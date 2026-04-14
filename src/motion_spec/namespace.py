@@ -2,6 +2,10 @@
 from rdflib import URIRef
 from rdflib.namespace import DefinedNamespace, Namespace
 
+URI_CR2B_MM = "https://comp-rob2b.github.io/metamodels"
+URI_QUDT = "http://qudt.org"
+
+
 class APP(DefinedNamespace):
     constraints: URIRef
     path: URIRef
@@ -13,15 +17,16 @@ class APP(DefinedNamespace):
         "iri-map"
     ]
 
-    _NS = Namespace("https://comp-rob2b.github.io/metamodels/application/")
-
+    _NS = Namespace(f"{URI_CR2B_MM}/application/")
 
 class GEOM_ENT(DefinedNamespace):
     Point: URIRef
     Frame: URIRef
     SimplicialComplex: URIRef
+    KinematicChain: URIRef
+    UniformGravitationalField: URIRef
 
-    _NS = Namespace("https://comp-rob2b.github.io/metamodels/geometry/structural-entities#")
+    _NS = Namespace(f"{URI_CR2B_MM}/geometry/structural-entities#")
 
 class QUDT_SCHEMA(DefinedNamespace):
     Quantity: URIRef
@@ -29,11 +34,19 @@ class QUDT_SCHEMA(DefinedNamespace):
     unit: URIRef
     value: URIRef
 
-    _NS = Namespace("http://qudt.org/schema/qudt/")
+    _extras = [
+        "quantity-kind",
+    ]
+
+    _NS = Namespace(f"{URI_QUDT}/schema/qudt/")
 
 class QUDT_QKIND(DefinedNamespace):
     Angle: URIRef
     Length: URIRef
+    Distance: URIRef
+    PlaneAngle: URIRef
+    Position: URIRef
+    Direction: URIRef
     AngularVelocity: URIRef
     LinearVelocity: URIRef
     AngularAcceleration: URIRef
@@ -41,7 +54,7 @@ class QUDT_QKIND(DefinedNamespace):
     Torque: URIRef
     Force: URIRef
 
-    _NS = Namespace("http://qudt.org/vocab/quantitykind/")
+    _NS = Namespace(f"{URI_QUDT}/vocab/quantitykind/")
 
 class QUDT_UNIT(DefinedNamespace):
     UNITLESS: URIRef
@@ -53,13 +66,20 @@ class QUDT_UNIT(DefinedNamespace):
         "M-PER-SEC2",
         "N-M",
         "RAD-PER-SEC",
-        "RAD-PER-SEC2"
+        "RAD-PER-SEC2",
+        "RAD",
+        "DEG",
+        "DEG-PER-SEC",
+        "CentiM",
+        "CentiM-PER-SEC",
     ]
 
-    _NS = Namespace("http://qudt.org/vocab/unit/")
+    _NS = Namespace(f"{URI_QUDT}/vocab/unit/")
 
 class GEOM_REL(DefinedNamespace):
     Pose: URIRef
+    Direction: URIRef
+    Position: URIRef
     VelocityTwist: URIRef
     AccelerationTwist: URIRef
 
@@ -70,7 +90,7 @@ class GEOM_REL(DefinedNamespace):
         "reference-point"
     ]
 
-    _NS = Namespace("https://comp-rob2b.github.io/metamodels/geometry/spatial-relations#")
+    _NS = Namespace(f"{URI_CR2B_MM}/geometry/spatial-relations#")
 
 class GEOM_COORD(DefinedNamespace):
     DirectionCoordinate: URIRef
@@ -99,7 +119,7 @@ class GEOM_COORD(DefinedNamespace):
         "linear-acceleration"
     ]
 
-    _NS = Namespace("https://comp-rob2b.github.io/metamodels/geometry/coordinates#")
+    _NS = Namespace(f"{URI_CR2B_MM}/geometry/coordinates#")
 
 class GEOM_OP(DefinedNamespace):
     RotateDirectionDistalToProximalWithPose: URIRef
@@ -134,7 +154,7 @@ class GEOM_OP(DefinedNamespace):
         "in"
     ]
 
-    _NS = Namespace("https://comp-rob2b.github.io/metamodels/geometry/spatial-operators#")
+    _NS = Namespace(f"{URI_CR2B_MM}/geometry/spatial-operators#")
 
 class RBDYN_ENT(DefinedNamespace):
     Wrench: URIRef
@@ -143,7 +163,7 @@ class RBDYN_ENT(DefinedNamespace):
         "reference-point"
     ]
 
-    _NS = Namespace("https://comp-rob2b.github.io/metamodels/newtonian-rigid-body-dynamics/structural-entities#")
+    _NS = Namespace(f"{URI_CR2B_MM}/newtonian-rigid-body-dynamics/structural-entities#")
 
 class RBDYN_COORD(DefinedNamespace):
     WrenchCoordinate: URIRef
@@ -153,7 +173,7 @@ class RBDYN_COORD(DefinedNamespace):
         "as-seen-by"
     ]
 
-    _NS = Namespace("https://comp-rob2b.github.io/metamodels/newtonian-rigid-body-dynamics/coordinates#")
+    _NS = Namespace(f"{URI_CR2B_MM}/newtonian-rigid-body-dynamics/coordinates#")
 
 class RBDYN_OP(DefinedNamespace):
     TransformWrenchToProximal: URIRef
@@ -176,7 +196,7 @@ class RBDYN_OP(DefinedNamespace):
         "from"
     ]
 
-    _NS = Namespace("https://comp-rob2b.github.io/metamodels/newtonian-rigid-body-dynamics/operators#")
+    _NS = Namespace(f"{URI_CR2B_MM}/newtonian-rigid-body-dynamics/operators#")
 
 class MAP(DefinedNamespace):
     View: URIRef
@@ -198,13 +218,16 @@ class MAP(DefinedNamespace):
     z: URIRef
 
     _extras = [
+        "rotation",
+        "pose",
+        "ComputeRotationFromPose",
         "angular-velocity",
         "linear-velocity",
         "angular-acceleration",
         "linear-acceleration"
     ]
 
-    _NS = Namespace("https://comp-rob2b.github.io/metamodels/task/map#")
+    _NS = Namespace(f"{URI_CR2B_MM}/task/map#")
 
 class CSTR(DefinedNamespace):
     Constraint: URIRef
@@ -213,17 +236,24 @@ class CSTR(DefinedNamespace):
     GreaterThanConstraint: URIRef
     LessThanConstraint: URIRef
     BilateralConstraint: URIRef
+    AngularVelocityConstraint: URIRef
+    LinearVelocityConstraint: URIRef
+    TorqueConstraint: URIRef
+    ForceConstraint: URIRef
+    AngleConstraint: URIRef
+    DistanceConstraint: URIRef
 
     quantity: URIRef
     threshold: URIRef
 
     _extras = [
+        "PositionConstraint",
         "reference-value",
         "lower-threshold",
-        "upper-threshold"
+        "upper-threshold",
     ]
 
-    _NS = Namespace("https://comp-rob2b.github.io/metamodels/task/constraint#")
+    _NS = Namespace(f"{URI_CR2B_MM}/task/constraint#")
 
 class MOT(DefinedNamespace):
     GuardedMotion: URIRef
@@ -235,7 +265,7 @@ class MOT(DefinedNamespace):
         "while"
     ]
 
-    _NS = Namespace("https://comp-rob2b.github.io/metamodels/task/motion-specification#")
+    _NS = Namespace(f"{URI_CR2B_MM}/task/motion-specification#")
 
 class CSTR_HDL(DefinedNamespace):
     ConstraintHandler: URIRef
@@ -245,6 +275,11 @@ class CSTR_HDL(DefinedNamespace):
     Controller: URIRef
     ProportionalIntegralDerivative: URIRef
     DecayingIntegralTerm: URIRef
+    Monitor: URIRef
+    EdgeTriggeredMonitor: URIRef
+    LevelTriggeredMonitor: URIRef
+    Event: URIRef
+    Flag: URIRef
 
     motion: URIRef
     evaluators: URIRef
@@ -252,6 +287,8 @@ class CSTR_HDL(DefinedNamespace):
     controllers: URIRef
     constraint: URIRef
     error: URIRef
+    event: URIRef
+    flag: URIRef
 
     _extras = [
         "error-signal",
@@ -259,10 +296,10 @@ class CSTR_HDL(DefinedNamespace):
         "proportional-gain",
         "integral-gain",
         "derivative-gain",
-        "decay-rate"
+        "decay-rate",
     ]
 
-    _NS = Namespace("https://comp-rob2b.github.io/metamodels/task/constraint-handler#")
+    _NS = Namespace(f"{URI_CR2B_MM}/task/constraint-handler#")
 
 class SLV(DefinedNamespace):
     VelocityCompositionSolver: URIRef
@@ -273,6 +310,9 @@ class SLV(DefinedNamespace):
     CartesianForceSpecification: URIRef
     AccelerationConstraint: URIRef
     AxisAligned: URIRef
+    PrioritizationLevel: URIRef
+    AccelerationConstrainedHybridDynamicsAlgorithm: URIRef
+    NewtonEulerAlgorithm: URIRef
 
     constraints: URIRef
     force: URIRef
@@ -284,6 +324,9 @@ class SLV(DefinedNamespace):
     configuration: URIRef
     velocity: URIRef
     output: URIRef
+    solver: URIRef
+    root: URIRef
+    gravity: URIRef
 
     _extras = [
         "motion-drivers",
@@ -292,7 +335,9 @@ class SLV(DefinedNamespace):
         "acceleration-energy",
         "angular-acceleration",
         "linear-acceleration",
-        "attached-to"
+        "attached-to",
+        "kinematic-chain",
+        "prioritization-hierarchy",
     ]
 
-    _NS = Namespace("https://comp-rob2b.github.io/metamodels/task/solver-specification#")
+    _NS = Namespace(f"{URI_CR2B_MM}/task/solver-specification#")

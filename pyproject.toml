@@ -1,0 +1,34 @@
+[project]
+name = "motion_spec"
+version = "0.1.0"
+description = "IR generator and C++ code generator for motion specification models"
+authors = [
+    {name = "Sven Schneider", email = "sven.schneider@h-brs.de"},
+    {name = "Vamsi Kalagaturu", email = "vamsikalagaturu@gmail.com"}
+]
+maintainers = [
+    {name = "Vamsi Kalagaturu", email = "vamsikalagaturu@gmail.com"}
+]
+license = { text = "MPL-2.0" }
+requires-python = ">=3.10"
+dependencies = [
+    "rdflib",
+    "pyshacl>=0.25.0",
+    "numpy",
+]
+
+[project.scripts]
+motion-spec-check = "motion_spec.check:main"
+motion-spec-ir-gen = "motion_spec.ir_gen:main"
+motion-spec-count = "motion_spec.count:main"
+motion-spec-codegen = "motion_spec.codegen:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100

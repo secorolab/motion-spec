@@ -1,5 +1,75 @@
-# motion-spec-ral
+# motion-spec
+
 Code base for RAL paper: *From Composable Models to Correct-by-Construction Software for Contact-Rich Robotic Mobile-Manipulation Tasks*
+
+## Installation
+
+```bash
+pip install -e .
+```
+
+## Usage
+
+The motion-spec package provides console scripts for validating and generating intermediate representations from motion specification models:
+
+### Validation
+
+Validate motion specification models against SHACL constraints:
+
+```bash
+motion-spec-check manifest.json
+```
+
+### IR Generation
+
+Generate intermediate representation (IR) JSON from motion specification models:
+
+```bash
+# Print IR to console
+motion-spec-ir-gen manifest.json --console
+
+# Save IR to file
+motion-spec-ir-gen manifest.json -o output.json
+
+# Print IR to console (alternative)
+motion-spec-ir-gen manifest.json --output -
+
+# Get help
+motion-spec-ir-gen --help
+```
+
+### C++ Code Generation
+
+Generate C++ code through StringTemplate:
+
+```bash
+# Generate IR first
+motion-spec-ir-gen models/sc0a-right-arm.json -o gen/ir.json
+
+# Header-only mode: runtime/shared headers + one header per motion
+motion-spec-codegen gen/ir.json --mode headers --output-dir gen
+
+# Demo app mode
+motion-spec-ir-gen models/sc1.json -o gen/ir.json
+motion-spec-codegen gen/ir.json --mode app --output-dir gen
+```
+
+`motion-spec-codegen` takes a previously generated IR JSON file as input.
+Header mode is intended for integration with an external FSM such as
+`coord-dsl`; app mode emits a generated application.
+
+### Examples
+
+```bash
+# Validate a model
+motion-spec-check models/sc0a-right-arm.json
+
+# Generate IR and save to file
+motion-spec-ir-gen models/sc0a-right-arm.json -o ir-output.json
+
+# Generate IR and view in console
+motion-spec-ir-gen models/sc0a-right-arm.json --console
+```
 
 ## Documentation
 

@@ -1,10 +1,13 @@
 # SPDX-License-Identifier: MPL-2.0
+"""Count entities and lines in motion specification model files."""
+
 import sys
 import os
 import json
 import numpy as np
 import rdflib
-from namespace import APP
+from motion_spec.namespace import APP
+
 
 class Table:
     def __init__(self):
@@ -82,14 +85,17 @@ class Table:
 
         return s
 
+
 def replace_by(arr, find, replace):
     arr[arr == find] = replace
     return arr
 
 
-if __name__ == "__main__":
+def main():
+    """Count entities and lines in motion specification models."""
     if len(sys.argv) < 2:
-        sys.exit(0)
+        print("Usage: motion-spec-count <manifest.json>")
+        sys.exit(1)
 
     app_model = sys.argv[1]
 
@@ -120,20 +126,24 @@ if __name__ == "__main__":
         entities.insert(folder, filename, num_entities)
         lines.insert(folder, filename, num_lines)
 
-    #                world-model
-    #                |  constraints
-    #                |  |  controllers
-    #                |  |  |  maps
-    #                |  |  |  |  solver-specification
-    #                |  |  |  |  |
-    acc = np.array([[0, 0, 0, 0, 0],    # 00-misc
-                    [1, 0, 0, 0, 0],    # 01-world-model
-                    [0, 0, 0, 1, 0],    # 02-map
-                    [0, 1, 0, 0, 0],    # 03-constraints
-                    [0, 1, 0, 0, 0],    # 04-motion-specification
-                    [0, 0, 1, 0, 0],    # 05-constraint-handler
-                    [0, 0, 0, 0, 1],    # 06-solver-specification
-                    [0, 0, 0, 0, 1]])   # 07-scenario
+    #        world-model
+    #        |  constraints
+    #        |  |  controllers
+    #        |  |  |  maps
+    #        |  |  |  |  solver-specification
+    #        |  |  |  |  |
+    acc = np.array(
+        [
+            [0, 0, 0, 0, 0],  # 00-misc
+            [1, 0, 0, 0, 0],  # 01-world-model
+            [0, 0, 0, 1, 0],  # 02-map
+            [0, 1, 0, 0, 0],  # 03-constraints
+            [0, 1, 0, 0, 0],  # 04-motion-specification
+            [0, 0, 1, 0, 0],  # 05-constraint-handler
+            [0, 0, 0, 0, 1],  # 06-solver-specification
+            [0, 0, 0, 0, 1],  # 07-scenario
+        ]
+    )
 
     ent_name = entities.column_names()
     ent_np = replace_by(np.array(entities.to_list()), None, 0)
@@ -148,3 +158,7 @@ if __name__ == "__main__":
     print(ent_np)
     print("lines:", np.sum(lin_np, axis=0))
     print(lin_np)
+
+
+if __name__ == "__main__":
+    main()

@@ -2,3 +2,10 @@ __pycache__/
 comp-rob2b/
 
 build/
+.stst/
+generated/**/.stst/
+
+# Python packaging artifacts
+*.egg-info/
+dist/
+.eggs/

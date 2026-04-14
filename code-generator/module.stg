@@ -1,0 +1,1145 @@
+// SPDX-License-Identifier: MPL-2.0
+
+import "hddc2b.stg"
+import "robif2b.stg"
+import "solver.stg"
+
+subspace-to-runtime-subspace ::= [
+    "LinearAcceleration": "Subspace::Linear",
+    "AngularAcceleration": "Subspace::Angular"
+]
+
+axis-to-vector ::= [
+    "X": "{1.0, 0.0, 0.0}",
+    "Y": "{0.0, 1.0, 0.0}",
+    "Z": "{0.0, 0.0, 1.0}"
+]
+
+subspace-to-member ::= [
+    "AngularVelocity": "rot",
+    "LinearVelocity": "vel",
+    "AngularAcceleration": "rot",
+    "LinearAcceleration": "vel",
+    "Torque": "torque",
+    "Force": "force",
+    "Position": "p"
+]
+
+axis-to-index ::= [
+    "X": "0",
+    "Y": "1",
+    "Z": "2"
+]
+
+ip-lookup ::= [
+    "slv_sc2_leftarm": "192.168.1.10",
+    "slv_sc2_rightarm": "192.168.1.11",
+    default: "127.0.0.1"
+]
+
+access-expr(id, views) ::= <<
+<if(views.(id))>shared.<views.(id).superobject.id>.<subspace-to-member.(views.(id).subspace)>[<axis-to-index.(views.(id).axis)>]<else>shared.<id><endif>
+>>
+
+shared-member(var) ::= <<
+<({shared-member-<var.type>})(var)>
+>>
+
+indented-shared-member(var) ::= "    <shared-member(var)>"
+
+shared-member-Direction(var) ::= <<
+KDL::Vector <var.id>;
+>>
+
+shared-member-Pose(var) ::= <<
+KDL::Frame <var.id>;
+>>
+
+shared-member-Position(var) ::= <<
+KDL::Vector <var.id> = KDL::Vector(<var.position; separator=", ">);
+>>
+
+shared-member-VelocityTwist(var) ::= <<
+KDL::Twist <var.id>;
+>>
+
+shared-member-AccelerationTwist(var) ::= <<
+KDL::Twist <var.id>;
+>>
+
+shared-member-Wrench(var) ::= <<
+KDL::Wrench <var.id>;
+>>
+
+shared-member-Quantity(var) ::= <<
+double <var.id><if(var.value)> = <var.value><endif>;
+>>
+
+controller-member(controller) ::= <<
+    motion_spec::runtime::PIDControl <controller.id>{<controller.proportional_gain>, <controller.integral_gain>, <controller.derivative_gain><if(controller.decay_rate)>, <controller.decay_rate><endif>};
+>>
+
+monitor-member(monitor) ::= "<if(monitor.is_edge_triggered)>    bool <monitor.id>_previous = false;<else>    bool <monitor.flag> = false;<endif>"
+
+emit-call(closure, views) ::= <<
+<({emit-call-<closure.type>})(closure, views)>
+>>
+
+emit-call-AssignmentEvaluator(closure, views) ::= <<
+shared.<closure.quantity> = <access-expr(closure.reference_value, views)>;
+>>
+
+emit-call-ErrorEvaluator-EqualityConstraint(closure, views) ::= <<
+shared.<closure.error> = motion_spec::runtime::evaluate_equality_constraint(<access-expr(closure.quantity, views)>, <access-expr(closure.reference_value, views)>);
+>>
+
+emit-call-ErrorEvaluator-GreaterThanConstraint(closure, views) ::= <<
+shared.<closure.error> = motion_spec::runtime::evaluate_greater_than_constraint(<access-expr(closure.quantity, views)>, <access-expr(closure.threshold, views)>);
+>>
+
+emit-call-ErrorEvaluator-LessThanConstraint(closure, views) ::= <<
+shared.<closure.error> = motion_spec::runtime::evaluate_less_than_constraint(<access-expr(closure.quantity, views)>, <access-expr(closure.threshold, views)>);
+>>
+
+emit-call-ErrorEvaluator-BilateralConstraint(closure, views) ::= <<
+shared.<closure.error> = motion_spec::runtime::evaluate_bilateral_constraint(<access-expr(closure.quantity, views)>, <access-expr(closure.lower_threshold, views)>, <access-expr(closure.upper_threshold, views)>);
+>>
+
+emit-call-ErrorEvaluator(closure, views) ::= <<
+<({emit-call-ErrorEvaluator-<closure.constraint>})(closure, views)>
+>>
+
+emit-call-Controller(closure, views) ::= <<
+shared.<closure.control_signal> = state.<closure.id>.control(shared.<closure.error_signal>);
+>>
+
+emit-call-PlanarAngleFromDirections(closure, views) ::= <<
+shared.<closure.angle> = KDL::dot(<closure.from_directions:{d | <access-expr(d, views)>}; separator=", ">);
+>>
+
+emit-call-InvertAngle(closure, views) ::= <<
+shared.<closure.out> = -<access-expr(closure.in, views)>;
+>>
+
+emit-call-RotateDirectionDistalToProximalWithPose(closure, views) ::= <<
+shared.<closure.to> = shared.<closure.pose>.M * <access-expr(closure.from, views)>;
+>>
+
+emit-call-ComposePose(closure, views) ::= <<
+shared.<closure.composite> = <access-expr(closure.in1, views)> * <access-expr(closure.in2, views)>;
+>>
+
+emit-call-PoseToLinearDistance(closure, views) ::= <<
+shared.<closure.distance> = shared.<closure.pose>.p.Norm();
+>>
+
+emit-call-PoseToDirection(closure, views) ::= <<
+shared.<closure.direction> = shared.<closure.pose>.p;
+shared.<closure.direction>.Normalize();
+>>
+
+emit-call-PoseToAngleAroundAxis(closure, views) ::= <<
+KDL::Vector _<closure.angle> = KDL::Vector<axis-to-vector.(closure.axis)>;
+shared.<closure.angle> = shared.<closure.pose>.M.GetRotAngle(_<closure.angle>);
+>>
+
+emit-call-RotateVelocityTwistToProximalWithPose(closure, views) ::= <<
+shared.<closure.to> = shared.<closure.pose>.M * <access-expr(closure.from, views)>;
+>>
+
+emit-call-WrenchFromPositionDirectionAndMagnitude(closure, views) ::= <<
+shared.<closure.wrench> = KDL::Wrench(<access-expr(closure.direction, views)> * <access-expr(closure.magnitude, views)>, KDL::Vector(0.0, 0.0, 0.0)).RefPoint(-<access-expr(closure.position, views)>);
+>>
+
+emit-call-RotateWrenchToDistalWithPose(closure, views) ::= <<
+shared.<closure.to> = shared.<closure.pose>.M.Inverse(<access-expr(closure.from, views)>);
+>>
+
+emit-call-RotateWrenchToProximalWithPose(closure, views) ::= <<
+shared.<closure.to> = shared.<closure.pose>.M * <access-expr(closure.from, views)>;
+>>
+
+emit-call-TransformWrenchToProximal(closure, views) ::= <<
+shared.<closure.to> = shared.<closure.pose> * <access-expr(closure.from, views)>;
+>>
+
+emit-call-AddWrench(closure, views) ::= <<
+shared.<closure.out> = <access-expr(closure.in1, views)> + <access-expr(closure.in2, views)>;
+>>
+
+schedule-step(step, closures, views) ::= <<
+    // <step>
+    <emit-call(closures.(step), views)>
+>>
+
+schedule-block(steps, closures, views) ::= <<
+<steps:{step | <schedule-step(step, closures, views)>}; separator="\n">
+>>
+
+update-monitor(monitor) ::= <<
+<if(monitor.is_edge_triggered)>
+    {
+        const bool active = motion_spec::runtime::constraint_satisfied(shared.<monitor.error.id>);
+        if (motion_spec::runtime::rising_edge(state.<monitor.id>_previous, active)) {
+            motion_spec::runtime::warn_produce_event_not_implemented("<monitor.event>");
+        }
+    }
+<else>
+    motion_spec::runtime::set_flag(
+        state.<monitor.flag>,
+        motion_spec::runtime::constraint_satisfied(shared.<monitor.error.id>));
+<endif>
+>>
+
+monitor-block(monitors) ::= <<
+<monitors:{monitor | <update-monitor(monitor)>}; separator="\n\n">
+>>
+
+motion-prelude(wrench_outputs, arm_solvers) ::= <<
+<wrench_outputs:{wrench | <sync-wrench(wrench)>}; separator="\n">
+<if(arm_solvers)>
+
+<arm-prepare-block(arm_solvers)>
+<endif>
+>>
+
+motion-when-block(steps, closures, views) ::= <<
+<if(first(steps))>
+<schedule-block(steps, closures, views)>
+<endif>
+>>
+
+sync-wrench(wrench) ::= <<
+    if (robot.<wrench.id> != nullptr) {
+        shared.<wrench.id> = *robot.<wrench.id>;
+    }
+>>
+
+solver-state-struct(solver) ::= <<
+struct <solver.id>_solver_state {
+    bool initialized = false;
+    int num_constraints = 0;
+    int num_joints = 0;
+    int num_segments = 0;
+    KDL::Twist root_acc;
+    KDL::JntArray q;
+    KDL::JntArray qd;
+    KDL::JntArray qdd;
+    KDL::JntArray tau_ff;
+    KDL::JntArray tau_ctrl;
+    KDL::Wrenches f_ext;
+    KDL::Jacobian f_cstr;
+    KDL::JntArray e_acc;
+    std::unique_ptr\<KDL::ChainHdSolver_Vereshchagin_Fext\> achd_fext;
+    std::unique_ptr\<KDL::ChainHdSolver_Vereshchagin\> achd_acc;
+};
+>>
+
+assign-constraint-force(constraint, solver_state, column) ::= <<
+state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::<constraint.axis>), <column>) = 1.0;
+state.<solver_state>.e_acc(<column>) = shared.<constraint.acceleration_energy.id>;
+>>
+
+solver-init(solver, motion_driver) ::= <<
+if (!state.<solver.id>.initialized) {
+        state.<solver.id>.num_constraints = <length(first(motion_driver.acceleration_constraint).constraints)>;
+        state.<solver.id>.num_joints = robot.<solver.id>.chain->getNrOfJoints();
+        state.<solver.id>.num_segments = robot.<solver.id>.chain->getNrOfSegments();
+        state.<solver.id>.q = KDL::JntArray(state.<solver.id>.num_joints);
+        state.<solver.id>.qd = KDL::JntArray(state.<solver.id>.num_joints);
+        state.<solver.id>.qdd = KDL::JntArray(state.<solver.id>.num_joints);
+        state.<solver.id>.tau_ff = KDL::JntArray(state.<solver.id>.num_joints);
+        state.<solver.id>.tau_ctrl = KDL::JntArray(state.<solver.id>.num_joints);
+        state.<solver.id>.f_ext = KDL::Wrenches(state.<solver.id>.num_segments);
+        state.<solver.id>.f_cstr = KDL::Jacobian(state.<solver.id>.num_constraints);
+        state.<solver.id>.e_acc = KDL::JntArray(state.<solver.id>.num_constraints);
+        state.<solver.id>.achd_fext = std::make_unique\<KDL::ChainHdSolver_Vereshchagin_Fext\>(*robot.<solver.id>.chain, state.<solver.id>.root_acc, state.<solver.id>.num_constraints);
+        state.<solver.id>.achd_acc = std::make_unique\<KDL::ChainHdSolver_Vereshchagin\>(*robot.<solver.id>.chain, state.<solver.id>.root_acc, state.<solver.id>.num_constraints);
+        state.<solver.id>.initialized = true;
+}
+>>
+
+solver-sync-input(solver) ::= <<
+for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
+    state.<solver.id>.q(i) = robot.<solver.id>.state->pos_msr[i];
+    state.<solver.id>.qd(i) = robot.<solver.id>.state->vel_msr[i];
+}
+KDL::JntArrayVel q_qd_<solver.id>(state.<solver.id>.q, state.<solver.id>.qd);
+>>
+
+solver-output-Pose(solver, out) ::= <<
+{
+    KDL::ChainFkSolverPos_recursive fk(*robot.<solver.id>.chain);
+    fk.JntToCart(
+        state.<solver.id>.q,
+        shared.<out.id>,
+        motion_spec::runtime::find_segment_index(*robot.<solver.id>.chain, "<out.of.id>"));
+}
+>>
+
+solver-output-VelocityTwist(solver, out) ::= <<
+{
+    KDL::ChainFkSolverVel_recursive fk(*robot.<solver.id>.chain);
+    KDL::FrameVel tmp;
+    fk.JntToCart(
+        q_qd_<solver.id>,
+        tmp,
+        motion_spec::runtime::find_segment_index(*robot.<solver.id>.chain, "<out.of.id>"));
+    shared.<out.id> = tmp.deriv();
+}
+>>
+
+solver-output(solver, out) ::= <<
+<({solver-output-<out.type>})(solver, out)>
+>>
+
+solver-run(solver, motion_driver) ::= <<
+    KDL::SetToZero(state.<solver.id>.f_cstr);
+<first(motion_driver.acceleration_constraint).constraints:{c |     <assign-constraint-force(c, solver.id, i0)>}; separator="\n">
+    for (int i = 0; i \< state.<solver.id>.num_segments; ++i) {
+        KDL::SetToZero(state.<solver.id>.f_ext[i]);
+    }
+<motion_driver.cartesian_force:{f |     <solver-assign-f-ext-modular(solver, f)>}; separator="\n">
+    KDL::JntArray tau_ctrl_fext_<solver.id>(state.<solver.id>.num_joints);
+    state.<solver.id>.achd_fext->CartToJnt(
+        state.<solver.id>.q,
+        state.<solver.id>.qd,
+        state.<solver.id>.qdd,
+        state.<solver.id>.f_cstr,
+        state.<solver.id>.e_acc,
+        state.<solver.id>.f_ext,
+        state.<solver.id>.tau_ff,
+        tau_ctrl_fext_<solver.id>);
+    KDL::Wrenches f_ext_zero_<solver.id>(state.<solver.id>.num_segments);
+    KDL::JntArray tau_ctrl_acc_<solver.id>(state.<solver.id>.num_joints);
+    state.<solver.id>.achd_acc->CartToJnt(
+        state.<solver.id>.q,
+        state.<solver.id>.qd,
+        state.<solver.id>.qdd,
+        state.<solver.id>.f_cstr,
+        state.<solver.id>.e_acc,
+        f_ext_zero_<solver.id>,
+        state.<solver.id>.tau_ff,
+        tau_ctrl_acc_<solver.id>);
+    KDL::Add(tau_ctrl_fext_<solver.id>, tau_ctrl_acc_<solver.id>, state.<solver.id>.tau_ctrl);
+>>
+
+solver-assign-f-ext-modular(solver, force) ::= <<
+state.<solver.id>.f_ext[motion_spec::runtime::find_segment_index(*robot.<solver.id>.chain, "<force.attached_to.id>") - 1] += shared.<force.force.id>;
+>>
+
+solver-stage-output(solver) ::= <<
+    for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
+        robot.<solver.id>.state->eff_cmd[i] = state.<solver.id>.tau_ctrl(i);
+    }
+>>
+
+solver-apply-output(solver) ::= <<
+    robif2b_kinova_gen3_update(robot.<solver.id>.robot);
+>>
+
+shared-schedule-block(steps, closures, views) ::= <<
+<if(first(steps))>
+<schedule-block(steps, closures, views)>
+<endif>
+>>
+
+wrench-pointer-member(wrench) ::= <<
+    KDL::Wrench *<wrench.id> = nullptr;
+>>
+
+wrench-measurement(wrench) ::= <<
+    KDL::Wrench <wrench.id>_measurement;
+>>
+
+arm-robot-member(solver) ::= <<
+    manipulator_robot <solver.id>;
+>>
+
+motion-state-member(motion) ::= <<
+    <motion.id>_state <motion.id>_state_instance;
+>>
+
+motion-include(motion) ::= <<
+#include "motion_<motion.id>.hpp"
+>>
+
+mobile-base-cycle-include() ::= <<
+#include "mobile_base_cycle.hpp"
+>>
+
+app-prepare-call(motion) ::= <<
+        update_<motion.id>(<motion.id>_state_instance, shared, robot);
+>>
+
+app-run-call(motion) ::= <<
+        if (can_start_<motion.id>(<motion.id>_state_instance, shared)) {
+            control_<motion.id>(<motion.id>_state_instance, shared, robot);
+        }
+>>
+
+app-stage-call(motion) ::= <<
+        apply_<motion.id>(<motion.id>_state_instance, shared, robot);
+>>
+
+app-base-control-call(has_mobile_base) ::= <<
+<if(has_mobile_base)>
+        control_mobile_base(mobile_base_state_instance, shared, robot);
+<endif>
+>>
+
+base-force-solver-hddc2b_example_frc_sc1(solver) ::= <<
+hddc2b_pltf_drv_algn_dst(NUM_DRIVES, mobile_base.drive_attachment, mobile_base.w_align, kelo_msr.pvt_pos, mobile_base.f_platform, &mobile_base.f_drive_ref[1], 2);
+hddc2b_pltf_frc_pltf_to_drv(NUM_DRIVES, EPS, mobile_base.g, mobile_base.w_platform, mobile_base.f_platform, mobile_base.w_drive, mobile_base.f_drive_ref, mobile_base.f_prim, mobile_base.f_scnd);
+motion_spec::runtime::hddc2b_rescale(mobile_base.f_scnd);
+hddc2b_pltf_frc_redu_ref_fini(NUM_DRIVES, mobile_base.f_prim, mobile_base.f_scnd, mobile_base.f_drive);
+hddc2b_drv_frc_pvt_to_gnd(NUM_DRIVES, mobile_base.wheel_distance, mobile_base.castor_offset, mobile_base.f_drive, mobile_base.f_wheel);
+hddc2b_whl_frc_gnd_to_hub(NUM_DRIVES, mobile_base.wheel_diameter, mobile_base.f_wheel, kelo_cmd.trq);
+>>
+
+base-force-solver-hddc2b_example_frc_sc2(solver) ::= <<
+hddc2b_pltf_drv_algn_dst(NUM_DRIVES, mobile_base.drive_attachment, mobile_base.w_align, kelo_msr.pvt_pos, mobile_base.f_platform, &mobile_base.f_drive[1], 2);
+hddc2b_drv_frc_pvt_to_gnd(NUM_DRIVES, mobile_base.wheel_distance, mobile_base.castor_offset, mobile_base.f_drive, mobile_base.f_wheel);
+hddc2b_whl_frc_gnd_to_hub(NUM_DRIVES, mobile_base.wheel_diameter, mobile_base.f_wheel, kelo_cmd.trq);
+>>
+
+base-force-solver(solver) ::= <<
+<({base-force-solver-<solver.configuration>})(solver)>
+>>
+
+base-cycle-begin(base_velocity_solvers) ::= <<
+    {
+        auto &mobile_base = shared.mobile_base;
+        auto &ecat = *robot.mobile_base.ethercat;
+        auto &drive_enc = *robot.mobile_base.drive_encoder;
+        auto &kelo_msr = *robot.mobile_base.measurement;
+
+        <robif2b-update-ethercat()>
+        <robif2b-update-kelo-encoder()>
+        hddc2b_pltf_frc_comp_mat(NUM_DRIVES, mobile_base.drive_attachment, kelo_msr.pvt_pos, mobile_base.g);
+<base_velocity_solvers:{solver |
+
+        hddc2b_whl_vel_hub_to_gnd(NUM_DRIVES, mobile_base.wheel_diameter, kelo_msr.whl_vel, mobile_base.xd_ground);
+        hddc2b_drv_vel_gnd_to_pvt(NUM_DRIVES, mobile_base.wheel_distance, mobile_base.castor_offset, mobile_base.xd_ground, mobile_base.xd_drive);
+        motion_spec::runtime::hddc2b_pltf_vel_drv_to_pltf(NUM_DRIVES, EPS, mobile_base.g, mobile_base.w_drive, mobile_base.xd_drive, mobile_base.w_platform, mobile_base.xd_platform);
+        shared.<solver.velocity.id>.vel.x(mobile_base.xd_platform[0]);
+        shared.<solver.velocity.id>.vel.y(mobile_base.xd_platform[1]);
+        shared.<solver.velocity.id>.rot.z(mobile_base.xd_platform[2]);
+}; separator="\n">
+    }
+>>
+
+base-cycle-force(base_force_solvers) ::= <<
+    {
+        auto &mobile_base = shared.mobile_base;
+        auto &kelo_msr = *robot.mobile_base.measurement;
+        auto &kelo_cmd = *robot.mobile_base.command;
+<base_force_solvers:{solver |
+
+        mobile_base.f_platform[0] = shared.<solver.force.id>.force.x();
+        mobile_base.f_platform[1] = shared.<solver.force.id>.force.y();
+        mobile_base.f_platform[2] = shared.<solver.force.id>.torque.z();
+        <base-force-solver(solver)>
+}; separator="\n">
+    }
+>>
+
+arm-solver-members(arm_solvers) ::= <<
+<arm_solvers:{solver | <solver-state-struct(solver)>}; separator="\n\n">
+>>
+
+arm-state-members(arm_solvers) ::= <<
+<arm_solvers:{solver |     <solver.id>_solver_state <solver.id>;}; separator="\n">
+>>
+
+arm-init-block(arm_solvers) ::= <<
+<arm_solvers:{solver |     <solver-init(solver, solver.motion_driver)>}; separator="\n">
+>>
+
+arm-prepare-block(arm_solvers) ::= <<
+<arm_solvers:{solver |
+    <solver-sync-input(solver)>
+    <solver.output:{out | <solver-output(solver, out)>}; separator="\n\n">
+}; separator="\n\n">
+>>
+
+arm-run-block(arm_solvers) ::= <<
+<arm_solvers:{solver |     <solver-run(solver, solver.motion_driver)>}; separator="\n">
+>>
+
+arm-stage-block(arm_solvers) ::= <<
+<arm_solvers:{solver |     <solver-stage-output(solver)>}; separator="\n">
+>>
+
+arm-apply-block(arm_solvers) ::= <<
+<arm_solvers:{solver |     <solver-apply-output(solver)>}; separator="\n">
+>>
+
+app-kinova-state(solver) ::= <<
+    kinova_state kinova_<solver.id>_state{};
+    kinova_<solver.id>_state.ctrl_mode = ROBIF2B_CTRL_MODE_FORCE;
+>>
+
+app-kinova-robot(solver) ::= <<
+    robif2b_kinova_gen3_nbx kinova_<solver.id>{};
+    kinova_<solver.id>.conf.ip_address = "<ip-lookup.(solver.id)>";
+    kinova_<solver.id>.conf.port = 10000;
+    kinova_<solver.id>.conf.port_real_time = 10001;
+    kinova_<solver.id>.conf.user = "admin";
+    kinova_<solver.id>.conf.password = "admin";
+    kinova_<solver.id>.conf.session_timeout = 60000;
+    kinova_<solver.id>.conf.connection_timeout = 2000;
+    kinova_<solver.id>.ctrl_mode = &kinova_<solver.id>_state.ctrl_mode;
+    kinova_<solver.id>.jnt_pos_msr = &kinova_<solver.id>_state.pos_msr[0];
+    kinova_<solver.id>.jnt_vel_msr = &kinova_<solver.id>_state.vel_msr[0];
+    kinova_<solver.id>.jnt_trq_msr = &kinova_<solver.id>_state.eff_msr[0];
+    kinova_<solver.id>.act_cur_msr = &kinova_<solver.id>_state.cur_msr[0];
+    kinova_<solver.id>.jnt_pos_cmd = &kinova_<solver.id>_state.pos_cmd[0];
+    kinova_<solver.id>.jnt_vel_cmd = &kinova_<solver.id>_state.vel_cmd[0];
+    kinova_<solver.id>.jnt_trq_cmd = &kinova_<solver.id>_state.eff_cmd[0];
+    kinova_<solver.id>.act_cur_cmd = &kinova_<solver.id>_state.cur_cmd[0];
+    kinova_<solver.id>.success = &kinova_<solver.id>_state.success;
+>>
+
+app-kinova-chain(solver) ::= <<
+    KDL::Chain chain_<solver.id>;
+    kinova_tree.getChain("base_link", "Bracelet_Link", chain_<solver.id>);
+>>
+
+app-kinova-robot-assign(solver) ::= <<
+    robot.<solver.id> = manipulator_robot{
+        .state = &kinova_<solver.id>_state,
+        .robot = &kinova_<solver.id>,
+        .chain = &chain_<solver.id>,
+    };
+>>
+
+app-configure-kinova(solver) ::= <<
+    <robif2b-configure-kinova(solver.id)>
+    <robif2b-recover-kinova(solver.id)>
+    <robif2b-start-kinova(solver.id)>
+>>
+
+app-shutdown-kinova(solver) ::= <<
+    <robif2b-stop-kinova(solver.id)>
+    <robif2b-shutdown-kinova(solver.id)>
+>>
+
+runtime_header(has_mobile_base) ::= <<
+#pragma once
+
+#include \<cassert\>
+#include \<cmath\>
+#include \<iostream\>
+#include \<kdl/chain.hpp\>
+#include \<stdexcept\>
+#include \<string\>
+#include \<string_view\>
+<if(has_mobile_base)>
+#include \<hddc2b/functions/platform.h\>
+#include \<hddc2b/functions/solver.h\>
+#include \<hddc2b/functions/drive.h\>
+#include \<hddc2b/functions/wheel.h\>
+<endif>
+
+namespace motion_spec::runtime {
+
+inline constexpr double kConstraintTolerance = 1e-9;
+<if(has_mobile_base)>
+inline constexpr int NUM_DRIVES = 4;
+inline constexpr int NUM_SLAVES = 4;
+inline constexpr int NUM_WHL_COORD = 2;
+inline constexpr int NUM_GND_COORD = 2;
+inline constexpr int NUM_DRV_COORD = 2;
+inline constexpr int NUM_PLTF_COORD = 3;
+inline constexpr int NUM_G_COORD = NUM_DRV_COORD * NUM_PLTF_COORD;
+inline constexpr double EPS = 0.001;
+<endif>
+
+class PIDControl {
+  public:
+    PIDControl() = default;
+
+    PIDControl(double p_gain, double i_gain, double d_gain, double decay_rate = 0.0)
+        : kp(p_gain), ki(i_gain), kd(d_gain), decay_rate(decay_rate) {}
+
+    double control(double error) {
+        double err_diff = error - err_last;
+        err_integ = decay_rate * err_integ + (1.0 - decay_rate) * error;
+        err_last = error;
+        return kp * error + ki * err_integ + kd * err_diff;
+    }
+
+  private:
+    double err_integ = 0.0;
+    double err_last = 0.0;
+    double kp = 0.0;
+    double ki = 0.0;
+    double kd = 0.0;
+    double decay_rate = 0.0;
+};
+
+inline double evaluate_equality_constraint(double quantity, double reference) {
+    return quantity - reference;
+}
+
+inline double evaluate_less_than_constraint(double quantity, double threshold) {
+    return (quantity \< threshold) ? 0.0 : threshold - quantity;
+}
+
+inline double evaluate_greater_than_constraint(double quantity, double threshold) {
+    return (quantity \> threshold) ? 0.0 : quantity - threshold;
+}
+
+inline double evaluate_bilateral_constraint(double quantity, double lower, double upper) {
+    if (quantity \< lower) return lower - quantity;
+    if (quantity \> upper) return quantity - upper;
+    return 0.0;
+}
+
+inline bool constraint_satisfied(double error) {
+    return std::fabs(error) \<= kConstraintTolerance;
+}
+
+enum class Axis {
+    X = 0,
+    Y = 1,
+    Z = 2,
+};
+
+enum class Subspace {
+    Linear = 0,
+    Angular = 1,
+};
+
+inline int constraint_row(Subspace subspace, Axis axis) {
+    return static_cast\<int\>(subspace) * 3 + static_cast\<int\>(axis);
+}
+
+inline bool rising_edge(bool &previous, bool active) {
+    const bool detected = active && !previous;
+    previous = active;
+    return detected;
+}
+
+inline void set_flag(bool &flag, bool active) {
+    flag = active;
+}
+
+inline void warn_produce_event_not_implemented(std::string_view event_id) {
+    std::cerr \<\< "produce_event(" \<\< event_id \<\< ") not implemented yet\\n";
+}
+
+inline unsigned int find_segment_index(const KDL::Chain &chain, std::string_view model_name) {
+    std::string target(model_name);
+    if (target.rfind("frame_", 0) == 0) {
+        target.replace(0, 6, "link_");
+    }
+    for (unsigned int i = 0; i \< chain.getNrOfSegments(); ++i) {
+        if (chain.getSegment(i).getName() == target) {
+            return i + 1;
+        }
+    }
+    throw std::runtime_error("KDL segment not found for model name: " + target);
+}
+<if(has_mobile_base)>
+inline void hddc2b_pltf_vel_drv_to_pltf(
+        int num_drv,
+        double eps,
+        const double *g,
+        const double *w_drv_sqrt,
+        const double *xd_drv,
+        const double *w_pltf_inv_sqrt,
+        double *xd_pltf)
+{
+    assert(num_drv >= 0);
+
+    double g2[num_drv * NUM_G_COORD];
+    double xd_drv2[num_drv * NUM_DRV_COORD];
+    hddc2b_pltf_vel_sing_wgh(num_drv, g, xd_drv, w_drv_sqrt, g2, xd_drv2);
+
+    double g3[num_drv * NUM_G_COORD];
+    hddc2b_pltf_vel_redu_wgh_init(num_drv, g2, w_pltf_inv_sqrt, g3);
+
+    double u[NUM_PLTF_COORD * NUM_PLTF_COORD];
+    double s[NUM_PLTF_COORD];
+    double vt[num_drv * NUM_G_COORD];
+    hddc2b_pltf_dcmp(num_drv, g3, u, s, vt);
+
+    double s_inv[NUM_PLTF_COORD];
+    hddc2b_pltf_pinv(num_drv, eps, s, s_inv);
+
+    double xd_pltf2[NUM_PLTF_COORD];
+    hddc2b_pltf_vel_slv(num_drv, u, s_inv, vt, xd_drv2, xd_pltf2);
+
+    hddc2b_pltf_vel_redu_wgh_fini(num_drv, xd_pltf2, w_pltf_inv_sqrt, xd_pltf);
+}
+
+inline void hddc2b_rescale(double *f_scnd) {
+    double f_scnd_max = 0.0;
+    for (int i = 0; i \< NUM_DRIVES; ++i) {
+        double current = fabs(f_scnd[i * NUM_DRV_COORD + 1]);
+        if (current > f_scnd_max) f_scnd_max = current;
+    }
+
+    double scale_factor = (f_scnd_max == 0.0) ? 1.0 : f_scnd_max;
+
+    for (int i = 0; i \< NUM_DRIVES; ++i) {
+        f_scnd[i * NUM_DRV_COORD + 0] /= scale_factor;
+        f_scnd[i * NUM_DRV_COORD + 1] /= scale_factor;
+    }
+}
+<endif>
+
+}  // namespace motion_spec::runtime
+>>
+
+shared_state_header(shared_data, wrench_outputs, has_arm, has_mobile_base, arm_solvers, base_velocity_solvers, base_force_solvers) ::= <<
+#pragma once
+
+#include "runtime.hpp"
+
+#include \<memory\>
+#include \<kdl/frames.hpp\>
+#include \<kdl/chain.hpp\>
+#include \<kdl/jacobian.hpp\>
+#include \<kdl/jntarray.hpp\>
+#include \<kdl/chainfksolverpos_recursive.hpp\>
+#include \<kdl/chainfksolvervel_recursive.hpp\>
+#include \<kdl/chainhdsolver_vereshchagin.hpp\>
+#include \<robif2b/functions/kinova_gen3.h\>
+<if(has_mobile_base)>
+#include \<robif2b/functions/ethercat.h\>
+#include \<robif2b/functions/kelo_drive.h\>
+<endif>
+
+#include "chainhdsolver_vereshchagin_fext.hpp"
+
+inline constexpr int KINOVA_NUM_JOINTS = 7;
+
+<if(has_mobile_base)>
+struct ecat_state {
+    const char *ethernet_if = nullptr;
+    int error_code = 0;
+    int num_exposed_slaves = 0;
+    int num_found_slaves = 0;
+    int num_active_slaves = 0;
+    int slave_idx[NUM_SLAVES] = {0};
+    const char *name[NUM_SLAVES] = {nullptr};
+    unsigned int prod_code[NUM_SLAVES] = {0U};
+    size_t input_size[NUM_SLAVES] = {0U};
+    size_t output_size[NUM_SLAVES] = {0U};
+    bool is_connected[NUM_SLAVES] = {false};
+};
+
+struct ecat_comm {
+    robif2b_kelo_drive_api_msr_pdo drv_msr_pdo[NUM_DRIVES];
+    robif2b_kelo_drive_api_cmd_pdo drv_cmd_pdo[NUM_DRIVES];
+};
+
+struct kelo_msr {
+    double pvt_off[NUM_DRIVES] = {0.0};
+    double pvt_pos[NUM_DRIVES] = {0.0};
+    double pvt_vel[NUM_DRIVES] = {0.0};
+    double whl_pos[NUM_DRIVES * 2] = {0.0};
+    double whl_vel[NUM_DRIVES * 2] = {0.0};
+    double imu_ang_vel[NUM_DRIVES * 3] = {0.0};
+    double imu_lin_acc[NUM_DRIVES * 3] = {0.0};
+    double bat_volt = 0.0;
+    double bat_cur = 0.0;
+    double bat_pwr = 0.0;
+    int bat_lvl = 0;
+};
+
+struct kelo_cmd {
+    enum robif2b_ctrl_mode ctrl_mode[NUM_DRIVES] = {ROBIF2B_CTRL_MODE_FORCE};
+    double vel[NUM_DRIVES * 2] = {0.0};
+    double trq[NUM_DRIVES * 2] = {0.0};
+    double cur[NUM_DRIVES * 2] = {0.0};
+    double max_current[NUM_DRIVES * 2] = {0.0};
+    double trq_const[NUM_DRIVES * 2] = {0.0};
+};
+
+struct mobile_base_robot {
+    int *num_drives = nullptr;
+    ecat_state *ethercat_state = nullptr;
+    ecat_comm *ethercat_comm = nullptr;
+    robif2b_ethercat *ethercat = nullptr;
+    kelo_msr *measurement = nullptr;
+    kelo_cmd *command = nullptr;
+    robif2b_kelo_drive_encoder *drive_encoder = nullptr;
+    robif2b_kelo_drive_actuator *wheel_actuator = nullptr;
+};
+
+struct mobile_base_runtime_state {
+    double drive_attachment[NUM_DRIVES * 2] = {
+         0.195,  0.21,
+        -0.195,  0.21,
+        -0.195, -0.21,
+         0.195, -0.21,
+    };
+    double wheel_diameter[NUM_DRIVES * 2] = {
+        0.115, 0.115,
+        0.115, 0.115,
+        0.115, 0.115,
+        0.115, 0.115,
+    };
+    double wheel_distance[NUM_DRIVES] = {0.0775, 0.0775, 0.0775, 0.0775};
+    double castor_offset[NUM_DRIVES] = {0.01, 0.01, 0.01, 0.01};
+    double g[NUM_DRIVES * NUM_G_COORD] = {0.0};
+    double f_platform[NUM_PLTF_COORD] = {0.0, 0.0, 0.0};
+    double w_platform[NUM_PLTF_COORD * NUM_PLTF_COORD] = {
+        1.0, 0.0, 0.0,
+        0.0, 1.0, 0.0,
+        0.0, 0.0, 1.0,
+    };
+    double w_drive[NUM_DRIVES * 4] = {
+        1.0, 0.0, 0.0, 1.0,
+        1.0, 0.0, 0.0, 1.0,
+        1.0, 0.0, 0.0, 1.0,
+        1.0, 0.0, 0.0, 1.0,
+    };
+    double f_drive_ref[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
+    double w_align[NUM_DRIVES * 2] = {
+        1.0, 1.0,
+        1.0, 1.0,
+        1.0, 1.0,
+        1.0, 1.0,
+    };
+    double f_drive[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
+    double f_wheel[NUM_DRIVES * NUM_GND_COORD] = {0.0};
+    double f_prim[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
+    double f_scnd[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
+    double xd_ground[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
+    double xd_drive[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
+    double xd_platform[NUM_PLTF_COORD] = {0.0, 0.0, 0.0};
+};
+<endif>
+
+struct kinova_state {
+    bool success = false;
+    enum robif2b_ctrl_mode ctrl_mode = ROBIF2B_CTRL_MODE_FORCE;
+    double pos_msr[KINOVA_NUM_JOINTS] = {0.0};
+    double vel_msr[KINOVA_NUM_JOINTS] = {0.0};
+    double eff_msr[KINOVA_NUM_JOINTS] = {0.0};
+    double cur_msr[KINOVA_NUM_JOINTS] = {0.0};
+    double pos_cmd[KINOVA_NUM_JOINTS] = {0.0};
+    double vel_cmd[KINOVA_NUM_JOINTS] = {0.0};
+    double eff_cmd[KINOVA_NUM_JOINTS] = {0.0};
+    double cur_cmd[KINOVA_NUM_JOINTS] = {0.0};
+};
+
+struct manipulator_robot {
+    kinova_state *state = nullptr;
+    robif2b_kinova_gen3_nbx *robot = nullptr;
+    KDL::Chain *chain = nullptr;
+};
+
+struct robot_io {
+<if(has_mobile_base)>
+    mobile_base_robot mobile_base;
+<endif>
+<arm_solvers:{solver | <arm-robot-member(solver)>}; separator="\n">
+<wrench_outputs:{wrench | <wrench-pointer-member(wrench)>}; separator="\n">
+};
+
+struct shared_data {
+<if(has_mobile_base)>
+    mobile_base_runtime_state mobile_base;
+<endif>
+<shared_data:{var | <indented-shared-member(var)>}; separator="\n">
+};
+>>
+
+mobile_base_cycle_header(has_mobile_base, base_velocity_solvers, base_force_solvers) ::= <<
+#pragma once
+
+#include "shared_state.hpp"
+
+<if(has_mobile_base)>
+struct mobile_base_state {
+    bool initialized = false;
+};
+
+inline void reset_mobile_base(mobile_base_state &state) {
+    state = mobile_base_state{};
+}
+
+inline void init_mobile_base(mobile_base_state &state, shared_data &shared, const robot_io &robot) {
+    state.initialized = true;
+}
+
+inline void update_mobile_base(
+    mobile_base_state &state,
+    shared_data &shared,
+    const robot_io &robot) {
+    init_mobile_base(state, shared, robot);
+<base-cycle-begin(base_velocity_solvers)>
+}
+
+inline void control_mobile_base(
+    mobile_base_state &state,
+    shared_data &shared,
+    const robot_io &robot) {
+<base-cycle-force(base_force_solvers)>
+}
+
+inline void apply_mobile_base(
+    mobile_base_state &state,
+    shared_data &shared,
+    const robot_io &robot) {
+    auto &wheel_act = *robot.mobile_base.wheel_actuator;
+    <robif2b-update-kelo-driver()>
+}
+<endif>
+>>
+
+motion_header(motion, closures, views, wrench_outputs, base_velocity_solvers, base_force_solvers, has_mobile_base) ::= <<
+#pragma once
+
+#include "runtime.hpp"
+#include "shared_state.hpp"
+
+<arm-solver-members(motion.arm_solvers)>
+
+struct <motion.id>_state {
+<arm-state-members(motion.arm_solvers)>
+<motion.controllers:{controller | <controller-member(controller)>}; separator="\n">
+<motion.when_monitors:{monitor | <monitor-member(monitor)>}; separator="\n">
+<motion.while_monitors:{monitor | <monitor-member(monitor)>}; separator="\n">
+<motion.until_monitors:{monitor | <monitor-member(monitor)>}; separator="\n">
+};
+
+inline void reset_<motion.id>(<motion.id>_state &state) {
+    state = <motion.id>_state{};
+}
+
+inline void init_<motion.id>(<motion.id>_state &state, const robot_io &robot) {
+<if(motion.arm_solvers)>
+<arm-init-block(motion.arm_solvers)>
+<endif>
+}
+
+inline void update_<motion.id>(
+    <motion.id>_state &state,
+    shared_data &shared,
+    const robot_io &robot) {
+    init_<motion.id>(state, robot);
+<motion-prelude(wrench_outputs, motion.arm_solvers)>
+}
+
+inline bool can_start_<motion.id>(
+    <motion.id>_state &state,
+    shared_data &shared) {
+<motion-when-block(motion.when_schedule, closures, views)>
+    return true<motion.when_evaluators:{e | && motion_spec::runtime::constraint_satisfied(shared.<e.error.id>)}>;
+}
+
+inline void control_<motion.id>(
+    <motion.id>_state &state,
+    shared_data &shared,
+    const robot_io &robot) {
+<shared-schedule-block(motion.while_schedule, closures, views)>
+<shared-schedule-block(motion.until_schedule, closures, views)>
+<if(first(motion.when_monitors))>
+
+<monitor-block(motion.when_monitors)>
+<endif>
+<if(first(motion.while_monitors))>
+
+<monitor-block(motion.while_monitors)>
+<endif>
+<if(first(motion.until_monitors))>
+
+<monitor-block(motion.until_monitors)>
+<endif>
+<if(motion.arm_solvers)>
+
+<arm-run-block(motion.arm_solvers)>
+<endif>
+}
+
+inline void apply_<motion.id>(
+    <motion.id>_state &state,
+    shared_data &shared,
+    const robot_io &robot) {
+<if(motion.arm_solvers)>
+<arm-stage-block(motion.arm_solvers)>
+<arm-apply-block(motion.arm_solvers)>
+<endif>
+}
+>>
+
+app-main-base-setup() ::= <<
+    int num_drives = NUM_DRIVES;
+    ecat_comm ecat_comm{};
+    ecat_state ethercat_state{};
+    ethercat_state.ethernet_if = "net0";
+    ethercat_state.num_exposed_slaves = NUM_SLAVES;
+    ethercat_state.slave_idx[0] = 3;
+    ethercat_state.slave_idx[1] = 4;
+    ethercat_state.slave_idx[2] = 6;
+    ethercat_state.slave_idx[3] = 7;
+
+    for (int i = 0; i \< NUM_DRIVES; ++i) {
+        ethercat_state.name[i] = "KELOD105";
+        ethercat_state.prod_code[i] = 0x02001001;
+        ethercat_state.input_size[i] = sizeof(ecat_comm.drv_msr_pdo[i]);
+        ethercat_state.output_size[i] = sizeof(ecat_comm.drv_cmd_pdo[i]);
+    }
+
+    void *input_array[NUM_SLAVES] = {
+        &ecat_comm.drv_msr_pdo[0],
+        &ecat_comm.drv_msr_pdo[1],
+        &ecat_comm.drv_msr_pdo[2],
+        &ecat_comm.drv_msr_pdo[3],
+    };
+    const void *output_array[NUM_SLAVES] = {
+        &ecat_comm.drv_cmd_pdo[0],
+        &ecat_comm.drv_cmd_pdo[1],
+        &ecat_comm.drv_cmd_pdo[2],
+        &ecat_comm.drv_cmd_pdo[3],
+    };
+
+    robif2b_ethercat ecat{};
+    ecat.ethernet_if = &ethercat_state.ethernet_if[0];
+    ecat.num_exposed_slaves = &ethercat_state.num_exposed_slaves;
+    ecat.slave_idx = &ethercat_state.slave_idx[0];
+    ecat.name = &ethercat_state.name[0];
+    ecat.product_code = &ethercat_state.prod_code[0];
+    ecat.input_size = &ethercat_state.input_size[0];
+    ecat.output_size = &ethercat_state.output_size[0];
+    ecat.error_code = &ethercat_state.error_code;
+    ecat.num_initial_slaves = &ethercat_state.num_found_slaves;
+    ecat.num_current_slaves = &ethercat_state.num_active_slaves;
+    ecat.is_connected = &ethercat_state.is_connected[0];
+    ecat.input = input_array;
+    ecat.output = output_array;
+
+    kelo_msr kelo_msr{};
+    robif2b_kelo_drive_encoder drive_enc{};
+    drive_enc.num_drives = &num_drives;
+    drive_enc.msr_pdo = &ecat_comm.drv_msr_pdo[0];
+    drive_enc.wheel_pos_msr = &kelo_msr.whl_pos[0];
+    drive_enc.wheel_vel_msr = &kelo_msr.whl_vel[0];
+    drive_enc.pivot_pos_msr = &kelo_msr.pvt_pos[0];
+    drive_enc.pivot_vel_msr = &kelo_msr.pvt_vel[0];
+    drive_enc.pivot_pos_off = &kelo_msr.pvt_off[0];
+
+    kelo_cmd kelo_cmd{};
+    for (int i = 0; i \< NUM_DRIVES; ++i) {
+        kelo_cmd.ctrl_mode[i] = ROBIF2B_CTRL_MODE_FORCE;
+        kelo_cmd.max_current[i * 2 + 0] = 10.0;
+        kelo_cmd.max_current[i * 2 + 1] = 10.0;
+        kelo_cmd.trq_const[i * 2 + 0] = 0.29;
+        kelo_cmd.trq_const[i * 2 + 1] = 0.29;
+    }
+
+    robif2b_kelo_drive_actuator wheel_act{
+        .num_drives = &num_drives,
+        .cmd_pdo = &ecat_comm.drv_cmd_pdo[0],
+        .ctrl_mode = &kelo_cmd.ctrl_mode[0],
+        .act_vel_cmd = &kelo_cmd.vel[0],
+        .act_trq_cmd = &kelo_cmd.trq[0],
+        .act_cur_cmd = &kelo_cmd.cur[0],
+        .max_current = &kelo_cmd.max_current[0],
+        .trq_const = &kelo_cmd.trq_const[0],
+    };
+
+    robot.mobile_base = mobile_base_robot{
+        .num_drives = &num_drives,
+        .ethercat_state = &ethercat_state,
+        .ethercat_comm = &ecat_comm,
+        .ethercat = &ecat,
+        .measurement = &kelo_msr,
+        .command = &kelo_cmd,
+        .drive_encoder = &drive_enc,
+        .wheel_actuator = &wheel_act,
+    };
+>>
+
+app_main(motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, arm_solvers, base_velocity_solvers, base_force_solvers) ::= <<
+#include "runtime.hpp"
+#include "shared_state.hpp"
+<if(has_mobile_base)>
+<mobile-base-cycle-include()>
+<endif>
+<motions:{motion | <motion-include(motion)>}; separator="\n">
+
+<if(has_arm)>
+#include \<urdf_model/model.h\>
+#include \<urdf_parser/urdf_parser.h\>
+#include \<kdl_parser/kdl_parser.hpp\>
+<endif>
+#include \<unistd.h\>
+
+int main() {
+    robot_io robot{};
+    shared_data shared{};
+<if(has_mobile_base)>
+
+<app-main-base-setup()>
+<endif>
+<if(has_arm)>
+
+    urdf::ModelInterfaceSharedPtr kinova_model = urdf::parseURDFFile("../GEN3_URDF_V12.urdf");
+    KDL::Tree kinova_tree;
+    kdl_parser::treeFromUrdfModel(*kinova_model, kinova_tree);
+<arm_solvers:{solver |
+
+<app-kinova-state(solver)>
+
+<app-kinova-robot(solver)>
+
+<app-kinova-chain(solver)>
+
+<app-kinova-robot-assign(solver)>
+}; separator="\n">
+<endif>
+<wrench_outputs:{wrench | <wrench-measurement(wrench)>}; separator="\n">
+<wrench_outputs:{wrench |     robot.<wrench.id> = &<wrench.id>_measurement;}; separator="\n">
+<motions:{motion | <motion-state-member(motion)>}; separator="\n">
+<if(has_mobile_base)>
+    mobile_base_state mobile_base_state_instance;
+<endif>
+<if(has_mobile_base)>
+
+    robif2b_ethercat_configure(robot.mobile_base.ethercat);
+    robif2b_ethercat_start(robot.mobile_base.ethercat);
+<endif>
+<if(has_arm)>
+<arm_solvers:{solver |
+<app-configure-kinova(solver)>
+}; separator="\n">
+<endif>
+
+    while (true) {
+<if(has_mobile_base)>
+        update_mobile_base(mobile_base_state_instance, shared, robot);
+<endif>
+        <motions:{motion | <app-prepare-call(motion)>}; separator="\n">
+<shared-schedule-block(shared_schedule, closures, views)>
+        <motions:{motion | <app-run-call(motion)>}; separator="\n">
+<app-base-control-call(has_mobile_base)>
+        <motions:{motion | <app-stage-call(motion)>}; separator="\n">
+<if(has_mobile_base)>
+        apply_mobile_base(mobile_base_state_instance, shared, robot);
+<endif>
+
+        usleep(1000);
+    }
+<if(has_arm)>
+
+<arm_solvers:{solver |
+<app-shutdown-kinova(solver)>
+}; separator="\n">
+<endif>
+<if(has_mobile_base)>
+    robif2b_kelo_drive_actuator_stop(robot.mobile_base.wheel_actuator);
+    robif2b_ethercat_stop(robot.mobile_base.ethercat);
+    robif2b_ethercat_shutdown(robot.mobile_base.ethercat);
+<endif>
+
+    return 0;
+}
+>>

@@ -13,21 +13,27 @@ gen-prepare: | $(GEN)
 gen-ir-to-code:
 	@stst -s "<>" -t code-generator tmpl.application $(GEN)/ir.json > $(GEN)/main.cpp
 
+gen-code-headers:
+	@motion-spec-codegen $(GEN)/ir.json --mode headers --output-dir $(GEN)
+
+gen-code-app:
+	@motion-spec-codegen $(GEN)/ir.json --mode app --output-dir $(GEN)
+
 gen-comp:
 	@cmake -S $(GEN) -B $(GEN)/build -DCMAKE_BUILD_TYPE=Debug
 	@cd $(GEN)/build && make
 
 gen-ir-sc0a:
-	@python ir_gen.py models/sc0a-right-arm.json > $(GEN)/ir.json
+	@motion-spec-ir-gen models/sc0a-right-arm.json -o $(GEN)/ir.json
 
 gen-ir-sc0b:
-	@python ir_gen.py models/sc0b-dual-arm.json > $(GEN)/ir.json
+	@motion-spec-ir-gen models/sc0b-dual-arm.json -o $(GEN)/ir.json
 
 gen-ir-sc1:
-	@python ir_gen.py models/sc1.json > $(GEN)/ir.json
+	@motion-spec-ir-gen models/sc1.json -o $(GEN)/ir.json
 
 gen-ir-sc2:
-	@python ir_gen.py models/sc2.json > $(GEN)/ir.json
+	@motion-spec-ir-gen models/sc2.json -o $(GEN)/ir.json
 
 sc0a: gen-prepare gen-ir-sc0a gen-ir-to-code gen-comp
 sc0b: gen-prepare gen-ir-sc0b gen-ir-to-code gen-comp
@@ -46,16 +52,16 @@ tutorial-pdf:
 
 
 check:
-	python check.py models/sc0a-right-arm.json
-	python check.py models/sc0b-dual-arm.json
-	python check.py models/sc1.json
-	python check.py models/sc2.json
+	motion-spec-check models/sc0a-right-arm.json
+	motion-spec-check models/sc0b-dual-arm.json
+	motion-spec-check models/sc1.json
+	motion-spec-check models/sc2.json
 
 count:
-	python count.py models/sc0a-right-arm.json
-	python count.py models/sc0b-dual-arm.json
-	python count.py models/sc1.json
-	python count.py models/sc2.json
+	motion-spec-count models/sc0a-right-arm.json
+	motion-spec-count models/sc0b-dual-arm.json
+	motion-spec-count models/sc1.json
+	motion-spec-count models/sc2.json
 
 clean:
 	@rm -rf $(GEN) $(BUILD)

@@ -9,14 +9,81 @@ import os
 import shutil
 import subprocess
 import sys
+from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
+from urllib.parse import urlparse
 
 from motion_spec.ir_gen import JSONEncoder
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
-TEMPLATE_GROUP = PACKAGE_ROOT / "code-generator"
 MODULE_TEMPLATE = "module"
+DIST_NAME = "motion_spec"
+
+
+def _path_endswith(path, relative_path: Path) -> bool:
+    path_parts = Path(path).parts
+    relative_parts = relative_path.parts
+    return len(path_parts) >= len(relative_parts) and path_parts[-len(relative_parts) :] == relative_parts
+
+
+def _distribution_path(relative_path: Path) -> Path | None:
+    try:
+        dist = distribution(DIST_NAME)
+    except PackageNotFoundError:
+        return None
+
+    for package_path in dist.files or []:
+        if _path_endswith(package_path, relative_path):
+            candidate = Path(dist.locate_file(package_path))
+            if candidate.exists():
+                return candidate
+    return None
+
+
+def _source_root_from_distribution() -> Path | None:
+    try:
+        direct_url = distribution(DIST_NAME).read_text("direct_url.json")
+    except (PackageNotFoundError, FileNotFoundError):
+        return None
+    if not direct_url:
+        return None
+    try:
+        url = json.loads(direct_url).get("url", "")
+    except json.JSONDecodeError:
+        return None
+    parsed = urlparse(url)
+    if parsed.scheme != "file":
+        return None
+    return Path(parsed.path)
+
+
+def _source_path(relative_path: Path) -> Path | None:
+    roots = [PACKAGE_ROOT, Path.cwd() / "src" / "motion-spec", Path.cwd()]
+    source_root = _source_root_from_distribution()
+    if source_root is not None:
+        roots.insert(0, source_root)
+
+    for root in roots:
+        candidate = root / relative_path
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def resource_path(relative_path: Path) -> Path:
+    path = _distribution_path(relative_path) or _source_path(relative_path)
+    if path is not None:
+        return path
+
+    raise RuntimeError(
+        f"Could not locate required motion_spec resource '{relative_path}'. "
+        "Reinstall the motion_spec package from this repository."
+    )
+
+
+def template_group() -> Path:
+    return resource_path(Path("code-generator/module.stg")).parent
 
 
 def write_json(path: Path, payload):
@@ -34,12 +101,13 @@ def render_template(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     stst_path = Path(stst_bin)
     run_cwd = stst_path.resolve().parent if stst_path.parent != Path(".") else PACKAGE_ROOT
+    templates = template_group()
     command = [
         stst_bin,
         "-s",
         "<>",
         "-t",
-        str(TEMPLATE_GROUP),
+        str(templates),
         f"{module_template}.{template_name}",
         str(payload_path),
     ]
@@ -83,7 +151,7 @@ def copy_demo_support_files(output_dir: Path):
         Path("thirdparty/orocos-kdl/chainhdsolver_vereshchagin_fext.cpp"),
         Path("thirdparty/kinova/GEN3_URDF_V12.urdf"),
     ]:
-        source = PACKAGE_ROOT / relative_path
+        source = resource_path(relative_path)
         target = output_dir / relative_path.name
         shutil.copy2(source, target)
 

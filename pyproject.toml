@@ -30,5 +30,18 @@ include-package-data = true
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.data-files]
+"code-generator" = [
+    "code-generator/*.stg",
+    "code-generator/CMakeLists.txt",
+]
+"thirdparty/orocos-kdl" = [
+    "thirdparty/orocos-kdl/chainhdsolver_vereshchagin_fext.hpp",
+    "thirdparty/orocos-kdl/chainhdsolver_vereshchagin_fext.cpp",
+]
+"thirdparty/kinova" = [
+    "thirdparty/kinova/GEN3_URDF_V12.urdf",
+]
+
 [tool.ruff]
 line-length = 100

@@ -42,6 +42,7 @@ class QUDT_SCHEMA(DefinedNamespace):
 
 class QUDT_QKIND(DefinedNamespace):
     Angle: URIRef
+    AngularDistance: URIRef
     Length: URIRef
     Distance: URIRef
     PlaneAngle: URIRef

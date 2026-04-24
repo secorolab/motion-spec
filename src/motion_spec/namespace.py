@@ -28,6 +28,11 @@ class GEOM_ENT(DefinedNamespace):
 
     _NS = Namespace(f"{URI_CR2B_MM}/geometry/structural-entities#")
 
+class KC(DefinedNamespace):
+    Joint: URIRef
+
+    _NS = Namespace(f"{URI_CR2B_MM}/kinematic-chain/structural-entities#")
+
 class QUDT_SCHEMA(DefinedNamespace):
     Quantity: URIRef
     hasQuantityKind: URIRef
@@ -45,6 +50,7 @@ class QUDT_QKIND(DefinedNamespace):
     AngularDistance: URIRef
     Length: URIRef
     Distance: URIRef
+    Vector: URIRef
     PlaneAngle: URIRef
     Position: URIRef
     Direction: URIRef
@@ -52,6 +58,7 @@ class QUDT_QKIND(DefinedNamespace):
     LinearVelocity: URIRef
     AngularAcceleration: URIRef
     LinearAcceleration: URIRef
+    AccelerationEnergy: URIRef
     Torque: URIRef
     Force: URIRef
 
@@ -66,6 +73,7 @@ class QUDT_UNIT(DefinedNamespace):
         "M-PER-SEC",
         "M-PER-SEC2",
         "N-M",
+        "N-M2-PER-SEC2",
         "RAD-PER-SEC",
         "RAD-PER-SEC2",
         "RAD",
@@ -309,6 +317,7 @@ class SLV(DefinedNamespace):
     MotionDrivers: URIRef
     AccelerationConstraintSpecification: URIRef
     CartesianForceSpecification: URIRef
+    JointForce: URIRef
     AccelerationConstraint: URIRef
     AxisAligned: URIRef
     PrioritizationLevel: URIRef
@@ -332,6 +341,7 @@ class SLV(DefinedNamespace):
     _extras = [
         "motion-drivers",
         "cartesian-force",
+        "joint-force",
         "acceleration-constraint",
         "acceleration-energy",
         "angular-acceleration",

@@ -143,7 +143,6 @@ def render_template(
     output_path.write_text(result.stdout)
 
 
-
 def load_ir(input_path: Path):
     with input_path.open() as handle:
         return json.load(handle)
@@ -158,13 +157,10 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     payload_dir = output_dir / ".stst"
     payload_dir.mkdir(parents=True, exist_ok=True)
 
-    output_ir_path = output_dir / "ir.json"
-    write_json(output_ir_path, ir)
-
-    render_template(stst_bin, "runtime_header", output_ir_path, headers_dir / "runtime.hpp")
-    render_template(stst_bin, "shared_state_header", output_ir_path, headers_dir / "shared_state.hpp")
+    render_template(stst_bin, "runtime_header", ir_path, headers_dir / "runtime.hpp")
+    render_template(stst_bin, "shared_state_header", ir_path, headers_dir / "shared_state.hpp")
     if ir.get("has_mobile_base"):
-        render_template(stst_bin, "mobile_base_cycle_header", output_ir_path, headers_dir / "mobile_base_cycle.hpp")
+        render_template(stst_bin, "mobile_base_cycle_header", ir_path, headers_dir / "mobile_base_cycle.hpp")
 
     for motion in ir["motions"]:
         payload = {
@@ -180,7 +176,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
         write_json(payload_path, payload)
         render_template(stst_bin, "motion_header", payload_path, headers_dir / f"{motion['id']}.hpp")
 
-    render_template(stst_bin, "ref_main", output_ir_path, output_dir / "ref_main.cpp")
+    render_template(stst_bin, "ref_main", ir_path, output_dir / "ref_main.cpp")
 
 
 def main():

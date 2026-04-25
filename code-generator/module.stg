@@ -1199,18 +1199,19 @@ int main() {
 }; separator="\n">
 <endif>
 
+    // Each motion runs its own control cycle.
+    // Coordinate them using a state machine, FSM, or threads as needed.
+<motions:{motion |
+    // --- <motion.id> ---
     while (true) {
-        // 1. read sensors, compute FK, update shared state
-        <motions:{motion | <app-prepare-call(motion)>}; separator="\n">
-<shared-schedule-block(shared_schedule, closures, views)>
-        // 2. evaluate constraints and run controllers for each active motion
-        <motions:{motion | <app-run-call(motion)>}; separator="\n">
-<app-base-control-call(has_mobile_base)>
-        // 3. write control outputs to robot
-        <motions:{motion | <app-stage-call(motion)>}; separator="\n">
-
+        update_<motion.id>(<motion.id>_state_instance, shared, robot);
+        if (can_start_<motion.id>(<motion.id>_state_instance, shared)) {
+            control_<motion.id>(<motion.id>_state_instance, shared, robot);
+        \}
+        apply_<motion.id>(<motion.id>_state_instance, shared, robot);
         usleep(1000);
-    }
+    \}
+}; separator="\n">
 <if(has_arm)>
 
 <arm_solvers:{solver |

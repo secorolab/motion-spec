@@ -9,13 +9,14 @@ find_package(urdfdom_headers)
 find_package(urdfdom)
 
 add_executable(main
-  main.cpp
+  ref_main.cpp
   chainhdsolver_vereshchagin_fext.cpp
 )
 
 target_include_directories(main
   PRIVATE
     ${EIGEN3_INCLUDE_DIRS}
+    headers
 )
 
 target_link_libraries(main

@@ -1,38 +1,39 @@
-GEN = gen
+GENERATED = generated
 BUILD = build
 
-$(GEN):
-	@mkdir -p $@
+SUPPORT_FILES = \
+	code-generator/CMakeLists.txt \
+	thirdparty/orocos-kdl/chainhdsolver_vereshchagin_fext.hpp \
+	thirdparty/orocos-kdl/chainhdsolver_vereshchagin_fext.cpp \
+	thirdparty/kinova/GEN3_URDF_V12.urdf
 
-gen-prepare: | $(GEN)
-	@cp code-generator/CMakeLists.txt $(GEN)/CMakeLists.txt
-	@cp thirdparty/orocos-kdl/chainhdsolver_vereshchagin_fext.hpp $(GEN)/chainhdsolver_vereshchagin_fext.hpp
-	@cp thirdparty/orocos-kdl/chainhdsolver_vereshchagin_fext.cpp $(GEN)/chainhdsolver_vereshchagin_fext.cpp
-	@cp thirdparty/kinova/GEN3_URDF_V12.urdf $(GEN)/GEN3_URDF_V12.urdf
+define scenario
+$(GENERATED)/$(1):
+	@mkdir -p $(GENERATED)/$(1)/headers
 
-gen-code:
-	@motion-spec-codegen $(GEN)/ir.json -o $(GEN)
+gen-prepare-$(1): | $(GENERATED)/$(1)
+	@cp code-generator/CMakeLists.txt $(GENERATED)/$(1)/CMakeLists.txt
+	@cp thirdparty/orocos-kdl/chainhdsolver_vereshchagin_fext.hpp $(GENERATED)/$(1)/chainhdsolver_vereshchagin_fext.hpp
+	@cp thirdparty/orocos-kdl/chainhdsolver_vereshchagin_fext.cpp $(GENERATED)/$(1)/chainhdsolver_vereshchagin_fext.cpp
+	@cp thirdparty/kinova/GEN3_URDF_V12.urdf $(GENERATED)/$(1)/GEN3_URDF_V12.urdf
 
-gen-comp:
-	@cmake -S $(GEN) -B $(GEN)/build -DCMAKE_BUILD_TYPE=Debug
-	@cd $(GEN)/build && make
+gen-ir-$(1): | $(GENERATED)/$(1)
+	@motion-spec-ir-gen models/$(2) -o $(GENERATED)/$(1)/ir.json
 
-gen-ir-sc0a:
-	@motion-spec-ir-gen models/sc0a-right-arm.json -o $(GEN)/ir.json
+gen-code-$(1): gen-ir-$(1)
+	@motion-spec-codegen $(GENERATED)/$(1)/ir.json -o $(GENERATED)/$(1)/headers
 
-gen-ir-sc0b:
-	@motion-spec-ir-gen models/sc0b-dual-arm.json -o $(GEN)/ir.json
+gen-comp-$(1): gen-prepare-$(1) gen-code-$(1)
+	@cmake -S $(GENERATED)/$(1) -B $(GENERATED)/$(1)/build -DCMAKE_BUILD_TYPE=Debug
+	@cd $(GENERATED)/$(1)/build && make
 
-gen-ir-sc1:
-	@motion-spec-ir-gen models/sc1.json -o $(GEN)/ir.json
+$(1): gen-comp-$(1)
+endef
 
-gen-ir-sc2:
-	@motion-spec-ir-gen models/sc2.json -o $(GEN)/ir.json
-
-sc0a: gen-prepare gen-ir-sc0a gen-code gen-comp
-sc0b: gen-prepare gen-ir-sc0b gen-code gen-comp
-sc1: gen-prepare gen-ir-sc1 gen-code gen-comp
-sc2: gen-prepare gen-ir-sc2 gen-code gen-comp
+$(eval $(call scenario,sc0a,sc0a-right-arm.json))
+$(eval $(call scenario,sc0b,sc0b-dual-arm.json))
+$(eval $(call scenario,sc1,sc1.json))
+$(eval $(call scenario,sc2,sc2.json))
 
 
 tutorial-html:
@@ -58,4 +59,4 @@ count:
 	motion-spec-count models/sc2.json
 
 clean:
-	@rm -rf $(GEN) $(BUILD)
+	@rm -rf $(GENERATED) $(BUILD)

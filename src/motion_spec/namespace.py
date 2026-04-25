@@ -154,6 +154,9 @@ class GEOM_OP(DefinedNamespace):
     angle: URIRef
     out: URIRef
     axis: URIRef
+    x: URIRef
+    y: URIRef
+    z: URIRef
 
     _extras = [
         "from",

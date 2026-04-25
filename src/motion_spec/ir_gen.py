@@ -1353,7 +1353,15 @@ def build_motion_units(g, handlers, node_by_id, slv_arm):
             if g.value(n, CSTR_HDL["error-signal"]) in while_error_nodes
         ]
 
-        # Classify monitors by which evaluator phase produces their error signal
+        # Classify monitors by the constraint they watch (via cstr-hdl:constraint).
+        # Fall back to error-signal bucketing for monitors without a constraint link.
+        when_cstr_nodes = {g.value(n, CSTR_HDL["constraint"]) for n in when_eval_nodes}
+        while_cstr_nodes = {g.value(n, CSTR_HDL["constraint"]) for n in while_eval_nodes}
+        until_cstr_nodes = {g.value(n, CSTR_HDL["constraint"]) for n in until_eval_nodes}
+        when_cstr_nodes.discard(None)
+        while_cstr_nodes.discard(None)
+        until_cstr_nodes.discard(None)
+
         when_error_nodes = {g.value(n, CSTR_HDL["error"]) for n in when_eval_nodes}
         until_error_nodes = {g.value(n, CSTR_HDL["error"]) for n in until_eval_nodes}
         when_error_nodes.discard(None)
@@ -1361,13 +1369,22 @@ def build_motion_units(g, handlers, node_by_id, slv_arm):
 
         when_mon_nodes, while_mon_nodes, until_mon_nodes = [], [], []
         for mon_node in g[handler_node : CSTR_HDL["monitors"]]:
-            mon_error = g.value(mon_node, CSTR_HDL["error"])
-            if mon_error in when_error_nodes:
-                when_mon_nodes.append(mon_node)
-            elif mon_error in while_error_nodes:
-                while_mon_nodes.append(mon_node)
-            elif mon_error in until_error_nodes:
-                until_mon_nodes.append(mon_node)
+            mon_cstr = g.value(mon_node, CSTR_HDL["constraint"])
+            if mon_cstr is not None:
+                if mon_cstr in when_cstr_nodes:
+                    when_mon_nodes.append(mon_node)
+                elif mon_cstr in while_cstr_nodes:
+                    while_mon_nodes.append(mon_node)
+                elif mon_cstr in until_cstr_nodes:
+                    until_mon_nodes.append(mon_node)
+            else:
+                mon_error = g.value(mon_node, CSTR_HDL["error"])
+                if mon_error in when_error_nodes:
+                    when_mon_nodes.append(mon_node)
+                elif mon_error in while_error_nodes:
+                    while_mon_nodes.append(mon_node)
+                elif mon_error in until_error_nodes:
+                    until_mon_nodes.append(mon_node)
 
         # Validate that classified sets are subsets of what the handler declares.
         # Evaluators and controllers whose constraints/errors are not linked to any

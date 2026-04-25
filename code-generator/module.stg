@@ -938,6 +938,10 @@ inline bool can_start_<motion.id>(
 inline void monitor_<motion.id>(
     <motion.id>_state &state,
     shared_data &shared) {
+<shared-schedule-block(motion.when_schedule, closures, views)>
+<if(first(motion.when_monitors))>
+<monitor-block(motion.when_monitors)>
+<endif>
 <shared-schedule-block(motion.until_schedule, closures, views)>
 <if(first(motion.until_monitors))>
 <monitor-block(motion.until_monitors)>
@@ -949,10 +953,6 @@ inline void control_<motion.id>(
     shared_data &shared,
     const robot_io &robot) {
 <shared-schedule-block(motion.while_schedule, closures, views)>
-<if(first(motion.when_monitors))>
-
-<monitor-block(motion.when_monitors)>
-<endif>
 <if(first(motion.while_monitors))>
 
 <monitor-block(motion.while_monitors)>

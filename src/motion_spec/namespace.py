@@ -269,6 +269,7 @@ class MOT(DefinedNamespace):
 
     when: URIRef
     until: URIRef
+    untilLogic: URIRef
 
     _extras = [
         "while"

@@ -935,12 +935,20 @@ inline bool can_start_<motion.id>(
     return true<motion.when_evaluators:{e | && motion_spec::runtime::constraint_satisfied(shared.<e.error.id>)}>;
 }
 
+inline void monitor_<motion.id>(
+    <motion.id>_state &state,
+    shared_data &shared) {
+<shared-schedule-block(motion.until_schedule, closures, views)>
+<if(first(motion.until_monitors))>
+<monitor-block(motion.until_monitors)>
+<endif>
+}
+
 inline void control_<motion.id>(
     <motion.id>_state &state,
     shared_data &shared,
     const robot_io &robot) {
 <shared-schedule-block(motion.while_schedule, closures, views)>
-<shared-schedule-block(motion.until_schedule, closures, views)>
 <if(first(motion.when_monitors))>
 
 <monitor-block(motion.when_monitors)>
@@ -948,10 +956,6 @@ inline void control_<motion.id>(
 <if(first(motion.while_monitors))>
 
 <monitor-block(motion.while_monitors)>
-<endif>
-<if(first(motion.until_monitors))>
-
-<monitor-block(motion.until_monitors)>
 <endif>
 <if(motion.arm_solvers)>
 
@@ -1205,6 +1209,7 @@ int main() {
     // --- <motion.id> ---
     while (true) {
         update_<motion.id>(<motion.id>_state_instance, shared, robot);
+        monitor_<motion.id>(<motion.id>_state_instance, shared);
         if (can_start_<motion.id>(<motion.id>_state_instance, shared)) {
             control_<motion.id>(<motion.id>_state_instance, shared, robot);
         \}

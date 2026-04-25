@@ -707,6 +707,11 @@ class SolverWithInputAndOutput:
     id: str
     motion_drivers: list[MotionDrivers]
     output: list
+    urdf: str = ""
+    chain_root: str = ""
+    chain_end: str = ""
+    robot_type: str = ""
+    robot_model: str = ""
     type: str = field(default="SolverWithInputAndOutput")
 
 
@@ -792,7 +797,13 @@ class Parser:
                 if type_ in self.g[o : RDF["type"]]:
                     out.append(func(o))
 
-        return SolverWithInputAndOutput(self.id(id_), drv, out)
+        urdf = str(self.g.value(id_, APP["urdf"]) or "")
+        chain_root = str(self.g.value(id_, APP["chain-root"]) or "")
+        chain_end = str(self.g.value(id_, APP["chain-end"]) or "")
+        robot_type = str(self.g.value(id_, APP["robot-type"]) or "")
+        robot_model = str(self.g.value(id_, APP["robot-model"]) or "")
+
+        return SolverWithInputAndOutput(self.id(id_), drv, out, urdf, chain_root, chain_end, robot_type, robot_model)
 
     @memoize
     def motion_drivers(self, id_):

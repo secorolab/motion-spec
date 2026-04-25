@@ -1,87 +1,6 @@
 {
     "slv_arm": [
         {
-            "id": "slv_m_approach",
-            "motion_drivers": [
-                {
-                    "id": "drv_m_approach",
-                    "acceleration_constraint": [
-                        {
-                            "id": "spec_acc_m_approach",
-                            "constraints": [
-                                {
-                                    "id": "acc_cstr_twist_ee.linear.x_m_approach",
-                                    "subspace": "LinearAcceleration",
-                                    "axis": "X",
-                                    "acceleration_energy": {
-                                        "id": "eacc_twist_ee.linear.x_m_approach",
-                                        "quantity_kind": {
-                                            "id": null,
-                                            "type": "QuantityKind"
-                                        },
-                                        "unit": {
-                                            "id": "N_M2_PER_SEC2",
-                                            "type": "Unit"
-                                        },
-                                        "value": null,
-                                        "has_view": false,
-                                        "type": "Quantity"
-                                    },
-                                    "type": "AccelerationConstraint"
-                                },
-                                {
-                                    "id": "acc_cstr_twist_ee.linear.y_m_approach",
-                                    "subspace": "LinearAcceleration",
-                                    "axis": "Y",
-                                    "acceleration_energy": {
-                                        "id": "eacc_twist_ee.linear.y_m_approach",
-                                        "quantity_kind": {
-                                            "id": null,
-                                            "type": "QuantityKind"
-                                        },
-                                        "unit": {
-                                            "id": "N_M2_PER_SEC2",
-                                            "type": "Unit"
-                                        },
-                                        "value": null,
-                                        "has_view": false,
-                                        "type": "Quantity"
-                                    },
-                                    "type": "AccelerationConstraint"
-                                },
-                                {
-                                    "id": "acc_cstr_twist_ee.linear.z_m_approach",
-                                    "subspace": "LinearAcceleration",
-                                    "axis": "Z",
-                                    "acceleration_energy": {
-                                        "id": "eacc_twist_ee.linear.z_m_approach",
-                                        "quantity_kind": {
-                                            "id": null,
-                                            "type": "QuantityKind"
-                                        },
-                                        "unit": {
-                                            "id": "N_M2_PER_SEC2",
-                                            "type": "Unit"
-                                        },
-                                        "value": null,
-                                        "has_view": false,
-                                        "type": "Quantity"
-                                    },
-                                    "type": "AccelerationConstraint"
-                                }
-                            ],
-                            "attached_to": null,
-                            "type": "AccelerationConstraintSpecification"
-                        }
-                    ],
-                    "cartesian_force": [],
-                    "type": "MotionDrivers"
-                }
-            ],
-            "output": [],
-            "type": "SolverWithInputAndOutput"
-        },
-        {
             "id": "slv_m_contact",
             "motion_drivers": [
                 {
@@ -180,6 +99,97 @@
                 }
             ],
             "output": [],
+            "urdf": "../robots/kg3.urdf",
+            "chain_root": "base_link",
+            "chain_end": "Bracelet_Link",
+            "robot_type": "Manipulator",
+            "robot_model": "KinovaGen3",
+            "type": "SolverWithInputAndOutput"
+        },
+        {
+            "id": "slv_m_approach",
+            "motion_drivers": [
+                {
+                    "id": "drv_m_approach",
+                    "acceleration_constraint": [
+                        {
+                            "id": "spec_acc_m_approach",
+                            "constraints": [
+                                {
+                                    "id": "acc_cstr_twist_ee.linear.x_m_approach",
+                                    "subspace": "LinearAcceleration",
+                                    "axis": "X",
+                                    "acceleration_energy": {
+                                        "id": "eacc_twist_ee.linear.x_m_approach",
+                                        "quantity_kind": {
+                                            "id": null,
+                                            "type": "QuantityKind"
+                                        },
+                                        "unit": {
+                                            "id": "N_M2_PER_SEC2",
+                                            "type": "Unit"
+                                        },
+                                        "value": null,
+                                        "has_view": false,
+                                        "type": "Quantity"
+                                    },
+                                    "type": "AccelerationConstraint"
+                                },
+                                {
+                                    "id": "acc_cstr_twist_ee.linear.y_m_approach",
+                                    "subspace": "LinearAcceleration",
+                                    "axis": "Y",
+                                    "acceleration_energy": {
+                                        "id": "eacc_twist_ee.linear.y_m_approach",
+                                        "quantity_kind": {
+                                            "id": null,
+                                            "type": "QuantityKind"
+                                        },
+                                        "unit": {
+                                            "id": "N_M2_PER_SEC2",
+                                            "type": "Unit"
+                                        },
+                                        "value": null,
+                                        "has_view": false,
+                                        "type": "Quantity"
+                                    },
+                                    "type": "AccelerationConstraint"
+                                },
+                                {
+                                    "id": "acc_cstr_twist_ee.linear.z_m_approach",
+                                    "subspace": "LinearAcceleration",
+                                    "axis": "Z",
+                                    "acceleration_energy": {
+                                        "id": "eacc_twist_ee.linear.z_m_approach",
+                                        "quantity_kind": {
+                                            "id": null,
+                                            "type": "QuantityKind"
+                                        },
+                                        "unit": {
+                                            "id": "N_M2_PER_SEC2",
+                                            "type": "Unit"
+                                        },
+                                        "value": null,
+                                        "has_view": false,
+                                        "type": "Quantity"
+                                    },
+                                    "type": "AccelerationConstraint"
+                                }
+                            ],
+                            "attached_to": null,
+                            "type": "AccelerationConstraintSpecification"
+                        }
+                    ],
+                    "cartesian_force": [],
+                    "type": "MotionDrivers"
+                }
+            ],
+            "output": [],
+            "urdf": "../robots/kg3.urdf",
+            "chain_root": "base_link",
+            "chain_end": "Bracelet_Link",
+            "robot_type": "Manipulator",
+            "robot_model": "KinovaGen3",
             "type": "SolverWithInputAndOutput"
         }
     ],
@@ -4335,7 +4345,7 @@
             "type": "Wrench"
         },
         {
-            "id": "twist_ee.linear.x_err_m_approach",
+            "id": "twist_ee.linear.x",
             "quantity_kind": {
                 "id": null,
                 "type": "QuantityKind"
@@ -4345,17 +4355,45 @@
                 "type": "Unit"
             },
             "value": null,
-            "has_view": false,
+            "has_view": true,
             "type": "Quantity"
         },
         {
-            "id": "gravity_vec",
+            "id": "frc_start",
             "quantity_kind": {
                 "id": null,
                 "type": "QuantityKind"
             },
             "unit": {
-                "id": "M_PER_SEC2",
+                "id": "N",
+                "type": "Unit"
+            },
+            "value": 1.0,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "vel_zero",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "M_PER_SEC",
+                "type": "Unit"
+            },
+            "value": 0.0,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "twist_ee.angular.z_err_m_contact",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "RAD_PER_SEC",
                 "type": "Unit"
             },
             "value": null,
@@ -4363,7 +4401,21 @@
             "type": "Quantity"
         },
         {
-            "id": "q_j4",
+            "id": "frc_z_ref",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "N",
+                "type": "Unit"
+            },
+            "value": 10.0,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "q_j2",
             "quantity_kind": {
                 "id": null,
                 "type": "QuantityKind"
@@ -4377,7 +4429,21 @@
             "type": "Quantity"
         },
         {
-            "id": "twist_ee.linear.z_err_m_approach",
+            "id": "tau_ctrl_limit_j4",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "N_M",
+                "type": "Unit"
+            },
+            "value": null,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "vel_y_zero",
             "quantity_kind": {
                 "id": null,
                 "type": "QuantityKind"
@@ -4386,18 +4452,32 @@
                 "id": "M_PER_SEC",
                 "type": "Unit"
             },
-            "value": null,
+            "value": 0.0,
             "has_view": false,
             "type": "Quantity"
         },
         {
-            "id": "eacc_twist_ee.angular.y_m_contact",
+            "id": "q_j4_lower",
             "quantity_kind": {
                 "id": null,
                 "type": "QuantityKind"
             },
             "unit": {
-                "id": "N_M2_PER_SEC2",
+                "id": "RAD",
+                "type": "Unit"
+            },
+            "value": -0.8,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "twist_ee.linear.z_err_m_approach",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "M_PER_SEC",
                 "type": "Unit"
             },
             "value": null,
@@ -4419,7 +4499,35 @@
             "type": "Quantity"
         },
         {
-            "id": "vel_z_down",
+            "id": "q_j4_err",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "RAD",
+                "type": "Unit"
+            },
+            "value": null,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "gravity_vec",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "M_PER_SEC2",
+                "type": "Unit"
+            },
+            "value": null,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "twist_ee.linear.z",
             "quantity_kind": {
                 "id": null,
                 "type": "QuantityKind"
@@ -4428,88 +4536,18 @@
                 "id": "M_PER_SEC",
                 "type": "Unit"
             },
-            "value": -0.05,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "frc_contact_overload",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "N",
-                "type": "Unit"
-            },
-            "value": 25.0,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "q_j2_ref",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "RAD",
-                "type": "Unit"
-            },
-            "value": 2.4,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "twist_ee.angular.x",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "RAD_PER_SEC",
-                "type": "Unit"
-            },
             "value": null,
             "has_view": true,
             "type": "Quantity"
         },
         {
-            "id": "frc_z_ref",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "N",
-                "type": "Unit"
-            },
-            "value": 10.0,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "eacc_twist_ee.angular.z_m_contact",
+            "id": "eacc_twist_ee.linear.z_m_approach",
             "quantity_kind": {
                 "id": null,
                 "type": "QuantityKind"
             },
             "unit": {
                 "id": "N_M2_PER_SEC2",
-                "type": "Unit"
-            },
-            "value": null,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "q_j2",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "RAD",
                 "type": "Unit"
             },
             "value": null,
@@ -4531,34 +4569,6 @@
             "type": "Quantity"
         },
         {
-            "id": "q_j4_err",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "RAD",
-                "type": "Unit"
-            },
-            "value": null,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "vel_zero",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "M_PER_SEC",
-                "type": "Unit"
-            },
-            "value": 0.0,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
             "id": "twist_ee.angular.y_err_m_contact",
             "quantity_kind": {
                 "id": null,
@@ -4573,7 +4583,7 @@
             "type": "Quantity"
         },
         {
-            "id": "eacc_twist_ee.angular.x_m_contact",
+            "id": "eacc_twist_ee.angular.z_m_contact",
             "quantity_kind": {
                 "id": null,
                 "type": "QuantityKind"
@@ -4584,20 +4594,6 @@
             },
             "value": null,
             "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "wrench_ee.force.z",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "N",
-                "type": "Unit"
-            },
-            "value": null,
-            "has_view": true,
             "type": "Quantity"
         },
         {
@@ -4615,77 +4611,7 @@
             "type": "Quantity"
         },
         {
-            "id": "frc_overload",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "N",
-                "type": "Unit"
-            },
-            "value": 20.0,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "twist_ee.angular.z_err_m_contact",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "RAD_PER_SEC",
-                "type": "Unit"
-            },
-            "value": null,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "frc_start",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "N",
-                "type": "Unit"
-            },
-            "value": 1.0,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "tau_ctrl_limit_j4",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "N_M",
-                "type": "Unit"
-            },
-            "value": null,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "q_j4_lower",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "RAD",
-                "type": "Unit"
-            },
-            "value": -0.8,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "twist_ee.linear.x",
+            "id": "twist_ee.linear.y_err_m_approach",
             "quantity_kind": {
                 "id": null,
                 "type": "QuantityKind"
@@ -4695,25 +4621,11 @@
                 "type": "Unit"
             },
             "value": null,
-            "has_view": true,
-            "type": "Quantity"
-        },
-        {
-            "id": "tau_ctrl_keep_j2",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "N_M",
-                "type": "Unit"
-            },
-            "value": null,
             "has_view": false,
             "type": "Quantity"
         },
         {
-            "id": "q_j2",
+            "id": "q_j4",
             "quantity_kind": {
                 "id": null,
                 "type": "QuantityKind"
@@ -4741,161 +4653,7 @@
             "type": "Quantity"
         },
         {
-            "id": "q_j4",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "RAD",
-                "type": "Unit"
-            },
-            "value": null,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
             "id": "eacc_twist_ee.linear.x_m_approach",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "N_M2_PER_SEC2",
-                "type": "Unit"
-            },
-            "value": null,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "q_j2_err",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "RAD",
-                "type": "Unit"
-            },
-            "value": null,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "twist_ee.linear.y",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "M_PER_SEC",
-                "type": "Unit"
-            },
-            "value": null,
-            "has_view": true,
-            "type": "Quantity"
-        },
-        {
-            "id": "frc_threshold",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "N",
-                "type": "Unit"
-            },
-            "value": 5.0,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "twist_ee.linear.y_err_m_approach",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "M_PER_SEC",
-                "type": "Unit"
-            },
-            "value": null,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "q_j4_upper",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "RAD",
-                "type": "Unit"
-            },
-            "value": 0.8,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "vel_y_zero",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "M_PER_SEC",
-                "type": "Unit"
-            },
-            "value": 0.0,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "twist_ee.linear.z",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "M_PER_SEC",
-                "type": "Unit"
-            },
-            "value": null,
-            "has_view": true,
-            "type": "Quantity"
-        },
-        {
-            "id": "twist_ee.angular.x_err_m_contact",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "RAD_PER_SEC",
-                "type": "Unit"
-            },
-            "value": null,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "wrench_ee.force.z_err_m_contact",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "N",
-                "type": "Unit"
-            },
-            "value": null,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "eacc_twist_ee.linear.z_m_approach",
             "quantity_kind": {
                 "id": null,
                 "type": "QuantityKind"
@@ -4921,74 +4679,266 @@
             "value": null,
             "has_view": true,
             "type": "Quantity"
+        },
+        {
+            "id": "frc_contact_overload",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "N",
+                "type": "Unit"
+            },
+            "value": 25.0,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "twist_ee.linear.y",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "M_PER_SEC",
+                "type": "Unit"
+            },
+            "value": null,
+            "has_view": true,
+            "type": "Quantity"
+        },
+        {
+            "id": "eacc_twist_ee.angular.y_m_contact",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "N_M2_PER_SEC2",
+                "type": "Unit"
+            },
+            "value": null,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "frc_threshold",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "N",
+                "type": "Unit"
+            },
+            "value": 5.0,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "q_j2_ref",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "RAD",
+                "type": "Unit"
+            },
+            "value": 2.4,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "q_j4",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "RAD",
+                "type": "Unit"
+            },
+            "value": null,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "frc_overload",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "N",
+                "type": "Unit"
+            },
+            "value": 20.0,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "q_j4_upper",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "RAD",
+                "type": "Unit"
+            },
+            "value": 0.8,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "tau_ctrl_keep_j2",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "N_M",
+                "type": "Unit"
+            },
+            "value": null,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "wrench_ee.force.z_err_m_contact",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "N",
+                "type": "Unit"
+            },
+            "value": null,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "wrench_ee.force.z",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "N",
+                "type": "Unit"
+            },
+            "value": null,
+            "has_view": true,
+            "type": "Quantity"
+        },
+        {
+            "id": "twist_ee.linear.x_err_m_approach",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "M_PER_SEC",
+                "type": "Unit"
+            },
+            "value": null,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "twist_ee.angular.x_err_m_contact",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "RAD_PER_SEC",
+                "type": "Unit"
+            },
+            "value": null,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "q_j2_err",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "RAD",
+                "type": "Unit"
+            },
+            "value": null,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "q_j2",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "RAD",
+                "type": "Unit"
+            },
+            "value": null,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "eacc_twist_ee.angular.x_m_contact",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "N_M2_PER_SEC2",
+                "type": "Unit"
+            },
+            "value": null,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "twist_ee.angular.x",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "RAD_PER_SEC",
+                "type": "Unit"
+            },
+            "value": null,
+            "has_view": true,
+            "type": "Quantity"
+        },
+        {
+            "id": "vel_z_down",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "M_PER_SEC",
+                "type": "Unit"
+            },
+            "value": -0.05,
+            "has_view": false,
+            "type": "Quantity"
         }
     ],
     "closures": {
-        "ctrl_angvel_z": {
-            "id": "ctrl_angvel_z",
-            "type": "Controller",
-            "error_signal": "twist_ee.angular.z_err_m_contact",
-            "control_signal": "eacc_twist_ee.angular.z_m_contact",
-            "proportional_gain": "5.0",
-            "integral_gain": "0.5",
-            "derivative_gain": "1.0",
-            "decay_rate": null
-        },
         "ctrl_linvel_x": {
             "id": "ctrl_linvel_x",
             "type": "Controller",
             "error_signal": "twist_ee.linear.x_err_m_approach",
             "control_signal": "eacc_twist_ee.linear.x_m_approach",
-            "proportional_gain": "5.0",
-            "integral_gain": "1.0",
-            "derivative_gain": "1.0",
-            "decay_rate": null
-        },
-        "ctrl_limit_j4": {
-            "id": "ctrl_limit_j4",
-            "type": "Controller",
-            "error_signal": "q_j4_err",
-            "control_signal": "tau_ctrl_limit_j4",
-            "proportional_gain": "10.0",
-            "integral_gain": "0.0",
-            "derivative_gain": "0.5",
-            "decay_rate": null
-        },
-        "ctrl_keep_j2": {
-            "id": "ctrl_keep_j2",
-            "type": "Controller",
-            "error_signal": "q_j2_err",
-            "control_signal": "tau_ctrl_keep_j2",
-            "proportional_gain": "10.0",
-            "integral_gain": "0.0",
-            "derivative_gain": "0.5",
-            "decay_rate": null
-        },
-        "ctrl_linvel_z": {
-            "id": "ctrl_linvel_z",
-            "type": "Controller",
-            "error_signal": "twist_ee.linear.z_err_m_approach",
-            "control_signal": "eacc_twist_ee.linear.z_m_approach",
-            "proportional_gain": "5.0",
-            "integral_gain": "1.0",
-            "derivative_gain": "1.0",
-            "decay_rate": null
-        },
-        "ctrl_angvel_x": {
-            "id": "ctrl_angvel_x",
-            "type": "Controller",
-            "error_signal": "twist_ee.angular.x_err_m_contact",
-            "control_signal": "eacc_twist_ee.angular.x_m_contact",
-            "proportional_gain": "5.0",
-            "integral_gain": "0.5",
-            "derivative_gain": "1.0",
-            "decay_rate": null
-        },
-        "ctrl_linvel_y": {
-            "id": "ctrl_linvel_y",
-            "type": "Controller",
-            "error_signal": "twist_ee.linear.y_err_m_approach",
-            "control_signal": "eacc_twist_ee.linear.y_m_approach",
             "proportional_gain": "5.0",
             "integral_gain": "1.0",
             "derivative_gain": "1.0",
@@ -5004,6 +4954,46 @@
             "derivative_gain": "1.0",
             "decay_rate": null
         },
+        "ctrl_linvel_y": {
+            "id": "ctrl_linvel_y",
+            "type": "Controller",
+            "error_signal": "twist_ee.linear.y_err_m_approach",
+            "control_signal": "eacc_twist_ee.linear.y_m_approach",
+            "proportional_gain": "5.0",
+            "integral_gain": "1.0",
+            "derivative_gain": "1.0",
+            "decay_rate": null
+        },
+        "ctrl_angvel_x": {
+            "id": "ctrl_angvel_x",
+            "type": "Controller",
+            "error_signal": "twist_ee.angular.x_err_m_contact",
+            "control_signal": "eacc_twist_ee.angular.x_m_contact",
+            "proportional_gain": "5.0",
+            "integral_gain": "0.5",
+            "derivative_gain": "1.0",
+            "decay_rate": null
+        },
+        "ctrl_angvel_z": {
+            "id": "ctrl_angvel_z",
+            "type": "Controller",
+            "error_signal": "twist_ee.angular.z_err_m_contact",
+            "control_signal": "eacc_twist_ee.angular.z_m_contact",
+            "proportional_gain": "5.0",
+            "integral_gain": "0.5",
+            "derivative_gain": "1.0",
+            "decay_rate": null
+        },
+        "ctrl_keep_j2": {
+            "id": "ctrl_keep_j2",
+            "type": "Controller",
+            "error_signal": "q_j2_err",
+            "control_signal": "tau_ctrl_keep_j2",
+            "proportional_gain": "10.0",
+            "integral_gain": "0.0",
+            "derivative_gain": "0.5",
+            "decay_rate": null
+        },
         "ctrl_frc_z": {
             "id": "ctrl_frc_z",
             "type": "Controller",
@@ -5014,6 +5004,42 @@
             "derivative_gain": "0.0",
             "decay_rate": null
         },
+        "ctrl_limit_j4": {
+            "id": "ctrl_limit_j4",
+            "type": "Controller",
+            "error_signal": "q_j4_err",
+            "control_signal": "tau_ctrl_limit_j4",
+            "proportional_gain": "10.0",
+            "integral_gain": "0.0",
+            "derivative_gain": "0.5",
+            "decay_rate": null
+        },
+        "ctrl_linvel_z": {
+            "id": "ctrl_linvel_z",
+            "type": "Controller",
+            "error_signal": "twist_ee.linear.z_err_m_approach",
+            "control_signal": "eacc_twist_ee.linear.z_m_approach",
+            "proportional_gain": "5.0",
+            "integral_gain": "1.0",
+            "derivative_gain": "1.0",
+            "decay_rate": null
+        },
+        "eval_m_approach_until_cstr_overload": {
+            "id": "eval_m_approach_until_cstr_overload",
+            "type": "ErrorEvaluator",
+            "constraint": "GreaterThanConstraint",
+            "quantity": "wrench_ee.force.z",
+            "threshold": "frc_overload",
+            "error": "wrench_ee.force.z_err"
+        },
+        "eval_m_contact_while_cstr_angvel_y": {
+            "id": "eval_m_contact_while_cstr_angvel_y",
+            "type": "ErrorEvaluator",
+            "constraint": "EqualityConstraint",
+            "quantity": "twist_ee.angular.y",
+            "reference_value": "angvel_zero",
+            "error": "twist_ee.angular.y_err_m_contact"
+        },
         "eval_m_contact_until_cstr_overload": {
             "id": "eval_m_contact_until_cstr_overload",
             "type": "ErrorEvaluator",
@@ -5021,6 +5047,14 @@
             "quantity": "wrench_ee.force.z",
             "threshold": "frc_contact_overload",
             "error": "wrench_ee.force.z_err"
+        },
+        "eval_m_approach_while_cstr_linvel_y": {
+            "id": "eval_m_approach_while_cstr_linvel_y",
+            "type": "ErrorEvaluator",
+            "constraint": "EqualityConstraint",
+            "quantity": "twist_ee.linear.y",
+            "reference_value": "vel_y_zero",
+            "error": "twist_ee.linear.y_err_m_approach"
         },
         "eval_m_approach_while_cstr_linvel_x": {
             "id": "eval_m_approach_while_cstr_linvel_x",
@@ -5030,28 +5064,20 @@
             "reference_value": "vel_zero",
             "error": "twist_ee.linear.x_err_m_approach"
         },
-        "eval_m_contact_while_cstr_angvel_x": {
-            "id": "eval_m_contact_while_cstr_angvel_x",
+        "eval_m_contact_while_cstr_frc_z": {
+            "id": "eval_m_contact_while_cstr_frc_z",
             "type": "ErrorEvaluator",
             "constraint": "EqualityConstraint",
-            "quantity": "twist_ee.angular.x",
-            "reference_value": "angvel_zero",
-            "error": "twist_ee.angular.x_err_m_contact"
+            "quantity": "wrench_ee.force.z",
+            "reference_value": "frc_z_ref",
+            "error": "wrench_ee.force.z_err_m_contact"
         },
-        "eval_m_approach_while_cstr_linvel_z": {
-            "id": "eval_m_approach_while_cstr_linvel_z",
-            "type": "ErrorEvaluator",
-            "constraint": "EqualityConstraint",
-            "quantity": "twist_ee.linear.z",
-            "reference_value": "vel_z_down",
-            "error": "twist_ee.linear.z_err_m_approach"
-        },
-        "eval_m_approach_until_cstr_overload": {
-            "id": "eval_m_approach_until_cstr_overload",
+        "eval_m_contact_when_cstr_in_contact": {
+            "id": "eval_m_contact_when_cstr_in_contact",
             "type": "ErrorEvaluator",
             "constraint": "GreaterThanConstraint",
             "quantity": "wrench_ee.force.z",
-            "threshold": "frc_overload",
+            "threshold": "frc_start",
             "error": "wrench_ee.force.z_err"
         },
         "eval_m_approach_while_cstr_limit_j4": {
@@ -5063,37 +5089,29 @@
             "upper_threshold": "q_j4_upper",
             "error": "q_j4_err"
         },
-        "eval_m_contact_when_cstr_in_contact": {
-            "id": "eval_m_contact_when_cstr_in_contact",
+        "eval_m_approach_until_cstr_contact": {
+            "id": "eval_m_approach_until_cstr_contact",
             "type": "ErrorEvaluator",
             "constraint": "GreaterThanConstraint",
             "quantity": "wrench_ee.force.z",
-            "threshold": "frc_start",
+            "threshold": "frc_threshold",
             "error": "wrench_ee.force.z_err"
         },
-        "eval_m_approach_while_cstr_linvel_y": {
-            "id": "eval_m_approach_while_cstr_linvel_y",
+        "eval_m_approach_while_cstr_linvel_z": {
+            "id": "eval_m_approach_while_cstr_linvel_z",
             "type": "ErrorEvaluator",
             "constraint": "EqualityConstraint",
-            "quantity": "twist_ee.linear.y",
-            "reference_value": "vel_y_zero",
-            "error": "twist_ee.linear.y_err_m_approach"
+            "quantity": "twist_ee.linear.z",
+            "reference_value": "vel_z_down",
+            "error": "twist_ee.linear.z_err_m_approach"
         },
-        "eval_m_contact_while_cstr_frc_z": {
-            "id": "eval_m_contact_while_cstr_frc_z",
+        "eval_m_contact_while_cstr_angvel_x": {
+            "id": "eval_m_contact_while_cstr_angvel_x",
             "type": "ErrorEvaluator",
             "constraint": "EqualityConstraint",
-            "quantity": "wrench_ee.force.z",
-            "reference_value": "frc_z_ref",
-            "error": "wrench_ee.force.z_err_m_contact"
-        },
-        "eval_m_contact_while_cstr_angvel_y": {
-            "id": "eval_m_contact_while_cstr_angvel_y",
-            "type": "ErrorEvaluator",
-            "constraint": "EqualityConstraint",
-            "quantity": "twist_ee.angular.y",
+            "quantity": "twist_ee.angular.x",
             "reference_value": "angvel_zero",
-            "error": "twist_ee.angular.y_err_m_contact"
+            "error": "twist_ee.angular.x_err_m_contact"
         },
         "eval_m_contact_while_cstr_angvel_z": {
             "id": "eval_m_contact_while_cstr_angvel_z",
@@ -5110,14 +5128,6 @@
             "quantity": "q_j2",
             "threshold": "q_j2_ref",
             "error": "q_j2_err"
-        },
-        "eval_m_approach_until_cstr_contact": {
-            "id": "eval_m_approach_until_cstr_contact",
-            "type": "ErrorEvaluator",
-            "constraint": "GreaterThanConstraint",
-            "quantity": "wrench_ee.force.z",
-            "threshold": "frc_threshold",
-            "error": "wrench_ee.force.z_err"
         }
     },
     "shared_schedule": [],
@@ -5142,35 +5152,49 @@
         "ctrl_linvel_z"
     ],
     "views": {
-        "wrench_ee.force.z": {
-            "id": "view_wrench_ee.force.z",
+        "twist_ee.linear.x": {
+            "id": "view_twist_ee.linear.x",
             "superobject": {
-                "id": "wrench_ee",
+                "id": "twist_ee",
+                "of": {
+                    "id": "link_ee",
+                    "type": "SimplicialComplex"
+                },
+                "with_respect_to": {
+                    "id": "link_base",
+                    "type": "SimplicialComplex"
+                },
                 "quantity_kind": [],
-                "reference_point": null,
-                "as_seen_by": null,
+                "reference_point": {
+                    "id": "point_ee_origin",
+                    "type": "Point"
+                },
+                "as_seen_by": {
+                    "id": "frame_ee",
+                    "type": "Frame"
+                },
                 "unit": [
-                    "N_M",
-                    "N"
+                    "RAD_PER_SEC",
+                    "M_PER_SEC"
                 ],
-                "type": "Wrench"
+                "type": "VelocityTwist"
             },
             "subobject": {
-                "id": "wrench_ee.force.z",
+                "id": "twist_ee.linear.x",
                 "quantity_kind": {
                     "id": null,
                     "type": "QuantityKind"
                 },
                 "unit": {
-                    "id": "N",
+                    "id": "M_PER_SEC",
                     "type": "Unit"
                 },
                 "value": null,
                 "has_view": true,
                 "type": "Quantity"
             },
-            "subspace": "Force",
-            "axis": "Z",
+            "subspace": "LinearVelocity",
+            "axis": "X",
             "type": "View"
         },
         "twist_ee.linear.z": {
@@ -5260,6 +5284,37 @@
                 "type": "Quantity"
             },
             "subspace": "AngularVelocity",
+            "axis": "Z",
+            "type": "View"
+        },
+        "wrench_ee.force.z": {
+            "id": "view_wrench_ee.force.z",
+            "superobject": {
+                "id": "wrench_ee",
+                "quantity_kind": [],
+                "reference_point": null,
+                "as_seen_by": null,
+                "unit": [
+                    "N_M",
+                    "N"
+                ],
+                "type": "Wrench"
+            },
+            "subobject": {
+                "id": "wrench_ee.force.z",
+                "quantity_kind": {
+                    "id": null,
+                    "type": "QuantityKind"
+                },
+                "unit": {
+                    "id": "N",
+                    "type": "Unit"
+                },
+                "value": null,
+                "has_view": true,
+                "type": "Quantity"
+            },
+            "subspace": "Force",
             "axis": "Z",
             "type": "View"
         },
@@ -5353,51 +5408,6 @@
             "axis": "X",
             "type": "View"
         },
-        "twist_ee.linear.x": {
-            "id": "view_twist_ee.linear.x",
-            "superobject": {
-                "id": "twist_ee",
-                "of": {
-                    "id": "link_ee",
-                    "type": "SimplicialComplex"
-                },
-                "with_respect_to": {
-                    "id": "link_base",
-                    "type": "SimplicialComplex"
-                },
-                "quantity_kind": [],
-                "reference_point": {
-                    "id": "point_ee_origin",
-                    "type": "Point"
-                },
-                "as_seen_by": {
-                    "id": "frame_ee",
-                    "type": "Frame"
-                },
-                "unit": [
-                    "RAD_PER_SEC",
-                    "M_PER_SEC"
-                ],
-                "type": "VelocityTwist"
-            },
-            "subobject": {
-                "id": "twist_ee.linear.x",
-                "quantity_kind": {
-                    "id": null,
-                    "type": "QuantityKind"
-                },
-                "unit": {
-                    "id": "M_PER_SEC",
-                    "type": "Unit"
-                },
-                "value": null,
-                "has_view": true,
-                "type": "Quantity"
-            },
-            "subspace": "LinearVelocity",
-            "axis": "X",
-            "type": "View"
-        },
         "twist_ee.angular.y": {
             "id": "view_twist_ee.angular.y",
             "superobject": {
@@ -5482,7 +5492,21 @@
             "type": "Wrench"
         },
         {
-            "id": "twist_ee.linear.x_err_m_approach",
+            "id": "frc_start",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "N",
+                "type": "Unit"
+            },
+            "value": 1.0,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "vel_zero",
             "quantity_kind": {
                 "id": null,
                 "type": "QuantityKind"
@@ -5491,18 +5515,18 @@
                 "id": "M_PER_SEC",
                 "type": "Unit"
             },
-            "value": null,
+            "value": 0.0,
             "has_view": false,
             "type": "Quantity"
         },
         {
-            "id": "gravity_vec",
+            "id": "twist_ee.angular.z_err_m_contact",
             "quantity_kind": {
                 "id": null,
                 "type": "QuantityKind"
             },
             "unit": {
-                "id": "M_PER_SEC2",
+                "id": "RAD_PER_SEC",
                 "type": "Unit"
             },
             "value": null,
@@ -5510,7 +5534,21 @@
             "type": "Quantity"
         },
         {
-            "id": "q_j4",
+            "id": "frc_z_ref",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "N",
+                "type": "Unit"
+            },
+            "value": 10.0,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "q_j2",
             "quantity_kind": {
                 "id": null,
                 "type": "QuantityKind"
@@ -5524,7 +5562,21 @@
             "type": "Quantity"
         },
         {
-            "id": "twist_ee.linear.z_err_m_approach",
+            "id": "tau_ctrl_limit_j4",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "N_M",
+                "type": "Unit"
+            },
+            "value": null,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "vel_y_zero",
             "quantity_kind": {
                 "id": null,
                 "type": "QuantityKind"
@@ -5533,18 +5585,32 @@
                 "id": "M_PER_SEC",
                 "type": "Unit"
             },
-            "value": null,
+            "value": 0.0,
             "has_view": false,
             "type": "Quantity"
         },
         {
-            "id": "eacc_twist_ee.angular.y_m_contact",
+            "id": "q_j4_lower",
             "quantity_kind": {
                 "id": null,
                 "type": "QuantityKind"
             },
             "unit": {
-                "id": "N_M2_PER_SEC2",
+                "id": "RAD",
+                "type": "Unit"
+            },
+            "value": -0.8,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "twist_ee.linear.z_err_m_approach",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "M_PER_SEC",
                 "type": "Unit"
             },
             "value": null,
@@ -5566,90 +5632,6 @@
             "type": "Quantity"
         },
         {
-            "id": "vel_z_down",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "M_PER_SEC",
-                "type": "Unit"
-            },
-            "value": -0.05,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "frc_contact_overload",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "N",
-                "type": "Unit"
-            },
-            "value": 25.0,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "q_j2_ref",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "RAD",
-                "type": "Unit"
-            },
-            "value": 2.4,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "frc_z_ref",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "N",
-                "type": "Unit"
-            },
-            "value": 10.0,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "eacc_twist_ee.angular.z_m_contact",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "N_M2_PER_SEC2",
-                "type": "Unit"
-            },
-            "value": null,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "q_j2",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "RAD",
-                "type": "Unit"
-            },
-            "value": null,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
             "id": "q_j4_err",
             "quantity_kind": {
                 "id": null,
@@ -5664,16 +5646,30 @@
             "type": "Quantity"
         },
         {
-            "id": "vel_zero",
+            "id": "gravity_vec",
             "quantity_kind": {
                 "id": null,
                 "type": "QuantityKind"
             },
             "unit": {
-                "id": "M_PER_SEC",
+                "id": "M_PER_SEC2",
                 "type": "Unit"
             },
-            "value": 0.0,
+            "value": null,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "eacc_twist_ee.linear.z_m_approach",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "N_M2_PER_SEC2",
+                "type": "Unit"
+            },
+            "value": null,
             "has_view": false,
             "type": "Quantity"
         },
@@ -5692,7 +5688,7 @@
             "type": "Quantity"
         },
         {
-            "id": "eacc_twist_ee.angular.x_m_contact",
+            "id": "eacc_twist_ee.angular.z_m_contact",
             "quantity_kind": {
                 "id": null,
                 "type": "QuantityKind"
@@ -5720,27 +5716,13 @@
             "type": "Quantity"
         },
         {
-            "id": "frc_overload",
+            "id": "twist_ee.linear.y_err_m_approach",
             "quantity_kind": {
                 "id": null,
                 "type": "QuantityKind"
             },
             "unit": {
-                "id": "N",
-                "type": "Unit"
-            },
-            "value": 20.0,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "twist_ee.angular.z_err_m_contact",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "RAD_PER_SEC",
+                "id": "M_PER_SEC",
                 "type": "Unit"
             },
             "value": null,
@@ -5748,63 +5730,7 @@
             "type": "Quantity"
         },
         {
-            "id": "frc_start",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "N",
-                "type": "Unit"
-            },
-            "value": 1.0,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "tau_ctrl_limit_j4",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "N_M",
-                "type": "Unit"
-            },
-            "value": null,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "q_j4_lower",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "RAD",
-                "type": "Unit"
-            },
-            "value": -0.8,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "tau_ctrl_keep_j2",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "N_M",
-                "type": "Unit"
-            },
-            "value": null,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "q_j2",
+            "id": "q_j4",
             "quantity_kind": {
                 "id": null,
                 "type": "QuantityKind"
@@ -5832,20 +5758,6 @@
             "type": "Quantity"
         },
         {
-            "id": "q_j4",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "RAD",
-                "type": "Unit"
-            },
-            "value": null,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
             "id": "eacc_twist_ee.linear.x_m_approach",
             "quantity_kind": {
                 "id": null,
@@ -5860,13 +5772,27 @@
             "type": "Quantity"
         },
         {
-            "id": "q_j2_err",
+            "id": "frc_contact_overload",
             "quantity_kind": {
                 "id": null,
                 "type": "QuantityKind"
             },
             "unit": {
-                "id": "RAD",
+                "id": "N",
+                "type": "Unit"
+            },
+            "value": 25.0,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "eacc_twist_ee.angular.y_m_contact",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "N_M2_PER_SEC2",
                 "type": "Unit"
             },
             "value": null,
@@ -5888,16 +5814,44 @@
             "type": "Quantity"
         },
         {
-            "id": "twist_ee.linear.y_err_m_approach",
+            "id": "q_j2_ref",
             "quantity_kind": {
                 "id": null,
                 "type": "QuantityKind"
             },
             "unit": {
-                "id": "M_PER_SEC",
+                "id": "RAD",
+                "type": "Unit"
+            },
+            "value": 2.4,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "q_j4",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "RAD",
                 "type": "Unit"
             },
             "value": null,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "frc_overload",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "N",
+                "type": "Unit"
+            },
+            "value": 20.0,
             "has_view": false,
             "type": "Quantity"
         },
@@ -5916,27 +5870,13 @@
             "type": "Quantity"
         },
         {
-            "id": "vel_y_zero",
+            "id": "tau_ctrl_keep_j2",
             "quantity_kind": {
                 "id": null,
                 "type": "QuantityKind"
             },
             "unit": {
-                "id": "M_PER_SEC",
-                "type": "Unit"
-            },
-            "value": 0.0,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
-            "id": "twist_ee.angular.x_err_m_contact",
-            "quantity_kind": {
-                "id": null,
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "RAD_PER_SEC",
+                "id": "N_M",
                 "type": "Unit"
             },
             "value": null,
@@ -5958,7 +5898,63 @@
             "type": "Quantity"
         },
         {
-            "id": "eacc_twist_ee.linear.z_m_approach",
+            "id": "twist_ee.linear.x_err_m_approach",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "M_PER_SEC",
+                "type": "Unit"
+            },
+            "value": null,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "twist_ee.angular.x_err_m_contact",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "RAD_PER_SEC",
+                "type": "Unit"
+            },
+            "value": null,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "q_j2_err",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "RAD",
+                "type": "Unit"
+            },
+            "value": null,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "q_j2",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "RAD",
+                "type": "Unit"
+            },
+            "value": null,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "eacc_twist_ee.angular.x_m_contact",
             "quantity_kind": {
                 "id": null,
                 "type": "QuantityKind"
@@ -5968,6 +5964,20 @@
                 "type": "Unit"
             },
             "value": null,
+            "has_view": false,
+            "type": "Quantity"
+        },
+        {
+            "id": "vel_z_down",
+            "quantity_kind": {
+                "id": null,
+                "type": "QuantityKind"
+            },
+            "unit": {
+                "id": "M_PER_SEC",
+                "type": "Unit"
+            },
+            "value": -0.05,
             "has_view": false,
             "type": "Quantity"
         }
@@ -5988,87 +5998,6 @@
     "has_arm": true,
     "has_mobile_base": false,
     "arm_solvers": [
-        {
-            "id": "slv_m_approach",
-            "motion_drivers": [
-                {
-                    "id": "drv_m_approach",
-                    "acceleration_constraint": [
-                        {
-                            "id": "spec_acc_m_approach",
-                            "constraints": [
-                                {
-                                    "id": "acc_cstr_twist_ee.linear.x_m_approach",
-                                    "subspace": "LinearAcceleration",
-                                    "axis": "X",
-                                    "acceleration_energy": {
-                                        "id": "eacc_twist_ee.linear.x_m_approach",
-                                        "quantity_kind": {
-                                            "id": null,
-                                            "type": "QuantityKind"
-                                        },
-                                        "unit": {
-                                            "id": "N_M2_PER_SEC2",
-                                            "type": "Unit"
-                                        },
-                                        "value": null,
-                                        "has_view": false,
-                                        "type": "Quantity"
-                                    },
-                                    "type": "AccelerationConstraint"
-                                },
-                                {
-                                    "id": "acc_cstr_twist_ee.linear.y_m_approach",
-                                    "subspace": "LinearAcceleration",
-                                    "axis": "Y",
-                                    "acceleration_energy": {
-                                        "id": "eacc_twist_ee.linear.y_m_approach",
-                                        "quantity_kind": {
-                                            "id": null,
-                                            "type": "QuantityKind"
-                                        },
-                                        "unit": {
-                                            "id": "N_M2_PER_SEC2",
-                                            "type": "Unit"
-                                        },
-                                        "value": null,
-                                        "has_view": false,
-                                        "type": "Quantity"
-                                    },
-                                    "type": "AccelerationConstraint"
-                                },
-                                {
-                                    "id": "acc_cstr_twist_ee.linear.z_m_approach",
-                                    "subspace": "LinearAcceleration",
-                                    "axis": "Z",
-                                    "acceleration_energy": {
-                                        "id": "eacc_twist_ee.linear.z_m_approach",
-                                        "quantity_kind": {
-                                            "id": null,
-                                            "type": "QuantityKind"
-                                        },
-                                        "unit": {
-                                            "id": "N_M2_PER_SEC2",
-                                            "type": "Unit"
-                                        },
-                                        "value": null,
-                                        "has_view": false,
-                                        "type": "Quantity"
-                                    },
-                                    "type": "AccelerationConstraint"
-                                }
-                            ],
-                            "attached_to": null,
-                            "type": "AccelerationConstraintSpecification"
-                        }
-                    ],
-                    "cartesian_force": [],
-                    "type": "MotionDrivers"
-                }
-            ],
-            "output": [],
-            "type": "SolverWithInputAndOutput"
-        },
         {
             "id": "slv_m_contact",
             "motion_drivers": [
@@ -6168,6 +6097,97 @@
                 }
             ],
             "output": [],
+            "urdf": "../robots/kg3.urdf",
+            "chain_root": "base_link",
+            "chain_end": "Bracelet_Link",
+            "robot_type": "Manipulator",
+            "robot_model": "KinovaGen3",
+            "type": "SolverWithInputAndOutput"
+        },
+        {
+            "id": "slv_m_approach",
+            "motion_drivers": [
+                {
+                    "id": "drv_m_approach",
+                    "acceleration_constraint": [
+                        {
+                            "id": "spec_acc_m_approach",
+                            "constraints": [
+                                {
+                                    "id": "acc_cstr_twist_ee.linear.x_m_approach",
+                                    "subspace": "LinearAcceleration",
+                                    "axis": "X",
+                                    "acceleration_energy": {
+                                        "id": "eacc_twist_ee.linear.x_m_approach",
+                                        "quantity_kind": {
+                                            "id": null,
+                                            "type": "QuantityKind"
+                                        },
+                                        "unit": {
+                                            "id": "N_M2_PER_SEC2",
+                                            "type": "Unit"
+                                        },
+                                        "value": null,
+                                        "has_view": false,
+                                        "type": "Quantity"
+                                    },
+                                    "type": "AccelerationConstraint"
+                                },
+                                {
+                                    "id": "acc_cstr_twist_ee.linear.y_m_approach",
+                                    "subspace": "LinearAcceleration",
+                                    "axis": "Y",
+                                    "acceleration_energy": {
+                                        "id": "eacc_twist_ee.linear.y_m_approach",
+                                        "quantity_kind": {
+                                            "id": null,
+                                            "type": "QuantityKind"
+                                        },
+                                        "unit": {
+                                            "id": "N_M2_PER_SEC2",
+                                            "type": "Unit"
+                                        },
+                                        "value": null,
+                                        "has_view": false,
+                                        "type": "Quantity"
+                                    },
+                                    "type": "AccelerationConstraint"
+                                },
+                                {
+                                    "id": "acc_cstr_twist_ee.linear.z_m_approach",
+                                    "subspace": "LinearAcceleration",
+                                    "axis": "Z",
+                                    "acceleration_energy": {
+                                        "id": "eacc_twist_ee.linear.z_m_approach",
+                                        "quantity_kind": {
+                                            "id": null,
+                                            "type": "QuantityKind"
+                                        },
+                                        "unit": {
+                                            "id": "N_M2_PER_SEC2",
+                                            "type": "Unit"
+                                        },
+                                        "value": null,
+                                        "has_view": false,
+                                        "type": "Quantity"
+                                    },
+                                    "type": "AccelerationConstraint"
+                                }
+                            ],
+                            "attached_to": null,
+                            "type": "AccelerationConstraintSpecification"
+                        }
+                    ],
+                    "cartesian_force": [],
+                    "type": "MotionDrivers"
+                }
+            ],
+            "output": [],
+            "urdf": "../robots/kg3.urdf",
+            "chain_root": "base_link",
+            "chain_end": "Bracelet_Link",
+            "robot_type": "Manipulator",
+            "robot_model": "KinovaGen3",
             "type": "SolverWithInputAndOutput"
         }
     ],

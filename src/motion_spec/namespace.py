@@ -14,7 +14,12 @@ class APP(DefinedNamespace):
         "import",
         "entry-point",
         "reasoning-rules",
-        "iri-map"
+        "iri-map",
+        "urdf",
+        "chain-root",
+        "chain-end",
+        "robot-type",
+        "robot-model",
     ]
 
     _NS = Namespace(f"{URI_CR2B_MM}/application/")

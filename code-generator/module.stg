@@ -503,7 +503,7 @@ app-kinova-robot(solver) ::= <<
 
 app-kinova-chain(solver) ::= <<
     KDL::Chain chain_<solver.id>;
-    kinova_tree.getChain("base_link", "Bracelet_Link", chain_<solver.id>);
+    kinova_tree.getChain("<solver.chain_root>", "<solver.chain_end>", chain_<solver.id>);
 >>
 
 app-kinova-robot-assign(solver) ::= <<
@@ -1086,7 +1086,7 @@ int main() {
 <endif>
 <if(has_arm)>
 
-    urdf::ModelInterfaceSharedPtr kinova_model = urdf::parseURDFFile("../GEN3_URDF_V12.urdf");
+    urdf::ModelInterfaceSharedPtr kinova_model = urdf::parseURDFFile("<first(arm_solvers).urdf>");
     KDL::Tree kinova_tree;
     kdl_parser::treeFromUrdfModel(*kinova_model, kinova_tree);
 <arm_solvers:{solver |
@@ -1172,7 +1172,7 @@ int main() {
 <endif>
 <if(has_arm)>
 
-    urdf::ModelInterfaceSharedPtr kinova_model = urdf::parseURDFFile("../GEN3_URDF_V12.urdf");
+    urdf::ModelInterfaceSharedPtr kinova_model = urdf::parseURDFFile("<first(arm_solvers).urdf>");
     KDL::Tree kinova_tree;
     kdl_parser::treeFromUrdfModel(*kinova_model, kinova_tree);
 <arm_solvers:{solver |

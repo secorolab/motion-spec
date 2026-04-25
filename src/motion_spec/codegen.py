@@ -177,6 +177,8 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
         write_json(payload_path, payload)
         render_template(stst_bin, "motion_header", payload_path, output_dir / f"motion_{motion['id']}.hpp")
 
+    render_template(stst_bin, "ref_main", output_ir_path, output_dir / "ref_main.cpp")
+
 
 def main():
     parser = argparse.ArgumentParser(

@@ -1,0 +1,1782 @@
+{
+  "@context": [
+    {
+      "app": "https://secorolab.github.io/models/generated/",
+      "cstr": "https://comp-rob2b.github.io/metamodels/task/constraint#",
+      "cstr-hdl": "https://comp-rob2b.github.io/metamodels/task/constraint-handler#",
+      "geom-coord": "https://comp-rob2b.github.io/metamodels/geometry/coordinates#",
+      "geom-ent": "https://comp-rob2b.github.io/metamodels/geometry/structural-entities#",
+      "geom-op": "https://comp-rob2b.github.io/metamodels/geometry/spatial-operators#",
+      "geom-rel": "https://comp-rob2b.github.io/metamodels/geometry/spatial-relations#",
+      "kc": "https://comp-rob2b.github.io/metamodels/kinematic-chain/structural-entities#",
+      "map": "https://comp-rob2b.github.io/metamodels/task/map#",
+      "mot": "https://comp-rob2b.github.io/metamodels/task/motion-specification#",
+      "qkind": "http://qudt.org/vocab/quantitykind/",
+      "qudt": "http://qudt.org/schema/qudt/",
+      "rbdyn-coord": "https://comp-rob2b.github.io/metamodels/newtonian-rigid-body-dynamics/coordinates#",
+      "rbdyn-ent": "https://comp-rob2b.github.io/metamodels/newtonian-rigid-body-dynamics/structural-entities#",
+      "slv": "https://comp-rob2b.github.io/metamodels/task/solver-specification#",
+      "unit": "http://qudt.org/vocab/unit/"
+    }
+  ],
+  "@graph": [
+    {
+      "@id": "app:twist-ee.linear.x-err-m-approach",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:LinearVelocity"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:LinearVelocity"
+      },
+      "qudt:unit": {
+        "@id": "unit:M-PER-SEC"
+      }
+    },
+    {
+      "@id": "app:drv-m-contact",
+      "@type": "slv:MotionDrivers",
+      "slv:acceleration-constraint": {
+        "@id": "app:spec-acc-m-contact"
+      },
+      "slv:cartesian-force": {
+        "@id": "app:spec-wrench-ee"
+      },
+      "slv:joint-force": [
+        {
+          "@id": "app:tau-ctrl-keep-j2"
+        },
+        {
+          "@id": "app:tau-ctrl-limit-j4"
+        }
+      ]
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/handler-approach/Spec/c2/gravity-vec",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:Vector"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:Vector"
+      },
+      "qudt:unit": {
+        "@id": "unit:M-PER-SEC2"
+      }
+    },
+    {
+      "@id": "app:q-j4",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:Angle"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:Angle"
+      },
+      "qudt:unit": {
+        "@id": "unit:RAD"
+      }
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/handler-contact/mon-in-contact",
+      "@type": [
+        "cstr-hdl:Monitor",
+        "cstr-hdl:LevelTriggeredMonitor"
+      ],
+      "cstr-hdl:constraint": {
+        "@id": "https://secorolab.github.io/models/generated/m-contact/when/cstr-in-contact"
+      },
+      "cstr-hdl:error": {
+        "@id": "app:wrench-ee.force.z-err"
+      },
+      "cstr-hdl:flag": {
+        "@id": "app:flg-in-contact"
+      }
+    },
+    {
+      "@id": "app:joint-2",
+      "@type": "kc:Joint"
+    },
+    {
+      "@id": "app:evt-contact",
+      "@type": "cstr-hdl:Event"
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/m-approach/while/cstr-linvel-z",
+      "@type": [
+        "cstr:Constraint",
+        "cstr:LinearVelocityConstraint",
+        "cstr:EqualityConstraint"
+      ],
+      "cstr:quantity": {
+        "@id": "app:twist-ee.linear.z"
+      },
+      "cstr:reference-value": {
+        "@id": "https://secorolab.github.io/models/generated/m-approach/Spec/cs/vel-z-down"
+      }
+    },
+    {
+      "@id": "app:motion-m-approach",
+      "@type": "mot:GuardedMotion",
+      "mot:until": [
+        {
+          "@id": "https://secorolab.github.io/models/generated/m-approach/until/cstr-contact"
+        },
+        {
+          "@id": "https://secorolab.github.io/models/generated/m-approach/until/cstr-overload"
+        }
+      ],
+      "mot:untilLogic": "any",
+      "mot:while": [
+        {
+          "@id": "https://secorolab.github.io/models/generated/m-approach/while/cstr-linvel-z"
+        },
+        {
+          "@id": "https://secorolab.github.io/models/generated/m-approach/while/cstr-linvel-x"
+        },
+        {
+          "@id": "https://secorolab.github.io/models/generated/m-approach/while/cstr-linvel-y"
+        },
+        {
+          "@id": "https://secorolab.github.io/models/generated/m-approach/while/cstr-keep-j2"
+        },
+        {
+          "@id": "https://secorolab.github.io/models/generated/m-approach/while/cstr-limit-j4"
+        }
+      ]
+    },
+    {
+      "@id": "app:eval-m-contact-until-cstr-overload",
+      "@type": [
+        "cstr-hdl:ConstraintEvaluator",
+        "cstr-hdl:ErrorEvaluator"
+      ],
+      "cstr-hdl:constraint": {
+        "@id": "https://secorolab.github.io/models/generated/m-contact/until/cstr-overload"
+      },
+      "cstr-hdl:error": {
+        "@id": "app:wrench-ee.force.z-err"
+      }
+    },
+    {
+      "@id": "app:twist-ee.linear.z-err-m-approach",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:LinearVelocity"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:LinearVelocity"
+      },
+      "qudt:unit": {
+        "@id": "unit:M-PER-SEC"
+      }
+    },
+    {
+      "@id": "app:view-wrench-ee.force.z",
+      "@type": [
+        "map:View",
+        "map:WrenchCoordinateView"
+      ],
+      "map:axis": {
+        "@id": "map:z"
+      },
+      "map:subobject": {
+        "@id": "app:wrench-ee.force.z"
+      },
+      "map:subspace": {
+        "@id": "map:force"
+      },
+      "map:superobject": {
+        "@id": "https://secorolab.github.io/models/generated/m-approach/World/cw/wrench-ee"
+      }
+    },
+    {
+      "@id": "app:eacc-twist-ee.angular.y-m-contact",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:AccelerationEnergy"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:AccelerationEnergy"
+      },
+      "qudt:unit": {
+        "@id": "unit:N-M2-PER-SEC2"
+      }
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/m-contact/Spec/cs/angvel-zero",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:AngularVelocity"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:AngularVelocity"
+      },
+      "qudt:unit": {
+        "@id": "unit:RAD-PER-SEC"
+      },
+      "qudt:value": "0.0"
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/m-approach/Spec/cs/vel-z-down",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:LinearVelocity"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:LinearVelocity"
+      },
+      "qudt:unit": {
+        "@id": "unit:M-PER-SEC"
+      },
+      "qudt:value": "-0.05"
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/m-approach/until/cstr-overload",
+      "@type": [
+        "cstr:Constraint",
+        "cstr:ForceConstraint",
+        "cstr:UnilateralConstraint",
+        "cstr:GreaterThanConstraint"
+      ],
+      "cstr:quantity": {
+        "@id": "app:wrench-ee.force.z"
+      },
+      "cstr:threshold": {
+        "@id": "https://secorolab.github.io/models/generated/m-approach/Post/cpo/frc-overload"
+      }
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/m-contact/until/cstr-overload/Spec/frc-contact-overload",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:Force"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:Force"
+      },
+      "qudt:unit": {
+        "@id": "unit:N"
+      },
+      "qudt:value": "25.0"
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/m-approach/World/cw/twist-ee",
+      "@type": [
+        "geom-rel:VelocityTwist",
+        "geom-coord:VelocityTwistCoordinate",
+        "geom-coord:VectorXYZ"
+      ],
+      "geom-coord:as-seen-by": {
+        "@id": "app:frame-ee"
+      },
+      "geom-rel:of": {
+        "@id": "app:link-ee"
+      },
+      "geom-rel:reference-point": {
+        "@id": "app:point-ee-origin"
+      },
+      "geom-rel:with-respect-to": {
+        "@id": "app:link-base"
+      },
+      "qudt:quantity-kind": [
+        {
+          "@id": "qkind:AngularVelocity"
+        },
+        {
+          "@id": "qkind:LinearVelocity"
+        }
+      ],
+      "qudt:unit": [
+        {
+          "@id": "unit:RAD-PER-SEC"
+        },
+        {
+          "@id": "unit:M-PER-SEC"
+        }
+      ]
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/m-approach/Spec/cs/q-j2-ref",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:Angle"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:Angle"
+      },
+      "qudt:unit": {
+        "@id": "unit:RAD"
+      },
+      "qudt:value": "2.4"
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/handler-contact/ctrl-angvel-z",
+      "@type": [
+        "cstr-hdl:Controller",
+        "cstr-hdl:ProportionalIntegralDerivative"
+      ],
+      "cstr-hdl:control-signal": {
+        "@id": "app:eacc-twist-ee.angular.z-m-contact"
+      },
+      "cstr-hdl:derivative-gain": "1.0",
+      "cstr-hdl:error-signal": {
+        "@id": "app:twist-ee.angular.z-err-m-contact"
+      },
+      "cstr-hdl:integral-gain": "0.5",
+      "cstr-hdl:proportional-gain": "5.0"
+    },
+    {
+      "@id": "app:joint-4",
+      "@type": "kc:Joint"
+    },
+    {
+      "@id": "app:twist-ee.angular.x",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:AngularVelocity"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:AngularVelocity"
+      },
+      "qudt:unit": {
+        "@id": "unit:RAD-PER-SEC"
+      }
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/handler-approach/ctrl-linvel-x",
+      "@type": [
+        "cstr-hdl:Controller",
+        "cstr-hdl:ProportionalIntegralDerivative"
+      ],
+      "cstr-hdl:control-signal": {
+        "@id": "app:eacc-twist-ee.linear.x-m-approach"
+      },
+      "cstr-hdl:derivative-gain": "1.0",
+      "cstr-hdl:error-signal": {
+        "@id": "app:twist-ee.linear.x-err-m-approach"
+      },
+      "cstr-hdl:integral-gain": "1.0",
+      "cstr-hdl:proportional-gain": "5.0"
+    },
+    {
+      "@id": "app:slv-m-approach",
+      "@type": "slv:SolverWithInputAndOutput",
+      "slv:gravity": {
+        "@id": "https://secorolab.github.io/models/generated/handler-approach/World/c1/gravity"
+      },
+      "slv:kinematic-chain": {
+        "@id": "app:kinova"
+      },
+      "slv:motion-drivers": {
+        "@id": "app:drv-m-approach"
+      },
+      "slv:root": {
+        "@id": "app:kinova.chain.root"
+      },
+      "slv:solver": {
+        "@id": "slv:AccelerationConstrainedHybridDynamicsAlgorithm"
+      }
+    },
+    {
+      "@id": "app:acc-cstr-twist-ee.angular.z-m-contact",
+      "@type": [
+        "slv:AccelerationConstraint",
+        "slv:AxisAligned"
+      ],
+      "slv:acceleration-energy": {
+        "@id": "app:eacc-twist-ee.angular.z-m-contact"
+      },
+      "slv:axis": {
+        "@id": "slv:z"
+      },
+      "slv:subspace": {
+        "@id": "slv:angular-acceleration"
+      }
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/m-contact/while/cstr-frc-z",
+      "@type": [
+        "cstr:Constraint",
+        "cstr:ForceConstraint",
+        "cstr:EqualityConstraint"
+      ],
+      "cstr:quantity": {
+        "@id": "app:wrench-ee.force.z"
+      },
+      "cstr:reference-value": {
+        "@id": "https://secorolab.github.io/models/generated/m-contact/Spec/cs/frc-z-ref"
+      }
+    },
+    {
+      "@id": "app:spec-acc-m-contact",
+      "@type": "slv:AccelerationConstraintSpecification",
+      "slv:constraints": [
+        {
+          "@id": "app:acc-cstr-twist-ee.angular.x-m-contact"
+        },
+        {
+          "@id": "app:acc-cstr-twist-ee.angular.y-m-contact"
+        },
+        {
+          "@id": "app:acc-cstr-twist-ee.angular.z-m-contact"
+        }
+      ]
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/m-contact/Spec/cs/frc-z-ref",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:Force"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:Force"
+      },
+      "qudt:unit": {
+        "@id": "unit:N"
+      },
+      "qudt:value": "10.0"
+    },
+    {
+      "@id": "app:motion-m-contact",
+      "@type": "mot:GuardedMotion",
+      "mot:until": {
+        "@id": "https://secorolab.github.io/models/generated/m-contact/until/cstr-overload"
+      },
+      "mot:untilLogic": "any",
+      "mot:when": {
+        "@id": "https://secorolab.github.io/models/generated/m-contact/when/cstr-in-contact"
+      },
+      "mot:while": [
+        {
+          "@id": "https://secorolab.github.io/models/generated/m-contact/while/cstr-frc-z"
+        },
+        {
+          "@id": "https://secorolab.github.io/models/generated/m-contact/while/cstr-angvel-x"
+        },
+        {
+          "@id": "https://secorolab.github.io/models/generated/m-contact/while/cstr-angvel-y"
+        },
+        {
+          "@id": "https://secorolab.github.io/models/generated/m-contact/while/cstr-angvel-z"
+        },
+        {
+          "@id": "https://secorolab.github.io/models/generated/m-approach/while/cstr-keep-j2"
+        },
+        {
+          "@id": "https://secorolab.github.io/models/generated/m-approach/while/cstr-limit-j4"
+        }
+      ]
+    },
+    {
+      "@id": "app:eval-m-approach-while-cstr-linvel-x",
+      "@type": [
+        "cstr-hdl:ConstraintEvaluator",
+        "cstr-hdl:ErrorEvaluator"
+      ],
+      "cstr-hdl:constraint": {
+        "@id": "https://secorolab.github.io/models/generated/m-approach/while/cstr-linvel-x"
+      },
+      "cstr-hdl:error": {
+        "@id": "app:twist-ee.linear.x-err-m-approach"
+      }
+    },
+    {
+      "@id": "app:eacc-twist-ee.angular.z-m-contact",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:AccelerationEnergy"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:AccelerationEnergy"
+      },
+      "qudt:unit": {
+        "@id": "unit:N-M2-PER-SEC2"
+      }
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/m-contact/when/cstr-in-contact",
+      "@type": [
+        "cstr:Constraint",
+        "cstr:ForceConstraint",
+        "cstr:UnilateralConstraint",
+        "cstr:GreaterThanConstraint"
+      ],
+      "cstr:quantity": {
+        "@id": "app:wrench-ee.force.z"
+      },
+      "cstr:threshold": {
+        "@id": "https://secorolab.github.io/models/generated/m-contact/Pre/cpr/frc-start"
+      }
+    },
+    {
+      "@id": "app:q-j2",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:Angle"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:Angle"
+      },
+      "qudt:unit": {
+        "@id": "unit:RAD"
+      }
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/m-approach/until/cstr-contact",
+      "@type": [
+        "cstr:Constraint",
+        "cstr:ForceConstraint",
+        "cstr:UnilateralConstraint",
+        "cstr:GreaterThanConstraint"
+      ],
+      "cstr:quantity": {
+        "@id": "app:wrench-ee.force.z"
+      },
+      "cstr:threshold": {
+        "@id": "https://secorolab.github.io/models/generated/m-approach/Post/cpo/frc-threshold"
+      }
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/handler-approach/ctrl-limit-j4",
+      "@type": [
+        "cstr-hdl:Controller",
+        "cstr-hdl:ProportionalIntegralDerivative"
+      ],
+      "cstr-hdl:control-signal": {
+        "@id": "app:tau-ctrl-limit-j4"
+      },
+      "cstr-hdl:derivative-gain": "0.5",
+      "cstr-hdl:error-signal": {
+        "@id": "app:q-j4-err"
+      },
+      "cstr-hdl:integral-gain": "0.0",
+      "cstr-hdl:proportional-gain": "10.0"
+    },
+    {
+      "@id": "app:eval-m-contact-while-cstr-angvel-x",
+      "@type": [
+        "cstr-hdl:ConstraintEvaluator",
+        "cstr-hdl:ErrorEvaluator"
+      ],
+      "cstr-hdl:constraint": {
+        "@id": "https://secorolab.github.io/models/generated/m-contact/while/cstr-angvel-x"
+      },
+      "cstr-hdl:error": {
+        "@id": "app:twist-ee.angular.x-err-m-contact"
+      }
+    },
+    {
+      "@id": "app:point-ee-origin",
+      "@type": "geom-ent:Point"
+    },
+    {
+      "@id": "app:twist-ee.angular.y",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:AngularVelocity"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:AngularVelocity"
+      },
+      "qudt:unit": {
+        "@id": "unit:RAD-PER-SEC"
+      }
+    },
+    {
+      "@id": "app:handler-contact",
+      "@type": "cstr-hdl:ConstraintHandler",
+      "cstr-hdl:controllers": [
+        {
+          "@id": "https://secorolab.github.io/models/generated/handler-contact/ctrl-frc-z"
+        },
+        {
+          "@id": "https://secorolab.github.io/models/generated/handler-contact/ctrl-angvel-x"
+        },
+        {
+          "@id": "https://secorolab.github.io/models/generated/handler-contact/ctrl-angvel-y"
+        },
+        {
+          "@id": "https://secorolab.github.io/models/generated/handler-contact/ctrl-angvel-z"
+        },
+        {
+          "@id": "https://secorolab.github.io/models/generated/handler-approach/ctrl-keep-j2"
+        },
+        {
+          "@id": "https://secorolab.github.io/models/generated/handler-approach/ctrl-limit-j4"
+        }
+      ],
+      "cstr-hdl:evaluators": [
+        {
+          "@id": "app:eval-m-contact-while-cstr-frc-z"
+        },
+        {
+          "@id": "app:eval-m-contact-while-cstr-angvel-x"
+        },
+        {
+          "@id": "app:eval-m-contact-while-cstr-angvel-y"
+        },
+        {
+          "@id": "app:eval-m-contact-while-cstr-angvel-z"
+        },
+        {
+          "@id": "app:eval-m-approach-while-cstr-keep-j2"
+        },
+        {
+          "@id": "app:eval-m-approach-while-cstr-limit-j4"
+        },
+        {
+          "@id": "app:eval-m-contact-when-cstr-in-contact"
+        },
+        {
+          "@id": "app:eval-m-contact-until-cstr-overload"
+        }
+      ],
+      "cstr-hdl:monitors": [
+        {
+          "@id": "https://secorolab.github.io/models/generated/handler-contact/mon-in-contact"
+        },
+        {
+          "@id": "https://secorolab.github.io/models/generated/handler-contact/mon-overload"
+        }
+      ],
+      "cstr-hdl:motion": {
+        "@id": "app:motion-m-contact"
+      }
+    },
+    {
+      "@id": "app:q-j4-err",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:Angle"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:Angle"
+      },
+      "qudt:unit": {
+        "@id": "unit:RAD"
+      }
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/m-approach/Spec/cs/vel-zero",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:LinearVelocity"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:LinearVelocity"
+      },
+      "qudt:unit": {
+        "@id": "unit:M-PER-SEC"
+      },
+      "qudt:value": "0.0"
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/m-contact/while/cstr-angvel-y",
+      "@type": [
+        "cstr:Constraint",
+        "cstr:AngularVelocityConstraint",
+        "cstr:EqualityConstraint"
+      ],
+      "cstr:quantity": {
+        "@id": "app:twist-ee.angular.y"
+      },
+      "cstr:reference-value": {
+        "@id": "https://secorolab.github.io/models/generated/m-contact/Spec/cs/angvel-zero"
+      }
+    },
+    {
+      "@id": "app:evt-overload",
+      "@type": "cstr-hdl:Event"
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/m-contact/while/cstr-angvel-z",
+      "@type": [
+        "cstr:Constraint",
+        "cstr:AngularVelocityConstraint",
+        "cstr:EqualityConstraint"
+      ],
+      "cstr:quantity": {
+        "@id": "app:twist-ee.angular.z"
+      },
+      "cstr:reference-value": {
+        "@id": "https://secorolab.github.io/models/generated/m-contact/Spec/cs/angvel-zero"
+      }
+    },
+    {
+      "@id": "app:twist-ee.angular.y-err-m-contact",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:AngularVelocity"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:AngularVelocity"
+      },
+      "qudt:unit": {
+        "@id": "unit:RAD-PER-SEC"
+      }
+    },
+    {
+      "@id": "app:eacc-twist-ee.angular.x-m-contact",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:AccelerationEnergy"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:AccelerationEnergy"
+      },
+      "qudt:unit": {
+        "@id": "unit:N-M2-PER-SEC2"
+      }
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/handler-contact/mon-overload",
+      "@type": [
+        "cstr-hdl:Monitor",
+        "cstr-hdl:EdgeTriggeredMonitor"
+      ],
+      "cstr-hdl:constraint": {
+        "@id": "https://secorolab.github.io/models/generated/m-contact/until/cstr-overload"
+      },
+      "cstr-hdl:error": {
+        "@id": "app:wrench-ee.force.z-err"
+      },
+      "cstr-hdl:event": {
+        "@id": "app:evt-overload"
+      }
+    },
+    {
+      "@id": "app:wrench-ee.force.z",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:Force"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:Force"
+      },
+      "qudt:unit": {
+        "@id": "unit:N"
+      }
+    },
+    {
+      "@id": "app:eacc-twist-ee.linear.y-m-approach",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:AccelerationEnergy"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:AccelerationEnergy"
+      },
+      "qudt:unit": {
+        "@id": "unit:N-M2-PER-SEC2"
+      }
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/handler-approach/mon-overload",
+      "@type": [
+        "cstr-hdl:Monitor",
+        "cstr-hdl:EdgeTriggeredMonitor"
+      ],
+      "cstr-hdl:constraint": {
+        "@id": "https://secorolab.github.io/models/generated/m-approach/until/cstr-overload"
+      },
+      "cstr-hdl:error": {
+        "@id": "app:wrench-ee.force.z-err"
+      },
+      "cstr-hdl:event": {
+        "@id": "app:evt-overload"
+      }
+    },
+    {
+      "@id": "app:view-twist-ee.linear.z",
+      "@type": [
+        "map:View",
+        "map:VelocityTwistCoordinateView"
+      ],
+      "map:axis": {
+        "@id": "map:z"
+      },
+      "map:subobject": {
+        "@id": "app:twist-ee.linear.z"
+      },
+      "map:subspace": {
+        "@id": "map:linear-velocity"
+      },
+      "map:superobject": {
+        "@id": "https://secorolab.github.io/models/generated/m-approach/World/cw/twist-ee"
+      }
+    },
+    {
+      "@id": "app:kinova.chain.root",
+      "@type": "geom-ent:Frame"
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/handler-approach/ctrl-keep-j2",
+      "@type": [
+        "cstr-hdl:Controller",
+        "cstr-hdl:ProportionalIntegralDerivative"
+      ],
+      "cstr-hdl:control-signal": {
+        "@id": "app:tau-ctrl-keep-j2"
+      },
+      "cstr-hdl:derivative-gain": "0.5",
+      "cstr-hdl:error-signal": {
+        "@id": "app:q-j2-err"
+      },
+      "cstr-hdl:integral-gain": "0.0",
+      "cstr-hdl:proportional-gain": "10.0"
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/m-approach/Post/cpo/frc-overload",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:Force"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:Force"
+      },
+      "qudt:unit": {
+        "@id": "unit:N"
+      },
+      "qudt:value": "20.0"
+    },
+    {
+      "@id": "app:link-base",
+      "@type": "geom-ent:SimplicialComplex"
+    },
+    {
+      "@id": "app:twist-ee.angular.z-err-m-contact",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:AngularVelocity"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:AngularVelocity"
+      },
+      "qudt:unit": {
+        "@id": "unit:RAD-PER-SEC"
+      }
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/handler-approach/ctrl-linvel-z",
+      "@type": [
+        "cstr-hdl:Controller",
+        "cstr-hdl:ProportionalIntegralDerivative"
+      ],
+      "cstr-hdl:control-signal": {
+        "@id": "app:eacc-twist-ee.linear.z-m-approach"
+      },
+      "cstr-hdl:derivative-gain": "1.0",
+      "cstr-hdl:error-signal": {
+        "@id": "app:twist-ee.linear.z-err-m-approach"
+      },
+      "cstr-hdl:integral-gain": "1.0",
+      "cstr-hdl:proportional-gain": "5.0"
+    },
+    {
+      "@id": "app:eval-m-approach-while-cstr-linvel-z",
+      "@type": [
+        "cstr-hdl:ConstraintEvaluator",
+        "cstr-hdl:ErrorEvaluator"
+      ],
+      "cstr-hdl:constraint": {
+        "@id": "https://secorolab.github.io/models/generated/m-approach/while/cstr-linvel-z"
+      },
+      "cstr-hdl:error": {
+        "@id": "app:twist-ee.linear.z-err-m-approach"
+      }
+    },
+    {
+      "@id": "app:frame-ee",
+      "@type": "geom-ent:Frame"
+    },
+    {
+      "@id": "app:eval-m-approach-until-cstr-overload",
+      "@type": [
+        "cstr-hdl:ConstraintEvaluator",
+        "cstr-hdl:ErrorEvaluator"
+      ],
+      "cstr-hdl:constraint": {
+        "@id": "https://secorolab.github.io/models/generated/m-approach/until/cstr-overload"
+      },
+      "cstr-hdl:error": {
+        "@id": "app:wrench-ee.force.z-err"
+      }
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/m-contact/Pre/cpr/frc-start",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:Force"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:Force"
+      },
+      "qudt:unit": {
+        "@id": "unit:N"
+      },
+      "qudt:value": "1.0"
+    },
+    {
+      "@id": "app:tau-ctrl-limit-j4",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:Torque",
+        "slv:JointForce"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:Torque"
+      },
+      "qudt:unit": {
+        "@id": "unit:N-M"
+      }
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/handler-contact/ctrl-angvel-x",
+      "@type": [
+        "cstr-hdl:Controller",
+        "cstr-hdl:ProportionalIntegralDerivative"
+      ],
+      "cstr-hdl:control-signal": {
+        "@id": "app:eacc-twist-ee.angular.x-m-contact"
+      },
+      "cstr-hdl:derivative-gain": "1.0",
+      "cstr-hdl:error-signal": {
+        "@id": "app:twist-ee.angular.x-err-m-contact"
+      },
+      "cstr-hdl:integral-gain": "0.5",
+      "cstr-hdl:proportional-gain": "5.0"
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/m-approach/Spec/cs/q-j4-lower",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:Angle"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:Angle"
+      },
+      "qudt:unit": {
+        "@id": "unit:RAD"
+      },
+      "qudt:value": "-0.8"
+    },
+    {
+      "@id": "app:view-twist-ee.angular.z",
+      "@type": [
+        "map:View",
+        "map:VelocityTwistCoordinateView"
+      ],
+      "map:axis": {
+        "@id": "map:z"
+      },
+      "map:subobject": {
+        "@id": "app:twist-ee.angular.z"
+      },
+      "map:subspace": {
+        "@id": "map:angular-velocity"
+      },
+      "map:superobject": {
+        "@id": "https://secorolab.github.io/models/generated/m-approach/World/cw/twist-ee"
+      }
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/m-approach/while/cstr-linvel-y",
+      "@type": [
+        "cstr:Constraint",
+        "cstr:LinearVelocityConstraint",
+        "cstr:EqualityConstraint"
+      ],
+      "cstr:quantity": {
+        "@id": "app:twist-ee.linear.y"
+      },
+      "cstr:reference-value": {
+        "@id": "https://secorolab.github.io/models/generated/m-approach/while/cstr-linvel-y/Spec/vel-y-zero"
+      }
+    },
+    {
+      "@id": "app:twist-ee.linear.x",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:LinearVelocity"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:LinearVelocity"
+      },
+      "qudt:unit": {
+        "@id": "unit:M-PER-SEC"
+      }
+    },
+    {
+      "@id": "app:view-twist-ee.linear.y",
+      "@type": [
+        "map:View",
+        "map:VelocityTwistCoordinateView"
+      ],
+      "map:axis": {
+        "@id": "map:y"
+      },
+      "map:subobject": {
+        "@id": "app:twist-ee.linear.y"
+      },
+      "map:subspace": {
+        "@id": "map:linear-velocity"
+      },
+      "map:superobject": {
+        "@id": "https://secorolab.github.io/models/generated/m-approach/World/cw/twist-ee"
+      }
+    },
+    {
+      "@id": "app:tau-ctrl-keep-j2",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:Torque",
+        "slv:JointForce"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:Torque"
+      },
+      "qudt:unit": {
+        "@id": "unit:N-M"
+      }
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/m-approach/World/cw/q-j2",
+      "@type": "qudt:Quantity",
+      "geom-rel:of": {
+        "@id": "app:joint-2"
+      },
+      "qudt:quantity-kind": {
+        "@id": "qkind:PlaneAngle"
+      },
+      "qudt:unit": {
+        "@id": "unit:RAD"
+      }
+    },
+    {
+      "@id": "app:wrench-ee.force.z-err",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:Force"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:Force"
+      },
+      "qudt:unit": {
+        "@id": "unit:N"
+      }
+    },
+    {
+      "@id": "app:eval-m-approach-while-cstr-limit-j4",
+      "@type": [
+        "cstr-hdl:ConstraintEvaluator",
+        "cstr-hdl:ErrorEvaluator"
+      ],
+      "cstr-hdl:constraint": {
+        "@id": "https://secorolab.github.io/models/generated/m-approach/while/cstr-limit-j4"
+      },
+      "cstr-hdl:error": {
+        "@id": "app:q-j4-err"
+      }
+    },
+    {
+      "@id": "app:flg-in-contact",
+      "@type": "cstr-hdl:Flag"
+    },
+    {
+      "@id": "app:eval-m-contact-when-cstr-in-contact",
+      "@type": [
+        "cstr-hdl:ConstraintEvaluator",
+        "cstr-hdl:ErrorEvaluator"
+      ],
+      "cstr-hdl:constraint": {
+        "@id": "https://secorolab.github.io/models/generated/m-contact/when/cstr-in-contact"
+      },
+      "cstr-hdl:error": {
+        "@id": "app:wrench-ee.force.z-err"
+      }
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/m-contact/while/cstr-angvel-x",
+      "@type": [
+        "cstr:Constraint",
+        "cstr:AngularVelocityConstraint",
+        "cstr:EqualityConstraint"
+      ],
+      "cstr:quantity": {
+        "@id": "app:twist-ee.angular.x"
+      },
+      "cstr:reference-value": {
+        "@id": "https://secorolab.github.io/models/generated/m-contact/Spec/cs/angvel-zero"
+      }
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/m-approach/World/cw/q-j4",
+      "@type": "qudt:Quantity",
+      "geom-rel:of": {
+        "@id": "app:joint-4"
+      },
+      "qudt:quantity-kind": {
+        "@id": "qkind:PlaneAngle"
+      },
+      "qudt:unit": {
+        "@id": "unit:RAD"
+      }
+    },
+    {
+      "@id": "app:eacc-twist-ee.linear.x-m-approach",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:AccelerationEnergy"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:AccelerationEnergy"
+      },
+      "qudt:unit": {
+        "@id": "unit:N-M2-PER-SEC2"
+      }
+    },
+    {
+      "@id": "app:handler-approach",
+      "@type": "cstr-hdl:ConstraintHandler",
+      "cstr-hdl:controllers": [
+        {
+          "@id": "https://secorolab.github.io/models/generated/handler-approach/ctrl-linvel-z"
+        },
+        {
+          "@id": "https://secorolab.github.io/models/generated/handler-approach/ctrl-linvel-x"
+        },
+        {
+          "@id": "https://secorolab.github.io/models/generated/handler-approach/ctrl-linvel-y"
+        },
+        {
+          "@id": "https://secorolab.github.io/models/generated/handler-approach/ctrl-keep-j2"
+        },
+        {
+          "@id": "https://secorolab.github.io/models/generated/handler-approach/ctrl-limit-j4"
+        }
+      ],
+      "cstr-hdl:evaluators": [
+        {
+          "@id": "app:eval-m-approach-while-cstr-linvel-z"
+        },
+        {
+          "@id": "app:eval-m-approach-while-cstr-linvel-x"
+        },
+        {
+          "@id": "app:eval-m-approach-while-cstr-linvel-y"
+        },
+        {
+          "@id": "app:eval-m-approach-while-cstr-keep-j2"
+        },
+        {
+          "@id": "app:eval-m-approach-while-cstr-limit-j4"
+        },
+        {
+          "@id": "app:eval-m-approach-until-cstr-contact"
+        },
+        {
+          "@id": "app:eval-m-approach-until-cstr-overload"
+        }
+      ],
+      "cstr-hdl:monitors": [
+        {
+          "@id": "https://secorolab.github.io/models/generated/handler-approach/mon-contact"
+        },
+        {
+          "@id": "https://secorolab.github.io/models/generated/handler-approach/mon-overload"
+        }
+      ],
+      "cstr-hdl:motion": {
+        "@id": "app:motion-m-approach"
+      }
+    },
+    {
+      "@id": "app:view-twist-ee.angular.x",
+      "@type": [
+        "map:View",
+        "map:VelocityTwistCoordinateView"
+      ],
+      "map:axis": {
+        "@id": "map:x"
+      },
+      "map:subobject": {
+        "@id": "app:twist-ee.angular.x"
+      },
+      "map:subspace": {
+        "@id": "map:angular-velocity"
+      },
+      "map:superobject": {
+        "@id": "https://secorolab.github.io/models/generated/m-approach/World/cw/twist-ee"
+      }
+    },
+    {
+      "@id": "app:q-j2-err",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:Angle"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:Angle"
+      },
+      "qudt:unit": {
+        "@id": "unit:RAD"
+      }
+    },
+    {
+      "@id": "app:twist-ee.linear.y",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:LinearVelocity"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:LinearVelocity"
+      },
+      "qudt:unit": {
+        "@id": "unit:M-PER-SEC"
+      }
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/handler-approach/ctrl-linvel-y",
+      "@type": [
+        "cstr-hdl:Controller",
+        "cstr-hdl:ProportionalIntegralDerivative"
+      ],
+      "cstr-hdl:control-signal": {
+        "@id": "app:eacc-twist-ee.linear.y-m-approach"
+      },
+      "cstr-hdl:derivative-gain": "1.0",
+      "cstr-hdl:error-signal": {
+        "@id": "app:twist-ee.linear.y-err-m-approach"
+      },
+      "cstr-hdl:integral-gain": "1.0",
+      "cstr-hdl:proportional-gain": "5.0"
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/m-approach/Post/cpo/frc-threshold",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:Force"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:Force"
+      },
+      "qudt:unit": {
+        "@id": "unit:N"
+      },
+      "qudt:value": "5.0"
+    },
+    {
+      "@id": "app:acc-cstr-twist-ee.linear.z-m-approach",
+      "@type": [
+        "slv:AccelerationConstraint",
+        "slv:AxisAligned"
+      ],
+      "slv:acceleration-energy": {
+        "@id": "app:eacc-twist-ee.linear.z-m-approach"
+      },
+      "slv:axis": {
+        "@id": "slv:z"
+      },
+      "slv:subspace": {
+        "@id": "slv:linear-acceleration"
+      }
+    },
+    {
+      "@id": "app:twist-ee.linear.y-err-m-approach",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:LinearVelocity"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:LinearVelocity"
+      },
+      "qudt:unit": {
+        "@id": "unit:M-PER-SEC"
+      }
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/handler-approach/World/c1/gravity",
+      "@type": "geom-ent:UniformGravitationalField"
+    },
+    {
+      "@id": "app:acc-cstr-twist-ee.linear.y-m-approach",
+      "@type": [
+        "slv:AccelerationConstraint",
+        "slv:AxisAligned"
+      ],
+      "slv:acceleration-energy": {
+        "@id": "app:eacc-twist-ee.linear.y-m-approach"
+      },
+      "slv:axis": {
+        "@id": "slv:y"
+      },
+      "slv:subspace": {
+        "@id": "slv:linear-acceleration"
+      }
+    },
+    {
+      "@id": "app:slv-m-contact",
+      "@type": "slv:SolverWithInputAndOutput",
+      "slv:gravity": {
+        "@id": "https://secorolab.github.io/models/generated/handler-approach/World/c1/gravity"
+      },
+      "slv:kinematic-chain": {
+        "@id": "app:kinova"
+      },
+      "slv:motion-drivers": {
+        "@id": "app:drv-m-contact"
+      },
+      "slv:root": {
+        "@id": "app:kinova.chain.root"
+      },
+      "slv:solver": {
+        "@id": "slv:AccelerationConstrainedHybridDynamicsAlgorithm"
+      }
+    },
+    {
+      "@id": "app:eval-m-approach-while-cstr-linvel-y",
+      "@type": [
+        "cstr-hdl:ConstraintEvaluator",
+        "cstr-hdl:ErrorEvaluator"
+      ],
+      "cstr-hdl:constraint": {
+        "@id": "https://secorolab.github.io/models/generated/m-approach/while/cstr-linvel-y"
+      },
+      "cstr-hdl:error": {
+        "@id": "app:twist-ee.linear.y-err-m-approach"
+      }
+    },
+    {
+      "@id": "app:drv-m-approach",
+      "@type": "slv:MotionDrivers",
+      "slv:acceleration-constraint": {
+        "@id": "app:spec-acc-m-approach"
+      },
+      "slv:joint-force": [
+        {
+          "@id": "app:tau-ctrl-keep-j2"
+        },
+        {
+          "@id": "app:tau-ctrl-limit-j4"
+        }
+      ]
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/m-approach/Spec/cs/q-j4-upper",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:Angle"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:Angle"
+      },
+      "qudt:unit": {
+        "@id": "unit:RAD"
+      },
+      "qudt:value": "0.8"
+    },
+    {
+      "@id": "app:eval-m-contact-while-cstr-frc-z",
+      "@type": [
+        "cstr-hdl:ConstraintEvaluator",
+        "cstr-hdl:ErrorEvaluator"
+      ],
+      "cstr-hdl:constraint": {
+        "@id": "https://secorolab.github.io/models/generated/m-contact/while/cstr-frc-z"
+      },
+      "cstr-hdl:error": {
+        "@id": "app:wrench-ee.force.z-err-m-contact"
+      }
+    },
+    {
+      "@id": "app:view-twist-ee.linear.x",
+      "@type": [
+        "map:View",
+        "map:VelocityTwistCoordinateView"
+      ],
+      "map:axis": {
+        "@id": "map:x"
+      },
+      "map:subobject": {
+        "@id": "app:twist-ee.linear.x"
+      },
+      "map:subspace": {
+        "@id": "map:linear-velocity"
+      },
+      "map:superobject": {
+        "@id": "https://secorolab.github.io/models/generated/m-approach/World/cw/twist-ee"
+      }
+    },
+    {
+      "@id": "app:eval-m-contact-while-cstr-angvel-y",
+      "@type": [
+        "cstr-hdl:ConstraintEvaluator",
+        "cstr-hdl:ErrorEvaluator"
+      ],
+      "cstr-hdl:constraint": {
+        "@id": "https://secorolab.github.io/models/generated/m-contact/while/cstr-angvel-y"
+      },
+      "cstr-hdl:error": {
+        "@id": "app:twist-ee.angular.y-err-m-contact"
+      }
+    },
+    {
+      "@id": "app:eval-m-contact-while-cstr-angvel-z",
+      "@type": [
+        "cstr-hdl:ConstraintEvaluator",
+        "cstr-hdl:ErrorEvaluator"
+      ],
+      "cstr-hdl:constraint": {
+        "@id": "https://secorolab.github.io/models/generated/m-contact/while/cstr-angvel-z"
+      },
+      "cstr-hdl:error": {
+        "@id": "app:twist-ee.angular.z-err-m-contact"
+      }
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/handler-contact/World/c1/link-ee",
+      "@type": "geom-ent:SimplicialComplex"
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/m-approach/while/cstr-linvel-y/Spec/vel-y-zero",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:LinearVelocity"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:LinearVelocity"
+      },
+      "qudt:unit": {
+        "@id": "unit:M-PER-SEC"
+      },
+      "qudt:value": "0.0"
+    },
+    {
+      "@id": "app:twist-ee.linear.z",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:LinearVelocity"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:LinearVelocity"
+      },
+      "qudt:unit": {
+        "@id": "unit:M-PER-SEC"
+      }
+    },
+    {
+      "@id": "app:eval-m-approach-while-cstr-keep-j2",
+      "@type": [
+        "cstr-hdl:ConstraintEvaluator",
+        "cstr-hdl:ErrorEvaluator"
+      ],
+      "cstr-hdl:constraint": {
+        "@id": "https://secorolab.github.io/models/generated/m-approach/while/cstr-keep-j2"
+      },
+      "cstr-hdl:error": {
+        "@id": "app:q-j2-err"
+      }
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/m-approach/while/cstr-linvel-x",
+      "@type": [
+        "cstr:Constraint",
+        "cstr:LinearVelocityConstraint",
+        "cstr:EqualityConstraint"
+      ],
+      "cstr:quantity": {
+        "@id": "app:twist-ee.linear.x"
+      },
+      "cstr:reference-value": {
+        "@id": "https://secorolab.github.io/models/generated/m-approach/Spec/cs/vel-zero"
+      }
+    },
+    {
+      "@id": "app:twist-ee.angular.x-err-m-contact",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:AngularVelocity"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:AngularVelocity"
+      },
+      "qudt:unit": {
+        "@id": "unit:RAD-PER-SEC"
+      }
+    },
+    {
+      "@id": "app:acc-cstr-twist-ee.linear.x-m-approach",
+      "@type": [
+        "slv:AccelerationConstraint",
+        "slv:AxisAligned"
+      ],
+      "slv:acceleration-energy": {
+        "@id": "app:eacc-twist-ee.linear.x-m-approach"
+      },
+      "slv:axis": {
+        "@id": "slv:x"
+      },
+      "slv:subspace": {
+        "@id": "slv:linear-acceleration"
+      }
+    },
+    {
+      "@id": "app:spec-acc-m-approach",
+      "@type": "slv:AccelerationConstraintSpecification",
+      "slv:constraints": [
+        {
+          "@id": "app:acc-cstr-twist-ee.linear.x-m-approach"
+        },
+        {
+          "@id": "app:acc-cstr-twist-ee.linear.y-m-approach"
+        },
+        {
+          "@id": "app:acc-cstr-twist-ee.linear.z-m-approach"
+        }
+      ]
+    },
+    {
+      "@id": "app:view-twist-ee.angular.y",
+      "@type": [
+        "map:View",
+        "map:VelocityTwistCoordinateView"
+      ],
+      "map:axis": {
+        "@id": "map:y"
+      },
+      "map:subobject": {
+        "@id": "app:twist-ee.angular.y"
+      },
+      "map:subspace": {
+        "@id": "map:angular-velocity"
+      },
+      "map:superobject": {
+        "@id": "https://secorolab.github.io/models/generated/m-approach/World/cw/twist-ee"
+      }
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/m-approach/World/cw/wrench-ee",
+      "@type": [
+        "rbdyn-ent:Wrench",
+        "rbdyn-coord:WrenchCoordinate",
+        "geom-coord:VectorXYZ"
+      ],
+      "geom-coord:as-seen-by": {
+        "@id": "app:frame-ee"
+      },
+      "geom-rel:reference-point": {
+        "@id": "app:point-ee-origin"
+      },
+      "qudt:quantity-kind": [
+        {
+          "@id": "qkind:Torque"
+        },
+        {
+          "@id": "qkind:Force"
+        }
+      ],
+      "qudt:unit": [
+        {
+          "@id": "unit:N-M"
+        },
+        {
+          "@id": "unit:N"
+        }
+      ]
+    },
+    {
+      "@id": "app:acc-cstr-twist-ee.angular.y-m-contact",
+      "@type": [
+        "slv:AccelerationConstraint",
+        "slv:AxisAligned"
+      ],
+      "slv:acceleration-energy": {
+        "@id": "app:eacc-twist-ee.angular.y-m-contact"
+      },
+      "slv:axis": {
+        "@id": "slv:y"
+      },
+      "slv:subspace": {
+        "@id": "slv:angular-acceleration"
+      }
+    },
+    {
+      "@id": "app:wrench-ee.force.z-err-m-contact",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:Force"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:Force"
+      },
+      "qudt:unit": {
+        "@id": "unit:N"
+      }
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/m-approach/while/cstr-limit-j4",
+      "@type": [
+        "cstr:Constraint",
+        "cstr:AngleConstraint",
+        "cstr:BilateralConstraint"
+      ],
+      "cstr:lower-threshold": {
+        "@id": "https://secorolab.github.io/models/generated/m-approach/Spec/cs/q-j4-lower"
+      },
+      "cstr:quantity": {
+        "@id": "app:q-j4"
+      },
+      "cstr:upper-threshold": {
+        "@id": "https://secorolab.github.io/models/generated/m-approach/Spec/cs/q-j4-upper"
+      }
+    },
+    {
+      "@id": "app:eval-m-approach-until-cstr-contact",
+      "@type": [
+        "cstr-hdl:ConstraintEvaluator",
+        "cstr-hdl:ErrorEvaluator"
+      ],
+      "cstr-hdl:constraint": {
+        "@id": "https://secorolab.github.io/models/generated/m-approach/until/cstr-contact"
+      },
+      "cstr-hdl:error": {
+        "@id": "app:wrench-ee.force.z-err"
+      }
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/handler-approach/mon-contact",
+      "@type": [
+        "cstr-hdl:Monitor",
+        "cstr-hdl:EdgeTriggeredMonitor"
+      ],
+      "cstr-hdl:constraint": {
+        "@id": "https://secorolab.github.io/models/generated/m-approach/until/cstr-contact"
+      },
+      "cstr-hdl:error": {
+        "@id": "app:wrench-ee.force.z-err"
+      },
+      "cstr-hdl:event": {
+        "@id": "app:evt-contact"
+      }
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/handler-contact/ctrl-angvel-y",
+      "@type": [
+        "cstr-hdl:Controller",
+        "cstr-hdl:ProportionalIntegralDerivative"
+      ],
+      "cstr-hdl:control-signal": {
+        "@id": "app:eacc-twist-ee.angular.y-m-contact"
+      },
+      "cstr-hdl:derivative-gain": "1.0",
+      "cstr-hdl:error-signal": {
+        "@id": "app:twist-ee.angular.y-err-m-contact"
+      },
+      "cstr-hdl:integral-gain": "0.5",
+      "cstr-hdl:proportional-gain": "5.0"
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/handler-contact/ctrl-frc-z",
+      "@type": [
+        "cstr-hdl:Controller",
+        "cstr-hdl:ProportionalIntegralDerivative"
+      ],
+      "cstr-hdl:control-signal": {
+        "@id": "app:wrench-ee.force.z"
+      },
+      "cstr-hdl:derivative-gain": "0.0",
+      "cstr-hdl:error-signal": {
+        "@id": "app:wrench-ee.force.z-err-m-contact"
+      },
+      "cstr-hdl:integral-gain": "0.0",
+      "cstr-hdl:proportional-gain": "1.0"
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/m-approach/while/cstr-keep-j2",
+      "@type": [
+        "cstr:Constraint",
+        "cstr:AngleConstraint",
+        "cstr:UnilateralConstraint",
+        "cstr:GreaterThanConstraint"
+      ],
+      "cstr:quantity": {
+        "@id": "app:q-j2"
+      },
+      "cstr:threshold": {
+        "@id": "https://secorolab.github.io/models/generated/m-approach/Spec/cs/q-j2-ref"
+      }
+    },
+    {
+      "@id": "app:link-ee",
+      "@type": "geom-ent:SimplicialComplex"
+    },
+    {
+      "@id": "app:eacc-twist-ee.linear.z-m-approach",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:AccelerationEnergy"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:AccelerationEnergy"
+      },
+      "qudt:unit": {
+        "@id": "unit:N-M2-PER-SEC2"
+      }
+    },
+    {
+      "@id": "app:acc-cstr-twist-ee.angular.x-m-contact",
+      "@type": [
+        "slv:AccelerationConstraint",
+        "slv:AxisAligned"
+      ],
+      "slv:acceleration-energy": {
+        "@id": "app:eacc-twist-ee.angular.x-m-contact"
+      },
+      "slv:axis": {
+        "@id": "slv:x"
+      },
+      "slv:subspace": {
+        "@id": "slv:angular-acceleration"
+      }
+    },
+    {
+      "@id": "app:twist-ee.angular.z",
+      "@type": [
+        "qudt:Quantity",
+        "qkind:AngularVelocity"
+      ],
+      "qudt:quantity-kind": {
+        "@id": "qkind:AngularVelocity"
+      },
+      "qudt:unit": {
+        "@id": "unit:RAD-PER-SEC"
+      }
+    },
+    {
+      "@id": "https://secorolab.github.io/models/generated/m-contact/until/cstr-overload",
+      "@type": [
+        "cstr:Constraint",
+        "cstr:ForceConstraint",
+        "cstr:UnilateralConstraint",
+        "cstr:GreaterThanConstraint"
+      ],
+      "cstr:quantity": {
+        "@id": "app:wrench-ee.force.z"
+      },
+      "cstr:threshold": {
+        "@id": "https://secorolab.github.io/models/generated/m-contact/until/cstr-overload/Spec/frc-contact-overload"
+      }
+    },
+    {
+      "@id": "app:spec-wrench-ee",
+      "@type": "slv:CartesianForceSpecification",
+      "slv:attached-to": {
+        "@id": "https://secorolab.github.io/models/generated/handler-contact/World/c1/link-ee"
+      },
+      "slv:force": {
+        "@id": "https://secorolab.github.io/models/generated/m-approach/World/cw/wrench-ee"
+      }
+    }
+  ]
+}

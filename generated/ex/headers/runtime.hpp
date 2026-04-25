@@ -7,23 +7,9 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <hddc2b/functions/platform.h>
-#include <hddc2b/functions/solver.h>
-#include <hddc2b/functions/drive.h>
-#include <hddc2b/functions/wheel.h>
-
 namespace motion_spec::runtime {
 
 inline constexpr double kConstraintTolerance = 1e-9;
-inline constexpr int NUM_DRIVES = 4;
-inline constexpr int NUM_SLAVES = 4;
-inline constexpr int NUM_WHL_COORD = 2;
-inline constexpr int NUM_GND_COORD = 2;
-inline constexpr int NUM_DRV_COORD = 2;
-inline constexpr int NUM_PLTF_COORD = 3;
-inline constexpr int NUM_G_COORD = NUM_DRV_COORD * NUM_PLTF_COORD;
-inline constexpr double EPS = 0.001;
-
 class PIDControl {
   public:
     PIDControl() = default;
@@ -110,51 +96,4 @@ inline unsigned int find_segment_index(const KDL::Chain &chain, std::string_view
     }
     throw std::runtime_error("KDL segment not found for model name: " + target);
 }
-inline void hddc2b_pltf_vel_drv_to_pltf(
-        int num_drv,
-        double eps,
-        const double *g,
-        const double *w_drv_sqrt,
-        const double *xd_drv,
-        const double *w_pltf_inv_sqrt,
-        double *xd_pltf)
-{
-    assert(num_drv >= 0);
-
-    double g2[num_drv * NUM_G_COORD];
-    double xd_drv2[num_drv * NUM_DRV_COORD];
-    hddc2b_pltf_vel_sing_wgh(num_drv, g, xd_drv, w_drv_sqrt, g2, xd_drv2);
-
-    double g3[num_drv * NUM_G_COORD];
-    hddc2b_pltf_vel_redu_wgh_init(num_drv, g2, w_pltf_inv_sqrt, g3);
-
-    double u[NUM_PLTF_COORD * NUM_PLTF_COORD];
-    double s[NUM_PLTF_COORD];
-    double vt[num_drv * NUM_G_COORD];
-    hddc2b_pltf_dcmp(num_drv, g3, u, s, vt);
-
-    double s_inv[NUM_PLTF_COORD];
-    hddc2b_pltf_pinv(num_drv, eps, s, s_inv);
-
-    double xd_pltf2[NUM_PLTF_COORD];
-    hddc2b_pltf_vel_slv(num_drv, u, s_inv, vt, xd_drv2, xd_pltf2);
-
-    hddc2b_pltf_vel_redu_wgh_fini(num_drv, xd_pltf2, w_pltf_inv_sqrt, xd_pltf);
-}
-
-inline void hddc2b_rescale(double *f_scnd) {
-    double f_scnd_max = 0.0;
-    for (int i = 0; i < NUM_DRIVES; ++i) {
-        double current = fabs(f_scnd[i * NUM_DRV_COORD + 1]);
-        if (current > f_scnd_max) f_scnd_max = current;
-    }
-
-    double scale_factor = (f_scnd_max == 0.0) ? 1.0 : f_scnd_max;
-
-    for (int i = 0; i < NUM_DRIVES; ++i) {
-        f_scnd[i * NUM_DRV_COORD + 0] /= scale_factor;
-        f_scnd[i * NUM_DRV_COORD + 1] /= scale_factor;
-    }
-}
-
 }  // namespace motion_spec::runtime

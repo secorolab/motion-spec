@@ -1,0 +1,59 @@
+{
+  "license": "https://github.com/aws/mit-0",
+  "@context": {
+    "@version": 1.1,
+    "xsd": "http://www.w3.org/2001/XMLSchema#",
+    "app": "https://comp-rob2b.github.io/metamodels/application/",
+    "import": {
+      "@id": "app:import",
+      "@type": "@id",
+      "@context": {
+        "@base": "https://secorolab.github.io/"
+      }
+    },
+    "constraints": {
+      "@id": "app:constraints",
+      "@type": "@id",
+      "@container": "@set",
+      "@context": {
+        "@base": "https://comp-rob2b.github.io/metamodels/"
+      }
+    },
+    "iri-map": {
+      "@id": "app:iri-map",
+      "@container": "@id"
+    },
+    "path": {
+      "@id": "app:path",
+      "@type": "xsd:string"
+    }
+  },
+  "@id": "https://secorolab.github.io/models/generated/",
+  "@graph": [
+    {
+      "import": [
+        "ex.json"
+      ],
+      "constraints": [
+        "geometry/coordinates.ttl",
+        "geometry/spatial-relations.ttl",
+        "geometry/structural-entities.ttl",
+        "newtonian-rigid-body-dynamics/coordinates.ttl",
+        "newtonian-rigid-body-dynamics/structural-entities.ttl",
+        "task/constraint-handler.ttl",
+        "task/constraint.ttl",
+        "task/map.ttl",
+        "task/motion-specification.ttl",
+        "task/solver-specification.ttl"
+      ],
+      "iri-map": {
+        "https://comp-rob2b.github.io/": {
+          "path": "comp-rob2b/"
+        },
+        "https://secorolab.github.io/": {
+          "path": "models/"
+        }
+      }
+    }
+  ]
+}

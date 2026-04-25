@@ -21,7 +21,7 @@ gen-ir-$(1): | $(GENERATED)/$(1)
 	@motion-spec-ir-gen models/$(2) -o $(GENERATED)/$(1)/ir.json
 
 gen-code-$(1): gen-ir-$(1)
-	@motion-spec-codegen $(GENERATED)/$(1)/ir.json -o $(GENERATED)/$(1)/headers
+	@motion-spec-codegen $(GENERATED)/$(1)/ir.json -o $(GENERATED)/$(1)
 
 gen-comp-$(1): gen-prepare-$(1) gen-code-$(1)
 	@cmake -S $(GENERATED)/$(1) -B $(GENERATED)/$(1)/build -DCMAKE_BUILD_TYPE=Debug

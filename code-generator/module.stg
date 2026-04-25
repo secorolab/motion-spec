@@ -361,7 +361,7 @@ motion-state-member(motion) ::= <<
 >>
 
 motion-include(motion) ::= <<
-#include "motion_<motion.id>.hpp"
+#include "<motion.id>.hpp"
 >>
 
 mobile-base-cycle-include() ::= <<
@@ -1200,7 +1200,15 @@ int main() {
 <endif>
 
     while (true) {
-        // TODO: read sensors, evaluate constraints, run controllers, apply outputs
+        // 1. read sensors, compute FK, update shared state
+        <motions:{motion | <app-prepare-call(motion)>}; separator="\n">
+<shared-schedule-block(shared_schedule, closures, views)>
+        // 2. evaluate constraints and run controllers for each active motion
+        <motions:{motion | <app-run-call(motion)>}; separator="\n">
+<app-base-control-call(has_mobile_base)>
+        // 3. write control outputs to robot
+        <motions:{motion | <app-stage-call(motion)>}; separator="\n">
+
         usleep(1000);
     }
 <if(has_arm)>

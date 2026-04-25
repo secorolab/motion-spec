@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 from importlib.metadata import PackageNotFoundError, distribution
@@ -35,7 +34,7 @@ def _distribution_path(relative_path: Path) -> Path | None:
 
     for package_path in dist.files or []:
         if _path_endswith(package_path, relative_path):
-            candidate = Path(dist.locate_file(package_path))
+            candidate = Path(str(dist.locate_file(package_path)))
             if candidate.exists():
                 return candidate
     return None
@@ -144,24 +143,13 @@ def render_template(
     output_path.write_text(result.stdout)
 
 
-def copy_demo_support_files(output_dir: Path):
-    for relative_path in [
-        Path("code-generator/CMakeLists.txt"),
-        Path("thirdparty/orocos-kdl/chainhdsolver_vereshchagin_fext.hpp"),
-        Path("thirdparty/orocos-kdl/chainhdsolver_vereshchagin_fext.cpp"),
-        Path("thirdparty/kinova/GEN3_URDF_V12.urdf"),
-    ]:
-        source = resource_path(relative_path)
-        target = output_dir / relative_path.name
-        shutil.copy2(source, target)
-
 
 def load_ir(input_path: Path):
     with input_path.open() as handle:
         return json.load(handle)
 
 
-def generate_code(ir_path: Path, output_dir: Path, mode: str, stst_bin: str):
+def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     ir = load_ir(ir_path)
 
     payload_dir = output_dir / ".stst"
@@ -189,23 +177,12 @@ def generate_code(ir_path: Path, output_dir: Path, mode: str, stst_bin: str):
         write_json(payload_path, payload)
         render_template(stst_bin, "motion_header", payload_path, output_dir / f"motion_{motion['id']}.hpp")
 
-    if mode == "app":
-        render_template(stst_bin, "app_main", output_ir_path, output_dir / "main.cpp")
-        copy_demo_support_files(output_dir)
-
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate C++ code from motion-spec IR using StringTemplate.",
+        description="Generate C++ header files from motion-spec IR.",
     )
     parser.add_argument("input", help="Previously generated IR JSON path")
-    parser.add_argument(
-        "-m",
-        "--mode",
-        choices=["headers", "app"],
-        default="headers",
-        help="Generate header-only motion modules or a sequential demo application",
-    )
     parser.add_argument("-o", "--output-dir", required=True, help="Directory for generated C++ files")
     parser.add_argument(
         "--stst-bin",
@@ -219,7 +196,6 @@ def main():
         generate_code(
             ir_path=Path(args.input).resolve(),
             output_dir=Path(args.output_dir).resolve(),
-            mode=args.mode,
             stst_bin=args.stst_bin,
         )
     except RuntimeError as exc:

@@ -10,14 +10,8 @@ gen-prepare: | $(GEN)
 	@cp thirdparty/orocos-kdl/chainhdsolver_vereshchagin_fext.cpp $(GEN)/chainhdsolver_vereshchagin_fext.cpp
 	@cp thirdparty/kinova/GEN3_URDF_V12.urdf $(GEN)/GEN3_URDF_V12.urdf
 
-gen-ir-to-code:
-	@stst -s "<>" -t code-generator tmpl.application $(GEN)/ir.json > $(GEN)/main.cpp
-
-gen-code-headers:
-	@motion-spec-codegen $(GEN)/ir.json --mode headers --output-dir $(GEN)
-
-gen-code-app:
-	@motion-spec-codegen $(GEN)/ir.json --mode app --output-dir $(GEN)
+gen-code:
+	@motion-spec-codegen $(GEN)/ir.json -o $(GEN)
 
 gen-comp:
 	@cmake -S $(GEN) -B $(GEN)/build -DCMAKE_BUILD_TYPE=Debug
@@ -35,10 +29,10 @@ gen-ir-sc1:
 gen-ir-sc2:
 	@motion-spec-ir-gen models/sc2.json -o $(GEN)/ir.json
 
-sc0a: gen-prepare gen-ir-sc0a gen-ir-to-code gen-comp
-sc0b: gen-prepare gen-ir-sc0b gen-ir-to-code gen-comp
-sc1: gen-prepare gen-ir-sc1 gen-ir-to-code gen-comp
-sc2: gen-prepare gen-ir-sc2 gen-ir-to-code gen-comp
+sc0a: gen-prepare gen-ir-sc0a gen-code gen-comp
+sc0b: gen-prepare gen-ir-sc0b gen-code gen-comp
+sc1: gen-prepare gen-ir-sc1 gen-code gen-comp
+sc2: gen-prepare gen-ir-sc2 gen-code gen-comp
 
 
 tutorial-html:

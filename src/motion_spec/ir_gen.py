@@ -1300,39 +1300,36 @@ class Parser:
         return s
 
 
-def _arm_solvers_for_handler(g, p, handler_node, slv_arm):
-    """Find arm solvers whose motion drivers are driven by this handler's controllers.
+def _arm_solvers_for_handler(handler, slv_arm):
+    """Find arm solvers whose motion drivers consume this handler's controller outputs.
 
-    Traverses: handler -> cstr-hdl:controllers -> cstr-hdl:control-signal
-    Then matches against: solver -> motion-drivers -> acceleration-energy | cartesian-force.force
+    A handler drives an arm solver through controller ``control_signal`` quantities.
+    Those quantities are referenced by the solver graph either as
+    ``acceleration-energy`` entries in acceleration constraints or as ``force``
+    entries in cartesian-force specifications.
     """
-    ctrl_signal_ids = {
-        p.id(g.value(ctrl_node, CSTR_HDL["control-signal"]))
-        for ctrl_node in g[handler_node : CSTR_HDL["controllers"]]
-    }
-    ctrl_signal_ids.discard(None)
-    if not ctrl_signal_ids:
+    handler_output_ids = {c.control_signal.id for c in handler.controllers}
+    if not handler_output_ids:
         return []
 
     result = []
     for solver in slv_arm:
         for driver in solver.motion_drivers:
-            driver_input_ids = {
+            driver_output_ids = {
                 ac.acceleration_energy.id
                 for ac_spec in driver.acceleration_constraint
                 for ac in ac_spec.constraints
             }
-            driver_input_ids.update(f.force.id for f in driver.cartesian_force)
-            if ctrl_signal_ids & driver_input_ids:
+            driver_output_ids.update(force_spec.force.id for force_spec in driver.cartesian_force)
+            if handler_output_ids & driver_output_ids:
                 result.append(MotionArmSolver(id=solver.id, output=solver.output, motion_driver=driver))
                 break
 
     return result
 
 
-def build_motion_units(g, handlers, node_by_id, slv_arm):
+def build_motion_units(g, p, handlers, node_by_id, slv_arm):
     motions = []
-    p = Parser(g)
 
     for handler in handlers:
         handler_node = node_by_id[handler.id]
@@ -1478,7 +1475,7 @@ def build_motion_units(g, handlers, node_by_id, slv_arm):
                 when_events=[m.event for m in when_monitors if m.event is not None],
                 while_events=[m.event for m in while_monitors if m.event is not None],
                 until_events=[m.event for m in until_monitors if m.event is not None],
-                arm_solvers=_arm_solvers_for_handler(g, p, handler_node, slv_arm),
+                arm_solvers=_arm_solvers_for_handler(handler, slv_arm),
             )
         )
 
@@ -1608,7 +1605,7 @@ def generate_ir(manifest_path):
         "slv_base_vel": slv_base_vel,
         "slv_base_frc": slv_base_frc,
         "cstr_hdl": hdl,
-        "motions": build_motion_units(g, hdl, node_by_id, slv_arm),
+        "motions": build_motion_units(g, p, hdl, node_by_id, slv_arm),
         "data": data_structures,
         "closures": closures,
         "shared_schedule": sched1 + sched3 + sched4,

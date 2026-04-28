@@ -148,8 +148,25 @@ def load_ir(input_path: Path):
         return json.load(handle)
 
 
+SUPPORTED_ROBOT_MODELS = {"KinovaGen3"}
+
+
+def _validate_ir(ir: dict) -> None:
+    unsupported = {
+        s["robot_model"]
+        for s in ir.get("arm_solvers", [])
+        if s.get("robot_model") and s["robot_model"] not in SUPPORTED_ROBOT_MODELS
+    }
+    if unsupported:
+        raise RuntimeError(
+            f"Unsupported robot model(s): {', '.join(sorted(unsupported))}. "
+            f"Supported: {', '.join(sorted(SUPPORTED_ROBOT_MODELS))}"
+        )
+
+
 def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     ir = load_ir(ir_path)
+    _validate_ir(ir)
 
     headers_dir = output_dir / "headers"
     headers_dir.mkdir(parents=True, exist_ok=True)

@@ -37,6 +37,88 @@ ip-lookup ::= [
     default: "127.0.0.1"
 ]
 
+robot-driver-include(solver) ::= <<
+<({robot-driver-include-<solver.robot_model>})(solver)>
+>>
+robot-driver-include-KinovaGen3(solver) ::= <<
+#include \<robif2b/functions/kinova_gen3.h\>
+>>
+
+robot-num-joints-def(solver) ::= <<
+<({robot-num-joints-def-<solver.robot_model>})(solver)>
+>>
+robot-num-joints-def-KinovaGen3(solver) ::= <<
+inline constexpr int KINOVA_NUM_JOINTS = 7;
+>>
+
+robot-state-struct(solver) ::= <<
+<({robot-state-struct-<solver.robot_model>})(solver)>
+>>
+robot-state-struct-KinovaGen3(solver) ::= <<
+struct kinova_state {
+    bool success = false;
+    enum robif2b_ctrl_mode ctrl_mode = ROBIF2B_CTRL_MODE_FORCE;
+    double pos_msr[KINOVA_NUM_JOINTS] = {0.0};
+    double vel_msr[KINOVA_NUM_JOINTS] = {0.0};
+    double eff_msr[KINOVA_NUM_JOINTS] = {0.0};
+    double cur_msr[KINOVA_NUM_JOINTS] = {0.0};
+    double pos_cmd[KINOVA_NUM_JOINTS] = {0.0};
+    double vel_cmd[KINOVA_NUM_JOINTS] = {0.0};
+    double eff_cmd[KINOVA_NUM_JOINTS] = {0.0};
+    double cur_cmd[KINOVA_NUM_JOINTS] = {0.0};
+};
+>>
+
+robot-manipulator-struct(solver) ::= <<
+<({robot-manipulator-struct-<solver.robot_model>})(solver)>
+>>
+robot-manipulator-struct-KinovaGen3(solver) ::= <<
+struct manipulator_robot {
+    kinova_state *state = nullptr;
+    robif2b_kinova_gen3_nbx *robot = nullptr;
+    KDL::Chain *chain = nullptr;
+};
+>>
+
+robot-state-init(solver) ::= <<
+<({robot-state-init-<solver.robot_model>})(solver)>
+>>
+robot-state-init-KinovaGen3(solver) ::= <<
+<app-kinova-state(solver)>
+>>
+
+robot-init(solver) ::= <<
+<({robot-init-<solver.robot_model>})(solver)>
+>>
+robot-init-KinovaGen3(solver) ::= <<
+<app-kinova-robot(solver)>
+>>
+
+robot-chain(solver) ::= <<
+<app-kinova-chain(solver)>
+>>
+
+robot-assign(solver) ::= <<
+<({robot-assign-<solver.robot_model>})(solver)>
+>>
+robot-assign-KinovaGen3(solver) ::= <<
+<app-kinova-robot-assign(solver)>
+>>
+
+robot-configure(solver) ::= <<
+<({robot-configure-<solver.robot_model>})(solver)>
+>>
+robot-configure-KinovaGen3(solver) ::= <<
+<app-configure-kinova(solver)>
+>>
+
+robot-shutdown(solver) ::= <<
+<({robot-shutdown-<solver.robot_model>})(solver)>
+>>
+robot-shutdown-KinovaGen3(solver) ::= <<
+<app-shutdown-kinova(solver)>
+>>
+
 access-expr(id, views) ::= <<
 <if(views.(id))>shared.<views.(id).superobject.id>.<subspace-to-member.(views.(id).subspace)>[<axis-to-index.(views.(id).axis)>]<else>shared.<id><endif>
 >>
@@ -707,7 +789,7 @@ shared_state_header(shared_data, wrench_outputs, has_arm, has_mobile_base, arm_s
 #include \<kdl/chainfksolverpos_recursive.hpp\>
 #include \<kdl/chainfksolvervel_recursive.hpp\>
 #include \<kdl/chainhdsolver_vereshchagin.hpp\>
-#include \<robif2b/functions/kinova_gen3.h\>
+<if(has_arm)><robot-driver-include(first(arm_solvers))><endif>
 <if(has_mobile_base)>
 #include \<robif2b/functions/ethercat.h\>
 #include \<robif2b/functions/kelo_drive.h\>
@@ -715,7 +797,7 @@ shared_state_header(shared_data, wrench_outputs, has_arm, has_mobile_base, arm_s
 
 #include "chainhdsolver_vereshchagin_fext.hpp"
 
-inline constexpr int KINOVA_NUM_JOINTS = 7;
+<if(has_arm)><robot-num-joints-def(first(arm_solvers))><endif>
 
 <if(has_mobile_base)>
 struct ecat_state {
@@ -816,24 +898,11 @@ struct mobile_base_runtime_state {
 };
 <endif>
 
-struct kinova_state {
-    bool success = false;
-    enum robif2b_ctrl_mode ctrl_mode = ROBIF2B_CTRL_MODE_FORCE;
-    double pos_msr[KINOVA_NUM_JOINTS] = {0.0};
-    double vel_msr[KINOVA_NUM_JOINTS] = {0.0};
-    double eff_msr[KINOVA_NUM_JOINTS] = {0.0};
-    double cur_msr[KINOVA_NUM_JOINTS] = {0.0};
-    double pos_cmd[KINOVA_NUM_JOINTS] = {0.0};
-    double vel_cmd[KINOVA_NUM_JOINTS] = {0.0};
-    double eff_cmd[KINOVA_NUM_JOINTS] = {0.0};
-    double cur_cmd[KINOVA_NUM_JOINTS] = {0.0};
-};
+<if(has_arm)>
+<robot-state-struct(first(arm_solvers))>
 
-struct manipulator_robot {
-    kinova_state *state = nullptr;
-    robif2b_kinova_gen3_nbx *robot = nullptr;
-    KDL::Chain *chain = nullptr;
-};
+<robot-manipulator-struct(first(arm_solvers))>
+<endif>
 
 struct robot_io {
 <if(has_mobile_base)>
@@ -1091,13 +1160,13 @@ int main() {
     kdl_parser::treeFromUrdfModel(*kinova_model, kinova_tree);
 <arm_solvers:{solver |
 
-<app-kinova-state(solver)>
+<robot-state-init(solver)>
 
-<app-kinova-robot(solver)>
+<robot-init(solver)>
 
-<app-kinova-chain(solver)>
+<robot-chain(solver)>
 
-<app-kinova-robot-assign(solver)>
+<robot-assign(solver)>
 }; separator="\n">
 <endif>
 <wrench_outputs:{wrench | <wrench-measurement(wrench)>}; separator="\n">
@@ -1113,7 +1182,7 @@ int main() {
 <endif>
 <if(has_arm)>
 <arm_solvers:{solver |
-<app-configure-kinova(solver)>
+<robot-configure(solver)>
 }; separator="\n">
 <endif>
 
@@ -1135,7 +1204,7 @@ int main() {
 <if(has_arm)>
 
 <arm_solvers:{solver |
-<app-shutdown-kinova(solver)>
+<robot-shutdown(solver)>
 }; separator="\n">
 <endif>
 <if(has_mobile_base)>
@@ -1177,13 +1246,13 @@ int main() {
     kdl_parser::treeFromUrdfModel(*kinova_model, kinova_tree);
 <arm_solvers:{solver |
 
-<app-kinova-state(solver)>
+<robot-state-init(solver)>
 
-<app-kinova-robot(solver)>
+<robot-init(solver)>
 
-<app-kinova-chain(solver)>
+<robot-chain(solver)>
 
-<app-kinova-robot-assign(solver)>
+<robot-assign(solver)>
 }; separator="\n">
 <endif>
 <wrench_outputs:{wrench | <wrench-measurement(wrench)>}; separator="\n">
@@ -1199,7 +1268,7 @@ int main() {
 <endif>
 <if(has_arm)>
 <arm_solvers:{solver |
-<app-configure-kinova(solver)>
+<robot-configure(solver)>
 }; separator="\n">
 <endif>
 
@@ -1220,7 +1289,7 @@ int main() {
 <if(has_arm)>
 
 <arm_solvers:{solver |
-<app-shutdown-kinova(solver)>
+<robot-shutdown(solver)>
 }; separator="\n">
 <endif>
 <if(has_mobile_base)>

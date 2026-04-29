@@ -133,7 +133,7 @@ shared-member(var) ::= <<
 indented-shared-member(var) ::= "    <shared-member(var)>"
 
 shared-member-Direction(var) ::= <<
-KDL::Vector <var.id>;
+KDL::Vector <var.id><if(var.direction)> = KDL::Vector(<var.direction; separator=", ">)<endif>;
 >>
 
 shared-member-Pose(var) ::= <<
@@ -158,6 +158,10 @@ KDL::Wrench <var.id>;
 
 shared-member-Quantity(var) ::= <<
 double <var.id><if(var.value)> = <var.value><endif>;
+>>
+
+shared-member-PoseQuantity(var) ::= <<
+KDL::Frame <var.id>;
 >>
 
 controller-member(controller) ::= <<
@@ -194,8 +198,12 @@ emit-call-ErrorEvaluator(closure, views) ::= <<
 <({emit-call-ErrorEvaluator-<closure.constraint>})(closure, views)>
 >>
 
+emit-call-PoseDiffEvaluator(closure, views) ::= <<
+shared.<closure.out> = KDL::diff(shared.<closure.in1>, shared.<closure.in2>);
+>>
+
 emit-call-Controller(closure, views) ::= <<
-shared.<closure.control_signal> = state.<closure.id>.control(shared.<closure.error_signal>);
+shared.<closure.control_signal> = state.<closure.id>.control(<access-expr(closure.error_signal, views)>);
 >>
 
 emit-call-PlanarAngleFromDirections(closure, views) ::= <<
@@ -212,6 +220,10 @@ shared.<closure.to> = shared.<closure.pose>.M * <access-expr(closure.from, views
 
 emit-call-ComposePose(closure, views) ::= <<
 shared.<closure.composite> = <access-expr(closure.in1, views)> * <access-expr(closure.in2, views)>;
+>>
+
+emit-call-InvertPose(closure, views) ::= <<
+shared.<closure.out> = shared.<closure.pose>.Inverse();
 >>
 
 emit-call-PoseToLinearDistance(closure, views) ::= <<
@@ -280,6 +292,10 @@ monitor-block(monitors) ::= <<
 <monitors:{monitor | <update-monitor(monitor)>}; separator="\n\n">
 >>
 
+motion-done-condition(motion) ::= <<
+<motion.until_evaluators:{e | motion_spec::runtime::constraint_satisfied(shared.<e.error.id>)}; separator=" && ">
+>>
+
 motion-prelude(wrench_outputs, arm_solvers) ::= <<
 <wrench_outputs:{wrench | <sync-wrench(wrench)>}; separator="\n">
 <if(arm_solvers)>
@@ -344,6 +360,9 @@ if (!state.<solver.id>.initialized) {
 <endif>
         state.<solver.id>.f_cstr = KDL::Jacobian(state.<solver.id>.num_constraints);
         state.<solver.id>.e_acc = KDL::JntArray(state.<solver.id>.num_constraints);
+<if(solver.root_acc)>
+        state.<solver.id>.root_acc.vel = KDL::Vector(<solver.root_acc; separator=", ">);
+<endif>
 <if(solver.has_cartesian_force)>
         state.<solver.id>.achd_fext = std::make_unique\<KDL::ChainHdSolver_Vereshchagin_Fext\>(*robot.<solver.id>.chain, state.<solver.id>.root_acc, state.<solver.id>.num_constraints);
 <endif>
@@ -919,6 +938,8 @@ struct mobile_base_runtime_state {
 <robot-state-struct(first(arm_solvers))>
 
 <robot-manipulator-struct(first(arm_solvers))>
+
+<arm-solver-members(arm_solvers)>
 <endif>
 
 struct robot_io {
@@ -1000,8 +1021,6 @@ motion_header(motion, closures, views, wrench_outputs, base_velocity_solvers, ba
 
 #include "runtime.hpp"
 #include "shared_state.hpp"
-
-<arm-solver-members(motion.arm_solvers)>
 
 struct <motion.id>_state {
 <arm-state-members(motion.arm_solvers)>
@@ -1316,20 +1335,33 @@ int main() {
 }; separator="\n">
 <endif>
 
-    // Each motion runs its own control cycle.
-    // Coordinate them using a state machine, FSM, or threads as needed.
-<motions:{motion |
-    // --- <motion.id> ---
+    int current_motion = 0;
     while (true) {
-        update_<motion.id>(<motion.id>_state_instance, shared, robot);
-        monitor_<motion.id>(<motion.id>_state_instance, shared);
-        if (can_start_<motion.id>(<motion.id>_state_instance, shared)) {
-            control_<motion.id>(<motion.id>_state_instance, shared, robot);
+        switch (current_motion) {
+<motions:{motion |
+        case <i0>: {
+            update_<motion.id>(<motion.id>_state_instance, shared, robot);
+            monitor_<motion.id>(<motion.id>_state_instance, shared);
+            if (can_start_<motion.id>(<motion.id>_state_instance, shared)) {
+                control_<motion.id>(<motion.id>_state_instance, shared, robot);
+            \}
+            apply_<motion.id>(<motion.id>_state_instance, shared, robot);
+<if(motion.has_until_condition)>
+            if (<motion-done-condition(motion)>) {
+                current_motion = <i>;
+            \}
+<else>
+            current_motion = <i>;
+<endif>
+            break;
         \}
-        apply_<motion.id>(<motion.id>_state_instance, shared, robot);
-        usleep(1000);
-    \}
 }; separator="\n">
+        default:
+            current_motion = <length(motions)> - 1;
+            break;
+        }
+        usleep(1000);
+    }
 <if(has_arm)>
 
 <arm_solvers:{solver |

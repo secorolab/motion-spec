@@ -320,6 +320,11 @@ ops_generic = [
         output=[GEOM_OP["composite"]],
     ),
     Operator(
+        type_=GEOM_OP["InvertPose"],
+        input=[GEOM_OP["pose"]],
+        output=[GEOM_OP["out"]],
+    ),
+    Operator(
         type_=GEOM_OP["RotateVelocityTwistToProximalWithPose"],
         input=[GEOM_OP["pose"], GEOM_OP["from"]],
         output=[GEOM_OP["to"]],
@@ -371,6 +376,11 @@ ops_generic = [
         type_=MAP["View"],
         input=[MAP["superobject"], MAP["subobject"]],
         output=[MAP["superobject"], MAP["subobject"]],
+    ),
+    Operator(
+        type_=GEOM_OP["PoseDiffEvaluator"],
+        input=[GEOM_OP["in1"], GEOM_OP["in2"]],
+        output=[GEOM_OP["out"]],
     ),
 ]
 
@@ -460,6 +470,16 @@ class Quantity:
 
 
 @dataclass
+class PoseQuantity:
+    id: str
+    quantity_kind: QuantityKind
+    unit: Unit
+    has_view: bool
+    value: None = None
+    type: str = field(default="PoseQuantity")
+
+
+@dataclass
 class SimplicialComplex:
     id: str
     type: str = field(default="SimplicialComplex")
@@ -471,6 +491,7 @@ class Direction:
     quantity_kind: list[QuantityKind]
     as_seen_by: Frame
     unit: list[Unit]
+    direction: list[float] | None
     type: str = field(default="Direction")
 
 
@@ -620,6 +641,7 @@ class ConstraintHandler:
     evaluators: list[ConstraintEvaluator]
     controllers: list[Controller]
     monitors: list[MonitorEntry]
+    order: int = 0
     type: str = field(default="ConstraintHandler")
 
 
@@ -669,6 +691,7 @@ class GuardedMotionBlock:
     when_events: list[str]
     while_events: list[str]
     until_events: list[str]
+    has_until_condition: bool = False
 
     # Solver Integration
     arm_solvers: list = field(default_factory=list)
@@ -695,7 +718,7 @@ class AccelerationConstraint:
 class AccelerationConstraintSpecification:
     id: str
     constraints: list[AccelerationConstraint]
-    attached_to: SimplicialComplex
+    attached_to: SimplicialComplex | None
     type: str = field(default="AccelerationConstraintSpecification")
 
 
@@ -721,6 +744,7 @@ class MotionArmSolver:
     output: list
     motion_driver: MotionDrivers
     has_cartesian_force: bool = False
+    root_acc: list[float] | None = None
     type: str = field(default="MotionArmSolver")
 
 
@@ -734,6 +758,7 @@ class SolverWithInputAndOutput:
     chain_end: str = ""
     robot_type: str = ""
     robot_model: str = ""
+    root_acc: list[float] | None = None
     type: str = field(default="SolverWithInputAndOutput")
 
 
@@ -825,8 +850,13 @@ class Parser:
         chain_end = str(self.g.value(id_, APP["chain-end"]) or "")
         robot_type = str(self.g.value(id_, APP["robot-type"]) or "")
         robot_model = str(self.g.value(id_, APP["robot-model"]) or "")
+        gravity_node = self.g.value(id_, SLV["gravity-value"])
+        gravity = self.parse_xyz(gravity_node) if gravity_node else None
+        root_acc = [-v for v in gravity] if gravity else None
 
-        return SolverWithInputAndOutput(self.id(id_), drv, out, urdf, chain_root, chain_end, robot_type, robot_model)
+        return SolverWithInputAndOutput(
+            self.id(id_), drv, out, urdf, chain_root, chain_end, robot_type, robot_model, root_acc
+        )
 
     @memoize
     def motion_drivers(self, id_):
@@ -859,7 +889,8 @@ class Parser:
         constraints = []
         for c in self.g[id_ : SLV["constraints"]]:
             constraints.append(self.acceleration_constraint(c))
-        attached_to = self.simplicial_complex(self.g.value(id_, SLV["attached-to"]))
+        attached_to_node = self.g.value(id_, SLV["attached-to"])
+        attached_to = self.simplicial_complex(attached_to_node) if attached_to_node else None
 
         return AccelerationConstraintSpecification(self.id(id_), constraints, attached_to)
 
@@ -913,6 +944,8 @@ class Parser:
 
         evaluators = []
         for e in self.g[id_ : CSTR_HDL["evaluators"]]:
+            if GEOM_OP["PoseDiffEvaluator"] in self.g[e : RDF["type"]]:
+                continue  # handled via schedule traversal
             evaluators.append(self.constraint_evaluator(e))
 
         controllers = []
@@ -923,7 +956,10 @@ class Parser:
         for m in self.g[id_ : CSTR_HDL["monitors"]]:
             monitors.append(self.monitor_entry(m))
 
-        return ConstraintHandler(self.id(id_), motion, evaluators, controllers, monitors)
+        order_value = self.g.value(id_, APP["order"])
+        order = int(order_value.value) if order_value is not None else 0
+
+        return ConstraintHandler(self.id(id_), motion, evaluators, controllers, monitors, order)
 
     @memoize
     def monitor_entry(self, id_):
@@ -1041,10 +1077,13 @@ class Parser:
         quantity_kind = []
         for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]]:
             quantity_kind.append(self.quantity_kind(k))
+        for k in self.g[id_ : QUDT_SCHEMA["quantity-kind"]]:
+            quantity_kind.append(self.quantity_kind(k))
         as_seen_by = self.frame(self.g.value(id_, GEOM_COORD["as-seen-by"]))
         unit = self.unit(self.g.value(id_, QUDT_SCHEMA["unit"]))
+        direction = self.parse_xyz(id_)
 
-        return Direction(self.id(id_), quantity_kind, as_seen_by, [Unit(unit)])
+        return Direction(self.id(id_), quantity_kind, as_seen_by, [Unit(unit)], direction)
 
     def parse_vector3(self, node):
         from rdflib import collection
@@ -1078,7 +1117,7 @@ class Parser:
         if x is None or y is None or z is None:
             return None
 
-        return [x.value, y.value, z.value]
+        return [float(v.value) for v in (x, y, z)]
 
     @memoize
     def position(self, id_):
@@ -1174,14 +1213,21 @@ class Parser:
     def quantity(self, id_):
         assert QUDT_SCHEMA["Quantity"] in self.g[id_ : RDF["type"]]
 
-        quantity_kind = self.quantity_kind(self.g.value(id_, QUDT_SCHEMA["hasQuantityKind"]))
+        quantity_kind_node = (
+            self.g.value(id_, QUDT_SCHEMA["hasQuantityKind"])
+            or self.g.value(id_, QUDT_SCHEMA["quantity-kind"])
+        )
+        quantity_kind = self.quantity_kind(quantity_kind_node)
 
         unit = self.unit(self.g.value(id_, QUDT_SCHEMA["unit"]))
+        has_view = (id_, ~MAP["subobject"], None) in self.g
+
+        if GEOM_REL["Pose"] in self.g[id_ : RDF["type"]]:
+            return PoseQuantity(self.id(id_), QuantityKind(quantity_kind), Unit(unit), has_view)
+
         value = None
         if (id_, QUDT_SCHEMA["value"], None) in self.g:
             value = float(self.g.value(id_, QUDT_SCHEMA["value"]))
-        has_view = (id_, ~MAP["subobject"], None) in self.g
-
         return Quantity(self.id(id_), QuantityKind(quantity_kind), Unit(unit), value, has_view)
 
     @memoize
@@ -1356,6 +1402,7 @@ def _arm_solvers_for_handler(handler, slv_arm):
             output=solver.output,
             motion_driver=selected,
             has_cartesian_force=bool(selected.cartesian_force),
+            root_acc=solver.root_acc,
         ))
 
     return result
@@ -1393,13 +1440,30 @@ def _relative_poses_for_motion(evaluators, view_map, arm_solvers):
     return result
 
 
-def _snapshots_for_motion(evaluators, snapshot_source_map, view_map, closure_output_map):
+def _constraint_reference_value_id(constraint):
+    param = getattr(constraint, "parameter", None)
+    ref = getattr(param, "reference_value", None) if param else None
+    ref_id = getattr(ref, "id", None)
+    return ref_id if ref_id else None
+
+
+def _snapshot_reference_value_ids(evaluators, constraints):
     ref_val_ids = set()
     for ev in evaluators:
-        param = getattr(ev.constraint, "parameter", None) if ev.constraint else None
-        ref = getattr(param, "reference_value", None) if param else None
-        if ref is not None and ref.id:
-            ref_val_ids.add(ref.id)
+        if ev.constraint is None:
+            continue
+        ref_id = _constraint_reference_value_id(ev.constraint)
+        if ref_id:
+            ref_val_ids.add(ref_id)
+    for constraint in constraints:
+        ref_id = _constraint_reference_value_id(constraint)
+        if ref_id:
+            ref_val_ids.add(ref_id)
+    return ref_val_ids
+
+
+def _snapshots_for_motion(evaluators, constraints, snapshot_source_map, view_map, closure_output_map):
+    ref_val_ids = _snapshot_reference_value_ids(evaluators, constraints)
     result = []
     seen = set()
     for target_id in sorted(ref_val_ids):
@@ -1422,8 +1486,15 @@ _CLOSURE_OUTPUT_FIELDS = {
     "PoseToDirection": "direction",
     "RotateDirectionDistalToProximalWithPose": "to",
     "ComposePose": "composite",
+    "InvertPose": "out",
+    "PoseDiffEvaluator": "out",
     "RotateVelocityTwistToProximalWithPose": "to",
     "InvertAngle": "out",
+    "AddWrench": "out",
+    "RotateWrenchToDistalWithPose": "to",
+    "RotateWrenchToProximalWithPose": "to",
+    "TransformWrenchToProximal": "to",
+    "WrenchFromPositionDirectionAndMagnitude": "wrench",
 }
 
 
@@ -1437,6 +1508,7 @@ def build_motion_units(g, p, handlers, node_by_id, slv_arm,
     for handler in handlers:
         handler_node = node_by_id[handler.id]
         motion_node = g.value(handler_node, CSTR_HDL["motion"])
+        motion = handler.motion
 
         # Classify constraints by motion phase via RDF traversal
         when_constraint_nodes = set(g[motion_node : MOT["when"]])
@@ -1454,10 +1526,23 @@ def build_motion_units(g, p, handlers, node_by_id, slv_arm,
             elif cstr_node in until_constraint_nodes:
                 until_eval_nodes.append(eval_node)
 
-        # Classify controllers: driven by while-evaluator error outputs
-        while_error_nodes = {
-            g.value(n, CSTR_HDL["error"]) for n in while_eval_nodes
-        }
+        # Classify controllers: driven by while-evaluator error outputs.
+        # PoseDiffEvaluator exposes its components as normal MAP views over the
+        # operator output twist, so collect those view subobjects here.
+        while_error_nodes = set()
+        while_pose_eval_nodes = []
+        for n in while_eval_nodes:
+            if GEOM_OP["PoseDiffEvaluator"] in g[n : RDF["type"]]:
+                while_pose_eval_nodes.append(n)
+                pose_diff_out = g.value(n, GEOM_OP["out"])
+                for view_node in g.subjects(MAP["superobject"], pose_diff_out):
+                    error_node = g.value(view_node, MAP["subobject"])
+                    if error_node is not None:
+                        while_error_nodes.add(error_node)
+                continue
+            error_node = g.value(n, CSTR_HDL["error"])
+            if error_node is not None:
+                while_error_nodes.add(error_node)
         while_error_nodes.discard(None)
         ctrl_nodes = [
             n for n in g[handler_node : CSTR_HDL["controllers"]]
@@ -1529,8 +1614,21 @@ def build_motion_units(g, p, handlers, node_by_id, slv_arm,
         p_when = Parser(g)
         when_schedule = p_when.schedule(when_eval_nodes, ops_generic + ops_cstr_hdl)
 
+        handler_arm_solvers = _arm_solvers_for_handler(handler, slv_arm)
+        cartesian_force_nodes = []
+        for solver in handler_arm_solvers:
+            driver_node = node_by_id.get(solver.motion_driver.id)
+            if driver_node is None:
+                continue
+            cartesian_force_nodes.extend(g[driver_node : SLV["cartesian-force"]])
+
         p_active = Parser(g)
-        while_schedule = p_active.schedule(while_eval_nodes + ctrl_nodes, ops_generic + ops_cstr_hdl)
+        while_schedule = p_active.schedule(
+            [n for n in while_eval_nodes if n not in while_pose_eval_nodes]
+            + ctrl_nodes
+            + cartesian_force_nodes,
+            ops_generic + ops_slv + ops_cstr_hdl,
+        )
         until_schedule = p_active.schedule(until_eval_nodes, ops_generic + ops_cstr_hdl)
 
         # Until evaluators have no controllers whose error-signal would drive their
@@ -1553,7 +1651,11 @@ def build_motion_units(g, p, handlers, node_by_id, slv_arm,
 
         # Build Python objects from classified RDF nodes
         when_evaluators = [p.constraint_evaluator(n) for n in when_eval_nodes]
-        while_evaluators = [p.constraint_evaluator(n) for n in while_eval_nodes]
+        while_evaluators = [
+            p.constraint_evaluator(n)
+            for n in while_eval_nodes
+            if GEOM_OP["PoseDiffEvaluator"] not in g[n : RDF["type"]]
+        ]
         until_evaluators = [p.constraint_evaluator(n) for n in until_eval_nodes]
         controllers = [p.controller(n) for n in ctrl_nodes]
         when_monitors = [p.monitor_entry(n) for n in when_mon_nodes]
@@ -1578,7 +1680,8 @@ def build_motion_units(g, p, handlers, node_by_id, slv_arm,
                 when_events=[m.event for m in when_monitors if m.event is not None],
                 while_events=[m.event for m in while_monitors if m.event is not None],
                 until_events=[m.event for m in until_monitors if m.event is not None],
-                arm_solvers=_arm_solvers_for_handler(handler, slv_arm),
+                has_until_condition=bool(until_evaluators),
+                arm_solvers=handler_arm_solvers,
                 relative_poses=_relative_poses_for_motion(
                     while_evaluators + when_evaluators + until_evaluators,
                     view_map,
@@ -1586,12 +1689,13 @@ def build_motion_units(g, p, handlers, node_by_id, slv_arm,
                 ),
                 snapshots=_snapshots_for_motion(
                     while_evaluators + when_evaluators + until_evaluators,
+                    motion.while_ + motion.when + motion.until,
                     snapshot_source_map, view_map, closure_output_map,
                 ),
             )
         )
 
-    return motions
+    return sorted(motions, key=lambda motion: next(h.order for h in handlers if h.id == motion.handler))
 
 
 def _filter_shared_data(data_structures, schedule, closures, view_map=None, fk_output_ids=None):
@@ -1752,6 +1856,11 @@ def generate_ir(manifest_path):
             if isinstance(out_val, str):
                 closure_output_map[out_val] = cid
 
+    wrench_outputs = [
+        item for item in data_structures
+        if item.type == "Wrench" and item.id not in closure_output_map
+    ]
+
     # Compose the overall schedule via concatenation
     return {
         "slv_arm": slv_arm,
@@ -1774,7 +1883,7 @@ def generate_ir(manifest_path):
             view_map=view_map,
             fk_output_ids={out.id for s in slv_arm for out in s.output},
         ),
-        "wrench_outputs": [item for item in data_structures if item.type == "Wrench"],
+        "wrench_outputs": wrench_outputs,
         "has_arm": bool(slv_arm),
         "has_mobile_base": bool(slv_base_vel or slv_base_frc),
         "arm_solvers": slv_arm,

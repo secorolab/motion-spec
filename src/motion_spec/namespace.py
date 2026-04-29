@@ -20,6 +20,10 @@ class APP(DefinedNamespace):
         "chain-end",
         "robot-type",
         "robot-model",
+        "order",
+        "Snapshot",
+        "snapshot-of",
+        "snapshot-time",
     ]
 
     _NS = Namespace(f"{URI_CR2B_MM}/application/")
@@ -146,6 +150,8 @@ class GEOM_OP(DefinedNamespace):
     PoseToAngleAroundAxis: URIRef
     PoseToLinearDistance: URIRef
     PoseToDirection: URIRef
+    PoseDiffEvaluator: URIRef
+    InvertPose: URIRef
     PlanarAngleFromDirections: URIRef
     InvertAngle: URIRef
 
@@ -168,7 +174,7 @@ class GEOM_OP(DefinedNamespace):
         "absolute-velocity",
         "relative-velocity",
         "from-directions",
-        "in"
+        "in",
     ]
 
     _NS = Namespace(f"{URI_CR2B_MM}/geometry/spatial-operators#")
@@ -357,6 +363,7 @@ class SLV(DefinedNamespace):
         "linear-acceleration",
         "attached-to",
         "kinematic-chain",
+        "gravity-value",
         "prioritization-hierarchy",
     ]
 

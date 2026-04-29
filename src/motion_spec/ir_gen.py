@@ -624,6 +624,21 @@ class ConstraintHandler:
 
 
 @dataclass
+class SnapshotCapture:
+    target_id: str
+    source_id: str
+    source_closure_id: str | None = None
+    type: str = field(default="SnapshotCapture")
+
+
+@dataclass
+class RelativePoseCapture:
+    id: str
+    fk_pose_id: str
+    type: str = field(default="RelativePoseCapture")
+
+
+@dataclass
 class GuardedMotionBlock:
     id: str
     handler: str
@@ -657,6 +672,12 @@ class GuardedMotionBlock:
 
     # Solver Integration
     arm_solvers: list = field(default_factory=list)
+
+    # Snapshot captures (once-at-start scalar assignments)
+    snapshots: list = field(default_factory=list)
+
+    # Relative-from-start pose computations (e.g. pose_start_ee)
+    relative_poses: list = field(default_factory=list)
 
     type: str = field(default="GuardedMotionBlock")
 
@@ -699,6 +720,7 @@ class MotionArmSolver:
     id: str
     output: list
     motion_driver: MotionDrivers
+    has_cartesian_force: bool = False
     type: str = field(default="MotionArmSolver")
 
 
@@ -743,8 +765,9 @@ def memoize(func):
 
 
 def escape(s):
-    s = re.sub("[:-]", "_", s)
-    s = re.sub("[<>]", "", s)
+    s = re.sub(r"[^0-9A-Za-z_]", "_", str(s))
+    if s and s[0].isdigit():
+        s = f"_{s}"
     return s
 
 
@@ -1313,7 +1336,9 @@ def _arm_solvers_for_handler(handler, slv_arm):
         return []
 
     result = []
+    motion_driver_id = f"driver_{handler.motion.id.removeprefix('motion_')}"
     for solver in slv_arm:
+        matched = []
         for driver in solver.motion_drivers:
             driver_output_ids = {
                 ac.acceleration_energy.id
@@ -1322,13 +1347,91 @@ def _arm_solvers_for_handler(handler, slv_arm):
             }
             driver_output_ids.update(force_spec.force.id for force_spec in driver.cartesian_force)
             if handler_output_ids & driver_output_ids:
-                result.append(MotionArmSolver(id=solver.id, output=solver.output, motion_driver=driver))
-                break
+                matched.append(driver)
+        if not matched:
+            continue
+        selected = next((driver for driver in matched if driver.id == motion_driver_id), matched[0])
+        result.append(MotionArmSolver(
+            id=solver.id,
+            output=solver.output,
+            motion_driver=selected,
+            has_cartesian_force=bool(selected.cartesian_force),
+        ))
 
     return result
 
 
-def build_motion_units(g, p, handlers, node_by_id, slv_arm):
+def _relative_poses_for_motion(evaluators, view_map, arm_solvers):
+    """Detect Pose quantities whose wrt frame ends in _start and pair them with FK outputs."""
+    fk_poses: dict[str, str] = {}  # of_id → FK pose id
+    for solver in arm_solvers:
+        for out in solver.output:
+            if getattr(out, "type", "") == "Pose":
+                of_id = getattr(getattr(out, "of", None), "id", None)
+                if of_id:
+                    fk_poses[of_id] = out.id
+
+    start_rel_poses: dict[str, object] = {}
+    for ev in evaluators:
+        qty = getattr(getattr(ev, "constraint", None), "quantity", None)
+        if qty is None or not getattr(qty, "has_view", False):
+            continue
+        view = view_map.get(qty.id)
+        if view is None:
+            continue
+        wrt = getattr(getattr(view, "superobject", None), "with_respect_to", None)
+        if wrt and getattr(wrt, "id", "").endswith("_start"):
+            pose_id = view.superobject.id
+            start_rel_poses[pose_id] = view.superobject
+
+    result = []
+    for pose_id, pose in start_rel_poses.items():
+        of_id = getattr(getattr(pose, "of", None), "id", None)
+        fk_pose_id = fk_poses.get(of_id) if of_id else None
+        if fk_pose_id:
+            result.append(RelativePoseCapture(id=pose_id, fk_pose_id=fk_pose_id))
+    return result
+
+
+def _snapshots_for_motion(evaluators, snapshot_source_map, view_map, closure_output_map):
+    ref_val_ids = set()
+    for ev in evaluators:
+        param = getattr(ev.constraint, "parameter", None) if ev.constraint else None
+        ref = getattr(param, "reference_value", None) if param else None
+        if ref is not None and ref.id:
+            ref_val_ids.add(ref.id)
+    result = []
+    seen = set()
+    for target_id in sorted(ref_val_ids):
+        if target_id not in snapshot_source_map or target_id in seen:
+            continue
+        seen.add(target_id)
+        source_id = snapshot_source_map[target_id]
+        source_closure_id = None if source_id in view_map else closure_output_map.get(source_id)
+        result.append(SnapshotCapture(
+            target_id=target_id,
+            source_id=source_id,
+            source_closure_id=source_closure_id,
+        ))
+    return result
+
+
+_CLOSURE_OUTPUT_FIELDS = {
+    "PoseToAngleAroundAxis": "angle",
+    "PoseToLinearDistance": "distance",
+    "PoseToDirection": "direction",
+    "RotateDirectionDistalToProximalWithPose": "to",
+    "ComposePose": "composite",
+    "RotateVelocityTwistToProximalWithPose": "to",
+    "InvertAngle": "out",
+}
+
+
+def build_motion_units(g, p, handlers, node_by_id, slv_arm,
+                       snapshot_source_map=None, view_map=None, closure_output_map=None):
+    snapshot_source_map = snapshot_source_map or {}
+    view_map = view_map or {}
+    closure_output_map = closure_output_map or {}
     motions = []
 
     for handler in handlers:
@@ -1476,10 +1579,49 @@ def build_motion_units(g, p, handlers, node_by_id, slv_arm):
                 while_events=[m.event for m in while_monitors if m.event is not None],
                 until_events=[m.event for m in until_monitors if m.event is not None],
                 arm_solvers=_arm_solvers_for_handler(handler, slv_arm),
+                relative_poses=_relative_poses_for_motion(
+                    while_evaluators + when_evaluators + until_evaluators,
+                    view_map,
+                    _arm_solvers_for_handler(handler, slv_arm),
+                ),
+                snapshots=_snapshots_for_motion(
+                    while_evaluators + when_evaluators + until_evaluators,
+                    snapshot_source_map, view_map, closure_output_map,
+                ),
             )
         )
 
     return motions
+
+
+def _filter_shared_data(data_structures, schedule, closures, view_map=None, fk_output_ids=None):
+    referenced: set[str] = set(schedule)
+    for c in closures.values():
+        if isinstance(c, dict):
+            for v in c.values():
+                if isinstance(v, str):
+                    referenced.add(v)
+    if view_map:
+        for view in view_map.values():
+            so = getattr(view, "superobject", None)
+            if so:
+                referenced.add(so.id)
+    if fk_output_ids:
+        referenced.update(fk_output_ids)
+
+    result = []
+    for item in data_structures:
+        if item.type == "Quantity" and item.has_view:
+            continue
+        if (item.type == "Quantity"
+                and getattr(item, "value", None) is None
+                and getattr(getattr(item, "quantity_kind", None), "id", "x") is None
+                and item.id not in referenced):
+            continue
+        if item.type in ("Pose", "VelocityTwist") and item.id not in referenced:
+            continue
+        result.append(item)
+    return result
 
 
 def generate_ir(manifest_path):
@@ -1593,11 +1735,22 @@ def generate_ir(manifest_path):
     view_map = p.view()
     data_structures = p.data_structures()
 
-    #print(json.dumps(slv_arm, cls=JSONEncoder, indent=4))
-    #print(json.dumps(sched1 + sched2 + sched3 + sched4, cls=JSONEncoder, indent=4))
-    #print(json.dumps(view_map, cls=JSONEncoder, indent=4))
-    #print(json.dumps(data_structures, cls=JSONEncoder, indent=4))
-    #print(json.dumps(closures, indent=4))
+    # Build snapshot lookup maps
+    snapshot_source_map: dict[str, str] = {}
+    for snap_node in g.subjects(RDF.type, APP["Snapshot"]):
+        source_node = g.value(snap_node, APP["snapshot-of"])
+        if source_node is not None:
+            snapshot_source_map[p.id(snap_node)] = p.id(source_node)
+
+    closure_output_map: dict[str, str] = {}
+    for cid, c in closures.items():
+        if not isinstance(c, dict):
+            continue
+        out_field = _CLOSURE_OUTPUT_FIELDS.get(c.get("type", ""))
+        if out_field:
+            out_val = c.get(out_field)
+            if isinstance(out_val, str):
+                closure_output_map[out_val] = cid
 
     # Compose the overall schedule via concatenation
     return {
@@ -1605,13 +1758,22 @@ def generate_ir(manifest_path):
         "slv_base_vel": slv_base_vel,
         "slv_base_frc": slv_base_frc,
         "cstr_hdl": hdl,
-        "motions": build_motion_units(g, p, hdl, node_by_id, slv_arm),
+        "motions": build_motion_units(
+            g, p, hdl, node_by_id, slv_arm,
+            snapshot_source_map=snapshot_source_map,
+            view_map=view_map,
+            closure_output_map=closure_output_map,
+        ),
         "data": data_structures,
         "closures": closures,
         "shared_schedule": sched1 + sched3 + sched4,
         "schedule": sched1 + sched2 + sched3 + sched4,
         "views": view_map,
-        "shared_data": [item for item in data_structures if not (item.type == "Quantity" and item.has_view)],
+        "shared_data": _filter_shared_data(
+            data_structures, sched1 + sched2 + sched3 + sched4, closures,
+            view_map=view_map,
+            fk_output_ids={out.id for s in slv_arm for out in s.output},
+        ),
         "wrench_outputs": [item for item in data_structures if item.type == "Wrench"],
         "has_arm": bool(slv_arm),
         "has_mobile_base": bool(slv_base_vel or slv_base_frc),

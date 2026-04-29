@@ -28,7 +28,10 @@ subspace-to-member ::= [
 axis-to-index ::= [
     "X": "0",
     "Y": "1",
-    "Z": "2"
+    "Z": "2",
+    "x": "0",
+    "y": "1",
+    "z": "2"
 ]
 
 ip-lookup ::= [
@@ -221,8 +224,8 @@ shared.<closure.direction>.Normalize();
 >>
 
 emit-call-PoseToAngleAroundAxis(closure, views) ::= <<
-KDL::Vector _<closure.angle> = KDL::Vector<axis-to-vector.(closure.axis)>;
-shared.<closure.angle> = shared.<closure.pose>.M.GetRotAngle(_<closure.angle>);
+KDL::Vector diff_<closure.angle> = KDL::diff(KDL::Rotation::Identity(), shared.<closure.pose>.M);
+shared.<closure.angle> = diff_<closure.angle>[<axis-to-index.(closure.axis)>];
 >>
 
 emit-call-RotateVelocityTwistToProximalWithPose(closure, views) ::= <<
@@ -309,17 +312,21 @@ struct <solver.id>_solver_state {
     KDL::JntArray qdd;
     KDL::JntArray tau_ff;
     KDL::JntArray tau_ctrl;
+<if(solver.has_cartesian_force)>
     KDL::Wrenches f_ext;
+<endif>
     KDL::Jacobian f_cstr;
     KDL::JntArray e_acc;
+<if(solver.has_cartesian_force)>
     std::unique_ptr\<KDL::ChainHdSolver_Vereshchagin_Fext\> achd_fext;
+<endif>
     std::unique_ptr\<KDL::ChainHdSolver_Vereshchagin\> achd_acc;
 };
 >>
 
 assign-constraint-force(constraint, solver_state, column) ::= <<
-state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::<constraint.axis>), <column>) = 1.0;
-state.<solver_state>.e_acc(<column>) = shared.<constraint.acceleration_energy.id>;
+    state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::<constraint.axis>), <column>) = 1.0;
+    state.<solver_state>.e_acc(<column>) = shared.<constraint.acceleration_energy.id>;
 >>
 
 solver-init(solver, motion_driver) ::= <<
@@ -332,13 +339,17 @@ if (!state.<solver.id>.initialized) {
         state.<solver.id>.qdd = KDL::JntArray(state.<solver.id>.num_joints);
         state.<solver.id>.tau_ff = KDL::JntArray(state.<solver.id>.num_joints);
         state.<solver.id>.tau_ctrl = KDL::JntArray(state.<solver.id>.num_joints);
+<if(solver.has_cartesian_force)>
         state.<solver.id>.f_ext = KDL::Wrenches(state.<solver.id>.num_segments);
+<endif>
         state.<solver.id>.f_cstr = KDL::Jacobian(state.<solver.id>.num_constraints);
         state.<solver.id>.e_acc = KDL::JntArray(state.<solver.id>.num_constraints);
+<if(solver.has_cartesian_force)>
         state.<solver.id>.achd_fext = std::make_unique\<KDL::ChainHdSolver_Vereshchagin_Fext\>(*robot.<solver.id>.chain, state.<solver.id>.root_acc, state.<solver.id>.num_constraints);
+<endif>
         state.<solver.id>.achd_acc = std::make_unique\<KDL::ChainHdSolver_Vereshchagin\>(*robot.<solver.id>.chain, state.<solver.id>.root_acc, state.<solver.id>.num_constraints);
         state.<solver.id>.initialized = true;
-}
+    }
 >>
 
 solver-sync-input(solver) ::= <<
@@ -377,7 +388,8 @@ solver-output(solver, out) ::= <<
 
 solver-run(solver, motion_driver) ::= <<
     KDL::SetToZero(state.<solver.id>.f_cstr);
-<first(motion_driver.acceleration_constraint).constraints:{c |     <assign-constraint-force(c, solver.id, i0)>}; separator="\n">
+<first(motion_driver.acceleration_constraint).constraints:{c | <assign-constraint-force(c, solver.id, i0)>}; separator="\n">
+<if(solver.has_cartesian_force)>
     for (int i = 0; i \< state.<solver.id>.num_segments; ++i) {
         KDL::SetToZero(state.<solver.id>.f_ext[i]);
     }
@@ -392,6 +404,7 @@ solver-run(solver, motion_driver) ::= <<
         state.<solver.id>.f_ext,
         state.<solver.id>.tau_ff,
         tau_ctrl_fext_<solver.id>);
+<endif>
     KDL::Wrenches f_ext_zero_<solver.id>(state.<solver.id>.num_segments);
     KDL::JntArray tau_ctrl_acc_<solver.id>(state.<solver.id>.num_joints);
     state.<solver.id>.achd_acc->CartToJnt(
@@ -403,7 +416,11 @@ solver-run(solver, motion_driver) ::= <<
         f_ext_zero_<solver.id>,
         state.<solver.id>.tau_ff,
         tau_ctrl_acc_<solver.id>);
+<if(solver.has_cartesian_force)>
     KDL::Add(tau_ctrl_fext_<solver.id>, tau_ctrl_acc_<solver.id>, state.<solver.id>.tau_ctrl);
+<else>
+    state.<solver.id>.tau_ctrl = tau_ctrl_acc_<solver.id>;
+<endif>
 >>
 
 solver-assign-f-ext-modular(solver, force) ::= <<
@@ -963,6 +980,21 @@ inline void apply_mobile_base(
 <endif>
 >>
 
+emit-relative-pose(rp) ::= <<
+    if (!state.<rp.id>_start_captured) {
+        state.<rp.id>_start_frame = shared.<rp.fk_pose_id>;
+        state.<rp.id>_start_captured = true;
+    }
+    shared.<rp.id> = state.<rp.id>_start_frame.Inverse() * shared.<rp.fk_pose_id>;
+>>
+
+emit-snapshot(snap, closures, views) ::= <<
+<if(snap.source_closure_id)>
+        <({emit-call-<closures.(snap.source_closure_id).type>})(closures.(snap.source_closure_id), views)>
+<endif>
+        shared.<snap.target_id> = <access-expr(snap.source_id, views)>;
+>>
+
 motion_header(motion, closures, views, wrench_outputs, base_velocity_solvers, base_force_solvers, has_mobile_base) ::= <<
 #pragma once
 
@@ -973,6 +1005,11 @@ motion_header(motion, closures, views, wrench_outputs, base_velocity_solvers, ba
 
 struct <motion.id>_state {
 <arm-state-members(motion.arm_solvers)>
+<if(motion.snapshots)>    bool snapshot_taken = false;
+<endif>
+<motion.relative_poses:{rp |     KDL::Frame <rp.id>_start_frame;
+    bool <rp.id>_start_captured = false;
+}; separator="\n">
 <motion.controllers:{controller | <controller-member(controller)>}; separator="\n">
 <motion.when_monitors:{monitor | <monitor-member(monitor)>}; separator="\n">
 <motion.while_monitors:{monitor | <monitor-member(monitor)>}; separator="\n">
@@ -995,6 +1032,13 @@ inline void update_<motion.id>(
     const robot_io &robot) {
     init_<motion.id>(state, robot);
 <motion-prelude(wrench_outputs, motion.arm_solvers)>
+<if(motion.snapshots)>
+    if (!state.snapshot_taken) {
+<motion.snapshots:{snap | <emit-snapshot(snap, closures, views)>}; separator="\n">
+        state.snapshot_taken = true;
+    }
+<endif>
+<motion.relative_poses:{rp | <emit-relative-pose(rp)>}; separator="\n">
 }
 
 inline bool can_start_<motion.id>(

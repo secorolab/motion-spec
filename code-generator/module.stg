@@ -165,7 +165,15 @@ KDL::Frame <var.id>;
 >>
 
 controller-member(controller) ::= <<
+<({controller-member-<controller.type>})(controller)>
+>>
+
+controller-member-ProportionalIntegralDerivative(controller) ::= <<
     motion_spec::runtime::PIDControl <controller.id>{<controller.proportional_gain>, <controller.integral_gain>, <controller.derivative_gain><if(controller.decay_rate)>, <controller.decay_rate><endif>};
+>>
+
+controller-member-ImpedanceController(controller) ::= <<
+    motion_spec::runtime::ImpedanceControl <controller.id>{<controller.stiffness>, <controller.damping>};
 >>
 
 monitor-member(monitor) ::= "<if(monitor.is_edge_triggered)>    bool <monitor.id>_previous = false;<else>    bool <monitor.flag> = false;<endif>"
@@ -204,6 +212,10 @@ shared.<closure.out> = KDL::diff(shared.<closure.in1>, shared.<closure.in2>);
 
 emit-call-Controller(closure, views) ::= <<
 shared.<closure.control_signal> = state.<closure.id>.control(<access-expr(closure.error_signal, views)>);
+>>
+
+emit-call-JointPositionRead(closure, views) ::= <<
+shared.<closure.id> = state.<closure.solver_id>.q(motion_spec::runtime::find_joint_index(*robot.<closure.solver_id>.chain, "<closure.joint_name>"));
 >>
 
 emit-call-PlanarAngleFromDirections(closure, views) ::= <<
@@ -361,9 +373,12 @@ assign-constraint-force(constraint, solver_state, column) ::= <<
     state.<solver_state>.e_acc(<column>) = shared.<constraint.acceleration_energy.id>;
 >>
 
+// num_constraints=0 is valid for posture-only handlers: Vereshchagin runs
+// in unconstrained mode and passes tau_ff through to tau_ctrl unchanged.
+// Confirmed correct per KDL implementation; see validation TODO in todo.md.
 solver-init(solver, motion_driver) ::= <<
 if (!state.<solver.id>.initialized) {
-        state.<solver.id>.num_constraints = <length(first(motion_driver.acceleration_constraint).constraints)>;
+        state.<solver.id>.num_constraints = <if(motion_driver.acceleration_constraint)><length(first(motion_driver.acceleration_constraint).constraints)><else>0<endif>;
         state.<solver.id>.num_joints = robot.<solver.id>.chain->getNrOfJoints();
         state.<solver.id>.num_segments = robot.<solver.id>.chain->getNrOfSegments();
         state.<solver.id>.q = KDL::JntArray(state.<solver.id>.num_joints);
@@ -423,7 +438,11 @@ solver-output(solver, out) ::= <<
 
 solver-run(solver, motion_driver) ::= <<
     KDL::SetToZero(state.<solver.id>.f_cstr);
+<if(motion_driver.acceleration_constraint)>
 <first(motion_driver.acceleration_constraint).constraints:{c | <assign-constraint-force(c, solver.id, i0)>}; separator="\n">
+<endif>
+    KDL::SetToZero(state.<solver.id>.tau_ff);
+<motion_driver.joint_force:{jf |     state.<solver.id>.tau_ff(motion_spec::runtime::find_joint_index(*robot.<solver.id>.chain, "<jf.joint_name>")) += shared.<jf.id>;}; separator="\n">
 <if(solver.has_cartesian_force)>
     for (int i = 0; i \< state.<solver.id>.num_segments; ++i) {
         KDL::SetToZero(state.<solver.id>.f_ext[i]);
@@ -713,6 +732,30 @@ class PIDControl {
     double decay_rate = 0.0;
 };
 
+// Spring-damper controller: maps a single scalar constraint error to a
+// force/torque output as F = ks*e + kd*(de/dt). The derivative is
+// approximated by finite difference on successive error samples, so
+// "error" is assumed to be a position or angle error; the damping term
+// then approximates velocity feedback rather than reading it directly.
+class ImpedanceControl {
+  public:
+    ImpedanceControl() = default;
+
+    ImpedanceControl(double stiffness, double damping)
+        : ks(stiffness), kd(damping) {}
+
+    double control(double error) {
+        double err_diff = error - err_last;
+        err_last = error;
+        return ks * error + kd * err_diff;
+    }
+
+  private:
+    double err_last = 0.0;
+    double ks = 0.0;
+    double kd = 0.0;
+};
+
 inline double evaluate_equality_constraint(double quantity, double reference) {
     return quantity - reference;
 }
@@ -762,6 +805,21 @@ inline void set_flag(bool &flag, bool active) {
 
 inline void warn_produce_event_not_implemented(std::string_view event_id) {
     std::cerr \<\< "produce_event(" \<\< event_id \<\< ") not implemented yet\\n";
+}
+
+inline unsigned int find_joint_index(const KDL::Chain &chain, std::string_view joint_name) {
+    unsigned int idx = 0;
+    for (unsigned int i = 0; i \< chain.getNrOfSegments(); ++i) {
+        const auto &joint = chain.getSegment(i).getJoint();
+        if (joint.getType() == KDL::Joint::None) {
+            continue;
+        }
+        if (joint.getName() == joint_name) {
+            return idx;
+        }
+        ++idx;
+    }
+    throw std::runtime_error("KDL joint not found: " + std::string(joint_name));
 }
 
 inline unsigned int find_segment_index(const KDL::Chain &chain, std::string_view model_name) {

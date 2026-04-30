@@ -298,6 +298,7 @@ class CSTR_HDL(DefinedNamespace):
     ErrorEvaluator: URIRef
     Controller: URIRef
     ProportionalIntegralDerivative: URIRef
+    ImpedanceController: URIRef
     DecayingIntegralTerm: URIRef
     Monitor: URIRef
     EdgeTriggeredMonitor: URIRef
@@ -321,6 +322,8 @@ class CSTR_HDL(DefinedNamespace):
         "integral-gain",
         "derivative-gain",
         "decay-rate",
+        "stiffness",
+        "damping",
     ]
 
     _NS = Namespace(f"{URI_CR2B_MM}/task/constraint-handler#")

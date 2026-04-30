@@ -619,7 +619,9 @@ class Controller:
     integral_gain: float
     derivative_gain: float
     decay_rate: float | None
-    type: str = field(default="Controller")
+    stiffness: float = 0.0
+    damping: float = 0.0
+    type: str = "Controller"
 
 
 @dataclass
@@ -733,10 +735,26 @@ class CartesianForceSpecification:
 
 
 @dataclass
+class JointForceSpecification:
+    id: str
+    joint_name: str
+    type: str = field(default="JointForceSpecification")
+
+
+@dataclass
+class JointPositionRead:
+    id: str
+    solver_id: str
+    joint_name: str
+    type: str = field(default="JointPositionRead")
+
+
+@dataclass
 class MotionDrivers:
     id: str
     acceleration_constraint: list[AccelerationConstraintSpecification]
     cartesian_force: list[CartesianForceSpecification]
+    joint_force: list[JointForceSpecification] = field(default_factory=list)
     type: str = field(default="MotionDrivers")
 
 
@@ -866,6 +884,7 @@ class Parser:
 
         spec_acc = []
         spec_frc = []
+        spec_jf = []
 
         for a in self.g[id_ : SLV["acceleration-constraint"]]:
             spec_acc.append(self.acceleration_constraint_specification(a))
@@ -873,7 +892,20 @@ class Parser:
         for f in self.g[id_ : SLV["cartesian-force"]]:
             spec_frc.append(self.cartesian_force_specification(f))
 
-        return MotionDrivers(self.id(id_), spec_acc, spec_frc)
+        for jf in self.g[id_ : SLV["joint-force"]]:
+            spec_jf.append(self.joint_force_specification(jf))
+
+        return MotionDrivers(self.id(id_), spec_acc, spec_frc, spec_jf)
+
+    def joint_force_specification(self, id_):
+        # Not @memoize: the JointForce node URI is also registered as a QUDT
+        # Quantity (same URI, different type), so the shared cache would return
+        # the Quantity object on a second lookup. motion_drivers() is memoized,
+        # so this is called at most once per JF node anyway.
+        assert SLV["JointForce"] in self.g[id_ : RDF["type"]]
+        joint_node = self.g.value(id_, SLV["attached-to"])
+        joint_name = self.id(joint_node) if joint_node is not None else ""
+        return JointForceSpecification(self.id(id_), joint_name)
 
     @memoize
     def cartesian_force_specification(self, id_):
@@ -996,20 +1028,33 @@ class Parser:
     @memoize
     def controller(self, id_):
         assert CSTR_HDL["Controller"] in self.g[id_ : RDF["type"]]
-        assert CSTR_HDL["ProportionalIntegralDerivative"] in self.g[id_ : RDF["type"]]
+
+        is_pid = CSTR_HDL["ProportionalIntegralDerivative"] in self.g[id_ : RDF["type"]]
+        is_impedance = CSTR_HDL["ImpedanceController"] in self.g[id_ : RDF["type"]]
+        assert is_pid or is_impedance, f"Controller {id_} must be ProportionalIntegralDerivative or ImpedanceController"
 
         error_signal = self.quantity(self.g.value(id_, CSTR_HDL["error-signal"]))
         control_signal = self.quantity(self.g.value(id_, CSTR_HDL["control-signal"]))
 
-        decay_rate = None
-        if CSTR_HDL["DecayingIntegralTerm"] in self.g[id_ : RDF["type"]]:
-            decay_rate = self.g.value(id_, CSTR_HDL["decay-rate"]).value
+        if is_pid:
+            decay_rate = None
+            if CSTR_HDL["DecayingIntegralTerm"] in self.g[id_ : RDF["type"]]:
+                decay_rate = self.g.value(id_, CSTR_HDL["decay-rate"]).value
+            p = self._optional_float(id_, CSTR_HDL["proportional-gain"], 0.0)
+            i = self._optional_float(id_, CSTR_HDL["integral-gain"], 0.0)
+            d = self._optional_float(id_, CSTR_HDL["derivative-gain"], 0.0)
+            return Controller(self.id(id_), error_signal, control_signal, p, i, d, decay_rate,
+                              type=self.id(CSTR_HDL.ProportionalIntegralDerivative))
+        else:
+            ks = self._optional_float(id_, CSTR_HDL["stiffness"], 0.0)
+            kd = self._optional_float(id_, CSTR_HDL["damping"], 0.0)
+            return Controller(self.id(id_), error_signal, control_signal, 0.0, 0.0, 0.0, None,
+                              stiffness=ks, damping=kd,
+                              type=self.id(CSTR_HDL.ImpedanceController))
 
-        p = self.g.value(id_, CSTR_HDL["proportional-gain"]).value
-        i = self.g.value(id_, CSTR_HDL["integral-gain"]).value
-        d = self.g.value(id_, CSTR_HDL["derivative-gain"]).value
-
-        return Controller(self.id(id_), error_signal, control_signal, p, i, d, decay_rate)
+    def _optional_float(self, subject, predicate, default: float) -> float:
+        value = self.g.value(subject, predicate)
+        return default if value is None else float(value.value)
 
     @memoize
     def guarded_motion(self, id_):
@@ -1431,6 +1476,8 @@ def _arm_solvers_for_handler(handler, slv_arm, closure_input_map=None):
                 driver_output_ids.update(
                     _upstream_dependencies(force_spec.force.id, closure_input_map)
                 )
+            for jf_spec in driver.joint_force:
+                driver_output_ids.add(jf_spec.id)
             if handler_output_ids & driver_output_ids:
                 matched.append(driver)
         if not matched:
@@ -1539,7 +1586,8 @@ _CLOSURE_OUTPUT_FIELDS = {
 
 def build_motion_units(g, p, handlers, node_by_id, slv_arm,
                        snapshot_source_map=None, view_map=None,
-                       closure_output_map=None, closure_input_map=None):
+                       closure_output_map=None, closure_input_map=None,
+                       closures=None):
     snapshot_source_map = snapshot_source_map or {}
     view_map = view_map or {}
     closure_output_map = closure_output_map or {}
@@ -1673,6 +1721,44 @@ def build_motion_units(g, p, handlers, node_by_id, slv_arm,
             p_active.schedule(cartesian_force_nodes, ops_generic + ops_slv + ops_cstr_hdl)
         )
         until_schedule = p_active.schedule(until_eval_nodes, ops_generic + ops_cstr_hdl)
+
+        # Prepend JointPositionRead closures for posture controllers so joint
+        # angles are available in shared before evaluators run.
+        jp_read_ids = []
+        for arm_solver in handler_arm_solvers:
+            for jf in arm_solver.motion_driver.joint_force:
+                if not jf.joint_name:
+                    continue
+                jp_scalar_id = None
+                for ctrl_node in ctrl_nodes:
+                    cs_node = g.value(ctrl_node, CSTR_HDL["control-signal"])
+                    if cs_node is None or p.id(cs_node) != jf.id:
+                        continue
+                    es_node = g.value(ctrl_node, CSTR_HDL["error-signal"])
+                    for eval_node in g.subjects(CSTR_HDL["error"], es_node):
+                        cstr_node = g.value(eval_node, CSTR_HDL["constraint"])
+                        if cstr_node is None:
+                            continue
+                        qty_node = g.value(cstr_node, CSTR["quantity"])
+                        if qty_node is not None:
+                            jp_scalar_id = p.id(qty_node)
+                            break
+                    if jp_scalar_id is not None:
+                        break
+                if jp_scalar_id is None:
+                    continue
+                read_id = f"read_{jp_scalar_id}_from_{arm_solver.id}"
+                if read_id not in p_active.sched:
+                    jp_read_ids.append(read_id)
+                    p_active.sched.add(read_id)
+                    if closures is not None:
+                        closures[read_id] = {
+                            "id": jp_scalar_id,
+                            "type": "JointPositionRead",
+                            "solver_id": arm_solver.id,
+                            "joint_name": jf.joint_name,
+                        }
+        while_schedule = jp_read_ids + while_schedule
 
         # Until evaluators have no controllers whose error-signal would drive their
         # backward discovery. Append them explicitly after their dependencies so the
@@ -1924,6 +2010,7 @@ def generate_ir(manifest_path):
             view_map=view_map,
             closure_output_map=closure_output_map,
             closure_input_map=closure_input_map,
+            closures=closures,
         ),
         "data": data_structures,
         "closures": closures,

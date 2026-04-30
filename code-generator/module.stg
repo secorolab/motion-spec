@@ -10,9 +10,9 @@ subspace-to-runtime-subspace ::= [
 ]
 
 axis-to-vector ::= [
-    "X": "{1.0, 0.0, 0.0}",
-    "Y": "{0.0, 1.0, 0.0}",
-    "Z": "{0.0, 0.0, 1.0}"
+    "X": "1.0, 0.0, 0.0",
+    "Y": "0.0, 1.0, 0.0",
+    "Z": "0.0, 0.0, 1.0"
 ]
 
 subspace-to-member ::= [
@@ -341,7 +341,23 @@ struct <solver.id>_solver_state {
 >>
 
 assign-constraint-force(constraint, solver_state, column) ::= <<
+<if(constraint.base_aligned)>
     state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::<constraint.axis>), <column>) = 1.0;
+<else>
+    {
+        KDL::Frame alpha_frame_<solver_state>_<column>;
+        KDL::ChainFkSolverPos_recursive alpha_fk_<solver_state>_<column>(*robot.<solver_state>.chain);
+        alpha_fk_<solver_state>_<column>.JntToCart(
+            state.<solver_state>.q,
+            alpha_frame_<solver_state>_<column>,
+            motion_spec::runtime::find_segment_index(*robot.<solver_state>.chain, "<constraint.as_seen_by.id>"));
+        const KDL::Vector alpha_axis_<solver_state>_<column> =
+            alpha_frame_<solver_state>_<column>.M * KDL::Vector(<axis-to-vector.(constraint.axis)>);
+        state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::X), <column>) = alpha_axis_<solver_state>_<column>[0];
+        state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::Y), <column>) = alpha_axis_<solver_state>_<column>[1];
+        state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::Z), <column>) = alpha_axis_<solver_state>_<column>[2];
+    }
+<endif>
     state.<solver_state>.e_acc(<column>) = shared.<constraint.acceleration_energy.id>;
 >>
 

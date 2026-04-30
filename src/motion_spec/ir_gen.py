@@ -711,6 +711,8 @@ class AccelerationConstraint:
     subspace: Subspace
     axis: Axis
     acceleration_energy: Quantity
+    as_seen_by: Frame | None = None
+    base_aligned: bool = True
     type: str = field(default="AccelerationConstraint")
 
 
@@ -902,8 +904,10 @@ class Parser:
         subspace = self.subspace(self.g.value(id_, SLV["subspace"]))
         axis = self.axis(self.g.value(id_, SLV["axis"]))
         e_acc = self.quantity(self.g.value(id_, SLV["acceleration-energy"]))
+        as_seen_by_node = self.g.value(id_, GEOM_COORD["as-seen-by"])
+        as_seen_by = self.frame(as_seen_by_node) if as_seen_by_node else None
 
-        return AccelerationConstraint(self.id(id_), subspace, axis, e_acc)
+        return AccelerationConstraint(self.id(id_), subspace, axis, e_acc, as_seen_by)
 
     @memoize
     def subspace(self, id_):
@@ -1381,6 +1385,24 @@ def _upstream_dependencies(data_id: str, closure_input_map: dict[str, set[str]])
     return result
 
 
+def _body_name(name: str | None) -> str | None:
+    if name is None:
+        return None
+    for prefix in ("frame_", "frame-", "link_", "link-"):
+        if name.startswith(prefix):
+            return name[len(prefix):]
+    return name
+
+
+def _mark_acceleration_constraint_frames(solver):
+    root_body = _body_name(getattr(solver, "chain_root", None))
+    for driver in solver.motion_drivers:
+        for acc_spec in driver.acceleration_constraint:
+            for constraint in acc_spec.constraints:
+                axis_frame = getattr(constraint.as_seen_by, "id", None)
+                constraint.base_aligned = axis_frame is None or _body_name(axis_frame) == root_body
+
+
 def _arm_solvers_for_handler(handler, slv_arm, closure_input_map=None):
     """Find arm solvers whose motion drivers consume this handler's controller outputs.
 
@@ -1835,7 +1857,9 @@ def generate_ir(manifest_path):
     # The "parser" keeps track of the previously visited closures/computations
     # so that they are visited only once.
     for s in g.subjects(RDF.type, SLV["SolverWithInputAndOutput"]):
-        slv_arm.append(p.solver_with_input_and_output(s))
+        solver = p.solver_with_input_and_output(s)
+        _mark_acceleration_constraint_frames(solver)
+        slv_arm.append(solver)
         start = g[
             s : SLV["motion-drivers"]
             / ((SLV["acceleration-constraint"] / SLV["constraints"]) | (SLV["cartesian-force"]))

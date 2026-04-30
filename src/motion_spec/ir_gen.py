@@ -1369,7 +1369,19 @@ class Parser:
         return s
 
 
-def _arm_solvers_for_handler(handler, slv_arm):
+def _upstream_dependencies(data_id: str, closure_input_map: dict[str, set[str]]) -> set[str]:
+    result: set[str] = set()
+    pending = list(closure_input_map.get(data_id, set()))
+    while pending:
+        item = pending.pop()
+        if item in result:
+            continue
+        result.add(item)
+        pending.extend(closure_input_map.get(item, set()))
+    return result
+
+
+def _arm_solvers_for_handler(handler, slv_arm, closure_input_map=None):
     """Find arm solvers whose motion drivers consume this handler's controller outputs.
 
     A handler drives an arm solver through controller ``control_signal`` quantities.
@@ -1377,6 +1389,7 @@ def _arm_solvers_for_handler(handler, slv_arm):
     ``acceleration-energy`` entries in acceleration constraints or as ``force``
     entries in cartesian-force specifications.
     """
+    closure_input_map = closure_input_map or {}
     handler_output_ids = {c.control_signal.id for c in handler.controllers}
     if not handler_output_ids:
         return []
@@ -1391,7 +1404,11 @@ def _arm_solvers_for_handler(handler, slv_arm):
                 for ac_spec in driver.acceleration_constraint
                 for ac in ac_spec.constraints
             }
-            driver_output_ids.update(force_spec.force.id for force_spec in driver.cartesian_force)
+            for force_spec in driver.cartesian_force:
+                driver_output_ids.add(force_spec.force.id)
+                driver_output_ids.update(
+                    _upstream_dependencies(force_spec.force.id, closure_input_map)
+                )
             if handler_output_ids & driver_output_ids:
                 matched.append(driver)
         if not matched:
@@ -1499,10 +1516,12 @@ _CLOSURE_OUTPUT_FIELDS = {
 
 
 def build_motion_units(g, p, handlers, node_by_id, slv_arm,
-                       snapshot_source_map=None, view_map=None, closure_output_map=None):
+                       snapshot_source_map=None, view_map=None,
+                       closure_output_map=None, closure_input_map=None):
     snapshot_source_map = snapshot_source_map or {}
     view_map = view_map or {}
     closure_output_map = closure_output_map or {}
+    closure_input_map = closure_input_map or {}
     motions = []
 
     for handler in handlers:
@@ -1614,7 +1633,7 @@ def build_motion_units(g, p, handlers, node_by_id, slv_arm,
         p_when = Parser(g)
         when_schedule = p_when.schedule(when_eval_nodes, ops_generic + ops_cstr_hdl)
 
-        handler_arm_solvers = _arm_solvers_for_handler(handler, slv_arm)
+        handler_arm_solvers = _arm_solvers_for_handler(handler, slv_arm, closure_input_map)
         cartesian_force_nodes = []
         for solver in handler_arm_solvers:
             driver_node = node_by_id.get(solver.motion_driver.id)
@@ -1625,9 +1644,11 @@ def build_motion_units(g, p, handlers, node_by_id, slv_arm,
         p_active = Parser(g)
         while_schedule = p_active.schedule(
             [n for n in while_eval_nodes if n not in while_pose_eval_nodes]
-            + ctrl_nodes
-            + cartesian_force_nodes,
-            ops_generic + ops_slv + ops_cstr_hdl,
+            + ctrl_nodes,
+            ops_generic + ops_cstr_hdl,
+        )
+        while_schedule.extend(
+            p_active.schedule(cartesian_force_nodes, ops_generic + ops_slv + ops_cstr_hdl)
         )
         until_schedule = p_active.schedule(until_eval_nodes, ops_generic + ops_cstr_hdl)
 
@@ -1847,14 +1868,20 @@ def generate_ir(manifest_path):
             snapshot_source_map[p.id(snap_node)] = p.id(source_node)
 
     closure_output_map: dict[str, str] = {}
+    closure_input_map: dict[str, set[str]] = {}
     for cid, c in closures.items():
         if not isinstance(c, dict):
             continue
+        inputs = {
+            v for k, v in c.items()
+            if k not in {"id", "type"} and isinstance(v, str)
+        }
         out_field = _CLOSURE_OUTPUT_FIELDS.get(c.get("type", ""))
         if out_field:
             out_val = c.get(out_field)
             if isinstance(out_val, str):
                 closure_output_map[out_val] = cid
+                closure_input_map[out_val] = {v for v in inputs if v != out_val}
 
     wrench_outputs = [
         item for item in data_structures
@@ -1872,6 +1899,7 @@ def generate_ir(manifest_path):
             snapshot_source_map=snapshot_source_map,
             view_map=view_map,
             closure_output_map=closure_output_map,
+            closure_input_map=closure_input_map,
         ),
         "data": data_structures,
         "closures": closures,

@@ -42,6 +42,16 @@ class KC(DefinedNamespace):
 
     _NS = Namespace(f"{URI_CR2B_MM}/kinematic-chain/structural-entities#")
 
+
+class KC_STAT(DefinedNamespace):
+    JointPositionCoordinate: URIRef
+    JointVelocityCoordinate: URIRef
+    JointAccelerationCoordinate: URIRef
+    JointForceCoordinate: URIRef
+
+    _NS = Namespace(f"{URI_CR2B_MM}/kinematic-chain/state#")
+
+
 class QUDT_SCHEMA(DefinedNamespace):
     Quantity: URIRef
     hasQuantityKind: URIRef
@@ -335,7 +345,7 @@ class SLV(DefinedNamespace):
     MotionDrivers: URIRef
     AccelerationConstraintSpecification: URIRef
     CartesianForceSpecification: URIRef
-    JointForce: URIRef
+    JointForceSpecification: URIRef
     AccelerationConstraint: URIRef
     AxisAligned: URIRef
     PrioritizationLevel: URIRef

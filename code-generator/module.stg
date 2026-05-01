@@ -214,10 +214,6 @@ emit-call-Controller(closure, views) ::= <<
 shared.<closure.control_signal> = state.<closure.id>.control(<access-expr(closure.error_signal, views)>);
 >>
 
-emit-call-JointPositionRead(closure, views) ::= <<
-shared.<closure.id> = state.<closure.solver_id>.q(motion_spec::runtime::find_joint_index(*robot.<closure.solver_id>.chain, "<closure.joint_name>"));
->>
-
 emit-call-PlanarAngleFromDirections(closure, views) ::= <<
 shared.<closure.angle> = KDL::dot(<closure.from_directions:{d | <access-expr(d, views)>}; separator=", ">);
 >>
@@ -432,6 +428,10 @@ solver-output-VelocityTwist(solver, out) ::= <<
 }
 >>
 
+solver-output-JointPosition(solver, out) ::= <<
+shared.<out.id> = state.<solver.id>.q(motion_spec::runtime::find_joint_index(*robot.<solver.id>.chain, "<out.joint_name>"));
+>>
+
 solver-output(solver, out) ::= <<
 <({solver-output-<out.type>})(solver, out)>
 >>
@@ -442,7 +442,7 @@ solver-run(solver, motion_driver) ::= <<
 <first(motion_driver.acceleration_constraint).constraints:{c | <assign-constraint-force(c, solver.id, i0)>}; separator="\n">
 <endif>
     KDL::SetToZero(state.<solver.id>.tau_ff);
-<motion_driver.joint_force:{jf |     state.<solver.id>.tau_ff(motion_spec::runtime::find_joint_index(*robot.<solver.id>.chain, "<jf.joint_name>")) += shared.<jf.id>;}; separator="\n">
+<motion_driver.joint_force:{jf |     state.<solver.id>.tau_ff(motion_spec::runtime::find_joint_index(*robot.<solver.id>.chain, "<jf.joint_name>")) += shared.<jf.force_id>;}; separator="\n">
 <if(solver.has_cartesian_force)>
     for (int i = 0; i \< state.<solver.id>.num_segments; ++i) {
         KDL::SetToZero(state.<solver.id>.f_ext[i]);

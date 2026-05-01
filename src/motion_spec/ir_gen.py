@@ -30,6 +30,7 @@ from motion_spec.namespace import (
     RBDYN_ENT,
     RBDYN_COORD,
     RBDYN_OP,
+    KC_STAT,
     MAP,
     CSTR,
     MOT,
@@ -402,6 +403,7 @@ ops_cstr_hdl = [
 
 ops_slv = [
     Specification(type_=SLV["CartesianForceSpecification"], input=[SLV["force"]], output=[]),
+    Specification(type_=SLV["JointForceSpecification"], input=[SLV["force"]], output=[]),
     Specification(
         type_=SLV["AccelerationConstraint"], input=[SLV["acceleration-energy"]], output=[]
     ),
@@ -467,6 +469,13 @@ class Quantity:
     value: float
     has_view: bool
     type: str = field(default="Quantity")
+
+
+@dataclass
+class JointPosition:
+    id: str
+    joint_name: str
+    type: str = field(default="JointPosition")
 
 
 @dataclass
@@ -737,16 +746,9 @@ class CartesianForceSpecification:
 @dataclass
 class JointForceSpecification:
     id: str
+    force_id: str
     joint_name: str
     type: str = field(default="JointForceSpecification")
-
-
-@dataclass
-class JointPositionRead:
-    id: str
-    solver_id: str
-    joint_name: str
-    type: str = field(default="JointPositionRead")
 
 
 @dataclass
@@ -829,6 +831,13 @@ class Parser:
         except:
             return x
 
+    def label(self, x):
+        try:
+            q = self.g.compute_qname(x)
+            return q[2]
+        except:
+            return str(x)
+
     @memoize
     def velocity_composition_solver(self, id_):
         assert SLV["VelocityCompositionSolver"] in self.g[id_ : RDF["type"]]
@@ -854,6 +863,7 @@ class Parser:
         io_dispatcher = [
             (GEOM_COORD["PoseCoordinate"], self.pose),
             (GEOM_COORD["VelocityTwistCoordinate"], self.velocity_twist),
+            (KC_STAT["JointPositionCoordinate"], self.joint_position),
         ]
 
         drv = []
@@ -898,14 +908,12 @@ class Parser:
         return MotionDrivers(self.id(id_), spec_acc, spec_frc, spec_jf)
 
     def joint_force_specification(self, id_):
-        # Not @memoize: the JointForce node URI is also registered as a QUDT
-        # Quantity (same URI, different type), so the shared cache would return
-        # the Quantity object on a second lookup. motion_drivers() is memoized,
-        # so this is called at most once per JF node anyway.
-        assert SLV["JointForce"] in self.g[id_ : RDF["type"]]
+        assert SLV["JointForceSpecification"] in self.g[id_ : RDF["type"]]
+        force_node = self.g.value(id_, SLV["force"])
+        force_id = self.id(force_node) if force_node is not None else ""
         joint_node = self.g.value(id_, SLV["attached-to"])
-        joint_name = self.id(joint_node) if joint_node is not None else ""
-        return JointForceSpecification(self.id(id_), joint_name)
+        joint_name = self.label(joint_node) if joint_node is not None else ""
+        return JointForceSpecification(self.id(id_), force_id, joint_name)
 
     @memoize
     def cartesian_force_specification(self, id_):
@@ -1280,6 +1288,13 @@ class Parser:
         return Quantity(self.id(id_), QuantityKind(quantity_kind), Unit(unit), value, has_view)
 
     @memoize
+    def joint_position(self, id_):
+        assert KC_STAT["JointPositionCoordinate"] in self.g[id_ : RDF["type"]]
+        joint_node = self.g.value(id_, GEOM_REL["of"])
+        joint_name = self.label(joint_node) if joint_node is not None else ""
+        return JointPosition(self.id(id_), joint_name)
+
+    @memoize
     def quantity_kind(self, id_):
         return self.id(id_)
 
@@ -1477,7 +1492,7 @@ def _arm_solvers_for_handler(handler, slv_arm, closure_input_map=None):
                     _upstream_dependencies(force_spec.force.id, closure_input_map)
                 )
             for jf_spec in driver.joint_force:
-                driver_output_ids.add(jf_spec.id)
+                driver_output_ids.add(jf_spec.force_id)
             if handler_output_ids & driver_output_ids:
                 matched.append(driver)
         if not matched:
@@ -1722,44 +1737,6 @@ def build_motion_units(g, p, handlers, node_by_id, slv_arm,
         )
         until_schedule = p_active.schedule(until_eval_nodes, ops_generic + ops_cstr_hdl)
 
-        # Prepend JointPositionRead closures for posture controllers so joint
-        # angles are available in shared before evaluators run.
-        jp_read_ids = []
-        for arm_solver in handler_arm_solvers:
-            for jf in arm_solver.motion_driver.joint_force:
-                if not jf.joint_name:
-                    continue
-                jp_scalar_id = None
-                for ctrl_node in ctrl_nodes:
-                    cs_node = g.value(ctrl_node, CSTR_HDL["control-signal"])
-                    if cs_node is None or p.id(cs_node) != jf.id:
-                        continue
-                    es_node = g.value(ctrl_node, CSTR_HDL["error-signal"])
-                    for eval_node in g.subjects(CSTR_HDL["error"], es_node):
-                        cstr_node = g.value(eval_node, CSTR_HDL["constraint"])
-                        if cstr_node is None:
-                            continue
-                        qty_node = g.value(cstr_node, CSTR["quantity"])
-                        if qty_node is not None:
-                            jp_scalar_id = p.id(qty_node)
-                            break
-                    if jp_scalar_id is not None:
-                        break
-                if jp_scalar_id is None:
-                    continue
-                read_id = f"read_{jp_scalar_id}_from_{arm_solver.id}"
-                if read_id not in p_active.sched:
-                    jp_read_ids.append(read_id)
-                    p_active.sched.add(read_id)
-                    if closures is not None:
-                        closures[read_id] = {
-                            "id": jp_scalar_id,
-                            "type": "JointPositionRead",
-                            "solver_id": arm_solver.id,
-                            "joint_name": jf.joint_name,
-                        }
-        while_schedule = jp_read_ids + while_schedule
-
         # Until evaluators have no controllers whose error-signal would drive their
         # backward discovery. Append them explicitly after their dependencies so the
         # template emits the computation calls in the correct order.
@@ -1948,7 +1925,11 @@ def generate_ir(manifest_path):
         slv_arm.append(solver)
         start = g[
             s : SLV["motion-drivers"]
-            / ((SLV["acceleration-constraint"] / SLV["constraints"]) | (SLV["cartesian-force"]))
+            / (
+                (SLV["acceleration-constraint"] / SLV["constraints"])
+                | (SLV["cartesian-force"])
+                | (SLV["joint-force"])
+            )
         ]
         sched3.extend(p.schedule(start, ops_generic + ops_slv))
 

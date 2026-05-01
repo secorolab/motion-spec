@@ -620,8 +620,12 @@ arm-run-block(arm_solvers) ::= <<
 <arm_solvers:{solver |     <solver-run(solver, solver.motion_driver)>}; separator="\n">
 >>
 
-arm-stage-block(arm_solvers) ::= <<
+arm-stage-block-JointTorque(arm_solvers) ::= <<
 <arm_solvers:{solver |     <solver-stage-output(solver)>}; separator="\n">
+>>
+
+arm-stage-block(control_mode, arm_solvers) ::= <<
+<({arm-stage-block-<control_mode>})(arm_solvers)>
 >>
 
 arm-apply-block(arm_solvers) ::= <<
@@ -630,7 +634,15 @@ arm-apply-block(arm_solvers) ::= <<
 
 app-kinova-state(solver) ::= <<
     kinova_state kinova_<solver.id>_state{};
-    kinova_<solver.id>_state.ctrl_mode = ROBIF2B_CTRL_MODE_FORCE;
+    kinova_<solver.id>_state.ctrl_mode = <robif2b-control-mode(solver)>;
+>>
+
+robif2b-control-mode(solver) ::= <<
+<({robif2b-control-mode-<solver.control_mode>})(solver)>
+>>
+
+robif2b-control-mode-JointTorque(solver) ::= <<
+ROBIF2B_CTRL_MODE_FORCE
 >>
 
 app-kinova-robot(solver) ::= <<
@@ -1174,7 +1186,7 @@ inline void apply_<motion.id>(
     shared_data &shared,
     const robot_io &robot) {
 <if(motion.arm_solvers)>
-<arm-stage-block(motion.arm_solvers)>
+<arm-stage-block(motion.control_mode, motion.arm_solvers)>
 <arm-apply-block(motion.arm_solvers)>
 <endif>
 }

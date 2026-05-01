@@ -303,6 +303,7 @@ class MOT(DefinedNamespace):
 
 class CSTR_HDL(DefinedNamespace):
     ConstraintHandler: URIRef
+    JointTorque: URIRef
     ConstraintEvaluator: URIRef
     AssignmentEvaluator: URIRef
     ErrorEvaluator: URIRef
@@ -328,6 +329,7 @@ class CSTR_HDL(DefinedNamespace):
     _extras = [
         "error-signal",
         "control-signal",
+        "control-mode",
         "proportional-gain",
         "integral-gain",
         "derivative-gain",

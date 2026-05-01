@@ -427,6 +427,10 @@ class Axis(str, Enum):
     Z = "Z"
 
 
+class ControlMode(str, Enum):
+    JointTorque = "JointTorque"
+
+
 class UnilateralConstraintType(str, Enum):
     GreaterThan = "GreaterThan"
     LessThan = "LessThan"
@@ -649,6 +653,7 @@ class MonitorEntry:
 class ConstraintHandler:
     id: str
     motion: GuardedMotion
+    control_mode: str
     evaluators: list[ConstraintEvaluator]
     controllers: list[Controller]
     monitors: list[MonitorEntry]
@@ -675,6 +680,7 @@ class RelativePoseCapture:
 class GuardedMotionBlock:
     id: str
     handler: str
+    control_mode: str
     motion: GuardedMotion
 
     # Evaluators
@@ -765,6 +771,7 @@ class MotionArmSolver:
     id: str
     output: list
     motion_driver: MotionDrivers
+    control_mode: str
     has_cartesian_force: bool = False
     root_acc: list[float] | None = None
     type: str = field(default="MotionArmSolver")
@@ -775,6 +782,7 @@ class SolverWithInputAndOutput:
     id: str
     motion_drivers: list[MotionDrivers]
     output: list
+    control_mode: str = ""
     urdf: str = ""
     chain_root: str = ""
     chain_end: str = ""
@@ -885,7 +893,15 @@ class Parser:
         root_acc = [-v for v in gravity] if gravity else None
 
         return SolverWithInputAndOutput(
-            self.id(id_), drv, out, urdf, chain_root, chain_end, robot_type, robot_model, root_acc
+            id=self.id(id_),
+            motion_drivers=drv,
+            output=out,
+            urdf=urdf,
+            chain_root=chain_root,
+            chain_end=chain_end,
+            robot_type=robot_type,
+            robot_model=robot_model,
+            root_acc=root_acc,
         )
 
     @memoize
@@ -985,6 +1001,17 @@ class Parser:
         assert CSTR_HDL["ConstraintHandler"] in self.g[id_ : RDF["type"]]
 
         motion = self.guarded_motion(self.g.value(id_, CSTR_HDL["motion"]))
+        control_mode_node = self.g.value(id_, CSTR_HDL["control-mode"])
+        if control_mode_node is None:
+            raise ValueError(f"Constraint handler '{self.id(id_)}' is missing control-mode.")
+        control_mode = self.id(control_mode_node)
+        try:
+            ControlMode(control_mode)
+        except ValueError as exc:
+            raise ValueError(
+                f"Constraint handler '{self.id(id_)}' uses unsupported control mode "
+                f"'{control_mode}'."
+            ) from exc
 
         evaluators = []
         for e in self.g[id_ : CSTR_HDL["evaluators"]]:
@@ -1003,7 +1030,9 @@ class Parser:
         order_value = self.g.value(id_, APP["order"])
         order = int(order_value.value) if order_value is not None else 0
 
-        return ConstraintHandler(self.id(id_), motion, evaluators, controllers, monitors, order)
+        return ConstraintHandler(
+            self.id(id_), motion, control_mode, evaluators, controllers, monitors, order
+        )
 
     @memoize
     def monitor_entry(self, id_):
@@ -1013,7 +1042,9 @@ class Parser:
 
         if CSTR_HDL["LevelTriggeredMonitor"] in self.g[id_ : RDF["type"]]:
             flag = self.id(self.g.value(id_, CSTR_HDL["flag"]))
-            return MonitorEntry(self.id(id_), "LevelTriggeredMonitor", error, flag, None, None, False)
+            return MonitorEntry(
+                self.id(id_), "LevelTriggeredMonitor", error, flag, None, None, False
+            )
 
         event = self.id(self.g.value(id_, CSTR_HDL["event"]))
         return MonitorEntry(self.id(id_), "EdgeTriggeredMonitor", error, None, event, None, True)
@@ -1039,7 +1070,9 @@ class Parser:
 
         is_pid = CSTR_HDL["ProportionalIntegralDerivative"] in self.g[id_ : RDF["type"]]
         is_impedance = CSTR_HDL["ImpedanceController"] in self.g[id_ : RDF["type"]]
-        assert is_pid or is_impedance, f"Controller {id_} must be ProportionalIntegralDerivative or ImpedanceController"
+        assert is_pid or is_impedance, (
+            f"Controller {id_} must be ProportionalIntegralDerivative or ImpedanceController"
+        )
 
         error_signal = self.quantity(self.g.value(id_, CSTR_HDL["error-signal"]))
         control_signal = self.quantity(self.g.value(id_, CSTR_HDL["control-signal"]))
@@ -1051,14 +1084,31 @@ class Parser:
             p = self._optional_float(id_, CSTR_HDL["proportional-gain"], 0.0)
             i = self._optional_float(id_, CSTR_HDL["integral-gain"], 0.0)
             d = self._optional_float(id_, CSTR_HDL["derivative-gain"], 0.0)
-            return Controller(self.id(id_), error_signal, control_signal, p, i, d, decay_rate,
-                              type=self.id(CSTR_HDL.ProportionalIntegralDerivative))
+            return Controller(
+                self.id(id_),
+                error_signal,
+                control_signal,
+                p,
+                i,
+                d,
+                decay_rate,
+                type=self.id(CSTR_HDL.ProportionalIntegralDerivative),
+            )
         else:
             ks = self._optional_float(id_, CSTR_HDL["stiffness"], 0.0)
             kd = self._optional_float(id_, CSTR_HDL["damping"], 0.0)
-            return Controller(self.id(id_), error_signal, control_signal, 0.0, 0.0, 0.0, None,
-                              stiffness=ks, damping=kd,
-                              type=self.id(CSTR_HDL.ImpedanceController))
+            return Controller(
+                self.id(id_),
+                error_signal,
+                control_signal,
+                0.0,
+                0.0,
+                0.0,
+                None,
+                stiffness=ks,
+                damping=kd,
+                type=self.id(CSTR_HDL.ImpedanceController),
+            )
 
     def _optional_float(self, subject, predicate, default: float) -> float:
         value = self.g.value(subject, predicate)
@@ -1253,7 +1303,7 @@ class Parser:
     @memoize
     def wrench(self, id_):
         assert RBDYN_COORD["WrenchCoordinate"] in self.g[id_ : RDF["type"]]
-        #assert(RBDYN_COORD["VectorXYZ"] in self.g[id_ : RDF["type"]])
+        # assert(RBDYN_COORD["VectorXYZ"] in self.g[id_ : RDF["type"]])
 
         quantity_kind = []
         for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]]:
@@ -1270,9 +1320,8 @@ class Parser:
     def quantity(self, id_):
         assert QUDT_SCHEMA["Quantity"] in self.g[id_ : RDF["type"]]
 
-        quantity_kind_node = (
-            self.g.value(id_, QUDT_SCHEMA["hasQuantityKind"])
-            or self.g.value(id_, QUDT_SCHEMA["quantity-kind"])
+        quantity_kind_node = self.g.value(id_, QUDT_SCHEMA["hasQuantityKind"]) or self.g.value(
+            id_, QUDT_SCHEMA["quantity-kind"]
         )
         quantity_kind = self.quantity_kind(quantity_kind_node)
 
@@ -1450,7 +1499,7 @@ def _body_name(name: str | None) -> str | None:
         return None
     for prefix in ("frame_", "frame-", "link_", "link-"):
         if name.startswith(prefix):
-            return name[len(prefix):]
+            return name[len(prefix) :]
     return name
 
 
@@ -1498,13 +1547,16 @@ def _arm_solvers_for_handler(handler, slv_arm, closure_input_map=None):
         if not matched:
             continue
         selected = next((driver for driver in matched if driver.id == motion_driver_id), matched[0])
-        result.append(MotionArmSolver(
-            id=solver.id,
-            output=solver.output,
-            motion_driver=selected,
-            has_cartesian_force=bool(selected.cartesian_force),
-            root_acc=solver.root_acc,
-        ))
+        result.append(
+            MotionArmSolver(
+                id=solver.id,
+                output=solver.output,
+                motion_driver=selected,
+                control_mode=handler.control_mode,
+                has_cartesian_force=bool(selected.cartesian_force),
+                root_acc=solver.root_acc,
+            )
+        )
 
     return result
 
@@ -1563,7 +1615,9 @@ def _snapshot_reference_value_ids(evaluators, constraints):
     return ref_val_ids
 
 
-def _snapshots_for_motion(evaluators, constraints, snapshot_source_map, view_map, closure_output_map):
+def _snapshots_for_motion(
+    evaluators, constraints, snapshot_source_map, view_map, closure_output_map
+):
     ref_val_ids = _snapshot_reference_value_ids(evaluators, constraints)
     result = []
     seen = set()
@@ -1573,11 +1627,13 @@ def _snapshots_for_motion(evaluators, constraints, snapshot_source_map, view_map
         seen.add(target_id)
         source_id = snapshot_source_map[target_id]
         source_closure_id = None if source_id in view_map else closure_output_map.get(source_id)
-        result.append(SnapshotCapture(
-            target_id=target_id,
-            source_id=source_id,
-            source_closure_id=source_closure_id,
-        ))
+        result.append(
+            SnapshotCapture(
+                target_id=target_id,
+                source_id=source_id,
+                source_closure_id=source_closure_id,
+            )
+        )
     return result
 
 
@@ -1599,10 +1655,18 @@ _CLOSURE_OUTPUT_FIELDS = {
 }
 
 
-def build_motion_units(g, p, handlers, node_by_id, slv_arm,
-                       snapshot_source_map=None, view_map=None,
-                       closure_output_map=None, closure_input_map=None,
-                       closures=None):
+def build_motion_units(
+    g,
+    p,
+    handlers,
+    node_by_id,
+    slv_arm,
+    snapshot_source_map=None,
+    view_map=None,
+    closure_output_map=None,
+    closure_input_map=None,
+    closures=None,
+):
     snapshot_source_map = snapshot_source_map or {}
     view_map = view_map or {}
     closure_output_map = closure_output_map or {}
@@ -1649,7 +1713,8 @@ def build_motion_units(g, p, handlers, node_by_id, slv_arm,
                 while_error_nodes.add(error_node)
         while_error_nodes.discard(None)
         ctrl_nodes = [
-            n for n in g[handler_node : CSTR_HDL["controllers"]]
+            n
+            for n in g[handler_node : CSTR_HDL["controllers"]]
             if g.value(n, CSTR_HDL["error-signal"]) in while_error_nodes
         ]
 
@@ -1728,8 +1793,7 @@ def build_motion_units(g, p, handlers, node_by_id, slv_arm,
 
         p_active = Parser(g)
         while_schedule = p_active.schedule(
-            [n for n in while_eval_nodes if n not in while_pose_eval_nodes]
-            + ctrl_nodes,
+            [n for n in while_eval_nodes if n not in while_pose_eval_nodes] + ctrl_nodes,
             ops_generic + ops_cstr_hdl,
         )
         while_schedule.extend(
@@ -1772,6 +1836,7 @@ def build_motion_units(g, p, handlers, node_by_id, slv_arm,
             GuardedMotionBlock(
                 id=handler.motion.id,
                 handler=handler.id,
+                control_mode=handler.control_mode,
                 motion=handler.motion,
                 when_evaluators=when_evaluators,
                 while_evaluators=while_evaluators,
@@ -1796,12 +1861,16 @@ def build_motion_units(g, p, handlers, node_by_id, slv_arm,
                 snapshots=_snapshots_for_motion(
                     while_evaluators + when_evaluators + until_evaluators,
                     motion.while_ + motion.when + motion.until,
-                    snapshot_source_map, view_map, closure_output_map,
+                    snapshot_source_map,
+                    view_map,
+                    closure_output_map,
                 ),
             )
         )
 
-    return sorted(motions, key=lambda motion: next(h.order for h in handlers if h.id == motion.handler))
+    return sorted(
+        motions, key=lambda motion: next(h.order for h in handlers if h.id == motion.handler)
+    )
 
 
 def _filter_shared_data(data_structures, schedule, closures, view_map=None, fk_output_ids=None):
@@ -1823,10 +1892,12 @@ def _filter_shared_data(data_structures, schedule, closures, view_map=None, fk_o
     for item in data_structures:
         if item.type == "Quantity" and item.has_view:
             continue
-        if (item.type == "Quantity"
-                and getattr(item, "value", None) is None
-                and getattr(getattr(item, "quantity_kind", None), "id", "x") is None
-                and item.id not in referenced):
+        if (
+            item.type == "Quantity"
+            and getattr(item, "value", None) is None
+            and getattr(getattr(item, "quantity_kind", None), "id", "x") is None
+            and item.id not in referenced
+        ):
             continue
         if item.type in ("Pose", "VelocityTwist") and item.id not in referenced:
             continue
@@ -1963,10 +2034,7 @@ def generate_ir(manifest_path):
     for cid, c in closures.items():
         if not isinstance(c, dict):
             continue
-        inputs = {
-            v for k, v in c.items()
-            if k not in {"id", "type"} and isinstance(v, str)
-        }
+        inputs = {v for k, v in c.items() if k not in {"id", "type"} and isinstance(v, str)}
         out_field = _CLOSURE_OUTPUT_FIELDS.get(c.get("type", ""))
         if out_field:
             out_val = c.get(out_field)
@@ -1975,9 +2043,39 @@ def generate_ir(manifest_path):
                 closure_input_map[out_val] = {v for v in inputs if v != out_val}
 
     wrench_outputs = [
-        item for item in data_structures
+        item
+        for item in data_structures
         if item.type == "Wrench" and item.id not in closure_output_map
     ]
+
+    motions = build_motion_units(
+        g,
+        p,
+        hdl,
+        node_by_id,
+        slv_arm,
+        snapshot_source_map=snapshot_source_map,
+        view_map=view_map,
+        closure_output_map=closure_output_map,
+        closure_input_map=closure_input_map,
+        closures=closures,
+    )
+    for solver in slv_arm:
+        control_modes = {
+            arm_solver.control_mode
+            for motion in motions
+            for arm_solver in motion.arm_solvers
+            if arm_solver.id == solver.id and arm_solver.control_mode
+        }
+        if len(control_modes) == 1:
+            solver.control_mode = next(iter(control_modes))
+        elif len(control_modes) > 1:
+            raise ValueError(
+                f"Solver '{solver.id}' is used with multiple control modes: "
+                f"{', '.join(sorted(control_modes))}."
+            )
+        else:
+            raise ValueError(f"Solver '{solver.id}' is not associated with a control mode.")
 
     # Compose the overall schedule via concatenation
     return {
@@ -1985,21 +2083,16 @@ def generate_ir(manifest_path):
         "slv_base_vel": slv_base_vel,
         "slv_base_frc": slv_base_frc,
         "cstr_hdl": hdl,
-        "motions": build_motion_units(
-            g, p, hdl, node_by_id, slv_arm,
-            snapshot_source_map=snapshot_source_map,
-            view_map=view_map,
-            closure_output_map=closure_output_map,
-            closure_input_map=closure_input_map,
-            closures=closures,
-        ),
+        "motions": motions,
         "data": data_structures,
         "closures": closures,
         "shared_schedule": sched1 + sched3 + sched4,
         "schedule": sched1 + sched2 + sched3 + sched4,
         "views": view_map,
         "shared_data": _filter_shared_data(
-            data_structures, sched1 + sched2 + sched3 + sched4, closures,
+            data_structures,
+            sched1 + sched2 + sched3 + sched4,
+            closures,
             view_map=view_map,
             fk_output_ids={out.id for s in slv_arm for out in s.output},
         ),

@@ -33,6 +33,30 @@ class PIDControl {
     double decay_rate = 0.0;
 };
 
+// Spring-damper controller: maps a single scalar constraint error to a
+// force/torque output as F = ks*e + kd*(de/dt). The derivative is
+// approximated by finite difference on successive error samples, so
+// "error" is assumed to be a position or angle error; the damping term
+// then approximates velocity feedback rather than reading it directly.
+class ImpedanceControl {
+  public:
+    ImpedanceControl() = default;
+
+    ImpedanceControl(double stiffness, double damping)
+        : ks(stiffness), kd(damping) {}
+
+    double control(double error) {
+        double err_diff = error - err_last;
+        err_last = error;
+        return ks * error + kd * err_diff;
+    }
+
+  private:
+    double err_last = 0.0;
+    double ks = 0.0;
+    double kd = 0.0;
+};
+
 inline double evaluate_equality_constraint(double quantity, double reference) {
     return quantity - reference;
 }
@@ -82,6 +106,21 @@ inline void set_flag(bool &flag, bool active) {
 
 inline void warn_produce_event_not_implemented(std::string_view event_id) {
     std::cerr << "produce_event(" << event_id << ") not implemented yet\n";
+}
+
+inline unsigned int find_joint_index(const KDL::Chain &chain, std::string_view joint_name) {
+    unsigned int idx = 0;
+    for (unsigned int i = 0; i < chain.getNrOfSegments(); ++i) {
+        const auto &joint = chain.getSegment(i).getJoint();
+        if (joint.getType() == KDL::Joint::None) {
+            continue;
+        }
+        if (joint.getName() == joint_name) {
+            return idx;
+        }
+        ++idx;
+    }
+    throw std::runtime_error("KDL joint not found: " + std::string(joint_name));
 }
 
 inline unsigned int find_segment_index(const KDL::Chain &chain, std::string_view model_name) {

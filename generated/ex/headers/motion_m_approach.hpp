@@ -3,26 +3,9 @@
 #include "runtime.hpp"
 #include "shared_state.hpp"
 
-struct slv_m_approach_solver_state {
-    bool initialized = false;
-    int num_constraints = 0;
-    int num_joints = 0;
-    int num_segments = 0;
-    KDL::Twist root_acc;
-    KDL::JntArray q;
-    KDL::JntArray qd;
-    KDL::JntArray qdd;
-    KDL::JntArray tau_ff;
-    KDL::JntArray tau_ctrl;
-    KDL::Wrenches f_ext;
-    KDL::Jacobian f_cstr;
-    KDL::JntArray e_acc;
-    std::unique_ptr<KDL::ChainHdSolver_Vereshchagin_Fext> achd_fext;
-    std::unique_ptr<KDL::ChainHdSolver_Vereshchagin> achd_acc;
-};
-
 struct motion_m_approach_state {
-    slv_m_approach_solver_state slv_m_approach;
+    arm_solver_solver_state arm_solver;
+    bool snapshot_taken = false;
     motion_spec::runtime::PIDControl ctrl_linvel_z{5.0, 1.0, 1.0};
     motion_spec::runtime::PIDControl ctrl_linvel_x{5.0, 1.0, 1.0};
     motion_spec::runtime::PIDControl ctrl_linvel_y{5.0, 1.0, 1.0};
@@ -37,22 +20,21 @@ inline void reset_motion_m_approach(motion_m_approach_state &state) {
 }
 
 inline void init_motion_m_approach(motion_m_approach_state &state, const robot_io &robot) {
-    if (!state.slv_m_approach.initialized) {
-        state.slv_m_approach.num_constraints = 3;
-        state.slv_m_approach.num_joints = robot.slv_m_approach.chain->getNrOfJoints();
-        state.slv_m_approach.num_segments = robot.slv_m_approach.chain->getNrOfSegments();
-        state.slv_m_approach.q = KDL::JntArray(state.slv_m_approach.num_joints);
-        state.slv_m_approach.qd = KDL::JntArray(state.slv_m_approach.num_joints);
-        state.slv_m_approach.qdd = KDL::JntArray(state.slv_m_approach.num_joints);
-        state.slv_m_approach.tau_ff = KDL::JntArray(state.slv_m_approach.num_joints);
-        state.slv_m_approach.tau_ctrl = KDL::JntArray(state.slv_m_approach.num_joints);
-        state.slv_m_approach.f_ext = KDL::Wrenches(state.slv_m_approach.num_segments);
-        state.slv_m_approach.f_cstr = KDL::Jacobian(state.slv_m_approach.num_constraints);
-        state.slv_m_approach.e_acc = KDL::JntArray(state.slv_m_approach.num_constraints);
-        state.slv_m_approach.achd_fext = std::make_unique<KDL::ChainHdSolver_Vereshchagin_Fext>(*robot.slv_m_approach.chain, state.slv_m_approach.root_acc, state.slv_m_approach.num_constraints);
-        state.slv_m_approach.achd_acc = std::make_unique<KDL::ChainHdSolver_Vereshchagin>(*robot.slv_m_approach.chain, state.slv_m_approach.root_acc, state.slv_m_approach.num_constraints);
-        state.slv_m_approach.initialized = true;
-}
+    if (!state.arm_solver.initialized) {
+        state.arm_solver.num_constraints = 3;
+        state.arm_solver.num_joints = robot.arm_solver.chain->getNrOfJoints();
+        state.arm_solver.num_segments = robot.arm_solver.chain->getNrOfSegments();
+        state.arm_solver.q = KDL::JntArray(state.arm_solver.num_joints);
+        state.arm_solver.qd = KDL::JntArray(state.arm_solver.num_joints);
+        state.arm_solver.qdd = KDL::JntArray(state.arm_solver.num_joints);
+        state.arm_solver.tau_ff = KDL::JntArray(state.arm_solver.num_joints);
+        state.arm_solver.tau_ctrl = KDL::JntArray(state.arm_solver.num_joints);
+        state.arm_solver.f_cstr = KDL::Jacobian(state.arm_solver.num_constraints);
+        state.arm_solver.e_acc = KDL::JntArray(state.arm_solver.num_constraints);
+        state.arm_solver.root_acc.vel = KDL::Vector(-0.0, -0.0, 9.81);
+        state.arm_solver.achd_acc = std::make_unique<KDL::ChainHdSolver_Vereshchagin>(*robot.arm_solver.chain, state.arm_solver.root_acc, state.arm_solver.num_constraints);
+        state.arm_solver.initialized = true;
+    }
 }
 
 inline void update_motion_m_approach(
@@ -63,14 +45,23 @@ inline void update_motion_m_approach(
     if (robot.wrench_ee != nullptr) {
         shared.wrench_ee = *robot.wrench_ee;
     }
-
-    for (int i = 0; i < state.slv_m_approach.num_joints; ++i) {
-        state.slv_m_approach.q(i) = robot.slv_m_approach.state->pos_msr[i];
-        state.slv_m_approach.qd(i) = robot.slv_m_approach.state->vel_msr[i];
+    if (robot.wrench_ee != nullptr) {
+        shared.wrench_ee = *robot.wrench_ee;
     }
-    KDL::JntArrayVel q_qd_slv_m_approach(state.slv_m_approach.q, state.slv_m_approach.qd);
+
+    for (int i = 0; i < state.arm_solver.num_joints; ++i) {
+        state.arm_solver.q(i) = robot.arm_solver.state->pos_msr[i];
+        state.arm_solver.qd(i) = robot.arm_solver.state->vel_msr[i];
+    }
+    KDL::JntArrayVel q_qd_arm_solver(state.arm_solver.q, state.arm_solver.qd);
+    shared.q_j2 = state.arm_solver.q(motion_spec::runtime::find_joint_index(*robot.arm_solver.chain, "joint-2"));
+
+    shared.q_j4 = state.arm_solver.q(motion_spec::runtime::find_joint_index(*robot.arm_solver.chain, "joint-4"));
 
 
+    if (!state.snapshot_taken) {
+        state.snapshot_taken = true;
+    }
 }
 
 inline bool can_start_motion_m_approach(
@@ -82,17 +73,13 @@ inline bool can_start_motion_m_approach(
 inline void monitor_motion_m_approach(
     motion_m_approach_state &state,
     shared_data &shared) {
-    // eval_m_contact_while_cstr_frc_z
-    shared.wrench_ee.force.z_err_m_contact = motion_spec::runtime::evaluate_equality_constraint(shared.wrench_ee.force[2], shared.frc_z_ref);
-    // ctrl_frc_z
-    shared.wrench_ee.force.z = state.ctrl_frc_z.control(shared.wrench_ee.force.z_err_m_contact);
     // eval_m_approach_until_cstr_contact
-    shared.wrench_ee.force.z_err = motion_spec::runtime::evaluate_greater_than_constraint(shared.wrench_ee.force[2], shared.frc_threshold);
+    shared.wrench_ee_force_z_err = motion_spec::runtime::evaluate_greater_than_constraint(shared.wrench_ee.force[2], shared.frc_threshold);
     // eval_m_approach_until_cstr_overload
-    shared.wrench_ee.force.z_err = motion_spec::runtime::evaluate_greater_than_constraint(shared.wrench_ee.force[2], shared.frc_overload);
+    shared.wrench_ee_force_z_err = motion_spec::runtime::evaluate_greater_than_constraint(shared.wrench_ee.force[2], shared.frc_overload);
 
     {
-        const bool active = motion_spec::runtime::constraint_satisfied(shared.wrench_ee.force.z_err);
+        const bool active = motion_spec::runtime::constraint_satisfied(shared.wrench_ee_force_z_err);
         if (motion_spec::runtime::rising_edge(state.mon_contact_previous, active)) {
             motion_spec::runtime::warn_produce_event_not_implemented("evt_contact");
         }
@@ -101,7 +88,7 @@ inline void monitor_motion_m_approach(
 
 
     {
-        const bool active = motion_spec::runtime::constraint_satisfied(shared.wrench_ee.force.z_err);
+        const bool active = motion_spec::runtime::constraint_satisfied(shared.wrench_ee_force_z_err);
         if (motion_spec::runtime::rising_edge(state.mon_overload_previous, active)) {
             motion_spec::runtime::warn_produce_event_not_implemented("evt_overload");
         }
@@ -114,11 +101,11 @@ inline void control_motion_m_approach(
     shared_data &shared,
     const robot_io &robot) {
     // eval_m_approach_while_cstr_linvel_z
-    shared.twist_ee.linear.z_err_m_approach = motion_spec::runtime::evaluate_equality_constraint(shared.twist_ee.vel[2], shared.vel_z_down);
+    shared.twist_ee_linear_z_err_m_approach = motion_spec::runtime::evaluate_equality_constraint(shared.twist_ee.vel[2], shared.vel_z_down);
     // eval_m_approach_while_cstr_linvel_x
-    shared.twist_ee.linear.x_err_m_approach = motion_spec::runtime::evaluate_equality_constraint(shared.twist_ee.vel[0], shared.vel_zero);
+    shared.twist_ee_linear_x_err_m_approach = motion_spec::runtime::evaluate_equality_constraint(shared.twist_ee.vel[0], shared.vel_zero);
     // eval_m_approach_while_cstr_linvel_y
-    shared.twist_ee.linear.y_err_m_approach = motion_spec::runtime::evaluate_equality_constraint(shared.twist_ee.vel[1], shared.vel_y_zero);
+    shared.twist_ee_linear_y_err_m_approach = motion_spec::runtime::evaluate_equality_constraint(shared.twist_ee.vel[1], shared.vel_y_zero);
     // eval_m_approach_while_cstr_keep_j2
     shared.q_j2_err = motion_spec::runtime::evaluate_greater_than_constraint(shared.q_j2, shared.q_j2_ref);
     // eval_m_approach_while_cstr_limit_j4
@@ -128,54 +115,83 @@ inline void control_motion_m_approach(
     // ctrl_keep_j2
     shared.tau_ctrl_keep_j2 = state.ctrl_keep_j2.control(shared.q_j2_err);
     // ctrl_linvel_y
-    shared.eacc_twist_ee.linear.y_m_approach = state.ctrl_linvel_y.control(shared.twist_ee.linear.y_err_m_approach);
+    shared.eacc_twist_ee_linear_y_m_approach = state.ctrl_linvel_y.control(shared.twist_ee_linear_y_err_m_approach);
     // ctrl_linvel_x
-    shared.eacc_twist_ee.linear.x_m_approach = state.ctrl_linvel_x.control(shared.twist_ee.linear.x_err_m_approach);
+    shared.eacc_twist_ee_linear_x_m_approach = state.ctrl_linvel_x.control(shared.twist_ee_linear_x_err_m_approach);
     // ctrl_linvel_z
-    shared.eacc_twist_ee.linear.z_m_approach = state.ctrl_linvel_z.control(shared.twist_ee.linear.z_err_m_approach);
+    shared.eacc_twist_ee_linear_z_m_approach = state.ctrl_linvel_z.control(shared.twist_ee_linear_z_err_m_approach);
 
 
 
-    KDL::SetToZero(state.slv_m_approach.f_cstr);
-    state.slv_m_approach.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Linear, motion_spec::runtime::Axis::X), 0) = 1.0;
-state.slv_m_approach.e_acc(0) = shared.eacc_twist_ee.linear.x_m_approach;
-    state.slv_m_approach.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Linear, motion_spec::runtime::Axis::Y), 1) = 1.0;
-state.slv_m_approach.e_acc(1) = shared.eacc_twist_ee.linear.y_m_approach;
-    state.slv_m_approach.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Linear, motion_spec::runtime::Axis::Z), 2) = 1.0;
-state.slv_m_approach.e_acc(2) = shared.eacc_twist_ee.linear.z_m_approach;
-    for (int i = 0; i < state.slv_m_approach.num_segments; ++i) {
-        KDL::SetToZero(state.slv_m_approach.f_ext[i]);
+    KDL::SetToZero(state.arm_solver.f_cstr);
+    {
+        KDL::Frame alpha_frame_arm_solver_0;
+        KDL::ChainFkSolverPos_recursive alpha_fk_arm_solver_0(*robot.arm_solver.chain);
+        alpha_fk_arm_solver_0.JntToCart(
+            state.arm_solver.q,
+            alpha_frame_arm_solver_0,
+            motion_spec::runtime::find_segment_index(*robot.arm_solver.chain, "frame_ee"));
+        const KDL::Vector alpha_axis_arm_solver_0 =
+            alpha_frame_arm_solver_0.M * KDL::Vector(0.0, 0.0, 1.0);
+        state.arm_solver.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Linear, motion_spec::runtime::Axis::X), 0) = alpha_axis_arm_solver_0[0];
+        state.arm_solver.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Linear, motion_spec::runtime::Axis::Y), 0) = alpha_axis_arm_solver_0[1];
+        state.arm_solver.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Linear, motion_spec::runtime::Axis::Z), 0) = alpha_axis_arm_solver_0[2];
     }
-    KDL::JntArray tau_ctrl_fext_slv_m_approach(state.slv_m_approach.num_joints);
-    state.slv_m_approach.achd_fext->CartToJnt(
-        state.slv_m_approach.q,
-        state.slv_m_approach.qd,
-        state.slv_m_approach.qdd,
-        state.slv_m_approach.f_cstr,
-        state.slv_m_approach.e_acc,
-        state.slv_m_approach.f_ext,
-        state.slv_m_approach.tau_ff,
-        tau_ctrl_fext_slv_m_approach);
-    KDL::Wrenches f_ext_zero_slv_m_approach(state.slv_m_approach.num_segments);
-    KDL::JntArray tau_ctrl_acc_slv_m_approach(state.slv_m_approach.num_joints);
-    state.slv_m_approach.achd_acc->CartToJnt(
-        state.slv_m_approach.q,
-        state.slv_m_approach.qd,
-        state.slv_m_approach.qdd,
-        state.slv_m_approach.f_cstr,
-        state.slv_m_approach.e_acc,
-        f_ext_zero_slv_m_approach,
-        state.slv_m_approach.tau_ff,
-        tau_ctrl_acc_slv_m_approach);
-    KDL::Add(tau_ctrl_fext_slv_m_approach, tau_ctrl_acc_slv_m_approach, state.slv_m_approach.tau_ctrl);
+    state.arm_solver.e_acc(0) = shared.eacc_twist_ee_linear_z_m_approach;
+
+    {
+        KDL::Frame alpha_frame_arm_solver_1;
+        KDL::ChainFkSolverPos_recursive alpha_fk_arm_solver_1(*robot.arm_solver.chain);
+        alpha_fk_arm_solver_1.JntToCart(
+            state.arm_solver.q,
+            alpha_frame_arm_solver_1,
+            motion_spec::runtime::find_segment_index(*robot.arm_solver.chain, "frame_ee"));
+        const KDL::Vector alpha_axis_arm_solver_1 =
+            alpha_frame_arm_solver_1.M * KDL::Vector(1.0, 0.0, 0.0);
+        state.arm_solver.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Linear, motion_spec::runtime::Axis::X), 1) = alpha_axis_arm_solver_1[0];
+        state.arm_solver.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Linear, motion_spec::runtime::Axis::Y), 1) = alpha_axis_arm_solver_1[1];
+        state.arm_solver.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Linear, motion_spec::runtime::Axis::Z), 1) = alpha_axis_arm_solver_1[2];
+    }
+    state.arm_solver.e_acc(1) = shared.eacc_twist_ee_linear_x_m_approach;
+
+    {
+        KDL::Frame alpha_frame_arm_solver_2;
+        KDL::ChainFkSolverPos_recursive alpha_fk_arm_solver_2(*robot.arm_solver.chain);
+        alpha_fk_arm_solver_2.JntToCart(
+            state.arm_solver.q,
+            alpha_frame_arm_solver_2,
+            motion_spec::runtime::find_segment_index(*robot.arm_solver.chain, "frame_ee"));
+        const KDL::Vector alpha_axis_arm_solver_2 =
+            alpha_frame_arm_solver_2.M * KDL::Vector(0.0, 1.0, 0.0);
+        state.arm_solver.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Linear, motion_spec::runtime::Axis::X), 2) = alpha_axis_arm_solver_2[0];
+        state.arm_solver.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Linear, motion_spec::runtime::Axis::Y), 2) = alpha_axis_arm_solver_2[1];
+        state.arm_solver.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Linear, motion_spec::runtime::Axis::Z), 2) = alpha_axis_arm_solver_2[2];
+    }
+    state.arm_solver.e_acc(2) = shared.eacc_twist_ee_linear_y_m_approach;
+    KDL::SetToZero(state.arm_solver.tau_ff);
+    state.arm_solver.tau_ff(motion_spec::runtime::find_joint_index(*robot.arm_solver.chain, "joint-2")) += shared.tau_ctrl_keep_j2;
+    state.arm_solver.tau_ff(motion_spec::runtime::find_joint_index(*robot.arm_solver.chain, "joint-4")) += shared.tau_ctrl_limit_j4;
+    KDL::Wrenches f_ext_zero_arm_solver(state.arm_solver.num_segments);
+    KDL::JntArray tau_ctrl_acc_arm_solver(state.arm_solver.num_joints);
+    state.arm_solver.achd_acc->CartToJnt(
+        state.arm_solver.q,
+        state.arm_solver.qd,
+        state.arm_solver.qdd,
+        state.arm_solver.f_cstr,
+        state.arm_solver.e_acc,
+        f_ext_zero_arm_solver,
+        state.arm_solver.tau_ff,
+        tau_ctrl_acc_arm_solver);
+    state.arm_solver.tau_ctrl = tau_ctrl_acc_arm_solver;
+
 }
 
 inline void apply_motion_m_approach(
     motion_m_approach_state &state,
     shared_data &shared,
     const robot_io &robot) {
-    for (int i = 0; i < state.slv_m_approach.num_joints; ++i) {
-        robot.slv_m_approach.state->eff_cmd[i] = state.slv_m_approach.tau_ctrl(i);
+    for (int i = 0; i < state.arm_solver.num_joints; ++i) {
+        robot.arm_solver.state->eff_cmd[i] = state.arm_solver.tau_ctrl(i);
     }
-    robif2b_kinova_gen3_update(robot.slv_m_approach.robot);
+    robif2b_kinova_gen3_update(robot.arm_solver.robot);
 }

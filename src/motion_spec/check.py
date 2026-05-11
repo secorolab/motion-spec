@@ -9,7 +9,12 @@ import pyshacl
 import rdflib
 from rdf_utils.resolver import IriToFileResolver, install_resolver
 
-from motion_spec.namespace import APP
+from rdflib.namespace import RDF
+
+from motion_spec.namespace import APP, CSTR_HDL
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[2]
+SUPPORTED_CONTROL_MODES = {"JointTorque"}
 
 
 def main():
@@ -81,7 +86,8 @@ Examples:
                 # For non-models paths, resolve normally relative to manifest
                 absolute_path = app_model_path.parent / value
                 if not absolute_path.exists():
-                    absolute_path = Path.cwd() / value
+                    source_path = PACKAGE_ROOT / value
+                    absolute_path = source_path if source_path.exists() else Path.cwd() / value
                 url_map[str(key)] = str(absolute_path)
 
     install_resolver(IriToFileResolver(url_map))
@@ -90,6 +96,24 @@ Examples:
     models = list(g.objects(predicate=APP["import"]))
     for o in models:
         g.parse(location=o, format="json-ld")
+
+    validation_errors = []
+    for handler in g.subjects(RDF.type, CSTR_HDL["ConstraintHandler"]):
+        control_mode = g.value(handler, CSTR_HDL["control-mode"])
+        if control_mode is None:
+            validation_errors.append(f"Constraint handler '{handler}' is missing control-mode.")
+            continue
+        mode_name = str(control_mode).rsplit("#", 1)[-1].rsplit("/", 1)[-1]
+        if mode_name not in SUPPORTED_CONTROL_MODES:
+            validation_errors.append(
+                f"Constraint handler '{handler}' uses unsupported control mode '{mode_name}'."
+            )
+    if validation_errors:
+        print("Validation Report")
+        print("Conforms: False")
+        for error in validation_errors:
+            print(error)
+        sys.exit(1)
 
     g_sh = rdflib.Dataset()
     metamodels = list(g.objects(predicate=APP["constraints"]))

@@ -32,7 +32,7 @@
   "@graph": [
     {
       "import": [
-        "ex.json"
+        "sc1.json"
       ],
       "constraints": [
         "geometry/coordinates.ttl",

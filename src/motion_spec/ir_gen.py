@@ -38,6 +38,8 @@ from motion_spec.namespace import (
     SLV,
 )
 
+PACKAGE_ROOT = Path(__file__).resolve().parents[2]
+
 
 class JSONEncoder(json.JSONEncoder):
     def default(self, o):
@@ -1949,7 +1951,8 @@ def generate_ir(manifest_path):
 
         absolute_path = app_model_path.parent / relative_path
         if not absolute_path.exists():
-            absolute_path = Path.cwd() / relative_path
+            source_path = PACKAGE_ROOT / relative_path
+            absolute_path = source_path if source_path.exists() else Path.cwd() / relative_path
         url_map[str(key)] = str(absolute_path)
 
     install_resolver(IriToFileResolver(url_map))

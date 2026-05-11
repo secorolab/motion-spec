@@ -3,45 +3,9 @@
 #include "runtime.hpp"
 #include "shared_state.hpp"
 
-struct slv_m_loosen_solver_state {
-    bool initialized = false;
-    int num_constraints = 0;
-    int num_joints = 0;
-    int num_segments = 0;
-    KDL::Twist root_acc;
-    KDL::JntArray q;
-    KDL::JntArray qd;
-    KDL::JntArray qdd;
-    KDL::JntArray tau_ff;
-    KDL::JntArray tau_ctrl;
-    KDL::Wrenches f_ext;
-    KDL::Jacobian f_cstr;
-    KDL::JntArray e_acc;
-    std::unique_ptr<KDL::ChainHdSolver_Vereshchagin_Fext> achd_fext;
-    std::unique_ptr<KDL::ChainHdSolver_Vereshchagin> achd_acc;
-};
-
-struct slv_m_find_solver_state {
-    bool initialized = false;
-    int num_constraints = 0;
-    int num_joints = 0;
-    int num_segments = 0;
-    KDL::Twist root_acc;
-    KDL::JntArray q;
-    KDL::JntArray qd;
-    KDL::JntArray qdd;
-    KDL::JntArray tau_ff;
-    KDL::JntArray tau_ctrl;
-    KDL::Wrenches f_ext;
-    KDL::Jacobian f_cstr;
-    KDL::JntArray e_acc;
-    std::unique_ptr<KDL::ChainHdSolver_Vereshchagin_Fext> achd_fext;
-    std::unique_ptr<KDL::ChainHdSolver_Vereshchagin> achd_acc;
-};
-
 struct motion_m_find_state {
-    slv_m_loosen_solver_state slv_m_loosen;
-    slv_m_find_solver_state slv_m_find;
+    right_arm_solver_solver_state right_arm_solver;
+    bool snapshot_taken = false;
     motion_spec::runtime::PIDControl ctrl_angvel_find{8.0, 0.5, 3.0};
     motion_spec::runtime::PIDControl ctrl_linvel_ee_x_zero{5.0, 1.0, 3.0};
     motion_spec::runtime::PIDControl ctrl_linvel_ee_y_zero{5.0, 1.0, 3.0};
@@ -58,38 +22,21 @@ inline void reset_motion_m_find(motion_m_find_state &state) {
 }
 
 inline void init_motion_m_find(motion_m_find_state &state, const robot_io &robot) {
-    if (!state.slv_m_loosen.initialized) {
-        state.slv_m_loosen.num_constraints = 6;
-        state.slv_m_loosen.num_joints = robot.slv_m_loosen.chain->getNrOfJoints();
-        state.slv_m_loosen.num_segments = robot.slv_m_loosen.chain->getNrOfSegments();
-        state.slv_m_loosen.q = KDL::JntArray(state.slv_m_loosen.num_joints);
-        state.slv_m_loosen.qd = KDL::JntArray(state.slv_m_loosen.num_joints);
-        state.slv_m_loosen.qdd = KDL::JntArray(state.slv_m_loosen.num_joints);
-        state.slv_m_loosen.tau_ff = KDL::JntArray(state.slv_m_loosen.num_joints);
-        state.slv_m_loosen.tau_ctrl = KDL::JntArray(state.slv_m_loosen.num_joints);
-        state.slv_m_loosen.f_ext = KDL::Wrenches(state.slv_m_loosen.num_segments);
-        state.slv_m_loosen.f_cstr = KDL::Jacobian(state.slv_m_loosen.num_constraints);
-        state.slv_m_loosen.e_acc = KDL::JntArray(state.slv_m_loosen.num_constraints);
-        state.slv_m_loosen.achd_fext = std::make_unique<KDL::ChainHdSolver_Vereshchagin_Fext>(*robot.slv_m_loosen.chain, state.slv_m_loosen.root_acc, state.slv_m_loosen.num_constraints);
-        state.slv_m_loosen.achd_acc = std::make_unique<KDL::ChainHdSolver_Vereshchagin>(*robot.slv_m_loosen.chain, state.slv_m_loosen.root_acc, state.slv_m_loosen.num_constraints);
-        state.slv_m_loosen.initialized = true;
-}
-    if (!state.slv_m_find.initialized) {
-        state.slv_m_find.num_constraints = 6;
-        state.slv_m_find.num_joints = robot.slv_m_find.chain->getNrOfJoints();
-        state.slv_m_find.num_segments = robot.slv_m_find.chain->getNrOfSegments();
-        state.slv_m_find.q = KDL::JntArray(state.slv_m_find.num_joints);
-        state.slv_m_find.qd = KDL::JntArray(state.slv_m_find.num_joints);
-        state.slv_m_find.qdd = KDL::JntArray(state.slv_m_find.num_joints);
-        state.slv_m_find.tau_ff = KDL::JntArray(state.slv_m_find.num_joints);
-        state.slv_m_find.tau_ctrl = KDL::JntArray(state.slv_m_find.num_joints);
-        state.slv_m_find.f_ext = KDL::Wrenches(state.slv_m_find.num_segments);
-        state.slv_m_find.f_cstr = KDL::Jacobian(state.slv_m_find.num_constraints);
-        state.slv_m_find.e_acc = KDL::JntArray(state.slv_m_find.num_constraints);
-        state.slv_m_find.achd_fext = std::make_unique<KDL::ChainHdSolver_Vereshchagin_Fext>(*robot.slv_m_find.chain, state.slv_m_find.root_acc, state.slv_m_find.num_constraints);
-        state.slv_m_find.achd_acc = std::make_unique<KDL::ChainHdSolver_Vereshchagin>(*robot.slv_m_find.chain, state.slv_m_find.root_acc, state.slv_m_find.num_constraints);
-        state.slv_m_find.initialized = true;
-}
+    if (!state.right_arm_solver.initialized) {
+        state.right_arm_solver.num_constraints = 6;
+        state.right_arm_solver.num_joints = robot.right_arm_solver.chain->getNrOfJoints();
+        state.right_arm_solver.num_segments = robot.right_arm_solver.chain->getNrOfSegments();
+        state.right_arm_solver.q = KDL::JntArray(state.right_arm_solver.num_joints);
+        state.right_arm_solver.qd = KDL::JntArray(state.right_arm_solver.num_joints);
+        state.right_arm_solver.qdd = KDL::JntArray(state.right_arm_solver.num_joints);
+        state.right_arm_solver.tau_ff = KDL::JntArray(state.right_arm_solver.num_joints);
+        state.right_arm_solver.tau_ctrl = KDL::JntArray(state.right_arm_solver.num_joints);
+        state.right_arm_solver.f_cstr = KDL::Jacobian(state.right_arm_solver.num_constraints);
+        state.right_arm_solver.e_acc = KDL::JntArray(state.right_arm_solver.num_constraints);
+        state.right_arm_solver.root_acc.vel = KDL::Vector(-0.0, -0.0, 9.81);
+        state.right_arm_solver.achd_acc = std::make_unique<KDL::ChainHdSolver_Vereshchagin>(*robot.right_arm_solver.chain, state.right_arm_solver.root_acc, state.right_arm_solver.num_constraints);
+        state.right_arm_solver.initialized = true;
+    }
 }
 
 inline void update_motion_m_find(
@@ -100,21 +47,20 @@ inline void update_motion_m_find(
     if (robot.wrench_ee_ee != nullptr) {
         shared.wrench_ee_ee = *robot.wrench_ee_ee;
     }
-
-    for (int i = 0; i < state.slv_m_loosen.num_joints; ++i) {
-        state.slv_m_loosen.q(i) = robot.slv_m_loosen.state->pos_msr[i];
-        state.slv_m_loosen.qd(i) = robot.slv_m_loosen.state->vel_msr[i];
+    if (robot.wrench_ee_ee != nullptr) {
+        shared.wrench_ee_ee = *robot.wrench_ee_ee;
     }
-    KDL::JntArrayVel q_qd_slv_m_loosen(state.slv_m_loosen.q, state.slv_m_loosen.qd);
 
-
-    for (int i = 0; i < state.slv_m_find.num_joints; ++i) {
-        state.slv_m_find.q(i) = robot.slv_m_find.state->pos_msr[i];
-        state.slv_m_find.qd(i) = robot.slv_m_find.state->vel_msr[i];
+    for (int i = 0; i < state.right_arm_solver.num_joints; ++i) {
+        state.right_arm_solver.q(i) = robot.right_arm_solver.state->pos_msr[i];
+        state.right_arm_solver.qd(i) = robot.right_arm_solver.state->vel_msr[i];
     }
-    KDL::JntArrayVel q_qd_slv_m_find(state.slv_m_find.q, state.slv_m_find.qd);
+    KDL::JntArrayVel q_qd_right_arm_solver(state.right_arm_solver.q, state.right_arm_solver.qd);
 
 
+    if (!state.snapshot_taken) {
+        state.snapshot_taken = true;
+    }
 }
 
 inline bool can_start_motion_m_find(
@@ -126,18 +72,18 @@ inline bool can_start_motion_m_find(
 inline void monitor_motion_m_find(
     motion_m_find_state &state,
     shared_data &shared) {
-    // compute_pose_arm_ee_world.rotation.z
-    KDL::Vector _pose_arm_ee_world.rotation.z = KDL::Vector;
-    shared.pose_arm_ee_world.rotation.z = shared.pose_arm_ee_world.M.GetRotAngle(_pose_arm_ee_world.rotation.z);
+    // compute_pose_arm_ee_world_rotation_z
+    KDL::Vector diff_pose_arm_ee_world_rotation_z = KDL::diff(KDL::Rotation::Identity(), shared.pose_arm_ee_world.M);
+    shared.pose_arm_ee_world_rotation_z = diff_pose_arm_ee_world_rotation_z[2];
     // eval_m_find_until_cstr_torque_find_shutoff
-    shared.wrench_ee_ee.torque.z_err = motion_spec::runtime::evaluate_greater_than_constraint(shared.wrench_ee_ee.torque[2], shared.torque_find_shutoff);
+    shared.wrench_ee_ee_torque_z_err = motion_spec::runtime::evaluate_greater_than_constraint(shared.wrench_ee_ee.torque[2], shared.torque_find_shutoff);
     // eval_m_find_until_cstr_rotation_find_limit
-    shared.pose_arm_ee_world.rotation.z_err = motion_spec::runtime::evaluate_greater_than_constraint(shared.pose_arm_ee_world.rotation.z, shared.rotation_find_limit);
+    shared.pose_arm_ee_world_rotation_z_err = motion_spec::runtime::evaluate_greater_than_constraint(shared.pose_arm_ee_world_rotation_z, shared.rotation_find_limit);
     // eval_m_find_until_cstr_torque_find_upper_limit
-    shared.wrench_ee_ee.torque.z_err = motion_spec::runtime::evaluate_greater_than_constraint(shared.wrench_ee_ee.torque[2], shared.torque_find_upper_limit);
+    shared.wrench_ee_ee_torque_z_err = motion_spec::runtime::evaluate_greater_than_constraint(shared.wrench_ee_ee.torque[2], shared.torque_find_upper_limit);
 
     {
-        const bool active = motion_spec::runtime::constraint_satisfied(shared.wrench_ee_ee.torque.z_err);
+        const bool active = motion_spec::runtime::constraint_satisfied(shared.wrench_ee_ee_torque_z_err);
         if (motion_spec::runtime::rising_edge(state.mon_torque_find_shutoff_previous, active)) {
             motion_spec::runtime::warn_produce_event_not_implemented("evt_torque_find_shutoff");
         }
@@ -146,7 +92,7 @@ inline void monitor_motion_m_find(
 
 
     {
-        const bool active = motion_spec::runtime::constraint_satisfied(shared.pose_arm_ee_world.rotation.z_err);
+        const bool active = motion_spec::runtime::constraint_satisfied(shared.pose_arm_ee_world_rotation_z_err);
         if (motion_spec::runtime::rising_edge(state.mon_rotation_find_limit_previous, active)) {
             motion_spec::runtime::warn_produce_event_not_implemented("evt_rotation_find_limit");
         }
@@ -155,7 +101,7 @@ inline void monitor_motion_m_find(
 
 
     {
-        const bool active = motion_spec::runtime::constraint_satisfied(shared.wrench_ee_ee.torque.z_err);
+        const bool active = motion_spec::runtime::constraint_satisfied(shared.wrench_ee_ee_torque_z_err);
         if (motion_spec::runtime::rising_edge(state.mon_torque_find_upper_limit_previous, active)) {
             motion_spec::runtime::warn_produce_event_not_implemented("evt_torque_find_upper_limit");
         }
@@ -168,120 +114,144 @@ inline void control_motion_m_find(
     shared_data &shared,
     const robot_io &robot) {
     // eval_m_find_while_cstr_angvel_find
-    shared.twist_ee_ee.angular.z_err_m_find = motion_spec::runtime::evaluate_equality_constraint(shared.twist_ee_ee.rot[2], shared.angvel_ee_z_ref_find);
+    shared.twist_ee_ee_angular_z_err_m_find = motion_spec::runtime::evaluate_equality_constraint(shared.twist_ee_ee.rot[2], shared.angvel_ee_z_ref_find);
     // eval_m_find_while_cstr_linvel_ee_x_zero
-    shared.twist_ee_ee.linear.x_err = motion_spec::runtime::evaluate_equality_constraint(shared.twist_ee_ee.vel[0], shared.linvel_zero_ref);
+    shared.twist_ee_ee_linear_x_err = motion_spec::runtime::evaluate_equality_constraint(shared.twist_ee_ee.vel[0], shared.linvel_zero_ref);
     // eval_m_find_while_cstr_linvel_ee_y_zero
-    shared.twist_ee_ee.linear.y_err = motion_spec::runtime::evaluate_equality_constraint(shared.twist_ee_ee.vel[1], shared.linvel_zero_inline_ref);
+    shared.twist_ee_ee_linear_y_err = motion_spec::runtime::evaluate_equality_constraint(shared.twist_ee_ee.vel[1], shared.linvel_zero_inline_ref);
     // eval_m_find_while_cstr_linvel_ee_z_zero
-    shared.twist_ee_ee.linear.z_err = motion_spec::runtime::evaluate_equality_constraint(shared.twist_ee_ee.vel[2], shared.linvel_zero_ref);
+    shared.twist_ee_ee_linear_z_err = motion_spec::runtime::evaluate_equality_constraint(shared.twist_ee_ee.vel[2], shared.linvel_zero_ref);
     // eval_m_find_while_cstr_angvel_ee_x_zero
-    shared.twist_ee_ee.angular.x_err = motion_spec::runtime::evaluate_equality_constraint(shared.twist_ee_ee.rot[0], shared.angvel_zero_ref);
+    shared.twist_ee_ee_angular_x_err = motion_spec::runtime::evaluate_equality_constraint(shared.twist_ee_ee.rot[0], shared.angvel_zero_ref);
     // eval_m_find_while_cstr_angvel_ee_y_zero
-    shared.twist_ee_ee.angular.y_err = motion_spec::runtime::evaluate_equality_constraint(shared.twist_ee_ee.rot[1], shared.angvel_zero_ref);
+    shared.twist_ee_ee_angular_y_err = motion_spec::runtime::evaluate_equality_constraint(shared.twist_ee_ee.rot[1], shared.angvel_zero_ref);
     // ctrl_angvel_ee_y_zero
-    shared.eacc_twist_ee_ee.angular.y = state.ctrl_angvel_ee_y_zero.control(shared.twist_ee_ee.angular.y_err);
+    shared.eacc_twist_ee_ee_angular_y = state.ctrl_angvel_ee_y_zero.control(shared.twist_ee_ee_angular_y_err);
     // ctrl_angvel_ee_x_zero
-    shared.eacc_twist_ee_ee.angular.x = state.ctrl_angvel_ee_x_zero.control(shared.twist_ee_ee.angular.x_err);
+    shared.eacc_twist_ee_ee_angular_x = state.ctrl_angvel_ee_x_zero.control(shared.twist_ee_ee_angular_x_err);
     // ctrl_linvel_ee_z_zero
-    shared.eacc_twist_ee_ee.linear.z = state.ctrl_linvel_ee_z_zero.control(shared.twist_ee_ee.linear.z_err);
+    shared.eacc_twist_ee_ee_linear_z = state.ctrl_linvel_ee_z_zero.control(shared.twist_ee_ee_linear_z_err);
     // ctrl_linvel_ee_y_zero
-    shared.eacc_twist_ee_ee.linear.y = state.ctrl_linvel_ee_y_zero.control(shared.twist_ee_ee.linear.y_err);
+    shared.eacc_twist_ee_ee_linear_y = state.ctrl_linvel_ee_y_zero.control(shared.twist_ee_ee_linear_y_err);
     // ctrl_linvel_ee_x_zero
-    shared.eacc_twist_ee_ee.linear.x = state.ctrl_linvel_ee_x_zero.control(shared.twist_ee_ee.linear.x_err);
+    shared.eacc_twist_ee_ee_linear_x = state.ctrl_linvel_ee_x_zero.control(shared.twist_ee_ee_linear_x_err);
     // ctrl_angvel_find
-    shared.eacc_twist_ee_ee.angular.z_m_find = state.ctrl_angvel_find.control(shared.twist_ee_ee.angular.z_err_m_find);
+    shared.eacc_twist_ee_ee_angular_z_m_find = state.ctrl_angvel_find.control(shared.twist_ee_ee_angular_z_err_m_find);
 
 
 
-    KDL::SetToZero(state.slv_m_loosen.f_cstr);
-    state.slv_m_loosen.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Angular, motion_spec::runtime::Axis::X), 0) = 1.0;
-state.slv_m_loosen.e_acc(0) = shared.eacc_twist_ee_ee.angular.x;
-    state.slv_m_loosen.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Angular, motion_spec::runtime::Axis::Y), 1) = 1.0;
-state.slv_m_loosen.e_acc(1) = shared.eacc_twist_ee_ee.angular.y;
-    state.slv_m_loosen.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Angular, motion_spec::runtime::Axis::Z), 2) = 1.0;
-state.slv_m_loosen.e_acc(2) = shared.eacc_twist_ee_ee.angular.z_m_loosen;
-    state.slv_m_loosen.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Linear, motion_spec::runtime::Axis::X), 3) = 1.0;
-state.slv_m_loosen.e_acc(3) = shared.eacc_twist_ee_ee.linear.x;
-    state.slv_m_loosen.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Linear, motion_spec::runtime::Axis::Y), 4) = 1.0;
-state.slv_m_loosen.e_acc(4) = shared.eacc_twist_ee_ee.linear.y;
-    state.slv_m_loosen.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Linear, motion_spec::runtime::Axis::Z), 5) = 1.0;
-state.slv_m_loosen.e_acc(5) = shared.eacc_twist_ee_ee.linear.z;
-    for (int i = 0; i < state.slv_m_loosen.num_segments; ++i) {
-        KDL::SetToZero(state.slv_m_loosen.f_ext[i]);
+    KDL::SetToZero(state.right_arm_solver.f_cstr);
+    {
+        KDL::Frame alpha_frame_right_arm_solver_0;
+        KDL::ChainFkSolverPos_recursive alpha_fk_right_arm_solver_0(*robot.right_arm_solver.chain);
+        alpha_fk_right_arm_solver_0.JntToCart(
+            state.right_arm_solver.q,
+            alpha_frame_right_arm_solver_0,
+            motion_spec::runtime::find_segment_index(*robot.right_arm_solver.chain, "frame_ee"));
+        const KDL::Vector alpha_axis_right_arm_solver_0 =
+            alpha_frame_right_arm_solver_0.M * KDL::Vector(0.0, 0.0, 1.0);
+        state.right_arm_solver.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Angular, motion_spec::runtime::Axis::X), 0) = alpha_axis_right_arm_solver_0[0];
+        state.right_arm_solver.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Angular, motion_spec::runtime::Axis::Y), 0) = alpha_axis_right_arm_solver_0[1];
+        state.right_arm_solver.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Angular, motion_spec::runtime::Axis::Z), 0) = alpha_axis_right_arm_solver_0[2];
     }
-    KDL::JntArray tau_ctrl_fext_slv_m_loosen(state.slv_m_loosen.num_joints);
-    state.slv_m_loosen.achd_fext->CartToJnt(
-        state.slv_m_loosen.q,
-        state.slv_m_loosen.qd,
-        state.slv_m_loosen.qdd,
-        state.slv_m_loosen.f_cstr,
-        state.slv_m_loosen.e_acc,
-        state.slv_m_loosen.f_ext,
-        state.slv_m_loosen.tau_ff,
-        tau_ctrl_fext_slv_m_loosen);
-    KDL::Wrenches f_ext_zero_slv_m_loosen(state.slv_m_loosen.num_segments);
-    KDL::JntArray tau_ctrl_acc_slv_m_loosen(state.slv_m_loosen.num_joints);
-    state.slv_m_loosen.achd_acc->CartToJnt(
-        state.slv_m_loosen.q,
-        state.slv_m_loosen.qd,
-        state.slv_m_loosen.qdd,
-        state.slv_m_loosen.f_cstr,
-        state.slv_m_loosen.e_acc,
-        f_ext_zero_slv_m_loosen,
-        state.slv_m_loosen.tau_ff,
-        tau_ctrl_acc_slv_m_loosen);
-    KDL::Add(tau_ctrl_fext_slv_m_loosen, tau_ctrl_acc_slv_m_loosen, state.slv_m_loosen.tau_ctrl);
-    KDL::SetToZero(state.slv_m_find.f_cstr);
-    state.slv_m_find.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Angular, motion_spec::runtime::Axis::X), 0) = 1.0;
-state.slv_m_find.e_acc(0) = shared.eacc_twist_ee_ee.angular.x;
-    state.slv_m_find.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Angular, motion_spec::runtime::Axis::Y), 1) = 1.0;
-state.slv_m_find.e_acc(1) = shared.eacc_twist_ee_ee.angular.y;
-    state.slv_m_find.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Angular, motion_spec::runtime::Axis::Z), 2) = 1.0;
-state.slv_m_find.e_acc(2) = shared.eacc_twist_ee_ee.angular.z_m_find;
-    state.slv_m_find.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Linear, motion_spec::runtime::Axis::X), 3) = 1.0;
-state.slv_m_find.e_acc(3) = shared.eacc_twist_ee_ee.linear.x;
-    state.slv_m_find.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Linear, motion_spec::runtime::Axis::Y), 4) = 1.0;
-state.slv_m_find.e_acc(4) = shared.eacc_twist_ee_ee.linear.y;
-    state.slv_m_find.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Linear, motion_spec::runtime::Axis::Z), 5) = 1.0;
-state.slv_m_find.e_acc(5) = shared.eacc_twist_ee_ee.linear.z;
-    for (int i = 0; i < state.slv_m_find.num_segments; ++i) {
-        KDL::SetToZero(state.slv_m_find.f_ext[i]);
+    state.right_arm_solver.e_acc(0) = shared.eacc_twist_ee_ee_angular_z_m_find;
+
+    {
+        KDL::Frame alpha_frame_right_arm_solver_1;
+        KDL::ChainFkSolverPos_recursive alpha_fk_right_arm_solver_1(*robot.right_arm_solver.chain);
+        alpha_fk_right_arm_solver_1.JntToCart(
+            state.right_arm_solver.q,
+            alpha_frame_right_arm_solver_1,
+            motion_spec::runtime::find_segment_index(*robot.right_arm_solver.chain, "frame_ee"));
+        const KDL::Vector alpha_axis_right_arm_solver_1 =
+            alpha_frame_right_arm_solver_1.M * KDL::Vector(1.0, 0.0, 0.0);
+        state.right_arm_solver.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Linear, motion_spec::runtime::Axis::X), 1) = alpha_axis_right_arm_solver_1[0];
+        state.right_arm_solver.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Linear, motion_spec::runtime::Axis::Y), 1) = alpha_axis_right_arm_solver_1[1];
+        state.right_arm_solver.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Linear, motion_spec::runtime::Axis::Z), 1) = alpha_axis_right_arm_solver_1[2];
     }
-    KDL::JntArray tau_ctrl_fext_slv_m_find(state.slv_m_find.num_joints);
-    state.slv_m_find.achd_fext->CartToJnt(
-        state.slv_m_find.q,
-        state.slv_m_find.qd,
-        state.slv_m_find.qdd,
-        state.slv_m_find.f_cstr,
-        state.slv_m_find.e_acc,
-        state.slv_m_find.f_ext,
-        state.slv_m_find.tau_ff,
-        tau_ctrl_fext_slv_m_find);
-    KDL::Wrenches f_ext_zero_slv_m_find(state.slv_m_find.num_segments);
-    KDL::JntArray tau_ctrl_acc_slv_m_find(state.slv_m_find.num_joints);
-    state.slv_m_find.achd_acc->CartToJnt(
-        state.slv_m_find.q,
-        state.slv_m_find.qd,
-        state.slv_m_find.qdd,
-        state.slv_m_find.f_cstr,
-        state.slv_m_find.e_acc,
-        f_ext_zero_slv_m_find,
-        state.slv_m_find.tau_ff,
-        tau_ctrl_acc_slv_m_find);
-    KDL::Add(tau_ctrl_fext_slv_m_find, tau_ctrl_acc_slv_m_find, state.slv_m_find.tau_ctrl);
+    state.right_arm_solver.e_acc(1) = shared.eacc_twist_ee_ee_linear_x;
+
+    {
+        KDL::Frame alpha_frame_right_arm_solver_2;
+        KDL::ChainFkSolverPos_recursive alpha_fk_right_arm_solver_2(*robot.right_arm_solver.chain);
+        alpha_fk_right_arm_solver_2.JntToCart(
+            state.right_arm_solver.q,
+            alpha_frame_right_arm_solver_2,
+            motion_spec::runtime::find_segment_index(*robot.right_arm_solver.chain, "frame_ee"));
+        const KDL::Vector alpha_axis_right_arm_solver_2 =
+            alpha_frame_right_arm_solver_2.M * KDL::Vector(0.0, 1.0, 0.0);
+        state.right_arm_solver.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Linear, motion_spec::runtime::Axis::X), 2) = alpha_axis_right_arm_solver_2[0];
+        state.right_arm_solver.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Linear, motion_spec::runtime::Axis::Y), 2) = alpha_axis_right_arm_solver_2[1];
+        state.right_arm_solver.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Linear, motion_spec::runtime::Axis::Z), 2) = alpha_axis_right_arm_solver_2[2];
+    }
+    state.right_arm_solver.e_acc(2) = shared.eacc_twist_ee_ee_linear_y;
+
+    {
+        KDL::Frame alpha_frame_right_arm_solver_3;
+        KDL::ChainFkSolverPos_recursive alpha_fk_right_arm_solver_3(*robot.right_arm_solver.chain);
+        alpha_fk_right_arm_solver_3.JntToCart(
+            state.right_arm_solver.q,
+            alpha_frame_right_arm_solver_3,
+            motion_spec::runtime::find_segment_index(*robot.right_arm_solver.chain, "frame_ee"));
+        const KDL::Vector alpha_axis_right_arm_solver_3 =
+            alpha_frame_right_arm_solver_3.M * KDL::Vector(0.0, 0.0, 1.0);
+        state.right_arm_solver.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Linear, motion_spec::runtime::Axis::X), 3) = alpha_axis_right_arm_solver_3[0];
+        state.right_arm_solver.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Linear, motion_spec::runtime::Axis::Y), 3) = alpha_axis_right_arm_solver_3[1];
+        state.right_arm_solver.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Linear, motion_spec::runtime::Axis::Z), 3) = alpha_axis_right_arm_solver_3[2];
+    }
+    state.right_arm_solver.e_acc(3) = shared.eacc_twist_ee_ee_linear_z;
+
+    {
+        KDL::Frame alpha_frame_right_arm_solver_4;
+        KDL::ChainFkSolverPos_recursive alpha_fk_right_arm_solver_4(*robot.right_arm_solver.chain);
+        alpha_fk_right_arm_solver_4.JntToCart(
+            state.right_arm_solver.q,
+            alpha_frame_right_arm_solver_4,
+            motion_spec::runtime::find_segment_index(*robot.right_arm_solver.chain, "frame_ee"));
+        const KDL::Vector alpha_axis_right_arm_solver_4 =
+            alpha_frame_right_arm_solver_4.M * KDL::Vector(1.0, 0.0, 0.0);
+        state.right_arm_solver.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Angular, motion_spec::runtime::Axis::X), 4) = alpha_axis_right_arm_solver_4[0];
+        state.right_arm_solver.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Angular, motion_spec::runtime::Axis::Y), 4) = alpha_axis_right_arm_solver_4[1];
+        state.right_arm_solver.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Angular, motion_spec::runtime::Axis::Z), 4) = alpha_axis_right_arm_solver_4[2];
+    }
+    state.right_arm_solver.e_acc(4) = shared.eacc_twist_ee_ee_angular_x;
+
+    {
+        KDL::Frame alpha_frame_right_arm_solver_5;
+        KDL::ChainFkSolverPos_recursive alpha_fk_right_arm_solver_5(*robot.right_arm_solver.chain);
+        alpha_fk_right_arm_solver_5.JntToCart(
+            state.right_arm_solver.q,
+            alpha_frame_right_arm_solver_5,
+            motion_spec::runtime::find_segment_index(*robot.right_arm_solver.chain, "frame_ee"));
+        const KDL::Vector alpha_axis_right_arm_solver_5 =
+            alpha_frame_right_arm_solver_5.M * KDL::Vector(0.0, 1.0, 0.0);
+        state.right_arm_solver.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Angular, motion_spec::runtime::Axis::X), 5) = alpha_axis_right_arm_solver_5[0];
+        state.right_arm_solver.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Angular, motion_spec::runtime::Axis::Y), 5) = alpha_axis_right_arm_solver_5[1];
+        state.right_arm_solver.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::Subspace::Angular, motion_spec::runtime::Axis::Z), 5) = alpha_axis_right_arm_solver_5[2];
+    }
+    state.right_arm_solver.e_acc(5) = shared.eacc_twist_ee_ee_angular_y;
+    KDL::SetToZero(state.right_arm_solver.tau_ff);
+    KDL::Wrenches f_ext_zero_right_arm_solver(state.right_arm_solver.num_segments);
+    KDL::JntArray tau_ctrl_acc_right_arm_solver(state.right_arm_solver.num_joints);
+    state.right_arm_solver.achd_acc->CartToJnt(
+        state.right_arm_solver.q,
+        state.right_arm_solver.qd,
+        state.right_arm_solver.qdd,
+        state.right_arm_solver.f_cstr,
+        state.right_arm_solver.e_acc,
+        f_ext_zero_right_arm_solver,
+        state.right_arm_solver.tau_ff,
+        tau_ctrl_acc_right_arm_solver);
+    state.right_arm_solver.tau_ctrl = tau_ctrl_acc_right_arm_solver;
+
 }
 
 inline void apply_motion_m_find(
     motion_m_find_state &state,
     shared_data &shared,
     const robot_io &robot) {
-    for (int i = 0; i < state.slv_m_loosen.num_joints; ++i) {
-        robot.slv_m_loosen.state->eff_cmd[i] = state.slv_m_loosen.tau_ctrl(i);
+    for (int i = 0; i < state.right_arm_solver.num_joints; ++i) {
+        robot.right_arm_solver.state->eff_cmd[i] = state.right_arm_solver.tau_ctrl(i);
     }
-    for (int i = 0; i < state.slv_m_find.num_joints; ++i) {
-        robot.slv_m_find.state->eff_cmd[i] = state.slv_m_find.tau_ctrl(i);
-    }
-    robif2b_kinova_gen3_update(robot.slv_m_loosen.robot);
-    robif2b_kinova_gen3_update(robot.slv_m_find.robot);
+    robif2b_kinova_gen3_update(robot.right_arm_solver.robot);
 }

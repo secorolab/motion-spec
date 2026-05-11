@@ -46,17 +46,13 @@ Generate C++ code through StringTemplate:
 # Generate IR first
 motion-spec-ir-gen models/sc0a-right-arm.json -o gen/ir.json
 
-# Header-only mode: runtime/shared headers + one header per motion
-motion-spec-codegen gen/ir.json --mode headers --output-dir gen
-
-# Demo app mode
+# Generate runtime/shared headers, one header per motion, and a reference app
 motion-spec-ir-gen models/sc1.json -o gen/ir.json
-motion-spec-codegen gen/ir.json --mode app --output-dir gen
+motion-spec-codegen gen/ir.json --output-dir gen
 ```
 
 `motion-spec-codegen` takes a previously generated IR JSON file as input.
-Header mode is intended for integration with an external FSM such as
-`coord-dsl`; app mode emits a generated application.
+It emits runtime/shared headers, one header per motion, and `ref_main.cpp`.
 
 ### Examples
 

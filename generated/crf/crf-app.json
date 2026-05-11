@@ -38,6 +38,7 @@
         "geometry/coordinates.ttl",
         "geometry/spatial-relations.ttl",
         "geometry/structural-entities.ttl",
+        "kinematic-chain/state.ttl",
         "newtonian-rigid-body-dynamics/coordinates.ttl",
         "newtonian-rigid-body-dynamics/structural-entities.ttl",
         "task/constraint-handler.ttl",

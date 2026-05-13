@@ -1,0 +1,123 @@
+// SPDX-License-Identifier: MPL-2.0
+
+ip-lookup ::= [
+    "slv_sc2_leftarm": "192.168.1.10",
+    "slv_sc2_rightarm": "192.168.1.11",
+    default: "127.0.0.1"
+]
+
+robot-driver-include-robif2b-KinovaGen3(solver) ::= <<
+#include \<robif2b/functions/kinova_gen3.h\>
+>>
+
+robot-state-struct-robif2b-KinovaGen3(solver) ::= <<
+struct kinova_state {
+    bool success = false;
+    enum robif2b_ctrl_mode ctrl_mode = ROBIF2B_CTRL_MODE_FORCE;
+    double pos_msr[KINOVA_NUM_JOINTS] = {0.0};
+    double vel_msr[KINOVA_NUM_JOINTS] = {0.0};
+    double eff_msr[KINOVA_NUM_JOINTS] = {0.0};
+    double cur_msr[KINOVA_NUM_JOINTS] = {0.0};
+    double pos_cmd[KINOVA_NUM_JOINTS] = {0.0};
+    double vel_cmd[KINOVA_NUM_JOINTS] = {0.0};
+    double eff_cmd[KINOVA_NUM_JOINTS] = {0.0};
+    double cur_cmd[KINOVA_NUM_JOINTS] = {0.0};
+};
+>>
+
+robot-manipulator-struct-robif2b-KinovaGen3(solver) ::= <<
+struct manipulator_robot {
+    kinova_state *state = nullptr;
+    robif2b_kinova_gen3_nbx *robot = nullptr;
+    KDL::Chain *chain = nullptr;
+};
+>>
+
+robot-state-init-robif2b-KinovaGen3(solver) ::= <<
+    kinova_state kinova_<solver.id>_state{};
+    kinova_<solver.id>_state.ctrl_mode = <robif2b-control-mode(solver)>;
+>>
+
+robif2b-control-mode(solver) ::= <<
+<({robif2b-control-mode-<solver.control_mode>})(solver)>
+>>
+
+robif2b-control-mode-JointTorque(solver) ::= <<
+ROBIF2B_CTRL_MODE_FORCE
+>>
+
+robot-init-robif2b-KinovaGen3(solver) ::= <<
+    robif2b_kinova_gen3_nbx kinova_<solver.id>{};
+    kinova_<solver.id>.conf.ip_address = "<ip-lookup.(solver.id)>";
+    kinova_<solver.id>.conf.port = 10000;
+    kinova_<solver.id>.conf.port_real_time = 10001;
+    kinova_<solver.id>.conf.user = "admin";
+    kinova_<solver.id>.conf.password = "admin";
+    kinova_<solver.id>.conf.session_timeout = 60000;
+    kinova_<solver.id>.conf.connection_timeout = 2000;
+    kinova_<solver.id>.ctrl_mode = &kinova_<solver.id>_state.ctrl_mode;
+    kinova_<solver.id>.jnt_pos_msr = &kinova_<solver.id>_state.pos_msr[0];
+    kinova_<solver.id>.jnt_vel_msr = &kinova_<solver.id>_state.vel_msr[0];
+    kinova_<solver.id>.jnt_trq_msr = &kinova_<solver.id>_state.eff_msr[0];
+    kinova_<solver.id>.act_cur_msr = &kinova_<solver.id>_state.cur_msr[0];
+    kinova_<solver.id>.jnt_pos_cmd = &kinova_<solver.id>_state.pos_cmd[0];
+    kinova_<solver.id>.jnt_vel_cmd = &kinova_<solver.id>_state.vel_cmd[0];
+    kinova_<solver.id>.jnt_trq_cmd = &kinova_<solver.id>_state.eff_cmd[0];
+    kinova_<solver.id>.act_cur_cmd = &kinova_<solver.id>_state.cur_cmd[0];
+    kinova_<solver.id>.success = &kinova_<solver.id>_state.success;
+>>
+
+robot-chain-robif2b-KinovaGen3(solver) ::= <<
+    KDL::Chain chain_<solver.id>;
+    kinova_tree.getChain("<solver.chain_root>", "<solver.chain_end>", chain_<solver.id>);
+>>
+
+robot-assign-robif2b-KinovaGen3(solver) ::= <<
+    robot.<solver.id> = manipulator_robot{
+        .state = &kinova_<solver.id>_state,
+        .robot = &kinova_<solver.id>,
+        .chain = &chain_<solver.id>,
+    };
+>>
+
+robot-configure-robif2b-KinovaGen3(solver) ::= <<
+    <robif2b-configure-kinova(solver.id)>
+    <robif2b-recover-kinova(solver.id)>
+    <robif2b-start-kinova(solver.id)>
+>>
+
+robot-shutdown-robif2b-KinovaGen3(solver) ::= <<
+    <robif2b-stop-kinova(solver.id)>
+    <robif2b-shutdown-kinova(solver.id)>
+>>
+
+app-arm-includes-robif2b(has_arm) ::= <<
+<if(has_arm)>
+#include \<urdf_model/model.h\>
+#include \<urdf_parser/urdf_parser.h\>
+#include \<kdl_parser/kdl_parser.hpp\>
+<endif>
+>>
+
+app-arm-setup-robif2b(arm_solvers) ::= <<
+    urdf::ModelInterfaceSharedPtr kinova_model = urdf::parseURDFFile("<first(arm_solvers).urdf>");
+    KDL::Tree kinova_tree;
+    kdl_parser::treeFromUrdfModel(*kinova_model, kinova_tree);
+<arm_solvers:{solver |
+
+<robot-state-init(solver, "robif2b")>
+
+<robot-init(solver, "robif2b")>
+
+<robot-chain(solver, "robif2b")>
+
+<robot-assign(solver, "robif2b")>
+}; separator="\n">
+>>
+
+app-loop-condition-robif2b(has_arm) ::= <<
+true
+>>
+
+app-arm-cleanup-robif2b(has_arm) ::= <<
+>>

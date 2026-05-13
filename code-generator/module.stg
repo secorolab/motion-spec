@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import "hddc2b.stg"
+import "mj_kdl_backend.stg"
 import "robif2b.stg"
+import "robif2b_backend.stg"
 import "solver.stg"
 
 subspace-to-runtime-subspace ::= [
@@ -34,17 +36,8 @@ axis-to-index ::= [
     "z": "2"
 ]
 
-ip-lookup ::= [
-    "slv_sc2_leftarm": "192.168.1.10",
-    "slv_sc2_rightarm": "192.168.1.11",
-    default: "127.0.0.1"
-]
-
-robot-driver-include(solver) ::= <<
-<({robot-driver-include-<solver.robot_model>})(solver)>
->>
-robot-driver-include-KinovaGen3(solver) ::= <<
-#include \<robif2b/functions/kinova_gen3.h\>
+robot-driver-include(solver, backend) ::= <<
+<({robot-driver-include-<backend>-<solver.robot_model>})(solver)>
 >>
 
 robot-num-joints-def(solver) ::= <<
@@ -54,72 +47,36 @@ robot-num-joints-def-KinovaGen3(solver) ::= <<
 inline constexpr int KINOVA_NUM_JOINTS = 7;
 >>
 
-robot-state-struct(solver) ::= <<
-<({robot-state-struct-<solver.robot_model>})(solver)>
->>
-robot-state-struct-KinovaGen3(solver) ::= <<
-struct kinova_state {
-    bool success = false;
-    enum robif2b_ctrl_mode ctrl_mode = ROBIF2B_CTRL_MODE_FORCE;
-    double pos_msr[KINOVA_NUM_JOINTS] = {0.0};
-    double vel_msr[KINOVA_NUM_JOINTS] = {0.0};
-    double eff_msr[KINOVA_NUM_JOINTS] = {0.0};
-    double cur_msr[KINOVA_NUM_JOINTS] = {0.0};
-    double pos_cmd[KINOVA_NUM_JOINTS] = {0.0};
-    double vel_cmd[KINOVA_NUM_JOINTS] = {0.0};
-    double eff_cmd[KINOVA_NUM_JOINTS] = {0.0};
-    double cur_cmd[KINOVA_NUM_JOINTS] = {0.0};
-};
+robot-state-struct(solver, backend) ::= <<
+<({robot-state-struct-<backend>-<solver.robot_model>})(solver)>
 >>
 
-robot-manipulator-struct(solver) ::= <<
-<({robot-manipulator-struct-<solver.robot_model>})(solver)>
->>
-robot-manipulator-struct-KinovaGen3(solver) ::= <<
-struct manipulator_robot {
-    kinova_state *state = nullptr;
-    robif2b_kinova_gen3_nbx *robot = nullptr;
-    KDL::Chain *chain = nullptr;
-};
+robot-manipulator-struct(solver, backend) ::= <<
+<({robot-manipulator-struct-<backend>-<solver.robot_model>})(solver)>
 >>
 
-robot-state-init(solver) ::= <<
-<({robot-state-init-<solver.robot_model>})(solver)>
->>
-robot-state-init-KinovaGen3(solver) ::= <<
-<app-kinova-state(solver)>
+robot-state-init(solver, backend) ::= <<
+<({robot-state-init-<backend>-<solver.robot_model>})(solver)>
 >>
 
-robot-init(solver) ::= <<
-<({robot-init-<solver.robot_model>})(solver)>
->>
-robot-init-KinovaGen3(solver) ::= <<
-<app-kinova-robot(solver)>
+robot-init(solver, backend) ::= <<
+<({robot-init-<backend>-<solver.robot_model>})(solver)>
 >>
 
-robot-chain(solver) ::= <<
-<app-kinova-chain(solver)>
+robot-chain(solver, backend) ::= <<
+<({robot-chain-<backend>-<solver.robot_model>})(solver)>
 >>
 
-robot-assign(solver) ::= <<
-<({robot-assign-<solver.robot_model>})(solver)>
->>
-robot-assign-KinovaGen3(solver) ::= <<
-<app-kinova-robot-assign(solver)>
+robot-assign(solver, backend) ::= <<
+<({robot-assign-<backend>-<solver.robot_model>})(solver)>
 >>
 
-robot-configure(solver) ::= <<
-<({robot-configure-<solver.robot_model>})(solver)>
->>
-robot-configure-KinovaGen3(solver) ::= <<
-<app-configure-kinova(solver)>
+robot-configure(solver, backend) ::= <<
+<({robot-configure-<backend>-<solver.robot_model>})(solver)>
 >>
 
-robot-shutdown(solver) ::= <<
-<({robot-shutdown-<solver.robot_model>})(solver)>
->>
-robot-shutdown-KinovaGen3(solver) ::= <<
-<app-shutdown-kinova(solver)>
+robot-shutdown(solver, backend) ::= <<
+<({robot-shutdown-<backend>-<solver.robot_model>})(solver)>
 >>
 
 access-expr(id, views) ::= <<
@@ -187,7 +144,7 @@ shared.<closure.quantity> = <access-expr(closure.reference_value, views)>;
 >>
 
 emit-call-ErrorEvaluator-EqualityConstraint(closure, views) ::= <<
-shared.<closure.error> = motion_spec::runtime::evaluate_equality_constraint(<access-expr(closure.quantity, views)>, <access-expr(closure.reference_value, views)>);
+shared.<closure.error> = motion_spec::runtime::evaluate_equality_constraint(<access-expr(closure.reference_value, views)>, <access-expr(closure.quantity, views)>);
 >>
 
 emit-call-ErrorEvaluator-GreaterThanConstraint(closure, views) ::= <<
@@ -211,7 +168,7 @@ shared.<closure.out> = KDL::diff(shared.<closure.in1>, shared.<closure.in2>);
 >>
 
 emit-call-Controller(closure, views) ::= <<
-shared.<closure.control_signal> = state.<closure.id>.control(<access-expr(closure.error_signal, views)>);
+<if(closure.velocity_signal)>shared.<closure.control_signal> = state.<closure.id>.control_with_vel(<access-expr(closure.error_signal, views)>, <access-expr(closure.velocity_signal, views)>);<else>shared.<closure.control_signal> = state.<closure.id>.control(<access-expr(closure.error_signal, views)>);<endif>
 >>
 
 emit-call-PlanarAngleFromDirections(closure, views) ::= <<
@@ -304,11 +261,11 @@ motion-done-condition(motion) ::= <<
 <motion.until_evaluators:{e | motion_spec::runtime::constraint_satisfied(shared.<e.error.id>)}; separator=" && ">
 >>
 
-motion-prelude(wrench_outputs, arm_solvers) ::= <<
+motion-prelude(wrench_outputs, arm_solvers, backend) ::= <<
 <wrench_outputs:{wrench | <sync-wrench(wrench)>}; separator="\n">
 <if(arm_solvers)>
 
-<arm-prepare-block(arm_solvers)>
+<arm-prepare-block(arm_solvers, backend)>
 <endif>
 >>
 
@@ -342,9 +299,9 @@ struct <solver.id>_solver_state {
     KDL::Jacobian f_cstr;
     KDL::JntArray e_acc;
 <if(solver.has_cartesian_force)>
-    std::unique_ptr\<KDL::ChainHdSolver_Vereshchagin_Fext\> achd_fext;
+    std::unique_ptr\<KDL::ChainHdSolver_Vereshchagin_Fext_FixedJoint\> achd_fext;
 <endif>
-    std::unique_ptr\<KDL::ChainHdSolver_Vereshchagin\> achd_acc;
+    std::unique_ptr\<KDL::ChainHdSolver_Vereshchagin_Fixed_Joint\> achd_acc;
 };
 >>
 
@@ -391,17 +348,28 @@ if (!state.<solver.id>.initialized) {
         state.<solver.id>.root_acc.vel = KDL::Vector(<solver.root_acc; separator=", ">);
 <endif>
 <if(solver.has_cartesian_force)>
-        state.<solver.id>.achd_fext = std::make_unique\<KDL::ChainHdSolver_Vereshchagin_Fext\>(*robot.<solver.id>.chain, state.<solver.id>.root_acc, state.<solver.id>.num_constraints);
+        state.<solver.id>.achd_fext = std::make_unique\<KDL::ChainHdSolver_Vereshchagin_Fext_FixedJoint\>(*robot.<solver.id>.chain, state.<solver.id>.root_acc, state.<solver.id>.num_constraints);
 <endif>
-        state.<solver.id>.achd_acc = std::make_unique\<KDL::ChainHdSolver_Vereshchagin\>(*robot.<solver.id>.chain, state.<solver.id>.root_acc, state.<solver.id>.num_constraints);
+        state.<solver.id>.achd_acc = std::make_unique\<KDL::ChainHdSolver_Vereshchagin_Fixed_Joint\>(*robot.<solver.id>.chain, state.<solver.id>.root_acc, state.<solver.id>.num_constraints);
         state.<solver.id>.initialized = true;
     }
 >>
 
-solver-sync-input(solver) ::= <<
+solver-sync-input(solver, backend) ::= <<
+<({solver-sync-input-<backend>})(solver)>
+>>
+solver-sync-input-robif2b(solver) ::= <<
 for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
     state.<solver.id>.q(i) = robot.<solver.id>.state->pos_msr[i];
     state.<solver.id>.qd(i) = robot.<solver.id>.state->vel_msr[i];
+}
+KDL::JntArrayVel q_qd_<solver.id>(state.<solver.id>.q, state.<solver.id>.qd);
+>>
+solver-sync-input-mj_kdl(solver) ::= <<
+mj_kdl::update(robot.<solver.id>.robot);
+for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
+    state.<solver.id>.q(i) = robot.<solver.id>.robot->jnt_pos_msr[i];
+    state.<solver.id>.qd(i) = robot.<solver.id>.robot->jnt_vel_msr[i];
 }
 KDL::JntArrayVel q_qd_<solver.id>(state.<solver.id>.q, state.<solver.id>.qd);
 >>
@@ -481,14 +449,31 @@ solver-assign-f-ext-modular(solver, force) ::= <<
 state.<solver.id>.f_ext[motion_spec::runtime::find_segment_index(*robot.<solver.id>.chain, "<force.attached_to.id>") - 1] += shared.<force.force.id>;
 >>
 
-solver-stage-output(solver) ::= <<
+solver-stage-output(solver, backend) ::= <<
+<({solver-stage-output-<backend>})(solver)>
+>>
+solver-stage-output-robif2b(solver) ::= <<
     for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
         robot.<solver.id>.state->eff_cmd[i] = state.<solver.id>.tau_ctrl(i);
     }
 >>
+solver-stage-output-mj_kdl(solver) ::= <<
+    for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
+        robot.<solver.id>.robot->jnt_trq_cmd[i] = state.<solver.id>.tau_ctrl(i);
+    }
+>>
 
-solver-apply-output(solver) ::= <<
+solver-apply-output(solver, backend) ::= <<
+<({solver-apply-output-<backend>})(solver)>
+>>
+solver-apply-output-robif2b(solver) ::= <<
     robif2b_kinova_gen3_update(robot.<solver.id>.robot);
+>>
+solver-apply-output-mj_kdl(solver) ::= <<
+    mj_kdl::update(robot.<solver.id>.robot);
+    if (!mj_kdl::step(robot.<solver.id>.robot)) {
+        std::exit(0);
+    }
 >>
 
 shared-schedule-block(steps, closures, views) ::= <<
@@ -526,13 +511,25 @@ app-prepare-call(motion) ::= <<
 >>
 
 app-run-call(motion) ::= <<
-        if (can_start_<motion.id>(<motion.id>_state_instance, shared)) {
+        if (!<motion.id>_state_instance.active && can_start_<motion.id>(<motion.id>_state_instance, shared)) {
+            <motion.id>_state_instance.active = true;
+        \}
+        if (<motion.id>_state_instance.active) {
             control_<motion.id>(<motion.id>_state_instance, shared, robot);
-        }
+        \}
 >>
 
 app-stage-call(motion) ::= <<
-        apply_<motion.id>(<motion.id>_state_instance, shared, robot);
+        if (<motion.id>_state_instance.active) {
+            apply_<motion.id>(<motion.id>_state_instance, shared, robot);
+<if(motion.has_until_condition)>
+            if (<motion-done-condition(motion)>) {
+                <motion.id>_state_instance.active = false;
+            \}
+<else>
+            <motion.id>_state_instance.active = false;
+<endif>
+        \}
 >>
 
 app-base-control-call(has_mobile_base) ::= <<
@@ -609,9 +606,9 @@ arm-init-block(arm_solvers) ::= <<
 <arm_solvers:{solver |     <solver-init(solver, solver.motion_driver)>}; separator="\n">
 >>
 
-arm-prepare-block(arm_solvers) ::= <<
+arm-prepare-block(arm_solvers, backend) ::= <<
 <arm_solvers:{solver |
-    <solver-sync-input(solver)>
+    <solver-sync-input(solver, backend)>
     <solver.output:{out | <solver-output(solver, out)>}; separator="\n\n">
 }; separator="\n\n">
 >>
@@ -620,74 +617,16 @@ arm-run-block(arm_solvers) ::= <<
 <arm_solvers:{solver |     <solver-run(solver, solver.motion_driver)>}; separator="\n">
 >>
 
-arm-stage-block-JointTorque(arm_solvers) ::= <<
-<arm_solvers:{solver |     <solver-stage-output(solver)>}; separator="\n">
+arm-stage-block-JointTorque(arm_solvers, backend) ::= <<
+<arm_solvers:{solver |     <solver-stage-output(solver, backend)>}; separator="\n">
 >>
 
-arm-stage-block(control_mode, arm_solvers) ::= <<
-<({arm-stage-block-<control_mode>})(arm_solvers)>
+arm-stage-block(control_mode, arm_solvers, backend) ::= <<
+<({arm-stage-block-<control_mode>})(arm_solvers, backend)>
 >>
 
-arm-apply-block(arm_solvers) ::= <<
-<arm_solvers:{solver |     <solver-apply-output(solver)>}; separator="\n">
->>
-
-app-kinova-state(solver) ::= <<
-    kinova_state kinova_<solver.id>_state{};
-    kinova_<solver.id>_state.ctrl_mode = <robif2b-control-mode(solver)>;
->>
-
-robif2b-control-mode(solver) ::= <<
-<({robif2b-control-mode-<solver.control_mode>})(solver)>
->>
-
-robif2b-control-mode-JointTorque(solver) ::= <<
-ROBIF2B_CTRL_MODE_FORCE
->>
-
-app-kinova-robot(solver) ::= <<
-    robif2b_kinova_gen3_nbx kinova_<solver.id>{};
-    kinova_<solver.id>.conf.ip_address = "<ip-lookup.(solver.id)>";
-    kinova_<solver.id>.conf.port = 10000;
-    kinova_<solver.id>.conf.port_real_time = 10001;
-    kinova_<solver.id>.conf.user = "admin";
-    kinova_<solver.id>.conf.password = "admin";
-    kinova_<solver.id>.conf.session_timeout = 60000;
-    kinova_<solver.id>.conf.connection_timeout = 2000;
-    kinova_<solver.id>.ctrl_mode = &kinova_<solver.id>_state.ctrl_mode;
-    kinova_<solver.id>.jnt_pos_msr = &kinova_<solver.id>_state.pos_msr[0];
-    kinova_<solver.id>.jnt_vel_msr = &kinova_<solver.id>_state.vel_msr[0];
-    kinova_<solver.id>.jnt_trq_msr = &kinova_<solver.id>_state.eff_msr[0];
-    kinova_<solver.id>.act_cur_msr = &kinova_<solver.id>_state.cur_msr[0];
-    kinova_<solver.id>.jnt_pos_cmd = &kinova_<solver.id>_state.pos_cmd[0];
-    kinova_<solver.id>.jnt_vel_cmd = &kinova_<solver.id>_state.vel_cmd[0];
-    kinova_<solver.id>.jnt_trq_cmd = &kinova_<solver.id>_state.eff_cmd[0];
-    kinova_<solver.id>.act_cur_cmd = &kinova_<solver.id>_state.cur_cmd[0];
-    kinova_<solver.id>.success = &kinova_<solver.id>_state.success;
->>
-
-app-kinova-chain(solver) ::= <<
-    KDL::Chain chain_<solver.id>;
-    kinova_tree.getChain("<solver.chain_root>", "<solver.chain_end>", chain_<solver.id>);
->>
-
-app-kinova-robot-assign(solver) ::= <<
-    robot.<solver.id> = manipulator_robot{
-        .state = &kinova_<solver.id>_state,
-        .robot = &kinova_<solver.id>,
-        .chain = &chain_<solver.id>,
-    };
->>
-
-app-configure-kinova(solver) ::= <<
-    <robif2b-configure-kinova(solver.id)>
-    <robif2b-recover-kinova(solver.id)>
-    <robif2b-start-kinova(solver.id)>
->>
-
-app-shutdown-kinova(solver) ::= <<
-    <robif2b-stop-kinova(solver.id)>
-    <robif2b-shutdown-kinova(solver.id)>
+arm-apply-block(arm_solvers, backend) ::= <<
+<arm_solvers:{solver |     <solver-apply-output(solver, backend)>}; separator="\n">
 >>
 
 runtime_header(has_mobile_base) ::= <<
@@ -695,6 +634,7 @@ runtime_header(has_mobile_base) ::= <<
 
 #include \<cassert\>
 #include \<cmath\>
+#include \<cstdlib\>
 #include \<iostream\>
 #include \<kdl/chain.hpp\>
 #include \<stdexcept\>
@@ -733,6 +673,12 @@ class PIDControl {
         err_integ = decay_rate * err_integ + (1.0 - decay_rate) * error;
         err_last = error;
         return kp * error + ki * err_integ + kd * err_diff;
+    }
+
+    double control_with_vel(double pos_error, double velocity) {
+        err_integ = decay_rate * err_integ + (1.0 - decay_rate) * pos_error;
+        err_last = pos_error;
+        return kp * pos_error + ki * err_integ - kd * velocity;
     }
 
   private:
@@ -898,7 +844,7 @@ inline void hddc2b_rescale(double *f_scnd) {
 }  // namespace motion_spec::runtime
 >>
 
-shared_state_header(shared_data, wrench_outputs, has_arm, has_mobile_base, arm_solvers, base_velocity_solvers, base_force_solvers) ::= <<
+shared_state_header(shared_data, wrench_outputs, has_arm, has_mobile_base, arm_solvers, base_velocity_solvers, base_force_solvers, backend) ::= <<
 #pragma once
 
 #include "runtime.hpp"
@@ -910,14 +856,14 @@ shared_state_header(shared_data, wrench_outputs, has_arm, has_mobile_base, arm_s
 #include \<kdl/jntarray.hpp\>
 #include \<kdl/chainfksolverpos_recursive.hpp\>
 #include \<kdl/chainfksolvervel_recursive.hpp\>
-#include \<kdl/chainhdsolver_vereshchagin.hpp\>
-<if(has_arm)><robot-driver-include(first(arm_solvers))><endif>
+#include \<kdl/chainhdsolver_vereshchagin_fixed_joint.hpp\>
+<if(has_arm)><robot-driver-include(first(arm_solvers), backend)><endif>
 <if(has_mobile_base)>
 #include \<robif2b/functions/ethercat.h\>
 #include \<robif2b/functions/kelo_drive.h\>
 <endif>
 
-#include "chainhdsolver_vereshchagin_fext.hpp"
+#include \<kdl/chainhdsolver_vereshchagin_fext_fixed_joint.hpp\>
 
 <if(has_arm)><robot-num-joints-def(first(arm_solvers))><endif>
 
@@ -1021,9 +967,9 @@ struct mobile_base_runtime_state {
 <endif>
 
 <if(has_arm)>
-<robot-state-struct(first(arm_solvers))>
+<robot-state-struct(first(arm_solvers), backend)>
 
-<robot-manipulator-struct(first(arm_solvers))>
+<robot-manipulator-struct(first(arm_solvers), backend)>
 
 <arm-solver-members(arm_solvers)>
 <endif>
@@ -1102,13 +1048,14 @@ emit-snapshot(snap, closures, views) ::= <<
         shared.<snap.target_id> = <access-expr(snap.source_id, views)>;
 >>
 
-motion_header(motion, closures, views, wrench_outputs, base_velocity_solvers, base_force_solvers, has_mobile_base) ::= <<
+motion_header(motion, closures, views, wrench_outputs, base_velocity_solvers, base_force_solvers, has_mobile_base, backend) ::= <<
 #pragma once
 
 #include "runtime.hpp"
 #include "shared_state.hpp"
 
 struct <motion.id>_state {
+    bool active = false;
 <arm-state-members(motion.arm_solvers)>
 <if(motion.snapshots)>    bool snapshot_taken = false;
 <endif>
@@ -1136,7 +1083,7 @@ inline void update_<motion.id>(
     shared_data &shared,
     const robot_io &robot) {
     init_<motion.id>(state, robot);
-<motion-prelude(wrench_outputs, motion.arm_solvers)>
+<motion-prelude(wrench_outputs, motion.arm_solvers, backend)>
 <if(motion.snapshots)>
     if (!state.snapshot_taken) {
 <motion.snapshots:{snap | <emit-snapshot(snap, closures, views)>}; separator="\n">
@@ -1186,8 +1133,8 @@ inline void apply_<motion.id>(
     shared_data &shared,
     const robot_io &robot) {
 <if(motion.arm_solvers)>
-<arm-stage-block(motion.control_mode, motion.arm_solvers)>
-<arm-apply-block(motion.arm_solvers)>
+<arm-stage-block(motion.control_mode, motion.arm_solvers, backend)>
+<arm-apply-block(motion.arm_solvers, backend)>
 <endif>
 }
 >>
@@ -1280,7 +1227,27 @@ app-main-base-setup() ::= <<
     };
 >>
 
-app_main(motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, arm_solvers, base_velocity_solvers, base_force_solvers) ::= <<
+app-arm-includes(backend, has_arm) ::= <<
+<({app-arm-includes-<backend>})(has_arm)>
+>>
+
+app-arm-setup(backend, arm_solvers) ::= <<
+<({app-arm-setup-<backend>})(arm_solvers)>
+>>
+
+app-loop-condition(backend, has_arm) ::= <<
+<({app-loop-condition-<backend>})(has_arm)>
+>>
+
+app-arm-cleanup(backend, has_arm) ::= <<
+<({app-arm-cleanup-<backend>})(has_arm)>
+>>
+
+app-headless-telemetry(backend, shared_data, arm_solvers) ::= <<
+<({app-headless-telemetry-<backend>})(shared_data, arm_solvers)>
+>>
+
+app_main(motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, arm_solvers, base_velocity_solvers, base_force_solvers, backend) ::= <<
 #include "runtime.hpp"
 #include "shared_state.hpp"
 <if(has_mobile_base)>
@@ -1288,14 +1255,10 @@ app_main(motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, clo
 <endif>
 <motions:{motion | <motion-include(motion)>}; separator="\n">
 
-<if(has_arm)>
-#include \<urdf_model/model.h\>
-#include \<urdf_parser/urdf_parser.h\>
-#include \<kdl_parser/kdl_parser.hpp\>
-<endif>
+<app-arm-includes(backend, has_arm)>
 #include \<unistd.h\>
 
-int main() {
+int main(int argc, char **argv) {
     robot_io robot{};
     shared_data shared{};
 <if(has_mobile_base)>
@@ -1304,19 +1267,7 @@ int main() {
 <endif>
 <if(has_arm)>
 
-    urdf::ModelInterfaceSharedPtr kinova_model = urdf::parseURDFFile("<first(arm_solvers).urdf>");
-    KDL::Tree kinova_tree;
-    kdl_parser::treeFromUrdfModel(*kinova_model, kinova_tree);
-<arm_solvers:{solver |
-
-<robot-state-init(solver)>
-
-<robot-init(solver)>
-
-<robot-chain(solver)>
-
-<robot-assign(solver)>
-}; separator="\n">
+<app-arm-setup(backend, arm_solvers)>
 <endif>
 <wrench_outputs:{wrench | <wrench-measurement(wrench)>}; separator="\n">
 <wrench_outputs:{wrench |     robot.<wrench.id> = &<wrench.id>_measurement;}; separator="\n">
@@ -1331,11 +1282,11 @@ int main() {
 <endif>
 <if(has_arm)>
 <arm_solvers:{solver |
-<robot-configure(solver)>
+<robot-configure(solver, backend)>
 }; separator="\n">
 <endif>
 
-    while (true) {
+    while (<app-loop-condition(backend, has_arm)>) {
 <if(has_mobile_base)>
         update_mobile_base(mobile_base_state_instance, shared, robot);
 <endif>
@@ -1352,8 +1303,9 @@ int main() {
     }
 <if(has_arm)>
 
+<app-arm-cleanup(backend, has_arm)>
 <arm_solvers:{solver |
-<robot-shutdown(solver)>
+<robot-shutdown(solver, backend)>
 }; separator="\n">
 <endif>
 <if(has_mobile_base)>
@@ -1366,7 +1318,7 @@ int main() {
 }
 >>
 
-ref_main(motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, arm_solvers, base_velocity_solvers, base_force_solvers) ::= <<
+ref_main(motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, shared_data, arm_solvers, base_velocity_solvers, base_force_solvers, backend) ::= <<
 #include "runtime.hpp"
 #include "shared_state.hpp"
 <if(has_mobile_base)>
@@ -1374,14 +1326,10 @@ ref_main(motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, clo
 <endif>
 <motions:{motion | <motion-include(motion)>}; separator="\n">
 
-<if(has_arm)>
-#include \<urdf_model/model.h\>
-#include \<urdf_parser/urdf_parser.h\>
-#include \<kdl_parser/kdl_parser.hpp\>
-<endif>
+<app-arm-includes(backend, has_arm)>
 #include \<unistd.h\>
 
-int main() {
+int main(int argc, char **argv) {
     robot_io robot{};
     shared_data shared{};
 <if(has_mobile_base)>
@@ -1390,19 +1338,7 @@ int main() {
 <endif>
 <if(has_arm)>
 
-    urdf::ModelInterfaceSharedPtr kinova_model = urdf::parseURDFFile("<first(arm_solvers).urdf>");
-    KDL::Tree kinova_tree;
-    kdl_parser::treeFromUrdfModel(*kinova_model, kinova_tree);
-<arm_solvers:{solver |
-
-<robot-state-init(solver)>
-
-<robot-init(solver)>
-
-<robot-chain(solver)>
-
-<robot-assign(solver)>
-}; separator="\n">
+<app-arm-setup(backend, arm_solvers)>
 <endif>
 <wrench_outputs:{wrench | <wrench-measurement(wrench)>}; separator="\n">
 <wrench_outputs:{wrench |     robot.<wrench.id> = &<wrench.id>_measurement;}; separator="\n">
@@ -1417,28 +1353,34 @@ int main() {
 <endif>
 <if(has_arm)>
 <arm_solvers:{solver |
-<robot-configure(solver)>
+<robot-configure(solver, backend)>
 }; separator="\n">
 <endif>
 
+    int _step = 0;
     int current_motion = 0;
-    while (true) {
+    while (<app-loop-condition(backend, has_arm)>) {
         switch (current_motion) {
 <motions:{motion |
         case <i0>: {
             update_<motion.id>(<motion.id>_state_instance, shared, robot);
             monitor_<motion.id>(<motion.id>_state_instance, shared);
-            if (can_start_<motion.id>(<motion.id>_state_instance, shared)) {
+            if (!<motion.id>_state_instance.active && can_start_<motion.id>(<motion.id>_state_instance, shared)) {
+                <motion.id>_state_instance.active = true;
+            \}
+            if (<motion.id>_state_instance.active) {
                 control_<motion.id>(<motion.id>_state_instance, shared, robot);
-            \}
-            apply_<motion.id>(<motion.id>_state_instance, shared, robot);
+                apply_<motion.id>(<motion.id>_state_instance, shared, robot);
 <if(motion.has_until_condition)>
-            if (<motion-done-condition(motion)>) {
-                current_motion = <i>;
-            \}
+                if (<motion-done-condition(motion)>) {
+                    <motion.id>_state_instance.active = false;
+                    current_motion = <i>;
+                \}
 <else>
-            current_motion = <i>;
+                <motion.id>_state_instance.active = false;
+                current_motion = <i>;
 <endif>
+            \}
             break;
         \}
 }; separator="\n">
@@ -1446,12 +1388,15 @@ int main() {
             current_motion = <length(motions)> - 1;
             break;
         }
+        ++_step;
         usleep(1000);
     }
+<app-headless-telemetry(backend, shared_data, arm_solvers)>
 <if(has_arm)>
 
+<app-arm-cleanup(backend, has_arm)>
 <arm_solvers:{solver |
-<robot-shutdown(solver)>
+<robot-shutdown(solver, backend)>
 }; separator="\n">
 <endif>
 <if(has_mobile_base)>

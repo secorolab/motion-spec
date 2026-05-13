@@ -1,0 +1,219 @@
+// SPDX-License-Identifier: MPL-2.0
+
+robot-driver-include-mj_kdl-KinovaGen3(solver) ::= <<
+#include \<mj_kdl_wrapper/mj_kdl_wrapper.hpp\>
+>>
+
+robot-state-struct-mj_kdl-KinovaGen3(solver) ::= <<
+>>
+
+robot-manipulator-struct-mj_kdl-KinovaGen3(solver) ::= <<
+struct manipulator_robot {
+    mj_kdl::Robot *robot = nullptr;
+    KDL::Chain *chain = nullptr;
+};
+>>
+
+robot-state-init-mj_kdl-KinovaGen3(solver) ::= <<
+>>
+
+robot-init-mj_kdl-KinovaGen3(solver) ::= <<
+    mj_kdl::Robot mj_<solver.id>{};
+    if (!mj_kdl::init_robot_from_mjcf(&mj_<solver.id>, mj_model, mj_data, "<solver.chain_root>", "<solver.chain_end>")) {
+        std::cerr \<\< "init_robot_from_mjcf() failed for <solver.id>\\n";
+        mj_kdl::destroy_scene(mj_model, mj_data);
+        return 1;
+    \}
+    mj_<solver.id>.ctrl_mode = mj_kdl::CtrlMode::TORQUE;
+    {
+        const double q_home_values[7] = {0.0, 0.2618, 3.1416, -2.2689, 0.0, 0.9599, 1.5708};
+        KDL::JntArray q_home(mj_<solver.id>.n_joints);
+        for (int i = 0; i \< mj_<solver.id>.n_joints && i \< 7; ++i) {
+            q_home(i) = q_home_values[i];
+        }
+        mj_kdl::set_joint_pos(&mj_<solver.id>, q_home, false);
+    }
+>>
+
+robot-chain-mj_kdl-KinovaGen3(solver) ::= <<
+    KDL::Chain *chain_<solver.id> = &mj_<solver.id>.chain;
+>>
+
+robot-assign-mj_kdl-KinovaGen3(solver) ::= <<
+    robot.<solver.id> = manipulator_robot{
+        .robot = &mj_<solver.id>,
+        .chain = chain_<solver.id>,
+    };
+>>
+
+robot-configure-mj_kdl-KinovaGen3(solver) ::= <<
+>>
+
+robot-shutdown-mj_kdl-KinovaGen3(solver) ::= <<
+    mj_kdl::cleanup(&mj_<solver.id>);
+>>
+
+app-arm-includes-mj_kdl(has_arm) ::= <<
+<if(has_arm)>
+#include \<cstring\>
+#include \<filesystem\>
+#include \<iostream\>
+#include \<string\>
+#include \<vector\>
+<endif>
+>>
+
+app-arm-setup-mj_kdl(arm_solvers) ::= <<
+    bool headless = false;
+    int headless_steps = 2000;
+    for (int i = 1; i \< argc; ++i) {
+        if (std::strcmp(argv[i], "--headless") == 0) {
+            headless = true;
+        } else if (std::strcmp(argv[i], "--steps") == 0 && i + 1 \< argc) {
+            headless_steps = std::atoi(argv[++i]);
+        }
+    }
+
+    const auto find_mjcf_path = []() -> std::filesystem::path {
+        const std::vector\<std::filesystem::path\> relative_paths = {
+            "src/mj_kdl_wrapper/third_party/menagerie/kinova_gen3/gen3.xml",
+            "mj_kdl_wrapper/third_party/menagerie/kinova_gen3/gen3.xml",
+            "third_party/menagerie/kinova_gen3/gen3.xml",
+        };
+        std::vector\<std::filesystem::path\> roots = {std::filesystem::current_path()};
+        roots.push_back(std::filesystem::path(__FILE__).parent_path());
+        for (const auto &start : roots) {
+            for (auto root = start; !root.empty(); root = root.parent_path()) {
+                for (const auto &relative : relative_paths) {
+                    const auto candidate = root / relative;
+                    if (std::filesystem::exists(candidate)) {
+                        return candidate;
+                    }
+                }
+                if (root == root.root_path()) {
+                    break;
+                }
+            }
+        }
+        return {};
+    };
+
+    const std::filesystem::path mjcf_path = find_mjcf_path();
+    if (mjcf_path.empty()) {
+        std::cerr \<\< "Kinova Gen3 MJCF not found. Expected mj_kdl_wrapper third_party/menagerie/kinova_gen3/gen3.xml\\n";
+        return 1;
+    }
+
+    mj_kdl::SceneSpec mj_scene{};
+    mj_kdl::RobotSpec mj_robot_spec{};
+    const std::string mjcf_path_string = mjcf_path.string();
+    mj_robot_spec.path = mjcf_path_string.c_str();
+    mj_scene.robots.push_back(mj_robot_spec);
+
+    mjModel *mj_model = nullptr;
+    mjData *mj_data = nullptr;
+    if (!mj_kdl::build_scene(&mj_model, &mj_data, &mj_scene)) {
+        std::cerr \<\< "mj_kdl::build_scene() failed for " \<\< mjcf_path_string \<\< "\\n";
+        return 1;
+    }
+<arm_solvers:{solver |
+
+<robot-state-init(solver, "mj_kdl")>
+
+<robot-init(solver, "mj_kdl")>
+
+<robot-chain(solver, "mj_kdl")>
+
+<robot-assign(solver, "mj_kdl")>
+}; separator="\n">
+
+    mj_kdl::Viewer mj_viewer{};
+    if (!headless) {
+        if (!mj_kdl::init_window_sim(&mj_viewer, &mj_<first(arm_solvers).id>)) {
+            std::cerr \<\< "mj_kdl::init_window_sim() failed\\n";
+            mj_kdl::cleanup(&mj_<first(arm_solvers).id>);
+            mj_kdl::destroy_scene(mj_model, mj_data);
+            return 1;
+        }
+    }
+>>
+
+app-loop-condition-mj_kdl(has_arm) ::= <<
+(!headless || headless_steps-- > 0)
+>>
+
+app-arm-cleanup-mj_kdl(has_arm) ::= <<
+<if(has_arm)>    if (!headless) {
+        mj_kdl::cleanup(&mj_viewer);
+    }<endif>
+>>
+
+app-headless-telemetry-mj_kdl(shared_data, arm_solvers) ::= <<
+    if (headless) {
+        std::cout \<\< "steps=" \<\< _step \<\< " sim_time=" \<\< mj_<first(arm_solvers).id>.data->time \<\< "\n";
+<shared_data:{item | <app-headless-print-shared-mj_kdl(item)>}; separator="\n">
+        std::cout \<\< "tau=[";
+        for (int _i = 0; _i \< robot.<first(arm_solvers).id>.robot->n_joints; ++_i)
+            std::cout \<\< robot.<first(arm_solvers).id>.robot->jnt_trq_cmd[_i] \<\< " ";
+        std::cout \<\< "]\n";
+    }
+>>
+
+app-headless-print-shared-mj_kdl(item) ::= <<
+<({app-headless-print-<item.type>-mj_kdl})(item)>
+>>
+
+app-headless-print-Pose-mj_kdl(item) ::= <<
+        std::cout \<\< "<item.id> p=[" \<\< shared.<item.id>.p.x() \<\< " " \<\< shared.<item.id>.p.y() \<\< " " \<\< shared.<item.id>.p.z() \<\< "]\n";
+>>
+
+app-headless-print-VelocityTwist-mj_kdl(item) ::= <<
+        std::cout \<\< "<item.id> vel=[" \<\< shared.<item.id>.vel.x() \<\< " " \<\< shared.<item.id>.vel.y() \<\< " " \<\< shared.<item.id>.vel.z() \<\< "] rot=[" \<\< shared.<item.id>.rot.x() \<\< " " \<\< shared.<item.id>.rot.y() \<\< " " \<\< shared.<item.id>.rot.z() \<\< "]\n";
+>>
+
+app-headless-print-PoseQuantity-mj_kdl(item) ::= <<
+        std::cout \<\< "<item.id> p=[" \<\< shared.<item.id>.p.x() \<\< " " \<\< shared.<item.id>.p.y() \<\< " " \<\< shared.<item.id>.p.z() \<\< "]\n";
+>>
+
+app-headless-print-AccelerationTwist-mj_kdl(item) ::= <<
+        std::cout \<\< "<item.id> vel=[" \<\< shared.<item.id>.vel.x() \<\< " " \<\< shared.<item.id>.vel.y() \<\< " " \<\< shared.<item.id>.vel.z() \<\< "] rot=[" \<\< shared.<item.id>.rot.x() \<\< " " \<\< shared.<item.id>.rot.y() \<\< " " \<\< shared.<item.id>.rot.z() \<\< "]\n";
+>>
+
+app-headless-print-Quantity-mj_kdl(item) ::= <<
+        std::cout \<\< "<item.id>=" \<\< shared.<item.id> \<\< "\n";
+>>
+
+cmake_mj_kdl(motions) ::= <<
+cmake_minimum_required(VERSION 3.16)
+project(motion_spec_mj_kdl_target LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+find_package(Eigen3 REQUIRED)
+find_package(orocos_kdl REQUIRED CONFIG)
+
+set(MJ_KDL_WRAPPER_SOURCE_DIR "" CACHE PATH "Path to the mj_kdl_wrapper source tree")
+if(MJ_KDL_WRAPPER_SOURCE_DIR)
+    add_subdirectory("${MJ_KDL_WRAPPER_SOURCE_DIR}" mj_kdl_wrapper_build)
+    set(MJ_KDL_WRAPPER_TARGET mj_kdl_wrapper)
+else()
+    find_package(mj_kdl_wrapper REQUIRED CONFIG)
+    set(MJ_KDL_WRAPPER_TARGET mj_kdl_wrapper::mj_kdl_wrapper)
+endif()
+
+add_executable(main
+    ref_main.cpp
+)
+target_include_directories(main PRIVATE
+    ${EIGEN3_INCLUDE_DIRS}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/headers
+)
+target_link_libraries(main PRIVATE
+    ${MJ_KDL_WRAPPER_TARGET}
+    orocos-kdl
+)
+target_compile_options(main PRIVATE -Wall -Wextra)
+>>

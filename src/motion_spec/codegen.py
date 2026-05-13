@@ -164,20 +164,23 @@ def _validate_ir(ir: dict) -> None:
         )
 
 
-def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
+def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, backend: str = "robif2b"):
     ir = load_ir(ir_path)
     _validate_ir(ir)
+    ir["backend"] = backend
 
     headers_dir = output_dir / "headers"
     headers_dir.mkdir(parents=True, exist_ok=True)
 
     payload_dir = output_dir / ".stst"
     payload_dir.mkdir(parents=True, exist_ok=True)
+    ir_payload_path = payload_dir / "ir.json"
+    write_json(ir_payload_path, ir)
 
-    render_template(stst_bin, "runtime_header", ir_path, headers_dir / "runtime.hpp")
-    render_template(stst_bin, "shared_state_header", ir_path, headers_dir / "shared_state.hpp")
+    render_template(stst_bin, "runtime_header", ir_payload_path, headers_dir / "runtime.hpp")
+    render_template(stst_bin, "shared_state_header", ir_payload_path, headers_dir / "shared_state.hpp")
     if ir.get("has_mobile_base"):
-        render_template(stst_bin, "mobile_base_cycle_header", ir_path, headers_dir / "mobile_base_cycle.hpp")
+        render_template(stst_bin, "mobile_base_cycle_header", ir_payload_path, headers_dir / "mobile_base_cycle.hpp")
 
     for motion in ir["motions"]:
         payload = {
@@ -188,12 +191,15 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
             "base_velocity_solvers": ir["base_velocity_solvers"],
             "base_force_solvers": ir["base_force_solvers"],
             "has_mobile_base": ir["has_mobile_base"],
+            "backend": backend,
         }
         payload_path = payload_dir / f"{motion['id']}.json"
         write_json(payload_path, payload)
         render_template(stst_bin, "motion_header", payload_path, headers_dir / f"{motion['id']}.hpp")
 
-    render_template(stst_bin, "ref_main", ir_path, output_dir / "ref_main.cpp")
+    render_template(stst_bin, "ref_main", ir_payload_path, output_dir / "ref_main.cpp")
+    if backend == "mj_kdl":
+        render_template(stst_bin, "cmake_mj_kdl", ir_payload_path, output_dir / "CMakeLists.txt")
 
 
 def main():
@@ -207,6 +213,12 @@ def main():
         default="stst",
         help="Path to the STSTv4 executable used to render StringTemplate groups",
     )
+    parser.add_argument(
+        "--backend",
+        choices=("robif2b", "mj-kdl"),
+        default="robif2b",
+        help="Robot runtime backend for generated reference code.",
+    )
 
     args = parser.parse_args()
 
@@ -215,6 +227,7 @@ def main():
             ir_path=Path(args.input).resolve(),
             output_dir=Path(args.output_dir).resolve(),
             stst_bin=args.stst_bin,
+            backend=args.backend.replace("-", "_"),
         )
     except RuntimeError as exc:
         print(f"Code generation failed: {exc}", file=sys.stderr)

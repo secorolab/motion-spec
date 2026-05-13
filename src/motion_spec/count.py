@@ -145,11 +145,9 @@ def main():
         ]
     )
 
-    ent_name = entities.column_names()
     ent_np = replace_by(np.array(entities.to_list()), None, 0)
     ent_np = ent_np @ acc
 
-    lin_name = lines.column_names()
     lin_np = replace_by(np.array(lines.to_list()), None, 0)
     lin_np = lin_np @ acc
 

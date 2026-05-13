@@ -21,8 +21,6 @@ from rdflib import URIRef
 from motion_spec.namespace import (
     APP,
     QUDT_SCHEMA,
-    QUDT_QKIND,
-    QUDT_UNIT,
     GEOM_ENT,
     GEOM_REL,
     GEOM_COORD,
@@ -397,6 +395,7 @@ ops_cstr_hdl = [
             CSTR_HDL["integral-gain"],
             CSTR_HDL["derivative-gain"],
             CSTR_HDL["decay-rate"],
+            CSTR_HDL["velocity-signal"],
         ],
     ),
     AssignmentEvaluator(),
@@ -838,14 +837,14 @@ class Parser:
         try:
             q = self.g.compute_qname(x)
             return escape(q[2])
-        except:
+        except Exception:
             return x
 
     def label(self, x):
         try:
             q = self.g.compute_qname(x)
             return q[2]
-        except:
+        except Exception:
             return str(x)
 
     @memoize
@@ -1418,7 +1417,7 @@ class Parser:
             for dstruct in self.g[: RDF["type"] : type_]:
                 data_structures.append(func(dstruct))
 
-        return data_structures
+        return _dedupe_by_id(data_structures)
 
     def closures(self, operators):
         closures = {}
@@ -1436,6 +1435,7 @@ class Parser:
         q = collections.deque()
         data_structures = set()
         sched = []
+        scheduled_nodes = {}
         for v in start:
             for op in ops:
                 if op.type_ not in self.g[v : RDF["type"]]:
@@ -1444,6 +1444,7 @@ class Parser:
                 call = self.id(v)
                 if op.is_schedulable() and call not in set(self.sched):
                     sched.append(call)
+                    scheduled_nodes[call] = v
                     self.sched.add(call)
 
                 for data_in in op.from_operator_to_input(self.g, v):
@@ -1460,10 +1461,11 @@ class Parser:
             for op in ops:
                 res = op.scheduler_step(self.g, data_out)
 
-                for call in res["schedule"]:
-                    call = self.id(call)
+                for call_node in res["schedule"]:
+                    call = self.id(call_node)
                     if call and call not in set(self.sched):
                         sched.append(call)
+                        scheduled_nodes[call] = call_node
                         self.sched.add(call)
 
                 for data_in in res["data_structures"]:
@@ -1476,7 +1478,66 @@ class Parser:
                     data_structures.add(data_in)
 
         sched.reverse()
-        return sched
+        return self._topological_schedule(sched, scheduled_nodes, ops)
+
+    def _operator_outputs(self, node, op):
+        outputs = set()
+        for out in getattr(op, "output", []):
+            outputs.update(self.g.objects(node, out))
+        return outputs
+
+    def _topological_schedule(self, sched, scheduled_nodes, ops):
+        """Order scheduled calls so producers run before their consumers."""
+        if len(sched) < 2:
+            return sched
+
+        order = {call: index for index, call in enumerate(sched)}
+        call_inputs: dict[str, set] = {}
+        output_producer = {}
+
+        for call in sched:
+            node = scheduled_nodes.get(call)
+            if node is None:
+                continue
+            inputs = set()
+            outputs = set()
+            for op in ops:
+                if op.type_ not in self.g[node : RDF["type"]]:
+                    continue
+                inputs.update(op.from_operator_to_input(self.g, node))
+                outputs.update(self._operator_outputs(node, op))
+            call_inputs[call] = inputs
+            for output in outputs:
+                output_producer.setdefault(output, call)
+
+        deps = {
+            call: {
+                output_producer[data]
+                for data in inputs
+                if output_producer.get(data) is not None and output_producer[data] != call
+            }
+            for call, inputs in call_inputs.items()
+        }
+
+        result = []
+        temporary = set()
+        permanent = set()
+
+        def visit(call):
+            if call in permanent:
+                return
+            if call in temporary:
+                return
+            temporary.add(call)
+            for dep in sorted(deps.get(call, ()), key=lambda item: order.get(item, 0)):
+                visit(dep)
+            temporary.remove(call)
+            permanent.add(call)
+            result.append(call)
+
+        for call in sched:
+            visit(call)
+        return result
 
     def get_schedule(self) -> list[str]:
         s = list(self.sched)
@@ -1904,6 +1965,21 @@ def _filter_shared_data(data_structures, schedule, closures, view_map=None, fk_o
         if item.type in ("Pose", "VelocityTwist") and item.id not in referenced:
             continue
         result.append(item)
+    return _dedupe_by_id(result)
+
+
+def _dedupe_by_id(items):
+    result = []
+    seen = set()
+    for item in items:
+        key = getattr(item, "id", None)
+        if key is None:
+            result.append(item)
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
     return result
 
 
@@ -2045,11 +2121,13 @@ def generate_ir(manifest_path):
                 closure_output_map[out_val] = cid
                 closure_input_map[out_val] = {v for v in inputs if v != out_val}
 
-    wrench_outputs = [
-        item
-        for item in data_structures
-        if item.type == "Wrench" and item.id not in closure_output_map
-    ]
+    wrench_outputs = _dedupe_by_id(
+        [
+            item
+            for item in data_structures
+            if item.type == "Wrench" and item.id not in closure_output_map
+        ]
+    )
 
     motions = build_motion_units(
         g,

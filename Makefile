@@ -30,10 +30,35 @@ gen-comp-$(1): gen-prepare-$(1) gen-code-$(1)
 $(1): gen-comp-$(1)
 endef
 
+define mj_scenario
+$(GENERATED)/$(1):
+	@mkdir -p $(GENERATED)/$(1)/headers
+
+gen-prepare-$(1): | $(GENERATED)/$(1)
+	@cp thirdparty/orocos-kdl/chainhdsolver_vereshchagin_fext.hpp $(GENERATED)/$(1)/chainhdsolver_vereshchagin_fext.hpp
+	@cp thirdparty/orocos-kdl/chainhdsolver_vereshchagin_fext.cpp $(GENERATED)/$(1)/chainhdsolver_vereshchagin_fext.cpp
+
+gen-jsonld-$(1): | $(GENERATED)/$(1)
+	@textx generate ../motion-spec-dsl/models/$(2) --target jsonld -o $(GENERATED)/$(1)
+
+gen-ir-$(1): gen-jsonld-$(1)
+	@motion-spec-ir-gen $(GENERATED)/$(1)/$(basename $(2))-app.json -o $(GENERATED)/$(1)/ir.json
+
+gen-code-$(1): gen-ir-$(1)
+	@motion-spec-codegen $(GENERATED)/$(1)/ir.json -o $(GENERATED)/$(1) --backend mj-kdl
+
+gen-comp-$(1): gen-prepare-$(1) gen-code-$(1)
+	@cmake -S $(GENERATED)/$(1) -B $(GENERATED)/$(1)/build -DCMAKE_BUILD_TYPE=Debug -DMJ_KDL_WRAPPER_SOURCE_DIR=$$(realpath ../mj_kdl_wrapper)
+	@cd $(GENERATED)/$(1)/build && make
+
+$(1): gen-comp-$(1)
+endef
+
 $(eval $(call scenario,sc0a,sc0a-right-arm.json))
 $(eval $(call scenario,sc0b,sc0b-dual-arm.json))
 $(eval $(call scenario,sc1,sc1.json))
 $(eval $(call scenario,sc2,sc2.json))
+$(eval $(call mj_scenario,mj_fall,mj_fall.robmot))
 
 
 tutorial-html:

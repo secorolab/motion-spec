@@ -11,7 +11,7 @@ solver-include() ::= <<
 #include \<kdl/jntarray.hpp\>
 #include \<kdl/chainfksolverpos_recursive.hpp\>
 #include \<kdl/chainfksolvervel_recursive.hpp\>
-#include \<kdl/chainhdsolver_vereshchagin.hpp\>
+#include \<kdl/chainhdsolver_vereshchagin_fixed_joint.hpp\>
 >>
 
 
@@ -72,8 +72,8 @@ KDL::JntArray tau_ctrl_<solver.id>(num_jnts_<solver.id>);
 KDL::Wrenches f_ext_<solver.id>(num_segs_<solver.id>);
 KDL::Jacobian f_cstr_<solver.id>(num_cstr_<solver.id>);
 KDL::JntArray e_acc_<solver.id>(num_cstr_<solver.id>);
-KDL::ChainHdSolver_Vereshchagin_Fext achd_fext_<solver.id>(chain, root_acc_<solver.id>, num_cstr_<solver.id>);
-KDL::ChainHdSolver_Vereshchagin achd_acc_<solver.id>(chain, root_acc_<solver.id>, num_cstr_<solver.id>);
+KDL::ChainHdSolver_Vereshchagin_Fext_FixedJoint achd_fext_<solver.id>(chain, root_acc_<solver.id>, num_cstr_<solver.id>);
+KDL::ChainHdSolver_Vereshchagin_Fixed_Joint achd_acc_<solver.id>(chain, root_acc_<solver.id>, num_cstr_<solver.id>);
 >>
 
 

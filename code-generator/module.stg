@@ -441,7 +441,7 @@ solver-run(solver, motion_driver) ::= <<
 <if(solver.has_cartesian_force)>
     KDL::Add(tau_ctrl_fext_<solver.id>, tau_ctrl_acc_<solver.id>, state.<solver.id>.tau_ctrl);
 <else>
-    state.<solver.id>.tau_ctrl = tau_ctrl_acc_<solver.id>;
+    state.<solver.id>.achd_acc->getTotalTorque(state.<solver.id>.tau_ctrl);
 <endif>
 >>
 

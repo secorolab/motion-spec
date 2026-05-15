@@ -4731,20 +4731,6 @@
             "type": "Quantity"
         },
         {
-            "id": "q_j2",
-            "quantity_kind": {
-                "id": "Angle",
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "RAD",
-                "type": "Unit"
-            },
-            "value": null,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
             "id": "tau_ctrl_limit_j4",
             "quantity_kind": {
                 "id": "Torque",
@@ -4927,26 +4913,6 @@
             "type": "Quantity"
         },
         {
-            "id": "wrench_ee",
-            "quantity_kind": [
-                "Torque",
-                "Force"
-            ],
-            "reference_point": {
-                "id": "point_ee_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_ee",
-                "type": "Frame"
-            },
-            "unit": [
-                "N_M",
-                "N"
-            ],
-            "type": "Wrench"
-        },
-        {
             "id": "vel_z_down",
             "quantity_kind": {
                 "id": "LinearVelocity",
@@ -5057,34 +5023,6 @@
             "value": null,
             "has_view": false,
             "type": "Quantity"
-        },
-        {
-            "id": "twist_ee",
-            "of": {
-                "id": "link_ee",
-                "type": "SimplicialComplex"
-            },
-            "with_respect_to": {
-                "id": "link_base",
-                "type": "SimplicialComplex"
-            },
-            "quantity_kind": [
-                "AngularVelocity",
-                "LinearVelocity"
-            ],
-            "reference_point": {
-                "id": "point_ee_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_ee",
-                "type": "Frame"
-            },
-            "unit": [
-                "RAD_PER_SEC",
-                "M_PER_SEC"
-            ],
-            "type": "VelocityTwist"
         },
         {
             "id": "eacc_twist_ee_linear_z_m_approach",
@@ -5281,11 +5219,6 @@
             "value": null,
             "has_view": false,
             "type": "Quantity"
-        },
-        {
-            "id": "q_j4",
-            "joint_name": "joint-4",
-            "type": "JointPosition"
         }
     ],
     "closures": {
@@ -6015,20 +5948,6 @@
             "type": "Quantity"
         },
         {
-            "id": "q_j2",
-            "quantity_kind": {
-                "id": "Angle",
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "RAD",
-                "type": "Unit"
-            },
-            "value": null,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
             "id": "tau_ctrl_limit_j4",
             "quantity_kind": {
                 "id": "Torque",
@@ -6183,26 +6102,6 @@
             "type": "Quantity"
         },
         {
-            "id": "wrench_ee",
-            "quantity_kind": [
-                "Torque",
-                "Force"
-            ],
-            "reference_point": {
-                "id": "point_ee_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_ee",
-                "type": "Frame"
-            },
-            "unit": [
-                "N_M",
-                "N"
-            ],
-            "type": "Wrench"
-        },
-        {
             "id": "vel_z_down",
             "quantity_kind": {
                 "id": "LinearVelocity",
@@ -6285,34 +6184,6 @@
             "value": null,
             "has_view": false,
             "type": "Quantity"
-        },
-        {
-            "id": "twist_ee",
-            "of": {
-                "id": "link_ee",
-                "type": "SimplicialComplex"
-            },
-            "with_respect_to": {
-                "id": "link_base",
-                "type": "SimplicialComplex"
-            },
-            "quantity_kind": [
-                "AngularVelocity",
-                "LinearVelocity"
-            ],
-            "reference_point": {
-                "id": "point_ee_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_ee",
-                "type": "Frame"
-            },
-            "unit": [
-                "RAD_PER_SEC",
-                "M_PER_SEC"
-            ],
-            "type": "VelocityTwist"
         },
         {
             "id": "eacc_twist_ee_linear_z_m_approach",
@@ -6495,34 +6366,9 @@
             "value": null,
             "has_view": false,
             "type": "Quantity"
-        },
-        {
-            "id": "q_j4",
-            "joint_name": "joint-4",
-            "type": "JointPosition"
         }
     ],
     "wrench_outputs": [
-        {
-            "id": "wrench_ee",
-            "quantity_kind": [
-                "Torque",
-                "Force"
-            ],
-            "reference_point": {
-                "id": "point_ee_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_ee",
-                "type": "Frame"
-            },
-            "unit": [
-                "N_M",
-                "N"
-            ],
-            "type": "Wrench"
-        },
         {
             "id": "wrench_ee",
             "quantity_kind": [

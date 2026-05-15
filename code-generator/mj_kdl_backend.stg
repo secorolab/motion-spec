@@ -19,20 +19,13 @@ robot-state-init-mj_kdl-KinovaGen3(solver) ::= <<
 
 robot-init-mj_kdl-KinovaGen3(solver) ::= <<
     mj_kdl::Robot mj_<solver.id>{};
-    if (!mj_kdl::init_robot_from_mjcf(&mj_<solver.id>, mj_model, mj_data, "<solver.chain_root>", "<solver.chain_end>")) {
+    if (!mj_kdl::init_robot_from_mjcf(&mj_<solver.id>, mj_env.model, mj_env.data, "<solver.chain_root>", "<solver.chain_end>")) {
         std::cerr \<\< "init_robot_from_mjcf() failed for <solver.id>\\n";
-        mj_kdl::destroy_scene(mj_model, mj_data);
+        mj_kdl::cleanup(&mj_env);
         return 1;
     \}
     mj_<solver.id>.ctrl_mode = mj_kdl::CtrlMode::TORQUE;
-    {
-        const double q_home_values[7] = {0.0, 0.2618, 3.1416, -2.2689, 0.0, 0.9599, 1.5708};
-        KDL::JntArray q_home(mj_<solver.id>.n_joints);
-        for (int i = 0; i \< mj_<solver.id>.n_joints && i \< 7; ++i) {
-            q_home(i) = q_home_values[i];
-        }
-        mj_kdl::set_joint_pos(&mj_<solver.id>, q_home, false);
-    }
+    mj_kdl::env_add_robot(&mj_env, &mj_<solver.id>);
 >>
 
 robot-chain-mj_kdl-KinovaGen3(solver) ::= <<
@@ -104,16 +97,15 @@ app-arm-setup-mj_kdl(arm_solvers) ::= <<
         return 1;
     }
 
+    mj_kdl::Env mj_env{};
     mj_kdl::SceneSpec mj_scene{};
     mj_kdl::RobotSpec mj_robot_spec{};
     const std::string mjcf_path_string = mjcf_path.string();
     mj_robot_spec.path = mjcf_path_string.c_str();
     mj_scene.robots.push_back(mj_robot_spec);
 
-    mjModel *mj_model = nullptr;
-    mjData *mj_data = nullptr;
-    if (!mj_kdl::build_scene(&mj_model, &mj_data, &mj_scene)) {
-        std::cerr \<\< "mj_kdl::build_scene() failed for " \<\< mjcf_path_string \<\< "\\n";
+    if (!mj_kdl::init_env(&mj_env, &mj_scene)) {
+        std::cerr \<\< "mj_kdl::init_env() failed for " \<\< mjcf_path_string \<\< "\\n";
         return 1;
     }
 <arm_solvers:{solver |
@@ -131,11 +123,31 @@ app-arm-setup-mj_kdl(arm_solvers) ::= <<
     if (!headless) {
         if (!mj_kdl::init_window_sim(&mj_viewer, &mj_<first(arm_solvers).id>)) {
             std::cerr \<\< "mj_kdl::init_window_sim() failed\\n";
-            mj_kdl::cleanup(&mj_<first(arm_solvers).id>);
-            mj_kdl::destroy_scene(mj_model, mj_data);
+            mj_kdl::cleanup(&mj_env);
             return 1;
         }
     }
+>>
+
+app-arm-post-setup-mj_kdl(arm_solvers, motions) ::= <<
+    mj_env.on_reset = [&](mj_kdl::ResetContext *) {
+        const double _q_home[7] = {0.0, 0.2618, 3.1416, -2.2689, 0.0, 0.9599, 1.5708};
+        KDL::JntArray _q(mj_<first(arm_solvers).id>.n_joints);
+        for (int _i = 0; _i \< mj_<first(arm_solvers).id>.n_joints && _i \< 7; ++_i)
+            _q(_i) = _q_home[_i];
+        mj_kdl::set_joint_pos(&mj_<first(arm_solvers).id>, _q, false);
+        <motions:{m | reset_<m.id>(<m.id>_state_instance);}; separator="\n        ">
+    };
+    mj_kdl::reset(&mj_env);
+    double _prev_sim_time = mj_<first(arm_solvers).id>.data->time;
+>>
+
+app-arm-loop-reset-mj_kdl(arm_solvers) ::= <<
+        if (mj_<first(arm_solvers).id>.data->time \< _prev_sim_time - 1e-6) {
+            mj_kdl::reset(&mj_env);
+            current_motion = 0;
+        }
+        _prev_sim_time = mj_<first(arm_solvers).id>.data->time;
 >>
 
 app-loop-condition-mj_kdl(has_arm) ::= <<
@@ -145,7 +157,8 @@ app-loop-condition-mj_kdl(has_arm) ::= <<
 app-arm-cleanup-mj_kdl(has_arm) ::= <<
 <if(has_arm)>    if (!headless) {
         mj_kdl::cleanup(&mj_viewer);
-    }<endif>
+    }
+    mj_kdl::cleanup(&mj_env);<endif>
 >>
 
 app-headless-telemetry-mj_kdl(shared_data, arm_solvers) ::= <<

@@ -3579,8 +3579,8 @@
             "until_monitors": [],
             "when_schedule": [],
             "while_schedule": [
-                "transform_twist_rightarm_shoulder_ee_platform_to_twist_rightarm_shoulder_ee_shoulder",
                 "compute_inverse_pose_rightarm_platform_shoulder",
+                "transform_twist_rightarm_shoulder_ee_platform_to_twist_rightarm_shoulder_ee_shoulder",
                 "compute_pose_rightarm_shoulder_ee",
                 "compute_pose_rightarm_shoulder_ee_distance",
                 "eval_motion_rightarm_while_cstr_linvel_rightarm_shoulder_ee_vertical",
@@ -4910,8 +4910,8 @@
             "until_monitors": [],
             "when_schedule": [],
             "while_schedule": [
-                "transform_twist_leftarm_shoulder_ee_platform_to_twist_leftarm_shoulder_ee_shoulder",
                 "compute_inverse_pose_leftarm_platform_shoulder",
+                "transform_twist_leftarm_shoulder_ee_platform_to_twist_leftarm_shoulder_ee_shoulder",
                 "compute_pose_leftarm_shoulder_ee",
                 "compute_pose_leftarm_shoulder_ee_distance",
                 "eval_motion_leftarm_while_cstr_linvel_leftarm_shoulder_ee_vertical",
@@ -6229,34 +6229,6 @@
             "type": "Quantity"
         },
         {
-            "id": "twist_rightarm_shoulder_ee_shoulder",
-            "of": {
-                "id": "link_rightarm_ee",
-                "type": "SimplicialComplex"
-            },
-            "with_respect_to": {
-                "id": "link_rightarm_shoulder",
-                "type": "SimplicialComplex"
-            },
-            "quantity_kind": [
-                "AngularVelocity",
-                "LinearVelocity"
-            ],
-            "reference_point": {
-                "id": "point_twist_rightarm_shoulder_ee_shoulder_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_rightarm_shoulder",
-                "type": "Frame"
-            },
-            "unit": [
-                "RAD_PER_SEC",
-                "M_PER_SEC"
-            ],
-            "type": "VelocityTwist"
-        },
-        {
             "id": "pose_leftarm_shoulder_ee_distance",
             "quantity_kind": {
                 "id": "Distance",
@@ -6325,34 +6297,6 @@
             "value": null,
             "has_view": false,
             "type": "Quantity"
-        },
-        {
-            "id": "pose_leftarm_platform_ee",
-            "of": {
-                "id": "frame_leftarm_ee",
-                "type": "Frame"
-            },
-            "with_respect_to": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "quantity_kind": [
-                "PlaneAngle",
-                "Length"
-            ],
-            "as_seen_by": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "unit": [
-                "UNITLESS",
-                "M"
-            ],
-            "direction_cosine_x": null,
-            "direction_cosine_y": null,
-            "direction_cosine_z": null,
-            "position": null,
-            "type": "Pose"
         },
         {
             "id": "twist_leftarm_shoulder_ee_shoulder_linear_z_err_motion_leftarm",
@@ -6437,26 +6381,6 @@
             "value": null,
             "has_view": false,
             "type": "Quantity"
-        },
-        {
-            "id": "wrench_leftarm_elbow",
-            "quantity_kind": [
-                "Torque",
-                "Force"
-            ],
-            "reference_point": {
-                "id": "point_leftarm_elbow_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "unit": [
-                "N_M",
-                "N"
-            ],
-            "type": "Wrench"
         },
         {
             "id": "pose_rightarm_platform_elbow_distance_z_err_motion_rightarm",
@@ -6557,34 +6481,6 @@
             "type": "Quantity"
         },
         {
-            "id": "twist_rightarm_shoulder_ee_platform",
-            "of": {
-                "id": "link_rightarm_ee",
-                "type": "SimplicialComplex"
-            },
-            "with_respect_to": {
-                "id": "link_rightarm_shoulder",
-                "type": "SimplicialComplex"
-            },
-            "quantity_kind": [
-                "AngularVelocity",
-                "LinearVelocity"
-            ],
-            "reference_point": {
-                "id": "point_twist_rightarm_shoulder_ee_platform_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "unit": [
-                "RAD_PER_SEC",
-                "M_PER_SEC"
-            ],
-            "type": "VelocityTwist"
-        },
-        {
             "id": "pose_rightarm_platform_elbow_distance_z",
             "quantity_kind": {
                 "id": "Distance",
@@ -6597,34 +6493,6 @@
             "value": null,
             "has_view": true,
             "type": "Quantity"
-        },
-        {
-            "id": "pose_rightarm_shoulder_elbow",
-            "of": {
-                "id": "frame_rightarm_elbow",
-                "type": "Frame"
-            },
-            "with_respect_to": {
-                "id": "frame_rightarm_shoulder",
-                "type": "Frame"
-            },
-            "quantity_kind": [
-                "PlaneAngle",
-                "Length"
-            ],
-            "as_seen_by": {
-                "id": "frame_rightarm_shoulder",
-                "type": "Frame"
-            },
-            "unit": [
-                "UNITLESS",
-                "M"
-            ],
-            "direction_cosine_x": null,
-            "direction_cosine_y": null,
-            "direction_cosine_z": null,
-            "position": null,
-            "type": "Pose"
         },
         {
             "id": "dist_leftarm_shoulder_ee_lower",
@@ -6653,90 +6521,6 @@
             "value": null,
             "has_view": false,
             "type": "Quantity"
-        },
-        {
-            "id": "twist_leftarm_shoulder_ee_platform",
-            "of": {
-                "id": "link_leftarm_ee",
-                "type": "SimplicialComplex"
-            },
-            "with_respect_to": {
-                "id": "link_leftarm_shoulder",
-                "type": "SimplicialComplex"
-            },
-            "quantity_kind": [
-                "AngularVelocity",
-                "LinearVelocity"
-            ],
-            "reference_point": {
-                "id": "point_twist_leftarm_shoulder_ee_platform_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "unit": [
-                "RAD_PER_SEC",
-                "M_PER_SEC"
-            ],
-            "type": "VelocityTwist"
-        },
-        {
-            "id": "twist_world_platform_leftarm_ee",
-            "of": {
-                "id": "link_platform",
-                "type": "SimplicialComplex"
-            },
-            "with_respect_to": {
-                "id": "link_world",
-                "type": "SimplicialComplex"
-            },
-            "quantity_kind": [
-                "AngularVelocity",
-                "LinearVelocity"
-            ],
-            "reference_point": {
-                "id": "point_twist_world_platform_leftarm_ee_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_leftarm_ee",
-                "type": "Frame"
-            },
-            "unit": [
-                "RAD_PER_SEC",
-                "M_PER_SEC"
-            ],
-            "type": "VelocityTwist"
-        },
-        {
-            "id": "pose_leftarm_platform_shoulder",
-            "of": {
-                "id": "frame_leftarm_shoulder",
-                "type": "Frame"
-            },
-            "with_respect_to": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "quantity_kind": [
-                "PlaneAngle",
-                "Length"
-            ],
-            "as_seen_by": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "unit": [
-                "UNITLESS",
-                "M"
-            ],
-            "direction_cosine_x": null,
-            "direction_cosine_y": null,
-            "direction_cosine_z": null,
-            "position": null,
-            "type": "Pose"
         },
         {
             "id": "eacc_twist_rightarm_shoulder_ee_shoulder_angular_y_motion_rightarm",
@@ -6865,20 +6649,6 @@
             "type": "Quantity"
         },
         {
-            "id": "gravity_vec",
-            "quantity_kind": {
-                "id": "Vector",
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "M_PER_SEC2",
-                "type": "Unit"
-            },
-            "value": null,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
             "id": "twist_leftarm_shoulder_ee_shoulder_angular_x",
             "quantity_kind": {
                 "id": "AngularVelocity",
@@ -6905,34 +6675,6 @@
             "value": null,
             "has_view": false,
             "type": "Quantity"
-        },
-        {
-            "id": "pose_leftarm_platform_elbow",
-            "of": {
-                "id": "frame_leftarm_elbow",
-                "type": "Frame"
-            },
-            "with_respect_to": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "quantity_kind": [
-                "PlaneAngle",
-                "Length"
-            ],
-            "as_seen_by": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "unit": [
-                "UNITLESS",
-                "M"
-            ],
-            "direction_cosine_x": null,
-            "direction_cosine_y": null,
-            "direction_cosine_z": null,
-            "position": null,
-            "type": "Pose"
         },
         {
             "id": "twist_leftarm_shoulder_ee_shoulder_angular_z",
@@ -6991,26 +6733,6 @@
             "type": "Quantity"
         },
         {
-            "id": "wrench_leftarm_ee_anteroposterior_ee",
-            "quantity_kind": [
-                "Torque",
-                "Force"
-            ],
-            "reference_point": {
-                "id": "point_leftarm_ee_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_leftarm_ee",
-                "type": "Frame"
-            },
-            "unit": [
-                "N_M",
-                "N"
-            ],
-            "type": "Wrench"
-        },
-        {
             "id": "eacc_twist_rightarm_shoulder_ee_shoulder_angular_x_motion_rightarm",
             "quantity_kind": {
                 "id": "AccelerationEnergy",
@@ -7023,26 +6745,6 @@
             "value": null,
             "has_view": false,
             "type": "Quantity"
-        },
-        {
-            "id": "wrench_rightarm_ee_anteroposterior_platform",
-            "quantity_kind": [
-                "Torque",
-                "Force"
-            ],
-            "reference_point": {
-                "id": "point_rightarm_ee_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "unit": [
-                "N_M",
-                "N"
-            ],
-            "type": "Wrench"
         },
         {
             "id": "twist_rightarm_shoulder_ee_shoulder_angular_x_err_motion_rightarm",
@@ -7059,130 +6761,6 @@
             "type": "Quantity"
         },
         {
-            "id": "wrench_leftarm_dist_shoulder",
-            "quantity_kind": [
-                "Torque",
-                "Force"
-            ],
-            "reference_point": {
-                "id": "point_leftarm_shoulder_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_leftarm_shoulder",
-                "type": "Frame"
-            },
-            "unit": [
-                "N_M",
-                "N"
-            ],
-            "type": "Wrench"
-        },
-        {
-            "id": "pose_rightarm_shoulder_ee",
-            "of": {
-                "id": "frame_rightarm_ee",
-                "type": "Frame"
-            },
-            "with_respect_to": {
-                "id": "frame_rightarm_shoulder",
-                "type": "Frame"
-            },
-            "quantity_kind": [
-                "PlaneAngle",
-                "Length"
-            ],
-            "as_seen_by": {
-                "id": "frame_rightarm_shoulder",
-                "type": "Frame"
-            },
-            "unit": [
-                "UNITLESS",
-                "M"
-            ],
-            "direction_cosine_x": null,
-            "direction_cosine_y": null,
-            "direction_cosine_z": null,
-            "position": null,
-            "type": "Pose"
-        },
-        {
-            "id": "pose_leftarm_shoulder_ee",
-            "of": {
-                "id": "frame_leftarm_ee",
-                "type": "Frame"
-            },
-            "with_respect_to": {
-                "id": "frame_leftarm_shoulder",
-                "type": "Frame"
-            },
-            "quantity_kind": [
-                "PlaneAngle",
-                "Length"
-            ],
-            "as_seen_by": {
-                "id": "frame_leftarm_shoulder",
-                "type": "Frame"
-            },
-            "unit": [
-                "UNITLESS",
-                "M"
-            ],
-            "direction_cosine_x": null,
-            "direction_cosine_y": null,
-            "direction_cosine_z": null,
-            "position": null,
-            "type": "Pose"
-        },
-        {
-            "id": "pose_rightarm_platform_ee",
-            "of": {
-                "id": "frame_rightarm_ee",
-                "type": "Frame"
-            },
-            "with_respect_to": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "quantity_kind": [
-                "PlaneAngle",
-                "Length"
-            ],
-            "as_seen_by": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "unit": [
-                "UNITLESS",
-                "M"
-            ],
-            "direction_cosine_x": null,
-            "direction_cosine_y": null,
-            "direction_cosine_z": null,
-            "position": null,
-            "type": "Pose"
-        },
-        {
-            "id": "wrench_rightarm_elbow",
-            "quantity_kind": [
-                "Torque",
-                "Force"
-            ],
-            "reference_point": {
-                "id": "point_rightarm_elbow_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "unit": [
-                "N_M",
-                "N"
-            ],
-            "type": "Wrench"
-        },
-        {
             "id": "linvel_leftarm_world_ee_lateral_ref",
             "quantity_kind": {
                 "id": "LinearVelocity",
@@ -7195,34 +6773,6 @@
             "value": 0.0,
             "has_view": false,
             "type": "Quantity"
-        },
-        {
-            "id": "pose_rightarm_platform_shoulder",
-            "of": {
-                "id": "frame_rightarm_shoulder",
-                "type": "Frame"
-            },
-            "with_respect_to": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "quantity_kind": [
-                "PlaneAngle",
-                "Length"
-            ],
-            "as_seen_by": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "unit": [
-                "UNITLESS",
-                "M"
-            ],
-            "direction_cosine_x": null,
-            "direction_cosine_y": null,
-            "direction_cosine_z": null,
-            "position": null,
-            "type": "Pose"
         },
         {
             "id": "dist_rightarm_shoulder_ee_lower",
@@ -7309,34 +6859,6 @@
             "type": "Quantity"
         },
         {
-            "id": "pose_leftarm_shoulder_elbow",
-            "of": {
-                "id": "frame_leftarm_elbow",
-                "type": "Frame"
-            },
-            "with_respect_to": {
-                "id": "frame_leftarm_shoulder",
-                "type": "Frame"
-            },
-            "quantity_kind": [
-                "PlaneAngle",
-                "Length"
-            ],
-            "as_seen_by": {
-                "id": "frame_leftarm_shoulder",
-                "type": "Frame"
-            },
-            "unit": [
-                "UNITLESS",
-                "M"
-            ],
-            "direction_cosine_x": null,
-            "direction_cosine_y": null,
-            "direction_cosine_z": null,
-            "position": null,
-            "type": "Pose"
-        },
-        {
             "id": "twist_leftarm_shoulder_ee_shoulder_angular_y_err_motion_leftarm",
             "quantity_kind": {
                 "id": "AngularVelocity",
@@ -7349,54 +6871,6 @@
             "value": null,
             "has_view": false,
             "type": "Quantity"
-        },
-        {
-            "id": "wrench_rightarm_ee_anteroposterior_ee",
-            "quantity_kind": [
-                "Torque",
-                "Force"
-            ],
-            "reference_point": {
-                "id": "point_rightarm_ee_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_rightarm_ee",
-                "type": "Frame"
-            },
-            "unit": [
-                "N_M",
-                "N"
-            ],
-            "type": "Wrench"
-        },
-        {
-            "id": "pose_rightarm_platform_elbow",
-            "of": {
-                "id": "frame_rightarm_elbow",
-                "type": "Frame"
-            },
-            "with_respect_to": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "quantity_kind": [
-                "PlaneAngle",
-                "Length"
-            ],
-            "as_seen_by": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "unit": [
-                "UNITLESS",
-                "M"
-            ],
-            "direction_cosine_x": null,
-            "direction_cosine_y": null,
-            "direction_cosine_z": null,
-            "position": null,
-            "type": "Pose"
         },
         {
             "id": "angvel_leftarm_shoulder_ee_vertical_ref",
@@ -7413,34 +6887,6 @@
             "type": "Quantity"
         },
         {
-            "id": "twist_leftarm_shoulder_ee_shoulder",
-            "of": {
-                "id": "link_leftarm_ee",
-                "type": "SimplicialComplex"
-            },
-            "with_respect_to": {
-                "id": "link_leftarm_shoulder",
-                "type": "SimplicialComplex"
-            },
-            "quantity_kind": [
-                "AngularVelocity",
-                "LinearVelocity"
-            ],
-            "reference_point": {
-                "id": "point_twist_leftarm_shoulder_ee_shoulder_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_leftarm_shoulder",
-                "type": "Frame"
-            },
-            "unit": [
-                "RAD_PER_SEC",
-                "M_PER_SEC"
-            ],
-            "type": "VelocityTwist"
-        },
-        {
             "id": "pose_leftarm_platform_elbow_distance_z",
             "quantity_kind": {
                 "id": "Distance",
@@ -7453,26 +6899,6 @@
             "value": null,
             "has_view": true,
             "type": "Quantity"
-        },
-        {
-            "id": "wrench_rightarm_dist_shoulder",
-            "quantity_kind": [
-                "Torque",
-                "Force"
-            ],
-            "reference_point": {
-                "id": "point_rightarm_shoulder_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_rightarm_shoulder",
-                "type": "Frame"
-            },
-            "unit": [
-                "N_M",
-                "N"
-            ],
-            "type": "Wrench"
         },
         {
             "id": "pose_rightarm_shoulder_ee_distance",
@@ -7543,34 +6969,6 @@
             "value": 0.72,
             "has_view": false,
             "type": "Quantity"
-        },
-        {
-            "id": "twist_world_platform_rightarm_ee",
-            "of": {
-                "id": "link_platform",
-                "type": "SimplicialComplex"
-            },
-            "with_respect_to": {
-                "id": "link_world",
-                "type": "SimplicialComplex"
-            },
-            "quantity_kind": [
-                "AngularVelocity",
-                "LinearVelocity"
-            ],
-            "reference_point": {
-                "id": "point_twist_world_platform_rightarm_ee_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_rightarm_ee",
-                "type": "Frame"
-            },
-            "unit": [
-                "RAD_PER_SEC",
-                "M_PER_SEC"
-            ],
-            "type": "VelocityTwist"
         },
         {
             "id": "twist_world_platform_rightarm_ee_linear_y",
@@ -7655,26 +7053,6 @@
             "value": null,
             "has_view": true,
             "type": "Quantity"
-        },
-        {
-            "id": "wrench_leftarm_ee_anteroposterior_platform",
-            "quantity_kind": [
-                "Torque",
-                "Force"
-            ],
-            "reference_point": {
-                "id": "point_leftarm_ee_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "unit": [
-                "N_M",
-                "N"
-            ],
-            "type": "Wrench"
         },
         {
             "id": "twist_rightarm_shoulder_ee_shoulder_angular_y",
@@ -8122,8 +7500,8 @@
         "compute_wrench_force_ctrl_dist_leftarm_shoulder_ee"
     ],
     "schedule": [
-        "transform_twist_rightarm_shoulder_ee_platform_to_twist_rightarm_shoulder_ee_shoulder",
         "compute_inverse_pose_rightarm_platform_shoulder",
+        "transform_twist_rightarm_shoulder_ee_platform_to_twist_rightarm_shoulder_ee_shoulder",
         "compute_pose_rightarm_shoulder_ee",
         "compute_pose_rightarm_shoulder_ee_distance",
         "eval_motion_rightarm_while_cstr_linvel_rightarm_shoulder_ee_vertical",
@@ -8140,8 +7518,8 @@
         "ctrl_angvel_rightarm_shoulder_ee_anteroposterior",
         "ctrl_pos_rightarm_platform_elbow_height",
         "ctrl_linvel_rightarm_shoulder_ee_vertical",
-        "transform_twist_leftarm_shoulder_ee_platform_to_twist_leftarm_shoulder_ee_shoulder",
         "compute_inverse_pose_leftarm_platform_shoulder",
+        "transform_twist_leftarm_shoulder_ee_platform_to_twist_leftarm_shoulder_ee_shoulder",
         "compute_pose_leftarm_shoulder_ee",
         "compute_pose_leftarm_shoulder_ee_distance",
         "eval_motion_leftarm_while_cstr_linvel_leftarm_shoulder_ee_vertical",
@@ -9773,34 +9151,6 @@
             "type": "Quantity"
         },
         {
-            "id": "twist_rightarm_shoulder_ee_shoulder",
-            "of": {
-                "id": "link_rightarm_ee",
-                "type": "SimplicialComplex"
-            },
-            "with_respect_to": {
-                "id": "link_rightarm_shoulder",
-                "type": "SimplicialComplex"
-            },
-            "quantity_kind": [
-                "AngularVelocity",
-                "LinearVelocity"
-            ],
-            "reference_point": {
-                "id": "point_twist_rightarm_shoulder_ee_shoulder_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_rightarm_shoulder",
-                "type": "Frame"
-            },
-            "unit": [
-                "RAD_PER_SEC",
-                "M_PER_SEC"
-            ],
-            "type": "VelocityTwist"
-        },
-        {
             "id": "pose_leftarm_shoulder_ee_distance",
             "quantity_kind": {
                 "id": "Distance",
@@ -9855,34 +9205,6 @@
             "value": null,
             "has_view": false,
             "type": "Quantity"
-        },
-        {
-            "id": "pose_leftarm_platform_ee",
-            "of": {
-                "id": "frame_leftarm_ee",
-                "type": "Frame"
-            },
-            "with_respect_to": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "quantity_kind": [
-                "PlaneAngle",
-                "Length"
-            ],
-            "as_seen_by": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "unit": [
-                "UNITLESS",
-                "M"
-            ],
-            "direction_cosine_x": null,
-            "direction_cosine_y": null,
-            "direction_cosine_z": null,
-            "position": null,
-            "type": "Pose"
         },
         {
             "id": "twist_leftarm_shoulder_ee_shoulder_linear_z_err_motion_leftarm",
@@ -9969,26 +9291,6 @@
             "type": "Quantity"
         },
         {
-            "id": "wrench_leftarm_elbow",
-            "quantity_kind": [
-                "Torque",
-                "Force"
-            ],
-            "reference_point": {
-                "id": "point_leftarm_elbow_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "unit": [
-                "N_M",
-                "N"
-            ],
-            "type": "Wrench"
-        },
-        {
             "id": "pose_rightarm_platform_elbow_distance_z_err_motion_rightarm",
             "quantity_kind": {
                 "id": "Distance",
@@ -10059,62 +9361,6 @@
             "type": "Quantity"
         },
         {
-            "id": "twist_rightarm_shoulder_ee_platform",
-            "of": {
-                "id": "link_rightarm_ee",
-                "type": "SimplicialComplex"
-            },
-            "with_respect_to": {
-                "id": "link_rightarm_shoulder",
-                "type": "SimplicialComplex"
-            },
-            "quantity_kind": [
-                "AngularVelocity",
-                "LinearVelocity"
-            ],
-            "reference_point": {
-                "id": "point_twist_rightarm_shoulder_ee_platform_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "unit": [
-                "RAD_PER_SEC",
-                "M_PER_SEC"
-            ],
-            "type": "VelocityTwist"
-        },
-        {
-            "id": "pose_rightarm_shoulder_elbow",
-            "of": {
-                "id": "frame_rightarm_elbow",
-                "type": "Frame"
-            },
-            "with_respect_to": {
-                "id": "frame_rightarm_shoulder",
-                "type": "Frame"
-            },
-            "quantity_kind": [
-                "PlaneAngle",
-                "Length"
-            ],
-            "as_seen_by": {
-                "id": "frame_rightarm_shoulder",
-                "type": "Frame"
-            },
-            "unit": [
-                "UNITLESS",
-                "M"
-            ],
-            "direction_cosine_x": null,
-            "direction_cosine_y": null,
-            "direction_cosine_z": null,
-            "position": null,
-            "type": "Pose"
-        },
-        {
             "id": "dist_leftarm_shoulder_ee_lower",
             "quantity_kind": {
                 "id": "Distance",
@@ -10141,90 +9387,6 @@
             "value": null,
             "has_view": false,
             "type": "Quantity"
-        },
-        {
-            "id": "twist_leftarm_shoulder_ee_platform",
-            "of": {
-                "id": "link_leftarm_ee",
-                "type": "SimplicialComplex"
-            },
-            "with_respect_to": {
-                "id": "link_leftarm_shoulder",
-                "type": "SimplicialComplex"
-            },
-            "quantity_kind": [
-                "AngularVelocity",
-                "LinearVelocity"
-            ],
-            "reference_point": {
-                "id": "point_twist_leftarm_shoulder_ee_platform_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "unit": [
-                "RAD_PER_SEC",
-                "M_PER_SEC"
-            ],
-            "type": "VelocityTwist"
-        },
-        {
-            "id": "twist_world_platform_leftarm_ee",
-            "of": {
-                "id": "link_platform",
-                "type": "SimplicialComplex"
-            },
-            "with_respect_to": {
-                "id": "link_world",
-                "type": "SimplicialComplex"
-            },
-            "quantity_kind": [
-                "AngularVelocity",
-                "LinearVelocity"
-            ],
-            "reference_point": {
-                "id": "point_twist_world_platform_leftarm_ee_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_leftarm_ee",
-                "type": "Frame"
-            },
-            "unit": [
-                "RAD_PER_SEC",
-                "M_PER_SEC"
-            ],
-            "type": "VelocityTwist"
-        },
-        {
-            "id": "pose_leftarm_platform_shoulder",
-            "of": {
-                "id": "frame_leftarm_shoulder",
-                "type": "Frame"
-            },
-            "with_respect_to": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "quantity_kind": [
-                "PlaneAngle",
-                "Length"
-            ],
-            "as_seen_by": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "unit": [
-                "UNITLESS",
-                "M"
-            ],
-            "direction_cosine_x": null,
-            "direction_cosine_y": null,
-            "direction_cosine_z": null,
-            "position": null,
-            "type": "Pose"
         },
         {
             "id": "eacc_twist_rightarm_shoulder_ee_shoulder_angular_y_motion_rightarm",
@@ -10339,20 +9501,6 @@
             "type": "Quantity"
         },
         {
-            "id": "gravity_vec",
-            "quantity_kind": {
-                "id": "Vector",
-                "type": "QuantityKind"
-            },
-            "unit": {
-                "id": "M_PER_SEC2",
-                "type": "Unit"
-            },
-            "value": null,
-            "has_view": false,
-            "type": "Quantity"
-        },
-        {
             "id": "eacc_twist_world_platform_rightarm_ee_linear_y_motion_rightarm",
             "quantity_kind": {
                 "id": "AccelerationEnergy",
@@ -10365,34 +9513,6 @@
             "value": null,
             "has_view": false,
             "type": "Quantity"
-        },
-        {
-            "id": "pose_leftarm_platform_elbow",
-            "of": {
-                "id": "frame_leftarm_elbow",
-                "type": "Frame"
-            },
-            "with_respect_to": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "quantity_kind": [
-                "PlaneAngle",
-                "Length"
-            ],
-            "as_seen_by": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "unit": [
-                "UNITLESS",
-                "M"
-            ],
-            "direction_cosine_x": null,
-            "direction_cosine_y": null,
-            "direction_cosine_z": null,
-            "position": null,
-            "type": "Pose"
         },
         {
             "id": "linvel_leftarm_shoulder_ee_vertical_ref",
@@ -10437,26 +9557,6 @@
             "type": "Quantity"
         },
         {
-            "id": "wrench_leftarm_ee_anteroposterior_ee",
-            "quantity_kind": [
-                "Torque",
-                "Force"
-            ],
-            "reference_point": {
-                "id": "point_leftarm_ee_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_leftarm_ee",
-                "type": "Frame"
-            },
-            "unit": [
-                "N_M",
-                "N"
-            ],
-            "type": "Wrench"
-        },
-        {
             "id": "eacc_twist_rightarm_shoulder_ee_shoulder_angular_x_motion_rightarm",
             "quantity_kind": {
                 "id": "AccelerationEnergy",
@@ -10469,26 +9569,6 @@
             "value": null,
             "has_view": false,
             "type": "Quantity"
-        },
-        {
-            "id": "wrench_rightarm_ee_anteroposterior_platform",
-            "quantity_kind": [
-                "Torque",
-                "Force"
-            ],
-            "reference_point": {
-                "id": "point_rightarm_ee_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "unit": [
-                "N_M",
-                "N"
-            ],
-            "type": "Wrench"
         },
         {
             "id": "twist_rightarm_shoulder_ee_shoulder_angular_x_err_motion_rightarm",
@@ -10505,130 +9585,6 @@
             "type": "Quantity"
         },
         {
-            "id": "wrench_leftarm_dist_shoulder",
-            "quantity_kind": [
-                "Torque",
-                "Force"
-            ],
-            "reference_point": {
-                "id": "point_leftarm_shoulder_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_leftarm_shoulder",
-                "type": "Frame"
-            },
-            "unit": [
-                "N_M",
-                "N"
-            ],
-            "type": "Wrench"
-        },
-        {
-            "id": "pose_rightarm_shoulder_ee",
-            "of": {
-                "id": "frame_rightarm_ee",
-                "type": "Frame"
-            },
-            "with_respect_to": {
-                "id": "frame_rightarm_shoulder",
-                "type": "Frame"
-            },
-            "quantity_kind": [
-                "PlaneAngle",
-                "Length"
-            ],
-            "as_seen_by": {
-                "id": "frame_rightarm_shoulder",
-                "type": "Frame"
-            },
-            "unit": [
-                "UNITLESS",
-                "M"
-            ],
-            "direction_cosine_x": null,
-            "direction_cosine_y": null,
-            "direction_cosine_z": null,
-            "position": null,
-            "type": "Pose"
-        },
-        {
-            "id": "pose_leftarm_shoulder_ee",
-            "of": {
-                "id": "frame_leftarm_ee",
-                "type": "Frame"
-            },
-            "with_respect_to": {
-                "id": "frame_leftarm_shoulder",
-                "type": "Frame"
-            },
-            "quantity_kind": [
-                "PlaneAngle",
-                "Length"
-            ],
-            "as_seen_by": {
-                "id": "frame_leftarm_shoulder",
-                "type": "Frame"
-            },
-            "unit": [
-                "UNITLESS",
-                "M"
-            ],
-            "direction_cosine_x": null,
-            "direction_cosine_y": null,
-            "direction_cosine_z": null,
-            "position": null,
-            "type": "Pose"
-        },
-        {
-            "id": "pose_rightarm_platform_ee",
-            "of": {
-                "id": "frame_rightarm_ee",
-                "type": "Frame"
-            },
-            "with_respect_to": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "quantity_kind": [
-                "PlaneAngle",
-                "Length"
-            ],
-            "as_seen_by": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "unit": [
-                "UNITLESS",
-                "M"
-            ],
-            "direction_cosine_x": null,
-            "direction_cosine_y": null,
-            "direction_cosine_z": null,
-            "position": null,
-            "type": "Pose"
-        },
-        {
-            "id": "wrench_rightarm_elbow",
-            "quantity_kind": [
-                "Torque",
-                "Force"
-            ],
-            "reference_point": {
-                "id": "point_rightarm_elbow_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "unit": [
-                "N_M",
-                "N"
-            ],
-            "type": "Wrench"
-        },
-        {
             "id": "linvel_leftarm_world_ee_lateral_ref",
             "quantity_kind": {
                 "id": "LinearVelocity",
@@ -10641,34 +9597,6 @@
             "value": 0.0,
             "has_view": false,
             "type": "Quantity"
-        },
-        {
-            "id": "pose_rightarm_platform_shoulder",
-            "of": {
-                "id": "frame_rightarm_shoulder",
-                "type": "Frame"
-            },
-            "with_respect_to": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "quantity_kind": [
-                "PlaneAngle",
-                "Length"
-            ],
-            "as_seen_by": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "unit": [
-                "UNITLESS",
-                "M"
-            ],
-            "direction_cosine_x": null,
-            "direction_cosine_y": null,
-            "direction_cosine_z": null,
-            "position": null,
-            "type": "Pose"
         },
         {
             "id": "dist_rightarm_shoulder_ee_lower",
@@ -10741,34 +9669,6 @@
             "type": "Quantity"
         },
         {
-            "id": "pose_leftarm_shoulder_elbow",
-            "of": {
-                "id": "frame_leftarm_elbow",
-                "type": "Frame"
-            },
-            "with_respect_to": {
-                "id": "frame_leftarm_shoulder",
-                "type": "Frame"
-            },
-            "quantity_kind": [
-                "PlaneAngle",
-                "Length"
-            ],
-            "as_seen_by": {
-                "id": "frame_leftarm_shoulder",
-                "type": "Frame"
-            },
-            "unit": [
-                "UNITLESS",
-                "M"
-            ],
-            "direction_cosine_x": null,
-            "direction_cosine_y": null,
-            "direction_cosine_z": null,
-            "position": null,
-            "type": "Pose"
-        },
-        {
             "id": "twist_leftarm_shoulder_ee_shoulder_angular_y_err_motion_leftarm",
             "quantity_kind": {
                 "id": "AngularVelocity",
@@ -10783,54 +9683,6 @@
             "type": "Quantity"
         },
         {
-            "id": "wrench_rightarm_ee_anteroposterior_ee",
-            "quantity_kind": [
-                "Torque",
-                "Force"
-            ],
-            "reference_point": {
-                "id": "point_rightarm_ee_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_rightarm_ee",
-                "type": "Frame"
-            },
-            "unit": [
-                "N_M",
-                "N"
-            ],
-            "type": "Wrench"
-        },
-        {
-            "id": "pose_rightarm_platform_elbow",
-            "of": {
-                "id": "frame_rightarm_elbow",
-                "type": "Frame"
-            },
-            "with_respect_to": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "quantity_kind": [
-                "PlaneAngle",
-                "Length"
-            ],
-            "as_seen_by": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "unit": [
-                "UNITLESS",
-                "M"
-            ],
-            "direction_cosine_x": null,
-            "direction_cosine_y": null,
-            "direction_cosine_z": null,
-            "position": null,
-            "type": "Pose"
-        },
-        {
             "id": "angvel_leftarm_shoulder_ee_vertical_ref",
             "quantity_kind": {
                 "id": "AngularVelocity",
@@ -10843,54 +9695,6 @@
             "value": 0.0,
             "has_view": false,
             "type": "Quantity"
-        },
-        {
-            "id": "twist_leftarm_shoulder_ee_shoulder",
-            "of": {
-                "id": "link_leftarm_ee",
-                "type": "SimplicialComplex"
-            },
-            "with_respect_to": {
-                "id": "link_leftarm_shoulder",
-                "type": "SimplicialComplex"
-            },
-            "quantity_kind": [
-                "AngularVelocity",
-                "LinearVelocity"
-            ],
-            "reference_point": {
-                "id": "point_twist_leftarm_shoulder_ee_shoulder_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_leftarm_shoulder",
-                "type": "Frame"
-            },
-            "unit": [
-                "RAD_PER_SEC",
-                "M_PER_SEC"
-            ],
-            "type": "VelocityTwist"
-        },
-        {
-            "id": "wrench_rightarm_dist_shoulder",
-            "quantity_kind": [
-                "Torque",
-                "Force"
-            ],
-            "reference_point": {
-                "id": "point_rightarm_shoulder_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_rightarm_shoulder",
-                "type": "Frame"
-            },
-            "unit": [
-                "N_M",
-                "N"
-            ],
-            "type": "Wrench"
         },
         {
             "id": "pose_rightarm_shoulder_ee_distance",
@@ -10963,34 +9767,6 @@
             "type": "Quantity"
         },
         {
-            "id": "twist_world_platform_rightarm_ee",
-            "of": {
-                "id": "link_platform",
-                "type": "SimplicialComplex"
-            },
-            "with_respect_to": {
-                "id": "link_world",
-                "type": "SimplicialComplex"
-            },
-            "quantity_kind": [
-                "AngularVelocity",
-                "LinearVelocity"
-            ],
-            "reference_point": {
-                "id": "point_twist_world_platform_rightarm_ee_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_rightarm_ee",
-                "type": "Frame"
-            },
-            "unit": [
-                "RAD_PER_SEC",
-                "M_PER_SEC"
-            ],
-            "type": "VelocityTwist"
-        },
-        {
             "id": "linvel_rightarm_shoulder_ee_vertical_ref",
             "quantity_kind": {
                 "id": "LinearVelocity",
@@ -11033,26 +9809,6 @@
             "type": "Quantity"
         },
         {
-            "id": "wrench_leftarm_ee_anteroposterior_platform",
-            "quantity_kind": [
-                "Torque",
-                "Force"
-            ],
-            "reference_point": {
-                "id": "point_leftarm_ee_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_platform",
-                "type": "Frame"
-            },
-            "unit": [
-                "N_M",
-                "N"
-            ],
-            "type": "Wrench"
-        },
-        {
             "id": "eacc_twist_rightarm_shoulder_ee_shoulder_angular_z_motion_rightarm",
             "quantity_kind": {
                 "id": "AccelerationEnergy",
@@ -11068,46 +9824,6 @@
         }
     ],
     "wrench_outputs": [
-        {
-            "id": "wrench_leftarm_ee_anteroposterior_ee",
-            "quantity_kind": [
-                "Torque",
-                "Force"
-            ],
-            "reference_point": {
-                "id": "point_leftarm_ee_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_leftarm_ee",
-                "type": "Frame"
-            },
-            "unit": [
-                "N_M",
-                "N"
-            ],
-            "type": "Wrench"
-        },
-        {
-            "id": "wrench_rightarm_ee_anteroposterior_ee",
-            "quantity_kind": [
-                "Torque",
-                "Force"
-            ],
-            "reference_point": {
-                "id": "point_rightarm_ee_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_rightarm_ee",
-                "type": "Frame"
-            },
-            "unit": [
-                "N_M",
-                "N"
-            ],
-            "type": "Wrench"
-        },
         {
             "id": "wrench_leftarm_ee_anteroposterior_ee",
             "quantity_kind": [

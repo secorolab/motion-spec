@@ -47,8 +47,6 @@ int main() {
     };
 
     KDL::Wrench wrench_ee_ee_measurement;
-    KDL::Wrench wrench_ee_ee_measurement;
-    robot.wrench_ee_ee = &wrench_ee_ee_measurement;
     robot.wrench_ee_ee = &wrench_ee_ee_measurement;
     motion_m_find_state motion_m_find_state_instance;
     motion_m_loosen_state motion_m_loosen_state_instance;
@@ -63,12 +61,16 @@ int main() {
         case 0: {
             update_motion_m_find(motion_m_find_state_instance, shared, robot);
             monitor_motion_m_find(motion_m_find_state_instance, shared);
-            if (can_start_motion_m_find(motion_m_find_state_instance, shared)) {
-                control_motion_m_find(motion_m_find_state_instance, shared, robot);
+            if (!motion_m_find_state_instance.active && can_start_motion_m_find(motion_m_find_state_instance, shared)) {
+                motion_m_find_state_instance.active = true;
             }
-            apply_motion_m_find(motion_m_find_state_instance, shared, robot);
-            if (motion_spec::runtime::constraint_satisfied(shared.wrench_ee_ee_torque_z_err) && motion_spec::runtime::constraint_satisfied(shared.pose_arm_ee_world_rotation_z_err) && motion_spec::runtime::constraint_satisfied(shared.wrench_ee_ee_torque_z_err)) {
-                current_motion = 1;
+            if (motion_m_find_state_instance.active) {
+                control_motion_m_find(motion_m_find_state_instance, shared, robot);
+                apply_motion_m_find(motion_m_find_state_instance, shared, robot);
+                if (motion_spec::runtime::constraint_satisfied(shared.wrench_ee_ee_torque_z_err) && motion_spec::runtime::constraint_satisfied(shared.pose_arm_ee_world_rotation_z_err) && motion_spec::runtime::constraint_satisfied(shared.wrench_ee_ee_torque_z_err)) {
+                    motion_m_find_state_instance.active = false;
+                    current_motion = 1;
+                }
             }
             break;
         }
@@ -76,12 +78,16 @@ int main() {
         case 1: {
             update_motion_m_loosen(motion_m_loosen_state_instance, shared, robot);
             monitor_motion_m_loosen(motion_m_loosen_state_instance, shared);
-            if (can_start_motion_m_loosen(motion_m_loosen_state_instance, shared)) {
-                control_motion_m_loosen(motion_m_loosen_state_instance, shared, robot);
+            if (!motion_m_loosen_state_instance.active && can_start_motion_m_loosen(motion_m_loosen_state_instance, shared)) {
+                motion_m_loosen_state_instance.active = true;
             }
-            apply_motion_m_loosen(motion_m_loosen_state_instance, shared, robot);
-            if (motion_spec::runtime::constraint_satisfied(shared.pose_arm_ee_world_rotation_z_err) && motion_spec::runtime::constraint_satisfied(shared.wrench_ee_ee_torque_z_err)) {
-                current_motion = 2;
+            if (motion_m_loosen_state_instance.active) {
+                control_motion_m_loosen(motion_m_loosen_state_instance, shared, robot);
+                apply_motion_m_loosen(motion_m_loosen_state_instance, shared, robot);
+                if (motion_spec::runtime::constraint_satisfied(shared.pose_arm_ee_world_rotation_z_err) && motion_spec::runtime::constraint_satisfied(shared.wrench_ee_ee_torque_z_err)) {
+                    motion_m_loosen_state_instance.active = false;
+                    current_motion = 2;
+                }
             }
             break;
         }

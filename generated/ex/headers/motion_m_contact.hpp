@@ -4,6 +4,7 @@
 #include "shared_state.hpp"
 
 struct motion_m_contact_state {
+    bool active = false;
     arm_solver_solver_state arm_solver;
     bool snapshot_taken = false;
     motion_spec::runtime::PIDControl ctrl_frc_z{1.0, 0.0, 0.0};
@@ -45,9 +46,6 @@ inline void update_motion_m_contact(
     shared_data &shared,
     const robot_io &robot) {
     init_motion_m_contact(state, robot);
-    if (robot.wrench_ee != nullptr) {
-        shared.wrench_ee = *robot.wrench_ee;
-    }
     if (robot.wrench_ee != nullptr) {
         shared.wrench_ee = *robot.wrench_ee;
     }

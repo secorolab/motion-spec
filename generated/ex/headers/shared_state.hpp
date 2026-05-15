@@ -53,7 +53,6 @@ struct arm_solver_solver_state {
 struct robot_io {
     manipulator_robot arm_solver;
     KDL::Wrench *wrench_ee = nullptr;
-    KDL::Wrench *wrench_ee = nullptr;
 };
 
 struct shared_data {
@@ -66,7 +65,6 @@ struct shared_data {
 
     double q_j4;
     double q_j2_err;
-    double q_j2;
     double tau_ctrl_limit_j4;
     double eacc_twist_ee_angular_z_m_contact;
     double frc_start = 1.0;
@@ -78,14 +76,12 @@ struct shared_data {
     double tau_ctrl_keep_j2;
     double vel_y_zero = 0.0;
     double gravity_vec;
-    KDL::Wrench wrench_ee;
     double vel_z_down = -0.05;
     double wrench_ee_force_z_err;
     double twist_ee_linear_x_err_m_approach;
     double twist_ee_angular_x_err_m_contact;
     double eacc_twist_ee_angular_x_m_contact;
     double wrench_ee_force_z_err_m_contact;
-    KDL::Twist twist_ee;
     double eacc_twist_ee_linear_z_m_approach;
     double eacc_twist_ee_linear_x_m_approach;
     double frc_contact_overload = 25.0;
@@ -99,5 +95,4 @@ struct shared_data {
     double force_ctrl_frc_z;
     double vel_zero = 0.0;
     double q_j4_err;
-
 };

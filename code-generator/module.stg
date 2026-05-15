@@ -40,6 +40,17 @@ robot-driver-include(solver, backend) ::= <<
 <({robot-driver-include-<backend>-<solver.robot_model>})(solver)>
 >>
 
+solver-rnea-include(backend) ::= <<
+<({solver-rnea-include-<backend>})()>
+>>
+
+solver-rnea-include-mj_kdl() ::= <<
+#include \<kdl/chainidsolver_recursive_newton_euler.hpp\>
+>>
+
+solver-rnea-include-robif2b() ::= <<
+>>
+
 robot-num-joints-def(solver) ::= <<
 <({robot-num-joints-def-<solver.robot_model>})(solver)>
 >>
@@ -281,7 +292,7 @@ sync-wrench(wrench) ::= <<
     }
 >>
 
-solver-state-struct(solver) ::= <<
+solver-state-struct(solver, backend) ::= <<
 struct <solver.id>_solver_state {
     bool initialized = false;
     int num_constraints = 0;
@@ -302,7 +313,19 @@ struct <solver.id>_solver_state {
     std::unique_ptr\<KDL::ChainHdSolver_Vereshchagin_Fext_FixedJoint\> achd_fext;
 <endif>
     std::unique_ptr\<KDL::ChainHdSolver_Vereshchagin_Fixed_Joint\> achd_acc;
+<solver-state-struct-extra(solver, backend)>
 };
+>>
+
+solver-state-struct-extra(solver, backend) ::= <<
+<({solver-state-struct-extra-<backend>})(solver)>
+>>
+
+solver-state-struct-extra-mj_kdl(solver) ::= <<
+    std::unique_ptr\<KDL::ChainIdSolver_RNE\> rnea;
+>>
+
+solver-state-struct-extra-robif2b(solver) ::= <<
 >>
 
 assign-constraint-force(constraint, solver_state, column) ::= <<
@@ -329,7 +352,7 @@ assign-constraint-force(constraint, solver_state, column) ::= <<
 // num_constraints=0 is valid for posture-only handlers: Vereshchagin runs
 // in unconstrained mode and passes tau_ff through to tau_ctrl unchanged.
 // Confirmed correct per KDL implementation; see validation TODO in todo.md.
-solver-init(solver, motion_driver) ::= <<
+solver-init(solver, motion_driver, backend) ::= <<
 if (!state.<solver.id>.initialized) {
         state.<solver.id>.num_constraints = <if(motion_driver.acceleration_constraint)><length(first(motion_driver.acceleration_constraint).constraints)><else>0<endif>;
         state.<solver.id>.num_joints = robot.<solver.id>.chain->getNrOfJoints();
@@ -351,8 +374,20 @@ if (!state.<solver.id>.initialized) {
         state.<solver.id>.achd_fext = std::make_unique\<KDL::ChainHdSolver_Vereshchagin_Fext_FixedJoint\>(*robot.<solver.id>.chain, state.<solver.id>.root_acc, state.<solver.id>.num_constraints);
 <endif>
         state.<solver.id>.achd_acc = std::make_unique\<KDL::ChainHdSolver_Vereshchagin_Fixed_Joint\>(*robot.<solver.id>.chain, state.<solver.id>.root_acc, state.<solver.id>.num_constraints);
+<solver-init-extra(solver, backend)>
         state.<solver.id>.initialized = true;
     }
+>>
+
+solver-init-extra(solver, backend) ::= <<
+<({solver-init-extra-<backend>})(solver)>
+>>
+
+solver-init-extra-mj_kdl(solver) ::= <<
+        state.<solver.id>.rnea = std::make_unique\<KDL::ChainIdSolver_RNE\>(*robot.<solver.id>.chain, KDL::Vector(<solver.gravity; separator=", ">));
+>>
+
+solver-init-extra-robif2b(solver) ::= <<
 >>
 
 solver-sync-input(solver, backend) ::= <<
@@ -404,7 +439,7 @@ solver-output(solver, out) ::= <<
 <({solver-output-<out.type>})(solver, out)>
 >>
 
-solver-run(solver, motion_driver) ::= <<
+solver-run(solver, motion_driver, backend) ::= <<
     KDL::SetToZero(state.<solver.id>.f_cstr);
 <if(motion_driver.acceleration_constraint)>
 <first(motion_driver.acceleration_constraint).constraints:{c | <assign-constraint-force(c, solver.id, i0)>}; separator="\n">
@@ -438,6 +473,23 @@ solver-run(solver, motion_driver) ::= <<
         f_ext_zero_<solver.id>,
         state.<solver.id>.tau_ff,
         tau_ctrl_acc_<solver.id>);
+<solver-run-finalize(solver, backend)>
+>>
+
+solver-run-finalize(solver, backend) ::= <<
+<({solver-run-finalize-<backend>})(solver)>
+>>
+
+solver-run-finalize-mj_kdl(solver) ::= <<
+    state.<solver.id>.rnea->CartToJnt(
+        state.<solver.id>.q,
+        state.<solver.id>.qd,
+        state.<solver.id>.qdd,
+        f_ext_zero_<solver.id>,
+        state.<solver.id>.tau_ctrl);
+>>
+
+solver-run-finalize-robif2b(solver) ::= <<
 <if(solver.has_cartesian_force)>
     KDL::Add(tau_ctrl_fext_<solver.id>, tau_ctrl_acc_<solver.id>, state.<solver.id>.tau_ctrl);
 <else>
@@ -594,16 +646,16 @@ base-cycle-force(base_force_solvers) ::= <<
     }
 >>
 
-arm-solver-members(arm_solvers) ::= <<
-<arm_solvers:{solver | <solver-state-struct(solver)>}; separator="\n\n">
+arm-solver-members(arm_solvers, backend) ::= <<
+<arm_solvers:{solver | <solver-state-struct(solver, backend)>}; separator="\n\n">
 >>
 
 arm-state-members(arm_solvers) ::= <<
 <arm_solvers:{solver |     <solver.id>_solver_state <solver.id>;}; separator="\n">
 >>
 
-arm-init-block(arm_solvers) ::= <<
-<arm_solvers:{solver |     <solver-init(solver, solver.motion_driver)>}; separator="\n">
+arm-init-block(arm_solvers, backend) ::= <<
+<arm_solvers:{solver |     <solver-init(solver, solver.motion_driver, backend)>}; separator="\n">
 >>
 
 arm-prepare-block(arm_solvers, backend) ::= <<
@@ -613,8 +665,8 @@ arm-prepare-block(arm_solvers, backend) ::= <<
 }; separator="\n\n">
 >>
 
-arm-run-block(arm_solvers) ::= <<
-<arm_solvers:{solver |     <solver-run(solver, solver.motion_driver)>}; separator="\n">
+arm-run-block(arm_solvers, backend) ::= <<
+<arm_solvers:{solver |     <solver-run(solver, solver.motion_driver, backend)>}; separator="\n">
 >>
 
 arm-stage-block-JointTorque(arm_solvers, backend) ::= <<
@@ -857,6 +909,7 @@ shared_state_header(shared_data, wrench_outputs, has_arm, has_mobile_base, arm_s
 #include \<kdl/chainfksolverpos_recursive.hpp\>
 #include \<kdl/chainfksolvervel_recursive.hpp\>
 #include \<kdl/chainhdsolver_vereshchagin_fixed_joint.hpp\>
+<if(has_arm)><solver-rnea-include(backend)><endif>
 <if(has_arm)><robot-driver-include(first(arm_solvers), backend)><endif>
 <if(has_mobile_base)>
 #include \<robif2b/functions/ethercat.h\>
@@ -971,7 +1024,7 @@ struct mobile_base_runtime_state {
 
 <robot-manipulator-struct(first(arm_solvers), backend)>
 
-<arm-solver-members(arm_solvers)>
+<arm-solver-members(arm_solvers, backend)>
 <endif>
 
 struct robot_io {
@@ -1074,7 +1127,7 @@ inline void reset_<motion.id>(<motion.id>_state &state) {
 
 inline void init_<motion.id>(<motion.id>_state &state, const robot_io &robot) {
 <if(motion.arm_solvers)>
-<arm-init-block(motion.arm_solvers)>
+<arm-init-block(motion.arm_solvers, backend)>
 <endif>
 }
 
@@ -1124,7 +1177,7 @@ inline void control_<motion.id>(
 <endif>
 <if(motion.arm_solvers)>
 
-<arm-run-block(motion.arm_solvers)>
+<arm-run-block(motion.arm_solvers, backend)>
 <endif>
 }
 
@@ -1243,6 +1296,20 @@ app-arm-cleanup(backend, has_arm) ::= <<
 <({app-arm-cleanup-<backend>})(has_arm)>
 >>
 
+app-arm-post-setup(backend, arm_solvers, motions) ::= <<
+<({app-arm-post-setup-<backend>})(arm_solvers, motions)>
+>>
+
+app-arm-post-setup-robif2b(arm_solvers, motions) ::= <<
+>>
+
+app-arm-loop-reset(backend, arm_solvers) ::= <<
+<({app-arm-loop-reset-<backend>})(arm_solvers)>
+>>
+
+app-arm-loop-reset-robif2b(arm_solvers) ::= <<
+>>
+
 app-headless-telemetry(backend, shared_data, arm_solvers) ::= <<
 <({app-headless-telemetry-<backend>})(shared_data, arm_solvers)>
 >>
@@ -1357,9 +1424,16 @@ int main(int argc, char **argv) {
 }; separator="\n">
 <endif>
 
+<if(has_arm)>
+<app-arm-post-setup(backend, arm_solvers, motions)>
+<endif>
+
     int _step = 0;
     int current_motion = 0;
     while (<app-loop-condition(backend, has_arm)>) {
+<if(has_arm)>
+<app-arm-loop-reset(backend, arm_solvers)>
+<endif>
         switch (current_motion) {
 <motions:{motion |
         case <i0>: {
@@ -1389,7 +1463,6 @@ int main(int argc, char **argv) {
             break;
         }
         ++_step;
-        usleep(1000);
     }
 <app-headless-telemetry(backend, shared_data, arm_solvers)>
 <if(has_arm)>

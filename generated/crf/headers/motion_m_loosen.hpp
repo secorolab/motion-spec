@@ -4,6 +4,7 @@
 #include "shared_state.hpp"
 
 struct motion_m_loosen_state {
+    bool active = false;
     right_arm_solver_solver_state right_arm_solver;
     bool snapshot_taken = false;
     motion_spec::runtime::PIDControl ctrl_angvel_loosen{8.0, 0.5, 3.0};
@@ -44,9 +45,6 @@ inline void update_motion_m_loosen(
     shared_data &shared,
     const robot_io &robot) {
     init_motion_m_loosen(state, robot);
-    if (robot.wrench_ee_ee != nullptr) {
-        shared.wrench_ee_ee = *robot.wrench_ee_ee;
-    }
     if (robot.wrench_ee_ee != nullptr) {
         shared.wrench_ee_ee = *robot.wrench_ee_ee;
     }

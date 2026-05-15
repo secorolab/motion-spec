@@ -169,6 +169,15 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, backend: str =
     _validate_ir(ir)
     ir["backend"] = backend
 
+    if backend == "mj_kdl":
+        for solver in ir.get("arm_solvers", []):
+            if solver.get("root_acc"):
+                solver["gravity"] = [-v for v in solver["root_acc"]]
+        for motion in ir.get("motions", []):
+            for solver in motion.get("arm_solvers", []):
+                if solver.get("root_acc"):
+                    solver["gravity"] = [-v for v in solver["root_acc"]]
+
     headers_dir = output_dir / "headers"
     headers_dir.mkdir(parents=True, exist_ok=True)
 

@@ -53,7 +53,6 @@ struct right_arm_solver_solver_state {
 struct robot_io {
     manipulator_robot right_arm_solver;
     KDL::Wrench *wrench_ee_ee = nullptr;
-    KDL::Wrench *wrench_ee_ee = nullptr;
 };
 
 struct shared_data {
@@ -63,7 +62,6 @@ struct shared_data {
     double torque_find_shutoff = 4.0;
     double gravity_vec;
     double pose_arm_ee_world_rotation_z;
-    KDL::Twist twist_ee_ee;
     double angvel_zero_ref = 0.0;
     double linvel_zero_ref = 0.0;
     double rotation_find_limit = 2.0944;
@@ -80,8 +78,6 @@ struct shared_data {
     double eacc_twist_ee_ee_angular_x;
     double twist_ee_ee_linear_x_err;
     double eacc_twist_ee_ee_linear_z;
-    KDL::Frame pose_arm_ee_world;
-    KDL::Wrench wrench_ee_ee;
     double twist_ee_ee_angular_x_err;
     double twist_ee_ee_angular_y_err;
     double twist_ee_ee_linear_y_err;

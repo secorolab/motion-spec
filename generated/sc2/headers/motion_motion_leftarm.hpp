@@ -4,6 +4,7 @@
 #include "shared_state.hpp"
 
 struct motion_motion_leftarm_state {
+    bool active = false;
     left_arm_solver_solver_state left_arm_solver;
     bool snapshot_taken = false;
     motion_spec::runtime::PIDControl ctrl_linvel_leftarm_shoulder_ee_vertical{5.0, 1.0, 3.0};
@@ -44,12 +45,6 @@ inline void update_motion_motion_leftarm(
     shared_data &shared,
     const robot_io &robot) {
     init_motion_motion_leftarm(state, robot);
-    if (robot.wrench_leftarm_ee_anteroposterior_ee != nullptr) {
-        shared.wrench_leftarm_ee_anteroposterior_ee = *robot.wrench_leftarm_ee_anteroposterior_ee;
-    }
-    if (robot.wrench_rightarm_ee_anteroposterior_ee != nullptr) {
-        shared.wrench_rightarm_ee_anteroposterior_ee = *robot.wrench_rightarm_ee_anteroposterior_ee;
-    }
     if (robot.wrench_leftarm_ee_anteroposterior_ee != nullptr) {
         shared.wrench_leftarm_ee_anteroposterior_ee = *robot.wrench_leftarm_ee_anteroposterior_ee;
     }
@@ -119,10 +114,10 @@ inline void control_motion_motion_leftarm(
     motion_motion_leftarm_state &state,
     shared_data &shared,
     const robot_io &robot) {
-    // transform_twist_leftarm_shoulder_ee_platform_to_twist_leftarm_shoulder_ee_shoulder
-    shared.twist_leftarm_shoulder_ee_shoulder = shared.inverse_pose_leftarm_platform_shoulder.M * shared.twist_leftarm_shoulder_ee_platform;
     // compute_inverse_pose_leftarm_platform_shoulder
     shared.inverse_pose_leftarm_platform_shoulder = shared.pose_leftarm_platform_shoulder.Inverse();
+    // transform_twist_leftarm_shoulder_ee_platform_to_twist_leftarm_shoulder_ee_shoulder
+    shared.twist_leftarm_shoulder_ee_shoulder = shared.inverse_pose_leftarm_platform_shoulder.M * shared.twist_leftarm_shoulder_ee_platform;
     // compute_pose_leftarm_shoulder_ee
     shared.pose_leftarm_shoulder_ee = shared.inverse_pose_leftarm_platform_shoulder * shared.pose_leftarm_platform_ee;
     // compute_pose_leftarm_shoulder_ee_distance

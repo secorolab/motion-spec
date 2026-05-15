@@ -5527,34 +5527,6 @@
             "type": "Quantity"
         },
         {
-            "id": "twist_ee_ee",
-            "of": {
-                "id": "link_ee",
-                "type": "SimplicialComplex"
-            },
-            "with_respect_to": {
-                "id": "link_world",
-                "type": "SimplicialComplex"
-            },
-            "quantity_kind": [
-                "AngularVelocity",
-                "LinearVelocity"
-            ],
-            "reference_point": {
-                "id": "point_ee_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_ee",
-                "type": "Frame"
-            },
-            "unit": [
-                "RAD_PER_SEC",
-                "M_PER_SEC"
-            ],
-            "type": "VelocityTwist"
-        },
-        {
             "id": "angvel_zero_ref",
             "quantity_kind": {
                 "id": "AngularVelocity",
@@ -5833,54 +5805,6 @@
             "value": null,
             "has_view": false,
             "type": "Quantity"
-        },
-        {
-            "id": "pose_arm_ee_world",
-            "of": {
-                "id": "frame_ee",
-                "type": "Frame"
-            },
-            "with_respect_to": {
-                "id": "frame_world",
-                "type": "Frame"
-            },
-            "quantity_kind": [
-                "PlaneAngle",
-                "Length"
-            ],
-            "as_seen_by": {
-                "id": "frame_world",
-                "type": "Frame"
-            },
-            "unit": [
-                "UNITLESS",
-                "M"
-            ],
-            "direction_cosine_x": null,
-            "direction_cosine_y": null,
-            "direction_cosine_z": null,
-            "position": null,
-            "type": "Pose"
-        },
-        {
-            "id": "wrench_ee_ee",
-            "quantity_kind": [
-                "Torque",
-                "Force"
-            ],
-            "reference_point": {
-                "id": "point_ee_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_ee",
-                "type": "Frame"
-            },
-            "unit": [
-                "N_M",
-                "N"
-            ],
-            "type": "Wrench"
         },
         {
             "id": "twist_ee_ee_angular_x_err",
@@ -6732,34 +6656,6 @@
             "type": "Quantity"
         },
         {
-            "id": "twist_ee_ee",
-            "of": {
-                "id": "link_ee",
-                "type": "SimplicialComplex"
-            },
-            "with_respect_to": {
-                "id": "link_world",
-                "type": "SimplicialComplex"
-            },
-            "quantity_kind": [
-                "AngularVelocity",
-                "LinearVelocity"
-            ],
-            "reference_point": {
-                "id": "point_ee_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_ee",
-                "type": "Frame"
-            },
-            "unit": [
-                "RAD_PER_SEC",
-                "M_PER_SEC"
-            ],
-            "type": "VelocityTwist"
-        },
-        {
             "id": "angvel_zero_ref",
             "quantity_kind": {
                 "id": "AngularVelocity",
@@ -6984,54 +6880,6 @@
             "type": "Quantity"
         },
         {
-            "id": "pose_arm_ee_world",
-            "of": {
-                "id": "frame_ee",
-                "type": "Frame"
-            },
-            "with_respect_to": {
-                "id": "frame_world",
-                "type": "Frame"
-            },
-            "quantity_kind": [
-                "PlaneAngle",
-                "Length"
-            ],
-            "as_seen_by": {
-                "id": "frame_world",
-                "type": "Frame"
-            },
-            "unit": [
-                "UNITLESS",
-                "M"
-            ],
-            "direction_cosine_x": null,
-            "direction_cosine_y": null,
-            "direction_cosine_z": null,
-            "position": null,
-            "type": "Pose"
-        },
-        {
-            "id": "wrench_ee_ee",
-            "quantity_kind": [
-                "Torque",
-                "Force"
-            ],
-            "reference_point": {
-                "id": "point_ee_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_ee",
-                "type": "Frame"
-            },
-            "unit": [
-                "N_M",
-                "N"
-            ],
-            "type": "Wrench"
-        },
-        {
             "id": "twist_ee_ee_angular_x_err",
             "quantity_kind": {
                 "id": "AngularVelocity",
@@ -7201,26 +7049,6 @@
         }
     ],
     "wrench_outputs": [
-        {
-            "id": "wrench_ee_ee",
-            "quantity_kind": [
-                "Torque",
-                "Force"
-            ],
-            "reference_point": {
-                "id": "point_ee_origin",
-                "type": "Point"
-            },
-            "as_seen_by": {
-                "id": "frame_ee",
-                "type": "Frame"
-            },
-            "unit": [
-                "N_M",
-                "N"
-            ],
-            "type": "Wrench"
-        },
         {
             "id": "wrench_ee_ee",
             "quantity_kind": [

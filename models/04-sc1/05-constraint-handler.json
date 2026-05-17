@@ -5,10 +5,6 @@
         "https://comp-rob2b.github.io/metamodels/task/constraint-handler.json",
         {
             "@base": "https://secorolab.github.io/models/demo/",
-            "control-mode": {
-                "@id": "https://comp-rob2b.github.io/metamodels/task/constraint-handler#control-mode",
-                "@type": "@id"
-            },
             "JointTorque": "https://comp-rob2b.github.io/metamodels/task/constraint-handler#JointTorque"
         }
     ],
@@ -16,29 +12,41 @@
     "@graph": [
         {
             "@id": "eval-ang-rightarm-shoulder-ee-vertical",
-            "@type": [ "ConstraintEvaluator", "ErrorEvaluator" ],
+            "@type": [
+                "ConstraintEvaluator",
+                "ErrorEvaluator"
+            ],
             "constraint": "cstr-ang-rightarm-shoulder-ee-vertical",
             "error": "ang-rightarm-shoulder-ee-vertical-err"
         },
         {
             "@id": "ctrl-ang-rightarm-shoulder-ee-vertical",
-            "@type": [ "Controller", "ProportionalIntegralDerivative" ],
+            "@type": [
+                "Controller",
+                "ProportionalIntegralDerivative"
+            ],
             "error-signal": "ang-rightarm-shoulder-ee-vertical-err",
             "control-signal": "eacc-rightarm-shoulder-ee-ang-z",
             "proportional-gain": "200.0",
             "integral-gain": "2.9",
             "derivative-gain": "80.5"
         },
-
         {
             "@id": "eval-dist-rightarm-shoulder-ee",
-            "@type": [ "ConstraintEvaluator", "ErrorEvaluator" ],
+            "@type": [
+                "ConstraintEvaluator",
+                "ErrorEvaluator"
+            ],
             "constraint": "cstr-dist-rightarm-shoulder-ee",
             "error": "dist-rightarm-shoulder-ee-err"
         },
         {
             "@id": "ctrl-dist-rightarm-shoulder-ee",
-            "@type": [ "Controller", "ProportionalIntegralDerivative", "DecayingIntegralTerm" ],
+            "@type": [
+                "Controller",
+                "ProportionalIntegralDerivative",
+                "DecayingIntegralTerm"
+            ],
             "error-signal": "dist-rightarm-shoulder-ee-err",
             "control-signal": "frc-rightarm-dist",
             "proportional-gain": "450.0",
@@ -46,12 +54,13 @@
             "derivative-gain": "80.0",
             "decay-rate": "0.99"
         },
-
         {
             "@id": "cstr-hdl-rightarm",
             "@type": "ConstraintHandler",
             "motion": "motion-rightarm",
-            "control-mode": "JointTorque",
+            "cstr-hdl:control-mode": {
+                "@id": "cstr-hdl:JointTorque"
+            },
             "evaluators": [
                 "eval-frc-rightarm-ee-anteroposterior",
                 "eval-linvel-rightarm-shoulder-ee-vertical",
@@ -73,35 +82,43 @@
                 "ctrl-dist-rightarm-shoulder-ee"
             ]
         },
-
-
-
-
         {
             "@id": "eval-ang-leftarm-shoulder-ee-vertical",
-            "@type": [ "ConstraintEvaluator", "ErrorEvaluator" ],
+            "@type": [
+                "ConstraintEvaluator",
+                "ErrorEvaluator"
+            ],
             "constraint": "cstr-ang-leftarm-shoulder-ee-vertical",
             "error": "ang-leftarm-shoulder-ee-vertical-err"
         },
         {
             "@id": "ctrl-ang-leftarm-shoulder-ee-vertical",
-            "@type": [ "Controller", "ProportionalIntegralDerivative" ],
+            "@type": [
+                "Controller",
+                "ProportionalIntegralDerivative"
+            ],
             "error-signal": "ang-leftarm-shoulder-ee-vertical-err",
             "control-signal": "eacc-leftarm-shoulder-ee-ang-z",
             "proportional-gain": "200.0",
             "integral-gain": "2.9",
             "derivative-gain": "80.5"
         },
-
         {
             "@id": "eval-dist-leftarm-shoulder-ee",
-            "@type": [ "ConstraintEvaluator", "ErrorEvaluator" ],
+            "@type": [
+                "ConstraintEvaluator",
+                "ErrorEvaluator"
+            ],
             "constraint": "cstr-dist-leftarm-shoulder-ee",
             "error": "dist-leftarm-shoulder-ee-err"
         },
         {
             "@id": "ctrl-dist-leftarm-shoulder-ee",
-            "@type": [ "Controller", "ProportionalIntegralDerivative", "DecayingIntegralTerm" ],
+            "@type": [
+                "Controller",
+                "ProportionalIntegralDerivative",
+                "DecayingIntegralTerm"
+            ],
             "error-signal": "dist-leftarm-shoulder-ee-err",
             "control-signal": "frc-leftarm-dist",
             "proportional-gain": "450.0",
@@ -109,12 +126,13 @@
             "derivative-gain": "80.0",
             "decay-rate": "0.99"
         },
-
         {
             "@id": "cstr-hdl-leftarm",
             "@type": "ConstraintHandler",
             "motion": "motion-leftarm",
-            "control-mode": "JointTorque",
+            "cstr-hdl:control-mode": {
+                "@id": "cstr-hdl:JointTorque"
+            },
             "evaluators": [
                 "eval-frc-leftarm-ee-anteroposterior",
                 "eval-linvel-leftarm-shoulder-ee-vertical",

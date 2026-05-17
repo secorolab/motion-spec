@@ -179,7 +179,7 @@ shared.<closure.out> = KDL::diff(shared.<closure.in1>, shared.<closure.in2>);
 >>
 
 emit-call-Controller(closure, views) ::= <<
-<if(closure.velocity_signal)>shared.<closure.control_signal> = state.<closure.id>.control_with_vel(<access-expr(closure.error_signal, views)>, <access-expr(closure.velocity_signal, views)>);<else>shared.<closure.control_signal> = state.<closure.id>.control(<access-expr(closure.error_signal, views)>);<endif>
+shared.<closure.control_signal> = state.<closure.id>.control(<access-expr(closure.error_signal, views)>);
 >>
 
 emit-call-PlanarAngleFromDirections(closure, views) ::= <<
@@ -269,7 +269,7 @@ monitor-block(monitors) ::= <<
 >>
 
 motion-done-condition(motion) ::= <<
-<motion.until_evaluators:{e | motion_spec::runtime::constraint_satisfied(shared.<e.error.id>)}; separator=" && ">
+<if(motion.until_any)><motion.until_evaluators:{e | motion_spec::runtime::constraint_satisfied(shared.<e.error.id>)}; separator=" || "><else><motion.until_evaluators:{e | motion_spec::runtime::constraint_satisfied(shared.<e.error.id>)}; separator=" && "><endif>
 >>
 
 motion-prelude(wrench_outputs, arm_solvers, backend) ::= <<
@@ -304,14 +304,10 @@ struct <solver.id>_solver_state {
     KDL::JntArray qdd;
     KDL::JntArray tau_ff;
     KDL::JntArray tau_ctrl;
-<if(solver.has_cartesian_force)>
     KDL::Wrenches f_ext;
-<endif>
     KDL::Jacobian f_cstr;
     KDL::JntArray e_acc;
-<if(solver.has_cartesian_force)>
     std::unique_ptr\<KDL::ChainHdSolver_Vereshchagin_Fext_FixedJoint\> achd_fext;
-<endif>
     std::unique_ptr\<KDL::ChainHdSolver_Vereshchagin_Fixed_Joint\> achd_acc;
 <solver-state-struct-extra(solver, backend)>
 };
@@ -362,7 +358,7 @@ if (!state.<solver.id>.initialized) {
         state.<solver.id>.qdd = KDL::JntArray(state.<solver.id>.num_joints);
         state.<solver.id>.tau_ff = KDL::JntArray(state.<solver.id>.num_joints);
         state.<solver.id>.tau_ctrl = KDL::JntArray(state.<solver.id>.num_joints);
-<if(solver.has_cartesian_force)>
+<if(motion_driver.has_cartesian_force)>
         state.<solver.id>.f_ext = KDL::Wrenches(state.<solver.id>.num_segments);
 <endif>
         state.<solver.id>.f_cstr = KDL::Jacobian(state.<solver.id>.num_constraints);
@@ -370,7 +366,7 @@ if (!state.<solver.id>.initialized) {
 <if(solver.root_acc)>
         state.<solver.id>.root_acc.vel = KDL::Vector(<solver.root_acc; separator=", ">);
 <endif>
-<if(solver.has_cartesian_force)>
+<if(motion_driver.has_cartesian_force)>
         state.<solver.id>.achd_fext = std::make_unique\<KDL::ChainHdSolver_Vereshchagin_Fext_FixedJoint\>(*robot.<solver.id>.chain, state.<solver.id>.root_acc, state.<solver.id>.num_constraints);
 <endif>
         state.<solver.id>.achd_acc = std::make_unique\<KDL::ChainHdSolver_Vereshchagin_Fixed_Joint\>(*robot.<solver.id>.chain, state.<solver.id>.root_acc, state.<solver.id>.num_constraints);
@@ -409,7 +405,11 @@ for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
 KDL::JntArrayVel q_qd_<solver.id>(state.<solver.id>.q, state.<solver.id>.qd);
 >>
 
-solver-output-Pose(solver, out) ::= <<
+solver-output-Pose(solver, out, backend) ::= <<
+<({solver-output-Pose-<backend>})(solver, out)>
+>>
+
+solver-output-Pose-robif2b(solver, out) ::= <<
 {
     KDL::ChainFkSolverPos_recursive fk(*robot.<solver.id>.chain);
     fk.JntToCart(
@@ -419,7 +419,27 @@ solver-output-Pose(solver, out) ::= <<
 }
 >>
 
-solver-output-VelocityTwist(solver, out) ::= <<
+solver-output-Pose-mj_kdl(solver, out) ::= <<
+{
+<if(out.of.is_scene_object)>
+    if (!mj_kdl::get_body_frame(
+            robot.<solver.id>.robot->model,
+            robot.<solver.id>.robot->data,
+            "<out.of.body>",
+            &shared.<out.id>)) {
+        throw std::runtime_error("MuJoCo body not found for scene object pose output: <out.of.body>");
+    }
+<else>
+    KDL::ChainFkSolverPos_recursive fk(*robot.<solver.id>.chain);
+    fk.JntToCart(
+        state.<solver.id>.q,
+        shared.<out.id>,
+        motion_spec::runtime::find_segment_index(*robot.<solver.id>.chain, "<out.of.id>"));
+<endif>
+}
+>>
+
+solver-output-VelocityTwist(solver, out, backend) ::= <<
 {
     KDL::ChainFkSolverVel_recursive fk(*robot.<solver.id>.chain);
     KDL::FrameVel tmp;
@@ -431,12 +451,12 @@ solver-output-VelocityTwist(solver, out) ::= <<
 }
 >>
 
-solver-output-JointPosition(solver, out) ::= <<
+solver-output-JointPosition(solver, out, backend) ::= <<
 shared.<out.id> = state.<solver.id>.q(motion_spec::runtime::find_joint_index(*robot.<solver.id>.chain, "<out.joint_name>"));
 >>
 
-solver-output(solver, out) ::= <<
-<({solver-output-<out.type>})(solver, out)>
+solver-output(solver, out, backend) ::= <<
+<({solver-output-<out.type>})(solver, out, backend)>
 >>
 
 solver-run(solver, motion_driver, backend) ::= <<
@@ -446,21 +466,28 @@ solver-run(solver, motion_driver, backend) ::= <<
 <endif>
     KDL::SetToZero(state.<solver.id>.tau_ff);
 <motion_driver.joint_force:{jf |     state.<solver.id>.tau_ff(motion_spec::runtime::find_joint_index(*robot.<solver.id>.chain, "<jf.joint_name>")) += shared.<jf.force_id>;}; separator="\n">
-<if(solver.has_cartesian_force)>
+<if(motion_driver.has_cartesian_force)>
     for (int i = 0; i \< state.<solver.id>.num_segments; ++i) {
         KDL::SetToZero(state.<solver.id>.f_ext[i]);
     }
 <motion_driver.cartesian_force:{f |     <solver-assign-f-ext-modular(solver, f)>}; separator="\n">
-    KDL::JntArray tau_ctrl_fext_<solver.id>(state.<solver.id>.num_joints);
+    KDL::JntArray qdd_fext_<solver.id>(state.<solver.id>.num_joints);
+    KDL::Jacobian alpha_zero_<solver.id>(state.<solver.id>.num_constraints);
+    KDL::JntArray beta_zero_<solver.id>(state.<solver.id>.num_constraints);
+    KDL::JntArray ff_zero_<solver.id>(state.<solver.id>.num_joints);
+    KDL::SetToZero(alpha_zero_<solver.id>);
+    KDL::SetToZero(beta_zero_<solver.id>);
+    KDL::SetToZero(ff_zero_<solver.id>);
+    KDL::JntArray tau_cstr_fext_<solver.id>(state.<solver.id>.num_joints);
     state.<solver.id>.achd_fext->CartToJnt(
         state.<solver.id>.q,
         state.<solver.id>.qd,
-        state.<solver.id>.qdd,
-        state.<solver.id>.f_cstr,
-        state.<solver.id>.e_acc,
+        qdd_fext_<solver.id>,
+        alpha_zero_<solver.id>,
+        beta_zero_<solver.id>,
         state.<solver.id>.f_ext,
-        state.<solver.id>.tau_ff,
-        tau_ctrl_fext_<solver.id>);
+        ff_zero_<solver.id>,
+        tau_cstr_fext_<solver.id>);
 <endif>
     KDL::Wrenches f_ext_zero_<solver.id>(state.<solver.id>.num_segments);
     KDL::JntArray tau_ctrl_acc_<solver.id>(state.<solver.id>.num_joints);
@@ -473,25 +500,35 @@ solver-run(solver, motion_driver, backend) ::= <<
         f_ext_zero_<solver.id>,
         state.<solver.id>.tau_ff,
         tau_ctrl_acc_<solver.id>);
-<solver-run-finalize(solver, backend)>
+<solver-run-finalize(solver, motion_driver, backend)>
 >>
 
-solver-run-finalize(solver, backend) ::= <<
-<({solver-run-finalize-<backend>})(solver)>
+solver-run-finalize(solver, motion_driver, backend) ::= <<
+<({solver-run-finalize-<backend>})(solver, motion_driver)>
 >>
 
-solver-run-finalize-mj_kdl(solver) ::= <<
+solver-run-finalize-mj_kdl(solver, motion_driver) ::= <<
     state.<solver.id>.rnea->CartToJnt(
         state.<solver.id>.q,
         state.<solver.id>.qd,
         state.<solver.id>.qdd,
         f_ext_zero_<solver.id>,
         state.<solver.id>.tau_ctrl);
+<if(motion_driver.has_cartesian_force)>
+    KDL::JntArray tau_fext_<solver.id>(state.<solver.id>.num_joints);
+    state.<solver.id>.rnea->CartToJnt(
+        state.<solver.id>.q,
+        state.<solver.id>.qd,
+        qdd_fext_<solver.id>,
+        f_ext_zero_<solver.id>,
+        tau_fext_<solver.id>);
+    KDL::Add(state.<solver.id>.tau_ctrl, tau_fext_<solver.id>, state.<solver.id>.tau_ctrl);
+<endif>
 >>
 
-solver-run-finalize-robif2b(solver) ::= <<
-<if(solver.has_cartesian_force)>
-    KDL::Add(tau_ctrl_fext_<solver.id>, tau_ctrl_acc_<solver.id>, state.<solver.id>.tau_ctrl);
+solver-run-finalize-robif2b(solver, motion_driver) ::= <<
+<if(motion_driver.has_cartesian_force)>
+    KDL::Add(tau_cstr_fext_<solver.id>, tau_ctrl_acc_<solver.id>, state.<solver.id>.tau_ctrl);
 <else>
     state.<solver.id>.achd_acc->getTotalTorque(state.<solver.id>.tau_ctrl);
 <endif>
@@ -661,7 +698,7 @@ arm-init-block(arm_solvers, backend) ::= <<
 arm-prepare-block(arm_solvers, backend) ::= <<
 <arm_solvers:{solver |
     <solver-sync-input(solver, backend)>
-    <solver.output:{out | <solver-output(solver, out)>}; separator="\n\n">
+    <solver.output:{out | <solver-output(solver, out, backend)>}; separator="\n\n">
 }; separator="\n\n">
 >>
 
@@ -717,20 +754,18 @@ class PIDControl {
   public:
     PIDControl() = default;
 
-    PIDControl(double p_gain, double i_gain, double d_gain, double decay_rate = 0.0)
-        : kp(p_gain), ki(i_gain), kd(d_gain), decay_rate(decay_rate) {}
+    PIDControl(double p_gain, double i_gain, double d_gain, double decay_rate = 0.0, double dt = 0.002)
+        : kp(p_gain), ki(i_gain), kd(d_gain), decay_rate(decay_rate), dt_(dt) {}
 
     double control(double error) {
-        double err_diff = error - err_last;
-        err_integ = decay_rate * err_integ + (1.0 - decay_rate) * error;
+        double err_diff = (error - err_last) / dt_;
+        if (decay_rate > 0.0) {
+            err_integ = decay_rate * err_integ + error * dt_;
+        } else {
+            err_integ += error * dt_;
+        }
         err_last = error;
         return kp * error + ki * err_integ + kd * err_diff;
-    }
-
-    double control_with_vel(double pos_error, double velocity) {
-        err_integ = decay_rate * err_integ + (1.0 - decay_rate) * pos_error;
-        err_last = pos_error;
-        return kp * pos_error + ki * err_integ - kd * velocity;
     }
 
   private:
@@ -740,6 +775,7 @@ class PIDControl {
     double ki = 0.0;
     double kd = 0.0;
     double decay_rate = 0.0;
+    double dt_ = 0.002;
 };
 
 // Spring-damper controller: maps a single scalar constraint error to a
@@ -844,6 +880,7 @@ inline unsigned int find_segment_index(const KDL::Chain &chain, std::string_view
     }
     throw std::runtime_error("KDL segment not found for model name: " + target);
 }
+
 <if(has_mobile_base)>
 inline void hddc2b_pltf_vel_drv_to_pltf(
         int num_drv,

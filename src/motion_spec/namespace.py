@@ -3,30 +3,90 @@ from rdflib import URIRef
 from rdflib.namespace import DefinedNamespace, Namespace
 
 URI_CR2B_MM = "https://comp-rob2b.github.io/metamodels"
+URI_SECORO_MM = "https://secorolab.github.io/metamodels"
 URI_QUDT = "http://qudt.org"
 
 
 class APP(DefinedNamespace):
-    constraints: URIRef
     path: URIRef
 
     _extras = [
         "import",
-        "entry-point",
-        "reasoning-rules",
         "iri-map",
-        "urdf",
-        "chain-root",
-        "chain-end",
-        "robot-type",
-        "robot-model",
         "order",
-        "Snapshot",
-        "snapshot-of",
-        "snapshot-time",
     ]
 
     _NS = Namespace(f"{URI_CR2B_MM}/application/")
+
+
+class SNAP(DefinedNamespace):
+    Snapshot: URIRef
+
+    _extras = ["snapshot-of"]
+
+    _NS = Namespace(f"{URI_SECORO_MM}/snapshot#")
+
+
+class ENV(DefinedNamespace):
+    Object: URIRef
+    Workspace: URIRef
+    ModelledObject: URIRef
+    ObjectModel: URIRef
+    RigidObject: URIRef
+
+    _extras = [
+        "of-object",
+        "has-object",
+        "of-workspace",
+        "has-workspace",
+        "has-object-model",
+    ]
+
+    _NS = Namespace(f"{URI_SECORO_MM}/environment#")
+
+
+class SIM(DefinedNamespace):
+    SystemResource: URIRef
+    ResourceWithPath: URIRef
+
+    path: URIRef
+
+    _NS = Namespace(f"{URI_SECORO_MM}/simulation#")
+
+
+class EL(DefinedNamespace):
+    Event: URIRef
+    Flag: URIRef
+
+    _NS = Namespace(f"{URI_SECORO_MM}/behaviour/event_loop#")
+
+
+class RT(DefinedNamespace):
+    Runtime: URIRef
+    MuJoCoRuntime: URIRef
+    RealRobotRuntime: URIRef
+
+    _extras = [
+        "uses-runtime",
+    ]
+
+    _NS = Namespace(f"{URI_SECORO_MM}/runtime#")
+
+
+class MJ(DefinedNamespace):
+    MjcfModel: URIRef
+    MuJoCoBody: URIRef
+    MuJoCoSite: URIRef
+
+    _extras = [
+        "body-name",
+        "site-name",
+        "tool-body",
+        "tcp-site",
+    ]
+
+    _NS = Namespace(f"{URI_SECORO_MM}/simulation/mujoco#")
+
 
 class GEOM_ENT(DefinedNamespace):
     Point: URIRef
@@ -34,6 +94,11 @@ class GEOM_ENT(DefinedNamespace):
     SimplicialComplex: URIRef
     KinematicChain: URIRef
     UniformGravitationalField: URIRef
+    RigidBody: URIRef
+    start: URIRef
+    end: URIRef
+
+    _extras = ["kinematic-chain"]
 
     _NS = Namespace(f"{URI_CR2B_MM}/geometry/structural-entities#")
 
@@ -57,10 +122,6 @@ class QUDT_SCHEMA(DefinedNamespace):
     hasQuantityKind: URIRef
     unit: URIRef
     value: URIRef
-
-    _extras = [
-        "quantity-kind",
-    ]
 
     _NS = Namespace(f"{URI_QUDT}/schema/qudt/")
 
@@ -105,6 +166,7 @@ class QUDT_UNIT(DefinedNamespace):
     _NS = Namespace(f"{URI_QUDT}/vocab/unit/")
 
 class GEOM_REL(DefinedNamespace):
+    Orientation: URIRef
     Pose: URIRef
     Direction: URIRef
     Position: URIRef
@@ -122,6 +184,7 @@ class GEOM_REL(DefinedNamespace):
 
 class GEOM_COORD(DefinedNamespace):
     DirectionCoordinate: URIRef
+    OrientationCoordinate: URIRef
     PositionCoordinate: URIRef
     PoseCoordinate: URIRef
     VelocityTwistCoordinate: URIRef
@@ -293,13 +356,19 @@ class MOT(DefinedNamespace):
 
     when: URIRef
     until: URIRef
-    untilLogic: URIRef
 
-    _extras = [
-        "while"
-    ]
+    _extras = ["while"]
 
     _NS = Namespace(f"{URI_CR2B_MM}/task/motion-specification#")
+
+
+class MOT_EXT(DefinedNamespace):
+    ConstraintConjunction: URIRef
+    ConstraintDisjunction: URIRef
+
+    _extras = ["has-constraint"]
+
+    _NS = Namespace(f"{URI_SECORO_MM}/task/motion-specification#")
 
 class CSTR_HDL(DefinedNamespace):
     ConstraintHandler: URIRef
@@ -314,9 +383,6 @@ class CSTR_HDL(DefinedNamespace):
     Monitor: URIRef
     EdgeTriggeredMonitor: URIRef
     LevelTriggeredMonitor: URIRef
-    Event: URIRef
-    Flag: URIRef
-
     motion: URIRef
     evaluators: URIRef
     monitors: URIRef
@@ -377,7 +443,6 @@ class SLV(DefinedNamespace):
         "angular-acceleration",
         "linear-acceleration",
         "attached-to",
-        "kinematic-chain",
         "gravity-value",
         "prioritization-hierarchy",
     ]

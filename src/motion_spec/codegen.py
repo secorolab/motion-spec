@@ -164,10 +164,10 @@ def _validate_ir(ir: dict) -> None:
         )
 
 
-def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, backend: str = "robif2b"):
+def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     ir = load_ir(ir_path)
     _validate_ir(ir)
-    ir["backend"] = backend
+    backend = ir.get("backend", "robif2b")
 
     if backend == "mj_kdl":
         for solver in ir.get("arm_solvers", []):
@@ -200,14 +200,14 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, backend: str =
             "base_velocity_solvers": ir["base_velocity_solvers"],
             "base_force_solvers": ir["base_force_solvers"],
             "has_mobile_base": ir["has_mobile_base"],
-            "backend": backend,
+            "backend": ir["backend"],
         }
         payload_path = payload_dir / f"{motion['id']}.json"
         write_json(payload_path, payload)
         render_template(stst_bin, "motion_header", payload_path, headers_dir / f"{motion['id']}.hpp")
 
     render_template(stst_bin, "ref_main", ir_payload_path, output_dir / "ref_main.cpp")
-    if backend == "mj_kdl":
+    if ir["backend"] == "mj_kdl":
         render_template(stst_bin, "cmake_mj_kdl", ir_payload_path, output_dir / "CMakeLists.txt")
 
 
@@ -222,13 +222,6 @@ def main():
         default="stst",
         help="Path to the STSTv4 executable used to render StringTemplate groups",
     )
-    parser.add_argument(
-        "--backend",
-        choices=("robif2b", "mj-kdl"),
-        default="robif2b",
-        help="Robot runtime backend for generated reference code.",
-    )
-
     args = parser.parse_args()
 
     try:
@@ -236,7 +229,6 @@ def main():
             ir_path=Path(args.input).resolve(),
             output_dir=Path(args.output_dir).resolve(),
             stst_bin=args.stst_bin,
-            backend=args.backend.replace("-", "_"),
         )
     except RuntimeError as exc:
         print(f"Code generation failed: {exc}", file=sys.stderr)

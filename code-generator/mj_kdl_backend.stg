@@ -69,9 +69,7 @@ app-arm-setup-mj_kdl(arm_solvers) ::= <<
 
     const auto find_mjcf_path = []() -> std::filesystem::path {
         const std::vector\<std::filesystem::path\> relative_paths = {
-            "src/mj_kdl_wrapper/third_party/menagerie/kinova_gen3/gen3.xml",
-            "mj_kdl_wrapper/third_party/menagerie/kinova_gen3/gen3.xml",
-            "third_party/menagerie/kinova_gen3/gen3.xml",
+            "<first(arm_solvers).urdf>",
         };
         std::vector\<std::filesystem::path\> roots = {std::filesystem::current_path()};
         roots.push_back(std::filesystem::path(__FILE__).parent_path());
@@ -93,7 +91,7 @@ app-arm-setup-mj_kdl(arm_solvers) ::= <<
 
     const std::filesystem::path mjcf_path = find_mjcf_path();
     if (mjcf_path.empty()) {
-        std::cerr \<\< "Kinova Gen3 MJCF not found. Expected mj_kdl_wrapper third_party/menagerie/kinova_gen3/gen3.xml\\n";
+        std::cerr \<\< "MJCF model not found: <first(arm_solvers).urdf>\\n";
         return 1;
     }
 
@@ -164,11 +162,6 @@ app-arm-cleanup-mj_kdl(has_arm) ::= <<
 app-headless-telemetry-mj_kdl(shared_data, arm_solvers) ::= <<
     if (headless) {
         std::cout \<\< "steps=" \<\< _step \<\< " sim_time=" \<\< mj_<first(arm_solvers).id>.data->time \<\< "\n";
-<shared_data:{item | <app-headless-print-shared-mj_kdl(item)>}; separator="\n">
-        std::cout \<\< "tau=[";
-        for (int _i = 0; _i \< robot.<first(arm_solvers).id>.robot->n_joints; ++_i)
-            std::cout \<\< robot.<first(arm_solvers).id>.robot->jnt_trq_cmd[_i] \<\< " ";
-        std::cout \<\< "]\n";
     }
 >>
 

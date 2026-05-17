@@ -20,6 +20,7 @@ from rdflib.namespace import RDF
 from rdflib import URIRef
 from motion_spec.namespace import (
     APP,
+    ENV,
     QUDT_SCHEMA,
     GEOM_ENT,
     GEOM_REL,
@@ -31,8 +32,13 @@ from motion_spec.namespace import (
     KC_STAT,
     MAP,
     CSTR,
+    MJ,
     MOT,
+    MOT_EXT,
+    RT,
     CSTR_HDL,
+    SIM,
+    SNAP,
     SLV,
 )
 
@@ -51,10 +57,11 @@ def parse_argument(g, closure_id, argument, to_id):
     entry = list(g[closure_id:argument])
     if len(entry) == 0:
         return None
-    elif len(entry) == 1:
-        return to_id(entry[0])
-    else:
-        return [to_id(e) for e in entry]
+    ids = [to_id(e) for e in entry]
+    unique = list(dict.fromkeys(ids))  # deduplicate, preserving order
+    if len(unique) == 1:
+        return unique[0]
+    return unique
 
 
 @dataclass
@@ -395,7 +402,6 @@ ops_cstr_hdl = [
             CSTR_HDL["integral-gain"],
             CSTR_HDL["derivative-gain"],
             CSTR_HDL["decay-rate"],
-            CSTR_HDL["velocity-signal"],
         ],
     ),
     AssignmentEvaluator(),
@@ -451,6 +457,7 @@ class Point:
 @dataclass
 class Frame:
     id: str
+    is_scene_object: bool = False
     type: str = field(default="Frame")
 
 
@@ -496,7 +503,16 @@ class PoseQuantity:
 @dataclass
 class SimplicialComplex:
     id: str
+    is_scene_object: bool = False
     type: str = field(default="SimplicialComplex")
+
+
+@dataclass
+class SceneObject:
+    id: str
+    body: str = ""
+    is_scene_object: bool = True
+    type: str = field(default="SceneObject")
 
 
 @dataclass
@@ -512,8 +528,8 @@ class Direction:
 @dataclass
 class Position:
     id: str
-    of: SimplicialComplex | Point
-    with_respect_to: SimplicialComplex | Point
+    of: SimplicialComplex | Point | Frame | SceneObject
+    with_respect_to: SimplicialComplex | Point | Frame | SceneObject
     quantity_kind: QuantityKind
     as_seen_by: Frame
     unit: Unit
@@ -524,7 +540,7 @@ class Position:
 @dataclass
 class Pose:
     id: str
-    of: SimplicialComplex | Frame
+    of: SimplicialComplex | Frame | SceneObject
     with_respect_to: SimplicialComplex | Frame
     quantity_kind: list[QuantityKind]
     as_seen_by: Frame
@@ -612,6 +628,7 @@ class GuardedMotion:
     when: list[Constraint]
     while_: list[Constraint]
     until: list[Constraint]
+    until_any: bool = False
     type: str = field(default="GuardedMotion")
 
 
@@ -710,6 +727,7 @@ class GuardedMotionBlock:
     while_events: list[str]
     until_events: list[str]
     has_until_condition: bool = False
+    until_any: bool = False
 
     # Solver Integration
     arm_solvers: list = field(default_factory=list)
@@ -764,6 +782,7 @@ class MotionDrivers:
     acceleration_constraint: list[AccelerationConstraintSpecification]
     cartesian_force: list[CartesianForceSpecification]
     joint_force: list[JointForceSpecification] = field(default_factory=list)
+    has_cartesian_force: bool = False
     type: str = field(default="MotionDrivers")
 
 
@@ -773,7 +792,6 @@ class MotionArmSolver:
     output: list
     motion_driver: MotionDrivers
     control_mode: str
-    has_cartesian_force: bool = False
     root_acc: list[float] | None = None
     type: str = field(default="MotionArmSolver")
 
@@ -787,7 +805,6 @@ class SolverWithInputAndOutput:
     urdf: str = ""
     chain_root: str = ""
     chain_end: str = ""
-    robot_type: str = ""
     robot_model: str = ""
     root_acc: list[float] | None = None
     type: str = field(default="SolverWithInputAndOutput")
@@ -884,11 +901,6 @@ class Parser:
                 if type_ in self.g[o : RDF["type"]]:
                     out.append(func(o))
 
-        urdf = str(self.g.value(id_, APP["urdf"]) or "")
-        chain_root = str(self.g.value(id_, APP["chain-root"]) or "")
-        chain_end = str(self.g.value(id_, APP["chain-end"]) or "")
-        robot_type = str(self.g.value(id_, APP["robot-type"]) or "")
-        robot_model = str(self.g.value(id_, APP["robot-model"]) or "")
         gravity_node = self.g.value(id_, SLV["gravity-value"])
         gravity = self.parse_xyz(gravity_node) if gravity_node else None
         root_acc = [-v for v in gravity] if gravity else None
@@ -897,11 +909,6 @@ class Parser:
             id=self.id(id_),
             motion_drivers=drv,
             output=out,
-            urdf=urdf,
-            chain_root=chain_root,
-            chain_end=chain_end,
-            robot_type=robot_type,
-            robot_model=robot_model,
             root_acc=root_acc,
         )
 
@@ -922,7 +929,13 @@ class Parser:
         for jf in self.g[id_ : SLV["joint-force"]]:
             spec_jf.append(self.joint_force_specification(jf))
 
-        return MotionDrivers(self.id(id_), spec_acc, spec_frc, spec_jf)
+        return MotionDrivers(
+            self.id(id_),
+            spec_acc,
+            spec_frc,
+            spec_jf,
+            has_cartesian_force=bool(spec_frc),
+        )
 
     def joint_force_specification(self, id_):
         assert SLV["JointForceSpecification"] in self.g[id_ : RDF["type"]]
@@ -1128,10 +1141,16 @@ class Parser:
             while_.append(self.constraint(c))
 
         until = []
+        until_any = False
         for c in self.g[id_ : MOT["until"]]:
-            until.append(self.constraint(c))
+            if MOT_EXT.ConstraintDisjunction in self.g[c : RDF["type"]]:
+                until_any = True
+                for member in self.g[c : MOT_EXT["has-constraint"]]:
+                    until.append(self.constraint(member))
+            else:
+                until.append(self.constraint(c))
 
-        return GuardedMotion(self.id(id_), when, while_, until)
+        return GuardedMotion(self.id(id_), when, while_, until, until_any)
 
     @memoize
     def constraint(self, id_):
@@ -1232,8 +1251,8 @@ class Parser:
         assert GEOM_COORD["PositionCoordinate"] in self.g[id_ : RDF["type"]]
         assert GEOM_COORD["VectorXYZ"] in self.g[id_ : RDF["type"]]
 
-        of = self.point(self.g.value(id_, GEOM_REL["of"]))
-        wrt = self.point(self.g.value(id_, GEOM_REL["with-respect-to"]))
+        of = self.position_reference(self.g.value(id_, GEOM_REL["of"]))
+        wrt = self.position_reference(self.g.value(id_, GEOM_REL["with-respect-to"]))
         quantity_kind = self.quantity_kind(self.g.value(id_, QUDT_SCHEMA["hasQuantityKind"]))
         as_seen_by = self.frame(self.g.value(id_, GEOM_COORD["as-seen-by"]))
         unit = self.unit(self.g.value(id_, QUDT_SCHEMA["unit"]))
@@ -1243,13 +1262,30 @@ class Parser:
             self.id(id_), of, wrt, QuantityKind(quantity_kind), as_seen_by, Unit(unit), pos
         )
 
+    def position_reference(self, id_):
+        if ENV.RigidObject in self.g[id_ : RDF["type"]]:
+            return self.scene_object(id_)
+        if GEOM_ENT.Frame in self.g[id_ : RDF["type"]]:
+            return self.frame(id_)
+        if GEOM_ENT.SimplicialComplex in self.g[id_ : RDF["type"]]:
+            return self.simplicial_complex(id_)
+        if GEOM_ENT.Point in self.g[id_ : RDF["type"]]:
+            return self.point(id_)
+        raise ValueError(f"Unsupported position reference node: {id_}")
+
     @memoize
     def pose(self, id_):
         assert GEOM_COORD["PoseCoordinate"] in self.g[id_ : RDF["type"]]
         assert GEOM_COORD["DirectionCosineXYZ"] in self.g[id_ : RDF["type"]]
         assert GEOM_COORD["VectorXYZ"] in self.g[id_ : RDF["type"]]
 
-        of = self.frame(self.g.value(id_, GEOM_REL["of"]))
+        of_node = self.g.value(id_, GEOM_REL["of"])
+        if ENV.RigidObject in self.g[of_node : RDF["type"]] and GEOM_ENT.Frame not in self.g[
+            of_node : RDF["type"]
+        ]:
+            of = self.scene_object(of_node)
+        else:
+            of = self.frame(of_node)
         wrt = self.frame(self.g.value(id_, GEOM_REL["with-respect-to"]))
         quantity_kind = []
         for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]]:
@@ -1357,6 +1393,12 @@ class Parser:
         assert GEOM_ENT["SimplicialComplex"] in self.g[id_ : RDF["type"]]
 
         return SimplicialComplex(self.id(id_))
+
+    @memoize
+    def scene_object(self, id_):
+        assert ENV.RigidObject in self.g[id_ : RDF["type"]]
+        body = str(self.g.value(id_, MJ["body-name"]) or self.id(id_))
+        return SceneObject(self.id(id_), body)
 
     @memoize
     def frame(self, id_):
@@ -1616,7 +1658,6 @@ def _arm_solvers_for_handler(handler, slv_arm, closure_input_map=None):
                 output=solver.output,
                 motion_driver=selected,
                 control_mode=handler.control_mode,
-                has_cartesian_force=bool(selected.cartesian_force),
                 root_acc=solver.root_acc,
             )
         )
@@ -1744,7 +1785,13 @@ def build_motion_units(
         # Classify constraints by motion phase via RDF traversal
         when_constraint_nodes = set(g[motion_node : MOT["when"]])
         while_constraint_nodes = set(g[motion_node : MOT["while"]])
-        until_constraint_nodes = set(g[motion_node : MOT["until"]])
+        _raw_until = set(g[motion_node : MOT["until"]])
+        until_constraint_nodes = set()
+        for node in _raw_until:
+            if MOT_EXT.ConstraintDisjunction in g[node : RDF["type"]]:
+                until_constraint_nodes.update(g[node : MOT_EXT["has-constraint"]])
+            else:
+                until_constraint_nodes.add(node)
 
         # Classify evaluators by which phase their constraint belongs to
         when_eval_nodes, while_eval_nodes, until_eval_nodes = [], [], []
@@ -1915,6 +1962,7 @@ def build_motion_units(
                 while_events=[m.event for m in while_monitors if m.event is not None],
                 until_events=[m.event for m in until_monitors if m.event is not None],
                 has_until_condition=bool(until_evaluators),
+                until_any=handler.motion.until_any,
                 arm_solvers=handler_arm_solvers,
                 relative_poses=_relative_poses_for_motion(
                     while_evaluators + when_evaluators + until_evaluators,
@@ -1981,6 +2029,24 @@ def _dedupe_by_id(items):
         seen.add(key)
         result.append(item)
     return result
+
+
+def _robot_setup_from_graph(g):
+    for env_node in g.subjects(RDF.type, ENV.Workspace):
+        for obj_node in g.objects(env_node, ENV["has-object"]):
+            chain = g.value(obj_node, GEOM_ENT["kinematic-chain"])
+            if chain is None:
+                continue
+            start = g.value(chain, GEOM_ENT.start)
+            end = g.value(chain, GEOM_ENT.end)
+            chain_root = str(g.value(start, MJ["body-name"]) or "")
+            chain_end = str(g.value(end, MJ["body-name"]) or "")
+            model_node = g.value(obj_node, ENV["has-object-model"])
+            urdf = str(g.value(model_node, SIM.path) or "") if model_node else ""
+            robot_model = str(model_node).rstrip("/").split("/")[-1].split("#")[-1] if model_node else ""
+            if chain_root or chain_end or urdf:
+                return urdf, chain_root, chain_end, robot_model
+    return "", "", "", ""
 
 
 def generate_ir(manifest_path):
@@ -2053,6 +2119,7 @@ def generate_ir(manifest_path):
     slv_arm = []
     sched4 = []
     slv_base_frc = []
+    _urdf, _chain_root, _chain_end, _robot_model = _robot_setup_from_graph(g)
 
     # Construct the computational graph that feeds into the mobile base's
     # velocity composition solver.
@@ -2071,6 +2138,10 @@ def generate_ir(manifest_path):
     # so that they are visited only once.
     for s in g.subjects(RDF.type, SLV["SolverWithInputAndOutput"]):
         solver = p.solver_with_input_and_output(s)
+        solver.urdf = _urdf
+        solver.chain_root = _chain_root
+        solver.chain_end = _chain_end
+        solver.robot_model = _robot_model
         _mark_acceleration_constraint_frames(solver)
         slv_arm.append(solver)
         start = g[
@@ -2103,8 +2174,8 @@ def generate_ir(manifest_path):
 
     # Build snapshot lookup maps
     snapshot_source_map: dict[str, str] = {}
-    for snap_node in g.subjects(RDF.type, APP["Snapshot"]):
-        source_node = g.value(snap_node, APP["snapshot-of"])
+    for snap_node in g.subjects(RDF.type, SNAP.Snapshot):
+        source_node = g.value(snap_node, SNAP["snapshot-of"])
         if source_node is not None:
             snapshot_source_map[p.id(snap_node)] = p.id(source_node)
 
@@ -2158,6 +2229,18 @@ def generate_ir(manifest_path):
         else:
             raise ValueError(f"Solver '{solver.id}' is not associated with a control mode.")
 
+    # Determine backend from runtime declaration in the environment spec
+    _RUNTIME_TO_BACKEND = {
+        str(RT.MuJoCoRuntime): "mj_kdl",
+        str(RT.RealRobotRuntime): "robif2b",
+    }
+    backend = "robif2b"
+    for runtime_iri in g.objects(predicate=RT["uses-runtime"]):
+        mapped = _RUNTIME_TO_BACKEND.get(str(runtime_iri))
+        if mapped:
+            backend = mapped
+            break
+
     # Compose the overall schedule via concatenation
     return {
         "slv_arm": slv_arm,
@@ -2183,6 +2266,7 @@ def generate_ir(manifest_path):
         "arm_solvers": slv_arm,
         "base_velocity_solvers": slv_base_vel,
         "base_force_solvers": slv_base_frc,
+        "backend": backend,
     }
 
 

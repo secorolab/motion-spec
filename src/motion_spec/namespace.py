@@ -380,6 +380,17 @@ class MOT(DefinedNamespace):
     _NS = Namespace(f"{URI_CR2B_MM}/task/motion-specification#")
 
 
+class TRAJ(DefinedNamespace):
+    Lerp: URIRef
+
+    start: URIRef
+    goal: URIRef
+    alpha: URIRef
+    trajectory: URIRef
+
+    _NS = Namespace("https://secorolab.github.io/metamodels/task/trajectory#")
+
+
 class MOT_EXT(DefinedNamespace):
     ConstraintConjunction: URIRef
     ConstraintDisjunction: URIRef

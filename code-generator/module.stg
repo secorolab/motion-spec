@@ -11,6 +11,11 @@ subspace-to-runtime-subspace ::= [
     "AngularAcceleration": "Subspace::Angular"
 ]
 
+subspace-to-beta-max ::= [
+    "LinearAcceleration": "motion_spec::runtime::kBetaMaxLin",
+    "AngularAcceleration": "motion_spec::runtime::kBetaMaxRot"
+]
+
 axis-to-vector ::= [
     "X": "1.0, 0.0, 0.0",
     "Y": "0.0, 1.0, 0.0",
@@ -403,7 +408,7 @@ assign-constraint-force(constraint, solver_state, column) ::= <<
         state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::Z), <column>) = alpha_axis_<solver_state>_<column>[2];
     }
 <endif>
-    state.<solver_state>.e_acc(<column>) = shared.<constraint.acceleration_energy.id>;
+    state.<solver_state>.e_acc(<column>) = motion_spec::runtime::clamp_abs(shared.<constraint.acceleration_energy.id>, <subspace-to-beta-max.(constraint.subspace)>);
 >>
 
 // num_constraints=0 is valid for posture-only handlers: Vereshchagin runs
@@ -483,13 +488,21 @@ solver-output-Pose-robif2b(solver, out) ::= <<
 solver-output-Pose-mj_kdl(solver, out) ::= <<
 {
 <if(out.of.is_scene_object)>
+    KDL::Frame _body_frame_<out.id>;
     if (!mj_kdl::get_body_frame(
             robot.<solver.id>.robot->model,
             robot.<solver.id>.robot->data,
             "<out.of.body>",
-            &shared.<out.id>)) {
+            &_body_frame_<out.id>)) {
         throw std::runtime_error("MuJoCo body not found for scene object pose output: <out.of.body>");
     }
+    KDL::Frame _base_world_frame_<solver.id>;
+    mj_kdl::get_body_frame(
+            robot.<solver.id>.robot->model,
+            robot.<solver.id>.robot->data,
+            "<solver.chain_root>",
+            &_base_world_frame_<solver.id>);
+    shared.<out.id> = _base_world_frame_<solver.id>.Inverse() * _body_frame_<out.id>;
 <else>
     KDL::ChainFkSolverPos_recursive fk(*robot.<solver.id>.chain);
     fk.JntToCart(
@@ -609,7 +622,7 @@ solver-stage-output-robif2b(solver) ::= <<
 >>
 solver-stage-output-mj_kdl(solver) ::= <<
     for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
-        robot.<solver.id>.robot->jnt_trq_cmd[i] = state.<solver.id>.tau_ctrl(i);
+        robot.<solver.id>.robot->jnt_trq_cmd[i] = motion_spec::runtime::clamp_abs(state.<solver.id>.tau_ctrl(i), motion_spec::runtime::kTauMax);
     }
 >>
 
@@ -818,6 +831,14 @@ runtime_header(has_mobile_base) ::= <<
 namespace motion_spec::runtime {
 
 inline constexpr double kConstraintTolerance = 1e-2;
+inline constexpr double kTauMax     = 59.0;
+inline constexpr double kBetaMaxLin = 120.0;
+inline constexpr double kBetaMaxRot = 80.0;
+inline double clamp_abs(double v, double limit) {
+    if (v > limit) return limit;
+    if (v \< -limit) return -limit;
+    return v;
+}
 <if(has_mobile_base)>
 inline constexpr int NUM_DRIVES = 4;
 inline constexpr int NUM_SLAVES = 4;

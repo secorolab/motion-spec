@@ -38,6 +38,7 @@ from motion_spec.namespace import (
     MJ,
     MOT,
     MOT_EXT,
+    TRAJ,
     RT,
     CSTR_HDL,
     SIM,

@@ -111,6 +111,14 @@ view-access-expr-Pose-Rotation(view) ::= <<
 KDL::diff(KDL::Rotation::Identity(), shared.<view.superobject.id>.M)[<axis-to-index.(view.axis)>]
 >>
 
+view-access-expr-PoseQuantity-Position(view) ::= <<
+shared.<view.superobject.id>.p[<axis-to-index.(view.axis)>]
+>>
+
+view-access-expr-PoseQuantity-Rotation(view) ::= <<
+KDL::diff(KDL::Rotation::Identity(), shared.<view.superobject.id>.M)[<axis-to-index.(view.axis)>]
+>>
+
 view-access-expr-VelocityTwist-AngularVelocity(view) ::= <<
 shared.<view.superobject.id>.rot[<axis-to-index.(view.axis)>]
 >>
@@ -166,7 +174,11 @@ KDL::Wrench <var.id>;
 >>
 
 shared-member-Quantity(var) ::= <<
-double <var.id><if(var.value)> = <var.value><endif>;
+double <var.id> = <if(var.value)><var.value><else>0.0<endif>;
+>>
+
+shared-member-Trajectory(var) ::= <<
+KDL::Frame <var.id>;
 >>
 
 shared-member-PoseQuantity(var) ::= <<
@@ -217,6 +229,14 @@ emit-call-ErrorEvaluator(closure, views) ::= <<
 
 emit-call-PoseDiffEvaluator(closure, views) ::= <<
 shared.<closure.out> = KDL::diff(shared.<closure.in1>, shared.<closure.in2>);
+>>
+
+emit-call-Lerp(closure, views) ::= <<
+{
+    const KDL::Frame _lerp_goal_<closure.trajectory> = <closure.goal_expr>;
+<if(closure.assign_goal)>    shared.<closure.goal> = _lerp_goal_<closure.trajectory>;
+<endif>    shared.<closure.trajectory> = KDL::addDelta(shared.<closure.start>, KDL::diff(shared.<closure.start>, _lerp_goal_<closure.trajectory>), motion_spec::runtime::smoothstep(<access-expr(closure.alpha, views)>));
+}
 >>
 
 pose-axis-error-component(component) ::= <<
@@ -335,7 +355,7 @@ monitor-block(monitors) ::= <<
 >>
 
 motion-done-condition(motion) ::= <<
-<if(motion.until_any)><motion.until_evaluators:{e | motion_spec::runtime::constraint_satisfied(shared.<e.error.id>)}; separator=" || "><else><motion.until_evaluators:{e | motion_spec::runtime::constraint_satisfied(shared.<e.error.id>)}; separator=" && "><endif>
+true<if(first(motion.trajectory_progress_ids))><motion.trajectory_progress_ids:{alpha_id |  && shared.<alpha_id> >= 1.0}; separator=""><endif><if(first(motion.until_evaluators))> && (<if(motion.until_any)><motion.until_evaluators:{e | motion_spec::runtime::constraint_satisfied(shared.<e.error.id>)}; separator=" || "><else><motion.until_evaluators:{e | motion_spec::runtime::constraint_satisfied(shared.<e.error.id>)}; separator=" && "><endif>)<endif>
 >>
 
 motion-prelude(wrench_outputs, arm_solvers, backend) ::= <<
@@ -429,8 +449,12 @@ if (!state.<solver.id>.initialized) {
 <endif>
         state.<solver.id>.f_cstr = KDL::Jacobian(state.<solver.id>.num_constraints);
         state.<solver.id>.e_acc = KDL::JntArray(state.<solver.id>.num_constraints);
+<if(solver.gravity)>
+        state.<solver.id>.root_acc.vel = KDL::Vector(<solver.gravity; separator=", ">);
+<else>
 <if(solver.root_acc)>
         state.<solver.id>.root_acc.vel = KDL::Vector(<solver.root_acc; separator=", ">);
+<endif>
 <endif>
 <if(motion_driver.has_cartesian_force)>
         state.<solver.id>.achd_fext = std::make_unique\<KDL::ChainHdSolver_Vereshchagin_Fext_FixedJoint\>(*robot.<solver.id>.chain, state.<solver.id>.root_acc, state.<solver.id>.num_constraints);
@@ -446,7 +470,7 @@ solver-init-extra(solver, backend) ::= <<
 >>
 
 solver-init-extra-mj_kdl(solver) ::= <<
-        state.<solver.id>.rnea = std::make_unique\<KDL::ChainIdSolver_RNE\>(*robot.<solver.id>.chain, KDL::Vector(<solver.gravity; separator=", ">));
+        state.<solver.id>.rnea = std::make_unique\<KDL::ChainIdSolver_RNE\>(*robot.<solver.id>.chain, KDL::Vector(<if(solver.root_acc)><solver.root_acc; separator=", "><else>0.0, 0.0, 0.0<endif>));
 >>
 
 solver-init-extra-robif2b(solver) ::= <<
@@ -513,6 +537,24 @@ solver-output-Pose-mj_kdl(solver, out) ::= <<
 }
 >>
 
+solver-output-PoseQuantity(solver, out, backend) ::= <<
+<({solver-output-PoseQuantity-<backend>})(solver, out)>
+>>
+
+solver-output-PoseQuantity-mj_kdl(solver, out) ::= <<
+{
+    KDL::ChainFkSolverPos_recursive fk(*robot.<solver.id>.chain);
+    fk.JntToCart(
+        state.<solver.id>.q,
+        shared.<out.id>,
+        motion_spec::runtime::find_segment_index(*robot.<solver.id>.chain, "<if(out.of.id)><out.of.id><else><solver.chain_end><endif>"));
+}
+>>
+
+solver-output-PoseQuantity-robif2b(solver, out) ::= <<
+<solver-output-Pose-robif2b(solver, out)>
+>>
+
 solver-output-VelocityTwist(solver, out, backend) ::= <<
 {
     KDL::ChainFkSolverVel_recursive fk(*robot.<solver.id>.chain);
@@ -545,6 +587,33 @@ solver-run(solver, motion_driver, backend) ::= <<
         KDL::SetToZero(state.<solver.id>.f_ext[i]);
     }
 <motion_driver.cartesian_force:{f |     <solver-assign-f-ext-modular(solver, f)>}; separator="\n">
+<solver-run-fext-pre(solver, motion_driver, backend)>
+<endif>
+    KDL::Wrenches f_ext_zero_<solver.id>(state.<solver.id>.num_segments);
+    for (int i = 0; i \< state.<solver.id>.num_segments; ++i) {
+        KDL::SetToZero(f_ext_zero_<solver.id>[i]);
+    }
+    KDL::JntArray tau_ctrl_acc_<solver.id>(state.<solver.id>.num_joints);
+    state.<solver.id>.achd_acc->CartToJnt(
+        state.<solver.id>.q,
+        state.<solver.id>.qd,
+        state.<solver.id>.qdd,
+        state.<solver.id>.f_cstr,
+        state.<solver.id>.e_acc,
+        <solver-achd-f_ext-arg(solver, motion_driver, backend)>,
+        state.<solver.id>.tau_ff,
+        tau_ctrl_acc_<solver.id>);
+<solver-run-finalize(solver, motion_driver, backend)>
+>>
+
+solver-run-fext-pre(solver, motion_driver, backend) ::= <<
+<({solver-run-fext-pre-<backend>})(solver, motion_driver)>
+>>
+
+solver-run-fext-pre-mj_kdl(solver, motion_driver) ::= <<
+>>
+
+solver-run-fext-pre-robif2b(solver, motion_driver) ::= <<
     KDL::JntArray qdd_fext_<solver.id>(state.<solver.id>.num_joints);
     KDL::Jacobian alpha_zero_<solver.id>(state.<solver.id>.num_constraints);
     KDL::JntArray beta_zero_<solver.id>(state.<solver.id>.num_constraints);
@@ -562,19 +631,18 @@ solver-run(solver, motion_driver, backend) ::= <<
         state.<solver.id>.f_ext,
         ff_zero_<solver.id>,
         tau_cstr_fext_<solver.id>);
-<endif>
-    KDL::Wrenches f_ext_zero_<solver.id>(state.<solver.id>.num_segments);
-    KDL::JntArray tau_ctrl_acc_<solver.id>(state.<solver.id>.num_joints);
-    state.<solver.id>.achd_acc->CartToJnt(
-        state.<solver.id>.q,
-        state.<solver.id>.qd,
-        state.<solver.id>.qdd,
-        state.<solver.id>.f_cstr,
-        state.<solver.id>.e_acc,
-        f_ext_zero_<solver.id>,
-        state.<solver.id>.tau_ff,
-        tau_ctrl_acc_<solver.id>);
-<solver-run-finalize(solver, motion_driver, backend)>
+>>
+
+solver-achd-f_ext-arg(solver, motion_driver, backend) ::= <<
+<({solver-achd-f_ext-arg-<backend>})(solver, motion_driver)>
+>>
+
+solver-achd-f_ext-arg-mj_kdl(solver, motion_driver) ::= <<
+<if(motion_driver.has_cartesian_force)>state.<solver.id>.f_ext<else>f_ext_zero_<solver.id><endif>
+>>
+
+solver-achd-f_ext-arg-robif2b(solver, motion_driver) ::= <<
+f_ext_zero_<solver.id>
 >>
 
 solver-run-finalize(solver, motion_driver, backend) ::= <<
@@ -588,16 +656,6 @@ solver-run-finalize-mj_kdl(solver, motion_driver) ::= <<
         state.<solver.id>.qdd,
         f_ext_zero_<solver.id>,
         state.<solver.id>.tau_ctrl);
-<if(motion_driver.has_cartesian_force)>
-    KDL::JntArray tau_fext_<solver.id>(state.<solver.id>.num_joints);
-    state.<solver.id>.rnea->CartToJnt(
-        state.<solver.id>.q,
-        state.<solver.id>.qd,
-        qdd_fext_<solver.id>,
-        f_ext_zero_<solver.id>,
-        tau_fext_<solver.id>);
-    KDL::Add(state.<solver.id>.tau_ctrl, tau_fext_<solver.id>, state.<solver.id>.tau_ctrl);
-<endif>
 >>
 
 solver-run-finalize-robif2b(solver, motion_driver) ::= <<
@@ -676,6 +734,7 @@ app-prepare-call(motion) ::= <<
 app-run-call(motion) ::= <<
         if (!<motion.id>_state_instance.active && can_start_<motion.id>(<motion.id>_state_instance, shared)) {
             <motion.id>_state_instance.active = true;
+            <motion.id>_state_instance.active_steps = 0;
         \}
         if (<motion.id>_state_instance.active) {
             control_<motion.id>(<motion.id>_state_instance, shared, robot);
@@ -686,12 +745,13 @@ app-stage-call(motion) ::= <<
         if (<motion.id>_state_instance.active) {
             apply_<motion.id>(<motion.id>_state_instance, shared, robot);
 <if(motion.has_until_condition)>
-            if (<motion-done-condition(motion)>) {
+            if (<motion.id>_state_instance.active_steps > 0 && (<motion-done-condition(motion)>)) {
                 <motion.id>_state_instance.active = false;
             \}
 <else>
             <motion.id>_state_instance.active = false;
 <endif>
+            ++<motion.id>_state_instance.active_steps;
         \}
 >>
 
@@ -810,6 +870,23 @@ gripper-actions-mj_kdl(motion) ::= <<
 <endif>}; separator="\n">
 >>
 
+trajectory-progress(backend, motion) ::= <<
+<({trajectory-progress-<backend>})(motion)>
+>>
+
+trajectory-progress-robif2b(motion) ::= <<
+>>
+
+trajectory-progress-mj_kdl(motion) ::= <<
+<if(first(motion.trajectory_progress_ids))>    if (state.trajectory_start_time \< 0.0) {
+        if (robot.<first(motion.arm_solvers).id>.robot != nullptr) {
+        state.trajectory_start_time = robot.<first(motion.arm_solvers).id>.robot->data->time;
+        \}
+    \}
+<motion.trajectory_progress_ids:{alpha_id |     shared.<alpha_id> = motion_spec::runtime::clamp01((robot.<first(motion.arm_solvers).id>.robot->data->time - state.trajectory_start_time) / motion_spec::runtime::kDefaultTrajectoryDuration);}; separator="\n">
+<endif>
+>>
+
 runtime_header(has_mobile_base) ::= <<
 #pragma once
 
@@ -834,11 +911,45 @@ inline constexpr double kConstraintTolerance = 1e-2;
 inline constexpr double kTauMax     = 59.0;
 inline constexpr double kBetaMaxLin = 120.0;
 inline constexpr double kBetaMaxRot = 80.0;
+inline constexpr double kSupportFMax = 45.0;
+inline constexpr double kSupportLift = 0.06;
 inline double clamp_abs(double v, double limit) {
     if (v > limit) return limit;
     if (v \< -limit) return -limit;
     return v;
 }
+
+inline double clamp01(double v) {
+    if (v \< 0.0) return 0.0;
+    if (v > 1.0) return 1.0;
+    return v;
+}
+
+inline double smoothstep(double alpha) {
+    alpha = clamp01(alpha);
+    return alpha * alpha * (3.0 - 2.0 * alpha);
+}
+
+inline KDL::Frame interpolate_pose_lerp(
+        const KDL::Frame &start,
+        const KDL::Frame &goal,
+        double alpha) {
+    const double s = smoothstep(alpha);
+    const KDL::Vector dp = goal.p - start.p;
+    const KDL::Vector p(
+        start.p.x() + dp.x() * s,
+        start.p.y() + dp.y() * s,
+        start.p.z() + dp.z() * s);
+    const KDL::Vector rot = KDL::diff(start.M, goal.M);
+    const double angle = rot.Norm();
+    KDL::Rotation r = start.M;
+    if (angle > 1e-9) {
+        const KDL::Vector axis(rot.x() / angle, rot.y() / angle, rot.z() / angle);
+        r = start.M * KDL::Rotation::Rot(axis, angle * s);
+    }
+    return KDL::Frame(r, p);
+}
+inline constexpr double kDefaultTrajectoryDuration = 8.0;
 <if(has_mobile_base)>
 inline constexpr int NUM_DRIVES = 4;
 inline constexpr int NUM_SLAVES = 4;
@@ -857,15 +968,18 @@ class PIDControl {
     PIDControl(double p_gain, double i_gain, double d_gain, double decay_rate = 0.0, double dt = 0.002)
         : kp(p_gain), ki(i_gain), kd(d_gain), decay_rate(decay_rate), dt_(dt) {}
 
-    double control(double error) {
-        double err_diff = (error - err_last) / dt_;
+    double control(double error, double ext_deriv = 0.0) {
+        const double err_diff = (decay_rate > 0.0)
+            ? 0.0
+            : ((error - err_last) / dt_);
         if (decay_rate > 0.0) {
             err_integ = decay_rate * err_integ + error * dt_;
         } else {
-            err_integ += error * dt_;
+            err_integ = clamp_abs(err_integ + error * dt_, 0.5);
         }
         err_last = error;
-        return kp * error + ki * err_integ + kd * err_diff;
+        const double deriv = (kd > 0.0 && ext_deriv != 0.0) ? ext_deriv : err_diff;
+        return kp * error + ki * err_integ + kd * deriv;
     }
 
   private:
@@ -887,23 +1001,30 @@ class ImpedanceControl {
   public:
     ImpedanceControl() = default;
 
-    ImpedanceControl(double stiffness, double damping)
-        : ks(stiffness), kd(damping) {}
+    ImpedanceControl(double stiffness, double damping, double dt = 0.002)
+        : ks(stiffness), kd(damping), dt_(dt) {}
 
     double control(double error) {
-        double err_diff = error - err_last;
+        const double err_diff = first_sample ? 0.0 : ((error - err_last) / dt_);
         err_last = error;
-        return ks * error + kd * err_diff;
+        first_sample = false;
+        return std::min(kSupportFMax, std::max(0.0, ks * error + kd * err_diff));
     }
 
   private:
     double err_last = 0.0;
+    bool first_sample = true;
     double ks = 0.0;
     double kd = 0.0;
+    double dt_ = 0.002;
 };
 
 inline double evaluate_equality_constraint(double quantity, double reference) {
     return quantity - reference;
+}
+
+inline KDL::Frame evaluate_equality_constraint(const KDL::Frame &target, const KDL::Frame &current) {
+    return current.Inverse() * target;
 }
 
 inline double evaluate_less_than_constraint(double quantity, double threshold) {
@@ -922,6 +1043,18 @@ inline double evaluate_bilateral_constraint(double quantity, double lower, doubl
 
 inline bool constraint_satisfied(double error) {
     return std::fabs(error) \<= kConstraintTolerance;
+}
+
+inline bool constraint_satisfied(const KDL::Twist &error) {
+    return error.vel.Norm() \<= kConstraintTolerance &&
+           error.rot.Norm() \<= kConstraintTolerance;
+}
+
+inline bool constraint_satisfied(const KDL::Frame &error) {
+    KDL::Vector axis;
+    const double angle = error.M.GetRotAngle(axis);
+    return error.p.Norm() \<= kConstraintTolerance &&
+           std::fabs(angle) \<= kConstraintTolerance;
 }
 
 enum class Axis {
@@ -1235,7 +1368,7 @@ emit-snapshot(snap, closures, views) ::= <<
 <if(snap.source_closure_id)>
         <({emit-call-<closures.(snap.source_closure_id).type>})(closures.(snap.source_closure_id), views)>
 <endif>
-        shared.<snap.target_id> = <access-expr(snap.source_id, views)>;
+        shared.<snap.target_id> = <access-expr(snap.source_id, views)><if(snap.support_lift)> + motion_spec::runtime::kSupportLift<endif>;
 >>
 
 motion_header(motion, closures, views, wrench_outputs, base_velocity_solvers, base_force_solvers, has_mobile_base, backend, pose_axis_error_groups) ::= <<
@@ -1246,6 +1379,9 @@ motion_header(motion, closures, views, wrench_outputs, base_velocity_solvers, ba
 
 struct <motion.id>_state {
     bool active = false;
+    int active_steps = 0;
+<if(first(motion.trajectory_progress_ids))>    double trajectory_start_time = -1.0;
+<endif>
 <arm-state-members(motion.arm_solvers)>
 <if(motion.snapshots)>    bool snapshot_taken = false;
 <endif>
@@ -1274,16 +1410,18 @@ inline void update_<motion.id>(
     const robot_io &robot) {
     init_<motion.id>(state, robot);
 <motion-prelude(wrench_outputs, motion.arm_solvers, backend)>
+<motion.relative_poses:{rp | <emit-relative-pose(rp)>}; separator="\n">
+<motion.scene_relative_poses:{srp |
+<if(srp.base_seen)>    shared.<srp.id> = KDL::Frame(shared.<srp.fk_pose_id>.M, shared.<srp.fk_pose_id>.p - shared.<srp.scene_pose_id>.p);
+<else>    shared.<srp.id> = shared.<srp.scene_pose_id>.Inverse() * shared.<srp.fk_pose_id>;
+<endif>
+}; separator="\n">
 <if(motion.snapshots)>
     if (!state.snapshot_taken) {
 <motion.snapshots:{snap | <emit-snapshot(snap, closures, views)>}; separator="\n">
         state.snapshot_taken = true;
     }
 <endif>
-<motion.relative_poses:{rp | <emit-relative-pose(rp)>}; separator="\n">
-<motion.scene_relative_poses:{srp |
-    shared.<srp.id> = shared.<srp.scene_pose_id>.Inverse() * shared.<srp.fk_pose_id>;
-}; separator="\n">
 }
 
 inline bool can_start_<motion.id>(
@@ -1310,6 +1448,7 @@ inline void control_<motion.id>(
     <motion.id>_state &state,
     shared_data &shared,
     const robot_io &robot) {
+<trajectory-progress(backend, motion)>
 <pose_axis_error_groups:{group | <pose-axis-error-group(group, views)>}; separator="\n">
 <shared-schedule-block(motion.while_schedule, closures, views)>
 <if(first(motion.while_monitors))>
@@ -1583,19 +1722,23 @@ int main(int argc, char **argv) {
             monitor_<motion.id>(<motion.id>_state_instance, shared);
             if (!<motion.id>_state_instance.active && can_start_<motion.id>(<motion.id>_state_instance, shared)) {
                 <motion.id>_state_instance.active = true;
+                <motion.id>_state_instance.active_steps = 0;
             \}
             if (<motion.id>_state_instance.active) {
                 control_<motion.id>(<motion.id>_state_instance, shared, robot);
                 apply_<motion.id>(<motion.id>_state_instance, shared, robot);
 <if(motion.has_until_condition)>
-                if (<motion-done-condition(motion)>) {
+                if (<motion.id>_state_instance.active_steps > 0 && (<motion-done-condition(motion)>)) {
                     <motion.id>_state_instance.active = false;
                     current_motion = <i>;
                 \}
 <else>
-                <motion.id>_state_instance.active = false;
-                current_motion = <i>;
+                if (<motion.id>_state_instance.active_steps >= 750) {
+                    <motion.id>_state_instance.active = false;
+                    current_motion = <i>;
+                \}
 <endif>
+                ++<motion.id>_state_instance.active_steps;
             \}
             break;
         \}

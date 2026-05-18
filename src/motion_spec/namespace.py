@@ -206,11 +206,16 @@ class GEOM_COORD(DefinedNamespace):
     VelocityTwistCoordinate: URIRef
     AccelerationTwistCoordinate: URIRef
     DirectionCosineXYZ: URIRef
+    EulerAngles: URIRef
+    AnglesABG: URIRef
     VectorXYZ: URIRef
 
     x: URIRef
     y: URIRef
     z: URIRef
+    alpha: URIRef
+    beta: URIRef
+    gamma: URIRef
 
     _extras = [ 
         "of-pose",
@@ -220,6 +225,7 @@ class GEOM_COORD(DefinedNamespace):
         "direction-cosine-x",
         "direction-cosine-y",
         "direction-cosine-z",
+        "axes-sequence",
         "angular-velocity",
         "linear-velocity",
         "angular-acceleration",
@@ -381,7 +387,9 @@ class MOT(DefinedNamespace):
 
 
 class TRAJ(DefinedNamespace):
+    Trajectory: URIRef
     Lerp: URIRef
+    Progress: URIRef
 
     start: URIRef
     goal: URIRef

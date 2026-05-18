@@ -202,6 +202,126 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
             dst.append(copy.deepcopy(item))
             seen.add(item_id)
 
+    def cpp_access_expr(data_id: str, views: dict) -> str:
+        view = views.get(data_id)
+        if not view:
+            return f"shared.{data_id}"
+        superobject = view["superobject"]
+        axis_index = {"X": 0, "Y": 1, "Z": 2, "x": 0, "y": 1, "z": 2}[view["axis"]]
+        if superobject["type"] == "Pose" and view["subspace"] == "Position":
+            return f"shared.{superobject['id']}.p[{axis_index}]"
+        if superobject["type"] == "Pose" and view["subspace"] == "Rotation":
+            return (
+                "KDL::diff(KDL::Rotation::Identity(), "
+                f"shared.{superobject['id']}.M)[{axis_index}]"
+            )
+        if superobject["type"] == "VelocityTwist":
+            member = "rot" if view["subspace"] == "AngularVelocity" else "vel"
+            return f"shared.{superobject['id']}.{member}[{axis_index}]"
+        if superobject["type"] == "AccelerationTwist":
+            member = "rot" if view["subspace"] == "AngularAcceleration" else "vel"
+            return f"shared.{superobject['id']}.{member}[{axis_index}]"
+        if superobject["type"] == "Wrench":
+            member = "torque" if view["subspace"] == "Torque" else "force"
+            return f"shared.{superobject['id']}.{member}[{axis_index}]"
+        return f"shared.{data_id}"
+
+    def component_expr(component_id: str, data_by_id: dict, views: dict) -> str:
+        component = data_by_id.get(component_id) or {}
+        if component.get("reference_value"):
+            return cpp_access_expr(component["reference_value"], views)
+        if component.get("value") is not None:
+            return str(component["value"])
+        return cpp_access_expr(component_id, views)
+
+    def build_pose_components(ir_payload: dict) -> dict:
+        views = ir_payload.get("views", {})
+        data_by_id = {
+            item.get("id"): item
+            for item in ir_payload.get("data", [])
+            if isinstance(item, dict) and item.get("id")
+        }
+        components: dict[str, dict] = {}
+        for view in views.values():
+            superobject = view.get("superobject") or {}
+            so_type = superobject.get("type")
+            if so_type == "Pose" and not superobject.get("euler_axes_sequence"):
+                continue
+            if so_type not in ("Pose", "PoseQuantity"):
+                continue
+            # Only include inline-defined poses (those where components have values/references)
+            # FK poses have all components computed from the solver with no stored value/reference
+            subobject_id = (view.get("subobject") or {}).get("id")
+            subobject_data = data_by_id.get(subobject_id) or {}
+            if not subobject_data.get("reference_value") and subobject_data.get("value") is None:
+                continue
+            pose_id = superobject["id"]
+            entry = components.setdefault(
+                pose_id,
+                {
+                    "position_x_expr": "0.0",
+                    "position_y_expr": "0.0",
+                    "position_z_expr": "0.0",
+                    "orientation_x_expr": "0.0",
+                    "orientation_y_expr": "0.0",
+                    "orientation_z_expr": "0.0",
+                },
+            )
+            axis = str(view.get("axis", "")).lower()
+            if axis not in {"x", "y", "z"}:
+                continue
+            subobject = (view.get("subobject") or {}).get("id")
+            if not subobject:
+                continue
+            prefix = "position" if view.get("subspace") == "Position" else "orientation"
+            entry[f"{prefix}_{axis}_expr"] = component_expr(subobject, data_by_id, views)
+        return components
+
+    def enrich_lerp_closures(ir_payload: dict, pose_components: dict) -> None:
+        for closure in ir_payload.get("closures", {}).values():
+            if closure.get("type") != "Lerp":
+                continue
+            goal = closure.get("goal")
+            if not isinstance(goal, str):
+                continue
+            if goal in pose_components:
+                parts = pose_components[goal]
+                closure["goal_expr"] = (
+                    "KDL::Frame("
+                    "KDL::Rotation::RPY("
+                    f"{parts['orientation_x_expr']}, "
+                    f"{parts['orientation_y_expr']}, "
+                    f"{parts['orientation_z_expr']}), "
+                    "KDL::Vector("
+                    f"{parts['position_x_expr']}, "
+                    f"{parts['position_y_expr']}, "
+                    f"{parts['position_z_expr']}))"
+                )
+                closure["assign_goal"] = True
+            else:
+                closure["goal_expr"] = f"shared.{goal}"
+                closure["assign_goal"] = False
+
+    def add_motion_trajectory_progress(ir_payload: dict) -> None:
+        data_by_id = {
+            item.get("id"): item
+            for item in ir_payload.get("data", [])
+            if isinstance(item, dict) and item.get("id")
+        }
+        closures = ir_payload.get("closures", {})
+        for motion in ir_payload.get("motions", []):
+            progress_ids: list[str] = []
+            for step in motion.get("while_schedule", []):
+                closure = closures.get(step)
+                if not closure or closure.get("type") != "Lerp":
+                    continue
+                alpha_id = closure.get("alpha")
+                alpha_data = data_by_id.get(alpha_id) or {}
+                qkind = (alpha_data.get("quantity_kind") or {}).get("id")
+                if qkind == "Progress" and alpha_id not in progress_ids:
+                    progress_ids.append(alpha_id)
+            motion["trajectory_progress_ids"] = progress_ids
+
     # When the same motion ID is reused by handlers with different gripper_actions, each
     # handler needs its own generated function. Detect those conflicts first and rename
     # the affected entries to "{motion_id}__{handler_suffix}" so the dedup loop below
@@ -241,10 +361,23 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
         for solver in ir.get("arm_solvers", []):
             if solver.get("root_acc"):
                 solver["gravity"] = [-v for v in solver["root_acc"]]
-        for motion in ir.get("motions", []):
-            for solver in motion.get("arm_solvers", []):
-                if solver.get("root_acc"):
-                    solver["gravity"] = [-v for v in solver["root_acc"]]
+        for motion_list in (ir.get("motions", []), unique_motions):
+            for motion in motion_list:
+                for solver in motion.get("arm_solvers", []):
+                    if solver.get("root_acc"):
+                        solver["gravity"] = [-v for v in solver["root_acc"]]
+
+    pose_components = build_pose_components(ir)
+    ir["pose_components"] = pose_components
+    enrich_lerp_closures(ir, pose_components)
+    add_motion_trajectory_progress(ir)
+    add_motion_trajectory_progress(
+        {
+            "motions": unique_motions,
+            "data": ir.get("data", []),
+            "closures": ir.get("closures", {}),
+        }
+    )
 
     headers_dir = output_dir / "headers"
     headers_dir.mkdir(parents=True, exist_ok=True)

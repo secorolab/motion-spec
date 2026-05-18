@@ -386,13 +386,18 @@ ops_generic = [
     ),
     Specification(
         type_=MAP["View"],
-        input=[MAP["superobject"], MAP["subobject"]],
-        output=[MAP["superobject"], MAP["subobject"]],
+        input=[MAP["superobject"]],
+        output=[MAP["subobject"]],
     ),
     Operator(
         type_=GEOM_OP["PoseDiffEvaluator"],
         input=[GEOM_OP["in1"], GEOM_OP["in2"]],
         output=[GEOM_OP["out"]],
+    ),
+    Operator(
+        type_=TRAJ["Lerp"],
+        input=[TRAJ["start"], TRAJ["goal"], TRAJ["alpha"]],
+        output=[TRAJ["trajectory"]],
     ),
 ]
 
@@ -485,7 +490,19 @@ class Quantity:
     unit: Unit
     value: float
     has_view: bool
+    reference_value: str | None = None
     type: str = field(default="Quantity")
+
+
+@dataclass
+class Trajectory:
+    id: str
+    quantity_kind: QuantityKind
+    unit: Unit
+    has_view: bool
+    value: None = None
+    reference_value: str | None = None
+    type: str = field(default="Trajectory")
 
 
 @dataclass
@@ -545,15 +562,16 @@ class Position:
 @dataclass
 class Pose:
     id: str
-    of: SimplicialComplex | Frame | SceneObject
-    with_respect_to: SimplicialComplex | Frame
+    of: SimplicialComplex | Frame | SceneObject | None
+    with_respect_to: SimplicialComplex | Frame | None
     quantity_kind: list[QuantityKind]
-    as_seen_by: Frame
+    as_seen_by: Frame | None
     unit: list[Unit]
     direction_cosine_x: list[float] | None
     direction_cosine_y: list[float] | None
     direction_cosine_z: list[float] | None
     position: list[float] | None
+    euler_axes_sequence: str | None = None
     type: str = field(default="Pose")
 
 
@@ -716,6 +734,7 @@ class SnapshotCapture:
     target_id: str
     source_id: str
     source_closure_id: str | None = None
+    support_lift: bool = False
     type: str = field(default="SnapshotCapture")
 
 
@@ -724,6 +743,7 @@ class SceneRelativePose:
     id: str
     fk_pose_id: str
     scene_pose_id: str
+    base_seen: bool = False
     type: str = field(default="SceneRelativePose")
 
 
@@ -840,6 +860,8 @@ class MotionArmSolver:
     motion_driver: MotionDrivers
     control_mode: str
     root_acc: list[float] | None = None
+    chain_root: str = ""
+    chain_end: str = ""
     type: str = field(default="MotionArmSolver")
 
 
@@ -1009,7 +1031,7 @@ class Parser:
 
         gravity_node = self.g.value(id_, SLV["gravity-value"])
         gravity = self.parse_xyz(gravity_node) if gravity_node else None
-        root_acc = [-v for v in gravity] if gravity else None
+        root_acc = list(gravity) if gravity else None
 
         return SolverWithInputAndOutput(
             id=self.id(id_),
@@ -1393,21 +1415,24 @@ class Parser:
     @memoize
     def pose(self, id_):
         assert GEOM_COORD["PoseCoordinate"] in self.g[id_ : RDF["type"]]
-        assert GEOM_COORD["DirectionCosineXYZ"] in self.g[id_ : RDF["type"]]
         assert GEOM_COORD["VectorXYZ"] in self.g[id_ : RDF["type"]]
 
         of_node = self.g.value(id_, GEOM_REL["of"])
-        if ENV.RigidObject in self.g[of_node : RDF["type"]] and GEOM_ENT.Frame not in self.g[
+        if of_node is None:
+            of = None
+        elif ENV.RigidObject in self.g[of_node : RDF["type"]] and GEOM_ENT.Frame not in self.g[
             of_node : RDF["type"]
         ]:
             of = self.scene_object(of_node)
         else:
             of = self.frame(of_node)
-        wrt = self.frame(self.g.value(id_, GEOM_REL["with-respect-to"]))
+        wrt_node = self.g.value(id_, GEOM_REL["with-respect-to"])
+        wrt = self.frame(wrt_node) if wrt_node is not None else None
         quantity_kind = []
         for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]]:
             quantity_kind.append(self.quantity_kind(k))
-        as_seen_by = self.frame(self.g.value(id_, GEOM_COORD["as-seen-by"]))
+        as_seen_by_node = self.g.value(id_, GEOM_COORD["as-seen-by"])
+        as_seen_by = self.frame(as_seen_by_node) if as_seen_by_node is not None else None
         unit = []
         for u in self.g[id_ : QUDT_SCHEMA["unit"]]:
             unit.append(self.unit(u))
@@ -1415,8 +1440,26 @@ class Parser:
         dc_y = self.parse_vector3(self.g.value(id_, GEOM_COORD["direction-cosine-y"]))
         dc_z = self.parse_vector3(self.g.value(id_, GEOM_COORD["direction-cosine-z"]))
         pos = self.parse_xyz(id_)
+        euler_axes_sequence = None
+        for coord in self.g.objects(id_, GEOM_COORD["has-coordinate"]):
+            if GEOM_COORD["EulerAngles"] in self.g[coord : RDF["type"]]:
+                axes = self.g.value(coord, GEOM_COORD["axes-sequence"])
+                euler_axes_sequence = str(axes) if axes is not None else None
+                break
 
-        return Pose(self.id(id_), of, wrt, quantity_kind, as_seen_by, unit, dc_x, dc_y, dc_z, pos)
+        return Pose(
+            self.id(id_),
+            of,
+            wrt,
+            quantity_kind,
+            as_seen_by,
+            unit,
+            dc_x,
+            dc_y,
+            dc_z,
+            pos,
+            euler_axes_sequence,
+        )
 
     @memoize
     def velocity_twist(self, id_):
@@ -1481,14 +1524,31 @@ class Parser:
 
         unit = self.unit(self.g.value(id_, QUDT_SCHEMA["unit"]))
         has_view = (id_, ~MAP["subobject"], None) in self.g
+        reference_node = self.g.value(id_, CSTR["reference-value"])
+        reference_value = self.id(reference_node) if reference_node is not None else None
 
         if GEOM_REL["Pose"] in self.g[id_ : RDF["type"]]:
             return PoseQuantity(self.id(id_), QuantityKind(quantity_kind), Unit(unit), has_view)
+        if TRAJ["Trajectory"] in self.g[id_ : RDF["type"]]:
+            return Trajectory(
+                self.id(id_),
+                QuantityKind(quantity_kind),
+                Unit(unit),
+                has_view,
+                reference_value=reference_value,
+            )
 
         value = None
         if (id_, QUDT_SCHEMA["value"], None) in self.g:
             value = float(self.g.value(id_, QUDT_SCHEMA["value"]))
-        return Quantity(self.id(id_), QuantityKind(quantity_kind), Unit(unit), value, has_view)
+        return Quantity(
+            self.id(id_),
+            QuantityKind(quantity_kind),
+            Unit(unit),
+            value,
+            has_view,
+            reference_value,
+        )
 
     @memoize
     def joint_position(self, id_):
@@ -1776,6 +1836,8 @@ def _arm_solvers_for_handler(handler, slv_arm, closure_input_map=None):
                 motion_driver=selected,
                 control_mode=handler.control_mode,
                 root_acc=solver.root_acc,
+                chain_root=solver.chain_root,
+                chain_end=solver.chain_end,
             )
         )
 
@@ -1817,7 +1879,7 @@ def _relative_poses_for_motion(evaluators, view_map, arm_solvers):
 def _constraint_reference_value_id(constraint):
     param = getattr(constraint, "parameter", None)
     ref = getattr(param, "reference_value", None) if param else None
-    ref_id = getattr(ref, "id", None)
+    ref_id = ref if isinstance(ref, str) else getattr(ref, "id", None)
     return ref_id if ref_id else None
 
 
@@ -1837,9 +1899,62 @@ def _snapshot_reference_value_ids(evaluators, constraints):
 
 
 def _snapshots_for_motion(
-    evaluators, constraints, snapshot_source_map, view_map, closure_output_map
+    evaluators,
+    constraints,
+    snapshot_source_map,
+    view_map,
+    closure_output_map,
+    data_reference_map=None,
+    schedule=None,
+    closures=None,
 ):
     ref_val_ids = _snapshot_reference_value_ids(evaluators, constraints)
+    closures = closures or {}
+    data_reference_map = data_reference_map or {}
+
+    def object_id(value):
+        if isinstance(value, dict):
+            return value.get("id")
+        return getattr(value, "id", None)
+
+    def object_field(value, field):
+        if isinstance(value, dict):
+            return value.get(field)
+        return getattr(value, field, None)
+
+    def add_reference(ref_id):
+        if not isinstance(ref_id, str):
+            return
+        pending = [ref_id]
+        expanded = set()
+        while pending:
+            current = pending.pop()
+            if current in expanded:
+                continue
+            expanded.add(current)
+            ref_val_ids.add(current)
+            referenced = data_reference_map.get(current)
+            if referenced:
+                pending.append(referenced)
+            for view in view_map.values():
+                superobject = object_field(view, "superobject")
+                if object_id(superobject) != current:
+                    continue
+                subobject = object_field(view, "subobject")
+                subobject_id = object_id(subobject)
+                if subobject_id:
+                    pending.append(subobject_id)
+
+    for ref_id in list(ref_val_ids):
+        add_reference(ref_id)
+    for step in schedule or []:
+        closure = closures.get(step) or {}
+        for value in closure.values():
+            if isinstance(value, str):
+                add_reference(value)
+            elif isinstance(value, list):
+                for item in value:
+                    add_reference(item)
     result = []
     seen = set()
     for target_id in sorted(ref_val_ids):
@@ -1853,6 +1968,7 @@ def _snapshots_for_motion(
                 target_id=target_id,
                 source_id=source_id,
                 source_closure_id=source_closure_id,
+                support_lift=target_id == "support_z",
             )
         )
     return result
@@ -1877,9 +1993,9 @@ _CLOSURE_OUTPUT_FIELDS = {
 
 
 def _scene_relative_poses_for_motion(view_map, arm_solvers):
-    """For each view whose wrt-frame is a scene object, emit inverse(scene_body) * fk_pose."""
+    """For each view whose wrt-frame is a scene object, emit the requested relative pose."""
     fk_pose_by_frame: dict[str, str] = {}
-    scene_pose_by_id: dict[str, str] = {}
+    scene_pose_by_id: dict[str, tuple[str, str | None]] = {}
     for solver in arm_solvers:
         for out in solver.output:
             if getattr(out, "type", "") != "Pose":
@@ -1888,10 +2004,13 @@ def _scene_relative_poses_for_motion(view_map, arm_solvers):
             if of is None:
                 continue
             if getattr(of, "is_scene_object", False):
-                scene_pose_by_id[of.id] = out.id
+                scene_pose_by_id[of.id] = (
+                    out.id,
+                    getattr(getattr(out, "with_respect_to", None), "id", None),
+                )
                 body = getattr(of, "body", None)
                 if body:
-                    scene_pose_by_id[body] = out.id
+                    scene_pose_by_id[body] = scene_pose_by_id[of.id]
             else:
                 fk_pose_by_frame[of.id] = out.id
 
@@ -1913,10 +2032,19 @@ def _scene_relative_poses_for_motion(view_map, arm_solvers):
         if not getattr(wrt, "is_scene_object", False):
             continue
         fk_pose_id = fk_pose_by_frame.get(getattr(of, "id", ""))
-        scene_pose_id = scene_pose_by_id.get(getattr(wrt, "id", ""))
-        if fk_pose_id and scene_pose_id:
+        scene_pose = scene_pose_by_id.get(getattr(wrt, "id", ""))
+        if fk_pose_id and scene_pose:
+            scene_pose_id, scene_wrt_id = scene_pose
+            as_seen_by_id = getattr(getattr(so, "as_seen_by", None), "id", None)
             seen.add(pose_id)
-            result.append(SceneRelativePose(id=pose_id, fk_pose_id=fk_pose_id, scene_pose_id=scene_pose_id))
+            result.append(
+                SceneRelativePose(
+                    id=pose_id,
+                    fk_pose_id=fk_pose_id,
+                    scene_pose_id=scene_pose_id,
+                    base_seen=as_seen_by_id == scene_wrt_id,
+                )
+            )
     return result
 
 
@@ -1987,12 +2115,14 @@ def build_motion_units(
     snapshot_source_map=None,
     view_map=None,
     closure_output_map=None,
+    data_reference_map=None,
     closure_input_map=None,
     closures=None,
 ):
     snapshot_source_map = snapshot_source_map or {}
     view_map = view_map or {}
     closure_output_map = closure_output_map or {}
+    data_reference_map = data_reference_map or {}
     closure_input_map = closure_input_map or {}
     motions = []
 
@@ -2241,6 +2371,9 @@ def build_motion_units(
                     snapshot_source_map,
                     view_map,
                     closure_output_map,
+                    data_reference_map,
+                    while_schedule + when_schedule + until_schedule,
+                    closures,
                 ),
             )
         )
@@ -2267,7 +2400,7 @@ def _filter_shared_data(data_structures, schedule, closures, view_map=None, fk_o
 
     result = []
     for item in data_structures:
-        if item.type == "Quantity" and item.has_view:
+        if item.type == "Quantity" and item.has_view and item.id not in referenced:
             continue
         if (
             item.type == "Quantity"
@@ -2641,6 +2774,21 @@ def generate_ir(manifest_path):
         if source_node is not None:
             snapshot_source_map[p.id(snap_node)] = p.id(source_node)
 
+    data_reference_map: dict[str, str] = {}
+    for item in data_structures:
+        ref = getattr(item, "reference_value", None)
+        ref_id = ref if isinstance(ref, str) else getattr(ref, "id", None)
+        if ref_id:
+            data_reference_map[item.id] = ref_id
+
+    for c in closures.values():
+        if not isinstance(c, dict) or c.get("type") != "AssignmentEvaluator":
+            continue
+        quantity_id = c.get("quantity")
+        ref_id = c.get("reference_value")
+        if isinstance(quantity_id, str) and isinstance(ref_id, str):
+            data_reference_map[quantity_id] = ref_id
+
     closure_output_map: dict[str, str] = {}
     closure_input_map: dict[str, set[str]] = {}
     for cid, c in closures.items():
@@ -2671,6 +2819,7 @@ def generate_ir(manifest_path):
         snapshot_source_map=snapshot_source_map,
         view_map=view_map,
         closure_output_map=closure_output_map,
+        data_reference_map=data_reference_map,
         closure_input_map=closure_input_map,
         closures=closures,
     )

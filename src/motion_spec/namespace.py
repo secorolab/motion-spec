@@ -81,6 +81,20 @@ class MJ(DefinedNamespace):
     _extras = [
         "body-name",
         "site-name",
+        "attach-to-body",
+        "attach-prefix",
+        "attach-position",
+        "attach-orientation",
+        "actuator-name",
+        "open-command",
+        "closed-command",
+        "shape",
+        "size",
+        "mass",
+        "friction",
+        "friction-slide",
+        "friction-torsion",
+        "friction-roll",
         "tool-body",
         "tcp-site",
     ]
@@ -122,6 +136,8 @@ class QUDT_SCHEMA(DefinedNamespace):
     hasQuantityKind: URIRef
     unit: URIRef
     value: URIRef
+
+    _extras = ["quantity-kind"]
 
     _NS = Namespace(f"{URI_QUDT}/schema/qudt/")
 
@@ -207,7 +223,9 @@ class GEOM_COORD(DefinedNamespace):
         "angular-velocity",
         "linear-velocity",
         "angular-acceleration",
-        "linear-acceleration"
+        "linear-acceleration",
+        "angle-axis",
+        "has-coordinate",
     ]
 
     _NS = Namespace(f"{URI_CR2B_MM}/geometry/coordinates#")
@@ -393,6 +411,7 @@ class CSTR_HDL(DefinedNamespace):
     flag: URIRef
 
     _extras = [
+        "GripperAction",
         "error-signal",
         "control-signal",
         "control-mode",
@@ -402,6 +421,9 @@ class CSTR_HDL(DefinedNamespace):
         "decay-rate",
         "stiffness",
         "damping",
+        "actions",
+        "target-attachment",
+        "command",
     ]
 
     _NS = Namespace(f"{URI_CR2B_MM}/task/constraint-handler#")

@@ -5,11 +5,14 @@ This module parses RDF graphs containing motion specification models and generat
 a JSON intermediate representation suitable for code generation.
 """
 
+from __future__ import annotations
+
 import sys
 import argparse
 from dataclasses import dataclass, field, is_dataclass, asdict
 from enum import Enum
 import collections
+import math
 import re
 import json
 from pathlib import Path
@@ -420,6 +423,7 @@ ops_slv = [
 
 class Subspace(str, Enum):
     Position = "Position"
+    Rotation = "Rotation"
     AngularVelocity = "AngularVelocity"
     LinearVelocity = "LinearVelocity"
     AngularAcceleration = "AngularAcceleration"
@@ -587,7 +591,7 @@ class Wrench:
 @dataclass
 class View:
     id: str
-    superobject: VelocityTwist | AccelerationTwist | Wrench
+    superobject: Pose | VelocityTwist | AccelerationTwist | Wrench
     subobject: Quantity
     subspace: Subspace
     axis: Axis
@@ -668,6 +672,32 @@ class MonitorEntry:
 
 
 @dataclass
+class PoseAxisErrorComponent:
+    quantity: str
+    error: str
+    reference: str
+    subspace: str
+    axis: str
+    eval_id: str
+    type: str = field(default="PoseAxisErrorComponent")
+
+
+@dataclass
+class PoseAxisErrorGroup:
+    id: str
+    pose: str
+    components: list[PoseAxisErrorComponent]
+    has_angular: bool = False
+    linear_x: str | None = None
+    linear_y: str | None = None
+    linear_z: str | None = None
+    angular_x: str | None = None
+    angular_y: str | None = None
+    angular_z: str | None = None
+    type: str = field(default="PoseAxisErrorGroup")
+
+
+@dataclass
 class ConstraintHandler:
     id: str
     motion: GuardedMotion
@@ -675,6 +705,7 @@ class ConstraintHandler:
     evaluators: list[ConstraintEvaluator]
     controllers: list[Controller]
     monitors: list[MonitorEntry]
+    actions: list[GripperAction] = field(default_factory=list)
     order: int = 0
     type: str = field(default="ConstraintHandler")
 
@@ -685,6 +716,14 @@ class SnapshotCapture:
     source_id: str
     source_closure_id: str | None = None
     type: str = field(default="SnapshotCapture")
+
+
+@dataclass
+class SceneRelativePose:
+    id: str
+    fk_pose_id: str
+    scene_pose_id: str
+    type: str = field(default="SceneRelativePose")
 
 
 @dataclass
@@ -711,6 +750,7 @@ class GuardedMotionBlock:
     when_monitors: list[MonitorEntry]
     while_monitors: list[MonitorEntry]
     until_monitors: list[MonitorEntry]
+    gripper_actions: list[GripperAction]
 
     # Schedules
     # when_schedule is independent: it runs in can_start, a separate C++ function.
@@ -737,6 +777,12 @@ class GuardedMotionBlock:
 
     # Relative-from-start pose computations (e.g. pose_start_ee)
     relative_poses: list = field(default_factory=list)
+
+    # Continuous relative pose of FK frame wrt scene object body (e.g. pose_ee_wrt_cube)
+    scene_relative_poses: list[SceneRelativePose] = field(default_factory=list)
+
+    # Pose coordinate-view scalar constraints grouped back into one KDL::diff pose error.
+    pose_axis_error_groups: list[PoseAxisErrorGroup] = field(default_factory=list)
 
     type: str = field(default="GuardedMotionBlock")
 
@@ -805,9 +851,68 @@ class SolverWithInputAndOutput:
     urdf: str = ""
     chain_root: str = ""
     chain_end: str = ""
+    chain_tip: str = ""
     robot_model: str = ""
+    tool_body: str = ""
+    tcp_site: str = ""
     root_acc: list[float] | None = None
     type: str = field(default="SolverWithInputAndOutput")
+
+
+@dataclass
+class SceneAttachment:
+    id: str
+    path: str
+    attach_to: str
+    prefix: str = ""
+    pos: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    euler: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    actuator: str = ""
+    open_command: float = 0.0
+    closed_command: float = 0.0
+    type: str = field(default="SceneAttachment")
+
+
+@dataclass
+class SceneRobot:
+    id: str
+    path: str
+    pos: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    euler: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    attachments: list[SceneAttachment] = field(default_factory=list)
+    type: str = field(default="SceneRobot")
+
+
+@dataclass
+class SceneObjectSpec:
+    id: str
+    body: str
+    path: str = ""
+    pos: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    euler: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    fixed: bool = False
+    shape: str = "BOX"
+    size: list[float] = field(default_factory=lambda: [0.03, 0.03, 0.03])
+    mass: float = 0.1
+    friction: list[float] = field(default_factory=lambda: [0.5, 0.005, 0.0001])
+    type: str = field(default="SceneObjectSpec")
+
+
+@dataclass
+class GripperAction:
+    id: str
+    attachment_id: str
+    command: str
+    actuator: str = ""
+    value: float = 0.0
+    type: str = field(default="GripperAction")
+
+
+@dataclass
+class SceneSpec:
+    robots: list[SceneRobot] = field(default_factory=list)
+    objects: list[SceneObjectSpec] = field(default_factory=list)
+    type: str = field(default="SceneSpec")
 
 
 @dataclass
@@ -983,6 +1088,7 @@ class Parser:
     def subspace(self, id_):
         d = {
             MAP["position"]: Subspace.Position,
+            MAP["rotation"]: Subspace.Rotation,
             MAP["angular-velocity"]: Subspace.AngularVelocity,
             MAP["linear-velocity"]: Subspace.LinearVelocity,
             MAP["angular-acceleration"]: Subspace.AngularAcceleration,
@@ -1041,12 +1147,22 @@ class Parser:
         for m in self.g[id_ : CSTR_HDL["monitors"]]:
             monitors.append(self.monitor_entry(m))
 
+        actions = []
+        for action in self.g[id_ : CSTR_HDL["actions"]]:
+            actions.append(self.gripper_action(action))
+
         order_value = self.g.value(id_, APP["order"])
         order = int(order_value.value) if order_value is not None else 0
 
         return ConstraintHandler(
-            self.id(id_), motion, control_mode, evaluators, controllers, monitors, order
+            self.id(id_), motion, control_mode, evaluators, controllers, monitors, actions, order
         )
+
+    @memoize
+    def gripper_action(self, id_):
+        attachment = self.g.value(id_, CSTR_HDL["target-attachment"])
+        command = str(self.g.value(id_, CSTR_HDL["command"]) or "")
+        return GripperAction(self.id(id_), self.id(attachment), command)
 
     @memoize
     def monitor_entry(self, id_):
@@ -1759,6 +1875,108 @@ _CLOSURE_OUTPUT_FIELDS = {
 }
 
 
+def _scene_relative_poses_for_motion(view_map, arm_solvers):
+    """For each view whose wrt-frame is a scene object, emit inverse(scene_body) * fk_pose."""
+    fk_pose_by_frame: dict[str, str] = {}
+    scene_pose_by_id: dict[str, str] = {}
+    for solver in arm_solvers:
+        for out in solver.output:
+            if getattr(out, "type", "") != "Pose":
+                continue
+            of = getattr(out, "of", None)
+            if of is None:
+                continue
+            if getattr(of, "is_scene_object", False):
+                scene_pose_by_id[of.id] = out.id
+                body = getattr(of, "body", None)
+                if body:
+                    scene_pose_by_id[body] = out.id
+            else:
+                fk_pose_by_frame[of.id] = out.id
+
+    seen: set[str] = set()
+    result: list[SceneRelativePose] = []
+    for view in view_map.values():
+        so = getattr(view, "superobject", None)
+        if so is None:
+            continue
+        pose_id = getattr(so, "id", None)
+        if not pose_id or pose_id in seen:
+            continue
+        of = getattr(so, "of", None)
+        wrt = getattr(so, "with_respect_to", None)
+        if of is None or wrt is None:
+            continue
+        if getattr(of, "is_scene_object", False):
+            continue
+        if not getattr(wrt, "is_scene_object", False):
+            continue
+        fk_pose_id = fk_pose_by_frame.get(getattr(of, "id", ""))
+        scene_pose_id = scene_pose_by_id.get(getattr(wrt, "id", ""))
+        if fk_pose_id and scene_pose_id:
+            seen.add(pose_id)
+            result.append(SceneRelativePose(id=pose_id, fk_pose_id=fk_pose_id, scene_pose_id=scene_pose_id))
+    return result
+
+
+def _pose_axis_error_groups_for_motion(eval_nodes, p, view_map):
+    groups: dict[str, PoseAxisErrorGroup] = {}
+    for eval_node in eval_nodes:
+        if GEOM_OP["PoseDiffEvaluator"] in p.g[eval_node : RDF["type"]]:
+            continue
+        if CSTR_HDL["ErrorEvaluator"] not in p.g[eval_node : RDF["type"]]:
+            continue
+
+        evaluator = p.constraint_evaluator(eval_node)
+        if not isinstance(evaluator.constraint.parameter, EqualityConstraint):
+            continue
+        if evaluator.error is None:
+            continue
+
+        quantity = evaluator.constraint.quantity
+        view = view_map.get(quantity.id)
+        if view is None or getattr(view.superobject, "type", None) != "Pose":
+            continue
+
+        qkind = getattr(getattr(quantity, "quantity_kind", None), "id", "")
+        quantity_id = getattr(quantity, "id", "")
+        if view.subspace == Subspace.Position:
+            subspace = "linear"
+        elif (
+            view.subspace == Subspace.Rotation
+            or "Angle" in qkind
+            or "angle" in qkind.lower()
+            or "rotation" in quantity_id
+        ):
+            subspace = "angular"
+        else:
+            continue
+
+        pose_id = view.superobject.id
+        group = groups.setdefault(
+            pose_id,
+            PoseAxisErrorGroup(id=f"pose_axis_error_{pose_id}", pose=pose_id, components=[]),
+        )
+        if subspace == "angular":
+            group.has_angular = True
+        group.components.append(
+            PoseAxisErrorComponent(
+                quantity=evaluator.constraint.quantity.id,
+                error=evaluator.error.id,
+                reference=evaluator.constraint.parameter.reference_value.id,
+                subspace=subspace,
+                axis=view.axis.value,
+                eval_id=evaluator.id,
+            )
+        )
+        setattr(group, f"{subspace}_{view.axis.value.lower()}", evaluator.constraint.parameter.reference_value.id)
+
+    # Keep single-axis pose constraints scalar: this covers real scalar uses such
+    # as elbow/table height. Multi-axis groups are pose-control intents and should
+    # compute one KDL::diff then project component views from the twist.
+    return [group for group in groups.values() if len(group.components) > 1]
+
+
 def build_motion_units(
     g,
     p,
@@ -1894,18 +2112,59 @@ def build_motion_units(
         when_schedule = p_when.schedule(when_eval_nodes, ops_generic + ops_cstr_hdl)
 
         handler_arm_solvers = _arm_solvers_for_handler(handler, slv_arm, closure_input_map)
+        handler_output_ids = {c.control_signal.id for c in handler.controllers}
         cartesian_force_nodes = []
         for solver in handler_arm_solvers:
             driver_node = node_by_id.get(solver.motion_driver.id)
             if driver_node is None:
                 continue
-            cartesian_force_nodes.extend(g[driver_node : SLV["cartesian-force"]])
+            for cf_node in g[driver_node : SLV["cartesian-force"]]:
+                cf_force = g.value(cf_node, SLV["force"])
+                if cf_force is None:
+                    continue
+                cf_force_id = p.id(cf_force)
+                upstream = {cf_force_id} | _upstream_dependencies(cf_force_id, closure_input_map)
+                if upstream & handler_output_ids:
+                    cartesian_force_nodes.append(cf_node)
 
         p_active = Parser(g)
+        pose_axis_error_groups = _pose_axis_error_groups_for_motion(
+            while_eval_nodes, p_active, view_map
+        )
+        pose_axis_error_eval_ids = {
+            component.eval_id
+            for group in pose_axis_error_groups
+            for component in group.components
+        }
+        pose_axis_error_quantity_ids = {
+            component.quantity
+            for group in pose_axis_error_groups
+            for component in group.components
+        }
+        pose_axis_error_compute_ids = {
+            closure_output_map[quantity_id]
+            for quantity_id in pose_axis_error_quantity_ids
+            if quantity_id in closure_output_map
+        }
+        grouped_while_eval_nodes = {
+            node
+            for node in while_eval_nodes
+            if p_active.id(node) in pose_axis_error_eval_ids
+        }
         while_schedule = p_active.schedule(
-            [n for n in while_eval_nodes if n not in while_pose_eval_nodes] + ctrl_nodes,
+            [
+                n
+                for n in while_eval_nodes
+                if n not in while_pose_eval_nodes and n not in grouped_while_eval_nodes
+            ]
+            + ctrl_nodes,
             ops_generic + ops_cstr_hdl,
         )
+        while_schedule = [
+            step
+            for step in while_schedule
+            if step not in pose_axis_error_eval_ids and step not in pose_axis_error_compute_ids
+        ]
         while_schedule.extend(
             p_active.schedule(cartesian_force_nodes, ops_generic + ops_slv + ops_cstr_hdl)
         )
@@ -1955,6 +2214,7 @@ def build_motion_units(
                 when_monitors=when_monitors,
                 while_monitors=while_monitors,
                 until_monitors=until_monitors,
+                gripper_actions=handler.actions,
                 when_schedule=when_schedule,
                 while_schedule=while_schedule,
                 until_schedule=until_schedule,
@@ -1969,6 +2229,11 @@ def build_motion_units(
                     view_map,
                     _arm_solvers_for_handler(handler, slv_arm),
                 ),
+                scene_relative_poses=_scene_relative_poses_for_motion(
+                    view_map,
+                    handler_arm_solvers,
+                ),
+                pose_axis_error_groups=pose_axis_error_groups,
                 snapshots=_snapshots_for_motion(
                     while_evaluators + when_evaluators + until_evaluators,
                     motion.while_ + motion.when + motion.until,
@@ -2031,6 +2296,182 @@ def _dedupe_by_id(items):
     return result
 
 
+def _xyz_or_zero(g, node):
+    if node is None:
+        return [0.0, 0.0, 0.0]
+    values = [g.value(node, GEOM_COORD[axis]) for axis in ("x", "y", "z")]
+    if any(v is None for v in values):
+        return [0.0, 0.0, 0.0]
+    return [float(v.value) for v in values]
+
+
+def _orientation_degrees(g, node):
+    result = {"roll": 0.0, "pitch": 0.0, "yaw": 0.0}
+    if node is None:
+        return [0.0, 0.0, 0.0]
+    for coord in g.objects(node, GEOM_COORD["has-coordinate"]):
+        axis = str(g.value(coord, GEOM_COORD["angle-axis"]) or "")
+        if axis not in result:
+            continue
+        value_node = g.value(coord, QUDT_SCHEMA.value)
+        value = 0.0 if value_node is None else float(value_node.value)
+        unit = str(g.value(coord, QUDT_SCHEMA.unit) or "")
+        if unit.endswith("RAD"):
+            value = math.degrees(value)
+        result[axis] = value
+    return [result["roll"], result["pitch"], result["yaw"]]
+
+
+def _position_of(g, obj_node):
+    for pos_node in g.subjects(GEOM_REL["of"], obj_node):
+        if GEOM_COORD["PositionCoordinate"] in g[pos_node:RDF.type]:
+            return _xyz_or_zero(g, pos_node)
+    return [0.0, 0.0, 0.0]
+
+
+def _path_of_model(g, model_node):
+    return str(g.value(model_node, SIM.path) or "") if model_node else ""
+
+
+def _mj_body_name(g, node):
+    return str(g.value(node, MJ["body-name"]) or "") if node else ""
+
+
+def _site_name(g, node):
+    return str(g.value(node, MJ["site-name"]) or "") if node else ""
+
+
+def _prefix_from_tool_body(tool_body):
+    if "_" in tool_body:
+        return tool_body.rsplit("_", 1)[0] + "_"
+    return ""
+
+
+def _attachment_defaults(path, tool_body):
+    pos = [0.0, 0.0, 0.0]
+    euler = [0.0, 0.0, 0.0]
+    prefix = _prefix_from_tool_body(tool_body)
+    if "robotiq_2f85" in path:
+        pos[2] = -0.061525
+        euler[0] = 180.0
+        prefix = prefix or "g_"
+    return prefix, pos, euler
+
+
+def _attachments_for_robot(g, env_node, robot_node, tool_body):
+    attachments = []
+    for candidate in g.objects(env_node, ENV["has-object"]):
+        if g.value(candidate, SLV["attached-to"]) != robot_node:
+            continue
+        path = _path_of_model(g, candidate)
+        if not path:
+            continue
+        attach_to = _mj_body_name(g, g.value(candidate, MJ["attach-to-body"]))
+        prefix, pos, euler = _attachment_defaults(path, tool_body)
+        prefix = str(g.value(candidate, MJ["attach-prefix"]) or prefix)
+        pos = _xyz_or_zero(g, g.value(candidate, MJ["attach-position"])) if g.value(candidate, MJ["attach-position"]) else pos
+        euler = _orientation_degrees(g, g.value(candidate, MJ["attach-orientation"])) if g.value(candidate, MJ["attach-orientation"]) else euler
+        actuator = str(g.value(candidate, MJ["actuator-name"]) or "")
+        open_command = g.value(candidate, MJ["open-command"])
+        closed_command = g.value(candidate, MJ["closed-command"])
+        attachments.append(
+            SceneAttachment(
+                id=_id_from_uri(candidate),
+                path=path,
+                attach_to=attach_to,
+                prefix=prefix,
+                pos=pos,
+                euler=euler,
+                actuator=actuator,
+                open_command=0.0 if open_command is None else float(open_command.value),
+                closed_command=0.0 if closed_command is None else float(closed_command.value),
+            )
+        )
+    return attachments
+
+
+def _scene_from_graph(g):
+    scene = SceneSpec()
+    for env_node in g.subjects(RDF.type, ENV.Workspace):
+        robot_nodes = []
+        for obj_node in g.objects(env_node, ENV["has-object"]):
+            if g.value(obj_node, GEOM_ENT["kinematic-chain"]) is not None:
+                robot_nodes.append(obj_node)
+
+        for robot_node in robot_nodes:
+            model_node = g.value(robot_node, ENV["has-object-model"])
+            robot_path = _path_of_model(g, model_node)
+            if not robot_path:
+                continue
+
+            tool_body = _mj_body_name(g, g.value(robot_node, MJ["tool-body"]))
+            attachments = _attachments_for_robot(g, env_node, robot_node, tool_body)
+
+            scene.robots.append(
+                SceneRobot(
+                    id=_id_from_uri(robot_node),
+                    path=robot_path,
+                    pos=_position_of(g, robot_node),
+                    attachments=attachments,
+                )
+            )
+
+        for obj_node in g.objects(env_node, ENV["has-object"]):
+            if obj_node in robot_nodes:
+                continue
+            if ENV.RigidObject not in g[obj_node:RDF.type]:
+                continue
+            model_node = g.value(obj_node, ENV["has-object-model"])
+            path = _path_of_model(g, model_node)
+            body = _mj_body_name(g, obj_node) or _id_from_uri(obj_node)
+            shape = str(g.value(obj_node, MJ["shape"]) or "box").upper()
+            size = _xyz_or_zero(g, g.value(obj_node, MJ["size"])) if g.value(obj_node, MJ["size"]) else [0.03, 0.03, 0.03]
+            mass_node = g.value(obj_node, MJ["mass"])
+            friction = [
+                float((g.value(obj_node, MJ["friction-slide"]) or rdflib.Literal(0.5)).value),
+                float((g.value(obj_node, MJ["friction-torsion"]) or rdflib.Literal(0.005)).value),
+                float((g.value(obj_node, MJ["friction-roll"]) or rdflib.Literal(0.0001)).value),
+            ]
+            scene.objects.append(
+                SceneObjectSpec(
+                    id=_id_from_uri(obj_node),
+                    body=body,
+                    path=path,
+                    pos=_position_of(g, obj_node),
+                    fixed=bool(path),
+                    shape=shape,
+                    size=size,
+                    mass=0.1 if mass_node is None else float(mass_node.value),
+                    friction=friction,
+                )
+            )
+        break
+    return scene
+
+
+def _id_from_uri(node):
+    return str(node).rstrip("/").split("/")[-1].split("#")[-1].replace("-", "_")
+
+
+def _resolve_gripper_actions(handlers, scene):
+    attachments = {
+        attachment.id: attachment
+        for robot in scene.robots
+        for attachment in robot.attachments
+    }
+
+    for handler in handlers:
+        for action in handler.actions:
+            attachment = attachments.get(action.attachment_id)
+            if attachment is None:
+                continue
+            action.actuator = attachment.actuator
+            if action.command == "close":
+                action.value = attachment.closed_command
+            elif action.command == "open":
+                action.value = attachment.open_command
+
+
 def _robot_setup_from_graph(g):
     for env_node in g.subjects(RDF.type, ENV.Workspace):
         for obj_node in g.objects(env_node, ENV["has-object"]):
@@ -2044,9 +2485,15 @@ def _robot_setup_from_graph(g):
             model_node = g.value(obj_node, ENV["has-object-model"])
             urdf = str(g.value(model_node, SIM.path) or "") if model_node else ""
             robot_model = str(model_node).rstrip("/").split("/")[-1].split("#")[-1] if model_node else ""
+            tool_body = _mj_body_name(g, g.value(obj_node, MJ["tool-body"]))
+            tcp_site = _site_name(g, g.value(obj_node, MJ["tcp-site"]))
+            attachments = _attachments_for_robot(g, env_node, obj_node, tool_body)
+            chain_tip = chain_end
+            if tcp_site and chain_end == tcp_site and attachments:
+                chain_tip = attachments[0].attach_to
             if chain_root or chain_end or urdf:
-                return urdf, chain_root, chain_end, robot_model
-    return "", "", "", ""
+                return urdf, chain_root, chain_end, chain_tip, robot_model, tool_body, tcp_site
+    return "", "", "", "", "", "", ""
 
 
 def generate_ir(manifest_path):
@@ -2119,7 +2566,16 @@ def generate_ir(manifest_path):
     slv_arm = []
     sched4 = []
     slv_base_frc = []
-    _urdf, _chain_root, _chain_end, _robot_model = _robot_setup_from_graph(g)
+    (
+        _urdf,
+        _chain_root,
+        _chain_end,
+        _chain_tip,
+        _robot_model,
+        _tool_body,
+        _tcp_site,
+    ) = _robot_setup_from_graph(g)
+    scene = _scene_from_graph(g)
 
     # Construct the computational graph that feeds into the mobile base's
     # velocity composition solver.
@@ -2133,6 +2589,8 @@ def generate_ir(manifest_path):
         start = g[h : CSTR_HDL["evaluators"] | CSTR_HDL["controllers"]]
         sched2.extend(p.schedule(start, ops_generic + ops_cstr_hdl))
 
+    _resolve_gripper_actions(hdl, scene)
+
     # Traverse backward from the "distal" solver configuration.
     # The "parser" keeps track of the previously visited closures/computations
     # so that they are visited only once.
@@ -2141,7 +2599,10 @@ def generate_ir(manifest_path):
         solver.urdf = _urdf
         solver.chain_root = _chain_root
         solver.chain_end = _chain_end
+        solver.chain_tip = _chain_tip
         solver.robot_model = _robot_model
+        solver.tool_body = _tool_body
+        solver.tcp_site = _tcp_site
         _mark_acceleration_constraint_frames(solver)
         slv_arm.append(solver)
         start = g[
@@ -2267,6 +2728,7 @@ def generate_ir(manifest_path):
         "base_velocity_solvers": slv_base_vel,
         "base_force_solvers": slv_base_frc,
         "backend": backend,
+        "scene": scene,
     }
 
 

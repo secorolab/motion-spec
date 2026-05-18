@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import subprocess
@@ -169,6 +170,73 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     _validate_ir(ir)
     backend = ir.get("backend", "robif2b")
 
+    def expand_vector_fields(item: dict, field: str) -> None:
+        values = item.get(field) or [0.0, 0.0, 0.0]
+        item[f"{field}_x"] = values[0] if len(values) > 0 else 0.0
+        item[f"{field}_y"] = values[1] if len(values) > 1 else 0.0
+        item[f"{field}_z"] = values[2] if len(values) > 2 else 0.0
+
+    scene = ir.get("scene") or {}
+    for robot in scene.get("robots", []):
+        expand_vector_fields(robot, "pos")
+        expand_vector_fields(robot, "euler")
+        for attachment in robot.get("attachments", []):
+            expand_vector_fields(attachment, "pos")
+            expand_vector_fields(attachment, "euler")
+    for obj in scene.get("objects", []):
+        expand_vector_fields(obj, "pos")
+        expand_vector_fields(obj, "euler")
+        expand_vector_fields(obj, "size")
+        friction = obj.get("friction") or [0.5, 0.005, 0.0001]
+        obj["friction_slide"] = friction[0] if len(friction) > 0 else 0.5
+        obj["friction_torsion"] = friction[1] if len(friction) > 1 else 0.005
+        obj["friction_roll"] = friction[2] if len(friction) > 2 else 0.0001
+        obj["has_path"] = bool(obj.get("path"))
+
+    def merge_list_by_id(dst: list, src: list) -> None:
+        seen = {item.get("id") for item in dst if isinstance(item, dict)}
+        for item in src:
+            item_id = item.get("id") if isinstance(item, dict) else None
+            if item_id in seen:
+                continue
+            dst.append(copy.deepcopy(item))
+            seen.add(item_id)
+
+    # When the same motion ID is reused by handlers with different gripper_actions, each
+    # handler needs its own generated function. Detect those conflicts first and rename
+    # the affected entries to "{motion_id}__{handler_suffix}" so the dedup loop below
+    # keeps them separate.
+    _ga_by_id: dict = {}
+    _conflicting_ids: set = set()
+    for motion in ir.get("motions", []):
+        mid = motion.get("id")
+        ga_key = tuple(a.get("id") for a in motion.get("gripper_actions", []))
+        if mid not in _ga_by_id:
+            _ga_by_id[mid] = ga_key
+        elif _ga_by_id[mid] != ga_key:
+            _conflicting_ids.add(mid)
+
+    for motion in ir.get("motions", []):
+        if motion.get("id") in _conflicting_ids:
+            handler = motion.get("handler") or ""
+            suffix = handler[len("handler_"):] if handler.startswith("handler_") else handler
+            motion["id"] = f"{motion['id']}__{suffix}"
+
+    unique_motions = []
+    motion_by_id = {}
+    for motion in ir.get("motions", []):
+        motion_id = motion.get("id")
+        if motion_id in motion_by_id:
+            existing = motion_by_id[motion_id]
+            merge_list_by_id(existing.setdefault("controllers", []), motion.get("controllers", []))
+            merge_list_by_id(existing.setdefault("monitors", []), motion.get("monitors", []))
+            merge_list_by_id(existing.setdefault("arm_solvers", []), motion.get("arm_solvers", []))
+            continue
+        merged_motion = copy.deepcopy(motion)
+        motion_by_id[motion_id] = merged_motion
+        unique_motions.append(merged_motion)
+    ir["unique_motions"] = unique_motions
+
     if backend == "mj_kdl":
         for solver in ir.get("arm_solvers", []):
             if solver.get("root_acc"):
@@ -191,7 +259,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     if ir.get("has_mobile_base"):
         render_template(stst_bin, "mobile_base_cycle_header", ir_payload_path, headers_dir / "mobile_base_cycle.hpp")
 
-    for motion in ir["motions"]:
+    for motion in unique_motions:
         payload = {
             "motion": motion,
             "closures": ir["closures"],
@@ -201,6 +269,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
             "base_force_solvers": ir["base_force_solvers"],
             "has_mobile_base": ir["has_mobile_base"],
             "backend": ir["backend"],
+            "pose_axis_error_groups": motion.get("pose_axis_error_groups", []),
         }
         payload_path = payload_dir / f"{motion['id']}.json"
         write_json(payload_path, payload)

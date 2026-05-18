@@ -19,7 +19,12 @@ robot-state-init-mj_kdl-KinovaGen3(solver) ::= <<
 
 robot-init-mj_kdl-KinovaGen3(solver) ::= <<
     mj_kdl::Robot mj_<solver.id>{};
-    if (!mj_kdl::init_robot_from_mjcf(&mj_<solver.id>, mj_env.model, mj_env.data, "<solver.chain_root>", "<solver.chain_end>")) {
+<if(solver.tool_body)>    mj_kdl::ToolFrameSpec mj_tool_<solver.id>{};
+    mj_tool_<solver.id>.tool_body = "<solver.tool_body>";
+<if(solver.tcp_site)>    mj_tool_<solver.id>.tcp_site = "<solver.tcp_site>";
+<endif>    if (!mj_kdl::init_robot_from_mjcf(&mj_<solver.id>, mj_env.model, mj_env.data, "<solver.chain_root>", "<solver.chain_tip>", "", &mj_tool_<solver.id>)) {
+<else>    if (!mj_kdl::init_robot_from_mjcf(&mj_<solver.id>, mj_env.model, mj_env.data, "<solver.chain_root>", "<solver.chain_tip>")) {
+<endif>
         std::cerr \<\< "init_robot_from_mjcf() failed for <solver.id>\\n";
         mj_kdl::cleanup(&mj_env);
         return 1;
@@ -49,6 +54,7 @@ robot-shutdown-mj_kdl-KinovaGen3(solver) ::= <<
 app-arm-includes-mj_kdl(has_arm) ::= <<
 <if(has_arm)>
 #include \<cstring\>
+#include \<deque\>
 #include \<filesystem\>
 #include \<iostream\>
 #include \<string\>
@@ -56,7 +62,7 @@ app-arm-includes-mj_kdl(has_arm) ::= <<
 <endif>
 >>
 
-app-arm-setup-mj_kdl(arm_solvers) ::= <<
+app-arm-setup-mj_kdl(arm_solvers, scene) ::= <<
     bool headless = false;
     int headless_steps = 2000;
     for (int i = 1; i \< argc; ++i) {
@@ -67,10 +73,7 @@ app-arm-setup-mj_kdl(arm_solvers) ::= <<
         }
     }
 
-    const auto find_mjcf_path = []() -> std::filesystem::path {
-        const std::vector\<std::filesystem::path\> relative_paths = {
-            "<first(arm_solvers).urdf>",
-        };
+    const auto find_asset_path = [](const std::vector\<std::filesystem::path\> &relative_paths) -> std::filesystem::path {
         std::vector\<std::filesystem::path\> roots = {std::filesystem::current_path()};
         roots.push_back(std::filesystem::path(__FILE__).parent_path());
         for (const auto &start : roots) {
@@ -89,18 +92,67 @@ app-arm-setup-mj_kdl(arm_solvers) ::= <<
         return {};
     };
 
-    const std::filesystem::path mjcf_path = find_mjcf_path();
+    const std::filesystem::path mjcf_path = find_asset_path({"<first(scene.robots).path>"\});
     if (mjcf_path.empty()) {
-        std::cerr \<\< "MJCF model not found: <first(arm_solvers).urdf>\\n";
+        std::cerr \<\< "MJCF model not found: <first(scene.robots).path>\\n";
         return 1;
     }
-
     mj_kdl::Env mj_env{};
     mj_kdl::SceneSpec mj_scene{};
     mj_kdl::RobotSpec mj_robot_spec{};
+    std::deque\<std::string\> mj_path_storage;
     const std::string mjcf_path_string = mjcf_path.string();
     mj_robot_spec.path = mjcf_path_string.c_str();
+    mj_robot_spec.pos[0] = <first(scene.robots).pos_x>;
+    mj_robot_spec.pos[1] = <first(scene.robots).pos_y>;
+    mj_robot_spec.pos[2] = <first(scene.robots).pos_z>;
+<first(scene.robots).attachments:{attachment |
+    {
+        const std::filesystem::path attachment_path = find_asset_path({"<attachment.path>"\});
+        if (attachment_path.empty()) {
+            std::cerr \<\< "MJCF attachment not found: <attachment.path>\\n";
+            return 1;
+        \}
+        mj_path_storage.push_back(attachment_path.string());
+        mj_kdl::AttachmentSpec attachment_spec{\};
+        attachment_spec.mjcf_path = mj_path_storage.back().c_str();
+        attachment_spec.attach_to = "<attachment.attach_to>";
+        attachment_spec.prefix = "<attachment.prefix>";
+        attachment_spec.pos[0] = <attachment.pos_x>;
+        attachment_spec.pos[1] = <attachment.pos_y>;
+        attachment_spec.pos[2] = <attachment.pos_z>;
+        attachment_spec.euler[0] = <attachment.euler_x>;
+        attachment_spec.euler[1] = <attachment.euler_y>;
+        attachment_spec.euler[2] = <attachment.euler_z>;
+        mj_robot_spec.attachments.push_back(attachment_spec);
+    \}
+}; separator="\n">
     mj_scene.robots.push_back(mj_robot_spec);
+<scene.objects:{object |
+    {
+        mj_kdl::SceneObject object_spec{\};
+        object_spec.name = "<object.body>";
+<if(object.has_path)>        const std::filesystem::path object_path = find_asset_path({"<object.path>"\});
+        if (object_path.empty()) {
+            std::cerr \<\< "MJCF object not found: <object.path>\\n";
+            return 1;
+        \}
+        object_spec.mjcf_path = object_path.string();
+<endif>        object_spec.pos[0] = <object.pos_x>;
+        object_spec.pos[1] = <object.pos_y>;
+        object_spec.pos[2] = <object.pos_z>;
+        object_spec.fixed = <object.fixed>;
+        object_spec.shape = mj_kdl::Shape::<object.shape>;
+        object_spec.size[0] = <object.size_x>;
+        object_spec.size[1] = <object.size_y>;
+        object_spec.size[2] = <object.size_z>;
+        object_spec.mass = <object.mass>;
+        object_spec.friction[0] = <object.friction_slide>;
+        object_spec.friction[1] = <object.friction_torsion>;
+        object_spec.friction[2] = <object.friction_roll>;
+        mj_scene.objects.push_back(object_spec);
+    \}
+}; separator="\n">
 
     if (!mj_kdl::init_env(&mj_env, &mj_scene)) {
         std::cerr \<\< "mj_kdl::init_env() failed for " \<\< mjcf_path_string \<\< "\\n";

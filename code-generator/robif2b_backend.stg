@@ -99,7 +99,7 @@ app-arm-includes-robif2b(has_arm) ::= <<
 <endif>
 >>
 
-app-arm-setup-robif2b(arm_solvers) ::= <<
+app-arm-setup-robif2b(arm_solvers, scene) ::= <<
     urdf::ModelInterfaceSharedPtr kinova_model = urdf::parseURDFFile("<first(arm_solvers).urdf>");
     KDL::Tree kinova_tree;
     kdl_parser::treeFromUrdfModel(*kinova_model, kinova_tree);

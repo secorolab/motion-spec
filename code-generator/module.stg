@@ -91,7 +91,43 @@ robot-shutdown(solver, backend) ::= <<
 >>
 
 access-expr(id, views) ::= <<
-<if(views.(id))>shared.<views.(id).superobject.id>.<subspace-to-member.(views.(id).subspace)>[<axis-to-index.(views.(id).axis)>]<else>shared.<id><endif>
+<if(views.(id))><view-access-expr(views.(id))><else>shared.<id><endif>
+>>
+
+view-access-expr(view) ::= <<
+<({view-access-expr-<view.superobject.type>-<view.subspace>})(view)>
+>>
+
+view-access-expr-Pose-Position(view) ::= <<
+shared.<view.superobject.id>.p[<axis-to-index.(view.axis)>]
+>>
+
+view-access-expr-Pose-Rotation(view) ::= <<
+KDL::diff(KDL::Rotation::Identity(), shared.<view.superobject.id>.M)[<axis-to-index.(view.axis)>]
+>>
+
+view-access-expr-VelocityTwist-AngularVelocity(view) ::= <<
+shared.<view.superobject.id>.rot[<axis-to-index.(view.axis)>]
+>>
+
+view-access-expr-VelocityTwist-LinearVelocity(view) ::= <<
+shared.<view.superobject.id>.vel[<axis-to-index.(view.axis)>]
+>>
+
+view-access-expr-AccelerationTwist-AngularAcceleration(view) ::= <<
+shared.<view.superobject.id>.rot[<axis-to-index.(view.axis)>]
+>>
+
+view-access-expr-AccelerationTwist-LinearAcceleration(view) ::= <<
+shared.<view.superobject.id>.vel[<axis-to-index.(view.axis)>]
+>>
+
+view-access-expr-Wrench-Torque(view) ::= <<
+shared.<view.superobject.id>.torque[<axis-to-index.(view.axis)>]
+>>
+
+view-access-expr-Wrench-Force(view) ::= <<
+shared.<view.superobject.id>.force[<axis-to-index.(view.axis)>]
 >>
 
 shared-member(var) ::= <<
@@ -176,6 +212,31 @@ emit-call-ErrorEvaluator(closure, views) ::= <<
 
 emit-call-PoseDiffEvaluator(closure, views) ::= <<
 shared.<closure.out> = KDL::diff(shared.<closure.in1>, shared.<closure.in2>);
+>>
+
+pose-axis-error-component(component) ::= <<
+shared.<component.error> = _pose_axis_error_<component.subspace>_<component.axis>;
+>>
+
+pose-axis-error-group(pose_group, views) ::= <<
+    {
+        KDL::Frame _pose_axis_target_<pose_group.id> = shared.<pose_group.pose>;
+<if(pose_group.linear_x)>        _pose_axis_target_<pose_group.id>.p[0] = <access-expr(pose_group.linear_x, views)>;<endif>
+<if(pose_group.linear_y)>        _pose_axis_target_<pose_group.id>.p[1] = <access-expr(pose_group.linear_y, views)>;<endif>
+<if(pose_group.linear_z)>        _pose_axis_target_<pose_group.id>.p[2] = <access-expr(pose_group.linear_z, views)>;<endif>
+<if(pose_group.angular_x)>        const double _pose_axis_roll_<pose_group.id> = <access-expr(pose_group.angular_x, views)>;<else>        const double _pose_axis_roll_<pose_group.id> = 0.0;<endif>
+<if(pose_group.angular_y)>        const double _pose_axis_pitch_<pose_group.id> = <access-expr(pose_group.angular_y, views)>;<else>        const double _pose_axis_pitch_<pose_group.id> = 0.0;<endif>
+<if(pose_group.angular_z)>        const double _pose_axis_yaw_<pose_group.id> = <access-expr(pose_group.angular_z, views)>;<else>        const double _pose_axis_yaw_<pose_group.id> = 0.0;<endif>
+<if(pose_group.has_angular)>        _pose_axis_target_<pose_group.id>.M = KDL::Rotation::RPY(_pose_axis_roll_<pose_group.id>, _pose_axis_pitch_<pose_group.id>, _pose_axis_yaw_<pose_group.id>);<endif>
+        const KDL::Twist _pose_axis_error_<pose_group.id> = KDL::diff(shared.<pose_group.pose>, _pose_axis_target_<pose_group.id>);
+        const double _pose_axis_error_linear_X = _pose_axis_error_<pose_group.id>.vel.x();
+        const double _pose_axis_error_linear_Y = _pose_axis_error_<pose_group.id>.vel.y();
+        const double _pose_axis_error_linear_Z = _pose_axis_error_<pose_group.id>.vel.z();
+        const double _pose_axis_error_angular_X = _pose_axis_error_<pose_group.id>.rot.x();
+        const double _pose_axis_error_angular_Y = _pose_axis_error_<pose_group.id>.rot.y();
+        const double _pose_axis_error_angular_Z = _pose_axis_error_<pose_group.id>.rot.z();
+<pose_group.components:{component |         <pose-axis-error-component(component)>}; separator="\n">
+    }
 >>
 
 emit-call-Controller(closure, views) ::= <<
@@ -718,6 +779,24 @@ arm-apply-block(arm_solvers, backend) ::= <<
 <arm_solvers:{solver |     <solver-apply-output(solver, backend)>}; separator="\n">
 >>
 
+gripper-actions(backend, motion) ::= <<
+<({gripper-actions-<backend>})(motion)>
+>>
+
+gripper-actions-robif2b(motion) ::= <<
+>>
+
+gripper-actions-mj_kdl(motion) ::= <<
+<motion.gripper_actions:{action |
+<if(action.actuator)>    {
+        const int actuator_id = mj_name2id(robot.<first(motion.arm_solvers).id>.robot->model, mjOBJ_ACTUATOR, "<action.actuator>");
+        if (actuator_id >= 0) {
+            robot.<first(motion.arm_solvers).id>.robot->data->ctrl[actuator_id] = <action.value>;
+        \}
+    \}
+<endif>}; separator="\n">
+>>
+
 runtime_header(has_mobile_base) ::= <<
 #pragma once
 
@@ -738,7 +817,7 @@ runtime_header(has_mobile_base) ::= <<
 
 namespace motion_spec::runtime {
 
-inline constexpr double kConstraintTolerance = 1e-9;
+inline constexpr double kConstraintTolerance = 1e-2;
 <if(has_mobile_base)>
 inline constexpr int NUM_DRIVES = 4;
 inline constexpr int NUM_SLAVES = 4;
@@ -1138,7 +1217,7 @@ emit-snapshot(snap, closures, views) ::= <<
         shared.<snap.target_id> = <access-expr(snap.source_id, views)>;
 >>
 
-motion_header(motion, closures, views, wrench_outputs, base_velocity_solvers, base_force_solvers, has_mobile_base, backend) ::= <<
+motion_header(motion, closures, views, wrench_outputs, base_velocity_solvers, base_force_solvers, has_mobile_base, backend, pose_axis_error_groups) ::= <<
 #pragma once
 
 #include "runtime.hpp"
@@ -1181,6 +1260,9 @@ inline void update_<motion.id>(
     }
 <endif>
 <motion.relative_poses:{rp | <emit-relative-pose(rp)>}; separator="\n">
+<motion.scene_relative_poses:{srp |
+    shared.<srp.id> = shared.<srp.scene_pose_id>.Inverse() * shared.<srp.fk_pose_id>;
+}; separator="\n">
 }
 
 inline bool can_start_<motion.id>(
@@ -1207,6 +1289,7 @@ inline void control_<motion.id>(
     <motion.id>_state &state,
     shared_data &shared,
     const robot_io &robot) {
+<pose_axis_error_groups:{group | <pose-axis-error-group(group, views)>}; separator="\n">
 <shared-schedule-block(motion.while_schedule, closures, views)>
 <if(first(motion.while_monitors))>
 
@@ -1226,6 +1309,7 @@ inline void apply_<motion.id>(
 <arm-stage-block(motion.control_mode, motion.arm_solvers, backend)>
 <arm-apply-block(motion.arm_solvers, backend)>
 <endif>
+<gripper-actions(backend, motion)>
 }
 >>
 
@@ -1321,8 +1405,8 @@ app-arm-includes(backend, has_arm) ::= <<
 <({app-arm-includes-<backend>})(has_arm)>
 >>
 
-app-arm-setup(backend, arm_solvers) ::= <<
-<({app-arm-setup-<backend>})(arm_solvers)>
+app-arm-setup(backend, arm_solvers, scene) ::= <<
+<({app-arm-setup-<backend>})(arm_solvers, scene)>
 >>
 
 app-loop-condition(backend, has_arm) ::= <<
@@ -1351,7 +1435,7 @@ app-headless-telemetry(backend, shared_data, arm_solvers) ::= <<
 <({app-headless-telemetry-<backend>})(shared_data, arm_solvers)>
 >>
 
-app_main(motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, arm_solvers, base_velocity_solvers, base_force_solvers, backend) ::= <<
+app_main(motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene) ::= <<
 #include "runtime.hpp"
 #include "shared_state.hpp"
 <if(has_mobile_base)>
@@ -1371,7 +1455,7 @@ int main(int argc, char **argv) {
 <endif>
 <if(has_arm)>
 
-<app-arm-setup(backend, arm_solvers)>
+<app-arm-setup(backend, arm_solvers, scene)>
 <endif>
 <wrench_outputs:{wrench | <wrench-measurement(wrench)>}; separator="\n">
 <wrench_outputs:{wrench |     robot.<wrench.id> = &<wrench.id>_measurement;}; separator="\n">
@@ -1422,13 +1506,13 @@ int main(int argc, char **argv) {
 }
 >>
 
-ref_main(motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, shared_data, arm_solvers, base_velocity_solvers, base_force_solvers, backend) ::= <<
+ref_main(motions, unique_motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, shared_data, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene) ::= <<
 #include "runtime.hpp"
 #include "shared_state.hpp"
 <if(has_mobile_base)>
 <mobile-base-cycle-include()>
 <endif>
-<motions:{motion | <motion-include(motion)>}; separator="\n">
+<unique_motions:{motion | <motion-include(motion)>}; separator="\n">
 
 <app-arm-includes(backend, has_arm)>
 #include \<unistd.h\>
@@ -1442,11 +1526,11 @@ int main(int argc, char **argv) {
 <endif>
 <if(has_arm)>
 
-<app-arm-setup(backend, arm_solvers)>
+<app-arm-setup(backend, arm_solvers, scene)>
 <endif>
 <wrench_outputs:{wrench | <wrench-measurement(wrench)>}; separator="\n">
 <wrench_outputs:{wrench |     robot.<wrench.id> = &<wrench.id>_measurement;}; separator="\n">
-<motions:{motion | <motion-state-member(motion)>}; separator="\n">
+<unique_motions:{motion | <motion-state-member(motion)>}; separator="\n">
 <if(has_mobile_base)>
     mobile_base_state mobile_base_state_instance;
 <endif>
@@ -1462,7 +1546,7 @@ int main(int argc, char **argv) {
 <endif>
 
 <if(has_arm)>
-<app-arm-post-setup(backend, arm_solvers, motions)>
+<app-arm-post-setup(backend, arm_solvers, unique_motions)>
 <endif>
 
     int _step = 0;

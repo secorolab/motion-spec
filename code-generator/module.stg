@@ -186,7 +186,10 @@ controller-member-ImpedanceController(controller) ::= <<
     motion_spec::runtime::ImpedanceControl <controller.id>{<controller.stiffness>, <controller.damping>};
 >>
 
-monitor-member(monitor) ::= "<if(monitor.is_edge_triggered)>    bool <monitor.id>_previous = false;<else>    bool <monitor.flag> = false;<endif>"
+monitor-member(monitor) ::= <<
+<if(monitor.is_edge_triggered)>    bool <monitor.id>_previous = false;
+    bool <monitor.id>_event_triggered = false;<else>    bool <monitor.flag> = false;<endif>
+>>
 
 emit-call(closure, views) ::= <<
 <({emit-call-<closure.type>})(closure, views)>
@@ -406,7 +409,9 @@ update-monitor(monitor) ::= <<
 <if(monitor.is_edge_triggered)>
     {
         const bool active = motion_spec::runtime::constraint_satisfied(shared.<monitor.error.id>);
-        if (motion_spec::runtime::rising_edge(state.<monitor.id>_previous, active)) {
+        const bool detected = motion_spec::runtime::rising_edge(state.<monitor.id>_previous, active);
+        if (state.active && detected) {
+            state.<monitor.id>_event_triggered = true;
             motion_spec::runtime::warn_produce_event_not_implemented("<monitor.event>");
         }
     }
@@ -422,7 +427,7 @@ monitor-block(monitors) ::= <<
 >>
 
 motion-done-condition(motion) ::= <<
-true<if(first(motion.trajectory_progress_ids))><motion.trajectory_progress_ids:{alpha_id |  && shared.<alpha_id> >= 1.0}; separator=""><endif><if(first(motion.until_evaluators))> && (<if(motion.until_any)><motion.until_evaluators:{e | motion_spec::runtime::constraint_satisfied(shared.<e.error.id>)}; separator=" || "><else><motion.until_evaluators:{e | motion_spec::runtime::constraint_satisfied(shared.<e.error.id>)}; separator=" && "><endif>)<endif>
+<motion.done_condition>
 >>
 
 motion-prelude(wrench_outputs, arm_solvers, backend) ::= <<
@@ -784,6 +789,9 @@ app-run-call(motion) ::= <<
         if (!<motion.id>_state_instance.active && can_start_<motion.id>(<motion.id>_state_instance, shared)) {
             <motion.id>_state_instance.active = true;
             <motion.id>_state_instance.active_steps = 0;
+<motion.until_monitors:{m |             <motion.id>_state_instance.<m.id>_previous = false;
+            <motion.id>_state_instance.<m.id>_event_triggered = false;}; separator="
+">
         \}
         if (<motion.id>_state_instance.active) {
             control_<motion.id>(<motion.id>_state_instance, shared, robot);
@@ -794,6 +802,7 @@ app-stage-call(motion) ::= <<
         if (<motion.id>_state_instance.active) {
             apply_<motion.id>(<motion.id>_state_instance, shared, robot);
 <if(motion.has_until_condition)>
+            // TODO: replace this temporary event latch bridge with real event-driven FSM transitions.
             if (<motion.id>_state_instance.active_steps > 0 && (<motion-done-condition(motion)>)) {
                 <motion.id>_state_instance.active = false;
             \}
@@ -1771,11 +1780,15 @@ int main(int argc, char **argv) {
             if (!<motion.id>_state_instance.active && can_start_<motion.id>(<motion.id>_state_instance, shared)) {
                 <motion.id>_state_instance.active = true;
                 <motion.id>_state_instance.active_steps = 0;
+<motion.until_monitors:{m |                 <motion.id>_state_instance.<m.id>_previous = false;
+                <motion.id>_state_instance.<m.id>_event_triggered = false;}; separator="
+">
             \}
             if (<motion.id>_state_instance.active) {
                 control_<motion.id>(<motion.id>_state_instance, shared, robot);
                 apply_<motion.id>(<motion.id>_state_instance, shared, robot);
 <if(motion.has_until_condition)>
+                // TODO: replace this temporary event latch bridge with real event-driven FSM transitions.
                 if (<motion.id>_state_instance.active_steps > 0 && (<motion-done-condition(motion)>)) {
                     <motion.id>_state_instance.active = false;
                     current_motion = <i>;

@@ -336,6 +336,25 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
                     progress_ids.append(alpha_id)
             motion["trajectory_progress_ids"] = progress_ids
 
+    def add_motion_done_conditions(motions: list[dict]) -> None:
+        for motion in motions:
+            terms = [
+                f"shared.{alpha_id} >= 1.0"
+                for alpha_id in motion.get("trajectory_progress_ids", [])
+            ]
+            until_monitors = motion.get("until_monitors", [])
+            if until_monitors:
+                event_joiner = " || " if motion.get("until_any") else " && "
+                event_terms = [
+                    f"{motion['id']}_state_instance.{monitor['id']}_event_triggered"
+                    for monitor in until_monitors
+                ]
+                event_condition = event_joiner.join(event_terms)
+                if len(event_terms) > 1:
+                    event_condition = f"({event_condition})"
+                terms.append(event_condition)
+            motion["done_condition"] = " && ".join(terms) if terms else "true"
+
     # When the same motion ID is reused by handlers with different gripper_actions, each
     # handler needs its own generated function. Detect those conflicts first and rename
     # the affected entries to "{motion_id}__{handler_suffix}" so the dedup loop below
@@ -392,6 +411,8 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
             "closures": ir.get("closures", {}),
         }
     )
+    add_motion_done_conditions(ir.get("motions", []))
+    add_motion_done_conditions(unique_motions)
 
     headers_dir = output_dir / "headers"
     headers_dir.mkdir(parents=True, exist_ok=True)

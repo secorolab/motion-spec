@@ -1026,7 +1026,8 @@ class PIDControl {
         : kp(p_gain), ki(i_gain), kd(d_gain), decay_rate(decay_rate), dt_(dt) {}
 
     double control(double error, double ext_deriv = 0.0) {
-        const double err_diff = (decay_rate > 0.0)
+        const bool has_external_derivative = kd > 0.0 && ext_deriv != 0.0;
+        const double err_diff = (decay_rate > 0.0 || first_sample)
             ? 0.0
             : ((error - err_last) / dt_);
         if (decay_rate > 0.0) {
@@ -1035,13 +1036,15 @@ class PIDControl {
             err_integ = clamp_abs(err_integ + error * dt_, 0.5);
         }
         err_last = error;
-        const double deriv = (kd > 0.0 && ext_deriv != 0.0) ? ext_deriv : err_diff;
+        first_sample = false;
+        const double deriv = has_external_derivative ? ext_deriv : err_diff;
         return kp * error + ki * err_integ + kd * deriv;
     }
 
   private:
     double err_integ = 0.0;
     double err_last = 0.0;
+    bool first_sample = true;
     double kp = 0.0;
     double ki = 0.0;
     double kd = 0.0;

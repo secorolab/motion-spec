@@ -44,6 +44,7 @@ from motion_spec.namespace import (
     SIM,
     SNAP,
     SLV,
+    VALUE_ROLE,
 )
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
@@ -365,6 +366,11 @@ ops_generic = [
         output=[RBDYN_OP["out"]],
     ),
     Operator(
+        type_=RBDYN_OP["AddQuantity"],
+        input=[RBDYN_OP["in1"], RBDYN_OP["in2"]],
+        output=[RBDYN_OP["out"]],
+    ),
+    Operator(
         type_=RBDYN_OP["RotateWrenchToDistalWithPose"],
         input=[RBDYN_OP["pose"], RBDYN_OP["from"]],
         output=[RBDYN_OP["to"]],
@@ -491,6 +497,7 @@ class Quantity:
     value: float
     has_view: bool
     reference_value: str | None = None
+    roles: list[str] = field(default_factory=list)
     type: str = field(default="Quantity")
 
 
@@ -502,6 +509,7 @@ class Trajectory:
     has_view: bool
     value: None = None
     reference_value: str | None = None
+    roles: list[str] = field(default_factory=list)
     type: str = field(default="Trajectory")
 
 
@@ -519,7 +527,8 @@ class PoseQuantity:
     unit: Unit
     has_view: bool
     value: None = None
-    type: str = field(default="PoseQuantity")
+    roles: list[str] = field(default_factory=list)
+    type: str = field(default="Pose")
 
 
 @dataclass
@@ -572,6 +581,7 @@ class Pose:
     direction_cosine_z: list[float] | None
     position: list[float] | None
     euler_axes_sequence: str | None = None
+    roles: list[str] = field(default_factory=list)
     type: str = field(default="Pose")
 
 
@@ -584,6 +594,7 @@ class VelocityTwist:
     reference_point: Point
     as_seen_by: Frame
     unit: list[Unit]
+    roles: list[str] = field(default_factory=list)
     type: str = field(default="VelocityTwist")
 
 
@@ -594,6 +605,7 @@ class AccelerationTwist:
     reference_point: Point
     as_seen_by: Frame
     unit: list[Unit]
+    roles: list[str] = field(default_factory=list)
     type: str = field(default="AccelerationTwist")
 
 
@@ -604,6 +616,7 @@ class Wrench:
     reference_point: Point
     as_seen_by: Frame
     unit: list[Unit]
+    roles: list[str] = field(default_factory=list)
     type: str = field(default="Wrench")
 
 
@@ -706,6 +719,7 @@ class PoseAxisErrorGroup:
     id: str
     pose: str
     components: list[PoseAxisErrorComponent]
+    superobject_type: str = "Pose"
     has_angular: bool = False
     linear_x: str | None = None
     linear_y: str | None = None
@@ -734,7 +748,6 @@ class SnapshotCapture:
     target_id: str
     source_id: str
     source_closure_id: str | None = None
-    support_lift: bool = False
     type: str = field(default="SnapshotCapture")
 
 
@@ -1459,6 +1472,7 @@ class Parser:
             dc_z,
             pos,
             euler_axes_sequence,
+            self.roles(id_),
         )
 
     @memoize
@@ -1478,7 +1492,7 @@ class Parser:
             unit.append(self.unit(u))
 
         return VelocityTwist(
-            self.id(id_), of, wrt, quantity_kind, reference_point, as_seen_by, unit
+            self.id(id_), of, wrt, quantity_kind, reference_point, as_seen_by, unit, self.roles(id_)
         )
 
     @memoize
@@ -1495,7 +1509,7 @@ class Parser:
         for u in self.g[id_ : QUDT_SCHEMA["unit"]]:
             unit.append(self.unit(u))
 
-        return AccelerationTwist(self.id(id_), quantity_kind, reference_point, as_seen_by, unit)
+        return AccelerationTwist(self.id(id_), quantity_kind, reference_point, as_seen_by, unit, self.roles(id_))
 
     @memoize
     def wrench(self, id_):
@@ -1511,7 +1525,7 @@ class Parser:
         for u in self.g[id_ : QUDT_SCHEMA["unit"]]:
             unit.append(self.unit(u))
 
-        return Wrench(self.id(id_), quantity_kind, reference_point, as_seen_by, unit)
+        return Wrench(self.id(id_), quantity_kind, reference_point, as_seen_by, unit, self.roles(id_))
 
     @memoize
     def quantity(self, id_):
@@ -1528,7 +1542,7 @@ class Parser:
         reference_value = self.id(reference_node) if reference_node is not None else None
 
         if GEOM_REL["Pose"] in self.g[id_ : RDF["type"]]:
-            return PoseQuantity(self.id(id_), QuantityKind(quantity_kind), Unit(unit), has_view)
+            return PoseQuantity(self.id(id_), QuantityKind(quantity_kind), Unit(unit), has_view, roles=self.roles(id_))
         if TRAJ["Trajectory"] in self.g[id_ : RDF["type"]]:
             return Trajectory(
                 self.id(id_),
@@ -1536,6 +1550,7 @@ class Parser:
                 Unit(unit),
                 has_view,
                 reference_value=reference_value,
+                roles=self.roles(id_),
             )
 
         value = None
@@ -1548,6 +1563,7 @@ class Parser:
             value,
             has_view,
             reference_value,
+            self.roles(id_),
         )
 
     @memoize
@@ -1556,6 +1572,14 @@ class Parser:
         joint_node = self.g.value(id_, GEOM_REL["of"])
         joint_name = self.label(joint_node) if joint_node is not None else ""
         return JointPosition(self.id(id_), joint_name)
+
+    def roles(self, id_):
+        role_ns = str(VALUE_ROLE._NS)
+        return sorted(
+            self.id(t)
+            for t in self.g[id_ : RDF["type"]]
+            if str(t).startswith(role_ns)
+        )
 
     @memoize
     def quantity_kind(self, id_):
@@ -1968,7 +1992,6 @@ def _snapshots_for_motion(
                 target_id=target_id,
                 source_id=source_id,
                 source_closure_id=source_closure_id,
-                support_lift=target_id == "support_z",
             )
         )
     return result
@@ -1985,6 +2008,7 @@ _CLOSURE_OUTPUT_FIELDS = {
     "RotateVelocityTwistToProximalWithPose": "to",
     "InvertAngle": "out",
     "AddWrench": "out",
+    "AddQuantity": "out",
     "RotateWrenchToDistalWithPose": "to",
     "RotateWrenchToProximalWithPose": "to",
     "TransformWrenchToProximal": "to",
@@ -2048,6 +2072,20 @@ def _scene_relative_poses_for_motion(view_map, arm_solvers):
     return result
 
 
+_GROUPABLE_SO_TYPES = {"Pose", "VelocityTwist", "AccelerationTwist", "Wrench"}
+
+_SUBSPACE_TO_GROUP_AXIS: dict[Subspace, tuple[str, bool]] = {
+    Subspace.Position:           ("linear",  False),
+    Subspace.Rotation:           ("angular", True),
+    Subspace.LinearVelocity:     ("linear",  False),
+    Subspace.AngularVelocity:    ("angular", True),
+    Subspace.LinearAcceleration: ("linear",  False),
+    Subspace.AngularAcceleration:("angular", True),
+    Subspace.Force:              ("linear",  False),
+    Subspace.Torque:             ("angular", True),
+}
+
+
 def _pose_axis_error_groups_for_motion(eval_nodes, p, view_map):
     groups: dict[str, PoseAxisErrorGroup] = {}
     for eval_node in eval_nodes:
@@ -2064,29 +2102,40 @@ def _pose_axis_error_groups_for_motion(eval_nodes, p, view_map):
 
         quantity = evaluator.constraint.quantity
         view = view_map.get(quantity.id)
-        if view is None or getattr(view.superobject, "type", None) != "Pose":
+        if view is None:
+            continue
+        so_type = getattr(view.superobject, "type", None)
+        if so_type not in _GROUPABLE_SO_TYPES:
             continue
 
-        qkind = getattr(getattr(quantity, "quantity_kind", None), "id", "")
-        quantity_id = getattr(quantity, "id", "")
-        if view.subspace == Subspace.Position:
-            subspace = "linear"
-        elif (
-            view.subspace == Subspace.Rotation
-            or "Angle" in qkind
-            or "angle" in qkind.lower()
-            or "rotation" in quantity_id
-        ):
-            subspace = "angular"
-        else:
-            continue
+        mapping = _SUBSPACE_TO_GROUP_AXIS.get(view.subspace)
+        if mapping is None:
+            qkind = getattr(getattr(quantity, "quantity_kind", None), "id", "")
+            quantity_id = getattr(quantity, "id", "")
+            if (
+                so_type == "Pose"
+                and (
+                    "Angle" in qkind
+                    or "angle" in qkind.lower()
+                    or "rotation" in quantity_id
+                )
+            ):
+                mapping = ("angular", True)
+            else:
+                continue
+        subspace, is_angular = mapping
 
-        pose_id = view.superobject.id
+        so_id = view.superobject.id
         group = groups.setdefault(
-            pose_id,
-            PoseAxisErrorGroup(id=f"pose_axis_error_{pose_id}", pose=pose_id, components=[]),
+            so_id,
+            PoseAxisErrorGroup(
+                id=f"pose_axis_error_{so_id}",
+                pose=so_id,
+                components=[],
+                superobject_type=so_type,
+            ),
         )
-        if subspace == "angular":
+        if is_angular:
             group.has_angular = True
         group.components.append(
             PoseAxisErrorComponent(
@@ -2100,9 +2149,6 @@ def _pose_axis_error_groups_for_motion(eval_nodes, p, view_map):
         )
         setattr(group, f"{subspace}_{view.axis.value.lower()}", evaluator.constraint.parameter.reference_value.id)
 
-    # Keep single-axis pose constraints scalar: this covers real scalar uses such
-    # as elbow/table height. Multi-axis groups are pose-control intents and should
-    # compute one KDL::diff then project component views from the twist.
     return [group for group in groups.values() if len(group.components) > 1]
 
 

@@ -111,13 +111,6 @@ view-access-expr-Pose-Rotation(view) ::= <<
 KDL::diff(KDL::Rotation::Identity(), shared.<view.superobject.id>.M)[<axis-to-index.(view.axis)>]
 >>
 
-view-access-expr-PoseQuantity-Position(view) ::= <<
-shared.<view.superobject.id>.p[<axis-to-index.(view.axis)>]
->>
-
-view-access-expr-PoseQuantity-Rotation(view) ::= <<
-KDL::diff(KDL::Rotation::Identity(), shared.<view.superobject.id>.M)[<axis-to-index.(view.axis)>]
->>
 
 view-access-expr-VelocityTwist-AngularVelocity(view) ::= <<
 shared.<view.superobject.id>.rot[<axis-to-index.(view.axis)>]
@@ -181,10 +174,6 @@ shared-member-Trajectory(var) ::= <<
 KDL::Frame <var.id>;
 >>
 
-shared-member-PoseQuantity(var) ::= <<
-KDL::Frame <var.id>;
->>
-
 controller-member(controller) ::= <<
 <({controller-member-<controller.type>})(controller)>
 >>
@@ -245,23 +234,97 @@ shared.<component.error> = _pose_axis_error_<component.subspace>_<component.axis
 
 pose-axis-error-group(pose_group, views) ::= <<
     {
-        KDL::Frame _pose_axis_target_<pose_group.id> = shared.<pose_group.pose>;
-<if(pose_group.linear_x)>        _pose_axis_target_<pose_group.id>.p[0] = <access-expr(pose_group.linear_x, views)>;<endif>
-<if(pose_group.linear_y)>        _pose_axis_target_<pose_group.id>.p[1] = <access-expr(pose_group.linear_y, views)>;<endif>
-<if(pose_group.linear_z)>        _pose_axis_target_<pose_group.id>.p[2] = <access-expr(pose_group.linear_z, views)>;<endif>
-<if(pose_group.angular_x)>        const double _pose_axis_roll_<pose_group.id> = <access-expr(pose_group.angular_x, views)>;<else>        const double _pose_axis_roll_<pose_group.id> = 0.0;<endif>
-<if(pose_group.angular_y)>        const double _pose_axis_pitch_<pose_group.id> = <access-expr(pose_group.angular_y, views)>;<else>        const double _pose_axis_pitch_<pose_group.id> = 0.0;<endif>
-<if(pose_group.angular_z)>        const double _pose_axis_yaw_<pose_group.id> = <access-expr(pose_group.angular_z, views)>;<else>        const double _pose_axis_yaw_<pose_group.id> = 0.0;<endif>
-<if(pose_group.has_angular)>        _pose_axis_target_<pose_group.id>.M = KDL::Rotation::RPY(_pose_axis_roll_<pose_group.id>, _pose_axis_pitch_<pose_group.id>, _pose_axis_yaw_<pose_group.id>);<endif>
-        const KDL::Twist _pose_axis_error_<pose_group.id> = KDL::diff(shared.<pose_group.pose>, _pose_axis_target_<pose_group.id>);
-        const double _pose_axis_error_linear_X = _pose_axis_error_<pose_group.id>.vel.x();
-        const double _pose_axis_error_linear_Y = _pose_axis_error_<pose_group.id>.vel.y();
-        const double _pose_axis_error_linear_Z = _pose_axis_error_<pose_group.id>.vel.z();
-        const double _pose_axis_error_angular_X = _pose_axis_error_<pose_group.id>.rot.x();
-        const double _pose_axis_error_angular_Y = _pose_axis_error_<pose_group.id>.rot.y();
-        const double _pose_axis_error_angular_Z = _pose_axis_error_<pose_group.id>.rot.z();
+<if(pose_group.is_pose)><pose-axis-error-group-pose(pose_group, views)><endif>
+<if(pose_group.is_twist)><pose-axis-error-group-twist(pose_group, views)><endif>
+<if(pose_group.is_wrench)><pose-axis-error-group-wrench(pose_group, views)><endif>
 <pose_group.components:{component |         <pose-axis-error-component(component)>}; separator="\n">
     }
+>>
+
+pose-axis-error-group-pose(g, views) ::= <<
+        KDL::Frame _pose_axis_target_<g.id> = shared.<g.pose>;
+<if(g.linear_x)>        _pose_axis_target_<g.id>.p[0] = <access-expr(g.linear_x, views)>;
+<endif>
+<if(g.linear_y)>        _pose_axis_target_<g.id>.p[1] = <access-expr(g.linear_y, views)>;
+<endif>
+<if(g.linear_z)>        _pose_axis_target_<g.id>.p[2] = <access-expr(g.linear_z, views)>;
+<endif>
+<if(g.has_angular)>        const double _pose_axis_roll_<g.id> = <if(g.angular_x)><access-expr(g.angular_x, views)><else>0.0<endif>;
+        const double _pose_axis_pitch_<g.id> = <if(g.angular_y)><access-expr(g.angular_y, views)><else>0.0<endif>;
+        const double _pose_axis_yaw_<g.id> = <if(g.angular_z)><access-expr(g.angular_z, views)><else>0.0<endif>;
+        _pose_axis_target_<g.id>.M = KDL::Rotation::RPY(_pose_axis_roll_<g.id>, _pose_axis_pitch_<g.id>, _pose_axis_yaw_<g.id>);
+<endif>
+        const KDL::Twist _pose_axis_error_<g.id> = KDL::diff(shared.<g.pose>, _pose_axis_target_<g.id>);
+<if(g.linear_x)>        const double _pose_axis_error_linear_X = _pose_axis_error_<g.id>.vel.x();
+<endif>
+<if(g.linear_y)>        const double _pose_axis_error_linear_Y = _pose_axis_error_<g.id>.vel.y();
+<endif>
+<if(g.linear_z)>        const double _pose_axis_error_linear_Z = _pose_axis_error_<g.id>.vel.z();
+<endif>
+<if(g.angular_x)>        const double _pose_axis_error_angular_X = _pose_axis_error_<g.id>.rot.x();
+<endif>
+<if(g.angular_y)>        const double _pose_axis_error_angular_Y = _pose_axis_error_<g.id>.rot.y();
+<endif>
+<if(g.angular_z)>        const double _pose_axis_error_angular_Z = _pose_axis_error_<g.id>.rot.z();
+<endif>
+>>
+
+pose-axis-error-group-twist(g, views) ::= <<
+        KDL::Twist _pose_axis_target_<g.id> = KDL::Twist::Zero();
+<if(g.linear_x)>        _pose_axis_target_<g.id>.vel[0] = <access-expr(g.linear_x, views)>;
+<endif>
+<if(g.linear_y)>        _pose_axis_target_<g.id>.vel[1] = <access-expr(g.linear_y, views)>;
+<endif>
+<if(g.linear_z)>        _pose_axis_target_<g.id>.vel[2] = <access-expr(g.linear_z, views)>;
+<endif>
+<if(g.angular_x)>        _pose_axis_target_<g.id>.rot[0] = <access-expr(g.angular_x, views)>;
+<endif>
+<if(g.angular_y)>        _pose_axis_target_<g.id>.rot[1] = <access-expr(g.angular_y, views)>;
+<endif>
+<if(g.angular_z)>        _pose_axis_target_<g.id>.rot[2] = <access-expr(g.angular_z, views)>;
+<endif>
+        const KDL::Twist _pose_axis_error_<g.id> = _pose_axis_target_<g.id> - shared.<g.pose>;
+<if(g.linear_x)>        const double _pose_axis_error_linear_X = _pose_axis_error_<g.id>.vel.x();
+<endif>
+<if(g.linear_y)>        const double _pose_axis_error_linear_Y = _pose_axis_error_<g.id>.vel.y();
+<endif>
+<if(g.linear_z)>        const double _pose_axis_error_linear_Z = _pose_axis_error_<g.id>.vel.z();
+<endif>
+<if(g.angular_x)>        const double _pose_axis_error_angular_X = _pose_axis_error_<g.id>.rot.x();
+<endif>
+<if(g.angular_y)>        const double _pose_axis_error_angular_Y = _pose_axis_error_<g.id>.rot.y();
+<endif>
+<if(g.angular_z)>        const double _pose_axis_error_angular_Z = _pose_axis_error_<g.id>.rot.z();
+<endif>
+>>
+
+pose-axis-error-group-wrench(g, views) ::= <<
+        KDL::Wrench _pose_axis_target_<g.id> = KDL::Wrench::Zero();
+<if(g.linear_x)>        _pose_axis_target_<g.id>.force[0] = <access-expr(g.linear_x, views)>;
+<endif>
+<if(g.linear_y)>        _pose_axis_target_<g.id>.force[1] = <access-expr(g.linear_y, views)>;
+<endif>
+<if(g.linear_z)>        _pose_axis_target_<g.id>.force[2] = <access-expr(g.linear_z, views)>;
+<endif>
+<if(g.angular_x)>        _pose_axis_target_<g.id>.torque[0] = <access-expr(g.angular_x, views)>;
+<endif>
+<if(g.angular_y)>        _pose_axis_target_<g.id>.torque[1] = <access-expr(g.angular_y, views)>;
+<endif>
+<if(g.angular_z)>        _pose_axis_target_<g.id>.torque[2] = <access-expr(g.angular_z, views)>;
+<endif>
+        const KDL::Wrench _pose_axis_error_<g.id> = _pose_axis_target_<g.id> - shared.<g.pose>;
+<if(g.linear_x)>        const double _pose_axis_error_linear_X = _pose_axis_error_<g.id>.force.x();
+<endif>
+<if(g.linear_y)>        const double _pose_axis_error_linear_Y = _pose_axis_error_<g.id>.force.y();
+<endif>
+<if(g.linear_z)>        const double _pose_axis_error_linear_Z = _pose_axis_error_<g.id>.force.z();
+<endif>
+<if(g.angular_x)>        const double _pose_axis_error_angular_X = _pose_axis_error_<g.id>.torque.x();
+<endif>
+<if(g.angular_y)>        const double _pose_axis_error_angular_Y = _pose_axis_error_<g.id>.torque.y();
+<endif>
+<if(g.angular_z)>        const double _pose_axis_error_angular_Z = _pose_axis_error_<g.id>.torque.z();
+<endif>
 >>
 
 emit-call-Controller(closure, views) ::= <<
@@ -320,6 +383,10 @@ shared.<closure.to> = shared.<closure.pose>.M * <access-expr(closure.from, views
 
 emit-call-TransformWrenchToProximal(closure, views) ::= <<
 shared.<closure.to> = shared.<closure.pose> * <access-expr(closure.from, views)>;
+>>
+
+emit-call-AddQuantity(closure, views) ::= <<
+shared.<closure.out> = <access-expr(closure.in1, views)> + <access-expr(closure.in2, views)>;
 >>
 
 emit-call-AddWrench(closure, views) ::= <<
@@ -532,27 +599,9 @@ solver-output-Pose-mj_kdl(solver, out) ::= <<
     fk.JntToCart(
         state.<solver.id>.q,
         shared.<out.id>,
-        motion_spec::runtime::find_segment_index(*robot.<solver.id>.chain, "<out.of.id>"));
+        motion_spec::runtime::find_segment_index(*robot.<solver.id>.chain, "<if(out.of.id)><out.of.id><else><solver.chain_end><endif>"));
 <endif>
 }
->>
-
-solver-output-PoseQuantity(solver, out, backend) ::= <<
-<({solver-output-PoseQuantity-<backend>})(solver, out)>
->>
-
-solver-output-PoseQuantity-mj_kdl(solver, out) ::= <<
-{
-    KDL::ChainFkSolverPos_recursive fk(*robot.<solver.id>.chain);
-    fk.JntToCart(
-        state.<solver.id>.q,
-        shared.<out.id>,
-        motion_spec::runtime::find_segment_index(*robot.<solver.id>.chain, "<if(out.of.id)><out.of.id><else><solver.chain_end><endif>"));
-}
->>
-
-solver-output-PoseQuantity-robif2b(solver, out) ::= <<
-<solver-output-Pose-robif2b(solver, out)>
 >>
 
 solver-output-VelocityTwist(solver, out, backend) ::= <<
@@ -912,7 +961,6 @@ inline constexpr double kTauMax     = 59.0;
 inline constexpr double kBetaMaxLin = 120.0;
 inline constexpr double kBetaMaxRot = 80.0;
 inline constexpr double kSupportFMax = 45.0;
-inline constexpr double kSupportLift = 0.06;
 inline double clamp_abs(double v, double limit) {
     if (v > limit) return limit;
     if (v \< -limit) return -limit;
@@ -1368,7 +1416,7 @@ emit-snapshot(snap, closures, views) ::= <<
 <if(snap.source_closure_id)>
         <({emit-call-<closures.(snap.source_closure_id).type>})(closures.(snap.source_closure_id), views)>
 <endif>
-        shared.<snap.target_id> = <access-expr(snap.source_id, views)><if(snap.support_lift)> + motion_spec::runtime::kSupportLift<endif>;
+        shared.<snap.target_id> = <access-expr(snap.source_id, views)>;
 >>
 
 motion_header(motion, closures, views, wrench_outputs, base_velocity_solvers, base_force_solvers, has_mobile_base, backend, pose_axis_error_groups) ::= <<

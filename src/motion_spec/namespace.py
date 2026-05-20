@@ -27,6 +27,18 @@ class SNAP(DefinedNamespace):
     _NS = Namespace(f"{URI_SECORO_MM}/snapshot#")
 
 
+class VALUE_ROLE(DefinedNamespace):
+    Measured: URIRef
+    Declared: URIRef
+    Computed: URIRef
+    Snapshot: URIRef
+    Reference: URIRef
+    Error: URIRef
+    Commanded: URIRef
+
+    _NS = Namespace(f"{URI_SECORO_MM}/task/value-role#")
+
+
 class ENV(DefinedNamespace):
     Object: URIRef
     Workspace: URIRef
@@ -301,6 +313,7 @@ class RBDYN_OP(DefinedNamespace):
     RotateWrenchToProximalWithPose: URIRef
     WrenchFromPositionDirectionAndMagnitude: URIRef
     AddWrench: URIRef
+    AddQuantity: URIRef
 
     position: URIRef
     pose: URIRef

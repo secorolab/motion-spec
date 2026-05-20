@@ -165,6 +165,15 @@ def _validate_ir(ir: dict) -> None:
         )
 
 
+def _add_group_type_flags(groups: list) -> list:
+    for g in groups:
+        so_type = g.get("superobject_type", "Pose")
+        g["is_pose"] = so_type == "Pose"
+        g["is_twist"] = so_type in ("VelocityTwist", "AccelerationTwist")
+        g["is_wrench"] = so_type == "Wrench"
+    return groups
+
+
 def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     ir = load_ir(ir_path)
     _validate_ir(ir)
@@ -245,10 +254,15 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
         for view in views.values():
             superobject = view.get("superobject") or {}
             so_type = superobject.get("type")
-            if so_type == "Pose" and not superobject.get("euler_axes_sequence"):
-                continue
+            roles = set(superobject.get("roles") or [])
+            is_declared_pose = bool({"Declared", "Snapshot"} & roles)
+            is_legacy_pose_quantity = so_type == "PoseQuantity"
             if so_type not in ("Pose", "PoseQuantity"):
                 continue
+            if so_type == "Pose" and not (is_declared_pose or superobject.get("euler_axes_sequence")):
+                continue
+            if is_legacy_pose_quantity:
+                is_declared_pose = True
             # Only include inline-defined poses (those where components have values/references)
             # FK poses have all components computed from the solver with no stored value/reference
             subobject_id = (view.get("subobject") or {}).get("id")
@@ -402,7 +416,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
             "base_force_solvers": ir["base_force_solvers"],
             "has_mobile_base": ir["has_mobile_base"],
             "backend": ir["backend"],
-            "pose_axis_error_groups": motion.get("pose_axis_error_groups", []),
+            "pose_axis_error_groups": _add_group_type_flags(motion.get("pose_axis_error_groups", [])),
         }
         payload_path = payload_dir / f"{motion['id']}.json"
         write_json(payload_path, payload)

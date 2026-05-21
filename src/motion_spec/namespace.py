@@ -442,10 +442,12 @@ class CSTR_HDL(DefinedNamespace):
     event: URIRef
     flag: URIRef
 
+    FeedForwardController: URIRef
+
     _extras = [
-        "GripperAction",
         "error-signal",
         "control-signal",
+        "reference-signal",
         "control-mode",
         "proportional-gain",
         "integral-gain",
@@ -453,9 +455,7 @@ class CSTR_HDL(DefinedNamespace):
         "decay-rate",
         "stiffness",
         "damping",
-        "actions",
-        "target-attachment",
-        "command",
+        "monitors-until",
     ]
 
     _NS = Namespace(f"{URI_CR2B_MM}/task/constraint-handler#")
@@ -499,6 +499,11 @@ class SLV(DefinedNamespace):
         "attached-to",
         "gravity-value",
         "prioritization-hierarchy",
+        "CommandForwardingSolver",
+        "CommandForwardingSpecification",
+        "CommandForwardingAlgorithm",
+        "command-forwarding",
+        "control-signal",
     ]
 
     _NS = Namespace(f"{URI_CR2B_MM}/task/solver-specification#")

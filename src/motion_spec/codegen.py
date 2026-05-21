@@ -316,6 +316,48 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
                 closure["goal_expr"] = f"shared.{goal}"
                 closure["assign_goal"] = False
 
+    def declared_pose_component_entries(
+        ir_payload: dict,
+        pose_components: dict,
+        referenced_ids: set[str] | None = None,
+    ) -> list[dict]:
+        data_by_id = {
+            item.get("id"): item
+            for item in ir_payload.get("data", [])
+            if isinstance(item, dict) and item.get("id")
+        }
+        entries = []
+        for pose_id, parts in pose_components.items():
+            if referenced_ids is not None and pose_id not in referenced_ids:
+                continue
+            item = data_by_id.get(pose_id) or {}
+            roles = set(item.get("roles") or [])
+            if "Declared" not in roles or "Snapshot" in roles:
+                continue
+            entries.append({"id": pose_id, **parts})
+        return entries
+
+    def collect_motion_references(motion: dict, closures: dict) -> set[str]:
+        refs: set[str] = set()
+
+        def visit(value):
+            if isinstance(value, str):
+                refs.add(value)
+            elif isinstance(value, dict):
+                for item in value.values():
+                    visit(item)
+            elif isinstance(value, list):
+                for item in value:
+                    visit(item)
+
+        visit(motion)
+        for schedule_name in ("when_schedule", "while_schedule", "until_schedule"):
+            for step in motion.get(schedule_name, []):
+                closure = closures.get(step)
+                if closure:
+                    visit(closure)
+        return refs
+
     def add_motion_trajectory_progress(ir_payload: dict) -> None:
         data_by_id = {
             item.get("id"): item
@@ -336,6 +378,21 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
                     progress_ids.append(alpha_id)
             motion["trajectory_progress_ids"] = progress_ids
 
+    def add_until_monitor_conditions(motions: list[dict]) -> None:
+        for motion in motions:
+            terms = [
+                f"motion_spec::runtime::constraint_satisfied(shared.{e['error']['id']})"
+                for e in motion.get("until_evaluators", [])
+                if e.get("error")
+            ]
+            joiner = " || " if motion.get("until_any") else " && "
+            active_condition = joiner.join(terms) if terms else "false"
+            if len(terms) > 1:
+                active_condition = f"({active_condition})"
+            for monitor in motion.get("until_monitors", []):
+                if monitor.get("is_until_aggregate"):
+                    monitor["active_condition"] = active_condition
+
     def add_motion_done_conditions(motions: list[dict]) -> None:
         for motion in motions:
             terms = [
@@ -346,34 +403,61 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
             if until_monitors:
                 event_joiner = " || " if motion.get("until_any") else " && "
                 event_terms = [
-                    f"{motion['id']}_state_instance.{monitor['id']}_event_triggered"
+                    (
+                        f"{motion['id']}_state_instance.{monitor['id']}_event_triggered"
+                        if monitor.get("is_edge_triggered")
+                        else f"{motion['id']}_state_instance.{monitor['flag']}"
+                    )
                     for monitor in until_monitors
                 ]
-                event_condition = event_joiner.join(event_terms)
-                if len(event_terms) > 1:
-                    event_condition = f"({event_condition})"
-                terms.append(event_condition)
+                if event_terms:
+                    event_condition = event_joiner.join(event_terms)
+                    if len(event_terms) > 1:
+                        event_condition = f"({event_condition})"
+                    terms.append(event_condition)
             motion["done_condition"] = " && ".join(terms) if terms else "true"
 
-    # When the same motion ID is reused by handlers with different gripper_actions, each
-    # handler needs its own generated function. Detect those conflicts first and rename
-    # the affected entries to "{motion_id}__{handler_suffix}" so the dedup loop below
-    # keeps them separate.
-    _ga_by_id: dict = {}
-    _conflicting_ids: set = set()
-    for motion in ir.get("motions", []):
-        mid = motion.get("id")
-        ga_key = tuple(a.get("id") for a in motion.get("gripper_actions", []))
-        if mid not in _ga_by_id:
-            _ga_by_id[mid] = ga_key
-        elif _ga_by_id[mid] != ga_key:
-            _conflicting_ids.add(mid)
+    def add_motion_function_interfaces(motions: list[dict]) -> None:
+        def join_params(params: list[str]) -> str:
+            if not params:
+                return ""
+            return "\n    " + ",\n    ".join(params) + "\n"
 
-    for motion in ir.get("motions", []):
-        if motion.get("id") in _conflicting_ids:
-            handler = motion.get("handler") or ""
-            suffix = handler[len("handler_"):] if handler.startswith("handler_") else handler
-            motion["id"] = f"{motion['id']}__{suffix}"
+        def join_args(args: list[str]) -> str:
+            return ", ".join(args)
+
+        for motion in motions:
+            state_type = f"{motion['id']}_state &state"
+            has_when_logic = bool(motion.get("when_schedule") or motion.get("when_evaluators"))
+            motion["can_start_params"] = "shared_data &shared" if has_when_logic else ""
+            motion["can_start_args"] = "shared" if has_when_logic else ""
+
+            has_monitor_logic = bool(
+                motion.get("when_schedule")
+                or motion.get("until_schedule")
+                or motion.get("when_monitors")
+                or motion.get("until_monitors")
+            )
+            motion["monitor_params"] = join_params([state_type, "shared_data &shared"]) if has_monitor_logic else ""
+            motion["monitor_args"] = join_args([f"{motion['id']}_state_instance", "shared"]) if has_monitor_logic else ""
+
+            has_apply_state = bool(motion.get("arm_solvers"))
+            has_command_forwarding = bool(motion.get("command_forwarding"))
+            has_apply_shared = has_command_forwarding
+            has_apply_robot = bool(motion.get("arm_solvers") or has_command_forwarding)
+            apply_params = []
+            apply_args = []
+            if has_apply_state:
+                apply_params.append(state_type)
+                apply_args.append(f"{motion['id']}_state_instance")
+            if has_apply_shared:
+                apply_params.append("shared_data &shared")
+                apply_args.append("shared")
+            if has_apply_robot:
+                apply_params.append("const robot_io &robot")
+                apply_args.append("robot")
+            motion["apply_params"] = join_params(apply_params)
+            motion["apply_args"] = join_args(apply_args)
 
     unique_motions = []
     motion_by_id = {}
@@ -402,7 +486,13 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
 
     pose_components = build_pose_components(ir)
     ir["pose_components"] = pose_components
+    ir["declared_pose_components"] = declared_pose_component_entries(ir, pose_components)
     enrich_lerp_closures(ir, pose_components)
+    for motion in unique_motions:
+        motion_refs = collect_motion_references(motion, ir.get("closures", {}))
+        motion["declared_pose_components"] = declared_pose_component_entries(
+            ir, pose_components, motion_refs
+        )
     add_motion_trajectory_progress(ir)
     add_motion_trajectory_progress(
         {
@@ -411,8 +501,18 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
             "closures": ir.get("closures", {}),
         }
     )
+    primary_robot_id = next((solver.get("id") for solver in ir.get("arm_solvers", []) if solver.get("id")), "")
+    for motion in ir.get("motions", []):
+        motion["command_robot_id"] = primary_robot_id
+    for motion in unique_motions:
+        motion["command_robot_id"] = primary_robot_id
+
+    add_until_monitor_conditions(ir.get("motions", []))
+    add_until_monitor_conditions(unique_motions)
     add_motion_done_conditions(ir.get("motions", []))
     add_motion_done_conditions(unique_motions)
+    add_motion_function_interfaces(ir.get("motions", []))
+    add_motion_function_interfaces(unique_motions)
 
     headers_dir = output_dir / "headers"
     headers_dir.mkdir(parents=True, exist_ok=True)
@@ -437,6 +537,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
             "base_force_solvers": ir["base_force_solvers"],
             "has_mobile_base": ir["has_mobile_base"],
             "backend": ir["backend"],
+            "declared_pose_components": motion.get("declared_pose_components", []),
             "pose_axis_error_groups": _add_group_type_flags(motion.get("pose_axis_error_groups", [])),
         }
         payload_path = payload_dir / f"{motion['id']}.json"

@@ -186,6 +186,9 @@ controller-member-ImpedanceController(controller) ::= <<
     motion_spec::runtime::ImpedanceControl <controller.id>{<controller.stiffness>, <controller.damping>};
 >>
 
+controller-member-FeedForwardController(controller) ::= <<
+>>
+
 monitor-member(monitor) ::= <<
 <if(monitor.is_edge_triggered)>    bool <monitor.id>_previous = false;
     bool <monitor.id>_event_triggered = false;<else>    bool <monitor.flag> = false;<endif>
@@ -331,7 +334,7 @@ pose-axis-error-group-wrench(g, views) ::= <<
 >>
 
 emit-call-Controller(closure, views) ::= <<
-shared.<closure.control_signal> = state.<closure.id>.control(<access-expr(closure.error_signal, views)>);
+<if(closure.reference_signal)>shared.<closure.control_signal> = <access-expr(closure.reference_signal, views)>;<else>shared.<closure.control_signal> = state.<closure.id>.control(<access-expr(closure.error_signal, views)>);<endif>
 >>
 
 emit-call-PlanarAngleFromDirections(closure, views) ::= <<
@@ -406,6 +409,20 @@ schedule-block(steps, closures, views) ::= <<
 >>
 
 update-monitor(monitor) ::= <<
+<if(monitor.is_until_aggregate)>
+    {
+        const bool active = <monitor.active_condition>;
+<if(monitor.is_edge_triggered)>
+        const bool detected = motion_spec::runtime::rising_edge(state.<monitor.id>_previous, active);
+        if (state.active && detected) {
+            state.<monitor.id>_event_triggered = true;
+            motion_spec::runtime::warn_produce_event_not_implemented("<monitor.event>");
+        }
+<else>
+        motion_spec::runtime::set_flag(state.<monitor.flag>, active);
+<endif>
+    }
+<else>
 <if(monitor.is_edge_triggered)>
     {
         const bool active = motion_spec::runtime::constraint_satisfied(shared.<monitor.error.id>);
@@ -420,6 +437,7 @@ update-monitor(monitor) ::= <<
         state.<monitor.flag>,
         motion_spec::runtime::constraint_satisfied(shared.<monitor.error.id>));
 <endif>
+<endif>
 >>
 
 monitor-block(monitors) ::= <<
@@ -428,6 +446,12 @@ monitor-block(monitors) ::= <<
 
 motion-done-condition(motion) ::= <<
 <motion.done_condition>
+>>
+
+materialize-pose-component(pose) ::= <<
+    shared.<pose.id> = KDL::Frame(
+        KDL::Rotation::RPY(<pose.orientation_x_expr>, <pose.orientation_y_expr>, <pose.orientation_z_expr>),
+        KDL::Vector(<pose.position_x_expr>, <pose.position_y_expr>, <pose.position_z_expr>));
 >>
 
 motion-prelude(wrench_outputs, arm_solvers, backend) ::= <<
@@ -786,7 +810,7 @@ app-prepare-call(motion) ::= <<
 >>
 
 app-run-call(motion) ::= <<
-        if (!<motion.id>_state_instance.active && can_start_<motion.id>(<motion.id>_state_instance, shared)) {
+        if (!<motion.id>_state_instance.active && can_start_<motion.id>(<motion.can_start_args>)) {
             <motion.id>_state_instance.active = true;
             <motion.id>_state_instance.active_steps = 0;
 <motion.until_monitors:{m |             <motion.id>_state_instance.<m.id>_previous = false;
@@ -800,7 +824,7 @@ app-run-call(motion) ::= <<
 
 app-stage-call(motion) ::= <<
         if (<motion.id>_state_instance.active) {
-            apply_<motion.id>(<motion.id>_state_instance, shared, robot);
+            apply_<motion.id>(<motion.apply_args>);
 <if(motion.has_until_condition)>
             // TODO: replace this temporary event latch bridge with real event-driven FSM transitions.
             if (<motion.id>_state_instance.active_steps > 0 && (<motion-done-condition(motion)>)) {
@@ -910,19 +934,18 @@ arm-apply-block(arm_solvers, backend) ::= <<
 <arm_solvers:{solver |     <solver-apply-output(solver, backend)>}; separator="\n">
 >>
 
-gripper-actions(backend, motion) ::= <<
-<({gripper-actions-<backend>})(motion)>
+command-forwarding(backend, motion) ::= <<
+<({command-forwarding-<backend>})(motion)>
 >>
 
-gripper-actions-robif2b(motion) ::= <<
+command-forwarding-robif2b(motion) ::= <<
 >>
 
-gripper-actions-mj_kdl(motion) ::= <<
-<motion.gripper_actions:{action |
-<if(action.actuator)>    {
-        const int actuator_id = mj_name2id(robot.<first(motion.arm_solvers).id>.robot->model, mjOBJ_ACTUATOR, "<action.actuator>");
+command-forwarding-mj_kdl(motion) ::= <<
+<motion.command_forwarding:{cmd | <if(cmd.target)>    {
+        const int actuator_id = mj_name2id(robot.<motion.command_robot_id>.robot->model, mjOBJ_ACTUATOR, "<cmd.target>");
         if (actuator_id >= 0) {
-            robot.<first(motion.arm_solvers).id>.robot->data->ctrl[actuator_id] = <action.value>;
+            robot.<motion.command_robot_id>.robot->data->ctrl[actuator_id] = shared.<cmd.control_signal.id>;
         \}
     \}
 <endif>}; separator="\n">
@@ -1431,7 +1454,7 @@ emit-snapshot(snap, closures, views) ::= <<
         shared.<snap.target_id> = <access-expr(snap.source_id, views)>;
 >>
 
-motion_header(motion, closures, views, wrench_outputs, base_velocity_solvers, base_force_solvers, has_mobile_base, backend, pose_axis_error_groups) ::= <<
+motion_header(motion, closures, views, wrench_outputs, base_velocity_solvers, base_force_solvers, has_mobile_base, backend, declared_pose_components, pose_axis_error_groups) ::= <<
 #pragma once
 
 #include "runtime.hpp"
@@ -1482,18 +1505,15 @@ inline void update_<motion.id>(
         state.snapshot_taken = true;
     }
 <endif>
+<declared_pose_components:{pose | <materialize-pose-component(pose)>}; separator="\n">
 }
 
-inline bool can_start_<motion.id>(
-    <motion.id>_state &state,
-    shared_data &shared) {
+inline bool can_start_<motion.id>(<motion.can_start_params>) {
 <motion-when-block(motion.when_schedule, closures, views)>
     return true<motion.when_evaluators:{e | && motion_spec::runtime::constraint_satisfied(shared.<e.error.id>)}>;
 }
 
-inline void monitor_<motion.id>(
-    <motion.id>_state &state,
-    shared_data &shared) {
+inline void monitor_<motion.id>(<motion.monitor_params>) {
 <shared-schedule-block(motion.when_schedule, closures, views)>
 <if(first(motion.when_monitors))>
 <monitor-block(motion.when_monitors)>
@@ -1521,15 +1541,12 @@ inline void control_<motion.id>(
 <endif>
 }
 
-inline void apply_<motion.id>(
-    <motion.id>_state &state,
-    shared_data &shared,
-    const robot_io &robot) {
+inline void apply_<motion.id>(<motion.apply_params>) {
 <if(motion.arm_solvers)>
 <arm-stage-block(motion.control_mode, motion.arm_solvers, backend)>
 <arm-apply-block(motion.arm_solvers, backend)>
 <endif>
-<gripper-actions(backend, motion)>
+<command-forwarding(backend, motion)>
 }
 >>
 
@@ -1779,8 +1796,8 @@ int main(int argc, char **argv) {
 <motions:{motion |
         case <i0>: {
             update_<motion.id>(<motion.id>_state_instance, shared, robot);
-            monitor_<motion.id>(<motion.id>_state_instance, shared);
-            if (!<motion.id>_state_instance.active && can_start_<motion.id>(<motion.id>_state_instance, shared)) {
+            monitor_<motion.id>(<motion.monitor_args>);
+            if (!<motion.id>_state_instance.active && can_start_<motion.id>(<motion.can_start_args>)) {
                 <motion.id>_state_instance.active = true;
                 <motion.id>_state_instance.active_steps = 0;
 <motion.until_monitors:{m |                 <motion.id>_state_instance.<m.id>_previous = false;
@@ -1789,7 +1806,7 @@ int main(int argc, char **argv) {
             \}
             if (<motion.id>_state_instance.active) {
                 control_<motion.id>(<motion.id>_state_instance, shared, robot);
-                apply_<motion.id>(<motion.id>_state_instance, shared, robot);
+                apply_<motion.id>(<motion.apply_args>);
 <if(motion.has_until_condition)>
                 // TODO: replace this temporary event latch bridge with real event-driven FSM transitions.
                 if (<motion.id>_state_instance.active_steps > 0 && (<motion-done-condition(motion)>)) {

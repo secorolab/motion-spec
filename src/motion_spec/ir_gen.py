@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sys
 import argparse
-from dataclasses import dataclass, field, is_dataclass, asdict
+from dataclasses import dataclass, field, is_dataclass, asdict, replace
 from enum import Enum
 import collections
 import math
@@ -410,7 +410,7 @@ ops_generic = [
 ops_cstr_hdl = [
     Operator(
         type_=CSTR_HDL["Controller"],
-        input=[CSTR_HDL["error-signal"]],
+        input=[CSTR_HDL["error-signal"], CSTR_HDL["reference-signal"]],
         output=[CSTR_HDL["control-signal"]],
         parameters=[
             CSTR_HDL["proportional-gain"],
@@ -494,10 +494,10 @@ class Quantity:
     id: str
     quantity_kind: QuantityKind
     unit: Unit
-    value: float
+    value: float | None
     has_view: bool
-    reference_value: str | None = None
     roles: list[str] = field(default_factory=list)
+    reference_value: str | None = None
     type: str = field(default="Quantity")
 
 
@@ -508,7 +508,6 @@ class Trajectory:
     unit: Unit
     has_view: bool
     value: None = None
-    reference_value: str | None = None
     roles: list[str] = field(default_factory=list)
     type: str = field(default="Trajectory")
 
@@ -680,26 +679,36 @@ class ConstraintEvaluator:
 @dataclass
 class Controller:
     id: str
-    error_signal: Quantity
     control_signal: Quantity
-    proportional_gain: float
-    integral_gain: float
-    derivative_gain: float
-    decay_rate: float | None
+    error_signal: Quantity | None = None
+    reference_signal: Quantity | None = None
+    proportional_gain: float = 0.0
+    integral_gain: float = 0.0
+    derivative_gain: float = 0.0
+    decay_rate: float | None = None
     stiffness: float = 0.0
     damping: float = 0.0
     type: str = "Controller"
 
 
 @dataclass
+class CommandForwardingSpecification:
+    id: str
+    control_signal: Quantity
+    target: str
+    type: str = field(default="CommandForwardingSpecification")
+
+
+@dataclass
 class MonitorEntry:
     id: str
     monitor_type: str
-    error: Quantity
+    error: Quantity | None
     flag: str | None
     event: str | None
     event_idx: int | None
     is_edge_triggered: bool
+    is_until_aggregate: bool = False
     type: str = field(default="MonitorEntry")
 
 
@@ -738,7 +747,6 @@ class ConstraintHandler:
     evaluators: list[ConstraintEvaluator]
     controllers: list[Controller]
     monitors: list[MonitorEntry]
-    actions: list[GripperAction] = field(default_factory=list)
     order: int = 0
     type: str = field(default="ConstraintHandler")
 
@@ -784,8 +792,6 @@ class GuardedMotionBlock:
     when_monitors: list[MonitorEntry]
     while_monitors: list[MonitorEntry]
     until_monitors: list[MonitorEntry]
-    gripper_actions: list[GripperAction]
-
     # Schedules
     # when_schedule is independent: it runs in can_start, a separate C++ function.
     # while_schedule and until_schedule are NOT independent schedules; they are
@@ -817,6 +823,9 @@ class GuardedMotionBlock:
 
     # Pose coordinate-view scalar constraints grouped back into one KDL::diff pose error.
     pose_axis_error_groups: list[PoseAxisErrorGroup] = field(default_factory=list)
+
+    # Direct robot command forwarding driven by FeedForward controllers.
+    command_forwarding: list[CommandForwardingSpecification] = field(default_factory=list)
 
     type: str = field(default="GuardedMotionBlock")
 
@@ -934,14 +943,6 @@ class SceneObjectSpec:
     type: str = field(default="SceneObjectSpec")
 
 
-@dataclass
-class GripperAction:
-    id: str
-    attachment_id: str
-    command: str
-    actuator: str = ""
-    value: float = 0.0
-    type: str = field(default="GripperAction")
 
 
 @dataclass
@@ -1183,37 +1184,29 @@ class Parser:
         for m in self.g[id_ : CSTR_HDL["monitors"]]:
             monitors.append(self.monitor_entry(m))
 
-        actions = []
-        for action in self.g[id_ : CSTR_HDL["actions"]]:
-            actions.append(self.gripper_action(action))
-
         order_value = self.g.value(id_, APP["order"])
         order = int(order_value.value) if order_value is not None else 0
 
         return ConstraintHandler(
-            self.id(id_), motion, control_mode, evaluators, controllers, monitors, actions, order
+            self.id(id_), motion, control_mode, evaluators, controllers, monitors, order
         )
-
-    @memoize
-    def gripper_action(self, id_):
-        attachment = self.g.value(id_, CSTR_HDL["target-attachment"])
-        command = str(self.g.value(id_, CSTR_HDL["command"]) or "")
-        return GripperAction(self.id(id_), self.id(attachment), command)
 
     @memoize
     def monitor_entry(self, id_):
         assert CSTR_HDL["Monitor"] in self.g[id_ : RDF["type"]]
 
-        error = self.quantity(self.g.value(id_, CSTR_HDL["error"]))
+        is_until_aggregate = self.g.value(id_, CSTR_HDL["monitors-until"]) is not None
+        error_node = self.g.value(id_, CSTR_HDL["error"])
+        error = None if is_until_aggregate or error_node is None else self.quantity(error_node)
 
         if CSTR_HDL["LevelTriggeredMonitor"] in self.g[id_ : RDF["type"]]:
             flag = self.id(self.g.value(id_, CSTR_HDL["flag"]))
             return MonitorEntry(
-                self.id(id_), "LevelTriggeredMonitor", error, flag, None, None, False
+                self.id(id_), "LevelTriggeredMonitor", error, flag, None, None, False, is_until_aggregate
             )
 
         event = self.id(self.g.value(id_, CSTR_HDL["event"]))
-        return MonitorEntry(self.id(id_), "EdgeTriggeredMonitor", error, None, event, None, True)
+        return MonitorEntry(self.id(id_), "EdgeTriggeredMonitor", error, None, event, None, True, is_until_aggregate)
 
     @memoize
     def constraint_evaluator(self, id_):
@@ -1232,49 +1225,65 @@ class Parser:
 
     @memoize
     def controller(self, id_):
-        assert CSTR_HDL["Controller"] in self.g[id_ : RDF["type"]]
-
         is_pid = CSTR_HDL["ProportionalIntegralDerivative"] in self.g[id_ : RDF["type"]]
         is_impedance = CSTR_HDL["ImpedanceController"] in self.g[id_ : RDF["type"]]
-        assert is_pid or is_impedance, (
-            f"Controller {id_} must be ProportionalIntegralDerivative or ImpedanceController"
+        is_feedforward = CSTR_HDL["FeedForwardController"] in self.g[id_ : RDF["type"]]
+        assert is_pid or is_impedance or is_feedforward, (
+            f"Controller {id_} must be ProportionalIntegralDerivative, ImpedanceController, or FeedForwardController"
         )
 
-        error_signal = self.quantity(self.g.value(id_, CSTR_HDL["error-signal"]))
+        error_node = self.g.value(id_, CSTR_HDL["error-signal"])
+        ref_node = self.g.value(id_, CSTR_HDL["reference-signal"])
+        error_signal = self.quantity(error_node) if error_node is not None else None
+        reference_signal = self.quantity(ref_node) if ref_node is not None else None
         control_signal = self.quantity(self.g.value(id_, CSTR_HDL["control-signal"]))
 
         if is_pid:
+            assert error_signal is not None, f"PID controller {id_} must have cstr-hdl:error-signal"
+            assert reference_signal is None, f"PID controller {id_} must not have cstr-hdl:reference-signal"
             decay_rate = None
             if CSTR_HDL["DecayingIntegralTerm"] in self.g[id_ : RDF["type"]]:
                 decay_rate = self.g.value(id_, CSTR_HDL["decay-rate"]).value
-            p = self._optional_float(id_, CSTR_HDL["proportional-gain"], 0.0)
-            i = self._optional_float(id_, CSTR_HDL["integral-gain"], 0.0)
-            d = self._optional_float(id_, CSTR_HDL["derivative-gain"], 0.0)
             return Controller(
-                self.id(id_),
-                error_signal,
-                control_signal,
-                p,
-                i,
-                d,
-                decay_rate,
+                id=self.id(id_),
+                control_signal=control_signal,
+                error_signal=error_signal,
+                proportional_gain=self._optional_float(id_, CSTR_HDL["proportional-gain"], 0.0),
+                integral_gain=self._optional_float(id_, CSTR_HDL["integral-gain"], 0.0),
+                derivative_gain=self._optional_float(id_, CSTR_HDL["derivative-gain"], 0.0),
+                decay_rate=decay_rate,
                 type=self.id(CSTR_HDL.ProportionalIntegralDerivative),
             )
-        else:
-            ks = self._optional_float(id_, CSTR_HDL["stiffness"], 0.0)
-            kd = self._optional_float(id_, CSTR_HDL["damping"], 0.0)
+        if is_impedance:
+            assert error_signal is not None, f"Impedance controller {id_} must have cstr-hdl:error-signal"
+            assert reference_signal is None, f"Impedance controller {id_} must not have cstr-hdl:reference-signal"
             return Controller(
-                self.id(id_),
-                error_signal,
-                control_signal,
-                0.0,
-                0.0,
-                0.0,
-                None,
-                stiffness=ks,
-                damping=kd,
+                id=self.id(id_),
+                control_signal=control_signal,
+                error_signal=error_signal,
+                stiffness=self._optional_float(id_, CSTR_HDL["stiffness"], 0.0),
+                damping=self._optional_float(id_, CSTR_HDL["damping"], 0.0),
                 type=self.id(CSTR_HDL.ImpedanceController),
             )
+        assert reference_signal is not None, f"FeedForward controller {id_} must have cstr-hdl:reference-signal"
+        assert error_signal is None, f"FeedForward controller {id_} must not have cstr-hdl:error-signal"
+        return Controller(
+            id=self.id(id_),
+            control_signal=control_signal,
+            reference_signal=reference_signal,
+            type=self.id(CSTR_HDL.FeedForwardController),
+        )
+
+    @memoize
+    def command_forwarding_specification(self, id_):
+        assert SLV["CommandForwardingSpecification"] in self.g[id_ : RDF["type"]]
+        control_signal = self.quantity(self.g.value(id_, SLV["control-signal"]))
+        target_node = self.g.value(id_, SLV["attached-to"])
+        return CommandForwardingSpecification(
+            self.id(id_),
+            control_signal,
+            self.label(target_node) if target_node is not None else "",
+        )
 
     def _optional_float(self, subject, predicate, default: float) -> float:
         value = self.g.value(subject, predicate)
@@ -1538,8 +1547,6 @@ class Parser:
 
         unit = self.unit(self.g.value(id_, QUDT_SCHEMA["unit"]))
         has_view = (id_, ~MAP["subobject"], None) in self.g
-        reference_node = self.g.value(id_, CSTR["reference-value"])
-        reference_value = self.id(reference_node) if reference_node is not None else None
 
         if GEOM_REL["Pose"] in self.g[id_ : RDF["type"]]:
             return PoseQuantity(self.id(id_), QuantityKind(quantity_kind), Unit(unit), has_view, roles=self.roles(id_))
@@ -1549,21 +1556,21 @@ class Parser:
                 QuantityKind(quantity_kind),
                 Unit(unit),
                 has_view,
-                reference_value=reference_value,
                 roles=self.roles(id_),
             )
 
         value = None
         if (id_, QUDT_SCHEMA["value"], None) in self.g:
             value = float(self.g.value(id_, QUDT_SCHEMA["value"]))
+        reference_value = self.g.value(id_, CSTR["reference-value"])
         return Quantity(
             self.id(id_),
             QuantityKind(quantity_kind),
             Unit(unit),
             value,
             has_view,
-            reference_value,
             self.roles(id_),
+            self.id(reference_value) if reference_value is not None else None,
         )
 
     @memoize
@@ -1818,6 +1825,43 @@ def _mark_acceleration_constraint_frames(solver):
                 constraint.base_aligned = axis_frame is None or _body_name(axis_frame) == root_body
 
 
+def _filtered_motion_driver(driver, handler_output_ids: set[str], closure_input_map):
+    """Return the slice of a solver driver fed by the current handler outputs."""
+    acceleration_specs = []
+    for acc_spec in driver.acceleration_constraint:
+        constraints = [
+            ac
+            for ac in acc_spec.constraints
+            if ac.acceleration_energy.id in handler_output_ids
+        ]
+        if constraints:
+            acceleration_specs.append(replace(acc_spec, constraints=constraints))
+
+    cartesian_forces = []
+    for force_spec in driver.cartesian_force:
+        force_id = force_spec.force.id
+        upstream = {force_id} | _upstream_dependencies(force_id, closure_input_map)
+        if upstream & handler_output_ids:
+            cartesian_forces.append(force_spec)
+
+    joint_forces = [
+        jf_spec
+        for jf_spec in driver.joint_force
+        if jf_spec.force_id in handler_output_ids
+    ]
+
+    if not acceleration_specs and not cartesian_forces and not joint_forces:
+        return None
+
+    return replace(
+        driver,
+        acceleration_constraint=acceleration_specs,
+        cartesian_force=cartesian_forces,
+        joint_force=joint_forces,
+        has_cartesian_force=bool(cartesian_forces),
+    )
+
+
 def _arm_solvers_for_handler(handler, slv_arm, closure_input_map=None):
     """Find arm solvers whose motion drivers consume this handler's controller outputs.
 
@@ -1836,20 +1880,9 @@ def _arm_solvers_for_handler(handler, slv_arm, closure_input_map=None):
     for solver in slv_arm:
         matched = []
         for driver in solver.motion_drivers:
-            driver_output_ids = {
-                ac.acceleration_energy.id
-                for ac_spec in driver.acceleration_constraint
-                for ac in ac_spec.constraints
-            }
-            for force_spec in driver.cartesian_force:
-                driver_output_ids.add(force_spec.force.id)
-                driver_output_ids.update(
-                    _upstream_dependencies(force_spec.force.id, closure_input_map)
-                )
-            for jf_spec in driver.joint_force:
-                driver_output_ids.add(jf_spec.force_id)
-            if handler_output_ids & driver_output_ids:
-                matched.append(driver)
+            filtered = _filtered_motion_driver(driver, handler_output_ids, closure_input_map)
+            if filtered is not None:
+                matched.append(filtered)
         if not matched:
             continue
         selected = next((driver for driver in matched if driver.id == motion_driver_id), matched[0])
@@ -1903,8 +1936,7 @@ def _relative_poses_for_motion(evaluators, view_map, arm_solvers):
 def _constraint_reference_value_id(constraint):
     param = getattr(constraint, "parameter", None)
     ref = getattr(param, "reference_value", None) if param else None
-    ref_id = ref if isinstance(ref, str) else getattr(ref, "id", None)
-    return ref_id if ref_id else None
+    return getattr(ref, "id", None)
 
 
 def _snapshot_reference_value_ids(evaluators, constraints):
@@ -2220,7 +2252,10 @@ def build_motion_units(
         ctrl_nodes = [
             n
             for n in g[handler_node : CSTR_HDL["controllers"]]
-            if g.value(n, CSTR_HDL["error-signal"]) in while_error_nodes
+            if (
+                g.value(n, CSTR_HDL["error-signal"]) in while_error_nodes
+                or g.value(n, CSTR_HDL["constraint"]) in while_constraint_nodes
+            )
         ]
 
         # Classify monitors by the constraint they watch (via cstr-hdl:constraint).
@@ -2239,6 +2274,9 @@ def build_motion_units(
 
         when_mon_nodes, while_mon_nodes, until_mon_nodes = [], [], []
         for mon_node in g[handler_node : CSTR_HDL["monitors"]]:
+            if g.value(mon_node, CSTR_HDL["monitors-until"]) is not None:
+                until_mon_nodes.append(mon_node)
+                continue
             mon_cstr = g.value(mon_node, CSTR_HDL["constraint"])
             if mon_cstr is not None:
                 if mon_cstr in when_cstr_nodes:
@@ -2374,6 +2412,12 @@ def build_motion_units(
         ]
         until_evaluators = [p.constraint_evaluator(n) for n in until_eval_nodes]
         controllers = [p.controller(n) for n in ctrl_nodes]
+        controller_output_ids = {c.control_signal.id for c in controllers if c.control_signal is not None}
+        command_forwarding = [
+            p.command_forwarding_specification(n)
+            for n in g.subjects(RDF.type, SLV["CommandForwardingSpecification"])
+            if p.id(g.value(n, SLV["control-signal"])) in controller_output_ids
+        ]
         when_monitors = [p.monitor_entry(n) for n in when_mon_nodes]
         while_monitors = [p.monitor_entry(n) for n in while_mon_nodes]
         until_monitors = [p.monitor_entry(n) for n in until_mon_nodes]
@@ -2391,7 +2435,6 @@ def build_motion_units(
                 when_monitors=when_monitors,
                 while_monitors=while_monitors,
                 until_monitors=until_monitors,
-                gripper_actions=handler.actions,
                 when_schedule=when_schedule,
                 while_schedule=while_schedule,
                 until_schedule=until_schedule,
@@ -2411,6 +2454,7 @@ def build_motion_units(
                     handler_arm_solvers,
                 ),
                 pose_axis_error_groups=pose_axis_error_groups,
+                command_forwarding=command_forwarding,
                 snapshots=_snapshots_for_motion(
                     while_evaluators + when_evaluators + until_evaluators,
                     motion.while_ + motion.when + motion.until,
@@ -2633,24 +2677,6 @@ def _id_from_uri(node):
     return str(node).rstrip("/").split("/")[-1].split("#")[-1].replace("-", "_")
 
 
-def _resolve_gripper_actions(handlers, scene):
-    attachments = {
-        attachment.id: attachment
-        for robot in scene.robots
-        for attachment in robot.attachments
-    }
-
-    for handler in handlers:
-        for action in handler.actions:
-            attachment = attachments.get(action.attachment_id)
-            if attachment is None:
-                continue
-            action.actuator = attachment.actuator
-            if action.command == "close":
-                action.value = attachment.closed_command
-            elif action.command == "open":
-                action.value = attachment.open_command
-
 
 def _robot_setup_from_graph(g):
     for env_node in g.subjects(RDF.type, ENV.Workspace):
@@ -2769,8 +2795,6 @@ def generate_ir(manifest_path):
         start = g[h : CSTR_HDL["evaluators"] | CSTR_HDL["controllers"]]
         sched2.extend(p.schedule(start, ops_generic + ops_cstr_hdl))
 
-    _resolve_gripper_actions(hdl, scene)
-
     # Traverse backward from the "distal" solver configuration.
     # The "parser" keeps track of the previously visited closures/computations
     # so that they are visited only once.
@@ -2826,7 +2850,6 @@ def generate_ir(manifest_path):
         ref_id = ref if isinstance(ref, str) else getattr(ref, "id", None)
         if ref_id:
             data_reference_map[item.id] = ref_id
-
     for c in closures.values():
         if not isinstance(c, dict) or c.get("type") != "AssignmentEvaluator":
             continue

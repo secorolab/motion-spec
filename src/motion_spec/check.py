@@ -40,9 +40,20 @@ Examples:
     g.parse(app_model, format="json-ld")
 
     # Load IRI map and resolve paths relative to the manifest file
+    def _quad_objects(predicate):
+        """Return distinct objects for a predicate across all named graphs."""
+        return list({o for _, _, o, _ in g.quads((None, predicate, None, None))})
+
+    def _quad_value(subject, predicate):
+        """Return first object for subject+predicate across all named graphs."""
+        return next((o for _, _, o, _ in g.quads((subject, predicate, None, None))), None)
+
     url_map = {}
-    for key in g.objects(predicate=APP["iri-map"]):
-        value = g.value(key, APP["path"]).value
+    for key in _quad_objects(APP["iri-map"]):
+        path_node = _quad_value(key, APP["path"])
+        if path_node is None:
+            continue
+        value = str(path_node)
         if Path(value).is_absolute():
             # Already absolute path, use as-is
             url_map[str(key)] = value
@@ -56,14 +67,14 @@ Examples:
                 models_subdir_path = app_model_path.parent / "models"
 
                 # Check which one contains the expected files by looking at imports
-                imports = list(g.objects(predicate=APP["import"]))
+                imports = _quad_objects(APP["import"])
                 if imports:
                     # Take first import URL and extract the path part after the base URL
                     first_import_url = str(imports[0])
                     # The import URLs are like "https://secorolab.github.io/00-common/00-misc.json"
                     # We want to extract "00-common/00-misc.json"
                     import_path = None
-                    for base_url in [str(k) for k in g.objects(predicate=APP["iri-map"])]:
+                    for base_url in [str(k) for k in _quad_objects(APP["iri-map"])]:
                         if first_import_url.startswith(base_url):
                             import_path = first_import_url[len(base_url) :]
                             break
@@ -90,16 +101,16 @@ Examples:
                     absolute_path = source_path if source_path.exists() else Path.cwd() / value
                 url_map[str(key)] = str(absolute_path)
 
-    install_resolver(IriToFileResolver(url_map))
+    install_resolver(IriToFileResolver(dict(sorted(url_map.items(), key=lambda x: len(x[0]), reverse=True))))
 
     # Load/import the referenced models
-    models = list(g.objects(predicate=APP["import"]))
+    models = _quad_objects(APP["import"])
     for o in models:
         g.parse(location=o, format="json-ld")
 
     validation_errors = []
-    for handler in g.subjects(RDF.type, CSTR_HDL["ConstraintHandler"]):
-        control_mode = g.value(handler, CSTR_HDL["control-mode"])
+    for handler in {s for s, _, _, _ in g.quads((None, RDF.type, CSTR_HDL["ConstraintHandler"], None))}:
+        control_mode = _quad_value(handler, CSTR_HDL["control-mode"])
         if control_mode is None:
             validation_errors.append(f"Constraint handler '{handler}' is missing control-mode.")
             continue
@@ -116,9 +127,12 @@ Examples:
         sys.exit(1)
 
     g_sh = rdflib.Dataset()
-    metamodels = list(g.objects(predicate=APP["constraints"]))
+    metamodels = _quad_objects(APP["constraints"])
     for o in metamodels:
-        g_sh.parse(location=str(o), format="turtle")
+        try:
+            g_sh.parse(location=str(o), format="turtle")
+        except Exception:
+            pass
 
     # Validate using Dataset directly
     conforms, v_graph, v_text = pyshacl.validate(

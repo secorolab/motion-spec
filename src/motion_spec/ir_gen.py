@@ -509,6 +509,7 @@ class Trajectory:
     has_view: bool
     value: None = None
     roles: list[str] = field(default_factory=list)
+    value_kind: str | None = None
     type: str = field(default="Trajectory")
 
 
@@ -1449,7 +1450,14 @@ class Parser:
         else:
             of = self.frame(of_node)
         wrt_node = self.g.value(id_, GEOM_REL["with-respect-to"])
-        wrt = self.frame(wrt_node) if wrt_node is not None else None
+        if wrt_node is None:
+            wrt = None
+        elif ENV.RigidObject in self.g[wrt_node : RDF["type"]] and GEOM_ENT.Frame not in self.g[
+            wrt_node : RDF["type"]
+        ]:
+            wrt = self.scene_object(wrt_node)
+        else:
+            wrt = self.frame(wrt_node)
         quantity_kind = []
         for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]]:
             quantity_kind.append(self.quantity_kind(k))
@@ -1549,14 +1557,21 @@ class Parser:
         has_view = (id_, ~MAP["subobject"], None) in self.g
 
         if GEOM_REL["Pose"] in self.g[id_ : RDF["type"]]:
+            if (id_, GEOM_REL.of, None) in self.g or (id_, GEOM_REL["with-respect-to"], None) in self.g:
+                return self.pose(id_)
             return PoseQuantity(self.id(id_), QuantityKind(quantity_kind), Unit(unit), has_view, roles=self.roles(id_))
         if TRAJ["Trajectory"] in self.g[id_ : RDF["type"]]:
+            value_kind_node = next(
+                (k for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]] if k != TRAJ.Trajectory),
+                None,
+            )
             return Trajectory(
                 self.id(id_),
                 QuantityKind(quantity_kind),
                 Unit(unit),
                 has_view,
                 roles=self.roles(id_),
+                value_kind=self.quantity_kind(value_kind_node) if value_kind_node is not None else None,
             )
 
         value = None
@@ -2048,16 +2063,23 @@ _CLOSURE_OUTPUT_FIELDS = {
 }
 
 
-def _scene_relative_poses_for_motion(view_map, arm_solvers):
+def _scene_relative_poses_for_motion(view_map, arm_solvers, data_structures=None, evaluators=None):
     """For each view whose wrt-frame is a scene object, emit the requested relative pose."""
     fk_pose_by_frame: dict[str, str] = {}
+    # Keys are the scene-object's id (the "of" of scene-object solver pose outputs).
+    # A wrt_id lookup asks: "is this frame the subject of a tracked scene-object pose?"
     scene_pose_by_id: dict[str, tuple[str, str | None]] = {}
+    solver_output_ids: set[str] = set()
     for solver in arm_solvers:
         for out in solver.output:
             if getattr(out, "type", "") != "Pose":
                 continue
+            solver_output_ids.add(out.id)
             of = getattr(out, "of", None)
             if of is None:
+                chain_end = getattr(solver, "chain_end", None)
+                if chain_end:
+                    fk_pose_by_frame.setdefault(chain_end, out.id)
                 continue
             if getattr(of, "is_scene_object", False):
                 scene_pose_by_id[of.id] = (
@@ -2070,10 +2092,31 @@ def _scene_relative_poses_for_motion(view_map, arm_solvers):
             else:
                 fk_pose_by_frame[of.id] = out.id
 
-    seen: set[str] = set()
-    result: list[SceneRelativePose] = []
     for view in view_map.values():
         so = getattr(view, "superobject", None)
+        if so is None or not hasattr(so, "of") or not hasattr(so, "with_respect_to"):
+            continue
+        if getattr(so, "id", None) not in solver_output_ids:
+            continue
+        of = getattr(so, "of", None)
+        if of is None or getattr(of, "is_scene_object", False):
+            continue
+        fk_pose_by_frame.setdefault(getattr(of, "id", ""), so.id)
+
+    candidate_poses = [
+        getattr(view, "superobject", None)
+        for view in view_map.values()
+        if "Declared" not in set(getattr(getattr(view, "superobject", None), "roles", []) or [])
+    ]
+    for evaluator in evaluators or []:
+        constraint = getattr(evaluator, "constraint", None)
+        quantity = getattr(constraint, "quantity", None)
+        if quantity is not None and hasattr(quantity, "of") and hasattr(quantity, "with_respect_to"):
+            candidate_poses.append(quantity)
+
+    seen: set[str] = set()
+    result: list[SceneRelativePose] = []
+    for so in candidate_poses:
         if so is None:
             continue
         pose_id = getattr(so, "id", None)
@@ -2083,12 +2126,14 @@ def _scene_relative_poses_for_motion(view_map, arm_solvers):
         wrt = getattr(so, "with_respect_to", None)
         if of is None or wrt is None:
             continue
-        if getattr(of, "is_scene_object", False):
+        of_id = getattr(of, "id", "")
+        wrt_id = getattr(wrt, "id", "")
+        if getattr(of, "is_scene_object", False) or of_id in scene_pose_by_id:
             continue
-        if not getattr(wrt, "is_scene_object", False):
+        scene_pose = scene_pose_by_id.get(wrt_id)
+        if scene_pose is None and not getattr(wrt, "is_scene_object", False):
             continue
-        fk_pose_id = fk_pose_by_frame.get(getattr(of, "id", ""))
-        scene_pose = scene_pose_by_id.get(getattr(wrt, "id", ""))
+        fk_pose_id = fk_pose_by_frame.get(of_id)
         if fk_pose_id and scene_pose:
             scene_pose_id, scene_wrt_id = scene_pose
             as_seen_by_id = getattr(getattr(so, "as_seen_by", None), "id", None)
@@ -2196,6 +2241,7 @@ def build_motion_units(
     data_reference_map=None,
     closure_input_map=None,
     closures=None,
+    data_structures=None,
 ):
     snapshot_source_map = snapshot_source_map or {}
     view_map = view_map or {}
@@ -2452,6 +2498,8 @@ def build_motion_units(
                 scene_relative_poses=_scene_relative_poses_for_motion(
                     view_map,
                     handler_arm_solvers,
+                    data_structures,
+                    while_evaluators + when_evaluators + until_evaluators,
                 ),
                 pose_axis_error_groups=pose_axis_error_groups,
                 command_forwarding=command_forwarding,
@@ -2891,6 +2939,7 @@ def generate_ir(manifest_path):
         data_reference_map=data_reference_map,
         closure_input_map=closure_input_map,
         closures=closures,
+        data_structures=data_structures,
     )
     for solver in slv_arm:
         control_modes = {

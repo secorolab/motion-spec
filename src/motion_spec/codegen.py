@@ -164,6 +164,23 @@ def _validate_ir(ir: dict) -> None:
             f"Supported: {', '.join(sorted(SUPPORTED_ROBOT_MODELS))}"
         )
 
+    backend = ir.get("backend", "robif2b")
+    if backend != "robif2b":
+        return
+
+    for solver in ir.get("arm_solvers", []):
+        for out in solver.get("output", []):
+            if out.get("type") != "Pose":
+                continue
+            entity = out.get("of") or {}
+            if entity.get("is_scene_object"):
+                obj_id = entity.get("id") or entity.get("body") or out.get("id")
+                raise RuntimeError(
+                    "robif2b backend cannot sync scene-object pose output "
+                    f"'{out.get('id')}' for '{obj_id}'; world/scene object pose sync "
+                    "is only implemented for mj_kdl."
+                )
+
 
 def _add_group_type_flags(groups: list) -> list:
     for g in groups:

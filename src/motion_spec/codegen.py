@@ -247,6 +247,11 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
         expand_vector_fields(obj, "pos")
         expand_vector_fields(obj, "euler")
         expand_vector_fields(obj, "size")
+        color = obj.get("color") or [0.1, 0.35, 1.0, 1.0]
+        obj["color_r"] = color[0] if len(color) > 0 else 0.1
+        obj["color_g"] = color[1] if len(color) > 1 else 0.35
+        obj["color_b"] = color[2] if len(color) > 2 else 1.0
+        obj["color_a"] = color[3] if len(color) > 3 else 1.0
         friction = obj.get("friction") or [0.5, 0.005, 0.0001]
         obj["friction_slide"] = friction[0] if len(friction) > 0 else 0.5
         obj["friction_torsion"] = friction[1] if len(friction) > 1 else 0.005

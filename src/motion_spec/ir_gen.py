@@ -16,6 +16,7 @@ import math
 import re
 import json
 from pathlib import Path
+import xml.etree.ElementTree as ET
 import rdflib
 from rdf_utils.resolver import IriToFileResolver, install_resolver
 from functools import wraps
@@ -910,6 +911,7 @@ class SceneAttachment:
     id: str
     path: str
     attach_to: str
+    attach_kind: str = "Body"
     prefix: str = ""
     pos: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
     euler: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
@@ -923,6 +925,9 @@ class SceneAttachment:
 class SceneRobot:
     id: str
     path: str
+    prefix: str = ""
+    attach_kind: str = "World"
+    attach_name: str = ""
     pos: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
     euler: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
     attachments: list[SceneAttachment] = field(default_factory=list)
@@ -934,11 +939,14 @@ class SceneObjectSpec:
     id: str
     body: str
     path: str = ""
+    attach_kind: str = "World"
+    attach_name: str = ""
     pos: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
     euler: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
     fixed: bool = False
     shape: str = "BOX"
     size: list[float] = field(default_factory=lambda: [0.03, 0.03, 0.03])
+    color: list[float] = field(default_factory=lambda: [0.1, 0.35, 1.0, 1.0])
     mass: float = 0.1
     friction: list[float] = field(default_factory=lambda: [0.5, 0.005, 0.0001])
     type: str = field(default="SceneObjectSpec")
@@ -2616,17 +2624,76 @@ def _site_name(g, node):
     return str(g.value(node, MJ["site-name"]) or "") if node else ""
 
 
+def _resolve_existing_path(path: str) -> Path | None:
+    if not path:
+        return None
+    candidate = Path(path)
+    if candidate.exists():
+        return candidate
+    for root in [Path.cwd(), *Path.cwd().parents]:
+        candidate = root / path
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _mjcf_body_containing_site(path: str, site_name: str) -> str:
+    resolved = _resolve_existing_path(path)
+    if resolved is None or not site_name:
+        return ""
+    try:
+        root = ET.parse(resolved).getroot()
+    except ET.ParseError:
+        return ""
+
+    def visit_body(body) -> str:
+        for site in body.findall("site"):
+            if site.get("name") == site_name:
+                return body.get("name") or ""
+        for child in body.findall("body"):
+            found = visit_body(child)
+            if found:
+                return found
+        return ""
+
+    for worldbody in root.findall("worldbody"):
+        for body in worldbody.findall("body"):
+            found = visit_body(body)
+            if found:
+                return found
+    return ""
+
+
+def _derive_tool_body_from_attachment(attachment: SceneAttachment, tcp_site: str) -> str:
+    if not tcp_site:
+        return ""
+    local_site = tcp_site
+    if attachment.prefix and tcp_site.startswith(attachment.prefix):
+        local_site = tcp_site[len(attachment.prefix):]
+    local_body = _mjcf_body_containing_site(attachment.path, local_site)
+    if not local_body:
+        return ""
+    return f"{attachment.prefix}{local_body}"
+
+
+def _attach_target_of(g, obj_node):
+    kind = str(g.value(obj_node, MJ["attach-kind"]) or "world").title()
+    if kind not in {"World", "Body", "Site", "Frame"}:
+        kind = "World"
+    return kind, str(g.value(obj_node, MJ["attach-name"]) or "")
+
+
 def _prefix_from_tool_body(tool_body):
     if "_" in tool_body:
         return tool_body.rsplit("_", 1)[0] + "_"
     return ""
 
 
-def _attachment_defaults(path, tool_body):
+def _attachment_defaults(path, tool_body, attach_kind="Body"):
     pos = [0.0, 0.0, 0.0]
     euler = [0.0, 0.0, 0.0]
     prefix = _prefix_from_tool_body(tool_body)
-    if "robotiq_2f85" in path:
+    if attach_kind == "Body" and "robotiq_2f85" in path:
         pos[2] = -0.061525
         euler[0] = 180.0
         prefix = prefix or "g_"
@@ -2640,9 +2707,15 @@ def _attachments_for_robot(g, env_node, robot_node, tool_body):
             continue
         path = _path_of_model(g, candidate)
         if not path:
+            path = _path_of_model(g, g.value(candidate, ENV["has-object-model"]))
+        if not path:
             continue
-        attach_to = _mj_body_name(g, g.value(candidate, MJ["attach-to-body"]))
-        prefix, pos, euler = _attachment_defaults(path, tool_body)
+        attach_node = g.value(candidate, MJ["attach-to-body"])
+        attach_kind = str(g.value(candidate, MJ["attach-kind"]) or "body").title()
+        if attach_kind not in {"Body", "Site", "Frame"}:
+            attach_kind = "Body"
+        attach_to = _site_name(g, attach_node) if attach_kind == "Site" else _mj_body_name(g, attach_node)
+        prefix, pos, euler = _attachment_defaults(path, tool_body, attach_kind)
         prefix = str(g.value(candidate, MJ["attach-prefix"]) or prefix)
         pos = _xyz_or_zero(g, g.value(candidate, MJ["attach-position"])) if g.value(candidate, MJ["attach-position"]) else pos
         euler = _orientation_degrees(g, g.value(candidate, MJ["attach-orientation"])) if g.value(candidate, MJ["attach-orientation"]) else euler
@@ -2654,6 +2727,7 @@ def _attachments_for_robot(g, env_node, robot_node, tool_body):
                 id=_id_from_uri(candidate),
                 path=path,
                 attach_to=attach_to,
+                attach_kind=attach_kind,
                 prefix=prefix,
                 pos=pos,
                 euler=euler,
@@ -2681,11 +2755,15 @@ def _scene_from_graph(g):
 
             tool_body = _mj_body_name(g, g.value(robot_node, MJ["tool-body"]))
             attachments = _attachments_for_robot(g, env_node, robot_node, tool_body)
+            attach_kind, attach_name = _attach_target_of(g, robot_node)
 
             scene.robots.append(
                 SceneRobot(
                     id=_id_from_uri(robot_node),
                     path=robot_path,
+                    prefix=str(g.value(robot_node, MJ["prefix"]) or ""),
+                    attach_kind=attach_kind,
+                    attach_name=attach_name,
                     pos=_position_of(g, robot_node),
                     attachments=attachments,
                 )
@@ -2702,20 +2780,30 @@ def _scene_from_graph(g):
             shape = str(g.value(obj_node, MJ["shape"]) or "box").upper()
             size = _xyz_or_zero(g, g.value(obj_node, MJ["size"])) if g.value(obj_node, MJ["size"]) else [0.03, 0.03, 0.03]
             mass_node = g.value(obj_node, MJ["mass"])
+            attach_kind, attach_name = _attach_target_of(g, obj_node)
             friction = [
                 float((g.value(obj_node, MJ["friction-slide"]) or rdflib.Literal(0.5)).value),
                 float((g.value(obj_node, MJ["friction-torsion"]) or rdflib.Literal(0.005)).value),
                 float((g.value(obj_node, MJ["friction-roll"]) or rdflib.Literal(0.0001)).value),
+            ]
+            color = [
+                float((g.value(obj_node, MJ["color-r"]) or rdflib.Literal(0.1)).value),
+                float((g.value(obj_node, MJ["color-g"]) or rdflib.Literal(0.35)).value),
+                float((g.value(obj_node, MJ["color-b"]) or rdflib.Literal(1.0)).value),
+                float((g.value(obj_node, MJ["color-a"]) or rdflib.Literal(1.0)).value),
             ]
             scene.objects.append(
                 SceneObjectSpec(
                     id=_id_from_uri(obj_node),
                     body=body,
                     path=path,
+                    attach_kind=attach_kind,
+                    attach_name=attach_name,
                     pos=_position_of(g, obj_node),
                     fixed=bool(path),
                     shape=shape,
                     size=size,
+                    color=color,
                     mass=0.1 if mass_node is None else float(mass_node.value),
                     friction=friction,
                 )
@@ -2745,9 +2833,22 @@ def _robot_setup_from_graph(g):
             tool_body = _mj_body_name(g, g.value(obj_node, MJ["tool-body"]))
             tcp_site = _site_name(g, g.value(obj_node, MJ["tcp-site"]))
             attachments = _attachments_for_robot(g, env_node, obj_node, tool_body)
+            for attachment in g.objects(env_node, ENV["has-object"]):
+                if g.value(attachment, SLV["attached-to"]) != obj_node:
+                    continue
+                tool_body = tool_body or _mj_body_name(g, g.value(attachment, MJ["tool-body"]))
+                tcp_site = tcp_site or _site_name(g, g.value(attachment, MJ["tcp-site"]))
+            if not tool_body and tcp_site:
+                for attachment in attachments:
+                    tool_body = _derive_tool_body_from_attachment(attachment, tcp_site)
+                    if tool_body:
+                        break
             chain_tip = chain_end
-            if tcp_site and chain_end == tcp_site and attachments:
+            if tcp_site and chain_end == tcp_site and attachments and attachments[0].attach_kind == "Body":
                 chain_tip = attachments[0].attach_to
+            elif tcp_site and chain_end == tcp_site and attachments and attachments[0].attach_kind == "Site":
+                model_path = _path_of_model(g, model_node)
+                chain_tip = _mjcf_body_containing_site(model_path, attachments[0].attach_to) or chain_tip
             if chain_root or chain_end or urdf:
                 return urdf, chain_root, chain_end, chain_tip, robot_model, tool_body, tcp_site
     return "", "", "", "", "", "", ""

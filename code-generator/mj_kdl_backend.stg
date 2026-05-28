@@ -102,13 +102,22 @@ app-arm-setup-mj_kdl(arm_solvers, scene) ::= <<
     }
     mj_kdl::Env mj_env{};
     mj_kdl::SceneSpec mj_scene{};
+    mj_scene.timestep = 0.002;
+    mj_scene.add_floor = true;
+    mj_scene.add_skybox = true;
     mj_kdl::RobotSpec mj_robot_spec{};
     std::deque\<std::string\> mj_path_storage;
     const std::string mjcf_path_string = mjcf_path.string();
     mj_robot_spec.path = mjcf_path_string.c_str();
+    mj_robot_spec.prefix = "<first(scene.robots).prefix>";
+    mj_robot_spec.attach_to.kind = mj_kdl::AttachKind::<first(scene.robots).attach_kind>;
+    mj_robot_spec.attach_to.name = "<first(scene.robots).attach_name>";
     mj_robot_spec.pos[0] = <first(scene.robots).pos_x>;
     mj_robot_spec.pos[1] = <first(scene.robots).pos_y>;
     mj_robot_spec.pos[2] = <first(scene.robots).pos_z>;
+    mj_robot_spec.euler[0] = <first(scene.robots).euler_x>;
+    mj_robot_spec.euler[1] = <first(scene.robots).euler_y>;
+    mj_robot_spec.euler[2] = <first(scene.robots).euler_z>;
 <first(scene.robots).attachments:{attachment |
     {
         const std::filesystem::path attachment_path = find_asset_path({"<attachment.path>"\});
@@ -119,7 +128,8 @@ app-arm-setup-mj_kdl(arm_solvers, scene) ::= <<
         mj_path_storage.push_back(attachment_path.string());
         mj_kdl::AttachmentSpec attachment_spec{\};
         attachment_spec.mjcf_path = mj_path_storage.back().c_str();
-        attachment_spec.attach_to = "<attachment.attach_to>";
+        attachment_spec.attach_to.kind = mj_kdl::AttachKind::<attachment.attach_kind>;
+        attachment_spec.attach_to.name = "<attachment.attach_to>";
         attachment_spec.prefix = "<attachment.prefix>";
         attachment_spec.pos[0] = <attachment.pos_x>;
         attachment_spec.pos[1] = <attachment.pos_y>;
@@ -135,6 +145,8 @@ app-arm-setup-mj_kdl(arm_solvers, scene) ::= <<
     {
         mj_kdl::SceneObject object_spec{\};
         object_spec.name = "<object.body>";
+        object_spec.attach_to.kind = mj_kdl::AttachKind::<object.attach_kind>;
+        object_spec.attach_to.name = "<object.attach_name>";
 <if(object.has_path)>        const std::filesystem::path object_path = find_asset_path({"<object.path>"\});
         if (object_path.empty()) {
             std::cerr \<\< "MJCF object not found: <object.path>\\n";
@@ -149,7 +161,12 @@ app-arm-setup-mj_kdl(arm_solvers, scene) ::= <<
         object_spec.size[0] = <object.size_x>;
         object_spec.size[1] = <object.size_y>;
         object_spec.size[2] = <object.size_z>;
+        object_spec.rgba[0] = <object.color_r>f;
+        object_spec.rgba[1] = <object.color_g>f;
+        object_spec.rgba[2] = <object.color_b>f;
+        object_spec.rgba[3] = <object.color_a>f;
         object_spec.mass = <object.mass>;
+        object_spec.condim = mj_kdl::Condim::Torsional;
         object_spec.friction[0] = <object.friction_slide>;
         object_spec.friction[1] = <object.friction_torsion>;
         object_spec.friction[2] = <object.friction_roll>;
@@ -265,6 +282,7 @@ find_package(orocos_kdl REQUIRED CONFIG)
 
 set(MJ_KDL_WRAPPER_SOURCE_DIR "" CACHE PATH "Path to the mj_kdl_wrapper source tree")
 if(MJ_KDL_WRAPPER_SOURCE_DIR)
+    set(BUILD_TESTS OFF CACHE BOOL "Disable mj_kdl_wrapper tests for generated builds" FORCE)
     add_subdirectory("${MJ_KDL_WRAPPER_SOURCE_DIR}" mj_kdl_wrapper_build)
     set(MJ_KDL_WRAPPER_TARGET mj_kdl_wrapper)
 else()

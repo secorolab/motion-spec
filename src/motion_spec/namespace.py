@@ -11,6 +11,7 @@ class APP(DefinedNamespace):
     path: URIRef
 
     _extras = [
+        "constraints",
         "import",
         "iri-map",
         "order",
@@ -67,8 +68,20 @@ class SIM(DefinedNamespace):
 
 
 class EL(DefinedNamespace):
+    EventLoop: URIRef
     Event: URIRef
     Flag: URIRef
+    EventReaction: URIRef
+    FlagReaction: URIRef
+
+    _extras = [
+        "has-event",
+        "ref-event",
+        "has-flag",
+        "ref-flag",
+        "has-evt-reaction",
+        "has-flg-reaction",
+    ]
 
     _NS = Namespace(f"{URI_SECORO_MM}/behaviour/event_loop#")
 
@@ -194,6 +207,7 @@ class QUDT_UNIT(DefinedNamespace):
     _NS = Namespace(f"{URI_QUDT}/vocab/unit/")
 
 class GEOM_REL(DefinedNamespace):
+    LinearDistance: URIRef
     Orientation: URIRef
     Pose: URIRef
     Direction: URIRef
@@ -212,6 +226,7 @@ class GEOM_REL(DefinedNamespace):
 
 class GEOM_COORD(DefinedNamespace):
     DirectionCoordinate: URIRef
+    LinearDistanceCoordinate: URIRef
     OrientationCoordinate: URIRef
     PositionCoordinate: URIRef
     PoseCoordinate: URIRef
@@ -299,6 +314,7 @@ class RBDYN_ENT(DefinedNamespace):
 
 class RBDYN_COORD(DefinedNamespace):
     WrenchCoordinate: URIRef
+    UniformGravitationalFieldCoordinate: URIRef
     #VectorXYZ: URIRef
 
     _extras = [
@@ -449,6 +465,7 @@ class CSTR_HDL(DefinedNamespace):
         "control-signal",
         "reference-signal",
         "control-mode",
+        "event-queue",
         "proportional-gain",
         "integral-gain",
         "derivative-gain",

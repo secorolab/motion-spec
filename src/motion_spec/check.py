@@ -127,12 +127,20 @@ Examples:
         sys.exit(1)
 
     g_sh = rdflib.Dataset()
-    metamodels = _quad_objects(APP["constraints"])
-    for o in metamodels:
+    metamodels = sorted(str(o) for o in _quad_objects(APP["constraints"]))
+    if not metamodels:
+        print("Validation Report")
+        print("Conforms: False")
+        print("No SHACL constraint files were listed in the application manifest.")
+        sys.exit(1)
+    for location in metamodels:
         try:
-            g_sh.parse(location=str(o), format="turtle")
-        except Exception:
-            pass
+            g_sh.parse(location=location, format="turtle")
+        except Exception as exc:
+            print("Validation Report")
+            print("Conforms: False")
+            print(f"Failed to load SHACL constraint graph {location}: {exc}")
+            sys.exit(1)
 
     # Validate using Dataset directly
     conforms, v_graph, v_text = pyshacl.validate(

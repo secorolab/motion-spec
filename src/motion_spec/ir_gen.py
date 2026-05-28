@@ -1288,7 +1288,14 @@ class Parser:
 
     def _optional_float(self, subject, predicate, default: float) -> float:
         value = self.g.value(subject, predicate)
-        return default if value is None else float(value.value)
+        if value is None:
+            return default
+        literal = value if isinstance(value, rdflib.Literal) else self.g.value(value, QUDT_SCHEMA.value)
+        if literal is None:
+            raise ValueError(
+                f"Controller '{self.id(subject)}' property '{self.id(predicate)}' must be a literal or a node with qudt:value."
+            )
+        return float(literal.value)
 
     @memoize
     def guarded_motion(self, id_):
@@ -1443,18 +1450,14 @@ class Parser:
         of_node = self.g.value(id_, GEOM_REL["of"])
         if of_node is None:
             of = None
-        elif ENV.RigidObject in self.g[of_node : RDF["type"]] and GEOM_ENT.Frame not in self.g[
-            of_node : RDF["type"]
-        ]:
+        elif ENV.RigidObject in self.g[of_node : RDF["type"]]:
             of = self.scene_object(of_node)
         else:
             of = self.frame(of_node)
         wrt_node = self.g.value(id_, GEOM_REL["with-respect-to"])
         if wrt_node is None:
             wrt = None
-        elif ENV.RigidObject in self.g[wrt_node : RDF["type"]] and GEOM_ENT.Frame not in self.g[
-            wrt_node : RDF["type"]
-        ]:
+        elif ENV.RigidObject in self.g[wrt_node : RDF["type"]]:
             wrt = self.scene_object(wrt_node)
         else:
             wrt = self.frame(wrt_node)
@@ -1557,7 +1560,7 @@ class Parser:
         has_view = (id_, ~MAP["subobject"], None) in self.g
 
         if GEOM_REL["Pose"] in self.g[id_ : RDF["type"]]:
-            if (id_, GEOM_REL.of, None) in self.g or (id_, GEOM_REL["with-respect-to"], None) in self.g:
+            if GEOM_COORD["PoseCoordinate"] in self.g[id_ : RDF["type"]]:
                 return self.pose(id_)
             return PoseQuantity(self.id(id_), QuantityKind(quantity_kind), Unit(unit), has_view, roles=self.roles(id_))
         if TRAJ["Trajectory"] in self.g[id_ : RDF["type"]]:

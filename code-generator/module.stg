@@ -766,13 +766,8 @@ solver-apply-output(solver, backend) ::= <<
 <({solver-apply-output-<backend>})(solver)>
 >>
 solver-apply-output-robif2b(solver) ::= <<
-    robif2b_kinova_gen3_update(robot.<solver.id>.robot);
 >>
 solver-apply-output-mj_kdl(solver) ::= <<
-    mj_kdl::update(robot.<solver.id>.robot);
-    if (!mj_kdl::step(robot.<solver.id>.robot)) {
-        std::exit(0);
-    }
 >>
 
 shared-schedule-block(steps, closures, views) ::= <<
@@ -1668,6 +1663,11 @@ app-arm-loop-reset(backend, arm_solvers) ::= <<
 app-arm-loop-reset-robif2b(arm_solvers) ::= <<
 >>
 
+app-arm-runtime-step(backend, arm_solvers) ::= <<
+<({app-arm-runtime-step-<backend>})(arm_solvers)>
+>>
+
+
 app-headless-telemetry(backend, shared_data, arm_solvers) ::= <<
 <({app-headless-telemetry-<backend>})(shared_data, arm_solvers)>
 >>
@@ -1722,6 +1722,9 @@ int main(int argc, char **argv) {
         <motions:{motion | <app-stage-call(motion)>}; separator="\n">
 <if(has_mobile_base)>
         apply_mobile_base(mobile_base_state_instance, shared, robot);
+<endif>
+<if(has_arm)>
+<app-arm-runtime-step(backend, arm_solvers)>
 <endif>
 
         usleep(1000);
@@ -1828,6 +1831,9 @@ int main(int argc, char **argv) {
             current_motion = <length(motions)> - 1;
             break;
         }
+<if(has_arm)>
+<app-arm-runtime-step(backend, arm_solvers)>
+<endif>
         ++_step;
     }
 <app-headless-telemetry(backend, shared_data, arm_solvers)>

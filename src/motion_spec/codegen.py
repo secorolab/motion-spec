@@ -182,6 +182,40 @@ def _validate_ir(ir: dict) -> None:
                 )
 
 
+def _runtime_signature(solver: dict, backend: str) -> tuple:
+    return (
+        backend,
+        solver.get("robot_model", ""),
+        solver.get("urdf", ""),
+        solver.get("chain_root", ""),
+        solver.get("chain_tip") or solver.get("chain_end", ""),
+        solver.get("tool_body", ""),
+        solver.get("tcp_site", ""),
+    )
+
+
+def _annotate_runtime_robots(ir: dict, unique_motions: list, backend: str) -> None:
+    runtime_by_signature: dict[tuple, str] = {}
+    owner_by_runtime: dict[str, str] = {}
+    solvers_by_id = {solver.get("id"): solver for solver in ir.get("arm_solvers", [])}
+
+    for solver in ir.get("arm_solvers", []):
+        solver_id = solver.get("id", "")
+        signature = _runtime_signature(solver, backend)
+        runtime_id = runtime_by_signature.setdefault(signature, solver_id)
+        owner_by_runtime.setdefault(runtime_id, solver_id)
+        solver["runtime_id"] = runtime_id
+        solver["runtime_owner"] = solver_id == owner_by_runtime[runtime_id]
+
+    for motion_list in (ir.get("motions", []), unique_motions):
+        for motion in motion_list:
+            for solver in motion.get("arm_solvers", []):
+                canonical = solvers_by_id.get(solver.get("id"))
+                if canonical is None:
+                    continue
+                solver["runtime_id"] = canonical.get("runtime_id", solver.get("id", ""))
+                solver["runtime_owner"] = canonical.get("runtime_owner", True)
+
 def _add_group_type_flags(groups: list) -> list:
     for g in groups:
         so_type = g.get("superobject_type", "Pose")
@@ -500,6 +534,8 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
                 for solver in motion.get("arm_solvers", []):
                     if solver.get("root_acc"):
                         solver["gravity"] = [-v for v in solver["root_acc"]]
+
+    _annotate_runtime_robots(ir, unique_motions, backend)
 
     pose_components = build_pose_components(ir)
     ir["pose_components"] = pose_components

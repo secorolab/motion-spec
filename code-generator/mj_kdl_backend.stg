@@ -18,29 +18,31 @@ robot-state-init-mj_kdl-KinovaGen3(solver) ::= <<
 >>
 
 robot-init-mj_kdl-KinovaGen3(solver) ::= <<
-    mj_kdl::Robot mj_<solver.id>{};
-<if(solver.tool_body)>    mj_kdl::ToolFrameSpec mj_tool_<solver.id>{};
-    mj_tool_<solver.id>.tool_body = "<solver.tool_body>";
-<if(solver.tcp_site)>    mj_tool_<solver.id>.tcp_site = "<solver.tcp_site>";
-<endif>    if (!mj_kdl::init_robot_from_mjcf(&mj_<solver.id>, mj_env.model, mj_env.data, "<solver.chain_root>", "<solver.chain_tip>", "", &mj_tool_<solver.id>)) {
-<else>    if (!mj_kdl::init_robot_from_mjcf(&mj_<solver.id>, mj_env.model, mj_env.data, "<solver.chain_root>", "<solver.chain_tip>")) {
+<if(solver.runtime_owner)>    mj_kdl::Robot mj_<solver.runtime_id>{};
+<if(solver.tool_body)>    mj_kdl::ToolFrameSpec mj_tool_<solver.runtime_id>{};
+    mj_tool_<solver.runtime_id>.tool_body = "<solver.tool_body>";
+<if(solver.tcp_site)>    mj_tool_<solver.runtime_id>.tcp_site = "<solver.tcp_site>";
+<endif>    if (!mj_kdl::init_robot_from_mjcf(&mj_<solver.runtime_id>, mj_env.model, mj_env.data, "<solver.chain_root>", "<solver.chain_tip>", "", &mj_tool_<solver.runtime_id>)) {
+<else>    if (!mj_kdl::init_robot_from_mjcf(&mj_<solver.runtime_id>, mj_env.model, mj_env.data, "<solver.chain_root>", "<solver.chain_tip>")) {
 <endif>
-        std::cerr \<\< "init_robot_from_mjcf() failed for <solver.id>\\n";
+        std::cerr \<\< "init_robot_from_mjcf() failed for runtime <solver.runtime_id>\n";
         mj_kdl::cleanup(&mj_env);
         return 1;
     \}
-    mj_<solver.id>.ctrl_mode = mj_kdl::CtrlMode::TORQUE;
-    mj_kdl::env_add_robot(&mj_env, &mj_<solver.id>);
+    mj_<solver.runtime_id>.ctrl_mode = mj_kdl::CtrlMode::TORQUE;
+    mj_kdl::env_add_robot(&mj_env, &mj_<solver.runtime_id>);
+<endif>
 >>
 
 robot-chain-mj_kdl-KinovaGen3(solver) ::= <<
-    KDL::Chain *chain_<solver.id> = &mj_<solver.id>.chain;
+<if(solver.runtime_owner)>    KDL::Chain *chain_<solver.runtime_id> = &mj_<solver.runtime_id>.chain;
+<endif>
 >>
 
 robot-assign-mj_kdl-KinovaGen3(solver) ::= <<
     robot.<solver.id> = manipulator_robot{
-        .robot = &mj_<solver.id>,
-        .chain = chain_<solver.id>,
+        .robot = &mj_<solver.runtime_id>,
+        .chain = chain_<solver.runtime_id>,
     };
 >>
 
@@ -48,7 +50,8 @@ robot-configure-mj_kdl-KinovaGen3(solver) ::= <<
 >>
 
 robot-shutdown-mj_kdl-KinovaGen3(solver) ::= <<
-    mj_kdl::cleanup(&mj_<solver.id>);
+<if(solver.runtime_owner)>    mj_kdl::cleanup(&mj_<solver.runtime_id>);
+<endif>
 >>
 
 app-arm-includes-mj_kdl(has_arm) ::= <<
@@ -171,7 +174,7 @@ app-arm-setup-mj_kdl(arm_solvers, scene) ::= <<
 
     mj_kdl::Viewer mj_viewer{};
     if (!headless) {
-        if (!mj_kdl::init_window_sim(&mj_viewer, &mj_<first(arm_solvers).id>)) {
+        if (!mj_kdl::init_window_sim(&mj_viewer, &mj_<first(arm_solvers).runtime_id>)) {
             std::cerr \<\< "mj_kdl::init_window_sim() failed\\n";
             mj_kdl::cleanup(&mj_env);
             return 1;
@@ -182,22 +185,22 @@ app-arm-setup-mj_kdl(arm_solvers, scene) ::= <<
 app-arm-post-setup-mj_kdl(arm_solvers, motions) ::= <<
     mj_env.on_reset = [&](mj_kdl::ResetContext *) {
         const double _q_home[7] = {0.0, 0.2618, 3.1416, -2.2689, 0.0, 0.9599, 1.5708};
-        KDL::JntArray _q(mj_<first(arm_solvers).id>.n_joints);
-        for (int _i = 0; _i \< mj_<first(arm_solvers).id>.n_joints && _i \< 7; ++_i)
+        KDL::JntArray _q(mj_<first(arm_solvers).runtime_id>.n_joints);
+        for (int _i = 0; _i \< mj_<first(arm_solvers).runtime_id>.n_joints && _i \< 7; ++_i)
             _q(_i) = _q_home[_i];
-        mj_kdl::set_joint_pos(&mj_<first(arm_solvers).id>, _q, false);
+        mj_kdl::set_joint_pos(&mj_<first(arm_solvers).runtime_id>, _q, false);
         <motions:{m | reset_<m.id>(<m.id>_state_instance);}; separator="\n        ">
     };
     mj_kdl::reset(&mj_env);
-    double _prev_sim_time = mj_<first(arm_solvers).id>.data->time;
+    double _prev_sim_time = mj_<first(arm_solvers).runtime_id>.data->time;
 >>
 
 app-arm-loop-reset-mj_kdl(arm_solvers) ::= <<
-        if (mj_<first(arm_solvers).id>.data->time \< _prev_sim_time - 1e-6) {
+        if (mj_<first(arm_solvers).runtime_id>.data->time \< _prev_sim_time - 1e-6) {
             mj_kdl::reset(&mj_env);
             current_motion = 0;
         }
-        _prev_sim_time = mj_<first(arm_solvers).id>.data->time;
+        _prev_sim_time = mj_<first(arm_solvers).runtime_id>.data->time;
 >>
 
 app-loop-condition-mj_kdl(has_arm) ::= <<
@@ -211,9 +214,17 @@ app-arm-cleanup-mj_kdl(has_arm) ::= <<
     mj_kdl::cleanup(&mj_env);<endif>
 >>
 
+app-arm-runtime-step-mj_kdl(arm_solvers) ::= <<
+<arm_solvers:{solver | <if(solver.runtime_owner)>        mj_kdl::update(&mj_<solver.runtime_id>);
+        if (!mj_kdl::step(&mj_<solver.runtime_id>)) {
+            std::exit(0);
+        \}
+<endif>}; separator="">
+>>
+
 app-headless-telemetry-mj_kdl(shared_data, arm_solvers) ::= <<
     if (headless) {
-        std::cout \<\< "steps=" \<\< _step \<\< " sim_time=" \<\< mj_<first(arm_solvers).id>.data->time \<\< "\n";
+        std::cout \<\< "steps=" \<\< _step \<\< " sim_time=" \<\< mj_<first(arm_solvers).runtime_id>.data->time \<\< "\n";
     }
 >>
 

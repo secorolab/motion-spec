@@ -453,12 +453,24 @@ class MOT(DefinedNamespace):
 class TRAJ(DefinedNamespace):
     Trajectory: URIRef
     Lerp: URIRef
+    Circle: URIRef
+    SemiCircle: URIRef
+    Helix: URIRef
     Progress: URIRef
 
     start: URIRef
     goal: URIRef
     alpha: URIRef
     trajectory: URIRef
+    center: URIRef
+    radius: URIRef
+    end: URIRef
+    axis: URIRef
+    pitch: URIRef
+    revolutions: URIRef
+    orientation: URIRef
+
+    _extras = ["plane-normal"]
 
     _NS = Namespace("https://secorolab.github.io/metamodels/task/trajectory#")
 

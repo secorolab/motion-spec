@@ -407,6 +407,24 @@ ops_generic = [
         input=[TRAJ["start"], TRAJ["goal"], TRAJ["alpha"]],
         output=[TRAJ["trajectory"]],
     ),
+    Operator(
+        type_=TRAJ["Circle"],
+        input=[TRAJ["center"], TRAJ["radius"], TRAJ["plane-normal"],
+               TRAJ["orientation"], TRAJ["alpha"]],
+        output=[TRAJ["trajectory"]],
+    ),
+    Operator(
+        type_=TRAJ["SemiCircle"],
+        input=[TRAJ["start"], TRAJ["end"], TRAJ["radius"], TRAJ["plane-normal"],
+               TRAJ["orientation"], TRAJ["alpha"]],
+        output=[TRAJ["trajectory"]],
+    ),
+    Operator(
+        type_=TRAJ["Helix"],
+        input=[TRAJ["center"], TRAJ["radius"], TRAJ["axis"], TRAJ["pitch"],
+               TRAJ["revolutions"], TRAJ["orientation"], TRAJ["alpha"]],
+        output=[TRAJ["trajectory"]],
+    ),
 ]
 
 ops_cstr_hdl = [
@@ -979,7 +997,9 @@ class ForceDistributionSolver:
 def memoize(func):
     @wraps(func)
     def decorator(self, *args, **kwargs):
-        key = args + tuple(kwargs.items())
+        # Scope by func identity so e.g. position(uri) and quantity(uri)
+        # don't collide on the same (uri,) cache key.
+        key = (func.__qualname__,) + args + tuple(kwargs.items())
         if key not in self.cache:
             self.cache[key] = func(self, *args, **kwargs)
         return self.cache[key]
@@ -1584,6 +1604,11 @@ class Parser:
             if GEOM_COORD["PoseCoordinate"] in self.g[id_ : RDF["type"]]:
                 return self.pose(id_)
             return PoseQuantity(self.id(id_), QuantityKind(quantity_kind), Unit(unit), has_view, roles=self.roles(id_))
+        if (
+            GEOM_REL["Position"] in self.g[id_ : RDF["type"]]
+            and GEOM_COORD["PositionCoordinate"] in self.g[id_ : RDF["type"]]
+        ):
+            return self.position(id_)
         if TRAJ["Trajectory"] in self.g[id_ : RDF["type"]]:
             value_kind_node = next(
                 (k for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]] if k != TRAJ.Trajectory),
@@ -1681,7 +1706,8 @@ class Parser:
 
             subobject = self.quantity(self.g.value(view, MAP["subobject"]))
             subspace = self.subspace(self.g.value(view, MAP["subspace"]))
-            axis = self.axis(self.g.value(view, MAP["axis"]))
+            axis_node = self.g.value(view, MAP["axis"])
+            axis = self.axis(axis_node) if axis_node is not None else None
 
             assert superobject is not None
             view_map[self.id(subobject.id)] = View(

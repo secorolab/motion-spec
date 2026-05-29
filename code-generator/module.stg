@@ -104,7 +104,7 @@ view-access-expr(view) ::= <<
 >>
 
 view-access-expr-Pose-Position(view) ::= <<
-shared.<view.superobject.id>.p[<axis-to-index.(view.axis)>]
+<if(view.axis)>shared.<view.superobject.id>.p[<axis-to-index.(view.axis)>]<else>shared.<view.superobject.id>.p<endif>
 >>
 
 view-access-expr-Pose-Rotation(view) ::= <<
@@ -151,7 +151,7 @@ KDL::Frame <var.id>;
 >>
 
 shared-member-Position(var) ::= <<
-KDL::Vector <var.id> = KDL::Vector(<var.position; separator=", ">);
+KDL::Vector <var.id><if(var.position)> = KDL::Vector(<var.position; separator=", ">)<endif>;
 >>
 
 shared-member-VelocityTwist(var) ::= <<
@@ -231,6 +231,55 @@ emit-call-Lerp(closure, views) ::= <<
     const KDL::Frame _lerp_goal_<closure.trajectory> = <closure.goal_expr>;
 <if(closure.assign_goal)>    shared.<closure.goal> = _lerp_goal_<closure.trajectory>;
 <endif>    shared.<closure.trajectory> = KDL::addDelta(shared.<closure.start>, KDL::diff(shared.<closure.start>, _lerp_goal_<closure.trajectory>), motion_spec::runtime::smoothstep(<access-expr(closure.alpha, views)>));
+}
+>>
+
+emit-call-Circle(closure, views) ::= <<
+{
+    const double _s_<closure.trajectory>     = motion_spec::runtime::smoothstep(<access-expr(closure.alpha, views)>);
+    const double _angle_<closure.trajectory> = 2.0 * M_PI * _s_<closure.trajectory>;
+    KDL::Vector _n_<closure.trajectory>   = shared.<closure.plane_normal>;
+    _n_<closure.trajectory>.Normalize();
+    const KDL::Vector _ref_<closure.trajectory> = motion_spec::runtime::plane_reference(_n_<closure.trajectory>);
+    const KDL::Vector _pos_<closure.trajectory> = shared.<closure.center>
+        + KDL::Rotation::Rot(_n_<closure.trajectory>, _angle_<closure.trajectory>) * (_ref_<closure.trajectory> * shared.<closure.radius>);
+    shared.<closure.trajectory> = KDL::Frame(shared.<closure.orientation>.M, _pos_<closure.trajectory>);
+}
+>>
+
+emit-call-SemiCircle(closure, views) ::= <<
+{
+    const double _s_<closure.trajectory>      = motion_spec::runtime::smoothstep(<access-expr(closure.alpha, views)>);
+    KDL::Vector _n_<closure.trajectory> = shared.<closure.plane_normal>;
+    _n_<closure.trajectory>.Normalize();
+    const KDL::Vector _chord_<closure.trajectory> = shared.<closure.end> - shared.<closure.start>;
+    const KDL::Vector _mid_<closure.trajectory>   = 0.5 * (shared.<closure.start> + shared.<closure.end>);
+    const double _h_chord_<closure.trajectory>    = 0.5 * _chord_<closure.trajectory>.Norm();
+    const double _h_<closure.trajectory>          = std::sqrt(std::max(0.0,
+        shared.<closure.radius> * shared.<closure.radius> - _h_chord_<closure.trajectory> * _h_chord_<closure.trajectory>));
+    KDL::Vector _perp_<closure.trajectory>        = _n_<closure.trajectory> * _chord_<closure.trajectory>;
+    _perp_<closure.trajectory>.Normalize();
+    const KDL::Vector _center_<closure.trajectory> = _mid_<closure.trajectory> + _h_<closure.trajectory> * _perp_<closure.trajectory>;
+    const double _angle_<closure.trajectory>       = M_PI * _s_<closure.trajectory>;
+    const KDL::Vector _r0_<closure.trajectory>     = shared.<closure.start> - _center_<closure.trajectory>;
+    const KDL::Vector _pos_<closure.trajectory>    = _center_<closure.trajectory>
+        + KDL::Rotation::Rot(_n_<closure.trajectory>, _angle_<closure.trajectory>) * _r0_<closure.trajectory>;
+    shared.<closure.trajectory> = KDL::Frame(shared.<closure.orientation>.M, _pos_<closure.trajectory>);
+}
+>>
+
+emit-call-Helix(closure, views) ::= <<
+{
+    const double _s_<closure.trajectory>     = motion_spec::runtime::smoothstep(<access-expr(closure.alpha, views)>);
+    const double _angle_<closure.trajectory> = shared.<closure.revolutions> * 2.0 * M_PI * _s_<closure.trajectory>;
+    const double _rise_<closure.trajectory>  = shared.<closure.pitch> * shared.<closure.revolutions> * _s_<closure.trajectory>;
+    KDL::Vector _ax_<closure.trajectory>  = shared.<closure.axis>;
+    _ax_<closure.trajectory>.Normalize();
+    const KDL::Vector _ref_<closure.trajectory> = motion_spec::runtime::plane_reference(_ax_<closure.trajectory>);
+    const KDL::Vector _pos_<closure.trajectory> = shared.<closure.center>
+        + KDL::Rotation::Rot(_ax_<closure.trajectory>, _angle_<closure.trajectory>) * (_ref_<closure.trajectory> * shared.<closure.radius>)
+        + _ax_<closure.trajectory> * _rise_<closure.trajectory>;
+    shared.<closure.trajectory> = KDL::Frame(shared.<closure.orientation>.M, _pos_<closure.trajectory>);
 }
 >>
 
@@ -1023,6 +1072,25 @@ inline KDL::Frame interpolate_pose_lerp(
         r = start.M * KDL::Rotation::Rot(axis, angle * s);
     }
     return KDL::Frame(r, p);
+}
+
+// Returns a unit vector perpendicular to `n`, chosen by crossing `n` with the
+// world axis least aligned with it (so the cross product is well-conditioned).
+inline KDL::Vector plane_reference(const KDL::Vector &n) {
+    const double ax = std::abs(n.x());
+    const double ay = std::abs(n.y());
+    const double az = std::abs(n.z());
+    KDL::Vector pick;
+    if (ax \<= ay && ax \<= az) {
+        pick = KDL::Vector(1.0, 0.0, 0.0);
+    } else if (ay \<= az) {
+        pick = KDL::Vector(0.0, 1.0, 0.0);
+    } else {
+        pick = KDL::Vector(0.0, 0.0, 1.0);
+    }
+    KDL::Vector perp = n * pick;
+    perp.Normalize();
+    return perp;
 }
 inline constexpr double kDefaultTrajectoryDuration = 8.0;
 <if(has_mobile_base)>

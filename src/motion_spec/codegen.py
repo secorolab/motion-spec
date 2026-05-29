@@ -206,6 +206,13 @@ def _annotate_runtime_robots(ir: dict, unique_motions: list, backend: str) -> No
         owner_by_runtime.setdefault(runtime_id, solver_id)
         solver["runtime_id"] = runtime_id
         solver["runtime_owner"] = solver_id == owner_by_runtime[runtime_id]
+        # ST4's <if(x)> treats "" as truthy. Convert empty strings to None so
+        # the template's <if(solver.tool_body)> branch is correctly skipped
+        # for bare robots (no gripper / tool attached).
+        if not solver.get("tool_body"):
+            solver["tool_body"] = None
+        if not solver.get("tcp_site"):
+            solver["tcp_site"] = None
 
     for motion_list in (ir.get("motions", []), unique_motions):
         for motion in motion_list:
@@ -483,7 +490,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
             progress_ids: list[str] = []
             for step in motion.get("while_schedule", []):
                 closure = closures.get(step)
-                if not closure or closure.get("type") != "Lerp":
+                if not closure or closure.get("type") not in {"Lerp", "Circle", "SemiCircle", "Helix"}:
                     continue
                 alpha_id = closure.get("alpha")
                 alpha_data = data_by_id.get(alpha_id) or {}

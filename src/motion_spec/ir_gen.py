@@ -39,6 +39,7 @@ from motion_spec.namespace import (
     MJ,
     MOT,
     MOT_EXT,
+    POLY,
     TRAJ,
     RT,
     CSTR_HDL,
@@ -684,12 +685,12 @@ class Controller:
     control_signal: Quantity
     error_signal: Quantity | None = None
     reference_signal: Quantity | None = None
-    proportional_gain: float = 0.0
-    integral_gain: float = 0.0
-    derivative_gain: float = 0.0
+    proportional_gain: float | None = None
+    integral_gain: float | None = None
+    derivative_gain: float | None = None
     decay_rate: float | None = None
-    stiffness: float = 0.0
-    damping: float = 0.0
+    stiffness: float | None = None
+    damping: float | None = None
     type: str = "Controller"
 
 
@@ -913,11 +914,9 @@ class SceneAttachment:
     attach_to: str
     attach_kind: str = "Body"
     prefix: str = ""
-    pos: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
-    euler: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    pos: list[float] | None = None
+    euler: list[float] | None = None
     actuator: str = ""
-    open_command: float = 0.0
-    closed_command: float = 0.0
     type: str = field(default="SceneAttachment")
 
 
@@ -928,8 +927,8 @@ class SceneRobot:
     prefix: str = ""
     attach_kind: str = "World"
     attach_name: str = ""
-    pos: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
-    euler: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    pos: list[float] | None = None
+    euler: list[float] | None = None
     attachments: list[SceneAttachment] = field(default_factory=list)
     type: str = field(default="SceneRobot")
 
@@ -941,14 +940,14 @@ class SceneObjectSpec:
     path: str = ""
     attach_kind: str = "World"
     attach_name: str = ""
-    pos: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
-    euler: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    pos: list[float] | None = None
+    euler: list[float] | None = None
     fixed: bool = False
-    shape: str = "BOX"
-    size: list[float] = field(default_factory=lambda: [0.03, 0.03, 0.03])
-    color: list[float] = field(default_factory=lambda: [0.1, 0.35, 1.0, 1.0])
-    mass: float = 0.1
-    friction: list[float] = field(default_factory=lambda: [0.5, 0.005, 0.0001])
+    shape: str | None = None
+    size: list[float] | None = None
+    color: list[float] | None = None
+    mass: float | None = None
+    friction: list[float] | None = None
     type: str = field(default="SceneObjectSpec")
 
 
@@ -1248,8 +1247,10 @@ class Parser:
         control_signal = self.quantity(self.g.value(id_, CSTR_HDL["control-signal"]))
 
         if is_pid:
-            assert error_signal is not None, f"PID controller {id_} must have cstr-hdl:error-signal"
-            assert reference_signal is None, f"PID controller {id_} must not have cstr-hdl:reference-signal"
+            if error_signal is None:
+                raise ValueError(f"PID controller '{self.id(id_)}' must have cstr-hdl:error-signal.")
+            if reference_signal is not None:
+                raise ValueError(f"PID controller '{self.id(id_)}' must not have cstr-hdl:reference-signal.")
             decay_rate = None
             if CSTR_HDL["DecayingIntegralTerm"] in self.g[id_ : RDF["type"]]:
                 decay_rate = self.g.value(id_, CSTR_HDL["decay-rate"]).value
@@ -1257,25 +1258,29 @@ class Parser:
                 id=self.id(id_),
                 control_signal=control_signal,
                 error_signal=error_signal,
-                proportional_gain=self._optional_float(id_, CSTR_HDL["proportional-gain"], 0.0),
-                integral_gain=self._optional_float(id_, CSTR_HDL["integral-gain"], 0.0),
-                derivative_gain=self._optional_float(id_, CSTR_HDL["derivative-gain"], 0.0),
+                proportional_gain=self._required_float(id_, CSTR_HDL["proportional-gain"]),
+                integral_gain=self._required_float(id_, CSTR_HDL["integral-gain"]),
+                derivative_gain=self._required_float(id_, CSTR_HDL["derivative-gain"]),
                 decay_rate=decay_rate,
                 type=self.id(CSTR_HDL.ProportionalIntegralDerivative),
             )
         if is_impedance:
-            assert error_signal is not None, f"Impedance controller {id_} must have cstr-hdl:error-signal"
-            assert reference_signal is None, f"Impedance controller {id_} must not have cstr-hdl:reference-signal"
+            if error_signal is None:
+                raise ValueError(f"Impedance controller '{self.id(id_)}' must have cstr-hdl:error-signal.")
+            if reference_signal is not None:
+                raise ValueError(f"Impedance controller '{self.id(id_)}' must not have cstr-hdl:reference-signal.")
             return Controller(
                 id=self.id(id_),
                 control_signal=control_signal,
                 error_signal=error_signal,
-                stiffness=self._optional_float(id_, CSTR_HDL["stiffness"], 0.0),
-                damping=self._optional_float(id_, CSTR_HDL["damping"], 0.0),
+                stiffness=self._required_float(id_, CSTR_HDL["stiffness"]),
+                damping=self._required_float(id_, CSTR_HDL["damping"]),
                 type=self.id(CSTR_HDL.ImpedanceController),
             )
-        assert reference_signal is not None, f"FeedForward controller {id_} must have cstr-hdl:reference-signal"
-        assert error_signal is None, f"FeedForward controller {id_} must not have cstr-hdl:error-signal"
+        if reference_signal is None:
+            raise ValueError(f"FeedForward controller '{self.id(id_)}' must have cstr-hdl:reference-signal.")
+        if error_signal is not None:
+            raise ValueError(f"FeedForward controller '{self.id(id_)}' must not have cstr-hdl:error-signal.")
         return Controller(
             id=self.id(id_),
             control_signal=control_signal,
@@ -1294,16 +1299,24 @@ class Parser:
             self.label(target_node) if target_node is not None else "",
         )
 
-    def _optional_float(self, subject, predicate, default: float) -> float:
+    def _optional_float(self, subject, predicate) -> float | None:
         value = self.g.value(subject, predicate)
         if value is None:
-            return default
+            return None
         literal = value if isinstance(value, rdflib.Literal) else self.g.value(value, QUDT_SCHEMA.value)
         if literal is None:
             raise ValueError(
                 f"Controller '{self.id(subject)}' property '{self.id(predicate)}' must be a literal or a node with qudt:value."
             )
         return float(literal.value)
+
+    def _required_float(self, subject, predicate) -> float:
+        value = self._optional_float(subject, predicate)
+        if value is None:
+            raise ValueError(
+                f"Controller '{self.id(subject)}' is missing required property '{self.id(predicate)}'."
+            )
+        return value
 
     @memoize
     def guarded_motion(self, id_):
@@ -2579,37 +2592,41 @@ def _dedupe_by_id(items):
     return result
 
 
-def _xyz_or_zero(g, node):
+def _xyz_or_none(g, node):
     if node is None:
-        return [0.0, 0.0, 0.0]
+        return None
     values = [g.value(node, GEOM_COORD[axis]) for axis in ("x", "y", "z")]
     if any(v is None for v in values):
-        return [0.0, 0.0, 0.0]
+        return None
     return [float(v.value) for v in values]
 
 
 def _orientation_degrees(g, node):
-    result = {"roll": 0.0, "pitch": 0.0, "yaw": 0.0}
+    result: dict[str, float | None] = {"roll": None, "pitch": None, "yaw": None}
     if node is None:
-        return [0.0, 0.0, 0.0]
+        return None
     for coord in g.objects(node, GEOM_COORD["has-coordinate"]):
         axis = str(g.value(coord, GEOM_COORD["angle-axis"]) or "")
         if axis not in result:
             continue
         value_node = g.value(coord, QUDT_SCHEMA.value)
-        value = 0.0 if value_node is None else float(value_node.value)
+        if value_node is None:
+            continue
+        value = float(value_node.value)
         unit = str(g.value(coord, QUDT_SCHEMA.unit) or "")
         if unit.endswith("RAD"):
             value = math.degrees(value)
         result[axis] = value
+    if any(value is None for value in result.values()):
+        return None
     return [result["roll"], result["pitch"], result["yaw"]]
 
 
 def _position_of(g, obj_node):
     for pos_node in g.subjects(GEOM_REL["of"], obj_node):
         if GEOM_COORD["PositionCoordinate"] in g[pos_node:RDF.type]:
-            return _xyz_or_zero(g, pos_node)
-    return [0.0, 0.0, 0.0]
+            return _xyz_or_none(g, pos_node)
+    return None
 
 
 def _path_of_model(g, model_node):
@@ -2680,24 +2697,13 @@ def _attach_target_of(g, obj_node):
     kind = str(g.value(obj_node, MJ["attach-kind"]) or "world").title()
     if kind not in {"World", "Body", "Site", "Frame"}:
         kind = "World"
-    return kind, str(g.value(obj_node, MJ["attach-name"]) or "")
-
-
-def _prefix_from_tool_body(tool_body):
-    if "_" in tool_body:
-        return tool_body.rsplit("_", 1)[0] + "_"
-    return ""
-
-
-def _attachment_defaults(path, tool_body, attach_kind="Body"):
-    pos = [0.0, 0.0, 0.0]
-    euler = [0.0, 0.0, 0.0]
-    prefix = _prefix_from_tool_body(tool_body)
-    if attach_kind == "Body" and "robotiq_2f85" in path:
-        pos[2] = -0.061525
-        euler[0] = 180.0
-        prefix = prefix or "g_"
-    return prefix, pos, euler
+    name = str(g.value(obj_node, MJ["attach-name"]) or "")
+    target = g.value(obj_node, SLV["attached-to"])
+    if kind == "Site" and target is not None and ENV.Object in g[target:RDF.type]:
+        target_name = _id_from_uri(target)
+        if target_name and name and not name.startswith(f"{target_name}_{target_name}_"):
+            name = f"{target_name}_{name}"
+    return kind, name
 
 
 def _attachments_for_robot(g, env_node, robot_node, tool_body):
@@ -2711,17 +2717,24 @@ def _attachments_for_robot(g, env_node, robot_node, tool_body):
         if not path:
             continue
         attach_node = g.value(candidate, MJ["attach-to-body"])
-        attach_kind = str(g.value(candidate, MJ["attach-kind"]) or "body").title()
+        attach_kind_lit = g.value(candidate, MJ["attach-kind"])
+        if attach_kind_lit is None:
+            raise ValueError(
+                f"Attachment '{candidate}' is missing mj:attach-kind; "
+                f"add an 'attach-to:' entry to the .robmot model."
+            )
+        attach_kind = str(attach_kind_lit).title()
         if attach_kind not in {"Body", "Site", "Frame"}:
-            attach_kind = "Body"
+            raise ValueError(
+                f"Attachment '{candidate}' has unsupported attach-kind '{attach_kind}'; "
+                f"expected Body, Site, or Frame."
+            )
         attach_to = _site_name(g, attach_node) if attach_kind == "Site" else _mj_body_name(g, attach_node)
-        prefix, pos, euler = _attachment_defaults(path, tool_body, attach_kind)
-        prefix = str(g.value(candidate, MJ["attach-prefix"]) or prefix)
-        pos = _xyz_or_zero(g, g.value(candidate, MJ["attach-position"])) if g.value(candidate, MJ["attach-position"]) else pos
-        euler = _orientation_degrees(g, g.value(candidate, MJ["attach-orientation"])) if g.value(candidate, MJ["attach-orientation"]) else euler
+        prefix_lit = g.value(candidate, MJ["attach-prefix"])
+        prefix = str(prefix_lit) if prefix_lit is not None else ""
+        pos = _xyz_or_none(g, g.value(candidate, MJ["attach-position"]))
+        euler = _orientation_degrees(g, g.value(candidate, MJ["attach-orientation"]))
         actuator = str(g.value(candidate, MJ["actuator-name"]) or "")
-        open_command = g.value(candidate, MJ["open-command"])
-        closed_command = g.value(candidate, MJ["closed-command"])
         attachments.append(
             SceneAttachment(
                 id=_id_from_uri(candidate),
@@ -2732,8 +2745,6 @@ def _attachments_for_robot(g, env_node, robot_node, tool_body):
                 pos=pos,
                 euler=euler,
                 actuator=actuator,
-                open_command=0.0 if open_command is None else float(open_command.value),
-                closed_command=0.0 if closed_command is None else float(closed_command.value),
             )
         )
     return attachments
@@ -2777,21 +2788,45 @@ def _scene_from_graph(g):
             model_node = g.value(obj_node, ENV["has-object-model"])
             path = _path_of_model(g, model_node)
             body = _mj_body_name(g, obj_node) or _id_from_uri(obj_node)
-            shape = str(g.value(obj_node, MJ["shape"]) or "box").upper()
-            size = _xyz_or_zero(g, g.value(obj_node, MJ["size"])) if g.value(obj_node, MJ["size"]) else [0.03, 0.03, 0.03]
-            mass_node = g.value(obj_node, MJ["mass"])
+            obj_types = set(g[obj_node:RDF.type])
+            if POLY.CuboidWithSize in obj_types:
+                shape = "BOX"
+            else:
+                shape_lit = g.value(obj_node, MJ["shape"])
+                shape = str(shape_lit).upper() if shape_lit is not None else None
+            size_x = g.value(obj_node, POLY["x-size"])
+            size_y = g.value(obj_node, POLY["y-size"])
+            size_z = g.value(obj_node, POLY["z-size"])
+            size = (
+                [float(size_x.value), float(size_y.value), float(size_z.value)]
+                if size_x is not None and size_y is not None and size_z is not None
+                else None
+            )
+            mass_value = None
+            for mass_node in g.subjects(RBDYN_ENT["of-body"], obj_node):
+                if RBDYN_ENT.Mass in g[mass_node:RDF.type]:
+                    mv = g.value(mass_node, RBDYN_ENT.mass)
+                    if mv is not None:
+                        mass_value = float(mv.value)
+                        break
             attach_kind, attach_name = _attach_target_of(g, obj_node)
-            friction = [
-                float((g.value(obj_node, MJ["friction-slide"]) or rdflib.Literal(0.5)).value),
-                float((g.value(obj_node, MJ["friction-torsion"]) or rdflib.Literal(0.005)).value),
-                float((g.value(obj_node, MJ["friction-roll"]) or rdflib.Literal(0.0001)).value),
-            ]
-            color = [
-                float((g.value(obj_node, MJ["color-r"]) or rdflib.Literal(0.1)).value),
-                float((g.value(obj_node, MJ["color-g"]) or rdflib.Literal(0.35)).value),
-                float((g.value(obj_node, MJ["color-b"]) or rdflib.Literal(1.0)).value),
-                float((g.value(obj_node, MJ["color-a"]) or rdflib.Literal(1.0)).value),
-            ]
+            f_slide = g.value(obj_node, MJ["friction-slide"])
+            f_torsion = g.value(obj_node, MJ["friction-torsion"])
+            f_roll = g.value(obj_node, MJ["friction-roll"])
+            friction = (
+                [float(f_slide.value), float(f_torsion.value), float(f_roll.value)]
+                if f_slide is not None and f_torsion is not None and f_roll is not None
+                else None
+            )
+            c_r = g.value(obj_node, MJ["color-r"])
+            c_g = g.value(obj_node, MJ["color-g"])
+            c_b = g.value(obj_node, MJ["color-b"])
+            c_a = g.value(obj_node, MJ["color-a"])
+            color = (
+                [float(c_r.value), float(c_g.value), float(c_b.value), float(c_a.value)]
+                if c_r is not None and c_g is not None and c_b is not None and c_a is not None
+                else None
+            )
             scene.objects.append(
                 SceneObjectSpec(
                     id=_id_from_uri(obj_node),
@@ -2804,7 +2839,7 @@ def _scene_from_graph(g):
                     shape=shape,
                     size=size,
                     color=color,
-                    mass=0.1 if mass_node is None else float(mass_node.value),
+                    mass=mass_value,
                     friction=friction,
                 )
             )

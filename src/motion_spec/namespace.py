@@ -114,8 +114,6 @@ class MJ(DefinedNamespace):
         "attach-position",
         "attach-orientation",
         "actuator-name",
-        "open-command",
-        "closed-command",
         "shape",
         "size",
         "mass",
@@ -132,6 +130,33 @@ class MJ(DefinedNamespace):
     ]
 
     _NS = Namespace(f"{URI_SECORO_MM}/simulation/mujoco#")
+
+
+class POLY(DefinedNamespace):
+    Polytope: URIRef
+    Polygon: URIRef
+    Polyhedron: URIRef
+    Circle: URIRef
+    Cuboid: URIRef
+    CuboidWithSize: URIRef
+    Cylinder: URIRef
+
+    _extras = [
+        "x-size",
+        "y-size",
+        "z-size",
+        "radius",
+        "diameter",
+        "center",
+        "base",
+        "height",
+        "axis",
+        "points",
+        "faces",
+        "3DPolytope",
+    ]
+
+    _NS = Namespace(f"{URI_SECORO_MM}/geometry/polytope#")
 
 
 class GEOM_ENT(DefinedNamespace):
@@ -312,9 +337,12 @@ class GEOM_OP(DefinedNamespace):
 
 class RBDYN_ENT(DefinedNamespace):
     Wrench: URIRef
+    Mass: URIRef
+    mass: URIRef
 
     _extras = [
-        "reference-point"
+        "reference-point",
+        "of-body",
     ]
 
     _NS = Namespace(f"{URI_CR2B_MM}/newtonian-rigid-body-dynamics/structural-entities#")

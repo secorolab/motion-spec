@@ -157,7 +157,7 @@ app-arm-setup-mj_kdl(arm_solvers, scene) ::= <<
         object_spec.pos[1] = <object.pos_y>;
         object_spec.pos[2] = <object.pos_z>;
         object_spec.fixed = <object.fixed>;
-        object_spec.shape = mj_kdl::Shape::<object.shape>;
+<if(!object.has_path)>        object_spec.shape = mj_kdl::Shape::<object.shape>;
         object_spec.size[0] = <object.size_x>;
         object_spec.size[1] = <object.size_y>;
         object_spec.size[2] = <object.size_z>;
@@ -170,7 +170,7 @@ app-arm-setup-mj_kdl(arm_solvers, scene) ::= <<
         object_spec.friction[0] = <object.friction_slide>;
         object_spec.friction[1] = <object.friction_torsion>;
         object_spec.friction[2] = <object.friction_roll>;
-        mj_scene.objects.push_back(object_spec);
+<endif>        mj_scene.objects.push_back(object_spec);
     \}
 }; separator="\n">
 

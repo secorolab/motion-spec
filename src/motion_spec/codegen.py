@@ -231,10 +231,54 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     backend = ir.get("backend", "robif2b")
 
     def expand_vector_fields(item: dict, field: str) -> None:
-        values = item.get(field) or [0.0, 0.0, 0.0]
-        item[f"{field}_x"] = values[0] if len(values) > 0 else 0.0
-        item[f"{field}_y"] = values[1] if len(values) > 1 else 0.0
-        item[f"{field}_z"] = values[2] if len(values) > 2 else 0.0
+        values = item.get(field)
+        if values is None:
+            # Env placement shorthand: omitted position/orientation means zero/identity.
+            values = [0.0, 0.0, 0.0]
+        if not isinstance(values, list) or len(values) != 3:
+            item_id = item.get("id", "<unknown>")
+            raise ValueError(f"Scene item '{item_id}' has invalid '{field}'; expected three values.")
+        item[f"{field}_x"] = values[0]
+        item[f"{field}_y"] = values[1]
+        item[f"{field}_z"] = values[2]
+
+    def normalize_controller_gains(controller: dict) -> None:
+        ctrl_type = controller.get("type")
+        ctrl_id = controller.get("id", "<unknown>")
+        if ctrl_type == "ProportionalIntegralDerivative":
+            missing = [
+                name
+                for name, key in (
+                    ("Kp", "proportional_gain"),
+                    ("Ki", "integral_gain"),
+                    ("Kd", "derivative_gain"),
+                )
+                if controller.get(key) is None
+            ]
+            if missing:
+                raise ValueError(
+                    f"PID controller '{ctrl_id}' is missing required gain(s) {missing}; "
+                    f"all of Kp, Ki, Kd must be specified in the model."
+                )
+        elif ctrl_type == "ImpedanceController":
+            if controller.get("stiffness") is None or controller.get("damping") is None:
+                raise ValueError(f"Impedance controller '{ctrl_id}' requires stiffness and damping.")
+
+    def _require(obj_id: str, field: str, value):
+        if value is None:
+            raise ValueError(
+                f"Procedural scene object '{obj_id}' is missing required field "
+                f"'{field}'. Add it to the .robmot model — silent defaults are no "
+                f"longer applied."
+            )
+        return value
+
+    for handler in ir.get("cstr_hdl", []):
+        for controller in handler.get("controllers", []):
+            normalize_controller_gains(controller)
+    for motion in ir.get("motions", []):
+        for controller in motion.get("controllers", []):
+            normalize_controller_gains(controller)
 
     scene = ir.get("scene") or {}
     for robot in scene.get("robots", []):
@@ -246,17 +290,25 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     for obj in scene.get("objects", []):
         expand_vector_fields(obj, "pos")
         expand_vector_fields(obj, "euler")
-        expand_vector_fields(obj, "size")
-        color = obj.get("color") or [0.1, 0.35, 1.0, 1.0]
-        obj["color_r"] = color[0] if len(color) > 0 else 0.1
-        obj["color_g"] = color[1] if len(color) > 1 else 0.35
-        obj["color_b"] = color[2] if len(color) > 2 else 1.0
-        obj["color_a"] = color[3] if len(color) > 3 else 1.0
-        friction = obj.get("friction") or [0.5, 0.005, 0.0001]
-        obj["friction_slide"] = friction[0] if len(friction) > 0 else 0.5
-        obj["friction_torsion"] = friction[1] if len(friction) > 1 else 0.005
-        obj["friction_roll"] = friction[2] if len(friction) > 2 else 0.0001
         obj["has_path"] = bool(obj.get("path"))
+        if obj["has_path"]:
+            # Geometry comes from the MJCF/URDF asset; do not fabricate flat
+            # size/color/friction fields. The template skips this block when
+            # has_path is true.
+            continue
+        obj_id = obj.get("id", "<unknown>")
+        size = _require(obj_id, "size", obj.get("size"))
+        color = _require(obj_id, "color", obj.get("color"))
+        friction = _require(obj_id, "friction", obj.get("friction"))
+        _require(obj_id, "shape", obj.get("shape"))
+        _require(obj_id, "mass", obj.get("mass"))
+        obj["size_x"], obj["size_y"], obj["size_z"] = (float(size[0]), float(size[1]), float(size[2]))
+        obj["color_r"], obj["color_g"], obj["color_b"], obj["color_a"] = (
+            float(color[0]), float(color[1]), float(color[2]), float(color[3])
+        )
+        obj["friction_slide"], obj["friction_torsion"], obj["friction_roll"] = (
+            float(friction[0]), float(friction[1]), float(friction[2])
+        )
 
     def merge_list_by_id(dst: list, src: list) -> None:
         seen = {item.get("id") for item in dst if isinstance(item, dict)}
@@ -329,12 +381,12 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
             entry = components.setdefault(
                 pose_id,
                 {
-                    "position_x_expr": "0.0",
-                    "position_y_expr": "0.0",
-                    "position_z_expr": "0.0",
-                    "orientation_x_expr": "0.0",
-                    "orientation_y_expr": "0.0",
-                    "orientation_z_expr": "0.0",
+                    "position_x_expr": None,
+                    "position_y_expr": None,
+                    "position_z_expr": None,
+                    "orientation_x_expr": None,
+                    "orientation_y_expr": None,
+                    "orientation_z_expr": None,
                 },
             )
             axis = str(view.get("axis", "")).lower()
@@ -345,6 +397,12 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
                 continue
             prefix = "position" if view.get("subspace") == "Position" else "orientation"
             entry[f"{prefix}_{axis}_expr"] = component_expr(subobject, data_by_id, views)
+        for pose_id, parts in components.items():
+            missing = [name for name, value in parts.items() if value is None]
+            if missing:
+                raise ValueError(
+                    f"Declared pose '{pose_id}' is missing required components: {', '.join(missing)}."
+                )
         return components
 
     def enrich_lerp_closures(ir_payload: dict, pose_components: dict) -> None:

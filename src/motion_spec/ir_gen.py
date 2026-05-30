@@ -409,21 +409,28 @@ ops_generic = [
     ),
     Operator(
         type_=TRAJ["Circle"],
-        input=[TRAJ["center"], TRAJ["radius"], TRAJ["plane-normal"],
-               TRAJ["orientation"], TRAJ["alpha"]],
+        input=[TRAJ["start"], TRAJ["center"], TRAJ["plane-normal"],
+               TRAJ["alpha"]],
         output=[TRAJ["trajectory"]],
     ),
     Operator(
-        type_=TRAJ["SemiCircle"],
-        input=[TRAJ["start"], TRAJ["end"], TRAJ["radius"], TRAJ["plane-normal"],
-               TRAJ["orientation"], TRAJ["alpha"]],
+        type_=TRAJ["Arc"],
+        input=[TRAJ["start"], TRAJ["end"], TRAJ["amplitude"], TRAJ["plane-normal"],
+               TRAJ["alpha"]],
         output=[TRAJ["trajectory"]],
     ),
     Operator(
         type_=TRAJ["Helix"],
-        input=[TRAJ["center"], TRAJ["radius"], TRAJ["axis"], TRAJ["pitch"],
-               TRAJ["revolutions"], TRAJ["orientation"], TRAJ["alpha"]],
+        input=[TRAJ["start"], TRAJ["center"], TRAJ["axis"], TRAJ["pitch"],
+               TRAJ["revolutions"], TRAJ["alpha"]],
         output=[TRAJ["trajectory"]],
+    ),
+    Operator(
+        type_=TRAJ["Figure8"],
+        input=[TRAJ["anchor"], TRAJ["radius"], TRAJ["plane-normal"],
+               TRAJ["alpha"]],
+        output=[TRAJ["trajectory"]],
+        parameters=[TRAJ["form"]],
     ),
 ]
 
@@ -519,6 +526,17 @@ class Quantity:
     roles: list[str] = field(default_factory=list)
     reference_value: str | None = None
     type: str = field(default="Quantity")
+
+
+@dataclass
+class FreeVector:
+    id: str
+    quantity_kind: QuantityKind
+    unit: Unit
+    vector: list[float] | None
+    has_view: bool = False
+    roles: list[str] = field(default_factory=list)
+    type: str = field(default="FreeVector")
 
 
 @dataclass
@@ -1621,6 +1639,16 @@ class Parser:
                 has_view,
                 roles=self.roles(id_),
                 value_kind=self.quantity_kind(value_kind_node) if value_kind_node is not None else None,
+            )
+
+        if quantity_kind == "FreeVector" and GEOM_COORD["VectorXYZ"] in self.g[id_ : RDF["type"]]:
+            return FreeVector(
+                self.id(id_),
+                QuantityKind(quantity_kind),
+                Unit(unit),
+                self.parse_xyz(id_),
+                has_view,
+                self.roles(id_),
             )
 
         value = None

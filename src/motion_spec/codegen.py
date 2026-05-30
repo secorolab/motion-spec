@@ -490,7 +490,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
             progress_ids: list[str] = []
             for step in motion.get("while_schedule", []):
                 closure = closures.get(step)
-                if not closure or closure.get("type") not in {"Lerp", "Circle", "SemiCircle", "Helix"}:
+                if not closure or closure.get("type") not in {"Lerp", "Circle", "Arc", "Helix", "Figure8"}:
                     continue
                 alpha_id = closure.get("alpha")
                 alpha_data = data_by_id.get(alpha_id) or {}

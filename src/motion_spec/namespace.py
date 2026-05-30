@@ -209,7 +209,8 @@ class QUDT_QKIND(DefinedNamespace):
     AngularDistance: URIRef
     Length: URIRef
     Distance: URIRef
-    Vector: URIRef
+    FreeVector: URIRef
+    Dimensionless: URIRef
     PlaneAngle: URIRef
     Position: URIRef
     Direction: URIRef
@@ -460,21 +461,25 @@ class TRAJ(DefinedNamespace):
     Trajectory: URIRef
     Lerp: URIRef
     Circle: URIRef
-    SemiCircle: URIRef
+    Arc: URIRef
     Helix: URIRef
+    Figure8: URIRef
     Progress: URIRef
 
     start: URIRef
     goal: URIRef
     alpha: URIRef
     trajectory: URIRef
+    anchor: URIRef
     center: URIRef
     radius: URIRef
+    amplitude: URIRef
     end: URIRef
     axis: URIRef
     pitch: URIRef
     revolutions: URIRef
     orientation: URIRef
+    form: URIRef
 
     _extras = ["plane-normal"]
 

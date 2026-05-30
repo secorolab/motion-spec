@@ -154,6 +154,10 @@ shared-member-Position(var) ::= <<
 KDL::Vector <var.id><if(var.position)> = KDL::Vector(<var.position; separator=", ">)<endif>;
 >>
 
+shared-member-FreeVector(var) ::= <<
+KDL::Vector <var.id><if(var.vector)> = KDL::Vector(<var.vector; separator=", ">)<endif>;
+>>
+
 shared-member-VelocityTwist(var) ::= <<
 KDL::Twist <var.id>;
 >>
@@ -240,31 +244,38 @@ emit-call-Circle(closure, views) ::= <<
     const double _angle_<closure.trajectory> = 2.0 * M_PI * _s_<closure.trajectory>;
     KDL::Vector _n_<closure.trajectory>   = shared.<closure.plane_normal>;
     _n_<closure.trajectory>.Normalize();
-    const KDL::Vector _ref_<closure.trajectory> = motion_spec::runtime::plane_reference(_n_<closure.trajectory>);
+    // Radial arm from center to start: alpha=0 lands exactly on start, and the orbit
+    // radius is the in-plane distance between start and center (they may differ freely).
+    const KDL::Vector _arm_<closure.trajectory> = shared.<closure.start>.p - shared.<closure.center>;
     const KDL::Vector _pos_<closure.trajectory> = shared.<closure.center>
-        + KDL::Rotation::Rot(_n_<closure.trajectory>, _angle_<closure.trajectory>) * (_ref_<closure.trajectory> * shared.<closure.radius>);
-    shared.<closure.trajectory> = KDL::Frame(shared.<closure.orientation>.M, _pos_<closure.trajectory>);
+        + KDL::Rotation::Rot(_n_<closure.trajectory>, _angle_<closure.trajectory>) * _arm_<closure.trajectory>;
+    shared.<closure.trajectory> = KDL::Frame(shared.<closure.start>.M, _pos_<closure.trajectory>);
 }
 >>
 
-emit-call-SemiCircle(closure, views) ::= <<
+emit-call-Arc(closure, views) ::= <<
 {
-    const double _s_<closure.trajectory>      = motion_spec::runtime::smoothstep(<access-expr(closure.alpha, views)>);
+    const double _s_<closure.trajectory>    = motion_spec::runtime::smoothstep(<access-expr(closure.alpha, views)>);
     KDL::Vector _n_<closure.trajectory> = shared.<closure.plane_normal>;
     _n_<closure.trajectory>.Normalize();
-    const KDL::Vector _chord_<closure.trajectory> = shared.<closure.end> - shared.<closure.start>;
-    const KDL::Vector _mid_<closure.trajectory>   = 0.5 * (shared.<closure.start> + shared.<closure.end>);
-    const double _h_chord_<closure.trajectory>    = 0.5 * _chord_<closure.trajectory>.Norm();
-    const double _h_<closure.trajectory>          = std::sqrt(std::max(0.0,
-        shared.<closure.radius> * shared.<closure.radius> - _h_chord_<closure.trajectory> * _h_chord_<closure.trajectory>));
+    // Circular arc from start to end that bows out of the chord by `amplitude` (the
+    // sagitta). center, radius and swept angle are derived so the path begins at start,
+    // ends exactly at end, and apexes amplitude away from the chord midpoint.
+    // amplitude == |chord|/2 reproduces a clean semicircle (swept angle pi).
+    const KDL::Vector _chord_<closure.trajectory> = shared.<closure.end> - shared.<closure.start>.p;
+    const KDL::Vector _mid_<closure.trajectory>   = 0.5 * (shared.<closure.start>.p + shared.<closure.end>);
+    const double _m_<closure.trajectory>          = 0.5 * _chord_<closure.trajectory>.Norm();
     KDL::Vector _perp_<closure.trajectory>        = _n_<closure.trajectory> * _chord_<closure.trajectory>;
     _perp_<closure.trajectory>.Normalize();
-    const KDL::Vector _center_<closure.trajectory> = _mid_<closure.trajectory> + _h_<closure.trajectory> * _perp_<closure.trajectory>;
-    const double _angle_<closure.trajectory>       = M_PI * _s_<closure.trajectory>;
-    const KDL::Vector _r0_<closure.trajectory>     = shared.<closure.start> - _center_<closure.trajectory>;
-    const KDL::Vector _pos_<closure.trajectory>    = _center_<closure.trajectory>
-        + KDL::Rotation::Rot(_n_<closure.trajectory>, _angle_<closure.trajectory>) * _r0_<closure.trajectory>;
-    shared.<closure.trajectory> = KDL::Frame(shared.<closure.orientation>.M, _pos_<closure.trajectory>);
+    const double _a_<closure.trajectory>          = shared.<closure.amplitude>;
+    const double _R_<closure.trajectory>          = (_a_<closure.trajectory> * _a_<closure.trajectory> + _m_<closure.trajectory> * _m_<closure.trajectory>) / (2.0 * _a_<closure.trajectory>);
+    const double _d_<closure.trajectory>          = (_a_<closure.trajectory> * _a_<closure.trajectory> - _m_<closure.trajectory> * _m_<closure.trajectory>) / (2.0 * _a_<closure.trajectory>);
+    const KDL::Vector _center_<closure.trajectory> = _mid_<closure.trajectory> + _d_<closure.trajectory> * _perp_<closure.trajectory>;
+    const double _theta_<closure.trajectory>      = 2.0 * std::acos(std::max(-1.0, std::min(1.0, -_d_<closure.trajectory> / _R_<closure.trajectory>)));
+    const KDL::Vector _v0_<closure.trajectory>    = shared.<closure.start>.p - _center_<closure.trajectory>;
+    const KDL::Vector _pos_<closure.trajectory>   = _center_<closure.trajectory>
+        + KDL::Rotation::Rot(_n_<closure.trajectory>, -_theta_<closure.trajectory> * _s_<closure.trajectory>) * _v0_<closure.trajectory>;
+    shared.<closure.trajectory> = KDL::Frame(shared.<closure.start>.M, _pos_<closure.trajectory>);
 }
 >>
 
@@ -275,11 +286,56 @@ emit-call-Helix(closure, views) ::= <<
     const double _rise_<closure.trajectory>  = shared.<closure.pitch> * shared.<closure.revolutions> * _s_<closure.trajectory>;
     KDL::Vector _ax_<closure.trajectory>  = shared.<closure.axis>;
     _ax_<closure.trajectory>.Normalize();
-    const KDL::Vector _ref_<closure.trajectory> = motion_spec::runtime::plane_reference(_ax_<closure.trajectory>);
+    // Radial arm from center to start: alpha=0 lands exactly on start; the helix winds
+    // around the axis through center and rises along it (start and center may differ freely).
+    const KDL::Vector _arm_<closure.trajectory> = shared.<closure.start>.p - shared.<closure.center>;
     const KDL::Vector _pos_<closure.trajectory> = shared.<closure.center>
-        + KDL::Rotation::Rot(_ax_<closure.trajectory>, _angle_<closure.trajectory>) * (_ref_<closure.trajectory> * shared.<closure.radius>)
+        + KDL::Rotation::Rot(_ax_<closure.trajectory>, _angle_<closure.trajectory>) * _arm_<closure.trajectory>
         + _ax_<closure.trajectory> * _rise_<closure.trajectory>;
-    shared.<closure.trajectory> = KDL::Frame(shared.<closure.orientation>.M, _pos_<closure.trajectory>);
+    shared.<closure.trajectory> = KDL::Frame(shared.<closure.start>.M, _pos_<closure.trajectory>);
+}
+>>
+
+emit-call-Figure8(closure, views) ::= <<
+<({emit-call-Figure8-<closure.form>})(closure, views)>
+>>
+
+emit-call-Figure8-Gerono(closure, views) ::= <<
+{
+    const double _s_<closure.trajectory> = motion_spec::runtime::smoothstep(<access-expr(closure.alpha, views)>);
+    // Phase offset of pi/2 puts alpha=0 at the curve's center crossing (the anchor),
+    // so the path starts and ends at the anchor instead of darting out to a tip.
+    const double _t_<closure.trajectory> = 2.0 * M_PI * _s_<closure.trajectory> + 0.5 * M_PI;
+    KDL::Vector _n_<closure.trajectory>   = shared.<closure.plane_normal>;
+    _n_<closure.trajectory>.Normalize();
+    const KDL::Vector _u_<closure.trajectory> = motion_spec::runtime::plane_reference(_n_<closure.trajectory>);
+    const KDL::Vector _v_<closure.trajectory> = _n_<closure.trajectory> * _u_<closure.trajectory>;
+    const double _ct_<closure.trajectory> = std::cos(_t_<closure.trajectory>);
+    const double _st_<closure.trajectory> = std::sin(_t_<closure.trajectory>);
+    const KDL::Vector _pos_<closure.trajectory> = shared.<closure.anchor>.p
+        + shared.<closure.radius> * (_ct_<closure.trajectory> * _u_<closure.trajectory>
+            + (_st_<closure.trajectory> * _ct_<closure.trajectory>) * _v_<closure.trajectory>);
+    shared.<closure.trajectory> = KDL::Frame(shared.<closure.anchor>.M, _pos_<closure.trajectory>);
+}
+>>
+
+emit-call-Figure8-Bernoulli(closure, views) ::= <<
+{
+    const double _s_<closure.trajectory> = motion_spec::runtime::smoothstep(<access-expr(closure.alpha, views)>);
+    // Phase offset of pi/2 puts alpha=0 at the curve's center crossing (the anchor),
+    // so the path starts and ends at the anchor instead of darting out to a tip.
+    const double _t_<closure.trajectory> = 2.0 * M_PI * _s_<closure.trajectory> + 0.5 * M_PI;
+    KDL::Vector _n_<closure.trajectory>   = shared.<closure.plane_normal>;
+    _n_<closure.trajectory>.Normalize();
+    const KDL::Vector _u_<closure.trajectory> = motion_spec::runtime::plane_reference(_n_<closure.trajectory>);
+    const KDL::Vector _v_<closure.trajectory> = _n_<closure.trajectory> * _u_<closure.trajectory>;
+    const double _ct_<closure.trajectory> = std::cos(_t_<closure.trajectory>);
+    const double _st_<closure.trajectory> = std::sin(_t_<closure.trajectory>);
+    const double _d_<closure.trajectory>  = 1.0 + _st_<closure.trajectory> * _st_<closure.trajectory>;
+    const KDL::Vector _pos_<closure.trajectory> = shared.<closure.anchor>.p
+        + shared.<closure.radius> * ((_ct_<closure.trajectory> / _d_<closure.trajectory>) * _u_<closure.trajectory>
+            + ((_st_<closure.trajectory> * _ct_<closure.trajectory>) / _d_<closure.trajectory>) * _v_<closure.trajectory>);
+    shared.<closure.trajectory> = KDL::Frame(shared.<closure.anchor>.M, _pos_<closure.trajectory>);
 }
 >>
 

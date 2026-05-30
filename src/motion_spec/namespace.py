@@ -393,6 +393,7 @@ class MAP(DefinedNamespace):
     View: URIRef
     DirectionCoordinateView: URIRef
     PoseCoordinateView: URIRef
+    PoseOrientationView: URIRef
     VelocityTwistCoordinateView: URIRef
     AccelerationTwistCoordinateView: URIRef
     WrenchCoordinateView: URIRef

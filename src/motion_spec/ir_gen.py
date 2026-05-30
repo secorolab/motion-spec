@@ -2776,6 +2776,52 @@ def _attachments_for_robot(g, env_node, robot_node, tool_body):
     return attachments
 
 
+def _color_rgba(g, owner_node):
+    """Read a grouped mj:ColorRGBA value node (via mj:color) as [r, g, b, a].
+
+    Returns None when the owner has no colour, so callers can fall back to their
+    own defaults. Shared by scene objects and the trajectory-trace overlay.
+    """
+    color_node = g.value(owner_node, MJ["color"])
+    if color_node is None:
+        return None
+    channels = [g.value(color_node, MJ[f"color-{ch}"]) for ch in ("r", "g", "b", "a")]
+    if any(c is None for c in channels):
+        return None
+    return [float(c.toPython()) for c in channels]
+
+
+def _trace_from_graph(g):
+    """Read the optional MuJoCo trajectory-trace overlay config from the graph.
+
+    The trace is a viewer-only overlay (a polyline of recent EE positions). When
+    no TRACE block is declared it stays disabled, so headless runs and non-MuJoCo
+    runtimes cost nothing. Defaults match the wrapper's built-in warm orange.
+    """
+    trace = {
+        "enabled": False,
+        "length": 4096,
+        "color_r": 1.0,
+        "color_g": 0.5,
+        "color_b": 0.1,
+        "color_a": 1.0,
+    }
+    trace_node = next(g.objects(predicate=MJ["has-trace"]), None)
+    if trace_node is None:
+        return trace
+
+    enabled = g.value(trace_node, MJ["trace-enabled"])
+    if enabled is not None:
+        trace["enabled"] = bool(enabled.toPython())
+    length = g.value(trace_node, MJ["trace-length"])
+    if length is not None:
+        trace["length"] = int(length.toPython())
+    color = _color_rgba(g, trace_node)
+    if color is not None:
+        trace["color_r"], trace["color_g"], trace["color_b"], trace["color_a"] = color
+    return trace
+
+
 def _scene_from_graph(g):
     scene = SceneSpec()
     for env_node in g.subjects(RDF.type, ENV.Workspace):
@@ -2844,15 +2890,7 @@ def _scene_from_graph(g):
                 if f_slide is not None and f_torsion is not None and f_roll is not None
                 else None
             )
-            c_r = g.value(obj_node, MJ["color-r"])
-            c_g = g.value(obj_node, MJ["color-g"])
-            c_b = g.value(obj_node, MJ["color-b"])
-            c_a = g.value(obj_node, MJ["color-a"])
-            color = (
-                [float(c_r.value), float(c_g.value), float(c_b.value), float(c_a.value)]
-                if c_r is not None and c_g is not None and c_b is not None and c_a is not None
-                else None
-            )
+            color = _color_rgba(g, obj_node)
             scene.objects.append(
                 SceneObjectSpec(
                     id=_id_from_uri(obj_node),
@@ -3162,6 +3200,7 @@ def generate_ir(manifest_path):
         "base_force_solvers": slv_base_frc,
         "backend": backend,
         "scene": scene,
+        "trace": _trace_from_graph(g),
     }
 
 

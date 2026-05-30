@@ -1735,12 +1735,16 @@ app-arm-runtime-step(backend, arm_solvers) ::= <<
 <({app-arm-runtime-step-<backend>})(arm_solvers)>
 >>
 
+app-arm-trace-update(backend, arm_solvers, trace) ::= <<
+<({app-arm-trace-update-<backend>})(arm_solvers, trace)>
+>>
+
 
 app-headless-telemetry(backend, shared_data, arm_solvers) ::= <<
 <({app-headless-telemetry-<backend>})(shared_data, arm_solvers)>
 >>
 
-app_main(motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene) ::= <<
+app_main(motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene, trace) ::= <<
 #include "runtime.hpp"
 #include "shared_state.hpp"
 <if(has_mobile_base)>
@@ -1792,6 +1796,7 @@ int main(int argc, char **argv) {
         apply_mobile_base(mobile_base_state_instance, shared, robot);
 <endif>
 <if(has_arm)>
+<app-arm-trace-update(backend, arm_solvers, trace)>
 <app-arm-runtime-step(backend, arm_solvers)>
 <endif>
 
@@ -1814,7 +1819,7 @@ int main(int argc, char **argv) {
 }
 >>
 
-ref_main(motions, unique_motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, shared_data, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene) ::= <<
+ref_main(motions, unique_motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, shared_data, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene, trace) ::= <<
 #include "runtime.hpp"
 #include "shared_state.hpp"
 <if(has_mobile_base)>
@@ -1900,6 +1905,7 @@ int main(int argc, char **argv) {
             break;
         }
 <if(has_arm)>
+<app-arm-trace-update(backend, arm_solvers, trace)>
 <app-arm-runtime-step(backend, arm_solvers)>
 <endif>
         ++_step;

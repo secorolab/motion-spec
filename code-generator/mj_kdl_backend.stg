@@ -239,6 +239,35 @@ app-arm-runtime-step-mj_kdl(arm_solvers) ::= <<
 <endif>}; separator="">
 >>
 
+app-arm-trace-update-mj_kdl(arm_solvers, trace) ::= <<
+<if(trace.enabled)>
+        if (!headless) {
+            // Live EE trajectory trace: bounded ring of recent EE positions in
+            // world frame, redrawn each frame as a polyline overlay. pose_ee_base
+            // is FK output in the chain-root frame, so lift it into world via the
+            // base body pose (cached once; base is fixed). Length and colour come
+            // from the ENVIRONMENT TRACE block in the .robmot model.
+            static std::deque\<KDL::Vector> _trace;
+            static constexpr size_t kTraceMax = <trace.length>; // bounded by user_scn maxgeom (init_window_sim)
+            static constexpr float kTraceRGBA[4] = {
+                <trace.color_r>f, <trace.color_g>f, <trace.color_b>f, <trace.color_a>f};
+            static bool _trace_base_ok = false;
+            static KDL::Frame _trace_world_T_base;
+            if (!_trace_base_ok) {
+                _trace_base_ok = mj_kdl::get_body_frame(
+                    mj_<first(arm_solvers).runtime_id>.model, mj_<first(arm_solvers).runtime_id>.data,
+                    "<first(arm_solvers).chain_root>", &_trace_world_T_base);
+            }
+            _trace.push_back(_trace_world_T_base * shared.pose_ee_base.p);
+            if (_trace.size() > kTraceMax) _trace.pop_front();
+            mj_kdl::clear_trace(&mj_viewer);
+            for (size_t _i = 1; _i \< _trace.size(); ++_i) {
+                mj_kdl::add_trace_segment(&mj_viewer, _trace[_i - 1], _trace[_i], kTraceRGBA);
+            }
+        }
+<endif>
+>>
+
 app-headless-telemetry-mj_kdl(shared_data, arm_solvers) ::= <<
     if (headless) {
         std::cout \<\< "steps=" \<\< _step \<\< " sim_time=" \<\< mj_<first(arm_solvers).runtime_id>.data->time \<\< "\n";

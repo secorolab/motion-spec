@@ -129,5 +129,8 @@ app-arm-runtime-step-robif2b(arm_solvers) ::= <<
 <endif>}; separator="">
 >>
 
+app-arm-trace-update-robif2b(arm_solvers, trace) ::= <<
+>>
+
 app-arm-cleanup-robif2b(has_arm) ::= <<
 >>

@@ -102,10 +102,16 @@ class MJ(DefinedNamespace):
     MjcfModel: URIRef
     MuJoCoBody: URIRef
     MuJoCoSite: URIRef
+    TrajectoryTrace: URIRef
+    ColorRGBA: URIRef
 
     _extras = [
         "body-name",
         "site-name",
+        "color",
+        "has-trace",
+        "trace-enabled",
+        "trace-length",
         "attach-to-body",
         "attach-kind",
         "attach-name",

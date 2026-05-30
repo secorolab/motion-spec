@@ -263,18 +263,24 @@ emit-call-Arc(closure, views) ::= <<
     // ends exactly at end, and apexes amplitude away from the chord midpoint.
     // amplitude == |chord|/2 reproduces a clean semicircle (swept angle pi).
     const KDL::Vector _chord_<closure.trajectory> = shared.<closure.end> - shared.<closure.start>.p;
-    const KDL::Vector _mid_<closure.trajectory>   = 0.5 * (shared.<closure.start>.p + shared.<closure.end>);
-    const double _m_<closure.trajectory>          = 0.5 * _chord_<closure.trajectory>.Norm();
-    KDL::Vector _perp_<closure.trajectory>        = _n_<closure.trajectory> * _chord_<closure.trajectory>;
-    _perp_<closure.trajectory>.Normalize();
     const double _a_<closure.trajectory>          = shared.<closure.amplitude>;
-    const double _R_<closure.trajectory>          = (_a_<closure.trajectory> * _a_<closure.trajectory> + _m_<closure.trajectory> * _m_<closure.trajectory>) / (2.0 * _a_<closure.trajectory>);
-    const double _d_<closure.trajectory>          = (_a_<closure.trajectory> * _a_<closure.trajectory> - _m_<closure.trajectory> * _m_<closure.trajectory>) / (2.0 * _a_<closure.trajectory>);
-    const KDL::Vector _center_<closure.trajectory> = _mid_<closure.trajectory> + _d_<closure.trajectory> * _perp_<closure.trajectory>;
-    const double _theta_<closure.trajectory>      = 2.0 * std::acos(std::max(-1.0, std::min(1.0, -_d_<closure.trajectory> / _R_<closure.trajectory>)));
-    const KDL::Vector _v0_<closure.trajectory>    = shared.<closure.start>.p - _center_<closure.trajectory>;
-    const KDL::Vector _pos_<closure.trajectory>   = _center_<closure.trajectory>
-        + KDL::Rotation::Rot(_n_<closure.trajectory>, -_theta_<closure.trajectory> * _s_<closure.trajectory>) * _v0_<closure.trajectory>;
+    const double _chordlen_<closure.trajectory>   = _chord_<closure.trajectory>.Norm();
+    // Degenerate input (end == start, or non-positive amplitude) would divide by zero /
+    // normalize a zero vector; hold at start instead of emitting NaN.
+    KDL::Vector _pos_<closure.trajectory> = shared.<closure.start>.p;
+    if (_chordlen_<closure.trajectory> > 1e-9 && _a_<closure.trajectory> > 1e-9) {
+        const KDL::Vector _mid_<closure.trajectory> = 0.5 * (shared.<closure.start>.p + shared.<closure.end>);
+        const double _m_<closure.trajectory>        = 0.5 * _chordlen_<closure.trajectory>;
+        KDL::Vector _perp_<closure.trajectory>      = _n_<closure.trajectory> * _chord_<closure.trajectory>;
+        _perp_<closure.trajectory>.Normalize();
+        const double _R_<closure.trajectory>        = (_a_<closure.trajectory> * _a_<closure.trajectory> + _m_<closure.trajectory> * _m_<closure.trajectory>) / (2.0 * _a_<closure.trajectory>);
+        const double _d_<closure.trajectory>        = (_a_<closure.trajectory> * _a_<closure.trajectory> - _m_<closure.trajectory> * _m_<closure.trajectory>) / (2.0 * _a_<closure.trajectory>);
+        const KDL::Vector _center_<closure.trajectory> = _mid_<closure.trajectory> + _d_<closure.trajectory> * _perp_<closure.trajectory>;
+        const double _theta_<closure.trajectory>    = 2.0 * std::acos(std::max(-1.0, std::min(1.0, -_d_<closure.trajectory> / _R_<closure.trajectory>)));
+        const KDL::Vector _v0_<closure.trajectory>  = shared.<closure.start>.p - _center_<closure.trajectory>;
+        _pos_<closure.trajectory> = _center_<closure.trajectory>
+            + KDL::Rotation::Rot(_n_<closure.trajectory>, -_theta_<closure.trajectory> * _s_<closure.trajectory>) * _v0_<closure.trajectory>;
+    }
     shared.<closure.trajectory> = KDL::Frame(shared.<closure.start>.M, _pos_<closure.trajectory>);
 }
 >>

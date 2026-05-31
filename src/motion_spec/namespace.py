@@ -371,7 +371,6 @@ class RBDYN_OP(DefinedNamespace):
     RotateWrenchToProximalWithPose: URIRef
     WrenchFromPositionDirectionAndMagnitude: URIRef
     AddWrench: URIRef
-    AddQuantity: URIRef
 
     position: URIRef
     pose: URIRef
@@ -389,11 +388,19 @@ class RBDYN_OP(DefinedNamespace):
 
     _NS = Namespace(f"{URI_CR2B_MM}/newtonian-rigid-body-dynamics/operators#")
 
+class RBDYN_OP_EXT(DefinedNamespace):
+    # Secorolab extension to the upstream comp-rob2b rigid-body-dynamics operators:
+    # a generic element-wise quantity addition. Lives in the secorolab namespace
+    # rather than squatting in comp-rob2b's operators#; upstream rbdyn-op:
+    # predicates (in1/in2/out) are reused.
+    AddQuantity: URIRef
+
+    _NS = Namespace(f"{URI_SECORO_MM}/newtonian-rigid-body-dynamics/operators#")
+
 class MAP(DefinedNamespace):
     View: URIRef
     DirectionCoordinateView: URIRef
     PoseCoordinateView: URIRef
-    PoseOrientationView: URIRef
     VelocityTwistCoordinateView: URIRef
     AccelerationTwistCoordinateView: URIRef
     WrenchCoordinateView: URIRef
@@ -410,9 +417,6 @@ class MAP(DefinedNamespace):
     z: URIRef
 
     _extras = [
-        "rotation",
-        "pose",
-        "ComputeRotationFromPose",
         "angular-velocity",
         "linear-velocity",
         "angular-acceleration",
@@ -420,6 +424,19 @@ class MAP(DefinedNamespace):
     ]
 
     _NS = Namespace(f"{URI_CR2B_MM}/task/map#")
+
+class MAP_EXT(DefinedNamespace):
+    # Secorolab coordinate-view and operator extensions to the upstream comp-rob2b
+    # `map` vocabulary. New classes/terms live here rather than squatting in
+    # comp-rob2b's `task/map#`; the map: predicates (superobject/subobject/subspace/
+    # axis) are reused from upstream. Mirrors how `mot-ext` shadows `mot`.
+    PoseOrientationView: URIRef
+    PosePositionView: URIRef
+    ComputeRotationFromPose: URIRef
+    rotation: URIRef
+    pose: URIRef
+
+    _NS = Namespace(f"{URI_SECORO_MM}/task/map#")
 
 class CSTR(DefinedNamespace):
     Constraint: URIRef
@@ -517,12 +534,9 @@ class CSTR_HDL(DefinedNamespace):
     event: URIRef
     flag: URIRef
 
-    FeedForwardController: URIRef
-
     _extras = [
         "error-signal",
         "control-signal",
-        "reference-signal",
         "control-mode",
         "event-queue",
         "proportional-gain",
@@ -535,6 +549,18 @@ class CSTR_HDL(DefinedNamespace):
     ]
 
     _NS = Namespace(f"{URI_CR2B_MM}/task/constraint-handler#")
+
+class CSTR_HDL_EXT(DefinedNamespace):
+    # Secorolab extension to the upstream comp-rob2b constraint-handler: a
+    # feed-forward controller that consumes a reference-signal instead of an
+    # error-signal. New class/predicate live in the secorolab namespace rather
+    # than squatting in comp-rob2b's task/constraint-handler#; upstream cstr_hdl:
+    # predicates (control-signal, error-signal) are reused.
+    FeedForwardController: URIRef
+
+    _extras = ["reference-signal"]
+
+    _NS = Namespace(f"{URI_SECORO_MM}/task/constraint-handler#")
 
 class SLV(DefinedNamespace):
     VelocityCompositionSolver: URIRef
@@ -573,13 +599,22 @@ class SLV(DefinedNamespace):
         "angular-acceleration",
         "linear-acceleration",
         "attached-to",
-        "gravity-value",
         "prioritization-hierarchy",
-        "CommandForwardingSolver",
-        "CommandForwardingSpecification",
-        "CommandForwardingAlgorithm",
-        "command-forwarding",
-        "control-signal",
     ]
 
     _NS = Namespace(f"{URI_CR2B_MM}/task/solver-specification#")
+
+class SLV_EXT(DefinedNamespace):
+    # Secorolab extension to the upstream comp-rob2b solver-specification: a
+    # pass-through "command forwarding" solver (used for gripper actuation), plus
+    # the control-signal and gravity-value terms that upstream does not define.
+    # These new classes/predicates live in the secorolab namespace rather than
+    # squatting in comp-rob2b's task/solver-specification#; upstream slv:
+    # predicates (solver, attached-to) are reused.
+    CommandForwardingSolver: URIRef
+    CommandForwardingSpecification: URIRef
+    CommandForwardingAlgorithm: URIRef
+
+    _extras = ["command-forwarding", "control-signal", "gravity-value"]
+
+    _NS = Namespace(f"{URI_SECORO_MM}/task/solver-specification#")

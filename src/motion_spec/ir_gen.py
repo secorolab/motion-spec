@@ -33,8 +33,10 @@ from motion_spec.namespace import (
     RBDYN_ENT,
     RBDYN_COORD,
     RBDYN_OP,
+    RBDYN_OP_EXT,
     KC_STAT,
     MAP,
+    MAP_EXT,
     CSTR,
     MJ,
     MOT,
@@ -43,9 +45,11 @@ from motion_spec.namespace import (
     TRAJ,
     RT,
     CSTR_HDL,
+    CSTR_HDL_EXT,
     SIM,
     SNAP,
     SLV,
+    SLV_EXT,
     VALUE_ROLE,
 )
 
@@ -368,7 +372,7 @@ ops_generic = [
         output=[RBDYN_OP["out"]],
     ),
     Operator(
-        type_=RBDYN_OP["AddQuantity"],
+        type_=RBDYN_OP_EXT["AddQuantity"],
         input=[RBDYN_OP["in1"], RBDYN_OP["in2"]],
         output=[RBDYN_OP["out"]],
     ),
@@ -437,7 +441,7 @@ ops_generic = [
 ops_cstr_hdl = [
     Operator(
         type_=CSTR_HDL["Controller"],
-        input=[CSTR_HDL["error-signal"], CSTR_HDL["reference-signal"]],
+        input=[CSTR_HDL["error-signal"], CSTR_HDL_EXT["reference-signal"]],
         output=[CSTR_HDL["control-signal"]],
         parameters=[
             CSTR_HDL["proportional-gain"],
@@ -1089,7 +1093,7 @@ class Parser:
                 if type_ in self.g[o : RDF["type"]]:
                     out.append(func(o))
 
-        gravity_node = self.g.value(id_, SLV["gravity-value"])
+        gravity_node = self.g.value(id_, SLV_EXT["gravity-value"])
         gravity = self.parse_xyz(gravity_node) if gravity_node else None
         root_acc = list(gravity) if gravity else None
 
@@ -1171,7 +1175,7 @@ class Parser:
     def subspace(self, id_):
         d = {
             MAP["position"]: Subspace.Position,
-            MAP["rotation"]: Subspace.Rotation,
+            MAP_EXT["rotation"]: Subspace.Rotation,
             MAP["angular-velocity"]: Subspace.AngularVelocity,
             MAP["linear-velocity"]: Subspace.LinearVelocity,
             MAP["angular-acceleration"]: Subspace.AngularAcceleration,
@@ -1273,13 +1277,13 @@ class Parser:
     def controller(self, id_):
         is_pid = CSTR_HDL["ProportionalIntegralDerivative"] in self.g[id_ : RDF["type"]]
         is_impedance = CSTR_HDL["ImpedanceController"] in self.g[id_ : RDF["type"]]
-        is_feedforward = CSTR_HDL["FeedForwardController"] in self.g[id_ : RDF["type"]]
+        is_feedforward = CSTR_HDL_EXT["FeedForwardController"] in self.g[id_ : RDF["type"]]
         assert is_pid or is_impedance or is_feedforward, (
             f"Controller {id_} must be ProportionalIntegralDerivative, ImpedanceController, or FeedForwardController"
         )
 
         error_node = self.g.value(id_, CSTR_HDL["error-signal"])
-        ref_node = self.g.value(id_, CSTR_HDL["reference-signal"])
+        ref_node = self.g.value(id_, CSTR_HDL_EXT["reference-signal"])
         error_signal = self.quantity(error_node) if error_node is not None else None
         reference_signal = self.quantity(ref_node) if ref_node is not None else None
         control_signal = self.quantity(self.g.value(id_, CSTR_HDL["control-signal"]))
@@ -1288,7 +1292,7 @@ class Parser:
             if error_signal is None:
                 raise ValueError(f"PID controller '{self.id(id_)}' must have cstr-hdl:error-signal.")
             if reference_signal is not None:
-                raise ValueError(f"PID controller '{self.id(id_)}' must not have cstr-hdl:reference-signal.")
+                raise ValueError(f"PID controller '{self.id(id_)}' must not have cstr-hdl-ext:reference-signal.")
             decay_rate = None
             if CSTR_HDL["DecayingIntegralTerm"] in self.g[id_ : RDF["type"]]:
                 decay_rate = self.g.value(id_, CSTR_HDL["decay-rate"]).value
@@ -1306,7 +1310,7 @@ class Parser:
             if error_signal is None:
                 raise ValueError(f"Impedance controller '{self.id(id_)}' must have cstr-hdl:error-signal.")
             if reference_signal is not None:
-                raise ValueError(f"Impedance controller '{self.id(id_)}' must not have cstr-hdl:reference-signal.")
+                raise ValueError(f"Impedance controller '{self.id(id_)}' must not have cstr-hdl-ext:reference-signal.")
             return Controller(
                 id=self.id(id_),
                 control_signal=control_signal,
@@ -1316,20 +1320,20 @@ class Parser:
                 type=self.id(CSTR_HDL.ImpedanceController),
             )
         if reference_signal is None:
-            raise ValueError(f"FeedForward controller '{self.id(id_)}' must have cstr-hdl:reference-signal.")
+            raise ValueError(f"FeedForward controller '{self.id(id_)}' must have cstr-hdl-ext:reference-signal.")
         if error_signal is not None:
             raise ValueError(f"FeedForward controller '{self.id(id_)}' must not have cstr-hdl:error-signal.")
         return Controller(
             id=self.id(id_),
             control_signal=control_signal,
             reference_signal=reference_signal,
-            type=self.id(CSTR_HDL.FeedForwardController),
+            type=self.id(CSTR_HDL_EXT.FeedForwardController),
         )
 
     @memoize
     def command_forwarding_specification(self, id_):
-        assert SLV["CommandForwardingSpecification"] in self.g[id_ : RDF["type"]]
-        control_signal = self.quantity(self.g.value(id_, SLV["control-signal"]))
+        assert SLV_EXT["CommandForwardingSpecification"] in self.g[id_ : RDF["type"]]
+        control_signal = self.quantity(self.g.value(id_, SLV_EXT["control-signal"]))
         target_node = self.g.value(id_, SLV["attached-to"])
         return CommandForwardingSpecification(
             self.id(id_),
@@ -1716,7 +1720,8 @@ class Parser:
         dispatcher = [
             (MAP["DirectionCoordinateView"], self.direction),
             (MAP["PoseCoordinateView"], self.pose),
-            (MAP["PoseOrientationView"], self.pose),
+            (MAP_EXT["PoseOrientationView"], self.pose),
+            (MAP_EXT["PosePositionView"], self.pose),
             (MAP["VelocityTwistCoordinateView"], self.velocity_twist),
             (MAP["AccelerationTwistCoordinateView"], self.acceleration_twist),
             (MAP["WrenchCoordinateView"], self.wrench),
@@ -2540,8 +2545,8 @@ def build_motion_units(
         controller_output_ids = {c.control_signal.id for c in controllers if c.control_signal is not None}
         command_forwarding = [
             p.command_forwarding_specification(n)
-            for n in g.subjects(RDF.type, SLV["CommandForwardingSpecification"])
-            if p.id(g.value(n, SLV["control-signal"])) in controller_output_ids
+            for n in g.subjects(RDF.type, SLV_EXT["CommandForwardingSpecification"])
+            if p.id(g.value(n, SLV_EXT["control-signal"])) in controller_output_ids
         ]
         when_monitors = [p.monitor_entry(n) for n in when_mon_nodes]
         while_monitors = [p.monitor_entry(n) for n in while_mon_nodes]

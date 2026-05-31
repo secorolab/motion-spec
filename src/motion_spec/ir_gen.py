@@ -1716,6 +1716,7 @@ class Parser:
         dispatcher = [
             (MAP["DirectionCoordinateView"], self.direction),
             (MAP["PoseCoordinateView"], self.pose),
+            (MAP["PoseOrientationView"], self.pose),
             (MAP["VelocityTwistCoordinateView"], self.velocity_twist),
             (MAP["AccelerationTwistCoordinateView"], self.acceleration_twist),
             (MAP["WrenchCoordinateView"], self.wrench),

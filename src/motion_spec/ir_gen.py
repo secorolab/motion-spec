@@ -3235,6 +3235,12 @@ def generate_ir(manifest_path):
         "backend": backend,
         "scene": scene,
         "trace": _trace_from_graph(g),
+        # Flat id -> full model URI table; sorted for deterministic emission.
+        "uris": [
+            {"id": id_, "uri": str(node)}
+            for id_, node in sorted(node_by_id.items())
+            if isinstance(node, URIRef)
+        ],
     }
 
 

@@ -31,14 +31,11 @@ def _pid_graph(*, kp: float | None = 1.0) -> tuple[Graph, URIRef]:
     return graph, controller
 
 
-def test_parser_preserves_missing_optional_pid_gains() -> None:
+def test_parser_rejects_pid_missing_required_integral_gain() -> None:
     graph, controller_node = _pid_graph(kp=2.0)
 
-    controller = Parser(graph).controller(controller_node)
-
-    assert controller.proportional_gain == 2.0
-    assert controller.integral_gain is None
-    assert controller.derivative_gain is None
+    with pytest.raises(ValueError, match="integral_gain"):
+        Parser(graph).controller(controller_node)
 
 
 def test_parser_rejects_pid_missing_required_proportional_gain() -> None:
@@ -73,3 +70,19 @@ def test_scene_object_site_attach_target_is_prefixed_for_runtime_scene_name() ->
 
     assert scene.robots[0].attach_kind == "Site"
     assert scene.robots[0].attach_name == "table_table_top"
+
+
+def test_uris_table_maps_each_id_to_full_uri() -> None:
+    graph, controller_node = _pid_graph(kp=1.0)
+
+    parser = Parser(graph)
+    node_by_id = {parser.id(node): node for node in graph.subjects()}
+    uris = {
+        id_: str(node)
+        for id_, node in sorted(node_by_id.items())
+        if isinstance(node, URIRef)
+    }
+
+    assert uris[parser.id(controller_node)] == str(controller_node)
+    assert uris[parser.id(controller_node)] == "https://example.test/controller"
+    assert all(uri.startswith("https://example.test/") for uri in uris.values())

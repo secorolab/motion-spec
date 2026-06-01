@@ -647,6 +647,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
 
     render_template(stst_bin, "runtime_header", ir_payload_path, headers_dir / "runtime.hpp")
     render_template(stst_bin, "shared_state_header", ir_payload_path, headers_dir / "shared_state.hpp")
+    render_template(stst_bin, "uris_header", ir_payload_path, headers_dir / "uris.hpp")
     if ir.get("has_mobile_base"):
         render_template(stst_bin, "mobile_base_cycle_header", ir_payload_path, headers_dir / "mobile_base_cycle.hpp")
 

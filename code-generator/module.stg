@@ -41,6 +41,16 @@ axis-to-index ::= [
     "z": "2"
 ]
 
+// Trajectory progress easing profile -> runtime function. Default EaseInOut (smoothstep)
+// preserves the historical behaviour for trajectories that do not specify a profile.
+easing-fn ::= [
+    "Linear": "ease_linear",
+    "EaseIn": "ease_in",
+    "EaseOut": "ease_out",
+    "EaseInOut": "smoothstep",
+    default: "smoothstep"
+]
+
 robot-driver-include(solver, backend) ::= <<
 <({robot-driver-include-<backend>-<solver.robot_model>})(solver)>
 >>
@@ -234,7 +244,7 @@ emit-call-Lerp(closure, views) ::= <<
 {
     const KDL::Frame _lerp_goal_<closure.trajectory> = <closure.goal_expr>;
 <if(closure.assign_goal)>    shared.<closure.goal> = _lerp_goal_<closure.trajectory>;
-<endif>    shared.<closure.trajectory> = KDL::addDelta(shared.<closure.start>, KDL::diff(shared.<closure.start>, _lerp_goal_<closure.trajectory>), motion_spec::runtime::smoothstep(<access-expr(closure.alpha, views)>));
+<endif>    shared.<closure.trajectory> = KDL::addDelta(shared.<closure.start>, KDL::diff(shared.<closure.start>, _lerp_goal_<closure.trajectory>), motion_spec::runtime::<easing-fn.(closure.profile)>(<access-expr(closure.alpha, views)>));
 }
 >>
 
@@ -525,10 +535,18 @@ update-monitor(monitor) ::= <<
         const bool active = <monitor.active_condition>;
 <if(monitor.is_edge_triggered)>
         const bool detected = motion_spec::runtime::rising_edge(state.<monitor.id>_previous, active);
+<if(monitor.fsm_namespace)>
+        // coord2b is the sequencer: fire the FSM event on the rising edge while in this state.
+        if (detected && robot.fsm_events) {
+            produce_event(robot.fsm_events, <monitor.fsm_namespace>::<monitor.event_name>);
+            std::cerr \<\< "[fsm] event   " \<\< <monitor.fsm_namespace>::EVENT_URIS[<monitor.fsm_namespace>::<monitor.event_name>] \<\< std::endl;
+        \}
+<else>
         if (state.active && detected) {
             state.<monitor.id>_event_triggered = true;
             motion_spec::runtime::warn_produce_event_not_implemented("<monitor.event>");
-        }
+        \}
+<endif>
 <else>
         motion_spec::runtime::set_flag(state.<monitor.flag>, active);
 <endif>
@@ -538,10 +556,18 @@ update-monitor(monitor) ::= <<
     {
         const bool active = motion_spec::runtime::constraint_satisfied(shared.<monitor.error.id>);
         const bool detected = motion_spec::runtime::rising_edge(state.<monitor.id>_previous, active);
+<if(monitor.fsm_namespace)>
+        // coord2b is the sequencer: fire the FSM event on the rising edge while in this state.
+        if (detected && robot.fsm_events) {
+            produce_event(robot.fsm_events, <monitor.fsm_namespace>::<monitor.event_name>);
+            std::cerr \<\< "[fsm] event   " \<\< <monitor.fsm_namespace>::EVENT_URIS[<monitor.fsm_namespace>::<monitor.event_name>] \<\< std::endl;
+        \}
+<else>
         if (state.active && detected) {
             state.<monitor.id>_event_triggered = true;
             motion_spec::runtime::warn_produce_event_not_implemented("<monitor.event>");
-        }
+        \}
+<endif>
     }
 <else>
     motion_spec::runtime::set_flag(
@@ -757,7 +783,26 @@ solver-output-VelocityTwist(solver, out, backend) ::= <<
 >>
 
 solver-output-JointPosition(solver, out, backend) ::= <<
+<({solver-output-JointPosition-<backend>})(solver, out)>
+>>
+
+solver-output-JointPosition-robif2b(solver, out) ::= <<
 shared.<out.id> = state.<solver.id>.q(motion_spec::runtime::find_joint_index(*robot.<solver.id>.chain, "<out.joint_name>"));
+>>
+
+solver-output-JointPosition-mj_kdl(solver, out) ::= <<
+{
+    double _joint_position_<out.id> = 0.0;
+    if (mj_kdl::get_joint_position(
+            robot.<solver.id>.robot->model,
+            robot.<solver.id>.robot->data,
+            "<out.joint_name>",
+            &_joint_position_<out.id>)) {
+        shared.<out.id> = _joint_position_<out.id>;
+    } else {
+        shared.<out.id> = state.<solver.id>.q(motion_spec::runtime::find_joint_index(*robot.<solver.id>.chain, "<out.joint_name>"));
+    }
+}
 >>
 
 solver-output(solver, out, backend) ::= <<
@@ -1116,6 +1161,20 @@ inline double smoothstep(double alpha) {
     return alpha * alpha * (3.0 - 2.0 * alpha);
 }
 
+// Progress easing profiles selectable from the DSL (Lerp `profile:`). smoothstep is
+// EaseInOut. All map [0,1] -> [0,1] with f(0)=0, f(1)=1.
+inline double ease_linear(double alpha) { return clamp01(alpha); }
+
+inline double ease_in(double alpha) {
+    alpha = clamp01(alpha);
+    return alpha * alpha; // slow start, full speed at the end
+}
+
+inline double ease_out(double alpha) {
+    alpha = clamp01(alpha);
+    return alpha * (2.0 - alpha); // full speed at the start, gentle stop
+}
+
 inline KDL::Frame interpolate_pose_lerp(
         const KDL::Frame &start,
         const KDL::Frame &goal,
@@ -1374,11 +1433,16 @@ inline void hddc2b_rescale(double *f_scnd) {
 }  // namespace motion_spec::runtime
 >>
 
-shared_state_header(shared_data, wrench_outputs, has_arm, has_mobile_base, arm_solvers, base_velocity_solvers, base_force_solvers, backend) ::= <<
+shared_state_header(shared_data, wrench_outputs, has_arm, has_mobile_base, arm_solvers, base_velocity_solvers, base_force_solvers, backend, fsm_namespace, fsm_header) ::= <<
 #pragma once
 
 #include "runtime.hpp"
 #include "uris.hpp"
+<if(fsm_namespace)>
+#include "coord2b/functions/event_loop.h"
+#include "coord2b/functions/fsm.h"
+#include "<fsm_header>"
+<endif>
 
 #include \<memory\>
 #include \<kdl/frames.hpp\>
@@ -1509,6 +1573,9 @@ struct mobile_base_runtime_state {
 struct robot_io {
 <if(has_mobile_base)>
     mobile_base_robot mobile_base;
+<endif>
+<if(fsm_namespace)>
+    struct events *fsm_events = nullptr;
 <endif>
 <arm_solvers:{solver | <arm-robot-member(solver)>}; separator="\n">
 <wrench_outputs:{wrench | <wrench-pointer-member(wrench)>}; separator="\n">
@@ -1667,6 +1734,21 @@ inline bool can_start_<motion.id>(<motion.can_start_params>) {
     return true<motion.when_evaluators:{e | && motion_spec::runtime::constraint_satisfied(shared.<e.error.id>)}>;
 }
 
+inline void monitor_when_<motion.id>(<motion.monitor_params>) {
+<declared_pose_components:{pose | <materialize-pose-component(pose)>}; separator="\n">
+<shared-schedule-block(motion.when_schedule, closures, views)>
+<if(first(motion.when_monitors))>
+<monitor-block(motion.when_monitors)>
+<endif>
+}
+
+inline void monitor_until_<motion.id>(<motion.monitor_params>) {
+<shared-schedule-block(motion.until_schedule, closures, views)>
+<if(first(motion.until_monitors))>
+<monitor-block(motion.until_monitors)>
+<endif>
+}
+
 inline void monitor_<motion.id>(<motion.monitor_params>) {
 <shared-schedule-block(motion.when_schedule, closures, views)>
 <if(first(motion.when_monitors))>
@@ -1815,11 +1897,11 @@ app-arm-post-setup(backend, arm_solvers, motions) ::= <<
 app-arm-post-setup-robif2b(arm_solvers, motions) ::= <<
 >>
 
-app-arm-loop-reset(backend, arm_solvers) ::= <<
-<({app-arm-loop-reset-<backend>})(arm_solvers)>
+app-arm-loop-reset(backend, arm_solvers, fsm_namespace) ::= <<
+<({app-arm-loop-reset-<backend>})(arm_solvers, fsm_namespace)>
 >>
 
-app-arm-loop-reset-robif2b(arm_solvers) ::= <<
+app-arm-loop-reset-robif2b(arm_solvers, fsm_namespace) ::= <<
 >>
 
 app-arm-runtime-step(backend, arm_solvers) ::= <<
@@ -1831,8 +1913,8 @@ app-arm-trace-update(backend, arm_solvers, trace) ::= <<
 >>
 
 
-app-headless-telemetry(backend, shared_data, arm_solvers) ::= <<
-<({app-headless-telemetry-<backend>})(shared_data, arm_solvers)>
+app-headless-telemetry(backend, shared_data, arm_solvers, scene) ::= <<
+<({app-headless-telemetry-<backend>})(shared_data, arm_solvers, scene)>
 >>
 
 app_main(motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene, trace) ::= <<
@@ -1910,7 +1992,38 @@ int main(int argc, char **argv) {
 }
 >>
 
-ref_main(motions, unique_motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, shared_data, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene, trace) ::= <<
+fsm-step-function(motion) ::= <<
+<if(motion.fsm_state)>
+static void step_<motion.id>(<motion.id>_state &<motion.id>_state_instance, shared_data &shared, robot_io &robot) {
+    update_<motion.id>(<motion.id>_state_instance, shared, robot);
+    monitor_until_<motion.id>(<motion.monitor_args>);
+    control_<motion.id>(<motion.id>_state_instance, shared, robot);
+    apply_<motion.id>(<motion.apply_args>);
+\}
+<endif>
+>>
+
+fsm-dispatch-case(motion, fsm_namespace) ::= <<
+<if(motion.fsm_state)>
+        case <fsm_namespace>::<motion.fsm_state>:
+            step_<motion.id>(<motion.id>_state_instance, shared, robot);
+<motion.fsm_when_gate_calls:{call |             <call>}; separator="\n">
+            break;
+<endif>
+>>
+
+fsm-dispatch(motions, fsm_namespace) ::= <<
+    // The FSM's current state selects which motion runs; the motion's monitor advances the FSM. A
+    // fallback hold state additionally re-evaluates the gated motion's WHEN precondition each tick.
+    auto fsm_dispatch = [&](struct fsm_nbx *fsm) {
+        switch (fsm->currentStateIndex) {
+<motions:{motion | <fsm-dispatch-case(motion, fsm_namespace)>}; separator="\n">
+        default: break;
+        \}
+    \};
+>>
+
+ref_main(motions, unique_motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, shared_data, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene, trace, fsm_namespace, fsm_step_event) ::= <<
 #include "runtime.hpp"
 #include "shared_state.hpp"
 <if(has_mobile_base)>
@@ -1920,6 +2033,10 @@ ref_main(motions, unique_motions, wrench_outputs, has_arm, has_mobile_base, shar
 
 <app-arm-includes(backend, has_arm)>
 #include \<unistd.h\>
+<if(fsm_namespace)>
+
+<unique_motions:{motion | <fsm-step-function(motion)>}; separator="\n\n">
+<endif>
 
 int main(int argc, char **argv) {
     robot_io robot{};
@@ -1953,12 +2070,35 @@ int main(int argc, char **argv) {
 <app-arm-post-setup(backend, arm_solvers, unique_motions)>
 <endif>
 
+<if(fsm_namespace)>
+    struct fsm_nbx *fsm = <fsm_namespace>::create_fsm();
+    if (!fsm) return 1;
+    robot.fsm_events = fsm->eventData;
+
+<fsm-dispatch(motions, fsm_namespace)>
+
+<endif>
     int _step = 0;
+<if(fsm_namespace)>
+    int _fsm_prev_state = -1;
+<else>
     int current_motion = 0;
+<endif>
     while (<app-loop-condition(backend, has_arm)>) {
 <if(has_arm)>
-<app-arm-loop-reset(backend, arm_solvers)>
+<app-arm-loop-reset(backend, arm_solvers, fsm_namespace)>
 <endif>
+<if(fsm_namespace)>
+        if (fsm->currentStateIndex != _fsm_prev_state) {
+            _fsm_prev_state = fsm->currentStateIndex;
+            std::cerr \<\< "[fsm] state   " \<\< <fsm_namespace>::STATE_URIS[fsm->currentStateIndex] \<\< std::endl;
+        \}
+        if (fsm->currentStateIndex == fsm->endStateIndex) break;
+<if(fsm_step_event)>
+        produce_event(fsm->eventData, <fsm_namespace>::<fsm_step_event>);
+<endif>
+        fsm_dispatch(fsm);
+<else>
         switch (current_motion) {
 <motions:{motion |
         case <i0>: {
@@ -1995,13 +2135,18 @@ int main(int argc, char **argv) {
             current_motion = <length(motions)> - 1;
             break;
         }
+<endif>
 <if(has_arm)>
 <app-arm-trace-update(backend, arm_solvers, trace)>
 <app-arm-runtime-step(backend, arm_solvers)>
 <endif>
+<if(fsm_namespace)>
+        fsm_step_nbx(fsm);
+        reconfig_event_buffers(fsm->eventData);
+<endif>
         ++_step;
     }
-<app-headless-telemetry(backend, shared_data, arm_solvers)>
+<app-headless-telemetry(backend, shared_data, arm_solvers, scene)>
 <if(has_arm)>
 
 <app-arm-cleanup(backend, has_arm)>
@@ -2013,6 +2158,9 @@ int main(int argc, char **argv) {
     robif2b_kelo_drive_actuator_stop(robot.mobile_base.wheel_actuator);
     robif2b_ethercat_stop(robot.mobile_base.ethercat);
     robif2b_ethercat_shutdown(robot.mobile_base.ethercat);
+<endif>
+<if(fsm_namespace)>
+    <fsm_namespace>::destroy_fsm(fsm);
 <endif>
 
     return 0;

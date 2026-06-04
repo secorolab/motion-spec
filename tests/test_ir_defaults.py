@@ -86,3 +86,25 @@ def test_uris_table_maps_each_id_to_full_uri() -> None:
     assert uris[parser.id(controller_node)] == str(controller_node)
     assert uris[parser.id(controller_node)] == "https://example.test/controller"
     assert all(uri.startswith("https://example.test/") for uri in uris.values())
+
+
+@pytest.mark.parametrize(
+    "event_uri, expected_name",
+    [
+        ("http://example.org/coord/E_OBJ_REACHED", "E_OBJ_REACHED"),
+        ("http://example.org/coord/e-step", "E_STEP"),
+    ],
+)
+def test_edge_monitor_carries_full_event_uri_and_enum_token(event_uri: str, expected_name: str) -> None:
+    graph = Graph()
+    monitor = URIRef("https://example.test/mon")
+    event = URIRef(event_uri)
+    graph.add((monitor, RDF.type, CSTR_HDL.Monitor))
+    graph.add((monitor, RDF.type, CSTR_HDL.EdgeTriggeredMonitor))
+    graph.add((monitor, CSTR_HDL.event, event))
+
+    entry = Parser(graph).monitor_entry(monitor)
+
+    assert entry.event_uri == event_uri
+    # event_name is the coord-dsl FSM enum token (local name, upper-cased, '-' -> '_').
+    assert entry.event_name == expected_name

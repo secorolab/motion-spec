@@ -410,6 +410,7 @@ ops_generic = [
         type_=TRAJ["Lerp"],
         input=[TRAJ["start"], TRAJ["goal"], TRAJ["alpha"]],
         output=[TRAJ["trajectory"]],
+        parameters=[TRAJ["profile"]],
     ),
     Operator(
         type_=TRAJ["Circle"],
@@ -752,6 +753,9 @@ class MonitorEntry:
     event_idx: int | None
     is_edge_triggered: bool
     is_until_aggregate: bool = False
+    event_uri: str | None = None
+    event_name: str | None = None
+    fallback_motion: str | None = None
     type: str = field(default="MonitorEntry")
 
 
@@ -1037,17 +1041,65 @@ def escape(s):
 
 
 class Parser:
+    # Context quantities (and their derived op nodes) live under `.../<owner>/Spec/spec/...` or
+    # `.../<owner>/World/world/...`, where <owner> is a motion or the shared context. Their `id` is
+    # the URI's last segment, so a generic name reused across several motions' specs (e.g.
+    # `support-z`) collapses to one id and gets merged by `_dedupe_by_id`. We qualify only the
+    # genuinely-ambiguous names (same last segment under more than one owner) by their owner.
+    _SPEC_OWNER_RE = re.compile(r"/([^/]+)/(?:Spec/spec|World/world)/")
+
     def __init__(self, g):
         self.cache = dict()
         self.g = g
         self.sched = set()
+        self._ambiguous_context_ids = self._compute_ambiguous_context_ids()
+        self._id_sources: dict[str, set[str]] = {}
+
+    def _compute_ambiguous_context_ids(self):
+        owners_by_id: dict[str, set[str]] = {}
+        for s in set(self.g.subjects()):
+            m = self._SPEC_OWNER_RE.search(str(s))
+            if not m:
+                continue
+            try:
+                local = escape(self.g.compute_qname(s)[2])
+            except Exception:
+                continue
+            owners_by_id.setdefault(local, set()).add(m.group(1))
+        return {lid for lid, owners in owners_by_id.items() if len(owners) > 1}
 
     def id(self, x):
         try:
             q = self.g.compute_qname(x)
-            return escape(q[2])
+            local = escape(q[2])
         except Exception:
             return x
+        # Only context quantities (a motion's or the shared context's `Spec/spec` / `World/world`
+        # members) become `shared.*` data fields and are vulnerable to the silent merge; constraint
+        # names, metamodel predicates and aliases legitimately share an id and are scoped elsewhere.
+        m = self._SPEC_OWNER_RE.search(str(x))
+        if m:
+            if local in self._ambiguous_context_ids:
+                local = escape(f"{m.group(1)}-{q[2]}")
+            self._id_sources.setdefault(local, set()).add(str(x))
+        return local
+
+    def assert_no_id_collisions(self):
+        """Fail loudly if two distinct context-quantity URIs collapse to one generated id. That
+        would silently merge unrelated `shared.*` fields (the class of bug that hid the support-z
+        collision) -- a genuinely-shared quantity has a single URI, so >1 URI per id is a real
+        collision the motion-qualified id scoping failed to resolve."""
+        collisions = {i: sorted(u) for i, u in self._id_sources.items() if len(u) > 1}
+        if collisions:
+            details = "\n".join(
+                f"  '{i}' <- {', '.join(u)}" for i, u in sorted(collisions.items())
+            )
+            raise ValueError(
+                "id collision(s): distinct URIs map to one generated id and would be silently "
+                "merged (e.g. a context-quantity name reused across motions with different "
+                "definitions). Give them distinct names, or extend the motion-qualified id "
+                f"scoping in Parser.id to cover their URI shape:\n{details}"
+            )
 
     def label(self, x):
         try:
@@ -1255,8 +1307,14 @@ class Parser:
                 self.id(id_), "LevelTriggeredMonitor", error, flag, None, None, False, is_until_aggregate
             )
 
-        event = self.id(self.g.value(id_, CSTR_HDL["event"]))
-        return MonitorEntry(self.id(id_), "EdgeTriggeredMonitor", error, None, event, None, True, is_until_aggregate)
+        event_node = self.g.value(id_, CSTR_HDL["event"])
+        event = self.id(event_node)
+        fallback_node = self.g.value(id_, CSTR_HDL["fallback-motion"])
+        fallback_motion = self.id(fallback_node) if fallback_node is not None else None
+        return MonitorEntry(
+            self.id(id_), "EdgeTriggeredMonitor", error, None, event, None, True, is_until_aggregate,
+            event_uri=str(event_node), event_name=event.upper(), fallback_motion=fallback_motion,
+        )
 
     @memoize
     def constraint_evaluator(self, id_):
@@ -3206,6 +3264,9 @@ def generate_ir(manifest_path):
         if mapped:
             backend = mapped
             break
+
+    # Safeguard: no two distinct URIs may collapse to one generated id (would silently merge).
+    p.assert_no_id_collisions()
 
     # Compose the overall schedule via concatenation
     return {

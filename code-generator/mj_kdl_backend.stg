@@ -178,16 +178,10 @@ app-arm-setup-mj_kdl(arm_solvers, scene) ::= <<
         std::cerr \<\< "mj_kdl::init_env() failed for " \<\< mjcf_path_string \<\< "\\n";
         return 1;
     }
-<arm_solvers:{solver |
-
-<robot-state-init(solver, "mj_kdl")>
-
+<arm_solvers:{solver |<robot-state-init(solver, "mj_kdl")>
 <robot-init(solver, "mj_kdl")>
-
 <robot-chain(solver, "mj_kdl")>
-
-<robot-assign(solver, "mj_kdl")>
-}; separator="\n">
+<robot-assign(solver, "mj_kdl")>}; separator="\n">
 
     mj_kdl::Viewer mj_viewer{};
     if (!headless) {
@@ -212,10 +206,14 @@ app-arm-post-setup-mj_kdl(arm_solvers, motions) ::= <<
     double _prev_sim_time = mj_<first(arm_solvers).runtime_id>.data->time;
 >>
 
-app-arm-loop-reset-mj_kdl(arm_solvers) ::= <<
+app-arm-loop-reset-mj_kdl(arm_solvers, fsm_namespace) ::= <<
         if (mj_<first(arm_solvers).runtime_id>.data->time \< _prev_sim_time - 1e-6) {
             mj_kdl::reset(&mj_env);
+<if(fsm_namespace)>
+            fsm->currentStateIndex = fsm->startStateIndex;
+<else>
             current_motion = 0;
+<endif>
         }
         _prev_sim_time = mj_<first(arm_solvers).runtime_id>.data->time;
 >>
@@ -268,10 +266,13 @@ app-arm-trace-update-mj_kdl(arm_solvers, trace) ::= <<
 <endif>
 >>
 
-app-headless-telemetry-mj_kdl(shared_data, arm_solvers) ::= <<
+app-headless-telemetry-mj_kdl(shared_data, arm_solvers, scene) ::= <<
     if (headless) {
         std::cout \<\< "steps=" \<\< _step \<\< " sim_time=" \<\< mj_<first(arm_solvers).runtime_id>.data->time \<\< "\n";
-    }
+<scene.objects:{object |        KDL::Frame _obj_<object.body>;
+        if (mj_kdl::get_body_frame(mj_<first(arm_solvers).runtime_id>.model, mj_<first(arm_solvers).runtime_id>.data, "<object.body>", &_obj_<object.body>))
+            std::cout \<\< "<object.body> p=[" \<\< _obj_<object.body>.p.x() \<\< " " \<\< _obj_<object.body>.p.y() \<\< " " \<\< _obj_<object.body>.p.z() \<\< "]\n";
+}>    }
 >>
 
 app-headless-print-shared-mj_kdl(item) ::= <<
@@ -298,7 +299,7 @@ app-headless-print-Quantity-mj_kdl(item) ::= <<
         std::cout \<\< "<item.id>=" \<\< shared.<item.id> \<\< "\n";
 >>
 
-cmake_mj_kdl(motions) ::= <<
+cmake_mj_kdl(motions, fsm_namespace) ::= <<
 cmake_minimum_required(VERSION 3.16)
 project(motion_spec_mj_kdl_target LANGUAGES CXX)
 
@@ -308,10 +309,14 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Eigen3 REQUIRED)
 find_package(orocos_kdl REQUIRED CONFIG)
+<if(fsm_namespace)>
+find_package(coord2b REQUIRED)
+<endif>
 
 set(MJ_KDL_WRAPPER_SOURCE_DIR "" CACHE PATH "Path to the mj_kdl_wrapper source tree")
 if(MJ_KDL_WRAPPER_SOURCE_DIR)
     set(BUILD_TESTS OFF CACHE BOOL "Disable mj_kdl_wrapper tests for generated builds" FORCE)
+    set(BUILD_EXAMPLES OFF CACHE BOOL "Disable mj_kdl_wrapper examples for generated builds" FORCE)
     add_subdirectory("${MJ_KDL_WRAPPER_SOURCE_DIR}" mj_kdl_wrapper_build)
     set(MJ_KDL_WRAPPER_TARGET mj_kdl_wrapper)
 else()
@@ -326,10 +331,16 @@ target_include_directories(main PRIVATE
     ${EIGEN3_INCLUDE_DIRS}
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/headers
+<if(fsm_namespace)>
+    ${coord2b_INCLUDE_DIRS}
+<endif>
 )
 target_link_libraries(main PRIVATE
     ${MJ_KDL_WRAPPER_TARGET}
     orocos-kdl
+<if(fsm_namespace)>
+    ${coord2b_LIBRARIES}
+<endif>
 )
 target_compile_options(main PRIVATE -Wall -Wextra)
 >>

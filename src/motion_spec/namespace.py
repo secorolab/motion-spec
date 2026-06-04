@@ -498,6 +498,7 @@ class TRAJ(DefinedNamespace):
     revolutions: URIRef
     orientation: URIRef
     form: URIRef
+    profile: URIRef
 
     _extras = ["plane-normal"]
 
@@ -546,6 +547,7 @@ class CSTR_HDL(DefinedNamespace):
         "stiffness",
         "damping",
         "monitors-until",
+        "fallback-motion",
     ]
 
     _NS = Namespace(f"{URI_CR2B_MM}/task/constraint-handler#")

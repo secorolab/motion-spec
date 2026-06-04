@@ -7,6 +7,7 @@ import argparse
 import copy
 import json
 import os
+import re
 import subprocess
 import sys
 from importlib.metadata import PackageNotFoundError, distribution
@@ -141,7 +142,17 @@ def render_template(
             ) from exc
         raise RuntimeError(error_text) from exc
 
-    output_path.write_text(result.stdout)
+    output_path.write_text(_collapse_blank_lines(result.stdout))
+
+
+def _collapse_blank_lines(text: str) -> str:
+    """Normalize StringTemplate output: at most one blank line between blocks, single trailing newline.
+
+    ST4 emits stray blank lines for empty conditional/list items (the literal newlines survive even when
+    the rendered value is empty), which is impractical to eliminate per-template — collapse them here."""
+    text = re.sub(r"[ \t]+\n", "\n", text)          # drop trailing whitespace on each line
+    text = re.sub(r"\n{3,}", "\n\n", text)          # collapse runs of blank lines to a single blank
+    return text.strip("\n") + "\n"
 
 
 def load_ir(input_path: Path):
@@ -232,10 +243,72 @@ def _add_group_type_flags(groups: list) -> list:
     return groups
 
 
-def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
+_FSM_NS_RE = re.compile(r"FSM\s*\(\s*ns\s*=\s*([^)\s]+)\s*\)")
+
+
+def _fsm_namespace_uri(fsm_path: Path) -> str:
+    """URI of the FSM's namespace; FSM event URIs (which monitor events must match) live under it."""
+    text = fsm_path.read_text()
+    ns_match = _FSM_NS_RE.search(text)
+    if not ns_match:
+        raise RuntimeError(f"Could not read the FSM namespace from '{fsm_path}'. Expected 'FSM (ns=<prefix>) ...'.")
+    prefix = ns_match.group(1)
+    uri_match = re.search(rf'ns\s+{re.escape(prefix)}\s*=\s*"([^"]+)"', text)
+    if not uri_match:
+        raise RuntimeError(f"FSM namespace prefix '{prefix}' has no 'ns {prefix} = \"...\"' declaration in '{fsm_path}'.")
+    return uri_match.group(1)
+
+
+def _load_fsm(fsm_path: Path) -> tuple[dict, str]:
+    """Parse a .fsm via coord-dsl: return its structured IR and the rendered C++ header."""
+    try:
+        from coord_dsl.generators.registration import fsm_metamodel
+        from coord_dsl.generators.fsm_graph import get_fsm_graph, gen_json, gen_cpp_header
+    except ImportError as exc:
+        raise RuntimeError(
+            "coord-dsl is required for --fsm. Install it, e.g. pip install -e src/coord-dsl."
+        ) from exc
+    model = fsm_metamodel().model_from_file(str(fsm_path))
+    graph, _, fsm_ref = get_fsm_graph(model)
+    fsm_ir = gen_json(graph, fsm_ref)
+    return fsm_ir, gen_cpp_header(fsm_ir)
+
+
+def _event_to_state(fsm_ir: dict) -> dict[str, str]:
+    """Map each FSM event enum token to the state it transitions out of (the state the motion runs in)."""
+    transition_from = {t["id"]: t["from_state"] for t in fsm_ir["transitions_table"]}
+    return {
+        r["when_event"]: transition_from[r["do_transition"]]
+        for r in fsm_ir["reactions_table"]
+        if r["do_transition"] in transition_from
+    }
+
+
+def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path | None = None):
     ir = load_ir(ir_path)
     _validate_ir(ir)
     backend = ir.get("backend", "robif2b")
+
+    # FSM wiring (codegen/build concern; derived, not part of the semantic IR).
+    fsm_ir, fsm_header_text = _load_fsm(fsm_path) if fsm_path else (None, None)
+    fsm_namespace = fsm_ir["name"].lower() if fsm_ir else None
+    fsm_header = f"{fsm_ir['name']}.hpp" if fsm_ir else None
+    fsm_ns_uri = _fsm_namespace_uri(fsm_path) if fsm_path else None
+    event_state = _event_to_state(fsm_ir) if fsm_ir else {}
+    # Heartbeat event produced every tick (drives the start-state kick / self-loops), if present.
+    fsm_step_event = "E_STEP" if (fsm_ir and "E_STEP" in fsm_ir["events"]) else None
+    ir["fsm_namespace"] = fsm_namespace
+    ir["fsm_header"] = fsm_header
+    ir["fsm_step_event"] = fsm_step_event
+
+    def is_fsm_event(monitor: dict) -> bool:
+        # A monitor fires the FSM only when its event lives in the FSM's namespace;
+        # standalone (monitor-owned) events keep the existing warn stub.
+        return bool(
+            fsm_ns_uri
+            and monitor.get("is_edge_triggered")
+            and (monitor.get("event_uri") or "").startswith(fsm_ns_uri)
+        )
 
     def expand_vector_fields(item: dict, field: str) -> None:
         values = item.get(field)
@@ -559,8 +632,17 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
                 or motion.get("when_monitors")
                 or motion.get("until_monitors")
             )
-            motion["monitor_params"] = join_params([state_type, "shared_data &shared"]) if has_monitor_logic else ""
-            motion["monitor_args"] = join_args([f"{motion['id']}_state_instance", "shared"]) if has_monitor_logic else ""
+            monitor_params = [state_type, "shared_data &shared"]
+            monitor_args = [f"{motion['id']}_state_instance", "shared"]
+            if any(
+                m.get("fsm_namespace")
+                for m in (motion.get("when_monitors", []) + motion.get("until_monitors", []))
+            ):
+                # produce_event(robot.fsm_events, ...) needs robot in the monitor fn.
+                monitor_params.append("const robot_io &robot")
+                monitor_args.append("robot")
+            motion["monitor_params"] = join_params(monitor_params) if has_monitor_logic else ""
+            motion["monitor_args"] = join_args(monitor_args) if has_monitor_logic else ""
 
             has_apply_state = bool(motion.get("arm_solvers"))
             has_command_forwarding = bool(motion.get("command_forwarding"))
@@ -634,11 +716,79 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     add_until_monitor_conditions(unique_motions)
     add_motion_done_conditions(ir.get("motions", []))
     add_motion_done_conditions(unique_motions)
+    if fsm_namespace is not None:
+        # Tag FSM-event monitors so update-monitor emits produce_event(...) (and the monitor fn takes
+        # robot); also map each motion to the state it *runs* in (fsm_state): the from-state of the
+        # transition its UNTIL/WHILE event fires.
+        #
+        # A WHEN precondition is never an entry guard with no controller (that would leave the arm
+        # uncommanded). Instead it must name an explicit fallback hold motion: the FSM enters that
+        # fallback motion's state, holds pose there, and re-evaluates the precondition each tick; when
+        # it becomes satisfied the WHEN monitor's event advances to the gated motion. So the fallback
+        # motion runs in the state the WHEN (success) event exits, and the gated motion's WHEN is
+        # evaluated inside that fallback state.
+        def tag_run_state(motion, monitors):
+            for monitor in monitors:
+                if is_fsm_event(monitor):
+                    monitor["fsm_namespace"] = fsm_namespace
+                    state = event_state.get(monitor.get("event_name") or "")
+                    if state and not motion.get("fsm_state"):
+                        motion["fsm_state"] = state
+
+        for motion_list in (ir.get("motions", []), unique_motions):
+            by_id = {m["id"]: m for m in motion_list}
+            for motion in motion_list:
+                tag_run_state(
+                    motion, motion.get("until_monitors", []) + motion.get("while_monitors", [])
+                )
+                for monitor in motion.get("when_monitors", []):
+                    if not is_fsm_event(monitor):
+                        continue
+                    monitor["fsm_namespace"] = fsm_namespace
+                    fallback_id = monitor.get("fallback_motion")
+                    if not fallback_id:
+                        raise ValueError(
+                            f"WHEN monitor '{monitor.get('id')}' on FSM-wired motion "
+                            f"'{motion['id']}' must declare a fallback hold motion "
+                            f"(e.g. '... when active fallback <hold-motion>'). A WHEN precondition "
+                            f"without a fallback would leave the arm uncommanded while waiting."
+                        )
+                    fallback = by_id.get(fallback_id)
+                    if fallback is None:
+                        raise ValueError(
+                            f"WHEN monitor '{monitor.get('id')}' names unknown fallback motion "
+                            f"'{fallback_id}'."
+                        )
+                    state = event_state.get(monitor.get("event_name") or "")
+                    if state and not fallback.get("fsm_state"):
+                        fallback["fsm_state"] = state
+                    gates = fallback.setdefault("fsm_when_gate_motions", [])
+                    if motion["id"] not in gates:
+                        gates.append(motion["id"])
+
     add_motion_function_interfaces(ir.get("motions", []))
     add_motion_function_interfaces(unique_motions)
 
+    if fsm_namespace is not None:
+        # Now that monitor_args are computed, materialize the WHEN-evaluation calls that each fallback
+        # state must run (the gated motion's precondition, dispatched alongside the hold step).
+        for motion_list in (ir.get("motions", []), unique_motions):
+            by_id = {m["id"]: m for m in motion_list}
+            for fallback in motion_list:
+                gate_ids = fallback.get("fsm_when_gate_motions")
+                if not gate_ids:
+                    continue
+                fallback["fsm_when_gate_calls"] = [
+                    f"monitor_when_{gate_id}({by_id[gate_id].get('monitor_args', '')});"
+                    for gate_id in gate_ids
+                    if gate_id in by_id
+                ]
+
     headers_dir = output_dir / "headers"
     headers_dir.mkdir(parents=True, exist_ok=True)
+
+    if fsm_header_text is not None:
+        (headers_dir / fsm_header).write_text(fsm_header_text)
 
     payload_dir = output_dir / ".stst"
     payload_dir.mkdir(parents=True, exist_ok=True)
@@ -684,6 +834,11 @@ def main():
         default="stst",
         help="Path to the STSTv4 executable used to render StringTemplate groups",
     )
+    parser.add_argument(
+        "--fsm",
+        default=None,
+        help="Path to a coord-dsl .fsm; generates its C++ header and wires monitor events to it",
+    )
     args = parser.parse_args()
 
     try:
@@ -691,6 +846,7 @@ def main():
             ir_path=Path(args.input).resolve(),
             output_dir=Path(args.output_dir).resolve(),
             stst_bin=args.stst_bin,
+            fsm_path=Path(args.fsm).resolve() if args.fsm else None,
         )
     except RuntimeError as exc:
         print(f"Code generation failed: {exc}", file=sys.stderr)

@@ -4,91 +4,20 @@
 import sys
 import os
 import json
-import numpy as np
 import rdflib
 from motion_spec.namespace import APP
 
+CATEGORIES = ["world-model", "constraints", "controllers", "map", "solver-specification"]
 
-class Table:
-    def __init__(self):
-        self.data = {}
-        self.rows = set()
-        self.columns = set()
-
-    def _extend_rows(self, row):
-        if row in self.rows:
-            return
-
-        self.data[row] = {}
-        for column in self.columns:
-            self.data[row][column] = None
-
-        self.rows.add(row)
-
-    def _extend_columns(self, column):
-        if column in self.columns:
-            return
-
-        for row in self.rows:
-            self.data[row][column] = None
-
-        self.columns.add(column)
-
-    def insert(self, row, column, entry):
-        self._extend_rows(row)
-        self._extend_columns(column)
-        self.data[row][column] = entry
-
-    def to_list(self):
-        rows = list(self.rows)
-        rows.sort()
-        columns = list(self.columns)
-        columns.sort()
-
-        r = []
-        for row in rows:
-            c = []
-            for column in columns:
-                c.append(self.data[row][column])
-            r.append(c)
-
-        return r
-
-    def row_names(self):
-        rows = list(self.rows)
-        rows.sort()
-        return rows
-
-    def column_names(self):
-        columns = list(self.columns)
-        columns.sort()
-        return columns
-
-    def __repr__(self):
-        rows = list(self.rows)
-        rows.sort()
-        columns = list(self.columns)
-        columns.sort()
-        sep = "\t"
-        lf = "\n"
-
-        s = sep
-        for column in columns:
-            s += str(column) + sep
-        s += lf
-
-        for row in rows:
-            s += str(row) + sep
-            for column in columns:
-                s += str(self.data[row][column]) + sep
-            s += lf
-
-        return s
-
-
-def replace_by(arr, find, replace):
-    arr[arr == find] = replace
-    return arr
+CATEGORY_BY_FILENAME = {
+    "01-world-model": "world-model",
+    "03-constraints": "constraints",
+    "04-motion-specification": "constraints",
+    "05-constraint-handler": "controllers",
+    "02-map": "map",
+    "06-solver-specification": "solver-specification",
+    "07-scenario": "solver-specification",
+}
 
 
 def main():
@@ -104,8 +33,8 @@ def main():
     g.parse(app_model, format="json-ld")
 
     # Handle the referenced models
-    entities = Table()
-    lines = Table()
+    entities = {}
+    lines = {}
 
     models = list(g.objects(predicate=APP["import"]))
     for model_path in models:
@@ -123,39 +52,38 @@ def main():
             serialized = json.dumps(obj, indent=4)
             num_lines = len(serialized.split("\n"))
 
-        entities.insert(folder, filename, num_entities)
-        lines.insert(folder, filename, num_lines)
+        entities.setdefault(folder, {})[filename] = num_entities
+        lines.setdefault(folder, {})[filename] = num_lines
 
-    #        world-model
-    #        |  constraints
-    #        |  |  controllers
-    #        |  |  |  maps
-    #        |  |  |  |  solver-specification
-    #        |  |  |  |  |
-    acc = np.array(
-        [
-            [0, 0, 0, 0, 0],  # 00-misc
-            [1, 0, 0, 0, 0],  # 01-world-model
-            [0, 0, 0, 1, 0],  # 02-map
-            [0, 1, 0, 0, 0],  # 03-constraints
-            [0, 1, 0, 0, 0],  # 04-motion-specification
-            [0, 0, 1, 0, 0],  # 05-constraint-handler
-            [0, 0, 0, 0, 1],  # 06-solver-specification
-            [0, 0, 0, 0, 1],  # 07-scenario
-        ]
-    )
+    def bucket(table):
+        rows = []
+        for folder in sorted(table):
+            row = {category: 0 for category in CATEGORIES}
+            for filename, value in table[folder].items():
+                category = CATEGORY_BY_FILENAME.get(filename)
+                if category is not None:
+                    row[category] += value
+            rows.append([row[category] for category in CATEGORIES])
+        return rows
 
-    ent_np = replace_by(np.array(entities.to_list()), None, 0)
-    ent_np = ent_np @ acc
+    def format_vector(values):
+        return "[" + " ".join(str(v) for v in values) + "]"
 
-    lin_np = replace_by(np.array(lines.to_list()), None, 0)
-    lin_np = lin_np @ acc
+    def format_matrix(rows):
+        row_strs = [format_vector(row) for row in rows]
+        return "[" + ("\n ".join(row_strs)) + "]"
 
-    print("world-model, constraints, controllers, map, solver-specification")
-    print("entities:", np.sum(ent_np, axis=0))
-    print(ent_np)
-    print("lines:", np.sum(lin_np, axis=0))
-    print(lin_np)
+    ent_rows = bucket(entities)
+    lin_rows = bucket(lines)
+
+    ent_sum = [sum(row[i] for row in ent_rows) for i in range(len(CATEGORIES))]
+    lin_sum = [sum(row[i] for row in lin_rows) for i in range(len(CATEGORIES))]
+
+    print(", ".join(CATEGORIES))
+    print("entities:", format_vector(ent_sum))
+    print(format_matrix(ent_rows))
+    print("lines:", format_vector(lin_sum))
+    print(format_matrix(lin_rows))
 
 
 if __name__ == "__main__":

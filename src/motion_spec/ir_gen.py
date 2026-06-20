@@ -52,8 +52,7 @@ from motion_spec.namespace import (
     SLV_EXT,
     VALUE_ROLE,
 )
-
-PACKAGE_ROOT = Path(__file__).resolve().parents[2]
+from motion_spec.manifest import build_url_map
 
 
 class JSONEncoder(json.JSONEncoder):
@@ -3053,46 +3052,7 @@ def generate_ir(manifest_path):
     g.parse(str(app_model_path), format="json-ld")
 
     # Load IRI map
-    url_map = {}
-    for key in g.objects(predicate=APP["iri-map"]):
-        node = g.value(key, APP["path"])
-        if not isinstance(node, rdflib.Literal):
-            continue
-
-        relative_path = node.value
-        if Path(relative_path).is_absolute():
-            url_map[str(key)] = relative_path
-            continue
-
-        if relative_path == "models/":
-            manifest_dir_path = app_model_path.parent
-            models_subdir_path = app_model_path.parent / "models"
-            imports = list(g.objects(predicate=APP["import"]))
-
-            if imports:
-                first_import_url = str(imports[0])
-                import_path = None
-                for base_url in [str(k) for k in g.objects(predicate=APP["iri-map"])]:
-                    if first_import_url.startswith(base_url):
-                        import_path = first_import_url[len(base_url) :]
-                        break
-
-                if import_path and (manifest_dir_path / import_path).exists():
-                    url_map[str(key)] = str(manifest_dir_path)
-                elif import_path and (models_subdir_path / import_path).exists():
-                    url_map[str(key)] = str(models_subdir_path)
-                else:
-                    url_map[str(key)] = str(models_subdir_path)
-            else:
-                url_map[str(key)] = str(models_subdir_path)
-            continue
-
-        absolute_path = app_model_path.parent / relative_path
-        if not absolute_path.exists():
-            source_path = PACKAGE_ROOT / relative_path
-            absolute_path = source_path if source_path.exists() else Path.cwd() / relative_path
-        url_map[str(key)] = str(absolute_path)
-
+    url_map = build_url_map(g, app_model_path)
     install_resolver(IriToFileResolver(url_map))
 
     # Load/import the referenced models

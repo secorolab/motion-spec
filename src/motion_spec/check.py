@@ -11,9 +11,9 @@ from rdf_utils.resolver import IriToFileResolver, install_resolver
 
 from rdflib.namespace import RDF
 
+from motion_spec.manifest import build_url_map
 from motion_spec.namespace import APP, CSTR_HDL
 
-PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 SUPPORTED_CONTROL_MODES = {"JointTorque"}
 
 
@@ -48,59 +48,7 @@ Examples:
         """Return first object for subject+predicate across all named graphs."""
         return next((o for _, _, o, _ in g.quads((subject, predicate, None, None))), None)
 
-    url_map = {}
-    for key in _quad_objects(APP["iri-map"]):
-        path_node = _quad_value(key, APP["path"])
-        if path_node is None:
-            continue
-        value = str(path_node)
-        if Path(value).is_absolute():
-            # Already absolute path, use as-is
-            url_map[str(key)] = value
-        else:
-            # For existing models, the IRI mapping "models/" should resolve to the manifest directory itself
-            # For new DSL models, "models/" should resolve to a models/ subdirectory
-            if value == "models/":
-                # Try manifest directory first (for existing models)
-                manifest_dir_path = app_model_path.parent
-                # Try models subdirectory (for new DSL models)
-                models_subdir_path = app_model_path.parent / "models"
-
-                # Check which one contains the expected files by looking at imports
-                imports = _quad_objects(APP["import"])
-                if imports:
-                    # Take first import URL and extract the path part after the base URL
-                    first_import_url = str(imports[0])
-                    # The import URLs are like "https://secorolab.github.io/00-common/00-misc.json"
-                    # We want to extract "00-common/00-misc.json"
-                    import_path = None
-                    for base_url in [str(k) for k in _quad_objects(APP["iri-map"])]:
-                        if first_import_url.startswith(base_url):
-                            import_path = first_import_url[len(base_url) :]
-                            break
-
-                    if import_path:
-                        if (manifest_dir_path / import_path).exists():
-                            url_map[str(key)] = str(manifest_dir_path)
-                        elif (models_subdir_path / import_path).exists():
-                            url_map[str(key)] = str(models_subdir_path)
-                        else:
-                            # Fallback to current working directory
-                            url_map[str(key)] = str(Path.cwd() / value)
-                    else:
-                        # Couldn't extract path, use models subdirectory by default
-                        url_map[str(key)] = str(models_subdir_path)
-                else:
-                    # No imports to check, use models subdirectory by default
-                    url_map[str(key)] = str(models_subdir_path)
-            else:
-                # For non-models paths, resolve normally relative to manifest
-                absolute_path = app_model_path.parent / value
-                if not absolute_path.exists():
-                    source_path = PACKAGE_ROOT / value
-                    absolute_path = source_path if source_path.exists() else Path.cwd() / value
-                url_map[str(key)] = str(absolute_path)
-
+    url_map = build_url_map(g, app_model_path)
     install_resolver(IriToFileResolver(dict(sorted(url_map.items(), key=lambda x: len(x[0]), reverse=True))))
 
     # Load/import the referenced models

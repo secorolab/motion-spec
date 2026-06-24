@@ -57,6 +57,7 @@ robot-shutdown-mj_kdl-KinovaGen3(solver) ::= <<
 app-arm-includes-mj_kdl(has_arm) ::= <<
 <if(has_arm)>
 #include \<cstring\>
+#include \<cstdlib\>
 #include \<deque\>
 #include \<filesystem\>
 #include \<iostream\>
@@ -76,12 +77,43 @@ app-arm-setup-mj_kdl(arm_solvers, scene) ::= <<
         }
     }
 
-    const auto find_asset_path = [](const std::vector\<std::filesystem::path\> &relative_paths) -> std::filesystem::path {
+    const auto cache_root = []() -> std::filesystem::path {
+        if (const char *xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg) {
+            return std::filesystem::path(xdg) / "mj_kdl_wrapper";
+        }
+        if (const char *home = std::getenv("HOME"); home && *home) {
+            return std::filesystem::path(home) / ".cache" / "mj_kdl_wrapper";
+        }
+        return {};
+    };
+
+    const auto find_asset_path = [&cache_root](const std::vector\<std::filesystem::path\> &relative_paths) -> std::filesystem::path {
         std::vector\<std::filesystem::path\> roots = {std::filesystem::current_path()};
         roots.push_back(std::filesystem::path(__FILE__).parent_path());
+        const auto cache = cache_root();
+        const auto append_cache_candidate = [&cache](std::vector\<std::filesystem::path\> &candidates,
+                                                     const std::filesystem::path &relative) {
+            if (cache.empty()) {
+                return;
+            }
+            const auto text = relative.generic_string();
+            const auto append_suffix = [&](const std::string &marker, const std::filesystem::path &cache_subdir) {
+                const auto pos = text.find(marker);
+                if (pos != std::string::npos) {
+                    candidates.push_back(cache / cache_subdir / text.substr(pos + marker.size()));
+                }
+            };
+            append_suffix("third_party/menagerie/", "menagerie");
+            append_suffix("src/mj_kdl_wrapper/assets/", "assets");
+            append_suffix("src/examples/assets/", "assets");
+        };
+
         for (const auto &start : roots) {
             for (auto root = start; !root.empty(); root = root.parent_path()) {
                 for (const auto &relative : relative_paths) {
+                    if (relative.is_absolute() && std::filesystem::exists(relative)) {
+                        return relative;
+                    }
                     const auto candidate = root / relative;
                     if (std::filesystem::exists(candidate)) {
                         return candidate;
@@ -89,6 +121,22 @@ app-arm-setup-mj_kdl(arm_solvers, scene) ::= <<
                 }
                 if (root == root.root_path()) {
                     break;
+                }
+            }
+        }
+        for (const auto &relative : relative_paths) {
+            std::vector\<std::filesystem::path\> cache_candidates;
+            if (const char *menagerie = std::getenv("MJ_KDL_MENAGERIE"); menagerie && *menagerie) {
+                const auto text = relative.generic_string();
+                const auto pos = text.find("third_party/menagerie/");
+                if (pos != std::string::npos) {
+                    cache_candidates.push_back(std::filesystem::path(menagerie) / text.substr(pos + std::string("third_party/menagerie/").size()));
+                }
+            }
+            append_cache_candidate(cache_candidates, relative);
+            for (const auto &candidate : cache_candidates) {
+                if (std::filesystem::exists(candidate)) {
+                    return candidate;
                 }
             }
         }
@@ -312,17 +360,7 @@ find_package(orocos_kdl REQUIRED CONFIG)
 <if(fsm_namespace)>
 find_package(coord2b REQUIRED)
 <endif>
-
-set(MJ_KDL_WRAPPER_SOURCE_DIR "" CACHE PATH "Path to the mj_kdl_wrapper source tree")
-if(MJ_KDL_WRAPPER_SOURCE_DIR)
-    set(BUILD_TESTS OFF CACHE BOOL "Disable mj_kdl_wrapper tests for generated builds" FORCE)
-    set(BUILD_EXAMPLES OFF CACHE BOOL "Disable mj_kdl_wrapper examples for generated builds" FORCE)
-    add_subdirectory("${MJ_KDL_WRAPPER_SOURCE_DIR}" mj_kdl_wrapper_build)
-    set(MJ_KDL_WRAPPER_TARGET mj_kdl_wrapper)
-else()
-    find_package(mj_kdl_wrapper REQUIRED CONFIG)
-    set(MJ_KDL_WRAPPER_TARGET mj_kdl_wrapper::mj_kdl_wrapper)
-endif()
+find_package(mj_kdl_wrapper REQUIRED CONFIG)
 
 add_executable(main
     ref_main.cpp
@@ -336,7 +374,7 @@ target_include_directories(main PRIVATE
 <endif>
 )
 target_link_libraries(main PRIVATE
-    ${MJ_KDL_WRAPPER_TARGET}
+    mj_kdl_wrapper::mj_kdl_wrapper
     orocos-kdl
 <if(fsm_namespace)>
     ${coord2b_LIBRARIES}

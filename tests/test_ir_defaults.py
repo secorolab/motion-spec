@@ -7,7 +7,7 @@ from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import RDF, XSD
 
 from motion_spec.ir_gen import Parser, _scene_from_graph
-from motion_spec.namespace import CSTR_HDL, ENV, GEOM_ENT, MJ, QUDT_QKIND, QUDT_SCHEMA, SIM, SLV
+from motion_spec.namespace import CSTR_HDL, ENV, EXEC, GEOM_ENT, MJ, QUDT_QKIND, QUDT_SCHEMA, SLV
 
 
 def _quantity(graph: Graph, name: str) -> URIRef:
@@ -60,7 +60,7 @@ def test_scene_object_site_attach_target_is_prefixed_for_runtime_scene_name() ->
     graph.add((table, RDF.type, ENV.Object))
     graph.add((robot, RDF.type, ENV.RigidObject))
     graph.add((robot, ENV["has-object-model"], robot_model))
-    graph.add((robot_model, SIM.path, Literal("robot.xml")))
+    graph.add((robot_model, EXEC.path, Literal("robot.xml")))
     graph.add((robot, GEOM_ENT["kinematic-chain"], chain))
     graph.add((robot, MJ["attach-kind"], Literal("site")))
     graph.add((robot, MJ["attach-name"], Literal("table_top")))

@@ -67,6 +67,19 @@ class SIM(DefinedNamespace):
     _NS = Namespace(f"{URI_SECORO_MM}/simulation#")
 
 
+class EXEC(DefinedNamespace):
+    SystemResource: URIRef
+    ResourceWithPath: URIRef
+
+    path: URIRef
+
+    _extras = [
+        "has-config",
+    ]
+
+    _NS = Namespace(f"{URI_SECORO_MM}/execution-context#")
+
+
 class EL(DefinedNamespace):
     EventLoop: URIRef
     Event: URIRef

@@ -13,6 +13,7 @@ from dataclasses import dataclass, field, is_dataclass, asdict, replace
 from enum import Enum
 import collections
 import math
+import os
 import re
 import json
 from pathlib import Path
@@ -46,7 +47,7 @@ from motion_spec.namespace import (
     RT,
     CSTR_HDL,
     CSTR_HDL_EXT,
-    SIM,
+    EXEC,
     SNAP,
     SLV,
     SLV_EXT,
@@ -2747,7 +2748,9 @@ def _position_of(g, obj_node):
 
 
 def _path_of_model(g, model_node):
-    return str(g.value(model_node, SIM.path) or "") if model_node else ""
+    if not model_node:
+        return ""
+    return str(g.value(model_node, EXEC.path) or "")
 
 
 def _mj_body_name(g, node):
@@ -2767,6 +2770,32 @@ def _resolve_existing_path(path: str) -> Path | None:
     for root in [Path.cwd(), *Path.cwd().parents]:
         candidate = root / path
         if candidate.exists():
+            return candidate
+    text = Path(path).as_posix()
+    cache_root = None
+    if os.environ.get("XDG_CACHE_HOME"):
+        cache_root = Path(os.environ["XDG_CACHE_HOME"]) / "mj_kdl_wrapper"
+    elif os.environ.get("HOME"):
+        cache_root = Path(os.environ["HOME"]) / ".cache" / "mj_kdl_wrapper"
+
+    def cache_path(marker: str, cache_subdir: str) -> Path | None:
+        pos = text.find(marker)
+        if pos == -1 or cache_root is None:
+            return None
+        return cache_root / cache_subdir / text[pos + len(marker):]
+
+    menagerie_marker = "third_party/menagerie/"
+    pos = text.find(menagerie_marker)
+    if pos != -1 and os.environ.get("MJ_KDL_MENAGERIE"):
+        candidate = Path(os.environ["MJ_KDL_MENAGERIE"]) / text[pos + len(menagerie_marker):]
+        if candidate.exists():
+            return candidate
+    for candidate in (
+        cache_path(menagerie_marker, "menagerie"),
+        cache_path("src/mj_kdl_wrapper/assets/", "assets"),
+        cache_path("src/examples/assets/", "assets"),
+    ):
+        if candidate is not None and candidate.exists():
             return candidate
     return None
 
@@ -3018,7 +3047,7 @@ def _robot_setup_from_graph(g):
             chain_root = str(g.value(start, MJ["body-name"]) or "")
             chain_end = str(g.value(end, MJ["body-name"]) or "")
             model_node = g.value(obj_node, ENV["has-object-model"])
-            urdf = str(g.value(model_node, SIM.path) or "") if model_node else ""
+            urdf = _path_of_model(g, model_node)
             robot_model = str(model_node).rstrip("/").split("/")[-1].split("#")[-1] if model_node else ""
             tool_body = _mj_body_name(g, g.value(obj_node, MJ["tool-body"]))
             tcp_site = _site_name(g, g.value(obj_node, MJ["tcp-site"]))
@@ -3038,7 +3067,13 @@ def _robot_setup_from_graph(g):
                 chain_tip = attachments[0].attach_to
             elif tcp_site and chain_end == tcp_site and attachments and attachments[0].attach_kind == "Site":
                 model_path = _path_of_model(g, model_node)
-                chain_tip = _mjcf_body_containing_site(model_path, attachments[0].attach_to) or chain_tip
+                site_body = _mjcf_body_containing_site(model_path, attachments[0].attach_to)
+                if not site_body:
+                    raise ValueError(
+                        f"Cannot derive robot chain tip body: site '{attachments[0].attach_to}' "
+                        f"was not found in model '{model_path}'."
+                    )
+                chain_tip = site_body
             if chain_root or chain_end or urdf:
                 return urdf, chain_root, chain_end, chain_tip, robot_model, tool_body, tcp_site
     return "", "", "", "", "", "", ""

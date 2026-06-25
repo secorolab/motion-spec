@@ -630,6 +630,8 @@ class SLV_EXT(DefinedNamespace):
     CommandForwardingSpecification: URIRef
     CommandForwardingAlgorithm: URIRef
 
-    _extras = ["command-forwarding", "control-signal", "gravity-value"]
+    # "robot" links a solver to the environment robot whose kinematic chain it
+    # drives, so per-robot chain setups can be resolved in multi-robot scenes.
+    _extras = ["command-forwarding", "control-signal", "gravity-value", "robot"]
 
     _NS = Namespace(f"{URI_SECORO_MM}/task/solver-specification#")

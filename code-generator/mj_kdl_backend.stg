@@ -143,52 +143,56 @@ app-arm-setup-mj_kdl(arm_solvers, scene) ::= <<
         return {};
     };
 
-    const std::filesystem::path mjcf_path = find_asset_path({"<first(scene.robots).path>"\});
-    if (mjcf_path.empty()) {
-        std::cerr \<\< "MJCF model not found: <first(scene.robots).path>\\n";
-        return 1;
-    }
     mj_kdl::Env mj_env{};
     mj_kdl::SceneSpec mj_scene{};
     mj_scene.timestep = 0.002;
     mj_scene.add_floor = true;
     mj_scene.add_skybox = true;
-    mj_kdl::RobotSpec mj_robot_spec{};
     std::deque\<std::string\> mj_path_storage;
-    const std::string mjcf_path_string = mjcf_path.string();
-    mj_robot_spec.path = mjcf_path_string.c_str();
-    mj_robot_spec.prefix = "<first(scene.robots).prefix>";
-    mj_robot_spec.attach_to.kind = mj_kdl::AttachKind::<first(scene.robots).attach_kind>;
-    mj_robot_spec.attach_to.name = "<first(scene.robots).attach_name>";
-    mj_robot_spec.pos[0] = <first(scene.robots).pos_x>;
-    mj_robot_spec.pos[1] = <first(scene.robots).pos_y>;
-    mj_robot_spec.pos[2] = <first(scene.robots).pos_z>;
-    mj_robot_spec.euler[0] = <first(scene.robots).euler_x>;
-    mj_robot_spec.euler[1] = <first(scene.robots).euler_y>;
-    mj_robot_spec.euler[2] = <first(scene.robots).euler_z>;
-<first(scene.robots).attachments:{attachment |
+<scene.robots:{robot |
     {
-        const std::filesystem::path attachment_path = find_asset_path({"<attachment.path>"\});
-        if (attachment_path.empty()) {
-            std::cerr \<\< "MJCF attachment not found: <attachment.path>\\n";
+        const std::filesystem::path robot_mjcf_path = find_asset_path({"<robot.path>"\});
+        if (robot_mjcf_path.empty()) {
+            std::cerr \<\< "MJCF model not found: <robot.path>\\n";
             return 1;
         \}
-        mj_path_storage.push_back(attachment_path.string());
-        mj_kdl::AttachmentSpec attachment_spec{\};
-        attachment_spec.mjcf_path = mj_path_storage.back().c_str();
-        attachment_spec.attach_to.kind = mj_kdl::AttachKind::<attachment.attach_kind>;
-        attachment_spec.attach_to.name = "<attachment.attach_to>";
-        attachment_spec.prefix = "<attachment.prefix>";
-        attachment_spec.pos[0] = <attachment.pos_x>;
-        attachment_spec.pos[1] = <attachment.pos_y>;
-        attachment_spec.pos[2] = <attachment.pos_z>;
-        attachment_spec.euler[0] = <attachment.euler_x>;
-        attachment_spec.euler[1] = <attachment.euler_y>;
-        attachment_spec.euler[2] = <attachment.euler_z>;
-        mj_robot_spec.attachments.push_back(attachment_spec);
+        mj_path_storage.push_back(robot_mjcf_path.string());
+        mj_kdl::RobotSpec mj_robot_spec{\};
+        mj_robot_spec.path = mj_path_storage.back().c_str();
+        mj_robot_spec.prefix = "<robot.prefix>";
+        mj_robot_spec.attach_to.kind = mj_kdl::AttachKind::<robot.attach_kind>;
+        mj_robot_spec.attach_to.name = "<robot.attach_name>";
+        mj_robot_spec.pos[0] = <robot.pos_x>;
+        mj_robot_spec.pos[1] = <robot.pos_y>;
+        mj_robot_spec.pos[2] = <robot.pos_z>;
+        mj_robot_spec.euler[0] = <robot.euler_x>;
+        mj_robot_spec.euler[1] = <robot.euler_y>;
+        mj_robot_spec.euler[2] = <robot.euler_z>;
+<robot.attachments:{attachment |
+        {
+            const std::filesystem::path attachment_path = find_asset_path({"<attachment.path>"\});
+            if (attachment_path.empty()) {
+                std::cerr \<\< "MJCF attachment not found: <attachment.path>\\n";
+                return 1;
+            \}
+            mj_path_storage.push_back(attachment_path.string());
+            mj_kdl::AttachmentSpec attachment_spec{\};
+            attachment_spec.mjcf_path = mj_path_storage.back().c_str();
+            attachment_spec.attach_to.kind = mj_kdl::AttachKind::<attachment.attach_kind>;
+            attachment_spec.attach_to.name = "<attachment.attach_to>";
+            attachment_spec.prefix = "<attachment.prefix>";
+            attachment_spec.pos[0] = <attachment.pos_x>;
+            attachment_spec.pos[1] = <attachment.pos_y>;
+            attachment_spec.pos[2] = <attachment.pos_z>;
+            attachment_spec.euler[0] = <attachment.euler_x>;
+            attachment_spec.euler[1] = <attachment.euler_y>;
+            attachment_spec.euler[2] = <attachment.euler_z>;
+            mj_robot_spec.attachments.push_back(attachment_spec);
+        \}
+}; separator="\n">
+        mj_scene.robots.push_back(mj_robot_spec);
     \}
 }; separator="\n">
-    mj_scene.robots.push_back(mj_robot_spec);
 <scene.objects:{object |
     {
         mj_kdl::SceneObject object_spec{\};
@@ -223,7 +227,7 @@ app-arm-setup-mj_kdl(arm_solvers, scene) ::= <<
 }; separator="\n">
 
     if (!mj_kdl::init_env(&mj_env, &mj_scene)) {
-        std::cerr \<\< "mj_kdl::init_env() failed for " \<\< mjcf_path_string \<\< "\\n";
+        std::cerr \<\< "mj_kdl::init_env() failed\\n";
         return 1;
     }
 <arm_solvers:{solver |<robot-state-init(solver, "mj_kdl")>
@@ -244,10 +248,13 @@ app-arm-setup-mj_kdl(arm_solvers, scene) ::= <<
 app-arm-post-setup-mj_kdl(arm_solvers, motions) ::= <<
     mj_env.on_reset = [&](mj_kdl::ResetContext *) {
         const double _q_home[7] = {0.0, 0.2618, 3.1416, -2.2689, 0.0, 0.9599, 1.5708};
-        KDL::JntArray _q(mj_<first(arm_solvers).runtime_id>.n_joints);
-        for (int _i = 0; _i \< mj_<first(arm_solvers).runtime_id>.n_joints && _i \< 7; ++_i)
-            _q(_i) = _q_home[_i];
-        mj_kdl::set_joint_pos(&mj_<first(arm_solvers).runtime_id>, _q, false);
+<arm_solvers:{solver | <if(solver.runtime_owner)>        {
+            KDL::JntArray _q(mj_<solver.runtime_id>.n_joints);
+            for (int _i = 0; _i \< mj_<solver.runtime_id>.n_joints && _i \< 7; ++_i)
+                _q(_i) = _q_home[_i];
+            mj_kdl::set_joint_pos(&mj_<solver.runtime_id>, _q, false);
+        \}
+<endif>}; separator="">
         <motions:{m | reset_<m.id>(<m.id>_state_instance);}; separator="\n        ">
     };
     mj_kdl::reset(&mj_env);
@@ -279,10 +286,10 @@ app-arm-cleanup-mj_kdl(has_arm) ::= <<
 
 app-arm-runtime-step-mj_kdl(arm_solvers) ::= <<
 <arm_solvers:{solver | <if(solver.runtime_owner)>        mj_kdl::update(&mj_<solver.runtime_id>);
-        if (!mj_kdl::step(&mj_<solver.runtime_id>)) {
-            std::exit(0);
-        \}
 <endif>}; separator="">
+        if (!mj_kdl::step(&mj_<first(arm_solvers).runtime_id>)) {
+            std::exit(0);
+        }
 >>
 
 app-arm-trace-update-mj_kdl(arm_solvers, trace) ::= <<

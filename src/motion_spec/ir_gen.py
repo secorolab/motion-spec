@@ -2747,6 +2747,13 @@ def _position_of(g, obj_node):
     return None
 
 
+def _orientation_of(g, obj_node):
+    for orient_node in g.subjects(GEOM_REL["of"], obj_node):
+        if GEOM_COORD["OrientationCoordinate"] in g[orient_node:RDF.type]:
+            return _orientation_degrees(g, orient_node)
+    return None
+
+
 def _path_of_model(g, model_node):
     if not model_node:
         return ""
@@ -2968,6 +2975,7 @@ def _scene_from_graph(g):
                     attach_kind=attach_kind,
                     attach_name=attach_name,
                     pos=_position_of(g, robot_node),
+                    euler=_orientation_of(g, robot_node),
                     attachments=attachments,
                 )
             )
@@ -3036,12 +3044,25 @@ def _id_from_uri(node):
 
 
 
-def _robot_setup_from_graph(g):
+def _robot_setups_from_graph(g):
+    """Per-robot solver chain setups for the whole workspace.
+
+    Returns ``(setups_by_node, ordered)`` where ``setups_by_node`` maps each
+    robot's graph node to its setup tuple
+    ``(urdf, chain_root, chain_end, chain_tip, robot_model, tool_body, tcp_site)``
+    and ``ordered`` is the same tuples in declaration order. Names derived from
+    the robot's own MJCF (``chain_tip``, ``tool_body``) get the robot's prefix
+    prepended so they resolve in the prefixed, multi-robot MuJoCo scene;
+    already-prefixed (authored) names are left untouched.
+    """
+    setups_by_node = {}
+    ordered = []
     for env_node in g.subjects(RDF.type, ENV.Workspace):
         for obj_node in g.objects(env_node, ENV["has-object"]):
             chain = g.value(obj_node, GEOM_ENT["kinematic-chain"])
             if chain is None:
                 continue
+            prefix = str(g.value(obj_node, MJ["prefix"]) or "")
             start = g.value(chain, GEOM_ENT.start)
             end = g.value(chain, GEOM_ENT.end)
             chain_root = str(g.value(start, MJ["body-name"]) or "")
@@ -3074,9 +3095,17 @@ def _robot_setup_from_graph(g):
                         f"was not found in model '{model_path}'."
                     )
                 chain_tip = site_body
-            if chain_root or chain_end or urdf:
-                return urdf, chain_root, chain_end, chain_tip, robot_model, tool_body, tcp_site
-    return "", "", "", "", "", "", ""
+            if prefix:
+                if chain_tip and not chain_tip.startswith(prefix):
+                    chain_tip = prefix + chain_tip
+                if tool_body and not tool_body.startswith(prefix):
+                    tool_body = prefix + tool_body
+            if not (chain_root or chain_end or urdf):
+                continue
+            setup = (urdf, chain_root, chain_end, chain_tip, robot_model, tool_body, tcp_site)
+            setups_by_node[obj_node] = setup
+            ordered.append(setup)
+    return setups_by_node, ordered
 
 
 def generate_ir(manifest_path):
@@ -3110,15 +3139,8 @@ def generate_ir(manifest_path):
     slv_arm = []
     sched4 = []
     slv_base_frc = []
-    (
-        _urdf,
-        _chain_root,
-        _chain_end,
-        _chain_tip,
-        _robot_model,
-        _tool_body,
-        _tcp_site,
-    ) = _robot_setup_from_graph(g)
+    setups_by_node, ordered_setups = _robot_setups_from_graph(g)
+    _default_setup = ordered_setups[0] if ordered_setups else ("", "", "", "", "", "", "")
     scene = _scene_from_graph(g)
 
     # Construct the computational graph that feeds into the mobile base's
@@ -3138,6 +3160,16 @@ def generate_ir(manifest_path):
     # so that they are visited only once.
     for s in g.subjects(RDF.type, SLV["SolverWithInputAndOutput"]):
         solver = p.solver_with_input_and_output(s)
+        robot_node = g.value(s, SLV_EXT["robot"])
+        (
+            _urdf,
+            _chain_root,
+            _chain_end,
+            _chain_tip,
+            _robot_model,
+            _tool_body,
+            _tcp_site,
+        ) = setups_by_node.get(robot_node, _default_setup)
         solver.urdf = _urdf
         solver.chain_root = _chain_root
         solver.chain_end = _chain_end

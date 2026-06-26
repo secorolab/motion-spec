@@ -218,7 +218,7 @@ app-arm-setup-mj_kdl(arm_solvers, scene) ::= <<
         object_spec.rgba[2] = <object.color_b>f;
         object_spec.rgba[3] = <object.color_a>f;
         object_spec.mass = <object.mass>;
-        object_spec.condim = mj_kdl::Condim::Torsional;
+        object_spec.condim = mj_kdl::Condim::Rolling;
         object_spec.friction[0] = <object.friction_slide>;
         object_spec.friction[1] = <object.friction_torsion>;
         object_spec.friction[2] = <object.friction_roll>;
@@ -230,6 +230,11 @@ app-arm-setup-mj_kdl(arm_solvers, scene) ::= <<
         std::cerr \<\< "mj_kdl::init_env() failed\\n";
         return 1;
     }
+
+    mj_env.model->opt.iterations = 100;
+    mj_env.model->opt.tolerance  = 1e-10;
+    mj_env.model->opt.impratio   = 20.0;
+    mj_env.model->opt.cone       = mjCONE_ELLIPTIC;
 <arm_solvers:{solver |<robot-state-init(solver, "mj_kdl")>
 <robot-init(solver, "mj_kdl")>
 <robot-chain(solver, "mj_kdl")>

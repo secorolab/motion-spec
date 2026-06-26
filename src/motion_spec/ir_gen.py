@@ -2571,6 +2571,19 @@ def build_motion_units(
         while_schedule.extend(
             p_active.schedule(cartesian_force_nodes, ops_generic + ops_slv + ops_cstr_hdl)
         )
+
+        # While evaluators watched only by a monitor (no controller consumes their
+        # error, e.g. a slip-detection guard) are not reached by backward discovery
+        # either. Append them after their dependencies, same as the until evaluators
+        # below, so the template emits their evaluate_*_constraint call.
+        for n in while_eval_nodes:
+            if GEOM_OP["PoseDiffEvaluator"] in g[n : RDF["type"]]:
+                continue
+            eval_id = p.id(n)
+            if eval_id not in p_active.sched:
+                while_schedule.append(eval_id)
+                p_active.sched.add(eval_id)
+
         until_schedule = p_active.schedule(until_eval_nodes, ops_generic + ops_cstr_hdl)
 
         # Until evaluators have no controllers whose error-signal would drive their

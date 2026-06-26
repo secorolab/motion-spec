@@ -560,22 +560,22 @@ class CSTR_HDL(DefinedNamespace):
         "decay-rate",
         "stiffness",
         "damping",
-        "monitors-until",
-        "monitors-when",
-        "fallback-motion",
     ]
 
     _NS = Namespace(f"{URI_CR2B_MM}/task/constraint-handler#")
 
 class CSTR_HDL_EXT(DefinedNamespace):
-    # Secorolab extension to the upstream comp-rob2b constraint-handler: a
-    # feed-forward controller that consumes a reference-signal instead of an
-    # error-signal. New class/predicate live in the secorolab namespace rather
-    # than squatting in comp-rob2b's task/constraint-handler#; upstream cstr_hdl:
-    # predicates (control-signal, error-signal) are reused.
+    # Secorolab extension to the upstream comp-rob2b constraint-handler.
+    # New classes/predicates live here rather than squatting in comp-rob2b's
+    # task/constraint-handler#; upstream cstr_hdl predicates are reused.
     FeedForwardController: URIRef
 
-    _extras = ["reference-signal"]
+    _extras = [
+        "reference-signal",
+        "monitors-until",
+        "monitors-when",
+        "fallback-motion",
+    ]
 
     _NS = Namespace(f"{URI_SECORO_MM}/task/constraint-handler#")
 

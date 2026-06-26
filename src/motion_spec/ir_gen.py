@@ -1300,8 +1300,8 @@ class Parser:
     def monitor_entry(self, id_):
         assert CSTR_HDL["Monitor"] in self.g[id_ : RDF["type"]]
 
-        is_until_aggregate = self.g.value(id_, CSTR_HDL["monitors-until"]) is not None
-        is_when_aggregate = self.g.value(id_, CSTR_HDL["monitors-when"]) is not None
+        is_until_aggregate = self.g.value(id_, CSTR_HDL_EXT["monitors-until"]) is not None
+        is_when_aggregate = self.g.value(id_, CSTR_HDL_EXT["monitors-when"]) is not None
         error_node = self.g.value(id_, CSTR_HDL["error"])
         error = None if is_until_aggregate or is_when_aggregate or error_node is None else self.quantity(error_node)
 
@@ -1313,7 +1313,7 @@ class Parser:
 
         event_node = self.g.value(id_, CSTR_HDL["event"])
         event = self.id(event_node)
-        fallback_node = self.g.value(id_, CSTR_HDL["fallback-motion"])
+        fallback_node = self.g.value(id_, CSTR_HDL_EXT["fallback-motion"])
         fallback_motion = self.id(fallback_node) if fallback_node is not None else None
         return MonitorEntry(
             self.id(id_), "EdgeTriggeredMonitor", error, None, event, None, True, is_until_aggregate, is_when_aggregate,
@@ -2478,10 +2478,10 @@ def build_motion_units(
 
         when_mon_nodes, while_mon_nodes, until_mon_nodes = [], [], []
         for mon_node in g[handler_node : CSTR_HDL["monitors"]]:
-            if g.value(mon_node, CSTR_HDL["monitors-when"]) is not None:
+            if g.value(mon_node, CSTR_HDL_EXT["monitors-when"]) is not None:
                 when_mon_nodes.append(mon_node)
                 continue
-            if g.value(mon_node, CSTR_HDL["monitors-until"]) is not None:
+            if g.value(mon_node, CSTR_HDL_EXT["monitors-until"]) is not None:
                 until_mon_nodes.append(mon_node)
                 continue
             mon_cstr = g.value(mon_node, CSTR_HDL["constraint"])

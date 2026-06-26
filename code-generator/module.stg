@@ -530,7 +530,7 @@ schedule-block(steps, closures, views) ::= <<
 >>
 
 update-monitor(monitor) ::= <<
-<if(monitor.is_until_aggregate)>
+<if(monitor.active_condition)>
     {
         const bool active = <monitor.active_condition>;
 <if(monitor.is_edge_triggered)>

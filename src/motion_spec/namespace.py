@@ -125,6 +125,7 @@ class MJ(DefinedNamespace):
         "has-trace",
         "trace-enabled",
         "trace-length",
+        "trace-target",
         "attach-to-body",
         "attach-kind",
         "attach-name",
@@ -560,6 +561,7 @@ class CSTR_HDL(DefinedNamespace):
         "stiffness",
         "damping",
         "monitors-until",
+        "monitors-when",
         "fallback-motion",
     ]
 

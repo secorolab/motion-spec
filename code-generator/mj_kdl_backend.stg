@@ -299,6 +299,23 @@ app-arm-runtime-step-mj_kdl(arm_solvers) ::= <<
 
 app-arm-trace-update-mj_kdl(arm_solvers, trace) ::= <<
 <if(trace.enabled)>
+<if(trace.has_targets)>
+        if (!headless) {
+            // Live EE trajectory trace: one bounded polyline per referenced link,
+            // each link's world frame read straight from MuJoCo. Length and colour
+            // come from the ENVIRONMENT TRACE block in the .robmot model.
+            static constexpr size_t kTraceMax = <trace.length>; // bounded by user_scn maxgeom (init_window_sim)
+            static constexpr float kTraceRGBA[4] = {
+                <trace.color_r>f, <trace.color_g>f, <trace.color_b>f, <trace.color_a>f};
+            mj_kdl::clear_trace(&mj_viewer);
+<trace.targets:{target |            static std::deque\<KDL::Vector> _trace<i0>;
+            KDL::Frame _f<i0>;
+            if (mj_kdl::get_site_frame(mj_<first(arm_solvers).runtime_id>.model, mj_<first(arm_solvers).runtime_id>.data, "<target.link>", &_f<i0>) || mj_kdl::get_body_frame(mj_<first(arm_solvers).runtime_id>.model, mj_<first(arm_solvers).runtime_id>.data, "<target.link>", &_f<i0>)) _trace<i0>.push_back(_f<i0>.p);
+            if (_trace<i0>.size() > kTraceMax) _trace<i0>.pop_front();
+            for (size_t _i = 1; _i \< _trace<i0>.size(); ++_i)
+                mj_kdl::add_trace_segment(&mj_viewer, _trace<i0>[_i - 1], _trace<i0>[_i], kTraceRGBA);
+}>        }
+<else>
         if (!headless) {
             // Live EE trajectory trace: bounded ring of recent EE positions in
             // world frame, redrawn each frame as a polyline overlay. pose_ee_base
@@ -323,6 +340,7 @@ app-arm-trace-update-mj_kdl(arm_solvers, trace) ::= <<
                 mj_kdl::add_trace_segment(&mj_viewer, _trace[_i - 1], _trace[_i], kTraceRGBA);
             }
         }
+<endif>
 <endif>
 >>
 

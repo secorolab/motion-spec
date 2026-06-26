@@ -587,6 +587,21 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
                 if monitor.get("is_until_aggregate"):
                     monitor["active_condition"] = active_condition
 
+    def add_when_monitor_conditions(motions: list[dict]) -> None:
+        for motion in motions:
+            terms = [
+                f"motion_spec::runtime::constraint_satisfied(shared.{e['error']['id']})"
+                for e in motion.get("when_evaluators", [])
+                if e.get("error")
+            ]
+            joiner = " || " if motion.get("when_any") else " && "
+            active_condition = joiner.join(terms) if terms else "false"
+            if len(terms) > 1:
+                active_condition = f"({active_condition})"
+            for monitor in motion.get("when_monitors", []):
+                if monitor.get("is_when_aggregate"):
+                    monitor["active_condition"] = active_condition
+
     def add_motion_done_conditions(motions: list[dict]) -> None:
         for motion in motions:
             terms = [
@@ -714,6 +729,8 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
 
     add_until_monitor_conditions(ir.get("motions", []))
     add_until_monitor_conditions(unique_motions)
+    add_when_monitor_conditions(ir.get("motions", []))
+    add_when_monitor_conditions(unique_motions)
     add_motion_done_conditions(ir.get("motions", []))
     add_motion_done_conditions(unique_motions)
     if fsm_namespace is not None:

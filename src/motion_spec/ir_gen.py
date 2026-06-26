@@ -708,6 +708,7 @@ class GuardedMotion:
     while_: list[Constraint]
     until: list[Constraint]
     until_any: bool = False
+    when_any: bool = False
     type: str = field(default="GuardedMotion")
 
 
@@ -753,6 +754,7 @@ class MonitorEntry:
     event_idx: int | None
     is_edge_triggered: bool
     is_until_aggregate: bool = False
+    is_when_aggregate: bool = False
     event_uri: str | None = None
     event_name: str | None = None
     fallback_motion: str | None = None
@@ -855,6 +857,7 @@ class GuardedMotionBlock:
     until_events: list[str]
     has_until_condition: bool = False
     until_any: bool = False
+    when_any: bool = False
 
     # Solver Integration
     arm_solvers: list = field(default_factory=list)
@@ -1298,13 +1301,14 @@ class Parser:
         assert CSTR_HDL["Monitor"] in self.g[id_ : RDF["type"]]
 
         is_until_aggregate = self.g.value(id_, CSTR_HDL["monitors-until"]) is not None
+        is_when_aggregate = self.g.value(id_, CSTR_HDL["monitors-when"]) is not None
         error_node = self.g.value(id_, CSTR_HDL["error"])
-        error = None if is_until_aggregate or error_node is None else self.quantity(error_node)
+        error = None if is_until_aggregate or is_when_aggregate or error_node is None else self.quantity(error_node)
 
         if CSTR_HDL["LevelTriggeredMonitor"] in self.g[id_ : RDF["type"]]:
             flag = self.id(self.g.value(id_, CSTR_HDL["flag"]))
             return MonitorEntry(
-                self.id(id_), "LevelTriggeredMonitor", error, flag, None, None, False, is_until_aggregate
+                self.id(id_), "LevelTriggeredMonitor", error, flag, None, None, False, is_until_aggregate, is_when_aggregate
             )
 
         event_node = self.g.value(id_, CSTR_HDL["event"])
@@ -1312,7 +1316,7 @@ class Parser:
         fallback_node = self.g.value(id_, CSTR_HDL["fallback-motion"])
         fallback_motion = self.id(fallback_node) if fallback_node is not None else None
         return MonitorEntry(
-            self.id(id_), "EdgeTriggeredMonitor", error, None, event, None, True, is_until_aggregate,
+            self.id(id_), "EdgeTriggeredMonitor", error, None, event, None, True, is_until_aggregate, is_when_aggregate,
             event_uri=str(event_node), event_name=event.upper(), fallback_motion=fallback_motion,
         )
 
@@ -1423,8 +1427,14 @@ class Parser:
         assert MOT["GuardedMotion"] in self.g[id_ : RDF["type"]]
 
         when = []
+        when_any = False
         for c in self.g[id_ : MOT["when"]]:
-            when.append(self.constraint(c))
+            if MOT_EXT.ConstraintDisjunction in self.g[c : RDF["type"]]:
+                when_any = True
+                for member in self.g[c : MOT_EXT["has-constraint"]]:
+                    when.append(self.constraint(member))
+            else:
+                when.append(self.constraint(c))
 
         while_ = []
         for c in self.g[id_ : MOT["while"]]:
@@ -1440,7 +1450,7 @@ class Parser:
             else:
                 until.append(self.constraint(c))
 
-        return GuardedMotion(self.id(id_), when, while_, until, until_any)
+        return GuardedMotion(self.id(id_), when, while_, until, until_any, when_any)
 
     @memoize
     def constraint(self, id_):
@@ -2398,7 +2408,13 @@ def build_motion_units(
         motion = handler.motion
 
         # Classify constraints by motion phase via RDF traversal
-        when_constraint_nodes = set(g[motion_node : MOT["when"]])
+        _raw_when = set(g[motion_node : MOT["when"]])
+        when_constraint_nodes = set()
+        for node in _raw_when:
+            if MOT_EXT.ConstraintDisjunction in g[node : RDF["type"]]:
+                when_constraint_nodes.update(g[node : MOT_EXT["has-constraint"]])
+            else:
+                when_constraint_nodes.add(node)
         while_constraint_nodes = set(g[motion_node : MOT["while"]])
         _raw_until = set(g[motion_node : MOT["until"]])
         until_constraint_nodes = set()
@@ -2462,6 +2478,9 @@ def build_motion_units(
 
         when_mon_nodes, while_mon_nodes, until_mon_nodes = [], [], []
         for mon_node in g[handler_node : CSTR_HDL["monitors"]]:
+            if g.value(mon_node, CSTR_HDL["monitors-when"]) is not None:
+                when_mon_nodes.append(mon_node)
+                continue
             if g.value(mon_node, CSTR_HDL["monitors-until"]) is not None:
                 until_mon_nodes.append(mon_node)
                 continue
@@ -2644,6 +2663,7 @@ def build_motion_units(
                 until_events=[m.event for m in until_monitors if m.event is not None],
                 has_until_condition=bool(until_evaluators),
                 until_any=handler.motion.until_any,
+                when_any=handler.motion.when_any,
                 arm_solvers=handler_arm_solvers,
                 relative_poses=_relative_poses_for_motion(
                     while_evaluators + when_evaluators + until_evaluators,
@@ -2945,6 +2965,8 @@ def _trace_from_graph(g):
         "color_g": 0.5,
         "color_b": 0.1,
         "color_a": 1.0,
+        "targets": [],
+        "has_targets": False,
     }
     trace_node = next(g.objects(predicate=MJ["has-trace"]), None)
     if trace_node is None:
@@ -2959,6 +2981,9 @@ def _trace_from_graph(g):
     color = _color_rgba(g, trace_node)
     if color is not None:
         trace["color_r"], trace["color_g"], trace["color_b"], trace["color_a"] = color
+    for target in g.objects(trace_node, MJ["trace-target"]):
+        trace["targets"].append({"link": str(target)})
+    trace["has_targets"] = bool(trace["targets"])
     return trace
 
 

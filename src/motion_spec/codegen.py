@@ -572,13 +572,33 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
                     progress_ids.append(alpha_id)
             motion["trajectory_progress_ids"] = progress_ids
 
+    def _evaluator_term(e: dict, start_field: str) -> str:
+        # A timing evaluator has no solver error: compare the world clock
+        # against the threshold, measured from the selected state timestamp.
+        if e.get("is_elapsed"):
+            op = e.get("elapsed_op") or ">="
+            thr = e.get("elapsed_threshold_s") or 0.0
+            return f"(shared.clock_time_s - state.{start_field} {op} {thr:.6f})"
+        return f"motion_spec::runtime::constraint_satisfied(shared.{e['error']['id']})"
+
+    def _evaluator_active_term(e: dict) -> str:
+        return _evaluator_term(e, "motion_start_time")
+
+    def _evaluator_when_term(e: dict) -> str:
+        return _evaluator_term(e, "when_start_time")
+
     def add_until_monitor_conditions(motions: list[dict]) -> None:
         for motion in motions:
             terms = [
-                f"motion_spec::runtime::constraint_satisfied(shared.{e['error']['id']})"
+                _evaluator_active_term(e)
                 for e in motion.get("until_evaluators", [])
-                if e.get("error")
+                if e.get("error") or e.get("is_elapsed")
             ]
+            elapsed_terms_by_error = {
+                e["error"]["id"]: _evaluator_active_term(e)
+                for e in motion.get("until_evaluators", [])
+                if e.get("is_elapsed") and e.get("error")
+            }
             joiner = " || " if motion.get("until_any") else " && "
             active_condition = joiner.join(terms) if terms else "false"
             if len(terms) > 1:
@@ -586,21 +606,37 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
             for monitor in motion.get("until_monitors", []):
                 if monitor.get("is_until_aggregate"):
                     monitor["active_condition"] = active_condition
+                    continue
+                error_id = (monitor.get("error") or {}).get("id")
+                if error_id in elapsed_terms_by_error:
+                    monitor["active_condition"] = elapsed_terms_by_error[error_id]
 
     def add_when_monitor_conditions(motions: list[dict]) -> None:
         for motion in motions:
             terms = [
-                f"motion_spec::runtime::constraint_satisfied(shared.{e['error']['id']})"
+                _evaluator_when_term(e)
                 for e in motion.get("when_evaluators", [])
-                if e.get("error")
+                if e.get("error") or e.get("is_elapsed")
             ]
+            elapsed_terms_by_error = {
+                e["error"]["id"]: _evaluator_when_term(e)
+                for e in motion.get("when_evaluators", [])
+                if e.get("is_elapsed") and e.get("error")
+            }
             joiner = " || " if motion.get("when_any") else " && "
+            motion["when_condition"] = joiner.join(terms) if terms else "true"
+            if len(terms) > 1:
+                motion["when_condition"] = f"({motion['when_condition']})"
             active_condition = joiner.join(terms) if terms else "false"
             if len(terms) > 1:
                 active_condition = f"({active_condition})"
             for monitor in motion.get("when_monitors", []):
                 if monitor.get("is_when_aggregate"):
                     monitor["active_condition"] = active_condition
+                    continue
+                error_id = (monitor.get("error") or {}).get("id")
+                if error_id in elapsed_terms_by_error:
+                    monitor["active_condition"] = elapsed_terms_by_error[error_id]
 
     def add_motion_done_conditions(motions: list[dict]) -> None:
         for motion in motions:
@@ -637,9 +673,18 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
 
         for motion in motions:
             state_type = f"{motion['id']}_state &state"
+            has_when_elapsed = any(e.get("is_elapsed") for e in motion.get("when_evaluators", []))
             has_when_logic = bool(motion.get("when_schedule") or motion.get("when_evaluators"))
-            motion["can_start_params"] = "shared_data &shared" if has_when_logic else ""
-            motion["can_start_args"] = "shared" if has_when_logic else ""
+            can_start_params = []
+            can_start_args = []
+            if has_when_elapsed:
+                can_start_params.append(state_type)
+                can_start_args.append(f"{motion['id']}_state_instance")
+            if has_when_logic:
+                can_start_params.append("shared_data &shared")
+                can_start_args.append("shared")
+            motion["can_start_params"] = join_params(can_start_params)
+            motion["can_start_args"] = join_args(can_start_args)
 
             has_monitor_logic = bool(
                 motion.get("when_schedule")
@@ -726,6 +771,13 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
         motion["command_robot_id"] = primary_robot_id
     for motion in unique_motions:
         motion["command_robot_id"] = primary_robot_id
+    for motion in ir.get("motions", []) + unique_motions:
+        motion["has_when_elapsed"] = any(e.get("is_elapsed") for e in motion.get("when_evaluators", []))
+        motion["has_active_elapsed"] = any(
+            e.get("is_elapsed")
+            for e in motion.get("while_evaluators", []) + motion.get("until_evaluators", [])
+        )
+        motion["has_elapsed"] = motion["has_when_elapsed"] or motion["has_active_elapsed"]
 
     add_until_monitor_conditions(ir.get("motions", []))
     add_until_monitor_conditions(unique_motions)
@@ -733,6 +785,10 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
     add_when_monitor_conditions(unique_motions)
     add_motion_done_conditions(ir.get("motions", []))
     add_motion_done_conditions(unique_motions)
+
+    # Elapsed constraints compare seconds from the runtime clock. MuJoCo supplies sim
+    # seconds; real backends use a monotonic wall clock.
+    ir["needs_clock_time"] = any(m.get("has_elapsed") for m in ir.get("motions", []))
     if fsm_namespace is not None:
         # Tag FSM-event monitors so update-monitor emits produce_event(...) (and the monitor fn takes
         # robot); also map each motion to the state it *runs* in (fsm_state): the from-state of the

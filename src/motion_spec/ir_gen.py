@@ -27,6 +27,8 @@ from motion_spec.namespace import (
     APP,
     ENV,
     QUDT_SCHEMA,
+    QUDT_QKIND,
+    QUDT_UNIT,
     GEOM_ENT,
     GEOM_REL,
     GEOM_COORD,
@@ -718,6 +720,9 @@ class ConstraintEvaluator:
     type_: EvaluatorType
     constraint: Constraint
     error: Quantity | None
+    is_elapsed: bool = False
+    elapsed_op: str | None = None
+    elapsed_threshold_s: float | None = None
     type: str = field(default="ConstraintEvaluator")
 
 
@@ -855,6 +860,7 @@ class GuardedMotionBlock:
     when_events: list[str]
     while_events: list[str]
     until_events: list[str]
+    has_elapsed: bool = False
     has_until_condition: bool = False
     until_any: bool = False
     when_any: bool = False
@@ -1324,7 +1330,8 @@ class Parser:
     def constraint_evaluator(self, id_):
         assert CSTR_HDL["ConstraintEvaluator"] in self.g[id_ : RDF["type"]]
 
-        constraint = self.constraint(self.g.value(id_, CSTR_HDL["constraint"]))
+        constraint_node = self.g.value(id_, CSTR_HDL["constraint"])
+        constraint = self.constraint(constraint_node)
 
         if CSTR_HDL["AssignmentEvaluator"] in self.g[id_ : RDF["type"]]:
             t = EvaluatorType.AssignmentEvaluator
@@ -1333,7 +1340,24 @@ class Parser:
             t = EvaluatorType.ErrorEvaluator
             error = self.quantity(self.g.value(id_, CSTR_HDL["error"]))
 
-        return ConstraintEvaluator(self.id(id_), t, constraint, error)
+        # Timing constraint: measured quantity is the motion-state elapsed time (kind Time).
+        # No solver error — codegen compares the world clock against the threshold directly.
+        is_elapsed = False
+        elapsed_op = None
+        elapsed_threshold_s = None
+        qnode = self.g.value(constraint_node, CSTR["quantity"])
+        if qnode is not None and QUDT_QKIND["Time"] in self.g[qnode : QUDT_SCHEMA["hasQuantityKind"]]:
+            is_elapsed = True
+            elapsed_op = ">=" if CSTR["GreaterThanConstraint"] in self.g[constraint_node : RDF["type"]] else "<"
+            thr = self.g.value(constraint_node, CSTR["threshold"])
+            thr_val = float(self.g.value(thr, QUDT_SCHEMA["value"]))
+            thr_unit = self.g.value(thr, QUDT_SCHEMA["unit"])
+            elapsed_threshold_s = thr_val * (0.001 if thr_unit == QUDT_UNIT["MilliSEC"] else 1.0)
+
+        return ConstraintEvaluator(
+            self.id(id_), t, constraint, error,
+            is_elapsed=is_elapsed, elapsed_op=elapsed_op, elapsed_threshold_s=elapsed_threshold_s,
+        )
 
     @memoize
     def controller(self, id_):
@@ -2435,6 +2459,15 @@ def build_motion_units(
             elif cstr_node in until_constraint_nodes:
                 until_eval_nodes.append(eval_node)
 
+        def _is_elapsed_eval(eval_node):
+            # Timing evaluator: measured quantity is kind Time. No kinematic computation,
+            # so it must stay out of the schedule (the monitor reads the clock directly).
+            cnode = g.value(eval_node, CSTR_HDL["constraint"])
+            if cnode is None:
+                return False
+            qnode = g.value(cnode, CSTR["quantity"])
+            return qnode is not None and QUDT_QKIND["Time"] in g[qnode : QUDT_SCHEMA["hasQuantityKind"]]
+
         # Classify controllers: driven by while-evaluator error outputs.
         # PoseDiffEvaluator exposes its components as normal MAP views over the
         # operator output twist, so collect those view subobjects here.
@@ -2531,7 +2564,9 @@ def build_motion_units(
         # They must share one Parser (p_active) so that steps evaluated in both phases
         # are emitted only once and deduplication across the two slices is correct.
         p_when = Parser(g)
-        when_schedule = p_when.schedule(when_eval_nodes, ops_generic + ops_cstr_hdl)
+        when_schedule = p_when.schedule(
+            [n for n in when_eval_nodes if not _is_elapsed_eval(n)], ops_generic + ops_cstr_hdl
+        )
 
         handler_arm_solvers = _arm_solvers_for_handler(handler, slv_arm, closure_input_map)
         handler_output_ids = {c.control_signal.id for c in handler.controllers}
@@ -2578,6 +2613,7 @@ def build_motion_units(
                 n
                 for n in while_eval_nodes
                 if n not in while_pose_eval_nodes and n not in grouped_while_eval_nodes
+                and not _is_elapsed_eval(n)
             ]
             + ctrl_nodes,
             ops_generic + ops_cstr_hdl,
@@ -2598,17 +2634,23 @@ def build_motion_units(
         for n in while_eval_nodes:
             if GEOM_OP["PoseDiffEvaluator"] in g[n : RDF["type"]]:
                 continue
+            if _is_elapsed_eval(n):
+                continue
             eval_id = p.id(n)
             if eval_id not in p_active.sched:
                 while_schedule.append(eval_id)
                 p_active.sched.add(eval_id)
 
-        until_schedule = p_active.schedule(until_eval_nodes, ops_generic + ops_cstr_hdl)
+        until_schedule = p_active.schedule(
+            [n for n in until_eval_nodes if not _is_elapsed_eval(n)], ops_generic + ops_cstr_hdl
+        )
 
         # Until evaluators have no controllers whose error-signal would drive their
         # backward discovery. Append them explicitly after their dependencies so the
         # template emits the computation calls in the correct order.
         for n in until_eval_nodes:
+            if _is_elapsed_eval(n):
+                continue
             eval_id = p.id(n)
             if eval_id not in p_active.sched:
                 until_schedule.append(eval_id)
@@ -2618,6 +2660,8 @@ def build_motion_units(
         # when_evaluators, but any prerequisite generic ops still need scheduling.
         # Append when evaluators that were not discovered through backward traversal.
         for n in when_eval_nodes:
+            if _is_elapsed_eval(n):
+                continue
             eval_id = p.id(n)
             if eval_id not in p_when.sched:
                 when_schedule.append(eval_id)
@@ -2642,6 +2686,9 @@ def build_motion_units(
         while_monitors = [p.monitor_entry(n) for n in while_mon_nodes]
         until_monitors = [p.monitor_entry(n) for n in until_mon_nodes]
 
+        _all_evaluators = when_evaluators + while_evaluators + until_evaluators
+        has_elapsed = any(getattr(e, "is_elapsed", False) for e in _all_evaluators)
+
         motions.append(
             GuardedMotionBlock(
                 id=handler.motion.id,
@@ -2661,6 +2708,7 @@ def build_motion_units(
                 when_events=[m.event for m in when_monitors if m.event is not None],
                 while_events=[m.event for m in while_monitors if m.event is not None],
                 until_events=[m.event for m in until_monitors if m.event is not None],
+                has_elapsed=has_elapsed,
                 has_until_condition=bool(until_evaluators),
                 until_any=handler.motion.until_any,
                 when_any=handler.motion.when_any,
@@ -3330,6 +3378,22 @@ def generate_ir(manifest_path):
             backend = mapped
             break
 
+    # Authored control-loop period (CONTROL_PERIOD in a handler) -> nanoseconds.
+    # There is one generated loop, so different authored periods are ambiguous.
+    control_period_values = set()
+    for _hdl, _period in g.subject_objects(CSTR_HDL_EXT["control-period"]):
+        _val = float(g.value(_period, QUDT_SCHEMA["value"]))
+        _unit = g.value(_period, QUDT_SCHEMA["unit"])
+        _seconds = _val * (0.001 if _unit == QUDT_UNIT["MilliSEC"] else 1.0)
+        control_period_values.add(int(round(_seconds * 1e9)))
+    if not control_period_values:
+        raise ValueError("CONTROL_PERIOD is required on every ConstraintHandler.")
+    if any(ns <= 0 for ns in control_period_values):
+        raise ValueError("CONTROL_PERIOD must be positive.")
+    if len(control_period_values) > 1:
+        raise ValueError("Multiple CONTROL_PERIOD values found, but generated code has one loop.")
+    control_period_ns = next(iter(control_period_values))
+
     # Safeguard: no two distinct URIs may collapse to one generated id (would silently merge).
     p.assert_no_id_collisions()
 
@@ -3355,6 +3419,7 @@ def generate_ir(manifest_path):
         "wrench_outputs": wrench_outputs,
         "has_arm": bool(slv_arm),
         "has_mobile_base": bool(slv_base_vel or slv_base_frc),
+        "control_period_ns": control_period_ns,
         "arm_solvers": slv_arm,
         "base_velocity_solvers": slv_base_vel,
         "base_force_solvers": slv_base_frc,

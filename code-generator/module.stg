@@ -1123,8 +1123,11 @@ runtime_header(has_mobile_base) ::= <<
 #pragma once
 
 #include \<cassert\>
+#include \<cerrno\>
+#include \<chrono\>
 #include \<cmath\>
 #include \<cstdlib\>
+#include \<ctime\>
 #include \<iostream\>
 #include \<kdl/chain.hpp\>
 #include \<stdexcept\>
@@ -1159,6 +1162,31 @@ inline double clamp01(double v) {
 inline double smoothstep(double alpha) {
     alpha = clamp01(alpha);
     return alpha * alpha * (3.0 - 2.0 * alpha);
+}
+
+inline double monotonic_time_s() {
+    using clock = std::chrono::steady_clock;
+    static const auto start = clock::now();
+    return std::chrono::duration<double>(clock::now() - start).count();
+}
+
+inline bool timespec_less(const timespec &a, const timespec &b) {
+    return a.tv_sec \< b.tv_sec || (a.tv_sec == b.tv_sec && a.tv_nsec \< b.tv_nsec);
+}
+
+inline void sleep_until_next(timespec &next, long period_ns) {
+    next.tv_nsec += period_ns;
+    while (next.tv_nsec >= 1000000000L) {
+        next.tv_nsec -= 1000000000L;
+        ++next.tv_sec;
+    }
+    timespec now{};
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (!timespec_less(now, next)) {
+        next = now;
+        return;
+    }
+    while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, nullptr) == EINTR) {}
 }
 
 // Progress easing profiles selectable from the DSL (Lerp `profile:`). smoothstep is
@@ -1585,6 +1613,7 @@ struct shared_data {
 <if(has_mobile_base)>
     mobile_base_runtime_state mobile_base;
 <endif>
+    double clock_time_s = 0.0;  // runtime clock seconds; MuJoCo sim time or real monotonic time
 <shared_data:{var | <indented-shared-member(var)>}; separator="\n">
 };
 >>
@@ -1686,6 +1715,10 @@ struct <motion.id>_state {
     int active_steps = 0;
 <if(first(motion.trajectory_progress_ids))>    double trajectory_start_time = -1.0;
 <endif>
+<if(motion.has_active_elapsed)>    double motion_start_time = -1.0;
+<endif>
+<if(motion.has_when_elapsed)>    double when_start_time = -1.0;
+<endif>
 <arm-state-members(motion.arm_solvers)>
 <if(motion.snapshots)>    bool snapshot_taken = false;
 <endif>
@@ -1713,6 +1746,10 @@ inline void update_<motion.id>(
     shared_data &shared,
     const robot_io &robot) {
     init_<motion.id>(state, robot);
+<if(motion.has_active_elapsed)>    if (state.motion_start_time \< 0.0) {
+        state.motion_start_time = shared.clock_time_s;
+    }
+<endif>
 <motion-prelude(wrench_outputs, motion.arm_solvers, backend)>
 <motion.relative_poses:{rp | <emit-relative-pose(rp)>}; separator="\n">
 <motion.scene_relative_poses:{srp |
@@ -1730,11 +1767,19 @@ inline void update_<motion.id>(
 }
 
 inline bool can_start_<motion.id>(<motion.can_start_params>) {
+<if(motion.has_when_elapsed)>    if (state.when_start_time \< 0.0) {
+        state.when_start_time = shared.clock_time_s;
+    }
+<endif>
 <motion-when-block(motion.when_schedule, closures, views)>
-    return true<motion.when_evaluators:{e | && motion_spec::runtime::constraint_satisfied(shared.<e.error.id>)}>;
+    return <motion.when_condition>;
 }
 
 inline void monitor_when_<motion.id>(<motion.monitor_params>) {
+<if(motion.has_when_elapsed)>    if (state.when_start_time \< 0.0) {
+        state.when_start_time = shared.clock_time_s;
+    }
+<endif>
 <declared_pose_components:{pose | <materialize-pose-component(pose)>}; separator="\n">
 <shared-schedule-block(motion.when_schedule, closures, views)>
 <if(first(motion.when_monitors))>
@@ -1908,6 +1953,18 @@ app-arm-runtime-step(backend, arm_solvers) ::= <<
 <({app-arm-runtime-step-<backend>})(arm_solvers)>
 >>
 
+clock-time-source(backend, arm_solvers, has_arm) ::= <<
+<if(has_arm)><({clock-time-source-<backend>})(arm_solvers)><else>motion_spec::runtime::monotonic_time_s()<endif>
+>>
+
+clock-time-source-mj_kdl(arm_solvers) ::= <<
+robot.<first(arm_solvers).id>.robot->data->time
+>>
+
+clock-time-source-robif2b(arm_solvers) ::= <<
+motion_spec::runtime::monotonic_time_s()
+>>
+
 app-arm-trace-update(backend, arm_solvers, trace) ::= <<
 <({app-arm-trace-update-<backend>})(arm_solvers, trace)>
 >>
@@ -1917,7 +1974,7 @@ app-headless-telemetry(backend, shared_data, arm_solvers, scene) ::= <<
 <({app-headless-telemetry-<backend>})(shared_data, arm_solvers, scene)>
 >>
 
-app_main(motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene, trace) ::= <<
+app_main(motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene, trace, needs_clock_time, control_period_ns) ::= <<
 #include "runtime.hpp"
 #include "shared_state.hpp"
 <if(has_mobile_base)>
@@ -1956,7 +2013,11 @@ int main(int argc, char **argv) {
 }; separator="\n">
 <endif>
 
+    timespec _next_tick{};
+    clock_gettime(CLOCK_MONOTONIC, &_next_tick);
     while (<app-loop-condition(backend, has_arm)>) {
+<if(needs_clock_time)>        shared.clock_time_s = <clock-time-source(backend, arm_solvers, has_arm)>;
+<endif>
 <if(has_mobile_base)>
         update_mobile_base(mobile_base_state_instance, shared, robot);
 <endif>
@@ -1973,7 +2034,7 @@ int main(int argc, char **argv) {
 <app-arm-runtime-step(backend, arm_solvers)>
 <endif>
 
-        usleep(1000);
+        motion_spec::runtime::sleep_until_next(_next_tick, <control_period_ns>);
     }
 <if(has_arm)>
 
@@ -2023,7 +2084,7 @@ fsm-dispatch(motions, fsm_namespace) ::= <<
     \};
 >>
 
-ref_main(motions, unique_motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, shared_data, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene, trace, fsm_namespace, fsm_step_event) ::= <<
+ref_main(motions, unique_motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, shared_data, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene, trace, fsm_namespace, fsm_step_event, needs_clock_time, control_period_ns) ::= <<
 #include "runtime.hpp"
 #include "shared_state.hpp"
 <if(has_mobile_base)>
@@ -2084,7 +2145,11 @@ int main(int argc, char **argv) {
 <else>
     int current_motion = 0;
 <endif>
+    timespec _next_tick{};
+    clock_gettime(CLOCK_MONOTONIC, &_next_tick);
     while (<app-loop-condition(backend, has_arm)>) {
+<if(needs_clock_time)>        shared.clock_time_s = <clock-time-source(backend, arm_solvers, has_arm)>;
+<endif>
 <if(has_arm)>
 <app-arm-loop-reset(backend, arm_solvers, fsm_namespace)>
 <endif>
@@ -2107,6 +2172,8 @@ int main(int argc, char **argv) {
             if (!<motion.id>_state_instance.active && can_start_<motion.id>(<motion.can_start_args>)) {
                 <motion.id>_state_instance.active = true;
                 <motion.id>_state_instance.active_steps = 0;
+<if(motion.has_active_elapsed)>                <motion.id>_state_instance.motion_start_time = shared.clock_time_s;
+<endif>
 <motion.until_monitors:{m |                 <motion.id>_state_instance.<m.id>_previous = false;
                 <motion.id>_state_instance.<m.id>_event_triggered = false;}; separator="
 ">
@@ -2145,6 +2212,7 @@ int main(int argc, char **argv) {
         reconfig_event_buffers(fsm->eventData);
 <endif>
         ++_step;
+        motion_spec::runtime::sleep_until_next(_next_tick, <control_period_ns>);
     }
 <app-headless-telemetry(backend, shared_data, arm_solvers, scene)>
 <if(has_arm)>

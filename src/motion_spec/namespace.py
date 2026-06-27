@@ -235,6 +235,7 @@ class QUDT_QKIND(DefinedNamespace):
     AccelerationEnergy: URIRef
     Torque: URIRef
     Force: URIRef
+    Time: URIRef
 
     _NS = Namespace(f"{URI_QUDT}/vocab/quantitykind/")
 
@@ -255,6 +256,8 @@ class QUDT_UNIT(DefinedNamespace):
         "DEG-PER-SEC",
         "CentiM",
         "CentiM-PER-SEC",
+        "SEC",
+        "MilliSEC",
     ]
 
     _NS = Namespace(f"{URI_QUDT}/vocab/unit/")
@@ -575,6 +578,7 @@ class CSTR_HDL_EXT(DefinedNamespace):
         "monitors-until",
         "monitors-when",
         "fallback-motion",
+        "control-period",
     ]
 
     _NS = Namespace(f"{URI_SECORO_MM}/task/constraint-handler#")

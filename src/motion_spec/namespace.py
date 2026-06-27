@@ -247,6 +247,7 @@ class QUDT_UNIT(DefinedNamespace):
     _extras = [
         "M-PER-SEC",
         "M-PER-SEC2",
+        "M-PER-SEC3",
         "N-M",
         "N-M2-PER-SEC2",
         "RAD-PER-SEC",
@@ -572,6 +573,7 @@ class CSTR_HDL_EXT(DefinedNamespace):
     # New classes/predicates live here rather than squatting in comp-rob2b's
     # task/constraint-handler#; upstream cstr_hdl predicates are reused.
     FeedForwardController: URIRef
+    VelocityProfile: URIRef
 
     _extras = [
         "reference-signal",
@@ -579,6 +581,16 @@ class CSTR_HDL_EXT(DefinedNamespace):
         "monitors-when",
         "fallback-motion",
         "control-period",
+        "velocity-profile",
+        "max-velocity",
+        "max-acceleration",
+        "max-jerk",
+        "shape",
+        "goal",
+        "measured",
+        "reference",
+        "controller",
+        "LinearJerk",
     ]
 
     _NS = Namespace(f"{URI_SECORO_MM}/task/constraint-handler#")

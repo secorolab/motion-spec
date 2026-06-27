@@ -415,6 +415,18 @@ ops_generic = [
         parameters=[TRAJ["profile"]],
     ),
     Operator(
+        type_=CSTR_HDL_EXT["VelocityProfile"],
+        input=[
+            CSTR_HDL_EXT["goal"],
+            CSTR_HDL_EXT["measured"],
+            CSTR_HDL_EXT["max-velocity"],
+            CSTR_HDL_EXT["max-acceleration"],
+            CSTR_HDL_EXT["max-jerk"],
+        ],
+        output=[CSTR_HDL_EXT["reference"]],
+        parameters=[CSTR_HDL_EXT["shape"], CSTR_HDL_EXT["controller"]],
+    ),
+    Operator(
         type_=TRAJ["Circle"],
         input=[TRAJ["start"], TRAJ["center"], TRAJ["plane-normal"],
                TRAJ["alpha"]],
@@ -2236,6 +2248,7 @@ _CLOSURE_OUTPUT_FIELDS = {
     "RotateWrenchToProximalWithPose": "to",
     "TransformWrenchToProximal": "to",
     "WrenchFromPositionDirectionAndMagnitude": "wrench",
+    "VelocityProfile": "reference",
 }
 
 

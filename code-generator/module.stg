@@ -51,6 +51,12 @@ easing-fn ::= [
     default: "smoothstep"
 ]
 
+velocity-profile-shape ::= [
+    "SCurve": "motion_spec::runtime::VelocityProfileShape::SCurve",
+    "Trapezoidal": "motion_spec::runtime::VelocityProfileShape::Trapezoidal",
+    default: "motion_spec::runtime::VelocityProfileShape::Trapezoidal"
+]
+
 robot-driver-include(solver, backend) ::= <<
 <({robot-driver-include-<backend>-<solver.robot_model>})(solver)>
 >>
@@ -193,7 +199,7 @@ controller-member(controller) ::= <<
 >>
 
 controller-member-ProportionalIntegralDerivative(controller) ::= <<
-    motion_spec::runtime::PIDControl <controller.id>{<controller.proportional_gain>, <controller.integral_gain>, <controller.derivative_gain><if(controller.decay_rate)>, <controller.decay_rate><endif>};
+    motion_spec::runtime::PIDControl <controller.id>{<controller.proportional_gain>, <controller.integral_gain>, <controller.derivative_gain>, <if(controller.decay_rate)><controller.decay_rate><else>0.0<endif>, motion_spec::runtime::kControlPeriodS};
 >>
 
 controller-member-ImpedanceController(controller) ::= <<
@@ -245,6 +251,28 @@ emit-call-Lerp(closure, views) ::= <<
     const KDL::Frame _lerp_goal_<closure.trajectory> = <closure.goal_expr>;
 <if(closure.assign_goal)>    shared.<closure.goal> = _lerp_goal_<closure.trajectory>;
 <endif>    shared.<closure.trajectory> = KDL::addDelta(shared.<closure.start>, KDL::diff(shared.<closure.start>, _lerp_goal_<closure.trajectory>), motion_spec::runtime::<easing-fn.(closure.profile)>(<access-expr(closure.alpha, views)>));
+}
+>>
+
+emit-call-VelocityProfile(closure, views) ::= <<
+{
+    if (!state.<closure.controller>.vp_init) {
+        state.<closure.controller>.vp_setpoint = <access-expr(closure.measured, views)>;
+        state.<closure.controller>.vp_velocity = 0.0;
+        state.<closure.controller>.vp_accel = 0.0;
+        state.<closure.controller>.vp_init = true;
+    }
+    shared.<closure.reference> = motion_spec::runtime::velocity_profile_step(
+        state.<closure.controller>.vp_setpoint,
+        state.<closure.controller>.vp_velocity,
+        state.<closure.controller>.vp_accel,
+        <access-expr(closure.goal, views)>,
+        <access-expr(closure.max_velocity, views)>,
+        <access-expr(closure.max_acceleration, views)>,
+        <if(closure.max_jerk)><access-expr(closure.max_jerk, views)><else>0.0<endif>,
+        motion_spec::runtime::kControlPeriodS,
+        <velocity-profile-shape.(closure.shape)>);
+    state.<closure.controller>.vp_setpoint = shared.<closure.reference>;
 }
 >>
 
@@ -1119,10 +1147,11 @@ trajectory-progress-mj_kdl(motion) ::= <<
 <endif>
 >>
 
-runtime_header(has_mobile_base) ::= <<
+runtime_header(has_mobile_base, control_period_ns) ::= <<
 #pragma once
 
 #include \<cassert\>
+#include \<algorithm\>
 #include \<cerrno\>
 #include \<chrono\>
 #include \<cmath\>
@@ -1147,6 +1176,7 @@ inline constexpr double kTauMax     = 59.0;
 inline constexpr double kBetaMaxLin = 120.0;
 inline constexpr double kBetaMaxRot = 80.0;
 inline constexpr double kSupportFMax = 45.0;
+inline constexpr double kControlPeriodS = <control_period_ns> * 1e-9;
 inline double clamp_abs(double v, double limit) {
     if (v > limit) return limit;
     if (v \< -limit) return -limit;
@@ -1201,6 +1231,38 @@ inline double ease_in(double alpha) {
 inline double ease_out(double alpha) {
     alpha = clamp01(alpha);
     return alpha * (2.0 - alpha); // full speed at the start, gentle stop
+}
+
+enum class VelocityProfileShape { Trapezoidal, SCurve };
+
+// ponytail: SCurve is a cascaded jerk limiter, not a time-optimal phase planner.
+inline double velocity_profile_step(double x, double &v, double &a, double goal,
+                                    double vmax, double amax, double jmax, double dt,
+                                    VelocityProfileShape shape) {
+    vmax = std::max(vmax, 1e-9);
+    amax = std::max(amax, 1e-9);
+    const double dir = (goal >= x) ? 1.0 : -1.0;
+    const double dist = std::abs(goal - x);
+    const double v_brake = std::sqrt(2.0 * amax * dist);
+    const double v_target = dir * std::min(vmax, v_brake);
+    if (shape == VelocityProfileShape::Trapezoidal) {
+        const double dv = std::clamp(v_target - v, -amax * dt, amax * dt);
+        v += dv;
+        a = dv / dt;
+    } else {
+        jmax = std::max(jmax, 1e-9);
+        const double a_target = std::clamp((v_target - v) / dt, -amax, amax);
+        a += std::clamp(a_target - a, -jmax * dt, jmax * dt);
+        v += a * dt;
+    }
+    v = std::clamp(v, -vmax, vmax);
+    double nx = x + v * dt;
+    if ((goal - nx) * dir \< 0.0) {
+        nx = goal;
+        v = 0.0;
+        a = 0.0;
+    }
+    return nx;
 }
 
 inline KDL::Frame interpolate_pose_lerp(
@@ -1275,6 +1337,11 @@ class PIDControl {
         const double deriv = has_external_derivative ? ext_deriv : err_diff;
         return kp * error + ki * err_integ + kd * deriv;
     }
+
+    double vp_setpoint = 0.0;
+    double vp_velocity = 0.0;
+    double vp_accel = 0.0;
+    bool vp_init = false;
 
   private:
     double err_integ = 0.0;

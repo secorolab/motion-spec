@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
+
 import pytest
 from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import RDF, XSD
 
-from motion_spec.ir_gen import Parser, _scene_from_graph
-from motion_spec.namespace import CSTR_HDL, ENV, EXEC, GEOM_ENT, MJ, QUDT_QKIND, QUDT_SCHEMA, SLV
+from motion_spec.codegen import render_template
+from motion_spec.ir_gen import Parser, _scene_from_graph, ops_generic
+from motion_spec.namespace import (
+    CSTR_HDL,
+    CSTR_HDL_EXT,
+    ENV,
+    EXEC,
+    GEOM_ENT,
+    MJ,
+    QUDT_QKIND,
+    QUDT_SCHEMA,
+    SLV,
+)
 
 
 def _quantity(graph: Graph, name: str) -> URIRef:
@@ -86,6 +101,89 @@ def test_uris_table_maps_each_id_to_full_uri() -> None:
     assert uris[parser.id(controller_node)] == str(controller_node)
     assert uris[parser.id(controller_node)] == "https://example.test/controller"
     assert all(uri.startswith("https://example.test/") for uri in uris.values())
+
+
+def test_velocity_profile_operator_closure_exposes_codegen_fields() -> None:
+    graph = Graph()
+    op = URIRef("https://example.test/profile-op")
+    graph.add((op, RDF.type, CSTR_HDL_EXT.VelocityProfile))
+    for pred, name in (
+        (CSTR_HDL_EXT["goal"], "goal"),
+        (CSTR_HDL_EXT["measured"], "measured"),
+        (CSTR_HDL_EXT["max-velocity"], "max-velocity"),
+        (CSTR_HDL_EXT["max-acceleration"], "max-acceleration"),
+        (CSTR_HDL_EXT["max-jerk"], "max-jerk"),
+        (CSTR_HDL_EXT["reference"], "reference"),
+        (CSTR_HDL_EXT["controller"], "controller"),
+    ):
+        graph.add((op, pred, URIRef(f"https://example.test/{name}")))
+    graph.add((op, CSTR_HDL_EXT["shape"], Literal("SCurve")))
+
+    closure = Parser(graph).closures(ops_generic)["profile_op"]
+
+    assert closure["type"] == "VelocityProfile"
+    assert closure["goal"] == "goal"
+    assert closure["measured"] == "measured"
+    assert closure["max_velocity"] == "max_velocity"
+    assert closure["max_acceleration"] == "max_acceleration"
+    assert closure["max_jerk"] == "max_jerk"
+    assert closure["reference"] == "reference"
+    assert closure["controller"] == "controller"
+    assert str(closure["shape"]) == "SCurve"
+
+
+def test_generated_velocity_profile_runtime_respects_authored_bounds(tmp_path) -> None:
+    if shutil.which("stst") is None or shutil.which("c++") is None:
+        pytest.skip("requires stst and c++")
+
+    payload = tmp_path / "ir.json"
+    payload.write_text(json.dumps({"has_mobile_base": False, "control_period_ns": 1_000_000}))
+    runtime_hpp = tmp_path / "runtime.hpp"
+    render_template("stst", "runtime_header", payload, runtime_hpp)
+
+    source = tmp_path / "check.cpp"
+    source.write_text(
+        r'''
+#include <algorithm>
+#include <cassert>
+#include <cmath>
+#include <iostream>
+#include "runtime.hpp"
+
+void check(motion_spec::runtime::VelocityProfileShape shape) {
+    constexpr double dt = motion_spec::runtime::kControlPeriodS;
+    constexpr double vmax = 0.10;
+    constexpr double amax = 0.30;
+    constexpr double jmax = 2.0;
+    constexpr double goal = 0.08;
+    double x = 0.50;
+    double v = 0.0;
+    double a = 0.0;
+    double prev_a = 0.0;
+    for (int i = 0; i < 5000; ++i) {
+        const double before = x;
+        x = motion_spec::runtime::velocity_profile_step(x, v, a, goal, vmax, amax, jmax, dt, shape);
+        assert(std::abs(v) <= vmax + 1e-9);
+        assert(std::abs(a) <= amax + 1e-9);
+        if (shape == motion_spec::runtime::VelocityProfileShape::SCurve && !(x == goal && v == 0.0 && a == 0.0)) {
+            assert(std::abs(a - prev_a) <= jmax * dt + 1e-9);
+        }
+        assert((goal - x) * (goal - before) >= -1e-12 || x == goal);
+        if (x == goal) break;
+        prev_a = a;
+    }
+    assert(x == goal);
+}
+
+int main() {
+    check(motion_spec::runtime::VelocityProfileShape::Trapezoidal);
+    check(motion_spec::runtime::VelocityProfileShape::SCurve);
+}
+'''
+    )
+    exe = tmp_path / "check"
+    subprocess.run(["c++", "-std=c++17", "-I", str(tmp_path), str(source), "-o", str(exe)], check=True)
+    subprocess.run([str(exe)], check=True)
 
 
 @pytest.mark.parametrize(

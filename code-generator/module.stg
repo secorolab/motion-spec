@@ -67,6 +67,7 @@ solver-rnea-include(backend) ::= <<
 
 solver-rnea-include-mj_kdl() ::= <<
 #include \<kdl/chainidsolver_recursive_newton_euler.hpp\>
+#include \<kdl/chainjnttojacsolver.hpp\>
 >>
 
 solver-rnea-include-robif2b() ::= <<
@@ -667,6 +668,7 @@ solver-state-struct-extra(solver, backend) ::= <<
 
 solver-state-struct-extra-mj_kdl(solver) ::= <<
     std::unique_ptr\<KDL::ChainIdSolver_RNE\> rnea;
+    std::unique_ptr\<KDL::ChainJntToJacSolver\> jac_solver;
 >>
 
 solver-state-struct-extra-robif2b(solver) ::= <<
@@ -706,8 +708,11 @@ if (!state.<solver.id>.initialized) {
         state.<solver.id>.qdd = KDL::JntArray(state.<solver.id>.num_joints);
         state.<solver.id>.tau_ff = KDL::JntArray(state.<solver.id>.num_joints);
         state.<solver.id>.tau_ctrl = KDL::JntArray(state.<solver.id>.num_joints);
-<if(motion_driver.has_cartesian_force)>
+<if(motion_driver.has_cartesian_force)> 
         state.<solver.id>.f_ext = KDL::Wrenches(state.<solver.id>.num_segments);
+<else>
+<if(solver.algorithm_is_rne)>        state.<solver.id>.f_ext = KDL::Wrenches(state.<solver.id>.num_segments);
+<endif>
 <endif>
         state.<solver.id>.f_cstr = KDL::Jacobian(state.<solver.id>.num_constraints);
         state.<solver.id>.e_acc = KDL::JntArray(state.<solver.id>.num_constraints);
@@ -732,7 +737,8 @@ solver-init-extra(solver, backend) ::= <<
 >>
 
 solver-init-extra-mj_kdl(solver) ::= <<
-        state.<solver.id>.rnea = std::make_unique\<KDL::ChainIdSolver_RNE\>(*robot.<solver.id>.chain, KDL::Vector(<if(solver.root_acc)><solver.root_acc; separator=", "><else>0.0, 0.0, 0.0<endif>));
+        state.<solver.id>.rnea = std::make_unique\<KDL::ChainIdSolver_RNE\>(*robot.<solver.id>.chain, KDL::Vector(<if(solver.gravity)><solver.gravity; separator=", "><else><if(solver.root_acc)><solver.root_acc; separator=", "><else>0.0, 0.0, 0.0<endif><endif>));
+        state.<solver.id>.jac_solver = std::make_unique\<KDL::ChainJntToJacSolver\>(*robot.<solver.id>.chain);
 >>
 
 solver-init-extra-robif2b(solver) ::= <<
@@ -851,11 +857,19 @@ solver-run(solver, motion_driver, backend) ::= <<
     }
 <motion_driver.cartesian_force:{f |     <solver-assign-f-ext-modular(solver, f)>}; separator="\n">
 <solver-run-fext-pre(solver, motion_driver, backend)>
+<else>
+<if(solver.algorithm_is_rne)>    for (int i = 0; i \< state.<solver.id>.num_segments; ++i) {
+        KDL::SetToZero(state.<solver.id>.f_ext[i]);
+    }
+<endif>
 <endif>
     KDL::Wrenches f_ext_zero_<solver.id>(state.<solver.id>.num_segments);
     for (int i = 0; i \< state.<solver.id>.num_segments; ++i) {
         KDL::SetToZero(f_ext_zero_<solver.id>[i]);
     }
+<if(solver.algorithm_is_rne)>
+<solver-run-RNE(solver, motion_driver, backend)>
+<else>
     KDL::JntArray tau_ctrl_acc_<solver.id>(state.<solver.id>.num_joints);
     state.<solver.id>.achd_acc->CartToJnt(
         state.<solver.id>.q,
@@ -867,6 +881,37 @@ solver-run(solver, motion_driver, backend) ::= <<
         state.<solver.id>.tau_ff,
         tau_ctrl_acc_<solver.id>);
 <solver-run-finalize(solver, motion_driver, backend)>
+<endif>
+>>
+
+solver-run-RNE(solver, motion_driver, backend) ::= <<
+<({solver-run-RNE-<backend>})(solver, motion_driver)>
+>>
+
+solver-run-RNE-mj_kdl(solver, motion_driver) ::= <<
+    KDL::Jacobian jac_<solver.id>(state.<solver.id>.num_joints);
+    state.<solver.id>.jac_solver->JntToJac(state.<solver.id>.q, jac_<solver.id>);
+    KDL::JntArray qdd_des_<solver.id>(state.<solver.id>.num_joints);
+    motion_spec::runtime::resolve_constraint_acceleration(
+        jac_<solver.id>,
+        state.<solver.id>.f_cstr,
+        state.<solver.id>.e_acc,
+        nullptr,
+        motion_spec::runtime::kRneDampingLambda,
+        qdd_des_<solver.id>);
+    state.<solver.id>.rnea->CartToJnt(
+        state.<solver.id>.q,
+        state.<solver.id>.qd,
+        qdd_des_<solver.id>,
+        state.<solver.id>.f_ext,
+        state.<solver.id>.tau_ctrl);
+    for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
+        state.<solver.id>.tau_ctrl(i) += state.<solver.id>.tau_ff(i);
+    }
+>>
+
+solver-run-RNE-robif2b(solver, motion_driver) ::= <<
+    static_assert(false, "Standalone RNE is only supported on mj_kdl");
 >>
 
 solver-run-fext-pre(solver, motion_driver, backend) ::= <<
@@ -1158,8 +1203,11 @@ runtime_header(has_mobile_base, control_period_ns) ::= <<
 #include \<cmath\>
 #include \<cstdlib\>
 #include \<ctime\>
+#include \<Eigen/Dense\>
 #include \<iostream\>
 #include \<kdl/chain.hpp\>
+#include \<kdl/jacobian.hpp\>
+#include \<kdl/jntarray.hpp\>
 #include \<stdexcept\>
 #include \<string\>
 #include \<string_view\>
@@ -1178,6 +1226,7 @@ inline constexpr double kBetaMaxLin = 120.0;
 inline constexpr double kBetaMaxRot = 80.0;
 inline constexpr double kSupportFMax = 45.0;
 inline constexpr double kControlPeriodS = <control_period_ns> * 1e-9;
+inline constexpr double kRneDampingLambda = 1e-4;
 inline double clamp_abs(double v, double limit) {
     if (v > limit) return limit;
     if (v \< -limit) return -limit;
@@ -1188,6 +1237,33 @@ inline double clamp01(double v) {
     if (v \< 0.0) return 0.0;
     if (v > 1.0) return 1.0;
     return v;
+}
+
+inline void resolve_constraint_acceleration(
+        const KDL::Jacobian &jac,
+        const KDL::Jacobian &alpha,
+        const KDL::JntArray &e_acc,
+        const Eigen::VectorXd *bias,
+        double lambda,
+        KDL::JntArray &qdd_out) {
+    KDL::SetToZero(qdd_out);
+    const int m = e_acc.rows();
+    if (m == 0) return;
+    const Eigen::MatrixXd task_jac = alpha.data.transpose() * jac.data;
+    Eigen::VectorXd rhs(m);
+    for (int i = 0; i \< m; ++i) {
+        rhs(i) = e_acc(i);
+    }
+    if (bias != nullptr && bias->size() == m) {
+        rhs -= *bias;
+    }
+    const Eigen::MatrixXd damped =
+        task_jac * task_jac.transpose() +
+        (lambda * lambda) * Eigen::MatrixXd::Identity(m, m);
+    const Eigen::VectorXd qdd = task_jac.transpose() * damped.ldlt().solve(rhs);
+    for (int i = 0; i \< static_cast\<int\>(qdd_out.rows()); ++i) {
+        qdd_out(i) = qdd(i);
+    }
 }
 
 inline double smoothstep(double alpha) {

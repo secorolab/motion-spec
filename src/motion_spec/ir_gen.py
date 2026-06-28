@@ -950,6 +950,9 @@ class MotionArmSolver:
     output: list
     motion_driver: MotionDrivers
     control_mode: str
+    algorithm: str = ""
+    algorithm_is_rne: bool = False
+    gravity: list[float] | None = None
     root_acc: list[float] | None = None
     chain_root: str = ""
     chain_end: str = ""
@@ -961,6 +964,8 @@ class SolverWithInputAndOutput:
     id: str
     motion_drivers: list[MotionDrivers]
     output: list
+    algorithm: str = ""
+    algorithm_is_rne: bool = False
     control_mode: str = ""
     urdf: str = ""
     chain_root: str = ""
@@ -969,6 +974,7 @@ class SolverWithInputAndOutput:
     robot_model: str = ""
     tool_body: str = ""
     tcp_site: str = ""
+    gravity: list[float] | None = None
     root_acc: list[float] | None = None
     type: str = field(default="SolverWithInputAndOutput")
 
@@ -1170,11 +1176,19 @@ class Parser:
         gravity_node = self.g.value(id_, SLV_EXT["gravity-value"])
         gravity = self.parse_xyz(gravity_node) if gravity_node else None
         root_acc = list(gravity) if gravity else None
+        algorithm_node = self.g.value(id_, SLV["solver"])
+        algorithm = {
+            SLV["AccelerationConstrainedHybridDynamicsAlgorithm"]: "ACHD",
+            SLV["RecursiveNewtonEulerAlgorithm"]: "RNE",
+        }.get(algorithm_node, self.id(algorithm_node) if algorithm_node else "")
 
         return SolverWithInputAndOutput(
             id=self.id(id_),
             motion_drivers=drv,
             output=out,
+            algorithm=algorithm,
+            algorithm_is_rne=algorithm == "RNE",
+            gravity=list(gravity) if gravity else None,
             root_acc=root_acc,
         )
 
@@ -2096,6 +2110,9 @@ def _arm_solvers_for_handler(handler, slv_arm, closure_input_map=None):
                 output=solver.output,
                 motion_driver=selected,
                 control_mode=handler.control_mode,
+                algorithm=solver.algorithm,
+                algorithm_is_rne=solver.algorithm_is_rne,
+                gravity=solver.gravity,
                 root_acc=solver.root_acc,
                 chain_root=solver.chain_root,
                 chain_end=solver.chain_end,

@@ -608,7 +608,7 @@ class SLV(DefinedNamespace):
     AxisAligned: URIRef
     PrioritizationLevel: URIRef
     AccelerationConstrainedHybridDynamicsAlgorithm: URIRef
-    NewtonEulerAlgorithm: URIRef
+    RecursiveNewtonEulerAlgorithm: URIRef
 
     constraints: URIRef
     force: URIRef

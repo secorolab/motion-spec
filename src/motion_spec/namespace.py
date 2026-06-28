@@ -588,6 +588,7 @@ class CSTR_HDL_EXT(DefinedNamespace):
         "shape",
         "goal",
         "measured",
+        "measured-velocity",
         "reference",
         "controller",
         "LinearJerk",

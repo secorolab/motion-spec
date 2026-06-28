@@ -271,7 +271,8 @@ emit-call-VelocityProfile(closure, views) ::= <<
         <access-expr(closure.max_acceleration, views)>,
         <if(closure.max_jerk)><access-expr(closure.max_jerk, views)><else>0.0<endif>,
         motion_spec::runtime::kControlPeriodS,
-        <velocity-profile-shape.(closure.shape)>);
+        <velocity-profile-shape.(closure.shape)>,
+        <if(closure.measured_velocity)><access-expr(closure.measured_velocity, views)>, true<else>0.0, false<endif>);
     state.<closure.controller>.vp_setpoint = shared.<closure.reference>;
 }
 >>
@@ -1238,9 +1239,14 @@ enum class VelocityProfileShape { Trapezoidal, SCurve };
 // ponytail: SCurve is a cascaded jerk limiter, not a time-optimal phase planner.
 inline double velocity_profile_step(double x, double &v, double &a, double goal,
                                     double vmax, double amax, double jmax, double dt,
-                                    VelocityProfileShape shape) {
+                                    VelocityProfileShape shape,
+                                    double measured_v = 0.0,
+                                    bool has_measured_v = false) {
     vmax = std::max(vmax, 1e-9);
     amax = std::max(amax, 1e-9);
+    if (has_measured_v) {
+        v = std::clamp(measured_v, -vmax, vmax);
+    }
     const double dir = (goal >= x) ? 1.0 : -1.0;
     const double dist = std::abs(goal - x);
     const double v_brake = std::sqrt(2.0 * amax * dist);

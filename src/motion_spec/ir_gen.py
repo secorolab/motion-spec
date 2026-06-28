@@ -419,6 +419,7 @@ ops_generic = [
         input=[
             CSTR_HDL_EXT["goal"],
             CSTR_HDL_EXT["measured"],
+            CSTR_HDL_EXT["measured-velocity"],
             CSTR_HDL_EXT["max-velocity"],
             CSTR_HDL_EXT["max-acceleration"],
             CSTR_HDL_EXT["max-jerk"],

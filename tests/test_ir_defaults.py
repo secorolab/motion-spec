@@ -110,6 +110,7 @@ def test_velocity_profile_operator_closure_exposes_codegen_fields() -> None:
     for pred, name in (
         (CSTR_HDL_EXT["goal"], "goal"),
         (CSTR_HDL_EXT["measured"], "measured"),
+        (CSTR_HDL_EXT["measured-velocity"], "measured-velocity"),
         (CSTR_HDL_EXT["max-velocity"], "max-velocity"),
         (CSTR_HDL_EXT["max-acceleration"], "max-acceleration"),
         (CSTR_HDL_EXT["max-jerk"], "max-jerk"),
@@ -124,6 +125,7 @@ def test_velocity_profile_operator_closure_exposes_codegen_fields() -> None:
     assert closure["type"] == "VelocityProfile"
     assert closure["goal"] == "goal"
     assert closure["measured"] == "measured"
+    assert closure["measured_velocity"] == "measured_velocity"
     assert closure["max_velocity"] == "max_velocity"
     assert closure["max_acceleration"] == "max_acceleration"
     assert closure["max_jerk"] == "max_jerk"
@@ -178,6 +180,16 @@ void check(motion_spec::runtime::VelocityProfileShape shape) {
 int main() {
     check(motion_spec::runtime::VelocityProfileShape::Trapezoidal);
     check(motion_spec::runtime::VelocityProfileShape::SCurve);
+
+    double x = 0.50;
+    double v = 0.0;
+    double a = 0.0;
+    x = motion_spec::runtime::velocity_profile_step(
+        x, v, a, 0.08, 0.10, 0.30, 2.0, motion_spec::runtime::kControlPeriodS,
+        motion_spec::runtime::VelocityProfileShape::Trapezoidal,
+        1.0,
+        true);
+    assert(std::abs(v) <= 0.10 + 1e-9);
 }
 '''
     )

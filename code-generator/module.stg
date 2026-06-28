@@ -68,6 +68,7 @@ solver-rnea-include(backend) ::= <<
 solver-rnea-include-mj_kdl() ::= <<
 #include \<kdl/chainidsolver_recursive_newton_euler.hpp\>
 #include \<kdl/chainjnttojacsolver.hpp\>
+#include \<kdl/chainjnttojacdotsolver.hpp\>
 >>
 
 solver-rnea-include-robif2b() ::= <<
@@ -668,6 +669,7 @@ solver-state-struct-extra(solver, backend) ::= <<
 solver-state-struct-extra-mj_kdl(solver) ::= <<
     std::unique_ptr\<KDL::ChainIdSolver_RNE\> rnea;
     std::unique_ptr\<KDL::ChainJntToJacSolver\> jac_solver;
+    std::unique_ptr\<KDL::ChainJntToJacDotSolver\> jac_dot_solver;
 >>
 
 solver-state-struct-extra-robif2b(solver) ::= <<
@@ -737,7 +739,9 @@ solver-init-extra(solver, backend) ::= <<
 
 solver-init-extra-mj_kdl(solver) ::= <<
         state.<solver.id>.rnea = std::make_unique\<KDL::ChainIdSolver_RNE\>(*robot.<solver.id>.chain, KDL::Vector(<if(solver.root_acc)><solver.root_acc; separator=", "><else>0.0, 0.0, 0.0<endif>));
-        state.<solver.id>.jac_solver = std::make_unique\<KDL::ChainJntToJacSolver\>(*robot.<solver.id>.chain);
+<if(solver.algorithm_is_rne)>        state.<solver.id>.jac_solver = std::make_unique\<KDL::ChainJntToJacSolver\>(*robot.<solver.id>.chain);
+        state.<solver.id>.jac_dot_solver = std::make_unique\<KDL::ChainJntToJacDotSolver\>(*robot.<solver.id>.chain);
+<endif>
 >>
 
 solver-init-extra-robif2b(solver) ::= <<
@@ -890,12 +894,22 @@ solver-run-RNE(solver, motion_driver, backend) ::= <<
 solver-run-RNE-mj_kdl(solver, motion_driver) ::= <<
     KDL::Jacobian jac_<solver.id>(state.<solver.id>.num_joints);
     state.<solver.id>.jac_solver->JntToJac(state.<solver.id>.q, jac_<solver.id>);
+    // Task-space velocity-product term Jdot*qdot (base frame, ee ref point):
+    // xdd = J*qdd + Jdot*qdot, so subtract it from the desired task accel before
+    // resolving qdd. Projected onto the constraint directions to match e_acc.
+    KDL::Twist jdot_qd_<solver.id>;
+    state.<solver.id>.jac_dot_solver->JntToJacDot(
+        KDL::JntArrayVel(state.<solver.id>.q, state.<solver.id>.qd), jdot_qd_<solver.id>);
+    Eigen::Matrix\<double, 6, 1\> jdot_qd_vec_<solver.id>;
+    jdot_qd_vec_<solver.id> \<\< jdot_qd_<solver.id>.vel.x(), jdot_qd_<solver.id>.vel.y(), jdot_qd_<solver.id>.vel.z(),
+                               jdot_qd_<solver.id>.rot.x(), jdot_qd_<solver.id>.rot.y(), jdot_qd_<solver.id>.rot.z();
+    const Eigen::VectorXd task_bias_<solver.id> = state.<solver.id>.f_cstr.data.transpose() * jdot_qd_vec_<solver.id>;
     KDL::JntArray qdd_des_<solver.id>(state.<solver.id>.num_joints);
     motion_spec::runtime::resolve_constraint_acceleration(
         jac_<solver.id>,
         state.<solver.id>.f_cstr,
         state.<solver.id>.e_acc,
-        nullptr,
+        &task_bias_<solver.id>,
         motion_spec::runtime::kRneDampingLambda,
         qdd_des_<solver.id>);
     state.<solver.id>.rnea->CartToJnt(

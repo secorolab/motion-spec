@@ -201,15 +201,19 @@ int main() {
     check(motion_spec::runtime::VelocityProfileShape::Trapezoidal);
     check(motion_spec::runtime::VelocityProfileShape::SCurve);
 
+    // Seeded from a nonzero measured velocity (the online-generator initial
+    // condition set in the controller init): still respects bounds and converges.
     double x = 0.50;
-    double v = 0.0;
+    double v = -0.05;
     double a = 0.0;
-    x = motion_spec::runtime::velocity_profile_step(
-        x, v, a, 0.08, 0.10, 0.30, 2.0, motion_spec::runtime::kControlPeriodS,
-        motion_spec::runtime::VelocityProfileShape::Trapezoidal,
-        1.0,
-        true);
-    assert(std::abs(v) <= 0.10 + 1e-9);
+    for (int i = 0; i < 5000; ++i) {
+        x = motion_spec::runtime::velocity_profile_step(
+            x, v, a, 0.08, 0.10, 0.30, 2.0, motion_spec::runtime::kControlPeriodS,
+            motion_spec::runtime::VelocityProfileShape::Trapezoidal);
+        assert(std::abs(v) <= 0.10 + 1e-9);
+        if (x == 0.08) break;
+    }
+    assert(x == 0.08);
 }
 '''
     )

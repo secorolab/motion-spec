@@ -686,23 +686,50 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
             motion["can_start_params"] = join_params(can_start_params)
             motion["can_start_args"] = join_args(can_start_args)
 
-            has_monitor_logic = bool(
-                motion.get("when_schedule")
-                or motion.get("until_schedule")
-                or motion.get("when_monitors")
-                or motion.get("until_monitors")
+            # Each monitor fn (when / until / combined) takes exactly the params its
+            # generated body uses, so no parameter is ever emitted unused. state is
+            # touched by edge/level monitors and the elapsed-clock latch; shared by
+            # any view closure, monitor, or pose materialisation; robot only when a
+            # monitor fires an FSM event (produce_event needs robot.fsm_events).
+            when_mons = motion.get("when_monitors") or []
+            until_mons = motion.get("until_monitors") or []
+            has_pose = bool(motion.get("declared_pose_components"))
+            when_sched = bool(motion.get("when_schedule"))
+            until_sched = bool(motion.get("until_schedule"))
+            when_fsm = any(m.get("fsm_namespace") for m in when_mons)
+            until_fsm = any(m.get("fsm_namespace") for m in until_mons)
+
+            def monitor_sig(use_state, use_shared, use_robot):
+                params, args = [], []
+                if use_state:
+                    params.append(state_type)
+                    args.append(f"{motion['id']}_state_instance")
+                if use_shared:
+                    params.append("shared_data &shared")
+                    args.append("shared")
+                if use_robot:
+                    params.append("const robot_io &robot")
+                    args.append("robot")
+                return join_params(params), join_args(args)
+
+            # monitor_when_<id>: elapsed latch + pose materialise + when schedule/monitors
+            motion["when_params"], motion["when_args"] = monitor_sig(
+                has_when_elapsed or bool(when_mons),
+                has_when_elapsed or has_pose or when_sched or bool(when_mons),
+                when_fsm,
             )
-            monitor_params = [state_type, "shared_data &shared"]
-            monitor_args = [f"{motion['id']}_state_instance", "shared"]
-            if any(
-                m.get("fsm_namespace")
-                for m in (motion.get("when_monitors", []) + motion.get("until_monitors", []))
-            ):
-                # produce_event(robot.fsm_events, ...) needs robot in the monitor fn.
-                monitor_params.append("const robot_io &robot")
-                monitor_args.append("robot")
-            motion["monitor_params"] = join_params(monitor_params) if has_monitor_logic else ""
-            motion["monitor_args"] = join_args(monitor_args) if has_monitor_logic else ""
+            # monitor_until_<id>: until schedule/monitors
+            motion["until_params"], motion["until_args"] = monitor_sig(
+                bool(until_mons),
+                until_sched or bool(until_mons),
+                until_fsm,
+            )
+            # monitor_<id> (combined): when + until schedules/monitors (no pose/elapsed)
+            motion["monitor_params"], motion["monitor_args"] = monitor_sig(
+                bool(when_mons) or bool(until_mons),
+                when_sched or bool(when_mons) or until_sched or bool(until_mons),
+                when_fsm or until_fsm,
+            )
 
             has_apply_state = bool(motion.get("arm_solvers"))
             has_command_forwarding = bool(motion.get("command_forwarding"))
@@ -852,7 +879,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
                 if not gate_ids:
                     continue
                 fallback["fsm_when_gate_calls"] = [
-                    f"monitor_when_{gate_id}({by_id[gate_id].get('monitor_args', '')});"
+                    f"monitor_when_{gate_id}({by_id[gate_id].get('when_args', '')});"
                     for gate_id in gate_ids
                     if gate_id in by_id
                 ]

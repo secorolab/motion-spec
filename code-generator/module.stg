@@ -1937,7 +1937,7 @@ inline bool can_start_<motion.id>(<motion.can_start_params>) {
     return <motion.when_condition>;
 }
 
-inline void monitor_when_<motion.id>(<motion.monitor_params>) {
+inline void monitor_when_<motion.id>(<motion.when_params>) {
 <if(motion.has_when_elapsed)>    if (state.when_start_time \< 0.0) {
         state.when_start_time = shared.clock_time_s;
     }
@@ -1949,7 +1949,7 @@ inline void monitor_when_<motion.id>(<motion.monitor_params>) {
 <endif>
 }
 
-inline void monitor_until_<motion.id>(<motion.monitor_params>) {
+inline void monitor_until_<motion.id>(<motion.until_params>) {
 <shared-schedule-block(motion.until_schedule, closures, views)>
 <if(first(motion.until_monitors))>
 <monitor-block(motion.until_monitors)>
@@ -2219,7 +2219,7 @@ fsm-step-function(motion) ::= <<
 <if(motion.fsm_state)>
 static void step_<motion.id>(<motion.id>_state &<motion.id>_state_instance, shared_data &shared, robot_io &robot) {
     update_<motion.id>(<motion.id>_state_instance, shared, robot);
-    monitor_until_<motion.id>(<motion.monitor_args>);
+    monitor_until_<motion.id>(<motion.until_args>);
     control_<motion.id>(<motion.id>_state_instance, shared, robot);
     apply_<motion.id>(<motion.apply_args>);
 \}
@@ -2316,8 +2316,8 @@ int main(int argc, char **argv) {
 <app-arm-loop-reset(backend, arm_solvers, fsm_namespace)>
 <endif>
 <if(fsm_namespace)>
-        if (fsm->currentStateIndex != _fsm_prev_state) {
-            _fsm_prev_state = fsm->currentStateIndex;
+        if (static_cast\<int\>(fsm->currentStateIndex) != _fsm_prev_state) {
+            _fsm_prev_state = static_cast\<int\>(fsm->currentStateIndex);
             std::cerr \<\< "[fsm] state   " \<\< <fsm_namespace>::STATE_URIS[fsm->currentStateIndex] \<\< std::endl;
         \}
         if (fsm->currentStateIndex == fsm->endStateIndex) break;

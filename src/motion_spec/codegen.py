@@ -421,6 +421,8 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
         if superobject["type"] == "Wrench":
             member = "torque" if view["subspace"] == "Torque" else "force"
             return f"shared.{superobject['id']}.{member}[{axis_index}]"
+        if superobject["type"] == "ExternalForce":
+            return f"shared.{superobject['id']}[{axis_index}]"
         return f"shared.{data_id}"
 
     def component_expr(component_id: str, data_by_id: dict, views: dict) -> str:
@@ -509,6 +511,31 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
             else:
                 closure["goal_expr"] = f"shared.{goal}"
                 closure["assign_goal"] = False
+
+    def enrich_arc_closures(ir_payload: dict) -> None:
+        data_by_id = {
+            item.get("id"): item
+            for item in ir_payload.get("data", [])
+            if isinstance(item, dict) and item.get("id")
+        }
+
+        def is_pose(data: dict) -> bool:
+            qkind = data.get("quantity_kind")
+            qkind_ids = qkind if isinstance(qkind, list) else [qkind]
+            return data.get("type") == "Pose" or any(
+                isinstance(item, dict) and item.get("id") == "Pose"
+                for item in qkind_ids
+            )
+
+        for closure in ir_payload.get("closures", {}).values():
+            if closure.get("type") != "Arc":
+                continue
+            end = closure.get("end")
+            end_data = data_by_id.get(end) or {}
+            if not isinstance(end, str) or not is_pose(end_data):
+                raise ValueError("Arc trajectory end must be a Pose quantity.")
+            closure["end_position_expr"] = f"shared.{end}.p"
+            closure["end_orientation_expr"] = f"shared.{end}.M"
 
     def declared_pose_component_entries(
         ir_payload: dict,
@@ -780,6 +807,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
     ir["pose_components"] = pose_components
     ir["declared_pose_components"] = declared_pose_component_entries(ir, pose_components)
     enrich_lerp_closures(ir, pose_components)
+    enrich_arc_closures(ir)
     for motion in unique_motions:
         motion_refs = collect_motion_references(motion, ir.get("closures", {}))
         motion["declared_pose_components"] = declared_pose_component_entries(

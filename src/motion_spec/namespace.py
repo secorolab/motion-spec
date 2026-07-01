@@ -22,8 +22,9 @@ class APP(DefinedNamespace):
 
 class SNAP(DefinedNamespace):
     Snapshot: URIRef
+    Clock: URIRef
 
-    _extras = ["snapshot-of"]
+    _extras = ["snapshot-of", "sampled-on", "task-clock", "entry-clock"]
 
     _NS = Namespace(f"{URI_SECORO_MM}/snapshot#")
 
@@ -117,10 +118,18 @@ class MJ(DefinedNamespace):
     MuJoCoSite: URIRef
     TrajectoryTrace: URIRef
     ColorRGBA: URIRef
+    ExternalForceMagnitudeCoordinate: URIRef
+    ExternalForceCoordinate: URIRef
+    ExternalForceCoordinateView: URIRef
 
     _extras = [
         "body-name",
         "site-name",
+        "ft-sensor",
+        "sensor-name",
+        "frame-site",
+        "ft-sensor-ref",
+        "deadband-ref",
         "color",
         "has-trace",
         "trace-enabled",
@@ -574,9 +583,14 @@ class CSTR_HDL_EXT(DefinedNamespace):
     # task/constraint-handler#; upstream cstr_hdl predicates are reused.
     FeedForwardController: URIRef
     VelocityProfile: URIRef
+    Admittance: URIRef
 
     _extras = [
         "reference-signal",
+        "mass",
+        "damping",
+        "stiffness",
+        "force",
         "monitors-until",
         "monitors-when",
         "fallback-motion",

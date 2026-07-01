@@ -22,7 +22,8 @@ robot-init-mj_kdl-KinovaGen3(solver) ::= <<
 <if(solver.tool_body)>    mj_kdl::ToolFrameSpec mj_tool_<solver.runtime_id>{};
     mj_tool_<solver.runtime_id>.tool_body = "<solver.tool_body>";
 <if(solver.tcp_site)>    mj_tool_<solver.runtime_id>.tcp_site = "<solver.tcp_site>";
-<endif>    if (!mj_kdl::init_robot_from_mjcf(&mj_<solver.runtime_id>, mj_env.model, mj_env.data, "<solver.chain_root>", "<solver.chain_tip>", "", &mj_tool_<solver.runtime_id>)) {
+<endif><solver.ft_sensors:{ft |    mj_tool_<solver.runtime_id>.ft_sensors.push_back(mj_kdl::ForceTorqueSensorSpec{ .name = "<ft.name>", .frame_site = "<ft.frame_site>" \});
+}>    if (!mj_kdl::init_robot_from_mjcf(&mj_<solver.runtime_id>, mj_env.model, mj_env.data, "<solver.chain_root>", "<solver.chain_tip>", "", &mj_tool_<solver.runtime_id>)) {
 <else>    if (!mj_kdl::init_robot_from_mjcf(&mj_<solver.runtime_id>, mj_env.model, mj_env.data, "<solver.chain_root>", "<solver.chain_tip>")) {
 <endif>
         std::cerr \<\< "init_robot_from_mjcf() failed for runtime <solver.runtime_id>\n";

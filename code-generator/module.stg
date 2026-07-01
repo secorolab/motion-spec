@@ -154,6 +154,10 @@ view-access-expr-Wrench-Force(view) ::= <<
 shared.<view.superobject.id>.force[<axis-to-index.(view.axis)>]
 >>
 
+view-access-expr-ExternalForce-Force(view) ::= <<
+shared.<view.superobject.id>[<axis-to-index.(view.axis)>]
+>>
+
 shared-member(var) ::= <<
 <({shared-member-<var.type>})(var)>
 >>
@@ -188,8 +192,20 @@ shared-member-Wrench(var) ::= <<
 KDL::Wrench <var.id>;
 >>
 
+shared-member-ExternalForce(var) ::= <<
+KDL::Vector <var.id>;
+>>
+
 shared-member-Quantity(var) ::= <<
 double <var.id> = <if(var.value)><var.value><else>0.0<endif>;
+>>
+
+shared-member-IntCounter(var) ::= <<
+int <var.id> = 0;
+>>
+
+shared-member-Bool(var) ::= <<
+bool <var.id> = false;
 >>
 
 shared-member-Trajectory(var) ::= <<
@@ -205,7 +221,7 @@ controller-member-ProportionalIntegralDerivative(controller) ::= <<
 >>
 
 controller-member-ImpedanceController(controller) ::= <<
-    motion_spec::runtime::ImpedanceControl <controller.id>{<controller.stiffness>, <controller.damping>};
+    motion_spec::runtime::ImpedanceControl <controller.id>{<controller.stiffness>, <controller.damping>, <if(controller.integral_gain)><controller.integral_gain><else>0.0<endif>};
 >>
 
 controller-member-FeedForwardController(controller) ::= <<
@@ -278,6 +294,10 @@ emit-call-VelocityProfile(closure, views) ::= <<
 }
 >>
 
+emit-call-Admittance(closure, views) ::= <<
+shared.<closure.reference> = state.<closure.controller>.adm_filter.step(<access-expr(closure.force, views)>, <closure.mass>, <closure.damping>, <closure.stiffness>, <closure.max_velocity>, motion_spec::runtime::kControlPeriodS);
+>>
+
 emit-call-Circle(closure, views) ::= <<
 {
     const double _s_<closure.trajectory>     = motion_spec::runtime::smoothstep(<access-expr(closure.alpha, views)>);
@@ -302,14 +322,15 @@ emit-call-Arc(closure, views) ::= <<
     // sagitta). center, radius and swept angle are derived so the path begins at start,
     // ends exactly at end, and apexes amplitude away from the chord midpoint.
     // amplitude == |chord|/2 reproduces a clean semicircle (swept angle pi).
-    const KDL::Vector _chord_<closure.trajectory> = shared.<closure.end> - shared.<closure.start>.p;
+    const KDL::Vector _end_<closure.trajectory>   = <closure.end_position_expr>;
+    const KDL::Vector _chord_<closure.trajectory> = _end_<closure.trajectory> - shared.<closure.start>.p;
     const double _a_<closure.trajectory>          = shared.<closure.amplitude>;
     const double _chordlen_<closure.trajectory>   = _chord_<closure.trajectory>.Norm();
     // Degenerate input (end == start, or non-positive amplitude) would divide by zero /
     // normalize a zero vector; hold at start instead of emitting NaN.
     KDL::Vector _pos_<closure.trajectory> = shared.<closure.start>.p;
     if (_chordlen_<closure.trajectory> > 1e-9 && _a_<closure.trajectory> > 1e-9) {
-        const KDL::Vector _mid_<closure.trajectory> = 0.5 * (shared.<closure.start>.p + shared.<closure.end>);
+        const KDL::Vector _mid_<closure.trajectory> = 0.5 * (shared.<closure.start>.p + _end_<closure.trajectory>);
         const double _m_<closure.trajectory>        = 0.5 * _chordlen_<closure.trajectory>;
         KDL::Vector _perp_<closure.trajectory>      = _n_<closure.trajectory> * _chord_<closure.trajectory>;
         _perp_<closure.trajectory>.Normalize();
@@ -321,7 +342,11 @@ emit-call-Arc(closure, views) ::= <<
         _pos_<closure.trajectory> = _center_<closure.trajectory>
             + KDL::Rotation::Rot(_n_<closure.trajectory>, -_theta_<closure.trajectory> * _s_<closure.trajectory>) * _v0_<closure.trajectory>;
     }
-    shared.<closure.trajectory> = KDL::Frame(shared.<closure.start>.M, _pos_<closure.trajectory>);
+    const KDL::Frame _rot_start_<closure.trajectory>(shared.<closure.start>.M, KDL::Vector(0.0, 0.0, 0.0));
+    const KDL::Frame _rot_goal_<closure.trajectory>(<closure.end_orientation_expr>, KDL::Vector(0.0, 0.0, 0.0));
+    const KDL::Rotation _rot_<closure.trajectory> =
+        KDL::addDelta(_rot_start_<closure.trajectory>, KDL::diff(_rot_start_<closure.trajectory>, _rot_goal_<closure.trajectory>), _s_<closure.trajectory>).M;
+    shared.<closure.trajectory> = KDL::Frame(_rot_<closure.trajectory>, _pos_<closure.trajectory>);
 }
 >>
 
@@ -559,12 +584,15 @@ schedule-block(steps, closures, views) ::= <<
 <steps:{step | <schedule-step(step, closures, views)>}; separator="\n">
 >>
 
-update-monitor(monitor) ::= <<
+update-monitor(monitor, suppress_initial_active) ::= <<
 <if(monitor.active_condition)>
     {
         const bool active = <monitor.active_condition>;
 <if(monitor.is_edge_triggered)>
-        const bool detected = motion_spec::runtime::rising_edge(state.<monitor.id>_previous, active);
+        const bool detected = <if(suppress_initial_active)>motion_spec::runtime::rising_edge_after(
+            state.<monitor.id>_previous,
+            active,
+            state.active_steps >= motion_spec::runtime::kMonitorArmSteps)<else>motion_spec::runtime::rising_edge(state.<monitor.id>_previous, active)<endif>;
 <if(monitor.fsm_namespace)>
         // coord2b is the sequencer: fire the FSM event on the rising edge while in this state.
         if (detected && robot.fsm_events) {
@@ -585,7 +613,10 @@ update-monitor(monitor) ::= <<
 <if(monitor.is_edge_triggered)>
     {
         const bool active = motion_spec::runtime::constraint_satisfied(shared.<monitor.error.id>);
-        const bool detected = motion_spec::runtime::rising_edge(state.<monitor.id>_previous, active);
+        const bool detected = <if(suppress_initial_active)>motion_spec::runtime::rising_edge_after(
+            state.<monitor.id>_previous,
+            active,
+            state.active_steps >= motion_spec::runtime::kMonitorArmSteps)<else>motion_spec::runtime::rising_edge(state.<monitor.id>_previous, active)<endif>;
 <if(monitor.fsm_namespace)>
         // coord2b is the sequencer: fire the FSM event on the rising edge while in this state.
         if (detected && robot.fsm_events) {
@@ -607,8 +638,8 @@ update-monitor(monitor) ::= <<
 <endif>
 >>
 
-monitor-block(monitors) ::= <<
-<monitors:{monitor | <update-monitor(monitor)>}; separator="\n\n">
+monitor-block(monitors, suppress_initial_active) ::= <<
+<monitors:{monitor | <update-monitor(monitor, suppress_initial_active)>}; separator="\n\n">
 >>
 
 motion-done-condition(motion) ::= <<
@@ -841,6 +872,80 @@ solver-output-JointPosition-mj_kdl(solver, out) ::= <<
         shared.<out.id> = state.<solver.id>.q(motion_spec::runtime::find_joint_index(*robot.<solver.id>.chain, "<out.joint_name>"));
     }
 }
+>>
+
+solver-output-ExternalForceMagnitude(solver, out, backend) ::= <<
+<({solver-output-ExternalForceMagnitude-<backend>})(solver, out)>
+>>
+
+solver-output-ExternalForceMagnitude-mj_kdl(solver, out) ::= <<
+{
+    // Measured external-force magnitude from the wrist FT sensor: rotate the wrench to
+    // world frame, subtract a startup-tared bias, deadband, then take the norm.
+    // ponytail: startup tare is pose-invariant here (gravity is world-constant and the
+    // tool load never changes mid-run); per-state-entry tare is the upgrade path if a
+    // future model picks up an object and changes the tool load.
+    const mj_kdl::ForceTorqueSensor *ft_<out.id> = mj_kdl::find_ft_sensor(robot.<solver.id>.robot, "<out.sensor_name>");
+    KDL::Vector f_world_<out.id> = KDL::Vector::Zero();
+    if (ft_<out.id> && ft_<out.id>->frame_site_id >= 0) {
+        KDL::Frame site_frame_<out.id>;
+        if (mj_kdl::get_site_frame(robot.<solver.id>.robot->model, robot.<solver.id>.robot->data, ft_<out.id>->frame_site.c_str(), &site_frame_<out.id>)) {
+            f_world_<out.id> = site_frame_<out.id>.M * ft_<out.id>->wrench.force;
+        }
+    }
+    // Tare state (bias + settle) lives in shared_data so it is captured once,
+    // before any external push, and reused across handler re-entries and by the
+    // vector read of the same sensor -- never re-tared while a push is active.
+    if (shared.<out.id>_ft_settle \< 200) {       // ponytail: fixed settle; author it if startup transients vary
+        ++shared.<out.id>_ft_settle;
+        shared.<out.id>_ft_bias = f_world_<out.id>;   // last settle step is the tare sample
+        shared.<out.id> = 0.0;
+    } else {
+        const KDL::Vector f_ext_<out.id> = shared.<out.id>_ft_bias - f_world_<out.id>;
+        const double mag_<out.id> = f_ext_<out.id>.Norm();
+        shared.<out.id> = (mag_<out.id> \< <if(out.deadband_id)>shared.<out.deadband_id><else>0.0<endif>) ? 0.0 : mag_<out.id>;
+    }
+}
+>>
+
+solver-output-ExternalForceMagnitude-robif2b(solver, out) ::= <<
+    // ponytail: robif2b has no sim FT sensor; a real build wires a hardware FT driver here.
+    shared.<out.id> = 0.0;
+>>
+
+solver-output-ExternalForce(solver, out, backend) ::= <<
+<({solver-output-ExternalForce-<backend>})(solver, out)>
+>>
+
+solver-output-ExternalForce-mj_kdl(solver, out) ::= <<
+{
+    // Measured external-force VECTOR (plan 003): same FT read as the scalar magnitude,
+    // but keep all three world-frame components (no Norm, no deadband) for the
+    // admittance filter. bias - f_world is the tared external force.
+    const mj_kdl::ForceTorqueSensor *ft_<out.id> = mj_kdl::find_ft_sensor(robot.<solver.id>.robot, "<out.sensor_name>");
+    KDL::Vector f_world_<out.id> = KDL::Vector::Zero();
+    if (ft_<out.id> && ft_<out.id>->frame_site_id >= 0) {
+        KDL::Frame site_frame_<out.id>;
+        if (mj_kdl::get_site_frame(robot.<solver.id>.robot->model, robot.<solver.id>.robot->data, ft_<out.id>->frame_site.c_str(), &site_frame_<out.id>)) {
+            f_world_<out.id> = site_frame_<out.id>.M * ft_<out.id>->wrench.force;
+        }
+    }
+    // Tare state (bias + settle) lives in shared_data so it is captured once,
+    // before any external push, and reused across handler re-entries and by the
+    // magnitude read of the same sensor -- never re-tared while a push is active.
+    if (shared.<out.id>_ft_settle \< 200) {       // ponytail: fixed settle; author it if startup transients vary
+        ++shared.<out.id>_ft_settle;
+        shared.<out.id>_ft_bias = f_world_<out.id>;   // last settle step is the tare sample
+        shared.<out.id> = KDL::Vector::Zero();
+    } else {
+        shared.<out.id> = shared.<out.id>_ft_bias - f_world_<out.id>;
+    }
+}
+>>
+
+solver-output-ExternalForce-robif2b(solver, out) ::= <<
+    // ponytail: robif2b has no sim FT sensor; a real build wires a hardware FT driver here.
+    shared.<out.id> = KDL::Vector::Zero();
 >>
 
 solver-output(solver, out, backend) ::= <<
@@ -1237,8 +1342,8 @@ inline constexpr double kConstraintTolerance = 1e-2;
 inline constexpr double kTauMax     = 59.0;
 inline constexpr double kBetaMaxLin = 120.0;
 inline constexpr double kBetaMaxRot = 80.0;
-inline constexpr double kSupportFMax = 45.0;
 inline constexpr double kControlPeriodS = <control_period_ns> * 1e-9;
+inline constexpr int kMonitorArmSteps = 100;
 inline constexpr double kRneDampingLambda = 1e-4;
 inline double clamp_abs(double v, double limit) {
     if (v > limit) return limit;
@@ -1410,6 +1515,36 @@ inline constexpr int NUM_G_COORD = NUM_DRV_COORD * NUM_PLTF_COORD;
 inline constexpr double EPS = 0.001;
 <endif>
 
+// Virtual mass-damper(-spring) admittance filter: turns a measured external-force
+// axis into a per-axis velocity setpoint. vel_/offset_ integrate across control
+// steps (persistent state), so the filter must outlive a single step -- it lives
+// as a member of the tracking constraint's PIDControl, mirroring the vp_* members.
+// Velocity-output (not position-with-K): v -> 0 as F -> 0, so the arm halts when
+// the push ends. M/D/K/vmax are authored tuning knobs, passed in each step.
+class AdmittanceFilter {
+  public:
+    double step(double force, double mass, double damping, double stiffness,
+                double max_velocity, double dt) {
+        mass = std::max(mass, 1e-6);
+        // Zero-force -> zero-velocity guard: with a pure damper the velocity decays
+        // on its own, but an explicit reset guarantees a clean halt on release.
+        if (force == 0.0 && stiffness == 0.0) {
+            vel_ = 0.0;
+            offset_ = 0.0;
+            return 0.0;
+        }
+        const double acc = (force - damping * vel_ - stiffness * offset_) / mass;
+        vel_ += acc * dt;
+        vel_ = std::clamp(vel_, -max_velocity, max_velocity);
+        offset_ += vel_ * dt; // only used when stiffness > 0 (spring return)
+        return vel_;
+    }
+
+  private:
+    double vel_ = 0.0;
+    double offset_ = 0.0;
+};
+
 class PIDControl {
   public:
     PIDControl() = default;
@@ -1438,6 +1573,8 @@ class PIDControl {
     double vp_accel = 0.0;
     bool vp_init = false;
 
+    AdmittanceFilter adm_filter;
+
   private:
     double err_integ = 0.0;
     double err_last = 0.0;
@@ -1458,21 +1595,26 @@ class ImpedanceControl {
   public:
     ImpedanceControl() = default;
 
-    ImpedanceControl(double stiffness, double damping, double dt = 0.002)
-        : ks(stiffness), kd(damping), dt_(dt) {}
+    ImpedanceControl(double stiffness, double damping, double integral = 0.0, double dt = 0.002)
+        : ks(stiffness), kd(damping), ki(integral), dt_(dt) {}
 
     double control(double error) {
         const double err_diff = first_sample ? 0.0 : ((error - err_last) / dt_);
         err_last = error;
         first_sample = false;
-        return std::min(kSupportFMax, std::max(0.0, ks * error + kd * err_diff));
+        if (ki > 0.0) {
+            err_int += error * dt_;
+        }
+        return ks * error + kd * err_diff + ki * err_int;
     }
 
   private:
     double err_last = 0.0;
+    double err_int = 0.0;
     bool first_sample = true;
     double ks = 0.0;
     double kd = 0.0;
+    double ki = 0.0;
     double dt_ = 0.002;
 };
 
@@ -1533,6 +1675,14 @@ inline bool rising_edge(bool &previous, bool active) {
     const bool detected = active && !previous;
     previous = active;
     return detected;
+}
+
+inline bool rising_edge_after(bool &previous, bool active, bool armed) {
+    if (!armed) {
+        previous = active;
+        return false;
+    }
+    return rising_edge(previous, active);
 }
 
 inline void set_flag(bool &flag, bool active) {
@@ -1920,8 +2070,14 @@ inline void update_<motion.id>(
 <endif>
 }; separator="\n">
 <if(motion.snapshots)>
+<motion.snapshots:{snap | <if(snap.persistent)>    if (!shared.<snap.target_id>_captured) {
+<emit-snapshot(snap, closures, views)>
+        shared.<snap.target_id>_captured = true;
+    \}
+<endif>}; separator="">
     if (!state.snapshot_taken) {
-<motion.snapshots:{snap | <emit-snapshot(snap, closures, views)>}; separator="\n">
+<motion.snapshots:{snap | <if(!snap.persistent)><emit-snapshot(snap, closures, views)>
+<endif>}; separator="">
         state.snapshot_taken = true;
     }
 <endif>
@@ -1945,25 +2101,25 @@ inline void monitor_when_<motion.id>(<motion.when_params>) {
 <declared_pose_components:{pose | <materialize-pose-component(pose)>}; separator="\n">
 <shared-schedule-block(motion.when_schedule, closures, views)>
 <if(first(motion.when_monitors))>
-<monitor-block(motion.when_monitors)>
+<monitor-block(motion.when_monitors, false)>
 <endif>
 }
 
 inline void monitor_until_<motion.id>(<motion.until_params>) {
 <shared-schedule-block(motion.until_schedule, closures, views)>
 <if(first(motion.until_monitors))>
-<monitor-block(motion.until_monitors)>
+<monitor-block(motion.until_monitors, false)>
 <endif>
 }
 
 inline void monitor_<motion.id>(<motion.monitor_params>) {
 <shared-schedule-block(motion.when_schedule, closures, views)>
 <if(first(motion.when_monitors))>
-<monitor-block(motion.when_monitors)>
+<monitor-block(motion.when_monitors, false)>
 <endif>
 <shared-schedule-block(motion.until_schedule, closures, views)>
 <if(first(motion.until_monitors))>
-<monitor-block(motion.until_monitors)>
+<monitor-block(motion.until_monitors, false)>
 <endif>
 }
 
@@ -1976,7 +2132,7 @@ inline void control_<motion.id>(
 <shared-schedule-block(motion.while_schedule, closures, views)>
 <if(first(motion.while_monitors))>
 
-<monitor-block(motion.while_monitors)>
+<monitor-block(motion.while_monitors, true)>
 <endif>
 <if(motion.arm_solvers)>
 
@@ -2218,10 +2374,15 @@ int main(int argc, char **argv) {
 fsm-step-function(motion) ::= <<
 <if(motion.fsm_state)>
 static void step_<motion.id>(<motion.id>_state &<motion.id>_state_instance, shared_data &shared, robot_io &robot) {
+    if (!<motion.id>_state_instance.active) {
+        <motion.id>_state_instance.active = true;
+        <motion.id>_state_instance.active_steps = 0;
+    }
     update_<motion.id>(<motion.id>_state_instance, shared, robot);
     monitor_until_<motion.id>(<motion.until_args>);
     control_<motion.id>(<motion.id>_state_instance, shared, robot);
     apply_<motion.id>(<motion.apply_args>);
+    ++<motion.id>_state_instance.active_steps;
 \}
 <endif>
 >>
@@ -2233,6 +2394,12 @@ fsm-dispatch-case(motion, fsm_namespace) ::= <<
 <motion.fsm_when_gate_calls:{call |             <call>}; separator="\n">
             break;
 <endif>
+>>
+
+fsm-reenter-reset-case(motion, fsm_namespace) ::= <<
+<if(motion.fsm_state)><if(motion.has_entry_snapshot)>
+            case <fsm_namespace>::<motion.fsm_state>: reset_<motion.id>(<motion.id>_state_instance); break;
+<endif><endif>
 >>
 
 fsm-dispatch(motions, fsm_namespace) ::= <<
@@ -2319,6 +2486,12 @@ int main(int argc, char **argv) {
         if (static_cast\<int\>(fsm->currentStateIndex) != _fsm_prev_state) {
             _fsm_prev_state = static_cast\<int\>(fsm->currentStateIndex);
             std::cerr \<\< "[fsm] state   " \<\< <fsm_namespace>::STATE_URIS[fsm->currentStateIndex] \<\< std::endl;
+            // Re-arm per-entry snapshots for a trajectory motion whenever its state is
+            // (re-)entered, so the trajectory rebuilds from the current pose. Fixed
+            // targets (trajectory anchors) persist via their shared_data guards.
+            switch (fsm->currentStateIndex) {
+<motions:{motion | <fsm-reenter-reset-case(motion, fsm_namespace)>}; separator="">            default: break;
+            \}
         \}
         if (fsm->currentStateIndex == fsm->endStateIndex) break;
 <if(fsm_step_event)>

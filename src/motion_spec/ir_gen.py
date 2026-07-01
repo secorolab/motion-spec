@@ -428,6 +428,18 @@ ops_generic = [
         parameters=[CSTR_HDL_EXT["shape"], CSTR_HDL_EXT["controller"]],
     ),
     Operator(
+        type_=CSTR_HDL_EXT["Admittance"],
+        input=[CSTR_HDL_EXT["force"]],
+        output=[CSTR_HDL_EXT["reference"]],
+        parameters=[
+            CSTR_HDL_EXT["mass"],
+            CSTR_HDL_EXT["damping"],
+            CSTR_HDL_EXT["stiffness"],
+            CSTR_HDL_EXT["max-velocity"],
+            CSTR_HDL_EXT["controller"],
+        ],
+    ),
+    Operator(
         type_=TRAJ["Circle"],
         input=[TRAJ["start"], TRAJ["center"], TRAJ["plane-normal"],
                TRAJ["alpha"]],
@@ -576,6 +588,21 @@ class JointPosition:
     id: str
     joint_name: str
     type: str = field(default="JointPosition")
+
+
+@dataclass
+class ExternalForceMagnitude:
+    id: str
+    sensor_name: str
+    deadband_id: str = ""
+    type: str = field(default="ExternalForceMagnitude")
+
+
+@dataclass
+class ExternalForce:
+    id: str
+    sensor_name: str
+    type: str = field(default="ExternalForce")
 
 
 @dataclass
@@ -823,6 +850,10 @@ class SnapshotCapture:
     target_id: str
     source_id: str
     source_closure_id: str | None = None
+    # snap:sampled-on clock: "task" = sampled once, "entry" = re-sampled per entry.
+    clock: str = "task"
+    # persistent = shared-guarded so it survives the on-entry reset (see _snapshots_for_motion).
+    persistent: bool = False
     type: str = field(default="SnapshotCapture")
 
 
@@ -881,8 +912,11 @@ class GuardedMotionBlock:
     # Solver Integration
     arm_solvers: list = field(default_factory=list)
 
-    # Snapshot captures (once-at-start scalar assignments)
+    # Snapshot captures (sample-and-hold of a fluent on a clock)
     snapshots: list = field(default_factory=list)
+
+    # True iff any snapshot samples `on entry` -> motion is reset on FSM re-entry.
+    has_entry_snapshot: bool = False
 
     # Relative-from-start pose computations (e.g. pose_start_ee)
     relative_poses: list = field(default_factory=list)
@@ -974,6 +1008,7 @@ class SolverWithInputAndOutput:
     robot_model: str = ""
     tool_body: str = ""
     tcp_site: str = ""
+    ft_sensors: list[dict] = field(default_factory=list)
     gravity: list[float] | None = None
     root_acc: list[float] | None = None
     type: str = field(default="SolverWithInputAndOutput")
@@ -1162,6 +1197,8 @@ class Parser:
             (GEOM_COORD["PoseCoordinate"], self.pose),
             (GEOM_COORD["VelocityTwistCoordinate"], self.velocity_twist),
             (KC_STAT["JointPositionCoordinate"], self.joint_position),
+            (MJ["ExternalForceMagnitudeCoordinate"], self.external_force_magnitude),
+            (MJ["ExternalForceCoordinate"], self.external_force),
         ]
 
         drv = []
@@ -1392,7 +1429,8 @@ class Parser:
         is_impedance = CSTR_HDL["ImpedanceController"] in self.g[id_ : RDF["type"]]
         is_feedforward = CSTR_HDL_EXT["FeedForwardController"] in self.g[id_ : RDF["type"]]
         assert is_pid or is_impedance or is_feedforward, (
-            f"Controller {id_} must be ProportionalIntegralDerivative, ImpedanceController, or FeedForwardController"
+            f"Controller {id_} must be ProportionalIntegralDerivative, ImpedanceController, "
+            "or FeedForwardController"
         )
 
         error_node = self.g.value(id_, CSTR_HDL["error-signal"])
@@ -1430,6 +1468,7 @@ class Parser:
                 error_signal=error_signal,
                 stiffness=self._required_float(id_, CSTR_HDL["stiffness"]),
                 damping=self._required_float(id_, CSTR_HDL["damping"]),
+                integral_gain=self._optional_float(id_, CSTR_HDL["integral-gain"]),
                 type=self.id(CSTR_HDL.ImpedanceController),
             )
         if reference_signal is None:
@@ -1795,6 +1834,21 @@ class Parser:
         joint_name = self.label(joint_node) if joint_node is not None else ""
         return JointPosition(self.id(id_), joint_name)
 
+    @memoize
+    def external_force_magnitude(self, id_):
+        assert MJ["ExternalForceMagnitudeCoordinate"] in self.g[id_ : RDF["type"]]
+        sensor_name = str(self.g.value(id_, MJ["ft-sensor-ref"]) or "")
+        dead_ref = self.g.value(id_, MJ["deadband-ref"])
+        # The authored deadband Spec becomes a `shared.<id>` double; match its sanitized id.
+        deadband_id = str(dead_ref).replace("-", "_") if dead_ref else ""
+        return ExternalForceMagnitude(self.id(id_), sensor_name, deadband_id)
+
+    @memoize
+    def external_force(self, id_):
+        assert MJ["ExternalForceCoordinate"] in self.g[id_ : RDF["type"]]
+        sensor_name = str(self.g.value(id_, MJ["ft-sensor-ref"]) or "")
+        return ExternalForce(self.id(id_), sensor_name)
+
     def roles(self, id_):
         role_ns = str(VALUE_ROLE._NS)
         return sorted(
@@ -1844,6 +1898,7 @@ class Parser:
             (MAP["VelocityTwistCoordinateView"], self.velocity_twist),
             (MAP["AccelerationTwistCoordinateView"], self.acceleration_twist),
             (MAP["WrenchCoordinateView"], self.wrench),
+            (MJ["ExternalForceCoordinateView"], self.external_force),
         ]
 
         view_map = {}
@@ -1877,6 +1932,7 @@ class Parser:
             (GEOM_COORD["VelocityTwistCoordinate"], self.velocity_twist),
             (GEOM_COORD["AccelerationTwistCoordinate"], self.acceleration_twist),
             (RBDYN_COORD["WrenchCoordinate"], self.wrench),
+            (MJ["ExternalForceCoordinate"], self.external_force),
             (QUDT_SCHEMA["Quantity"], self.quantity),
         ]
 
@@ -2184,7 +2240,9 @@ def _snapshots_for_motion(
     data_reference_map=None,
     schedule=None,
     closures=None,
+    snapshot_clock_map=None,
 ):
+    snapshot_clock_map = snapshot_clock_map or {}
     ref_val_ids = _snapshot_reference_value_ids(evaluators, constraints)
     closures = closures or {}
     data_reference_map = data_reference_map or {}
@@ -2245,8 +2303,15 @@ def _snapshots_for_motion(
                 target_id=target_id,
                 source_id=source_id,
                 source_closure_id=source_closure_id,
+                clock=snapshot_clock_map.get(target_id, "task"),
             )
         )
+
+    # If the motion resets on re-entry (has any `on entry` sample), its `on task`
+    # samples must survive that reset -> persistent. Otherwise nothing persists.
+    has_entry = any(s.clock == "entry" for s in result)
+    for s in result:
+        s.persistent = has_entry and s.clock == "task"
     return result
 
 
@@ -2267,6 +2332,7 @@ _CLOSURE_OUTPUT_FIELDS = {
     "TransformWrenchToProximal": "to",
     "WrenchFromPositionDirectionAndMagnitude": "wrench",
     "VelocityProfile": "reference",
+    "Admittance": "reference",
 }
 
 
@@ -2409,6 +2475,12 @@ def _pose_axis_error_groups_for_motion(eval_nodes, p, view_map):
                 continue
         subspace, is_angular = mapping
 
+        # A whole-subspace view (e.g. keeping <pose>.position as a unit) has no per-axis
+        # component, so it cannot join a per-axis pose-error group; it is controlled by its
+        # own equality-constraint controller instead. Skip it rather than deref a None axis.
+        if view.axis is None:
+            continue
+
         so_id = view.superobject.id
         group = groups.setdefault(
             so_id,
@@ -2449,7 +2521,9 @@ def build_motion_units(
     closure_input_map=None,
     closures=None,
     data_structures=None,
+    snapshot_clock_map=None,
 ):
+    snapshot_clock_map = snapshot_clock_map or {}
     snapshot_source_map = snapshot_source_map or {}
     view_map = view_map or {}
     closure_output_map = closure_output_map or {}
@@ -2757,7 +2831,7 @@ def build_motion_units(
                 ),
                 pose_axis_error_groups=pose_axis_error_groups,
                 command_forwarding=command_forwarding,
-                snapshots=_snapshots_for_motion(
+                snapshots=(_motion_snapshots := _snapshots_for_motion(
                     while_evaluators + when_evaluators + until_evaluators,
                     motion.while_ + motion.when + motion.until,
                     snapshot_source_map,
@@ -2766,7 +2840,9 @@ def build_motion_units(
                     data_reference_map,
                     while_schedule + when_schedule + until_schedule,
                     closures,
-                ),
+                    snapshot_clock_map,
+                )),
+                has_entry_snapshot=any(s.clock == "entry" for s in _motion_snapshots),
             )
         )
 
@@ -3166,7 +3242,7 @@ def _robot_setups_from_graph(g):
 
     Returns ``(setups_by_node, ordered)`` where ``setups_by_node`` maps each
     robot's graph node to its setup tuple
-    ``(urdf, chain_root, chain_end, chain_tip, robot_model, tool_body, tcp_site)``
+    ``(urdf, chain_root, chain_end, chain_tip, robot_model, tool_body, tcp_site, ft_sensors)``
     and ``ordered`` is the same tuples in declaration order. Names derived from
     the robot's own MJCF (``chain_tip``, ``tool_body``) get the robot's prefix
     prepended so they resolve in the prefixed, multi-robot MuJoCo scene;
@@ -3189,6 +3265,16 @@ def _robot_setups_from_graph(g):
             robot_model = str(model_node).rstrip("/").split("/")[-1].split("#")[-1] if model_node else ""
             tool_body = _mj_body_name(g, g.value(obj_node, MJ["tool-body"]))
             tcp_site = _site_name(g, g.value(obj_node, MJ["tcp-site"]))
+            ft_sensors = sorted(
+                (
+                    {
+                        "name": str(g.value(ft_node, MJ["sensor-name"]) or ""),
+                        "frame_site": str(g.value(ft_node, MJ["frame-site"]) or ""),
+                    }
+                    for ft_node in g.objects(obj_node, MJ["ft-sensor"])
+                ),
+                key=lambda s: s["name"],
+            )
             attachments = _attachments_for_robot(g, env_node, obj_node, tool_body)
             for attachment in g.objects(env_node, ENV["has-object"]):
                 if g.value(attachment, SLV["attached-to"]) != obj_node:
@@ -3219,7 +3305,7 @@ def _robot_setups_from_graph(g):
                     tool_body = prefix + tool_body
             if not (chain_root or chain_end or urdf):
                 continue
-            setup = (urdf, chain_root, chain_end, chain_tip, robot_model, tool_body, tcp_site)
+            setup = (urdf, chain_root, chain_end, chain_tip, robot_model, tool_body, tcp_site, ft_sensors)
             setups_by_node[obj_node] = setup
             ordered.append(setup)
     return setups_by_node, ordered
@@ -3257,7 +3343,7 @@ def generate_ir(manifest_path):
     sched4 = []
     slv_base_frc = []
     setups_by_node, ordered_setups = _robot_setups_from_graph(g)
-    _default_setup = ordered_setups[0] if ordered_setups else ("", "", "", "", "", "", "")
+    _default_setup = ordered_setups[0] if ordered_setups else ("", "", "", "", "", "", "", [])
     scene = _scene_from_graph(g)
 
     # Construct the computational graph that feeds into the mobile base's
@@ -3286,6 +3372,7 @@ def generate_ir(manifest_path):
             _robot_model,
             _tool_body,
             _tcp_site,
+            _ft_sensors,
         ) = setups_by_node.get(robot_node, _default_setup)
         solver.urdf = _urdf
         solver.chain_root = _chain_root
@@ -3294,6 +3381,7 @@ def generate_ir(manifest_path):
         solver.robot_model = _robot_model
         solver.tool_body = _tool_body
         solver.tcp_site = _tcp_site
+        solver.ft_sensors = _ft_sensors
         _mark_acceleration_constraint_frames(solver)
         slv_arm.append(solver)
         start = g[
@@ -3326,10 +3414,16 @@ def generate_ir(manifest_path):
 
     # Build snapshot lookup maps
     snapshot_source_map: dict[str, str] = {}
+    snapshot_clock_map: dict[str, str] = {}
     for snap_node in g.subjects(RDF.type, SNAP.Snapshot):
         source_node = g.value(snap_node, SNAP["snapshot-of"])
         if source_node is not None:
             snapshot_source_map[p.id(snap_node)] = p.id(source_node)
+        # Sampling clock: "entry" re-samples each state activation; else "task" (once).
+        clock_node = g.value(snap_node, SNAP["sampled-on"])
+        snapshot_clock_map[p.id(snap_node)] = (
+            "entry" if clock_node == SNAP["entry-clock"] else "task"
+        )
 
     data_reference_map: dict[str, str] = {}
     for item in data_structures:
@@ -3373,6 +3467,7 @@ def generate_ir(manifest_path):
         node_by_id,
         slv_arm,
         snapshot_source_map=snapshot_source_map,
+        snapshot_clock_map=snapshot_clock_map,
         view_map=view_map,
         closure_output_map=closure_output_map,
         data_reference_map=data_reference_map,
@@ -3428,6 +3523,41 @@ def generate_ir(manifest_path):
     # Safeguard: no two distinct URIs may collapse to one generated id (would silently merge).
     p.assert_no_id_collisions()
 
+    shared_data = _filter_shared_data(
+        data_structures,
+        sched1 + sched2 + sched3 + sched4,
+        closures,
+        view_map=view_map,
+        fk_output_ids={out.id for s in slv_arm for out in s.output},
+    )
+    # Promote the FT tare state (bias + settle counter) to shared_data. It must be
+    # captured once, before any external push, and then reused: sharing it across
+    # handlers means the no-push tare taken in an early state (e.g. the arc) is
+    # reused when a later state (e.g. admittance) runs during an active push,
+    # instead of that state re-taring the disturbance away to ~zero.
+    _ft_tare_members = []
+    _seen_ft_ids = set()
+    for s in slv_arm:
+        for out in s.output:
+            if getattr(out, "type", None) in ("ExternalForce", "ExternalForceMagnitude"):
+                if out.id in _seen_ft_ids:
+                    continue
+                _seen_ft_ids.add(out.id)
+                _ft_tare_members.append({"id": f"{out.id}_ft_bias", "type": "FreeVector"})
+                _ft_tare_members.append({"id": f"{out.id}_ft_settle", "type": "IntCounter"})
+    shared_data = shared_data + _ft_tare_members
+
+    # Persistent (once-per-run) snapshot guards live in shared_data so they
+    # survive the motion-state reset applied on FSM re-entry (fixed traj targets).
+    _persist_captured_members = []
+    _seen_captured = set()
+    for m in motions:
+        for snap in getattr(m, "snapshots", []):
+            if getattr(snap, "persistent", False) and snap.target_id not in _seen_captured:
+                _seen_captured.add(snap.target_id)
+                _persist_captured_members.append({"id": f"{snap.target_id}_captured", "type": "Bool"})
+    shared_data = shared_data + _persist_captured_members
+
     # Compose the overall schedule via concatenation
     return {
         "slv_arm": slv_arm,
@@ -3440,13 +3570,7 @@ def generate_ir(manifest_path):
         "shared_schedule": sched1 + sched3 + sched4,
         "schedule": sched1 + sched2 + sched3 + sched4,
         "views": view_map,
-        "shared_data": _filter_shared_data(
-            data_structures,
-            sched1 + sched2 + sched3 + sched4,
-            closures,
-            view_map=view_map,
-            fk_output_ids={out.id for s in slv_arm for out in s.output},
-        ),
+        "shared_data": shared_data,
         "wrench_outputs": wrench_outputs,
         "has_arm": bool(slv_arm),
         "has_mobile_base": bool(slv_base_vel or slv_base_frc),

@@ -8,6 +8,7 @@ import copy
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from importlib.metadata import PackageNotFoundError, distribution
@@ -292,16 +293,36 @@ def _event_to_state(fsm_ir: dict) -> dict[str, str]:
     }
 
 
+def _load_fsm_ir(output_dir: Path, fsm_path: Path | None) -> tuple[dict | None, str | None]:
+    """Return (fsm_ir, fsm_header_text).
+
+    Resolution order:
+    1. ``fsm_ir.json`` in *output_dir* — written by ``textx generate --target jsonld``
+       when the .robmot imports a .fsm.  The C++ header is already on disk; header
+       text is not returned in this case (None).
+    2. ``--fsm <path>`` legacy flag — parses the .fsm directly (backward compat).
+    3. Neither present → (None, None); no FSM wiring.
+    """
+    fsm_ir_path = output_dir / "fsm_ir.json"
+    if fsm_ir_path.exists():
+        return json.loads(fsm_ir_path.read_text()), None
+    if fsm_path is not None:
+        return _load_fsm(fsm_path)
+    return None, None
+
+
 def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path | None = None):
     ir = load_ir(ir_path)
     _validate_ir(ir)
     backend = ir.get("backend", "robif2b")
 
     # FSM wiring (codegen/build concern; derived, not part of the semantic IR).
-    fsm_ir, fsm_header_text = _load_fsm(fsm_path) if fsm_path else (None, None)
+    fsm_ir, fsm_header_text = _load_fsm_ir(output_dir, fsm_path)
     fsm_namespace = fsm_ir["name"].lower() if fsm_ir else None
     fsm_header = f"{fsm_ir['name']}.hpp" if fsm_ir else None
-    fsm_ns_uri = _fsm_namespace_uri(fsm_path) if fsm_path else None
+    fsm_ns_uri = fsm_ir.get("namespace_uri") if fsm_ir else None
+    if fsm_ns_uri is None and fsm_path is not None:
+        fsm_ns_uri = _fsm_namespace_uri(fsm_path)
     event_state = _event_to_state(fsm_ir) if fsm_ir else {}
     # Heartbeat event produced every tick (drives the start-state kick / self-loops), if present.
     fsm_step_event = "E_STEP" if (fsm_ir and "E_STEP" in fsm_ir["events"]) else None
@@ -964,6 +985,8 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
 
     if fsm_header_text is not None:
         (headers_dir / fsm_header).write_text(fsm_header_text)
+    elif fsm_ir is not None:
+        shutil.copy2(output_dir / fsm_header, headers_dir / fsm_header)
 
     payload_dir = output_dir / ".stst"
     payload_dir.mkdir(parents=True, exist_ok=True)
@@ -1025,7 +1048,7 @@ def main():
     parser.add_argument(
         "--fsm",
         default=None,
-        help="Path to a coord-dsl .fsm; generates its C++ header and wires monitor events to it",
+        help="(deprecated) Path to a coord-dsl .fsm; auto-detected from fsm_ir.json in the output directory",
     )
     args = parser.parse_args()
 

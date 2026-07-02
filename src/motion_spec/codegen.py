@@ -311,6 +311,24 @@ def _load_fsm_ir(output_dir: Path, fsm_path: Path | None) -> tuple[dict | None, 
     return None, None
 
 
+def _motion_done_condition(motion: dict) -> str:
+    """Boolean expression that ends a motion: its UNTIL members combined by any/all
+    (``||`` for any, ``&&`` for all/default)."""
+    event_terms = [
+        (
+            f"{motion['id']}_state_instance.{monitor['id']}_event_triggered"
+            if monitor.get("is_edge_triggered")
+            else f"{motion['id']}_state_instance.{monitor['flag']}"
+        )
+        for monitor in motion.get("until_monitors", [])
+    ]
+    if not event_terms:
+        return "true"
+    joiner = " || " if motion.get("until_any") else " && "
+    condition = joiner.join(event_terms)
+    return f"({condition})" if len(event_terms) > 1 else condition
+
+
 def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path | None = None):
     ir = load_ir(ir_path)
     _validate_ir(ir)
@@ -637,7 +655,6 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
         }
         closures = ir_payload.get("closures", {})
         for motion in ir_payload.get("motions", []):
-            progress_ids: list[str] = []
             time_progress_ids: list[str] = []
             for step in motion.get("while_schedule", []):
                 closure = closures.get(step)
@@ -652,15 +669,12 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
                 alpha_id = closure.get("alpha")
                 alpha_data = data_by_id.get(alpha_id) or {}
                 qkind = (alpha_data.get("quantity_kind") or {}).get("id")
-                if qkind == "Progress" and alpha_id not in progress_ids:
-                    progress_ids.append(alpha_id)
                 if (
                     qkind == "Progress"
                     and not (closure.get("type") == "Arc")
                     and alpha_id not in time_progress_ids
                 ):
                     time_progress_ids.append(alpha_id)
-            motion["trajectory_progress_ids"] = progress_ids
             motion["time_trajectory_progress_ids"] = time_progress_ids
 
     def _evaluator_term(e: dict, start_field: str) -> str:
@@ -731,27 +745,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
 
     def add_motion_done_conditions(motions: list[dict]) -> None:
         for motion in motions:
-            terms = [
-                f"shared.{alpha_id} >= 1.0"
-                for alpha_id in motion.get("trajectory_progress_ids", [])
-            ]
-            until_monitors = motion.get("until_monitors", [])
-            if until_monitors:
-                event_joiner = " || " if motion.get("until_any") else " && "
-                event_terms = [
-                    (
-                        f"{motion['id']}_state_instance.{monitor['id']}_event_triggered"
-                        if monitor.get("is_edge_triggered")
-                        else f"{motion['id']}_state_instance.{monitor['flag']}"
-                    )
-                    for monitor in until_monitors
-                ]
-                if event_terms:
-                    event_condition = event_joiner.join(event_terms)
-                    if len(event_terms) > 1:
-                        event_condition = f"({event_condition})"
-                    terms.append(event_condition)
-            motion["done_condition"] = " && ".join(terms) if terms else "true"
+            motion["done_condition"] = _motion_done_condition(motion)
 
     def add_motion_function_interfaces(motions: list[dict]) -> None:
         def join_params(params: list[str]) -> str:

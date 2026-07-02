@@ -10,7 +10,7 @@ import pytest
 from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import RDF, XSD
 
-from motion_spec.codegen import render_template
+from motion_spec.codegen import _motion_done_condition, render_template
 from motion_spec.ir_gen import Parser, _scene_from_graph, ops_cstr_hdl, ops_generic
 from motion_spec.namespace import (
     CSTR_HDL,
@@ -350,3 +350,27 @@ def test_edge_monitor_carries_full_event_uri_and_enum_token(event_uri: str, expe
     assert entry.event_uri == event_uri
     # event_name is the coord-dsl FSM enum token (local name, upper-cased, '-' -> '_').
     assert entry.event_name == expected_name
+
+
+def test_done_condition_is_until_only_and_respects_any_all() -> None:
+    """done_condition is the UNTIL expression alone -- no trajectory alpha coupling --
+    combined with || for `any` (early exit) and && for `all`/default."""
+    monitors = [
+        {"id": "mon_a", "is_edge_triggered": True},
+        {"id": "mon_b", "flag": "flag_b"},
+    ]
+
+    all_cond = _motion_done_condition({"id": "m", "until_monitors": monitors})
+    assert all_cond == "(m_state_instance.mon_a_event_triggered && m_state_instance.flag_b)"
+    # Trajectory completion is NOT folded in.
+    assert ">= 1.0" not in all_cond and "shared." not in all_cond
+
+    any_cond = _motion_done_condition({"id": "m", "until_monitors": monitors, "until_any": True})
+    assert any_cond == "(m_state_instance.mon_a_event_triggered || m_state_instance.flag_b)"
+
+    # Single UNTIL member: bare term, no parens, joiner irrelevant.
+    single = {"id": "m", "until_monitors": [monitors[0]], "until_any": True}
+    assert _motion_done_condition(single) == "m_state_instance.mon_a_event_triggered"
+
+    # No UNTIL monitors: the motion has no stop condition of its own.
+    assert _motion_done_condition({"id": "m", "until_monitors": []}) == "true"

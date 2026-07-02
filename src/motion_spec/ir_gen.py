@@ -822,7 +822,7 @@ class MonitorEntry:
     event_name: str | None = None
     fallback_motion: str | None = None
     # Raw authored debounce duration (seconds); converted to debounce_steps once
-    # control_period_ns is known (see app-build post-pass). None == no debounce.
+    # the loop period is known. None == no debounce.
     # NB: debounce_steps must stay None (not 0) when absent -- ST4's <if(x)> is
     # true for any non-null value, including the integer 0 (see codegen.py's
     # "" -> None note for the same gotcha).
@@ -1036,9 +1036,9 @@ class SolverWithInputAndOutput:
     ft_sensors: list[dict] = field(default_factory=list)
     gravity: list[float] | None = None
     root_acc: list[float] | None = None
-    # Authored control-loop tuning, collected/deduped across arm solvers in the
-    # app-build post-pass (mirrors control_period_ns) into top-level IR keys
-    # consumed by runtime_header; not read directly by any per-solver template.
+    # Authored control-loop tuning, collected/deduped across arm solvers into
+    # top-level IR keys consumed by runtime_header; not read directly by any
+    # per-solver template.
     damping: float | None = None
     torque_limit: float | None = None
     max_linear_accel: float | None = None
@@ -1096,8 +1096,8 @@ class SceneObjectSpec:
 class SceneSpec:
     robots: list[SceneRobot] = field(default_factory=list)
     objects: list[SceneObjectSpec] = field(default_factory=list)
-    # Physics timestep; set to the declared CONTROL_PERIOD so the controllers'
-    # dt_ matches the actual per-step interval (see monitor-debounce-plan Fix 2).
+    # Physics/control timestep from ENVIRONMENT.timestep; defaults to the backend
+    # interval when the model omits it.
     timestep_s: float = 0.002
     type: str = field(default="SceneSpec")
 
@@ -3579,25 +3579,13 @@ def generate_ir(manifest_path):
             backend = mapped
             break
 
-    # Authored control-loop period (CONTROL_PERIOD in a handler) -> nanoseconds.
-    # There is one generated loop, so different authored periods are ambiguous.
-    control_period_values = set()
-    for _hdl, _period in g.subject_objects(CSTR_HDL_EXT["control-period"]):
-        _val = float(g.value(_period, QUDT_SCHEMA["value"]))
-        _unit = g.value(_period, QUDT_SCHEMA["unit"])
-        _seconds = _val * (0.001 if _unit == QUDT_UNIT["MilliSEC"] else 1.0)
-        control_period_values.add(int(round(_seconds * 1e9)))
-    if not control_period_values:
-        raise ValueError("CONTROL_PERIOD is required on every ConstraintHandler.")
-    if any(ns <= 0 for ns in control_period_values):
-        raise ValueError("CONTROL_PERIOD must be positive.")
-    if len(control_period_values) > 1:
-        raise ValueError("Multiple CONTROL_PERIOD values found, but generated code has one loop.")
-    control_period_ns = next(iter(control_period_values))
+    if scene.timestep_s <= 0:
+        raise ValueError("ENVIRONMENT timestep must be positive.")
+    control_period_ns = int(round(scene.timestep_s * 1e9))
 
     # Authorable control-loop tuning (DLS damping lambda, torque-limit override,
     # beta clamps): sourced from the arm solver(s), same single-value-across-the-
-    # scene contract as CONTROL_PERIOD above (one generated control loop). Falls
+    # scene contract as the timestep (one generated control loop). Falls
     # back to the Python-reference defaults when unauthored (see
     # authorable-control-limits-plan.md "Locked decisions").
     def _single_solver_value(attr, label, default):

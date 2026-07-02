@@ -600,7 +600,6 @@ class CSTR_HDL_EXT(DefinedNamespace):
         "monitors-until",
         "monitors-when",
         "fallback-motion",
-        "control-period",
         "debounce-seconds",
         "velocity-profile",
         "max-velocity",

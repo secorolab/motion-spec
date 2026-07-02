@@ -135,6 +135,7 @@ class MJ(DefinedNamespace):
         "trace-enabled",
         "trace-length",
         "trace-target",
+        "timestep",
         "attach-to-body",
         "attach-kind",
         "attach-name",
@@ -595,6 +596,7 @@ class CSTR_HDL_EXT(DefinedNamespace):
         "monitors-when",
         "fallback-motion",
         "control-period",
+        "debounce-seconds",
         "velocity-profile",
         "max-velocity",
         "max-acceleration",
@@ -603,6 +605,7 @@ class CSTR_HDL_EXT(DefinedNamespace):
         "goal",
         "measured",
         "measured-velocity",
+        "measured-derivative",
         "reference",
         "controller",
         "LinearJerk",
@@ -665,6 +668,18 @@ class SLV_EXT(DefinedNamespace):
 
     # "robot" links a solver to the environment robot whose kinematic chain it
     # drives, so per-robot chain setups can be resolved in multi-robot scenes.
-    _extras = ["command-forwarding", "control-signal", "gravity-value", "robot"]
+    # "damping"/"torque-limit"/"max-linear-accel"/"max-angular-accel" are
+    # optional authored control-loop tuning knobs on the RNE/ACHD solver (DLS
+    # damping lambda, torque saturation override, and beta-clamp overrides).
+    _extras = [
+        "command-forwarding",
+        "control-signal",
+        "gravity-value",
+        "robot",
+        "damping",
+        "torque-limit",
+        "max-linear-accel",
+        "max-angular-accel",
+    ]
 
     _NS = Namespace(f"{URI_SECORO_MM}/task/solver-specification#")

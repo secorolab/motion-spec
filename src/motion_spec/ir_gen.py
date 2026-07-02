@@ -469,7 +469,11 @@ ops_generic = [
 ops_cstr_hdl = [
     Operator(
         type_=CSTR_HDL["Controller"],
-        input=[CSTR_HDL["error-signal"], CSTR_HDL_EXT["reference-signal"]],
+        input=[
+            CSTR_HDL["error-signal"],
+            CSTR_HDL_EXT["reference-signal"],
+            CSTR_HDL_EXT["measured-derivative"],
+        ],
         output=[CSTR_HDL["control-signal"]],
         parameters=[
             CSTR_HDL["proportional-gain"],
@@ -772,6 +776,7 @@ class Controller:
     control_signal: Quantity
     error_signal: Quantity | None = None
     reference_signal: Quantity | None = None
+    measured_derivative: Quantity | None = None
     proportional_gain: float | None = None
     integral_gain: float | None = None
     derivative_gain: float | None = None
@@ -803,6 +808,13 @@ class MonitorEntry:
     event_uri: str | None = None
     event_name: str | None = None
     fallback_motion: str | None = None
+    # Raw authored debounce duration (seconds); converted to debounce_steps once
+    # control_period_ns is known (see app-build post-pass). None == no debounce.
+    # NB: debounce_steps must stay None (not 0) when absent -- ST4's <if(x)> is
+    # true for any non-null value, including the integer 0 (see codegen.py's
+    # "" -> None note for the same gotcha).
+    debounce_s: float | None = None
+    debounce_steps: int | None = None
     type: str = field(default="MonitorEntry")
 
 
@@ -1011,6 +1023,13 @@ class SolverWithInputAndOutput:
     ft_sensors: list[dict] = field(default_factory=list)
     gravity: list[float] | None = None
     root_acc: list[float] | None = None
+    # Authored control-loop tuning, collected/deduped across arm solvers in the
+    # app-build post-pass (mirrors control_period_ns) into top-level IR keys
+    # consumed by runtime_header; not read directly by any per-solver template.
+    damping: float | None = None
+    torque_limit: float | None = None
+    max_linear_accel: float | None = None
+    max_angular_accel: float | None = None
     type: str = field(default="SolverWithInputAndOutput")
 
 
@@ -1064,6 +1083,9 @@ class SceneObjectSpec:
 class SceneSpec:
     robots: list[SceneRobot] = field(default_factory=list)
     objects: list[SceneObjectSpec] = field(default_factory=list)
+    # Physics timestep; set to the declared CONTROL_PERIOD so the controllers'
+    # dt_ matches the actual per-step interval (see monitor-debounce-plan Fix 2).
+    timestep_s: float = 0.002
     type: str = field(default="SceneSpec")
 
 
@@ -1219,6 +1241,10 @@ class Parser:
             SLV["RecursiveNewtonEulerAlgorithm"]: "RNE",
         }.get(algorithm_node, self.id(algorithm_node) if algorithm_node else "")
 
+        def _optional_float(predicate):
+            value = self.g.value(id_, predicate)
+            return float(value) if value is not None else None
+
         return SolverWithInputAndOutput(
             id=self.id(id_),
             motion_drivers=drv,
@@ -1227,6 +1253,10 @@ class Parser:
             algorithm_is_rne=algorithm == "RNE",
             gravity=list(gravity) if gravity else None,
             root_acc=root_acc,
+            damping=_optional_float(SLV_EXT["damping"]),
+            torque_limit=_optional_float(SLV_EXT["torque-limit"]),
+            max_linear_accel=_optional_float(SLV_EXT["max-linear-accel"]),
+            max_angular_accel=_optional_float(SLV_EXT["max-angular-accel"]),
         )
 
     @memoize
@@ -1385,9 +1415,12 @@ class Parser:
         event = self.id(event_node)
         fallback_node = self.g.value(id_, CSTR_HDL_EXT["fallback-motion"])
         fallback_motion = self.id(fallback_node) if fallback_node is not None else None
+        debounce_literal = self.g.value(id_, CSTR_HDL_EXT["debounce-seconds"])
+        debounce_s = float(debounce_literal) if debounce_literal is not None else None
         return MonitorEntry(
             self.id(id_), "EdgeTriggeredMonitor", error, None, event, None, True, is_until_aggregate, is_when_aggregate,
             event_uri=str(event_node), event_name=event.upper(), fallback_motion=fallback_motion,
+            debounce_s=debounce_s,
         )
 
     @memoize
@@ -1435,8 +1468,14 @@ class Parser:
 
         error_node = self.g.value(id_, CSTR_HDL["error-signal"])
         ref_node = self.g.value(id_, CSTR_HDL_EXT["reference-signal"])
+        measured_derivative_node = self.g.value(id_, CSTR_HDL_EXT["measured-derivative"])
         error_signal = self.quantity(error_node) if error_node is not None else None
         reference_signal = self.quantity(ref_node) if ref_node is not None else None
+        measured_derivative = (
+            self.quantity(measured_derivative_node)
+            if measured_derivative_node is not None
+            else None
+        )
         control_signal = self.quantity(self.g.value(id_, CSTR_HDL["control-signal"]))
 
         if is_pid:
@@ -1451,6 +1490,7 @@ class Parser:
                 id=self.id(id_),
                 control_signal=control_signal,
                 error_signal=error_signal,
+                measured_derivative=measured_derivative,
                 proportional_gain=self._required_float(id_, CSTR_HDL["proportional-gain"]),
                 integral_gain=self._required_float(id_, CSTR_HDL["integral-gain"]),
                 derivative_gain=self._required_float(id_, CSTR_HDL["derivative-gain"]),
@@ -1458,6 +1498,10 @@ class Parser:
                 type=self.id(CSTR_HDL.ProportionalIntegralDerivative),
             )
         if is_impedance:
+            if measured_derivative is not None:
+                raise ValueError(
+                    f"Impedance controller '{self.id(id_)}' must not have cstr-hdl-ext:measured-derivative."
+                )
             if error_signal is None:
                 raise ValueError(f"Impedance controller '{self.id(id_)}' must have cstr-hdl:error-signal.")
             if reference_signal is not None:
@@ -1475,6 +1519,10 @@ class Parser:
             raise ValueError(f"FeedForward controller '{self.id(id_)}' must have cstr-hdl-ext:reference-signal.")
         if error_signal is not None:
             raise ValueError(f"FeedForward controller '{self.id(id_)}' must not have cstr-hdl:error-signal.")
+        if measured_derivative is not None:
+            raise ValueError(
+                f"FeedForward controller '{self.id(id_)}' must not have cstr-hdl-ext:measured-derivative."
+            )
         return Controller(
             id=self.id(id_),
             control_signal=control_signal,
@@ -3145,6 +3193,9 @@ def _trace_from_graph(g):
 def _scene_from_graph(g):
     scene = SceneSpec()
     for env_node in g.subjects(RDF.type, ENV.Workspace):
+        _timestep = g.value(env_node, MJ["timestep"])
+        if _timestep is not None:
+            scene.timestep_s = float(_timestep.toPython())
         robot_nodes = []
         for obj_node in g.objects(env_node, ENV["has-object"]):
             if g.value(obj_node, GEOM_ENT["kinematic-chain"]) is not None:
@@ -3520,6 +3571,33 @@ def generate_ir(manifest_path):
         raise ValueError("Multiple CONTROL_PERIOD values found, but generated code has one loop.")
     control_period_ns = next(iter(control_period_values))
 
+    # Authorable control-loop tuning (DLS damping lambda, torque-limit override,
+    # beta clamps): sourced from the arm solver(s), same single-value-across-the-
+    # scene contract as CONTROL_PERIOD above (one generated control loop). Falls
+    # back to the Python-reference defaults when unauthored (see
+    # authorable-control-limits-plan.md "Locked decisions").
+    def _single_solver_value(attr, label, default):
+        values = {v for s in slv_arm if (v := getattr(s, attr)) is not None}
+        if len(values) > 1:
+            raise ValueError(
+                f"Multiple {label} values found across arm solvers, but generated code has one "
+                "control loop."
+            )
+        return next(iter(values), default)
+
+    rne_damping_lambda = _single_solver_value("damping", "Solver damping", 0.05)
+    beta_max_lin = _single_solver_value("max_linear_accel", "Solver max-linear-accel", 1e6)
+    beta_max_rot = _single_solver_value("max_angular_accel", "Solver max-angular-accel", 1e6)
+    tau_max_override = _single_solver_value("torque_limit", "Solver torque-limit", None)
+
+    # Per-monitor debounce (`for <FLOAT> <Unit>`): convert the authored seconds
+    # into a step count now that the control period is known. Absent -> stays
+    # None, which keeps the codegen on the existing rising-edge path (byte-identical).
+    for handler in hdl:
+        for monitor in handler.monitors:
+            if monitor.debounce_s is not None:
+                monitor.debounce_steps = round(monitor.debounce_s / (control_period_ns * 1e-9))
+
     # Safeguard: no two distinct URIs may collapse to one generated id (would silently merge).
     p.assert_no_id_collisions()
 
@@ -3575,6 +3653,10 @@ def generate_ir(manifest_path):
         "has_arm": bool(slv_arm),
         "has_mobile_base": bool(slv_base_vel or slv_base_frc),
         "control_period_ns": control_period_ns,
+        "rne_damping_lambda": rne_damping_lambda,
+        "beta_max_lin": beta_max_lin,
+        "beta_max_rot": beta_max_rot,
+        "tau_max_override": tau_max_override,
         "arm_solvers": slv_arm,
         "base_velocity_solvers": slv_base_vel,
         "base_force_solvers": slv_base_frc,

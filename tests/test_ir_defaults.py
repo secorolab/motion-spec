@@ -11,7 +11,7 @@ from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import RDF, XSD
 
 from motion_spec.codegen import render_template
-from motion_spec.ir_gen import Parser, _scene_from_graph, ops_generic
+from motion_spec.ir_gen import Parser, _scene_from_graph, ops_cstr_hdl, ops_generic
 from motion_spec.namespace import (
     CSTR_HDL,
     CSTR_HDL_EXT,
@@ -60,6 +60,22 @@ def test_parser_rejects_pid_missing_required_proportional_gain() -> None:
 
     with pytest.raises(ValueError, match="proportional_gain"):
         Parser(graph).controller(controller_node)
+
+
+def test_parser_reads_pid_measured_derivative() -> None:
+    graph, controller_node = _pid_graph(kp=1.0)
+    graph.add((controller_node, CSTR_HDL["integral-gain"], Literal(0.0, datatype=XSD.double)))
+    graph.add((controller_node, CSTR_HDL["derivative-gain"], Literal(1.0, datatype=XSD.double)))
+    measured_derivative = _quantity(graph, "measured_derivative")
+    graph.add((controller_node, CSTR_HDL_EXT["measured-derivative"], measured_derivative))
+
+    parser = Parser(graph)
+    controller = parser.controller(controller_node)
+    closure = parser.closures(ops_generic + ops_cstr_hdl)["controller"]
+
+    assert controller.measured_derivative is not None
+    assert controller.measured_derivative.id == "measured_derivative"
+    assert closure["measured_derivative"] == "measured_derivative"
 
 
 def test_scene_object_site_attach_target_is_prefixed_for_runtime_scene_name() -> None:
@@ -159,7 +175,18 @@ def test_generated_velocity_profile_runtime_respects_authored_bounds(tmp_path) -
         pytest.skip("requires stst and c++")
 
     payload = tmp_path / "ir.json"
-    payload.write_text(json.dumps({"has_mobile_base": False, "control_period_ns": 1_000_000}))
+    payload.write_text(
+        json.dumps(
+            {
+                "has_mobile_base": False,
+                "control_period_ns": 1_000_000,
+                "rne_damping_lambda": 0.05,
+                "beta_max_lin": 1e6,
+                "beta_max_rot": 1e6,
+                "tau_max_override": None,
+            }
+        )
+    )
     runtime_hpp = tmp_path / "runtime.hpp"
     render_template("stst", "runtime_header", payload, runtime_hpp)
 
@@ -214,6 +241,12 @@ int main() {
         if (x == 0.08) break;
     }
     assert(x == 0.08);
+
+    // Passing an authored derivative of zero must still mean "use the authored
+    // derivative", not "fall back to numerical error differentiation".
+    motion_spec::runtime::PIDControl pid(0.0, 0.0, 1.0, 0.0, 1.0);
+    assert(pid.control(1.0, 0.0) == 0.0);
+    assert(pid.control(2.0, 0.0) == 0.0);
 }
 '''
     )
@@ -241,7 +274,18 @@ def test_generated_runtime_resolves_constraint_acceleration(tmp_path) -> None:
         pytest.skip("requires stst and c++")
 
     payload = tmp_path / "ir.json"
-    payload.write_text(json.dumps({"has_mobile_base": False, "control_period_ns": 1_000_000}))
+    payload.write_text(
+        json.dumps(
+            {
+                "has_mobile_base": False,
+                "control_period_ns": 1_000_000,
+                "rne_damping_lambda": 0.05,
+                "beta_max_lin": 1e6,
+                "beta_max_rot": 1e6,
+                "tau_max_override": None,
+            }
+        )
+    )
     runtime_hpp = tmp_path / "runtime.hpp"
     render_template("stst", "runtime_header", payload, runtime_hpp)
 

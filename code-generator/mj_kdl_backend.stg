@@ -146,7 +146,7 @@ app-arm-setup-mj_kdl(arm_solvers, scene) ::= <<
 
     mj_kdl::Env mj_env{};
     mj_kdl::SceneSpec mj_scene{};
-    mj_scene.timestep = 0.002;
+    mj_scene.timestep = <scene.timestep_s>;
     mj_scene.add_floor = true;
     mj_scene.add_skybox = true;
     std::deque\<std::string\> mj_path_storage;

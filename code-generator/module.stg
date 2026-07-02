@@ -229,7 +229,9 @@ controller-member-FeedForwardController(controller) ::= <<
 
 monitor-member(monitor) ::= <<
 <if(monitor.is_edge_triggered)>    bool <monitor.id>_previous = false;
-    bool <monitor.id>_event_triggered = false;<else>    bool <monitor.flag> = false;<endif>
+    bool <monitor.id>_event_triggered = false;
+<if(monitor.debounce_steps)>    int <monitor.id>_hold = 0;
+<endif><else>    bool <monitor.flag> = false;<endif>
 >>
 
 emit-call(closure, views) ::= <<
@@ -315,7 +317,6 @@ emit-call-Circle(closure, views) ::= <<
 
 emit-call-Arc(closure, views) ::= <<
 {
-    const double _s_<closure.trajectory>    = motion_spec::runtime::smoothstep(<access-expr(closure.alpha, views)>);
     KDL::Vector _n_<closure.trajectory> = shared.<closure.plane_normal>;
     _n_<closure.trajectory>.Normalize();
     // Circular arc from start to end that bows out of the chord by `amplitude` (the
@@ -324,23 +325,61 @@ emit-call-Arc(closure, views) ::= <<
     // amplitude == |chord|/2 reproduces a clean semicircle (swept angle pi).
     const KDL::Vector _end_<closure.trajectory>   = <closure.end_position_expr>;
     const KDL::Vector _chord_<closure.trajectory> = _end_<closure.trajectory> - shared.<closure.start>.p;
-    const double _a_<closure.trajectory>          = shared.<closure.amplitude>;
-    const double _chordlen_<closure.trajectory>   = _chord_<closure.trajectory>.Norm();
+        const double _a_<closure.trajectory>          = shared.<closure.amplitude>;
+        const double _chordlen_<closure.trajectory>   = _chord_<closure.trajectory>.Norm();
     // Degenerate input (end == start, or non-positive amplitude) would divide by zero /
     // normalize a zero vector; hold at start instead of emitting NaN.
     KDL::Vector _pos_<closure.trajectory> = shared.<closure.start>.p;
+    // _s is 0 in the degenerate case: hold at start orientation too.
+    double _s_<closure.trajectory> = 0.0;
     if (_chordlen_<closure.trajectory> > 1e-9 && _a_<closure.trajectory> > 1e-9) {
-        const KDL::Vector _mid_<closure.trajectory> = 0.5 * (shared.<closure.start>.p + _end_<closure.trajectory>);
-        const double _m_<closure.trajectory>        = 0.5 * _chordlen_<closure.trajectory>;
-        KDL::Vector _perp_<closure.trajectory>      = _n_<closure.trajectory> * _chord_<closure.trajectory>;
+        const KDL::Vector _chord_hat_<closure.trajectory> = _chord_<closure.trajectory> * (1.0 / _chordlen_<closure.trajectory>);
+        const KDL::Vector _mid_<closure.trajectory>       = 0.5 * (shared.<closure.start>.p + _end_<closure.trajectory>);
+        const double _m_<closure.trajectory>              = 0.5 * _chordlen_<closure.trajectory>;
+        // Cap sagitta to half-chord so the arc stays in the minor-arc (\<=semicircle)
+        // regime.  Amplitudes larger than |chord|/2 are silently reduced to a
+        // semicircle; if a major arc is ever needed the cap must be lifted and the
+        // angle-wrapping handled explicitly.
+        const double _sagitta_<closure.trajectory> = std::min(_a_<closure.trajectory>, _m_<closure.trajectory>);
+        // Arc-rotation axis: project plane_normal onto the subspace perpendicular to
+        // the chord.  This removes any chord-parallel component so that
+        // (start - center) is always perpendicular to the axis -- the necessary
+        // condition for Rot(axis, angle)*(start-center) to trace a true circle
+        // regardless of the angle between chord and plane_normal.
+        KDL::Vector _arc_normal_<closure.trajectory> = _n_<closure.trajectory> - KDL::dot(_n_<closure.trajectory>, _chord_hat_<closure.trajectory>) * _chord_hat_<closure.trajectory>;
+        if (_arc_normal_<closure.trajectory>.Norm() \< 1e-6) {
+            // plane_normal nearly parallel to chord: pick any stable world-axis perp.
+            _arc_normal_<closure.trajectory> = motion_spec::runtime::plane_reference(_chord_hat_<closure.trajectory>);
+        } else {
+            _arc_normal_<closure.trajectory>.Normalize();
+        }
+        // Sagitta (bulge) direction: in the arc plane, perpendicular to chord.
+        // arc_normal x chord_hat lies in the arc plane and is perpendicular to chord_hat.
+        KDL::Vector _perp_<closure.trajectory> = _arc_normal_<closure.trajectory> * _chord_hat_<closure.trajectory>;
         _perp_<closure.trajectory>.Normalize();
-        const double _R_<closure.trajectory>        = (_a_<closure.trajectory> * _a_<closure.trajectory> + _m_<closure.trajectory> * _m_<closure.trajectory>) / (2.0 * _a_<closure.trajectory>);
-        const double _d_<closure.trajectory>        = (_a_<closure.trajectory> * _a_<closure.trajectory> - _m_<closure.trajectory> * _m_<closure.trajectory>) / (2.0 * _a_<closure.trajectory>);
+        const double _R_<closure.trajectory>     = (_sagitta_<closure.trajectory> * _sagitta_<closure.trajectory> + _m_<closure.trajectory> * _m_<closure.trajectory>) / (2.0 * _sagitta_<closure.trajectory>);
+        const double _d_<closure.trajectory>     = (_sagitta_<closure.trajectory> * _sagitta_<closure.trajectory> - _m_<closure.trajectory> * _m_<closure.trajectory>) / (2.0 * _sagitta_<closure.trajectory>);
         const KDL::Vector _center_<closure.trajectory> = _mid_<closure.trajectory> + _d_<closure.trajectory> * _perp_<closure.trajectory>;
-        const double _theta_<closure.trajectory>    = 2.0 * std::acos(std::max(-1.0, std::min(1.0, -_d_<closure.trajectory> / _R_<closure.trajectory>)));
-        const KDL::Vector _v0_<closure.trajectory>  = shared.<closure.start>.p - _center_<closure.trajectory>;
+        const double _theta_<closure.trajectory> = 2.0 * std::acos(std::max(-1.0, std::min(1.0, -_d_<closure.trajectory> / _R_<closure.trajectory>)));
+        const KDL::Vector _v0_<closure.trajectory>     = shared.<closure.start>.p - _center_<closure.trajectory>;
+        if (state.active_steps == 0) {
+            shared.<closure.alpha> = 0.0;
+        }
+        // Time-based alpha: advance at a fixed arc-speed each control step.
+        // The setpoint is fully decoupled from the measured EE pose -- external
+        // pushes or admittance excursions do NOT drag the setpoint along with the arm.
+        {
+            const double _arc_length_<closure.trajectory> = std::max(_R_<closure.trajectory> * _theta_<closure.trajectory>, 1e-9);
+            const double _arc_speed_<closure.trajectory>  = 0.05;  // m/s along the arc
+            const double _dalpha_<closure.trajectory>     = (_arc_speed_<closure.trajectory> * motion_spec::runtime::kControlPeriodS) / _arc_length_<closure.trajectory>;
+            shared.<closure.alpha> = motion_spec::runtime::clamp01(shared.<closure.alpha> + _dalpha_<closure.trajectory>);
+        }
+        // Apply smoothstep to the open-loop alpha for smooth start/stop easing.
+        // This must come AFTER alpha is updated, not before, so the easing is
+        // applied to the current step's alpha rather than the previous step's value.
+        _s_<closure.trajectory>   = motion_spec::runtime::smoothstep(shared.<closure.alpha>);
         _pos_<closure.trajectory> = _center_<closure.trajectory>
-            + KDL::Rotation::Rot(_n_<closure.trajectory>, -_theta_<closure.trajectory> * _s_<closure.trajectory>) * _v0_<closure.trajectory>;
+            + KDL::Rotation::Rot(_arc_normal_<closure.trajectory>, -_theta_<closure.trajectory> * _s_<closure.trajectory>) * _v0_<closure.trajectory>;
     }
     const KDL::Frame _rot_start_<closure.trajectory>(shared.<closure.start>.M, KDL::Vector(0.0, 0.0, 0.0));
     const KDL::Frame _rot_goal_<closure.trajectory>(<closure.end_orientation_expr>, KDL::Vector(0.0, 0.0, 0.0));
@@ -510,7 +549,7 @@ pose-axis-error-group-wrench(g, views) ::= <<
 >>
 
 emit-call-Controller(closure, views) ::= <<
-<if(closure.reference_signal)>shared.<closure.control_signal> = <access-expr(closure.reference_signal, views)>;<else>shared.<closure.control_signal> = state.<closure.id>.control(<access-expr(closure.error_signal, views)>);<endif>
+<if(closure.reference_signal)>shared.<closure.control_signal> = <access-expr(closure.reference_signal, views)>;<else>shared.<closure.control_signal> = state.<closure.id>.control(<access-expr(closure.error_signal, views)><if(closure.measured_derivative)>, -(<access-expr(closure.measured_derivative, views)>)<endif>);<endif>
 >>
 
 emit-call-PlanarAngleFromDirections(closure, views) ::= <<
@@ -589,10 +628,13 @@ update-monitor(monitor, suppress_initial_active) ::= <<
     {
         const bool active = <monitor.active_condition>;
 <if(monitor.is_edge_triggered)>
-        const bool detected = <if(suppress_initial_active)>motion_spec::runtime::rising_edge_after(
+        const bool detected = <if(monitor.debounce_steps)>motion_spec::runtime::sustained_edge(
+            state.<monitor.id>_hold,
+            active,
+            <monitor.debounce_steps>)<else><if(suppress_initial_active)>motion_spec::runtime::rising_edge_after(
             state.<monitor.id>_previous,
             active,
-            state.active_steps >= motion_spec::runtime::kMonitorArmSteps)<else>motion_spec::runtime::rising_edge(state.<monitor.id>_previous, active)<endif>;
+            state.active_steps >= motion_spec::runtime::kMonitorArmSteps)<else>motion_spec::runtime::rising_edge(state.<monitor.id>_previous, active)<endif><endif>;
 <if(monitor.fsm_namespace)>
         // coord2b is the sequencer: fire the FSM event on the rising edge while in this state.
         if (detected && robot.fsm_events) {
@@ -613,10 +655,13 @@ update-monitor(monitor, suppress_initial_active) ::= <<
 <if(monitor.is_edge_triggered)>
     {
         const bool active = motion_spec::runtime::constraint_satisfied(shared.<monitor.error.id>);
-        const bool detected = <if(suppress_initial_active)>motion_spec::runtime::rising_edge_after(
+        const bool detected = <if(monitor.debounce_steps)>motion_spec::runtime::sustained_edge(
+            state.<monitor.id>_hold,
+            active,
+            <monitor.debounce_steps>)<else><if(suppress_initial_active)>motion_spec::runtime::rising_edge_after(
             state.<monitor.id>_previous,
             active,
-            state.active_steps >= motion_spec::runtime::kMonitorArmSteps)<else>motion_spec::runtime::rising_edge(state.<monitor.id>_previous, active)<endif>;
+            state.active_steps >= motion_spec::runtime::kMonitorArmSteps)<else>motion_spec::runtime::rising_edge(state.<monitor.id>_previous, active)<endif><endif>;
 <if(monitor.fsm_namespace)>
         // coord2b is the sequencer: fire the FSM event on the rising edge while in this state.
         if (detected && robot.fsm_events) {
@@ -701,6 +746,7 @@ solver-state-struct-extra-mj_kdl(solver) ::= <<
     std::unique_ptr\<KDL::ChainIdSolver_RNE\> rnea;
     std::unique_ptr\<KDL::ChainJntToJacSolver\> jac_solver;
     std::unique_ptr\<KDL::ChainJntToJacDotSolver\> jac_dot_solver;
+    KDL::JntArray tau_max;
 >>
 
 solver-state-struct-extra-robif2b(solver) ::= <<
@@ -773,6 +819,17 @@ solver-init-extra-mj_kdl(solver) ::= <<
 <if(solver.algorithm_is_rne)>        state.<solver.id>.jac_solver = std::make_unique\<KDL::ChainJntToJacSolver\>(*robot.<solver.id>.chain);
         state.<solver.id>.jac_dot_solver = std::make_unique\<KDL::ChainJntToJacDotSolver\>(*robot.<solver.id>.chain);
 <endif>
+        state.<solver.id>.tau_max = KDL::JntArray(state.<solver.id>.num_joints);
+        if (motion_spec::runtime::kTauMaxOverrideEnabled) {
+            for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
+                state.<solver.id>.tau_max(i) = motion_spec::runtime::kTauMaxOverride;
+            }
+        } else {
+            const std::vector\<double\> _tau_limits_<solver.id> = mj_kdl::joint_force_limits(robot.<solver.id>.robot);
+            for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
+                state.<solver.id>.tau_max(i) = _tau_limits_<solver.id>[i];
+            }
+        }
 >>
 
 solver-init-extra-robif2b(solver) ::= <<
@@ -1106,7 +1163,7 @@ solver-stage-output-robif2b(solver) ::= <<
 >>
 solver-stage-output-mj_kdl(solver) ::= <<
     for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
-        robot.<solver.id>.robot->jnt_trq_cmd[i] = motion_spec::runtime::clamp_abs(state.<solver.id>.tau_ctrl(i), motion_spec::runtime::kTauMax);
+        robot.<solver.id>.robot->jnt_trq_cmd[i] = motion_spec::runtime::clamp_abs(state.<solver.id>.tau_ctrl(i), state.<solver.id>.tau_max(i));
     }
 >>
 
@@ -1302,16 +1359,16 @@ trajectory-progress-robif2b(motion) ::= <<
 >>
 
 trajectory-progress-mj_kdl(motion) ::= <<
-<if(first(motion.trajectory_progress_ids))>    if (state.trajectory_start_time \< 0.0) {
+<if(first(motion.time_trajectory_progress_ids))>    if (state.trajectory_start_time \< 0.0) {
         if (robot.<first(motion.arm_solvers).id>.robot != nullptr) {
         state.trajectory_start_time = robot.<first(motion.arm_solvers).id>.robot->data->time;
         \}
     \}
-<motion.trajectory_progress_ids:{alpha_id |     shared.<alpha_id> = motion_spec::runtime::clamp01((robot.<first(motion.arm_solvers).id>.robot->data->time - state.trajectory_start_time) / motion_spec::runtime::kDefaultTrajectoryDuration);}; separator="\n">
+<motion.time_trajectory_progress_ids:{alpha_id |     shared.<alpha_id> = motion_spec::runtime::clamp01((robot.<first(motion.arm_solvers).id>.robot->data->time - state.trajectory_start_time) / motion_spec::runtime::kDefaultTrajectoryDuration);}; separator="\n">
 <endif>
 >>
 
-runtime_header(has_mobile_base, control_period_ns) ::= <<
+runtime_header(has_mobile_base, control_period_ns, rne_damping_lambda, beta_max_lin, beta_max_rot, tau_max_override) ::= <<
 #pragma once
 
 #include \<cassert\>
@@ -1339,12 +1396,16 @@ runtime_header(has_mobile_base, control_period_ns) ::= <<
 namespace motion_spec::runtime {
 
 inline constexpr double kConstraintTolerance = 1e-2;
-inline constexpr double kTauMax     = 59.0;
-inline constexpr double kBetaMaxLin = 120.0;
-inline constexpr double kBetaMaxRot = 80.0;
+inline constexpr double kBetaMaxLin = <beta_max_lin>;
+inline constexpr double kBetaMaxRot = <beta_max_rot>;
 inline constexpr double kControlPeriodS = <control_period_ns> * 1e-9;
 inline constexpr int kMonitorArmSteps = 100;
-inline constexpr double kRneDampingLambda = 1e-4;
+inline constexpr double kRneDampingLambda = <rne_damping_lambda>;
+// Authored `torque-limit` scalar override (Solver); unauthored (the default)
+// leaves the per-joint torque saturation to the MJCF actuator forcerange,
+// read at runtime via mj_kdl::joint_force_limits() -- see solver-init-extra-mj_kdl.
+inline constexpr bool kTauMaxOverrideEnabled = <if(tau_max_override)>true<else>false<endif>;
+inline constexpr double kTauMaxOverride = <if(tau_max_override)><tau_max_override><else>0.0<endif>;
 inline double clamp_abs(double v, double limit) {
     if (v > limit) return limit;
     if (v \< -limit) return -limit;
@@ -1552,8 +1613,15 @@ class PIDControl {
     PIDControl(double p_gain, double i_gain, double d_gain, double decay_rate = 0.0, double dt = 0.002)
         : kp(p_gain), ki(i_gain), kd(d_gain), decay_rate(decay_rate), dt_(dt) {}
 
-    double control(double error, double ext_deriv = 0.0) {
-        const bool has_external_derivative = kd > 0.0 && ext_deriv != 0.0;
+    double control(double error) {
+        return control_impl(error, 0.0, false);
+    }
+
+    double control(double error, double error_derivative) {
+        return control_impl(error, error_derivative, true);
+    }
+
+    double control_impl(double error, double error_derivative, bool has_error_derivative) {
         const double err_diff = (decay_rate > 0.0 || first_sample)
             ? 0.0
             : ((error - err_last) / dt_);
@@ -1564,7 +1632,7 @@ class PIDControl {
         }
         err_last = error;
         first_sample = false;
-        const double deriv = has_external_derivative ? ext_deriv : err_diff;
+        const double deriv = has_error_derivative ? error_derivative : err_diff;
         return kp * error + ki * err_integ + kd * deriv;
     }
 
@@ -1683,6 +1751,14 @@ inline bool rising_edge_after(bool &previous, bool active, bool armed) {
         return false;
     }
     return rising_edge(previous, active);
+}
+
+// Fire once after `active` has held true for `hold_steps` consecutive calls;
+// re-arms when `active` drops. Rejects transient threshold crossings.
+inline bool sustained_edge(int &counter, bool active, int hold_steps) {
+    if (!active) { counter = 0; return false; }
+    ++counter;
+    return counter == hold_steps;
 }
 
 inline void set_flag(bool &flag, bool active) {
@@ -2025,7 +2101,7 @@ motion_header(motion, closures, views, wrench_outputs, base_velocity_solvers, ba
 struct <motion.id>_state {
     bool active = false;
     int active_steps = 0;
-<if(first(motion.trajectory_progress_ids))>    double trajectory_start_time = -1.0;
+<if(first(motion.time_trajectory_progress_ids))>    double trajectory_start_time = -1.0;
 <endif>
 <if(motion.has_active_elapsed)>    double motion_start_time = -1.0;
 <endif>

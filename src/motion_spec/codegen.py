@@ -25,7 +25,10 @@ DIST_NAME = "motion_spec"
 def _path_endswith(path, relative_path: Path) -> bool:
     path_parts = Path(path).parts
     relative_parts = relative_path.parts
-    return len(path_parts) >= len(relative_parts) and path_parts[-len(relative_parts) :] == relative_parts
+    return (
+        len(path_parts) >= len(relative_parts)
+        and path_parts[-len(relative_parts) :] == relative_parts
+    )
 
 
 def _distribution_path(relative_path: Path) -> Path | None:
@@ -150,8 +153,8 @@ def _collapse_blank_lines(text: str) -> str:
 
     ST4 emits stray blank lines for empty conditional/list items (the literal newlines survive even when
     the rendered value is empty), which is impractical to eliminate per-template — collapse them here."""
-    text = re.sub(r"[ \t]+\n", "\n", text)          # drop trailing whitespace on each line
-    text = re.sub(r"\n{3,}", "\n\n", text)          # collapse runs of blank lines to a single blank
+    text = re.sub(r"[ \t]+\n", "\n", text)  # drop trailing whitespace on each line
+    text = re.sub(r"\n{3,}", "\n\n", text)  # collapse runs of blank lines to a single blank
     return text.strip("\n") + "\n"
 
 
@@ -234,6 +237,7 @@ def _annotate_runtime_robots(ir: dict, unique_motions: list, backend: str) -> No
                 solver["runtime_id"] = canonical.get("runtime_id", solver.get("id", ""))
                 solver["runtime_owner"] = canonical.get("runtime_owner", True)
 
+
 def _add_group_type_flags(groups: list) -> list:
     for g in groups:
         so_type = g.get("superobject_type", "Pose")
@@ -251,11 +255,15 @@ def _fsm_namespace_uri(fsm_path: Path) -> str:
     text = fsm_path.read_text()
     ns_match = _FSM_NS_RE.search(text)
     if not ns_match:
-        raise RuntimeError(f"Could not read the FSM namespace from '{fsm_path}'. Expected 'FSM (ns=<prefix>) ...'.")
+        raise RuntimeError(
+            f"Could not read the FSM namespace from '{fsm_path}'. Expected 'FSM (ns=<prefix>) ...'."
+        )
     prefix = ns_match.group(1)
     uri_match = re.search(rf'ns\s+{re.escape(prefix)}\s*=\s*"([^"]+)"', text)
     if not uri_match:
-        raise RuntimeError(f"FSM namespace prefix '{prefix}' has no 'ns {prefix} = \"...\"' declaration in '{fsm_path}'.")
+        raise RuntimeError(
+            f"FSM namespace prefix '{prefix}' has no 'ns {prefix} = \"...\"' declaration in '{fsm_path}'."
+        )
     return uri_match.group(1)
 
 
@@ -317,7 +325,9 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
             values = [0.0, 0.0, 0.0]
         if not isinstance(values, list) or len(values) != 3:
             item_id = item.get("id", "<unknown>")
-            raise ValueError(f"Scene item '{item_id}' has invalid '{field}'; expected three values.")
+            raise ValueError(
+                f"Scene item '{item_id}' has invalid '{field}'; expected three values."
+            )
         item[f"{field}_x"] = values[0]
         item[f"{field}_y"] = values[1]
         item[f"{field}_z"] = values[2]
@@ -342,7 +352,9 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
                 )
         elif ctrl_type == "ImpedanceController":
             if controller.get("stiffness") is None or controller.get("damping") is None:
-                raise ValueError(f"Impedance controller '{ctrl_id}' requires stiffness and damping.")
+                raise ValueError(
+                    f"Impedance controller '{ctrl_id}' requires stiffness and damping."
+                )
 
     def _require(obj_id: str, field: str, value):
         if value is None:
@@ -382,12 +394,21 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
         friction = _require(obj_id, "friction", obj.get("friction"))
         _require(obj_id, "shape", obj.get("shape"))
         _require(obj_id, "mass", obj.get("mass"))
-        obj["size_x"], obj["size_y"], obj["size_z"] = (float(size[0]), float(size[1]), float(size[2]))
+        obj["size_x"], obj["size_y"], obj["size_z"] = (
+            float(size[0]),
+            float(size[1]),
+            float(size[2]),
+        )
         obj["color_r"], obj["color_g"], obj["color_b"], obj["color_a"] = (
-            float(color[0]), float(color[1]), float(color[2]), float(color[3])
+            float(color[0]),
+            float(color[1]),
+            float(color[2]),
+            float(color[3]),
         )
         obj["friction_slide"], obj["friction_torsion"], obj["friction_roll"] = (
-            float(friction[0]), float(friction[1]), float(friction[2])
+            float(friction[0]),
+            float(friction[1]),
+            float(friction[2]),
         )
 
     def merge_list_by_id(dst: list, src: list) -> None:
@@ -409,8 +430,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
             return f"shared.{superobject['id']}.p[{axis_index}]"
         if superobject["type"] == "Pose" and view["subspace"] == "Rotation":
             return (
-                "KDL::diff(KDL::Rotation::Identity(), "
-                f"shared.{superobject['id']}.M)[{axis_index}]"
+                f"KDL::diff(KDL::Rotation::Identity(), shared.{superobject['id']}.M)[{axis_index}]"
             )
         if superobject["type"] == "VelocityTwist":
             member = "rot" if view["subspace"] == "AngularVelocity" else "vel"
@@ -449,7 +469,9 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
             is_legacy_pose_quantity = so_type == "PoseQuantity"
             if so_type not in ("Pose", "PoseQuantity"):
                 continue
-            if so_type == "Pose" and not (is_declared_pose or superobject.get("euler_axes_sequence")):
+            if so_type == "Pose" and not (
+                is_declared_pose or superobject.get("euler_axes_sequence")
+            ):
                 continue
             if is_legacy_pose_quantity:
                 is_declared_pose = True
@@ -518,16 +540,21 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
             for item in ir_payload.get("data", [])
             if isinstance(item, dict) and item.get("id")
         }
+        closures = ir_payload.get("closures", {})
+        pose_diff_by_target = {
+            closure.get("in2"): closure
+            for closure in closures.values()
+            if isinstance(closure, dict) and closure.get("type") == "PoseDiffEvaluator"
+        }
 
         def is_pose(data: dict) -> bool:
             qkind = data.get("quantity_kind")
             qkind_ids = qkind if isinstance(qkind, list) else [qkind]
             return data.get("type") == "Pose" or any(
-                isinstance(item, dict) and item.get("id") == "Pose"
-                for item in qkind_ids
+                isinstance(item, dict) and item.get("id") == "Pose" for item in qkind_ids
             )
 
-        for closure in ir_payload.get("closures", {}).values():
+        for closure in closures.values():
             if closure.get("type") != "Arc":
                 continue
             end = closure.get("end")
@@ -536,6 +563,8 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
                 raise ValueError("Arc trajectory end must be a Pose quantity.")
             closure["end_position_expr"] = f"shared.{end}.p"
             closure["end_orientation_expr"] = f"shared.{end}.M"
+            # current_pose_expr was used by the old closed-loop pose-projection block.
+            # The arc template now uses time-based alpha and no longer reads this field.
 
     def declared_pose_component_entries(
         ir_payload: dict,
@@ -588,16 +617,30 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
         closures = ir_payload.get("closures", {})
         for motion in ir_payload.get("motions", []):
             progress_ids: list[str] = []
+            time_progress_ids: list[str] = []
             for step in motion.get("while_schedule", []):
                 closure = closures.get(step)
-                if not closure or closure.get("type") not in {"Lerp", "Circle", "Arc", "Helix", "Figure8"}:
+                if not closure or closure.get("type") not in {
+                    "Lerp",
+                    "Circle",
+                    "Arc",
+                    "Helix",
+                    "Figure8",
+                }:
                     continue
                 alpha_id = closure.get("alpha")
                 alpha_data = data_by_id.get(alpha_id) or {}
                 qkind = (alpha_data.get("quantity_kind") or {}).get("id")
                 if qkind == "Progress" and alpha_id not in progress_ids:
                     progress_ids.append(alpha_id)
+                if (
+                    qkind == "Progress"
+                    and not (closure.get("type") == "Arc")
+                    and alpha_id not in time_progress_ids
+                ):
+                    time_progress_ids.append(alpha_id)
             motion["trajectory_progress_ids"] = progress_ids
+            motion["time_trajectory_progress_ids"] = time_progress_ids
 
     def _evaluator_term(e: dict, start_field: str) -> str:
         # A timing evaluator has no solver error: compare the world clock
@@ -821,13 +864,17 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
             "closures": ir.get("closures", {}),
         }
     )
-    primary_robot_id = next((solver.get("id") for solver in ir.get("arm_solvers", []) if solver.get("id")), "")
+    primary_robot_id = next(
+        (solver.get("id") for solver in ir.get("arm_solvers", []) if solver.get("id")), ""
+    )
     for motion in ir.get("motions", []):
         motion["command_robot_id"] = primary_robot_id
     for motion in unique_motions:
         motion["command_robot_id"] = primary_robot_id
     for motion in ir.get("motions", []) + unique_motions:
-        motion["has_when_elapsed"] = any(e.get("is_elapsed") for e in motion.get("when_evaluators", []))
+        motion["has_when_elapsed"] = any(
+            e.get("is_elapsed") for e in motion.get("when_evaluators", [])
+        )
         motion["has_active_elapsed"] = any(
             e.get("is_elapsed")
             for e in motion.get("while_evaluators", []) + motion.get("until_evaluators", [])
@@ -924,10 +971,17 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
     write_json(ir_payload_path, ir)
 
     render_template(stst_bin, "runtime_header", ir_payload_path, headers_dir / "runtime.hpp")
-    render_template(stst_bin, "shared_state_header", ir_payload_path, headers_dir / "shared_state.hpp")
+    render_template(
+        stst_bin, "shared_state_header", ir_payload_path, headers_dir / "shared_state.hpp"
+    )
     render_template(stst_bin, "uris_header", ir_payload_path, headers_dir / "uris.hpp")
     if ir.get("has_mobile_base"):
-        render_template(stst_bin, "mobile_base_cycle_header", ir_payload_path, headers_dir / "mobile_base_cycle.hpp")
+        render_template(
+            stst_bin,
+            "mobile_base_cycle_header",
+            ir_payload_path,
+            headers_dir / "mobile_base_cycle.hpp",
+        )
 
     for motion in unique_motions:
         payload = {
@@ -940,11 +994,15 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
             "has_mobile_base": ir["has_mobile_base"],
             "backend": ir["backend"],
             "declared_pose_components": motion.get("declared_pose_components", []),
-            "pose_axis_error_groups": _add_group_type_flags(motion.get("pose_axis_error_groups", [])),
+            "pose_axis_error_groups": _add_group_type_flags(
+                motion.get("pose_axis_error_groups", [])
+            ),
         }
         payload_path = payload_dir / f"{motion['id']}.json"
         write_json(payload_path, payload)
-        render_template(stst_bin, "motion_header", payload_path, headers_dir / f"{motion['id']}.hpp")
+        render_template(
+            stst_bin, "motion_header", payload_path, headers_dir / f"{motion['id']}.hpp"
+        )
 
     render_template(stst_bin, "ref_main", ir_payload_path, output_dir / "ref_main.cpp")
     if ir["backend"] == "mj_kdl":
@@ -956,7 +1014,9 @@ def main():
         description="Generate C++ header files from motion-spec IR.",
     )
     parser.add_argument("input", help="Previously generated IR JSON path")
-    parser.add_argument("-o", "--output-dir", required=True, help="Directory for generated C++ files")
+    parser.add_argument(
+        "-o", "--output-dir", required=True, help="Directory for generated C++ files"
+    )
     parser.add_argument(
         "--stst-bin",
         default="stst",

@@ -258,6 +258,10 @@ emit-call-ErrorEvaluator-BilateralConstraint(closure, views) ::= <<
 shared.<closure.error> = motion_spec::runtime::evaluate_bilateral_constraint(<access-expr(closure.quantity, views)>, <access-expr(closure.lower_threshold, views)>, <access-expr(closure.upper_threshold, views)>);
 >>
 
+emit-call-ErrorEvaluator-OutsideConstraint(closure, views) ::= <<
+shared.<closure.error> = motion_spec::runtime::evaluate_outside_constraint(<access-expr(closure.quantity, views)>, <access-expr(closure.lower_threshold, views)>, <access-expr(closure.upper_threshold, views)>);
+>>
+
 emit-call-ErrorEvaluator(closure, views) ::= <<
 <({emit-call-ErrorEvaluator-<closure.constraint>})(closure, views)>
 >>
@@ -1706,6 +1710,13 @@ inline double evaluate_bilateral_constraint(double quantity, double lower, doubl
     if (quantity \< lower) return lower - quantity;
     if (quantity \> upper) return quantity - upper;
     return 0.0;
+}
+
+inline double evaluate_outside_constraint(double quantity, double lower, double upper) {
+    // Complement of bilateral: satisfied (0) when outside [lower, upper]; otherwise
+    // the remaining distance to the nearer band edge (still inside -> not yet satisfied).
+    if (quantity \<= lower || quantity \>= upper) return 0.0;
+    return std::min(quantity - lower, upper - quantity);
 }
 
 inline bool constraint_satisfied(double error) {

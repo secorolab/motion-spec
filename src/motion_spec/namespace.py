@@ -492,6 +492,11 @@ class CSTR(DefinedNamespace):
 
     _NS = Namespace(f"{URI_CR2B_MM}/task/constraint#")
 
+class CSTR_EXT(DefinedNamespace):
+    OutsideConstraint: URIRef
+
+    _NS = Namespace(f"{URI_SECORO_MM}/task/constraint#")
+
 class MOT(DefinedNamespace):
     GuardedMotion: URIRef
 

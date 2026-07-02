@@ -41,6 +41,7 @@ from motion_spec.namespace import (
     MAP,
     MAP_EXT,
     CSTR,
+    CSTR_EXT,
     MJ,
     MOT,
     MOT_EXT,
@@ -202,6 +203,11 @@ class ErrorEvaluator:
             ),
             Operator(
                 type_=CSTR["BilateralConstraint"],
+                input=[CSTR["quantity"], CSTR["lower-threshold"], CSTR["upper-threshold"]],
+                output=[CSTR_HDL["error"]],
+            ),
+            Operator(
+                type_=CSTR_EXT["OutsideConstraint"],
                 input=[CSTR["quantity"], CSTR["lower-threshold"], CSTR["upper-threshold"]],
                 output=[CSTR_HDL["error"]],
             ),
@@ -740,10 +746,17 @@ class BilateralConstraint:
 
 
 @dataclass
+class OutsideConstraint:
+    lower_threshold: Quantity
+    upper_threshold: Quantity
+    type: str = field(default="OutsideConstraint")
+
+
+@dataclass
 class Constraint:
     id: str
     quantity: Quantity
-    parameter: EqualityConstraint | UnilateralConstraint | BilateralConstraint
+    parameter: EqualityConstraint | UnilateralConstraint | BilateralConstraint | OutsideConstraint
     type: str = field(default="Constraint")
 
 
@@ -1601,6 +1614,8 @@ class Parser:
             parameter = self.equality_constraint(id_)
         elif CSTR["UnilateralConstraint"] in self.g[id_ : RDF["type"]]:
             parameter = self.unilateral_constraint(id_)
+        elif CSTR_EXT["OutsideConstraint"] in self.g[id_ : RDF["type"]]:
+            parameter = self.outside_constraint(id_)
         else:
             parameter = self.bilateral_constraint(id_)
 
@@ -1633,6 +1648,15 @@ class Parser:
         upper_threshold = self.quantity(self.g.value(id_, CSTR["upper-threshold"]))
 
         return BilateralConstraint(lower_threshold, upper_threshold)
+
+    @memoize
+    def outside_constraint(self, id_):
+        assert CSTR_EXT["OutsideConstraint"] in self.g[id_ : RDF["type"]]
+
+        lower_threshold = self.quantity(self.g.value(id_, CSTR["lower-threshold"]))
+        upper_threshold = self.quantity(self.g.value(id_, CSTR["upper-threshold"]))
+
+        return OutsideConstraint(lower_threshold, upper_threshold)
 
     @memoize
     def direction(self, id_):

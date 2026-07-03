@@ -12,6 +12,7 @@ import argparse
 from dataclasses import dataclass, field, is_dataclass, asdict, replace
 from enum import Enum
 import collections
+import itertools
 import math
 import os
 import re
@@ -664,6 +665,20 @@ class Position:
 
 
 @dataclass
+class Orientation:
+    id: str
+    of: SimplicialComplex | Frame | SceneObject | None
+    with_respect_to: SimplicialComplex | Frame | SceneObject | None
+    quantity_kind: QuantityKind
+    as_seen_by: Frame | None
+    unit: Unit
+    euler_axes_sequence: str | None = None
+    has_view: bool = False
+    roles: list[str] = field(default_factory=list)
+    type: str = field(default="Orientation")
+
+
+@dataclass
 class Pose:
     id: str
     of: SimplicialComplex | Frame | SceneObject | None
@@ -718,10 +733,10 @@ class Wrench:
 @dataclass
 class View:
     id: str
-    superobject: Pose | VelocityTwist | AccelerationTwist | Wrench
-    subobject: Quantity
+    superobject: Pose | VelocityTwist | AccelerationTwist | Wrench | ExternalForce
+    subobject: Quantity | Position | Orientation
     subspace: Subspace
-    axis: Axis
+    axis: Axis | None
     type: str = field(default="View")
 
 
@@ -1724,6 +1739,40 @@ class Parser:
             self.id(id_), of, wrt, QuantityKind(quantity_kind), as_seen_by, Unit(unit), pos
         )
 
+    @memoize
+    def orientation(self, id_):
+        assert GEOM_COORD["OrientationCoordinate"] in self.g[id_ : RDF["type"]]
+
+        def optional_pose_ref(node):
+            if node is None:
+                return None
+            if ENV.RigidObject in self.g[node : RDF["type"]]:
+                return self.scene_object(node)
+            if GEOM_ENT.Frame in self.g[node : RDF["type"]]:
+                return self.frame(node)
+            if GEOM_ENT.SimplicialComplex in self.g[node : RDF["type"]]:
+                return self.simplicial_complex(node)
+            return None
+
+        of = optional_pose_ref(self.g.value(id_, GEOM_REL["of"]))
+        wrt = optional_pose_ref(self.g.value(id_, GEOM_REL["with-respect-to"]))
+        quantity_kind = self.quantity_kind(self.g.value(id_, QUDT_SCHEMA["hasQuantityKind"]))
+        as_seen_by_node = self.g.value(id_, GEOM_COORD["as-seen-by"])
+        as_seen_by = self.frame(as_seen_by_node) if as_seen_by_node is not None else None
+        unit = self.unit(self.g.value(id_, QUDT_SCHEMA["unit"]))
+        axes = self.g.value(id_, GEOM_COORD["axes-sequence"])
+        return Orientation(
+            self.id(id_),
+            of,
+            wrt,
+            QuantityKind(quantity_kind),
+            as_seen_by,
+            Unit(unit),
+            str(axes) if axes is not None else None,
+            (id_, ~MAP["subobject"], None) in self.g,
+            self.roles(id_),
+        )
+
     def position_reference(self, id_):
         if ENV.RigidObject in self.g[id_ : RDF["type"]]:
             return self.scene_object(id_)
@@ -1861,6 +1910,11 @@ class Parser:
             and GEOM_COORD["PositionCoordinate"] in self.g[id_ : RDF["type"]]
         ):
             return self.position(id_)
+        if (
+            GEOM_REL["Orientation"] in self.g[id_ : RDF["type"]]
+            and GEOM_COORD["OrientationCoordinate"] in self.g[id_ : RDF["type"]]
+        ):
+            return self.orientation(id_)
         if TRAJ["Trajectory"] in self.g[id_ : RDF["type"]]:
             value_kind_node = next(
                 (k for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]] if k != TRAJ.Trajectory),
@@ -2000,6 +2054,7 @@ class Parser:
         dispatcher = [
             (GEOM_COORD["DirectionCoordinate"], self.direction),
             (GEOM_COORD["PositionCoordinate"], self.position),
+            (GEOM_COORD["OrientationCoordinate"], self.orientation),
             (GEOM_COORD["PoseCoordinate"], self.pose),
             (GEOM_COORD["VelocityTwistCoordinate"], self.velocity_twist),
             (GEOM_COORD["AccelerationTwistCoordinate"], self.acceleration_twist),
@@ -2072,6 +2127,20 @@ class Parser:
 
                     q.append(data_in)
                     data_structures.add(data_in)
+
+            # A composed/declared data structure (an inline Pose such as end_pose) is not
+            # the output of any operator, so the operator sweep never descends into it.
+            # Follow its coordinate decomposition and reference-value edges so the closures
+            # that PRODUCE its scalar components (end_x = task_pose.position.x + chord_x,
+            # etc.) are scheduled. Without this, an Arc/Lerp whose end is a declared pose is
+            # assembled from unwritten (zero) components -> wrong endpoint.
+            for successor in itertools.chain(
+                self.g.objects(data_out, GEOM_COORD["has-coordinate"]),
+                self.g.objects(data_out, CSTR["reference-value"]),
+            ):
+                if successor not in data_structures:
+                    q.append(successor)
+                    data_structures.add(successor)
 
         sched.reverse()
         return self._topological_schedule(sched, scheduled_nodes, ops)
@@ -2344,13 +2413,16 @@ def _snapshots_for_motion(
             if referenced:
                 pending.append(referenced)
             for view in view_map.values():
-                superobject = object_field(view, "superobject")
-                if object_id(superobject) != current:
-                    continue
-                subobject = object_field(view, "subobject")
-                subobject_id = object_id(subobject)
-                if subobject_id:
+                super_id = object_id(object_field(view, "superobject"))
+                subobject_id = object_id(object_field(view, "subobject"))
+                # superobject -> subobject (existing forward decomposition)
+                if super_id == current and subobject_id:
                     pending.append(subobject_id)
+                # subobject -> superobject: a snapshot of a composite pose is only
+                # ever referenced through its scalar components (e.g. task_pose via
+                # task_pose_position_y). Climb back so the composite snapshot is captured.
+                if subobject_id == current and super_id:
+                    pending.append(super_id)
 
     for ref_id in list(ref_val_ids):
         add_reference(ref_id)

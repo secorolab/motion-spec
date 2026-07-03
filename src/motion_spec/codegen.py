@@ -464,13 +464,21 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
         if not view:
             return f"shared.{data_id}"
         superobject = view["superobject"]
-        axis_index = {"X": 0, "Y": 1, "Z": 2, "x": 0, "y": 1, "z": 2}[view["axis"]]
         if superobject["type"] == "Pose" and view["subspace"] == "Position":
+            axis = view.get("axis")
+            if axis is None:
+                return f"shared.{superobject['id']}.p"
+            axis_index = {"X": 0, "Y": 1, "Z": 2, "x": 0, "y": 1, "z": 2}[axis]
             return f"shared.{superobject['id']}.p[{axis_index}]"
         if superobject["type"] == "Pose" and view["subspace"] == "Rotation":
+            axis = view.get("axis")
+            if axis is None:
+                return f"shared.{superobject['id']}.M"
+            axis_index = {"X": 0, "Y": 1, "Z": 2, "x": 0, "y": 1, "z": 2}[axis]
             return (
                 f"KDL::diff(KDL::Rotation::Identity(), shared.{superobject['id']}.M)[{axis_index}]"
             )
+        axis_index = {"X": 0, "Y": 1, "Z": 2, "x": 0, "y": 1, "z": 2}[view["axis"]]
         if superobject["type"] == "VelocityTwist":
             member = "rot" if view["subspace"] == "AngularVelocity" else "vel"
             return f"shared.{superobject['id']}.{member}[{axis_index}]"

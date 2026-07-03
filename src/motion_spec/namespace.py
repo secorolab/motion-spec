@@ -118,9 +118,6 @@ class MJ(DefinedNamespace):
     MuJoCoSite: URIRef
     TrajectoryTrace: URIRef
     ColorRGBA: URIRef
-    ExternalForceMagnitudeCoordinate: URIRef
-    ExternalForceCoordinate: URIRef
-    ExternalForceCoordinateView: URIRef
 
     _extras = [
         "body-name",
@@ -129,7 +126,6 @@ class MJ(DefinedNamespace):
         "sensor-name",
         "frame-site",
         "ft-sensor-ref",
-        "deadband-ref",
         "color",
         "has-trace",
         "trace-enabled",
@@ -422,6 +418,7 @@ class RBDYN_OP_EXT(DefinedNamespace):
     # rather than squatting in comp-rob2b's operators#; upstream rbdyn-op:
     # predicates (in1/in2/out) are reused.
     AddQuantity: URIRef
+    Norm: URIRef
 
     _NS = Namespace(f"{URI_SECORO_MM}/newtonian-rigid-body-dynamics/operators#")
 
@@ -460,6 +457,7 @@ class MAP_EXT(DefinedNamespace):
     # axis) are reused from upstream. Mirrors how `mot-ext` shadows `mot`.
     PoseOrientationView: URIRef
     PosePositionView: URIRef
+    WrenchVectorView: URIRef
     ComputeRotationFromPose: URIRef
     rotation: URIRef
     pose: URIRef
@@ -672,15 +670,15 @@ class SLV_EXT(DefinedNamespace):
 
     # "robot" links a solver to the environment robot whose kinematic chain it
     # drives, so per-robot chain setups can be resolved in multi-robot scenes.
-    # "damping"/"torque-limit"/"max-linear-accel"/"max-angular-accel" are
-    # optional authored control-loop tuning knobs on the RNE/ACHD solver (DLS
-    # damping lambda, torque saturation override, and beta-clamp overrides).
+    # "regularization"/"torque-limit"/"max-linear-accel"/"max-angular-accel" are
+    # optional authored control-loop tuning knobs on the RNE/ACHD solver (DLS/Tikhonov
+    # regularization lambda, torque saturation override, and beta-clamp overrides).
     _extras = [
         "command-forwarding",
         "control-signal",
         "gravity-value",
         "robot",
-        "damping",
+        "regularization",
         "torque-limit",
         "max-linear-accel",
         "max-angular-accel",

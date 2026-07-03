@@ -147,15 +147,11 @@ shared.<view.superobject.id>.vel[<axis-to-index.(view.axis)>]
 >>
 
 view-access-expr-Wrench-Torque(view) ::= <<
-shared.<view.superobject.id>.torque[<axis-to-index.(view.axis)>]
+<if(view.axis)>shared.<view.superobject.id>.torque[<axis-to-index.(view.axis)>]<else>shared.<view.superobject.id>.torque<endif>
 >>
 
 view-access-expr-Wrench-Force(view) ::= <<
-shared.<view.superobject.id>.force[<axis-to-index.(view.axis)>]
->>
-
-view-access-expr-ExternalForce-Force(view) ::= <<
-shared.<view.superobject.id>[<axis-to-index.(view.axis)>]
+<if(view.axis)>shared.<view.superobject.id>.force[<axis-to-index.(view.axis)>]<else>shared.<view.superobject.id>.force<endif>
 >>
 
 shared-member(var) ::= <<
@@ -194,10 +190,6 @@ KDL::Twist <var.id>;
 
 shared-member-Wrench(var) ::= <<
 KDL::Wrench <var.id>;
->>
-
-shared-member-ExternalForce(var) ::= <<
-KDL::Vector <var.id>;
 >>
 
 shared-member-Quantity(var) ::= <<
@@ -618,6 +610,10 @@ emit-call-AddQuantity(closure, views) ::= <<
 shared.<closure.out> = <access-expr(closure.in1, views)> + <access-expr(closure.in2, views)>;
 >>
 
+emit-call-Norm(closure, views) ::= <<
+shared.<closure.out> = <access-expr(closure.in1, views)>.Norm();
+>>
+
 emit-call-AddWrench(closure, views) ::= <<
 shared.<closure.out> = <access-expr(closure.in1, views)> + <access-expr(closure.in2, views)>;
 >>
@@ -939,17 +935,14 @@ solver-output-JointPosition-mj_kdl(solver, out) ::= <<
 }
 >>
 
-solver-output-ExternalForceMagnitude(solver, out, backend) ::= <<
-<({solver-output-ExternalForceMagnitude-<backend>})(solver, out)>
+solver-output-Wrench(solver, out, backend) ::= <<
+<({solver-output-Wrench-<backend>})(solver, out)>
 >>
 
-solver-output-ExternalForceMagnitude-mj_kdl(solver, out) ::= <<
+solver-output-Wrench-mj_kdl(solver, out) ::= <<
 {
-    // Measured external-force magnitude from the wrist FT sensor: rotate the wrench to
-    // world frame, subtract a startup-tared bias, deadband, then take the norm.
-    // ponytail: startup tare is pose-invariant here (gravity is world-constant and the
-    // tool load never changes mid-run); per-state-entry tare is the upgrade path if a
-    // future model picks up an object and changes the tool load.
+    // FT force -> world, minus startup-tared bias, into shared.<out.id>.force.
+    // startup tare assumes constant tool load; per-entry tare if that changes.
     const mj_kdl::ForceTorqueSensor *ft_<out.id> = mj_kdl::find_ft_sensor(robot.<solver.id>.robot, "<out.sensor_name>");
     KDL::Vector f_world_<out.id> = KDL::Vector::Zero();
     if (ft_<out.id> && ft_<out.id>->frame_site_id >= 0) {
@@ -958,59 +951,19 @@ solver-output-ExternalForceMagnitude-mj_kdl(solver, out) ::= <<
             f_world_<out.id> = site_frame_<out.id>.M * ft_<out.id>->wrench.force;
         }
     }
-    // Tare state (bias + settle) lives in shared_data so it is captured once,
-    // before any external push, and reused across handler re-entries and by the
-    // vector read of the same sensor -- never re-tared while a push is active.
-    if (shared.<out.id>_ft_settle \< 200) {       // ponytail: fixed settle; author it if startup transients vary
+    if (shared.<out.id>_ft_settle \< 200) {       // fixed settle; author it if startup transients vary
         ++shared.<out.id>_ft_settle;
         shared.<out.id>_ft_bias = f_world_<out.id>;   // last settle step is the tare sample
-        shared.<out.id> = 0.0;
+        shared.<out.id>.force = KDL::Vector::Zero();
     } else {
-        const KDL::Vector f_ext_<out.id> = shared.<out.id>_ft_bias - f_world_<out.id>;
-        const double mag_<out.id> = f_ext_<out.id>.Norm();
-        shared.<out.id> = (mag_<out.id> \< <if(out.deadband_id)>shared.<out.deadband_id><else>0.0<endif>) ? 0.0 : mag_<out.id>;
+        shared.<out.id>.force = shared.<out.id>_ft_bias - f_world_<out.id>;
     }
 }
 >>
 
-solver-output-ExternalForceMagnitude-robif2b(solver, out) ::= <<
-    // ponytail: robif2b has no sim FT sensor; a real build wires a hardware FT driver here.
-    shared.<out.id> = 0.0;
->>
-
-solver-output-ExternalForce(solver, out, backend) ::= <<
-<({solver-output-ExternalForce-<backend>})(solver, out)>
->>
-
-solver-output-ExternalForce-mj_kdl(solver, out) ::= <<
-{
-    // Measured external-force VECTOR (plan 003): same FT read as the scalar magnitude,
-    // but keep all three world-frame components (no Norm, no deadband) for the
-    // admittance filter. bias - f_world is the tared external force.
-    const mj_kdl::ForceTorqueSensor *ft_<out.id> = mj_kdl::find_ft_sensor(robot.<solver.id>.robot, "<out.sensor_name>");
-    KDL::Vector f_world_<out.id> = KDL::Vector::Zero();
-    if (ft_<out.id> && ft_<out.id>->frame_site_id >= 0) {
-        KDL::Frame site_frame_<out.id>;
-        if (mj_kdl::get_site_frame(robot.<solver.id>.robot->model, robot.<solver.id>.robot->data, ft_<out.id>->frame_site.c_str(), &site_frame_<out.id>)) {
-            f_world_<out.id> = site_frame_<out.id>.M * ft_<out.id>->wrench.force;
-        }
-    }
-    // Tare state (bias + settle) lives in shared_data so it is captured once,
-    // before any external push, and reused across handler re-entries and by the
-    // magnitude read of the same sensor -- never re-tared while a push is active.
-    if (shared.<out.id>_ft_settle \< 200) {       // ponytail: fixed settle; author it if startup transients vary
-        ++shared.<out.id>_ft_settle;
-        shared.<out.id>_ft_bias = f_world_<out.id>;   // last settle step is the tare sample
-        shared.<out.id> = KDL::Vector::Zero();
-    } else {
-        shared.<out.id> = shared.<out.id>_ft_bias - f_world_<out.id>;
-    }
-}
->>
-
-solver-output-ExternalForce-robif2b(solver, out) ::= <<
-    // ponytail: robif2b has no sim FT sensor; a real build wires a hardware FT driver here.
-    shared.<out.id> = KDL::Vector::Zero();
+solver-output-Wrench-robif2b(solver, out) ::= <<
+    // robif2b has no sim FT sensor; a real build wires a hardware FT driver here.
+    shared.<out.id>.force = KDL::Vector::Zero();
 >>
 
 solver-output(solver, out, backend) ::= <<
@@ -1499,7 +1452,7 @@ inline double ease_out(double alpha) {
 
 enum class VelocityProfileShape { Trapezoidal, SCurve };
 
-// ponytail: SCurve is a cascaded jerk limiter, not a time-optimal phase planner.
+// SCurve is a cascaded jerk limiter, not a time-optimal phase planner.
 // Feed-forward online generator: the setpoint must LEAD the plant to drive a
 // position controller, so v is the profile's own integrated velocity, not the
 // measured one. (Resetting v to the measured velocity each step glues the

@@ -478,6 +478,13 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
             return (
                 f"KDL::diff(KDL::Rotation::Identity(), shared.{superobject['id']}.M)[{axis_index}]"
             )
+        if superobject["type"] == "Wrench":
+            member = "torque" if view["subspace"] == "Torque" else "force"
+            axis = view.get("axis")
+            if axis is None:
+                return f"shared.{superobject['id']}.{member}"
+            axis_index = {"X": 0, "Y": 1, "Z": 2, "x": 0, "y": 1, "z": 2}[axis]
+            return f"shared.{superobject['id']}.{member}[{axis_index}]"
         axis_index = {"X": 0, "Y": 1, "Z": 2, "x": 0, "y": 1, "z": 2}[view["axis"]]
         if superobject["type"] == "VelocityTwist":
             member = "rot" if view["subspace"] == "AngularVelocity" else "vel"
@@ -485,11 +492,6 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
         if superobject["type"] == "AccelerationTwist":
             member = "rot" if view["subspace"] == "AngularAcceleration" else "vel"
             return f"shared.{superobject['id']}.{member}[{axis_index}]"
-        if superobject["type"] == "Wrench":
-            member = "torque" if view["subspace"] == "Torque" else "force"
-            return f"shared.{superobject['id']}.{member}[{axis_index}]"
-        if superobject["type"] == "ExternalForce":
-            return f"shared.{superobject['id']}[{axis_index}]"
         return f"shared.{data_id}"
 
     def component_expr(component_id: str, data_by_id: dict, views: dict) -> str:

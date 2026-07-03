@@ -386,6 +386,11 @@ ops_generic = [
         output=[RBDYN_OP["out"]],
     ),
     Operator(
+        type_=RBDYN_OP_EXT["Norm"],
+        input=[RBDYN_OP["in1"]],
+        output=[RBDYN_OP["out"]],
+    ),
+    Operator(
         type_=RBDYN_OP["RotateWrenchToDistalWithPose"],
         input=[RBDYN_OP["pose"], RBDYN_OP["from"]],
         output=[RBDYN_OP["to"]],
@@ -1043,7 +1048,7 @@ class SolverWithInputAndOutput:
     # Authored control-loop tuning, collected/deduped across arm solvers into
     # top-level IR keys consumed by runtime_header; not read directly by any
     # per-solver template.
-    damping: float | None = None
+    regularization: float | None = None
     torque_limit: float | None = None
     max_linear_accel: float | None = None
     max_angular_accel: float | None = None
@@ -1269,7 +1274,7 @@ class Parser:
             algorithm_is_rne=algorithm == "RNE",
             gravity=list(gravity) if gravity else None,
             root_acc=root_acc,
-            damping=_optional_float(SLV_EXT["damping"]),
+            regularization=_optional_float(SLV_EXT["regularization"]),
             torque_limit=_optional_float(SLV_EXT["torque-limit"]),
             max_linear_accel=_optional_float(SLV_EXT["max-linear-accel"]),
             max_angular_accel=_optional_float(SLV_EXT["max-angular-accel"]),
@@ -2006,6 +2011,7 @@ class Parser:
             (MAP["VelocityTwistCoordinateView"], self.velocity_twist),
             (MAP["AccelerationTwistCoordinateView"], self.acceleration_twist),
             (MAP["WrenchCoordinateView"], self.wrench),
+            (MAP_EXT["WrenchVectorView"], self.wrench),
         ]
 
         view_map = {}
@@ -2451,6 +2457,7 @@ _CLOSURE_OUTPUT_FIELDS = {
     "InvertAngle": "out",
     "AddWrench": "out",
     "AddQuantity": "out",
+    "Norm": "out",
     "RotateWrenchToDistalWithPose": "to",
     "RotateWrenchToProximalWithPose": "to",
     "TransformWrenchToProximal": "to",
@@ -3649,7 +3656,7 @@ def generate_ir(manifest_path):
             )
         return next(iter(values), default)
 
-    rne_damping_lambda = _single_solver_value("damping", "Solver damping", 0.05)
+    rne_damping_lambda = _single_solver_value("regularization", "Solver regularization", 0.05)
     beta_max_lin = _single_solver_value("max_linear_accel", "Solver max-linear-accel", 1e6)
     beta_max_rot = _single_solver_value("max_angular_accel", "Solver max-angular-accel", 1e6)
     tau_max_override = _single_solver_value("torque_limit", "Solver torque-limit", None)
@@ -3681,7 +3688,7 @@ def generate_ir(manifest_path):
     _seen_ft_ids = set()
     for s in slv_arm:
         for out in s.output:
-            if getattr(out, "type", None) in ("ExternalForce", "ExternalForceMagnitude"):
+            if getattr(out, "type", None) == "Wrench" and getattr(out, "sensor_name", ""):
                 if out.id in _seen_ft_ids:
                     continue
                 _seen_ft_ids.add(out.id)

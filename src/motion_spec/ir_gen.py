@@ -602,21 +602,6 @@ class JointPosition:
 
 
 @dataclass
-class ExternalForceMagnitude:
-    id: str
-    sensor_name: str
-    deadband_id: str = ""
-    type: str = field(default="ExternalForceMagnitude")
-
-
-@dataclass
-class ExternalForce:
-    id: str
-    sensor_name: str
-    type: str = field(default="ExternalForce")
-
-
-@dataclass
 class PoseQuantity:
     id: str
     quantity_kind: QuantityKind
@@ -727,13 +712,17 @@ class Wrench:
     as_seen_by: Frame
     unit: list[Unit]
     roles: list[str] = field(default_factory=list)
+    # Non-empty when this wrench is measured from a force/torque sensor (the FT-read
+    # solver-output reads and tares this sensor into shared.<id>.force). Empty for
+    # computed/commanded wrenches.
+    sensor_name: str = ""
     type: str = field(default="Wrench")
 
 
 @dataclass
 class View:
     id: str
-    superobject: Pose | VelocityTwist | AccelerationTwist | Wrench | ExternalForce
+    superobject: Pose | VelocityTwist | AccelerationTwist | Wrench
     subobject: Quantity | Position | Orientation
     subspace: Subspace
     axis: Axis | None
@@ -1247,8 +1236,7 @@ class Parser:
             (GEOM_COORD["PoseCoordinate"], self.pose),
             (GEOM_COORD["VelocityTwistCoordinate"], self.velocity_twist),
             (KC_STAT["JointPositionCoordinate"], self.joint_position),
-            (MJ["ExternalForceMagnitudeCoordinate"], self.external_force_magnitude),
-            (MJ["ExternalForceCoordinate"], self.external_force),
+            (RBDYN_COORD["WrenchCoordinate"], self.wrench),
         ]
 
         drv = []
@@ -1887,7 +1875,16 @@ class Parser:
         for u in self.g[id_ : QUDT_SCHEMA["unit"]]:
             unit.append(self.unit(u))
 
-        return Wrench(self.id(id_), quantity_kind, reference_point, as_seen_by, unit, self.roles(id_))
+        sensor_name = str(self.g.value(id_, MJ["ft-sensor-ref"]) or "")
+        return Wrench(
+            self.id(id_),
+            quantity_kind,
+            reference_point,
+            as_seen_by,
+            unit,
+            self.roles(id_),
+            sensor_name=sensor_name,
+        )
 
     @memoize
     def quantity(self, id_):
@@ -1960,21 +1957,6 @@ class Parser:
         joint_name = self.label(joint_node) if joint_node is not None else ""
         return JointPosition(self.id(id_), joint_name)
 
-    @memoize
-    def external_force_magnitude(self, id_):
-        assert MJ["ExternalForceMagnitudeCoordinate"] in self.g[id_ : RDF["type"]]
-        sensor_name = str(self.g.value(id_, MJ["ft-sensor-ref"]) or "")
-        dead_ref = self.g.value(id_, MJ["deadband-ref"])
-        # The authored deadband Spec becomes a `shared.<id>` double; match its sanitized id.
-        deadband_id = str(dead_ref).replace("-", "_") if dead_ref else ""
-        return ExternalForceMagnitude(self.id(id_), sensor_name, deadband_id)
-
-    @memoize
-    def external_force(self, id_):
-        assert MJ["ExternalForceCoordinate"] in self.g[id_ : RDF["type"]]
-        sensor_name = str(self.g.value(id_, MJ["ft-sensor-ref"]) or "")
-        return ExternalForce(self.id(id_), sensor_name)
-
     def roles(self, id_):
         role_ns = str(VALUE_ROLE._NS)
         return sorted(
@@ -2024,7 +2006,6 @@ class Parser:
             (MAP["VelocityTwistCoordinateView"], self.velocity_twist),
             (MAP["AccelerationTwistCoordinateView"], self.acceleration_twist),
             (MAP["WrenchCoordinateView"], self.wrench),
-            (MJ["ExternalForceCoordinateView"], self.external_force),
         ]
 
         view_map = {}
@@ -2059,7 +2040,6 @@ class Parser:
             (GEOM_COORD["VelocityTwistCoordinate"], self.velocity_twist),
             (GEOM_COORD["AccelerationTwistCoordinate"], self.acceleration_twist),
             (RBDYN_COORD["WrenchCoordinate"], self.wrench),
-            (MJ["ExternalForceCoordinate"], self.external_force),
             (QUDT_SCHEMA["Quantity"], self.quantity),
         ]
 

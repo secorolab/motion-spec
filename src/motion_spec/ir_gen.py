@@ -598,6 +598,17 @@ class Quantity:
 
 
 @dataclass
+class Saturation:
+    id: str
+    input_signal: Quantity
+    output_signal: Quantity
+    maximum: Quantity | None = None
+    lower: Quantity | None = None
+    upper: Quantity | None = None
+    type: str = field(default="Saturation")
+
+
+@dataclass
 class FreeVector:
     id: str
     quantity_kind: QuantityKind
@@ -846,6 +857,8 @@ class Controller:
     decay_rate: float | None = None
     stiffness: float | None = None
     damping: float | None = None
+    output_saturation: Saturation | None = None
+    integral_saturation: Saturation | None = None
     type: str = "Controller"
 
 
@@ -1018,6 +1031,7 @@ class AccelerationConstraint:
     as_seen_by: Frame | None = None
     base_aligned: bool = True
     direction: "Direction | None" = None
+    saturation: Saturation | None = None
     type: str = field(default="AccelerationConstraint")
 
 
@@ -1067,6 +1081,7 @@ class MotionArmSolver:
     root_acc: list[float] | None = None
     chain_root: str = ""
     chain_end: str = ""
+    torque_saturation: Saturation | None = None
     type: str = field(default="MotionArmSolver")
 
 
@@ -1095,6 +1110,7 @@ class SolverWithInputAndOutput:
     torque_limit: float | None = None
     max_linear_accel: float | None = None
     max_angular_accel: float | None = None
+    torque_saturation: Saturation | None = None
     type: str = field(default="SolverWithInputAndOutput")
 
 
@@ -1304,6 +1320,14 @@ class Parser:
             SLV["AccelerationConstrainedHybridDynamicsAlgorithm"]: "ACHD",
             SLV["RecursiveNewtonEulerAlgorithm"]: "RNE",
         }.get(algorithm_node, self.id(algorithm_node) if algorithm_node else "")
+        torque_saturation_node = next(
+            (
+                node
+                for node in self.g.objects(id_, CSTR_HDL_EXT["limits"])
+                if SLV_EXT["TorqueSaturation"] in self.g[node : RDF["type"]]
+            ),
+            None,
+        )
 
         return SolverWithInputAndOutput(
             id=self.id(id_),
@@ -1317,6 +1341,11 @@ class Parser:
             torque_limit=self._optional_float(id_, SLV_EXT["torque-limit"]),
             max_linear_accel=self._optional_float(id_, SLV_EXT["max-linear-accel"]),
             max_angular_accel=self._optional_float(id_, SLV_EXT["max-angular-accel"]),
+            torque_saturation=(
+                self.saturation(torque_saturation_node)
+                if torque_saturation_node is not None
+                else None
+            ),
         )
 
     @memoize
@@ -1362,6 +1391,23 @@ class Parser:
         return CartesianForceSpecification(self.id(id_), force, attached_to)
 
     @memoize
+    def saturation(self, id_):
+        assert CSTR_HDL_EXT["Saturation"] in self.g[id_ : RDF["type"]]
+        input_signal = self.quantity(self.g.value(id_, CSTR_HDL_EXT["input-signal"]))
+        output_signal = self.quantity(self.g.value(id_, CSTR_HDL_EXT["output-signal"]))
+        maximum_node = self.g.value(id_, CSTR_HDL_EXT["maximum-absolute-value"])
+        lower_node = self.g.value(id_, CSTR_HDL_EXT["lower-limit"])
+        upper_node = self.g.value(id_, CSTR_HDL_EXT["upper-limit"])
+        return Saturation(
+            self.id(id_),
+            input_signal,
+            output_signal,
+            self.quantity(maximum_node) if maximum_node is not None else None,
+            self.quantity(lower_node) if lower_node is not None else None,
+            self.quantity(upper_node) if upper_node is not None else None,
+        )
+
+    @memoize
     def acceleration_constraint_specification(self, id_):
         assert SLV["AccelerationConstraintSpecification"] in self.g[id_ : RDF["type"]]
 
@@ -1379,18 +1425,27 @@ class Parser:
 
         subspace = self.subspace(self.g.value(id_, SLV["subspace"]))
         e_acc = self.quantity(self.g.value(id_, SLV["acceleration-energy"]))
+        saturation_node = next(
+            (
+                node
+                for node in self.g.objects(id_, CSTR_HDL_EXT["limits"])
+                if SLV_EXT["AccelerationSaturation"] in self.g[node : RDF["type"]]
+            ),
+            None,
+        )
+        saturation = self.saturation(saturation_node) if saturation_node is not None else None
         as_seen_by_node = self.g.value(id_, GEOM_COORD["as-seen-by"])
         as_seen_by = self.frame(as_seen_by_node) if as_seen_by_node else None
 
         if SLV_EXT["DirectionAligned"] in self.g[id_ : RDF["type"]]:
             direction = self.direction(self.g.value(id_, SLV_EXT["direction"]))
             return AccelerationConstraint(
-                self.id(id_), subspace, None, e_acc, as_seen_by, direction=direction
+                self.id(id_), subspace, None, e_acc, as_seen_by, direction=direction, saturation=saturation
             )
 
         assert SLV["AxisAligned"] in self.g[id_ : RDF["type"]]
         axis = self.axis(self.g.value(id_, SLV["axis"]))
-        return AccelerationConstraint(self.id(id_), subspace, axis, e_acc, as_seen_by)
+        return AccelerationConstraint(self.id(id_), subspace, axis, e_acc, as_seen_by, saturation=saturation)
 
     @memoize
     def subspace(self, id_):
@@ -1545,6 +1600,28 @@ class Parser:
             else None
         )
         control_signal = self.quantity(self.g.value(id_, CSTR_HDL["control-signal"]))
+        output_saturation_node = next(
+            (
+                node
+                for node in self.g.objects(id_, CSTR_HDL_EXT["limits"])
+                if CSTR_HDL_EXT["IntegralSaturation"] not in self.g[node : RDF["type"]]
+            ),
+            None,
+        )
+        integral_saturation_node = next(
+            (
+                node
+                for node in self.g.objects(id_, CSTR_HDL_EXT["limits"])
+                if CSTR_HDL_EXT["IntegralSaturation"] in self.g[node : RDF["type"]]
+            ),
+            None,
+        )
+        output_saturation = (
+            self.saturation(output_saturation_node) if output_saturation_node is not None else None
+        )
+        integral_saturation = (
+            self.saturation(integral_saturation_node) if integral_saturation_node is not None else None
+        )
 
         if is_pid:
             if error_signal is None:
@@ -1563,6 +1640,8 @@ class Parser:
                 integral_gain=self._required_float(id_, CSTR_HDL["integral-gain"]),
                 derivative_gain=self._required_float(id_, CSTR_HDL["derivative-gain"]),
                 decay_rate=decay_rate,
+                output_saturation=output_saturation,
+                integral_saturation=integral_saturation,
                 type=self.id(CSTR_HDL.ProportionalIntegralDerivative),
             )
         if is_impedance:
@@ -1581,6 +1660,7 @@ class Parser:
                 stiffness=self._required_float(id_, CSTR_HDL["stiffness"]),
                 damping=self._required_float(id_, CSTR_HDL["damping"]),
                 integral_gain=self._optional_float(id_, CSTR_HDL["integral-gain"]),
+                output_saturation=output_saturation,
                 type=self.id(CSTR_HDL.ImpedanceController),
             )
         if reference_signal is None:
@@ -1595,6 +1675,7 @@ class Parser:
             id=self.id(id_),
             control_signal=control_signal,
             reference_signal=reference_signal,
+            output_saturation=output_saturation,
             type=self.id(CSTR_HDL_EXT.FeedForwardController),
         )
 
@@ -2199,6 +2280,20 @@ class Parser:
             for closure in self.g.subjects(RDF["type"], operator.type_):
                 cl = operator.closure_step(self.g, self.id, closure)
                 if cl:
+                    if operator.type_ == CSTR_HDL["Controller"]:
+                        # output-saturation lives on cstr-hdl-ext:limits (the non-integral
+                        # SignalLimiter); the closure the step template renders is built from
+                        # input/output/param edges, so attach the clamp explicitly.
+                        sat_node = next(
+                            (
+                                n
+                                for n in self.g.objects(closure, CSTR_HDL_EXT["limits"])
+                                if CSTR_HDL_EXT["IntegralSaturation"] not in self.g[n : RDF["type"]]
+                            ),
+                            None,
+                        )
+                        if sat_node is not None:
+                            cl["output_saturation"] = self.saturation(sat_node)
                     closures[self.id(closure)] = cl
 
         return closures
@@ -2436,6 +2531,7 @@ def _arm_solvers_for_handler(handler, slv_arm, closure_input_map=None):
                 root_acc=solver.root_acc,
                 chain_root=solver.chain_root,
                 chain_end=solver.chain_end,
+                torque_saturation=solver.torque_saturation,
             )
         )
 
@@ -3829,11 +3925,9 @@ def generate_ir(manifest_path):
         raise ValueError("ENVIRONMENT timestep must be positive.")
     control_period_ns = int(round(scene.timestep_s * 1e9))
 
-    # Authorable control-loop tuning (DLS damping lambda, torque-limit override,
-    # beta clamps): sourced from the arm solver(s), same single-value-across-the-
-    # scene contract as the timestep (one generated control loop). Falls
-    # back to the Python-reference defaults when unauthored (see
-    # authorable-control-limits-plan.md "Locked decisions").
+    # Authorable control-loop tuning: sourced from the arm solver(s), same
+    # single-value-across-the-scene contract as the timestep (one generated
+    # control loop). Saturations are emitted only from explicit limits.
     def _single_solver_value(attr, label, default):
         values = {v for s in slv_arm if (v := getattr(s, attr)) is not None}
         if len(values) > 1:
@@ -3844,9 +3938,6 @@ def generate_ir(manifest_path):
         return next(iter(values), default)
 
     rne_damping_lambda = _single_solver_value("regularization", "Solver regularization", 0.05)
-    beta_max_lin = _single_solver_value("max_linear_accel", "Solver max-linear-accel", 1e6)
-    beta_max_rot = _single_solver_value("max_angular_accel", "Solver max-angular-accel", 1e6)
-    tau_max_override = _single_solver_value("torque_limit", "Solver torque-limit", None)
 
     # Per-monitor debounce (`for <FLOAT> <Unit>`): convert the authored seconds
     # into a step count now that the control period is known. Absent -> stays
@@ -3912,9 +4003,6 @@ def generate_ir(manifest_path):
         "has_mobile_base": bool(slv_base_vel or slv_base_frc),
         "control_period_ns": control_period_ns,
         "rne_damping_lambda": rne_damping_lambda,
-        "beta_max_lin": beta_max_lin,
-        "beta_max_rot": beta_max_rot,
-        "tau_max_override": tau_max_override,
         "arm_solvers": slv_arm,
         "base_velocity_solvers": slv_base_vel,
         "base_force_solvers": slv_base_frc,

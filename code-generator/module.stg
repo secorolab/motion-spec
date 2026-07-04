@@ -11,11 +11,6 @@ subspace-to-runtime-subspace ::= [
     "AngularAcceleration": "Subspace::Angular"
 ]
 
-subspace-to-beta-max ::= [
-    "LinearAcceleration": "motion_spec::runtime::kBetaMaxLin",
-    "AngularAcceleration": "motion_spec::runtime::kBetaMaxRot"
-]
-
 axis-to-vector ::= [
     "X": "1.0, 0.0, 0.0",
     "Y": "0.0, 1.0, 0.0",
@@ -56,6 +51,14 @@ velocity-profile-shape ::= [
     "Trapezoidal": "motion_spec::runtime::VelocityProfileShape::Trapezoidal",
     default: "motion_spec::runtime::VelocityProfileShape::Trapezoidal"
 ]
+
+saturation-lower(saturation) ::= <<
+<if(saturation.maximum)>-<saturation.maximum.value><else><saturation.lower.value><endif>
+>>
+
+saturation-upper(saturation) ::= <<
+<if(saturation.maximum)><saturation.maximum.value><else><saturation.upper.value><endif>
+>>
 
 robot-driver-include(solver, backend) ::= <<
 <({robot-driver-include-<backend>-<solver.robot_model>})(solver)>
@@ -225,7 +228,7 @@ controller-member(controller) ::= <<
 >>
 
 controller-member-ProportionalIntegralDerivative(controller) ::= <<
-    motion_spec::runtime::PIDControl <controller.id>{<controller.proportional_gain>, <controller.integral_gain>, <controller.derivative_gain>, <if(controller.decay_rate)><controller.decay_rate><else>0.0<endif>, motion_spec::runtime::kControlPeriodS};
+    motion_spec::runtime::PIDControl <controller.id>{<controller.proportional_gain>, <controller.integral_gain>, <controller.derivative_gain>, <if(controller.decay_rate)><controller.decay_rate><else>0.0<endif>, motion_spec::runtime::kControlPeriodS<if(controller.integral_saturation)>, true, <saturation-lower(controller.integral_saturation)>, <saturation-upper(controller.integral_saturation)><endif>};
 >>
 
 controller-member-ImpedanceController(controller) ::= <<
@@ -561,7 +564,14 @@ pose-axis-error-group-wrench(g, views) ::= <<
 >>
 
 emit-call-Controller(closure, views) ::= <<
-<if(closure.reference_signal)>shared.<closure.control_signal> = <access-expr(closure.reference_signal, views)>;<else>shared.<closure.control_signal> = state.<closure.id>.control(<access-expr(closure.error_signal, views)><if(closure.measured_derivative)>, -(<access-expr(closure.measured_derivative, views)>)<endif>);<endif>
+{
+    const double _control_signal = <if(closure.reference_signal)><access-expr(closure.reference_signal, views)><else>state.<closure.id>.control(<access-expr(closure.error_signal, views)><if(closure.measured_derivative)>, -(<access-expr(closure.measured_derivative, views)>)<endif>)<endif>;
+<if(closure.output_saturation)>
+    shared.<closure.control_signal> = motion_spec::runtime::clamp_range(_control_signal, <saturation-lower(closure.output_saturation)>, <saturation-upper(closure.output_saturation)>);
+<else>
+    shared.<closure.control_signal> = _control_signal;
+<endif>
+}
 >>
 
 emit-call-PlanarAngleFromDirections(closure, views) ::= <<
@@ -762,7 +772,6 @@ solver-state-struct-extra-mj_kdl(solver) ::= <<
     std::unique_ptr\<KDL::ChainIdSolver_RNE\> rnea;
     std::unique_ptr\<KDL::ChainJntToJacSolver\> jac_solver;
     std::unique_ptr\<KDL::ChainJntToJacDotSolver\> jac_dot_solver;
-    KDL::JntArray tau_max;
 >>
 
 solver-state-struct-extra-robif2b(solver) ::= <<
@@ -808,7 +817,11 @@ assign-constraint-force(constraint, solver_state, column) ::= <<
     }
 <endif>
 <endif>
-    state.<solver_state>.e_acc(<column>) = motion_spec::runtime::clamp_abs(shared.<constraint.acceleration_energy.id>, <subspace-to-beta-max.(constraint.subspace)>);
+<if(constraint.saturation)>
+    state.<solver_state>.e_acc(<column>) = motion_spec::runtime::clamp_range(shared.<constraint.acceleration_energy.id>, <saturation-lower(constraint.saturation)>, <saturation-upper(constraint.saturation)>);
+<else>
+    state.<solver_state>.e_acc(<column>) = shared.<constraint.acceleration_energy.id>;
+<endif>
 >>
 
 // num_constraints=0 is valid for posture-only handlers: Vereshchagin runs
@@ -857,17 +870,6 @@ solver-init-extra-mj_kdl(solver) ::= <<
 <if(solver.algorithm_is_rne)>        state.<solver.id>.jac_solver = std::make_unique\<KDL::ChainJntToJacSolver\>(*robot.<solver.id>.chain);
         state.<solver.id>.jac_dot_solver = std::make_unique\<KDL::ChainJntToJacDotSolver\>(*robot.<solver.id>.chain);
 <endif>
-        state.<solver.id>.tau_max = KDL::JntArray(state.<solver.id>.num_joints);
-        if (motion_spec::runtime::kTauMaxOverrideEnabled) {
-            for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
-                state.<solver.id>.tau_max(i) = motion_spec::runtime::kTauMaxOverride;
-            }
-        } else {
-            const std::vector\<double\> _tau_limits_<solver.id> = mj_kdl::joint_force_limits(robot.<solver.id>.robot);
-            for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
-                state.<solver.id>.tau_max(i) = _tau_limits_<solver.id>[i];
-            }
-        }
 >>
 
 solver-init-extra-robif2b(solver) ::= <<
@@ -1158,7 +1160,9 @@ solver-stage-output-robif2b(solver) ::= <<
 >>
 solver-stage-output-mj_kdl(solver) ::= <<
     for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
-        robot.<solver.id>.robot->jnt_trq_cmd[i] = motion_spec::runtime::clamp_abs(state.<solver.id>.tau_ctrl(i), state.<solver.id>.tau_max(i));
+<if(solver.torque_saturation)>        robot.<solver.id>.robot->jnt_trq_cmd[i] = motion_spec::runtime::clamp_range(state.<solver.id>.tau_ctrl(i), <saturation-lower(solver.torque_saturation)>, <saturation-upper(solver.torque_saturation)>);
+<else>        robot.<solver.id>.robot->jnt_trq_cmd[i] = state.<solver.id>.tau_ctrl(i);
+<endif>
     }
 >>
 
@@ -1363,7 +1367,7 @@ trajectory-progress-mj_kdl(motion) ::= <<
 <endif>
 >>
 
-runtime_header(has_mobile_base, control_period_ns, rne_damping_lambda, beta_max_lin, beta_max_rot, tau_max_override) ::= <<
+runtime_header(has_mobile_base, control_period_ns, rne_damping_lambda) ::= <<
 #pragma once
 
 #include \<cassert\>
@@ -1391,19 +1395,13 @@ runtime_header(has_mobile_base, control_period_ns, rne_damping_lambda, beta_max_
 namespace motion_spec::runtime {
 
 inline constexpr double kConstraintTolerance = 1e-2;
-inline constexpr double kBetaMaxLin = <beta_max_lin>;
-inline constexpr double kBetaMaxRot = <beta_max_rot>;
 inline constexpr double kControlPeriodS = <control_period_ns> * 1e-9;
 inline constexpr int kMonitorArmSteps = 100;
 inline constexpr double kRneDampingLambda = <rne_damping_lambda>;
-// Authored `torque-limit` scalar override (Solver); unauthored (the default)
-// leaves the per-joint torque saturation to the MJCF actuator forcerange,
-// read at runtime via mj_kdl::joint_force_limits() -- see solver-init-extra-mj_kdl.
-inline constexpr bool kTauMaxOverrideEnabled = <if(tau_max_override)>true<else>false<endif>;
-inline constexpr double kTauMaxOverride = <if(tau_max_override)><tau_max_override><else>0.0<endif>;
-inline double clamp_abs(double v, double limit) {
-    if (v > limit) return limit;
-    if (v \< -limit) return -limit;
+
+inline double clamp_range(double v, double lower, double upper) {
+    if (v \< lower) return lower;
+    if (v > upper) return upper;
     return v;
 }
 
@@ -1605,8 +1603,10 @@ class PIDControl {
   public:
     PIDControl() = default;
 
-    PIDControl(double p_gain, double i_gain, double d_gain, double decay_rate = 0.0, double dt = 0.002)
-        : kp(p_gain), ki(i_gain), kd(d_gain), decay_rate(decay_rate), dt_(dt) {}
+    PIDControl(double p_gain, double i_gain, double d_gain, double decay_rate = 0.0, double dt = 0.002,
+               bool has_integral_limit = false, double integral_lower = 0.0, double integral_upper = 0.0)
+        : kp(p_gain), ki(i_gain), kd(d_gain), decay_rate(decay_rate), dt_(dt),
+          has_integral_limit(has_integral_limit), integral_lower(integral_lower), integral_upper(integral_upper) {}
 
     double control(double error) {
         return control_impl(error, 0.0, false);
@@ -1623,7 +1623,10 @@ class PIDControl {
         if (decay_rate > 0.0) {
             err_integ = decay_rate * err_integ + error * dt_;
         } else {
-            err_integ = clamp_abs(err_integ + error * dt_, 0.5);
+            err_integ = err_integ + error * dt_;
+        }
+        if (has_integral_limit) {
+            err_integ = clamp_range(err_integ, integral_lower, integral_upper);
         }
         err_last = error;
         first_sample = false;
@@ -1647,6 +1650,9 @@ class PIDControl {
     double kd = 0.0;
     double decay_rate = 0.0;
     double dt_ = 0.002;
+    bool has_integral_limit = false;
+    double integral_lower = 0.0;
+    double integral_upper = 0.0;
 };
 
 // Spring-damper controller: maps a single scalar constraint error to a

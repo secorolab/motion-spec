@@ -611,11 +611,20 @@ class CSTR_HDL_EXT(DefinedNamespace):
     FeedForwardController: URIRef
     VelocityProfile: URIRef
     Admittance: URIRef
+    SignalLimiter: URIRef
+    Saturation: URIRef
+    IntegralSaturation: URIRef
     JointTorque: URIRef
 
     _extras = [
         "control-mode",
         "reference-signal",
+        "limits",
+        "input-signal",
+        "output-signal",
+        "maximum-absolute-value",
+        "lower-limit",
+        "upper-limit",
         "mass",
         "damping",
         "stiffness",
@@ -693,13 +702,15 @@ class SLV_EXT(DefinedNamespace):
     # geom-rel:Direction instead of a fixed x/y/z axis, so a distance-between-poses
     # control constraint can drive the solver.
     DirectionAligned: URIRef
+    AccelerationSaturation: URIRef
+    TorqueSaturation: URIRef
     direction: URIRef
 
     # "robot" links a solver to the environment robot whose kinematic chain it
     # drives, so per-robot chain setups can be resolved in multi-robot scenes.
     # "regularization"/"torque-limit"/"max-linear-accel"/"max-angular-accel" are
-    # optional authored control-loop tuning knobs on the RNE/ACHD solver (DLS/Tikhonov
-    # regularization lambda, torque saturation override, and beta-clamp overrides).
+    # legacy authored scalar solver metadata. New saturation behavior is modeled
+    # with cstr-hdl-ext:limits and solver-specific Saturation classes.
     _extras = [
         "forwards-command",
         "command-signal",

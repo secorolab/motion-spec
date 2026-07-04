@@ -3295,11 +3295,37 @@ def _attach_target_of(g, obj_node):
     return kind, name
 
 
+def _transitive_attachment_nodes(g, env_node, robot_node):
+    """Attachment nodes reachable from the robot through SLV:attached-to, parent-first.
+
+    Supports chained attachments (e.g. gripper -> ft-sensor -> robot), not just those
+    bolted directly to the robot. Ordered so a parent always precedes its children,
+    which is the order MuJoCo needs (a child's target site only exists once its parent
+    is attached).
+    """
+    candidates = []
+    for c in g.objects(env_node, ENV["has-object"]):
+        path = _path_of_model(g, c) or _path_of_model(g, g.value(c, ENV["has-object-model"]))
+        if path:
+            candidates.append((c, g.value(c, SLV["attached-to"])))
+    ordered = []
+    resolved = {robot_node}
+    progress = True
+    while progress:
+        progress = False
+        for c, target in candidates:
+            if c in resolved or target not in resolved:
+                continue
+            ordered.append(c)
+            resolved.add(c)
+            progress = True
+    return ordered
+
+
 def _attachments_for_robot(g, env_node, robot_node, tool_body):
     attachments = []
-    for candidate in g.objects(env_node, ENV["has-object"]):
-        if g.value(candidate, SLV["attached-to"]) != robot_node:
-            continue
+    prefix_by_node = {}
+    for candidate in _transitive_attachment_nodes(g, env_node, robot_node):
         path = _path_of_model(g, candidate)
         if not path:
             path = _path_of_model(g, g.value(candidate, ENV["has-object-model"]))
@@ -3321,6 +3347,11 @@ def _attachments_for_robot(g, env_node, robot_node, tool_body):
         attach_to = _site_name(g, attach_node) if attach_kind == "Site" else _mj_body_name(g, attach_node)
         prefix_lit = g.value(candidate, MJ["attach-prefix"])
         prefix = str(prefix_lit) if prefix_lit is not None else ""
+        # When attached to another (prefixed) attachment, that parent's sites/bodies
+        # carry its prefix in the compiled model, so prefix the target name to match.
+        parent_prefix = prefix_by_node.get(g.value(candidate, SLV["attached-to"]), "")
+        if parent_prefix and attach_to and not attach_to.startswith(parent_prefix):
+            attach_to = parent_prefix + attach_to
         pos = _xyz_or_none(g, g.value(candidate, MJ["attach-position"]))
         euler = _orientation_degrees(g, g.value(candidate, MJ["attach-orientation"]))
         actuator = str(g.value(candidate, MJ["actuator-name"]) or "")
@@ -3336,6 +3367,7 @@ def _attachments_for_robot(g, env_node, robot_node, tool_body):
                 actuator=actuator,
             )
         )
+        prefix_by_node[candidate] = prefix
     return attachments
 
 
@@ -3527,9 +3559,7 @@ def _robot_setups_from_graph(g):
                 key=lambda s: s["name"],
             )
             attachments = _attachments_for_robot(g, env_node, obj_node, tool_body)
-            for attachment in g.objects(env_node, ENV["has-object"]):
-                if g.value(attachment, SLV["attached-to"]) != obj_node:
-                    continue
+            for attachment in _transitive_attachment_nodes(g, env_node, obj_node):
                 tool_body = tool_body or _mj_body_name(g, g.value(attachment, MJ["tool-body"]))
                 tcp_site = tcp_site or _site_name(g, g.value(attachment, MJ["tcp-site"]))
             if not tool_body and tcp_site:

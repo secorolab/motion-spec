@@ -7,7 +7,7 @@ find_package(Eigen3)
 find_package(orocos_kdl)
 find_package(urdfdom_headers)
 find_package(urdfdom)
-# Optional: present only when monitor events are wired to a coord2b FSM (--fsm).
+# Optional: present only when monitor events are wired to a coord2b FSM.
 find_package(coord2b)
 
 add_executable(main

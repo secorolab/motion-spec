@@ -248,41 +248,6 @@ def _add_group_type_flags(groups: list) -> list:
     return groups
 
 
-_FSM_NS_RE = re.compile(r"FSM\s*\(\s*ns\s*=\s*([^)\s]+)\s*\)")
-
-
-def _fsm_namespace_uri(fsm_path: Path) -> str:
-    """URI of the FSM's namespace; FSM event URIs (which monitor events must match) live under it."""
-    text = fsm_path.read_text()
-    ns_match = _FSM_NS_RE.search(text)
-    if not ns_match:
-        raise RuntimeError(
-            f"Could not read the FSM namespace from '{fsm_path}'. Expected 'FSM (ns=<prefix>) ...'."
-        )
-    prefix = ns_match.group(1)
-    uri_match = re.search(rf'ns\s+{re.escape(prefix)}\s*=\s*"([^"]+)"', text)
-    if not uri_match:
-        raise RuntimeError(
-            f"FSM namespace prefix '{prefix}' has no 'ns {prefix} = \"...\"' declaration in '{fsm_path}'."
-        )
-    return uri_match.group(1)
-
-
-def _load_fsm(fsm_path: Path) -> tuple[dict, str]:
-    """Parse a .fsm via coord-dsl: return its structured IR and the rendered C++ header."""
-    try:
-        from coord_dsl.generators.registration import fsm_metamodel
-        from coord_dsl.generators.fsm_graph import get_fsm_graph, gen_json, gen_cpp_header
-    except ImportError as exc:
-        raise RuntimeError(
-            "coord-dsl is required for --fsm. Install it, e.g. pip install -e src/coord-dsl."
-        ) from exc
-    model = fsm_metamodel().model_from_file(str(fsm_path))
-    graph, _, fsm_ref = get_fsm_graph(model)
-    fsm_ir = gen_json(graph, fsm_ref)
-    return fsm_ir, gen_cpp_header(fsm_ir)
-
-
 def _event_to_state(fsm_ir: dict) -> dict[str, str]:
     """Map each FSM event enum token to the state it transitions out of (the state the motion runs in)."""
     transition_from = {t["id"]: t["from_state"] for t in fsm_ir["transitions_table"]}
@@ -293,22 +258,13 @@ def _event_to_state(fsm_ir: dict) -> dict[str, str]:
     }
 
 
-def _load_fsm_ir(output_dir: Path, fsm_path: Path | None) -> tuple[dict | None, str | None]:
-    """Return (fsm_ir, fsm_header_text).
-
-    Resolution order:
-    1. ``fsm_ir.json`` in *output_dir* — written by ``textx generate --target jsonld``
-       when the .robmot imports a .fsm.  The C++ header is already on disk; header
-       text is not returned in this case (None).
-    2. ``--fsm <path>`` legacy flag — parses the .fsm directly (backward compat).
-    3. Neither present → (None, None); no FSM wiring.
-    """
+def _load_fsm_ir(output_dir: Path) -> dict | None:
+    """The fsm_ir.json written by ``textx generate --target jsonld`` when the .robmot
+    imports a .fsm; None when absent (no FSM wiring)."""
     fsm_ir_path = output_dir / "fsm_ir.json"
     if fsm_ir_path.exists():
-        return json.loads(fsm_ir_path.read_text()), None
-    if fsm_path is not None:
-        return _load_fsm(fsm_path)
-    return None, None
+        return json.loads(fsm_ir_path.read_text())
+    return None
 
 
 def _motion_done_condition(motion: dict) -> str:
@@ -329,18 +285,16 @@ def _motion_done_condition(motion: dict) -> str:
     return f"({condition})" if len(event_terms) > 1 else condition
 
 
-def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path | None = None):
+def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     ir = load_ir(ir_path)
     _validate_ir(ir)
     backend = ir.get("backend", "robif2b")
 
     # FSM wiring (codegen/build concern; derived, not part of the semantic IR).
-    fsm_ir, fsm_header_text = _load_fsm_ir(output_dir, fsm_path)
+    fsm_ir = _load_fsm_ir(output_dir)
     fsm_namespace = fsm_ir["name"].lower() if fsm_ir else None
     fsm_header = f"{fsm_ir['name']}.hpp" if fsm_ir else None
     fsm_ns_uri = fsm_ir.get("namespace_uri") if fsm_ir else None
-    if fsm_ns_uri is None and fsm_path is not None:
-        fsm_ns_uri = _fsm_namespace_uri(fsm_path)
     event_state = _event_to_state(fsm_ir) if fsm_ir else {}
     # Heartbeat event produced every tick (drives the start-state kick / self-loops), if present.
     fsm_step_event = "E_STEP" if (fsm_ir and "E_STEP" in fsm_ir["events"]) else None
@@ -514,14 +468,14 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
             superobject = view.get("superobject") or {}
             so_type = superobject.get("type")
             is_declared_pose = bool(superobject.get("authored") or superobject.get("snapshot"))
-            is_legacy_pose_quantity = so_type == "PoseQuantity"
+            is_bare_pose_quantity = so_type == "PoseQuantity"
             if so_type not in ("Pose", "PoseQuantity"):
                 continue
             if so_type == "Pose" and not (
                 is_declared_pose or superobject.get("euler_axes_sequence")
             ):
                 continue
-            if is_legacy_pose_quantity:
+            if is_bare_pose_quantity:
                 is_declared_pose = True
             # Only include inline-defined poses (those where components have values/references)
             # FK poses have all components computed from the solver with no stored value/reference
@@ -611,8 +565,6 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
                 raise ValueError("Arc trajectory end must be a Pose quantity.")
             closure["end_position_expr"] = f"shared.{end}.p"
             closure["end_orientation_expr"] = f"shared.{end}.M"
-            # current_pose_expr was used by the old closed-loop pose-projection block.
-            # The arc template now uses time-based alpha and no longer reads this field.
 
     def declared_pose_component_entries(
         ir_payload: dict,
@@ -976,9 +928,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
     headers_dir = output_dir / "headers"
     headers_dir.mkdir(parents=True, exist_ok=True)
 
-    if fsm_header_text is not None:
-        (headers_dir / fsm_header).write_text(fsm_header_text)
-    elif fsm_ir is not None:
+    if fsm_ir is not None:
         shutil.copy2(output_dir / fsm_header, headers_dir / fsm_header)
 
     payload_dir = output_dir / ".stst"
@@ -1038,11 +988,6 @@ def main():
         default="stst",
         help="Path to the STSTv4 executable used to render StringTemplate groups",
     )
-    parser.add_argument(
-        "--fsm",
-        default=None,
-        help="(deprecated) Path to a coord-dsl .fsm; auto-detected from fsm_ir.json in the output directory",
-    )
     args = parser.parse_args()
 
     try:
@@ -1050,7 +995,6 @@ def main():
             ir_path=Path(args.input).resolve(),
             output_dir=Path(args.output_dir).resolve(),
             stst_bin=args.stst_bin,
-            fsm_path=Path(args.fsm).resolve() if args.fsm else None,
         )
     except RuntimeError as exc:
         print(f"Code generation failed: {exc}", file=sys.stderr)

@@ -609,8 +609,10 @@ class CSTR_HDL_EXT(DefinedNamespace):
     FeedForwardController: URIRef
     VelocityProfile: URIRef
     Admittance: URIRef
+    JointTorque: URIRef
 
     _extras = [
+        "control-mode",
         "reference-signal",
         "mass",
         "damping",

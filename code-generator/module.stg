@@ -769,6 +769,27 @@ solver-state-struct-extra-robif2b(solver) ::= <<
 >>
 
 assign-constraint-force(constraint, solver_state, column) ::= <<
+<if(constraint.direction)>
+<if(constraint.base_aligned)>
+    state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::X), <column>) = shared.<constraint.direction.id>.x();
+    state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::Y), <column>) = shared.<constraint.direction.id>.y();
+    state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::Z), <column>) = shared.<constraint.direction.id>.z();
+<else>
+    {
+        KDL::Frame alpha_frame_<solver_state>_<column>;
+        KDL::ChainFkSolverPos_recursive alpha_fk_<solver_state>_<column>(*robot.<solver_state>.chain);
+        alpha_fk_<solver_state>_<column>.JntToCart(
+            state.<solver_state>.q,
+            alpha_frame_<solver_state>_<column>,
+            motion_spec::runtime::find_segment_index(*robot.<solver_state>.chain, "<constraint.as_seen_by.id>"));
+        const KDL::Vector alpha_axis_<solver_state>_<column> =
+            alpha_frame_<solver_state>_<column>.M * shared.<constraint.direction.id>;
+        state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::X), <column>) = alpha_axis_<solver_state>_<column>[0];
+        state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::Y), <column>) = alpha_axis_<solver_state>_<column>[1];
+        state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::Z), <column>) = alpha_axis_<solver_state>_<column>[2];
+    }
+<endif>
+<else>
 <if(constraint.base_aligned)>
     state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::<constraint.axis>), <column>) = 1.0;
 <else>
@@ -785,6 +806,7 @@ assign-constraint-force(constraint, solver_state, column) ::= <<
         state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::Y), <column>) = alpha_axis_<solver_state>_<column>[1];
         state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::Z), <column>) = alpha_axis_<solver_state>_<column>[2];
     }
+<endif>
 <endif>
     state.<solver_state>.e_acc(<column>) = motion_spec::runtime::clamp_abs(shared.<constraint.acceleration_energy.id>, <subspace-to-beta-max.(constraint.subspace)>);
 >>

@@ -516,7 +516,11 @@ ops_slv = [
     Specification(type_=SLV["CartesianForceSpecification"], input=[SLV["force"]], output=[]),
     Specification(type_=SLV["JointForceSpecification"], input=[SLV["force"]], output=[]),
     Specification(
-        type_=SLV["AccelerationConstraint"], input=[SLV["acceleration-energy"]], output=[]
+        type_=SLV["AccelerationConstraint"],
+        # `slv-ext:direction` is only present on DirectionAligned constraints; absent
+        # on AxisAligned ones, where g.objects() simply yields nothing for it.
+        input=[SLV["acceleration-energy"], SLV_EXT["direction"]],
+        output=[],
     ),
     Specification(type_=SLV["ForceDistributionSolver"], input=[SLV["force"]], output=[]),
 ]
@@ -1008,10 +1012,12 @@ class GuardedMotionBlock:
 class AccelerationConstraint:
     id: str
     subspace: Subspace
-    axis: Axis
+    # Exactly one of axis (AxisAligned) / direction (DirectionAligned) is set.
+    axis: Axis | None
     acceleration_energy: Quantity
     as_seen_by: Frame | None = None
     base_aligned: bool = True
+    direction: "Direction | None" = None
     type: str = field(default="AccelerationConstraint")
 
 
@@ -1370,14 +1376,20 @@ class Parser:
     @memoize
     def acceleration_constraint(self, id_):
         assert SLV["AccelerationConstraint"] in self.g[id_ : RDF["type"]]
-        assert SLV["AxisAligned"] in self.g[id_ : RDF["type"]]
 
         subspace = self.subspace(self.g.value(id_, SLV["subspace"]))
-        axis = self.axis(self.g.value(id_, SLV["axis"]))
         e_acc = self.quantity(self.g.value(id_, SLV["acceleration-energy"]))
         as_seen_by_node = self.g.value(id_, GEOM_COORD["as-seen-by"])
         as_seen_by = self.frame(as_seen_by_node) if as_seen_by_node else None
 
+        if SLV_EXT["DirectionAligned"] in self.g[id_ : RDF["type"]]:
+            direction = self.direction(self.g.value(id_, SLV_EXT["direction"]))
+            return AccelerationConstraint(
+                self.id(id_), subspace, None, e_acc, as_seen_by, direction=direction
+            )
+
+        assert SLV["AxisAligned"] in self.g[id_ : RDF["type"]]
+        axis = self.axis(self.g.value(id_, SLV["axis"]))
         return AccelerationConstraint(self.id(id_), subspace, axis, e_acc, as_seen_by)
 
     @memoize
@@ -2945,6 +2957,20 @@ def build_motion_units(
                 if upstream & handler_output_ids:
                     cartesian_force_nodes.append(cf_node)
 
+        # Direction-aligned ACHD acceleration constraints: their runtime direction
+        # (geom-op:PoseToDirection) is not an input to any evaluator/controller, so
+        # backward discovery from while_eval_nodes/ctrl_nodes never reaches it --
+        # seed the walk from the constraint nodes themselves, same as cartesian_force_nodes.
+        direction_constraint_nodes = []
+        for solver in handler_arm_solvers:
+            driver_node = node_by_id.get(solver.motion_driver.id)
+            if driver_node is None:
+                continue
+            for spec_node in g[driver_node : SLV["acceleration-constraint"]]:
+                for acc_node in g[spec_node : SLV["constraints"]]:
+                    if SLV_EXT["DirectionAligned"] in g[acc_node : RDF["type"]]:
+                        direction_constraint_nodes.append(acc_node)
+
         p_active = Parser(g)
         pose_axis_error_groups = _pose_axis_error_groups_for_motion(
             while_eval_nodes, p_active, view_map
@@ -2986,6 +3012,9 @@ def build_motion_units(
         ]
         while_schedule.extend(
             p_active.schedule(cartesian_force_nodes, ops_generic + ops_slv + ops_cstr_hdl)
+        )
+        while_schedule.extend(
+            p_active.schedule(direction_constraint_nodes, ops_generic + ops_slv + ops_cstr_hdl)
         )
 
         # While evaluators watched only by a monitor (no controller consumes their

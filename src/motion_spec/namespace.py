@@ -688,6 +688,13 @@ class SLV_EXT(DefinedNamespace):
     CommandForwardingDriver: URIRef
     ForwardedCommand: URIRef
 
+    # Direction-aligned ACHD acceleration constraint (sibling of upstream
+    # slv:AxisAligned): fills the constraint's Jacobian column from a runtime
+    # geom-rel:Direction instead of a fixed x/y/z axis, so a distance-between-poses
+    # control constraint can drive the solver.
+    DirectionAligned: URIRef
+    direction: URIRef
+
     # "robot" links a solver to the environment robot whose kinematic chain it
     # drives, so per-robot chain setups can be resolved in multi-robot scenes.
     # "regularization"/"torque-limit"/"max-linear-accel"/"max-angular-accel" are

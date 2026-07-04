@@ -33,7 +33,9 @@ from motion_spec.namespace import (
     GEOM_ENT,
     GEOM_REL,
     GEOM_COORD,
+    GEOM_COORD_EXT,
     GEOM_OP,
+    GEOM_OP_EXT,
     RBDYN_ENT,
     RBDYN_COORD,
     RBDYN_OP,
@@ -45,7 +47,6 @@ from motion_spec.namespace import (
     CSTR_EXT,
     MJ,
     MOT,
-    MOT_EXT,
     POLY,
     TRAJ,
     RT,
@@ -55,7 +56,6 @@ from motion_spec.namespace import (
     SNAP,
     SLV,
     SLV_EXT,
-    VALUE_ROLE,
 )
 from motion_spec.manifest import build_url_map
 
@@ -67,12 +67,26 @@ class JSONEncoder(json.JSONEncoder):
         return super().default(o)
 
 
-def parse_argument(g, closure_id, argument, to_id):
+def parse_argument(g, closure_id, argument, to_id, resolve_value=False):
     # For each of the key differentiate if there is one or more associated value
     entry = list(g[closure_id:argument])
     if len(entry) == 0:
         return None
-    ids = [to_id(e) for e in entry]
+
+    def resolve(e):
+        # Parameters (unlike input/output) are baked directly into generated code as
+        # literal text, never through `access-expr`/`shared.<id>`. A qudt:Quantity-wrapped
+        # constant (e.g. Admittance mass/damping/stiffness/max-velocity) must resolve to its
+        # scalar qudt:value here, not to the node's id, or the template would emit the id
+        # string where a number is expected. Bare literals (e.g. Lerp profile shape) and IRI
+        # references (e.g. controller) are untouched -- they never carry a qudt:value triple.
+        if resolve_value and not isinstance(e, rdflib.Literal):
+            qval = g.value(e, QUDT_SCHEMA["value"])
+            if qval is not None:
+                return qval
+        return to_id(e)
+
+    ids = [resolve(e) for e in entry]
     unique = list(dict.fromkeys(ids))  # deduplicate, preserving order
     if len(unique) == 1:
         return unique[0]
@@ -94,7 +108,7 @@ class Operator:
         for output in self.output:
             closure[to_id(output)] = parse_argument(g, closure_id, output, to_id)
         for param in self.parameters:
-            closure[to_id(param)] = parse_argument(g, closure_id, param, to_id)
+            closure[to_id(param)] = parse_argument(g, closure_id, param, to_id, resolve_value=True)
 
         return closure
 
@@ -232,7 +246,7 @@ class ErrorEvaluator:
             for output in operator.output:
                 closure[to_id(output)] = parse_argument(g, closure_id, output, to_id)
             for param in operator.parameters:
-                closure[to_id(param)] = parse_argument(g, closure_id, param, to_id)
+                closure[to_id(param)] = parse_argument(g, closure_id, param, to_id, resolve_value=True)
 
             # Only return the first matching type
             return closure
@@ -313,7 +327,7 @@ class AssignmentEvaluator:
         for input in self.cstr_op.input:
             closure[to_id(input)] = parse_argument(g, constraint_id, input, to_id)
         for param in self.cstr_op.parameters:
-            closure[to_id(param)] = parse_argument(g, closure_id, param, to_id)
+            closure[to_id(param)] = parse_argument(g, closure_id, param, to_id, resolve_value=True)
 
         # Only return the first matching type
         return closure
@@ -416,9 +430,9 @@ ops_generic = [
         output=[MAP["subobject"]],
     ),
     Operator(
-        type_=GEOM_OP["PoseDiffEvaluator"],
+        type_=GEOM_OP_EXT["PoseDiffEvaluator"],
         input=[GEOM_OP["in1"], GEOM_OP["in2"]],
-        output=[GEOM_OP["out"]],
+        output=[GEOM_OP_EXT["out"]],
     ),
     Operator(
         type_=TRAJ["Lerp"],
@@ -431,13 +445,13 @@ ops_generic = [
         input=[
             CSTR_HDL_EXT["goal"],
             CSTR_HDL_EXT["measured"],
-            CSTR_HDL_EXT["measured-velocity"],
-            CSTR_HDL_EXT["max-velocity"],
-            CSTR_HDL_EXT["max-acceleration"],
-            CSTR_HDL_EXT["max-jerk"],
+            TRAJ["measured-velocity"],
+            TRAJ["max-velocity"],
+            TRAJ["max-acceleration"],
+            TRAJ["max-jerk"],
         ],
         output=[CSTR_HDL_EXT["reference"]],
-        parameters=[CSTR_HDL_EXT["shape"], CSTR_HDL_EXT["controller"]],
+        parameters=[TRAJ["shape"], CSTR_HDL_EXT["controller"]],
     ),
     Operator(
         type_=CSTR_HDL_EXT["Admittance"],
@@ -517,6 +531,8 @@ class Subspace(str, Enum):
     LinearAcceleration = "LinearAcceleration"
     Torque = "Torque"
     Force = "Force"
+    LinearDifference = "LinearDifference"
+    AngularDifference = "AngularDifference"
 
 
 class Axis(str, Enum):
@@ -571,7 +587,8 @@ class Quantity:
     unit: Unit
     value: float | None
     has_view: bool
-    roles: list[str] = field(default_factory=list)
+    authored: bool = False
+    snapshot: bool = False
     reference_value: str | None = None
     type: str = field(default="Quantity")
 
@@ -583,7 +600,8 @@ class FreeVector:
     unit: Unit
     vector: list[float] | None
     has_view: bool = False
-    roles: list[str] = field(default_factory=list)
+    authored: bool = False
+    snapshot: bool = False
     type: str = field(default="FreeVector")
 
 
@@ -594,7 +612,8 @@ class Trajectory:
     unit: Unit
     has_view: bool
     value: None = None
-    roles: list[str] = field(default_factory=list)
+    authored: bool = False
+    snapshot: bool = False
     value_kind: str | None = None
     type: str = field(default="Trajectory")
 
@@ -613,7 +632,8 @@ class PoseQuantity:
     unit: Unit
     has_view: bool
     value: None = None
-    roles: list[str] = field(default_factory=list)
+    authored: bool = False
+    snapshot: bool = False
     type: str = field(default="Pose")
 
 
@@ -664,7 +684,8 @@ class Orientation:
     unit: Unit
     euler_axes_sequence: str | None = None
     has_view: bool = False
-    roles: list[str] = field(default_factory=list)
+    authored: bool = False
+    snapshot: bool = False
     type: str = field(default="Orientation")
 
 
@@ -681,7 +702,8 @@ class Pose:
     direction_cosine_z: list[float] | None
     position: list[float] | None
     euler_axes_sequence: str | None = None
-    roles: list[str] = field(default_factory=list)
+    authored: bool = False
+    snapshot: bool = False
     type: str = field(default="Pose")
 
 
@@ -694,7 +716,8 @@ class VelocityTwist:
     reference_point: Point
     as_seen_by: Frame
     unit: list[Unit]
-    roles: list[str] = field(default_factory=list)
+    authored: bool = False
+    snapshot: bool = False
     type: str = field(default="VelocityTwist")
 
 
@@ -705,8 +728,21 @@ class AccelerationTwist:
     reference_point: Point
     as_seen_by: Frame
     unit: list[Unit]
-    roles: list[str] = field(default_factory=list)
+    authored: bool = False
+    snapshot: bool = False
     type: str = field(default="AccelerationTwist")
+
+
+@dataclass
+class PoseDifference:
+    id: str
+    quantity_kind: list[QuantityKind]
+    reference_point: Point
+    as_seen_by: Frame
+    unit: list[Unit]
+    authored: bool = False
+    snapshot: bool = False
+    type: str = field(default="PoseDifference")
 
 
 @dataclass
@@ -716,7 +752,8 @@ class Wrench:
     reference_point: Point
     as_seen_by: Frame
     unit: list[Unit]
-    roles: list[str] = field(default_factory=list)
+    authored: bool = False
+    snapshot: bool = False
     # Non-empty when this wrench is measured from a force/torque sensor (the FT-read
     # solver-output reads and tares this sensor into shared.<id>.force). Empty for
     # computed/commanded wrenches.
@@ -727,7 +764,7 @@ class Wrench:
 @dataclass
 class View:
     id: str
-    superobject: Pose | VelocityTwist | AccelerationTwist | Wrench
+    superobject: Pose | VelocityTwist | AccelerationTwist | PoseDifference | Wrench
     subobject: Quantity | Position | Orientation
     subspace: Subspace
     axis: Axis | None
@@ -809,11 +846,11 @@ class Controller:
 
 
 @dataclass
-class CommandForwardingSpecification:
+class ForwardedCommand:
     id: str
     control_signal: Quantity
     target: str
-    type: str = field(default="CommandForwardingSpecification")
+    type: str = field(default="ForwardedCommand")
 
 
 @dataclass
@@ -835,7 +872,7 @@ class MonitorEntry:
     # NB: debounce_steps must stay None (not 0) when absent -- ST4's <if(x)> is
     # true for any non-null value, including the integer 0 (see codegen.py's
     # "" -> None note for the same gotcha).
-    debounce_s: float | None = None
+    debounce_duration_s: float | None = None
     debounce_steps: int | None = None
     type: str = field(default="MonitorEntry")
 
@@ -962,7 +999,7 @@ class GuardedMotionBlock:
     pose_axis_error_groups: list[PoseAxisErrorGroup] = field(default_factory=list)
 
     # Direct robot command forwarding driven by FeedForward controllers.
-    command_forwarding: list[CommandForwardingSpecification] = field(default_factory=list)
+    forwarded_commands: list[ForwardedCommand] = field(default_factory=list)
 
     type: str = field(default="GuardedMotionBlock")
 
@@ -1262,10 +1299,6 @@ class Parser:
             SLV["RecursiveNewtonEulerAlgorithm"]: "RNE",
         }.get(algorithm_node, self.id(algorithm_node) if algorithm_node else "")
 
-        def _optional_float(predicate):
-            value = self.g.value(id_, predicate)
-            return float(value) if value is not None else None
-
         return SolverWithInputAndOutput(
             id=self.id(id_),
             motion_drivers=drv,
@@ -1274,10 +1307,10 @@ class Parser:
             algorithm_is_rne=algorithm == "RNE",
             gravity=list(gravity) if gravity else None,
             root_acc=root_acc,
-            regularization=_optional_float(SLV_EXT["regularization"]),
-            torque_limit=_optional_float(SLV_EXT["torque-limit"]),
-            max_linear_accel=_optional_float(SLV_EXT["max-linear-accel"]),
-            max_angular_accel=_optional_float(SLV_EXT["max-angular-accel"]),
+            regularization=self._optional_float(id_, SLV_EXT["regularization"]),
+            torque_limit=self._optional_float(id_, SLV_EXT["torque-limit"]),
+            max_linear_accel=self._optional_float(id_, SLV_EXT["max-linear-accel"]),
+            max_angular_accel=self._optional_float(id_, SLV_EXT["max-angular-accel"]),
         )
 
     @memoize
@@ -1352,6 +1385,7 @@ class Parser:
         d = {
             MAP["position"]: Subspace.Position,
             MAP_EXT["rotation"]: Subspace.Rotation,
+            MAP_EXT["orientation"]: Subspace.Rotation,
             MAP["angular-velocity"]: Subspace.AngularVelocity,
             MAP["linear-velocity"]: Subspace.LinearVelocity,
             MAP["angular-acceleration"]: Subspace.AngularAcceleration,
@@ -1360,6 +1394,8 @@ class Parser:
             MAP["force"]: Subspace.Force,
             SLV["angular-acceleration"]: Subspace.AngularAcceleration,
             SLV["linear-acceleration"]: Subspace.LinearAcceleration,
+            GEOM_COORD_EXT["linear"]: Subspace.LinearDifference,
+            GEOM_COORD_EXT["angular"]: Subspace.AngularDifference,
         }
         assert id_ in d.keys()
 
@@ -1398,7 +1434,7 @@ class Parser:
 
         evaluators = []
         for e in self.g[id_ : CSTR_HDL["evaluators"]]:
-            if GEOM_OP["PoseDiffEvaluator"] in self.g[e : RDF["type"]]:
+            if GEOM_OP_EXT["PoseDiffEvaluator"] in self.g[e : RDF["type"]]:
                 continue  # handled via schedule traversal
             evaluators.append(self.constraint_evaluator(e))
 
@@ -1436,12 +1472,11 @@ class Parser:
         event = self.id(event_node)
         fallback_node = self.g.value(id_, CSTR_HDL_EXT["fallback-motion"])
         fallback_motion = self.id(fallback_node) if fallback_node is not None else None
-        debounce_literal = self.g.value(id_, CSTR_HDL_EXT["debounce-seconds"])
-        debounce_s = float(debounce_literal) if debounce_literal is not None else None
+        debounce_duration_s = self._optional_float(id_, CSTR_HDL_EXT["debounce-duration"])
         return MonitorEntry(
             self.id(id_), "EdgeTriggeredMonitor", error, None, event, None, True, is_until_aggregate, is_when_aggregate,
             event_uri=str(event_node), event_name=event.upper(), fallback_motion=fallback_motion,
-            debounce_s=debounce_s,
+            debounce_duration_s=debounce_duration_s,
         )
 
     @memoize
@@ -1552,13 +1587,13 @@ class Parser:
         )
 
     @memoize
-    def command_forwarding_specification(self, id_):
-        assert SLV_EXT["CommandForwardingSpecification"] in self.g[id_ : RDF["type"]]
-        control_signal = self.quantity(self.g.value(id_, SLV_EXT["control-signal"]))
+    def forwarded_command(self, id_):
+        assert SLV_EXT["ForwardedCommand"] in self.g[id_ : RDF["type"]]
+        command_signal = self.quantity(self.g.value(id_, SLV_EXT["command-signal"]))
         target_node = self.g.value(id_, SLV["attached-to"])
-        return CommandForwardingSpecification(
+        return ForwardedCommand(
             self.id(id_),
-            control_signal,
+            command_signal,
             self.label(target_node) if target_node is not None else "",
         )
 
@@ -1588,9 +1623,9 @@ class Parser:
         when = []
         when_any = False
         for c in self.g[id_ : MOT["when"]]:
-            if MOT_EXT.ConstraintDisjunction in self.g[c : RDF["type"]]:
+            if CSTR_EXT.ConstraintDisjunction in self.g[c : RDF["type"]]:
                 when_any = True
-                for member in self.g[c : MOT_EXT["has-constraint"]]:
+                for member in self.g[c : CSTR_EXT["has-constraint"]]:
                     when.append(self.constraint(member))
             else:
                 when.append(self.constraint(c))
@@ -1602,9 +1637,9 @@ class Parser:
         until = []
         until_any = False
         for c in self.g[id_ : MOT["until"]]:
-            if MOT_EXT.ConstraintDisjunction in self.g[c : RDF["type"]]:
+            if CSTR_EXT.ConstraintDisjunction in self.g[c : RDF["type"]]:
                 until_any = True
-                for member in self.g[c : MOT_EXT["has-constraint"]]:
+                for member in self.g[c : CSTR_EXT["has-constraint"]]:
                     until.append(self.constraint(member))
             else:
                 until.append(self.constraint(c))
@@ -1754,6 +1789,7 @@ class Parser:
         as_seen_by = self.frame(as_seen_by_node) if as_seen_by_node is not None else None
         unit = self.unit(self.g.value(id_, QUDT_SCHEMA["unit"]))
         axes = self.g.value(id_, GEOM_COORD["axes-sequence"])
+        authored, snapshot = self.quantity_role_flags(id_)
         return Orientation(
             self.id(id_),
             of,
@@ -1763,7 +1799,8 @@ class Parser:
             Unit(unit),
             str(axes) if axes is not None else None,
             (id_, ~MAP["subobject"], None) in self.g,
-            self.roles(id_),
+            authored=authored,
+            snapshot=snapshot,
         )
 
     def position_reference(self, id_):
@@ -1815,6 +1852,7 @@ class Parser:
                 euler_axes_sequence = str(axes) if axes is not None else None
                 break
 
+        authored, snapshot = self.quantity_role_flags(id_)
         return Pose(
             self.id(id_),
             of,
@@ -1827,7 +1865,8 @@ class Parser:
             dc_z,
             pos,
             euler_axes_sequence,
-            self.roles(id_),
+            authored=authored,
+            snapshot=snapshot,
         )
 
     @memoize
@@ -1846,8 +1885,17 @@ class Parser:
         for u in self.g[id_ : QUDT_SCHEMA["unit"]]:
             unit.append(self.unit(u))
 
+        authored, snapshot = self.quantity_role_flags(id_)
         return VelocityTwist(
-            self.id(id_), of, wrt, quantity_kind, reference_point, as_seen_by, unit, self.roles(id_)
+            self.id(id_),
+            of,
+            wrt,
+            quantity_kind,
+            reference_point,
+            as_seen_by,
+            unit,
+            authored=authored,
+            snapshot=snapshot,
         )
 
     @memoize
@@ -1864,7 +1912,41 @@ class Parser:
         for u in self.g[id_ : QUDT_SCHEMA["unit"]]:
             unit.append(self.unit(u))
 
-        return AccelerationTwist(self.id(id_), quantity_kind, reference_point, as_seen_by, unit, self.roles(id_))
+        authored, snapshot = self.quantity_role_flags(id_)
+        return AccelerationTwist(
+            self.id(id_),
+            quantity_kind,
+            reference_point,
+            as_seen_by,
+            unit,
+            authored=authored,
+            snapshot=snapshot,
+        )
+
+    @memoize
+    def pose_difference(self, id_):
+        assert GEOM_COORD_EXT["PoseDifferenceCoordinate"] in self.g[id_ : RDF["type"]]
+        assert GEOM_COORD["VectorXYZ"] in self.g[id_ : RDF["type"]]
+
+        quantity_kind = []
+        for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]]:
+            quantity_kind.append(self.quantity_kind(k))
+        reference_point = self.point(self.g.value(id_, GEOM_REL["reference-point"]))
+        as_seen_by = self.frame(self.g.value(id_, GEOM_COORD["as-seen-by"]))
+        unit = []
+        for u in self.g[id_ : QUDT_SCHEMA["unit"]]:
+            unit.append(self.unit(u))
+
+        authored, snapshot = self.quantity_role_flags(id_)
+        return PoseDifference(
+            self.id(id_),
+            quantity_kind,
+            reference_point,
+            as_seen_by,
+            unit,
+            authored=authored,
+            snapshot=snapshot,
+        )
 
     @memoize
     def wrench(self, id_):
@@ -1881,13 +1963,15 @@ class Parser:
             unit.append(self.unit(u))
 
         sensor_name = str(self.g.value(id_, MJ["ft-sensor-ref"]) or "")
+        authored, snapshot = self.quantity_role_flags(id_)
         return Wrench(
             self.id(id_),
             quantity_kind,
             reference_point,
             as_seen_by,
             unit,
-            self.roles(id_),
+            authored=authored,
+            snapshot=snapshot,
             sensor_name=sensor_name,
         )
 
@@ -1906,7 +1990,15 @@ class Parser:
         if GEOM_REL["Pose"] in self.g[id_ : RDF["type"]]:
             if GEOM_COORD["PoseCoordinate"] in self.g[id_ : RDF["type"]]:
                 return self.pose(id_)
-            return PoseQuantity(self.id(id_), QuantityKind(quantity_kind), Unit(unit), has_view, roles=self.roles(id_))
+            authored, snapshot = self.quantity_role_flags(id_)
+            return PoseQuantity(
+                self.id(id_),
+                QuantityKind(quantity_kind),
+                Unit(unit),
+                has_view,
+                authored=authored,
+                snapshot=snapshot,
+            )
         if (
             GEOM_REL["Position"] in self.g[id_ : RDF["type"]]
             and GEOM_COORD["PositionCoordinate"] in self.g[id_ : RDF["type"]]
@@ -1922,37 +2014,43 @@ class Parser:
                 (k for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]] if k != TRAJ.Trajectory),
                 None,
             )
+            authored, snapshot = self.quantity_role_flags(id_)
             return Trajectory(
                 self.id(id_),
                 QuantityKind(quantity_kind),
                 Unit(unit),
                 has_view,
-                roles=self.roles(id_),
+                authored=authored,
+                snapshot=snapshot,
                 value_kind=self.quantity_kind(value_kind_node) if value_kind_node is not None else None,
             )
 
         if quantity_kind == "FreeVector" and GEOM_COORD["VectorXYZ"] in self.g[id_ : RDF["type"]]:
+            authored, snapshot = self.quantity_role_flags(id_)
             return FreeVector(
                 self.id(id_),
                 QuantityKind(quantity_kind),
                 Unit(unit),
                 self.parse_xyz(id_),
                 has_view,
-                self.roles(id_),
+                authored=authored,
+                snapshot=snapshot,
             )
 
         value = None
         if (id_, QUDT_SCHEMA["value"], None) in self.g:
             value = float(self.g.value(id_, QUDT_SCHEMA["value"]))
         reference_value = self.g.value(id_, CSTR["reference-value"])
+        authored, snapshot = self.quantity_role_flags(id_)
         return Quantity(
             self.id(id_),
             QuantityKind(quantity_kind),
             Unit(unit),
             value,
             has_view,
-            self.roles(id_),
-            self.id(reference_value) if reference_value is not None else None,
+            authored=authored,
+            snapshot=snapshot,
+            reference_value=self.id(reference_value) if reference_value is not None else None,
         )
 
     @memoize
@@ -1962,13 +2060,30 @@ class Parser:
         joint_name = self.label(joint_node) if joint_node is not None else ""
         return JointPosition(self.id(id_), joint_name)
 
-    def roles(self, id_):
-        role_ns = str(VALUE_ROLE._NS)
-        return sorted(
-            self.id(t)
-            for t in self.g[id_ : RDF["type"]]
-            if str(t).startswith(role_ns)
-        )
+    def _is_snapshot(self, id_):
+        # snapshot == the node is a runtime snapshot (snap:Snapshot / snap:snapshot-of).
+        return SNAP.Snapshot in self.g[id_ : RDF["type"]]
+
+    def quantity_role_flags(self, id_):
+        # (authored, snapshot), mutually exclusive: snapshot wins (mirrors old roles() elif).
+        # authored == carries an authored value/coordinate and is not a runtime snapshot.
+        snapshot = self._is_snapshot(id_)
+        authored = (not snapshot) and self._is_authored(id_)
+        return authored, snapshot
+
+    def _is_authored(self, id_):
+        if (id_, QUDT_SCHEMA["value"], None) in self.g:
+            return True
+        if (id_, CSTR["reference-value"], None) in self.g:
+            return True
+        if any(
+            (id_, GEOM_COORD[c], None) in self.g
+            for c in ("x", "y", "z", "direction-cosine-x", "direction-cosine-y", "direction-cosine-z")
+        ):
+            return True
+        if any(True for _ in self.g.objects(id_, GEOM_COORD["has-coordinate"])):
+            return True
+        return False
 
     @memoize
     def quantity_kind(self, id_):
@@ -2010,6 +2125,7 @@ class Parser:
             (MAP_EXT["PosePositionView"], self.pose),
             (MAP["VelocityTwistCoordinateView"], self.velocity_twist),
             (MAP["AccelerationTwistCoordinateView"], self.acceleration_twist),
+            (MAP_EXT["PoseDifferenceView"], self.pose_difference),
             (MAP["WrenchCoordinateView"], self.wrench),
             (MAP_EXT["WrenchVectorView"], self.wrench),
         ]
@@ -2045,6 +2161,7 @@ class Parser:
             (GEOM_COORD["PoseCoordinate"], self.pose),
             (GEOM_COORD["VelocityTwistCoordinate"], self.velocity_twist),
             (GEOM_COORD["AccelerationTwistCoordinate"], self.acceleration_twist),
+            (GEOM_COORD_EXT["PoseDifferenceCoordinate"], self.pose_difference),
             (RBDYN_COORD["WrenchCoordinate"], self.wrench),
             (QUDT_SCHEMA["Quantity"], self.quantity),
         ]
@@ -2510,7 +2627,7 @@ def _scene_relative_poses_for_motion(view_map, arm_solvers, data_structures=None
     candidate_poses = [
         getattr(view, "superobject", None)
         for view in view_map.values()
-        if "Declared" not in set(getattr(getattr(view, "superobject", None), "roles", []) or [])
+        if not getattr(getattr(view, "superobject", None), "authored", False)
     ]
     for evaluator in evaluators or []:
         constraint = getattr(evaluator, "constraint", None)
@@ -2570,7 +2687,7 @@ _SUBSPACE_TO_GROUP_AXIS: dict[Subspace, tuple[str, bool]] = {
 def _pose_axis_error_groups_for_motion(eval_nodes, p, view_map):
     groups: dict[str, PoseAxisErrorGroup] = {}
     for eval_node in eval_nodes:
-        if GEOM_OP["PoseDiffEvaluator"] in p.g[eval_node : RDF["type"]]:
+        if GEOM_OP_EXT["PoseDiffEvaluator"] in p.g[eval_node : RDF["type"]]:
             continue
         if CSTR_HDL["ErrorEvaluator"] not in p.g[eval_node : RDF["type"]]:
             continue
@@ -2671,16 +2788,16 @@ def build_motion_units(
         _raw_when = set(g[motion_node : MOT["when"]])
         when_constraint_nodes = set()
         for node in _raw_when:
-            if MOT_EXT.ConstraintDisjunction in g[node : RDF["type"]]:
-                when_constraint_nodes.update(g[node : MOT_EXT["has-constraint"]])
+            if CSTR_EXT.ConstraintDisjunction in g[node : RDF["type"]]:
+                when_constraint_nodes.update(g[node : CSTR_EXT["has-constraint"]])
             else:
                 when_constraint_nodes.add(node)
         while_constraint_nodes = set(g[motion_node : MOT["while"]])
         _raw_until = set(g[motion_node : MOT["until"]])
         until_constraint_nodes = set()
         for node in _raw_until:
-            if MOT_EXT.ConstraintDisjunction in g[node : RDF["type"]]:
-                until_constraint_nodes.update(g[node : MOT_EXT["has-constraint"]])
+            if CSTR_EXT.ConstraintDisjunction in g[node : RDF["type"]]:
+                until_constraint_nodes.update(g[node : CSTR_EXT["has-constraint"]])
             else:
                 until_constraint_nodes.add(node)
 
@@ -2710,9 +2827,9 @@ def build_motion_units(
         while_error_nodes = set()
         while_pose_eval_nodes = []
         for n in while_eval_nodes:
-            if GEOM_OP["PoseDiffEvaluator"] in g[n : RDF["type"]]:
+            if GEOM_OP_EXT["PoseDiffEvaluator"] in g[n : RDF["type"]]:
                 while_pose_eval_nodes.append(n)
-                pose_diff_out = g.value(n, GEOM_OP["out"])
+                pose_diff_out = g.value(n, GEOM_OP_EXT["out"])
                 for view_node in g.subjects(MAP["superobject"], pose_diff_out):
                     error_node = g.value(view_node, MAP["subobject"])
                     if error_node is not None:
@@ -2868,7 +2985,7 @@ def build_motion_units(
         # either. Append them after their dependencies, same as the until evaluators
         # below, so the template emits their evaluate_*_constraint call.
         for n in while_eval_nodes:
-            if GEOM_OP["PoseDiffEvaluator"] in g[n : RDF["type"]]:
+            if GEOM_OP_EXT["PoseDiffEvaluator"] in g[n : RDF["type"]]:
                 continue
             if _is_elapsed_eval(n):
                 continue
@@ -2908,15 +3025,15 @@ def build_motion_units(
         while_evaluators = [
             p.constraint_evaluator(n)
             for n in while_eval_nodes
-            if GEOM_OP["PoseDiffEvaluator"] not in g[n : RDF["type"]]
+            if GEOM_OP_EXT["PoseDiffEvaluator"] not in g[n : RDF["type"]]
         ]
         until_evaluators = [p.constraint_evaluator(n) for n in until_eval_nodes]
         controllers = [p.controller(n) for n in ctrl_nodes]
         controller_output_ids = {c.control_signal.id for c in controllers if c.control_signal is not None}
-        command_forwarding = [
-            p.command_forwarding_specification(n)
-            for n in g.subjects(RDF.type, SLV_EXT["CommandForwardingSpecification"])
-            if p.id(g.value(n, SLV_EXT["control-signal"])) in controller_output_ids
+        forwarded_commands = [
+            p.forwarded_command(n)
+            for n in g.subjects(RDF.type, SLV_EXT["ForwardedCommand"])
+            if p.id(g.value(n, SLV_EXT["command-signal"])) in controller_output_ids
         ]
         when_monitors = [p.monitor_entry(n) for n in when_mon_nodes]
         while_monitors = [p.monitor_entry(n) for n in while_mon_nodes]
@@ -2961,7 +3078,7 @@ def build_motion_units(
                     while_evaluators + when_evaluators + until_evaluators,
                 ),
                 pose_axis_error_groups=pose_axis_error_groups,
-                command_forwarding=command_forwarding,
+                forwarded_commands=forwarded_commands,
                 snapshots=(_motion_snapshots := _snapshots_for_motion(
                     while_evaluators + when_evaluators + until_evaluators,
                     motion.while_ + motion.when + motion.until,
@@ -3666,8 +3783,8 @@ def generate_ir(manifest_path):
     # None, which keeps the codegen on the existing rising-edge path (byte-identical).
     for handler in hdl:
         for monitor in handler.monitors:
-            if monitor.debounce_s is not None:
-                monitor.debounce_steps = round(monitor.debounce_s / (control_period_ns * 1e-9))
+            if monitor.debounce_duration_s is not None:
+                monitor.debounce_steps = round(monitor.debounce_duration_s / (control_period_ns * 1e-9))
 
     # Safeguard: no two distinct URIs may collapse to one generated id (would silently merge).
     p.assert_no_id_collisions()

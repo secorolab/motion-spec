@@ -26,19 +26,7 @@ class SNAP(DefinedNamespace):
 
     _extras = ["snapshot-of", "sampled-on", "task-clock", "entry-clock"]
 
-    _NS = Namespace(f"{URI_SECORO_MM}/snapshot#")
-
-
-class VALUE_ROLE(DefinedNamespace):
-    Measured: URIRef
-    Declared: URIRef
-    Computed: URIRef
-    Snapshot: URIRef
-    Reference: URIRef
-    Error: URIRef
-    Commanded: URIRef
-
-    _NS = Namespace(f"{URI_SECORO_MM}/task/value-role#")
+    _NS = Namespace(f"{URI_SECORO_MM}/task/snapshot#")
 
 
 class ENV(DefinedNamespace):
@@ -242,6 +230,7 @@ class QUDT_QKIND(DefinedNamespace):
     Torque: URIRef
     Force: URIRef
     Time: URIRef
+    Mass: URIRef
 
     _NS = Namespace(f"{URI_QUDT}/vocab/quantitykind/")
 
@@ -265,6 +254,9 @@ class QUDT_UNIT(DefinedNamespace):
         "CentiM-PER-SEC",
         "SEC",
         "MilliSEC",
+        "KiloGM",
+        "N-PER-M",
+        "N-SEC-PER-M",
     ]
 
     _NS = Namespace(f"{URI_QUDT}/vocab/unit/")
@@ -337,7 +329,6 @@ class GEOM_OP(DefinedNamespace):
     PoseToAngleAroundAxis: URIRef
     PoseToLinearDistance: URIRef
     PoseToDirection: URIRef
-    PoseDiffEvaluator: URIRef
     InvertPose: URIRef
     PlanarAngleFromDirections: URIRef
     InvertAngle: URIRef
@@ -365,6 +356,35 @@ class GEOM_OP(DefinedNamespace):
     ]
 
     _NS = Namespace(f"{URI_CR2B_MM}/geometry/spatial-operators#")
+
+class GEOM_REL_EXT(DefinedNamespace):
+    # Secorolab extension to comp-rob2b spatial-relations: a pose difference is the
+    # geometric error between two poses (not itself a pose, not an acceleration twist).
+    PoseDifference: URIRef
+
+    _NS = Namespace(f"{URI_SECORO_MM}/geometry/spatial-relations#")
+
+
+class GEOM_COORD_EXT(DefinedNamespace):
+    # Secorolab extension to comp-rob2b coordinates: the coordinate of a pose difference,
+    # carrying a linear (position-difference, Length) and angular (orientation-difference,
+    # Angle) VectorXYZ. `linear`/`angular` double as the map:subspace selectors for its
+    # per-axis views (mirrors how a twist splits into linear/angular parts).
+    PoseDifferenceCoordinate: URIRef
+
+    _extras = ["linear", "angular"]
+
+    _NS = Namespace(f"{URI_SECORO_MM}/geometry/coordinates#")
+
+
+class GEOM_OP_EXT(DefinedNamespace):
+    # Secorolab extension to comp-rob2b spatial-operators: a pose-difference
+    # evaluator whose inputs/output are geom-coord:PoseCoordinate. Own class rather
+    # than squatting in comp-rob2b's spatial-operators#.
+    PoseDiffEvaluator: URIRef
+    out: URIRef
+
+    _NS = Namespace(f"{URI_SECORO_MM}/geometry/spatial-operators#")
 
 class RBDYN_ENT(DefinedNamespace):
     Wrench: URIRef
@@ -458,9 +478,11 @@ class MAP_EXT(DefinedNamespace):
     PoseOrientationView: URIRef
     PosePositionView: URIRef
     WrenchVectorView: URIRef
+    PoseDifferenceView: URIRef
     ComputeRotationFromPose: URIRef
     rotation: URIRef
     pose: URIRef
+    orientation: URIRef
 
     _NS = Namespace(f"{URI_SECORO_MM}/task/map#")
 
@@ -492,6 +514,10 @@ class CSTR(DefinedNamespace):
 
 class CSTR_EXT(DefinedNamespace):
     OutsideConstraint: URIRef
+    ConstraintConjunction: URIRef
+    ConstraintDisjunction: URIRef
+
+    _extras = ["has-constraint"]
 
     _NS = Namespace(f"{URI_SECORO_MM}/task/constraint#")
 
@@ -514,6 +540,7 @@ class TRAJ(DefinedNamespace):
     Helix: URIRef
     Figure8: URIRef
     Progress: URIRef
+    VelocityProfile: URIRef
 
     start: URIRef
     goal: URIRef
@@ -531,18 +558,12 @@ class TRAJ(DefinedNamespace):
     form: URIRef
     profile: URIRef
 
-    _extras = ["plane-normal"]
+    _extras = ["plane-normal",
+               "max-velocity", "max-acceleration", "max-jerk",
+               "measured-velocity", "shape"]
 
     _NS = Namespace("https://secorolab.github.io/metamodels/task/trajectory#")
 
-
-class MOT_EXT(DefinedNamespace):
-    ConstraintConjunction: URIRef
-    ConstraintDisjunction: URIRef
-
-    _extras = ["has-constraint"]
-
-    _NS = Namespace(f"{URI_SECORO_MM}/task/motion-specification#")
 
 class CSTR_HDL(DefinedNamespace):
     ConstraintHandler: URIRef
@@ -598,15 +619,11 @@ class CSTR_HDL_EXT(DefinedNamespace):
         "monitors-until",
         "monitors-when",
         "fallback-motion",
-        "debounce-seconds",
+        "debounce-duration",
         "velocity-profile",
-        "max-velocity",
-        "max-acceleration",
-        "max-jerk",
-        "shape",
+        "max-velocity",  # Admittance saturation clamp (distinct from traj: velocity-profile terms)
         "goal",
         "measured",
-        "measured-velocity",
         "measured-derivative",
         "reference",
         "controller",
@@ -664,9 +681,8 @@ class SLV_EXT(DefinedNamespace):
     # These new classes/predicates live in the secorolab namespace rather than
     # squatting in comp-rob2b's task/solver-specification#; upstream slv:
     # predicates (solver, attached-to) are reused.
-    CommandForwardingSolver: URIRef
-    CommandForwardingSpecification: URIRef
-    CommandForwardingAlgorithm: URIRef
+    CommandForwardingDriver: URIRef
+    ForwardedCommand: URIRef
 
     # "robot" links a solver to the environment robot whose kinematic chain it
     # drives, so per-robot chain setups can be resolved in multi-robot scenes.
@@ -674,8 +690,8 @@ class SLV_EXT(DefinedNamespace):
     # optional authored control-loop tuning knobs on the RNE/ACHD solver (DLS/Tikhonov
     # regularization lambda, torque saturation override, and beta-clamp overrides).
     _extras = [
-        "command-forwarding",
-        "control-signal",
+        "forwards-command",
+        "command-signal",
         "gravity-value",
         "robot",
         "regularization",

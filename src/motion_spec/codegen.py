@@ -513,8 +513,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
         for view in views.values():
             superobject = view.get("superobject") or {}
             so_type = superobject.get("type")
-            roles = set(superobject.get("roles") or [])
-            is_declared_pose = bool({"Declared", "Snapshot"} & roles)
+            is_declared_pose = bool(superobject.get("authored") or superobject.get("snapshot"))
             is_legacy_pose_quantity = so_type == "PoseQuantity"
             if so_type not in ("Pose", "PoseQuantity"):
                 continue
@@ -630,8 +629,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
             if referenced_ids is not None and pose_id not in referenced_ids:
                 continue
             item = data_by_id.get(pose_id) or {}
-            roles = set(item.get("roles") or [])
-            if "Declared" not in roles or "Snapshot" in roles:
+            if not item.get("authored") or item.get("snapshot"):
                 continue
             entries.append({"id": pose_id, **parts})
         return entries
@@ -827,9 +825,9 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
             )
 
             has_apply_state = bool(motion.get("arm_solvers"))
-            has_command_forwarding = bool(motion.get("command_forwarding"))
-            has_apply_shared = has_command_forwarding
-            has_apply_robot = bool(motion.get("arm_solvers") or has_command_forwarding)
+            has_forwarded_commands = bool(motion.get("forwarded_commands"))
+            has_apply_shared = has_forwarded_commands
+            has_apply_robot = bool(motion.get("arm_solvers") or has_forwarded_commands)
             apply_params = []
             apply_args = []
             if has_apply_state:

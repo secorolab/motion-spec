@@ -24,6 +24,7 @@ from motion_spec.namespace import (
     QUDT_SCHEMA,
     SLV,
     SLV_EXT,
+    TRAJ,
 )
 
 
@@ -128,15 +129,15 @@ def test_velocity_profile_operator_closure_exposes_codegen_fields() -> None:
     for pred, name in (
         (CSTR_HDL_EXT["goal"], "goal"),
         (CSTR_HDL_EXT["measured"], "measured"),
-        (CSTR_HDL_EXT["measured-velocity"], "measured-velocity"),
-        (CSTR_HDL_EXT["max-velocity"], "max-velocity"),
-        (CSTR_HDL_EXT["max-acceleration"], "max-acceleration"),
-        (CSTR_HDL_EXT["max-jerk"], "max-jerk"),
+        (TRAJ["measured-velocity"], "measured-velocity"),
+        (TRAJ["max-velocity"], "max-velocity"),
+        (TRAJ["max-acceleration"], "max-acceleration"),
+        (TRAJ["max-jerk"], "max-jerk"),
         (CSTR_HDL_EXT["reference"], "reference"),
         (CSTR_HDL_EXT["controller"], "controller"),
     ):
         graph.add((op, pred, URIRef(f"https://example.test/{name}")))
-    graph.add((op, CSTR_HDL_EXT["shape"], Literal("SCurve")))
+    graph.add((op, TRAJ["shape"], Literal("SCurve")))
 
     closure = Parser(graph).closures(ops_generic)["profile_op"]
 

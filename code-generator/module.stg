@@ -146,6 +146,14 @@ view-access-expr-AccelerationTwist-LinearAcceleration(view) ::= <<
 shared.<view.superobject.id>.vel[<axis-to-index.(view.axis)>]
 >>
 
+view-access-expr-PoseDifference-AngularDifference(view) ::= <<
+shared.<view.superobject.id>.rot[<axis-to-index.(view.axis)>]
+>>
+
+view-access-expr-PoseDifference-LinearDifference(view) ::= <<
+shared.<view.superobject.id>.vel[<axis-to-index.(view.axis)>]
+>>
+
 view-access-expr-Wrench-Torque(view) ::= <<
 <if(view.axis)>shared.<view.superobject.id>.torque[<axis-to-index.(view.axis)>]<else>shared.<view.superobject.id>.torque<endif>
 >>
@@ -185,6 +193,10 @@ KDL::Twist <var.id>;
 >>
 
 shared-member-AccelerationTwist(var) ::= <<
+KDL::Twist <var.id>;
+>>
+
+shared-member-PoseDifference(var) ::= <<
 KDL::Twist <var.id>;
 >>
 
@@ -1303,7 +1315,7 @@ command-forwarding-robif2b(motion) ::= <<
 >>
 
 command-forwarding-mj_kdl(motion) ::= <<
-<motion.command_forwarding:{cmd | <if(cmd.target)>    {
+<motion.forwarded_commands:{cmd | <if(cmd.target)>    {
         const int actuator_id = mj_name2id(robot.<motion.command_robot_id>.robot->model, mjOBJ_ACTUATOR, "<cmd.target>");
         if (actuator_id >= 0) {
             robot.<motion.command_robot_id>.robot->data->ctrl[actuator_id] = shared.<cmd.control_signal.id>;

@@ -141,6 +141,7 @@ class MJ(DefinedNamespace):
         "friction-roll",
         "tool-body",
         "tcp-site",
+        "attached-body",
     ]
 
     _NS = Namespace(f"{URI_SECORO_MM}/simulation/mujoco#")
@@ -182,6 +183,7 @@ class GEOM_ENT(DefinedNamespace):
     RigidBody: URIRef
     start: URIRef
     end: URIRef
+    origin: URIRef
 
     _extras = ["kinematic-chain"]
 

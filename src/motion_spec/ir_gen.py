@@ -2096,8 +2096,12 @@ class Parser:
     @memoize
     def simplicial_complex(self, id_):
         assert GEOM_ENT["SimplicialComplex"] in self.g[id_ : RDF["type"]]
-
-        return SimplicialComplex(self.id(id_))
+        # rdf.py's _frame_body() mints this node off a Frame (mj:attached-body)
+        # so Twist.of/wrt (which need SimplicialComplex, not Frame) don't fuse
+        # the two entities onto one URI. Follow the link back to the owning
+        # frame so the generated id still matches its physical name.
+        owner = self.g.value(predicate=MJ["attached-body"], object=id_)
+        return SimplicialComplex(self.id(owner if owner is not None else id_))
 
     @memoize
     def scene_object(self, id_):
@@ -2114,8 +2118,12 @@ class Parser:
     @memoize
     def point(self, id_):
         assert GEOM_ENT["Point"] in self.g[id_ : RDF["type"]]
-
-        return Point(self.id(id_))
+        # rdf.py's _frame_origin_point() mints this node off a Frame
+        # (geom-ent:origin) so Position.of/wrt (which need Point, not Frame)
+        # don't fuse the two entities onto one URI. Follow the link back to
+        # the owning frame so the generated id still matches its physical name.
+        owner = self.g.value(predicate=GEOM_ENT["origin"], object=id_)
+        return Point(self.id(owner if owner is not None else id_))
 
     def view(self):
         dispatcher = [
@@ -3177,7 +3185,10 @@ def _orientation_degrees(g, node):
 
 
 def _position_of(g, obj_node):
-    for pos_node in g.subjects(GEOM_REL["of"], obj_node):
+    # geom-rel:Position.of targets the frame's origin Point (geom-ent:origin),
+    # not the frame node itself -- see rdf.py's _frame_origin_point().
+    origin = g.value(obj_node, GEOM_ENT["origin"]) or obj_node
+    for pos_node in g.subjects(GEOM_REL["of"], origin):
         if GEOM_COORD["PositionCoordinate"] in g[pos_node:RDF.type]:
             return _xyz_or_none(g, pos_node)
     return None

@@ -74,12 +74,8 @@ def parse_argument(g, closure_id, argument, to_id, resolve_value=False):
         return None
 
     def resolve(e):
-        # Parameters (unlike input/output) are baked directly into generated code as
-        # literal text, never through `access-expr`/`shared.<id>`. A qudt:Quantity-wrapped
-        # constant (e.g. Admittance mass/damping/stiffness/max-velocity) must resolve to its
-        # scalar qudt:value here, not to the node's id, or the template would emit the id
-        # string where a number is expected. Bare literals (e.g. Lerp profile shape) and IRI
-        # references (e.g. controller) are untouched -- they never carry a qudt:value triple.
+        # Parameters are baked into generated code as literal text, so a qudt:Quantity-wrapped
+        # constant must resolve to its scalar qudt:value here (bare literals / IRI refs pass through).
         if resolve_value and not isinstance(e, rdflib.Literal):
             qval = g.value(e, QUDT_SCHEMA["value"])
             if qval is not None:
@@ -884,11 +880,8 @@ class MonitorEntry:
     event_uri: str | None = None
     event_name: str | None = None
     fallback_motion: str | None = None
-    # Raw authored debounce duration (seconds); converted to debounce_steps once
-    # the loop period is known. None == no debounce.
-    # NB: debounce_steps must stay None (not 0) when absent -- ST4's <if(x)> is
-    # true for any non-null value, including the integer 0 (see codegen.py's
-    # "" -> None note for the same gotcha).
+    # Authored debounce duration (s); converted to debounce_steps once the loop period is known.
+    # Stays None (not 0) when absent -- ST4's <if(x)> is true even for integer 0.
     debounce_duration_s: float | None = None
     debounce_steps: int | None = None
     type: str = field(default="MonitorEntry")
@@ -978,12 +971,8 @@ class GuardedMotionBlock:
     when_monitors: list[MonitorEntry]
     while_monitors: list[MonitorEntry]
     until_monitors: list[MonitorEntry]
-    # Schedules
-    # when_schedule is independent: it runs in can_start, a separate C++ function.
-    # while_schedule and until_schedule are NOT independent schedules; they are
-    # complementary slices of a single shared active computation graph (same C++
-    # control function). They must be built from one shared Parser so that steps
-    # common to both phases are emitted only once and deduplication is correct.
+    # Schedules: when_schedule runs in can_start (own Parser). while_/until_schedule are slices of
+    # one shared active graph, so they share a Parser -- common steps emit once and dedup correctly.
     when_schedule: list[str]
     while_schedule: list[str]
     until_schedule: list[str]
@@ -1103,13 +1092,9 @@ class SolverWithInputAndOutput:
     ft_sensors: list[dict] = field(default_factory=list)
     gravity: list[float] | None = None
     root_acc: list[float] | None = None
-    # Authored control-loop tuning, collected/deduped across arm solvers into
-    # top-level IR keys consumed by runtime_header; not read directly by any
-    # per-solver template.
+    # DLS/Tikhonov regularization lambda, deduped across arm solvers into the
+    # top-level IR key consumed by runtime_header.
     regularization: float | None = None
-    torque_limit: float | None = None
-    max_linear_accel: float | None = None
-    max_angular_accel: float | None = None
     torque_saturation: Saturation | None = None
     type: str = field(default="SolverWithInputAndOutput")
 
@@ -1207,11 +1192,8 @@ def escape(s):
 
 
 class Parser:
-    # Context quantities (and their derived op nodes) live under `.../<owner>/Spec/spec/...` or
-    # `.../<owner>/World/world/...`, where <owner> is a motion or the shared context. Their `id` is
-    # the URI's last segment, so a generic name reused across several motions' specs (e.g.
-    # `support-z`) collapses to one id and gets merged by `_dedupe_by_id`. We qualify only the
-    # genuinely-ambiguous names (same last segment under more than one owner) by their owner.
+    # A context quantity's id is its URI's last segment, so a name reused across motions' specs
+    # (e.g. `support-z`) collapses to one id. Qualify only ambiguous names (same segment, >1 owner).
     _SPEC_OWNER_RE = re.compile(r"/([^/]+)/(?:Spec/spec|World/world)/")
 
     def __init__(self, g):
@@ -1338,9 +1320,6 @@ class Parser:
             gravity=list(gravity) if gravity else None,
             root_acc=root_acc,
             regularization=self._optional_float(id_, SLV_EXT["regularization"]),
-            torque_limit=self._optional_float(id_, SLV_EXT["torque-limit"]),
-            max_linear_accel=self._optional_float(id_, SLV_EXT["max-linear-accel"]),
-            max_angular_accel=self._optional_float(id_, SLV_EXT["max-angular-accel"]),
             torque_saturation=(
                 self.saturation(torque_saturation_node)
                 if torque_saturation_node is not None
@@ -2189,10 +2168,8 @@ class Parser:
     @memoize
     def simplicial_complex(self, id_):
         assert GEOM_ENT["SimplicialComplex"] in self.g[id_ : RDF["type"]]
-        # rdf.py's _frame_body() mints this node off a Frame (mj:attached-body)
-        # so Twist.of/wrt (which need SimplicialComplex, not Frame) don't fuse
-        # the two entities onto one URI. Follow the link back to the owning
-        # frame so the generated id still matches its physical name.
+        # rdf.py's _frame_body() mints this off a Frame (mj:attached-body) so Twist.of/wrt don't
+        # fuse Frame and body onto one URI. Follow the link back so the id matches its name.
         owner = self.g.value(predicate=MJ["attached-body"], object=id_)
         return SimplicialComplex(self.id(owner if owner is not None else id_))
 
@@ -2211,10 +2188,8 @@ class Parser:
     @memoize
     def point(self, id_):
         assert GEOM_ENT["Point"] in self.g[id_ : RDF["type"]]
-        # rdf.py's _frame_origin_point() mints this node off a Frame
-        # (geom-ent:origin) so Position.of/wrt (which need Point, not Frame)
-        # don't fuse the two entities onto one URI. Follow the link back to
-        # the owning frame so the generated id still matches its physical name.
+        # rdf.py's _frame_origin_point() mints this off a Frame (geom-ent:origin) so Position.of/wrt
+        # don't fuse Frame and Point onto one URI. Follow the link back so the id matches its name.
         owner = self.g.value(predicate=GEOM_ENT["origin"], object=id_)
         return Point(self.id(owner if owner is not None else id_))
 
@@ -2320,10 +2295,8 @@ class Parser:
                     q.append(data_in)
                     data_structures.add(data_in)
 
-        # This is how an operator/call looks in the "forward" direction:
-        #   data_in --(in)--> operator/call --(out)--> data_out
-        # But it will be traversed in the "backward" direction.
-        # Note that there may exist multiple inputs and outputs.
+        # An operator/call: data_in --(in)--> call --(out)--> data_out (traversed backward here;
+        # there may be multiple inputs/outputs).
         while len(q) > 0:
             data_out = q.pop()
             # Iterate through all allowed operators and their outputs
@@ -2346,12 +2319,9 @@ class Parser:
                     q.append(data_in)
                     data_structures.add(data_in)
 
-            # A composed/declared data structure (an inline Pose such as end_pose) is not
-            # the output of any operator, so the operator sweep never descends into it.
-            # Follow its coordinate decomposition and reference-value edges so the closures
-            # that PRODUCE its scalar components (end_x = task_pose.position.x + chord_x,
-            # etc.) are scheduled. Without this, an Arc/Lerp whose end is a declared pose is
-            # assembled from unwritten (zero) components -> wrong endpoint.
+            # An inline/declared Pose is no operator's output, so follow its coordinate /
+            # reference-value edges to schedule the closures producing its scalar components --
+            # else an Arc/Lerp ending in a declared pose assembles from zeros -> wrong endpoint.
             for successor in itertools.chain(
                 self.g.objects(data_out, GEOM_COORD["has-coordinate"]),
                 self.g.objects(data_out, CSTR["reference-value"]),
@@ -3003,11 +2973,8 @@ def build_motion_units(
                 elif mon_error in until_error_nodes:
                     until_mon_nodes.append(mon_node)
 
-        # Validate that classified sets are subsets of what the handler declares.
-        # Evaluators and controllers whose constraints/errors are not linked to any
-        # motion phase (when/while/until) are silently excluded from all schedules --
-        # this matches the original behaviour and occurs in models such as sc1 where
-        # some handler-level evaluators exist outside the motion phase graph.
+        # Validate classified sets are subsets of what the handler declares. Evaluators/controllers
+        # not linked to any motion phase are silently excluded from all schedules (e.g. sc1's extras).
         all_eval_nodes = set(g[handler_node : CSTR_HDL["evaluators"]])
         classified_eval_nodes = set(when_eval_nodes) | set(while_eval_nodes) | set(until_eval_nodes)
         assert classified_eval_nodes <= all_eval_nodes, (
@@ -3025,13 +2992,8 @@ def build_motion_units(
             f"Handler {handler.id}: classified monitors not a subset of handler monitors"
         )
 
-        # Build schedules from RDF node traversal.
-        # when_schedule runs in can_start (a separate C++ function), so it gets its own
-        # Parser with a fresh dedup set.
-        # while_schedule and until_schedule are complementary slices of a single shared
-        # active computation graph (both emitted inside the same control C++ function).
-        # They must share one Parser (p_active) so that steps evaluated in both phases
-        # are emitted only once and deduplication across the two slices is correct.
+        # when_schedule runs in can_start (own Parser + dedup set); while_/until share p_active
+        # so steps evaluated in both phases emit once (see the _build_ir schedules note).
         p_when = Parser(g)
         when_schedule = p_when.schedule(
             [n for n in when_eval_nodes if not _is_elapsed_eval(n)], ops_generic + ops_cstr_hdl
@@ -3053,10 +3015,8 @@ def build_motion_units(
                 if upstream & handler_output_ids:
                     cartesian_force_nodes.append(cf_node)
 
-        # Direction-aligned ACHD acceleration constraints: their runtime direction
-        # (geom-op:PoseToDirection) is not an input to any evaluator/controller, so
-        # backward discovery from while_eval_nodes/ctrl_nodes never reaches it --
-        # seed the walk from the constraint nodes themselves, same as cartesian_force_nodes.
+        # Direction-aligned ACHD constraints: their runtime direction (PoseToDirection) is no
+        # evaluator/controller input, so seed the walk from the constraint nodes themselves.
         direction_constraint_nodes = []
         for solver in handler_arm_solvers:
             driver_node = node_by_id.get(solver.motion_driver.id)
@@ -3113,10 +3073,8 @@ def build_motion_units(
             p_active.schedule(direction_constraint_nodes, ops_generic + ops_slv + ops_cstr_hdl)
         )
 
-        # While evaluators watched only by a monitor (no controller consumes their
-        # error, e.g. a slip-detection guard) are not reached by backward discovery
-        # either. Append them after their dependencies, same as the until evaluators
-        # below, so the template emits their evaluate_*_constraint call.
+        # While evaluators watched only by a monitor (no controller consumes their error) aren't
+        # reached by backward discovery; append them after their deps so their evaluate call emits.
         for n in while_eval_nodes:
             if GEOM_OP_EXT["PoseDiffEvaluator"] in g[n : RDF["type"]]:
                 continue
@@ -3957,11 +3915,8 @@ def generate_ir(manifest_path):
         view_map=view_map,
         fk_output_ids={out.id for s in slv_arm for out in s.output},
     )
-    # Promote the FT tare state (bias + settle counter) to shared_data. It must be
-    # captured once, before any external push, and then reused: sharing it across
-    # handlers means the no-push tare taken in an early state (e.g. the arc) is
-    # reused when a later state (e.g. admittance) runs during an active push,
-    # instead of that state re-taring the disturbance away to ~zero.
+    # Promote FT tare state (bias + settle counter) to shared_data so it is captured once before
+    # any push and reused across handlers, instead of a later mid-push state re-taring it to ~zero.
     _ft_tare_members = []
     _seen_ft_ids = set()
     for s in slv_arm:

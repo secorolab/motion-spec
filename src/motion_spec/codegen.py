@@ -779,11 +779,8 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
             motion["can_start_params"] = join_params(can_start_params)
             motion["can_start_args"] = join_args(can_start_args)
 
-            # Each monitor fn (when / until / combined) takes exactly the params its
-            # generated body uses, so no parameter is ever emitted unused. state is
-            # touched by edge/level monitors and the elapsed-clock latch; shared by
-            # any view closure, monitor, or pose materialisation; robot only when a
-            # monitor fires an FSM event (produce_event needs robot.fsm_events).
+            # Each monitor fn takes only the params its body uses: state/shared as needed, robot
+            # only when it fires an FSM event (produce_event needs robot.fsm_events).
             when_mons = motion.get("when_monitors") or []
             until_mons = motion.get("until_monitors") or []
             has_pose = bool(motion.get("declared_pose_components"))
@@ -915,16 +912,10 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, fsm_path: Path
     # seconds; real backends use a monotonic wall clock.
     ir["needs_clock_time"] = any(m.get("has_elapsed") for m in ir.get("motions", []))
     if fsm_namespace is not None:
-        # Tag FSM-event monitors so update-monitor emits produce_event(...) (and the monitor fn takes
-        # robot); also map each motion to the state it *runs* in (fsm_state): the from-state of the
-        # transition its UNTIL/WHILE event fires.
-        #
-        # A WHEN precondition is never an entry guard with no controller (that would leave the arm
-        # uncommanded). Instead it must name an explicit fallback hold motion: the FSM enters that
-        # fallback motion's state, holds pose there, and re-evaluates the precondition each tick; when
-        # it becomes satisfied the WHEN monitor's event advances to the gated motion. So the fallback
-        # motion runs in the state the WHEN (success) event exits, and the gated motion's WHEN is
-        # evaluated inside that fallback state.
+        # Tag FSM-event monitors so update-monitor emits produce_event(...) (monitor fn then takes
+        # robot), and map each motion to its fsm_state (from-state of the transition its UNTIL/WHILE
+        # event fires). A WHEN precondition is not an entry guard but names a fallback hold motion,
+        # so the gated motion's WHEN is re-evaluated inside that fallback's state each tick.
         def tag_run_state(motion, monitors):
             for monitor in monitors:
                 if is_fsm_event(monitor):

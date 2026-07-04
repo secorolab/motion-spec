@@ -368,10 +368,8 @@ class GEOM_REL_EXT(DefinedNamespace):
 
 
 class GEOM_COORD_EXT(DefinedNamespace):
-    # Secorolab extension to comp-rob2b coordinates: the coordinate of a pose difference,
-    # carrying a linear (position-difference, Length) and angular (orientation-difference,
-    # Angle) VectorXYZ. `linear`/`angular` double as the map:subspace selectors for its
-    # per-axis views (mirrors how a twist splits into linear/angular parts).
+    # Secorolab extension to comp-rob2b coordinates: a pose-difference coordinate carrying linear
+    # (Length) and angular (Angle) VectorXYZ, which double as map:subspace selectors for its views.
     PoseDifferenceCoordinate: URIRef
 
     _extras = ["linear", "angular"]
@@ -435,10 +433,8 @@ class RBDYN_OP(DefinedNamespace):
     _NS = Namespace(f"{URI_CR2B_MM}/newtonian-rigid-body-dynamics/operators#")
 
 class RBDYN_OP_EXT(DefinedNamespace):
-    # Secorolab extension to the upstream comp-rob2b rigid-body-dynamics operators:
-    # a generic element-wise quantity addition. Lives in the secorolab namespace
-    # rather than squatting in comp-rob2b's operators#; upstream rbdyn-op:
-    # predicates (in1/in2/out) are reused.
+    # Secorolab extension to comp-rob2b rbdyn operators: a generic element-wise quantity addition
+    # in the secorolab namespace; upstream rbdyn-op: predicates (in1/in2/out) are reused.
     AddQuantity: URIRef
     Norm: URIRef
 
@@ -473,10 +469,8 @@ class MAP(DefinedNamespace):
     _NS = Namespace(f"{URI_CR2B_MM}/task/map#")
 
 class MAP_EXT(DefinedNamespace):
-    # Secorolab coordinate-view and operator extensions to the upstream comp-rob2b
-    # `map` vocabulary. New classes/terms live here rather than squatting in
-    # comp-rob2b's `task/map#`; the map: predicates (superobject/subobject/subspace/
-    # axis) are reused from upstream. Mirrors how `mot-ext` shadows `mot`.
+    # Secorolab coordinate-view / operator extensions to comp-rob2b's `map` vocabulary; the map:
+    # predicates (superobject/subobject/subspace/axis) are reused from upstream.
     PoseOrientationView: URIRef
     PosePositionView: URIRef
     WrenchVectorView: URIRef
@@ -688,38 +682,26 @@ class SLV(DefinedNamespace):
     _NS = Namespace(f"{URI_CR2B_MM}/task/solver-specification#")
 
 class SLV_EXT(DefinedNamespace):
-    # Secorolab extension to the upstream comp-rob2b solver-specification: a
-    # pass-through "command forwarding" solver (used for gripper actuation), plus
-    # the control-signal and gravity-value terms that upstream does not define.
-    # These new classes/predicates live in the secorolab namespace rather than
-    # squatting in comp-rob2b's task/solver-specification#; upstream slv:
-    # predicates (solver, attached-to) are reused.
+    # Secorolab extension to comp-rob2b solver-specification: pass-through command-forwarding solver
+    # (gripper) plus control-signal / gravity-value terms; upstream slv: predicates are reused.
     CommandForwardingDriver: URIRef
     ForwardedCommand: URIRef
 
-    # Direction-aligned ACHD acceleration constraint (sibling of upstream
-    # slv:AxisAligned): fills the constraint's Jacobian column from a runtime
-    # geom-rel:Direction instead of a fixed x/y/z axis, so a distance-between-poses
-    # control constraint can drive the solver.
+    # Direction-aligned ACHD acceleration constraint (sibling of slv:AxisAligned): fills the
+    # Jacobian column from a runtime geom-rel:Direction instead of a fixed axis.
     DirectionAligned: URIRef
     AccelerationSaturation: URIRef
     TorqueSaturation: URIRef
     direction: URIRef
 
-    # "robot" links a solver to the environment robot whose kinematic chain it
-    # drives, so per-robot chain setups can be resolved in multi-robot scenes.
-    # "regularization"/"torque-limit"/"max-linear-accel"/"max-angular-accel" are
-    # legacy authored scalar solver metadata. New saturation behavior is modeled
-    # with cstr-hdl-ext:limits and solver-specific Saturation classes.
+    # "robot" links a solver to its environment robot (multi-robot scenes); "regularization"
+    # is the DLS/Tikhonov lambda. Runtime limiting is authored via cstr-hdl-ext:limits.
     _extras = [
         "forwards-command",
         "command-signal",
         "gravity-value",
         "robot",
         "regularization",
-        "torque-limit",
-        "max-linear-accel",
-        "max-angular-accel",
     ]
 
     _NS = Namespace(f"{URI_SECORO_MM}/task/solver-specification#")

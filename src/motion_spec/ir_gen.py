@@ -637,18 +637,6 @@ class JointPosition:
 
 
 @dataclass
-class PoseQuantity:
-    id: str
-    quantity_kind: QuantityKind
-    unit: Unit
-    has_view: bool
-    value: None = None
-    authored: bool = False
-    snapshot: bool = False
-    type: str = field(default="Pose")
-
-
-@dataclass
 class SimplicialComplex:
     id: str
     is_scene_object: bool = False
@@ -1887,24 +1875,40 @@ class Parser:
         raise ValueError(f"Unsupported position reference node: {id_}")
 
     @memoize
+    def _pose_endpoint(self, node):
+        if node is None:
+            return None
+        if ENV.RigidObject in self.g[node : RDF["type"]]:
+            return self.scene_object(node)
+        return self.frame(node)
+
+    def _bare_pose(self, id_):
+        # A geom-rel:Pose with no PoseCoordinate: a snapshot/reference pose whose
+        # KDL::Frame is filled at runtime. Same IR shape as a coordinate pose, with
+        # its frame endpoints but no authored coordinate values.
+        as_seen_by_node = self.g.value(id_, GEOM_COORD["as-seen-by"])
+        authored, snapshot = self.quantity_role_flags(id_)
+        return Pose(
+            self.id(id_),
+            self._pose_endpoint(self.g.value(id_, GEOM_REL["of"])),
+            self._pose_endpoint(self.g.value(id_, GEOM_REL["with-respect-to"])),
+            [self.quantity_kind(k) for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]]],
+            self.frame(as_seen_by_node) if as_seen_by_node is not None else None,
+            [self.unit(u) for u in self.g[id_ : QUDT_SCHEMA["unit"]]],
+            None,
+            None,
+            None,
+            None,
+            authored=authored,
+            snapshot=snapshot,
+        )
+
     def pose(self, id_):
         assert GEOM_COORD["PoseCoordinate"] in self.g[id_ : RDF["type"]]
         assert GEOM_COORD["VectorXYZ"] in self.g[id_ : RDF["type"]]
 
-        of_node = self.g.value(id_, GEOM_REL["of"])
-        if of_node is None:
-            of = None
-        elif ENV.RigidObject in self.g[of_node : RDF["type"]]:
-            of = self.scene_object(of_node)
-        else:
-            of = self.frame(of_node)
-        wrt_node = self.g.value(id_, GEOM_REL["with-respect-to"])
-        if wrt_node is None:
-            wrt = None
-        elif ENV.RigidObject in self.g[wrt_node : RDF["type"]]:
-            wrt = self.scene_object(wrt_node)
-        else:
-            wrt = self.frame(wrt_node)
+        of = self._pose_endpoint(self.g.value(id_, GEOM_REL["of"]))
+        wrt = self._pose_endpoint(self.g.value(id_, GEOM_REL["with-respect-to"]))
         quantity_kind = []
         for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]]:
             quantity_kind.append(self.quantity_kind(k))
@@ -2062,15 +2066,7 @@ class Parser:
         if GEOM_REL["Pose"] in self.g[id_ : RDF["type"]]:
             if GEOM_COORD["PoseCoordinate"] in self.g[id_ : RDF["type"]]:
                 return self.pose(id_)
-            authored, snapshot = self.quantity_role_flags(id_)
-            return PoseQuantity(
-                self.id(id_),
-                QuantityKind(quantity_kind),
-                Unit(unit),
-                has_view,
-                authored=authored,
-                snapshot=snapshot,
-            )
+            return self._bare_pose(id_)
         if (
             GEOM_REL["Position"] in self.g[id_ : RDF["type"]]
             and GEOM_COORD["PositionCoordinate"] in self.g[id_ : RDF["type"]]

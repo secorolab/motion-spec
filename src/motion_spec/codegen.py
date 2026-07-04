@@ -468,15 +468,10 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
             superobject = view.get("superobject") or {}
             so_type = superobject.get("type")
             is_declared_pose = bool(superobject.get("authored") or superobject.get("snapshot"))
-            is_bare_pose_quantity = so_type == "PoseQuantity"
-            if so_type not in ("Pose", "PoseQuantity"):
+            if so_type != "Pose":
                 continue
-            if so_type == "Pose" and not (
-                is_declared_pose or superobject.get("euler_axes_sequence")
-            ):
+            if not (is_declared_pose or superobject.get("euler_axes_sequence")):
                 continue
-            if is_bare_pose_quantity:
-                is_declared_pose = True
             # Only include inline-defined poses (those where components have values/references)
             # FK poses have all components computed from the solver with no stored value/reference
             subobject_id = (view.get("subobject") or {}).get("id")

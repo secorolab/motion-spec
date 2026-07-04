@@ -366,10 +366,6 @@ app-headless-print-VelocityTwist-mj_kdl(item) ::= <<
         std::cout \<\< "<item.id> vel=[" \<\< shared.<item.id>.vel.x() \<\< " " \<\< shared.<item.id>.vel.y() \<\< " " \<\< shared.<item.id>.vel.z() \<\< "] rot=[" \<\< shared.<item.id>.rot.x() \<\< " " \<\< shared.<item.id>.rot.y() \<\< " " \<\< shared.<item.id>.rot.z() \<\< "]\n";
 >>
 
-app-headless-print-PoseQuantity-mj_kdl(item) ::= <<
-        std::cout \<\< "<item.id> p=[" \<\< shared.<item.id>.p.x() \<\< " " \<\< shared.<item.id>.p.y() \<\< " " \<\< shared.<item.id>.p.z() \<\< "]\n";
->>
-
 app-headless-print-AccelerationTwist-mj_kdl(item) ::= <<
         std::cout \<\< "<item.id> vel=[" \<\< shared.<item.id>.vel.x() \<\< " " \<\< shared.<item.id>.vel.y() \<\< " " \<\< shared.<item.id>.vel.z() \<\< "] rot=[" \<\< shared.<item.id>.rot.x() \<\< " " \<\< shared.<item.id>.rot.y() \<\< " " \<\< shared.<item.id>.rot.z() \<\< "]\n";
 >>

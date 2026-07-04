@@ -10,62 +10,32 @@ pip install -e .
 
 ## Usage
 
-The motion-spec package provides console scripts for validating and generating intermediate representations from motion specification models:
+`motion-spec` is the code-generation half of the motion-spec toolchain. Its input is an
+application manifest — a JSON-LD motion-spec graph plus its SHACL/ontology references —
+produced by [`motion-spec-dsl`](../motion-spec-dsl) from a `.robmot` file. Its output is
+C++: runtime/shared headers, one header per motion, and a `ref_main.cpp`.
 
-### Validation
-
-Validate motion specification models against SHACL constraints:
-
-```bash
-motion-spec-check manifest.json
-```
-
-### IR Generation
-
-Generate intermediate representation (IR) JSON from motion specification models:
+The pipeline is three console scripts run in order.
 
 ```bash
-# Print IR to console
-motion-spec-ir-gen manifest.json --console
+# 1. SHACL-validate the manifest
+motion-spec-check models/sc0a-right-arm.json
 
-# Save IR to file
-motion-spec-ir-gen manifest.json -o output.json
-
-# Print IR to console (alternative)
-motion-spec-ir-gen manifest.json --output -
-
-# Get help
-motion-spec-ir-gen --help
-```
-
-### C++ Code Generation
-
-Generate C++ code through StringTemplate:
-
-```bash
-# Generate IR first
+# 2. Lower the graph to an intermediate representation (IR)
 motion-spec-ir-gen models/sc0a-right-arm.json -o gen/ir.json
 
-# Generate runtime/shared headers, one header per motion, and a reference app
-motion-spec-ir-gen models/sc1.json -o gen/ir.json
+# 3. Render C++ from the IR
 motion-spec-codegen gen/ir.json --output-dir gen
 ```
 
-`motion-spec-codegen` takes a previously generated IR JSON file as input.
-It emits runtime/shared headers, one header per motion, and `ref_main.cpp`.
+`motion-spec-ir-gen` writes to a file with `-o FILE` (use `-o -` for stdout) or prints
+with `--console`. `motion-spec-codegen` takes a previously generated IR JSON and renders
+the headers via the `stst` StringTemplate engine (`--stst-bin` to point at a custom
+binary). Pass `--help` to any script for the full flag set.
 
-### Examples
-
-```bash
-# Validate a model
-motion-spec-check models/sc0a-right-arm.json
-
-# Generate IR and save to file
-motion-spec-ir-gen models/sc0a-right-arm.json -o ir-output.json
-
-# Generate IR and view in console
-motion-spec-ir-gen models/sc0a-right-arm.json --console
-```
+FSM wiring (monitor events bound to a coord2b state machine) is picked up automatically
+from the `fsm_ir.json` that `textx generate --target jsonld` writes alongside the
+manifest when the `.robmot` imports a `.fsm`.
 
 ## Documentation
 

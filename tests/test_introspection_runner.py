@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from motion_spec.introspection import runner
 from motion_spec.introspection.archive import verify_manifest
 from motion_spec.introspection.runner import run_cataloged
 
@@ -52,3 +53,40 @@ def test_runner_catalogs_run_from_start_and_archives_outputs(tmp_path: Path) -> 
     assert any(row["role"] == "log_producer_executable" for row in rec_doc["resources"])
     assert any(row["role"] == "frame_log" for row in rec_doc["artefacts"])
     assert any(row["role"] == "runtime_ttl" for row in rec_doc["artefacts"])
+
+
+def test_runner_cli_accepts_options_after_run_dir(monkeypatch) -> None:
+    captured = {}
+
+    def fake_run_cataloged(run_dir, **kwargs):
+        captured["run_dir"] = run_dir
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(runner, "run_cataloged", fake_run_cataloged)
+
+    assert (
+        runner.main(
+            [
+                "runs/test",
+                "--source-dir",
+                "gen/model",
+                "--run-id",
+                "test",
+                "--executable",
+                "gen/model/build/main",
+                "--recover-runtime-ttl",
+                "--",
+                "--headless",
+                "--steps",
+                "10",
+            ]
+        )
+        == 0
+    )
+    assert captured["run_dir"] == "runs/test"
+    assert captured["source_dir"] == "gen/model"
+    assert captured["executable"] == "gen/model/build/main"
+    assert captured["executable_args"] == ["--headless", "--steps", "10"]
+    assert captured["run_id"] == "test"
+    assert captured["recover_runtime_ttl"] is True

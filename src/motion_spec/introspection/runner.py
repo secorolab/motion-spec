@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -277,15 +278,15 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="skip archive verification after a successful run",
     )
-    parser.add_argument(
-        "executable_args",
-        nargs=argparse.REMAINDER,
-        help="arguments after -- are passed to the executable",
-    )
-    args = parser.parse_args(argv)
-    executable_args = args.executable_args
-    if executable_args[:1] == ["--"]:
-        executable_args = executable_args[1:]
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+    if "--" in raw_args:
+        separator = raw_args.index("--")
+        parser_args = raw_args[:separator]
+        executable_args = raw_args[separator + 1 :]
+    else:
+        parser_args = raw_args
+        executable_args = []
+    args = parser.parse_args(parser_args)
     try:
         return run_cataloged(
             args.run_dir,

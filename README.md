@@ -96,7 +96,7 @@ logs/run-001/
     model.jsonld
     ir.json
   provenance/
-    static.jsonld
+    codegen.jsonld
   runtime/
     runtime.ttl
   media/

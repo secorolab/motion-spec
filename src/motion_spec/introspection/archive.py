@@ -25,7 +25,7 @@ PROVENANCE_DOCUMENT_VERSION = 1
 HASHED_ARTIFACTS = {
     "schema": "contract/schema.json",
     "frame_layout": "contract/frame_layout.json",
-    "provenance": "provenance/static.jsonld",
+    "provenance": "provenance/codegen.jsonld",
     "runtime": "runtime/runtime.ttl",
     "frame_log": "logs/frame_log.bin",
     "model": "model/model.jsonld",
@@ -93,7 +93,7 @@ def create_archive_manifest(
     copies = {
         "schema.json": "contract/schema.json",
         "frame_layout.json": "contract/frame_layout.json",
-        "provenance.jsonld": "provenance/static.jsonld",
+        "provenance.jsonld": "provenance/codegen.jsonld",
     }
     if frame_log and Path(frame_log).exists():
         copies[str(Path(frame_log).resolve())] = "logs/frame_log.bin"
@@ -155,7 +155,7 @@ def create_archive_manifest(
         "files": {
             "schema": "contract/schema.json",
             "frame_layout": "contract/frame_layout.json",
-            "provenance": "provenance/static.jsonld",
+            "provenance": "provenance/codegen.jsonld",
             "runtime_ttl": "runtime/runtime.ttl",
             "frame_log": "logs/frame_log.bin",
             "model": "model/model.jsonld",
@@ -178,7 +178,7 @@ def create_archive_manifest(
         "contexts": schema.get("provenance_contexts", []),
         "artifacts": artifacts,
         "provenance": {
-            "document": "provenance/static.jsonld",
+            "document": "provenance/codegen.jsonld",
             "runtime": "runtime/runtime.ttl",
             "rec": "rec.json",
         },

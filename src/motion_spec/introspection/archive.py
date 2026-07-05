@@ -5,8 +5,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.metadata
 import json
+import platform
 import shutil
+import socket
+import subprocess
+import sys
 from pathlib import Path
 
 import rdflib
@@ -121,8 +126,6 @@ def create_archive_manifest(
     if log_producer_executable and Path(log_producer_executable).exists():
         executable = Path(log_producer_executable)
         _copy_file(executable, run_dir / "generated" / "log_producer_executable" / executable.name)
-    if rec and Path(rec).exists():
-        _copy_file(Path(rec), run_dir / "rec.json")
 
     artifacts = {}
     for key, rel in HASHED_ARTIFACTS.items():
@@ -143,8 +146,6 @@ def create_archive_manifest(
                 "role": "log_producer_executable",
                 "sha256": sha256_file(executable),
             }
-    if rec and (run_dir / "rec.json").exists():
-        artifacts["rec.json"] = {"role": "rec", "sha256": sha256_file(run_dir / "rec.json")}
 
     manifest = {
         "manifest_version": MANIFEST_VERSION,
@@ -174,9 +175,15 @@ def create_archive_manifest(
         },
         "contexts": schema.get("provenance_contexts", []),
         "artifacts": artifacts,
-        "provenance": {"document": "provenance.jsonld", "runtime": "runtime.ttl"},
+        "provenance": {"document": "provenance.jsonld", "runtime": "runtime.ttl", "rec": "rec.json"},
         "streams": streams or [],
     }
+    if rec and Path(rec).exists():
+        _copy_file(Path(rec), run_dir / "rec.json")
+    else:
+        _write_rec_snapshot(run_dir, manifest, schema)
+    manifest["artifacts"]["rec.json"] = {"role": "rec", "sha256": sha256_file(run_dir / "rec.json")}
+    manifest["rec"] = {"path": "rec.json", "run_id": manifest["run_id"]}
     (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=4) + "\n")
     return manifest
 
@@ -207,9 +214,9 @@ def verify_manifest(run_dir_or_manifest: Path | str) -> dict:
         actual = hash_tree(path) if path.is_dir() else sha256_file(path)
         if actual != meta.get("sha256"):
             errors.append(f"{rel}: sha256 mismatch")
-    for key in ("schema", "frame_layout", "provenance", "frame_log", "model", "ir", "generated"):
+    for key in ("schema", "frame_layout", "provenance", "frame_log", "model", "ir", "generated", "rec"):
         rel = manifest.get("files", {}).get(key)
-        if not rel and key in ("schema", "frame_layout", "provenance", "run"):
+        if not rel and key in ("schema", "frame_layout", "provenance", "frame_log", "rec"):
             errors.append(f"files.{key}: missing")
         elif rel and rel in manifest.get("artifacts", {}) and not (run_dir / rel).exists():
             errors.append(f"{rel}: missing")
@@ -231,7 +238,9 @@ def verify_manifest(run_dir_or_manifest: Path | str) -> dict:
         _require_runtime_provenance(runtime_graph, "runtime.ttl")
     rec_rel = manifest.get("files", {}).get("rec")
     if rec_rel and (run_dir / rec_rel).exists():
-        _parse_rdf(run_dir / rec_rel, "json-ld")
+        rec_graph = _parse_rdf(run_dir / rec_rel, "json-ld")
+        _require_rec_provenance(rec_graph, "rec.json")
+        _validate_prov_shacl(run_dir / rec_rel)
     return manifest
 
 
@@ -267,6 +276,203 @@ def _require_runtime_provenance(graph: rdflib.Graph, label: str) -> None:
     missing = [name for name, triple in checks.items() if triple not in graph]
     if missing:
         raise ArchiveError(f"{label}: missing runtime provenance relationship(s): {', '.join(missing)}")
+
+
+def _require_rec_provenance(graph: rdflib.Graph, label: str) -> None:
+    prov = rdflib.Namespace("http://www.w3.org/ns/prov#")
+    bdd = rdflib.Namespace("https://secorolab.github.io/metamodels/acceptance-criteria/bdd#")
+    obs = rdflib.Namespace("https://secorolab.github.io/metamodels/observation#")
+    checks = {
+        "BDD execution activity": (None, rdflib.RDF.type, bdd.SimulatedExecution),
+        "observation provider agent": (None, rdflib.RDF.type, obs.ObservationProvider),
+        "generated artifact entity": (None, prov.wasGeneratedBy, None),
+        "activity-agent association": (None, prov.wasAssociatedWith, None),
+        "activity resource usage": (None, prov.used, None),
+    }
+    missing = [name for name, triple in checks.items() if triple not in graph]
+    if missing:
+        raise ArchiveError(f"{label}: missing REC provenance relationship(s): {', '.join(missing)}")
+
+
+def _write_rec_snapshot(run_dir: Path, manifest: dict, schema: dict) -> None:
+    try:
+        _ensure_local_rec_importable()
+        from rec import Run
+        from rec.observers import FileObserver
+    except ImportError as exc:
+        raise ArchiveError(
+            "REC is required to create introspection archives. Install the sibling "
+            "package with `pip install -e /home/batsy/work/ms/src/rec` or install "
+            "`motion-spec[introspection]` once REC is published."
+        ) from exc
+
+    run_id = manifest["run_id"]
+    observer = FileObserver(run_dir / "rec.json", run_id=run_id)
+    run = Run(observers=[observer], run_id=run_id)
+    run._emit_started()
+    run.log_host_info(_host_info())
+    run.log_repositories(_repositories(run_dir))
+    run.log_dependencies(_dependencies())
+    _record_agents(run, schema)
+    _record_activities(run, schema)
+    _record_files(run, run_dir, manifest)
+    run.log_scalar("archive_artifact_count", len(manifest.get("artifacts", {})), step=0)
+    run._emit_completed()
+    observer.close()
+
+
+def _record_agents(run, schema: dict) -> None:
+    runtime = schema.get("runtime_provenance", {})
+    runtime_agent = runtime.get("runtime_agent_id") or "agent:runtime"
+    runtime_type = "rt:MuJoCoRuntime" if str(runtime_agent).endswith(":mujoco") else "prov:SoftwareAgent"
+    run.add_agent(runtime_agent, ["prov:SoftwareAgent", runtime_type], role="runtime")
+    run.add_agent(
+        runtime.get("producer_agent_id") or "agent:controller_process",
+        ["prov:SoftwareAgent", "obs:ObservationProvider"],
+        role="log_producer",
+        actedOnBehalfOf=runtime_agent,
+    )
+    run.add_agent(
+        "agent:motion_spec_archive",
+        ["prov:SoftwareAgent", "obs:ObservationProvider"],
+        role="archive_writer",
+    )
+    for agent in _provenance_nodes(schema, "agn:ModelledAgent"):
+        run.add_agent(
+            agent.get("@id", "agent:modelled"),
+            agent.get("@type", ["prov:Agent", "agn:ModelledAgent"]),
+            role=agent.get("role", "modelled_agent"),
+        )
+
+
+def _ensure_local_rec_importable() -> None:
+    try:
+        import rec  # noqa: F401
+
+        return
+    except ImportError:
+        pass
+    rec_root = _local_rec_root()
+    if rec_root:
+        sys.path.insert(0, str(rec_root))
+
+
+def _record_activities(run, schema: dict) -> None:
+    runtime = schema.get("runtime_provenance", {})
+    run.add_activity(
+        runtime.get("activity_id") or "activity:controller_execution",
+        ["prov:Activity", "bdd:SimulatedExecution"],
+        role="controller_execution",
+        wasAssociatedWith=runtime.get("producer_agent_id") or "agent:controller_process",
+    )
+    run.add_activity(
+        "activity:archive_creation",
+        ["prov:Activity"],
+        role="archive_creation",
+        wasAssociatedWith="agent:motion_spec_archive",
+    )
+
+
+def _record_files(run, run_dir: Path, manifest: dict) -> None:
+    resource_roles = {"schema", "frame_layout", "provenance", "model", "ir"}
+    for rel, meta in sorted(manifest.get("artifacts", {}).items()):
+        path = run_dir / rel
+        if not path.exists():
+            continue
+        row = {
+            "path": rel,
+            "role": meta.get("role"),
+            "sha256": meta.get("sha256"),
+            "size_bytes": _artifact_size(path),
+        }
+        if meta.get("role") in resource_roles:
+            run.add_resource(rel, **row)
+        else:
+            run.add_artefact(rel, gen_activity="activity:archive_creation", **row)
+    for stream in manifest.get("streams", []):
+        row = {
+            "path": stream.get("url"),
+            "role": f"stream_{stream.get('kind', 'unknown')}",
+            "id": stream.get("id"),
+            "label": stream.get("label"),
+        }
+        if stream.get("mode") in {"mp4", "file"}:
+            run.add_artefact(stream.get("url"), **row)
+        else:
+            run.add_resource(stream.get("url"), **row)
+
+
+def _artifact_size(path: Path) -> int:
+    if path.is_file():
+        return path.stat().st_size
+    return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+
+
+def _host_info() -> dict:
+    return {
+        "hostname": socket.gethostname(),
+        "os": platform.platform(),
+        "python": sys.version,
+        "executable": sys.executable,
+    }
+
+
+def _dependencies() -> list[dict]:
+    rows = []
+    for name in ("motion_spec", "rec", "rdflib", "pyshacl"):
+        try:
+            rows.append({"name": name, "hasVersion": importlib.metadata.version(name)})
+        except importlib.metadata.PackageNotFoundError:
+            continue
+    return rows
+
+
+def _repositories(run_dir: Path) -> list[dict]:
+    rows = []
+    for path in (run_dir, Path(__file__).resolve()):
+        root = _git_root(path)
+        if root and str(root) not in {row.get("path") for row in rows}:
+            rows.append({"name": root.name, "path": str(root), "commit": _git(root, "rev-parse", "HEAD")})
+    rec_root = _local_rec_root()
+    if rec_root and str(rec_root) not in {row.get("path") for row in rows}:
+        rows.append({"name": "rec", "path": str(rec_root), "commit": _git(rec_root, "rev-parse", "HEAD")})
+    return rows
+
+
+def _local_rec_root() -> Path | None:
+    for root in (Path.cwd(), *Path.cwd().parents, *Path(__file__).resolve().parents):
+        candidate = root / "src" / "rec"
+        if (candidate / "rec" / "__init__.py").exists():
+            return candidate
+    return None
+
+
+def _git_root(path: Path) -> Path | None:
+    start = path if path.is_dir() else path.parent
+    root = _git(start, "rev-parse", "--show-toplevel")
+    return Path(root) if root else None
+
+
+def _git(cwd: Path, *args: str) -> str | None:
+    try:
+        return subprocess.check_output(["git", *args], cwd=cwd, text=True, stderr=subprocess.DEVNULL).strip()
+    except Exception:
+        return None
+
+
+def _provenance_nodes(schema: dict, type_id: str) -> list[dict]:
+    path = Path(schema.get("output_dir", "")) / "provenance.jsonld"
+    if not path.exists():
+        return []
+    try:
+        nodes = json.loads(path.read_text()).get("@graph", [])
+    except Exception:
+        return []
+    return [
+        node
+        for node in nodes
+        if type_id in (node.get("@type") if isinstance(node.get("@type"), list) else [node.get("@type")])
+    ]
 
 
 def _metamodels_root() -> Path:

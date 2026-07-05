@@ -173,7 +173,10 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
     )
 
     assert manifest["files"]["log_producer_executable"] is None
+    assert manifest["files"]["rec"] == "rec.json"
+    assert manifest["rec"] == {"path": "rec.json", "run_id": "run-test"}
     assert "generated" in manifest["artifacts"]
+    assert "rec.json" in manifest["artifacts"]
     assert verify_manifest(run_dir)["run_id"] == "run-test"
     header = validate_header(run_dir / "frame_log.bin", _schema(), _layout(_schema()))
     assert header["producer_agent_id"] == "agent:controller_process"
@@ -186,6 +189,12 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
     runtime_ttl = write_runtime_ttl(run_dir, frames)
     assert runtime_ttl.exists()
     assert verify_manifest(run_dir)["artifacts"]["runtime.ttl"]["sha256"] == sha256_file(runtime_ttl)
+
+    rec_doc = json.loads((run_dir / "rec.json").read_text())
+    assert rec_doc["run"]["status"] == "COMPLETED"
+    assert any(row["role"] == "frame_log" for row in rec_doc["artefacts"])
+    assert any(row["role"] == "runtime_ttl" for row in rec_doc["artefacts"])
+    assert any(row["role"] == "runtime_ttl_recovery" for row in rec_doc["activities"])
 
 
 def test_manifest_hash_verification_rejects_mutation(tmp_path: Path) -> None:

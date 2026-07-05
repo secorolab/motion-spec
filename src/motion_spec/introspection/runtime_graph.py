@@ -113,5 +113,48 @@ def write_runtime_ttl(run_dir: Path | str, frames: list[dict], *, frame_count: i
             "sha256": sha256_file(out),
         }
         manifest.setdefault("files", {})["runtime_ttl"] = "runtime.ttl"
+        _record_runtime_ttl_with_rec(run_dir, manifest, out)
+        rec_path = run_dir / manifest.get("files", {}).get("rec", "rec.json")
+        if rec_path.exists():
+            manifest.setdefault("artifacts", {})["rec.json"] = {
+                "role": "rec",
+                "sha256": sha256_file(rec_path),
+            }
         manifest_path.write_text(json.dumps(manifest, indent=4) + "\n")
     return out
+
+
+def _record_runtime_ttl_with_rec(run_dir: Path, manifest: dict, runtime_ttl: Path) -> None:
+    try:
+        from motion_spec.introspection.archive import _ensure_local_rec_importable
+
+        _ensure_local_rec_importable()
+        from rec import Run
+        from rec.observers import FileObserver
+    except ImportError as exc:
+        raise RuntimeError("REC is required to update runtime.ttl provenance") from exc
+
+    rec_path = run_dir / manifest.get("files", {}).get("rec", "rec.json")
+    if not rec_path.exists():
+        return
+    observer = FileObserver(rec_path, run_id=manifest.get("run_id"))
+    run = Run(observers=[observer], run_id=manifest.get("run_id"))
+    run.add_agent(
+        "agent:replay_process",
+        ["prov:SoftwareAgent", "obs:ObservationProvider"],
+        role="runtime_ttl_recovery",
+    )
+    run.add_activity(
+        "activity:runtime_ttl_recovery",
+        ["prov:Activity"],
+        role="runtime_ttl_recovery",
+        wasAssociatedWith="agent:replay_process",
+    )
+    run.add_artefact(
+        "runtime.ttl",
+        gen_activity="activity:runtime_ttl_recovery",
+        role="runtime_ttl",
+        sha256=sha256_file(runtime_ttl),
+        size_bytes=runtime_ttl.stat().st_size,
+    )
+    observer.close()

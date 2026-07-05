@@ -16,6 +16,10 @@ dependencies = [
     "pyshacl>=0.25.0",
 ]
 
+[project.optional-dependencies]
+introspection = ["rec"]
+dashboard = ["flask>=3"]
+
 [project.scripts]
 motion-spec-check = "motion_spec.check:main"
 motion-spec-ir-gen = "motion_spec.ir_gen:main"

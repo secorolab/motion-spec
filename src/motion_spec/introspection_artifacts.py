@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 SCHEMA_VERSION = 1
@@ -47,6 +48,40 @@ METAMODEL_CONTEXTS = [
         False,
     ),
 ]
+TOOL_METADATA = {
+    "agent:motion_spec_codegen": {
+        "package": "motion-spec",
+        "repository": "https://github.com/secorolab/motion-spec",
+    },
+    "agent:motion_spec_ir_gen": {
+        "package": "motion-spec",
+        "repository": "https://github.com/secorolab/motion-spec",
+    },
+    "agent:motion_spec_dsl": {
+        "package": "motion-spec-dsl",
+        "repository": "https://github.com/secorolab/motion-spec-dsl",
+    },
+    "agent:rdf_utils": {
+        "package": "rdf-utils",
+        "repository": "https://github.com/secorolab/rdf-utils",
+    },
+    "agent:textx": {
+        "package": "textX",
+        "repository": "https://github.com/textX/textX",
+    },
+    "agent:rdflib": {
+        "package": "rdflib",
+        "repository": "https://github.com/RDFLib/rdflib",
+    },
+    "agent:pyshacl": {
+        "package": "pyshacl",
+        "repository": "https://github.com/RDFLib/pySHACL",
+    },
+    "agent:stst": {
+        "version": "0.4.1",
+        "repository": "https://github.com/jsnyders/STSTv4",
+    },
+}
 
 HEADER = [
     ("seq", "Q"),
@@ -126,7 +161,18 @@ def _location_iri(value: str | None) -> str | None:
         return None
     if value.startswith(("http://", "https://", "file://")):
         return value
-    return Path(value).resolve().as_uri()
+    path = Path(value)
+    if path.is_absolute():
+        return path.resolve().as_uri()
+    if path.parts[:1] == ("src",):
+        for root in (Path.cwd(), *Path.cwd().parents):
+            if (root / "src" / "motion-spec").is_dir():
+                return (root / path).resolve().as_uri()
+    for root in (Path.cwd(), *Path.cwd().parents):
+        candidate = root / path
+        if candidate.exists():
+            return candidate.resolve().as_uri()
+    return path.resolve().as_uri()
 
 
 def _agent_types(types: list[str]) -> list[str]:
@@ -147,6 +193,22 @@ def _compact_type(type_id: str) -> str:
 
 def _compact_types(types: list[str]) -> list[str]:
     return [_compact_type(type_id) for type_id in types]
+
+
+def _package_version(package: str) -> str | None:
+    try:
+        return version(package)
+    except PackageNotFoundError:
+        return None
+
+
+def _tool_properties(agent_id: str) -> dict:
+    metadata = TOOL_METADATA.get(agent_id, {})
+    package = metadata.get("package")
+    return {
+        "hasVersion": metadata.get("version") or (_package_version(package) if package else None),
+        "references": metadata.get("repository"),
+    }
 
 
 def _metamodels_root() -> Path:
@@ -490,25 +552,52 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
     def add_node(identifier: str, types: list[str], **properties) -> str:
         node_id = _prov_iri(identifier)
         node = {"@id": node_id, "@type": _compact_types(types)}
-        node.update(
-            {k: v for k, v in properties.items() if k != "role" and v is not None and v != []}
-        )
+        node.update({k: v for k, v in properties.items() if v is not None and v != []})
         graph.append(node)
         return node_id
 
     input_entity_ids = []
     for entity in prov.get("entities", []):
+        properties = {
+            "role": entity.get("role"),
+            "atLocation": _location_iri(entity.get("path") or entity.get("source")),
+            "wasGeneratedBy": _prov_iri(entity["wasGeneratedBy"])
+            if entity.get("wasGeneratedBy")
+            else None,
+        }
+        if entity.get("role") == "imported_model_graph":
+            properties["references"] = _prov_iri(entity["wasDerivedFrom"]) if entity.get("wasDerivedFrom") else None
+        elif entity.get("wasDerivedFrom"):
+            properties["wasDerivedFrom"] = _prov_iri(entity["wasDerivedFrom"])
         entity_id = add_node(
             entity.get("id", "entity"),
             entity.get("types") or ["prov:Entity"],
-            role=entity.get("role"),
-            atLocation=_location_iri(entity.get("path") or entity.get("source")),
-            wasGeneratedBy=_prov_iri(entity["wasGeneratedBy"]) if entity.get("wasGeneratedBy") else None,
-            wasDerivedFrom=_prov_iri(entity["wasDerivedFrom"]) if entity.get("wasDerivedFrom") else None,
+            **properties,
         )
         if entity.get("role") != "motion_spec_ir":
             input_entity_ids.append(entity_id)
 
+    artifact_names = [
+        "schema.json",
+        "frame_layout.json",
+        "frame_layout.h",
+        "provenance.jsonld",
+        "introspection_runtime.hpp",
+        "introspect_model.hpp",
+        "CMakeLists.txt",
+        "ref_main.cpp",
+        "headers/runtime.hpp",
+        "headers/shared_state.hpp",
+        "headers/uris.hpp",
+    ]
+    artifact_names.extend(
+        f"headers/{motion['id']}.hpp"
+        for motion in (ir.get("unique_motions") or ir.get("motions", []))
+        if motion.get("id")
+    )
+    if (output_dir / "fsm_ir.json").exists():
+        artifact_names.append("fsm_ir.json")
+    artifact_names.extend(path.name for path in sorted(output_dir.glob("*_fsm.hpp")))
     artifact_entities = {
         name: add_node(
             f"entity:generated_{name}",
@@ -517,7 +606,7 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
             atLocation=_location_iri(str(output_dir / name)),
             wasGeneratedBy=_prov_iri("activity:code_generation"),
         )
-        for name in ("schema.json", "frame_layout.json", "frame_layout.h", "provenance.jsonld")
+        for name in dict.fromkeys(artifact_names)
     }
 
     required_agents = {
@@ -531,6 +620,7 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
         add_node(
             activity.get("id", "activity"),
             activity.get("types") or ["prov:Activity"],
+            role=activity.get("role"),
             used=[_prov_iri(item) for item in activity.get("used", [])],
             wasAssociatedWith=_prov_iri(activity["wasAssociatedWith"])
             if activity.get("wasAssociatedWith")
@@ -539,12 +629,14 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
     codegen_activity = add_node(
         "activity:code_generation",
         ["prov:Activity"],
+        role="code_generation",
         used=input_entity_ids,
         wasAssociatedWith=_prov_iri("agent:motion_spec_codegen"),
     )
     add_node(
         "activity:build",
         ["prov:Activity"],
+        role="build",
         used=list(artifact_entities.values()),
         wasInformedBy=codegen_activity,
         wasAssociatedWith=_prov_iri("agent:build_toolchain"),
@@ -552,13 +644,16 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
 
     for agent in prov.get("agents", []):
         emitted_agents.add(agent.get("id", "agent"))
+        agent_id = agent.get("id", "agent")
         add_node(
-            agent.get("id", "agent"),
+            agent_id,
             _agent_types(agent.get("types") or [PROV_AGENT]),
             role=agent.get("role"),
+            **({"has-agn-model": _location_iri(agent["model"])} if agent.get("model") else {}),
             actedOnBehalfOf=_prov_iri(agent["actedOnBehalfOf"])
             if agent.get("actedOnBehalfOf")
             else None,
+            **_tool_properties(agent_id),
         )
     for agent_id in sorted(required_agents - emitted_agents):
         add_node(agent_id, [PROV_SOFTWARE_AGENT, PROV_AGENT])
@@ -566,6 +661,37 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
         "agent:motion_spec_codegen",
         [PROV_SOFTWARE_AGENT, PROV_AGENT, "obs:ObservationProvider"],
         role="code_generator",
+        **_tool_properties("agent:motion_spec_codegen"),
+    )
+    add_node(
+        "agent:motion_spec_dsl",
+        [PROV_SOFTWARE_AGENT, PROV_AGENT, "obs:ObservationProvider"],
+        role="dsl_jsonld_generator",
+        **_tool_properties("agent:motion_spec_dsl"),
+    )
+    add_node(
+        "agent:textx",
+        [PROV_SOFTWARE_AGENT, PROV_AGENT],
+        role="dsl_parser",
+        **_tool_properties("agent:textx"),
+    )
+    add_node(
+        "agent:stst",
+        [PROV_SOFTWARE_AGENT, PROV_AGENT],
+        role="template_renderer",
+        **_tool_properties("agent:stst"),
+    )
+    add_node(
+        "agent:rdf_utils",
+        [PROV_SOFTWARE_AGENT, PROV_AGENT],
+        role="rdf_resolver",
+        **_tool_properties("agent:rdf_utils"),
+    )
+    add_node(
+        "agent:rdflib",
+        [PROV_SOFTWARE_AGENT, PROV_AGENT],
+        role="rdf_graph_parser",
+        **_tool_properties("agent:rdflib"),
     )
     add_node("agent:build_toolchain", [PROV_SOFTWARE_AGENT, PROV_AGENT], role="build_toolchain")
     add_node(
@@ -582,7 +708,7 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
     return {
         "schema_version": SCHEMA_VERSION,
         "runtime_rdf_contract_version": RUNTIME_RDF_CONTRACT_VERSION,
-        "@context": [*_metamodel_contexts(), {"msprov": MSPROV}],
+        "@context": [*_metamodel_contexts(), {"msprov": MSPROV, "role": "msprov:role"}],
         "@graph": [
             {"@id": "msprov:bundle/static-provenance", "@type": "prov:Bundle"},
             *graph,

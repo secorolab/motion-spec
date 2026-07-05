@@ -3963,6 +3963,7 @@ def _build_introspection(
                     "types": ["prov:Activity"],
                     "used": [entity["id"] for entity in entities if entity["role"] != "motion_spec_ir"],
                     "wasAssociatedWith": "agent:motion_spec_ir_gen",
+                    "role": "motion_spec_ir_generation",
                 },
                 {
                     "id": "activity:controller_execution",

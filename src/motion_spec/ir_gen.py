@@ -17,6 +17,7 @@ import math
 import os
 import re
 import json
+import weakref
 from pathlib import Path
 import xml.etree.ElementTree as ET
 import rdflib
@@ -1184,11 +1185,18 @@ class Parser:
     # (e.g. `support-z`) collapses to one id. Qualify only ambiguous names (same segment, >1 owner).
     _SPEC_OWNER_RE = re.compile(r"/([^/]+)/(?:Spec/spec|World/world)/")
 
+    # scan depends only on the graph; memoize per-graph
+    _ambiguous_cache: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
     def __init__(self, g):
         self.cache = dict()
         self.g = g
         self.sched = set()
-        self._ambiguous_context_ids = self._compute_ambiguous_context_ids()
+        cached = Parser._ambiguous_cache.get(g)
+        if cached is None:
+            cached = self._compute_ambiguous_context_ids()
+            Parser._ambiguous_cache[g] = cached
+        self._ambiguous_context_ids = cached
         self._id_sources: dict[str, set[str]] = {}
 
     def _compute_ambiguous_context_ids(self):
@@ -2282,7 +2290,7 @@ class Parser:
                     continue
 
                 call = self.id(v)
-                if op.is_schedulable() and call not in set(self.sched):
+                if op.is_schedulable() and call not in self.sched:
                     sched.append(call)
                     scheduled_nodes[call] = v
                     self.sched.add(call)
@@ -2301,7 +2309,7 @@ class Parser:
 
                 for call_node in res["schedule"]:
                     call = self.id(call_node)
-                    if call and call not in set(self.sched):
+                    if call and call not in self.sched:
                         sched.append(call)
                         scheduled_nodes[call] = call_node
                         self.sched.add(call)
@@ -2583,6 +2591,15 @@ def _snapshots_for_motion(
             return value.get(field)
         return getattr(value, field, None)
 
+    subobjects_by_super: dict[str, list[str]] = {}
+    supers_by_subobject: dict[str, list[str]] = {}
+    for view in view_map.values():
+        super_id = object_id(object_field(view, "superobject"))
+        subobject_id = object_id(object_field(view, "subobject"))
+        if super_id and subobject_id:
+            subobjects_by_super.setdefault(super_id, []).append(subobject_id)
+            supers_by_subobject.setdefault(subobject_id, []).append(super_id)
+
     def add_reference(ref_id):
         if not isinstance(ref_id, str):
             return
@@ -2597,17 +2614,11 @@ def _snapshots_for_motion(
             referenced = data_reference_map.get(current)
             if referenced:
                 pending.append(referenced)
-            for view in view_map.values():
-                super_id = object_id(object_field(view, "superobject"))
-                subobject_id = object_id(object_field(view, "subobject"))
-                # superobject -> subobject (existing forward decomposition)
-                if super_id == current and subobject_id:
-                    pending.append(subobject_id)
-                # subobject -> superobject: a snapshot of a composite pose is only
-                # ever referenced through its scalar components (e.g. task_pose via
-                # task_pose_position_y). Climb back so the composite snapshot is captured.
-                if subobject_id == current and super_id:
-                    pending.append(super_id)
+            # superobject -> subobject (forward decomposition), and subobject ->
+            # superobject (a composite pose's snapshot is only referenced through its
+            # scalar components, so climb back to capture the composite).
+            pending.extend(subobjects_by_super.get(current, ()))
+            pending.extend(supers_by_subobject.get(current, ()))
 
     for ref_id in list(ref_val_ids):
         add_reference(ref_id)

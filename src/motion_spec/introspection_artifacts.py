@@ -9,6 +9,8 @@ import re
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
+from motion_spec.introspection.frame_layout_spec import fields_with_offsets
+
 SCHEMA_VERSION = 1
 FRAME_LAYOUT_VERSION = 1
 RUNTIME_RDF_CONTRACT_VERSION = 1
@@ -82,59 +84,6 @@ TOOL_METADATA = {
         "repository": "https://github.com/jsnyders/STSTv4",
     },
 }
-
-HEADER = [
-    ("seq", "Q"),
-    ("t", "d"),
-    ("step", "Q"),
-    ("fsm_state", "q"),
-    ("active_motion", "q"),
-    ("last_event", "q"),
-    ("state_since_t", "d"),
-    ("state_since_wall_ns", "q"),
-    ("event_t", "d"),
-    ("event_wall_ns", "q"),
-    ("wall_ns", "q"),
-    ("period_ns", "q"),
-    ("compute_ns", "q"),
-]
-CSLOT = [
-    ("active", "q"),
-    ("error", "d"),
-    ("output", "d"),
-    ("satisfied", "q"),
-    ("sat_t", "d"),
-    ("measured", "d"),
-    ("setpoint", "d"),
-]
-MSLOT = [("active", "q"), ("value", "d"), ("satisfied", "q"), ("sat_t", "d")]
-TSLOT = [("kind", "q"), ("idx", "q"), ("fsm_state", "q"), ("t", "d"), ("wall_ns", "q")]
-
-
-def fields_with_offsets(pools: dict) -> tuple[list[dict], int]:
-    fields = []
-    offset = 0
-
-    def add(name: str, fmt: str) -> None:
-        nonlocal offset
-        fields.append({"name": name, "fmt": fmt, "offset": offset, "size": FIELD_BYTES})
-        offset += FIELD_BYTES
-
-    for name, fmt in HEADER:
-        add(name, fmt)
-    for idx in range(pools["constraints"]):
-        for name, fmt in CSLOT:
-            add(f"c{idx}.{name}", fmt)
-    for idx in range(pools["monitors"]):
-        for name, fmt in MSLOT:
-            add(f"m{idx}.{name}", fmt)
-    for idx in range(pools["quantities"]):
-        add(f"q{idx}", "d")
-    for idx in range(pools["triggers"]):
-        for name, fmt in TSLOT:
-            add(f"tr{idx}.{name}", fmt)
-    add("trigger_count", "q")
-    return fields, offset
 
 
 def _uri_by_id(ir: dict) -> dict:

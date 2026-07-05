@@ -29,6 +29,12 @@ Examples:
     )
 
     parser.add_argument("manifest", help="Path to the application manifest JSON file")
+    parser.add_argument(
+        "--meta-shacl",
+        action="store_true",
+        help="Also validate the SHACL shape graph against SHACL-of-SHACL "
+        "(~4x slower; only useful when editing the metamodel shapes themselves).",
+    )
 
     args = parser.parse_args()
 
@@ -92,7 +98,7 @@ Examples:
 
     # Validate using Dataset directly
     conforms, v_graph, v_text = pyshacl.validate(
-        data_graph=g, shacl_graph=g_sh, inference="none", meta_shacl=True
+        data_graph=g, shacl_graph=g_sh, inference="none", meta_shacl=args.meta_shacl
     )
 
     print(v_text)

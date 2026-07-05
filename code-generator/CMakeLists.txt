@@ -9,6 +9,9 @@ find_package(urdfdom_headers)
 find_package(urdfdom)
 # Optional: present only when monitor events are wired to a coord2b FSM.
 find_package(coord2b)
+find_package(Threads)
+
+option(MOTION_SPEC_ENABLE_INTROSPECTION "Enable generated runtime introspection logging" OFF)
 
 add_executable(main
   ref_main.cpp
@@ -33,6 +36,11 @@ target_link_libraries(main
   kdl_parser
   ${coord2b_LIBRARIES}
 )
+
+if(MOTION_SPEC_ENABLE_INTROSPECTION)
+  target_compile_definitions(main PRIVATE MOTION_SPEC_ENABLE_INTROSPECTION)
+  target_link_libraries(main Threads::Threads)
+endif()
 
 target_compile_options(main
   PRIVATE

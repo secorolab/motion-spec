@@ -57,6 +57,9 @@ robot-shutdown-mj_kdl-KinovaGen3(solver) ::= <<
 
 app-arm-includes-mj_kdl(has_arm) ::= <<
 <if(has_arm)>
+#ifdef MOTION_SPEC_ENABLE_INTROSPECTION
+#include "introspect_model.hpp"
+#endif
 #include \<cstring\>
 #include \<cstdlib\>
 #include \<deque\>
@@ -388,6 +391,9 @@ find_package(orocos_kdl REQUIRED CONFIG)
 find_package(coord2b REQUIRED)
 <endif>
 find_package(mj_kdl_wrapper REQUIRED CONFIG)
+find_package(Threads REQUIRED)
+
+option(MOTION_SPEC_ENABLE_INTROSPECTION "Enable generated runtime introspection logging" OFF)
 
 add_executable(main
     ref_main.cpp
@@ -407,5 +413,9 @@ target_link_libraries(main PRIVATE
     ${coord2b_LIBRARIES}
 <endif>
 )
+if(MOTION_SPEC_ENABLE_INTROSPECTION)
+    target_compile_definitions(main PRIVATE MOTION_SPEC_ENABLE_INTROSPECTION)
+    target_link_libraries(main PRIVATE Threads::Threads)
+endif()
 target_compile_options(main PRIVATE -Wall -Wextra)
 >>

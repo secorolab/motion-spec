@@ -6,6 +6,27 @@ from pathlib import Path
 from motion_spec.namespace import APP
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
+METAMODELS_URL = "https://secorolab.github.io/metamodels/"
+
+
+def metamodel_url_map():
+    roots = []
+    env_path = None
+    try:
+        import os
+
+        env_path = os.environ.get("METAMODELS_PATH")
+    except Exception:
+        env_path = None
+    if env_path:
+        roots.append(Path(env_path))
+    for start in (PACKAGE_ROOT, Path.cwd()):
+        roots.extend([start, *start.parents])
+    for root in roots:
+        for candidate in (root / "src" / "metamodels", root / "metamodels"):
+            if (candidate / "prov.json").exists():
+                return {METAMODELS_URL: str(candidate)}
+    return {}
 
 
 def build_url_map(g, manifest_path):

@@ -5,13 +5,24 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import RDF, XSD
 
 from motion_spec.codegen import _motion_done_condition, render_template
-from motion_spec.ir_gen import Parser, _scene_from_graph, ops_cstr_hdl, ops_generic
+from motion_spec.ir_gen import (
+    GuardedMotion,
+    GuardedMotionBlock,
+    Parser,
+    SceneRobot,
+    SceneSpec,
+    _build_introspection,
+    _scene_from_graph,
+    ops_cstr_hdl,
+    ops_generic,
+)
 from motion_spec.namespace import (
     CSTR_HDL,
     CSTR_HDL_EXT,
@@ -120,6 +131,80 @@ def test_uris_table_maps_each_id_to_full_uri() -> None:
     assert uris[parser.id(controller_node)] == str(controller_node)
     assert uris[parser.id(controller_node)] == "https://example.test/controller"
     assert all(uri.startswith("https://example.test/") for uri in uris.values())
+
+
+def test_introspection_contract_carries_control_and_provenance() -> None:
+    graph, controller_node = _pid_graph(kp=2.0)
+    graph.add((controller_node, CSTR_HDL["integral-gain"], Literal(0.1, datatype=XSD.double)))
+    graph.add((controller_node, CSTR_HDL["derivative-gain"], Literal(0.3, datatype=XSD.double)))
+    monitor_node = URIRef("https://example.test/monitor")
+    event_node = URIRef("https://example.test/events/complete")
+    graph.add((monitor_node, RDF.type, CSTR_HDL.Monitor))
+    graph.add((monitor_node, RDF.type, CSTR_HDL.EdgeTriggeredMonitor))
+    graph.add((monitor_node, CSTR_HDL.event, event_node))
+
+    parser = Parser(graph)
+    controller = parser.controller(controller_node)
+    monitor = parser.monitor_entry(monitor_node)
+    motion = GuardedMotionBlock(
+        id="move",
+        handler="move_handler",
+        control_mode="JointTorque",
+        motion=GuardedMotion("move", [], [], []),
+        when_evaluators=[],
+        while_evaluators=[],
+        until_evaluators=[],
+        controllers=[controller],
+        when_monitors=[],
+        while_monitors=[],
+        until_monitors=[monitor],
+        when_schedule=[],
+        while_schedule=[],
+        until_schedule=[],
+        when_events=[],
+        while_events=[],
+        until_events=["complete"],
+    )
+
+    introspection = _build_introspection(
+        app_model_path=Path("/tmp/app.json"),
+        imported_models=["https://example.test/imported.json"],
+        id_nodes=[(parser.id(node), node) for node in graph.subjects()],
+        node_by_id={parser.id(node): node for node in graph.subjects()},
+        motions=[motion],
+        data_structures=[controller.error_signal, controller.control_signal],
+        control_period_ns=2_000_000,
+        backend="mj_kdl",
+        scene=SceneSpec(robots=[SceneRobot(id="robot", path="robot.xml")]),
+    )
+
+    assert introspection["contract_version"] == 1
+    assert introspection["controllers"][0]["proportional_gain"] == 2.0
+    assert introspection["controllers"][0]["output_signal"] == "control"
+    assert introspection["monitors"][0]["trigger"] == "edge"
+    assert introspection["monitors"][0]["event_uri"] == "https://example.test/events/complete"
+    assert {"id": "control", "uri": "https://example.test/control"} in introspection["uris"]
+    assert any(entity["role"] == "app_manifest" for entity in introspection["provenance"]["entities"])
+    assert any(
+        activity["wasAssociatedWith"] == "agent:motion_spec_ir_gen"
+        for activity in introspection["provenance"]["activities"]
+    )
+    runtime_activity = next(
+        activity
+        for activity in introspection["provenance"]["activities"]
+        if activity["id"] == "activity:controller_execution"
+    )
+    assert runtime_activity["role"] == "controller_execution"
+    assert runtime_activity["wasAssociatedWith"] == "agent:controller_process"
+    assert "bdd:SimulatedExecution" in runtime_activity["types"]
+    agents = {agent["id"]: agent for agent in introspection["provenance"]["agents"]}
+    assert {
+        "agent:runtime:mujoco",
+        "agent:controller_process",
+        "agent:modelled:robot",
+    } <= set(agents)
+    assert "rt:MuJoCoRuntime" in agents["agent:runtime:mujoco"]["types"]
+    assert "agn:ModelledAgent" in agents["agent:modelled:robot"]["types"]
 
 
 def test_velocity_profile_operator_closure_exposes_codegen_fields() -> None:

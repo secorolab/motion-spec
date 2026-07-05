@@ -57,7 +57,7 @@ from motion_spec.namespace import (
     SLV,
     SLV_EXT,
 )
-from motion_spec.manifest import build_url_map
+from motion_spec.manifest import build_url_map, metamodel_url_map
 
 
 class JSONEncoder(json.JSONEncoder):
@@ -3682,28 +3682,328 @@ def _robot_setups_from_graph(g):
     return setups_by_node, ordered
 
 
+def _uri_table(id_nodes):
+    return [
+        {"id": id_, "uri": str(node)}
+        for id_, node in sorted(id_nodes, key=lambda item: (item[0], str(item[1])))
+        if isinstance(node, URIRef)
+    ]
+
+
+def _id_ref(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, Enum):
+        return value.value
+    return getattr(value, "id", None)
+
+
+def _id_refs(value):
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [ref for item in value if (ref := _id_ref(item))]
+    ref = _id_ref(value)
+    return [ref] if ref else []
+
+
+def _compact(entry):
+    return {k: v for k, v in entry.items() if v is not None and v != []}
+
+
+def _dedupe_dicts(entries, key="id"):
+    result = []
+    seen = set()
+    for entry in entries:
+        value = entry.get(key)
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(entry)
+    return result
+
+
+def _build_introspection(
+    *,
+    app_model_path,
+    imported_models,
+    id_nodes,
+    node_by_id,
+    motions,
+    data_structures,
+    control_period_ns,
+    backend,
+    scene,
+):
+    uri_rows = _uri_table(id_nodes)
+    uri_by_id = {row["id"]: row["uri"] for row in uri_rows}
+
+    controllers = []
+    monitors = []
+    signals = []
+    for motion in motions:
+        for controller in motion.controllers:
+            controller_entry = {
+                "id": controller.id,
+                "uri": uri_by_id.get(controller.id),
+                "motion": motion.id,
+                "type": controller.type,
+                "proportional_gain": controller.proportional_gain,
+                "integral_gain": controller.integral_gain,
+                "derivative_gain": controller.derivative_gain,
+                "decay_rate": controller.decay_rate,
+                "stiffness": controller.stiffness,
+                "damping": controller.damping,
+                "error_signal": _id_ref(controller.error_signal),
+                "reference_signal": _id_ref(controller.reference_signal),
+                "measured_derivative": _id_ref(controller.measured_derivative),
+                "output_signal": _id_ref(controller.control_signal),
+            }
+            controllers.append(_compact(controller_entry))
+            for role in ("error_signal", "reference_signal", "measured_derivative", "control_signal"):
+                quantity_id = _id_ref(getattr(controller, role))
+                if quantity_id:
+                    signals.append(
+                        _compact(
+                            {
+                                "id": f"{controller.id}.{role}",
+                                "uri": uri_by_id.get(quantity_id),
+                                "quantity": quantity_id,
+                                "role": role,
+                                "owner": controller.id,
+                            }
+                        )
+                    )
+        for phase in ("when", "while", "until"):
+            for monitor in getattr(motion, f"{phase}_monitors"):
+                monitors.append(
+                    _compact(
+                        {
+                            "id": monitor.id,
+                            "uri": uri_by_id.get(monitor.id),
+                            "motion": motion.id,
+                            "phase": phase,
+                            "type": monitor.monitor_type,
+                            "trigger": "edge" if monitor.is_edge_triggered else "level",
+                            "event": monitor.event,
+                            "event_uri": monitor.event_uri,
+                            "event_name": monitor.event_name,
+                            "flag": monitor.flag,
+                            "error_signal": _id_ref(monitor.error),
+                            "fallback_motion": monitor.fallback_motion,
+                            "debounce_duration_s": monitor.debounce_duration_s,
+                            "debounce_steps": monitor.debounce_steps,
+                        }
+                    )
+                )
+                if monitor.error is not None:
+                    signals.append(
+                        _compact(
+                            {
+                                "id": f"{monitor.id}.error",
+                                "uri": uri_by_id.get(monitor.error.id),
+                                "quantity": monitor.error.id,
+                                "role": "monitor_error",
+                                "owner": monitor.id,
+                            }
+                        )
+                    )
+
+    quantities = []
+    for item in data_structures:
+        quantities.append(
+            _compact(
+                {
+                    "id": item.id,
+                    "uri": uri_by_id.get(item.id),
+                    "type": item.type,
+                    "unit": _id_refs(getattr(item, "unit", None)),
+                    "quantity_kind": _id_refs(getattr(item, "quantity_kind", None)),
+                    "reference_value": getattr(item, "reference_value", None),
+                    "value": getattr(item, "value", None),
+                    "authored": getattr(item, "authored", False),
+                    "snapshot": getattr(item, "snapshot", False),
+                }
+            )
+        )
+
+    runtime_type = {
+        "mj_kdl": "rt:MuJoCoRuntime",
+        "robif2b": "rt:RealRobotRuntime",
+    }.get(backend, "rt:Runtime")
+    runtime_id = "agent:runtime:mujoco" if backend == "mj_kdl" else "agent:runtime:real_robot"
+    runtime_activity_type = (
+        "bdd:SimulatedExecution"
+        if backend == "mj_kdl"
+        else "bdd:ScenarioExecution"
+    )
+
+    entities = [
+        {
+            "id": "entity:app_manifest",
+            "types": ["prov:Entity"],
+            "role": "app_manifest",
+            "path": str(app_model_path),
+        },
+        {
+            "id": "entity:motion_spec_ir",
+            "types": ["prov:Entity"],
+            "role": "motion_spec_ir",
+            "wasGeneratedBy": "activity:motion_spec_ir_generation",
+            "wasDerivedFrom": "entity:app_manifest",
+        },
+    ]
+    entities.extend(
+        {
+            "id": f"entity:imported_graph:{idx}",
+            "types": ["prov:Entity"],
+            "role": "imported_model_graph",
+            "source": source,
+            "wasDerivedFrom": "entity:app_manifest",
+        }
+        for idx, source in enumerate(imported_models)
+    )
+
+    agents = [
+        {
+            "id": "agent:motion_spec_ir_gen",
+            "types": [
+                "prov:SoftwareAgent",
+                "obs:ObservationProvider",
+            ],
+            "role": "ir_generator",
+        },
+        {
+            "id": runtime_id,
+            "types": ["prov:SoftwareAgent", runtime_type],
+            "role": "runtime_runner",
+        },
+        {
+            "id": "agent:controller_process",
+            "types": ["prov:SoftwareAgent"],
+            "role": "controller_process",
+            "actedOnBehalfOf": runtime_id,
+        },
+    ]
+    agents.extend(
+        {
+            "id": f"agent:modelled:{robot.id}",
+            "types": [
+                "prov:Agent",
+                "agn:ModelledAgent",
+            ],
+            "role": "robot",
+            "model": robot.path,
+        }
+        for robot in scene.robots
+    )
+
+    return {
+        "contract_version": 1,
+        "control_period_ns": control_period_ns,
+        "uris": uri_rows,
+        "motions": [
+            _compact(
+                {
+                    "id": motion.id,
+                    "uri": uri_by_id.get(motion.id),
+                    "handler": motion.handler,
+                    "handler_uri": uri_by_id.get(motion.handler),
+                    "control_mode": motion.control_mode,
+                    "controllers": [controller.id for controller in motion.controllers],
+                    "monitors": [
+                        monitor.id
+                        for group in (motion.when_monitors, motion.while_monitors, motion.until_monitors)
+                        for monitor in group
+                    ],
+                }
+            )
+            for motion in motions
+        ],
+        "states": [],
+        "controllers": _dedupe_dicts(controllers),
+        "monitors": _dedupe_dicts(monitors),
+        "quantities": _dedupe_dicts(quantities),
+        "signals": _dedupe_dicts(signals),
+        "provenance": {
+            "contexts": [
+                {
+                    "id": "prov",
+                    "uri": "http://www.w3.org/ns/prov#",
+                    "source": "src/metamodels/prov.json",
+                    "shape": "src/metamodels/prov.shacl.ttl",
+                },
+                {
+                    "id": "bdd",
+                    "uri": "https://secorolab.github.io/metamodels/acceptance-criteria/bdd#",
+                    "source": "src/metamodels/acceptance-criteria/bdd/bdd.json",
+                },
+                {
+                    "id": "agent",
+                    "uri": "https://secorolab.github.io/metamodels/agent#",
+                    "source": "src/metamodels/acceptance-criteria/bdd/agent.json",
+                },
+                {
+                    "id": "observation",
+                    "uri": "https://secorolab.github.io/metamodels/observation#",
+                    "source": "src/metamodels/acceptance-criteria/bdd/observation.json",
+                },
+                {
+                    "id": "runtime",
+                    "uri": str(RT.Runtime),
+                    "source": "src/metamodels/runtime/runtime.json",
+                },
+            ],
+            "entities": entities,
+            "activities": [
+                {
+                    "id": "activity:motion_spec_ir_generation",
+                    "types": ["prov:Activity"],
+                    "used": [entity["id"] for entity in entities if entity["role"] != "motion_spec_ir"],
+                    "wasAssociatedWith": "agent:motion_spec_ir_gen",
+                },
+                {
+                    "id": "activity:controller_execution",
+                    "types": ["prov:Activity", runtime_activity_type],
+                    "used": ["entity:motion_spec_ir"],
+                    "wasAssociatedWith": "agent:controller_process",
+                    "role": "controller_execution",
+                },
+            ],
+            "agents": agents,
+        },
+    }
+
+
 def generate_ir(manifest_path):
     app_model_path = Path(manifest_path).resolve()
 
     # Load top-level, application model
     g = rdflib.Dataset(default_union=True)
+    install_resolver(IriToFileResolver(metamodel_url_map(), download=False))
     g.parse(str(app_model_path), format="json-ld")
 
     # Load IRI map
     url_map = build_url_map(g, app_model_path)
-    install_resolver(IriToFileResolver(url_map))
+    install_resolver(IriToFileResolver({**metamodel_url_map(), **url_map}))
 
     # Load/import the referenced models
-    for model in list(g.objects(predicate=APP["import"])):
+    imported_models = list(dict.fromkeys(str(model) for model in g.objects(predicate=APP["import"])))
+    for model in imported_models:
         g.parse(location=model, format="json-ld")
 
     p = Parser(g)
     node_by_id = {}
-    for node in g.subjects():
+    id_nodes = []
+    for node in sorted(g.subjects(), key=lambda item: str(item)):
         try:
-            node_by_id[p.id(node)] = node
+            id_ = p.id(node)
         except Exception:
             continue
+        id_nodes.append((id_, node))
+        node_by_id.setdefault(id_, node)
 
     sched1 = []
     slv_base_vel = []
@@ -3936,6 +4236,18 @@ def generate_ir(manifest_path):
                 _persist_captured_members.append({"id": f"{snap.target_id}_captured", "type": "Bool"})
     shared_data = shared_data + _persist_captured_members
 
+    introspection = _build_introspection(
+        app_model_path=app_model_path,
+        imported_models=imported_models,
+        id_nodes=id_nodes,
+        node_by_id=node_by_id,
+        motions=motions,
+        data_structures=data_structures,
+        control_period_ns=control_period_ns,
+        backend=backend,
+        scene=scene,
+    )
+
     # Compose the overall schedule via concatenation
     return {
         "slv_arm": slv_arm,
@@ -3961,11 +4273,8 @@ def generate_ir(manifest_path):
         "scene": scene,
         "trace": _trace_from_graph(g),
         # Flat id -> full model URI table; sorted for deterministic emission.
-        "uris": [
-            {"id": id_, "uri": str(node)}
-            for id_, node in sorted(node_by_id.items())
-            if isinstance(node, URIRef)
-        ],
+        "uris": introspection["uris"],
+        "introspection": introspection,
     }
 
 

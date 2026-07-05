@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from motion_spec.ir_gen import JSONEncoder
+from motion_spec.introspection_artifacts import write_introspection_artifacts
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
@@ -920,6 +921,10 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
                     if gate_id in by_id
                 ]
 
+    ir["introspection_artifacts"] = write_introspection_artifacts(
+        ir, ir_path=ir_path, output_dir=output_dir, fsm_ir=fsm_ir
+    )
+
     headers_dir = output_dir / "headers"
     headers_dir.mkdir(parents=True, exist_ok=True)
 
@@ -931,6 +936,13 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     ir_payload_path = payload_dir / "ir.json"
     write_json(ir_payload_path, ir)
 
+    render_template(
+        stst_bin, "introspection_runtime_header", ir_payload_path, output_dir / "introspection_runtime.hpp"
+    )
+    render_template(
+        stst_bin, "introspect_model_header", ir_payload_path, output_dir / "introspect_model.hpp"
+    )
+    render_template(stst_bin, "frame_layout_header", ir_payload_path, output_dir / "frame_layout.h")
     render_template(stst_bin, "runtime_header", ir_payload_path, headers_dir / "runtime.hpp")
     render_template(
         stst_bin, "shared_state_header", ir_payload_path, headers_dir / "shared_state.hpp"

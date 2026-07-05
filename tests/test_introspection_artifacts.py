@@ -1,0 +1,220 @@
+# SPDX-License-Identifier: MPL-2.0
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from rdflib import Graph
+from rdf_utils.resolver import IriToFileResolver, install_resolver
+
+from motion_spec.introspection_artifacts import (
+    build_frame_layout,
+    build_provenance_document,
+    build_schema,
+    fields_with_offsets,
+)
+
+
+def _sample_ir() -> dict:
+    return {
+        "control_period_ns": 2_000_000,
+        "unique_motions": [
+            {
+                "id": "move",
+                "handler": "move_handler",
+                "fsm_state": "S_MOVE",
+                "controllers": [
+                    {
+                        "id": "ctrl_x",
+                        "type": "ProportionalIntegralDerivative",
+                        "proportional_gain": 1.0,
+                        "integral_gain": 0.0,
+                        "derivative_gain": 0.1,
+                        "error_signal": {"id": "err_x"},
+                        "control_signal": {"id": "out_x"},
+                    }
+                ],
+                "while_monitors": [],
+                "until_monitors": [
+                    {
+                        "id": "done_mon",
+                        "monitor_type": "EdgeTriggeredMonitor",
+                        "is_edge_triggered": True,
+                        "event": "E_DONE",
+                        "event_uri": "https://example.test/fsm/E_DONE",
+                        "event_name": "E_DONE",
+                    }
+                ],
+                "fsm_when_gate_motions": ["guarded"],
+            },
+            {
+                "id": "guarded",
+                "handler": "guarded_handler",
+                "controllers": [],
+                "when_monitors": [
+                    {
+                        "id": "ready_mon",
+                        "monitor_type": "LevelTriggeredMonitor",
+                        "is_edge_triggered": False,
+                        "flag": "ready",
+                        "error": {"id": "err_x"},
+                        "fallback_motion": "move",
+                    }
+                ],
+            },
+        ],
+        "introspection": {
+            "control_period_ns": 2_000_000,
+            "uris": [
+                {"id": "move", "uri": "https://example.test/move"},
+                {"id": "ctrl_x", "uri": "https://example.test/ctrl_x"},
+                {"id": "err_x", "uri": "https://example.test/err_x"},
+                {"id": "out_x", "uri": "https://example.test/out_x"},
+                {"id": "done_mon", "uri": "https://example.test/done_mon"},
+            ],
+            "motions": [{"id": "move", "handler": "move_handler"}],
+            "controllers": [{"id": "ctrl_x"}],
+            "monitors": [{"id": "done_mon"}],
+            "quantities": [
+                {
+                    "id": "err_x",
+                    "uri": "https://example.test/err_x",
+                    "type": "Quantity",
+                    "unit": ["M"],
+                    "quantity_kind": ["Length"],
+                }
+            ],
+            "signals": [{"id": "ctrl_x.error_signal", "quantity": "err_x"}],
+            "provenance": {
+                "contexts": [
+                    {"id": "prov", "uri": "http://www.w3.org/ns/prov#"},
+                    {
+                        "id": "runtime",
+                        "uri": "https://secorolab.github.io/metamodels/runtime#Runtime",
+                    },
+                ],
+                "entities": [
+                    {
+                        "id": "entity:app_manifest",
+                        "types": ["prov:Entity"],
+                        "role": "app_manifest",
+                        "path": "/tmp/app.json",
+                    },
+                    {
+                        "id": "entity:motion_spec_ir",
+                        "types": ["prov:Entity"],
+                        "role": "motion_spec_ir",
+                        "wasGeneratedBy": "activity:motion_spec_ir_generation",
+                        "wasDerivedFrom": "entity:app_manifest",
+                    }
+                ],
+                "activities": [
+                    {
+                        "id": "activity:motion_spec_ir_generation",
+                        "types": ["prov:Activity"],
+                        "used": ["entity:app_manifest"],
+                        "wasAssociatedWith": "agent:motion_spec_ir_gen",
+                    },
+                    {
+                        "id": "activity:controller_execution",
+                        "types": [
+                            "prov:Activity",
+                            "bdd:SimulatedExecution",
+                        ],
+                        "used": ["entity:motion_spec_ir"],
+                        "wasAssociatedWith": "agent:controller_process",
+                        "role": "controller_execution",
+                    }
+                ],
+                "agents": [
+                    {
+                        "id": "agent:runtime:mujoco",
+                        "types": [
+                            "prov:SoftwareAgent",
+                            "rt:MuJoCoRuntime",
+                        ],
+                        "role": "runtime_runner",
+                    },
+                    {
+                        "id": "agent:controller_process",
+                        "types": ["prov:SoftwareAgent"],
+                        "role": "controller_process",
+                        "actedOnBehalfOf": "agent:runtime:mujoco",
+                    }
+                ],
+            },
+        },
+    }
+
+
+def _sample_fsm() -> dict:
+    return {
+        "namespace_uri": "https://example.test/fsm/",
+        "start_state": "S_START",
+        "end_state": "S_DONE",
+        "states": ["S_START", "S_MOVE", "S_DONE"],
+        "state_uris": {
+            "S_START": "https://example.test/fsm/S_START",
+            "S_MOVE": "https://example.test/fsm/S_MOVE",
+            "S_DONE": "https://example.test/fsm/S_DONE",
+        },
+        "events": ["E_STEP", "E_DONE"],
+        "event_uris": {
+            "E_STEP": "https://example.test/fsm/E_STEP",
+            "E_DONE": "https://example.test/fsm/E_DONE",
+        },
+        "transitions_table": [
+            {"id": "T_START_MOVE", "from_state": "S_START", "to_state": "S_MOVE"},
+            {"id": "T_MOVE_DONE", "from_state": "S_MOVE", "to_state": "S_DONE"},
+        ],
+        "reactions_table": [
+            {"when_event": "E_STEP", "do_transition": "T_START_MOVE"},
+            {"when_event": "E_DONE", "do_transition": "T_MOVE_DONE"},
+        ],
+    }
+
+
+def test_schema_and_frame_layout_are_consistent(tmp_path: Path) -> None:
+    schema = build_schema(
+        _sample_ir(),
+        ir_path=tmp_path / "ir.json",
+        output_dir=tmp_path,
+        fsm_ir=_sample_fsm(),
+    )
+    layout = build_frame_layout(schema)
+    fields, size = fields_with_offsets(schema["pools"])
+
+    assert schema["schema_version"] == 1
+    assert schema["runtime_rdf_contract_version"] == 1
+    assert schema["runtime_provenance"] == {
+        "activity_id": "activity:controller_execution",
+        "producer_agent_id": "agent:controller_process",
+        "runtime_agent_id": "agent:runtime:mujoco",
+    }
+    assert schema["fsm"]["states"][1]["motion"] == "move"
+    assert schema["by_state"]["S_MOVE"]["controllers"][0]["id"] == "ctrl_x"
+    assert schema["by_state"]["S_MOVE"]["monitors"][0]["id"] == "done_mon"
+    assert schema["by_state"]["S_MOVE"]["monitors"][1]["id"] == "ready_mon"
+    assert layout["fields"] == fields
+    assert layout["frame_size_bytes"] == size
+    assert layout["pools"] == schema["pools"]
+
+
+def test_provenance_document_is_jsonld_and_prov_shacl_conformant(tmp_path: Path) -> None:
+    pyshacl = __import__("pyshacl")
+    seed = build_provenance_document(_sample_ir(), tmp_path)
+    path = tmp_path / "provenance.jsonld"
+    path.write_text(json.dumps(seed))
+    metamodels = Path(__file__).resolve().parents[2] / "metamodels"
+    install_resolver(
+        IriToFileResolver(
+            {"https://secorolab.github.io/metamodels/": str(metamodels)},
+            download=False,
+        )
+    )
+    graph = Graph().parse(path, format="json-ld")
+    assert (None, None, None) in graph
+    shape_path = metamodels / "prov.shacl.ttl"
+    conforms, _, report = pyshacl.validate(graph, shacl_graph=str(shape_path))
+    assert conforms, report

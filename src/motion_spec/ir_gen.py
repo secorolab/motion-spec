@@ -347,6 +347,16 @@ class AssignmentEvaluator:
         return {"data_structures": [], "schedule": []}
 
 
+def _op_output_preds(op):
+    # Predicates op.scheduler_step queries against data_out; if none point into a
+    # node, scheduler_step can only return empty, so it is safe to skip.
+    if isinstance(op, ErrorEvaluator):
+        return {p for sub in op.cstr_op for p in sub.output}
+    if isinstance(op, AssignmentEvaluator):
+        return set()
+    return set(op.output)
+
+
 ops_generic = [
     Operator(
         type_=GEOM_OP["RotateDirectionDistalToProximalWithPose"],
@@ -2301,10 +2311,14 @@ class Parser:
 
         # An operator/call: data_in --(in)--> call --(out)--> data_out (traversed backward here;
         # there may be multiple inputs/outputs).
+        op_preds = [(_op_output_preds(op), op) for op in ops]
         while len(q) > 0:
             data_out = q.pop()
-            # Iterate through all allowed operators and their outputs
-            for op in ops:
+            preds_into = set(self.g.predicates(None, data_out))
+            # Only ops whose output predicate points into data_out can match here.
+            for out_set, op in op_preds:
+                if out_set.isdisjoint(preds_into):
+                    continue
                 res = op.scheduler_step(self.g, data_out)
 
                 for call_node in res["schedule"]:

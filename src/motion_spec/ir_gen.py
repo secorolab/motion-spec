@@ -2295,8 +2295,9 @@ class Parser:
         sched = []
         scheduled_nodes = {}
         for v in start:
+            v_types = set(self.g[v : RDF["type"]])
             for op in ops:
-                if op.type_ not in self.g[v : RDF["type"]]:
+                if op.type_ not in v_types:
                     continue
 
                 call = self.id(v)
@@ -2372,8 +2373,9 @@ class Parser:
                 continue
             inputs = set()
             outputs = set()
+            node_types = set(self.g[node : RDF["type"]])
             for op in ops:
-                if op.type_ not in self.g[node : RDF["type"]]:
+                if op.type_ not in node_types:
                     continue
                 inputs.update(op.from_operator_to_input(self.g, node))
                 outputs.update(self._operator_outputs(node, op))

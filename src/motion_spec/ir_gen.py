@@ -4032,7 +4032,7 @@ def generate_ir(manifest_path):
 
     # Load IRI map
     url_map = build_url_map(g, app_model_path)
-    install_resolver(IriToFileResolver({**metamodel_url_map(), **url_map}))
+    install_resolver(IriToFileResolver({**metamodel_url_map(), **url_map}, download=False))
 
     # Load/import the referenced models
     imported_models = list(dict.fromkeys(str(model) for model in g.objects(predicate=APP["import"])))

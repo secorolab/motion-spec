@@ -1208,6 +1208,7 @@ class Parser:
             Parser._ambiguous_cache[g] = cached
         self._ambiguous_context_ids = cached
         self._id_sources: dict[str, set[str]] = {}
+        self._id_cache: dict = {}
 
     def _compute_ambiguous_context_ids(self):
         owners_by_id: dict[str, set[str]] = {}
@@ -1223,10 +1224,14 @@ class Parser:
         return {lid for lid, owners in owners_by_id.items() if len(owners) > 1}
 
     def id(self, x):
+        cached = self._id_cache.get(x)
+        if cached is not None:
+            return cached
         try:
             q = self.g.compute_qname(x)
             local = escape(q[2])
         except Exception:
+            self._id_cache[x] = x
             return x
         # Only context quantities (a motion's or the shared context's `Spec/spec` / `World/world`
         # members) become `shared.*` data fields and are vulnerable to the silent merge; constraint
@@ -1236,6 +1241,7 @@ class Parser:
             if local in self._ambiguous_context_ids:
                 local = escape(f"{m.group(1)}-{q[2]}")
             self._id_sources.setdefault(local, set()).add(str(x))
+        self._id_cache[x] = local
         return local
 
     def assert_no_id_collisions(self):

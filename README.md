@@ -45,8 +45,30 @@ format: postmortem analysis needs the generated `schema.json`, `frame_layout.jso
 `provenance.jsonld`, model graph, and generated source bundle that describe how to
 decode and attribute the log.
 
-Create a self-contained archive from the generated controller directory and the frame
-log:
+For new runs, launch the generated executable through `motion-spec-run`. It starts a
+REC record before the executable is launched, sets `MOTION_SPEC_FRAME_LOG` to the
+archive-local `frame_log.bin`, records the executable/source inputs as provenance,
+packages the generated bundle, and verifies the archive after the process exits:
+
+```bash
+motion-spec-run logs/run-001 \
+  --source-dir gen/controller \
+  --run-id run-001 \
+  --executable gen/controller/build-introspection/main \
+  --recover-runtime-ttl
+```
+
+Pass executable arguments after `--`:
+
+```bash
+motion-spec-run logs/run-001 \
+  --source-dir gen/controller \
+  --executable gen/controller/build-introspection/main \
+  -- --scenario pick-place-single
+```
+
+For an already completed run, create a self-contained archive from the generated
+controller directory and the frame log:
 
 ```bash
 motion-spec-archive logs/run-001 \

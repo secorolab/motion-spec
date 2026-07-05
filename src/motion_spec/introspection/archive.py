@@ -12,6 +12,7 @@ import shutil
 import socket
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import rdflib
@@ -82,6 +83,7 @@ def create_archive_manifest(
     frame_log: Path | str | None = None,
     log_producer_executable: Path | str | None = None,
     rec: Path | str | None = None,
+    complete_rec: bool = True,
 ) -> dict:
     """Create or refresh a local replay manifest for a run folder."""
     run_dir = Path(run_dir)
@@ -181,7 +183,7 @@ def create_archive_manifest(
     if rec and Path(rec).exists():
         _copy_file(Path(rec), run_dir / "rec.json")
     else:
-        _write_rec_snapshot(run_dir, manifest, schema)
+        _write_rec_snapshot(run_dir, manifest, schema, complete_lifecycle=complete_rec)
     manifest["artifacts"]["rec.json"] = {"role": "rec", "sha256": sha256_file(run_dir / "rec.json")}
     manifest["rec"] = {"path": "rec.json", "run_id": manifest["run_id"]}
     (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=4) + "\n")
@@ -294,7 +296,9 @@ def _require_rec_provenance(graph: rdflib.Graph, label: str) -> None:
         raise ArchiveError(f"{label}: missing REC provenance relationship(s): {', '.join(missing)}")
 
 
-def _write_rec_snapshot(run_dir: Path, manifest: dict, schema: dict) -> None:
+def _write_rec_snapshot(
+    run_dir: Path, manifest: dict, schema: dict, *, complete_lifecycle: bool = True
+) -> None:
     try:
         _ensure_local_rec_importable()
         from rec import Run
@@ -309,16 +313,41 @@ def _write_rec_snapshot(run_dir: Path, manifest: dict, schema: dict) -> None:
     run_id = manifest["run_id"]
     observer = FileObserver(run_dir / "rec.json", run_id=run_id)
     run = Run(observers=[observer], run_id=run_id)
-    run._emit_started()
+    lifecycle = observer.snapshot.get("run", {})
+    started_time = lifecycle.get("started_time")
+    completed_time = lifecycle.get("completed_time")
+    terminal_status = lifecycle.get("status") in {
+        "COMPLETED",
+        "FAILED",
+        "INTERRUPTED",
+        "CANCELLED",
+        "TIMED_OUT",
+        "DEAD",
+    }
+    if started_time:
+        run._id = run_id
+        run.start_time = _parse_rec_time(started_time)
+    else:
+        run._emit_started()
     run.log_host_info(_host_info())
     run.log_repositories(_repositories(run_dir))
     run.log_dependencies(_dependencies())
     _record_agents(run, schema)
     _record_activities(run, schema)
-    _record_files(run, run_dir, manifest)
+    _record_files(run, run_dir, manifest, schema)
     run.log_scalar("archive_artifact_count", len(manifest.get("artifacts", {})), step=0)
-    run._emit_completed()
+    if complete_lifecycle and not completed_time and not terminal_status:
+        if run.start_time is None:
+            run.start_time = datetime.now(timezone.utc)
+        run._emit_completed()
     observer.close()
+
+
+def _parse_rec_time(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _record_agents(run, schema: dict) -> None:
@@ -373,8 +402,11 @@ def _record_activities(run, schema: dict) -> None:
     )
 
 
-def _record_files(run, run_dir: Path, manifest: dict) -> None:
+def _record_files(run, run_dir: Path, manifest: dict, schema: dict) -> None:
     resource_roles = {"schema", "frame_layout", "provenance", "model", "ir"}
+    runtime_activity = (
+        schema.get("runtime_provenance", {}).get("activity_id") or "activity:controller_execution"
+    )
     for rel, meta in sorted(manifest.get("artifacts", {}).items()):
         path = run_dir / rel
         if not path.exists():
@@ -388,7 +420,8 @@ def _record_files(run, run_dir: Path, manifest: dict) -> None:
         if meta.get("role") in resource_roles:
             run.add_resource(rel, **row)
         else:
-            run.add_artefact(rel, gen_activity="activity:archive_creation", **row)
+            gen_activity = runtime_activity if meta.get("role") == "frame_log" else "activity:archive_creation"
+            run.add_artefact(rel, gen_activity=gen_activity, **row)
     for stream in manifest.get("streams", []):
         row = {
             "path": stream.get("url"),

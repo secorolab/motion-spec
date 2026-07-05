@@ -14,6 +14,7 @@ from motion_spec.introspection.archive import (
     verify_manifest,
 )
 from motion_spec.introspection.frame_layout_spec import fields_with_offsets, frame_struct
+from motion_spec.introspection import replay
 from motion_spec.introspection.replay import MAGIC, HEADER, decode_frames, summarize, validate_header
 from motion_spec.introspection.runtime_graph import write_runtime_ttl
 
@@ -185,6 +186,11 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
     assert frames[0]["step"] == 7
     assert frames[0]["quantities"] == [42.0]
     assert "frames      1" in summarize(run_dir / "logs" / "frame_log.bin")
+    assert decode_frames(run_dir)[0]["step"] == 7
+    assert f"archive     {run_dir}" in summarize(run_dir)
+    assert replay.main([str(run_dir), "--verify"]) == 0
+    with pytest.raises(ArchiveError, match="does not exist"):
+        summarize(run_dir / "missing")
 
     runtime_ttl = write_runtime_ttl(run_dir, frames)
     assert runtime_ttl.exists()

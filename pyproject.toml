@@ -14,10 +14,10 @@ requires-python = ">=3.10"
 dependencies = [
     "rdflib",
     "pyshacl>=0.25.0",
+    "rec",
 ]
 
 [project.optional-dependencies]
-introspection = ["rec"]
 dashboard = ["flask>=3"]
 
 [project.scripts]

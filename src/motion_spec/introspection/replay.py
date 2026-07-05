@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import struct
 from collections.abc import Iterator
 from pathlib import Path
@@ -21,19 +22,31 @@ def _cstr(raw: bytes) -> str:
 
 
 def run_dir_for(log_path: Path) -> Path:
+    if not log_path.exists():
+        raise ArchiveError(f"{log_path}: does not exist")
+    if log_path.is_dir() and (log_path / "manifest.json").exists():
+        return log_path
     for path in (log_path.parent, *log_path.parent.parents):
         if (path / "manifest.json").exists():
             return path
     return log_path.parent
 
 
-def load_archive(log_path: Path | str) -> tuple[Path, dict, dict, dict]:
-    log_path = Path(log_path)
-    run_dir = run_dir_for(log_path)
+def resolve_archive(path: Path | str) -> tuple[Path, Path, dict, dict, dict]:
+    input_path = Path(path)
+    run_dir = run_dir_for(input_path)
     manifest = verify_manifest(run_dir)
     files = manifest["files"]
     schema = json.loads((run_dir / files["schema"]).read_text())
     layout = json.loads((run_dir / files["frame_layout"]).read_text())
+    log_path = run_dir / files["frame_log"] if input_path.is_dir() else input_path
+    if not log_path.exists():
+        raise ArchiveError(f"{log_path}: missing frame log")
+    return run_dir, log_path, manifest, schema, layout
+
+
+def load_archive(log_path: Path | str) -> tuple[Path, dict, dict, dict]:
+    run_dir, _log_path, manifest, schema, layout = resolve_archive(log_path)
     return run_dir, manifest, schema, layout
 
 
@@ -81,8 +94,7 @@ def validate_header(log_path: Path | str, schema: dict, layout: dict) -> dict:
 
 
 def frames(log_path: Path | str) -> Iterator[tuple[dict, int, int, int, int]]:
-    log_path = Path(log_path)
-    _run_dir, _manifest, schema, layout = load_archive(log_path)
+    _run_dir, log_path, _manifest, schema, layout = resolve_archive(log_path)
     validate_header(log_path, schema, layout)
     st, names = frame_struct(schema["pools"])
     n_c = schema["pools"]["constraints"]
@@ -146,7 +158,7 @@ def sampled_frames(log_path: Path | str) -> tuple[list[dict], int]:
 
 
 def summarize(log_path: Path | str) -> str:
-    run_dir, _manifest, schema, layout = load_archive(log_path)
+    run_dir, log_path, _manifest, schema, layout = resolve_archive(log_path)
     header = validate_header(log_path, schema, layout)
     count = 0
     first = last = None
@@ -192,12 +204,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.recover_runtime_ttl:
             from motion_spec.introspection.runtime_graph import write_runtime_ttl
 
-            samples, frame_count = sampled_frames(args.log)
-            out = write_runtime_ttl(Path(args.log).parent, samples, frame_count=frame_count)
+            run_dir, log_path, _manifest, _schema, _layout = resolve_archive(args.log)
+            samples, frame_count = sampled_frames(log_path)
+            out = write_runtime_ttl(run_dir, samples, frame_count=frame_count)
             print(out)
         elif args.verify:
-            _run_dir, _manifest, schema, layout = load_archive(args.log)
-            validate_header(args.log, schema, layout)
+            _run_dir, log_path, _manifest, schema, layout = resolve_archive(args.log)
+            validate_header(log_path, schema, layout)
             print("archive OK")
         elif args.jsonl:
             for record in decode_frames(args.log):
@@ -206,6 +219,8 @@ def main(argv: list[str] | None = None) -> int:
             print(summarize(args.log))
     except ArchiveError as exc:
         parser.exit(2, f"{exc}\n")
+    except BrokenPipeError:
+        sys.stdout = None
     return 0
 
 

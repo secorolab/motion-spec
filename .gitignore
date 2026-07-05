@@ -3,7 +3,8 @@ comp-rob2b/
 
 build/
 .stst/
-generated/**/.stst/
+generated/
+runs/
 
 # Python packaging artifacts
 *.egg-info/

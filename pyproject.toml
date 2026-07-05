@@ -49,5 +49,13 @@ where = ["src"]
     "thirdparty/kinova/GEN3_URDF_V12.urdf",
 ]
 
+[tool.pytest.ini_options]
+# rdflib's Dataset.parse() internally reads its deprecated default_context
+# property. pytest forces "always" on warnings, so the package-level filter in
+# motion_spec/__init__.py doesn't apply under test — suppress it here too.
+filterwarnings = [
+    "ignore:Dataset.default_context is deprecated:DeprecationWarning",
+]
+
 [tool.ruff]
 line-length = 100

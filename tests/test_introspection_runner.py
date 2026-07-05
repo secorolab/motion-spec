@@ -41,9 +41,9 @@ def test_runner_catalogs_run_from_start_and_archives_outputs(tmp_path: Path) -> 
     assert result == 0
     manifest = verify_manifest(run_dir)
     assert manifest["run_id"] == "run-001"
-    assert manifest["files"]["frame_log"] == "frame_log.bin"
-    assert manifest["files"]["log_producer_executable"] == "generated/log_producer_executable/log-copy"
-    assert (run_dir / "runtime.ttl").exists()
+    assert manifest["files"]["frame_log"] == "logs/frame_log.bin"
+    assert manifest["files"]["log_producer_executable"] == "controller/executable/log-copy"
+    assert (run_dir / "runtime" / "runtime.ttl").exists()
 
     rec_doc = json.loads((run_dir / "rec.json").read_text())
     assert rec_doc["run"]["status"] == "COMPLETED"

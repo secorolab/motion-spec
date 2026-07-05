@@ -50,7 +50,7 @@ def run_cataloged(
     executable = Path(executable).resolve()
     executable_args = [str(arg) for arg in (executable_args or [])]
     run_id = run_id or run_dir.name
-    frame_log = run_dir / "frame_log.bin"
+    frame_log = run_dir / "logs" / "frame_log.bin"
     rec_path = run_dir / "rec.json"
 
     _validate_new_run(run_dir, source_dir, executable)
@@ -119,8 +119,9 @@ def _validate_new_run(run_dir: Path, source_dir: Path, executable: Path) -> None
         raise RunnerError(f"{executable}: executable does not exist")
     if run_dir.exists() and (run_dir / "rec.json").exists():
         raise RunnerError(f"{run_dir}: already contains rec.json; choose a fresh run directory")
-    if (run_dir / "frame_log.bin").exists():
-        raise RunnerError(f"{run_dir / 'frame_log.bin'}: refusing to overwrite an existing frame log")
+    frame_log = run_dir / "logs" / "frame_log.bin"
+    if frame_log.exists():
+        raise RunnerError(f"{frame_log}: refusing to overwrite an existing frame log")
 
 
 def _start_rec_run(
@@ -193,6 +194,7 @@ def _run_executable(
     run_id: str,
     rec_path: Path,
 ) -> int:
+    frame_log.parent.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env["MOTION_SPEC_FRAME_LOG"] = str(frame_log.resolve())
     env["MOTION_SPEC_RUN_ID"] = run_id

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import struct
 from pathlib import Path
 
 import pytest
@@ -175,20 +174,21 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
     assert manifest["files"]["log_producer_executable"] is None
     assert manifest["files"]["rec"] == "rec.json"
     assert manifest["rec"] == {"path": "rec.json", "run_id": "run-test"}
-    assert "generated" in manifest["artifacts"]
+    assert manifest["files"]["controller"] == "controller/source"
+    assert "controller/source" in manifest["artifacts"]
     assert "rec.json" in manifest["artifacts"]
     assert verify_manifest(run_dir)["run_id"] == "run-test"
-    header = validate_header(run_dir / "frame_log.bin", _schema(), _layout(_schema()))
+    header = validate_header(run_dir / "logs" / "frame_log.bin", _schema(), _layout(_schema()))
     assert header["producer_agent_id"] == "agent:controller_process"
 
-    frames = decode_frames(run_dir / "frame_log.bin")
+    frames = decode_frames(run_dir / "logs" / "frame_log.bin")
     assert frames[0]["step"] == 7
     assert frames[0]["quantities"] == [42.0]
-    assert "frames      1" in summarize(run_dir / "frame_log.bin")
+    assert "frames      1" in summarize(run_dir / "logs" / "frame_log.bin")
 
     runtime_ttl = write_runtime_ttl(run_dir, frames)
     assert runtime_ttl.exists()
-    assert verify_manifest(run_dir)["artifacts"]["runtime.ttl"]["sha256"] == sha256_file(runtime_ttl)
+    assert verify_manifest(run_dir)["artifacts"]["runtime/runtime.ttl"]["sha256"] == sha256_file(runtime_ttl)
 
     rec_doc = json.loads((run_dir / "rec.json").read_text())
     assert rec_doc["run"]["status"] == "COMPLETED"
@@ -201,7 +201,7 @@ def test_manifest_hash_verification_rejects_mutation(tmp_path: Path) -> None:
     source = _source_tree(tmp_path / "source")
     run_dir = tmp_path / "run"
     create_archive_manifest(run_dir, source_dir=source, run_id="run-test")
-    (run_dir / "schema.json").write_text("{}")
+    (run_dir / "contract" / "schema.json").write_text("{}")
 
     with pytest.raises(ArchiveError, match="schema.json: sha256 mismatch"):
         verify_manifest(run_dir)

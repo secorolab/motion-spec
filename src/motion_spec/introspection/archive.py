@@ -23,14 +23,14 @@ from motion_spec.manifest import metamodel_url_map
 MANIFEST_VERSION = 1
 PROVENANCE_DOCUMENT_VERSION = 1
 HASHED_ARTIFACTS = {
-    "schema": "schema.json",
-    "frame_layout": "frame_layout.json",
-    "provenance": "provenance.jsonld",
-    "runtime": "runtime.ttl",
-    "frame_log": "frame_log.bin",
-    "model": "model.jsonld",
-    "ir": "ir.json",
-    "generated": "generated",
+    "schema": "contract/schema.json",
+    "frame_layout": "contract/frame_layout.json",
+    "provenance": "provenance/static.jsonld",
+    "runtime": "runtime/runtime.ttl",
+    "frame_log": "logs/frame_log.bin",
+    "model": "model/model.jsonld",
+    "ir": "model/ir.json",
+    "controller": "controller/source",
 }
 GENERATED_BUNDLE_FILES = (
     "CMakeLists.txt",
@@ -91,32 +91,32 @@ def create_archive_manifest(
     run_dir.mkdir(parents=True, exist_ok=True)
 
     copies = {
-        "schema.json": "schema.json",
-        "frame_layout.json": "frame_layout.json",
-        "provenance.jsonld": "provenance.jsonld",
+        "schema.json": "contract/schema.json",
+        "frame_layout.json": "contract/frame_layout.json",
+        "provenance.jsonld": "provenance/static.jsonld",
     }
     if frame_log and Path(frame_log).exists():
-        copies[str(Path(frame_log).resolve())] = "frame_log.bin"
+        copies[str(Path(frame_log).resolve())] = "logs/frame_log.bin"
     elif (source_dir / "frame_log.bin").exists():
-        copies["frame_log.bin"] = "frame_log.bin"
+        copies["frame_log.bin"] = "logs/frame_log.bin"
     schema = json.loads((source_dir / "schema.json").read_text())
     if (source_dir / "model.jsonld").exists():
-        copies["model.jsonld"] = "model.jsonld"
+        copies["model.jsonld"] = "model/model.jsonld"
     elif schema.get("graph") and Path(schema["graph"]).exists():
-        copies[str(Path(schema["graph"]))] = "model.jsonld"
+        copies[str(Path(schema["graph"]))] = "model/model.jsonld"
     if schema.get("ir_path") and Path(schema["ir_path"]).exists():
-        copies[str(Path(schema["ir_path"]))] = "ir.json"
+        copies[str(Path(schema["ir_path"]))] = "model/ir.json"
 
     for src_name, dst_name in copies.items():
         src = Path(src_name) if Path(src_name).is_absolute() else source_dir / src_name
         if src.exists() and src.resolve() != (run_dir / dst_name).resolve():
             _copy_file(src, run_dir / dst_name)
 
-    generated_dir = run_dir / "generated"
-    generated_dir.mkdir(exist_ok=True)
+    controller_dir = run_dir / "controller" / "source"
+    controller_dir.mkdir(parents=True, exist_ok=True)
     for rel in GENERATED_BUNDLE_FILES:
         src = source_dir / rel
-        dst = generated_dir / rel
+        dst = controller_dir / rel
         if src.is_file():
             _copy_file(src, dst)
         elif src.is_dir():
@@ -124,10 +124,10 @@ def create_archive_manifest(
                 shutil.rmtree(dst)
             shutil.copytree(src, dst)
     for header in sorted(source_dir.glob("*_fsm.hpp")):
-        _copy_file(header, generated_dir / header.name)
+        _copy_file(header, controller_dir / header.name)
     if log_producer_executable and Path(log_producer_executable).exists():
         executable = Path(log_producer_executable)
-        _copy_file(executable, run_dir / "generated" / "log_producer_executable" / executable.name)
+        _copy_file(executable, run_dir / "controller" / "executable" / executable.name)
 
     artifacts = {}
     for key, rel in HASHED_ARTIFACTS.items():
@@ -139,12 +139,12 @@ def create_archive_manifest(
     if log_producer_executable:
         executable = (
             run_dir
-            / "generated"
-            / "log_producer_executable"
+            / "controller"
+            / "executable"
             / Path(log_producer_executable).name
         )
         if executable.exists():
-            artifacts[f"generated/log_producer_executable/{executable.name}"] = {
+            artifacts[f"controller/executable/{executable.name}"] = {
                 "role": "log_producer_executable",
                 "sha256": sha256_file(executable),
             }
@@ -153,16 +153,16 @@ def create_archive_manifest(
         "manifest_version": MANIFEST_VERSION,
         "run_id": run_id or run_dir.name,
         "files": {
-            "schema": "schema.json",
-            "frame_layout": "frame_layout.json",
-            "provenance": "provenance.jsonld",
-            "runtime_ttl": "runtime.ttl",
-            "frame_log": "frame_log.bin",
-            "model": "model.jsonld",
-            "ir": "ir.json",
-            "generated": "generated",
+            "schema": "contract/schema.json",
+            "frame_layout": "contract/frame_layout.json",
+            "provenance": "provenance/static.jsonld",
+            "runtime_ttl": "runtime/runtime.ttl",
+            "frame_log": "logs/frame_log.bin",
+            "model": "model/model.jsonld",
+            "ir": "model/ir.json",
+            "controller": "controller/source",
             "log_producer_executable": (
-                f"generated/log_producer_executable/{Path(log_producer_executable).name}"
+                f"controller/executable/{Path(log_producer_executable).name}"
                 if log_producer_executable
                 else None
             ),
@@ -177,7 +177,11 @@ def create_archive_manifest(
         },
         "contexts": schema.get("provenance_contexts", []),
         "artifacts": artifacts,
-        "provenance": {"document": "provenance.jsonld", "runtime": "runtime.ttl", "rec": "rec.json"},
+        "provenance": {
+            "document": "provenance/static.jsonld",
+            "runtime": "runtime/runtime.ttl",
+            "rec": "rec.json",
+        },
         "streams": streams or [],
     }
     if rec and Path(rec).exists():
@@ -216,7 +220,7 @@ def verify_manifest(run_dir_or_manifest: Path | str) -> dict:
         actual = hash_tree(path) if path.is_dir() else sha256_file(path)
         if actual != meta.get("sha256"):
             errors.append(f"{rel}: sha256 mismatch")
-    for key in ("schema", "frame_layout", "provenance", "frame_log", "model", "ir", "generated", "rec"):
+    for key in ("schema", "frame_layout", "provenance", "frame_log", "model", "ir", "controller", "rec"):
         rel = manifest.get("files", {}).get(key)
         if not rel and key in ("schema", "frame_layout", "provenance", "frame_log", "rec"):
             errors.append(f"files.{key}: missing")

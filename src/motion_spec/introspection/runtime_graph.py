@@ -103,16 +103,21 @@ def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int
 def write_runtime_ttl(run_dir: Path | str, frames: list[dict], *, frame_count: int | None = None) -> Path:
     run_dir = Path(run_dir)
     graph = project_runtime(run_dir, frames, frame_count=frame_count)
-    out = run_dir / "runtime.ttl"
-    graph.serialize(out, format="turtle")
     manifest_path = run_dir / "manifest.json"
+    runtime_rel = "runtime/runtime.ttl"
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text())
-        manifest.setdefault("artifacts", {})["runtime.ttl"] = {
+        runtime_rel = manifest.get("files", {}).get("runtime_ttl") or runtime_rel
+    out = run_dir / runtime_rel
+    out.parent.mkdir(parents=True, exist_ok=True)
+    graph.serialize(out, format="turtle")
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text())
+        manifest.setdefault("artifacts", {})[runtime_rel] = {
             "role": "runtime",
             "sha256": sha256_file(out),
         }
-        manifest.setdefault("files", {})["runtime_ttl"] = "runtime.ttl"
+        manifest.setdefault("files", {})["runtime_ttl"] = runtime_rel
         _record_runtime_ttl_with_rec(run_dir, manifest, out)
         rec_path = run_dir / manifest.get("files", {}).get("rec", "rec.json")
         if rec_path.exists():
@@ -151,7 +156,7 @@ def _record_runtime_ttl_with_rec(run_dir: Path, manifest: dict, runtime_ttl: Pat
         wasAssociatedWith="agent:replay_process",
     )
     run.add_artefact(
-        "runtime.ttl",
+        str(runtime_ttl.relative_to(run_dir)),
         gen_activity="activity:runtime_ttl_recovery",
         role="runtime_ttl",
         sha256=sha256_file(runtime_ttl),

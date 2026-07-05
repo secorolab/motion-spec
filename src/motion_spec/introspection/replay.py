@@ -21,6 +21,9 @@ def _cstr(raw: bytes) -> str:
 
 
 def run_dir_for(log_path: Path) -> Path:
+    for path in (log_path.parent, *log_path.parent.parents):
+        if (path / "manifest.json").exists():
+            return path
     return log_path.parent
 
 

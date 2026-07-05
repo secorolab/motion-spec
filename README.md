@@ -74,7 +74,7 @@ controller directory and the frame log:
 motion-spec-archive logs/run-001 \
   --source-dir gen/controller \
   --run-id run-001 \
-  --frame-log gen/controller/checks/frame_log.bin \
+  --frame-log gen/controller/logs/frame_log.bin \
   --log-producer-executable gen/controller/build-introspection/main
 ```
 
@@ -83,14 +83,22 @@ The archive layout is:
 ```text
 logs/run-001/
   manifest.json
-  provenance.jsonld
-  frame_log.bin
-  runtime.ttl
-  schema.json
-  frame_layout.json
-  model.jsonld
-  ir.json
-  generated/
+  rec.json
+  contract/
+    schema.json
+    frame_layout.json
+  controller/
+    executable/
+    source/
+  logs/
+    frame_log.bin
+  model/
+    model.jsonld
+    ir.json
+  provenance/
+    static.jsonld
+  runtime/
+    runtime.ttl
   media/
 ```
 
@@ -102,14 +110,14 @@ shape.
 Verify and summarize a copied archive without the original checkout:
 
 ```bash
-motion-spec-replay logs/run-001/frame_log.bin --verify
-motion-spec-replay logs/run-001/frame_log.bin
+motion-spec-replay logs/run-001/logs/frame_log.bin --verify
+motion-spec-replay logs/run-001/logs/frame_log.bin
 ```
 
 Recover runtime provenance RDF from the frame log and archive metadata:
 
 ```bash
-motion-spec-replay logs/run-001/frame_log.bin --recover-runtime-ttl
+motion-spec-replay logs/run-001/logs/frame_log.bin --recover-runtime-ttl
 motion-spec-archive logs/run-001 --verify
 ```
 
@@ -123,7 +131,7 @@ import matplotlib.pyplot as plt
 
 from motion_spec.introspection.replay import frames, load_archive, to_record
 
-log = "logs/run-001/frame_log.bin"
+log = "logs/run-001/logs/frame_log.bin"
 target_controller = "https://example.test/controller-uri"
 fields = ("error", "output", "measured", "setpoint")
 
@@ -168,7 +176,7 @@ matching slot from each decoded frame. Global quantity samples are in
 Export all decoded frames as JSON Lines only when you need whole-frame analysis:
 
 ```bash
-motion-spec-replay logs/run-001/frame_log.bin --jsonl > frames.jsonl
+motion-spec-replay logs/run-001/logs/frame_log.bin --jsonl > frames.jsonl
 ```
 
 The binary header magic is `MSFRMBIN`. A bad magic value, mismatched frame size, hash

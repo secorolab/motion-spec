@@ -1222,6 +1222,12 @@ class Parser:
         self._id_sources: dict[str, set[str]] = {}
         self._id_cache: dict = {}
 
+    def _expect_type(self, id_, type_):
+        """Raise if `id_` lacks the expected rdf:type. Replaces bare asserts so
+        the check survives `python -O` and names the offending node."""
+        if type_ not in self.g[id_ : RDF["type"]]:
+            raise ValueError(f"node {id_} is missing expected rdf:type {type_}")
+
     def _compute_ambiguous_context_ids(self):
         owners_by_id: dict[str, set[str]] = {}
         for s in set(self.g.subjects()):
@@ -1282,8 +1288,7 @@ class Parser:
 
     @memoize
     def velocity_composition_solver(self, id_):
-        assert SLV["VelocityCompositionSolver"] in self.g[id_ : RDF["type"]]
-
+        self._expect_type(id_, SLV["VelocityCompositionSolver"])
         conf = self.id(self.g.value(id_, SLV["configuration"]))
         velocity = self.velocity_twist(self.g.value(id_, SLV["velocity"]))
 
@@ -1291,8 +1296,7 @@ class Parser:
 
     @memoize
     def force_distribution_solver(self, id_):
-        assert SLV["ForceDistributionSolver"] in self.g[id_ : RDF["type"]]
-
+        self._expect_type(id_, SLV["ForceDistributionSolver"])
         conf = self.id(self.g.value(id_, SLV["configuration"]))
         force = self.wrench(self.g.value(id_, SLV["force"]))
 
@@ -1300,8 +1304,7 @@ class Parser:
 
     @memoize
     def solver_with_input_and_output(self, id_):
-        assert SLV["SolverWithInputAndOutput"] in self.g[id_ : RDF["type"]]
-
+        self._expect_type(id_, SLV["SolverWithInputAndOutput"])
         io_dispatcher = [
             (GEOM_COORD["PoseCoordinate"], self.pose),
             (GEOM_COORD["VelocityTwistCoordinate"], self.velocity_twist),
@@ -1353,8 +1356,7 @@ class Parser:
 
     @memoize
     def motion_drivers(self, id_):
-        assert SLV["MotionDrivers"] in self.g[id_ : RDF["type"]]
-
+        self._expect_type(id_, SLV["MotionDrivers"])
         spec_acc = []
         spec_frc = []
         spec_jf = []
@@ -1377,7 +1379,7 @@ class Parser:
         )
 
     def joint_force_specification(self, id_):
-        assert SLV["JointForceSpecification"] in self.g[id_ : RDF["type"]]
+        self._expect_type(id_, SLV["JointForceSpecification"])
         force_node = self.g.value(id_, SLV["force"])
         force_id = self.id(force_node) if force_node is not None else ""
         joint_node = self.g.value(id_, SLV["attached-to"])
@@ -1386,8 +1388,7 @@ class Parser:
 
     @memoize
     def cartesian_force_specification(self, id_):
-        assert SLV["CartesianForceSpecification"] in self.g[id_ : RDF["type"]]
-
+        self._expect_type(id_, SLV["CartesianForceSpecification"])
         force = self.wrench(self.g.value(id_, SLV["force"]))
         attached_to = self.simplicial_complex(self.g.value(id_, SLV["attached-to"]))
 
@@ -1395,7 +1396,7 @@ class Parser:
 
     @memoize
     def saturation(self, id_):
-        assert CSTR_HDL_EXT["Saturation"] in self.g[id_ : RDF["type"]]
+        self._expect_type(id_, CSTR_HDL_EXT["Saturation"])
         input_signal = self.quantity(self.g.value(id_, CSTR_HDL_EXT["input-signal"]))
         output_signal = self.quantity(self.g.value(id_, CSTR_HDL_EXT["output-signal"]))
         maximum_node = self.g.value(id_, CSTR_HDL_EXT["maximum-absolute-value"])
@@ -1412,8 +1413,7 @@ class Parser:
 
     @memoize
     def acceleration_constraint_specification(self, id_):
-        assert SLV["AccelerationConstraintSpecification"] in self.g[id_ : RDF["type"]]
-
+        self._expect_type(id_, SLV["AccelerationConstraintSpecification"])
         constraints = []
         for c in self.g[id_ : SLV["constraints"]]:
             constraints.append(self.acceleration_constraint(c))
@@ -1424,8 +1424,7 @@ class Parser:
 
     @memoize
     def acceleration_constraint(self, id_):
-        assert SLV["AccelerationConstraint"] in self.g[id_ : RDF["type"]]
-
+        self._expect_type(id_, SLV["AccelerationConstraint"])
         subspace = self.subspace(self.g.value(id_, SLV["subspace"]))
         e_acc = self.quantity(self.g.value(id_, SLV["acceleration-energy"]))
         saturation_node = next(
@@ -1446,7 +1445,7 @@ class Parser:
                 self.id(id_), subspace, None, e_acc, as_seen_by, direction=direction, saturation=saturation
             )
 
-        assert SLV["AxisAligned"] in self.g[id_ : RDF["type"]]
+        self._expect_type(id_, SLV["AxisAligned"])
         axis = self.axis(self.g.value(id_, SLV["axis"]))
         return AccelerationConstraint(self.id(id_), subspace, axis, e_acc, as_seen_by, saturation=saturation)
 
@@ -1467,7 +1466,8 @@ class Parser:
             GEOM_COORD_EXT["linear"]: Subspace.LinearDifference,
             GEOM_COORD_EXT["angular"]: Subspace.AngularDifference,
         }
-        assert id_ in d.keys()
+        if id_ not in d:
+            raise ValueError(f"unknown subspace {id_}")
 
         return d[id_]
 
@@ -1481,14 +1481,14 @@ class Parser:
             SLV["y"]: Axis.Y,
             SLV["z"]: Axis.Z,
         }
-        assert id_ in d.keys()
+        if id_ not in d:
+            raise ValueError(f"unknown axis {id_}")
 
         return d[id_]
 
     @memoize
     def constraint_handler(self, id_):
-        assert CSTR_HDL["ConstraintHandler"] in self.g[id_ : RDF["type"]]
-
+        self._expect_type(id_, CSTR_HDL["ConstraintHandler"])
         motion = self.guarded_motion(self.g.value(id_, CSTR_HDL["motion"]))
         control_mode_node = self.g.value(id_, CSTR_HDL["control-mode"])
         if control_mode_node is None:
@@ -1525,8 +1525,7 @@ class Parser:
 
     @memoize
     def monitor_entry(self, id_):
-        assert CSTR_HDL["Monitor"] in self.g[id_ : RDF["type"]]
-
+        self._expect_type(id_, CSTR_HDL["Monitor"])
         is_until_aggregate = self.g.value(id_, CSTR_HDL_EXT["monitors-until"]) is not None
         is_when_aggregate = self.g.value(id_, CSTR_HDL_EXT["monitors-when"]) is not None
         error_node = self.g.value(id_, CSTR_HDL["error"])
@@ -1551,8 +1550,7 @@ class Parser:
 
     @memoize
     def constraint_evaluator(self, id_):
-        assert CSTR_HDL["ConstraintEvaluator"] in self.g[id_ : RDF["type"]]
-
+        self._expect_type(id_, CSTR_HDL["ConstraintEvaluator"])
         constraint_node = self.g.value(id_, CSTR_HDL["constraint"])
         constraint = self.constraint(constraint_node)
 
@@ -1587,10 +1585,11 @@ class Parser:
         is_pid = CSTR_HDL["ProportionalIntegralDerivative"] in self.g[id_ : RDF["type"]]
         is_impedance = CSTR_HDL["ImpedanceController"] in self.g[id_ : RDF["type"]]
         is_feedforward = CSTR_HDL_EXT["FeedForwardController"] in self.g[id_ : RDF["type"]]
-        assert is_pid or is_impedance or is_feedforward, (
-            f"Controller {id_} must be ProportionalIntegralDerivative, ImpedanceController, "
-            "or FeedForwardController"
-        )
+        if not (is_pid or is_impedance or is_feedforward):
+            raise ValueError(
+                f"Controller {id_} must be ProportionalIntegralDerivative, ImpedanceController, "
+                "or FeedForwardController"
+            )
 
         error_node = self.g.value(id_, CSTR_HDL["error-signal"])
         ref_node = self.g.value(id_, CSTR_HDL_EXT["reference-signal"])
@@ -1684,7 +1683,7 @@ class Parser:
 
     @memoize
     def forwarded_command(self, id_):
-        assert SLV_EXT["ForwardedCommand"] in self.g[id_ : RDF["type"]]
+        self._expect_type(id_, SLV_EXT["ForwardedCommand"])
         command_signal = self.quantity(self.g.value(id_, SLV_EXT["command-signal"]))
         target_node = self.g.value(id_, SLV["attached-to"])
         return ForwardedCommand(
@@ -1714,8 +1713,7 @@ class Parser:
 
     @memoize
     def guarded_motion(self, id_):
-        assert MOT["GuardedMotion"] in self.g[id_ : RDF["type"]]
-
+        self._expect_type(id_, MOT["GuardedMotion"])
         when = []
         when_any = False
         for c in self.g[id_ : MOT["when"]]:
@@ -1744,8 +1742,7 @@ class Parser:
 
     @memoize
     def constraint(self, id_):
-        assert CSTR["Constraint"] in self.g[id_ : RDF["type"]]
-
+        self._expect_type(id_, CSTR["Constraint"])
         quantity = self.quantity(self.g.value(id_, CSTR["quantity"]))
 
         parameter = None
@@ -1762,16 +1759,14 @@ class Parser:
 
     @memoize
     def equality_constraint(self, id_):
-        assert CSTR["EqualityConstraint"] in self.g[id_ : RDF["type"]]
-
+        self._expect_type(id_, CSTR["EqualityConstraint"])
         reference_value = self.quantity(self.g.value(id_, CSTR["reference-value"]))
 
         return EqualityConstraint(reference_value)
 
     @memoize
     def unilateral_constraint(self, id_):
-        assert CSTR["UnilateralConstraint"] in self.g[id_ : RDF["type"]]
-
+        self._expect_type(id_, CSTR["UnilateralConstraint"])
         threshold = self.quantity(self.g.value(id_, CSTR["threshold"]))
         type_ = UnilateralConstraintType.LessThan
         if CSTR["GreaterThanConstraint"] in self.g[id_ : RDF["type"]]:
@@ -1781,8 +1776,7 @@ class Parser:
 
     @memoize
     def bilateral_constraint(self, id_):
-        assert CSTR["BilateralConstraint"] in self.g[id_ : RDF["type"]]
-
+        self._expect_type(id_, CSTR["BilateralConstraint"])
         lower_threshold = self.quantity(self.g.value(id_, CSTR["lower-threshold"]))
         upper_threshold = self.quantity(self.g.value(id_, CSTR["upper-threshold"]))
 
@@ -1790,8 +1784,7 @@ class Parser:
 
     @memoize
     def outside_constraint(self, id_):
-        assert CSTR_EXT["OutsideConstraint"] in self.g[id_ : RDF["type"]]
-
+        self._expect_type(id_, CSTR_EXT["OutsideConstraint"])
         lower_threshold = self.quantity(self.g.value(id_, CSTR["lower-threshold"]))
         upper_threshold = self.quantity(self.g.value(id_, CSTR["upper-threshold"]))
 
@@ -1799,9 +1792,8 @@ class Parser:
 
     @memoize
     def direction(self, id_):
-        assert GEOM_COORD["DirectionCoordinate"] in self.g[id_ : RDF["type"]]
-        assert GEOM_COORD["VectorXYZ"] in self.g[id_ : RDF["type"]]
-
+        self._expect_type(id_, GEOM_COORD["DirectionCoordinate"])
+        self._expect_type(id_, GEOM_COORD["VectorXYZ"])
         quantity_kind = []
         for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]]:
             quantity_kind.append(self.quantity_kind(k))
@@ -1849,9 +1841,8 @@ class Parser:
 
     @memoize
     def position(self, id_):
-        assert GEOM_COORD["PositionCoordinate"] in self.g[id_ : RDF["type"]]
-        assert GEOM_COORD["VectorXYZ"] in self.g[id_ : RDF["type"]]
-
+        self._expect_type(id_, GEOM_COORD["PositionCoordinate"])
+        self._expect_type(id_, GEOM_COORD["VectorXYZ"])
         of = self.position_reference(self.g.value(id_, GEOM_REL["of"]))
         wrt = self.position_reference(self.g.value(id_, GEOM_REL["with-respect-to"]))
         quantity_kind = self.quantity_kind(self.g.value(id_, QUDT_SCHEMA["hasQuantityKind"]))
@@ -1865,8 +1856,7 @@ class Parser:
 
     @memoize
     def orientation(self, id_):
-        assert GEOM_COORD["OrientationCoordinate"] in self.g[id_ : RDF["type"]]
-
+        self._expect_type(id_, GEOM_COORD["OrientationCoordinate"])
         def optional_pose_ref(node):
             if node is None:
                 return None
@@ -1940,9 +1930,8 @@ class Parser:
         )
 
     def pose(self, id_):
-        assert GEOM_COORD["PoseCoordinate"] in self.g[id_ : RDF["type"]]
-        assert GEOM_COORD["VectorXYZ"] in self.g[id_ : RDF["type"]]
-
+        self._expect_type(id_, GEOM_COORD["PoseCoordinate"])
+        self._expect_type(id_, GEOM_COORD["VectorXYZ"])
         of = self._pose_endpoint(self.g.value(id_, GEOM_REL["of"]))
         wrt = self._pose_endpoint(self.g.value(id_, GEOM_REL["with-respect-to"]))
         quantity_kind = []
@@ -1983,9 +1972,8 @@ class Parser:
 
     @memoize
     def velocity_twist(self, id_):
-        assert GEOM_COORD["VelocityTwistCoordinate"] in self.g[id_ : RDF["type"]]
-        assert GEOM_COORD["VectorXYZ"] in self.g[id_ : RDF["type"]]
-
+        self._expect_type(id_, GEOM_COORD["VelocityTwistCoordinate"])
+        self._expect_type(id_, GEOM_COORD["VectorXYZ"])
         of = self.simplicial_complex(self.g.value(id_, GEOM_REL["of"]))
         wrt = self.simplicial_complex(self.g.value(id_, GEOM_REL["with-respect-to"]))
         quantity_kind = []
@@ -2012,9 +2000,8 @@ class Parser:
 
     @memoize
     def acceleration_twist(self, id_):
-        assert GEOM_COORD["AccelerationTwistCoordinate"] in self.g[id_ : RDF["type"]]
-        assert GEOM_COORD["VectorXYZ"] in self.g[id_ : RDF["type"]]
-
+        self._expect_type(id_, GEOM_COORD["AccelerationTwistCoordinate"])
+        self._expect_type(id_, GEOM_COORD["VectorXYZ"])
         quantity_kind = []
         for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]]:
             quantity_kind.append(self.quantity_kind(k))
@@ -2037,9 +2024,8 @@ class Parser:
 
     @memoize
     def pose_difference(self, id_):
-        assert GEOM_COORD_EXT["PoseDifferenceCoordinate"] in self.g[id_ : RDF["type"]]
-        assert GEOM_COORD["VectorXYZ"] in self.g[id_ : RDF["type"]]
-
+        self._expect_type(id_, GEOM_COORD_EXT["PoseDifferenceCoordinate"])
+        self._expect_type(id_, GEOM_COORD["VectorXYZ"])
         quantity_kind = []
         for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]]:
             quantity_kind.append(self.quantity_kind(k))
@@ -2062,7 +2048,7 @@ class Parser:
 
     @memoize
     def wrench(self, id_):
-        assert RBDYN_COORD["WrenchCoordinate"] in self.g[id_ : RDF["type"]]
+        self._expect_type(id_, RBDYN_COORD["WrenchCoordinate"])
         # assert(RBDYN_COORD["VectorXYZ"] in self.g[id_ : RDF["type"]])
 
         quantity_kind = []
@@ -2089,8 +2075,7 @@ class Parser:
 
     @memoize
     def quantity(self, id_):
-        assert QUDT_SCHEMA["Quantity"] in self.g[id_ : RDF["type"]]
-
+        self._expect_type(id_, QUDT_SCHEMA["Quantity"])
         quantity_kind_node = self.g.value(id_, QUDT_SCHEMA["hasQuantityKind"]) or self.g.value(
             id_, QUDT_SCHEMA["quantity-kind"]
         )
@@ -2159,7 +2144,7 @@ class Parser:
 
     @memoize
     def joint_position(self, id_):
-        assert KC_STAT["JointPositionCoordinate"] in self.g[id_ : RDF["type"]]
+        self._expect_type(id_, KC_STAT["JointPositionCoordinate"])
         joint_node = self.g.value(id_, GEOM_REL["of"])
         joint_name = self.label(joint_node) if joint_node is not None else ""
         return JointPosition(self.id(id_), joint_name)
@@ -2199,7 +2184,7 @@ class Parser:
 
     @memoize
     def simplicial_complex(self, id_):
-        assert GEOM_ENT["SimplicialComplex"] in self.g[id_ : RDF["type"]]
+        self._expect_type(id_, GEOM_ENT["SimplicialComplex"])
         # rdf.py's _frame_body() mints this off a Frame (mj:attached-body) so Twist.of/wrt don't
         # fuse Frame and body onto one URI. Follow the link back so the id matches its name.
         owner = self.g.value(predicate=MJ["attached-body"], object=id_)
@@ -2207,19 +2192,18 @@ class Parser:
 
     @memoize
     def scene_object(self, id_):
-        assert ENV.RigidObject in self.g[id_ : RDF["type"]]
+        self._expect_type(id_, ENV.RigidObject)
         body = str(self.g.value(id_, MJ["body-name"]) or self.id(id_))
         return SceneObject(self.id(id_), body)
 
     @memoize
     def frame(self, id_):
-        assert GEOM_ENT["Frame"] in self.g[id_ : RDF["type"]]
-
+        self._expect_type(id_, GEOM_ENT["Frame"])
         return Frame(self.id(id_))
 
     @memoize
     def point(self, id_):
-        assert GEOM_ENT["Point"] in self.g[id_ : RDF["type"]]
+        self._expect_type(id_, GEOM_ENT["Point"])
         # rdf.py's _frame_origin_point() mints this off a Frame (geom-ent:origin) so Position.of/wrt
         # don't fuse Frame and Point onto one URI. Follow the link back so the id matches its name.
         owner = self.g.value(predicate=GEOM_ENT["origin"], object=id_)
@@ -2254,7 +2238,8 @@ class Parser:
             axis_node = self.g.value(view, MAP["axis"])
             axis = self.axis(axis_node) if axis_node is not None else None
 
-            assert superobject is not None
+            if superobject is None:
+                raise ValueError(f"MAP view {view} has an unrecognized type; no view dispatcher matched")
             view_map[self.id(subobject.id)] = View(
                 self.id(view), superobject, subobject, subspace, axis
             )
@@ -3018,20 +3003,23 @@ def build_motion_units(
         # not linked to any motion phase are silently excluded from all schedules (e.g. sc1's extras).
         all_eval_nodes = set(g[handler_node : CSTR_HDL["evaluators"]])
         classified_eval_nodes = set(when_eval_nodes) | set(while_eval_nodes) | set(until_eval_nodes)
-        assert classified_eval_nodes <= all_eval_nodes, (
-            f"Handler {handler.id}: classified evaluators not a subset of handler evaluators"
-        )
+        if not classified_eval_nodes <= all_eval_nodes:
+            raise ValueError(
+                f"Handler {handler.id}: classified evaluators not a subset of handler evaluators"
+            )
 
         all_ctrl_nodes = set(g[handler_node : CSTR_HDL["controllers"]])
-        assert set(ctrl_nodes) <= all_ctrl_nodes, (
-            f"Handler {handler.id}: classified controllers not a subset of handler controllers"
-        )
+        if not set(ctrl_nodes) <= all_ctrl_nodes:
+            raise ValueError(
+                f"Handler {handler.id}: classified controllers not a subset of handler controllers"
+            )
 
         all_mon_nodes = set(g[handler_node : CSTR_HDL["monitors"]])
         classified_mon_nodes = set(when_mon_nodes) | set(while_mon_nodes) | set(until_mon_nodes)
-        assert classified_mon_nodes <= all_mon_nodes, (
-            f"Handler {handler.id}: classified monitors not a subset of handler monitors"
-        )
+        if not classified_mon_nodes <= all_mon_nodes:
+            raise ValueError(
+                f"Handler {handler.id}: classified monitors not a subset of handler monitors"
+            )
 
         # when_schedule runs in can_start (own Parser + dedup set); while_/until share p_active
         # so steps evaluated in both phases emit once (see the _build_ir schedules note).

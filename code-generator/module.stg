@@ -1690,7 +1690,6 @@ public:
 private:
     static std::string log_path() {
         if (const char *env = std::getenv("MOTION_SPEC_FRAME_LOG")) return env;
-        if (const char *env = std::getenv("MOTION_SPEC_RUN_BIN")) return env;
         return "frame_log.bin";
     \}
 

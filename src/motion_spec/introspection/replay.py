@@ -13,7 +13,6 @@ from motion_spec.introspection.archive import ArchiveError, verify_manifest
 from motion_spec.introspection.frame_layout_spec import CSLOT, MSLOT, TSLOT, frame_struct
 
 MAGIC = b"MSFRMBIN"
-LEGACY_MAGIC = b"MSRUNBIN"
 HEADER = struct.Struct("<8sII32s32s128s128s")
 
 
@@ -41,7 +40,7 @@ def read_header(log_path: Path | str) -> dict:
     if len(data) != HEADER.size:
         raise ArchiveError(f"{log_path}: truncated run header")
     magic, writer_version, frame_size, schema_hash, layout_hash, producer, activity = HEADER.unpack(data)
-    if magic not in (MAGIC, LEGACY_MAGIC):
+    if magic != MAGIC:
         raise ArchiveError(f"{log_path}: bad magic {magic!r}")
     return {
         "writer_version": writer_version,

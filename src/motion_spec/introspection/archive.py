@@ -92,8 +92,6 @@ def create_archive_manifest(
         copies[str(Path(frame_log).resolve())] = "frame_log.bin"
     elif (source_dir / "frame_log.bin").exists():
         copies["frame_log.bin"] = "frame_log.bin"
-    elif (source_dir / "run.bin").exists():
-        copies["run.bin"] = "frame_log.bin"
     schema = json.loads((source_dir / "schema.json").read_text())
     if (source_dir / "model.jsonld").exists():
         copies["model.jsonld"] = "model.jsonld"

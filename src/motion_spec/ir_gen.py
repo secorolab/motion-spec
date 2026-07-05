@@ -3861,7 +3861,6 @@ def _build_introspection(
             "types": ["prov:Entity"],
             "role": "imported_model_graph",
             "source": source,
-            "wasDerivedFrom": "entity:app_manifest",
         }
         for idx, source in enumerate(imported_models)
     )

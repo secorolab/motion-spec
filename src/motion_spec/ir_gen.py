@@ -119,8 +119,12 @@ class Operator:
         return data_structures
 
     def from_output_to_operator(self, g, data_out):
-        for out in self.output:
-            return [op for op in g.subjects(out, data_out) if g[op : RDF["type"] : self.type_]]
+        return [
+            op
+            for out in self.output
+            for op in g.subjects(out, data_out)
+            if g[op : RDF["type"] : self.type_]
+        ]
 
     def is_schedulable(self):
         return True
@@ -174,8 +178,12 @@ class Specification:
         return data_structures
 
     def from_output_to_operator(self, g, data_out):
-        for out in self.output:
-            return [op for op in g.subjects(out, data_out) if g[op : RDF["type"] : self.type_]]
+        return [
+            op
+            for out in self.output
+            for op in g.subjects(out, data_out)
+            if g[op : RDF["type"] : self.type_]
+        ]
 
     def is_schedulable(self):
         """
@@ -265,9 +273,13 @@ class ErrorEvaluator:
         return data_structures
 
     def from_output_to_operator(self, g, data_out):
-        for operator in self.cstr_op:
-            for out in operator.output:
-                return [op for op in g.subjects(out, data_out) if g[op : RDF["type"] : self.type_]]
+        outputs = {out for operator in self.cstr_op for out in operator.output}
+        return [
+            op
+            for out in outputs
+            for op in g.subjects(out, data_out)
+            if g[op : RDF["type"] : self.type_]
+        ]
 
     def is_schedulable(self):
         """

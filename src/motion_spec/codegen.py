@@ -16,7 +16,7 @@ from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from urllib.parse import urlparse
 
-from motion_spec.introspection_artifacts import write_introspection_artifacts
+from motion_spec.introspection.artifacts import write_introspection_artifacts
 
 
 class JSONEncoder(json.JSONEncoder):

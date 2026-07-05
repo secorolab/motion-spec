@@ -8,7 +8,7 @@ from pathlib import Path
 from rdflib import Graph
 from rdf_utils.resolver import IriToFileResolver, install_resolver
 
-from motion_spec.introspection_artifacts import (
+from motion_spec.introspection.artifacts import (
     build_frame_layout,
     build_provenance_document,
     build_schema,

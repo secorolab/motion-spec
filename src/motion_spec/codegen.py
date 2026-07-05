@@ -11,12 +11,22 @@ import re
 import shutil
 import subprocess
 import sys
+from dataclasses import asdict, is_dataclass
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from urllib.parse import urlparse
 
-from motion_spec.ir_gen import JSONEncoder
 from motion_spec.introspection_artifacts import write_introspection_artifacts
+
+
+class JSONEncoder(json.JSONEncoder):
+    """Dataclass-aware JSON encoder. Defined locally so codegen consumes only the
+    IR dict and does not import the rdflib-heavy ir_gen module."""
+
+    def default(self, o):
+        if is_dataclass(o) and not isinstance(o, type):
+            return asdict(o)
+        return super().default(o)
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]

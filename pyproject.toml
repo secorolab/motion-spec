@@ -21,6 +21,8 @@ motion-spec-check = "motion_spec.check:main"
 motion-spec-ir-gen = "motion_spec.ir_gen:main"
 motion-spec-count = "motion_spec.count:main"
 motion-spec-codegen = "motion_spec.codegen:main"
+motion-spec-archive = "motion_spec.introspection.archive:main"
+motion-spec-replay = "motion_spec.introspection.replay:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

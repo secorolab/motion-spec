@@ -1470,7 +1470,7 @@ static_assert(sizeof(Trigger) == 5 * 8, "Trigger must be padding-free");
 static_assert(sizeof(Frame) == kFrameSizeBytes, "Frame layout must match frame_layout.json");
 static_assert(std::is_trivially_copyable_v\<Frame\>, "Frame must stay trivially copyable");
 
-struct RunHeader {
+struct FrameLogHeader {
     char magic[8];
     std::uint32_t writer_version;
     std::uint32_t frame_size;
@@ -1480,7 +1480,7 @@ struct RunHeader {
     char activity_id[128];
 };
 
-inline constexpr char kRunMagic[8] = {'M', 'S', 'R', 'U', 'N', 'B', 'I', 'N'};
+inline constexpr char kFrameLogMagic[8] = {'M', 'S', 'F', 'R', 'M', 'B', 'I', 'N'};
 inline constexpr std::uint32_t kWriterVersion = 1;
 
 inline std::int64_t wall_time_ns() {
@@ -1549,8 +1549,8 @@ public:
         if (ring_capacity == 0 || (ring_capacity & (ring_capacity - 1)) != 0) return;
         file_ = std::fopen(path.c_str(), "wb");
         if (!file_) return;
-        RunHeader header{};
-        std::memcpy(header.magic, kRunMagic, sizeof(kRunMagic));
+        FrameLogHeader header{};
+        std::memcpy(header.magic, kFrameLogMagic, sizeof(kFrameLogMagic));
         header.writer_version = kWriterVersion;
         header.frame_size = static_cast\<std::uint32_t\>(sizeof(Frame));
         copy_cstr(header.schema_hash, sizeof(header.schema_hash), kSchemaHash);
@@ -1689,8 +1689,9 @@ public:
 
 private:
     static std::string log_path() {
+        if (const char *env = std::getenv("MOTION_SPEC_FRAME_LOG")) return env;
         if (const char *env = std::getenv("MOTION_SPEC_RUN_BIN")) return env;
-        return "run.bin";
+        return "frame_log.bin";
     \}
 
     static std::string shm_name() {

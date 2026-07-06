@@ -550,11 +550,26 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
                 )
                 quantity_ids.add(item_id)
 
+        stateful_types = {"ProportionalIntegralDerivative", "ImpedanceController"}
+        stateful_ids = {
+            controller.get("id")
+            for source in (
+                ir_payload.get("motions", []),
+                ir_payload.get("unique_motions", []),
+                [ir_payload.get("introspection") or {}],
+            )
+            for entry in source
+            for controller in (entry.get("controllers", []) if isinstance(entry, dict) else [])
+            if isinstance(controller, dict)
+            and controller.get("type") in stateful_types
+            and controller.get("id")
+        }
+
         for closure in ir_payload.get("closures", {}).values():
             if not isinstance(closure, dict) or closure.get("type") != "Controller":
                 continue
             controller_id = closure.get("id")
-            if not controller_id:
+            if controller_id not in stateful_ids:
                 continue
             samples = [
                 ("error_integral", "Quantity", "error_integral"),

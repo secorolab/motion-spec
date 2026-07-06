@@ -28,6 +28,7 @@ HASHED_ARTIFACTS = {
     "provenance": "provenance/codegen.jsonld",
     "runtime": "runtime/runtime.ttl",
     "frame_log": "logs/frame_log.bin",
+    "frame_log_health": "logs/frame_log.bin.health.json",
     "model": "model/model.jsonld",
     "ir": "model/ir.json",
     "controller": "controller/source",
@@ -97,8 +98,13 @@ def create_archive_manifest(
     }
     if frame_log and Path(frame_log).exists():
         copies[str(Path(frame_log).resolve())] = "logs/frame_log.bin"
+        health = Path(str(frame_log) + ".health.json")
+        if health.exists():
+            copies[str(health.resolve())] = "logs/frame_log.bin.health.json"
     elif (source_dir / "frame_log.bin").exists():
         copies["frame_log.bin"] = "logs/frame_log.bin"
+        if (source_dir / "frame_log.bin.health.json").exists():
+            copies["frame_log.bin.health.json"] = "logs/frame_log.bin.health.json"
     schema = json.loads((source_dir / "schema.json").read_text())
     if (source_dir / "model.jsonld").exists():
         copies["model.jsonld"] = "model/model.jsonld"
@@ -158,6 +164,7 @@ def create_archive_manifest(
             "provenance": "provenance/codegen.jsonld",
             "runtime_ttl": "runtime/runtime.ttl",
             "frame_log": "logs/frame_log.bin",
+            "frame_log_health": "logs/frame_log.bin.health.json",
             "model": "model/model.jsonld",
             "ir": "model/ir.json",
             "controller": "controller/source",
@@ -247,6 +254,7 @@ def verify_manifest(run_dir_or_manifest: Path | str) -> dict:
         rec_graph = _parse_rdf(run_dir / rec_rel, "json-ld")
         _require_rec_provenance(rec_graph, "rec.json")
         _validate_prov_shacl(run_dir / rec_rel)
+        _validate_rec_shacl(run_dir / rec_rel)
     return manifest
 
 
@@ -339,6 +347,7 @@ def _write_rec_snapshot(
     _record_agents(run, schema)
     _record_activities(run, schema)
     _record_files(run, run_dir, manifest, schema)
+    _record_frame_log_health(run, run_dir, manifest)
     run.log_scalar("archive_artifact_count", len(manifest.get("artifacts", {})), step=0)
     if complete_lifecycle and not completed_time and not terminal_status:
         if run.start_time is None:
@@ -424,7 +433,11 @@ def _record_files(run, run_dir: Path, manifest: dict, schema: dict) -> None:
         if meta.get("role") in resource_roles:
             run.add_resource(rel, **row)
         else:
-            gen_activity = runtime_activity if meta.get("role") == "frame_log" else "activity:archive_creation"
+            gen_activity = (
+                runtime_activity
+                if meta.get("role") in {"frame_log", "frame_log_health"}
+                else "activity:archive_creation"
+            )
             run.add_artefact(rel, gen_activity=gen_activity, **row)
     for stream in manifest.get("streams", []):
         row = {
@@ -437,6 +450,21 @@ def _record_files(run, run_dir: Path, manifest: dict, schema: dict) -> None:
             run.add_artefact(stream.get("url"), **row)
         else:
             run.add_resource(stream.get("url"), **row)
+
+
+def _record_frame_log_health(run, run_dir: Path, manifest: dict) -> None:
+    rel = manifest.get("files", {}).get("frame_log_health")
+    if not rel:
+        return
+    path = run_dir / rel
+    if not path.exists():
+        return
+    health = json.loads(path.read_text())
+    for name in ("attempted_frames", "accepted_frames", "written_frames", "dropped_frames"):
+        if name in health:
+            run.log_scalar(f"frame_log_{name}", health[name], step=0)
+    if "complete" in health:
+        run.log_scalar("frame_log_complete", int(bool(health["complete"])), step=0)
 
 
 def _artifact_size(path: Path) -> int:
@@ -535,6 +563,22 @@ def _validate_prov_shacl(path: Path) -> None:
     )
     if not conforms:
         raise ArchiveError(f"{path.name}: PROV SHACL validation failed: {text}")
+
+
+def _validate_rec_shacl(path: Path) -> None:
+    root = _metamodels_root()
+    shape = root / "rec" / "rec.shacl.ttl"
+    if not shape.exists():
+        raise ArchiveError(f"{shape}: missing REC SHACL shape")
+    conforms, _graph, text = validate(
+        data_graph=str(path),
+        shacl_graph=str(shape),
+        data_graph_format="json-ld",
+        shacl_graph_format="turtle",
+        inference="rdfs",
+    )
+    if not conforms:
+        raise ArchiveError(f"{path.name}: REC SHACL validation failed: {text}")
 
 
 def main(argv: list[str] | None = None) -> int:

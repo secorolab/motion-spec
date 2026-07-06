@@ -46,9 +46,11 @@ def test_runner_catalogs_run_from_start_and_archives_outputs(tmp_path: Path) -> 
     assert (run_dir / "runtime" / "runtime.ttl").exists()
 
     rec_doc = json.loads((run_dir / "rec.json").read_text())
-    assert rec_doc["run"]["status"] == "COMPLETED"
-    assert rec_doc["run"]["started_time"]
-    assert rec_doc["run"]["completed_time"]
+    assert rec_doc["status"] == "COMPLETED"
+    assert rec_doc["startedAtTime"]
+    assert rec_doc["endedAtTime"]
+    assert "run" not in rec_doc
+    assert "@graph" not in rec_doc
     assert any(row["role"] == "run_cataloging" for row in rec_doc["activities"])
     assert any(row["role"] == "log_producer_executable" for row in rec_doc["resources"])
     assert any(row["role"] == "frame_log" for row in rec_doc["artefacts"])

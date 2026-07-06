@@ -309,9 +309,11 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     event_state = _event_to_state(fsm_ir) if fsm_ir else {}
     # Heartbeat event produced every tick (drives the start-state kick / self-loops), if present.
     fsm_step_event = "E_STEP" if (fsm_ir and "E_STEP" in fsm_ir["events"]) else None
+    fsm_event_index = {event: idx for idx, event in enumerate(fsm_ir.get("events", []))} if fsm_ir else {}
     ir["fsm_namespace"] = fsm_namespace
     ir["fsm_header"] = fsm_header
     ir["fsm_step_event"] = fsm_step_event
+    ir["fsm_step_event_idx"] = fsm_event_index.get(fsm_step_event, -1)
 
     def is_fsm_event(monitor: dict) -> bool:
         # A monitor fires the FSM only when its event lives in the FSM's namespace;
@@ -466,6 +468,180 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
         if component.get("value") is not None:
             return str(component["value"])
         return cpp_access_expr(component_id, views)
+
+    def add_controller_signal_metadata(ir_payload: dict) -> None:
+        error_sources = {
+            closure.get("error"): closure
+            for closure in ir_payload.get("closures", {}).values()
+            if isinstance(closure, dict)
+            and closure.get("type") == "ErrorEvaluator"
+            and closure.get("error")
+        }
+
+        def signal_id(value):
+            if isinstance(value, dict):
+                return value.get("id")
+            if isinstance(value, str):
+                return value
+            return None
+
+        def enrich(controller: dict) -> None:
+            error_id = signal_id(controller.get("error_signal"))
+            source = error_sources.get(error_id) or {}
+            measured_id = source.get("quantity")
+            setpoint_id = signal_id(controller.get("reference_signal")) or source.get("reference_value")
+            measured_derivative_id = signal_id(controller.get("measured_derivative"))
+            if measured_id:
+                controller["measured_signal"] = measured_id
+                controller["measured_expr"] = cpp_access_expr(measured_id, ir_payload.get("views", {}))
+            if setpoint_id:
+                controller["setpoint_signal"] = setpoint_id
+                controller["setpoint_expr"] = cpp_access_expr(setpoint_id, ir_payload.get("views", {}))
+            if measured_derivative_id:
+                controller["measured_derivative_expr"] = cpp_access_expr(
+                    measured_derivative_id,
+                    ir_payload.get("views", {}),
+                )
+
+        for motion in ir_payload.get("motions", []) + ir_payload.get("unique_motions", []):
+            for controller in motion.get("controllers", []):
+                enrich(controller)
+        for controller in (ir_payload.get("introspection") or {}).get("controllers", []):
+            enrich(controller)
+
+    def add_controller_internal_state_logging(ir_payload: dict) -> None:
+        shared_data = ir_payload.setdefault("shared_data", [])
+        introspection = ir_payload.setdefault("introspection", {})
+        quantities = introspection.setdefault("quantities", [])
+        shared_ids = {
+            item.get("id")
+            for item in shared_data
+            if isinstance(item, dict) and item.get("id")
+        }
+        quantity_ids = {
+            item.get("id")
+            for item in quantities
+            if isinstance(item, dict) and item.get("id")
+        }
+
+        def add_shared(item_id: str, item_type: str, controller_id: str, state_name: str) -> None:
+            if item_id not in shared_ids:
+                shared_data.append(
+                    {
+                        "id": item_id,
+                        "type": item_type,
+                        "controller": controller_id,
+                        "role": "controller_internal_state",
+                        "state": state_name,
+                    }
+                )
+                shared_ids.add(item_id)
+
+        def add_quantity(item_id: str, controller_id: str, state_name: str) -> None:
+            if item_id not in quantity_ids:
+                quantities.append(
+                    {
+                        "id": item_id,
+                        "type": "Quantity",
+                        "controller": controller_id,
+                        "role": "controller_internal_state",
+                        "state": state_name,
+                    }
+                )
+                quantity_ids.add(item_id)
+
+        for closure in ir_payload.get("closures", {}).values():
+            if not isinstance(closure, dict) or closure.get("type") != "Controller":
+                continue
+            controller_id = closure.get("id")
+            if not controller_id:
+                continue
+            samples = [
+                ("error_integral", "Quantity", "error_integral"),
+                ("previous_error", "Quantity", "previous_error"),
+                ("first_sample", "Bool", "is_first_sample"),
+            ]
+            closure_samples = []
+            for state_name, item_type, getter in samples:
+                item_id = f"{controller_id}_{state_name}"
+                add_shared(item_id, item_type, controller_id, state_name)
+                if item_type == "Quantity":
+                    add_quantity(item_id, controller_id, state_name)
+                closure_samples.append({"id": item_id, "getter": getter})
+            closure["internal_state_samples"] = closure_samples
+
+    def add_quantity_samples(ir_payload: dict) -> None:
+        introspection = ir_payload.get("introspection") or {}
+        shared_ids = {
+            item.get("id")
+            for item in ir_payload.get("shared_data", [])
+            if isinstance(item, dict) and item.get("id")
+        }
+        views = ir_payload.get("views", {})
+        samples = []
+
+        def add(source: dict, component: str, expr: str) -> None:
+            row = {key: value for key, value in source.items() if key != "index"}
+            source_id = source.get("id")
+            row.update(
+                {
+                    "id": source_id if not component else f"{source_id}.{component}",
+                    "source_id": source_id,
+                    "component": component or None,
+                    "type": "Scalar",
+                    "source_type": source.get("type"),
+                    "sample_expr": expr,
+                }
+            )
+            samples.append(row)
+
+        def add_axes(source: dict, prefix: str, expr: str) -> None:
+            for idx, axis in enumerate(("x", "y", "z")):
+                add(source, f"{prefix}.{axis}" if prefix else axis, f"{expr}[{idx}]")
+
+        def scalar_view(data_id: str) -> bool:
+            view = views.get(data_id)
+            return not view or view.get("axis") is not None
+
+        for quantity in introspection.get("quantities", []):
+            qid = quantity.get("id")
+            if not qid:
+                continue
+            qtype = quantity.get("type")
+            if qtype == "Quantity":
+                if quantity.get("value") is not None and qid not in shared_ids and qid not in views:
+                    add(quantity, "", str(quantity["value"]))
+                elif qid in views and scalar_view(qid):
+                    add(quantity, "", cpp_access_expr(qid, views))
+                elif qid in shared_ids and qid not in views:
+                    add(quantity, "", f"shared.{qid}")
+            elif qtype in {"Position", "Direction", "FreeVector"} and qid in shared_ids:
+                add_axes(quantity, "", f"shared.{qid}")
+            elif qtype == "Orientation" and qid in shared_ids:
+                add_axes(quantity, "", f"KDL::diff(KDL::Rotation::Identity(), shared.{qid})")
+            elif qtype in {"Pose", "Trajectory"} and qid in shared_ids:
+                add_axes(quantity, "position", f"shared.{qid}.p")
+                add_axes(quantity, "orientation", f"KDL::diff(KDL::Rotation::Identity(), shared.{qid}.M)")
+            elif qtype in {"VelocityTwist", "AccelerationTwist", "PoseDifference"} and qid in shared_ids:
+                add_axes(quantity, "angular", f"shared.{qid}.rot")
+                add_axes(quantity, "linear", f"shared.{qid}.vel")
+            elif qtype == "Wrench" and qid in shared_ids:
+                add_axes(quantity, "torque", f"shared.{qid}.torque")
+                add_axes(quantity, "force", f"shared.{qid}.force")
+
+        sampled_ids = {sample.get("source_id") for sample in samples}
+        for item in ir_payload.get("shared_data", []):
+            if not isinstance(item, dict):
+                continue
+            item_id = item.get("id")
+            if not item_id or item_id in sampled_ids:
+                continue
+            if item.get("type") == "Bool":
+                add(item, "", f"shared.{item_id} ? 1.0 : 0.0")
+            elif item.get("type") == "IntCounter":
+                add(item, "", f"static_cast<double>(shared.{item_id})")
+
+        introspection["quantity_samples"] = samples
 
     def build_pose_components(ir_payload: dict) -> dict:
         views = ir_payload.get("views", {})
@@ -878,6 +1054,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
             for monitor in monitors:
                 if is_fsm_event(monitor):
                     monitor["fsm_namespace"] = fsm_namespace
+                    monitor["fsm_event_idx"] = fsm_event_index.get(monitor.get("event_name") or "", -1)
                     state = event_state.get(monitor.get("event_name") or "")
                     if state and not motion.get("fsm_state"):
                         motion["fsm_state"] = state
@@ -892,6 +1069,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
                     if not is_fsm_event(monitor):
                         continue
                     monitor["fsm_namespace"] = fsm_namespace
+                    monitor["fsm_event_idx"] = fsm_event_index.get(monitor.get("event_name") or "", -1)
                     fallback_id = monitor.get("fallback_motion")
                     if not fallback_id:
                         raise ValueError(
@@ -930,6 +1108,10 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
                     for gate_id in gate_ids
                     if gate_id in by_id
                 ]
+
+    add_controller_signal_metadata(ir)
+    add_controller_internal_state_logging(ir)
+    add_quantity_samples(ir)
 
     ir["introspection_artifacts"] = write_introspection_artifacts(
         ir, ir_path=ir_path, output_dir=output_dir, fsm_ir=fsm_ir

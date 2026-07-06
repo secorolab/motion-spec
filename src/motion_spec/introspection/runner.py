@@ -248,7 +248,10 @@ def _finish_rec_run(rec_path: Path, run_id: str, status: str) -> None:
 def _rec_status(rec_path: Path) -> str | None:
     if not rec_path.exists():
         return None
-    return json.loads(rec_path.read_text()).get("run", {}).get("status")
+    doc = json.loads(rec_path.read_text())
+    if "run" in doc:
+        return doc.get("run", {}).get("status")
+    return doc.get("status")
 
 
 def _refresh_rec_hash(run_dir: Path) -> None:

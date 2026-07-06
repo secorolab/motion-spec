@@ -93,6 +93,13 @@ def validate_header(log_path: Path | str, schema: dict, layout: dict) -> dict:
     return header
 
 
+def read_health(log_path: Path | str) -> dict | None:
+    health_path = Path(str(log_path) + ".health.json")
+    if not health_path.exists():
+        return None
+    return json.loads(health_path.read_text())
+
+
 def frames(log_path: Path | str) -> Iterator[tuple[dict, int, int, int, int]]:
     _run_dir, log_path, _manifest, schema, layout = resolve_archive(log_path)
     validate_header(log_path, schema, layout)
@@ -186,6 +193,14 @@ def summarize(log_path: Path | str) -> str:
         f"writer      v{header['writer_version']} {header['producer_agent_id']} {header['activity_id']}",
         f"final state {final_name}",
     ]
+    health = read_health(log_path)
+    if health:
+        lines.append(
+            "log health  "
+            f"attempted {health.get('attempted_frames')} "
+            f"written {health.get('written_frames')} "
+            f"dropped {health.get('dropped_frames')}"
+        )
     if periods:
         lines.append(f"period[ms]  mean {sum(periods) / len(periods) / 1e6:.3f} max {periods[-1] / 1e6:.3f}")
     if computes:

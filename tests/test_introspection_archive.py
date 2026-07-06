@@ -149,6 +149,18 @@ def _source_tree(path: Path) -> Path:
     (path / "headers" / "runtime.hpp").write_text("// generated\n")
     (path / "ref_main.cpp").write_text("// generated\n")
     _write_frame_log(path / "frame_log.bin", schema, layout)
+    (path / "frame_log.bin.health.json").write_text(
+        json.dumps(
+            {
+                "attempted_frames": 1,
+                "accepted_frames": 1,
+                "written_frames": 1,
+                "dropped_frames": 0,
+                "complete": True,
+            },
+            indent=4,
+        )
+    )
     return path
 
 
@@ -174,9 +186,11 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
 
     assert manifest["files"]["log_producer_executable"] is None
     assert manifest["files"]["rec"] == "rec.json"
+    assert manifest["files"]["frame_log_health"] == "logs/frame_log.bin.health.json"
     assert manifest["rec"] == {"path": "rec.json", "run_id": "run-test"}
     assert manifest["files"]["controller"] == "controller/source"
     assert "controller/source" in manifest["artifacts"]
+    assert "logs/frame_log.bin.health.json" in manifest["artifacts"]
     assert "rec.json" in manifest["artifacts"]
     assert verify_manifest(run_dir)["run_id"] == "run-test"
     header = validate_header(run_dir / "logs" / "frame_log.bin", _schema(), _layout(_schema()))
@@ -186,6 +200,7 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
     assert frames[0]["step"] == 7
     assert frames[0]["quantities"] == [42.0]
     assert "frames      1" in summarize(run_dir / "logs" / "frame_log.bin")
+    assert "dropped 0" in summarize(run_dir / "logs" / "frame_log.bin")
     assert decode_frames(run_dir)[0]["step"] == 7
     assert f"archive     {run_dir}" in summarize(run_dir)
     assert replay.main([str(run_dir), "--verify"]) == 0
@@ -197,10 +212,23 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
     assert verify_manifest(run_dir)["artifacts"]["runtime/runtime.ttl"]["sha256"] == sha256_file(runtime_ttl)
 
     rec_doc = json.loads((run_dir / "rec.json").read_text())
-    assert rec_doc["run"]["status"] == "COMPLETED"
+    assert rec_doc["status"] == "COMPLETED"
+    assert rec_doc["role"] == "run_execution"
+    assert "run" not in rec_doc
+    assert "@graph" not in rec_doc
     assert any(row["role"] == "frame_log" for row in rec_doc["artefacts"])
+    assert any(
+        row["role"] == "frame_log_health"
+        and row["wasGeneratedBy"] == "activity:controller_execution"
+        for row in rec_doc["artefacts"]
+    )
     assert any(row["role"] == "runtime_ttl" for row in rec_doc["artefacts"])
     assert any(row["role"] == "runtime_ttl_recovery" for row in rec_doc["activities"])
+    metrics = {row["name"]: row["value"] for row in rec_doc["metrics"]}
+    assert metrics["frame_log_attempted_frames"] == 1
+    assert metrics["frame_log_written_frames"] == 1
+    assert metrics["frame_log_dropped_frames"] == 0
+    assert metrics["frame_log_complete"] == 1
 
 
 def test_manifest_hash_verification_rejects_mutation(tmp_path: Path) -> None:

@@ -571,6 +571,7 @@ emit-call-Controller(closure, views) ::= <<
 <else>
     shared.<closure.control_signal> = _control_signal;
 <endif>
+<closure.internal_state_samples:{sample |     shared.<sample.id> = state.<closure.id>.<sample.getter>();}; separator="\n">
 }
 >>
 
@@ -663,12 +664,16 @@ update-monitor(monitor, suppress_initial_active) ::= <<
             state.active_steps >= motion_spec::runtime::kMonitorArmSteps)<else>motion_spec::runtime::rising_edge(state.<monitor.id>_previous, active)<endif><endif>;
 <if(monitor.fsm_namespace)>
         // coord2b is the sequencer: fire the FSM event on the rising edge while in this state.
+        if (detected) {
+            shared._motion_spec_record_event(<monitor.fsm_event_idx>);
+        \}
         if (detected && robot.fsm_events) {
             produce_event(robot.fsm_events, <monitor.fsm_namespace>::<monitor.event_name>);
             std::cerr \<\< "[fsm] event   " \<\< <monitor.fsm_namespace>::EVENT_URIS[<monitor.fsm_namespace>::<monitor.event_name>] \<\< std::endl;
         \}
 <else>
         if (state.active && detected) {
+            shared._motion_spec_record_event(<monitor.event_idx>);
             state.<monitor.id>_event_triggered = true;
             motion_spec::runtime::warn_produce_event_not_implemented("<monitor.event>");
         \}
@@ -690,12 +695,16 @@ update-monitor(monitor, suppress_initial_active) ::= <<
             state.active_steps >= motion_spec::runtime::kMonitorArmSteps)<else>motion_spec::runtime::rising_edge(state.<monitor.id>_previous, active)<endif><endif>;
 <if(monitor.fsm_namespace)>
         // coord2b is the sequencer: fire the FSM event on the rising edge while in this state.
+        if (detected) {
+            shared._motion_spec_record_event(<monitor.fsm_event_idx>);
+        \}
         if (detected && robot.fsm_events) {
             produce_event(robot.fsm_events, <monitor.fsm_namespace>::<monitor.event_name>);
             std::cerr \<\< "[fsm] event   " \<\< <monitor.fsm_namespace>::EVENT_URIS[<monitor.fsm_namespace>::<monitor.event_name>] \<\< std::endl;
         \}
 <else>
         if (state.active && detected) {
+            shared._motion_spec_record_event(<monitor.event_idx>);
             state.<monitor.id>_event_triggered = true;
             motion_spec::runtime::warn_produce_event_not_implemented("<monitor.event>");
         \}
@@ -1545,7 +1554,7 @@ public:
         const char *producer_agent_id,
         const char *activity_id,
         std::size_t ring_capacity = 8192)
-        : ring_(ring_capacity), mask_(ring_capacity - 1) {
+        : ring_(ring_capacity), mask_(ring_capacity - 1), health_path_(path + ".health.json") {
         if (ring_capacity == 0 || (ring_capacity & (ring_capacity - 1)) != 0) return;
         file_ = std::fopen(path.c_str(), "wb");
         if (!file_) return;
@@ -1570,6 +1579,7 @@ public:
             return;
         \}
         if (writer_.joinable()) writer_.join();
+        write_health();
         if (file_) {
             std::fflush(file_);
             std::fclose(file_);
@@ -1578,6 +1588,7 @@ public:
     \}
 
     void push(const Frame &frame) {
+        attempted_.fetch_add(1, std::memory_order_relaxed);
         if (!running_.load(std::memory_order_relaxed)) return;
         const std::uint64_t head = head_.load(std::memory_order_relaxed);
         const std::uint64_t tail = tail_.load(std::memory_order_acquire);
@@ -1587,6 +1598,7 @@ public:
         \}
         ring_[head & mask_] = frame;
         head_.store(head + 1, std::memory_order_release);
+        accepted_.fetch_add(1, std::memory_order_relaxed);
     \}
 
 private:
@@ -1604,19 +1616,47 @@ private:
         while (tail != head) {
             std::fwrite(&ring_[tail & mask_], sizeof(Frame), 1, file_);
             ++tail;
+            ++written_;
         \}
         tail_.store(tail, std::memory_order_release);
         return true;
     \}
 
+    void write_health() {
+        std::FILE *health = std::fopen(health_path_.c_str(), "wb");
+        if (!health) return;
+        const std::uint64_t attempted = attempted_.load(std::memory_order_relaxed);
+        const std::uint64_t accepted = accepted_.load(std::memory_order_relaxed);
+        const std::uint64_t dropped = dropped_.load(std::memory_order_relaxed);
+        std::fprintf(
+            health,
+            "{\n"
+            "  \"attempted_frames\": %llu,\n"
+            "  \"accepted_frames\": %llu,\n"
+            "  \"written_frames\": %llu,\n"
+            "  \"dropped_frames\": %llu,\n"
+            "  \"complete\": %s\n"
+            "}\n",
+            static_cast\<unsigned long long\>(attempted),
+            static_cast\<unsigned long long\>(accepted),
+            static_cast\<unsigned long long\>(written_),
+            static_cast\<unsigned long long\>(dropped),
+            (dropped == 0 && accepted == written_) ? "true" : "false");
+        std::fclose(health);
+    \}
+
     std::vector\<Frame\> ring_;
     std::uint64_t mask_ = 0;
+    std::string health_path_;
     std::FILE *file_ = nullptr;
     std::thread writer_;
     std::atomic\<bool\> running_{false};
     std::atomic\<std::uint64_t\> head_{0};
     std::atomic\<std::uint64_t\> tail_{0};
+    std::atomic\<std::uint64_t\> attempted_{0};
+    std::atomic\<std::uint64_t\> accepted_{0};
     std::atomic\<std::uint64_t\> dropped_{0};
+    std::uint64_t written_ = 0;
 };
 
 class RunPublisher {
@@ -1668,16 +1708,34 @@ public:
         slot.sat_t = scratch_.t;
     \}
 
-    void event_occurrence(const char *uri) {
-        static_cast\<void\>(uri);
-        if (kNumTriggers == 0) return;
+    void quantity_sample(std::size_t index, double value) {
+        if (index >= kNumQuantities) return;
+        scratch_.quantities[index] = value;
+    \}
+
+    void event_occurrences(std::int64_t event_count, const int *events, std::size_t capacity) {
+        if (capacity == 0 || event_count \<= last_event_count_) return;
+        std::int64_t start = last_event_count_;
+        const std::int64_t oldest = event_count - static_cast\<std::int64_t\>(capacity);
+        if (start \< oldest) start = oldest;
+        for (std::int64_t count = start; count \< event_count; ++count) {
+            append_event(events[count % static_cast\<std::int64_t\>(capacity)]);
+        \}
+        last_event_count_ = event_count;
+    \}
+
+    void append_event(std::int64_t event_idx) {
+        if (event_idx \< 0 || kNumTriggers == 0) return;
         const std::int64_t idx = scratch_.trigger_count % static_cast\<std::int64_t\>(kNumTriggers);
+        scratch_.last_event = event_idx;
+        scratch_.event_t = scratch_.t;
+        scratch_.event_wall_ns = wall_time_ns();
         Trigger &trigger = scratch_.triggers[idx];
         trigger.kind = 1;
-        trigger.idx = scratch_.last_event;
+        trigger.idx = event_idx;
         trigger.fsm_state = scratch_.fsm_state;
         trigger.t = scratch_.t;
-        trigger.wall_ns = wall_time_ns();
+        trigger.wall_ns = scratch_.event_wall_ns;
         ++scratch_.trigger_count;
     \}
 
@@ -1707,17 +1765,22 @@ private:
     std::size_t monitor_count_ = 0;
     std::int64_t tick_start_ns_ = 0;
     std::int64_t last_tick_ns_ = 0;
+    std::int64_t last_event_count_ = 0;
 };
 
 } // namespace motion_spec::introspection
 >>
 
 introspection-controller-sample(slot) ::= <<
-        pub.constraint_sample(<slot.uri>, <slot.error_expr>, <slot.output_expr>, 0.0, 0.0, constraint_satisfied(<slot.error_expr>));
+        pub.constraint_sample(<slot.uri>, <slot.error_expr>, <slot.output_expr>, <slot.measured_expr>, <slot.setpoint_expr>, constraint_satisfied(<slot.error_expr>));
 >>
 
 introspection-monitor-sample(slot) ::= <<
-        pub.monitor_sample(<slot.uri>, <slot.value_expr>, constraint_satisfied(<slot.value_expr>));
+        pub.monitor_sample(<slot.uri>, <slot.value_expr>, <slot.satisfied_expr>);
+>>
+
+introspection-quantity-sample(slot) ::= <<
+    pub.quantity_sample(<slot.index>, <slot.expr>);
 >>
 
 introspection-state-case(state) ::= <<
@@ -1747,6 +1810,11 @@ inline bool constraint_satisfied(double error) {
 inline void sample_model(RunPublisher &pub, int state_index, int active_motion, double t, std::uint64_t step, shared_data &shared) {
     static_cast\<void\>(shared);
     pub.begin_tick(t, step, active_motion, state_index);
+    pub.event_occurrences(
+        shared._motion_spec_event_count,
+        shared._motion_spec_events,
+        shared._motion_spec_event_buffer_size);
+<introspection_artifacts.model.quantities:{slot | <introspection-quantity-sample(slot)>}; separator="\n">
     switch (state_index) {
 <introspection_artifacts.model.states:{state | <introspection-state-case(state)>}; separator="\n">
     default:
@@ -2025,6 +2093,10 @@ class PIDControl {
         return kp * error + ki * err_integ + kd * deriv;
     }
 
+    double error_integral() const { return err_integ; }
+    double previous_error() const { return err_last; }
+    bool is_first_sample() const { return first_sample; }
+
     double vp_setpoint = 0.0;
     double vp_velocity = 0.0;
     double vp_accel = 0.0;
@@ -2067,6 +2139,10 @@ class ImpedanceControl {
         }
         return ks * error + kd * err_diff + ki * err_int;
     }
+
+    double error_integral() const { return err_int; }
+    double previous_error() const { return err_last; }
+    bool is_first_sample() const { return first_sample; }
 
   private:
     double err_last = 0.0;
@@ -2251,6 +2327,7 @@ inline void hddc2b_rescale(double *f_scnd) {
 shared_state_header(shared_data, wrench_outputs, has_arm, has_mobile_base, arm_solvers, base_velocity_solvers, base_force_solvers, backend, fsm_namespace, fsm_header) ::= <<
 #pragma once
 
+#include "frame_layout.h"
 #include "runtime.hpp"
 #include "uris.hpp"
 <if(fsm_namespace)>
@@ -2400,6 +2477,17 @@ struct shared_data {
 <if(has_mobile_base)>
     mobile_base_runtime_state mobile_base;
 <endif>
+    static constexpr int _motion_spec_event_buffer_size =
+        motion_spec::introspection::kNumTriggers > 0
+            ? static_cast\<int\>(motion_spec::introspection::kNumTriggers)
+            : 1;
+    int _motion_spec_event_count = 0;
+    int _motion_spec_events[_motion_spec_event_buffer_size] = {};
+    void _motion_spec_record_event(int event_idx) {
+        if (event_idx \< 0) return;
+        _motion_spec_events[_motion_spec_event_count % _motion_spec_event_buffer_size] = event_idx;
+        ++_motion_spec_event_count;
+    \}
     double clock_time_s = 0.0;  // runtime clock seconds; MuJoCo sim time or real monotonic time
 <shared_data:{var | <indented-shared-member(var)>}; separator="\n">
 };
@@ -2891,7 +2979,7 @@ fsm-dispatch(motions, fsm_namespace) ::= <<
     \};
 >>
 
-ref_main(motions, unique_motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, shared_data, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene, trace, fsm_namespace, fsm_step_event, needs_clock_time, control_period_ns) ::= <<
+ref_main(motions, unique_motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, shared_data, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene, trace, fsm_namespace, fsm_step_event, fsm_step_event_idx, needs_clock_time, control_period_ns) ::= <<
 #include "runtime.hpp"
 #include "shared_state.hpp"
 <if(has_mobile_base)>
@@ -2976,6 +3064,7 @@ int main(int argc, char **argv) {
         \}
         if (fsm->currentStateIndex == fsm->endStateIndex) break;
 <if(fsm_step_event)>
+        shared._motion_spec_record_event(<fsm_step_event_idx>);
         produce_event(fsm->eventData, <fsm_namespace>::<fsm_step_event>);
 <endif>
         fsm_dispatch(fsm);

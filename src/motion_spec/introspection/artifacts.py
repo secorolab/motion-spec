@@ -191,6 +191,13 @@ def _controller_slot(controller: dict, index: int, motion: dict, uri_by_id: dict
     error_id = _signal_id(controller.get("error_signal"))
     output_id = _signal_id(controller.get("control_signal")) or controller.get("output_signal")
     reference_id = _signal_id(controller.get("reference_signal"))
+    measured_id = _signal_id(controller.get("measured_signal")) or controller.get("quantity")
+    setpoint_id = (
+        reference_id
+        or _signal_id(controller.get("setpoint_signal"))
+        or controller.get("reference_value")
+    )
+    measured_derivative_id = _signal_id(controller.get("measured_derivative"))
     return {
         "index": index,
         "id": controller.get("id"),
@@ -213,8 +220,17 @@ def _controller_slot(controller: dict, index: int, motion: dict, uri_by_id: dict
         "error_signal_uri": uri_by_id.get(error_id),
         "reference_signal": reference_id,
         "reference_signal_uri": uri_by_id.get(reference_id),
+        "measured_signal": measured_id,
+        "measured_signal_uri": uri_by_id.get(measured_id),
+        "measured_derivative_signal": measured_derivative_id,
+        "measured_derivative_signal_uri": uri_by_id.get(measured_derivative_id),
+        "setpoint_signal": setpoint_id,
+        "setpoint_signal_uri": uri_by_id.get(setpoint_id),
         "output_signal": output_id,
         "output_signal_uri": uri_by_id.get(output_id),
+        "measured_expr": controller.get("measured_expr"),
+        "setpoint_expr": controller.get("setpoint_expr"),
+        "measured_derivative_expr": controller.get("measured_derivative_expr"),
     }
 
 
@@ -230,11 +246,13 @@ def _monitor_slot(monitor: dict, index: int, motion: dict, uri_by_id: dict, phas
         "type": monitor.get("monitor_type") or monitor.get("type"),
         "trigger": "edge" if monitor.get("is_edge_triggered") else "level",
         "event": event_id,
+        "event_index": monitor.get("fsm_event_idx", monitor.get("event_idx")),
         "event_uri": monitor.get("event_uri") or uri_by_id.get(event_id),
         "event_name": monitor.get("event_name"),
         "flag": monitor.get("flag"),
         "error_signal": error_id,
         "error_signal_uri": uri_by_id.get(error_id),
+        "active_condition": monitor.get("active_condition"),
         "fallback_motion": monitor.get("fallback_motion"),
     }
 
@@ -345,13 +363,18 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
             "index": idx,
             **quantity,
         }
-        for idx, quantity in enumerate(introspection.get("quantities", []))
+        for idx, quantity in enumerate(
+            introspection.get("quantity_samples") or introspection.get("quantities", [])
+        )
     ]
+    max_controllers = max((len(entry["controllers"]) for entry in by_state.values()), default=0)
+    max_monitors = max((len(entry["monitors"]) for entry in by_state.values()), default=0)
+    heartbeat_events = 1 if any(event.get("id") == "E_STEP" for event in fsm.get("events", [])) else 0
     pools = {
-        "constraints": max((len(entry["controllers"]) for entry in by_state.values()), default=0),
-        "monitors": max((len(entry["monitors"]) for entry in by_state.values()), default=0),
+        "constraints": max_controllers,
+        "monitors": max_monitors,
         "quantities": len(quantities),
-        "triggers": max(TRIGGER_POOL_SIZE, len(fsm.get("events", []))),
+        "triggers": max(TRIGGER_POOL_SIZE, len(fsm.get("events", [])), max_monitors + heartbeat_events),
     }
     provenance = introspection.get("provenance", {})
     contexts = {
@@ -461,6 +484,13 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
         for item in ir.get("shared_data", [])
         if isinstance(item, dict) and item.get("id")
     }
+    quantities = [
+        {
+            "index": quantity["index"],
+            "expr": quantity.get("sample_expr", "0.0"),
+        }
+        for quantity in schema.get("quantities", [])
+    ]
     states = []
     for state in schema.get("fsm", {}).get("states", []):
         state_id = state.get("id")
@@ -474,14 +504,20 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
                     "uri": _cpp_string(slot.get("uri")),
                     "error_expr": _shared_expr(slot.get("error_signal"), shared_ids),
                     "output_expr": _shared_expr(slot.get("output_signal"), shared_ids),
+                    "measured_expr": slot.get("measured_expr")
+                    or _shared_expr(slot.get("measured_signal"), shared_ids),
+                    "setpoint_expr": slot.get("setpoint_expr")
+                    or _shared_expr(slot.get("setpoint_signal"), shared_ids),
                 }
             )
         monitors = []
         for slot in entry.get("monitors", []):
+            value_expr = slot.get("active_condition") or _shared_expr(slot.get("error_signal"), shared_ids)
             monitors.append(
                 {
                     "uri": _cpp_string(slot.get("uri")),
-                    "value_expr": _shared_expr(slot.get("error_signal"), shared_ids),
+                    "value_expr": value_expr,
+                    "satisfied_expr": value_expr if slot.get("active_condition") else f"constraint_satisfied({value_expr})",
                 }
             )
         states.append(
@@ -491,7 +527,7 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
                 "monitors": monitors,
             }
         )
-    return {"states": states}
+    return {"states": states, "quantities": quantities}
 
 
 def build_provenance_document(ir: dict, output_dir: Path) -> dict:

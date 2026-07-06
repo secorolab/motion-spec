@@ -8,6 +8,7 @@ from pathlib import Path
 from rdflib import Graph
 from rdf_utils.resolver import IriToFileResolver, install_resolver
 
+from motion_spec import codegen
 from motion_spec.introspection.artifacts import (
     build_frame_layout,
     build_provenance_document,
@@ -199,6 +200,119 @@ def test_schema_and_frame_layout_are_consistent(tmp_path: Path) -> None:
     assert layout["fields"] == fields
     assert layout["frame_size_bytes"] == size
     assert layout["pools"] == schema["pools"]
+
+
+def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch) -> None:
+    ir = _sample_ir()
+    ir.update(
+        {
+            "backend": "mj_kdl",
+            "has_arm": False,
+            "has_mobile_base": False,
+            "arm_solvers": [],
+            "base_velocity_solvers": [],
+            "base_force_solvers": [],
+            "cstr_hdl": [],
+            "motions": ir["unique_motions"],
+            "data": [],
+            "closures": {
+                "ctrl_x": {
+                    "id": "ctrl_x",
+                    "type": "Controller",
+                    "error_signal": "err_x",
+                    "control_signal": "out_x",
+                },
+                "eval_err_x": {
+                    "id": "eval_err_x",
+                    "type": "ErrorEvaluator",
+                    "constraint": "EqualityConstraint",
+                    "quantity": "measured_x",
+                    "reference_value": "setpoint_x",
+                    "error": "err_x",
+                }
+            },
+            "views": {
+                "wrench_force": {
+                    "superobject": {"id": "wrench_ee", "type": "Wrench"},
+                    "subobject": {"id": "wrench_force", "type": "Quantity"},
+                    "subspace": "Force",
+                    "axis": None,
+                },
+                "wrench_force_x": {
+                    "superobject": {"id": "wrench_ee", "type": "Wrench"},
+                    "subobject": {"id": "wrench_force_x", "type": "Quantity"},
+                    "subspace": "Force",
+                    "axis": "X",
+                },
+            },
+            "shared_schedule": [],
+            "schedule": [],
+            "shared_data": [
+                {"id": "err_x", "type": "Quantity"},
+                {"id": "pose_ee", "type": "Pose"},
+                {"id": "twist_ee", "type": "VelocityTwist"},
+                {"id": "wrench_ee", "type": "Wrench"},
+                {"id": "wrench_force", "type": "Quantity"},
+                {"id": "wrench_force_x", "type": "Quantity"},
+                {"id": "measured_x", "type": "Quantity"},
+                {"id": "setpoint_x", "type": "Quantity"},
+                {"id": "ready_flag", "type": "Bool"},
+                {"id": "settle_count", "type": "IntCounter"},
+            ],
+            "wrench_outputs": [],
+            "scene": {},
+            "trace": {},
+        }
+    )
+    ir["introspection"]["quantities"].extend(
+        [
+            {"id": "pose_ee", "type": "Pose"},
+            {"id": "twist_ee", "type": "VelocityTwist"},
+            {"id": "wrench_ee", "type": "Wrench"},
+            {"id": "wrench_force", "type": "Quantity"},
+            {"id": "wrench_force_x", "type": "Quantity"},
+        ]
+    )
+    ir_path = tmp_path / "ir.json"
+    ir_path.write_text(json.dumps(ir))
+    monkeypatch.setattr(codegen, "render_template", lambda *args, **kwargs: None)
+
+    codegen.generate_code(ir_path, tmp_path, "stst")
+
+    schema = json.loads((tmp_path / "schema.json").read_text())
+    quantities = {quantity["id"]: quantity for quantity in schema["quantities"]}
+    assert quantities["err_x"]["sample_expr"] == "shared.err_x"
+    assert quantities["pose_ee.position.x"]["source_id"] == "pose_ee"
+    assert quantities["pose_ee.orientation.z"]["component"] == "orientation.z"
+    assert quantities["twist_ee.angular.x"]["sample_expr"] == "shared.twist_ee.rot[0]"
+    assert quantities["wrench_ee.force.z"]["sample_expr"] == "shared.wrench_ee.force[2]"
+    assert "wrench_force" not in quantities
+    assert quantities["wrench_force_x"]["sample_expr"] == "shared.wrench_ee.force[0]"
+    assert quantities["ready_flag"]["sample_expr"] == "shared.ready_flag ? 1.0 : 0.0"
+    assert quantities["ready_flag"]["source_type"] == "Bool"
+    assert quantities["settle_count"]["sample_expr"] == "static_cast<double>(shared.settle_count)"
+    assert quantities["settle_count"]["source_type"] == "IntCounter"
+    assert quantities["ctrl_x_error_integral"]["sample_expr"] == "shared.ctrl_x_error_integral"
+    assert quantities["ctrl_x_error_integral"]["role"] == "controller_internal_state"
+    assert quantities["ctrl_x_previous_error"]["sample_expr"] == "shared.ctrl_x_previous_error"
+    assert quantities["ctrl_x_first_sample"]["sample_expr"] == "shared.ctrl_x_first_sample ? 1.0 : 0.0"
+    assert quantities["ctrl_x_first_sample"]["role"] == "controller_internal_state"
+    assert quantities["ctrl_x_first_sample"]["source_type"] == "Bool"
+    assert schema["pools"]["quantities"] == len(schema["quantities"])
+
+    payload = json.loads((tmp_path / ".stst" / "ir.json").read_text())
+    assert {
+        "index": quantities["pose_ee.position.x"]["index"],
+        "expr": "shared.pose_ee.p[0]",
+    } in payload["introspection_artifacts"]["model"]["quantities"]
+    controller = next(
+        controller
+        for state in payload["introspection_artifacts"]["model"]["states"]
+        for controller in state["controllers"]
+        if controller["error_expr"] == "shared.err_x"
+    )
+    assert controller["measured_expr"] == "shared.measured_x"
+    assert controller["setpoint_expr"] == "shared.setpoint_x"
 
 
 def test_provenance_document_is_jsonld_and_prov_shacl_conformant(tmp_path: Path) -> None:

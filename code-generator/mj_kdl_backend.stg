@@ -390,7 +390,7 @@ find_package(orocos_kdl REQUIRED CONFIG)
 <if(fsm_namespace)>
 find_package(coord2b REQUIRED)
 <endif>
-find_package(mj_kdl_wrapper REQUIRED CONFIG)
+find_package(mj_kdl_wrapper 0.2.2 REQUIRED CONFIG)
 find_package(Threads REQUIRED)
 
 option(MOTION_SPEC_ENABLE_INTROSPECTION "Enable generated runtime introspection logging" OFF)

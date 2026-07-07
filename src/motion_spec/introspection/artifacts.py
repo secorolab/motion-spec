@@ -85,6 +85,21 @@ def _prov_iri(identifier: str) -> str:
     return f"{MSPROV_PREFIX}{_slug(kind)}/{_slug(name)}"
 
 
+def prov_uri(identifier: str) -> str:
+    """Canonical *full* provenance IRI for an agent/activity id (e.g. ``agent:runtime:mujoco``).
+
+    Same slugging as the msprov: CURIE the codegen provenance uses, but expanded to an
+    absolute IRI. Runtime/rec documents emit this so the same concept shares one IRI with
+    the codegen graph — without those docs (or the generic rec package) needing the
+    msprov prefix defined. Pass an already-expanded/absolute IRI and it is returned as-is.
+    """
+    if identifier.startswith(("http://", "https://")):
+        return identifier
+    if identifier.startswith(MSPROV_PREFIX):
+        return MSPROV + identifier[len(MSPROV_PREFIX):]
+    return MSPROV + _prov_iri(identifier)[len(MSPROV_PREFIX):]
+
+
 def _location_iri(value: str | None) -> str | None:
     if not value:
         return None

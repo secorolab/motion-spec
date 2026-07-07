@@ -13,6 +13,7 @@ from motion_spec.introspection.archive import (
     sha256_file,
     verify_manifest,
 )
+from motion_spec.introspection.artifacts import prov_uri
 from motion_spec.introspection.frame_layout_spec import fields_with_offsets, frame_struct
 from motion_spec.introspection import replay
 from motion_spec.introspection.replay import MAGIC, HEADER, decode_frames, summarize, validate_header
@@ -187,15 +188,15 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
     )
 
     assert manifest["files"]["log_producer_executable"] is None
-    assert manifest["files"]["rec"] == "rec.json"
+    assert manifest["files"]["rec"] == "rec.jsonld"
     assert manifest["files"]["frame_log_health"] == "logs/frame_log.bin.health.json"
     assert manifest["files"]["dsl_provenance"] == "provenance/dsl.jsonld"
-    assert manifest["rec"] == {"path": "rec.json", "run_id": "run-test"}
+    assert manifest["rec"] == {"path": "rec.jsonld", "run_id": "run-test"}
     assert manifest["files"]["controller"] == "controller/source"
     assert "controller/source" in manifest["artifacts"]
     assert "logs/frame_log.bin.health.json" in manifest["artifacts"]
     assert "provenance/dsl.jsonld" in manifest["artifacts"]
-    assert "rec.json" in manifest["artifacts"]
+    assert "rec.jsonld" in manifest["artifacts"]
     assert verify_manifest(run_dir)["run_id"] == "run-test"
     header = validate_header(run_dir / "logs" / "frame_log.bin", _schema(), _layout(_schema()))
     assert header["producer_agent_id"] == "agent:controller_process"
@@ -215,7 +216,7 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
     assert runtime_ttl.exists()
     assert verify_manifest(run_dir)["artifacts"]["runtime/runtime.ttl"]["sha256"] == sha256_file(runtime_ttl)
 
-    rec_doc = json.loads((run_dir / "rec.json").read_text())
+    rec_doc = json.loads((run_dir / "rec.jsonld").read_text())
     assert rec_doc["status"] == "COMPLETED"
     assert rec_doc["role"] == "run_execution"
     assert "run" not in rec_doc
@@ -223,7 +224,7 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
     assert any(row["role"] == "frame_log" for row in rec_doc["artefacts"])
     assert any(
         row["role"] == "frame_log_health"
-        and row["wasGeneratedBy"] == "activity:controller_execution"
+        and row["wasGeneratedBy"] == prov_uri("activity:controller_execution")
         for row in rec_doc["artefacts"]
     )
     assert any(row["role"] == "runtime_ttl" for row in rec_doc["artefacts"])

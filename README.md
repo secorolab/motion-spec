@@ -83,7 +83,7 @@ The archive layout is:
 ```text
 logs/run-001/
   manifest.json
-  rec.json
+  rec.jsonld
   contract/
     schema.json
     frame_layout.json

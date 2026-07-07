@@ -10,6 +10,7 @@ from pathlib import Path
 import rdflib
 
 from motion_spec.introspection.archive import load_manifest, sha256_file
+from motion_spec.introspection.artifacts import MSPROV, prov_uri
 
 
 def _archive_location(rel: str) -> rdflib.URIRef:
@@ -306,7 +307,7 @@ def _sample_steps(frames: list[dict], schema: dict) -> set:
 
 
 def _add_rec_timing(g: rdflib.Graph, run_dir: Path, manifest: dict, activity: rdflib.URIRef) -> None:
-    rec_rel = manifest.get("files", {}).get("rec", "rec.json")
+    rec_rel = manifest.get("files", {}).get("rec", "rec.jsonld")
     rec_path = run_dir / rec_rel
     if not rec_path.exists():
         return
@@ -327,13 +328,18 @@ def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int
         "obs": OBS,
         "rt": RT,
         "msrun": MSRUN,
+        "msprov": rdflib.Namespace(MSPROV),
     }.items():
         g.bind(prefix, ns)
 
     run = _node(f"run:{manifest['run_id']}")
-    activity = _node(schema.get("runtime_provenance", {}).get("activity_id", "activity:controller_execution"))
-    producer = _node(schema.get("runtime_provenance", {}).get("producer_agent_id", "agent:controller_process"))
-    runtime = _node(schema.get("runtime_provenance", {}).get("runtime_agent_id", "agent:runtime"))
+    # Agents and the execution activity are shared provenance concepts: emit the same
+    # canonical msprov IRIs the codegen graph uses so the runtime, codegen and rec graphs
+    # join on one node per concept (rather than three parallel ones).
+    rp = schema.get("runtime_provenance", {})
+    activity = rdflib.URIRef(prov_uri(rp.get("activity_id", "activity:controller_execution")))
+    producer = rdflib.URIRef(prov_uri(rp.get("producer_agent_id", "agent:controller_process")))
+    runtime = rdflib.URIRef(prov_uri(rp.get("runtime_agent_id", "agent:runtime")))
     frame_log = _node("entity:frame_log")
     schema_entity = _node("entity:schema_json")
     layout_entity = _node("entity:frame_layout_json")
@@ -418,9 +424,9 @@ def write_runtime_ttl(run_dir: Path | str, frames: list[dict], *, frame_count: i
         }
         manifest.setdefault("files", {})["runtime_ttl"] = runtime_rel
         _record_runtime_ttl_with_rec(run_dir, manifest, out)
-        rec_path = run_dir / manifest.get("files", {}).get("rec", "rec.json")
+        rec_path = run_dir / manifest.get("files", {}).get("rec", "rec.jsonld")
         if rec_path.exists():
-            manifest.setdefault("artifacts", {})["rec.json"] = {
+            manifest.setdefault("artifacts", {})["rec.jsonld"] = {
                 "role": "rec",
                 "sha256": sha256_file(rec_path),
             }
@@ -438,25 +444,25 @@ def _record_runtime_ttl_with_rec(run_dir: Path, manifest: dict, runtime_ttl: Pat
     except ImportError as exc:
         raise RuntimeError("REC is required to update runtime.ttl provenance") from exc
 
-    rec_path = run_dir / manifest.get("files", {}).get("rec", "rec.json")
+    rec_path = run_dir / manifest.get("files", {}).get("rec", "rec.jsonld")
     if not rec_path.exists():
         return
     observer = FileObserver(rec_path, run_id=manifest.get("run_id"))
     run = Run(observers=[observer], run_id=manifest.get("run_id"))
     run.add_agent(
-        "agent:replay_process",
+        prov_uri("agent:replay_process"),
         ["prov:SoftwareAgent", "obs:ObservationProvider"],
         role="runtime_ttl_recovery",
     )
     run.add_activity(
-        "activity:runtime_ttl_recovery",
+        prov_uri("activity:runtime_ttl_recovery"),
         ["prov:Activity"],
         role="runtime_ttl_recovery",
-        wasAssociatedWith="agent:replay_process",
+        wasAssociatedWith=prov_uri("agent:replay_process"),
     )
     run.add_artefact(
         str(runtime_ttl.resolve()),
-        gen_activity="activity:runtime_ttl_recovery",
+        gen_activity=prov_uri("activity:runtime_ttl_recovery"),
         archivePath=str(runtime_ttl.relative_to(run_dir)),
         role="runtime_ttl",
         sha256=sha256_file(runtime_ttl),

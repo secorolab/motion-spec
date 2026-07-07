@@ -28,6 +28,7 @@ from motion_spec.introspection.archive import (
     sha256_file,
     verify_manifest,
 )
+from motion_spec.introspection.artifacts import prov_uri
 
 
 class RunnerError(RuntimeError):
@@ -52,7 +53,7 @@ def run_cataloged(
     executable_args = [str(arg) for arg in (executable_args or [])]
     run_id = run_id or run_dir.name
     frame_log = run_dir / "logs" / "frame_log.bin"
-    rec_path = run_dir / "rec.json"
+    rec_path = run_dir / "rec.jsonld"
 
     _validate_new_run(run_dir, source_dir, executable)
     schema = json.loads((source_dir / "schema.json").read_text())
@@ -118,8 +119,8 @@ def _validate_new_run(run_dir: Path, source_dir: Path, executable: Path) -> None
             raise RunnerError(f"{source_dir / rel}: required generated artifact is missing")
     if not executable.exists():
         raise RunnerError(f"{executable}: executable does not exist")
-    if run_dir.exists() and (run_dir / "rec.json").exists():
-        raise RunnerError(f"{run_dir}: already contains rec.json; choose a fresh run directory")
+    if run_dir.exists() and (run_dir / "rec.jsonld").exists():
+        raise RunnerError(f"{run_dir}: already contains rec.jsonld; choose a fresh run directory")
     frame_log = run_dir / "logs" / "frame_log.bin"
     if frame_log.exists():
         raise RunnerError(f"{frame_log}: refusing to overwrite an existing frame log")
@@ -136,7 +137,7 @@ def _start_rec_run(
     from rec import Run
     from rec.observers import FileObserver
 
-    observer = FileObserver(run_dir / "rec.json", run_id=run_id)
+    observer = FileObserver(run_dir / "rec.jsonld", run_id=run_id)
     run = Run(observers=[observer], run_id=run_id)
     run._emit_started()
     run.log_host_info(_host_info())
@@ -145,22 +146,22 @@ def _start_rec_run(
     _record_agents(run, run_dir, schema)
     _record_activities(run, schema)
     run.add_agent(
-        "agent:motion_spec_runner",
+        prov_uri("agent:motion_spec_runner"),
         ["prov:SoftwareAgent", "obs:ObservationProvider"],
         role="run_cataloguer",
     )
     run.add_activity(
-        "activity:run_cataloging",
+        prov_uri("activity:run_cataloging"),
         ["prov:Activity"],
         role="run_cataloging",
-        wasAssociatedWith="agent:motion_spec_runner",
+        wasAssociatedWith=prov_uri("agent:motion_spec_runner"),
     )
     _record_execution_inputs(run, source_dir, executable, schema)
     observer.close()
 
 
 def _record_execution_inputs(run, source_dir: Path, executable: Path, schema: dict) -> None:
-    activity = schema.get("runtime_provenance", {}).get("activity_id") or "activity:controller_execution"
+    activity = prov_uri(schema.get("runtime_provenance", {}).get("activity_id") or "activity:controller_execution")
     for rel, role in (
         ("schema.json", "schema"),
         ("frame_layout.json", "frame_layout"),
@@ -261,13 +262,13 @@ def _rec_status(rec_path: Path) -> str | None:
 
 def _refresh_rec_hash(run_dir: Path) -> None:
     manifest_path = run_dir / "manifest.json"
-    rec_path = run_dir / "rec.json"
+    rec_path = run_dir / "rec.jsonld"
     if not manifest_path.exists() or not rec_path.exists():
         return
     manifest = json.loads(manifest_path.read_text())
-    manifest.setdefault("artifacts", {})["rec.json"] = {"role": "rec", "sha256": sha256_file(rec_path)}
-    manifest.setdefault("files", {})["rec"] = "rec.json"
-    manifest.setdefault("rec", {"path": "rec.json", "run_id": manifest.get("run_id", run_dir.name)})
+    manifest.setdefault("artifacts", {})["rec.jsonld"] = {"role": "rec", "sha256": sha256_file(rec_path)}
+    manifest.setdefault("files", {})["rec"] = "rec.jsonld"
+    manifest.setdefault("rec", {"path": "rec.jsonld", "run_id": manifest.get("run_id", run_dir.name)})
     manifest_path.write_text(json.dumps(manifest, indent=4) + "\n")
 
 

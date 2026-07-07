@@ -20,6 +20,7 @@ from pathlib import Path
 import rdflib
 from pyshacl import validate
 
+from motion_spec.introspection.artifacts import prov_uri
 from motion_spec.manifest import build_url_map, metamodel_url_map, metamodels_root
 
 MANIFEST_VERSION = 1
@@ -360,7 +361,7 @@ def create_archive_manifest(
                 if log_producer_executable
                 else None
             ),
-            "rec": "rec.json",
+            "rec": "rec.jsonld",
         },
         "versions": {
             "manifest": MANIFEST_VERSION,
@@ -379,16 +380,16 @@ def create_archive_manifest(
                 else None
             ),
             "runtime": "runtime/runtime.ttl",
-            "rec": "rec.json",
+            "rec": "rec.jsonld",
         },
         "streams": streams or [],
     }
     if rec and Path(rec).exists():
-        _copy_file(Path(rec), run_dir / "rec.json")
+        _copy_file(Path(rec), run_dir / "rec.jsonld")
     else:
         _write_rec_snapshot(run_dir, manifest, schema, complete_lifecycle=complete_rec)
-    manifest["artifacts"]["rec.json"] = {"role": "rec", "sha256": sha256_file(run_dir / "rec.json")}
-    manifest["rec"] = {"path": "rec.json", "run_id": manifest["run_id"]}
+    manifest["artifacts"]["rec.jsonld"] = {"role": "rec", "sha256": sha256_file(run_dir / "rec.jsonld")}
+    manifest["rec"] = {"path": "rec.jsonld", "run_id": manifest["run_id"]}
     (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=4) + "\n")
     return manifest
 
@@ -450,7 +451,7 @@ def verify_manifest(run_dir_or_manifest: Path | str) -> dict:
     rec_rel = manifest.get("files", {}).get("rec")
     if rec_rel and (run_dir / rec_rel).exists():
         rec_graph = _parse_rdf(run_dir / rec_rel, "json-ld")
-        _require_rec_provenance(rec_graph, "rec.json")
+        _require_rec_provenance(rec_graph, "rec.jsonld")
         _validate_prov_shacl(run_dir / rec_rel)
         _validate_rec_shacl(run_dir / rec_rel)
     return manifest
@@ -559,7 +560,7 @@ def _write_rec_snapshot(
         ) from exc
 
     run_id = manifest["run_id"]
-    observer = FileObserver(run_dir / "rec.json", run_id=run_id)
+    observer = FileObserver(run_dir / "rec.jsonld", run_id=run_id)
     run = Run(observers=[observer], run_id=run_id)
     lifecycle = observer.snapshot.get("run", {})
     started_time = lifecycle.get("started_time")
@@ -601,23 +602,24 @@ def _parse_rec_time(value: str) -> datetime:
 
 def _record_agents(run, run_dir: Path, schema: dict) -> None:
     runtime = schema.get("runtime_provenance", {})
-    runtime_agent = runtime.get("runtime_agent_id") or "agent:runtime"
-    runtime_type = "rt:MuJoCoRuntime" if str(runtime_agent).endswith(":mujoco") else "prov:SoftwareAgent"
+    raw_runtime = runtime.get("runtime_agent_id") or "agent:runtime"
+    runtime_agent = prov_uri(raw_runtime)
+    runtime_type = "rt:MuJoCoRuntime" if raw_runtime.endswith(":mujoco") else "prov:SoftwareAgent"
     run.add_agent(runtime_agent, ["prov:SoftwareAgent", runtime_type], role="runtime")
     run.add_agent(
-        runtime.get("producer_agent_id") or "agent:controller_process",
+        prov_uri(runtime.get("producer_agent_id") or "agent:controller_process"),
         ["prov:SoftwareAgent", "obs:ObservationProvider"],
         role="log_producer",
         actedOnBehalfOf=runtime_agent,
     )
     run.add_agent(
-        "agent:motion_spec_archive",
+        prov_uri("agent:motion_spec_archive"),
         ["prov:SoftwareAgent", "obs:ObservationProvider"],
         role="archive_writer",
     )
     for agent in _provenance_nodes(run_dir, "agn:ModelledAgent"):
         run.add_agent(
-            agent.get("@id", "agent:modelled"),
+            prov_uri(agent.get("@id", "agent:modelled")),
             agent.get("@type", ["prov:Agent", "agn:ModelledAgent"]),
             role=agent.get("role", "modelled_agent"),
         )
@@ -638,22 +640,22 @@ def _ensure_local_rec_importable() -> None:
 def _record_activities(run, schema: dict) -> None:
     runtime = schema.get("runtime_provenance", {})
     run.add_activity(
-        runtime.get("activity_id") or "activity:controller_execution",
+        prov_uri(runtime.get("activity_id") or "activity:controller_execution"),
         ["prov:Activity", "bdd:SimulatedExecution"],
         role="controller_execution",
-        wasAssociatedWith=runtime.get("producer_agent_id") or "agent:controller_process",
+        wasAssociatedWith=prov_uri(runtime.get("producer_agent_id") or "agent:controller_process"),
     )
     run.add_activity(
-        "activity:archive_creation",
+        prov_uri("activity:archive_creation"),
         ["prov:Activity"],
         role="archive_creation",
-        wasAssociatedWith="agent:motion_spec_archive",
+        wasAssociatedWith=prov_uri("agent:motion_spec_archive"),
     )
 
 
 def _record_files(run, run_dir: Path, manifest: dict, schema: dict) -> None:
     resource_roles = {"schema", "frame_layout", "provenance", "dsl_provenance", "model", "ir"}
-    runtime_activity = (
+    runtime_activity = prov_uri(
         schema.get("runtime_provenance", {}).get("activity_id") or "activity:controller_execution"
     )
     for rel, meta in sorted(manifest.get("artifacts", {}).items()):
@@ -673,7 +675,7 @@ def _record_files(run, run_dir: Path, manifest: dict, schema: dict) -> None:
             gen_activity = (
                 runtime_activity
                 if meta.get("role") in {"frame_log", "frame_log_health"}
-                else "activity:archive_creation"
+                else prov_uri("activity:archive_creation")
             )
             run.add_artefact(rel, gen_activity=gen_activity, **row)
     for stream in manifest.get("streams", []):

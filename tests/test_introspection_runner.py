@@ -45,7 +45,7 @@ def test_runner_catalogs_run_from_start_and_archives_outputs(tmp_path: Path) -> 
     assert manifest["files"]["log_producer_executable"] == "controller/executable/log-copy"
     assert (run_dir / "runtime" / "runtime.ttl").exists()
 
-    rec_doc = json.loads((run_dir / "rec.json").read_text())
+    rec_doc = json.loads((run_dir / "rec.jsonld").read_text())
     assert rec_doc["status"] == "COMPLETED"
     assert rec_doc["startedAtTime"]
     assert rec_doc["endedAtTime"]

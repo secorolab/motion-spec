@@ -8,7 +8,6 @@ import copy
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 from dataclasses import asdict, is_dataclass
@@ -1134,9 +1133,9 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
 
     headers_dir = output_dir / "headers"
     headers_dir.mkdir(parents=True, exist_ok=True)
-
-    if fsm_ir is not None:
-        shutil.copy2(output_dir / fsm_header, headers_dir / fsm_header)
+    # The DSL-generated FSM header stays at the source root (like frame_layout.h); the bare
+    # include in shared_state.hpp resolves it via the root include dir, so no headers/ copy
+    # is needed — copying it there just duplicated the file in the tree and the archive.
 
     payload_dir = output_dir / ".stst"
     payload_dir.mkdir(parents=True, exist_ok=True)

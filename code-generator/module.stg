@@ -2329,7 +2329,6 @@ shared_state_header(shared_data, wrench_outputs, has_arm, has_mobile_base, arm_s
 
 #include "frame_layout.h"
 #include "runtime.hpp"
-#include "uris.hpp"
 <if(fsm_namespace)>
 #include "coord2b/functions/event_loop.h"
 #include "coord2b/functions/fsm.h"
@@ -2491,34 +2490,6 @@ struct shared_data {
     double clock_time_s = 0.0;  // runtime clock seconds; MuJoCo sim time or real monotonic time
 <shared_data:{var | <indented-shared-member(var)>}; separator="\n">
 };
->>
-
-uris_header(uris) ::= <<
-#pragma once
-
-// This is an auto-generated file. Do not edit it directly.
-
-#include \<string_view\>
-
-namespace motion_spec::uris {
-
-struct Entry {
-    std::string_view id;
-    std::string_view uri;
-};
-
-inline constexpr Entry kUris[] = {
-<uris:{e |     {"<e.id>", "<e.uri>"\},}; separator="\n">
-};
-
-inline constexpr std::string_view uri_of(std::string_view id) {
-    for (const auto &e : kUris) {
-        if (e.id == id) return e.uri;
-    }
-    return {};
-}
-
-}  // namespace motion_spec::uris
 >>
 
 mobile_base_cycle_header(has_mobile_base, base_velocity_solvers, base_force_solvers) ::= <<

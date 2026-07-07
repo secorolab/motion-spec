@@ -4,13 +4,74 @@
 from __future__ import annotations
 
 import json
+import math
 import os
+import time
+from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
 import rdflib
 
 from motion_spec.introspection.archive import load_manifest, sha256_file
 from motion_spec.introspection.artifacts import MSPROV, prov_uri
+
+
+def _dt_literal(wall_ns) -> rdflib.Literal | None:
+    """Absolute wall time (epoch nanoseconds) as an xsd:dateTime (rdflib canonicalizes to +00:00,
+    matching codegen.jsonld / rec.jsonld / provenance.jsonld)."""
+    if wall_ns is None:
+        return None
+    sec, ns = divmod(int(wall_ns), 1_000_000_000)
+    dt = datetime.fromtimestamp(sec, timezone.utc).replace(microsecond=ns // 1000)
+    return rdflib.Literal(dt)
+
+
+def _model_base(schema: dict) -> str | None:
+    """Common `.../models/<model>/` IRI base, derived from an FSM state URI."""
+    for state in schema.get("fsm", {}).get("states", []):
+        uri = state.get("uri")
+        if uri and "/fsm/" in uri:
+            return uri.rsplit("/fsm/", 1)[0] + "/"
+    return None
+
+
+def _condition_map(run_dir: Path, manifest: dict) -> dict[str, rdflib.URIRef]:
+    """Map monitor IRI -> its constraint-condition IRI, read from the co-archived model graph
+    (the compiled-from-.robmot jsonld). The condition node already carries the operator (@type),
+    measured quantity, and setpoint/threshold, so occurrences reference it by URI rather than
+    copying those values in — the model graph stays the single source for the spec."""
+    mapping: dict[str, rdflib.URIRef] = {}
+    for rel in manifest.get("files", {}).get("model_imports") or []:
+        path = run_dir / rel
+        if not path.exists() or path.suffix not in (".jsonld", ".json"):
+            continue
+        try:
+            mg = rdflib.Graph().parse(path, format="json-ld")
+        except Exception:
+            continue
+        for s, p, o in mg:
+            if isinstance(o, rdflib.URIRef) and str(p).rsplit("#", 1)[-1].rsplit("/", 1)[-1] == "constraint":
+                mapping[str(s)] = o
+    return mapping
+
+
+def _bind_model_subnamespaces(g: rdflib.Graph, model_base: str | None) -> None:
+    """Bind a prefix for each `<model_base><segment>/` namespace actually referenced (fsm,
+    handler-*, ...), so handler-scoped controller/monitor IRIs collapse to CURIEs instead of
+    staying full because of the '/' in their local name."""
+    if not model_base:
+        return
+    for term in g.all_nodes():
+        if not isinstance(term, rdflib.URIRef):
+            continue
+        text = str(term)
+        if not text.startswith(model_base):
+            continue
+        rest = text[len(model_base):]
+        if "/" in rest:
+            seg = rest.split("/", 1)[0]
+            g.bind(seg, rdflib.Namespace(model_base + seg + "/"))
 
 
 def _archive_location(rel: str) -> rdflib.URIRef:
@@ -25,18 +86,9 @@ OBS = rdflib.Namespace("https://secorolab.github.io/metamodels/observation#")
 RT = rdflib.Namespace("https://secorolab.github.io/metamodels/runtime#")
 MSRUN = rdflib.Namespace("https://secorolab.github.io/motion-spec/runtime/")
 RUNTIME_RDF_CONTRACT_VERSION = 1
-KIND_STATE = 0
+# Events are the only trigger kind the runtime actually emits; state/constraint/monitor edges
+# are synthesized here from the per-tick frame scan (see _project_occurrences).
 KIND_EVENT = 1
-KIND_CONSTRAINT_SAT = 2
-KIND_CONSTRAINT_UNSAT = 3
-KIND_MONITOR = 4
-TRIGGER_TYPES = {
-    KIND_STATE: "StateOccurrence",
-    KIND_EVENT: "EventOccurrence",
-    KIND_CONSTRAINT_SAT: "ConstraintSatisfiedOccurrence",
-    KIND_CONSTRAINT_UNSAT: "ConstraintUnsatisfiedOccurrence",
-    KIND_MONITOR: "MonitorOccurrence",
-}
 
 
 def _node(identifier: str) -> rdflib.URIRef:
@@ -44,13 +96,29 @@ def _node(identifier: str) -> rdflib.URIRef:
     return MSRUN[safe]
 
 
+def _scoped(family: str, run_id: str, *parts) -> rdflib.URIRef:
+    """Per-run sample/occurrence node under `<family>/<run_id>/`, with a slash-free local
+    (parts joined by '-') so it collapses to a CURIE against the bound family prefix."""
+    local = "-".join(str(p) for p in parts)
+    return MSRUN[f"{family}/{run_id}/{local}"]
+
+
 def _uri(value: str | None) -> rdflib.URIRef | None:
     return rdflib.URIRef(value) if value else None
 
 
 def _literal(g: rdflib.Graph, subject: rdflib.URIRef, predicate: rdflib.URIRef, value) -> None:
-    if value is not None:
-        g.add((subject, predicate, rdflib.Literal(value)))
+    if value is None:
+        return
+    # Floats are float64 (double) throughout the pipeline (cpp/bin/replay). Preserve the exact
+    # value: Decimal(repr(x)) round-trips to the same double and serializes as a plain decimal.
+    # (rdflib's Turtle writer emits xsd:double in scientific notation AND truncates it to ~7
+    # sig figs, which would silently lose precision — so xsd:double is not usable here.)
+    if isinstance(value, float):
+        if math.isfinite(value):
+            value = Decimal(repr(value))
+        # non-finite inf/nan fall through as a Python float -> xsd:double, which represents them
+    g.add((subject, predicate, rdflib.Literal(value)))
 
 
 def _state_maps(schema: dict) -> tuple[dict[int, dict], dict[int, dict]]:
@@ -80,230 +148,135 @@ def _slot_uri(slot: dict, *keys: str) -> rdflib.URIRef | None:
     return None
 
 
-def _add_signal_sample(
-    g: rdflib.Graph,
-    run_id: str,
-    frame_node: rdflib.URIRef,
-    frame: dict,
-    slot_idx: int,
-    role: str,
-    signal_uri: str | None,
-    value,
-    *,
-    controller_uri: rdflib.URIRef | None = None,
-    constraint_uri: rdflib.URIRef | None = None,
-    monitor_uri: rdflib.URIRef | None = None,
-) -> None:
-    signal = _uri(signal_uri)
-    if signal is None:
-        return
-    sample = _node(f"signal:{run_id}:{frame['step']}:{slot_idx}:{role}")
-    g.add((sample, rdflib.RDF.type, MSRUN.SignalSample))
-    g.add((sample, MSRUN.atFrame, frame_node))
-    g.add((sample, MSRUN.signal, signal))
-    g.add((sample, MSRUN.role, rdflib.Literal(role)))
-    _literal(g, sample, rdflib.RDF.value, value)
-    if controller_uri is not None:
-        g.add((sample, MSRUN.controller, controller_uri))
-    if constraint_uri is not None:
-        g.add((sample, MSRUN.constraint, constraint_uri))
-    if monitor_uri is not None:
-        g.add((sample, MSRUN.monitor, monitor_uri))
+def _occurrence(g: rdflib.Graph, run_id: str, typename: str, disc, wall_ns, step: int) -> rdflib.URIRef:
+    """Create a discrete occurrence node, anchored to its frame and stamped with wall time."""
+    node = _scoped("occurrence", run_id, typename, wall_ns if wall_ns is not None else 0, disc)
+    g.add((node, rdflib.RDF.type, MSRUN[typename]))
+    g.add((node, MSRUN.atFrame, _node(f"frame:{run_id}:{step}")))
+    dt = _dt_literal(wall_ns)
+    if dt is not None:
+        g.add((node, PROV.generatedAtTime, dt))
+    return node
 
 
-def _project_frame_samples(
-    g: rdflib.Graph,
-    run_id: str,
-    schema: dict,
-    frame: dict,
-    frame_node: rdflib.URIRef,
-    *,
-    include_slots: bool,
-) -> None:
-    states, _events = _state_maps(schema)
-    state, meta = _state_meta(schema, states, frame.get("fsm_state", -1))
-    if state and state.get("uri"):
-        g.add((frame_node, MSRUN.activeState, rdflib.URIRef(state["uri"])))
-    for key, value in frame.get("timing", {}).items():
-        _literal(g, frame_node, MSRUN[key], value)
-    if not include_slots:
-        return
+def _project_occurrences(
+    g: rdflib.Graph, run_id: str, schema: dict, frames: list[dict], cond_map: dict
+) -> set:
+    """Synthesize the discrete event graph from the per-tick frame scan; return the set of steps
+    that carry an occurrence (the frames worth materializing). Continuous scalars stay in
+    frame_log.bin; only semantic edges land in the graph:
 
-    controllers = meta.get("controllers") or meta.get("constraints") or []
-    for idx, sample in enumerate(frame.get("constraints", [])):
-        if not sample.get("active") or idx >= len(controllers):
-            continue
-        slot = controllers[idx]
-        controller_uri = _slot_uri(slot, "uri", "controller_uri")
-        constraint_uri = _slot_uri(slot, "constraint_uri")
-        if controller_uri is None:
-            continue
-        node = _node(f"controller-sample:{run_id}:{frame['step']}:{idx}")
-        g.add((node, rdflib.RDF.type, MSRUN.ControllerSample))
-        g.add((node, MSRUN.atFrame, frame_node))
-        g.add((node, MSRUN.controller, controller_uri))
-        g.add((node, MSRUN.slotIndex, rdflib.Literal(idx)))
-        g.add((node, MSRUN.active, rdflib.Literal(True)))
-        if constraint_uri is not None:
-            g.add((node, MSRUN.constraint, constraint_uri))
-        for src, pred in (
-            ("satisfied", MSRUN.satisfied),
-            ("sat_t", MSRUN.satSince),
-            ("error", MSRUN.error),
-            ("output", MSRUN.output),
-            ("measured", MSRUN.measured),
-            ("setpoint", MSRUN.setpoint),
-        ):
-            value = bool(sample[src]) if src == "satisfied" and src in sample else sample.get(src)
-            _literal(g, node, pred, value)
-        _add_signal_sample(
-            g,
-            run_id,
-            frame_node,
-            frame,
-            idx,
-            "error",
-            slot.get("error_signal_uri") or slot.get("error_uri"),
-            sample.get("error"),
-            controller_uri=controller_uri,
-            constraint_uri=constraint_uri,
-        )
-        _add_signal_sample(
-            g,
-            run_id,
-            frame_node,
-            frame,
-            idx,
-            "output",
-            slot.get("output_signal_uri") or slot.get("output_uri"),
-            sample.get("output"),
-            controller_uri=controller_uri,
-            constraint_uri=constraint_uri,
-        )
+      * StateOccurrence / TransitionOccurrence on FSM state changes,
+      * ConstraintSatisfied/UnsatisfiedOccurrence on a goal constraint's satisfied edge (both
+        directions - a falling edge is a goal lost, e.g. what fires E_GRASP_LOST_*),
+      * MonitorOccurrence on a monitor's rising (fired) edge,
+      * EventOccurrence from the runtime's event triggers (E_STEP filtered as per-tick noise).
 
-    monitors = meta.get("monitors") or []
-    for idx, sample in enumerate(frame.get("monitors", [])):
-        if not sample.get("active") or idx >= len(monitors):
-            continue
-        slot = monitors[idx]
-        monitor_uri = _slot_uri(slot, "uri", "monitor_uri")
-        if monitor_uri is None:
-            continue
-        node = _node(f"monitor-sample:{run_id}:{frame['step']}:{idx}")
-        g.add((node, rdflib.RDF.type, MSRUN.MonitorSample))
-        g.add((node, MSRUN.atFrame, frame_node))
-        g.add((node, MSRUN.monitor, monitor_uri))
-        g.add((node, MSRUN.slotIndex, rdflib.Literal(idx)))
-        g.add((node, MSRUN.active, rdflib.Literal(True)))
-        if slot.get("event_uri"):
-            g.add((node, MSRUN.event, rdflib.URIRef(slot["event_uri"])))
-        for src, pred in (
-            ("satisfied", MSRUN.satisfied),
-            ("sat_t", MSRUN.satSince),
-            ("value", MSRUN.value),
-        ):
-            value = bool(sample[src]) if src == "satisfied" and src in sample else sample.get(src)
-            _literal(g, node, pred, value)
-        _add_signal_sample(
-            g,
-            run_id,
-            frame_node,
-            frame,
-            idx,
-            "value",
-            slot.get("error_signal_uri") or slot.get("error_uri"),
-            sample.get("value"),
-            monitor_uri=monitor_uri,
-        )
-
-
-def _project_trigger_occurrences(g: rdflib.Graph, run_id: str, schema: dict, frames: list[dict]) -> None:
+    Edge detection resets at state boundaries: slot indices are state-local (slot i is a
+    different controller in a different state), so only intra-state comparison is valid.
+    """
     states, events = _state_maps(schema)
-    seen = set()
+    transitions = {
+        (t.get("from"), t.get("to")): t for t in schema.get("fsm", {}).get("transitions", [])
+    }
+    anchors: set = set()
+    prev_state = None
+    prev_csat: list | None = None
+    prev_msat: list | None = None
+    seen_events: set = set()
     for frame in frames:
-        frame_node = _node(f"frame:{run_id}:{frame['step']}")
-        for trigger in frame.get("triggers", []):
-            key = (
-                trigger.get("kind"),
-                trigger.get("idx"),
-                trigger.get("fsm_state"),
-                trigger.get("t"),
-                trigger.get("wall_ns"),
-            )
-            if key in seen:
-                continue
-            seen.add(key)
-            kind = trigger.get("kind")
-            idx = trigger.get("idx")
-            if kind == KIND_EVENT and events.get(idx, {}).get("id") == "E_STEP":
-                continue
-            typename = TRIGGER_TYPES.get(kind, "Occurrence")
-            occ = _node(f"occurrence:{run_id}:{typename}:{trigger.get('wall_ns', 0)}:{idx}")
-            g.add((occ, rdflib.RDF.type, MSRUN[typename]))
-            g.add((occ, MSRUN.atFrame, frame_node))
-            _literal(g, occ, MSRUN.t, trigger.get("t"))
-            _literal(g, occ, MSRUN.wall_ns, trigger.get("wall_ns"))
-            _literal(g, occ, MSRUN.slotIndex, idx)
-            state, meta = _state_meta(schema, states, trigger.get("fsm_state", -1))
+        step = frame["step"]
+        wall = frame.get("timing", {}).get("wall_ns")
+        cur = frame.get("fsm_state", -1)
+        state, meta = _state_meta(schema, states, cur)
+        controllers = meta.get("controllers") or meta.get("constraints") or []
+        monitors = meta.get("monitors") or []
+        csat = [bool(c.get("active")) and bool(c.get("satisfied")) for c in frame.get("constraints", [])]
+        msat = [bool(m.get("active")) and bool(m.get("satisfied")) for m in frame.get("monitors", [])]
+
+        if cur != prev_state:
+            entry = frame.get("state_since_wall_ns") or wall
             if state and state.get("uri"):
-                g.add((occ, MSRUN.fsmState, rdflib.URIRef(state["uri"])))
-            if kind == KIND_STATE and idx in states and states[idx].get("uri"):
-                g.add((occ, MSRUN.state, rdflib.URIRef(states[idx]["uri"])))
-            elif kind == KIND_EVENT and idx in events and events[idx].get("uri"):
-                g.add((occ, MSRUN.event, rdflib.URIRef(events[idx]["uri"])))
-            elif kind in (KIND_CONSTRAINT_SAT, KIND_CONSTRAINT_UNSAT):
-                controllers = meta.get("controllers") or meta.get("constraints") or []
-                if isinstance(idx, int) and 0 <= idx < len(controllers):
-                    controller_uri = _slot_uri(controllers[idx], "uri", "controller_uri")
+                occ = _occurrence(g, run_id, "StateOccurrence", cur, entry, step)
+                g.add((occ, MSRUN.state, rdflib.URIRef(state["uri"])))
+                anchors.add(step)
+            if prev_state is not None:
+                tr = transitions.get((prev_state, cur))
+                if tr and tr.get("uri"):
+                    occ = _occurrence(g, run_id, "TransitionOccurrence", tr.get("id", f"{prev_state}-{cur}"), entry, step)
+                    g.add((occ, MSRUN.transition, rdflib.URIRef(tr["uri"])))
+                    frm_state = states.get(prev_state) or {}
+                    if frm_state.get("uri"):
+                        g.add((occ, MSRUN.fromState, rdflib.URIRef(frm_state["uri"])))
+                    if state and state.get("uri"):
+                        g.add((occ, MSRUN.toState, rdflib.URIRef(state["uri"])))
+                    ev = events.get(tr.get("event_index")) or {}
+                    if ev.get("uri"):
+                        g.add((occ, MSRUN.event, rdflib.URIRef(ev["uri"])))
+                    anchors.add(step)
+        else:
+            if prev_csat is not None:
+                for idx, now in enumerate(csat):
+                    if idx >= len(prev_csat) or idx >= len(controllers) or now == prev_csat[idx]:
+                        continue
                     constraint_uri = _slot_uri(controllers[idx], "constraint_uri")
+                    if constraint_uri is None:  # only goal constraints, not pure regulation
+                        continue
+                    typename = "ConstraintSatisfiedOccurrence" if now else "ConstraintUnsatisfiedOccurrence"
+                    occ = _occurrence(g, run_id, typename, idx, wall, step)
+                    controller_uri = _slot_uri(controllers[idx], "uri", "controller_uri")
                     if controller_uri is not None:
                         g.add((occ, MSRUN.controller, controller_uri))
-                    if constraint_uri is not None:
-                        g.add((occ, MSRUN.constraint, constraint_uri))
-            elif kind == KIND_MONITOR:
-                monitors = meta.get("monitors") or []
-                if isinstance(idx, int) and 0 <= idx < len(monitors):
+                    g.add((occ, MSRUN.constraint, constraint_uri))
+                    if state and state.get("uri"):
+                        g.add((occ, MSRUN.fsmState, rdflib.URIRef(state["uri"])))
+                    _literal(g, occ, MSRUN.slotIndex, idx)
+                    # live residual at the edge; spec (setpoint/threshold) is on the linked constraint
+                    _literal(g, occ, MSRUN.value, frame["constraints"][idx].get("error"))
+                    anchors.add(step)
+            if prev_msat is not None:
+                for idx, now in enumerate(msat):
+                    if idx >= len(prev_msat) or idx >= len(monitors) or not (now and not prev_msat[idx]):
+                        continue
                     monitor_uri = _slot_uri(monitors[idx], "uri", "monitor_uri")
-                    if monitor_uri is not None:
-                        g.add((occ, MSRUN.monitor, monitor_uri))
+                    if monitor_uri is None:
+                        continue
+                    occ = _occurrence(g, run_id, "MonitorOccurrence", idx, wall, step)
+                    g.add((occ, MSRUN.monitor, monitor_uri))
+                    condition = cond_map.get(str(monitor_uri))
+                    if condition is not None:  # the cstr: model node (operator/quantity/threshold)
+                        g.add((occ, MSRUN.constraint, condition))
                     if monitors[idx].get("event_uri"):
                         g.add((occ, MSRUN.event, rdflib.URIRef(monitors[idx]["event_uri"])))
+                    if state and state.get("uri"):
+                        g.add((occ, MSRUN.fsmState, rdflib.URIRef(state["uri"])))
+                    _literal(g, occ, MSRUN.slotIndex, idx)
+                    # live residual at fire; spec (quantity/threshold) is on the linked constraint
+                    _literal(g, occ, MSRUN.value, frame["monitors"][idx].get("value"))
+                    anchors.add(step)
 
-
-def _sample_steps(frames: list[dict], schema: dict) -> set:
-    # ponytail: keep dense numeric curves in frame_log.bin; add graph samples at semantic changes.
-    if not frames:
-        return set()
-    _states, events = _state_maps(schema)
-    steps = {frames[0].get("step"), frames[-1].get("step")}
-    last_state = object()
-    last_constraints = None
-    last_monitors = None
-    seen_triggers = set()
-    for frame in frames:
-        step = frame.get("step")
-        state = frame.get("fsm_state")
-        constraints = tuple((bool(c.get("active")), bool(c.get("satisfied"))) for c in frame.get("constraints", []))
-        monitors = tuple((bool(m.get("active")), bool(m.get("satisfied"))) for m in frame.get("monitors", []))
-        if state != last_state or constraints != last_constraints or monitors != last_monitors:
-            steps.add(step)
-        last_state = state
-        last_constraints = constraints
-        last_monitors = monitors
         for trigger in frame.get("triggers", []):
-            if trigger.get("kind") == KIND_EVENT and events.get(trigger.get("idx"), {}).get("id") == "E_STEP":
+            if trigger.get("kind") != KIND_EVENT:
                 continue
-            key = (
-                trigger.get("kind"),
-                trigger.get("idx"),
-                trigger.get("fsm_state"),
-                trigger.get("t"),
-                trigger.get("wall_ns"),
-            )
-            if key not in seen_triggers:
-                seen_triggers.add(key)
-                steps.add(step)
-    return steps
+            eidx = trigger.get("idx")
+            event = events.get(eidx) or {}
+            if event.get("id") == "E_STEP":
+                continue
+            ekey = (eidx, trigger.get("wall_ns"))
+            if ekey in seen_events:
+                continue
+            seen_events.add(ekey)
+            occ = _occurrence(g, run_id, "EventOccurrence", eidx, trigger.get("wall_ns"), step)
+            if event.get("uri"):
+                g.add((occ, MSRUN.event, rdflib.URIRef(event["uri"])))
+            tstate, _tmeta = _state_meta(schema, states, trigger.get("fsm_state", -1))
+            if tstate and tstate.get("uri"):
+                g.add((occ, MSRUN.fsmState, rdflib.URIRef(tstate["uri"])))
+            _literal(g, occ, MSRUN.slotIndex, eidx)
+            anchors.add(step)
+
+        prev_state, prev_csat, prev_msat = cur, csat, msat
+    return anchors
 
 
 def _add_rec_timing(g: rdflib.Graph, run_dir: Path, manifest: dict, activity: rdflib.URIRef) -> None:
@@ -331,6 +304,21 @@ def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int
         "msprov": rdflib.Namespace(MSPROV),
     }.items():
         g.bind(prefix, ns)
+    # Compact the per-run node families and model FSM nodes into CURIEs by binding a prefix at
+    # each family's `<family>/<run_id>/` boundary (locals are slash-free — see _scoped).
+    run_id = manifest["run_id"]
+    for prefix, family in (
+        ("frm", "frame"),
+        ("cs", "controller-sample"),
+        ("mons", "monitor-sample"),
+        ("sig", "signal"),
+        ("occ", "occurrence"),
+    ):
+        g.bind(prefix, rdflib.Namespace(f"{MSRUN}{family}/{run_id}/"))
+    model_base = _model_base(schema)
+    if model_base:
+        g.bind("model", rdflib.Namespace(model_base))
+        g.bind("fsm", rdflib.Namespace(model_base + "fsm/"))
 
     run = _node(f"run:{manifest['run_id']}")
     # Agents and the execution activity are shared provenance concepts: emit the same
@@ -386,22 +374,46 @@ def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int
     g.add((run, PROV.wasGeneratedBy, activity))
     _add_rec_timing(g, run_dir, manifest, activity)
 
-    sample_steps = _sample_steps(frames, schema)
-    for frame in frames:
-        frame_node = _node(f"frame:{manifest['run_id']}:{frame['step']}")
-        g.add((frame_node, rdflib.RDF.type, MSRUN.Frame))
-        g.add((frame_node, MSRUN.step, rdflib.Literal(frame["step"])))
-        g.add((frame_node, MSRUN.t, rdflib.Literal(frame["t"])))
-        _project_frame_samples(
-            g,
-            manifest["run_id"],
-            schema,
-            frame,
-            frame_node,
-            include_slots=frame.get("step") in sample_steps,
-        )
-        g.add((run, MSRUN.frame, frame_node))
-    _project_trigger_occurrences(g, manifest["run_id"], schema, frames)
+    # Provenance of this runtime.ttl document itself: recovered from the frame log by the
+    # introspection recovery agent (same IRIs the rec graph uses), stamped at generation time.
+    runtime_doc = _node("entity:runtime_ttl")
+    recovery_activity = rdflib.URIRef(prov_uri("activity:runtime_ttl_recovery"))
+    recovery_agent = rdflib.URIRef(prov_uri("agent:replay_process"))
+    generated_at = _dt_literal(time.time_ns())
+    g.add((runtime_doc, rdflib.RDF.type, PROV.Entity))
+    g.add((runtime_doc, PROV.atLocation, rdflib.URIRef("runtime.ttl")))
+    g.add((runtime_doc, PROV.wasGeneratedBy, recovery_activity))
+    g.add((runtime_doc, PROV.wasDerivedFrom, frame_log))
+    g.add((runtime_doc, PROV.generatedAtTime, generated_at))
+    g.add((recovery_activity, rdflib.RDF.type, PROV.Activity))
+    g.add((recovery_activity, PROV.used, frame_log))
+    g.add((recovery_activity, PROV.wasAssociatedWith, recovery_agent))
+    g.add((recovery_activity, PROV.endedAtTime, generated_at))
+    g.add((recovery_agent, rdflib.RDF.type, PROV.SoftwareAgent))
+    g.add((recovery_agent, rdflib.RDF.type, OBS.ObservationProvider))
+    g.add((recovery_agent, rdflib.RDFS.label, rdflib.Literal("motion_spec runtime.ttl recovery")))
+
+    # Synthesize the discrete event graph, then materialize a Frame node only for the steps that
+    # actually anchor an occurrence (plus the run's first/last for bounds). The dense per-tick
+    # curve — every frame, all continuous scalars — stays in frame_log.bin for numeric analysis.
+    if frames:
+        states, _events = _state_maps(schema)
+        cond_map = _condition_map(run_dir, manifest)
+        anchors = _project_occurrences(g, manifest["run_id"], schema, frames, cond_map)
+        emit_steps = anchors | {frames[0]["step"], frames[-1]["step"]}
+        for frame in frames:
+            if frame["step"] not in emit_steps:
+                continue
+            frame_node = _node(f"frame:{manifest['run_id']}:{frame['step']}")
+            g.add((frame_node, rdflib.RDF.type, MSRUN.Frame))
+            g.add((frame_node, MSRUN.step, rdflib.Literal(frame["step"])))
+            frame_dt = _dt_literal(frame.get("timing", {}).get("wall_ns"))
+            if frame_dt is not None:
+                g.add((frame_node, PROV.generatedAtTime, frame_dt))
+            state, _meta = _state_meta(schema, states, frame.get("fsm_state", -1))
+            if state and state.get("uri"):
+                g.add((frame_node, MSRUN.activeState, rdflib.URIRef(state["uri"])))
+    _bind_model_subnamespaces(g, model_base)
     return g
 
 

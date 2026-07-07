@@ -129,7 +129,9 @@ def to_record(flat: dict, n_c: int, n_m: int, n_q: int, n_t: int) -> dict:
             "active_motion",
             "last_event",
             "state_since_t",
+            "state_since_wall_ns",
             "event_t",
+            "event_wall_ns",
         )
     }
     record["timing"] = {key: flat[key] for key in ("wall_ns", "period_ns", "compute_ns")}
@@ -146,6 +148,11 @@ def to_record(flat: dict, n_c: int, n_m: int, n_q: int, n_t: int) -> dict:
 
 def decode_frames(log_path: Path | str) -> list[dict]:
     return [to_record(flat, n_c, n_m, n_q, n_t) for flat, n_c, n_m, n_q, n_t in frames(log_path)]
+
+
+def runtime_frames(log_path: Path | str) -> tuple[list[dict], int]:
+    records = decode_frames(log_path)
+    return records, len(records)
 
 
 def sampled_frames(log_path: Path | str) -> tuple[list[dict], int]:
@@ -220,8 +227,8 @@ def main(argv: list[str] | None = None) -> int:
             from motion_spec.introspection.runtime_graph import write_runtime_ttl
 
             run_dir, log_path, _manifest, _schema, _layout = resolve_archive(args.log)
-            samples, frame_count = sampled_frames(log_path)
-            out = write_runtime_ttl(run_dir, samples, frame_count=frame_count)
+            records, frame_count = runtime_frames(log_path)
+            out = write_runtime_ttl(run_dir, records, frame_count=frame_count)
             print(out)
         elif args.verify:
             _run_dir, log_path, _manifest, schema, layout = resolve_archive(args.log)

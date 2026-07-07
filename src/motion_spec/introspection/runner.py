@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from motion_spec.introspection.archive import (
+    HASHED_ARTIFACTS,
     ArchiveError,
     _artifact_size,
     _dependencies,
@@ -93,11 +94,11 @@ def run_cataloged(
             complete_rec=False,
         )
         if recover_runtime_ttl:
-            from motion_spec.introspection.replay import sampled_frames
+            from motion_spec.introspection.replay import runtime_frames
             from motion_spec.introspection.runtime_graph import write_runtime_ttl
 
-            samples, frame_count = sampled_frames(frame_log)
-            write_runtime_ttl(run_dir, samples, frame_count=frame_count)
+            records, frame_count = runtime_frames(frame_log)
+            write_runtime_ttl(run_dir, records, frame_count=frame_count)
         _finish_rec_run(rec_path, run_id, "COMPLETED")
         _refresh_rec_hash(run_dir)
         if verify:
@@ -141,7 +142,7 @@ def _start_rec_run(
     run.log_host_info(_host_info())
     run.log_repositories(_repositories(run_dir))
     run.log_dependencies(_dependencies())
-    _record_agents(run, schema)
+    _record_agents(run, run_dir, schema)
     _record_activities(run, schema)
     run.add_agent(
         "agent:motion_spec_runner",
@@ -169,10 +170,13 @@ def _record_execution_inputs(run, source_dir: Path, executable: Path, schema: di
     ):
         path = source_dir / rel
         if path.exists():
+            # archivePath = where this input lands in the bundle, so the rec reference is
+            # portable and dedupes with the archive's own record of the same file.
             run.add_resource(
                 path,
                 usage_activity=activity,
                 role=role,
+                archivePath=HASHED_ARTIFACTS.get(role),
                 sha256=sha256_file(path),
                 size_bytes=_artifact_size(path),
             )
@@ -180,6 +184,7 @@ def _record_execution_inputs(run, source_dir: Path, executable: Path, schema: di
         executable,
         usage_activity=activity,
         role="log_producer_executable",
+        archivePath=f"controller/executable/{executable.name}",
         sha256=sha256_file(executable),
         size_bytes=_artifact_size(executable),
     )

@@ -143,6 +143,8 @@ def _source_tree(path: Path) -> Path:
     (path / "schema.json").write_text(json.dumps(schema, indent=4))
     (path / "frame_layout.json").write_text(json.dumps(layout, indent=4))
     (path / "provenance.jsonld").write_text(json.dumps(_provenance(), indent=4))
+    (path / "provenance").mkdir()
+    (path / "provenance" / "dsl.jsonld").write_text(json.dumps(_provenance(), indent=4))
     (path / "model.jsonld").write_text(json.dumps(_provenance(), indent=4))
     (path / "ir.json").write_text(json.dumps({"id": "test-ir"}))
     (path / "headers").mkdir()
@@ -187,10 +189,12 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
     assert manifest["files"]["log_producer_executable"] is None
     assert manifest["files"]["rec"] == "rec.json"
     assert manifest["files"]["frame_log_health"] == "logs/frame_log.bin.health.json"
+    assert manifest["files"]["dsl_provenance"] == "provenance/dsl.jsonld"
     assert manifest["rec"] == {"path": "rec.json", "run_id": "run-test"}
     assert manifest["files"]["controller"] == "controller/source"
     assert "controller/source" in manifest["artifacts"]
     assert "logs/frame_log.bin.health.json" in manifest["artifacts"]
+    assert "provenance/dsl.jsonld" in manifest["artifacts"]
     assert "rec.json" in manifest["artifacts"]
     assert verify_manifest(run_dir)["run_id"] == "run-test"
     header = validate_header(run_dir / "logs" / "frame_log.bin", _schema(), _layout(_schema()))
@@ -224,11 +228,130 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
     )
     assert any(row["role"] == "runtime_ttl" for row in rec_doc["artefacts"])
     assert any(row["role"] == "runtime_ttl_recovery" for row in rec_doc["activities"])
+    # rec references bundle contents by archive-relative path (portable, no machine path).
+    dsl_resource = next(row for row in rec_doc["resources"] if row["role"] == "dsl_provenance")
+    assert dsl_resource["atLocation"] == "provenance/dsl.jsonld"
+    runtime_artifact = next(row for row in rec_doc["artefacts"] if row["role"] == "runtime_ttl")
+    assert runtime_artifact["atLocation"] == "runtime/runtime.ttl"
     metrics = {row["name"]: row["value"] for row in rec_doc["metrics"]}
     assert metrics["frame_log_attempted_frames"] == 1
     assert metrics["frame_log_written_frames"] == 1
     assert metrics["frame_log_dropped_frames"] == 0
     assert metrics["frame_log_complete"] == 1
+
+
+def _importing_manifest() -> dict:
+    return {
+        "@context": {
+            "@version": 1.1,
+            "xsd": "http://www.w3.org/2001/XMLSchema#",
+            "app": "https://comp-rob2b.github.io/metamodels/application/",
+            "import": {
+                "@id": "app:import",
+                "@type": "@id",
+                "@context": {"@base": "https://secorolab.github.io/"},
+            },
+            "iri-map": {"@id": "app:iri-map", "@container": "@id"},
+            "path": {"@id": "app:path", "@type": "xsd:string"},
+        },
+        "@id": "https://secorolab.github.io/models/generated/",
+        "@graph": [
+            {
+                "import": ["sub.jsonld"],
+                "iri-map": {"https://secorolab.github.io/": {"path": "models/"}},
+            }
+        ],
+    }
+
+
+def test_archive_vendors_imported_model_graph_and_verify_catches_dangling(tmp_path: Path) -> None:
+    # The app manifest imports a model graph; the archive must vendor it next to
+    # model/model.jsonld so the import resolves offline, and verify must reject an
+    # archive where that imported graph is missing.
+    source = _source_tree(tmp_path / "source")
+    (source / "model.jsonld").write_text(json.dumps(_importing_manifest(), indent=4))
+    (source / "sub.jsonld").write_text(
+        json.dumps(
+            {
+                "@context": {"prov": "http://www.w3.org/ns/prov#"},
+                "@graph": [{"@id": "https://example.test/x", "@type": "prov:Entity"}],
+            }
+        )
+    )
+    run_dir = tmp_path / "run"
+
+    manifest = create_archive_manifest(run_dir, source_dir=source, run_id="run-test")
+    assert manifest["files"]["model_imports"] == ["model/sub.jsonld"]
+    assert (run_dir / "model" / "sub.jsonld").is_file()
+    assert manifest["artifacts"]["model/sub.jsonld"]["role"] == "imported_model_graph"
+    assert verify_manifest(run_dir)["run_id"] == "run-test"
+
+    (run_dir / "model" / "sub.jsonld").unlink()
+    with pytest.raises(ArchiveError, match="model/sub.jsonld: missing"):
+        verify_manifest(run_dir)
+
+
+def test_archive_is_provenance_complete_and_relative(tmp_path: Path) -> None:
+    # The DSL's authored source (referenced by dsl.jsonld) is vendored into source/ and
+    # its atLocation rewritten relative; a vendor asset the model only points at (via
+    # codegen provenance) is NOT archived. The dsl provenance is imported but not
+    # duplicated; the manifest import/iri-map are rewritten to resolve inside the archive.
+    source = _source_tree(tmp_path / "source")
+    authored = tmp_path / "inputs" / "model.robmot"
+    authored.parent.mkdir()
+    authored.write_text("robot { }\n")
+    vendor = tmp_path / "vendor" / "gen3.xml"
+    vendor.parent.mkdir()
+    vendor.write_text("<mujoco/>\n")
+
+    manifest_doc = _importing_manifest()
+    manifest_doc["@graph"][0]["import"] = ["sub.jsonld", "provenance/dsl.jsonld"]
+    (source / "model.jsonld").write_text(json.dumps(manifest_doc, indent=4))
+    (source / "sub.jsonld").write_text(
+        json.dumps({"@context": {"prov": "http://www.w3.org/ns/prov#"}, "@graph": []})
+    )
+    # dsl.jsonld references the authored source -> must be vendored + rewritten.
+    dsl = _provenance()
+    dsl["@graph"].append(
+        {"@id": "https://example.test/entity/src", "@type": "Entity", "atLocation": authored.resolve().as_uri()}
+    )
+    (source / "provenance" / "dsl.jsonld").write_text(json.dumps(dsl, indent=4))
+    # codegen.jsonld points at a vendor asset -> must be left alone, not archived.
+    prov = _provenance()
+    prov["@graph"].append(
+        {"@id": "https://example.test/agent/robot", "@type": "Agent", "atLocation": vendor.resolve().as_uri()}
+    )
+    (source / "provenance.jsonld").write_text(json.dumps(prov, indent=4))
+    run_dir = tmp_path / "run"
+
+    manifest = create_archive_manifest(run_dir, source_dir=source, run_id="run-test")
+
+    # Authored source vendored under source/, tracked, reachable.
+    assert manifest["files"]["sources"] == ["source/model.robmot"]
+    assert (run_dir / "source" / "model.robmot").is_file()
+    assert manifest["artifacts"]["source/model.robmot"]["role"] == "source_model"
+
+    # Vendor asset NOT archived; its reference left untouched.
+    assert not (run_dir / "source" / "gen3.xml").exists()
+    codegen = json.loads((run_dir / "provenance" / "codegen.jsonld").read_text())
+    robot = next(n for n in codegen["@graph"] if n.get("@id") == "https://example.test/agent/robot")
+    assert robot["atLocation"] == vendor.resolve().as_uri()
+
+    # dsl provenance imported but not duplicated under model/.
+    assert manifest["files"]["model_imports"] == ["model/sub.jsonld", "provenance/dsl.jsonld"]
+    assert not (run_dir / "model" / "provenance").exists()
+
+    # Manifest import + iri-map rewritten to resolve archive-relative.
+    model = json.loads((run_dir / "model" / "model.jsonld").read_text())
+    assert model["@graph"][0]["import"] == ["model/sub.jsonld", "provenance/dsl.jsonld"]
+    assert model["@graph"][0]["iri-map"] == {"https://secorolab.github.io/": {"path": ".."}}
+
+    # Authored-source atLocation rewritten relative to the dsl provenance doc.
+    dsl_out = json.loads((run_dir / "provenance" / "dsl.jsonld").read_text())
+    src_node = next(n for n in dsl_out["@graph"] if n.get("@id") == "https://example.test/entity/src")
+    assert src_node["atLocation"] == "../source/model.robmot"
+
+    assert verify_manifest(run_dir)["run_id"] == "run-test"
 
 
 def test_manifest_hash_verification_rejects_mutation(tmp_path: Path) -> None:

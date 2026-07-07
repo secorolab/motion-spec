@@ -7,18 +7,20 @@ import argparse
 import hashlib
 import importlib.metadata
 import json
+import os
 import platform
 import shutil
 import socket
 import subprocess
 import sys
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
 import rdflib
 from pyshacl import validate
 
-from motion_spec.manifest import metamodel_url_map
+from motion_spec.manifest import build_url_map, metamodel_url_map, metamodels_root
 
 MANIFEST_VERSION = 1
 PROVENANCE_DOCUMENT_VERSION = 1
@@ -26,6 +28,7 @@ HASHED_ARTIFACTS = {
     "schema": "contract/schema.json",
     "frame_layout": "contract/frame_layout.json",
     "provenance": "provenance/codegen.jsonld",
+    "dsl_provenance": "provenance/dsl.jsonld",
     "runtime": "runtime/runtime.ttl",
     "frame_log": "logs/frame_log.bin",
     "frame_log_health": "logs/frame_log.bin.health.json",
@@ -75,6 +78,123 @@ def _copy_file(src: Path, dst: Path) -> None:
     shutil.copy2(src, dst)
 
 
+def _manifest_imports(manifest_path: Path) -> list[str]:
+    """Relative graph files an app manifest declares via ``app:import``.
+
+    Returns [] for plain provenance/model documents that carry no import list.
+    """
+    try:
+        doc = json.loads(manifest_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    imports: list[str] = []
+    for node in doc.get("@graph", []) if isinstance(doc, dict) else []:
+        if isinstance(node, dict):
+            value = node.get("import")
+            if isinstance(value, str):
+                imports.append(value)
+            elif isinstance(value, list):
+                imports.extend(str(item) for item in value)
+    return list(dict.fromkeys(imports))
+
+
+def _file_uri_to_path(value: str) -> Path | None:
+    """Resolve a ``file://`` atLocation to a local path (None for other IRIs)."""
+    if not isinstance(value, str) or not value.startswith("file://"):
+        return None
+    parsed = urllib.parse.urlparse(value)
+    return Path(urllib.parse.unquote(parsed.path))
+
+
+def _iter_file_uris(obj) -> "list[str]":
+    """Every ``file://`` string value anywhere in a JSON structure."""
+    found: list[str] = []
+    if isinstance(obj, dict):
+        for value in obj.values():
+            found.extend(_iter_file_uris(value))
+    elif isinstance(obj, list):
+        for value in obj:
+            found.extend(_iter_file_uris(value))
+    elif isinstance(obj, str) and obj.startswith("file://"):
+        found.append(obj)
+    return found
+
+
+def _archive_referenced_sources(
+    prov_docs: list[Path], run_dir: Path, location_map: dict[str, str]
+) -> list[str]:
+    """Vendor authored source inputs referenced by the given provenance doc(s).
+
+    Pass only the DSL source provenance here: a referenced-but-unmapped file that still
+    exists on disk (the .robmot/.fsm models) is copied into ``source/`` and registered so
+    the rewrite can point at it. Third-party/vendor assets (MuJoCo scene xml, etc.) are not
+    in the DSL source provenance and are intentionally left as references, not archived.
+    """
+    sources: list[str] = []
+    for doc in prov_docs:
+        if not doc.is_file():
+            continue
+        for uri in _iter_file_uris(json.loads(doc.read_text())):
+            path = _file_uri_to_path(uri)
+            if path is None or not path.is_file():
+                continue
+            key = str(path.resolve())
+            if key in location_map:
+                continue
+            rel = f"source/{path.name}"
+            _copy_file(path, run_dir / rel)
+            location_map[key] = rel
+            sources.append(rel)
+    return sources
+
+
+def _relativize_paths(obj, location_map: dict[str, str], start: str):
+    """Repoint every archived reference (``file://`` URI or absolute path) at its archive
+    copy, relative to ``start``. Non-archived references are left untouched."""
+    if isinstance(obj, dict):
+        return {k: _relativize_paths(v, location_map, start) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_relativize_paths(v, location_map, start) for v in obj]
+    if isinstance(obj, str) and (obj.startswith("file://") or obj.startswith("/")):
+        path = _file_uri_to_path(obj) if obj.startswith("file://") else Path(obj)
+        rel = location_map.get(str(path.resolve())) if path else None
+        if rel is not None:
+            return os.path.relpath(rel, start)
+    return obj
+
+
+def _rewrite_archived_locations(doc: Path, location_map: dict[str, str]) -> None:
+    """Repoint every archived file reference in a JSON(-LD) doc, relative to the doc's dir.
+
+    Covers the provenance graphs' ``atLocation`` (file:// IRIs) and the IR's provenance
+    entity ``path``/``source`` (absolute paths) so no build-tree location survives in the
+    archived model.
+    """
+    if not doc.is_file():
+        return
+    data = json.loads(doc.read_text())
+    rewritten = _relativize_paths(data, location_map, doc.parent.name)
+    if rewritten != data:
+        doc.write_text(json.dumps(rewritten, indent=2) + "\n")
+
+
+def _rewrite_model_imports(model_manifest: Path, imports: list[str]) -> None:
+    """Point the archived app manifest at the vendored graphs (archive-root-relative).
+
+    Imports become root-relative archive paths and the model-root IRI maps to '..' (the
+    archive root, one up from model/), so each import resolves to its single archived
+    copy — no duplicate dsl.jsonld, no path into the build tree.
+    """
+    if not model_manifest.is_file() or not imports:
+        return
+    doc = json.loads(model_manifest.read_text())
+    for node in doc.get("@graph", []):
+        if isinstance(node, dict) and "import" in node:
+            node["import"] = imports
+            node["iri-map"] = {"https://secorolab.github.io/": {"path": ".."}}
+    model_manifest.write_text(json.dumps(doc, indent=2) + "\n")
+
+
 def create_archive_manifest(
     run_dir: Path | str,
     *,
@@ -95,6 +215,7 @@ def create_archive_manifest(
         "schema.json": "contract/schema.json",
         "frame_layout.json": "contract/frame_layout.json",
         "provenance.jsonld": "provenance/codegen.jsonld",
+        "provenance/dsl.jsonld": "provenance/dsl.jsonld",
     }
     if frame_log and Path(frame_log).exists():
         copies[str(Path(frame_log).resolve())] = "logs/frame_log.bin"
@@ -106,17 +227,47 @@ def create_archive_manifest(
         if (source_dir / "frame_log.bin.health.json").exists():
             copies["frame_log.bin.health.json"] = "logs/frame_log.bin.health.json"
     schema = json.loads((source_dir / "schema.json").read_text())
+    # schema.graph/ir_path are portable basenames; resolve them against source_dir.
     if (source_dir / "model.jsonld").exists():
         copies["model.jsonld"] = "model/model.jsonld"
-    elif schema.get("graph") and Path(schema["graph"]).exists():
-        copies[str(Path(schema["graph"]))] = "model/model.jsonld"
-    if schema.get("ir_path") and Path(schema["ir_path"]).exists():
-        copies[str(Path(schema["ir_path"]))] = "model/ir.json"
+    elif schema.get("graph") and (source_dir / Path(schema["graph"]).name).exists():
+        copies[Path(schema["graph"]).name] = "model/model.jsonld"
+    if schema.get("ir_path") and (source_dir / Path(schema["ir_path"]).name).exists():
+        copies[Path(schema["ir_path"]).name] = "model/ir.json"
+
+    # Track where each source artifact lands in the archive so provenance atLocations
+    # can be rewritten to point at the archived copy (keyed by resolved source path).
+    location_map: dict[str, str] = {}
+
+    def _register(src: Path, rel: str) -> None:
+        if src.is_file():
+            location_map[str(src.resolve())] = rel
 
     for src_name, dst_name in copies.items():
         src = Path(src_name) if Path(src_name).is_absolute() else source_dir / src_name
         if src.exists() and src.resolve() != (run_dir / dst_name).resolve():
             _copy_file(src, run_dir / dst_name)
+        _register(src, dst_name)
+
+    # Vendor the model graph(s) the app manifest imports. Graphs already archived under
+    # another role (e.g. the dsl provenance -> provenance/dsl.jsonld) are reused in place
+    # rather than duplicated; the manifest's import list is rewritten to the single copies.
+    model_manifest = run_dir / "model" / "model.jsonld"
+    model_imports: list[str] = []
+    if model_manifest.exists():
+        for imp in _manifest_imports(model_manifest):
+            src = source_dir / imp
+            key = str(src.resolve())
+            if key in location_map:
+                model_imports.append(location_map[key])
+                continue
+            dst_rel = f"model/{imp}"
+            dst = run_dir / dst_rel
+            if src.is_file() and src.resolve() != dst.resolve():
+                _copy_file(src, dst)
+            if dst.is_file():
+                _register(src, dst_rel)
+                model_imports.append(dst_rel)
 
     controller_dir = run_dir / "controller" / "source"
     controller_dir.mkdir(parents=True, exist_ok=True)
@@ -125,15 +276,36 @@ def create_archive_manifest(
         dst = controller_dir / rel
         if src.is_file():
             _copy_file(src, dst)
+            _register(src, f"controller/source/{rel}")
         elif src.is_dir():
             if dst.exists():
                 shutil.rmtree(dst)
             shutil.copytree(src, dst)
+            for item in sorted(p for p in src.rglob("*") if p.is_file()):
+                _register(item, f"controller/source/{rel}/{item.relative_to(src).as_posix()}")
     for header in sorted(source_dir.glob("*_fsm.hpp")):
         _copy_file(header, controller_dir / header.name)
+        _register(header, f"controller/source/{header.name}")
     if log_producer_executable and Path(log_producer_executable).exists():
         executable = Path(log_producer_executable)
         _copy_file(executable, run_dir / "controller" / "executable" / executable.name)
+        _register(executable, f"controller/executable/{executable.name}")
+
+    # Vendor the DSL's authored source inputs (.robmot/.fsm — referenced by dsl.jsonld and
+    # still outside the archive) so the model provenance is self-contained. Third-party /
+    # vendor assets the model merely points at (e.g. MuJoCo scene xml from the menagerie
+    # submodule) are left as references, not copied in. Then rewrite every archived file
+    # reference — and the model manifest's import/iri-map — to resolve inside the bundle.
+    source_artifacts = _archive_referenced_sources(
+        [run_dir / "provenance" / "dsl.jsonld"], run_dir, location_map
+    )
+    for doc in (
+        run_dir / "provenance" / "codegen.jsonld",
+        run_dir / "provenance" / "dsl.jsonld",
+        run_dir / "model" / "ir.json",
+    ):
+        _rewrite_archived_locations(doc, location_map)
+    _rewrite_model_imports(model_manifest, model_imports)
 
     artifacts = {}
     for key, rel in HASHED_ARTIFACTS.items():
@@ -142,6 +314,14 @@ def create_archive_manifest(
             artifacts[rel] = {"role": key, "sha256": sha256_file(path)}
         elif path.is_dir():
             artifacts[rel] = {"role": key, "sha256": hash_tree(path)}
+    for rel in model_imports:
+        path = run_dir / rel
+        if rel not in artifacts and path.is_file():
+            artifacts[rel] = {"role": "imported_model_graph", "sha256": sha256_file(path)}
+    for rel in source_artifacts:
+        path = run_dir / rel
+        if rel not in artifacts and path.is_file():
+            artifacts[rel] = {"role": "source_model", "sha256": sha256_file(path)}
     if log_producer_executable:
         executable = (
             run_dir
@@ -162,10 +342,17 @@ def create_archive_manifest(
             "schema": "contract/schema.json",
             "frame_layout": "contract/frame_layout.json",
             "provenance": "provenance/codegen.jsonld",
+            "dsl_provenance": (
+                "provenance/dsl.jsonld"
+                if (run_dir / "provenance" / "dsl.jsonld").exists()
+                else None
+            ),
             "runtime_ttl": "runtime/runtime.ttl",
             "frame_log": "logs/frame_log.bin",
             "frame_log_health": "logs/frame_log.bin.health.json",
             "model": "model/model.jsonld",
+            "model_imports": model_imports or None,
+            "sources": source_artifacts or None,
             "ir": "model/ir.json",
             "controller": "controller/source",
             "log_producer_executable": (
@@ -186,6 +373,11 @@ def create_archive_manifest(
         "artifacts": artifacts,
         "provenance": {
             "document": "provenance/codegen.jsonld",
+            "dsl": (
+                "provenance/dsl.jsonld"
+                if (run_dir / "provenance" / "dsl.jsonld").exists()
+                else None
+            ),
             "runtime": "runtime/runtime.ttl",
             "rec": "rec.json",
         },
@@ -242,9 +434,15 @@ def verify_manifest(run_dir_or_manifest: Path | str) -> dict:
     provenance_graph = _parse_rdf(run_dir / manifest["files"]["provenance"], "json-ld")
     _require_provenance(provenance_graph, "provenance.jsonld")
     _validate_prov_shacl(run_dir / manifest["files"]["provenance"])
+    dsl_provenance_rel = manifest.get("files", {}).get("dsl_provenance")
+    if dsl_provenance_rel and (run_dir / dsl_provenance_rel).exists():
+        dsl_provenance_graph = _parse_rdf(run_dir / dsl_provenance_rel, "json-ld")
+        _require_provenance(dsl_provenance_graph, "dsl.jsonld")
+        _validate_prov_shacl(run_dir / dsl_provenance_rel)
     model_rel = manifest.get("files", {}).get("model")
     if model_rel and (run_dir / model_rel).exists():
         _parse_rdf(run_dir / model_rel, "json-ld")
+        _verify_model_imports(run_dir / model_rel)
     runtime_rel = manifest.get("files", {}).get("runtime_ttl")
     if runtime_rel and (run_dir / runtime_rel).exists():
         runtime_graph = _parse_rdf(run_dir / runtime_rel, "turtle")
@@ -256,6 +454,44 @@ def verify_manifest(run_dir_or_manifest: Path | str) -> dict:
         _validate_prov_shacl(run_dir / rec_rel)
         _validate_rec_shacl(run_dir / rec_rel)
     return manifest
+
+
+def _verify_model_imports(model_path: Path) -> None:
+    """Assert every app:import in the archived model resolves offline within the bundle.
+
+    Metamodel prefixes resolve through the local checkout; the model's own iri-map
+    resolves its imported graphs to model/'s directory (where they were vendored).
+    A dangling import — the graph left behind in the build tree — fails here.
+    """
+    from motion_spec.namespace import APP
+
+    try:
+        from rdf_utils.resolver import IriToFileResolver, install_resolver
+    except Exception:
+        return
+    dataset = rdflib.Dataset()
+    install_resolver(IriToFileResolver(metamodel_url_map(), download=False))
+    try:
+        dataset.parse(str(model_path), format="json-ld")
+    except Exception as exc:
+        raise ArchiveError(f"{model_path.name}: model RDF parse failed: {exc}") from exc
+    imports = {str(o) for _, _, o, _ in dataset.quads((None, APP["import"], None, None))}
+    if not imports:
+        return
+    url_map = {**metamodel_url_map(), **build_url_map(dataset, model_path)}
+    install_resolver(
+        IriToFileResolver(
+            dict(sorted(url_map.items(), key=lambda x: len(x[0]), reverse=True)),
+            download=False,
+        )
+    )
+    for iri in sorted(imports):
+        try:
+            rdflib.Graph().parse(location=iri, format="json-ld")
+        except Exception as exc:
+            raise ArchiveError(
+                f"{model_path.name}: import '{iri}' does not resolve within the archive: {exc}"
+            ) from exc
 
 
 def _parse_rdf(path: Path, fmt: str) -> rdflib.Graph:
@@ -344,7 +580,7 @@ def _write_rec_snapshot(
     run.log_host_info(_host_info())
     run.log_repositories(_repositories(run_dir))
     run.log_dependencies(_dependencies())
-    _record_agents(run, schema)
+    _record_agents(run, run_dir, schema)
     _record_activities(run, schema)
     _record_files(run, run_dir, manifest, schema)
     _record_frame_log_health(run, run_dir, manifest)
@@ -363,7 +599,7 @@ def _parse_rec_time(value: str) -> datetime:
     return parsed
 
 
-def _record_agents(run, schema: dict) -> None:
+def _record_agents(run, run_dir: Path, schema: dict) -> None:
     runtime = schema.get("runtime_provenance", {})
     runtime_agent = runtime.get("runtime_agent_id") or "agent:runtime"
     runtime_type = "rt:MuJoCoRuntime" if str(runtime_agent).endswith(":mujoco") else "prov:SoftwareAgent"
@@ -379,7 +615,7 @@ def _record_agents(run, schema: dict) -> None:
         ["prov:SoftwareAgent", "obs:ObservationProvider"],
         role="archive_writer",
     )
-    for agent in _provenance_nodes(schema, "agn:ModelledAgent"):
+    for agent in _provenance_nodes(run_dir, "agn:ModelledAgent"):
         run.add_agent(
             agent.get("@id", "agent:modelled"),
             agent.get("@type", ["prov:Agent", "agn:ModelledAgent"]),
@@ -416,7 +652,7 @@ def _record_activities(run, schema: dict) -> None:
 
 
 def _record_files(run, run_dir: Path, manifest: dict, schema: dict) -> None:
-    resource_roles = {"schema", "frame_layout", "provenance", "model", "ir"}
+    resource_roles = {"schema", "frame_layout", "provenance", "dsl_provenance", "model", "ir"}
     runtime_activity = (
         schema.get("runtime_provenance", {}).get("activity_id") or "activity:controller_execution"
     )
@@ -425,7 +661,8 @@ def _record_files(run, run_dir: Path, manifest: dict, schema: dict) -> None:
         if not path.exists():
             continue
         row = {
-            "path": rel,
+            "path": str(path.resolve()),
+            "archivePath": rel,
             "role": meta.get("role"),
             "sha256": meta.get("sha256"),
             "size_bytes": _artifact_size(path),
@@ -474,11 +711,12 @@ def _artifact_size(path: Path) -> int:
 
 
 def _host_info() -> dict:
+    # The interpreter identity that matters for reproducibility is its version (python);
+    # sys.executable is just the local venv path — machine-specific and provenance-free.
     return {
         "hostname": socket.gethostname(),
         "os": platform.platform(),
         "python": sys.version,
-        "executable": sys.executable,
     }
 
 
@@ -493,14 +731,24 @@ def _dependencies() -> list[dict]:
 
 
 def _repositories(run_dir: Path) -> list[dict]:
+    """Portable repo provenance: name + commit + remote url. The local checkout path is
+    machine-specific and identifies nothing reproducible, so it is not recorded."""
     rows = []
+    seen: set[str] = set()
+
+    def _add(root: Path | None, name: str | None = None) -> None:
+        if root is None or str(root) in seen:
+            return
+        seen.add(str(root))
+        row = {"name": name or root.name, "commit": _git(root, "rev-parse", "HEAD")}
+        url = _git(root, "remote", "get-url", "origin")
+        if url:
+            row["url"] = url
+        rows.append(row)
+
     for path in (run_dir, Path(__file__).resolve()):
-        root = _git_root(path)
-        if root and str(root) not in {row.get("path") for row in rows}:
-            rows.append({"name": root.name, "path": str(root), "commit": _git(root, "rev-parse", "HEAD")})
-    rec_root = _local_rec_root()
-    if rec_root and str(rec_root) not in {row.get("path") for row in rows}:
-        rows.append({"name": "rec", "path": str(rec_root), "commit": _git(rec_root, "rev-parse", "HEAD")})
+        _add(_git_root(path))
+    _add(_local_rec_root(), name="rec")
     return rows
 
 
@@ -525,8 +773,8 @@ def _git(cwd: Path, *args: str) -> str | None:
         return None
 
 
-def _provenance_nodes(schema: dict, type_id: str) -> list[dict]:
-    path = Path(schema.get("output_dir", "")) / "provenance.jsonld"
+def _provenance_nodes(run_dir: Path, type_id: str) -> list[dict]:
+    path = run_dir / "provenance" / "codegen.jsonld"
     if not path.exists():
         return []
     try:
@@ -541,15 +789,10 @@ def _provenance_nodes(schema: dict, type_id: str) -> list[dict]:
 
 
 def _metamodels_root() -> Path:
-    for root in (Path.cwd(), *Path.cwd().parents):
-        candidate = root / "src" / "metamodels"
-        if (candidate / "prov.shacl.ttl").exists():
-            return candidate
-    for root in Path(__file__).resolve().parents:
-        candidate = root / "metamodels"
-        if (candidate / "prov.shacl.ttl").exists():
-            return candidate
-    raise ArchiveError("could not locate src/metamodels/prov.shacl.ttl")
+    root = metamodels_root()
+    if root is None or not (root / "prov.shacl.ttl").exists():
+        raise ArchiveError("could not locate metamodels/prov.shacl.ttl")
+    return root
 
 
 def _validate_prov_shacl(path: Path) -> None:

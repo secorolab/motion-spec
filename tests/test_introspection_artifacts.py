@@ -142,7 +142,13 @@ def _sample_ir() -> dict:
                         "types": ["prov:SoftwareAgent"],
                         "role": "controller_process",
                         "actedOnBehalfOf": "agent:runtime:mujoco",
-                    }
+                    },
+                    {
+                        "id": "agent:modelled:robot",
+                        "types": ["prov:Agent", "agn:ModelledAgent"],
+                        "role": "robot",
+                        "model": "src/mj_kdl_wrapper/third_party/menagerie/kinova_gen3/gen3.xml",
+                    },
                 ],
             },
         },
@@ -329,6 +335,10 @@ def test_provenance_document_is_jsonld_and_prov_shacl_conformant(tmp_path: Path)
     )
     graph = Graph().parse(path, format="json-ld")
     assert (None, None, None) in graph
+    # The robot model is recorded as a portable vendor-qualified reference (matching the
+    # mj_kdl_wrapper cache layout), never a machine-specific absolute path.
+    model_ref = next(n for n in seed["@graph"] if n.get("role") == "robot")["has-agn-model"]
+    assert model_ref == "menagerie:kinova_gen3/gen3.xml"
     shape_path = metamodels / "prov.shacl.ttl"
     conforms, _, report = pyshacl.validate(graph, shacl_graph=str(shape_path))
     assert conforms, report

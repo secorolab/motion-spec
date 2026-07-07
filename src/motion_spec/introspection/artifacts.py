@@ -27,28 +27,16 @@ TYPE_PREFIXES = {
     "https://secorolab.github.io/metamodels/observation#": "obs:",
     "https://secorolab.github.io/metamodels/runtime#": "rt:",
 }
+# JSON-LD @context references for the codegen provenance document. These are the
+# published metamodel IRIs; local resolution (offline) is the job of the installed
+# IriToFileResolver (motion_spec.manifest.metamodel_url_map), NOT an absolute
+# file:// path baked into the artifact — that would tie the archive to one machine.
 METAMODEL_CONTEXTS = [
-    ("https://secorolab.github.io/metamodels/prov.json", Path("prov.json"), True),
-    (
-        "https://secorolab.github.io/metamodels/acceptance-criteria/bdd/agent.json",
-        Path("acceptance-criteria/bdd/agent.json"),
-        True,
-    ),
-    (
-        "https://secorolab.github.io/metamodels/acceptance-criteria/bdd/bdd.json",
-        Path("acceptance-criteria/bdd/bdd.json"),
-        True,
-    ),
-    (
-        "https://secorolab.github.io/metamodels/acceptance-criteria/bdd/observation.json",
-        Path("acceptance-criteria/bdd/observation.json"),
-        True,
-    ),
-    (
-        "https://secorolab.github.io/metamodels/runtime/runtime.json",
-        Path("runtime/runtime.json"),
-        False,
-    ),
+    "https://secorolab.github.io/metamodels/prov.json",
+    "https://secorolab.github.io/metamodels/acceptance-criteria/bdd/agent.json",
+    "https://secorolab.github.io/metamodels/acceptance-criteria/bdd/bdd.json",
+    "https://secorolab.github.io/metamodels/acceptance-criteria/bdd/observation.json",
+    "https://secorolab.github.io/metamodels/runtime/runtime.json",
 ]
 TOOL_METADATA = {
     "agent:motion_spec_codegen": {
@@ -59,17 +47,9 @@ TOOL_METADATA = {
         "package": "motion-spec",
         "repository": "https://github.com/secorolab/motion-spec",
     },
-    "agent:motion_spec_dsl": {
-        "package": "motion-spec-dsl",
-        "repository": "https://github.com/secorolab/motion-spec-dsl",
-    },
     "agent:rdf_utils": {
         "package": "rdf-utils",
         "repository": "https://github.com/secorolab/rdf-utils",
-    },
-    "agent:textx": {
-        "package": "textX",
-        "repository": "https://github.com/textX/textX",
     },
     "agent:rdflib": {
         "package": "rdflib",
@@ -124,6 +104,27 @@ def _location_iri(value: str | None) -> str | None:
     return path.resolve().as_uri()
 
 
+# Vendor markers, mirroring mj_kdl_wrapper's asset cache layout (see the resolver in
+# ir_gen._resolve_existing_path / cache_path). A robot/scene model is a third-party asset
+# fetched into ~/.cache/mj_kdl_wrapper/<vendor>/..., not a file in the workspace tree, so
+# provenance records it by a portable vendor-qualified reference (menagerie:kinova_gen3/gen3.xml)
+# rather than a machine-specific absolute path that may not even exist locally.
+_VENDOR_MARKERS = (
+    ("third_party/menagerie/", "menagerie"),
+    ("src/mj_kdl_wrapper/assets/", "assets"),
+    ("src/examples/assets/", "assets"),
+)
+
+
+def _vendor_model_ref(path: str) -> str:
+    text = Path(path).as_posix()
+    for marker, vendor in _VENDOR_MARKERS:
+        pos = text.find(marker)
+        if pos != -1:
+            return f"{vendor}:{text[pos + len(marker):]}"
+    return text
+
+
 def _agent_types(types: list[str]) -> list[str]:
     result = list(types)
     has_agent = PROV_AGENT in result or "prov:Agent" in result
@@ -160,23 +161,8 @@ def _tool_properties(agent_id: str) -> dict:
     }
 
 
-def _metamodels_root() -> Path:
-    roots = []
-    for start in (Path.cwd(), Path(__file__).resolve()):
-        roots.extend([start, *start.parents])
-    for root in roots:
-        for candidate in (root / "src" / "metamodels", root / "metamodels"):
-            if (candidate / "prov.json").exists():
-                return candidate
-    raise RuntimeError("Could not locate src/metamodels for local JSON-LD context fallback.")
-
-
 def _metamodel_contexts() -> list[str]:
-    root = _metamodels_root()
-    contexts = []
-    for url, local_path, is_published in METAMODEL_CONTEXTS:
-        contexts.append(url if is_published else (root / local_path).resolve().as_uri())
-    return contexts
+    return list(METAMODEL_CONTEXTS)
 
 
 def _signal_id(value) -> str | None:
@@ -388,15 +374,17 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
         "frame_layout_version": FRAME_LAYOUT_VERSION,
         "runtime_rdf_contract_version": RUNTIME_RDF_CONTRACT_VERSION,
         "generated_by": "motion_spec.codegen",
-        "ir_path": str(ir_path),
-        "output_dir": str(output_dir),
+        # Portable basenames only — absolute build-tree paths here would leak machine
+        # paths into the archive AND make schema_hash (carried in the frame-log header)
+        # depend on where the build ran. The archive resolves these against its own dirs.
+        "ir_path": Path(ir_path).name,
         "graph": next(
             (
-                entity.get("path")
+                Path(entity["path"]).name
                 for entity in provenance.get("entities", [])
-                if entity.get("role") == "app_manifest"
+                if entity.get("role") == "app_manifest" and entity.get("path")
             ),
-            str(ir_path),
+            Path(ir_path).name,
         ),
         "context": contexts,
         "pools": pools,
@@ -634,7 +622,7 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
             agent_id,
             _agent_types(agent.get("types") or [PROV_AGENT]),
             role=agent.get("role"),
-            **({"has-agn-model": _location_iri(agent["model"])} if agent.get("model") else {}),
+            **({"has-agn-model": _vendor_model_ref(agent["model"])} if agent.get("model") else {}),
             actedOnBehalfOf=_prov_iri(agent["actedOnBehalfOf"])
             if agent.get("actedOnBehalfOf")
             else None,
@@ -647,18 +635,6 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
         [PROV_SOFTWARE_AGENT, PROV_AGENT, "obs:ObservationProvider"],
         role="code_generator",
         **_tool_properties("agent:motion_spec_codegen"),
-    )
-    add_node(
-        "agent:motion_spec_dsl",
-        [PROV_SOFTWARE_AGENT, PROV_AGENT, "obs:ObservationProvider"],
-        role="dsl_jsonld_generator",
-        **_tool_properties("agent:motion_spec_dsl"),
-    )
-    add_node(
-        "agent:textx",
-        [PROV_SOFTWARE_AGENT, PROV_AGENT],
-        role="dsl_parser",
-        **_tool_properties("agent:textx"),
     )
     add_node(
         "agent:stst",

@@ -169,6 +169,7 @@ def test_introspection_contract_carries_control_and_provenance() -> None:
     introspection = _build_introspection(
         app_model_path=Path("/tmp/app.json"),
         imported_models=["https://example.test/imported.json"],
+        imported_provenance=["/tmp/generated/provenance/dsl.jsonld"],
         id_nodes=[(parser.id(node), node) for node in graph.subjects()],
         node_by_id={parser.id(node): node for node in graph.subjects()},
         motions=[motion],
@@ -185,6 +186,11 @@ def test_introspection_contract_carries_control_and_provenance() -> None:
     assert introspection["monitors"][0]["event_uri"] == "https://example.test/events/complete"
     assert {"id": "control", "uri": "https://example.test/control"} in introspection["uris"]
     assert any(entity["role"] == "app_manifest" for entity in introspection["provenance"]["entities"])
+    assert any(
+        entity["role"] == "imported_provenance"
+        and entity["source"] == "/tmp/generated/provenance/dsl.jsonld"
+        for entity in introspection["provenance"]["entities"]
+    )
     assert any(
         activity["wasAssociatedWith"] == "agent:motion_spec_ir_gen"
         for activity in introspection["provenance"]["activities"]

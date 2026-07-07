@@ -11,7 +11,7 @@ from rdf_utils.resolver import IriToFileResolver, install_resolver
 
 from rdflib.namespace import RDF
 
-from motion_spec.manifest import build_url_map
+from motion_spec.manifest import build_url_map, metamodel_url_map
 from motion_spec.namespace import APP, CSTR_HDL
 
 SUPPORTED_CONTROL_MODES = {"JointTorque"}
@@ -54,8 +54,16 @@ Examples:
         """Return first object for subject+predicate across all named graphs."""
         return next((o for _, _, o, _ in g.quads((subject, predicate, None, None))), None)
 
-    url_map = build_url_map(g, app_model_path)
-    install_resolver(IriToFileResolver(dict(sorted(url_map.items(), key=lambda x: len(x[0]), reverse=True))))
+    # Metamodel/ontology prefixes resolve through the shared local checkout; the
+    # model's own iri-map only declares where its imported graphs live. Merge both
+    # (longest prefix first) so neither metamodels nor imports reach the network.
+    url_map = {**metamodel_url_map(), **build_url_map(g, app_model_path)}
+    install_resolver(
+        IriToFileResolver(
+            dict(sorted(url_map.items(), key=lambda x: len(x[0]), reverse=True)),
+            download=False,
+        )
+    )
 
     # Load/import the referenced models
     models = _quad_objects(APP["import"])

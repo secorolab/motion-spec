@@ -3184,6 +3184,7 @@ def _build_introspection(
     *,
     app_model_path,
     imported_models,
+    imported_provenance,
     id_nodes,
     node_by_id,
     motions,
@@ -3319,6 +3320,15 @@ def _build_introspection(
         }
         for idx, source in enumerate(imported_models)
     )
+    entities.extend(
+        {
+            "id": f"entity:imported_provenance:{idx}",
+            "types": ["prov:Entity"],
+            "role": "imported_provenance",
+            "source": source,
+        }
+        for idx, source in enumerate(imported_provenance)
+    )
 
     agents = [
         {
@@ -3382,33 +3392,15 @@ def _build_introspection(
         "quantities": _dedupe_dicts(quantities),
         "signals": _dedupe_dicts(signals),
         "provenance": {
+            # Only id/uri are consumed; the canonical uri is the published IRI, which
+            # the rdf-utils resolver maps to a local checkout. No local source/shape
+            # paths are baked in — they were dead metadata and non-portable.
             "contexts": [
-                {
-                    "id": "prov",
-                    "uri": "http://www.w3.org/ns/prov#",
-                    "source": "src/metamodels/prov.json",
-                    "shape": "src/metamodels/prov.shacl.ttl",
-                },
-                {
-                    "id": "bdd",
-                    "uri": "https://secorolab.github.io/metamodels/acceptance-criteria/bdd#",
-                    "source": "src/metamodels/acceptance-criteria/bdd/bdd.json",
-                },
-                {
-                    "id": "agent",
-                    "uri": "https://secorolab.github.io/metamodels/agent#",
-                    "source": "src/metamodels/acceptance-criteria/bdd/agent.json",
-                },
-                {
-                    "id": "observation",
-                    "uri": "https://secorolab.github.io/metamodels/observation#",
-                    "source": "src/metamodels/acceptance-criteria/bdd/observation.json",
-                },
-                {
-                    "id": "runtime",
-                    "uri": str(RT.Runtime),
-                    "source": "src/metamodels/runtime/runtime.json",
-                },
+                {"id": "prov", "uri": "http://www.w3.org/ns/prov#"},
+                {"id": "bdd", "uri": "https://secorolab.github.io/metamodels/acceptance-criteria/bdd#"},
+                {"id": "agent", "uri": "https://secorolab.github.io/metamodels/agent#"},
+                {"id": "observation", "uri": "https://secorolab.github.io/metamodels/observation#"},
+                {"id": "runtime", "uri": str(RT.Runtime)},
             ],
             "entities": entities,
             "activities": [
@@ -3432,6 +3424,17 @@ def _build_introspection(
     }
 
 
+def _is_dsl_provenance_import(location: str) -> bool:
+    return location.rstrip("/").endswith("/provenance/dsl.jsonld")
+
+
+def _resolve_import_location(location: str, url_map: dict[str, str]) -> str:
+    for base, root in sorted(url_map.items(), key=lambda item: len(item[0]), reverse=True):
+        if location.startswith(base):
+            return str((Path(root) / location[len(base) :]).resolve())
+    return location
+
+
 def generate_ir(manifest_path):
     app_model_path = Path(manifest_path).resolve()
 
@@ -3445,8 +3448,15 @@ def generate_ir(manifest_path):
     install_resolver(IriToFileResolver({**metamodel_url_map(), **url_map}, download=False))
 
     # Load/import the referenced models
-    imported_models = list(dict.fromkeys(str(model) for model in g.objects(predicate=APP["import"])))
-    for model in imported_models:
+    imported_files = list(dict.fromkeys(str(model) for model in g.objects(predicate=APP["import"])))
+    imported_provenance = [
+        _resolve_import_location(item, url_map)
+        for item in imported_files
+        if _is_dsl_provenance_import(item)
+    ]
+    imported_model_locations = [item for item in imported_files if not _is_dsl_provenance_import(item)]
+    imported_models = [_resolve_import_location(item, url_map) for item in imported_model_locations]
+    for model in imported_model_locations:
         g.parse(location=model, format="json-ld")
 
     p = Parser(g)
@@ -3694,6 +3704,7 @@ def generate_ir(manifest_path):
     introspection = _build_introspection(
         app_model_path=app_model_path,
         imported_models=imported_models,
+        imported_provenance=imported_provenance,
         id_nodes=id_nodes,
         node_by_id=node_by_id,
         motions=motions,

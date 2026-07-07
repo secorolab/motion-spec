@@ -7,17 +7,15 @@ from motion_spec.namespace import APP
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 METAMODELS_URL = "https://secorolab.github.io/metamodels/"
+COMP_ROB2B_URL = "https://comp-rob2b.github.io/metamodels/"
 
 
-def metamodel_url_map():
+def metamodels_root() -> Path | None:
+    """Locate the local secorolab metamodels checkout (honours METAMODELS_PATH)."""
+    import os
+
     roots = []
-    env_path = None
-    try:
-        import os
-
-        env_path = os.environ.get("METAMODELS_PATH")
-    except Exception:
-        env_path = None
+    env_path = os.environ.get("METAMODELS_PATH")
     if env_path:
         roots.append(Path(env_path))
     for start in (PACKAGE_ROOT, Path.cwd()):
@@ -25,8 +23,25 @@ def metamodel_url_map():
     for root in roots:
         for candidate in (root / "src" / "metamodels", root / "metamodels"):
             if (candidate / "prov.json").exists():
-                return {METAMODELS_URL: str(candidate)}
-    return {}
+                return candidate
+    return None
+
+
+def metamodel_url_map():
+    """Map the metamodel IRI prefixes to their local checkouts for the resolver.
+
+    This is the single source of truth for offline metamodel/ontology resolution;
+    callers merge it with a model's own ``build_url_map`` before parsing so that
+    neither the metamodel nor the model imports ever hit the network.
+    """
+    root = metamodels_root()
+    if root is None:
+        return {}
+    url_map = {METAMODELS_URL: str(root)}
+    comp_rob2b = root.parent / "comp-rob2b" / "metamodels"
+    if comp_rob2b.exists():
+        url_map[COMP_ROB2B_URL] = str(comp_rob2b)
+    return url_map
 
 
 def build_url_map(g, manifest_path):

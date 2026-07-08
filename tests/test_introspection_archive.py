@@ -11,6 +11,7 @@ from motion_spec.introspection.archive import (
     ArchiveError,
     create_archive_manifest,
     sha256_file,
+    _validate_runtime_shacl,
     verify_manifest,
 )
 from motion_spec.introspection.artifacts import prov_uri
@@ -241,6 +242,18 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
     assert metrics["frame_log_complete"] == 1
 
 
+def test_archive_includes_optional_mcap_frame_log(tmp_path: Path) -> None:
+    source = _source_tree(tmp_path / "source")
+    (source / "frame_log.mcap").write_bytes(b"mcap")
+    run_dir = tmp_path / "copied-run"
+
+    manifest = create_archive_manifest(run_dir, source_dir=source, run_id="run-test")
+
+    assert manifest["files"]["frame_log_mcap"] == "logs/frame_log.mcap"
+    assert manifest["artifacts"]["logs/frame_log.mcap"]["role"] == "frame_log_mcap"
+    assert (run_dir / "logs" / "frame_log.mcap").read_bytes() == b"mcap"
+
+
 def _importing_manifest() -> dict:
     return {
         "@context": {
@@ -372,3 +385,27 @@ def test_manifest_rejects_incomplete_stream_descriptor(tmp_path: Path) -> None:
 
     with pytest.raises(ArchiveError, match="missing kind"):
         verify_manifest(run_dir)
+
+
+def test_runtime_shacl_rejects_unanchored_occurrence(tmp_path: Path) -> None:
+    path = tmp_path / "runtime.ttl"
+    path.write_text(
+        """
+@prefix msrun: <https://secorolab.github.io/motion-spec/runtime/> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+<run> a <https://secorolab.github.io/metamodels/runtime#Runtime> ;
+    msrun:contractVersion 1 ;
+    msrun:frameCount 1 ;
+    msrun:runId "run-test" ;
+    prov:wasGeneratedBy <activity> .
+
+<event> a msrun:EventOccurrence ;
+    msrun:event <https://example.test/E_DONE> ;
+    msrun:slotIndex 0 .
+""".lstrip()
+    )
+
+    with pytest.raises(ArchiveError, match="runtime SHACL validation failed"):
+        _validate_runtime_shacl(path)

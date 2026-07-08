@@ -394,6 +394,11 @@ find_package(mj_kdl_wrapper 0.2.2 REQUIRED CONFIG)
 find_package(Threads REQUIRED)
 
 option(MOTION_SPEC_ENABLE_INTROSPECTION "Enable generated runtime introspection logging" OFF)
+set(MOTION_SPEC_MCAP_INCLUDE_DIR "" CACHE PATH "Path to vendored mcap headers (default: motion-spec/thirdparty/mcap/include)")
+if(NOT MOTION_SPEC_MCAP_INCLUDE_DIR)
+    get_filename_component(_motion_spec_workspace_src "${CMAKE_CURRENT_SOURCE_DIR}/../../../.." ABSOLUTE)
+    set(MOTION_SPEC_MCAP_INCLUDE_DIR "${_motion_spec_workspace_src}/motion-spec/thirdparty/mcap/include")
+endif()
 
 add_executable(main
     ref_main.cpp
@@ -414,6 +419,10 @@ target_link_libraries(main PRIVATE
 <endif>
 )
 if(MOTION_SPEC_ENABLE_INTROSPECTION)
+    if(NOT EXISTS "${MOTION_SPEC_MCAP_INCLUDE_DIR}/mcap/writer.hpp")
+        message(FATAL_ERROR "Vendored MCAP C++ headers not found at ${MOTION_SPEC_MCAP_INCLUDE_DIR}/mcap/writer.hpp. Expected motion-spec/thirdparty/mcap/include; set MOTION_SPEC_MCAP_INCLUDE_DIR to override.")
+    endif()
+    target_include_directories(main PRIVATE ${MOTION_SPEC_MCAP_INCLUDE_DIR})
     target_compile_definitions(main PRIVATE MOTION_SPEC_ENABLE_INTROSPECTION)
     target_link_libraries(main PRIVATE Threads::Threads)
 endif()

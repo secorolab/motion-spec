@@ -9,7 +9,7 @@ import re
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-from motion_spec.introspection.frame_layout_spec import fields_with_offsets
+from motion_spec.introspection.frame_layout_spec import fields_with_offsets, frame_json_schema
 
 SCHEMA_VERSION = 1
 FRAME_LAYOUT_VERSION = 1
@@ -717,6 +717,7 @@ def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path, 
             "runtime_agent_id": schema["runtime_provenance"].get("runtime_agent_id") or "",
             "end_state": end_state if end_state is not None else -1,
             "nominal_period_ns": schema.get("control_period_ns") or 0,
+            "frame_json_schema": json.dumps(frame_json_schema(), separators=(",", ":")),
         },
         "model": build_introspection_model(schema, ir),
     }

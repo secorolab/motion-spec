@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import time
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -57,9 +58,7 @@ def _condition_map(run_dir: Path, manifest: dict) -> dict[str, rdflib.URIRef]:
 
 
 def _bind_model_subnamespaces(g: rdflib.Graph, model_base: str | None) -> None:
-    """Bind a prefix for each `<model_base><segment>/` namespace actually referenced (fsm,
-    handler-*, ...), so handler-scoped controller/monitor IRIs collapse to CURIEs instead of
-    staying full because of the '/' in their local name."""
+    """Bind prefixes deep enough that referenced model IRIs serialize as CURIEs."""
     if not model_base:
         return
     for term in g.all_nodes():
@@ -70,8 +69,11 @@ def _bind_model_subnamespaces(g: rdflib.Graph, model_base: str | None) -> None:
             continue
         rest = text[len(model_base):]
         if "/" in rest:
-            seg = rest.split("/", 1)[0]
-            g.bind(seg, rdflib.Namespace(model_base + seg + "/"))
+            segments = rest.rsplit("/", 1)[0].split("/")
+            prefix = "mfsm" if segments == ["fsm"] else re.sub(r"[^A-Za-z0-9_-]+", "-", "-".join(segments))
+            if prefix and not prefix[0].isalpha():
+                prefix = f"m-{prefix}"
+            g.bind(prefix, rdflib.Namespace(model_base + "/".join(segments) + "/"))
 
 
 def _archive_location(rel: str) -> rdflib.URIRef:
@@ -301,7 +303,10 @@ def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int
         "obs": OBS,
         "rt": RT,
         "msrun": MSRUN,
-        "msprov": rdflib.Namespace(MSPROV),
+        "ent": rdflib.Namespace(f"{MSRUN}entity/"),
+        "run": rdflib.Namespace(f"{MSRUN}run/"),
+        "mspact": rdflib.Namespace(f"{MSPROV}activity/"),
+        "mspagent": rdflib.Namespace(f"{MSPROV}agent/"),
     }.items():
         g.bind(prefix, ns)
     # Compact the per-run node families and model FSM nodes into CURIEs by binding a prefix at
@@ -318,7 +323,7 @@ def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int
     model_base = _model_base(schema)
     if model_base:
         g.bind("model", rdflib.Namespace(model_base))
-        g.bind("fsm", rdflib.Namespace(model_base + "fsm/"))
+        g.bind("mfsm", rdflib.Namespace(model_base + "fsm/"))
 
     run = _node(f"run:{manifest['run_id']}")
     # Agents and the execution activity are shared provenance concepts: emit the same

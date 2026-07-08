@@ -208,6 +208,29 @@ def test_schema_and_frame_layout_are_consistent(tmp_path: Path) -> None:
     assert layout["pools"] == schema["pools"]
 
 
+def test_frame_json_schema_matches_decoded_record() -> None:
+    """The mcap JSON Schema must accept what replay.to_record() produces, since the
+    generated C++ writer mirrors that shape. Guards the two against drift."""
+    import jsonschema
+
+    from motion_spec.introspection.frame_layout_spec import (
+        field_names_and_format,
+        frame_json_schema,
+    )
+    from motion_spec.introspection.replay import to_record
+
+    schema = frame_json_schema()
+    jsonschema.Draft202012Validator.check_schema(schema)
+
+    pools = {"constraints": 2, "monitors": 1, "quantities": 3, "triggers": 2}
+    _fmt, names = field_names_and_format(pools)
+    flat = dict.fromkeys(names, 0)
+    flat["trigger_count"] = 5  # exercise the rolling trigger window
+    record = to_record(flat, pools["constraints"], pools["monitors"], pools["quantities"], pools["triggers"])
+    record["quantities"][0] = None  # non-finite doubles serialize to null
+    jsonschema.validate(record, schema)
+
+
 def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch) -> None:
     ir = _sample_ir()
     ir.update(

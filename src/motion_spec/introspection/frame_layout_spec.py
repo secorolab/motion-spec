@@ -66,3 +66,46 @@ def frame_struct(pools: dict) -> tuple[struct.Struct, list[str]]:
     fmt, names = field_names_and_format(pools)
     return struct.Struct(fmt), names
 
+
+def _json_type(code: str):
+    # Doubles may be non-finite; the writer emits null for those, so allow it.
+    return ["number", "null"] if code == "d" else "integer"
+
+
+def _slot_schema(fields: list[tuple[str, str]]) -> dict:
+    return {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {name: {"type": _json_type(code)} for name, code in fields},
+            "required": [name for name, _ in fields],
+        },
+    }
+
+
+def frame_json_schema() -> dict:
+    """JSON Schema for the nested per-frame record emitted to the .mcap log.
+
+    Mirrors ``replay.to_record()`` so a decoded mcap message equals the decoded
+    ``.bin`` frame. Pool-size independent (repeated arrays, not fixed slots)."""
+    top = {
+        name: {"type": _json_type(code)}
+        for name, code in HEADER
+        if name not in ("seq", "wall_ns", "period_ns", "compute_ns")
+    }
+    top["timing"] = {
+        "type": "object",
+        "properties": {k: {"type": "integer"} for k in ("wall_ns", "period_ns", "compute_ns")},
+        "required": ["wall_ns", "period_ns", "compute_ns"],
+    }
+    top["constraints"] = _slot_schema(CSLOT)
+    top["monitors"] = _slot_schema(MSLOT)
+    top["quantities"] = {"type": "array", "items": {"type": ["number", "null"]}}
+    top["triggers"] = _slot_schema(TSLOT)
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "motion_spec.introspection.Frame",
+        "type": "object",
+        "properties": top,
+    }
+

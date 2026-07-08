@@ -32,6 +32,7 @@ HASHED_ARTIFACTS = {
     "dsl_provenance": "provenance/dsl.jsonld",
     "runtime": "runtime/runtime.ttl",
     "frame_log": "logs/frame_log.bin",
+    "frame_log_mcap": "logs/frame_log.mcap",
     "frame_log_health": "logs/frame_log.bin.health.json",
     "model": "model/model.jsonld",
     "ir": "model/ir.json",
@@ -77,6 +78,10 @@ def hash_tree(path: Path) -> str:
 def _copy_file(src: Path, dst: Path) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
+
+
+def _mcap_path_for_frame_log(path: Path) -> Path:
+    return path.with_suffix(".mcap") if path.suffix == ".bin" else Path(f"{path}.mcap")
 
 
 def _manifest_imports(manifest_path: Path) -> list[str]:
@@ -219,12 +224,18 @@ def create_archive_manifest(
         "provenance/dsl.jsonld": "provenance/dsl.jsonld",
     }
     if frame_log and Path(frame_log).exists():
-        copies[str(Path(frame_log).resolve())] = "logs/frame_log.bin"
-        health = Path(str(frame_log) + ".health.json")
+        frame_log_path = Path(frame_log)
+        copies[str(frame_log_path.resolve())] = "logs/frame_log.bin"
+        mcap = _mcap_path_for_frame_log(frame_log_path)
+        if mcap.exists():
+            copies[str(mcap.resolve())] = "logs/frame_log.mcap"
+        health = Path(str(frame_log_path) + ".health.json")
         if health.exists():
             copies[str(health.resolve())] = "logs/frame_log.bin.health.json"
     elif (source_dir / "frame_log.bin").exists():
         copies["frame_log.bin"] = "logs/frame_log.bin"
+        if (source_dir / "frame_log.mcap").exists():
+            copies["frame_log.mcap"] = "logs/frame_log.mcap"
         if (source_dir / "frame_log.bin.health.json").exists():
             copies["frame_log.bin.health.json"] = "logs/frame_log.bin.health.json"
     schema = json.loads((source_dir / "schema.json").read_text())
@@ -350,6 +361,9 @@ def create_archive_manifest(
             ),
             "runtime_ttl": "runtime/runtime.ttl",
             "frame_log": "logs/frame_log.bin",
+            "frame_log_mcap": (
+                "logs/frame_log.mcap" if (run_dir / "logs" / "frame_log.mcap").exists() else None
+            ),
             "frame_log_health": "logs/frame_log.bin.health.json",
             "model": "model/model.jsonld",
             "model_imports": model_imports or None,
@@ -448,6 +462,7 @@ def verify_manifest(run_dir_or_manifest: Path | str) -> dict:
     if runtime_rel and (run_dir / runtime_rel).exists():
         runtime_graph = _parse_rdf(run_dir / runtime_rel, "turtle")
         _require_runtime_provenance(runtime_graph, "runtime.ttl")
+        _validate_runtime_shacl(run_dir / runtime_rel)
     rec_rel = manifest.get("files", {}).get("rec")
     if rec_rel and (run_dir / rec_rel).exists():
         rec_graph = _parse_rdf(run_dir / rec_rel, "json-ld")
@@ -824,6 +839,22 @@ def _validate_rec_shacl(path: Path) -> None:
     )
     if not conforms:
         raise ArchiveError(f"{path.name}: REC SHACL validation failed: {text}")
+
+
+def _validate_runtime_shacl(path: Path) -> None:
+    root = _metamodels_root()
+    shape = root / "motion-spec" / "runtime.shacl.ttl"
+    if not shape.exists():
+        raise ArchiveError(f"{shape}: missing runtime SHACL shape")
+    conforms, _graph, text = validate(
+        data_graph=str(path),
+        shacl_graph=str(shape),
+        data_graph_format="turtle",
+        shacl_graph_format="turtle",
+        inference="rdfs",
+    )
+    if not conforms:
+        raise ArchiveError(f"{path.name}: runtime SHACL validation failed: {text}")
 
 
 def main(argv: list[str] | None = None) -> int:

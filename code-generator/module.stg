@@ -1400,6 +1400,7 @@ inline constexpr const char *kRuntimeProducerAgentId = "<introspection_artifacts
 inline constexpr const char *kRuntimeAgentId = "<introspection_artifacts.frame_layout.runtime_agent_id>";
 inline constexpr std::int64_t kEndState = <introspection_artifacts.frame_layout.end_state>;
 inline constexpr std::int64_t kNominalPeriodNs = <introspection_artifacts.frame_layout.nominal_period_ns>;
+inline constexpr const char *kFrameJsonSchema = R"JSON(<introspection_artifacts.frame_layout.frame_json_schema>)JSON";
 
 } // namespace motion_spec::introspection
 >>
@@ -1412,6 +1413,7 @@ introspection_runtime_header() ::= <<
 
 #include \<atomic\>
 #include \<chrono\>
+#include \<cmath\>
 #include \<cstddef\>
 #include \<cstdint\>
 #include \<cstdio\>
@@ -1424,6 +1426,15 @@ introspection_runtime_header() ::= <<
 #include \<unistd.h\>
 #include \<sys/mman.h\>
 #include \<vector\>
+
+#ifndef MCAP_COMPRESSION_NO_LZ4
+#define MCAP_COMPRESSION_NO_LZ4
+#endif
+#ifndef MCAP_COMPRESSION_NO_ZSTD
+#define MCAP_COMPRESSION_NO_ZSTD
+#endif
+#define MCAP_IMPLEMENTATION
+#include \<mcap/writer.hpp\>
 
 namespace motion_spec::introspection {
 
@@ -1507,6 +1518,38 @@ inline void copy_cstr(char *dst, std::size_t size, const char *src) {
     std::snprintf(dst, size, "%s", src ? src : "");
 }
 
+inline std::string mcap_path_for_log(const std::string &path) {
+    const std::string suffix = ".bin";
+    if (path.size() >= suffix.size() && path.compare(path.size() - suffix.size(), suffix.size(), suffix) == 0) {
+        return path.substr(0, path.size() - suffix.size()) + ".mcap";
+    \}
+    return path + ".mcap";
+}
+
+// JSON value emitters for the .mcap message payload. Doubles round-trip at %.17g;
+// non-finite doubles become null (JSON has no NaN/Inf).
+inline void json_double(std::string &out, double v) {
+    if (std::isfinite(v)) {
+        char b[32];
+        std::snprintf(b, sizeof(b), "%.17g", v);
+        out += b;
+    \} else {
+        out += "null";
+    \}
+}
+
+inline void json_i64(std::string &out, std::int64_t v) {
+    char b[24];
+    std::snprintf(b, sizeof(b), "%lld", static_cast\<long long\>(v));
+    out += b;
+}
+
+inline void json_u64(std::string &out, std::uint64_t v) {
+    char b[24];
+    std::snprintf(b, sizeof(b), "%llu", static_cast\<unsigned long long\>(v));
+    out += b;
+}
+
 class LatestFramePublisher {
 public:
     explicit LatestFramePublisher(const std::string &name) {
@@ -1567,6 +1610,7 @@ public:
         copy_cstr(header.producer_agent_id, sizeof(header.producer_agent_id), producer_agent_id);
         copy_cstr(header.activity_id, sizeof(header.activity_id), activity_id);
         std::fwrite(&header, sizeof(header), 1, file_);
+        open_mcap(mcap_path_for_log(path), producer_agent_id, activity_id);
         running_.store(true, std::memory_order_relaxed);
         writer_ = std::thread(&FrameLogger::run, this);
     \}
@@ -1579,12 +1623,16 @@ public:
             return;
         \}
         if (writer_.joinable()) writer_.join();
-        write_health();
         if (file_) {
             std::fflush(file_);
             std::fclose(file_);
             file_ = nullptr;
         \}
+        if (mcap_open_) {
+            mcap_writer_.close();
+            mcap_open_ = false;
+        \}
+        write_health();
     \}
 
     void push(const Frame &frame) {
@@ -1614,12 +1662,126 @@ private:
         std::uint64_t tail = tail_.load(std::memory_order_relaxed);
         if (tail == head || !file_) return false;
         while (tail != head) {
-            std::fwrite(&ring_[tail & mask_], sizeof(Frame), 1, file_);
+            const Frame &frame = ring_[tail & mask_];
+            std::fwrite(&frame, sizeof(Frame), 1, file_);
+            write_mcap(frame);
             ++tail;
             ++written_;
         \}
         tail_.store(tail, std::memory_order_release);
         return true;
+    \}
+
+    void open_mcap(const std::string &path, const char *producer_agent_id, const char *activity_id) {
+        mcap::McapWriterOptions options("");
+        // lz4/zstd are compiled out (see MCAP_COMPRESSION_NO_*); the default is Zstd,
+        // so chunks must be written uncompressed. Chunking/index stay on for a seekable file.
+        options.compression = mcap::Compression::None;
+        const auto status = mcap_writer_.open(path, options);
+        if (!status.ok()) {
+            ++mcap_errors_;
+            return;
+        \}
+
+        mcap_schema_ = mcap::Schema("motion_spec.introspection.Frame", "jsonschema", kFrameJsonSchema);
+        mcap_writer_.addSchema(mcap_schema_);
+        mcap_channel_ = mcap::Channel(
+            "/motion_spec/frame",
+            "json",
+            mcap_schema_.id,
+            {
+                {"schema_hash", kSchemaHash},
+                {"frame_layout_hash", kFrameLayoutHash},
+                {"producer_agent_id", producer_agent_id ? producer_agent_id : ""},
+                {"activity_id", activity_id ? activity_id : ""},
+            \});
+        mcap_writer_.addChannel(mcap_channel_);
+        mcap_open_ = true;
+    \}
+
+    // Serialize one frame to the nested JSON record replay.to_record() produces, so a
+    // decoded mcap message is byte-for-byte comparable to the decoded .bin frame.
+    void encode_frame_json(const Frame &frame) {
+        std::string &j = json_;
+        j.clear();
+        j += "{\"t\":";                    json_double(j, frame.t);
+        j += ",\"step\":";                 json_u64(j, frame.step);
+        j += ",\"fsm_state\":";            json_i64(j, frame.fsm_state);
+        j += ",\"active_motion\":";        json_i64(j, frame.active_motion);
+        j += ",\"last_event\":";           json_i64(j, frame.last_event);
+        j += ",\"state_since_t\":";        json_double(j, frame.state_since_t);
+        j += ",\"state_since_wall_ns\":";  json_i64(j, frame.state_since_wall_ns);
+        j += ",\"event_t\":";              json_double(j, frame.event_t);
+        j += ",\"event_wall_ns\":";        json_i64(j, frame.event_wall_ns);
+        j += ",\"timing\":{\"wall_ns\":";  json_i64(j, frame.wall_ns);
+        j += ",\"period_ns\":";            json_i64(j, frame.period_ns);
+        j += ",\"compute_ns\":";           json_i64(j, frame.compute_ns);
+        j += "\},\"constraints\":[";
+        for (std::size_t i = 0; i \< kNumConstraints; ++i) {
+            if (i) j += ',';
+            const ConstraintSlot &c = frame.constraints[i];
+            j += "{\"active\":";     json_i64(j, c.active);
+            j += ",\"error\":";      json_double(j, c.error);
+            j += ",\"output\":";     json_double(j, c.output);
+            j += ",\"satisfied\":";  json_i64(j, c.satisfied);
+            j += ",\"sat_t\":";      json_double(j, c.sat_t);
+            j += ",\"measured\":";   json_double(j, c.measured);
+            j += ",\"setpoint\":";   json_double(j, c.setpoint);
+            j += '\}';
+        \}
+        j += "],\"monitors\":[";
+        for (std::size_t i = 0; i \< kNumMonitors; ++i) {
+            if (i) j += ',';
+            const MonitorSlot &m = frame.monitors[i];
+            j += "{\"active\":";     json_i64(j, m.active);
+            j += ",\"value\":";      json_double(j, m.value);
+            j += ",\"satisfied\":";  json_i64(j, m.satisfied);
+            j += ",\"sat_t\":";      json_double(j, m.sat_t);
+            j += '\}';
+        \}
+        j += "],\"quantities\":[";
+        for (std::size_t i = 0; i \< kNumQuantities; ++i) {
+            if (i) j += ',';
+            json_double(j, frame.quantities[i]);
+        \}
+        j += "],\"triggers\":[";
+        if (kNumTriggers \> 0) {
+            const std::int64_t nt = static_cast\<std::int64_t\>(kNumTriggers);
+            const std::int64_t tc = frame.trigger_count;
+            const std::int64_t start = tc \> nt ? tc - nt : 0;
+            bool first = true;
+            for (std::int64_t idx = start; idx \< tc; ++idx) {
+                if (!first) j += ',';
+                first = false;
+                const Trigger &tg = frame.triggers[idx % nt];
+                j += "{\"kind\":";       json_i64(j, tg.kind);
+                j += ",\"idx\":";        json_i64(j, tg.idx);
+                j += ",\"fsm_state\":";  json_i64(j, tg.fsm_state);
+                j += ",\"t\":";          json_double(j, tg.t);
+                j += ",\"wall_ns\":";    json_i64(j, tg.wall_ns);
+                j += '\}';
+            \}
+        \}
+        j += "]\}";
+    \}
+
+    void write_mcap(const Frame &frame) {
+        if (!mcap_open_) return;
+        encode_frame_json(frame);
+        mcap::Message msg{};
+        msg.channelId = mcap_channel_.id;
+        msg.sequence = static_cast\<std::uint32_t\>(frame.step & 0xffffffffu);
+        const auto timestamp = static_cast\<mcap::Timestamp\>(frame.wall_ns > 0 ? frame.wall_ns : wall_time_ns());
+        msg.logTime = timestamp;
+        msg.publishTime = timestamp;
+        msg.data = reinterpret_cast\<const std::byte *\>(json_.data());
+        msg.dataSize = json_.size();
+        const auto status = mcap_writer_.write(msg);
+        if (status.ok()) {
+            ++mcap_written_;
+        \} else {
+            ++mcap_errors_;
+        \}
     \}
 
     void write_health() {
@@ -1634,14 +1796,18 @@ private:
             "  \"attempted_frames\": %llu,\n"
             "  \"accepted_frames\": %llu,\n"
             "  \"written_frames\": %llu,\n"
+            "  \"mcap_written_frames\": %llu,\n"
+            "  \"mcap_write_errors\": %llu,\n"
             "  \"dropped_frames\": %llu,\n"
             "  \"complete\": %s\n"
             "}\n",
             static_cast\<unsigned long long\>(attempted),
             static_cast\<unsigned long long\>(accepted),
             static_cast\<unsigned long long\>(written_),
+            static_cast\<unsigned long long\>(mcap_written_),
+            static_cast\<unsigned long long\>(mcap_errors_),
             static_cast\<unsigned long long\>(dropped),
-            (dropped == 0 && accepted == written_) ? "true" : "false");
+            (dropped == 0 && accepted == written_ && mcap_errors_ == 0) ? "true" : "false");
         std::fclose(health);
     \}
 
@@ -1649,6 +1815,11 @@ private:
     std::uint64_t mask_ = 0;
     std::string health_path_;
     std::FILE *file_ = nullptr;
+    mcap::McapWriter mcap_writer_;
+    mcap::Schema mcap_schema_;
+    mcap::Channel mcap_channel_;
+    std::string json_;
+    bool mcap_open_ = false;
     std::thread writer_;
     std::atomic\<bool\> running_{false};
     std::atomic\<std::uint64_t\> head_{0};
@@ -1657,6 +1828,8 @@ private:
     std::atomic\<std::uint64_t\> accepted_{0};
     std::atomic\<std::uint64_t\> dropped_{0};
     std::uint64_t written_ = 0;
+    std::uint64_t mcap_written_ = 0;
+    std::uint64_t mcap_errors_ = 0;
 };
 
 class RunPublisher {

@@ -299,8 +299,8 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
     )
     ir["introspection"]["quantities"].extend(
         [
-            {"id": "pose_ee", "type": "Pose"},
-            {"id": "twist_ee", "type": "VelocityTwist"},
+            {"id": "pose_ee", "type": "Pose", "reference_frame": "world"},
+            {"id": "twist_ee", "type": "VelocityTwist", "reference_frame": "base"},
             {"id": "wrench_ee", "type": "Wrench"},
             {"id": "wrench_force", "type": "Quantity"},
             {"id": "wrench_force_x", "type": "Quantity"},
@@ -347,6 +347,23 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
     assert controller["measured_expr"] == "shared.measured_x"
     assert controller["setpoint_expr"] == "shared.setpoint_x"
 
+    # Spatial channels: pose (well-known PoseInFrame) + twist/wrench (custom), one per data
+    # object, with the object's reference frame threaded through as frame_id (never faked).
+    fl = payload["introspection_artifacts"]["frame_layout"]
+    model = payload["introspection_artifacts"]["model"]
+    assert (schema["pools"]["poses"], schema["pools"]["twists"], schema["pools"]["wrenches"]) == (1, 1, 1)
+    assert schema["spatial"]["poses"][0]["topic"] == "/motion_spec/pose/pose_ee"
+    assert schema["spatial"]["poses"][0]["frame_id"] == "world"
+    assert schema["spatial"]["twists"][0]["frame_id"] == "base"
+    assert schema["spatial"]["wrenches"][0]["frame_id"] == ""  # no reference frame -> empty, not faked
+    assert fl["poses"][0]["topic"] == "/motion_spec/pose/pose_ee"
+    assert {"index": 0, "expr": "shared.pose_ee"} in model["poses"]
+    assert {"index": 0, "expr": "shared.twist_ee"} in model["twists"]
+    assert {"index": 0, "expr": "shared.wrench_ee"} in model["wrenches"]
+    assert '"title":"foxglove.PoseInFrame"' in fl["pose_schema"]
+    assert '"title":"motion_spec.TwistInFrame"' in fl["twist_schema"]
+    assert '"title":"motion_spec.WrenchInFrame"' in fl["wrench_schema"]
+
 
 def test_provenance_document_is_jsonld_and_prov_shacl_conformant(tmp_path: Path) -> None:
     pyshacl = __import__("pyshacl")
@@ -369,3 +386,52 @@ def test_provenance_document_is_jsonld_and_prov_shacl_conformant(tmp_path: Path)
     shape_path = metamodels / "prov.shacl.ttl"
     conforms, _, report = pyshacl.validate(graph, shacl_graph=str(shape_path))
     assert conforms, report
+
+
+def test_spatial_channel_messages_conform_to_schemas() -> None:
+    """The pose/twist/wrench messages the generated writer emits validate against their
+    (well-known + authored) schemas — guards the schema authoring vs the C++ message shape."""
+    import jsonschema
+
+    from motion_spec.introspection.artifacts import SCHEMAS_DIR
+
+    ts = {"sec": 1, "nsec": 2}
+    cases = [
+        (
+            "PoseInFrame",
+            {
+                "timestamp": ts,
+                "frame_id": "world",
+                "pose": {
+                    "position": {"x": 1.0, "y": 2.0, "z": 3.0},
+                    "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+                },
+            },
+        ),
+        (
+            "TwistInFrame",
+            {
+                "timestamp": ts,
+                "frame_id": "base",
+                "twist": {
+                    "linear": {"x": 1.0, "y": 0.0, "z": 0.0},
+                    "angular": {"x": 0.0, "y": 0.0, "z": 1.0},
+                },
+            },
+        ),
+        (
+            "WrenchInFrame",
+            {
+                "timestamp": ts,
+                "frame_id": "ee",
+                "wrench": {
+                    "force": {"x": 1.0, "y": 0.0, "z": 0.0},
+                    "torque": {"x": 0.0, "y": 0.0, "z": 1.0},
+                },
+            },
+        ),
+    ]
+    for name, message in cases:
+        schema = json.loads((SCHEMAS_DIR / f"{name}.json").read_text())
+        jsonschema.Draft202012Validator.check_schema(schema)
+        jsonschema.validate(message, schema)

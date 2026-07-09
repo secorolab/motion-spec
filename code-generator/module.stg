@@ -1392,6 +1392,9 @@ inline constexpr std::size_t kNumConstraints = <introspection_artifacts.frame_la
 inline constexpr std::size_t kNumMonitors = <introspection_artifacts.frame_layout.pools.monitors>;
 inline constexpr std::size_t kNumQuantities = <introspection_artifacts.frame_layout.pools.quantities>;
 inline constexpr std::size_t kNumTriggers = <introspection_artifacts.frame_layout.pools.triggers>;
+inline constexpr std::size_t kNumPoses = <introspection_artifacts.frame_layout.pools.poses>;
+inline constexpr std::size_t kNumTwists = <introspection_artifacts.frame_layout.pools.twists>;
+inline constexpr std::size_t kNumWrenches = <introspection_artifacts.frame_layout.pools.wrenches>;
 inline constexpr std::size_t kFrameSizeBytes = <introspection_artifacts.frame_layout.frame_size_bytes>;
 inline constexpr const char *kSchemaHash = "<introspection_artifacts.frame_layout.schema_hash>";
 inline constexpr const char *kFrameLayoutHash = "<introspection_artifacts.frame_layout.frame_layout_hash>";
@@ -1414,6 +1417,18 @@ inline constexpr const char *kEventIds[] = { <introspection_artifacts.frame_layo
 inline constexpr const char *kEventIris[] = { <introspection_artifacts.frame_layout.fsm_events:{e|"<e.iri>", }>nullptr };
 
 inline constexpr const char *kFoxgloveLogSchema = R"JSON(<introspection_artifacts.frame_layout.log_schema>)JSON";
+
+// Spatial channels — one topic per data object; frame_id is the object's reference frame.
+inline constexpr const char *kPoseTopics[] = { <introspection_artifacts.frame_layout.poses:{p|"<p.topic>", }>nullptr };
+inline constexpr const char *kPoseFrameIds[] = { <introspection_artifacts.frame_layout.poses:{p|"<p.frame_id>", }>nullptr };
+inline constexpr const char *kTwistTopics[] = { <introspection_artifacts.frame_layout.twists:{t|"<t.topic>", }>nullptr };
+inline constexpr const char *kTwistFrameIds[] = { <introspection_artifacts.frame_layout.twists:{t|"<t.frame_id>", }>nullptr };
+inline constexpr const char *kWrenchTopics[] = { <introspection_artifacts.frame_layout.wrenches:{w|"<w.topic>", }>nullptr };
+inline constexpr const char *kWrenchFrameIds[] = { <introspection_artifacts.frame_layout.wrenches:{w|"<w.frame_id>", }>nullptr };
+
+inline constexpr const char *kPoseInFrameSchema = R"JSON(<introspection_artifacts.frame_layout.pose_schema>)JSON";
+inline constexpr const char *kTwistInFrameSchema = R"JSON(<introspection_artifacts.frame_layout.twist_schema>)JSON";
+inline constexpr const char *kWrenchInFrameSchema = R"JSON(<introspection_artifacts.frame_layout.wrench_schema>)JSON";
 
 } // namespace motion_spec::introspection
 >>
@@ -1476,6 +1491,20 @@ struct Trigger {
     std::int64_t wall_ns;
 };
 
+// Spatial slots ride the frame ring so the writer thread can emit the pose/twist/wrench
+// channels; they are not part of the /motion_spec/frame JSON record.
+struct PoseSlot {
+    double px, py, pz, qx, qy, qz, qw;
+};
+
+struct TwistSlot {
+    double lx, ly, lz, ax, ay, az;
+};
+
+struct WrenchSlot {
+    double fx, fy, fz, tx, ty, tz;
+};
+
 struct Frame {
     std::uint64_t seq;
     double t;
@@ -1495,11 +1524,17 @@ struct Frame {
     double quantities[kNumQuantities];
     Trigger triggers[kNumTriggers];
     std::int64_t trigger_count;
+    PoseSlot poses[kNumPoses];
+    TwistSlot twists[kNumTwists];
+    WrenchSlot wrenches[kNumWrenches];
 };
 
 static_assert(sizeof(ConstraintSlot) == 7 * 8, "ConstraintSlot must be padding-free");
 static_assert(sizeof(MonitorSlot) == 4 * 8, "MonitorSlot must be padding-free");
 static_assert(sizeof(Trigger) == 5 * 8, "Trigger must be padding-free");
+static_assert(sizeof(PoseSlot) == 7 * 8, "PoseSlot must be padding-free");
+static_assert(sizeof(TwistSlot) == 6 * 8, "TwistSlot must be padding-free");
+static_assert(sizeof(WrenchSlot) == 6 * 8, "WrenchSlot must be padding-free");
 static_assert(sizeof(Frame) == kFrameSizeBytes, "Frame layout must match frame_layout.json");
 static_assert(std::is_trivially_copyable_v\<Frame\>, "Frame must stay trivially copyable");
 
@@ -1541,7 +1576,7 @@ inline void json_u64(std::string &out, std::uint64_t v) {
 inline void json_str(std::string &out, const char *s) {
     out += '"';
     for (const char *p = s ? s : ""; *p; ++p) {
-        if (*p == '"' || *p == '\\') out += '\\';
+        if (*p == '"' || *p == '\\\\') out += '\\\\';
         out += *p;
     \}
     out += '"';
@@ -1654,6 +1689,7 @@ private:
             const Frame &frame = ring_[tail & mask_];
             write_mcap(frame);
             write_logs(frame);
+            write_spatial(frame);
             ++tail;
         \}
         tail_.store(tail, std::memory_order_release);
@@ -1689,6 +1725,34 @@ private:
         mcap_writer_.addSchema(log_schema_);
         log_channel_ = mcap::Channel("/motion_spec/log", "json", log_schema_.id);
         mcap_writer_.addChannel(log_channel_);
+
+        if (kNumPoses > 0) {
+            pose_schema_ = mcap::Schema("foxglove.PoseInFrame", "jsonschema", kPoseInFrameSchema);
+            mcap_writer_.addSchema(pose_schema_);
+            for (std::size_t i = 0; i \< kNumPoses; ++i) {
+                mcap::Channel ch(kPoseTopics[i], "json", pose_schema_.id);
+                mcap_writer_.addChannel(ch);
+                pose_channel_ids_.push_back(ch.id);
+            \}
+        \}
+        if (kNumTwists > 0) {
+            twist_schema_ = mcap::Schema("motion_spec.TwistInFrame", "jsonschema", kTwistInFrameSchema);
+            mcap_writer_.addSchema(twist_schema_);
+            for (std::size_t i = 0; i \< kNumTwists; ++i) {
+                mcap::Channel ch(kTwistTopics[i], "json", twist_schema_.id);
+                mcap_writer_.addChannel(ch);
+                twist_channel_ids_.push_back(ch.id);
+            \}
+        \}
+        if (kNumWrenches > 0) {
+            wrench_schema_ = mcap::Schema("motion_spec.WrenchInFrame", "jsonschema", kWrenchInFrameSchema);
+            mcap_writer_.addSchema(wrench_schema_);
+            for (std::size_t i = 0; i \< kNumWrenches; ++i) {
+                mcap::Channel ch(kWrenchTopics[i], "json", wrench_schema_.id);
+                mcap_writer_.addChannel(ch);
+                wrench_channel_ids_.push_back(ch.id);
+            \}
+        \}
 
         mcap_open_ = true;
     \}
@@ -1825,6 +1889,71 @@ private:
         if (!mcap_writer_.write(msg).ok()) ++mcap_errors_;
     \}
 
+    bool send(mcap::ChannelId channel_id, std::int64_t wall_ns, const std::string &buf) {
+        mcap::Message msg{};
+        msg.channelId = channel_id;
+        const auto ts = static_cast\<mcap::Timestamp\>(wall_ns > 0 ? wall_ns : wall_time_ns());
+        msg.logTime = ts;
+        msg.publishTime = ts;
+        msg.data = reinterpret_cast\<const std::byte *\>(buf.data());
+        msg.dataSize = buf.size();
+        return mcap_writer_.write(msg).ok();
+    \}
+
+    // foxglove.PoseInFrame / motion_spec.TwistInFrame / motion_spec.WrenchInFrame per object.
+    void write_spatial(const Frame &frame) {
+        if (!mcap_open_) return;
+        for (std::size_t i = 0; i \< kNumPoses; ++i) emit_pose(i, frame.wall_ns, frame.poses[i]);
+        for (std::size_t i = 0; i \< kNumTwists; ++i) emit_twist(i, frame.wall_ns, frame.twists[i]);
+        for (std::size_t i = 0; i \< kNumWrenches; ++i) emit_wrench(i, frame.wall_ns, frame.wrenches[i]);
+    \}
+
+    void emit_pose(std::size_t i, std::int64_t wall_ns, const PoseSlot &s) {
+        std::string &j = spatial_json_;
+        j.clear();
+        j += "{\"timestamp\":"; json_timestamp(j, wall_ns);
+        j += ",\"frame_id\":";  json_str(j, kPoseFrameIds[i]);
+        j += ",\"pose\":{\"position\":{\"x\":"; json_double(j, s.px);
+        j += ",\"y\":"; json_double(j, s.py);
+        j += ",\"z\":"; json_double(j, s.pz);
+        j += "\},\"orientation\":{\"x\":"; json_double(j, s.qx);
+        j += ",\"y\":"; json_double(j, s.qy);
+        j += ",\"z\":"; json_double(j, s.qz);
+        j += ",\"w\":"; json_double(j, s.qw);
+        j += "\}\}\}";
+        if (!send(pose_channel_ids_[i], wall_ns, j)) ++mcap_errors_;
+    \}
+
+    void emit_twist(std::size_t i, std::int64_t wall_ns, const TwistSlot &s) {
+        std::string &j = spatial_json_;
+        j.clear();
+        j += "{\"timestamp\":"; json_timestamp(j, wall_ns);
+        j += ",\"frame_id\":";  json_str(j, kTwistFrameIds[i]);
+        j += ",\"twist\":{\"linear\":{\"x\":"; json_double(j, s.lx);
+        j += ",\"y\":"; json_double(j, s.ly);
+        j += ",\"z\":"; json_double(j, s.lz);
+        j += "\},\"angular\":{\"x\":"; json_double(j, s.ax);
+        j += ",\"y\":"; json_double(j, s.ay);
+        j += ",\"z\":"; json_double(j, s.az);
+        j += "\}\}\}";
+        if (!send(twist_channel_ids_[i], wall_ns, j)) ++mcap_errors_;
+    \}
+
+    void emit_wrench(std::size_t i, std::int64_t wall_ns, const WrenchSlot &s) {
+        std::string &j = spatial_json_;
+        j.clear();
+        j += "{\"timestamp\":"; json_timestamp(j, wall_ns);
+        j += ",\"frame_id\":";  json_str(j, kWrenchFrameIds[i]);
+        j += ",\"wrench\":{\"force\":{\"x\":"; json_double(j, s.fx);
+        j += ",\"y\":"; json_double(j, s.fy);
+        j += ",\"z\":"; json_double(j, s.fz);
+        j += "\},\"torque\":{\"x\":"; json_double(j, s.tx);
+        j += ",\"y\":"; json_double(j, s.ty);
+        j += ",\"z\":"; json_double(j, s.tz);
+        j += "\}\}\}";
+        if (!send(wrench_channel_ids_[i], wall_ns, j)) ++mcap_errors_;
+    \}
+
     void write_health() {
         std::FILE *health = std::fopen(health_path_.c_str(), "wb");
         if (!health) return;
@@ -1858,8 +1987,15 @@ private:
     mcap::Channel mcap_channel_;
     mcap::Schema log_schema_;
     mcap::Channel log_channel_;
+    mcap::Schema pose_schema_;
+    mcap::Schema twist_schema_;
+    mcap::Schema wrench_schema_;
+    std::vector\<mcap::ChannelId\> pose_channel_ids_;
+    std::vector\<mcap::ChannelId\> twist_channel_ids_;
+    std::vector\<mcap::ChannelId\> wrench_channel_ids_;
     std::string json_;
     std::string log_json_;
+    std::string spatial_json_;
     bool mcap_open_ = false;
     std::int64_t prev_log_state_ = INT64_MIN;
     std::int64_t prev_log_trigger_count_ = 0;
@@ -1926,6 +2062,24 @@ public:
     void quantity_sample(std::size_t index, double value) {
         if (index >= kNumQuantities) return;
         scratch_.quantities[index] = value;
+    \}
+
+    void pose_sample(std::size_t index, double px, double py, double pz, double qx, double qy, double qz, double qw) {
+        if (index >= kNumPoses) return;
+        PoseSlot &s = scratch_.poses[index];
+        s.px = px; s.py = py; s.pz = pz; s.qx = qx; s.qy = qy; s.qz = qz; s.qw = qw;
+    \}
+
+    void twist_sample(std::size_t index, double lx, double ly, double lz, double ax, double ay, double az) {
+        if (index >= kNumTwists) return;
+        TwistSlot &s = scratch_.twists[index];
+        s.lx = lx; s.ly = ly; s.lz = lz; s.ax = ax; s.ay = ay; s.az = az;
+    \}
+
+    void wrench_sample(std::size_t index, double fx, double fy, double fz, double tx, double ty, double tz) {
+        if (index >= kNumWrenches) return;
+        WrenchSlot &s = scratch_.wrenches[index];
+        s.fx = fx; s.fy = fy; s.fz = fz; s.tx = tx; s.ty = ty; s.tz = tz;
     \}
 
     void event_occurrences(std::int64_t event_count, const int *events, std::size_t capacity) {
@@ -1998,6 +2152,18 @@ introspection-quantity-sample(slot) ::= <<
     pub.quantity_sample(<slot.index>, <slot.expr>);
 >>
 
+introspection-pose-sample(slot) ::= <<
+    { double _qx, _qy, _qz, _qw; <slot.expr>.M.GetQuaternion(_qx, _qy, _qz, _qw); pub.pose_sample(<slot.index>, <slot.expr>.p.x(), <slot.expr>.p.y(), <slot.expr>.p.z(), _qx, _qy, _qz, _qw); \}
+>>
+
+introspection-twist-sample(slot) ::= <<
+    pub.twist_sample(<slot.index>, <slot.expr>.vel.x(), <slot.expr>.vel.y(), <slot.expr>.vel.z(), <slot.expr>.rot.x(), <slot.expr>.rot.y(), <slot.expr>.rot.z());
+>>
+
+introspection-wrench-sample(slot) ::= <<
+    pub.wrench_sample(<slot.index>, <slot.expr>.force.x(), <slot.expr>.force.y(), <slot.expr>.force.z(), <slot.expr>.torque.x(), <slot.expr>.torque.y(), <slot.expr>.torque.z());
+>>
+
 introspection-state-case(state) ::= <<
     case <state.index>:
 <state.controllers:{slot | <introspection-controller-sample(slot)>}; separator="\n">
@@ -2030,6 +2196,9 @@ inline void sample_model(RunPublisher &pub, int state_index, int active_motion, 
         shared._motion_spec_events,
         shared._motion_spec_event_buffer_size);
 <introspection_artifacts.model.quantities:{slot | <introspection-quantity-sample(slot)>}; separator="\n">
+<introspection_artifacts.model.poses:{slot | <introspection-pose-sample(slot)>}; separator="\n">
+<introspection_artifacts.model.twists:{slot | <introspection-twist-sample(slot)>}; separator="\n">
+<introspection_artifacts.model.wrenches:{slot | <introspection-wrench-sample(slot)>}; separator="\n">
     switch (state_index) {
 <introspection_artifacts.model.states:{state | <introspection-state-case(state)>}; separator="\n">
     default:

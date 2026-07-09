@@ -3277,6 +3277,10 @@ def _build_introspection(
                     "type": item.type,
                     "unit": _id_refs(getattr(item, "unit", None)),
                     "quantity_kind": _id_refs(getattr(item, "quantity_kind", None)),
+                    # Reference frame the spatial value is expressed in — the frame_id for the
+                    # well-known/custom pose/twist/wrench channels.
+                    "reference_frame": _id_ref(getattr(item, "as_seen_by", None))
+                    or _id_ref(getattr(item, "with_respect_to", None)),
                     "reference_value": getattr(item, "reference_value", None),
                     "value": getattr(item, "value", None),
                     "authored": getattr(item, "authored", False),

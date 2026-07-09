@@ -383,11 +383,15 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
     max_controllers = max((len(entry["controllers"]) for entry in by_state.values()), default=0)
     max_monitors = max((len(entry["monitors"]) for entry in by_state.values()), default=0)
     heartbeat_events = 1 if any(event.get("id") == "E_STEP" for event in fsm.get("events", [])) else 0
+    spatial = introspection.get("spatial_samples") or {"poses": [], "twists": [], "wrenches": []}
     pools = {
         "constraints": max_controllers,
         "monitors": max_monitors,
         "quantities": len(quantities),
         "triggers": max(TRIGGER_POOL_SIZE, len(fsm.get("events", [])), max_monitors + heartbeat_events),
+        "poses": len(spatial["poses"]),
+        "twists": len(spatial["twists"]),
+        "wrenches": len(spatial["wrenches"]),
     }
     provenance = introspection.get("provenance", {})
     contexts = {
@@ -423,6 +427,7 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
         "controllers": introspection.get("controllers", []),
         "monitors": introspection.get("monitors", []),
         "quantities": quantities,
+        "spatial": spatial,
         "signals": introspection.get("signals", []),
         "provenance_contexts": provenance.get("contexts", []),
         "runtime_provenance": runtime_provenance,
@@ -542,7 +547,14 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
                 "monitors": monitors,
             }
         )
-    return {"states": states, "quantities": quantities}
+    spatial = schema.get("spatial", {"poses": [], "twists": [], "wrenches": []})
+    return {
+        "states": states,
+        "quantities": quantities,
+        "poses": [{"index": p["index"], "expr": p["expr"]} for p in spatial["poses"]],
+        "twists": [{"index": t["index"], "expr": t["expr"]} for t in spatial["twists"]],
+        "wrenches": [{"index": w["index"], "expr": w["expr"]} for w in spatial["wrenches"]],
+    }
 
 
 def build_provenance_document(ir: dict, output_dir: Path) -> dict:
@@ -740,6 +752,12 @@ def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path, 
                 for event in schema.get("fsm", {}).get("events", [])
             ],
             "log_schema": _embedded_schema("Log"),
+            "poses": schema["spatial"]["poses"],
+            "twists": schema["spatial"]["twists"],
+            "wrenches": schema["spatial"]["wrenches"],
+            "pose_schema": _embedded_schema("PoseInFrame"),
+            "twist_schema": _embedded_schema("TwistInFrame"),
+            "wrench_schema": _embedded_schema("WrenchInFrame"),
         },
         "model": build_introspection_model(schema, ir),
     }

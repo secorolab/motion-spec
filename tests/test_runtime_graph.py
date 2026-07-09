@@ -10,10 +10,11 @@ import rdflib
 
 from motion_spec.introspection.archive import create_archive_manifest
 from motion_spec.introspection.artifacts import prov_uri
-from motion_spec.introspection.frame_layout_spec import frame_struct
-from motion_spec.introspection.replay import HEADER, MAGIC, runtime_frames
+from motion_spec.introspection.frame_layout_spec import field_names_and_format
+from motion_spec.introspection.replay import runtime_frames
 from motion_spec.introspection.runtime_graph import MSRUN, PROV, _bind_model_subnamespaces, write_runtime_ttl
 
+from mcap_fixture import records_from_flats, write_frame_log_mcap
 from test_introspection_archive import _hash_doc, _layout, _provenance
 
 
@@ -99,7 +100,7 @@ def _frame(names: list[str], **values) -> dict:
 
 
 def _write_frame_log(path: Path, schema: dict, layout: dict) -> None:
-    st, names = frame_struct(schema["pools"])
+    _fmt, names = field_names_and_format(schema["pools"])
     frames = [
         # S_START; nothing active -> StateOccurrence(S_START)
         _frame(names, step=0, t=1.0, wall_ns=100, fsm_state=0),
@@ -150,16 +151,7 @@ def _write_frame_log(path: Path, schema: dict, layout: dict) -> None:
             },
         ),
     ]
-    header = HEADER.pack(
-        MAGIC,
-        1,
-        st.size,
-        schema["schema_hash"].encode(),
-        layout["frame_layout_hash"].encode(),
-        schema["runtime_provenance"]["producer_agent_id"].encode(),
-        schema["runtime_provenance"]["activity_id"].encode(),
-    )
-    path.write_bytes(header + b"".join(st.pack(*(frame[name] for name in names)) for frame in frames))
+    write_frame_log_mcap(path, schema, layout, records_from_flats(schema, frames))
 
 
 def _source_tree(path: Path) -> Path:
@@ -174,7 +166,7 @@ def _source_tree(path: Path) -> Path:
     (path / "headers").mkdir()
     (path / "headers" / "runtime.hpp").write_text("// generated\n")
     (path / "ref_main.cpp").write_text("// generated\n")
-    _write_frame_log(path / "frame_log.bin", schema, layout)
+    _write_frame_log(path / "frame_log.mcap", schema, layout)
     return path
 
 
@@ -215,7 +207,7 @@ def test_runtime_ttl_projects_full_observation_graph(tmp_path: Path) -> None:
     assert _has(graph, None, MSRUN.monitor, rdflib.URIRef("https://example.test/done_mon"))
     assert _has(graph, None, MSRUN.event, rdflib.URIRef("https://example.test/E_DONE"))
 
-    # The Sample node families and the continuous streams are gone (they live in frame_log.bin).
+    # The Sample node families and the continuous streams are gone (they live in the frame log).
     for gone in (MSRUN.ControllerSample, MSRUN.SignalSample, MSRUN.MonitorSample):
         assert not list(graph.subjects(rdflib.RDF.type, gone))
     for gone in (MSRUN.error, MSRUN.output, MSRUN.measured, MSRUN.setpoint,

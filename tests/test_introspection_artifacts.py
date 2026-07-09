@@ -216,18 +216,22 @@ def test_frame_json_schema_matches_decoded_record() -> None:
     from motion_spec.introspection.frame_layout_spec import (
         field_names_and_format,
         frame_json_schema,
+        quantity_ids,
     )
     from motion_spec.introspection.replay import to_record
 
-    schema = frame_json_schema()
+    quantities = [{"index": i, "id": f"q{i}", "unit": ["M"], "quantity_kind": ["Length"]} for i in range(3)]
+    schema = frame_json_schema(quantities)
     jsonschema.Draft202012Validator.check_schema(schema)
 
     pools = {"constraints": 2, "monitors": 1, "quantities": 3, "triggers": 2}
     _fmt, names = field_names_and_format(pools)
     flat = dict.fromkeys(names, 0)
     flat["trigger_count"] = 5  # exercise the rolling trigger window
-    record = to_record(flat, pools["constraints"], pools["monitors"], pools["quantities"], pools["triggers"])
-    record["quantities"][0] = None  # non-finite doubles serialize to null
+    record = to_record(
+        flat, pools["constraints"], pools["monitors"], pools["quantities"], pools["triggers"], quantity_ids(quantities)
+    )
+    record["quantities"]["q0"] = None  # non-finite doubles serialize to null
     jsonschema.validate(record, schema)
 
 

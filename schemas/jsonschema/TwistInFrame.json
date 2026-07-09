@@ -1,0 +1,92 @@
+{
+  "title": "motion_spec.TwistInFrame",
+  "description": "A timestamped spatial velocity (twist) for an object or reference frame in 3D space",
+  "$comment": "Authored by motion-spec in the Foxglove schema pattern (no well-known Twist schema exists)",
+  "type": "object",
+  "properties": {
+    "timestamp": {
+      "type": "object",
+      "title": "time",
+      "properties": {
+        "sec": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "nsec": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 999999999
+        }
+      },
+      "description": "Timestamp of twist"
+    },
+    "frame_id": {
+      "type": "string",
+      "description": "Frame of reference the twist is expressed in"
+    },
+    "twist": {
+      "title": "motion_spec.Twist",
+      "description": "Spatial velocity in 3D space",
+      "type": "object",
+      "properties": {
+        "linear": {
+          "title": "foxglove.Vector3",
+          "description": "Linear velocity component",
+          "type": "object",
+          "properties": {
+            "x": {
+              "type": "number",
+              "description": "x component"
+            },
+            "y": {
+              "type": "number",
+              "description": "y component"
+            },
+            "z": {
+              "type": "number",
+              "description": "z component"
+            }
+          },
+          "required": [
+            "x",
+            "y",
+            "z"
+          ]
+        },
+        "angular": {
+          "title": "foxglove.Vector3",
+          "description": "Angular velocity component",
+          "type": "object",
+          "properties": {
+            "x": {
+              "type": "number",
+              "description": "x component"
+            },
+            "y": {
+              "type": "number",
+              "description": "y component"
+            },
+            "z": {
+              "type": "number",
+              "description": "z component"
+            }
+          },
+          "required": [
+            "x",
+            "y",
+            "z"
+          ]
+        }
+      },
+      "required": [
+        "linear",
+        "angular"
+      ]
+    }
+  },
+  "required": [
+    "timestamp",
+    "frame_id",
+    "twist"
+  ]
+}

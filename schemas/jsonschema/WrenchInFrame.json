@@ -1,0 +1,92 @@
+{
+  "title": "motion_spec.WrenchInFrame",
+  "description": "A timestamped spatial force (wrench) for an object or reference frame in 3D space",
+  "$comment": "Authored by motion-spec in the Foxglove schema pattern (no well-known Wrench schema exists)",
+  "type": "object",
+  "properties": {
+    "timestamp": {
+      "type": "object",
+      "title": "time",
+      "properties": {
+        "sec": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "nsec": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 999999999
+        }
+      },
+      "description": "Timestamp of wrench"
+    },
+    "frame_id": {
+      "type": "string",
+      "description": "Frame of reference the wrench is expressed in"
+    },
+    "wrench": {
+      "title": "motion_spec.Wrench",
+      "description": "Spatial force in 3D space",
+      "type": "object",
+      "properties": {
+        "force": {
+          "title": "foxglove.Vector3",
+          "description": "Linear force component",
+          "type": "object",
+          "properties": {
+            "x": {
+              "type": "number",
+              "description": "x component"
+            },
+            "y": {
+              "type": "number",
+              "description": "y component"
+            },
+            "z": {
+              "type": "number",
+              "description": "z component"
+            }
+          },
+          "required": [
+            "x",
+            "y",
+            "z"
+          ]
+        },
+        "torque": {
+          "title": "foxglove.Vector3",
+          "description": "Rotational torque component",
+          "type": "object",
+          "properties": {
+            "x": {
+              "type": "number",
+              "description": "x component"
+            },
+            "y": {
+              "type": "number",
+              "description": "y component"
+            },
+            "z": {
+              "type": "number",
+              "description": "z component"
+            }
+          },
+          "required": [
+            "x",
+            "y",
+            "z"
+          ]
+        }
+      },
+      "required": [
+        "force",
+        "torque"
+      ]
+    }
+  },
+  "required": [
+    "timestamp",
+    "frame_id",
+    "wrench"
+  ]
+}

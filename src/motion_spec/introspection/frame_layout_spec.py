@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: MPL-2.0
-"""Binary frame layout used by generated introspection logs."""
+"""Binary frame layout used by generated introspection logs.
+
+The layout sizes the in-memory ``Frame`` struct (and its ``frame_size_bytes`` hash); the
+log itself is written as ``.mcap``, never a raw struct dump. Spatial slots (pose/twist/
+wrench) ride in the struct so the writer thread can emit their well-known/custom channels,
+but are not part of the ``/motion_spec/frame`` JSON record (they have their own channels)."""
 
 from __future__ import annotations
-
-import struct
 
 FIELD_BYTES = 8
 HEADER = [
@@ -32,6 +35,10 @@ CSLOT = [
 ]
 MSLOT = [("active", "q"), ("value", "d"), ("satisfied", "q"), ("sat_t", "d")]
 TSLOT = [("kind", "q"), ("idx", "q"), ("fsm_state", "q"), ("t", "d"), ("wall_ns", "q")]
+# Spatial slots — feed the pose/twist/wrench channels, not the frame record.
+PSLOT = [("px", "d"), ("py", "d"), ("pz", "d"), ("qx", "d"), ("qy", "d"), ("qz", "d"), ("qw", "d")]
+VSLOT = [("lx", "d"), ("ly", "d"), ("lz", "d"), ("ax", "d"), ("ay", "d"), ("az", "d")]
+KSLOT = [("fx", "d"), ("fy", "d"), ("fz", "d"), ("tx", "d"), ("ty", "d"), ("tz", "d")]
 
 
 def field_names_and_format(pools: dict) -> tuple[str, list[str]]:
@@ -50,6 +57,10 @@ def field_names_and_format(pools: dict) -> tuple[str, list[str]]:
         names.extend(f"tr{idx}.{name}" for name, _ in TSLOT)
     fmt += "q"
     names.append("trigger_count")
+    for prefix, slot, key in (("pose", PSLOT, "poses"), ("twist", VSLOT, "twists"), ("wrench", KSLOT, "wrenches")):
+        for idx in range(pools.get(key, 0)):
+            fmt += "".join(code for _, code in slot)
+            names.extend(f"{prefix}{idx}.{name}" for name, _ in slot)
     return fmt, names
 
 
@@ -62,14 +73,10 @@ def fields_with_offsets(pools: dict) -> tuple[list[dict], int]:
     return fields, len(fields) * FIELD_BYTES
 
 
-def frame_struct(pools: dict) -> tuple[struct.Struct, list[str]]:
-    fmt, names = field_names_and_format(pools)
-    return struct.Struct(fmt), names
-
-
-def _json_type(code: str):
-    # Doubles may be non-finite; the writer emits null for those, so allow it.
-    return ["number", "null"] if code == "d" else "integer"
+def quantity_ids(quantities: list[dict]) -> list[str]:
+    """Ordered quantity ids (by pool index) — the keys of the frame ``quantities`` object
+    and the C++ ``kQuantityIds[]`` table."""
+    return [q["id"] for q in sorted(quantities, key=lambda q: q.get("index", 0))]
 
 
 def _slot_schema(fields: list[tuple[str, str]]) -> dict:
@@ -83,11 +90,31 @@ def _slot_schema(fields: list[tuple[str, str]]) -> dict:
     }
 
 
-def frame_json_schema() -> dict:
-    """JSON Schema for the nested per-frame record emitted to the .mcap log.
+def _json_type(code: str):
+    # Doubles may be non-finite; the writer emits null for those, so allow it.
+    return ["number", "null"] if code == "d" else "integer"
 
-    Mirrors ``replay.to_record()`` so a decoded mcap message equals the decoded
-    ``.bin`` frame. Pool-size independent (repeated arrays, not fixed slots)."""
+
+def _quantity_property(quantity: dict) -> dict:
+    prop: dict = {"type": ["number", "null"], "title": quantity["id"]}
+    bits = []
+    if quantity.get("quantity_kind"):
+        bits.append("/".join(quantity["quantity_kind"]))
+    if quantity.get("unit"):
+        bits.append("[" + "/".join(quantity["unit"]) + "]")
+    if quantity.get("uri"):
+        bits.append(quantity["uri"])
+    if bits:
+        prop["description"] = " ".join(bits)
+    return prop
+
+
+def frame_json_schema(quantities: list[dict]) -> dict:
+    """JSON Schema for the nested per-frame record on ``/motion_spec/frame``.
+
+    ``quantities`` is a **named object** keyed by quantity id (each signal a typed,
+    plottable Foxglove path) — mirrors ``replay.to_record()``. Pool-size independent for
+    the repeated slot arrays; the quantity object is model-specific."""
     top = {
         name: {"type": _json_type(code)}
         for name, code in HEADER
@@ -100,7 +127,10 @@ def frame_json_schema() -> dict:
     }
     top["constraints"] = _slot_schema(CSLOT)
     top["monitors"] = _slot_schema(MSLOT)
-    top["quantities"] = {"type": "array", "items": {"type": ["number", "null"]}}
+    top["quantities"] = {
+        "type": "object",
+        "properties": {q["id"]: _quantity_property(q) for q in sorted(quantities, key=lambda q: q.get("index", 0))},
+    }
     top["triggers"] = _slot_schema(TSLOT)
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -108,4 +138,3 @@ def frame_json_schema() -> dict:
         "type": "object",
         "properties": top,
     }
-

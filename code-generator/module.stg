@@ -1402,6 +1402,19 @@ inline constexpr std::int64_t kEndState = <introspection_artifacts.frame_layout.
 inline constexpr std::int64_t kNominalPeriodNs = <introspection_artifacts.frame_layout.nominal_period_ns>;
 inline constexpr const char *kFrameJsonSchema = R"JSON(<introspection_artifacts.frame_layout.frame_json_schema>)JSON";
 
+// Named-signal table: keys of the frame `quantities` object (indexed by pool slot).
+inline constexpr const char *kQuantityIds[] = { <introspection_artifacts.frame_layout.quantity_ids:{q|"<q>", }>nullptr };
+
+// FSM state/event naming — the /motion_spec/log channel resolves indices to IRIs (fallback id).
+inline constexpr std::size_t kNumFsmStates = <length(introspection_artifacts.frame_layout.fsm_states)>;
+inline constexpr const char *kFsmStateIds[] = { <introspection_artifacts.frame_layout.fsm_states:{s|"<s.id>", }>nullptr };
+inline constexpr const char *kFsmStateIris[] = { <introspection_artifacts.frame_layout.fsm_states:{s|"<s.iri>", }>nullptr };
+inline constexpr std::size_t kNumEvents = <length(introspection_artifacts.frame_layout.fsm_events)>;
+inline constexpr const char *kEventIds[] = { <introspection_artifacts.frame_layout.fsm_events:{e|"<e.id>", }>nullptr };
+inline constexpr const char *kEventIris[] = { <introspection_artifacts.frame_layout.fsm_events:{e|"<e.iri>", }>nullptr };
+
+inline constexpr const char *kFoxgloveLogSchema = R"JSON(<introspection_artifacts.frame_layout.log_schema>)JSON";
+
 } // namespace motion_spec::introspection
 >>
 
@@ -1490,19 +1503,6 @@ static_assert(sizeof(Trigger) == 5 * 8, "Trigger must be padding-free");
 static_assert(sizeof(Frame) == kFrameSizeBytes, "Frame layout must match frame_layout.json");
 static_assert(std::is_trivially_copyable_v\<Frame\>, "Frame must stay trivially copyable");
 
-struct FrameLogHeader {
-    char magic[8];
-    std::uint32_t writer_version;
-    std::uint32_t frame_size;
-    char schema_hash[32];
-    char frame_layout_hash[32];
-    char producer_agent_id[128];
-    char activity_id[128];
-};
-
-inline constexpr char kFrameLogMagic[8] = {'M', 'S', 'F', 'R', 'M', 'B', 'I', 'N'};
-inline constexpr std::uint32_t kWriterVersion = 1;
-
 inline std::int64_t wall_time_ns() {
     const auto now = std::chrono::system_clock::now().time_since_epoch();
     return std::chrono::duration_cast\<std::chrono::nanoseconds\>(now).count();
@@ -1511,19 +1511,6 @@ inline std::int64_t wall_time_ns() {
 inline std::int64_t steady_time_ns() {
     const auto now = std::chrono::steady_clock::now().time_since_epoch();
     return std::chrono::duration_cast\<std::chrono::nanoseconds\>(now).count();
-}
-
-inline void copy_cstr(char *dst, std::size_t size, const char *src) {
-    if (size == 0) return;
-    std::snprintf(dst, size, "%s", src ? src : "");
-}
-
-inline std::string mcap_path_for_log(const std::string &path) {
-    const std::string suffix = ".bin";
-    if (path.size() >= suffix.size() && path.compare(path.size() - suffix.size(), suffix.size(), suffix) == 0) {
-        return path.substr(0, path.size() - suffix.size()) + ".mcap";
-    \}
-    return path + ".mcap";
 }
 
 // JSON value emitters for the .mcap message payload. Doubles round-trip at %.17g;
@@ -1548,6 +1535,24 @@ inline void json_u64(std::string &out, std::uint64_t v) {
     char b[24];
     std::snprintf(b, sizeof(b), "%llu", static_cast\<unsigned long long\>(v));
     out += b;
+}
+
+// Minimal JSON string (ids/IRIs carry no control chars; escape only " and \).
+inline void json_str(std::string &out, const char *s) {
+    out += '"';
+    for (const char *p = s ? s : ""; *p; ++p) {
+        if (*p == '"' || *p == '\\') out += '\\';
+        out += *p;
+    \}
+    out += '"';
+}
+
+// foxglove.Timestamp {sec,nsec} from epoch nanoseconds.
+inline void json_timestamp(std::string &out, std::int64_t wall_ns) {
+    if (wall_ns \< 0) wall_ns = 0;
+    out += "{\"sec\":";  json_i64(out, wall_ns / 1000000000);
+    out += ",\"nsec\":"; json_i64(out, wall_ns % 1000000000);
+    out += '\}';
 }
 
 class LatestFramePublisher {
@@ -1599,18 +1604,7 @@ public:
         std::size_t ring_capacity = 8192)
         : ring_(ring_capacity), mask_(ring_capacity - 1), health_path_(path + ".health.json") {
         if (ring_capacity == 0 || (ring_capacity & (ring_capacity - 1)) != 0) return;
-        file_ = std::fopen(path.c_str(), "wb");
-        if (!file_) return;
-        FrameLogHeader header{};
-        std::memcpy(header.magic, kFrameLogMagic, sizeof(kFrameLogMagic));
-        header.writer_version = kWriterVersion;
-        header.frame_size = static_cast\<std::uint32_t\>(sizeof(Frame));
-        copy_cstr(header.schema_hash, sizeof(header.schema_hash), kSchemaHash);
-        copy_cstr(header.frame_layout_hash, sizeof(header.frame_layout_hash), kFrameLayoutHash);
-        copy_cstr(header.producer_agent_id, sizeof(header.producer_agent_id), producer_agent_id);
-        copy_cstr(header.activity_id, sizeof(header.activity_id), activity_id);
-        std::fwrite(&header, sizeof(header), 1, file_);
-        open_mcap(mcap_path_for_log(path), producer_agent_id, activity_id);
+        open_mcap(path, producer_agent_id, activity_id);
         running_.store(true, std::memory_order_relaxed);
         writer_ = std::thread(&FrameLogger::run, this);
     \}
@@ -1623,11 +1617,6 @@ public:
             return;
         \}
         if (writer_.joinable()) writer_.join();
-        if (file_) {
-            std::fflush(file_);
-            std::fclose(file_);
-            file_ = nullptr;
-        \}
         if (mcap_open_) {
             mcap_writer_.close();
             mcap_open_ = false;
@@ -1660,13 +1649,12 @@ private:
     bool drain() {
         const std::uint64_t head = head_.load(std::memory_order_acquire);
         std::uint64_t tail = tail_.load(std::memory_order_relaxed);
-        if (tail == head || !file_) return false;
+        if (tail == head) return false;
         while (tail != head) {
             const Frame &frame = ring_[tail & mask_];
-            std::fwrite(&frame, sizeof(Frame), 1, file_);
             write_mcap(frame);
+            write_logs(frame);
             ++tail;
-            ++written_;
         \}
         tail_.store(tail, std::memory_order_release);
         return true;
@@ -1696,6 +1684,12 @@ private:
                 {"activity_id", activity_id ? activity_id : ""},
             \});
         mcap_writer_.addChannel(mcap_channel_);
+
+        log_schema_ = mcap::Schema("foxglove.Log", "jsonschema", kFoxgloveLogSchema);
+        mcap_writer_.addSchema(log_schema_);
+        log_channel_ = mcap::Channel("/motion_spec/log", "json", log_schema_.id);
+        mcap_writer_.addChannel(log_channel_);
+
         mcap_open_ = true;
     \}
 
@@ -1739,12 +1733,14 @@ private:
             j += ",\"sat_t\":";      json_double(j, m.sat_t);
             j += '\}';
         \}
-        j += "],\"quantities\":[";
+        j += "],\"quantities\":{";
         for (std::size_t i = 0; i \< kNumQuantities; ++i) {
             if (i) j += ',';
+            json_str(j, kQuantityIds[i]);
+            j += ':';
             json_double(j, frame.quantities[i]);
         \}
-        j += "],\"triggers\":[";
+        j += "\},\"triggers\":[";
         if (kNumTriggers \> 0) {
             const std::int64_t nt = static_cast\<std::int64_t\>(kNumTriggers);
             const std::int64_t tc = frame.trigger_count;
@@ -1784,6 +1780,51 @@ private:
         \}
     \}
 
+    // foxglove.Log on every FSM state change and every new event — named, not bare ints.
+    void write_logs(const Frame &frame) {
+        if (!mcap_open_) return;
+        if (frame.fsm_state != prev_log_state_) {
+            prev_log_state_ = frame.fsm_state;
+            emit_log(frame.wall_ns, state_name(frame.fsm_state));
+        \}
+        if (kNumTriggers \> 0 && frame.trigger_count \> prev_log_trigger_count_) {
+            const std::int64_t nt = static_cast\<std::int64_t\>(kNumTriggers);
+            std::int64_t start = prev_log_trigger_count_;
+            if (start \< frame.trigger_count - nt) start = frame.trigger_count - nt;
+            for (std::int64_t c = start; c \< frame.trigger_count; ++c) {
+                const Trigger &tg = frame.triggers[c % nt];
+                if (tg.kind == 1) emit_log(tg.wall_ns, event_name(tg.idx));
+            \}
+            prev_log_trigger_count_ = frame.trigger_count;
+        \}
+    \}
+
+    static const char *state_name(std::int64_t idx) {
+        if (idx \< 0 || static_cast\<std::size_t\>(idx) >= kNumFsmStates) return "";
+        return kFsmStateIris[idx][0] ? kFsmStateIris[idx] : kFsmStateIds[idx];
+    \}
+
+    static const char *event_name(std::int64_t idx) {
+        if (idx \< 0 || static_cast\<std::size_t\>(idx) >= kNumEvents) return "";
+        return kEventIris[idx][0] ? kEventIris[idx] : kEventIds[idx];
+    \}
+
+    void emit_log(std::int64_t wall_ns, const char *message) {
+        std::string &j = log_json_;
+        j.clear();
+        j += "{\"timestamp\":";       json_timestamp(j, wall_ns);
+        j += ",\"level\":2,\"message\":"; json_str(j, message);
+        j += ",\"name\":\"motion_spec\",\"file\":\"\",\"line\":0\}";
+        mcap::Message msg{};
+        msg.channelId = log_channel_.id;
+        const auto ts = static_cast\<mcap::Timestamp\>(wall_ns > 0 ? wall_ns : wall_time_ns());
+        msg.logTime = ts;
+        msg.publishTime = ts;
+        msg.data = reinterpret_cast\<const std::byte *\>(j.data());
+        msg.dataSize = j.size();
+        if (!mcap_writer_.write(msg).ok()) ++mcap_errors_;
+    \}
+
     void write_health() {
         std::FILE *health = std::fopen(health_path_.c_str(), "wb");
         if (!health) return;
@@ -1795,7 +1836,6 @@ private:
             "{\n"
             "  \"attempted_frames\": %llu,\n"
             "  \"accepted_frames\": %llu,\n"
-            "  \"written_frames\": %llu,\n"
             "  \"mcap_written_frames\": %llu,\n"
             "  \"mcap_write_errors\": %llu,\n"
             "  \"dropped_frames\": %llu,\n"
@@ -1803,23 +1843,26 @@ private:
             "}\n",
             static_cast\<unsigned long long\>(attempted),
             static_cast\<unsigned long long\>(accepted),
-            static_cast\<unsigned long long\>(written_),
             static_cast\<unsigned long long\>(mcap_written_),
             static_cast\<unsigned long long\>(mcap_errors_),
             static_cast\<unsigned long long\>(dropped),
-            (dropped == 0 && accepted == written_ && mcap_errors_ == 0) ? "true" : "false");
+            (dropped == 0 && accepted == mcap_written_ && mcap_errors_ == 0) ? "true" : "false");
         std::fclose(health);
     \}
 
     std::vector\<Frame\> ring_;
     std::uint64_t mask_ = 0;
     std::string health_path_;
-    std::FILE *file_ = nullptr;
     mcap::McapWriter mcap_writer_;
     mcap::Schema mcap_schema_;
     mcap::Channel mcap_channel_;
+    mcap::Schema log_schema_;
+    mcap::Channel log_channel_;
     std::string json_;
+    std::string log_json_;
     bool mcap_open_ = false;
+    std::int64_t prev_log_state_ = INT64_MIN;
+    std::int64_t prev_log_trigger_count_ = 0;
     std::thread writer_;
     std::atomic\<bool\> running_{false};
     std::atomic\<std::uint64_t\> head_{0};
@@ -1827,7 +1870,6 @@ private:
     std::atomic\<std::uint64_t\> attempted_{0};
     std::atomic\<std::uint64_t\> accepted_{0};
     std::atomic\<std::uint64_t\> dropped_{0};
-    std::uint64_t written_ = 0;
     std::uint64_t mcap_written_ = 0;
     std::uint64_t mcap_errors_ = 0;
 };
@@ -1921,7 +1963,7 @@ public:
 private:
     static std::string log_path() {
         if (const char *env = std::getenv("MOTION_SPEC_FRAME_LOG")) return env;
-        return "frame_log.bin";
+        return "frame_log.mcap";
     \}
 
     static std::string shm_name() {

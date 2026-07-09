@@ -15,10 +15,12 @@ from motion_spec.introspection.archive import (
     verify_manifest,
 )
 from motion_spec.introspection.artifacts import prov_uri
-from motion_spec.introspection.frame_layout_spec import fields_with_offsets, frame_struct
+from motion_spec.introspection.frame_layout_spec import fields_with_offsets
 from motion_spec.introspection import replay
-from motion_spec.introspection.replay import MAGIC, HEADER, decode_frames, summarize, validate_header
+from motion_spec.introspection.replay import decode_frames, summarize, validate_header
 from motion_spec.introspection.runtime_graph import write_runtime_ttl
+
+from mcap_fixture import flat_frame, records_from_flats, write_frame_log_mcap
 
 
 def _hash_doc(doc: dict) -> str:
@@ -42,7 +44,7 @@ def _schema() -> dict:
             "end": 0,
         },
         "by_state": {},
-        "quantities": [],
+        "quantities": [{"index": 0, "id": "q0"}],
         "provenance_contexts": [{"id": "prov", "source": "src/metamodels/prov.json"}],
         "runtime_provenance": {
             "activity_id": "activity:controller_execution",
@@ -105,37 +107,27 @@ def _provenance() -> dict:
 
 
 def _write_frame_log(path: Path, schema: dict, layout: dict) -> None:
-    st, names = frame_struct(schema["pools"])
-    flat = {name: 0 for name in names}
-    flat.update(
-        {
-            "t": 1.25,
-            "step": 7,
-            "fsm_state": 0,
-            "active_motion": -1,
-            "last_event": -1,
-            "state_since_t": 1.0,
-            "event_t": 0.0,
-            "wall_ns": 100,
-            "period_ns": 1_000_000,
-            "compute_ns": 25_000,
+    flat = flat_frame(
+        schema,
+        t=1.25,
+        step=7,
+        fsm_state=0,
+        active_motion=-1,
+        last_event=-1,
+        state_since_t=1.0,
+        event_t=0.0,
+        wall_ns=100,
+        period_ns=1_000_000,
+        compute_ns=25_000,
+        **{
             "c0.active": 1,
             "c0.satisfied": 1,
             "m0.active": 1,
             "m0.satisfied": 1,
             "q0": 42.0,
-        }
+        },
     )
-    header = HEADER.pack(
-        MAGIC,
-        1,
-        st.size,
-        schema["schema_hash"].encode(),
-        layout["frame_layout_hash"].encode(),
-        schema["runtime_provenance"]["producer_agent_id"].encode(),
-        schema["runtime_provenance"]["activity_id"].encode(),
-    )
-    path.write_bytes(header + st.pack(*(flat[name] for name in names)))
+    write_frame_log_mcap(path, schema, layout, records_from_flats(schema, [flat]))
 
 
 def _source_tree(path: Path) -> Path:
@@ -152,13 +144,13 @@ def _source_tree(path: Path) -> Path:
     (path / "headers").mkdir()
     (path / "headers" / "runtime.hpp").write_text("// generated\n")
     (path / "ref_main.cpp").write_text("// generated\n")
-    _write_frame_log(path / "frame_log.bin", schema, layout)
-    (path / "frame_log.bin.health.json").write_text(
+    _write_frame_log(path / "frame_log.mcap", schema, layout)
+    (path / "frame_log.mcap.health.json").write_text(
         json.dumps(
             {
                 "attempted_frames": 1,
                 "accepted_frames": 1,
-                "written_frames": 1,
+                "mcap_written_frames": 1,
                 "dropped_frames": 0,
                 "complete": True,
             },
@@ -190,23 +182,23 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
 
     assert manifest["files"]["log_producer_executable"] is None
     assert manifest["files"]["rec"] == "rec.jsonld"
-    assert manifest["files"]["frame_log_health"] == "logs/frame_log.bin.health.json"
+    assert manifest["files"]["frame_log_health"] == "logs/frame_log.mcap.health.json"
     assert manifest["files"]["dsl_provenance"] == "provenance/dsl.jsonld"
     assert manifest["rec"] == {"path": "rec.jsonld", "run_id": "run-test"}
     assert manifest["files"]["controller"] == "controller/source"
     assert "controller/source" in manifest["artifacts"]
-    assert "logs/frame_log.bin.health.json" in manifest["artifacts"]
+    assert "logs/frame_log.mcap.health.json" in manifest["artifacts"]
     assert "provenance/dsl.jsonld" in manifest["artifacts"]
     assert "rec.jsonld" in manifest["artifacts"]
     assert verify_manifest(run_dir)["run_id"] == "run-test"
-    header = validate_header(run_dir / "logs" / "frame_log.bin", _schema(), _layout(_schema()))
+    header = validate_header(run_dir / "logs" / "frame_log.mcap", _schema(), _layout(_schema()))
     assert header["producer_agent_id"] == "agent:controller_process"
 
-    frames = decode_frames(run_dir / "logs" / "frame_log.bin")
+    frames = decode_frames(run_dir / "logs" / "frame_log.mcap")
     assert frames[0]["step"] == 7
-    assert frames[0]["quantities"] == [42.0]
-    assert "frames      1" in summarize(run_dir / "logs" / "frame_log.bin")
-    assert "dropped 0" in summarize(run_dir / "logs" / "frame_log.bin")
+    assert frames[0]["quantities"] == {"q0": 42.0}
+    assert "frames      1" in summarize(run_dir / "logs" / "frame_log.mcap")
+    assert "dropped 0" in summarize(run_dir / "logs" / "frame_log.mcap")
     assert decode_frames(run_dir)[0]["step"] == 7
     assert f"archive     {run_dir}" in summarize(run_dir)
     assert replay.main([str(run_dir), "--verify"]) == 0
@@ -237,21 +229,9 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
     assert runtime_artifact["atLocation"] == "runtime/runtime.ttl"
     metrics = {row["name"]: row["value"] for row in rec_doc["metrics"]}
     assert metrics["frame_log_attempted_frames"] == 1
-    assert metrics["frame_log_written_frames"] == 1
+    assert metrics["frame_log_mcap_written_frames"] == 1
     assert metrics["frame_log_dropped_frames"] == 0
     assert metrics["frame_log_complete"] == 1
-
-
-def test_archive_includes_optional_mcap_frame_log(tmp_path: Path) -> None:
-    source = _source_tree(tmp_path / "source")
-    (source / "frame_log.mcap").write_bytes(b"mcap")
-    run_dir = tmp_path / "copied-run"
-
-    manifest = create_archive_manifest(run_dir, source_dir=source, run_id="run-test")
-
-    assert manifest["files"]["frame_log_mcap"] == "logs/frame_log.mcap"
-    assert manifest["artifacts"]["logs/frame_log.mcap"]["role"] == "frame_log_mcap"
-    assert (run_dir / "logs" / "frame_log.mcap").read_bytes() == b"mcap"
 
 
 def _importing_manifest() -> dict:

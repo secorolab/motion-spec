@@ -166,7 +166,7 @@ def _project_occurrences(
 ) -> set:
     """Synthesize the discrete event graph from the per-tick frame scan; return the set of steps
     that carry an occurrence (the frames worth materializing). Continuous scalars stay in
-    frame_log.bin; only semantic edges land in the graph:
+    the frame log (.mcap /motion_spec/frame); only semantic edges land in the graph:
 
       * StateOccurrence / TransitionOccurrence on FSM state changes,
       * ConstraintSatisfied/UnsatisfiedOccurrence on a goal constraint's satisfied edge (both
@@ -400,7 +400,7 @@ def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int
 
     # Synthesize the discrete event graph, then materialize a Frame node only for the steps that
     # actually anchor an occurrence (plus the run's first/last for bounds). The dense per-tick
-    # curve — every frame, all continuous scalars — stays in frame_log.bin for numeric analysis.
+    # curve — every frame, all continuous scalars — stays in the frame log for numeric analysis.
     if frames:
         states, _events = _state_maps(schema)
         cond_map = _condition_map(run_dir, manifest)

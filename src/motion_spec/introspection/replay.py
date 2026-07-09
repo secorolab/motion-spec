@@ -1,24 +1,21 @@
 # SPDX-License-Identifier: MPL-2.0
-"""Replay generated introspection frame logs from a self-contained run folder."""
+"""Replay generated introspection frame logs (``.mcap``) from a run archive."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import sys
-import struct
 from collections.abc import Iterator
 from pathlib import Path
 
+from mcap.reader import make_reader
+
 from motion_spec.introspection.archive import ArchiveError, verify_manifest
-from motion_spec.introspection.frame_layout_spec import CSLOT, MSLOT, TSLOT, frame_struct
+from motion_spec.introspection.frame_layout_spec import CSLOT, MSLOT, TSLOT
 
-MAGIC = b"MSFRMBIN"
-HEADER = struct.Struct("<8sII32s32s128s128s")
-
-
-def _cstr(raw: bytes) -> str:
-    return raw.split(b"\0", 1)[0].decode("utf-8", errors="replace")
+FRAME_TOPIC = "/motion_spec/frame"
+LOG_TOPIC = "/motion_spec/log"
 
 
 def run_dir_for(log_path: Path) -> Path:
@@ -50,47 +47,43 @@ def load_archive(log_path: Path | str) -> tuple[Path, dict, dict, dict]:
     return run_dir, manifest, schema, layout
 
 
-def read_header(log_path: Path | str) -> dict:
+def _frame_channel_metadata(reader) -> dict:
+    """Metadata carried on the ``/motion_spec/frame`` channel (schema/layout hashes and
+    runtime provenance the writer stamped there)."""
+    summary = reader.get_summary()
+    if summary is not None:
+        for channel in summary.channels.values():
+            if channel.topic == FRAME_TOPIC:
+                return dict(channel.metadata)
+    # No summary section: fall back to the first frame message's channel.
+    for _schema, channel, _message in reader.iter_messages(topics=[FRAME_TOPIC]):
+        return dict(channel.metadata)
+    raise ArchiveError(f"{FRAME_TOPIC}: channel not found in mcap")
+
+
+def read_meta(log_path: Path | str) -> dict:
     with Path(log_path).open("rb") as fh:
-        data = fh.read(HEADER.size)
-    if len(data) != HEADER.size:
-        raise ArchiveError(f"{log_path}: truncated run header")
-    magic, writer_version, frame_size, schema_hash, layout_hash, producer, activity = HEADER.unpack(data)
-    if magic != MAGIC:
-        raise ArchiveError(f"{log_path}: bad magic {magic!r}")
-    return {
-        "writer_version": writer_version,
-        "frame_size": frame_size,
-        "schema_hash": _cstr(schema_hash),
-        "frame_layout_hash": _cstr(layout_hash),
-        "producer_agent_id": _cstr(producer),
-        "activity_id": _cstr(activity),
-    }
+        return _frame_channel_metadata(make_reader(fh))
 
 
 def validate_header(log_path: Path | str, schema: dict, layout: dict) -> dict:
-    header = read_header(log_path)
-    if header["frame_size"] != layout["frame_size_bytes"]:
+    meta = read_meta(log_path)
+    if meta.get("schema_hash") != schema.get("schema_hash"):
         raise ArchiveError(
-            f"{log_path}: header frame_size {header['frame_size']} != frame_layout.json "
-            f"{layout['frame_size_bytes']}"
-        )
-    if header["schema_hash"] != schema.get("schema_hash"):
-        raise ArchiveError(
-            f"{log_path}: header schema_hash {header['schema_hash']} != schema.json "
+            f"{log_path}: channel schema_hash {meta.get('schema_hash')} != schema.json "
             f"{schema.get('schema_hash')}"
         )
-    if header["frame_layout_hash"] != layout.get("frame_layout_hash"):
+    if meta.get("frame_layout_hash") != layout.get("frame_layout_hash"):
         raise ArchiveError(
-            f"{log_path}: header frame_layout_hash {header['frame_layout_hash']} != "
+            f"{log_path}: channel frame_layout_hash {meta.get('frame_layout_hash')} != "
             f"frame_layout.json {layout.get('frame_layout_hash')}"
         )
     expected = schema.get("runtime_provenance", {})
-    if expected.get("producer_agent_id") and header["producer_agent_id"] != expected["producer_agent_id"]:
+    if expected.get("producer_agent_id") and meta.get("producer_agent_id") != expected["producer_agent_id"]:
         raise ArchiveError(f"{log_path}: producer_agent_id does not match schema runtime provenance")
-    if expected.get("activity_id") and header["activity_id"] != expected["activity_id"]:
+    if expected.get("activity_id") and meta.get("activity_id") != expected["activity_id"]:
         raise ArchiveError(f"{log_path}: activity_id does not match schema runtime provenance")
-    return header
+    return meta
 
 
 def read_health(log_path: Path | str) -> dict | None:
@@ -100,26 +93,24 @@ def read_health(log_path: Path | str) -> dict | None:
     return json.loads(health_path.read_text())
 
 
-def frames(log_path: Path | str) -> Iterator[tuple[dict, int, int, int, int]]:
+def _iter_records(log_path: Path | str) -> Iterator[dict]:
+    """Decoded ``/motion_spec/frame`` messages — already the nested record shape the C++
+    writer emits (`to_record` form), so no reshaping on read."""
+    with Path(log_path).open("rb") as fh:
+        reader = make_reader(fh)
+        for _schema, _channel, message in reader.iter_messages(topics=[FRAME_TOPIC]):
+            yield json.loads(message.data)
+
+
+def frames(log_path: Path | str) -> Iterator[dict]:
     _run_dir, log_path, _manifest, schema, layout = resolve_archive(log_path)
     validate_header(log_path, schema, layout)
-    st, names = frame_struct(schema["pools"])
-    n_c = schema["pools"]["constraints"]
-    n_m = schema["pools"]["monitors"]
-    n_q = schema["pools"]["quantities"]
-    n_t = schema["pools"]["triggers"]
-    with log_path.open("rb") as fh:
-        fh.seek(HEADER.size)
-        while True:
-            buf = fh.read(st.size)
-            if not buf:
-                break
-            if len(buf) != st.size:
-                raise ArchiveError(f"{log_path}: truncated frame payload")
-            yield dict(zip(names, st.unpack(buf))), n_c, n_m, n_q, n_t
+    yield from _iter_records(log_path)
 
 
-def to_record(flat: dict, n_c: int, n_m: int, n_q: int, n_t: int) -> dict:
+def to_record(flat: dict, n_c: int, n_m: int, n_q: int, n_t: int, quantity_ids: list[str]) -> dict:
+    """Canonical nested frame record from a flat name->value map. Mirrors the C++ writer;
+    used by tests/fixtures (the read path gets this shape straight from the mcap)."""
     record = {
         key: flat[key]
         for key in (
@@ -137,7 +128,7 @@ def to_record(flat: dict, n_c: int, n_m: int, n_q: int, n_t: int) -> dict:
     record["timing"] = {key: flat[key] for key in ("wall_ns", "period_ns", "compute_ns")}
     record["constraints"] = [{name: flat[f"c{idx}.{name}"] for name, _ in CSLOT} for idx in range(n_c)]
     record["monitors"] = [{name: flat[f"m{idx}.{name}"] for name, _ in MSLOT} for idx in range(n_m)]
-    record["quantities"] = [flat[f"q{idx}"] for idx in range(n_q)]
+    record["quantities"] = {quantity_ids[idx]: flat[f"q{idx}"] for idx in range(n_q)}
     start = max(0, flat["trigger_count"] - n_t)
     record["triggers"] = [
         {name: flat[f"tr{idx % n_t}.{name}"] for name, _ in TSLOT}
@@ -147,7 +138,9 @@ def to_record(flat: dict, n_c: int, n_m: int, n_q: int, n_t: int) -> dict:
 
 
 def decode_frames(log_path: Path | str) -> list[dict]:
-    return [to_record(flat, n_c, n_m, n_q, n_t) for flat, n_c, n_m, n_q, n_t in frames(log_path)]
+    _run_dir, log_path, _manifest, schema, layout = resolve_archive(log_path)
+    validate_header(log_path, schema, layout)
+    return list(_iter_records(log_path))
 
 
 def runtime_frames(log_path: Path | str) -> tuple[list[dict], int]:
@@ -158,8 +151,7 @@ def runtime_frames(log_path: Path | str) -> tuple[list[dict], int]:
 def sampled_frames(log_path: Path | str) -> tuple[list[dict], int]:
     first = last = None
     count = 0
-    for flat, n_c, n_m, n_q, n_t in frames(log_path):
-        record = to_record(flat, n_c, n_m, n_q, n_t)
+    for record in frames(log_path):
         if first is None:
             first = record
         last = record
@@ -173,13 +165,12 @@ def sampled_frames(log_path: Path | str) -> tuple[list[dict], int]:
 
 def summarize(log_path: Path | str) -> str:
     run_dir, log_path, _manifest, schema, layout = resolve_archive(log_path)
-    header = validate_header(log_path, schema, layout)
+    meta = validate_header(log_path, schema, layout)
     count = 0
     first = last = None
     periods = []
     computes = []
-    for flat, n_c, n_m, n_q, n_t in frames(log_path):
-        record = to_record(flat, n_c, n_m, n_q, n_t)
+    for record in _iter_records(log_path):
         first = first or record
         last = record
         count += 1
@@ -197,7 +188,7 @@ def summarize(log_path: Path | str) -> str:
         f"log         {log_path}",
         f"archive     {run_dir}",
         f"frames      {count}",
-        f"writer      v{header['writer_version']} {header['producer_agent_id']} {header['activity_id']}",
+        f"writer      {meta.get('producer_agent_id', '')} {meta.get('activity_id', '')}",
         f"final state {final_name}",
     ]
     health = read_health(log_path)
@@ -205,7 +196,7 @@ def summarize(log_path: Path | str) -> str:
         lines.append(
             "log health  "
             f"attempted {health.get('attempted_frames')} "
-            f"written {health.get('written_frames')} "
+            f"written {health.get('mcap_written_frames')} "
             f"dropped {health.get('dropped_frames')}"
         )
     if periods:
@@ -217,7 +208,7 @@ def summarize(log_path: Path | str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("log", help="frame_log.bin inside a motion-spec run archive")
+    parser.add_argument("log", help="frame_log.mcap inside a motion-spec run archive")
     parser.add_argument("--jsonl", action="store_true", help="emit decoded frames as JSON Lines")
     parser.add_argument("--verify", action="store_true", help="verify manifest/header only")
     parser.add_argument("--recover-runtime-ttl", action="store_true", help="write runtime.ttl from the frame log")

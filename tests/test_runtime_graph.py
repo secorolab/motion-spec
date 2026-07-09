@@ -137,8 +137,10 @@ def _write_frame_log(path: Path, schema: dict, layout: dict) -> None:
             state_since_wall_ns=200,
             **{
                 "c0.active": 1,
+                # Integer-valued measurement: JSON serializes a double 1.0 as "1", which
+                # json.loads reads back as int — msrun:value must still be xsd:decimal.
                 "c0.satisfied": 0,
-                "c0.error": 0.02,
+                "c0.error": 1,
                 "m0.active": 1,
                 "m0.satisfied": 1,
                 "m0.value": 0.004,
@@ -219,7 +221,9 @@ def test_runtime_ttl_projects_full_observation_graph(tmp_path: Path) -> None:
     mon = next(graph.subjects(rdflib.RDF.type, MSRUN.MonitorOccurrence))
     assert graph.value(mon, MSRUN.value) == rdflib.Literal(Decimal("0.004"))
     con = next(graph.subjects(rdflib.RDF.type, MSRUN.ConstraintUnsatisfiedOccurrence))
-    assert graph.value(con, MSRUN.value) == rdflib.Literal(Decimal("0.02"))
+    # int-valued measurement coerced to xsd:decimal (not xsd:integer, which the runtime SHACL rejects)
+    assert graph.value(con, MSRUN.value) == rdflib.Literal(Decimal("1.0"))
+    assert graph.value(con, MSRUN.value).datatype == rdflib.XSD.decimal
     # The only floats are those bounded occurrence values, and they stay exact-decimal (never double).
     floats = [(s, o) for s, p, o in graph.triples((None, MSRUN.value, None)) if isinstance(o, rdflib.Literal)]
     assert floats and all(o.datatype == rdflib.XSD.decimal for _, o in floats)

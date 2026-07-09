@@ -123,6 +123,13 @@ def _literal(g: rdflib.Graph, subject: rdflib.URIRef, predicate: rdflib.URIRef, 
     g.add((subject, predicate, rdflib.Literal(value)))
 
 
+def _double(value):
+    """Coerce a JSON number to float. Continuous measurements (msrun:value) are doubles, but
+    JSON serializes an integer-valued double (1.0 -> "1") which json.loads reads back as int;
+    left as-is that emits xsd:integer, which the runtime SHACL (xsd:decimal/double) rejects."""
+    return None if value is None else float(value)
+
+
 def _state_maps(schema: dict) -> tuple[dict[int, dict], dict[int, dict]]:
     states = {
         state.get("index", idx): state
@@ -234,7 +241,7 @@ def _project_occurrences(
                         g.add((occ, MSRUN.fsmState, rdflib.URIRef(state["uri"])))
                     _literal(g, occ, MSRUN.slotIndex, idx)
                     # live residual at the edge; spec (setpoint/threshold) is on the linked constraint
-                    _literal(g, occ, MSRUN.value, frame["constraints"][idx].get("error"))
+                    _literal(g, occ, MSRUN.value, _double(frame["constraints"][idx].get("error")))
                     anchors.add(step)
             if prev_msat is not None:
                 for idx, now in enumerate(msat):
@@ -254,7 +261,7 @@ def _project_occurrences(
                         g.add((occ, MSRUN.fsmState, rdflib.URIRef(state["uri"])))
                     _literal(g, occ, MSRUN.slotIndex, idx)
                     # live residual at fire; spec (quantity/threshold) is on the linked constraint
-                    _literal(g, occ, MSRUN.value, frame["monitors"][idx].get("value"))
+                    _literal(g, occ, MSRUN.value, _double(frame["monitors"][idx].get("value")))
                     anchors.add(step)
 
         for trigger in frame.get("triggers", []):

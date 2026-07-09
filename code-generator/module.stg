@@ -1663,10 +1663,12 @@ public:
         attempted_.fetch_add(1, std::memory_order_relaxed);
         if (!running_.load(std::memory_order_relaxed)) return;
         const std::uint64_t head = head_.load(std::memory_order_relaxed);
-        const std::uint64_t tail = tail_.load(std::memory_order_acquire);
-        if (head - tail >= ring_.size()) {
-            dropped_.fetch_add(1, std::memory_order_relaxed);
-            return;
+        // Backpressure, not drop: wait for the writer to free a slot so the log stays
+        // complete. Only blocks when the producer outruns the writer (max-speed headless);
+        // at control-period pacing the ring never fills, so the control loop never stalls.
+        while (head - tail_.load(std::memory_order_acquire) >= ring_.size()) {
+            if (!running_.load(std::memory_order_relaxed)) return;
+            std::this_thread::yield();
         \}
         ring_[head & mask_] = frame;
         head_.store(head + 1, std::memory_order_release);

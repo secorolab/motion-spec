@@ -232,12 +232,6 @@ def create_archive_manifest(
         copies["frame_log.pb"] = frame_log_rel
         if (source_dir / "frame_log.pb.health.json").exists():
             copies["frame_log.pb.health.json"] = frame_log_health_rel
-    elif (source_dir / "frame_log.mcap").exists():
-        frame_log_rel = "logs/frame_log.mcap"
-        frame_log_health_rel = "logs/frame_log.mcap.health.json"
-        copies["frame_log.mcap"] = frame_log_rel
-        if (source_dir / "frame_log.mcap.health.json").exists():
-            copies["frame_log.mcap.health.json"] = frame_log_health_rel
     schema = json.loads((source_dir / "schema.json").read_text())
     # schema.graph/ir_path are portable basenames; resolve them against source_dir.
     if (source_dir / "model.jsonld").exists():
@@ -711,7 +705,7 @@ def _record_frame_log_health(run, run_dir: Path, manifest: dict) -> None:
     if not path.exists():
         return
     health = json.loads(path.read_text())
-    for name in ("attempted_frames", "accepted_frames", "written_frames", "mcap_written_frames", "dropped_frames"):
+    for name in ("attempted_frames", "accepted_frames", "written_frames", "dropped_frames"):
         if name in health:
             run.log_scalar(f"frame_log_{name}", health[name], step=0)
     if "complete" in health:

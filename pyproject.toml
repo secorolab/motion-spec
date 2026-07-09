@@ -15,7 +15,6 @@ dependencies = [
     "rdflib",
     "pyshacl>=0.25.0",
     "rec",
-    "mcap",
 ]
 
 [project.optional-dependencies]

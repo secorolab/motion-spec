@@ -20,7 +20,7 @@ from motion_spec.introspection import replay
 from motion_spec.introspection.replay import decode_frames, summarize, validate_header
 from motion_spec.introspection.runtime_graph import write_runtime_ttl
 
-from mcap_fixture import flat_frame, write_frame_log_pb
+from frame_log_fixture import flat_frame, write_frame_log_pb
 
 
 def _hash_doc(doc: dict) -> str:

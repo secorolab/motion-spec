@@ -1403,7 +1403,6 @@ inline constexpr const char *kRuntimeProducerAgentId = "<introspection_artifacts
 inline constexpr const char *kRuntimeAgentId = "<introspection_artifacts.frame_layout.runtime_agent_id>";
 inline constexpr std::int64_t kEndState = <introspection_artifacts.frame_layout.end_state>;
 inline constexpr std::int64_t kNominalPeriodNs = <introspection_artifacts.frame_layout.nominal_period_ns>;
-inline constexpr const char *kFrameJsonSchema = R"JSON(<introspection_artifacts.frame_layout.frame_json_schema>)JSON";
 
 // Named-signal table: keys of the frame `quantities` object (indexed by pool slot).
 inline constexpr const char *kQuantityIds[] = { <introspection_artifacts.frame_layout.quantity_ids:{q|"<q>", }>nullptr };
@@ -1416,8 +1415,6 @@ inline constexpr std::size_t kNumEvents = <length(introspection_artifacts.frame_
 inline constexpr const char *kEventIds[] = { <introspection_artifacts.frame_layout.fsm_events:{e|"<e.id>", }>nullptr };
 inline constexpr const char *kEventIris[] = { <introspection_artifacts.frame_layout.fsm_events:{e|"<e.iri>", }>nullptr };
 
-inline constexpr const char *kFoxgloveLogSchema = R"JSON(<introspection_artifacts.frame_layout.log_schema>)JSON";
-
 // Spatial channels — one topic per data object; frame_id is the object's reference frame.
 inline constexpr const char *kPoseTopics[] = { <introspection_artifacts.frame_layout.poses:{p|"<p.topic>", }>nullptr };
 inline constexpr const char *kPoseFrameIds[] = { <introspection_artifacts.frame_layout.poses:{p|"<p.frame_id>", }>nullptr };
@@ -1425,10 +1422,6 @@ inline constexpr const char *kTwistTopics[] = { <introspection_artifacts.frame_l
 inline constexpr const char *kTwistFrameIds[] = { <introspection_artifacts.frame_layout.twists:{t|"<t.frame_id>", }>nullptr };
 inline constexpr const char *kWrenchTopics[] = { <introspection_artifacts.frame_layout.wrenches:{w|"<w.topic>", }>nullptr };
 inline constexpr const char *kWrenchFrameIds[] = { <introspection_artifacts.frame_layout.wrenches:{w|"<w.frame_id>", }>nullptr };
-
-inline constexpr const char *kPoseInFrameSchema = R"JSON(<introspection_artifacts.frame_layout.pose_schema>)JSON";
-inline constexpr const char *kTwistInFrameSchema = R"JSON(<introspection_artifacts.frame_layout.twist_schema>)JSON";
-inline constexpr const char *kWrenchInFrameSchema = R"JSON(<introspection_artifacts.frame_layout.wrench_schema>)JSON";
 
 } // namespace motion_spec::introspection
 >>
@@ -1537,48 +1530,6 @@ inline std::int64_t wall_time_ns() {
 inline std::int64_t steady_time_ns() {
     const auto now = std::chrono::steady_clock::now().time_since_epoch();
     return std::chrono::duration_cast\<std::chrono::nanoseconds\>(now).count();
-}
-
-// JSON value emitters for the .mcap message payload. Doubles round-trip at %.17g;
-// non-finite doubles become null (JSON has no NaN/Inf).
-inline void json_double(std::string &out, double v) {
-    if (std::isfinite(v)) {
-        char b[32];
-        std::snprintf(b, sizeof(b), "%.17g", v);
-        out += b;
-    \} else {
-        out += "null";
-    \}
-}
-
-inline void json_i64(std::string &out, std::int64_t v) {
-    char b[24];
-    std::snprintf(b, sizeof(b), "%lld", static_cast\<long long\>(v));
-    out += b;
-}
-
-inline void json_u64(std::string &out, std::uint64_t v) {
-    char b[24];
-    std::snprintf(b, sizeof(b), "%llu", static_cast\<unsigned long long\>(v));
-    out += b;
-}
-
-// Minimal JSON string (ids/IRIs carry no control chars; escape only " and \).
-inline void json_str(std::string &out, const char *s) {
-    out += '"';
-    for (const char *p = s ? s : ""; *p; ++p) {
-        if (*p == '"' || *p == '\\\\') out += '\\\\';
-        out += *p;
-    \}
-    out += '"';
-}
-
-// foxglove.Timestamp {sec,nsec} from epoch nanoseconds.
-inline void json_timestamp(std::string &out, std::int64_t wall_ns) {
-    if (wall_ns \< 0) wall_ns = 0;
-    out += "{\"sec\":";  json_i64(out, wall_ns / 1000000000);
-    out += ",\"nsec\":"; json_i64(out, wall_ns % 1000000000);
-    out += '\}';
 }
 
 class LatestFramePublisher {

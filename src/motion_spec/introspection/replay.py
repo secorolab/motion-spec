@@ -9,14 +9,8 @@ import sys
 from collections.abc import Iterator
 from pathlib import Path
 
-from mcap.reader import make_reader
-
 from motion_spec.introspection.archive import ArchiveError, verify_manifest
-from motion_spec.introspection.frame_layout_spec import CSLOT, MSLOT, TSLOT
 from motion_spec.introspection import frame_log_pb
-
-FRAME_TOPIC = "/motion_spec/frame"
-LOG_TOPIC = "/motion_spec/log"
 
 
 def run_dir_for(log_path: Path) -> Path:
@@ -48,26 +42,11 @@ def load_archive(log_path: Path | str) -> tuple[Path, dict, dict, dict]:
     return run_dir, manifest, schema, layout
 
 
-def _frame_channel_metadata(reader) -> dict:
-    """Metadata carried on the ``/motion_spec/frame`` channel (schema/layout hashes and
-    runtime provenance the writer stamped there)."""
-    summary = reader.get_summary()
-    if summary is not None:
-        for channel in summary.channels.values():
-            if channel.topic == FRAME_TOPIC:
-                return dict(channel.metadata)
-    # No summary section: fall back to the first frame message's channel.
-    for _schema, channel, _message in reader.iter_messages(topics=[FRAME_TOPIC]):
-        return dict(channel.metadata)
-    raise ArchiveError(f"{FRAME_TOPIC}: channel not found in mcap")
-
-
 def read_meta(log_path: Path | str) -> dict:
     path = Path(log_path)
-    if path.suffix == ".pb":
-        return frame_log_pb.read_header(path)
-    with path.open("rb") as fh:
-        return _frame_channel_metadata(make_reader(fh))
+    if path.suffix != ".pb":
+        raise ArchiveError(f"{path}: expected a .pb frame log")
+    return frame_log_pb.read_header(path)
 
 
 def validate_header(log_path: Path | str, schema: dict, layout: dict) -> dict:
@@ -97,56 +76,14 @@ def read_health(log_path: Path | str) -> dict | None:
     return json.loads(health_path.read_text())
 
 
-def _iter_records(log_path: Path | str) -> Iterator[dict]:
-    """Decoded ``/motion_spec/frame`` messages — already the nested record shape the C++
-    writer emits (`to_record` form), so no reshaping on read."""
-    with Path(log_path).open("rb") as fh:
-        reader = make_reader(fh)
-        for _schema, _channel, message in reader.iter_messages(topics=[FRAME_TOPIC]):
-            yield json.loads(message.data)
-
-
 def _records(log_path: Path | str, schema: dict, layout: dict) -> Iterator[dict]:
-    path = Path(log_path)
-    if path.suffix == ".pb":
-        yield from frame_log_pb.frame_records(path, schema, layout)
-        return
-    yield from _iter_records(path)
+    yield from frame_log_pb.frame_records(log_path, schema, layout)
 
 
 def frames(log_path: Path | str) -> Iterator[dict]:
     _run_dir, log_path, _manifest, schema, layout = resolve_archive(log_path)
     validate_header(log_path, schema, layout)
     yield from _records(log_path, schema, layout)
-
-
-def to_record(flat: dict, n_c: int, n_m: int, n_q: int, n_t: int, quantity_ids: list[str]) -> dict:
-    """Canonical nested frame record from a flat name->value map. Mirrors the C++ writer;
-    used by tests/fixtures (the read path gets this shape straight from the mcap)."""
-    record = {
-        key: flat[key]
-        for key in (
-            "t",
-            "step",
-            "fsm_state",
-            "active_motion",
-            "last_event",
-            "state_since_t",
-            "state_since_wall_ns",
-            "event_t",
-            "event_wall_ns",
-        )
-    }
-    record["timing"] = {key: flat[key] for key in ("wall_ns", "period_ns", "compute_ns")}
-    record["constraints"] = [{name: flat[f"c{idx}.{name}"] for name, _ in CSLOT} for idx in range(n_c)]
-    record["monitors"] = [{name: flat[f"m{idx}.{name}"] for name, _ in MSLOT} for idx in range(n_m)]
-    record["quantities"] = {quantity_ids[idx]: flat[f"q{idx}"] for idx in range(n_q)}
-    start = max(0, flat["trigger_count"] - n_t)
-    record["triggers"] = [
-        {name: flat[f"tr{idx % n_t}.{name}"] for name, _ in TSLOT}
-        for idx in range(start, flat["trigger_count"])
-    ]
-    return record
 
 
 def decode_frames(log_path: Path | str) -> list[dict]:
@@ -208,7 +145,7 @@ def summarize(log_path: Path | str) -> str:
         lines.append(
             "log health  "
             f"attempted {health.get('attempted_frames')} "
-            f"written {health.get('written_frames', health.get('mcap_written_frames'))} "
+            f"written {health.get('written_frames')} "
             f"dropped {health.get('dropped_frames')}"
         )
     if periods:
@@ -220,7 +157,7 @@ def summarize(log_path: Path | str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("log", help="frame_log.pb or frame_log.mcap inside a motion-spec run archive")
+    parser.add_argument("log", help="frame_log.pb inside a motion-spec run archive")
     parser.add_argument("--jsonl", action="store_true", help="emit decoded frames as JSON Lines")
     parser.add_argument("--verify", action="store_true", help="verify manifest/header only")
     parser.add_argument("--recover-runtime-ttl", action="store_true", help="write runtime.ttl from the frame log")

@@ -11,17 +11,8 @@ from pathlib import Path
 
 from motion_spec.introspection.frame_layout_spec import (
     fields_with_offsets,
-    frame_json_schema,
     quantity_ids,
 )
-
-SCHEMAS_DIR = Path(__file__).resolve().parents[3] / "schemas" / "jsonschema"
-
-
-def _embedded_schema(name: str) -> str:
-    """Compact JSON of a vendored/authored channel schema, embedded verbatim into the
-    generated header (single source of truth: ``schemas/jsonschema/``)."""
-    return json.dumps(json.loads((SCHEMAS_DIR / f"{name}.json").read_text()), separators=(",", ":"))
 
 SCHEMA_VERSION = 1
 FRAME_LAYOUT_VERSION = 1
@@ -741,7 +732,6 @@ def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path, 
             "runtime_agent_id": schema["runtime_provenance"].get("runtime_agent_id") or "",
             "end_state": end_state if end_state is not None else -1,
             "nominal_period_ns": schema.get("control_period_ns") or 0,
-            "frame_json_schema": json.dumps(frame_json_schema(schema["quantities"]), separators=(",", ":")),
             "quantity_ids": quantity_ids(schema["quantities"]),
             "fsm_states": [
                 {"id": state["id"], "iri": state.get("uri") or ""}
@@ -751,13 +741,9 @@ def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path, 
                 {"id": event["id"], "iri": event.get("uri") or ""}
                 for event in schema.get("fsm", {}).get("events", [])
             ],
-            "log_schema": _embedded_schema("Log"),
             "poses": schema["spatial"]["poses"],
             "twists": schema["spatial"]["twists"],
             "wrenches": schema["spatial"]["wrenches"],
-            "pose_schema": _embedded_schema("PoseInFrame"),
-            "twist_schema": _embedded_schema("TwistInFrame"),
-            "wrench_schema": _embedded_schema("WrenchInFrame"),
         },
         "model": build_introspection_model(schema, ir),
     }

@@ -14,7 +14,7 @@ from motion_spec.introspection.frame_layout_spec import field_names_and_format
 from motion_spec.introspection.replay import runtime_frames
 from motion_spec.introspection.runtime_graph import MSRUN, PROV, _bind_model_subnamespaces, write_runtime_ttl
 
-from mcap_fixture import write_frame_log_pb
+from frame_log_fixture import write_frame_log_pb
 from test_introspection_archive import _hash_doc, _layout, _provenance
 
 

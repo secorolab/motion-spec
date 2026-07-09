@@ -1671,6 +1671,11 @@ private:
         out.append(reinterpret_cast\<const char *\>(&value), sizeof(value));
     \}
 
+    static void append_double(std::string &out, std::uint32_t field, double value) {
+        append_key(out, field, 1);
+        out.append(reinterpret_cast\<const char *\>(&value), sizeof(value));
+    \}
+
     bool write_delimited(const std::string &message) {
         if (!log_) return false;
         prefix_.clear();
@@ -1682,20 +1687,100 @@ private:
     void write_header(const char *producer_agent_id, const char *activity_id) {
         payload_.clear();
         append_string(payload_, 1, kSchemaHash);
-        append_string(payload_, 2, kFrameLayoutHash);
-        append_string(payload_, 3, producer_agent_id);
-        append_string(payload_, 4, activity_id);
-        append_uint(payload_, 5, kFrameSizeBytes);
+        append_string(payload_, 2, producer_agent_id);
+        append_string(payload_, 3, activity_id);
         message_.clear();
         append_bytes(message_, 1, payload_.data(), payload_.size());
         if (!write_delimited(message_)) ++write_errors_;
     \}
 
+    void append_constraint(const ConstraintSlot &slot) {
+        slot_.clear();
+        append_i64(slot_, 1, slot.active);
+        append_double(slot_, 2, slot.error);
+        append_double(slot_, 3, slot.output);
+        append_i64(slot_, 4, slot.satisfied);
+        append_double(slot_, 5, slot.sat_t);
+        append_double(slot_, 6, slot.measured);
+        append_double(slot_, 7, slot.setpoint);
+        append_bytes(payload_, 13, slot_.data(), slot_.size());
+    \}
+
+    void append_monitor(const MonitorSlot &slot) {
+        slot_.clear();
+        append_i64(slot_, 1, slot.active);
+        append_double(slot_, 2, slot.value);
+        append_i64(slot_, 3, slot.satisfied);
+        append_double(slot_, 4, slot.sat_t);
+        append_bytes(payload_, 14, slot_.data(), slot_.size());
+    \}
+
+    void append_trigger(const Trigger &slot) {
+        slot_.clear();
+        append_i64(slot_, 1, slot.kind);
+        append_i64(slot_, 2, slot.idx);
+        append_i64(slot_, 3, slot.fsm_state);
+        append_double(slot_, 4, slot.t);
+        append_i64(slot_, 5, slot.wall_ns);
+        append_bytes(payload_, 16, slot_.data(), slot_.size());
+    \}
+
+    void append_pose(const PoseSlot &slot) {
+        slot_.clear();
+        append_double(slot_, 1, slot.px);
+        append_double(slot_, 2, slot.py);
+        append_double(slot_, 3, slot.pz);
+        append_double(slot_, 4, slot.qx);
+        append_double(slot_, 5, slot.qy);
+        append_double(slot_, 6, slot.qz);
+        append_double(slot_, 7, slot.qw);
+        append_bytes(payload_, 18, slot_.data(), slot_.size());
+    \}
+
+    void append_twist(const TwistSlot &slot) {
+        slot_.clear();
+        append_double(slot_, 1, slot.lx);
+        append_double(slot_, 2, slot.ly);
+        append_double(slot_, 3, slot.lz);
+        append_double(slot_, 4, slot.ax);
+        append_double(slot_, 5, slot.ay);
+        append_double(slot_, 6, slot.az);
+        append_bytes(payload_, 19, slot_.data(), slot_.size());
+    \}
+
+    void append_wrench(const WrenchSlot &slot) {
+        slot_.clear();
+        append_double(slot_, 1, slot.fx);
+        append_double(slot_, 2, slot.fy);
+        append_double(slot_, 3, slot.fz);
+        append_double(slot_, 4, slot.tx);
+        append_double(slot_, 5, slot.ty);
+        append_double(slot_, 6, slot.tz);
+        append_bytes(payload_, 20, slot_.data(), slot_.size());
+    \}
+
     void write_frame(const Frame &frame) {
         payload_.clear();
-        append_uint(payload_, 1, frame.step);
-        append_i64(payload_, 2, frame.wall_ns);
-        append_bytes(payload_, 3, &frame, sizeof(Frame));
+        append_double(payload_, 1, frame.t);
+        append_uint(payload_, 2, frame.step);
+        append_i64(payload_, 3, frame.fsm_state);
+        append_i64(payload_, 4, frame.active_motion);
+        append_i64(payload_, 5, frame.last_event);
+        append_double(payload_, 6, frame.state_since_t);
+        append_i64(payload_, 7, frame.state_since_wall_ns);
+        append_double(payload_, 8, frame.event_t);
+        append_i64(payload_, 9, frame.event_wall_ns);
+        append_i64(payload_, 10, frame.wall_ns);
+        append_i64(payload_, 11, frame.period_ns);
+        append_i64(payload_, 12, frame.compute_ns);
+        for (std::size_t i = 0; i \< kNumConstraints; ++i) append_constraint(frame.constraints[i]);
+        for (std::size_t i = 0; i \< kNumMonitors; ++i) append_monitor(frame.monitors[i]);
+        for (std::size_t i = 0; i \< kNumQuantities; ++i) append_double(payload_, 15, frame.quantities[i]);
+        for (std::size_t i = 0; i \< kNumTriggers; ++i) append_trigger(frame.triggers[i]);
+        append_i64(payload_, 17, frame.trigger_count);
+        for (std::size_t i = 0; i \< kNumPoses; ++i) append_pose(frame.poses[i]);
+        for (std::size_t i = 0; i \< kNumTwists; ++i) append_twist(frame.twists[i]);
+        for (std::size_t i = 0; i \< kNumWrenches; ++i) append_wrench(frame.wrenches[i]);
         message_.clear();
         append_bytes(message_, 2, payload_.data(), payload_.size());
         if (write_delimited(message_)) {
@@ -1736,6 +1821,7 @@ private:
     std::FILE *log_ = nullptr;
     std::string message_;
     std::string payload_;
+    std::string slot_;
     std::string prefix_;
     std::thread writer_;
     std::atomic\<bool\> running_{false};

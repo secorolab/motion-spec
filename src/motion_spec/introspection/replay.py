@@ -56,11 +56,6 @@ def validate_header(log_path: Path | str, schema: dict, layout: dict) -> dict:
             f"{log_path}: channel schema_hash {meta.get('schema_hash')} != schema.json "
             f"{schema.get('schema_hash')}"
         )
-    if meta.get("frame_layout_hash") != layout.get("frame_layout_hash"):
-        raise ArchiveError(
-            f"{log_path}: channel frame_layout_hash {meta.get('frame_layout_hash')} != "
-            f"frame_layout.json {layout.get('frame_layout_hash')}"
-        )
     expected = schema.get("runtime_provenance", {})
     if expected.get("producer_agent_id") and meta.get("producer_agent_id") != expected["producer_agent_id"]:
         raise ArchiveError(f"{log_path}: producer_agent_id does not match schema runtime provenance")

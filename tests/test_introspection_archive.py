@@ -184,12 +184,14 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
     assert manifest["files"]["rec"] == "rec.jsonld"
     assert manifest["files"]["frame_log_health"] == "logs/frame_log.pb.health.json"
     assert manifest["files"]["frame_log_proto"] == "contract/frame_log.proto"
+    assert "frame_layout" not in manifest["files"]
     assert manifest["files"]["dsl_provenance"] == "provenance/dsl.jsonld"
     assert manifest["rec"] == {"path": "rec.jsonld", "run_id": "run-test"}
     assert manifest["files"]["controller"] == "controller/source"
     assert "controller/source" in manifest["artifacts"]
     assert "logs/frame_log.pb.health.json" in manifest["artifacts"]
     assert "contract/frame_log.proto" in manifest["artifacts"]
+    assert "contract/frame_layout.json" not in manifest["artifacts"]
     assert "provenance/dsl.jsonld" in manifest["artifacts"]
     assert "rec.jsonld" in manifest["artifacts"]
     assert verify_manifest(run_dir)["run_id"] == "run-test"

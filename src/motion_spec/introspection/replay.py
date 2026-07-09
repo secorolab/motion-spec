@@ -24,20 +24,22 @@ def run_dir_for(log_path: Path) -> Path:
     return log_path.parent
 
 
-def resolve_archive(path: Path | str) -> tuple[Path, Path, dict, dict, dict]:
+def resolve_archive(path: Path | str) -> tuple[Path, Path, dict, dict, dict | None]:
     input_path = Path(path)
     run_dir = run_dir_for(input_path)
     manifest = verify_manifest(run_dir)
     files = manifest["files"]
     schema = json.loads((run_dir / files["schema"]).read_text())
-    layout = json.loads((run_dir / files["frame_layout"]).read_text())
+    layout = None
+    if files.get("frame_layout") and (run_dir / files["frame_layout"]).exists():
+        layout = json.loads((run_dir / files["frame_layout"]).read_text())
     log_path = run_dir / files["frame_log"] if input_path.is_dir() else input_path
     if not log_path.exists():
         raise ArchiveError(f"{log_path}: missing frame log")
     return run_dir, log_path, manifest, schema, layout
 
 
-def load_archive(log_path: Path | str) -> tuple[Path, dict, dict, dict]:
+def load_archive(log_path: Path | str) -> tuple[Path, dict, dict, dict | None]:
     run_dir, _log_path, manifest, schema, layout = resolve_archive(log_path)
     return run_dir, manifest, schema, layout
 
@@ -49,7 +51,7 @@ def read_meta(log_path: Path | str) -> dict:
     return frame_log_pb.read_header(path)
 
 
-def validate_header(log_path: Path | str, schema: dict, layout: dict) -> dict:
+def validate_header(log_path: Path | str, schema: dict, layout: dict | None = None) -> dict:
     meta = read_meta(log_path)
     if meta.get("schema_hash") != schema.get("schema_hash"):
         raise ArchiveError(
@@ -71,8 +73,8 @@ def read_health(log_path: Path | str) -> dict | None:
     return json.loads(health_path.read_text())
 
 
-def _records(log_path: Path | str, schema: dict, layout: dict) -> Iterator[dict]:
-    yield from frame_log_pb.frame_records(log_path, schema, layout)
+def _records(log_path: Path | str, schema: dict, layout: dict | None = None) -> Iterator[dict]:
+    yield from frame_log_pb.frame_records(log_path, schema)
 
 
 def frames(log_path: Path | str) -> Iterator[dict]:

@@ -27,7 +27,6 @@ MANIFEST_VERSION = 1
 PROVENANCE_DOCUMENT_VERSION = 1
 HASHED_ARTIFACTS = {
     "schema": "contract/schema.json",
-    "frame_layout": "contract/frame_layout.json",
     "frame_log_proto": "contract/frame_log.proto",
     "provenance": "provenance/codegen.jsonld",
     "dsl_provenance": "provenance/dsl.jsonld",
@@ -215,7 +214,6 @@ def create_archive_manifest(
 
     copies = {
         "schema.json": "contract/schema.json",
-        "frame_layout.json": "contract/frame_layout.json",
         str(Path(__file__).with_name("frame_log.proto")): "contract/frame_log.proto",
         "provenance.jsonld": "provenance/codegen.jsonld",
         "provenance/dsl.jsonld": "provenance/dsl.jsonld",
@@ -348,7 +346,6 @@ def create_archive_manifest(
         "run_id": run_id or run_dir.name,
         "files": {
             "schema": "contract/schema.json",
-            "frame_layout": "contract/frame_layout.json",
             "frame_log_proto": "contract/frame_log.proto",
             "provenance": "provenance/codegen.jsonld",
             "dsl_provenance": (
@@ -374,7 +371,6 @@ def create_archive_manifest(
         "versions": {
             "manifest": MANIFEST_VERSION,
             "schema": schema.get("schema_version"),
-            "frame_layout": schema.get("frame_layout_version"),
             "runtime_rdf_contract": schema.get("runtime_rdf_contract_version"),
             "provenance_document": PROVENANCE_DOCUMENT_VERSION,
         },
@@ -428,9 +424,9 @@ def verify_manifest(run_dir_or_manifest: Path | str) -> dict:
         actual = hash_tree(path) if path.is_dir() else sha256_file(path)
         if actual != meta.get("sha256"):
             errors.append(f"{rel}: sha256 mismatch")
-    for key in ("schema", "frame_layout", "provenance", "frame_log", "model", "ir", "controller", "rec"):
+    for key in ("schema", "frame_log_proto", "provenance", "frame_log", "model", "ir", "controller", "rec"):
         rel = manifest.get("files", {}).get(key)
-        if not rel and key in ("schema", "frame_layout", "provenance", "frame_log", "rec"):
+        if not rel and key in ("schema", "frame_log_proto", "provenance", "frame_log", "rec"):
             errors.append(f"files.{key}: missing")
         elif rel and rel in manifest.get("artifacts", {}) and not (run_dir / rel).exists():
             errors.append(f"{rel}: missing")
@@ -663,7 +659,7 @@ def _record_activities(run, schema: dict) -> None:
 
 
 def _record_files(run, run_dir: Path, manifest: dict, schema: dict) -> None:
-    resource_roles = {"schema", "frame_layout", "provenance", "dsl_provenance", "model", "ir"}
+    resource_roles = {"schema", "frame_log_proto", "provenance", "dsl_provenance", "model", "ir"}
     runtime_activity = prov_uri(
         schema.get("runtime_provenance", {}).get("activity_id") or "activity:controller_execution"
     )

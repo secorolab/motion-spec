@@ -114,7 +114,7 @@ def run_cataloged(
 def _validate_new_run(run_dir: Path, source_dir: Path, executable: Path) -> None:
     if not source_dir.exists():
         raise RunnerError(f"{source_dir}: source directory does not exist")
-    for rel in ("schema.json", "frame_layout.json", "provenance.jsonld"):
+    for rel in ("schema.json", "provenance.jsonld"):
         if not (source_dir / rel).exists():
             raise RunnerError(f"{source_dir / rel}: required generated artifact is missing")
     if not executable.exists():
@@ -164,7 +164,6 @@ def _record_execution_inputs(run, source_dir: Path, executable: Path, schema: di
     activity = prov_uri(schema.get("runtime_provenance", {}).get("activity_id") or "activity:controller_execution")
     for rel, role in (
         ("schema.json", "schema"),
-        ("frame_layout.json", "frame_layout"),
         ("provenance.jsonld", "provenance"),
         ("model.jsonld", "model"),
         ("ir.json", "ir"),

@@ -342,7 +342,7 @@ def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int
     runtime = rdflib.URIRef(prov_uri(rp.get("runtime_agent_id", "agent:runtime")))
     frame_log = _node("entity:frame_log")
     schema_entity = _node("entity:schema_json")
-    layout_entity = _node("entity:frame_layout_json")
+    proto_entity = _node("entity:frame_log_proto")
     model_entity = _node("entity:model_jsonld")
     provenance_entity = _node("entity:provenance_jsonld")
 
@@ -352,7 +352,7 @@ def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int
     g.add((activity, rdflib.RDF.type, BDD.SimulatedExecution))
     g.add((activity, PROV.wasAssociatedWith, producer))
     g.add((activity, PROV.used, schema_entity))
-    g.add((activity, PROV.used, layout_entity))
+    g.add((activity, PROV.used, proto_entity))
     g.add((activity, PROV.used, model_entity))
     g.add((activity, PROV.used, provenance_entity))
     g.add((producer, rdflib.RDF.type, PROV.SoftwareAgent))
@@ -372,7 +372,7 @@ def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int
     )
     for entity, key in (
         (schema_entity, "schema"),
-        (layout_entity, "frame_layout"),
+        (proto_entity, "frame_log_proto"),
         (model_entity, "model"),
         (provenance_entity, "provenance"),
     ):

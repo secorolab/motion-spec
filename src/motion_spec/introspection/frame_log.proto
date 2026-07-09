@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: MPL-2.0
+// SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
+
+syntax = "proto3";
+
+package motion_spec.introspection;
+
+message FrameLogHeader {
+  string schema_hash = 1;
+  string frame_layout_hash = 2;
+  string producer_agent_id = 3;
+  string activity_id = 4;
+  uint64 frame_size_bytes = 5;
+}
+
+message RuntimeFrame {
+  uint64 step = 1;
+  sfixed64 wall_ns = 2;
+  bytes frame = 3;
+}
+
+message FrameLogRecord {
+  oneof record {
+    FrameLogHeader header = 1;
+    RuntimeFrame frame = 2;
+  }
+}

@@ -1455,15 +1455,6 @@ introspection_runtime_header() ::= <<
 #include \<sys/mman.h\>
 #include \<vector\>
 
-#ifndef MCAP_COMPRESSION_NO_LZ4
-#define MCAP_COMPRESSION_NO_LZ4
-#endif
-#ifndef MCAP_COMPRESSION_NO_ZSTD
-#define MCAP_COMPRESSION_NO_ZSTD
-#endif
-#define MCAP_IMPLEMENTATION
-#include \<mcap/writer.hpp\>
-
 namespace motion_spec::introspection {
 
 struct ConstraintSlot {
@@ -1639,7 +1630,9 @@ public:
         std::size_t ring_capacity = 8192)
         : ring_(ring_capacity), mask_(ring_capacity - 1), health_path_(path + ".health.json") {
         if (ring_capacity == 0 || (ring_capacity & (ring_capacity - 1)) != 0) return;
-        open_mcap(path, producer_agent_id, activity_id);
+        log_ = std::fopen(path.c_str(), "wb");
+        if (!log_) return;
+        write_header(producer_agent_id, activity_id);
         running_.store(true, std::memory_order_relaxed);
         writer_ = std::thread(&FrameLogger::run, this);
     \}
@@ -1652,9 +1645,9 @@ public:
             return;
         \}
         if (writer_.joinable()) writer_.join();
-        if (mcap_open_) {
-            mcap_writer_.close();
-            mcap_open_ = false;
+        if (log_) {
+            std::fclose(log_);
+            log_ = nullptr;
         \}
         write_health();
     \}
@@ -1663,12 +1656,10 @@ public:
         attempted_.fetch_add(1, std::memory_order_relaxed);
         if (!running_.load(std::memory_order_relaxed)) return;
         const std::uint64_t head = head_.load(std::memory_order_relaxed);
-        // Backpressure, not drop: wait for the writer to free a slot so the log stays
-        // complete. Only blocks when the producer outruns the writer (max-speed headless);
-        // at control-period pacing the ring never fills, so the control loop never stalls.
-        while (head - tail_.load(std::memory_order_acquire) >= ring_.size()) {
-            if (!running_.load(std::memory_order_relaxed)) return;
-            std::this_thread::yield();
+        const std::uint64_t tail = tail_.load(std::memory_order_acquire);
+        if (head - tail \>= ring_.size()) {
+            dropped_.fetch_add(1, std::memory_order_relaxed);
+            return;
         \}
         ring_[head & mask_] = frame;
         head_.store(head + 1, std::memory_order_release);
@@ -1689,271 +1680,78 @@ private:
         if (tail == head) return false;
         while (tail != head) {
             const Frame &frame = ring_[tail & mask_];
-            write_mcap(frame);
-            write_logs(frame);
-            write_spatial(frame);
+            write_frame(frame);
             ++tail;
         \}
         tail_.store(tail, std::memory_order_release);
         return true;
     \}
 
-    void open_mcap(const std::string &path, const char *producer_agent_id, const char *activity_id) {
-        mcap::McapWriterOptions options("");
-        // lz4/zstd are compiled out (see MCAP_COMPRESSION_NO_*); the default is Zstd,
-        // so chunks must be written uncompressed. Chunking/index stay on for a seekable file.
-        options.compression = mcap::Compression::None;
-        const auto status = mcap_writer_.open(path, options);
-        if (!status.ok()) {
-            ++mcap_errors_;
-            return;
+    static void append_varint(std::string &out, std::uint64_t value) {
+        while (value \>= 128) {
+            out.push_back(static_cast\<char\>((value % 128) + 128));
+            value /= 128;
         \}
-
-        mcap_schema_ = mcap::Schema("motion_spec.introspection.Frame", "jsonschema", kFrameJsonSchema);
-        mcap_writer_.addSchema(mcap_schema_);
-        mcap_channel_ = mcap::Channel(
-            "/motion_spec/frame",
-            "json",
-            mcap_schema_.id,
-            {
-                {"schema_hash", kSchemaHash},
-                {"frame_layout_hash", kFrameLayoutHash},
-                {"producer_agent_id", producer_agent_id ? producer_agent_id : ""},
-                {"activity_id", activity_id ? activity_id : ""},
-            \});
-        mcap_writer_.addChannel(mcap_channel_);
-
-        log_schema_ = mcap::Schema("foxglove.Log", "jsonschema", kFoxgloveLogSchema);
-        mcap_writer_.addSchema(log_schema_);
-        log_channel_ = mcap::Channel("/motion_spec/log", "json", log_schema_.id);
-        mcap_writer_.addChannel(log_channel_);
-
-        if (kNumPoses > 0) {
-            pose_schema_ = mcap::Schema("foxglove.PoseInFrame", "jsonschema", kPoseInFrameSchema);
-            mcap_writer_.addSchema(pose_schema_);
-            for (std::size_t i = 0; i \< kNumPoses; ++i) {
-                mcap::Channel ch(kPoseTopics[i], "json", pose_schema_.id);
-                mcap_writer_.addChannel(ch);
-                pose_channel_ids_.push_back(ch.id);
-            \}
-        \}
-        if (kNumTwists > 0) {
-            twist_schema_ = mcap::Schema("motion_spec.TwistInFrame", "jsonschema", kTwistInFrameSchema);
-            mcap_writer_.addSchema(twist_schema_);
-            for (std::size_t i = 0; i \< kNumTwists; ++i) {
-                mcap::Channel ch(kTwistTopics[i], "json", twist_schema_.id);
-                mcap_writer_.addChannel(ch);
-                twist_channel_ids_.push_back(ch.id);
-            \}
-        \}
-        if (kNumWrenches > 0) {
-            wrench_schema_ = mcap::Schema("motion_spec.WrenchInFrame", "jsonschema", kWrenchInFrameSchema);
-            mcap_writer_.addSchema(wrench_schema_);
-            for (std::size_t i = 0; i \< kNumWrenches; ++i) {
-                mcap::Channel ch(kWrenchTopics[i], "json", wrench_schema_.id);
-                mcap_writer_.addChannel(ch);
-                wrench_channel_ids_.push_back(ch.id);
-            \}
-        \}
-
-        mcap_open_ = true;
+        out.push_back(static_cast\<char\>(value));
     \}
 
-    // Serialize one frame to the nested JSON record replay.to_record() produces, so a
-    // decoded mcap message is byte-for-byte comparable to the decoded .bin frame.
-    void encode_frame_json(const Frame &frame) {
-        std::string &j = json_;
-        j.clear();
-        j += "{\"t\":";                    json_double(j, frame.t);
-        j += ",\"step\":";                 json_u64(j, frame.step);
-        j += ",\"fsm_state\":";            json_i64(j, frame.fsm_state);
-        j += ",\"active_motion\":";        json_i64(j, frame.active_motion);
-        j += ",\"last_event\":";           json_i64(j, frame.last_event);
-        j += ",\"state_since_t\":";        json_double(j, frame.state_since_t);
-        j += ",\"state_since_wall_ns\":";  json_i64(j, frame.state_since_wall_ns);
-        j += ",\"event_t\":";              json_double(j, frame.event_t);
-        j += ",\"event_wall_ns\":";        json_i64(j, frame.event_wall_ns);
-        j += ",\"timing\":{\"wall_ns\":";  json_i64(j, frame.wall_ns);
-        j += ",\"period_ns\":";            json_i64(j, frame.period_ns);
-        j += ",\"compute_ns\":";           json_i64(j, frame.compute_ns);
-        j += "\},\"constraints\":[";
-        for (std::size_t i = 0; i \< kNumConstraints; ++i) {
-            if (i) j += ',';
-            const ConstraintSlot &c = frame.constraints[i];
-            j += "{\"active\":";     json_i64(j, c.active);
-            j += ",\"error\":";      json_double(j, c.error);
-            j += ",\"output\":";     json_double(j, c.output);
-            j += ",\"satisfied\":";  json_i64(j, c.satisfied);
-            j += ",\"sat_t\":";      json_double(j, c.sat_t);
-            j += ",\"measured\":";   json_double(j, c.measured);
-            j += ",\"setpoint\":";   json_double(j, c.setpoint);
-            j += '\}';
-        \}
-        j += "],\"monitors\":[";
-        for (std::size_t i = 0; i \< kNumMonitors; ++i) {
-            if (i) j += ',';
-            const MonitorSlot &m = frame.monitors[i];
-            j += "{\"active\":";     json_i64(j, m.active);
-            j += ",\"value\":";      json_double(j, m.value);
-            j += ",\"satisfied\":";  json_i64(j, m.satisfied);
-            j += ",\"sat_t\":";      json_double(j, m.sat_t);
-            j += '\}';
-        \}
-        j += "],\"quantities\":{";
-        for (std::size_t i = 0; i \< kNumQuantities; ++i) {
-            if (i) j += ',';
-            json_str(j, kQuantityIds[i]);
-            j += ':';
-            json_double(j, frame.quantities[i]);
-        \}
-        j += "\},\"triggers\":[";
-        if (kNumTriggers \> 0) {
-            const std::int64_t nt = static_cast\<std::int64_t\>(kNumTriggers);
-            const std::int64_t tc = frame.trigger_count;
-            const std::int64_t start = tc \> nt ? tc - nt : 0;
-            bool first = true;
-            for (std::int64_t idx = start; idx \< tc; ++idx) {
-                if (!first) j += ',';
-                first = false;
-                const Trigger &tg = frame.triggers[idx % nt];
-                j += "{\"kind\":";       json_i64(j, tg.kind);
-                j += ",\"idx\":";        json_i64(j, tg.idx);
-                j += ",\"fsm_state\":";  json_i64(j, tg.fsm_state);
-                j += ",\"t\":";          json_double(j, tg.t);
-                j += ",\"wall_ns\":";    json_i64(j, tg.wall_ns);
-                j += '\}';
-            \}
-        \}
-        j += "]\}";
+    static void append_key(std::string &out, std::uint32_t field, std::uint32_t wire) {
+        append_varint(out, (static_cast\<std::uint64_t\>(field) * 8) + wire);
     \}
 
-    void write_mcap(const Frame &frame) {
-        if (!mcap_open_) return;
-        encode_frame_json(frame);
-        mcap::Message msg{};
-        msg.channelId = mcap_channel_.id;
-        msg.sequence = static_cast\<std::uint32_t\>(frame.step & 0xffffffffu);
-        const auto timestamp = static_cast\<mcap::Timestamp\>(frame.wall_ns > 0 ? frame.wall_ns : wall_time_ns());
-        msg.logTime = timestamp;
-        msg.publishTime = timestamp;
-        msg.data = reinterpret_cast\<const std::byte *\>(json_.data());
-        msg.dataSize = json_.size();
-        const auto status = mcap_writer_.write(msg);
-        if (status.ok()) {
-            ++mcap_written_;
+    static void append_bytes(std::string &out, std::uint32_t field, const void *data, std::size_t size) {
+        append_key(out, field, 2);
+        append_varint(out, size);
+        out.append(static_cast\<const char *\>(data), size);
+    \}
+
+    static void append_string(std::string &out, std::uint32_t field, const char *value) {
+        const char *s = value ? value : "";
+        append_bytes(out, field, s, std::strlen(s));
+    \}
+
+    static void append_uint(std::string &out, std::uint32_t field, std::uint64_t value) {
+        append_key(out, field, 0);
+        append_varint(out, value);
+    \}
+
+    static void append_i64(std::string &out, std::uint32_t field, std::int64_t value) {
+        append_key(out, field, 1);
+        out.append(reinterpret_cast\<const char *\>(&value), sizeof(value));
+    \}
+
+    bool write_delimited(const std::string &message) {
+        if (!log_) return false;
+        prefix_.clear();
+        append_varint(prefix_, message.size());
+        return std::fwrite(prefix_.data(), 1, prefix_.size(), log_) == prefix_.size()
+            && std::fwrite(message.data(), 1, message.size(), log_) == message.size();
+    \}
+
+    void write_header(const char *producer_agent_id, const char *activity_id) {
+        payload_.clear();
+        append_string(payload_, 1, kSchemaHash);
+        append_string(payload_, 2, kFrameLayoutHash);
+        append_string(payload_, 3, producer_agent_id);
+        append_string(payload_, 4, activity_id);
+        append_uint(payload_, 5, kFrameSizeBytes);
+        message_.clear();
+        append_bytes(message_, 1, payload_.data(), payload_.size());
+        if (!write_delimited(message_)) ++write_errors_;
+    \}
+
+    void write_frame(const Frame &frame) {
+        payload_.clear();
+        append_uint(payload_, 1, frame.step);
+        append_i64(payload_, 2, frame.wall_ns);
+        append_bytes(payload_, 3, &frame, sizeof(Frame));
+        message_.clear();
+        append_bytes(message_, 2, payload_.data(), payload_.size());
+        if (write_delimited(message_)) {
+            ++written_;
         \} else {
-            ++mcap_errors_;
+            ++write_errors_;
         \}
-    \}
-
-    // foxglove.Log on every FSM state change and every new event — named, not bare ints.
-    void write_logs(const Frame &frame) {
-        if (!mcap_open_) return;
-        if (frame.fsm_state != prev_log_state_) {
-            prev_log_state_ = frame.fsm_state;
-            emit_log(frame.wall_ns, state_name(frame.fsm_state));
-        \}
-        if (kNumTriggers \> 0 && frame.trigger_count \> prev_log_trigger_count_) {
-            const std::int64_t nt = static_cast\<std::int64_t\>(kNumTriggers);
-            std::int64_t start = prev_log_trigger_count_;
-            if (start \< frame.trigger_count - nt) start = frame.trigger_count - nt;
-            for (std::int64_t c = start; c \< frame.trigger_count; ++c) {
-                const Trigger &tg = frame.triggers[c % nt];
-                if (tg.kind == 1) emit_log(tg.wall_ns, event_name(tg.idx));
-            \}
-            prev_log_trigger_count_ = frame.trigger_count;
-        \}
-    \}
-
-    static const char *state_name(std::int64_t idx) {
-        if (idx \< 0 || static_cast\<std::size_t\>(idx) >= kNumFsmStates) return "";
-        return kFsmStateIris[idx][0] ? kFsmStateIris[idx] : kFsmStateIds[idx];
-    \}
-
-    static const char *event_name(std::int64_t idx) {
-        if (idx \< 0 || static_cast\<std::size_t\>(idx) >= kNumEvents) return "";
-        return kEventIris[idx][0] ? kEventIris[idx] : kEventIds[idx];
-    \}
-
-    void emit_log(std::int64_t wall_ns, const char *message) {
-        std::string &j = log_json_;
-        j.clear();
-        j += "{\"timestamp\":";       json_timestamp(j, wall_ns);
-        j += ",\"level\":2,\"message\":"; json_str(j, message);
-        j += ",\"name\":\"motion_spec\",\"file\":\"\",\"line\":0\}";
-        mcap::Message msg{};
-        msg.channelId = log_channel_.id;
-        const auto ts = static_cast\<mcap::Timestamp\>(wall_ns > 0 ? wall_ns : wall_time_ns());
-        msg.logTime = ts;
-        msg.publishTime = ts;
-        msg.data = reinterpret_cast\<const std::byte *\>(j.data());
-        msg.dataSize = j.size();
-        if (!mcap_writer_.write(msg).ok()) ++mcap_errors_;
-    \}
-
-    bool send(mcap::ChannelId channel_id, std::int64_t wall_ns, const std::string &buf) {
-        mcap::Message msg{};
-        msg.channelId = channel_id;
-        const auto ts = static_cast\<mcap::Timestamp\>(wall_ns > 0 ? wall_ns : wall_time_ns());
-        msg.logTime = ts;
-        msg.publishTime = ts;
-        msg.data = reinterpret_cast\<const std::byte *\>(buf.data());
-        msg.dataSize = buf.size();
-        return mcap_writer_.write(msg).ok();
-    \}
-
-    // foxglove.PoseInFrame / motion_spec.TwistInFrame / motion_spec.WrenchInFrame per object.
-    void write_spatial(const Frame &frame) {
-        if (!mcap_open_) return;
-        for (std::size_t i = 0; i \< kNumPoses; ++i) emit_pose(i, frame.wall_ns, frame.poses[i]);
-        for (std::size_t i = 0; i \< kNumTwists; ++i) emit_twist(i, frame.wall_ns, frame.twists[i]);
-        for (std::size_t i = 0; i \< kNumWrenches; ++i) emit_wrench(i, frame.wall_ns, frame.wrenches[i]);
-    \}
-
-    void emit_pose(std::size_t i, std::int64_t wall_ns, const PoseSlot &s) {
-        std::string &j = spatial_json_;
-        j.clear();
-        j += "{\"timestamp\":"; json_timestamp(j, wall_ns);
-        j += ",\"frame_id\":";  json_str(j, kPoseFrameIds[i]);
-        j += ",\"pose\":{\"position\":{\"x\":"; json_double(j, s.px);
-        j += ",\"y\":"; json_double(j, s.py);
-        j += ",\"z\":"; json_double(j, s.pz);
-        j += "\},\"orientation\":{\"x\":"; json_double(j, s.qx);
-        j += ",\"y\":"; json_double(j, s.qy);
-        j += ",\"z\":"; json_double(j, s.qz);
-        j += ",\"w\":"; json_double(j, s.qw);
-        j += "\}\}\}";
-        if (!send(pose_channel_ids_[i], wall_ns, j)) ++mcap_errors_;
-    \}
-
-    void emit_twist(std::size_t i, std::int64_t wall_ns, const TwistSlot &s) {
-        std::string &j = spatial_json_;
-        j.clear();
-        j += "{\"timestamp\":"; json_timestamp(j, wall_ns);
-        j += ",\"frame_id\":";  json_str(j, kTwistFrameIds[i]);
-        j += ",\"twist\":{\"linear\":{\"x\":"; json_double(j, s.lx);
-        j += ",\"y\":"; json_double(j, s.ly);
-        j += ",\"z\":"; json_double(j, s.lz);
-        j += "\},\"angular\":{\"x\":"; json_double(j, s.ax);
-        j += ",\"y\":"; json_double(j, s.ay);
-        j += ",\"z\":"; json_double(j, s.az);
-        j += "\}\}\}";
-        if (!send(twist_channel_ids_[i], wall_ns, j)) ++mcap_errors_;
-    \}
-
-    void emit_wrench(std::size_t i, std::int64_t wall_ns, const WrenchSlot &s) {
-        std::string &j = spatial_json_;
-        j.clear();
-        j += "{\"timestamp\":"; json_timestamp(j, wall_ns);
-        j += ",\"frame_id\":";  json_str(j, kWrenchFrameIds[i]);
-        j += ",\"wrench\":{\"force\":{\"x\":"; json_double(j, s.fx);
-        j += ",\"y\":"; json_double(j, s.fy);
-        j += ",\"z\":"; json_double(j, s.fz);
-        j += "\},\"torque\":{\"x\":"; json_double(j, s.tx);
-        j += ",\"y\":"; json_double(j, s.ty);
-        j += ",\"z\":"; json_double(j, s.tz);
-        j += "\}\}\}";
-        if (!send(wrench_channel_ids_[i], wall_ns, j)) ++mcap_errors_;
     \}
 
     void write_health() {
@@ -1967,40 +1765,27 @@ private:
             "{\n"
             "  \"attempted_frames\": %llu,\n"
             "  \"accepted_frames\": %llu,\n"
-            "  \"mcap_written_frames\": %llu,\n"
-            "  \"mcap_write_errors\": %llu,\n"
+            "  \"written_frames\": %llu,\n"
+            "  \"write_errors\": %llu,\n"
             "  \"dropped_frames\": %llu,\n"
             "  \"complete\": %s\n"
             "}\n",
             static_cast\<unsigned long long\>(attempted),
             static_cast\<unsigned long long\>(accepted),
-            static_cast\<unsigned long long\>(mcap_written_),
-            static_cast\<unsigned long long\>(mcap_errors_),
+            static_cast\<unsigned long long\>(written_),
+            static_cast\<unsigned long long\>(write_errors_),
             static_cast\<unsigned long long\>(dropped),
-            (dropped == 0 && accepted == mcap_written_ && mcap_errors_ == 0) ? "true" : "false");
+            (dropped == 0 && accepted == written_ && write_errors_ == 0) ? "true" : "false");
         std::fclose(health);
     \}
 
     std::vector\<Frame\> ring_;
     std::uint64_t mask_ = 0;
     std::string health_path_;
-    mcap::McapWriter mcap_writer_;
-    mcap::Schema mcap_schema_;
-    mcap::Channel mcap_channel_;
-    mcap::Schema log_schema_;
-    mcap::Channel log_channel_;
-    mcap::Schema pose_schema_;
-    mcap::Schema twist_schema_;
-    mcap::Schema wrench_schema_;
-    std::vector\<mcap::ChannelId\> pose_channel_ids_;
-    std::vector\<mcap::ChannelId\> twist_channel_ids_;
-    std::vector\<mcap::ChannelId\> wrench_channel_ids_;
-    std::string json_;
-    std::string log_json_;
-    std::string spatial_json_;
-    bool mcap_open_ = false;
-    std::int64_t prev_log_state_ = INT64_MIN;
-    std::int64_t prev_log_trigger_count_ = 0;
+    std::FILE *log_ = nullptr;
+    std::string message_;
+    std::string payload_;
+    std::string prefix_;
     std::thread writer_;
     std::atomic\<bool\> running_{false};
     std::atomic\<std::uint64_t\> head_{0};
@@ -2008,8 +1793,8 @@ private:
     std::atomic\<std::uint64_t\> attempted_{0};
     std::atomic\<std::uint64_t\> accepted_{0};
     std::atomic\<std::uint64_t\> dropped_{0};
-    std::uint64_t mcap_written_ = 0;
-    std::uint64_t mcap_errors_ = 0;
+    std::uint64_t written_ = 0;
+    std::uint64_t write_errors_ = 0;
 };
 
 class RunPublisher {
@@ -2040,7 +1825,7 @@ public:
 
     void constraint_sample(const char *uri, double error, double output, double measured, double setpoint, bool satisfied) {
         static_cast\<void\>(uri);
-        if (constraint_count_ >= kNumConstraints) return;
+        if (constraint_count_ \>= kNumConstraints) return;
         ConstraintSlot &slot = scratch_.constraints[constraint_count_++];
         slot.active = 1;
         slot.error = error;
@@ -2053,7 +1838,7 @@ public:
 
     void monitor_sample(const char *uri, double value, bool satisfied) {
         static_cast\<void\>(uri);
-        if (monitor_count_ >= kNumMonitors) return;
+        if (monitor_count_ \>= kNumMonitors) return;
         MonitorSlot &slot = scratch_.monitors[monitor_count_++];
         slot.active = 1;
         slot.value = value;
@@ -2062,24 +1847,24 @@ public:
     \}
 
     void quantity_sample(std::size_t index, double value) {
-        if (index >= kNumQuantities) return;
+        if (index \>= kNumQuantities) return;
         scratch_.quantities[index] = value;
     \}
 
     void pose_sample(std::size_t index, double px, double py, double pz, double qx, double qy, double qz, double qw) {
-        if (index >= kNumPoses) return;
+        if (index \>= kNumPoses) return;
         PoseSlot &s = scratch_.poses[index];
         s.px = px; s.py = py; s.pz = pz; s.qx = qx; s.qy = qy; s.qz = qz; s.qw = qw;
     \}
 
     void twist_sample(std::size_t index, double lx, double ly, double lz, double ax, double ay, double az) {
-        if (index >= kNumTwists) return;
+        if (index \>= kNumTwists) return;
         TwistSlot &s = scratch_.twists[index];
         s.lx = lx; s.ly = ly; s.lz = lz; s.ax = ax; s.ay = ay; s.az = az;
     \}
 
     void wrench_sample(std::size_t index, double fx, double fy, double fz, double tx, double ty, double tz) {
-        if (index >= kNumWrenches) return;
+        if (index \>= kNumWrenches) return;
         WrenchSlot &s = scratch_.wrenches[index];
         s.fx = fx; s.fy = fy; s.fz = fz; s.tx = tx; s.ty = ty; s.tz = tz;
     \}
@@ -2119,7 +1904,7 @@ public:
 private:
     static std::string log_path() {
         if (const char *env = std::getenv("MOTION_SPEC_FRAME_LOG")) return env;
-        return "frame_log.mcap";
+        return "frame_log.pb";
     \}
 
     static std::string shm_name() {

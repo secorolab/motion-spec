@@ -2,9 +2,8 @@
 """Binary frame layout used by generated introspection logs.
 
 The layout sizes the in-memory ``Frame`` struct (and its ``frame_size_bytes`` hash); the
-log itself is written as ``.mcap``, never a raw struct dump. Spatial slots (pose/twist/
-wrench) ride in the struct so the writer thread can emit their well-known/custom channels,
-but are not part of the ``/motion_spec/frame`` JSON record (they have their own channels)."""
+log stores protobuf-delimited frame payloads with this binary struct inside. Spatial slots
+(pose/twist/wrench) ride in the struct for offline export/visualization."""
 
 from __future__ import annotations
 

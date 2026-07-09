@@ -52,7 +52,7 @@ def run_cataloged(
     executable = Path(executable).resolve()
     executable_args = [str(arg) for arg in (executable_args or [])]
     run_id = run_id or run_dir.name
-    frame_log = run_dir / "logs" / "frame_log.mcap"
+    frame_log = run_dir / "logs" / "frame_log.pb"
     rec_path = run_dir / "rec.jsonld"
 
     _validate_new_run(run_dir, source_dir, executable)
@@ -121,7 +121,7 @@ def _validate_new_run(run_dir: Path, source_dir: Path, executable: Path) -> None
         raise RunnerError(f"{executable}: executable does not exist")
     if run_dir.exists() and (run_dir / "rec.jsonld").exists():
         raise RunnerError(f"{run_dir}: already contains rec.jsonld; choose a fresh run directory")
-    frame_log = run_dir / "logs" / "frame_log.mcap"
+    frame_log = run_dir / "logs" / "frame_log.pb"
     if frame_log.exists():
         raise RunnerError(f"{frame_log}: refusing to overwrite an existing frame log")
 

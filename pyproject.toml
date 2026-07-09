@@ -37,6 +37,9 @@ include-package-data = true
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+motion_spec = ["introspection/frame_log.proto"]
+
 [tool.setuptools.data-files]
 "code-generator" = [
     "code-generator/*.stg",

@@ -20,7 +20,7 @@ from motion_spec.introspection import replay
 from motion_spec.introspection.replay import decode_frames, summarize, validate_header
 from motion_spec.introspection.runtime_graph import write_runtime_ttl
 
-from mcap_fixture import flat_frame, records_from_flats, write_frame_log_mcap
+from mcap_fixture import flat_frame, write_frame_log_pb
 
 
 def _hash_doc(doc: dict) -> str:
@@ -127,7 +127,7 @@ def _write_frame_log(path: Path, schema: dict, layout: dict) -> None:
             "q0": 42.0,
         },
     )
-    write_frame_log_mcap(path, schema, layout, records_from_flats(schema, [flat]))
+    write_frame_log_pb(path, schema, layout, [flat])
 
 
 def _source_tree(path: Path) -> Path:
@@ -144,13 +144,13 @@ def _source_tree(path: Path) -> Path:
     (path / "headers").mkdir()
     (path / "headers" / "runtime.hpp").write_text("// generated\n")
     (path / "ref_main.cpp").write_text("// generated\n")
-    _write_frame_log(path / "frame_log.mcap", schema, layout)
-    (path / "frame_log.mcap.health.json").write_text(
+    _write_frame_log(path / "frame_log.pb", schema, layout)
+    (path / "frame_log.pb.health.json").write_text(
         json.dumps(
             {
                 "attempted_frames": 1,
                 "accepted_frames": 1,
-                "mcap_written_frames": 1,
+                "written_frames": 1,
                 "dropped_frames": 0,
                 "complete": True,
             },
@@ -182,23 +182,23 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
 
     assert manifest["files"]["log_producer_executable"] is None
     assert manifest["files"]["rec"] == "rec.jsonld"
-    assert manifest["files"]["frame_log_health"] == "logs/frame_log.mcap.health.json"
+    assert manifest["files"]["frame_log_health"] == "logs/frame_log.pb.health.json"
     assert manifest["files"]["dsl_provenance"] == "provenance/dsl.jsonld"
     assert manifest["rec"] == {"path": "rec.jsonld", "run_id": "run-test"}
     assert manifest["files"]["controller"] == "controller/source"
     assert "controller/source" in manifest["artifacts"]
-    assert "logs/frame_log.mcap.health.json" in manifest["artifacts"]
+    assert "logs/frame_log.pb.health.json" in manifest["artifacts"]
     assert "provenance/dsl.jsonld" in manifest["artifacts"]
     assert "rec.jsonld" in manifest["artifacts"]
     assert verify_manifest(run_dir)["run_id"] == "run-test"
-    header = validate_header(run_dir / "logs" / "frame_log.mcap", _schema(), _layout(_schema()))
+    header = validate_header(run_dir / "logs" / "frame_log.pb", _schema(), _layout(_schema()))
     assert header["producer_agent_id"] == "agent:controller_process"
 
-    frames = decode_frames(run_dir / "logs" / "frame_log.mcap")
+    frames = decode_frames(run_dir / "logs" / "frame_log.pb")
     assert frames[0]["step"] == 7
     assert frames[0]["quantities"] == {"q0": 42.0}
-    assert "frames      1" in summarize(run_dir / "logs" / "frame_log.mcap")
-    assert "dropped 0" in summarize(run_dir / "logs" / "frame_log.mcap")
+    assert "frames      1" in summarize(run_dir / "logs" / "frame_log.pb")
+    assert "dropped 0" in summarize(run_dir / "logs" / "frame_log.pb")
     assert decode_frames(run_dir)[0]["step"] == 7
     assert f"archive     {run_dir}" in summarize(run_dir)
     assert replay.main([str(run_dir), "--verify"]) == 0
@@ -229,7 +229,7 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
     assert runtime_artifact["atLocation"] == "runtime/runtime.ttl"
     metrics = {row["name"]: row["value"] for row in rec_doc["metrics"]}
     assert metrics["frame_log_attempted_frames"] == 1
-    assert metrics["frame_log_mcap_written_frames"] == 1
+    assert metrics["frame_log_written_frames"] == 1
     assert metrics["frame_log_dropped_frames"] == 0
     assert metrics["frame_log_complete"] == 1
 

@@ -28,6 +28,7 @@ PROVENANCE_DOCUMENT_VERSION = 1
 HASHED_ARTIFACTS = {
     "schema": "contract/schema.json",
     "frame_layout": "contract/frame_layout.json",
+    "frame_log_proto": "contract/frame_log.proto",
     "provenance": "provenance/codegen.jsonld",
     "dsl_provenance": "provenance/dsl.jsonld",
     "runtime": "runtime/runtime.ttl",
@@ -215,6 +216,7 @@ def create_archive_manifest(
     copies = {
         "schema.json": "contract/schema.json",
         "frame_layout.json": "contract/frame_layout.json",
+        str(Path(__file__).with_name("frame_log.proto")): "contract/frame_log.proto",
         "provenance.jsonld": "provenance/codegen.jsonld",
         "provenance/dsl.jsonld": "provenance/dsl.jsonld",
     }
@@ -347,6 +349,7 @@ def create_archive_manifest(
         "files": {
             "schema": "contract/schema.json",
             "frame_layout": "contract/frame_layout.json",
+            "frame_log_proto": "contract/frame_log.proto",
             "provenance": "provenance/codegen.jsonld",
             "dsl_provenance": (
                 "provenance/dsl.jsonld"

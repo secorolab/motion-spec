@@ -15,7 +15,7 @@ from pathlib import Path
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
 from motion_spec.introspection.archive import ArchiveError
-from motion_spec.codegen_artifacts import build_frame_log_proto_fields, quantity_ids
+from motion_spec.codegen_artifacts import build_frame_log_proto_fields
 
 PROTO_PACKAGE = "motion_spec.introspection.log"
 POSE_NAMES = ("px", "py", "pz", "qx", "qy", "qz", "qw")
@@ -204,7 +204,7 @@ def _parse_frame(msg, schema: dict) -> dict:
     record["monitors"] = [{k: getattr(getattr(msg, e["name"]), k) for k in _MONITOR_KEYS} for e in fields["monitors"]]
     quantities = [getattr(msg, e["name"]) for e in fields["quantities"]]
     triggers = [{k: getattr(getattr(msg, e["name"]), k) for k in _TRIGGER_KEYS} for e in fields["triggers"]]
-    qids = quantity_ids(schema["quantities"])
+    qids = [q["id"] for q in sorted(schema["quantities"], key=lambda q: q.get("index", 0))]
     record["quantities"] = {qids[idx]: quantities[idx] for idx in range(min(len(qids), len(quantities)))}
     trigger_count = msg.trigger_count
     start = max(0, trigger_count - pools["triggers"])
@@ -218,10 +218,6 @@ def _parse_frame(msg, schema: dict) -> dict:
     return record
 
 
-def _header_dict(header) -> dict:
-    return {"schema_hash": header.schema_hash, "producer_agent_id": header.producer_agent_id, "activity_id": header.activity_id}
-
-
 def iter_messages(path: Path | str, schema: dict | None = None) -> Iterator[tuple[str, object]]:
     record_cls, _ = _record_class(schema if schema is not None else _HEADER_SCHEMA)
     with Path(path).open("rb") as fh:
@@ -233,7 +229,11 @@ def iter_messages(path: Path | str, schema: dict | None = None) -> Iterator[tupl
             rec.ParseFromString(data)
             which = rec.WhichOneof("record")
             if which == "header":
-                yield "header", _header_dict(rec.header)
+                yield "header", {
+                    "schema_hash": rec.header.schema_hash,
+                    "producer_agent_id": rec.header.producer_agent_id,
+                    "activity_id": rec.header.activity_id,
+                }
             elif which == "frame" and schema is not None:
                 yield "frame", _parse_frame(rec.frame, schema)
 

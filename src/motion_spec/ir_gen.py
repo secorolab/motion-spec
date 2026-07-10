@@ -12,6 +12,7 @@ import argparse
 from dataclasses import dataclass, field, replace
 from enum import Enum
 import collections
+import hashlib
 import itertools
 import math
 import os
@@ -21,7 +22,9 @@ import weakref
 from pathlib import Path
 import xml.etree.ElementTree as ET
 import rdflib
+from rdf_utils.naming import get_valid_var_name
 from rdf_utils.resolver import IriToFileResolver, install_resolver
+from rdf_utils.uri import local_name
 from functools import wraps
 from rdflib.namespace import RDF
 from rdflib import URIRef
@@ -147,6 +150,7 @@ class Operator:
     input: list[URIRef]
     output: list[URIRef]
     parameters: list = field(default_factory=list)
+    schedulable: bool = True
 
     def closure_step(self, g, to_id, closure_id):
         closure = {"id": to_id(closure_id), "type": to_id(self.type_)}
@@ -176,9 +180,6 @@ class Operator:
             for op in g.subjects(out, data_out)
             if g[op : RDF["type"] : self.type_]
         ]
-
-    def is_schedulable(self):
-        return True
 
     def scheduler_step(self, g, data_out):
         data_structures = set()
@@ -215,9 +216,7 @@ class Specification:
     input: list[URIRef]
     output: list[URIRef]
     parameters: list = field(default_factory=list)
-
-    def closure_step(self, g, to_id, closure_id):
-        return None
+    schedulable: bool = False
 
     def from_operator_to_input(self, g, operator_id):
         data_structures = set()
@@ -236,12 +235,6 @@ class Specification:
             if g[op : RDF["type"] : self.type_]
         ]
 
-    def is_schedulable(self):
-        """
-        A specification is not callable.
-        """
-        return False
-
     def scheduler_step(self, g, data_out):
         data_structures = set()
         for out in self.output:
@@ -256,6 +249,7 @@ class Specification:
 class ErrorEvaluator:
     def __init__(self):
         self.type_ = CSTR_HDL["ErrorEvaluator"]
+        self.schedulable = False
         self.cstr_op = [
             Operator(
                 type_=CSTR["EqualityConstraint"],
@@ -332,13 +326,6 @@ class ErrorEvaluator:
             if g[op : RDF["type"] : self.type_]
         ]
 
-    def is_schedulable(self):
-        """
-        An error evaluator is not callable (but it will be added separately to
-        the schedule!).
-        """
-        return False
-
     def scheduler_step(self, g, data_out):
         data_structures = set()
         schedule = []
@@ -366,6 +353,7 @@ class ErrorEvaluator:
 class AssignmentEvaluator:
     def __init__(self):
         self.type_ = CSTR_HDL["AssignmentEvaluator"]
+        self.schedulable = True
         self.cstr_op = Operator(
             type_=CSTR["EqualityConstraint"],
             input=[CSTR["quantity"], CSTR["reference-value"]],
@@ -402,13 +390,6 @@ class AssignmentEvaluator:
                 data_structures.add(data_in)
 
         return data_structures
-
-    def is_schedulable(self):
-        return True
-
-    def scheduler_step(self, g, data_out):
-        return {"data_structures": [], "schedule": []}
-
 
 def _op_output_preds(op):
     # Predicates op.scheduler_step queries against data_out; if none point into a
@@ -616,6 +597,42 @@ def escape(s):
     if s and s[0].isdigit():
         s = f"_{s}"
     return s
+
+
+class LocalIdMap:
+    """Stable generated ids for RDF nodes: local name when unique, scoped name on collision."""
+
+    def __init__(self, graph, nodes):
+        self.graph = graph
+        grouped: dict[str, list] = {}
+        for node in sorted({n for n in nodes if n is not None}, key=str):
+            grouped.setdefault(get_valid_var_name(local_name(node)), []).append(node)
+        self.ids = {}
+        for base, members in grouped.items():
+            if len(members) == 1:
+                self.ids[members[0]] = base
+                continue
+            used = set()
+            for node in members:
+                scoped = self._scoped_id(node, base)
+                if scoped in used:
+                    scoped = f"{scoped}_{hashlib.sha1(str(node).encode()).hexdigest()[:8]}"
+                used.add(scoped)
+                self.ids[node] = scoped
+
+    def _scoped_id(self, node, base: str) -> str:
+        try:
+            prefix, _namespace, local = self.graph.compute_qname(node)
+        except Exception:
+            prefix, local = "", base
+        if prefix:
+            return get_valid_var_name(f"{prefix}_{local}")
+        return f"{base}_{hashlib.sha1(str(node).encode()).hexdigest()[:8]}"
+
+    def __getitem__(self, node) -> str:
+        if node not in self.ids:
+            self.ids[node] = get_valid_var_name(local_name(node))
+        return self.ids[node]
 
 
 class Parser:
@@ -1212,11 +1229,11 @@ class Parser:
         self._expect_type(id_, GEOM_COORD["VectorXYZ"])
         quantity_kind = []
         for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]]:
-            quantity_kind.append(self.quantity_kind(k))
+            quantity_kind.append(self.id(k))
         for k in self.g[id_ : QUDT_SCHEMA["quantity-kind"]]:
-            quantity_kind.append(self.quantity_kind(k))
+            quantity_kind.append(self.id(k))
         as_seen_by = self.frame(self.g.value(id_, GEOM_COORD["as-seen-by"]))
-        unit = self.unit(self.g.value(id_, QUDT_SCHEMA["unit"]))
+        unit = self.id(self.g.value(id_, QUDT_SCHEMA["unit"]))
         direction = self.parse_xyz(id_)
 
         return Direction(self.id(id_), quantity_kind, as_seen_by, [Unit(unit)], direction)
@@ -1261,9 +1278,9 @@ class Parser:
         self._expect_type(id_, GEOM_COORD["VectorXYZ"])
         of = self.position_reference(self.g.value(id_, GEOM_REL["of"]))
         wrt = self.position_reference(self.g.value(id_, GEOM_REL["with-respect-to"]))
-        quantity_kind = self.quantity_kind(self.g.value(id_, QUDT_SCHEMA["hasQuantityKind"]))
+        quantity_kind = self.id(self.g.value(id_, QUDT_SCHEMA["hasQuantityKind"]))
         as_seen_by = self.frame(self.g.value(id_, GEOM_COORD["as-seen-by"]))
-        unit = self.unit(self.g.value(id_, QUDT_SCHEMA["unit"]))
+        unit = self.id(self.g.value(id_, QUDT_SCHEMA["unit"]))
         pos = self.parse_xyz(id_)
 
         return Position(
@@ -1286,10 +1303,10 @@ class Parser:
 
         of = optional_pose_ref(self.g.value(id_, GEOM_REL["of"]))
         wrt = optional_pose_ref(self.g.value(id_, GEOM_REL["with-respect-to"]))
-        quantity_kind = self.quantity_kind(self.g.value(id_, QUDT_SCHEMA["hasQuantityKind"]))
+        quantity_kind = self.id(self.g.value(id_, QUDT_SCHEMA["hasQuantityKind"]))
         as_seen_by_node = self.g.value(id_, GEOM_COORD["as-seen-by"])
         as_seen_by = self.frame(as_seen_by_node) if as_seen_by_node is not None else None
-        unit = self.unit(self.g.value(id_, QUDT_SCHEMA["unit"]))
+        unit = self.id(self.g.value(id_, QUDT_SCHEMA["unit"]))
         axes = self.g.value(id_, GEOM_COORD["axes-sequence"])
         authored, snapshot = self.quantity_role_flags(id_)
         return Orientation(
@@ -1334,9 +1351,9 @@ class Parser:
             self.id(id_),
             self._pose_endpoint(self.g.value(id_, GEOM_REL["of"])),
             self._pose_endpoint(self.g.value(id_, GEOM_REL["with-respect-to"])),
-            [self.quantity_kind(k) for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]]],
+            [self.id(k) for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]]],
             self.frame(as_seen_by_node) if as_seen_by_node is not None else None,
-            [self.unit(u) for u in self.g[id_ : QUDT_SCHEMA["unit"]]],
+            [self.id(u) for u in self.g[id_ : QUDT_SCHEMA["unit"]]],
             None,
             None,
             None,
@@ -1352,12 +1369,12 @@ class Parser:
         wrt = self._pose_endpoint(self.g.value(id_, GEOM_REL["with-respect-to"]))
         quantity_kind = []
         for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]]:
-            quantity_kind.append(self.quantity_kind(k))
+            quantity_kind.append(self.id(k))
         as_seen_by_node = self.g.value(id_, GEOM_COORD["as-seen-by"])
         as_seen_by = self.frame(as_seen_by_node) if as_seen_by_node is not None else None
         unit = []
         for u in self.g[id_ : QUDT_SCHEMA["unit"]]:
-            unit.append(self.unit(u))
+            unit.append(self.id(u))
         dc_x = self.parse_vector3(self.g.value(id_, GEOM_COORD["direction-cosine-x"]))
         dc_y = self.parse_vector3(self.g.value(id_, GEOM_COORD["direction-cosine-y"]))
         dc_z = self.parse_vector3(self.g.value(id_, GEOM_COORD["direction-cosine-z"]))
@@ -1394,12 +1411,12 @@ class Parser:
         wrt = self.simplicial_complex(self.g.value(id_, GEOM_REL["with-respect-to"]))
         quantity_kind = []
         for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]]:
-            quantity_kind.append(self.quantity_kind(k))
+            quantity_kind.append(self.id(k))
         reference_point = self.point(self.g.value(id_, GEOM_REL["reference-point"]))
         as_seen_by = self.frame(self.g.value(id_, GEOM_COORD["as-seen-by"]))
         unit = []
         for u in self.g[id_ : QUDT_SCHEMA["unit"]]:
-            unit.append(self.unit(u))
+            unit.append(self.id(u))
 
         authored, snapshot = self.quantity_role_flags(id_)
         return VelocityTwist(
@@ -1420,12 +1437,12 @@ class Parser:
         self._expect_type(id_, GEOM_COORD["VectorXYZ"])
         quantity_kind = []
         for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]]:
-            quantity_kind.append(self.quantity_kind(k))
+            quantity_kind.append(self.id(k))
         reference_point = self.point(self.g.value(id_, GEOM_REL["reference-point"]))
         as_seen_by = self.frame(self.g.value(id_, GEOM_COORD["as-seen-by"]))
         unit = []
         for u in self.g[id_ : QUDT_SCHEMA["unit"]]:
-            unit.append(self.unit(u))
+            unit.append(self.id(u))
 
         authored, snapshot = self.quantity_role_flags(id_)
         return AccelerationTwist(
@@ -1444,12 +1461,12 @@ class Parser:
         self._expect_type(id_, GEOM_COORD["VectorXYZ"])
         quantity_kind = []
         for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]]:
-            quantity_kind.append(self.quantity_kind(k))
+            quantity_kind.append(self.id(k))
         reference_point = self.point(self.g.value(id_, GEOM_REL["reference-point"]))
         as_seen_by = self.frame(self.g.value(id_, GEOM_COORD["as-seen-by"]))
         unit = []
         for u in self.g[id_ : QUDT_SCHEMA["unit"]]:
-            unit.append(self.unit(u))
+            unit.append(self.id(u))
 
         authored, snapshot = self.quantity_role_flags(id_)
         return PoseDifference(
@@ -1469,12 +1486,12 @@ class Parser:
 
         quantity_kind = []
         for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]]:
-            quantity_kind.append(self.quantity_kind(k))
+            quantity_kind.append(self.id(k))
         reference_point = self.point(self.g.value(id_, RBDYN_ENT["reference-point"]))
         as_seen_by = self.frame(self.g.value(id_, RBDYN_COORD["as-seen-by"]))
         unit = []
         for u in self.g[id_ : QUDT_SCHEMA["unit"]]:
-            unit.append(self.unit(u))
+            unit.append(self.id(u))
 
         sensor_name = str(self.g.value(id_, MJ["ft-sensor-ref"]) or "")
         authored, snapshot = self.quantity_role_flags(id_)
@@ -1495,9 +1512,9 @@ class Parser:
         quantity_kind_node = self.g.value(id_, QUDT_SCHEMA["hasQuantityKind"]) or self.g.value(
             id_, QUDT_SCHEMA["quantity-kind"]
         )
-        quantity_kind = self.quantity_kind(quantity_kind_node)
+        quantity_kind = self.id(quantity_kind_node)
 
-        unit = self.unit(self.g.value(id_, QUDT_SCHEMA["unit"]))
+        unit = self.id(self.g.value(id_, QUDT_SCHEMA["unit"]))
         has_view = (id_, ~MAP["subobject"], None) in self.g
 
         if GEOM_REL["Pose"] in self.g[id_ : RDF["type"]]:
@@ -1527,7 +1544,7 @@ class Parser:
                 has_view,
                 authored=authored,
                 snapshot=snapshot,
-                value_kind=self.quantity_kind(value_kind_node) if value_kind_node is not None else None,
+                value_kind=self.id(value_kind_node) if value_kind_node is not None else None,
             )
 
         if quantity_kind == "FreeVector" and GEOM_COORD["VectorXYZ"] in self.g[id_ : RDF["type"]]:
@@ -1565,14 +1582,10 @@ class Parser:
         joint_name = self.label(joint_node) if joint_node is not None else ""
         return JointPosition(self.id(id_), joint_name)
 
-    def _is_snapshot(self, id_):
-        # snapshot == the node is a runtime snapshot (snap:Snapshot / snap:snapshot-of).
-        return SNAP.Snapshot in self.g[id_ : RDF["type"]]
-
     def quantity_role_flags(self, id_):
         # (authored, snapshot), mutually exclusive: snapshot wins (mirrors old roles() elif).
         # authored == carries an authored value/coordinate and is not a runtime snapshot.
-        snapshot = self._is_snapshot(id_)
+        snapshot = SNAP.Snapshot in self.g[id_ : RDF["type"]]
         authored = (not snapshot) and self._is_authored(id_)
         return authored, snapshot
 
@@ -1589,14 +1602,6 @@ class Parser:
         if any(True for _ in self.g.objects(id_, GEOM_COORD["has-coordinate"])):
             return True
         return False
-
-    @memoize
-    def quantity_kind(self, id_):
-        return self.id(id_)
-
-    @memoize
-    def unit(self, id_):
-        return self.id(id_)
 
     @memoize
     def simplicial_complex(self, id_):
@@ -1686,7 +1691,7 @@ class Parser:
         closures = {}
         for operator in operators:
             for closure in self.g.subjects(RDF["type"], operator.type_):
-                cl = operator.closure_step(self.g, self.id, closure)
+                cl = operator.closure_step(self.g, self.id, closure) if hasattr(operator, "closure_step") else None
                 if cl:
                     if operator.type_ == CSTR_HDL["Controller"]:
                         # output-saturation lives on cstr-hdl-ext:limits (the non-integral
@@ -1720,7 +1725,7 @@ class Parser:
                     continue
 
                 call = self.id(v)
-                if op.is_schedulable() and call not in self.sched:
+                if op.schedulable and call not in self.sched:
                     sched.append(call)
                     scheduled_nodes[call] = v
                     self.sched.add(call)
@@ -2735,14 +2740,6 @@ def _path_of_model(g, model_node):
     return str(g.value(model_node, EXEC.path) or "")
 
 
-def _mj_body_name(g, node):
-    return str(g.value(node, MJ["body-name"]) or "") if node else ""
-
-
-def _site_name(g, node):
-    return str(g.value(node, MJ["site-name"]) or "") if node else ""
-
-
 def _resolve_existing_path(path: str) -> Path | None:
     if not path:
         return None
@@ -2821,14 +2818,23 @@ def _derive_tool_body_from_attachment(attachment: SceneAttachment, tcp_site: str
     return f"{attachment.prefix}{local_body}"
 
 
-def _attach_target_of(g, obj_node):
+def _scene_id_nodes(g, env_node):
+    nodes = set()
+    for obj_node in g.objects(env_node, ENV["has-object"]):
+        nodes.add(obj_node)
+        nodes.add(g.value(obj_node, ENV["has-object-model"]))
+        nodes.add(g.value(obj_node, SLV["attached-to"]))
+    return nodes
+
+
+def _attach_target_of(g, obj_node, ids: LocalIdMap):
     kind = str(g.value(obj_node, MJ["attach-kind"]) or "world").title()
     if kind not in {"World", "Body", "Site", "Frame"}:
         kind = "World"
     name = str(g.value(obj_node, MJ["attach-name"]) or "")
     target = g.value(obj_node, SLV["attached-to"])
     if kind == "Site" and target is not None and ENV.Object in g[target:RDF.type]:
-        target_name = _id_from_uri(target)
+        target_name = ids[target]
         if target_name and name and not name.startswith(f"{target_name}_{target_name}_"):
             name = f"{target_name}_{name}"
     return kind, name
@@ -2861,7 +2867,7 @@ def _transitive_attachment_nodes(g, env_node, robot_node):
     return ordered
 
 
-def _attachments_for_robot(g, env_node, robot_node, tool_body):
+def _attachments_for_robot(g, env_node, robot_node, tool_body, ids: LocalIdMap):
     attachments = []
     prefix_by_node = {}
     for candidate in _transitive_attachment_nodes(g, env_node, robot_node):
@@ -2883,7 +2889,11 @@ def _attachments_for_robot(g, env_node, robot_node, tool_body):
                 f"Attachment '{candidate}' has unsupported attach-kind '{attach_kind}'; "
                 f"expected Body, Site, or Frame."
             )
-        attach_to = _site_name(g, attach_node) if attach_kind == "Site" else _mj_body_name(g, attach_node)
+        attach_to = (
+            str(g.value(attach_node, MJ["site-name"]) or "")
+            if attach_kind == "Site"
+            else str(g.value(attach_node, MJ["body-name"]) or "")
+        )
         prefix_lit = g.value(candidate, MJ["attach-prefix"])
         prefix = str(prefix_lit) if prefix_lit is not None else ""
         # When attached to another (prefixed) attachment, that parent's sites/bodies
@@ -2896,7 +2906,7 @@ def _attachments_for_robot(g, env_node, robot_node, tool_body):
         actuator = str(g.value(candidate, MJ["actuator-name"]) or "")
         attachments.append(
             SceneAttachment(
-                id=_id_from_uri(candidate),
+                id=ids[candidate],
                 path=path,
                 attach_to=attach_to,
                 attach_kind=attach_kind,
@@ -2964,6 +2974,7 @@ def _trace_from_graph(g):
 def _scene_from_graph(g):
     scene = SceneSpec()
     for env_node in g.subjects(RDF.type, ENV.Workspace):
+        ids = LocalIdMap(g, _scene_id_nodes(g, env_node))
         _timestep = g.value(env_node, MJ["timestep"])
         if _timestep is not None:
             scene.timestep_s = float(_timestep.toPython())
@@ -2978,13 +2989,14 @@ def _scene_from_graph(g):
             if not robot_path:
                 continue
 
-            tool_body = _mj_body_name(g, g.value(robot_node, MJ["tool-body"]))
-            attachments = _attachments_for_robot(g, env_node, robot_node, tool_body)
-            attach_kind, attach_name = _attach_target_of(g, robot_node)
+            tool_body_node = g.value(robot_node, MJ["tool-body"])
+            tool_body = str(g.value(tool_body_node, MJ["body-name"]) or "") if tool_body_node else ""
+            attachments = _attachments_for_robot(g, env_node, robot_node, tool_body, ids)
+            attach_kind, attach_name = _attach_target_of(g, robot_node, ids)
 
             scene.robots.append(
                 SceneRobot(
-                    id=_id_from_uri(robot_node),
+                    id=ids[robot_node],
                     path=robot_path,
                     prefix=str(g.value(robot_node, MJ["prefix"]) or ""),
                     attach_kind=attach_kind,
@@ -3002,7 +3014,10 @@ def _scene_from_graph(g):
                 continue
             model_node = g.value(obj_node, ENV["has-object-model"])
             path = _path_of_model(g, model_node)
-            body = _mj_body_name(g, obj_node) or _id_from_uri(obj_node)
+            body = (
+                str(g.value(obj_node, MJ["body-name"]) or "")
+                or ids[obj_node]
+            )
             obj_types = set(g[obj_node:RDF.type])
             if POLY.CuboidWithSize in obj_types:
                 shape = "BOX"
@@ -3024,7 +3039,7 @@ def _scene_from_graph(g):
                     if mv is not None:
                         mass_value = float(mv.value)
                         break
-            attach_kind, attach_name = _attach_target_of(g, obj_node)
+            attach_kind, attach_name = _attach_target_of(g, obj_node, ids)
             f_slide = g.value(obj_node, MJ["friction-slide"])
             f_torsion = g.value(obj_node, MJ["friction-torsion"])
             f_roll = g.value(obj_node, MJ["friction-roll"])
@@ -3036,7 +3051,7 @@ def _scene_from_graph(g):
             color = _color_rgba(g, obj_node)
             scene.objects.append(
                 SceneObjectSpec(
-                    id=_id_from_uri(obj_node),
+                    id=ids[obj_node],
                     body=body,
                     path=path,
                     attach_kind=attach_kind,
@@ -3054,11 +3069,6 @@ def _scene_from_graph(g):
     return scene
 
 
-def _id_from_uri(node):
-    return str(node).rstrip("/").split("/")[-1].split("#")[-1].replace("-", "_")
-
-
-
 def _robot_setups_from_graph(g):
     """Per-robot solver chain setups for the whole workspace.
 
@@ -3073,6 +3083,7 @@ def _robot_setups_from_graph(g):
     setups_by_node = {}
     ordered = []
     for env_node in g.subjects(RDF.type, ENV.Workspace):
+        ids = LocalIdMap(g, _scene_id_nodes(g, env_node))
         for obj_node in g.objects(env_node, ENV["has-object"]):
             chain = g.value(obj_node, GEOM_ENT["kinematic-chain"])
             if chain is None:
@@ -3084,9 +3095,11 @@ def _robot_setups_from_graph(g):
             chain_end = str(g.value(end, MJ["body-name"]) or "")
             model_node = g.value(obj_node, ENV["has-object-model"])
             urdf = _path_of_model(g, model_node)
-            robot_model = str(model_node).rstrip("/").split("/")[-1].split("#")[-1] if model_node else ""
-            tool_body = _mj_body_name(g, g.value(obj_node, MJ["tool-body"]))
-            tcp_site = _site_name(g, g.value(obj_node, MJ["tcp-site"]))
+            robot_model = ids[model_node] if model_node else ""
+            tool_body_node = g.value(obj_node, MJ["tool-body"])
+            tcp_site_node = g.value(obj_node, MJ["tcp-site"])
+            tool_body = str(g.value(tool_body_node, MJ["body-name"]) or "") if tool_body_node else ""
+            tcp_site = str(g.value(tcp_site_node, MJ["site-name"]) or "") if tcp_site_node else ""
             ft_sensors = sorted(
                 (
                     {
@@ -3097,10 +3110,16 @@ def _robot_setups_from_graph(g):
                 ),
                 key=lambda s: s["name"],
             )
-            attachments = _attachments_for_robot(g, env_node, obj_node, tool_body)
+            attachments = _attachments_for_robot(g, env_node, obj_node, tool_body, ids)
             for attachment in _transitive_attachment_nodes(g, env_node, obj_node):
-                tool_body = tool_body or _mj_body_name(g, g.value(attachment, MJ["tool-body"]))
-                tcp_site = tcp_site or _site_name(g, g.value(attachment, MJ["tcp-site"]))
+                tool_body_node = g.value(attachment, MJ["tool-body"])
+                tcp_site_node = g.value(attachment, MJ["tcp-site"])
+                tool_body = tool_body or (
+                    str(g.value(tool_body_node, MJ["body-name"]) or "") if tool_body_node else ""
+                )
+                tcp_site = tcp_site or (
+                    str(g.value(tcp_site_node, MJ["site-name"]) or "") if tcp_site_node else ""
+                )
             if not tool_body and tcp_site:
                 for attachment in attachments:
                     tool_body = _derive_tool_body_from_attachment(attachment, tcp_site)
@@ -3158,10 +3177,6 @@ def _id_refs(value):
     return [ref] if ref else []
 
 
-def _compact(entry):
-    return {k: v for k, v in entry.items() if v is not None and v != []}
-
-
 def _dedupe_dicts(entries, key="id"):
     result = []
     seen = set()
@@ -3211,77 +3226,65 @@ def _build_introspection(
                 "measured_derivative": _id_ref(controller.measured_derivative),
                 "output_signal": _id_ref(controller.control_signal),
             }
-            controllers.append(_compact(controller_entry))
+            controllers.append({k: v for k, v in controller_entry.items() if v is not None and v != []})
             for role in ("error_signal", "reference_signal", "measured_derivative", "control_signal"):
                 quantity_id = _id_ref(getattr(controller, role))
                 if quantity_id:
-                    signals.append(
-                        _compact(
-                            {
-                                "id": f"{controller.id}.{role}",
-                                "uri": uri_by_id.get(quantity_id),
-                                "quantity": quantity_id,
-                                "role": role,
-                                "owner": controller.id,
-                            }
-                        )
-                    )
+                    signal_entry = {
+                        "id": f"{controller.id}.{role}",
+                        "uri": uri_by_id.get(quantity_id),
+                        "quantity": quantity_id,
+                        "role": role,
+                        "owner": controller.id,
+                    }
+                    signals.append({k: v for k, v in signal_entry.items() if v is not None and v != []})
         for phase in ("when", "while", "until"):
             for monitor in getattr(motion, f"{phase}_monitors"):
-                monitors.append(
-                    _compact(
-                        {
-                            "id": monitor.id,
-                            "uri": uri_by_id.get(monitor.id),
-                            "motion": motion.id,
-                            "phase": phase,
-                            "type": monitor.monitor_type,
-                            "trigger": "edge" if monitor.is_edge_triggered else "level",
-                            "event": monitor.event,
-                            "event_uri": monitor.event_uri,
-                            "event_name": monitor.event_name,
-                            "flag": monitor.flag,
-                            "error_signal": _id_ref(monitor.error),
-                            "fallback_motion": monitor.fallback_motion,
-                            "debounce_duration_s": monitor.debounce_duration_s,
-                            "debounce_steps": monitor.debounce_steps,
-                        }
-                    )
-                )
+                monitor_entry = {
+                    "id": monitor.id,
+                    "uri": uri_by_id.get(monitor.id),
+                    "motion": motion.id,
+                    "phase": phase,
+                    "type": monitor.monitor_type,
+                    "trigger": "edge" if monitor.is_edge_triggered else "level",
+                    "event": monitor.event,
+                    "event_uri": monitor.event_uri,
+                    "event_name": monitor.event_name,
+                    "flag": monitor.flag,
+                    "error_signal": _id_ref(monitor.error),
+                    "fallback_motion": monitor.fallback_motion,
+                    "debounce_duration_s": monitor.debounce_duration_s,
+                    "debounce_steps": monitor.debounce_steps,
+                }
+                monitors.append({k: v for k, v in monitor_entry.items() if v is not None and v != []})
                 if monitor.error is not None:
-                    signals.append(
-                        _compact(
-                            {
-                                "id": f"{monitor.id}.error",
-                                "uri": uri_by_id.get(monitor.error.id),
-                                "quantity": monitor.error.id,
-                                "role": "monitor_error",
-                                "owner": monitor.id,
-                            }
-                        )
-                    )
+                    signal_entry = {
+                        "id": f"{monitor.id}.error",
+                        "uri": uri_by_id.get(monitor.error.id),
+                        "quantity": monitor.error.id,
+                        "role": "monitor_error",
+                        "owner": monitor.id,
+                    }
+                    signals.append({k: v for k, v in signal_entry.items() if v is not None and v != []})
 
     quantities = []
     for item in data_structures:
-        quantities.append(
-            _compact(
-                {
-                    "id": item.id,
-                    "uri": uri_by_id.get(item.id),
-                    "type": item.type,
-                    "unit": _id_refs(getattr(item, "unit", None)),
-                    "quantity_kind": _id_refs(getattr(item, "quantity_kind", None)),
-                    # Reference frame the spatial value is expressed in — the frame_id for the
-                    # pose/twist/wrench spatial samples.
-                    "reference_frame": _id_ref(getattr(item, "as_seen_by", None))
-                    or _id_ref(getattr(item, "with_respect_to", None)),
-                    "reference_value": getattr(item, "reference_value", None),
-                    "value": getattr(item, "value", None),
-                    "authored": getattr(item, "authored", False),
-                    "snapshot": getattr(item, "snapshot", False),
-                }
-            )
-        )
+        quantity_entry = {
+            "id": item.id,
+            "uri": uri_by_id.get(item.id),
+            "type": item.type,
+            "unit": _id_refs(getattr(item, "unit", None)),
+            "quantity_kind": _id_refs(getattr(item, "quantity_kind", None)),
+            # Reference frame the spatial value is expressed in — the frame_id for the
+            # pose/twist/wrench spatial samples.
+            "reference_frame": _id_ref(getattr(item, "as_seen_by", None))
+            or _id_ref(getattr(item, "with_respect_to", None)),
+            "reference_value": getattr(item, "reference_value", None),
+            "value": getattr(item, "value", None),
+            "authored": getattr(item, "authored", False),
+            "snapshot": getattr(item, "snapshot", False),
+        }
+        quantities.append({k: v for k, v in quantity_entry.items() if v is not None and v != []})
 
     runtime_type = {
         "mj_kdl": "rt:MuJoCoRuntime",
@@ -3367,8 +3370,9 @@ def _build_introspection(
         "control_period_ns": control_period_ns,
         "uris": uri_rows,
         "motions": [
-            _compact(
-                {
+            {
+                k: v
+                for k, v in {
                     "id": motion.id,
                     "uri": uri_by_id.get(motion.id),
                     "handler": motion.handler,
@@ -3380,8 +3384,9 @@ def _build_introspection(
                         for group in (motion.when_monitors, motion.while_monitors, motion.until_monitors)
                         for monitor in group
                     ],
-                }
-            )
+                }.items()
+                if v is not None and v != []
+            }
             for motion in motions
         ],
         "states": [],
@@ -3422,10 +3427,6 @@ def _build_introspection(
     }
 
 
-def _is_dsl_provenance_import(location: str) -> bool:
-    return location.rstrip("/").endswith("/provenance/dsl.jsonld")
-
-
 def _resolve_import_location(location: str, url_map: dict[str, str]) -> str:
     for base, root in sorted(url_map.items(), key=lambda item: len(item[0]), reverse=True):
         if location.startswith(base):
@@ -3443,12 +3444,13 @@ def _load_graph(manifest_path):
     install_resolver(IriToFileResolver({**metamodel_url_map(), **url_map}, download=False))
 
     imported_files = list(dict.fromkeys(str(model) for model in g.objects(predicate=APP["import"])))
-    imported_provenance = [
-        _resolve_import_location(item, url_map)
-        for item in imported_files
-        if _is_dsl_provenance_import(item)
-    ]
-    imported_model_locations = [item for item in imported_files if not _is_dsl_provenance_import(item)]
+    imported_provenance = []
+    imported_model_locations = []
+    for item in imported_files:
+        if item.endswith("/provenance/dsl.jsonld"):
+            imported_provenance.append(_resolve_import_location(item, url_map))
+        else:
+            imported_model_locations.append(item)
     imported_models = [_resolve_import_location(item, url_map) for item in imported_model_locations]
     for model in imported_model_locations:
         g.parse(location=model, format="json-ld")

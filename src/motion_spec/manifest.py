@@ -51,15 +51,10 @@ def build_url_map(g, manifest_path):
     """
     app_model_path = Path(manifest_path).resolve()
 
-    def _quad_objects(predicate):
-        return list({o for _, _, o, _ in g.quads((None, predicate, None, None))})
-
-    def _quad_value(subject, predicate):
-        return next((o for _, _, o, _ in g.quads((subject, predicate, None, None))), None)
-
     url_map = {}
-    for key in _quad_objects(APP["iri-map"]):
-        path_node = _quad_value(key, APP["path"])
+    iri_map_keys = list({o for _, _, o, _ in g.quads((None, APP["iri-map"], None, None))})
+    for key in iri_map_keys:
+        path_node = next((o for _, _, o, _ in g.quads((key, APP["path"], None, None))), None)
         if path_node is None:
             continue
         value = str(path_node)
@@ -76,14 +71,14 @@ def build_url_map(g, manifest_path):
                 models_subdir_path = app_model_path.parent / "models"
 
                 # Check which one contains the expected files by looking at imports
-                imports = _quad_objects(APP["import"])
+                imports = list({o for _, _, o, _ in g.quads((None, APP["import"], None, None))})
                 if imports:
                     # Take first import URL and extract the path part after the base URL
                     first_import_url = str(imports[0])
                     # The import URLs are like "https://secorolab.github.io/00-common/00-misc.json"
                     # We want to extract "00-common/00-misc.json"
                     import_path = None
-                    for base_url in [str(k) for k in _quad_objects(APP["iri-map"])]:
+                    for base_url in [str(k) for k in iri_map_keys]:
                         if first_import_url.startswith(base_url):
                             import_path = first_import_url[len(base_url) :]
                             break

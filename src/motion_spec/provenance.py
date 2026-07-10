@@ -61,15 +61,13 @@ TOOL_METADATA = {
 }
 
 
-def _slug(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("_") or "item"
-
-
 def _prov_iri(identifier: str) -> str:
     kind, _, name = identifier.partition(":")
     if not name:
         kind, name = "id", identifier
-    return f"{MSPROV_PREFIX}{_slug(kind)}/{_slug(name)}"
+    kind_slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", kind).strip("_") or "item"
+    name_slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_") or "item"
+    return f"{MSPROV_PREFIX}{kind_slug}/{name_slug}"
 
 
 def prov_uri(identifier: str) -> str:
@@ -132,10 +130,6 @@ def _compact_type(type_id: str) -> str:
     return type_id
 
 
-def _compact_types(types: list[str]) -> list[str]:
-    return [_compact_type(type_id) for type_id in types]
-
-
 def _tool_properties(agent_id: str) -> dict:
     metadata = TOOL_METADATA.get(agent_id, {})
     package = metadata.get("package")
@@ -154,7 +148,7 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
 
     def add_node(identifier: str, types: list[str], **properties) -> str:
         node_id = _prov_iri(identifier)
-        node = {"@id": node_id, "@type": _compact_types(types)}
+        node = {"@id": node_id, "@type": [_compact_type(type_id) for type_id in types]}
         node.update({k: v for k, v in properties.items() if v is not None and v != []})
         graph.append(node)
         return node_id

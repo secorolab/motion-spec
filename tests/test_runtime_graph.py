@@ -12,7 +12,7 @@ from motion_spec.introspection.archive import create_archive_manifest
 from motion_spec.provenance import prov_uri
 from motion_spec.codegen_artifacts import field_names_and_format
 from motion_spec.introspection.replay import runtime_frames
-from motion_spec.introspection.runtime_graph import MSRUN, PROV, _bind_model_subnamespaces, write_runtime_ttl
+from motion_spec.introspection.runtime_graph import MSRUN, PROV, write_runtime_ttl
 
 from frame_log_fixture import write_frame_log_pb, write_frame_log_proto
 from test_introspection_archive import _hash_doc, _layout, _provenance
@@ -238,17 +238,3 @@ def test_runtime_ttl_projects_full_observation_graph(tmp_path: Path) -> None:
     recovery = rdflib.URIRef(prov_uri("activity:runtime_ttl_recovery"))
     assert _has(graph, None, PROV.wasGeneratedBy, recovery)
     assert _has(graph, recovery, PROV.wasAssociatedWith, rdflib.URIRef(prov_uri("agent:replay_process")))
-
-
-def test_model_subnamespace_bindings_compact_deep_model_iris() -> None:
-    graph = rdflib.Graph()
-    graph.bind("msrun", MSRUN)
-    model_base = "https://example.test/models/demo/"
-    condition = rdflib.URIRef(f"{model_base}pick/when/aligned-above")
-    graph.add((MSRUN["example"], MSRUN.constraint, condition))
-
-    _bind_model_subnamespaces(graph, model_base)
-
-    text = graph.serialize(format="turtle")
-    assert "pick-when:aligned-above" in text
-    assert f"<{condition}>" not in text

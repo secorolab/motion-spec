@@ -14,7 +14,7 @@ from rdflib.namespace import RDF
 from motion_spec.manifest import build_url_map, metamodel_url_map
 from motion_spec.namespace import APP, CSTR_HDL
 
-SUPPORTED_CONTROL_MODES = {"JointTorque"}
+SUPPORTED_CONTROL_MODES = {CSTR_HDL["JointTorque"]}
 
 
 def main():
@@ -45,15 +45,6 @@ Examples:
     g = rdflib.Dataset()
     g.parse(app_model, format="json-ld")
 
-    # Load IRI map and resolve paths relative to the manifest file
-    def _quad_objects(predicate):
-        """Return distinct objects for a predicate across all named graphs."""
-        return list({o for _, _, o, _ in g.quads((None, predicate, None, None))})
-
-    def _quad_value(subject, predicate):
-        """Return first object for subject+predicate across all named graphs."""
-        return next((o for _, _, o, _ in g.quads((subject, predicate, None, None))), None)
-
     # Metamodel/ontology prefixes resolve through the shared local checkout; the
     # model's own iri-map only declares where its imported graphs live. Merge both
     # (longest prefix first) so neither metamodels nor imports reach the network.
@@ -66,20 +57,22 @@ Examples:
     )
 
     # Load/import the referenced models
-    models = _quad_objects(APP["import"])
+    models = list({o for _, _, o, _ in g.quads((None, APP["import"], None, None))})
     for o in models:
         g.parse(location=o, format="json-ld")
 
     validation_errors = []
     for handler in {s for s, _, _, _ in g.quads((None, RDF.type, CSTR_HDL["ConstraintHandler"], None))}:
-        control_mode = _quad_value(handler, CSTR_HDL["control-mode"])
+        control_mode = next(
+            (o for _, _, o, _ in g.quads((handler, CSTR_HDL["control-mode"], None, None))),
+            None,
+        )
         if control_mode is None:
             validation_errors.append(f"Constraint handler '{handler}' is missing control-mode.")
             continue
-        mode_name = str(control_mode).rsplit("#", 1)[-1].rsplit("/", 1)[-1]
-        if mode_name not in SUPPORTED_CONTROL_MODES:
+        if control_mode not in SUPPORTED_CONTROL_MODES:
             validation_errors.append(
-                f"Constraint handler '{handler}' uses unsupported control mode '{mode_name}'."
+                f"Constraint handler '{handler}' uses unsupported control mode '{control_mode}'."
             )
     if validation_errors:
         print("Validation Report")
@@ -89,7 +82,9 @@ Examples:
         sys.exit(1)
 
     g_sh = rdflib.Dataset()
-    metamodels = sorted(str(o) for o in _quad_objects(APP["constraints"]))
+    metamodels = sorted(
+        str(o) for _, _, o, _ in g.quads((None, APP["constraints"], None, None))
+    )
     if not metamodels:
         print("Validation Report")
         print("Conforms: False")

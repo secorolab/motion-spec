@@ -117,6 +117,25 @@ def test_scene_object_site_attach_target_is_prefixed_for_runtime_scene_name() ->
     assert scene.robots[0].attach_name == "table_table_top"
 
 
+def test_scene_ids_are_scoped_when_local_names_collide() -> None:
+    graph = Graph()
+    graph.bind("demo1", "https://example.test/models/demo1/")
+    graph.bind("demo2", "https://example.test/models/demo2/")
+    env = URIRef("https://example.test/env")
+    first = URIRef("https://example.test/models/demo1/pick_object")
+    second = URIRef("https://example.test/models/demo2/pick_object")
+
+    graph.add((env, RDF.type, ENV.Workspace))
+    for node in (first, second):
+        graph.add((env, ENV["has-object"], node))
+        graph.add((node, RDF.type, ENV.RigidObject))
+        graph.add((node, RDF.type, ENV.Object))
+
+    scene = _scene_from_graph(graph)
+
+    assert {obj.id for obj in scene.objects} == {"demo1_pick_object", "demo2_pick_object"}
+
+
 def test_uris_table_maps_each_id_to_full_uri() -> None:
     graph, controller_node = _pid_graph(kp=1.0)
 

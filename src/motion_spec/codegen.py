@@ -87,10 +87,6 @@ def resource_path(relative_path: Path) -> Path:
     )
 
 
-def template_group() -> Path:
-    return resource_path(Path("code-generator/main.stg")).parent
-
-
 def write_json(path: Path, payload):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, cls=DataclassJSONEncoder, indent=4) + "\n")
@@ -106,7 +102,7 @@ def render_template(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     stst_path = Path(stst_bin)
     run_cwd = stst_path.resolve().parent if stst_path.parent != Path(".") else PACKAGE_ROOT
-    templates = template_group()
+    templates = resource_path(Path("code-generator/main.stg")).parent
     command = [
         stst_bin,
         "-s",
@@ -800,23 +796,15 @@ def _evaluator_term(e: dict, start_field: str) -> str:
     return f"motion_spec::runtime::constraint_satisfied(shared.{e['error']['id']})"
 
 
-def _evaluator_active_term(e: dict) -> str:
-    return _evaluator_term(e, "motion_start_time")
-
-
-def _evaluator_when_term(e: dict) -> str:
-    return _evaluator_term(e, "when_start_time")
-
-
 def add_until_monitor_conditions(motions: list[dict]) -> None:
     for motion in motions:
         terms = [
-            _evaluator_active_term(e)
+            _evaluator_term(e, "motion_start_time")
             for e in motion.get("until_evaluators", [])
             if e.get("error") or e.get("is_elapsed")
         ]
         elapsed_terms_by_error = {
-            e["error"]["id"]: _evaluator_active_term(e)
+            e["error"]["id"]: _evaluator_term(e, "motion_start_time")
             for e in motion.get("until_evaluators", [])
             if e.get("is_elapsed") and e.get("error")
         }
@@ -836,12 +824,12 @@ def add_until_monitor_conditions(motions: list[dict]) -> None:
 def add_when_monitor_conditions(motions: list[dict]) -> None:
     for motion in motions:
         terms = [
-            _evaluator_when_term(e)
+            _evaluator_term(e, "when_start_time")
             for e in motion.get("when_evaluators", [])
             if e.get("error") or e.get("is_elapsed")
         ]
         elapsed_terms_by_error = {
-            e["error"]["id"]: _evaluator_when_term(e)
+            e["error"]["id"]: _evaluator_term(e, "when_start_time")
             for e in motion.get("when_evaluators", [])
             if e.get("is_elapsed") and e.get("error")
         }
@@ -872,9 +860,6 @@ def add_motion_function_interfaces(motions: list[dict]) -> None:
             return ""
         return "\n    " + ",\n    ".join(params) + "\n"
 
-    def join_args(args: list[str]) -> str:
-        return ", ".join(args)
-
     for motion in motions:
         state_type = f"{motion['id']}_state &state"
         has_when_elapsed = any(e.get("is_elapsed") for e in motion.get("when_evaluators", []))
@@ -888,7 +873,7 @@ def add_motion_function_interfaces(motions: list[dict]) -> None:
             can_start_params.append("shared_data &shared")
             can_start_args.append("shared")
         motion["can_start_params"] = join_params(can_start_params)
-        motion["can_start_args"] = join_args(can_start_args)
+        motion["can_start_args"] = ", ".join(can_start_args)
 
         when_mons = motion.get("when_monitors") or []
         until_mons = motion.get("until_monitors") or []
@@ -909,7 +894,7 @@ def add_motion_function_interfaces(motions: list[dict]) -> None:
             if use_robot:
                 params.append("const robot_io &robot")
                 args.append("robot")
-            return join_params(params), join_args(args)
+            return join_params(params), ", ".join(args)
 
         motion["when_params"], motion["when_args"] = monitor_sig(
             has_when_elapsed or bool(when_mons),
@@ -943,7 +928,7 @@ def add_motion_function_interfaces(motions: list[dict]) -> None:
             apply_params.append("const robot_io &robot")
             apply_args.append("robot")
         motion["apply_params"] = join_params(apply_params)
-        motion["apply_args"] = join_args(apply_args)
+        motion["apply_args"] = ", ".join(apply_args)
 
 
 def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):

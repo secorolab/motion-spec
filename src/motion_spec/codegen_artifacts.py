@@ -78,10 +78,6 @@ def fields_with_offsets(pools: dict) -> tuple[list[dict], int]:
     return fields, len(fields) * FIELD_BYTES
 
 
-def quantity_ids(quantities: list[dict]) -> list[str]:
-    return [q["id"] for q in sorted(quantities, key=lambda q: q.get("index", 0))]
-
-
 def _uri_by_id(ir: dict) -> dict:
     return {
         row["id"]: row["uri"]
@@ -469,10 +465,6 @@ def build_frame_log_proto_fields(schema: dict) -> dict:
     return {"runtime_frame": RUNTIME_FRAME_MESSAGE, "fields": fields}
 
 
-def _cpp_string(value: str | None) -> str:
-    return json.dumps(value or "")
-
-
 def _shared_expr(signal_id: str | None, shared_ids: set[str]) -> str:
     if signal_id and signal_id in shared_ids:
         return f"shared.{signal_id}"
@@ -502,7 +494,7 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
         for slot in entry.get("controllers", []):
             controllers.append(
                 {
-                    "uri": _cpp_string(slot.get("uri")),
+                    "uri": json.dumps(slot.get("uri") or ""),
                     "error_expr": _shared_expr(slot.get("error_signal"), shared_ids),
                     "output_expr": _shared_expr(slot.get("output_signal"), shared_ids),
                     "measured_expr": slot.get("measured_expr")
@@ -516,7 +508,7 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
             value_expr = slot.get("active_condition") or _shared_expr(slot.get("error_signal"), shared_ids)
             monitors.append(
                 {
-                    "uri": _cpp_string(slot.get("uri")),
+                    "uri": json.dumps(slot.get("uri") or ""),
                     "value_expr": value_expr,
                     "satisfied_expr": value_expr if slot.get("active_condition") else f"constraint_satisfied({value_expr})",
                 }

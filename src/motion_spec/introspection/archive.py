@@ -65,10 +65,6 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def short_hash(path: Path) -> str:
-    return sha256_file(path)[:16]
-
-
 def hash_tree(path: Path) -> str:
     h = hashlib.sha256()
     for item in sorted(p for p in path.rglob("*") if p.is_file()):

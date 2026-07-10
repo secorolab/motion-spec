@@ -66,11 +66,8 @@ def main():
             rows.append([row[category] for category in CATEGORIES])
         return rows
 
-    def format_vector(values):
-        return "[" + " ".join(str(v) for v in values) + "]"
-
     def format_matrix(rows):
-        row_strs = [format_vector(row) for row in rows]
+        row_strs = ["[" + " ".join(str(v) for v in row) + "]" for row in rows]
         return "[" + ("\n ".join(row_strs)) + "]"
 
     ent_rows = bucket(entities)
@@ -80,9 +77,9 @@ def main():
     lin_sum = [sum(row[i] for row in lin_rows) for i in range(len(CATEGORIES))]
 
     print(", ".join(CATEGORIES))
-    print("entities:", format_vector(ent_sum))
+    print("entities:", "[" + " ".join(str(v) for v in ent_sum) + "]")
     print(format_matrix(ent_rows))
-    print("lines:", format_vector(lin_sum))
+    print("lines:", "[" + " ".join(str(v) for v in lin_sum) + "]")
     print(format_matrix(lin_rows))
 
 

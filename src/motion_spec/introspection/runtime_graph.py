@@ -6,7 +6,6 @@ from __future__ import annotations
 import json
 import math
 import os
-import re
 import time
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -15,6 +14,7 @@ from pathlib import Path
 import rdflib
 
 from motion_spec.introspection.archive import load_manifest, sha256_file
+from motion_spec.namespace import CSTR_HDL
 from motion_spec.provenance import MSPROV, prov_uri
 
 
@@ -26,15 +26,6 @@ def _dt_literal(wall_ns) -> rdflib.Literal | None:
     sec, ns = divmod(int(wall_ns), 1_000_000_000)
     dt = datetime.fromtimestamp(sec, timezone.utc).replace(microsecond=ns // 1000)
     return rdflib.Literal(dt)
-
-
-def _model_base(schema: dict) -> str | None:
-    """Common `.../models/<model>/` IRI base, derived from an FSM state URI."""
-    for state in schema.get("fsm", {}).get("states", []):
-        uri = state.get("uri")
-        if uri and "/fsm/" in uri:
-            return uri.rsplit("/fsm/", 1)[0] + "/"
-    return None
 
 
 def _condition_map(run_dir: Path, manifest: dict) -> dict[str, rdflib.URIRef]:
@@ -52,34 +43,10 @@ def _condition_map(run_dir: Path, manifest: dict) -> dict[str, rdflib.URIRef]:
         except Exception:
             continue
         for s, p, o in mg:
-            if isinstance(o, rdflib.URIRef) and str(p).rsplit("#", 1)[-1].rsplit("/", 1)[-1] == "constraint":
+            if isinstance(o, rdflib.URIRef) and p == CSTR_HDL["constraint"]:
                 mapping[str(s)] = o
     return mapping
 
-
-def _bind_model_subnamespaces(g: rdflib.Graph, model_base: str | None) -> None:
-    """Bind prefixes deep enough that referenced model IRIs serialize as CURIEs."""
-    if not model_base:
-        return
-    for term in g.all_nodes():
-        if not isinstance(term, rdflib.URIRef):
-            continue
-        text = str(term)
-        if not text.startswith(model_base):
-            continue
-        rest = text[len(model_base):]
-        if "/" in rest:
-            segments = rest.rsplit("/", 1)[0].split("/")
-            prefix = "mfsm" if segments == ["fsm"] else re.sub(r"[^A-Za-z0-9_-]+", "-", "-".join(segments))
-            if prefix and not prefix[0].isalpha():
-                prefix = f"m-{prefix}"
-            g.bind(prefix, rdflib.Namespace(model_base + "/".join(segments) + "/"))
-
-
-def _archive_location(rel: str) -> rdflib.URIRef:
-    """atLocation for an archived file, relative to runtime/runtime.ttl (portable, no
-    machine path). Resolves correctly when the graph is parsed from its own file base."""
-    return rdflib.URIRef(os.path.relpath(rel, "runtime"))
 
 PROV = rdflib.Namespace("http://www.w3.org/ns/prov#")
 BDD = rdflib.Namespace("https://secorolab.github.io/metamodels/acceptance-criteria/bdd#")
@@ -105,10 +72,6 @@ def _scoped(family: str, run_id: str, *parts) -> rdflib.URIRef:
     return MSRUN[f"{family}/{run_id}/{local}"]
 
 
-def _uri(value: str | None) -> rdflib.URIRef | None:
-    return rdflib.URIRef(value) if value else None
-
-
 def _literal(g: rdflib.Graph, subject: rdflib.URIRef, predicate: rdflib.URIRef, value) -> None:
     if value is None:
         return
@@ -121,13 +84,6 @@ def _literal(g: rdflib.Graph, subject: rdflib.URIRef, predicate: rdflib.URIRef, 
             value = Decimal(repr(value))
         # non-finite inf/nan fall through as a Python float -> xsd:double, which represents them
     g.add((subject, predicate, rdflib.Literal(value)))
-
-
-def _double(value):
-    """Coerce a JSON number to float. Continuous measurements (msrun:value) are doubles, but
-    JSON serializes an integer-valued double (1.0 -> "1") which json.loads reads back as int;
-    left as-is that emits xsd:integer, which the runtime SHACL (xsd:decimal/double) rejects."""
-    return None if value is None else float(value)
 
 
 def _state_maps(schema: dict) -> tuple[dict[int, dict], dict[int, dict]]:
@@ -151,9 +107,9 @@ def _state_meta(schema: dict, states: dict[int, dict], state_idx: int) -> tuple[
 
 def _slot_uri(slot: dict, *keys: str) -> rdflib.URIRef | None:
     for key in keys:
-        uri = _uri(slot.get(key))
-        if uri is not None:
-            return uri
+        value = slot.get(key)
+        if value:
+            return rdflib.URIRef(value)
     return None
 
 
@@ -233,7 +189,8 @@ def _constraint_edge_occurrences(
         if state and state.get("uri"):
             g.add((occ, MSRUN.fsmState, rdflib.URIRef(state["uri"])))
         _literal(g, occ, MSRUN.slotIndex, idx)
-        _literal(g, occ, MSRUN.value, _double(frame["constraints"][idx].get("error")))
+        value = frame["constraints"][idx].get("error")
+        _literal(g, occ, MSRUN.value, None if value is None else float(value))
         anchors.add(step)
     return anchors
 
@@ -269,7 +226,8 @@ def _monitor_edge_occurrences(
         if state and state.get("uri"):
             g.add((occ, MSRUN.fsmState, rdflib.URIRef(state["uri"])))
         _literal(g, occ, MSRUN.slotIndex, idx)
-        _literal(g, occ, MSRUN.value, _double(frame["monitors"][idx].get("value")))
+        value = frame["monitors"][idx].get("value")
+        _literal(g, occ, MSRUN.value, None if value is None else float(value))
         anchors.add(step)
     return anchors
 
@@ -401,10 +359,9 @@ def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int
         ("occ", "occurrence"),
     ):
         g.bind(prefix, rdflib.Namespace(f"{MSRUN}{family}/{run_id}/"))
-    model_base = _model_base(schema)
-    if model_base:
-        g.bind("model", rdflib.Namespace(model_base))
-        g.bind("mfsm", rdflib.Namespace(model_base + "fsm/"))
+    fsm_namespace = schema.get("fsm", {}).get("namespace")
+    if fsm_namespace:
+        g.bind("mfsm", rdflib.Namespace(fsm_namespace))
 
     run = _node(f"run:{manifest['run_id']}")
     # Agents and the execution activity are shared provenance concepts: emit the same
@@ -441,7 +398,7 @@ def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int
         (
             frame_log,
             PROV.atLocation,
-            _archive_location(manifest["files"]["frame_log"]),
+            rdflib.URIRef(os.path.relpath(manifest["files"]["frame_log"], "runtime")),
         )
     )
     for entity, key in (
@@ -453,7 +410,7 @@ def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int
         rel = manifest.get("files", {}).get(key)
         if rel and (run_dir / rel).exists():
             g.add((entity, rdflib.RDF.type, PROV.Entity))
-            g.add((entity, PROV.atLocation, _archive_location(rel)))
+            g.add((entity, PROV.atLocation, rdflib.URIRef(os.path.relpath(rel, "runtime"))))
     g.add((run, MSRUN.contractVersion, rdflib.Literal(RUNTIME_RDF_CONTRACT_VERSION)))
     g.add((run, MSRUN.runId, rdflib.Literal(manifest["run_id"])))
     g.add((run, MSRUN.frameCount, rdflib.Literal(len(frames) if frame_count is None else frame_count)))
@@ -499,7 +456,6 @@ def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int
             state, _meta = _state_meta(schema, states, frame.get("fsm_state", -1))
             if state and state.get("uri"):
                 g.add((frame_node, MSRUN.activeState, rdflib.URIRef(state["uri"])))
-    _bind_model_subnamespaces(g, model_base)
     return g
 
 

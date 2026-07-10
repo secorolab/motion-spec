@@ -1,0 +1,500 @@
+// SPDX-License-Identifier: MPL-2.0
+// Runtime header: control-loop math (easing/admittance/spring-damper, monitors, solver glue).
+
+runtime_header(has_mobile_base, control_period_ns, rne_damping_lambda) ::= <<
+#pragma once
+
+#include \<cassert\>
+#include \<algorithm\>
+#include \<cerrno\>
+#include \<chrono\>
+#include \<cmath\>
+#include \<cstdlib\>
+#include \<ctime\>
+#include \<Eigen/Dense\>
+#include \<iostream\>
+#include \<kdl/chain.hpp\>
+#include \<kdl/jacobian.hpp\>
+#include \<kdl/jntarray.hpp\>
+#include \<stdexcept\>
+#include \<string\>
+#include \<string_view\>
+<if(has_mobile_base)>
+#include \<hddc2b/functions/platform.h\>
+#include \<hddc2b/functions/solver.h\>
+#include \<hddc2b/functions/drive.h\>
+#include \<hddc2b/functions/wheel.h\>
+<endif>
+
+namespace motion_spec::runtime {
+
+inline constexpr double kConstraintTolerance = 1e-2;
+inline constexpr double kControlPeriodS = <control_period_ns> * 1e-9;
+inline constexpr int kMonitorArmSteps = 100;
+inline constexpr double kRneDampingLambda = <rne_damping_lambda>;
+
+inline double clamp_range(double v, double lower, double upper) {
+    if (v \< lower) return lower;
+    if (v > upper) return upper;
+    return v;
+}
+
+inline double clamp01(double v) {
+    if (v \< 0.0) return 0.0;
+    if (v > 1.0) return 1.0;
+    return v;
+}
+
+inline void resolve_constraint_acceleration(
+        const KDL::Jacobian &jac,
+        const KDL::Jacobian &alpha,
+        const KDL::JntArray &e_acc,
+        const Eigen::VectorXd *bias,
+        double lambda,
+        KDL::JntArray &qdd_out) {
+    KDL::SetToZero(qdd_out);
+    const int m = e_acc.rows();
+    if (m == 0) return;
+    const Eigen::MatrixXd task_jac = alpha.data.transpose() * jac.data;
+    Eigen::VectorXd rhs(m);
+    for (int i = 0; i \< m; ++i) {
+        rhs(i) = e_acc(i);
+    }
+    if (bias != nullptr && bias->size() == m) {
+        rhs -= *bias;
+    }
+    const Eigen::MatrixXd damped =
+        task_jac * task_jac.transpose() +
+        (lambda * lambda) * Eigen::MatrixXd::Identity(m, m);
+    const Eigen::VectorXd qdd = task_jac.transpose() * damped.ldlt().solve(rhs);
+    for (int i = 0; i \< static_cast\<int\>(qdd_out.rows()); ++i) {
+        qdd_out(i) = qdd(i);
+    }
+}
+
+inline double smoothstep(double alpha) {
+    alpha = clamp01(alpha);
+    return alpha * alpha * (3.0 - 2.0 * alpha);
+}
+
+inline double monotonic_time_s() {
+    using clock = std::chrono::steady_clock;
+    static const auto start = clock::now();
+    return std::chrono::duration<double>(clock::now() - start).count();
+}
+
+inline bool timespec_less(const timespec &a, const timespec &b) {
+    return a.tv_sec \< b.tv_sec || (a.tv_sec == b.tv_sec && a.tv_nsec \< b.tv_nsec);
+}
+
+inline void sleep_until_next(timespec &next, long period_ns) {
+    next.tv_nsec += period_ns;
+    while (next.tv_nsec >= 1000000000L) {
+        next.tv_nsec -= 1000000000L;
+        ++next.tv_sec;
+    }
+    timespec now{};
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (!timespec_less(now, next)) {
+        next = now;
+        return;
+    }
+    while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, nullptr) == EINTR) {}
+}
+
+// Progress easing profiles selectable from the DSL (Lerp `profile:`). smoothstep is
+// EaseInOut. All map [0,1] -> [0,1] with f(0)=0, f(1)=1.
+inline double ease_linear(double alpha) { return clamp01(alpha); }
+
+inline double ease_in(double alpha) {
+    alpha = clamp01(alpha);
+    return alpha * alpha; // slow start, full speed at the end
+}
+
+inline double ease_out(double alpha) {
+    alpha = clamp01(alpha);
+    return alpha * (2.0 - alpha); // full speed at the start, gentle stop
+}
+
+enum class VelocityProfileShape { Trapezoidal, SCurve };
+
+// SCurve is a cascaded jerk limiter, not a time-optimal phase planner.
+// Feed-forward online generator: the setpoint must LEAD the plant to drive a
+// position controller, so v is the profile's own integrated velocity, not the
+// measured one. (Resetting v to the measured velocity each step glues the
+// setpoint to the plant -> zero tracking error -> no drive -> deadlock from
+// rest.) The measured state seeds vp_velocity once at init in the caller.
+inline double velocity_profile_step(double x, double &v, double &a, double goal,
+                                    double vmax, double amax, double jmax, double dt,
+                                    VelocityProfileShape shape) {
+    vmax = std::max(vmax, 1e-9);
+    amax = std::max(amax, 1e-9);
+    const double dir = (goal >= x) ? 1.0 : -1.0;
+    const double dist = std::abs(goal - x);
+    const double v_brake = std::sqrt(2.0 * amax * dist);
+    const double v_target = dir * std::min(vmax, v_brake);
+    if (shape == VelocityProfileShape::Trapezoidal) {
+        const double dv = std::clamp(v_target - v, -amax * dt, amax * dt);
+        v += dv;
+        a = dv / dt;
+    } else {
+        jmax = std::max(jmax, 1e-9);
+        const double a_target = std::clamp((v_target - v) / dt, -amax, amax);
+        a += std::clamp(a_target - a, -jmax * dt, jmax * dt);
+        v += a * dt;
+    }
+    v = std::clamp(v, -vmax, vmax);
+    double nx = x + v * dt;
+    if ((goal - nx) * dir \< 0.0) {
+        nx = goal;
+        v = 0.0;
+        a = 0.0;
+    }
+    return nx;
+}
+
+inline KDL::Frame interpolate_pose_lerp(
+        const KDL::Frame &start,
+        const KDL::Frame &goal,
+        double alpha) {
+    const double s = smoothstep(alpha);
+    const KDL::Vector dp = goal.p - start.p;
+    const KDL::Vector p(
+        start.p.x() + dp.x() * s,
+        start.p.y() + dp.y() * s,
+        start.p.z() + dp.z() * s);
+    const KDL::Vector rot = KDL::diff(start.M, goal.M);
+    const double angle = rot.Norm();
+    KDL::Rotation r = start.M;
+    if (angle > 1e-9) {
+        const KDL::Vector axis(rot.x() / angle, rot.y() / angle, rot.z() / angle);
+        r = start.M * KDL::Rotation::Rot(axis, angle * s);
+    }
+    return KDL::Frame(r, p);
+}
+
+// Returns a unit vector perpendicular to `n`, chosen by crossing `n` with the
+// world axis least aligned with it (so the cross product is well-conditioned).
+inline KDL::Vector plane_reference(const KDL::Vector &n) {
+    const double ax = std::abs(n.x());
+    const double ay = std::abs(n.y());
+    const double az = std::abs(n.z());
+    KDL::Vector pick;
+    if (ax \<= ay && ax \<= az) {
+        pick = KDL::Vector(1.0, 0.0, 0.0);
+    } else if (ay \<= az) {
+        pick = KDL::Vector(0.0, 1.0, 0.0);
+    } else {
+        pick = KDL::Vector(0.0, 0.0, 1.0);
+    }
+    KDL::Vector perp = n * pick;
+    perp.Normalize();
+    return perp;
+}
+inline constexpr double kDefaultTrajectoryDuration = 8.0;
+<if(has_mobile_base)>
+inline constexpr int NUM_DRIVES = 4;
+inline constexpr int NUM_SLAVES = 4;
+inline constexpr int NUM_WHL_COORD = 2;
+inline constexpr int NUM_GND_COORD = 2;
+inline constexpr int NUM_DRV_COORD = 2;
+inline constexpr int NUM_PLTF_COORD = 3;
+inline constexpr int NUM_G_COORD = NUM_DRV_COORD * NUM_PLTF_COORD;
+inline constexpr double EPS = 0.001;
+<endif>
+
+// Virtual mass-damper(-spring) admittance filter: turns a measured external-force
+// axis into a per-axis velocity setpoint. vel_/offset_ integrate across control
+// steps (persistent state), so the filter must outlive a single step -- it lives
+// as a member of the tracking constraint's PIDControl, mirroring the vp_* members.
+// Velocity-output (not position-with-K): v -> 0 as F -> 0, so the arm halts when
+// the push ends. M/D/K/vmax are authored tuning knobs, passed in each step.
+class AdmittanceFilter {
+  public:
+    double step(double force, double mass, double damping, double stiffness,
+                double max_velocity, double dt) {
+        mass = std::max(mass, 1e-6);
+        // Zero-force -> zero-velocity guard: with a pure damper the velocity decays
+        // on its own, but an explicit reset guarantees a clean halt on release.
+        if (force == 0.0 && stiffness == 0.0) {
+            vel_ = 0.0;
+            offset_ = 0.0;
+            return 0.0;
+        }
+        const double acc = (force - damping * vel_ - stiffness * offset_) / mass;
+        vel_ += acc * dt;
+        vel_ = std::clamp(vel_, -max_velocity, max_velocity);
+        offset_ += vel_ * dt; // only used when stiffness > 0 (spring return)
+        return vel_;
+    }
+
+  private:
+    double vel_ = 0.0;
+    double offset_ = 0.0;
+};
+
+class PIDControl {
+  public:
+    PIDControl() = default;
+
+    PIDControl(double p_gain, double i_gain, double d_gain, double decay_rate = 0.0, double dt = 0.002,
+               bool has_integral_limit = false, double integral_lower = 0.0, double integral_upper = 0.0)
+        : kp(p_gain), ki(i_gain), kd(d_gain), decay_rate(decay_rate), dt_(dt),
+          has_integral_limit(has_integral_limit), integral_lower(integral_lower), integral_upper(integral_upper) {}
+
+    double control(double error) {
+        return control_impl(error, 0.0, false);
+    }
+
+    double control(double error, double error_derivative) {
+        return control_impl(error, error_derivative, true);
+    }
+
+    double control_impl(double error, double error_derivative, bool has_error_derivative) {
+        const double err_diff = (decay_rate > 0.0 || first_sample)
+            ? 0.0
+            : ((error - err_last) / dt_);
+        if (decay_rate > 0.0) {
+            err_integ = decay_rate * err_integ + error * dt_;
+        } else {
+            err_integ = err_integ + error * dt_;
+        }
+        if (has_integral_limit) {
+            err_integ = clamp_range(err_integ, integral_lower, integral_upper);
+        }
+        err_last = error;
+        first_sample = false;
+        const double deriv = has_error_derivative ? error_derivative : err_diff;
+        return kp * error + ki * err_integ + kd * deriv;
+    }
+
+    double error_integral() const { return err_integ; }
+    double previous_error() const { return err_last; }
+    bool is_first_sample() const { return first_sample; }
+
+    double vp_setpoint = 0.0;
+    double vp_velocity = 0.0;
+    double vp_accel = 0.0;
+    bool vp_init = false;
+
+    AdmittanceFilter adm_filter;
+
+  private:
+    double err_integ = 0.0;
+    double err_last = 0.0;
+    bool first_sample = true;
+    double kp = 0.0;
+    double ki = 0.0;
+    double kd = 0.0;
+    double decay_rate = 0.0;
+    double dt_ = 0.002;
+    bool has_integral_limit = false;
+    double integral_lower = 0.0;
+    double integral_upper = 0.0;
+};
+
+// Spring-damper controller: maps a single scalar constraint error to a
+// force/torque output as F = ks*e + kd*(de/dt). The derivative is
+// approximated by finite difference on successive error samples, so
+// "error" is assumed to be a position or angle error; the damping term
+// then approximates velocity feedback rather than reading it directly.
+class ImpedanceControl {
+  public:
+    ImpedanceControl() = default;
+
+    ImpedanceControl(double stiffness, double damping, double integral = 0.0, double dt = 0.002)
+        : ks(stiffness), kd(damping), ki(integral), dt_(dt) {}
+
+    double control(double error) {
+        const double err_diff = first_sample ? 0.0 : ((error - err_last) / dt_);
+        err_last = error;
+        first_sample = false;
+        if (ki > 0.0) {
+            err_int += error * dt_;
+        }
+        return ks * error + kd * err_diff + ki * err_int;
+    }
+
+    double error_integral() const { return err_int; }
+    double previous_error() const { return err_last; }
+    bool is_first_sample() const { return first_sample; }
+
+  private:
+    double err_last = 0.0;
+    double err_int = 0.0;
+    bool first_sample = true;
+    double ks = 0.0;
+    double kd = 0.0;
+    double ki = 0.0;
+    double dt_ = 0.002;
+};
+
+inline double evaluate_equality_constraint(double quantity, double reference) {
+    return quantity - reference;
+}
+
+inline KDL::Frame evaluate_equality_constraint(const KDL::Frame &target, const KDL::Frame &current) {
+    return current.Inverse() * target;
+}
+
+inline double evaluate_less_than_constraint(double quantity, double threshold) {
+    return (quantity \< threshold) ? 0.0 : threshold - quantity;
+}
+
+inline double evaluate_greater_than_constraint(double quantity, double threshold) {
+    return (quantity \> threshold) ? 0.0 : quantity - threshold;
+}
+
+inline double evaluate_bilateral_constraint(double quantity, double lower, double upper) {
+    if (quantity \< lower) return lower - quantity;
+    if (quantity \> upper) return quantity - upper;
+    return 0.0;
+}
+
+inline double evaluate_outside_constraint(double quantity, double lower, double upper) {
+    // Complement of bilateral: satisfied (0) when outside [lower, upper]; otherwise
+    // the remaining distance to the nearer band edge (still inside -> not yet satisfied).
+    if (quantity \<= lower || quantity \>= upper) return 0.0;
+    return std::min(quantity - lower, upper - quantity);
+}
+
+inline bool constraint_satisfied(double error) {
+    return std::fabs(error) \<= kConstraintTolerance;
+}
+
+inline bool constraint_satisfied(const KDL::Twist &error) {
+    return error.vel.Norm() \<= kConstraintTolerance &&
+           error.rot.Norm() \<= kConstraintTolerance;
+}
+
+inline bool constraint_satisfied(const KDL::Frame &error) {
+    KDL::Vector axis;
+    const double angle = error.M.GetRotAngle(axis);
+    return error.p.Norm() \<= kConstraintTolerance &&
+           std::fabs(angle) \<= kConstraintTolerance;
+}
+
+enum class Axis {
+    X = 0,
+    Y = 1,
+    Z = 2,
+};
+
+enum class Subspace {
+    Linear = 0,
+    Angular = 1,
+};
+
+inline int constraint_row(Subspace subspace, Axis axis) {
+    return static_cast\<int\>(subspace) * 3 + static_cast\<int\>(axis);
+}
+
+inline bool rising_edge(bool &previous, bool active) {
+    const bool detected = active && !previous;
+    previous = active;
+    return detected;
+}
+
+inline bool rising_edge_after(bool &previous, bool active, bool armed) {
+    if (!armed) {
+        previous = active;
+        return false;
+    }
+    return rising_edge(previous, active);
+}
+
+// Fire once after `active` has held true for `hold_steps` consecutive calls;
+// re-arms when `active` drops. Rejects transient threshold crossings.
+inline bool sustained_edge(int &counter, bool active, int hold_steps) {
+    if (!active) { counter = 0; return false; }
+    ++counter;
+    return counter == hold_steps;
+}
+
+inline void set_flag(bool &flag, bool active) {
+    flag = active;
+}
+
+inline void warn_produce_event_not_implemented(std::string_view event_id) {
+    std::cerr \<\< "produce_event(" \<\< event_id \<\< ") not implemented yet\\n";
+}
+
+inline unsigned int find_joint_index(const KDL::Chain &chain, std::string_view joint_name) {
+    unsigned int idx = 0;
+    for (unsigned int i = 0; i \< chain.getNrOfSegments(); ++i) {
+        const auto &joint = chain.getSegment(i).getJoint();
+        if (joint.getType() == KDL::Joint::None) {
+            continue;
+        }
+        if (joint.getName() == joint_name) {
+            return idx;
+        }
+        ++idx;
+    }
+    throw std::runtime_error("KDL joint not found: " + std::string(joint_name));
+}
+
+inline unsigned int find_segment_index(const KDL::Chain &chain, std::string_view model_name) {
+    std::string target(model_name);
+    if (target.rfind("frame_", 0) == 0) {
+        target.replace(0, 6, "link_");
+    }
+    for (unsigned int i = 0; i \< chain.getNrOfSegments(); ++i) {
+        if (chain.getSegment(i).getName() == target) {
+            return i + 1;
+        }
+    }
+    throw std::runtime_error("KDL segment not found for model name: " + target);
+}
+
+<if(has_mobile_base)>
+inline void hddc2b_pltf_vel_drv_to_pltf(
+        int num_drv,
+        double eps,
+        const double *g,
+        const double *w_drv_sqrt,
+        const double *xd_drv,
+        const double *w_pltf_inv_sqrt,
+        double *xd_pltf)
+{
+    assert(num_drv >= 0);
+
+    double g2[num_drv * NUM_G_COORD];
+    double xd_drv2[num_drv * NUM_DRV_COORD];
+    hddc2b_pltf_vel_sing_wgh(num_drv, g, xd_drv, w_drv_sqrt, g2, xd_drv2);
+
+    double g3[num_drv * NUM_G_COORD];
+    hddc2b_pltf_vel_redu_wgh_init(num_drv, g2, w_pltf_inv_sqrt, g3);
+
+    double u[NUM_PLTF_COORD * NUM_PLTF_COORD];
+    double s[NUM_PLTF_COORD];
+    double vt[num_drv * NUM_G_COORD];
+    hddc2b_pltf_dcmp(num_drv, g3, u, s, vt);
+
+    double s_inv[NUM_PLTF_COORD];
+    hddc2b_pltf_pinv(num_drv, eps, s, s_inv);
+
+    double xd_pltf2[NUM_PLTF_COORD];
+    hddc2b_pltf_vel_slv(num_drv, u, s_inv, vt, xd_drv2, xd_pltf2);
+
+    hddc2b_pltf_vel_redu_wgh_fini(num_drv, xd_pltf2, w_pltf_inv_sqrt, xd_pltf);
+}
+
+inline void hddc2b_rescale(double *f_scnd) {
+    double f_scnd_max = 0.0;
+    for (int i = 0; i \< NUM_DRIVES; ++i) {
+        double current = fabs(f_scnd[i * NUM_DRV_COORD + 1]);
+        if (current > f_scnd_max) f_scnd_max = current;
+    }
+
+    double scale_factor = (f_scnd_max == 0.0) ? 1.0 : f_scnd_max;
+
+    for (int i = 0; i \< NUM_DRIVES; ++i) {
+        f_scnd[i * NUM_DRV_COORD + 0] /= scale_factor;
+        f_scnd[i * NUM_DRV_COORD + 1] /= scale_factor;
+    }
+}
+<endif>
+
+}  // namespace motion_spec::runtime
+>>

@@ -5,7 +5,6 @@ import "hddc2b.stg"
 import "mj_kdl_backend.stg"
 import "robif2b.stg"
 import "robif2b_backend.stg"
-import "solver.stg"
 
 subspace-to-runtime-subspace ::= [
     "LinearAcceleration": "Subspace::Linear",

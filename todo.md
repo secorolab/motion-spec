@@ -5,9 +5,9 @@
 The FSM is table-driven (`enum` index ↔ `STATE_URIS[]`/`EVENT_URIS[]`), and that's
 fine — it's a self-contained single header and the interpreter needs those tables to
 run/report. The motion/controller code is deliberately *not* table-driven: variables are
-named typed fields bound at codegen time, and the id/uri ↔ slot mapping lives in the JSON
-contract (`schema.json` / `frame_layout.json`), consumed offline by replay/introspection/
-provenance tooling. That split is intentional (single source of truth, hot-path stays
+named typed fields bound at codegen time, and the id/uri ↔ slot mapping lives in the
+contract (`schema.json` / `frame_layout.json`, plus the generated `frame_log.proto` that
+names each wire slot), consumed offline by replay/introspection/provenance tooling. That split is intentional (single source of truth, hot-path stays
 integer-slot-keyed, no type erasure over heterogeneous controller types). We dropped the
 old `uris.hpp` (a `#include`d-but-unused, ~5k-entry / <1k-unique id→uri table) accordingly.
 

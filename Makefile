@@ -3,8 +3,6 @@ BUILD = build
 
 SUPPORT_FILES = \
 	code-generator/CMakeLists.txt \
-	thirdparty/orocos-kdl/chainhdsolver_vereshchagin_fext.hpp \
-	thirdparty/orocos-kdl/chainhdsolver_vereshchagin_fext.cpp \
 	thirdparty/kinova/GEN3_URDF_V12.urdf
 
 define scenario
@@ -13,8 +11,6 @@ $(GENERATED)/$(1):
 
 gen-prepare-$(1): | $(GENERATED)/$(1)
 	@cp code-generator/CMakeLists.txt $(GENERATED)/$(1)/CMakeLists.txt
-	@cp thirdparty/orocos-kdl/chainhdsolver_vereshchagin_fext.hpp $(GENERATED)/$(1)/chainhdsolver_vereshchagin_fext.hpp
-	@cp thirdparty/orocos-kdl/chainhdsolver_vereshchagin_fext.cpp $(GENERATED)/$(1)/chainhdsolver_vereshchagin_fext.cpp
 	@cp thirdparty/kinova/GEN3_URDF_V12.urdf $(GENERATED)/$(1)/GEN3_URDF_V12.urdf
 
 gen-ir-$(1): | $(GENERATED)/$(1)

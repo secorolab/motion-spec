@@ -15,7 +15,6 @@ option(MOTION_SPEC_ENABLE_INTROSPECTION "Enable generated runtime introspection 
 
 add_executable(main
   ref_main.cpp
-  chainhdsolver_vereshchagin_fext.cpp
 )
 
 target_include_directories(main

@@ -41,10 +41,6 @@ where = ["src"]
     "code-generator/*.stg",
     "code-generator/CMakeLists.txt",
 ]
-"thirdparty/orocos-kdl" = [
-    "thirdparty/orocos-kdl/chainhdsolver_vereshchagin_fext.hpp",
-    "thirdparty/orocos-kdl/chainhdsolver_vereshchagin_fext.cpp",
-]
 "thirdparty/kinova" = [
     "thirdparty/kinova/GEN3_URDF_V12.urdf",
 ]

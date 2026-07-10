@@ -195,7 +195,6 @@ The documentation comprises
 
 ## Third-party software
 
-* [`orocos-kdl`](thirdparty/orocos-kdl/) is a modified version that retains the GNU Lesser General Public License version 2.1 and originates from the OROCOS [Kinematics and Dynamics Library](https://github.com/orocos/orocos_kinematics_dynamics).
 * [`GEN3_URDF_V12.urdf`](thirdparty/kinova/GEN3_URDF_V12.urdf) is licensed under the BSD-3-Clause license and originates from Kinova's [ros_kortex](https://github.com/Kinovarobotics/ros_kortex).
 
 ## Contributors

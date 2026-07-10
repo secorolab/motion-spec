@@ -30,8 +30,6 @@ The following dependencies are required for the code generator:
 * `STSTv4 <https://github.com/jsnyders/STSTv4>`_ (from Git!)
 * `GNU Make <https://www.gnu.org/software/make/>`_
 
-Apply the patches from the ``misc/patches`` directory to rdflib.
-
 For convenience, we provide a step-by-step installation guide for the latter two dependencies. Note, that STSTv4 comes with a pre-bundled version of StringTemplate. Hence, the steps for StringTemplate can be considered optional and are only relevant if one plans to use a more recent StringTemplate version.
 
 StringTemplate can either be `installed <https://github.com/antlr/stringtemplate4/blob/master/doc/java.md#installation>`_ from the `pre-compiled version <https://www.stringtemplate.org/download.html>`_ or it can be built from source:

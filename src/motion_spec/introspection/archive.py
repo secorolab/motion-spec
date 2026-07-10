@@ -212,9 +212,15 @@ def create_archive_manifest(
     source_dir = Path(source_dir) if source_dir else run_dir
     run_dir.mkdir(parents=True, exist_ok=True)
 
+    # Contract inputs the archive cannot be self-explanatory without. Fail fast at the source
+    # rather than emit an archive that only trips verify_manifest later.
+    for required in ("schema.json", "frame_log.proto"):
+        if not (source_dir / required).is_file():
+            raise ArchiveError(f"{source_dir / required}: required generated artifact is missing")
+
     copies = {
         "schema.json": "contract/schema.json",
-        str(Path(__file__).with_name("frame_log.proto")): "contract/frame_log.proto",
+        "frame_log.proto": "contract/frame_log.proto",
         "provenance.jsonld": "provenance/codegen.jsonld",
         "provenance/dsl.jsonld": "provenance/dsl.jsonld",
     }

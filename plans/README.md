@@ -8,7 +8,7 @@ honor its STOP conditions, and update your row when done.
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
-| 001 | [Generate semantic protobuf frame logs per run](001-semantic-frame-log-protobuf.md) | P1 | L | none | TODO |
+| 001 | [Generate semantic protobuf frame logs per run](001-semantic-frame-log-protobuf.md) | P1 | L | none | DONE |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 

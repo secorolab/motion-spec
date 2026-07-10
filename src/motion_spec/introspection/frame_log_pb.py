@@ -10,6 +10,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from motion_spec.introspection.archive import ArchiveError
+from motion_spec.introspection.artifacts import build_frame_log_proto_fields
 from motion_spec.introspection.frame_layout_spec import quantity_ids
 
 WIRE_VARINT = 0
@@ -18,6 +19,21 @@ WIRE_LEN = 2
 
 REC_HEADER = 1
 REC_FRAME = 2
+
+POSE_NAMES = ("px", "py", "pz", "qx", "qy", "qz", "qw")
+TWIST_NAMES = ("lx", "ly", "lz", "ax", "ay", "az")
+WRENCH_NAMES = ("fx", "fy", "fz", "tx", "ty", "tz")
+
+
+def _proto_fields(schema: dict) -> dict:
+    """Category -> slot fields (semantic protobuf numbers), from the schema or recomputed."""
+    protobuf = schema.get("protobuf")
+    fields = protobuf.get("fields") if protobuf else None
+    return fields if fields is not None else build_frame_log_proto_fields(schema)["fields"]
+
+
+def _slot_numbers(fields: dict, category: str) -> dict:
+    return {entry["index"]: entry["number"] for entry in fields.get(category, [])}
 
 
 def _key(field: int, wire_type: int) -> int:
@@ -94,6 +110,14 @@ def _slot(fields: list[tuple[int, str, object]]) -> bytes:
 
 def frame_record(flat: dict, schema: dict) -> bytes:
     pools = schema["pools"]
+    fields = _proto_fields(schema)
+    cnum = _slot_numbers(fields, "constraints")
+    mnum = _slot_numbers(fields, "monitors")
+    qnum = _slot_numbers(fields, "quantities")
+    trnum = _slot_numbers(fields, "triggers")
+    pnum = _slot_numbers(fields, "poses")
+    vnum = _slot_numbers(fields, "twists")
+    knum = _slot_numbers(fields, "wrenches")
     payload = [
         _double_field(1, flat["t"]),
         _uint_field(2, flat["step"]),
@@ -111,7 +135,7 @@ def frame_record(flat: dict, schema: dict) -> bytes:
     for idx in range(pools["constraints"]):
         payload.append(
             _bytes_field(
-                13,
+                cnum[idx],
                 _slot(
                     [
                         (1, "i", flat[f"c{idx}.active"]),
@@ -128,7 +152,7 @@ def frame_record(flat: dict, schema: dict) -> bytes:
     for idx in range(pools["monitors"]):
         payload.append(
             _bytes_field(
-                14,
+                mnum[idx],
                 _slot(
                     [
                         (1, "i", flat[f"m{idx}.active"]),
@@ -140,11 +164,11 @@ def frame_record(flat: dict, schema: dict) -> bytes:
             )
         )
     for idx in range(pools["quantities"]):
-        payload.append(_double_field(15, flat[f"q{idx}"]))
+        payload.append(_double_field(qnum[idx], flat[f"q{idx}"]))
     for idx in range(pools["triggers"]):
         payload.append(
             _bytes_field(
-                16,
+                trnum[idx],
                 _slot(
                     [
                         (1, "i", flat[f"tr{idx}.kind"]),
@@ -158,26 +182,11 @@ def frame_record(flat: dict, schema: dict) -> bytes:
         )
     payload.append(_sfixed64_field(17, flat["trigger_count"]))
     for idx in range(pools.get("poses", 0)):
-        payload.append(
-            _bytes_field(
-                18,
-                _slot([(n, "d", flat[f"pose{idx}.{name}"]) for n, name in enumerate(("px", "py", "pz", "qx", "qy", "qz", "qw"), 1)]),
-            )
-        )
+        payload.append(_bytes_field(pnum[idx], _slot([(n, "d", flat[f"pose{idx}.{name}"]) for n, name in enumerate(POSE_NAMES, 1)])))
     for idx in range(pools.get("twists", 0)):
-        payload.append(
-            _bytes_field(
-                19,
-                _slot([(n, "d", flat[f"twist{idx}.{name}"]) for n, name in enumerate(("lx", "ly", "lz", "ax", "ay", "az"), 1)]),
-            )
-        )
+        payload.append(_bytes_field(vnum[idx], _slot([(n, "d", flat[f"twist{idx}.{name}"]) for n, name in enumerate(TWIST_NAMES, 1)])))
     for idx in range(pools.get("wrenches", 0)):
-        payload.append(
-            _bytes_field(
-                20,
-                _slot([(n, "d", flat[f"wrench{idx}.{name}"]) for n, name in enumerate(("fx", "fy", "fz", "tx", "ty", "tz"), 1)]),
-            )
-        )
+        payload.append(_bytes_field(knum[idx], _slot([(n, "d", flat[f"wrench{idx}.{name}"]) for n, name in enumerate(WRENCH_NAMES, 1)])))
     return _bytes_field(REC_FRAME, b"".join(payload))
 
 
@@ -313,6 +322,12 @@ def _parse_doubles(data: bytes, names: tuple[str, ...]) -> dict:
 
 def _parse_frame(data: bytes, schema: dict) -> dict:
     pools = schema["pools"]
+    fields = _proto_fields(schema)
+    # Reverse map: semantic field number -> category. Slots decode back into pool-index order
+    # because the encoder writes them ascending by number within each category.
+    number_category = {
+        entry["number"]: category for category, entries in fields.items() for entry in entries
+    }
     constraints = []
     monitors = []
     quantities = []
@@ -358,22 +373,28 @@ def _parse_frame(data: bytes, schema: dict) -> dict:
             record["timing"]["period_ns"] = _sfixed64(value)
         elif field == 12:
             record["timing"]["compute_ns"] = _sfixed64(value)
-        elif field == 13:
-            constraints.append(_parse_constraint(bytes(value)))
-        elif field == 14:
-            monitors.append(_parse_monitor(bytes(value)))
-        elif field == 15:
-            quantities.append(_double(value))
-        elif field == 16:
-            triggers.append(_parse_trigger(bytes(value)))
         elif field == 17:
             trigger_count = _sfixed64(value)
-        elif field == 18:
-            poses.append(_parse_doubles(bytes(value), ("px", "py", "pz", "qx", "qy", "qz", "qw")))
-        elif field == 19:
-            twists.append(_parse_doubles(bytes(value), ("lx", "ly", "lz", "ax", "ay", "az")))
-        elif field == 20:
-            wrenches.append(_parse_doubles(bytes(value), ("fx", "fy", "fz", "tx", "ty", "tz")))
+        else:
+            category = number_category.get(field)
+            if category == "constraints":
+                constraints.append(_parse_constraint(bytes(value)))
+            elif category == "monitors":
+                monitors.append(_parse_monitor(bytes(value)))
+            elif category == "quantities":
+                quantities.append(_double(value))
+            elif category == "triggers":
+                triggers.append(_parse_trigger(bytes(value)))
+            elif category == "poses":
+                poses.append(_parse_doubles(bytes(value), POSE_NAMES))
+            elif category == "twists":
+                twists.append(_parse_doubles(bytes(value), TWIST_NAMES))
+            elif category == "wrenches":
+                wrenches.append(_parse_doubles(bytes(value), WRENCH_NAMES))
+            else:
+                # A field number the schema does not define means the log was written against a
+                # different schema. Fail fast rather than silently drop the slot.
+                raise ArchiveError(f"frame log field number {field} is not in the schema protobuf mapping")
     qids = quantity_ids(schema["quantities"])
     record["constraints"] = constraints[: pools["constraints"]]
     record["monitors"] = monitors[: pools["monitors"]]

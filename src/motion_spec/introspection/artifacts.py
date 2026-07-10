@@ -423,6 +423,9 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
         "provenance_contexts": provenance.get("contexts", []),
         "runtime_provenance": runtime_provenance,
     }
+    # The wire field mapping is part of the run contract: fold it into schema_hash so the
+    # frame-log header hash changes whenever a slot's protobuf field name/number changes.
+    schema["protobuf"] = build_frame_log_proto_fields(schema)
     schema["schema_hash"] = hashlib.sha256(
         json.dumps(schema, sort_keys=True).encode()
     ).hexdigest()[:16]
@@ -477,6 +480,86 @@ def build_frame_layout(schema: dict) -> dict:
         json.dumps(layout, sort_keys=True).encode()
     ).hexdigest()[:16]
     return layout
+
+
+# Deterministic per-category field-number ranges. Each runtime-frame slot maps to one
+# singular protobuf field, so `<base> + slot_index` is stable across runs of the same model.
+PROTO_FIELD_BASES = {
+    "constraints": 1000,
+    "monitors": 2000,
+    "quantities": 3000,
+    "triggers": 4000,
+    "poses": 5000,
+    "twists": 6000,
+    "wrenches": 7000,
+}
+PROTO_MAX_FIELD_NUMBER = 536870911
+RUNTIME_FRAME_MESSAGE = "RuntimeFrame"
+
+
+def _proto_field_name(value: str | None, used: set[str], fallback: str) -> str:
+    """Sanitize a schema id to a unique, valid protobuf3 field identifier."""
+    name = re.sub(r"[^a-z0-9]+", "_", (value or "").lower()).strip("_")
+    if not name:
+        name = fallback
+    if name[0].isdigit():
+        name = f"field_{name}"
+    base = name
+    suffix = 2
+    while name in used:
+        name = f"{base}_{suffix}"
+        suffix += 1
+    used.add(name)
+    return name
+
+
+def build_frame_log_proto_fields(schema: dict) -> dict:
+    """Per-category runtime-frame slot -> protobuf field {index, id, name, number}.
+
+    Constraint/monitor/trigger slots are reused per FSM state, so their names are slot-stable
+    (`constraint_0`), never state-specific. Quantities and spatial slots take semantic names
+    sanitized from their schema ids. Names are unique across the whole RuntimeFrame message.
+    """
+    pools = schema.get("pools", {})
+    spatial = schema.get("spatial") or {"poses": [], "twists": [], "wrenches": []}
+    used: set[str] = set()
+    fields: dict[str, list] = {}
+
+    def _pool_slots(category: str) -> None:
+        base = PROTO_FIELD_BASES[category]
+        singular = category[:-1]
+        fields[category] = []
+        for idx in range(pools.get(category, 0)):
+            slot_id = f"{singular}_{idx}"
+            fields[category].append(
+                {"index": idx, "id": slot_id, "name": _proto_field_name(slot_id, used, slot_id), "number": base + idx}
+            )
+
+    def _semantic_slots(category: str, entries: list) -> None:
+        base = PROTO_FIELD_BASES[category]
+        singular = category[:-1]
+        fields[category] = []
+        for entry in sorted(entries, key=lambda e: e.get("index", 0)):
+            idx = entry.get("index", len(fields[category]))
+            name = _proto_field_name(entry.get("id"), used, f"{singular}_{idx}")
+            fields[category].append({"index": idx, "id": entry.get("id"), "name": name, "number": base + idx})
+
+    _pool_slots("constraints")
+    _pool_slots("monitors")
+    _semantic_slots("quantities", schema.get("quantities", []))
+    _pool_slots("triggers")
+    _semantic_slots("poses", spatial.get("poses", []))
+    _semantic_slots("twists", spatial.get("twists", []))
+    _semantic_slots("wrenches", spatial.get("wrenches", []))
+
+    for category, entries in fields.items():
+        for entry in entries:
+            if entry["number"] > PROTO_MAX_FIELD_NUMBER:
+                raise RuntimeError(
+                    f"protobuf field number {entry['number']} for {category}[{entry['index']}] "
+                    f"exceeds maximum {PROTO_MAX_FIELD_NUMBER}"
+                )
+    return {"runtime_frame": RUNTIME_FRAME_MESSAGE, "fields": fields}
 
 
 def _cpp_string(value: str | None) -> str:
@@ -584,6 +667,7 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
         "schema.json",
         "frame_layout.json",
         "frame_layout.h",
+        "frame_log.proto",
         "provenance.jsonld",
         "introspection_runtime.hpp",
         "introspect_model.hpp",
@@ -744,6 +828,7 @@ def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path, 
             "poses": schema["spatial"]["poses"],
             "twists": schema["spatial"]["twists"],
             "wrenches": schema["spatial"]["wrenches"],
+            "protobuf": schema["protobuf"],
         },
         "model": build_introspection_model(schema, ir),
     }

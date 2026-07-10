@@ -14,7 +14,7 @@ from motion_spec.introspection.frame_layout_spec import field_names_and_format
 from motion_spec.introspection.replay import runtime_frames
 from motion_spec.introspection.runtime_graph import MSRUN, PROV, _bind_model_subnamespaces, write_runtime_ttl
 
-from frame_log_fixture import write_frame_log_pb
+from frame_log_fixture import write_frame_log_pb, write_frame_log_proto
 from test_introspection_archive import _hash_doc, _layout, _provenance
 
 
@@ -162,6 +162,7 @@ def _source_tree(path: Path) -> Path:
     path.mkdir()
     (path / "schema.json").write_text(json.dumps(schema, indent=4))
     (path / "frame_layout.json").write_text(json.dumps(layout, indent=4))
+    write_frame_log_proto(path / "frame_log.proto", schema)
     (path / "provenance.jsonld").write_text(json.dumps(_provenance(), indent=4))
     (path / "model.jsonld").write_text(json.dumps(_provenance(), indent=4))
     (path / "ir.json").write_text(json.dumps({"id": "test-ir"}))

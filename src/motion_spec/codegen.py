@@ -1186,6 +1186,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
         stst_bin, "introspect_model_header", ir_payload_path, output_dir / "introspect_model.hpp"
     )
     render_template(stst_bin, "frame_layout_header", ir_payload_path, output_dir / "frame_layout.h")
+    render_template(stst_bin, "frame_log_proto", ir_payload_path, output_dir / "frame_log.proto")
     render_template(stst_bin, "runtime_header", ir_payload_path, headers_dir / "runtime.hpp")
     render_template(
         stst_bin, "shared_state_header", ir_payload_path, headers_dir / "shared_state.hpp"

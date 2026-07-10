@@ -10,7 +10,9 @@ from rdf_utils.resolver import IriToFileResolver, install_resolver
 
 from motion_spec import codegen
 from motion_spec.introspection.artifacts import (
+    PROTO_FIELD_BASES,
     build_frame_layout,
+    build_frame_log_proto_fields,
     build_provenance_document,
     build_schema,
     fields_with_offsets,
@@ -206,6 +208,53 @@ def test_schema_and_frame_layout_are_consistent(tmp_path: Path) -> None:
     assert layout["fields"] == fields
     assert layout["frame_size_bytes"] == size
     assert layout["pools"] == schema["pools"]
+    # The wire field mapping is folded into the schema before hashing.
+    assert schema["protobuf"]["runtime_frame"] == "RuntimeFrame"
+    assert schema["protobuf"]["fields"]["constraints"][0] == {
+        "index": 0,
+        "id": "constraint_0",
+        "name": "constraint_0",
+        "number": 1000,
+    }
+
+
+def test_frame_log_proto_field_naming_and_numbering() -> None:
+    schema = {
+        "pools": {"constraints": 2, "monitors": 1, "quantities": 4, "triggers": 3},
+        "quantities": [
+            {"index": 0, "id": "direction_ctrl_cg_support_z.x"},  # dots -> underscores
+            {"index": 1, "id": "home_pose"},
+            {"index": 2, "id": "home.pose"},  # sanitizes to a duplicate -> suffixed
+            {"index": 3, "id": "3dof"},  # leading digit -> field_ prefix
+        ],
+        "spatial": {
+            "poses": [{"index": 0, "id": "pose_ee_base"}],
+            "twists": [],
+            "wrenches": [{"index": 0, "id": "wrench force"}],
+        },
+    }
+    proto = build_frame_log_proto_fields(schema)
+    fields = proto["fields"]
+
+    quantity_names = {q["id"]: q["name"] for q in fields["quantities"]}
+    assert quantity_names["direction_ctrl_cg_support_z.x"] == "direction_ctrl_cg_support_z_x"
+    assert quantity_names["home_pose"] == "home_pose"
+    assert quantity_names["home.pose"] == "home_pose_2"  # deterministic de-dup suffix
+    assert quantity_names["3dof"] == "field_3dof"  # numeric-leading gets field_ prefix
+
+    # Constraint/monitor/trigger slots are reused per state -> slot-stable names, never model ids.
+    assert [c["name"] for c in fields["constraints"]] == ["constraint_0", "constraint_1"]
+    assert [m["name"] for m in fields["monitors"]] == ["monitor_0"]
+    assert [t["name"] for t in fields["triggers"]] == ["trigger_0", "trigger_1", "trigger_2"]
+
+    # Every field number sits in its category's range, and all numbers/names are unique.
+    for category, base in PROTO_FIELD_BASES.items():
+        for entry in fields.get(category, []):
+            assert entry["number"] == base + entry["index"]
+    all_numbers = [e["number"] for cat in fields.values() for e in cat]
+    all_names = [e["name"] for cat in fields.values() for e in cat]
+    assert len(all_numbers) == len(set(all_numbers))
+    assert len(all_names) == len(set(all_names))
 
 
 def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch) -> None:

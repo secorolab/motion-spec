@@ -20,7 +20,7 @@ from motion_spec.introspection import replay
 from motion_spec.introspection.replay import decode_frames, summarize, validate_header
 from motion_spec.introspection.runtime_graph import write_runtime_ttl
 
-from frame_log_fixture import flat_frame, write_frame_log_pb
+from frame_log_fixture import flat_frame, write_frame_log_pb, write_frame_log_proto
 
 
 def _hash_doc(doc: dict) -> str:
@@ -136,6 +136,7 @@ def _source_tree(path: Path) -> Path:
     path.mkdir()
     (path / "schema.json").write_text(json.dumps(schema, indent=4))
     (path / "frame_layout.json").write_text(json.dumps(layout, indent=4))
+    write_frame_log_proto(path / "frame_log.proto", schema)
     (path / "provenance.jsonld").write_text(json.dumps(_provenance(), indent=4))
     (path / "provenance").mkdir()
     (path / "provenance" / "dsl.jsonld").write_text(json.dumps(_provenance(), indent=4))
@@ -191,6 +192,8 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
     assert "controller/source" in manifest["artifacts"]
     assert "logs/frame_log.pb.health.json" in manifest["artifacts"]
     assert "contract/frame_log.proto" in manifest["artifacts"]
+    # The archived proto is the generated semantic one (copied from source), not a static file.
+    assert "double q0 = 3000;" in (run_dir / "contract" / "frame_log.proto").read_text()
     assert "contract/frame_layout.json" not in manifest["artifacts"]
     assert "provenance/dsl.jsonld" in manifest["artifacts"]
     assert "rec.jsonld" in manifest["artifacts"]

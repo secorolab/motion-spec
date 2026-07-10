@@ -5,8 +5,27 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import json
+import shutil
+
+import pytest
+
+from motion_spec.codegen import render_template
 from motion_spec.introspection import frame_log_pb
+from motion_spec.introspection.artifacts import build_frame_log_proto_fields
 from motion_spec.introspection.frame_layout_spec import field_names_and_format
+
+
+def write_frame_log_proto(path: Path, schema: dict) -> None:
+    """Render the semantic ``frame_log.proto`` for a fixture through the real codegen template,
+    so archive fixtures exercise the same StringTemplate render production uses (not a copy)."""
+    if shutil.which("stst") is None:
+        pytest.skip("requires stst to render frame_log.proto")
+    protobuf = schema.get("protobuf") or build_frame_log_proto_fields(schema)
+    payload = path.parent / ".frame_log_proto_payload.json"
+    payload.write_text(json.dumps({"introspection_artifacts": {"frame_layout": {"protobuf": protobuf}}}))
+    render_template("stst", "frame_log_proto", payload, path)
+    payload.unlink()
 
 
 def flat_frame(schema: dict, **values) -> dict:

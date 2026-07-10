@@ -114,7 +114,7 @@ def run_cataloged(
 def _validate_new_run(run_dir: Path, source_dir: Path, executable: Path) -> None:
     if not source_dir.exists():
         raise RunnerError(f"{source_dir}: source directory does not exist")
-    for rel in ("schema.json", "provenance.jsonld"):
+    for rel in ("schema.json", "frame_log.proto", "provenance.jsonld"):
         if not (source_dir / rel).exists():
             raise RunnerError(f"{source_dir / rel}: required generated artifact is missing")
     if not executable.exists():

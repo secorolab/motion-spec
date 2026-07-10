@@ -2,24 +2,14 @@
 // Shared data model (leaf): lookup maps, saturation, member declarations, view access expressions.
 
 subspace-to-runtime-subspace ::= [
-    "LinearAcceleration": "Subspace::Linear",
-    "AngularAcceleration": "Subspace::Angular"
+    "Linear": "Subspace::Linear",
+    "Angular": "Subspace::Angular"
 ]
 
 axis-to-vector ::= [
     "X": "1.0, 0.0, 0.0",
     "Y": "0.0, 1.0, 0.0",
     "Z": "0.0, 0.0, 1.0"
-]
-
-subspace-to-member ::= [
-    "AngularVelocity": "rot",
-    "LinearVelocity": "vel",
-    "AngularAcceleration": "rot",
-    "LinearAcceleration": "vel",
-    "Torque": "torque",
-    "Force": "force",
-    "Position": "p"
 ]
 
 axis-to-index ::= [
@@ -143,43 +133,43 @@ view-access-expr(view) ::= <<
 <({view-access-expr-<view.superobject.type>-<view.subspace>})(view)>
 >>
 
-view-access-expr-Pose-Position(view) ::= <<
+view-access-expr-Pose-Linear(view) ::= <<
 <if(view.axis)>shared.<view.superobject.id>.p[<axis-to-index.(view.axis)>]<else>shared.<view.superobject.id>.p<endif>
 >>
 
-view-access-expr-Pose-Rotation(view) ::= <<
+view-access-expr-Pose-Angular(view) ::= <<
 <if(view.axis)>KDL::diff(KDL::Rotation::Identity(), shared.<view.superobject.id>.M)[<axis-to-index.(view.axis)>]<else>shared.<view.superobject.id>.M<endif>
 >>
 
 
-view-access-expr-VelocityTwist-AngularVelocity(view) ::= <<
+view-access-expr-VelocityTwist-Angular(view) ::= <<
 shared.<view.superobject.id>.rot[<axis-to-index.(view.axis)>]
 >>
 
-view-access-expr-VelocityTwist-LinearVelocity(view) ::= <<
+view-access-expr-VelocityTwist-Linear(view) ::= <<
 shared.<view.superobject.id>.vel[<axis-to-index.(view.axis)>]
 >>
 
-view-access-expr-AccelerationTwist-AngularAcceleration(view) ::= <<
+view-access-expr-AccelerationTwist-Angular(view) ::= <<
 shared.<view.superobject.id>.rot[<axis-to-index.(view.axis)>]
 >>
 
-view-access-expr-AccelerationTwist-LinearAcceleration(view) ::= <<
+view-access-expr-AccelerationTwist-Linear(view) ::= <<
 shared.<view.superobject.id>.vel[<axis-to-index.(view.axis)>]
 >>
 
-view-access-expr-PoseDifference-AngularDifference(view) ::= <<
+view-access-expr-PoseDifference-Angular(view) ::= <<
 shared.<view.superobject.id>.rot[<axis-to-index.(view.axis)>]
 >>
 
-view-access-expr-PoseDifference-LinearDifference(view) ::= <<
+view-access-expr-PoseDifference-Linear(view) ::= <<
 shared.<view.superobject.id>.vel[<axis-to-index.(view.axis)>]
 >>
 
-view-access-expr-Wrench-Torque(view) ::= <<
+view-access-expr-Wrench-Angular(view) ::= <<
 <if(view.axis)>shared.<view.superobject.id>.torque[<axis-to-index.(view.axis)>]<else>shared.<view.superobject.id>.torque<endif>
 >>
 
-view-access-expr-Wrench-Force(view) ::= <<
+view-access-expr-Wrench-Linear(view) ::= <<
 <if(view.axis)>shared.<view.superobject.id>.force[<axis-to-index.(view.axis)>]<else>shared.<view.superobject.id>.force<endif>
 >>

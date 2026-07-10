@@ -879,19 +879,19 @@ class Parser:
     @memoize
     def subspace(self, id_):
         d = {
-            MAP["position"]: Subspace.Position,
-            MAP_EXT["rotation"]: Subspace.Rotation,
-            MAP_EXT["orientation"]: Subspace.Rotation,
-            MAP["angular-velocity"]: Subspace.AngularVelocity,
-            MAP["linear-velocity"]: Subspace.LinearVelocity,
-            MAP["angular-acceleration"]: Subspace.AngularAcceleration,
-            MAP["linear-acceleration"]: Subspace.LinearAcceleration,
-            MAP["torque"]: Subspace.Torque,
-            MAP["force"]: Subspace.Force,
-            SLV["angular-acceleration"]: Subspace.AngularAcceleration,
-            SLV["linear-acceleration"]: Subspace.LinearAcceleration,
-            GEOM_COORD_EXT["linear"]: Subspace.LinearDifference,
-            GEOM_COORD_EXT["angular"]: Subspace.AngularDifference,
+            MAP["position"]: Subspace.Linear,
+            MAP_EXT["rotation"]: Subspace.Angular,
+            MAP_EXT["orientation"]: Subspace.Angular,
+            MAP["angular-velocity"]: Subspace.Angular,
+            MAP["linear-velocity"]: Subspace.Linear,
+            MAP["angular-acceleration"]: Subspace.Angular,
+            MAP["linear-acceleration"]: Subspace.Linear,
+            MAP["torque"]: Subspace.Angular,
+            MAP["force"]: Subspace.Linear,
+            SLV["angular-acceleration"]: Subspace.Angular,
+            SLV["linear-acceleration"]: Subspace.Linear,
+            GEOM_COORD_EXT["linear"]: Subspace.Linear,
+            GEOM_COORD_EXT["angular"]: Subspace.Angular,
         }
         if id_ not in d:
             raise ValueError(f"unknown subspace {id_}")
@@ -2158,14 +2158,8 @@ def _scene_relative_poses_for_motion(view_map, arm_solvers, data_structures=None
 _GROUPABLE_SO_TYPES = {"Pose", "VelocityTwist", "AccelerationTwist", "Wrench"}
 
 _SUBSPACE_TO_GROUP_AXIS: dict[Subspace, tuple[str, bool]] = {
-    Subspace.Position:           ("linear",  False),
-    Subspace.Rotation:           ("angular", True),
-    Subspace.LinearVelocity:     ("linear",  False),
-    Subspace.AngularVelocity:    ("angular", True),
-    Subspace.LinearAcceleration: ("linear",  False),
-    Subspace.AngularAcceleration:("angular", True),
-    Subspace.Force:              ("linear",  False),
-    Subspace.Torque:             ("angular", True),
+    Subspace.Linear:  ("linear",  False),
+    Subspace.Angular: ("angular", True),
 }
 
 

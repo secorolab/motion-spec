@@ -23,16 +23,12 @@ class DataclassJSONEncoder(json.JSONEncoder):
 
 
 class Subspace(str, Enum):
-    Position = "Position"
-    Rotation = "Rotation"
-    AngularVelocity = "AngularVelocity"
-    LinearVelocity = "LinearVelocity"
-    AngularAcceleration = "AngularAcceleration"
-    LinearAcceleration = "LinearAcceleration"
-    Torque = "Torque"
-    Force = "Force"
-    LinearDifference = "LinearDifference"
-    AngularDifference = "AngularDifference"
+    # The 6D subspace of a spatial quantity: its linear (translational) or angular
+    # (rotational) half. Which physical quantity it belongs to is carried by the
+    # View's superobject type (Pose/VelocityTwist/AccelerationTwist/Wrench/PoseDifference),
+    # so the subspace only needs to name the half -- matching the C++ runtime Subspace enum.
+    Linear = "Linear"
+    Angular = "Angular"
 
 
 class Axis(str, Enum):

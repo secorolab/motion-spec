@@ -380,20 +380,20 @@ def cpp_access_expr(data_id: str, views: dict) -> str:
     if not view:
         return f"shared.{data_id}"
     superobject = view["superobject"]
-    if superobject["type"] == "Pose" and view["subspace"] == "Position":
+    if superobject["type"] == "Pose" and view["subspace"] == "Linear":
         axis = view.get("axis")
         if axis is None:
             return f"shared.{superobject['id']}.p"
         axis_index = {"X": 0, "Y": 1, "Z": 2, "x": 0, "y": 1, "z": 2}[axis]
         return f"shared.{superobject['id']}.p[{axis_index}]"
-    if superobject["type"] == "Pose" and view["subspace"] == "Rotation":
+    if superobject["type"] == "Pose" and view["subspace"] == "Angular":
         axis = view.get("axis")
         if axis is None:
             return f"shared.{superobject['id']}.M"
         axis_index = {"X": 0, "Y": 1, "Z": 2, "x": 0, "y": 1, "z": 2}[axis]
         return f"KDL::diff(KDL::Rotation::Identity(), shared.{superobject['id']}.M)[{axis_index}]"
     if superobject["type"] == "Wrench":
-        member = "torque" if view["subspace"] == "Torque" else "force"
+        member = "torque" if view["subspace"] == "Angular" else "force"
         axis = view.get("axis")
         if axis is None:
             return f"shared.{superobject['id']}.{member}"
@@ -401,10 +401,10 @@ def cpp_access_expr(data_id: str, views: dict) -> str:
         return f"shared.{superobject['id']}.{member}[{axis_index}]"
     axis_index = {"X": 0, "Y": 1, "Z": 2, "x": 0, "y": 1, "z": 2}[view["axis"]]
     if superobject["type"] == "VelocityTwist":
-        member = "rot" if view["subspace"] == "AngularVelocity" else "vel"
+        member = "rot" if view["subspace"] == "Angular" else "vel"
         return f"shared.{superobject['id']}.{member}[{axis_index}]"
     if superobject["type"] == "AccelerationTwist":
-        member = "rot" if view["subspace"] == "AngularAcceleration" else "vel"
+        member = "rot" if view["subspace"] == "Angular" else "vel"
         return f"shared.{superobject['id']}.{member}[{axis_index}]"
     return f"shared.{data_id}"
 
@@ -661,7 +661,7 @@ def build_pose_components(ir_payload: dict) -> dict:
         subobject = (view.get("subobject") or {}).get("id")
         if not subobject:
             continue
-        prefix = "position" if view.get("subspace") == "Position" else "orientation"
+        prefix = "position" if view.get("subspace") == "Linear" else "orientation"
         entry[f"{prefix}_{axis}_expr"] = component_expr(subobject, data_by_id, views)
     for pose_id, parts in components.items():
         missing = [name for name, value in parts.items() if value is None]

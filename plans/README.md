@@ -9,7 +9,7 @@ once it ships.
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
-| 002 | [Serialize frame logs with a real protobuf library](002-protobuf-library-frame-log.md) | P2 | L | none | TODO |
+| _(none pending)_ | | | | | |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 

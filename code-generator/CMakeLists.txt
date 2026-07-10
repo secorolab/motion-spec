@@ -37,8 +37,11 @@ target_link_libraries(main
 )
 
 if(MOTION_SPEC_ENABLE_INTROSPECTION)
+  find_package(Protobuf REQUIRED)
+  target_sources(main PRIVATE frame_log.pb.cc)
+  target_include_directories(main PRIVATE ${Protobuf_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR})
   target_compile_definitions(main PRIVATE MOTION_SPEC_ENABLE_INTROSPECTION)
-  target_link_libraries(main Threads::Threads)
+  target_link_libraries(main Threads::Threads protobuf::libprotobuf)
 endif()
 
 target_compile_options(main

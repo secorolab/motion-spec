@@ -331,6 +331,7 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
     ir_path = tmp_path / "ir.json"
     ir_path.write_text(json.dumps(ir))
     monkeypatch.setattr(codegen, "render_template", lambda *args, **kwargs: None)
+    monkeypatch.setattr(codegen, "compile_frame_log_proto", lambda *args, **kwargs: None)
 
     codegen.generate_code(ir_path, tmp_path, "stst")
 

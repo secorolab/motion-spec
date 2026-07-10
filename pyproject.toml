@@ -15,6 +15,7 @@ dependencies = [
     "rdflib",
     "pyshacl>=0.25.0",
     "rec",
+    "protobuf",
 ]
 
 [project.optional-dependencies]

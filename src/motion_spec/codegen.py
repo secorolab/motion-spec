@@ -159,6 +159,34 @@ def render_template(
     output_path.write_text(_collapse_blank_lines(result.stdout))
 
 
+def compile_frame_log_proto(proto_path: Path) -> None:
+    """Compile the generated frame_log.proto to C++ (frame_log.pb.{h,cc}) with protoc.
+
+    The controller links libprotobuf and includes the generated header; protoc owns the
+    wire format on the C++ side (the Python reader builds its message classes from schema).
+    """
+    proto_path = Path(proto_path)
+    try:
+        subprocess.run(
+            [
+                "protoc",
+                f"--proto_path={proto_path.parent}",
+                f"--cpp_out={proto_path.parent}",
+                proto_path.name,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "protoc was not found. Install the protobuf compiler (apt: protobuf-compiler) "
+            "to generate the frame-log C++ codec."
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(exc.stderr.strip() or exc.stdout.strip()) from exc
+
+
 def _collapse_blank_lines(text: str) -> str:
     """Normalize StringTemplate output: at most one blank line between blocks, single trailing newline.
 
@@ -1178,6 +1206,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     )
     render_template(stst_bin, "frame_layout_header", ir_payload_path, output_dir / "frame_layout.h")
     render_template(stst_bin, "frame_log_proto", ir_payload_path, output_dir / "frame_log.proto")
+    compile_frame_log_proto(output_dir / "frame_log.proto")
     render_template(stst_bin, "runtime_header", ir_payload_path, headers_dir / "runtime.hpp")
     render_template(
         stst_bin, "shared_state_header", ir_payload_path, headers_dir / "shared_state.hpp"

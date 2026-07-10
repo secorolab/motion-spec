@@ -632,7 +632,8 @@ def build_pose_components(ir_payload: dict) -> dict:
     for view in views.values():
         superobject = view.get("superobject") or {}
         so_type = superobject.get("type")
-        is_declared_pose = bool(superobject.get("authored") or superobject.get("snapshot"))
+        so_prov = superobject.get("provenance") or {}
+        is_declared_pose = bool(so_prov.get("authored") or so_prov.get("snapshot"))
         if so_type != "Pose":
             continue
         if not (is_declared_pose or superobject.get("euler_axes_sequence")):
@@ -737,7 +738,8 @@ def declared_pose_component_entries(
         if referenced_ids is not None and pose_id not in referenced_ids:
             continue
         item = data_by_id.get(pose_id) or {}
-        if not item.get("authored") or item.get("snapshot"):
+        item_prov = item.get("provenance") or {}
+        if not item_prov.get("authored") or item_prov.get("snapshot"):
             continue
         entries.append({"id": pose_id, **parts})
     return entries

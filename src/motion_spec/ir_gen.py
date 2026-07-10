@@ -99,6 +99,7 @@ from motion_spec.entities import (
     FeedForwardController,
     ImpedanceController,
     PIDController,
+    Provenance,
     ForwardedCommand,
     EdgeMonitor,
     LevelMonitor,
@@ -1301,7 +1302,7 @@ class Parser:
         as_seen_by = self.frame(as_seen_by_node) if as_seen_by_node is not None else None
         unit = self.id(self.g.value(id_, QUDT_SCHEMA["unit"]))
         axes = self.g.value(id_, GEOM_COORD["axes-sequence"])
-        authored, snapshot = self.quantity_role_flags(id_)
+        provenance = self.quantity_provenance(id_)
         return Orientation(
             self.id(id_),
             of,
@@ -1311,8 +1312,7 @@ class Parser:
             Unit(unit),
             str(axes) if axes is not None else None,
             (id_, ~MAP["subobject"], None) in self.g,
-            authored=authored,
-            snapshot=snapshot,
+            provenance=provenance,
         )
 
     def position_reference(self, id_):
@@ -1336,7 +1336,7 @@ class Parser:
         # KDL::Frame is filled at runtime. Same IR shape as a coordinate pose, with
         # its frame endpoints but no authored coordinate values.
         as_seen_by_node = self.g.value(id_, GEOM_COORD["as-seen-by"])
-        authored, snapshot = self.quantity_role_flags(id_)
+        provenance = self.quantity_provenance(id_)
         return Pose(
             self.id(id_),
             self._pose_endpoint(self.g.value(id_, GEOM_REL["of"])),
@@ -1348,8 +1348,7 @@ class Parser:
             None,
             None,
             None,
-            authored=authored,
-            snapshot=snapshot,
+            provenance=provenance,
         )
 
     def pose(self, id_):
@@ -1376,7 +1375,7 @@ class Parser:
                 euler_axes_sequence = str(axes) if axes is not None else None
                 break
 
-        authored, snapshot = self.quantity_role_flags(id_)
+        provenance = self.quantity_provenance(id_)
         return Pose(
             self.id(id_),
             of,
@@ -1389,8 +1388,7 @@ class Parser:
             dc_z,
             pos,
             euler_axes_sequence,
-            authored=authored,
-            snapshot=snapshot,
+            provenance=provenance,
         )
 
     @memoize
@@ -1408,7 +1406,7 @@ class Parser:
         for u in self.g[id_ : QUDT_SCHEMA["unit"]]:
             unit.append(self.id(u))
 
-        authored, snapshot = self.quantity_role_flags(id_)
+        provenance = self.quantity_provenance(id_)
         return VelocityTwist(
             self.id(id_),
             of,
@@ -1417,8 +1415,7 @@ class Parser:
             reference_point,
             as_seen_by,
             unit,
-            authored=authored,
-            snapshot=snapshot,
+            provenance=provenance,
         )
 
     def _spatial_coordinate_fields(self, id_, ref_point_pred, as_seen_by_pred):
@@ -1432,40 +1429,40 @@ class Parser:
         reference_point = self.point(self.g.value(id_, ref_point_pred))
         as_seen_by = self.frame(self.g.value(id_, as_seen_by_pred))
         unit = [self.id(u) for u in self.g[id_ : QUDT_SCHEMA["unit"]]]
-        authored, snapshot = self.quantity_role_flags(id_)
-        return quantity_kind, reference_point, as_seen_by, unit, authored, snapshot
+        provenance = self.quantity_provenance(id_)
+        return quantity_kind, reference_point, as_seen_by, unit, provenance
 
     @memoize
     def acceleration_twist(self, id_):
         self._expect_type(id_, GEOM_COORD["AccelerationTwistCoordinate"])
         self._expect_type(id_, GEOM_COORD["VectorXYZ"])
-        qk, ref, seen, unit, authored, snapshot = self._spatial_coordinate_fields(
+        qk, ref, seen, unit, provenance = self._spatial_coordinate_fields(
             id_, GEOM_REL["reference-point"], GEOM_COORD["as-seen-by"]
         )
         return AccelerationTwist(
-            self.id(id_), qk, ref, seen, unit, authored=authored, snapshot=snapshot
+            self.id(id_), qk, ref, seen, unit, provenance=provenance
         )
 
     @memoize
     def pose_difference(self, id_):
         self._expect_type(id_, GEOM_COORD_EXT["PoseDifferenceCoordinate"])
         self._expect_type(id_, GEOM_COORD["VectorXYZ"])
-        qk, ref, seen, unit, authored, snapshot = self._spatial_coordinate_fields(
+        qk, ref, seen, unit, provenance = self._spatial_coordinate_fields(
             id_, GEOM_REL["reference-point"], GEOM_COORD["as-seen-by"]
         )
         return PoseDifference(
-            self.id(id_), qk, ref, seen, unit, authored=authored, snapshot=snapshot
+            self.id(id_), qk, ref, seen, unit, provenance=provenance
         )
 
     @memoize
     def wrench(self, id_):
         self._expect_type(id_, RBDYN_COORD["WrenchCoordinate"])
-        qk, ref, seen, unit, authored, snapshot = self._spatial_coordinate_fields(
+        qk, ref, seen, unit, provenance = self._spatial_coordinate_fields(
             id_, RBDYN_ENT["reference-point"], RBDYN_COORD["as-seen-by"]
         )
         sensor_name = str(self.g.value(id_, MJ["ft-sensor-ref"]) or "")
         return Wrench(
-            self.id(id_), qk, ref, seen, unit, authored=authored, snapshot=snapshot,
+            self.id(id_), qk, ref, seen, unit, provenance=provenance,
             sensor_name=sensor_name,
         )
 
@@ -1499,42 +1496,39 @@ class Parser:
                 (k for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]] if k != TRAJ.Trajectory),
                 None,
             )
-            authored, snapshot = self.quantity_role_flags(id_)
+            provenance = self.quantity_provenance(id_)
             return Trajectory(
                 self.id(id_),
                 QuantityKind(quantity_kind),
                 Unit(unit),
                 has_view,
-                authored=authored,
-                snapshot=snapshot,
+                provenance=provenance,
                 value_kind=self.id(value_kind_node) if value_kind_node is not None else None,
             )
 
         if quantity_kind == "FreeVector" and GEOM_COORD["VectorXYZ"] in self.g[id_ : RDF["type"]]:
-            authored, snapshot = self.quantity_role_flags(id_)
+            provenance = self.quantity_provenance(id_)
             return FreeVector(
                 self.id(id_),
                 QuantityKind(quantity_kind),
                 Unit(unit),
                 self.parse_xyz(id_),
                 has_view,
-                authored=authored,
-                snapshot=snapshot,
+                provenance=provenance,
             )
 
         value = None
         if (id_, QUDT_SCHEMA["value"], None) in self.g:
             value = float(self.g.value(id_, QUDT_SCHEMA["value"]))
         reference_value = self.g.value(id_, CSTR["reference-value"])
-        authored, snapshot = self.quantity_role_flags(id_)
+        provenance = self.quantity_provenance(id_)
         return Quantity(
             self.id(id_),
             QuantityKind(quantity_kind),
             Unit(unit),
             value,
             has_view,
-            authored=authored,
-            snapshot=snapshot,
+            provenance=provenance,
             reference_value=self.id(reference_value) if reference_value is not None else None,
         )
 
@@ -1545,12 +1539,12 @@ class Parser:
         joint_name = self.label(joint_node) if joint_node is not None else ""
         return JointPosition(self.id(id_), joint_name)
 
-    def quantity_role_flags(self, id_):
-        # (authored, snapshot), mutually exclusive: snapshot wins (mirrors old roles() elif).
+    def quantity_provenance(self, id_):
+        # Provenance(authored, snapshot), mutually exclusive: snapshot wins (mirrors old roles() elif).
         # authored == carries an authored value/coordinate and is not a runtime snapshot.
         snapshot = SNAP.Snapshot in self.g[id_ : RDF["type"]]
         authored = (not snapshot) and self._is_authored(id_)
-        return authored, snapshot
+        return Provenance(authored=authored, snapshot=snapshot)
 
     def _is_authored(self, id_):
         if (id_, QUDT_SCHEMA["value"], None) in self.g:
@@ -3235,8 +3229,8 @@ def _build_introspection(
             or _id_ref(getattr(item, "with_respect_to", None)),
             "reference_value": getattr(item, "reference_value", None),
             "value": getattr(item, "value", None),
-            "authored": getattr(item, "authored", False),
-            "snapshot": getattr(item, "snapshot", False),
+            "authored": getattr(getattr(item, "provenance", None), "authored", False),
+            "snapshot": getattr(getattr(item, "provenance", None), "snapshot", False),
         }
         quantities.append({k: v for k, v in quantity_entry.items() if v is not None and v != []})
 

@@ -81,14 +81,25 @@ class Unit:
 
 
 @dataclass
+class Provenance:
+    """Origin/role of a quantity's value, shared by all quantity-like entities.
+
+    Not intrinsic to the physical quantity: whether the value was authored by the
+    user (vs computed) and whether it is a runtime snapshot capture.
+    """
+
+    authored: bool = False
+    snapshot: bool = False
+
+
+@dataclass
 class Quantity:
     id: str
     quantity_kind: QuantityKind
     unit: Unit
     value: float | None
     has_view: bool
-    authored: bool = False
-    snapshot: bool = False
+    provenance: Provenance = field(default_factory=Provenance)
     reference_value: str | None = None
     type: str = field(default="Quantity")
 
@@ -111,8 +122,7 @@ class FreeVector:
     unit: Unit
     vector: list[float] | None
     has_view: bool = False
-    authored: bool = False
-    snapshot: bool = False
+    provenance: Provenance = field(default_factory=Provenance)
     type: str = field(default="FreeVector")
 
 
@@ -122,8 +132,7 @@ class Trajectory:
     quantity_kind: QuantityKind
     unit: Unit
     has_view: bool
-    authored: bool = False
-    snapshot: bool = False
+    provenance: Provenance = field(default_factory=Provenance)
     value_kind: str | None = None
     type: str = field(default="Trajectory")
 
@@ -182,8 +191,7 @@ class Orientation:
     unit: Unit
     euler_axes_sequence: str | None = None
     has_view: bool = False
-    authored: bool = False
-    snapshot: bool = False
+    provenance: Provenance = field(default_factory=Provenance)
     type: str = field(default="Orientation")
 
 
@@ -200,8 +208,7 @@ class Pose:
     direction_cosine_z: list[float] | None
     position: list[float] | None
     euler_axes_sequence: str | None = None
-    authored: bool = False
-    snapshot: bool = False
+    provenance: Provenance = field(default_factory=Provenance)
     type: str = field(default="Pose")
 
 
@@ -214,8 +221,7 @@ class VelocityTwist:
     reference_point: Point
     as_seen_by: Frame
     unit: list[Unit]
-    authored: bool = False
-    snapshot: bool = False
+    provenance: Provenance = field(default_factory=Provenance)
     type: str = field(default="VelocityTwist")
 
 
@@ -226,8 +232,7 @@ class AccelerationTwist:
     reference_point: Point
     as_seen_by: Frame
     unit: list[Unit]
-    authored: bool = False
-    snapshot: bool = False
+    provenance: Provenance = field(default_factory=Provenance)
     type: str = field(default="AccelerationTwist")
 
 
@@ -238,8 +243,7 @@ class PoseDifference:
     reference_point: Point
     as_seen_by: Frame
     unit: list[Unit]
-    authored: bool = False
-    snapshot: bool = False
+    provenance: Provenance = field(default_factory=Provenance)
     type: str = field(default="PoseDifference")
 
 
@@ -250,8 +254,7 @@ class Wrench:
     reference_point: Point
     as_seen_by: Frame
     unit: list[Unit]
-    authored: bool = False
-    snapshot: bool = False
+    provenance: Provenance = field(default_factory=Provenance)
     # Non-empty when this wrench is measured from a force/torque sensor (the FT-read
     # solver-output reads and tares this sensor into shared.<id>.force). Empty for
     # computed/commanded wrenches.

@@ -11,8 +11,9 @@ import pytest
 from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import RDF, XSD
 
-from motion_spec.codegen import _motion_done_condition, render_template
+from motion_spec.codegen import render_template
 from motion_spec.ir_gen import (
+    _motion_done_condition,
     GuardedMotionBlock,
     Parser,
     SceneRobot,
@@ -273,7 +274,7 @@ def test_solver_ir_carries_rne_algorithm_and_gravity() -> None:
 
     assert entry.algorithm == "RNE"
     assert entry.algorithm_is_rne is True
-    assert entry.gravity == [0.0, 0.0, -9.81]
+    assert entry.root_acc == [0.0, 0.0, -9.81]
 
 
 def test_generated_velocity_profile_runtime_respects_authored_bounds(tmp_path) -> None:

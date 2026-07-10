@@ -281,19 +281,19 @@ fsm-dispatch(motions, fsm_namespace) ::= <<
     \};
 >>
 
-ref_main(motions, unique_motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, shared_data, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene, trace, fsm_namespace, fsm_step_event, fsm_step_event_idx, needs_clock_time, control_period_ns) ::= <<
+ref_main(motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, shared_data, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene, trace, fsm_namespace, fsm_step_event, fsm_step_event_idx, needs_clock_time, control_period_ns) ::= <<
 #include "runtime.hpp"
 #include "shared_state.hpp"
 <if(has_mobile_base)>
 <mobile-base-cycle-include()>
 <endif>
-<unique_motions:{motion | <motion-include(motion)>}; separator="\n">
+<motions:{motion | <motion-include(motion)>}; separator="\n">
 
 <app-arm-includes(backend, has_arm)>
 #include \<unistd.h\>
 <if(fsm_namespace)>
 
-<unique_motions:{motion | <fsm-step-function(motion)>}; separator="\n\n">
+<motions:{motion | <fsm-step-function(motion)>}; separator="\n\n">
 <endif>
 
 int main(int argc, char **argv) {
@@ -309,7 +309,7 @@ int main(int argc, char **argv) {
 <endif>
 <wrench_outputs:{wrench | <wrench-measurement(wrench)>}; separator="\n">
 <wrench_outputs:{wrench |     robot.<wrench.id> = &<wrench.id>_measurement;}; separator="\n">
-<unique_motions:{motion | <motion-state-member(motion)>}; separator="\n">
+<motions:{motion | <motion-state-member(motion)>}; separator="\n">
 <if(has_mobile_base)>
     mobile_base_state mobile_base_state_instance;
 <endif>
@@ -325,7 +325,7 @@ int main(int argc, char **argv) {
 <endif>
 
 <if(has_arm)>
-<app-arm-post-setup(backend, arm_solvers, unique_motions)>
+<app-arm-post-setup(backend, arm_solvers, motions)>
 <endif>
 
 <if(fsm_namespace)>

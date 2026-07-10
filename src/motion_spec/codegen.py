@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 import os
 import re
@@ -16,6 +15,7 @@ from urllib.parse import urlparse
 
 from motion_spec.entities import DataclassJSONEncoder
 from motion_spec.codegen_artifacts import write_introspection_artifacts
+from motion_spec.ir_gen import add_motion_function_interfaces
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
@@ -188,90 +188,6 @@ def load_ir(input_path: Path):
         return json.load(handle)
 
 
-SUPPORTED_ROBOT_MODELS = {"KinovaGen3"}
-
-
-def _validate_ir(ir: dict) -> None:
-    unsupported = {
-        s["robot_model"]
-        for s in ir.get("arm_solvers", [])
-        if s.get("robot_model") and s["robot_model"] not in SUPPORTED_ROBOT_MODELS
-    }
-    if unsupported:
-        raise RuntimeError(
-            f"Unsupported robot model(s): {', '.join(sorted(unsupported))}. "
-            f"Supported: {', '.join(sorted(SUPPORTED_ROBOT_MODELS))}"
-        )
-
-    backend = ir.get("backend", "robif2b")
-    if backend != "robif2b":
-        return
-
-    for solver in ir.get("arm_solvers", []):
-        for out in solver.get("output", []):
-            if out.get("type") != "Pose":
-                continue
-            entity = out.get("of") or {}
-            if entity.get("is_scene_object"):
-                obj_id = entity.get("id") or entity.get("body") or out.get("id")
-                raise RuntimeError(
-                    "robif2b backend cannot sync scene-object pose output "
-                    f"'{out.get('id')}' for '{obj_id}'; world/scene object pose sync "
-                    "is only implemented for mj_kdl."
-                )
-
-
-def _runtime_signature(solver: dict, backend: str) -> tuple:
-    return (
-        backend,
-        solver.get("robot_model", ""),
-        solver.get("urdf", ""),
-        solver.get("chain_root", ""),
-        solver.get("chain_tip") or solver.get("chain_end", ""),
-        solver.get("tool_body", ""),
-        solver.get("tcp_site", ""),
-    )
-
-
-def _annotate_runtime_robots(ir: dict, unique_motions: list, backend: str) -> None:
-    runtime_by_signature: dict[tuple, str] = {}
-    owner_by_runtime: dict[str, str] = {}
-    solvers_by_id = {solver.get("id"): solver for solver in ir.get("arm_solvers", [])}
-
-    for solver in ir.get("arm_solvers", []):
-        solver_id = solver.get("id", "")
-        signature = _runtime_signature(solver, backend)
-        runtime_id = runtime_by_signature.setdefault(signature, solver_id)
-        owner_by_runtime.setdefault(runtime_id, solver_id)
-        solver["runtime_id"] = runtime_id
-        solver["runtime_owner"] = solver_id == owner_by_runtime[runtime_id]
-        # ST4's <if(x)> treats "" as truthy. Convert empty strings to None so
-        # the template's <if(solver.tool_body)> branch is correctly skipped
-        # for bare robots (no gripper / tool attached).
-        if not solver.get("tool_body"):
-            solver["tool_body"] = None
-        if not solver.get("tcp_site"):
-            solver["tcp_site"] = None
-
-    for motion_list in (ir.get("motions", []), unique_motions):
-        for motion in motion_list:
-            for solver in motion.get("arm_solvers", []):
-                canonical = solvers_by_id.get(solver.get("id"))
-                if canonical is None:
-                    continue
-                solver["runtime_id"] = canonical.get("runtime_id", solver.get("id", ""))
-                solver["runtime_owner"] = canonical.get("runtime_owner", True)
-
-
-def _add_group_type_flags(groups: list) -> list:
-    for g in groups:
-        so_type = g.get("superobject_type", "Pose")
-        g["is_pose"] = so_type == "Pose"
-        g["is_twist"] = so_type in ("VelocityTwist", "AccelerationTwist")
-        g["is_wrench"] = so_type == "Wrench"
-    return groups
-
-
 def _event_to_state(fsm_ir: dict) -> dict[str, str]:
     """Map each FSM event enum token to the state it transitions out of (the state the motion runs in)."""
     transition_from = {t["id"]: t["from_state"] for t in fsm_ir["transitions_table"]}
@@ -291,24 +207,6 @@ def _load_fsm_ir(output_dir: Path) -> dict | None:
     return None
 
 
-def _motion_done_condition(motion: dict) -> str:
-    """Boolean expression that ends a motion: its UNTIL members combined by any/all
-    (``||`` for any, ``&&`` for all/default)."""
-    event_terms = [
-        (
-            f"{motion['id']}_state_instance.{monitor['id']}_event_triggered"
-            if monitor.get("is_edge_triggered")
-            else f"{motion['id']}_state_instance.{monitor['flag']}"
-        )
-        for monitor in motion.get("until_monitors", [])
-    ]
-    if not event_terms:
-        return "true"
-    joiner = " || " if motion.get("until_any") else " && "
-    condition = joiner.join(event_terms)
-    return f"({condition})" if len(event_terms) > 1 else condition
-
-
 def is_fsm_event(monitor: dict, fsm_ns_uri: str | None) -> bool:
     # A monitor fires the FSM only when its event lives in the FSM's namespace;
     # standalone (monitor-owned) events keep the existing warn stub.
@@ -319,626 +217,13 @@ def is_fsm_event(monitor: dict, fsm_ns_uri: str | None) -> bool:
     )
 
 
-def expand_vector_fields(item: dict, field: str) -> None:
-    values = item.get(field)
-    if values is None:
-        # Env placement shorthand: omitted position/orientation means zero/identity.
-        values = [0.0, 0.0, 0.0]
-    if not isinstance(values, list) or len(values) != 3:
-        item_id = item.get("id", "<unknown>")
-        raise ValueError(f"Scene item '{item_id}' has invalid '{field}'; expected three values.")
-    item[f"{field}_x"] = values[0]
-    item[f"{field}_y"] = values[1]
-    item[f"{field}_z"] = values[2]
-
-
-def normalize_controller_gains(controller: dict) -> None:
-    ctrl_type = controller.get("type")
-    ctrl_id = controller.get("id", "<unknown>")
-    if ctrl_type == "ProportionalIntegralDerivative":
-        missing = [
-            name
-            for name, key in (
-                ("Kp", "proportional_gain"),
-                ("Ki", "integral_gain"),
-                ("Kd", "derivative_gain"),
-            )
-            if controller.get(key) is None
-        ]
-        if missing:
-            raise ValueError(
-                f"PID controller '{ctrl_id}' is missing required gain(s) {missing}; "
-                f"all of Kp, Ki, Kd must be specified in the model."
-            )
-    elif ctrl_type == "ImpedanceController":
-        if controller.get("stiffness") is None or controller.get("damping") is None:
-            raise ValueError(f"Impedance controller '{ctrl_id}' requires stiffness and damping.")
-
-
-def require_field(obj_id: str, field: str, value):
-    if value is None:
-        raise ValueError(
-            f"Procedural scene object '{obj_id}' is missing required field "
-            f"'{field}'. Add it to the .robmot model — silent defaults are no "
-            f"longer applied."
-        )
-    return value
-
-
-def merge_list_by_id(dst: list, src: list) -> None:
-    seen = {item.get("id") for item in dst if isinstance(item, dict)}
-    for item in src:
-        item_id = item.get("id") if isinstance(item, dict) else None
-        if item_id in seen:
-            continue
-        dst.append(copy.deepcopy(item))
-        seen.add(item_id)
-
-
-def cpp_access_expr(data_id: str, views: dict) -> str:
-    view = views.get(data_id)
-    if not view:
-        return f"shared.{data_id}"
-    superobject = view["superobject"]
-    if superobject["type"] == "Pose" and view["subspace"] == "Linear":
-        axis = view.get("axis")
-        if axis is None:
-            return f"shared.{superobject['id']}.p"
-        axis_index = {"X": 0, "Y": 1, "Z": 2, "x": 0, "y": 1, "z": 2}[axis]
-        return f"shared.{superobject['id']}.p[{axis_index}]"
-    if superobject["type"] == "Pose" and view["subspace"] == "Angular":
-        axis = view.get("axis")
-        if axis is None:
-            return f"shared.{superobject['id']}.M"
-        axis_index = {"X": 0, "Y": 1, "Z": 2, "x": 0, "y": 1, "z": 2}[axis]
-        return f"KDL::diff(KDL::Rotation::Identity(), shared.{superobject['id']}.M)[{axis_index}]"
-    if superobject["type"] == "Wrench":
-        member = "torque" if view["subspace"] == "Angular" else "force"
-        axis = view.get("axis")
-        if axis is None:
-            return f"shared.{superobject['id']}.{member}"
-        axis_index = {"X": 0, "Y": 1, "Z": 2, "x": 0, "y": 1, "z": 2}[axis]
-        return f"shared.{superobject['id']}.{member}[{axis_index}]"
-    axis_index = {"X": 0, "Y": 1, "Z": 2, "x": 0, "y": 1, "z": 2}[view["axis"]]
-    if superobject["type"] == "VelocityTwist":
-        member = "rot" if view["subspace"] == "Angular" else "vel"
-        return f"shared.{superobject['id']}.{member}[{axis_index}]"
-    if superobject["type"] == "AccelerationTwist":
-        member = "rot" if view["subspace"] == "Angular" else "vel"
-        return f"shared.{superobject['id']}.{member}[{axis_index}]"
-    return f"shared.{data_id}"
-
-
-def component_expr(component_id: str, data_by_id: dict, views: dict) -> str:
-    component = data_by_id.get(component_id) or {}
-    if component.get("reference_value"):
-        return cpp_access_expr(component["reference_value"], views)
-    if component.get("value") is not None:
-        return str(component["value"])
-    return cpp_access_expr(component_id, views)
-
-
-def add_controller_signal_metadata(ir_payload: dict) -> None:
-    error_sources = {
-        closure.get("error"): closure
-        for closure in ir_payload.get("closures", {}).values()
-        if isinstance(closure, dict) and closure.get("type") == "ErrorEvaluator" and closure.get("error")
-    }
-
-    def signal_id(value):
-        if isinstance(value, dict):
-            return value.get("id")
-        if isinstance(value, str):
-            return value
-        return None
-
-    def enrich(controller: dict) -> None:
-        error_id = signal_id(controller.get("error_signal"))
-        source = error_sources.get(error_id) or {}
-        measured_id = source.get("quantity")
-        setpoint_id = signal_id(controller.get("reference_signal")) or source.get("reference_value")
-        measured_derivative_id = signal_id(controller.get("measured_derivative"))
-        if measured_id:
-            controller["measured_signal"] = measured_id
-            controller["measured_expr"] = cpp_access_expr(measured_id, ir_payload.get("views", {}))
-        if setpoint_id:
-            controller["setpoint_signal"] = setpoint_id
-            controller["setpoint_expr"] = cpp_access_expr(setpoint_id, ir_payload.get("views", {}))
-        if measured_derivative_id:
-            controller["measured_derivative_expr"] = cpp_access_expr(
-                measured_derivative_id,
-                ir_payload.get("views", {}),
-            )
-
-    for motion in ir_payload.get("motions", []) + ir_payload.get("unique_motions", []):
-        for controller in motion.get("controllers", []):
-            enrich(controller)
-    for controller in (ir_payload.get("introspection") or {}).get("controllers", []):
-        enrich(controller)
-
-
-def add_controller_internal_state_logging(ir_payload: dict) -> None:
-    shared_data = ir_payload.setdefault("shared_data", [])
-    introspection = ir_payload.setdefault("introspection", {})
-    quantities = introspection.setdefault("quantities", [])
-    shared_ids = {item.get("id") for item in shared_data if isinstance(item, dict) and item.get("id")}
-    quantity_ids = {item.get("id") for item in quantities if isinstance(item, dict) and item.get("id")}
-
-    def add_shared(item_id: str, item_type: str, controller_id: str, state_name: str) -> None:
-        if item_id not in shared_ids:
-            shared_data.append(
-                {
-                    "id": item_id,
-                    "type": item_type,
-                    "controller": controller_id,
-                    "role": "controller_internal_state",
-                    "state": state_name,
-                }
-            )
-            shared_ids.add(item_id)
-
-    def add_quantity(item_id: str, controller_id: str, state_name: str) -> None:
-        if item_id not in quantity_ids:
-            quantities.append(
-                {
-                    "id": item_id,
-                    "type": "Quantity",
-                    "controller": controller_id,
-                    "role": "controller_internal_state",
-                    "state": state_name,
-                }
-            )
-            quantity_ids.add(item_id)
-
-    stateful_types = {"ProportionalIntegralDerivative", "ImpedanceController"}
-    stateful_ids = {
-        controller.get("id")
-        for source in (
-            ir_payload.get("motions", []),
-            ir_payload.get("unique_motions", []),
-            [ir_payload.get("introspection") or {}],
-        )
-        for entry in source
-        for controller in (entry.get("controllers", []) if isinstance(entry, dict) else [])
-        if isinstance(controller, dict)
-        and controller.get("type") in stateful_types
-        and controller.get("id")
-    }
-
-    for closure in ir_payload.get("closures", {}).values():
-        if not isinstance(closure, dict) or closure.get("type") != "Controller":
-            continue
-        controller_id = closure.get("id")
-        if controller_id not in stateful_ids:
-            continue
-        samples = [
-            ("error_integral", "Quantity", "error_integral"),
-            ("previous_error", "Quantity", "previous_error"),
-            ("first_sample", "Bool", "is_first_sample"),
-        ]
-        closure_samples = []
-        for state_name, item_type, getter in samples:
-            item_id = f"{controller_id}_{state_name}"
-            add_shared(item_id, item_type, controller_id, state_name)
-            if item_type == "Quantity":
-                add_quantity(item_id, controller_id, state_name)
-            closure_samples.append({"id": item_id, "getter": getter})
-        closure["internal_state_samples"] = closure_samples
-
-
-def add_quantity_samples(ir_payload: dict) -> None:
-    introspection = ir_payload.get("introspection") or {}
-    shared_ids = {
-        item.get("id")
-        for item in ir_payload.get("shared_data", [])
-        if isinstance(item, dict) and item.get("id")
-    }
-    views = ir_payload.get("views", {})
-    samples = []
-
-    def add(source: dict, component: str, expr: str) -> None:
-        row = {key: value for key, value in source.items() if key != "index"}
-        source_id = source.get("id")
-        row.update(
-            {
-                "id": source_id if not component else f"{source_id}.{component}",
-                "source_id": source_id,
-                "component": component or None,
-                "type": "Scalar",
-                "source_type": source.get("type"),
-                "sample_expr": expr,
-            }
-        )
-        samples.append(row)
-
-    def add_axes(source: dict, prefix: str, expr: str) -> None:
-        for idx, axis in enumerate(("x", "y", "z")):
-            add(source, f"{prefix}.{axis}" if prefix else axis, f"{expr}[{idx}]")
-
-    def scalar_view(data_id: str) -> bool:
-        view = views.get(data_id)
-        return not view or view.get("axis") is not None
-
-    for quantity in introspection.get("quantities", []):
-        qid = quantity.get("id")
-        if not qid:
-            continue
-        qtype = quantity.get("type")
-        if qtype == "Quantity":
-            if quantity.get("value") is not None and qid not in shared_ids and qid not in views:
-                add(quantity, "", str(quantity["value"]))
-            elif qid in views and scalar_view(qid):
-                add(quantity, "", cpp_access_expr(qid, views))
-            elif qid in shared_ids and qid not in views:
-                add(quantity, "", f"shared.{qid}")
-        elif qtype in {"Position", "Direction", "FreeVector"} and qid in shared_ids:
-            add_axes(quantity, "", f"shared.{qid}")
-        elif qtype == "Orientation" and qid in shared_ids:
-            add_axes(quantity, "", f"KDL::diff(KDL::Rotation::Identity(), shared.{qid})")
-        elif qtype in {"Pose", "Trajectory"} and qid in shared_ids:
-            add_axes(quantity, "position", f"shared.{qid}.p")
-            add_axes(quantity, "orientation", f"KDL::diff(KDL::Rotation::Identity(), shared.{qid}.M)")
-        elif qtype in {"VelocityTwist", "AccelerationTwist", "PoseDifference"} and qid in shared_ids:
-            add_axes(quantity, "angular", f"shared.{qid}.rot")
-            add_axes(quantity, "linear", f"shared.{qid}.vel")
-        elif qtype == "Wrench" and qid in shared_ids:
-            add_axes(quantity, "torque", f"shared.{qid}.torque")
-            add_axes(quantity, "force", f"shared.{qid}.force")
-
-    sampled_ids = {sample.get("source_id") for sample in samples}
-    for item in ir_payload.get("shared_data", []):
-        if not isinstance(item, dict):
-            continue
-        item_id = item.get("id")
-        if not item_id or item_id in sampled_ids:
-            continue
-        if item.get("type") == "Bool":
-            add(item, "", f"shared.{item_id} ? 1.0 : 0.0")
-        elif item.get("type") == "IntCounter":
-            add(item, "", f"static_cast<double>(shared.{item_id})")
-
-    introspection["quantity_samples"] = samples
-
-
-def add_spatial_samples(ir_payload: dict) -> None:
-    """Add per-object pose, velocity-twist and wrench frame-log samples."""
-    introspection = ir_payload.get("introspection") or {}
-    shared_ids = {
-        item.get("id")
-        for item in ir_payload.get("shared_data", [])
-        if isinstance(item, dict) and item.get("id")
-    }
-    kinds = {"Pose": "poses", "VelocityTwist": "twists", "Wrench": "wrenches"}
-    spatial = {"poses": [], "twists": [], "wrenches": []}
-    for item in ir_payload.get("shared_data", []):
-        if not isinstance(item, dict):
-            continue
-        iid = item.get("id")
-        pool = kinds.get(item.get("type"))
-        if not iid or iid not in shared_ids or pool is None:
-            continue
-        spatial[pool].append({"id": iid, "index": len(spatial[pool]), "expr": f"shared.{iid}"})
-    introspection["spatial_samples"] = spatial
-
-
-def build_pose_components(ir_payload: dict) -> dict:
-    views = ir_payload.get("views", {})
-    data_by_id = {
-        item.get("id"): item
-        for item in ir_payload.get("data", [])
-        if isinstance(item, dict) and item.get("id")
-    }
-    components: dict[str, dict] = {}
-    for view in views.values():
-        superobject = view.get("superobject") or {}
-        so_type = superobject.get("type")
-        so_prov = superobject.get("provenance") or {}
-        is_declared_pose = bool(so_prov.get("authored") or so_prov.get("snapshot"))
-        if so_type != "Pose":
-            continue
-        if not (is_declared_pose or superobject.get("euler_axes_sequence")):
-            continue
-        # Only include inline-defined poses (those where components have values/references).
-        subobject_id = (view.get("subobject") or {}).get("id")
-        subobject_data = data_by_id.get(subobject_id) or {}
-        if not subobject_data.get("reference_value") and subobject_data.get("value") is None:
-            continue
-        pose_id = superobject["id"]
-        entry = components.setdefault(
-            pose_id,
-            {
-                "position_x_expr": None,
-                "position_y_expr": None,
-                "position_z_expr": None,
-                "orientation_x_expr": None,
-                "orientation_y_expr": None,
-                "orientation_z_expr": None,
-            },
-        )
-        axis = str(view.get("axis", "")).lower()
-        if axis not in {"x", "y", "z"}:
-            continue
-        subobject = (view.get("subobject") or {}).get("id")
-        if not subobject:
-            continue
-        prefix = "position" if view.get("subspace") == "Linear" else "orientation"
-        entry[f"{prefix}_{axis}_expr"] = component_expr(subobject, data_by_id, views)
-    for pose_id, parts in components.items():
-        missing = [name for name, value in parts.items() if value is None]
-        if missing:
-            raise ValueError(
-                f"Declared pose '{pose_id}' is missing required components: {', '.join(missing)}."
-            )
-    return components
-
-
-def enrich_lerp_closures(ir_payload: dict, pose_components: dict) -> None:
-    for closure in ir_payload.get("closures", {}).values():
-        if closure.get("type") != "Lerp":
-            continue
-        goal = closure.get("goal")
-        if not isinstance(goal, str):
-            continue
-        if goal in pose_components:
-            parts = pose_components[goal]
-            closure["goal_expr"] = (
-                "KDL::Frame("
-                "KDL::Rotation::RPY("
-                f"{parts['orientation_x_expr']}, "
-                f"{parts['orientation_y_expr']}, "
-                f"{parts['orientation_z_expr']}), "
-                "KDL::Vector("
-                f"{parts['position_x_expr']}, "
-                f"{parts['position_y_expr']}, "
-                f"{parts['position_z_expr']}))"
-            )
-            closure["assign_goal"] = True
-        else:
-            closure["goal_expr"] = f"shared.{goal}"
-            closure["assign_goal"] = False
-
-
-def enrich_arc_closures(ir_payload: dict) -> None:
-    data_by_id = {
-        item.get("id"): item
-        for item in ir_payload.get("data", [])
-        if isinstance(item, dict) and item.get("id")
-    }
-
-    def is_pose(data: dict) -> bool:
-        qkind = data.get("quantity_kind")
-        qkind_ids = qkind if isinstance(qkind, list) else [qkind]
-        return data.get("type") == "Pose" or any(
-            isinstance(item, dict) and item.get("id") == "Pose" for item in qkind_ids
-        )
-
-    for closure in ir_payload.get("closures", {}).values():
-        if closure.get("type") != "Arc":
-            continue
-        end = closure.get("end")
-        end_data = data_by_id.get(end) or {}
-        if not isinstance(end, str) or not is_pose(end_data):
-            raise ValueError("Arc trajectory end must be a Pose quantity.")
-        closure["end_position_expr"] = f"shared.{end}.p"
-        closure["end_orientation_expr"] = f"shared.{end}.M"
-
-
-def declared_pose_component_entries(
-    ir_payload: dict,
-    pose_components: dict,
-    referenced_ids: set[str] | None = None,
-) -> list[dict]:
-    data_by_id = {
-        item.get("id"): item
-        for item in ir_payload.get("data", [])
-        if isinstance(item, dict) and item.get("id")
-    }
-    entries = []
-    for pose_id, parts in pose_components.items():
-        if referenced_ids is not None and pose_id not in referenced_ids:
-            continue
-        item = data_by_id.get(pose_id) or {}
-        item_prov = item.get("provenance") or {}
-        if not item_prov.get("authored") or item_prov.get("snapshot"):
-            continue
-        entries.append({"id": pose_id, **parts})
-    return entries
-
-
-def collect_motion_references(motion: dict, closures: dict) -> set[str]:
-    refs: set[str] = set()
-
-    def visit(value):
-        if isinstance(value, str):
-            refs.add(value)
-        elif isinstance(value, dict):
-            for item in value.values():
-                visit(item)
-        elif isinstance(value, list):
-            for item in value:
-                visit(item)
-
-    visit(motion)
-    for schedule_name in ("when_schedule", "while_schedule", "until_schedule"):
-        for step in motion.get(schedule_name, []):
-            closure = closures.get(step)
-            if closure:
-                visit(closure)
-    return refs
-
-
-def add_motion_trajectory_progress(ir_payload: dict) -> None:
-    data_by_id = {
-        item.get("id"): item
-        for item in ir_payload.get("data", [])
-        if isinstance(item, dict) and item.get("id")
-    }
-    closures = ir_payload.get("closures", {})
-    for motion in ir_payload.get("motions", []):
-        time_progress_ids: list[str] = []
-        for step in motion.get("while_schedule", []):
-            closure = closures.get(step)
-            if not closure or closure.get("type") not in {"Lerp", "Circle", "Arc", "Helix", "Figure8"}:
-                continue
-            alpha_id = closure.get("alpha")
-            alpha_data = data_by_id.get(alpha_id) or {}
-            qkind = (alpha_data.get("quantity_kind") or {}).get("id")
-            if qkind == "Progress" and closure.get("type") != "Arc" and alpha_id not in time_progress_ids:
-                time_progress_ids.append(alpha_id)
-        motion["time_trajectory_progress_ids"] = time_progress_ids
-
-
-def _evaluator_term(e: dict, start_field: str) -> str:
-    # A timing evaluator has no solver error: compare the world clock against the threshold,
-    # measured from the selected state timestamp.
-    if e.get("is_elapsed"):
-        op = e.get("elapsed_op") or ">="
-        thr = e.get("elapsed_threshold_s") or 0.0
-        return f"(shared.clock_time_s - state.{start_field} {op} {thr:.6f})"
-    return f"motion_spec::runtime::constraint_satisfied(shared.{e['error']['id']})"
-
-
-def add_until_monitor_conditions(motions: list[dict]) -> None:
-    for motion in motions:
-        terms = [
-            _evaluator_term(e, "motion_start_time")
-            for e in motion.get("until_evaluators", [])
-            if e.get("error") or e.get("is_elapsed")
-        ]
-        elapsed_terms_by_error = {
-            e["error"]["id"]: _evaluator_term(e, "motion_start_time")
-            for e in motion.get("until_evaluators", [])
-            if e.get("is_elapsed") and e.get("error")
-        }
-        joiner = " || " if motion.get("until_any") else " && "
-        active_condition = joiner.join(terms) if terms else "false"
-        if len(terms) > 1:
-            active_condition = f"({active_condition})"
-        for monitor in motion.get("until_monitors", []):
-            if monitor.get("is_until_aggregate"):
-                monitor["active_condition"] = active_condition
-                continue
-            error_id = (monitor.get("error") or {}).get("id")
-            if error_id in elapsed_terms_by_error:
-                monitor["active_condition"] = elapsed_terms_by_error[error_id]
-
-
-def add_when_monitor_conditions(motions: list[dict]) -> None:
-    for motion in motions:
-        terms = [
-            _evaluator_term(e, "when_start_time")
-            for e in motion.get("when_evaluators", [])
-            if e.get("error") or e.get("is_elapsed")
-        ]
-        elapsed_terms_by_error = {
-            e["error"]["id"]: _evaluator_term(e, "when_start_time")
-            for e in motion.get("when_evaluators", [])
-            if e.get("is_elapsed") and e.get("error")
-        }
-        joiner = " || " if motion.get("when_any") else " && "
-        motion["when_condition"] = joiner.join(terms) if terms else "true"
-        if len(terms) > 1:
-            motion["when_condition"] = f"({motion['when_condition']})"
-        active_condition = joiner.join(terms) if terms else "false"
-        if len(terms) > 1:
-            active_condition = f"({active_condition})"
-        for monitor in motion.get("when_monitors", []):
-            if monitor.get("is_when_aggregate"):
-                monitor["active_condition"] = active_condition
-                continue
-            error_id = (monitor.get("error") or {}).get("id")
-            if error_id in elapsed_terms_by_error:
-                monitor["active_condition"] = elapsed_terms_by_error[error_id]
-
-
-def add_motion_done_conditions(motions: list[dict]) -> None:
-    for motion in motions:
-        motion["done_condition"] = _motion_done_condition(motion)
-
-
-def add_motion_function_interfaces(motions: list[dict]) -> None:
-    def join_params(params: list[str]) -> str:
-        if not params:
-            return ""
-        return "\n    " + ",\n    ".join(params) + "\n"
-
-    for motion in motions:
-        state_type = f"{motion['id']}_state &state"
-        has_when_elapsed = any(e.get("is_elapsed") for e in motion.get("when_evaluators", []))
-        has_when_logic = bool(motion.get("when_schedule") or motion.get("when_evaluators"))
-        can_start_params = []
-        can_start_args = []
-        if has_when_elapsed:
-            can_start_params.append(state_type)
-            can_start_args.append(f"{motion['id']}_state_instance")
-        if has_when_logic:
-            can_start_params.append("shared_data &shared")
-            can_start_args.append("shared")
-        motion["can_start_params"] = join_params(can_start_params)
-        motion["can_start_args"] = ", ".join(can_start_args)
-
-        when_mons = motion.get("when_monitors") or []
-        until_mons = motion.get("until_monitors") or []
-        has_pose = bool(motion.get("declared_pose_components"))
-        when_sched = bool(motion.get("when_schedule"))
-        until_sched = bool(motion.get("until_schedule"))
-        when_fsm = any(m.get("fsm_namespace") for m in when_mons)
-        until_fsm = any(m.get("fsm_namespace") for m in until_mons)
-
-        def monitor_sig(use_state, use_shared, use_robot):
-            params, args = [], []
-            if use_state:
-                params.append(state_type)
-                args.append(f"{motion['id']}_state_instance")
-            if use_shared:
-                params.append("shared_data &shared")
-                args.append("shared")
-            if use_robot:
-                params.append("const robot_io &robot")
-                args.append("robot")
-            return join_params(params), ", ".join(args)
-
-        motion["when_params"], motion["when_args"] = monitor_sig(
-            has_when_elapsed or bool(when_mons),
-            has_when_elapsed or has_pose or when_sched or bool(when_mons),
-            when_fsm,
-        )
-        motion["until_params"], motion["until_args"] = monitor_sig(
-            bool(until_mons),
-            until_sched or bool(until_mons),
-            until_fsm,
-        )
-        motion["monitor_params"], motion["monitor_args"] = monitor_sig(
-            bool(when_mons) or bool(until_mons),
-            when_sched or bool(when_mons) or until_sched or bool(until_mons),
-            when_fsm or until_fsm,
-        )
-
-        has_apply_state = bool(motion.get("arm_solvers"))
-        has_forwarded_commands = bool(motion.get("forwarded_commands"))
-        has_apply_shared = has_forwarded_commands
-        has_apply_robot = bool(motion.get("arm_solvers") or has_forwarded_commands)
-        apply_params = []
-        apply_args = []
-        if has_apply_state:
-            apply_params.append(state_type)
-            apply_args.append(f"{motion['id']}_state_instance")
-        if has_apply_shared:
-            apply_params.append("shared_data &shared")
-            apply_args.append("shared")
-        if has_apply_robot:
-            apply_params.append("const robot_io &robot")
-            apply_args.append("robot")
-        motion["apply_params"] = join_params(apply_params)
-        motion["apply_args"] = ", ".join(apply_args)
-
-
 def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
+    # ir.json is already fully derived by ir_gen (derive_codegen_fields). Codegen only
+    # layers on FSM wiring (from the build-side fsm_ir.json ir_gen never sees), then renders.
     ir = load_ir(ir_path)
-    _validate_ir(ir)
-    backend = ir.get("backend", "robif2b")
 
-    # FSM wiring (codegen/build concern; derived, not part of the semantic IR).
+    # FSM wiring (codegen/build concern): picked up from the fsm_ir.json that textx
+    # writes alongside the manifest when the .robmot imports a .fsm.
     fsm_ir = _load_fsm_ir(output_dir)
     fsm_namespace = fsm_ir["name"].lower() if fsm_ir else None
     fsm_header = f"{fsm_ir['name']}.hpp" if fsm_ir else None
@@ -952,125 +237,10 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     ir["fsm_step_event"] = fsm_step_event
     ir["fsm_step_event_idx"] = fsm_event_index.get(fsm_step_event, -1)
 
-    for handler in ir.get("cstr_hdl", []):
-        for controller in handler.get("controllers", []):
-            normalize_controller_gains(controller)
-    for motion in ir.get("motions", []):
-        for controller in motion.get("controllers", []):
-            normalize_controller_gains(controller)
-
-    scene = ir.get("scene") or {}
-    for robot in scene.get("robots", []):
-        expand_vector_fields(robot, "pos")
-        expand_vector_fields(robot, "euler")
-        for attachment in robot.get("attachments", []):
-            expand_vector_fields(attachment, "pos")
-            expand_vector_fields(attachment, "euler")
-    for obj in scene.get("objects", []):
-        expand_vector_fields(obj, "pos")
-        expand_vector_fields(obj, "euler")
-        obj["has_path"] = bool(obj.get("path"))
-        if obj["has_path"]:
-            # Geometry comes from the MJCF/URDF asset; do not fabricate flat
-            # size/color/friction fields. The template skips this block when
-            # has_path is true.
-            continue
-        obj_id = obj.get("id", "<unknown>")
-        size = require_field(obj_id, "size", obj.get("size"))
-        color = require_field(obj_id, "color", obj.get("color"))
-        friction = require_field(obj_id, "friction", obj.get("friction"))
-        require_field(obj_id, "shape", obj.get("shape"))
-        require_field(obj_id, "mass", obj.get("mass"))
-        obj["size_x"], obj["size_y"], obj["size_z"] = (
-            float(size[0]),
-            float(size[1]),
-            float(size[2]),
-        )
-        obj["color_r"], obj["color_g"], obj["color_b"], obj["color_a"] = (
-            float(color[0]),
-            float(color[1]),
-            float(color[2]),
-            float(color[3]),
-        )
-        obj["friction_slide"], obj["friction_torsion"], obj["friction_roll"] = (
-            float(friction[0]),
-            float(friction[1]),
-            float(friction[2]),
-        )
-
-    unique_motions = []
-    motion_by_id = {}
-    for motion in ir.get("motions", []):
-        motion_id = motion.get("id")
-        if motion_id in motion_by_id:
-            existing = motion_by_id[motion_id]
-            merge_list_by_id(existing.setdefault("controllers", []), motion.get("controllers", []))
-            merge_list_by_id(existing.setdefault("monitors", []), motion.get("monitors", []))
-            merge_list_by_id(existing.setdefault("arm_solvers", []), motion.get("arm_solvers", []))
-            continue
-        merged_motion = copy.deepcopy(motion)
-        motion_by_id[motion_id] = merged_motion
-        unique_motions.append(merged_motion)
-    ir["unique_motions"] = unique_motions
-
-    if backend == "mj_kdl":
-        for solver in ir.get("arm_solvers", []):
-            if solver.get("root_acc"):
-                solver["gravity"] = [-v for v in solver["root_acc"]]
-        for motion_list in (ir.get("motions", []), unique_motions):
-            for motion in motion_list:
-                for solver in motion.get("arm_solvers", []):
-                    if solver.get("root_acc"):
-                        solver["gravity"] = [-v for v in solver["root_acc"]]
-
-    _annotate_runtime_robots(ir, unique_motions, backend)
-
-    pose_components = build_pose_components(ir)
-    ir["pose_components"] = pose_components
-    ir["declared_pose_components"] = declared_pose_component_entries(ir, pose_components)
-    enrich_lerp_closures(ir, pose_components)
-    enrich_arc_closures(ir)
-    for motion in unique_motions:
-        motion_refs = collect_motion_references(motion, ir.get("closures", {}))
-        motion["declared_pose_components"] = declared_pose_component_entries(
-            ir, pose_components, motion_refs
-        )
-    add_motion_trajectory_progress(ir)
-    add_motion_trajectory_progress(
-        {
-            "motions": unique_motions,
-            "data": ir.get("data", []),
-            "closures": ir.get("closures", {}),
-        }
-    )
-    primary_robot_id = next(
-        (solver.get("id") for solver in ir.get("arm_solvers", []) if solver.get("id")), ""
-    )
-    for motion in ir.get("motions", []):
-        motion["command_robot_id"] = primary_robot_id
-    for motion in unique_motions:
-        motion["command_robot_id"] = primary_robot_id
-    for motion in ir.get("motions", []) + unique_motions:
-        motion["has_when_elapsed"] = any(
-            e.get("is_elapsed") for e in motion.get("when_evaluators", [])
-        )
-        motion["has_active_elapsed"] = any(
-            e.get("is_elapsed")
-            for e in motion.get("while_evaluators", []) + motion.get("until_evaluators", [])
-        )
-        motion["has_elapsed"] = motion["has_when_elapsed"] or motion["has_active_elapsed"]
-
-    add_until_monitor_conditions(ir.get("motions", []))
-    add_until_monitor_conditions(unique_motions)
-    add_when_monitor_conditions(ir.get("motions", []))
-    add_when_monitor_conditions(unique_motions)
-    add_motion_done_conditions(ir.get("motions", []))
-    add_motion_done_conditions(unique_motions)
-
-    # Elapsed constraints compare seconds from the runtime clock. MuJoCo supplies sim
-    # seconds; real backends use a monotonic wall clock.
-    ir["needs_clock_time"] = any(m.get("has_elapsed") for m in ir.get("motions", []))
     if fsm_namespace is not None:
+        motions = ir.get("motions", [])
+        by_id = {m["id"]: m for m in motions}
+
         # Tag FSM-event monitors so update-monitor emits produce_event(...) (monitor fn then takes
         # robot), and map each motion to its fsm_state (from-state of the transition its UNTIL/WHILE
         # event fires). A WHEN precondition is not an entry guard but names a fallback hold motion,
@@ -1084,60 +254,51 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
                     if state and not motion.get("fsm_state"):
                         motion["fsm_state"] = state
 
-        for motion_list in (ir.get("motions", []), unique_motions):
-            by_id = {m["id"]: m for m in motion_list}
-            for motion in motion_list:
-                tag_run_state(
-                    motion, motion.get("until_monitors", []) + motion.get("while_monitors", [])
-                )
-                for monitor in motion.get("when_monitors", []):
-                    if not is_fsm_event(monitor, fsm_ns_uri):
-                        continue
-                    monitor["fsm_namespace"] = fsm_namespace
-                    monitor["fsm_event_idx"] = fsm_event_index.get(monitor.get("event_name") or "", -1)
-                    fallback_id = monitor.get("fallback_motion")
-                    if not fallback_id:
-                        raise ValueError(
-                            f"WHEN monitor '{monitor.get('id')}' on FSM-wired motion "
-                            f"'{motion['id']}' must declare a fallback hold motion "
-                            f"(e.g. '... when active fallback <hold-motion>'). A WHEN precondition "
-                            f"without a fallback would leave the arm uncommanded while waiting."
-                        )
-                    fallback = by_id.get(fallback_id)
-                    if fallback is None:
-                        raise ValueError(
-                            f"WHEN monitor '{monitor.get('id')}' names unknown fallback motion "
-                            f"'{fallback_id}'."
-                        )
-                    state = event_state.get(monitor.get("event_name") or "")
-                    if state and not fallback.get("fsm_state"):
-                        fallback["fsm_state"] = state
-                    gates = fallback.setdefault("fsm_when_gate_motions", [])
-                    if motion["id"] not in gates:
-                        gates.append(motion["id"])
-
-    add_motion_function_interfaces(ir.get("motions", []))
-    add_motion_function_interfaces(unique_motions)
-
-    if fsm_namespace is not None:
-        # Now that monitor_args are computed, materialize the WHEN-evaluation calls that each fallback
-        # state must run (the gated motion's precondition, dispatched alongside the hold step).
-        for motion_list in (ir.get("motions", []), unique_motions):
-            by_id = {m["id"]: m for m in motion_list}
-            for fallback in motion_list:
-                gate_ids = fallback.get("fsm_when_gate_motions")
-                if not gate_ids:
+        for motion in motions:
+            tag_run_state(
+                motion, motion.get("until_monitors", []) + motion.get("while_monitors", [])
+            )
+            for monitor in motion.get("when_monitors", []):
+                if not is_fsm_event(monitor, fsm_ns_uri):
                     continue
-                fallback["fsm_when_gate_calls"] = [
-                    f"monitor_when_{gate_id}({by_id[gate_id].get('when_args', '')});"
-                    for gate_id in gate_ids
-                    if gate_id in by_id
-                ]
+                monitor["fsm_namespace"] = fsm_namespace
+                monitor["fsm_event_idx"] = fsm_event_index.get(monitor.get("event_name") or "", -1)
+                fallback_id = monitor.get("fallback_motion")
+                if not fallback_id:
+                    raise ValueError(
+                        f"WHEN monitor '{monitor.get('id')}' on FSM-wired motion "
+                        f"'{motion['id']}' must declare a fallback hold motion "
+                        f"(e.g. '... when active fallback <hold-motion>'). A WHEN precondition "
+                        f"without a fallback would leave the arm uncommanded while waiting."
+                    )
+                fallback = by_id.get(fallback_id)
+                if fallback is None:
+                    raise ValueError(
+                        f"WHEN monitor '{monitor.get('id')}' names unknown fallback motion "
+                        f"'{fallback_id}'."
+                    )
+                state = event_state.get(monitor.get("event_name") or "")
+                if state and not fallback.get("fsm_state"):
+                    fallback["fsm_state"] = state
+                gates = fallback.setdefault("fsm_when_gate_motions", [])
+                if motion["id"] not in gates:
+                    gates.append(motion["id"])
 
-    add_controller_signal_metadata(ir)
-    add_controller_internal_state_logging(ir)
-    add_quantity_samples(ir)
-    add_spatial_samples(ir)
+        # FSM tags add a robot param to when/until/monitor signatures, so recompute the
+        # function interfaces derive_codegen_fields already built without FSM knowledge.
+        add_motion_function_interfaces(motions)
+
+        # Now that monitor_args are computed, materialize the WHEN-evaluation calls that each
+        # fallback state must run (the gated motion's precondition, dispatched with the hold step).
+        for fallback in motions:
+            gate_ids = fallback.get("fsm_when_gate_motions")
+            if not gate_ids:
+                continue
+            fallback["fsm_when_gate_calls"] = [
+                f"monitor_when_{gate_id}({by_id[gate_id].get('when_args', '')});"
+                for gate_id in gate_ids
+                if gate_id in by_id
+            ]
 
     ir["introspection_artifacts"] = write_introspection_artifacts(
         ir, ir_path=ir_path, output_dir=output_dir, fsm_ir=fsm_ir
@@ -1175,7 +336,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
             headers_dir / "mobile_base_cycle.hpp",
         )
 
-    for motion in unique_motions:
+    for motion in ir.get("motions", []):
         payload = {
             "motion": motion,
             "closures": ir["closures"],
@@ -1186,9 +347,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
             "has_mobile_base": ir["has_mobile_base"],
             "backend": ir["backend"],
             "declared_pose_components": motion.get("declared_pose_components", []),
-            "pose_axis_error_groups": _add_group_type_flags(
-                motion.get("pose_axis_error_groups", [])
-            ),
+            "pose_axis_error_groups": motion.get("pose_axis_error_groups", []),
         }
         payload_path = payload_dir / f"{motion['id']}.json"
         write_json(payload_path, payload)

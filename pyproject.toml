@@ -15,7 +15,8 @@ dependencies = [
     "rdflib",
     "pyshacl>=0.25.0",
     "rec",
-    "protobuf",
+    # frame_log_pb reads .pb logs via message_factory.GetMessageClass, added in 4.22.
+    "protobuf>=4.22",
 ]
 
 [project.optional-dependencies]

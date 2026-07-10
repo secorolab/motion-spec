@@ -9,6 +9,7 @@ from rdflib import Graph
 from rdf_utils.resolver import IriToFileResolver, install_resolver
 
 from motion_spec import codegen
+from motion_spec.ir_gen import derive_codegen_fields
 from motion_spec.codegen_artifacts import (
     PROTO_FIELD_BASES,
     build_frame_layout,
@@ -328,6 +329,7 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
             {"id": "wrench_force_x", "type": "Quantity"},
         ]
     )
+    derive_codegen_fields(ir)
     ir_path = tmp_path / "ir.json"
     ir_path.write_text(json.dumps(ir))
     monkeypatch.setattr(codegen, "render_template", lambda *args, **kwargs: None)

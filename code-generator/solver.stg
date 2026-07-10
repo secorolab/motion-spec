@@ -111,12 +111,8 @@ if (!state.<solver.id>.initialized) {
 <endif>
         state.<solver.id>.f_cstr = KDL::Jacobian(state.<solver.id>.num_constraints);
         state.<solver.id>.e_acc = KDL::JntArray(state.<solver.id>.num_constraints);
-<if(solver.gravity)>
-        state.<solver.id>.root_acc.vel = KDL::Vector(<solver.gravity; separator=", ">);
-<else>
 <if(solver.root_acc)>
         state.<solver.id>.root_acc.vel = KDL::Vector(<solver.root_acc; separator=", ">);
-<endif>
 <endif>
 <if(motion_driver.has_cartesian_force)>
         state.<solver.id>.achd_fext = std::make_unique\<KDL::ChainHdSolver_Vereshchagin_Fext_FixedJoint\>(*robot.<solver.id>.chain, state.<solver.id>.root_acc, state.<solver.id>.num_constraints);

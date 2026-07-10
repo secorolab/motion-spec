@@ -579,7 +579,6 @@ class HandlerArmSolver:
     control_mode: str
     algorithm: str = ""
     algorithm_is_rne: bool = False
-    gravity: list[float] | None = None
     root_acc: list[float] | None = None
     chain_root: str = ""
     chain_end: str = ""
@@ -603,7 +602,6 @@ class SolverWithInputAndOutput:
     tool_body: str = ""
     tcp_site: str = ""
     ft_sensors: list[dict] = field(default_factory=list)
-    gravity: list[float] | None = None
     root_acc: list[float] | None = None
     # DLS/Tikhonov regularization lambda, deduped across arm solvers into the
     # top-level IR key consumed by runtime_header.

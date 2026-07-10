@@ -369,19 +369,16 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
     assert controller["measured_expr"] == "shared.measured_x"
     assert controller["setpoint_expr"] == "shared.setpoint_x"
 
-    # Spatial channels: pose (well-known PoseInFrame) + twist/wrench (custom), one per data
-    # object, with the object's reference frame threaded through as frame_id (never faked).
-    fl = payload["introspection_artifacts"]["frame_layout"]
+    # Spatial samples: one pose/twist/wrench per data object, serialized into the frame
+    # record's pose/twist/wrench fields.
     model = payload["introspection_artifacts"]["model"]
     assert (schema["pools"]["poses"], schema["pools"]["twists"], schema["pools"]["wrenches"]) == (1, 1, 1)
-    assert schema["spatial"]["poses"][0]["topic"] == "/motion_spec/pose/pose_ee"
-    assert schema["spatial"]["poses"][0]["frame_id"] == "world"
-    assert schema["spatial"]["twists"][0]["frame_id"] == "base"
-    assert schema["spatial"]["wrenches"][0]["frame_id"] == ""  # no reference frame -> empty, not faked
-    assert fl["poses"][0]["topic"] == "/motion_spec/pose/pose_ee"
+    assert schema["spatial"]["poses"][0]["id"] == "pose_ee"
     assert {"index": 0, "expr": "shared.pose_ee"} in model["poses"]
     assert {"index": 0, "expr": "shared.twist_ee"} in model["twists"]
     assert {"index": 0, "expr": "shared.wrench_ee"} in model["wrenches"]
+
+
 def test_provenance_document_is_jsonld_and_prov_shacl_conformant(tmp_path: Path) -> None:
     pyshacl = __import__("pyshacl")
     seed = build_provenance_document(_sample_ir(), tmp_path)

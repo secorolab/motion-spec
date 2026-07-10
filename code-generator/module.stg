@@ -1405,25 +1405,6 @@ inline constexpr const char *kRuntimeAgentId = "<introspection_artifacts.frame_l
 inline constexpr std::int64_t kEndState = <introspection_artifacts.frame_layout.end_state>;
 inline constexpr std::int64_t kNominalPeriodNs = <introspection_artifacts.frame_layout.nominal_period_ns>;
 
-// Named-signal table: keys of the frame `quantities` object (indexed by pool slot).
-inline constexpr const char *kQuantityIds[] = { <introspection_artifacts.frame_layout.quantity_ids:{q|"<q>", }>nullptr };
-
-// FSM state/event naming — the /motion_spec/log channel resolves indices to IRIs (fallback id).
-inline constexpr std::size_t kNumFsmStates = <length(introspection_artifacts.frame_layout.fsm_states)>;
-inline constexpr const char *kFsmStateIds[] = { <introspection_artifacts.frame_layout.fsm_states:{s|"<s.id>", }>nullptr };
-inline constexpr const char *kFsmStateIris[] = { <introspection_artifacts.frame_layout.fsm_states:{s|"<s.iri>", }>nullptr };
-inline constexpr std::size_t kNumEvents = <length(introspection_artifacts.frame_layout.fsm_events)>;
-inline constexpr const char *kEventIds[] = { <introspection_artifacts.frame_layout.fsm_events:{e|"<e.id>", }>nullptr };
-inline constexpr const char *kEventIris[] = { <introspection_artifacts.frame_layout.fsm_events:{e|"<e.iri>", }>nullptr };
-
-// Spatial channels — one topic per data object; frame_id is the object's reference frame.
-inline constexpr const char *kPoseTopics[] = { <introspection_artifacts.frame_layout.poses:{p|"<p.topic>", }>nullptr };
-inline constexpr const char *kPoseFrameIds[] = { <introspection_artifacts.frame_layout.poses:{p|"<p.frame_id>", }>nullptr };
-inline constexpr const char *kTwistTopics[] = { <introspection_artifacts.frame_layout.twists:{t|"<t.topic>", }>nullptr };
-inline constexpr const char *kTwistFrameIds[] = { <introspection_artifacts.frame_layout.twists:{t|"<t.frame_id>", }>nullptr };
-inline constexpr const char *kWrenchTopics[] = { <introspection_artifacts.frame_layout.wrenches:{w|"<w.topic>", }>nullptr };
-inline constexpr const char *kWrenchFrameIds[] = { <introspection_artifacts.frame_layout.wrenches:{w|"<w.frame_id>", }>nullptr };
-
 } // namespace motion_spec::introspection
 >>
 
@@ -1476,8 +1457,8 @@ struct Trigger {
     std::int64_t wall_ns;
 };
 
-// Spatial slots ride the frame ring so the writer thread can emit the pose/twist/wrench
-// channels; they are not part of the /motion_spec/frame JSON record.
+// Spatial slots ride the frame ring; the writer serializes them into the frame record's
+// pose/twist/wrench fields.
 struct PoseSlot {
     double px, py, pz, qx, qy, qz, qw;
 };

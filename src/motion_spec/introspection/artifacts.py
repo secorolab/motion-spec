@@ -9,10 +9,7 @@ import re
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-from motion_spec.introspection.frame_layout_spec import (
-    fields_with_offsets,
-    quantity_ids,
-)
+from motion_spec.introspection.frame_layout_spec import fields_with_offsets
 
 SCHEMA_VERSION = 1
 FRAME_LAYOUT_VERSION = 1
@@ -816,18 +813,6 @@ def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path, 
             "runtime_agent_id": schema["runtime_provenance"].get("runtime_agent_id") or "",
             "end_state": end_state if end_state is not None else -1,
             "nominal_period_ns": schema.get("control_period_ns") or 0,
-            "quantity_ids": quantity_ids(schema["quantities"]),
-            "fsm_states": [
-                {"id": state["id"], "iri": state.get("uri") or ""}
-                for state in schema.get("fsm", {}).get("states", [])
-            ],
-            "fsm_events": [
-                {"id": event["id"], "iri": event.get("uri") or ""}
-                for event in schema.get("fsm", {}).get("events", [])
-            ],
-            "poses": schema["spatial"]["poses"],
-            "twists": schema["spatial"]["twists"],
-            "wrenches": schema["spatial"]["wrenches"],
             "protobuf": schema["protobuf"],
         },
         "model": build_introspection_model(schema, ir),

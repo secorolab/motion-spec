@@ -55,7 +55,7 @@ def validate_header(log_path: Path | str, schema: dict, layout: dict | None = No
     meta = read_meta(log_path)
     if meta.get("schema_hash") != schema.get("schema_hash"):
         raise ArchiveError(
-            f"{log_path}: channel schema_hash {meta.get('schema_hash')} != schema.json "
+            f"{log_path}: frame log header schema_hash {meta.get('schema_hash')} != schema.json "
             f"{schema.get('schema_hash')}"
         )
     expected = schema.get("runtime_provenance", {})

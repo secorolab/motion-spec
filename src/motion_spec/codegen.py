@@ -658,36 +658,27 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
         introspection["quantity_samples"] = samples
 
     def add_spatial_samples(ir_payload: dict) -> None:
-        """Per-object channel specs for shared spatial data — pose (foxglove.PoseInFrame),
-        velocity twist and wrench (custom, Foxglove-pattern). The frame_id comes from the
-        data object's reference frame (threaded through introspection.quantities)."""
+        """Per-object spatial samples for shared data — one pose, velocity-twist and wrench
+        entry per data object, serialized into the frame record's pose/twist/wrench fields."""
         introspection = ir_payload.get("introspection") or {}
         shared_ids = {
             item.get("id")
             for item in ir_payload.get("shared_data", [])
             if isinstance(item, dict) and item.get("id")
         }
-        ref_by_id = {
-            q.get("id"): q.get("reference_frame")
-            for q in introspection.get("quantities", [])
-            if isinstance(q, dict)
-        }
-        kinds = {"Pose": ("pose", "poses"), "VelocityTwist": ("twist", "twists"), "Wrench": ("wrench", "wrenches")}
+        kinds = {"Pose": "poses", "VelocityTwist": "twists", "Wrench": "wrenches"}
         spatial = {"poses": [], "twists": [], "wrenches": []}
         for item in ir_payload.get("shared_data", []):
             if not isinstance(item, dict):
                 continue
             iid = item.get("id")
-            kind = kinds.get(item.get("type"))
-            if not iid or iid not in shared_ids or kind is None:
+            pool = kinds.get(item.get("type"))
+            if not iid or iid not in shared_ids or pool is None:
                 continue
-            topic_kind, pool = kind
             spatial[pool].append(
                 {
                     "id": iid,
                     "index": len(spatial[pool]),
-                    "topic": f"/motion_spec/{topic_kind}/{iid}",
-                    "frame_id": ref_by_id.get(iid) or "",
                     "expr": f"shared.{iid}",
                 }
             )

@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: MPL-2.0
 """Binary frame layout used by generated introspection logs.
 
-The layout sizes the in-memory ``Frame`` struct (and its ``frame_size_bytes`` hash); the
-log stores protobuf-delimited frame payloads with this binary struct inside. Spatial slots
-(pose/twist/wrench) ride in the struct for offline export/visualization."""
+The layout sizes the in-memory ``Frame`` struct (and its ``frame_size_bytes`` hash); the log
+stores length-delimited protobuf frames encoded from it. Spatial slots (pose/twist/wrench)
+ride in the struct and are serialized into the frame record's pose/twist/wrench fields."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ CSLOT = [
 ]
 MSLOT = [("active", "q"), ("value", "d"), ("satisfied", "q"), ("sat_t", "d")]
 TSLOT = [("kind", "q"), ("idx", "q"), ("fsm_state", "q"), ("t", "d"), ("wall_ns", "q")]
-# Spatial slots — feed the pose/twist/wrench channels, not the frame record.
+# Spatial slots — the pose/twist/wrench fields of the frame record.
 PSLOT = [("px", "d"), ("py", "d"), ("pz", "d"), ("qx", "d"), ("qy", "d"), ("qz", "d"), ("qw", "d")]
 VSLOT = [("lx", "d"), ("ly", "d"), ("lz", "d"), ("ax", "d"), ("ay", "d"), ("az", "d")]
 KSLOT = [("fx", "d"), ("fy", "d"), ("fz", "d"), ("tx", "d"), ("ty", "d"), ("tz", "d")]
@@ -73,6 +73,6 @@ def fields_with_offsets(pools: dict) -> tuple[list[dict], int]:
 
 
 def quantity_ids(quantities: list[dict]) -> list[str]:
-    """Ordered quantity ids (by pool index) — the keys of the frame ``quantities`` object
-    and the C++ ``kQuantityIds[]`` table."""
+    """Ordered quantity ids (by pool index) — the keys of the decoded frame ``quantities``
+    object."""
     return [q["id"] for q in sorted(quantities, key=lambda q: q.get("index", 0))]

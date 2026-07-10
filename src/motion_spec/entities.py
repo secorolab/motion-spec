@@ -354,14 +354,30 @@ class ForwardedCommand:
 
 
 @dataclass
-class MonitorEntry:
+class LevelMonitor:
+    """A monitor that continuously sets a boolean flag from its constraint."""
+
     id: str
     monitor_type: str
     error: Quantity | None
     flag: str | None
+    is_edge_triggered: bool = False
+    is_until_aggregate: bool = False
+    is_when_aggregate: bool = False
+    debounce_steps: int | None = None
+    type: str = field(default="LevelMonitor")
+
+
+@dataclass
+class EdgeMonitor:
+    """A monitor that fires an FSM event on a rising edge of its constraint."""
+
+    id: str
+    monitor_type: str
+    error: Quantity | None
     event: str | None
     event_idx: int | None
-    is_edge_triggered: bool
+    is_edge_triggered: bool = True
     is_until_aggregate: bool = False
     is_when_aggregate: bool = False
     event_uri: str | None = None
@@ -371,7 +387,10 @@ class MonitorEntry:
     # Stays None (not 0) when absent -- ST4's <if(x)> is true even for integer 0.
     debounce_duration_s: float | None = None
     debounce_steps: int | None = None
-    type: str = field(default="MonitorEntry")
+    type: str = field(default="EdgeMonitor")
+
+
+Monitor = LevelMonitor | EdgeMonitor
 
 
 @dataclass
@@ -408,7 +427,7 @@ class ConstraintHandler:
     control_mode: str
     evaluators: list[ConstraintEvaluator]
     controllers: list[Controller]
-    monitors: list[MonitorEntry]
+    monitors: list[Monitor]
     order: int = 0
     type: str = field(default="ConstraintHandler")
 
@@ -454,9 +473,9 @@ class GuardedMotionBlock:
 
     # Controllers and Monitors
     controllers: list[Controller]
-    when_monitors: list[MonitorEntry]
-    while_monitors: list[MonitorEntry]
-    until_monitors: list[MonitorEntry]
+    when_monitors: list[Monitor]
+    while_monitors: list[Monitor]
+    until_monitors: list[Monitor]
     # Schedules: when_schedule runs in can_start (own Parser). while_/until_schedule are slices of
     # one shared active graph, so they share a Parser -- common steps emit once and dedup correctly.
     when_schedule: list[str]

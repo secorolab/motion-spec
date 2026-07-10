@@ -98,7 +98,8 @@ from motion_spec.entities import (
     ConstraintEvaluator,
     Controller,
     ForwardedCommand,
-    MonitorEntry,
+    EdgeMonitor,
+    LevelMonitor,
     PoseAxisErrorComponent,
     PoseAxisErrorGroup,
     ConstraintHandler,
@@ -956,8 +957,9 @@ class Parser:
 
         if CSTR_HDL["LevelTriggeredMonitor"] in self.g[id_ : RDF["type"]]:
             flag = self.id(self.g.value(id_, CSTR_HDL["flag"]))
-            return MonitorEntry(
-                self.id(id_), "LevelTriggeredMonitor", error, flag, None, None, False, is_until_aggregate, is_when_aggregate
+            return LevelMonitor(
+                self.id(id_), "LevelTriggeredMonitor", error, flag,
+                is_until_aggregate=is_until_aggregate, is_when_aggregate=is_when_aggregate,
             )
 
         event_node = self.g.value(id_, CSTR_HDL["event"])
@@ -965,8 +967,9 @@ class Parser:
         fallback_node = self.g.value(id_, CSTR_HDL_EXT["fallback-motion"])
         fallback_motion = self.id(fallback_node) if fallback_node is not None else None
         debounce_duration_s = self._optional_float(id_, CSTR_HDL_EXT["debounce-duration"])
-        return MonitorEntry(
-            self.id(id_), "EdgeTriggeredMonitor", error, None, event, None, True, is_until_aggregate, is_when_aggregate,
+        return EdgeMonitor(
+            self.id(id_), "EdgeTriggeredMonitor", error, event, None,
+            is_until_aggregate=is_until_aggregate, is_when_aggregate=is_when_aggregate,
             event_uri=str(event_node), event_name=event.upper(), fallback_motion=fallback_motion,
             debounce_duration_s=debounce_duration_s,
         )
@@ -3196,14 +3199,14 @@ def _build_introspection(
                     "phase": phase,
                     "type": monitor.monitor_type,
                     "trigger": "edge" if monitor.is_edge_triggered else "level",
-                    "event": monitor.event,
-                    "event_uri": monitor.event_uri,
-                    "event_name": monitor.event_name,
-                    "flag": monitor.flag,
+                    "event": getattr(monitor, "event", None),
+                    "event_uri": getattr(monitor, "event_uri", None),
+                    "event_name": getattr(monitor, "event_name", None),
+                    "flag": getattr(monitor, "flag", None),
                     "error_signal": _id_ref(monitor.error),
-                    "fallback_motion": monitor.fallback_motion,
-                    "debounce_duration_s": monitor.debounce_duration_s,
-                    "debounce_steps": monitor.debounce_steps,
+                    "fallback_motion": getattr(monitor, "fallback_motion", None),
+                    "debounce_duration_s": getattr(monitor, "debounce_duration_s", None),
+                    "debounce_steps": getattr(monitor, "debounce_steps", None),
                 }
                 monitors.append({k: v for k, v in monitor_entry.items() if v is not None and v != []})
                 if monitor.error is not None:
@@ -3570,7 +3573,7 @@ def _single_solver_value(slv_arm, attr, label, default):
 def _apply_monitor_debounce(handlers, control_period_ns: int) -> None:
     for handler in handlers:
         for monitor in handler.monitors:
-            if monitor.debounce_duration_s is not None:
+            if getattr(monitor, "debounce_duration_s", None) is not None:
                 monitor.debounce_steps = round(monitor.debounce_duration_s / (control_period_ns * 1e-9))
 
 

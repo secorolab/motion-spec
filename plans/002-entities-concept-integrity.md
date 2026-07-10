@@ -90,6 +90,22 @@ codegen.py + template refactor; reference run is the oracle.
 
 Phase 6 is the largest; sequence subtypes first (MonitorEntry, then Controller), role-flags last.
 
+Sub-status / measured surfaces:
+- **6a DONE** — twist/pose-diff/wrench constructor dedup via `_spatial_coordinate_fields`
+  (3 distinct concepts kept). Byte-identical, pytest 27.
+- **6b MonitorEntry → LevelMonitor/EdgeMonitor** (needs run): template reads are
+  `monitor.flag` (level), `monitor.event/event_idx/event_name` (edge), plus `is_edge_triggered`,
+  `error`, `debounce_steps`; codegen branches on `monitor_type == "EdgeTriggeredMonitor"`
+  (ir_gen:3528) and `codegen_artifacts` emits `monitor.get("monitor_type")`. Disjoint-field split
+  changes ir.json shape → verify every `<monitor.event*>`/`<monitor.flag>` is guarded by trigger
+  type, then confirm reference run reaches S_DONE @ ~22308.
+- **6c Controller → P/PID/impedance variants** (needs run): codegen + codegen_artifacts read the
+  optional gains directly for the introspection contract.
+- **6d role-flag extraction** (authored/snapshot/has_view): most invasive — every quantity type +
+  every consumer; do last, own session.
+- **6e foreign-concern lifts**: Wrench.sensor_name, MonitorEntry.debounce_steps (derived from
+  debounce_duration_s), ConstraintEvaluator.is_elapsed/elapsed_*.
+
 ## Status
 - [x] Phase 1 — View.subobject narrowed; Trajectory.value + AccelerationConstraintSpecification.attached_to removed. Codegen byte-identical across 5 models, ir.json drops only dead keys, pytest 27 green.
 - [x] Phase 2 — MotionArmSolver → HandlerArmSolver. Codegen byte-identical (no template branches on the type string), ir.json shows only the 10 renames, pytest 27 green.

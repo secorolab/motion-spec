@@ -111,7 +111,7 @@ from motion_spec.entities import (
     CartesianForceSpecification,
     JointForceSpecification,
     MotionDrivers,
-    MotionArmSolver,
+    HandlerArmSolver,
     SolverWithInputAndOutput,
     SceneAttachment,
     SceneRobot,
@@ -1932,7 +1932,7 @@ def _arm_solvers_for_handler(handler, slv_arm, closure_input_map=None):
             continue
         selected = next((driver for driver in matched if driver.id == motion_driver_id), matched[0])
         result.append(
-            MotionArmSolver(
+            HandlerArmSolver(
                 id=solver.id,
                 output=solver.output,
                 motion_driver=selected,

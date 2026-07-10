@@ -545,7 +545,7 @@ class MotionDrivers:
 
 
 @dataclass
-class MotionArmSolver:
+class HandlerArmSolver:
     id: str
     output: list
     motion_driver: MotionDrivers
@@ -557,7 +557,7 @@ class MotionArmSolver:
     chain_root: str = ""
     chain_end: str = ""
     torque_saturation: Saturation | None = None
-    type: str = field(default="MotionArmSolver")
+    type: str = field(default="HandlerArmSolver")
 
 
 @dataclass

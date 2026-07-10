@@ -163,8 +163,8 @@ class Direction:
 @dataclass
 class Position:
     id: str
-    of: SimplicialComplex | Point | Frame | SceneObject
-    with_respect_to: SimplicialComplex | Point | Frame | SceneObject
+    of: Point | None
+    with_respect_to: Point | None
     quantity_kind: QuantityKind
     as_seen_by: Frame
     unit: Unit
@@ -175,8 +175,8 @@ class Position:
 @dataclass
 class Orientation:
     id: str
-    of: SimplicialComplex | Frame | SceneObject | None
-    with_respect_to: SimplicialComplex | Frame | SceneObject | None
+    of: Frame | SceneObject | None
+    with_respect_to: Frame | SceneObject | None
     quantity_kind: QuantityKind
     as_seen_by: Frame | None
     unit: Unit

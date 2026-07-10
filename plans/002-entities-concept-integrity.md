@@ -81,6 +81,6 @@ Phase 6 is the largest; sequence subtypes first (MonitorEntry, then Controller),
 - [x] Phase 1 — View.subobject narrowed; Trajectory.value + AccelerationConstraintSpecification.attached_to removed. Codegen byte-identical across 5 models, ir.json drops only dead keys, pytest 27 green.
 - [x] Phase 2 — MotionArmSolver → HandlerArmSolver. Codegen byte-identical (no template branches on the type string), ir.json shows only the 10 renames, pytest 27 green.
 - [x] Phase 3 — AccelerationConstraintSpecification flattened away; MotionDrivers.acceleration_constraint is now list[AccelerationConstraint]. solver.stg adjusted (first().constraints → the list). All 111 drivers had exactly 1 spec, so byte-equivalent. Codegen identical, wrapper gone from ir.json (30→0), pytest 27 green.
-- [ ] Phase 4
+- [x] Phase 4 — Position.of/wrt narrowed to `Point | None`; Orientation.of/wrt to `Frame | SceneObject | None` (dead SimplicialComplex dropped). Measured across golden models: Position endpoints are ALWAYS Point (never Frame/SC/SceneObject); Orientation endpoints are Frame or SceneObject (never SC, never Point) — so my original "narrow to Frame" was wrong, SceneObject is real. position_reference now enforces Point-only (metamodel: a Position is of a Point wrt a Point). Pure model correction: codegen byte-identical, zero of/wrt value changes in ir.json, pytest 27 green.
 - [ ] Phase 5
 - [ ] Phase 6

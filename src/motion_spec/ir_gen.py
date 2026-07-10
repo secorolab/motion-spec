@@ -1287,8 +1287,6 @@ class Parser:
                 return self.scene_object(node)
             if GEOM_ENT.Frame in self.g[node : RDF["type"]]:
                 return self.frame(node)
-            if GEOM_ENT.SimplicialComplex in self.g[node : RDF["type"]]:
-                return self.simplicial_complex(node)
             return None
 
         of = optional_pose_ref(self.g.value(id_, GEOM_REL["of"]))
@@ -1313,15 +1311,12 @@ class Parser:
         )
 
     def position_reference(self, id_):
-        if ENV.RigidObject in self.g[id_ : RDF["type"]]:
-            return self.scene_object(id_)
-        if GEOM_ENT.Frame in self.g[id_ : RDF["type"]]:
-            return self.frame(id_)
-        if GEOM_ENT.SimplicialComplex in self.g[id_ : RDF["type"]]:
-            return self.simplicial_complex(id_)
+        """A Position is of a Point with respect to a Point (geometry metamodel)."""
+        if id_ is None:
+            return None
         if GEOM_ENT.Point in self.g[id_ : RDF["type"]]:
             return self.point(id_)
-        raise ValueError(f"Unsupported position reference node: {id_}")
+        raise ValueError(f"Position reference must be a Point, got: {id_}")
 
     @memoize
     def _pose_endpoint(self, node):

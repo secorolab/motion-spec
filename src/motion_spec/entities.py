@@ -122,7 +122,6 @@ class Trajectory:
     quantity_kind: QuantityKind
     unit: Unit
     has_view: bool
-    value: None = None
     authored: bool = False
     snapshot: bool = False
     value_kind: str | None = None
@@ -264,7 +263,7 @@ class Wrench:
 class View:
     id: str
     superobject: Pose | VelocityTwist | AccelerationTwist | PoseDifference | Wrench
-    subobject: Quantity | Position | Orientation
+    subobject: Quantity
     subspace: Subspace
     axis: Axis | None
     type: str = field(default="View")
@@ -516,7 +515,6 @@ class AccelerationConstraint:
 class AccelerationConstraintSpecification:
     id: str
     constraints: list[AccelerationConstraint]
-    attached_to: SimplicialComplex | None
     type: str = field(default="AccelerationConstraintSpecification")
 
 

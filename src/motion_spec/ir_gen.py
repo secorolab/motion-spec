@@ -850,10 +850,8 @@ class Parser:
         constraints = []
         for c in self.g[id_ : SLV["constraints"]]:
             constraints.append(self.acceleration_constraint(c))
-        attached_to_node = self.g.value(id_, SLV["attached-to"])
-        attached_to = self.simplicial_complex(attached_to_node) if attached_to_node else None
 
-        return AccelerationConstraintSpecification(self.id(id_), constraints, attached_to)
+        return AccelerationConstraintSpecification(self.id(id_), constraints)
 
     @memoize
     def acceleration_constraint(self, id_):

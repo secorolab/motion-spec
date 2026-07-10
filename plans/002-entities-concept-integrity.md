@@ -55,7 +55,20 @@ a Position is *of a Point wrt a Point*. Narrow to `Point`; `Orientation` to `Fra
 `rdf.py`/`ir_gen` to resolve frame→origin-point, body→ref-point at parse. Behavior-changing IR ⇒
 reference run + codegen review (of/wrt ids may change; keep generated behavior equivalent).
 
-### Phase 5 — GuardedMotionBlock decompose (finding A, headline)
+### Phase 5 — GuardedMotionBlock decompose (finding A, headline) — NEEDS REFERENCE RUN
+Measured consumption surface (do these together):
+- Templates: `motion.control_mode` (motion.stg:491), `motion.controllers` (motion.stg:386),
+  and the loop var `motion` throughout motion.stg. Only motion.stg reads the duplicated fields.
+- `codegen.py`: `ir["motions"]` is post-processed (add_until/when_monitor_conditions,
+  add_motion_done_conditions, …) then **merged into `ir["unique_motions"]`** (codegen.py ~999-1012),
+  which is what templates render. Any block restructure must update the merge + the dict-key reads.
+- Because block structure (hence ir.json) changes, codegen is NOT byte-identical here; oracle is
+  `$GRC_SCRIPT_RUN pick_place_single --headless` (behavior) + inspecting the codegen diff is intended.
+Minimal step: block holds `handler: ConstraintHandler`; drop the 4 copied fields
+(motion/control_mode/controllers + `handler:str`); rewrite the ~4 template/codegen reads to go
+through `handler`. Full step: peel the solver/data-flow group (arm_solvers, snapshots,
+relative_poses, scene_relative_poses, pose_axis_error_groups, forwarded_commands,
+has_entry_snapshot) into a sibling `MotionCodegen` the emitter zips by id.
 30-field god-object keyed by `handler.motion.id`, pretending to be the GuardedMotion. Every group
 is already a proper dataclass; the block is a materialized per-handler join. Target: the block
 holds `handler: ConstraintHandler` (drop the 4 copied fields: motion/control_mode/controllers +
@@ -82,5 +95,5 @@ Phase 6 is the largest; sequence subtypes first (MonitorEntry, then Controller),
 - [x] Phase 2 — MotionArmSolver → HandlerArmSolver. Codegen byte-identical (no template branches on the type string), ir.json shows only the 10 renames, pytest 27 green.
 - [x] Phase 3 — AccelerationConstraintSpecification flattened away; MotionDrivers.acceleration_constraint is now list[AccelerationConstraint]. solver.stg adjusted (first().constraints → the list). All 111 drivers had exactly 1 spec, so byte-equivalent. Codegen identical, wrapper gone from ir.json (30→0), pytest 27 green.
 - [x] Phase 4 — Position.of/wrt narrowed to `Point | None`; Orientation.of/wrt to `Frame | SceneObject | None` (dead SimplicialComplex dropped). Measured across golden models: Position endpoints are ALWAYS Point (never Frame/SC/SceneObject); Orientation endpoints are Frame or SceneObject (never SC, never Point) — so my original "narrow to Frame" was wrong, SceneObject is real. position_reference now enforces Point-only (metamodel: a Position is of a Point wrt a Point). Pure model correction: codegen byte-identical, zero of/wrt value changes in ir.json, pytest 27 green.
-- [ ] Phase 5
-- [ ] Phase 6
+- [ ] Phase 5 — staged; large codegen-coupled refactor, reference sim run required (steps above)
+- [ ] Phase 6 — staged; subtypes + role-flag extraction + twist constructor dedup (steps above)

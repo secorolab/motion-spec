@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
-// Backend-neutral robot driver include/state/init dispatch (impl lives in the *_backend files).
+// Backend-neutral robot driver dispatch (include/state/init/chain/shutdown).
+
+import "mj_kdl_backend.stg"
+import "robif2b_backend.stg"
 
 robot-driver-include(solver, backend) ::= <<
 <({robot-driver-include-<backend>-<solver.robot_model>})(solver)>

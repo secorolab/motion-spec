@@ -1,0 +1,185 @@
+// SPDX-License-Identifier: MPL-2.0
+// Shared data model (leaf): lookup maps, saturation, member declarations, view access expressions.
+
+subspace-to-runtime-subspace ::= [
+    "LinearAcceleration": "Subspace::Linear",
+    "AngularAcceleration": "Subspace::Angular"
+]
+
+axis-to-vector ::= [
+    "X": "1.0, 0.0, 0.0",
+    "Y": "0.0, 1.0, 0.0",
+    "Z": "0.0, 0.0, 1.0"
+]
+
+subspace-to-member ::= [
+    "AngularVelocity": "rot",
+    "LinearVelocity": "vel",
+    "AngularAcceleration": "rot",
+    "LinearAcceleration": "vel",
+    "Torque": "torque",
+    "Force": "force",
+    "Position": "p"
+]
+
+axis-to-index ::= [
+    "X": "0",
+    "Y": "1",
+    "Z": "2",
+    "x": "0",
+    "y": "1",
+    "z": "2"
+]
+
+// Trajectory progress easing profile -> runtime function. Default EaseInOut (smoothstep)
+// preserves the historical behaviour for trajectories that do not specify a profile.
+easing-fn ::= [
+    "Linear": "ease_linear",
+    "EaseIn": "ease_in",
+    "EaseOut": "ease_out",
+    "EaseInOut": "smoothstep",
+    default: "smoothstep"
+]
+
+velocity-profile-shape ::= [
+    "SCurve": "motion_spec::runtime::VelocityProfileShape::SCurve",
+    "Trapezoidal": "motion_spec::runtime::VelocityProfileShape::Trapezoidal",
+    default: "motion_spec::runtime::VelocityProfileShape::Trapezoidal"
+]
+
+saturation-lower(saturation) ::= <<
+<if(saturation.maximum)>-<saturation.maximum.value><else><saturation.lower.value><endif>
+>>
+
+saturation-upper(saturation) ::= <<
+<if(saturation.maximum)><saturation.maximum.value><else><saturation.upper.value><endif>
+>>
+
+shared-member(var) ::= <<
+<({shared-member-<var.type>})(var)>
+>>
+
+indented-shared-member(var) ::= "    <shared-member(var)>"
+
+shared-member-Direction(var) ::= <<
+KDL::Vector <var.id><if(var.direction)> = KDL::Vector(<var.direction; separator=", ">)<endif>;
+>>
+
+shared-member-Pose(var) ::= <<
+KDL::Frame <var.id>;
+>>
+
+shared-member-Position(var) ::= <<
+KDL::Vector <var.id><if(var.position)> = KDL::Vector(<var.position; separator=", ">)<endif>;
+>>
+
+shared-member-Orientation(var) ::= <<
+KDL::Rotation <var.id>;
+>>
+
+shared-member-FreeVector(var) ::= <<
+KDL::Vector <var.id><if(var.vector)> = KDL::Vector(<var.vector; separator=", ">)<endif>;
+>>
+
+shared-member-VelocityTwist(var) ::= <<
+KDL::Twist <var.id>;
+>>
+
+shared-member-AccelerationTwist(var) ::= <<
+KDL::Twist <var.id>;
+>>
+
+shared-member-PoseDifference(var) ::= <<
+KDL::Twist <var.id>;
+>>
+
+shared-member-Wrench(var) ::= <<
+KDL::Wrench <var.id>;
+>>
+
+shared-member-Quantity(var) ::= <<
+double <var.id> = <if(var.value)><var.value><else>0.0<endif>;
+>>
+
+shared-member-IntCounter(var) ::= <<
+int <var.id> = 0;
+>>
+
+shared-member-Bool(var) ::= <<
+bool <var.id> = false;
+>>
+
+shared-member-Trajectory(var) ::= <<
+KDL::Frame <var.id>;
+>>
+
+controller-member(controller) ::= <<
+<({controller-member-<controller.type>})(controller)>
+>>
+
+controller-member-ProportionalIntegralDerivative(controller) ::= <<
+    motion_spec::runtime::PIDControl <controller.id>{<controller.proportional_gain>, <controller.integral_gain>, <controller.derivative_gain>, <if(controller.decay_rate)><controller.decay_rate><else>0.0<endif>, motion_spec::runtime::kControlPeriodS<if(controller.integral_saturation)>, true, <saturation-lower(controller.integral_saturation)>, <saturation-upper(controller.integral_saturation)><endif>};
+>>
+
+controller-member-ImpedanceController(controller) ::= <<
+    motion_spec::runtime::ImpedanceControl <controller.id>{<controller.stiffness>, <controller.damping>, <if(controller.integral_gain)><controller.integral_gain><else>0.0<endif>};
+>>
+
+controller-member-FeedForwardController(controller) ::= <<
+>>
+
+monitor-member(monitor) ::= <<
+<if(monitor.is_edge_triggered)>    bool <monitor.id>_previous = false;
+    bool <monitor.id>_event_triggered = false;
+<if(monitor.debounce_steps)>    int <monitor.id>_hold = 0;
+<endif><else>    bool <monitor.flag> = false;<endif>
+>>
+
+access-expr(id, views) ::= <<
+<if(views.(id))><view-access-expr(views.(id))><else>shared.<id><endif>
+>>
+
+view-access-expr(view) ::= <<
+<({view-access-expr-<view.superobject.type>-<view.subspace>})(view)>
+>>
+
+view-access-expr-Pose-Position(view) ::= <<
+<if(view.axis)>shared.<view.superobject.id>.p[<axis-to-index.(view.axis)>]<else>shared.<view.superobject.id>.p<endif>
+>>
+
+view-access-expr-Pose-Rotation(view) ::= <<
+<if(view.axis)>KDL::diff(KDL::Rotation::Identity(), shared.<view.superobject.id>.M)[<axis-to-index.(view.axis)>]<else>shared.<view.superobject.id>.M<endif>
+>>
+
+
+view-access-expr-VelocityTwist-AngularVelocity(view) ::= <<
+shared.<view.superobject.id>.rot[<axis-to-index.(view.axis)>]
+>>
+
+view-access-expr-VelocityTwist-LinearVelocity(view) ::= <<
+shared.<view.superobject.id>.vel[<axis-to-index.(view.axis)>]
+>>
+
+view-access-expr-AccelerationTwist-AngularAcceleration(view) ::= <<
+shared.<view.superobject.id>.rot[<axis-to-index.(view.axis)>]
+>>
+
+view-access-expr-AccelerationTwist-LinearAcceleration(view) ::= <<
+shared.<view.superobject.id>.vel[<axis-to-index.(view.axis)>]
+>>
+
+view-access-expr-PoseDifference-AngularDifference(view) ::= <<
+shared.<view.superobject.id>.rot[<axis-to-index.(view.axis)>]
+>>
+
+view-access-expr-PoseDifference-LinearDifference(view) ::= <<
+shared.<view.superobject.id>.vel[<axis-to-index.(view.axis)>]
+>>
+
+view-access-expr-Wrench-Torque(view) ::= <<
+<if(view.axis)>shared.<view.superobject.id>.torque[<axis-to-index.(view.axis)>]<else>shared.<view.superobject.id>.torque<endif>
+>>
+
+view-access-expr-Wrench-Force(view) ::= <<
+<if(view.axis)>shared.<view.superobject.id>.force[<axis-to-index.(view.axis)>]<else>shared.<view.superobject.id>.force<endif>
+>>

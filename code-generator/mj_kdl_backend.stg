@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
+// mj_kdl backend tool: MuJoCo+KDL simulation robot impl (KinovaGen3) and CMake generation.
 
 robot-driver-include-mj_kdl-KinovaGen3(solver) ::= <<
 #include \<mj_kdl_wrapper/mj_kdl_wrapper.hpp\>

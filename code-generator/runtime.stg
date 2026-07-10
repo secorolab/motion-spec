@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
-// Runtime header: control-loop math (easing/admittance/spring-damper, monitors, solver glue).
+// Runtime control-loop math header (easing/admittance/spring-damper, monitors).
 
 runtime_header(has_mobile_base, control_period_ns, rne_damping_lambda) ::= <<
 #pragma once

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
-// Modular Vereshchagin/RNEA solver: state, init, sync, outputs, run stages.
+// Modular Vereshchagin/RNEA dynamics solver: state, init, sync, outputs, run stages.
 
-import "primitives.stg"
+import "shared_data.stg"
 
 sync-wrench(wrench) ::= <<
     if (robot.<wrench.id> != nullptr) {

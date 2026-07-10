@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
+// KELO mobile-base solver tool (hddc2b): platform/drive/wheel force-distribution codegen.
 
 hddc2b-include() ::= <<
 #include \<hddc2b/functions/platform.h\>

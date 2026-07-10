@@ -29,7 +29,7 @@ class JSONEncoder(json.JSONEncoder):
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
-MODULE_TEMPLATE = "module"
+MAIN_TEMPLATE = "main"
 DIST_NAME = "motion_spec"
 
 
@@ -98,7 +98,7 @@ def resource_path(relative_path: Path) -> Path:
 
 
 def template_group() -> Path:
-    return resource_path(Path("code-generator/module.stg")).parent
+    return resource_path(Path("code-generator/main.stg")).parent
 
 
 def write_json(path: Path, payload):
@@ -111,7 +111,7 @@ def render_template(
     template_name: str,
     payload_path: Path,
     output_path: Path,
-    module_template: str = MODULE_TEMPLATE,
+    module_template: str = MAIN_TEMPLATE,
 ):
     output_path.parent.mkdir(parents=True, exist_ok=True)
     stst_path = Path(stst_bin)

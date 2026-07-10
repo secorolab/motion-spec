@@ -176,10 +176,6 @@ def _tool_properties(agent_id: str) -> dict:
     }
 
 
-def _metamodel_contexts() -> list[str]:
-    return list(METAMODEL_CONTEXTS)
-
-
 def _signal_id(value) -> str | None:
     if isinstance(value, dict):
         return value.get("id")
@@ -779,7 +775,7 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
     return {
         "schema_version": SCHEMA_VERSION,
         "runtime_rdf_contract_version": RUNTIME_RDF_CONTRACT_VERSION,
-        "@context": [*_metamodel_contexts(), {"msprov": MSPROV, "role": "msprov:role"}],
+        "@context": [*METAMODEL_CONTEXTS, {"msprov": MSPROV, "role": "msprov:role"}],
         "@graph": [
             {"@id": "msprov:bundle/static-provenance", "@type": "prov:Bundle"},
             *graph,

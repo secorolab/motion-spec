@@ -106,7 +106,7 @@ def _provenance() -> dict:
     }
 
 
-def _write_frame_log(path: Path, schema: dict, layout: dict) -> None:
+def _write_frame_log(path: Path, schema: dict) -> None:
     flat = flat_frame(
         schema,
         t=1.25,
@@ -127,7 +127,7 @@ def _write_frame_log(path: Path, schema: dict, layout: dict) -> None:
             "q0": 42.0,
         },
     )
-    write_frame_log_pb(path, schema, layout, [flat])
+    write_frame_log_pb(path, schema, [flat])
 
 
 def _source_tree(path: Path) -> Path:
@@ -145,7 +145,7 @@ def _source_tree(path: Path) -> Path:
     (path / "headers").mkdir()
     (path / "headers" / "runtime.hpp").write_text("// generated\n")
     (path / "ref_main.cpp").write_text("// generated\n")
-    _write_frame_log(path / "frame_log.pb", schema, layout)
+    _write_frame_log(path / "frame_log.pb", schema)
     (path / "frame_log.pb.health.json").write_text(
         json.dumps(
             {
@@ -198,7 +198,7 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
     assert "provenance/dsl.jsonld" in manifest["artifacts"]
     assert "rec.jsonld" in manifest["artifacts"]
     assert verify_manifest(run_dir)["run_id"] == "run-test"
-    header = validate_header(run_dir / "logs" / "frame_log.pb", _schema(), _layout(_schema()))
+    header = validate_header(run_dir / "logs" / "frame_log.pb", _schema())
     assert header["producer_agent_id"] == "agent:controller_process"
 
     frames = decode_frames(run_dir / "logs" / "frame_log.pb")

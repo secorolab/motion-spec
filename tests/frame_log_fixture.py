@@ -36,8 +36,8 @@ def flat_frame(schema: dict, **values) -> dict:
     return flat
 
 
-def write_frame_log_pb(path: Path, schema: dict, layout: dict, flats: list[dict]) -> None:
+def write_frame_log_pb(path: Path, schema: dict, flats: list[dict]) -> None:
     with open(path, "wb") as fh:
-        frame_log_pb.write_delimited(fh, frame_log_pb.header_record(schema, layout))
+        frame_log_pb.write_delimited(fh, frame_log_pb.header_record(schema))
         for flat in flats:
             frame_log_pb.write_delimited(fh, frame_log_pb.frame_record(flat, schema))

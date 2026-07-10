@@ -137,7 +137,7 @@ def _read_delimited(fh) -> bytes | None:
 
 
 # --- encode (fixtures/tests) ---
-def header_record(schema: dict, layout: dict | None = None) -> bytes:
+def header_record(schema: dict) -> bytes:
     record_cls, _ = _record_class(schema)
     meta = schema.get("runtime_provenance", {})
     rec = record_cls()
@@ -246,7 +246,7 @@ def read_header(path: Path | str) -> dict:
     raise ArchiveError(f"{path}: protobuf header not found")
 
 
-def frame_records(path: Path | str, schema: dict, layout: dict | None = None) -> Iterator[dict]:
+def frame_records(path: Path | str, schema: dict) -> Iterator[dict]:
     for kind, value in iter_messages(path, schema):
         if kind == "frame":
             yield value

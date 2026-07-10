@@ -99,7 +99,7 @@ def _frame(names: list[str], **values) -> dict:
     return flat
 
 
-def _write_frame_log(path: Path, schema: dict, layout: dict) -> None:
+def _write_frame_log(path: Path, schema: dict) -> None:
     _fmt, names = field_names_and_format(schema["pools"])
     frames = [
         # S_START; nothing active -> StateOccurrence(S_START)
@@ -153,7 +153,7 @@ def _write_frame_log(path: Path, schema: dict, layout: dict) -> None:
             },
         ),
     ]
-    write_frame_log_pb(path, schema, layout, frames)
+    write_frame_log_pb(path, schema, frames)
 
 
 def _source_tree(path: Path) -> Path:
@@ -169,7 +169,7 @@ def _source_tree(path: Path) -> Path:
     (path / "headers").mkdir()
     (path / "headers" / "runtime.hpp").write_text("// generated\n")
     (path / "ref_main.cpp").write_text("// generated\n")
-    _write_frame_log(path / "frame_log.pb", schema, layout)
+    _write_frame_log(path / "frame_log.pb", schema)
     return path
 
 

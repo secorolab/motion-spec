@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: MPL-2.0
+// Primitive lookup maps (subspace/axis/easing) and scalar saturation helpers.
+
+subspace-to-runtime-subspace ::= [
+    "LinearAcceleration": "Subspace::Linear",
+    "AngularAcceleration": "Subspace::Angular"
+]
+
+axis-to-vector ::= [
+    "X": "1.0, 0.0, 0.0",
+    "Y": "0.0, 1.0, 0.0",
+    "Z": "0.0, 0.0, 1.0"
+]
+
+subspace-to-member ::= [
+    "AngularVelocity": "rot",
+    "LinearVelocity": "vel",
+    "AngularAcceleration": "rot",
+    "LinearAcceleration": "vel",
+    "Torque": "torque",
+    "Force": "force",
+    "Position": "p"
+]
+
+axis-to-index ::= [
+    "X": "0",
+    "Y": "1",
+    "Z": "2",
+    "x": "0",
+    "y": "1",
+    "z": "2"
+]
+
+// Trajectory progress easing profile -> runtime function. Default EaseInOut (smoothstep)
+// preserves the historical behaviour for trajectories that do not specify a profile.
+easing-fn ::= [
+    "Linear": "ease_linear",
+    "EaseIn": "ease_in",
+    "EaseOut": "ease_out",
+    "EaseInOut": "smoothstep",
+    default: "smoothstep"
+]
+
+velocity-profile-shape ::= [
+    "SCurve": "motion_spec::runtime::VelocityProfileShape::SCurve",
+    "Trapezoidal": "motion_spec::runtime::VelocityProfileShape::Trapezoidal",
+    default: "motion_spec::runtime::VelocityProfileShape::Trapezoidal"
+]
+
+saturation-lower(saturation) ::= <<
+<if(saturation.maximum)>-<saturation.maximum.value><else><saturation.lower.value><endif>
+>>
+
+saturation-upper(saturation) ::= <<
+<if(saturation.maximum)><saturation.maximum.value><else><saturation.upper.value><endif>
+>>

@@ -1,0 +1,401 @@
+// SPDX-License-Identifier: MPL-2.0
+// Closure/evaluator emit-call templates and pose-axis error groups.
+
+import "expressions.stg"
+import "primitives.stg"
+
+emit-call(closure, views) ::= <<
+<({emit-call-<closure.type>})(closure, views)>
+>>
+
+emit-call-AssignmentEvaluator(closure, views) ::= <<
+shared.<closure.quantity> = <access-expr(closure.reference_value, views)>;
+>>
+
+emit-call-ErrorEvaluator-EqualityConstraint(closure, views) ::= <<
+shared.<closure.error> = motion_spec::runtime::evaluate_equality_constraint(<access-expr(closure.reference_value, views)>, <access-expr(closure.quantity, views)>);
+>>
+
+emit-call-ErrorEvaluator-GreaterThanConstraint(closure, views) ::= <<
+shared.<closure.error> = motion_spec::runtime::evaluate_greater_than_constraint(<access-expr(closure.quantity, views)>, <access-expr(closure.threshold, views)>);
+>>
+
+emit-call-ErrorEvaluator-LessThanConstraint(closure, views) ::= <<
+shared.<closure.error> = motion_spec::runtime::evaluate_less_than_constraint(<access-expr(closure.quantity, views)>, <access-expr(closure.threshold, views)>);
+>>
+
+emit-call-ErrorEvaluator-BilateralConstraint(closure, views) ::= <<
+shared.<closure.error> = motion_spec::runtime::evaluate_bilateral_constraint(<access-expr(closure.quantity, views)>, <access-expr(closure.lower_threshold, views)>, <access-expr(closure.upper_threshold, views)>);
+>>
+
+emit-call-ErrorEvaluator-OutsideConstraint(closure, views) ::= <<
+shared.<closure.error> = motion_spec::runtime::evaluate_outside_constraint(<access-expr(closure.quantity, views)>, <access-expr(closure.lower_threshold, views)>, <access-expr(closure.upper_threshold, views)>);
+>>
+
+emit-call-ErrorEvaluator(closure, views) ::= <<
+<({emit-call-ErrorEvaluator-<closure.constraint>})(closure, views)>
+>>
+
+emit-call-PoseDiffEvaluator(closure, views) ::= <<
+shared.<closure.out> = KDL::diff(shared.<closure.in1>, shared.<closure.in2>);
+>>
+
+emit-call-Lerp(closure, views) ::= <<
+{
+    const KDL::Frame _lerp_goal_<closure.trajectory> = <closure.goal_expr>;
+<if(closure.assign_goal)>    shared.<closure.goal> = _lerp_goal_<closure.trajectory>;
+<endif>    shared.<closure.trajectory> = KDL::addDelta(shared.<closure.start>, KDL::diff(shared.<closure.start>, _lerp_goal_<closure.trajectory>), motion_spec::runtime::<easing-fn.(closure.profile)>(<access-expr(closure.alpha, views)>));
+}
+>>
+
+emit-call-VelocityProfile(closure, views) ::= <<
+{
+    if (!state.<closure.controller>.vp_init) {
+        state.<closure.controller>.vp_setpoint = <access-expr(closure.measured, views)>;
+        state.<closure.controller>.vp_velocity = <if(closure.measured_velocity)><access-expr(closure.measured_velocity, views)><else>0.0<endif>;
+        state.<closure.controller>.vp_accel = 0.0;
+        state.<closure.controller>.vp_init = true;
+    }
+    shared.<closure.reference> = motion_spec::runtime::velocity_profile_step(
+        state.<closure.controller>.vp_setpoint,
+        state.<closure.controller>.vp_velocity,
+        state.<closure.controller>.vp_accel,
+        <access-expr(closure.goal, views)>,
+        <access-expr(closure.max_velocity, views)>,
+        <access-expr(closure.max_acceleration, views)>,
+        <if(closure.max_jerk)><access-expr(closure.max_jerk, views)><else>0.0<endif>,
+        motion_spec::runtime::kControlPeriodS,
+        <velocity-profile-shape.(closure.shape)>);
+    state.<closure.controller>.vp_setpoint = shared.<closure.reference>;
+}
+>>
+
+emit-call-Admittance(closure, views) ::= <<
+shared.<closure.reference> = state.<closure.controller>.adm_filter.step(<access-expr(closure.force, views)>, <closure.mass>, <closure.damping>, <closure.stiffness>, <closure.max_velocity>, motion_spec::runtime::kControlPeriodS);
+>>
+
+emit-call-Circle(closure, views) ::= <<
+{
+    const double _s_<closure.trajectory>     = motion_spec::runtime::smoothstep(<access-expr(closure.alpha, views)>);
+    const double _angle_<closure.trajectory> = 2.0 * M_PI * _s_<closure.trajectory>;
+    KDL::Vector _n_<closure.trajectory>   = shared.<closure.plane_normal>;
+    _n_<closure.trajectory>.Normalize();
+    // Radial arm from center to start: alpha=0 lands exactly on start, and the orbit
+    // radius is the in-plane distance between start and center (they may differ freely).
+    const KDL::Vector _arm_<closure.trajectory> = shared.<closure.start>.p - shared.<closure.center>;
+    const KDL::Vector _pos_<closure.trajectory> = shared.<closure.center>
+        + KDL::Rotation::Rot(_n_<closure.trajectory>, _angle_<closure.trajectory>) * _arm_<closure.trajectory>;
+    shared.<closure.trajectory> = KDL::Frame(shared.<closure.start>.M, _pos_<closure.trajectory>);
+}
+>>
+
+emit-call-Arc(closure, views) ::= <<
+{
+    KDL::Vector _n_<closure.trajectory> = shared.<closure.plane_normal>;
+    _n_<closure.trajectory>.Normalize();
+    // Circular arc from start to end that bows out of the chord by `amplitude` (the
+    // sagitta). center, radius and swept angle are derived so the path begins at start,
+    // ends exactly at end, and apexes amplitude away from the chord midpoint.
+    // amplitude == |chord|/2 reproduces a clean semicircle (swept angle pi).
+    const KDL::Vector _end_<closure.trajectory>   = <closure.end_position_expr>;
+    const KDL::Vector _chord_<closure.trajectory> = _end_<closure.trajectory> - shared.<closure.start>.p;
+        const double _a_<closure.trajectory>          = shared.<closure.amplitude>;
+        const double _chordlen_<closure.trajectory>   = _chord_<closure.trajectory>.Norm();
+    // Degenerate input (end == start, or non-positive amplitude) would divide by zero /
+    // normalize a zero vector; hold at start instead of emitting NaN.
+    KDL::Vector _pos_<closure.trajectory> = shared.<closure.start>.p;
+    // _s is 0 in the degenerate case: hold at start orientation too.
+    double _s_<closure.trajectory> = 0.0;
+    if (_chordlen_<closure.trajectory> > 1e-9 && _a_<closure.trajectory> > 1e-9) {
+        const KDL::Vector _chord_hat_<closure.trajectory> = _chord_<closure.trajectory> * (1.0 / _chordlen_<closure.trajectory>);
+        const KDL::Vector _mid_<closure.trajectory>       = 0.5 * (shared.<closure.start>.p + _end_<closure.trajectory>);
+        const double _m_<closure.trajectory>              = 0.5 * _chordlen_<closure.trajectory>;
+        // Cap sagitta to half-chord so the arc stays in the minor-arc (\<=semicircle)
+        // regime.  Amplitudes larger than |chord|/2 are silently reduced to a
+        // semicircle; if a major arc is ever needed the cap must be lifted and the
+        // angle-wrapping handled explicitly.
+        const double _sagitta_<closure.trajectory> = std::min(_a_<closure.trajectory>, _m_<closure.trajectory>);
+        // Arc-rotation axis: project plane_normal onto the subspace perpendicular to
+        // the chord.  This removes any chord-parallel component so that
+        // (start - center) is always perpendicular to the axis -- the necessary
+        // condition for Rot(axis, angle)*(start-center) to trace a true circle
+        // regardless of the angle between chord and plane_normal.
+        KDL::Vector _arc_normal_<closure.trajectory> = _n_<closure.trajectory> - KDL::dot(_n_<closure.trajectory>, _chord_hat_<closure.trajectory>) * _chord_hat_<closure.trajectory>;
+        if (_arc_normal_<closure.trajectory>.Norm() \< 1e-6) {
+            // plane_normal nearly parallel to chord: pick any stable world-axis perp.
+            _arc_normal_<closure.trajectory> = motion_spec::runtime::plane_reference(_chord_hat_<closure.trajectory>);
+        } else {
+            _arc_normal_<closure.trajectory>.Normalize();
+        }
+        // Sagitta (bulge) direction: in the arc plane, perpendicular to chord.
+        // arc_normal x chord_hat lies in the arc plane and is perpendicular to chord_hat.
+        KDL::Vector _perp_<closure.trajectory> = _arc_normal_<closure.trajectory> * _chord_hat_<closure.trajectory>;
+        _perp_<closure.trajectory>.Normalize();
+        const double _R_<closure.trajectory>     = (_sagitta_<closure.trajectory> * _sagitta_<closure.trajectory> + _m_<closure.trajectory> * _m_<closure.trajectory>) / (2.0 * _sagitta_<closure.trajectory>);
+        const double _d_<closure.trajectory>     = (_sagitta_<closure.trajectory> * _sagitta_<closure.trajectory> - _m_<closure.trajectory> * _m_<closure.trajectory>) / (2.0 * _sagitta_<closure.trajectory>);
+        const KDL::Vector _center_<closure.trajectory> = _mid_<closure.trajectory> + _d_<closure.trajectory> * _perp_<closure.trajectory>;
+        const double _theta_<closure.trajectory> = 2.0 * std::acos(std::max(-1.0, std::min(1.0, -_d_<closure.trajectory> / _R_<closure.trajectory>)));
+        const KDL::Vector _v0_<closure.trajectory>     = shared.<closure.start>.p - _center_<closure.trajectory>;
+        if (state.active_steps == 0) {
+            shared.<closure.alpha> = 0.0;
+        }
+        // Time-based alpha: advance at a fixed arc-speed each control step.
+        // The setpoint is fully decoupled from the measured EE pose -- external
+        // pushes or admittance excursions do NOT drag the setpoint along with the arm.
+        {
+            const double _arc_length_<closure.trajectory> = std::max(_R_<closure.trajectory> * _theta_<closure.trajectory>, 1e-9);
+            const double _arc_speed_<closure.trajectory>  = 0.05;  // m/s along the arc
+            const double _dalpha_<closure.trajectory>     = (_arc_speed_<closure.trajectory> * motion_spec::runtime::kControlPeriodS) / _arc_length_<closure.trajectory>;
+            shared.<closure.alpha> = motion_spec::runtime::clamp01(shared.<closure.alpha> + _dalpha_<closure.trajectory>);
+        }
+        // Apply smoothstep to the open-loop alpha for smooth start/stop easing.
+        // This must come AFTER alpha is updated, not before, so the easing is
+        // applied to the current step's alpha rather than the previous step's value.
+        _s_<closure.trajectory>   = motion_spec::runtime::smoothstep(shared.<closure.alpha>);
+        _pos_<closure.trajectory> = _center_<closure.trajectory>
+            + KDL::Rotation::Rot(_arc_normal_<closure.trajectory>, -_theta_<closure.trajectory> * _s_<closure.trajectory>) * _v0_<closure.trajectory>;
+    }
+    const KDL::Frame _rot_start_<closure.trajectory>(shared.<closure.start>.M, KDL::Vector(0.0, 0.0, 0.0));
+    const KDL::Frame _rot_goal_<closure.trajectory>(<closure.end_orientation_expr>, KDL::Vector(0.0, 0.0, 0.0));
+    const KDL::Rotation _rot_<closure.trajectory> =
+        KDL::addDelta(_rot_start_<closure.trajectory>, KDL::diff(_rot_start_<closure.trajectory>, _rot_goal_<closure.trajectory>), _s_<closure.trajectory>).M;
+    shared.<closure.trajectory> = KDL::Frame(_rot_<closure.trajectory>, _pos_<closure.trajectory>);
+}
+>>
+
+emit-call-Helix(closure, views) ::= <<
+{
+    const double _s_<closure.trajectory>     = motion_spec::runtime::smoothstep(<access-expr(closure.alpha, views)>);
+    const double _angle_<closure.trajectory> = shared.<closure.revolutions> * 2.0 * M_PI * _s_<closure.trajectory>;
+    const double _rise_<closure.trajectory>  = shared.<closure.pitch> * shared.<closure.revolutions> * _s_<closure.trajectory>;
+    KDL::Vector _ax_<closure.trajectory>  = shared.<closure.axis>;
+    _ax_<closure.trajectory>.Normalize();
+    // Radial arm from center to start: alpha=0 lands exactly on start; the helix winds
+    // around the axis through center and rises along it (start and center may differ freely).
+    const KDL::Vector _arm_<closure.trajectory> = shared.<closure.start>.p - shared.<closure.center>;
+    const KDL::Vector _pos_<closure.trajectory> = shared.<closure.center>
+        + KDL::Rotation::Rot(_ax_<closure.trajectory>, _angle_<closure.trajectory>) * _arm_<closure.trajectory>
+        + _ax_<closure.trajectory> * _rise_<closure.trajectory>;
+    shared.<closure.trajectory> = KDL::Frame(shared.<closure.start>.M, _pos_<closure.trajectory>);
+}
+>>
+
+emit-call-Figure8(closure, views) ::= <<
+<({emit-call-Figure8-<closure.form>})(closure, views)>
+>>
+
+emit-call-Figure8-Gerono(closure, views) ::= <<
+{
+    const double _s_<closure.trajectory> = motion_spec::runtime::smoothstep(<access-expr(closure.alpha, views)>);
+    // Phase offset of pi/2 puts alpha=0 at the curve's center crossing (the anchor),
+    // so the path starts and ends at the anchor instead of darting out to a tip.
+    const double _t_<closure.trajectory> = 2.0 * M_PI * _s_<closure.trajectory> + 0.5 * M_PI;
+    KDL::Vector _n_<closure.trajectory>   = shared.<closure.plane_normal>;
+    _n_<closure.trajectory>.Normalize();
+    const KDL::Vector _u_<closure.trajectory> = motion_spec::runtime::plane_reference(_n_<closure.trajectory>);
+    const KDL::Vector _v_<closure.trajectory> = _n_<closure.trajectory> * _u_<closure.trajectory>;
+    const double _ct_<closure.trajectory> = std::cos(_t_<closure.trajectory>);
+    const double _st_<closure.trajectory> = std::sin(_t_<closure.trajectory>);
+    const KDL::Vector _pos_<closure.trajectory> = shared.<closure.anchor>.p
+        + shared.<closure.radius> * (_ct_<closure.trajectory> * _u_<closure.trajectory>
+            + (_st_<closure.trajectory> * _ct_<closure.trajectory>) * _v_<closure.trajectory>);
+    shared.<closure.trajectory> = KDL::Frame(shared.<closure.anchor>.M, _pos_<closure.trajectory>);
+}
+>>
+
+emit-call-Figure8-Bernoulli(closure, views) ::= <<
+{
+    const double _s_<closure.trajectory> = motion_spec::runtime::smoothstep(<access-expr(closure.alpha, views)>);
+    // Phase offset of pi/2 puts alpha=0 at the curve's center crossing (the anchor),
+    // so the path starts and ends at the anchor instead of darting out to a tip.
+    const double _t_<closure.trajectory> = 2.0 * M_PI * _s_<closure.trajectory> + 0.5 * M_PI;
+    KDL::Vector _n_<closure.trajectory>   = shared.<closure.plane_normal>;
+    _n_<closure.trajectory>.Normalize();
+    const KDL::Vector _u_<closure.trajectory> = motion_spec::runtime::plane_reference(_n_<closure.trajectory>);
+    const KDL::Vector _v_<closure.trajectory> = _n_<closure.trajectory> * _u_<closure.trajectory>;
+    const double _ct_<closure.trajectory> = std::cos(_t_<closure.trajectory>);
+    const double _st_<closure.trajectory> = std::sin(_t_<closure.trajectory>);
+    const double _d_<closure.trajectory>  = 1.0 + _st_<closure.trajectory> * _st_<closure.trajectory>;
+    const KDL::Vector _pos_<closure.trajectory> = shared.<closure.anchor>.p
+        + shared.<closure.radius> * ((_ct_<closure.trajectory> / _d_<closure.trajectory>) * _u_<closure.trajectory>
+            + ((_st_<closure.trajectory> * _ct_<closure.trajectory>) / _d_<closure.trajectory>) * _v_<closure.trajectory>);
+    shared.<closure.trajectory> = KDL::Frame(shared.<closure.anchor>.M, _pos_<closure.trajectory>);
+}
+>>
+
+pose-axis-error-component(component) ::= <<
+shared.<component.error> = _pose_axis_error_<component.subspace>_<component.axis>;
+>>
+
+pose-axis-error-group(pose_group, views) ::= <<
+    {
+<if(pose_group.is_pose)><pose-axis-error-group-pose(pose_group, views)><endif>
+<if(pose_group.is_twist)><pose-axis-error-group-twist(pose_group, views)><endif>
+<if(pose_group.is_wrench)><pose-axis-error-group-wrench(pose_group, views)><endif>
+<pose_group.components:{component |         <pose-axis-error-component(component)>}; separator="\n">
+    }
+>>
+
+pose-axis-error-group-pose(g, views) ::= <<
+        KDL::Frame _pose_axis_target_<g.id> = shared.<g.pose>;
+<if(g.linear_x)>        _pose_axis_target_<g.id>.p[0] = <access-expr(g.linear_x, views)>;
+<endif>
+<if(g.linear_y)>        _pose_axis_target_<g.id>.p[1] = <access-expr(g.linear_y, views)>;
+<endif>
+<if(g.linear_z)>        _pose_axis_target_<g.id>.p[2] = <access-expr(g.linear_z, views)>;
+<endif>
+<if(g.has_angular)>        const double _pose_axis_roll_<g.id> = <if(g.angular_x)><access-expr(g.angular_x, views)><else>0.0<endif>;
+        const double _pose_axis_pitch_<g.id> = <if(g.angular_y)><access-expr(g.angular_y, views)><else>0.0<endif>;
+        const double _pose_axis_yaw_<g.id> = <if(g.angular_z)><access-expr(g.angular_z, views)><else>0.0<endif>;
+        _pose_axis_target_<g.id>.M = KDL::Rotation::RPY(_pose_axis_roll_<g.id>, _pose_axis_pitch_<g.id>, _pose_axis_yaw_<g.id>);
+<endif>
+        const KDL::Twist _pose_axis_error_<g.id> = KDL::diff(shared.<g.pose>, _pose_axis_target_<g.id>);
+<if(g.linear_x)>        const double _pose_axis_error_linear_X = _pose_axis_error_<g.id>.vel.x();
+<endif>
+<if(g.linear_y)>        const double _pose_axis_error_linear_Y = _pose_axis_error_<g.id>.vel.y();
+<endif>
+<if(g.linear_z)>        const double _pose_axis_error_linear_Z = _pose_axis_error_<g.id>.vel.z();
+<endif>
+<if(g.angular_x)>        const double _pose_axis_error_angular_X = _pose_axis_error_<g.id>.rot.x();
+<endif>
+<if(g.angular_y)>        const double _pose_axis_error_angular_Y = _pose_axis_error_<g.id>.rot.y();
+<endif>
+<if(g.angular_z)>        const double _pose_axis_error_angular_Z = _pose_axis_error_<g.id>.rot.z();
+<endif>
+>>
+
+pose-axis-error-group-twist(g, views) ::= <<
+        KDL::Twist _pose_axis_target_<g.id> = KDL::Twist::Zero();
+<if(g.linear_x)>        _pose_axis_target_<g.id>.vel[0] = <access-expr(g.linear_x, views)>;
+<endif>
+<if(g.linear_y)>        _pose_axis_target_<g.id>.vel[1] = <access-expr(g.linear_y, views)>;
+<endif>
+<if(g.linear_z)>        _pose_axis_target_<g.id>.vel[2] = <access-expr(g.linear_z, views)>;
+<endif>
+<if(g.angular_x)>        _pose_axis_target_<g.id>.rot[0] = <access-expr(g.angular_x, views)>;
+<endif>
+<if(g.angular_y)>        _pose_axis_target_<g.id>.rot[1] = <access-expr(g.angular_y, views)>;
+<endif>
+<if(g.angular_z)>        _pose_axis_target_<g.id>.rot[2] = <access-expr(g.angular_z, views)>;
+<endif>
+        const KDL::Twist _pose_axis_error_<g.id> = _pose_axis_target_<g.id> - shared.<g.pose>;
+<if(g.linear_x)>        const double _pose_axis_error_linear_X = _pose_axis_error_<g.id>.vel.x();
+<endif>
+<if(g.linear_y)>        const double _pose_axis_error_linear_Y = _pose_axis_error_<g.id>.vel.y();
+<endif>
+<if(g.linear_z)>        const double _pose_axis_error_linear_Z = _pose_axis_error_<g.id>.vel.z();
+<endif>
+<if(g.angular_x)>        const double _pose_axis_error_angular_X = _pose_axis_error_<g.id>.rot.x();
+<endif>
+<if(g.angular_y)>        const double _pose_axis_error_angular_Y = _pose_axis_error_<g.id>.rot.y();
+<endif>
+<if(g.angular_z)>        const double _pose_axis_error_angular_Z = _pose_axis_error_<g.id>.rot.z();
+<endif>
+>>
+
+pose-axis-error-group-wrench(g, views) ::= <<
+        KDL::Wrench _pose_axis_target_<g.id> = KDL::Wrench::Zero();
+<if(g.linear_x)>        _pose_axis_target_<g.id>.force[0] = <access-expr(g.linear_x, views)>;
+<endif>
+<if(g.linear_y)>        _pose_axis_target_<g.id>.force[1] = <access-expr(g.linear_y, views)>;
+<endif>
+<if(g.linear_z)>        _pose_axis_target_<g.id>.force[2] = <access-expr(g.linear_z, views)>;
+<endif>
+<if(g.angular_x)>        _pose_axis_target_<g.id>.torque[0] = <access-expr(g.angular_x, views)>;
+<endif>
+<if(g.angular_y)>        _pose_axis_target_<g.id>.torque[1] = <access-expr(g.angular_y, views)>;
+<endif>
+<if(g.angular_z)>        _pose_axis_target_<g.id>.torque[2] = <access-expr(g.angular_z, views)>;
+<endif>
+        const KDL::Wrench _pose_axis_error_<g.id> = _pose_axis_target_<g.id> - shared.<g.pose>;
+<if(g.linear_x)>        const double _pose_axis_error_linear_X = _pose_axis_error_<g.id>.force.x();
+<endif>
+<if(g.linear_y)>        const double _pose_axis_error_linear_Y = _pose_axis_error_<g.id>.force.y();
+<endif>
+<if(g.linear_z)>        const double _pose_axis_error_linear_Z = _pose_axis_error_<g.id>.force.z();
+<endif>
+<if(g.angular_x)>        const double _pose_axis_error_angular_X = _pose_axis_error_<g.id>.torque.x();
+<endif>
+<if(g.angular_y)>        const double _pose_axis_error_angular_Y = _pose_axis_error_<g.id>.torque.y();
+<endif>
+<if(g.angular_z)>        const double _pose_axis_error_angular_Z = _pose_axis_error_<g.id>.torque.z();
+<endif>
+>>
+
+emit-call-Controller(closure, views) ::= <<
+{
+    const double _control_signal = <if(closure.reference_signal)><access-expr(closure.reference_signal, views)><else>state.<closure.id>.control(<access-expr(closure.error_signal, views)><if(closure.measured_derivative)>, -(<access-expr(closure.measured_derivative, views)>)<endif>)<endif>;
+<if(closure.output_saturation)>
+    shared.<closure.control_signal> = motion_spec::runtime::clamp_range(_control_signal, <saturation-lower(closure.output_saturation)>, <saturation-upper(closure.output_saturation)>);
+<else>
+    shared.<closure.control_signal> = _control_signal;
+<endif>
+<closure.internal_state_samples:{sample |     shared.<sample.id> = state.<closure.id>.<sample.getter>();}; separator="\n">
+}
+>>
+
+emit-call-PlanarAngleFromDirections(closure, views) ::= <<
+shared.<closure.angle> = KDL::dot(<closure.from_directions:{d | <access-expr(d, views)>}; separator=", ">);
+>>
+
+emit-call-InvertAngle(closure, views) ::= <<
+shared.<closure.out> = -<access-expr(closure.in, views)>;
+>>
+
+emit-call-RotateDirectionDistalToProximalWithPose(closure, views) ::= <<
+shared.<closure.to> = shared.<closure.pose>.M * <access-expr(closure.from, views)>;
+>>
+
+emit-call-ComposePose(closure, views) ::= <<
+shared.<closure.composite> = <access-expr(closure.in1, views)> * <access-expr(closure.in2, views)>;
+>>
+
+emit-call-InvertPose(closure, views) ::= <<
+shared.<closure.out> = shared.<closure.pose>.Inverse();
+>>
+
+emit-call-PoseToLinearDistance(closure, views) ::= <<
+shared.<closure.distance> = shared.<closure.pose>.p.Norm();
+>>
+
+emit-call-PoseToDirection(closure, views) ::= <<
+shared.<closure.direction> = shared.<closure.pose>.p;
+shared.<closure.direction>.Normalize();
+>>
+
+emit-call-PoseToAngleAroundAxis(closure, views) ::= <<
+KDL::Vector diff_<closure.angle> = KDL::diff(KDL::Rotation::Identity(), shared.<closure.pose>.M);
+shared.<closure.angle> = diff_<closure.angle>[<axis-to-index.(closure.axis)>];
+>>
+
+emit-call-RotateVelocityTwistToProximalWithPose(closure, views) ::= <<
+shared.<closure.to> = shared.<closure.pose>.M * <access-expr(closure.from, views)>;
+>>
+
+emit-call-WrenchFromPositionDirectionAndMagnitude(closure, views) ::= <<
+shared.<closure.wrench> = KDL::Wrench(<access-expr(closure.direction, views)> * <access-expr(closure.magnitude, views)>, KDL::Vector(0.0, 0.0, 0.0)).RefPoint(-<access-expr(closure.position, views)>);
+>>
+
+emit-call-RotateWrenchToDistalWithPose(closure, views) ::= <<
+shared.<closure.to> = shared.<closure.pose>.M.Inverse(<access-expr(closure.from, views)>);
+>>
+
+emit-call-RotateWrenchToProximalWithPose(closure, views) ::= <<
+shared.<closure.to> = shared.<closure.pose>.M * <access-expr(closure.from, views)>;
+>>
+
+emit-call-TransformWrenchToProximal(closure, views) ::= <<
+shared.<closure.to> = shared.<closure.pose> * <access-expr(closure.from, views)>;
+>>
+
+emit-call-AddQuantity(closure, views) ::= <<
+shared.<closure.out> = <access-expr(closure.in1, views)> + <access-expr(closure.in2, views)>;
+>>
+
+emit-call-Norm(closure, views) ::= <<
+shared.<closure.out> = <access-expr(closure.in1, views)>.Norm();
+>>
+
+emit-call-AddWrench(closure, views) ::= <<
+shared.<closure.out> = <access-expr(closure.in1, views)> + <access-expr(closure.in2, views)>;
+>>

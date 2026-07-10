@@ -1,0 +1,441 @@
+// SPDX-License-Identifier: MPL-2.0
+// Modular Vereshchagin/RNEA solver: state, init, sync, outputs, run stages.
+
+import "primitives.stg"
+
+sync-wrench(wrench) ::= <<
+    if (robot.<wrench.id> != nullptr) {
+        shared.<wrench.id> = *robot.<wrench.id>;
+    }
+>>
+
+solver-state-struct(solver, backend) ::= <<
+struct <solver.id>_solver_state {
+    bool initialized = false;
+    int num_constraints = 0;
+    int num_joints = 0;
+    int num_segments = 0;
+    KDL::Twist root_acc;
+    KDL::JntArray q;
+    KDL::JntArray qd;
+    KDL::JntArray qdd;
+    KDL::JntArray tau_ff;
+    KDL::JntArray tau_ctrl;
+    KDL::Wrenches f_ext;
+    KDL::Jacobian f_cstr;
+    KDL::JntArray e_acc;
+    std::unique_ptr\<KDL::ChainHdSolver_Vereshchagin_Fext_FixedJoint\> achd_fext;
+    std::unique_ptr\<KDL::ChainHdSolver_Vereshchagin_Fixed_Joint\> achd_acc;
+<solver-state-struct-extra(solver, backend)>
+};
+>>
+
+solver-state-struct-extra(solver, backend) ::= <<
+<({solver-state-struct-extra-<backend>})(solver)>
+>>
+
+solver-state-struct-extra-mj_kdl(solver) ::= <<
+    std::unique_ptr\<KDL::ChainIdSolver_RNE\> rnea;
+    std::unique_ptr\<KDL::ChainJntToJacSolver\> jac_solver;
+    std::unique_ptr\<KDL::ChainJntToJacDotSolver\> jac_dot_solver;
+>>
+
+solver-state-struct-extra-robif2b(solver) ::= <<
+>>
+
+assign-constraint-force(constraint, solver_state, column) ::= <<
+<if(constraint.direction)>
+<if(constraint.base_aligned)>
+    state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::X), <column>) = shared.<constraint.direction.id>.x();
+    state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::Y), <column>) = shared.<constraint.direction.id>.y();
+    state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::Z), <column>) = shared.<constraint.direction.id>.z();
+<else>
+    {
+        KDL::Frame alpha_frame_<solver_state>_<column>;
+        KDL::ChainFkSolverPos_recursive alpha_fk_<solver_state>_<column>(*robot.<solver_state>.chain);
+        alpha_fk_<solver_state>_<column>.JntToCart(
+            state.<solver_state>.q,
+            alpha_frame_<solver_state>_<column>,
+            motion_spec::runtime::find_segment_index(*robot.<solver_state>.chain, "<constraint.as_seen_by.id>"));
+        const KDL::Vector alpha_axis_<solver_state>_<column> =
+            alpha_frame_<solver_state>_<column>.M * shared.<constraint.direction.id>;
+        state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::X), <column>) = alpha_axis_<solver_state>_<column>[0];
+        state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::Y), <column>) = alpha_axis_<solver_state>_<column>[1];
+        state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::Z), <column>) = alpha_axis_<solver_state>_<column>[2];
+    }
+<endif>
+<else>
+<if(constraint.base_aligned)>
+    state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::<constraint.axis>), <column>) = 1.0;
+<else>
+    {
+        KDL::Frame alpha_frame_<solver_state>_<column>;
+        KDL::ChainFkSolverPos_recursive alpha_fk_<solver_state>_<column>(*robot.<solver_state>.chain);
+        alpha_fk_<solver_state>_<column>.JntToCart(
+            state.<solver_state>.q,
+            alpha_frame_<solver_state>_<column>,
+            motion_spec::runtime::find_segment_index(*robot.<solver_state>.chain, "<constraint.as_seen_by.id>"));
+        const KDL::Vector alpha_axis_<solver_state>_<column> =
+            alpha_frame_<solver_state>_<column>.M * KDL::Vector(<axis-to-vector.(constraint.axis)>);
+        state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::X), <column>) = alpha_axis_<solver_state>_<column>[0];
+        state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::Y), <column>) = alpha_axis_<solver_state>_<column>[1];
+        state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::Z), <column>) = alpha_axis_<solver_state>_<column>[2];
+    }
+<endif>
+<endif>
+<if(constraint.saturation)>
+    state.<solver_state>.e_acc(<column>) = motion_spec::runtime::clamp_range(shared.<constraint.acceleration_energy.id>, <saturation-lower(constraint.saturation)>, <saturation-upper(constraint.saturation)>);
+<else>
+    state.<solver_state>.e_acc(<column>) = shared.<constraint.acceleration_energy.id>;
+<endif>
+>>
+
+// num_constraints=0 is valid for posture-only handlers: Vereshchagin runs
+// in unconstrained mode and passes tau_ff through to tau_ctrl unchanged.
+// Confirmed correct per KDL implementation; see validation TODO in todo.md.
+solver-init(solver, motion_driver, backend) ::= <<
+if (!state.<solver.id>.initialized) {
+        state.<solver.id>.num_constraints = <if(motion_driver.acceleration_constraint)><length(first(motion_driver.acceleration_constraint).constraints)><else>0<endif>;
+        state.<solver.id>.num_joints = robot.<solver.id>.chain->getNrOfJoints();
+        state.<solver.id>.num_segments = robot.<solver.id>.chain->getNrOfSegments();
+        state.<solver.id>.q = KDL::JntArray(state.<solver.id>.num_joints);
+        state.<solver.id>.qd = KDL::JntArray(state.<solver.id>.num_joints);
+        state.<solver.id>.qdd = KDL::JntArray(state.<solver.id>.num_joints);
+        state.<solver.id>.tau_ff = KDL::JntArray(state.<solver.id>.num_joints);
+        state.<solver.id>.tau_ctrl = KDL::JntArray(state.<solver.id>.num_joints);
+<if(motion_driver.has_cartesian_force)> 
+        state.<solver.id>.f_ext = KDL::Wrenches(state.<solver.id>.num_segments);
+<else>
+<if(solver.algorithm_is_rne)>        state.<solver.id>.f_ext = KDL::Wrenches(state.<solver.id>.num_segments);
+<endif>
+<endif>
+        state.<solver.id>.f_cstr = KDL::Jacobian(state.<solver.id>.num_constraints);
+        state.<solver.id>.e_acc = KDL::JntArray(state.<solver.id>.num_constraints);
+<if(solver.gravity)>
+        state.<solver.id>.root_acc.vel = KDL::Vector(<solver.gravity; separator=", ">);
+<else>
+<if(solver.root_acc)>
+        state.<solver.id>.root_acc.vel = KDL::Vector(<solver.root_acc; separator=", ">);
+<endif>
+<endif>
+<if(motion_driver.has_cartesian_force)>
+        state.<solver.id>.achd_fext = std::make_unique\<KDL::ChainHdSolver_Vereshchagin_Fext_FixedJoint\>(*robot.<solver.id>.chain, state.<solver.id>.root_acc, state.<solver.id>.num_constraints);
+<endif>
+        state.<solver.id>.achd_acc = std::make_unique\<KDL::ChainHdSolver_Vereshchagin_Fixed_Joint\>(*robot.<solver.id>.chain, state.<solver.id>.root_acc, state.<solver.id>.num_constraints);
+<solver-init-extra(solver, backend)>
+        state.<solver.id>.initialized = true;
+    }
+>>
+
+solver-init-extra(solver, backend) ::= <<
+<({solver-init-extra-<backend>})(solver)>
+>>
+
+solver-init-extra-mj_kdl(solver) ::= <<
+        state.<solver.id>.rnea = std::make_unique\<KDL::ChainIdSolver_RNE\>(*robot.<solver.id>.chain, KDL::Vector(<if(solver.root_acc)><solver.root_acc; separator=", "><else>0.0, 0.0, 0.0<endif>));
+<if(solver.algorithm_is_rne)>        state.<solver.id>.jac_solver = std::make_unique\<KDL::ChainJntToJacSolver\>(*robot.<solver.id>.chain);
+        state.<solver.id>.jac_dot_solver = std::make_unique\<KDL::ChainJntToJacDotSolver\>(*robot.<solver.id>.chain);
+<endif>
+>>
+
+solver-init-extra-robif2b(solver) ::= <<
+>>
+
+solver-sync-input(solver, backend) ::= <<
+<({solver-sync-input-<backend>})(solver)>
+>>
+solver-sync-input-robif2b(solver) ::= <<
+for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
+    state.<solver.id>.q(i) = robot.<solver.id>.state->pos_msr[i];
+    state.<solver.id>.qd(i) = robot.<solver.id>.state->vel_msr[i];
+}
+KDL::JntArrayVel q_qd_<solver.id>(state.<solver.id>.q, state.<solver.id>.qd);
+>>
+solver-sync-input-mj_kdl(solver) ::= <<
+mj_kdl::update(robot.<solver.id>.robot);
+for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
+    state.<solver.id>.q(i) = robot.<solver.id>.robot->jnt_pos_msr[i];
+    state.<solver.id>.qd(i) = robot.<solver.id>.robot->jnt_vel_msr[i];
+}
+KDL::JntArrayVel q_qd_<solver.id>(state.<solver.id>.q, state.<solver.id>.qd);
+>>
+
+solver-output-Pose(solver, out, backend) ::= <<
+<({solver-output-Pose-<backend>})(solver, out)>
+>>
+
+solver-output-Pose-robif2b(solver, out) ::= <<
+{
+    KDL::ChainFkSolverPos_recursive fk(*robot.<solver.id>.chain);
+    fk.JntToCart(
+        state.<solver.id>.q,
+        shared.<out.id>,
+        motion_spec::runtime::find_segment_index(*robot.<solver.id>.chain, "<out.of.id>"));
+}
+>>
+
+solver-output-Pose-mj_kdl(solver, out) ::= <<
+{
+<if(out.of.is_scene_object)>
+    KDL::Frame _body_frame_<out.id>;
+    if (!mj_kdl::get_body_frame(
+            robot.<solver.id>.robot->model,
+            robot.<solver.id>.robot->data,
+            "<out.of.body>",
+            &_body_frame_<out.id>)) {
+        throw std::runtime_error("MuJoCo body not found for scene object pose output: <out.of.body>");
+    }
+    KDL::Frame _base_world_frame_<solver.id>;
+    mj_kdl::get_body_frame(
+            robot.<solver.id>.robot->model,
+            robot.<solver.id>.robot->data,
+            "<solver.chain_root>",
+            &_base_world_frame_<solver.id>);
+    shared.<out.id> = _base_world_frame_<solver.id>.Inverse() * _body_frame_<out.id>;
+<else>
+    KDL::ChainFkSolverPos_recursive fk(*robot.<solver.id>.chain);
+    fk.JntToCart(
+        state.<solver.id>.q,
+        shared.<out.id>,
+        motion_spec::runtime::find_segment_index(*robot.<solver.id>.chain, "<if(out.of.id)><out.of.id><else><solver.chain_end><endif>"));
+<endif>
+}
+>>
+
+solver-output-VelocityTwist(solver, out, backend) ::= <<
+{
+    KDL::ChainFkSolverVel_recursive fk(*robot.<solver.id>.chain);
+    KDL::FrameVel tmp;
+    fk.JntToCart(
+        q_qd_<solver.id>,
+        tmp,
+        motion_spec::runtime::find_segment_index(*robot.<solver.id>.chain, "<out.of.id>"));
+    shared.<out.id> = tmp.deriv();
+}
+>>
+
+solver-output-JointPosition(solver, out, backend) ::= <<
+<({solver-output-JointPosition-<backend>})(solver, out)>
+>>
+
+solver-output-JointPosition-robif2b(solver, out) ::= <<
+shared.<out.id> = state.<solver.id>.q(motion_spec::runtime::find_joint_index(*robot.<solver.id>.chain, "<out.joint_name>"));
+>>
+
+solver-output-JointPosition-mj_kdl(solver, out) ::= <<
+{
+    double _joint_position_<out.id> = 0.0;
+    if (mj_kdl::get_joint_position(
+            robot.<solver.id>.robot->model,
+            robot.<solver.id>.robot->data,
+            "<out.joint_name>",
+            &_joint_position_<out.id>)) {
+        shared.<out.id> = _joint_position_<out.id>;
+    } else {
+        shared.<out.id> = state.<solver.id>.q(motion_spec::runtime::find_joint_index(*robot.<solver.id>.chain, "<out.joint_name>"));
+    }
+}
+>>
+
+solver-output-Wrench(solver, out, backend) ::= <<
+<({solver-output-Wrench-<backend>})(solver, out)>
+>>
+
+solver-output-Wrench-mj_kdl(solver, out) ::= <<
+{
+    // FT force -> world, minus startup-tared bias, into shared.<out.id>.force.
+    // startup tare assumes constant tool load; per-entry tare if that changes.
+    const mj_kdl::ForceTorqueSensor *ft_<out.id> = mj_kdl::find_ft_sensor(robot.<solver.id>.robot, "<out.sensor_name>");
+    KDL::Vector f_world_<out.id> = KDL::Vector::Zero();
+    if (ft_<out.id> && ft_<out.id>->frame_site_id >= 0) {
+        KDL::Frame site_frame_<out.id>;
+        if (mj_kdl::get_site_frame(robot.<solver.id>.robot->model, robot.<solver.id>.robot->data, ft_<out.id>->frame_site.c_str(), &site_frame_<out.id>)) {
+            f_world_<out.id> = site_frame_<out.id>.M * ft_<out.id>->wrench.force;
+        }
+    }
+    if (shared.<out.id>_ft_settle \< 200) {       // fixed settle; author it if startup transients vary
+        ++shared.<out.id>_ft_settle;
+        shared.<out.id>_ft_bias = f_world_<out.id>;   // last settle step is the tare sample
+        shared.<out.id>.force = KDL::Vector::Zero();
+    } else {
+        shared.<out.id>.force = shared.<out.id>_ft_bias - f_world_<out.id>;
+    }
+}
+>>
+
+solver-output-Wrench-robif2b(solver, out) ::= <<
+    // robif2b has no sim FT sensor; a real build wires a hardware FT driver here.
+    shared.<out.id>.force = KDL::Vector::Zero();
+>>
+
+solver-output(solver, out, backend) ::= <<
+<({solver-output-<out.type>})(solver, out, backend)>
+>>
+
+solver-run(solver, motion_driver, backend) ::= <<
+    KDL::SetToZero(state.<solver.id>.f_cstr);
+<if(motion_driver.acceleration_constraint)>
+<first(motion_driver.acceleration_constraint).constraints:{c | <assign-constraint-force(c, solver.id, i0)>}; separator="\n">
+<endif>
+    KDL::SetToZero(state.<solver.id>.tau_ff);
+<motion_driver.joint_force:{jf |     state.<solver.id>.tau_ff(motion_spec::runtime::find_joint_index(*robot.<solver.id>.chain, "<jf.joint_name>")) += shared.<jf.force_id>;}; separator="\n">
+<if(motion_driver.has_cartesian_force)>
+    for (int i = 0; i \< state.<solver.id>.num_segments; ++i) {
+        KDL::SetToZero(state.<solver.id>.f_ext[i]);
+    }
+<motion_driver.cartesian_force:{f |     <solver-assign-f-ext-modular(solver, f)>}; separator="\n">
+<solver-run-fext-pre(solver, motion_driver, backend)>
+<else>
+<if(solver.algorithm_is_rne)>    for (int i = 0; i \< state.<solver.id>.num_segments; ++i) {
+        KDL::SetToZero(state.<solver.id>.f_ext[i]);
+    }
+<endif>
+<endif>
+    KDL::Wrenches f_ext_zero_<solver.id>(state.<solver.id>.num_segments);
+    for (int i = 0; i \< state.<solver.id>.num_segments; ++i) {
+        KDL::SetToZero(f_ext_zero_<solver.id>[i]);
+    }
+<if(solver.algorithm_is_rne)>
+<solver-run-RNE(solver, motion_driver, backend)>
+<else>
+    KDL::JntArray tau_ctrl_acc_<solver.id>(state.<solver.id>.num_joints);
+    state.<solver.id>.achd_acc->CartToJnt(
+        state.<solver.id>.q,
+        state.<solver.id>.qd,
+        state.<solver.id>.qdd,
+        state.<solver.id>.f_cstr,
+        state.<solver.id>.e_acc,
+        <solver-achd-f_ext-arg(solver, motion_driver, backend)>,
+        state.<solver.id>.tau_ff,
+        tau_ctrl_acc_<solver.id>);
+<solver-run-finalize(solver, motion_driver, backend)>
+<endif>
+>>
+
+solver-run-RNE(solver, motion_driver, backend) ::= <<
+<({solver-run-RNE-<backend>})(solver, motion_driver)>
+>>
+
+solver-run-RNE-mj_kdl(solver, motion_driver) ::= <<
+    KDL::Jacobian jac_<solver.id>(state.<solver.id>.num_joints);
+    state.<solver.id>.jac_solver->JntToJac(state.<solver.id>.q, jac_<solver.id>);
+    // Task-space velocity-product term Jdot*qdot (base frame, ee ref point):
+    // xdd = J*qdd + Jdot*qdot, so subtract it from the desired task accel before
+    // resolving qdd. Projected onto the constraint directions to match e_acc.
+    KDL::Twist jdot_qd_<solver.id>;
+    state.<solver.id>.jac_dot_solver->JntToJacDot(
+        KDL::JntArrayVel(state.<solver.id>.q, state.<solver.id>.qd), jdot_qd_<solver.id>);
+    Eigen::Matrix\<double, 6, 1\> jdot_qd_vec_<solver.id>;
+    jdot_qd_vec_<solver.id> \<\< jdot_qd_<solver.id>.vel.x(), jdot_qd_<solver.id>.vel.y(), jdot_qd_<solver.id>.vel.z(),
+                               jdot_qd_<solver.id>.rot.x(), jdot_qd_<solver.id>.rot.y(), jdot_qd_<solver.id>.rot.z();
+    const Eigen::VectorXd task_bias_<solver.id> = state.<solver.id>.f_cstr.data.transpose() * jdot_qd_vec_<solver.id>;
+    KDL::JntArray qdd_des_<solver.id>(state.<solver.id>.num_joints);
+    motion_spec::runtime::resolve_constraint_acceleration(
+        jac_<solver.id>,
+        state.<solver.id>.f_cstr,
+        state.<solver.id>.e_acc,
+        &task_bias_<solver.id>,
+        motion_spec::runtime::kRneDampingLambda,
+        qdd_des_<solver.id>);
+    state.<solver.id>.rnea->CartToJnt(
+        state.<solver.id>.q,
+        state.<solver.id>.qd,
+        qdd_des_<solver.id>,
+        state.<solver.id>.f_ext,
+        state.<solver.id>.tau_ctrl);
+    for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
+        state.<solver.id>.tau_ctrl(i) += state.<solver.id>.tau_ff(i);
+    }
+>>
+
+solver-run-RNE-robif2b(solver, motion_driver) ::= <<
+    static_assert(false, "Standalone RNE is only supported on mj_kdl");
+>>
+
+solver-run-fext-pre(solver, motion_driver, backend) ::= <<
+<({solver-run-fext-pre-<backend>})(solver, motion_driver)>
+>>
+
+solver-run-fext-pre-mj_kdl(solver, motion_driver) ::= <<
+>>
+
+solver-run-fext-pre-robif2b(solver, motion_driver) ::= <<
+    KDL::JntArray qdd_fext_<solver.id>(state.<solver.id>.num_joints);
+    KDL::Jacobian alpha_zero_<solver.id>(state.<solver.id>.num_constraints);
+    KDL::JntArray beta_zero_<solver.id>(state.<solver.id>.num_constraints);
+    KDL::JntArray ff_zero_<solver.id>(state.<solver.id>.num_joints);
+    KDL::SetToZero(alpha_zero_<solver.id>);
+    KDL::SetToZero(beta_zero_<solver.id>);
+    KDL::SetToZero(ff_zero_<solver.id>);
+    KDL::JntArray tau_cstr_fext_<solver.id>(state.<solver.id>.num_joints);
+    state.<solver.id>.achd_fext->CartToJnt(
+        state.<solver.id>.q,
+        state.<solver.id>.qd,
+        qdd_fext_<solver.id>,
+        alpha_zero_<solver.id>,
+        beta_zero_<solver.id>,
+        state.<solver.id>.f_ext,
+        ff_zero_<solver.id>,
+        tau_cstr_fext_<solver.id>);
+>>
+
+solver-achd-f_ext-arg(solver, motion_driver, backend) ::= <<
+<({solver-achd-f_ext-arg-<backend>})(solver, motion_driver)>
+>>
+
+solver-achd-f_ext-arg-mj_kdl(solver, motion_driver) ::= <<
+<if(motion_driver.has_cartesian_force)>state.<solver.id>.f_ext<else>f_ext_zero_<solver.id><endif>
+>>
+
+solver-achd-f_ext-arg-robif2b(solver, motion_driver) ::= <<
+f_ext_zero_<solver.id>
+>>
+
+solver-run-finalize(solver, motion_driver, backend) ::= <<
+<({solver-run-finalize-<backend>})(solver, motion_driver)>
+>>
+
+solver-run-finalize-mj_kdl(solver, motion_driver) ::= <<
+    state.<solver.id>.rnea->CartToJnt(
+        state.<solver.id>.q,
+        state.<solver.id>.qd,
+        state.<solver.id>.qdd,
+        f_ext_zero_<solver.id>,
+        state.<solver.id>.tau_ctrl);
+>>
+
+solver-run-finalize-robif2b(solver, motion_driver) ::= <<
+<if(motion_driver.has_cartesian_force)>
+    KDL::Add(tau_cstr_fext_<solver.id>, tau_ctrl_acc_<solver.id>, state.<solver.id>.tau_ctrl);
+<else>
+    state.<solver.id>.achd_acc->getTotalTorque(state.<solver.id>.tau_ctrl);
+<endif>
+>>
+
+solver-assign-f-ext-modular(solver, force) ::= <<
+state.<solver.id>.f_ext[motion_spec::runtime::find_segment_index(*robot.<solver.id>.chain, "<force.attached_to.id>") - 1] += shared.<force.force.id>;
+>>
+
+solver-stage-output(solver, backend) ::= <<
+<({solver-stage-output-<backend>})(solver)>
+>>
+solver-stage-output-robif2b(solver) ::= <<
+    for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
+        robot.<solver.id>.state->eff_cmd[i] = state.<solver.id>.tau_ctrl(i);
+    }
+>>
+solver-stage-output-mj_kdl(solver) ::= <<
+    for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
+<if(solver.torque_saturation)>        robot.<solver.id>.robot->jnt_trq_cmd[i] = motion_spec::runtime::clamp_range(state.<solver.id>.tau_ctrl(i), <saturation-lower(solver.torque_saturation)>, <saturation-upper(solver.torque_saturation)>);
+<else>        robot.<solver.id>.robot->jnt_trq_cmd[i] = state.<solver.id>.tau_ctrl(i);
+<endif>
+    }
+>>
+
+solver-apply-output(solver, backend) ::= <<
+<({solver-apply-output-<backend>})(solver)>
+>>
+solver-apply-output-robif2b(solver) ::= <<
+>>
+solver-apply-output-mj_kdl(solver) ::= <<
+>>

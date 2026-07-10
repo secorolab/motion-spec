@@ -1,0 +1,173 @@
+// SPDX-License-Identifier: MPL-2.0
+// shared_state.hpp header assembling all shared data members.
+
+import "motion_core.stg"
+import "robot.stg"
+
+shared_state_header(shared_data, wrench_outputs, has_arm, has_mobile_base, arm_solvers, base_velocity_solvers, base_force_solvers, backend, fsm_namespace, fsm_header) ::= <<
+#pragma once
+
+#include "frame_layout.h"
+#include "runtime.hpp"
+<if(fsm_namespace)>
+#include "coord2b/functions/event_loop.h"
+#include "coord2b/functions/fsm.h"
+#include "<fsm_header>"
+<endif>
+
+#include \<memory\>
+#include \<kdl/frames.hpp\>
+#include \<kdl/chain.hpp\>
+#include \<kdl/jacobian.hpp\>
+#include \<kdl/jntarray.hpp\>
+#include \<kdl/chainfksolverpos_recursive.hpp\>
+#include \<kdl/chainfksolvervel_recursive.hpp\>
+#include \<kdl/chainhdsolver_vereshchagin_fixed_joint.hpp\>
+<if(has_arm)><solver-rnea-include(backend)><endif>
+<if(has_arm)><robot-driver-include(first(arm_solvers), backend)><endif>
+<if(has_mobile_base)>
+#include \<robif2b/functions/ethercat.h\>
+#include \<robif2b/functions/kelo_drive.h\>
+<endif>
+
+#include \<kdl/chainhdsolver_vereshchagin_fext_fixed_joint.hpp\>
+
+<if(has_arm)><robot-num-joints-def(first(arm_solvers))><endif>
+
+<if(has_mobile_base)>
+struct ecat_state {
+    const char *ethernet_if = nullptr;
+    int error_code = 0;
+    int num_exposed_slaves = 0;
+    int num_found_slaves = 0;
+    int num_active_slaves = 0;
+    int slave_idx[NUM_SLAVES] = {0};
+    const char *name[NUM_SLAVES] = {nullptr};
+    unsigned int prod_code[NUM_SLAVES] = {0U};
+    size_t input_size[NUM_SLAVES] = {0U};
+    size_t output_size[NUM_SLAVES] = {0U};
+    bool is_connected[NUM_SLAVES] = {false};
+};
+
+struct ecat_comm {
+    robif2b_kelo_drive_api_msr_pdo drv_msr_pdo[NUM_DRIVES];
+    robif2b_kelo_drive_api_cmd_pdo drv_cmd_pdo[NUM_DRIVES];
+};
+
+struct kelo_msr {
+    double pvt_off[NUM_DRIVES] = {0.0};
+    double pvt_pos[NUM_DRIVES] = {0.0};
+    double pvt_vel[NUM_DRIVES] = {0.0};
+    double whl_pos[NUM_DRIVES * 2] = {0.0};
+    double whl_vel[NUM_DRIVES * 2] = {0.0};
+    double imu_ang_vel[NUM_DRIVES * 3] = {0.0};
+    double imu_lin_acc[NUM_DRIVES * 3] = {0.0};
+    double bat_volt = 0.0;
+    double bat_cur = 0.0;
+    double bat_pwr = 0.0;
+    int bat_lvl = 0;
+};
+
+struct kelo_cmd {
+    enum robif2b_ctrl_mode ctrl_mode[NUM_DRIVES] = {ROBIF2B_CTRL_MODE_FORCE};
+    double vel[NUM_DRIVES * 2] = {0.0};
+    double trq[NUM_DRIVES * 2] = {0.0};
+    double cur[NUM_DRIVES * 2] = {0.0};
+    double max_current[NUM_DRIVES * 2] = {0.0};
+    double trq_const[NUM_DRIVES * 2] = {0.0};
+};
+
+struct mobile_base_robot {
+    int *num_drives = nullptr;
+    ecat_state *ethercat_state = nullptr;
+    ecat_comm *ethercat_comm = nullptr;
+    robif2b_ethercat *ethercat = nullptr;
+    kelo_msr *measurement = nullptr;
+    kelo_cmd *command = nullptr;
+    robif2b_kelo_drive_encoder *drive_encoder = nullptr;
+    robif2b_kelo_drive_actuator *wheel_actuator = nullptr;
+};
+
+struct mobile_base_runtime_state {
+    double drive_attachment[NUM_DRIVES * 2] = {
+         0.195,  0.21,
+        -0.195,  0.21,
+        -0.195, -0.21,
+         0.195, -0.21,
+    };
+    double wheel_diameter[NUM_DRIVES * 2] = {
+        0.115, 0.115,
+        0.115, 0.115,
+        0.115, 0.115,
+        0.115, 0.115,
+    };
+    double wheel_distance[NUM_DRIVES] = {0.0775, 0.0775, 0.0775, 0.0775};
+    double castor_offset[NUM_DRIVES] = {0.01, 0.01, 0.01, 0.01};
+    double g[NUM_DRIVES * NUM_G_COORD] = {0.0};
+    double f_platform[NUM_PLTF_COORD] = {0.0, 0.0, 0.0};
+    double w_platform[NUM_PLTF_COORD * NUM_PLTF_COORD] = {
+        1.0, 0.0, 0.0,
+        0.0, 1.0, 0.0,
+        0.0, 0.0, 1.0,
+    };
+    double w_drive[NUM_DRIVES * 4] = {
+        1.0, 0.0, 0.0, 1.0,
+        1.0, 0.0, 0.0, 1.0,
+        1.0, 0.0, 0.0, 1.0,
+        1.0, 0.0, 0.0, 1.0,
+    };
+    double f_drive_ref[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
+    double w_align[NUM_DRIVES * 2] = {
+        1.0, 1.0,
+        1.0, 1.0,
+        1.0, 1.0,
+        1.0, 1.0,
+    };
+    double f_drive[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
+    double f_wheel[NUM_DRIVES * NUM_GND_COORD] = {0.0};
+    double f_prim[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
+    double f_scnd[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
+    double xd_ground[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
+    double xd_drive[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
+    double xd_platform[NUM_PLTF_COORD] = {0.0, 0.0, 0.0};
+};
+<endif>
+
+<if(has_arm)>
+<robot-state-struct(first(arm_solvers), backend)>
+
+<robot-manipulator-struct(first(arm_solvers), backend)>
+
+<arm-solver-members(arm_solvers, backend)>
+<endif>
+
+struct robot_io {
+<if(has_mobile_base)>
+    mobile_base_robot mobile_base;
+<endif>
+<if(fsm_namespace)>
+    struct events *fsm_events = nullptr;
+<endif>
+<arm_solvers:{solver | <arm-robot-member(solver)>}; separator="\n">
+<wrench_outputs:{wrench | <wrench-pointer-member(wrench)>}; separator="\n">
+};
+
+struct shared_data {
+<if(has_mobile_base)>
+    mobile_base_runtime_state mobile_base;
+<endif>
+    static constexpr int _motion_spec_event_buffer_size =
+        motion_spec::introspection::kNumTriggers > 0
+            ? static_cast\<int\>(motion_spec::introspection::kNumTriggers)
+            : 1;
+    int _motion_spec_event_count = 0;
+    int _motion_spec_events[_motion_spec_event_buffer_size] = {};
+    void _motion_spec_record_event(int event_idx) {
+        if (event_idx \< 0) return;
+        _motion_spec_events[_motion_spec_event_count % _motion_spec_event_buffer_size] = event_idx;
+        ++_motion_spec_event_count;
+    \}
+    double clock_time_s = 0.0;  // runtime clock seconds; MuJoCo sim time or real monotonic time
+<shared_data:{var | <indented-shared-member(var)>}; separator="\n">
+};
+>>

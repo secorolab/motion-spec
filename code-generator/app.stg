@@ -1,0 +1,444 @@
+// SPDX-License-Identifier: MPL-2.0
+// Application main loop, clock/telemetry glue, FSM dispatch, and ref_main.
+
+import "motion_core.stg"
+import "robot.stg"
+
+app-main-base-setup() ::= <<
+    int num_drives = NUM_DRIVES;
+    ecat_comm ecat_comm{};
+    ecat_state ethercat_state{};
+    ethercat_state.ethernet_if = "net0";
+    ethercat_state.num_exposed_slaves = NUM_SLAVES;
+    ethercat_state.slave_idx[0] = 3;
+    ethercat_state.slave_idx[1] = 4;
+    ethercat_state.slave_idx[2] = 6;
+    ethercat_state.slave_idx[3] = 7;
+
+    for (int i = 0; i \< NUM_DRIVES; ++i) {
+        ethercat_state.name[i] = "KELOD105";
+        ethercat_state.prod_code[i] = 0x02001001;
+        ethercat_state.input_size[i] = sizeof(ecat_comm.drv_msr_pdo[i]);
+        ethercat_state.output_size[i] = sizeof(ecat_comm.drv_cmd_pdo[i]);
+    }
+
+    void *input_array[NUM_SLAVES] = {
+        &ecat_comm.drv_msr_pdo[0],
+        &ecat_comm.drv_msr_pdo[1],
+        &ecat_comm.drv_msr_pdo[2],
+        &ecat_comm.drv_msr_pdo[3],
+    };
+    const void *output_array[NUM_SLAVES] = {
+        &ecat_comm.drv_cmd_pdo[0],
+        &ecat_comm.drv_cmd_pdo[1],
+        &ecat_comm.drv_cmd_pdo[2],
+        &ecat_comm.drv_cmd_pdo[3],
+    };
+
+    robif2b_ethercat ecat{};
+    ecat.ethernet_if = &ethercat_state.ethernet_if[0];
+    ecat.num_exposed_slaves = &ethercat_state.num_exposed_slaves;
+    ecat.slave_idx = &ethercat_state.slave_idx[0];
+    ecat.name = &ethercat_state.name[0];
+    ecat.product_code = &ethercat_state.prod_code[0];
+    ecat.input_size = &ethercat_state.input_size[0];
+    ecat.output_size = &ethercat_state.output_size[0];
+    ecat.error_code = &ethercat_state.error_code;
+    ecat.num_initial_slaves = &ethercat_state.num_found_slaves;
+    ecat.num_current_slaves = &ethercat_state.num_active_slaves;
+    ecat.is_connected = &ethercat_state.is_connected[0];
+    ecat.input = input_array;
+    ecat.output = output_array;
+
+    kelo_msr kelo_msr{};
+    robif2b_kelo_drive_encoder drive_enc{};
+    drive_enc.num_drives = &num_drives;
+    drive_enc.msr_pdo = &ecat_comm.drv_msr_pdo[0];
+    drive_enc.wheel_pos_msr = &kelo_msr.whl_pos[0];
+    drive_enc.wheel_vel_msr = &kelo_msr.whl_vel[0];
+    drive_enc.pivot_pos_msr = &kelo_msr.pvt_pos[0];
+    drive_enc.pivot_vel_msr = &kelo_msr.pvt_vel[0];
+    drive_enc.pivot_pos_off = &kelo_msr.pvt_off[0];
+
+    kelo_cmd kelo_cmd{};
+    for (int i = 0; i \< NUM_DRIVES; ++i) {
+        kelo_cmd.ctrl_mode[i] = ROBIF2B_CTRL_MODE_FORCE;
+        kelo_cmd.max_current[i * 2 + 0] = 10.0;
+        kelo_cmd.max_current[i * 2 + 1] = 10.0;
+        kelo_cmd.trq_const[i * 2 + 0] = 0.29;
+        kelo_cmd.trq_const[i * 2 + 1] = 0.29;
+    }
+
+    robif2b_kelo_drive_actuator wheel_act{
+        .num_drives = &num_drives,
+        .cmd_pdo = &ecat_comm.drv_cmd_pdo[0],
+        .ctrl_mode = &kelo_cmd.ctrl_mode[0],
+        .act_vel_cmd = &kelo_cmd.vel[0],
+        .act_trq_cmd = &kelo_cmd.trq[0],
+        .act_cur_cmd = &kelo_cmd.cur[0],
+        .max_current = &kelo_cmd.max_current[0],
+        .trq_const = &kelo_cmd.trq_const[0],
+    };
+
+    robot.mobile_base = mobile_base_robot{
+        .num_drives = &num_drives,
+        .ethercat_state = &ethercat_state,
+        .ethercat_comm = &ecat_comm,
+        .ethercat = &ecat,
+        .measurement = &kelo_msr,
+        .command = &kelo_cmd,
+        .drive_encoder = &drive_enc,
+        .wheel_actuator = &wheel_act,
+    };
+>>
+
+app-arm-includes(backend, has_arm) ::= <<
+<({app-arm-includes-<backend>})(has_arm)>
+>>
+
+app-arm-setup(backend, arm_solvers, scene) ::= <<
+<({app-arm-setup-<backend>})(arm_solvers, scene)>
+>>
+
+app-loop-condition(backend, has_arm) ::= <<
+<({app-loop-condition-<backend>})(has_arm)>
+>>
+
+app-arm-cleanup(backend, has_arm) ::= <<
+<({app-arm-cleanup-<backend>})(has_arm)>
+>>
+
+app-arm-post-setup(backend, arm_solvers, motions) ::= <<
+<({app-arm-post-setup-<backend>})(arm_solvers, motions)>
+>>
+
+app-arm-post-setup-robif2b(arm_solvers, motions) ::= <<
+>>
+
+app-arm-loop-reset(backend, arm_solvers, fsm_namespace) ::= <<
+<({app-arm-loop-reset-<backend>})(arm_solvers, fsm_namespace)>
+>>
+
+app-arm-loop-reset-robif2b(arm_solvers, fsm_namespace) ::= <<
+>>
+
+app-arm-runtime-step(backend, arm_solvers) ::= <<
+<({app-arm-runtime-step-<backend>})(arm_solvers)>
+>>
+
+clock-time-source(backend, arm_solvers, has_arm) ::= <<
+<if(has_arm)><({clock-time-source-<backend>})(arm_solvers)><else>motion_spec::runtime::monotonic_time_s()<endif>
+>>
+
+clock-time-source-mj_kdl(arm_solvers) ::= <<
+robot.<first(arm_solvers).id>.robot->data->time
+>>
+
+clock-time-source-robif2b(arm_solvers) ::= <<
+motion_spec::runtime::monotonic_time_s()
+>>
+
+app-arm-trace-update(backend, arm_solvers, trace) ::= <<
+<({app-arm-trace-update-<backend>})(arm_solvers, trace)>
+>>
+
+
+app-headless-telemetry(backend, shared_data, arm_solvers, scene) ::= <<
+<({app-headless-telemetry-<backend>})(shared_data, arm_solvers, scene)>
+>>
+
+app_main(motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene, trace, needs_clock_time, control_period_ns) ::= <<
+#include "runtime.hpp"
+#include "shared_state.hpp"
+#ifdef MOTION_SPEC_ENABLE_INTROSPECTION
+#include "introspect_model.hpp"
+#endif
+<if(has_mobile_base)>
+<mobile-base-cycle-include()>
+<endif>
+<motions:{motion | <motion-include(motion)>}; separator="\n">
+
+<app-arm-includes(backend, has_arm)>
+#include \<unistd.h\>
+
+int main(int argc, char **argv) {
+    robot_io robot{};
+    shared_data shared{};
+<if(has_mobile_base)>
+
+<app-main-base-setup()>
+<endif>
+<if(has_arm)>
+
+<app-arm-setup(backend, arm_solvers, scene)>
+<endif>
+<wrench_outputs:{wrench | <wrench-measurement(wrench)>}; separator="\n">
+<wrench_outputs:{wrench |     robot.<wrench.id> = &<wrench.id>_measurement;}; separator="\n">
+<motions:{motion | <motion-state-member(motion)>}; separator="\n">
+<if(has_mobile_base)>
+    mobile_base_state mobile_base_state_instance;
+<endif>
+<if(has_mobile_base)>
+
+    robif2b_ethercat_configure(robot.mobile_base.ethercat);
+    robif2b_ethercat_start(robot.mobile_base.ethercat);
+<endif>
+<if(has_arm)>
+<arm_solvers:{solver |
+<robot-configure(solver, backend)>
+}; separator="\n">
+<endif>
+
+    timespec _next_tick{};
+    clock_gettime(CLOCK_MONOTONIC, &_next_tick);
+    while (<app-loop-condition(backend, has_arm)>) {
+<if(needs_clock_time)>        shared.clock_time_s = <clock-time-source(backend, arm_solvers, has_arm)>;
+<endif>
+<if(has_mobile_base)>
+        update_mobile_base(mobile_base_state_instance, shared, robot);
+<endif>
+        <motions:{motion | <app-prepare-call(motion)>}; separator="\n">
+<shared-schedule-block(shared_schedule, closures, views)>
+        <motions:{motion | <app-run-call(motion)>}; separator="\n">
+<app-base-control-call(has_mobile_base)>
+        <motions:{motion | <app-stage-call(motion)>}; separator="\n">
+<if(has_mobile_base)>
+        apply_mobile_base(mobile_base_state_instance, shared, robot);
+<endif>
+<if(has_arm)>
+<app-arm-trace-update(backend, arm_solvers, trace)>
+<app-arm-runtime-step(backend, arm_solvers)>
+<endif>
+
+        motion_spec::runtime::sleep_until_next(_next_tick, <control_period_ns>);
+    }
+<if(has_arm)>
+
+<app-arm-cleanup(backend, has_arm)>
+<arm_solvers:{solver |
+<robot-shutdown(solver, backend)>
+}; separator="\n">
+<endif>
+<if(has_mobile_base)>
+    robif2b_kelo_drive_actuator_stop(robot.mobile_base.wheel_actuator);
+    robif2b_ethercat_stop(robot.mobile_base.ethercat);
+    robif2b_ethercat_shutdown(robot.mobile_base.ethercat);
+<endif>
+
+    return 0;
+}
+>>
+
+fsm-step-function(motion) ::= <<
+<if(motion.fsm_state)>
+static void step_<motion.id>(<motion.id>_state &<motion.id>_state_instance, shared_data &shared, robot_io &robot) {
+    if (!<motion.id>_state_instance.active) {
+        <motion.id>_state_instance.active = true;
+        <motion.id>_state_instance.active_steps = 0;
+    }
+    update_<motion.id>(<motion.id>_state_instance, shared, robot);
+    monitor_until_<motion.id>(<motion.until_args>);
+    control_<motion.id>(<motion.id>_state_instance, shared, robot);
+    apply_<motion.id>(<motion.apply_args>);
+    ++<motion.id>_state_instance.active_steps;
+\}
+<endif>
+>>
+
+fsm-dispatch-case(motion, fsm_namespace) ::= <<
+<if(motion.fsm_state)>
+        case <fsm_namespace>::<motion.fsm_state>:
+            step_<motion.id>(<motion.id>_state_instance, shared, robot);
+<motion.fsm_when_gate_calls:{call |             <call>}; separator="\n">
+            break;
+<endif>
+>>
+
+fsm-reenter-reset-case(motion, fsm_namespace) ::= <<
+<if(motion.fsm_state)><if(motion.has_entry_snapshot)>
+            case <fsm_namespace>::<motion.fsm_state>: reset_<motion.id>(<motion.id>_state_instance); break;
+<endif><endif>
+>>
+
+fsm-dispatch(motions, fsm_namespace) ::= <<
+    // The FSM's current state selects which motion runs; the motion's monitor advances the FSM. A
+    // fallback hold state additionally re-evaluates the gated motion's WHEN precondition each tick.
+    auto fsm_dispatch = [&](struct fsm_nbx *fsm) {
+        switch (fsm->currentStateIndex) {
+<motions:{motion | <fsm-dispatch-case(motion, fsm_namespace)>}; separator="\n">
+        default: break;
+        \}
+    \};
+>>
+
+ref_main(motions, unique_motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, shared_data, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene, trace, fsm_namespace, fsm_step_event, fsm_step_event_idx, needs_clock_time, control_period_ns) ::= <<
+#include "runtime.hpp"
+#include "shared_state.hpp"
+<if(has_mobile_base)>
+<mobile-base-cycle-include()>
+<endif>
+<unique_motions:{motion | <motion-include(motion)>}; separator="\n">
+
+<app-arm-includes(backend, has_arm)>
+#include \<unistd.h\>
+<if(fsm_namespace)>
+
+<unique_motions:{motion | <fsm-step-function(motion)>}; separator="\n\n">
+<endif>
+
+int main(int argc, char **argv) {
+    robot_io robot{};
+    shared_data shared{};
+<if(has_mobile_base)>
+
+<app-main-base-setup()>
+<endif>
+<if(has_arm)>
+
+<app-arm-setup(backend, arm_solvers, scene)>
+<endif>
+<wrench_outputs:{wrench | <wrench-measurement(wrench)>}; separator="\n">
+<wrench_outputs:{wrench |     robot.<wrench.id> = &<wrench.id>_measurement;}; separator="\n">
+<unique_motions:{motion | <motion-state-member(motion)>}; separator="\n">
+<if(has_mobile_base)>
+    mobile_base_state mobile_base_state_instance;
+<endif>
+<if(has_mobile_base)>
+
+    robif2b_ethercat_configure(robot.mobile_base.ethercat);
+    robif2b_ethercat_start(robot.mobile_base.ethercat);
+<endif>
+<if(has_arm)>
+<arm_solvers:{solver |
+<robot-configure(solver, backend)>
+}; separator="\n">
+<endif>
+
+<if(has_arm)>
+<app-arm-post-setup(backend, arm_solvers, unique_motions)>
+<endif>
+
+<if(fsm_namespace)>
+    struct fsm_nbx *fsm = <fsm_namespace>::create_fsm();
+    if (!fsm) return 1;
+    robot.fsm_events = fsm->eventData;
+
+<fsm-dispatch(motions, fsm_namespace)>
+
+<endif>
+    int _step = 0;
+<if(fsm_namespace)>
+    int _fsm_prev_state = -1;
+<else>
+    int current_motion = 0;
+<endif>
+#ifdef MOTION_SPEC_ENABLE_INTROSPECTION
+    motion_spec::introspection::RunPublisher _introspection_pub;
+#endif
+    timespec _next_tick{};
+    clock_gettime(CLOCK_MONOTONIC, &_next_tick);
+    while (<app-loop-condition(backend, has_arm)>) {
+<if(needs_clock_time)>        shared.clock_time_s = <clock-time-source(backend, arm_solvers, has_arm)>;
+<endif>
+<if(has_arm)>
+<app-arm-loop-reset(backend, arm_solvers, fsm_namespace)>
+<endif>
+<if(fsm_namespace)>
+        if (static_cast\<int\>(fsm->currentStateIndex) != _fsm_prev_state) {
+            _fsm_prev_state = static_cast\<int\>(fsm->currentStateIndex);
+            std::cerr \<\< "[fsm] state   " \<\< <fsm_namespace>::STATE_URIS[fsm->currentStateIndex] \<\< std::endl;
+            // Re-arm per-entry snapshots for a trajectory motion whenever its state is
+            // (re-)entered, so the trajectory rebuilds from the current pose. Fixed
+            // targets (trajectory anchors) persist via their shared_data guards.
+            switch (fsm->currentStateIndex) {
+<motions:{motion | <fsm-reenter-reset-case(motion, fsm_namespace)>}; separator="">            default: break;
+            \}
+        \}
+        if (fsm->currentStateIndex == fsm->endStateIndex) break;
+<if(fsm_step_event)>
+        shared._motion_spec_record_event(<fsm_step_event_idx>);
+        produce_event(fsm->eventData, <fsm_namespace>::<fsm_step_event>);
+<endif>
+        fsm_dispatch(fsm);
+<else>
+        switch (current_motion) {
+<motions:{motion |
+        case <i0>: {
+            update_<motion.id>(<motion.id>_state_instance, shared, robot);
+            monitor_<motion.id>(<motion.monitor_args>);
+            if (!<motion.id>_state_instance.active && can_start_<motion.id>(<motion.can_start_args>)) {
+                <motion.id>_state_instance.active = true;
+                <motion.id>_state_instance.active_steps = 0;
+<if(motion.has_active_elapsed)>                <motion.id>_state_instance.motion_start_time = shared.clock_time_s;
+<endif>
+<motion.until_monitors:{m |                 <motion.id>_state_instance.<m.id>_previous = false;
+                <motion.id>_state_instance.<m.id>_event_triggered = false;}; separator="
+">
+            \}
+            if (<motion.id>_state_instance.active) {
+                control_<motion.id>(<motion.id>_state_instance, shared, robot);
+                apply_<motion.id>(<motion.apply_args>);
+<if(motion.has_until_condition)>
+                // TODO: replace this temporary event latch bridge with real event-driven FSM transitions.
+                if (<motion.id>_state_instance.active_steps > 0 && (<motion-done-condition(motion)>)) {
+                    <motion.id>_state_instance.active = false;
+                    current_motion = <i>;
+                \}
+<else>
+                if (<motion.id>_state_instance.active_steps >= 750) {
+                    <motion.id>_state_instance.active = false;
+                    current_motion = <i>;
+                \}
+<endif>
+                ++<motion.id>_state_instance.active_steps;
+            \}
+            break;
+        \}
+}; separator="\n">
+        default:
+            current_motion = <length(motions)> - 1;
+            break;
+        }
+<endif>
+<if(has_arm)>
+<app-arm-trace-update(backend, arm_solvers, trace)>
+<app-arm-runtime-step(backend, arm_solvers)>
+<endif>
+<if(fsm_namespace)>
+        fsm_step_nbx(fsm);
+        reconfig_event_buffers(fsm->eventData);
+<endif>
+#ifdef MOTION_SPEC_ENABLE_INTROSPECTION
+        motion_spec::introspection::sample_model(
+            _introspection_pub,
+<if(fsm_namespace)>            static_cast\<int\>(fsm->currentStateIndex),
+            static_cast\<int\>(fsm->currentStateIndex),
+<else>            current_motion,
+            current_motion,
+<endif>            motion_spec::runtime::monotonic_time_s(),
+            static_cast\<std::uint64_t\>(_step),
+            shared);
+#endif
+        ++_step;
+        motion_spec::runtime::sleep_until_next(_next_tick, <control_period_ns>);
+    }
+<app-headless-telemetry(backend, shared_data, arm_solvers, scene)>
+<if(has_arm)>
+
+<app-arm-cleanup(backend, has_arm)>
+<arm_solvers:{solver |
+<robot-shutdown(solver, backend)>
+}; separator="\n">
+<endif>
+<if(has_mobile_base)>
+    robif2b_kelo_drive_actuator_stop(robot.mobile_base.wheel_actuator);
+    robif2b_ethercat_stop(robot.mobile_base.ethercat);
+    robif2b_ethercat_shutdown(robot.mobile_base.ethercat);
+<endif>
+<if(fsm_namespace)>
+    <fsm_namespace>::destroy_fsm(fsm);
+<endif>
+
+    return 0;
+}
+>>

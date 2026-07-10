@@ -531,8 +531,9 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
 
 
 
-def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | None) -> dict:
-    schema = build_schema(ir, ir_path=ir_path, output_dir=output_dir, fsm_ir=fsm_ir)
+def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path) -> dict:
+    # The framed FSM lives in ir["fsm"] (derived by ir_gen from the FSM named graph).
+    schema = build_schema(ir, ir_path=ir_path, output_dir=output_dir, fsm_ir=ir.get("fsm"))
     layout = build_frame_layout(schema)
     end_state = schema.get("fsm", {}).get("end")
     output_dir.mkdir(parents=True, exist_ok=True)

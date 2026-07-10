@@ -4267,6 +4267,174 @@ def add_motion_function_interfaces(motions: list[dict]) -> None:
         motion["apply_args"] = ", ".join(apply_args)
 
 
+_FSM_NS = "https://secorolab.github.io/metamodels/behaviour/fsm#"
+
+
+def _fsm_from_graph(g) -> dict | None:
+    """Frame the FSM named graph (states/events/transitions/reactions, folded into the
+    model dataset by motion-spec-dsl) into the same dict shape the standalone .hpp uses,
+    so codegen needs no fsm_ir.json read. None when the model imports no .fsm."""
+    FSM = rdflib.Namespace(_FSM_NS)
+    fsm_ref = next(iter(g.subjects(RDF["type"], FSM["FSM"])), None)
+    if fsm_ref is None:
+        return None
+
+    def ident(uri):
+        return get_valid_var_name(local_name(str(uri))).upper()
+
+    states, state_uris = [], {}
+    for s in g.objects(fsm_ref, FSM["states"]):
+        key = ident(s)
+        states.append(key)
+        state_uris[key] = str(s)
+    events, event_uris = [], {}
+    for e in g.objects(fsm_ref, FSM["events"]):
+        key = ident(e)
+        events.append(key)
+        event_uris[key] = str(e)
+
+    transitions_table = []
+    for tr in g.objects(fsm_ref, FSM["transitions"]):
+        transitions_table.append(
+            {
+                "id": ident(tr),
+                "uri": str(tr),
+                "from_state": ident(g.value(tr, FSM["transition-from"])),
+                "to_state": ident(g.value(tr, FSM["transition-to"])),
+            }
+        )
+    reactions_table = []
+    for rx in g.objects(fsm_ref, FSM["reactions"]):
+        fires = [ident(ev) for ev in g.objects(rx, FSM["fires-events"])]
+        reactions_table.append(
+            {
+                "id": ident(rx),
+                "uri": str(rx),
+                "when_event": ident(g.value(rx, FSM["when-event"])),
+                "do_transition": ident(g.value(rx, FSM["do-transition"])),
+                "fires_events": fires,
+                "num_fires": len(fires),
+            }
+        )
+
+    description_node = g.value(fsm_ref, FSM["description"])
+    # Event/state IRIs share the FSM node's parent path (…/<model>/fsm/); is_fsm_event
+    # matches monitor event IRIs against it.
+    namespace_uri = str(fsm_ref).rsplit("/", 1)[0] + "/"
+    return {
+        "name": str(g.value(fsm_ref, FSM["name"])),
+        "description": str(description_node) if description_node is not None else None,
+        "start_state": ident(g.value(fsm_ref, FSM["start-state"])),
+        "end_state": ident(g.value(fsm_ref, FSM["end-state"])),
+        "states": states,
+        "state_uris": state_uris,
+        "events": events,
+        "event_uris": event_uris,
+        "transitions_table": transitions_table,
+        "reactions_table": reactions_table,
+        "namespace_uri": namespace_uri,
+    }
+
+
+def _event_to_state(fsm: dict) -> dict[str, str]:
+    """Map each FSM event token to the state it transitions out of (the state the motion
+    runs in): the from-state of the transition the event's reaction fires."""
+    transition_from = {t["id"]: t["from_state"] for t in fsm["transitions_table"]}
+    return {
+        r["when_event"]: transition_from[r["do_transition"]]
+        for r in fsm["reactions_table"]
+        if r["do_transition"] in transition_from
+    }
+
+
+def is_fsm_event(monitor: dict, fsm_ns_uri: str | None) -> bool:
+    # A monitor fires the FSM only when its event lives in the FSM's namespace;
+    # standalone (monitor-owned) events keep the existing warn stub.
+    return bool(
+        fsm_ns_uri
+        and monitor.get("is_edge_triggered")
+        and (monitor.get("event_uri") or "").startswith(fsm_ns_uri)
+    )
+
+
+def _apply_fsm_wiring(ir: dict) -> None:
+    """Set the FSM header/step fields and tag FSM-event monitors + their motions, from the
+    FSM the ir_gen graph already carries (ir["fsm"]). Runs before the function-interface
+    pass so the FSM-added robot param is picked up. No-op when the model has no FSM."""
+    fsm = ir.get("fsm")
+    fsm_namespace = fsm["name"].lower() if fsm else None
+    events = fsm.get("events", []) if fsm else []
+    fsm_event_index = {event: idx for idx, event in enumerate(events)}
+    fsm_step_event = "E_STEP" if "E_STEP" in events else None
+    ir["fsm_namespace"] = fsm_namespace
+    ir["fsm_header"] = f"{fsm['name']}.hpp" if fsm else None
+    ir["fsm_step_event"] = fsm_step_event
+    ir["fsm_step_event_idx"] = fsm_event_index.get(fsm_step_event, -1)
+    if fsm_namespace is None:
+        return
+
+    fsm_ns_uri = fsm.get("namespace_uri")
+    event_state = _event_to_state(fsm)
+    motions = ir.get("motions", [])
+    by_id = {m["id"]: m for m in motions}
+
+    def tag_run_state(motion, monitors):
+        for monitor in monitors:
+            if is_fsm_event(monitor, fsm_ns_uri):
+                monitor["fsm_namespace"] = fsm_namespace
+                monitor["fsm_event_idx"] = fsm_event_index.get(monitor.get("event_name") or "", -1)
+                state = event_state.get(monitor.get("event_name") or "")
+                if state and not motion.get("fsm_state"):
+                    motion["fsm_state"] = state
+
+    for motion in motions:
+        tag_run_state(motion, motion.get("until_monitors", []) + motion.get("while_monitors", []))
+        for monitor in motion.get("when_monitors", []):
+            if not is_fsm_event(monitor, fsm_ns_uri):
+                continue
+            monitor["fsm_namespace"] = fsm_namespace
+            monitor["fsm_event_idx"] = fsm_event_index.get(monitor.get("event_name") or "", -1)
+            fallback_id = monitor.get("fallback_motion")
+            if not fallback_id:
+                raise ValueError(
+                    f"WHEN monitor '{monitor.get('id')}' on FSM-wired motion "
+                    f"'{motion['id']}' must declare a fallback hold motion "
+                    f"(e.g. '... when active fallback <hold-motion>'). A WHEN precondition "
+                    f"without a fallback would leave the arm uncommanded while waiting."
+                )
+            fallback = by_id.get(fallback_id)
+            if fallback is None:
+                raise ValueError(
+                    f"WHEN monitor '{monitor.get('id')}' names unknown fallback motion "
+                    f"'{fallback_id}'."
+                )
+            state = event_state.get(monitor.get("event_name") or "")
+            if state and not fallback.get("fsm_state"):
+                fallback["fsm_state"] = state
+            gates = fallback.setdefault("fsm_when_gate_motions", [])
+            if motion["id"] not in gates:
+                gates.append(motion["id"])
+
+
+def _apply_fsm_gate_calls(ir: dict) -> None:
+    """Materialize each fallback state's WHEN-evaluation calls (the gated motion's
+    precondition, dispatched with the hold step). Runs after function interfaces so
+    when_args are available."""
+    if ir.get("fsm_namespace") is None:
+        return
+    motions = ir.get("motions", [])
+    by_id = {m["id"]: m for m in motions}
+    for fallback in motions:
+        gate_ids = fallback.get("fsm_when_gate_motions")
+        if not gate_ids:
+            continue
+        fallback["fsm_when_gate_calls"] = [
+            f"monitor_when_{gate_id}({by_id[gate_id].get('when_args', '')});"
+            for gate_id in gate_ids
+            if gate_id in by_id
+        ]
+
+
 def derive_codegen_fields(ir: dict) -> None:
     """Compute every codegen-facing field on the plain-dict IR: scene vector
     expansions, runtime-robot annotations, pose components, motion timing/monitor
@@ -4346,7 +4514,9 @@ def derive_codegen_fields(ir: dict) -> None:
     # seconds; real backends use a monotonic wall clock.
     ir["needs_clock_time"] = any(m.get("has_elapsed") for m in ir.get("motions", []))
 
+    _apply_fsm_wiring(ir)
     add_motion_function_interfaces(ir.get("motions", []))
+    _apply_fsm_gate_calls(ir)
 
     add_controller_signal_metadata(ir)
     add_controller_internal_state_logging(ir)
@@ -4468,6 +4638,9 @@ def generate_ir(manifest_path):
         "trace": _trace_from_graph(g),
         "uris": introspection["uris"],
         "introspection": introspection,
+        # FSM (states/events/transitions/reactions) framed from the FSM named graph that
+        # motion-spec-dsl folds into the model dataset; None when no .fsm is imported.
+        "fsm": _fsm_from_graph(g),
     }
     # Serialize the dataclass IR to its plain-dict form (as codegen used to see it
     # via load_ir), then derive all codegen-facing fields so ir.json is complete

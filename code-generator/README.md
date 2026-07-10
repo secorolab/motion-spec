@@ -1,8 +1,7 @@
 # code-generator
 
 StringTemplate v4 (`.stg`) templates that motion-spec codegen renders into the
-generated C++ controller, introspection artifacts, and CMake. Rendered by
-`motion_spec.codegen.render_template` (`stst -t <this dir> main.<template>`).
+generated C++ controller, introspection artifacts, and CMake.
 
 ### `main.stg`
 - Root group: imports every other template group.

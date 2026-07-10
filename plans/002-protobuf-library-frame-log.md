@@ -54,14 +54,13 @@ decoded record shape that replay/runtime-graph depend on.
 compiles it for C++ (writer) and Python (reader). `build_frame_log_proto_fields`
 and the `.proto` template are unchanged.
 
-**C++ writer — pick one (STOP and confirm with maintainer before coding):**
-
-| Option | Runtime dep | Notes |
-|---|---|---|
-| **libprotobuf-lite** (recommended) | `libprotobuf-lite` + `protoc` at codegen | Simplest. `protoc --cpp_out` → `frame_log.pb.{h,cc}` compiled into the controller; `write_frame` populates a `RuntimeFrame` and `SerializeToString`. Lite = no reflection/text-format. |
-| **nanopb** | none at runtime (vendored `.c`) + `nanopb_generator` at codegen | Keeps the generated binary dependency-light (matches the "lean generated project" goal). But the per-model `.proto` has ~900 singular fields → a large generated struct; needs `.options`. More moving parts in codegen. |
-
-Both regenerate per model at codegen time (the `.proto` is model-specific).
+**C++ writer — full libprotobuf** (decided). At codegen time, `protoc --cpp_out`
+compiles the per-model `frame_log.proto` → `frame_log.pb.{h,cc}`; the generated
+controller compiles it and links `protobuf::libprotobuf`. `write_frame`
+populates a `RuntimeFrame` message and calls `SerializeToString`. Full (not
+`-lite`) for the complete, familiar API; the extra binary size is acceptable for
+now. `protobuf-lite` or nanopb remain a later optimization if a lean generated
+binary becomes a requirement — deferred, not chosen.
 
 **Python reader**: parse the archived `frame_log.proto` into a descriptor with
 `protoc --descriptor_set_out` (or `grpcio-tools`), build the message class
@@ -76,10 +75,10 @@ and any protobuf library. Field **order** may differ from the hand-rolled writer
 (protobuf serializes ascending by number), so new logs are valid protobuf but
 **not byte-identical** to old ones — acceptable for new runs; note it.
 
-**Dependencies (new)**: Python `protobuf`; C++ `protoc` + `libprotobuf-lite`
-(or nanopb). These must be added to `grc_meta` (Dockerfile apt
-`protobuf-compiler libprotobuf-dev`, and `script-setup`'s package check + pip
-list) — this is the protobuf setup that is intentionally absent today.
+**Dependencies (new)**: Python `protobuf`; C++ `protoc` + `libprotobuf` (full).
+These must be added to `grc_meta` (Dockerfile apt `protobuf-compiler
+libprotobuf-dev`, and `script-setup`'s package check + pip list) — this is the
+protobuf setup that is intentionally absent today.
 
 ## Scope
 
@@ -100,10 +99,11 @@ drop policy, the `.proto` template output, schema.json.
 3. **C++ writer.** Replace `FrameLogger`'s hand-rolled `append_*`/`write_frame`
    with: build a `motion_spec::introspection::RuntimeFrame`, set each semantic
    field from the `Frame` struct, `SerializeToString`, length-delimit (keep the
-   varint length prefix helper OR use `writeDelimitedTo`). Drop `append_varint`/
-   `append_key`/`append_bytes`/`append_string`/`append_uint`/`append_i64`/
-   `append_double`. Update `cmake_mj_kdl` + `code-generator/CMakeLists.txt` to
-   compile `frame_log.pb.cc` and link `protobuf-lite`.
+   varint length prefix helper OR use `SerializeDelimitedToOstream`). Drop
+   `append_varint`/`append_key`/`append_bytes`/`append_string`/`append_uint`/
+   `append_i64`/`append_double`. Update `cmake_mj_kdl` +
+   `code-generator/CMakeLists.txt` to compile `frame_log.pb.cc` and link
+   `protobuf::libprotobuf`.
 4. **Python reader.** Replace `frame_log_pb.py` encode/decode: load the run's
    `.proto` descriptor, parse `FrameLogRecord`s, emit the canonical record.
    Delete `_varint`/`_read_varint`/`_key`/`_*_field`/`_slot`/`_fields`/`_parse_*`.
@@ -132,9 +132,9 @@ drop policy, the `.proto` template output, schema.json.
 ## STOP conditions
 
 - The writer thread can't keep up (drops appear) with library serialization —
-  reconsider (arena reuse, `protobuf-lite`, or nanopb) before proceeding.
+  reconsider (reuse a single `RuntimeFrame` with `Clear()`, arena allocation)
+  before proceeding.
 - protoc is unavailable in CI/build and cannot be added — report; do not silently
   fall back to the hand-rolled codec.
 - The decoded record shape would have to change (replay/runtime-graph break) —
   stop; only the wire mechanism should change, not the record contract.
-- C++ option choice (libprotobuf-lite vs nanopb) is unresolved — confirm before Step 3.

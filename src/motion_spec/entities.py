@@ -512,13 +512,6 @@ class AccelerationConstraint:
 
 
 @dataclass
-class AccelerationConstraintSpecification:
-    id: str
-    constraints: list[AccelerationConstraint]
-    type: str = field(default="AccelerationConstraintSpecification")
-
-
-@dataclass
 class CartesianForceSpecification:
     id: str
     force: Wrench
@@ -537,7 +530,7 @@ class JointForceSpecification:
 @dataclass
 class MotionDrivers:
     id: str
-    acceleration_constraint: list[AccelerationConstraintSpecification]
+    acceleration_constraint: list[AccelerationConstraint]
     cartesian_force: list[CartesianForceSpecification]
     joint_force: list[JointForceSpecification] = field(default_factory=list)
     has_cartesian_force: bool = False

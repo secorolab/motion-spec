@@ -95,7 +95,7 @@ assign-constraint-force(constraint, solver_state, column) ::= <<
 // Confirmed correct per KDL implementation; see validation TODO in todo.md.
 solver-init(solver, motion_driver, backend) ::= <<
 if (!state.<solver.id>.initialized) {
-        state.<solver.id>.num_constraints = <if(motion_driver.acceleration_constraint)><length(first(motion_driver.acceleration_constraint).constraints)><else>0<endif>;
+        state.<solver.id>.num_constraints = <if(motion_driver.acceleration_constraint)><length(motion_driver.acceleration_constraint)><else>0<endif>;
         state.<solver.id>.num_joints = robot.<solver.id>.chain->getNrOfJoints();
         state.<solver.id>.num_segments = robot.<solver.id>.chain->getNrOfSegments();
         state.<solver.id>.q = KDL::JntArray(state.<solver.id>.num_joints);
@@ -275,7 +275,7 @@ solver-output(solver, out, backend) ::= <<
 solver-run(solver, motion_driver, backend) ::= <<
     KDL::SetToZero(state.<solver.id>.f_cstr);
 <if(motion_driver.acceleration_constraint)>
-<first(motion_driver.acceleration_constraint).constraints:{c | <assign-constraint-force(c, solver.id, i0)>}; separator="\n">
+<motion_driver.acceleration_constraint:{c | <assign-constraint-force(c, solver.id, i0)>}; separator="\n">
 <endif>
     KDL::SetToZero(state.<solver.id>.tau_ff);
 <motion_driver.joint_force:{jf |     state.<solver.id>.tau_ff(motion_spec::runtime::find_joint_index(*robot.<solver.id>.chain, "<jf.joint_name>")) += shared.<jf.force_id>;}; separator="\n">

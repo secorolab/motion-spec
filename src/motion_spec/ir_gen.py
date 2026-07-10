@@ -107,7 +107,6 @@ from motion_spec.entities import (
     RelativePoseCapture,
     GuardedMotionBlock,
     AccelerationConstraint,
-    AccelerationConstraintSpecification,
     CartesianForceSpecification,
     JointForceSpecification,
     MotionDrivers,
@@ -795,7 +794,9 @@ class Parser:
         spec_jf = []
 
         for a in self.g[id_ : SLV["acceleration-constraint"]]:
-            spec_acc.append(self.acceleration_constraint_specification(a))
+            self._expect_type(a, SLV["AccelerationConstraintSpecification"])
+            for c in self.g[a : SLV["constraints"]]:
+                spec_acc.append(self.acceleration_constraint(c))
 
         for f in self.g[id_ : SLV["cartesian-force"]]:
             spec_frc.append(self.cartesian_force_specification(f))
@@ -843,15 +844,6 @@ class Parser:
             self.quantity(lower_node) if lower_node is not None else None,
             self.quantity(upper_node) if upper_node is not None else None,
         )
-
-    @memoize
-    def acceleration_constraint_specification(self, id_):
-        self._expect_type(id_, SLV["AccelerationConstraintSpecification"])
-        constraints = []
-        for c in self.g[id_ : SLV["constraints"]]:
-            constraints.append(self.acceleration_constraint(c))
-
-        return AccelerationConstraintSpecification(self.id(id_), constraints)
 
     @memoize
     def acceleration_constraint(self, id_):
@@ -1864,23 +1856,18 @@ def _body_name(name: str | None) -> str | None:
 def _mark_acceleration_constraint_frames(solver):
     root_body = _body_name(getattr(solver, "chain_root", None))
     for driver in solver.motion_drivers:
-        for acc_spec in driver.acceleration_constraint:
-            for constraint in acc_spec.constraints:
-                axis_frame = getattr(constraint.as_seen_by, "id", None)
-                constraint.base_aligned = axis_frame is None or _body_name(axis_frame) == root_body
+        for constraint in driver.acceleration_constraint:
+            axis_frame = getattr(constraint.as_seen_by, "id", None)
+            constraint.base_aligned = axis_frame is None or _body_name(axis_frame) == root_body
 
 
 def _filtered_motion_driver(driver, handler_output_ids: set[str], closure_input_map):
     """Return the slice of a solver driver fed by the current handler outputs."""
-    acceleration_specs = []
-    for acc_spec in driver.acceleration_constraint:
-        constraints = [
-            ac
-            for ac in acc_spec.constraints
-            if ac.acceleration_energy.id in handler_output_ids
-        ]
-        if constraints:
-            acceleration_specs.append(replace(acc_spec, constraints=constraints))
+    acceleration_constraints = [
+        ac
+        for ac in driver.acceleration_constraint
+        if ac.acceleration_energy.id in handler_output_ids
+    ]
 
     cartesian_forces = []
     for force_spec in driver.cartesian_force:
@@ -1895,12 +1882,12 @@ def _filtered_motion_driver(driver, handler_output_ids: set[str], closure_input_
         if jf_spec.force_id in handler_output_ids
     ]
 
-    if not acceleration_specs and not cartesian_forces and not joint_forces:
+    if not acceleration_constraints and not cartesian_forces and not joint_forces:
         return None
 
     return replace(
         driver,
-        acceleration_constraint=acceleration_specs,
+        acceleration_constraint=acceleration_constraints,
         cartesian_force=cartesian_forces,
         joint_force=joint_forces,
         has_cartesian_force=bool(cartesian_forces),

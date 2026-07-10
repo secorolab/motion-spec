@@ -80,7 +80,7 @@ Phase 6 is the largest; sequence subtypes first (MonitorEntry, then Controller),
 ## Status
 - [x] Phase 1 — View.subobject narrowed; Trajectory.value + AccelerationConstraintSpecification.attached_to removed. Codegen byte-identical across 5 models, ir.json drops only dead keys, pytest 27 green.
 - [x] Phase 2 — MotionArmSolver → HandlerArmSolver. Codegen byte-identical (no template branches on the type string), ir.json shows only the 10 renames, pytest 27 green.
-- [ ] Phase 3
+- [x] Phase 3 — AccelerationConstraintSpecification flattened away; MotionDrivers.acceleration_constraint is now list[AccelerationConstraint]. solver.stg adjusted (first().constraints → the list). All 111 drivers had exactly 1 spec, so byte-equivalent. Codegen identical, wrapper gone from ir.json (30→0), pytest 27 green.
 - [ ] Phase 4
 - [ ] Phase 5
 - [ ] Phase 6

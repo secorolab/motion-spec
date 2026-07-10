@@ -1416,78 +1416,51 @@ class Parser:
             snapshot=snapshot,
         )
 
+    def _spatial_coordinate_fields(self, id_, ref_point_pred, as_seen_by_pred):
+        """Shared field extraction for the 6D coordinate quantities.
+
+        AccelerationTwist, PoseDifference and Wrench are distinct concepts with an
+        identical coordinate structure; only the RDF predicates differ (geometry vs
+        rigid-body-dynamics namespaces).
+        """
+        quantity_kind = [self.id(k) for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]]]
+        reference_point = self.point(self.g.value(id_, ref_point_pred))
+        as_seen_by = self.frame(self.g.value(id_, as_seen_by_pred))
+        unit = [self.id(u) for u in self.g[id_ : QUDT_SCHEMA["unit"]]]
+        authored, snapshot = self.quantity_role_flags(id_)
+        return quantity_kind, reference_point, as_seen_by, unit, authored, snapshot
+
     @memoize
     def acceleration_twist(self, id_):
         self._expect_type(id_, GEOM_COORD["AccelerationTwistCoordinate"])
         self._expect_type(id_, GEOM_COORD["VectorXYZ"])
-        quantity_kind = []
-        for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]]:
-            quantity_kind.append(self.id(k))
-        reference_point = self.point(self.g.value(id_, GEOM_REL["reference-point"]))
-        as_seen_by = self.frame(self.g.value(id_, GEOM_COORD["as-seen-by"]))
-        unit = []
-        for u in self.g[id_ : QUDT_SCHEMA["unit"]]:
-            unit.append(self.id(u))
-
-        authored, snapshot = self.quantity_role_flags(id_)
+        qk, ref, seen, unit, authored, snapshot = self._spatial_coordinate_fields(
+            id_, GEOM_REL["reference-point"], GEOM_COORD["as-seen-by"]
+        )
         return AccelerationTwist(
-            self.id(id_),
-            quantity_kind,
-            reference_point,
-            as_seen_by,
-            unit,
-            authored=authored,
-            snapshot=snapshot,
+            self.id(id_), qk, ref, seen, unit, authored=authored, snapshot=snapshot
         )
 
     @memoize
     def pose_difference(self, id_):
         self._expect_type(id_, GEOM_COORD_EXT["PoseDifferenceCoordinate"])
         self._expect_type(id_, GEOM_COORD["VectorXYZ"])
-        quantity_kind = []
-        for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]]:
-            quantity_kind.append(self.id(k))
-        reference_point = self.point(self.g.value(id_, GEOM_REL["reference-point"]))
-        as_seen_by = self.frame(self.g.value(id_, GEOM_COORD["as-seen-by"]))
-        unit = []
-        for u in self.g[id_ : QUDT_SCHEMA["unit"]]:
-            unit.append(self.id(u))
-
-        authored, snapshot = self.quantity_role_flags(id_)
+        qk, ref, seen, unit, authored, snapshot = self._spatial_coordinate_fields(
+            id_, GEOM_REL["reference-point"], GEOM_COORD["as-seen-by"]
+        )
         return PoseDifference(
-            self.id(id_),
-            quantity_kind,
-            reference_point,
-            as_seen_by,
-            unit,
-            authored=authored,
-            snapshot=snapshot,
+            self.id(id_), qk, ref, seen, unit, authored=authored, snapshot=snapshot
         )
 
     @memoize
     def wrench(self, id_):
         self._expect_type(id_, RBDYN_COORD["WrenchCoordinate"])
-        # assert(RBDYN_COORD["VectorXYZ"] in self.g[id_ : RDF["type"]])
-
-        quantity_kind = []
-        for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]]:
-            quantity_kind.append(self.id(k))
-        reference_point = self.point(self.g.value(id_, RBDYN_ENT["reference-point"]))
-        as_seen_by = self.frame(self.g.value(id_, RBDYN_COORD["as-seen-by"]))
-        unit = []
-        for u in self.g[id_ : QUDT_SCHEMA["unit"]]:
-            unit.append(self.id(u))
-
+        qk, ref, seen, unit, authored, snapshot = self._spatial_coordinate_fields(
+            id_, RBDYN_ENT["reference-point"], RBDYN_COORD["as-seen-by"]
+        )
         sensor_name = str(self.g.value(id_, MJ["ft-sensor-ref"]) or "")
-        authored, snapshot = self.quantity_role_flags(id_)
         return Wrench(
-            self.id(id_),
-            quantity_kind,
-            reference_point,
-            as_seen_by,
-            unit,
-            authored=authored,
-            snapshot=snapshot,
+            self.id(id_), qk, ref, seen, unit, authored=authored, snapshot=snapshot,
             sensor_name=sensor_name,
         )
 

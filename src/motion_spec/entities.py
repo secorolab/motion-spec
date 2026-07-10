@@ -328,21 +328,42 @@ class ConstraintEvaluator:
 
 
 @dataclass
-class Controller:
+class PIDController:
     id: str
     control_signal: Quantity
     error_signal: Quantity | None = None
-    reference_signal: Quantity | None = None
     measured_derivative: Quantity | None = None
     proportional_gain: float | None = None
     integral_gain: float | None = None
     derivative_gain: float | None = None
     decay_rate: float | None = None
+    output_saturation: Saturation | None = None
+    integral_saturation: Saturation | None = None
+    type: str = "ProportionalIntegralDerivative"
+
+
+@dataclass
+class ImpedanceController:
+    id: str
+    control_signal: Quantity
+    error_signal: Quantity | None = None
+    integral_gain: float | None = None
     stiffness: float | None = None
     damping: float | None = None
     output_saturation: Saturation | None = None
-    integral_saturation: Saturation | None = None
-    type: str = "Controller"
+    type: str = "ImpedanceController"
+
+
+@dataclass
+class FeedForwardController:
+    id: str
+    control_signal: Quantity
+    reference_signal: Quantity | None = None
+    output_saturation: Saturation | None = None
+    type: str = "FeedForwardController"
+
+
+Controller = PIDController | ImpedanceController | FeedForwardController
 
 
 @dataclass

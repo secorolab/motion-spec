@@ -96,7 +96,9 @@ from motion_spec.entities import (
     Constraint,
     GuardedMotion,
     ConstraintEvaluator,
-    Controller,
+    FeedForwardController,
+    ImpedanceController,
+    PIDController,
     ForwardedCommand,
     EdgeMonitor,
     LevelMonitor,
@@ -1059,7 +1061,7 @@ class Parser:
             decay_rate = None
             if CSTR_HDL["DecayingIntegralTerm"] in self.g[id_ : RDF["type"]]:
                 decay_rate = self.g.value(id_, CSTR_HDL["decay-rate"]).value
-            return Controller(
+            return PIDController(
                 id=self.id(id_),
                 control_signal=control_signal,
                 error_signal=error_signal,
@@ -1081,7 +1083,7 @@ class Parser:
                 raise ValueError(f"Impedance controller '{self.id(id_)}' must have cstr-hdl:error-signal.")
             if reference_signal is not None:
                 raise ValueError(f"Impedance controller '{self.id(id_)}' must not have cstr-hdl-ext:reference-signal.")
-            return Controller(
+            return ImpedanceController(
                 id=self.id(id_),
                 control_signal=control_signal,
                 error_signal=error_signal,
@@ -1099,7 +1101,7 @@ class Parser:
             raise ValueError(
                 f"FeedForward controller '{self.id(id_)}' must not have cstr-hdl-ext:measured-derivative."
             )
-        return Controller(
+        return FeedForwardController(
             id=self.id(id_),
             control_signal=control_signal,
             reference_signal=reference_signal,
@@ -3167,20 +3169,20 @@ def _build_introspection(
                 "uri": uri_by_id.get(controller.id),
                 "motion": motion.id,
                 "type": controller.type,
-                "proportional_gain": controller.proportional_gain,
-                "integral_gain": controller.integral_gain,
-                "derivative_gain": controller.derivative_gain,
-                "decay_rate": controller.decay_rate,
-                "stiffness": controller.stiffness,
-                "damping": controller.damping,
-                "error_signal": _id_ref(controller.error_signal),
-                "reference_signal": _id_ref(controller.reference_signal),
-                "measured_derivative": _id_ref(controller.measured_derivative),
+                "proportional_gain": getattr(controller, "proportional_gain", None),
+                "integral_gain": getattr(controller, "integral_gain", None),
+                "derivative_gain": getattr(controller, "derivative_gain", None),
+                "decay_rate": getattr(controller, "decay_rate", None),
+                "stiffness": getattr(controller, "stiffness", None),
+                "damping": getattr(controller, "damping", None),
+                "error_signal": _id_ref(getattr(controller, "error_signal", None)),
+                "reference_signal": _id_ref(getattr(controller, "reference_signal", None)),
+                "measured_derivative": _id_ref(getattr(controller, "measured_derivative", None)),
                 "output_signal": _id_ref(controller.control_signal),
             }
             controllers.append({k: v for k, v in controller_entry.items() if v is not None and v != []})
             for role in ("error_signal", "reference_signal", "measured_derivative", "control_signal"):
-                quantity_id = _id_ref(getattr(controller, role))
+                quantity_id = _id_ref(getattr(controller, role, None))
                 if quantity_id:
                     signal_entry = {
                         "id": f"{controller.id}.{role}",

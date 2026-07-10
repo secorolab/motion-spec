@@ -9,14 +9,14 @@ from rdflib import Graph
 from rdf_utils.resolver import IriToFileResolver, install_resolver
 
 from motion_spec import codegen
-from motion_spec.introspection.artifacts import (
+from motion_spec.codegen_artifacts import (
     PROTO_FIELD_BASES,
     build_frame_layout,
     build_frame_log_proto_fields,
-    build_provenance_document,
     build_schema,
     fields_with_offsets,
 )
+from motion_spec.provenance import build_provenance_document
 
 
 def _sample_ir() -> dict:
@@ -401,4 +401,3 @@ def test_provenance_document_is_jsonld_and_prov_shacl_conformant(tmp_path: Path)
     shape_path = metamodels / "prov.shacl.ttl"
     conforms, _, report = pyshacl.validate(graph, shacl_graph=str(shape_path))
     assert conforms, report
-

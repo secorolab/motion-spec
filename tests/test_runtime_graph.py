@@ -9,8 +9,8 @@ from pathlib import Path
 import rdflib
 
 from motion_spec.introspection.archive import create_archive_manifest
-from motion_spec.introspection.artifacts import prov_uri
-from motion_spec.introspection.frame_layout_spec import field_names_and_format
+from motion_spec.provenance import prov_uri
+from motion_spec.codegen_artifacts import field_names_and_format
 from motion_spec.introspection.replay import runtime_frames
 from motion_spec.introspection.runtime_graph import MSRUN, PROV, _bind_model_subnamespaces, write_runtime_ttl
 

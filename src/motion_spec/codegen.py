@@ -10,22 +10,12 @@ import os
 import re
 import subprocess
 import sys
-from dataclasses import asdict, is_dataclass
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from urllib.parse import urlparse
 
-from motion_spec.introspection.artifacts import write_introspection_artifacts
-
-
-class JSONEncoder(json.JSONEncoder):
-    """Dataclass-aware JSON encoder. Defined locally so codegen consumes only the
-    IR dict and does not import the rdflib-heavy ir_gen module."""
-
-    def default(self, o):
-        if is_dataclass(o) and not isinstance(o, type):
-            return asdict(o)
-        return super().default(o)
+from motion_spec.entities import DataclassJSONEncoder
+from motion_spec.codegen_artifacts import write_introspection_artifacts
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
@@ -103,7 +93,7 @@ def template_group() -> Path:
 
 def write_json(path: Path, payload):
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, cls=JSONEncoder, indent=4) + "\n")
+    path.write_text(json.dumps(payload, cls=DataclassJSONEncoder, indent=4) + "\n")
 
 
 def render_template(
@@ -323,6 +313,639 @@ def _motion_done_condition(motion: dict) -> str:
     return f"({condition})" if len(event_terms) > 1 else condition
 
 
+def is_fsm_event(monitor: dict, fsm_ns_uri: str | None) -> bool:
+    # A monitor fires the FSM only when its event lives in the FSM's namespace;
+    # standalone (monitor-owned) events keep the existing warn stub.
+    return bool(
+        fsm_ns_uri
+        and monitor.get("is_edge_triggered")
+        and (monitor.get("event_uri") or "").startswith(fsm_ns_uri)
+    )
+
+
+def expand_vector_fields(item: dict, field: str) -> None:
+    values = item.get(field)
+    if values is None:
+        # Env placement shorthand: omitted position/orientation means zero/identity.
+        values = [0.0, 0.0, 0.0]
+    if not isinstance(values, list) or len(values) != 3:
+        item_id = item.get("id", "<unknown>")
+        raise ValueError(f"Scene item '{item_id}' has invalid '{field}'; expected three values.")
+    item[f"{field}_x"] = values[0]
+    item[f"{field}_y"] = values[1]
+    item[f"{field}_z"] = values[2]
+
+
+def normalize_controller_gains(controller: dict) -> None:
+    ctrl_type = controller.get("type")
+    ctrl_id = controller.get("id", "<unknown>")
+    if ctrl_type == "ProportionalIntegralDerivative":
+        missing = [
+            name
+            for name, key in (
+                ("Kp", "proportional_gain"),
+                ("Ki", "integral_gain"),
+                ("Kd", "derivative_gain"),
+            )
+            if controller.get(key) is None
+        ]
+        if missing:
+            raise ValueError(
+                f"PID controller '{ctrl_id}' is missing required gain(s) {missing}; "
+                f"all of Kp, Ki, Kd must be specified in the model."
+            )
+    elif ctrl_type == "ImpedanceController":
+        if controller.get("stiffness") is None or controller.get("damping") is None:
+            raise ValueError(f"Impedance controller '{ctrl_id}' requires stiffness and damping.")
+
+
+def require_field(obj_id: str, field: str, value):
+    if value is None:
+        raise ValueError(
+            f"Procedural scene object '{obj_id}' is missing required field "
+            f"'{field}'. Add it to the .robmot model — silent defaults are no "
+            f"longer applied."
+        )
+    return value
+
+
+def merge_list_by_id(dst: list, src: list) -> None:
+    seen = {item.get("id") for item in dst if isinstance(item, dict)}
+    for item in src:
+        item_id = item.get("id") if isinstance(item, dict) else None
+        if item_id in seen:
+            continue
+        dst.append(copy.deepcopy(item))
+        seen.add(item_id)
+
+
+def cpp_access_expr(data_id: str, views: dict) -> str:
+    view = views.get(data_id)
+    if not view:
+        return f"shared.{data_id}"
+    superobject = view["superobject"]
+    if superobject["type"] == "Pose" and view["subspace"] == "Position":
+        axis = view.get("axis")
+        if axis is None:
+            return f"shared.{superobject['id']}.p"
+        axis_index = {"X": 0, "Y": 1, "Z": 2, "x": 0, "y": 1, "z": 2}[axis]
+        return f"shared.{superobject['id']}.p[{axis_index}]"
+    if superobject["type"] == "Pose" and view["subspace"] == "Rotation":
+        axis = view.get("axis")
+        if axis is None:
+            return f"shared.{superobject['id']}.M"
+        axis_index = {"X": 0, "Y": 1, "Z": 2, "x": 0, "y": 1, "z": 2}[axis]
+        return f"KDL::diff(KDL::Rotation::Identity(), shared.{superobject['id']}.M)[{axis_index}]"
+    if superobject["type"] == "Wrench":
+        member = "torque" if view["subspace"] == "Torque" else "force"
+        axis = view.get("axis")
+        if axis is None:
+            return f"shared.{superobject['id']}.{member}"
+        axis_index = {"X": 0, "Y": 1, "Z": 2, "x": 0, "y": 1, "z": 2}[axis]
+        return f"shared.{superobject['id']}.{member}[{axis_index}]"
+    axis_index = {"X": 0, "Y": 1, "Z": 2, "x": 0, "y": 1, "z": 2}[view["axis"]]
+    if superobject["type"] == "VelocityTwist":
+        member = "rot" if view["subspace"] == "AngularVelocity" else "vel"
+        return f"shared.{superobject['id']}.{member}[{axis_index}]"
+    if superobject["type"] == "AccelerationTwist":
+        member = "rot" if view["subspace"] == "AngularAcceleration" else "vel"
+        return f"shared.{superobject['id']}.{member}[{axis_index}]"
+    return f"shared.{data_id}"
+
+
+def component_expr(component_id: str, data_by_id: dict, views: dict) -> str:
+    component = data_by_id.get(component_id) or {}
+    if component.get("reference_value"):
+        return cpp_access_expr(component["reference_value"], views)
+    if component.get("value") is not None:
+        return str(component["value"])
+    return cpp_access_expr(component_id, views)
+
+
+def add_controller_signal_metadata(ir_payload: dict) -> None:
+    error_sources = {
+        closure.get("error"): closure
+        for closure in ir_payload.get("closures", {}).values()
+        if isinstance(closure, dict) and closure.get("type") == "ErrorEvaluator" and closure.get("error")
+    }
+
+    def signal_id(value):
+        if isinstance(value, dict):
+            return value.get("id")
+        if isinstance(value, str):
+            return value
+        return None
+
+    def enrich(controller: dict) -> None:
+        error_id = signal_id(controller.get("error_signal"))
+        source = error_sources.get(error_id) or {}
+        measured_id = source.get("quantity")
+        setpoint_id = signal_id(controller.get("reference_signal")) or source.get("reference_value")
+        measured_derivative_id = signal_id(controller.get("measured_derivative"))
+        if measured_id:
+            controller["measured_signal"] = measured_id
+            controller["measured_expr"] = cpp_access_expr(measured_id, ir_payload.get("views", {}))
+        if setpoint_id:
+            controller["setpoint_signal"] = setpoint_id
+            controller["setpoint_expr"] = cpp_access_expr(setpoint_id, ir_payload.get("views", {}))
+        if measured_derivative_id:
+            controller["measured_derivative_expr"] = cpp_access_expr(
+                measured_derivative_id,
+                ir_payload.get("views", {}),
+            )
+
+    for motion in ir_payload.get("motions", []) + ir_payload.get("unique_motions", []):
+        for controller in motion.get("controllers", []):
+            enrich(controller)
+    for controller in (ir_payload.get("introspection") or {}).get("controllers", []):
+        enrich(controller)
+
+
+def add_controller_internal_state_logging(ir_payload: dict) -> None:
+    shared_data = ir_payload.setdefault("shared_data", [])
+    introspection = ir_payload.setdefault("introspection", {})
+    quantities = introspection.setdefault("quantities", [])
+    shared_ids = {item.get("id") for item in shared_data if isinstance(item, dict) and item.get("id")}
+    quantity_ids = {item.get("id") for item in quantities if isinstance(item, dict) and item.get("id")}
+
+    def add_shared(item_id: str, item_type: str, controller_id: str, state_name: str) -> None:
+        if item_id not in shared_ids:
+            shared_data.append(
+                {
+                    "id": item_id,
+                    "type": item_type,
+                    "controller": controller_id,
+                    "role": "controller_internal_state",
+                    "state": state_name,
+                }
+            )
+            shared_ids.add(item_id)
+
+    def add_quantity(item_id: str, controller_id: str, state_name: str) -> None:
+        if item_id not in quantity_ids:
+            quantities.append(
+                {
+                    "id": item_id,
+                    "type": "Quantity",
+                    "controller": controller_id,
+                    "role": "controller_internal_state",
+                    "state": state_name,
+                }
+            )
+            quantity_ids.add(item_id)
+
+    stateful_types = {"ProportionalIntegralDerivative", "ImpedanceController"}
+    stateful_ids = {
+        controller.get("id")
+        for source in (
+            ir_payload.get("motions", []),
+            ir_payload.get("unique_motions", []),
+            [ir_payload.get("introspection") or {}],
+        )
+        for entry in source
+        for controller in (entry.get("controllers", []) if isinstance(entry, dict) else [])
+        if isinstance(controller, dict)
+        and controller.get("type") in stateful_types
+        and controller.get("id")
+    }
+
+    for closure in ir_payload.get("closures", {}).values():
+        if not isinstance(closure, dict) or closure.get("type") != "Controller":
+            continue
+        controller_id = closure.get("id")
+        if controller_id not in stateful_ids:
+            continue
+        samples = [
+            ("error_integral", "Quantity", "error_integral"),
+            ("previous_error", "Quantity", "previous_error"),
+            ("first_sample", "Bool", "is_first_sample"),
+        ]
+        closure_samples = []
+        for state_name, item_type, getter in samples:
+            item_id = f"{controller_id}_{state_name}"
+            add_shared(item_id, item_type, controller_id, state_name)
+            if item_type == "Quantity":
+                add_quantity(item_id, controller_id, state_name)
+            closure_samples.append({"id": item_id, "getter": getter})
+        closure["internal_state_samples"] = closure_samples
+
+
+def add_quantity_samples(ir_payload: dict) -> None:
+    introspection = ir_payload.get("introspection") or {}
+    shared_ids = {
+        item.get("id")
+        for item in ir_payload.get("shared_data", [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    views = ir_payload.get("views", {})
+    samples = []
+
+    def add(source: dict, component: str, expr: str) -> None:
+        row = {key: value for key, value in source.items() if key != "index"}
+        source_id = source.get("id")
+        row.update(
+            {
+                "id": source_id if not component else f"{source_id}.{component}",
+                "source_id": source_id,
+                "component": component or None,
+                "type": "Scalar",
+                "source_type": source.get("type"),
+                "sample_expr": expr,
+            }
+        )
+        samples.append(row)
+
+    def add_axes(source: dict, prefix: str, expr: str) -> None:
+        for idx, axis in enumerate(("x", "y", "z")):
+            add(source, f"{prefix}.{axis}" if prefix else axis, f"{expr}[{idx}]")
+
+    def scalar_view(data_id: str) -> bool:
+        view = views.get(data_id)
+        return not view or view.get("axis") is not None
+
+    for quantity in introspection.get("quantities", []):
+        qid = quantity.get("id")
+        if not qid:
+            continue
+        qtype = quantity.get("type")
+        if qtype == "Quantity":
+            if quantity.get("value") is not None and qid not in shared_ids and qid not in views:
+                add(quantity, "", str(quantity["value"]))
+            elif qid in views and scalar_view(qid):
+                add(quantity, "", cpp_access_expr(qid, views))
+            elif qid in shared_ids and qid not in views:
+                add(quantity, "", f"shared.{qid}")
+        elif qtype in {"Position", "Direction", "FreeVector"} and qid in shared_ids:
+            add_axes(quantity, "", f"shared.{qid}")
+        elif qtype == "Orientation" and qid in shared_ids:
+            add_axes(quantity, "", f"KDL::diff(KDL::Rotation::Identity(), shared.{qid})")
+        elif qtype in {"Pose", "Trajectory"} and qid in shared_ids:
+            add_axes(quantity, "position", f"shared.{qid}.p")
+            add_axes(quantity, "orientation", f"KDL::diff(KDL::Rotation::Identity(), shared.{qid}.M)")
+        elif qtype in {"VelocityTwist", "AccelerationTwist", "PoseDifference"} and qid in shared_ids:
+            add_axes(quantity, "angular", f"shared.{qid}.rot")
+            add_axes(quantity, "linear", f"shared.{qid}.vel")
+        elif qtype == "Wrench" and qid in shared_ids:
+            add_axes(quantity, "torque", f"shared.{qid}.torque")
+            add_axes(quantity, "force", f"shared.{qid}.force")
+
+    sampled_ids = {sample.get("source_id") for sample in samples}
+    for item in ir_payload.get("shared_data", []):
+        if not isinstance(item, dict):
+            continue
+        item_id = item.get("id")
+        if not item_id or item_id in sampled_ids:
+            continue
+        if item.get("type") == "Bool":
+            add(item, "", f"shared.{item_id} ? 1.0 : 0.0")
+        elif item.get("type") == "IntCounter":
+            add(item, "", f"static_cast<double>(shared.{item_id})")
+
+    introspection["quantity_samples"] = samples
+
+
+def add_spatial_samples(ir_payload: dict) -> None:
+    """Add per-object pose, velocity-twist and wrench frame-log samples."""
+    introspection = ir_payload.get("introspection") or {}
+    shared_ids = {
+        item.get("id")
+        for item in ir_payload.get("shared_data", [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    kinds = {"Pose": "poses", "VelocityTwist": "twists", "Wrench": "wrenches"}
+    spatial = {"poses": [], "twists": [], "wrenches": []}
+    for item in ir_payload.get("shared_data", []):
+        if not isinstance(item, dict):
+            continue
+        iid = item.get("id")
+        pool = kinds.get(item.get("type"))
+        if not iid or iid not in shared_ids or pool is None:
+            continue
+        spatial[pool].append({"id": iid, "index": len(spatial[pool]), "expr": f"shared.{iid}"})
+    introspection["spatial_samples"] = spatial
+
+
+def build_pose_components(ir_payload: dict) -> dict:
+    views = ir_payload.get("views", {})
+    data_by_id = {
+        item.get("id"): item
+        for item in ir_payload.get("data", [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    components: dict[str, dict] = {}
+    for view in views.values():
+        superobject = view.get("superobject") or {}
+        so_type = superobject.get("type")
+        is_declared_pose = bool(superobject.get("authored") or superobject.get("snapshot"))
+        if so_type != "Pose":
+            continue
+        if not (is_declared_pose or superobject.get("euler_axes_sequence")):
+            continue
+        # Only include inline-defined poses (those where components have values/references).
+        subobject_id = (view.get("subobject") or {}).get("id")
+        subobject_data = data_by_id.get(subobject_id) or {}
+        if not subobject_data.get("reference_value") and subobject_data.get("value") is None:
+            continue
+        pose_id = superobject["id"]
+        entry = components.setdefault(
+            pose_id,
+            {
+                "position_x_expr": None,
+                "position_y_expr": None,
+                "position_z_expr": None,
+                "orientation_x_expr": None,
+                "orientation_y_expr": None,
+                "orientation_z_expr": None,
+            },
+        )
+        axis = str(view.get("axis", "")).lower()
+        if axis not in {"x", "y", "z"}:
+            continue
+        subobject = (view.get("subobject") or {}).get("id")
+        if not subobject:
+            continue
+        prefix = "position" if view.get("subspace") == "Position" else "orientation"
+        entry[f"{prefix}_{axis}_expr"] = component_expr(subobject, data_by_id, views)
+    for pose_id, parts in components.items():
+        missing = [name for name, value in parts.items() if value is None]
+        if missing:
+            raise ValueError(
+                f"Declared pose '{pose_id}' is missing required components: {', '.join(missing)}."
+            )
+    return components
+
+
+def enrich_lerp_closures(ir_payload: dict, pose_components: dict) -> None:
+    for closure in ir_payload.get("closures", {}).values():
+        if closure.get("type") != "Lerp":
+            continue
+        goal = closure.get("goal")
+        if not isinstance(goal, str):
+            continue
+        if goal in pose_components:
+            parts = pose_components[goal]
+            closure["goal_expr"] = (
+                "KDL::Frame("
+                "KDL::Rotation::RPY("
+                f"{parts['orientation_x_expr']}, "
+                f"{parts['orientation_y_expr']}, "
+                f"{parts['orientation_z_expr']}), "
+                "KDL::Vector("
+                f"{parts['position_x_expr']}, "
+                f"{parts['position_y_expr']}, "
+                f"{parts['position_z_expr']}))"
+            )
+            closure["assign_goal"] = True
+        else:
+            closure["goal_expr"] = f"shared.{goal}"
+            closure["assign_goal"] = False
+
+
+def enrich_arc_closures(ir_payload: dict) -> None:
+    data_by_id = {
+        item.get("id"): item
+        for item in ir_payload.get("data", [])
+        if isinstance(item, dict) and item.get("id")
+    }
+
+    def is_pose(data: dict) -> bool:
+        qkind = data.get("quantity_kind")
+        qkind_ids = qkind if isinstance(qkind, list) else [qkind]
+        return data.get("type") == "Pose" or any(
+            isinstance(item, dict) and item.get("id") == "Pose" for item in qkind_ids
+        )
+
+    for closure in ir_payload.get("closures", {}).values():
+        if closure.get("type") != "Arc":
+            continue
+        end = closure.get("end")
+        end_data = data_by_id.get(end) or {}
+        if not isinstance(end, str) or not is_pose(end_data):
+            raise ValueError("Arc trajectory end must be a Pose quantity.")
+        closure["end_position_expr"] = f"shared.{end}.p"
+        closure["end_orientation_expr"] = f"shared.{end}.M"
+
+
+def declared_pose_component_entries(
+    ir_payload: dict,
+    pose_components: dict,
+    referenced_ids: set[str] | None = None,
+) -> list[dict]:
+    data_by_id = {
+        item.get("id"): item
+        for item in ir_payload.get("data", [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    entries = []
+    for pose_id, parts in pose_components.items():
+        if referenced_ids is not None and pose_id not in referenced_ids:
+            continue
+        item = data_by_id.get(pose_id) or {}
+        if not item.get("authored") or item.get("snapshot"):
+            continue
+        entries.append({"id": pose_id, **parts})
+    return entries
+
+
+def collect_motion_references(motion: dict, closures: dict) -> set[str]:
+    refs: set[str] = set()
+
+    def visit(value):
+        if isinstance(value, str):
+            refs.add(value)
+        elif isinstance(value, dict):
+            for item in value.values():
+                visit(item)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+
+    visit(motion)
+    for schedule_name in ("when_schedule", "while_schedule", "until_schedule"):
+        for step in motion.get(schedule_name, []):
+            closure = closures.get(step)
+            if closure:
+                visit(closure)
+    return refs
+
+
+def add_motion_trajectory_progress(ir_payload: dict) -> None:
+    data_by_id = {
+        item.get("id"): item
+        for item in ir_payload.get("data", [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    closures = ir_payload.get("closures", {})
+    for motion in ir_payload.get("motions", []):
+        time_progress_ids: list[str] = []
+        for step in motion.get("while_schedule", []):
+            closure = closures.get(step)
+            if not closure or closure.get("type") not in {"Lerp", "Circle", "Arc", "Helix", "Figure8"}:
+                continue
+            alpha_id = closure.get("alpha")
+            alpha_data = data_by_id.get(alpha_id) or {}
+            qkind = (alpha_data.get("quantity_kind") or {}).get("id")
+            if qkind == "Progress" and closure.get("type") != "Arc" and alpha_id not in time_progress_ids:
+                time_progress_ids.append(alpha_id)
+        motion["time_trajectory_progress_ids"] = time_progress_ids
+
+
+def _evaluator_term(e: dict, start_field: str) -> str:
+    # A timing evaluator has no solver error: compare the world clock against the threshold,
+    # measured from the selected state timestamp.
+    if e.get("is_elapsed"):
+        op = e.get("elapsed_op") or ">="
+        thr = e.get("elapsed_threshold_s") or 0.0
+        return f"(shared.clock_time_s - state.{start_field} {op} {thr:.6f})"
+    return f"motion_spec::runtime::constraint_satisfied(shared.{e['error']['id']})"
+
+
+def _evaluator_active_term(e: dict) -> str:
+    return _evaluator_term(e, "motion_start_time")
+
+
+def _evaluator_when_term(e: dict) -> str:
+    return _evaluator_term(e, "when_start_time")
+
+
+def add_until_monitor_conditions(motions: list[dict]) -> None:
+    for motion in motions:
+        terms = [
+            _evaluator_active_term(e)
+            for e in motion.get("until_evaluators", [])
+            if e.get("error") or e.get("is_elapsed")
+        ]
+        elapsed_terms_by_error = {
+            e["error"]["id"]: _evaluator_active_term(e)
+            for e in motion.get("until_evaluators", [])
+            if e.get("is_elapsed") and e.get("error")
+        }
+        joiner = " || " if motion.get("until_any") else " && "
+        active_condition = joiner.join(terms) if terms else "false"
+        if len(terms) > 1:
+            active_condition = f"({active_condition})"
+        for monitor in motion.get("until_monitors", []):
+            if monitor.get("is_until_aggregate"):
+                monitor["active_condition"] = active_condition
+                continue
+            error_id = (monitor.get("error") or {}).get("id")
+            if error_id in elapsed_terms_by_error:
+                monitor["active_condition"] = elapsed_terms_by_error[error_id]
+
+
+def add_when_monitor_conditions(motions: list[dict]) -> None:
+    for motion in motions:
+        terms = [
+            _evaluator_when_term(e)
+            for e in motion.get("when_evaluators", [])
+            if e.get("error") or e.get("is_elapsed")
+        ]
+        elapsed_terms_by_error = {
+            e["error"]["id"]: _evaluator_when_term(e)
+            for e in motion.get("when_evaluators", [])
+            if e.get("is_elapsed") and e.get("error")
+        }
+        joiner = " || " if motion.get("when_any") else " && "
+        motion["when_condition"] = joiner.join(terms) if terms else "true"
+        if len(terms) > 1:
+            motion["when_condition"] = f"({motion['when_condition']})"
+        active_condition = joiner.join(terms) if terms else "false"
+        if len(terms) > 1:
+            active_condition = f"({active_condition})"
+        for monitor in motion.get("when_monitors", []):
+            if monitor.get("is_when_aggregate"):
+                monitor["active_condition"] = active_condition
+                continue
+            error_id = (monitor.get("error") or {}).get("id")
+            if error_id in elapsed_terms_by_error:
+                monitor["active_condition"] = elapsed_terms_by_error[error_id]
+
+
+def add_motion_done_conditions(motions: list[dict]) -> None:
+    for motion in motions:
+        motion["done_condition"] = _motion_done_condition(motion)
+
+
+def add_motion_function_interfaces(motions: list[dict]) -> None:
+    def join_params(params: list[str]) -> str:
+        if not params:
+            return ""
+        return "\n    " + ",\n    ".join(params) + "\n"
+
+    def join_args(args: list[str]) -> str:
+        return ", ".join(args)
+
+    for motion in motions:
+        state_type = f"{motion['id']}_state &state"
+        has_when_elapsed = any(e.get("is_elapsed") for e in motion.get("when_evaluators", []))
+        has_when_logic = bool(motion.get("when_schedule") or motion.get("when_evaluators"))
+        can_start_params = []
+        can_start_args = []
+        if has_when_elapsed:
+            can_start_params.append(state_type)
+            can_start_args.append(f"{motion['id']}_state_instance")
+        if has_when_logic:
+            can_start_params.append("shared_data &shared")
+            can_start_args.append("shared")
+        motion["can_start_params"] = join_params(can_start_params)
+        motion["can_start_args"] = join_args(can_start_args)
+
+        when_mons = motion.get("when_monitors") or []
+        until_mons = motion.get("until_monitors") or []
+        has_pose = bool(motion.get("declared_pose_components"))
+        when_sched = bool(motion.get("when_schedule"))
+        until_sched = bool(motion.get("until_schedule"))
+        when_fsm = any(m.get("fsm_namespace") for m in when_mons)
+        until_fsm = any(m.get("fsm_namespace") for m in until_mons)
+
+        def monitor_sig(use_state, use_shared, use_robot):
+            params, args = [], []
+            if use_state:
+                params.append(state_type)
+                args.append(f"{motion['id']}_state_instance")
+            if use_shared:
+                params.append("shared_data &shared")
+                args.append("shared")
+            if use_robot:
+                params.append("const robot_io &robot")
+                args.append("robot")
+            return join_params(params), join_args(args)
+
+        motion["when_params"], motion["when_args"] = monitor_sig(
+            has_when_elapsed or bool(when_mons),
+            has_when_elapsed or has_pose or when_sched or bool(when_mons),
+            when_fsm,
+        )
+        motion["until_params"], motion["until_args"] = monitor_sig(
+            bool(until_mons),
+            until_sched or bool(until_mons),
+            until_fsm,
+        )
+        motion["monitor_params"], motion["monitor_args"] = monitor_sig(
+            bool(when_mons) or bool(until_mons),
+            when_sched or bool(when_mons) or until_sched or bool(until_mons),
+            when_fsm or until_fsm,
+        )
+
+        has_apply_state = bool(motion.get("arm_solvers"))
+        has_forwarded_commands = bool(motion.get("forwarded_commands"))
+        has_apply_shared = has_forwarded_commands
+        has_apply_robot = bool(motion.get("arm_solvers") or has_forwarded_commands)
+        apply_params = []
+        apply_args = []
+        if has_apply_state:
+            apply_params.append(state_type)
+            apply_args.append(f"{motion['id']}_state_instance")
+        if has_apply_shared:
+            apply_params.append("shared_data &shared")
+            apply_args.append("shared")
+        if has_apply_robot:
+            apply_params.append("const robot_io &robot")
+            apply_args.append("robot")
+        motion["apply_params"] = join_params(apply_params)
+        motion["apply_args"] = join_args(apply_args)
+
+
 def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     ir = load_ir(ir_path)
     _validate_ir(ir)
@@ -341,62 +964,6 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     ir["fsm_header"] = fsm_header
     ir["fsm_step_event"] = fsm_step_event
     ir["fsm_step_event_idx"] = fsm_event_index.get(fsm_step_event, -1)
-
-    def is_fsm_event(monitor: dict) -> bool:
-        # A monitor fires the FSM only when its event lives in the FSM's namespace;
-        # standalone (monitor-owned) events keep the existing warn stub.
-        return bool(
-            fsm_ns_uri
-            and monitor.get("is_edge_triggered")
-            and (monitor.get("event_uri") or "").startswith(fsm_ns_uri)
-        )
-
-    def expand_vector_fields(item: dict, field: str) -> None:
-        values = item.get(field)
-        if values is None:
-            # Env placement shorthand: omitted position/orientation means zero/identity.
-            values = [0.0, 0.0, 0.0]
-        if not isinstance(values, list) or len(values) != 3:
-            item_id = item.get("id", "<unknown>")
-            raise ValueError(
-                f"Scene item '{item_id}' has invalid '{field}'; expected three values."
-            )
-        item[f"{field}_x"] = values[0]
-        item[f"{field}_y"] = values[1]
-        item[f"{field}_z"] = values[2]
-
-    def normalize_controller_gains(controller: dict) -> None:
-        ctrl_type = controller.get("type")
-        ctrl_id = controller.get("id", "<unknown>")
-        if ctrl_type == "ProportionalIntegralDerivative":
-            missing = [
-                name
-                for name, key in (
-                    ("Kp", "proportional_gain"),
-                    ("Ki", "integral_gain"),
-                    ("Kd", "derivative_gain"),
-                )
-                if controller.get(key) is None
-            ]
-            if missing:
-                raise ValueError(
-                    f"PID controller '{ctrl_id}' is missing required gain(s) {missing}; "
-                    f"all of Kp, Ki, Kd must be specified in the model."
-                )
-        elif ctrl_type == "ImpedanceController":
-            if controller.get("stiffness") is None or controller.get("damping") is None:
-                raise ValueError(
-                    f"Impedance controller '{ctrl_id}' requires stiffness and damping."
-                )
-
-    def _require(obj_id: str, field: str, value):
-        if value is None:
-            raise ValueError(
-                f"Procedural scene object '{obj_id}' is missing required field "
-                f"'{field}'. Add it to the .robmot model — silent defaults are no "
-                f"longer applied."
-            )
-        return value
 
     for handler in ir.get("cstr_hdl", []):
         for controller in handler.get("controllers", []):
@@ -422,11 +989,11 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
             # has_path is true.
             continue
         obj_id = obj.get("id", "<unknown>")
-        size = _require(obj_id, "size", obj.get("size"))
-        color = _require(obj_id, "color", obj.get("color"))
-        friction = _require(obj_id, "friction", obj.get("friction"))
-        _require(obj_id, "shape", obj.get("shape"))
-        _require(obj_id, "mass", obj.get("mass"))
+        size = require_field(obj_id, "size", obj.get("size"))
+        color = require_field(obj_id, "color", obj.get("color"))
+        friction = require_field(obj_id, "friction", obj.get("friction"))
+        require_field(obj_id, "shape", obj.get("shape"))
+        require_field(obj_id, "mass", obj.get("mass"))
         obj["size_x"], obj["size_y"], obj["size_z"] = (
             float(size[0]),
             float(size[1]),
@@ -443,604 +1010,6 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
             float(friction[1]),
             float(friction[2]),
         )
-
-    def merge_list_by_id(dst: list, src: list) -> None:
-        seen = {item.get("id") for item in dst if isinstance(item, dict)}
-        for item in src:
-            item_id = item.get("id") if isinstance(item, dict) else None
-            if item_id in seen:
-                continue
-            dst.append(copy.deepcopy(item))
-            seen.add(item_id)
-
-    def cpp_access_expr(data_id: str, views: dict) -> str:
-        view = views.get(data_id)
-        if not view:
-            return f"shared.{data_id}"
-        superobject = view["superobject"]
-        if superobject["type"] == "Pose" and view["subspace"] == "Position":
-            axis = view.get("axis")
-            if axis is None:
-                return f"shared.{superobject['id']}.p"
-            axis_index = {"X": 0, "Y": 1, "Z": 2, "x": 0, "y": 1, "z": 2}[axis]
-            return f"shared.{superobject['id']}.p[{axis_index}]"
-        if superobject["type"] == "Pose" and view["subspace"] == "Rotation":
-            axis = view.get("axis")
-            if axis is None:
-                return f"shared.{superobject['id']}.M"
-            axis_index = {"X": 0, "Y": 1, "Z": 2, "x": 0, "y": 1, "z": 2}[axis]
-            return (
-                f"KDL::diff(KDL::Rotation::Identity(), shared.{superobject['id']}.M)[{axis_index}]"
-            )
-        if superobject["type"] == "Wrench":
-            member = "torque" if view["subspace"] == "Torque" else "force"
-            axis = view.get("axis")
-            if axis is None:
-                return f"shared.{superobject['id']}.{member}"
-            axis_index = {"X": 0, "Y": 1, "Z": 2, "x": 0, "y": 1, "z": 2}[axis]
-            return f"shared.{superobject['id']}.{member}[{axis_index}]"
-        axis_index = {"X": 0, "Y": 1, "Z": 2, "x": 0, "y": 1, "z": 2}[view["axis"]]
-        if superobject["type"] == "VelocityTwist":
-            member = "rot" if view["subspace"] == "AngularVelocity" else "vel"
-            return f"shared.{superobject['id']}.{member}[{axis_index}]"
-        if superobject["type"] == "AccelerationTwist":
-            member = "rot" if view["subspace"] == "AngularAcceleration" else "vel"
-            return f"shared.{superobject['id']}.{member}[{axis_index}]"
-        return f"shared.{data_id}"
-
-    def component_expr(component_id: str, data_by_id: dict, views: dict) -> str:
-        component = data_by_id.get(component_id) or {}
-        if component.get("reference_value"):
-            return cpp_access_expr(component["reference_value"], views)
-        if component.get("value") is not None:
-            return str(component["value"])
-        return cpp_access_expr(component_id, views)
-
-    def add_controller_signal_metadata(ir_payload: dict) -> None:
-        error_sources = {
-            closure.get("error"): closure
-            for closure in ir_payload.get("closures", {}).values()
-            if isinstance(closure, dict)
-            and closure.get("type") == "ErrorEvaluator"
-            and closure.get("error")
-        }
-
-        def signal_id(value):
-            if isinstance(value, dict):
-                return value.get("id")
-            if isinstance(value, str):
-                return value
-            return None
-
-        def enrich(controller: dict) -> None:
-            error_id = signal_id(controller.get("error_signal"))
-            source = error_sources.get(error_id) or {}
-            measured_id = source.get("quantity")
-            setpoint_id = signal_id(controller.get("reference_signal")) or source.get("reference_value")
-            measured_derivative_id = signal_id(controller.get("measured_derivative"))
-            if measured_id:
-                controller["measured_signal"] = measured_id
-                controller["measured_expr"] = cpp_access_expr(measured_id, ir_payload.get("views", {}))
-            if setpoint_id:
-                controller["setpoint_signal"] = setpoint_id
-                controller["setpoint_expr"] = cpp_access_expr(setpoint_id, ir_payload.get("views", {}))
-            if measured_derivative_id:
-                controller["measured_derivative_expr"] = cpp_access_expr(
-                    measured_derivative_id,
-                    ir_payload.get("views", {}),
-                )
-
-        for motion in ir_payload.get("motions", []) + ir_payload.get("unique_motions", []):
-            for controller in motion.get("controllers", []):
-                enrich(controller)
-        for controller in (ir_payload.get("introspection") or {}).get("controllers", []):
-            enrich(controller)
-
-    def add_controller_internal_state_logging(ir_payload: dict) -> None:
-        shared_data = ir_payload.setdefault("shared_data", [])
-        introspection = ir_payload.setdefault("introspection", {})
-        quantities = introspection.setdefault("quantities", [])
-        shared_ids = {
-            item.get("id")
-            for item in shared_data
-            if isinstance(item, dict) and item.get("id")
-        }
-        quantity_ids = {
-            item.get("id")
-            for item in quantities
-            if isinstance(item, dict) and item.get("id")
-        }
-
-        def add_shared(item_id: str, item_type: str, controller_id: str, state_name: str) -> None:
-            if item_id not in shared_ids:
-                shared_data.append(
-                    {
-                        "id": item_id,
-                        "type": item_type,
-                        "controller": controller_id,
-                        "role": "controller_internal_state",
-                        "state": state_name,
-                    }
-                )
-                shared_ids.add(item_id)
-
-        def add_quantity(item_id: str, controller_id: str, state_name: str) -> None:
-            if item_id not in quantity_ids:
-                quantities.append(
-                    {
-                        "id": item_id,
-                        "type": "Quantity",
-                        "controller": controller_id,
-                        "role": "controller_internal_state",
-                        "state": state_name,
-                    }
-                )
-                quantity_ids.add(item_id)
-
-        stateful_types = {"ProportionalIntegralDerivative", "ImpedanceController"}
-        stateful_ids = {
-            controller.get("id")
-            for source in (
-                ir_payload.get("motions", []),
-                ir_payload.get("unique_motions", []),
-                [ir_payload.get("introspection") or {}],
-            )
-            for entry in source
-            for controller in (entry.get("controllers", []) if isinstance(entry, dict) else [])
-            if isinstance(controller, dict)
-            and controller.get("type") in stateful_types
-            and controller.get("id")
-        }
-
-        for closure in ir_payload.get("closures", {}).values():
-            if not isinstance(closure, dict) or closure.get("type") != "Controller":
-                continue
-            controller_id = closure.get("id")
-            if controller_id not in stateful_ids:
-                continue
-            samples = [
-                ("error_integral", "Quantity", "error_integral"),
-                ("previous_error", "Quantity", "previous_error"),
-                ("first_sample", "Bool", "is_first_sample"),
-            ]
-            closure_samples = []
-            for state_name, item_type, getter in samples:
-                item_id = f"{controller_id}_{state_name}"
-                add_shared(item_id, item_type, controller_id, state_name)
-                if item_type == "Quantity":
-                    add_quantity(item_id, controller_id, state_name)
-                closure_samples.append({"id": item_id, "getter": getter})
-            closure["internal_state_samples"] = closure_samples
-
-    def add_quantity_samples(ir_payload: dict) -> None:
-        introspection = ir_payload.get("introspection") or {}
-        shared_ids = {
-            item.get("id")
-            for item in ir_payload.get("shared_data", [])
-            if isinstance(item, dict) and item.get("id")
-        }
-        views = ir_payload.get("views", {})
-        samples = []
-
-        def add(source: dict, component: str, expr: str) -> None:
-            row = {key: value for key, value in source.items() if key != "index"}
-            source_id = source.get("id")
-            row.update(
-                {
-                    "id": source_id if not component else f"{source_id}.{component}",
-                    "source_id": source_id,
-                    "component": component or None,
-                    "type": "Scalar",
-                    "source_type": source.get("type"),
-                    "sample_expr": expr,
-                }
-            )
-            samples.append(row)
-
-        def add_axes(source: dict, prefix: str, expr: str) -> None:
-            for idx, axis in enumerate(("x", "y", "z")):
-                add(source, f"{prefix}.{axis}" if prefix else axis, f"{expr}[{idx}]")
-
-        def scalar_view(data_id: str) -> bool:
-            view = views.get(data_id)
-            return not view or view.get("axis") is not None
-
-        for quantity in introspection.get("quantities", []):
-            qid = quantity.get("id")
-            if not qid:
-                continue
-            qtype = quantity.get("type")
-            if qtype == "Quantity":
-                if quantity.get("value") is not None and qid not in shared_ids and qid not in views:
-                    add(quantity, "", str(quantity["value"]))
-                elif qid in views and scalar_view(qid):
-                    add(quantity, "", cpp_access_expr(qid, views))
-                elif qid in shared_ids and qid not in views:
-                    add(quantity, "", f"shared.{qid}")
-            elif qtype in {"Position", "Direction", "FreeVector"} and qid in shared_ids:
-                add_axes(quantity, "", f"shared.{qid}")
-            elif qtype == "Orientation" and qid in shared_ids:
-                add_axes(quantity, "", f"KDL::diff(KDL::Rotation::Identity(), shared.{qid})")
-            elif qtype in {"Pose", "Trajectory"} and qid in shared_ids:
-                add_axes(quantity, "position", f"shared.{qid}.p")
-                add_axes(quantity, "orientation", f"KDL::diff(KDL::Rotation::Identity(), shared.{qid}.M)")
-            elif qtype in {"VelocityTwist", "AccelerationTwist", "PoseDifference"} and qid in shared_ids:
-                add_axes(quantity, "angular", f"shared.{qid}.rot")
-                add_axes(quantity, "linear", f"shared.{qid}.vel")
-            elif qtype == "Wrench" and qid in shared_ids:
-                add_axes(quantity, "torque", f"shared.{qid}.torque")
-                add_axes(quantity, "force", f"shared.{qid}.force")
-
-        sampled_ids = {sample.get("source_id") for sample in samples}
-        for item in ir_payload.get("shared_data", []):
-            if not isinstance(item, dict):
-                continue
-            item_id = item.get("id")
-            if not item_id or item_id in sampled_ids:
-                continue
-            if item.get("type") == "Bool":
-                add(item, "", f"shared.{item_id} ? 1.0 : 0.0")
-            elif item.get("type") == "IntCounter":
-                add(item, "", f"static_cast<double>(shared.{item_id})")
-
-        introspection["quantity_samples"] = samples
-
-    def add_spatial_samples(ir_payload: dict) -> None:
-        """Per-object spatial samples for shared data — one pose, velocity-twist and wrench
-        entry per data object, serialized into the frame record's pose/twist/wrench fields."""
-        introspection = ir_payload.get("introspection") or {}
-        shared_ids = {
-            item.get("id")
-            for item in ir_payload.get("shared_data", [])
-            if isinstance(item, dict) and item.get("id")
-        }
-        kinds = {"Pose": "poses", "VelocityTwist": "twists", "Wrench": "wrenches"}
-        spatial = {"poses": [], "twists": [], "wrenches": []}
-        for item in ir_payload.get("shared_data", []):
-            if not isinstance(item, dict):
-                continue
-            iid = item.get("id")
-            pool = kinds.get(item.get("type"))
-            if not iid or iid not in shared_ids or pool is None:
-                continue
-            spatial[pool].append(
-                {
-                    "id": iid,
-                    "index": len(spatial[pool]),
-                    "expr": f"shared.{iid}",
-                }
-            )
-        introspection["spatial_samples"] = spatial
-
-    def build_pose_components(ir_payload: dict) -> dict:
-        views = ir_payload.get("views", {})
-        data_by_id = {
-            item.get("id"): item
-            for item in ir_payload.get("data", [])
-            if isinstance(item, dict) and item.get("id")
-        }
-        components: dict[str, dict] = {}
-        for view in views.values():
-            superobject = view.get("superobject") or {}
-            so_type = superobject.get("type")
-            is_declared_pose = bool(superobject.get("authored") or superobject.get("snapshot"))
-            if so_type != "Pose":
-                continue
-            if not (is_declared_pose or superobject.get("euler_axes_sequence")):
-                continue
-            # Only include inline-defined poses (those where components have values/references)
-            # FK poses have all components computed from the solver with no stored value/reference
-            subobject_id = (view.get("subobject") or {}).get("id")
-            subobject_data = data_by_id.get(subobject_id) or {}
-            if not subobject_data.get("reference_value") and subobject_data.get("value") is None:
-                continue
-            pose_id = superobject["id"]
-            entry = components.setdefault(
-                pose_id,
-                {
-                    "position_x_expr": None,
-                    "position_y_expr": None,
-                    "position_z_expr": None,
-                    "orientation_x_expr": None,
-                    "orientation_y_expr": None,
-                    "orientation_z_expr": None,
-                },
-            )
-            axis = str(view.get("axis", "")).lower()
-            if axis not in {"x", "y", "z"}:
-                continue
-            subobject = (view.get("subobject") or {}).get("id")
-            if not subobject:
-                continue
-            prefix = "position" if view.get("subspace") == "Position" else "orientation"
-            entry[f"{prefix}_{axis}_expr"] = component_expr(subobject, data_by_id, views)
-        for pose_id, parts in components.items():
-            missing = [name for name, value in parts.items() if value is None]
-            if missing:
-                raise ValueError(
-                    f"Declared pose '{pose_id}' is missing required components: {', '.join(missing)}."
-                )
-        return components
-
-    def enrich_lerp_closures(ir_payload: dict, pose_components: dict) -> None:
-        for closure in ir_payload.get("closures", {}).values():
-            if closure.get("type") != "Lerp":
-                continue
-            goal = closure.get("goal")
-            if not isinstance(goal, str):
-                continue
-            if goal in pose_components:
-                parts = pose_components[goal]
-                closure["goal_expr"] = (
-                    "KDL::Frame("
-                    "KDL::Rotation::RPY("
-                    f"{parts['orientation_x_expr']}, "
-                    f"{parts['orientation_y_expr']}, "
-                    f"{parts['orientation_z_expr']}), "
-                    "KDL::Vector("
-                    f"{parts['position_x_expr']}, "
-                    f"{parts['position_y_expr']}, "
-                    f"{parts['position_z_expr']}))"
-                )
-                closure["assign_goal"] = True
-            else:
-                closure["goal_expr"] = f"shared.{goal}"
-                closure["assign_goal"] = False
-
-    def enrich_arc_closures(ir_payload: dict) -> None:
-        data_by_id = {
-            item.get("id"): item
-            for item in ir_payload.get("data", [])
-            if isinstance(item, dict) and item.get("id")
-        }
-        closures = ir_payload.get("closures", {})
-        pose_diff_by_target = {
-            closure.get("in2"): closure
-            for closure in closures.values()
-            if isinstance(closure, dict) and closure.get("type") == "PoseDiffEvaluator"
-        }
-
-        def is_pose(data: dict) -> bool:
-            qkind = data.get("quantity_kind")
-            qkind_ids = qkind if isinstance(qkind, list) else [qkind]
-            return data.get("type") == "Pose" or any(
-                isinstance(item, dict) and item.get("id") == "Pose" for item in qkind_ids
-            )
-
-        for closure in closures.values():
-            if closure.get("type") != "Arc":
-                continue
-            end = closure.get("end")
-            end_data = data_by_id.get(end) or {}
-            if not isinstance(end, str) or not is_pose(end_data):
-                raise ValueError("Arc trajectory end must be a Pose quantity.")
-            closure["end_position_expr"] = f"shared.{end}.p"
-            closure["end_orientation_expr"] = f"shared.{end}.M"
-
-    def declared_pose_component_entries(
-        ir_payload: dict,
-        pose_components: dict,
-        referenced_ids: set[str] | None = None,
-    ) -> list[dict]:
-        data_by_id = {
-            item.get("id"): item
-            for item in ir_payload.get("data", [])
-            if isinstance(item, dict) and item.get("id")
-        }
-        entries = []
-        for pose_id, parts in pose_components.items():
-            if referenced_ids is not None and pose_id not in referenced_ids:
-                continue
-            item = data_by_id.get(pose_id) or {}
-            if not item.get("authored") or item.get("snapshot"):
-                continue
-            entries.append({"id": pose_id, **parts})
-        return entries
-
-    def collect_motion_references(motion: dict, closures: dict) -> set[str]:
-        refs: set[str] = set()
-
-        def visit(value):
-            if isinstance(value, str):
-                refs.add(value)
-            elif isinstance(value, dict):
-                for item in value.values():
-                    visit(item)
-            elif isinstance(value, list):
-                for item in value:
-                    visit(item)
-
-        visit(motion)
-        for schedule_name in ("when_schedule", "while_schedule", "until_schedule"):
-            for step in motion.get(schedule_name, []):
-                closure = closures.get(step)
-                if closure:
-                    visit(closure)
-        return refs
-
-    def add_motion_trajectory_progress(ir_payload: dict) -> None:
-        data_by_id = {
-            item.get("id"): item
-            for item in ir_payload.get("data", [])
-            if isinstance(item, dict) and item.get("id")
-        }
-        closures = ir_payload.get("closures", {})
-        for motion in ir_payload.get("motions", []):
-            time_progress_ids: list[str] = []
-            for step in motion.get("while_schedule", []):
-                closure = closures.get(step)
-                if not closure or closure.get("type") not in {
-                    "Lerp",
-                    "Circle",
-                    "Arc",
-                    "Helix",
-                    "Figure8",
-                }:
-                    continue
-                alpha_id = closure.get("alpha")
-                alpha_data = data_by_id.get(alpha_id) or {}
-                qkind = (alpha_data.get("quantity_kind") or {}).get("id")
-                if (
-                    qkind == "Progress"
-                    and not (closure.get("type") == "Arc")
-                    and alpha_id not in time_progress_ids
-                ):
-                    time_progress_ids.append(alpha_id)
-            motion["time_trajectory_progress_ids"] = time_progress_ids
-
-    def _evaluator_term(e: dict, start_field: str) -> str:
-        # A timing evaluator has no solver error: compare the world clock
-        # against the threshold, measured from the selected state timestamp.
-        if e.get("is_elapsed"):
-            op = e.get("elapsed_op") or ">="
-            thr = e.get("elapsed_threshold_s") or 0.0
-            return f"(shared.clock_time_s - state.{start_field} {op} {thr:.6f})"
-        return f"motion_spec::runtime::constraint_satisfied(shared.{e['error']['id']})"
-
-    def _evaluator_active_term(e: dict) -> str:
-        return _evaluator_term(e, "motion_start_time")
-
-    def _evaluator_when_term(e: dict) -> str:
-        return _evaluator_term(e, "when_start_time")
-
-    def add_until_monitor_conditions(motions: list[dict]) -> None:
-        for motion in motions:
-            terms = [
-                _evaluator_active_term(e)
-                for e in motion.get("until_evaluators", [])
-                if e.get("error") or e.get("is_elapsed")
-            ]
-            elapsed_terms_by_error = {
-                e["error"]["id"]: _evaluator_active_term(e)
-                for e in motion.get("until_evaluators", [])
-                if e.get("is_elapsed") and e.get("error")
-            }
-            joiner = " || " if motion.get("until_any") else " && "
-            active_condition = joiner.join(terms) if terms else "false"
-            if len(terms) > 1:
-                active_condition = f"({active_condition})"
-            for monitor in motion.get("until_monitors", []):
-                if monitor.get("is_until_aggregate"):
-                    monitor["active_condition"] = active_condition
-                    continue
-                error_id = (monitor.get("error") or {}).get("id")
-                if error_id in elapsed_terms_by_error:
-                    monitor["active_condition"] = elapsed_terms_by_error[error_id]
-
-    def add_when_monitor_conditions(motions: list[dict]) -> None:
-        for motion in motions:
-            terms = [
-                _evaluator_when_term(e)
-                for e in motion.get("when_evaluators", [])
-                if e.get("error") or e.get("is_elapsed")
-            ]
-            elapsed_terms_by_error = {
-                e["error"]["id"]: _evaluator_when_term(e)
-                for e in motion.get("when_evaluators", [])
-                if e.get("is_elapsed") and e.get("error")
-            }
-            joiner = " || " if motion.get("when_any") else " && "
-            motion["when_condition"] = joiner.join(terms) if terms else "true"
-            if len(terms) > 1:
-                motion["when_condition"] = f"({motion['when_condition']})"
-            active_condition = joiner.join(terms) if terms else "false"
-            if len(terms) > 1:
-                active_condition = f"({active_condition})"
-            for monitor in motion.get("when_monitors", []):
-                if monitor.get("is_when_aggregate"):
-                    monitor["active_condition"] = active_condition
-                    continue
-                error_id = (monitor.get("error") or {}).get("id")
-                if error_id in elapsed_terms_by_error:
-                    monitor["active_condition"] = elapsed_terms_by_error[error_id]
-
-    def add_motion_done_conditions(motions: list[dict]) -> None:
-        for motion in motions:
-            motion["done_condition"] = _motion_done_condition(motion)
-
-    def add_motion_function_interfaces(motions: list[dict]) -> None:
-        def join_params(params: list[str]) -> str:
-            if not params:
-                return ""
-            return "\n    " + ",\n    ".join(params) + "\n"
-
-        def join_args(args: list[str]) -> str:
-            return ", ".join(args)
-
-        for motion in motions:
-            state_type = f"{motion['id']}_state &state"
-            has_when_elapsed = any(e.get("is_elapsed") for e in motion.get("when_evaluators", []))
-            has_when_logic = bool(motion.get("when_schedule") or motion.get("when_evaluators"))
-            can_start_params = []
-            can_start_args = []
-            if has_when_elapsed:
-                can_start_params.append(state_type)
-                can_start_args.append(f"{motion['id']}_state_instance")
-            if has_when_logic:
-                can_start_params.append("shared_data &shared")
-                can_start_args.append("shared")
-            motion["can_start_params"] = join_params(can_start_params)
-            motion["can_start_args"] = join_args(can_start_args)
-
-            # Each monitor fn takes only the params its body uses: state/shared as needed, robot
-            # only when it fires an FSM event (produce_event needs robot.fsm_events).
-            when_mons = motion.get("when_monitors") or []
-            until_mons = motion.get("until_monitors") or []
-            has_pose = bool(motion.get("declared_pose_components"))
-            when_sched = bool(motion.get("when_schedule"))
-            until_sched = bool(motion.get("until_schedule"))
-            when_fsm = any(m.get("fsm_namespace") for m in when_mons)
-            until_fsm = any(m.get("fsm_namespace") for m in until_mons)
-
-            def monitor_sig(use_state, use_shared, use_robot):
-                params, args = [], []
-                if use_state:
-                    params.append(state_type)
-                    args.append(f"{motion['id']}_state_instance")
-                if use_shared:
-                    params.append("shared_data &shared")
-                    args.append("shared")
-                if use_robot:
-                    params.append("const robot_io &robot")
-                    args.append("robot")
-                return join_params(params), join_args(args)
-
-            # monitor_when_<id>: elapsed latch + pose materialise + when schedule/monitors
-            motion["when_params"], motion["when_args"] = monitor_sig(
-                has_when_elapsed or bool(when_mons),
-                has_when_elapsed or has_pose or when_sched or bool(when_mons),
-                when_fsm,
-            )
-            # monitor_until_<id>: until schedule/monitors
-            motion["until_params"], motion["until_args"] = monitor_sig(
-                bool(until_mons),
-                until_sched or bool(until_mons),
-                until_fsm,
-            )
-            # monitor_<id> (combined): when + until schedules/monitors (no pose/elapsed)
-            motion["monitor_params"], motion["monitor_args"] = monitor_sig(
-                bool(when_mons) or bool(until_mons),
-                when_sched or bool(when_mons) or until_sched or bool(until_mons),
-                when_fsm or until_fsm,
-            )
-
-            has_apply_state = bool(motion.get("arm_solvers"))
-            has_forwarded_commands = bool(motion.get("forwarded_commands"))
-            has_apply_shared = has_forwarded_commands
-            has_apply_robot = bool(motion.get("arm_solvers") or has_forwarded_commands)
-            apply_params = []
-            apply_args = []
-            if has_apply_state:
-                apply_params.append(state_type)
-                apply_args.append(f"{motion['id']}_state_instance")
-            if has_apply_shared:
-                apply_params.append("shared_data &shared")
-                apply_args.append("shared")
-            if has_apply_robot:
-                apply_params.append("const robot_io &robot")
-                apply_args.append("robot")
-            motion["apply_params"] = join_params(apply_params)
-            motion["apply_args"] = join_args(apply_args)
 
     unique_motions = []
     motion_by_id = {}
@@ -1121,7 +1090,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
         # so the gated motion's WHEN is re-evaluated inside that fallback's state each tick.
         def tag_run_state(motion, monitors):
             for monitor in monitors:
-                if is_fsm_event(monitor):
+                if is_fsm_event(monitor, fsm_ns_uri):
                     monitor["fsm_namespace"] = fsm_namespace
                     monitor["fsm_event_idx"] = fsm_event_index.get(monitor.get("event_name") or "", -1)
                     state = event_state.get(monitor.get("event_name") or "")
@@ -1135,7 +1104,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
                     motion, motion.get("until_monitors", []) + motion.get("while_monitors", [])
                 )
                 for monitor in motion.get("when_monitors", []):
-                    if not is_fsm_event(monitor):
+                    if not is_fsm_event(monitor, fsm_ns_uri):
                         continue
                     monitor["fsm_namespace"] = fsm_namespace
                     monitor["fsm_event_idx"] = fsm_event_index.get(monitor.get("event_name") or "", -1)

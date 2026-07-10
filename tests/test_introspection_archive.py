@@ -14,8 +14,8 @@ from motion_spec.introspection.archive import (
     _validate_runtime_shacl,
     verify_manifest,
 )
-from motion_spec.introspection.artifacts import prov_uri
-from motion_spec.introspection.frame_layout_spec import fields_with_offsets
+from motion_spec.provenance import prov_uri
+from motion_spec.codegen_artifacts import fields_with_offsets
 from motion_spec.introspection import replay
 from motion_spec.introspection.replay import decode_frames, summarize, validate_header
 from motion_spec.introspection.runtime_graph import write_runtime_ttl

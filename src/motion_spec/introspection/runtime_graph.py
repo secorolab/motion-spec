@@ -15,7 +15,7 @@ from pathlib import Path
 import rdflib
 
 from motion_spec.introspection.archive import load_manifest, sha256_file
-from motion_spec.introspection.artifacts import MSPROV, prov_uri
+from motion_spec.provenance import MSPROV, prov_uri
 
 
 def _dt_literal(wall_ns) -> rdflib.Literal | None:
@@ -168,6 +168,144 @@ def _occurrence(g: rdflib.Graph, run_id: str, typename: str, disc, wall_ns, step
     return node
 
 
+def _state_change_occurrences(
+    g: rdflib.Graph,
+    run_id: str,
+    states: dict[int, dict],
+    events: dict[int, dict],
+    transitions: dict,
+    prev_state,
+    cur,
+    state,
+    entry,
+    step,
+) -> set:
+    anchors = set()
+    if state and state.get("uri"):
+        occ = _occurrence(g, run_id, "StateOccurrence", cur, entry, step)
+        g.add((occ, MSRUN.state, rdflib.URIRef(state["uri"])))
+        anchors.add(step)
+    if prev_state is None:
+        return anchors
+    tr = transitions.get((prev_state, cur))
+    if not tr or not tr.get("uri"):
+        return anchors
+    occ = _occurrence(g, run_id, "TransitionOccurrence", tr.get("id", f"{prev_state}-{cur}"), entry, step)
+    g.add((occ, MSRUN.transition, rdflib.URIRef(tr["uri"])))
+    frm_state = states.get(prev_state) or {}
+    if frm_state.get("uri"):
+        g.add((occ, MSRUN.fromState, rdflib.URIRef(frm_state["uri"])))
+    if state and state.get("uri"):
+        g.add((occ, MSRUN.toState, rdflib.URIRef(state["uri"])))
+    ev = events.get(tr.get("event_index")) or {}
+    if ev.get("uri"):
+        g.add((occ, MSRUN.event, rdflib.URIRef(ev["uri"])))
+    anchors.add(step)
+    return anchors
+
+
+def _constraint_edge_occurrences(
+    g: rdflib.Graph,
+    run_id: str,
+    state,
+    controllers: list,
+    prev_csat: list | None,
+    csat: list,
+    frame: dict,
+    wall,
+    step: int,
+) -> set:
+    anchors = set()
+    if prev_csat is None:
+        return anchors
+    for idx, now in enumerate(csat):
+        if idx >= len(prev_csat) or idx >= len(controllers) or now == prev_csat[idx]:
+            continue
+        constraint_uri = _slot_uri(controllers[idx], "constraint_uri")
+        if constraint_uri is None:  # only goal constraints, not pure regulation
+            continue
+        typename = "ConstraintSatisfiedOccurrence" if now else "ConstraintUnsatisfiedOccurrence"
+        occ = _occurrence(g, run_id, typename, idx, wall, step)
+        controller_uri = _slot_uri(controllers[idx], "uri", "controller_uri")
+        if controller_uri is not None:
+            g.add((occ, MSRUN.controller, controller_uri))
+        g.add((occ, MSRUN.constraint, constraint_uri))
+        if state and state.get("uri"):
+            g.add((occ, MSRUN.fsmState, rdflib.URIRef(state["uri"])))
+        _literal(g, occ, MSRUN.slotIndex, idx)
+        _literal(g, occ, MSRUN.value, _double(frame["constraints"][idx].get("error")))
+        anchors.add(step)
+    return anchors
+
+
+def _monitor_edge_occurrences(
+    g: rdflib.Graph,
+    run_id: str,
+    state,
+    monitors: list,
+    prev_msat: list | None,
+    msat: list,
+    frame: dict,
+    cond_map: dict,
+    wall,
+    step: int,
+) -> set:
+    anchors = set()
+    if prev_msat is None:
+        return anchors
+    for idx, now in enumerate(msat):
+        if idx >= len(prev_msat) or idx >= len(monitors) or not (now and not prev_msat[idx]):
+            continue
+        monitor_uri = _slot_uri(monitors[idx], "uri", "monitor_uri")
+        if monitor_uri is None:
+            continue
+        occ = _occurrence(g, run_id, "MonitorOccurrence", idx, wall, step)
+        g.add((occ, MSRUN.monitor, monitor_uri))
+        condition = cond_map.get(str(monitor_uri))
+        if condition is not None:
+            g.add((occ, MSRUN.constraint, condition))
+        if monitors[idx].get("event_uri"):
+            g.add((occ, MSRUN.event, rdflib.URIRef(monitors[idx]["event_uri"])))
+        if state and state.get("uri"):
+            g.add((occ, MSRUN.fsmState, rdflib.URIRef(state["uri"])))
+        _literal(g, occ, MSRUN.slotIndex, idx)
+        _literal(g, occ, MSRUN.value, _double(frame["monitors"][idx].get("value")))
+        anchors.add(step)
+    return anchors
+
+
+def _trigger_occurrences(
+    g: rdflib.Graph,
+    run_id: str,
+    states: dict[int, dict],
+    events: dict[int, dict],
+    frame: dict,
+    seen_events: set,
+    step: int,
+) -> set:
+    anchors = set()
+    for trigger in frame.get("triggers", []):
+        if trigger.get("kind") != KIND_EVENT:
+            continue
+        eidx = trigger.get("idx")
+        event = events.get(eidx) or {}
+        if event.get("id") == "E_STEP":
+            continue
+        ekey = (eidx, trigger.get("wall_ns"))
+        if ekey in seen_events:
+            continue
+        seen_events.add(ekey)
+        occ = _occurrence(g, run_id, "EventOccurrence", eidx, trigger.get("wall_ns"), step)
+        if event.get("uri"):
+            g.add((occ, MSRUN.event, rdflib.URIRef(event["uri"])))
+        tstate = states.get(trigger.get("fsm_state", -1))
+        if tstate and tstate.get("uri"):
+            g.add((occ, MSRUN.fsmState, rdflib.URIRef(tstate["uri"])))
+        _literal(g, occ, MSRUN.slotIndex, eidx)
+        anchors.add(step)
+    return anchors
+
+
 def _project_occurrences(
     g: rdflib.Graph, run_id: str, schema: dict, frames: list[dict], cond_map: dict
 ) -> set:
@@ -204,85 +342,21 @@ def _project_occurrences(
         msat = [bool(m.get("active")) and bool(m.get("satisfied")) for m in frame.get("monitors", [])]
 
         if cur != prev_state:
-            entry = frame.get("state_since_wall_ns") or wall
-            if state and state.get("uri"):
-                occ = _occurrence(g, run_id, "StateOccurrence", cur, entry, step)
-                g.add((occ, MSRUN.state, rdflib.URIRef(state["uri"])))
-                anchors.add(step)
-            if prev_state is not None:
-                tr = transitions.get((prev_state, cur))
-                if tr and tr.get("uri"):
-                    occ = _occurrence(g, run_id, "TransitionOccurrence", tr.get("id", f"{prev_state}-{cur}"), entry, step)
-                    g.add((occ, MSRUN.transition, rdflib.URIRef(tr["uri"])))
-                    frm_state = states.get(prev_state) or {}
-                    if frm_state.get("uri"):
-                        g.add((occ, MSRUN.fromState, rdflib.URIRef(frm_state["uri"])))
-                    if state and state.get("uri"):
-                        g.add((occ, MSRUN.toState, rdflib.URIRef(state["uri"])))
-                    ev = events.get(tr.get("event_index")) or {}
-                    if ev.get("uri"):
-                        g.add((occ, MSRUN.event, rdflib.URIRef(ev["uri"])))
-                    anchors.add(step)
+            anchors.update(
+                _state_change_occurrences(
+                    g, run_id, states, events, transitions, prev_state, cur, state,
+                    frame.get("state_since_wall_ns") or wall, step
+                )
+            )
         else:
-            if prev_csat is not None:
-                for idx, now in enumerate(csat):
-                    if idx >= len(prev_csat) or idx >= len(controllers) or now == prev_csat[idx]:
-                        continue
-                    constraint_uri = _slot_uri(controllers[idx], "constraint_uri")
-                    if constraint_uri is None:  # only goal constraints, not pure regulation
-                        continue
-                    typename = "ConstraintSatisfiedOccurrence" if now else "ConstraintUnsatisfiedOccurrence"
-                    occ = _occurrence(g, run_id, typename, idx, wall, step)
-                    controller_uri = _slot_uri(controllers[idx], "uri", "controller_uri")
-                    if controller_uri is not None:
-                        g.add((occ, MSRUN.controller, controller_uri))
-                    g.add((occ, MSRUN.constraint, constraint_uri))
-                    if state and state.get("uri"):
-                        g.add((occ, MSRUN.fsmState, rdflib.URIRef(state["uri"])))
-                    _literal(g, occ, MSRUN.slotIndex, idx)
-                    # live residual at the edge; spec (setpoint/threshold) is on the linked constraint
-                    _literal(g, occ, MSRUN.value, _double(frame["constraints"][idx].get("error")))
-                    anchors.add(step)
-            if prev_msat is not None:
-                for idx, now in enumerate(msat):
-                    if idx >= len(prev_msat) or idx >= len(monitors) or not (now and not prev_msat[idx]):
-                        continue
-                    monitor_uri = _slot_uri(monitors[idx], "uri", "monitor_uri")
-                    if monitor_uri is None:
-                        continue
-                    occ = _occurrence(g, run_id, "MonitorOccurrence", idx, wall, step)
-                    g.add((occ, MSRUN.monitor, monitor_uri))
-                    condition = cond_map.get(str(monitor_uri))
-                    if condition is not None:  # the cstr: model node (operator/quantity/threshold)
-                        g.add((occ, MSRUN.constraint, condition))
-                    if monitors[idx].get("event_uri"):
-                        g.add((occ, MSRUN.event, rdflib.URIRef(monitors[idx]["event_uri"])))
-                    if state and state.get("uri"):
-                        g.add((occ, MSRUN.fsmState, rdflib.URIRef(state["uri"])))
-                    _literal(g, occ, MSRUN.slotIndex, idx)
-                    # live residual at fire; spec (quantity/threshold) is on the linked constraint
-                    _literal(g, occ, MSRUN.value, _double(frame["monitors"][idx].get("value")))
-                    anchors.add(step)
+            anchors.update(_constraint_edge_occurrences(
+                g, run_id, state, controllers, prev_csat, csat, frame, wall, step
+            ))
+            anchors.update(_monitor_edge_occurrences(
+                g, run_id, state, monitors, prev_msat, msat, frame, cond_map, wall, step
+            ))
 
-        for trigger in frame.get("triggers", []):
-            if trigger.get("kind") != KIND_EVENT:
-                continue
-            eidx = trigger.get("idx")
-            event = events.get(eidx) or {}
-            if event.get("id") == "E_STEP":
-                continue
-            ekey = (eidx, trigger.get("wall_ns"))
-            if ekey in seen_events:
-                continue
-            seen_events.add(ekey)
-            occ = _occurrence(g, run_id, "EventOccurrence", eidx, trigger.get("wall_ns"), step)
-            if event.get("uri"):
-                g.add((occ, MSRUN.event, rdflib.URIRef(event["uri"])))
-            tstate, _tmeta = _state_meta(schema, states, trigger.get("fsm_state", -1))
-            if tstate and tstate.get("uri"):
-                g.add((occ, MSRUN.fsmState, rdflib.URIRef(tstate["uri"])))
-            _literal(g, occ, MSRUN.slotIndex, eidx)
-            anchors.add(step)
+        anchors.update(_trigger_occurrences(g, run_id, states, events, frame, seen_events, step))
 
         prev_state, prev_csat, prev_msat = cur, csat, msat
     return anchors
@@ -460,9 +534,9 @@ def write_runtime_ttl(run_dir: Path | str, frames: list[dict], *, frame_count: i
 
 def _record_runtime_ttl_with_rec(run_dir: Path, manifest: dict, runtime_ttl: Path) -> None:
     try:
-        from motion_spec.introspection.archive import _ensure_local_rec_importable
+        from motion_spec.provenance import ensure_local_rec_importable
 
-        _ensure_local_rec_importable()
+        ensure_local_rec_importable()
         from rec import Run
         from rec.observers import FileObserver
     except ImportError as exc:

@@ -16,19 +16,21 @@ from pathlib import Path
 from motion_spec.introspection.archive import (
     HASHED_ARTIFACTS,
     ArchiveError,
-    _artifact_size,
-    _dependencies,
-    _ensure_local_rec_importable,
-    _host_info,
-    _parse_rec_time,
-    _record_activities,
-    _record_agents,
-    _repositories,
     create_archive_manifest,
     sha256_file,
     verify_manifest,
 )
-from motion_spec.introspection.artifacts import prov_uri
+from motion_spec.provenance import (
+    artifact_size,
+    dependencies,
+    ensure_local_rec_importable,
+    host_info,
+    parse_rec_time,
+    prov_uri,
+    record_activities,
+    record_agents,
+    repositories,
+)
 
 
 class RunnerError(RuntimeError):
@@ -133,18 +135,18 @@ def _start_rec_run(
     executable: Path,
     schema: dict,
 ) -> None:
-    _ensure_local_rec_importable()
+    ensure_local_rec_importable()
     from rec import Run
     from rec.observers import FileObserver
 
     observer = FileObserver(run_dir / "rec.jsonld", run_id=run_id)
     run = Run(observers=[observer], run_id=run_id)
     run._emit_started()
-    run.log_host_info(_host_info())
-    run.log_repositories(_repositories(run_dir))
-    run.log_dependencies(_dependencies())
-    _record_agents(run, run_dir, schema)
-    _record_activities(run, schema)
+    run.log_host_info(host_info())
+    run.log_repositories(repositories(run_dir))
+    run.log_dependencies(dependencies())
+    record_agents(run, run_dir, schema)
+    record_activities(run, schema)
     run.add_agent(
         prov_uri("agent:motion_spec_runner"),
         ["prov:SoftwareAgent", "obs:ObservationProvider"],
@@ -178,7 +180,7 @@ def _record_execution_inputs(run, source_dir: Path, executable: Path, schema: di
                 role=role,
                 archivePath=HASHED_ARTIFACTS.get(role),
                 sha256=sha256_file(path),
-                size_bytes=_artifact_size(path),
+                size_bytes=artifact_size(path),
             )
     run.add_resource(
         executable,
@@ -186,7 +188,7 @@ def _record_execution_inputs(run, source_dir: Path, executable: Path, schema: di
         role="log_producer_executable",
         archivePath=f"controller/executable/{executable.name}",
         sha256=sha256_file(executable),
-        size_bytes=_artifact_size(executable),
+        size_bytes=artifact_size(executable),
     )
 
 
@@ -223,7 +225,7 @@ def _run_executable(
 
 
 def _finish_rec_run(rec_path: Path, run_id: str, status: str) -> None:
-    _ensure_local_rec_importable()
+    ensure_local_rec_importable()
     from rec import Run
     from rec.observers import FileObserver
 
@@ -237,7 +239,7 @@ def _finish_rec_run(rec_path: Path, run_id: str, status: str) -> None:
     run = Run(observers=[observer], run_id=run_id)
     run._id = run_id
     run.start_time = (
-        _parse_rec_time(lifecycle["started_time"])
+        parse_rec_time(lifecycle["started_time"])
         if lifecycle.get("started_time")
         else datetime.now(timezone.utc)
     )

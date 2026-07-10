@@ -8,8 +8,18 @@ them via the IR dict.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import json
+from dataclasses import asdict, dataclass, field, is_dataclass
 from enum import Enum
+
+
+class DataclassJSONEncoder(json.JSONEncoder):
+    """Encode IR dataclasses without importing the RDF parser."""
+
+    def default(self, o):
+        if is_dataclass(o) and not isinstance(o, type):
+            return asdict(o)
+        return super().default(o)
 
 
 class Subspace(str, Enum):

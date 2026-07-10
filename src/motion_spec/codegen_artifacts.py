@@ -1,69 +1,85 @@
 # SPDX-License-Identifier: MPL-2.0
-"""Static introspection artifacts generated from the enriched motion-spec IR."""
+"""Static codegen contract artifacts generated from the enriched motion-spec IR."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import re
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-from motion_spec.introspection.frame_layout_spec import fields_with_offsets
+from motion_spec.provenance import build_provenance_document
 
 SCHEMA_VERSION = 1
 FRAME_LAYOUT_VERSION = 1
 RUNTIME_RDF_CONTRACT_VERSION = 1
 FIELD_BYTES = 8
 TRIGGER_POOL_SIZE = 32
-MSPROV = "https://secorolab.github.io/motion-spec/provenance/"
-MSPROV_PREFIX = "msprov:"
-PROV_AGENT = "http://www.w3.org/ns/prov#Agent"
-PROV_SOFTWARE_AGENT = "http://www.w3.org/ns/prov#SoftwareAgent"
-TYPE_PREFIXES = {
-    "http://www.w3.org/ns/prov#": "prov:",
-    "https://secorolab.github.io/metamodels/acceptance-criteria/bdd#": "bdd:",
-    "https://secorolab.github.io/metamodels/agent#": "agn:",
-    "https://secorolab.github.io/metamodels/observation#": "obs:",
-    "https://secorolab.github.io/metamodels/runtime#": "rt:",
-}
-# JSON-LD @context references for the codegen provenance document. These are the
-# published metamodel IRIs; local resolution (offline) is the job of the installed
-# IriToFileResolver (motion_spec.manifest.metamodel_url_map), NOT an absolute
-# file:// path baked into the artifact — that would tie the archive to one machine.
-METAMODEL_CONTEXTS = [
-    "https://secorolab.github.io/metamodels/prov.json",
-    "https://secorolab.github.io/metamodels/acceptance-criteria/bdd/agent.json",
-    "https://secorolab.github.io/metamodels/acceptance-criteria/bdd/bdd.json",
-    "https://secorolab.github.io/metamodels/acceptance-criteria/bdd/observation.json",
-    "https://secorolab.github.io/metamodels/runtime/runtime.json",
+HEADER = [
+    ("seq", "Q"),
+    ("t", "d"),
+    ("step", "Q"),
+    ("fsm_state", "q"),
+    ("active_motion", "q"),
+    ("last_event", "q"),
+    ("state_since_t", "d"),
+    ("state_since_wall_ns", "q"),
+    ("event_t", "d"),
+    ("event_wall_ns", "q"),
+    ("wall_ns", "q"),
+    ("period_ns", "q"),
+    ("compute_ns", "q"),
 ]
-TOOL_METADATA = {
-    "agent:motion_spec_codegen": {
-        "package": "motion-spec",
-        "repository": "https://github.com/secorolab/motion-spec",
-    },
-    "agent:motion_spec_ir_gen": {
-        "package": "motion-spec",
-        "repository": "https://github.com/secorolab/motion-spec",
-    },
-    "agent:rdf_utils": {
-        "package": "rdf-utils",
-        "repository": "https://github.com/secorolab/rdf-utils",
-    },
-    "agent:rdflib": {
-        "package": "rdflib",
-        "repository": "https://github.com/RDFLib/rdflib",
-    },
-    "agent:pyshacl": {
-        "package": "pyshacl",
-        "repository": "https://github.com/RDFLib/pySHACL",
-    },
-    "agent:stst": {
-        "version": "0.4.1",
-        "repository": "https://github.com/jsnyders/STSTv4",
-    },
-}
+CSLOT = [
+    ("active", "q"),
+    ("error", "d"),
+    ("output", "d"),
+    ("satisfied", "q"),
+    ("sat_t", "d"),
+    ("measured", "d"),
+    ("setpoint", "d"),
+]
+MSLOT = [("active", "q"), ("value", "d"), ("satisfied", "q"), ("sat_t", "d")]
+TSLOT = [("kind", "q"), ("idx", "q"), ("fsm_state", "q"), ("t", "d"), ("wall_ns", "q")]
+PSLOT = [("px", "d"), ("py", "d"), ("pz", "d"), ("qx", "d"), ("qy", "d"), ("qz", "d"), ("qw", "d")]
+VSLOT = [("lx", "d"), ("ly", "d"), ("lz", "d"), ("ax", "d"), ("ay", "d"), ("az", "d")]
+KSLOT = [("fx", "d"), ("fy", "d"), ("fz", "d"), ("tx", "d"), ("ty", "d"), ("tz", "d")]
+
+
+def field_names_and_format(pools: dict) -> tuple[str, list[str]]:
+    fmt = "<" + "".join(code for _, code in HEADER)
+    names = [name for name, _ in HEADER]
+    for idx in range(pools["constraints"]):
+        fmt += "".join(code for _, code in CSLOT)
+        names.extend(f"c{idx}.{name}" for name, _ in CSLOT)
+    for idx in range(pools["monitors"]):
+        fmt += "".join(code for _, code in MSLOT)
+        names.extend(f"m{idx}.{name}" for name, _ in MSLOT)
+    fmt += "d" * pools["quantities"]
+    names.extend(f"q{idx}" for idx in range(pools["quantities"]))
+    for idx in range(pools["triggers"]):
+        fmt += "".join(code for _, code in TSLOT)
+        names.extend(f"tr{idx}.{name}" for name, _ in TSLOT)
+    fmt += "q"
+    names.append("trigger_count")
+    for prefix, slot, key in (("pose", PSLOT, "poses"), ("twist", VSLOT, "twists"), ("wrench", KSLOT, "wrenches")):
+        for idx in range(pools.get(key, 0)):
+            fmt += "".join(code for _, code in slot)
+            names.extend(f"{prefix}{idx}.{name}" for name, _ in slot)
+    return fmt, names
+
+
+def fields_with_offsets(pools: dict) -> tuple[list[dict], int]:
+    fmt, names = field_names_and_format(pools)
+    fields = [
+        {"name": name, "fmt": code, "offset": idx * FIELD_BYTES, "size": FIELD_BYTES}
+        for idx, (name, code) in enumerate(zip(names, fmt[1:]))
+    ]
+    return fields, len(fields) * FIELD_BYTES
+
+
+def quantity_ids(quantities: list[dict]) -> list[str]:
+    return [q["id"] for q in sorted(quantities, key=lambda q: q.get("index", 0))]
 
 
 def _uri_by_id(ir: dict) -> dict:
@@ -71,108 +87,6 @@ def _uri_by_id(ir: dict) -> dict:
         row["id"]: row["uri"]
         for row in ir.get("introspection", {}).get("uris", ir.get("uris", []))
         if isinstance(row, dict) and row.get("id") and row.get("uri")
-    }
-
-
-def _slug(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("_") or "item"
-
-
-def _prov_iri(identifier: str) -> str:
-    kind, _, name = identifier.partition(":")
-    if not name:
-        kind, name = "id", identifier
-    return f"{MSPROV_PREFIX}{_slug(kind)}/{_slug(name)}"
-
-
-def prov_uri(identifier: str) -> str:
-    """Canonical *full* provenance IRI for an agent/activity id (e.g. ``agent:runtime:mujoco``).
-
-    Same slugging as the msprov: CURIE the codegen provenance uses, but expanded to an
-    absolute IRI. Runtime/rec documents emit this so the same concept shares one IRI with
-    the codegen graph — without those docs (or the generic rec package) needing the
-    msprov prefix defined. Pass an already-expanded/absolute IRI and it is returned as-is.
-    """
-    if identifier.startswith(("http://", "https://")):
-        return identifier
-    if identifier.startswith(MSPROV_PREFIX):
-        return MSPROV + identifier[len(MSPROV_PREFIX):]
-    return MSPROV + _prov_iri(identifier)[len(MSPROV_PREFIX):]
-
-
-def _location_iri(value: str | None) -> str | None:
-    if not value:
-        return None
-    if value.startswith(("http://", "https://", "file://")):
-        return value
-    path = Path(value)
-    if path.is_absolute():
-        return path.resolve().as_uri()
-    if path.parts[:1] == ("src",):
-        for root in (Path.cwd(), *Path.cwd().parents):
-            if (root / "src" / "motion-spec").is_dir():
-                return (root / path).resolve().as_uri()
-    for root in (Path.cwd(), *Path.cwd().parents):
-        candidate = root / path
-        if candidate.exists():
-            return candidate.resolve().as_uri()
-    return path.resolve().as_uri()
-
-
-# Vendor markers, mirroring mj_kdl_wrapper's asset cache layout (see the resolver in
-# ir_gen._resolve_existing_path / cache_path). A robot/scene model is a third-party asset
-# fetched into ~/.cache/mj_kdl_wrapper/<vendor>/..., not a file in the workspace tree, so
-# provenance records it by a portable vendor-qualified reference (menagerie:kinova_gen3/gen3.xml)
-# rather than a machine-specific absolute path that may not even exist locally.
-_VENDOR_MARKERS = (
-    ("third_party/menagerie/", "menagerie"),
-    ("src/mj_kdl_wrapper/assets/", "assets"),
-    ("src/examples/assets/", "assets"),
-)
-
-
-def _vendor_model_ref(path: str) -> str:
-    text = Path(path).as_posix()
-    for marker, vendor in _VENDOR_MARKERS:
-        pos = text.find(marker)
-        if pos != -1:
-            return f"{vendor}:{text[pos + len(marker):]}"
-    return text
-
-
-def _agent_types(types: list[str]) -> list[str]:
-    result = list(types)
-    has_agent = PROV_AGENT in result or "prov:Agent" in result
-    has_software_agent = PROV_SOFTWARE_AGENT in result or "prov:SoftwareAgent" in result
-    if has_software_agent and not has_agent:
-        result.append(PROV_AGENT)
-    return result
-
-
-def _compact_type(type_id: str) -> str:
-    for base, prefix in TYPE_PREFIXES.items():
-        if type_id.startswith(base):
-            return prefix + type_id[len(base) :]
-    return type_id
-
-
-def _compact_types(types: list[str]) -> list[str]:
-    return [_compact_type(type_id) for type_id in types]
-
-
-def _package_version(package: str) -> str | None:
-    try:
-        return version(package)
-    except PackageNotFoundError:
-        return None
-
-
-def _tool_properties(agent_id: str) -> dict:
-    metadata = TOOL_METADATA.get(agent_id, {})
-    package = metadata.get("package")
-    return {
-        "hasVersion": metadata.get("version") or (_package_version(package) if package else None),
-        "references": metadata.get("repository"),
     }
 
 
@@ -623,164 +537,6 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
         "wrenches": [{"index": w["index"], "expr": w["expr"]} for w in spatial["wrenches"]],
     }
 
-
-def build_provenance_document(ir: dict, output_dir: Path) -> dict:
-    prov = (ir.get("introspection") or {}).get("provenance", {})
-    graph = []
-
-    def add_node(identifier: str, types: list[str], **properties) -> str:
-        node_id = _prov_iri(identifier)
-        node = {"@id": node_id, "@type": _compact_types(types)}
-        node.update({k: v for k, v in properties.items() if v is not None and v != []})
-        graph.append(node)
-        return node_id
-
-    input_entity_ids = []
-    for entity in prov.get("entities", []):
-        properties = {
-            "role": entity.get("role"),
-            "atLocation": _location_iri(entity.get("path") or entity.get("source")),
-            "wasGeneratedBy": _prov_iri(entity["wasGeneratedBy"])
-            if entity.get("wasGeneratedBy")
-            else None,
-        }
-        if entity.get("role") == "imported_model_graph":
-            properties["references"] = _prov_iri(entity["wasDerivedFrom"]) if entity.get("wasDerivedFrom") else None
-        elif entity.get("wasDerivedFrom"):
-            properties["wasDerivedFrom"] = _prov_iri(entity["wasDerivedFrom"])
-        entity_id = add_node(
-            entity.get("id", "entity"),
-            entity.get("types") or ["prov:Entity"],
-            **properties,
-        )
-        if entity.get("role") != "motion_spec_ir":
-            input_entity_ids.append(entity_id)
-
-    artifact_names = [
-        "schema.json",
-        "frame_layout.json",
-        "frame_layout.h",
-        "frame_log.proto",
-        "provenance.jsonld",
-        "introspection_runtime.hpp",
-        "introspect_model.hpp",
-        "CMakeLists.txt",
-        "ref_main.cpp",
-        "headers/runtime.hpp",
-        "headers/shared_state.hpp",
-    ]
-    artifact_names.extend(
-        f"headers/{motion['id']}.hpp"
-        for motion in (ir.get("unique_motions") or ir.get("motions", []))
-        if motion.get("id")
-    )
-    if (output_dir / "fsm_ir.json").exists():
-        artifact_names.append("fsm_ir.json")
-    artifact_names.extend(path.name for path in sorted(output_dir.glob("*_fsm.hpp")))
-    artifact_entities = {
-        name: add_node(
-            f"entity:generated_{name}",
-            ["prov:Entity"],
-            role=f"generated_{name}",
-            atLocation=_location_iri(str(output_dir / name)),
-            wasGeneratedBy=_prov_iri("activity:code_generation"),
-        )
-        for name in dict.fromkeys(artifact_names)
-    }
-
-    required_agents = {
-        activity["wasAssociatedWith"]
-        for activity in prov.get("activities", [])
-        if activity.get("wasAssociatedWith")
-    }
-    emitted_agents = set()
-
-    for activity in prov.get("activities", []):
-        add_node(
-            activity.get("id", "activity"),
-            activity.get("types") or ["prov:Activity"],
-            role=activity.get("role"),
-            used=[_prov_iri(item) for item in activity.get("used", [])],
-            wasAssociatedWith=_prov_iri(activity["wasAssociatedWith"])
-            if activity.get("wasAssociatedWith")
-            else None,
-        )
-    codegen_activity = add_node(
-        "activity:code_generation",
-        ["prov:Activity"],
-        role="code_generation",
-        used=input_entity_ids,
-        wasAssociatedWith=_prov_iri("agent:motion_spec_codegen"),
-    )
-    add_node(
-        "activity:build",
-        ["prov:Activity"],
-        role="build",
-        used=list(artifact_entities.values()),
-        wasInformedBy=codegen_activity,
-        wasAssociatedWith=_prov_iri("agent:build_toolchain"),
-    )
-
-    for agent in prov.get("agents", []):
-        emitted_agents.add(agent.get("id", "agent"))
-        agent_id = agent.get("id", "agent")
-        add_node(
-            agent_id,
-            _agent_types(agent.get("types") or [PROV_AGENT]),
-            role=agent.get("role"),
-            **({"has-agn-model": _vendor_model_ref(agent["model"])} if agent.get("model") else {}),
-            actedOnBehalfOf=_prov_iri(agent["actedOnBehalfOf"])
-            if agent.get("actedOnBehalfOf")
-            else None,
-            **_tool_properties(agent_id),
-        )
-    for agent_id in sorted(required_agents - emitted_agents):
-        add_node(agent_id, [PROV_SOFTWARE_AGENT, PROV_AGENT])
-    add_node(
-        "agent:motion_spec_codegen",
-        [PROV_SOFTWARE_AGENT, PROV_AGENT, "obs:ObservationProvider"],
-        role="code_generator",
-        **_tool_properties("agent:motion_spec_codegen"),
-    )
-    add_node(
-        "agent:stst",
-        [PROV_SOFTWARE_AGENT, PROV_AGENT],
-        role="template_renderer",
-        **_tool_properties("agent:stst"),
-    )
-    add_node(
-        "agent:rdf_utils",
-        [PROV_SOFTWARE_AGENT, PROV_AGENT],
-        role="rdf_resolver",
-        **_tool_properties("agent:rdf_utils"),
-    )
-    add_node(
-        "agent:rdflib",
-        [PROV_SOFTWARE_AGENT, PROV_AGENT],
-        role="rdf_graph_parser",
-        **_tool_properties("agent:rdflib"),
-    )
-    add_node("agent:build_toolchain", [PROV_SOFTWARE_AGENT, PROV_AGENT], role="build_toolchain")
-    add_node(
-        "agent:replay_process",
-        [PROV_SOFTWARE_AGENT, PROV_AGENT],
-        role="expected_replay_process",
-    )
-    add_node(
-        "agent:dashboard_process",
-        [PROV_SOFTWARE_AGENT, PROV_AGENT],
-        role="expected_dashboard_process",
-    )
-
-    return {
-        "schema_version": SCHEMA_VERSION,
-        "runtime_rdf_contract_version": RUNTIME_RDF_CONTRACT_VERSION,
-        "@context": [*METAMODEL_CONTEXTS, {"msprov": MSPROV, "role": "msprov:role"}],
-        "@graph": [
-            {"@id": "msprov:bundle/static-provenance", "@type": "prov:Bundle"},
-            *graph,
-        ],
-    }
 
 
 def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | None) -> dict:

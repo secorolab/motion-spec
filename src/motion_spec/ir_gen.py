@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sys
 import argparse
-from dataclasses import dataclass, field, is_dataclass, asdict, replace
+from dataclasses import dataclass, field, replace
 from enum import Enum
 import collections
 import itertools
@@ -60,6 +60,7 @@ from motion_spec.namespace import (
 )
 from motion_spec.manifest import build_url_map, metamodel_url_map
 from motion_spec.entities import (
+    DataclassJSONEncoder,
     Subspace,
     Axis,
     ControlMode,
@@ -116,13 +117,6 @@ from motion_spec.entities import (
     VelocityCompositionSolver,
     ForceDistributionSolver,
 )
-
-
-class JSONEncoder(json.JSONEncoder):
-    def default(self, o):
-        if is_dataclass(o) and not isinstance(o, type):
-            return asdict(o)
-        return super().default(o)
 
 
 def parse_argument(g, closure_id, argument, to_id, resolve_value=False):
@@ -3439,19 +3433,15 @@ def _resolve_import_location(location: str, url_map: dict[str, str]) -> str:
     return location
 
 
-def generate_ir(manifest_path):
+def _load_graph(manifest_path):
     app_model_path = Path(manifest_path).resolve()
-
-    # Load top-level, application model
     g = rdflib.Dataset(default_union=True)
     install_resolver(IriToFileResolver(metamodel_url_map(), download=False))
     g.parse(str(app_model_path), format="json-ld")
 
-    # Load IRI map
     url_map = build_url_map(g, app_model_path)
     install_resolver(IriToFileResolver({**metamodel_url_map(), **url_map}, download=False))
 
-    # Load/import the referenced models
     imported_files = list(dict.fromkeys(str(model) for model in g.objects(predicate=APP["import"])))
     imported_provenance = [
         _resolve_import_location(item, url_map)
@@ -3462,8 +3452,10 @@ def generate_ir(manifest_path):
     imported_models = [_resolve_import_location(item, url_map) for item in imported_model_locations]
     for model in imported_model_locations:
         g.parse(location=model, format="json-ld")
+    return app_model_path, g, imported_models, imported_provenance
 
-    p = Parser(g)
+
+def _node_indexes(g, p: Parser):
     node_by_id = {}
     id_nodes = []
     for node in sorted(g.subjects(), key=lambda item: str(item)):
@@ -3473,7 +3465,10 @@ def generate_ir(manifest_path):
             continue
         id_nodes.append((id_, node))
         node_by_id.setdefault(id_, node)
+    return node_by_id, id_nodes
 
+
+def _solver_sections(g, p: Parser, setups_by_node: dict, default_setup):
     sched1 = []
     slv_base_vel = []
     sched2 = []
@@ -3482,46 +3477,29 @@ def generate_ir(manifest_path):
     slv_arm = []
     sched4 = []
     slv_base_frc = []
-    setups_by_node, ordered_setups = _robot_setups_from_graph(g)
-    _default_setup = ordered_setups[0] if ordered_setups else ("", "", "", "", "", "", "", [])
-    scene = _scene_from_graph(g)
 
-    # Construct the computational graph that feeds into the mobile base's
-    # velocity composition solver.
     for s in g.subjects(RDF.type, SLV["VelocityCompositionSolver"]):
         slv_base_vel.append(p.velocity_composition_solver(s))
         sched1.extend(p.schedule([s], ops_generic + ops_slv))
 
-    # Traverse backward from the "proximal" constraint handler.
     for h in g.subjects(RDF.type, CSTR_HDL["ConstraintHandler"]):
         hdl.append(p.constraint_handler(h))
         start = g[h : CSTR_HDL["evaluators"] | CSTR_HDL["controllers"]]
         sched2.extend(p.schedule(start, ops_generic + ops_cstr_hdl))
 
-    # Traverse backward from the "distal" solver configuration.
-    # The "parser" keeps track of the previously visited closures/computations
-    # so that they are visited only once.
     for s in g.subjects(RDF.type, SLV["SolverWithInputAndOutput"]):
         solver = p.solver_with_input_and_output(s)
         robot_node = g.value(s, SLV_EXT["robot"])
         (
-            _urdf,
-            _chain_root,
-            _chain_end,
-            _chain_tip,
-            _robot_model,
-            _tool_body,
-            _tcp_site,
-            _ft_sensors,
-        ) = setups_by_node.get(robot_node, _default_setup)
-        solver.urdf = _urdf
-        solver.chain_root = _chain_root
-        solver.chain_end = _chain_end
-        solver.chain_tip = _chain_tip
-        solver.robot_model = _robot_model
-        solver.tool_body = _tool_body
-        solver.tcp_site = _tcp_site
-        solver.ft_sensors = _ft_sensors
+            solver.urdf,
+            solver.chain_root,
+            solver.chain_end,
+            solver.chain_tip,
+            solver.robot_model,
+            solver.tool_body,
+            solver.tcp_site,
+            solver.ft_sensors,
+        ) = setups_by_node.get(robot_node, default_setup)
         _mark_acceleration_constraint_frames(solver)
         slv_arm.append(solver)
         start = g[
@@ -3534,37 +3512,37 @@ def generate_ir(manifest_path):
         ]
         sched3.extend(p.schedule(start, ops_generic + ops_slv))
 
-    # Construct the computational graph that feeds into the mobile base's force
-    # distribution solver.
     for s in g.subjects(RDF.type, SLV["ForceDistributionSolver"]):
         slv_base_frc.append(p.force_distribution_solver(s))
         sched4.extend(p.schedule([s], ops_generic + ops_slv))
 
+    return slv_base_vel, sched1, hdl, sched2, slv_arm, sched3, slv_base_frc, sched4
+
+
+def _assign_monitor_event_indexes(handlers) -> None:
     event_idx = 0
-    for handler in hdl:
+    for handler in handlers:
         for monitor in handler.monitors:
             if monitor.monitor_type == "EdgeTriggeredMonitor":
                 monitor.event_idx = event_idx
                 event_idx += 1
 
-    # Extract all views, data structures and closures
-    closures = p.closures(ops_generic + ops_slv + ops_cstr_hdl)
-    view_map = p.view()
-    data_structures = p.data_structures()
 
-    # Build snapshot lookup maps
+def _snapshot_maps(g, p: Parser) -> tuple[dict[str, str], dict[str, str]]:
     snapshot_source_map: dict[str, str] = {}
     snapshot_clock_map: dict[str, str] = {}
     for snap_node in g.subjects(RDF.type, SNAP.Snapshot):
         source_node = g.value(snap_node, SNAP["snapshot-of"])
         if source_node is not None:
             snapshot_source_map[p.id(snap_node)] = p.id(source_node)
-        # Sampling clock: "entry" re-samples each state activation; else "task" (once).
         clock_node = g.value(snap_node, SNAP["sampled-on"])
         snapshot_clock_map[p.id(snap_node)] = (
             "entry" if clock_node == SNAP["entry-clock"] else "task"
         )
+    return snapshot_source_map, snapshot_clock_map
 
+
+def _data_reference_map(data_structures, closures: dict) -> dict[str, str]:
     data_reference_map: dict[str, str] = {}
     for item in data_structures:
         ref = getattr(item, "reference_value", None)
@@ -3578,7 +3556,10 @@ def generate_ir(manifest_path):
         ref_id = c.get("reference_value")
         if isinstance(quantity_id, str) and isinstance(ref_id, str):
             data_reference_map[quantity_id] = ref_id
+    return data_reference_map
 
+
+def _closure_maps(closures: dict) -> tuple[dict[str, str], dict[str, set[str]]]:
     closure_output_map: dict[str, str] = {}
     closure_input_map: dict[str, set[str]] = {}
     for cid, c in closures.items():
@@ -3591,6 +3572,105 @@ def generate_ir(manifest_path):
             if isinstance(out_val, str):
                 closure_output_map[out_val] = cid
                 closure_input_map[out_val] = {v for v in inputs if v != out_val}
+    return closure_output_map, closure_input_map
+
+
+def _apply_solver_control_modes(slv_arm, motions) -> None:
+    for solver in slv_arm:
+        control_modes = {
+            arm_solver.control_mode
+            for motion in motions
+            for arm_solver in motion.arm_solvers
+            if arm_solver.id == solver.id and arm_solver.control_mode
+        }
+        if len(control_modes) == 1:
+            solver.control_mode = next(iter(control_modes))
+        elif len(control_modes) > 1:
+            raise ValueError(
+                f"Solver '{solver.id}' is used with multiple control modes: "
+                f"{', '.join(sorted(control_modes))}."
+            )
+        else:
+            raise ValueError(f"Solver '{solver.id}' is not associated with a control mode.")
+
+
+def _backend_from_graph(g) -> str:
+    runtime_to_backend = {
+        str(RT.MuJoCoRuntime): "mj_kdl",
+        str(RT.RealRobotRuntime): "robif2b",
+    }
+    for runtime_iri in g.objects(predicate=RT["uses-runtime"]):
+        mapped = runtime_to_backend.get(str(runtime_iri))
+        if mapped:
+            return mapped
+    return "robif2b"
+
+
+def _single_solver_value(slv_arm, attr, label, default):
+    values = {v for s in slv_arm if (v := getattr(s, attr)) is not None}
+    if len(values) > 1:
+        raise ValueError(
+            f"Multiple {label} values found across arm solvers, but generated code has one "
+            "control loop."
+        )
+    return next(iter(values), default)
+
+
+def _apply_monitor_debounce(handlers, control_period_ns: int) -> None:
+    for handler in handlers:
+        for monitor in handler.monitors:
+            if monitor.debounce_duration_s is not None:
+                monitor.debounce_steps = round(monitor.debounce_duration_s / (control_period_ns * 1e-9))
+
+
+def _shared_runtime_members(slv_arm, motions) -> list[dict]:
+    members = []
+    seen_ft_ids = set()
+    for s in slv_arm:
+        for out in s.output:
+            if getattr(out, "type", None) == "Wrench" and getattr(out, "sensor_name", ""):
+                if out.id in seen_ft_ids:
+                    continue
+                seen_ft_ids.add(out.id)
+                members.append({"id": f"{out.id}_ft_bias", "type": "FreeVector"})
+                members.append({"id": f"{out.id}_ft_settle", "type": "IntCounter"})
+
+    seen_captured = set()
+    for motion in motions:
+        for snap in getattr(motion, "snapshots", []):
+            if getattr(snap, "persistent", False) and snap.target_id not in seen_captured:
+                seen_captured.add(snap.target_id)
+                members.append({"id": f"{snap.target_id}_captured", "type": "Bool"})
+    return members
+
+
+def generate_ir(manifest_path):
+    app_model_path, g, imported_models, imported_provenance = _load_graph(manifest_path)
+
+    p = Parser(g)
+    node_by_id, id_nodes = _node_indexes(g, p)
+    setups_by_node, ordered_setups = _robot_setups_from_graph(g)
+    default_setup = ordered_setups[0] if ordered_setups else ("", "", "", "", "", "", "", [])
+    scene = _scene_from_graph(g)
+
+    (
+        slv_base_vel,
+        sched1,
+        hdl,
+        sched2,
+        slv_arm,
+        sched3,
+        slv_base_frc,
+        sched4,
+    ) = _solver_sections(g, p, setups_by_node, default_setup)
+    _assign_monitor_event_indexes(hdl)
+
+    closures = p.closures(ops_generic + ops_slv + ops_cstr_hdl)
+    view_map = p.view()
+    data_structures = p.data_structures()
+    snapshot_source_map, snapshot_clock_map = _snapshot_maps(g, p)
+    data_reference_map = _data_reference_map(data_structures, closures)
+    closure_output_map, closure_input_map = _closure_maps(closures)
 
     wrench_outputs = _dedupe_by_id(
         [
@@ -3615,60 +3695,16 @@ def generate_ir(manifest_path):
         closures=closures,
         data_structures=data_structures,
     )
-    for solver in slv_arm:
-        control_modes = {
-            arm_solver.control_mode
-            for motion in motions
-            for arm_solver in motion.arm_solvers
-            if arm_solver.id == solver.id and arm_solver.control_mode
-        }
-        if len(control_modes) == 1:
-            solver.control_mode = next(iter(control_modes))
-        elif len(control_modes) > 1:
-            raise ValueError(
-                f"Solver '{solver.id}' is used with multiple control modes: "
-                f"{', '.join(sorted(control_modes))}."
-            )
-        else:
-            raise ValueError(f"Solver '{solver.id}' is not associated with a control mode.")
+    _apply_solver_control_modes(slv_arm, motions)
 
-    # Determine backend from runtime declaration in the environment spec
-    _RUNTIME_TO_BACKEND = {
-        str(RT.MuJoCoRuntime): "mj_kdl",
-        str(RT.RealRobotRuntime): "robif2b",
-    }
-    backend = "robif2b"
-    for runtime_iri in g.objects(predicate=RT["uses-runtime"]):
-        mapped = _RUNTIME_TO_BACKEND.get(str(runtime_iri))
-        if mapped:
-            backend = mapped
-            break
-
+    backend = _backend_from_graph(g)
     if scene.timestep_s <= 0:
         raise ValueError("ENVIRONMENT timestep must be positive.")
     control_period_ns = int(round(scene.timestep_s * 1e9))
-
-    # Authorable control-loop tuning: sourced from the arm solver(s), same
-    # single-value-across-the-scene contract as the timestep (one generated
-    # control loop). Saturations are emitted only from explicit limits.
-    def _single_solver_value(attr, label, default):
-        values = {v for s in slv_arm if (v := getattr(s, attr)) is not None}
-        if len(values) > 1:
-            raise ValueError(
-                f"Multiple {label} values found across arm solvers, but generated code has one "
-                "control loop."
-            )
-        return next(iter(values), default)
-
-    rne_damping_lambda = _single_solver_value("regularization", "Solver regularization", 0.05)
-
-    # Per-monitor debounce (`for <FLOAT> <Unit>`): convert the authored seconds
-    # into a step count now that the control period is known. Absent -> stays
-    # None, which keeps the codegen on the existing rising-edge path (byte-identical).
-    for handler in hdl:
-        for monitor in handler.monitors:
-            if monitor.debounce_duration_s is not None:
-                monitor.debounce_steps = round(monitor.debounce_duration_s / (control_period_ns * 1e-9))
+    rne_damping_lambda = _single_solver_value(
+        slv_arm, "regularization", "Solver regularization", 0.05
+    )
+    _apply_monitor_debounce(hdl, control_period_ns)
 
     # Safeguard: no two distinct URIs may collapse to one generated id (would silently merge).
     p.assert_no_id_collisions()
@@ -3680,30 +3716,7 @@ def generate_ir(manifest_path):
         view_map=view_map,
         fk_output_ids={out.id for s in slv_arm for out in s.output},
     )
-    # Promote FT tare state (bias + settle counter) to shared_data so it is captured once before
-    # any push and reused across handlers, instead of a later mid-push state re-taring it to ~zero.
-    _ft_tare_members = []
-    _seen_ft_ids = set()
-    for s in slv_arm:
-        for out in s.output:
-            if getattr(out, "type", None) == "Wrench" and getattr(out, "sensor_name", ""):
-                if out.id in _seen_ft_ids:
-                    continue
-                _seen_ft_ids.add(out.id)
-                _ft_tare_members.append({"id": f"{out.id}_ft_bias", "type": "FreeVector"})
-                _ft_tare_members.append({"id": f"{out.id}_ft_settle", "type": "IntCounter"})
-    shared_data = shared_data + _ft_tare_members
-
-    # Persistent (once-per-run) snapshot guards live in shared_data so they
-    # survive the motion-state reset applied on FSM re-entry (fixed traj targets).
-    _persist_captured_members = []
-    _seen_captured = set()
-    for m in motions:
-        for snap in getattr(m, "snapshots", []):
-            if getattr(snap, "persistent", False) and snap.target_id not in _seen_captured:
-                _seen_captured.add(snap.target_id)
-                _persist_captured_members.append({"id": f"{snap.target_id}_captured", "type": "Bool"})
-    shared_data = shared_data + _persist_captured_members
+    shared_data = shared_data + _shared_runtime_members(slv_arm, motions)
 
     introspection = _build_introspection(
         app_model_path=app_model_path,
@@ -3718,7 +3731,8 @@ def generate_ir(manifest_path):
         scene=scene,
     )
 
-    # Compose the overall schedule via concatenation
+    schedule = sched1 + sched2 + sched3 + sched4
+    shared_schedule = sched1 + sched3 + sched4
     return {
         "slv_arm": slv_arm,
         "slv_base_vel": slv_base_vel,
@@ -3727,8 +3741,8 @@ def generate_ir(manifest_path):
         "motions": motions,
         "data": data_structures,
         "closures": closures,
-        "shared_schedule": sched1 + sched3 + sched4,
-        "schedule": sched1 + sched2 + sched3 + sched4,
+        "shared_schedule": shared_schedule,
+        "schedule": schedule,
         "views": view_map,
         "shared_data": shared_data,
         "wrench_outputs": wrench_outputs,
@@ -3742,11 +3756,9 @@ def generate_ir(manifest_path):
         "backend": backend,
         "scene": scene,
         "trace": _trace_from_graph(g),
-        # Flat id -> full model URI table; sorted for deterministic emission.
         "uris": introspection["uris"],
         "introspection": introspection,
     }
-
 
 def main():
     """Generate intermediate representation (IR) from motion specification models."""
@@ -3782,7 +3794,7 @@ Examples:
     ir = generate_ir(args.manifest)
 
     # Output IR to file or stdout
-    ir_json = json.dumps(ir, cls=JSONEncoder, indent=4)
+    ir_json = json.dumps(ir, cls=DataclassJSONEncoder, indent=4)
 
     if output_file is None:
         # Output to stdout

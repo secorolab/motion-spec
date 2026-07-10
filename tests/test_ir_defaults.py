@@ -13,7 +13,6 @@ from rdflib.namespace import RDF, XSD
 
 from motion_spec.codegen import _motion_done_condition, render_template
 from motion_spec.ir_gen import (
-    GuardedMotion,
     GuardedMotionBlock,
     Parser,
     SceneRobot,
@@ -169,7 +168,6 @@ def test_introspection_contract_carries_control_and_provenance() -> None:
         id="move",
         handler="move_handler",
         control_mode="JointTorque",
-        motion=GuardedMotion("move", [], [], []),
         when_evaluators=[],
         while_evaluators=[],
         until_evaluators=[],
@@ -180,9 +178,6 @@ def test_introspection_contract_carries_control_and_provenance() -> None:
         when_schedule=[],
         while_schedule=[],
         until_schedule=[],
-        when_events=[],
-        while_events=[],
-        until_events=["complete"],
     )
 
     introspection = _build_introspection(

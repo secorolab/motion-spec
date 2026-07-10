@@ -446,7 +446,6 @@ class GuardedMotionBlock:
     id: str
     handler: str
     control_mode: str
-    motion: GuardedMotion
 
     # Evaluators
     when_evaluators: list[ConstraintEvaluator]
@@ -464,10 +463,6 @@ class GuardedMotionBlock:
     while_schedule: list[str]
     until_schedule: list[str]
 
-    # FSM Interaction
-    when_events: list[str]
-    while_events: list[str]
-    until_events: list[str]
     has_elapsed: bool = False
     has_until_condition: bool = False
     until_any: bool = False

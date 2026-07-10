@@ -4,14 +4,46 @@ StringTemplate v4 (`.stg`) templates that motion-spec codegen renders into the
 generated C++ controller, introspection artifacts, and CMake. Rendered by
 `motion_spec.codegen.render_template` (`stst -t <this dir> main.<template>`).
 
-- **`main.stg`** — root group: imports every other group and holds the top-level program (shared_state header, `app_main`/main loop, clock/telemetry, FSM dispatch, `ref_main`).
-- **`shared_data.stg`** — shared data model: lookup maps, saturation, member declarations, and view access expressions.
-- **`closures.stg`** — closure/evaluator library (`emit-call-*`) and pose-axis error groups.
-- **`solver.stg`** — modular Vereshchagin/RNEA dynamics solver: state, init, sync, outputs, run stages.
-- **`robot.stg`** — backend-neutral robot driver dispatch (include/state/init/chain/shutdown).
-- **`motion.stg`** — motion assembly: schedule/monitor blocks, arm/base cycle, per-motion and mobile-base headers.
-- **`introspection.stg`** — introspection artifacts: `frame_layout.h`, runtime writer, model samples, `frame_log.proto`.
-- **`runtime.stg`** — runtime control-loop math header (easing/admittance/spring-damper, monitors).
-- **`mj_kdl_backend.stg`** — MuJoCo+KDL simulation robot impl (KinovaGen3) and CMake generation.
-- **`robif2b_backend.stg`** — EtherCAT/KELO driver bindings and robif2b robot impl.
-- **`hddc2b.stg`** — KELO mobile-base solver (platform/drive/wheel force distribution).
+### `main.stg`
+- Root group: imports every other template group.
+- Holds the top-level program — shared_state header, `app_main`/main loop, clock/telemetry, FSM dispatch, and `ref_main`.
+
+### `shared_data.stg`
+- Lookup maps and scalar saturation helpers.
+- Shared-data struct member declarations.
+- View access expressions for reading typed subspaces of shared data.
+
+### `closures.stg`
+- Closure/evaluator library (`emit-call-*`): trajectories, controllers, geometry/wrench ops.
+- Pose-axis error groups.
+
+### `solver.stg`
+- Modular Vereshchagin/RNEA dynamics solver.
+- Solver state, init, input sync, outputs, and run stages.
+
+### `robot.stg`
+- Backend-neutral robot driver dispatch: include, state, init, chain, configure, shutdown.
+
+### `motion.stg`
+- Per-step schedule and monitor blocks.
+- Arm and mobile-base cycle assembly.
+- Per-motion and mobile-base cycle headers.
+
+### `introspection.stg`
+- `frame_layout.h` and the runtime frame-log writer.
+- Model sample/state templates.
+- `frame_log.proto` wire contract.
+
+### `runtime.stg`
+- Runtime control-loop math header: easing/admittance/spring-damper filters and monitor helpers.
+
+### `mj_kdl_backend.stg`
+- MuJoCo+KDL simulation robot impl (KinovaGen3).
+- CMake generation.
+
+### `robif2b_backend.stg`
+- EtherCAT/KELO driver bindings.
+- robif2b robot impl.
+
+### `hddc2b.stg`
+- KELO mobile-base solver: platform/drive/wheel force distribution.

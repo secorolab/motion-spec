@@ -47,6 +47,7 @@ KSLOT = [("fx", "d"), ("fy", "d"), ("fz", "d"), ("tx", "d"), ("ty", "d"), ("tz",
 
 
 def field_names_and_format(pools: dict) -> tuple[str, list[str]]:
+    """Struct format string and flat field names for a runtime frame, given the per-category pool sizes."""
     fmt = "<" + "".join(code for _, code in HEADER)
     names = [name for name, _ in HEADER]
     for idx in range(pools["constraints"]):
@@ -62,7 +63,11 @@ def field_names_and_format(pools: dict) -> tuple[str, list[str]]:
         names.extend(f"tr{idx}.{name}" for name, _ in TSLOT)
     fmt += "q"
     names.append("trigger_count")
-    for prefix, slot, key in (("pose", PSLOT, "poses"), ("twist", VSLOT, "twists"), ("wrench", KSLOT, "wrenches")):
+    for prefix, slot, key in (
+        ("pose", PSLOT, "poses"),
+        ("twist", VSLOT, "twists"),
+        ("wrench", KSLOT, "wrenches"),
+    ):
         for idx in range(pools.get(key, 0)):
             fmt += "".join(code for _, code in slot)
             names.extend(f"{prefix}{idx}.{name}" for name, _ in slot)
@@ -70,6 +75,7 @@ def field_names_and_format(pools: dict) -> tuple[str, list[str]]:
 
 
 def fields_with_offsets(pools: dict) -> tuple[list[dict], int]:
+    """Per-field {name, fmt, offset, size} list and the total frame size in bytes."""
     fmt, names = field_names_and_format(pools)
     fields = [
         {"name": name, "fmt": code, "offset": idx * FIELD_BYTES, "size": FIELD_BYTES}
@@ -79,6 +85,7 @@ def fields_with_offsets(pools: dict) -> tuple[list[dict], int]:
 
 
 def _uri_by_id(ir: dict) -> dict:
+    """Map every introspection id to its canonical URI."""
     return {
         row["id"]: row["uri"]
         for row in ir.get("introspection", {}).get("uris", ir.get("uris", []))
@@ -87,6 +94,7 @@ def _uri_by_id(ir: dict) -> dict:
 
 
 def _signal_id(value) -> str | None:
+    """Id of a signal value (a dict with 'id', a str, or None)."""
     if isinstance(value, dict):
         return value.get("id")
     if isinstance(value, str):
@@ -95,6 +103,7 @@ def _signal_id(value) -> str | None:
 
 
 def _controller_slot(controller: dict, index: int, motion: dict, uri_by_id: dict) -> dict:
+    """Introspection slot for a controller: gains and resolved signal ids/URIs."""
     error_id = _signal_id(controller.get("error_signal"))
     output_id = _signal_id(controller.get("control_signal")) or controller.get("output_signal")
     reference_id = _signal_id(controller.get("reference_signal"))
@@ -139,6 +148,7 @@ def _controller_slot(controller: dict, index: int, motion: dict, uri_by_id: dict
 
 
 def _monitor_slot(monitor: dict, index: int, motion: dict, uri_by_id: dict, phase: str) -> dict:
+    """Introspection slot for a monitor: trigger, event/flag and active-condition terms."""
     error_id = _signal_id(monitor.get("error")) or monitor.get("error_signal")
     event_id = monitor.get("event")
     return {
@@ -165,6 +175,7 @@ def _monitor_slot(monitor: dict, index: int, motion: dict, uri_by_id: dict, phas
 
 
 def _fsm_meta(fsm_ir: dict | None) -> dict:
+    """Flatten the framed FSM into indexed states/events/transitions (empty when there is no FSM)."""
     if not fsm_ir:
         return {
             "namespace": None,
@@ -194,11 +205,7 @@ def _fsm_meta(fsm_ir: dict | None) -> dict:
             for state, idx in state_index.items()
         ],
         "events": [
-            {
-                "index": idx,
-                "id": event,
-                "uri": (fsm_ir.get("event_uris") or {}).get(event),
-            }
+            {"index": idx, "id": event, "uri": (fsm_ir.get("event_uris") or {}).get(event)}
             for event, idx in event_index.items()
         ],
         "transitions": [
@@ -216,6 +223,7 @@ def _fsm_meta(fsm_ir: dict | None) -> dict:
 
 
 def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | None) -> dict:
+    """Build the run's introspection schema (pools, per-state slots, quantities, provenance) and its schema_hash."""
     introspection = ir.get("introspection") or {}
     uri_by_id = _uri_by_id(ir)
     fsm = _fsm_meta(fsm_ir)
@@ -247,42 +255,41 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
         ]
         monitor_sources = []
         for phase in ("while", "until"):
-            monitor_sources.extend((phase, monitor, motion) for monitor in motion.get(f"{phase}_monitors", []))
+            monitor_sources.extend(
+                (phase, monitor, motion) for monitor in motion.get(f"{phase}_monitors", [])
+            )
         for gate_motion_id in motion.get("fsm_when_gate_motions", []):
             gate_motion = motion_by_id.get(gate_motion_id)
             if gate_motion is None:
                 continue
             monitor_sources.extend(
-                ("when", monitor, gate_motion)
-                for monitor in gate_motion.get("when_monitors", [])
+                ("when", monitor, gate_motion) for monitor in gate_motion.get("when_monitors", [])
             )
         monitor_slots = [
             _monitor_slot(monitor, idx, owner, uri_by_id, phase)
             for idx, (phase, monitor, owner) in enumerate(monitor_sources)
         ]
-        by_state[state_id] = {
-            "controllers": controller_slots,
-            "monitors": monitor_slots,
-        }
+        by_state[state_id] = {"controllers": controller_slots, "monitors": monitor_slots}
 
     quantities = [
-        {
-            "index": idx,
-            **quantity,
-        }
+        {"index": idx, **quantity}
         for idx, quantity in enumerate(
             introspection.get("quantity_samples") or introspection.get("quantities", [])
         )
     ]
     max_controllers = max((len(entry["controllers"]) for entry in by_state.values()), default=0)
     max_monitors = max((len(entry["monitors"]) for entry in by_state.values()), default=0)
-    heartbeat_events = 1 if any(event.get("id") == "E_STEP" for event in fsm.get("events", [])) else 0
+    heartbeat_events = (
+        1 if any(event.get("id") == "E_STEP" for event in fsm.get("events", [])) else 0
+    )
     spatial = introspection.get("spatial_samples") or {"poses": [], "twists": [], "wrenches": []}
     pools = {
         "constraints": max_controllers,
         "monitors": max_monitors,
         "quantities": len(quantities),
-        "triggers": max(TRIGGER_POOL_SIZE, len(fsm.get("events", [])), max_monitors + heartbeat_events),
+        "triggers": max(
+            TRIGGER_POOL_SIZE, len(fsm.get("events", [])), max_monitors + heartbeat_events
+        ),
         "poses": len(spatial["poses"]),
         "twists": len(spatial["twists"]),
         "wrenches": len(spatial["wrenches"]),
@@ -329,13 +336,14 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
     # The wire field mapping is part of the run contract: fold it into schema_hash so the
     # frame-log header hash changes whenever a slot's protobuf field name/number changes.
     schema["protobuf"] = build_frame_log_proto_fields(schema)
-    schema["schema_hash"] = hashlib.sha256(
-        json.dumps(schema, sort_keys=True).encode()
-    ).hexdigest()[:16]
+    schema["schema_hash"] = hashlib.sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest()[
+        :16
+    ]
     return schema
 
 
 def _runtime_provenance(provenance: dict) -> dict:
+    """Resolve the controller-execution activity and its producer/runtime agents from provenance."""
     activity = next(
         (
             item
@@ -352,8 +360,7 @@ def _runtime_provenance(provenance: dict) -> dict:
         )
     producer_id = activity["wasAssociatedWith"]
     producer = next(
-        (item for item in provenance.get("agents", []) if item.get("id") == producer_id),
-        None,
+        (item for item in provenance.get("agents", []) if item.get("id") == producer_id), None
     )
     if producer is None:
         raise RuntimeError(
@@ -367,6 +374,7 @@ def _runtime_provenance(provenance: dict) -> dict:
 
 
 def build_frame_layout(schema: dict) -> dict:
+    """Compute the binary frame layout (field offsets, frame size) and its frame_layout_hash from the schema."""
     fields, frame_size = fields_with_offsets(schema["pools"])
     layout = {
         "frame_layout_version": FRAME_LAYOUT_VERSION,
@@ -429,23 +437,32 @@ def build_frame_log_proto_fields(schema: dict) -> dict:
     fields: dict[str, list] = {}
 
     def _pool_slots(category: str) -> None:
+        """Emit slot-stable proto fields (e.g. constraint_0) for a fixed-size pool category."""
         base = PROTO_FIELD_BASES[category]
         singular = category[:-1]
         fields[category] = []
         for idx in range(pools.get(category, 0)):
             slot_id = f"{singular}_{idx}"
             fields[category].append(
-                {"index": idx, "id": slot_id, "name": _proto_field_name(slot_id, used, slot_id), "number": base + idx}
+                {
+                    "index": idx,
+                    "id": slot_id,
+                    "name": _proto_field_name(slot_id, used, slot_id),
+                    "number": base + idx,
+                }
             )
 
     def _semantic_slots(category: str, entries: list) -> None:
+        """Emit proto fields named from each entry's schema id (quantities and spatial slots)."""
         base = PROTO_FIELD_BASES[category]
         singular = category[:-1]
         fields[category] = []
         for entry in sorted(entries, key=lambda e: e.get("index", 0)):
             idx = entry.get("index", len(fields[category]))
             name = _proto_field_name(entry.get("id"), used, f"{singular}_{idx}")
-            fields[category].append({"index": idx, "id": entry.get("id"), "name": name, "number": base + idx})
+            fields[category].append(
+                {"index": idx, "id": entry.get("id"), "name": name, "number": base + idx}
+            )
 
     _pool_slots("constraints")
     _pool_slots("monitors")
@@ -466,22 +483,21 @@ def build_frame_log_proto_fields(schema: dict) -> dict:
 
 
 def _shared_expr(signal_id: str | None, shared_ids: set[str]) -> str:
+    """C++ access for a shared signal ('shared.<id>'), or '0.0' when it is not a shared field."""
     if signal_id and signal_id in shared_ids:
         return f"shared.{signal_id}"
     return "0.0"
 
 
 def build_introspection_model(schema: dict, ir: dict) -> dict:
+    """Per-FSM-state sample model (controller/monitor exprs, quantity/spatial ids) that the introspect_model template renders."""
     shared_ids = {
         item.get("id")
         for item in ir.get("shared_data", [])
         if isinstance(item, dict) and item.get("id")
     }
     quantities = [
-        {
-            "index": quantity["index"],
-            "desc": quantity.get("sample_desc"),
-        }
+        {"index": quantity["index"], "desc": quantity.get("sample_desc")}
         for quantity in schema.get("quantities", [])
     ]
     states = []
@@ -530,11 +546,7 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
                     }
                 )
         states.append(
-            {
-                "index": state.get("index", -1),
-                "controllers": controllers,
-                "monitors": monitors,
-            }
+            {"index": state.get("index", -1), "controllers": controllers, "monitors": monitors}
         )
     spatial = schema.get("spatial", {"poses": [], "twists": [], "wrenches": []})
     return {
@@ -546,9 +558,10 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
     }
 
 
-
 def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path) -> dict:
-    # The framed FSM lives in ir["fsm"] (derived by ir_gen from the FSM named graph).
+    """Write schema.json, frame_layout.json and provenance.jsonld, and return the frame-log
+    header + sample model that codegen folds into the IR. The framed FSM lives in ir["fsm"].
+    """
     schema = build_schema(ir, ir_path=ir_path, output_dir=output_dir, fsm_ir=ir.get("fsm"))
     layout = build_frame_layout(schema)
     end_state = schema.get("fsm", {}).get("end")

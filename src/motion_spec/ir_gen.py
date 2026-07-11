@@ -30,101 +30,32 @@ from rdf_utils.uri import local_name
 from rdflib import URIRef
 from rdflib.namespace import RDF
 
+# fmt: off
 from motion_spec.entities import (
-    AccelerationConstraint,
-    AccelerationTwist,
-    Axis,
-    BilateralConstraint,
-    CartesianForceSpecification,
-    Constraint,
-    ConstraintEvaluator,
-    ConstraintHandler,
-    ControlMode,
-    DataclassJSONEncoder,
-    Direction,
-    EdgeMonitor,
-    EqualityConstraint,
-    EvaluatorType,
-    FeedForwardController,
-    ForceDistributionSolver,
-    ForwardedCommand,
-    Frame,
-    FreeVector,
-    GuardedMotion,
-    GuardedMotionBlock,
-    HandlerArmSolver,
-    ImpedanceController,
-    JointForceSpecification,
-    JointPosition,
-    LevelMonitor,
-    MotionDrivers,
-    Orientation,
-    OutsideConstraint,
-    PIDController,
-    Point,
-    Pose,
-    PoseAxisErrorComponent,
-    PoseAxisErrorGroup,
-    PoseDifference,
-    Position,
-    Provenance,
-    Quantity,
-    QuantityKind,
-    RelativePoseCapture,
-    Saturation,
-    SceneAttachment,
-    SceneObject,
-    SceneObjectSpec,
-    SceneRelativePose,
-    SceneRobot,
-    SceneSpec,
-    SimplicialComplex,
-    SnapshotCapture,
-    SolverWithInputAndOutput,
-    Subspace,
-    Trajectory,
-    UnilateralConstraint,
-    UnilateralConstraintType,
-    Unit,
-    VelocityCompositionSolver,
-    VelocityTwist,
-    View,
-    Wrench,
+    AccelerationConstraint, AccelerationTwist, Axis, BilateralConstraint,
+    CartesianForceSpecification, Constraint, ConstraintEvaluator, ConstraintHandler,
+    ControlMode, DataclassJSONEncoder, Direction, EdgeMonitor, EqualityConstraint,
+    EvaluatorType, FeedForwardController, ForceDistributionSolver, ForwardedCommand, Frame,
+    FreeVector, GuardedMotion, GuardedMotionBlock, HandlerArmSolver, ImpedanceController,
+    JointForceSpecification, JointPosition, LevelMonitor, MotionDrivers, Orientation,
+    OutsideConstraint, PIDController, Point, Pose, PoseAxisErrorComponent, PoseAxisErrorGroup,
+    PoseDifference, Position, Provenance, Quantity, QuantityKind, RelativePoseCapture,
+    Saturation, SceneAttachment, SceneObject, SceneObjectSpec, SceneRelativePose, SceneRobot,
+    SceneSpec, SimplicialComplex, SnapshotCapture, SolverWithInputAndOutput, Subspace,
+    Trajectory, UnilateralConstraint, UnilateralConstraintType, Unit, VelocityCompositionSolver,
+    VelocityTwist, View, Wrench,
 )
+# fmt: on
 from motion_spec.manifest import build_url_map, metamodel_url_map
+
+# fmt: off
 from motion_spec.namespace import (
-    APP,
-    CSTR,
-    CSTR_EXT,
-    CSTR_HDL,
-    CSTR_HDL_EXT,
-    ENV,
-    EXEC,
-    GEOM_COORD,
-    GEOM_COORD_EXT,
-    GEOM_ENT,
-    GEOM_OP,
-    GEOM_OP_EXT,
-    GEOM_REL,
-    KC_STAT,
-    MAP,
-    MAP_EXT,
-    MJ,
-    MOT,
-    POLY,
-    QUDT_QKIND,
-    QUDT_SCHEMA,
-    QUDT_UNIT,
-    RBDYN_COORD,
-    RBDYN_ENT,
-    RBDYN_OP,
-    RBDYN_OP_EXT,
-    RT,
-    SLV,
-    SLV_EXT,
-    SNAP,
-    TRAJ,
+    APP, CSTR, CSTR_EXT, CSTR_HDL, CSTR_HDL_EXT, ENV, EXEC, GEOM_COORD, GEOM_COORD_EXT,
+    GEOM_ENT, GEOM_OP, GEOM_OP_EXT, GEOM_REL, KC_STAT, MAP, MAP_EXT, MJ, MOT, POLY, QUDT_QKIND,
+    QUDT_SCHEMA, QUDT_UNIT, RBDYN_COORD, RBDYN_ENT, RBDYN_OP, RBDYN_OP_EXT, RT, SLV, SLV_EXT,
+    SNAP, TRAJ,
 )
+# fmt: on
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +73,7 @@ def parse_argument(g, closure_id, argument, to_id, resolve_value=False):
     def resolve(e):
         # Parameters are baked into generated code as literal text, so a qudt:Quantity-wrapped
         # constant must resolve to its scalar qudt:value here (bare literals / IRI refs pass through).
+        """Resolve one graph value to its id, unwrapping a qudt:Quantity constant to its scalar."""
         if resolve_value and not isinstance(e, rdflib.Literal):
             qval = g.value(e, QUDT_SCHEMA["value"])
             if qval is not None:
@@ -168,6 +100,7 @@ class Operator:
     schedulable: bool = True
 
     def closure_step(self, g, to_id, closure_id):
+        """Build the closure dict for this operator's call at closure_id."""
         closure = {"id": to_id(closure_id), "type": to_id(self.type_)}
 
         for input in self.input:
@@ -180,6 +113,7 @@ class Operator:
         return closure
 
     def from_operator_to_input(self, g, operator_id):
+        """Data-structure nodes feeding this operator call's inputs."""
         data_structures = set()
 
         for in_ in self.input:
@@ -189,6 +123,7 @@ class Operator:
         return data_structures
 
     def from_output_to_operator(self, g, data_out):
+        """Operator calls of this type that produce data_out."""
         return [
             op
             for out in self.output
@@ -197,6 +132,7 @@ class Operator:
         ]
 
     def scheduler_step(self, g, data_out):
+        """Input data structures and schedulable calls producing data_out for this operator."""
         data_structures = set()
         schedule = []
 
@@ -234,6 +170,7 @@ class Specification:
     schedulable: bool = False
 
     def from_operator_to_input(self, g, operator_id):
+        """Data-structure nodes feeding this specification's inputs."""
         data_structures = set()
 
         for in_ in self.input:
@@ -243,6 +180,7 @@ class Specification:
         return data_structures
 
     def from_output_to_operator(self, g, data_out):
+        """Specification calls of this type that produce data_out."""
         return [
             op
             for out in self.output
@@ -251,6 +189,7 @@ class Specification:
         ]
 
     def scheduler_step(self, g, data_out):
+        """Input data structures for this specification (never schedulable)."""
         data_structures = set()
         for out in self.output:
             for call in g.subjects(out, data_out):
@@ -267,6 +206,7 @@ class ErrorEvaluator:
     """
 
     def __init__(self):
+        """Register the constraint operators this error evaluator dispatches over."""
         self.type_ = CSTR_HDL["ErrorEvaluator"]
         self.schedulable = False
         self.cstr_op = [
@@ -298,6 +238,7 @@ class ErrorEvaluator:
         ]
 
     def closure_step(self, g, to_id, closure_id):
+        """Build the error-evaluator closure, dispatching on the constraint type."""
         constraint_id = g.value(closure_id, CSTR_HDL["constraint"])
 
         for operator in self.cstr_op:
@@ -326,6 +267,7 @@ class ErrorEvaluator:
         return None
 
     def from_operator_to_input(self, g, operator_id):
+        """Data-structure nodes feeding the matching constraint's inputs."""
         data_structures = set()
 
         for op in self.cstr_op:
@@ -339,6 +281,7 @@ class ErrorEvaluator:
         return data_structures
 
     def from_output_to_operator(self, g, data_out):
+        """Evaluator calls that produce the given error data_out."""
         outputs = {out for operator in self.cstr_op for out in operator.output}
         return [
             op
@@ -348,6 +291,7 @@ class ErrorEvaluator:
         ]
 
     def scheduler_step(self, g, data_out):
+        """Input data structures and schedulable calls producing the error data_out."""
         data_structures = set()
         schedule = []
 
@@ -375,6 +319,7 @@ class AssignmentEvaluator:
     """Constraint operator that assigns a reference value to a quantity (no error output)."""
 
     def __init__(self):
+        """Register the equality-constraint operator this assignment evaluator uses."""
         self.type_ = CSTR_HDL["AssignmentEvaluator"]
         self.schedulable = True
         self.cstr_op = Operator(
@@ -384,6 +329,7 @@ class AssignmentEvaluator:
         )
 
     def closure_step(self, g, to_id, closure_id):
+        """Build the assignment-evaluator closure (equality constraint only)."""
         constraint_id = g.value(closure_id, CSTR_HDL["constraint"])
 
         if self.cstr_op.type_ not in g[constraint_id : RDF["type"]]:
@@ -404,6 +350,7 @@ class AssignmentEvaluator:
         return closure
 
     def from_operator_to_input(self, g, operator_id):
+        """Data-structure nodes feeding the assignment's inputs."""
         if self.cstr_op.type_ not in g[operator_id : CSTR_HDL["constraint"] / RDF["type"]]:
             return set()
 
@@ -605,6 +552,7 @@ def memoize(func):
     def decorator(self, *args, **kwargs):
         # Scope by func identity so e.g. position(uri) and quantity(uri)
         # don't collide on the same (uri,) cache key.
+        """Return the cached result, computing and storing it on first call."""
         key = (func.__qualname__,) + args + tuple(kwargs.items())
         if key not in self.cache:
             self.cache[key] = func(self, *args, **kwargs)
@@ -625,6 +573,7 @@ class LocalIdMap:
     """Stable generated ids for RDF nodes: local name when unique, scoped name on collision."""
 
     def __init__(self, graph, nodes):
+        """Build the id map over the given nodes, scoping names that collide across models."""
         self.graph = graph
         grouped: dict[str, list] = {}
         for node in sorted({n for n in nodes if n is not None}, key=str):
@@ -643,6 +592,7 @@ class LocalIdMap:
                 self.ids[node] = scoped
 
     def _scoped_id(self, node, base: str) -> str:
+        """Local id for a node, prefixed with its model scope when the bare name collides."""
         try:
             prefix, _namespace, local = self.graph.compute_qname(node)
         except Exception:
@@ -652,6 +602,7 @@ class LocalIdMap:
         return f"{base}_{hashlib.sha1(str(node).encode()).hexdigest()[:8]}"
 
     def __getitem__(self, node) -> str:
+        """Local id for a node (empty string for None)."""
         if node not in self.ids:
             self.ids[node] = get_valid_var_name(local_name(node))
         return self.ids[node]
@@ -670,6 +621,7 @@ class Parser:
     _ambiguous_cache: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 
     def __init__(self, g):
+        """Bind the parser to an RDF graph and initialize its memoization cache."""
         self.cache = dict()
         self.g = g
         self.sched = set()
@@ -688,6 +640,7 @@ class Parser:
             raise ValueError(f"node {id_} is missing expected rdf:type {type_}")
 
     def _compute_ambiguous_context_ids(self):
+        """Local names shared by more than one node, which need model-scope prefixing."""
         owners_by_id: dict[str, set[str]] = {}
         for s in set(self.g.subjects()):
             m = self._SPEC_OWNER_RE.search(str(s))
@@ -701,6 +654,7 @@ class Parser:
         return {lid for lid, owners in owners_by_id.items() if len(owners) > 1}
 
     def id(self, x):
+        """Stable local id for a URI/node (scoped when the bare name is ambiguous)."""
         cached = self._id_cache.get(x)
         if cached is not None:
             return cached
@@ -737,6 +691,7 @@ class Parser:
             )
 
     def label(self, x):
+        """Human-readable label of a node, if the graph carries one."""
         try:
             q = self.g.compute_qname(x)
             return q[2]
@@ -745,6 +700,7 @@ class Parser:
 
     @memoize
     def velocity_composition_solver(self, id_):
+        """Parse a VelocityCompositionSolver at node."""
         self._expect_type(id_, SLV["VelocityCompositionSolver"])
         conf = self.id(self.g.value(id_, SLV["configuration"]))
         velocity = self.velocity_twist(self.g.value(id_, SLV["velocity"]))
@@ -753,6 +709,7 @@ class Parser:
 
     @memoize
     def force_distribution_solver(self, id_):
+        """Parse a ForceDistributionSolver at node."""
         self._expect_type(id_, SLV["ForceDistributionSolver"])
         conf = self.id(self.g.value(id_, SLV["configuration"]))
         force = self.wrench(self.g.value(id_, SLV["force"]))
@@ -761,6 +718,7 @@ class Parser:
 
     @memoize
     def solver_with_input_and_output(self, id_):
+        """Parse a SolverWithInputAndOutput (chain, algorithm, drivers, outputs) at node."""
         self._expect_type(id_, SLV["SolverWithInputAndOutput"])
         io_dispatcher = [
             (GEOM_COORD["PoseCoordinate"], self.pose),
@@ -815,6 +773,7 @@ class Parser:
 
     @memoize
     def motion_drivers(self, id_):
+        """Parse a MotionDrivers group (acceleration/cartesian/joint forces) at node."""
         self._expect_type(id_, SLV["MotionDrivers"])
         spec_acc = []
         spec_frc = []
@@ -836,6 +795,7 @@ class Parser:
         )
 
     def joint_force_specification(self, id_):
+        """Parse a JointForceSpecification at node."""
         self._expect_type(id_, SLV["JointForceSpecification"])
         force_node = self.g.value(id_, SLV["force"])
         force_id = self.id(force_node) if force_node is not None else ""
@@ -845,6 +805,7 @@ class Parser:
 
     @memoize
     def cartesian_force_specification(self, id_):
+        """Parse a CartesianForceSpecification at node."""
         self._expect_type(id_, SLV["CartesianForceSpecification"])
         force = self.wrench(self.g.value(id_, SLV["force"]))
         attached_to = self.simplicial_complex(self.g.value(id_, SLV["attached-to"]))
@@ -853,6 +814,7 @@ class Parser:
 
     @memoize
     def saturation(self, id_):
+        """Parse a Saturation (input/output limits) at node."""
         self._expect_type(id_, CSTR_HDL_EXT["Saturation"])
         input_signal = self.quantity(self.g.value(id_, CSTR_HDL_EXT["input-signal"]))
         output_signal = self.quantity(self.g.value(id_, CSTR_HDL_EXT["output-signal"]))
@@ -870,6 +832,7 @@ class Parser:
 
     @memoize
     def acceleration_constraint(self, id_):
+        """Parse an AccelerationConstraint at node."""
         self._expect_type(id_, SLV["AccelerationConstraint"])
         subspace = self.subspace(self.g.value(id_, SLV["subspace"]))
         e_acc = self.quantity(self.g.value(id_, SLV["acceleration-energy"]))
@@ -905,6 +868,7 @@ class Parser:
 
     @memoize
     def subspace(self, id_):
+        """Parse the Subspace (linear/angular half) of node."""
         d = {
             MAP["position"]: Subspace.Linear,
             MAP_EXT["rotation"]: Subspace.Angular,
@@ -927,6 +891,7 @@ class Parser:
 
     @memoize
     def axis(self, id_):
+        """Parse the Axis (X/Y/Z) of node."""
         d = {
             MAP["x"]: Axis.X,
             MAP["y"]: Axis.Y,
@@ -942,6 +907,7 @@ class Parser:
 
     @memoize
     def constraint_handler(self, id_):
+        """Parse a ConstraintHandler (evaluators, controllers, monitors) at node."""
         self._expect_type(id_, CSTR_HDL["ConstraintHandler"])
         motion = self.guarded_motion(self.g.value(id_, CSTR_HDL["motion"]))
         control_mode_node = self.g.value(id_, CSTR_HDL["control-mode"])
@@ -979,6 +945,7 @@ class Parser:
 
     @memoize
     def monitor_entry(self, id_):
+        """Parse a monitor (level flag or edge event) at node."""
         self._expect_type(id_, CSTR_HDL["Monitor"])
         is_until_aggregate = self.g.value(id_, CSTR_HDL_EXT["monitors-until"]) is not None
         is_when_aggregate = self.g.value(id_, CSTR_HDL_EXT["monitors-when"]) is not None
@@ -1021,6 +988,7 @@ class Parser:
 
     @memoize
     def constraint_evaluator(self, id_):
+        """Parse a ConstraintEvaluator (constraint, error, elapsed timing) at node."""
         self._expect_type(id_, CSTR_HDL["ConstraintEvaluator"])
         constraint_node = self.g.value(id_, CSTR_HDL["constraint"])
         constraint = self.constraint(constraint_node)
@@ -1065,6 +1033,7 @@ class Parser:
 
     @memoize
     def controller(self, id_):
+        """Parse a controller (PID / impedance / feed-forward) at node."""
         is_pid = CSTR_HDL["ProportionalIntegralDerivative"] in self.g[id_ : RDF["type"]]
         is_impedance = CSTR_HDL["ImpedanceController"] in self.g[id_ : RDF["type"]]
         is_feedforward = CSTR_HDL_EXT["FeedForwardController"] in self.g[id_ : RDF["type"]]
@@ -1180,6 +1149,7 @@ class Parser:
 
     @memoize
     def forwarded_command(self, id_):
+        """Parse a ForwardedCommand (direct robot command forwarding) at node."""
         self._expect_type(id_, SLV_EXT["ForwardedCommand"])
         command_signal = self.quantity(self.g.value(id_, SLV_EXT["command-signal"]))
         target_node = self.g.value(id_, SLV["attached-to"])
@@ -1188,6 +1158,7 @@ class Parser:
         )
 
     def _optional_float(self, subject, predicate) -> float | None:
+        """Read an optional float-valued property, or None when absent."""
         value = self.g.value(subject, predicate)
         if value is None:
             return None
@@ -1201,6 +1172,7 @@ class Parser:
         return float(literal.value)
 
     def _required_float(self, subject, predicate) -> float:
+        """Read a required float-valued property, raising when absent."""
         value = self._optional_float(subject, predicate)
         if value is None:
             raise ValueError(
@@ -1210,6 +1182,7 @@ class Parser:
 
     @memoize
     def guarded_motion(self, id_):
+        """Parse a GuardedMotion (when/while/until constraint sets) at node."""
         self._expect_type(id_, MOT["GuardedMotion"])
         when = []
         when_any = False
@@ -1239,6 +1212,7 @@ class Parser:
 
     @memoize
     def constraint(self, id_):
+        """Parse a Constraint (quantity plus its parameter) at node."""
         self._expect_type(id_, CSTR["Constraint"])
         quantity = self.quantity(self.g.value(id_, CSTR["quantity"]))
 
@@ -1256,6 +1230,7 @@ class Parser:
 
     @memoize
     def equality_constraint(self, id_):
+        """Parse an EqualityConstraint at node."""
         self._expect_type(id_, CSTR["EqualityConstraint"])
         reference_value = self.quantity(self.g.value(id_, CSTR["reference-value"]))
 
@@ -1263,6 +1238,7 @@ class Parser:
 
     @memoize
     def unilateral_constraint(self, id_):
+        """Parse a UnilateralConstraint (greater/less threshold) at node."""
         self._expect_type(id_, CSTR["UnilateralConstraint"])
         threshold = self.quantity(self.g.value(id_, CSTR["threshold"]))
         type_ = UnilateralConstraintType.LessThan
@@ -1273,6 +1249,7 @@ class Parser:
 
     @memoize
     def bilateral_constraint(self, id_):
+        """Parse a BilateralConstraint (lower/upper threshold) at node."""
         self._expect_type(id_, CSTR["BilateralConstraint"])
         lower_threshold = self.quantity(self.g.value(id_, CSTR["lower-threshold"]))
         upper_threshold = self.quantity(self.g.value(id_, CSTR["upper-threshold"]))
@@ -1281,6 +1258,7 @@ class Parser:
 
     @memoize
     def outside_constraint(self, id_):
+        """Parse an OutsideConstraint (lower/upper threshold) at node."""
         self._expect_type(id_, CSTR_EXT["OutsideConstraint"])
         lower_threshold = self.quantity(self.g.value(id_, CSTR["lower-threshold"]))
         upper_threshold = self.quantity(self.g.value(id_, CSTR["upper-threshold"]))
@@ -1289,6 +1267,7 @@ class Parser:
 
     @memoize
     def direction(self, id_):
+        """Parse a Direction quantity at node."""
         self._expect_type(id_, GEOM_COORD["DirectionCoordinate"])
         self._expect_type(id_, GEOM_COORD["VectorXYZ"])
         quantity_kind = []
@@ -1303,6 +1282,7 @@ class Parser:
         return Direction(self.id(id_), quantity_kind, as_seen_by, [Unit(unit)], direction)
 
     def parse_vector3(self, node):
+        """Parse a 3-vector coordinate list from node, or None."""
         from rdflib import collection
 
         items = list(collection.Collection(self.g, node))
@@ -1313,6 +1293,7 @@ class Parser:
         return [float(v.toPython()) for v in items]
 
     def parse_xyz(self, node):
+        """Parse x/y/z scalar coordinates from node, or None."""
         x = self.g.value(node, GEOM_COORD["x"])
         y = self.g.value(node, GEOM_COORD["y"])
         z = self.g.value(node, GEOM_COORD["z"])
@@ -1324,6 +1305,7 @@ class Parser:
 
     @memoize
     def position(self, id_):
+        """Parse a Position quantity at node."""
         self._expect_type(id_, GEOM_COORD["PositionCoordinate"])
         self._expect_type(id_, GEOM_COORD["VectorXYZ"])
         of = self.position_reference(self.g.value(id_, GEOM_REL["of"]))
@@ -1339,9 +1321,11 @@ class Parser:
 
     @memoize
     def orientation(self, id_):
+        """Parse an Orientation quantity at node."""
         self._expect_type(id_, GEOM_COORD["OrientationCoordinate"])
 
         def optional_pose_ref(node):
+            """Resolve an optional pose reference (endpoint or bare pose) at node."""
             if node is None:
                 return None
             if ENV.RigidObject in self.g[node : RDF["type"]]:
@@ -1380,6 +1364,7 @@ class Parser:
 
     @memoize
     def _pose_endpoint(self, node):
+        """Resolve a pose endpoint (frame/scene-object) to its id."""
         if node is None:
             return None
         if ENV.RigidObject in self.g[node : RDF["type"]]:
@@ -1390,6 +1375,7 @@ class Parser:
         # A geom-rel:Pose with no PoseCoordinate: a snapshot/reference pose whose
         # KDL::Frame is filled at runtime. Same IR shape as a coordinate pose, with
         # its frame endpoints but no authored coordinate values.
+        """Parse a bare Pose (no view) at node."""
         as_seen_by_node = self.g.value(id_, GEOM_COORD["as-seen-by"])
         provenance = self.quantity_provenance(id_)
         return Pose(
@@ -1407,6 +1393,7 @@ class Parser:
         )
 
     def pose(self, id_):
+        """Parse a Pose quantity (endpoints, orientation, position) at node."""
         self._expect_type(id_, GEOM_COORD["PoseCoordinate"])
         self._expect_type(id_, GEOM_COORD["VectorXYZ"])
         of = self._pose_endpoint(self.g.value(id_, GEOM_REL["of"]))
@@ -1448,6 +1435,7 @@ class Parser:
 
     @memoize
     def velocity_twist(self, id_):
+        """Parse a VelocityTwist quantity at node."""
         self._expect_type(id_, GEOM_COORD["VelocityTwistCoordinate"])
         self._expect_type(id_, GEOM_COORD["VectorXYZ"])
         of = self.simplicial_complex(self.g.value(id_, GEOM_REL["of"]))
@@ -1489,6 +1477,7 @@ class Parser:
 
     @memoize
     def acceleration_twist(self, id_):
+        """Parse an AccelerationTwist quantity at node."""
         self._expect_type(id_, GEOM_COORD["AccelerationTwistCoordinate"])
         self._expect_type(id_, GEOM_COORD["VectorXYZ"])
         qk, ref, seen, unit, provenance = self._spatial_coordinate_fields(
@@ -1498,6 +1487,7 @@ class Parser:
 
     @memoize
     def pose_difference(self, id_):
+        """Parse a PoseDifference quantity at node."""
         self._expect_type(id_, GEOM_COORD_EXT["PoseDifferenceCoordinate"])
         self._expect_type(id_, GEOM_COORD["VectorXYZ"])
         qk, ref, seen, unit, provenance = self._spatial_coordinate_fields(
@@ -1507,6 +1497,7 @@ class Parser:
 
     @memoize
     def wrench(self, id_):
+        """Parse a Wrench quantity (with any FT sensor) at node."""
         self._expect_type(id_, RBDYN_COORD["WrenchCoordinate"])
         qk, ref, seen, unit, provenance = self._spatial_coordinate_fields(
             id_, RBDYN_ENT["reference-point"], RBDYN_COORD["as-seen-by"]
@@ -1518,6 +1509,7 @@ class Parser:
 
     @memoize
     def quantity(self, id_):
+        """Parse the quantity at node, dispatching on its RDF type."""
         self._expect_type(id_, QUDT_SCHEMA["Quantity"])
         quantity_kind_node = self.g.value(id_, QUDT_SCHEMA["hasQuantityKind"]) or self.g.value(
             id_, QUDT_SCHEMA["quantity-kind"]
@@ -1584,6 +1576,7 @@ class Parser:
 
     @memoize
     def joint_position(self, id_):
+        """Parse a JointPosition quantity at node."""
         self._expect_type(id_, KC_STAT["JointPositionCoordinate"])
         joint_node = self.g.value(id_, GEOM_REL["of"])
         joint_name = self.label(joint_node) if joint_node is not None else ""
@@ -1592,11 +1585,13 @@ class Parser:
     def quantity_provenance(self, id_):
         # Provenance(authored, snapshot), mutually exclusive: snapshot wins (mirrors old roles() elif).
         # authored == carries an authored value/coordinate and is not a runtime snapshot.
+        """Parse a quantity's Provenance (authored / snapshot) at node."""
         snapshot = SNAP.Snapshot in self.g[id_ : RDF["type"]]
         authored = (not snapshot) and self._is_authored(id_)
         return Provenance(authored=authored, snapshot=snapshot)
 
     def _is_authored(self, id_):
+        """True when a quantity's value was authored by the user (not computed)."""
         if (id_, QUDT_SCHEMA["value"], None) in self.g:
             return True
         if (id_, CSTR["reference-value"], None) in self.g:
@@ -1619,6 +1614,7 @@ class Parser:
 
     @memoize
     def simplicial_complex(self, id_):
+        """Parse a SimplicialComplex at node."""
         self._expect_type(id_, GEOM_ENT["SimplicialComplex"])
         # rdf.py's _frame_body() mints this off a Frame (mj:attached-body) so Twist.of/wrt don't
         # fuse Frame and body onto one URI. Follow the link back so the id matches its name.
@@ -1627,17 +1623,20 @@ class Parser:
 
     @memoize
     def scene_object(self, id_):
+        """Parse a SceneObject at node."""
         self._expect_type(id_, ENV.RigidObject)
         body = str(self.g.value(id_, MJ["body-name"]) or self.id(id_))
         return SceneObject(self.id(id_), body)
 
     @memoize
     def frame(self, id_):
+        """Parse a Frame at node."""
         self._expect_type(id_, GEOM_ENT["Frame"])
         return Frame(self.id(id_))
 
     @memoize
     def point(self, id_):
+        """Parse a Point at node."""
         self._expect_type(id_, GEOM_ENT["Point"])
         # rdf.py's _frame_origin_point() mints this off a Frame (geom-ent:origin) so Position.of/wrt
         # don't fuse Frame and Point onto one URI. Follow the link back so the id matches its name.
@@ -1645,6 +1644,7 @@ class Parser:
         return Point(self.id(owner if owner is not None else id_))
 
     def view(self):
+        """Parse a View (superobject, subobject, subspace, axis) at node."""
         dispatcher = [
             (MAP["DirectionCoordinateView"], self.direction),
             (MAP["PoseCoordinateView"], self.pose),
@@ -1684,6 +1684,7 @@ class Parser:
         return view_map
 
     def data_structures(self):
+        """Parse every data-structure entity in the graph."""
         dispatcher = [
             (GEOM_COORD["DirectionCoordinate"], self.direction),
             (GEOM_COORD["PositionCoordinate"], self.position),
@@ -1704,6 +1705,7 @@ class Parser:
         return _dedupe_by_id(data_structures)
 
     def closures(self, operators):
+        """Build the closure for each call of the given operators."""
         closures = {}
         for operator in operators:
             for closure in self.g.subjects(RDF["type"], operator.type_):
@@ -1734,6 +1736,7 @@ class Parser:
     def schedule(self, start, ops):
         # Start at a SolverWithInputAndOutput
         # Then traverse along data structure and collect function blocks
+        """Build the dependency-ordered schedule for the given operators."""
         q = collections.deque()
         data_structures = set()
         sched = []
@@ -1797,6 +1800,7 @@ class Parser:
         return self._topological_schedule(sched, scheduled_nodes, ops)
 
     def _operator_outputs(self, node, op):
+        """Output data ids produced by an operator call."""
         outputs = set()
         for out in getattr(op, "output", []):
             outputs.update(self.g.objects(node, out))
@@ -1841,6 +1845,9 @@ class Parser:
         permanent = set()
 
         def visit(call):
+            """Recurse operators feeding a data node, appending schedulable calls in dependency
+            order.
+            """
             if call in permanent:
                 return
             if call in temporary:
@@ -2042,11 +2049,13 @@ def _snapshots_for_motion(
     data_reference_map = data_reference_map or {}
 
     def object_id(value):
+        """Id of a value, whether a dict row or an object."""
         if isinstance(value, dict):
             return value.get("id")
         return getattr(value, "id", None)
 
     def object_field(value, field):
+        """Read a field from a value, whether a dict row or an object."""
         if isinstance(value, dict):
             return value.get(field)
         return getattr(value, field, None)
@@ -2061,6 +2070,7 @@ def _snapshots_for_motion(
             supers_by_subobject.setdefault(subobject_id, []).append(super_id)
 
     def add_reference(ref_id):
+        """Record a snapshot capture for one referenced id."""
         if not isinstance(ref_id, str):
             return
         pending = [ref_id]
@@ -2829,6 +2839,7 @@ def _resolve_existing_path(path: str) -> Path | None:
         cache_root = Path(os.environ["HOME"]) / ".cache" / "mj_kdl_wrapper"
 
     def cache_path(marker: str, cache_subdir: str) -> Path | None:
+        """Candidate cache path for an asset under a marker directory, or None."""
         pos = text.find(marker)
         if pos == -1 or cache_root is None:
             return None
@@ -2861,6 +2872,7 @@ def _mjcf_body_containing_site(path: str, site_name: str) -> str:
         return ""
 
     def visit_body(body) -> str:
+        """Recurse MJCF bodies for the one owning the named site."""
         for site in body.findall("site"):
             if site.get("name") == site_name:
                 return body.get("name") or ""
@@ -4075,6 +4087,7 @@ def add_controller_internal_state_logging(
     quantity_ids = {_field(item, "id") for item in quantities if _field(item, "id")}
 
     def add_shared(item_id: str, item_type: str, controller_id: str, state_name: str) -> None:
+        """Append a controller-internal-state shared_data item (once per id)."""
         if item_id not in shared_ids:
             shared_data.append(
                 {
@@ -4088,6 +4101,7 @@ def add_controller_internal_state_logging(
             shared_ids.add(item_id)
 
     def add_quantity(item_id: str, controller_id: str, state_name: str) -> None:
+        """Append a controller-internal-state introspection quantity (once per id)."""
         if item_id not in quantity_ids:
             quantities.append(
                 {
@@ -4140,6 +4154,7 @@ def add_quantity_samples(introspection: dict, shared_data: list, views: dict) ->
     # Each sample carries a backend-agnostic descriptor (kind + ids/axis); the C++
     # sample expression is rendered by the sample-expr template (shared_data.stg).
     def add(source, component: str, desc: dict) -> None:
+        """Append one scalar frame-log sample row for a source and component."""
         src = _as_dict(source)
         row = {key: value for key, value in src.items() if key != "index"}
         source_id = src.get("id")
@@ -4156,10 +4171,12 @@ def add_quantity_samples(introspection: dict, shared_data: list, views: dict) ->
         samples.append(row)
 
     def add_axes(source, prefix: str, make_desc) -> None:
+        """Append per-axis (x/y/z) sample rows for a vector quantity."""
         for idx, axis in enumerate(("x", "y", "z")):
             add(source, f"{prefix}.{axis}" if prefix else axis, make_desc(idx))
 
     def scalar_view(data_id: str) -> bool:
+        """True when a data id has no view or its view selects a single axis."""
         view = views.get(data_id)
         return not view or _field(view, "axis") is not None
 
@@ -4333,6 +4350,7 @@ def resolve_arc_closures(closures: dict, data: list) -> None:
     data_by_id = _index_by_id(data)
 
     def is_pose(data) -> bool:
+        """True when a data structure is a Pose quantity."""
         qkind = _field(data, "quantity_kind")
         qkind_ids = qkind if isinstance(qkind, list) else [qkind]
         return _field(data, "type") == "Pose" or any(
@@ -4371,6 +4389,7 @@ def collect_motion_references(motion, closures: dict) -> set[str]:
     refs: set[str] = set()
 
     def visit(value):
+        """Recurse a value collecting every string id it references."""
         if isinstance(value, str):
             refs.add(value)
         elif isinstance(value, dict):
@@ -4541,6 +4560,7 @@ def _fsm_from_graph(g) -> dict | None:
         return None
 
     def ident(uri):
+        """FSM identifier token (upper-cased var name) for a graph URI."""
         return get_valid_var_name(local_name(str(uri))).upper()
 
     states, state_uris = [], {}
@@ -4641,6 +4661,7 @@ def _apply_fsm_wiring(motions, fsm) -> dict:
     by_id = {_field(m, "id"): m for m in motions}
 
     def tag_run_state(motion, monitors):
+        """Tag FSM-event monitors and set their motion's run state."""
         for monitor in monitors:
             if is_fsm_event(monitor, fsm_ns_uri):
                 _set_field(monitor, "fsm_namespace", fsm_namespace)

@@ -7,126 +7,134 @@ a JSON intermediate representation suitable for code generation.
 
 from __future__ import annotations
 
-import sys
 import argparse
-from dataclasses import dataclass, field, replace, asdict, is_dataclass
-from enum import Enum
 import collections
 import hashlib
 import itertools
+import json
 import math
 import os
 import re
-import json
+import sys
 import weakref
-from pathlib import Path
 import xml.etree.ElementTree as ET
+from dataclasses import asdict, dataclass, field, replace
+from enum import Enum
+from functools import wraps
+from pathlib import Path
+
 import rdflib
 from rdf_utils.naming import get_valid_var_name
 from rdf_utils.resolver import IriToFileResolver, install_resolver
 from rdf_utils.uri import local_name
-from functools import wraps
-from rdflib.namespace import RDF
 from rdflib import URIRef
+from rdflib.namespace import RDF
+
+from motion_spec.entities import (
+    AccelerationConstraint,
+    AccelerationTwist,
+    Axis,
+    BilateralConstraint,
+    CartesianForceSpecification,
+    Constraint,
+    ConstraintEvaluator,
+    ConstraintHandler,
+    ControlMode,
+    DataclassJSONEncoder,
+    Direction,
+    EdgeMonitor,
+    EqualityConstraint,
+    EvaluatorType,
+    FeedForwardController,
+    ForceDistributionSolver,
+    ForwardedCommand,
+    Frame,
+    FreeVector,
+    GuardedMotion,
+    GuardedMotionBlock,
+    HandlerArmSolver,
+    ImpedanceController,
+    JointForceSpecification,
+    JointPosition,
+    LevelMonitor,
+    MotionDrivers,
+    Orientation,
+    OutsideConstraint,
+    PIDController,
+    Point,
+    Pose,
+    PoseAxisErrorComponent,
+    PoseAxisErrorGroup,
+    PoseDifference,
+    Position,
+    Provenance,
+    Quantity,
+    QuantityKind,
+    RelativePoseCapture,
+    Saturation,
+    SceneAttachment,
+    SceneObject,
+    SceneObjectSpec,
+    SceneRelativePose,
+    SceneRobot,
+    SceneSpec,
+    SimplicialComplex,
+    SnapshotCapture,
+    SolverWithInputAndOutput,
+    Subspace,
+    Trajectory,
+    UnilateralConstraint,
+    UnilateralConstraintType,
+    Unit,
+    VelocityCompositionSolver,
+    VelocityTwist,
+    View,
+    Wrench,
+)
+from motion_spec.manifest import build_url_map, metamodel_url_map
 from motion_spec.namespace import (
     APP,
+    CSTR,
+    CSTR_EXT,
+    CSTR_HDL,
+    CSTR_HDL_EXT,
     ENV,
-    QUDT_SCHEMA,
-    QUDT_QKIND,
-    QUDT_UNIT,
-    GEOM_ENT,
-    GEOM_REL,
+    EXEC,
     GEOM_COORD,
     GEOM_COORD_EXT,
+    GEOM_ENT,
     GEOM_OP,
     GEOM_OP_EXT,
-    RBDYN_ENT,
-    RBDYN_COORD,
-    RBDYN_OP,
-    RBDYN_OP_EXT,
+    GEOM_REL,
     KC_STAT,
     MAP,
     MAP_EXT,
-    CSTR,
-    CSTR_EXT,
     MJ,
     MOT,
     POLY,
-    TRAJ,
+    QUDT_QKIND,
+    QUDT_SCHEMA,
+    QUDT_UNIT,
+    RBDYN_COORD,
+    RBDYN_ENT,
+    RBDYN_OP,
+    RBDYN_OP_EXT,
     RT,
-    CSTR_HDL,
-    CSTR_HDL_EXT,
-    EXEC,
-    SNAP,
     SLV,
     SLV_EXT,
-)
-from motion_spec.manifest import build_url_map, metamodel_url_map
-from motion_spec.entities import (
-    DataclassJSONEncoder,
-    Subspace,
-    Axis,
-    ControlMode,
-    UnilateralConstraintType,
-    EvaluatorType,
-    Point,
-    Frame,
-    QuantityKind,
-    Unit,
-    Quantity,
-    Saturation,
-    FreeVector,
-    Trajectory,
-    JointPosition,
-    SimplicialComplex,
-    SceneObject,
-    Direction,
-    Position,
-    Orientation,
-    Pose,
-    VelocityTwist,
-    AccelerationTwist,
-    PoseDifference,
-    Wrench,
-    View,
-    EqualityConstraint,
-    UnilateralConstraint,
-    BilateralConstraint,
-    OutsideConstraint,
-    Constraint,
-    GuardedMotion,
-    ConstraintEvaluator,
-    FeedForwardController,
-    ImpedanceController,
-    PIDController,
-    Provenance,
-    ForwardedCommand,
-    EdgeMonitor,
-    LevelMonitor,
-    PoseAxisErrorComponent,
-    PoseAxisErrorGroup,
-    ConstraintHandler,
-    SnapshotCapture,
-    SceneRelativePose,
-    RelativePoseCapture,
-    GuardedMotionBlock,
-    AccelerationConstraint,
-    CartesianForceSpecification,
-    JointForceSpecification,
-    MotionDrivers,
-    HandlerArmSolver,
-    SolverWithInputAndOutput,
-    SceneAttachment,
-    SceneRobot,
-    SceneObjectSpec,
-    SceneSpec,
-    VelocityCompositionSolver,
-    ForceDistributionSolver,
+    SNAP,
+    TRAJ,
 )
 
 
+# ---------------------------------------------------------------------------
+# DSL operators and specifications
+# ---------------------------------------------------------------------------
 def parse_argument(g, closure_id, argument, to_id, resolve_value=False):
     # For each of the key differentiate if there is one or more associated value
+    """Resolve a closure argument (input/output/parameter) from the graph to id(s); a lone value
+    collapses to a scalar and qudt:Quantity constants resolve to their scalar value.
+    """
     entry = list(g[closure_id:argument])
     if len(entry) == 0:
         return None
@@ -149,6 +157,10 @@ def parse_argument(g, closure_id, argument, to_id, resolve_value=False):
 
 @dataclass
 class Operator:
+    """A schedulable RDF computation mapping graph inputs/outputs/parameters to a closure and
+    participating in output-to-input scheduling.
+    """
+
     type_: URIRef
     input: list[URIRef]
     output: list[URIRef]
@@ -250,6 +262,10 @@ class Specification:
 
 
 class ErrorEvaluator:
+    """Constraint-handler operator that emits a constraint error signal, dispatching on the
+    constraint type (equality/greater/less/bilateral/outside).
+    """
+
     def __init__(self):
         self.type_ = CSTR_HDL["ErrorEvaluator"]
         self.schedulable = False
@@ -299,7 +315,9 @@ class ErrorEvaluator:
             for output in operator.output:
                 closure[to_id(output)] = parse_argument(g, closure_id, output, to_id)
             for param in operator.parameters:
-                closure[to_id(param)] = parse_argument(g, closure_id, param, to_id, resolve_value=True)
+                closure[to_id(param)] = parse_argument(
+                    g, closure_id, param, to_id, resolve_value=True
+                )
 
             # Only return the first matching type
             return closure
@@ -354,6 +372,8 @@ class ErrorEvaluator:
 
 
 class AssignmentEvaluator:
+    """Constraint operator that assigns a reference value to a quantity (no error output)."""
+
     def __init__(self):
         self.type_ = CSTR_HDL["AssignmentEvaluator"]
         self.schedulable = True
@@ -394,9 +414,13 @@ class AssignmentEvaluator:
 
         return data_structures
 
+
 def _op_output_preds(op):
     # Predicates op.scheduler_step queries against data_out; if none point into a
     # node, scheduler_step can only return empty, so it is safe to skip.
+    """Output predicates an operator's scheduler queries; empty when the operator can never match,
+    so its scheduler step can be skipped.
+    """
     if isinstance(op, ErrorEvaluator):
         return {p for sub in op.cstr_op for p in sub.output}
     if isinstance(op, AssignmentEvaluator):
@@ -415,11 +439,7 @@ ops_generic = [
         input=[GEOM_OP["in1"], GEOM_OP["in2"]],
         output=[GEOM_OP["composite"]],
     ),
-    Operator(
-        type_=GEOM_OP["InvertPose"],
-        input=[GEOM_OP["pose"]],
-        output=[GEOM_OP["out"]],
-    ),
+    Operator(type_=GEOM_OP["InvertPose"], input=[GEOM_OP["pose"]], output=[GEOM_OP["out"]]),
     Operator(
         type_=GEOM_OP["RotateVelocityTwistToProximalWithPose"],
         input=[GEOM_OP["pose"], GEOM_OP["from"]],
@@ -453,11 +473,7 @@ ops_generic = [
         input=[RBDYN_OP["in1"], RBDYN_OP["in2"]],
         output=[RBDYN_OP["out"]],
     ),
-    Operator(
-        type_=RBDYN_OP_EXT["Norm"],
-        input=[RBDYN_OP["in1"]],
-        output=[RBDYN_OP["out"]],
-    ),
+    Operator(type_=RBDYN_OP_EXT["Norm"], input=[RBDYN_OP["in1"]], output=[RBDYN_OP["out"]]),
     Operator(
         type_=RBDYN_OP["RotateWrenchToDistalWithPose"],
         input=[RBDYN_OP["pose"], RBDYN_OP["from"]],
@@ -478,11 +494,7 @@ ops_generic = [
         input=[RBDYN_OP["magnitude"], RBDYN_OP["direction"], RBDYN_OP["position"]],
         output=[RBDYN_OP["wrench"]],
     ),
-    Specification(
-        type_=MAP["View"],
-        input=[MAP["superobject"]],
-        output=[MAP["subobject"]],
-    ),
+    Specification(type_=MAP["View"], input=[MAP["superobject"]], output=[MAP["subobject"]]),
     Operator(
         type_=GEOM_OP_EXT["PoseDiffEvaluator"],
         input=[GEOM_OP["in1"], GEOM_OP["in2"]],
@@ -521,26 +533,29 @@ ops_generic = [
     ),
     Operator(
         type_=TRAJ["Circle"],
-        input=[TRAJ["start"], TRAJ["center"], TRAJ["plane-normal"],
-               TRAJ["alpha"]],
+        input=[TRAJ["start"], TRAJ["center"], TRAJ["plane-normal"], TRAJ["alpha"]],
         output=[TRAJ["trajectory"]],
     ),
     Operator(
         type_=TRAJ["Arc"],
-        input=[TRAJ["start"], TRAJ["end"], TRAJ["amplitude"], TRAJ["plane-normal"],
-               TRAJ["alpha"]],
+        input=[TRAJ["start"], TRAJ["end"], TRAJ["amplitude"], TRAJ["plane-normal"], TRAJ["alpha"]],
         output=[TRAJ["trajectory"]],
     ),
     Operator(
         type_=TRAJ["Helix"],
-        input=[TRAJ["start"], TRAJ["center"], TRAJ["axis"], TRAJ["pitch"],
-               TRAJ["revolutions"], TRAJ["alpha"]],
+        input=[
+            TRAJ["start"],
+            TRAJ["center"],
+            TRAJ["axis"],
+            TRAJ["pitch"],
+            TRAJ["revolutions"],
+            TRAJ["alpha"],
+        ],
         output=[TRAJ["trajectory"]],
     ),
     Operator(
         type_=TRAJ["Figure8"],
-        input=[TRAJ["anchor"], TRAJ["radius"], TRAJ["plane-normal"],
-               TRAJ["alpha"]],
+        input=[TRAJ["anchor"], TRAJ["radius"], TRAJ["plane-normal"], TRAJ["alpha"]],
         output=[TRAJ["trajectory"]],
         parameters=[TRAJ["form"]],
     ),
@@ -580,9 +595,12 @@ ops_slv = [
 ]
 
 
-
-
+# ---------------------------------------------------------------------------
+# RDF parsing
+# ---------------------------------------------------------------------------
 def memoize(func):
+    """Decorator caching a Parser method's result per instance, keyed by its arguments."""
+
     @wraps(func)
     def decorator(self, *args, **kwargs):
         # Scope by func identity so e.g. position(uri) and quantity(uri)
@@ -596,6 +614,7 @@ def memoize(func):
 
 
 def escape(s):
+    """Return a graph-safe identifier for a local name."""
     s = re.sub(r"[^0-9A-Za-z_]", "_", str(s))
     if s and s[0].isdigit():
         s = f"_{s}"
@@ -641,6 +660,10 @@ class LocalIdMap:
 class Parser:
     # A context quantity's id is its URI's last segment, so a name reused across motions' specs
     # (e.g. `support-z`) collapses to one id. Qualify only ambiguous names (same segment, >1 owner).
+    """Parses a motion-spec RDF dataset into IR pieces: ids, closures, views, data structures,
+    handlers and solvers.
+    """
+
     _SPEC_OWNER_RE = re.compile(r"/([^/]+)/(?:Spec/spec|World/world)/")
 
     # scan depends only on the graph; memoize per-graph
@@ -705,9 +728,7 @@ class Parser:
         collision the motion-qualified id scoping failed to resolve."""
         collisions = {i: sorted(u) for i, u in self._id_sources.items() if len(u) > 1}
         if collisions:
-            details = "\n".join(
-                f"  '{i}' <- {', '.join(u)}" for i, u in sorted(collisions.items())
-            )
+            details = "\n".join(f"  '{i}' <- {', '.join(u)}" for i, u in sorted(collisions.items()))
             raise ValueError(
                 "id collision(s): distinct URIs map to one generated id and would be silently "
                 "merged (e.g. a context-quantity name reused across motions with different "
@@ -811,11 +832,7 @@ class Parser:
             spec_jf.append(self.joint_force_specification(jf))
 
         return MotionDrivers(
-            self.id(id_),
-            spec_acc,
-            spec_frc,
-            spec_jf,
-            has_cartesian_force=bool(spec_frc),
+            self.id(id_), spec_acc, spec_frc, spec_jf, has_cartesian_force=bool(spec_frc)
         )
 
     def joint_force_specification(self, id_):
@@ -871,12 +888,20 @@ class Parser:
         if SLV_EXT["DirectionAligned"] in self.g[id_ : RDF["type"]]:
             direction = self.direction(self.g.value(id_, SLV_EXT["direction"]))
             return AccelerationConstraint(
-                self.id(id_), subspace, None, e_acc, as_seen_by, direction=direction, saturation=saturation
+                self.id(id_),
+                subspace,
+                None,
+                e_acc,
+                as_seen_by,
+                direction=direction,
+                saturation=saturation,
             )
 
         self._expect_type(id_, SLV["AxisAligned"])
         axis = self.axis(self.g.value(id_, SLV["axis"]))
-        return AccelerationConstraint(self.id(id_), subspace, axis, e_acc, as_seen_by, saturation=saturation)
+        return AccelerationConstraint(
+            self.id(id_), subspace, axis, e_acc, as_seen_by, saturation=saturation
+        )
 
     @memoize
     def subspace(self, id_):
@@ -958,13 +983,21 @@ class Parser:
         is_until_aggregate = self.g.value(id_, CSTR_HDL_EXT["monitors-until"]) is not None
         is_when_aggregate = self.g.value(id_, CSTR_HDL_EXT["monitors-when"]) is not None
         error_node = self.g.value(id_, CSTR_HDL["error"])
-        error = None if is_until_aggregate or is_when_aggregate or error_node is None else self.quantity(error_node)
+        error = (
+            None
+            if is_until_aggregate or is_when_aggregate or error_node is None
+            else self.quantity(error_node)
+        )
 
         if CSTR_HDL["LevelTriggeredMonitor"] in self.g[id_ : RDF["type"]]:
             flag = self.id(self.g.value(id_, CSTR_HDL["flag"]))
             return LevelMonitor(
-                self.id(id_), "LevelTriggeredMonitor", error, flag,
-                is_until_aggregate=is_until_aggregate, is_when_aggregate=is_when_aggregate,
+                self.id(id_),
+                "LevelTriggeredMonitor",
+                error,
+                flag,
+                is_until_aggregate=is_until_aggregate,
+                is_when_aggregate=is_when_aggregate,
             )
 
         event_node = self.g.value(id_, CSTR_HDL["event"])
@@ -973,9 +1006,16 @@ class Parser:
         fallback_motion = self.id(fallback_node) if fallback_node is not None else None
         debounce_duration_s = self._optional_float(id_, CSTR_HDL_EXT["debounce-duration"])
         return EdgeMonitor(
-            self.id(id_), "EdgeTriggeredMonitor", error, event, None,
-            is_until_aggregate=is_until_aggregate, is_when_aggregate=is_when_aggregate,
-            event_uri=str(event_node), event_name=event.upper(), fallback_motion=fallback_motion,
+            self.id(id_),
+            "EdgeTriggeredMonitor",
+            error,
+            event,
+            None,
+            is_until_aggregate=is_until_aggregate,
+            is_when_aggregate=is_when_aggregate,
+            event_uri=str(event_node),
+            event_name=event.upper(),
+            fallback_motion=fallback_motion,
             debounce_duration_s=debounce_duration_s,
         )
 
@@ -998,17 +1038,29 @@ class Parser:
         elapsed_op = None
         elapsed_threshold_s = None
         qnode = self.g.value(constraint_node, CSTR["quantity"])
-        if qnode is not None and QUDT_QKIND["Time"] in self.g[qnode : QUDT_SCHEMA["hasQuantityKind"]]:
+        if (
+            qnode is not None
+            and QUDT_QKIND["Time"] in self.g[qnode : QUDT_SCHEMA["hasQuantityKind"]]
+        ):
             is_elapsed = True
-            elapsed_op = ">=" if CSTR["GreaterThanConstraint"] in self.g[constraint_node : RDF["type"]] else "<"
+            elapsed_op = (
+                ">="
+                if CSTR["GreaterThanConstraint"] in self.g[constraint_node : RDF["type"]]
+                else "<"
+            )
             thr = self.g.value(constraint_node, CSTR["threshold"])
             thr_val = float(self.g.value(thr, QUDT_SCHEMA["value"]))
             thr_unit = self.g.value(thr, QUDT_SCHEMA["unit"])
             elapsed_threshold_s = thr_val * (0.001 if thr_unit == QUDT_UNIT["MilliSEC"] else 1.0)
 
         return ConstraintEvaluator(
-            self.id(id_), t, constraint, error,
-            is_elapsed=is_elapsed, elapsed_op=elapsed_op, elapsed_threshold_s=elapsed_threshold_s,
+            self.id(id_),
+            t,
+            constraint,
+            error,
+            is_elapsed=is_elapsed,
+            elapsed_op=elapsed_op,
+            elapsed_threshold_s=elapsed_threshold_s,
         )
 
     @memoize
@@ -1053,14 +1105,20 @@ class Parser:
             self.saturation(output_saturation_node) if output_saturation_node is not None else None
         )
         integral_saturation = (
-            self.saturation(integral_saturation_node) if integral_saturation_node is not None else None
+            self.saturation(integral_saturation_node)
+            if integral_saturation_node is not None
+            else None
         )
 
         if is_pid:
             if error_signal is None:
-                raise ValueError(f"PID controller '{self.id(id_)}' must have cstr-hdl:error-signal.")
+                raise ValueError(
+                    f"PID controller '{self.id(id_)}' must have cstr-hdl:error-signal."
+                )
             if reference_signal is not None:
-                raise ValueError(f"PID controller '{self.id(id_)}' must not have cstr-hdl-ext:reference-signal.")
+                raise ValueError(
+                    f"PID controller '{self.id(id_)}' must not have cstr-hdl-ext:reference-signal."
+                )
             decay_rate = None
             if CSTR_HDL["DecayingIntegralTerm"] in self.g[id_ : RDF["type"]]:
                 decay_rate = self.g.value(id_, CSTR_HDL["decay-rate"]).value
@@ -1083,9 +1141,13 @@ class Parser:
                     f"Impedance controller '{self.id(id_)}' must not have cstr-hdl-ext:measured-derivative."
                 )
             if error_signal is None:
-                raise ValueError(f"Impedance controller '{self.id(id_)}' must have cstr-hdl:error-signal.")
+                raise ValueError(
+                    f"Impedance controller '{self.id(id_)}' must have cstr-hdl:error-signal."
+                )
             if reference_signal is not None:
-                raise ValueError(f"Impedance controller '{self.id(id_)}' must not have cstr-hdl-ext:reference-signal.")
+                raise ValueError(
+                    f"Impedance controller '{self.id(id_)}' must not have cstr-hdl-ext:reference-signal."
+                )
             return ImpedanceController(
                 id=self.id(id_),
                 control_signal=control_signal,
@@ -1097,9 +1159,13 @@ class Parser:
                 type=self.id(CSTR_HDL.ImpedanceController),
             )
         if reference_signal is None:
-            raise ValueError(f"FeedForward controller '{self.id(id_)}' must have cstr-hdl-ext:reference-signal.")
+            raise ValueError(
+                f"FeedForward controller '{self.id(id_)}' must have cstr-hdl-ext:reference-signal."
+            )
         if error_signal is not None:
-            raise ValueError(f"FeedForward controller '{self.id(id_)}' must not have cstr-hdl:error-signal.")
+            raise ValueError(
+                f"FeedForward controller '{self.id(id_)}' must not have cstr-hdl:error-signal."
+            )
         if measured_derivative is not None:
             raise ValueError(
                 f"FeedForward controller '{self.id(id_)}' must not have cstr-hdl-ext:measured-derivative."
@@ -1118,16 +1184,16 @@ class Parser:
         command_signal = self.quantity(self.g.value(id_, SLV_EXT["command-signal"]))
         target_node = self.g.value(id_, SLV["attached-to"])
         return ForwardedCommand(
-            self.id(id_),
-            command_signal,
-            self.label(target_node) if target_node is not None else "",
+            self.id(id_), command_signal, self.label(target_node) if target_node is not None else ""
         )
 
     def _optional_float(self, subject, predicate) -> float | None:
         value = self.g.value(subject, predicate)
         if value is None:
             return None
-        literal = value if isinstance(value, rdflib.Literal) else self.g.value(value, QUDT_SCHEMA.value)
+        literal = (
+            value if isinstance(value, rdflib.Literal) else self.g.value(value, QUDT_SCHEMA.value)
+        )
         if literal is None:
             raise ValueError(
                 f"Controller '{self.id(subject)}' property '{self.id(predicate)}' must be a literal or a node with qudt:value."
@@ -1274,6 +1340,7 @@ class Parser:
     @memoize
     def orientation(self, id_):
         self._expect_type(id_, GEOM_COORD["OrientationCoordinate"])
+
         def optional_pose_ref(node):
             if node is None:
                 return None
@@ -1427,9 +1494,7 @@ class Parser:
         qk, ref, seen, unit, provenance = self._spatial_coordinate_fields(
             id_, GEOM_REL["reference-point"], GEOM_COORD["as-seen-by"]
         )
-        return AccelerationTwist(
-            self.id(id_), qk, ref, seen, unit, provenance=provenance
-        )
+        return AccelerationTwist(self.id(id_), qk, ref, seen, unit, provenance=provenance)
 
     @memoize
     def pose_difference(self, id_):
@@ -1438,9 +1503,7 @@ class Parser:
         qk, ref, seen, unit, provenance = self._spatial_coordinate_fields(
             id_, GEOM_REL["reference-point"], GEOM_COORD["as-seen-by"]
         )
-        return PoseDifference(
-            self.id(id_), qk, ref, seen, unit, provenance=provenance
-        )
+        return PoseDifference(self.id(id_), qk, ref, seen, unit, provenance=provenance)
 
     @memoize
     def wrench(self, id_):
@@ -1450,8 +1513,7 @@ class Parser:
         )
         sensor_name = str(self.g.value(id_, MJ["ft-sensor-ref"]) or "")
         return Wrench(
-            self.id(id_), qk, ref, seen, unit, provenance=provenance,
-            sensor_name=sensor_name,
+            self.id(id_), qk, ref, seen, unit, provenance=provenance, sensor_name=sensor_name
         )
 
     @memoize
@@ -1541,7 +1603,14 @@ class Parser:
             return True
         if any(
             (id_, GEOM_COORD[c], None) in self.g
-            for c in ("x", "y", "z", "direction-cosine-x", "direction-cosine-y", "direction-cosine-z")
+            for c in (
+                "x",
+                "y",
+                "z",
+                "direction-cosine-x",
+                "direction-cosine-y",
+                "direction-cosine-z",
+            )
         ):
             return True
         if any(True for _ in self.g.objects(id_, GEOM_COORD["has-coordinate"])):
@@ -1605,7 +1674,9 @@ class Parser:
             axis = self.axis(axis_node) if axis_node is not None else None
 
             if superobject is None:
-                raise ValueError(f"MAP view {view} has an unrecognized type; no view dispatcher matched")
+                raise ValueError(
+                    f"MAP view {view} has an unrecognized type; no view dispatcher matched"
+                )
             view_map[self.id(subobject.id)] = View(
                 self.id(view), superobject, subobject, subspace, axis
             )
@@ -1636,7 +1707,11 @@ class Parser:
         closures = {}
         for operator in operators:
             for closure in self.g.subjects(RDF["type"], operator.type_):
-                cl = operator.closure_step(self.g, self.id, closure) if hasattr(operator, "closure_step") else None
+                cl = (
+                    operator.closure_step(self.g, self.id, closure)
+                    if hasattr(operator, "closure_step")
+                    else None
+                )
                 if cl:
                     if operator.type_ == CSTR_HDL["Controller"]:
                         # output-saturation lives on cstr-hdl-ext:limits (the non-integral
@@ -1782,7 +1857,11 @@ class Parser:
         return result
 
 
+# ---------------------------------------------------------------------------
+# Motion units
+# ---------------------------------------------------------------------------
 def _upstream_dependencies(data_id: str, closure_input_map: dict[str, set[str]]) -> set[str]:
+    """Transitive set of data ids that feed the given id through the closure input map."""
     result: set[str] = set()
     pending = list(closure_input_map.get(data_id, set()))
     while pending:
@@ -1795,6 +1874,7 @@ def _upstream_dependencies(data_id: str, closure_input_map: dict[str, set[str]])
 
 
 def _body_name(name: str | None) -> str | None:
+    """Strip a frame_/link_ prefix to the bare MuJoCo body name."""
     if name is None:
         return None
     for prefix in ("frame_", "frame-", "link_", "link-"):
@@ -1804,6 +1884,9 @@ def _body_name(name: str | None) -> str | None:
 
 
 def _mark_acceleration_constraint_frames(solver):
+    """Flag each of a solver's acceleration constraints as base-aligned when its axis frame is the
+    chain root (or unset).
+    """
     root_body = _body_name(getattr(solver, "chain_root", None))
     for driver in solver.motion_drivers:
         for constraint in driver.acceleration_constraint:
@@ -1827,9 +1910,7 @@ def _filtered_motion_driver(driver, handler_output_ids: set[str], closure_input_
             cartesian_forces.append(force_spec)
 
     joint_forces = [
-        jf_spec
-        for jf_spec in driver.joint_force
-        if jf_spec.force_id in handler_output_ids
+        jf_spec for jf_spec in driver.joint_force if jf_spec.force_id in handler_output_ids
     ]
 
     if not acceleration_constraints and not cartesian_forces and not joint_forces:
@@ -1919,12 +2000,14 @@ def _relative_poses_for_motion(evaluators, view_map, arm_solvers):
 
 
 def _constraint_reference_value_id(constraint):
+    """Id of a constraint's reference-value parameter, or None."""
     param = getattr(constraint, "parameter", None)
     ref = getattr(param, "reference_value", None) if param else None
     return getattr(ref, "id", None)
 
 
 def _snapshot_reference_value_ids(evaluators, constraints):
+    """Set of reference-value ids across the given evaluators and constraints."""
     ref_val_ids = set()
     for ev in evaluators:
         if ev.constraint is None:
@@ -1950,6 +2033,9 @@ def _snapshots_for_motion(
     closures=None,
     snapshot_clock_map=None,
 ):
+    """Build a motion's snapshot captures (sampled source, clock and persistence) from its
+    evaluators, constraints and reference maps.
+    """
     snapshot_clock_map = snapshot_clock_map or {}
     ref_val_ids = _snapshot_reference_value_ids(evaluators, constraints)
     closures = closures or {}
@@ -2099,7 +2185,11 @@ def _scene_relative_poses_for_motion(view_map, arm_solvers, data_structures=None
     for evaluator in evaluators or []:
         constraint = getattr(evaluator, "constraint", None)
         quantity = getattr(constraint, "quantity", None)
-        if quantity is not None and hasattr(quantity, "of") and hasattr(quantity, "with_respect_to"):
+        if (
+            quantity is not None
+            and hasattr(quantity, "of")
+            and hasattr(quantity, "with_respect_to")
+        ):
             candidate_poses.append(quantity)
 
     seen: set[str] = set()
@@ -2140,12 +2230,15 @@ def _scene_relative_poses_for_motion(view_map, arm_solvers, data_structures=None
 _GROUPABLE_SO_TYPES = {"Pose", "VelocityTwist", "AccelerationTwist", "Wrench"}
 
 _SUBSPACE_TO_GROUP_AXIS: dict[Subspace, tuple[str, bool]] = {
-    Subspace.Linear:  ("linear",  False),
+    Subspace.Linear: ("linear", False),
     Subspace.Angular: ("angular", True),
 }
 
 
 def _pose_axis_error_groups_for_motion(eval_nodes, p, view_map):
+    """Group a motion's per-axis pose error evaluators into PoseAxisErrorGroups, one per superobject
+    pose.
+    """
     groups: dict[str, PoseAxisErrorGroup] = {}
     for eval_node in eval_nodes:
         if GEOM_OP_EXT["PoseDiffEvaluator"] in p.g[eval_node : RDF["type"]]:
@@ -2171,13 +2264,8 @@ def _pose_axis_error_groups_for_motion(eval_nodes, p, view_map):
         if mapping is None:
             qkind = getattr(getattr(quantity, "quantity_kind", None), "id", "")
             quantity_id = getattr(quantity, "id", "")
-            if (
-                so_type == "Pose"
-                and (
-                    "Angle" in qkind
-                    or "angle" in qkind.lower()
-                    or "rotation" in quantity_id
-                )
+            if so_type == "Pose" and (
+                "Angle" in qkind or "angle" in qkind.lower() or "rotation" in quantity_id
             ):
                 mapping = ("angular", True)
             else:
@@ -2194,10 +2282,7 @@ def _pose_axis_error_groups_for_motion(eval_nodes, p, view_map):
         group = groups.setdefault(
             so_id,
             PoseAxisErrorGroup(
-                id=f"pose_axis_error_{so_id}",
-                pose=so_id,
-                components=[],
-                superobject_type=so_type,
+                id=f"pose_axis_error_{so_id}", pose=so_id, components=[], superobject_type=so_type
             ),
         )
         if is_angular:
@@ -2212,7 +2297,11 @@ def _pose_axis_error_groups_for_motion(eval_nodes, p, view_map):
                 eval_id=evaluator.id,
             )
         )
-        setattr(group, f"{subspace}_{view.axis.value.lower()}", evaluator.constraint.parameter.reference_value.id)
+        setattr(
+            group,
+            f"{subspace}_{view.axis.value.lower()}",
+            evaluator.constraint.parameter.reference_value.id,
+        )
 
     return [group for group in groups.values() if len(group.components) > 1]
 
@@ -2234,6 +2323,10 @@ def build_motion_units(
     pose_components=None,
     fsm=None,
 ):
+    """Build the per-motion IR units (one motion per handler), each complete with schedules,
+    monitors, controllers, conditions, declared poses, FSM wiring and function-interface flags;
+    returns (motions, fsm_meta).
+    """
     snapshot_clock_map = snapshot_clock_map or {}
     snapshot_source_map = snapshot_source_map or {}
     view_map = view_map or {}
@@ -2283,7 +2376,10 @@ def build_motion_units(
             if cnode is None:
                 return False
             qnode = g.value(cnode, CSTR["quantity"])
-            return qnode is not None and QUDT_QKIND["Time"] in g[qnode : QUDT_SCHEMA["hasQuantityKind"]]
+            return (
+                qnode is not None
+                and QUDT_QKIND["Time"] in g[qnode : QUDT_SCHEMA["hasQuantityKind"]]
+            )
 
         # Classify controllers: driven by while-evaluator error outputs.
         # PoseDiffEvaluator exposes its components as normal MAP views over the
@@ -2413,14 +2509,10 @@ def build_motion_units(
             while_eval_nodes, p_active, view_map
         )
         pose_axis_error_eval_ids = {
-            component.eval_id
-            for group in pose_axis_error_groups
-            for component in group.components
+            component.eval_id for group in pose_axis_error_groups for component in group.components
         }
         pose_axis_error_quantity_ids = {
-            component.quantity
-            for group in pose_axis_error_groups
-            for component in group.components
+            component.quantity for group in pose_axis_error_groups for component in group.components
         }
         pose_axis_error_compute_ids = {
             closure_output_map[quantity_id]
@@ -2428,15 +2520,14 @@ def build_motion_units(
             if quantity_id in closure_output_map
         }
         grouped_while_eval_nodes = {
-            node
-            for node in while_eval_nodes
-            if p_active.id(node) in pose_axis_error_eval_ids
+            node for node in while_eval_nodes if p_active.id(node) in pose_axis_error_eval_ids
         }
         while_schedule = p_active.schedule(
             [
                 n
                 for n in while_eval_nodes
-                if n not in while_pose_eval_nodes and n not in grouped_while_eval_nodes
+                if n not in while_pose_eval_nodes
+                and n not in grouped_while_eval_nodes
                 and not _is_elapsed_eval(n)
             ]
             + ctrl_nodes,
@@ -2501,7 +2592,9 @@ def build_motion_units(
         ]
         until_evaluators = [p.constraint_evaluator(n) for n in until_eval_nodes]
         controllers = [p.controller(n) for n in ctrl_nodes]
-        controller_output_ids = {c.control_signal.id for c in controllers if c.control_signal is not None}
+        controller_output_ids = {
+            c.control_signal.id for c in controllers if c.control_signal is not None
+        }
         forwarded_commands = [
             p.forwarded_command(n)
             for n in g.subjects(RDF.type, SLV_EXT["ForwardedCommand"])
@@ -2553,17 +2646,19 @@ def build_motion_units(
                 ),
                 pose_axis_error_groups=pose_axis_error_groups,
                 forwarded_commands=forwarded_commands,
-                snapshots=(_motion_snapshots := _snapshots_for_motion(
-                    while_evaluators + when_evaluators + until_evaluators,
-                    motion.while_ + motion.when + motion.until,
-                    snapshot_source_map,
-                    view_map,
-                    closure_output_map,
-                    data_reference_map,
-                    while_schedule + when_schedule + until_schedule,
-                    closures,
-                    snapshot_clock_map,
-                )),
+                snapshots=(
+                    _motion_snapshots := _snapshots_for_motion(
+                        while_evaluators + when_evaluators + until_evaluators,
+                        motion.while_ + motion.when + motion.until,
+                        snapshot_source_map,
+                        view_map,
+                        closure_output_map,
+                        data_reference_map,
+                        while_schedule + when_schedule + until_schedule,
+                        closures,
+                        snapshot_clock_map,
+                    )
+                ),
                 has_entry_snapshot=any(s.clock == "entry" for s in _motion_snapshots),
             )
         )
@@ -2593,7 +2688,8 @@ def build_motion_units(
         _annotate_controller_signals(motion.controllers, closures or {})
         motion_refs = collect_motion_references(motion, closures or {})
         motion.declared_pose_components = declared_pose_component_entries(
-            data_structures or [], pose_components or {}, motion_refs)
+            data_structures or [], pose_components or {}, motion_refs
+        )
     # FSM wiring tags monitors/motions and yields the header/step meta; then the
     # function-interface capability booleans, then the gate calls (which read them).
     fsm_meta = _apply_fsm_wiring(ordered, fsm)
@@ -2602,7 +2698,13 @@ def build_motion_units(
     return ordered, fsm_meta
 
 
+# ---------------------------------------------------------------------------
+# Scene, geometry and robot setups
+# ---------------------------------------------------------------------------
 def _filter_shared_data(data_structures, schedule, closures, view_map=None, fk_output_ids=None):
+    """Select the data structures that become shared_data fields (scheduled/closure/FK outputs),
+    excluding view sub-objects.
+    """
     referenced: set[str] = set(schedule)
     for c in closures.values():
         if isinstance(c, dict):
@@ -2635,6 +2737,7 @@ def _filter_shared_data(data_structures, schedule, closures, view_map=None, fk_o
 
 
 def _dedupe_by_id(items):
+    """Deduplicate items by id, keeping the first occurrence."""
     result = []
     seen = set()
     for item in items:
@@ -2650,6 +2753,7 @@ def _dedupe_by_id(items):
 
 
 def _xyz_or_none(g, node):
+    """Read a coordinate node's x/y/z as floats, or None if any axis is missing."""
     if node is None:
         return None
     values = [g.value(node, GEOM_COORD[axis]) for axis in ("x", "y", "z")]
@@ -2659,6 +2763,7 @@ def _xyz_or_none(g, node):
 
 
 def _orientation_degrees(g, node):
+    """Read an orientation node's roll/pitch/yaw in degrees, or None if incomplete."""
     result: dict[str, float | None] = {"roll": None, "pitch": None, "yaw": None}
     if node is None:
         return None
@@ -2682,27 +2787,31 @@ def _orientation_degrees(g, node):
 def _position_of(g, obj_node):
     # geom-rel:Position.of targets the frame's origin Point (geom-ent:origin),
     # not the frame node itself -- see rdf.py's _frame_origin_point().
+    """World position [x, y, z] of an object's origin frame, or None."""
     origin = g.value(obj_node, GEOM_ENT["origin"]) or obj_node
     for pos_node in g.subjects(GEOM_REL["of"], origin):
-        if GEOM_COORD["PositionCoordinate"] in g[pos_node:RDF.type]:
+        if GEOM_COORD["PositionCoordinate"] in g[pos_node : RDF.type]:
             return _xyz_or_none(g, pos_node)
     return None
 
 
 def _orientation_of(g, obj_node):
+    """World orientation [roll, pitch, yaw] (degrees) of an object, or None."""
     for orient_node in g.subjects(GEOM_REL["of"], obj_node):
-        if GEOM_COORD["OrientationCoordinate"] in g[orient_node:RDF.type]:
+        if GEOM_COORD["OrientationCoordinate"] in g[orient_node : RDF.type]:
             return _orientation_degrees(g, orient_node)
     return None
 
 
 def _path_of_model(g, model_node):
+    """Asset path (exec:path) of a model node, or the empty string."""
     if not model_node:
         return ""
     return str(g.value(model_node, EXEC.path) or "")
 
 
 def _resolve_existing_path(path: str) -> Path | None:
+    """Resolve an asset path against cwd, menagerie and cache roots; None if not found."""
     if not path:
         return None
     candidate = Path(path)
@@ -2723,12 +2832,12 @@ def _resolve_existing_path(path: str) -> Path | None:
         pos = text.find(marker)
         if pos == -1 or cache_root is None:
             return None
-        return cache_root / cache_subdir / text[pos + len(marker):]
+        return cache_root / cache_subdir / text[pos + len(marker) :]
 
     menagerie_marker = "third_party/menagerie/"
     pos = text.find(menagerie_marker)
     if pos != -1 and os.environ.get("MJ_KDL_MENAGERIE"):
-        candidate = Path(os.environ["MJ_KDL_MENAGERIE"]) / text[pos + len(menagerie_marker):]
+        candidate = Path(os.environ["MJ_KDL_MENAGERIE"]) / text[pos + len(menagerie_marker) :]
         if candidate.exists():
             return candidate
     for candidate in (
@@ -2742,6 +2851,7 @@ def _resolve_existing_path(path: str) -> Path | None:
 
 
 def _mjcf_body_containing_site(path: str, site_name: str) -> str:
+    """Name of the MJCF body that owns the named site, or the empty string."""
     resolved = _resolve_existing_path(path)
     if resolved is None or not site_name:
         return ""
@@ -2769,11 +2879,12 @@ def _mjcf_body_containing_site(path: str, site_name: str) -> str:
 
 
 def _derive_tool_body_from_attachment(attachment: SceneAttachment, tcp_site: str) -> str:
+    """Prefixed tool-body owning the tcp site within an attachment's MJCF, or empty string."""
     if not tcp_site:
         return ""
     local_site = tcp_site
     if attachment.prefix and tcp_site.startswith(attachment.prefix):
-        local_site = tcp_site[len(attachment.prefix):]
+        local_site = tcp_site[len(attachment.prefix) :]
     local_body = _mjcf_body_containing_site(attachment.path, local_site)
     if not local_body:
         return ""
@@ -2781,6 +2892,7 @@ def _derive_tool_body_from_attachment(attachment: SceneAttachment, tcp_site: str
 
 
 def _scene_id_nodes(g, env_node):
+    """Graph nodes needing local ids for a workspace (objects, their models and attach targets)."""
     nodes = set()
     for obj_node in g.objects(env_node, ENV["has-object"]):
         nodes.add(obj_node)
@@ -2790,12 +2902,13 @@ def _scene_id_nodes(g, env_node):
 
 
 def _attach_target_of(g, obj_node, ids: LocalIdMap):
+    """Attachment (kind, name) of an object, scoping a site name to its target object."""
     kind = str(g.value(obj_node, MJ["attach-kind"]) or "world").title()
     if kind not in {"World", "Body", "Site", "Frame"}:
         kind = "World"
     name = str(g.value(obj_node, MJ["attach-name"]) or "")
     target = g.value(obj_node, SLV["attached-to"])
-    if kind == "Site" and target is not None and ENV.Object in g[target:RDF.type]:
+    if kind == "Site" and target is not None and ENV.Object in g[target : RDF.type]:
         target_name = ids[target]
         if target_name and name and not name.startswith(f"{target_name}_{target_name}_"):
             name = f"{target_name}_{name}"
@@ -2830,6 +2943,9 @@ def _transitive_attachment_nodes(g, env_node, robot_node):
 
 
 def _attachments_for_robot(g, env_node, robot_node, tool_body, ids: LocalIdMap):
+    """Ordered SceneAttachment list bolted onto a robot, resolving chained (parent-first)
+    attachments.
+    """
     attachments = []
     prefix_by_node = {}
     for candidate in _transitive_attachment_nodes(g, env_node, robot_node):
@@ -2934,6 +3050,7 @@ def _trace_from_graph(g):
 
 
 def _scene_from_graph(g):
+    """Build the scene (robots, objects, placement and geometry) from the workspace graph."""
     scene = SceneSpec()
     for env_node in g.subjects(RDF.type, ENV.Workspace):
         ids = LocalIdMap(g, _scene_id_nodes(g, env_node))
@@ -2952,7 +3069,9 @@ def _scene_from_graph(g):
                 continue
 
             tool_body_node = g.value(robot_node, MJ["tool-body"])
-            tool_body = str(g.value(tool_body_node, MJ["body-name"]) or "") if tool_body_node else ""
+            tool_body = (
+                str(g.value(tool_body_node, MJ["body-name"]) or "") if tool_body_node else ""
+            )
             attachments = _attachments_for_robot(g, env_node, robot_node, tool_body, ids)
             attach_kind, attach_name = _attach_target_of(g, robot_node, ids)
 
@@ -2972,15 +3091,12 @@ def _scene_from_graph(g):
         for obj_node in g.objects(env_node, ENV["has-object"]):
             if obj_node in robot_nodes:
                 continue
-            if ENV.RigidObject not in g[obj_node:RDF.type]:
+            if ENV.RigidObject not in g[obj_node : RDF.type]:
                 continue
             model_node = g.value(obj_node, ENV["has-object-model"])
             path = _path_of_model(g, model_node)
-            body = (
-                str(g.value(obj_node, MJ["body-name"]) or "")
-                or ids[obj_node]
-            )
-            obj_types = set(g[obj_node:RDF.type])
+            body = str(g.value(obj_node, MJ["body-name"]) or "") or ids[obj_node]
+            obj_types = set(g[obj_node : RDF.type])
             if POLY.CuboidWithSize in obj_types:
                 shape = "BOX"
             else:
@@ -2996,7 +3112,7 @@ def _scene_from_graph(g):
             )
             mass_value = None
             for mass_node in g.subjects(RBDYN_ENT["of-body"], obj_node):
-                if RBDYN_ENT.Mass in g[mass_node:RDF.type]:
+                if RBDYN_ENT.Mass in g[mass_node : RDF.type]:
                     mv = g.value(mass_node, RBDYN_ENT.mass)
                     if mv is not None:
                         mass_value = float(mv.value)
@@ -3052,13 +3168,24 @@ def _expand_scene_geometry(scene) -> None:
         if obj.has_path:
             continue
         if obj.size is not None:
-            obj.size_x, obj.size_y, obj.size_z = float(obj.size[0]), float(obj.size[1]), float(obj.size[2])
+            obj.size_x, obj.size_y, obj.size_z = (
+                float(obj.size[0]),
+                float(obj.size[1]),
+                float(obj.size[2]),
+            )
         if obj.color is not None:
             obj.color_r, obj.color_g, obj.color_b, obj.color_a = (
-                float(obj.color[0]), float(obj.color[1]), float(obj.color[2]), float(obj.color[3]))
+                float(obj.color[0]),
+                float(obj.color[1]),
+                float(obj.color[2]),
+                float(obj.color[3]),
+            )
         if obj.friction is not None:
             obj.friction_slide, obj.friction_torsion, obj.friction_roll = (
-                float(obj.friction[0]), float(obj.friction[1]), float(obj.friction[2]))
+                float(obj.friction[0]),
+                float(obj.friction[1]),
+                float(obj.friction[2]),
+            )
 
 
 def _validate_scene(scene) -> None:
@@ -3103,7 +3230,9 @@ def _robot_setups_from_graph(g):
             robot_model = ids[model_node] if model_node else ""
             tool_body_node = g.value(obj_node, MJ["tool-body"])
             tcp_site_node = g.value(obj_node, MJ["tcp-site"])
-            tool_body = str(g.value(tool_body_node, MJ["body-name"]) or "") if tool_body_node else ""
+            tool_body = (
+                str(g.value(tool_body_node, MJ["body-name"]) or "") if tool_body_node else ""
+            )
             tcp_site = str(g.value(tcp_site_node, MJ["site-name"]) or "") if tcp_site_node else ""
             ft_sensors = sorted(
                 (
@@ -3131,9 +3260,19 @@ def _robot_setups_from_graph(g):
                     if tool_body:
                         break
             chain_tip = chain_end
-            if tcp_site and chain_end == tcp_site and attachments and attachments[0].attach_kind == "Body":
+            if (
+                tcp_site
+                and chain_end == tcp_site
+                and attachments
+                and attachments[0].attach_kind == "Body"
+            ):
                 chain_tip = attachments[0].attach_to
-            elif tcp_site and chain_end == tcp_site and attachments and attachments[0].attach_kind == "Site":
+            elif (
+                tcp_site
+                and chain_end == tcp_site
+                and attachments
+                and attachments[0].attach_kind == "Site"
+            ):
                 model_path = _path_of_model(g, model_node)
                 site_body = _mjcf_body_containing_site(model_path, attachments[0].attach_to)
                 if not site_body:
@@ -3149,13 +3288,26 @@ def _robot_setups_from_graph(g):
                     tool_body = prefix + tool_body
             if not (chain_root or chain_end or urdf):
                 continue
-            setup = (urdf, chain_root, chain_end, chain_tip, robot_model, tool_body, tcp_site, ft_sensors)
+            setup = (
+                urdf,
+                chain_root,
+                chain_end,
+                chain_tip,
+                robot_model,
+                tool_body,
+                tcp_site,
+                ft_sensors,
+            )
             setups_by_node[obj_node] = setup
             ordered.append(setup)
     return setups_by_node, ordered
 
 
+# ---------------------------------------------------------------------------
+# Introspection artifact
+# ---------------------------------------------------------------------------
 def _uri_table(id_nodes):
+    """Sorted [{id, uri}] rows for every id that maps to a URIRef."""
     return [
         {"id": id_, "uri": str(node)}
         for id_, node in sorted(id_nodes, key=lambda item: (item[0], str(item[1])))
@@ -3164,6 +3316,7 @@ def _uri_table(id_nodes):
 
 
 def _id_ref(value):
+    """Normalize a value to its id string (str/Enum/.id), or None."""
     if value is None:
         return None
     if isinstance(value, str):
@@ -3174,6 +3327,7 @@ def _id_ref(value):
 
 
 def _id_refs(value):
+    """Map _id_ref over a list of values."""
     if value is None:
         return []
     if isinstance(value, list):
@@ -3183,6 +3337,7 @@ def _id_refs(value):
 
 
 def _dedupe_dicts(entries, key="id"):
+    """Deduplicate dict rows by id, keeping the first occurrence."""
     result = []
     seen = set()
     for entry in entries:
@@ -3210,6 +3365,9 @@ def _build_introspection(
     views,
     shared_data,
 ):
+    """Build the introspection artifact (uris, motions, controllers, monitors, quantities,
+    provenance) and fold in the controller-state and frame-log samples.
+    """
     uri_rows = _uri_table(id_nodes)
     uri_by_id = {row["id"]: row["uri"] for row in uri_rows}
 
@@ -3234,8 +3392,15 @@ def _build_introspection(
                 "measured_derivative": _id_ref(getattr(controller, "measured_derivative", None)),
                 "output_signal": _id_ref(controller.control_signal),
             }
-            controllers.append({k: v for k, v in controller_entry.items() if v is not None and v != []})
-            for role in ("error_signal", "reference_signal", "measured_derivative", "control_signal"):
+            controllers.append(
+                {k: v for k, v in controller_entry.items() if v is not None and v != []}
+            )
+            for role in (
+                "error_signal",
+                "reference_signal",
+                "measured_derivative",
+                "control_signal",
+            ):
                 quantity_id = _id_ref(getattr(controller, role, None))
                 if quantity_id:
                     signal_entry = {
@@ -3245,7 +3410,9 @@ def _build_introspection(
                         "role": role,
                         "owner": controller.id,
                     }
-                    signals.append({k: v for k, v in signal_entry.items() if v is not None and v != []})
+                    signals.append(
+                        {k: v for k, v in signal_entry.items() if v is not None and v != []}
+                    )
         for phase in ("when", "while", "until"):
             for monitor in getattr(motion, f"{phase}_monitors"):
                 monitor_entry = {
@@ -3264,7 +3431,9 @@ def _build_introspection(
                     "debounce_duration_s": getattr(monitor, "debounce_duration_s", None),
                     "debounce_steps": getattr(monitor, "debounce_steps", None),
                 }
-                monitors.append({k: v for k, v in monitor_entry.items() if v is not None and v != []})
+                monitors.append(
+                    {k: v for k, v in monitor_entry.items() if v is not None and v != []}
+                )
                 if monitor.error is not None:
                     signal_entry = {
                         "id": f"{monitor.id}.error",
@@ -3273,7 +3442,9 @@ def _build_introspection(
                         "role": "monitor_error",
                         "owner": monitor.id,
                     }
-                    signals.append({k: v for k, v in signal_entry.items() if v is not None and v != []})
+                    signals.append(
+                        {k: v for k, v in signal_entry.items() if v is not None and v != []}
+                    )
 
     quantities = []
     for item in data_structures:
@@ -3294,15 +3465,12 @@ def _build_introspection(
         }
         quantities.append({k: v for k, v in quantity_entry.items() if v is not None and v != []})
 
-    runtime_type = {
-        "mj_kdl": "rt:MuJoCoRuntime",
-        "robif2b": "rt:RealRobotRuntime",
-    }.get(backend, "rt:Runtime")
+    runtime_type = {"mj_kdl": "rt:MuJoCoRuntime", "robif2b": "rt:RealRobotRuntime"}.get(
+        backend, "rt:Runtime"
+    )
     runtime_id = "agent:runtime:mujoco" if backend == "mj_kdl" else "agent:runtime:real_robot"
     runtime_activity_type = (
-        "bdd:SimulatedExecution"
-        if backend == "mj_kdl"
-        else "bdd:ScenarioExecution"
+        "bdd:SimulatedExecution" if backend == "mj_kdl" else "bdd:ScenarioExecution"
     )
 
     entities = [
@@ -3342,17 +3510,10 @@ def _build_introspection(
     agents = [
         {
             "id": "agent:motion_spec_ir_gen",
-            "types": [
-                "prov:SoftwareAgent",
-                "obs:ObservationProvider",
-            ],
+            "types": ["prov:SoftwareAgent", "obs:ObservationProvider"],
             "role": "ir_generator",
         },
-        {
-            "id": runtime_id,
-            "types": ["prov:SoftwareAgent", runtime_type],
-            "role": "runtime_runner",
-        },
+        {"id": runtime_id, "types": ["prov:SoftwareAgent", runtime_type], "role": "runtime_runner"},
         {
             "id": "agent:controller_process",
             "types": ["prov:SoftwareAgent"],
@@ -3363,10 +3524,7 @@ def _build_introspection(
     agents.extend(
         {
             "id": f"agent:modelled:{robot.id}",
-            "types": [
-                "prov:Agent",
-                "agn:ModelledAgent",
-            ],
+            "types": ["prov:Agent", "agn:ModelledAgent"],
             "role": "robot",
             "model": robot.path,
         }
@@ -3389,7 +3547,11 @@ def _build_introspection(
                     "controllers": [controller.id for controller in motion.controllers],
                     "monitors": [
                         monitor.id
-                        for group in (motion.when_monitors, motion.while_monitors, motion.until_monitors)
+                        for group in (
+                            motion.when_monitors,
+                            motion.while_monitors,
+                            motion.until_monitors,
+                        )
                         for monitor in group
                     ],
                 }.items()
@@ -3408,7 +3570,10 @@ def _build_introspection(
             # paths are baked in — they were dead metadata and non-portable.
             "contexts": [
                 {"id": "prov", "uri": "http://www.w3.org/ns/prov#"},
-                {"id": "bdd", "uri": "https://secorolab.github.io/metamodels/acceptance-criteria/bdd#"},
+                {
+                    "id": "bdd",
+                    "uri": "https://secorolab.github.io/metamodels/acceptance-criteria/bdd#",
+                },
                 {"id": "agent", "uri": "https://secorolab.github.io/metamodels/agent#"},
                 {"id": "observation", "uri": "https://secorolab.github.io/metamodels/observation#"},
                 {"id": "runtime", "uri": str(RT.Runtime)},
@@ -3418,7 +3583,9 @@ def _build_introspection(
                 {
                     "id": "activity:motion_spec_ir_generation",
                     "types": ["prov:Activity"],
-                    "used": [entity["id"] for entity in entities if entity["role"] != "motion_spec_ir"],
+                    "used": [
+                        entity["id"] for entity in entities if entity["role"] != "motion_spec_ir"
+                    ],
                     "wasAssociatedWith": "agent:motion_spec_ir_gen",
                     "role": "motion_spec_ir_generation",
                 },
@@ -3444,7 +3611,11 @@ def _build_introspection(
     return introspection
 
 
+# ---------------------------------------------------------------------------
+# Graph loading
+# ---------------------------------------------------------------------------
 def _resolve_import_location(location: str, url_map: dict[str, str]) -> str:
+    """Map an import-location URL to its local file path via the url map."""
     for base, root in sorted(url_map.items(), key=lambda item: len(item[0]), reverse=True):
         if location.startswith(base):
             return str((Path(root) / location[len(base) :]).resolve())
@@ -3452,6 +3623,9 @@ def _resolve_import_location(location: str, url_map: dict[str, str]) -> str:
 
 
 def _load_graph(manifest_path):
+    """Load the app manifest and its imports into one dataset; return (app path, graph, imported
+    models, imported provenance).
+    """
     app_model_path = Path(manifest_path).resolve()
     g = rdflib.Dataset(default_union=True)
     install_resolver(IriToFileResolver(metamodel_url_map(), download=False))
@@ -3475,6 +3649,7 @@ def _load_graph(manifest_path):
 
 
 def _node_indexes(g, p: Parser):
+    """Build the (node_by_id, id_nodes) lookup indexes from the parser."""
     node_by_id = {}
     id_nodes = []
     for node in sorted(g.subjects(), key=lambda item: str(item)):
@@ -3487,7 +3662,13 @@ def _node_indexes(g, p: Parser):
     return node_by_id, id_nodes
 
 
+# ---------------------------------------------------------------------------
+# Solver sections
+# ---------------------------------------------------------------------------
 def _solver_sections(g, p: Parser, setups_by_node: dict, default_setup):
+    """Parse the solver/handler sections: base-velocity, arm and base-force solvers with their
+    schedules.
+    """
     sched1 = []
     slv_base_vel = []
     sched2 = []
@@ -3539,6 +3720,7 @@ def _solver_sections(g, p: Parser, setups_by_node: dict, default_setup):
 
 
 def _assign_monitor_event_indexes(handlers) -> None:
+    """Assign each monitor a stable per-handler event index."""
     event_idx = 0
     for handler in handlers:
         for monitor in handler.monitors:
@@ -3548,6 +3730,7 @@ def _assign_monitor_event_indexes(handlers) -> None:
 
 
 def _snapshot_maps(g, p: Parser) -> tuple[dict[str, str], dict[str, str]]:
+    """Build the (snapshot_source_map, snapshot_clock_map) lookups from the graph."""
     snapshot_source_map: dict[str, str] = {}
     snapshot_clock_map: dict[str, str] = {}
     for snap_node in g.subjects(RDF.type, SNAP.Snapshot):
@@ -3562,6 +3745,7 @@ def _snapshot_maps(g, p: Parser) -> tuple[dict[str, str], dict[str, str]]:
 
 
 def _data_reference_map(data_structures, closures: dict) -> dict[str, str]:
+    """Map each data id to the ids it references through closures."""
     data_reference_map: dict[str, str] = {}
     for item in data_structures:
         ref = getattr(item, "reference_value", None)
@@ -3579,6 +3763,9 @@ def _data_reference_map(data_structures, closures: dict) -> dict[str, str]:
 
 
 def _closure_maps(closures: dict) -> tuple[dict[str, str], dict[str, set[str]]]:
+    """Build (closure_output_map, closure_input_map): data id to the closures producing/consuming
+    it.
+    """
     closure_output_map: dict[str, str] = {}
     closure_input_map: dict[str, set[str]] = {}
     for cid, c in closures.items():
@@ -3595,6 +3782,7 @@ def _closure_maps(closures: dict) -> tuple[dict[str, str], dict[str, set[str]]]:
 
 
 def _apply_solver_control_modes(slv_arm, motions) -> None:
+    """Propagate each motion's control mode onto its arm solvers."""
     for solver in slv_arm:
         control_modes = {
             arm_solver.control_mode
@@ -3614,10 +3802,8 @@ def _apply_solver_control_modes(slv_arm, motions) -> None:
 
 
 def _backend_from_graph(g) -> str:
-    runtime_to_backend = {
-        str(RT.MuJoCoRuntime): "mj_kdl",
-        str(RT.RealRobotRuntime): "robif2b",
-    }
+    """Runtime backend ('mj_kdl' or 'robif2b') selected by the graph's runtime type."""
+    runtime_to_backend = {str(RT.MuJoCoRuntime): "mj_kdl", str(RT.RealRobotRuntime): "robif2b"}
     for runtime_iri in g.objects(predicate=RT["uses-runtime"]):
         mapped = runtime_to_backend.get(str(runtime_iri))
         if mapped:
@@ -3626,6 +3812,9 @@ def _backend_from_graph(g) -> str:
 
 
 def _single_solver_value(slv_arm, attr, label, default):
+    """The single value of an attribute across arm solvers (one control loop); raises if they
+    disagree.
+    """
     values = {v for s in slv_arm if (v := getattr(s, attr)) is not None}
     if len(values) > 1:
         raise ValueError(
@@ -3636,13 +3825,19 @@ def _single_solver_value(slv_arm, attr, label, default):
 
 
 def _apply_monitor_debounce(handlers, control_period_ns: int) -> None:
+    """Convert each monitor's debounce duration to a step count from the control period."""
     for handler in handlers:
         for monitor in handler.monitors:
             if getattr(monitor, "debounce_duration_s", None) is not None:
-                monitor.debounce_steps = round(monitor.debounce_duration_s / (control_period_ns * 1e-9))
+                monitor.debounce_steps = round(
+                    monitor.debounce_duration_s / (control_period_ns * 1e-9)
+                )
 
 
 def _shared_runtime_members(slv_arm, motions) -> list[dict]:
+    """Extra shared_data members for runtime state (FT bias/settle counters, snapshot-captured
+    flags).
+    """
     members = []
     seen_ft_ids = set()
     for s in slv_arm:
@@ -3672,7 +3867,9 @@ def _shared_runtime_members(slv_arm, motions) -> list[dict]:
 
 SUPPORTED_ROBOT_MODELS = {"KinovaGen3"}
 
+
 def _validate_solvers(arm_solvers, backend: str) -> None:
+    """Reject unsupported robot models, and scene-object pose sync on the robif2b backend."""
     unsupported = {
         _field(s, "robot_model")
         for s in arm_solvers
@@ -3700,7 +3897,9 @@ def _validate_solvers(arm_solvers, backend: str) -> None:
                     "is only implemented for mj_kdl."
                 )
 
+
 def _runtime_signature(solver, backend: str) -> tuple:
+    """Identity tuple of a solver's runtime (backend, chain, tool) for deduplicating runtimes."""
     return (
         backend,
         _field(solver, "robot_model", ""),
@@ -3711,7 +3910,11 @@ def _runtime_signature(solver, backend: str) -> tuple:
         _field(solver, "tcp_site", ""),
     )
 
+
 def _annotate_runtime_robots(arm_solvers, motions, backend: str) -> None:
+    """Assign runtime_id/runtime_owner across solvers sharing a runtime and normalize empty tool
+    fields.
+    """
     runtime_by_signature: dict[tuple, str] = {}
     owner_by_runtime: dict[str, str] = {}
     solvers_by_id = {_field(solver, "id"): solver for solver in arm_solvers}
@@ -3736,10 +3939,14 @@ def _annotate_runtime_robots(arm_solvers, motions, backend: str) -> None:
             canonical = solvers_by_id.get(_field(solver, "id"))
             if canonical is None:
                 continue
-            _set_field(solver, "runtime_id", _field(canonical, "runtime_id") or _field(solver, "id", ""))
+            _set_field(
+                solver, "runtime_id", _field(canonical, "runtime_id") or _field(solver, "id", "")
+            )
             _set_field(solver, "runtime_owner", _field(canonical, "runtime_owner", True))
 
+
 def _add_group_type_flags(groups: list) -> list:
+    """Set is_pose/is_twist/is_wrench on pose-axis error groups from their superobject type."""
     for g in groups:
         so_type = _field(g, "superobject_type", "Pose")
         _set_field(g, "is_pose", so_type == "Pose")
@@ -3747,6 +3954,10 @@ def _add_group_type_flags(groups: list) -> list:
         _set_field(g, "is_wrench", so_type == "Wrench")
     return groups
 
+
+# ---------------------------------------------------------------------------
+# Codegen-facing helpers
+# ---------------------------------------------------------------------------
 def _field(obj, key, default=None):
     """Read a field from either a dict or a dataclass instance, so derivations can run
     on the native IR (dataclasses) without a dict round-trip. str-Enum values are
@@ -3783,7 +3994,9 @@ def _motion_done_terms(motion) -> list:
             terms.append({"kind": "flag", "motion_id": mid, "flag": _field(monitor, "flag")})
     return terms
 
+
 def expand_vector_fields(item, field: str) -> None:
+    """Expand a 3-vector field into <field>_x/_y/_z components (an omitted value means zero)."""
     values = _field(item, field)
     if values is None:
         # Env placement shorthand: omitted position/orientation means zero/identity.
@@ -3795,7 +4008,9 @@ def expand_vector_fields(item, field: str) -> None:
     _set_field(item, f"{field}_y", values[1])
     _set_field(item, f"{field}_z", values[2])
 
+
 def require_field(obj_id: str, field: str, value):
+    """Return value, raising if a required procedural scene-object field is missing."""
     if value is None:
         raise ValueError(
             f"Procedural scene object '{obj_id}' is missing required field "
@@ -3803,6 +4018,7 @@ def require_field(obj_id: str, field: str, value):
             f"longer applied."
         )
     return value
+
 
 def _pose_component(component_id: str, data_by_id: dict) -> dict:
     """Structured pose component: either a literal ``value`` or a ``ref`` id that the
@@ -3816,7 +4032,9 @@ def _pose_component(component_id: str, data_by_id: dict) -> dict:
         return {"value": str(value), "ref": None}
     return {"value": None, "ref": component_id}
 
+
 def _signal_id(value):
+    """Id string of a signal value (a str or an object with an id)."""
     if isinstance(value, str):
         return value
     return _field(value, "id")
@@ -3829,19 +4047,29 @@ def _annotate_controller_signals(controllers, closures: dict) -> None:
     error_sources = {
         closure.get("error"): closure
         for closure in closures.values()
-        if isinstance(closure, dict) and closure.get("type") == "ErrorEvaluator" and closure.get("error")
+        if isinstance(closure, dict)
+        and closure.get("type") == "ErrorEvaluator"
+        and closure.get("error")
     }
     for controller in controllers:
         error_id = _signal_id(_field(controller, "error_signal"))
         source = error_sources.get(error_id) or {}
         measured_id = source.get("quantity")
-        setpoint_id = _signal_id(_field(controller, "reference_signal")) or source.get("reference_value")
+        setpoint_id = _signal_id(_field(controller, "reference_signal")) or source.get(
+            "reference_value"
+        )
         if measured_id:
             _set_field(controller, "measured_signal", measured_id)
         if setpoint_id:
             _set_field(controller, "setpoint_signal", setpoint_id)
 
-def add_controller_internal_state_logging(closures: dict, shared_data: list, introspection: dict, motions) -> None:
+
+def add_controller_internal_state_logging(
+    closures: dict, shared_data: list, introspection: dict, motions
+) -> None:
+    """Log stateful controllers' internal state (error integral, previous error, first-sample flag)
+    as shared_data items and introspection quantities.
+    """
     quantities = introspection.setdefault("quantities", [])
     shared_ids = {_field(item, "id") for item in shared_data if _field(item, "id")}
     quantity_ids = {_field(item, "id") for item in quantities if _field(item, "id")}
@@ -3901,7 +4129,11 @@ def add_controller_internal_state_logging(closures: dict, shared_data: list, int
             closure_samples.append({"id": item_id, "getter": getter})
         closure["internal_state_samples"] = closure_samples
 
+
 def add_quantity_samples(introspection: dict, shared_data: list, views: dict) -> None:
+    """Build the per-quantity frame-log sample descriptors from the introspection quantities and
+    shared data.
+    """
     shared_ids = {_field(item, "id") for item in shared_data if _field(item, "id")}
     samples = []
 
@@ -3955,14 +4187,38 @@ def add_quantity_samples(introspection: dict, shared_data: list, views: dict) ->
         elif qtype == "Orientation" and qid in shared_ids:
             add_axes(quantity, "", lambda i, q=qid: {"kind": "orientation", "id": q, "axis": i})
         elif qtype in {"Pose", "Trajectory"} and qid in shared_ids:
-            add_axes(quantity, "position", lambda i, q=qid: {"kind": "pose_pos", "id": q, "axis": i})
-            add_axes(quantity, "orientation", lambda i, q=qid: {"kind": "pose_orient", "id": q, "axis": i})
-        elif qtype in {"VelocityTwist", "AccelerationTwist", "PoseDifference"} and qid in shared_ids:
-            add_axes(quantity, "angular", lambda i, q=qid: {"kind": "member", "id": q, "member": "rot", "axis": i})
-            add_axes(quantity, "linear", lambda i, q=qid: {"kind": "member", "id": q, "member": "vel", "axis": i})
+            add_axes(
+                quantity, "position", lambda i, q=qid: {"kind": "pose_pos", "id": q, "axis": i}
+            )
+            add_axes(
+                quantity,
+                "orientation",
+                lambda i, q=qid: {"kind": "pose_orient", "id": q, "axis": i},
+            )
+        elif (
+            qtype in {"VelocityTwist", "AccelerationTwist", "PoseDifference"} and qid in shared_ids
+        ):
+            add_axes(
+                quantity,
+                "angular",
+                lambda i, q=qid: {"kind": "member", "id": q, "member": "rot", "axis": i},
+            )
+            add_axes(
+                quantity,
+                "linear",
+                lambda i, q=qid: {"kind": "member", "id": q, "member": "vel", "axis": i},
+            )
         elif qtype == "Wrench" and qid in shared_ids:
-            add_axes(quantity, "torque", lambda i, q=qid: {"kind": "member", "id": q, "member": "torque", "axis": i})
-            add_axes(quantity, "force", lambda i, q=qid: {"kind": "member", "id": q, "member": "force", "axis": i})
+            add_axes(
+                quantity,
+                "torque",
+                lambda i, q=qid: {"kind": "member", "id": q, "member": "torque", "axis": i},
+            )
+            add_axes(
+                quantity,
+                "force",
+                lambda i, q=qid: {"kind": "member", "id": q, "member": "force", "axis": i},
+            )
 
     sampled_ids = {sample.get("source_id") for sample in samples}
     for item in shared_data:
@@ -3975,6 +4231,7 @@ def add_quantity_samples(introspection: dict, shared_data: list, views: dict) ->
             add(item, "", {"kind": "int", "id": item_id})
 
     introspection["quantity_samples"] = samples
+
 
 def add_spatial_samples(introspection: dict, shared_data: list) -> None:
     """Add per-object pose, velocity-twist and wrench frame-log samples."""
@@ -3989,6 +4246,7 @@ def add_spatial_samples(introspection: dict, shared_data: list) -> None:
         spatial[pool].append({"id": iid, "index": len(spatial[pool])})
     introspection["spatial_samples"] = spatial
 
+
 def _index_by_id(items: list) -> dict:
     """Index IR items (dicts or dataclasses) by their id (skips id-less entries)."""
     out = {}
@@ -4000,6 +4258,9 @@ def _index_by_id(items: list) -> dict:
 
 
 def build_pose_components(views: dict, data: list) -> dict:
+    """Resolve declared/inline poses into per-axis structured components (a literal value or a
+    reference id).
+    """
     data_by_id = _index_by_id(data)
     components: dict[str, dict] = {}
     for view in views.values():
@@ -4014,7 +4275,10 @@ def build_pose_components(views: dict, data: list) -> dict:
         # Only include inline-defined poses (those where components have values/references).
         subobject_id = _field(_field(view, "subobject"), "id")
         subobject_data = data_by_id.get(subobject_id)
-        if not _field(subobject_data, "reference_value") and _field(subobject_data, "value") is None:
+        if (
+            not _field(subobject_data, "reference_value")
+            and _field(subobject_data, "value") is None
+        ):
             continue
         pose_id = _field(superobject, "id")
         entry = components.setdefault(
@@ -4044,7 +4308,9 @@ def build_pose_components(views: dict, data: list) -> dict:
             )
     return components
 
+
 def resolve_lerp_closures(closures: dict, pose_components: dict) -> None:
+    """Fold each Lerp closure's goal into structured pose components or a shared-signal ref."""
     for closure in closures.values():
         if closure.get("type") != "Lerp":
             continue
@@ -4059,7 +4325,11 @@ def resolve_lerp_closures(closures: dict, pose_components: dict) -> None:
             # goal is a shared signal id (already on the closure as closure["goal"]).
             closure["assign_goal"] = False
 
+
 def resolve_arc_closures(closures: dict, data: list) -> None:
+    """Validate that each Arc closure's end is a Pose (the template renders its
+    position/orientation).
+    """
     data_by_id = _index_by_id(data)
 
     def is_pose(data) -> bool:
@@ -4078,11 +4348,11 @@ def resolve_arc_closures(closures: dict, data: list) -> None:
             raise ValueError("Arc trajectory end must be a Pose quantity.")
         # end is a validated Pose shared signal; the template renders shared.<end>.p/.M.
 
+
 def declared_pose_component_entries(
-    data: list,
-    pose_components: dict,
-    referenced_ids: set[str] | None = None,
+    data: list, pose_components: dict, referenced_ids: set[str] | None = None
 ) -> list[dict]:
+    """Authored declared-pose component entries, optionally restricted to the referenced ids."""
     data_by_id = _index_by_id(data)
     entries = []
     for pose_id, parts in pose_components.items():
@@ -4095,7 +4365,9 @@ def declared_pose_component_entries(
         entries.append({"id": pose_id, **parts})
     return entries
 
+
 def collect_motion_references(motion, closures: dict) -> set[str]:
+    """Every id a motion references, including through its scheduled closures."""
     refs: set[str] = set()
 
     def visit(value):
@@ -4116,13 +4388,20 @@ def collect_motion_references(motion, closures: dict) -> set[str]:
                 visit(closure)
     return refs
 
+
 def _set_motion_trajectory_progress(motion, closures: dict, data_by_id: dict) -> None:
     """Fold the time-driven trajectory alpha ids (Progress-kind, non-Arc while-schedule
     closures) onto a motion (dict or dataclass)."""
     ids: list[str] = []
     for step in _field(motion, "while_schedule", []):
         closure = closures.get(step)
-        if not closure or _field(closure, "type") not in {"Lerp", "Circle", "Arc", "Helix", "Figure8"}:
+        if not closure or _field(closure, "type") not in {
+            "Lerp",
+            "Circle",
+            "Arc",
+            "Helix",
+            "Figure8",
+        }:
             continue
         alpha_id = _field(closure, "alpha")
         alpha_data = data_by_id.get(alpha_id)
@@ -4130,6 +4409,7 @@ def _set_motion_trajectory_progress(motion, closures: dict, data_by_id: dict) ->
         if qkind == "Progress" and _field(closure, "type") != "Arc" and alpha_id not in ids:
             ids.append(alpha_id)
     _set_field(motion, "time_trajectory_progress_ids", ids)
+
 
 def _evaluator_term(e, start_field: str) -> dict:
     """Structured boolean term for an evaluator: an elapsed timing predicate (world clock
@@ -4143,8 +4423,9 @@ def _evaluator_term(e, start_field: str) -> dict:
     return {"kind": "constraint", "error_id": _field(_field(e, "error"), "id")}
 
 
-def _set_monitor_conditions(motion, evaluators_key: str, monitors_key: str,
-                            start_field: str, any_key: str) -> None:
+def _set_monitor_conditions(
+    motion, evaluators_key: str, monitors_key: str, start_field: str, any_key: str
+) -> None:
     """Stamp the structured active-phase terms onto the aggregate monitor + any
     elapsed-error monitors. Rendered to C++ by the bool-condition template."""
     evaluators = _field(motion, evaluators_key, [])
@@ -4178,8 +4459,9 @@ def _set_monitor_conditions(motion, evaluators_key: str, monitors_key: str,
 def _set_motion_conditions(motion) -> None:
     """Fold the UNTIL/WHEN/done structured boolean terms onto a motion (rendered to C++ by
     the bool-condition template). WHEN joins with when_any, done with until_any."""
-    _set_monitor_conditions(motion, "until_evaluators", "until_monitors",
-                            "motion_start_time", "until_any")
+    _set_monitor_conditions(
+        motion, "until_evaluators", "until_monitors", "motion_start_time", "until_any"
+    )
     when_terms = [
         _evaluator_term(e, "when_start_time")
         for e in _field(motion, "when_evaluators", [])
@@ -4187,18 +4469,22 @@ def _set_motion_conditions(motion) -> None:
     ]
     _set_field(motion, "when_terms", when_terms)
     _set_field(motion, "when_terms_present", bool(when_terms))
-    _set_monitor_conditions(motion, "when_evaluators", "when_monitors",
-                            "when_start_time", "when_any")
+    _set_monitor_conditions(
+        motion, "when_evaluators", "when_monitors", "when_start_time", "when_any"
+    )
     done_terms = _motion_done_terms(motion)
     _set_field(motion, "done_terms", done_terms)
     _set_field(motion, "done_terms_present", bool(done_terms))
+
 
 def add_motion_function_interfaces(motions: list) -> None:
     """Fold per-motion capability booleans (which context objects — state, shared, robot —
     each generated function needs). The C++ signatures and call args are built from these
     by the sig-params / sig-args templates; ir_gen carries no C++ type names."""
     for motion in motions:
-        has_when_elapsed = any(_field(e, "is_elapsed") for e in _field(motion, "when_evaluators", []))
+        has_when_elapsed = any(
+            _field(e, "is_elapsed") for e in _field(motion, "when_evaluators", [])
+        )
         has_when_logic = bool(_field(motion, "when_schedule") or _field(motion, "when_evaluators"))
         when_mons = _field(motion, "when_monitors") or []
         until_mons = _field(motion, "until_monitors") or []
@@ -4215,8 +4501,11 @@ def add_motion_function_interfaces(motions: list) -> None:
         _set_field(motion, "can_start_needs_robot", False)
 
         _set_field(motion, "when_needs_state", has_when_elapsed or bool(when_mons))
-        _set_field(motion, "when_needs_shared",
-                   has_when_elapsed or has_pose or when_sched or bool(when_mons))
+        _set_field(
+            motion,
+            "when_needs_shared",
+            has_when_elapsed or has_pose or when_sched or bool(when_mons),
+        )
         _set_field(motion, "when_needs_robot", when_fsm)
 
         _set_field(motion, "until_needs_state", bool(until_mons))
@@ -4224,8 +4513,11 @@ def add_motion_function_interfaces(motions: list) -> None:
         _set_field(motion, "until_needs_robot", until_fsm)
 
         _set_field(motion, "monitor_needs_state", bool(when_mons) or bool(until_mons))
-        _set_field(motion, "monitor_needs_shared",
-                   when_sched or bool(when_mons) or until_sched or bool(until_mons))
+        _set_field(
+            motion,
+            "monitor_needs_shared",
+            when_sched or bool(when_mons) or until_sched or bool(until_mons),
+        )
         _set_field(motion, "monitor_needs_robot", when_fsm or until_fsm)
 
         _set_field(motion, "apply_needs_state", has_arm)
@@ -4236,6 +4528,9 @@ def add_motion_function_interfaces(motions: list) -> None:
 _FSM_NS = "https://secorolab.github.io/metamodels/behaviour/fsm#"
 
 
+# ---------------------------------------------------------------------------
+# FSM wiring
+# ---------------------------------------------------------------------------
 def _fsm_from_graph(g) -> dict | None:
     """Frame the FSM named graph (states/events/transitions/reactions, folded into the
     model dataset by motion-spec-dsl) into the same dict shape the standalone .hpp uses,
@@ -4316,6 +4611,7 @@ def _event_to_state(fsm: dict) -> dict[str, str]:
 def is_fsm_event(monitor, fsm_ns_uri: str | None) -> bool:
     # A monitor fires the FSM only when its event lives in the FSM's namespace;
     # standalone (monitor-owned) events keep the existing warn stub.
+    """True when a monitor fires an FSM event: edge-triggered with an event in the FSM namespace."""
     return bool(
         fsm_ns_uri
         and _field(monitor, "is_edge_triggered")
@@ -4348,20 +4644,28 @@ def _apply_fsm_wiring(motions, fsm) -> dict:
         for monitor in monitors:
             if is_fsm_event(monitor, fsm_ns_uri):
                 _set_field(monitor, "fsm_namespace", fsm_namespace)
-                _set_field(monitor, "fsm_event_idx",
-                           fsm_event_index.get(_field(monitor, "event_name") or "", -1))
+                _set_field(
+                    monitor,
+                    "fsm_event_idx",
+                    fsm_event_index.get(_field(monitor, "event_name") or "", -1),
+                )
                 state = event_state.get(_field(monitor, "event_name") or "")
                 if state and not _field(motion, "fsm_state"):
                     _set_field(motion, "fsm_state", state)
 
     for motion in motions:
-        tag_run_state(motion, _field(motion, "until_monitors", []) + _field(motion, "while_monitors", []))
+        tag_run_state(
+            motion, _field(motion, "until_monitors", []) + _field(motion, "while_monitors", [])
+        )
         for monitor in _field(motion, "when_monitors", []):
             if not is_fsm_event(monitor, fsm_ns_uri):
                 continue
             _set_field(monitor, "fsm_namespace", fsm_namespace)
-            _set_field(monitor, "fsm_event_idx",
-                       fsm_event_index.get(_field(monitor, "event_name") or "", -1))
+            _set_field(
+                monitor,
+                "fsm_event_idx",
+                fsm_event_index.get(_field(monitor, "event_name") or "", -1),
+            )
             fallback_id = _field(monitor, "fallback_motion")
             if not fallback_id:
                 raise ValueError(
@@ -4400,19 +4704,27 @@ def _apply_fsm_gate_calls(motions, fsm_namespace) -> None:
         gate_ids = _field(fallback, "fsm_when_gate_motions")
         if not gate_ids:
             continue
-        _set_field(fallback, "fsm_when_gate_calls", [
-            {
-                "gid": gate_id,
-                "needs_state": _field(by_id[gate_id], "when_needs_state", False),
-                "needs_shared": _field(by_id[gate_id], "when_needs_shared", False),
-                "needs_robot": _field(by_id[gate_id], "when_needs_robot", False),
-            }
-            for gate_id in gate_ids
-            if gate_id in by_id
-        ])
+        _set_field(
+            fallback,
+            "fsm_when_gate_calls",
+            [
+                {
+                    "gid": gate_id,
+                    "needs_state": _field(by_id[gate_id], "when_needs_state", False),
+                    "needs_shared": _field(by_id[gate_id], "when_needs_shared", False),
+                    "needs_robot": _field(by_id[gate_id], "when_needs_robot", False),
+                }
+                for gate_id in gate_ids
+                if gate_id in by_id
+            ],
+        )
 
 
+# ---------------------------------------------------------------------------
+# Top-level orchestration
+# ---------------------------------------------------------------------------
 def generate_ir(manifest_path):
+    """Build the complete IR for a model manifest in one forward pass and return it as a dict."""
     app_model_path, g, imported_models, imported_provenance = _load_graph(manifest_path)
 
     p = Parser(g)
@@ -4426,16 +4738,9 @@ def generate_ir(manifest_path):
     scene = _scene_from_graph(g)
     _validate_scene(scene)
 
-    (
-        slv_base_vel,
-        sched1,
-        hdl,
-        sched2,
-        slv_arm,
-        sched3,
-        slv_base_frc,
-        sched4,
-    ) = _solver_sections(g, p, setups_by_node, default_setup)
+    (slv_base_vel, sched1, hdl, sched2, slv_arm, sched3, slv_base_frc, sched4) = _solver_sections(
+        g, p, setups_by_node, default_setup
+    )
     _assign_monitor_event_indexes(hdl)
 
     closures = p.closures(ops_generic + ops_slv + ops_cstr_hdl)
@@ -4531,7 +4836,9 @@ def generate_ir(manifest_path):
         "views": view_map,
         "shared_data": shared_data,
         "pose_components": pose_components,
-        "declared_pose_components": declared_pose_component_entries(data_structures, pose_components),
+        "declared_pose_components": declared_pose_component_entries(
+            data_structures, pose_components
+        ),
         "wrench_outputs": wrench_outputs,
         "has_arm": bool(slv_arm),
         "has_mobile_base": bool(slv_base_vel or slv_base_frc),
@@ -4557,6 +4864,7 @@ def generate_ir(manifest_path):
     # piece was built (scene / solvers / closures / motions / introspection). Codegen only
     # loads ir.json and renders; there is no post-assembly derivation pass.
     return ir
+
 
 def main():
     """Generate intermediate representation (IR) from motion specification models."""

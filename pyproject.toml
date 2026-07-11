@@ -57,3 +57,8 @@ filterwarnings = [
 
 [tool.ruff]
 line-length = 100
+
+[tool.ruff.format]
+# Collapse calls/collections/imports onto as few lines as fit in line-length,
+# instead of keeping them exploded one-entity-per-line on a trailing comma.
+skip-magic-trailing-comma = true

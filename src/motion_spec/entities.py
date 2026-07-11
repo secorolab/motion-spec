@@ -23,42 +23,56 @@ class DataclassJSONEncoder(json.JSONEncoder):
 
 
 class Subspace(str, Enum):
-    # The 6D subspace of a spatial quantity: its linear (translational) or angular
-    # (rotational) half. Which physical quantity it belongs to is carried by the
-    # View's superobject type (Pose/VelocityTwist/AccelerationTwist/Wrench/PoseDifference),
-    # so the subspace only needs to name the half -- matching the C++ runtime Subspace enum.
+    """The linear (translational) or angular (rotational) half of a 6D spatial quantity.
+
+    The physical quantity it belongs to is carried by the View's superobject type, so the
+    subspace only names the half -- matching the C++ runtime Subspace enum.
+    """
+
     Linear = "Linear"
     Angular = "Angular"
 
 
 class Axis(str, Enum):
+    """A Cartesian axis: X, Y or Z."""
+
     X = "X"
     Y = "Y"
     Z = "Z"
 
 
 class ControlMode(str, Enum):
+    """Solver control mode."""
+
     JointTorque = "JointTorque"
 
 
 class UnilateralConstraintType(str, Enum):
+    """Greater-than vs less-than kind of a unilateral constraint."""
+
     GreaterThan = "GreaterThan"
     LessThan = "LessThan"
 
 
 class EvaluatorType(str, Enum):
+    """Assignment vs error kind of a constraint evaluator."""
+
     AssignmentEvaluator = "AssignmentEvaluator"
     ErrorEvaluator = "ErrorEvaluator"
 
 
 @dataclass
 class Point:
+    """A named point, such as a frame origin."""
+
     id: str
     type: str = field(default="Point")
 
 
 @dataclass
 class Frame:
+    """A named reference frame (optionally backed by a scene object)."""
+
     id: str
     is_scene_object: bool = False
     type: str = field(default="Frame")
@@ -66,12 +80,16 @@ class Frame:
 
 @dataclass
 class QuantityKind:
+    """A QUDT quantity kind."""
+
     id: str
     type: str = field(default="QuantityKind")
 
 
 @dataclass
 class Unit:
+    """A QUDT unit."""
+
     id: str
     type: str = field(default="Unit")
 
@@ -90,6 +108,8 @@ class Provenance:
 
 @dataclass
 class Quantity:
+    """A scalar quantity with its kind, unit and optional value or view."""
+
     id: str
     quantity_kind: QuantityKind
     unit: Unit
@@ -102,6 +122,8 @@ class Quantity:
 
 @dataclass
 class Saturation:
+    """Input/output saturation limits applied to a signal."""
+
     id: str
     input_signal: Quantity
     output_signal: Quantity
@@ -113,6 +135,8 @@ class Saturation:
 
 @dataclass
 class FreeVector:
+    """A free (un-anchored) vector quantity."""
+
     id: str
     quantity_kind: QuantityKind
     unit: Unit
@@ -124,6 +148,8 @@ class FreeVector:
 
 @dataclass
 class Trajectory:
+    """A trajectory-valued quantity."""
+
     id: str
     quantity_kind: QuantityKind
     unit: Unit
@@ -135,6 +161,8 @@ class Trajectory:
 
 @dataclass
 class JointPosition:
+    """A joint-position quantity for a named joint."""
+
     id: str
     joint_name: str
     type: str = field(default="JointPosition")
@@ -142,6 +170,8 @@ class JointPosition:
 
 @dataclass
 class SimplicialComplex:
+    """A geometric body (optionally a scene object)."""
+
     id: str
     is_scene_object: bool = False
     type: str = field(default="SimplicialComplex")
@@ -149,6 +179,8 @@ class SimplicialComplex:
 
 @dataclass
 class SceneObject:
+    """A scene object referenced as a spatial endpoint."""
+
     id: str
     body: str = ""
     is_scene_object: bool = True
@@ -157,6 +189,8 @@ class SceneObject:
 
 @dataclass
 class Direction:
+    """A unit-direction quantity."""
+
     id: str
     quantity_kind: list[QuantityKind]
     as_seen_by: Frame
@@ -167,6 +201,8 @@ class Direction:
 
 @dataclass
 class Position:
+    """A position quantity of a point with respect to another."""
+
     id: str
     of: Point | None
     with_respect_to: Point | None
@@ -179,6 +215,8 @@ class Position:
 
 @dataclass
 class Orientation:
+    """An orientation quantity of a frame/object with respect to another."""
+
     id: str
     of: Frame | SceneObject | None
     with_respect_to: Frame | SceneObject | None
@@ -193,6 +231,8 @@ class Orientation:
 
 @dataclass
 class Pose:
+    """A pose (position and orientation) quantity."""
+
     id: str
     of: SimplicialComplex | Frame | SceneObject | None
     with_respect_to: SimplicialComplex | Frame | None
@@ -210,6 +250,8 @@ class Pose:
 
 @dataclass
 class VelocityTwist:
+    """A velocity-twist quantity."""
+
     id: str
     of: SimplicialComplex
     with_respect_to: SimplicialComplex
@@ -223,6 +265,8 @@ class VelocityTwist:
 
 @dataclass
 class AccelerationTwist:
+    """An acceleration-twist quantity."""
+
     id: str
     quantity_kind: list[QuantityKind]
     reference_point: Point
@@ -234,6 +278,8 @@ class AccelerationTwist:
 
 @dataclass
 class PoseDifference:
+    """A pose-difference quantity."""
+
     id: str
     quantity_kind: list[QuantityKind]
     reference_point: Point
@@ -245,6 +291,8 @@ class PoseDifference:
 
 @dataclass
 class Wrench:
+    """A wrench (force/torque) quantity, optionally read from a force/torque sensor."""
+
     id: str
     quantity_kind: list[QuantityKind]
     reference_point: Point
@@ -260,6 +308,8 @@ class Wrench:
 
 @dataclass
 class View:
+    """A scalar/axis view onto one subspace of a spatial superobject."""
+
     id: str
     superobject: Pose | VelocityTwist | AccelerationTwist | PoseDifference | Wrench
     subobject: Quantity
@@ -270,12 +320,16 @@ class View:
 
 @dataclass
 class EqualityConstraint:
+    """Constraint parameter: equality to a reference value."""
+
     reference_value: Quantity
     type: str = field(default="EqualityConstraint")
 
 
 @dataclass
 class UnilateralConstraint:
+    """Constraint parameter: a one-sided threshold."""
+
     type_: UnilateralConstraintType
     threshold: Quantity
     type: str = field(default="UnilateralConstraint")
@@ -283,6 +337,8 @@ class UnilateralConstraint:
 
 @dataclass
 class BilateralConstraint:
+    """Constraint parameter: inside a lower/upper band."""
+
     lower_threshold: Quantity
     upper_threshold: Quantity
     type: str = field(default="BilateralConstraint")
@@ -290,6 +346,8 @@ class BilateralConstraint:
 
 @dataclass
 class OutsideConstraint:
+    """Constraint parameter: outside a lower/upper band."""
+
     lower_threshold: Quantity
     upper_threshold: Quantity
     type: str = field(default="OutsideConstraint")
@@ -297,6 +355,8 @@ class OutsideConstraint:
 
 @dataclass
 class Constraint:
+    """A constraint on a quantity together with its parameter."""
+
     id: str
     quantity: Quantity
     parameter: EqualityConstraint | UnilateralConstraint | BilateralConstraint | OutsideConstraint
@@ -305,6 +365,8 @@ class Constraint:
 
 @dataclass
 class GuardedMotion:
+    """A guarded motion: its when/while/until constraint sets."""
+
     id: str
     when: list[Constraint]
     while_: list[Constraint]
@@ -316,6 +378,8 @@ class GuardedMotion:
 
 @dataclass
 class ConstraintEvaluator:
+    """Evaluates a constraint into an error signal (or an elapsed-timing predicate)."""
+
     id: str
     type_: EvaluatorType
     constraint: Constraint
@@ -328,6 +392,8 @@ class ConstraintEvaluator:
 
 @dataclass
 class PIDController:
+    """A proportional-integral-derivative controller."""
+
     id: str
     control_signal: Quantity
     error_signal: Quantity | None = None
@@ -347,6 +413,8 @@ class PIDController:
 
 @dataclass
 class ImpedanceController:
+    """An impedance controller."""
+
     id: str
     control_signal: Quantity
     error_signal: Quantity | None = None
@@ -361,6 +429,8 @@ class ImpedanceController:
 
 @dataclass
 class FeedForwardController:
+    """A feed-forward controller."""
+
     id: str
     control_signal: Quantity
     reference_signal: Quantity | None = None
@@ -375,6 +445,8 @@ Controller = PIDController | ImpedanceController | FeedForwardController
 
 @dataclass
 class ForwardedCommand:
+    """A robot command forwarded directly from a controller output."""
+
     id: str
     control_signal: Quantity
     target: str
@@ -436,6 +508,8 @@ Monitor = LevelMonitor | EdgeMonitor
 
 @dataclass
 class PoseAxisErrorComponent:
+    """One per-axis component of a grouped pose error."""
+
     quantity: str
     error: str
     reference: str
@@ -447,6 +521,8 @@ class PoseAxisErrorComponent:
 
 @dataclass
 class PoseAxisErrorGroup:
+    """Per-axis pose-error scalars regrouped into a single pose error."""
+
     id: str
     pose: str
     components: list[PoseAxisErrorComponent]
@@ -467,6 +543,8 @@ class PoseAxisErrorGroup:
 
 @dataclass
 class ConstraintHandler:
+    """Binds a motion to its evaluators, controllers and monitors."""
+
     id: str
     motion: GuardedMotion
     control_mode: str
@@ -479,6 +557,8 @@ class ConstraintHandler:
 
 @dataclass
 class SnapshotCapture:
+    """A sample-and-hold capture of a fluent on a clock."""
+
     target_id: str
     source_id: str
     source_closure_id: str | None = None
@@ -491,6 +571,8 @@ class SnapshotCapture:
 
 @dataclass
 class SceneRelativePose:
+    """Continuous relative pose of an FK frame with respect to a scene-object body."""
+
     id: str
     fk_pose_id: str
     scene_pose_id: str
@@ -500,6 +582,8 @@ class SceneRelativePose:
 
 @dataclass
 class RelativePoseCapture:
+    """A pose captured relative to its start frame."""
+
     id: str
     fk_pose_id: str
     type: str = field(default="RelativePoseCapture")
@@ -507,6 +591,8 @@ class RelativePoseCapture:
 
 @dataclass
 class GuardedMotionBlock:
+    """A fully built motion unit: schedules, monitors, controllers, conditions, solvers and codegen flags."""
+
     id: str
     handler: str
     control_mode: str
@@ -596,6 +682,8 @@ class GuardedMotionBlock:
 
 @dataclass
 class AccelerationConstraint:
+    """An acceleration constraint (axis- or direction-aligned) on a solver."""
+
     id: str
     subspace: Subspace
     # Exactly one of axis (AxisAligned) / direction (DirectionAligned) is set.
@@ -610,6 +698,8 @@ class AccelerationConstraint:
 
 @dataclass
 class CartesianForceSpecification:
+    """A Cartesian force applied to a body."""
+
     id: str
     force: Wrench
     attached_to: SimplicialComplex
@@ -618,6 +708,8 @@ class CartesianForceSpecification:
 
 @dataclass
 class JointForceSpecification:
+    """A joint-space force for a named joint."""
+
     id: str
     force_id: str
     joint_name: str
@@ -626,6 +718,8 @@ class JointForceSpecification:
 
 @dataclass
 class MotionDrivers:
+    """The acceleration/Cartesian/joint force drivers of a solver."""
+
     id: str
     acceleration_constraint: list[AccelerationConstraint]
     cartesian_force: list[CartesianForceSpecification]
@@ -636,6 +730,8 @@ class MotionDrivers:
 
 @dataclass
 class HandlerArmSolver:
+    """An arm solver sliced to a single handler's motion driver."""
+
     id: str
     output: list
     motion_driver: MotionDrivers
@@ -653,6 +749,8 @@ class HandlerArmSolver:
 
 @dataclass
 class SolverWithInputAndOutput:
+    """A full arm solver: chain, algorithm, drivers and outputs."""
+
     id: str
     motion_drivers: list[MotionDrivers]
     output: list
@@ -679,6 +777,8 @@ class SolverWithInputAndOutput:
 
 @dataclass
 class SceneAttachment:
+    """An asset attached to a robot or object in the scene."""
+
     id: str
     path: str
     attach_to: str
@@ -698,6 +798,8 @@ class SceneAttachment:
 
 @dataclass
 class SceneRobot:
+    """A robot placed in the scene, with its attachments."""
+
     id: str
     path: str
     prefix: str = ""
@@ -717,6 +819,8 @@ class SceneRobot:
 
 @dataclass
 class SceneObjectSpec:
+    """A scene object's placement and (procedural or asset) geometry."""
+
     id: str
     body: str
     path: str = ""
@@ -751,10 +855,10 @@ class SceneObjectSpec:
     type: str = field(default="SceneObjectSpec")
 
 
-
-
 @dataclass
 class SceneSpec:
+    """The scene: robots, objects and the control timestep."""
+
     robots: list[SceneRobot] = field(default_factory=list)
     objects: list[SceneObjectSpec] = field(default_factory=list)
     # Physics/control timestep from ENVIRONMENT.timestep; defaults to the backend
@@ -765,6 +869,8 @@ class SceneSpec:
 
 @dataclass
 class VelocityCompositionSolver:
+    """A base velocity-composition solver."""
+
     id: str
     configuration: str
     velocity: VelocityTwist
@@ -773,6 +879,8 @@ class VelocityCompositionSolver:
 
 @dataclass
 class ForceDistributionSolver:
+    """A base force-distribution solver."""
+
     id: str
     configuration: str
     force: Wrench

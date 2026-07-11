@@ -339,21 +339,27 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
 
     schema = json.loads((tmp_path / "schema.json").read_text())
     quantities = {quantity["id"]: quantity for quantity in schema["quantities"]}
-    assert quantities["err_x"]["sample_expr"] == "shared.err_x"
+    # sample_desc is the backend-agnostic descriptor; the C++ expression is rendered
+    # by the sample-expr template (shared_data.stg).
+    assert quantities["err_x"]["sample_desc"] == {"kind": "shared", "id": "err_x"}
     assert quantities["pose_ee.position.x"]["source_id"] == "pose_ee"
     assert quantities["pose_ee.orientation.z"]["component"] == "orientation.z"
-    assert quantities["twist_ee.angular.x"]["sample_expr"] == "shared.twist_ee.rot[0]"
-    assert quantities["wrench_ee.force.z"]["sample_expr"] == "shared.wrench_ee.force[2]"
+    assert quantities["twist_ee.angular.x"]["sample_desc"] == {
+        "kind": "member", "id": "twist_ee", "member": "rot", "axis": 0}
+    assert quantities["wrench_ee.force.z"]["sample_desc"] == {
+        "kind": "member", "id": "wrench_ee", "member": "force", "axis": 2}
     assert "wrench_force" not in quantities
-    assert quantities["wrench_force_x"]["sample_expr"] == "shared.wrench_ee.force[0]"
-    assert quantities["ready_flag"]["sample_expr"] == "shared.ready_flag ? 1.0 : 0.0"
+    assert quantities["wrench_force_x"]["sample_desc"] == {"kind": "access", "ref": "wrench_force_x"}
+    assert quantities["ready_flag"]["sample_desc"] == {"kind": "bool", "id": "ready_flag"}
     assert quantities["ready_flag"]["source_type"] == "Bool"
-    assert quantities["settle_count"]["sample_expr"] == "static_cast<double>(shared.settle_count)"
+    assert quantities["settle_count"]["sample_desc"] == {"kind": "int", "id": "settle_count"}
     assert quantities["settle_count"]["source_type"] == "IntCounter"
-    assert quantities["ctrl_x_error_integral"]["sample_expr"] == "shared.ctrl_x_error_integral"
+    assert quantities["ctrl_x_error_integral"]["sample_desc"] == {
+        "kind": "shared", "id": "ctrl_x_error_integral"}
     assert quantities["ctrl_x_error_integral"]["role"] == "controller_internal_state"
-    assert quantities["ctrl_x_previous_error"]["sample_expr"] == "shared.ctrl_x_previous_error"
-    assert quantities["ctrl_x_first_sample"]["sample_expr"] == "shared.ctrl_x_first_sample ? 1.0 : 0.0"
+    assert quantities["ctrl_x_previous_error"]["sample_desc"] == {
+        "kind": "shared", "id": "ctrl_x_previous_error"}
+    assert quantities["ctrl_x_first_sample"]["sample_desc"] == {"kind": "bool", "id": "ctrl_x_first_sample"}
     assert quantities["ctrl_x_first_sample"]["role"] == "controller_internal_state"
     assert quantities["ctrl_x_first_sample"]["source_type"] == "Bool"
     assert schema["pools"]["quantities"] == len(schema["quantities"])
@@ -361,7 +367,7 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
     payload = json.loads((tmp_path / ".stst" / "ir.json").read_text())
     assert {
         "index": quantities["pose_ee.position.x"]["index"],
-        "expr": "shared.pose_ee.p[0]",
+        "desc": {"kind": "pose_pos", "id": "pose_ee", "axis": 0},
     } in payload["introspection_artifacts"]["model"]["quantities"]
     controller = next(
         controller
@@ -369,17 +375,19 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
         for controller in state["controllers"]
         if controller["error_expr"] == "shared.err_x"
     )
-    assert controller["measured_expr"] == "shared.measured_x"
-    assert controller["setpoint_expr"] == "shared.setpoint_x"
+    # measured/setpoint carry abstract signal ids now; the template renders them via
+    # access-expr (here plain shared signals -> shared.measured_x / shared.setpoint_x).
+    assert controller["measured_signal"] == "measured_x"
+    assert controller["setpoint_signal"] == "setpoint_x"
 
     # Spatial samples: one pose/twist/wrench per data object, serialized into the frame
     # record's pose/twist/wrench fields.
     model = payload["introspection_artifacts"]["model"]
     assert (schema["pools"]["poses"], schema["pools"]["twists"], schema["pools"]["wrenches"]) == (1, 1, 1)
     assert schema["spatial"]["poses"][0]["id"] == "pose_ee"
-    assert {"index": 0, "expr": "shared.pose_ee"} in model["poses"]
-    assert {"index": 0, "expr": "shared.twist_ee"} in model["twists"]
-    assert {"index": 0, "expr": "shared.wrench_ee"} in model["wrenches"]
+    assert {"index": 0, "id": "pose_ee"} in model["poses"]
+    assert {"index": 0, "id": "twist_ee"} in model["twists"]
+    assert {"index": 0, "id": "wrench_ee"} in model["wrenches"]
 
 
 def test_provenance_document_is_jsonld_and_prov_shacl_conformant(tmp_path: Path) -> None:

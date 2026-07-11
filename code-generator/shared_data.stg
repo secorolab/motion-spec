@@ -173,3 +173,49 @@ view-access-expr-Wrench-Angular(view) ::= <<
 view-access-expr-Wrench-Linear(view) ::= <<
 <if(view.axis)>shared.<view.superobject.id>.force[<axis-to-index.(view.axis)>]<else>shared.<view.superobject.id>.force<endif>
 >>
+
+// Frame-log sample expression, dispatched on the descriptor kind emitted by
+// ir_gen (add_quantity_samples). Renders the scalar C++ expression sampled per tick.
+sample-expr(desc, views) ::= <<
+<({sample-expr-<desc.kind>})(desc, views)>
+>>
+
+sample-expr-literal(desc, views) ::= <<
+<desc.value>
+>>
+
+sample-expr-access(desc, views) ::= <<
+<access-expr(desc.ref, views)>
+>>
+
+sample-expr-shared(desc, views) ::= <<
+shared.<desc.id>
+>>
+
+sample-expr-vec(desc, views) ::= <<
+shared.<desc.id>[<desc.axis>]
+>>
+
+sample-expr-orientation(desc, views) ::= <<
+KDL::diff(KDL::Rotation::Identity(), shared.<desc.id>)[<desc.axis>]
+>>
+
+sample-expr-pose_pos(desc, views) ::= <<
+shared.<desc.id>.p[<desc.axis>]
+>>
+
+sample-expr-pose_orient(desc, views) ::= <<
+KDL::diff(KDL::Rotation::Identity(), shared.<desc.id>.M)[<desc.axis>]
+>>
+
+sample-expr-member(desc, views) ::= <<
+shared.<desc.id>.<desc.member>[<desc.axis>]
+>>
+
+sample-expr-bool(desc, views) ::= <<
+shared.<desc.id> ? 1.0 : 0.0
+>>
+
+sample-expr-int(desc, views) ::= <<
+static_cast\<double\>(shared.<desc.id>)
+>>

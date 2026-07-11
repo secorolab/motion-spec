@@ -338,12 +338,10 @@ class PIDController:
     decay_rate: float | None = None
     output_saturation: Saturation | None = None
     integral_saturation: Saturation | None = None
-    # Signal metadata folded from the error-evaluator closure (C++ access expressions).
+    # Abstract signal ids folded from the error-evaluator closure; the C++ access
+    # expression is rendered backend-side by access-expr (shared_data.stg).
     measured_signal: str | None = None
-    measured_expr: str | None = None
     setpoint_signal: str | None = None
-    setpoint_expr: str | None = None
-    measured_derivative_expr: str | None = None
     type: str = "ProportionalIntegralDerivative"
 
 
@@ -357,10 +355,7 @@ class ImpedanceController:
     damping: float | None = None
     output_saturation: Saturation | None = None
     measured_signal: str | None = None
-    measured_expr: str | None = None
     setpoint_signal: str | None = None
-    setpoint_expr: str | None = None
-    measured_derivative_expr: str | None = None
     type: str = "ImpedanceController"
 
 
@@ -371,10 +366,7 @@ class FeedForwardController:
     reference_signal: Quantity | None = None
     output_saturation: Saturation | None = None
     measured_signal: str | None = None
-    measured_expr: str | None = None
     setpoint_signal: str | None = None
-    setpoint_expr: str | None = None
-    measured_derivative_expr: str | None = None
     type: str = "FeedForwardController"
 
 
@@ -401,7 +393,11 @@ class LevelMonitor:
     is_until_aggregate: bool = False
     is_when_aggregate: bool = False
     debounce_steps: int | None = None
-    active_condition: str | None = None
+    # Structured active-phase boolean terms (rendered to C++ by the bool-condition template).
+    has_active: bool = False
+    active_terms: list | None = None
+    active_terms_present: bool = False
+    active_any: bool = False
     type: str = field(default="LevelMonitor")
 
 
@@ -424,7 +420,11 @@ class EdgeMonitor:
     # Stays None (not 0) when absent -- ST4's <if(x)> is true even for integer 0.
     debounce_duration_s: float | None = None
     debounce_steps: int | None = None
-    active_condition: str | None = None
+    # Structured active-phase boolean terms (rendered to C++ by the bool-condition template).
+    has_active: bool = False
+    active_terms: list | None = None
+    active_terms_present: bool = False
+    active_any: bool = False
     # FSM binding (folded when the monitor's event lives in the FSM namespace).
     fsm_namespace: str | None = None
     fsm_event_idx: int | None = None
@@ -535,24 +535,35 @@ class GuardedMotionBlock:
     when_any: bool = False
     # Primary arm-solver id the motion commands (empty when the model has no arm).
     command_robot_id: str = ""
-    # C++ boolean expressions (folded from the evaluators/monitors at build time).
-    when_condition: str = "true"
-    done_condition: str = "true"
+    # Structured boolean terms (folded from evaluators/monitors); rendered to C++ by the
+    # bool-condition template. WHEN joins with when_any, done joins with until_any. The
+    # *_present flags gate the empty-default (JSON empty lists are truthy in the ST4 build).
+    when_terms: list = field(default_factory=list)
+    when_terms_present: bool = False
+    done_terms: list = field(default_factory=list)
+    done_terms_present: bool = False
     # Time-driven trajectory alpha ids (folded from while_schedule closures).
     time_trajectory_progress_ids: list = field(default_factory=list)
     # Declared pose components referenced by this motion (folded from pose_components).
     declared_pose_components: list = field(default_factory=list)
-    # Generated C++ function signatures/args (folded from schedules/monitors/solvers).
-    can_start_params: str = ""
-    can_start_args: str = ""
-    when_params: str = ""
-    when_args: str = ""
-    until_params: str = ""
-    until_args: str = ""
-    monitor_params: str = ""
-    monitor_args: str = ""
-    apply_params: str = ""
-    apply_args: str = ""
+    # Per-function capability booleans (which context objects each generated function
+    # needs). The C++ signatures/args are built from these by the sig-params/sig-args
+    # templates (folded from schedules/monitors/solvers).
+    can_start_needs_state: bool = False
+    can_start_needs_shared: bool = False
+    can_start_needs_robot: bool = False
+    when_needs_state: bool = False
+    when_needs_shared: bool = False
+    when_needs_robot: bool = False
+    until_needs_state: bool = False
+    until_needs_shared: bool = False
+    until_needs_robot: bool = False
+    monitor_needs_state: bool = False
+    monitor_needs_shared: bool = False
+    monitor_needs_robot: bool = False
+    apply_needs_state: bool = False
+    apply_needs_shared: bool = False
+    apply_needs_robot: bool = False
     # FSM wiring (folded from the FSM named graph): the state this motion runs in,
     # and the WHEN-gated motions this one holds for as a fallback.
     fsm_state: str | None = None

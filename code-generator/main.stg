@@ -247,9 +247,9 @@ static void step_<motion.id>(<motion.id>_state &<motion.id>_state_instance, shar
         <motion.id>_state_instance.active_steps = 0;
     }
     update_<motion.id>(<motion.id>_state_instance, shared, robot);
-    monitor_until_<motion.id>(<motion.until_args>);
+    monitor_until_<motion.id>(<sig-args(motion.id, motion.until_needs_state, motion.until_needs_shared, motion.until_needs_robot)>);
     control_<motion.id>(<motion.id>_state_instance, shared, robot);
-    apply_<motion.id>(<motion.apply_args>);
+    apply_<motion.id>(<sig-args(motion.id, motion.apply_needs_state, motion.apply_needs_shared, motion.apply_needs_robot)>);
     ++<motion.id>_state_instance.active_steps;
 \}
 <endif>
@@ -259,7 +259,7 @@ fsm-dispatch-case(motion, fsm_namespace) ::= <<
 <if(motion.fsm_state)>
         case <fsm_namespace>::<motion.fsm_state>:
             step_<motion.id>(<motion.id>_state_instance, shared, robot);
-<motion.fsm_when_gate_calls:{call |             <call>}; separator="\n">
+<motion.fsm_when_gate_calls:{c |             monitor_when_<c.gid>(<sig-args(c.gid, c.needs_state, c.needs_shared, c.needs_robot)>);}; separator="\n">
             break;
 <endif>
 >>
@@ -375,8 +375,8 @@ int main(int argc, char **argv) {
 <motions:{motion |
         case <i0>: {
             update_<motion.id>(<motion.id>_state_instance, shared, robot);
-            monitor_<motion.id>(<motion.monitor_args>);
-            if (!<motion.id>_state_instance.active && can_start_<motion.id>(<motion.can_start_args>)) {
+            monitor_<motion.id>(<sig-args(motion.id, motion.monitor_needs_state, motion.monitor_needs_shared, motion.monitor_needs_robot)>);
+            if (!<motion.id>_state_instance.active && can_start_<motion.id>(<sig-args(motion.id, motion.can_start_needs_state, motion.can_start_needs_shared, motion.can_start_needs_robot)>)) {
                 <motion.id>_state_instance.active = true;
                 <motion.id>_state_instance.active_steps = 0;
 <if(motion.has_active_elapsed)>                <motion.id>_state_instance.motion_start_time = shared.clock_time_s;
@@ -387,7 +387,7 @@ int main(int argc, char **argv) {
             \}
             if (<motion.id>_state_instance.active) {
                 control_<motion.id>(<motion.id>_state_instance, shared, robot);
-                apply_<motion.id>(<motion.apply_args>);
+                apply_<motion.id>(<sig-args(motion.id, motion.apply_needs_state, motion.apply_needs_shared, motion.apply_needs_robot)>);
 <if(motion.has_until_condition)>
                 // TODO: replace this temporary event latch bridge with real event-driven FSM transitions.
                 if (<motion.id>_state_instance.active_steps > 0 && (<motion-done-condition(motion)>)) {

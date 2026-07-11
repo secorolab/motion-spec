@@ -3706,23 +3706,17 @@ def _as_dict(obj) -> dict:
     return obj if isinstance(obj, dict) else asdict(obj)
 
 
-def _motion_done_condition(motion) -> str:
-    """Boolean expression that ends a motion: its UNTIL members combined by any/all
-    (``||`` for any, ``&&`` for all/default)."""
+def _motion_done_terms(motion) -> list:
+    """Structured UNTIL-member terms that end a motion (edge monitors → event flag, level
+    monitors → their boolean flag). Joined by until_any and rendered by bool-condition."""
     mid = _field(motion, "id")
-    event_terms = [
-        (
-            f"{mid}_state_instance.{_field(monitor, 'id')}_event_triggered"
-            if _field(monitor, "is_edge_triggered")
-            else f"{mid}_state_instance.{_field(monitor, 'flag')}"
-        )
-        for monitor in _field(motion, "until_monitors", [])
-    ]
-    if not event_terms:
-        return "true"
-    joiner = " || " if _field(motion, "until_any") else " && "
-    condition = joiner.join(event_terms)
-    return f"({condition})" if len(event_terms) > 1 else condition
+    terms = []
+    for monitor in _field(motion, "until_monitors", []):
+        if _field(monitor, "is_edge_triggered"):
+            terms.append({"kind": "event", "motion_id": mid, "monitor_id": _field(monitor, "id")})
+        else:
+            terms.append({"kind": "flag", "motion_id": mid, "flag": _field(monitor, "flag")})
+    return terms
 
 def expand_vector_fields(item, field: str) -> None:
     values = _field(item, field)
@@ -3745,47 +3739,17 @@ def require_field(obj_id: str, field: str, value):
         )
     return value
 
-def cpp_access_expr(data_id: str, views: dict) -> str:
-    view = views.get(data_id)
-    if not view:
-        return f"shared.{data_id}"
-    superobject = _field(view, "superobject")
-    so_type = _field(superobject, "type")
-    so_id = _field(superobject, "id")
-    subspace = _field(view, "subspace")
-    axis = _field(view, "axis")
-    axis_map = {"X": 0, "Y": 1, "Z": 2, "x": 0, "y": 1, "z": 2}
-    if so_type == "Pose" and subspace == "Linear":
-        if axis is None:
-            return f"shared.{so_id}.p"
-        return f"shared.{so_id}.p[{axis_map[axis]}]"
-    if so_type == "Pose" and subspace == "Angular":
-        if axis is None:
-            return f"shared.{so_id}.M"
-        return f"KDL::diff(KDL::Rotation::Identity(), shared.{so_id}.M)[{axis_map[axis]}]"
-    if so_type == "Wrench":
-        member = "torque" if subspace == "Angular" else "force"
-        if axis is None:
-            return f"shared.{so_id}.{member}"
-        return f"shared.{so_id}.{member}[{axis_map[axis]}]"
-    axis_index = axis_map[axis]
-    if so_type == "VelocityTwist":
-        member = "rot" if subspace == "Angular" else "vel"
-        return f"shared.{so_id}.{member}[{axis_index}]"
-    if so_type == "AccelerationTwist":
-        member = "rot" if subspace == "Angular" else "vel"
-        return f"shared.{so_id}.{member}[{axis_index}]"
-    return f"shared.{data_id}"
-
-def component_expr(component_id: str, data_by_id: dict, views: dict) -> str:
+def _pose_component(component_id: str, data_by_id: dict) -> dict:
+    """Structured pose component: either a literal ``value`` or a ``ref`` id that the
+    backend template renders via access-expr. Backend-agnostic — no C++/KDL here."""
     component = data_by_id.get(component_id)
     reference_value = _field(component, "reference_value")
     if reference_value:
-        return cpp_access_expr(reference_value, views)
+        return {"value": None, "ref": reference_value}
     value = _field(component, "value")
     if value is not None:
-        return str(value)
-    return cpp_access_expr(component_id, views)
+        return {"value": str(value), "ref": None}
+    return {"value": None, "ref": component_id}
 
 def add_controller_signal_metadata(ir_payload: dict) -> None:
     error_sources = {
@@ -3793,7 +3757,6 @@ def add_controller_signal_metadata(ir_payload: dict) -> None:
         for closure in ir_payload.get("closures", {}).values()
         if isinstance(closure, dict) and closure.get("type") == "ErrorEvaluator" and closure.get("error")
     }
-    views = ir_payload.get("views", {})
 
     def signal_id(value):
         if isinstance(value, str):
@@ -3801,20 +3764,16 @@ def add_controller_signal_metadata(ir_payload: dict) -> None:
         return _field(value, "id")
 
     def annotate(controller) -> None:
+        # Emit abstract signal ids only; the C++ access expression is rendered by the
+        # backend template (access-expr, shared_data.stg) from the id + views map.
         error_id = signal_id(_field(controller, "error_signal"))
         source = error_sources.get(error_id) or {}
         measured_id = source.get("quantity")
         setpoint_id = signal_id(_field(controller, "reference_signal")) or source.get("reference_value")
-        measured_derivative_id = signal_id(_field(controller, "measured_derivative"))
         if measured_id:
             _set_field(controller, "measured_signal", measured_id)
-            _set_field(controller, "measured_expr", cpp_access_expr(measured_id, views))
         if setpoint_id:
             _set_field(controller, "setpoint_signal", setpoint_id)
-            _set_field(controller, "setpoint_expr", cpp_access_expr(setpoint_id, views))
-        if measured_derivative_id:
-            _set_field(controller, "measured_derivative_expr",
-                       cpp_access_expr(measured_derivative_id, views))
 
     for motion in ir_payload.get("motions", []):
         for controller in _field(motion, "controllers", []):
@@ -3893,7 +3852,9 @@ def add_quantity_samples(ir_payload: dict) -> None:
     views = ir_payload.get("views", {})
     samples = []
 
-    def add(source, component: str, expr: str) -> None:
+    # Each sample carries a backend-agnostic descriptor (kind + ids/axis); the C++
+    # sample expression is rendered by the sample-expr template (shared_data.stg).
+    def add(source, component: str, desc: dict) -> None:
         src = _as_dict(source)
         row = {key: value for key, value in src.items() if key != "index"}
         source_id = src.get("id")
@@ -3904,14 +3865,14 @@ def add_quantity_samples(ir_payload: dict) -> None:
                 "component": component or None,
                 "type": "Scalar",
                 "source_type": src.get("type"),
-                "sample_expr": expr,
+                "sample_desc": desc,
             }
         )
         samples.append(row)
 
-    def add_axes(source: dict, prefix: str, expr: str) -> None:
+    def add_axes(source, prefix: str, make_desc) -> None:
         for idx, axis in enumerate(("x", "y", "z")):
-            add(source, f"{prefix}.{axis}" if prefix else axis, f"{expr}[{idx}]")
+            add(source, f"{prefix}.{axis}" if prefix else axis, make_desc(idx))
 
     def scalar_view(data_id: str) -> bool:
         view = views.get(data_id)
@@ -3924,24 +3885,31 @@ def add_quantity_samples(ir_payload: dict) -> None:
         qtype = quantity.get("type")
         if qtype == "Quantity":
             if quantity.get("value") is not None and qid not in shared_ids and qid not in views:
-                add(quantity, "", str(quantity["value"]))
+                add(quantity, "", {"kind": "literal", "value": str(quantity["value"])})
             elif qid in views and scalar_view(qid):
-                add(quantity, "", cpp_access_expr(qid, views))
+                # A scalar view resolves to a composite-member access only for these
+                # superobject types; other superobjects (e.g. PoseDifference) sample the
+                # quantity's own shared field instead.
+                so_type = _field(_field(views.get(qid), "superobject"), "type")
+                if so_type in {"Pose", "Wrench", "VelocityTwist", "AccelerationTwist"}:
+                    add(quantity, "", {"kind": "access", "ref": qid})
+                else:
+                    add(quantity, "", {"kind": "shared", "id": qid})
             elif qid in shared_ids and qid not in views:
-                add(quantity, "", f"shared.{qid}")
+                add(quantity, "", {"kind": "shared", "id": qid})
         elif qtype in {"Position", "Direction", "FreeVector"} and qid in shared_ids:
-            add_axes(quantity, "", f"shared.{qid}")
+            add_axes(quantity, "", lambda i, q=qid: {"kind": "vec", "id": q, "axis": i})
         elif qtype == "Orientation" and qid in shared_ids:
-            add_axes(quantity, "", f"KDL::diff(KDL::Rotation::Identity(), shared.{qid})")
+            add_axes(quantity, "", lambda i, q=qid: {"kind": "orientation", "id": q, "axis": i})
         elif qtype in {"Pose", "Trajectory"} and qid in shared_ids:
-            add_axes(quantity, "position", f"shared.{qid}.p")
-            add_axes(quantity, "orientation", f"KDL::diff(KDL::Rotation::Identity(), shared.{qid}.M)")
+            add_axes(quantity, "position", lambda i, q=qid: {"kind": "pose_pos", "id": q, "axis": i})
+            add_axes(quantity, "orientation", lambda i, q=qid: {"kind": "pose_orient", "id": q, "axis": i})
         elif qtype in {"VelocityTwist", "AccelerationTwist", "PoseDifference"} and qid in shared_ids:
-            add_axes(quantity, "angular", f"shared.{qid}.rot")
-            add_axes(quantity, "linear", f"shared.{qid}.vel")
+            add_axes(quantity, "angular", lambda i, q=qid: {"kind": "member", "id": q, "member": "rot", "axis": i})
+            add_axes(quantity, "linear", lambda i, q=qid: {"kind": "member", "id": q, "member": "vel", "axis": i})
         elif qtype == "Wrench" and qid in shared_ids:
-            add_axes(quantity, "torque", f"shared.{qid}.torque")
-            add_axes(quantity, "force", f"shared.{qid}.force")
+            add_axes(quantity, "torque", lambda i, q=qid: {"kind": "member", "id": q, "member": "torque", "axis": i})
+            add_axes(quantity, "force", lambda i, q=qid: {"kind": "member", "id": q, "member": "force", "axis": i})
 
     sampled_ids = {sample.get("source_id") for sample in samples}
     for item in ir_payload.get("shared_data", []):
@@ -3949,9 +3917,9 @@ def add_quantity_samples(ir_payload: dict) -> None:
         if not item_id or item_id in sampled_ids:
             continue
         if _field(item, "type") == "Bool":
-            add(item, "", f"shared.{item_id} ? 1.0 : 0.0")
+            add(item, "", {"kind": "bool", "id": item_id})
         elif _field(item, "type") == "IntCounter":
-            add(item, "", f"static_cast<double>(shared.{item_id})")
+            add(item, "", {"kind": "int", "id": item_id})
 
     introspection["quantity_samples"] = samples
 
@@ -3966,7 +3934,7 @@ def add_spatial_samples(ir_payload: dict) -> None:
         pool = kinds.get(_field(item, "type"))
         if not iid or iid not in shared_ids or pool is None:
             continue
-        spatial[pool].append({"id": iid, "index": len(spatial[pool]), "expr": f"shared.{iid}"})
+        spatial[pool].append({"id": iid, "index": len(spatial[pool])})
     introspection["spatial_samples"] = spatial
 
 def _index_by_id(items: list) -> dict:
@@ -4001,12 +3969,12 @@ def build_pose_components(ir_payload: dict) -> dict:
         entry = components.setdefault(
             pose_id,
             {
-                "position_x_expr": None,
-                "position_y_expr": None,
-                "position_z_expr": None,
-                "orientation_x_expr": None,
-                "orientation_y_expr": None,
-                "orientation_z_expr": None,
+                "position_x": None,
+                "position_y": None,
+                "position_z": None,
+                "orientation_x": None,
+                "orientation_y": None,
+                "orientation_z": None,
             },
         )
         axis = str(_field(view, "axis") or "").lower()
@@ -4016,7 +3984,7 @@ def build_pose_components(ir_payload: dict) -> dict:
         if not subobject:
             continue
         prefix = "position" if _field(view, "subspace") == "Linear" else "orientation"
-        entry[f"{prefix}_{axis}_expr"] = component_expr(subobject, data_by_id, views)
+        entry[f"{prefix}_{axis}"] = _pose_component(subobject, data_by_id)
     for pose_id, parts in components.items():
         missing = [name for name, value in parts.items() if value is None]
         if missing:
@@ -4033,21 +4001,11 @@ def resolve_lerp_closures(ir_payload: dict, pose_components: dict) -> None:
         if not isinstance(goal, str):
             continue
         if goal in pose_components:
-            parts = pose_components[goal]
-            closure["goal_expr"] = (
-                "KDL::Frame("
-                "KDL::Rotation::RPY("
-                f"{parts['orientation_x_expr']}, "
-                f"{parts['orientation_y_expr']}, "
-                f"{parts['orientation_z_expr']}), "
-                "KDL::Vector("
-                f"{parts['position_x_expr']}, "
-                f"{parts['position_y_expr']}, "
-                f"{parts['position_z_expr']}))"
-            )
+            # Emit the structured pose components; the template builds the pose frame.
+            closure["goal_components"] = pose_components[goal]
             closure["assign_goal"] = True
         else:
-            closure["goal_expr"] = f"shared.{goal}"
+            # goal is a shared signal id (already on the closure as closure["goal"]).
             closure["assign_goal"] = False
 
 def resolve_arc_closures(ir_payload: dict) -> None:
@@ -4067,8 +4025,7 @@ def resolve_arc_closures(ir_payload: dict) -> None:
         end_data = data_by_id.get(end)
         if not isinstance(end, str) or not is_pose(end_data):
             raise ValueError("Arc trajectory end must be a Pose quantity.")
-        closure["end_position_expr"] = f"shared.{end}.p"
-        closure["end_orientation_expr"] = f"shared.{end}.M"
+        # end is a validated Pose shared signal; the template renders shared.<end>.p/.M.
 
 def declared_pose_component_entries(
     ir_payload: dict,
@@ -4123,47 +4080,53 @@ def _set_motion_trajectory_progress(motion, closures: dict, data_by_id: dict) ->
             ids.append(alpha_id)
     _set_field(motion, "time_trajectory_progress_ids", ids)
 
-def _evaluator_term(e, start_field: str) -> str:
-    # A timing evaluator has no solver error: compare the world clock against the threshold,
-    # measured from the selected state timestamp.
+def _evaluator_term(e, start_field: str) -> dict:
+    """Structured boolean term for an evaluator: an elapsed timing predicate (world clock
+    vs threshold from the selected state timestamp) or a solver constraint-satisfied check.
+    Rendered to C++ by the bool-condition template."""
     if _field(e, "is_elapsed"):
         op = _field(e, "elapsed_op") or ">="
         thr = _field(e, "elapsed_threshold_s") or 0.0
-        return f"(shared.clock_time_s - state.{start_field} {op} {thr:.6f})"
-    return f"motion_spec::runtime::constraint_satisfied(shared.{_field(_field(e, 'error'), 'id')})"
+        # Pre-format the threshold (fixed 6-decimal) so the emitted literal is stable.
+        return {"kind": "elapsed", "start_field": start_field, "op": op, "threshold": f"{thr:.6f}"}
+    return {"kind": "constraint", "error_id": _field(_field(e, "error"), "id")}
 
 
 def _set_monitor_conditions(motion, evaluators_key: str, monitors_key: str,
                             start_field: str, any_key: str) -> None:
-    """Build the active-phase C++ condition from a motion's evaluators and stamp it onto
-    the aggregate monitor + any elapsed-error monitors."""
+    """Stamp the structured active-phase terms onto the aggregate monitor + any
+    elapsed-error monitors. Rendered to C++ by the bool-condition template."""
     evaluators = _field(motion, evaluators_key, [])
     terms = [
         _evaluator_term(e, start_field)
         for e in evaluators
         if _field(e, "error") or _field(e, "is_elapsed")
     ]
+    any_flag = bool(_field(motion, any_key))
     elapsed_terms_by_error = {
         _field(_field(e, "error"), "id"): _evaluator_term(e, start_field)
         for e in evaluators
         if _field(e, "is_elapsed") and _field(e, "error")
     }
-    joiner = " || " if _field(motion, any_key) else " && "
-    active_condition = joiner.join(terms) if terms else "false"
-    if len(terms) > 1:
-        active_condition = f"({active_condition})"
     aggregate_key = "is_until_aggregate" if any_key == "until_any" else "is_when_aggregate"
     for monitor in _field(motion, monitors_key, []):
         if _field(monitor, aggregate_key):
-            _set_field(monitor, "active_condition", active_condition)
+            _set_field(monitor, "active_terms", terms)
+            _set_field(monitor, "active_terms_present", bool(terms))
+            _set_field(monitor, "active_any", any_flag)
+            _set_field(monitor, "has_active", True)
             continue
         error_id = _field(_field(monitor, "error"), "id")
         if error_id in elapsed_terms_by_error:
-            _set_field(monitor, "active_condition", elapsed_terms_by_error[error_id])
+            _set_field(monitor, "active_terms", [elapsed_terms_by_error[error_id]])
+            _set_field(monitor, "active_terms_present", True)
+            _set_field(monitor, "active_any", False)
+            _set_field(monitor, "has_active", True)
 
 
 def _set_motion_conditions(motion) -> None:
-    """Fold the UNTIL/WHEN/done C++ conditions onto a motion (dict or dataclass)."""
+    """Fold the UNTIL/WHEN/done structured boolean terms onto a motion (rendered to C++ by
+    the bool-condition template). WHEN joins with when_any, done with until_any."""
     _set_monitor_conditions(motion, "until_evaluators", "until_monitors",
                             "motion_start_time", "until_any")
     when_terms = [
@@ -4171,37 +4134,21 @@ def _set_motion_conditions(motion) -> None:
         for e in _field(motion, "when_evaluators", [])
         if _field(e, "error") or _field(e, "is_elapsed")
     ]
-    joiner = " || " if _field(motion, "when_any") else " && "
-    when_condition = joiner.join(when_terms) if when_terms else "true"
-    if len(when_terms) > 1:
-        when_condition = f"({when_condition})"
-    _set_field(motion, "when_condition", when_condition)
+    _set_field(motion, "when_terms", when_terms)
+    _set_field(motion, "when_terms_present", bool(when_terms))
     _set_monitor_conditions(motion, "when_evaluators", "when_monitors",
                             "when_start_time", "when_any")
-    _set_field(motion, "done_condition", _motion_done_condition(motion))
+    done_terms = _motion_done_terms(motion)
+    _set_field(motion, "done_terms", done_terms)
+    _set_field(motion, "done_terms_present", bool(done_terms))
 
 def add_motion_function_interfaces(motions: list) -> None:
-    def join_params(params: list[str]) -> str:
-        if not params:
-            return ""
-        return "\n    " + ",\n    ".join(params) + "\n"
-
+    """Fold per-motion capability booleans (which context objects — state, shared, robot —
+    each generated function needs). The C++ signatures and call args are built from these
+    by the sig-params / sig-args templates; ir_gen carries no C++ type names."""
     for motion in motions:
-        mid = _field(motion, "id")
-        state_type = f"{mid}_state &state"
         has_when_elapsed = any(_field(e, "is_elapsed") for e in _field(motion, "when_evaluators", []))
         has_when_logic = bool(_field(motion, "when_schedule") or _field(motion, "when_evaluators"))
-        can_start_params = []
-        can_start_args = []
-        if has_when_elapsed:
-            can_start_params.append(state_type)
-            can_start_args.append(f"{mid}_state_instance")
-        if has_when_logic:
-            can_start_params.append("shared_data &shared")
-            can_start_args.append("shared")
-        _set_field(motion, "can_start_params", join_params(can_start_params))
-        _set_field(motion, "can_start_args", ", ".join(can_start_args))
-
         when_mons = _field(motion, "when_monitors") or []
         until_mons = _field(motion, "until_monitors") or []
         has_pose = bool(_field(motion, "declared_pose_components"))
@@ -4209,52 +4156,30 @@ def add_motion_function_interfaces(motions: list) -> None:
         until_sched = bool(_field(motion, "until_schedule"))
         when_fsm = any(_field(m, "fsm_namespace") for m in when_mons)
         until_fsm = any(_field(m, "fsm_namespace") for m in until_mons)
-
-        def monitor_sig(use_state, use_shared, use_robot):
-            params, args = [], []
-            if use_state:
-                params.append(state_type)
-                args.append(f"{mid}_state_instance")
-            if use_shared:
-                params.append("shared_data &shared")
-                args.append("shared")
-            if use_robot:
-                params.append("const robot_io &robot")
-                args.append("robot")
-            return join_params(params), ", ".join(args)
-
-        when_p, when_a = monitor_sig(
-            has_when_elapsed or bool(when_mons),
-            has_when_elapsed or has_pose or when_sched or bool(when_mons),
-            when_fsm,
-        )
-        _set_field(motion, "when_params", when_p)
-        _set_field(motion, "when_args", when_a)
-        until_p, until_a = monitor_sig(bool(until_mons), until_sched or bool(until_mons), until_fsm)
-        _set_field(motion, "until_params", until_p)
-        _set_field(motion, "until_args", until_a)
-        mon_p, mon_a = monitor_sig(
-            bool(when_mons) or bool(until_mons),
-            when_sched or bool(when_mons) or until_sched or bool(until_mons),
-            when_fsm or until_fsm,
-        )
-        _set_field(motion, "monitor_params", mon_p)
-        _set_field(motion, "monitor_args", mon_a)
-
         has_forwarded_commands = bool(_field(motion, "forwarded_commands"))
-        apply_params = []
-        apply_args = []
-        if bool(_field(motion, "arm_solvers")):
-            apply_params.append(state_type)
-            apply_args.append(f"{mid}_state_instance")
-        if has_forwarded_commands:
-            apply_params.append("shared_data &shared")
-            apply_args.append("shared")
-        if bool(_field(motion, "arm_solvers")) or has_forwarded_commands:
-            apply_params.append("const robot_io &robot")
-            apply_args.append("robot")
-        _set_field(motion, "apply_params", join_params(apply_params))
-        _set_field(motion, "apply_args", ", ".join(apply_args))
+        has_arm = bool(_field(motion, "arm_solvers"))
+
+        _set_field(motion, "can_start_needs_state", has_when_elapsed)
+        _set_field(motion, "can_start_needs_shared", has_when_logic)
+        _set_field(motion, "can_start_needs_robot", False)
+
+        _set_field(motion, "when_needs_state", has_when_elapsed or bool(when_mons))
+        _set_field(motion, "when_needs_shared",
+                   has_when_elapsed or has_pose or when_sched or bool(when_mons))
+        _set_field(motion, "when_needs_robot", when_fsm)
+
+        _set_field(motion, "until_needs_state", bool(until_mons))
+        _set_field(motion, "until_needs_shared", until_sched or bool(until_mons))
+        _set_field(motion, "until_needs_robot", until_fsm)
+
+        _set_field(motion, "monitor_needs_state", bool(when_mons) or bool(until_mons))
+        _set_field(motion, "monitor_needs_shared",
+                   when_sched or bool(when_mons) or until_sched or bool(until_mons))
+        _set_field(motion, "monitor_needs_robot", when_fsm or until_fsm)
+
+        _set_field(motion, "apply_needs_state", has_arm)
+        _set_field(motion, "apply_needs_shared", has_forwarded_commands)
+        _set_field(motion, "apply_needs_robot", has_arm or has_forwarded_commands)
 
 
 _FSM_NS = "https://secorolab.github.io/metamodels/behaviour/fsm#"
@@ -4412,9 +4337,10 @@ def _apply_fsm_wiring(ir: dict) -> None:
 
 
 def _apply_fsm_gate_calls(ir: dict) -> None:
-    """Materialize each fallback state's WHEN-evaluation calls (the gated motion's
-    precondition, dispatched with the hold step). Runs after function interfaces so
-    when_args are available."""
+    """Fold each fallback state's WHEN-evaluation gate calls: the gated motion id plus its
+    when-signature capability booleans. The C++ ``monitor_when_<id>(<args>)`` call is
+    rendered by the template via sig-args. Runs after function interfaces so when_needs_*
+    are available."""
     if ir.get("fsm_namespace") is None:
         return
     motions = ir.get("motions", [])
@@ -4424,7 +4350,12 @@ def _apply_fsm_gate_calls(ir: dict) -> None:
         if not gate_ids:
             continue
         _set_field(fallback, "fsm_when_gate_calls", [
-            f"monitor_when_{gate_id}({_field(by_id[gate_id], 'when_args', '')});"
+            {
+                "gid": gate_id,
+                "needs_state": _field(by_id[gate_id], "when_needs_state", False),
+                "needs_shared": _field(by_id[gate_id], "when_needs_shared", False),
+                "needs_robot": _field(by_id[gate_id], "when_needs_robot", False),
+            }
             for gate_id in gate_ids
             if gate_id in by_id
         ])

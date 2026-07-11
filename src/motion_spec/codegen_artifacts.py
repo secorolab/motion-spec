@@ -135,9 +135,6 @@ def _controller_slot(controller: dict, index: int, motion: dict, uri_by_id: dict
         "setpoint_signal_uri": uri_by_id.get(setpoint_id),
         "output_signal": output_id,
         "output_signal_uri": uri_by_id.get(output_id),
-        "measured_expr": controller.get("measured_expr"),
-        "setpoint_expr": controller.get("setpoint_expr"),
-        "measured_derivative_expr": controller.get("measured_derivative_expr"),
     }
 
 
@@ -159,7 +156,10 @@ def _monitor_slot(monitor: dict, index: int, motion: dict, uri_by_id: dict, phas
         "flag": monitor.get("flag"),
         "error_signal": error_id,
         "error_signal_uri": uri_by_id.get(error_id),
-        "active_condition": monitor.get("active_condition"),
+        "has_active": monitor.get("has_active", False),
+        "active_terms": monitor.get("active_terms"),
+        "active_terms_present": monitor.get("active_terms_present", False),
+        "active_any": monitor.get("active_any", False),
         "fallback_motion": monitor.get("fallback_motion"),
     }
 
@@ -480,7 +480,7 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
     quantities = [
         {
             "index": quantity["index"],
-            "expr": quantity.get("sample_expr", "0.0"),
+            "desc": quantity.get("sample_desc"),
         }
         for quantity in schema.get("quantities", [])
     ]
@@ -492,27 +492,43 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
         entry = schema["by_state"][state_id]
         controllers = []
         for slot in entry.get("controllers", []):
+            # error/output are the controller's own dedicated shared fields (never views).
+            # measured/setpoint may reference a view, so pass their ids and let the
+            # template render them via access-expr(id, views).
             controllers.append(
                 {
                     "uri": json.dumps(slot.get("uri") or ""),
                     "error_expr": _shared_expr(slot.get("error_signal"), shared_ids),
                     "output_expr": _shared_expr(slot.get("output_signal"), shared_ids),
-                    "measured_expr": slot.get("measured_expr")
-                    or _shared_expr(slot.get("measured_signal"), shared_ids),
-                    "setpoint_expr": slot.get("setpoint_expr")
-                    or _shared_expr(slot.get("setpoint_signal"), shared_ids),
+                    "measured_signal": slot.get("measured_signal"),
+                    "setpoint_signal": slot.get("setpoint_signal"),
                 }
             )
         monitors = []
         for slot in entry.get("monitors", []):
-            value_expr = slot.get("active_condition") or _shared_expr(slot.get("error_signal"), shared_ids)
-            monitors.append(
-                {
-                    "uri": json.dumps(slot.get("uri") or ""),
-                    "value_expr": value_expr,
-                    "satisfied_expr": value_expr if slot.get("active_condition") else f"constraint_satisfied({value_expr})",
-                }
-            )
+            # Active (aggregate/elapsed) monitors: the boolean value/satisfied condition is
+            # rendered from the structured terms by the bool-condition template. Plain error
+            # monitors: sample the error value + constraint_satisfied (a plain shared field).
+            if slot.get("has_active"):
+                monitors.append(
+                    {
+                        "uri": json.dumps(slot.get("uri") or ""),
+                        "has_active": True,
+                        "active_terms": slot.get("active_terms"),
+                        "active_terms_present": slot.get("active_terms_present", False),
+                        "active_any": slot.get("active_any", False),
+                    }
+                )
+            else:
+                value_expr = _shared_expr(slot.get("error_signal"), shared_ids)
+                monitors.append(
+                    {
+                        "uri": json.dumps(slot.get("uri") or ""),
+                        "has_active": False,
+                        "value_expr": value_expr,
+                        "satisfied_expr": f"constraint_satisfied({value_expr})",
+                    }
+                )
         states.append(
             {
                 "index": state.get("index", -1),
@@ -524,9 +540,9 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
     return {
         "states": states,
         "quantities": quantities,
-        "poses": [{"index": p["index"], "expr": p["expr"]} for p in spatial["poses"]],
-        "twists": [{"index": t["index"], "expr": t["expr"]} for t in spatial["twists"]],
-        "wrenches": [{"index": w["index"], "expr": w["expr"]} for w in spatial["wrenches"]],
+        "poses": [{"index": p["index"], "id": p["id"]} for p in spatial["poses"]],
+        "twists": [{"index": t["index"], "id": t["id"]} for t in spatial["twists"]],
+        "wrenches": [{"index": w["index"], "id": w["id"]} for w in spatial["wrenches"]],
     }
 
 

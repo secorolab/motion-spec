@@ -41,7 +41,7 @@ shared.<closure.out> = KDL::diff(shared.<closure.in1>, shared.<closure.in2>);
 
 emit-call-Lerp(closure, views) ::= <<
 {
-    const KDL::Frame _lerp_goal_<closure.trajectory> = <closure.goal_expr>;
+    const KDL::Frame _lerp_goal_<closure.trajectory> = <if(closure.assign_goal)><pose-frame-inline(closure.goal_components, views)><else>shared.<closure.goal><endif>;
 <if(closure.assign_goal)>    shared.<closure.goal> = _lerp_goal_<closure.trajectory>;
 <endif>    shared.<closure.trajectory> = KDL::addDelta(shared.<closure.start>, KDL::diff(shared.<closure.start>, _lerp_goal_<closure.trajectory>), motion_spec::runtime::<easing-fn.(closure.profile)>(<access-expr(closure.alpha, views)>));
 }
@@ -96,7 +96,7 @@ emit-call-Arc(closure, views) ::= <<
     // sagitta). center, radius and swept angle are derived so the path begins at start,
     // ends exactly at end, and apexes amplitude away from the chord midpoint.
     // amplitude == |chord|/2 reproduces a clean semicircle (swept angle pi).
-    const KDL::Vector _end_<closure.trajectory>   = <closure.end_position_expr>;
+    const KDL::Vector _end_<closure.trajectory>   = shared.<closure.end>.p;
     const KDL::Vector _chord_<closure.trajectory> = _end_<closure.trajectory> - shared.<closure.start>.p;
         const double _a_<closure.trajectory>          = shared.<closure.amplitude>;
         const double _chordlen_<closure.trajectory>   = _chord_<closure.trajectory>.Norm();
@@ -155,7 +155,7 @@ emit-call-Arc(closure, views) ::= <<
             + KDL::Rotation::Rot(_arc_normal_<closure.trajectory>, -_theta_<closure.trajectory> * _s_<closure.trajectory>) * _v0_<closure.trajectory>;
     }
     const KDL::Frame _rot_start_<closure.trajectory>(shared.<closure.start>.M, KDL::Vector(0.0, 0.0, 0.0));
-    const KDL::Frame _rot_goal_<closure.trajectory>(<closure.end_orientation_expr>, KDL::Vector(0.0, 0.0, 0.0));
+    const KDL::Frame _rot_goal_<closure.trajectory>(shared.<closure.end>.M, KDL::Vector(0.0, 0.0, 0.0));
     const KDL::Rotation _rot_<closure.trajectory> =
         KDL::addDelta(_rot_start_<closure.trajectory>, KDL::diff(_rot_start_<closure.trajectory>, _rot_goal_<closure.trajectory>), _s_<closure.trajectory>).M;
     shared.<closure.trajectory> = KDL::Frame(_rot_<closure.trajectory>, _pos_<closure.trajectory>);

@@ -13,7 +13,7 @@ from rdflib.namespace import RDF, XSD
 
 from motion_spec.codegen import render_template
 from motion_spec.ir_gen import (
-    _motion_done_condition,
+    _motion_done_terms,
     GuardedMotionBlock,
     Parser,
     SceneRobot,
@@ -459,25 +459,22 @@ def test_edge_monitor_carries_full_event_uri_and_enum_token(event_uri: str, expe
     assert entry.event_name == expected_name
 
 
-def test_done_condition_is_until_only_and_respects_any_all() -> None:
-    """done_condition is the UNTIL expression alone -- no trajectory alpha coupling --
-    combined with || for `any` (early exit) and && for `all`/default."""
+def test_done_terms_are_until_only_event_or_flag() -> None:
+    """done_terms are the UNTIL members alone (edge monitor -> event flag, level monitor ->
+    boolean flag), with no trajectory-alpha coupling. The any/all/paren/empty folding is
+    done by the bool-condition template and covered by the codegen golden diff."""
     monitors = [
         {"id": "mon_a", "is_edge_triggered": True},
         {"id": "mon_b", "flag": "flag_b"},
     ]
 
-    all_cond = _motion_done_condition({"id": "m", "until_monitors": monitors})
-    assert all_cond == "(m_state_instance.mon_a_event_triggered && m_state_instance.flag_b)"
-    # Trajectory completion is NOT folded in.
-    assert ">= 1.0" not in all_cond and "shared." not in all_cond
+    terms = _motion_done_terms({"id": "m", "until_monitors": monitors})
+    assert terms == [
+        {"kind": "event", "motion_id": "m", "monitor_id": "mon_a"},
+        {"kind": "flag", "motion_id": "m", "flag": "flag_b"},
+    ]
+    # Trajectory completion is NOT folded in: only event/flag member terms.
+    assert all(t["kind"] in ("event", "flag") for t in terms)
 
-    any_cond = _motion_done_condition({"id": "m", "until_monitors": monitors, "until_any": True})
-    assert any_cond == "(m_state_instance.mon_a_event_triggered || m_state_instance.flag_b)"
-
-    # Single UNTIL member: bare term, no parens, joiner irrelevant.
-    single = {"id": "m", "until_monitors": [monitors[0]], "until_any": True}
-    assert _motion_done_condition(single) == "m_state_instance.mon_a_event_triggered"
-
-    # No UNTIL monitors: the motion has no stop condition of its own.
-    assert _motion_done_condition({"id": "m", "until_monitors": []}) == "true"
+    # No UNTIL monitors: no stop terms -> the template renders the "true" default.
+    assert _motion_done_terms({"id": "m", "until_monitors": []}) == []

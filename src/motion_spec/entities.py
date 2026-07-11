@@ -409,6 +409,9 @@ class EdgeMonitor:
     debounce_duration_s: float | None = None
     debounce_steps: int | None = None
     active_condition: str | None = None
+    # FSM binding (folded when the monitor's event lives in the FSM namespace).
+    fsm_namespace: str | None = None
+    fsm_event_idx: int | None = None
     type: str = field(default="EdgeMonitor")
 
 
@@ -439,6 +442,10 @@ class PoseAxisErrorGroup:
     angular_x: str | None = None
     angular_y: str | None = None
     angular_z: str | None = None
+    # Superobject-type flags folded from superobject_type (ST4 branch selectors).
+    is_pose: bool = True
+    is_twist: bool = False
+    is_wrench: bool = False
     type: str = field(default="PoseAxisErrorGroup")
 
 
@@ -515,6 +522,26 @@ class GuardedMotionBlock:
     # C++ boolean expressions (folded from the evaluators/monitors at build time).
     when_condition: str = "true"
     done_condition: str = "true"
+    # Time-driven trajectory alpha ids (folded from while_schedule closures).
+    time_trajectory_progress_ids: list = field(default_factory=list)
+    # Declared pose components referenced by this motion (folded from pose_components).
+    declared_pose_components: list = field(default_factory=list)
+    # Generated C++ function signatures/args (folded from schedules/monitors/solvers).
+    can_start_params: str = ""
+    can_start_args: str = ""
+    when_params: str = ""
+    when_args: str = ""
+    until_params: str = ""
+    until_args: str = ""
+    monitor_params: str = ""
+    monitor_args: str = ""
+    apply_params: str = ""
+    apply_args: str = ""
+    # FSM wiring (folded from the FSM named graph): the state this motion runs in,
+    # and the WHEN-gated motions this one holds for as a fallback.
+    fsm_state: str | None = None
+    fsm_when_gate_motions: list = field(default_factory=list)
+    fsm_when_gate_calls: list = field(default_factory=list)
 
     # Solver Integration
     arm_solvers: list = field(default_factory=list)

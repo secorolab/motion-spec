@@ -2582,8 +2582,11 @@ def build_motion_units(
     ordered = sorted(
         motions, key=lambda motion: next(h.order for h in handlers if h.id == motion.handler)
     )
+    data_by_id = _index_by_id(data_structures or [])
     for motion in ordered:
         _set_motion_conditions(motion)
+        _add_group_type_flags(motion.pose_axis_error_groups)
+        _set_motion_trajectory_progress(motion, closures or {}, data_by_id)
     return ordered
 
 
@@ -3673,10 +3676,10 @@ def _annotate_runtime_robots(ir: dict, backend: str) -> None:
 
 def _add_group_type_flags(groups: list) -> list:
     for g in groups:
-        so_type = g.get("superobject_type", "Pose")
-        g["is_pose"] = so_type == "Pose"
-        g["is_twist"] = so_type in ("VelocityTwist", "AccelerationTwist")
-        g["is_wrench"] = so_type == "Wrench"
+        so_type = _field(g, "superobject_type", "Pose")
+        _set_field(g, "is_pose", so_type == "Pose")
+        _set_field(g, "is_twist", so_type in ("VelocityTwist", "AccelerationTwist"))
+        _set_field(g, "is_wrench", so_type == "Wrench")
     return groups
 
 def _field(obj, key, default=None):
@@ -3975,8 +3978,13 @@ def add_spatial_samples(ir_payload: dict) -> None:
     introspection["spatial_samples"] = spatial
 
 def _index_by_id(items: list) -> dict:
-    """Index a list of IR dicts by their "id" (skips non-dicts / id-less entries)."""
-    return {item["id"]: item for item in items if isinstance(item, dict) and item.get("id")}
+    """Index IR items (dicts or dataclasses) by their id (skips id-less entries)."""
+    out = {}
+    for item in items:
+        iid = _field(item, "id")
+        if iid:
+            out[iid] = item
+    return out
 
 
 def build_pose_components(ir_payload: dict) -> dict:
@@ -4108,21 +4116,20 @@ def collect_motion_references(motion: dict, closures: dict) -> set[str]:
                 visit(closure)
     return refs
 
-def add_motion_trajectory_progress(ir_payload: dict) -> None:
-    data_by_id = _index_by_id(ir_payload.get("data", []))
-    closures = ir_payload.get("closures", {})
-    for motion in ir_payload.get("motions", []):
-        time_progress_ids: list[str] = []
-        for step in motion.get("while_schedule", []):
-            closure = closures.get(step)
-            if not closure or closure.get("type") not in {"Lerp", "Circle", "Arc", "Helix", "Figure8"}:
-                continue
-            alpha_id = closure.get("alpha")
-            alpha_data = data_by_id.get(alpha_id) or {}
-            qkind = (alpha_data.get("quantity_kind") or {}).get("id")
-            if qkind == "Progress" and closure.get("type") != "Arc" and alpha_id not in time_progress_ids:
-                time_progress_ids.append(alpha_id)
-        motion["time_trajectory_progress_ids"] = time_progress_ids
+def _set_motion_trajectory_progress(motion, closures: dict, data_by_id: dict) -> None:
+    """Fold the time-driven trajectory alpha ids (Progress-kind, non-Arc while-schedule
+    closures) onto a motion (dict or dataclass)."""
+    ids: list[str] = []
+    for step in _field(motion, "while_schedule", []):
+        closure = closures.get(step)
+        if not closure or _field(closure, "type") not in {"Lerp", "Circle", "Arc", "Helix", "Figure8"}:
+            continue
+        alpha_id = _field(closure, "alpha")
+        alpha_data = data_by_id.get(alpha_id)
+        qkind = _field(_field(alpha_data, "quantity_kind"), "id")
+        if qkind == "Progress" and _field(closure, "type") != "Arc" and alpha_id not in ids:
+            ids.append(alpha_id)
+    _set_field(motion, "time_trajectory_progress_ids", ids)
 
 def _evaluator_term(e, start_field: str) -> str:
     # A timing evaluator has no solver error: compare the world clock against the threshold,
@@ -4181,40 +4188,41 @@ def _set_motion_conditions(motion) -> None:
                             "when_start_time", "when_any")
     _set_field(motion, "done_condition", _motion_done_condition(motion))
 
-def add_motion_function_interfaces(motions: list[dict]) -> None:
+def add_motion_function_interfaces(motions: list) -> None:
     def join_params(params: list[str]) -> str:
         if not params:
             return ""
         return "\n    " + ",\n    ".join(params) + "\n"
 
     for motion in motions:
-        state_type = f"{motion['id']}_state &state"
-        has_when_elapsed = any(e.get("is_elapsed") for e in motion.get("when_evaluators", []))
-        has_when_logic = bool(motion.get("when_schedule") or motion.get("when_evaluators"))
+        mid = _field(motion, "id")
+        state_type = f"{mid}_state &state"
+        has_when_elapsed = any(_field(e, "is_elapsed") for e in _field(motion, "when_evaluators", []))
+        has_when_logic = bool(_field(motion, "when_schedule") or _field(motion, "when_evaluators"))
         can_start_params = []
         can_start_args = []
         if has_when_elapsed:
             can_start_params.append(state_type)
-            can_start_args.append(f"{motion['id']}_state_instance")
+            can_start_args.append(f"{mid}_state_instance")
         if has_when_logic:
             can_start_params.append("shared_data &shared")
             can_start_args.append("shared")
-        motion["can_start_params"] = join_params(can_start_params)
-        motion["can_start_args"] = ", ".join(can_start_args)
+        _set_field(motion, "can_start_params", join_params(can_start_params))
+        _set_field(motion, "can_start_args", ", ".join(can_start_args))
 
-        when_mons = motion.get("when_monitors") or []
-        until_mons = motion.get("until_monitors") or []
-        has_pose = bool(motion.get("declared_pose_components"))
-        when_sched = bool(motion.get("when_schedule"))
-        until_sched = bool(motion.get("until_schedule"))
-        when_fsm = any(m.get("fsm_namespace") for m in when_mons)
-        until_fsm = any(m.get("fsm_namespace") for m in until_mons)
+        when_mons = _field(motion, "when_monitors") or []
+        until_mons = _field(motion, "until_monitors") or []
+        has_pose = bool(_field(motion, "declared_pose_components"))
+        when_sched = bool(_field(motion, "when_schedule"))
+        until_sched = bool(_field(motion, "until_schedule"))
+        when_fsm = any(_field(m, "fsm_namespace") for m in when_mons)
+        until_fsm = any(_field(m, "fsm_namespace") for m in until_mons)
 
         def monitor_sig(use_state, use_shared, use_robot):
             params, args = [], []
             if use_state:
                 params.append(state_type)
-                args.append(f"{motion['id']}_state_instance")
+                args.append(f"{mid}_state_instance")
             if use_shared:
                 params.append("shared_data &shared")
                 args.append("shared")
@@ -4223,39 +4231,38 @@ def add_motion_function_interfaces(motions: list[dict]) -> None:
                 args.append("robot")
             return join_params(params), ", ".join(args)
 
-        motion["when_params"], motion["when_args"] = monitor_sig(
+        when_p, when_a = monitor_sig(
             has_when_elapsed or bool(when_mons),
             has_when_elapsed or has_pose or when_sched or bool(when_mons),
             when_fsm,
         )
-        motion["until_params"], motion["until_args"] = monitor_sig(
-            bool(until_mons),
-            until_sched or bool(until_mons),
-            until_fsm,
-        )
-        motion["monitor_params"], motion["monitor_args"] = monitor_sig(
+        _set_field(motion, "when_params", when_p)
+        _set_field(motion, "when_args", when_a)
+        until_p, until_a = monitor_sig(bool(until_mons), until_sched or bool(until_mons), until_fsm)
+        _set_field(motion, "until_params", until_p)
+        _set_field(motion, "until_args", until_a)
+        mon_p, mon_a = monitor_sig(
             bool(when_mons) or bool(until_mons),
             when_sched or bool(when_mons) or until_sched or bool(until_mons),
             when_fsm or until_fsm,
         )
+        _set_field(motion, "monitor_params", mon_p)
+        _set_field(motion, "monitor_args", mon_a)
 
-        has_apply_state = bool(motion.get("arm_solvers"))
-        has_forwarded_commands = bool(motion.get("forwarded_commands"))
-        has_apply_shared = has_forwarded_commands
-        has_apply_robot = bool(motion.get("arm_solvers") or has_forwarded_commands)
+        has_forwarded_commands = bool(_field(motion, "forwarded_commands"))
         apply_params = []
         apply_args = []
-        if has_apply_state:
+        if bool(_field(motion, "arm_solvers")):
             apply_params.append(state_type)
-            apply_args.append(f"{motion['id']}_state_instance")
-        if has_apply_shared:
+            apply_args.append(f"{mid}_state_instance")
+        if has_forwarded_commands:
             apply_params.append("shared_data &shared")
             apply_args.append("shared")
-        if has_apply_robot:
+        if bool(_field(motion, "arm_solvers")) or has_forwarded_commands:
             apply_params.append("const robot_io &robot")
             apply_args.append("robot")
-        motion["apply_params"] = join_params(apply_params)
-        motion["apply_args"] = ", ".join(apply_args)
+        _set_field(motion, "apply_params", join_params(apply_params))
+        _set_field(motion, "apply_args", ", ".join(apply_args))
 
 
 _FSM_NS = "https://secorolab.github.io/metamodels/behaviour/fsm#"
@@ -4338,13 +4345,13 @@ def _event_to_state(fsm: dict) -> dict[str, str]:
     }
 
 
-def is_fsm_event(monitor: dict, fsm_ns_uri: str | None) -> bool:
+def is_fsm_event(monitor, fsm_ns_uri: str | None) -> bool:
     # A monitor fires the FSM only when its event lives in the FSM's namespace;
     # standalone (monitor-owned) events keep the existing warn stub.
     return bool(
         fsm_ns_uri
-        and monitor.get("is_edge_triggered")
-        and (monitor.get("event_uri") or "").startswith(fsm_ns_uri)
+        and _field(monitor, "is_edge_triggered")
+        and (_field(monitor, "event_uri") or "").startswith(fsm_ns_uri)
     )
 
 
@@ -4367,44 +4374,49 @@ def _apply_fsm_wiring(ir: dict) -> None:
     fsm_ns_uri = fsm.get("namespace_uri")
     event_state = _event_to_state(fsm)
     motions = ir.get("motions", [])
-    by_id = {m["id"]: m for m in motions}
+    by_id = {_field(m, "id"): m for m in motions}
 
     def tag_run_state(motion, monitors):
         for monitor in monitors:
             if is_fsm_event(monitor, fsm_ns_uri):
-                monitor["fsm_namespace"] = fsm_namespace
-                monitor["fsm_event_idx"] = fsm_event_index.get(monitor.get("event_name") or "", -1)
-                state = event_state.get(monitor.get("event_name") or "")
-                if state and not motion.get("fsm_state"):
-                    motion["fsm_state"] = state
+                _set_field(monitor, "fsm_namespace", fsm_namespace)
+                _set_field(monitor, "fsm_event_idx",
+                           fsm_event_index.get(_field(monitor, "event_name") or "", -1))
+                state = event_state.get(_field(monitor, "event_name") or "")
+                if state and not _field(motion, "fsm_state"):
+                    _set_field(motion, "fsm_state", state)
 
     for motion in motions:
-        tag_run_state(motion, motion.get("until_monitors", []) + motion.get("while_monitors", []))
-        for monitor in motion.get("when_monitors", []):
+        tag_run_state(motion, _field(motion, "until_monitors", []) + _field(motion, "while_monitors", []))
+        for monitor in _field(motion, "when_monitors", []):
             if not is_fsm_event(monitor, fsm_ns_uri):
                 continue
-            monitor["fsm_namespace"] = fsm_namespace
-            monitor["fsm_event_idx"] = fsm_event_index.get(monitor.get("event_name") or "", -1)
-            fallback_id = monitor.get("fallback_motion")
+            _set_field(monitor, "fsm_namespace", fsm_namespace)
+            _set_field(monitor, "fsm_event_idx",
+                       fsm_event_index.get(_field(monitor, "event_name") or "", -1))
+            fallback_id = _field(monitor, "fallback_motion")
             if not fallback_id:
                 raise ValueError(
-                    f"WHEN monitor '{monitor.get('id')}' on FSM-wired motion "
-                    f"'{motion['id']}' must declare a fallback hold motion "
+                    f"WHEN monitor '{_field(monitor, 'id')}' on FSM-wired motion "
+                    f"'{_field(motion, 'id')}' must declare a fallback hold motion "
                     f"(e.g. '... when active fallback <hold-motion>'). A WHEN precondition "
                     f"without a fallback would leave the arm uncommanded while waiting."
                 )
             fallback = by_id.get(fallback_id)
             if fallback is None:
                 raise ValueError(
-                    f"WHEN monitor '{monitor.get('id')}' names unknown fallback motion "
+                    f"WHEN monitor '{_field(monitor, 'id')}' names unknown fallback motion "
                     f"'{fallback_id}'."
                 )
-            state = event_state.get(monitor.get("event_name") or "")
-            if state and not fallback.get("fsm_state"):
-                fallback["fsm_state"] = state
-            gates = fallback.setdefault("fsm_when_gate_motions", [])
-            if motion["id"] not in gates:
-                gates.append(motion["id"])
+            state = event_state.get(_field(monitor, "event_name") or "")
+            if state and not _field(fallback, "fsm_state"):
+                _set_field(fallback, "fsm_state", state)
+            gates = _field(fallback, "fsm_when_gate_motions")
+            if gates is None:
+                gates = []
+                _set_field(fallback, "fsm_when_gate_motions", gates)
+            if _field(motion, "id") not in gates:
+                gates.append(_field(motion, "id"))
 
 
 def _apply_fsm_gate_calls(ir: dict) -> None:
@@ -4414,16 +4426,16 @@ def _apply_fsm_gate_calls(ir: dict) -> None:
     if ir.get("fsm_namespace") is None:
         return
     motions = ir.get("motions", [])
-    by_id = {m["id"]: m for m in motions}
+    by_id = {_field(m, "id"): m for m in motions}
     for fallback in motions:
-        gate_ids = fallback.get("fsm_when_gate_motions")
+        gate_ids = _field(fallback, "fsm_when_gate_motions")
         if not gate_ids:
             continue
-        fallback["fsm_when_gate_calls"] = [
-            f"monitor_when_{gate_id}({by_id[gate_id].get('when_args', '')});"
+        _set_field(fallback, "fsm_when_gate_calls", [
+            f"monitor_when_{gate_id}({_field(by_id[gate_id], 'when_args', '')});"
             for gate_id in gate_ids
             if gate_id in by_id
-        ]
+        ])
 
 
 def derive_codegen_fields(ir: dict) -> None:
@@ -4481,11 +4493,7 @@ def derive_codegen_fields(ir: dict) -> None:
             ir, pose_components, motion_refs
         )
 
-    add_motion_trajectory_progress(ir)
-
-    # command_robot_id + elapsed flags are folded into build_motion_units (dataclass fields).
-    for motion in ir.get("motions", []):
-        _add_group_type_flags(motion.get("pose_axis_error_groups", []))
+    # group flags + trajectory progress + elapsed/command are folded into build_motion_units.
 
     # when/until/done conditions are folded into build_motion_units (_set_motion_conditions).
     # Elapsed constraints compare seconds from the runtime clock. MuJoCo supplies sim

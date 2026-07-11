@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sys
 import argparse
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, replace, asdict, is_dataclass
 from enum import Enum
 import collections
 import hashlib
@@ -3608,9 +3608,9 @@ SUPPORTED_ROBOT_MODELS = {"KinovaGen3"}
 
 def _validate_ir(ir: dict) -> None:
     unsupported = {
-        s["robot_model"]
+        _field(s, "robot_model")
         for s in ir.get("arm_solvers", [])
-        if s.get("robot_model") and s["robot_model"] not in SUPPORTED_ROBOT_MODELS
+        if _field(s, "robot_model") and _field(s, "robot_model") not in SUPPORTED_ROBOT_MODELS
     }
     if unsupported:
         raise RuntimeError(
@@ -3623,56 +3623,56 @@ def _validate_ir(ir: dict) -> None:
         return
 
     for solver in ir.get("arm_solvers", []):
-        for out in solver.get("output", []):
-            if out.get("type") != "Pose":
+        for out in _field(solver, "output", []):
+            if _field(out, "type") != "Pose":
                 continue
-            entity = out.get("of") or {}
-            if entity.get("is_scene_object"):
-                obj_id = entity.get("id") or entity.get("body") or out.get("id")
+            entity = _field(out, "of") or {}
+            if _field(entity, "is_scene_object"):
+                obj_id = _field(entity, "id") or _field(entity, "body") or _field(out, "id")
                 raise RuntimeError(
                     "robif2b backend cannot sync scene-object pose output "
-                    f"'{out.get('id')}' for '{obj_id}'; world/scene object pose sync "
+                    f"'{_field(out, 'id')}' for '{obj_id}'; world/scene object pose sync "
                     "is only implemented for mj_kdl."
                 )
 
-def _runtime_signature(solver: dict, backend: str) -> tuple:
+def _runtime_signature(solver, backend: str) -> tuple:
     return (
         backend,
-        solver.get("robot_model", ""),
-        solver.get("urdf", ""),
-        solver.get("chain_root", ""),
-        solver.get("chain_tip") or solver.get("chain_end", ""),
-        solver.get("tool_body", ""),
-        solver.get("tcp_site", ""),
+        _field(solver, "robot_model", ""),
+        _field(solver, "urdf", ""),
+        _field(solver, "chain_root", ""),
+        _field(solver, "chain_tip") or _field(solver, "chain_end", ""),
+        _field(solver, "tool_body", ""),
+        _field(solver, "tcp_site", ""),
     )
 
 def _annotate_runtime_robots(ir: dict, backend: str) -> None:
     runtime_by_signature: dict[tuple, str] = {}
     owner_by_runtime: dict[str, str] = {}
-    solvers_by_id = {solver.get("id"): solver for solver in ir.get("arm_solvers", [])}
+    solvers_by_id = {_field(solver, "id"): solver for solver in ir.get("arm_solvers", [])}
 
     for solver in ir.get("arm_solvers", []):
-        solver_id = solver.get("id", "")
+        solver_id = _field(solver, "id", "")
         signature = _runtime_signature(solver, backend)
         runtime_id = runtime_by_signature.setdefault(signature, solver_id)
         owner_by_runtime.setdefault(runtime_id, solver_id)
-        solver["runtime_id"] = runtime_id
-        solver["runtime_owner"] = solver_id == owner_by_runtime[runtime_id]
+        _set_field(solver, "runtime_id", runtime_id)
+        _set_field(solver, "runtime_owner", solver_id == owner_by_runtime[runtime_id])
         # ST4's <if(x)> treats "" as truthy. Convert empty strings to None so
         # the template's <if(solver.tool_body)> branch is correctly skipped
         # for bare robots (no gripper / tool attached).
-        if not solver.get("tool_body"):
-            solver["tool_body"] = None
-        if not solver.get("tcp_site"):
-            solver["tcp_site"] = None
+        if not _field(solver, "tool_body"):
+            _set_field(solver, "tool_body", None)
+        if not _field(solver, "tcp_site"):
+            _set_field(solver, "tcp_site", None)
 
     for motion in ir.get("motions", []):
-        for solver in motion.get("arm_solvers", []):
-            canonical = solvers_by_id.get(solver.get("id"))
+        for solver in _field(motion, "arm_solvers", []):
+            canonical = solvers_by_id.get(_field(solver, "id"))
             if canonical is None:
                 continue
-            solver["runtime_id"] = canonical.get("runtime_id", solver.get("id", ""))
-            solver["runtime_owner"] = canonical.get("runtime_owner", True)
+            _set_field(solver, "runtime_id", _field(canonical, "runtime_id") or _field(solver, "id", ""))
+            _set_field(solver, "runtime_owner", _field(canonical, "runtime_owner", True))
 
 def _add_group_type_flags(groups: list) -> list:
     for g in groups:
@@ -3684,10 +3684,12 @@ def _add_group_type_flags(groups: list) -> list:
 
 def _field(obj, key, default=None):
     """Read a field from either a dict or a dataclass instance, so derivations can run
-    on the native IR (dataclasses) without a dict round-trip."""
+    on the native IR (dataclasses) without a dict round-trip. str-Enum values are
+    normalized to their string value so native access matches the serialized dict."""
     if obj is None:
         return default
-    return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
+    val = obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
+    return val.value if isinstance(val, Enum) else val
 
 
 def _set_field(obj, key, value) -> None:
@@ -3697,6 +3699,11 @@ def _set_field(obj, key, value) -> None:
         obj[key] = value
     else:
         setattr(obj, key, value)
+
+
+def _as_dict(obj) -> dict:
+    """Plain-dict view of a dict or dataclass (for building rows from all fields)."""
+    return obj if isinstance(obj, dict) else asdict(obj)
 
 
 def _motion_done_condition(motion) -> str:
@@ -3717,17 +3724,17 @@ def _motion_done_condition(motion) -> str:
     condition = joiner.join(event_terms)
     return f"({condition})" if len(event_terms) > 1 else condition
 
-def expand_vector_fields(item: dict, field: str) -> None:
-    values = item.get(field)
+def expand_vector_fields(item, field: str) -> None:
+    values = _field(item, field)
     if values is None:
         # Env placement shorthand: omitted position/orientation means zero/identity.
         values = [0.0, 0.0, 0.0]
     if not isinstance(values, list) or len(values) != 3:
-        item_id = item.get("id", "<unknown>")
+        item_id = _field(item, "id", "<unknown>")
         raise ValueError(f"Scene item '{item_id}' has invalid '{field}'; expected three values.")
-    item[f"{field}_x"] = values[0]
-    item[f"{field}_y"] = values[1]
-    item[f"{field}_z"] = values[2]
+    _set_field(item, f"{field}_x", values[0])
+    _set_field(item, f"{field}_y", values[1])
+    _set_field(item, f"{field}_z", values[2])
 
 def require_field(obj_id: str, field: str, value):
     if value is None:
@@ -3742,41 +3749,42 @@ def cpp_access_expr(data_id: str, views: dict) -> str:
     view = views.get(data_id)
     if not view:
         return f"shared.{data_id}"
-    superobject = view["superobject"]
-    if superobject["type"] == "Pose" and view["subspace"] == "Linear":
-        axis = view.get("axis")
+    superobject = _field(view, "superobject")
+    so_type = _field(superobject, "type")
+    so_id = _field(superobject, "id")
+    subspace = _field(view, "subspace")
+    axis = _field(view, "axis")
+    axis_map = {"X": 0, "Y": 1, "Z": 2, "x": 0, "y": 1, "z": 2}
+    if so_type == "Pose" and subspace == "Linear":
         if axis is None:
-            return f"shared.{superobject['id']}.p"
-        axis_index = {"X": 0, "Y": 1, "Z": 2, "x": 0, "y": 1, "z": 2}[axis]
-        return f"shared.{superobject['id']}.p[{axis_index}]"
-    if superobject["type"] == "Pose" and view["subspace"] == "Angular":
-        axis = view.get("axis")
+            return f"shared.{so_id}.p"
+        return f"shared.{so_id}.p[{axis_map[axis]}]"
+    if so_type == "Pose" and subspace == "Angular":
         if axis is None:
-            return f"shared.{superobject['id']}.M"
-        axis_index = {"X": 0, "Y": 1, "Z": 2, "x": 0, "y": 1, "z": 2}[axis]
-        return f"KDL::diff(KDL::Rotation::Identity(), shared.{superobject['id']}.M)[{axis_index}]"
-    if superobject["type"] == "Wrench":
-        member = "torque" if view["subspace"] == "Angular" else "force"
-        axis = view.get("axis")
+            return f"shared.{so_id}.M"
+        return f"KDL::diff(KDL::Rotation::Identity(), shared.{so_id}.M)[{axis_map[axis]}]"
+    if so_type == "Wrench":
+        member = "torque" if subspace == "Angular" else "force"
         if axis is None:
-            return f"shared.{superobject['id']}.{member}"
-        axis_index = {"X": 0, "Y": 1, "Z": 2, "x": 0, "y": 1, "z": 2}[axis]
-        return f"shared.{superobject['id']}.{member}[{axis_index}]"
-    axis_index = {"X": 0, "Y": 1, "Z": 2, "x": 0, "y": 1, "z": 2}[view["axis"]]
-    if superobject["type"] == "VelocityTwist":
-        member = "rot" if view["subspace"] == "Angular" else "vel"
-        return f"shared.{superobject['id']}.{member}[{axis_index}]"
-    if superobject["type"] == "AccelerationTwist":
-        member = "rot" if view["subspace"] == "Angular" else "vel"
-        return f"shared.{superobject['id']}.{member}[{axis_index}]"
+            return f"shared.{so_id}.{member}"
+        return f"shared.{so_id}.{member}[{axis_map[axis]}]"
+    axis_index = axis_map[axis]
+    if so_type == "VelocityTwist":
+        member = "rot" if subspace == "Angular" else "vel"
+        return f"shared.{so_id}.{member}[{axis_index}]"
+    if so_type == "AccelerationTwist":
+        member = "rot" if subspace == "Angular" else "vel"
+        return f"shared.{so_id}.{member}[{axis_index}]"
     return f"shared.{data_id}"
 
 def component_expr(component_id: str, data_by_id: dict, views: dict) -> str:
-    component = data_by_id.get(component_id) or {}
-    if component.get("reference_value"):
-        return cpp_access_expr(component["reference_value"], views)
-    if component.get("value") is not None:
-        return str(component["value"])
+    component = data_by_id.get(component_id)
+    reference_value = _field(component, "reference_value")
+    if reference_value:
+        return cpp_access_expr(reference_value, views)
+    value = _field(component, "value")
+    if value is not None:
+        return str(value)
     return cpp_access_expr(component_id, views)
 
 def add_controller_signal_metadata(ir_payload: dict) -> None:
@@ -3785,34 +3793,31 @@ def add_controller_signal_metadata(ir_payload: dict) -> None:
         for closure in ir_payload.get("closures", {}).values()
         if isinstance(closure, dict) and closure.get("type") == "ErrorEvaluator" and closure.get("error")
     }
+    views = ir_payload.get("views", {})
 
     def signal_id(value):
-        if isinstance(value, dict):
-            return value.get("id")
         if isinstance(value, str):
             return value
-        return None
+        return _field(value, "id")
 
-    def annotate(controller: dict) -> None:
-        error_id = signal_id(controller.get("error_signal"))
+    def annotate(controller) -> None:
+        error_id = signal_id(_field(controller, "error_signal"))
         source = error_sources.get(error_id) or {}
         measured_id = source.get("quantity")
-        setpoint_id = signal_id(controller.get("reference_signal")) or source.get("reference_value")
-        measured_derivative_id = signal_id(controller.get("measured_derivative"))
+        setpoint_id = signal_id(_field(controller, "reference_signal")) or source.get("reference_value")
+        measured_derivative_id = signal_id(_field(controller, "measured_derivative"))
         if measured_id:
-            controller["measured_signal"] = measured_id
-            controller["measured_expr"] = cpp_access_expr(measured_id, ir_payload.get("views", {}))
+            _set_field(controller, "measured_signal", measured_id)
+            _set_field(controller, "measured_expr", cpp_access_expr(measured_id, views))
         if setpoint_id:
-            controller["setpoint_signal"] = setpoint_id
-            controller["setpoint_expr"] = cpp_access_expr(setpoint_id, ir_payload.get("views", {}))
+            _set_field(controller, "setpoint_signal", setpoint_id)
+            _set_field(controller, "setpoint_expr", cpp_access_expr(setpoint_id, views))
         if measured_derivative_id:
-            controller["measured_derivative_expr"] = cpp_access_expr(
-                measured_derivative_id,
-                ir_payload.get("views", {}),
-            )
+            _set_field(controller, "measured_derivative_expr",
+                       cpp_access_expr(measured_derivative_id, views))
 
     for motion in ir_payload.get("motions", []):
-        for controller in motion.get("controllers", []):
+        for controller in _field(motion, "controllers", []):
             annotate(controller)
     for controller in (ir_payload.get("introspection") or {}).get("controllers", []):
         annotate(controller)
@@ -3821,8 +3826,8 @@ def add_controller_internal_state_logging(ir_payload: dict) -> None:
     shared_data = ir_payload.setdefault("shared_data", [])
     introspection = ir_payload.setdefault("introspection", {})
     quantities = introspection.setdefault("quantities", [])
-    shared_ids = {item.get("id") for item in shared_data if isinstance(item, dict) and item.get("id")}
-    quantity_ids = {item.get("id") for item in quantities if isinstance(item, dict) and item.get("id")}
+    shared_ids = {_field(item, "id") for item in shared_data if _field(item, "id")}
+    quantity_ids = {_field(item, "id") for item in quantities if _field(item, "id")}
 
     def add_shared(item_id: str, item_type: str, controller_id: str, state_name: str) -> None:
         if item_id not in shared_ids:
@@ -3852,16 +3857,14 @@ def add_controller_internal_state_logging(ir_payload: dict) -> None:
 
     stateful_types = {"ProportionalIntegralDerivative", "ImpedanceController"}
     stateful_ids = {
-        controller.get("id")
+        _field(controller, "id")
         for source in (
             ir_payload.get("motions", []),
             [ir_payload.get("introspection") or {}],
         )
         for entry in source
-        for controller in (entry.get("controllers", []) if isinstance(entry, dict) else [])
-        if isinstance(controller, dict)
-        and controller.get("type") in stateful_types
-        and controller.get("id")
+        for controller in (_field(entry, "controllers", []) or [])
+        if _field(controller, "type") in stateful_types and _field(controller, "id")
     }
 
     for closure in ir_payload.get("closures", {}).values():
@@ -3886,24 +3889,21 @@ def add_controller_internal_state_logging(ir_payload: dict) -> None:
 
 def add_quantity_samples(ir_payload: dict) -> None:
     introspection = ir_payload.get("introspection") or {}
-    shared_ids = {
-        item.get("id")
-        for item in ir_payload.get("shared_data", [])
-        if isinstance(item, dict) and item.get("id")
-    }
+    shared_ids = {_field(item, "id") for item in ir_payload.get("shared_data", []) if _field(item, "id")}
     views = ir_payload.get("views", {})
     samples = []
 
-    def add(source: dict, component: str, expr: str) -> None:
-        row = {key: value for key, value in source.items() if key != "index"}
-        source_id = source.get("id")
+    def add(source, component: str, expr: str) -> None:
+        src = _as_dict(source)
+        row = {key: value for key, value in src.items() if key != "index"}
+        source_id = src.get("id")
         row.update(
             {
                 "id": source_id if not component else f"{source_id}.{component}",
                 "source_id": source_id,
                 "component": component or None,
                 "type": "Scalar",
-                "source_type": source.get("type"),
+                "source_type": src.get("type"),
                 "sample_expr": expr,
             }
         )
@@ -3915,7 +3915,7 @@ def add_quantity_samples(ir_payload: dict) -> None:
 
     def scalar_view(data_id: str) -> bool:
         view = views.get(data_id)
-        return not view or view.get("axis") is not None
+        return not view or _field(view, "axis") is not None
 
     for quantity in introspection.get("quantities", []):
         qid = quantity.get("id")
@@ -3945,14 +3945,12 @@ def add_quantity_samples(ir_payload: dict) -> None:
 
     sampled_ids = {sample.get("source_id") for sample in samples}
     for item in ir_payload.get("shared_data", []):
-        if not isinstance(item, dict):
-            continue
-        item_id = item.get("id")
+        item_id = _field(item, "id")
         if not item_id or item_id in sampled_ids:
             continue
-        if item.get("type") == "Bool":
+        if _field(item, "type") == "Bool":
             add(item, "", f"shared.{item_id} ? 1.0 : 0.0")
-        elif item.get("type") == "IntCounter":
+        elif _field(item, "type") == "IntCounter":
             add(item, "", f"static_cast<double>(shared.{item_id})")
 
     introspection["quantity_samples"] = samples
@@ -3960,18 +3958,12 @@ def add_quantity_samples(ir_payload: dict) -> None:
 def add_spatial_samples(ir_payload: dict) -> None:
     """Add per-object pose, velocity-twist and wrench frame-log samples."""
     introspection = ir_payload.get("introspection") or {}
-    shared_ids = {
-        item.get("id")
-        for item in ir_payload.get("shared_data", [])
-        if isinstance(item, dict) and item.get("id")
-    }
+    shared_ids = {_field(item, "id") for item in ir_payload.get("shared_data", []) if _field(item, "id")}
     kinds = {"Pose": "poses", "VelocityTwist": "twists", "Wrench": "wrenches"}
     spatial = {"poses": [], "twists": [], "wrenches": []}
     for item in ir_payload.get("shared_data", []):
-        if not isinstance(item, dict):
-            continue
-        iid = item.get("id")
-        pool = kinds.get(item.get("type"))
+        iid = _field(item, "id")
+        pool = kinds.get(_field(item, "type"))
         if not iid or iid not in shared_ids or pool is None:
             continue
         spatial[pool].append({"id": iid, "index": len(spatial[pool]), "expr": f"shared.{iid}"})
@@ -3992,20 +3984,20 @@ def build_pose_components(ir_payload: dict) -> dict:
     data_by_id = _index_by_id(ir_payload.get("data", []))
     components: dict[str, dict] = {}
     for view in views.values():
-        superobject = view.get("superobject") or {}
-        so_type = superobject.get("type")
-        so_prov = superobject.get("provenance") or {}
-        is_declared_pose = bool(so_prov.get("authored") or so_prov.get("snapshot"))
+        superobject = _field(view, "superobject")
+        so_type = _field(superobject, "type")
+        so_prov = _field(superobject, "provenance") or {}
+        is_declared_pose = bool(_field(so_prov, "authored") or _field(so_prov, "snapshot"))
         if so_type != "Pose":
             continue
-        if not (is_declared_pose or superobject.get("euler_axes_sequence")):
+        if not (is_declared_pose or _field(superobject, "euler_axes_sequence")):
             continue
         # Only include inline-defined poses (those where components have values/references).
-        subobject_id = (view.get("subobject") or {}).get("id")
-        subobject_data = data_by_id.get(subobject_id) or {}
-        if not subobject_data.get("reference_value") and subobject_data.get("value") is None:
+        subobject_id = _field(_field(view, "subobject"), "id")
+        subobject_data = data_by_id.get(subobject_id)
+        if not _field(subobject_data, "reference_value") and _field(subobject_data, "value") is None:
             continue
-        pose_id = superobject["id"]
+        pose_id = _field(superobject, "id")
         entry = components.setdefault(
             pose_id,
             {
@@ -4017,13 +4009,13 @@ def build_pose_components(ir_payload: dict) -> dict:
                 "orientation_z_expr": None,
             },
         )
-        axis = str(view.get("axis", "")).lower()
+        axis = str(_field(view, "axis") or "").lower()
         if axis not in {"x", "y", "z"}:
             continue
-        subobject = (view.get("subobject") or {}).get("id")
+        subobject = _field(_field(view, "subobject"), "id")
         if not subobject:
             continue
-        prefix = "position" if view.get("subspace") == "Linear" else "orientation"
+        prefix = "position" if _field(view, "subspace") == "Linear" else "orientation"
         entry[f"{prefix}_{axis}_expr"] = component_expr(subobject, data_by_id, views)
     for pose_id, parts in components.items():
         missing = [name for name, value in parts.items() if value is None]
@@ -4061,18 +4053,18 @@ def resolve_lerp_closures(ir_payload: dict, pose_components: dict) -> None:
 def resolve_arc_closures(ir_payload: dict) -> None:
     data_by_id = _index_by_id(ir_payload.get("data", []))
 
-    def is_pose(data: dict) -> bool:
-        qkind = data.get("quantity_kind")
+    def is_pose(data) -> bool:
+        qkind = _field(data, "quantity_kind")
         qkind_ids = qkind if isinstance(qkind, list) else [qkind]
-        return data.get("type") == "Pose" or any(
-            isinstance(item, dict) and item.get("id") == "Pose" for item in qkind_ids
+        return _field(data, "type") == "Pose" or any(
+            _field(item, "id") == "Pose" for item in qkind_ids
         )
 
     for closure in ir_payload.get("closures", {}).values():
         if closure.get("type") != "Arc":
             continue
         end = closure.get("end")
-        end_data = data_by_id.get(end) or {}
+        end_data = data_by_id.get(end)
         if not isinstance(end, str) or not is_pose(end_data):
             raise ValueError("Arc trajectory end must be a Pose quantity.")
         closure["end_position_expr"] = f"shared.{end}.p"
@@ -4088,14 +4080,14 @@ def declared_pose_component_entries(
     for pose_id, parts in pose_components.items():
         if referenced_ids is not None and pose_id not in referenced_ids:
             continue
-        item = data_by_id.get(pose_id) or {}
-        item_prov = item.get("provenance") or {}
-        if not item_prov.get("authored") or item_prov.get("snapshot"):
+        item = data_by_id.get(pose_id)
+        item_prov = _field(item, "provenance") or {}
+        if not _field(item_prov, "authored") or _field(item_prov, "snapshot"):
             continue
         entries.append({"id": pose_id, **parts})
     return entries
 
-def collect_motion_references(motion: dict, closures: dict) -> set[str]:
+def collect_motion_references(motion, closures: dict) -> set[str]:
     refs: set[str] = set()
 
     def visit(value):
@@ -4108,9 +4100,9 @@ def collect_motion_references(motion: dict, closures: dict) -> set[str]:
             for item in value:
                 visit(item)
 
-    visit(motion)
+    visit(_as_dict(motion))
     for schedule_name in ("when_schedule", "while_schedule", "until_schedule"):
-        for step in motion.get(schedule_name, []):
+        for step in _field(motion, schedule_name, []):
             closure = closures.get(step)
             if closure:
                 visit(closure)
@@ -4449,36 +4441,38 @@ def derive_codegen_fields(ir: dict) -> None:
     _validate_ir(ir)
 
     scene = ir.get("scene") or {}
-    for robot in scene.get("robots", []):
+    for robot in _field(scene, "robots", []):
         expand_vector_fields(robot, "pos")
         expand_vector_fields(robot, "euler")
-        for attachment in robot.get("attachments", []):
+        for attachment in _field(robot, "attachments", []):
             expand_vector_fields(attachment, "pos")
             expand_vector_fields(attachment, "euler")
-    for obj in scene.get("objects", []):
+    for obj in _field(scene, "objects", []):
         expand_vector_fields(obj, "pos")
         expand_vector_fields(obj, "euler")
-        obj["has_path"] = bool(obj.get("path"))
-        if obj["has_path"]:
+        has_path = bool(_field(obj, "path"))
+        _set_field(obj, "has_path", has_path)
+        if has_path:
             # Geometry comes from the MJCF/URDF asset; do not fabricate flat
             # size/color/friction fields. The template skips this block when
             # has_path is true.
             continue
-        obj_id = obj.get("id", "<unknown>")
-        size = require_field(obj_id, "size", obj.get("size"))
-        color = require_field(obj_id, "color", obj.get("color"))
-        friction = require_field(obj_id, "friction", obj.get("friction"))
-        require_field(obj_id, "shape", obj.get("shape"))
-        require_field(obj_id, "mass", obj.get("mass"))
-        obj["size_x"], obj["size_y"], obj["size_z"] = (
-            float(size[0]), float(size[1]), float(size[2]),
-        )
-        obj["color_r"], obj["color_g"], obj["color_b"], obj["color_a"] = (
-            float(color[0]), float(color[1]), float(color[2]), float(color[3]),
-        )
-        obj["friction_slide"], obj["friction_torsion"], obj["friction_roll"] = (
-            float(friction[0]), float(friction[1]), float(friction[2]),
-        )
+        obj_id = _field(obj, "id", "<unknown>")
+        size = require_field(obj_id, "size", _field(obj, "size"))
+        color = require_field(obj_id, "color", _field(obj, "color"))
+        friction = require_field(obj_id, "friction", _field(obj, "friction"))
+        require_field(obj_id, "shape", _field(obj, "shape"))
+        require_field(obj_id, "mass", _field(obj, "mass"))
+        _set_field(obj, "size_x", float(size[0]))
+        _set_field(obj, "size_y", float(size[1]))
+        _set_field(obj, "size_z", float(size[2]))
+        _set_field(obj, "color_r", float(color[0]))
+        _set_field(obj, "color_g", float(color[1]))
+        _set_field(obj, "color_b", float(color[2]))
+        _set_field(obj, "color_a", float(color[3]))
+        _set_field(obj, "friction_slide", float(friction[0]))
+        _set_field(obj, "friction_torsion", float(friction[1]))
+        _set_field(obj, "friction_roll", float(friction[2]))
 
     _annotate_runtime_robots(ir, ir.get("backend", "robif2b"))
 
@@ -4489,16 +4483,16 @@ def derive_codegen_fields(ir: dict) -> None:
     resolve_arc_closures(ir)
     for motion in ir.get("motions", []):
         motion_refs = collect_motion_references(motion, ir.get("closures", {}))
-        motion["declared_pose_components"] = declared_pose_component_entries(
+        _set_field(motion, "declared_pose_components", declared_pose_component_entries(
             ir, pose_components, motion_refs
-        )
+        ))
 
     # group flags + trajectory progress + elapsed/command are folded into build_motion_units.
 
     # when/until/done conditions are folded into build_motion_units (_set_motion_conditions).
     # Elapsed constraints compare seconds from the runtime clock. MuJoCo supplies sim
     # seconds; real backends use a monotonic wall clock.
-    ir["needs_clock_time"] = any(m.get("has_elapsed") for m in ir.get("motions", []))
+    ir["needs_clock_time"] = any(_field(m, "has_elapsed") for m in ir.get("motions", []))
 
     _apply_fsm_wiring(ir)
     add_motion_function_interfaces(ir.get("motions", []))
@@ -4628,10 +4622,10 @@ def generate_ir(manifest_path):
         # motion-spec-dsl folds into the model dataset; None when no .fsm is imported.
         "fsm": _fsm_from_graph(g),
     }
-    # Serialize the dataclass IR to its plain-dict form (as codegen used to see it
-    # via load_ir), then derive all codegen-facing fields so ir.json is complete
-    # and codegen only loads + renders.
-    ir = json.loads(json.dumps(ir, cls=DataclassJSONEncoder))
+    # Derive all codegen-facing fields directly on the native IR (dataclasses + dicts) so
+    # ir.json is complete and codegen only loads + renders. No dict round-trip: the
+    # derivations run via _field/_set_field on the real structures, and main() serializes
+    # the result through DataclassJSONEncoder.
     derive_codegen_fields(ir)
     return ir
 

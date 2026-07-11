@@ -338,6 +338,12 @@ class PIDController:
     decay_rate: float | None = None
     output_saturation: Saturation | None = None
     integral_saturation: Saturation | None = None
+    # Signal metadata folded from the error-evaluator closure (C++ access expressions).
+    measured_signal: str | None = None
+    measured_expr: str | None = None
+    setpoint_signal: str | None = None
+    setpoint_expr: str | None = None
+    measured_derivative_expr: str | None = None
     type: str = "ProportionalIntegralDerivative"
 
 
@@ -350,6 +356,11 @@ class ImpedanceController:
     stiffness: float | None = None
     damping: float | None = None
     output_saturation: Saturation | None = None
+    measured_signal: str | None = None
+    measured_expr: str | None = None
+    setpoint_signal: str | None = None
+    setpoint_expr: str | None = None
+    measured_derivative_expr: str | None = None
     type: str = "ImpedanceController"
 
 
@@ -359,6 +370,11 @@ class FeedForwardController:
     control_signal: Quantity
     reference_signal: Quantity | None = None
     output_saturation: Saturation | None = None
+    measured_signal: str | None = None
+    measured_expr: str | None = None
+    setpoint_signal: str | None = None
+    setpoint_expr: str | None = None
+    measured_derivative_expr: str | None = None
     type: str = "FeedForwardController"
 
 
@@ -619,6 +635,8 @@ class HandlerArmSolver:
     chain_root: str = ""
     chain_end: str = ""
     torque_saturation: Saturation | None = None
+    runtime_id: str = ""
+    runtime_owner: bool = False
     type: str = field(default="HandlerArmSolver")
 
 
@@ -643,6 +661,8 @@ class SolverWithInputAndOutput:
     # top-level IR key consumed by runtime_header.
     regularization: float | None = None
     torque_saturation: Saturation | None = None
+    runtime_id: str = ""
+    runtime_owner: bool = False
     type: str = field(default="SolverWithInputAndOutput")
 
 
@@ -656,6 +676,12 @@ class SceneAttachment:
     pos: list[float] | None = None
     euler: list[float] | None = None
     actuator: str = ""
+    pos_x: float | None = None
+    pos_y: float | None = None
+    pos_z: float | None = None
+    euler_x: float | None = None
+    euler_y: float | None = None
+    euler_z: float | None = None
     type: str = field(default="SceneAttachment")
 
 
@@ -669,6 +695,12 @@ class SceneRobot:
     pos: list[float] | None = None
     euler: list[float] | None = None
     attachments: list[SceneAttachment] = field(default_factory=list)
+    pos_x: float | None = None
+    pos_y: float | None = None
+    pos_z: float | None = None
+    euler_x: float | None = None
+    euler_y: float | None = None
+    euler_z: float | None = None
     type: str = field(default="SceneRobot")
 
 
@@ -687,6 +719,24 @@ class SceneObjectSpec:
     color: list[float] | None = None
     mass: float | None = None
     friction: list[float] | None = None
+    # Folded scalar expansions (pos/euler always; geometry only for non-path objects).
+    pos_x: float | None = None
+    pos_y: float | None = None
+    pos_z: float | None = None
+    euler_x: float | None = None
+    euler_y: float | None = None
+    euler_z: float | None = None
+    has_path: bool = False
+    size_x: float | None = None
+    size_y: float | None = None
+    size_z: float | None = None
+    color_r: float | None = None
+    color_g: float | None = None
+    color_b: float | None = None
+    color_a: float | None = None
+    friction_slide: float | None = None
+    friction_torsion: float | None = None
+    friction_roll: float | None = None
     type: str = field(default="SceneObjectSpec")
 
 

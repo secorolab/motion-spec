@@ -188,8 +188,8 @@ def load_ir(input_path: Path):
 
 
 def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
-    # ir.json is fully derived by ir_gen (derive_codegen_fields, incl. FSM wiring from the
-    # FSM named graph in ir["fsm"]). Codegen only loads it, writes artifacts, and renders.
+    # ir.json is complete by construction in ir_gen (every codegen-facing field, incl. FSM
+    # wiring from the FSM named graph). Codegen only loads it, writes artifacts, and renders.
     ir = load_ir(ir_path)
 
     ir["introspection_artifacts"] = write_introspection_artifacts(

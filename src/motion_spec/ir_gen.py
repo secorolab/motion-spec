@@ -2231,6 +2231,8 @@ def build_motion_units(
     closures=None,
     data_structures=None,
     snapshot_clock_map=None,
+    pose_components=None,
+    fsm=None,
 ):
     snapshot_clock_map = snapshot_clock_map or {}
     snapshot_source_map = snapshot_source_map or {}
@@ -2587,7 +2589,17 @@ def build_motion_units(
         _set_motion_conditions(motion)
         _add_group_type_flags(motion.pose_axis_error_groups)
         _set_motion_trajectory_progress(motion, closures or {}, data_by_id)
-    return ordered
+        # Controller signal ids + this motion's declared-pose components.
+        _annotate_controller_signals(motion.controllers, closures or {})
+        motion_refs = collect_motion_references(motion, closures or {})
+        motion.declared_pose_components = declared_pose_component_entries(
+            data_structures or [], pose_components or {}, motion_refs)
+    # FSM wiring tags monitors/motions and yields the header/step meta; then the
+    # function-interface capability booleans, then the gate calls (which read them).
+    fsm_meta = _apply_fsm_wiring(ordered, fsm)
+    add_motion_function_interfaces(ordered)
+    _apply_fsm_gate_calls(ordered, fsm_meta["fsm_namespace"])
+    return ordered, fsm_meta
 
 
 def _filter_shared_data(data_structures, schedule, closures, view_map=None, fk_output_ids=None):
@@ -3016,7 +3028,50 @@ def _scene_from_graph(g):
                 )
             )
         break
+    _expand_scene_geometry(scene)
     return scene
+
+
+def _expand_scene_geometry(scene) -> None:
+    """Expand placement vectors and (present) procedural geometry onto the native scene
+    items so the scene is codegen-complete at construction. Env placement shorthand: an
+    omitted position/orientation means zero/identity. Path-backed objects take geometry
+    from their MJCF/URDF asset, so their flat size/color/friction fields stay unset.
+    Missing required geometry is not raised here (that is ``_validate_scene``) so building a
+    scene never depends on a downstream pass."""
+    for robot in scene.robots:
+        expand_vector_fields(robot, "pos")
+        expand_vector_fields(robot, "euler")
+        for attachment in robot.attachments:
+            expand_vector_fields(attachment, "pos")
+            expand_vector_fields(attachment, "euler")
+    for obj in scene.objects:
+        expand_vector_fields(obj, "pos")
+        expand_vector_fields(obj, "euler")
+        obj.has_path = bool(obj.path)
+        if obj.has_path:
+            continue
+        if obj.size is not None:
+            obj.size_x, obj.size_y, obj.size_z = float(obj.size[0]), float(obj.size[1]), float(obj.size[2])
+        if obj.color is not None:
+            obj.color_r, obj.color_g, obj.color_b, obj.color_a = (
+                float(obj.color[0]), float(obj.color[1]), float(obj.color[2]), float(obj.color[3]))
+        if obj.friction is not None:
+            obj.friction_slide, obj.friction_torsion, obj.friction_roll = (
+                float(obj.friction[0]), float(obj.friction[1]), float(obj.friction[2]))
+
+
+def _validate_scene(scene) -> None:
+    """Every procedural (non-path) scene object must carry full geometry — the model must
+    declare it; silent defaults are not applied. Runs at construction time in generate_ir."""
+    for obj in scene.objects:
+        if bool(obj.path):
+            continue
+        require_field(obj.id, "size", obj.size)
+        require_field(obj.id, "color", obj.color)
+        require_field(obj.id, "friction", obj.friction)
+        require_field(obj.id, "shape", obj.shape)
+        require_field(obj.id, "mass", obj.mass)
 
 
 def _robot_setups_from_graph(g):
@@ -3151,6 +3206,9 @@ def _build_introspection(
     control_period_ns,
     backend,
     scene,
+    closures,
+    views,
+    shared_data,
 ):
     uri_rows = _uri_table(id_nodes)
     uri_by_id = {row["id"]: row["uri"] for row in uri_rows}
@@ -3315,7 +3373,7 @@ def _build_introspection(
         for robot in scene.robots
     )
 
-    return {
+    introspection = {
         "contract_version": 1,
         "control_period_ns": control_period_ns,
         "uris": uri_rows,
@@ -3375,6 +3433,15 @@ def _build_introspection(
             "agents": agents,
         },
     }
+
+    # Fold the introspection-facing derivations into the introspection piece itself:
+    # controller signal ids, controller-internal-state logging (which grows shared_data),
+    # then the frame-log quantity/spatial samples that read them.
+    _annotate_controller_signals(introspection["controllers"], closures)
+    add_controller_internal_state_logging(closures, shared_data, introspection, motions)
+    add_quantity_samples(introspection, shared_data, views)
+    add_spatial_samples(introspection, shared_data)
+    return introspection
 
 
 def _resolve_import_location(location: str, url_map: dict[str, str]) -> str:
@@ -3597,19 +3664,18 @@ def _shared_runtime_members(slv_arm, motions) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Codegen-facing derivations. These compute the C++ expressions, boolean
-# conditions, introspection samples and function signatures the StringTemplate
-# groups render verbatim. They run over the plain-dict IR (post JSON round-trip)
-# so codegen only loads ir.json and renders. Orchestrated by derive_codegen_fields.
+# Codegen-facing helpers. Each is invoked while constructing the piece it belongs to
+# (scene, solvers, closures, motions, introspection) so generate_ir builds a complete IR
+# in one forward pass — the assembled ir dict is final and is never re-processed.
 # ---------------------------------------------------------------------------
 
 
 SUPPORTED_ROBOT_MODELS = {"KinovaGen3"}
 
-def _validate_ir(ir: dict) -> None:
+def _validate_solvers(arm_solvers, backend: str) -> None:
     unsupported = {
         _field(s, "robot_model")
-        for s in ir.get("arm_solvers", [])
+        for s in arm_solvers
         if _field(s, "robot_model") and _field(s, "robot_model") not in SUPPORTED_ROBOT_MODELS
     }
     if unsupported:
@@ -3618,11 +3684,10 @@ def _validate_ir(ir: dict) -> None:
             f"Supported: {', '.join(sorted(SUPPORTED_ROBOT_MODELS))}"
         )
 
-    backend = ir.get("backend", "robif2b")
     if backend != "robif2b":
         return
 
-    for solver in ir.get("arm_solvers", []):
+    for solver in arm_solvers:
         for out in _field(solver, "output", []):
             if _field(out, "type") != "Pose":
                 continue
@@ -3646,12 +3711,12 @@ def _runtime_signature(solver, backend: str) -> tuple:
         _field(solver, "tcp_site", ""),
     )
 
-def _annotate_runtime_robots(ir: dict, backend: str) -> None:
+def _annotate_runtime_robots(arm_solvers, motions, backend: str) -> None:
     runtime_by_signature: dict[tuple, str] = {}
     owner_by_runtime: dict[str, str] = {}
-    solvers_by_id = {_field(solver, "id"): solver for solver in ir.get("arm_solvers", [])}
+    solvers_by_id = {_field(solver, "id"): solver for solver in arm_solvers}
 
-    for solver in ir.get("arm_solvers", []):
+    for solver in arm_solvers:
         solver_id = _field(solver, "id", "")
         signature = _runtime_signature(solver, backend)
         runtime_id = runtime_by_signature.setdefault(signature, solver_id)
@@ -3666,7 +3731,7 @@ def _annotate_runtime_robots(ir: dict, backend: str) -> None:
         if not _field(solver, "tcp_site"):
             _set_field(solver, "tcp_site", None)
 
-    for motion in ir.get("motions", []):
+    for motion in motions:
         for solver in _field(motion, "arm_solvers", []):
             canonical = solvers_by_id.get(_field(solver, "id"))
             if canonical is None:
@@ -3751,39 +3816,32 @@ def _pose_component(component_id: str, data_by_id: dict) -> dict:
         return {"value": str(value), "ref": None}
     return {"value": None, "ref": component_id}
 
-def add_controller_signal_metadata(ir_payload: dict) -> None:
+def _signal_id(value):
+    if isinstance(value, str):
+        return value
+    return _field(value, "id")
+
+
+def _annotate_controller_signals(controllers, closures: dict) -> None:
+    """Fold the measured/setpoint signal ids onto each controller from its error-evaluator
+    closure. Emits abstract ids only; the C++ access expression is rendered backend-side by
+    access-expr (shared_data.stg). Runs during construction of the controllers' piece."""
     error_sources = {
         closure.get("error"): closure
-        for closure in ir_payload.get("closures", {}).values()
+        for closure in closures.values()
         if isinstance(closure, dict) and closure.get("type") == "ErrorEvaluator" and closure.get("error")
     }
-
-    def signal_id(value):
-        if isinstance(value, str):
-            return value
-        return _field(value, "id")
-
-    def annotate(controller) -> None:
-        # Emit abstract signal ids only; the C++ access expression is rendered by the
-        # backend template (access-expr, shared_data.stg) from the id + views map.
-        error_id = signal_id(_field(controller, "error_signal"))
+    for controller in controllers:
+        error_id = _signal_id(_field(controller, "error_signal"))
         source = error_sources.get(error_id) or {}
         measured_id = source.get("quantity")
-        setpoint_id = signal_id(_field(controller, "reference_signal")) or source.get("reference_value")
+        setpoint_id = _signal_id(_field(controller, "reference_signal")) or source.get("reference_value")
         if measured_id:
             _set_field(controller, "measured_signal", measured_id)
         if setpoint_id:
             _set_field(controller, "setpoint_signal", setpoint_id)
 
-    for motion in ir_payload.get("motions", []):
-        for controller in _field(motion, "controllers", []):
-            annotate(controller)
-    for controller in (ir_payload.get("introspection") or {}).get("controllers", []):
-        annotate(controller)
-
-def add_controller_internal_state_logging(ir_payload: dict) -> None:
-    shared_data = ir_payload.setdefault("shared_data", [])
-    introspection = ir_payload.setdefault("introspection", {})
+def add_controller_internal_state_logging(closures: dict, shared_data: list, introspection: dict, motions) -> None:
     quantities = introspection.setdefault("quantities", [])
     shared_ids = {_field(item, "id") for item in shared_data if _field(item, "id")}
     quantity_ids = {_field(item, "id") for item in quantities if _field(item, "id")}
@@ -3817,16 +3875,13 @@ def add_controller_internal_state_logging(ir_payload: dict) -> None:
     stateful_types = {"ProportionalIntegralDerivative", "ImpedanceController"}
     stateful_ids = {
         _field(controller, "id")
-        for source in (
-            ir_payload.get("motions", []),
-            [ir_payload.get("introspection") or {}],
-        )
+        for source in (motions, [{"controllers": introspection.get("controllers", [])}])
         for entry in source
         for controller in (_field(entry, "controllers", []) or [])
         if _field(controller, "type") in stateful_types and _field(controller, "id")
     }
 
-    for closure in ir_payload.get("closures", {}).values():
+    for closure in closures.values():
         if not isinstance(closure, dict) or closure.get("type") != "Controller":
             continue
         controller_id = closure.get("id")
@@ -3846,10 +3901,8 @@ def add_controller_internal_state_logging(ir_payload: dict) -> None:
             closure_samples.append({"id": item_id, "getter": getter})
         closure["internal_state_samples"] = closure_samples
 
-def add_quantity_samples(ir_payload: dict) -> None:
-    introspection = ir_payload.get("introspection") or {}
-    shared_ids = {_field(item, "id") for item in ir_payload.get("shared_data", []) if _field(item, "id")}
-    views = ir_payload.get("views", {})
+def add_quantity_samples(introspection: dict, shared_data: list, views: dict) -> None:
+    shared_ids = {_field(item, "id") for item in shared_data if _field(item, "id")}
     samples = []
 
     # Each sample carries a backend-agnostic descriptor (kind + ids/axis); the C++
@@ -3912,7 +3965,7 @@ def add_quantity_samples(ir_payload: dict) -> None:
             add_axes(quantity, "force", lambda i, q=qid: {"kind": "member", "id": q, "member": "force", "axis": i})
 
     sampled_ids = {sample.get("source_id") for sample in samples}
-    for item in ir_payload.get("shared_data", []):
+    for item in shared_data:
         item_id = _field(item, "id")
         if not item_id or item_id in sampled_ids:
             continue
@@ -3923,13 +3976,12 @@ def add_quantity_samples(ir_payload: dict) -> None:
 
     introspection["quantity_samples"] = samples
 
-def add_spatial_samples(ir_payload: dict) -> None:
+def add_spatial_samples(introspection: dict, shared_data: list) -> None:
     """Add per-object pose, velocity-twist and wrench frame-log samples."""
-    introspection = ir_payload.get("introspection") or {}
-    shared_ids = {_field(item, "id") for item in ir_payload.get("shared_data", []) if _field(item, "id")}
+    shared_ids = {_field(item, "id") for item in shared_data if _field(item, "id")}
     kinds = {"Pose": "poses", "VelocityTwist": "twists", "Wrench": "wrenches"}
     spatial = {"poses": [], "twists": [], "wrenches": []}
-    for item in ir_payload.get("shared_data", []):
+    for item in shared_data:
         iid = _field(item, "id")
         pool = kinds.get(_field(item, "type"))
         if not iid or iid not in shared_ids or pool is None:
@@ -3947,9 +3999,8 @@ def _index_by_id(items: list) -> dict:
     return out
 
 
-def build_pose_components(ir_payload: dict) -> dict:
-    views = ir_payload.get("views", {})
-    data_by_id = _index_by_id(ir_payload.get("data", []))
+def build_pose_components(views: dict, data: list) -> dict:
+    data_by_id = _index_by_id(data)
     components: dict[str, dict] = {}
     for view in views.values():
         superobject = _field(view, "superobject")
@@ -3993,8 +4044,8 @@ def build_pose_components(ir_payload: dict) -> dict:
             )
     return components
 
-def resolve_lerp_closures(ir_payload: dict, pose_components: dict) -> None:
-    for closure in ir_payload.get("closures", {}).values():
+def resolve_lerp_closures(closures: dict, pose_components: dict) -> None:
+    for closure in closures.values():
         if closure.get("type") != "Lerp":
             continue
         goal = closure.get("goal")
@@ -4008,8 +4059,8 @@ def resolve_lerp_closures(ir_payload: dict, pose_components: dict) -> None:
             # goal is a shared signal id (already on the closure as closure["goal"]).
             closure["assign_goal"] = False
 
-def resolve_arc_closures(ir_payload: dict) -> None:
-    data_by_id = _index_by_id(ir_payload.get("data", []))
+def resolve_arc_closures(closures: dict, data: list) -> None:
+    data_by_id = _index_by_id(data)
 
     def is_pose(data) -> bool:
         qkind = _field(data, "quantity_kind")
@@ -4018,7 +4069,7 @@ def resolve_arc_closures(ir_payload: dict) -> None:
             _field(item, "id") == "Pose" for item in qkind_ids
         )
 
-    for closure in ir_payload.get("closures", {}).values():
+    for closure in closures.values():
         if closure.get("type") != "Arc":
             continue
         end = closure.get("end")
@@ -4028,11 +4079,11 @@ def resolve_arc_closures(ir_payload: dict) -> None:
         # end is a validated Pose shared signal; the template renders shared.<end>.p/.M.
 
 def declared_pose_component_entries(
-    ir_payload: dict,
+    data: list,
     pose_components: dict,
     referenced_ids: set[str] | None = None,
 ) -> list[dict]:
-    data_by_id = _index_by_id(ir_payload.get("data", []))
+    data_by_id = _index_by_id(data)
     entries = []
     for pose_id, parts in pose_components.items():
         if referenced_ids is not None and pose_id not in referenced_ids:
@@ -4272,25 +4323,25 @@ def is_fsm_event(monitor, fsm_ns_uri: str | None) -> bool:
     )
 
 
-def _apply_fsm_wiring(ir: dict) -> None:
-    """Set the FSM header/step fields and tag FSM-event monitors + their motions, from the
-    FSM the ir_gen graph already carries (ir["fsm"]). Runs before the function-interface
-    pass so the FSM-added robot param is picked up. No-op when the model has no FSM."""
-    fsm = ir.get("fsm")
+def _apply_fsm_wiring(motions, fsm) -> dict:
+    """Tag FSM-event monitors + their motions from the framed FSM, and return the FSM
+    header/step meta fields. Runs before the function-interface pass so the FSM-added robot
+    param is picked up. No tagging when the model has no FSM. Runs during motion construction."""
     fsm_namespace = fsm["name"].lower() if fsm else None
     events = fsm.get("events", []) if fsm else []
     fsm_event_index = {event: idx for idx, event in enumerate(events)}
     fsm_step_event = "E_STEP" if "E_STEP" in events else None
-    ir["fsm_namespace"] = fsm_namespace
-    ir["fsm_header"] = f"{fsm['name']}.hpp" if fsm else None
-    ir["fsm_step_event"] = fsm_step_event
-    ir["fsm_step_event_idx"] = fsm_event_index.get(fsm_step_event, -1)
+    meta = {
+        "fsm_namespace": fsm_namespace,
+        "fsm_header": f"{fsm['name']}.hpp" if fsm else None,
+        "fsm_step_event": fsm_step_event,
+        "fsm_step_event_idx": fsm_event_index.get(fsm_step_event, -1),
+    }
     if fsm_namespace is None:
-        return
+        return meta
 
     fsm_ns_uri = fsm.get("namespace_uri")
     event_state = _event_to_state(fsm)
-    motions = ir.get("motions", [])
     by_id = {_field(m, "id"): m for m in motions}
 
     def tag_run_state(motion, monitors):
@@ -4334,16 +4385,16 @@ def _apply_fsm_wiring(ir: dict) -> None:
                 _set_field(fallback, "fsm_when_gate_motions", gates)
             if _field(motion, "id") not in gates:
                 gates.append(_field(motion, "id"))
+    return meta
 
 
-def _apply_fsm_gate_calls(ir: dict) -> None:
+def _apply_fsm_gate_calls(motions, fsm_namespace) -> None:
     """Fold each fallback state's WHEN-evaluation gate calls: the gated motion id plus its
     when-signature capability booleans. The C++ ``monitor_when_<id>(<args>)`` call is
     rendered by the template via sig-args. Runs after function interfaces so when_needs_*
     are available."""
-    if ir.get("fsm_namespace") is None:
+    if fsm_namespace is None:
         return
-    motions = ir.get("motions", [])
     by_id = {_field(m, "id"): m for m in motions}
     for fallback in motions:
         gate_ids = _field(fallback, "fsm_when_gate_motions")
@@ -4361,80 +4412,6 @@ def _apply_fsm_gate_calls(ir: dict) -> None:
         ])
 
 
-def derive_codegen_fields(ir: dict) -> None:
-    """Compute every codegen-facing field on the plain-dict IR: scene vector
-    expansions, runtime-robot annotations, pose components, motion timing/monitor
-    conditions, function signatures, controller signal metadata and introspection
-    samples. Runs once over ``ir["motions"]`` (one motion = one handler, enforced in
-    build_motion_units). FSM wiring is layered on later at codegen time from the
-    build-side fsm_ir.json, which ir_gen never sees — so the FSM-dependent bits of
-    the function signatures are recomputed there."""
-    _validate_ir(ir)
-
-    scene = ir.get("scene") or {}
-    for robot in _field(scene, "robots", []):
-        expand_vector_fields(robot, "pos")
-        expand_vector_fields(robot, "euler")
-        for attachment in _field(robot, "attachments", []):
-            expand_vector_fields(attachment, "pos")
-            expand_vector_fields(attachment, "euler")
-    for obj in _field(scene, "objects", []):
-        expand_vector_fields(obj, "pos")
-        expand_vector_fields(obj, "euler")
-        has_path = bool(_field(obj, "path"))
-        _set_field(obj, "has_path", has_path)
-        if has_path:
-            # Geometry comes from the MJCF/URDF asset; do not fabricate flat
-            # size/color/friction fields. The template skips this block when
-            # has_path is true.
-            continue
-        obj_id = _field(obj, "id", "<unknown>")
-        size = require_field(obj_id, "size", _field(obj, "size"))
-        color = require_field(obj_id, "color", _field(obj, "color"))
-        friction = require_field(obj_id, "friction", _field(obj, "friction"))
-        require_field(obj_id, "shape", _field(obj, "shape"))
-        require_field(obj_id, "mass", _field(obj, "mass"))
-        _set_field(obj, "size_x", float(size[0]))
-        _set_field(obj, "size_y", float(size[1]))
-        _set_field(obj, "size_z", float(size[2]))
-        _set_field(obj, "color_r", float(color[0]))
-        _set_field(obj, "color_g", float(color[1]))
-        _set_field(obj, "color_b", float(color[2]))
-        _set_field(obj, "color_a", float(color[3]))
-        _set_field(obj, "friction_slide", float(friction[0]))
-        _set_field(obj, "friction_torsion", float(friction[1]))
-        _set_field(obj, "friction_roll", float(friction[2]))
-
-    _annotate_runtime_robots(ir, ir.get("backend", "robif2b"))
-
-    pose_components = build_pose_components(ir)
-    ir["pose_components"] = pose_components
-    ir["declared_pose_components"] = declared_pose_component_entries(ir, pose_components)
-    resolve_lerp_closures(ir, pose_components)
-    resolve_arc_closures(ir)
-    for motion in ir.get("motions", []):
-        motion_refs = collect_motion_references(motion, ir.get("closures", {}))
-        _set_field(motion, "declared_pose_components", declared_pose_component_entries(
-            ir, pose_components, motion_refs
-        ))
-
-    # group flags + trajectory progress + elapsed/command are folded into build_motion_units.
-
-    # when/until/done conditions are folded into build_motion_units (_set_motion_conditions).
-    # Elapsed constraints compare seconds from the runtime clock. MuJoCo supplies sim
-    # seconds; real backends use a monotonic wall clock.
-    ir["needs_clock_time"] = any(_field(m, "has_elapsed") for m in ir.get("motions", []))
-
-    _apply_fsm_wiring(ir)
-    add_motion_function_interfaces(ir.get("motions", []))
-    _apply_fsm_gate_calls(ir)
-
-    add_controller_signal_metadata(ir)
-    add_controller_internal_state_logging(ir)
-    add_quantity_samples(ir)
-    add_spatial_samples(ir)
-
-
 def generate_ir(manifest_path):
     app_model_path, g, imported_models, imported_provenance = _load_graph(manifest_path)
 
@@ -4442,7 +4419,12 @@ def generate_ir(manifest_path):
     node_by_id, id_nodes = _node_indexes(g, p)
     setups_by_node, ordered_setups = _robot_setups_from_graph(g)
     default_setup = ordered_setups[0] if ordered_setups else ("", "", "", "", "", "", "", [])
+    # Derive backend + FSM up front: both are pure functions of the graph and are inputs to
+    # downstream construction (solver validation, runtime-robot annotation, motion FSM wiring).
+    backend = _backend_from_graph(g)
+    fsm = _fsm_from_graph(g)
     scene = _scene_from_graph(g)
+    _validate_scene(scene)
 
     (
         slv_base_vel,
@@ -4463,6 +4445,12 @@ def generate_ir(manifest_path):
     data_reference_map = _data_reference_map(data_structures, closures)
     closure_output_map, closure_input_map = _closure_maps(closures)
 
+    # Resolve declared-pose components and trajectory goals from views/data/closures before
+    # motions are built (per-motion declared poses reference them).
+    pose_components = build_pose_components(view_map, data_structures)
+    resolve_lerp_closures(closures, pose_components)
+    resolve_arc_closures(closures, data_structures)
+
     wrench_outputs = _dedupe_by_id(
         [
             item
@@ -4471,7 +4459,7 @@ def generate_ir(manifest_path):
         ]
     )
 
-    motions = build_motion_units(
+    motions, fsm_meta = build_motion_units(
         g,
         p,
         hdl,
@@ -4485,10 +4473,13 @@ def generate_ir(manifest_path):
         closure_input_map=closure_input_map,
         closures=closures,
         data_structures=data_structures,
+        pose_components=pose_components,
+        fsm=fsm,
     )
     _apply_solver_control_modes(slv_arm, motions)
+    _validate_solvers(slv_arm, backend)
+    _annotate_runtime_robots(slv_arm, motions, backend)
 
-    backend = _backend_from_graph(g)
     if scene.timestep_s <= 0:
         raise ValueError("ENVIRONMENT timestep must be positive.")
     control_period_ns = int(round(scene.timestep_s * 1e9))
@@ -4520,6 +4511,9 @@ def generate_ir(manifest_path):
         control_period_ns=control_period_ns,
         backend=backend,
         scene=scene,
+        closures=closures,
+        views=view_map,
+        shared_data=shared_data,
     )
 
     schedule = sched1 + sched2 + sched3 + sched4
@@ -4536,9 +4530,14 @@ def generate_ir(manifest_path):
         "schedule": schedule,
         "views": view_map,
         "shared_data": shared_data,
+        "pose_components": pose_components,
+        "declared_pose_components": declared_pose_component_entries(data_structures, pose_components),
         "wrench_outputs": wrench_outputs,
         "has_arm": bool(slv_arm),
         "has_mobile_base": bool(slv_base_vel or slv_base_frc),
+        # Elapsed constraints compare seconds from the runtime clock (MuJoCo sim seconds /
+        # real monotonic wall clock).
+        "needs_clock_time": any(m.has_elapsed for m in motions),
         "control_period_ns": control_period_ns,
         "rne_damping_lambda": rne_damping_lambda,
         "arm_solvers": slv_arm,
@@ -4551,13 +4550,12 @@ def generate_ir(manifest_path):
         "introspection": introspection,
         # FSM (states/events/transitions/reactions) framed from the FSM named graph that
         # motion-spec-dsl folds into the model dataset; None when no .fsm is imported.
-        "fsm": _fsm_from_graph(g),
+        "fsm": fsm,
+        **fsm_meta,
     }
-    # Derive all codegen-facing fields directly on the native IR (dataclasses + dicts) so
-    # ir.json is complete and codegen only loads + renders. No dict round-trip: the
-    # derivations run via _field/_set_field on the real structures, and main() serializes
-    # the result through DataclassJSONEncoder.
-    derive_codegen_fields(ir)
+    # ir is complete by construction — every codegen-facing field was computed while its
+    # piece was built (scene / solvers / closures / motions / introspection). Codegen only
+    # loads ir.json and renders; there is no post-assembly derivation pass.
     return ir
 
 def main():

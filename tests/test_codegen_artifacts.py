@@ -9,7 +9,12 @@ from rdflib import Graph
 from rdf_utils.resolver import IriToFileResolver, install_resolver
 
 from motion_spec import codegen
-from motion_spec.ir_gen import derive_codegen_fields
+from motion_spec.ir_gen import (
+    _annotate_controller_signals,
+    add_controller_internal_state_logging,
+    add_quantity_samples,
+    add_spatial_samples,
+)
 from motion_spec.codegen_artifacts import (
     PROTO_FIELD_BASES,
     build_frame_layout,
@@ -271,6 +276,7 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
             "cstr_hdl": [],
             "motions": ir["unique_motions"],
             "data": [],
+            "pose_components": {},
             "closures": {
                 "ctrl_x": {
                     "id": "ctrl_x",
@@ -329,7 +335,14 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
             {"id": "wrench_force_x", "type": "Quantity"},
         ]
     )
-    derive_codegen_fields(ir)
+    # Run the introspection-piece derivations the way _build_introspection now does
+    # (this synthetic ir is assembled by hand, so drive the pieces directly).
+    for motion in ir["motions"]:
+        _annotate_controller_signals(motion.get("controllers", []), ir["closures"])
+    _annotate_controller_signals(ir["introspection"]["controllers"], ir["closures"])
+    add_controller_internal_state_logging(ir["closures"], ir["shared_data"], ir["introspection"], ir["motions"])
+    add_quantity_samples(ir["introspection"], ir["shared_data"], ir["views"])
+    add_spatial_samples(ir["introspection"], ir["shared_data"])
     ir_path = tmp_path / "ir.json"
     ir_path.write_text(json.dumps(ir))
     monkeypatch.setattr(codegen, "render_template", lambda *args, **kwargs: None)

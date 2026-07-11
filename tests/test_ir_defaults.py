@@ -192,6 +192,9 @@ def test_introspection_contract_carries_control_and_provenance() -> None:
         control_period_ns=2_000_000,
         backend="mj_kdl",
         scene=SceneSpec(robots=[SceneRobot(id="robot", path="robot.xml")]),
+        closures={},
+        views={},
+        shared_data=[],
     )
 
     assert introspection["contract_version"] == 1

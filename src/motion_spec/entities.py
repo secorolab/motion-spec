@@ -385,6 +385,7 @@ class LevelMonitor:
     is_until_aggregate: bool = False
     is_when_aggregate: bool = False
     debounce_steps: int | None = None
+    active_condition: str | None = None
     type: str = field(default="LevelMonitor")
 
 
@@ -407,6 +408,7 @@ class EdgeMonitor:
     # Stays None (not 0) when absent -- ST4's <if(x)> is true even for integer 0.
     debounce_duration_s: float | None = None
     debounce_steps: int | None = None
+    active_condition: str | None = None
     type: str = field(default="EdgeMonitor")
 
 
@@ -503,9 +505,16 @@ class GuardedMotionBlock:
     until_schedule: list[str]
 
     has_elapsed: bool = False
+    has_when_elapsed: bool = False
+    has_active_elapsed: bool = False
     has_until_condition: bool = False
     until_any: bool = False
     when_any: bool = False
+    # Primary arm-solver id the motion commands (empty when the model has no arm).
+    command_robot_id: str = ""
+    # C++ boolean expressions (folded from the evaluators/monitors at build time).
+    when_condition: str = "true"
+    done_condition: str = "true"
 
     # Solver Integration
     arm_solvers: list = field(default_factory=list)

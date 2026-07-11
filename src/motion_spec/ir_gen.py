@@ -1246,20 +1246,6 @@ class Parser:
         # Get the Python representation of the associated RDF literal
         return [float(v.toPython()) for v in items]
 
-    def parse_direction_cosine_xyz(self, node):
-        cos_x = self.parse_vector3(self.g.value(node, GEOM_COORD["direction-cosine-x"]))
-        cos_y = self.parse_vector3(self.g.value(node, GEOM_COORD["direction-cosine-y"]))
-        cos_z = self.parse_vector3(self.g.value(node, GEOM_COORD["direction-cosine-z"]))
-
-        if cos_x is None or cos_y is None or cos_z is None:
-            return None
-
-        mat_col_major = []
-        for col in [cos_x, cos_y, cos_z]:
-            mat_col_major.extend(col)
-
-        return mat_col_major
-
     def parse_xyz(self, node):
         x = self.g.value(node, GEOM_COORD["x"])
         y = self.g.value(node, GEOM_COORD["y"])
@@ -1795,11 +1781,6 @@ class Parser:
             visit(call)
         return result
 
-    def get_schedule(self) -> list[str]:
-        s = list(self.sched)
-        s.reverse()
-        return s
-
 
 def _upstream_dependencies(data_id: str, closure_input_map: dict[str, set[str]]) -> set[str]:
     result: set[str] = set()
@@ -2258,6 +2239,7 @@ def build_motion_units(
     data_reference_map = data_reference_map or {}
     closure_input_map = closure_input_map or {}
     motions = []
+    primary_robot_id = next((s.id for s in slv_arm if getattr(s, "id", "")), "")
 
     for handler in handlers:
         handler_node = node_by_id[handler.id]
@@ -2527,14 +2509,20 @@ def build_motion_units(
         while_monitors = [p.monitor_entry(n) for n in while_mon_nodes]
         until_monitors = [p.monitor_entry(n) for n in until_mon_nodes]
 
-        _all_evaluators = when_evaluators + while_evaluators + until_evaluators
-        has_elapsed = any(getattr(e, "is_elapsed", False) for e in _all_evaluators)
+        has_when_elapsed = any(getattr(e, "is_elapsed", False) for e in when_evaluators)
+        has_active_elapsed = any(
+            getattr(e, "is_elapsed", False) for e in while_evaluators + until_evaluators
+        )
+        has_elapsed = has_when_elapsed or has_active_elapsed
 
         motions.append(
             GuardedMotionBlock(
                 id=handler.motion.id,
                 handler=handler.id,
                 control_mode=handler.control_mode,
+                command_robot_id=primary_robot_id,
+                has_when_elapsed=has_when_elapsed,
+                has_active_elapsed=has_active_elapsed,
                 when_evaluators=when_evaluators,
                 while_evaluators=while_evaluators,
                 until_evaluators=until_evaluators,
@@ -2591,9 +2579,12 @@ def build_motion_units(
             )
         handler_by_motion[motion.id] = motion.handler
 
-    return sorted(
+    ordered = sorted(
         motions, key=lambda motion: next(h.order for h in handlers if h.id == motion.handler)
     )
+    for motion in ordered:
+        _set_motion_conditions(motion)
+    return ordered
 
 
 def _filter_shared_data(data_structures, schedule, closures, view_map=None, fk_output_ids=None):
@@ -3688,20 +3679,38 @@ def _add_group_type_flags(groups: list) -> list:
         g["is_wrench"] = so_type == "Wrench"
     return groups
 
-def _motion_done_condition(motion: dict) -> str:
+def _field(obj, key, default=None):
+    """Read a field from either a dict or a dataclass instance, so derivations can run
+    on the native IR (dataclasses) without a dict round-trip."""
+    if obj is None:
+        return default
+    return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
+
+
+def _set_field(obj, key, value) -> None:
+    """Set a field on either a dict or a dataclass instance (the field must exist on the
+    dataclass for it to serialize)."""
+    if isinstance(obj, dict):
+        obj[key] = value
+    else:
+        setattr(obj, key, value)
+
+
+def _motion_done_condition(motion) -> str:
     """Boolean expression that ends a motion: its UNTIL members combined by any/all
     (``||`` for any, ``&&`` for all/default)."""
+    mid = _field(motion, "id")
     event_terms = [
         (
-            f"{motion['id']}_state_instance.{monitor['id']}_event_triggered"
-            if monitor.get("is_edge_triggered")
-            else f"{motion['id']}_state_instance.{monitor['flag']}"
+            f"{mid}_state_instance.{_field(monitor, 'id')}_event_triggered"
+            if _field(monitor, "is_edge_triggered")
+            else f"{mid}_state_instance.{_field(monitor, 'flag')}"
         )
-        for monitor in motion.get("until_monitors", [])
+        for monitor in _field(motion, "until_monitors", [])
     ]
     if not event_terms:
         return "true"
-    joiner = " || " if motion.get("until_any") else " && "
+    joiner = " || " if _field(motion, "until_any") else " && "
     condition = joiner.join(event_terms)
     return f"({condition})" if len(event_terms) > 1 else condition
 
@@ -3965,13 +3974,14 @@ def add_spatial_samples(ir_payload: dict) -> None:
         spatial[pool].append({"id": iid, "index": len(spatial[pool]), "expr": f"shared.{iid}"})
     introspection["spatial_samples"] = spatial
 
+def _index_by_id(items: list) -> dict:
+    """Index a list of IR dicts by their "id" (skips non-dicts / id-less entries)."""
+    return {item["id"]: item for item in items if isinstance(item, dict) and item.get("id")}
+
+
 def build_pose_components(ir_payload: dict) -> dict:
     views = ir_payload.get("views", {})
-    data_by_id = {
-        item.get("id"): item
-        for item in ir_payload.get("data", [])
-        if isinstance(item, dict) and item.get("id")
-    }
+    data_by_id = _index_by_id(ir_payload.get("data", []))
     components: dict[str, dict] = {}
     for view in views.values():
         superobject = view.get("superobject") or {}
@@ -4041,11 +4051,7 @@ def resolve_lerp_closures(ir_payload: dict, pose_components: dict) -> None:
             closure["assign_goal"] = False
 
 def resolve_arc_closures(ir_payload: dict) -> None:
-    data_by_id = {
-        item.get("id"): item
-        for item in ir_payload.get("data", [])
-        if isinstance(item, dict) and item.get("id")
-    }
+    data_by_id = _index_by_id(ir_payload.get("data", []))
 
     def is_pose(data: dict) -> bool:
         qkind = data.get("quantity_kind")
@@ -4069,11 +4075,7 @@ def declared_pose_component_entries(
     pose_components: dict,
     referenced_ids: set[str] | None = None,
 ) -> list[dict]:
-    data_by_id = {
-        item.get("id"): item
-        for item in ir_payload.get("data", [])
-        if isinstance(item, dict) and item.get("id")
-    }
+    data_by_id = _index_by_id(ir_payload.get("data", []))
     entries = []
     for pose_id, parts in pose_components.items():
         if referenced_ids is not None and pose_id not in referenced_ids:
@@ -4107,11 +4109,7 @@ def collect_motion_references(motion: dict, closures: dict) -> set[str]:
     return refs
 
 def add_motion_trajectory_progress(ir_payload: dict) -> None:
-    data_by_id = {
-        item.get("id"): item
-        for item in ir_payload.get("data", [])
-        if isinstance(item, dict) and item.get("id")
-    }
+    data_by_id = _index_by_id(ir_payload.get("data", []))
     closures = ir_payload.get("closures", {})
     for motion in ir_payload.get("motions", []):
         time_progress_ids: list[str] = []
@@ -4126,69 +4124,62 @@ def add_motion_trajectory_progress(ir_payload: dict) -> None:
                 time_progress_ids.append(alpha_id)
         motion["time_trajectory_progress_ids"] = time_progress_ids
 
-def _evaluator_term(e: dict, start_field: str) -> str:
+def _evaluator_term(e, start_field: str) -> str:
     # A timing evaluator has no solver error: compare the world clock against the threshold,
     # measured from the selected state timestamp.
-    if e.get("is_elapsed"):
-        op = e.get("elapsed_op") or ">="
-        thr = e.get("elapsed_threshold_s") or 0.0
+    if _field(e, "is_elapsed"):
+        op = _field(e, "elapsed_op") or ">="
+        thr = _field(e, "elapsed_threshold_s") or 0.0
         return f"(shared.clock_time_s - state.{start_field} {op} {thr:.6f})"
-    return f"motion_spec::runtime::constraint_satisfied(shared.{e['error']['id']})"
+    return f"motion_spec::runtime::constraint_satisfied(shared.{_field(_field(e, 'error'), 'id')})"
 
-def add_until_monitor_conditions(motions: list[dict]) -> None:
-    for motion in motions:
-        terms = [
-            _evaluator_term(e, "motion_start_time")
-            for e in motion.get("until_evaluators", [])
-            if e.get("error") or e.get("is_elapsed")
-        ]
-        elapsed_terms_by_error = {
-            e["error"]["id"]: _evaluator_term(e, "motion_start_time")
-            for e in motion.get("until_evaluators", [])
-            if e.get("is_elapsed") and e.get("error")
-        }
-        joiner = " || " if motion.get("until_any") else " && "
-        active_condition = joiner.join(terms) if terms else "false"
-        if len(terms) > 1:
-            active_condition = f"({active_condition})"
-        for monitor in motion.get("until_monitors", []):
-            if monitor.get("is_until_aggregate"):
-                monitor["active_condition"] = active_condition
-                continue
-            error_id = (monitor.get("error") or {}).get("id")
-            if error_id in elapsed_terms_by_error:
-                monitor["active_condition"] = elapsed_terms_by_error[error_id]
 
-def add_when_monitor_conditions(motions: list[dict]) -> None:
-    for motion in motions:
-        terms = [
-            _evaluator_term(e, "when_start_time")
-            for e in motion.get("when_evaluators", [])
-            if e.get("error") or e.get("is_elapsed")
-        ]
-        elapsed_terms_by_error = {
-            e["error"]["id"]: _evaluator_term(e, "when_start_time")
-            for e in motion.get("when_evaluators", [])
-            if e.get("is_elapsed") and e.get("error")
-        }
-        joiner = " || " if motion.get("when_any") else " && "
-        motion["when_condition"] = joiner.join(terms) if terms else "true"
-        if len(terms) > 1:
-            motion["when_condition"] = f"({motion['when_condition']})"
-        active_condition = joiner.join(terms) if terms else "false"
-        if len(terms) > 1:
-            active_condition = f"({active_condition})"
-        for monitor in motion.get("when_monitors", []):
-            if monitor.get("is_when_aggregate"):
-                monitor["active_condition"] = active_condition
-                continue
-            error_id = (monitor.get("error") or {}).get("id")
-            if error_id in elapsed_terms_by_error:
-                monitor["active_condition"] = elapsed_terms_by_error[error_id]
+def _set_monitor_conditions(motion, evaluators_key: str, monitors_key: str,
+                            start_field: str, any_key: str) -> None:
+    """Build the active-phase C++ condition from a motion's evaluators and stamp it onto
+    the aggregate monitor + any elapsed-error monitors."""
+    evaluators = _field(motion, evaluators_key, [])
+    terms = [
+        _evaluator_term(e, start_field)
+        for e in evaluators
+        if _field(e, "error") or _field(e, "is_elapsed")
+    ]
+    elapsed_terms_by_error = {
+        _field(_field(e, "error"), "id"): _evaluator_term(e, start_field)
+        for e in evaluators
+        if _field(e, "is_elapsed") and _field(e, "error")
+    }
+    joiner = " || " if _field(motion, any_key) else " && "
+    active_condition = joiner.join(terms) if terms else "false"
+    if len(terms) > 1:
+        active_condition = f"({active_condition})"
+    aggregate_key = "is_until_aggregate" if any_key == "until_any" else "is_when_aggregate"
+    for monitor in _field(motion, monitors_key, []):
+        if _field(monitor, aggregate_key):
+            _set_field(monitor, "active_condition", active_condition)
+            continue
+        error_id = _field(_field(monitor, "error"), "id")
+        if error_id in elapsed_terms_by_error:
+            _set_field(monitor, "active_condition", elapsed_terms_by_error[error_id])
 
-def add_motion_done_conditions(motions: list[dict]) -> None:
-    for motion in motions:
-        motion["done_condition"] = _motion_done_condition(motion)
+
+def _set_motion_conditions(motion) -> None:
+    """Fold the UNTIL/WHEN/done C++ conditions onto a motion (dict or dataclass)."""
+    _set_monitor_conditions(motion, "until_evaluators", "until_monitors",
+                            "motion_start_time", "until_any")
+    when_terms = [
+        _evaluator_term(e, "when_start_time")
+        for e in _field(motion, "when_evaluators", [])
+        if _field(e, "error") or _field(e, "is_elapsed")
+    ]
+    joiner = " || " if _field(motion, "when_any") else " && "
+    when_condition = joiner.join(when_terms) if when_terms else "true"
+    if len(when_terms) > 1:
+        when_condition = f"({when_condition})"
+    _set_field(motion, "when_condition", when_condition)
+    _set_monitor_conditions(motion, "when_evaluators", "when_monitors",
+                            "when_start_time", "when_any")
+    _set_field(motion, "done_condition", _motion_done_condition(motion))
 
 def add_motion_function_interfaces(motions: list[dict]) -> None:
     def join_params(params: list[str]) -> str:
@@ -4492,24 +4483,11 @@ def derive_codegen_fields(ir: dict) -> None:
 
     add_motion_trajectory_progress(ir)
 
-    primary_robot_id = next(
-        (solver.get("id") for solver in ir.get("arm_solvers", []) if solver.get("id")), ""
-    )
+    # command_robot_id + elapsed flags are folded into build_motion_units (dataclass fields).
     for motion in ir.get("motions", []):
-        motion["command_robot_id"] = primary_robot_id
-        motion["has_when_elapsed"] = any(
-            e.get("is_elapsed") for e in motion.get("when_evaluators", [])
-        )
-        motion["has_active_elapsed"] = any(
-            e.get("is_elapsed")
-            for e in motion.get("while_evaluators", []) + motion.get("until_evaluators", [])
-        )
-        motion["has_elapsed"] = motion["has_when_elapsed"] or motion["has_active_elapsed"]
         _add_group_type_flags(motion.get("pose_axis_error_groups", []))
 
-    add_until_monitor_conditions(ir.get("motions", []))
-    add_when_monitor_conditions(ir.get("motions", []))
-    add_motion_done_conditions(ir.get("motions", []))
+    # when/until/done conditions are folded into build_motion_units (_set_motion_conditions).
     # Elapsed constraints compare seconds from the runtime clock. MuJoCo supplies sim
     # seconds; real backends use a monotonic wall clock.
     ir["needs_clock_time"] = any(m.get("has_elapsed") for m in ir.get("motions", []))

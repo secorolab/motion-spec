@@ -23,6 +23,7 @@ DIST_NAME = "motion_spec"
 
 
 def _path_endswith(path, relative_path: Path) -> bool:
+    """True when path ends with the given relative-path components."""
     path_parts = Path(path).parts
     relative_parts = relative_path.parts
     return (
@@ -32,6 +33,7 @@ def _path_endswith(path, relative_path: Path) -> bool:
 
 
 def _distribution_path(relative_path: Path) -> Path | None:
+    """Locate a resource inside the installed motion_spec distribution, or None."""
     try:
         dist = distribution(DIST_NAME)
     except PackageNotFoundError:
@@ -46,6 +48,7 @@ def _distribution_path(relative_path: Path) -> Path | None:
 
 
 def _source_root_from_distribution() -> Path | None:
+    """Editable-install source root from the distribution's direct_url.json, or None."""
     try:
         direct_url = distribution(DIST_NAME).read_text("direct_url.json")
     except (PackageNotFoundError, FileNotFoundError):
@@ -63,6 +66,7 @@ def _source_root_from_distribution() -> Path | None:
 
 
 def _source_path(relative_path: Path) -> Path | None:
+    """Locate a resource under the known source roots, or None."""
     roots = [PACKAGE_ROOT, Path.cwd() / "src" / "motion-spec", Path.cwd()]
     source_root = _source_root_from_distribution()
     if source_root is not None:
@@ -76,6 +80,7 @@ def _source_path(relative_path: Path) -> Path | None:
 
 
 def resource_path(relative_path: Path) -> Path:
+    """Absolute path to a packaged resource (installed dist or source tree); raises if missing."""
     path = _distribution_path(relative_path) or _source_path(relative_path)
     if path is not None:
         return path
@@ -87,6 +92,7 @@ def resource_path(relative_path: Path) -> Path:
 
 
 def write_json(path: Path, payload):
+    """Write payload as pretty, dataclass-aware JSON, creating parent directories."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, cls=DataclassJSONEncoder, indent=4) + "\n")
 
@@ -98,6 +104,7 @@ def render_template(
     output_path: Path,
     module_template: str = MAIN_TEMPLATE,
 ):
+    """Render a StringTemplate group template over a JSON payload to output_path via the STSTv4 runner."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     stst_path = Path(stst_bin)
     run_cwd = stst_path.resolve().parent if stst_path.parent != Path(".") else PACKAGE_ROOT
@@ -119,12 +126,7 @@ def render_template(
 
     try:
         result = subprocess.run(
-            command,
-            cwd=run_cwd,
-            env=env,
-            check=True,
-            capture_output=True,
-            text=True,
+            command, cwd=run_cwd, env=env, check=True, capture_output=True, text=True
         )
     except FileNotFoundError as exc:
         raise RuntimeError(
@@ -183,13 +185,19 @@ def _collapse_blank_lines(text: str) -> str:
 
 
 def load_ir(input_path: Path):
+    """Load an IR JSON file into a dict."""
     with input_path.open() as handle:
         return json.load(handle)
 
 
 def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
-    # ir.json is complete by construction in ir_gen (every codegen-facing field, incl. FSM
-    # wiring from the FSM named graph). Codegen only loads it, writes artifacts, and renders.
+    """Render every C++/artifact file for an IR: introspection headers, runtime and
+    shared-state headers, the frame-log proto (compiled to C++), per-motion headers and
+    ref_main.cpp.
+
+    ir.json is complete by construction in ir_gen (every codegen-facing field, incl. FSM
+    wiring); codegen only loads it, writes artifacts, and renders.
+    """
     ir = load_ir(ir_path)
 
     ir["introspection_artifacts"] = write_introspection_artifacts(
@@ -208,7 +216,10 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     write_json(ir_payload_path, ir)
 
     render_template(
-        stst_bin, "introspection_runtime_header", ir_payload_path, output_dir / "introspection_runtime.hpp"
+        stst_bin,
+        "introspection_runtime_header",
+        ir_payload_path,
+        output_dir / "introspection_runtime.hpp",
     )
     render_template(
         stst_bin, "introspect_model_header", ir_payload_path, output_dir / "introspect_model.hpp"
@@ -253,9 +264,8 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Generate C++ header files from motion-spec IR.",
-    )
+    """CLI entry point: render C++ from a previously generated IR JSON."""
+    parser = argparse.ArgumentParser(description="Generate C++ header files from motion-spec IR.")
     parser.add_argument("input", help="Previously generated IR JSON path")
     parser.add_argument(
         "-o", "--output-dir", required=True, help="Directory for generated C++ files"

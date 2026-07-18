@@ -26,7 +26,6 @@ from pathlib import Path
 import rdflib
 from rdf_utils.naming import get_valid_var_name
 from rdf_utils.resolver import IriToFileResolver, install_resolver
-from rdf_utils.uri import local_name
 from rdflib import URIRef
 from rdflib.namespace import RDF
 
@@ -50,10 +49,10 @@ from motion_spec.manifest import build_url_map, metamodel_url_map
 
 # fmt: off
 from motion_spec.namespace import (
-    APP, CSTR, CSTR_EXT, CSTR_HDL, CSTR_HDL_EXT, ENV, EXEC, GEOM_COORD, GEOM_COORD_EXT,
+    ALGO_EXT, APP, CSTR, CSTR_EXT, CSTR_HDL, CSTR_HDL_EXT, ENV, EXEC, GEOM_COORD,
     GEOM_ENT, GEOM_OP, GEOM_OP_EXT, GEOM_REL, KC_STAT, MAP, MAP_EXT, MJ, MOT, POLY, QUDT_QKIND,
-    QUDT_SCHEMA, QUDT_UNIT, RBDYN_COORD, RBDYN_ENT, RBDYN_OP, RBDYN_OP_EXT, RT, SLV, SLV_EXT,
-    SNAP, TRAJ,
+    QUDT_SCHEMA, QUDT_UNIT, RBDYN_COORD, RBDYN_ENT, RBDYN_OP, SLV, SLV_EXT,
+    SNAP, SOSA, TRAJ,
 )
 # fmt: on
 
@@ -416,11 +415,10 @@ ops_generic = [
         output=[RBDYN_OP["out"]],
     ),
     Operator(
-        type_=RBDYN_OP_EXT["AddQuantity"],
-        input=[RBDYN_OP["in1"], RBDYN_OP["in2"]],
-        output=[RBDYN_OP["out"]],
+        type_=ALGO_EXT.Addition,
+        input=[ALGO_EXT["in1"], ALGO_EXT["in2"]],
+        output=[ALGO_EXT.out],
     ),
-    Operator(type_=RBDYN_OP_EXT["Norm"], input=[RBDYN_OP["in1"]], output=[RBDYN_OP["out"]]),
     Operator(
         type_=RBDYN_OP["RotateWrenchToDistalWithPose"],
         input=[RBDYN_OP["pose"], RBDYN_OP["from"]],
@@ -454,28 +452,27 @@ ops_generic = [
         parameters=[TRAJ["profile"]],
     ),
     Operator(
-        type_=CSTR_HDL_EXT["VelocityProfile"],
+        type_=TRAJ["VelocityProfile"],
         input=[
-            CSTR_HDL_EXT["goal"],
-            CSTR_HDL_EXT["measured"],
+            TRAJ["goal"],
+            TRAJ["start"],
             TRAJ["measured-velocity"],
             TRAJ["max-velocity"],
             TRAJ["max-acceleration"],
             TRAJ["max-jerk"],
         ],
-        output=[CSTR_HDL_EXT["reference"]],
-        parameters=[TRAJ["shape"], CSTR_HDL_EXT["controller"]],
+        output=[TRAJ["reference"]],
+        parameters=[TRAJ["shape"]],
     ),
     Operator(
         type_=CSTR_HDL_EXT["Admittance"],
         input=[CSTR_HDL_EXT["force"]],
-        output=[CSTR_HDL_EXT["reference"]],
+        output=[TRAJ["reference"]],
         parameters=[
             CSTR_HDL_EXT["mass"],
             CSTR_HDL_EXT["damping"],
             CSTR_HDL_EXT["stiffness"],
-            CSTR_HDL_EXT["max-velocity"],
-            CSTR_HDL_EXT["controller"],
+            CSTR_HDL["maximum-velocity"],
         ],
     ),
     Operator(
@@ -514,7 +511,7 @@ ops_cstr_hdl = [
         input=[
             CSTR_HDL["error-signal"],
             CSTR_HDL_EXT["reference-signal"],
-            CSTR_HDL_EXT["measured-derivative"],
+            CSTR_HDL["measured-velocity"],
         ],
         output=[CSTR_HDL["control-signal"]],
         parameters=[
@@ -532,11 +529,7 @@ ops_slv = [
     Specification(type_=SLV["CartesianForceSpecification"], input=[SLV["force"]], output=[]),
     Specification(type_=SLV["JointForceSpecification"], input=[SLV["force"]], output=[]),
     Specification(
-        type_=SLV["AccelerationConstraint"],
-        # `slv-ext:direction` is only present on DirectionAligned constraints; absent
-        # on AxisAligned ones, where g.objects() simply yields nothing for it.
-        input=[SLV["acceleration-energy"], SLV_EXT["direction"]],
-        output=[],
+        type_=SLV["AccelerationConstraint"], input=[SLV["acceleration-energy"]], output=[]
     ),
     Specification(type_=SLV["ForceDistributionSolver"], input=[SLV["force"]], output=[]),
 ]
@@ -577,7 +570,7 @@ class LocalIdMap:
         self.graph = graph
         grouped: dict[str, list] = {}
         for node in sorted({n for n in nodes if n is not None}, key=str):
-            grouped.setdefault(get_valid_var_name(local_name(node)), []).append(node)
+            grouped.setdefault(get_valid_var_name(graph.compute_qname(node)[2]), []).append(node)
         self.ids = {}
         for base, members in grouped.items():
             if len(members) == 1:
@@ -604,7 +597,7 @@ class LocalIdMap:
     def __getitem__(self, node) -> str:
         """Local id for a node (empty string for None)."""
         if node not in self.ids:
-            self.ids[node] = get_valid_var_name(local_name(node))
+            self.ids[node] = get_valid_var_name(self.graph.compute_qname(node)[2])
         return self.ids[node]
 
 
@@ -740,21 +733,14 @@ class Parser:
         # root_acc.vel) — taken as truth, no sign flip. If a MuJoCo env ever needs a
         # different world gravity than the solver, hardcode it there with a TODO;
         # do not re-derive it from this by negation.
-        gravity_node = self.g.value(id_, SLV_EXT["gravity-value"])
+        gravity_node = self.g.value(id_, SLV.gravity)
         root_acc = self.parse_xyz(gravity_node) if gravity_node else None
         algorithm_node = self.g.value(id_, SLV["solver"])
         algorithm = {
             SLV["AccelerationConstrainedHybridDynamicsAlgorithm"]: "ACHD",
             SLV["RecursiveNewtonEulerAlgorithm"]: "RNE",
         }.get(algorithm_node, self.id(algorithm_node) if algorithm_node else "")
-        torque_saturation_node = next(
-            (
-                node
-                for node in self.g.objects(id_, CSTR_HDL_EXT["limits"])
-                if SLV_EXT["TorqueSaturation"] in self.g[node : RDF["type"]]
-            ),
-            None,
-        )
+        torque_saturation_node = next(self.g.objects(id_, ALGO_EXT.limits), None)
 
         return SolverWithInputAndOutput(
             id=self.id(id_),
@@ -763,7 +749,6 @@ class Parser:
             algorithm=algorithm,
             algorithm_is_rne=algorithm == "RNE",
             root_acc=root_acc,
-            regularization=self._optional_float(id_, SLV_EXT["regularization"]),
             torque_saturation=(
                 self.saturation(torque_saturation_node)
                 if torque_saturation_node is not None
@@ -815,12 +800,12 @@ class Parser:
     @memoize
     def saturation(self, id_):
         """Parse a Saturation (input/output limits) at node."""
-        self._expect_type(id_, CSTR_HDL_EXT["Saturation"])
-        input_signal = self.quantity(self.g.value(id_, CSTR_HDL_EXT["input-signal"]))
-        output_signal = self.quantity(self.g.value(id_, CSTR_HDL_EXT["output-signal"]))
-        maximum_node = self.g.value(id_, CSTR_HDL_EXT["maximum-absolute-value"])
-        lower_node = self.g.value(id_, CSTR_HDL_EXT["lower-limit"])
-        upper_node = self.g.value(id_, CSTR_HDL_EXT["upper-limit"])
+        self._expect_type(id_, ALGO_EXT.Saturation)
+        input_signal = self.quantity(self.g.value(id_, ALGO_EXT["in"]))
+        output_signal = self.quantity(self.g.value(id_, ALGO_EXT.out))
+        maximum_node = self.g.value(id_, ALGO_EXT["maximum-absolute-value"])
+        lower_node = self.g.value(id_, ALGO_EXT["lower-bound"])
+        upper_node = self.g.value(id_, ALGO_EXT["upper-bound"])
         return Saturation(
             self.id(id_),
             input_signal,
@@ -836,29 +821,10 @@ class Parser:
         self._expect_type(id_, SLV["AccelerationConstraint"])
         subspace = self.subspace(self.g.value(id_, SLV["subspace"]))
         e_acc = self.quantity(self.g.value(id_, SLV["acceleration-energy"]))
-        saturation_node = next(
-            (
-                node
-                for node in self.g.objects(id_, CSTR_HDL_EXT["limits"])
-                if SLV_EXT["AccelerationSaturation"] in self.g[node : RDF["type"]]
-            ),
-            None,
-        )
+        saturation_node = next(self.g.objects(id_, ALGO_EXT.limits), None)
         saturation = self.saturation(saturation_node) if saturation_node is not None else None
         as_seen_by_node = self.g.value(id_, GEOM_COORD["as-seen-by"])
         as_seen_by = self.frame(as_seen_by_node) if as_seen_by_node else None
-
-        if SLV_EXT["DirectionAligned"] in self.g[id_ : RDF["type"]]:
-            direction = self.direction(self.g.value(id_, SLV_EXT["direction"]))
-            return AccelerationConstraint(
-                self.id(id_),
-                subspace,
-                None,
-                e_acc,
-                as_seen_by,
-                direction=direction,
-                saturation=saturation,
-            )
 
         self._expect_type(id_, SLV["AxisAligned"])
         axis = self.axis(self.g.value(id_, SLV["axis"]))
@@ -871,7 +837,7 @@ class Parser:
         """Parse the Subspace (linear/angular half) of node."""
         d = {
             MAP["position"]: Subspace.Linear,
-            MAP_EXT["rotation"]: Subspace.Angular,
+            MAP_EXT["position"]: Subspace.Linear,
             MAP_EXT["orientation"]: Subspace.Angular,
             MAP["angular-velocity"]: Subspace.Angular,
             MAP["linear-velocity"]: Subspace.Linear,
@@ -881,8 +847,8 @@ class Parser:
             MAP["force"]: Subspace.Linear,
             SLV["angular-acceleration"]: Subspace.Angular,
             SLV["linear-acceleration"]: Subspace.Linear,
-            GEOM_COORD_EXT["linear"]: Subspace.Linear,
-            GEOM_COORD_EXT["angular"]: Subspace.Angular,
+            MAP_EXT["linear"]: Subspace.Linear,
+            MAP_EXT["angular"]: Subspace.Angular,
         }
         if id_ not in d:
             raise ValueError(f"unknown subspace {id_}")
@@ -947,8 +913,16 @@ class Parser:
     def monitor_entry(self, id_):
         """Parse a monitor (level flag or edge event) at node."""
         self._expect_type(id_, CSTR_HDL["Monitor"])
-        is_until_aggregate = self.g.value(id_, CSTR_HDL_EXT["monitors-until"]) is not None
-        is_when_aggregate = self.g.value(id_, CSTR_HDL_EXT["monitors-when"]) is not None
+        handler = next(self.g.subjects(CSTR_HDL.monitors, id_), None)
+        motion = self.g.value(handler, CSTR_HDL.motion) if handler is not None else None
+        monitored = set(self.g.objects(id_, CSTR_HDL.constraint))
+        when = set(self.g.objects(motion, MOT.when)) if motion is not None else set()
+        until = set(self.g.objects(motion, MOT.until)) if motion is not None else set()
+        is_aggregate = len(monitored) > 1 or any(
+            CSTR_EXT.ConstraintDisjunction in self.g[node : RDF.type] for node in monitored
+        )
+        is_until_aggregate = is_aggregate and monitored == until
+        is_when_aggregate = is_aggregate and monitored == when
         error_node = self.g.value(id_, CSTR_HDL["error"])
         error = (
             None
@@ -1045,7 +1019,7 @@ class Parser:
 
         error_node = self.g.value(id_, CSTR_HDL["error-signal"])
         ref_node = self.g.value(id_, CSTR_HDL_EXT["reference-signal"])
-        measured_derivative_node = self.g.value(id_, CSTR_HDL_EXT["measured-derivative"])
+        measured_derivative_node = self.g.value(id_, CSTR_HDL["measured-velocity"])
         error_signal = self.quantity(error_node) if error_node is not None else None
         reference_signal = self.quantity(ref_node) if ref_node is not None else None
         measured_derivative = (
@@ -1053,22 +1027,19 @@ class Parser:
             if measured_derivative_node is not None
             else None
         )
-        control_signal = self.quantity(self.g.value(id_, CSTR_HDL["control-signal"]))
+        control_signal_node = self.g.value(id_, CSTR_HDL["control-signal"])
+        control_signal = self.quantity(control_signal_node)
+        saturation_nodes = list(self.g.objects(id_, ALGO_EXT.limits))
         output_saturation_node = next(
             (
                 node
-                for node in self.g.objects(id_, CSTR_HDL_EXT["limits"])
-                if CSTR_HDL_EXT["IntegralSaturation"] not in self.g[node : RDF["type"]]
+                for node in saturation_nodes
+                if self.g.value(node, ALGO_EXT["in"]) == control_signal_node
             ),
             None,
         )
         integral_saturation_node = next(
-            (
-                node
-                for node in self.g.objects(id_, CSTR_HDL_EXT["limits"])
-                if CSTR_HDL_EXT["IntegralSaturation"] in self.g[node : RDF["type"]]
-            ),
-            None,
+            (node for node in saturation_nodes if node != output_saturation_node), None
         )
         output_saturation = (
             self.saturation(output_saturation_node) if output_saturation_node is not None else None
@@ -1145,16 +1116,6 @@ class Parser:
             reference_signal=reference_signal,
             output_saturation=output_saturation,
             type=self.id(CSTR_HDL_EXT.FeedForwardController),
-        )
-
-    @memoize
-    def forwarded_command(self, id_):
-        """Parse a ForwardedCommand (direct robot command forwarding) at node."""
-        self._expect_type(id_, SLV_EXT["ForwardedCommand"])
-        command_signal = self.quantity(self.g.value(id_, SLV_EXT["command-signal"]))
-        target_node = self.g.value(id_, SLV["attached-to"])
-        return ForwardedCommand(
-            self.id(id_), command_signal, self.label(target_node) if target_node is not None else ""
         )
 
     def _optional_float(self, subject, predicate) -> float | None:
@@ -1303,15 +1264,45 @@ class Parser:
 
         return [float(v.value) for v in (x, y, z)]
 
+    def _derived_reference_frames(self, id_):
+        """Derive a reference value's frames from its RDF use or snapshot source."""
+        source = next(
+            (
+                self.g.value(snapshot, SNAP["snapshot-of"])
+                for snapshot in self.g.subjects(SNAP["output"], id_)
+            ),
+            None,
+        )
+        if source is None:
+            constraint = next(self.g.subjects(CSTR["reference-value"], id_), None)
+            quantity = self.g.value(constraint, CSTR.quantity) if constraint is not None else None
+            view = next(self.g.subjects(MAP.subobject, quantity), None)
+            source = self.g.value(view, MAP.superobject) if view is not None else quantity
+        if source is None:
+            return None, None, None
+        return (
+            self.g.value(source, GEOM_REL.of),
+            self.g.value(source, GEOM_REL["with-respect-to"]),
+            self.g.value(source, GEOM_COORD["as-seen-by"]),
+        )
+
     @memoize
     def position(self, id_):
         """Parse a Position quantity at node."""
         self._expect_type(id_, GEOM_COORD["PositionCoordinate"])
         self._expect_type(id_, GEOM_COORD["VectorXYZ"])
-        of = self.position_reference(self.g.value(id_, GEOM_REL["of"]))
-        wrt = self.position_reference(self.g.value(id_, GEOM_REL["with-respect-to"]))
+        of_node = self.g.value(id_, GEOM_REL["of"])
+        wrt_node = self.g.value(id_, GEOM_REL["with-respect-to"])
+        as_seen_by_node = self.g.value(id_, GEOM_COORD["as-seen-by"])
+        if of_node is None or wrt_node is None or as_seen_by_node is None:
+            inherited_of, inherited_wrt, inherited_as_seen_by = self._derived_reference_frames(id_)
+            of_node = of_node or inherited_of
+            wrt_node = wrt_node or inherited_wrt
+            as_seen_by_node = as_seen_by_node or inherited_as_seen_by
+        of = self.position_reference(of_node)
+        wrt = self.position_reference(wrt_node)
         quantity_kind = self.id(self.g.value(id_, QUDT_SCHEMA["hasQuantityKind"]))
-        as_seen_by = self.frame(self.g.value(id_, GEOM_COORD["as-seen-by"]))
+        as_seen_by = self.frame(as_seen_by_node)
         unit = self.id(self.g.value(id_, QUDT_SCHEMA["unit"]))
         pos = self.parse_xyz(id_)
 
@@ -1360,6 +1351,8 @@ class Parser:
             return None
         if GEOM_ENT.Point in self.g[id_ : RDF["type"]]:
             return self.point(id_)
+        if GEOM_ENT.Frame in self.g[id_ : RDF["type"]]:
+            return Point(self.id(id_))
         raise ValueError(f"Position reference must be a Point, got: {id_}")
 
     @memoize
@@ -1376,12 +1369,19 @@ class Parser:
         # KDL::Frame is filled at runtime. Same IR shape as a coordinate pose, with
         # its frame endpoints but no authored coordinate values.
         """Parse a bare Pose (no view) at node."""
+        of_node = self.g.value(id_, GEOM_REL["of"])
+        wrt_node = self.g.value(id_, GEOM_REL["with-respect-to"])
         as_seen_by_node = self.g.value(id_, GEOM_COORD["as-seen-by"])
+        if of_node is None or wrt_node is None or as_seen_by_node is None:
+            inherited_of, inherited_wrt, inherited_as_seen_by = self._derived_reference_frames(id_)
+            of_node = of_node or inherited_of
+            wrt_node = wrt_node or inherited_wrt
+            as_seen_by_node = as_seen_by_node or inherited_as_seen_by
         provenance = self.quantity_provenance(id_)
         return Pose(
             self.id(id_),
-            self._pose_endpoint(self.g.value(id_, GEOM_REL["of"])),
-            self._pose_endpoint(self.g.value(id_, GEOM_REL["with-respect-to"])),
+            self._pose_endpoint(of_node),
+            self._pose_endpoint(wrt_node),
             [self.id(k) for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]]],
             self.frame(as_seen_by_node) if as_seen_by_node is not None else None,
             [self.id(u) for u in self.g[id_ : QUDT_SCHEMA["unit"]]],
@@ -1395,13 +1395,19 @@ class Parser:
     def pose(self, id_):
         """Parse a Pose quantity (endpoints, orientation, position) at node."""
         self._expect_type(id_, GEOM_COORD["PoseCoordinate"])
-        self._expect_type(id_, GEOM_COORD["VectorXYZ"])
-        of = self._pose_endpoint(self.g.value(id_, GEOM_REL["of"]))
-        wrt = self._pose_endpoint(self.g.value(id_, GEOM_REL["with-respect-to"]))
+        of_node = self.g.value(id_, GEOM_REL["of"])
+        wrt_node = self.g.value(id_, GEOM_REL["with-respect-to"])
+        as_seen_by_node = self.g.value(id_, GEOM_COORD["as-seen-by"])
+        if of_node is None or wrt_node is None or as_seen_by_node is None:
+            inherited_of, inherited_wrt, inherited_as_seen_by = self._derived_reference_frames(id_)
+            of_node = of_node or inherited_of
+            wrt_node = wrt_node or inherited_wrt
+            as_seen_by_node = as_seen_by_node or inherited_as_seen_by
+        of = self._pose_endpoint(of_node)
+        wrt = self._pose_endpoint(wrt_node)
         quantity_kind = []
         for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]]:
             quantity_kind.append(self.id(k))
-        as_seen_by_node = self.g.value(id_, GEOM_COORD["as-seen-by"])
         as_seen_by = self.frame(as_seen_by_node) if as_seen_by_node is not None else None
         unit = []
         for u in self.g[id_ : QUDT_SCHEMA["unit"]]:
@@ -1488,7 +1494,7 @@ class Parser:
     @memoize
     def pose_difference(self, id_):
         """Parse a PoseDifference quantity at node."""
-        self._expect_type(id_, GEOM_COORD_EXT["PoseDifferenceCoordinate"])
+        self._expect_type(id_, GEOM_COORD["PoseDifferenceCoordinate"])
         self._expect_type(id_, GEOM_COORD["VectorXYZ"])
         qk, ref, seen, unit, provenance = self._spatial_coordinate_fields(
             id_, GEOM_REL["reference-point"], GEOM_COORD["as-seen-by"]
@@ -1502,7 +1508,8 @@ class Parser:
         qk, ref, seen, unit, provenance = self._spatial_coordinate_fields(
             id_, RBDYN_ENT["reference-point"], RBDYN_COORD["as-seen-by"]
         )
-        sensor_name = str(self.g.value(id_, MJ["ft-sensor-ref"]) or "")
+        sensor = self.g.value(id_, SOSA.madeBySensor)
+        sensor_name = self.id(sensor) if sensor is not None else ""
         return Wrench(
             self.id(id_), qk, ref, seen, unit, provenance=provenance, sensor_name=sensor_name
         )
@@ -1578,7 +1585,7 @@ class Parser:
     def joint_position(self, id_):
         """Parse a JointPosition quantity at node."""
         self._expect_type(id_, KC_STAT["JointPositionCoordinate"])
-        joint_node = self.g.value(id_, GEOM_REL["of"])
+        joint_node = self.g.value(id_, KC_STAT["of-joint"])
         joint_name = self.label(joint_node) if joint_node is not None else ""
         return JointPosition(self.id(id_), joint_name)
 
@@ -1615,11 +1622,12 @@ class Parser:
     @memoize
     def simplicial_complex(self, id_):
         """Parse a SimplicialComplex at node."""
-        self._expect_type(id_, GEOM_ENT["SimplicialComplex"])
-        # rdf.py's _frame_body() mints this off a Frame (mj:attached-body) so Twist.of/wrt don't
-        # fuse Frame and body onto one URI. Follow the link back so the id matches its name.
-        owner = self.g.value(predicate=MJ["attached-body"], object=id_)
-        return SimplicialComplex(self.id(owner if owner is not None else id_))
+        if not any(
+            type_ in self.g[id_ : RDF.type]
+            for type_ in (GEOM_ENT.SimplicialComplex, GEOM_ENT.Frame)
+        ):
+            raise ValueError(f"Expected a rigid body or frame, got: {id_}")
+        return SimplicialComplex(self.id(id_))
 
     @memoize
     def scene_object(self, id_):
@@ -1637,24 +1645,19 @@ class Parser:
     @memoize
     def point(self, id_):
         """Parse a Point at node."""
-        self._expect_type(id_, GEOM_ENT["Point"])
-        # rdf.py's _frame_origin_point() mints this off a Frame (geom-ent:origin) so Position.of/wrt
-        # don't fuse Frame and Point onto one URI. Follow the link back so the id matches its name.
-        owner = self.g.value(predicate=GEOM_ENT["origin"], object=id_)
-        return Point(self.id(owner if owner is not None else id_))
+        if not any(type_ in self.g[id_ : RDF.type] for type_ in (GEOM_ENT.Point, GEOM_ENT.Frame)):
+            raise ValueError(f"Expected a point or frame, got: {id_}")
+        return Point(self.id(id_))
 
     def view(self):
         """Parse a View (superobject, subobject, subspace, axis) at node."""
         dispatcher = [
             (MAP["DirectionCoordinateView"], self.direction),
-            (MAP["PoseCoordinateView"], self.pose),
-            (MAP_EXT["PoseOrientationView"], self.pose),
-            (MAP_EXT["PosePositionView"], self.pose),
-            (MAP["VelocityTwistCoordinateView"], self.velocity_twist),
-            (MAP["AccelerationTwistCoordinateView"], self.acceleration_twist),
+            (MAP_EXT["PoseCoordinateView"], self.pose),
+            (MAP_EXT["VelocityTwistCoordinateView"], self.velocity_twist),
+            (MAP_EXT["AccelerationTwistCoordinateView"], self.acceleration_twist),
             (MAP_EXT["PoseDifferenceView"], self.pose_difference),
-            (MAP["WrenchCoordinateView"], self.wrench),
-            (MAP_EXT["WrenchVectorView"], self.wrench),
+            (MAP_EXT["WrenchCoordinateView"], self.wrench),
         ]
 
         view_map = {}
@@ -1667,6 +1670,10 @@ class Parser:
                 superobject_id = self.g.value(view, MAP["superobject"])
                 superobject = func(superobject_id)
                 break
+
+            if superobject is None:
+                superobject_id = self.g.value(view, MAP["superobject"])
+                superobject = self.quantity(superobject_id)
 
             subobject = self.quantity(self.g.value(view, MAP["subobject"]))
             subspace = self.subspace(self.g.value(view, MAP["subspace"]))
@@ -1692,7 +1699,7 @@ class Parser:
             (GEOM_COORD["PoseCoordinate"], self.pose),
             (GEOM_COORD["VelocityTwistCoordinate"], self.velocity_twist),
             (GEOM_COORD["AccelerationTwistCoordinate"], self.acceleration_twist),
-            (GEOM_COORD_EXT["PoseDifferenceCoordinate"], self.pose_difference),
+            (GEOM_COORD["PoseDifferenceCoordinate"], self.pose_difference),
             (RBDYN_COORD["WrenchCoordinate"], self.wrench),
             (QUDT_SCHEMA["Quantity"], self.quantity),
         ]
@@ -1715,15 +1722,28 @@ class Parser:
                     else None
                 )
                 if cl:
+                    if operator.type_ in {TRAJ.VelocityProfile, CSTR_HDL_EXT.Admittance}:
+                        reference = self.g.value(closure, TRAJ.reference)
+                        constraint = next(
+                            self.g.subjects(CSTR["reference-value"], reference), None
+                        )
+                        controller = next(
+                            self.g.subjects(CSTR_HDL.constraint, constraint), None
+                        )
+                        cl["controller"] = self.id(controller)
+                        if operator.type_ == TRAJ.VelocityProfile:
+                            cl["measured"] = cl.pop("start")
+                        else:
+                            cl["max_velocity"] = cl.pop("maximum_velocity")
                     if operator.type_ == CSTR_HDL["Controller"]:
-                        # output-saturation lives on cstr-hdl-ext:limits (the non-integral
-                        # SignalLimiter); the closure the step template renders is built from
-                        # input/output/param edges, so attach the clamp explicitly.
+                        # The closure step omits attached algorithm limits, so carry its output
+                        # saturation into the rendered controller call explicitly.
+                        control_signal = self.g.value(closure, CSTR_HDL["control-signal"])
                         sat_node = next(
                             (
                                 n
-                                for n in self.g.objects(closure, CSTR_HDL_EXT["limits"])
-                                if CSTR_HDL_EXT["IntegralSaturation"] not in self.g[n : RDF["type"]]
+                                for n in self.g.objects(closure, ALGO_EXT.limits)
+                                if self.g.value(n, ALGO_EXT["in"]) == control_signal
                             ),
                             None,
                         )
@@ -2038,12 +2058,8 @@ def _snapshots_for_motion(
     data_reference_map=None,
     schedule=None,
     closures=None,
-    snapshot_clock_map=None,
 ):
-    """Build a motion's snapshot captures (sampled source, clock and persistence) from its
-    evaluators, constraints and reference maps.
-    """
-    snapshot_clock_map = snapshot_clock_map or {}
+    """Build a motion's initial snapshot captures from its references."""
     ref_val_ids = _snapshot_reference_value_ids(evaluators, constraints)
     closures = closures or {}
     data_reference_map = data_reference_map or {}
@@ -2113,15 +2129,8 @@ def _snapshots_for_motion(
                 target_id=target_id,
                 source_id=source_id,
                 source_closure_id=source_closure_id,
-                clock=snapshot_clock_map.get(target_id, "task"),
             )
         )
-
-    # If the motion resets on re-entry (has any `on entry` sample), its `on task`
-    # samples must survive that reset -> persistent. Otherwise nothing persists.
-    has_entry = any(s.clock == "entry" for s in result)
-    for s in result:
-        s.persistent = has_entry and s.clock == "task"
     return result
 
 
@@ -2136,8 +2145,7 @@ _CLOSURE_OUTPUT_FIELDS = {
     "RotateVelocityTwistToProximalWithPose": "to",
     "InvertAngle": "out",
     "AddWrench": "out",
-    "AddQuantity": "out",
-    "Norm": "out",
+    "Addition": "out",
     "RotateWrenchToDistalWithPose": "to",
     "RotateWrenchToProximalWithPose": "to",
     "TransformWrenchToProximal": "to",
@@ -2329,7 +2337,6 @@ def build_motion_units(
     closure_input_map=None,
     closures=None,
     data_structures=None,
-    snapshot_clock_map=None,
     pose_components=None,
     fsm=None,
 ):
@@ -2337,7 +2344,6 @@ def build_motion_units(
     monitors, controllers, conditions, declared poses, FSM wiring and function-interface flags;
     returns (motions, fsm_meta).
     """
-    snapshot_clock_map = snapshot_clock_map or {}
     snapshot_source_map = snapshot_source_map or {}
     view_map = view_map or {}
     closure_output_map = closure_output_map or {}
@@ -2434,19 +2440,19 @@ def build_motion_units(
 
         when_mon_nodes, while_mon_nodes, until_mon_nodes = [], [], []
         for mon_node in g[handler_node : CSTR_HDL["monitors"]]:
-            if g.value(mon_node, CSTR_HDL_EXT["monitors-when"]) is not None:
+            monitored = set(g.objects(mon_node, CSTR_HDL["constraint"]))
+            if monitored and monitored == _raw_when:
                 when_mon_nodes.append(mon_node)
                 continue
-            if g.value(mon_node, CSTR_HDL_EXT["monitors-until"]) is not None:
+            if monitored and monitored == _raw_until:
                 until_mon_nodes.append(mon_node)
                 continue
-            mon_cstr = g.value(mon_node, CSTR_HDL["constraint"])
-            if mon_cstr is not None:
-                if mon_cstr in when_cstr_nodes:
+            if monitored:
+                if monitored & when_cstr_nodes:
                     when_mon_nodes.append(mon_node)
-                elif mon_cstr in while_cstr_nodes:
+                elif monitored & while_cstr_nodes:
                     while_mon_nodes.append(mon_node)
-                elif mon_cstr in until_cstr_nodes:
+                elif monitored & until_cstr_nodes:
                     until_mon_nodes.append(mon_node)
             else:
                 mon_error = g.value(mon_node, CSTR_HDL["error"])
@@ -2502,18 +2508,6 @@ def build_motion_units(
                 if upstream & handler_output_ids:
                     cartesian_force_nodes.append(cf_node)
 
-        # Direction-aligned ACHD constraints: their runtime direction (PoseToDirection) is no
-        # evaluator/controller input, so seed the walk from the constraint nodes themselves.
-        direction_constraint_nodes = []
-        for solver in handler_arm_solvers:
-            driver_node = node_by_id.get(solver.motion_driver.id)
-            if driver_node is None:
-                continue
-            for spec_node in g[driver_node : SLV["acceleration-constraint"]]:
-                for acc_node in g[spec_node : SLV["constraints"]]:
-                    if SLV_EXT["DirectionAligned"] in g[acc_node : RDF["type"]]:
-                        direction_constraint_nodes.append(acc_node)
-
         p_active = Parser(g)
         pose_axis_error_groups = _pose_axis_error_groups_for_motion(
             while_eval_nodes, p_active, view_map
@@ -2551,10 +2545,6 @@ def build_motion_units(
         while_schedule.extend(
             p_active.schedule(cartesian_force_nodes, ops_generic + ops_slv + ops_cstr_hdl)
         )
-        while_schedule.extend(
-            p_active.schedule(direction_constraint_nodes, ops_generic + ops_slv + ops_cstr_hdl)
-        )
-
         # While evaluators watched only by a monitor (no controller consumes their error) aren't
         # reached by backward discovery; append them after their deps so their evaluate call emits.
         for n in while_eval_nodes:
@@ -2602,14 +2592,28 @@ def build_motion_units(
         ]
         until_evaluators = [p.constraint_evaluator(n) for n in until_eval_nodes]
         controllers = [p.controller(n) for n in ctrl_nodes]
-        controller_output_ids = {
-            c.control_signal.id for c in controllers if c.control_signal is not None
+        forwarded_outputs = {
+            output
+            for solver in g.subjects(RDF.type, SLV_EXT.CommandForwardingSolver)
+            for output in g.objects(solver, SLV.output)
         }
-        forwarded_commands = [
-            p.forwarded_command(n)
-            for n in g.subjects(RDF.type, SLV_EXT["ForwardedCommand"])
-            if p.id(g.value(n, SLV_EXT["command-signal"])) in controller_output_ids
-        ]
+        forwarded_commands = []
+        for controller_node in ctrl_nodes:
+            output = g.value(controller_node, CSTR_HDL["control-signal"])
+            if output not in forwarded_outputs:
+                continue
+            constraint = g.value(controller_node, CSTR_HDL.constraint)
+            quantity = g.value(constraint, CSTR.quantity)
+            view = next(g.subjects(MAP.subobject, quantity), None)
+            target_quantity = g.value(view, MAP.superobject) if view is not None else quantity
+            target = g.value(target_quantity, KC_STAT["of-joint"])
+            forwarded_commands.append(
+                ForwardedCommand(
+                    f"cmd-fwd-{p.id(controller_node)}",
+                    p.quantity(output),
+                    p.label(target) if target is not None else "",
+                )
+            )
         when_monitors = [p.monitor_entry(n) for n in when_mon_nodes]
         while_monitors = [p.monitor_entry(n) for n in while_mon_nodes]
         until_monitors = [p.monitor_entry(n) for n in until_mon_nodes]
@@ -2657,7 +2661,7 @@ def build_motion_units(
                 pose_axis_error_groups=pose_axis_error_groups,
                 forwarded_commands=forwarded_commands,
                 snapshots=(
-                    _motion_snapshots := _snapshots_for_motion(
+                    _snapshots_for_motion(
                         while_evaluators + when_evaluators + until_evaluators,
                         motion.while_ + motion.when + motion.until,
                         snapshot_source_map,
@@ -2666,10 +2670,8 @@ def build_motion_units(
                         data_reference_map,
                         while_schedule + when_schedule + until_schedule,
                         closures,
-                        snapshot_clock_map,
                     )
                 ),
-                has_entry_snapshot=any(s.clock == "entry" for s in _motion_snapshots),
             )
         )
 
@@ -3064,11 +3066,16 @@ def _trace_from_graph(g):
 def _scene_from_graph(g):
     """Build the scene (robots, objects, placement and geometry) from the workspace graph."""
     scene = SceneSpec()
+    context = next(g.subjects(RDF.type, EXEC.ExecutionContext), None)
+    if context is not None:
+        timestep = g.value(context, EXEC.timestep)
+        value = g.value(timestep, QUDT_SCHEMA.value)
+        unit = g.value(timestep, QUDT_SCHEMA.unit)
+        if value is not None:
+            scale = 0.001 if unit == QUDT_UNIT.MilliSEC else 1.0
+            scene.timestep_s = float(value.toPython()) * scale
     for env_node in g.subjects(RDF.type, ENV.Workspace):
         ids = LocalIdMap(g, _scene_id_nodes(g, env_node))
-        _timestep = g.value(env_node, MJ["timestep"])
-        if _timestep is not None:
-            scene.timestep_s = float(_timestep.toPython())
         robot_nodes = []
         for obj_node in g.objects(env_node, ENV["has-object"]):
             if g.value(obj_node, GEOM_ENT["kinematic-chain"]) is not None:
@@ -3477,8 +3484,8 @@ def _build_introspection(
         }
         quantities.append({k: v for k, v in quantity_entry.items() if v is not None and v != []})
 
-    runtime_type = {"mj_kdl": "rt:MuJoCoRuntime", "robif2b": "rt:RealRobotRuntime"}.get(
-        backend, "rt:Runtime"
+    runtime_type = {"mj_kdl": "exec:Simulation", "robif2b": "exec:RealWorld"}.get(
+        backend, "exec:ExecutionContext"
     )
     runtime_id = "agent:runtime:mujoco" if backend == "mj_kdl" else "agent:runtime:real_robot"
     runtime_activity_type = (
@@ -3588,7 +3595,7 @@ def _build_introspection(
                 },
                 {"id": "agent", "uri": "https://secorolab.github.io/metamodels/agent#"},
                 {"id": "observation", "uri": "https://secorolab.github.io/metamodels/observation#"},
-                {"id": "runtime", "uri": str(RT.Runtime)},
+                {"id": "execution-context", "uri": str(EXEC.ExecutionContext)},
             ],
             "entities": entities,
             "activities": [
@@ -3741,19 +3748,246 @@ def _assign_monitor_event_indexes(handlers) -> None:
                 event_idx += 1
 
 
-def _snapshot_maps(g, p: Parser) -> tuple[dict[str, str], dict[str, str]]:
-    """Build the (snapshot_source_map, snapshot_clock_map) lookups from the graph."""
+def _snapshot_source_map(g, p: Parser) -> dict[str, str]:
+    """Map each snapshot output to its source quantity."""
     snapshot_source_map: dict[str, str] = {}
-    snapshot_clock_map: dict[str, str] = {}
     for snap_node in g.subjects(RDF.type, SNAP.Snapshot):
         source_node = g.value(snap_node, SNAP["snapshot-of"])
         if source_node is not None:
             snapshot_source_map[p.id(snap_node)] = p.id(source_node)
-        clock_node = g.value(snap_node, SNAP["sampled-on"])
-        snapshot_clock_map[p.id(snap_node)] = (
-            "entry" if clock_node == SNAP["entry-clock"] else "task"
-        )
-    return snapshot_source_map, snapshot_clock_map
+    return snapshot_source_map
+
+
+def _pose_frames(g, pose) -> tuple[URIRef, URIRef]:
+    """Return a pose quantity's authored `(of, with-respect-to)` frames."""
+    of_frame = g.value(pose, GEOM_REL.of)
+    wrt_frame = g.value(pose, GEOM_REL["with-respect-to"])
+    if not isinstance(of_frame, URIRef) or not isinstance(wrt_frame, URIRef):
+        raise ValueError(f"Pose {pose} needs explicit of/with-respect-to frames.")
+    return of_frame, wrt_frame
+
+
+def _materialize_linear_distance_operations(g) -> None:
+    """Expand authored linear-distance relations into codegen operations.
+
+    The DSL graph states only the two pose endpoints. This operational expansion belongs
+    here because its inverse/composition path is derivable from the complete RDF graph.
+    """
+
+    def derived(node, suffix):
+        return URIRef(f"{node}.derived-{suffix}")
+
+    def emit_pose(node, of_frame, wrt_frame):
+        g.add((node, RDF.type, QUDT_SCHEMA.Quantity))
+        g.add((node, RDF.type, GEOM_REL.Pose))
+        g.add((node, RDF.type, GEOM_COORD.PoseCoordinate))
+        g.add((node, GEOM_REL.of, of_frame))
+        g.add((node, GEOM_REL["with-respect-to"], wrt_frame))
+        g.add((node, GEOM_COORD["as-seen-by"], wrt_frame))
+
+    edges = collections.defaultdict(list)
+    for pose in g.subjects(RDF.type, GEOM_REL.Pose):
+        try:
+            of_frame, wrt_frame = _pose_frames(g, pose)
+        except ValueError:
+            continue
+        edges[wrt_frame].append((of_frame, pose, False))
+        edges[of_frame].append((wrt_frame, pose, True))
+
+    for distance in list(g.subjects(RDF.type, GEOM_REL.LinearDistance)):
+        if next(g.subjects(CSTR.quantity, distance), None) is None:
+            continue
+        endpoints = list(dict.fromkeys(g.objects(distance, GEOM_REL["between-entities"])))
+        if len(endpoints) != 2:
+            raise ValueError(f"Linear distance {distance} needs exactly two pose endpoints.")
+        start, end = endpoints
+        start_of, start_wrt = _pose_frames(g, start)
+        end_of, end_wrt = _pose_frames(g, end)
+
+        path = ()
+        if start_wrt != end_wrt:
+            queue = collections.deque([(start_wrt, ())])
+            seen = {start_wrt}
+            while queue:
+                frame, current_path = queue.popleft()
+                for next_frame, pose, inverted in edges[frame]:
+                    if next_frame in seen:
+                        continue
+                    next_path = (*current_path, (pose, inverted))
+                    if next_frame == end_wrt:
+                        path = next_path
+                        queue.clear()
+                        break
+                    seen.add(next_frame)
+                    queue.append((next_frame, next_path))
+            if not path:
+                raise ValueError(
+                    f"Linear distance {distance} has no pose path from {start_wrt} to {end_wrt}."
+                )
+
+        current = None
+        current_wrt = start_wrt
+        for index, (pose, inverted) in enumerate(path):
+            pose_of, pose_wrt = _pose_frames(g, pose)
+            step = pose
+            step_of, step_wrt = pose_of, pose_wrt
+            if inverted:
+                step = derived(distance, f"path-{index}-inverse")
+                emit_pose(step, pose_wrt, pose_of)
+                operation = derived(distance, f"path-{index}-invert")
+                g.add((operation, RDF.type, GEOM_OP.InvertPose))
+                g.add((operation, GEOM_OP.pose, pose))
+                g.add((operation, GEOM_OP.out, step))
+                step_of, step_wrt = pose_wrt, pose_of
+            if current is None:
+                current = step
+                current_wrt = step_wrt
+                continue
+            composite = derived(distance, f"path-{index}-pose")
+            emit_pose(composite, step_of, current_wrt)
+            operation = derived(distance, f"path-{index}-compose")
+            g.add((operation, RDF.type, GEOM_OP.ComposePose))
+            g.add((operation, GEOM_OP.in1, current))
+            g.add((operation, GEOM_OP.in2, step))
+            g.add((operation, GEOM_OP.composite, composite))
+            current = composite
+
+        end_in_start_reference = end
+        if current is not None:
+            end_in_start_reference = derived(distance, "end-in-start-reference")
+            emit_pose(end_in_start_reference, end_of, start_wrt)
+            operation = derived(distance, "compose-reference-path")
+            g.add((operation, RDF.type, GEOM_OP.ComposePose))
+            g.add((operation, GEOM_OP.in1, current))
+            g.add((operation, GEOM_OP.in2, end))
+            g.add((operation, GEOM_OP.composite, end_in_start_reference))
+
+        inverse_start = derived(distance, "inverse-start")
+        emit_pose(inverse_start, start_wrt, start_of)
+        invert_start = derived(distance, "invert-start")
+        g.add((invert_start, RDF.type, GEOM_OP.InvertPose))
+        g.add((invert_start, GEOM_OP.pose, start))
+        g.add((invert_start, GEOM_OP.out, inverse_start))
+
+        relative_pose = derived(distance, "relative-pose")
+        emit_pose(relative_pose, end_of, start_of)
+        compose_relative = derived(distance, "compose-relative-pose")
+        g.add((compose_relative, RDF.type, GEOM_OP.ComposePose))
+        g.add((compose_relative, GEOM_OP.in1, inverse_start))
+        g.add((compose_relative, GEOM_OP.in2, end_in_start_reference))
+        g.add((compose_relative, GEOM_OP.composite, relative_pose))
+
+        operation = derived(distance, "magnitude")
+        g.add((operation, RDF.type, GEOM_OP.PoseToLinearDistance))
+        g.add((operation, GEOM_OP.pose, relative_pose))
+        g.add((operation, GEOM_OP.distance, distance))
+
+
+def _materialize_pose_reference_transforms(g) -> None:
+    """Re-express a full-pose equality reference into the constrained pose's frame.
+
+    A full-pose EqualityConstraint states its reference in whatever frame it was
+    authored; when that differs from the constrained quantity's `with-respect-to`
+    frame the comparison first needs the reference re-expressed. The transform path
+    is derivable from the complete RDF graph, so the composition belongs here.
+    """
+    def derived(node, suffix):
+        return URIRef(f"{node}.derived-{suffix}")
+
+    def emit_pose(node, of_frame, wrt_frame):
+        g.add((node, RDF.type, QUDT_SCHEMA.Quantity))
+        g.add((node, RDF.type, GEOM_REL.Pose))
+        g.add((node, RDF.type, GEOM_COORD.PoseCoordinate))
+        g.add((node, GEOM_REL.of, of_frame))
+        g.add((node, GEOM_REL["with-respect-to"], wrt_frame))
+        g.add((node, GEOM_COORD["as-seen-by"], wrt_frame))
+
+    edges = collections.defaultdict(list)
+    for pose in g.subjects(RDF.type, GEOM_REL.Pose):
+        try:
+            of_frame, wrt_frame = _pose_frames(g, pose)
+        except ValueError:
+            continue
+        edges[wrt_frame].append((of_frame, pose, False))
+        edges[of_frame].append((wrt_frame, pose, True))
+
+    for constraint in list(g.subjects(RDF.type, CSTR.EqualityConstraint)):
+        quantity = g.value(constraint, CSTR.quantity)
+        reference = g.value(constraint, CSTR["reference-value"])
+        if quantity is None or reference is None:
+            continue
+        if GEOM_REL.Pose not in g[quantity : RDF.type]:
+            continue
+        if GEOM_REL.Pose not in g[reference : RDF.type]:
+            continue
+        target_of, target_wrt = _pose_frames(g, quantity)
+        source_of, source_wrt = _pose_frames(g, reference)
+        if source_wrt == target_wrt:
+            continue
+        if source_of != target_of:
+            raise ValueError(
+                f"Equality constraint {constraint} compares a pose of {target_of} "
+                f"to a reference of {source_of}."
+            )
+
+        queue = collections.deque([(target_wrt, ())])
+        seen = {target_wrt}
+        path = ()
+        while queue:
+            frame, current_path = queue.popleft()
+            for next_frame, pose, inverted in edges[frame]:
+                if next_frame in seen:
+                    continue
+                next_path = (*current_path, (pose, inverted))
+                if next_frame == source_wrt:
+                    path = next_path
+                    queue.clear()
+                    break
+                seen.add(next_frame)
+                queue.append((next_frame, next_path))
+        if not path:
+            raise ValueError(
+                f"Equality constraint {constraint} has no pose path from "
+                f"{target_wrt} to {source_wrt}."
+            )
+
+        current = None
+        current_wrt = target_wrt
+        for index, (pose, inverted) in enumerate(path):
+            pose_of, pose_wrt = _pose_frames(g, pose)
+            step = pose
+            step_of, step_wrt = pose_of, pose_wrt
+            if inverted:
+                step = derived(constraint, f"path-{index}-inverse")
+                emit_pose(step, pose_wrt, pose_of)
+                operation = derived(constraint, f"path-{index}-invert")
+                g.add((operation, RDF.type, GEOM_OP.InvertPose))
+                g.add((operation, GEOM_OP.pose, pose))
+                g.add((operation, GEOM_OP.out, step))
+                step_of, step_wrt = pose_wrt, pose_of
+            if current is None:
+                current = step
+                current_wrt = step_wrt
+                continue
+            composite = derived(constraint, f"path-{index}-pose")
+            emit_pose(composite, step_of, current_wrt)
+            operation = derived(constraint, f"path-{index}-compose")
+            g.add((operation, RDF.type, GEOM_OP.ComposePose))
+            g.add((operation, GEOM_OP.in1, current))
+            g.add((operation, GEOM_OP.in2, step))
+            g.add((operation, GEOM_OP.composite, composite))
+            current = composite
+
+        reference_in_target = derived(constraint, "reference-in-target")
+        emit_pose(reference_in_target, source_of, target_wrt)
+        operation = derived(constraint, "compose-reference")
+        g.add((operation, RDF.type, GEOM_OP.ComposePose))
+        g.add((operation, GEOM_OP.in1, current))
+        g.add((operation, GEOM_OP.in2, reference))
+        g.add((operation, GEOM_OP.composite, reference_in_target))
+
+        g.remove((constraint, CSTR["reference-value"], reference))
+        g.add((constraint, CSTR["reference-value"], reference_in_target))
 
 
 def _data_reference_map(data_structures, closures: dict) -> dict[str, str]:
@@ -3814,26 +4048,14 @@ def _apply_solver_control_modes(slv_arm, motions) -> None:
 
 
 def _backend_from_graph(g) -> str:
-    """Runtime backend ('mj_kdl' or 'robif2b') selected by the graph's runtime type."""
-    runtime_to_backend = {str(RT.MuJoCoRuntime): "mj_kdl", str(RT.RealRobotRuntime): "robif2b"}
-    for runtime_iri in g.objects(predicate=RT["uses-runtime"]):
-        mapped = runtime_to_backend.get(str(runtime_iri))
-        if mapped:
-            return mapped
+    """Select the runtime backend from the authored execution context."""
+    simulation = next(g.subjects(RDF.type, EXEC.Simulation), None)
+    if simulation is not None:
+        name = str(g.value(simulation, EXEC["platform-name"]) or "").casefold()
+        if name == "mujoco":
+            return "mj_kdl"
+        raise ValueError(f"Unsupported simulation platform '{name}'.")
     return "robif2b"
-
-
-def _single_solver_value(slv_arm, attr, label, default):
-    """The single value of an attribute across arm solvers (one control loop); raises if they
-    disagree.
-    """
-    values = {v for s in slv_arm if (v := getattr(s, attr)) is not None}
-    if len(values) > 1:
-        raise ValueError(
-            f"Multiple {label} values found across arm solvers, but generated code has one "
-            "control loop."
-        )
-    return next(iter(values), default)
 
 
 def _apply_monitor_debounce(handlers, control_period_ns: int) -> None:
@@ -3846,10 +4068,8 @@ def _apply_monitor_debounce(handlers, control_period_ns: int) -> None:
                 )
 
 
-def _shared_runtime_members(slv_arm, motions) -> list[dict]:
-    """Extra shared_data members for runtime state (FT bias/settle counters, snapshot-captured
-    flags).
-    """
+def _shared_runtime_members(slv_arm) -> list[dict]:
+    """Extra shared-data members for force/torque sensor state."""
     members = []
     seen_ft_ids = set()
     for s in slv_arm:
@@ -3861,12 +4081,6 @@ def _shared_runtime_members(slv_arm, motions) -> list[dict]:
                 members.append({"id": f"{out.id}_ft_bias", "type": "FreeVector"})
                 members.append({"id": f"{out.id}_ft_settle", "type": "IntCounter"})
 
-    seen_captured = set()
-    for motion in motions:
-        for snap in getattr(motion, "snapshots", []):
-            if getattr(snap, "persistent", False) and snap.target_id not in seen_captured:
-                seen_captured.add(snap.target_id)
-                members.append({"id": f"{snap.target_id}_captured", "type": "Bool"})
     return members
 
 
@@ -4561,7 +4775,7 @@ def _fsm_from_graph(g) -> dict | None:
 
     def ident(uri):
         """FSM identifier token (upper-cased var name) for a graph URI."""
-        return get_valid_var_name(local_name(str(uri))).upper()
+        return get_valid_var_name(g.compute_qname(uri)[2]).upper()
 
     states, state_uris = [], {}
     for s in g.objects(fsm_ref, FSM["states"]):
@@ -4691,8 +4905,8 @@ def _apply_fsm_wiring(motions, fsm) -> dict:
             if not fallback_id:
                 raise ValueError(
                     f"WHEN monitor '{_field(monitor, 'id')}' on FSM-wired motion "
-                    f"'{_field(motion, 'id')}' must declare a fallback hold motion "
-                    f"(e.g. '... when active fallback <hold-motion>'). A WHEN precondition "
+                    f"'{_field(motion, 'id')}' must declare a waiting hold motion "
+                    f"(e.g. '... while waiting hold <hold-motion>'). A WHEN precondition "
                     f"without a fallback would leave the arm uncommanded while waiting."
                 )
             fallback = by_id.get(fallback_id)
@@ -4747,6 +4961,8 @@ def _apply_fsm_gate_calls(motions, fsm_namespace) -> None:
 def generate_ir(manifest_path):
     """Build the complete IR for a model manifest in one forward pass and return it as a dict."""
     app_model_path, g, imported_models, imported_provenance = _load_graph(manifest_path)
+    _materialize_pose_reference_transforms(g)
+    _materialize_linear_distance_operations(g)
 
     p = Parser(g)
     node_by_id, id_nodes = _node_indexes(g, p)
@@ -4767,7 +4983,7 @@ def generate_ir(manifest_path):
     closures = p.closures(ops_generic + ops_slv + ops_cstr_hdl)
     view_map = p.view()
     data_structures = p.data_structures()
-    snapshot_source_map, snapshot_clock_map = _snapshot_maps(g, p)
+    snapshot_source_map = _snapshot_source_map(g, p)
     data_reference_map = _data_reference_map(data_structures, closures)
     closure_output_map, closure_input_map = _closure_maps(closures)
 
@@ -4792,7 +5008,6 @@ def generate_ir(manifest_path):
         node_by_id,
         slv_arm,
         snapshot_source_map=snapshot_source_map,
-        snapshot_clock_map=snapshot_clock_map,
         view_map=view_map,
         closure_output_map=closure_output_map,
         data_reference_map=data_reference_map,
@@ -4809,9 +5024,6 @@ def generate_ir(manifest_path):
     if scene.timestep_s <= 0:
         raise ValueError("ENVIRONMENT timestep must be positive.")
     control_period_ns = int(round(scene.timestep_s * 1e9))
-    rne_damping_lambda = _single_solver_value(
-        slv_arm, "regularization", "Solver regularization", 0.05
-    )
     _apply_monitor_debounce(hdl, control_period_ns)
 
     # Safeguard: no two distinct URIs may collapse to one generated id (would silently merge).
@@ -4824,7 +5036,7 @@ def generate_ir(manifest_path):
         view_map=view_map,
         fk_output_ids={out.id for s in slv_arm for out in s.output},
     )
-    shared_data = shared_data + _shared_runtime_members(slv_arm, motions)
+    shared_data = shared_data + _shared_runtime_members(slv_arm)
 
     introspection = _build_introspection(
         app_model_path=app_model_path,
@@ -4867,7 +5079,6 @@ def generate_ir(manifest_path):
         # real monotonic wall clock).
         "needs_clock_time": any(m.has_elapsed for m in motions),
         "control_period_ns": control_period_ns,
-        "rne_damping_lambda": rne_damping_lambda,
         "arm_solvers": slv_arm,
         "base_velocity_solvers": slv_base_vel,
         "base_force_solvers": slv_base_frc,

@@ -643,7 +643,7 @@ def _validate_rec_shacl(path: Path) -> None:
 
 def _validate_runtime_shacl(path: Path) -> None:
     root = _metamodels_root()
-    shape = root / "motion-spec" / "runtime.shacl.ttl"
+    shape = root / "motion-spec" / "execution-trace.shacl.ttl"
     if not shape.exists():
         raise ArchiveError(f"{shape}: missing runtime SHACL shape")
     conforms, _graph, text = validate(

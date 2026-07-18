@@ -99,8 +99,8 @@ def _sample_ir() -> dict:
                 "contexts": [
                     {"id": "prov", "uri": "http://www.w3.org/ns/prov#"},
                     {
-                        "id": "runtime",
-                        "uri": "https://secorolab.github.io/metamodels/runtime#Runtime",
+                        "id": "execution-context",
+                        "uri": "https://secorolab.github.io/metamodels/execution-context#",
                     },
                 ],
                 "entities": [
@@ -141,7 +141,7 @@ def _sample_ir() -> dict:
                         "id": "agent:runtime:mujoco",
                         "types": [
                             "prov:SoftwareAgent",
-                            "rt:MuJoCoRuntime",
+                            "exec:Simulation",
                         ],
                         "role": "runtime_runner",
                     },

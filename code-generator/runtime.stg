@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Runtime control-loop math header (easing/admittance/spring-damper, monitors).
 
-runtime_header(has_mobile_base, control_period_ns, rne_damping_lambda) ::= <<
+runtime_header(has_mobile_base, control_period_ns) ::= <<
 #pragma once
 
 #include \<cassert\>
@@ -31,7 +31,7 @@ namespace motion_spec::runtime {
 inline constexpr double kConstraintTolerance = 1e-2;
 inline constexpr double kControlPeriodS = <control_period_ns> * 1e-9;
 inline constexpr int kMonitorArmSteps = 100;
-inline constexpr double kRneDampingLambda = <rne_damping_lambda>;
+inline constexpr double kRneDampingLambda = 0.05;
 
 inline double clamp_range(double v, double lower, double upper) {
     if (v \< lower) return lower;

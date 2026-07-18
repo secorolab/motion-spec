@@ -557,15 +557,11 @@ class ConstraintHandler:
 
 @dataclass
 class SnapshotCapture:
-    """A sample-and-hold capture of a fluent on a clock."""
+    """An initial sample-and-hold capture of a fluent."""
 
     target_id: str
     source_id: str
     source_closure_id: str | None = None
-    # snap:sampled-on clock: "task" = sampled once, "entry" = re-sampled per entry.
-    clock: str = "task"
-    # persistent = shared-guarded so it survives the on-entry reset (see _snapshots_for_motion).
-    persistent: bool = False
     type: str = field(default="SnapshotCapture")
 
 
@@ -659,11 +655,8 @@ class GuardedMotionBlock:
     # Solver Integration
     arm_solvers: list = field(default_factory=list)
 
-    # Snapshot captures (sample-and-hold of a fluent on a clock)
+    # Initial sample-and-hold captures.
     snapshots: list = field(default_factory=list)
-
-    # True iff any snapshot samples `on entry` -> motion is reset on FSM re-entry.
-    has_entry_snapshot: bool = False
 
     # Relative-from-start pose computations (e.g. pose_start_ee)
     relative_poses: list = field(default_factory=list)
@@ -686,7 +679,7 @@ class AccelerationConstraint:
 
     id: str
     subspace: Subspace
-    # Exactly one of axis (AxisAligned) / direction (DirectionAligned) is set.
+    # Axis-aligned constraints carry an axis; derived constraint forms may leave it unset.
     axis: Axis | None
     acceleration_energy: Quantity
     as_seen_by: Frame | None = None
@@ -766,9 +759,6 @@ class SolverWithInputAndOutput:
     tcp_site: str = ""
     ft_sensors: list[dict] = field(default_factory=list)
     root_acc: list[float] | None = None
-    # DLS/Tikhonov regularization lambda, deduped across arm solvers into the
-    # top-level IR key consumed by runtime_header.
-    regularization: float | None = None
     torque_saturation: Saturation | None = None
     runtime_id: str = ""
     runtime_owner: bool = False

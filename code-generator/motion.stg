@@ -466,14 +466,8 @@ inline void update_<motion.id>(
 <endif>
 }; separator="\n">
 <if(motion.snapshots)>
-<motion.snapshots:{snap | <if(snap.persistent)>    if (!shared.<snap.target_id>_captured) {
-<emit-snapshot(snap, closures, views)>
-        shared.<snap.target_id>_captured = true;
-    \}
-<endif>}; separator="">
     if (!state.snapshot_taken) {
-<motion.snapshots:{snap | <if(!snap.persistent)><emit-snapshot(snap, closures, views)>
-<endif>}; separator="">
+<motion.snapshots:{snap | <emit-snapshot(snap, closures, views)>}; separator="\n">
         state.snapshot_taken = true;
     }
 <endif>

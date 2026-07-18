@@ -24,8 +24,8 @@ from motion_spec.ir_gen import (
     ops_generic,
 )
 from motion_spec.namespace import (
+    CSTR,
     CSTR_HDL,
-    CSTR_HDL_EXT,
     ENV,
     EXEC,
     GEOM_ENT,
@@ -34,7 +34,6 @@ from motion_spec.namespace import (
     QUDT_QKIND,
     QUDT_SCHEMA,
     SLV,
-    SLV_EXT,
     TRAJ,
 )
 
@@ -79,7 +78,7 @@ def test_parser_reads_pid_measured_derivative() -> None:
     graph.add((controller_node, CSTR_HDL["integral-gain"], Literal(0.0, datatype=XSD.double)))
     graph.add((controller_node, CSTR_HDL["derivative-gain"], Literal(1.0, datatype=XSD.double)))
     measured_derivative = _quantity(graph, "measured_derivative")
-    graph.add((controller_node, CSTR_HDL_EXT["measured-derivative"], measured_derivative))
+    graph.add((controller_node, CSTR_HDL["measured-velocity"], measured_derivative))
 
     parser = Parser(graph)
     controller = parser.controller(controller_node)
@@ -87,7 +86,7 @@ def test_parser_reads_pid_measured_derivative() -> None:
 
     assert controller.measured_derivative is not None
     assert controller.measured_derivative.id == "measured_derivative"
-    assert closure["measured_derivative"] == "measured_derivative"
+    assert closure["measured_velocity"] == "measured_derivative"
 
 
 def test_scene_object_site_attach_target_is_prefixed_for_runtime_scene_name() -> None:
@@ -227,25 +226,28 @@ def test_introspection_contract_carries_control_and_provenance() -> None:
         "agent:controller_process",
         "agent:modelled:robot",
     } <= set(agents)
-    assert "rt:MuJoCoRuntime" in agents["agent:runtime:mujoco"]["types"]
+    assert "exec:Simulation" in agents["agent:runtime:mujoco"]["types"]
     assert "agn:ModelledAgent" in agents["agent:modelled:robot"]["types"]
 
 
 def test_velocity_profile_operator_closure_exposes_codegen_fields() -> None:
     graph = Graph()
     op = URIRef("https://example.test/profile-op")
-    graph.add((op, RDF.type, CSTR_HDL_EXT.VelocityProfile))
+    graph.add((op, RDF.type, TRAJ.VelocityProfile))
     for pred, name in (
-        (CSTR_HDL_EXT["goal"], "goal"),
-        (CSTR_HDL_EXT["measured"], "measured"),
+        (TRAJ["goal"], "goal"),
+        (TRAJ["start"], "measured"),
         (TRAJ["measured-velocity"], "measured-velocity"),
         (TRAJ["max-velocity"], "max-velocity"),
         (TRAJ["max-acceleration"], "max-acceleration"),
         (TRAJ["max-jerk"], "max-jerk"),
-        (CSTR_HDL_EXT["reference"], "reference"),
-        (CSTR_HDL_EXT["controller"], "controller"),
+        (TRAJ["reference"], "reference"),
     ):
         graph.add((op, pred, URIRef(f"https://example.test/{name}")))
+    constraint = URIRef("https://example.test/constraint")
+    controller = URIRef("https://example.test/controller")
+    graph.add((constraint, CSTR["reference-value"], URIRef("https://example.test/reference")))
+    graph.add((controller, CSTR_HDL.constraint, constraint))
     graph.add((op, TRAJ["shape"], Literal("SCurve")))
 
     closure = Parser(graph).closures(ops_generic)["profile_op"]
@@ -268,7 +270,7 @@ def test_solver_ir_carries_rne_algorithm_and_gravity() -> None:
     gravity = URIRef("https://example.test/gravity")
     graph.add((solver, RDF.type, SLV.SolverWithInputAndOutput))
     graph.add((solver, SLV.solver, SLV.RecursiveNewtonEulerAlgorithm))
-    graph.add((solver, SLV_EXT["gravity-value"], gravity))
+    graph.add((solver, SLV.gravity, gravity))
     graph.add((gravity, GEOM_COORD["x"], Literal(0.0, datatype=XSD.double)))
     graph.add((gravity, GEOM_COORD["y"], Literal(0.0, datatype=XSD.double)))
     graph.add((gravity, GEOM_COORD["z"], Literal(-9.81, datatype=XSD.double)))
@@ -290,7 +292,6 @@ def test_generated_velocity_profile_runtime_respects_authored_bounds(tmp_path) -
             {
                 "has_mobile_base": False,
                 "control_period_ns": 1_000_000,
-                "rne_damping_lambda": 0.05,
                 "beta_max_lin": 1e6,
                 "beta_max_rot": 1e6,
                 "tau_max_override": None,
@@ -389,7 +390,6 @@ def test_generated_runtime_resolves_constraint_acceleration(tmp_path) -> None:
             {
                 "has_mobile_base": False,
                 "control_period_ns": 1_000_000,
-                "rne_damping_lambda": 0.05,
                 "beta_max_lin": 1e6,
                 "beta_max_rot": 1e6,
                 "tau_max_override": None,

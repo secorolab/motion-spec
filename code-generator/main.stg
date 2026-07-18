@@ -264,12 +264,6 @@ fsm-dispatch-case(motion, fsm_namespace) ::= <<
 <endif>
 >>
 
-fsm-reenter-reset-case(motion, fsm_namespace) ::= <<
-<if(motion.fsm_state)><if(motion.has_entry_snapshot)>
-            case <fsm_namespace>::<motion.fsm_state>: reset_<motion.id>(<motion.id>_state_instance); break;
-<endif><endif>
->>
-
 fsm-dispatch(motions, fsm_namespace) ::= <<
     // The FSM's current state selects which motion runs; the motion's monitor advances the FSM. A
     // fallback hold state additionally re-evaluates the gated motion's WHEN precondition each tick.
@@ -357,12 +351,6 @@ int main(int argc, char **argv) {
         if (static_cast\<int\>(fsm->currentStateIndex) != _fsm_prev_state) {
             _fsm_prev_state = static_cast\<int\>(fsm->currentStateIndex);
             std::cerr \<\< "[fsm] state   " \<\< <fsm_namespace>::STATE_URIS[fsm->currentStateIndex] \<\< std::endl;
-            // Re-arm per-entry snapshots for a trajectory motion whenever its state is
-            // (re-)entered, so the trajectory rebuilds from the current pose. Fixed
-            // targets (trajectory anchors) persist via their shared_data guards.
-            switch (fsm->currentStateIndex) {
-<motions:{motion | <fsm-reenter-reset-case(motion, fsm_namespace)>}; separator="">            default: break;
-            \}
         \}
         if (fsm->currentStateIndex == fsm->endStateIndex) break;
 <if(fsm_step_event)>

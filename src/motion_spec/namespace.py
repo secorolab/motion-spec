@@ -1,30 +1,48 @@
 # SPDX-License-Identifier: MPL-2.0
 from rdflib import URIRef
 from rdflib.namespace import DefinedNamespace, Namespace
+from rdf_utils.namespace import (
+    URL_COMP_ROB2B,
+    URL_SECORO_MM,
+    NS_MM_QUDT,
+    NS_MM_QUDT_QTY,
+    NS_MM_QUDT_UNIT,
+    NS_MM_GEOM,
+    NS_MM_GEOM_REL,
+    NS_MM_GEOM_COORD,
+    NS_MM_KC,
+    NS_MM_KC_STAT,
+    NS_MM_EL,
+    NS_MM_ENV,
+    NS_MM_DYN_ENT,
+    NS_MM_DYN_COORD,
+)
 
-URI_CR2B_MM = "https://comp-rob2b.github.io/metamodels"
-URI_SECORO_MM = "https://secorolab.github.io/metamodels"
+URI_CR2B_MM = f"{URL_COMP_ROB2B}/metamodels"
+URI_SECORO_MM = URL_SECORO_MM
 URI_QUDT = "http://qudt.org"
+SOSA = Namespace("http://www.w3.org/ns/sosa/")
 
 
 class APP(DefinedNamespace):
     path: URIRef
 
-    _extras = [
-        "constraints",
-        "import",
-        "iri-map",
-        "order",
-    ]
+    _extras = ["constraints", "import", "iri-map", "order"]
 
     _NS = Namespace(f"{URI_CR2B_MM}/application/")
 
 
 class SNAP(DefinedNamespace):
     Snapshot: URIRef
-    Clock: URIRef
 
-    _extras = ["snapshot-of", "sampled-on", "task-clock", "entry-clock"]
+    _extras = [
+        "snapshot-of",
+        "output",
+        "sampling",
+        "initial-sampling",
+        "event-triggered-sampling",
+        "trigger",
+    ]
 
     _NS = Namespace(f"{URI_SECORO_MM}/task/snapshot#")
 
@@ -36,27 +54,15 @@ class ENV(DefinedNamespace):
     ObjectModel: URIRef
     RigidObject: URIRef
 
-    _extras = [
-        "of-object",
-        "has-object",
-        "of-workspace",
-        "has-workspace",
-        "has-object-model",
-    ]
+    _extras = ["of-object", "has-object", "of-workspace", "has-workspace", "has-object-model"]
 
-    _NS = Namespace(f"{URI_SECORO_MM}/environment#")
-
-
-class SIM(DefinedNamespace):
-    SystemResource: URIRef
-    ResourceWithPath: URIRef
-
-    path: URIRef
-
-    _NS = Namespace(f"{URI_SECORO_MM}/simulation#")
+    _NS = NS_MM_ENV
 
 
 class EXEC(DefinedNamespace):
+    ExecutionContext: URIRef
+    Simulation: URIRef
+    RealWorld: URIRef
     SystemResource: URIRef
     ResourceWithPath: URIRef
 
@@ -64,9 +70,33 @@ class EXEC(DefinedNamespace):
 
     _extras = [
         "has-config",
+        "runs-scene",
+        "timestep",
+        "platform-name",
+        "platform-version",
     ]
 
     _NS = Namespace(f"{URI_SECORO_MM}/execution-context#")
+
+
+class EXEC_TRACE(DefinedNamespace):
+    Frame: URIRef
+    StateOccurrence: URIRef
+    TransitionOccurrence: URIRef
+    EventOccurrence: URIRef
+    MonitorOccurrence: URIRef
+
+    atFrame: URIRef
+    seq: URIRef
+    activeState: URIRef
+    step: URIRef
+    state: URIRef
+    transition: URIRef
+    event: URIRef
+    monitor: URIRef
+    value: URIRef
+
+    _NS = Namespace(f"{URI_SECORO_MM}/motion-spec/execution-trace/")
 
 
 class EL(DefinedNamespace):
@@ -85,114 +115,25 @@ class EL(DefinedNamespace):
         "has-flg-reaction",
     ]
 
-    _NS = Namespace(f"{URI_SECORO_MM}/behaviour/event_loop#")
-
-
-class RT(DefinedNamespace):
-    Runtime: URIRef
-    MuJoCoRuntime: URIRef
-    RealRobotRuntime: URIRef
-
-    _extras = [
-        "uses-runtime",
-    ]
-
-    _NS = Namespace(f"{URI_SECORO_MM}/runtime#")
-
-
-class MJ(DefinedNamespace):
-    MjcfModel: URIRef
-    MuJoCoBody: URIRef
-    MuJoCoSite: URIRef
-    TrajectoryTrace: URIRef
-    ColorRGBA: URIRef
-
-    _extras = [
-        "body-name",
-        "site-name",
-        "ft-sensor",
-        "sensor-name",
-        "frame-site",
-        "ft-sensor-ref",
-        "color",
-        "has-trace",
-        "trace-enabled",
-        "trace-length",
-        "trace-target",
-        "timestep",
-        "attach-to-body",
-        "attach-kind",
-        "attach-name",
-        "attach-prefix",
-        "prefix",
-        "attach-position",
-        "attach-orientation",
-        "actuator-name",
-        "shape",
-        "size",
-        "mass",
-        "color-r",
-        "color-g",
-        "color-b",
-        "color-a",
-        "friction",
-        "friction-slide",
-        "friction-torsion",
-        "friction-roll",
-        "tool-body",
-        "tcp-site",
-        "attached-body",
-    ]
-
-    _NS = Namespace(f"{URI_SECORO_MM}/simulation/mujoco#")
-
-
-class POLY(DefinedNamespace):
-    Polytope: URIRef
-    Polygon: URIRef
-    Polyhedron: URIRef
-    Circle: URIRef
-    Cuboid: URIRef
-    CuboidWithSize: URIRef
-    Cylinder: URIRef
-
-    _extras = [
-        "x-size",
-        "y-size",
-        "z-size",
-        "radius",
-        "diameter",
-        "center",
-        "base",
-        "height",
-        "axis",
-        "points",
-        "faces",
-        "3DPolytope",
-    ]
-
-    _NS = Namespace(f"{URI_SECORO_MM}/geometry/polytope#")
+    _NS = NS_MM_EL
 
 
 class GEOM_ENT(DefinedNamespace):
     Point: URIRef
     Frame: URIRef
     SimplicialComplex: URIRef
-    KinematicChain: URIRef
-    UniformGravitationalField: URIRef
     RigidBody: URIRef
     start: URIRef
     end: URIRef
     origin: URIRef
 
-    _extras = ["kinematic-chain"]
+    _NS = NS_MM_GEOM
 
-    _NS = Namespace(f"{URI_CR2B_MM}/geometry/structural-entities#")
 
 class KC(DefinedNamespace):
     Joint: URIRef
 
-    _NS = Namespace(f"{URI_CR2B_MM}/kinematic-chain/structural-entities#")
+    _NS = NS_MM_KC
 
 
 class KC_STAT(DefinedNamespace):
@@ -201,7 +142,9 @@ class KC_STAT(DefinedNamespace):
     JointAccelerationCoordinate: URIRef
     JointForceCoordinate: URIRef
 
-    _NS = Namespace(f"{URI_CR2B_MM}/kinematic-chain/state#")
+    _extras = ["of-joint"]
+
+    _NS = NS_MM_KC_STAT
 
 
 class QUDT_SCHEMA(DefinedNamespace):
@@ -212,7 +155,8 @@ class QUDT_SCHEMA(DefinedNamespace):
 
     _extras = ["quantity-kind"]
 
-    _NS = Namespace(f"{URI_QUDT}/schema/qudt/")
+    _NS = NS_MM_QUDT
+
 
 class QUDT_QKIND(DefinedNamespace):
     Angle: URIRef
@@ -234,7 +178,8 @@ class QUDT_QKIND(DefinedNamespace):
     Time: URIRef
     Mass: URIRef
 
-    _NS = Namespace(f"{URI_QUDT}/vocab/quantitykind/")
+    _NS = NS_MM_QUDT_QTY
+
 
 class QUDT_UNIT(DefinedNamespace):
     UNITLESS: URIRef
@@ -261,7 +206,8 @@ class QUDT_UNIT(DefinedNamespace):
         "N-SEC-PER-M",
     ]
 
-    _NS = Namespace(f"{URI_QUDT}/vocab/unit/")
+    _NS = NS_MM_QUDT_UNIT
+
 
 class GEOM_REL(DefinedNamespace):
     LinearDistance: URIRef
@@ -274,12 +220,10 @@ class GEOM_REL(DefinedNamespace):
 
     of: URIRef
 
-    _extras = [ 
-        "with-respect-to",
-        "reference-point"
-    ]
+    _extras = ["with-respect-to", "reference-point", "between-entities"]
 
-    _NS = Namespace(f"{URI_CR2B_MM}/geometry/spatial-relations#")
+    _NS = NS_MM_GEOM_REL
+
 
 class GEOM_COORD(DefinedNamespace):
     DirectionCoordinate: URIRef
@@ -287,11 +231,11 @@ class GEOM_COORD(DefinedNamespace):
     OrientationCoordinate: URIRef
     PositionCoordinate: URIRef
     PoseCoordinate: URIRef
+    PoseDifferenceCoordinate: URIRef
     VelocityTwistCoordinate: URIRef
     AccelerationTwistCoordinate: URIRef
     DirectionCosineXYZ: URIRef
     EulerAngles: URIRef
-    AnglesABG: URIRef
     VectorXYZ: URIRef
 
     x: URIRef
@@ -301,7 +245,7 @@ class GEOM_COORD(DefinedNamespace):
     beta: URIRef
     gamma: URIRef
 
-    _extras = [ 
+    _extras = [
         "of-pose",
         "of-velocity",
         "of-acceleration",
@@ -314,11 +258,12 @@ class GEOM_COORD(DefinedNamespace):
         "linear-velocity",
         "angular-acceleration",
         "linear-acceleration",
-        "angle-axis",
-        "has-coordinate",
+        "linear",
+        "angular",
     ]
 
-    _NS = Namespace(f"{URI_CR2B_MM}/geometry/coordinates#")
+    _NS = NS_MM_GEOM_COORD
+
 
 class GEOM_OP(DefinedNamespace):
     RotateDirectionDistalToProximalWithPose: URIRef
@@ -331,7 +276,6 @@ class GEOM_OP(DefinedNamespace):
     PoseToAngleAroundAxis: URIRef
     PoseToLinearDistance: URIRef
     PoseToDirection: URIRef
-    InvertPose: URIRef
     PlanarAngleFromDirections: URIRef
     InvertAngle: URIRef
 
@@ -349,65 +293,44 @@ class GEOM_OP(DefinedNamespace):
     y: URIRef
     z: URIRef
 
-    _extras = [
-        "from",
-        "absolute-velocity",
-        "relative-velocity",
-        "from-directions",
-        "in",
-    ]
+    _extras = ["from", "absolute-velocity", "relative-velocity", "from-directions", "in"]
 
     _NS = Namespace(f"{URI_CR2B_MM}/geometry/spatial-operators#")
 
+
 class GEOM_REL_EXT(DefinedNamespace):
-    # Secorolab extension to comp-rob2b spatial-relations: a pose difference is the
-    # geometric error between two poses (not itself a pose, not an acceleration twist).
     PoseDifference: URIRef
 
     _NS = Namespace(f"{URI_SECORO_MM}/geometry/spatial-relations#")
 
 
-class GEOM_COORD_EXT(DefinedNamespace):
-    # Secorolab extension to comp-rob2b coordinates: a pose-difference coordinate carrying linear
-    # (Length) and angular (Angle) VectorXYZ, which double as map:subspace selectors for its views.
-    PoseDifferenceCoordinate: URIRef
-
-    _extras = ["linear", "angular"]
-
-    _NS = Namespace(f"{URI_SECORO_MM}/geometry/coordinates#")
-
-
 class GEOM_OP_EXT(DefinedNamespace):
-    # Secorolab extension to comp-rob2b spatial-operators: a pose-difference
-    # evaluator whose inputs/output are geom-coord:PoseCoordinate. Own class rather
-    # than squatting in comp-rob2b's spatial-operators#.
     PoseDiffEvaluator: URIRef
-    out: URIRef
+    PoseToAngularDistance: URIRef
+
+    _extras = ["angular-distance"]
 
     _NS = Namespace(f"{URI_SECORO_MM}/geometry/spatial-operators#")
+
 
 class RBDYN_ENT(DefinedNamespace):
     Wrench: URIRef
     Mass: URIRef
     mass: URIRef
 
-    _extras = [
-        "reference-point",
-        "of-body",
-    ]
+    _extras = ["reference-point", "of-body"]
 
-    _NS = Namespace(f"{URI_CR2B_MM}/newtonian-rigid-body-dynamics/structural-entities#")
+    _NS = NS_MM_DYN_ENT
+
 
 class RBDYN_COORD(DefinedNamespace):
     WrenchCoordinate: URIRef
     UniformGravitationalFieldCoordinate: URIRef
-    #VectorXYZ: URIRef
 
-    _extras = [
-        "as-seen-by"
-    ]
+    _extras = ["as-seen-by"]
 
-    _NS = Namespace(f"{URI_CR2B_MM}/newtonian-rigid-body-dynamics/coordinates#")
+    _NS = NS_MM_DYN_COORD
+
 
 class RBDYN_OP(DefinedNamespace):
     TransformWrenchToProximal: URIRef
@@ -426,23 +349,13 @@ class RBDYN_OP(DefinedNamespace):
     in2: URIRef
     out: URIRef
 
-    _extras = [
-        "from"
-    ]
+    _extras = ["from"]
 
     _NS = Namespace(f"{URI_CR2B_MM}/newtonian-rigid-body-dynamics/operators#")
 
-class RBDYN_OP_EXT(DefinedNamespace):
-    # Secorolab extension to comp-rob2b rbdyn operators: a generic element-wise quantity addition
-    # in the secorolab namespace; upstream rbdyn-op: predicates (in1/in2/out) are reused.
-    AddQuantity: URIRef
-    Norm: URIRef
-
-    _NS = Namespace(f"{URI_SECORO_MM}/newtonian-rigid-body-dynamics/operators#")
 
 class MAP(DefinedNamespace):
     View: URIRef
-    DirectionCoordinateView: URIRef
     PoseCoordinateView: URIRef
     VelocityTwistCoordinateView: URIRef
     AccelerationTwistCoordinateView: URIRef
@@ -459,28 +372,35 @@ class MAP(DefinedNamespace):
     y: URIRef
     z: URIRef
 
-    _extras = [
-        "angular-velocity",
-        "linear-velocity",
-        "angular-acceleration",
-        "linear-acceleration"
-    ]
+    _extras = ["angular-velocity", "linear-velocity", "angular-acceleration", "linear-acceleration"]
 
     _NS = Namespace(f"{URI_CR2B_MM}/task/map#")
 
+
 class MAP_EXT(DefinedNamespace):
-    # Secorolab coordinate-view / operator extensions to comp-rob2b's `map` vocabulary; the map:
-    # predicates (superobject/subobject/subspace/axis) are reused from upstream.
-    PoseOrientationView: URIRef
-    PosePositionView: URIRef
-    WrenchVectorView: URIRef
+    PoseCoordinateView: URIRef
+    VelocityTwistCoordinateView: URIRef
+    AccelerationTwistCoordinateView: URIRef
+    WrenchCoordinateView: URIRef
     PoseDifferenceView: URIRef
-    ComputeRotationFromPose: URIRef
-    rotation: URIRef
-    pose: URIRef
+    position: URIRef
     orientation: URIRef
+    linear: URIRef
+    angular: URIRef
 
     _NS = Namespace(f"{URI_SECORO_MM}/task/map#")
+
+
+class ALGO_EXT(DefinedNamespace):
+    Saturation: URIRef
+    Addition: URIRef
+    limits: URIRef
+    out: URIRef
+
+    _extras = ["in", "in1", "in2", "maximum-absolute-value", "lower-bound", "upper-bound"]
+
+    _NS = Namespace(f"{URI_SECORO_MM}/algorithm#")
+
 
 class CSTR(DefinedNamespace):
     Constraint: URIRef
@@ -493,29 +413,27 @@ class CSTR(DefinedNamespace):
     LinearVelocityConstraint: URIRef
     TorqueConstraint: URIRef
     ForceConstraint: URIRef
-    AngleConstraint: URIRef
-    DistanceConstraint: URIRef
 
     quantity: URIRef
     threshold: URIRef
 
-    _extras = [
-        "PositionConstraint",
-        "reference-value",
-        "lower-threshold",
-        "upper-threshold",
-    ]
+    _extras = ["PositionConstraint", "reference-value", "lower-threshold", "upper-threshold"]
 
     _NS = Namespace(f"{URI_CR2B_MM}/task/constraint#")
 
+
 class CSTR_EXT(DefinedNamespace):
-    OutsideConstraint: URIRef
+    ConstraintExpression: URIRef
     ConstraintConjunction: URIRef
     ConstraintDisjunction: URIRef
+    OutsideConstraint: URIRef
+    AngleConstraint: URIRef
+    AngularDistanceConstraint: URIRef
 
     _extras = ["has-constraint"]
 
     _NS = Namespace(f"{URI_SECORO_MM}/task/constraint#")
+
 
 class MOT(DefinedNamespace):
     GuardedMotion: URIRef
@@ -529,19 +447,19 @@ class MOT(DefinedNamespace):
 
 
 class TRAJ(DefinedNamespace):
+    ReferenceGenerator: URIRef
     Trajectory: URIRef
-    Lerp: URIRef
+    CartesianPoseInterpolation: URIRef
     Circle: URIRef
     Arc: URIRef
     Helix: URIRef
     Figure8: URIRef
-    Progress: URIRef
     VelocityProfile: URIRef
 
     start: URIRef
     goal: URIRef
-    alpha: URIRef
     trajectory: URIRef
+    reference: URIRef
     anchor: URIRef
     center: URIRef
     radius: URIRef
@@ -550,20 +468,24 @@ class TRAJ(DefinedNamespace):
     axis: URIRef
     pitch: URIRef
     revolutions: URIRef
-    orientation: URIRef
     form: URIRef
     profile: URIRef
 
-    _extras = ["plane-normal",
-               "max-velocity", "max-acceleration", "max-jerk",
-               "measured-velocity", "shape"]
+    _extras = [
+        "plane-normal",
+        "max-velocity",
+        "max-acceleration",
+        "max-jerk",
+        "measured-velocity",
+        "shape",
+        "path-parameter",
+    ]
 
     _NS = Namespace("https://secorolab.github.io/metamodels/task/trajectory#")
 
 
 class CSTR_HDL(DefinedNamespace):
     ConstraintHandler: URIRef
-    JointTorque: URIRef
     ConstraintEvaluator: URIRef
     AssignmentEvaluator: URIRef
     ErrorEvaluator: URIRef
@@ -586,7 +508,6 @@ class CSTR_HDL(DefinedNamespace):
     _extras = [
         "error-signal",
         "control-signal",
-        "control-mode",
         "event-queue",
         "proportional-gain",
         "integral-gain",
@@ -594,50 +515,30 @@ class CSTR_HDL(DefinedNamespace):
         "decay-rate",
         "stiffness",
         "damping",
+        "maximum-velocity",
+        "measured-velocity",
     ]
 
     _NS = Namespace(f"{URI_CR2B_MM}/task/constraint-handler#")
 
+
 class CSTR_HDL_EXT(DefinedNamespace):
-    # Secorolab extension to the upstream comp-rob2b constraint-handler.
-    # New classes/predicates live here rather than squatting in comp-rob2b's
-    # task/constraint-handler#; upstream cstr_hdl predicates are reused.
     FeedForwardController: URIRef
-    VelocityProfile: URIRef
     Admittance: URIRef
-    SignalLimiter: URIRef
-    Saturation: URIRef
-    IntegralSaturation: URIRef
-    JointTorque: URIRef
 
     _extras = [
-        "control-mode",
         "reference-signal",
-        "limits",
-        "input-signal",
-        "output-signal",
-        "maximum-absolute-value",
-        "lower-limit",
-        "upper-limit",
         "mass",
         "damping",
         "stiffness",
         "force",
-        "monitors-until",
-        "monitors-when",
         "fallback-motion",
         "debounce-duration",
-        "velocity-profile",
-        "max-velocity",  # Admittance saturation clamp (distinct from traj: velocity-profile terms)
-        "goal",
-        "measured",
-        "measured-derivative",
-        "reference",
-        "controller",
         "LinearJerk",
     ]
 
     _NS = Namespace(f"{URI_SECORO_MM}/task/constraint-handler#")
+
 
 class SLV(DefinedNamespace):
     VelocityCompositionSolver: URIRef
@@ -681,27 +582,8 @@ class SLV(DefinedNamespace):
 
     _NS = Namespace(f"{URI_CR2B_MM}/task/solver-specification#")
 
+
 class SLV_EXT(DefinedNamespace):
-    # Secorolab extension to comp-rob2b solver-specification: pass-through command-forwarding solver
-    # (gripper) plus control-signal / gravity-value terms; upstream slv: predicates are reused.
-    CommandForwardingDriver: URIRef
-    ForwardedCommand: URIRef
-
-    # Direction-aligned ACHD acceleration constraint (sibling of slv:AxisAligned): fills the
-    # Jacobian column from a runtime geom-rel:Direction instead of a fixed axis.
-    DirectionAligned: URIRef
-    AccelerationSaturation: URIRef
-    TorqueSaturation: URIRef
-    direction: URIRef
-
-    # "robot" links a solver to its environment robot (multi-robot scenes); "regularization"
-    # is the DLS/Tikhonov lambda. Runtime limiting is authored via cstr-hdl-ext:limits.
-    _extras = [
-        "forwards-command",
-        "command-signal",
-        "gravity-value",
-        "robot",
-        "regularization",
-    ]
+    CommandForwardingSolver: URIRef
 
     _NS = Namespace(f"{URI_SECORO_MM}/task/solver-specification#")

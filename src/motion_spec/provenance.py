@@ -24,14 +24,14 @@ TYPE_PREFIXES = {
     "https://secorolab.github.io/metamodels/acceptance-criteria/bdd#": "bdd:",
     "https://secorolab.github.io/metamodels/agent#": "agn:",
     "https://secorolab.github.io/metamodels/observation#": "obs:",
-    "https://secorolab.github.io/metamodels/runtime#": "rt:",
+    "https://secorolab.github.io/metamodels/execution-context#": "exec:",
 }
 METAMODEL_CONTEXTS = [
     "https://secorolab.github.io/metamodels/prov.json",
     "https://secorolab.github.io/metamodels/acceptance-criteria/bdd/agent.json",
     "https://secorolab.github.io/metamodels/acceptance-criteria/bdd/bdd.json",
     "https://secorolab.github.io/metamodels/acceptance-criteria/bdd/observation.json",
-    "https://secorolab.github.io/metamodels/runtime/runtime.json",
+    "https://secorolab.github.io/metamodels/acceptance-criteria/bdd/execution-context.json",
 ]
 TOOL_METADATA = {
     "agent:motion_spec_codegen": {
@@ -326,7 +326,7 @@ def record_agents(run, run_dir: Path, schema: dict) -> None:
     runtime = schema.get("runtime_provenance", {})
     raw_runtime = runtime.get("runtime_agent_id") or "agent:runtime"
     runtime_agent = prov_uri(raw_runtime)
-    runtime_type = "rt:MuJoCoRuntime" if raw_runtime.endswith(":mujoco") else "prov:SoftwareAgent"
+    runtime_type = "exec:Simulation" if raw_runtime.endswith(":mujoco") else "prov:SoftwareAgent"
     run.add_agent(runtime_agent, ["prov:SoftwareAgent", runtime_type], role="runtime")
     run.add_agent(
         prov_uri(runtime.get("producer_agent_id") or "agent:controller_process"),

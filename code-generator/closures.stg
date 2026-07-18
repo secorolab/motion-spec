@@ -387,12 +387,8 @@ emit-call-TransformWrenchToProximal(closure, views) ::= <<
 shared.<closure.to> = shared.<closure.pose> * <access-expr(closure.from, views)>;
 >>
 
-emit-call-AddQuantity(closure, views) ::= <<
+emit-call-Addition(closure, views) ::= <<
 shared.<closure.out> = <access-expr(closure.in1, views)> + <access-expr(closure.in2, views)>;
->>
-
-emit-call-Norm(closure, views) ::= <<
-shared.<closure.out> = <access-expr(closure.in1, views)>.Norm();
 >>
 
 emit-call-AddWrench(closure, views) ::= <<

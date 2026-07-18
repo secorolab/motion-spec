@@ -52,7 +52,7 @@ PROV = rdflib.Namespace("http://www.w3.org/ns/prov#")
 BDD = rdflib.Namespace("https://secorolab.github.io/metamodels/acceptance-criteria/bdd#")
 AGN = rdflib.Namespace("https://secorolab.github.io/metamodels/agent#")
 OBS = rdflib.Namespace("https://secorolab.github.io/metamodels/observation#")
-RT = rdflib.Namespace("https://secorolab.github.io/metamodels/runtime#")
+EXEC = rdflib.Namespace("https://secorolab.github.io/metamodels/execution-context#")
 MSRUN = rdflib.Namespace("https://secorolab.github.io/motion-spec/runtime/")
 RUNTIME_RDF_CONTRACT_VERSION = 1
 # Events are the only trigger kind the runtime actually emits; state/constraint/monitor edges
@@ -340,7 +340,7 @@ def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int
         "bdd": BDD,
         "agn": AGN,
         "obs": OBS,
-        "rt": RT,
+        "exec": EXEC,
         "msrun": MSRUN,
         "ent": rdflib.Namespace(f"{MSRUN}entity/"),
         "run": rdflib.Namespace(f"{MSRUN}run/"),
@@ -378,7 +378,7 @@ def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int
     provenance_entity = _node("entity:provenance_jsonld")
 
     g.add((run, rdflib.RDF.type, PROV.Entity))
-    g.add((run, rdflib.RDF.type, RT.Runtime))
+    g.add((run, rdflib.RDF.type, EXEC.ExecutionContext))
     g.add((activity, rdflib.RDF.type, PROV.Activity))
     g.add((activity, rdflib.RDF.type, BDD.SimulatedExecution))
     g.add((activity, PROV.wasAssociatedWith, producer))
@@ -391,7 +391,7 @@ def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int
     g.add((producer, PROV.actedOnBehalfOf, runtime))
     g.add((runtime, rdflib.RDF.type, PROV.SoftwareAgent))
     if str(schema.get("runtime_provenance", {}).get("runtime_agent_id", "")).endswith(":mujoco"):
-        g.add((runtime, rdflib.RDF.type, RT.MuJoCoRuntime))
+        g.add((runtime, rdflib.RDF.type, EXEC.Simulation))
     g.add((frame_log, rdflib.RDF.type, PROV.Entity))
     g.add((frame_log, PROV.wasGeneratedBy, activity))
     g.add(

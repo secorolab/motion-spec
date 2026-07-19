@@ -75,7 +75,7 @@ shared.<closure.reference> = state.<closure.controller>.adm_filter.step(<access-
 
 emit-call-Circle(closure, views) ::= <<
 {
-    const double _s_<closure.trajectory>     = motion_spec::runtime::smoothstep(<access-expr(closure.alpha, views)>);
+    const double _s_<closure.trajectory>     = motion_spec::runtime::smoothstep(<access-expr(closure.path_parameter, views)>);
     const double _angle_<closure.trajectory> = 2.0 * M_PI * _s_<closure.trajectory>;
     KDL::Vector _n_<closure.trajectory>   = shared.<closure.plane_normal>;
     _n_<closure.trajectory>.Normalize();
@@ -136,7 +136,7 @@ emit-call-Arc(closure, views) ::= <<
         const double _theta_<closure.trajectory> = 2.0 * std::acos(std::max(-1.0, std::min(1.0, -_d_<closure.trajectory> / _R_<closure.trajectory>)));
         const KDL::Vector _v0_<closure.trajectory>     = shared.<closure.start>.p - _center_<closure.trajectory>;
         if (state.active_steps == 0) {
-            shared.<closure.alpha> = 0.0;
+            shared.<closure.path_parameter> = 0.0;
         }
         // Time-based alpha: advance at a fixed arc-speed each control step.
         // The setpoint is fully decoupled from the measured EE pose -- external
@@ -145,12 +145,12 @@ emit-call-Arc(closure, views) ::= <<
             const double _arc_length_<closure.trajectory> = std::max(_R_<closure.trajectory> * _theta_<closure.trajectory>, 1e-9);
             const double _arc_speed_<closure.trajectory>  = 0.05;  // m/s along the arc
             const double _dalpha_<closure.trajectory>     = (_arc_speed_<closure.trajectory> * motion_spec::runtime::kControlPeriodS) / _arc_length_<closure.trajectory>;
-            shared.<closure.alpha> = motion_spec::runtime::clamp01(shared.<closure.alpha> + _dalpha_<closure.trajectory>);
+            shared.<closure.path_parameter> = motion_spec::runtime::clamp01(shared.<closure.path_parameter> + _dalpha_<closure.trajectory>);
         }
         // Apply smoothstep to the open-loop alpha for smooth start/stop easing.
         // This must come AFTER alpha is updated, not before, so the easing is
         // applied to the current step's alpha rather than the previous step's value.
-        _s_<closure.trajectory>   = motion_spec::runtime::smoothstep(shared.<closure.alpha>);
+        _s_<closure.trajectory>   = motion_spec::runtime::smoothstep(shared.<closure.path_parameter>);
         _pos_<closure.trajectory> = _center_<closure.trajectory>
             + KDL::Rotation::Rot(_arc_normal_<closure.trajectory>, -_theta_<closure.trajectory> * _s_<closure.trajectory>) * _v0_<closure.trajectory>;
     }
@@ -164,7 +164,7 @@ emit-call-Arc(closure, views) ::= <<
 
 emit-call-Helix(closure, views) ::= <<
 {
-    const double _s_<closure.trajectory>     = motion_spec::runtime::smoothstep(<access-expr(closure.alpha, views)>);
+    const double _s_<closure.trajectory>     = motion_spec::runtime::smoothstep(<access-expr(closure.path_parameter, views)>);
     const double _angle_<closure.trajectory> = shared.<closure.revolutions> * 2.0 * M_PI * _s_<closure.trajectory>;
     const double _rise_<closure.trajectory>  = shared.<closure.pitch> * shared.<closure.revolutions> * _s_<closure.trajectory>;
     KDL::Vector _ax_<closure.trajectory>  = shared.<closure.axis>;
@@ -185,7 +185,7 @@ emit-call-Figure8(closure, views) ::= <<
 
 emit-call-Figure8-Gerono(closure, views) ::= <<
 {
-    const double _s_<closure.trajectory> = motion_spec::runtime::smoothstep(<access-expr(closure.alpha, views)>);
+    const double _s_<closure.trajectory> = motion_spec::runtime::smoothstep(<access-expr(closure.path_parameter, views)>);
     // Phase offset of pi/2 puts alpha=0 at the curve's center crossing (the anchor),
     // so the path starts and ends at the anchor instead of darting out to a tip.
     const double _t_<closure.trajectory> = 2.0 * M_PI * _s_<closure.trajectory> + 0.5 * M_PI;
@@ -204,7 +204,7 @@ emit-call-Figure8-Gerono(closure, views) ::= <<
 
 emit-call-Figure8-Bernoulli(closure, views) ::= <<
 {
-    const double _s_<closure.trajectory> = motion_spec::runtime::smoothstep(<access-expr(closure.alpha, views)>);
+    const double _s_<closure.trajectory> = motion_spec::runtime::smoothstep(<access-expr(closure.path_parameter, views)>);
     // Phase offset of pi/2 puts alpha=0 at the curve's center crossing (the anchor),
     // so the path starts and ends at the anchor instead of darting out to a tip.
     const double _t_<closure.trajectory> = 2.0 * M_PI * _s_<closure.trajectory> + 0.5 * M_PI;

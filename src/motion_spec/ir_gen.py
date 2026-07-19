@@ -2416,9 +2416,12 @@ def _snapshots_for_motion(
     closures=None,
     snapshot_trigger_map=None,
     motion_token=None,
+    snapshot_owner_map=None,
+    motion_tokens=(),
 ):
     """Build a motion's initial snapshot captures from its references."""
     snapshot_trigger_map = snapshot_trigger_map or {}
+    snapshot_owner_map = snapshot_owner_map or {}
     ref_val_ids = _snapshot_reference_value_ids(evaluators, constraints)
     closures = closures or {}
     data_reference_map = data_reference_map or {}
@@ -2479,6 +2482,12 @@ def _snapshots_for_motion(
     seen = set()
     for target_id in sorted(ref_val_ids):
         if target_id not in snapshot_source_map or target_id in seen:
+            continue
+        # Capture only what this motion declares. A snapshot owned by another motion is that
+        # motion's to sample; re-capturing it here would overwrite its value with this
+        # motion's pose. Unowned (shared-context) snapshots stay everyone's to capture.
+        owner = snapshot_owner_map.get(target_id)
+        if owner in motion_tokens and owner != motion_token:
             continue
         seen.add(target_id)
         source_id = snapshot_source_map[target_id]
@@ -2699,6 +2708,7 @@ def build_motion_units(
     fsm=None,
     derivation=None,
     snapshot_trigger_map=None,
+    snapshot_owner_map=None,
 ):
     """Build the per-motion IR units (one motion per handler), each complete with schedules,
     monitors, controllers, conditions, declared poses, FSM wiring and function-interface flags;
@@ -2710,6 +2720,10 @@ def build_motion_units(
     data_reference_map = data_reference_map or {}
     closure_input_map = closure_input_map or {}
     motions = []
+    snapshot_owner_map = snapshot_owner_map or {}
+    motion_tokens = {
+        _motion_suffix(p, g.value(node_by_id[h.id], CSTR_HDL["motion"])) for h in handlers
+    }
     primary_robot_id = next((s.id for s in slv_arm if getattr(s, "id", "")), "")
 
     for handler in handlers:
@@ -3045,6 +3059,8 @@ def build_motion_units(
                         closures,
                         snapshot_trigger_map,
                         _motion_suffix(p, motion_node),
+                        snapshot_owner_map,
+                        motion_tokens,
                     )
                 ),
             )
@@ -4120,6 +4136,25 @@ def _snapshot_source_map(g, p: Parser) -> dict[str, str]:
         if source_node is not None and output_node is not None:
             snapshot_source_map[p.id(output_node)] = p.id(source_node)
     return snapshot_source_map
+
+
+def _snapshot_owner_map(g, p: Parser) -> dict[str, str]:
+    """Map each snapshot's output to the motion that declares it.
+
+    Every motion captures each snapshot it *references*, and they all write the same shared
+    slot, so a motion re-capturing another's snapshot silently retargets it. The owner is the
+    motion segment of the quantity's URI: <app>/<motion>/Spec/spec/<name>.
+    """
+    owner_map: dict[str, str] = {}
+    for snap_node in g.subjects(RDF.type, SNAP.Snapshot):
+        output_node = g.value(snap_node, SNAP.output)
+        if output_node is None:
+            continue
+        segments = str(output_node).rstrip("/").split("/")
+        if len(segments) < 4:
+            continue
+        owner_map[p.id(output_node)] = get_valid_var_name(segments[-4])
+    return owner_map
 
 
 def _snapshot_trigger_map(g, p: Parser) -> dict[tuple[str, str], str]:
@@ -5375,6 +5410,7 @@ def generate_ir(manifest_path):
     _derive_solver_data(g, p, derivation, data_structures, view_map)
     snapshot_source_map = _snapshot_source_map(g, p)
     snapshot_trigger_map = _snapshot_trigger_map(g, p)
+    snapshot_owner_map = _snapshot_owner_map(g, p)
     data_reference_map = _data_reference_map(data_structures, closures)
     closure_output_map, closure_input_map = _closure_maps(closures)
 
@@ -5409,6 +5445,7 @@ def generate_ir(manifest_path):
         fsm=fsm,
         derivation=derivation,
         snapshot_trigger_map=snapshot_trigger_map,
+        snapshot_owner_map=snapshot_owner_map,
     )
     _validate_solvers(slv_arm, backend)
     _annotate_runtime_robots(slv_arm, motions, backend)

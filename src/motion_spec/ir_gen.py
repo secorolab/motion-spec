@@ -1412,14 +1412,27 @@ class Parser:
         when = set(self.g.objects(motion, MOT.when)) if motion is not None else set()
         until = set(self.g.objects(motion, MOT.until)) if motion is not None else set()
         is_aggregate = len(monitored) > 1 or any(
-            CSTR_EXT.ConstraintDisjunction in self.g[node : RDF.type] for node in monitored
+            _is_constraint_aggregate(self.g, node) for node in monitored
         )
         is_until_aggregate = is_aggregate and monitored == until
         is_when_aggregate = is_aggregate and monitored == when
+        # A named group is one of several until conditions, so it is not the whole section:
+        # carry its members and logic instead, and let the terms be built from those.
+        group_constraint_ids: list[str] = []
+        group_any = False
+        if not is_until_aggregate and not is_when_aggregate:
+            group_node = next(
+                (n for n in monitored if _is_constraint_aggregate(self.g, n)), None
+            )
+            if group_node is not None:
+                group_constraint_ids = sorted(
+                    self.id(c) for c in self.g[group_node : CSTR_EXT["has-constraint"]]
+                )
+                group_any = CSTR_EXT.ConstraintDisjunction in self.g[group_node : RDF.type]
         error_node = self.g.value(id_, CSTR_HDL["error"])
         error = (
             None
-            if is_until_aggregate or is_when_aggregate or error_node is None
+            if is_until_aggregate or is_when_aggregate or group_constraint_ids or error_node is None
             else self.quantity(error_node)
         )
 
@@ -1432,6 +1445,8 @@ class Parser:
                 flag,
                 is_until_aggregate=is_until_aggregate,
                 is_when_aggregate=is_when_aggregate,
+                group_constraint_ids=group_constraint_ids,
+                group_any=group_any,
             )
 
         event_node = self.g.value(id_, CSTR_HDL["event"])
@@ -1447,6 +1462,8 @@ class Parser:
             None,
             is_until_aggregate=is_until_aggregate,
             is_when_aggregate=is_when_aggregate,
+            group_constraint_ids=group_constraint_ids,
+            group_any=group_any,
             event_uri=str(event_node),
             event_name=event.upper(),
             fallback_motion=fallback_motion,
@@ -1544,8 +1561,11 @@ class Parser:
         until = []
         until_any = False
         for c in self.g[id_ : MOT["until"]]:
-            if CSTR_EXT.ConstraintDisjunction in self.g[c : RDF["type"]]:
-                until_any = True
+            if _is_constraint_aggregate(self.g, c):
+                # A section-wide disjunction makes the whole until 'any'; a named group keeps
+                # its own logic on the monitor that targets it.
+                if CSTR_EXT.ConstraintDisjunction in self.g[c : RDF["type"]]:
+                    until_any = True
                 for member in self.g[c : CSTR_EXT["has-constraint"]]:
                     until.append(self.constraint(member))
             else:
@@ -2737,7 +2757,7 @@ def build_motion_units(
         _raw_when = set(g[motion_node : MOT["when"]])
         when_constraint_nodes = set()
         for node in _raw_when:
-            if CSTR_EXT.ConstraintDisjunction in g[node : RDF["type"]]:
+            if _is_constraint_aggregate(g, node):
                 when_constraint_nodes.update(g[node : CSTR_EXT["has-constraint"]])
             else:
                 when_constraint_nodes.add(node)
@@ -2745,7 +2765,7 @@ def build_motion_units(
         _raw_until = set(g[motion_node : MOT["until"]])
         until_constraint_nodes = set()
         for node in _raw_until:
-            if CSTR_EXT.ConstraintDisjunction in g[node : RDF["type"]]:
+            if _is_constraint_aggregate(g, node):
                 until_constraint_nodes.update(g[node : CSTR_EXT["has-constraint"]])
             else:
                 until_constraint_nodes.add(node)
@@ -2808,6 +2828,14 @@ def build_motion_units(
                 when_mon_nodes.append(mon_node)
                 continue
             if monitored and monitored == _raw_until:
+                until_mon_nodes.append(mon_node)
+                continue
+            # A group monitor names one of the section's nodes, not the whole section, and the
+            # group node itself never appears in the expanded member sets below.
+            if monitored and monitored <= _raw_when:
+                when_mon_nodes.append(mon_node)
+                continue
+            if monitored and monitored <= _raw_until:
                 until_mon_nodes.append(mon_node)
                 continue
             if monitored:
@@ -3336,6 +3364,12 @@ def _fixed_attachments(g, bound_trees):
                 parent_body,
             )
     return attachments, root
+
+
+def _is_constraint_aggregate(g, node) -> bool:
+    """True for an until/when group node: a conjunction or disjunction of constraints."""
+    types = set(g[node : RDF["type"]])
+    return bool({CSTR_EXT.ConstraintDisjunction, CSTR_EXT.ConstraintConjunction} & types)
 
 
 def _agent_assemblies(g, attach_by_body):
@@ -5084,6 +5118,19 @@ def _set_monitor_conditions(
     }
     aggregate_key = "is_until_aggregate" if any_key == "until_any" else "is_when_aggregate"
     for monitor in _field(motion, monitors_key, []):
+        group_ids = set(_field(monitor, "group_constraint_ids") or ())
+        if group_ids:
+            group_terms = [
+                _evaluator_term(e, start_field)
+                for e in evaluators
+                if _field(_field(e, "constraint"), "id") in group_ids
+                and (_field(e, "error") or _field(e, "is_elapsed"))
+            ]
+            _set_field(monitor, "active_terms", group_terms)
+            _set_field(monitor, "active_terms_present", bool(group_terms))
+            _set_field(monitor, "active_any", bool(_field(monitor, "group_any")))
+            _set_field(monitor, "has_active", True)
+            continue
         if _field(monitor, aggregate_key):
             _set_field(monitor, "active_terms", terms)
             _set_field(monitor, "active_terms_present", bool(terms))

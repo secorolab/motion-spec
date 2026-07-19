@@ -308,7 +308,7 @@ arm-run-block(arm_solvers, backend) ::= <<
 <arm_solvers:{solver |     <solver-run(solver, solver.motion_driver, backend)>}; separator="\n">
 >>
 
-arm-stage-block-JointTorque(arm_solvers, backend) ::= <<
+arm-stage-block-JointForce(arm_solvers, backend) ::= <<
 <arm_solvers:{solver |     <solver-stage-output(solver, backend)>}; separator="\n">
 >>
 

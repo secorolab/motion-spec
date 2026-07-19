@@ -44,7 +44,7 @@ class Axis(str, Enum):
 class ControlMode(str, Enum):
     """Solver control mode."""
 
-    JointTorque = "JointTorque"
+    JointForce = "JointForce"
 
 
 class UnilateralConstraintType(str, Enum):

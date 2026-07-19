@@ -19,18 +19,19 @@ from motion_spec.ir_gen import (
     SceneRobot,
     SceneSpec,
     _build_introspection,
-    _scene_from_graph,
+    _robot_setups_from_graph,
     ops_cstr_hdl,
     ops_generic,
 )
 from motion_spec.namespace import (
+    AGN,
     CSTR,
     CSTR_HDL,
-    ENV,
     EXEC,
     GEOM_ENT,
     GEOM_COORD,
-    MJ,
+    KC,
+    KC_EXT,
     QUDT_QKIND,
     QUDT_SCHEMA,
     SLV,
@@ -89,50 +90,34 @@ def test_parser_reads_pid_measured_derivative() -> None:
     assert closure["measured_velocity"] == "measured_derivative"
 
 
-def test_scene_object_site_attach_target_is_prefixed_for_runtime_scene_name() -> None:
+def test_agent_model_may_bind_the_assembled_kinematic_tree() -> None:
     graph = Graph()
-    env = URIRef("https://example.test/env")
-    table = URIRef("https://example.test/env/table")
-    robot = URIRef("https://example.test/env/robot")
-    robot_model = URIRef("https://example.test/assets/robot-model")
-    chain = URIRef("https://example.test/env/robot.chain")
+    base = URIRef("https://example.test/arm/base")
+    root = URIRef(f"{base}/root")
+    tool = URIRef("https://example.test/gripper/tool")
+    tcp = URIRef(f"{tool}/tcp")
+    tree = URIRef("https://example.test/assembled")
+    joint = URIRef(f"{tree}/fixed")
+    agent = URIRef("https://example.test/robot")
+    modelled = URIRef("https://example.test/modelled-robot")
+    model = URIRef("https://example.test/robot-model")
 
-    graph.add((env, RDF.type, ENV.Workspace))
-    graph.add((env, ENV["has-object"], table))
-    graph.add((env, ENV["has-object"], robot))
-    graph.add((table, RDF.type, ENV.RigidObject))
-    graph.add((table, RDF.type, ENV.Object))
-    graph.add((robot, RDF.type, ENV.RigidObject))
-    graph.add((robot, ENV["has-object-model"], robot_model))
-    graph.add((robot_model, EXEC.path, Literal("robot.xml")))
-    graph.add((robot, GEOM_ENT["kinematic-chain"], chain))
-    graph.add((robot, MJ["attach-kind"], Literal("site")))
-    graph.add((robot, MJ["attach-name"], Literal("table_top")))
-    graph.add((robot, SLV["attached-to"], table))
+    graph.add((modelled, RDF.type, AGN.ModelledAgent))
+    graph.add((modelled, AGN["of-agent"], agent))
+    graph.add((modelled, AGN["has-agent-model"], model))
+    graph.add((model, EXEC["has-kinematic-tree"], tree))
+    graph.add((model, EXEC.path, Literal("kinova_gen3.xml")))
+    graph.add((tree, RDF.type, GEOM_ENT.KinematicTree))
+    graph.add((tree, RDF.type, KC.SerialComposition))
+    graph.add((tree, KC_EXT.root, root))
+    graph.add((tree, KC_EXT.tip, tcp))
+    graph.add((joint, RDF.type, KC.Joint))
+    graph.add((joint, KC["between-attachments"], root))
+    graph.add((joint, KC["between-attachments"], tcp))
 
-    scene = _scene_from_graph(graph)
+    setups, _ordered = _robot_setups_from_graph(graph)
 
-    assert scene.robots[0].attach_kind == "Site"
-    assert scene.robots[0].attach_name == "table_table_top"
-
-
-def test_scene_ids_are_scoped_when_local_names_collide() -> None:
-    graph = Graph()
-    graph.bind("demo1", "https://example.test/models/demo1/")
-    graph.bind("demo2", "https://example.test/models/demo2/")
-    env = URIRef("https://example.test/env")
-    first = URIRef("https://example.test/models/demo1/pick_object")
-    second = URIRef("https://example.test/models/demo2/pick_object")
-
-    graph.add((env, RDF.type, ENV.Workspace))
-    for node in (first, second):
-        graph.add((env, ENV["has-object"], node))
-        graph.add((node, RDF.type, ENV.RigidObject))
-        graph.add((node, RDF.type, ENV.Object))
-
-    scene = _scene_from_graph(graph)
-
-    assert {obj.id for obj in scene.objects} == {"demo1_pick_object", "demo2_pick_object"}
+    assert setups[agent][1:7] == ("base", "tool", "tool", "KinovaGen3", "", "")
 
 
 def test_uris_table_maps_each_id_to_full_uri() -> None:

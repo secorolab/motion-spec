@@ -13,11 +13,9 @@ import hashlib
 import itertools
 import json
 import math
-import os
 import re
 import sys
 import weakref
-import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from functools import wraps
@@ -49,8 +47,8 @@ from motion_spec.manifest import build_url_map, metamodel_url_map
 
 # fmt: off
 from motion_spec.namespace import (
-    ALGO_EXT, APP, CSTR, CSTR_EXT, CSTR_HDL, CSTR_HDL_EXT, ENV, EXEC, GEOM_COORD,
-    GEOM_ENT, GEOM_OP, GEOM_OP_EXT, GEOM_REL, KC_STAT, MAP, MAP_EXT, MJ, MOT, POLY, QUDT_QKIND,
+    AGN, ALGO_EXT, APP, CSTR, CSTR_EXT, CSTR_HDL, CSTR_HDL_EXT, ENV, EXEC, GEOM_COORD,
+    GEOM_ENT, GEOM_OP, GEOM_OP_EXT, GEOM_REL, KC, KC_EXT, KC_STAT, MAP, MAP_EXT, MOT, QUDT_QKIND,
     QUDT_SCHEMA, QUDT_UNIT, RBDYN_COORD, RBDYN_ENT, RBDYN_OP, SLV, SLV_EXT,
     SNAP, SOSA, TRAJ,
 )
@@ -876,7 +874,7 @@ class Parser:
         """Parse a ConstraintHandler (evaluators, controllers, monitors) at node."""
         self._expect_type(id_, CSTR_HDL["ConstraintHandler"])
         motion = self.guarded_motion(self.g.value(id_, CSTR_HDL["motion"]))
-        control_mode_node = self.g.value(id_, CSTR_HDL["control-mode"])
+        control_mode_node = self.g.value(id_, CSTR_HDL_EXT["control-mode"])
         if control_mode_node is None:
             raise ValueError(f"Constraint handler '{self.id(id_)}' is missing control-mode.")
         control_mode = self.id(control_mode_node)
@@ -1633,13 +1631,22 @@ class Parser:
     def scene_object(self, id_):
         """Parse a SceneObject at node."""
         self._expect_type(id_, ENV.RigidObject)
-        body = str(self.g.value(id_, MJ["body-name"]) or self.id(id_))
-        return SceneObject(self.id(id_), body)
+        return SceneObject(self.id(id_), self.id(id_))
 
     @memoize
     def frame(self, id_):
-        """Parse a Frame at node."""
+        """Parse a frame, mapping a scene-dsl body-origin frame to its runtime body."""
         self._expect_type(id_, GEOM_ENT["Frame"])
+        body = next(
+            (
+                owner
+                for owner in self.g.subjects(GEOM_ENT.simplices, id_)
+                if GEOM_ENT.RigidBody in self.g[owner : RDF.type]
+            ),
+            None,
+        )
+        if body is not None and self.id(id_) == f"{self.id(body)}_origin":
+            return Frame(self.id(body))
         return Frame(self.id(id_))
 
     @memoize
@@ -1652,7 +1659,6 @@ class Parser:
     def view(self):
         """Parse a View (superobject, subobject, subspace, axis) at node."""
         dispatcher = [
-            (MAP["DirectionCoordinateView"], self.direction),
             (MAP_EXT["PoseCoordinateView"], self.pose),
             (MAP_EXT["VelocityTwistCoordinateView"], self.velocity_twist),
             (MAP_EXT["AccelerationTwistCoordinateView"], self.acceleration_twist),
@@ -2776,42 +2782,41 @@ def _xyz_or_none(g, node):
 
 def _orientation_degrees(g, node):
     """Read an orientation node's roll/pitch/yaw in degrees, or None if incomplete."""
-    result: dict[str, float | None] = {"roll": None, "pitch": None, "yaw": None}
     if node is None:
         return None
-    for coord in g.objects(node, GEOM_COORD["has-coordinate"]):
-        axis = str(g.value(coord, GEOM_COORD["angle-axis"]) or "")
-        if axis not in result:
-            continue
-        value_node = g.value(coord, QUDT_SCHEMA.value)
-        if value_node is None:
-            continue
-        value = float(value_node.value)
-        unit = str(g.value(coord, QUDT_SCHEMA.unit) or "")
-        if unit.endswith("RAD"):
-            value = math.degrees(value)
-        result[axis] = value
-    if any(value is None for value in result.values()):
+    values = [g.value(node, GEOM_COORD[axis]) for axis in ("alpha", "beta", "gamma")]
+    if any(value is None for value in values):
         return None
-    return [result["roll"], result["pitch"], result["yaw"]]
+    result = [float(value) for value in values]
+    if str(g.value(node, QUDT_SCHEMA.unit) or "").endswith("RAD"):
+        result = [math.degrees(value) for value in result]
+    return result
 
 
-def _position_of(g, obj_node):
-    # geom-rel:Position.of targets the frame's origin Point (geom-ent:origin),
-    # not the frame node itself -- see rdf.py's _frame_origin_point().
-    """World position [x, y, z] of an object's origin frame, or None."""
-    origin = g.value(obj_node, GEOM_ENT["origin"]) or obj_node
-    for pos_node in g.subjects(GEOM_REL["of"], origin):
-        if GEOM_COORD["PositionCoordinate"] in g[pos_node : RDF.type]:
-            return _xyz_or_none(g, pos_node)
+def _frames_of(g, node):
+    if GEOM_ENT.Frame in g[node : RDF.type]:
+        return [node]
+    return [frame for frame in g.objects(node, GEOM_ENT.simplices) if GEOM_ENT.Frame in g[frame : RDF.type]]
+
+
+def _position_of(g, node):
+    """Position of a body or frame from its authored scene-dsl pose, or None."""
+    for frame in _frames_of(g, node):
+        origin = g.value(frame, GEOM_ENT.origin) or frame
+        for position in g.subjects(GEOM_REL.of, origin):
+            coordinate = next(g.subjects(GEOM_COORD["of-position"], position), None)
+            if coordinate is not None:
+                return _xyz_or_none(g, coordinate)
     return None
 
 
-def _orientation_of(g, obj_node):
-    """World orientation [roll, pitch, yaw] (degrees) of an object, or None."""
-    for orient_node in g.subjects(GEOM_REL["of"], obj_node):
-        if GEOM_COORD["OrientationCoordinate"] in g[orient_node : RDF.type]:
-            return _orientation_degrees(g, orient_node)
+def _orientation_of(g, node):
+    """Orientation of a body or frame from its authored scene-dsl pose, or None."""
+    for frame in _frames_of(g, node):
+        for orientation in g.subjects(GEOM_REL.of, frame):
+            coordinate = next(g.subjects(GEOM_COORD["of-orientation"], orientation), None)
+            if coordinate is not None:
+                return _orientation_degrees(g, coordinate)
     return None
 
 
@@ -2822,211 +2827,6 @@ def _path_of_model(g, model_node):
     return str(g.value(model_node, EXEC.path) or "")
 
 
-def _resolve_existing_path(path: str) -> Path | None:
-    """Resolve an asset path against cwd, menagerie and cache roots; None if not found."""
-    if not path:
-        return None
-    candidate = Path(path)
-    if candidate.exists():
-        return candidate
-    for root in [Path.cwd(), *Path.cwd().parents]:
-        candidate = root / path
-        if candidate.exists():
-            return candidate
-    text = Path(path).as_posix()
-    cache_root = None
-    if os.environ.get("XDG_CACHE_HOME"):
-        cache_root = Path(os.environ["XDG_CACHE_HOME"]) / "mj_kdl_wrapper"
-    elif os.environ.get("HOME"):
-        cache_root = Path(os.environ["HOME"]) / ".cache" / "mj_kdl_wrapper"
-
-    def cache_path(marker: str, cache_subdir: str) -> Path | None:
-        """Candidate cache path for an asset under a marker directory, or None."""
-        pos = text.find(marker)
-        if pos == -1 or cache_root is None:
-            return None
-        return cache_root / cache_subdir / text[pos + len(marker) :]
-
-    menagerie_marker = "third_party/menagerie/"
-    pos = text.find(menagerie_marker)
-    if pos != -1 and os.environ.get("MJ_KDL_MENAGERIE"):
-        candidate = Path(os.environ["MJ_KDL_MENAGERIE"]) / text[pos + len(menagerie_marker) :]
-        if candidate.exists():
-            return candidate
-    for candidate in (
-        cache_path(menagerie_marker, "menagerie"),
-        cache_path("src/mj_kdl_wrapper/assets/", "assets"),
-        cache_path("src/examples/assets/", "assets"),
-    ):
-        if candidate is not None and candidate.exists():
-            return candidate
-    return None
-
-
-def _mjcf_body_containing_site(path: str, site_name: str) -> str:
-    """Name of the MJCF body that owns the named site, or the empty string."""
-    resolved = _resolve_existing_path(path)
-    if resolved is None or not site_name:
-        return ""
-    try:
-        root = ET.parse(resolved).getroot()
-    except ET.ParseError:
-        return ""
-
-    def visit_body(body) -> str:
-        """Recurse MJCF bodies for the one owning the named site."""
-        for site in body.findall("site"):
-            if site.get("name") == site_name:
-                return body.get("name") or ""
-        for child in body.findall("body"):
-            found = visit_body(child)
-            if found:
-                return found
-        return ""
-
-    for worldbody in root.findall("worldbody"):
-        for body in worldbody.findall("body"):
-            found = visit_body(body)
-            if found:
-                return found
-    return ""
-
-
-def _derive_tool_body_from_attachment(attachment: SceneAttachment, tcp_site: str) -> str:
-    """Prefixed tool-body owning the tcp site within an attachment's MJCF, or empty string."""
-    if not tcp_site:
-        return ""
-    local_site = tcp_site
-    if attachment.prefix and tcp_site.startswith(attachment.prefix):
-        local_site = tcp_site[len(attachment.prefix) :]
-    local_body = _mjcf_body_containing_site(attachment.path, local_site)
-    if not local_body:
-        return ""
-    return f"{attachment.prefix}{local_body}"
-
-
-def _scene_id_nodes(g, env_node):
-    """Graph nodes needing local ids for a workspace (objects, their models and attach targets)."""
-    nodes = set()
-    for obj_node in g.objects(env_node, ENV["has-object"]):
-        nodes.add(obj_node)
-        nodes.add(g.value(obj_node, ENV["has-object-model"]))
-        nodes.add(g.value(obj_node, SLV["attached-to"]))
-    return nodes
-
-
-def _attach_target_of(g, obj_node, ids: LocalIdMap):
-    """Attachment (kind, name) of an object, scoping a site name to its target object."""
-    kind = str(g.value(obj_node, MJ["attach-kind"]) or "world").title()
-    if kind not in {"World", "Body", "Site", "Frame"}:
-        kind = "World"
-    name = str(g.value(obj_node, MJ["attach-name"]) or "")
-    target = g.value(obj_node, SLV["attached-to"])
-    if kind == "Site" and target is not None and ENV.Object in g[target : RDF.type]:
-        target_name = ids[target]
-        if target_name and name and not name.startswith(f"{target_name}_{target_name}_"):
-            name = f"{target_name}_{name}"
-    return kind, name
-
-
-def _transitive_attachment_nodes(g, env_node, robot_node):
-    """Attachment nodes reachable from the robot through SLV:attached-to, parent-first.
-
-    Supports chained attachments (e.g. gripper -> ft-sensor -> robot), not just those
-    bolted directly to the robot. Ordered so a parent always precedes its children,
-    which is the order MuJoCo needs (a child's target site only exists once its parent
-    is attached).
-    """
-    candidates = []
-    for c in g.objects(env_node, ENV["has-object"]):
-        path = _path_of_model(g, c) or _path_of_model(g, g.value(c, ENV["has-object-model"]))
-        if path:
-            candidates.append((c, g.value(c, SLV["attached-to"])))
-    ordered = []
-    resolved = {robot_node}
-    progress = True
-    while progress:
-        progress = False
-        for c, target in candidates:
-            if c in resolved or target not in resolved:
-                continue
-            ordered.append(c)
-            resolved.add(c)
-            progress = True
-    return ordered
-
-
-def _attachments_for_robot(g, env_node, robot_node, tool_body, ids: LocalIdMap):
-    """Ordered SceneAttachment list bolted onto a robot, resolving chained (parent-first)
-    attachments.
-    """
-    attachments = []
-    prefix_by_node = {}
-    for candidate in _transitive_attachment_nodes(g, env_node, robot_node):
-        path = _path_of_model(g, candidate)
-        if not path:
-            path = _path_of_model(g, g.value(candidate, ENV["has-object-model"]))
-        if not path:
-            continue
-        attach_node = g.value(candidate, MJ["attach-to-body"])
-        attach_kind_lit = g.value(candidate, MJ["attach-kind"])
-        if attach_kind_lit is None:
-            raise ValueError(
-                f"Attachment '{candidate}' is missing mj:attach-kind; "
-                f"add an 'attach-to:' entry to the .robmot model."
-            )
-        attach_kind = str(attach_kind_lit).title()
-        if attach_kind not in {"Body", "Site", "Frame"}:
-            raise ValueError(
-                f"Attachment '{candidate}' has unsupported attach-kind '{attach_kind}'; "
-                f"expected Body, Site, or Frame."
-            )
-        attach_to = (
-            str(g.value(attach_node, MJ["site-name"]) or "")
-            if attach_kind == "Site"
-            else str(g.value(attach_node, MJ["body-name"]) or "")
-        )
-        prefix_lit = g.value(candidate, MJ["attach-prefix"])
-        prefix = str(prefix_lit) if prefix_lit is not None else ""
-        # When attached to another (prefixed) attachment, that parent's sites/bodies
-        # carry its prefix in the compiled model, so prefix the target name to match.
-        parent_prefix = prefix_by_node.get(g.value(candidate, SLV["attached-to"]), "")
-        if parent_prefix and attach_to and not attach_to.startswith(parent_prefix):
-            attach_to = parent_prefix + attach_to
-        pos = _xyz_or_none(g, g.value(candidate, MJ["attach-position"]))
-        euler = _orientation_degrees(g, g.value(candidate, MJ["attach-orientation"]))
-        actuator = str(g.value(candidate, MJ["actuator-name"]) or "")
-        attachments.append(
-            SceneAttachment(
-                id=ids[candidate],
-                path=path,
-                attach_to=attach_to,
-                attach_kind=attach_kind,
-                prefix=prefix,
-                pos=pos,
-                euler=euler,
-                actuator=actuator,
-            )
-        )
-        prefix_by_node[candidate] = prefix
-    return attachments
-
-
-def _color_rgba(g, owner_node):
-    """Read a grouped mj:ColorRGBA value node (via mj:color) as [r, g, b, a].
-
-    Returns None when the owner has no colour, so callers can fall back to their
-    own defaults. Shared by scene objects and the trajectory-trace overlay.
-    """
-    color_node = g.value(owner_node, MJ["color"])
-    if color_node is None:
-        return None
-    channels = [g.value(color_node, MJ[f"color-{ch}"]) for ch in ("r", "g", "b", "a")]
-    if any(c is None for c in channels):
-        return None
-    return [float(c.toPython()) for c in channels]
-
-
 def _trace_from_graph(g):
     """Read the optional MuJoCo trajectory-trace overlay config from the graph.
 
@@ -3034,7 +2834,10 @@ def _trace_from_graph(g):
     no TRACE block is declared it stays disabled, so headless runs and non-MuJoCo
     runtimes cost nothing. Defaults match the wrapper's built-in warm orange.
     """
-    trace = {
+    # The MuJoCo trajectory trace is a viewer-only overlay authored in the scene, not
+    # the motion spec; it is no longer part of this graph, so it stays disabled and
+    # costs nothing for headless / non-MuJoCo runtimes. Codegen guards on trace.enabled.
+    return {
         "enabled": False,
         "length": 4096,
         "color_r": 1.0,
@@ -3044,27 +2847,232 @@ def _trace_from_graph(g):
         "targets": [],
         "has_targets": False,
     }
-    trace_node = next(g.objects(predicate=MJ["has-trace"]), None)
-    if trace_node is None:
-        return trace
 
-    enabled = g.value(trace_node, MJ["trace-enabled"])
-    if enabled is not None:
-        trace["enabled"] = bool(enabled.toPython())
-    length = g.value(trace_node, MJ["trace-length"])
-    if length is not None:
-        trace["length"] = int(length.toPython())
-    color = _color_rgba(g, trace_node)
-    if color is not None:
-        trace["color_r"], trace["color_g"], trace["color_b"], trace["color_a"] = color
-    for target in g.objects(trace_node, MJ["trace-target"]):
-        trace["targets"].append({"link": str(target)})
-    trace["has_targets"] = bool(trace["targets"])
-    return trace
+
+def _leaf(node):
+    return str(node).rstrip("/").split("/")[-1]
+
+
+def _body_of(frame):
+    return URIRef(str(frame).rstrip("/").rsplit("/", 1)[0])
+
+
+def _tree_owns(tree, node):
+    return str(node).startswith(f"{str(tree).rstrip('/')}/")
+
+
+def _kinematic_adjacency(g):
+    adjacency = collections.defaultdict(list)
+    fixed = []
+    for joint in g.subjects(RDF.type, KC.Joint):
+        frames = list(g.objects(joint, KC["between-attachments"]))
+        if len(frames) != 2:
+            continue
+        body_a, body_b = map(_body_of, frames)
+        if body_a == body_b:
+            continue
+        adjacency[body_a].append((body_b, frames[0], frames[1], joint))
+        adjacency[body_b].append((body_a, frames[1], frames[0], joint))
+        if set(g.objects(joint, RDF.type)) == {KC.Joint}:
+            fixed.append((frames[0], frames[1]))
+    return adjacency, fixed
+
+
+def _distances(adjacency, source):
+    distances = {source: 0}
+    queue = collections.deque([source])
+    while queue:
+        node = queue.popleft()
+        for neighbor, *_ in adjacency[node]:
+            if neighbor not in distances:
+                distances[neighbor] = distances[node] + 1
+                queue.append(neighbor)
+    return distances
+
+
+def _body_path(adjacency, start, end):
+    """Oriented body/frame edges on the shortest kinematic path from start to end."""
+    parents = {start: None}
+    queue = collections.deque([start])
+    while queue and end not in parents:
+        node = queue.popleft()
+        for neighbor, frame, neighbor_frame, joint in adjacency[node]:
+            if neighbor not in parents:
+                parents[neighbor] = (node, frame, neighbor_frame, joint)
+                queue.append(neighbor)
+    if end not in parents:
+        return []
+    path = []
+    node = end
+    while parents[node] is not None:
+        parent, parent_frame, child_frame, joint = parents[node]
+        path.append((parent, node, parent_frame, child_frame, joint))
+        node = parent
+    return list(reversed(path))
+
+
+def _fixed_attachments(g, bound_trees):
+    """Fixed scene/model boundaries, oriented from the world's root toward robot tips."""
+    adjacency, fixed = _kinematic_adjacency(g)
+    if not fixed:
+        return {}, None
+    tip = next(g.objects(None, KC_EXT.tip), None)
+    leaves = [body for body in adjacency if len(adjacency[body]) == 1]
+    from_tip = _distances(adjacency, _body_of(tip)) if tip is not None else {}
+    root = max(leaves, key=lambda body: from_tip.get(body, -1)) if leaves else None
+    from_root = _distances(adjacency, root) if root is not None else {}
+
+    def owner(body):
+        return next(
+            (
+                tree
+                for tree in sorted(bound_trees, key=lambda item: (-len(str(item)), str(item)))
+                if _tree_owns(tree, body)
+            ),
+            None,
+        )
+
+    attachments = {}
+    for frame_a, frame_b in fixed:
+        parent_frame, child_frame = (
+            (frame_a, frame_b)
+            if from_root.get(_body_of(frame_a), 1 << 30)
+            <= from_root.get(_body_of(frame_b), 1 << 30)
+            else (frame_b, frame_a)
+        )
+        parent_body, child_body = map(_body_of, (parent_frame, child_frame))
+        if parent_body == root:
+            attachments[child_body] = ("World", "", child_frame, parent_body)
+        elif owner(parent_body) != owner(child_body):
+            attachments[child_body] = (
+                "Site",
+                _leaf(parent_frame),
+                child_frame,
+                parent_body,
+            )
+    return attachments, root
+
+
+def _agent_assemblies(g, attach_by_body):
+    """Resolve model bindings into runtime robot assets, attachments, and chain bounds."""
+    adjacency, _fixed = _kinematic_adjacency(g)
+    serials = sorted(
+        (
+            (tree, g.value(tree, KC_EXT.root), g.value(tree, KC_EXT.tip))
+            for tree in g.subjects(RDF.type, KC.SerialComposition)
+        ),
+        key=lambda item: str(item[0]),
+    )
+    result = []
+    for modelled in sorted(g.subjects(RDF.type, AGN.ModelledAgent), key=str):
+        agent = g.value(modelled, AGN["of-agent"])
+        bindings = []
+        for model in sorted(g.objects(modelled, AGN["has-agent-model"]), key=str):
+            tree = g.value(model, EXEC["has-kinematic-tree"])
+            path = _path_of_model(g, model)
+            if tree is not None and path:
+                bindings.append(
+                    {
+                        "model": model,
+                        "tree": tree,
+                        "path": path,
+                        "entity": str(g.value(model, EXEC["model-entity"]) or ""),
+                    }
+                )
+        if agent is None or not bindings:
+            continue
+
+        def binding_for(node):
+            return next((binding for binding in bindings if _tree_owns(binding["tree"], node)), None)
+
+        serial = next(
+            (
+                (tree, root, tip)
+                for tree, root, tip in serials
+                if root is not None
+                and tip is not None
+                and (
+                    any(binding["tree"] == tree for binding in bindings)
+                    or (binding_for(root) is not None and binding_for(tip) is not None)
+                )
+            ),
+            None,
+        )
+        if serial is None:
+            continue
+        serial_tree, root_frame, tip_frame = serial
+        root_binding = binding_for(root_frame) or next(
+            binding for binding in bindings if binding["tree"] == serial_tree
+        )
+        tip_binding = binding_for(tip_frame) or root_binding
+        root_body, tip_body = map(_body_of, (root_frame, tip_frame))
+        path = _body_path(adjacency, root_body, tip_body)
+        chain_tip_body = tip_body if root_binding["tree"] == serial_tree else root_body
+        if root_binding["tree"] != serial_tree:
+            for parent_body, child_body, *_ in path:
+                if _tree_owns(root_binding["tree"], child_body):
+                    chain_tip_body = child_body
+                elif _tree_owns(root_binding["tree"], parent_body):
+                    chain_tip_body = parent_body
+                    break
+
+        attachments = []
+        for binding in bindings:
+            if binding is root_binding or binding["path"] == root_binding["path"]:
+                continue
+            boundary = next(
+                (
+                    edge
+                    for edge in path
+                    if _tree_owns(binding["tree"], edge[1])
+                    and not _tree_owns(binding["tree"], edge[0])
+                ),
+                None,
+            )
+            if boundary is None:
+                continue
+            _parent_body, child_body, parent_frame, _child_frame, _joint = boundary
+            entity = binding["entity"]
+            child_name = _leaf(child_body)
+            prefix = child_name[: -len(entity)] if entity and child_name.endswith(entity) else ""
+            attachments.append(
+                SceneAttachment(
+                    id=_leaf(binding["tree"]),
+                    path=binding["path"],
+                    attach_to=_leaf(parent_frame),
+                    attach_kind="Site",
+                    prefix=prefix,
+                )
+            )
+
+        attach_kind, attach_name, placement_frame, _parent_body = attach_by_body.get(
+            root_body, ("World", "", root_frame, None)
+        )
+        result.append(
+            {
+                "agent": agent,
+                "path": root_binding["path"],
+                "root_body": root_body,
+                "chain_root": _leaf(root_body),
+                "chain_tip": _leaf(chain_tip_body),
+                "tool_body": _leaf(tip_body) if tip_binding is not root_binding else "",
+                "tcp_site": _leaf(tip_frame) if tip_binding is not root_binding else "",
+                "attach_kind": attach_kind,
+                "attach_name": attach_name,
+                "placement_frame": placement_frame,
+                "attachments": attachments,
+            }
+        )
+    return result
 
 
 def _scene_from_graph(g):
-    """Build the scene (robots, objects, placement and geometry) from the workspace graph."""
+    """Build the scene (robots + objects with model paths, placement and attachment) from
+    the scene-dsl (`.scenex`) graph. Geometry comes from the referenced mjcf assets, so
+    procedural geometry fields stay unset; placement between attached frames is coincident
+    (identity), and the weld target (`attach_kind`/`attach_name`) is derived from the
+    fixed-joint tree by `_fixed_attachments`.
+    """
     scene = SceneSpec()
     context = next(g.subjects(RDF.type, EXEC.ExecutionContext), None)
     if context is not None:
@@ -3074,98 +3082,60 @@ def _scene_from_graph(g):
         if value is not None:
             scale = 0.001 if unit == QUDT_UNIT.MilliSEC else 1.0
             scene.timestep_s = float(value.toPython()) * scale
-    for env_node in g.subjects(RDF.type, ENV.Workspace):
-        ids = LocalIdMap(g, _scene_id_nodes(g, env_node))
-        robot_nodes = []
-        for obj_node in g.objects(env_node, ENV["has-object"]):
-            if g.value(obj_node, GEOM_ENT["kinematic-chain"]) is not None:
-                robot_nodes.append(obj_node)
 
-        for robot_node in robot_nodes:
-            model_node = g.value(robot_node, ENV["has-object-model"])
-            robot_path = _path_of_model(g, model_node)
-            if not robot_path:
-                continue
+    bound_trees = {
+        tree
+        for model in g.subjects(RDF.type, AGN["AgentModel"])
+        if (tree := g.value(model, EXEC["has-kinematic-tree"])) is not None
+    }
+    attach_by_body, _root = _fixed_attachments(g, bound_trees)
+    object_ids_by_body = {
+        body: _leaf(obj)
+        for modelled in g.subjects(RDF.type, ENV["ModelledObject"])
+        if (obj := g.value(modelled, ENV["of-object"])) is not None
+        and (body := g.value(modelled, EXEC["has-body"])) is not None
+    }
+    for body, (kind, name, frame, parent_body) in list(attach_by_body.items()):
+        if kind == "Site" and parent_body in object_ids_by_body:
+            name = f"{object_ids_by_body[parent_body]}_{name}"
+        attach_by_body[body] = (kind, name, frame, parent_body)
+    for modelled in sorted(g.subjects(RDF.type, ENV["ModelledObject"]), key=str):
+        obj = g.value(modelled, ENV["of-object"])
+        body = g.value(modelled, EXEC["has-body"])
+        if obj is None or body is None:
+            continue
+        path = _path_of_model(g, g.value(modelled, ENV["has-object-model"]))
+        attach_kind, attach_name, placement_frame, _parent_body = attach_by_body.get(
+            body, ("World", "", body, None)
+        )
+        scene.objects.append(
+            SceneObjectSpec(
+                id=_leaf(obj),
+                body=_leaf(body),
+                path=path,
+                fixed=body in attach_by_body,
+                attach_kind=attach_kind,
+                attach_name=attach_name,
+                pos=_position_of(g, placement_frame),
+                euler=_orientation_of(g, placement_frame),
+            )
+        )
 
-            tool_body_node = g.value(robot_node, MJ["tool-body"])
-            tool_body = (
-                str(g.value(tool_body_node, MJ["body-name"]) or "") if tool_body_node else ""
+    for assembly in _agent_assemblies(g, attach_by_body):
+        scene.robots.append(
+            SceneRobot(
+                id=_leaf(assembly["agent"]),
+                path=assembly["path"],
+                attach_kind=assembly["attach_kind"],
+                attach_name=assembly["attach_name"],
+                pos=_position_of(g, assembly["placement_frame"]),
+                euler=_orientation_of(g, assembly["placement_frame"]),
+                attachments=assembly["attachments"],
             )
-            attachments = _attachments_for_robot(g, env_node, robot_node, tool_body, ids)
-            attach_kind, attach_name = _attach_target_of(g, robot_node, ids)
+        )
 
-            scene.robots.append(
-                SceneRobot(
-                    id=ids[robot_node],
-                    path=robot_path,
-                    prefix=str(g.value(robot_node, MJ["prefix"]) or ""),
-                    attach_kind=attach_kind,
-                    attach_name=attach_name,
-                    pos=_position_of(g, robot_node),
-                    euler=_orientation_of(g, robot_node),
-                    attachments=attachments,
-                )
-            )
-
-        for obj_node in g.objects(env_node, ENV["has-object"]):
-            if obj_node in robot_nodes:
-                continue
-            if ENV.RigidObject not in g[obj_node : RDF.type]:
-                continue
-            model_node = g.value(obj_node, ENV["has-object-model"])
-            path = _path_of_model(g, model_node)
-            body = str(g.value(obj_node, MJ["body-name"]) or "") or ids[obj_node]
-            obj_types = set(g[obj_node : RDF.type])
-            if POLY.CuboidWithSize in obj_types:
-                shape = "BOX"
-            else:
-                shape_lit = g.value(obj_node, MJ["shape"])
-                shape = str(shape_lit).upper() if shape_lit is not None else None
-            size_x = g.value(obj_node, POLY["x-size"])
-            size_y = g.value(obj_node, POLY["y-size"])
-            size_z = g.value(obj_node, POLY["z-size"])
-            size = (
-                [float(size_x.value), float(size_y.value), float(size_z.value)]
-                if size_x is not None and size_y is not None and size_z is not None
-                else None
-            )
-            mass_value = None
-            for mass_node in g.subjects(RBDYN_ENT["of-body"], obj_node):
-                if RBDYN_ENT.Mass in g[mass_node : RDF.type]:
-                    mv = g.value(mass_node, RBDYN_ENT.mass)
-                    if mv is not None:
-                        mass_value = float(mv.value)
-                        break
-            attach_kind, attach_name = _attach_target_of(g, obj_node, ids)
-            f_slide = g.value(obj_node, MJ["friction-slide"])
-            f_torsion = g.value(obj_node, MJ["friction-torsion"])
-            f_roll = g.value(obj_node, MJ["friction-roll"])
-            friction = (
-                [float(f_slide.value), float(f_torsion.value), float(f_roll.value)]
-                if f_slide is not None and f_torsion is not None and f_roll is not None
-                else None
-            )
-            color = _color_rgba(g, obj_node)
-            scene.objects.append(
-                SceneObjectSpec(
-                    id=ids[obj_node],
-                    body=body,
-                    path=path,
-                    attach_kind=attach_kind,
-                    attach_name=attach_name,
-                    pos=_position_of(g, obj_node),
-                    fixed=bool(path),
-                    shape=shape,
-                    size=size,
-                    color=color,
-                    mass=mass_value,
-                    friction=friction,
-                )
-            )
-        break
     _expand_scene_geometry(scene)
     return scene
-
 
 def _expand_scene_geometry(scene) -> None:
     """Expand placement vectors and (present) procedural geometry onto the native scene
@@ -3221,104 +3191,41 @@ def _validate_scene(scene) -> None:
 
 
 def _robot_setups_from_graph(g):
-    """Per-robot solver chain setups for the whole workspace.
+    """Per-robot solver chain setups, sourced from the scene-dsl (`.scenex`) graph.
 
-    Returns ``(setups_by_node, ordered)`` where ``setups_by_node`` maps each
-    robot's graph node to its setup tuple
-    ``(urdf, chain_root, chain_end, chain_tip, robot_model, tool_body, tcp_site, ft_sensors)``
-    and ``ordered`` is the same tuples in declaration order. Names derived from
-    the robot's own MJCF (``chain_tip``, ``tool_body``) get the robot's prefix
-    prepended so they resolve in the prefixed, multi-robot MuJoCo scene;
-    already-prefixed (authored) names are left untouched.
+    Returns ``(setups_by_node, ordered)`` where ``setups_by_node`` maps each robot's
+    abstract agent node (the target of a solver's ``agn:of-agent``) to its setup tuple
+    ``(urdf, chain_root, chain_end, chain_tip, robot_model, tool_body, tcp_site, ft_sensors)``.
+
+    Chain bodies come from a serial-composition ``geom:KinematicTree``'s
+    ``kc-ext:root`` / ``kc-ext:tip`` frames. A scene-dsl frame URI is
+    ``.../<robot>/<body>/<frame|site>``, so the body is the second-to-last path
+    segment and the tip site is the last. The model path comes from the robot's
+    ``agn:ModelledAgent`` -> ``agn:has-agent-model`` -> ``exec-ctx:path``.
     """
-    setups_by_node = {}
-    ordered = []
-    for env_node in g.subjects(RDF.type, ENV.Workspace):
-        ids = LocalIdMap(g, _scene_id_nodes(g, env_node))
-        for obj_node in g.objects(env_node, ENV["has-object"]):
-            chain = g.value(obj_node, GEOM_ENT["kinematic-chain"])
-            if chain is None:
-                continue
-            prefix = str(g.value(obj_node, MJ["prefix"]) or "")
-            start = g.value(chain, GEOM_ENT.start)
-            end = g.value(chain, GEOM_ENT.end)
-            chain_root = str(g.value(start, MJ["body-name"]) or "")
-            chain_end = str(g.value(end, MJ["body-name"]) or "")
-            model_node = g.value(obj_node, ENV["has-object-model"])
-            urdf = _path_of_model(g, model_node)
-            robot_model = ids[model_node] if model_node else ""
-            tool_body_node = g.value(obj_node, MJ["tool-body"])
-            tcp_site_node = g.value(obj_node, MJ["tcp-site"])
-            tool_body = (
-                str(g.value(tool_body_node, MJ["body-name"]) or "") if tool_body_node else ""
-            )
-            tcp_site = str(g.value(tcp_site_node, MJ["site-name"]) or "") if tcp_site_node else ""
-            ft_sensors = sorted(
-                (
-                    {
-                        "name": str(g.value(ft_node, MJ["sensor-name"]) or ""),
-                        "frame_site": str(g.value(ft_node, MJ["frame-site"]) or ""),
-                    }
-                    for ft_node in g.objects(obj_node, MJ["ft-sensor"])
-                ),
-                key=lambda s: s["name"],
-            )
-            attachments = _attachments_for_robot(g, env_node, obj_node, tool_body, ids)
-            for attachment in _transitive_attachment_nodes(g, env_node, obj_node):
-                tool_body_node = g.value(attachment, MJ["tool-body"])
-                tcp_site_node = g.value(attachment, MJ["tcp-site"])
-                tool_body = tool_body or (
-                    str(g.value(tool_body_node, MJ["body-name"]) or "") if tool_body_node else ""
-                )
-                tcp_site = tcp_site or (
-                    str(g.value(tcp_site_node, MJ["site-name"]) or "") if tcp_site_node else ""
-                )
-            if not tool_body and tcp_site:
-                for attachment in attachments:
-                    tool_body = _derive_tool_body_from_attachment(attachment, tcp_site)
-                    if tool_body:
-                        break
-            chain_tip = chain_end
-            if (
-                tcp_site
-                and chain_end == tcp_site
-                and attachments
-                and attachments[0].attach_kind == "Body"
-            ):
-                chain_tip = attachments[0].attach_to
-            elif (
-                tcp_site
-                and chain_end == tcp_site
-                and attachments
-                and attachments[0].attach_kind == "Site"
-            ):
-                model_path = _path_of_model(g, model_node)
-                site_body = _mjcf_body_containing_site(model_path, attachments[0].attach_to)
-                if not site_body:
-                    raise ValueError(
-                        f"Cannot derive robot chain tip body: site '{attachments[0].attach_to}' "
-                        f"was not found in model '{model_path}'."
-                    )
-                chain_tip = site_body
-            if prefix:
-                if chain_tip and not chain_tip.startswith(prefix):
-                    chain_tip = prefix + chain_tip
-                if tool_body and not tool_body.startswith(prefix):
-                    tool_body = prefix + tool_body
-            if not (chain_root or chain_end or urdf):
-                continue
-            setup = (
-                urdf,
-                chain_root,
-                chain_end,
-                chain_tip,
-                robot_model,
-                tool_body,
-                tcp_site,
-                ft_sensors,
-            )
-            setups_by_node[obj_node] = setup
-            ordered.append(setup)
+    def _robot_model_from_path(path):
+        low = str(path).lower()
+        for hint, canonical in (("kinova_gen3", "KinovaGen3"), ("gen3", "KinovaGen3")):
+            if hint in low:
+                return canonical
+        return ""
+
+    setups_by_node, ordered = {}, []
+    bound_trees = set(g.objects(None, EXEC["has-kinematic-tree"]))
+    attach_by_body, _root = _fixed_attachments(g, bound_trees)
+    for assembly in _agent_assemblies(g, attach_by_body):
+        setup = (
+            assembly["path"],
+            assembly["chain_root"],
+            assembly["chain_tip"],
+            assembly["chain_tip"],
+            _robot_model_from_path(assembly["path"]),
+            assembly["tool_body"],
+            assembly["tcp_site"],
+            [],
+        )
+        setups_by_node[assembly["agent"]] = setup
+        ordered.append(setup)
     return setups_by_node, ordered
 
 
@@ -3708,7 +3615,7 @@ def _solver_sections(g, p: Parser, setups_by_node: dict, default_setup):
 
     for s in g.subjects(RDF.type, SLV["SolverWithInputAndOutput"]):
         solver = p.solver_with_input_and_output(s)
-        robot_node = g.value(s, SLV_EXT["robot"])
+        robot_node = g.value(s, AGN["of-agent"])
         (
             solver.urdf,
             solver.chain_root,
@@ -3920,8 +3827,14 @@ def _materialize_pose_reference_transforms(g) -> None:
             continue
         if GEOM_REL.Pose not in g[reference : RDF.type]:
             continue
-        target_of, target_wrt = _pose_frames(g, quantity)
-        source_of, source_wrt = _pose_frames(g, reference)
+        try:
+            target_of, target_wrt = _pose_frames(g, quantity)
+            source_of, source_wrt = _pose_frames(g, reference)
+        except ValueError:
+            # A coordinate-authored goal pose (position/orientation values, no explicit
+            # of/with-respect-to frames) is already stated in the constrained pose's
+            # frame; there is no cross-frame reference to re-express.
+            continue
         if source_wrt == target_wrt:
             continue
         if source_of != target_of:

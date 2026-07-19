@@ -12,9 +12,9 @@ from rdf_utils.resolver import IriToFileResolver, install_resolver
 from rdflib.namespace import RDF
 
 from motion_spec.manifest import build_url_map, metamodel_url_map
-from motion_spec.namespace import APP, CSTR_HDL
+from motion_spec.namespace import APP, CSTR_HDL, CSTR_HDL_EXT, KC_STAT
 
-SUPPORTED_CONTROL_MODES = {CSTR_HDL["JointTorque"]}
+SUPPORTED_CONTROL_MODES = {KC_STAT["JointForce"]}
 
 
 def main():
@@ -64,7 +64,7 @@ Examples:
     validation_errors = []
     for handler in {s for s, _, _, _ in g.quads((None, RDF.type, CSTR_HDL["ConstraintHandler"], None))}:
         control_mode = next(
-            (o for _, _, o, _ in g.quads((handler, CSTR_HDL["control-mode"], None, None))),
+            (o for _, _, o, _ in g.quads((handler, CSTR_HDL_EXT["control-mode"], None, None))),
             None,
         )
         if control_mode is None:

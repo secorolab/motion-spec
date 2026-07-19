@@ -44,7 +44,7 @@ robif2b-control-mode(solver) ::= <<
 <({robif2b-control-mode-<solver.control_mode>})(solver)>
 >>
 
-robif2b-control-mode-JointTorque(solver) ::= <<
+robif2b-control-mode-JointForce(solver) ::= <<
 ROBIF2B_CTRL_MODE_FORCE
 >>
 

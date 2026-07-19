@@ -54,7 +54,13 @@ class ENV(DefinedNamespace):
     ObjectModel: URIRef
     RigidObject: URIRef
 
-    _extras = ["of-object", "has-object", "of-workspace", "has-workspace", "has-object-model"]
+    _extras = [
+        "of-object",
+        "has-object",
+        "of-workspace",
+        "has-workspace",
+        "has-object-model",
+    ]
 
     _NS = NS_MM_ENV
 
@@ -70,6 +76,9 @@ class EXEC(DefinedNamespace):
 
     _extras = [
         "has-config",
+        "has-body",
+        "has-kinematic-tree",
+        "model-entity",
         "runs-scene",
         "timestep",
         "platform-name",
@@ -119,6 +128,7 @@ class EL(DefinedNamespace):
 
 
 class GEOM_ENT(DefinedNamespace):
+    KinematicTree: URIRef
     Point: URIRef
     Frame: URIRef
     SimplicialComplex: URIRef
@@ -126,14 +136,26 @@ class GEOM_ENT(DefinedNamespace):
     start: URIRef
     end: URIRef
     origin: URIRef
+    simplices: URIRef
 
     _NS = NS_MM_GEOM
 
 
 class KC(DefinedNamespace):
     Joint: URIRef
+    RevoluteJoint: URIRef
+    SerialComposition: URIRef
+
+    _extras = ["between-attachments"]
 
     _NS = NS_MM_KC
+
+
+class KC_EXT(DefinedNamespace):
+    root: URIRef
+    tip: URIRef
+
+    _NS = Namespace(f"{URI_SECORO_MM}/kinematic-chain/structural-entities-extension#")
 
 
 class KC_STAT(DefinedNamespace):
@@ -141,10 +163,21 @@ class KC_STAT(DefinedNamespace):
     JointVelocityCoordinate: URIRef
     JointAccelerationCoordinate: URIRef
     JointForceCoordinate: URIRef
+    JointForce: URIRef
 
     _extras = ["of-joint"]
 
     _NS = NS_MM_KC_STAT
+
+
+class AGN(DefinedNamespace):
+    Agent: URIRef
+    AgentModel: URIRef
+    ModelledAgent: URIRef
+
+    _extras = ["of-agent", "has-agent", "has-agent-model"]
+
+    _NS = Namespace(f"{URI_SECORO_MM}/agent#")
 
 
 class QUDT_SCHEMA(DefinedNamespace):
@@ -246,7 +279,10 @@ class GEOM_COORD(DefinedNamespace):
     gamma: URIRef
 
     _extras = [
+        "has-coordinate",
         "of-pose",
+        "of-position",
+        "of-orientation",
         "of-velocity",
         "of-acceleration",
         "as-seen-by",
@@ -278,6 +314,7 @@ class GEOM_OP(DefinedNamespace):
     PoseToDirection: URIRef
     PlanarAngleFromDirections: URIRef
     InvertAngle: URIRef
+    InvertPose: URIRef
 
     in1: URIRef
     in2: URIRef
@@ -527,6 +564,7 @@ class CSTR_HDL_EXT(DefinedNamespace):
     Admittance: URIRef
 
     _extras = [
+        "control-mode",
         "reference-signal",
         "mass",
         "damping",

@@ -53,7 +53,7 @@ from motion_spec.namespace import (
     AGN, ALGO_EXT, APP, CSTR, CSTR_EXT, CSTR_HDL, CSTR_HDL_EXT, ENV, EXEC, GEOM_COORD,
     GEOM_ENT, GEOM_OP, GEOM_REL, KC, KC_STAT, MAP, MAP_EXT, MOT, QUDT_QKIND,
     QUDT_SCHEMA, RBDYN_COORD, RBDYN_ENT, RBDYN_OP, SLV, SLV_EXT,
-    SNAP, SOSA, TRAJ,
+    SENSORS, SNAP, SOSA, TRAJ,
 )
 # fmt: on
 
@@ -3401,9 +3401,16 @@ def _agent_assemblies(g, attach_by_body):
         attach_kind, attach_name, placement_frame, _parent_body = attach_by_body.get(
             root_body, ("World", "", root_frame, None)
         )
+        ft_sensors = [
+            {"name": _leaf(sensor), "frame_site": _leaf(frame)}
+            for sensor in sorted(g.objects(modelled, SOSA.hosts), key=str)
+            if SENSORS.ForceTorqueSensor in g[sensor : RDF["type"]]
+            and (frame := g.value(sensor, SENSORS.frame)) is not None
+        ]
         result.append(
             {
                 "agent": agent,
+                "ft_sensors": ft_sensors,
                 "path": root_binding["path"],
                 "root_body": root_body,
                 "chain_root": _leaf(root_body),
@@ -3575,7 +3582,7 @@ def _robot_setups_from_graph(g):
             _robot_model_from_path(assembly["path"]),
             assembly["tool_body"],
             assembly["tcp_site"],
-            [],
+            assembly["ft_sensors"],
         )
         setups_by_node[assembly["agent"]] = setup
         ordered.append(setup)

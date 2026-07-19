@@ -23,8 +23,16 @@ URI_SECORO_MM = URL_SECORO_MM
 
 class SOSA(DefinedNamespace):
     madeBySensor: URIRef
+    hosts: URIRef
 
     _NS = Namespace("http://www.w3.org/ns/sosa/")
+
+
+class SENSORS(DefinedNamespace):
+    ForceTorqueSensor: URIRef
+    frame: URIRef
+
+    _NS = Namespace(f"{URI_SECORO_MM}/robot/sensors#")
 
 
 class APP(DefinedNamespace):

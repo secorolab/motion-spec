@@ -414,6 +414,18 @@ emit-snapshot(snap, closures, views) ::= <<
         shared.<snap.target_id> = <access-expr(snap.source_id, views)>;
 >>
 
+// An event-triggered snapshot re-samples on every occurrence of its trigger. The FSM fires
+// the event into the future buffer as it transitions, so it is readable for exactly the one
+// tick that is this motion's first after entry.
+emit-triggered-snapshot(snap, closures, views) ::= <<
+<if(snap.trigger_event)>
+
+    if (robot.fsm_events && consume_event(robot.fsm_events, <snap.fsm_namespace>::<snap.trigger_event>)) {
+    <emit-snapshot(snap, closures, views)>
+    \}
+<endif>
+>>
+
 motion_header(motion, closures, views, wrench_outputs, base_velocity_solvers, base_force_solvers, has_mobile_base, backend, declared_pose_components, pose_axis_error_groups) ::= <<
 #pragma once
 
@@ -472,6 +484,7 @@ inline void update_<motion.id>(
 <motion.snapshots:{snap | <emit-snapshot(snap, closures, views)>}; separator="\n">
         state.snapshot_taken = true;
     }
+<motion.snapshots:{snap | <emit-triggered-snapshot(snap, closures, views)>}; separator="">
 <endif>
 <declared_pose_components:{pose | <materialize-pose-component(pose, views)>}; separator="\n">
 }

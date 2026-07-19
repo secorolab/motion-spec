@@ -550,11 +550,15 @@ class ConstraintHandler:
 
 @dataclass
 class SnapshotCapture:
-    """An initial sample-and-hold capture of a fluent."""
+    """A sample-and-hold capture of a fluent: always sampled once when its motion first
+    runs, and re-sampled on every occurrence of `trigger_event` when one is declared.
+    """
 
     target_id: str
     source_id: str
     source_closure_id: str | None = None
+    trigger_event: str | None = None
+    fsm_namespace: str | None = None
     type: str = field(default="SnapshotCapture")
 
 

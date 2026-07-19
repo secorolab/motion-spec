@@ -1999,12 +1999,22 @@ class Parser:
 
     @memoize
     def simplicial_complex(self, id_):
-        """Parse a SimplicialComplex at node."""
+        """Parse a SimplicialComplex, mapping a body-origin frame to its runtime body."""
         if not any(
             type_ in self.g[id_ : RDF.type]
             for type_ in (GEOM_ENT.SimplicialComplex, GEOM_ENT.Frame)
         ):
             raise ValueError(f"Expected a rigid body or frame, got: {id_}")
+        body = next(
+            (
+                owner
+                for owner in self.g.subjects(GEOM_ENT.simplices, id_)
+                if GEOM_ENT.RigidBody in self.g[owner : RDF.type]
+            ),
+            None,
+        )
+        if body is not None and self.id(id_) == f"{self.id(body)}_origin":
+            return SimplicialComplex(self.id(body))
         return SimplicialComplex(self.id(id_))
 
     @memoize
@@ -2108,7 +2118,13 @@ class Parser:
                     else None
                 )
                 if cl:
-                    if operator.type_ == TRAJ.CartesianPoseInterpolation:
+                    if operator.type_ in {
+                        TRAJ.CartesianPoseInterpolation,
+                        TRAJ.Circle,
+                        TRAJ.Arc,
+                        TRAJ.Helix,
+                        TRAJ.Figure8,
+                    }:
                         trajectory = self.g.value(closure, TRAJ.trajectory)
                         reference = self.g.value(trajectory, TRAJ.reference)
                         if reference is not None:
@@ -2390,8 +2406,11 @@ def _snapshots_for_motion(
     data_reference_map=None,
     schedule=None,
     closures=None,
+    snapshot_trigger_map=None,
+    motion_token=None,
 ):
     """Build a motion's initial snapshot captures from its references."""
+    snapshot_trigger_map = snapshot_trigger_map or {}
     ref_val_ids = _snapshot_reference_value_ids(evaluators, constraints)
     closures = closures or {}
     data_reference_map = data_reference_map or {}
@@ -2461,6 +2480,7 @@ def _snapshots_for_motion(
                 target_id=target_id,
                 source_id=source_id,
                 source_closure_id=source_closure_id,
+                trigger_event=snapshot_trigger_map.get((motion_token, target_id)),
             )
         )
     return result
@@ -2670,6 +2690,7 @@ def build_motion_units(
     pose_components=None,
     fsm=None,
     derivation=None,
+    snapshot_trigger_map=None,
 ):
     """Build the per-motion IR units (one motion per handler), each complete with schedules,
     monitors, controllers, conditions, declared poses, FSM wiring and function-interface flags;
@@ -3002,6 +3023,8 @@ def build_motion_units(
                         data_reference_map,
                         while_schedule + when_schedule + until_schedule,
                         closures,
+                        snapshot_trigger_map,
+                        _motion_suffix(p, motion_node),
                     )
                 ),
             )
@@ -4070,6 +4093,26 @@ def _snapshot_source_map(g, p: Parser) -> dict[str, str]:
         if source_node is not None and output_node is not None:
             snapshot_source_map[p.id(output_node)] = p.id(source_node)
     return snapshot_source_map
+
+
+def _snapshot_trigger_map(g, p: Parser) -> dict[tuple[str, str], str]:
+    """Map each event-triggered snapshot to its trigger event's local name, keyed by
+    (declaring motion, output id). Every motion referencing a snapshot captures it, but only
+    the motion that declares it re-samples on the trigger, so the key carries the owner. That
+    owner is the motion segment of the quantity's URI: <app>/<motion>/Spec/spec/<name>.
+    """
+    trigger_map: dict[tuple[str, str], str] = {}
+    for snap_node in g.subjects(RDF.type, SNAP.Snapshot):
+        trigger_node = g.value(snap_node, SNAP["trigger"])
+        output_node = g.value(snap_node, SNAP.output)
+        if trigger_node is None or output_node is None:
+            continue
+        segments = str(output_node).rstrip("/").split("/")
+        if len(segments) < 4:
+            continue
+        owner = get_valid_var_name(segments[-4])
+        trigger_map[(owner, p.id(output_node))] = get_valid_var_name(_leaf(trigger_node)).upper()
+    return trigger_map
 
 
 def _pose_frames(g, pose) -> tuple[URIRef, URIRef]:
@@ -5193,6 +5236,19 @@ def _apply_fsm_wiring(motions, fsm) -> dict:
                     _set_field(motion, "fsm_state", state)
 
     for motion in motions:
+        # An event-triggered snapshot re-samples when its trigger is in the current event
+        # buffer; that only compiles if the event is one this FSM declares.
+        for snapshot in _field(motion, "snapshots", []) or []:
+            trigger = _field(snapshot, "trigger_event")
+            if not trigger:
+                continue
+            if trigger not in fsm_event_index:
+                raise ValueError(
+                    f"Snapshot '{_field(snapshot, 'target_id')}' in motion "
+                    f"'{_field(motion, 'id')}' triggers on '{trigger}', which the FSM "
+                    f"'{fsm_namespace}' does not declare."
+                )
+            _set_field(snapshot, "fsm_namespace", fsm_namespace)
         tag_run_state(
             motion, _field(motion, "until_monitors", []) + _field(motion, "while_monitors", [])
         )
@@ -5291,6 +5347,7 @@ def generate_ir(manifest_path):
     data_structures = p.data_structures()
     _derive_solver_data(g, p, derivation, data_structures, view_map)
     snapshot_source_map = _snapshot_source_map(g, p)
+    snapshot_trigger_map = _snapshot_trigger_map(g, p)
     data_reference_map = _data_reference_map(data_structures, closures)
     closure_output_map, closure_input_map = _closure_maps(closures)
 
@@ -5324,6 +5381,7 @@ def generate_ir(manifest_path):
         pose_components=pose_components,
         fsm=fsm,
         derivation=derivation,
+        snapshot_trigger_map=snapshot_trigger_map,
     )
     _validate_solvers(slv_arm, backend)
     _annotate_runtime_robots(slv_arm, motions, backend)

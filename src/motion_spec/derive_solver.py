@@ -71,9 +71,9 @@ def acceleration_axes(
         return ()
     if quantity_kind == "Pose" and subspace in {None, "pose"} and relation == "EqualityConstraint":
         return POSE_AXES
-    if subspace in {"position", "linvel"}:
+    if subspace in {"position", "linear-velocity"}:
         return (AccelerationAxis("linear-acceleration", axis),) if axis else LINEAR_AXES
-    if subspace in {"orientation", "angvel"}:
+    if subspace in {"orientation", "angular-velocity"}:
         return (AccelerationAxis("angular-acceleration", axis),) if axis else ANGULAR_AXES
     if subspace == "distance" and axis is not None:
         return (AccelerationAxis("linear-acceleration", axis),)

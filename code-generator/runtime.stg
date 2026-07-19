@@ -272,6 +272,17 @@ class PIDControl {
     double previous_error() const { return err_last; }
     bool is_first_sample() const { return first_sample; }
 
+    // Re-arm on motion entry. The stored error belongs to whenever this motion last ran; if
+    // the setpoint moved while it was inactive, differencing across that gap yields a huge
+    // one-step derivative, and a stale integral would unwind into the fresh motion.
+    void reset() {
+        err_integ = 0.0;
+        err_last = 0.0;
+        first_sample = true;
+        vp_init = false;
+        adm_filter = AdmittanceFilter{};
+    }
+
     double vp_setpoint = 0.0;
     double vp_velocity = 0.0;
     double vp_accel = 0.0;
@@ -318,6 +329,13 @@ class ImpedanceControl {
     double error_integral() const { return err_int; }
     double previous_error() const { return err_last; }
     bool is_first_sample() const { return first_sample; }
+
+    // See PIDControl::reset().
+    void reset() {
+        err_last = 0.0;
+        err_int = 0.0;
+        first_sample = true;
+    }
 
   private:
     double err_last = 0.0;

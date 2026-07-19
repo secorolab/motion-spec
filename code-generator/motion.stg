@@ -533,6 +533,7 @@ inline void control_<motion.id>(
     shared_data &shared,
     const robot_io &robot) {
 <trajectory-progress(backend, motion)>
+<shared-schedule-block(motion.while_pre_schedule, closures, views)>
 <pose_axis_error_groups:{group | <pose-axis-error-group(group, views)>}; separator="\n">
 <shared-schedule-block(motion.while_schedule, closures, views)>
 <if(first(motion.while_monitors))>

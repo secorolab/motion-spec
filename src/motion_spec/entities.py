@@ -605,6 +605,9 @@ class GuardedMotionBlock:
     while_schedule: list[str]
     until_schedule: list[str]
 
+    # Producers feeding a pose-axis error group's reference. The group emits its error inline
+    # ahead of while_schedule, so these must run before it, not with the controllers.
+    while_pre_schedule: list[str] = field(default_factory=list)
     has_elapsed: bool = False
     has_when_elapsed: bool = False
     has_active_elapsed: bool = False

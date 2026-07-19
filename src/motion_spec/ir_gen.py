@@ -2134,8 +2134,16 @@ class Parser:
                         constraint = next(
                             self.g.subjects(CSTR["reference-value"], reference), None
                         )
+                        # Evaluators carry cstr-hdl:constraint too, and can win this lookup;
+                        # the filter state this closure steps lives on the controller, so
+                        # skip them.
                         controller = next(
-                            self.g.subjects(CSTR_HDL.constraint, constraint), None
+                            (
+                                node
+                                for node in self.g.subjects(CSTR_HDL.constraint, constraint)
+                                if CSTR_HDL.ConstraintEvaluator not in self.g[node : RDF["type"]]
+                            ),
+                            None,
                         )
                         cl["controller"] = self.id(controller)
                         if operator.type_ == TRAJ.VelocityProfile:
@@ -2857,6 +2865,17 @@ def build_motion_units(
         grouped_while_eval_nodes = {
             node for node in while_eval_nodes if p_active.id(node) in pose_axis_error_eval_ids
         }
+        # A grouped evaluator's error is emitted inline by its group, ahead of the schedule
+        # block, but whatever produces its reference -- an admittance filter, a velocity
+        # profile -- still has to run, and has to run first. Walk the grouped nodes before
+        # the main pass so those producers land here rather than being skipped entirely.
+        pre_group_schedule = [
+            step
+            for step in p_active.schedule(
+                sorted(grouped_while_eval_nodes, key=str), ops_generic + ops_cstr_hdl
+            )
+            if step not in pose_axis_error_eval_ids
+        ]
         plan_by_constraint = {plan.constraint: plan for plan in active_plans}
         pre_controller_evaluators = []
         trailing_evaluators = []
@@ -3012,6 +3031,7 @@ def build_motion_units(
                     while_evaluators + when_evaluators + until_evaluators,
                 ),
                 pose_axis_error_groups=pose_axis_error_groups,
+                while_pre_schedule=pre_group_schedule,
                 forwarded_commands=forwarded_commands,
                 snapshots=(
                     _snapshots_for_motion(

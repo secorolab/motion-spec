@@ -351,6 +351,10 @@ int main(int argc, char **argv) {
         if (static_cast\<int\>(fsm->currentStateIndex) != _fsm_prev_state) {
             _fsm_prev_state = static_cast\<int\>(fsm->currentStateIndex);
             std::cerr \<\< "[fsm] state   " \<\< <fsm_namespace>::STATE_URIS[fsm->currentStateIndex] \<\< std::endl;
+            // Leaving a state ends its motion's activation, so re-entering one is a fresh
+            // start: active_steps returns to 0 and any trajectory replans from the current
+            // pose instead of resuming the alpha it had when it was interrupted.
+<motions:{motion |             <motion.id>_state_instance.active = false;}; separator="\n">
         \}
         if (fsm->currentStateIndex == fsm->endStateIndex) break;
 <if(fsm_step_event)>

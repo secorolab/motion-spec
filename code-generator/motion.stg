@@ -308,12 +308,8 @@ arm-run-block(arm_solvers, backend) ::= <<
 <arm_solvers:{solver |     <solver-run(solver, solver.motion_driver, backend)>}; separator="\n">
 >>
 
-arm-stage-block-JointForce(arm_solvers, backend) ::= <<
+arm-stage-block(arm_solvers, backend) ::= <<
 <arm_solvers:{solver |     <solver-stage-output(solver, backend)>}; separator="\n">
->>
-
-arm-stage-block(control_mode, arm_solvers, backend) ::= <<
-<({arm-stage-block-<control_mode>})(arm_solvers, backend)>
 >>
 
 arm-apply-block(arm_solvers, backend) ::= <<
@@ -329,7 +325,13 @@ command-forwarding-robif2b(motion) ::= <<
 
 command-forwarding-mj_kdl(motion) ::= <<
 <motion.forwarded_commands:{cmd | <if(cmd.target)>    {
-        const int actuator_id = mj_name2id(robot.<motion.command_robot_id>.robot->model, mjOBJ_ACTUATOR, "<cmd.target>");
+        const mjModel *model = robot.<motion.command_robot_id>.robot->model;
+        int actuator_id = mj_name2id(model, mjOBJ_ACTUATOR, "<cmd.target>");
+        const int joint_id = mj_name2id(model, mjOBJ_JOINT, "<cmd.target>");
+        for (int i = 0; actuator_id \< 0 && joint_id >= 0 && i \< model->nu; ++i) {
+            if (model->actuator_trntype[i] == mjTRN_JOINT
+                && model->actuator_trnid[2 * i] == joint_id) actuator_id = i;
+        \}
         if (actuator_id >= 0) {
             robot.<motion.command_robot_id>.robot->data->ctrl[actuator_id] = shared.<cmd.control_signal.id>;
         \}
@@ -532,7 +534,7 @@ inline void control_<motion.id>(
 
 inline void apply_<motion.id>(<sig-params(motion.id, motion.apply_needs_state, motion.apply_needs_shared, motion.apply_needs_robot)>) {
 <if(motion.arm_solvers)>
-<arm-stage-block(motion.control_mode, motion.arm_solvers, backend)>
+<arm-stage-block(motion.arm_solvers, backend)>
 <arm-apply-block(motion.arm_solvers, backend)>
 <endif>
 <command-forwarding(backend, motion)>

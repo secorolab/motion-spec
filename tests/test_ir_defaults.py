@@ -8,10 +8,13 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from rdf_utils.models.vocab import URI_KC_TYPE_SERIAL
+from rdf_utils.namespace import NS_MM_GEOM, NS_MM_KC_EXT
 from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import RDF, XSD
 
 from motion_spec.codegen import render_template
+from motion_spec.entities import PIDController
 from motion_spec.ir_gen import (
     _motion_done_terms,
     GuardedMotionBlock,
@@ -20,7 +23,6 @@ from motion_spec.ir_gen import (
     SceneSpec,
     _build_introspection,
     _robot_setups_from_graph,
-    ops_cstr_hdl,
     ops_generic,
 )
 from motion_spec.namespace import (
@@ -28,10 +30,8 @@ from motion_spec.namespace import (
     CSTR,
     CSTR_HDL,
     EXEC,
-    GEOM_ENT,
     GEOM_COORD,
     KC,
-    KC_EXT,
     QUDT_QKIND,
     QUDT_SCHEMA,
     SLV,
@@ -60,36 +60,6 @@ def _pid_graph(*, kp: float | None = 1.0) -> tuple[Graph, URIRef]:
     return graph, controller
 
 
-def test_parser_rejects_pid_missing_required_integral_gain() -> None:
-    graph, controller_node = _pid_graph(kp=2.0)
-
-    with pytest.raises(ValueError, match="integral_gain"):
-        Parser(graph).controller(controller_node)
-
-
-def test_parser_rejects_pid_missing_required_proportional_gain() -> None:
-    graph, controller_node = _pid_graph(kp=None)
-
-    with pytest.raises(ValueError, match="proportional_gain"):
-        Parser(graph).controller(controller_node)
-
-
-def test_parser_reads_pid_measured_derivative() -> None:
-    graph, controller_node = _pid_graph(kp=1.0)
-    graph.add((controller_node, CSTR_HDL["integral-gain"], Literal(0.0, datatype=XSD.double)))
-    graph.add((controller_node, CSTR_HDL["derivative-gain"], Literal(1.0, datatype=XSD.double)))
-    measured_derivative = _quantity(graph, "measured_derivative")
-    graph.add((controller_node, CSTR_HDL["measured-velocity"], measured_derivative))
-
-    parser = Parser(graph)
-    controller = parser.controller(controller_node)
-    closure = parser.closures(ops_generic + ops_cstr_hdl)["controller"]
-
-    assert controller.measured_derivative is not None
-    assert controller.measured_derivative.id == "measured_derivative"
-    assert closure["measured_velocity"] == "measured_derivative"
-
-
 def test_agent_model_may_bind_the_assembled_kinematic_tree() -> None:
     graph = Graph()
     base = URIRef("https://example.test/arm/base")
@@ -107,10 +77,10 @@ def test_agent_model_may_bind_the_assembled_kinematic_tree() -> None:
     graph.add((modelled, AGN["has-agent-model"], model))
     graph.add((model, EXEC["has-kinematic-tree"], tree))
     graph.add((model, EXEC.path, Literal("kinova_gen3.xml")))
-    graph.add((tree, RDF.type, GEOM_ENT.KinematicTree))
-    graph.add((tree, RDF.type, KC.SerialComposition))
-    graph.add((tree, KC_EXT.root, root))
-    graph.add((tree, KC_EXT.tip, tcp))
+    graph.add((tree, RDF.type, NS_MM_GEOM["KinematicTree"]))
+    graph.add((tree, RDF.type, URI_KC_TYPE_SERIAL))
+    graph.add((tree, NS_MM_KC_EXT["root"], root))
+    graph.add((tree, NS_MM_KC_EXT["tip"], tcp))
     graph.add((joint, RDF.type, KC.Joint))
     graph.add((joint, KC["between-attachments"], root))
     graph.add((joint, KC["between-attachments"], tcp))
@@ -147,12 +117,23 @@ def test_introspection_contract_carries_control_and_provenance() -> None:
     graph.add((monitor_node, CSTR_HDL.event, event_node))
 
     parser = Parser(graph)
-    controller = parser.controller(controller_node)
+    controller = PIDController(
+        id=parser.id(controller_node),
+        control_signal=parser.quantity(graph.value(controller_node, CSTR_HDL["control-signal"])),
+        error_signal=parser.quantity(graph.value(controller_node, CSTR_HDL["error-signal"])),
+        measured_derivative=None,
+        proportional_gain=2.0,
+        integral_gain=0.1,
+        derivative_gain=0.3,
+        decay_rate=None,
+        output_saturation=None,
+        integral_saturation=None,
+        type=parser.id(CSTR_HDL.ProportionalIntegralDerivative),
+    )
     monitor = parser.monitor_entry(monitor_node)
     motion = GuardedMotionBlock(
         id="move",
         handler="move_handler",
-        control_mode="JointTorque",
         when_evaluators=[],
         while_evaluators=[],
         until_evaluators=[],

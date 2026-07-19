@@ -39,11 +39,11 @@ emit-call-PoseDiffEvaluator(closure, views) ::= <<
 shared.<closure.out> = KDL::diff(shared.<closure.in1>, shared.<closure.in2>);
 >>
 
-emit-call-Lerp(closure, views) ::= <<
+emit-call-CartesianPoseInterpolation(closure, views) ::= <<
 {
     const KDL::Frame _lerp_goal_<closure.trajectory> = <if(closure.assign_goal)><pose-frame-inline(closure.goal_components, views)><else>shared.<closure.goal><endif>;
 <if(closure.assign_goal)>    shared.<closure.goal> = _lerp_goal_<closure.trajectory>;
-<endif>    shared.<closure.trajectory> = KDL::addDelta(shared.<closure.start>, KDL::diff(shared.<closure.start>, _lerp_goal_<closure.trajectory>), motion_spec::runtime::<easing-fn.(closure.profile)>(<access-expr(closure.alpha, views)>));
+<endif>    shared.<closure.trajectory> = KDL::addDelta(shared.<closure.start>, KDL::diff(shared.<closure.start>, _lerp_goal_<closure.trajectory>), motion_spec::runtime::<easing-fn.(closure.profile)>(<access-expr(closure.path_parameter, views)>));
 }
 >>
 

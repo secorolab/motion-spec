@@ -149,7 +149,8 @@ def _controller_slot(controller: dict, index: int, motion: dict, uri_by_id: dict
 
 def _monitor_slot(monitor: dict, index: int, motion: dict, uri_by_id: dict, phase: str) -> dict:
     """Introspection slot for a monitor: trigger, event/flag and active-condition terms."""
-    error_id = _signal_id(monitor.get("error")) or monitor.get("error_signal")
+    error = monitor.get("error")
+    error_id = _signal_id(error) or monitor.get("error_signal")
     event_id = monitor.get("event")
     return {
         "index": index,
@@ -166,6 +167,8 @@ def _monitor_slot(monitor: dict, index: int, motion: dict, uri_by_id: dict, phas
         "flag": monitor.get("flag"),
         "error_signal": error_id,
         "error_signal_uri": uri_by_id.get(error_id),
+        "composite_error": isinstance(error, dict)
+        and error.get("type") in {"Pose", "VelocityTwist"},
         "has_active": monitor.get("has_active", False),
         "active_terms": monitor.get("active_terms"),
         "active_terms_present": monitor.get("active_terms_present", False),
@@ -542,7 +545,7 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
                         "uri": json.dumps(slot.get("uri") or ""),
                         "has_active": False,
                         "value_expr": value_expr,
-                        "satisfied_expr": f"constraint_satisfied({value_expr})",
+                        "composite_error": slot.get("composite_error", False),
                     }
                 )
         states.append(

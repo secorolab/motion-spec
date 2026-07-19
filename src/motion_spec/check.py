@@ -9,12 +9,8 @@ import pyshacl
 import rdflib
 from rdf_utils.resolver import IriToFileResolver, install_resolver
 
-from rdflib.namespace import RDF
-
 from motion_spec.manifest import build_url_map, metamodel_url_map
-from motion_spec.namespace import APP, CSTR_HDL, CSTR_HDL_EXT, KC_STAT
-
-SUPPORTED_CONTROL_MODES = {KC_STAT["JointForce"]}
+from motion_spec.namespace import APP
 
 
 def main():
@@ -60,26 +56,6 @@ Examples:
     models = list({o for _, _, o, _ in g.quads((None, APP["import"], None, None))})
     for o in models:
         g.parse(location=o, format="json-ld")
-
-    validation_errors = []
-    for handler in {s for s, _, _, _ in g.quads((None, RDF.type, CSTR_HDL["ConstraintHandler"], None))}:
-        control_mode = next(
-            (o for _, _, o, _ in g.quads((handler, CSTR_HDL_EXT["control-mode"], None, None))),
-            None,
-        )
-        if control_mode is None:
-            validation_errors.append(f"Constraint handler '{handler}' is missing control-mode.")
-            continue
-        if control_mode not in SUPPORTED_CONTROL_MODES:
-            validation_errors.append(
-                f"Constraint handler '{handler}' uses unsupported control mode '{control_mode}'."
-            )
-    if validation_errors:
-        print("Validation Report")
-        print("Conforms: False")
-        for error in validation_errors:
-            print(error)
-        sys.exit(1)
 
     g_sh = rdflib.Dataset()
     metamodels = sorted(

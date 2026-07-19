@@ -333,6 +333,10 @@ inline double evaluate_equality_constraint(double quantity, double reference) {
     return quantity - reference;
 }
 
+inline double evaluate_equality_constraint(const KDL::Vector &target, const KDL::Vector &current) {
+    return (target - current).Norm();
+}
+
 inline KDL::Frame evaluate_equality_constraint(const KDL::Frame &target, const KDL::Frame &current) {
     return current.Inverse() * target;
 }
@@ -362,16 +366,22 @@ inline bool constraint_satisfied(double error) {
     return std::fabs(error) \<= kConstraintTolerance;
 }
 
+inline double constraint_error_value(const KDL::Twist &error) {
+    return std::max(error.vel.Norm(), error.rot.Norm());
+}
+
+inline double constraint_error_value(const KDL::Frame &error) {
+    KDL::Vector axis;
+    const double angle = error.M.GetRotAngle(axis);
+    return std::max(error.p.Norm(), std::fabs(angle));
+}
+
 inline bool constraint_satisfied(const KDL::Twist &error) {
-    return error.vel.Norm() \<= kConstraintTolerance &&
-           error.rot.Norm() \<= kConstraintTolerance;
+    return constraint_error_value(error) \<= kConstraintTolerance;
 }
 
 inline bool constraint_satisfied(const KDL::Frame &error) {
-    KDL::Vector axis;
-    const double angle = error.M.GetRotAngle(axis);
-    return error.p.Norm() \<= kConstraintTolerance &&
-           std::fabs(angle) \<= kConstraintTolerance;
+    return constraint_error_value(error) \<= kConstraintTolerance;
 }
 
 enum class Axis {

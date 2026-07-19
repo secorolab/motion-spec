@@ -41,12 +41,6 @@ class Axis(str, Enum):
     Z = "Z"
 
 
-class ControlMode(str, Enum):
-    """Solver control mode."""
-
-    JointForce = "JointForce"
-
-
 class UnilateralConstraintType(str, Enum):
     """Greater-than vs less-than kind of a unilateral constraint."""
 
@@ -547,7 +541,6 @@ class ConstraintHandler:
 
     id: str
     motion: GuardedMotion
-    control_mode: str
     evaluators: list[ConstraintEvaluator]
     controllers: list[Controller]
     monitors: list[Monitor]
@@ -591,7 +584,6 @@ class GuardedMotionBlock:
 
     id: str
     handler: str
-    control_mode: str
 
     # Evaluators
     when_evaluators: list[ConstraintEvaluator]
@@ -728,7 +720,6 @@ class HandlerArmSolver:
     id: str
     output: list
     motion_driver: MotionDrivers
-    control_mode: str
     algorithm: str = ""
     algorithm_is_rne: bool = False
     root_acc: list[float] | None = None
@@ -749,7 +740,6 @@ class SolverWithInputAndOutput:
     output: list
     algorithm: str = ""
     algorithm_is_rne: bool = False
-    control_mode: str = ""
     urdf: str = ""
     chain_root: str = ""
     chain_end: str = ""

@@ -41,7 +41,6 @@ introspection_runtime_header(introspection_artifacts) ::= <<
 
 #include \<atomic\>
 #include \<chrono\>
-#include \<cmath\>
 #include \<cstddef\>
 #include \<cstdint\>
 #include \<cstdio\>
@@ -483,11 +482,11 @@ ctrl-sig(id, views) ::= <<
 >>
 
 introspection-controller-sample(slot, views) ::= <<
-        pub.constraint_sample(<slot.uri>, <slot.error_expr>, <slot.output_expr>, <ctrl-sig(slot.measured_signal, views)>, <ctrl-sig(slot.setpoint_signal, views)>, constraint_satisfied(<slot.error_expr>));
+        pub.constraint_sample(<slot.uri>, <slot.error_expr>, <slot.output_expr>, <ctrl-sig(slot.measured_signal, views)>, <ctrl-sig(slot.setpoint_signal, views)>, motion_spec::runtime::constraint_satisfied(<slot.error_expr>));
 >>
 
 introspection-monitor-sample(slot) ::= <<
-<if(slot.has_active)>        pub.monitor_sample(<slot.uri>, <if(slot.active_terms_present)><bool-condition(slot.active_terms, slot.active_any)><else>false<endif>, <if(slot.active_terms_present)><bool-condition(slot.active_terms, slot.active_any)><else>false<endif>);<else>        pub.monitor_sample(<slot.uri>, <slot.value_expr>, <slot.satisfied_expr>);<endif>
+<if(slot.has_active)>        pub.monitor_sample(<slot.uri>, <if(slot.active_terms_present)><bool-condition(slot.active_terms, slot.active_any)><else>false<endif>, <if(slot.active_terms_present)><bool-condition(slot.active_terms, slot.active_any)><else>false<endif>);<else>        pub.monitor_sample(<slot.uri>, <if(slot.composite_error)>motion_spec::runtime::constraint_error_value(<slot.value_expr>)<else><slot.value_expr><endif>, motion_spec::runtime::constraint_satisfied(<slot.value_expr>));<endif>
 >>
 
 introspection-quantity-sample(slot, views) ::= <<
@@ -521,14 +520,9 @@ introspect_model_header(introspection_artifacts, views) ::= <<
 #include "runtime.hpp"
 #include "shared_state.hpp"
 
-#include \<cmath\>
 #include \<cstdint\>
 
 namespace motion_spec::introspection {
-
-inline bool constraint_satisfied(double error) {
-    return std::abs(error) \<= motion_spec::runtime::kConstraintTolerance;
-}
 
 inline void sample_model(RunPublisher &pub, int state_index, int active_motion, double t, std::uint64_t step, shared_data &shared) {
     static_cast\<void\>(shared);

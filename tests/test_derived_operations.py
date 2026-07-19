@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+from rdf_utils.namespace import NS_MM_QUDT_UNIT
 from rdflib import Graph, URIRef
 from rdflib.namespace import RDF
 
@@ -18,7 +19,6 @@ from motion_spec.namespace import (
     GEOM_REL,
     QUDT_QKIND,
     QUDT_SCHEMA,
-    QUDT_UNIT,
     RBDYN_COORD,
     RBDYN_ENT,
     SOSA,
@@ -175,7 +175,7 @@ def _wrench_graph(*, sensor: URIRef | None) -> tuple[Graph, URIRef]:
     g.add((node, RDF.type, GEOM_COORD.VectorXYZ))
     g.add((node, QUDT_SCHEMA["hasQuantityKind"], QUDT_QKIND.Force))
     g.add((node, QUDT_SCHEMA["hasQuantityKind"], QUDT_QKIND.Torque))
-    g.add((node, QUDT_SCHEMA.unit, QUDT_UNIT.N))
+    g.add((node, QUDT_SCHEMA.unit, NS_MM_QUDT_UNIT["N"]))
     point = _u("ref-point")
     g.add((point, RDF.type, GEOM_ENT.Point))
     g.add((node, RBDYN_ENT["reference-point"], point))

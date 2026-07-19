@@ -19,6 +19,7 @@ from motion_spec.codegen_artifacts import (
     PROTO_FIELD_BASES,
     build_frame_layout,
     build_frame_log_proto_fields,
+    build_introspection_model,
     build_schema,
     fields_with_offsets,
 )
@@ -265,6 +266,10 @@ def test_frame_log_proto_field_naming_and_numbering() -> None:
 
 def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch) -> None:
     ir = _sample_ir()
+    ir["unique_motions"][0]["until_monitors"][0]["error"] = {
+        "id": "pose_ee",
+        "type": "Pose",
+    }
     ir.update(
         {
             "backend": "mj_kdl",
@@ -392,6 +397,15 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
     # access-expr (here plain shared signals -> shared.measured_x / shared.setpoint_x).
     assert controller["measured_signal"] == "measured_x"
     assert controller["setpoint_signal"] == "setpoint_x"
+    monitors = [
+        monitor
+        for state in build_introspection_model(schema, ir)["states"]
+        for monitor in state["monitors"]
+        if not monitor["has_active"]
+    ]
+    assert any(monitor["value_expr"] == "shared.err_x" for monitor in monitors)
+    assert any(monitor["composite_error"] for monitor in monitors)
+    assert all("satisfied_expr" not in monitor for monitor in monitors)
 
     # Spatial samples: one pose/twist/wrench per data object, serialized into the frame
     # record's pose/twist/wrench fields.

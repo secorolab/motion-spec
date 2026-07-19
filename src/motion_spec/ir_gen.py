@@ -23,6 +23,8 @@ from pathlib import Path
 
 import rdflib
 from rdf_utils.naming import get_valid_var_name
+from rdf_utils.models.vocab import URI_KC_TYPE_SERIAL
+from rdf_utils.namespace import NS_MM_KC_EXT, NS_MM_QUDT_QTY, NS_MM_QUDT_UNIT
 from rdf_utils.resolver import IriToFileResolver, install_resolver
 from rdflib import URIRef
 from rdflib.namespace import RDF
@@ -31,7 +33,7 @@ from rdflib.namespace import RDF
 from motion_spec.entities import (
     AccelerationConstraint, AccelerationTwist, Axis, BilateralConstraint,
     CartesianForceSpecification, Constraint, ConstraintEvaluator, ConstraintHandler,
-    ControlMode, DataclassJSONEncoder, Direction, EdgeMonitor, EqualityConstraint,
+    DataclassJSONEncoder, Direction, EdgeMonitor, EqualityConstraint,
     EvaluatorType, FeedForwardController, ForceDistributionSolver, ForwardedCommand, Frame,
     FreeVector, GuardedMotion, GuardedMotionBlock, HandlerArmSolver, ImpedanceController,
     JointForceSpecification, JointPosition, LevelMonitor, MotionDrivers, Orientation,
@@ -44,12 +46,13 @@ from motion_spec.entities import (
 )
 # fmt: on
 from motion_spec.manifest import build_url_map, metamodel_url_map
+from motion_spec.derive_solver import AccelerationAxis, SolverIdFactory, acceleration_axes
 
 # fmt: off
 from motion_spec.namespace import (
     AGN, ALGO_EXT, APP, CSTR, CSTR_EXT, CSTR_HDL, CSTR_HDL_EXT, ENV, EXEC, GEOM_COORD,
-    GEOM_ENT, GEOM_OP, GEOM_OP_EXT, GEOM_REL, KC, KC_EXT, KC_STAT, MAP, MAP_EXT, MOT, QUDT_QKIND,
-    QUDT_SCHEMA, QUDT_UNIT, RBDYN_COORD, RBDYN_ENT, RBDYN_OP, SLV, SLV_EXT,
+    GEOM_ENT, GEOM_OP, GEOM_REL, KC, KC_STAT, MAP, MAP_EXT, MOT, QUDT_QKIND,
+    QUDT_SCHEMA, RBDYN_COORD, RBDYN_ENT, RBDYN_OP, SLV, SLV_EXT,
     SNAP, SOSA, TRAJ,
 )
 # fmt: on
@@ -58,6 +61,540 @@ from motion_spec.namespace import (
 # ---------------------------------------------------------------------------
 # DSL operators and specifications
 # ---------------------------------------------------------------------------
+def _term_name(node) -> str | None:
+    if node is None:
+        return None
+    return re.split(r"[/#]", str(node).rstrip("/"))[-1]
+
+
+def _authored_controller_axes(g) -> dict[URIRef, tuple[AccelerationAxis, ...]]:
+    """Acceleration axes derived only from authored controller facts."""
+    handler_controllers = set(g.objects(None, CSTR_HDL.controllers))
+    result = {}
+    for controller in handler_controllers:
+        constraint = g.value(controller, CSTR_HDL.constraint)
+        quantity = g.value(constraint, CSTR.quantity) if constraint is not None else None
+        if constraint is None or quantity is None:
+            continue
+        view = next(g.subjects(MAP.subobject, quantity), None)
+        subspace = _term_name(g.value(view, MAP.subspace)) if view is not None else None
+        axis = _term_name(g.value(view, MAP.axis)) if view is not None else None
+        quantity_kind = None
+        target = g.value(view, MAP.superobject) if view is not None else quantity
+        target_types = set(g.objects(target, RDF.type))
+        if GEOM_COORD.PoseCoordinate in target_types:
+            quantity_kind = "Pose"
+        elif KC_STAT.JointPositionCoordinate in target_types:
+            quantity_kind = "JointPosition"
+        controller_types = set(g.objects(controller, RDF.type))
+        controller_type = next(
+            (
+                _term_name(type_)
+                for type_ in (
+                    CSTR_HDL.ImpedanceController,
+                    CSTR_HDL.ProportionalIntegralDerivative,
+                    CSTR_HDL_EXT.FeedForwardController,
+                )
+                if type_ in controller_types
+            ),
+            "",
+        )
+        relation = next(
+            (
+                _term_name(type_)
+                for type_ in g.objects(constraint, RDF.type)
+                if type_ != CSTR.Constraint and _term_name(type_).endswith("Constraint")
+            ),
+            "",
+        )
+        command_type = g.value(controller, APP["command-type"])
+        result[controller] = acceleration_axes(
+            controller_type=controller_type,
+            subspace=subspace,
+            axis=axis,
+            command_type=str(command_type) if command_type is not None else None,
+            relation=relation,
+            quantity_kind=quantity_kind,
+        )
+    return result
+
+
+@dataclass(frozen=True)
+class ControllerDerivation:
+    """Resolved authored facts needed to derive one controller's solver IR."""
+
+    handler: URIRef
+    motion: URIRef
+    controller: URIRef
+    solver: URIRef
+    constraint: URIRef
+    quantity: URIRef
+    view: URIRef | None
+    axes: tuple[AccelerationAxis, ...]
+
+
+@dataclass(frozen=True)
+class SolverDerivationContext:
+    """Immutable indexes for solver expansion, built once before IR emission."""
+
+    controllers_by_handler: dict[URIRef, tuple[ControllerDerivation, ...]]
+    controllers_by_solver: dict[URIRef, tuple[ControllerDerivation, ...]]
+    shared_constraints: frozenset[URIRef]
+
+
+def _solver_derivation_context(g) -> SolverDerivationContext:
+    """Resolve controller ownership and command shape without generated solver nodes."""
+    axes_by_controller = _authored_controller_axes(g)
+    by_handler = {}
+    by_solver: dict[URIRef, list[ControllerDerivation]] = collections.defaultdict(list)
+    for handler in g.subjects(RDF.type, CSTR_HDL.ConstraintHandler):
+        motion = g.value(handler, CSTR_HDL.motion)
+        if not isinstance(motion, URIRef):
+            raise ValueError(f"Constraint handler '{handler}' is missing its motion.")
+        authored = []
+        for controller in g.objects(handler, CSTR_HDL.controllers):
+            if controller not in authored:
+                authored.append(controller)
+        authored.sort(key=lambda node: int(getattr(g.value(node, APP.order), "value", 0)))
+        plans = []
+        for controller in authored:
+            solver = g.value(controller, CSTR_HDL_EXT.solver)
+            constraint = g.value(controller, CSTR_HDL.constraint)
+            quantity = g.value(constraint, CSTR.quantity) if constraint is not None else None
+            if not all(isinstance(node, URIRef) for node in (solver, constraint, quantity)):
+                raise ValueError(
+                    f"Authored controller '{controller}' needs explicit solver, constraint, "
+                    "and constraint quantity relations."
+                )
+            view = next(g.subjects(MAP.subobject, quantity), None)
+            plan = ControllerDerivation(
+                handler,
+                motion,
+                controller,
+                solver,
+                constraint,
+                quantity,
+                view if isinstance(view, URIRef) else None,
+                axes_by_controller.get(controller, ()),
+            )
+            plans.append(plan)
+            by_solver[solver].append(plan)
+        by_handler[handler] = tuple(plans)
+    constraint_counts = collections.Counter(
+        plan.constraint for plans in by_handler.values() for plan in plans
+    )
+    return SolverDerivationContext(
+        controllers_by_handler=by_handler,
+        controllers_by_solver={node: tuple(plans) for node, plans in by_solver.items()},
+        shared_constraints=frozenset(
+            constraint for constraint, count in constraint_counts.items() if count > 1
+        ),
+    )
+
+
+def _derived_quantity(
+    id_: str, kind: str, unit: str, *, has_view: bool = False
+) -> Quantity:
+    """Construct a runtime scalar that is implied rather than authored."""
+    return Quantity(
+        id_,
+        QuantityKind(kind),
+        Unit(unit),
+        None,
+        has_view,
+        provenance=Provenance(),
+    )
+
+
+def _motion_suffix(p, motion: URIRef) -> str:
+    """Return the compatibility motion suffix from its authored motion resource."""
+    motion_id = p.id(motion)
+    return motion_id.removeprefix("motion_")
+
+
+def _controller_signal_id(
+    g, p, context: SolverDerivationContext, plan: ControllerDerivation
+) -> str:
+    """Derive a scalar controller output ID from its authored command semantics."""
+    controller_id = p.id(plan.controller)
+    types = set(g.objects(plan.controller, RDF.type))
+    command_type = str(g.value(plan.controller, APP["command-type"]) or "")
+    if CSTR_HDL_EXT.FeedForwardController in types:
+        return f"cmd_{controller_id}"
+    if CSTR_HDL.ImpedanceController in types or command_type == "Force":
+        return f"force_{controller_id}"
+    target = g.value(plan.view, MAP.superobject) if plan.view is not None else plan.quantity
+    if command_type == "Torque" and KC_STAT.JointPositionCoordinate in g[target : RDF.type]:
+        return f"tau_{controller_id}"
+    quantity_id = p.id(plan.quantity)
+    suffix = "" if plan.constraint in context.shared_constraints else f"_{_motion_suffix(p, plan.motion)}"
+    return f"eacc_{quantity_id}{suffix}"
+
+
+def _saturation_for_signal(g, p, node, signal):
+    """Parse authored saturation bounds and bind them to a derived signal."""
+    if node is None:
+        return None
+    maximum = g.value(node, ALGO_EXT["maximum-absolute-value"])
+    lower = g.value(node, ALGO_EXT["lower-bound"])
+    upper = g.value(node, ALGO_EXT["upper-bound"])
+    return Saturation(
+        p.id(node),
+        signal,
+        signal,
+        p.quantity(maximum) if maximum is not None else None,
+        p.quantity(lower) if lower is not None else None,
+        p.quantity(upper) if upper is not None else None,
+    )
+
+
+def _controller_saturations(g, p, controller, signal):
+    """Bind authored output and integral bounds to a derived controller signal."""
+    nodes = list(g.objects(controller, ALGO_EXT.limits))
+    output_node = next(
+        (
+            node
+            for node in nodes
+            if (input_node := g.value(node, ALGO_EXT["in"])) is not None
+            and g.value(input_node, QUDT_SCHEMA.hasQuantityKind) is not None
+        ),
+        None,
+    )
+    integral_node = next((node for node in nodes if node != output_node), None)
+    return (
+        _saturation_for_signal(g, p, output_node, signal),
+        _saturation_for_signal(g, p, integral_node, signal),
+    )
+
+
+def _derived_controller(
+    g,
+    p,
+    context: SolverDerivationContext,
+    plan: ControllerDerivation,
+    axis: AccelerationAxis | None = None,
+):
+    """Build a controller dataclass from one authored controller and optional pose axis."""
+    source_id = p.id(plan.controller)
+    ids = SolverIdFactory(source_id, _motion_suffix(p, plan.motion))
+    if axis is not None:
+        controller_id = ids.component_controller(axis)
+        signal = _derived_quantity(
+            ids.component_energy(axis), "AccelerationEnergy", "N_M2_PER_SEC2"
+        )
+        is_linear = axis.subspace == "linear-acceleration"
+        error = _derived_quantity(
+            ids.component_error(axis),
+            "Length" if is_linear else "Angle",
+            "M" if is_linear else "RAD",
+            has_view=True,
+        )
+        measured_source = g.value(plan.controller, CSTR_HDL["measured-velocity"])
+        measured_derivative = (
+            _derived_quantity(
+                f"{source_id}_measured_derivative_{axis.suffix}",
+                "LinearVelocity" if is_linear else "AngularVelocity",
+                "M_PER_SEC" if is_linear else "RAD_PER_SEC",
+                has_view=True,
+            )
+            if measured_source is not None
+            else None
+        )
+        output_saturation, integral_saturation = _controller_saturations(
+            g, p, plan.controller, signal
+        )
+    else:
+        controller_id = source_id
+        signal_id = _controller_signal_id(g, p, context, plan)
+        types = set(g.objects(plan.controller, RDF.type))
+        command_type = str(g.value(plan.controller, APP["command-type"]) or "")
+        if CSTR_HDL_EXT.FeedForwardController in types:
+            source = p.quantity(plan.quantity)
+            signal = replace(
+                source,
+                id=signal_id,
+                value=None,
+                has_view=False,
+                provenance=Provenance(),
+                reference_value=None,
+            )
+        elif CSTR_HDL.ImpedanceController in types or command_type == "Force":
+            signal = _derived_quantity(signal_id, "Force", "N")
+        elif signal_id.startswith("tau_"):
+            signal = _derived_quantity(signal_id, "Torque", "N_M")
+        else:
+            signal = _derived_quantity(signal_id, "AccelerationEnergy", "N_M2_PER_SEC2")
+        error_node = g.value(plan.controller, CSTR_HDL["error-signal"])
+        error = p.quantity(error_node) if error_node is not None else None
+        measured_node = g.value(plan.controller, CSTR_HDL["measured-velocity"])
+        measured_derivative = p.quantity(measured_node) if measured_node is not None else None
+        output_saturation, integral_saturation = _controller_saturations(
+            g, p, plan.controller, signal
+        )
+
+    types = set(g.objects(plan.controller, RDF.type))
+    if CSTR_HDL.ProportionalIntegralDerivative in types:
+        decay_rate = None
+        if CSTR_HDL.DecayingIntegralTerm in types:
+            decay_rate = g.value(plan.controller, CSTR_HDL["decay-rate"]).value
+        return PIDController(
+            id=controller_id,
+            control_signal=signal,
+            error_signal=error,
+            measured_derivative=measured_derivative,
+            proportional_gain=p._required_float(plan.controller, CSTR_HDL["proportional-gain"]),
+            integral_gain=p._required_float(plan.controller, CSTR_HDL["integral-gain"]),
+            derivative_gain=p._required_float(plan.controller, CSTR_HDL["derivative-gain"]),
+            decay_rate=decay_rate,
+            output_saturation=output_saturation,
+            integral_saturation=integral_saturation,
+            type=p.id(CSTR_HDL.ProportionalIntegralDerivative),
+        )
+    if CSTR_HDL.ImpedanceController in types:
+        return ImpedanceController(
+            id=controller_id,
+            control_signal=signal,
+            error_signal=error,
+            stiffness=p._required_float(plan.controller, CSTR_HDL.stiffness),
+            damping=p._required_float(plan.controller, CSTR_HDL.damping),
+            integral_gain=p._optional_float(plan.controller, CSTR_HDL["integral-gain"]),
+            output_saturation=output_saturation,
+            type=p.id(CSTR_HDL.ImpedanceController),
+        )
+    reference_node = g.value(plan.controller, CSTR_HDL_EXT["reference-signal"])
+    return FeedForwardController(
+        id=controller_id,
+        control_signal=signal,
+        reference_signal=p.quantity(reference_node) if reference_node is not None else None,
+        output_saturation=output_saturation,
+        type=p.id(CSTR_HDL_EXT.FeedForwardController),
+    )
+
+
+def _derived_controllers(g, p, context, plan: ControllerDerivation):
+    """Expand a pose command per axis and leave scalar commands singular."""
+    if len(plan.axes) > 1:
+        return [_derived_controller(g, p, context, plan, axis) for axis in plan.axes]
+    return [_derived_controller(g, p, context, plan)]
+
+
+def _solver_limit(g, p, solver: URIRef, axis: AccelerationAxis):
+    """Return the solver saturation matching a derived acceleration subspace."""
+    kind = (
+        QUDT_QKIND.LinearAcceleration
+        if axis.subspace == "linear-acceleration"
+        else QUDT_QKIND.AngularAcceleration
+    )
+    node = next(
+        (
+            limit
+            for limit in g.objects(solver, ALGO_EXT.limits)
+            if kind
+            in g[g.value(limit, ALGO_EXT["in"]) : QUDT_SCHEMA.hasQuantityKind]
+        ),
+        None,
+    )
+    return p.saturation(node) if node is not None else None
+
+
+def _derived_acceleration_constraints(g, p, context, plan: ControllerDerivation):
+    """Build ordered acceleration constraints for one authored controller."""
+    ids = SolverIdFactory(p.id(plan.controller), _motion_suffix(p, plan.motion))
+    target = g.value(plan.view, MAP.superobject) if plan.view is not None else plan.quantity
+    frame_node = g.value(target, GEOM_COORD["as-seen-by"])
+    frame = p.frame(frame_node) if frame_node is not None else None
+    result = []
+    for axis in plan.axes:
+        if len(plan.axes) > 1:
+            constraint_id = ids.component_constraint(axis)
+            energy_id = ids.component_energy(axis)
+        else:
+            suffix = (
+                ""
+                if plan.constraint in context.shared_constraints
+                else f"_{_motion_suffix(p, plan.motion)}"
+            )
+            constraint_id = f"acc_cstr_{p.id(plan.quantity)}{suffix}"
+            energy_id = f"eacc_{p.id(plan.quantity)}{suffix}"
+        result.append(
+            AccelerationConstraint(
+                id=constraint_id,
+                subspace=(
+                    Subspace.Linear
+                    if axis.subspace == "linear-acceleration"
+                    else Subspace.Angular
+                ),
+                axis={"x": Axis.X, "y": Axis.Y, "z": Axis.Z}.get(axis.axis),
+                acceleration_energy=_derived_quantity(
+                    energy_id, "AccelerationEnergy", "N_M2_PER_SEC2"
+                ),
+                as_seen_by=frame,
+                saturation=_solver_limit(g, p, plan.solver, axis),
+            )
+        )
+    return result
+
+
+def _derived_motion_drivers(g, p, context, solver: URIRef) -> list[MotionDrivers]:
+    """Build a solver's drivers from authored controllers plus authored force specs."""
+    acceleration = [
+        constraint
+        for plan in context.controllers_by_solver.get(solver, ())
+        for constraint in _derived_acceleration_constraints(g, p, context, plan)
+    ]
+    result = []
+    for driver in g.objects(solver, SLV["motion-drivers"]):
+        cartesian = [
+            p.cartesian_force_specification(node)
+            for node in g.objects(driver, SLV["cartesian-force"])
+        ]
+        joint = [
+            p.joint_force_specification(node)
+            for node in g.objects(driver, SLV["joint-force"])
+        ]
+        result.append(
+            MotionDrivers(
+                p.id(driver),
+                acceleration,
+                cartesian,
+                joint,
+                has_cartesian_force=bool(cartesian),
+            )
+        )
+    return result
+
+
+def _literal_text(g, subject, predicate):
+    """Return a controller parameter in the text form used by closure IR."""
+    value = g.value(subject, predicate)
+    if value is None:
+        return None
+    literal = value if isinstance(value, rdflib.Literal) else g.value(value, QUDT_SCHEMA.value)
+    return str(literal) if literal is not None else None
+
+
+def _derive_solver_closures(g, p, context, closures: dict) -> None:
+    """Replace graph-expanded controller closures with authored semantic derivations."""
+    for plans in context.controllers_by_handler.values():
+        for plan in plans:
+            source_id = p.id(plan.controller)
+            ids = SolverIdFactory(source_id, _motion_suffix(p, plan.motion))
+            controllers = _derived_controllers(g, p, context, plan)
+            closures.pop(source_id, None)
+            for controller in controllers:
+                closures.pop(controller.id, None)
+                closures[controller.id] = {
+                    "id": controller.id,
+                    "type": "Controller",
+                    "error_signal": getattr(getattr(controller, "error_signal", None), "id", None),
+                    "reference_signal": getattr(
+                        getattr(controller, "reference_signal", None), "id", None
+                    ),
+                    "measured_velocity": getattr(
+                        getattr(controller, "measured_derivative", None), "id", None
+                    ),
+                    "control_signal": controller.control_signal.id,
+                    "proportional_gain": _literal_text(
+                        g, plan.controller, CSTR_HDL["proportional-gain"]
+                    ),
+                    "integral_gain": _literal_text(
+                        g, plan.controller, CSTR_HDL["integral-gain"]
+                    ),
+                    "derivative_gain": _literal_text(
+                        g, plan.controller, CSTR_HDL["derivative-gain"]
+                    ),
+                    "decay_rate": _literal_text(g, plan.controller, CSTR_HDL["decay-rate"]),
+                }
+            if len(plan.axes) <= 1:
+                continue
+            target = g.value(plan.view, MAP.superobject)
+            reference = g.value(plan.constraint, CSTR["reference-value"])
+            reference_view = next(g.subjects(MAP.subobject, reference), None)
+            if reference_view is not None:
+                reference = g.value(reference_view, MAP.superobject)
+            closures[ids.pose_evaluator()] = {
+                "id": ids.pose_evaluator(),
+                "type": "PoseDiffEvaluator",
+                "in1": p.id(target),
+                "in2": p.id(reference),
+                "out": ids.pose_difference(),
+            }
+
+
+def _derive_solver_data(g, p, context, data: list, views: dict) -> None:
+    """Add pose-command runtime quantities and views without RDF materialization."""
+    differences = []
+    errors = []
+    signals = []
+    derivatives = []
+    derived_ids = set()
+    for plans in context.controllers_by_handler.values():
+        for plan in plans:
+            controllers = _derived_controllers(g, p, context, plan)
+            signals.extend(controller.control_signal for controller in controllers)
+            derived_ids.update(controller.control_signal.id for controller in controllers)
+            if len(plan.axes) <= 1:
+                continue
+            ids = SolverIdFactory(p.id(plan.controller), _motion_suffix(p, plan.motion))
+            target = g.value(plan.view, MAP.superobject)
+            frame_node = g.value(target, GEOM_COORD["as-seen-by"])
+            difference = PoseDifference(
+                ids.pose_difference(),
+                ["Angle", "Length"],
+                Point(f"point_{ids.pose_difference()}_origin"),
+                p.frame(frame_node),
+                ["M", "RAD"],
+                provenance=Provenance(),
+            )
+            differences.append(difference)
+            derived_ids.add(difference.id)
+            for axis in plan.axes:
+                is_linear = axis.subspace == "linear-acceleration"
+                error = _derived_quantity(
+                    ids.component_error(axis),
+                    "Length" if is_linear else "Angle",
+                    "M" if is_linear else "RAD",
+                    has_view=True,
+                )
+                errors.append(error)
+                derived_ids.add(error.id)
+                views.pop(error.id, None)
+                views[error.id] = View(
+                    f"view_{error.id}",
+                    difference,
+                    error,
+                    Subspace.Linear if is_linear else Subspace.Angular,
+                    {"x": Axis.X, "y": Axis.Y, "z": Axis.Z}[axis.axis],
+                )
+                measured_source = g.value(plan.controller, CSTR_HDL["measured-velocity"])
+                if measured_source is not None:
+                    derivative = _derived_quantity(
+                        f"{p.id(plan.controller)}_measured_derivative_{axis.suffix}",
+                        "LinearVelocity" if is_linear else "AngularVelocity",
+                        "M_PER_SEC" if is_linear else "RAD_PER_SEC",
+                        has_view=True,
+                    )
+                    derivatives.append(derivative)
+                    derived_ids.add(derivative.id)
+                    views.pop(derivative.id, None)
+                    views[derivative.id] = View(
+                        f"view_{derivative.id}",
+                        p.velocity_twist(measured_source),
+                        derivative,
+                        Subspace.Linear if is_linear else Subspace.Angular,
+                        {"x": Axis.X, "y": Axis.Y, "z": Axis.Z}[axis.axis],
+                    )
+
+    data[:] = [item for item in data if item.id not in derived_ids]
+    wrench_index = next(
+        (index for index, item in enumerate(data) if item.type == "Wrench"), len(data)
+    )
+    data[wrench_index:wrench_index] = differences
+    data.extend(errors)
+    data.extend(derivatives)
+    data.extend(signals)
+
+
 def parse_argument(g, closure_id, argument, to_id, resolve_value=False):
     # For each of the key differentiate if there is one or more associated value
     """Resolve a closure argument (input/output/parameter) from the graph to id(s); a lone value
@@ -439,13 +976,8 @@ ops_generic = [
     ),
     Specification(type_=MAP["View"], input=[MAP["superobject"]], output=[MAP["subobject"]]),
     Operator(
-        type_=GEOM_OP_EXT["PoseDiffEvaluator"],
-        input=[GEOM_OP["in1"], GEOM_OP["in2"]],
-        output=[GEOM_OP_EXT["out"]],
-    ),
-    Operator(
-        type_=TRAJ["Lerp"],
-        input=[TRAJ["start"], TRAJ["goal"], TRAJ["alpha"]],
+        type_=TRAJ.CartesianPoseInterpolation,
+        input=[TRAJ.start, TRAJ.goal, TRAJ["path-parameter"]],
         output=[TRAJ["trajectory"]],
         parameters=[TRAJ["profile"]],
     ),
@@ -475,12 +1007,23 @@ ops_generic = [
     ),
     Operator(
         type_=TRAJ["Circle"],
-        input=[TRAJ["start"], TRAJ["center"], TRAJ["plane-normal"], TRAJ["alpha"]],
+        input=[
+            TRAJ.start,
+            TRAJ.center,
+            TRAJ["plane-normal"],
+            TRAJ["path-parameter"],
+        ],
         output=[TRAJ["trajectory"]],
     ),
     Operator(
         type_=TRAJ["Arc"],
-        input=[TRAJ["start"], TRAJ["end"], TRAJ["amplitude"], TRAJ["plane-normal"], TRAJ["alpha"]],
+        input=[
+            TRAJ.start,
+            TRAJ.end,
+            TRAJ.amplitude,
+            TRAJ["plane-normal"],
+            TRAJ["path-parameter"],
+        ],
         output=[TRAJ["trajectory"]],
     ),
     Operator(
@@ -491,34 +1034,24 @@ ops_generic = [
             TRAJ["axis"],
             TRAJ["pitch"],
             TRAJ["revolutions"],
-            TRAJ["alpha"],
+            TRAJ["path-parameter"],
         ],
         output=[TRAJ["trajectory"]],
     ),
     Operator(
         type_=TRAJ["Figure8"],
-        input=[TRAJ["anchor"], TRAJ["radius"], TRAJ["plane-normal"], TRAJ["alpha"]],
+        input=[
+            TRAJ.anchor,
+            TRAJ.radius,
+            TRAJ["plane-normal"],
+            TRAJ["path-parameter"],
+        ],
         output=[TRAJ["trajectory"]],
         parameters=[TRAJ["form"]],
     ),
 ]
 
 ops_cstr_hdl = [
-    Operator(
-        type_=CSTR_HDL["Controller"],
-        input=[
-            CSTR_HDL["error-signal"],
-            CSTR_HDL_EXT["reference-signal"],
-            CSTR_HDL["measured-velocity"],
-        ],
-        output=[CSTR_HDL["control-signal"]],
-        parameters=[
-            CSTR_HDL["proportional-gain"],
-            CSTR_HDL["integral-gain"],
-            CSTR_HDL["derivative-gain"],
-            CSTR_HDL["decay-rate"],
-        ],
-    ),
     AssignmentEvaluator(),
     ErrorEvaluator(),
 ]
@@ -526,9 +1059,6 @@ ops_cstr_hdl = [
 ops_slv = [
     Specification(type_=SLV["CartesianForceSpecification"], input=[SLV["force"]], output=[]),
     Specification(type_=SLV["JointForceSpecification"], input=[SLV["force"]], output=[]),
-    Specification(
-        type_=SLV["AccelerationConstraint"], input=[SLV["acceleration-energy"]], output=[]
-    ),
     Specification(type_=SLV["ForceDistributionSolver"], input=[SLV["force"]], output=[]),
 ]
 
@@ -738,7 +1268,15 @@ class Parser:
             SLV["AccelerationConstrainedHybridDynamicsAlgorithm"]: "ACHD",
             SLV["RecursiveNewtonEulerAlgorithm"]: "RNE",
         }.get(algorithm_node, self.id(algorithm_node) if algorithm_node else "")
-        torque_saturation_node = next(self.g.objects(id_, ALGO_EXT.limits), None)
+        torque_saturation_node = next(
+            (
+                limit
+                for limit in self.g.objects(id_, ALGO_EXT.limits)
+                if QUDT_QKIND.Torque
+                in self.g[self.g.value(limit, ALGO_EXT["in"]) : QUDT_SCHEMA.hasQuantityKind]
+            ),
+            None,
+        )
 
         return SolverWithInputAndOutput(
             id=self.id(id_),
@@ -756,16 +1294,10 @@ class Parser:
 
     @memoize
     def motion_drivers(self, id_):
-        """Parse a MotionDrivers group (acceleration/cartesian/joint forces) at node."""
+        """Parse authored Cartesian and joint-force drivers at node."""
         self._expect_type(id_, SLV["MotionDrivers"])
-        spec_acc = []
         spec_frc = []
         spec_jf = []
-
-        for a in self.g[id_ : SLV["acceleration-constraint"]]:
-            self._expect_type(a, SLV["AccelerationConstraintSpecification"])
-            for c in self.g[a : SLV["constraints"]]:
-                spec_acc.append(self.acceleration_constraint(c))
 
         for f in self.g[id_ : SLV["cartesian-force"]]:
             spec_frc.append(self.cartesian_force_specification(f))
@@ -774,7 +1306,7 @@ class Parser:
             spec_jf.append(self.joint_force_specification(jf))
 
         return MotionDrivers(
-            self.id(id_), spec_acc, spec_frc, spec_jf, has_cartesian_force=bool(spec_frc)
+            self.id(id_), [], spec_frc, spec_jf, has_cartesian_force=bool(spec_frc)
         )
 
     def joint_force_specification(self, id_):
@@ -811,23 +1343,6 @@ class Parser:
             self.quantity(maximum_node) if maximum_node is not None else None,
             self.quantity(lower_node) if lower_node is not None else None,
             self.quantity(upper_node) if upper_node is not None else None,
-        )
-
-    @memoize
-    def acceleration_constraint(self, id_):
-        """Parse an AccelerationConstraint at node."""
-        self._expect_type(id_, SLV["AccelerationConstraint"])
-        subspace = self.subspace(self.g.value(id_, SLV["subspace"]))
-        e_acc = self.quantity(self.g.value(id_, SLV["acceleration-energy"]))
-        saturation_node = next(self.g.objects(id_, ALGO_EXT.limits), None)
-        saturation = self.saturation(saturation_node) if saturation_node is not None else None
-        as_seen_by_node = self.g.value(id_, GEOM_COORD["as-seen-by"])
-        as_seen_by = self.frame(as_seen_by_node) if as_seen_by_node else None
-
-        self._expect_type(id_, SLV["AxisAligned"])
-        axis = self.axis(self.g.value(id_, SLV["axis"]))
-        return AccelerationConstraint(
-            self.id(id_), subspace, axis, e_acc, as_seen_by, saturation=saturation
         )
 
     @memoize
@@ -874,27 +1389,9 @@ class Parser:
         """Parse a ConstraintHandler (evaluators, controllers, monitors) at node."""
         self._expect_type(id_, CSTR_HDL["ConstraintHandler"])
         motion = self.guarded_motion(self.g.value(id_, CSTR_HDL["motion"]))
-        control_mode_node = self.g.value(id_, CSTR_HDL_EXT["control-mode"])
-        if control_mode_node is None:
-            raise ValueError(f"Constraint handler '{self.id(id_)}' is missing control-mode.")
-        control_mode = self.id(control_mode_node)
-        try:
-            ControlMode(control_mode)
-        except ValueError as exc:
-            raise ValueError(
-                f"Constraint handler '{self.id(id_)}' uses unsupported control mode "
-                f"'{control_mode}'."
-            ) from exc
-
         evaluators = []
         for e in self.g[id_ : CSTR_HDL["evaluators"]]:
-            if GEOM_OP_EXT["PoseDiffEvaluator"] in self.g[e : RDF["type"]]:
-                continue  # handled via schedule traversal
             evaluators.append(self.constraint_evaluator(e))
-
-        controllers = []
-        for c in self.g[id_ : CSTR_HDL["controllers"]]:
-            controllers.append(self.controller(c))
 
         monitors = []
         for m in self.g[id_ : CSTR_HDL["monitors"]]:
@@ -903,9 +1400,7 @@ class Parser:
         order_value = self.g.value(id_, APP["order"])
         order = int(order_value.value) if order_value is not None else 0
 
-        return ConstraintHandler(
-            self.id(id_), motion, control_mode, evaluators, controllers, monitors, order
-        )
+        return ConstraintHandler(self.id(id_), motion, evaluators, [], monitors, order)
 
     @memoize
     def monitor_entry(self, id_):
@@ -980,7 +1475,7 @@ class Parser:
         qnode = self.g.value(constraint_node, CSTR["quantity"])
         if (
             qnode is not None
-            and QUDT_QKIND["Time"] in self.g[qnode : QUDT_SCHEMA["hasQuantityKind"]]
+            and NS_MM_QUDT_QTY["Time"] in self.g[qnode : QUDT_SCHEMA.hasQuantityKind]
         ):
             is_elapsed = True
             elapsed_op = (
@@ -991,7 +1486,9 @@ class Parser:
             thr = self.g.value(constraint_node, CSTR["threshold"])
             thr_val = float(self.g.value(thr, QUDT_SCHEMA["value"]))
             thr_unit = self.g.value(thr, QUDT_SCHEMA["unit"])
-            elapsed_threshold_s = thr_val * (0.001 if thr_unit == QUDT_UNIT["MilliSEC"] else 1.0)
+            elapsed_threshold_s = thr_val * (
+                0.001 if thr_unit == NS_MM_QUDT_UNIT["MilliSEC"] else 1.0
+            )
 
         return ConstraintEvaluator(
             self.id(id_),
@@ -1001,119 +1498,6 @@ class Parser:
             is_elapsed=is_elapsed,
             elapsed_op=elapsed_op,
             elapsed_threshold_s=elapsed_threshold_s,
-        )
-
-    @memoize
-    def controller(self, id_):
-        """Parse a controller (PID / impedance / feed-forward) at node."""
-        is_pid = CSTR_HDL["ProportionalIntegralDerivative"] in self.g[id_ : RDF["type"]]
-        is_impedance = CSTR_HDL["ImpedanceController"] in self.g[id_ : RDF["type"]]
-        is_feedforward = CSTR_HDL_EXT["FeedForwardController"] in self.g[id_ : RDF["type"]]
-        if not (is_pid or is_impedance or is_feedforward):
-            raise ValueError(
-                f"Controller {id_} must be ProportionalIntegralDerivative, ImpedanceController, "
-                "or FeedForwardController"
-            )
-
-        error_node = self.g.value(id_, CSTR_HDL["error-signal"])
-        ref_node = self.g.value(id_, CSTR_HDL_EXT["reference-signal"])
-        measured_derivative_node = self.g.value(id_, CSTR_HDL["measured-velocity"])
-        error_signal = self.quantity(error_node) if error_node is not None else None
-        reference_signal = self.quantity(ref_node) if ref_node is not None else None
-        measured_derivative = (
-            self.quantity(measured_derivative_node)
-            if measured_derivative_node is not None
-            else None
-        )
-        control_signal_node = self.g.value(id_, CSTR_HDL["control-signal"])
-        control_signal = self.quantity(control_signal_node)
-        saturation_nodes = list(self.g.objects(id_, ALGO_EXT.limits))
-        output_saturation_node = next(
-            (
-                node
-                for node in saturation_nodes
-                if self.g.value(node, ALGO_EXT["in"]) == control_signal_node
-            ),
-            None,
-        )
-        integral_saturation_node = next(
-            (node for node in saturation_nodes if node != output_saturation_node), None
-        )
-        output_saturation = (
-            self.saturation(output_saturation_node) if output_saturation_node is not None else None
-        )
-        integral_saturation = (
-            self.saturation(integral_saturation_node)
-            if integral_saturation_node is not None
-            else None
-        )
-
-        if is_pid:
-            if error_signal is None:
-                raise ValueError(
-                    f"PID controller '{self.id(id_)}' must have cstr-hdl:error-signal."
-                )
-            if reference_signal is not None:
-                raise ValueError(
-                    f"PID controller '{self.id(id_)}' must not have cstr-hdl-ext:reference-signal."
-                )
-            decay_rate = None
-            if CSTR_HDL["DecayingIntegralTerm"] in self.g[id_ : RDF["type"]]:
-                decay_rate = self.g.value(id_, CSTR_HDL["decay-rate"]).value
-            return PIDController(
-                id=self.id(id_),
-                control_signal=control_signal,
-                error_signal=error_signal,
-                measured_derivative=measured_derivative,
-                proportional_gain=self._required_float(id_, CSTR_HDL["proportional-gain"]),
-                integral_gain=self._required_float(id_, CSTR_HDL["integral-gain"]),
-                derivative_gain=self._required_float(id_, CSTR_HDL["derivative-gain"]),
-                decay_rate=decay_rate,
-                output_saturation=output_saturation,
-                integral_saturation=integral_saturation,
-                type=self.id(CSTR_HDL.ProportionalIntegralDerivative),
-            )
-        if is_impedance:
-            if measured_derivative is not None:
-                raise ValueError(
-                    f"Impedance controller '{self.id(id_)}' must not have cstr-hdl-ext:measured-derivative."
-                )
-            if error_signal is None:
-                raise ValueError(
-                    f"Impedance controller '{self.id(id_)}' must have cstr-hdl:error-signal."
-                )
-            if reference_signal is not None:
-                raise ValueError(
-                    f"Impedance controller '{self.id(id_)}' must not have cstr-hdl-ext:reference-signal."
-                )
-            return ImpedanceController(
-                id=self.id(id_),
-                control_signal=control_signal,
-                error_signal=error_signal,
-                stiffness=self._required_float(id_, CSTR_HDL["stiffness"]),
-                damping=self._required_float(id_, CSTR_HDL["damping"]),
-                integral_gain=self._optional_float(id_, CSTR_HDL["integral-gain"]),
-                output_saturation=output_saturation,
-                type=self.id(CSTR_HDL.ImpedanceController),
-            )
-        if reference_signal is None:
-            raise ValueError(
-                f"FeedForward controller '{self.id(id_)}' must have cstr-hdl-ext:reference-signal."
-            )
-        if error_signal is not None:
-            raise ValueError(
-                f"FeedForward controller '{self.id(id_)}' must not have cstr-hdl:error-signal."
-            )
-        if measured_derivative is not None:
-            raise ValueError(
-                f"FeedForward controller '{self.id(id_)}' must not have cstr-hdl-ext:measured-derivative."
-            )
-        return FeedForwardController(
-            id=self.id(id_),
-            control_signal=control_signal,
-            reference_signal=reference_signal,
-            output_saturation=output_saturation,
-            type=self.id(CSTR_HDL_EXT.FeedForwardController),
         )
 
     def _optional_float(self, subject, predicate) -> float | None:
@@ -1231,8 +1615,6 @@ class Parser:
         self._expect_type(id_, GEOM_COORD["VectorXYZ"])
         quantity_kind = []
         for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]]:
-            quantity_kind.append(self.id(k))
-        for k in self.g[id_ : QUDT_SCHEMA["quantity-kind"]]:
             quantity_kind.append(self.id(k))
         as_seen_by = self.frame(self.g.value(id_, GEOM_COORD["as-seen-by"]))
         unit = self.id(self.g.value(id_, QUDT_SCHEMA["unit"]))
@@ -1516,9 +1898,7 @@ class Parser:
     def quantity(self, id_):
         """Parse the quantity at node, dispatching on its RDF type."""
         self._expect_type(id_, QUDT_SCHEMA["Quantity"])
-        quantity_kind_node = self.g.value(id_, QUDT_SCHEMA["hasQuantityKind"]) or self.g.value(
-            id_, QUDT_SCHEMA["quantity-kind"]
-        )
+        quantity_kind_node = self.g.value(id_, QUDT_SCHEMA.hasQuantityKind)
         quantity_kind = self.id(quantity_kind_node)
 
         unit = self.id(self.g.value(id_, QUDT_SCHEMA["unit"]))
@@ -1728,6 +2108,11 @@ class Parser:
                     else None
                 )
                 if cl:
+                    if operator.type_ == TRAJ.CartesianPoseInterpolation:
+                        trajectory = self.g.value(closure, TRAJ.trajectory)
+                        reference = self.g.value(trajectory, TRAJ.reference)
+                        if reference is not None:
+                            cl["trajectory"] = self.id(reference)
                     if operator.type_ in {TRAJ.VelocityProfile, CSTR_HDL_EXT.Admittance}:
                         reference = self.g.value(closure, TRAJ.reference)
                         constraint = next(
@@ -1741,20 +2126,6 @@ class Parser:
                             cl["measured"] = cl.pop("start")
                         else:
                             cl["max_velocity"] = cl.pop("maximum_velocity")
-                    if operator.type_ == CSTR_HDL["Controller"]:
-                        # The closure step omits attached algorithm limits, so carry its output
-                        # saturation into the rendered controller call explicitly.
-                        control_signal = self.g.value(closure, CSTR_HDL["control-signal"])
-                        sat_node = next(
-                            (
-                                n
-                                for n in self.g.objects(closure, ALGO_EXT.limits)
-                                if self.g.value(n, ALGO_EXT["in"]) == control_signal
-                            ),
-                            None,
-                        )
-                        if sat_node is not None:
-                            cl["output_saturation"] = self.saturation(sat_node)
                     closures[self.id(closure)] = cl
 
         return closures
@@ -1927,58 +2298,14 @@ def _mark_acceleration_constraint_frames(solver):
             constraint.base_aligned = axis_frame is None or _body_name(axis_frame) == root_body
 
 
-def _filtered_motion_driver(driver, handler_output_ids: set[str], closure_input_map):
-    """Return the slice of a solver driver fed by the current handler outputs."""
-    acceleration_constraints = [
-        ac
-        for ac in driver.acceleration_constraint
-        if ac.acceleration_energy.id in handler_output_ids
-    ]
-
-    cartesian_forces = []
-    for force_spec in driver.cartesian_force:
-        force_id = force_spec.force.id
-        upstream = {force_id} | _upstream_dependencies(force_id, closure_input_map)
-        if upstream & handler_output_ids:
-            cartesian_forces.append(force_spec)
-
-    joint_forces = [
-        jf_spec for jf_spec in driver.joint_force if jf_spec.force_id in handler_output_ids
-    ]
-
-    if not acceleration_constraints and not cartesian_forces and not joint_forces:
-        return None
-
-    return replace(
-        driver,
-        acceleration_constraint=acceleration_constraints,
-        cartesian_force=cartesian_forces,
-        joint_force=joint_forces,
-        has_cartesian_force=bool(cartesian_forces),
-    )
-
-
-def _arm_solvers_for_handler(handler, slv_arm, closure_input_map=None):
-    """Find arm solvers whose motion drivers consume this handler's controller outputs.
-
-    A handler drives an arm solver through controller ``control_signal`` quantities.
-    Those quantities are referenced by the solver graph either as
-    ``acceleration-energy`` entries in acceleration constraints or as ``force``
-    entries in cartesian-force specifications.
-    """
-    closure_input_map = closure_input_map or {}
-    handler_output_ids = {c.control_signal.id for c in handler.controllers}
-    if not handler_output_ids:
-        return []
-
+def _arm_solvers_for_handler(handler, slv_arm, solver_ids):
+    """Select the arm solvers explicitly referenced by a handler's controllers."""
     result = []
     motion_driver_id = f"driver_{handler.motion.id.removeprefix('motion_')}"
     for solver in slv_arm:
-        matched = []
-        for driver in solver.motion_drivers:
-            filtered = _filtered_motion_driver(driver, handler_output_ids, closure_input_map)
-            if filtered is not None:
-                matched.append(filtered)
+        if solver.id not in solver_ids:
+            continue
+        matched = list(solver.motion_drivers)
         if not matched:
             continue
         selected = next((driver for driver in matched if driver.id == motion_driver_id), matched[0])
@@ -1987,7 +2314,6 @@ def _arm_solvers_for_handler(handler, slv_arm, closure_input_map=None):
                 id=solver.id,
                 output=solver.output,
                 motion_driver=selected,
-                control_mode=handler.control_mode,
                 algorithm=solver.algorithm,
                 algorithm_is_rne=solver.algorithm_is_rne,
                 root_acc=solver.root_acc,
@@ -2265,8 +2591,6 @@ def _pose_axis_error_groups_for_motion(eval_nodes, p, view_map):
     """
     groups: dict[str, PoseAxisErrorGroup] = {}
     for eval_node in eval_nodes:
-        if GEOM_OP_EXT["PoseDiffEvaluator"] in p.g[eval_node : RDF["type"]]:
-            continue
         if CSTR_HDL["ErrorEvaluator"] not in p.g[eval_node : RDF["type"]]:
             continue
 
@@ -2345,6 +2669,7 @@ def build_motion_units(
     data_structures=None,
     pose_components=None,
     fsm=None,
+    derivation=None,
 ):
     """Build the per-motion IR units (one motion per handler), each complete with schedules,
     monitors, controllers, conditions, declared poses, FSM wiring and function-interface flags;
@@ -2362,6 +2687,8 @@ def build_motion_units(
         handler_node = node_by_id[handler.id]
         motion_node = g.value(handler_node, CSTR_HDL["motion"])
         motion = handler.motion
+        handler_plans = derivation.controllers_by_handler.get(handler_node, ())
+        handler_solver_ids = {p.id(plan.solver) for plan in handler_plans}
 
         # Classify constraints by motion phase via RDF traversal
         _raw_when = set(g[motion_node : MOT["when"]])
@@ -2400,34 +2727,21 @@ def build_motion_units(
             qnode = g.value(cnode, CSTR["quantity"])
             return (
                 qnode is not None
-                and QUDT_QKIND["Time"] in g[qnode : QUDT_SCHEMA["hasQuantityKind"]]
+                and NS_MM_QUDT_QTY["Time"] in g[qnode : QUDT_SCHEMA.hasQuantityKind]
             )
 
-        # Classify controllers: driven by while-evaluator error outputs.
-        # PoseDiffEvaluator exposes its components as normal MAP views over the
-        # operator output twist, so collect those view subobjects here.
+        # Classify controllers by the constraints active during the motion body.
         while_error_nodes = set()
-        while_pose_eval_nodes = []
         for n in while_eval_nodes:
-            if GEOM_OP_EXT["PoseDiffEvaluator"] in g[n : RDF["type"]]:
-                while_pose_eval_nodes.append(n)
-                pose_diff_out = g.value(n, GEOM_OP_EXT["out"])
-                for view_node in g.subjects(MAP["superobject"], pose_diff_out):
-                    error_node = g.value(view_node, MAP["subobject"])
-                    if error_node is not None:
-                        while_error_nodes.add(error_node)
-                continue
             error_node = g.value(n, CSTR_HDL["error"])
             if error_node is not None:
                 while_error_nodes.add(error_node)
         while_error_nodes.discard(None)
-        ctrl_nodes = [
-            n
-            for n in g[handler_node : CSTR_HDL["controllers"]]
-            if (
-                g.value(n, CSTR_HDL["error-signal"]) in while_error_nodes
-                or g.value(n, CSTR_HDL["constraint"]) in while_constraint_nodes
-            )
+        active_plans = [plan for plan in handler_plans if plan.constraint in while_constraint_nodes]
+        active_controllers = [
+            controller
+            for plan in active_plans
+            for controller in _derived_controllers(g, p, derivation, plan)
         ]
 
         # Classify monitors by the constraint they watch (via cstr-hdl:constraint).
@@ -2478,12 +2792,6 @@ def build_motion_units(
                 f"Handler {handler.id}: classified evaluators not a subset of handler evaluators"
             )
 
-        all_ctrl_nodes = set(g[handler_node : CSTR_HDL["controllers"]])
-        if not set(ctrl_nodes) <= all_ctrl_nodes:
-            raise ValueError(
-                f"Handler {handler.id}: classified controllers not a subset of handler controllers"
-            )
-
         all_mon_nodes = set(g[handler_node : CSTR_HDL["monitors"]])
         classified_mon_nodes = set(when_mon_nodes) | set(while_mon_nodes) | set(until_mon_nodes)
         if not classified_mon_nodes <= all_mon_nodes:
@@ -2498,7 +2806,11 @@ def build_motion_units(
             [n for n in when_eval_nodes if not _is_elapsed_eval(n)], ops_generic + ops_cstr_hdl
         )
 
-        handler_arm_solvers = _arm_solvers_for_handler(handler, slv_arm, closure_input_map)
+        handler_arm_solvers = _arm_solvers_for_handler(
+            handler,
+            slv_arm,
+            handler_solver_ids,
+        )
         handler_output_ids = {c.control_signal.id for c in handler.controllers}
         cartesian_force_nodes = []
         for solver in handler_arm_solvers:
@@ -2521,47 +2833,68 @@ def build_motion_units(
         pose_axis_error_eval_ids = {
             component.eval_id for group in pose_axis_error_groups for component in group.components
         }
-        pose_axis_error_quantity_ids = {
-            component.quantity for group in pose_axis_error_groups for component in group.components
-        }
-        pose_axis_error_compute_ids = {
-            closure_output_map[quantity_id]
-            for quantity_id in pose_axis_error_quantity_ids
-            if quantity_id in closure_output_map
-        }
         grouped_while_eval_nodes = {
             node for node in while_eval_nodes if p_active.id(node) in pose_axis_error_eval_ids
         }
+        plan_by_constraint = {plan.constraint: plan for plan in active_plans}
+        pre_controller_evaluators = []
+        trailing_evaluators = []
+        for node in while_eval_nodes:
+            if (
+                node in grouped_while_eval_nodes or _is_elapsed_eval(node)
+            ):
+                continue
+            plan = plan_by_constraint.get(g.value(node, CSTR_HDL.constraint))
+            if plan is not None and CSTR_HDL_EXT.FeedForwardController not in g[
+                plan.controller : RDF.type
+            ]:
+                pre_controller_evaluators.append(node)
+            else:
+                trailing_evaluators.append(node)
+
         while_schedule = p_active.schedule(
-            [
-                n
-                for n in while_eval_nodes
-                if n not in while_pose_eval_nodes
-                and n not in grouped_while_eval_nodes
-                and not _is_elapsed_eval(n)
-            ]
-            + ctrl_nodes,
-            ops_generic + ops_cstr_hdl,
+            pre_controller_evaluators, ops_generic + ops_cstr_hdl
         )
+        derived_controller_ids = {controller.id for controller in active_controllers}
+        authored_controller_ids = {p.id(plan.controller) for plan in active_plans}
         while_schedule = [
             step
             for step in while_schedule
-            if step not in pose_axis_error_eval_ids and step not in pose_axis_error_compute_ids
+            if step not in derived_controller_ids and step not in authored_controller_ids
         ]
-        while_schedule.extend(
-            p_active.schedule(cartesian_force_nodes, ops_generic + ops_slv + ops_cstr_hdl)
-        )
-        # While evaluators watched only by a monitor (no controller consumes their error) aren't
-        # reached by backward discovery; append them after their deps so their evaluate call emits.
-        for n in while_eval_nodes:
-            if GEOM_OP_EXT["PoseDiffEvaluator"] in g[n : RDF["type"]]:
+        for plan in active_plans:
+            if len(plan.axes) <= 1:
                 continue
-            if _is_elapsed_eval(n):
-                continue
-            eval_id = p.id(n)
-            if eval_id not in p_active.sched:
+            reference = g.value(plan.constraint, CSTR["reference-value"])
+            reference_view = next(g.subjects(MAP.subobject, reference), None)
+            reference_pose = g.value(reference_view, MAP.superobject)
+            trajectory = next(g.subjects(TRAJ.reference, reference_pose), None)
+            interpolation = next(g.subjects(TRAJ.trajectory, trajectory), None)
+            if interpolation is not None:
+                for step in p_active.schedule([interpolation], ops_generic + ops_cstr_hdl):
+                    if step not in while_schedule:
+                        while_schedule.append(step)
+            evaluator_id = SolverIdFactory(
+                p.id(plan.controller), _motion_suffix(p, plan.motion)
+            ).pose_evaluator()
+            if evaluator_id not in while_schedule:
+                while_schedule.append(evaluator_id)
+        for node in pre_controller_evaluators:
+            eval_id = p.id(node)
+            if eval_id not in while_schedule:
                 while_schedule.append(eval_id)
-                p_active.sched.add(eval_id)
+        while_schedule.extend(controller.id for controller in reversed(active_controllers))
+        force_schedule = p_active.schedule(
+            cartesian_force_nodes, ops_generic + ops_slv + ops_cstr_hdl
+        )
+        while_schedule.extend(step for step in force_schedule if step not in while_schedule)
+        while_schedule.extend(
+            p_active.schedule(trailing_evaluators, ops_generic + ops_cstr_hdl)
+        )
+        for node in trailing_evaluators:
+            eval_id = p.id(node)
+            if eval_id not in while_schedule:
+                while_schedule.append(eval_id)
 
         until_schedule = p_active.schedule(
             [n for n in until_eval_nodes if not _is_elapsed_eval(n)], ops_generic + ops_cstr_hdl
@@ -2591,32 +2924,24 @@ def build_motion_units(
 
         # Build Python objects from classified RDF nodes
         when_evaluators = [p.constraint_evaluator(n) for n in when_eval_nodes]
-        while_evaluators = [
-            p.constraint_evaluator(n)
-            for n in while_eval_nodes
-            if GEOM_OP_EXT["PoseDiffEvaluator"] not in g[n : RDF["type"]]
-        ]
+        while_evaluators = [p.constraint_evaluator(n) for n in while_eval_nodes]
         until_evaluators = [p.constraint_evaluator(n) for n in until_eval_nodes]
-        controllers = [p.controller(n) for n in ctrl_nodes]
-        forwarded_outputs = {
-            output
-            for solver in g.subjects(RDF.type, SLV_EXT.CommandForwardingSolver)
-            for output in g.objects(solver, SLV.output)
-        }
+        controllers = active_controllers
+        forwarding_solvers = set(g.subjects(RDF.type, SLV_EXT.CommandForwardingSolver))
         forwarded_commands = []
-        for controller_node in ctrl_nodes:
-            output = g.value(controller_node, CSTR_HDL["control-signal"])
-            if output not in forwarded_outputs:
+        for plan in active_plans:
+            if plan.solver not in forwarding_solvers:
                 continue
-            constraint = g.value(controller_node, CSTR_HDL.constraint)
+            controller = _derived_controllers(g, p, derivation, plan)[0]
+            constraint = plan.constraint
             quantity = g.value(constraint, CSTR.quantity)
             view = next(g.subjects(MAP.subobject, quantity), None)
             target_quantity = g.value(view, MAP.superobject) if view is not None else quantity
             target = g.value(target_quantity, KC_STAT["of-joint"])
             forwarded_commands.append(
                 ForwardedCommand(
-                    f"cmd-fwd-{p.id(controller_node)}",
-                    p.quantity(output),
+                    f"cmd-fwd-{p.id(plan.controller)}",
+                    controller.control_signal,
                     p.label(target) if target is not None else "",
                 )
             )
@@ -2634,7 +2959,6 @@ def build_motion_units(
             GuardedMotionBlock(
                 id=handler.motion.id,
                 handler=handler.id,
-                control_mode=handler.control_mode,
                 command_robot_id=primary_robot_id,
                 has_when_elapsed=has_when_elapsed,
                 has_active_elapsed=has_active_elapsed,
@@ -2656,7 +2980,9 @@ def build_motion_units(
                 relative_poses=_relative_poses_for_motion(
                     while_evaluators + when_evaluators + until_evaluators,
                     view_map,
-                    _arm_solvers_for_handler(handler, slv_arm),
+                    _arm_solvers_for_handler(
+                        handler, slv_arm, handler_solver_ids
+                    ),
                 ),
                 scene_relative_poses=_scene_relative_poses_for_motion(
                     view_map,
@@ -2916,7 +3242,7 @@ def _fixed_attachments(g, bound_trees):
     adjacency, fixed = _kinematic_adjacency(g)
     if not fixed:
         return {}, None
-    tip = next(g.objects(None, KC_EXT.tip), None)
+    tip = next(g.objects(None, NS_MM_KC_EXT["tip"]), None)
     leaves = [body for body in adjacency if len(adjacency[body]) == 1]
     from_tip = _distances(adjacency, _body_of(tip)) if tip is not None else {}
     root = max(leaves, key=lambda body: from_tip.get(body, -1)) if leaves else None
@@ -2958,8 +3284,12 @@ def _agent_assemblies(g, attach_by_body):
     adjacency, _fixed = _kinematic_adjacency(g)
     serials = sorted(
         (
-            (tree, g.value(tree, KC_EXT.root), g.value(tree, KC_EXT.tip))
-            for tree in g.subjects(RDF.type, KC.SerialComposition)
+            (
+                tree,
+                g.value(tree, NS_MM_KC_EXT["root"]),
+                g.value(tree, NS_MM_KC_EXT["tip"]),
+            )
+            for tree in g.subjects(RDF.type, URI_KC_TYPE_SERIAL)
         ),
         key=lambda item: str(item[0]),
     )
@@ -3080,7 +3410,7 @@ def _scene_from_graph(g):
         value = g.value(timestep, QUDT_SCHEMA.value)
         unit = g.value(timestep, QUDT_SCHEMA.unit)
         if value is not None:
-            scale = 0.001 if unit == QUDT_UNIT.MilliSEC else 1.0
+            scale = 0.001 if unit == NS_MM_QUDT_UNIT["MilliSEC"] else 1.0
             scene.timestep_s = float(value.toPython()) * scale
 
     bound_trees = {
@@ -3469,7 +3799,6 @@ def _build_introspection(
                     "uri": uri_by_id.get(motion.id),
                     "handler": motion.handler,
                     "handler_uri": uri_by_id.get(motion.handler),
-                    "control_mode": motion.control_mode,
                     "controllers": [controller.id for controller in motion.controllers],
                     "monitors": [
                         monitor.id
@@ -3591,7 +3920,38 @@ def _node_indexes(g, p: Parser):
 # ---------------------------------------------------------------------------
 # Solver sections
 # ---------------------------------------------------------------------------
-def _solver_sections(g, p: Parser, setups_by_node: dict, default_setup):
+def _world_solver_outputs(g, p: Parser, chain_root: str, scene_objects):
+    """Parse runtime observations in the solver's reference frame."""
+    object_ids_by_body = {obj.body: obj.id for obj in scene_objects}
+    outputs = []
+    for type_, parse in (
+        (GEOM_COORD.PoseCoordinate, p.pose),
+        (GEOM_COORD.VelocityTwistCoordinate, p.velocity_twist),
+        (KC_STAT.JointPositionCoordinate, p.joint_position),
+        (RBDYN_COORD.WrenchCoordinate, p.wrench),
+    ):
+        for node in sorted(g.subjects(RDF.type, type_), key=str):
+            if "/World/world/" not in str(node):
+                continue
+            output = parse(node)
+            frame = getattr(output, "as_seen_by", None)
+            if frame is not None and frame.id != chain_root:
+                continue
+            of = getattr(output, "of", None)
+            if getattr(of, "id", None) in object_ids_by_body:
+                output.of = SceneObject(object_ids_by_body[of.id], of.id)
+            outputs.append(output)
+    return _dedupe_by_id(outputs)
+
+
+def _solver_sections(
+    g,
+    p: Parser,
+    setups_by_node: dict,
+    default_setup,
+    derivation: SolverDerivationContext,
+    scene_objects,
+):
     """Parse the solver/handler sections: base-velocity, arm and base-force solvers with their
     schedules.
     """
@@ -3608,13 +3968,59 @@ def _solver_sections(g, p: Parser, setups_by_node: dict, default_setup):
         slv_base_vel.append(p.velocity_composition_solver(s))
         sched1.extend(p.schedule([s], ops_generic + ops_slv))
 
-    for h in g.subjects(RDF.type, CSTR_HDL["ConstraintHandler"]):
-        hdl.append(p.constraint_handler(h))
-        start = g[h : CSTR_HDL["evaluators"] | CSTR_HDL["controllers"]]
-        sched2.extend(p.schedule(start, ops_generic + ops_cstr_hdl))
+    handler_nodes = sorted(
+        g.subjects(RDF.type, CSTR_HDL["ConstraintHandler"]),
+        key=lambda node: int(getattr(g.value(node, APP.order), "value", 0)),
+    )
+    for h in handler_nodes:
+        handler = p.constraint_handler(h)
+        handler.controllers = [
+            controller
+            for plan in derivation.controllers_by_handler.get(h, ())
+            for controller in _derived_controllers(g, p, derivation, plan)
+        ]
+        hdl.append(handler)
+        evaluator_nodes = list(g.objects(h, CSTR_HDL.evaluators))
+        sched2.extend(p.schedule(evaluator_nodes, ops_generic + ops_cstr_hdl))
+        plans = derivation.controllers_by_handler.get(h, ())
+        for plan in plans:
+            if len(plan.axes) > 1 or CSTR_HDL_EXT.FeedForwardController in g[
+                plan.controller : RDF.type
+            ]:
+                continue
+            error = g.value(plan.controller, CSTR_HDL["error-signal"])
+            evaluator = next(g.subjects(CSTR_HDL.error, error), None)
+            if evaluator is not None:
+                evaluator_id = p.id(evaluator)
+                if evaluator_id not in sched2:
+                    sched2.append(evaluator_id)
+        sched2.extend(
+            controller.id
+            for plan in reversed(plans)
+            for controller in reversed(_derived_controllers(g, p, derivation, plan))
+        )
+        sched2.extend(
+            SolverIdFactory(p.id(plan.controller), _motion_suffix(p, plan.motion)).pose_evaluator()
+            for plan in reversed(plans)
+            if len(plan.axes) > 1
+        )
 
-    for s in g.subjects(RDF.type, SLV["SolverWithInputAndOutput"]):
+    solver_nodes = []
+    for handler in handler_nodes:
+        for plan in derivation.controllers_by_handler.get(handler, ()):
+            if plan.solver not in solver_nodes and SLV.SolverWithInputAndOutput in g[
+                plan.solver : RDF.type
+            ]:
+                solver_nodes.append(plan.solver)
+    solver_nodes.extend(
+        sorted(
+            set(g.subjects(RDF.type, SLV.SolverWithInputAndOutput)) - set(solver_nodes),
+            key=str,
+        )
+    )
+    for s in solver_nodes:
         solver = p.solver_with_input_and_output(s)
+        solver.motion_drivers = _derived_motion_drivers(g, p, derivation, s)
         robot_node = g.value(s, AGN["of-agent"])
         (
             solver.urdf,
@@ -3626,15 +4032,15 @@ def _solver_sections(g, p: Parser, setups_by_node: dict, default_setup):
             solver.tcp_site,
             solver.ft_sensors,
         ) = setups_by_node.get(robot_node, default_setup)
+        solver.output = _dedupe_by_id(
+            [*solver.output, *_world_solver_outputs(g, p, solver.chain_root, scene_objects)]
+        )
         _mark_acceleration_constraint_frames(solver)
         slv_arm.append(solver)
         start = g[
-            s : SLV["motion-drivers"]
-            / (
-                (SLV["acceleration-constraint"] / SLV["constraints"])
-                | (SLV["cartesian-force"])
-                | (SLV["joint-force"])
-            )
+            s
+            : SLV["motion-drivers"]
+            / ((SLV["cartesian-force"]) | (SLV["joint-force"]))
         ]
         sched3.extend(p.schedule(start, ops_generic + ops_slv))
 
@@ -3660,8 +4066,9 @@ def _snapshot_source_map(g, p: Parser) -> dict[str, str]:
     snapshot_source_map: dict[str, str] = {}
     for snap_node in g.subjects(RDF.type, SNAP.Snapshot):
         source_node = g.value(snap_node, SNAP["snapshot-of"])
-        if source_node is not None:
-            snapshot_source_map[p.id(snap_node)] = p.id(source_node)
+        output_node = g.value(snap_node, SNAP.output)
+        if source_node is not None and output_node is not None:
+            snapshot_source_map[p.id(output_node)] = p.id(source_node)
     return snapshot_source_map
 
 
@@ -3938,26 +4345,6 @@ def _closure_maps(closures: dict) -> tuple[dict[str, str], dict[str, set[str]]]:
                 closure_output_map[out_val] = cid
                 closure_input_map[out_val] = {v for v in inputs if v != out_val}
     return closure_output_map, closure_input_map
-
-
-def _apply_solver_control_modes(slv_arm, motions) -> None:
-    """Propagate each motion's control mode onto its arm solvers."""
-    for solver in slv_arm:
-        control_modes = {
-            arm_solver.control_mode
-            for motion in motions
-            for arm_solver in motion.arm_solvers
-            if arm_solver.id == solver.id and arm_solver.control_mode
-        }
-        if len(control_modes) == 1:
-            solver.control_mode = next(iter(control_modes))
-        elif len(control_modes) > 1:
-            raise ValueError(
-                f"Solver '{solver.id}' is used with multiple control modes: "
-                f"{', '.join(sorted(control_modes))}."
-            )
-        else:
-            raise ValueError(f"Solver '{solver.id}' is not associated with a control mode.")
 
 
 def _backend_from_graph(g) -> str:
@@ -4454,9 +4841,9 @@ def build_pose_components(views: dict, data: list) -> dict:
 
 
 def resolve_lerp_closures(closures: dict, pose_components: dict) -> None:
-    """Fold each Lerp closure's goal into structured pose components or a shared-signal ref."""
+    """Fold each Cartesian interpolation goal into components or a shared-signal ref."""
     for closure in closures.values():
-        if closure.get("type") != "Lerp":
+        if closure.get("type") != "CartesianPoseInterpolation":
             continue
         goal = closure.get("goal")
         if not isinstance(goal, str):
@@ -4536,23 +4923,27 @@ def collect_motion_references(motion, closures: dict) -> set[str]:
 
 
 def _set_motion_trajectory_progress(motion, closures: dict, data_by_id: dict) -> None:
-    """Fold the time-driven trajectory alpha ids (Progress-kind, non-Arc while-schedule
+    """Fold the time-driven trajectory parameter ids (Progress-kind, non-Arc while-schedule
     closures) onto a motion (dict or dataclass)."""
     ids: list[str] = []
     for step in _field(motion, "while_schedule", []):
         closure = closures.get(step)
         if not closure or _field(closure, "type") not in {
-            "Lerp",
+            "CartesianPoseInterpolation",
             "Circle",
             "Arc",
             "Helix",
             "Figure8",
         }:
             continue
-        alpha_id = _field(closure, "alpha")
+        alpha_id = _field(closure, "path_parameter") or _field(closure, "alpha")
         alpha_data = data_by_id.get(alpha_id)
         qkind = _field(_field(alpha_data, "quantity_kind"), "id")
-        if qkind == "Progress" and _field(closure, "type") != "Arc" and alpha_id not in ids:
+        if (
+            qkind in {"Progress", "Dimensionless"}
+            and _field(closure, "type") != "Arc"
+            and alpha_id not in ids
+        ):
             ids.append(alpha_id)
     _set_field(motion, "time_trajectory_progress_ids", ids)
 
@@ -4819,7 +5210,7 @@ def _apply_fsm_wiring(motions, fsm) -> dict:
                 raise ValueError(
                     f"WHEN monitor '{_field(monitor, 'id')}' on FSM-wired motion "
                     f"'{_field(motion, 'id')}' must declare a waiting hold motion "
-                    f"(e.g. '... while waiting hold <hold-motion>'). A WHEN precondition "
+                    f"(e.g. '... otherwise hold <hold-motion>'). A WHEN precondition "
                     f"without a fallback would leave the arm uncommanded while waiting."
                 )
             fallback = by_id.get(fallback_id)
@@ -4887,15 +5278,18 @@ def generate_ir(manifest_path):
     fsm = _fsm_from_graph(g)
     scene = _scene_from_graph(g)
     _validate_scene(scene)
+    derivation = _solver_derivation_context(g)
 
     (slv_base_vel, sched1, hdl, sched2, slv_arm, sched3, slv_base_frc, sched4) = _solver_sections(
-        g, p, setups_by_node, default_setup
+        g, p, setups_by_node, default_setup, derivation, scene.objects
     )
     _assign_monitor_event_indexes(hdl)
 
     closures = p.closures(ops_generic + ops_slv + ops_cstr_hdl)
+    _derive_solver_closures(g, p, derivation, closures)
     view_map = p.view()
     data_structures = p.data_structures()
+    _derive_solver_data(g, p, derivation, data_structures, view_map)
     snapshot_source_map = _snapshot_source_map(g, p)
     data_reference_map = _data_reference_map(data_structures, closures)
     closure_output_map, closure_input_map = _closure_maps(closures)
@@ -4929,8 +5323,8 @@ def generate_ir(manifest_path):
         data_structures=data_structures,
         pose_components=pose_components,
         fsm=fsm,
+        derivation=derivation,
     )
-    _apply_solver_control_modes(slv_arm, motions)
     _validate_solvers(slv_arm, backend)
     _annotate_runtime_robots(slv_arm, motions, backend)
 

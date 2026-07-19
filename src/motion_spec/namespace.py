@@ -6,7 +6,6 @@ from rdf_utils.namespace import (
     URL_SECORO_MM,
     NS_MM_QUDT,
     NS_MM_QUDT_QTY,
-    NS_MM_QUDT_UNIT,
     NS_MM_GEOM,
     NS_MM_GEOM_REL,
     NS_MM_GEOM_COORD,
@@ -20,14 +19,18 @@ from rdf_utils.namespace import (
 
 URI_CR2B_MM = f"{URL_COMP_ROB2B}/metamodels"
 URI_SECORO_MM = URL_SECORO_MM
-URI_QUDT = "http://qudt.org"
-SOSA = Namespace("http://www.w3.org/ns/sosa/")
+
+
+class SOSA(DefinedNamespace):
+    madeBySensor: URIRef
+
+    _NS = Namespace("http://www.w3.org/ns/sosa/")
 
 
 class APP(DefinedNamespace):
     path: URIRef
 
-    _extras = ["constraints", "import", "iri-map", "order"]
+    _extras = ["command-type", "constraints", "import", "iri-map", "order"]
 
     _NS = Namespace(f"{URI_CR2B_MM}/application/")
 
@@ -76,9 +79,6 @@ class EXEC(DefinedNamespace):
 
     _extras = [
         "has-config",
-        "has-body",
-        "has-kinematic-tree",
-        "model-entity",
         "runs-scene",
         "timestep",
         "platform-name",
@@ -128,7 +128,6 @@ class EL(DefinedNamespace):
 
 
 class GEOM_ENT(DefinedNamespace):
-    KinematicTree: URIRef
     Point: URIRef
     Frame: URIRef
     SimplicialComplex: URIRef
@@ -144,18 +143,10 @@ class GEOM_ENT(DefinedNamespace):
 class KC(DefinedNamespace):
     Joint: URIRef
     RevoluteJoint: URIRef
-    SerialComposition: URIRef
 
     _extras = ["between-attachments"]
 
     _NS = NS_MM_KC
-
-
-class KC_EXT(DefinedNamespace):
-    root: URIRef
-    tip: URIRef
-
-    _NS = Namespace(f"{URI_SECORO_MM}/kinematic-chain/structural-entities-extension#")
 
 
 class KC_STAT(DefinedNamespace):
@@ -186,21 +177,13 @@ class QUDT_SCHEMA(DefinedNamespace):
     unit: URIRef
     value: URIRef
 
-    _extras = ["quantity-kind"]
-
     _NS = NS_MM_QUDT
 
 
 class QUDT_QKIND(DefinedNamespace):
-    Angle: URIRef
-    AngularDistance: URIRef
-    Length: URIRef
     Distance: URIRef
-    FreeVector: URIRef
-    Dimensionless: URIRef
     PlaneAngle: URIRef
     Position: URIRef
-    Direction: URIRef
     AngularVelocity: URIRef
     LinearVelocity: URIRef
     AngularAcceleration: URIRef
@@ -208,45 +191,14 @@ class QUDT_QKIND(DefinedNamespace):
     AccelerationEnergy: URIRef
     Torque: URIRef
     Force: URIRef
-    Time: URIRef
-    Mass: URIRef
 
     _NS = NS_MM_QUDT_QTY
-
-
-class QUDT_UNIT(DefinedNamespace):
-    UNITLESS: URIRef
-    M: URIRef
-    N: URIRef
-
-    _extras = [
-        "M-PER-SEC",
-        "M-PER-SEC2",
-        "M-PER-SEC3",
-        "N-M",
-        "N-M2-PER-SEC2",
-        "RAD-PER-SEC",
-        "RAD-PER-SEC2",
-        "RAD",
-        "DEG",
-        "DEG-PER-SEC",
-        "CentiM",
-        "CentiM-PER-SEC",
-        "SEC",
-        "MilliSEC",
-        "KiloGM",
-        "N-PER-M",
-        "N-SEC-PER-M",
-    ]
-
-    _NS = NS_MM_QUDT_UNIT
 
 
 class GEOM_REL(DefinedNamespace):
     LinearDistance: URIRef
     Orientation: URIRef
     Pose: URIRef
-    Direction: URIRef
     Position: URIRef
     VelocityTwist: URIRef
     AccelerationTwist: URIRef
@@ -562,9 +514,9 @@ class CSTR_HDL(DefinedNamespace):
 class CSTR_HDL_EXT(DefinedNamespace):
     FeedForwardController: URIRef
     Admittance: URIRef
+    solver: URIRef
 
     _extras = [
-        "control-mode",
         "reference-signal",
         "mass",
         "damping",
@@ -572,7 +524,6 @@ class CSTR_HDL_EXT(DefinedNamespace):
         "force",
         "fallback-motion",
         "debounce-duration",
-        "LinearJerk",
     ]
 
     _NS = Namespace(f"{URI_SECORO_MM}/task/constraint-handler#")

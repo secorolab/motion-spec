@@ -20,6 +20,8 @@ from motion_spec.codegen_artifacts import fields_with_offsets
 from motion_spec.introspection import replay
 from motion_spec.introspection.replay import decode_frames, summarize, validate_header
 from motion_spec.introspection.runtime_graph import write_runtime_ttl
+from motion_spec.namespace import APP
+from frame_log_fixture import flat_frame, write_frame_log_pb, write_frame_log_proto
 
 REC = rdflib.Namespace("https://secorolab.github.io/metamodels/rec#")
 PROV = rdflib.Namespace("http://www.w3.org/ns/prov#")
@@ -30,9 +32,6 @@ def _rec_entity_path(graph, label: str) -> str:
     """The archive-relative path REC recorded for the entity carrying `label`."""
     entity = next(e for e, value in graph.subject_objects(REC.label) if str(value) == label)
     return str(graph.value(graph.value(entity, PROV.atLocation), REC.path))
-
-from frame_log_fixture import flat_frame, write_frame_log_pb, write_frame_log_proto
-
 
 def _hash_doc(doc: dict) -> str:
     return __import__("hashlib").sha256(json.dumps(doc, sort_keys=True).encode()).hexdigest()[:16]
@@ -45,7 +44,7 @@ def _schema() -> dict:
         "runtime_rdf_contract_version": 1,
         "generated_by": "test",
         "ir_path": "ir.json",
-        "graph": "model.jsonld",
+        "graph": "model.ld.json",
         "context": {},
         "pools": {"constraints": 1, "monitors": 1, "quantities": 1, "triggers": 2},
         "timing": {"nominal_period_ns": 1_000_000},
@@ -95,6 +94,7 @@ def _provenance() -> dict:
             "used": {"@id": "prov:used", "@type": "@id"},
             "wasGeneratedBy": {"@id": "prov:wasGeneratedBy", "@type": "@id"},
             "wasAssociatedWith": {"@id": "prov:wasAssociatedWith", "@type": "@id"},
+            "atLocation": {"@id": "prov:atLocation", "@type": "@id"},
         },
         "@graph": [
             {"@id": "https://example.test/entity/schema", "@type": "Entity"},
@@ -148,10 +148,10 @@ def _source_tree(path: Path) -> Path:
     (path / "schema.json").write_text(json.dumps(schema, indent=4))
     (path / "frame_layout.json").write_text(json.dumps(layout, indent=4))
     write_frame_log_proto(path / "frame_log.proto", schema)
-    (path / "provenance.jsonld").write_text(json.dumps(_provenance(), indent=4))
+    (path / "provenance.ld.json").write_text(json.dumps(_provenance(), indent=4))
     (path / "provenance").mkdir()
-    (path / "provenance" / "dsl.jsonld").write_text(json.dumps(_provenance(), indent=4))
-    (path / "model.jsonld").write_text(json.dumps(_provenance(), indent=4))
+    (path / "provenance" / "dsl.ld.json").write_text(json.dumps(_provenance(), indent=4))
+    (path / "model.ld.json").write_text(json.dumps(_provenance(), indent=4))
     (path / "ir.json").write_text(json.dumps({"id": "test-ir"}))
     (path / "headers").mkdir()
     (path / "headers" / "runtime.hpp").write_text("// generated\n")
@@ -180,34 +180,19 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
         run_dir,
         source_dir=source,
         run_id="run-test",
-        streams=[
-            {
-                "id": "sim_front",
-                "kind": "camera",
-                "label": "Sim front camera",
-                "mode": "mp4",
-                "url": "media/sim_front.mp4",
-                "frame_map": "media/sim_front.frames.jsonl",
-            }
-        ],
     )
 
-    assert manifest["files"]["log_producer_executable"] is None
-    assert manifest["files"]["rec"] == "rec.jsonld"
+    assert "log_producer_executable" not in manifest["files"]
+    assert manifest["files"]["rec"] == "rec.ld.json"
     assert manifest["files"]["frame_log_health"] == "logs/frame_log.pb.health.json"
     assert manifest["files"]["frame_log_proto"] == "contract/frame_log.proto"
     assert "frame_layout" not in manifest["files"]
-    assert manifest["files"]["dsl_provenance"] == "provenance/dsl.jsonld"
-    assert manifest["rec"] == {"path": "rec.jsonld", "run_id": "run-test"}
+    assert manifest["files"]["dsl_provenance"] == "provenance/dsl.ld.json"
+    assert "rec" not in manifest
     assert manifest["files"]["controller"] == "controller/source"
-    assert "controller/source" in manifest["artifacts"]
-    assert "logs/frame_log.pb.health.json" in manifest["artifacts"]
-    assert "contract/frame_log.proto" in manifest["artifacts"]
+    assert "artifacts" not in manifest
     # The archived proto is the generated semantic one (copied from source), not a static file.
     assert "double q0 = 3000;" in (run_dir / "contract" / "frame_log.proto").read_text()
-    assert "contract/frame_layout.json" not in manifest["artifacts"]
-    assert "provenance/dsl.jsonld" in manifest["artifacts"]
-    assert "rec.jsonld" in manifest["artifacts"]
     assert verify_manifest(run_dir)["run_id"] == "run-test"
     header = validate_header(run_dir / "logs" / "frame_log.pb", _schema())
     assert header["producer_agent_id"] == "agent:controller_process"
@@ -225,14 +210,20 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
 
     runtime_ttl = write_runtime_ttl(run_dir, frames)
     assert runtime_ttl.exists()
-    assert verify_manifest(run_dir)["artifacts"]["runtime/runtime.ttl"]["sha256"] == sha256_file(runtime_ttl)
+    verify_manifest(run_dir)
 
     # REC records the archive as a PROV graph: lifecycle is an rdf:type on the run, and an
     # entity's role is its rec:label. See metamodels rec.shacl.ttl (RunExecutionShape).
-    rec_graph = rdflib.Graph().parse(run_dir / "rec.jsonld", format="json-ld")
+    rec_graph = rdflib.Graph().parse(run_dir / "rec.ld.json", format="json-ld")
     assert rec_run_lifecycle(rec_graph)["status"] == "COMPLETED"
     labels = {str(value) for value in rec_graph.objects(None, REC.label)}
     assert {"frame_log", "frame_log_health", "runtime_ttl"} <= labels
+    runtime_entity = next(
+        entity
+        for entity, label in rec_graph.subject_objects(REC.label)
+        if str(label) == "runtime_ttl"
+    )
+    assert str(rec_graph.value(runtime_entity, REC.sha256)) == sha256_file(runtime_ttl)
     health = next(
         entity
         for entity, value in rec_graph.subject_objects(REC.label)
@@ -249,7 +240,7 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
         rdflib.URIRef("http://www.w3.org/ns/prov#Activity"),
     ) in rec_graph
     # rec references bundle contents by archive-relative path (portable, no machine path).
-    assert _rec_entity_path(rec_graph, "dsl_provenance") == "provenance/dsl.jsonld"
+    assert _rec_entity_path(rec_graph, "dsl_provenance") == "provenance/dsl.ld.json"
     assert _rec_entity_path(rec_graph, "runtime_ttl") == "runtime/runtime.ttl"
     metrics = {
         str(rec_graph.value(metric, REC.label) or metric).rsplit("/", 1)[0].rsplit("metric/", 1)[-1]: (
@@ -280,7 +271,7 @@ def _importing_manifest() -> dict:
         "@id": "https://secorolab.github.io/models/generated/",
         "@graph": [
             {
-                "import": ["sub.jsonld"],
+                "import": ["sub.ld.json"],
                 "iri-map": {"https://secorolab.github.io/": {"path": "models/"}},
             }
         ],
@@ -289,11 +280,11 @@ def _importing_manifest() -> dict:
 
 def test_archive_vendors_imported_model_graph_and_verify_catches_dangling(tmp_path: Path) -> None:
     # The app manifest imports a model graph; the archive must vendor it next to
-    # model/model.jsonld so the import resolves offline, and verify must reject an
+    # model/model.ld.json so the import resolves offline, and verify must reject an
     # archive where that imported graph is missing.
     source = _source_tree(tmp_path / "source")
-    (source / "model.jsonld").write_text(json.dumps(_importing_manifest(), indent=4))
-    (source / "sub.jsonld").write_text(
+    (source / "model.ld.json").write_text(json.dumps(_importing_manifest(), indent=4))
+    (source / "sub.ld.json").write_text(
         json.dumps(
             {
                 "@context": {"prov": "http://www.w3.org/ns/prov#"},
@@ -304,18 +295,18 @@ def test_archive_vendors_imported_model_graph_and_verify_catches_dangling(tmp_pa
     run_dir = tmp_path / "run"
 
     manifest = create_archive_manifest(run_dir, source_dir=source, run_id="run-test")
-    assert manifest["files"]["model_imports"] == ["model/sub.jsonld"]
-    assert (run_dir / "model" / "sub.jsonld").is_file()
-    assert manifest["artifacts"]["model/sub.jsonld"]["role"] == "imported_model_graph"
+    assert manifest["files"]["model_imports"] == ["model/sub.ld.json"]
+    assert (run_dir / "model" / "sub.ld.json").is_file()
+    assert "artifacts" not in manifest
     assert verify_manifest(run_dir)["run_id"] == "run-test"
 
-    (run_dir / "model" / "sub.jsonld").unlink()
-    with pytest.raises(ArchiveError, match="model/sub.jsonld: missing"):
+    (run_dir / "model" / "sub.ld.json").unlink()
+    with pytest.raises(ArchiveError, match="model/sub.ld.json: missing"):
         verify_manifest(run_dir)
 
 
 def test_archive_is_provenance_complete_and_relative(tmp_path: Path) -> None:
-    # The DSL's authored source (referenced by dsl.jsonld) is vendored into source/ and
+    # The DSL's authored source (referenced by dsl.ld.json) is vendored into source/ and
     # its atLocation rewritten relative; a vendor asset the model only points at (via
     # codegen provenance) is NOT archived. The dsl provenance is imported but not
     # duplicated; the manifest import/iri-map are rewritten to resolve inside the archive.
@@ -328,23 +319,23 @@ def test_archive_is_provenance_complete_and_relative(tmp_path: Path) -> None:
     vendor.write_text("<mujoco/>\n")
 
     manifest_doc = _importing_manifest()
-    manifest_doc["@graph"][0]["import"] = ["sub.jsonld", "provenance/dsl.jsonld"]
-    (source / "model.jsonld").write_text(json.dumps(manifest_doc, indent=4))
-    (source / "sub.jsonld").write_text(
+    manifest_doc["@graph"][0]["import"] = ["sub.ld.json", "provenance/dsl.ld.json"]
+    (source / "model.ld.json").write_text(json.dumps(manifest_doc, indent=4))
+    (source / "sub.ld.json").write_text(
         json.dumps({"@context": {"prov": "http://www.w3.org/ns/prov#"}, "@graph": []})
     )
-    # dsl.jsonld references the authored source -> must be vendored + rewritten.
+    # dsl.ld.json references the authored source -> must be vendored + rewritten.
     dsl = _provenance()
     dsl["@graph"].append(
         {"@id": "https://example.test/entity/src", "@type": "Entity", "atLocation": authored.resolve().as_uri()}
     )
-    (source / "provenance" / "dsl.jsonld").write_text(json.dumps(dsl, indent=4))
-    # codegen.jsonld points at a vendor asset -> must be left alone, not archived.
+    (source / "provenance" / "dsl.ld.json").write_text(json.dumps(dsl, indent=4))
+    # motion-spec.ld.json points at a vendor asset -> must be left alone, not archived.
     prov = _provenance()
     prov["@graph"].append(
         {"@id": "https://example.test/agent/robot", "@type": "Agent", "atLocation": vendor.resolve().as_uri()}
     )
-    (source / "provenance.jsonld").write_text(json.dumps(prov, indent=4))
+    (source / "provenance.ld.json").write_text(json.dumps(prov, indent=4))
     run_dir = tmp_path / "run"
 
     manifest = create_archive_manifest(run_dir, source_dir=source, run_id="run-test")
@@ -352,27 +343,38 @@ def test_archive_is_provenance_complete_and_relative(tmp_path: Path) -> None:
     # Authored source vendored under source/, tracked, reachable.
     assert manifest["files"]["sources"] == ["source/model.robmot"]
     assert (run_dir / "source" / "model.robmot").is_file()
-    assert manifest["artifacts"]["source/model.robmot"]["role"] == "source_model"
+    assert "artifacts" not in manifest
 
     # Vendor asset NOT archived; its reference left untouched.
     assert not (run_dir / "source" / "gen3.xml").exists()
-    codegen = json.loads((run_dir / "provenance" / "codegen.jsonld").read_text())
-    robot = next(n for n in codegen["@graph"] if n.get("@id") == "https://example.test/agent/robot")
-    assert robot["atLocation"] == vendor.resolve().as_uri()
+    codegen = rdflib.Graph().parse(
+        run_dir / "provenance" / "motion-spec.ld.json", format="json-ld"
+    )
+    robot = rdflib.URIRef("https://example.test/agent/robot")
+    assert codegen.value(robot, PROV.atLocation) == rdflib.URIRef(vendor.resolve().as_uri())
 
     # dsl provenance imported but not duplicated under model/.
-    assert manifest["files"]["model_imports"] == ["model/sub.jsonld", "provenance/dsl.jsonld"]
+    assert set(manifest["files"]["model_imports"]) == {
+        "model/sub.ld.json",
+        "provenance/dsl.ld.json",
+    }
     assert not (run_dir / "model" / "provenance").exists()
 
     # Manifest import + iri-map rewritten to resolve archive-relative.
-    model = json.loads((run_dir / "model" / "model.jsonld").read_text())
-    assert model["@graph"][0]["import"] == ["model/sub.jsonld", "provenance/dsl.jsonld"]
-    assert model["@graph"][0]["iri-map"] == {"https://secorolab.github.io/": {"path": ".."}}
+    model = rdflib.Dataset().parse(run_dir / "model" / "model.ld.json", format="json-ld")
+    assert {str(value) for _, _, value, _ in model.quads((None, APP["import"], None, None))} == {
+        "https://secorolab.github.io/model/sub.ld.json",
+        "https://secorolab.github.io/provenance/dsl.ld.json",
+    }
+    iri_root = rdflib.URIRef("https://secorolab.github.io/")
+    assert next(model.quads((iri_root, APP.path, None, None)))[2] == rdflib.Literal("..")
 
     # Authored-source atLocation rewritten relative to the dsl provenance doc.
-    dsl_out = json.loads((run_dir / "provenance" / "dsl.jsonld").read_text())
-    src_node = next(n for n in dsl_out["@graph"] if n.get("@id") == "https://example.test/entity/src")
-    assert src_node["atLocation"] == "../source/model.robmot"
+    dsl_out = rdflib.Graph().parse(run_dir / "provenance" / "dsl.ld.json", format="json-ld")
+    src_node = rdflib.URIRef("https://example.test/entity/src")
+    assert dsl_out.value(src_node, PROV.atLocation) == rdflib.URIRef(
+        (run_dir / "source" / "model.robmot").resolve().as_uri()
+    )
 
     assert verify_manifest(run_dir)["run_id"] == "run-test"
 
@@ -387,13 +389,35 @@ def test_manifest_hash_verification_rejects_mutation(tmp_path: Path) -> None:
         verify_manifest(run_dir)
 
 
-def test_manifest_rejects_incomplete_stream_descriptor(tmp_path: Path) -> None:
-    source = _source_tree(tmp_path / "source")
-    run_dir = tmp_path / "run"
-    create_archive_manifest(run_dir, source_dir=source, run_id="run-test", streams=[{"id": "cam"}])
+def test_generation_owned_run_does_not_copy_static_artifacts(tmp_path: Path) -> None:
+    flat = _source_tree(tmp_path / "flat")
+    generation = tmp_path / "generation"
+    generated = generation / "generated"
+    for directory in ("contract", "model", "controller", "provenance"):
+        (generated / directory).mkdir(parents=True, exist_ok=True)
+    for source, target in (
+        (flat / "schema.json", generated / "contract/schema.json"),
+        (flat / "frame_log.proto", generated / "contract/frame_log.proto"),
+        (flat / "provenance.ld.json", generated / "provenance/motion-spec.ld.json"),
+        (flat / "provenance/dsl.ld.json", generated / "provenance/dsl.ld.json"),
+        (flat / "model.ld.json", generated / "model/demo-app.ld.json"),
+        (flat / "ir.json", generated / "model/ir.json"),
+    ):
+        target.write_bytes(source.read_bytes())
 
-    with pytest.raises(ArchiveError, match="missing kind"):
-        verify_manifest(run_dir)
+    run_dir = generation / "runs" / "run-1"
+    manifest = create_archive_manifest(
+        run_dir,
+        source_dir=generated,
+        run_id="run-1",
+        frame_log=flat / "frame_log.pb",
+    )
+
+    assert {path.name for path in run_dir.iterdir()} == {"logs", "rec.ld.json", "manifest.json"}
+    assert "provenance" not in manifest
+    assert "rec" not in manifest
+    assert json.dumps(manifest).count("../../generated/provenance/motion-spec.ld.json") == 1
+    assert "artifacts" not in manifest
 
 
 def test_runtime_shacl_rejects_unanchored_occurrence(tmp_path: Path) -> None:

@@ -567,7 +567,7 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
 
 
 def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path) -> dict:
-    """Write schema.json, frame_layout.json and provenance.jsonld, and return the frame-log
+    """Write schema.json, frame_layout.json and provenance.ld.json, and return the frame-log
     header + sample model that codegen folds into the IR. The framed FSM lives in ir["fsm"].
     """
     schema = build_schema(ir, ir_path=ir_path, output_dir=output_dir, fsm_ir=ir.get("fsm"))
@@ -576,7 +576,7 @@ def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path) 
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "schema.json").write_text(json.dumps(schema, indent=4) + "\n")
     (output_dir / "frame_layout.json").write_text(json.dumps(layout, indent=4) + "\n")
-    (output_dir / "provenance.jsonld").write_text(
+    (output_dir / "provenance.ld.json").write_text(
         json.dumps(build_provenance_document(ir, output_dir), indent=4) + "\n"
     )
     return {

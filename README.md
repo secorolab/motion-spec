@@ -8,28 +8,54 @@ Code base for RAL paper: *From Composable Models to Correct-by-Construction Soft
 pip install -e .
 ```
 
-## Usage
-
-`motion-spec` is the code-generation half of the motion-spec toolchain. Its input is an
-application manifest — a JSON-LD motion-spec graph plus its SHACL/ontology references —
-produced by [`motion-spec-dsl`](../motion-spec-dsl) from a `.robmot` file. Its output is
-C++: runtime/shared headers, one header per motion, and a `ref_main.cpp`.
-
-The pipeline is three console scripts run in order.
+Install only the features you use:
 
 ```bash
-# 1. SHACL-validate the manifest
-motion-spec-check models/sc0a-right-arm.json
-
-# 2. Lower the graph to an intermediate representation (IR)
-motion-spec-ir-gen models/sc0a-right-arm.json -o gen/ir.json
-
-# 3. Render C++ from the IR
-motion-spec-codegen gen/ir.json --output-dir gen
+pip install -e ".[validation]"       # motion-spec check
+pip install -e ".[introspection]"    # archive, replay, and run tooling
+pip install -e ".[all]"              # all end-user features
+pip install -e ".[test]"             # test suite
+pip install -e ".[docs]"             # documentation build
 ```
 
-`motion-spec-ir-gen` writes to a file with `-o FILE` (use `-o -` for stdout) or prints
-with `--console`. `motion-spec-codegen` takes a previously generated IR JSON and renders
+The base install provides RDF-to-IR and C++ generation. C++ generation still requires
+the external `stst` executable; install its pinned version after installing motion-spec:
+
+```bash
+motion-spec setup
+```
+
+This installs under `~/.local` by default and requires `git`, `ant`, and Java. Use
+`motion-spec setup --clean` to remove the managed STST installation. Generated protobuf
+artifacts require `protoc`.
+
+## Usage
+
+`motion-spec` generates, builds, runs, and inspects motion models. The high-level commands
+accept a `.robmot` model directly:
+
+```bash
+motion-spec gen model.robmot                   # DSL through generated C++
+motion-spec gen ir model.robmot                # stop after IR generation
+motion-spec gen code model.robmot              # explicit form of the first command
+motion-spec build generation/<generation-id>   # configure and compile generated C++
+motion-spec run model.robmot                    # generate, build, run, and archive
+```
+
+Use `-o generation/demo` with `gen` or `run` to choose a generation directory. Without
+`-o`, each command creates a unique directory under `./generation/`. Runs are stored under
+that generation's `runs/<run-id>/` directory.
+
+The low-level commands remain available for individual pipeline stages:
+
+```bash
+motion-spec check generated/model-app.ld.json
+motion-spec ir generated/model-app.ld.json -o generated/ir.json
+motion-spec codegen generated/ir.json --output-dir generated
+```
+
+`motion-spec ir` writes to a file with `-o FILE` (use `-o -` for stdout) or prints
+with `--console`. `motion-spec codegen` takes a previously generated IR JSON and renders
 the headers via the `stst` StringTemplate engine (`--stst-bin` to point at a custom
 binary). Pass `--help` to any script for the full flag set.
 
@@ -49,13 +75,13 @@ Each run also archives `contract/frame_log.proto`, generated from that run's
 log without the motion-spec package. `schema.json` stays required: it carries the
 RDF/provenance, units, and FSM/state metadata that field names alone do not replace.
 
-For new runs, launch the generated executable through `motion-spec-run`. It starts a
+For new runs, launch the generated executable through `motion-spec run`. It starts a
 REC record before the executable is launched, sets `MOTION_SPEC_FRAME_LOG` to the
 archive-local `frame_log.pb`, records the executable/source inputs as provenance,
 packages the generated bundle, and verifies the archive after the process exits:
 
 ```bash
-motion-spec-run logs/run-001 \
+motion-spec run logs/run-001 \
   --source-dir gen/controller \
   --run-id run-001 \
   --executable gen/controller/build-introspection/main \
@@ -65,7 +91,7 @@ motion-spec-run logs/run-001 \
 Pass executable arguments after `--`:
 
 ```bash
-motion-spec-run logs/run-001 \
+motion-spec run logs/run-001 \
   --source-dir gen/controller \
   --executable gen/controller/build-introspection/main \
   -- --scenario pick-place-single
@@ -75,54 +101,48 @@ For an already completed run, create a self-contained archive from the generated
 controller directory and the frame log:
 
 ```bash
-motion-spec-archive logs/run-001 \
+motion-spec archive logs/run-001 \
   --source-dir gen/controller \
   --run-id run-001 \
   --frame-log gen/controller/logs/frame_log.pb \
   --log-producer-executable gen/controller/build-introspection/main
 ```
 
-The archive layout is:
+Each generation owns its immutable inputs and build products once:
 
 ```text
-logs/run-001/
-  manifest.json
-  rec.jsonld
-  contract/
-    schema.json
-    frame_log.proto
-  controller/
-    executable/
-    source/
-  logs/
-    frame_log.pb
-  model/
-    model.jsonld
-    ir.json
-  provenance/
-    codegen.jsonld
-  runtime/
-    runtime.ttl
-  media/
+generation/<generation-id>/
+  generated/
+    contract/       # schema, frame layout, frame-log protocol
+    controller/     # generated C++ and CMake project
+    model/          # JSON-LD graphs, FSM artifacts, and IR
+    provenance/     # dsl.ld.json, coord-dsl.ld.json, motion-spec.ld.json
+    source/         # authored DSL inputs
+  build/
+  runs/<run-id>/
+    logs/           # frame log and health
+    runtime/        # recovered runtime.ttl
+    rec.ld.json
+    manifest.json
 ```
 
-`manifest.json` records hashes for the required artifacts. The frame log header
-carries `schema_hash`, checked against `schema.json` before any frames are decoded;
-`provenance.jsonld` is parsed as JSON-LD and validated against the local PROV SHACL
-shape.
+Run manifests hash only run-owned artifacts and reference their generation's static
+artifacts relatively. The frame log header carries `schema_hash`, checked against
+`generated/contract/schema.json` before any frames are decoded; `motion-spec.ld.json`
+is parsed as JSON-LD and validated against the local PROV SHACL shape.
 
 Verify and summarize a copied archive without the original checkout:
 
 ```bash
-motion-spec-replay logs/run-001/logs/frame_log.pb --verify
-motion-spec-replay logs/run-001/logs/frame_log.pb
+motion-spec replay generation/demo/runs/run-001 --verify
+motion-spec replay generation/demo/runs/run-001
 ```
 
 Recover runtime provenance RDF from the frame log and archive metadata:
 
 ```bash
-motion-spec-replay logs/run-001/logs/frame_log.pb --recover-runtime-ttl
-motion-spec-archive logs/run-001 --verify
+motion-spec replay logs/run-001/logs/frame_log.pb --recover-runtime-ttl
+motion-spec archive logs/run-001 --verify
 ```
 
 For custom analysis, load the archive metadata and stream decoded frames in Python.
@@ -180,7 +200,7 @@ matching slot from each decoded frame. Global quantity samples are in
 Export all decoded frames as JSON Lines only when you need whole-frame analysis:
 
 ```bash
-motion-spec-replay logs/run-001/logs/frame_log.pb --jsonl > frames.jsonl
+motion-spec replay logs/run-001/logs/frame_log.pb --jsonl > frames.jsonl
 ```
 
 A `schema_hash` mismatch, a field number the schema does not define, a missing

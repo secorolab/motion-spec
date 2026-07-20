@@ -25,7 +25,7 @@ def _schema() -> dict:
         "runtime_rdf_contract_version": 1,
         "generated_by": "test",
         "ir_path": "ir.json",
-        "graph": "model.jsonld",
+        "graph": "model.ld.json",
         "context": {},
         "pools": {"constraints": 1, "monitors": 1, "quantities": 0, "triggers": 3},
         "timing": {"nominal_period_ns": 1_000_000},
@@ -163,8 +163,8 @@ def _source_tree(path: Path) -> Path:
     (path / "schema.json").write_text(json.dumps(schema, indent=4))
     (path / "frame_layout.json").write_text(json.dumps(layout, indent=4))
     write_frame_log_proto(path / "frame_log.proto", schema)
-    (path / "provenance.jsonld").write_text(json.dumps(_provenance(), indent=4))
-    (path / "model.jsonld").write_text(json.dumps(_provenance(), indent=4))
+    (path / "provenance.ld.json").write_text(json.dumps(_provenance(), indent=4))
+    (path / "model.ld.json").write_text(json.dumps(_provenance(), indent=4))
     (path / "ir.json").write_text(json.dumps({"id": "test-ir"}))
     (path / "headers").mkdir()
     (path / "headers" / "runtime.hpp").write_text("// generated\n")

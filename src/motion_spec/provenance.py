@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import importlib.metadata
+import hashlib
 import json
 import platform
 import re
@@ -197,7 +198,7 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
         "frame_layout.json",
         "frame_layout.h",
         "frame_log.proto",
-        "provenance.jsonld",
+        "provenance.ld.json",
         "introspection_runtime.hpp",
         "introspect_model.hpp",
         "CMakeLists.txt",
@@ -412,10 +413,10 @@ def record_agents(run, run_dir: Path, schema: dict) -> None:
         prov_uri("agent:motion_spec_archive"),
         rec_types(["prov:SoftwareAgent", "obs:ObservationProvider"]),
     )
-    for agent in provenance_nodes(run_dir, "agn:ModelledAgent"):
+    for agent_id, agent_types in provenance_nodes(run_dir, "agn:ModelledAgent"):
         run.add_agent(
-            prov_uri(agent.get("@id", "agent:modelled")),
-            rec_types(agent.get("@type", ["prov:Agent", "agn:ModelledAgent"])),
+            agent_id,
+            agent_types,
         )
 
 
@@ -437,47 +438,28 @@ def record_activities(run, schema: dict) -> None:
 
 
 def record_files(run, run_dir: Path, manifest: dict, schema: dict) -> None:
-    """Record the archive's files as PROV entities.
-
-    REC labels an entity with `title` and keys it by its archive-relative path, so the
-    manifest role becomes the label and the archive path stays portable -- no absolute paths
-    reach the graph.
-    """
-    resource_roles = {"schema", "frame_log_proto", "provenance", "dsl_provenance", "model", "ir"}
+    """Record manifest files and their integrity metadata as PROV entities."""
+    generated_roles = {"frame_log", "frame_log_health"}
+    labels = {"model_imports": "imported_model_graph", "sources": "source_model"}
     runtime_activity = prov_uri(
         schema.get("runtime_provenance", {}).get("activity_id") or "activity:controller_execution"
     )
-    for rel, meta in sorted(manifest.get("artifacts", {}).items()):
-        path = run_dir / rel
-        if not path.exists():
+    for role, value in sorted(manifest.get("files", {}).items()):
+        if role == "rec" or not value:
             continue
-        role = meta.get("role")
-        common = {
-            "title": role,
-            "sha256": meta.get("sha256"),
-            "size_bytes": artifact_size(path),
-        }
-        if role in resource_roles:
-            run.add_resource(rel, usage_activity=runtime_activity, **common)
-        else:
-            run.add_artefact(
-                rel,
-                gen_activity=(
-                    runtime_activity
-                    if role in {"frame_log", "frame_log_health"}
-                    else prov_uri("activity:archive_creation")
-                ),
-                **common,
-            )
-    for stream in manifest.get("streams", []):
-        url = stream.get("url")
-        title = stream.get("label") or f"stream_{stream.get('kind', 'unknown')}"
-        if stream.get("mode") in {"mp4", "file"}:
-            run.add_artefact(url, gen_activity=runtime_activity, title=title)
-        else:
-            run.add_resource(url, usage_activity=runtime_activity, title=title)
-
-
+        for rel in value if isinstance(value, list) else [value]:
+            path = run_dir / rel
+            if not path.exists():
+                continue
+            common = {
+                "title": labels.get(role, role),
+                "sha256": artifact_sha256(path),
+                "size_bytes": artifact_size(path),
+            }
+            if role in generated_roles:
+                run.add_artefact(rel, gen_activity=runtime_activity, **common)
+            else:
+                run.add_resource(rel, usage_activity=runtime_activity, **common)
 def record_frame_log_health(run, run_dir: Path, manifest: dict) -> None:
     rel = manifest.get("files", {}).get("frame_log_health")
     if not rel:
@@ -497,6 +479,22 @@ def artifact_size(path: Path) -> int:
     if path.is_file():
         return path.stat().st_size
     return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+
+
+def artifact_sha256(path: Path) -> str:
+    """Hash a file or directory tree deterministically."""
+    digest = hashlib.sha256()
+    items = [path] if path.is_file() else sorted(item for item in path.rglob("*") if item.is_file())
+    for item in items:
+        if path.is_dir():
+            digest.update(item.relative_to(path).as_posix().encode())
+            digest.update(b"\0")
+        with item.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        if path.is_dir():
+            digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def host_info() -> dict:
@@ -563,17 +561,22 @@ def git(cwd: Path, *args: str) -> str | None:
         return None
 
 
-def provenance_nodes(run_dir: Path, type_id: str) -> list[dict]:
-    path = run_dir / "provenance" / "codegen.jsonld"
+def provenance_nodes(run_dir: Path, type_id: str) -> list[tuple[str, list[str]]]:
+    manifest_path = run_dir / "manifest.json"
+    path = run_dir / "provenance" / "motion-spec.ld.json"
+    if manifest_path.is_file():
+        manifest = json.loads(manifest_path.read_text())
+        path = run_dir / manifest.get("files", {}).get("provenance", path)
     if not path.exists():
         return []
     try:
-        nodes = json.loads(path.read_text()).get("@graph", [])
+        import rdflib
+
+        graph = rdflib.Graph().parse(path, format="json-ld")
     except Exception:
         return []
+    target = rdflib.URIRef(rec_types(type_id)[0])
     return [
-        node
-        for node in nodes
-        if type_id
-        in (node.get("@type") if isinstance(node.get("@type"), list) else [node.get("@type")])
+        (str(subject), [str(value) for value in graph.objects(subject, rdflib.RDF.type)])
+        for subject in graph.subjects(rdflib.RDF.type, target)
     ]

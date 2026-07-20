@@ -14,13 +14,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from motion_spec.introspection.archive import (
-    HASHED_ARTIFACTS,
     ArchiveError,
     create_archive_manifest,
-    sha256_file,
     verify_manifest,
 )
 from motion_spec.provenance import (
+    artifact_sha256,
     artifact_size,
     dependencies,
     ensure_local_rec_importable,
@@ -58,10 +57,15 @@ def run_cataloged(
     executable_args = [str(arg) for arg in (executable_args or [])]
     run_id = run_id or run_dir.name
     frame_log = run_dir / "logs" / "frame_log.pb"
-    rec_path = run_dir / "rec.jsonld"
+    rec_path = run_dir / "rec.ld.json"
 
     _validate_new_run(run_dir, source_dir, executable)
-    schema = json.loads((source_dir / "schema.json").read_text())
+    schema_path = (
+        source_dir / "contract" / "schema.json"
+        if (source_dir / "contract").is_dir()
+        else source_dir / "schema.json"
+    )
+    schema = json.loads(schema_path.read_text())
     run_dir.mkdir(parents=True, exist_ok=True)
     _start_rec_run(run_dir, run_id, source_dir, executable, schema)
 
@@ -106,12 +110,10 @@ def run_cataloged(
             records, frame_count = runtime_frames(frame_log)
             write_runtime_ttl(run_dir, records, frame_count=frame_count)
         _finish_rec_run(rec_path, run_id, "COMPLETED")
-        _refresh_rec_hash(run_dir)
         if verify:
             verify_manifest(run_dir)
     except Exception:
         _finish_rec_run(rec_path, run_id, "FAILED")
-        _refresh_rec_hash(run_dir)
         raise
     return returncode
 
@@ -119,13 +121,22 @@ def run_cataloged(
 def _validate_new_run(run_dir: Path, source_dir: Path, executable: Path) -> None:
     if not source_dir.exists():
         raise RunnerError(f"{source_dir}: source directory does not exist")
-    for rel in ("schema.json", "frame_log.proto", "provenance.jsonld"):
-        if not (source_dir / rel).exists():
-            raise RunnerError(f"{source_dir / rel}: required generated artifact is missing")
+    required = (
+        (
+            source_dir / "contract" / "schema.json",
+            source_dir / "contract" / "frame_log.proto",
+            source_dir / "provenance" / "motion-spec.ld.json",
+        )
+        if (source_dir / "contract").is_dir()
+        else tuple(source_dir / rel for rel in ("schema.json", "frame_log.proto", "provenance.ld.json"))
+    )
+    for path in required:
+        if not path.exists():
+            raise RunnerError(f"{path}: required generated artifact is missing")
     if not executable.exists():
         raise RunnerError(f"{executable}: executable does not exist")
-    if run_dir.exists() and (run_dir / "rec.jsonld").exists():
-        raise RunnerError(f"{run_dir}: already contains rec.jsonld; choose a fresh run directory")
+    if run_dir.exists() and (run_dir / "rec.ld.json").exists():
+        raise RunnerError(f"{run_dir}: already contains rec.ld.json; choose a fresh run directory")
     frame_log = run_dir / "logs" / "frame_log.pb"
     if frame_log.exists():
         raise RunnerError(f"{frame_log}: refusing to overwrite an existing frame log")
@@ -142,7 +153,7 @@ def _start_rec_run(
     from rec import Run
     from rec.observers import FileObserver
 
-    observer = FileObserver(run_dir / "rec.jsonld")
+    observer = FileObserver(run_dir / "rec.ld.json")
     run = Run(observers=[observer], run_id=run_id)
     run._emit_started()
     run.log_host_info(host_info())
@@ -159,18 +170,29 @@ def _start_rec_run(
         rec_types(["prov:Activity"]),
         associated_with=prov_uri("agent:motion_spec_runner"),
     )
-    _record_execution_inputs(run, source_dir, executable, schema)
+    _record_execution_inputs(run, run_dir, source_dir, executable, schema)
     observer.close()
 
 
-def _record_execution_inputs(run, source_dir: Path, executable: Path, schema: dict) -> None:
+def _record_execution_inputs(
+    run, run_dir: Path, source_dir: Path, executable: Path, schema: dict
+) -> None:
     activity = prov_uri(schema.get("runtime_provenance", {}).get("activity_id") or "activity:controller_execution")
-    for rel, role in (
-        ("schema.json", "schema"),
-        ("provenance.jsonld", "provenance"),
-        ("model.jsonld", "model"),
-        ("ir.json", "ir"),
-    ):
+    inputs = (
+        (
+            ("contract/schema.json", "schema"),
+            ("provenance/motion-spec.ld.json", "provenance"),
+            ("model/ir.json", "ir"),
+        )
+        if (source_dir / "contract").is_dir()
+        else (
+            ("schema.json", "schema"),
+            ("provenance.ld.json", "provenance"),
+            ("model.ld.json", "model"),
+            ("ir.json", "ir"),
+        )
+    )
+    for rel, role in inputs:
         path = source_dir / rel
         if path.exists():
             # archivePath = where this input lands in the bundle, so the rec reference is
@@ -179,16 +201,16 @@ def _record_execution_inputs(run, source_dir: Path, executable: Path, schema: di
                 path,
                 usage_activity=activity,
                 title=role,
-                archive_path=HASHED_ARTIFACTS.get(role),
-                sha256=sha256_file(path),
+                archive_path=os.path.relpath(path, run_dir),
+                sha256=artifact_sha256(path),
                 size_bytes=artifact_size(path),
             )
     run.add_resource(
         executable,
         usage_activity=activity,
         title="log_producer_executable",
-        archive_path=f"controller/executable/{executable.name}",
-        sha256=sha256_file(executable),
+        archive_path=os.path.relpath(executable, run_dir),
+        sha256=artifact_sha256(executable),
         size_bytes=artifact_size(executable),
     )
 
@@ -257,20 +279,8 @@ def _rec_status(rec_path: Path) -> str | None:
     return rec_run_lifecycle_from_file(rec_path).get("status")
 
 
-def _refresh_rec_hash(run_dir: Path) -> None:
-    manifest_path = run_dir / "manifest.json"
-    rec_path = run_dir / "rec.jsonld"
-    if not manifest_path.exists() or not rec_path.exists():
-        return
-    manifest = json.loads(manifest_path.read_text())
-    manifest.setdefault("artifacts", {})["rec.jsonld"] = {"role": "rec", "sha256": sha256_file(rec_path)}
-    manifest.setdefault("files", {})["rec"] = "rec.jsonld"
-    manifest.setdefault("rec", {"path": "rec.jsonld", "run_id": manifest.get("run_id", run_dir.name)})
-    manifest_path.write_text(json.dumps(manifest, indent=4) + "\n")
-
-
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(prog="motion-spec run")
     parser.add_argument("run_dir", help="fresh directory for the cataloged run archive")
     parser.add_argument("--source-dir", required=True, help="generated controller directory")
     parser.add_argument("--executable", required=True, help="generated executable to launch")

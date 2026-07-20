@@ -15,12 +15,12 @@ import rdflib
 
 from motion_spec.introspection.archive import load_manifest, sha256_file
 from motion_spec.namespace import CSTR_HDL
-from motion_spec.provenance import MSPROV, prov_uri, rec_types
+from motion_spec.provenance import MSPROV, prov_uri, rec_run_lifecycle, rec_types
 
 
 def _dt_literal(wall_ns) -> rdflib.Literal | None:
     """Absolute wall time (epoch nanoseconds) as an xsd:dateTime (rdflib canonicalizes to +00:00,
-    matching codegen.jsonld / rec.jsonld / provenance.jsonld)."""
+    matching motion-spec.ld.json / rec.ld.json / provenance.ld.json)."""
     if wall_ns is None:
         return None
     sec, ns = divmod(int(wall_ns), 1_000_000_000)
@@ -36,7 +36,7 @@ def _condition_map(run_dir: Path, manifest: dict) -> dict[str, rdflib.URIRef]:
     mapping: dict[str, rdflib.URIRef] = {}
     for rel in manifest.get("files", {}).get("model_imports") or []:
         path = run_dir / rel
-        if not path.exists() or path.suffix not in (".jsonld", ".json"):
+        if not path.exists() or path.suffix != ".json":
             continue
         try:
             mg = rdflib.Graph().parse(path, format="json-ld")
@@ -321,14 +321,14 @@ def _project_occurrences(
 
 
 def _add_rec_timing(g: rdflib.Graph, run_dir: Path, manifest: dict, activity: rdflib.URIRef) -> None:
-    rec_rel = manifest.get("files", {}).get("rec", "rec.jsonld")
+    rec_rel = manifest.get("files", {}).get("rec", "rec.ld.json")
     rec_path = run_dir / rec_rel
     if not rec_path.exists():
         return
-    rec = json.loads(rec_path.read_text())
-    for key, pred in (("startedAtTime", PROV.startedAtTime), ("endedAtTime", PROV.endedAtTime)):
-        if rec.get(key):
-            g.add((activity, pred, rdflib.Literal(rec[key], datatype=rdflib.XSD.dateTime)))
+    lifecycle = rec_run_lifecycle(rdflib.Graph().parse(rec_path, format="json-ld"))
+    for key, pred in (("started_time", PROV.startedAtTime), ("completed_time", PROV.endedAtTime)):
+        if lifecycle.get(key):
+            g.add((activity, pred, rdflib.Literal(lifecycle[key], datatype=rdflib.XSD.dateTime)))
 
 
 def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int | None = None) -> rdflib.Graph:
@@ -472,18 +472,8 @@ def write_runtime_ttl(run_dir: Path | str, frames: list[dict], *, frame_count: i
     graph.serialize(out, format="turtle")
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text())
-        manifest.setdefault("artifacts", {})[runtime_rel] = {
-            "role": "runtime",
-            "sha256": sha256_file(out),
-        }
         manifest.setdefault("files", {})["runtime_ttl"] = runtime_rel
         _record_runtime_ttl_with_rec(run_dir, manifest, out)
-        rec_path = run_dir / manifest.get("files", {}).get("rec", "rec.jsonld")
-        if rec_path.exists():
-            manifest.setdefault("artifacts", {})["rec.jsonld"] = {
-                "role": "rec",
-                "sha256": sha256_file(rec_path),
-            }
         manifest_path.write_text(json.dumps(manifest, indent=4) + "\n")
     return out
 
@@ -498,7 +488,7 @@ def _record_runtime_ttl_with_rec(run_dir: Path, manifest: dict, runtime_ttl: Pat
     except ImportError as exc:
         raise RuntimeError("REC is required to update runtime.ttl provenance") from exc
 
-    rec_path = run_dir / manifest.get("files", {}).get("rec", "rec.jsonld")
+    rec_path = run_dir / manifest.get("files", {}).get("rec", "rec.ld.json")
     if not rec_path.exists():
         return
     observer = FileObserver(rec_path)

@@ -119,7 +119,7 @@ def summarize(log_path: Path | str) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(prog="motion-spec replay")
     parser.add_argument("log", help="frame_log.pb inside a motion-spec run archive")
     parser.add_argument("--jsonl", action="store_true", help="emit decoded frames as JSON Lines")
     parser.add_argument("--verify", action="store_true", help="verify manifest/header only")

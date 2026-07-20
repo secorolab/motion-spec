@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "motion_spec"
 version = "0.1.0"
@@ -12,24 +16,26 @@ maintainers = [
 license = { text = "MPL-2.0" }
 requires-python = ">=3.10"
 dependencies = [
+    "click>=8.1",
     "rdflib",
+    "rdf_utils",
+]
+
+[project.optional-dependencies]
+validation = ["pyshacl>=0.25.0"]
+introspection = [
     "pyshacl>=0.25.0",
     "rec",
     # frame_log_pb reads .pb logs via message_factory.GetMessageClass, added in 4.22.
     "protobuf>=4.22",
 ]
-
-[project.optional-dependencies]
-dashboard = ["flask>=3"]
+all = ["pyshacl>=0.25.0", "rec", "protobuf>=4.22"]
+test = ["pytest"]
+docs = ["sphinx", "sphinx-rtd-theme", "sphinx-autobuild"]
+dev = ["pytest", "ruff"]
 
 [project.scripts]
-motion-spec-check = "motion_spec.check:main"
-motion-spec-ir-gen = "motion_spec.ir_gen:main"
-motion-spec-count = "motion_spec.count:main"
-motion-spec-codegen = "motion_spec.codegen:main"
-motion-spec-archive = "motion_spec.introspection.archive:main"
-motion-spec-replay = "motion_spec.introspection.replay:main"
-motion-spec-run = "motion_spec.introspection.runner:main"
+motion-spec = "motion_spec.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

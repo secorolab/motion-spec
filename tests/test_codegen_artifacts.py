@@ -433,7 +433,7 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
 def test_provenance_document_is_jsonld_and_prov_shacl_conformant(tmp_path: Path) -> None:
     pyshacl = __import__("pyshacl")
     seed = build_provenance_document(_sample_ir(), tmp_path)
-    path = tmp_path / "provenance.jsonld"
+    path = tmp_path / "provenance.ld.json"
     path.write_text(json.dumps(seed))
     metamodels = Path(__file__).resolve().parents[2] / "metamodels"
     install_resolver(

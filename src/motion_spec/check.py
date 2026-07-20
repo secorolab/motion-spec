@@ -13,28 +13,8 @@ from motion_spec.manifest import build_url_map, metamodel_url_map
 from motion_spec.namespace import APP
 
 
-def main():
-    """Validate motion specification models against SHACL constraints."""
-    parser = argparse.ArgumentParser(
-        description="Validate motion specification models against SHACL constraints",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  %(prog)s manifest.json                    # Validate model and print result
-        """,
-    )
-
-    parser.add_argument("manifest", help="Path to the application manifest JSON file")
-    parser.add_argument(
-        "--meta-shacl",
-        action="store_true",
-        help="Also validate the SHACL shape graph against SHACL-of-SHACL "
-        "(~4x slower; only useful when editing the metamodel shapes themselves).",
-    )
-
-    args = parser.parse_args()
-
-    app_model = args.manifest
+def validate_manifest(app_model: str | Path, *, meta_shacl: bool = False) -> tuple[bool, str]:
+    """Validate one application manifest and return conformance plus the SHACL report."""
     app_model_path = Path(app_model).resolve()
 
     # Load top-level, application model
@@ -62,27 +42,39 @@ Examples:
         str(o) for _, _, o, _ in g.quads((None, APP["constraints"], None, None))
     )
     if not metamodels:
-        print("Validation Report")
-        print("Conforms: False")
-        print("No SHACL constraint files were listed in the application manifest.")
-        sys.exit(1)
+        return (
+            False,
+            "Validation Report\nConforms: False\n"
+            "No SHACL constraint files were listed in the application manifest.",
+        )
     for location in metamodels:
         try:
             g_sh.parse(location=location, format="turtle")
         except Exception as exc:
-            print("Validation Report")
-            print("Conforms: False")
-            print(f"Failed to load SHACL constraint graph {location}: {exc}")
-            sys.exit(1)
+            return (
+                False,
+                "Validation Report\nConforms: False\n"
+                f"Failed to load SHACL constraint graph {location}: {exc}",
+            )
 
     # Validate using Dataset directly
-    conforms, v_graph, v_text = pyshacl.validate(
-        data_graph=g, shacl_graph=g_sh, inference="none", meta_shacl=args.meta_shacl
+    conforms, _v_graph, v_text = pyshacl.validate(
+        data_graph=g, shacl_graph=g_sh, inference="none", meta_shacl=meta_shacl
     )
+    return bool(conforms), v_text
 
-    print(v_text)
-    sys.exit(0 if conforms else 1)
+
+def main(argv: list[str] | None = None) -> int:
+    """Compatibility entry point; the installed CLI is ``motion-spec check``."""
+    parser = argparse.ArgumentParser(prog="motion-spec check")
+    parser.add_argument("manifest")
+    parser.add_argument("--meta-shacl", action="store_true")
+    args = parser.parse_args(argv)
+
+    conforms, report = validate_manifest(args.manifest, meta_shacl=args.meta_shacl)
+    print(report)
+    return 0 if conforms else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

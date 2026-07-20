@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import rdflib
@@ -52,7 +51,7 @@ def test_runner_catalogs_run_from_start_and_archives_outputs(tmp_path: Path) -> 
     assert (run_dir / "runtime" / "runtime.ttl").exists()
 
     # REC writes a PROV graph: lifecycle is an rdf:type on the run, roles are rec:label.
-    rec_graph = rdflib.Graph().parse(run_dir / "rec.jsonld", format="json-ld")
+    rec_graph = rdflib.Graph().parse(run_dir / "rec.ld.json", format="json-ld")
     lifecycle = rec_run_lifecycle(rec_graph)
     assert lifecycle["status"] == "COMPLETED"
     assert lifecycle["started_time"]

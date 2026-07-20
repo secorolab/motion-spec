@@ -4135,7 +4135,7 @@ def _load_graph(manifest_path):
     imported_provenance = []
     imported_model_locations = []
     for item in imported_files:
-        if item.endswith("/provenance/dsl.jsonld"):
+        if item.endswith("/provenance/dsl.ld.json"):
             imported_provenance.append(_resolve_import_location(item, url_map))
         else:
             imported_model_locations.append(item)
@@ -5785,9 +5785,10 @@ def generate_ir(manifest_path):
     return ir
 
 
-def main():
+def main(argv: list[str] | None = None):
     """Generate intermediate representation (IR) from motion specification models."""
     parser = argparse.ArgumentParser(
+        prog="motion-spec ir",
         description="Generate intermediate representation (IR) JSON from motion specification models",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
@@ -5808,7 +5809,7 @@ Examples:
         "-c", "--console", action="store_true", help="Print output to console"
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # Determine output destination
     if args.console or (args.output and args.output == "-"):

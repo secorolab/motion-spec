@@ -26,6 +26,9 @@ from motion_spec.provenance import (
     ensure_local_rec_importable,
     host_info,
     parse_rec_time,
+    rec_types,
+    rec_run_lifecycle,
+    rec_run_lifecycle_from_file,
     prov_uri,
     record_activities,
     record_agents,
@@ -139,7 +142,7 @@ def _start_rec_run(
     from rec import Run
     from rec.observers import FileObserver
 
-    observer = FileObserver(run_dir / "rec.jsonld", run_id=run_id)
+    observer = FileObserver(run_dir / "rec.jsonld")
     run = Run(observers=[observer], run_id=run_id)
     run._emit_started()
     run.log_host_info(host_info())
@@ -149,14 +152,12 @@ def _start_rec_run(
     record_activities(run, schema)
     run.add_agent(
         prov_uri("agent:motion_spec_runner"),
-        ["prov:SoftwareAgent", "obs:ObservationProvider"],
-        role="run_cataloguer",
+        rec_types(["prov:SoftwareAgent", "obs:ObservationProvider"]),
     )
     run.add_activity(
         prov_uri("activity:run_cataloging"),
-        ["prov:Activity"],
-        role="run_cataloging",
-        wasAssociatedWith=prov_uri("agent:motion_spec_runner"),
+        rec_types(["prov:Activity"]),
+        associated_with=prov_uri("agent:motion_spec_runner"),
     )
     _record_execution_inputs(run, source_dir, executable, schema)
     observer.close()
@@ -177,16 +178,16 @@ def _record_execution_inputs(run, source_dir: Path, executable: Path, schema: di
             run.add_resource(
                 path,
                 usage_activity=activity,
-                role=role,
-                archivePath=HASHED_ARTIFACTS.get(role),
+                title=role,
+                archive_path=HASHED_ARTIFACTS.get(role),
                 sha256=sha256_file(path),
                 size_bytes=artifact_size(path),
             )
     run.add_resource(
         executable,
         usage_activity=activity,
-        role="log_producer_executable",
-        archivePath=f"controller/executable/{executable.name}",
+        title="log_producer_executable",
+        archive_path=f"controller/executable/{executable.name}",
         sha256=sha256_file(executable),
         size_bytes=artifact_size(executable),
     )
@@ -229,8 +230,8 @@ def _finish_rec_run(rec_path: Path, run_id: str, status: str) -> None:
     from rec import Run
     from rec.observers import FileObserver
 
-    observer = FileObserver(rec_path, run_id=run_id)
-    lifecycle = observer.snapshot.get("run", {})
+    observer = FileObserver(rec_path)
+    lifecycle = rec_run_lifecycle(observer.graph)
     if lifecycle.get("status") == status and (
         status != "COMPLETED" or lifecycle.get("completed_time")
     ):
@@ -253,12 +254,7 @@ def _finish_rec_run(rec_path: Path, run_id: str, status: str) -> None:
 
 
 def _rec_status(rec_path: Path) -> str | None:
-    if not rec_path.exists():
-        return None
-    doc = json.loads(rec_path.read_text())
-    if "run" in doc:
-        return doc.get("run", {}).get("status")
-    return doc.get("status")
+    return rec_run_lifecycle_from_file(rec_path).get("status")
 
 
 def _refresh_rec_hash(run_dir: Path) -> None:

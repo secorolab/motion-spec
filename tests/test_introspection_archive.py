@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+import rdflib
 
 from motion_spec.introspection.archive import (
     ArchiveError,
@@ -14,11 +15,21 @@ from motion_spec.introspection.archive import (
     _validate_runtime_shacl,
     verify_manifest,
 )
-from motion_spec.provenance import prov_uri
+from motion_spec.provenance import prov_uri, rec_run_lifecycle
 from motion_spec.codegen_artifacts import fields_with_offsets
 from motion_spec.introspection import replay
 from motion_spec.introspection.replay import decode_frames, summarize, validate_header
 from motion_spec.introspection.runtime_graph import write_runtime_ttl
+
+REC = rdflib.Namespace("https://secorolab.github.io/metamodels/rec#")
+PROV = rdflib.Namespace("http://www.w3.org/ns/prov#")
+QUDT = rdflib.Namespace("http://qudt.org/schema/qudt/")
+
+
+def _rec_entity_path(graph, label: str) -> str:
+    """The archive-relative path REC recorded for the entity carrying `label`."""
+    entity = next(e for e, value in graph.subject_objects(REC.label) if str(value) == label)
+    return str(graph.value(graph.value(entity, PROV.atLocation), REC.path))
 
 from frame_log_fixture import flat_frame, write_frame_log_pb, write_frame_log_proto
 
@@ -216,29 +227,40 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
     assert runtime_ttl.exists()
     assert verify_manifest(run_dir)["artifacts"]["runtime/runtime.ttl"]["sha256"] == sha256_file(runtime_ttl)
 
-    rec_doc = json.loads((run_dir / "rec.jsonld").read_text())
-    assert rec_doc["status"] == "COMPLETED"
-    assert rec_doc["role"] == "run_execution"
-    assert "run" not in rec_doc
-    assert "@graph" not in rec_doc
-    assert any(row["role"] == "frame_log" for row in rec_doc["artefacts"])
-    assert any(
-        row["role"] == "frame_log_health"
-        and row["wasGeneratedBy"] == prov_uri("activity:controller_execution")
-        for row in rec_doc["artefacts"]
+    # REC records the archive as a PROV graph: lifecycle is an rdf:type on the run, and an
+    # entity's role is its rec:label. See metamodels rec.shacl.ttl (RunExecutionShape).
+    rec_graph = rdflib.Graph().parse(run_dir / "rec.jsonld", format="json-ld")
+    assert rec_run_lifecycle(rec_graph)["status"] == "COMPLETED"
+    labels = {str(value) for value in rec_graph.objects(None, REC.label)}
+    assert {"frame_log", "frame_log_health", "runtime_ttl"} <= labels
+    health = next(
+        entity
+        for entity, value in rec_graph.subject_objects(REC.label)
+        if str(value) == "frame_log_health"
     )
-    assert any(row["role"] == "runtime_ttl" for row in rec_doc["artefacts"])
-    assert any(row["role"] == "runtime_ttl_recovery" for row in rec_doc["activities"])
+    assert (
+        health,
+        rdflib.URIRef("http://www.w3.org/ns/prov#wasGeneratedBy"),
+        rdflib.URIRef(prov_uri("activity:controller_execution")),
+    ) in rec_graph
+    assert (
+        rdflib.URIRef(prov_uri("activity:runtime_ttl_recovery")),
+        rdflib.RDF.type,
+        rdflib.URIRef("http://www.w3.org/ns/prov#Activity"),
+    ) in rec_graph
     # rec references bundle contents by archive-relative path (portable, no machine path).
-    dsl_resource = next(row for row in rec_doc["resources"] if row["role"] == "dsl_provenance")
-    assert dsl_resource["atLocation"] == "provenance/dsl.jsonld"
-    runtime_artifact = next(row for row in rec_doc["artefacts"] if row["role"] == "runtime_ttl")
-    assert runtime_artifact["atLocation"] == "runtime/runtime.ttl"
-    metrics = {row["name"]: row["value"] for row in rec_doc["metrics"]}
-    assert metrics["frame_log_attempted_frames"] == 1
-    assert metrics["frame_log_written_frames"] == 1
-    assert metrics["frame_log_dropped_frames"] == 0
-    assert metrics["frame_log_complete"] == 1
+    assert _rec_entity_path(rec_graph, "dsl_provenance") == "provenance/dsl.jsonld"
+    assert _rec_entity_path(rec_graph, "runtime_ttl") == "runtime/runtime.ttl"
+    metrics = {
+        str(rec_graph.value(metric, REC.label) or metric).rsplit("/", 1)[0].rsplit("metric/", 1)[-1]: (
+            rec_graph.value(metric, QUDT.value)
+        )
+        for metric in rec_graph.objects(None, REC.metrics)
+    }
+    assert metrics["frame_log_attempted_frames"].toPython() == 1
+    assert metrics["frame_log_written_frames"].toPython() == 1
+    assert metrics["frame_log_dropped_frames"].toPython() == 0
+    assert metrics["frame_log_complete"].toPython() == 1
 
 
 def _importing_manifest() -> dict:

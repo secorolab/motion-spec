@@ -5,11 +5,17 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import rdflib
+
 from motion_spec.introspection import runner
 from motion_spec.introspection.archive import verify_manifest
 from motion_spec.introspection.runner import run_cataloged
+from motion_spec.provenance import prov_uri, rec_run_lifecycle
 
 from test_introspection_archive import _source_tree
+
+
+REC = rdflib.Namespace("https://secorolab.github.io/metamodels/rec#")
 
 
 def _log_copy_executable(path: Path) -> Path:
@@ -45,16 +51,19 @@ def test_runner_catalogs_run_from_start_and_archives_outputs(tmp_path: Path) -> 
     assert manifest["files"]["log_producer_executable"] == "controller/executable/log-copy"
     assert (run_dir / "runtime" / "runtime.ttl").exists()
 
-    rec_doc = json.loads((run_dir / "rec.jsonld").read_text())
-    assert rec_doc["status"] == "COMPLETED"
-    assert rec_doc["startedAtTime"]
-    assert rec_doc["endedAtTime"]
-    assert "run" not in rec_doc
-    assert "@graph" not in rec_doc
-    assert any(row["role"] == "run_cataloging" for row in rec_doc["activities"])
-    assert any(row["role"] == "log_producer_executable" for row in rec_doc["resources"])
-    assert any(row["role"] == "frame_log" for row in rec_doc["artefacts"])
-    assert any(row["role"] == "runtime_ttl" for row in rec_doc["artefacts"])
+    # REC writes a PROV graph: lifecycle is an rdf:type on the run, roles are rec:label.
+    rec_graph = rdflib.Graph().parse(run_dir / "rec.jsonld", format="json-ld")
+    lifecycle = rec_run_lifecycle(rec_graph)
+    assert lifecycle["status"] == "COMPLETED"
+    assert lifecycle["started_time"]
+    assert lifecycle["completed_time"]
+    labels = {str(value) for value in rec_graph.objects(None, REC.label)}
+    assert {"log_producer_executable", "frame_log", "runtime_ttl"} <= labels
+    assert (
+        rdflib.URIRef(prov_uri("activity:run_cataloging")),
+        rdflib.RDF.type,
+        rdflib.URIRef("http://www.w3.org/ns/prov#Activity"),
+    ) in rec_graph
 
 
 def test_runner_cli_accepts_options_after_run_dir(monkeypatch) -> None:

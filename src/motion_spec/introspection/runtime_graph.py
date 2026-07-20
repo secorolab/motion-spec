@@ -15,7 +15,7 @@ import rdflib
 
 from motion_spec.introspection.archive import load_manifest, sha256_file
 from motion_spec.namespace import CSTR_HDL
-from motion_spec.provenance import MSPROV, prov_uri
+from motion_spec.provenance import MSPROV, prov_uri, rec_types
 
 
 def _dt_literal(wall_ns) -> rdflib.Literal | None:
@@ -501,24 +501,22 @@ def _record_runtime_ttl_with_rec(run_dir: Path, manifest: dict, runtime_ttl: Pat
     rec_path = run_dir / manifest.get("files", {}).get("rec", "rec.jsonld")
     if not rec_path.exists():
         return
-    observer = FileObserver(rec_path, run_id=manifest.get("run_id"))
+    observer = FileObserver(rec_path)
     run = Run(observers=[observer], run_id=manifest.get("run_id"))
     run.add_agent(
         prov_uri("agent:replay_process"),
-        ["prov:SoftwareAgent", "obs:ObservationProvider"],
-        role="runtime_ttl_recovery",
+        rec_types(["prov:SoftwareAgent", "obs:ObservationProvider"]),
     )
     run.add_activity(
         prov_uri("activity:runtime_ttl_recovery"),
-        ["prov:Activity"],
-        role="runtime_ttl_recovery",
-        wasAssociatedWith=prov_uri("agent:replay_process"),
+        rec_types(["prov:Activity"]),
+        associated_with=prov_uri("agent:replay_process"),
     )
     run.add_artefact(
         str(runtime_ttl.resolve()),
         gen_activity=prov_uri("activity:runtime_ttl_recovery"),
-        archivePath=str(runtime_ttl.relative_to(run_dir)),
-        role="runtime_ttl",
+        archive_path=str(runtime_ttl.relative_to(run_dir)),
+        title="runtime_ttl",
         sha256=sha256_file(runtime_ttl),
         size_bytes=runtime_ttl.stat().st_size,
     )

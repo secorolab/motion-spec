@@ -70,6 +70,22 @@ def _prov_iri(identifier: str) -> str:
     return f"{MSPROV_PREFIX}{kind_slug}/{name_slug}"
 
 
+# REC expands only the `rec:` and `prov:` prefixes it owns; every other CURIE would be stored
+# verbatim as a bogus URIRef. Expand ours before handing types across the boundary.
+_TYPE_IRI_BY_PREFIX = {curie: iri for iri, curie in TYPE_PREFIXES.items()}
+
+
+def rec_types(types) -> list[str]:
+    """Expand motion-spec CURIEs to full IRIs for a REC agent/activity type list."""
+    expanded = []
+    for value in [types] if isinstance(types, str) else list(types or ()):
+        text = str(value)
+        prefix, _, local = text.partition(":")
+        base = _TYPE_IRI_BY_PREFIX.get(f"{prefix}:")
+        expanded.append(f"{base}{local}" if base and local else text)
+    return expanded
+
+
 def prov_uri(identifier: str) -> str:
     """Canonical full provenance IRI for an agent/activity id."""
     if identifier.startswith(("http://", "https://")):
@@ -303,6 +319,61 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
     }
 
 
+# REC records a run's state as an rdf:type on the run node, not as a status string. These
+# are the terminal-and-transient states rec.observers.graph_observer.RUN_TYPES defines.
+_REC_RUN_STATUS = {
+    "QueuedRun": "QUEUED",
+    "RunningRun": "RUNNING",
+    "CompletedRun": "COMPLETED",
+    "FailedRun": "FAILED",
+    "InterruptedRun": "INTERRUPTED",
+    "CancelledRun": "CANCELLED",
+}
+_REC_NS = "https://secorolab.github.io/metamodels/rec#"
+_PROV_NS = "http://www.w3.org/ns/prov#"
+
+
+def rec_run_lifecycle(graph) -> dict:
+    """The observed run's status and timestamps, read from a REC graph.
+
+    REC exposes lifecycle only as RDF -- an rdf:type drawn from its run-state vocabulary plus
+    prov:startedAtTime / prov:endedAtTime -- so a consumer has to project it. Returns the keys
+    callers need: `status`, `started_time`, `completed_time`; each is None when absent.
+    """
+    import rdflib
+
+    run = next(graph.subjects(rdflib.URIRef(_REC_NS + "run-id"), None), None)
+    if run is None:
+        return {}
+    status = next(
+        (
+            _REC_RUN_STATUS[local]
+            for type_ in graph.objects(run, rdflib.RDF.type)
+            if (local := str(type_).rsplit("#", 1)[-1]) in _REC_RUN_STATUS
+        ),
+        None,
+    )
+    started = graph.value(run, rdflib.URIRef(_PROV_NS + "startedAtTime"))
+    ended = graph.value(run, rdflib.URIRef(_PROV_NS + "endedAtTime"))
+    return {
+        "status": status,
+        "started_time": str(started) if started is not None else None,
+        "completed_time": str(ended) if ended is not None else None,
+    }
+
+
+def rec_run_lifecycle_from_file(path) -> dict:
+    """`rec_run_lifecycle` for an archive on disk; empty when it does not exist."""
+    import rdflib
+
+    path = Path(path)
+    if not path.exists():
+        return {}
+    graph = rdflib.Graph()
+    graph.parse(path, format="json-ld")
+    return rec_run_lifecycle(graph)
+
+
 def parse_rec_time(value: str) -> datetime:
     parsed = datetime.fromisoformat(value)
     if parsed.tzinfo is None:
@@ -323,47 +394,55 @@ def ensure_local_rec_importable() -> None:
 
 
 def record_agents(run, run_dir: Path, schema: dict) -> None:
+    """Register the run's agents.
+
+    REC identifies an agent by IRI and describes it by rdf:type, so the kind of agent is
+    carried in the type list rather than a separate role label.
+    """
     runtime = schema.get("runtime_provenance", {})
     raw_runtime = runtime.get("runtime_agent_id") or "agent:runtime"
     runtime_agent = prov_uri(raw_runtime)
     runtime_type = "exec:Simulation" if raw_runtime.endswith(":mujoco") else "prov:SoftwareAgent"
-    run.add_agent(runtime_agent, ["prov:SoftwareAgent", runtime_type], role="runtime")
+    run.add_agent(runtime_agent, rec_types(["prov:SoftwareAgent", runtime_type]))
     run.add_agent(
         prov_uri(runtime.get("producer_agent_id") or "agent:controller_process"),
-        ["prov:SoftwareAgent", "obs:ObservationProvider"],
-        role="log_producer",
-        actedOnBehalfOf=runtime_agent,
+        rec_types(["prov:SoftwareAgent", "obs:ObservationProvider"]),
     )
     run.add_agent(
         prov_uri("agent:motion_spec_archive"),
-        ["prov:SoftwareAgent", "obs:ObservationProvider"],
-        role="archive_writer",
+        rec_types(["prov:SoftwareAgent", "obs:ObservationProvider"]),
     )
     for agent in provenance_nodes(run_dir, "agn:ModelledAgent"):
         run.add_agent(
             prov_uri(agent.get("@id", "agent:modelled")),
-            agent.get("@type", ["prov:Agent", "agn:ModelledAgent"]),
-            role=agent.get("role", "modelled_agent"),
+            rec_types(agent.get("@type", ["prov:Agent", "agn:ModelledAgent"])),
         )
 
 
 def record_activities(run, schema: dict) -> None:
+    """Register the run's activities and the agent each is associated with."""
     runtime = schema.get("runtime_provenance", {})
     run.add_activity(
         prov_uri(runtime.get("activity_id") or "activity:controller_execution"),
-        ["prov:Activity", "bdd:SimulatedExecution"],
-        role="controller_execution",
-        wasAssociatedWith=prov_uri(runtime.get("producer_agent_id") or "agent:controller_process"),
+        rec_types(["prov:Activity", "bdd:SimulatedExecution"]),
+        associated_with=prov_uri(
+            runtime.get("producer_agent_id") or "agent:controller_process"
+        ),
     )
     run.add_activity(
         prov_uri("activity:archive_creation"),
-        ["prov:Activity"],
-        role="archive_creation",
-        wasAssociatedWith=prov_uri("agent:motion_spec_archive"),
+        rec_types(["prov:Activity"]),
+        associated_with=prov_uri("agent:motion_spec_archive"),
     )
 
 
 def record_files(run, run_dir: Path, manifest: dict, schema: dict) -> None:
+    """Record the archive's files as PROV entities.
+
+    REC labels an entity with `title` and keys it by its archive-relative path, so the
+    manifest role becomes the label and the archive path stays portable -- no absolute paths
+    reach the graph.
+    """
     resource_roles = {"schema", "frame_log_proto", "provenance", "dsl_provenance", "model", "ir"}
     runtime_activity = prov_uri(
         schema.get("runtime_provenance", {}).get("activity_id") or "activity:controller_execution"
@@ -372,33 +451,31 @@ def record_files(run, run_dir: Path, manifest: dict, schema: dict) -> None:
         path = run_dir / rel
         if not path.exists():
             continue
-        row = {
-            "path": str(path.resolve()),
-            "archivePath": rel,
-            "role": meta.get("role"),
+        role = meta.get("role")
+        common = {
+            "title": role,
             "sha256": meta.get("sha256"),
             "size_bytes": artifact_size(path),
         }
-        if meta.get("role") in resource_roles:
-            run.add_resource(rel, **row)
+        if role in resource_roles:
+            run.add_resource(rel, usage_activity=runtime_activity, **common)
         else:
-            gen_activity = (
-                runtime_activity
-                if meta.get("role") in {"frame_log", "frame_log_health"}
-                else prov_uri("activity:archive_creation")
+            run.add_artefact(
+                rel,
+                gen_activity=(
+                    runtime_activity
+                    if role in {"frame_log", "frame_log_health"}
+                    else prov_uri("activity:archive_creation")
+                ),
+                **common,
             )
-            run.add_artefact(rel, gen_activity=gen_activity, **row)
     for stream in manifest.get("streams", []):
-        row = {
-            "path": stream.get("url"),
-            "role": f"stream_{stream.get('kind', 'unknown')}",
-            "id": stream.get("id"),
-            "label": stream.get("label"),
-        }
+        url = stream.get("url")
+        title = stream.get("label") or f"stream_{stream.get('kind', 'unknown')}"
         if stream.get("mode") in {"mp4", "file"}:
-            run.add_artefact(stream.get("url"), **row)
+            run.add_artefact(url, gen_activity=runtime_activity, title=title)
         else:
-            run.add_resource(stream.get("url"), **row)
+            run.add_resource(url, usage_activity=runtime_activity, title=title)
 
 
 def record_frame_log_health(run, run_dir: Path, manifest: dict) -> None:

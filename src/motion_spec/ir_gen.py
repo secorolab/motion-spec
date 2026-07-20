@@ -2729,6 +2729,7 @@ def build_motion_units(
     derivation=None,
     snapshot_trigger_map=None,
     snapshot_owner_map=None,
+    closure_owner_map=None,
 ):
     """Build the per-motion IR units (one motion per handler), each complete with schedules,
     monitors, controllers, conditions, declared poses, FSM wiring and function-interface flags;
@@ -2741,6 +2742,7 @@ def build_motion_units(
     closure_input_map = closure_input_map or {}
     motions = []
     snapshot_owner_map = snapshot_owner_map or {}
+    closure_owner_map = closure_owner_map or {}
     motion_tokens = {
         _motion_suffix(p, g.value(node_by_id[h.id], CSTR_HDL["motion"])) for h in handlers
     }
@@ -2978,6 +2980,20 @@ def build_motion_units(
             if eval_id not in while_schedule:
                 while_schedule.append(eval_id)
 
+        # Drop closures another motion declares: the backward walk can reach them, and
+        # running them here recomputes that motion's outputs while it is not active.
+        motion_token_for_closures = _motion_suffix(p, motion_node)
+
+        def _owned_steps(steps):
+            return [
+                step
+                for step in steps
+                if closure_owner_map.get(step, motion_token_for_closures)
+                == motion_token_for_closures
+            ]
+
+        while_schedule = _owned_steps(while_schedule)
+        pre_group_schedule = _owned_steps(pre_group_schedule)
         until_schedule = p_active.schedule(
             [n for n in until_eval_nodes if not _is_elapsed_eval(n)], ops_generic + ops_cstr_hdl
         )
@@ -4170,6 +4186,33 @@ def _snapshot_source_map(g, p: Parser) -> dict[str, str]:
         if source_node is not None and output_node is not None:
             snapshot_source_map[p.id(output_node)] = p.id(source_node)
     return snapshot_source_map
+
+
+def _closure_owner_map(g, p: Parser, closures) -> dict[str, str]:
+    """Map each closure to the motion whose context declares the quantities it reads.
+
+    The backward schedule walk can reach a closure belonging to another motion, which then
+    runs (and mutates its outputs) whenever that unrelated motion is active. Ownership is the
+    motion segment of the quantities it references: <app>/<motion>/Spec/spec/<name>. A closure
+    reading only shared context has no owner and stays available to every motion.
+    """
+    owner_map: dict[str, str] = {}
+    for node in set(g.subjects()):
+        if not isinstance(node, URIRef):
+            continue
+        closure_id = p.id(node)
+        if closure_id not in closures:
+            continue
+        owners = set()
+        for obj in g.objects(node, None):
+            if not isinstance(obj, URIRef):
+                continue
+            segments = str(obj).rstrip("/").split("/")
+            if len(segments) >= 4 and segments[-3] == "Spec" and segments[-2] == "spec":
+                owners.add(get_valid_var_name(segments[-4]))
+        if len(owners) == 1:
+            owner_map[closure_id] = owners.pop()
+    return owner_map
 
 
 def _snapshot_owner_map(g, p: Parser) -> dict[str, str]:
@@ -5458,6 +5501,7 @@ def generate_ir(manifest_path):
     snapshot_source_map = _snapshot_source_map(g, p)
     snapshot_trigger_map = _snapshot_trigger_map(g, p)
     snapshot_owner_map = _snapshot_owner_map(g, p)
+    closure_owner_map = _closure_owner_map(g, p, closures)
     data_reference_map = _data_reference_map(data_structures, closures)
     closure_output_map, closure_input_map = _closure_maps(closures)
 
@@ -5493,6 +5537,7 @@ def generate_ir(manifest_path):
         derivation=derivation,
         snapshot_trigger_map=snapshot_trigger_map,
         snapshot_owner_map=snapshot_owner_map,
+        closure_owner_map=closure_owner_map,
     )
     _validate_solvers(slv_arm, backend)
     _annotate_runtime_robots(slv_arm, motions, backend)

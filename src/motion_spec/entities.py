@@ -444,6 +444,7 @@ class ForwardedCommand:
     id: str
     control_signal: Quantity
     target: str
+    robot_id: str
     type: str = field(default="ForwardedCommand")
 
 
@@ -763,6 +764,8 @@ class SolverWithInputAndOutput:
     tool_body: str = ""
     tcp_site: str = ""
     ft_sensors: list[dict] = field(default_factory=list)
+    runtime_prefix: str = ""
+    owned_trees: list = field(default_factory=list)
     root_acc: list[float] | None = None
     torque_saturation: Saturation | None = None
     runtime_id: str = ""

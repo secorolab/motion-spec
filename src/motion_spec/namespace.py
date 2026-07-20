@@ -87,6 +87,11 @@ class EXEC(DefinedNamespace):
 
     _extras = [
         "has-config",
+        "has-mapping",
+        "maps",
+        "has-body",
+        "has-kinematic-tree",
+        "model-entity",
         "runs-scene",
         "timestep",
         "platform-name",
@@ -138,6 +143,7 @@ class EL(DefinedNamespace):
 class GEOM_ENT(DefinedNamespace):
     Point: URIRef
     Frame: URIRef
+    KinematicTree: URIRef
     SimplicialComplex: URIRef
     RigidBody: URIRef
     start: URIRef
@@ -522,6 +528,7 @@ class CSTR_HDL(DefinedNamespace):
 class CSTR_HDL_EXT(DefinedNamespace):
     FeedForwardController: URIRef
     Admittance: URIRef
+    LinearJerk: URIRef
     solver: URIRef
 
     _extras = [

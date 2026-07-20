@@ -22,6 +22,7 @@ from motion_spec.ir_gen import (
     SceneRobot,
     SceneSpec,
     _build_introspection,
+    _fixed_attachments,
     _robot_setups_from_graph,
     ops_generic,
 )
@@ -39,6 +40,43 @@ from motion_spec.namespace import (
 )
 
 
+def test_fixed_attachments_root_a_branched_multi_robot_scene_at_world() -> None:
+    graph = Graph()
+    world = URIRef("https://example.test/world")
+    table = URIRef("https://example.test/table")
+    table_top = URIRef(f"{table}/top")
+    trees = {
+        URIRef("https://example.test/arm1"),
+        URIRef("https://example.test/arm2"),
+    }
+
+    def fixed(name: str, frame_a: URIRef, frame_b: URIRef) -> None:
+        joint = URIRef(f"https://example.test/{name}")
+        graph.add((joint, RDF.type, KC.Joint))
+        graph.add((joint, KC["between-attachments"], frame_a))
+        graph.add((joint, KC["between-attachments"], frame_b))
+
+    fixed("world-table", URIRef(f"{world}/origin"), table_top)
+    for tree in trees:
+        root = URIRef(f"{tree}/base")
+        root_frame = URIRef(f"{root}/origin")
+        tip = URIRef(f"{tree}/tip")
+        tip_frame = URIRef(f"{tip}/origin")
+        graph.add((tree, NS_MM_KC_EXT["tip"], tip_frame))
+        fixed(f"{tree.rsplit('/', 1)[-1]}-table", table_top, root_frame)
+        joint = URIRef(f"{tree}/moving")
+        graph.add((joint, RDF.type, KC.Joint))
+        graph.add((joint, RDF.type, KC.RevoluteJoint))
+        graph.add((joint, KC["between-attachments"], root_frame))
+        graph.add((joint, KC["between-attachments"], tip_frame))
+
+    attachments, root = _fixed_attachments(graph, trees)
+
+    assert root == world
+    assert attachments[table][:2] == ("World", "")
+    assert {attachments[URIRef(f"{tree}/base")][:2] for tree in trees} == {
+        ("Site", "top")
+    }
 def _quantity(graph: Graph, name: str) -> URIRef:
     node = URIRef(f"https://example.test/{name}")
     graph.add((node, RDF.type, QUDT_SCHEMA.Quantity))
@@ -46,6 +84,20 @@ def _quantity(graph: Graph, name: str) -> URIRef:
     graph.add((node, QUDT_SCHEMA["hasQuantityKind"], QUDT_QKIND.Force))
     graph.add((node, QUDT_SCHEMA.unit, URIRef("https://qudt.org/vocab/unit/N")))
     return node
+
+
+def test_parser_scopes_repeated_nested_reference_ids() -> None:
+    graph = Graph()
+    graph.bind("example", "https://example.test/")
+    first = URIRef("https://example.test/motion/Spec/spec/traj1/reference")
+    second = URIRef("https://example.test/motion/Spec/spec/traj2/reference")
+    graph.add((first, RDF.type, RDF.Property))
+    graph.add((second, RDF.type, RDF.Property))
+
+    parser = Parser(graph)
+
+    assert parser.id(first) == "motion_traj1_reference"
+    assert parser.id(second) == "motion_traj2_reference"
 
 
 def _pid_graph(*, kp: float | None = 1.0) -> tuple[Graph, URIRef]:
@@ -304,6 +356,13 @@ void check(motion_spec::runtime::VelocityProfileShape shape) {
 int main() {
     check(motion_spec::runtime::VelocityProfileShape::Trapezoidal);
     check(motion_spec::runtime::VelocityProfileShape::SCurve);
+
+    KDL::Chain prefixed_chain;
+    prefixed_chain.addSegment(KDL::Segment("r2_link_1"));
+    assert(motion_spec::runtime::find_segment_index(
+               prefixed_chain, "base_link", "r2_base_link") == 0);
+    assert(motion_spec::runtime::find_segment_index(
+               prefixed_chain, "link_1", "r2_base_link") == 1);
 
     // Seeded from a nonzero measured velocity (the online-generator initial
     // condition set in the controller init): still respects bounds and converges.

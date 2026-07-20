@@ -26,6 +26,14 @@ from rdf_utils.naming import get_valid_var_name
 from rdf_utils.models.vocab import URI_KC_TYPE_SERIAL
 from rdf_utils.namespace import NS_MM_KC_EXT, NS_MM_QUDT_QTY, NS_MM_QUDT_UNIT
 from rdf_utils.resolver import IriToFileResolver, install_resolver
+from rdf_utils.uri import (
+    iri_child,
+    iri_is_descendant,
+    iri_local_name,
+    iri_namespace,
+    iri_parent,
+    iri_path_segments,
+)
 from rdflib import URIRef
 from rdflib.namespace import RDF
 
@@ -64,7 +72,7 @@ from motion_spec.namespace import (
 def _term_name(node) -> str | None:
     if node is None:
         return None
-    return re.split(r"[/#]", str(node).rstrip("/"))[-1]
+    return iri_local_name(node)
 
 
 def _authored_controller_axes(g) -> dict[URIRef, tuple[AccelerationAxis, ...]]:
@@ -1136,8 +1144,6 @@ class Parser:
     handlers and solvers.
     """
 
-    _SPEC_OWNER_RE = re.compile(r"/([^/]+)/(?:Spec/spec|World/world)/")
-
     # scan depends only on the graph; memoize per-graph
     _ambiguous_cache: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 
@@ -1162,17 +1168,25 @@ class Parser:
 
     def _compute_ambiguous_context_ids(self):
         """Local names shared by more than one node, which need model-scope prefixing."""
-        owners_by_id: dict[str, set[str]] = {}
+        sources_by_id: dict[str, set[str]] = {}
         for s in set(self.g.subjects()):
-            m = self._SPEC_OWNER_RE.search(str(s))
-            if not m:
+            if self._context_scope(s) is None:
                 continue
             try:
                 local = escape(self.g.compute_qname(s)[2])
             except Exception:
                 continue
-            owners_by_id.setdefault(local, set()).add(m.group(1))
-        return {lid for lid, owners in owners_by_id.items() if len(owners) > 1}
+            sources_by_id.setdefault(local, set()).add(str(s))
+        return {lid for lid, sources in sources_by_id.items() if len(sources) > 1}
+
+    @staticmethod
+    def _context_scope(node) -> tuple[str, str, tuple[str, ...]] | None:
+        """Return the owner, section and member path of a context quantity IRI."""
+        parts = iri_path_segments(node)
+        for index in range(1, len(parts) - 2):
+            if parts[index : index + 2] in (("Spec", "spec"), ("World", "world")):
+                return parts[index - 1], parts[index], parts[index + 2 :]
+        return None
 
     def id(self, x):
         """Stable local id for a URI/node (scoped when the bare name is ambiguous)."""
@@ -1188,10 +1202,11 @@ class Parser:
         # Only context quantities (a motion's or the shared context's `Spec/spec` / `World/world`
         # members) become `shared.*` data fields and are vulnerable to the silent merge; constraint
         # names, metamodel predicates and aliases legitimately share an id and are scoped elsewhere.
-        m = self._SPEC_OWNER_RE.search(str(x))
-        if m:
+        scope = self._context_scope(x)
+        if scope:
+            owner, _section, member_path = scope
             if local in self._ambiguous_context_ids:
-                local = escape(f"{m.group(1)}-{q[2]}")
+                local = escape("-".join((owner, *member_path)))
             self._id_sources.setdefault(local, set()).add(str(x))
         self._id_cache[x] = local
         return local
@@ -2967,7 +2982,6 @@ def build_motion_units(
             eval_id = p.id(node)
             if eval_id not in while_schedule:
                 while_schedule.append(eval_id)
-        while_schedule.extend(controller.id for controller in reversed(active_controllers))
         force_schedule = p_active.schedule(
             cartesian_force_nodes, ops_generic + ops_slv + ops_cstr_hdl
         )
@@ -2994,6 +3008,11 @@ def build_motion_units(
 
         while_schedule = _owned_steps(while_schedule)
         pre_group_schedule = _owned_steps(pre_group_schedule)
+        while_schedule.extend(
+            controller.id
+            for controller in reversed(active_controllers)
+            if controller.id not in while_schedule
+        )
         until_schedule = p_active.schedule(
             [n for n in until_eval_nodes if not _is_elapsed_eval(n)], ops_generic + ops_cstr_hdl
         )
@@ -3036,11 +3055,26 @@ def build_motion_units(
             view = next(g.subjects(MAP.subobject, quantity), None)
             target_quantity = g.value(view, MAP.superobject) if view is not None else quantity
             target = g.value(target_quantity, KC_STAT["of-joint"])
+            agent = g.value(plan.solver, AGN["of-agent"])
+            arm_solver_ids = {
+                p.id(node)
+                for node in g.subjects(AGN["of-agent"], agent)
+                if SLV.SolverWithInputAndOutput in g[node : RDF.type]
+            }
+            arm_solver = next(
+                solver
+                for solver in handler_arm_solvers
+                if solver.id in arm_solver_ids
+            )
+            runtime_solver = next(solver for solver in slv_arm if solver.id == arm_solver.id)
             forwarded_commands.append(
                 ForwardedCommand(
                     f"cmd-fwd-{p.id(plan.controller)}",
                     controller.control_signal,
-                    p.label(target) if target is not None else "",
+                    f"{runtime_solver.runtime_prefix}{p.label(target)}"
+                    if target is not None
+                    else "",
+                    arm_solver.id,
                 )
             )
         when_monitors = [p.monitor_entry(n) for n in when_mon_nodes]
@@ -3256,6 +3290,38 @@ def _path_of_model(g, model_node):
     return str(g.value(model_node, EXEC.path) or "")
 
 
+def _model_mappings(g, model, target_type):
+    """Return (scene target, model entity) mappings of the requested RDF type."""
+    mappings = [
+        (target, str(g.value(mapping, EXEC["model-entity"]) or ""))
+        for mapping in sorted(g.objects(model, EXEC["has-mapping"]), key=str)
+        if (target := g.value(mapping, EXEC.maps)) is not None
+        and target_type in g[target : RDF.type]
+    ]
+    if mappings:
+        return mappings
+    legacy_predicate = {
+        GEOM_ENT.KinematicTree: EXEC["has-kinematic-tree"],
+        GEOM_ENT.RigidBody: EXEC["has-body"],
+    }.get(target_type)
+    if legacy_predicate is None:
+        return []
+    return [
+        (target, str(g.value(model, EXEC["model-entity"]) or ""))
+        for target in sorted(g.objects(model, legacy_predicate), key=str)
+        if target_type in g[target : RDF.type]
+    ]
+
+
+def _mapped_targets(g, model_type, target_type):
+    """All scene targets of a given type mapped by models of model_type."""
+    return {
+        target
+        for model in g.subjects(RDF.type, model_type)
+        for target, _entity in _model_mappings(g, model, target_type)
+    }
+
+
 def _trace_from_graph(g):
     """Read the optional MuJoCo trajectory-trace overlay config from the graph.
 
@@ -3279,15 +3345,15 @@ def _trace_from_graph(g):
 
 
 def _leaf(node):
-    return str(node).rstrip("/").split("/")[-1]
+    return iri_local_name(node)
 
 
 def _body_of(frame):
-    return URIRef(str(frame).rstrip("/").rsplit("/", 1)[0])
+    return iri_parent(frame)
 
 
 def _tree_owns(tree, node):
-    return str(node).startswith(f"{str(tree).rstrip('/')}/")
+    return iri_is_descendant(tree, node)
 
 
 def _kinematic_adjacency(g):
@@ -3345,10 +3411,17 @@ def _fixed_attachments(g, bound_trees):
     adjacency, fixed = _kinematic_adjacency(g)
     if not fixed:
         return {}, None
-    tip = next(g.objects(None, NS_MM_KC_EXT["tip"]), None)
     leaves = [body for body in adjacency if len(adjacency[body]) == 1]
-    from_tip = _distances(adjacency, _body_of(tip)) if tip is not None else {}
-    root = max(leaves, key=lambda body: from_tip.get(body, -1)) if leaves else None
+    tip_distances = [
+        _distances(adjacency, _body_of(tip))
+        for tip in g.objects(None, NS_MM_KC_EXT["tip"])
+    ]
+
+    def distance_from_nearest_tip(body):
+        distances = [distance[body] for distance in tip_distances if body in distance]
+        return min(distances, default=-1)
+
+    root = max(leaves, key=distance_from_nearest_tip) if leaves else None
     from_root = _distances(adjacency, root) if root is not None else {}
 
     def owner(body):
@@ -3361,6 +3434,7 @@ def _fixed_attachments(g, bound_trees):
             None,
         )
 
+    modelled_bodies = _mapped_targets(g, ENV["ObjectModel"], GEOM_ENT.RigidBody)
     attachments = {}
     for frame_a, frame_b in fixed:
         parent_frame, child_frame = (
@@ -3372,7 +3446,7 @@ def _fixed_attachments(g, bound_trees):
         parent_body, child_body = map(_body_of, (parent_frame, child_frame))
         if parent_body == root:
             attachments[child_body] = ("World", "", child_frame, parent_body)
-        elif owner(parent_body) != owner(child_body):
+        elif child_body in modelled_bodies or owner(parent_body) != owner(child_body):
             attachments[child_body] = (
                 "Site",
                 _leaf(parent_frame),
@@ -3391,6 +3465,15 @@ def _is_constraint_aggregate(g, node) -> bool:
 def _agent_assemblies(g, attach_by_body):
     """Resolve model bindings into runtime robot assets, attachments, and chain bounds."""
     adjacency, _fixed = _kinematic_adjacency(g)
+    bound_model_trees = _mapped_targets(g, AGN["AgentModel"], GEOM_ENT.KinematicTree)
+    body_names_by_tree = {
+        tree: {
+            _leaf(body)
+            for body in g.subjects(RDF.type, GEOM_ENT.RigidBody)
+            if _tree_owns(tree, body)
+        }
+        for tree in bound_model_trees
+    }
     serials = sorted(
         (
             (
@@ -3407,15 +3490,16 @@ def _agent_assemblies(g, attach_by_body):
         agent = g.value(modelled, AGN["of-agent"])
         bindings = []
         for model in sorted(g.objects(modelled, AGN["has-agent-model"]), key=str):
-            tree = g.value(model, EXEC["has-kinematic-tree"])
             path = _path_of_model(g, model)
-            if tree is not None and path:
+            for tree, entity in _model_mappings(g, model, GEOM_ENT.KinematicTree):
+                if not path:
+                    continue
                 bindings.append(
                     {
                         "model": model,
                         "tree": tree,
                         "path": path,
-                        "entity": str(g.value(model, EXEC["model-entity"]) or ""),
+                        "entity": entity,
                     }
                 )
         if agent is None or not bindings:
@@ -3445,6 +3529,11 @@ def _agent_assemblies(g, attach_by_body):
         )
         tip_binding = binding_for(tip_frame) or root_binding
         root_body, tip_body = map(_body_of, (root_frame, tip_frame))
+        duplicate_root = sum(
+            _leaf(root_body) in names for names in body_names_by_tree.values()
+        ) > 1
+        runtime_prefix = f"{_leaf(root_binding['tree'])}_" if duplicate_root else ""
+        runtime_root = f"{runtime_prefix}{_leaf(root_body)}"
         path = _body_path(adjacency, root_body, tip_body)
         chain_tip_body = tip_body if root_binding["tree"] == serial_tree else root_body
         if root_binding["tree"] != serial_tree:
@@ -3488,7 +3577,10 @@ def _agent_assemblies(g, attach_by_body):
             root_body, ("World", "", root_frame, None)
         )
         ft_sensors = [
-            {"name": _leaf(sensor), "frame_site": _leaf(frame)}
+            {
+                "name": f"{runtime_prefix}{_leaf(sensor)}",
+                "frame_site": f"{runtime_prefix}{_leaf(frame)}",
+            }
             for sensor in sorted(g.objects(modelled, SOSA.hosts), key=str)
             if SENSORS.ForceTorqueSensor in g[sensor : RDF["type"]]
             and (frame := g.value(sensor, SENSORS.frame)) is not None
@@ -3498,11 +3590,21 @@ def _agent_assemblies(g, attach_by_body):
                 "agent": agent,
                 "ft_sensors": ft_sensors,
                 "path": root_binding["path"],
+                "prefix": runtime_prefix,
+                "trees": [binding["tree"] for binding in bindings],
                 "root_body": root_body,
-                "chain_root": _leaf(root_body),
-                "chain_tip": _leaf(chain_tip_body),
-                "tool_body": _leaf(tip_body) if tip_binding is not root_binding else "",
-                "tcp_site": _leaf(tip_frame) if tip_binding is not root_binding else "",
+                "chain_root": runtime_root,
+                "chain_tip": f"{runtime_prefix}{_leaf(chain_tip_body)}",
+                "tool_body": (
+                    f"{runtime_prefix}{_leaf(tip_body)}"
+                    if tip_binding is not root_binding
+                    else ""
+                ),
+                "tcp_site": (
+                    f"{runtime_prefix}{_leaf(tip_frame)}"
+                    if tip_binding is not root_binding
+                    else ""
+                ),
                 "attach_kind": attach_kind,
                 "attach_name": attach_name,
                 "placement_frame": placement_frame,
@@ -3529,28 +3631,48 @@ def _scene_from_graph(g):
             scale = 0.001 if unit == NS_MM_QUDT_UNIT["MilliSEC"] else 1.0
             scene.timestep_s = float(value.toPython()) * scale
 
-    bound_trees = {
-        tree
-        for model in g.subjects(RDF.type, AGN["AgentModel"])
-        if (tree := g.value(model, EXEC["has-kinematic-tree"])) is not None
-    }
+    bound_trees = _mapped_targets(g, AGN["AgentModel"], GEOM_ENT.KinematicTree)
     attach_by_body, _root = _fixed_attachments(g, bound_trees)
     object_ids_by_body = {
         body: _leaf(obj)
         for modelled in g.subjects(RDF.type, ENV["ModelledObject"])
         if (obj := g.value(modelled, ENV["of-object"])) is not None
-        and (body := g.value(modelled, EXEC["has-body"])) is not None
+        for model in g.objects(modelled, ENV["has-object-model"])
+        for body, _entity in _model_mappings(g, model, GEOM_ENT.RigidBody)
     }
     for body, (kind, name, frame, parent_body) in list(attach_by_body.items()):
         if kind == "Site" and parent_body in object_ids_by_body:
+            parent_frame = iri_child(parent_body, name)
+            reference_frame = next(
+                (
+                    reference
+                    for pose in g.subjects(GEOM_REL.of, parent_frame)
+                    if (reference := g.value(pose, GEOM_REL["with-respect-to"])) is not None
+                    and GEOM_ENT.Frame in g[reference : RDF.type]
+                    and _body_of(reference) == parent_body
+                ),
+                None,
+            )
+            if reference_frame is not None:
+                name = _leaf(reference_frame)
+                frame = parent_frame
             name = f"{object_ids_by_body[parent_body]}_{name}"
         attach_by_body[body] = (kind, name, frame, parent_body)
     for modelled in sorted(g.subjects(RDF.type, ENV["ModelledObject"]), key=str):
         obj = g.value(modelled, ENV["of-object"])
-        body = g.value(modelled, EXEC["has-body"])
-        if obj is None or body is None:
+        mapped = next(
+            (
+                (model, body)
+                for model in sorted(g.objects(modelled, ENV["has-object-model"]), key=str)
+                for body, _entity in _model_mappings(g, model, GEOM_ENT.RigidBody)
+                if _path_of_model(g, model)
+            ),
+            None,
+        )
+        if obj is None or mapped is None:
             continue
-        path = _path_of_model(g, g.value(modelled, ENV["has-object-model"]))
+        model, body = mapped
+        path = _path_of_model(g, model)
         attach_kind, attach_name, placement_frame, _parent_body = attach_by_body.get(
             body, ("World", "", body, None)
         )
@@ -3572,6 +3694,7 @@ def _scene_from_graph(g):
             SceneRobot(
                 id=_leaf(assembly["agent"]),
                 path=assembly["path"],
+                prefix=assembly["prefix"],
                 attach_kind=assembly["attach_kind"],
                 attach_name=assembly["attach_name"],
                 pos=_position_of(g, assembly["placement_frame"]),
@@ -3641,7 +3764,8 @@ def _robot_setups_from_graph(g):
 
     Returns ``(setups_by_node, ordered)`` where ``setups_by_node`` maps each robot's
     abstract agent node (the target of a solver's ``agn:of-agent``) to its setup tuple
-    ``(urdf, chain_root, chain_end, chain_tip, robot_model, tool_body, tcp_site, ft_sensors)``.
+    ``(urdf, chain_root, chain_end, chain_tip, robot_model, tool_body, tcp_site,
+    ft_sensors, runtime_prefix, owned_trees)``.
 
     Chain bodies come from a serial-composition ``geom:KinematicTree``'s
     ``kc-ext:root`` / ``kc-ext:tip`` frames. A scene-dsl frame URI is
@@ -3657,7 +3781,7 @@ def _robot_setups_from_graph(g):
         return ""
 
     setups_by_node, ordered = {}, []
-    bound_trees = set(g.objects(None, EXEC["has-kinematic-tree"]))
+    bound_trees = _mapped_targets(g, AGN["AgentModel"], GEOM_ENT.KinematicTree)
     attach_by_body, _root = _fixed_attachments(g, bound_trees)
     for assembly in _agent_assemblies(g, attach_by_body):
         setup = (
@@ -3669,6 +3793,8 @@ def _robot_setups_from_graph(g):
             assembly["tool_body"],
             assembly["tcp_site"],
             assembly["ft_sensors"],
+            assembly["prefix"],
+            assembly["trees"],
         )
         setups_by_node[assembly["agent"]] = setup
         ordered.append(setup)
@@ -4036,7 +4162,9 @@ def _node_indexes(g, p: Parser):
 # ---------------------------------------------------------------------------
 # Solver sections
 # ---------------------------------------------------------------------------
-def _world_solver_outputs(g, p: Parser, chain_root: str, scene_objects):
+def _world_solver_outputs(
+    g, p: Parser, chain_root: str, runtime_prefix: str, owned_trees, scene_objects
+):
     """Parse runtime observations in the solver's reference frame."""
     object_ids_by_body = {obj.body: obj.id for obj in scene_objects}
     outputs = []
@@ -4047,11 +4175,29 @@ def _world_solver_outputs(g, p: Parser, chain_root: str, scene_objects):
         (RBDYN_COORD.WrenchCoordinate, p.wrench),
     ):
         for node in sorted(g.subjects(RDF.type, type_), key=str):
-            if "/World/world/" not in str(node):
+            scope = p._context_scope(node)
+            if scope is None or scope[1] != "World":
                 continue
+            if type_ == KC_STAT.JointPositionCoordinate:
+                joint = g.value(node, KC_STAT["of-joint"])
+                if joint is None or not any(_tree_owns(tree, joint) for tree in owned_trees):
+                    continue
+            frame_node = g.value(node, GEOM_COORD["as-seen-by"])
+            if frame_node is None:
+                _of, _wrt, frame_node = p._derived_reference_frames(node)
+            if frame_node is not None:
+                frame_body = _body_of(frame_node)
+                frame_tree = iri_parent(frame_body)
+                runtime_frame = _leaf(frame_body)
+                if frame_tree in owned_trees:
+                    runtime_frame = f"{runtime_prefix}{_leaf(frame_body)}"
+                if runtime_frame != chain_root:
+                    continue
             output = parse(node)
+            if type_ == KC_STAT.JointPositionCoordinate:
+                output = replace(output, joint_name=f"{runtime_prefix}{output.joint_name}")
             frame = getattr(output, "as_seen_by", None)
-            if frame is not None and frame.id != chain_root:
+            if frame_node is None and frame is not None and frame.id != chain_root:
                 continue
             of = getattr(output, "of", None)
             if getattr(of, "id", None) in object_ids_by_body:
@@ -4147,9 +4293,21 @@ def _solver_sections(
             solver.tool_body,
             solver.tcp_site,
             solver.ft_sensors,
+            solver.runtime_prefix,
+            solver.owned_trees,
         ) = setups_by_node.get(robot_node, default_setup)
         solver.output = _dedupe_by_id(
-            [*solver.output, *_world_solver_outputs(g, p, solver.chain_root, scene_objects)]
+            [
+                *solver.output,
+                *_world_solver_outputs(
+                    g,
+                    p,
+                    solver.chain_root,
+                    solver.runtime_prefix,
+                    solver.owned_trees,
+                    scene_objects,
+                ),
+            ]
         )
         _mark_acceleration_constraint_frames(solver)
         slv_arm.append(solver)
@@ -4207,9 +4365,9 @@ def _closure_owner_map(g, p: Parser, closures) -> dict[str, str]:
         for obj in g.objects(node, None):
             if not isinstance(obj, URIRef):
                 continue
-            segments = str(obj).rstrip("/").split("/")
-            if len(segments) >= 4 and segments[-3] == "Spec" and segments[-2] == "spec":
-                owners.add(get_valid_var_name(segments[-4]))
+            scope = p._context_scope(obj)
+            if scope is not None and scope[1] == "Spec":
+                owners.add(get_valid_var_name(scope[0]))
         if len(owners) == 1:
             owner_map[closure_id] = owners.pop()
     return owner_map
@@ -4227,10 +4385,10 @@ def _snapshot_owner_map(g, p: Parser) -> dict[str, str]:
         output_node = g.value(snap_node, SNAP.output)
         if output_node is None:
             continue
-        segments = str(output_node).rstrip("/").split("/")
-        if len(segments) < 4:
+        scope = p._context_scope(output_node)
+        if scope is None:
             continue
-        owner_map[p.id(output_node)] = get_valid_var_name(segments[-4])
+        owner_map[p.id(output_node)] = get_valid_var_name(scope[0])
     return owner_map
 
 
@@ -4246,10 +4404,10 @@ def _snapshot_trigger_map(g, p: Parser) -> dict[tuple[str, str], str]:
         output_node = g.value(snap_node, SNAP.output)
         if trigger_node is None or output_node is None:
             continue
-        segments = str(output_node).rstrip("/").split("/")
-        if len(segments) < 4:
+        scope = p._context_scope(output_node)
+        if scope is None:
             continue
-        owner = get_valid_var_name(segments[-4])
+        owner = get_valid_var_name(scope[0])
         trigger_map[(owner, p.id(output_node))] = get_valid_var_name(_leaf(trigger_node)).upper()
     return trigger_map
 
@@ -4651,6 +4809,10 @@ def _annotate_runtime_robots(arm_solvers, motions, backend: str) -> None:
                 solver, "runtime_id", _field(canonical, "runtime_id") or _field(solver, "id", "")
             )
             _set_field(solver, "runtime_owner", _field(canonical, "runtime_owner", True))
+        for command in _field(motion, "forwarded_commands", []):
+            canonical = solvers_by_id.get(_field(command, "robot_id"))
+            if canonical is not None:
+                _set_field(command, "robot_id", _field(canonical, "runtime_id"))
 
 
 def _add_group_type_flags(groups: list) -> list:
@@ -5314,7 +5476,7 @@ def _fsm_from_graph(g) -> dict | None:
     description_node = g.value(fsm_ref, FSM["description"])
     # Event/state IRIs share the FSM node's parent path (…/<model>/fsm/); is_fsm_event
     # matches monitor event IRIs against it.
-    namespace_uri = str(fsm_ref).rsplit("/", 1)[0] + "/"
+    namespace_uri = str(iri_namespace(iri_parent(fsm_ref)))
     return {
         "name": str(g.value(fsm_ref, FSM["name"])),
         "description": str(description_node) if description_node is not None else None,
@@ -5348,7 +5510,7 @@ def is_fsm_event(monitor, fsm_ns_uri: str | None) -> bool:
     return bool(
         fsm_ns_uri
         and _field(monitor, "is_edge_triggered")
-        and (_field(monitor, "event_uri") or "").startswith(fsm_ns_uri)
+        and iri_is_descendant(fsm_ns_uri, _field(monitor, "event_uri") or "")
     )
 
 
@@ -5479,7 +5641,11 @@ def generate_ir(manifest_path):
     p = Parser(g)
     node_by_id, id_nodes = _node_indexes(g, p)
     setups_by_node, ordered_setups = _robot_setups_from_graph(g)
-    default_setup = ordered_setups[0] if ordered_setups else ("", "", "", "", "", "", "", [])
+    default_setup = (
+        ordered_setups[0]
+        if ordered_setups
+        else ("", "", "", "", "", "", "", [], "", [])
+    )
     # Derive backend + FSM up front: both are pure functions of the graph and are inputs to
     # downstream construction (solver validation, runtime-robot annotation, motion FSM wiring).
     backend = _backend_from_graph(g)

@@ -447,6 +447,11 @@ inline void warn_produce_event_not_implemented(std::string_view event_id) {
     std::cerr \<\< "produce_event(" \<\< event_id \<\< ") not implemented yet\\n";
 }
 
+inline bool runtime_name_matches(std::string_view actual, std::string_view target) {
+    return actual == target ||
+           (actual.size() > target.size() && actual.substr(actual.size() - target.size()) == target);
+}
+
 inline unsigned int find_joint_index(const KDL::Chain &chain, std::string_view joint_name) {
     unsigned int idx = 0;
     for (unsigned int i = 0; i \< chain.getNrOfSegments(); ++i) {
@@ -454,7 +459,7 @@ inline unsigned int find_joint_index(const KDL::Chain &chain, std::string_view j
         if (joint.getType() == KDL::Joint::None) {
             continue;
         }
-        if (joint.getName() == joint_name) {
+        if (runtime_name_matches(joint.getName(), joint_name)) {
             return idx;
         }
         ++idx;
@@ -462,13 +467,19 @@ inline unsigned int find_joint_index(const KDL::Chain &chain, std::string_view j
     throw std::runtime_error("KDL joint not found: " + std::string(joint_name));
 }
 
-inline unsigned int find_segment_index(const KDL::Chain &chain, std::string_view model_name) {
+inline unsigned int find_segment_index(
+        const KDL::Chain &chain,
+        std::string_view model_name,
+        std::string_view chain_root = {}) {
     std::string target(model_name);
     if (target.rfind("frame_", 0) == 0) {
         target.replace(0, 6, "link_");
     }
+    if (runtime_name_matches(chain_root, target)) {
+        return 0;
+    }
     for (unsigned int i = 0; i \< chain.getNrOfSegments(); ++i) {
-        if (chain.getSegment(i).getName() == target) {
+        if (runtime_name_matches(chain.getSegment(i).getName(), target)) {
             return i + 1;
         }
     }

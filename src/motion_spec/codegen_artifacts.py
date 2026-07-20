@@ -438,10 +438,12 @@ def build_frame_log_proto_fields(schema: dict) -> dict:
     spatial = schema.get("spatial") or {"poses": [], "twists": [], "wrenches": []}
     used: set[str] = set()
     fields: dict[str, list] = {}
+    next_number = 1
 
     def _pool_slots(category: str) -> None:
         """Emit slot-stable proto fields (e.g. constraint_0) for a fixed-size pool category."""
-        base = PROTO_FIELD_BASES[category]
+        nonlocal next_number
+        base = max(PROTO_FIELD_BASES[category], next_number)
         singular = category[:-1]
         fields[category] = []
         for idx in range(pools.get(category, 0)):
@@ -454,10 +456,12 @@ def build_frame_log_proto_fields(schema: dict) -> dict:
                     "number": base + idx,
                 }
             )
+        next_number = base + len(fields[category])
 
     def _semantic_slots(category: str, entries: list) -> None:
         """Emit proto fields named from each entry's schema id (quantities and spatial slots)."""
-        base = PROTO_FIELD_BASES[category]
+        nonlocal next_number
+        base = max(PROTO_FIELD_BASES[category], next_number)
         singular = category[:-1]
         fields[category] = []
         for entry in sorted(entries, key=lambda e: e.get("index", 0)):
@@ -466,6 +470,7 @@ def build_frame_log_proto_fields(schema: dict) -> dict:
             fields[category].append(
                 {"index": idx, "id": entry.get("id"), "name": name, "number": base + idx}
             )
+        next_number = max((entry["number"] for entry in fields[category]), default=base - 1) + 1
 
     _pool_slots("constraints")
     _pool_slots("monitors")

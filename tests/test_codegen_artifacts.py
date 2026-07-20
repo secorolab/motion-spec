@@ -264,6 +264,19 @@ def test_frame_log_proto_field_naming_and_numbering() -> None:
     assert len(all_names) == len(set(all_names))
 
 
+def test_frame_log_proto_fields_advance_past_large_categories() -> None:
+    schema = {
+        "pools": {"constraints": 0, "monitors": 0, "quantities": 1001, "triggers": 1},
+        "quantities": [{"index": index, "id": f"q_{index}"} for index in range(1001)],
+        "spatial": {"poses": [], "twists": [], "wrenches": []},
+    }
+
+    fields = build_frame_log_proto_fields(schema)["fields"]
+
+    assert fields["quantities"][-1]["number"] == 4000
+    assert fields["triggers"][0]["number"] == 4001
+
+
 def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch) -> None:
     ir = _sample_ir()
     ir["unique_motions"][0]["until_monitors"][0]["error"] = {

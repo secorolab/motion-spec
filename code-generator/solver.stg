@@ -43,7 +43,7 @@ solver-state-struct-extra-mj_kdl(solver) ::= <<
 solver-state-struct-extra-robif2b(solver) ::= <<
 >>
 
-assign-constraint-force(constraint, solver_state, column) ::= <<
+assign-constraint-force(constraint, solver_state, column, chain_root) ::= <<
 <if(constraint.direction)>
 <if(constraint.base_aligned)>
     state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::X), <column>) = shared.<constraint.direction.id>.x();
@@ -56,7 +56,7 @@ assign-constraint-force(constraint, solver_state, column) ::= <<
         alpha_fk_<solver_state>_<column>.JntToCart(
             state.<solver_state>.q,
             alpha_frame_<solver_state>_<column>,
-            motion_spec::runtime::find_segment_index(*robot.<solver_state>.chain, "<constraint.as_seen_by.id>"));
+            motion_spec::runtime::find_segment_index(*robot.<solver_state>.chain, "<constraint.as_seen_by.id>", "<chain_root>"));
         const KDL::Vector alpha_axis_<solver_state>_<column> =
             alpha_frame_<solver_state>_<column>.M * shared.<constraint.direction.id>;
         state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::X), <column>) = alpha_axis_<solver_state>_<column>[0];
@@ -74,7 +74,7 @@ assign-constraint-force(constraint, solver_state, column) ::= <<
         alpha_fk_<solver_state>_<column>.JntToCart(
             state.<solver_state>.q,
             alpha_frame_<solver_state>_<column>,
-            motion_spec::runtime::find_segment_index(*robot.<solver_state>.chain, "<constraint.as_seen_by.id>"));
+            motion_spec::runtime::find_segment_index(*robot.<solver_state>.chain, "<constraint.as_seen_by.id>", "<chain_root>"));
         const KDL::Vector alpha_axis_<solver_state>_<column> =
             alpha_frame_<solver_state>_<column>.M * KDL::Vector(<axis-to-vector.(constraint.axis)>);
         state.<solver_state>.f_cstr(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(constraint.subspace)>, motion_spec::runtime::Axis::X), <column>) = alpha_axis_<solver_state>_<column>[0];
@@ -166,7 +166,7 @@ solver-output-Pose-robif2b(solver, out) ::= <<
     fk.JntToCart(
         state.<solver.id>.q,
         shared.<out.id>,
-        motion_spec::runtime::find_segment_index(*robot.<solver.id>.chain, "<out.of.id>"));
+        motion_spec::runtime::find_segment_index(*robot.<solver.id>.chain, "<out.of.id>", "<solver.chain_root>"));
 }
 >>
 
@@ -193,7 +193,7 @@ solver-output-Pose-mj_kdl(solver, out) ::= <<
     fk.JntToCart(
         state.<solver.id>.q,
         shared.<out.id>,
-        motion_spec::runtime::find_segment_index(*robot.<solver.id>.chain, "<if(out.of.id)><out.of.id><else><solver.chain_end><endif>"));
+        motion_spec::runtime::find_segment_index(*robot.<solver.id>.chain, "<if(out.of.id)><out.of.id><else><solver.chain_end><endif>", "<solver.chain_root>"));
 <endif>
 }
 >>
@@ -205,7 +205,7 @@ solver-output-VelocityTwist(solver, out, backend) ::= <<
     fk.JntToCart(
         q_qd_<solver.id>,
         tmp,
-        motion_spec::runtime::find_segment_index(*robot.<solver.id>.chain, "<out.of.id>"));
+        motion_spec::runtime::find_segment_index(*robot.<solver.id>.chain, "<out.of.id>", "<solver.chain_root>"));
     shared.<out.id> = tmp.deriv();
 }
 >>
@@ -271,7 +271,7 @@ solver-output(solver, out, backend) ::= <<
 solver-run(solver, motion_driver, backend) ::= <<
     KDL::SetToZero(state.<solver.id>.f_cstr);
 <if(motion_driver.acceleration_constraint)>
-<motion_driver.acceleration_constraint:{c | <assign-constraint-force(c, solver.id, i0)>}; separator="\n">
+<motion_driver.acceleration_constraint:{c | <assign-constraint-force(c, solver.id, i0, solver.chain_root)>}; separator="\n">
 <endif>
     KDL::SetToZero(state.<solver.id>.tau_ff);
 <motion_driver.joint_force:{jf |     state.<solver.id>.tau_ff(motion_spec::runtime::find_joint_index(*robot.<solver.id>.chain, "<jf.joint_name>")) += shared.<jf.force_id>;}; separator="\n">
@@ -409,7 +409,7 @@ solver-run-finalize-robif2b(solver, motion_driver) ::= <<
 >>
 
 solver-assign-f-ext-modular(solver, force) ::= <<
-state.<solver.id>.f_ext[motion_spec::runtime::find_segment_index(*robot.<solver.id>.chain, "<force.attached_to.id>") - 1] += shared.<force.force.id>;
+state.<solver.id>.f_ext[motion_spec::runtime::find_segment_index(*robot.<solver.id>.chain, "<force.attached_to.id>", "<solver.chain_root>") - 1] += shared.<force.force.id>;
 >>
 
 solver-stage-output(solver, backend) ::= <<

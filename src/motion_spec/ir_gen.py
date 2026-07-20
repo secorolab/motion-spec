@@ -20,6 +20,7 @@ from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from functools import wraps
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import rdflib
 from rdf_utils.naming import get_valid_var_name
@@ -27,15 +28,11 @@ from rdf_utils.models.vocab import URI_KC_TYPE_SERIAL
 from rdf_utils.namespace import NS_MM_KC_EXT, NS_MM_QUDT_QTY, NS_MM_QUDT_UNIT
 from rdf_utils.resolver import IriToFileResolver, install_resolver
 from rdf_utils.uri import (
-    iri_child,
     iri_is_descendant,
-    iri_local_name,
-    iri_namespace,
     iri_parent,
-    iri_path_segments,
 )
 from rdflib import URIRef
-from rdflib.namespace import RDF
+from rdflib.namespace import RDF, split_uri
 
 # fmt: off
 from motion_spec.entities import (
@@ -72,7 +69,7 @@ from motion_spec.namespace import (
 def _term_name(node) -> str | None:
     if node is None:
         return None
-    return iri_local_name(node)
+    return split_uri(str(node))[1]
 
 
 def _authored_controller_axes(g) -> dict[URIRef, tuple[AccelerationAxis, ...]]:
@@ -1182,7 +1179,7 @@ class Parser:
     @staticmethod
     def _context_scope(node) -> tuple[str, str, tuple[str, ...]] | None:
         """Return the owner, section and member path of a context quantity IRI."""
-        parts = iri_path_segments(node)
+        parts = tuple(part for part in urlsplit(str(node)).path.split("/") if part)
         for index in range(1, len(parts) - 2):
             if parts[index : index + 2] in (("Spec", "spec"), ("World", "world")):
                 return parts[index - 1], parts[index], parts[index + 2 :]
@@ -3345,7 +3342,7 @@ def _trace_from_graph(g):
 
 
 def _leaf(node):
-    return iri_local_name(node)
+    return split_uri(str(node))[1]
 
 
 def _body_of(frame):
@@ -3642,7 +3639,7 @@ def _scene_from_graph(g):
     }
     for body, (kind, name, frame, parent_body) in list(attach_by_body.items()):
         if kind == "Site" and parent_body in object_ids_by_body:
-            parent_frame = iri_child(parent_body, name)
+            parent_frame = rdflib.Namespace(f"{parent_body}/")[name]
             reference_frame = next(
                 (
                     reference
@@ -5476,7 +5473,7 @@ def _fsm_from_graph(g) -> dict | None:
     description_node = g.value(fsm_ref, FSM["description"])
     # Event/state IRIs share the FSM node's parent path (…/<model>/fsm/); is_fsm_event
     # matches monitor event IRIs against it.
-    namespace_uri = str(iri_namespace(iri_parent(fsm_ref)))
+    namespace_uri = str(rdflib.Namespace(f"{iri_parent(fsm_ref)}/"))
     return {
         "name": str(g.value(fsm_ref, FSM["name"])),
         "description": str(description_node) if description_node is not None else None,

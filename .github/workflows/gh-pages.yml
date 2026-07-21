@@ -2,7 +2,9 @@ name: Build and deploy documentation
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
   workflow_dispatch:
 
 permissions:
@@ -19,32 +21,38 @@ jobs:
     name: Build documentation
     runs-on: ubuntu-latest
     steps:
-      - name: Install dependencies
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Graphviz
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-sphinx python3-sphinx-rtd-theme
-      - name: Checkout motion-spec-ral
-        uses: actions/checkout@v4.2.0
+          sudo apt-get install -y graphviz
+      - uses: actions/setup-python@v5
         with:
-          path: motion-spec-ral
+          python-version: "3.12"
+      # conf.py imports nothing from motion_spec, so the package itself is not built.
+      - name: Install documentation dependencies
+        run: pip install sphinx myst-parser furo
       - name: Build documentation
-        run: |
-          sphinx-build -M html ${{ github.workspace }}/motion-spec-ral/docs/sphinx/source ${{ github.workspace }}/motion-spec-ral/build
+        run: sphinx-build -W -b html docs/sphinx/source docs/_build/html
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Upload artifacts
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ${{ github.workspace }}/motion-spec-ral/build/html
+          path: docs/_build/html
           retention-days: 1
 
+  # Build on every branch and PR so failures surface early; publish only from
+  # main or dev.
   deploy:
     name: Deploy documentation
+    needs: build
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
-    needs: build
     steps:
       - name: Deploy to GitHub Pages
         id: deployment

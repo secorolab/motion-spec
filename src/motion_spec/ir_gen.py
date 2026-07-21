@@ -56,9 +56,9 @@ from motion_spec.derive_solver import AccelerationAxis, SolverIdFactory, acceler
 # fmt: off
 from motion_spec.namespace import (
     AGN, ALGO_EXT, APP, CSTR, CSTR_EXT, CSTR_HDL, CSTR_HDL_EXT, ENV, EXEC, GEOM_COORD,
-    GEOM_ENT, GEOM_OP, GEOM_REL, KC, KC_STAT, MAP, MAP_EXT, MOT, QUDT_QKIND,
+    GEOM_ENT, GEOM_OP, GEOM_OP_EXT, GEOM_PATH, GEOM_REL, KC, KC_STAT, MAP, MAP_EXT, MOT, QUDT_QKIND,
     QUDT_SCHEMA, RBDYN_COORD, RBDYN_ENT, RBDYN_OP, SLV, SLV_EXT,
-    SENSORS, SNAP, SOSA, TRAJ,
+    SENSORS, SOSA,
 )
 # fmt: on
 
@@ -626,6 +626,18 @@ def parse_argument(g, closure_id, argument, to_id, resolve_value=False):
     return unique
 
 
+def _reference_inputs(g, node):
+    """Inputs a referenced data structure contributes to whoever reads it.
+
+    A path is geometry: it has parameters but produces nothing, so it can never be found as
+    a producer by the output-to-input walk. Its parameters are inputs of the operator that
+    traverses it, and are yielded here so the walk reaches them.
+    """
+    if not g[node : RDF["type"] : GEOM_PATH.Path]:
+        return ()
+    return tuple(obj for pred, obj in g.predicate_objects(node) if pred != RDF["type"])
+
+
 @dataclass
 class Operator:
     """A schedulable RDF computation mapping graph inputs/outputs/parameters to a closure and
@@ -658,6 +670,7 @@ class Operator:
         for in_ in self.input:
             for data_in in g.objects(operator_id, in_):
                 data_structures.add(data_in)
+                data_structures.update(_reference_inputs(g, data_in))
 
         return data_structures
 
@@ -686,6 +699,7 @@ class Operator:
                 for in_ in self.input:
                     for data_in in g.objects(call, in_):
                         data_structures.add(data_in)
+                        data_structures.update(_reference_inputs(g, data_in))
                         has_any_input = True
 
                 if has_any_input:
@@ -715,6 +729,7 @@ class Specification:
         for in_ in self.input:
             for data_in in g.objects(operator_id, in_):
                 data_structures.add(data_in)
+                data_structures.update(_reference_inputs(g, data_in))
 
         return data_structures
 
@@ -914,6 +929,50 @@ def _op_output_preds(op):
     return set(op.output)
 
 
+# A path is geometry: data with no output, so it is never found by the output-to-input walk
+# and yields no closure of its own. The evaluator that traverses it is the computation, and
+# folds the path's geometry into its call.
+ops_path = [
+    Specification(
+        type_=GEOM_PATH["LinearPath"],
+        input=[GEOM_PATH["start"], GEOM_PATH["goal"]],
+        output=[],
+    ),
+    Specification(
+        type_=GEOM_PATH["Circle"],
+        input=[GEOM_PATH["start"], GEOM_PATH["center"], GEOM_PATH["plane-normal"]],
+        output=[],
+    ),
+    Specification(
+        type_=GEOM_PATH["Arc"],
+        input=[
+            GEOM_PATH["start"],
+            GEOM_PATH["end"],
+            GEOM_PATH["amplitude"],
+            GEOM_PATH["plane-normal"],
+        ],
+        output=[],
+    ),
+    Specification(
+        type_=GEOM_PATH["Helix"],
+        input=[
+            GEOM_PATH["start"],
+            GEOM_PATH["center"],
+            GEOM_PATH["axis"],
+            GEOM_PATH["pitch"],
+            GEOM_PATH["revolutions"],
+        ],
+        output=[],
+    ),
+    Specification(
+        type_=GEOM_PATH["Figure8"],
+        input=[GEOM_PATH["anchor"], GEOM_PATH["radius"], GEOM_PATH["plane-normal"]],
+        output=[],
+        parameters=[GEOM_PATH["form"]],
+    ),
+]
+
+
 ops_generic = [
     Operator(
         type_=GEOM_OP["RotateDirectionDistalToProximalWithPose"],
@@ -956,7 +1015,7 @@ ops_generic = [
     ),
     Operator(
         type_=ALGO_EXT.Addition,
-        input=[ALGO_EXT["in1"], ALGO_EXT["in2"]],
+        input=[ALGO_EXT["in"]],
         output=[ALGO_EXT.out],
     ),
     Operator(
@@ -980,79 +1039,35 @@ ops_generic = [
         output=[RBDYN_OP["wrench"]],
     ),
     Specification(type_=MAP["View"], input=[MAP["superobject"]], output=[MAP["subobject"]]),
+    *ops_path,
     Operator(
-        type_=TRAJ.CartesianPoseInterpolation,
-        input=[TRAJ.start, TRAJ.goal, TRAJ["path-parameter"]],
-        output=[TRAJ["trajectory"]],
-        parameters=[TRAJ["profile"]],
+        type_=GEOM_OP_EXT.PathEvaluator,
+        input=[GEOM_OP_EXT.path, GEOM_OP_EXT["path-parameter"]],
+        output=[GEOM_OP["out"]],
+        parameters=[GEOM_OP_EXT["easing"]],
     ),
     Operator(
-        type_=TRAJ["VelocityProfile"],
+        type_=ALGO_EXT["VelocityProfile"],
         input=[
-            TRAJ["goal"],
-            TRAJ["start"],
-            TRAJ["measured-velocity"],
-            TRAJ["max-velocity"],
-            TRAJ["max-acceleration"],
-            TRAJ["max-jerk"],
+            ALGO_EXT["target"],
+            ALGO_EXT["in"],
+            ALGO_EXT["maximum-velocity"],
+            ALGO_EXT["maximum-acceleration"],
+            ALGO_EXT["maximum-jerk"],
         ],
-        output=[TRAJ["reference"]],
-        parameters=[TRAJ["shape"]],
+        output=[ALGO_EXT["out"]],
+        parameters=[ALGO_EXT["shape"]],
     ),
     Operator(
-        type_=CSTR_HDL_EXT["Admittance"],
-        input=[CSTR_HDL_EXT["force"]],
-        output=[TRAJ["reference"]],
+        type_=ALGO_EXT["Admittance"],
+        input=[ALGO_EXT["in"]],
+        output=[ALGO_EXT["out"]],
         parameters=[
-            CSTR_HDL_EXT["mass"],
-            CSTR_HDL_EXT["damping"],
-            CSTR_HDL_EXT["stiffness"],
+            ALGO_EXT["mass"],
+            ALGO_EXT["damping"],
+            ALGO_EXT["stiffness"],
             CSTR_HDL["maximum-velocity"],
         ],
-    ),
-    Operator(
-        type_=TRAJ["Circle"],
-        input=[
-            TRAJ.start,
-            TRAJ.center,
-            TRAJ["plane-normal"],
-            TRAJ["path-parameter"],
-        ],
-        output=[TRAJ["trajectory"]],
-    ),
-    Operator(
-        type_=TRAJ["Arc"],
-        input=[
-            TRAJ.start,
-            TRAJ.end,
-            TRAJ.amplitude,
-            TRAJ["plane-normal"],
-            TRAJ["path-parameter"],
-        ],
-        output=[TRAJ["trajectory"]],
-    ),
-    Operator(
-        type_=TRAJ["Helix"],
-        input=[
-            TRAJ["start"],
-            TRAJ["center"],
-            TRAJ["axis"],
-            TRAJ["pitch"],
-            TRAJ["revolutions"],
-            TRAJ["path-parameter"],
-        ],
-        output=[TRAJ["trajectory"]],
-    ),
-    Operator(
-        type_=TRAJ["Figure8"],
-        input=[
-            TRAJ.anchor,
-            TRAJ.radius,
-            TRAJ["plane-normal"],
-            TRAJ["path-parameter"],
-        ],
-        output=[TRAJ["trajectory"]],
-        parameters=[TRAJ["form"]],
     ),
 ]
 
@@ -1680,8 +1695,8 @@ class Parser:
         """Derive a reference value's frames from its RDF use or snapshot source."""
         source = next(
             (
-                self.g.value(snapshot, SNAP["snapshot-of"])
-                for snapshot in self.g.subjects(SNAP["output"], id_)
+                self.g.value(snapshot, ALGO_EXT["in"])
+                for snapshot in self.g.subjects(ALGO_EXT["out"], id_)
             ),
             None,
         )
@@ -1950,9 +1965,9 @@ class Parser:
             and GEOM_COORD["OrientationCoordinate"] in self.g[id_ : RDF["type"]]
         ):
             return self.orientation(id_)
-        if TRAJ["Trajectory"] in self.g[id_ : RDF["type"]]:
+        if CSTR_HDL_EXT["SetpointGenerator"] in self.g[id_ : RDF["type"]]:
             value_kind_node = next(
-                (k for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]] if k != TRAJ.Trajectory),
+                (k for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]] if k != CSTR_HDL_EXT.SetpointGenerator),
                 None,
             )
             provenance = self.quantity_provenance(id_)
@@ -2003,12 +2018,16 @@ class Parser:
         # Provenance(authored, snapshot), mutually exclusive: snapshot wins (mirrors old roles() elif).
         # authored == carries an authored value/coordinate and is not a runtime snapshot.
         """Parse a quantity's Provenance (authored / snapshot) at node."""
-        snapshot = SNAP.Snapshot in self.g[id_ : RDF["type"]]
+        snapshot = ALGO_EXT.Snapshot in self.g[id_ : RDF["type"]]
         authored = (not snapshot) and self._is_authored(id_)
         return Provenance(authored=authored, snapshot=snapshot)
 
     def _is_authored(self, id_):
         """True when a quantity's value was authored by the user (not computed)."""
+        # A path parameter carries a value only as its starting point on the curve; the
+        # traversal drives it every tick, so the value is not the user's.
+        if (None, GEOM_OP_EXT["path-parameter"], id_) in self.g:
+            return False
         if (id_, QUDT_SCHEMA["value"], None) in self.g:
             return True
         if (id_, CSTR["reference-value"], None) in self.g:
@@ -2139,6 +2158,24 @@ class Parser:
 
         return _dedupe_by_id(data_structures)
 
+    def _path_fields(self, path_node):
+        """The path's geometry, as fields of the evaluator call that traverses it.
+
+        Traversal is one computation: the shape decides the maths, so the closure takes the
+        path's type and carries its parameters directly.
+        """
+        spec = next((s for s in ops_path if s.type_ in self.g[path_node : RDF["type"]]), None)
+        if spec is None:
+            return {}
+        fields = {"type": self.id(spec.type_)}
+        for input_ in spec.input:
+            fields[self.id(input_)] = parse_argument(self.g, path_node, input_, self.id)
+        for param in spec.parameters:
+            fields[self.id(param)] = parse_argument(
+                self.g, path_node, param, self.id, resolve_value=True
+            )
+        return fields
+
     def closures(self, operators):
         """Build the closure for each call of the given operators."""
         closures = {}
@@ -2150,19 +2187,14 @@ class Parser:
                     else None
                 )
                 if cl:
-                    if operator.type_ in {
-                        TRAJ.CartesianPoseInterpolation,
-                        TRAJ.Circle,
-                        TRAJ.Arc,
-                        TRAJ.Helix,
-                        TRAJ.Figure8,
-                    }:
-                        trajectory = self.g.value(closure, TRAJ.trajectory)
-                        reference = self.g.value(trajectory, TRAJ.reference)
+                    if operator.type_ == GEOM_OP_EXT.PathEvaluator:
+                        # The evaluator's out port is the pose setpoint the motion tracks.
+                        reference = self.g.value(closure, GEOM_OP.out)
                         if reference is not None:
                             cl["trajectory"] = self.id(reference)
-                    if operator.type_ in {TRAJ.VelocityProfile, CSTR_HDL_EXT.Admittance}:
-                        reference = self.g.value(closure, TRAJ.reference)
+                        cl.update(self._path_fields(self.g.value(closure, GEOM_OP_EXT.path)))
+                    if operator.type_ in {ALGO_EXT.VelocityProfile, ALGO_EXT.Admittance}:
+                        reference = self.g.value(closure, ALGO_EXT.out)
                         constraint = next(
                             self.g.subjects(CSTR["reference-value"], reference), None
                         )
@@ -2178,10 +2210,11 @@ class Parser:
                             None,
                         )
                         cl["controller"] = self.id(controller)
-                        if operator.type_ == TRAJ.VelocityProfile:
-                            cl["measured"] = cl.pop("start")
-                        else:
-                            cl["max_velocity"] = cl.pop("maximum_velocity")
+                        if operator.type_ == ALGO_EXT.VelocityProfile:
+                            # The profile starts from the constraint's own quantity and
+                            # drives it to the target.
+                            cl["measured"] = self.id(self.g.value(constraint, CSTR.quantity))
+                            cl["goal"] = cl.pop("target")
                     closures[self.id(closure)] = cl
 
         return closures
@@ -2551,8 +2584,8 @@ _CLOSURE_OUTPUT_FIELDS = {
     "RotateWrenchToProximalWithPose": "to",
     "TransformWrenchToProximal": "to",
     "WrenchFromPositionDirectionAndMagnitude": "wrench",
-    "VelocityProfile": "reference",
-    "Admittance": "reference",
+    "VelocityProfile": "out",
+    "Admittance": "out",
 }
 
 
@@ -2964,8 +2997,7 @@ def build_motion_units(
             reference = g.value(plan.constraint, CSTR["reference-value"])
             reference_view = next(g.subjects(MAP.subobject, reference), None)
             reference_pose = g.value(reference_view, MAP.superobject)
-            trajectory = next(g.subjects(TRAJ.reference, reference_pose), None)
-            interpolation = next(g.subjects(TRAJ.trajectory, trajectory), None)
+            interpolation = next(g.subjects(GEOM_OP.out, reference_pose), None)
             if interpolation is not None:
                 for step in p_active.schedule([interpolation], ops_generic + ops_cstr_hdl):
                     if step not in while_schedule:
@@ -3187,8 +3219,10 @@ def _filter_shared_data(data_structures, schedule, closures, view_map=None, fk_o
     for c in closures.values():
         if isinstance(c, dict):
             for v in c.values():
-                if isinstance(v, str):
-                    referenced.add(v)
+                # An n-ary port (algo-ext:in) arrives as a list of operand ids.
+                for item in v if isinstance(v, list) else [v]:
+                    if isinstance(item, str):
+                        referenced.add(item)
     if view_map:
         for view in view_map.values():
             so = getattr(view, "superobject", None)
@@ -4335,9 +4369,9 @@ def _assign_monitor_event_indexes(handlers) -> None:
 def _snapshot_source_map(g, p: Parser) -> dict[str, str]:
     """Map each snapshot output to its source quantity."""
     snapshot_source_map: dict[str, str] = {}
-    for snap_node in g.subjects(RDF.type, SNAP.Snapshot):
-        source_node = g.value(snap_node, SNAP["snapshot-of"])
-        output_node = g.value(snap_node, SNAP.output)
+    for snap_node in g.subjects(RDF.type, ALGO_EXT.Snapshot):
+        source_node = g.value(snap_node, ALGO_EXT["in"])
+        output_node = g.value(snap_node, ALGO_EXT.out)
         if source_node is not None and output_node is not None:
             snapshot_source_map[p.id(output_node)] = p.id(source_node)
     return snapshot_source_map
@@ -4378,8 +4412,8 @@ def _snapshot_owner_map(g, p: Parser) -> dict[str, str]:
     motion segment of the quantity's URI: <app>/<motion>/Spec/spec/<name>.
     """
     owner_map: dict[str, str] = {}
-    for snap_node in g.subjects(RDF.type, SNAP.Snapshot):
-        output_node = g.value(snap_node, SNAP.output)
+    for snap_node in g.subjects(RDF.type, ALGO_EXT.Snapshot):
+        output_node = g.value(snap_node, ALGO_EXT.out)
         if output_node is None:
             continue
         scope = p._context_scope(output_node)
@@ -4396,9 +4430,9 @@ def _snapshot_trigger_map(g, p: Parser) -> dict[tuple[str, str], str]:
     owner is the motion segment of the quantity's URI: <app>/<motion>/Spec/spec/<name>.
     """
     trigger_map: dict[tuple[str, str], str] = {}
-    for snap_node in g.subjects(RDF.type, SNAP.Snapshot):
-        trigger_node = g.value(snap_node, SNAP["trigger"])
-        output_node = g.value(snap_node, SNAP.output)
+    for snap_node in g.subjects(RDF.type, ALGO_EXT.Snapshot):
+        trigger_node = g.value(snap_node, ALGO_EXT["trigger"])
+        output_node = g.value(snap_node, ALGO_EXT.out)
         if trigger_node is None or output_node is None:
             continue
         scope = p._context_scope(output_node)
@@ -5182,9 +5216,9 @@ def build_pose_components(views: dict, data: list) -> dict:
 
 
 def resolve_lerp_closures(closures: dict, pose_components: dict) -> None:
-    """Fold each Cartesian interpolation goal into components or a shared-signal ref."""
+    """Fold each linear-path goal into components or a shared-signal ref."""
     for closure in closures.values():
-        if closure.get("type") != "CartesianPoseInterpolation":
+        if closure.get("type") != "LinearPath":
             continue
         goal = closure.get("goal")
         if not isinstance(goal, str):
@@ -5270,7 +5304,7 @@ def _set_motion_trajectory_progress(motion, closures: dict, data_by_id: dict) ->
     for step in _field(motion, "while_schedule", []):
         closure = closures.get(step)
         if not closure or _field(closure, "type") not in {
-            "CartesianPoseInterpolation",
+            "LinearPath",
             "Circle",
             "Arc",
             "Helix",

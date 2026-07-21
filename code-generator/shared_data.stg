@@ -21,19 +21,19 @@ axis-to-index ::= [
     "z": "2"
 ]
 
-// Trajectory progress easing profile -> runtime function. Default EaseInOut (smoothstep)
+// Trajectory progress easing profile -> runtime function. Default ease-in-out (smoothstep)
 // preserves the historical behaviour for trajectories that do not specify a profile.
 easing-fn ::= [
-    "Linear": "ease_linear",
-    "EaseIn": "ease_in",
-    "EaseOut": "ease_out",
-    "EaseInOut": "smoothstep",
+    "linear": "ease_linear",
+    "ease_in": "ease_in",
+    "ease_out": "ease_out",
+    "ease_in_out": "smoothstep",
     default: "smoothstep"
 ]
 
 velocity-profile-shape ::= [
-    "SCurve": "motion_spec::runtime::VelocityProfileShape::SCurve",
-    "Trapezoidal": "motion_spec::runtime::VelocityProfileShape::Trapezoidal",
+    "s_curve": "motion_spec::runtime::VelocityProfileShape::SCurve",
+    "trapezoidal": "motion_spec::runtime::VelocityProfileShape::Trapezoidal",
     default: "motion_spec::runtime::VelocityProfileShape::Trapezoidal"
 ]
 

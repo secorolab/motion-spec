@@ -43,21 +43,6 @@ class APP(DefinedNamespace):
     _NS = Namespace(f"{URI_CR2B_MM}/application/")
 
 
-class SNAP(DefinedNamespace):
-    Snapshot: URIRef
-
-    _extras = [
-        "snapshot-of",
-        "output",
-        "sampling",
-        "initial-sampling",
-        "event-triggered-sampling",
-        "trigger",
-    ]
-
-    _NS = Namespace(f"{URI_SECORO_MM}/task/snapshot#")
-
-
 class ENV(DefinedNamespace):
     Object: URIRef
     Workspace: URIRef
@@ -310,8 +295,12 @@ class GEOM_REL_EXT(DefinedNamespace):
 class GEOM_OP_EXT(DefinedNamespace):
     PoseDiffEvaluator: URIRef
     PoseToAngularDistance: URIRef
+    PathEvaluator: URIRef
+    path: URIRef
+    easing: URIRef
+    linear: URIRef
 
-    _extras = ["angular-distance"]
+    _extras = ["angular-distance", "path-parameter", "ease-in", "ease-out", "ease-in-out"]
 
     _NS = Namespace(f"{URI_SECORO_MM}/geometry/spatial-operators#")
 
@@ -397,10 +386,32 @@ class MAP_EXT(DefinedNamespace):
 class ALGO_EXT(DefinedNamespace):
     Saturation: URIRef
     Addition: URIRef
+    VelocityProfile: URIRef
+    Snapshot: URIRef
+    Admittance: URIRef
     limits: URIRef
     out: URIRef
+    target: URIRef
+    mass: URIRef
+    damping: URIRef
+    stiffness: URIRef
+    sampling: URIRef
+    trigger: URIRef
+    shape: URIRef
+    trapezoidal: URIRef
 
-    _extras = ["in", "in1", "in2", "maximum-absolute-value", "lower-bound", "upper-bound"]
+    _extras = [
+        "in",
+        "maximum-absolute-value",
+        "lower-bound",
+        "upper-bound",
+        "maximum-velocity",
+        "maximum-acceleration",
+        "maximum-jerk",
+        "s-curve",
+        "initial-sampling",
+        "event-triggered-sampling",
+    ]
 
     _NS = Namespace(f"{URI_SECORO_MM}/algorithm#")
 
@@ -449,42 +460,31 @@ class MOT(DefinedNamespace):
     _NS = Namespace(f"{URI_CR2B_MM}/task/motion-specification#")
 
 
-class TRAJ(DefinedNamespace):
-    ReferenceGenerator: URIRef
-    Trajectory: URIRef
-    CartesianPoseInterpolation: URIRef
+class GEOM_PATH(DefinedNamespace):
+    Path: URIRef
+    LinearPath: URIRef
     Circle: URIRef
     Arc: URIRef
     Helix: URIRef
     Figure8: URIRef
-    VelocityProfile: URIRef
 
     start: URIRef
     goal: URIRef
-    trajectory: URIRef
-    reference: URIRef
+    end: URIRef
     anchor: URIRef
     center: URIRef
+    axis: URIRef
     radius: URIRef
     amplitude: URIRef
-    end: URIRef
-    axis: URIRef
     pitch: URIRef
     revolutions: URIRef
     form: URIRef
-    profile: URIRef
+    gerono: URIRef
+    bernoulli: URIRef
 
-    _extras = [
-        "plane-normal",
-        "max-velocity",
-        "max-acceleration",
-        "max-jerk",
-        "measured-velocity",
-        "shape",
-        "path-parameter",
-    ]
+    _extras = ["plane-normal"]
 
-    _NS = Namespace("https://secorolab.github.io/metamodels/task/trajectory#")
+    _NS = Namespace(f"{URI_SECORO_MM}/geometry/path#")
 
 
 class CSTR_HDL(DefinedNamespace):
@@ -527,7 +527,7 @@ class CSTR_HDL(DefinedNamespace):
 
 class CSTR_HDL_EXT(DefinedNamespace):
     FeedForwardController: URIRef
-    Admittance: URIRef
+    SetpointGenerator: URIRef
     LinearJerk: URIRef
     solver: URIRef
 

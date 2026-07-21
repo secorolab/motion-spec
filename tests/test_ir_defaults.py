@@ -28,6 +28,7 @@ from motion_spec.ir_gen import (
 )
 from motion_spec.namespace import (
     AGN,
+    ALGO_EXT,
     CSTR,
     CSTR_HDL,
     EXEC,
@@ -36,7 +37,6 @@ from motion_spec.namespace import (
     QUDT_QKIND,
     QUDT_SCHEMA,
     SLV,
-    TRAJ,
 )
 
 
@@ -251,35 +251,36 @@ def test_introspection_contract_carries_control_and_provenance() -> None:
 def test_velocity_profile_operator_closure_exposes_codegen_fields() -> None:
     graph = Graph()
     op = URIRef("https://example.test/profile-op")
-    graph.add((op, RDF.type, TRAJ.VelocityProfile))
+    graph.add((op, RDF.type, ALGO_EXT.VelocityProfile))
     for pred, name in (
-        (TRAJ["goal"], "goal"),
-        (TRAJ["start"], "measured"),
-        (TRAJ["measured-velocity"], "measured-velocity"),
-        (TRAJ["max-velocity"], "max-velocity"),
-        (TRAJ["max-acceleration"], "max-acceleration"),
-        (TRAJ["max-jerk"], "max-jerk"),
-        (TRAJ["reference"], "reference"),
+        (ALGO_EXT["target"], "goal"),
+        (ALGO_EXT["in"], "measured-velocity"),
+        (ALGO_EXT["maximum-velocity"], "max-velocity"),
+        (ALGO_EXT["maximum-acceleration"], "max-acceleration"),
+        (ALGO_EXT["maximum-jerk"], "max-jerk"),
+        (ALGO_EXT["out"], "reference"),
     ):
         graph.add((op, pred, URIRef(f"https://example.test/{name}")))
     constraint = URIRef("https://example.test/constraint")
     controller = URIRef("https://example.test/controller")
     graph.add((constraint, CSTR["reference-value"], URIRef("https://example.test/reference")))
+    # The value the profile starts from is the constraint's own quantity.
+    graph.add((constraint, CSTR.quantity, URIRef("https://example.test/measured")))
     graph.add((controller, CSTR_HDL.constraint, constraint))
-    graph.add((op, TRAJ["shape"], Literal("SCurve")))
+    graph.add((op, ALGO_EXT["shape"], ALGO_EXT["s-curve"]))
 
     closure = Parser(graph).closures(ops_generic)["profile_op"]
 
     assert closure["type"] == "VelocityProfile"
     assert closure["goal"] == "goal"
     assert closure["measured"] == "measured"
-    assert closure["measured_velocity"] == "measured_velocity"
-    assert closure["max_velocity"] == "max_velocity"
-    assert closure["max_acceleration"] == "max_acceleration"
-    assert closure["max_jerk"] == "max_jerk"
-    assert closure["reference"] == "reference"
+    assert closure["in"] == "measured_velocity"
+    assert closure["maximum_velocity"] == "max_velocity"
+    assert closure["maximum_acceleration"] == "max_acceleration"
+    assert closure["maximum_jerk"] == "max_jerk"
+    assert closure["out"] == "reference"
     assert closure["controller"] == "controller"
-    assert str(closure["shape"]) == "SCurve"
+    assert str(closure["shape"]) == "s_curve"
 
 
 def test_solver_ir_carries_rne_algorithm_and_gravity() -> None:

@@ -39,11 +39,11 @@ emit-call-PoseDiffEvaluator(closure, views) ::= <<
 shared.<closure.out> = KDL::diff(shared.<closure.in1>, shared.<closure.in2>);
 >>
 
-emit-call-CartesianPoseInterpolation(closure, views) ::= <<
+emit-call-LinearPath(closure, views) ::= <<
 {
     const KDL::Frame _lerp_goal_<closure.trajectory> = <if(closure.assign_goal)><pose-frame-inline(closure.goal_components, views)><else>shared.<closure.goal><endif>;
 <if(closure.assign_goal)>    shared.<closure.goal> = _lerp_goal_<closure.trajectory>;
-<endif>    shared.<closure.trajectory> = KDL::addDelta(shared.<closure.start>, KDL::diff(shared.<closure.start>, _lerp_goal_<closure.trajectory>), motion_spec::runtime::<easing-fn.(closure.profile)>(<access-expr(closure.path_parameter, views)>));
+<endif>    shared.<closure.trajectory> = KDL::addDelta(shared.<closure.start>, KDL::diff(shared.<closure.start>, _lerp_goal_<closure.trajectory>), motion_spec::runtime::<easing-fn.(closure.easing)>(<access-expr(closure.path_parameter, views)>));
 }
 >>
 
@@ -51,26 +51,26 @@ emit-call-VelocityProfile(closure, views) ::= <<
 {
     if (!state.<closure.controller>.vp_init) {
         state.<closure.controller>.vp_setpoint = <access-expr(closure.measured, views)>;
-        state.<closure.controller>.vp_velocity = <if(closure.measured_velocity)><access-expr(closure.measured_velocity, views)><else>0.0<endif>;
+        state.<closure.controller>.vp_velocity = <if(closure.in)><access-expr(closure.in, views)><else>0.0<endif>;
         state.<closure.controller>.vp_accel = 0.0;
         state.<closure.controller>.vp_init = true;
     }
-    shared.<closure.reference> = motion_spec::runtime::velocity_profile_step(
+    shared.<closure.out> = motion_spec::runtime::velocity_profile_step(
         state.<closure.controller>.vp_setpoint,
         state.<closure.controller>.vp_velocity,
         state.<closure.controller>.vp_accel,
         <access-expr(closure.goal, views)>,
-        <access-expr(closure.max_velocity, views)>,
-        <access-expr(closure.max_acceleration, views)>,
-        <if(closure.max_jerk)><access-expr(closure.max_jerk, views)><else>0.0<endif>,
+        <access-expr(closure.maximum_velocity, views)>,
+        <access-expr(closure.maximum_acceleration, views)>,
+        <if(closure.maximum_jerk)><access-expr(closure.maximum_jerk, views)><else>0.0<endif>,
         motion_spec::runtime::kControlPeriodS,
         <velocity-profile-shape.(closure.shape)>);
-    state.<closure.controller>.vp_setpoint = shared.<closure.reference>;
+    state.<closure.controller>.vp_setpoint = shared.<closure.out>;
 }
 >>
 
 emit-call-Admittance(closure, views) ::= <<
-shared.<closure.reference> = state.<closure.controller>.adm_filter.step(<access-expr(closure.force, views)>, <closure.mass>, <closure.damping>, <closure.stiffness>, <closure.max_velocity>, motion_spec::runtime::kControlPeriodS);
+shared.<closure.out> = state.<closure.controller>.adm_filter.step(<access-expr(closure.in, views)>, <closure.mass>, <closure.damping>, <closure.stiffness>, <closure.maximum_velocity>, motion_spec::runtime::kControlPeriodS);
 >>
 
 emit-call-Circle(closure, views) ::= <<
@@ -183,7 +183,7 @@ emit-call-Figure8(closure, views) ::= <<
 <({emit-call-Figure8-<closure.form>})(closure, views)>
 >>
 
-emit-call-Figure8-Gerono(closure, views) ::= <<
+emit-call-Figure8-gerono(closure, views) ::= <<
 {
     const double _s_<closure.trajectory> = motion_spec::runtime::smoothstep(<access-expr(closure.path_parameter, views)>);
     // Phase offset of pi/2 puts alpha=0 at the curve's center crossing (the anchor),
@@ -202,7 +202,7 @@ emit-call-Figure8-Gerono(closure, views) ::= <<
 }
 >>
 
-emit-call-Figure8-Bernoulli(closure, views) ::= <<
+emit-call-Figure8-bernoulli(closure, views) ::= <<
 {
     const double _s_<closure.trajectory> = motion_spec::runtime::smoothstep(<access-expr(closure.path_parameter, views)>);
     // Phase offset of pi/2 puts alpha=0 at the curve's center crossing (the anchor),
@@ -388,7 +388,7 @@ shared.<closure.to> = shared.<closure.pose> * <access-expr(closure.from, views)>
 >>
 
 emit-call-Addition(closure, views) ::= <<
-shared.<closure.out> = <access-expr(closure.in1, views)> + <access-expr(closure.in2, views)>;
+shared.<closure.out> = <closure.in:{operand | <access-expr(operand, views)>}; separator=" + ">;
 >>
 
 emit-call-AddWrench(closure, views) ::= <<

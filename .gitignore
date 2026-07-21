@@ -5,6 +5,7 @@ build/
 .stst/
 generated/
 runs/
+docs/_build/
 
 # Python packaging artifacts
 *.egg-info/

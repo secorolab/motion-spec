@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: MPL-2.0
+// SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
+// Author: Vamsi Kalagaturu
+
+digraph pipeline {
+  rankdir=LR;
+  graph [bgcolor="white", nodesep=0.35, ranksep=0.65, compound=true];
+  node [shape=box, style="rounded,filled", fillcolor="white", fontname="sans-serif"];
+  edge [fontname="sans-serif"];
+
+  subgraph cluster_dsl {
+    label="motion-spec-dsl (authoring frontend)";
+    color="#2f81f7";
+    penwidth=2;
+    style="rounded,filled";
+    fillcolor="#eaf3ff";
+
+    source [label=".robmot + .scenex + .fsm"];
+    rdf [label="parse + resolve + emit\nJSON-LD RDF dataset"];
+    source -> rdf;
+  }
+
+  subgraph cluster_motion_spec {
+    label="motion-spec (compiler and runtime toolchain)";
+    color="#8a63d2";
+    penwidth=2;
+    style="rounded,filled";
+    fillcolor="#f3edff";
+
+    check [label="check\nSHACL validation"];
+    ir [label="gen ir\nmotion-spec IR"];
+    cpp [label="gen / gen code\ngenerated C++"];
+    build [label="build\nreusable executable"];
+    run [label="run\nREC + frame log"];
+    replay [label="replay\nsummary / runtime RDF"];
+
+    ir -> cpp -> build;
+    build -> run [label="1..n"];
+    run -> replay;
+  }
+
+  rdf -> ir [ltail=cluster_dsl, lhead=cluster_motion_spec];
+  rdf -> check [style=dashed, label="optional validation"];
+}

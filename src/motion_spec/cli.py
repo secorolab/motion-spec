@@ -426,13 +426,7 @@ def replay(log: Path, jsonl: bool, verify: bool, recover_runtime_ttl: bool) -> N
 
 
 @main.command(context_settings={"ignore_unknown_options": True})
-@click.argument("input", type=click.Path(path_type=Path))
-@click.option(
-    "--source-dir", type=click.Path(exists=True, file_okay=False, path_type=Path)
-)
-@click.option(
-    "--executable", type=click.Path(exists=True, dir_okay=False, path_type=Path)
-)
+@click.argument("input", type=click.Path(exists=True, path_type=Path))
 @click.option("-o", "--output-dir", type=click.Path(file_okay=False, path_type=Path))
 @click.option(
     "--prefix",
@@ -443,76 +437,64 @@ def replay(log: Path, jsonl: bool, verify: bool, recover_runtime_ttl: bool) -> N
 @click.option("-j", "--jobs", type=click.IntRange(min=1))
 @click.option("--run-id")
 @click.option("--cwd", type=click.Path(exists=True, file_okay=False, path_type=Path))
-@click.option("--recover-runtime-ttl", is_flag=True)
 @click.option("--no-verify", is_flag=True)
-@click.option("--headless", is_flag=True, help="Run a .robmot model without a GUI.")
+@click.option("--headless", is_flag=True, help="Run without a GUI.")
 @click.option("--steps", type=click.IntRange(min=1), help="Maximum headless simulation steps.")
 @click.argument("executable-args", nargs=-1, type=click.UNPROCESSED)
 def run(
     input: Path,
-    source_dir: Path | None,
-    executable: Path | None,
     output_dir: Path | None,
     prefixes: tuple[Path, ...],
     jobs: int | None,
     run_id: str | None,
     cwd: Path | None,
-    recover_runtime_ttl: bool,
     no_verify: bool,
     headless: bool,
     steps: int | None,
     executable_args: tuple[str, ...],
 ) -> None:
-    """Generate, build, and run a .robmot INPUT, or run an explicit executable."""
+    """Run a .robmot INPUT, generating and building it first, or an existing GENERATION."""
     from motion_spec.introspection.archive import ArchiveError
     from motion_spec.introspection.runner import RunnerError, run_cataloged
+    from motion_spec.pipeline import build_generation, create_generation_dir, generate_model, new_id
 
-    generated_from_model = input.suffix == ".robmot"
-    if generated_from_model:
-        from motion_spec.pipeline import build_generation, create_generation_dir, generate_model, new_id
-
-        if not input.is_file():
-            raise click.BadParameter(f"file not found: {input}", param_hint="INPUT")
-        if source_dir is not None or executable is not None:
-            raise click.UsageError("--source-dir and --executable are only for an existing build")
-        if steps is not None and not headless:
-            raise click.UsageError("--steps requires --headless")
+    if steps is not None and not headless:
+        raise click.UsageError("--steps requires --headless")
+    if input.suffix == ".robmot":
         try:
             generation = create_generation_dir(input, output_dir)
-            source_dir = generate_model(input, generation, stage="code")
-            executable = build_generation(generation, prefixes=prefixes, jobs=jobs)
+            generate_model(input, generation, stage="code")
+            build_generation(generation, prefixes=prefixes, jobs=jobs)
         except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
             raise click.ClickException(f"pipeline failed: {exc}") from exc
-        run_id = run_id or new_id(f"{input.stem}-run")
-        run_dir = generation / "runs" / run_id
-        recover_runtime_ttl = True
-        arguments = (["--headless"] if headless else []) + (
-            ["--steps", str(steps)] if steps is not None else []
-        ) + list(executable_args)
     else:
-        if source_dir is None or executable is None:
-            raise click.UsageError(
-                "INPUT must be a .robmot model, or --source-dir and --executable must be provided"
+        if not input.is_dir():
+            raise click.BadParameter(
+                "INPUT must be a .robmot model or a generation directory", param_hint="INPUT"
             )
-        if output_dir is not None or prefixes or jobs is not None or headless or steps is not None:
+        if output_dir is not None or prefixes or jobs is not None:
             raise click.UsageError("generation and build options require a .robmot INPUT")
-        run_dir = input
-        arguments = list(executable_args)
+        generation = input.resolve()
 
+    run_dir = generation / "runs" / (run_id or new_id("run"))
+    arguments = (
+        (["--headless"] if headless else [])
+        + (["--steps", str(steps)] if steps is not None else [])
+        + list(executable_args)
+    )
     try:
         returncode = run_cataloged(
             run_dir,
-            source_dir=source_dir,
-            executable=executable,
+            source_dir=generation / "generated",
+            executable=generation / "build" / "main",
             executable_args=arguments,
             run_id=run_id,
             cwd=cwd,
-            recover_runtime_ttl=recover_runtime_ttl,
+            recover_runtime_ttl=True,
             verify=not no_verify,
         )
     except (ArchiveError, RunnerError) as exc:
         raise click.ClickException(str(exc)) from exc
     if returncode:
         raise click.exceptions.Exit(returncode)
-    if generated_from_model:
-        click.echo(run_dir)
+    click.echo(run_dir)

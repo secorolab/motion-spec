@@ -154,11 +154,13 @@ def generate_model(model: Path, generation: Path, *, stage: str = "code") -> Pat
 
     generated = generation / "generated"
     model_dir = generated / "model"
-    subprocess.run(
+    dsl = subprocess.run(
         ["textx", "generate", str(model.resolve()), "--target", "jsonld", "-o", str(model_dir)],
         cwd=model.parent,
-        check=True,
     )
+    if dsl.returncode:
+        # The DSL already reported the offending line on stderr; don't bury it under an argv dump.
+        raise RuntimeError(f"the DSL rejected {model.name}, see the error above")
     manifest = model_dir / f"{model.stem}-app.ld.json"
     ir_path = model_dir / "ir.json"
     ir_path.write_text(json.dumps(generate_ir(manifest), cls=DataclassJSONEncoder, indent=4))

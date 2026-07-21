@@ -1,148 +1,159 @@
-======================
-Setup and installation
-======================
+=====
+Setup
+=====
 
-Preparation
-===========
+Installation
+============
 
-JSON-LD metamodels
-------------------
+The base package provides the CLI, RDF-to-IR lowering, and C++ generation.
+Install optional features only where they are needed:
 
-After cloning this repository, checkout the metamodels to the folder `comp-rob2b/metamodels`:
+.. code-block:: console
 
-.. code:: sh
+   $ python -m venv .venv
+   $ source .venv/bin/activate
+   $ python -m pip install /path/to/motion-spec
+   $ motion-spec install validation
+   $ motion-spec install introspection
+   $ motion-spec install dsl
 
-  git clone https://github.com/comp-rob2b/metamodels comp-rob2b/metamodels
+``motion-spec install dsl all`` installs the authoring DSL and every optional
+Python feature. The package extras are ``validation``, ``introspection``, and
+``all``; the sibling ``motion-spec-dsl`` package is installed by the ``dsl``
+feature.
 
+Dependencies
+============
 
-Code generator
---------------
+Python profiles
+---------------
 
-The following dependencies are required for the code generator:
+.. list-table:: Python dependencies installed by package profile
+   :header-rows: 1
+   :width: 100%
 
-* `Python <https://www.python.org/>`_
-* `rdflib <https://github.com/RDFLib/rdflib>`_
-* `pySHACL <https://github.com/RDFLib/pySHACL>`_
-* `numpy <https://numpy.org/>`_
-* `Java <https://openjdk.org/>`_
-* `Apache Ant <https://ant.apache.org/>`_
-* `StringTemplate <https://www.stringtemplate.org/>`_
-* `STSTv4 <https://github.com/jsnyders/STSTv4>`_ (from Git!)
-* `GNU Make <https://www.gnu.org/software/make/>`_
+   * - Profile
+     - Dependencies
+     - Required for
+   * - Base
+     - `Python 3.10+ <https://www.python.org/>`_,
+       `Click <https://click.palletsprojects.com/>`_,
+       `RDFLib <https://github.com/RDFLib/rdflib>`_, and
+       `rdf-utils <https://github.com/secorolab/rdf-utils>`_
+     - CLI, RDF loading, IR, and code generation
+   * - Validation
+     - `pySHACL <https://github.com/RDFLib/pySHACL>`_
+     - ``motion-spec check``
+   * - Introspection
+     - `pySHACL <https://github.com/RDFLib/pySHACL>`_,
+       `REC <https://github.com/secorolab/rec>`_, and
+       `Protocol Buffers <https://github.com/protocolbuffers/protobuf>`_
+     - Recording, archive verification, replay, and runtime RDF
+   * - DSL
+     - `motion-spec-dsl <https://github.com/secorolab/motion-spec-dsl>`_,
+       `textX <https://github.com/textX/textX>`_,
+       `coord-dsl <https://github.com/secorolab/coord-dsl>`_, and
+       `scene-dsl <https://github.com/secorolab/scene-dsl>`_
+     - Accepting ``.robmot`` models as high-level command input
 
-For convenience, we provide a step-by-step installation guide for the latter two dependencies. Note, that STSTv4 comes with a pre-bundled version of StringTemplate. Hence, the steps for StringTemplate can be considered optional and are only relevant if one plans to use a more recent StringTemplate version.
+Generation and common runtime
+-----------------------------
 
-StringTemplate can either be `installed <https://github.com/antlr/stringtemplate4/blob/master/doc/java.md#installation>`_ from the `pre-compiled version <https://www.stringtemplate.org/download.html>`_ or it can be built from source:
+.. list-table:: External toolchain dependencies
+   :header-rows: 1
+   :width: 100%
 
-1. Download the latest version and extract it to a directory ``<st>``
-2. Change to the directory
+   * - Dependency
+     - Required for
+   * - `STSTv4 <https://github.com/jsnyders/STSTv4>`_
+     - Rendering generated C++
+   * - `Protocol Buffers compiler <https://protobuf.dev/>`_
+     - Generating the C++ frame-log codec
+   * - `Git <https://git-scm.com/>`_, `Java <https://openjdk.org/>`_, and
+       `Apache Ant <https://ant.apache.org/>`_
+     - Building the managed STST installation
+   * - `CMake <https://cmake.org/>`_ and `GCC <https://gcc.gnu.org/>`_ or another C++ compiler
+     - Configuring and compiling generated controllers
+   * - `coord2b <https://github.com/rosym-project/coord2b>`_
+     - Building and running generated controller state machines
 
-  .. code:: sh
+Target dependencies
+-------------------
 
-    cd <st>
+.. list-table:: Target-specific build and runtime dependencies
+   :header-rows: 1
+   :width: 100%
 
-2. For version 4.3.3 execute
+   * - Target
+     - Dependencies
+   * - MuJoCo
+     - `Orocos KDL <https://github.com/orocos/orocos_kinematics_dynamics>`_,
+       `kdl_parser <https://github.com/ros/kdl_parser>`_, and
+       `mj_kdl_wrapper <https://github.com/vamsikalagaturu/mj_kdl_wrapper>`_
+   * - robif2b
+     - `robif2b <https://github.com/secorolab/robif2b>`_,
+       `Eigen <https://eigen.tuxfamily.org/>`_,
+       `Orocos KDL <https://github.com/orocos/orocos_kinematics_dynamics>`_,
+       `urdfdom_headers <https://github.com/ros/urdfdom_headers>`_,
+       `urdfdom <https://github.com/ros/urdfdom>`_, and
+       `kdl_parser <https://github.com/ros/kdl_parser>`_
 
-  .. code:: sh
+These tables mirror ``motion-spec health``. ``hddc2b`` is optional for base
+solvers and is not a core health check.
 
-    sed "s/1.6/1.8/g" -i build.xml
+Code generation
+===============
 
-3. Compile using ``ant``
-4. This creates a JAR file ``<jar>`` (e.g. ``ST-4.3.4.jar``) in the ``<st>/dist`` folder
+C++ generation requires STST and ``protoc``. Install the pinned STST version
+with:
 
-STSTv4 must be `built <https://github.com/jsnyders/STSTv4#install-instructions>`_ from the Git version (to support `nested JSON arrays <https://github.com/jsnyders/STSTv4/commit/6f72c8cc19b773bab015ef9cf58cabd2cb2984c8>`_):
+.. code-block:: console
 
-1. Clone the source code:
+   $ motion-spec setup
 
-  .. code:: sh
+The default launcher is ``~/.local/bin/stst``. A local installation prefix and
+its matching cleanup are:
 
-    git clone https://github.com/jsnyders/STSTv4.git
+.. code-block:: console
 
-2. Change into the repository: ``cd STSTv4``
-3. Build with ``ant``
-4. Copy the launch script template:
+   $ motion-spec setup --prefix /path/to/workspace
+   $ motion-spec setup --prefix /path/to/workspace --clean
 
-  .. code:: sh
+STST setup requires Git, Java, and Ant.
 
-    cp stst.sh.init stst.sh
-
-5. Adapt the ``STST_HOME`` variable in the launch script
-6. (Optional) To use StringTemplate from above adapt the ``CP`` variable:
-
-  .. code:: sh
-
-    sed "s#\$STST_HOME/lib/ST-4.0.8.jar#<st>/dist/<jar>#g" -i stst.sh
-
-7. Fix the launch script:
-
-  .. code:: sh
-    
-    sed "s#lib/stst.jar#build/jar/stst.jar#g" -i stst.sh
-
-8. Make the launch script executable:
-
-  .. code:: sh
-
-    chmod +x stst.sh
-
-
-Generated code
---------------
-
-The following dependencies are required to build and execute the generated code:
-
-* Build dependencies:
-
-  * `CMake <https://cmake.org/>`_
-  * `GCC <https://gcc.gnu.org/>`_
-
-* Run-time dependencies:
-
-  * `orocos_kdl <https://github.com/orocos/orocos_kinematics_dynamics>`_
-  * `urdfdom_headers <https://github.com/ros/urdfdom_headers>`_
-  * `urdfdom <https://github.com/ros/urdfdom>`_
-  * `robif2b <https://github.com/rosym-project/robif2b>`_
-  * `hddc2b <https://github.com/comp-rob2b/hddc2b/tree/primary-secondary-task>`_
-
-Make sure that the latter dependencies are accessible to the generated CMake script. That can be achieved via a local or system-wide installation, but also using CMake's package registry (to avoid the installation). To this end, both projects can be configured with a ``-DENABLE_PACKAGE_REGISTRY=On`` option.
-
-
-Building and execution
-======================
-
-There are four make targets to build the different scenarios:
-
-* ``sc0a``: Keep the robot's right arm in contact with the table
-* ``sc0b``: Keep both robot arms in contact with the table
-* ``sc1``: Alignment task using an active mobile base
-* ``sc2``: Alignment task using active arms
-
-For instance, to build the latter scenario execute:
-
-.. code:: sh
-
-    make sc2
-
-This target triggers the intermediate code generation, code generation and the final compilation.
-
-Run the code via
-
-.. code:: sh
-
-  cd gen/build
-  ./main
-
-
-Documentation
+Health checks
 =============
 
-The following dependencies are required for building the documentation:
+``health`` reports every profile and target by default:
 
-* `Sphinx <https://www.sphinx-doc.org>`_
-* `Read the Docs Sphinx Theme <https://github.com/readthedocs/sphinx_rtd_theme>`_
+.. code-block:: console
 
-Build the documentation with the following command:
+   $ motion-spec health
+   $ motion-spec health --profile dsl
+   $ motion-spec health --profile codegen
+   $ motion-spec health --target mujoco
+   $ motion-spec health --target robif2b
 
-.. code:: sh
+The profiles are ``base``, ``validation``, ``introspection``, ``dsl``,
+``codegen``, ``build``, and ``runtime``. MuJoCo build and runtime require the
+KDL stack and ``mj_kdl_wrapper``. The real-robot target requires ``robif2b``.
+``hddc2b`` is not a core dependency.
 
-  make tutorial-html
+Development checkout
+====================
+
+Use the workspace virtual environment:
+
+.. code-block:: console
+
+   $ cd /path/to/workspace
+   $ source .venv/bin/activate
+   $ python -m pip install --no-deps -e src/motion-spec
+
+Build these docs locally with:
+
+.. code-block:: console
+
+   $ python -m pip install -e "src/motion-spec[docs]"
+   $ sphinx-build -W -b html src/motion-spec/docs/sphinx/source \
+       src/motion-spec/docs/_build/html

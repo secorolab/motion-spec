@@ -31,7 +31,7 @@ introspection = [
 ]
 all = ["pyshacl>=0.25.0", "rec", "protobuf>=4.22"]
 test = ["pytest"]
-docs = ["sphinx", "sphinx-rtd-theme", "sphinx-autobuild"]
+docs = ["sphinx", "myst-parser", "furo", "sphinx-autobuild"]
 dev = ["pytest", "ruff"]
 
 [project.scripts]

@@ -29,32 +29,23 @@ def test_cli_exposes_lazy_click_commands(monkeypatch, tmp_path) -> None:
     assert result.exit_code == 0
     assert "--stst-bin" in result.output
 
-    source = tmp_path / "source"
-    source.mkdir()
-    executable = tmp_path / "controller"
-    executable.write_text("")
+    generation = tmp_path / "generation"
+    (generation / "generated").mkdir(parents=True)
+    (generation / "build").mkdir()
+    (generation / "build" / "main").write_text("")
     received = {}
     monkeypatch.setattr(
         "motion_spec.introspection.runner.run_cataloged",
         lambda *args, **kwargs: received.update(args=args, kwargs=kwargs) or 0,
     )
     result = runner.invoke(
-        main,
-        [
-            "run",
-            str(tmp_path / "run"),
-            "--source-dir",
-            str(source),
-            "--executable",
-            str(executable),
-            "--",
-            "--headless",
-            "--steps",
-            "10",
-        ],
+        main, ["run", str(generation), "--run-id", "run-2", "--", "--headless", "--steps", "10"]
     )
     assert result.exit_code == 0
     assert received["kwargs"]["executable_args"] == ["--headless", "--steps", "10"]
+    assert received["kwargs"]["source_dir"] == generation / "generated"
+    assert received["kwargs"]["executable"] == generation / "build" / "main"
+    assert received["args"][0] == generation / "runs" / "run-2"
 
 
 def test_gen_and_run_compose_the_model_pipeline(monkeypatch, tmp_path) -> None:
@@ -101,7 +92,7 @@ def test_gen_and_run_compose_the_model_pipeline(monkeypatch, tmp_path) -> None:
     assert result.exit_code == 0
     assert received["stages"] == ["ir", "code"]
     assert received["run"][1]["executable_args"] == ["--headless", "--steps", "10"]
-    assert str(run_generation / "runs" / "demo-run-1") in result.output
+    assert str(run_generation / "runs" / "run-1") in result.output
 
 
 def test_install_uses_package_extras(monkeypatch) -> None:

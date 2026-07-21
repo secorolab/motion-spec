@@ -81,20 +81,13 @@ archive-local `frame_log.pb`, records the executable/source inputs as provenance
 packages the generated bundle, and verifies the archive after the process exits:
 
 ```bash
-motion-spec run logs/run-001 \
-  --source-dir gen/controller \
-  --run-id run-001 \
-  --executable gen/controller/build-introspection/main \
-  --recover-runtime-ttl
+motion-spec run generation/pick-place --run-id run-001
 ```
 
 Pass executable arguments after `--`:
 
 ```bash
-motion-spec run logs/run-001 \
-  --source-dir gen/controller \
-  --executable gen/controller/build-introspection/main \
-  -- --scenario pick-place-single
+motion-spec run generation/pick-place -- --scenario pick-place-single
 ```
 
 For an already completed run, create a self-contained archive from the generated
@@ -208,10 +201,11 @@ artifact, or invalid RDF provenance is a hard error.
 
 ## Documentation
 
-The documentation comprises
-
-* the [setup instructions](https://secorolab.github.io/motion-spec-ral/setup.html)
-* a [tutorial](https://secorolab.github.io/motion-spec-ral/tutorial.html).
+- [Setup](docs/sphinx/source/setup.rst)
+- [Pipeline and artifact concepts](docs/sphinx/source/concepts.rst)
+- [CLI tutorials](docs/sphinx/source/tutorials/index.rst)
+- [DSL concepts and tutorials](docs/sphinx/source/dsl/index.md)
+- [Original RAL tutorial](docs/sphinx/source/tutorial.rst)
 
 ## Third-party software
 

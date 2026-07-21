@@ -135,9 +135,11 @@ Health checks
    $ motion-spec health --target robif2b
 
 The profiles are ``base``, ``validation``, ``introspection``, ``dsl``,
-``codegen``, ``build``, and ``runtime``. MuJoCo build and runtime require the
-KDL stack and ``mj_kdl_wrapper``. The real-robot target requires ``robif2b``.
-``hddc2b`` is not a core dependency.
+``codegen``, ``build``, and ``runtime``. Build and runtime are evaluated per
+target: MuJoCo requires the KDL stack and ``mj_kdl_wrapper``, the real-robot
+target requires ``robif2b``. Missing optional profiles do not invalidate a
+base-only installation; select the profile required by the command you intend to
+run.
 
 Development checkout
 ====================

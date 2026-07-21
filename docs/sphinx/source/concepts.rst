@@ -133,11 +133,3 @@ files and the frame-log header against the generation contract.
 ``--recover-runtime-ttl`` rebuilds runtime RDF from the frame log, and ``--jsonl``
 streams decoded frames for external analysis.
 
-Health profiles
-===============
-
-Health checks are grouped as ``base``, ``validation``, ``introspection``, ``dsl``,
-``codegen``, ``build``, and ``runtime``. Build and runtime checks are evaluated per
-target (``mujoco`` or ``robif2b``). Missing optional profiles do not invalidate a
-base-only installation; select the profile required by the command you intend to
-run.

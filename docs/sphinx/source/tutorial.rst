@@ -1,6 +1,6 @@
-========
-Tutorial
-========
+=================
+JSON-LD tutorial
+=================
 
 :numref:`fig_left` and :numref:`fig_right` show a complicated mobile robot with two torque-controlled 7-DoF arms performing an alignment to a table.
 

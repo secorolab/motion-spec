@@ -1,6 +1,17 @@
 # motion-spec
 
-Code base for RAL paper: *From Composable Models to Correct-by-Construction Software for Contact-Rich Robotic Mobile-Manipulation Tasks*
+Validate, compile, build, run, and inspect guarded robot motion specifications.
+
+`motion-spec` consumes the RDF dataset that
+[motion-spec-dsl](https://github.com/secorolab/motion-spec-dsl) emits from a `.robmot`
+model, validates it against the [metamodels](https://github.com/secorolab/metamodels) with
+SHACL, lowers it to an intermediate representation, and generates the C++ controller that
+runs it. Each execution is archived as a run that carries its own provenance: the model and
+contracts it came from, and a full-rate frame log that can be replayed or recovered back
+into RDF.
+
+Companion code for the RAL paper *From Composable Models to Correct-by-Construction Software
+for Contact-Rich Robotic Mobile-Manipulation Tasks*.
 
 ## Installation
 

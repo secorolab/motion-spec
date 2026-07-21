@@ -174,6 +174,11 @@ Shapes are `trapezoidal` and `s-curve`. Maximum velocity and acceleration are
 required and positive; jerk and measured velocity are optional. Attach the profile
 to a controller with `profile: <...>`.
 
+A profiled controller drives its constraint's reference as a target rather than tracking
+it directly: the profile emits a setpoint that approaches the target within the limits,
+recomputed every cycle, and the controller tracks that setpoint. The measured value it
+starts from is the constraint's own quantity, so it is never restated.
+
 ### Admittance references
 
 Admittance maps measured force to a bounded velocity reference:
@@ -225,8 +230,10 @@ trajectory path = lerp {
 }
 ```
 
-The optional `trajectory: lerp|circle|arc|helix|figure8` field on a guarded motion
-describes its trajectory kind; the actual typed trajectory value lives in context.
+A trajectory is emitted as two things: the geometry, a `geom-path:Path` of the matching
+kind carrying only its shape parameters, and a `geom-op-ext:PathEvaluator` that traverses
+it. The evaluator owns the path parameter and the easing, and produces the pose setpoint
+the motion tracks. Timing is never on the geometry.
 
 ## Guarded motions
 

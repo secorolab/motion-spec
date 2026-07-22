@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 
 import rdflib
 
@@ -63,6 +64,33 @@ def test_runner_catalogs_run_from_start_and_archives_outputs(tmp_path: Path) -> 
         rdflib.RDF.type,
         rdflib.URIRef("http://www.w3.org/ns/prov#Activity"),
     ) in rec_graph
+
+
+def test_interrupted_runner_recovers_runtime_ttl(tmp_path: Path, monkeypatch) -> None:
+    source = _source_tree(tmp_path / "source")
+    executable = _log_copy_executable(tmp_path / "log-copy")
+    run_dir = tmp_path / "run-002"
+
+    def interrupt(_executable, _args, *, cwd, frame_log, run_id, rec_path):
+        frame_log.parent.mkdir(parents=True)
+        shutil.copyfile(source / "frame_log.pb", frame_log)
+        runner._finish_rec_run(rec_path, run_id, "INTERRUPTED")
+        return 130
+
+    monkeypatch.setattr(runner, "_run_executable", interrupt)
+
+    result = run_cataloged(
+        run_dir,
+        source_dir=source,
+        executable=executable,
+        run_id="run-002",
+        recover_runtime_ttl=True,
+    )
+
+    assert result == 130
+    assert (run_dir / "runtime" / "runtime.ttl").exists()
+    rec_graph = rdflib.Graph().parse(run_dir / "rec.ld.json", format="json-ld")
+    assert rec_run_lifecycle(rec_graph)["status"] == "INTERRUPTED"
 
 
 def test_runner_cli_accepts_options_after_run_dir(monkeypatch) -> None:

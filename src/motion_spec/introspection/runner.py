@@ -81,18 +81,8 @@ def run_cataloged(
     except Exception:
         _finish_rec_run(rec_path, run_id, "FAILED")
         raise
-    if returncode != 0:
-        if _rec_status(rec_path) != "INTERRUPTED":
-            _finish_rec_run(rec_path, run_id, "FAILED")
-        create_archive_manifest(
-            run_dir,
-            source_dir=source_dir,
-            run_id=run_id,
-            frame_log=frame_log,
-            log_producer_executable=executable,
-            complete_rec=False,
-        )
-        return returncode
+    if returncode != 0 and _rec_status(rec_path) != "INTERRUPTED":
+        _finish_rec_run(rec_path, run_id, "FAILED")
 
     try:
         create_archive_manifest(
@@ -103,17 +93,19 @@ def run_cataloged(
             log_producer_executable=executable,
             complete_rec=False,
         )
-        if recover_runtime_ttl:
+        if recover_runtime_ttl and (returncode == 0 or frame_log.exists()):
             from motion_spec.introspection.replay import runtime_frames
             from motion_spec.introspection.runtime_graph import write_runtime_ttl
 
             records, frame_count = runtime_frames(frame_log)
             write_runtime_ttl(run_dir, records, frame_count=frame_count)
-        _finish_rec_run(rec_path, run_id, "COMPLETED")
-        if verify:
-            verify_manifest(run_dir)
+        if returncode == 0:
+            _finish_rec_run(rec_path, run_id, "COMPLETED")
+            if verify:
+                verify_manifest(run_dir)
     except Exception:
-        _finish_rec_run(rec_path, run_id, "FAILED")
+        if returncode == 0:
+            _finish_rec_run(rec_path, run_id, "FAILED")
         raise
     return returncode
 

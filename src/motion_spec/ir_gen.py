@@ -4729,6 +4729,15 @@ def _backend_from_graph(g) -> str:
     return "robif2b"
 
 
+def _is_robif2b_communication_test(g) -> bool:
+    """Return whether the real-world target requests the bounded hardware smoke test."""
+    real_world = next(g.subjects(RDF.type, EXEC.RealWorld), None)
+    if real_world is None:
+        return False
+    name = str(g.value(real_world, EXEC["platform-name"]) or "").casefold()
+    return name == "robif2b-communication-test"
+
+
 def _apply_monitor_debounce(handlers, control_period_ns: int) -> None:
     """Convert each monitor's debounce duration to a step count from the control period."""
     for handler in handlers:
@@ -5680,6 +5689,7 @@ def generate_ir(manifest_path):
     # Derive backend + FSM up front: both are pure functions of the graph and are inputs to
     # downstream construction (solver validation, runtime-robot annotation, motion FSM wiring).
     backend = _backend_from_graph(g)
+    robif2b_communication_test = _is_robif2b_communication_test(g)
     fsm = _fsm_from_graph(g)
     scene = _scene_from_graph(g)
     _validate_scene(scene)
@@ -5737,6 +5747,8 @@ def generate_ir(manifest_path):
         closure_owner_map=closure_owner_map,
     )
     _validate_solvers(slv_arm, backend)
+    if robif2b_communication_test and slv_arm:
+        raise ValueError("robif2b-communication-test must not declare an arm solver.")
     _annotate_runtime_robots(slv_arm, motions, backend)
 
     if scene.timestep_s <= 0:
@@ -5801,6 +5813,7 @@ def generate_ir(manifest_path):
         "base_velocity_solvers": slv_base_vel,
         "base_force_solvers": slv_base_frc,
         "backend": backend,
+        "robif2b_communication_test": robif2b_communication_test,
         "scene": scene,
         "trace": _trace_from_graph(g),
         "uris": introspection["uris"],

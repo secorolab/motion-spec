@@ -482,6 +482,23 @@ def run(
         + (["--steps", str(steps)] if steps is not None else [])
         + list(executable_args)
     )
+    ir_path = generation / "generated" / "model" / "ir.json"
+    communication_test = (
+        ir_path.is_file()
+        and json.loads(ir_path.read_text()).get("robif2b_communication_test", False)
+    )
+    if communication_test:
+        try:
+            returncode = subprocess.run(
+                [str(generation / "build" / "main"), *arguments], cwd=cwd
+            ).returncode
+        except OSError as exc:
+            raise click.ClickException(f"communication test failed to start: {exc}") from exc
+        if returncode:
+            raise click.exceptions.Exit(returncode)
+        click.echo(generation)
+        return
+
     try:
         returncode = run_cataloged(
             run_dir,

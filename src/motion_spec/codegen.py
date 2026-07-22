@@ -81,6 +81,12 @@ def _source_path(relative_path: Path) -> Path | None:
 
 def resource_path(relative_path: Path) -> Path:
     """Absolute path to a packaged resource (installed dist or source tree); raises if missing."""
+    # Editable checkouts keep templates in the source tree.  Prefer those files so
+    # template changes are used immediately instead of a stale copied resource.
+    if _source_root_from_distribution() is not None:
+        source_path = _source_path(relative_path)
+        if source_path is not None:
+            return source_path
     path = _distribution_path(relative_path) or _source_path(relative_path)
     if path is not None:
         return path
@@ -258,9 +264,21 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
             stst_bin, "motion_header", payload_path, headers_dir / f"{motion['id']}.hpp"
         )
 
-    render_template(stst_bin, "ref_main", ir_payload_path, output_dir / "ref_main.cpp")
+    main_template = (
+        "robif2b_communication_test"
+        if ir.get("robif2b_communication_test")
+        else "ref_main"
+    )
+    render_template(stst_bin, main_template, ir_payload_path, output_dir / "ref_main.cpp")
     if ir["backend"] == "mj_kdl":
         render_template(stst_bin, "cmake_mj_kdl", ir_payload_path, output_dir / "CMakeLists.txt")
+    elif ir["backend"] == "robif2b":
+        cmake_template = (
+            "cmake_robif2b_communication_test"
+            if ir.get("robif2b_communication_test")
+            else "cmake_robif2b"
+        )
+        render_template(stst_bin, cmake_template, ir_payload_path, output_dir / "CMakeLists.txt")
 
 
 def main(argv: list[str] | None = None):

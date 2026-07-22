@@ -30,22 +30,33 @@ def test_cli_exposes_lazy_click_commands(monkeypatch, tmp_path) -> None:
     assert "--stst-bin" in result.output
 
     generation = tmp_path / "generation"
-    (generation / "generated").mkdir(parents=True)
+    (generation / "generated" / "model").mkdir(parents=True)
+    (generation / "generated" / "model" / "ir.json").write_text(
+        '{"robif2b_communication_test": true}'
+    )
     (generation / "build").mkdir()
     (generation / "build" / "main").write_text("")
-    received = {}
+    cataloged = {}
+    executed = {}
     monkeypatch.setattr(
         "motion_spec.introspection.runner.run_cataloged",
-        lambda *args, **kwargs: received.update(args=args, kwargs=kwargs) or 0,
+        lambda *args, **kwargs: cataloged.update(args=args, kwargs=kwargs) or 0,
+    )
+    monkeypatch.setattr(
+        "motion_spec.cli.subprocess.run",
+        lambda args, cwd=None: executed.update(args=args, cwd=cwd)
+        or SimpleNamespace(returncode=0),
     )
     result = runner.invoke(
         main, ["run", str(generation), "--run-id", "run-2", "--", "--headless", "--steps", "10"]
     )
     assert result.exit_code == 0
-    assert received["kwargs"]["executable_args"] == ["--headless", "--steps", "10"]
-    assert received["kwargs"]["source_dir"] == generation / "generated"
-    assert received["kwargs"]["executable"] == generation / "build" / "main"
-    assert received["args"][0] == generation / "runs" / "run-2"
+    assert executed == {
+        "args": [str(generation / "build" / "main"), "--headless", "--steps", "10"],
+        "cwd": None,
+    }
+    assert not cataloged
+    assert str(generation) in result.output
 
 
 def test_gen_and_run_compose_the_model_pipeline(monkeypatch, tmp_path) -> None:
@@ -92,6 +103,7 @@ def test_gen_and_run_compose_the_model_pipeline(monkeypatch, tmp_path) -> None:
     assert result.exit_code == 0
     assert received["stages"] == ["ir", "code"]
     assert received["run"][1]["executable_args"] == ["--headless", "--steps", "10"]
+    assert received["run"][1]["recover_runtime_ttl"] is True
     assert str(run_generation / "runs" / "run-1") in result.output
 
 

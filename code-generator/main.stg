@@ -162,6 +162,32 @@ app-headless-telemetry(backend, shared_data, arm_solvers, scene) ::= <<
 <({app-headless-telemetry-<backend>})(shared_data, arm_solvers, scene)>
 >>
 
+// ROS publish is decoupled from the control loop: each RealtimePublisher owns a background
+// thread that does the DDS publish; the RT loop only does a non-blocking trylock/unlockAndPublish.
+ros-includes(ros_publishers) ::= <<
+#include \<rclcpp/rclcpp.hpp\>
+#include \<realtime_tools/realtime_publisher.hpp\>
+<ros_publishers:{p | #include "<p.include>"}; separator="\n">
+>>
+
+ros-io-members(ros_publishers) ::= <<
+    rclcpp::Node::SharedPtr ros_node = nullptr;
+<ros_publishers:{p |     std::shared_ptr\<realtime_tools::RealtimePublisher\<<p.cpp_type>\>\> <p.pub_id> = nullptr;}; separator="\n">
+>>
+
+ros-setup(ros_publishers, ros_node_name) ::= <<
+    rclcpp::init(argc, argv);
+    robot.ros_node = std::make_shared\<rclcpp::Node\>("<ros_node_name>");
+<ros_publishers:{p |     robot.<p.pub_id> = std::make_shared\<realtime_tools::RealtimePublisher\<<p.cpp_type>\>\>(
+        robot.ros_node->create_publisher\<<p.cpp_type>\>("<p.channel>", rclcpp::QoS(10)));}; separator="\n">
+>>
+
+ros-shutdown(ros_publishers) ::= <<
+<ros_publishers:{p |     robot.<p.pub_id>.reset();}; separator="\n">
+    robot.ros_node.reset();
+    rclcpp::shutdown();
+>>
+
 app_main(motions, wrench_outputs, has_wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene, trace, needs_clock_time, control_period_ns) ::= <<
 #include "runtime.hpp"
 #include "shared_state.hpp"
@@ -284,7 +310,7 @@ fsm-dispatch(motions, fsm_namespace) ::= <<
     \};
 >>
 
-ref_main(motions, wrench_outputs, has_wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, shared_data, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene, trace, fsm_namespace, fsm_step_event, fsm_step_event_idx, needs_clock_time, control_period_ns) ::= <<
+ref_main(motions, wrench_outputs, has_wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, shared_data, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene, trace, fsm_namespace, fsm_step_event, fsm_step_event_idx, needs_clock_time, control_period_ns, has_ros, ros_publishers, ros_node_name) ::= <<
 #include "runtime.hpp"
 #include "shared_state.hpp"
 <if(has_mobile_base)>
@@ -302,6 +328,10 @@ ref_main(motions, wrench_outputs, has_wrench_outputs, has_arm, has_mobile_base, 
 int main(int argc, char **argv) {
     robot_io robot{};
     shared_data shared{};
+<if(has_ros)>
+
+<ros-setup(ros_publishers, ros_node_name)>
+<endif>
 <if(has_mobile_base)>
 
 <app-main-base-setup()>
@@ -461,12 +491,16 @@ int main(int argc, char **argv) {
 <if(fsm_namespace)>
     <fsm_namespace>::destroy_fsm(fsm);
 <endif>
+<if(has_ros)>
+
+<ros-shutdown(ros_publishers)>
+<endif>
 
     return 0;
 }
 >>
 
-shared_state_header(shared_data, wrench_outputs, has_arm, has_mobile_base, arm_solvers, base_velocity_solvers, base_force_solvers, backend, fsm_namespace, fsm_header, motions) ::= <<
+shared_state_header(shared_data, wrench_outputs, has_arm, has_mobile_base, arm_solvers, base_velocity_solvers, base_force_solvers, backend, fsm_namespace, fsm_header, motions, has_ros, ros_publishers) ::= <<
 #pragma once
 
 #include "frame_layout.h"
@@ -478,6 +512,9 @@ shared_state_header(shared_data, wrench_outputs, has_arm, has_mobile_base, arm_s
 <endif>
 
 #include \<memory\>
+<if(has_ros)>
+<ros-includes(ros_publishers)>
+<endif>
 #include \<kdl/frames.hpp\>
 #include \<kdl/chain.hpp\>
 #include \<kdl/jacobian.hpp\>
@@ -609,6 +646,9 @@ struct robot_io {
 <endif>
 <if(fsm_namespace)>
     struct events *fsm_events = nullptr;
+<endif>
+<if(has_ros)>
+<ros-io-members(ros_publishers)>
 <endif>
 <arm_solvers:{solver | <arm-robot-member(solver)>}; separator="\n">
 <wrench_outputs:{wrench | <wrench-pointer-member(wrench)>}; separator="\n">

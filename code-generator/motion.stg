@@ -69,6 +69,7 @@ update-monitor(monitor, suppress_initial_active) ::= <<
             state.<monitor.id>_previous,
             active,
             state.active_steps >= motion_spec::runtime::kMonitorArmSteps)<else>motion_spec::runtime::rising_edge(state.<monitor.id>_previous, active)<endif><endif>;
+<monitor-ros-publish(monitor)>
 <if(monitor.fsm_namespace)>
         // coord2b is the sequencer: fire the FSM event on the rising edge while in this state.
         if (detected) {
@@ -100,6 +101,7 @@ update-monitor(monitor, suppress_initial_active) ::= <<
             state.<monitor.id>_previous,
             active,
             state.active_steps >= motion_spec::runtime::kMonitorArmSteps)<else>motion_spec::runtime::rising_edge(state.<monitor.id>_previous, active)<endif><endif>;
+<monitor-ros-publish(monitor)>
 <if(monitor.fsm_namespace)>
         // coord2b is the sequencer: fire the FSM event on the rising edge while in this state.
         if (detected) {
@@ -122,6 +124,18 @@ update-monitor(monitor, suppress_initial_active) ::= <<
         state.<monitor.flag>,
         motion_spec::runtime::constraint_satisfied(shared.<monitor.error.id>));
 <endif>
+<endif>
+>>
+
+// RT-safe publish of the monitored condition: non-blocking trylock, the RealtimePublisher's
+// own thread does the DDS publish. Skips the cycle if the publisher thread holds the lock.
+monitor-ros-publish(monitor) ::= <<
+<if(monitor.ros_channel)>
+        if (robot.<monitor.ros_pub_id> && robot.<monitor.ros_pub_id>->trylock()) {
+            robot.<monitor.ros_pub_id>->msg_.value =
+                active ? <monitor.ros_cpp_type>::TRUE : <monitor.ros_cpp_type>::FALSE;
+            robot.<monitor.ros_pub_id>->unlockAndPublish();
+        \}
 <endif>
 >>
 

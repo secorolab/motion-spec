@@ -53,6 +53,30 @@ from motion_spec.entities import (
 from motion_spec.manifest import build_url_map, metamodel_url_map
 from motion_spec.derive_solver import AccelerationAxis, SolverIdFactory, acceleration_axes
 
+# ROS interop: a monitor's `also publish to topic` clause is emitted as ros:channel-name /
+# ros:type-name on the monitor node (ns from bdd-dsl's ROS metamodel).
+ROS = rdflib.Namespace("https://index.ros.org/p/")
+
+
+def _ros_camel_to_snake(name: str) -> str:
+    """rosidl message-name -> header stem (Trinary->trinary, TrinaryStamped->trinary_stamped)."""
+    s = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", name)
+    s = re.sub(r"([a-z\d])([A-Z])", r"\1_\2", s)
+    return s.lower()
+
+
+def _ros_type_parts(ros_type: str) -> tuple[str, str, str]:
+    """`pkg/msg/CamelType` -> (pkg, "pkg/msg/camel_type.hpp", "pkg::msg::CamelType").
+
+    Derives the include and C++ type from the rosidl naming rule rather than hardcoding.
+    """
+    parts = ros_type.split("/")
+    pkg, msg_name = parts[0], parts[-1]
+    sub = parts[1] if len(parts) == 3 else "msg"
+    include = f"{pkg}/{sub}/{_ros_camel_to_snake(msg_name)}.hpp"
+    cpp_type = f"{pkg}::{sub}::{msg_name}"
+    return pkg, include, cpp_type
+
 # fmt: off
 from motion_spec.namespace import (
     AGN, ALGO_EXT, APP, CSTR, CSTR_EXT, CSTR_HDL, CSTR_HDL_EXT, ENV, EXEC, GEOM_COORD,
@@ -1481,6 +1505,19 @@ class Parser:
         fallback_node = self.g.value(id_, CSTR_HDL_EXT["fallback-motion"])
         fallback_motion = self.id(fallback_node) if fallback_node is not None else None
         debounce_duration_s = self._optional_float(id_, CSTR_HDL_EXT["debounce-duration"])
+        ros_kwargs = {}
+        ros_channel = self.g.value(id_, ROS["channel-name"])
+        if ros_channel is not None:
+            ros_type = str(self.g.value(id_, ROS["type-name"]) or "")
+            pkg, include, cpp_type = _ros_type_parts(ros_type)
+            ros_kwargs = dict(
+                ros_channel=str(ros_channel),
+                ros_type=ros_type,
+                ros_pkg=pkg,
+                ros_include=include,
+                ros_cpp_type=cpp_type,
+                ros_pub_id=f"{self.id(id_)}_pub".replace("-", "_"),
+            )
         return EdgeMonitor(
             self.id(id_),
             "EdgeTriggeredMonitor",
@@ -1495,6 +1532,7 @@ class Parser:
             event_name=event.upper(),
             fallback_motion=fallback_motion,
             debounce_duration_s=debounce_duration_s,
+            **ros_kwargs,
         )
 
     @memoize
@@ -5774,6 +5812,29 @@ def generate_ir(manifest_path):
 
     schedule = sched1 + sched2 + sched3 + sched4
     shared_schedule = sched1 + sched3 + sched4
+
+    # Collect the distinct ROS publishers a monitor's `also publish to topic` needs, so codegen
+    # links rclcpp/realtime_tools and sets up nodes/publishers only when publishing is present.
+    ros_publishers = []
+    _seen_ros = set()
+    for motion in motions:
+        for phase in ("when_monitors", "until_monitors", "while_monitors"):
+            for mon in getattr(motion, phase, []) or []:
+                channel = getattr(mon, "ros_channel", None)
+                if channel is None or mon.ros_pub_id in _seen_ros:
+                    continue
+                _seen_ros.add(mon.ros_pub_id)
+                ros_publishers.append(
+                    {
+                        "pub_id": mon.ros_pub_id,
+                        "channel": channel,
+                        "cpp_type": mon.ros_cpp_type,
+                        "include": mon.ros_include,
+                        "pkg": mon.ros_pkg,
+                    }
+                )
+    ros_packages = sorted({p["pkg"] for p in ros_publishers})
+
     ir = {
         "slv_arm": slv_arm,
         "slv_base_vel": slv_base_vel,
@@ -5793,6 +5854,10 @@ def generate_ir(manifest_path):
         "wrench_outputs": wrench_outputs,
         "has_arm": bool(slv_arm),
         "has_mobile_base": bool(slv_base_vel or slv_base_frc),
+        "has_ros": bool(ros_publishers),
+        "ros_publishers": ros_publishers,
+        "ros_packages": ros_packages,
+        "ros_node_name": "motion_spec_monitor",
         # Elapsed constraints compare seconds from the runtime clock (MuJoCo sim seconds /
         # real monotonic wall clock).
         "needs_clock_time": any(m.has_elapsed for m in motions),

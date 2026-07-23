@@ -503,6 +503,14 @@ class EdgeMonitor:
     # FSM binding (folded when the monitor's event lives in the FSM namespace).
     fsm_namespace: str | None = None
     fsm_event_idx: int | None = None
+    # ROS topic publish (`also publish to topic`). ros_include/ros_cpp_type are derived
+    # from ros_type via the rosidl naming rule; ros_pub_id is the C++ publisher member.
+    ros_channel: str | None = None
+    ros_type: str | None = None
+    ros_pkg: str | None = None
+    ros_include: str | None = None
+    ros_cpp_type: str | None = None
+    ros_pub_id: str | None = None
     type: str = field(default="EdgeMonitor")
 
 

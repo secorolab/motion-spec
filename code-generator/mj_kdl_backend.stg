@@ -381,7 +381,7 @@ app-headless-print-Quantity-mj_kdl(item) ::= <<
         std::cout \<\< "<item.id>=" \<\< shared.<item.id> \<\< "\n";
 >>
 
-cmake_mj_kdl(motions, fsm_namespace) ::= <<
+cmake_mj_kdl(motions, fsm_namespace, has_ros, ros_packages) ::= <<
 cmake_minimum_required(VERSION 3.16)
 project(motion_spec_mj_kdl_target LANGUAGES CXX)
 
@@ -396,6 +396,11 @@ find_package(coord2b REQUIRED)
 <endif>
 find_package(mj_kdl_wrapper 0.2.2 REQUIRED CONFIG)
 find_package(Threads REQUIRED)
+<if(has_ros)>
+find_package(rclcpp REQUIRED)
+find_package(realtime_tools REQUIRED)
+<ros_packages:{pkg | find_package(<pkg> REQUIRED)}; separator="\n">
+<endif>
 
 option(MOTION_SPEC_ENABLE_INTROSPECTION "Enable generated runtime introspection logging" OFF)
 
@@ -415,6 +420,11 @@ target_link_libraries(main PRIVATE
     orocos-kdl
 <if(fsm_namespace)>
     ${coord2b_LIBRARIES}
+<endif>
+<if(has_ros)>
+    rclcpp::rclcpp
+    realtime_tools::realtime_tools
+<ros_packages:{pkg |     ${<pkg>_TARGETS\}}; separator="\n">
 <endif>
 )
 if(MOTION_SPEC_ENABLE_INTROSPECTION)

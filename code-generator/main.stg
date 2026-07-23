@@ -102,32 +102,32 @@ app-main-base-setup() ::= <<
     };
 >>
 
-app-arm-includes(backend, has_arm, wrench_outputs, has_wrench_outputs) ::= <<
-<({app-arm-includes-<backend>})(has_arm, wrench_outputs, has_wrench_outputs)>
+app-arm-includes(backend, has_arm, wrench_outputs) ::= <<
+<({app-arm-includes-<backend>})(has_arm, wrench_outputs)>
 >>
 
-app-arm-setup(backend, arm_solvers, scene, wrench_outputs, has_wrench_outputs) ::= <<
-<({app-arm-setup-<backend>})(arm_solvers, scene, wrench_outputs, has_wrench_outputs)>
+app-arm-setup(backend, arm_solvers, scene, wrench_outputs) ::= <<
+<({app-arm-setup-<backend>})(arm_solvers, scene, wrench_outputs)>
 >>
 
 app-loop-condition(backend, has_arm) ::= <<
 <({app-loop-condition-<backend>})(has_arm)>
 >>
 
-app-arm-cleanup(backend, has_arm, wrench_outputs, has_wrench_outputs) ::= <<
-<({app-arm-cleanup-<backend>})(has_arm, wrench_outputs, has_wrench_outputs)>
+app-arm-cleanup(backend, has_arm, wrench_outputs) ::= <<
+<({app-arm-cleanup-<backend>})(has_arm, wrench_outputs)>
 >>
 
 app-arm-start(backend, arm_solvers, fsm_namespace, fsm_step_event, fsm_step_event_idx) ::= <<
 <({app-arm-start-<backend>})(arm_solvers, fsm_namespace, fsm_step_event, fsm_step_event_idx)>
 >>
 
-app-arm-post-setup(backend, arm_solvers, motions, wrench_outputs, has_wrench_outputs) ::= <<
-<({app-arm-post-setup-<backend>})(arm_solvers, motions, wrench_outputs, has_wrench_outputs)>
+app-arm-post-setup(backend, arm_solvers, motions, wrench_outputs) ::= <<
+<({app-arm-post-setup-<backend>})(arm_solvers, motions, wrench_outputs)>
 >>
 
-app-arm-post-setup-robif2b(arm_solvers, motions, wrench_outputs, has_wrench_outputs) ::= <<
-<robif2b-hardware-post-setup(arm_solvers, wrench_outputs, has_wrench_outputs)>
+app-arm-post-setup-robif2b(arm_solvers, motions, wrench_outputs) ::= <<
+<robif2b-hardware-post-setup(arm_solvers, wrench_outputs)>
 >>
 
 app-arm-loop-reset(backend, arm_solvers, fsm_namespace) ::= <<
@@ -137,8 +137,8 @@ app-arm-loop-reset(backend, arm_solvers, fsm_namespace) ::= <<
 app-arm-loop-reset-robif2b(arm_solvers, fsm_namespace) ::= <<
 >>
 
-app-arm-runtime-step(backend, arm_solvers, wrench_outputs, has_wrench_outputs, has_wrench_data) ::= <<
-<({app-arm-runtime-step-<backend>})(arm_solvers, wrench_outputs, has_wrench_outputs, has_wrench_data)>
+app-arm-runtime-step(backend, arm_solvers, wrench_outputs) ::= <<
+<({app-arm-runtime-step-<backend>})(arm_solvers, wrench_outputs)>
 >>
 
 clock-time-source(backend, arm_solvers, has_arm) ::= <<
@@ -188,7 +188,7 @@ ros-shutdown(ros_publishers) ::= <<
     rclcpp::shutdown();
 >>
 
-app_main(motions, wrench_outputs, has_wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene, trace, needs_clock_time, control_period_ns) ::= <<
+app_main(motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene, trace, needs_clock_time, control_period_ns) ::= <<
 #include "runtime.hpp"
 #include "shared_state.hpp"
 #ifdef MOTION_SPEC_ENABLE_INTROSPECTION
@@ -199,7 +199,7 @@ app_main(motions, wrench_outputs, has_wrench_outputs, has_arm, has_mobile_base, 
 <endif>
 <motions:{motion | <motion-include(motion)>}; separator="\n">
 
-<app-arm-includes(backend, has_arm, wrench_outputs, has_wrench_outputs)>
+<app-arm-includes(backend, has_arm, wrench_outputs)>
 #include \<unistd.h\>
 
 int main(int argc, char **argv) {
@@ -211,7 +211,7 @@ int main(int argc, char **argv) {
 <endif>
 <if(has_arm)>
 
-<app-arm-setup(backend, arm_solvers, scene, wrench_outputs, has_wrench_outputs)>
+<app-arm-setup(backend, arm_solvers, scene, wrench_outputs)>
 <endif>
 <wrench_outputs:{wrench | <wrench-measurement(wrench)>}; separator="\n">
 <wrench_outputs:{wrench |     robot.<wrench.id> = &<wrench.id>_measurement;}; separator="\n">
@@ -248,14 +248,14 @@ int main(int argc, char **argv) {
 <endif>
 <if(has_arm)>
 <app-arm-trace-update(backend, arm_solvers, trace)>
-<app-arm-runtime-step(backend, arm_solvers, wrench_outputs, has_wrench_outputs, has_wrench_data)>
+<app-arm-runtime-step(backend, arm_solvers, wrench_outputs)>
 <endif>
 
         motion_spec::runtime::sleep_until_next(_next_tick, <control_period_ns>);
     }
 <if(has_arm)>
 
-<app-arm-cleanup(backend, has_arm, wrench_outputs, has_wrench_outputs)>
+<app-arm-cleanup(backend, has_arm, wrench_outputs)>
 <arm_solvers:{solver |
 <robot-shutdown(solver, backend)>
 }; separator="\n">
@@ -310,7 +310,7 @@ fsm-dispatch(motions, fsm_namespace) ::= <<
     \};
 >>
 
-ref_main(motions, wrench_outputs, has_wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, shared_data, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene, trace, fsm_namespace, fsm_step_event, fsm_step_event_idx, needs_clock_time, control_period_ns, has_ros, ros_publishers, ros_node_name) ::= <<
+ref_main(motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, shared_data, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene, trace, fsm_namespace, fsm_step_event, fsm_step_event_idx, needs_clock_time, control_period_ns, has_ros, ros_publishers, ros_node_name) ::= <<
 #include "runtime.hpp"
 #include "shared_state.hpp"
 <if(has_mobile_base)>
@@ -318,7 +318,7 @@ ref_main(motions, wrench_outputs, has_wrench_outputs, has_arm, has_mobile_base, 
 <endif>
 <motions:{motion | <motion-include(motion)>}; separator="\n">
 
-<app-arm-includes(backend, has_arm, wrench_outputs, has_wrench_outputs)>
+<app-arm-includes(backend, has_arm, wrench_outputs)>
 #include \<unistd.h\>
 <if(fsm_namespace)>
 
@@ -338,7 +338,7 @@ int main(int argc, char **argv) {
 <endif>
 <if(has_arm)>
 
-<app-arm-setup(backend, arm_solvers, scene, wrench_outputs, has_wrench_outputs)>
+<app-arm-setup(backend, arm_solvers, scene, wrench_outputs)>
 <endif>
 <wrench_outputs:{wrench | <wrench-measurement(wrench)>}; separator="\n">
 <wrench_outputs:{wrench |     robot.<wrench.id> = &<wrench.id>_measurement;}; separator="\n">
@@ -358,7 +358,7 @@ int main(int argc, char **argv) {
 <endif>
 
 <if(has_arm)>
-<app-arm-post-setup(backend, arm_solvers, motions, wrench_outputs, has_wrench_outputs)>
+<app-arm-post-setup(backend, arm_solvers, motions, wrench_outputs)>
 <endif>
 
 <if(fsm_namespace)>
@@ -452,7 +452,7 @@ int main(int argc, char **argv) {
 <endif>
 <if(has_arm)>
 <app-arm-trace-update(backend, arm_solvers, trace)>
-<app-arm-runtime-step(backend, arm_solvers, wrench_outputs, has_wrench_outputs, has_wrench_data)>
+<app-arm-runtime-step(backend, arm_solvers, wrench_outputs)>
 <endif>
 <if(fsm_namespace)>
         fsm_step_nbx(fsm);
@@ -478,7 +478,7 @@ int main(int argc, char **argv) {
 <app-headless-telemetry(backend, shared_data, arm_solvers, scene)>
 <if(has_arm)>
 
-<app-arm-cleanup(backend, has_arm, wrench_outputs, has_wrench_outputs)>
+<app-arm-cleanup(backend, has_arm, wrench_outputs)>
 <arm_solvers:{solver |
 <robot-shutdown(solver, backend)>
 }; separator="\n">

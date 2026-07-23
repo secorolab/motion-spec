@@ -5809,10 +5809,6 @@ def generate_ir(manifest_path):
             if item.type == "Wrench" and item.id not in closure_output_map
         ]
     )
-    # A declared FT sensor must initialize the real peripheral backend even when
-    # its wrench is monitoring-only and is not consumed by a solver constraint.
-    has_ft_sensor = any(g.triples((None, RDF.type, SENSORS.ForceTorqueSensor)) )
-
     motions, fsm_meta = build_motion_units(
         g,
         p,
@@ -5912,8 +5908,6 @@ def generate_ir(manifest_path):
             data_structures, pose_components
         ),
         "wrench_outputs": wrench_outputs,
-        "has_wrench_data": bool(wrench_outputs),
-        "has_wrench_outputs": bool(wrench_outputs) or has_ft_sensor,
         "has_arm": bool(slv_arm),
         "has_mobile_base": bool(slv_base_vel or slv_base_frc),
         "has_ros": bool(ros_publishers),

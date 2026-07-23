@@ -251,7 +251,6 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
             "closures": ir["closures"],
             "views": ir["views"],
             "wrench_outputs": ir["wrench_outputs"],
-            "has_wrench_outputs": ir.get("has_wrench_outputs", bool(ir["wrench_outputs"])),
             "base_velocity_solvers": ir["base_velocity_solvers"],
             "base_force_solvers": ir["base_force_solvers"],
             "has_mobile_base": ir["has_mobile_base"],

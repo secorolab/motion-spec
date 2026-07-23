@@ -127,7 +127,7 @@ robot-shutdown-robif2b-KinovaGen3(solver) ::= <<
 <endif>
 >>
 
-app-arm-includes-robif2b(has_arm, wrench_outputs, has_wrench_outputs) ::= <<
+app-arm-includes-robif2b(has_arm, wrench_outputs) ::= <<
 <if(has_arm)>
 #ifdef MOTION_SPEC_ENABLE_INTROSPECTION
 #include "introspect_model.hpp"
@@ -140,7 +140,7 @@ app-arm-includes-robif2b(has_arm, wrench_outputs, has_wrench_outputs) ::= <<
 #include \<urdf_model/model.h\>
 #include \<urdf_parser/urdf_parser.h\>
 #include \<kdl_parser/kdl_parser.hpp\>
-<if(has_wrench_outputs)>
+<if(wrench_outputs)>
 #include \<mutex\>
 #include \<string\>
 #include \<robif2b/functions/robotiq_ft_sensor.h\>
@@ -149,7 +149,7 @@ app-arm-includes-robif2b(has_arm, wrench_outputs, has_wrench_outputs) ::= <<
 <endif>
 >>
 
-app-arm-setup-robif2b(arm_solvers, scene, wrench_outputs, has_wrench_outputs) ::= <<
+app-arm-setup-robif2b(arm_solvers, scene, wrench_outputs) ::= <<
     urdf::ModelInterfaceSharedPtr kinova_model = urdf::parseURDFFile("<first(arm_solvers).urdf>");
     if (!kinova_model) {
         std::cerr \<\< "Failed to parse Kinova URDF: <first(arm_solvers).urdf>\n";
@@ -171,7 +171,7 @@ app-arm-setup-robif2b(arm_solvers, scene, wrench_outputs, has_wrench_outputs) ::
 <robot-assign(solver, "robif2b")>
 }; separator="\n">
 
-<if(has_wrench_outputs)>    struct robif2b_ft_runtime {
+<if(wrench_outputs)>    struct robif2b_ft_runtime {
         robif2b_robotiq_ft_sensor_nbx sensor{\};
         std::string port;
         float force_msr[3] = {0.0f, 0.0f, 0.0f\};
@@ -218,7 +218,7 @@ app-loop-condition-robif2b(has_arm) ::= <<
 true
 >>
 
-app-arm-runtime-step-robif2b(arm_solvers, wrench_outputs, has_wrench_outputs, has_wrench_data) ::= <<
+app-arm-runtime-step-robif2b(arm_solvers, wrench_outputs) ::= <<
 <arm_solvers:{solver | <if(solver.runtime_owner)>        bool _torque_finite = true;
         for (int i = 0; i \< KINOVA_NUM_JOINTS; ++i) {
             if (!std::isfinite(kinova_<solver.runtime_id>_state.eff_cmd[i])) {
@@ -235,16 +235,14 @@ app-arm-runtime-step-robif2b(arm_solvers, wrench_outputs, has_wrench_outputs, ha
             break;
         \}
 <endif>}; separator="">
-<if(has_wrench_outputs)>    if (robif2b_ft.error.load() || robif2b_gripper.error.load()) {
+<if(wrench_outputs)>    if (robif2b_ft.error.load() || robif2b_gripper.error.load()) {
         std::cerr \<\< "robif2b peripheral update failed\n";
         break;
     \}
-<if(has_wrench_data)>
     if (robot.ext_force != nullptr) {
         std::lock_guard\<std::mutex\> lock(robif2b_ft.mutex);
         *robot.ext_force = robif2b_ft.wrench;
     \}
-<endif>
 <endif>
 >>
 
@@ -257,8 +255,8 @@ robif2b-stop-arm(arm_solvers) ::= <<
 <endif>}; separator="">
 >>
 
-robif2b-hardware-post-setup(arm_solvers, wrench_outputs, has_wrench_outputs) ::= <<
-<if(has_wrench_outputs)>
+robif2b-hardware-post-setup(arm_solvers, wrench_outputs) ::= <<
+<if(wrench_outputs)>
     if (_use_ft) {
     const char *ft_port = std::getenv("MOTION_SPEC_ROBOTIQ_FT_PORT");
     robif2b_ft.port = (ft_port && *ft_port) ? ft_port : "ttyUSB0";
@@ -361,8 +359,8 @@ robif2b-hardware-post-setup(arm_solvers, wrench_outputs, has_wrench_outputs) ::=
 <endif>
 >>
 
-app-arm-cleanup-robif2b(has_arm, wrench_outputs, has_wrench_outputs) ::= <<
-<if(has_wrench_outputs)>
+app-arm-cleanup-robif2b(has_arm, wrench_outputs) ::= <<
+<if(wrench_outputs)>
     if (robif2b_gripper.active) {
         robif2b_gripper.stop.store(true);
         if (robif2b_gripper.worker.joinable()) robif2b_gripper.worker.join();
@@ -410,7 +408,7 @@ app-arm-start-robif2b(arm_solvers, fsm_namespace, fsm_step_event, fsm_step_event
 <endif>}; separator="\n">
 >>
 
-cmake_robif2b(motions, fsm_namespace, wrench_outputs, has_wrench_outputs) ::= <<
+cmake_robif2b(motions, fsm_namespace, wrench_outputs) ::= <<
 cmake_minimum_required(VERSION 3.16)
 project(motion_spec_robif2b_target LANGUAGES CXX)
 
@@ -425,7 +423,7 @@ find_package(urdfdom REQUIRED)
 find_package(kdl_parser REQUIRED)
 find_package(robif2b REQUIRED)
 find_package(Threads REQUIRED)
-<if(has_wrench_outputs)>
+<if(wrench_outputs)>
 find_package(serial REQUIRED)
 find_package(robotiq_driver_noros REQUIRED)
 find_package(robotiq_ft REQUIRED)
@@ -453,7 +451,7 @@ target_include_directories(main PRIVATE
 )
 target_link_libraries(main PRIVATE
     robif2b::kinova_gen3
-<if(has_wrench_outputs)>
+<if(wrench_outputs)>
     robif2b::robotiq_ft_sensor
     robif2b::robotiq_gripper
     serial::serial

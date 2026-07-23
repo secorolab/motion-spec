@@ -260,8 +260,9 @@ solver-output-Wrench-mj_kdl(solver, out) ::= <<
 >>
 
 solver-output-Wrench-robif2b(solver, out) ::= <<
-    // robif2b has no sim FT sensor; a real build wires a hardware FT driver here.
-    shared.<out.id>.force = KDL::Vector::Zero();
+    if (robot.<out.id> != nullptr) {
+        shared.<out.id> = *robot.<out.id>;
+    }
 >>
 
 solver-output(solver, out, backend) ::= <<
@@ -417,14 +418,20 @@ solver-stage-output(solver, backend) ::= <<
 >>
 solver-stage-output-robif2b(solver) ::= <<
     for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
-        robot.<solver.id>.state->eff_cmd[i] = state.<solver.id>.tau_ctrl(i);
+<if(solver.torque_saturation)>        const double _tau_cmd = motion_spec::runtime::clamp_range(state.<solver.id>.tau_ctrl(i), <saturation-lower(solver.torque_saturation)>, <saturation-upper(solver.torque_saturation)>);
+<else>        const double _tau_cmd = state.<solver.id>.tau_ctrl(i);
+<endif>
+<solver.commanded_torque_samples:{sample |         if (i == <sample.joint_index>) shared.<sample.id> = _tau_cmd;}; separator="\n">
+        robot.<solver.id>.state->eff_cmd[i] = _tau_cmd;
     }
 >>
 solver-stage-output-mj_kdl(solver) ::= <<
     for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
-<if(solver.torque_saturation)>        robot.<solver.id>.robot->jnt_trq_cmd[i] = motion_spec::runtime::clamp_range(state.<solver.id>.tau_ctrl(i), <saturation-lower(solver.torque_saturation)>, <saturation-upper(solver.torque_saturation)>);
-<else>        robot.<solver.id>.robot->jnt_trq_cmd[i] = state.<solver.id>.tau_ctrl(i);
+<if(solver.torque_saturation)>        const double _tau_cmd = motion_spec::runtime::clamp_range(state.<solver.id>.tau_ctrl(i), <saturation-lower(solver.torque_saturation)>, <saturation-upper(solver.torque_saturation)>);
+<else>        const double _tau_cmd = state.<solver.id>.tau_ctrl(i);
 <endif>
+<solver.commanded_torque_samples:{sample |         if (i == <sample.joint_index>) shared.<sample.id> = _tau_cmd;}; separator="\n">
+        robot.<solver.id>.robot->jnt_trq_cmd[i] = _tau_cmd;
     }
 >>
 

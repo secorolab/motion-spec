@@ -541,6 +541,7 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
                         "active_terms": slot.get("active_terms"),
                         "active_terms_present": slot.get("active_terms_present", False),
                         "active_any": slot.get("active_any", False),
+                        "motion": state.get("motion"),
                     }
                 )
             else:
@@ -554,7 +555,12 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
                     }
                 )
         states.append(
-            {"index": state.get("index", -1), "controllers": controllers, "monitors": monitors}
+            {
+                "index": state.get("index", -1),
+                "motion": state.get("motion"),
+                "controllers": controllers,
+                "monitors": monitors,
+            }
         )
     spatial = schema.get("spatial", {"poses": [], "twists": [], "wrenches": []})
     return {

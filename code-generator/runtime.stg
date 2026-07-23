@@ -7,6 +7,7 @@ runtime_header(has_mobile_base, control_period_ns) ::= <<
 #include \<cassert\>
 #include \<algorithm\>
 #include \<cerrno\>
+#include \<cctype\>
 #include \<chrono\>
 #include \<cmath\>
 #include \<cstdlib\>
@@ -80,7 +81,7 @@ inline double smoothstep(double alpha) {
 inline double monotonic_time_s() {
     using clock = std::chrono::steady_clock;
     static const auto start = clock::now();
-    return std::chrono::duration<double>(clock::now() - start).count();
+    return std::chrono::duration\<double\>(clock::now() - start).count();
 }
 
 inline bool timespec_less(const timespec &a, const timespec &b) {
@@ -448,8 +449,19 @@ inline void warn_produce_event_not_implemented(std::string_view event_id) {
 }
 
 inline bool runtime_name_matches(std::string_view actual, std::string_view target) {
-    return actual == target ||
-           (actual.size() > target.size() && actual.substr(actual.size() - target.size()) == target);
+    if (target.empty()) {
+        return false;
+    }
+    const auto equal_ignore_case = [](std::string_view lhs, std::string_view rhs) {
+        return lhs.size() == rhs.size() && std::equal(lhs.begin(), lhs.end(), rhs.begin(),
+            [](char a, char b) {
+                return std::tolower(static_cast\<unsigned char\>(a)) ==
+                       std::tolower(static_cast\<unsigned char\>(b));
+            });
+    };
+    return equal_ignore_case(actual, target) ||
+           (actual.size() > target.size() &&
+            equal_ignore_case(actual.substr(actual.size() - target.size()), target));
 }
 
 inline unsigned int find_joint_index(const KDL::Chain &chain, std::string_view joint_name) {

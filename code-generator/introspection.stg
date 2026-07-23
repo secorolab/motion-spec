@@ -353,6 +353,10 @@ public:
         : shm_(shm_name()),
           logger_(log_path(), kRuntimeProducerAgentId, kRuntimeActivityId) {}
 
+    // Flush the protobuf writer before a backend tears down its GUI or hardware
+    // resources. The destructor remains a second, harmless close for early exits.
+    void close() { logger_.close(); }
+
     void begin_tick(double t, std::uint64_t step, std::int64_t active_motion) {
         begin_tick(t, step, active_motion, active_motion);
     \}
@@ -485,8 +489,32 @@ introspection-controller-sample(slot, views) ::= <<
         pub.constraint_sample(<slot.uri>, <slot.error_expr>, <slot.output_expr>, <ctrl-sig(slot.measured_signal, views)>, <ctrl-sig(slot.setpoint_signal, views)>, motion_spec::runtime::constraint_satisfied(<slot.error_expr>));
 >>
 
+introspection-cond-term(t, motion_id) ::= <<
+<({introspection-cond-term-<t.kind>})(t, motion_id)>
+>>
+
+introspection-cond-term-elapsed(t, motion_id) ::= <<
+(shared.<motion_id>_motion_start_time <t.op> <t.threshold>)
+>>
+
+introspection-cond-term-constraint(t, motion_id) ::= <<
+motion_spec::runtime::constraint_satisfied(shared.<t.error_id>)
+>>
+
+introspection-cond-term-flag(t, motion_id) ::= <<
+<t.motion_id>_state_instance.<t.flag>
+>>
+
+introspection-cond-term-event(t, motion_id) ::= <<
+<t.motion_id>_state_instance.<t.monitor_id>_event_triggered
+>>
+
+introspection-bool-condition(terms, any, motion_id) ::= <<
+<if(rest(terms))>(<if(any)><terms:{t | <introspection-cond-term(t, motion_id)>}; separator=" || "><else><terms:{t | <introspection-cond-term(t, motion_id)>}; separator=" && "><endif>)<else><introspection-cond-term(first(terms), motion_id)><endif>
+>>
+
 introspection-monitor-sample(slot) ::= <<
-<if(slot.has_active)>        pub.monitor_sample(<slot.uri>, <if(slot.active_terms_present)><bool-condition(slot.active_terms, slot.active_any)><else>false<endif>, <if(slot.active_terms_present)><bool-condition(slot.active_terms, slot.active_any)><else>false<endif>);<else>        pub.monitor_sample(<slot.uri>, <if(slot.composite_error)>motion_spec::runtime::constraint_error_value(<slot.value_expr>)<else><slot.value_expr><endif>, motion_spec::runtime::constraint_satisfied(<slot.value_expr>));<endif>
+<if(slot.has_active)>        pub.monitor_sample(<slot.uri>, <if(slot.active_terms_present)><introspection-bool-condition(slot.active_terms, slot.active_any, slot.motion)><else>false<endif>, <if(slot.active_terms_present)><introspection-bool-condition(slot.active_terms, slot.active_any, slot.motion)><else>false<endif>);<else>        pub.monitor_sample(<slot.uri>, <if(slot.composite_error)>motion_spec::runtime::constraint_error_value(<slot.value_expr>)<else><slot.value_expr><endif>, motion_spec::runtime::constraint_satisfied(<slot.value_expr>));<endif>
 >>
 
 introspection-quantity-sample(slot, views) ::= <<

@@ -2447,6 +2447,7 @@ def _arm_solvers_for_handler(handler, slv_arm, solver_ids):
                 chain_root=solver.chain_root,
                 chain_end=solver.chain_end,
                 torque_saturation=solver.torque_saturation,
+                commanded_torque_samples=solver.commanded_torque_samples,
             )
         )
 
@@ -3931,6 +3932,7 @@ def _build_introspection(
     closures,
     views,
     shared_data,
+    arm_solvers,
 ):
     """Build the introspection artifact (uris, motions, controllers, monitors, quantities,
     provenance) and fold in the controller-state and frame-log samples.
@@ -4172,6 +4174,7 @@ def _build_introspection(
     # then the frame-log quantity/spatial samples that read them.
     _annotate_controller_signals(introspection["controllers"], closures)
     add_controller_internal_state_logging(closures, shared_data, introspection, motions)
+    add_solver_command_torque_logging(arm_solvers, motions, shared_data, introspection)
     add_quantity_samples(introspection, shared_data, views)
     add_spatial_samples(introspection, shared_data)
     return introspection
@@ -5071,6 +5074,59 @@ def add_controller_internal_state_logging(
         closure["internal_state_samples"] = closure_samples
 
 
+KINOVA_NUM_JOINTS = 7
+
+
+def add_solver_command_torque_logging(
+    arm_solvers: list, motions: list, shared_data: list, introspection: dict
+) -> None:
+    """Add post-saturation per-joint torque channels to the frame log."""
+    quantities = introspection.setdefault("quantities", [])
+    shared_ids = {_field(item, "id") for item in shared_data if _field(item, "id")}
+    quantity_ids = {_field(item, "id") for item in quantities if _field(item, "id")}
+    samples_by_solver = {}
+
+    for solver in arm_solvers:
+        samples = []
+        for joint_index in range(KINOVA_NUM_JOINTS):
+            sample_id = f"commanded_torque_{solver.id}_joint_{joint_index + 1}"
+            samples.append({"id": sample_id, "joint_index": joint_index})
+            if sample_id not in shared_ids:
+                shared_data.append(
+                    {
+                        "id": sample_id,
+                        "type": "Quantity",
+                        "role": "commanded_joint_torque",
+                        "solver": solver.id,
+                        "joint_index": joint_index,
+                    }
+                )
+                shared_ids.add(sample_id)
+            if sample_id not in quantity_ids:
+                quantities.append(
+                    {
+                        "id": sample_id,
+                        "type": "Quantity",
+                        "unit": ["N_M"],
+                        "quantity_kind": ["Torque"],
+                        "role": "commanded_joint_torque",
+                        "solver": solver.id,
+                        "joint_index": joint_index,
+                    }
+                )
+                quantity_ids.add(sample_id)
+        _set_field(solver, "commanded_torque_samples", samples)
+        samples_by_solver[solver.id] = samples
+
+    for motion in motions:
+        for solver in _field(motion, "arm_solvers", []) or []:
+            _set_field(
+                solver,
+                "commanded_torque_samples",
+                samples_by_solver.get(_field(solver, "id"), []),
+            )
+
+
 def add_quantity_samples(introspection: dict, shared_data: list, views: dict) -> None:
     """Build the per-quantity frame-log sample descriptors from the introspection quantities and
     shared data.
@@ -5484,7 +5540,7 @@ def add_motion_function_interfaces(motions: list) -> None:
         _set_field(motion, "monitor_needs_robot", when_fsm or until_fsm)
 
         _set_field(motion, "apply_needs_state", has_arm)
-        _set_field(motion, "apply_needs_shared", has_forwarded_commands)
+        _set_field(motion, "apply_needs_shared", has_forwarded_commands or has_arm)
         _set_field(motion, "apply_needs_robot", has_arm or has_forwarded_commands)
 
 
@@ -5753,6 +5809,9 @@ def generate_ir(manifest_path):
             if item.type == "Wrench" and item.id not in closure_output_map
         ]
     )
+    # A declared FT sensor must initialize the real peripheral backend even when
+    # its wrench is monitoring-only and is not consumed by a solver constraint.
+    has_ft_sensor = any(g.triples((None, RDF.type, SENSORS.ForceTorqueSensor)) )
 
     motions, fsm_meta = build_motion_units(
         g,
@@ -5808,6 +5867,7 @@ def generate_ir(manifest_path):
         closures=closures,
         views=view_map,
         shared_data=shared_data,
+        arm_solvers=slv_arm,
     )
 
     schedule = sched1 + sched2 + sched3 + sched4
@@ -5852,6 +5912,8 @@ def generate_ir(manifest_path):
             data_structures, pose_components
         ),
         "wrench_outputs": wrench_outputs,
+        "has_wrench_data": bool(wrench_outputs),
+        "has_wrench_outputs": bool(wrench_outputs) or has_ft_sensor,
         "has_arm": bool(slv_arm),
         "has_mobile_base": bool(slv_base_vel or slv_base_frc),
         "has_ros": bool(ros_publishers),

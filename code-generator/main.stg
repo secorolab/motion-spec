@@ -102,27 +102,32 @@ app-main-base-setup() ::= <<
     };
 >>
 
-app-arm-includes(backend, has_arm) ::= <<
-<({app-arm-includes-<backend>})(has_arm)>
+app-arm-includes(backend, has_arm, wrench_outputs, has_wrench_outputs) ::= <<
+<({app-arm-includes-<backend>})(has_arm, wrench_outputs, has_wrench_outputs)>
 >>
 
-app-arm-setup(backend, arm_solvers, scene) ::= <<
-<({app-arm-setup-<backend>})(arm_solvers, scene)>
+app-arm-setup(backend, arm_solvers, scene, wrench_outputs, has_wrench_outputs) ::= <<
+<({app-arm-setup-<backend>})(arm_solvers, scene, wrench_outputs, has_wrench_outputs)>
 >>
 
 app-loop-condition(backend, has_arm) ::= <<
 <({app-loop-condition-<backend>})(has_arm)>
 >>
 
-app-arm-cleanup(backend, has_arm) ::= <<
-<({app-arm-cleanup-<backend>})(has_arm)>
+app-arm-cleanup(backend, has_arm, wrench_outputs, has_wrench_outputs) ::= <<
+<({app-arm-cleanup-<backend>})(has_arm, wrench_outputs, has_wrench_outputs)>
 >>
 
-app-arm-post-setup(backend, arm_solvers, motions) ::= <<
-<({app-arm-post-setup-<backend>})(arm_solvers, motions)>
+app-arm-start(backend, arm_solvers, fsm_namespace, fsm_step_event, fsm_step_event_idx) ::= <<
+<({app-arm-start-<backend>})(arm_solvers, fsm_namespace, fsm_step_event, fsm_step_event_idx)>
 >>
 
-app-arm-post-setup-robif2b(arm_solvers, motions) ::= <<
+app-arm-post-setup(backend, arm_solvers, motions, wrench_outputs, has_wrench_outputs) ::= <<
+<({app-arm-post-setup-<backend>})(arm_solvers, motions, wrench_outputs, has_wrench_outputs)>
+>>
+
+app-arm-post-setup-robif2b(arm_solvers, motions, wrench_outputs, has_wrench_outputs) ::= <<
+<robif2b-hardware-post-setup(arm_solvers, wrench_outputs, has_wrench_outputs)>
 >>
 
 app-arm-loop-reset(backend, arm_solvers, fsm_namespace) ::= <<
@@ -132,8 +137,8 @@ app-arm-loop-reset(backend, arm_solvers, fsm_namespace) ::= <<
 app-arm-loop-reset-robif2b(arm_solvers, fsm_namespace) ::= <<
 >>
 
-app-arm-runtime-step(backend, arm_solvers) ::= <<
-<({app-arm-runtime-step-<backend>})(arm_solvers)>
+app-arm-runtime-step(backend, arm_solvers, wrench_outputs, has_wrench_outputs, has_wrench_data) ::= <<
+<({app-arm-runtime-step-<backend>})(arm_solvers, wrench_outputs, has_wrench_outputs, has_wrench_data)>
 >>
 
 clock-time-source(backend, arm_solvers, has_arm) ::= <<
@@ -157,33 +162,7 @@ app-headless-telemetry(backend, shared_data, arm_solvers, scene) ::= <<
 <({app-headless-telemetry-<backend>})(shared_data, arm_solvers, scene)>
 >>
 
-// ROS publish is decoupled from the control loop: each RealtimePublisher owns a background
-// thread that does the DDS publish; the RT loop only does a non-blocking trylock/unlockAndPublish.
-ros-includes(ros_publishers) ::= <<
-#include \<rclcpp/rclcpp.hpp\>
-#include \<realtime_tools/realtime_publisher.hpp\>
-<ros_publishers:{p | #include "<p.include>"}; separator="\n">
->>
-
-ros-io-members(ros_publishers) ::= <<
-    rclcpp::Node::SharedPtr ros_node = nullptr;
-<ros_publishers:{p |     std::shared_ptr\<realtime_tools::RealtimePublisher\<<p.cpp_type>\>\> <p.pub_id> = nullptr;}; separator="\n">
->>
-
-ros-setup(ros_publishers, ros_node_name) ::= <<
-    rclcpp::init(argc, argv);
-    robot.ros_node = std::make_shared\<rclcpp::Node\>("<ros_node_name>");
-<ros_publishers:{p |     robot.<p.pub_id> = std::make_shared\<realtime_tools::RealtimePublisher\<<p.cpp_type>\>\>(
-        robot.ros_node->create_publisher\<<p.cpp_type>\>("<p.channel>", rclcpp::QoS(10)));}; separator="\n">
->>
-
-ros-shutdown(ros_publishers) ::= <<
-<ros_publishers:{p |     robot.<p.pub_id>.reset();}; separator="\n">
-    robot.ros_node.reset();
-    rclcpp::shutdown();
->>
-
-app_main(motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene, trace, needs_clock_time, control_period_ns) ::= <<
+app_main(motions, wrench_outputs, has_wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene, trace, needs_clock_time, control_period_ns) ::= <<
 #include "runtime.hpp"
 #include "shared_state.hpp"
 #ifdef MOTION_SPEC_ENABLE_INTROSPECTION
@@ -194,7 +173,7 @@ app_main(motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, clo
 <endif>
 <motions:{motion | <motion-include(motion)>}; separator="\n">
 
-<app-arm-includes(backend, has_arm)>
+<app-arm-includes(backend, has_arm, wrench_outputs, has_wrench_outputs)>
 #include \<unistd.h\>
 
 int main(int argc, char **argv) {
@@ -206,7 +185,7 @@ int main(int argc, char **argv) {
 <endif>
 <if(has_arm)>
 
-<app-arm-setup(backend, arm_solvers, scene)>
+<app-arm-setup(backend, arm_solvers, scene, wrench_outputs, has_wrench_outputs)>
 <endif>
 <wrench_outputs:{wrench | <wrench-measurement(wrench)>}; separator="\n">
 <wrench_outputs:{wrench |     robot.<wrench.id> = &<wrench.id>_measurement;}; separator="\n">
@@ -243,14 +222,14 @@ int main(int argc, char **argv) {
 <endif>
 <if(has_arm)>
 <app-arm-trace-update(backend, arm_solvers, trace)>
-<app-arm-runtime-step(backend, arm_solvers)>
+<app-arm-runtime-step(backend, arm_solvers, wrench_outputs, has_wrench_outputs, has_wrench_data)>
 <endif>
 
         motion_spec::runtime::sleep_until_next(_next_tick, <control_period_ns>);
     }
 <if(has_arm)>
 
-<app-arm-cleanup(backend, has_arm)>
+<app-arm-cleanup(backend, has_arm, wrench_outputs, has_wrench_outputs)>
 <arm_solvers:{solver |
 <robot-shutdown(solver, backend)>
 }; separator="\n">
@@ -271,6 +250,9 @@ static void step_<motion.id>(<motion.id>_state &<motion.id>_state_instance, shar
     if (!<motion.id>_state_instance.active) {
         <motion.id>_state_instance.active = true;
         <motion.id>_state_instance.active_steps = 0;
+<if(motion.has_active_elapsed)>        shared.<motion.id>_motion_start_time = shared.clock_time_s;
+        <motion.id>_state_instance.motion_start_time = shared.clock_time_s;
+<endif>
 <motion.controllers:{controller |         <controller-reset(motion.id, controller)>}; separator="\n">
     }
     update_<motion.id>(<motion.id>_state_instance, shared, robot);
@@ -302,7 +284,7 @@ fsm-dispatch(motions, fsm_namespace) ::= <<
     \};
 >>
 
-ref_main(motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, shared_data, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene, trace, fsm_namespace, fsm_step_event, fsm_step_event_idx, needs_clock_time, control_period_ns, has_ros, ros_publishers, ros_node_name) ::= <<
+ref_main(motions, wrench_outputs, has_wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, shared_data, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene, trace, fsm_namespace, fsm_step_event, fsm_step_event_idx, needs_clock_time, control_period_ns) ::= <<
 #include "runtime.hpp"
 #include "shared_state.hpp"
 <if(has_mobile_base)>
@@ -310,7 +292,7 @@ ref_main(motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, clo
 <endif>
 <motions:{motion | <motion-include(motion)>}; separator="\n">
 
-<app-arm-includes(backend, has_arm)>
+<app-arm-includes(backend, has_arm, wrench_outputs, has_wrench_outputs)>
 #include \<unistd.h\>
 <if(fsm_namespace)>
 
@@ -320,17 +302,13 @@ ref_main(motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, clo
 int main(int argc, char **argv) {
     robot_io robot{};
     shared_data shared{};
-<if(has_ros)>
-
-<ros-setup(ros_publishers, ros_node_name)>
-<endif>
 <if(has_mobile_base)>
 
 <app-main-base-setup()>
 <endif>
 <if(has_arm)>
 
-<app-arm-setup(backend, arm_solvers, scene)>
+<app-arm-setup(backend, arm_solvers, scene, wrench_outputs, has_wrench_outputs)>
 <endif>
 <wrench_outputs:{wrench | <wrench-measurement(wrench)>}; separator="\n">
 <wrench_outputs:{wrench |     robot.<wrench.id> = &<wrench.id>_measurement;}; separator="\n">
@@ -350,7 +328,7 @@ int main(int argc, char **argv) {
 <endif>
 
 <if(has_arm)>
-<app-arm-post-setup(backend, arm_solvers, motions)>
+<app-arm-post-setup(backend, arm_solvers, motions, wrench_outputs, has_wrench_outputs)>
 <endif>
 
 <if(fsm_namespace)>
@@ -360,6 +338,13 @@ int main(int argc, char **argv) {
 
 <fsm-dispatch(motions, fsm_namespace)>
 
+<endif>
+<if(has_arm)>
+<if(needs_clock_time)>    // Initialize the runtime clock before FSM priming so active-elapsed
+    // motions snapshot their start time in the same clock domain as the main loop.
+    shared.clock_time_s = <clock-time-source(backend, arm_solvers, has_arm)>;
+<endif>
+<app-arm-start(backend, arm_solvers, fsm_namespace, fsm_step_event, fsm_step_event_idx)>
 <endif>
     int _step = 0;
 <if(fsm_namespace)>
@@ -402,6 +387,8 @@ int main(int argc, char **argv) {
             if (!<motion.id>_state_instance.active && can_start_<motion.id>(<sig-args(motion.id, motion.can_start_needs_state, motion.can_start_needs_shared, motion.can_start_needs_robot)>)) {
                 <motion.id>_state_instance.active = true;
                 <motion.id>_state_instance.active_steps = 0;
+<if(motion.has_active_elapsed)>                shared.<motion.id>_motion_start_time = shared.clock_time_s;
+<endif>
 <if(motion.has_active_elapsed)>                <motion.id>_state_instance.motion_start_time = shared.clock_time_s;
 <endif>
 <motion.until_monitors:{m |                 <motion.id>_state_instance.<m.id>_previous = false;
@@ -435,7 +422,7 @@ int main(int argc, char **argv) {
 <endif>
 <if(has_arm)>
 <app-arm-trace-update(backend, arm_solvers, trace)>
-<app-arm-runtime-step(backend, arm_solvers)>
+<app-arm-runtime-step(backend, arm_solvers, wrench_outputs, has_wrench_outputs, has_wrench_data)>
 <endif>
 <if(fsm_namespace)>
         fsm_step_nbx(fsm);
@@ -455,10 +442,13 @@ int main(int argc, char **argv) {
         ++_step;
         motion_spec::runtime::sleep_until_next(_next_tick, <control_period_ns>);
     }
+#ifdef MOTION_SPEC_ENABLE_INTROSPECTION
+    _introspection_pub.close();
+#endif
 <app-headless-telemetry(backend, shared_data, arm_solvers, scene)>
 <if(has_arm)>
 
-<app-arm-cleanup(backend, has_arm)>
+<app-arm-cleanup(backend, has_arm, wrench_outputs, has_wrench_outputs)>
 <arm_solvers:{solver |
 <robot-shutdown(solver, backend)>
 }; separator="\n">
@@ -471,16 +461,12 @@ int main(int argc, char **argv) {
 <if(fsm_namespace)>
     <fsm_namespace>::destroy_fsm(fsm);
 <endif>
-<if(has_ros)>
-
-<ros-shutdown(ros_publishers)>
-<endif>
 
     return 0;
 }
 >>
 
-shared_state_header(shared_data, wrench_outputs, has_arm, has_mobile_base, arm_solvers, base_velocity_solvers, base_force_solvers, backend, fsm_namespace, fsm_header, has_ros, ros_publishers) ::= <<
+shared_state_header(shared_data, wrench_outputs, has_arm, has_mobile_base, arm_solvers, base_velocity_solvers, base_force_solvers, backend, fsm_namespace, fsm_header, motions) ::= <<
 #pragma once
 
 #include "frame_layout.h"
@@ -492,9 +478,6 @@ shared_state_header(shared_data, wrench_outputs, has_arm, has_mobile_base, arm_s
 <endif>
 
 #include \<memory\>
-<if(has_ros)>
-<ros-includes(ros_publishers)>
-<endif>
 #include \<kdl/frames.hpp\>
 #include \<kdl/chain.hpp\>
 #include \<kdl/jacobian.hpp\>
@@ -627,9 +610,6 @@ struct robot_io {
 <if(fsm_namespace)>
     struct events *fsm_events = nullptr;
 <endif>
-<if(has_ros)>
-<ros-io-members(ros_publishers)>
-<endif>
 <arm_solvers:{solver | <arm-robot-member(solver)>}; separator="\n">
 <wrench_outputs:{wrench | <wrench-pointer-member(wrench)>}; separator="\n">
 };
@@ -650,6 +630,8 @@ struct shared_data {
         ++_motion_spec_event_count;
     \}
     double clock_time_s = 0.0;  // runtime clock seconds; MuJoCo sim time or real monotonic time
+<motions:{motion | <if(motion.has_active_elapsed)>    double <motion.id>_motion_start_time = -1.0;
+<endif>}; separator="\n">
 <shared_data:{var | <indented-shared-member(var)>}; separator="\n">
 };
 >>

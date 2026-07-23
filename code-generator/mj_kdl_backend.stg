@@ -56,7 +56,7 @@ robot-shutdown-mj_kdl-KinovaGen3(solver) ::= <<
 <endif>
 >>
 
-app-arm-includes-mj_kdl(has_arm) ::= <<
+app-arm-includes-mj_kdl(has_arm, wrench_outputs, has_wrench_outputs) ::= <<
 <if(has_arm)>
 #ifdef MOTION_SPEC_ENABLE_INTROSPECTION
 #include "introspect_model.hpp"
@@ -71,7 +71,7 @@ app-arm-includes-mj_kdl(has_arm) ::= <<
 <endif>
 >>
 
-app-arm-setup-mj_kdl(arm_solvers, scene) ::= <<
+app-arm-setup-mj_kdl(arm_solvers, scene, wrench_outputs, has_wrench_outputs) ::= <<
     bool headless = false;
     int headless_steps = 2000;
     for (int i = 1; i \< argc; ++i) {
@@ -258,7 +258,7 @@ app-arm-setup-mj_kdl(arm_solvers, scene) ::= <<
     }
 >>
 
-app-arm-post-setup-mj_kdl(arm_solvers, motions) ::= <<
+app-arm-post-setup-mj_kdl(arm_solvers, motions, wrench_outputs, has_wrench_outputs) ::= <<
     mj_env.on_reset = [&](mj_kdl::ResetContext *) {
         const double _q_home[7] = {0.0, 0.2618, 3.1416, -2.2689, 0.0, 0.9599, 1.5708};
 <arm_solvers:{solver | <if(solver.runtime_owner)>        {
@@ -290,18 +290,22 @@ app-loop-condition-mj_kdl(has_arm) ::= <<
 (!headless || headless_steps-- > 0)
 >>
 
-app-arm-cleanup-mj_kdl(has_arm) ::= <<
+app-arm-cleanup-mj_kdl(has_arm, wrench_outputs, has_wrench_outputs) ::= <<
 <if(has_arm)>    if (!headless) {
         mj_kdl::cleanup(&mj_viewer);
     }
     mj_kdl::cleanup(&mj_env);<endif>
 >>
 
-app-arm-runtime-step-mj_kdl(arm_solvers) ::= <<
+app-arm-start-mj_kdl(arm_solvers, fsm_namespace, fsm_step_event, fsm_step_event_idx) ::= <<
+>>
+
+app-arm-runtime-step-mj_kdl(arm_solvers, wrench_outputs, has_wrench_outputs, has_wrench_data) ::= <<
 <arm_solvers:{solver | <if(solver.runtime_owner)>        mj_kdl::update(&mj_<solver.runtime_id>);
 <endif>}; separator="">
         if (!mj_kdl::step(&mj_<first(arm_solvers).runtime_id>)) {
-            std::exit(0);
+            std::cerr \<\< "mj_kdl viewer closed\n";
+            break;
         }
 >>
 

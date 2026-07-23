@@ -92,6 +92,7 @@ def test_gen_and_run_compose_the_model_pipeline(monkeypatch, tmp_path) -> None:
     assert result.exit_code == 0
     assert received["stages"] == ["ir", "code"]
     assert received["run"][1]["executable_args"] == ["--headless", "--steps", "10"]
+    assert received["run"][1]["recover_runtime_ttl"] is True
     assert str(run_generation / "runs" / "run-1") in result.output
 
 

@@ -750,6 +750,7 @@ class HandlerArmSolver:
     chain_root: str = ""
     chain_end: str = ""
     torque_saturation: Saturation | None = None
+    commanded_torque_samples: list = field(default_factory=list)
     runtime_id: str = ""
     runtime_owner: bool = False
     type: str = field(default="HandlerArmSolver")
@@ -767,6 +768,7 @@ class SolverWithInputAndOutput:
     urdf: str = ""
     chain_root: str = ""
     chain_end: str = ""
+    commanded_torque_samples: list = field(default_factory=list)
     chain_tip: str = ""
     robot_model: str = ""
     tool_body: str = ""

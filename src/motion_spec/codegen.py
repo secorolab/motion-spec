@@ -81,6 +81,12 @@ def _source_path(relative_path: Path) -> Path | None:
 
 def resource_path(relative_path: Path) -> Path:
     """Absolute path to a packaged resource (installed dist or source tree); raises if missing."""
+    # Editable checkouts keep templates in the source tree.  Prefer those files so
+    # template changes are used immediately instead of a stale copied resource.
+    if _source_root_from_distribution() is not None:
+        source_path = _source_path(relative_path)
+        if source_path is not None:
+            return source_path
     path = _distribution_path(relative_path) or _source_path(relative_path)
     if path is not None:
         return path
@@ -245,6 +251,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
             "closures": ir["closures"],
             "views": ir["views"],
             "wrench_outputs": ir["wrench_outputs"],
+            "has_wrench_outputs": ir.get("has_wrench_outputs", bool(ir["wrench_outputs"])),
             "base_velocity_solvers": ir["base_velocity_solvers"],
             "base_force_solvers": ir["base_force_solvers"],
             "has_mobile_base": ir["has_mobile_base"],
@@ -261,6 +268,8 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     render_template(stst_bin, "ref_main", ir_payload_path, output_dir / "ref_main.cpp")
     if ir["backend"] == "mj_kdl":
         render_template(stst_bin, "cmake_mj_kdl", ir_payload_path, output_dir / "CMakeLists.txt")
+    elif ir["backend"] == "robif2b":
+        render_template(stst_bin, "cmake_robif2b", ir_payload_path, output_dir / "CMakeLists.txt")
 
 
 def main(argv: list[str] | None = None):

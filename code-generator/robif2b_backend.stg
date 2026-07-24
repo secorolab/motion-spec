@@ -15,7 +15,7 @@ robot-state-struct-robif2b-KinovaGen3(solver) ::= <<
 struct kinova_state {
     bool success = false;
     enum robif2b_ctrl_mode ctrl_mode = ROBIF2B_CTRL_MODE_FORCE;
-    double cycle_time = 0.001;
+    double cycle_time = 0.0;
     double pos_msr[KINOVA_NUM_JOINTS] = {0.0};
     double vel_msr[KINOVA_NUM_JOINTS] = {0.0};
     double eff_msr[KINOVA_NUM_JOINTS] = {0.0};
@@ -163,6 +163,8 @@ app-arm-setup-robif2b(arm_solvers, scene, wrench_outputs) ::= <<
 <arm_solvers:{solver |
 
 <robot-state-init(solver, "robif2b")>
+    // Keep robif2b's velocity integration period identical to the model loop period.
+    kinova_<solver.runtime_id>_state.cycle_time = <scene.timestep_s>;
 
 <robot-init(solver, "robif2b")>
 

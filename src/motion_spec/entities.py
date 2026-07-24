@@ -749,6 +749,7 @@ class HandlerArmSolver:
     root_acc: list[float] | None = None
     chain_root: str = ""
     chain_end: str = ""
+    num_joints: int = 0
     torque_saturation: Saturation | None = None
     commanded_torque_samples: list = field(default_factory=list)
     runtime_id: str = ""
@@ -768,6 +769,7 @@ class SolverWithInputAndOutput:
     urdf: str = ""
     chain_root: str = ""
     chain_end: str = ""
+    num_joints: int = 0
     commanded_torque_samples: list = field(default_factory=list)
     chain_tip: str = ""
     robot_model: str = ""

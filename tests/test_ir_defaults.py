@@ -116,10 +116,13 @@ def test_agent_model_may_bind_the_assembled_kinematic_tree() -> None:
     graph = Graph()
     base = URIRef("https://example.test/arm/base")
     root = URIRef(f"{base}/root")
+    elbow = URIRef("https://example.test/arm/elbow")
+    elbow_frame = URIRef(f"{elbow}/origin")
     tool = URIRef("https://example.test/gripper/tool")
     tcp = URIRef(f"{tool}/tcp")
     tree = URIRef("https://example.test/assembled")
-    joint = URIRef(f"{tree}/fixed")
+    moving_joint = URIRef(f"{tree}/moving")
+    fixed_joint = URIRef(f"{tree}/fixed")
     agent = URIRef("https://example.test/robot")
     modelled = URIRef("https://example.test/modelled-robot")
     model = URIRef("https://example.test/robot-model")
@@ -133,13 +136,18 @@ def test_agent_model_may_bind_the_assembled_kinematic_tree() -> None:
     graph.add((tree, RDF.type, URI_KC_TYPE_SERIAL))
     graph.add((tree, NS_MM_KC_EXT["root"], root))
     graph.add((tree, NS_MM_KC_EXT["tip"], tcp))
-    graph.add((joint, RDF.type, KC.Joint))
-    graph.add((joint, KC["between-attachments"], root))
-    graph.add((joint, KC["between-attachments"], tcp))
+    graph.add((moving_joint, RDF.type, KC.Joint))
+    graph.add((moving_joint, RDF.type, KC.RevoluteJoint))
+    graph.add((moving_joint, KC["between-attachments"], root))
+    graph.add((moving_joint, KC["between-attachments"], elbow_frame))
+    graph.add((fixed_joint, RDF.type, KC.Joint))
+    graph.add((fixed_joint, KC["between-attachments"], elbow_frame))
+    graph.add((fixed_joint, KC["between-attachments"], tcp))
 
     setups, _ordered = _robot_setups_from_graph(graph)
 
     assert setups[agent][1:7] == ("base", "tool", "tool", "KinovaGen3", "", "")
+    assert setups[agent][10] == 1
 
 
 def test_uris_table_maps_each_id_to_full_uri() -> None:

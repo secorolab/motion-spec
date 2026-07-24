@@ -13,6 +13,7 @@ from motion_spec.ir_gen import (
     _annotate_controller_signals,
     add_controller_internal_state_logging,
     add_quantity_samples,
+    add_solver_command_torque_logging,
     add_spatial_samples,
 )
 from motion_spec.codegen_artifacts import (
@@ -162,6 +163,21 @@ def _sample_ir() -> dict:
             },
         },
     }
+
+
+def test_commanded_torque_logging_uses_declared_chain_joint_count() -> None:
+    solver = {"id": "arm", "num_joints": 3}
+    motion_solver = {"id": "arm"}
+    shared_data = []
+    introspection = {}
+
+    add_solver_command_torque_logging(
+        [solver], [{"arm_solvers": [motion_solver]}], shared_data, introspection
+    )
+
+    assert [sample["joint_index"] for sample in solver["commanded_torque_samples"]] == [0, 1, 2]
+    assert motion_solver["commanded_torque_samples"] == solver["commanded_torque_samples"]
+    assert len(shared_data) == 3
 
 
 def _sample_fsm() -> dict:

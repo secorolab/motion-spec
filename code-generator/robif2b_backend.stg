@@ -74,10 +74,8 @@ robot-chain-robif2b-KinovaGen3(solver) ::= <<
     std::string kinova_chain_root = "<solver.chain_root>";
     std::string kinova_chain_end = "<solver.chain_end>";
     if (!kinova_tree.getChain(kinova_chain_root, kinova_chain_end, chain_<solver.runtime_id>)) {
-        // URDF link names are case-sensitive. The scene model uses the canonical
-        // lower-case Kinova names, while the supplied Gen3 URDF uses names such as
-        // Shoulder_Link and Bracelet_Link. Resolve that naming-only difference before
-        // extracting the chain; the physical model and joint order remain unchanged.
+        // Resolve harmless case or namespace differences between scene and URDF
+        // link names before extracting the same physical chain.
         const auto resolve_kinova_link = [&kinova_tree](std::string_view requested) {
             for (const auto &entry : kinova_tree.getSegments()) {
                 if (motion_spec::runtime::runtime_name_matches(entry.first, requested)) {
@@ -140,12 +138,12 @@ app-arm-includes-robif2b(has_arm, wrench_outputs) ::= <<
 #include \<urdf_model/model.h\>
 #include \<urdf_parser/urdf_parser.h\>
 #include \<kdl_parser/kdl_parser.hpp\>
+#include \<string\>
 <if(wrench_outputs)>
 #include \<mutex\>
-#include \<string\>
 #include \<robif2b/functions/robotiq_ft_sensor.h\>
-#include \<robif2b/functions/robotiq_gripper.h\>
 <endif>
+#include \<robif2b/functions/robotiq_gripper.h\>
 <endif>
 >>
 
@@ -188,6 +186,7 @@ app-arm-setup-robif2b(arm_solvers, scene, wrench_outputs) ::= <<
         std::thread worker;
         bool active = false;
     \} robif2b_ft;
+<endif>
 
     struct robif2b_gripper_runtime {
         robif2b_robotiq_gripper_nbx driver{\};
@@ -207,13 +206,13 @@ app-arm-setup-robif2b(arm_solvers, scene, wrench_outputs) ::= <<
     \} robif2b_gripper;
 
     const char *_devices_env = std::getenv("MOTION_SPEC_COMMUNICATION_DEVICES");
-    const std::string _devices = (_devices_env && *_devices_env) ? _devices_env : "ft,gripper";
+    const std::string _devices = (_devices_env && *_devices_env) ? _devices_env : "arm";
     const auto _selected = [&](const char *name) {
         return _devices == "all" || _devices.find(std::string(name)) != std::string::npos;
     };
-    const bool _use_ft = _selected("ft");
-    const bool _use_gripper = _selected("gripper");
+<if(wrench_outputs)>    const bool _use_ft = _selected("ft");
 <endif>
+    const bool _use_gripper = _selected("gripper");
 >>
 
 app-loop-condition-robif2b(has_arm) ::= <<
@@ -237,13 +236,20 @@ app-arm-runtime-step-robif2b(arm_solvers, wrench_outputs) ::= <<
             break;
         \}
 <endif>}; separator="">
-<if(wrench_outputs)>    if (robif2b_ft.error.load() || robif2b_gripper.error.load()) {
-        std::cerr \<\< "robif2b peripheral update failed\n";
+<if(wrench_outputs)>    if (robif2b_ft.error.load()) {
+        std::cerr \<\< "robif2b FT update failed\n";
         break;
     \}
-    if (robot.ext_force != nullptr) {
+<endif>
+    if (robif2b_gripper.error.load()) {
+        std::cerr \<\< "robif2b gripper update failed\n";
+        break;
+    \}
+<if(wrench_outputs)>    if (robif2b_ft.active) {
         std::lock_guard\<std::mutex\> lock(robif2b_ft.mutex);
-        *robot.ext_force = robif2b_ft.wrench;
+<wrench_outputs:{wrench |        if (robot.<wrench.id> != nullptr) {
+            *robot.<wrench.id> = robif2b_ft.wrench;
+        \}}; separator="\n">
     \}
 <endif>
 >>
@@ -280,9 +286,21 @@ robif2b-hardware-post-setup(arm_solvers, wrench_outputs) ::= <<
 <robif2b-stop-arm(arm_solvers)>
         return 1;
     \}
+    int ft_bias_samples = 100;
+    if (const char *value = std::getenv("MOTION_SPEC_ROBOTIQ_FT_BIAS_SAMPLES")) {
+        char *end = nullptr;
+        const long parsed = std::strtol(value, &end, 10);
+        if (end == value || *end != '\0' || parsed \< 0 || parsed > 100000) {
+            std::cerr \<\< "MOTION_SPEC_ROBOTIQ_FT_BIAS_SAMPLES must be an integer from 0 to 100000\n";
+            robif2b_robotiq_ft_shutdown(&robif2b_ft.sensor);
+<robif2b-stop-arm(arm_solvers)>
+            return 1;
+        \}
+        ft_bias_samples = static_cast\<int\>(parsed);
+    \}
     float force_sum[3] = {0.0f, 0.0f, 0.0f\};
     float moment_sum[3] = {0.0f, 0.0f, 0.0f\};
-    for (int sample = 0; sample \< 100; ++sample) {
+    for (int sample = 0; sample \< ft_bias_samples; ++sample) {
         robif2b_robotiq_ft_update(&robif2b_ft.sensor);
         if (!robif2b_ft.success) {
             std::cerr \<\< "Robotiq FT sensor zeroing failed\n";
@@ -296,9 +314,11 @@ robif2b-hardware-post-setup(arm_solvers, wrench_outputs) ::= <<
         \}
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     \}
-    for (int axis = 0; axis \< 3; ++axis) {
-        robif2b_ft.force_offset[axis] = force_sum[axis] / 100.0f;
-        robif2b_ft.moment_offset[axis] = moment_sum[axis] / 100.0f;
+    if (ft_bias_samples > 0) {
+        for (int axis = 0; axis \< 3; ++axis) {
+            robif2b_ft.force_offset[axis] = force_sum[axis] / ft_bias_samples;
+            robif2b_ft.moment_offset[axis] = moment_sum[axis] / ft_bias_samples;
+        \}
     \}
     robif2b_ft.worker = std::thread([&robif2b_ft]() {
         while (!robif2b_ft.stop.load()) {
@@ -318,6 +338,7 @@ robif2b-hardware-post-setup(arm_solvers, wrench_outputs) ::= <<
     \});
     robif2b_ft.active = true;
     }
+<endif>
 
     if (_use_gripper) {
     const char *gripper_port = std::getenv("MOTION_SPEC_ROBOTIQ_GRIPPER_PORT");
@@ -337,11 +358,13 @@ robif2b-hardware-post-setup(arm_solvers, wrench_outputs) ::= <<
     robif2b_robotiq_gripper_configure(&robif2b_gripper.driver);
     if (!robif2b_gripper.success) {
         std::cerr \<\< "Robotiq gripper configure failed\n";
+<if(wrench_outputs)>
         if (robif2b_ft.active) {
             robif2b_ft.stop.store(true);
             if (robif2b_ft.worker.joinable()) robif2b_ft.worker.join();
             robif2b_robotiq_ft_shutdown(&robif2b_ft.sensor);
         }
+<endif>
 <robif2b-stop-arm(arm_solvers)>
         return 1;
     \}
@@ -358,18 +381,16 @@ robif2b-hardware-post-setup(arm_solvers, wrench_outputs) ::= <<
     \});
     robif2b_gripper.active = true;
     }
-<endif>
 >>
 
 app-arm-cleanup-robif2b(has_arm, wrench_outputs) ::= <<
-<if(wrench_outputs)>
     if (robif2b_gripper.active) {
         robif2b_gripper.stop.store(true);
         if (robif2b_gripper.worker.joinable()) robif2b_gripper.worker.join();
         robif2b_robotiq_gripper_shutdown(&robif2b_gripper.driver);
         robif2b_gripper.active = false;
     \}
-    if (robif2b_ft.active) {
+<if(wrench_outputs)>    if (robif2b_ft.active) {
         robif2b_ft.stop.store(true);
         if (robif2b_ft.worker.joinable()) robif2b_ft.worker.join();
         robif2b_robotiq_ft_shutdown(&robif2b_ft.sensor);
@@ -425,9 +446,9 @@ find_package(urdfdom REQUIRED)
 find_package(kdl_parser REQUIRED)
 find_package(robif2b REQUIRED)
 find_package(Threads REQUIRED)
-<if(wrench_outputs)>
 find_package(serial REQUIRED)
 find_package(robotiq_driver_noros REQUIRED)
+<if(wrench_outputs)>
 find_package(robotiq_ft REQUIRED)
 <endif>
 <if(fsm_namespace)>
@@ -453,11 +474,11 @@ target_include_directories(main PRIVATE
 )
 target_link_libraries(main PRIVATE
     robif2b::kinova_gen3
-<if(wrench_outputs)>
-    robif2b::robotiq_ft_sensor
     robif2b::robotiq_gripper
     serial::serial
     robotiq::robotiq_driver_noros
+<if(wrench_outputs)>
+    robif2b::robotiq_ft_sensor
     robotiq::robotiq_ft_driver
 <endif>
     orocos-kdl

@@ -209,9 +209,8 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     ir["introspection_artifacts"] = write_introspection_artifacts(
         ir, ir_path=ir_path, output_dir=output_dir
     )
-    # StringTemplate treats an empty list as present in conditionals.  Preserve
-    # the automatically derived wrench list, but expose an empty list as null to
-    # templates so optional peripheral blocks are not emitted for arm-only models.
+    # ST4 treats an empty list as present in <if(...)>. Keep the automatically
+    # derived wrench list, but expose its empty case as null to template guards.
     if not ir.get("wrench_outputs"):
         ir["wrench_outputs"] = None
 

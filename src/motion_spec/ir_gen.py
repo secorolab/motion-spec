@@ -2446,6 +2446,7 @@ def _arm_solvers_for_handler(handler, slv_arm, solver_ids):
                 root_acc=solver.root_acc,
                 chain_root=solver.chain_root,
                 chain_end=solver.chain_end,
+                num_joints=solver.num_joints,
                 torque_saturation=solver.torque_saturation,
                 commanded_torque_samples=solver.commanded_torque_samples,
             )
@@ -3664,6 +3665,10 @@ def _agent_assemblies(g, attach_by_body):
                 "trees": [binding["tree"] for binding in bindings],
                 "root_body": root_body,
                 "chain_root": runtime_root,
+                "num_joints": sum(
+                    set(g.objects(joint, RDF.type)) != {KC.Joint}
+                    for *_edge, joint in path
+                ),
                 "chain_tip": f"{runtime_prefix}{_leaf(chain_tip_body)}",
                 "tool_body": (
                     f"{runtime_prefix}{_leaf(tip_body)}"
@@ -3835,7 +3840,7 @@ def _robot_setups_from_graph(g):
     Returns ``(setups_by_node, ordered)`` where ``setups_by_node`` maps each robot's
     abstract agent node (the target of a solver's ``agn:of-agent``) to its setup tuple
     ``(urdf, chain_root, chain_end, chain_tip, robot_model, tool_body, tcp_site,
-    ft_sensors, runtime_prefix, owned_trees)``.
+    ft_sensors, runtime_prefix, owned_trees, num_joints)``.
 
     Chain bodies come from a serial-composition ``geom:KinematicTree``'s
     ``kc-ext:root`` / ``kc-ext:tip`` frames. A scene-dsl frame URI is
@@ -3865,6 +3870,7 @@ def _robot_setups_from_graph(g):
             assembly["ft_sensors"],
             assembly["prefix"],
             assembly["trees"],
+            assembly["num_joints"],
         )
         setups_by_node[assembly["agent"]] = setup
         ordered.append(setup)
@@ -3932,7 +3938,7 @@ def _build_introspection(
     closures,
     views,
     shared_data,
-    arm_solvers,
+    arm_solvers=(),
 ):
     """Build the introspection artifact (uris, motions, controllers, monitors, quantities,
     provenance) and fold in the controller-state and frame-log samples.
@@ -4367,6 +4373,7 @@ def _solver_sections(
             solver.ft_sensors,
             solver.runtime_prefix,
             solver.owned_trees,
+            solver.num_joints,
         ) = setups_by_node.get(robot_node, default_setup)
         solver.output = _dedupe_by_id(
             [
@@ -5074,9 +5081,6 @@ def add_controller_internal_state_logging(
         closure["internal_state_samples"] = closure_samples
 
 
-KINOVA_NUM_JOINTS = 7
-
-
 def add_solver_command_torque_logging(
     arm_solvers: list, motions: list, shared_data: list, introspection: dict
 ) -> None:
@@ -5087,9 +5091,10 @@ def add_solver_command_torque_logging(
     samples_by_solver = {}
 
     for solver in arm_solvers:
+        solver_id = _field(solver, "id")
         samples = []
-        for joint_index in range(KINOVA_NUM_JOINTS):
-            sample_id = f"commanded_torque_{solver.id}_joint_{joint_index + 1}"
+        for joint_index in range(_field(solver, "num_joints", 0)):
+            sample_id = f"commanded_torque_{solver_id}_joint_{joint_index + 1}"
             samples.append({"id": sample_id, "joint_index": joint_index})
             if sample_id not in shared_ids:
                 shared_data.append(
@@ -5097,7 +5102,7 @@ def add_solver_command_torque_logging(
                         "id": sample_id,
                         "type": "Quantity",
                         "role": "commanded_joint_torque",
-                        "solver": solver.id,
+                        "solver": solver_id,
                         "joint_index": joint_index,
                     }
                 )
@@ -5110,13 +5115,13 @@ def add_solver_command_torque_logging(
                         "unit": ["N_M"],
                         "quantity_kind": ["Torque"],
                         "role": "commanded_joint_torque",
-                        "solver": solver.id,
+                        "solver": solver_id,
                         "joint_index": joint_index,
                     }
                 )
                 quantity_ids.add(sample_id)
         _set_field(solver, "commanded_torque_samples", samples)
-        samples_by_solver[solver.id] = samples
+        samples_by_solver[solver_id] = samples
 
     for motion in motions:
         for solver in _field(motion, "arm_solvers", []) or []:
@@ -5769,7 +5774,7 @@ def generate_ir(manifest_path):
     default_setup = (
         ordered_setups[0]
         if ordered_setups
-        else ("", "", "", "", "", "", "", [], "", [])
+        else ("", "", "", "", "", "", "", [], "", [], 0)
     )
     # Derive backend + FSM up front: both are pure functions of the graph and are inputs to
     # downstream construction (solver validation, runtime-robot annotation, motion FSM wiring).

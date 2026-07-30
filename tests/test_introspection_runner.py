@@ -12,7 +12,7 @@ from motion_spec.introspection.archive import verify_manifest
 from motion_spec.introspection.runner import run_cataloged
 from motion_spec.provenance import prov_uri, rec_run_lifecycle
 
-from test_introspection_archive import _source_tree
+from support import _source_tree
 
 
 REC = rdflib.Namespace("https://secorolab.github.io/metamodels/rec#")

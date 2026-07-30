@@ -15,7 +15,7 @@ from motion_spec.introspection.replay import runtime_frames
 from motion_spec.introspection.runtime_graph import MSRUN, PROV, write_runtime_ttl
 
 from frame_log_fixture import write_frame_log_pb, write_frame_log_proto
-from test_introspection_archive import _hash_doc, _layout, _provenance
+from support import _hash_doc, _layout, _provenance
 
 
 def _schema() -> dict:

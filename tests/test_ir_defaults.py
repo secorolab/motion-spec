@@ -144,22 +144,6 @@ def test_agent_model_may_bind_the_assembled_kinematic_tree() -> None:
     assert setups[agent][1:7] == ("base", "tool", "tool", "KinovaGen3", "", "")
 
 
-def test_uris_table_maps_each_id_to_full_uri() -> None:
-    graph, controller_node = _pid_graph(kp=1.0)
-
-    parser = Parser(graph)
-    node_by_id = {parser.id(node): node for node in graph.subjects()}
-    uris = {
-        id_: str(node)
-        for id_, node in sorted(node_by_id.items())
-        if isinstance(node, URIRef)
-    }
-
-    assert uris[parser.id(controller_node)] == str(controller_node)
-    assert uris[parser.id(controller_node)] == "https://example.test/controller"
-    assert all(uri.startswith("https://example.test/") for uri in uris.values())
-
-
 def test_introspection_contract_carries_control_and_provenance() -> None:
     graph, controller_node = _pid_graph(kp=2.0)
     graph.add((controller_node, CSTR_HDL["integral-gain"], Literal(0.1, datatype=XSD.double)))

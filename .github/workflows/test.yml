@@ -1,0 +1,38 @@
+name: test
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # rdf_utils and rec are workspace siblings, not on PyPI, so they are installed
+      # from git. pyshacl/protobuf cover the validation/introspection extras.
+      - name: Install workspace siblings
+        run: |
+          pip install pytest pyshacl protobuf click
+          pip install \
+            "git+https://github.com/secorolab/rdf-utils.git@main" \
+            "git+https://github.com/secorolab/rec.git@dev"
+
+      - name: Install motion_spec
+        run: pip install -e . --no-deps
+
+      # The patched rdflib must win over the PyPI rdflib the siblings pulled in.
+      - name: Pin patched rdflib
+        run: |
+          pip install --force-reinstall --no-deps \
+            "git+https://github.com/secorolab/rdflib.git@7.6.0-fix-multi-type-scoped-context"
+
+      - name: Run tests
+        run: pytest -q

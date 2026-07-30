@@ -149,6 +149,7 @@ def create_generation_dir(model: Path, output_dir: Path | None = None) -> Path:
 
 def generate_model(model: Path, generation: Path, *, stage: str = "code") -> Path:
     """Generate MODEL through IR or C++ code and return its generated-artifact directory."""
+    from motion_spec.check import validate_manifest
     from motion_spec.entities import DataclassJSONEncoder
     from motion_spec.ir_gen import generate_ir
 
@@ -162,6 +163,9 @@ def generate_model(model: Path, generation: Path, *, stage: str = "code") -> Pat
         # The DSL already reported the offending line on stderr; don't bury it under an argv dump.
         raise RuntimeError(f"the DSL rejected {model.name}, see the error above")
     manifest = model_dir / f"{model.stem}-app.ld.json"
+    conforms, report = validate_manifest(manifest)
+    if not conforms:
+        raise RuntimeError(f"generated RDF failed SHACL validation:\n{report}")
     ir_path = model_dir / "ir.json"
     ir_path.write_text(json.dumps(generate_ir(manifest), cls=DataclassJSONEncoder, indent=4))
     if stage == "code":

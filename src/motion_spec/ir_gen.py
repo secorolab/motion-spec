@@ -223,6 +223,7 @@ def _solver_derivation_context(g) -> SolverDerivationContext:
     constraint_counts = collections.Counter(
         plan.constraint for plans in by_handler.values() for plan in plans
     )
+    _validate_solver_derivations(g, by_handler, by_solver)
     return SolverDerivationContext(
         controllers_by_handler=by_handler,
         controllers_by_solver={node: tuple(plans) for node, plans in by_solver.items()},
@@ -230,6 +231,41 @@ def _solver_derivation_context(g) -> SolverDerivationContext:
             constraint for constraint, count in constraint_counts.items() if count > 1
         ),
     )
+
+
+def _validate_solver_derivations(g, by_handler, by_solver) -> None:
+    """Enforce executable solver limits after authored RDF has resolved to solver plans."""
+    algorithms = {
+        solver: g.value(solver, SLV["solver"])
+        for solver in by_solver
+    }
+    for solver, plans in by_solver.items():
+        if algorithms[solver] != SLV["AccelerationConstrainedHybridDynamicsAlgorithm"]:
+            continue
+        axes = [axis for plan in plans for axis in plan.axes]
+        duplicates = [axis for axis, count in collections.Counter(axes).items() if count > 1]
+        if duplicates:
+            rendered = ", ".join(f"{axis.subspace}.{axis.axis}" for axis in duplicates)
+            raise ValueError(f"ACHD solver '{solver}' repeats acceleration axis: {rendered}.")
+        if len(axes) > 6:
+            raise ValueError(f"ACHD solver '{solver}' has {len(axes)} axes; at most 6 are supported.")
+
+    for handler, plans in by_handler.items():
+        domains: dict[URIRef, set[str]] = collections.defaultdict(set)
+        for plan in plans:
+            command = str(g.value(plan.controller, APP["command-type"]) or "")
+            subspace = _term_name(g.value(plan.view, MAP.subspace)) if plan.view else None
+            domains[algorithms.get(plan.solver)].add(
+                "force" if command in {"Force", "Torque"} or subspace in {"force", "torque"} else "pose"
+            )
+        achd = domains[SLV["AccelerationConstrainedHybridDynamicsAlgorithm"]]
+        rne = domains[SLV["RecursiveNewtonEulerAlgorithm"]]
+        overlap = achd & rne
+        if overlap:
+            raise ValueError(
+                f"Handler '{handler}' assigns ACHD and RNE to the same domain(s): "
+                f"{', '.join(sorted(overlap))}."
+            )
 
 
 def _derived_quantity(
@@ -4893,6 +4929,9 @@ def _validate_solvers(arm_solvers, backend: str) -> None:
             f"Supported: {', '.join(sorted(SUPPORTED_ROBOT_MODELS))}"
         )
 
+    if backend != "mj_kdl" and any(_field(s, "algorithm_is_rne") for s in arm_solvers):
+        raise RuntimeError("RNE is currently supported only by the MuJoCo mj_kdl backend.")
+
     if backend != "robif2b":
         return
 
@@ -5788,6 +5827,17 @@ def generate_ir(manifest_path):
     (slv_base_vel, sched1, hdl, sched2, slv_arm, sched3, slv_base_frc, sched4) = _solver_sections(
         g, p, setups_by_node, default_setup, derivation, scene.objects
     )
+    unsupported_objectives = [
+        entry
+        for handler in hdl
+        for entry in handler.progress
+        if isinstance(entry, ProgressObjective)
+    ]
+    if unsupported_objectives:
+        names = ", ".join(entry.id for entry in unsupported_objectives)
+        raise RuntimeError(
+            f"No executable solver backend consumes progress objective(s): {names}."
+        )
     _assign_monitor_event_indexes(hdl)
 
     closures = p.closures(ops_generic + ops_slv + ops_cstr_hdl)

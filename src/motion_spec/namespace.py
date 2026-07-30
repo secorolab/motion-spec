@@ -384,6 +384,7 @@ class MAP_EXT(DefinedNamespace):
 
 class ALGO_EXT(DefinedNamespace):
     ProgressObjective: URIRef
+    ProgressConstraint: URIRef
     Saturation: URIRef
     Addition: URIRef
     VelocityProfile: URIRef
@@ -501,6 +502,7 @@ class GEOM_PATH(DefinedNamespace):
     anchor: URIRef
     center: URIRef
     axis: URIRef
+    direction: URIRef
     radius: URIRef
     amplitude: URIRef
     pitch: URIRef

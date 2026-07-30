@@ -43,7 +43,8 @@ from motion_spec.entities import (
     FreeVector, GuardedMotion, GuardedMotionBlock, HandlerArmSolver, ImpedanceController,
     JointForceSpecification, JointPosition, LevelMonitor, MotionDrivers, Orientation,
     OutsideConstraint, PIDController, Point, Pose, PoseAxisErrorComponent, PoseAxisErrorGroup,
-    PoseDifference, Position, ProgressObjective, Provenance, Quantity, QuantityKind, RelativePoseCapture,
+    PoseDifference, Position, ProgressConstraint, ProgressObjective, Provenance, Quantity, QuantityKind,
+    RelativePoseCapture,
     Saturation, SceneAttachment, SceneObject, SceneObjectSpec, SceneRelativePose, SceneRobot,
     SceneSpec, Setpoint, SimplicialComplex, SnapshotCapture, SolverWithInputAndOutput, Subspace,
     UnilateralConstraint, UnilateralConstraintType, Unit, VelocityCompositionSolver,
@@ -1000,7 +1001,12 @@ ops_path = [
     ),
     Specification(
         type_=GEOM_PATH["Figure8"],
-        input=[GEOM_PATH["anchor"], GEOM_PATH["radius"], GEOM_PATH["plane-normal"]],
+        input=[
+            GEOM_PATH["anchor"],
+            GEOM_PATH["radius"],
+            GEOM_PATH["plane-normal"],
+            GEOM_PATH["direction"],
+        ],
         output=[],
         parameters=[GEOM_PATH["form"]],
     ),
@@ -1445,23 +1451,28 @@ class Parser:
         return d[id_]
 
     @memoize
+    def _progress_entry(self, id_):
+        """Parse a progress entry: a ProgressConstraint (advancement law) or a
+        ProgressObjective (maximization request), dispatched by rdf:type.
+        """
+        parameter = self.id(self.g.value(id_, ALGO_EXT.parameter))
+        paths = sorted(self.id(path) for path in self.g.objects(id_, ALGO_EXT.path))
+        if ALGO_EXT.ProgressConstraint in self.g[id_ : RDF["type"]]:
+            advancement = float(
+                self.g.value(self.g.value(id_, ALGO_EXT.advancement), QUDT_SCHEMA.value)
+            )
+            constraints = sorted(self.id(c) for c in self.g.objects(id_, CSTR_HDL.constraint))
+            return ProgressConstraint(self.id(id_), parameter, paths, constraints, advancement)
+        self._expect_type(id_, ALGO_EXT.ProgressObjective)
+        return ProgressObjective(self.id(id_), parameter, paths)
+
     def constraint_handler(self, id_):
         """Parse a ConstraintHandler (evaluators, controllers, monitors) at node."""
         self._expect_type(id_, CSTR_HDL["ConstraintHandler"])
         motion = self.guarded_motion(self.g.value(id_, CSTR_HDL["motion"]))
         progress = [
-            ProgressObjective(
-                self.id(objective),
-                self.id(self.g.value(objective, ALGO_EXT.parameter)),
-                sorted(self.id(path) for path in self.g.objects(objective, ALGO_EXT.path)),
-                sorted(self.id(c) for c in self.g.objects(objective, CSTR_HDL.constraint)),
-                float(
-                    self.g.value(
-                        self.g.value(objective, ALGO_EXT.advancement), QUDT_SCHEMA.value
-                    )
-                ),
-            )
-            for objective in sorted(self.g.objects(id_, ALGO_EXT.progress), key=str)
+            self._progress_entry(entry)
+            for entry in sorted(self.g.objects(id_, ALGO_EXT.progress), key=str)
         ]
         evaluators = []
         for e in self.g[id_ : CSTR_HDL["evaluators"]]:
@@ -3245,27 +3256,28 @@ def build_motion_units(
                         motion_tokens,
                     )
                 ),
-                progress_objectives=[
-                    ProgressObjective(
-                        objective.id,
-                        objective.parameter,
-                        objective.paths,
-                        objective.constraints,
-                        objective.advancement,
+                progress_constraints=[
+                    ProgressConstraint(
+                        entry.id,
+                        entry.parameter,
+                        entry.paths,
+                        entry.constraints,
+                        entry.advancement,
                         [
                             controller.error_signal.id
                             for plan in active_plans
-                            if p.id(plan.constraint) in objective.constraints
+                            if p.id(plan.constraint) in entry.constraints
                             for controller in _derived_controllers(g, p, derivation, plan)
                             if controller.error_signal is not None
                         ],
                     )
-                    for objective in handler.progress
+                    for entry in handler.progress
+                    if isinstance(entry, ProgressConstraint)
                 ],
             )
         )
 
-    _validate_motion_progress_objectives(motions)
+    _validate_motion_progress_constraints(motions)
 
     # Invariant: one motion maps to exactly one constraint handler. A repeated
     # motion id (the same motion driven by two handlers) is rejected rather than
@@ -3300,14 +3312,14 @@ def build_motion_units(
     return ordered, fsm_meta
 
 
-def _validate_motion_progress_objectives(motions: list) -> None:
+def _validate_motion_progress_constraints(motions: list) -> None:
     """Reject progress bindings that have no controller error to gate advancement."""
     for motion in motions:
-        for objective in _field(motion, "progress_objectives", []):
-            if not _field(objective, "errors", []):
+        for entry in _field(motion, "progress_constraints", []):
+            if not _field(entry, "errors", []):
                 raise ValueError(
-                    f"Motion '{_field(motion, 'id')}' progress objective "
-                    f"'{_field(objective, 'id')}' has no derived tracking-controller error signal."
+                    f"Motion '{_field(motion, 'id')}' progress constraint "
+                    f"'{_field(entry, 'id')}' has no derived tracking-controller error signal."
                 )
 
 

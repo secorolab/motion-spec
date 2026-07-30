@@ -98,46 +98,27 @@ emit-call-Arc(closure, views) ::= <<
     // amplitude == |chord|/2 reproduces a clean semicircle (swept angle pi).
     const KDL::Vector _end_<closure.setpoint>   = shared.<closure.end>.p;
     const KDL::Vector _chord_<closure.setpoint> = _end_<closure.setpoint> - shared.<closure.start>.p;
-        const double _a_<closure.setpoint>          = shared.<closure.amplitude>;
-        const double _chordlen_<closure.setpoint>   = _chord_<closure.setpoint>.Norm();
-    // Degenerate input (end == start, or non-positive amplitude) would divide by zero /
-    // normalize a zero vector; hold at start instead of emitting NaN.
+    const double _a_<closure.setpoint>          = shared.<closure.amplitude>;
+    const double _chordlen_<closure.setpoint>   = _chord_<closure.setpoint>.Norm();
+    // A dynamically-resolved start/end can still land on a degenerate chord at runtime;
+    // hold at start rather than dividing by zero.
     KDL::Vector _pos_<closure.setpoint> = shared.<closure.start>.p;
-    // _s is 0 in the degenerate case: hold at start orientation too.
     double _s_<closure.setpoint> = 0.0;
     if (_chordlen_<closure.setpoint> > 1e-9 && _a_<closure.setpoint> > 1e-9) {
         const KDL::Vector _chord_hat_<closure.setpoint> = _chord_<closure.setpoint> * (1.0 / _chordlen_<closure.setpoint>);
         const KDL::Vector _mid_<closure.setpoint>       = 0.5 * (shared.<closure.start>.p + _end_<closure.setpoint>);
         const double _m_<closure.setpoint>              = 0.5 * _chordlen_<closure.setpoint>;
-        // Cap sagitta to half-chord so the arc stays in the minor-arc (\<=semicircle)
-        // regime.  Amplitudes larger than |chord|/2 are silently reduced to a
-        // semicircle; if a major arc is ever needed the cap must be lifted and the
-        // angle-wrapping handled explicitly.
-        const double _sagitta_<closure.setpoint> = std::min(_a_<closure.setpoint>, _m_<closure.setpoint>);
-        // Arc-rotation axis: project plane_normal onto the subspace perpendicular to
-        // the chord.  This removes any chord-parallel component so that
-        // (start - center) is always perpendicular to the axis -- the necessary
-        // condition for Rot(axis, angle)*(start-center) to trace a true circle
-        // regardless of the angle between chord and plane_normal.
-        KDL::Vector _arc_normal_<closure.setpoint> = _n_<closure.setpoint> - KDL::dot(_n_<closure.setpoint>, _chord_hat_<closure.setpoint>) * _chord_hat_<closure.setpoint>;
-        if (_arc_normal_<closure.setpoint>.Norm() \< 1e-6) {
-            // plane_normal nearly parallel to chord: pick any stable world-axis perp.
-            _arc_normal_<closure.setpoint> = motion_spec::runtime::plane_reference(_chord_hat_<closure.setpoint>);
-        } else {
-            _arc_normal_<closure.setpoint>.Normalize();
-        }
-        // Sagitta (bulge) direction: in the arc plane, perpendicular to chord.
-        // arc_normal x chord_hat lies in the arc plane and is perpendicular to chord_hat.
-        KDL::Vector _perp_<closure.setpoint> = _arc_normal_<closure.setpoint> * _chord_hat_<closure.setpoint>;
-        _perp_<closure.setpoint>.Normalize();
-        const double _R_<closure.setpoint>     = (_sagitta_<closure.setpoint> * _sagitta_<closure.setpoint> + _m_<closure.setpoint> * _m_<closure.setpoint>) / (2.0 * _sagitta_<closure.setpoint>);
-        const double _d_<closure.setpoint>     = (_sagitta_<closure.setpoint> * _sagitta_<closure.setpoint> - _m_<closure.setpoint> * _m_<closure.setpoint>) / (2.0 * _sagitta_<closure.setpoint>);
+        // plane-normal is authored perpendicular to the chord, so normal x chord_hat is
+        // the unit bulge direction directly, with no fallback axis needed.
+        const KDL::Vector _perp_<closure.setpoint> = _n_<closure.setpoint> * _chord_hat_<closure.setpoint>;
+        const double _R_<closure.setpoint>     = (_a_<closure.setpoint> * _a_<closure.setpoint> + _m_<closure.setpoint> * _m_<closure.setpoint>) / (2.0 * _a_<closure.setpoint>);
+        const double _d_<closure.setpoint>     = (_a_<closure.setpoint> * _a_<closure.setpoint> - _m_<closure.setpoint> * _m_<closure.setpoint>) / (2.0 * _a_<closure.setpoint>);
         const KDL::Vector _center_<closure.setpoint> = _mid_<closure.setpoint> + _d_<closure.setpoint> * _perp_<closure.setpoint>;
         const double _theta_<closure.setpoint> = 2.0 * std::acos(std::max(-1.0, std::min(1.0, -_d_<closure.setpoint> / _R_<closure.setpoint>)));
         const KDL::Vector _v0_<closure.setpoint>     = shared.<closure.start>.p - _center_<closure.setpoint>;
         _s_<closure.setpoint>   = motion_spec::runtime::clamp01(<access-expr(closure.path_parameter, views)>);
         _pos_<closure.setpoint> = _center_<closure.setpoint>
-            + KDL::Rotation::Rot(_arc_normal_<closure.setpoint>, -_theta_<closure.setpoint> * _s_<closure.setpoint>) * _v0_<closure.setpoint>;
+            + KDL::Rotation::Rot(_n_<closure.setpoint>, -_theta_<closure.setpoint> * _s_<closure.setpoint>) * _v0_<closure.setpoint>;
     }
     const KDL::Frame _rot_start_<closure.setpoint>(shared.<closure.start>.M, KDL::Vector(0.0, 0.0, 0.0));
     const KDL::Frame _rot_goal_<closure.setpoint>(shared.<closure.end>.M, KDL::Vector(0.0, 0.0, 0.0));
@@ -176,7 +157,11 @@ emit-call-Figure8-gerono(closure, views) ::= <<
     const double _t_<closure.setpoint> = 2.0 * M_PI * _s_<closure.setpoint> + 0.5 * M_PI;
     KDL::Vector _n_<closure.setpoint>   = shared.<closure.plane_normal>;
     _n_<closure.setpoint>.Normalize();
-    const KDL::Vector _u_<closure.setpoint> = motion_spec::runtime::plane_reference(_n_<closure.setpoint>);
+    // In-plane reference axis: the authored direction, projected onto the plane and
+    // normalized (Gram-Schmidt) so it stays perpendicular to plane-normal.
+    KDL::Vector _u_<closure.setpoint> = shared.<closure.direction>;
+    _u_<closure.setpoint> -= KDL::dot(_u_<closure.setpoint>, _n_<closure.setpoint>) * _n_<closure.setpoint>;
+    _u_<closure.setpoint>.Normalize();
     const KDL::Vector _v_<closure.setpoint> = _n_<closure.setpoint> * _u_<closure.setpoint>;
     const double _ct_<closure.setpoint> = std::cos(_t_<closure.setpoint>);
     const double _st_<closure.setpoint> = std::sin(_t_<closure.setpoint>);
@@ -195,7 +180,11 @@ emit-call-Figure8-bernoulli(closure, views) ::= <<
     const double _t_<closure.setpoint> = 2.0 * M_PI * _s_<closure.setpoint> + 0.5 * M_PI;
     KDL::Vector _n_<closure.setpoint>   = shared.<closure.plane_normal>;
     _n_<closure.setpoint>.Normalize();
-    const KDL::Vector _u_<closure.setpoint> = motion_spec::runtime::plane_reference(_n_<closure.setpoint>);
+    // In-plane reference axis: the authored direction, projected onto the plane and
+    // normalized (Gram-Schmidt) so it stays perpendicular to plane-normal.
+    KDL::Vector _u_<closure.setpoint> = shared.<closure.direction>;
+    _u_<closure.setpoint> -= KDL::dot(_u_<closure.setpoint>, _n_<closure.setpoint>) * _n_<closure.setpoint>;
+    _u_<closure.setpoint>.Normalize();
     const KDL::Vector _v_<closure.setpoint> = _n_<closure.setpoint> * _u_<closure.setpoint>;
     const double _ct_<closure.setpoint> = std::cos(_t_<closure.setpoint>);
     const double _st_<closure.setpoint> = std::sin(_t_<closure.setpoint>);

@@ -217,7 +217,7 @@ app-run-call(motion) ::= <<
         if (!<motion.id>_state_instance.active && can_start_<motion.id>(<sig-args(motion.id, motion.can_start_needs_state, motion.can_start_needs_shared, motion.can_start_needs_robot)>)) {
             <motion.id>_state_instance.active = true;
             <motion.id>_state_instance.active_steps = 0;
-<motion.progress_objectives:{objective |             shared.<objective.parameter> = 0.0;}; separator="\n">
+<motion.progress_constraints:{entry |             shared.<entry.parameter> = 0.0;}; separator="\n">
 <motion.until_monitors:{m |             <motion.id>_state_instance.<m.id>_previous = false;
             <motion.id>_state_instance.<m.id>_event_triggered = false;}; separator="
 ">
@@ -227,11 +227,11 @@ app-run-call(motion) ::= <<
         \}
 >>
 
-progress-block(objectives) ::= <<
-<objectives:{objective |     shared.<objective.parameter> = motion_spec::runtime::path_progress_step(
-        shared.<objective.parameter>,
-        <objective.errors:{error | motion_spec::runtime::constraint_satisfied(shared.<error>)}; separator=" && ">,
-        <objective.advancement>,
+progress-block(entries) ::= <<
+<entries:{entry |     shared.<entry.parameter> = motion_spec::runtime::path_progress_step(
+        shared.<entry.parameter>,
+        <entry.errors:{error | motion_spec::runtime::constraint_satisfied(shared.<error>)}; separator=" && ">,
+        <entry.advancement>,
         motion_spec::runtime::kControlPeriodS);}; separator="\n">
 >>
 
@@ -551,8 +551,8 @@ inline void control_<motion.id>(
 
 <arm-run-block(motion.arm_solvers, backend)>
 <endif>
-<if(first(motion.progress_objectives))>
-<progress-block(motion.progress_objectives)>
+<if(first(motion.progress_constraints))>
+<progress-block(motion.progress_constraints)>
 <endif>
 }
 

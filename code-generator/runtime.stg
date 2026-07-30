@@ -50,9 +50,8 @@ inline double path_progress_step(
         bool tracking_satisfied,
         double advancement_per_second,
         double timestep_s) {
-    return tracking_satisfied
-        ? std::min(1.0, clamp01(current) + advancement_per_second * timestep_s)
-        : clamp01(current);
+    if (!tracking_satisfied) return clamp01(current);
+    return clamp01(current + advancement_per_second * timestep_s);
 }
 
 inline void resolve_constraint_acceleration(
@@ -144,24 +143,6 @@ inline double velocity_profile_step(double x, double &v, double &a, double goal,
     return nx;
 }
 
-// Returns a unit vector perpendicular to `n`, chosen by crossing `n` with the
-// world axis least aligned with it (so the cross product is well-conditioned).
-inline KDL::Vector plane_reference(const KDL::Vector &n) {
-    const double ax = std::abs(n.x());
-    const double ay = std::abs(n.y());
-    const double az = std::abs(n.z());
-    KDL::Vector pick;
-    if (ax \<= ay && ax \<= az) {
-        pick = KDL::Vector(1.0, 0.0, 0.0);
-    } else if (ay \<= az) {
-        pick = KDL::Vector(0.0, 1.0, 0.0);
-    } else {
-        pick = KDL::Vector(0.0, 0.0, 1.0);
-    }
-    KDL::Vector perp = n * pick;
-    perp.Normalize();
-    return perp;
-}
 <if(has_mobile_base)>
 inline constexpr int NUM_DRIVES = 4;
 inline constexpr int NUM_SLAVES = 4;

@@ -358,8 +358,10 @@ class Constraint:
 
 
 @dataclass
-class ProgressObjective:
-    """A handler policy advancing one parameter along one or more geometric paths."""
+class ProgressConstraint:
+    """A handler's advancement law: the rate and gating constraints that move a path
+    parameter along one or more geometric paths.
+    """
 
     id: str
     parameter: str
@@ -367,6 +369,18 @@ class ProgressObjective:
     constraints: list[str]
     advancement: float
     errors: list[str] = field(default_factory=list)
+    type: str = field(default="ProgressConstraint")
+
+
+@dataclass
+class ProgressObjective:
+    """A handler's request that a compatible solver maximize a path parameter along one
+    or more geometric paths. No duration, easing, or fixed advancement rate.
+    """
+
+    id: str
+    parameter: str
+    paths: list[str]
     type: str = field(default="ProgressObjective")
 
 
@@ -572,7 +586,7 @@ class ConstraintHandler:
 
     id: str
     motion: GuardedMotion
-    progress: list[ProgressObjective]
+    progress: list[ProgressConstraint | ProgressObjective]
     evaluators: list[ConstraintEvaluator]
     controllers: list[Controller]
     monitors: list[Monitor]
@@ -655,7 +669,7 @@ class GuardedMotionBlock:
     when_terms_present: bool = False
     done_terms: list = field(default_factory=list)
     done_terms_present: bool = False
-    progress_objectives: list[ProgressObjective] = field(default_factory=list)
+    progress_constraints: list[ProgressConstraint] = field(default_factory=list)
     # Declared pose components referenced by this motion (folded from pose_components).
     declared_pose_components: list = field(default_factory=list)
     # Per-function capability booleans (which context objects each generated function

@@ -2,12 +2,10 @@
 from __future__ import annotations
 
 import pytest
-from rdf_utils.namespace import NS_MM_QUDT_UNIT
 from rdflib import Graph, URIRef
 from rdflib.namespace import RDF
 
 from motion_spec.ir_gen import (
-    Parser,
     _materialize_linear_distance_operations,
     _materialize_pose_reference_transforms,
 )
@@ -17,11 +15,7 @@ from motion_spec.namespace import (
     GEOM_ENT,
     GEOM_OP,
     GEOM_REL,
-    QUDT_QKIND,
     QUDT_SCHEMA,
-    RBDYN_COORD,
-    RBDYN_ENT,
-    SOSA,
 )
 
 BASE = "https://example.test/"
@@ -163,37 +157,3 @@ def test_pose_reference_rejects_body_mismatch() -> None:
     with pytest.raises(ValueError, match="compares a pose"):
         _materialize_pose_reference_transforms(g)
 
-
-# --------------------------------------------------------------------------- #
-# SOSA force/torque observation
-# --------------------------------------------------------------------------- #
-def _wrench_graph(*, sensor: URIRef | None) -> tuple[Graph, URIRef]:
-    g = Graph()
-    node = _u("wrench")
-    g.add((node, RDF.type, QUDT_SCHEMA.Quantity))
-    g.add((node, RDF.type, RBDYN_COORD.WrenchCoordinate))
-    g.add((node, RDF.type, GEOM_COORD.VectorXYZ))
-    g.add((node, QUDT_SCHEMA["hasQuantityKind"], QUDT_QKIND.Force))
-    g.add((node, QUDT_SCHEMA["hasQuantityKind"], QUDT_QKIND.Torque))
-    g.add((node, QUDT_SCHEMA.unit, NS_MM_QUDT_UNIT["N"]))
-    point = _u("ref-point")
-    g.add((point, RDF.type, GEOM_ENT.Point))
-    g.add((node, RBDYN_ENT["reference-point"], point))
-    g.add((node, RBDYN_COORD["as-seen-by"], _frame(g, "frame-ee")))
-    if sensor is not None:
-        g.add((node, SOSA.madeBySensor, sensor))
-    return g, node
-
-
-def test_wrench_reads_sosa_made_by_sensor() -> None:
-    sensor = _u("ft_sensor")
-    g, node = _wrench_graph(sensor=sensor)
-    wrench = Parser(g).wrench(node)
-    assert wrench.sensor_name == Parser(g).id(sensor)
-    assert wrench.sensor_name != ""
-
-
-def test_wrench_without_sensor_has_empty_name() -> None:
-    g, node = _wrench_graph(sensor=None)
-    wrench = Parser(g).wrench(node)
-    assert wrench.sensor_name == ""

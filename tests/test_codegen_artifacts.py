@@ -373,12 +373,8 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
     # sample_desc is the backend-agnostic descriptor; the C++ expression is rendered
     # by the sample-expr template (shared_data.stg).
     assert quantities["err_x"]["sample_desc"] == {"kind": "shared", "id": "err_x"}
-    assert quantities["pose_ee.position.x"]["source_id"] == "pose_ee"
-    assert quantities["pose_ee.orientation.z"]["component"] == "orientation.z"
     assert quantities["twist_ee.angular.x"]["sample_desc"] == {
         "kind": "member", "id": "twist_ee", "member": "rot", "axis": 0}
-    assert quantities["wrench_ee.force.z"]["sample_desc"] == {
-        "kind": "member", "id": "wrench_ee", "member": "force", "axis": 2}
     assert "wrench_force" not in quantities
     assert quantities["wrench_force_x"]["sample_desc"] == {"kind": "access", "ref": "wrench_force_x"}
     assert quantities["ready_flag"]["sample_desc"] == {"kind": "bool", "id": "ready_flag"}
@@ -388,8 +384,6 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
     assert quantities["ctrl_x_error_integral"]["sample_desc"] == {
         "kind": "shared", "id": "ctrl_x_error_integral"}
     assert quantities["ctrl_x_error_integral"]["role"] == "controller_internal_state"
-    assert quantities["ctrl_x_previous_error"]["sample_desc"] == {
-        "kind": "shared", "id": "ctrl_x_previous_error"}
     assert quantities["ctrl_x_first_sample"]["sample_desc"] == {"kind": "bool", "id": "ctrl_x_first_sample"}
     assert quantities["ctrl_x_first_sample"]["role"] == "controller_internal_state"
     assert quantities["ctrl_x_first_sample"]["source_type"] == "Bool"

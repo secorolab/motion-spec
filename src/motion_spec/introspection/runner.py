@@ -5,16 +5,13 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import subprocess
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 from motion_spec.introspection.archive import (
-    ArchiveError,
     create_archive_manifest,
     verify_manifest,
 )
@@ -269,49 +266,3 @@ def _finish_rec_run(rec_path: Path, run_id: str, status: str) -> None:
 
 def _rec_status(rec_path: Path) -> str | None:
     return rec_run_lifecycle_from_file(rec_path).get("status")
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="motion-spec run")
-    parser.add_argument("run_dir", help="fresh directory for the cataloged run archive")
-    parser.add_argument("--source-dir", required=True, help="generated controller directory")
-    parser.add_argument("--executable", required=True, help="generated executable to launch")
-    parser.add_argument("--run-id", default=None, help="stable run id; defaults to run_dir name")
-    parser.add_argument("--cwd", default=None, help="working directory for the generated executable")
-    parser.add_argument(
-        "--recover-runtime-ttl",
-        action="store_true",
-        help="recover runtime.ttl from the captured frame log after the run",
-    )
-    parser.add_argument(
-        "--no-verify",
-        action="store_true",
-        help="skip archive verification after a successful run",
-    )
-    raw_args = list(sys.argv[1:] if argv is None else argv)
-    if "--" in raw_args:
-        separator = raw_args.index("--")
-        parser_args = raw_args[:separator]
-        executable_args = raw_args[separator + 1 :]
-    else:
-        parser_args = raw_args
-        executable_args = []
-    args = parser.parse_args(parser_args)
-    try:
-        return run_cataloged(
-            args.run_dir,
-            source_dir=args.source_dir,
-            executable=args.executable,
-            executable_args=executable_args,
-            run_id=args.run_id,
-            cwd=args.cwd,
-            recover_runtime_ttl=args.recover_runtime_ttl,
-            verify=not args.no_verify,
-        )
-    except (ArchiveError, RunnerError) as exc:
-        parser.exit(2, f"{exc}\n")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

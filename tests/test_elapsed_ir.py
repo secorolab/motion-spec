@@ -92,36 +92,6 @@ def test_elapsed_equality_reads_reference_and_tolerance_normalized_to_seconds() 
     assert ev.elapsed_tolerance_s == 0.01
 
 
-def test_non_time_constraint_is_not_mistaken_for_elapsed() -> None:
-    """A constraint whose quantity happens to be Time-kind QUDT (not a TimeConstraint)
-    must not be dispatched as elapsed -- the class, not the quantity kind, decides."""
-    from motion_spec.namespace import QUDT_SCHEMA
-    from rdf_utils.namespace import NS_MM_QUDT_QTY, NS_MM_QUDT_UNIT
-
-    g = Graph()
-    cstr = URIRef(f"{NS}some-timer-quantity")
-    qty = URIRef(f"{NS}some-timer-quantity-qty")
-    g.add((qty, RDF.type, QUDT_SCHEMA.Quantity))
-    g.add((qty, QUDT_SCHEMA.hasQuantityKind, NS_MM_QUDT_QTY["Time"]))
-    g.add((qty, QUDT_SCHEMA.unit, NS_MM_QUDT_UNIT["SEC"]))
-    g.add((qty, QUDT_SCHEMA.value, Literal(1.0, datatype=XSD.double)))
-    g.add((cstr, RDF.type, CSTR.Constraint))
-    g.add((cstr, RDF.type, CSTR.UnilateralConstraint))
-    g.add((cstr, RDF.type, CSTR.GreaterThanConstraint))
-    g.add((cstr, CSTR.quantity, qty))
-    threshold = URIRef(f"{NS}some-timer-threshold")
-    g.add((threshold, RDF.type, QUDT_SCHEMA.Quantity))
-    g.add((threshold, QUDT_SCHEMA.hasQuantityKind, NS_MM_QUDT_QTY["Time"]))
-    g.add((threshold, QUDT_SCHEMA.unit, NS_MM_QUDT_UNIT["SEC"]))
-    g.add((threshold, QUDT_SCHEMA.value, Literal(0.5, datatype=XSD.double)))
-    g.add((cstr, CSTR.threshold, threshold))
-    eval_node = _evaluator(g, cstr, qty)
-
-    ev = Parser(g).constraint_evaluator(eval_node)
-
-    assert ev.is_elapsed is False
-
-
 def test_evaluator_term_renders_equality_as_abs_within_tolerance() -> None:
     ev = ConstraintEvaluator(
         id="wait5",

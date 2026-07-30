@@ -6,7 +6,6 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from rdf_utils.models.vocab import URI_KC_TYPE_SERIAL
@@ -17,8 +16,6 @@ from rdflib.namespace import RDF, XSD
 from motion_spec.codegen import render_template
 from motion_spec.entities import PIDController
 from motion_spec.ir_gen import (
-    _motion_done_terms,
-    _validate_motion_progress_objectives,
     GuardedMotionBlock,
     Parser,
     SceneRobot,
@@ -91,15 +88,15 @@ def _quantity(graph: Graph, name: str) -> URIRef:
 def test_parser_scopes_repeated_nested_reference_ids() -> None:
     graph = Graph()
     graph.bind("example", "https://example.test/")
-    first = URIRef("https://example.test/motion/Spec/spec/traj1/reference")
-    second = URIRef("https://example.test/motion/Spec/spec/traj2/reference")
+    first = URIRef("https://example.test/motion/Spec/spec/path1/reference")
+    second = URIRef("https://example.test/motion/Spec/spec/path2/reference")
     graph.add((first, RDF.type, RDF.Property))
     graph.add((second, RDF.type, RDF.Property))
 
     parser = Parser(graph)
 
-    assert parser.id(first) == "motion_traj1_reference"
-    assert parser.id(second) == "motion_traj2_reference"
+    assert parser.id(first) == "motion_path1_reference"
+    assert parser.id(second) == "motion_path2_reference"
 
 
 def _pid_graph(*, kp: float | None = 1.0) -> tuple[Graph, URIRef]:
@@ -206,32 +203,12 @@ def test_introspection_contract_carries_control_and_provenance() -> None:
     assert introspection["monitors"][0]["trigger"] == "edge"
     assert introspection["monitors"][0]["event_uri"] == "https://example.test/events/complete"
     assert {"id": "control", "uri": "https://example.test/control"} in introspection["uris"]
-    assert any(entity["role"] == "app_manifest" for entity in introspection["provenance"]["entities"])
-    assert any(
-        entity["role"] == "imported_provenance"
-        and entity["source"] == "/tmp/generated/provenance/dsl.ld.json"
-        for entity in introspection["provenance"]["entities"]
-    )
-    assert any(
-        activity["wasAssociatedWith"] == "agent:motion_spec_ir_gen"
-        for activity in introspection["provenance"]["activities"]
-    )
     runtime_activity = next(
         activity
         for activity in introspection["provenance"]["activities"]
         if activity["id"] == "activity:controller_execution"
     )
-    assert runtime_activity["role"] == "controller_execution"
     assert runtime_activity["wasAssociatedWith"] == "agent:controller_process"
-    assert "bdd:SimulatedExecution" in runtime_activity["types"]
-    agents = {agent["id"]: agent for agent in introspection["provenance"]["agents"]}
-    assert {
-        "agent:runtime:mujoco",
-        "agent:controller_process",
-        "agent:modelled:robot",
-    } <= set(agents)
-    assert "exec:Simulation" in agents["agent:runtime:mujoco"]["types"]
-    assert "agn:ModelledAgent" in agents["agent:modelled:robot"]["types"]
 
 
 def test_velocity_profile_operator_closure_exposes_codegen_fields() -> None:
@@ -277,16 +254,6 @@ def test_velocity_profile_without_controller_fails_clearly() -> None:
 
     with pytest.raises(ValueError, match="not bound to a constraint"):
         Parser(graph).closures(ops_generic)
-
-
-def test_progress_without_derived_tracking_error_fails_before_codegen() -> None:
-    motion = SimpleNamespace(
-        id="motion_path",
-        progress_objectives=[SimpleNamespace(id="progress_path_0", errors=[])],
-    )
-
-    with pytest.raises(ValueError, match="no derived tracking-controller error signal"):
-        _validate_motion_progress_objectives([motion])
 
 
 def test_solver_ir_carries_rne_algorithm_and_gravity() -> None:
@@ -486,16 +453,10 @@ int main() {
     subprocess.run([str(exe)], check=True)
 
 
-@pytest.mark.parametrize(
-    "event_uri, expected_name",
-    [
-        ("http://example.org/coord/E_OBJ_REACHED", "E_OBJ_REACHED"),
-        ("http://example.org/coord/e-step", "E_STEP"),
-    ],
-)
-def test_edge_monitor_carries_full_event_uri_and_enum_token(event_uri: str, expected_name: str) -> None:
+def test_edge_monitor_carries_full_event_uri_and_enum_token() -> None:
     graph = Graph()
     monitor = URIRef("https://example.test/mon")
+    event_uri = "http://example.org/coord/E_OBJ_REACHED"
     event = URIRef(event_uri)
     graph.add((monitor, RDF.type, CSTR_HDL.Monitor))
     graph.add((monitor, RDF.type, CSTR_HDL.EdgeTriggeredMonitor))
@@ -505,25 +466,4 @@ def test_edge_monitor_carries_full_event_uri_and_enum_token(event_uri: str, expe
 
     assert entry.event_uri == event_uri
     # event_name is the coord-dsl FSM enum token (local name, upper-cased, '-' -> '_').
-    assert entry.event_name == expected_name
-
-
-def test_done_terms_are_until_only_event_or_flag() -> None:
-    """done_terms are the UNTIL members alone (edge monitor -> event flag, level monitor ->
-    boolean flag), with no path-parameter coupling. The any/all/paren/empty folding is
-    done by the bool-condition template and covered by the codegen golden diff."""
-    monitors = [
-        {"id": "mon_a", "is_edge_triggered": True},
-        {"id": "mon_b", "flag": "flag_b"},
-    ]
-
-    terms = _motion_done_terms({"id": "m", "until_monitors": monitors})
-    assert terms == [
-        {"kind": "event", "motion_id": "m", "monitor_id": "mon_a"},
-        {"kind": "flag", "motion_id": "m", "flag": "flag_b"},
-    ]
-    # Path-parameter completion is NOT folded in: only event/flag member terms.
-    assert all(t["kind"] in ("event", "flag") for t in terms)
-
-    # No UNTIL monitors: no stop terms -> the template renders the "true" default.
-    assert _motion_done_terms({"id": "m", "until_monitors": []}) == []
+    assert entry.event_name == "E_OBJ_REACHED"

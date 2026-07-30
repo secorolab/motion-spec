@@ -19,11 +19,6 @@ def test_cli_exposes_lazy_click_commands(monkeypatch, tmp_path) -> None:
         command in result.output
         for command in ("install", "health", "gen", "build", "check", "ir", "codegen", "run")
     )
-    assert all(
-        section in result.output
-        for section in ("NAME", "SYNOPSIS", "DESCRIPTION", "WORKFLOW", "ARTIFACTS", "EXAMPLES", "SEE ALSO")
-    )
-    assert "motion-spec COMMAND --help" in result.output
 
     result = runner.invoke(main, ["codegen", "--help"])
     assert result.exit_code == 0

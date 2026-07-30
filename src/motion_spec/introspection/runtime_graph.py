@@ -14,8 +14,8 @@ from pathlib import Path
 import rdflib
 
 from motion_spec.introspection.archive import load_manifest, sha256_file
-from motion_spec.namespace import CSTR_HDL
-from motion_spec.provenance import MSPROV, prov_uri, rec_run_lifecycle, rec_types
+from motion_spec.rdf_parser.vocab import CSTR_HDL
+from motion_spec.introspection.provenance import MSPROV, prov_uri, rec_run_lifecycle, rec_types
 
 
 def _dt_literal(wall_ns) -> rdflib.Literal | None:
@@ -480,7 +480,7 @@ def write_runtime_ttl(run_dir: Path | str, frames: list[dict], *, frame_count: i
 
 def _record_runtime_ttl_with_rec(run_dir: Path, manifest: dict, runtime_ttl: Path) -> None:
     try:
-        from motion_spec.provenance import ensure_local_rec_importable
+        from motion_spec.introspection.provenance import ensure_local_rec_importable
 
         ensure_local_rec_importable()
         from rec import Run

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
-# Author: OpenAI
+# Author: Vamsi Kalagaturu
 
 """Unified Click command-line interface for motion-spec."""
 
@@ -116,7 +116,7 @@ def _install_features() -> tuple[str, ...]:
 
 
 def _dsl_requirement() -> str:
-    from motion_spec.codegen import _source_root_from_distribution
+    from motion_spec.generation.codegen import _source_root_from_distribution
 
     root = _source_root_from_distribution()
     sibling = root.parent / "motion-spec-dsl" if root else None
@@ -250,7 +250,7 @@ def health(profiles: tuple[str, ...], targets: tuple[str, ...]) -> None:
 @click.option("-o", "--output-dir", type=click.Path(file_okay=False, path_type=Path))
 def gen(stage_or_model: str, model: Path | None, output_dir: Path | None) -> None:
     """Generate IR or C++ from a .robmot MODEL; CODE is the default stage."""
-    from motion_spec.pipeline import create_generation_dir, generate_model
+    from motion_spec.generation.pipeline import create_generation_dir, generate_model
 
     if stage_or_model in {"ir", "code"}:
         if model is None:
@@ -285,7 +285,7 @@ def gen(stage_or_model: str, model: Path | None, output_dir: Path | None) -> Non
 @click.option("-j", "--jobs", type=click.IntRange(min=1))
 def build(generation: Path, prefixes: tuple[Path, ...], jobs: int | None) -> None:
     """Configure and compile GENERATION/generated into GENERATION/build."""
-    from motion_spec.pipeline import build_generation
+    from motion_spec.generation.pipeline import build_generation
 
     try:
         executable = build_generation(generation.resolve(), prefixes=prefixes, jobs=jobs)
@@ -303,7 +303,7 @@ def build(generation: Path, prefixes: tuple[Path, ...], jobs: int | None) -> Non
 )
 def check(manifest: Path, meta_shacl: bool) -> None:
     """Validate MANIFEST against its SHACL constraints."""
-    from motion_spec.check import validate_manifest
+    from motion_spec.rdf_parser.check import validate_manifest
 
     conforms, report = validate_manifest(manifest, meta_shacl=meta_shacl)
     click.echo(report)
@@ -317,8 +317,8 @@ def check(manifest: Path, meta_shacl: bool) -> None:
 @click.option("-c", "--console", is_flag=True, help="Print IR to stdout.")
 def generate_ir(manifest: Path, output: Path | None, console: bool) -> None:
     """Lower MANIFEST to motion-spec IR."""
-    from motion_spec.entities import DataclassJSONEncoder
-    from motion_spec.ir_gen import generate_ir as build_ir
+    from motion_spec.classes.entities import DataclassJSONEncoder
+    from motion_spec.rdf_parser.ir import generate_ir as build_ir
 
     if console == (output is not None):
         raise click.UsageError("choose exactly one of --output or --console")
@@ -338,7 +338,7 @@ def generate_ir(manifest: Path, output: Path | None, console: bool) -> None:
 @click.option("--stst-bin", help="STSTv4 executable; defaults to managed STST, then PATH.")
 def codegen(input: Path, output_dir: Path, stst_bin: str | None) -> None:
     """Generate C++ from motion-spec IR INPUT."""
-    from motion_spec.codegen import generate_code
+    from motion_spec.generation.codegen import generate_code
     from motion_spec.setup import find_stst
 
     try:
@@ -456,7 +456,7 @@ def run(
     """Run a .robmot INPUT, generating and building it first, or an existing GENERATION."""
     from motion_spec.introspection.archive import ArchiveError
     from motion_spec.introspection.runner import RunnerError, run_cataloged
-    from motion_spec.pipeline import build_generation, create_generation_dir, generate_model, new_id
+    from motion_spec.generation.pipeline import build_generation, create_generation_dir, generate_model, new_id
 
     if steps is not None and not headless:
         raise click.UsageError("--steps requires --headless")

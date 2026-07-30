@@ -15,7 +15,7 @@ from motion_spec.introspection.archive import (
     create_archive_manifest,
     verify_manifest,
 )
-from motion_spec.provenance import (
+from motion_spec.introspection.provenance import (
     artifact_sha256,
     artifact_size,
     dependencies,

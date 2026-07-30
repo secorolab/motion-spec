@@ -6,9 +6,9 @@ from __future__ import annotations
 from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import RDF, XSD
 
-from motion_spec.entities import ConstraintEvaluator, EvaluatorType
-from motion_spec.ir_gen import Parser, _evaluator_term
-from motion_spec.namespace import CSTR, CSTR_EXT, CSTR_HDL, TIME
+from motion_spec.classes.entities import ConstraintEvaluator, EvaluatorType
+from motion_spec.rdf_parser.ir import Parser, _evaluator_term
+from motion_spec.rdf_parser.vocab import CSTR, CSTR_EXT, CSTR_HDL, TIME
 
 NS = "https://example.test/"
 

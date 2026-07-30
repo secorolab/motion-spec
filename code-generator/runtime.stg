@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
+// SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
+// Author: Vamsi Kalagaturu
 // Runtime control-loop math header (profiles/admittance/spring-damper, monitors).
 
 runtime_header(has_mobile_base, control_period_ns) ::= <<
@@ -54,20 +56,20 @@ inline double path_progress_step(
     return clamp01(current + advancement_per_second * timestep_s);
 }
 
-inline void resolve_constraint_acceleration(
+inline void resolve_cartesian_acceleration(
         const KDL::Jacobian &jac,
-        const KDL::Jacobian &alpha,
-        const KDL::JntArray &e_acc,
+        const KDL::Jacobian &directions,
+        const KDL::JntArray &cartesian_acceleration,
         const Eigen::VectorXd *bias,
         double lambda,
         KDL::JntArray &qdd_out) {
     KDL::SetToZero(qdd_out);
-    const int m = e_acc.rows();
+    const int m = cartesian_acceleration.rows();
     if (m == 0) return;
-    const Eigen::MatrixXd task_jac = alpha.data.transpose() * jac.data;
+    const Eigen::MatrixXd task_jac = directions.data.transpose() * jac.data;
     Eigen::VectorXd rhs(m);
     for (int i = 0; i \< m; ++i) {
-        rhs(i) = e_acc(i);
+        rhs(i) = cartesian_acceleration(i);
     }
     if (bias != nullptr && bias->size() == m) {
         rhs -= *bias;

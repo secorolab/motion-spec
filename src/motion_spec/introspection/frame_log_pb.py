@@ -15,7 +15,7 @@ from pathlib import Path
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
 from motion_spec.introspection.archive import ArchiveError
-from motion_spec.codegen_artifacts import build_frame_log_proto_fields
+from motion_spec.generation.artifacts import build_frame_log_proto_fields
 
 PROTO_PACKAGE = "motion_spec.introspection.log"
 POSE_NAMES = ("px", "py", "pz", "qx", "qy", "qz", "qw")

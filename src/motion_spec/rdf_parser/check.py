@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
+# SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
+# Author: Vamsi Kalagaturu
 """SHACL validation tool for motion specification models."""
 
 import sys
@@ -9,8 +11,8 @@ import pyshacl
 import rdflib
 from rdf_utils.resolver import IriToFileResolver, install_resolver
 
-from motion_spec.manifest import build_url_map, metamodel_url_map
-from motion_spec.namespace import APP
+from motion_spec.rdf_parser.manifest import build_url_map, metamodel_url_map
+from motion_spec.rdf_parser.vocab import APP
 
 
 def validate_manifest(app_model: str | Path, *, meta_shacl: bool = False) -> tuple[bool, str]:

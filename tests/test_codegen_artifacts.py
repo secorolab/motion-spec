@@ -8,14 +8,14 @@ from pathlib import Path
 from rdflib import Graph
 from rdf_utils.resolver import IriToFileResolver, install_resolver
 
-from motion_spec import codegen
-from motion_spec.ir_gen import (
+from motion_spec.generation import codegen
+from motion_spec.rdf_parser.ir import (
     _annotate_controller_signals,
     add_controller_internal_state_logging,
     add_quantity_samples,
     add_spatial_samples,
 )
-from motion_spec.codegen_artifacts import (
+from motion_spec.generation.artifacts import (
     PROTO_FIELD_BASES,
     build_frame_layout,
     build_frame_log_proto_fields,
@@ -23,7 +23,7 @@ from motion_spec.codegen_artifacts import (
     build_schema,
     fields_with_offsets,
 )
-from motion_spec.provenance import build_provenance_document
+from motion_spec.introspection.provenance import build_provenance_document
 
 
 def _sample_ir() -> dict:

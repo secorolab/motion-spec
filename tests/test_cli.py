@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
-# Author: OpenAI
+# Author: Vamsi Kalagaturu
 
 from click.testing import CliRunner
 from pathlib import Path
@@ -65,10 +65,10 @@ def test_gen_and_run_compose_the_model_pipeline(monkeypatch, tmp_path) -> None:
         executable.touch()
         return executable
 
-    monkeypatch.setattr("motion_spec.pipeline.create_generation_dir", create_generation)
-    monkeypatch.setattr("motion_spec.pipeline.generate_model", generate)
-    monkeypatch.setattr("motion_spec.pipeline.build_generation", build)
-    monkeypatch.setattr("motion_spec.pipeline.new_id", lambda name: f"{name}-1")
+    monkeypatch.setattr("motion_spec.generation.pipeline.create_generation_dir", create_generation)
+    monkeypatch.setattr("motion_spec.generation.pipeline.generate_model", generate)
+    monkeypatch.setattr("motion_spec.generation.pipeline.build_generation", build)
+    monkeypatch.setattr("motion_spec.generation.pipeline.new_id", lambda name: f"{name}-1")
     monkeypatch.setattr(
         "motion_spec.introspection.runner.run_cataloged",
         lambda *args, **kwargs: received.update(run=(args, kwargs)) or 0,

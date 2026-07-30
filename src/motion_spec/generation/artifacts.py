@@ -8,7 +8,7 @@ import json
 import re
 from pathlib import Path
 
-from motion_spec.provenance import build_provenance_document
+from motion_spec.introspection.provenance import build_provenance_document
 
 SCHEMA_VERSION = 1
 FRAME_LAYOUT_VERSION = 1
@@ -308,7 +308,7 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
         "schema_version": SCHEMA_VERSION,
         "frame_layout_version": FRAME_LAYOUT_VERSION,
         "runtime_rdf_contract_version": RUNTIME_RDF_CONTRACT_VERSION,
-        "generated_by": "motion_spec.codegen",
+        "generated_by": "motion_spec.generation.codegen",
         # Portable basenames only — absolute build-tree paths here would leak machine
         # paths into the archive AND make schema_hash (carried in the frame-log header)
         # depend on where the build ran. The archive resolves these against its own dirs.

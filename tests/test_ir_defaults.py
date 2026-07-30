@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
+# SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
+# Author: Vamsi Kalagaturu
 
 from __future__ import annotations
 
@@ -13,19 +15,25 @@ from rdf_utils.namespace import NS_MM_GEOM, NS_MM_KC_EXT
 from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import RDF, XSD
 
-from motion_spec.codegen import render_template
-from motion_spec.entities import PIDController
-from motion_spec.ir_gen import (
+from motion_spec.generation.codegen import render_template
+from motion_spec.classes.entities import PIDController
+from motion_spec.rdf_parser.ir import (
+    LINEAR_AXES,
+    SOLVER_SEMANTICS_BY_ALGORITHM,
+    ControllerDerivation,
     GuardedMotionBlock,
     Parser,
     SceneRobot,
     SceneSpec,
+    SolverDerivationContext,
     _build_introspection,
+    _derived_controllers,
+    _derived_motion_drivers,
     _fixed_attachments,
     _robot_setups_from_graph,
     ops_generic,
 )
-from motion_spec.namespace import (
+from motion_spec.rdf_parser.vocab import (
     AGN,
     ALGO_EXT,
     CSTR,
@@ -270,8 +278,60 @@ def test_solver_ir_carries_rne_algorithm_and_gravity() -> None:
     entry = Parser(graph).solver_with_input_and_output(solver)
 
     assert entry.algorithm == "RNE"
-    assert entry.algorithm_is_rne is True
     assert entry.root_acc == [0.0, 0.0, -9.81]
+
+
+def test_rne_uses_acceleration_while_achd_uses_acceleration_energy() -> None:
+    def derive(algorithm: URIRef):
+        graph = Graph()
+        solver = URIRef(f"https://example.test/{algorithm.rsplit('/', 1)[-1]}")
+        driver = URIRef(f"{solver}/driver")
+        handler = URIRef(f"{solver}/handler")
+        motion = URIRef(f"{solver}/motion")
+        controller = URIRef(f"{solver}/controller")
+        constraint = URIRef(f"{solver}/constraint")
+        quantity = URIRef(f"{solver}/position/x")
+        graph.add((solver, SLV["solver"], algorithm))
+        graph.add((solver, SLV["motion-drivers"], driver))
+        graph.add((controller, RDF.type, CSTR_HDL.ProportionalIntegralDerivative))
+        for predicate, value in (
+            (CSTR_HDL["proportional-gain"], 1.0),
+            (CSTR_HDL["integral-gain"], 0.0),
+            (CSTR_HDL["derivative-gain"], 0.0),
+        ):
+            graph.add((controller, predicate, Literal(value, datatype=XSD.double)))
+        plan = ControllerDerivation(
+            handler, motion, controller, solver, constraint, quantity, None, LINEAR_AXES[:1]
+        )
+        context = SolverDerivationContext(
+            {handler: (plan,)},
+            {solver: (plan,)},
+            {solver: SOLVER_SEMANTICS_BY_ALGORITHM[algorithm]},
+            frozenset(),
+        )
+        parser = Parser(graph)
+        return (
+            _derived_controllers(graph, parser, context, plan)[0].control_signal,
+            _derived_motion_drivers(graph, parser, context, solver)[0],
+        )
+
+    rne_signal, rne_drivers = derive(SLV.RecursiveNewtonEulerAlgorithm)
+    achd_signal, achd_drivers = derive(
+        SLV.AccelerationConstrainedHybridDynamicsAlgorithm
+    )
+
+    assert (rne_signal.quantity_kind.id, rne_signal.unit.id) == (
+        "LinearAcceleration",
+        "M_PER_SEC2",
+    )
+    assert rne_drivers.acceleration_constraint == []
+    assert rne_drivers.cartesian_acceleration[0].acceleration == rne_signal
+    assert (achd_signal.quantity_kind.id, achd_signal.unit.id) == (
+        "AccelerationEnergy",
+        "N_M2_PER_SEC2",
+    )
+    assert achd_drivers.cartesian_acceleration == []
+    assert achd_drivers.acceleration_constraint[0].acceleration_energy == achd_signal
 
 
 def test_generated_velocity_profile_runtime_respects_authored_bounds(tmp_path) -> None:
@@ -393,7 +453,7 @@ int main() {
     subprocess.run([str(exe)], check=True)
 
 
-def test_generated_runtime_resolves_constraint_acceleration(tmp_path) -> None:
+def test_generated_runtime_resolves_cartesian_acceleration(tmp_path) -> None:
     if shutil.which("stst") is None or shutil.which("c++") is None:
         pytest.skip("requires stst and c++")
 
@@ -421,15 +481,16 @@ def test_generated_runtime_resolves_constraint_acceleration(tmp_path) -> None:
 
 int main() {
     KDL::Jacobian jac(1);
-    KDL::Jacobian alpha(1);
-    KDL::JntArray e_acc(1);
+    KDL::Jacobian directions(1);
+    KDL::JntArray acceleration(1);
     KDL::JntArray qdd(1);
     KDL::SetToZero(jac);
-    KDL::SetToZero(alpha);
+    KDL::SetToZero(directions);
     jac.data(0, 0) = 1.0;
-    alpha.data(0, 0) = 1.0;
-    e_acc(0) = 2.0;
-    motion_spec::runtime::resolve_constraint_acceleration(jac, alpha, e_acc, nullptr, 1e-9, qdd);
+    directions.data(0, 0) = 1.0;
+    acceleration(0) = 2.0;
+    motion_spec::runtime::resolve_cartesian_acceleration(
+        jac, directions, acceleration, nullptr, 1e-9, qdd);
     assert(std::abs(qdd(0) - 2.0) < 1e-6);
 }
 '''

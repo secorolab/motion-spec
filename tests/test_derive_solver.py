@@ -2,11 +2,11 @@
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 # Author: Vamsi Kalagaturu
 
-from motion_spec.derive_solver import ANGULAR_AXES, LINEAR_AXES, POSE_AXES, acceleration_axes
+from motion_spec.rdf_parser.ir import ANGULAR_AXES, LINEAR_AXES, POSE_AXES, spatial_axes
 
 
 def derive(subspace=None, axis=None, **kwargs):
-    return acceleration_axes(
+    return spatial_axes(
         controller_type=kwargs.get("controller_type", "ProportionalIntegralDerivative"),
         subspace=subspace,
         axis=axis,
@@ -16,7 +16,7 @@ def derive(subspace=None, axis=None, **kwargs):
     )
 
 
-def test_acceleration_axis_decision_table() -> None:
+def test_spatial_axis_decision_table() -> None:
     assert derive("pose", quantity_kind="Pose") == POSE_AXES
     assert derive("position", "x") == LINEAR_AXES[:1]
     assert derive("position") == LINEAR_AXES

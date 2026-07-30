@@ -5,11 +5,11 @@ import pytest
 from rdflib import Graph, URIRef
 from rdflib.namespace import RDF
 
-from motion_spec.ir_gen import (
+from motion_spec.rdf_parser.ir import (
     _materialize_linear_distance_operations,
     _materialize_pose_reference_transforms,
 )
-from motion_spec.namespace import (
+from motion_spec.rdf_parser.vocab import (
     CSTR,
     GEOM_COORD,
     GEOM_ENT,

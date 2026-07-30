@@ -8,7 +8,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from motion_spec.codegen_artifacts import fields_with_offsets
+from motion_spec.generation.artifacts import fields_with_offsets
 
 from frame_log_fixture import flat_frame, write_frame_log_pb, write_frame_log_proto
 

@@ -1,4 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
+# SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
+# Author: Vamsi Kalagaturu
+"""RDF namespaces used while parsing motion-spec manifests and models."""
 from rdflib import URIRef
 from rdflib.namespace import DefinedNamespace, Namespace
 from rdf_utils.namespace import (

@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
+# SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
+# Author: Vamsi Kalagaturu
 """Entity dataclasses and enums for the motion-spec IR.
 
 Pure data model: no RDF access, no parsing logic. The stateful Parser in
@@ -734,6 +736,21 @@ class AccelerationConstraint:
 
 
 @dataclass
+class CartesianAccelerationSpecification:
+    """A desired Cartesian acceleration supplied to an acceleration-to-joint mapping."""
+
+    id: str
+    subspace: Subspace
+    axis: Axis | None
+    acceleration: Quantity
+    as_seen_by: Frame | None = None
+    base_aligned: bool = True
+    direction: "Direction | None" = None
+    saturation: Saturation | None = None
+    type: str = field(default="CartesianAccelerationSpecification")
+
+
+@dataclass
 class CartesianForceSpecification:
     """A Cartesian force applied to a body."""
 
@@ -755,11 +772,14 @@ class JointForceSpecification:
 
 @dataclass
 class MotionDrivers:
-    """The acceleration/Cartesian/joint force drivers of a solver."""
+    """The physically distinct inputs accepted by a dynamics solver pipeline."""
 
     id: str
     acceleration_constraint: list[AccelerationConstraint]
     cartesian_force: list[CartesianForceSpecification]
+    cartesian_acceleration: list[CartesianAccelerationSpecification] = field(
+        default_factory=list
+    )
     joint_force: list[JointForceSpecification] = field(default_factory=list)
     has_cartesian_force: bool = False
     type: str = field(default="MotionDrivers")
@@ -773,7 +793,6 @@ class HandlerArmSolver:
     output: list
     motion_driver: MotionDrivers
     algorithm: str = ""
-    algorithm_is_rne: bool = False
     root_acc: list[float] | None = None
     chain_root: str = ""
     chain_end: str = ""
@@ -791,7 +810,6 @@ class SolverWithInputAndOutput:
     motion_drivers: list[MotionDrivers]
     output: list
     algorithm: str = ""
-    algorithm_is_rne: bool = False
     urdf: str = ""
     chain_root: str = ""
     chain_end: str = ""

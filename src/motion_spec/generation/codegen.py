@@ -13,11 +13,11 @@ from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from urllib.parse import urlparse
 
-from motion_spec.entities import DataclassJSONEncoder
-from motion_spec.codegen_artifacts import write_introspection_artifacts
+from motion_spec.classes.entities import DataclassJSONEncoder
+from motion_spec.generation.artifacts import write_introspection_artifacts
 
 
-PACKAGE_ROOT = Path(__file__).resolve().parents[2]
+PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 MAIN_TEMPLATE = "main"
 DIST_NAME = "motion_spec"
 

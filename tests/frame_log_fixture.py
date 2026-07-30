@@ -10,9 +10,9 @@ import shutil
 
 import pytest
 
-from motion_spec.codegen import render_template
+from motion_spec.generation.codegen import render_template
 from motion_spec.introspection import frame_log_pb
-from motion_spec.codegen_artifacts import build_frame_log_proto_fields, field_names_and_format
+from motion_spec.generation.artifacts import build_frame_log_proto_fields, field_names_and_format
 
 
 def write_frame_log_proto(path: Path, schema: dict) -> None:

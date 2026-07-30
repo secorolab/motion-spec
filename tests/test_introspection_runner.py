@@ -10,7 +10,7 @@ import rdflib
 from motion_spec.introspection import runner
 from motion_spec.introspection.archive import verify_manifest
 from motion_spec.introspection.runner import run_cataloged
-from motion_spec.provenance import prov_uri, rec_run_lifecycle
+from motion_spec.introspection.provenance import prov_uri, rec_run_lifecycle
 
 from support import _source_tree
 

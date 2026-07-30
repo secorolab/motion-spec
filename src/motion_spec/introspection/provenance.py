@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 # SPDX-FileContributor: Vamsi Kalagaturu <vamsikalagaturu@gmail.com>
-"""Provenance helpers for generated artifacts, run archives and cataloged executions."""
+"""Introspection provenance for generated artifacts, archives and recorded executions."""
 
 from __future__ import annotations
 

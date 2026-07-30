@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: MPL-2.0
+# SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
+# Author: Vamsi Kalagaturu
 """Shared IRI-map resolution for application manifests."""
 
 from pathlib import Path
 
-from motion_spec.namespace import APP
+from motion_spec.rdf_parser.vocab import APP
 
-PACKAGE_ROOT = Path(__file__).resolve().parents[2]
+PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 METAMODELS_URL = "https://secorolab.github.io/metamodels/"
 COMP_ROB2B_URL = "https://comp-rob2b.github.io/metamodels/"
 

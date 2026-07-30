@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
-# Author: OpenAI
+# Author: Vamsi Kalagaturu
 
 """High-level generation and build pipeline for motion models."""
 
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import rdflib
 
-from motion_spec.namespace import APP
+from motion_spec.rdf_parser.vocab import APP
 
 PROV = rdflib.Namespace("http://www.w3.org/ns/prov#")
 
@@ -149,9 +149,9 @@ def create_generation_dir(model: Path, output_dir: Path | None = None) -> Path:
 
 def generate_model(model: Path, generation: Path, *, stage: str = "code") -> Path:
     """Generate MODEL through IR or C++ code and return its generated-artifact directory."""
-    from motion_spec.check import validate_manifest
-    from motion_spec.entities import DataclassJSONEncoder
-    from motion_spec.ir_gen import generate_ir
+    from motion_spec.rdf_parser.check import validate_manifest
+    from motion_spec.classes.entities import DataclassJSONEncoder
+    from motion_spec.rdf_parser.ir import generate_ir
 
     generated = generation / "generated"
     model_dir = generated / "model"
@@ -169,7 +169,7 @@ def generate_model(model: Path, generation: Path, *, stage: str = "code") -> Pat
     ir_path = model_dir / "ir.json"
     ir_path.write_text(json.dumps(generate_ir(manifest), cls=DataclassJSONEncoder, indent=4))
     if stage == "code":
-        from motion_spec.codegen import generate_code
+        from motion_spec.generation.codegen import generate_code
         from motion_spec.setup import find_stst
 
         controller_dir = generated / "controller"

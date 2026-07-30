@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
-# Author: OpenAI
+# Author: Vamsi Kalagaturu
 
 """Health checks for installed motion-spec capabilities."""
 

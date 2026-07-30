@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
+# SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
+# Author: Vamsi Kalagaturu
 """Intermediate representation (IR) generator for motion specification models.
 
 This module parses RDF graphs containing motion specification models and generates
@@ -35,9 +37,9 @@ from rdflib import URIRef
 from rdflib.namespace import RDF, split_uri
 
 # fmt: off
-from motion_spec.entities import (
+from motion_spec.classes.entities import (
     AccelerationConstraint, AccelerationTwist, Axis, BilateralConstraint,
-    CartesianForceSpecification, Constraint, ConstraintEvaluator, ConstraintHandler,
+    CartesianAccelerationSpecification, CartesianForceSpecification, Constraint, ConstraintEvaluator, ConstraintHandler,
     DataclassJSONEncoder, Direction, EdgeMonitor, EqualityConstraint,
     EvaluatorType, FeedForwardController, ForceDistributionSolver, ForwardedCommand, Frame,
     FreeVector, GuardedMotion, GuardedMotionBlock, HandlerArmSolver, ImpedanceController,
@@ -51,8 +53,7 @@ from motion_spec.entities import (
     VelocityTwist, View, Wrench,
 )
 # fmt: on
-from motion_spec.manifest import build_url_map, metamodel_url_map
-from motion_spec.derive_solver import AccelerationAxis, SolverIdFactory, acceleration_axes
+from motion_spec.rdf_parser.manifest import build_url_map, metamodel_url_map
 
 # ROS interop: a monitor's `also publish to topic` clause is emitted as ros:channel-name /
 # ros:type-name on the monitor node (ns from bdd-dsl's ROS metamodel).
@@ -79,13 +80,123 @@ def _ros_type_parts(ros_type: str) -> tuple[str, str, str]:
     return pkg, include, cpp_type
 
 # fmt: off
-from motion_spec.namespace import (
+from motion_spec.rdf_parser.vocab import (
     AGN, ALGO_EXT, APP, CSTR, CSTR_EXT, CSTR_HDL, CSTR_HDL_EXT, ENV, EXEC, GEOM_COORD,
     GEOM_ENT, GEOM_OP, GEOM_OP_EXT, GEOM_PATH, GEOM_REL, KC, KC_STAT, MAP, MAP_EXT, MOT, QUDT_QKIND,
     QUDT_SCHEMA, RBDYN_COORD, RBDYN_ENT, RBDYN_OP, SLV, SLV_EXT,
     SENSORS, SOSA, TIME,
 )
 # fmt: on
+
+
+@dataclass(frozen=True)
+class SpatialAxis:
+    """One ordered linear or angular Cartesian direction."""
+
+    subspace: str
+    axis: str
+
+    @property
+    def suffix(self) -> str:
+        """Return the compatibility suffix used by generated IR identifiers."""
+        prefix = "lin" if self.subspace == "linear-acceleration" else "ang"
+        return f"{prefix}_{self.axis}"
+
+
+class AccelerationInputKind(str, Enum):
+    """Physical acceleration input accepted by a solver algorithm."""
+
+    None_ = "None"
+    ConstraintEnergy = "ConstraintEnergy"
+    CartesianAcceleration = "CartesianAcceleration"
+
+
+@dataclass(frozen=True)
+class SolverSemantics:
+    """Algorithm-specific meanings needed while deriving executable solver inputs."""
+
+    acceleration_input: AccelerationInputKind
+    signal_prefix: str | None = None
+    codegen_name: str = ""
+
+
+SOLVER_SEMANTICS_BY_ALGORITHM = {
+    SLV["AccelerationConstrainedHybridDynamicsAlgorithm"]: SolverSemantics(
+        AccelerationInputKind.ConstraintEnergy, "eacc", "ACHD"
+    ),
+    SLV["RecursiveNewtonEulerAlgorithm"]: SolverSemantics(
+        AccelerationInputKind.CartesianAcceleration, "acc", "RNE"
+    ),
+}
+COMMAND_FORWARDING_SEMANTICS = SolverSemantics(AccelerationInputKind.None_)
+
+
+@dataclass(frozen=True)
+class SolverIdFactory:
+    """Build compatibility IDs solely from authored RDF resource IDs."""
+
+    controller: str
+    motion: str
+
+    def component_controller(self, axis: SpatialAxis) -> str:
+        return f"{self.controller}_{axis.suffix}"
+
+    def component_error(self, axis: SpatialAxis) -> str:
+        return f"{self.controller}_err_{axis.suffix}"
+
+    def component_energy(self, axis: SpatialAxis) -> str:
+        return f"eacc_{self.controller}_{axis.suffix}"
+
+    def component_acceleration(self, axis: SpatialAxis) -> str:
+        return f"acc_{self.controller}_{axis.suffix}"
+
+    def component_constraint(self, axis: SpatialAxis) -> str:
+        return f"acc_cstr_{self.controller}_{axis.suffix}"
+
+    def component_acceleration_specification(self, axis: SpatialAxis) -> str:
+        return f"cart_acc_{self.controller}_{axis.suffix}"
+
+    def pose_evaluator(self) -> str:
+        return f"eval_pose_diff_{self.controller}"
+
+    def pose_difference(self) -> str:
+        return f"pose_diff_{self.controller}"
+
+
+LINEAR_AXES = tuple(SpatialAxis("linear-acceleration", axis) for axis in "xyz")
+ANGULAR_AXES = tuple(SpatialAxis("angular-acceleration", axis) for axis in "xyz")
+POSE_AXES = (*LINEAR_AXES, *ANGULAR_AXES)
+
+
+def spatial_axes(
+    *,
+    controller_type: str,
+    subspace: str | None,
+    axis: str | None,
+    command_type: str | None,
+    relation: str,
+    quantity_kind: str | None,
+) -> tuple[SpatialAxis, ...]:
+    """Return the ordered Cartesian directions implied by an authored controller."""
+    if controller_type == "ImpedanceController":
+        command_type = "Force"
+    if command_type == "Force" or subspace == "force":
+        return ()
+    if command_type == "Torque" and quantity_kind == "JointPosition":
+        return ()
+    if quantity_kind == "Pose" and subspace in {None, "pose"} and relation == "EqualityConstraint":
+        return POSE_AXES
+    if subspace in {"position", "linear-velocity"}:
+        return (SpatialAxis("linear-acceleration", axis),) if axis else LINEAR_AXES
+    if subspace in {"orientation", "angular-velocity"}:
+        return (SpatialAxis("angular-acceleration", axis),) if axis else ANGULAR_AXES
+    if subspace == "distance" and axis is not None:
+        return (SpatialAxis("linear-acceleration", axis),)
+    if subspace == "rotation" and axis is not None:
+        return (SpatialAxis("angular-acceleration", axis),)
+    if subspace == "distance" and axis is None:
+        return (SpatialAxis("linear-acceleration", "distance"),)
+    return ()
 
 
 def _is_elapsed_constraint(g, cstr_node) -> bool:
@@ -107,8 +218,8 @@ def _term_name(node) -> str | None:
     return split_uri(str(node))[1]
 
 
-def _authored_controller_axes(g) -> dict[URIRef, tuple[AccelerationAxis, ...]]:
-    """Acceleration axes derived only from authored controller facts."""
+def _authored_controller_axes(g) -> dict[URIRef, tuple[SpatialAxis, ...]]:
+    """Cartesian directions derived only from authored controller facts."""
     handler_controllers = set(g.objects(None, CSTR_HDL.controllers))
     result = {}
     for controller in handler_controllers:
@@ -148,7 +259,7 @@ def _authored_controller_axes(g) -> dict[URIRef, tuple[AccelerationAxis, ...]]:
             "",
         )
         command_type = g.value(controller, APP["command-type"])
-        result[controller] = acceleration_axes(
+        result[controller] = spatial_axes(
             controller_type=controller_type,
             subspace=subspace,
             axis=axis,
@@ -170,7 +281,7 @@ class ControllerDerivation:
     constraint: URIRef
     quantity: URIRef
     view: URIRef | None
-    axes: tuple[AccelerationAxis, ...]
+    axes: tuple[SpatialAxis, ...]
 
 
 @dataclass(frozen=True)
@@ -179,6 +290,7 @@ class SolverDerivationContext:
 
     controllers_by_handler: dict[URIRef, tuple[ControllerDerivation, ...]]
     controllers_by_solver: dict[URIRef, tuple[ControllerDerivation, ...]]
+    semantics_by_solver: dict[URIRef, SolverSemantics]
     shared_constraints: frozenset[URIRef]
 
 
@@ -223,24 +335,36 @@ def _solver_derivation_context(g) -> SolverDerivationContext:
     constraint_counts = collections.Counter(
         plan.constraint for plans in by_handler.values() for plan in plans
     )
-    _validate_solver_derivations(g, by_handler, by_solver)
+    solver_nodes = set(by_solver) | set(
+        g.subjects(RDF.type, SLV.SolverWithInputAndOutput)
+    )
+    semantics = {solver: _resolve_solver_semantics(g, solver) for solver in solver_nodes}
+    _validate_solver_derivations(g, by_handler, by_solver, semantics)
     return SolverDerivationContext(
         controllers_by_handler=by_handler,
         controllers_by_solver={node: tuple(plans) for node, plans in by_solver.items()},
+        semantics_by_solver=semantics,
         shared_constraints=frozenset(
             constraint for constraint, count in constraint_counts.items() if count > 1
         ),
     )
 
 
-def _validate_solver_derivations(g, by_handler, by_solver) -> None:
+def _resolve_solver_semantics(g, solver: URIRef) -> SolverSemantics:
+    """Resolve a solver resource to explicit input semantics or reject it."""
+    if SLV_EXT.CommandForwardingSolver in g[solver : RDF.type]:
+        return COMMAND_FORWARDING_SEMANTICS
+    algorithm = g.value(solver, SLV["solver"])
+    try:
+        return SOLVER_SEMANTICS_BY_ALGORITHM[algorithm]
+    except KeyError as exc:
+        raise ValueError(f"Solver '{solver}' has unsupported algorithm '{algorithm}'.") from exc
+
+
+def _validate_solver_derivations(g, by_handler, by_solver, semantics) -> None:
     """Enforce executable solver limits after authored RDF has resolved to solver plans."""
-    algorithms = {
-        solver: g.value(solver, SLV["solver"])
-        for solver in by_solver
-    }
     for solver, plans in by_solver.items():
-        if algorithms[solver] != SLV["AccelerationConstrainedHybridDynamicsAlgorithm"]:
+        if semantics[solver].acceleration_input != AccelerationInputKind.ConstraintEnergy:
             continue
         axes = [axis for plan in plans for axis in plan.axes]
         duplicates = [axis for axis, count in collections.Counter(axes).items() if count > 1]
@@ -255,11 +379,11 @@ def _validate_solver_derivations(g, by_handler, by_solver) -> None:
         for plan in plans:
             command = str(g.value(plan.controller, APP["command-type"]) or "")
             subspace = _term_name(g.value(plan.view, MAP.subspace)) if plan.view else None
-            domains[algorithms.get(plan.solver)].add(
+            domains[semantics[plan.solver].acceleration_input].add(
                 "force" if command in {"Force", "Torque"} or subspace in {"force", "torque"} else "pose"
             )
-        achd = domains[SLV["AccelerationConstrainedHybridDynamicsAlgorithm"]]
-        rne = domains[SLV["RecursiveNewtonEulerAlgorithm"]]
+        achd = domains[AccelerationInputKind.ConstraintEnergy]
+        rne = domains[AccelerationInputKind.CartesianAcceleration]
         overlap = achd & rne
         if overlap:
             raise ValueError(
@@ -304,7 +428,23 @@ def _controller_signal_id(
         return f"tau_{controller_id}"
     quantity_id = p.id(plan.quantity)
     suffix = "" if plan.constraint in context.shared_constraints else f"_{_motion_suffix(p, plan.motion)}"
-    return f"eacc_{quantity_id}{suffix}"
+    semantics = context.semantics_by_solver[plan.solver]
+    if semantics.signal_prefix is None:
+        raise ValueError(f"Solver '{plan.solver}' does not accept acceleration signals.")
+    return f"{semantics.signal_prefix}_{quantity_id}{suffix}"
+
+
+def _acceleration_signal(
+    id_: str, axis: SpatialAxis, input_kind: AccelerationInputKind
+) -> Quantity:
+    """Build an ACHD acceleration-energy or Cartesian acceleration signal."""
+    if input_kind == AccelerationInputKind.ConstraintEnergy:
+        return _derived_quantity(id_, "AccelerationEnergy", "N_M2_PER_SEC2")
+    if input_kind == AccelerationInputKind.CartesianAcceleration:
+        if axis.subspace == "linear-acceleration":
+            return _derived_quantity(id_, "LinearAcceleration", "M_PER_SEC2")
+        return _derived_quantity(id_, "AngularAcceleration", "RAD_PER_SEC2")
+    raise ValueError(f"Input kind '{input_kind}' does not carry acceleration.")
 
 
 def _saturation_for_signal(g, p, node, signal):
@@ -348,15 +488,22 @@ def _derived_controller(
     p,
     context: SolverDerivationContext,
     plan: ControllerDerivation,
-    axis: AccelerationAxis | None = None,
+    axis: SpatialAxis | None = None,
 ):
     """Build a controller dataclass from one authored controller and optional pose axis."""
     source_id = p.id(plan.controller)
     ids = SolverIdFactory(source_id, _motion_suffix(p, plan.motion))
+    input_kind = context.semantics_by_solver[plan.solver].acceleration_input
     if axis is not None:
         controller_id = ids.component_controller(axis)
-        signal = _derived_quantity(
-            ids.component_energy(axis), "AccelerationEnergy", "N_M2_PER_SEC2"
+        signal = _acceleration_signal(
+            (
+                ids.component_energy(axis)
+                if input_kind == AccelerationInputKind.ConstraintEnergy
+                else ids.component_acceleration(axis)
+            ),
+            axis,
+            input_kind,
         )
         is_linear = axis.subspace == "linear-acceleration"
         error = _derived_quantity(
@@ -398,6 +545,8 @@ def _derived_controller(
             signal = _derived_quantity(signal_id, "Force", "N")
         elif signal_id.startswith("tau_"):
             signal = _derived_quantity(signal_id, "Torque", "N_M")
+        elif input_kind == AccelerationInputKind.CartesianAcceleration and plan.axes:
+            signal = _acceleration_signal(signal_id, plan.axes[0], input_kind)
         else:
             signal = _derived_quantity(signal_id, "AccelerationEnergy", "N_M2_PER_SEC2")
         error_node = g.value(plan.controller, CSTR_HDL["error-signal"])
@@ -454,7 +603,7 @@ def _derived_controllers(g, p, context, plan: ControllerDerivation):
     return [_derived_controller(g, p, context, plan)]
 
 
-def _solver_limit(g, p, solver: URIRef, axis: AccelerationAxis):
+def _solver_limit(g, p, solver: URIRef, axis: SpatialAxis):
     """Return the solver saturation matching a derived acceleration subspace."""
     kind = (
         QUDT_QKIND.LinearAcceleration
@@ -474,7 +623,7 @@ def _solver_limit(g, p, solver: URIRef, axis: AccelerationAxis):
 
 
 def _derived_acceleration_constraints(g, p, context, plan: ControllerDerivation):
-    """Build ordered acceleration constraints for one authored controller."""
+    """Build ordered ACHD acceleration-energy constraints for one controller."""
     ids = SolverIdFactory(p.id(plan.controller), _motion_suffix(p, plan.motion))
     target = g.value(plan.view, MAP.superobject) if plan.view is not None else plan.quantity
     frame_node = g.value(target, GEOM_COORD["as-seen-by"])
@@ -505,6 +654,43 @@ def _derived_acceleration_constraints(g, p, context, plan: ControllerDerivation)
                     energy_id, "AccelerationEnergy", "N_M2_PER_SEC2"
                 ),
                 as_seen_by=frame,
+            )
+        )
+    return result
+
+
+def _derived_cartesian_accelerations(g, p, context, plan: ControllerDerivation):
+    """Build Cartesian acceleration commands resolved to joint acceleration before RNEA."""
+    ids = SolverIdFactory(p.id(plan.controller), _motion_suffix(p, plan.motion))
+    target = g.value(plan.view, MAP.superobject) if plan.view is not None else plan.quantity
+    frame_node = g.value(target, GEOM_COORD["as-seen-by"])
+    frame = p.frame(frame_node) if frame_node is not None else None
+    result = []
+    for axis in plan.axes:
+        if len(plan.axes) > 1:
+            specification_id = ids.component_acceleration_specification(axis)
+            acceleration_id = ids.component_acceleration(axis)
+        else:
+            suffix = (
+                ""
+                if plan.constraint in context.shared_constraints
+                else f"_{_motion_suffix(p, plan.motion)}"
+            )
+            specification_id = f"cart_acc_{p.id(plan.quantity)}{suffix}"
+            acceleration_id = f"acc_{p.id(plan.quantity)}{suffix}"
+        result.append(
+            CartesianAccelerationSpecification(
+                id=specification_id,
+                subspace=(
+                    Subspace.Linear
+                    if axis.subspace == "linear-acceleration"
+                    else Subspace.Angular
+                ),
+                axis={"x": Axis.X, "y": Axis.Y, "z": Axis.Z}.get(axis.axis),
+                acceleration=_acceleration_signal(
+                    acceleration_id, axis, AccelerationInputKind.CartesianAcceleration
+                ),
+                as_seen_by=frame,
                 saturation=_solver_limit(g, p, plan.solver, axis),
             )
         )
@@ -513,11 +699,25 @@ def _derived_acceleration_constraints(g, p, context, plan: ControllerDerivation)
 
 def _derived_motion_drivers(g, p, context, solver: URIRef) -> list[MotionDrivers]:
     """Build a solver's drivers from authored controllers plus authored force specs."""
-    acceleration = [
-        constraint
-        for plan in context.controllers_by_solver.get(solver, ())
-        for constraint in _derived_acceleration_constraints(g, p, context, plan)
-    ]
+    plans = context.controllers_by_solver.get(solver, ())
+    input_kind = context.semantics_by_solver[solver].acceleration_input
+    if input_kind == AccelerationInputKind.CartesianAcceleration:
+        constraints = []
+        accelerations = [
+            acceleration
+            for plan in plans
+            for acceleration in _derived_cartesian_accelerations(g, p, context, plan)
+        ]
+    elif input_kind == AccelerationInputKind.ConstraintEnergy:
+        constraints = [
+            constraint
+            for plan in plans
+            for constraint in _derived_acceleration_constraints(g, p, context, plan)
+        ]
+        accelerations = []
+    else:
+        constraints = []
+        accelerations = []
     result = []
     for driver in g.objects(solver, SLV["motion-drivers"]):
         cartesian = [
@@ -530,10 +730,11 @@ def _derived_motion_drivers(g, p, context, solver: URIRef) -> list[MotionDrivers
         ]
         result.append(
             MotionDrivers(
-                p.id(driver),
-                acceleration,
-                cartesian,
-                joint,
+                id=p.id(driver),
+                acceleration_constraint=constraints,
+                cartesian_force=cartesian,
+                cartesian_acceleration=accelerations,
+                joint_force=joint,
                 has_cartesian_force=bool(cartesian),
             )
         )
@@ -1366,10 +1567,12 @@ class Parser:
         gravity_node = self.g.value(id_, SLV.gravity)
         root_acc = self.parse_xyz(gravity_node) if gravity_node else None
         algorithm_node = self.g.value(id_, SLV["solver"])
-        algorithm = {
-            SLV["AccelerationConstrainedHybridDynamicsAlgorithm"]: "ACHD",
-            SLV["RecursiveNewtonEulerAlgorithm"]: "RNE",
-        }.get(algorithm_node, self.id(algorithm_node) if algorithm_node else "")
+        try:
+            algorithm = SOLVER_SEMANTICS_BY_ALGORITHM[algorithm_node].codegen_name
+        except KeyError as exc:
+            raise ValueError(
+                f"Solver '{id_}' has unsupported algorithm '{algorithm_node}'."
+            ) from exc
         torque_saturation_node = next(
             (
                 limit
@@ -1385,7 +1588,6 @@ class Parser:
             motion_drivers=drv,
             output=out,
             algorithm=algorithm,
-            algorithm_is_rne=algorithm == "RNE",
             root_acc=root_acc,
             torque_saturation=(
                 self.saturation(torque_saturation_node)
@@ -1408,7 +1610,11 @@ class Parser:
             spec_jf.append(self.joint_force_specification(jf))
 
         return MotionDrivers(
-            self.id(id_), [], spec_frc, spec_jf, has_cartesian_force=bool(spec_frc)
+            id=self.id(id_),
+            acceleration_constraint=[],
+            cartesian_force=spec_frc,
+            joint_force=spec_jf,
+            has_cartesian_force=bool(spec_frc),
         )
 
     def joint_force_specification(self, id_):
@@ -2535,7 +2741,6 @@ def _arm_solvers_for_handler(handler, slv_arm, solver_ids):
                 output=solver.output,
                 motion_driver=selected,
                 algorithm=solver.algorithm,
-                algorithm_is_rne=solver.algorithm_is_rne,
                 root_acc=solver.root_acc,
                 chain_root=solver.chain_root,
                 chain_end=solver.chain_end,
@@ -4929,7 +5134,7 @@ def _validate_solvers(arm_solvers, backend: str) -> None:
             f"Supported: {', '.join(sorted(SUPPORTED_ROBOT_MODELS))}"
         )
 
-    if backend != "mj_kdl" and any(_field(s, "algorithm_is_rne") for s in arm_solvers):
+    if backend != "mj_kdl" and any(_field(s, "algorithm") == "RNE" for s in arm_solvers):
         raise RuntimeError("RNE is currently supported only by the MuJoCo mj_kdl backend.")
 
     if backend != "robif2b":

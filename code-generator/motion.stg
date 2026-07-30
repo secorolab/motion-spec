@@ -29,6 +29,10 @@ cond-term-elapsed(t) ::= <<
 (shared.clock_time_s - state.<t.start_field> <t.op> <t.threshold>)
 >>
 
+cond-term-elapsed-eq(t) ::= <<
+(std::abs((shared.clock_time_s - state.<t.start_field>) - <t.threshold>) \<= <t.tolerance>)
+>>
+
 cond-term-flag(t) ::= <<
 <t.motion_id>_state_instance.<t.flag>
 >>
@@ -213,6 +217,7 @@ app-run-call(motion) ::= <<
         if (!<motion.id>_state_instance.active && can_start_<motion.id>(<sig-args(motion.id, motion.can_start_needs_state, motion.can_start_needs_shared, motion.can_start_needs_robot)>)) {
             <motion.id>_state_instance.active = true;
             <motion.id>_state_instance.active_steps = 0;
+<motion.progress_objectives:{objective |             shared.<objective.parameter> = 0.0;}; separator="\n">
 <motion.until_monitors:{m |             <motion.id>_state_instance.<m.id>_previous = false;
             <motion.id>_state_instance.<m.id>_event_triggered = false;}; separator="
 ">
@@ -220,6 +225,14 @@ app-run-call(motion) ::= <<
         if (<motion.id>_state_instance.active) {
             control_<motion.id>(<motion.id>_state_instance, shared, robot);
         \}
+>>
+
+progress-block(objectives) ::= <<
+<objectives:{objective |     shared.<objective.parameter> = motion_spec::runtime::path_progress_step(
+        shared.<objective.parameter>,
+        <objective.errors:{error | motion_spec::runtime::constraint_satisfied(shared.<error>)}; separator=" && ">,
+        <objective.advancement>,
+        motion_spec::runtime::kControlPeriodS);}; separator="\n">
 >>
 
 app-stage-call(motion) ::= <<
@@ -353,23 +366,6 @@ command-forwarding-mj_kdl(motion) ::= <<
 <endif>}; separator="\n">
 >>
 
-trajectory-progress(backend, motion) ::= <<
-<({trajectory-progress-<backend>})(motion)>
->>
-
-trajectory-progress-robif2b(motion) ::= <<
->>
-
-trajectory-progress-mj_kdl(motion) ::= <<
-<if(first(motion.time_trajectory_progress_ids))>    if (state.trajectory_start_time \< 0.0) {
-        if (robot.<first(motion.arm_solvers).id>.robot != nullptr) {
-        state.trajectory_start_time = robot.<first(motion.arm_solvers).id>.robot->data->time;
-        \}
-    \}
-<motion.time_trajectory_progress_ids:{alpha_id |     shared.<alpha_id> = motion_spec::runtime::clamp01((robot.<first(motion.arm_solvers).id>.robot->data->time - state.trajectory_start_time) / motion_spec::runtime::kDefaultTrajectoryDuration);}; separator="\n">
-<endif>
->>
-
 mobile_base_cycle_header(has_mobile_base, base_velocity_solvers, base_force_solvers) ::= <<
 #pragma once
 
@@ -449,8 +445,6 @@ motion_header(motion, closures, views, wrench_outputs, base_velocity_solvers, ba
 struct <motion.id>_state {
     bool active = false;
     int active_steps = 0;
-<if(first(motion.time_trajectory_progress_ids))>    double trajectory_start_time = -1.0;
-<endif>
 <if(motion.has_active_elapsed)>    double motion_start_time = -1.0;
 <endif>
 <if(motion.has_when_elapsed)>    double when_start_time = -1.0;
@@ -546,7 +540,6 @@ inline void control_<motion.id>(
     <motion.id>_state &state,
     shared_data &shared,
     const robot_io &robot) {
-<trajectory-progress(backend, motion)>
 <shared-schedule-block(motion.while_pre_schedule, closures, views)>
 <pose_axis_error_groups:{group | <pose-axis-error-group(group, views)>}; separator="\n">
 <shared-schedule-block(motion.while_schedule, closures, views)>
@@ -557,6 +550,9 @@ inline void control_<motion.id>(
 <if(motion.arm_solvers)>
 
 <arm-run-block(motion.arm_solvers, backend)>
+<endif>
+<if(first(motion.progress_objectives))>
+<progress-block(motion.progress_objectives)>
 <endif>
 }
 

@@ -6,6 +6,7 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from rdf_utils.models.vocab import URI_KC_TYPE_SERIAL
@@ -17,6 +18,7 @@ from motion_spec.codegen import render_template
 from motion_spec.entities import PIDController
 from motion_spec.ir_gen import (
     _motion_done_terms,
+    _validate_motion_progress_objectives,
     GuardedMotionBlock,
     Parser,
     SceneRobot,
@@ -283,6 +285,26 @@ def test_velocity_profile_operator_closure_exposes_codegen_fields() -> None:
     assert str(closure["shape"]) == "s_curve"
 
 
+def test_velocity_profile_without_controller_fails_clearly() -> None:
+    graph = Graph()
+    op = URIRef("https://example.test/profile-op")
+    graph.add((op, RDF.type, ALGO_EXT.VelocityProfile))
+    graph.add((op, ALGO_EXT["out"], URIRef("https://example.test/reference")))
+
+    with pytest.raises(ValueError, match="not bound to a constraint"):
+        Parser(graph).closures(ops_generic)
+
+
+def test_progress_without_derived_tracking_error_fails_before_codegen() -> None:
+    motion = SimpleNamespace(
+        id="motion_path",
+        progress_objectives=[SimpleNamespace(id="progress_path_0", errors=[])],
+    )
+
+    with pytest.raises(ValueError, match="no derived tracking-controller error signal"):
+        _validate_motion_progress_objectives([motion])
+
+
 def test_solver_ir_carries_rne_algorithm_and_gravity() -> None:
     graph = Graph()
     solver = URIRef("https://example.test/solver")
@@ -384,6 +406,20 @@ int main() {
     motion_spec::runtime::PIDControl pid(0.0, 0.0, 1.0, 0.0, 1.0);
     assert(pid.control(1.0, 0.0) == 0.0);
     assert(pid.control(2.0, 0.0) == 0.0);
+
+    double progress = 0.0; // activation reset
+    assert(motion_spec::runtime::path_progress_step(
+        progress, false, 1.0, motion_spec::runtime::kControlPeriodS) == 0.0);
+    double previous = progress;
+    for (int i = 0; i < 2000; ++i) {
+        progress = motion_spec::runtime::path_progress_step(
+            progress, true, 1.0, motion_spec::runtime::kControlPeriodS);
+        assert(progress >= previous && progress <= 1.0);
+        previous = progress;
+    }
+    assert(progress == 1.0);
+    assert(motion_spec::runtime::path_progress_step(
+        progress, false, 1.0, motion_spec::runtime::kControlPeriodS) == 1.0);
 }
 '''
     )
@@ -490,7 +526,7 @@ def test_edge_monitor_carries_full_event_uri_and_enum_token(event_uri: str, expe
 
 def test_done_terms_are_until_only_event_or_flag() -> None:
     """done_terms are the UNTIL members alone (edge monitor -> event flag, level monitor ->
-    boolean flag), with no trajectory-alpha coupling. The any/all/paren/empty folding is
+    boolean flag), with no path-parameter coupling. The any/all/paren/empty folding is
     done by the bool-condition template and covered by the codegen golden diff."""
     monitors = [
         {"id": "mon_a", "is_edge_triggered": True},
@@ -502,7 +538,7 @@ def test_done_terms_are_until_only_event_or_flag() -> None:
         {"kind": "event", "motion_id": "m", "monitor_id": "mon_a"},
         {"kind": "flag", "motion_id": "m", "flag": "flag_b"},
     ]
-    # Trajectory completion is NOT folded in: only event/flag member terms.
+    # Path-parameter completion is NOT folded in: only event/flag member terms.
     assert all(t["kind"] in ("event", "flag") for t in terms)
 
     # No UNTIL monitors: no stop terms -> the template renders the "true" default.

@@ -21,16 +21,6 @@ axis-to-index ::= [
     "z": "2"
 ]
 
-// Trajectory progress easing profile -> runtime function. Default ease-in-out (smoothstep)
-// preserves the historical behaviour for trajectories that do not specify a profile.
-easing-fn ::= [
-    "linear": "ease_linear",
-    "ease_in": "ease_in",
-    "ease_out": "ease_out",
-    "ease_in_out": "smoothstep",
-    default: "smoothstep"
-]
-
 velocity-profile-shape ::= [
     "s_curve": "motion_spec::runtime::VelocityProfileShape::SCurve",
     "trapezoidal": "motion_spec::runtime::VelocityProfileShape::Trapezoidal",
@@ -99,7 +89,7 @@ shared-member-Bool(var) ::= <<
 bool <var.id> = false;
 >>
 
-shared-member-Trajectory(var) ::= <<
+shared-member-Setpoint(var) ::= <<
 KDL::Frame <var.id>;
 >>
 

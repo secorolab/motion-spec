@@ -297,10 +297,9 @@ class GEOM_OP_EXT(DefinedNamespace):
     PoseToAngularDistance: URIRef
     PathEvaluator: URIRef
     path: URIRef
-    easing: URIRef
     linear: URIRef
 
-    _extras = ["angular-distance", "path-parameter", "ease-in", "ease-out", "ease-in-out"]
+    _extras = ["angular-distance", "path-parameter"]
 
     _NS = Namespace(f"{URI_SECORO_MM}/geometry/spatial-operators#")
 
@@ -384,6 +383,7 @@ class MAP_EXT(DefinedNamespace):
 
 
 class ALGO_EXT(DefinedNamespace):
+    ProgressObjective: URIRef
     Saturation: URIRef
     Addition: URIRef
     VelocityProfile: URIRef
@@ -399,6 +399,10 @@ class ALGO_EXT(DefinedNamespace):
     trigger: URIRef
     shape: URIRef
     trapezoidal: URIRef
+    parameter: URIRef
+    path: URIRef
+    progress: URIRef
+    advancement: URIRef
 
     _extras = [
         "in",
@@ -443,10 +447,33 @@ class CSTR_EXT(DefinedNamespace):
     OutsideConstraint: URIRef
     AngleConstraint: URIRef
     AngularDistanceConstraint: URIRef
+    TimeConstraint: URIRef
+
+    tolerance: URIRef
 
     _extras = ["has-constraint"]
 
     _NS = Namespace(f"{URI_SECORO_MM}/task/constraint#")
+
+
+class TIME(DefinedNamespace):
+    Instant: URIRef
+    TimePosition: URIRef
+    ProperInterval: URIRef
+    Duration: URIRef
+    TRS: URIRef
+    unitSecond: URIRef
+
+    inTimePosition: URIRef
+    hasTRS: URIRef
+    numericPosition: URIRef
+    hasBeginning: URIRef
+    hasEnd: URIRef
+    hasDuration: URIRef
+    numericDuration: URIRef
+    unitType: URIRef
+
+    _NS = Namespace("http://www.w3.org/2006/time#")
 
 
 class MOT(DefinedNamespace):

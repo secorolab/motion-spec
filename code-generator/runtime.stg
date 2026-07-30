@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
-// Runtime control-loop math header (easing/admittance/spring-damper, monitors).
+// Runtime control-loop math header (profiles/admittance/spring-damper, monitors).
 
 runtime_header(has_mobile_base, control_period_ns) ::= <<
 #pragma once
@@ -45,6 +45,16 @@ inline double clamp01(double v) {
     return v;
 }
 
+inline double path_progress_step(
+        double current,
+        bool tracking_satisfied,
+        double advancement_per_second,
+        double timestep_s) {
+    return tracking_satisfied
+        ? std::min(1.0, clamp01(current) + advancement_per_second * timestep_s)
+        : clamp01(current);
+}
+
 inline void resolve_constraint_acceleration(
         const KDL::Jacobian &jac,
         const KDL::Jacobian &alpha,
@@ -72,11 +82,6 @@ inline void resolve_constraint_acceleration(
     }
 }
 
-inline double smoothstep(double alpha) {
-    alpha = clamp01(alpha);
-    return alpha * alpha * (3.0 - 2.0 * alpha);
-}
-
 inline double monotonic_time_s() {
     using clock = std::chrono::steady_clock;
     static const auto start = clock::now();
@@ -100,20 +105,6 @@ inline void sleep_until_next(timespec &next, long period_ns) {
         return;
     }
     while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, nullptr) == EINTR) {}
-}
-
-// Progress easing profiles selectable from the DSL (Lerp `profile:`). smoothstep is
-// EaseInOut. All map [0,1] -> [0,1] with f(0)=0, f(1)=1.
-inline double ease_linear(double alpha) { return clamp01(alpha); }
-
-inline double ease_in(double alpha) {
-    alpha = clamp01(alpha);
-    return alpha * alpha; // slow start, full speed at the end
-}
-
-inline double ease_out(double alpha) {
-    alpha = clamp01(alpha);
-    return alpha * (2.0 - alpha); // full speed at the start, gentle stop
 }
 
 enum class VelocityProfileShape { Trapezoidal, SCurve };
@@ -153,26 +144,6 @@ inline double velocity_profile_step(double x, double &v, double &a, double goal,
     return nx;
 }
 
-inline KDL::Frame interpolate_pose_lerp(
-        const KDL::Frame &start,
-        const KDL::Frame &goal,
-        double alpha) {
-    const double s = smoothstep(alpha);
-    const KDL::Vector dp = goal.p - start.p;
-    const KDL::Vector p(
-        start.p.x() + dp.x() * s,
-        start.p.y() + dp.y() * s,
-        start.p.z() + dp.z() * s);
-    const KDL::Vector rot = KDL::diff(start.M, goal.M);
-    const double angle = rot.Norm();
-    KDL::Rotation r = start.M;
-    if (angle > 1e-9) {
-        const KDL::Vector axis(rot.x() / angle, rot.y() / angle, rot.z() / angle);
-        r = start.M * KDL::Rotation::Rot(axis, angle * s);
-    }
-    return KDL::Frame(r, p);
-}
-
 // Returns a unit vector perpendicular to `n`, chosen by crossing `n` with the
 // world axis least aligned with it (so the cross product is well-conditioned).
 inline KDL::Vector plane_reference(const KDL::Vector &n) {
@@ -191,7 +162,6 @@ inline KDL::Vector plane_reference(const KDL::Vector &n) {
     perp.Normalize();
     return perp;
 }
-inline constexpr double kDefaultTrajectoryDuration = 8.0;
 <if(has_mobile_base)>
 inline constexpr int NUM_DRIVES = 4;
 inline constexpr int NUM_SLAVES = 4;

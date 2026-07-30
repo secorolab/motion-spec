@@ -25,7 +25,7 @@ from urllib.parse import urlsplit
 import rdflib
 from rdf_utils.naming import get_valid_var_name
 from rdf_utils.models.vocab import URI_KC_TYPE_SERIAL
-from rdf_utils.namespace import NS_MM_KC_EXT, NS_MM_QUDT_QTY, NS_MM_QUDT_UNIT
+from rdf_utils.namespace import NS_MM_KC_EXT, NS_MM_QUDT_UNIT
 from rdf_utils.resolver import IriToFileResolver, install_resolver
 from rdf_utils.uri import (
     iri_is_descendant,
@@ -43,10 +43,10 @@ from motion_spec.entities import (
     FreeVector, GuardedMotion, GuardedMotionBlock, HandlerArmSolver, ImpedanceController,
     JointForceSpecification, JointPosition, LevelMonitor, MotionDrivers, Orientation,
     OutsideConstraint, PIDController, Point, Pose, PoseAxisErrorComponent, PoseAxisErrorGroup,
-    PoseDifference, Position, Provenance, Quantity, QuantityKind, RelativePoseCapture,
+    PoseDifference, Position, ProgressObjective, Provenance, Quantity, QuantityKind, RelativePoseCapture,
     Saturation, SceneAttachment, SceneObject, SceneObjectSpec, SceneRelativePose, SceneRobot,
-    SceneSpec, SimplicialComplex, SnapshotCapture, SolverWithInputAndOutput, Subspace,
-    Trajectory, UnilateralConstraint, UnilateralConstraintType, Unit, VelocityCompositionSolver,
+    SceneSpec, Setpoint, SimplicialComplex, SnapshotCapture, SolverWithInputAndOutput, Subspace,
+    UnilateralConstraint, UnilateralConstraintType, Unit, VelocityCompositionSolver,
     VelocityTwist, View, Wrench,
 )
 # fmt: on
@@ -82,9 +82,19 @@ from motion_spec.namespace import (
     AGN, ALGO_EXT, APP, CSTR, CSTR_EXT, CSTR_HDL, CSTR_HDL_EXT, ENV, EXEC, GEOM_COORD,
     GEOM_ENT, GEOM_OP, GEOM_OP_EXT, GEOM_PATH, GEOM_REL, KC, KC_STAT, MAP, MAP_EXT, MOT, QUDT_QKIND,
     QUDT_SCHEMA, RBDYN_COORD, RBDYN_ENT, RBDYN_OP, SLV, SLV_EXT,
-    SENSORS, SOSA,
+    SENSORS, SOSA, TIME,
 )
 # fmt: on
+
+
+def _is_elapsed_constraint(g, cstr_node) -> bool:
+    """Whether a constraint node is a timing (elapsed) constraint."""
+    return cstr_node is not None and CSTR_EXT["TimeConstraint"] in g[cstr_node : RDF["type"]]
+
+
+def _duration_seconds(g, node) -> float:
+    """The value in seconds of a native OWL-Time Duration node."""
+    return float(g.value(node, TIME["numericDuration"]))
 
 
 # ---------------------------------------------------------------------------
@@ -1068,7 +1078,6 @@ ops_generic = [
         type_=GEOM_OP_EXT.PathEvaluator,
         input=[GEOM_OP_EXT.path, GEOM_OP_EXT["path-parameter"]],
         output=[GEOM_OP["out"]],
-        parameters=[GEOM_OP_EXT["easing"]],
     ),
     Operator(
         type_=ALGO_EXT["VelocityProfile"],
@@ -1440,6 +1449,20 @@ class Parser:
         """Parse a ConstraintHandler (evaluators, controllers, monitors) at node."""
         self._expect_type(id_, CSTR_HDL["ConstraintHandler"])
         motion = self.guarded_motion(self.g.value(id_, CSTR_HDL["motion"]))
+        progress = [
+            ProgressObjective(
+                self.id(objective),
+                self.id(self.g.value(objective, ALGO_EXT.parameter)),
+                sorted(self.id(path) for path in self.g.objects(objective, ALGO_EXT.path)),
+                sorted(self.id(c) for c in self.g.objects(objective, CSTR_HDL.constraint)),
+                float(
+                    self.g.value(
+                        self.g.value(objective, ALGO_EXT.advancement), QUDT_SCHEMA.value
+                    )
+                ),
+            )
+            for objective in sorted(self.g.objects(id_, ALGO_EXT.progress), key=str)
+        ]
         evaluators = []
         for e in self.g[id_ : CSTR_HDL["evaluators"]]:
             evaluators.append(self.constraint_evaluator(e))
@@ -1451,7 +1474,7 @@ class Parser:
         order_value = self.g.value(id_, APP["order"])
         order = int(order_value.value) if order_value is not None else 0
 
-        return ConstraintHandler(self.id(id_), motion, evaluators, [], monitors, order)
+        return ConstraintHandler(self.id(id_), motion, progress, evaluators, [], monitors, order)
 
     @memoize
     def monitor_entry(self, id_):
@@ -1549,28 +1572,29 @@ class Parser:
             t = EvaluatorType.ErrorEvaluator
             error = self.quantity(self.g.value(id_, CSTR_HDL["error"]))
 
-        # Timing constraint: measured quantity is the motion-state elapsed time (kind Time).
-        # No solver error — codegen compares the world clock against the threshold directly.
+        # Timing constraint: measured quantity is the motion-state elapsed time. No solver
+        # error — codegen compares the world clock against the threshold directly.
         is_elapsed = False
         elapsed_op = None
         elapsed_threshold_s = None
-        qnode = self.g.value(constraint_node, CSTR["quantity"])
-        if (
-            qnode is not None
-            and NS_MM_QUDT_QTY["Time"] in self.g[qnode : QUDT_SCHEMA.hasQuantityKind]
-        ):
+        elapsed_tolerance_s = None
+        if _is_elapsed_constraint(self.g, constraint_node):
             is_elapsed = True
-            elapsed_op = (
-                ">="
-                if CSTR["GreaterThanConstraint"] in self.g[constraint_node : RDF["type"]]
-                else "<"
-            )
-            thr = self.g.value(constraint_node, CSTR["threshold"])
-            thr_val = float(self.g.value(thr, QUDT_SCHEMA["value"]))
-            thr_unit = self.g.value(thr, QUDT_SCHEMA["unit"])
-            elapsed_threshold_s = thr_val * (
-                0.001 if thr_unit == NS_MM_QUDT_UNIT["MilliSEC"] else 1.0
-            )
+            types = set(self.g[constraint_node : RDF["type"]])
+            if CSTR["GreaterThanConstraint"] in types:
+                elapsed_op = ">="
+                thr = self.g.value(constraint_node, CSTR["threshold"])
+                elapsed_threshold_s = _duration_seconds(self.g, thr)
+            elif CSTR["EqualityConstraint"] in types:
+                elapsed_op = "=="
+                thr = self.g.value(constraint_node, CSTR["reference-value"])
+                elapsed_threshold_s = _duration_seconds(self.g, thr)
+                tol = self.g.value(constraint_node, CSTR_EXT["tolerance"])
+                elapsed_tolerance_s = _duration_seconds(self.g, tol)
+            else:
+                elapsed_op = "<"
+                thr = self.g.value(constraint_node, CSTR["threshold"])
+                elapsed_threshold_s = _duration_seconds(self.g, thr)
 
         return ConstraintEvaluator(
             self.id(id_),
@@ -1580,6 +1604,7 @@ class Parser:
             is_elapsed=is_elapsed,
             elapsed_op=elapsed_op,
             elapsed_threshold_s=elapsed_threshold_s,
+            elapsed_tolerance_s=elapsed_tolerance_s,
         )
 
     def _optional_float(self, subject, predicate) -> float | None:
@@ -1982,6 +2007,8 @@ class Parser:
     @memoize
     def quantity(self, id_):
         """Parse the quantity at node, dispatching on its RDF type."""
+        if TIME["Duration"] in self.g[id_ : RDF["type"]]:
+            return self.duration_quantity(id_)
         self._expect_type(id_, QUDT_SCHEMA["Quantity"])
         quantity_kind_node = self.g.value(id_, QUDT_SCHEMA.hasQuantityKind)
         quantity_kind = self.id(quantity_kind_node)
@@ -2009,7 +2036,7 @@ class Parser:
                 None,
             )
             provenance = self.quantity_provenance(id_)
-            return Trajectory(
+            return Setpoint(
                 self.id(id_),
                 QuantityKind(quantity_kind),
                 Unit(unit),
@@ -2042,6 +2069,18 @@ class Parser:
             has_view,
             provenance=provenance,
             reference_value=self.id(reference_value) if reference_value is not None else None,
+        )
+
+    @memoize
+    def duration_quantity(self, id_):
+        """Parse a native OWL-Time Duration node (elapsed timing) as a generic Quantity."""
+        self._expect_type(id_, TIME["Duration"])
+        value_node = self.g.value(id_, TIME["numericDuration"])
+        value = float(value_node) if value_node is not None else None
+        provenance = self.quantity_provenance(id_)
+        return Quantity(
+            self.id(id_), QuantityKind("Duration"), Unit("Second"), value, False,
+            provenance=provenance,
         )
 
     @memoize
@@ -2229,28 +2268,35 @@ class Parser:
                         # The evaluator's out port is the pose setpoint the motion tracks.
                         reference = self.g.value(closure, GEOM_OP.out)
                         if reference is not None:
-                            cl["trajectory"] = self.id(reference)
+                            cl["setpoint"] = self.id(reference)
                         cl.update(self._path_fields(self.g.value(closure, GEOM_OP_EXT.path)))
                     if operator.type_ in {ALGO_EXT.VelocityProfile, ALGO_EXT.Admittance}:
                         reference = self.g.value(closure, ALGO_EXT.out)
                         constraint = next(
                             self.g.subjects(CSTR["reference-value"], reference), None
                         )
+                        if constraint is None:
+                            raise ValueError(
+                                f"{self.id(operator.type_)} '{self.id(closure)}' output is not bound to a constraint."
+                            )
                         # Evaluators carry cstr-hdl:constraint too, and can win this lookup;
-                        # the filter state this closure steps lives on the controller, so
-                        # skip them.
+                        # filter state belongs to the controller.
                         controller = next(
                             (
                                 node
                                 for node in self.g.subjects(CSTR_HDL.constraint, constraint)
-                                if CSTR_HDL.ConstraintEvaluator not in self.g[node : RDF["type"]]
+                                if CSTR_HDL.ConstraintEvaluator
+                                not in self.g[node : RDF["type"]]
                             ),
                             None,
                         )
+                        if controller is None:
+                            raise ValueError(
+                                f"{self.id(operator.type_)} '{self.id(closure)}' constraint has no controller."
+                            )
                         cl["controller"] = self.id(controller)
                         if operator.type_ == ALGO_EXT.VelocityProfile:
-                            # The profile starts from the constraint's own quantity and
-                            # drives it to the target.
+                            # A physical profile starts from the constraint's measured quantity.
                             cl["measured"] = self.id(self.g.value(constraint, CSTR.quantity))
                             cl["goal"] = cl.pop("target")
                     closures[self.id(closure)] = cl
@@ -2867,16 +2913,7 @@ def build_motion_units(
                 until_eval_nodes.append(eval_node)
 
         def _is_elapsed_eval(eval_node):
-            # Timing evaluator: measured quantity is kind Time. No kinematic computation,
-            # so it must stay out of the schedule (the monitor reads the clock directly).
-            cnode = g.value(eval_node, CSTR_HDL["constraint"])
-            if cnode is None:
-                return False
-            qnode = g.value(cnode, CSTR["quantity"])
-            return (
-                qnode is not None
-                and NS_MM_QUDT_QTY["Time"] in g[qnode : QUDT_SCHEMA.hasQuantityKind]
-            )
+            return _is_elapsed_constraint(g, g.value(eval_node, CSTR_HDL["constraint"]))
 
         # Classify controllers by the constraints active during the motion body.
         while_error_nodes = set()
@@ -3208,8 +3245,27 @@ def build_motion_units(
                         motion_tokens,
                     )
                 ),
+                progress_objectives=[
+                    ProgressObjective(
+                        objective.id,
+                        objective.parameter,
+                        objective.paths,
+                        objective.constraints,
+                        objective.advancement,
+                        [
+                            controller.error_signal.id
+                            for plan in active_plans
+                            if p.id(plan.constraint) in objective.constraints
+                            for controller in _derived_controllers(g, p, derivation, plan)
+                            if controller.error_signal is not None
+                        ],
+                    )
+                    for objective in handler.progress
+                ],
             )
         )
+
+    _validate_motion_progress_objectives(motions)
 
     # Invariant: one motion maps to exactly one constraint handler. A repeated
     # motion id (the same motion driven by two handlers) is rejected rather than
@@ -3227,11 +3283,9 @@ def build_motion_units(
     ordered = sorted(
         motions, key=lambda motion: next(h.order for h in handlers if h.id == motion.handler)
     )
-    data_by_id = _index_by_id(data_structures or [])
     for motion in ordered:
         _set_motion_conditions(motion)
         _add_group_type_flags(motion.pose_axis_error_groups)
-        _set_motion_trajectory_progress(motion, closures or {}, data_by_id)
         # Controller signal ids + this motion's declared-pose components.
         _annotate_controller_signals(motion.controllers, closures or {})
         motion_refs = collect_motion_references(motion, closures or {})
@@ -3244,6 +3298,17 @@ def build_motion_units(
     add_motion_function_interfaces(ordered)
     _apply_fsm_gate_calls(ordered, fsm_meta["fsm_namespace"])
     return ordered, fsm_meta
+
+
+def _validate_motion_progress_objectives(motions: list) -> None:
+    """Reject progress bindings that have no controller error to gate advancement."""
+    for motion in motions:
+        for objective in _field(motion, "progress_objectives", []):
+            if not _field(objective, "errors", []):
+                raise ValueError(
+                    f"Motion '{_field(motion, 'id')}' progress objective "
+                    f"'{_field(objective, 'id')}' has no derived tracking-controller error signal."
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -3336,9 +3401,9 @@ def _position_of(g, node):
     for frame in _frames_of(g, node):
         origin = g.value(frame, GEOM_ENT.origin) or frame
         for position in g.subjects(GEOM_REL.of, origin):
-            coordinate = next(g.subjects(GEOM_COORD["of-position"], position), None)
-            if coordinate is not None:
-                return _xyz_or_none(g, coordinate)
+            for coordinate in g.subjects(GEOM_COORD["of-position"], position):
+                if (value := _xyz_or_none(g, coordinate)) is not None:
+                    return value
     return None
 
 
@@ -3346,9 +3411,9 @@ def _orientation_of(g, node):
     """Orientation of a body or frame from its authored scene-dsl pose, or None."""
     for frame in _frames_of(g, node):
         for orientation in g.subjects(GEOM_REL.of, frame):
-            coordinate = next(g.subjects(GEOM_COORD["of-orientation"], orientation), None)
-            if coordinate is not None:
-                return _orientation_degrees(g, coordinate)
+            for coordinate in g.subjects(GEOM_COORD["of-orientation"], orientation):
+                if (value := _orientation_degrees(g, coordinate)) is not None:
+                    return value
     return None
 
 
@@ -5130,7 +5195,7 @@ def add_quantity_samples(introspection: dict, shared_data: list, views: dict) ->
             add_axes(quantity, "", lambda i, q=qid: {"kind": "vec", "id": q, "axis": i})
         elif qtype == "Orientation" and qid in shared_ids:
             add_axes(quantity, "", lambda i, q=qid: {"kind": "orientation", "id": q, "axis": i})
-        elif qtype in {"Pose", "Trajectory"} and qid in shared_ids:
+        elif qtype in {"Pose", "Setpoint"} and qid in shared_ids:
             add_axes(
                 quantity, "position", lambda i, q=qid: {"kind": "pose_pos", "id": q, "axis": i}
             )
@@ -5290,7 +5355,7 @@ def resolve_arc_closures(closures: dict, data: list) -> None:
         end = closure.get("end")
         end_data = data_by_id.get(end)
         if not isinstance(end, str) or not is_pose(end_data):
-            raise ValueError("Arc trajectory end must be a Pose quantity.")
+            raise ValueError("Arc path end must be a Pose quantity.")
         # end is a validated Pose shared signal; the template renders shared.<end>.p/.M.
 
 
@@ -5335,32 +5400,6 @@ def collect_motion_references(motion, closures: dict) -> set[str]:
     return refs
 
 
-def _set_motion_trajectory_progress(motion, closures: dict, data_by_id: dict) -> None:
-    """Fold the time-driven trajectory parameter ids (Progress-kind, non-Arc while-schedule
-    closures) onto a motion (dict or dataclass)."""
-    ids: list[str] = []
-    for step in _field(motion, "while_schedule", []):
-        closure = closures.get(step)
-        if not closure or _field(closure, "type") not in {
-            "LinearPath",
-            "Circle",
-            "Arc",
-            "Helix",
-            "Figure8",
-        }:
-            continue
-        alpha_id = _field(closure, "path_parameter") or _field(closure, "alpha")
-        alpha_data = data_by_id.get(alpha_id)
-        qkind = _field(_field(alpha_data, "quantity_kind"), "id")
-        if (
-            qkind in {"Progress", "Dimensionless"}
-            and _field(closure, "type") != "Arc"
-            and alpha_id not in ids
-        ):
-            ids.append(alpha_id)
-    _set_field(motion, "time_trajectory_progress_ids", ids)
-
-
 def _evaluator_term(e, start_field: str) -> dict:
     """Structured boolean term for an evaluator: an elapsed timing predicate (world clock
     vs threshold from the selected state timestamp) or a solver constraint-satisfied check.
@@ -5369,6 +5408,14 @@ def _evaluator_term(e, start_field: str) -> dict:
         op = _field(e, "elapsed_op") or ">="
         thr = _field(e, "elapsed_threshold_s") or 0.0
         # Pre-format the threshold (fixed 6-decimal) so the emitted literal is stable.
+        if op == "==":
+            tol = _field(e, "elapsed_tolerance_s") or 0.0
+            return {
+                "kind": "elapsed-eq",
+                "start_field": start_field,
+                "threshold": f"{thr:.6f}",
+                "tolerance": f"{tol:.6f}",
+            }
         return {"kind": "elapsed", "start_field": start_field, "op": op, "threshold": f"{thr:.6f}"}
     return {"kind": "constraint", "error_id": _field(_field(e, "error"), "id")}
 
@@ -5489,6 +5536,7 @@ def add_motion_function_interfaces(motions: list) -> None:
 
 
 _FSM_NS = "https://secorolab.github.io/metamodels/behaviour/fsm#"
+_EL_NS = "https://secorolab.github.io/metamodels/behaviour/event-loop#"
 
 
 # ---------------------------------------------------------------------------
@@ -5499,7 +5547,8 @@ def _fsm_from_graph(g) -> dict | None:
     model dataset by motion-spec-dsl) into the same dict shape the standalone .hpp uses,
     so codegen needs no fsm_ir.json read. None when the model imports no .fsm."""
     FSM = rdflib.Namespace(_FSM_NS)
-    fsm_ref = next(iter(g.subjects(RDF["type"], FSM["FSM"])), None)
+    EL = rdflib.Namespace(_EL_NS)
+    fsm_ref = next(iter(g.subjects(RDF["type"], FSM["FiniteStateMachine"])), None)
     if fsm_ref is None:
         return None
 
@@ -5513,7 +5562,8 @@ def _fsm_from_graph(g) -> dict | None:
         states.append(key)
         state_uris[key] = str(s)
     events, event_uris = [], {}
-    for e in g.objects(fsm_ref, FSM["events"]):
+    event_loop_node = g.value(fsm_ref, EL["event-loop"])
+    for e in g.objects(event_loop_node, EL["has-event"]):
         key = ident(e)
         events.append(key)
         event_uris[key] = str(e)
@@ -5535,7 +5585,7 @@ def _fsm_from_graph(g) -> dict | None:
             {
                 "id": ident(rx),
                 "uri": str(rx),
-                "when_event": ident(g.value(rx, FSM["when-event"])),
+                "when_event": ident(g.value(rx, EL["ref-event"])),
                 "do_transition": ident(g.value(rx, FSM["do-transition"])),
                 "fires_events": fires,
                 "num_fires": len(fires),
@@ -5740,7 +5790,7 @@ def generate_ir(manifest_path):
     data_reference_map = _data_reference_map(data_structures, closures)
     closure_output_map, closure_input_map = _closure_maps(closures)
 
-    # Resolve declared-pose components and trajectory goals from views/data/closures before
+    # Resolve declared-pose components and path goals from views/data/closures before
     # motions are built (per-motion declared poses reference them).
     pose_components = build_pose_components(view_map, data_structures)
     resolve_lerp_closures(closures, pose_components)

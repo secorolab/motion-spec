@@ -141,8 +141,8 @@ class FreeVector:
 
 
 @dataclass
-class Trajectory:
-    """A trajectory-valued quantity."""
+class Setpoint:
+    """A setpoint-valued quantity produced by a path evaluator."""
 
     id: str
     quantity_kind: QuantityKind
@@ -150,7 +150,7 @@ class Trajectory:
     has_view: bool
     provenance: Provenance = field(default_factory=Provenance)
     value_kind: str | None = None
-    type: str = field(default="Trajectory")
+    type: str = field(default="Setpoint")
 
 
 @dataclass
@@ -358,6 +358,19 @@ class Constraint:
 
 
 @dataclass
+class ProgressObjective:
+    """A handler policy advancing one parameter along one or more geometric paths."""
+
+    id: str
+    parameter: str
+    paths: list[str]
+    constraints: list[str]
+    advancement: float
+    errors: list[str] = field(default_factory=list)
+    type: str = field(default="ProgressObjective")
+
+
+@dataclass
 class GuardedMotion:
     """A guarded motion: its when/while/until constraint sets."""
 
@@ -381,6 +394,7 @@ class ConstraintEvaluator:
     is_elapsed: bool = False
     elapsed_op: str | None = None
     elapsed_threshold_s: float | None = None
+    elapsed_tolerance_s: float | None = None
     type: str = field(default="ConstraintEvaluator")
 
 
@@ -554,10 +568,11 @@ class PoseAxisErrorGroup:
 
 @dataclass
 class ConstraintHandler:
-    """Binds a motion to its evaluators, controllers and monitors."""
+    """Binds a motion to its progress policy, evaluators, controllers and monitors."""
 
     id: str
     motion: GuardedMotion
+    progress: list[ProgressObjective]
     evaluators: list[ConstraintEvaluator]
     controllers: list[Controller]
     monitors: list[Monitor]
@@ -640,8 +655,7 @@ class GuardedMotionBlock:
     when_terms_present: bool = False
     done_terms: list = field(default_factory=list)
     done_terms_present: bool = False
-    # Time-driven trajectory alpha ids (folded from while_schedule closures).
-    time_trajectory_progress_ids: list = field(default_factory=list)
+    progress_objectives: list[ProgressObjective] = field(default_factory=list)
     # Declared pose components referenced by this motion (folded from pose_components).
     declared_pose_components: list = field(default_factory=list)
     # Per-function capability booleans (which context objects each generated function

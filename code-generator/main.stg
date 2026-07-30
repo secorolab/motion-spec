@@ -272,6 +272,7 @@ static void step_<motion.id>(<motion.id>_state &<motion.id>_state_instance, shar
         <motion.id>_state_instance.active = true;
         <motion.id>_state_instance.active_steps = 0;
 <motion.controllers:{controller |         <controller-reset(motion.id, controller)>}; separator="\n">
+<motion.progress_objectives:{objective |         shared.<objective.parameter> = 0.0;}; separator="\n">
     }
     update_<motion.id>(<motion.id>_state_instance, shared, robot);
     monitor_until_<motion.id>(<sig-args(motion.id, motion.until_needs_state, motion.until_needs_shared, motion.until_needs_robot)>);

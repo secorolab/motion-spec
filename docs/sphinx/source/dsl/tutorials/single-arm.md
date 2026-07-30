@@ -141,19 +141,30 @@ The normal motions are:
 then constructs a Cartesian goal:
 
 ```robmot
-path-parameter progress,
+path-parameter s,
 pose start-pose = snapshot of <shared.world.pose-ee-base>,
 linear-distance start-cube-x = snapshot of <shared.world.pose-cube-base>.position.x,
 linear-distance start-cube-y = snapshot of <shared.world.pose-cube-base>.position.y,
-trajectory traj = lerp {
+path approach-path = lerp {
     start: <spec.start-pose>,
-    goal: <spec.goal-pose>,
-    alpha: <spec.progress>
+    goal: <spec.goal-pose>
+}
+```
+
+The constraint handler binds that geometry to its controller-owned progress objective:
+
+```robmot
+constraint-handler (ns=app) handler-pick-above {
+    handles: <pick-above>
+    progress {
+        approach: maximizing <pick-above.spec.s> along <pick-above.spec.approach-path> advancing at 1.0 Hz
+    }
+    // monitors, controllers, and solvers
 }
 ```
 
 Its `when` constraint prevents motion until the gripper is open. Its `while`
-constraints make the TCP position and orientation follow the trajectory:
+constraints make the TCP position and orientation follow the path:
 
 ```robmot
 when {
@@ -162,9 +173,9 @@ when {
 }
 while {
     follow-pos: keeping <shared.world.pose-ee-base>.position
-                equal to <spec.traj>.position,
+                equal to <spec.approach-path>.position,
     follow-ori: keeping <shared.world.pose-ee-base>.orientation
-                equal to <spec.traj>.orientation
+                equal to <spec.approach-path>.orientation
 }
 ```
 

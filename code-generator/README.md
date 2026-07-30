@@ -34,7 +34,7 @@ generated C++ controller, introspection artifacts, and CMake.
 - `frame_log.proto` wire contract.
 
 ### `runtime.stg`
-- Runtime control-loop math header: easing/admittance/spring-damper filters and monitor helpers.
+- Runtime control-loop math header: progress/admittance/profile helpers and monitor helpers.
 
 ### `mj_kdl_backend.stg`
 - MuJoCo+KDL simulation robot impl (KinovaGen3).

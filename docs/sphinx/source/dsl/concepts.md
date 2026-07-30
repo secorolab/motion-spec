@@ -209,31 +209,76 @@ elapsed
 Selectors determine the resulting type. For example, a pose is a pose,
 `.position` is a position, and `.position.x` is a distance.
 
-## Trajectories
+## Paths
 
-A trajectory is a context value, normally driven by a `path-parameter`:
+A path is a geometric context value:
 
 | Kind | Required fields | Optional fields |
 |---|---|---|
-| `lerp` | `start`, `goal`, `alpha` | `profile`: `linear`, `ease-in`, `ease-out`, `ease-in-out` |
-| `circle` | `start`, `center`, `plane-normal`, `alpha` | — |
-| `arc` | `start`, `end`, `amplitude`, `plane-normal`, `alpha` | — |
-| `helix` | `start`, `center`, `axis`, `pitch`, `revolutions`, `alpha` | — |
-| `figure8` | `anchor`, `radius`, `plane-normal`, `alpha` | `form`: `gerono` or `bernoulli` |
+| `lerp` | `start`, `goal` | — |
+| `circle` | `start`, `center`, `plane-normal` | — |
+| `arc` | `start`, `end`, `amplitude`, `plane-normal` | — |
+| `helix` | `start`, `center`, `axis`, `pitch`, `revolutions` | — |
+| `figure8` | `anchor`, `radius`, `plane-normal` | `form`: `gerono` or `bernoulli` |
 
 ```robmot
-trajectory path = lerp {
+path approach-path = lerp {
     start: <spec.start>,
-    goal: <spec.goal>,
-    alpha: <spec.progress>,
-    profile: ease-in-out
+    goal: <spec.goal>
 }
 ```
 
-A trajectory is emitted as two things: the geometry, a `geom-path:Path` of the matching
-kind carrying only its shape parameters, and a `geom-op-ext:PathEvaluator` that traverses
-it. The evaluator owns the path parameter and the easing, and produces the pose setpoint
-the motion tracks. Timing is never on the geometry.
+A path is emitted as geometry, a `geom-path:Path` of the matching kind carrying only its
+shape parameters. A progress binding adds the `geom-op-ext:PathEvaluator` that produces
+the pose setpoint the motion tracks. Timing is never on the geometry — Bruyninckx §8.6's ladder places a
+path one rung less constrained than a trajectory precisely because a path leaves timing
+unimposed, so the keyword names what the DSL actually declares rather than what execution
+generates: per §7.11, a trajectory is never specified, only produced at runtime by
+executing a guarded motion.
+
+Because a path imposes no timing, its constraint handler declares progress explicitly as required by
+§8.6.3. The normalized parameter is separate from the geometry:
+
+```robmot
+path-parameter s,
+path approach-path = lerp { start: <spec.start>, goal: <spec.goal> }
+```
+
+```robmot
+constraint-handler (ns=app) handler-approach {
+    handles: <approach>
+    progress {
+        approach: maximizing <approach.spec.s> along <approach.spec.approach-path> advancing at 1.0 Hz
+    }
+    // controllers and solvers
+}
+```
+
+The handler owns this named controller policy. One policy may synchronize multiple paths with a
+shared parameter:
+
+```robmot
+progress {
+    dual-approach: maximizing <approach.spec.s> along {
+        <approach.spec.arm1-path>,
+        <approach.spec.arm2-path>
+    } advancing at 1.0 Hz
+}
+```
+
+Alternatively, separate named entries provide independent parameters:
+
+```robmot
+progress {
+    arm1: maximizing <approach.spec.alpha1> along <approach.spec.arm1-path> advancing at 1.0 Hz,
+    arm2: maximizing <approach.spec.alpha2> along <approach.spec.arm2-path> advancing at 1.0 Hz
+}
+```
+
+The backend resets each parameter at activation and advances it monotonically only while every
+equality tracking its selected paths is satisfied. Physical velocity and acceleration limits
+remain ordinary controller constraints; progress is not a duration, easing curve, or velocity
+profile.
 
 ## Guarded motions
 

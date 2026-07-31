@@ -176,6 +176,8 @@ def test_introspection_contract_carries_control_and_provenance() -> None:
     monitor = parser.monitor_entry(monitor_node)
     motion = GuardedMotionBlock(
         id="move",
+        name="move",
+        description=None,
         handler="move_handler",
         when_evaluators=[],
         while_evaluators=[],

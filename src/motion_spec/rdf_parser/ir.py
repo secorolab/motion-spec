@@ -34,7 +34,7 @@ from rdf_utils.uri import (
     iri_parent,
 )
 from rdflib import URIRef
-from rdflib.namespace import RDF, split_uri
+from rdflib.namespace import RDF, SDO, split_uri
 
 # fmt: off
 from motion_spec.classes.entities import (
@@ -1894,7 +1894,15 @@ class Parser:
             else:
                 until.append(self.constraint(c))
 
-        return GuardedMotion(self.id(id_), when, while_, until, until_any, when_any)
+        name_literal = self.g.value(id_, SDO.name)
+        if name_literal is None:
+            raise ValueError(f"GuardedMotion {id_} has no schema:name triple")
+        name = str(name_literal)
+        description = self.g.value(id_, SDO.description)
+        return GuardedMotion(
+            self.id(id_), when, while_, until, until_any, when_any,
+            name=name, description=str(description) if description is not None else None,
+        )
 
     @memoize
     def constraint(self, id_):
@@ -3427,6 +3435,8 @@ def build_motion_units(
             GuardedMotionBlock(
                 id=handler.motion.id,
                 handler=handler.id,
+                name=handler.motion.name,
+                description=handler.motion.description,
                 command_robot_id=primary_robot_id,
                 has_when_elapsed=has_when_elapsed,
                 has_active_elapsed=has_active_elapsed,

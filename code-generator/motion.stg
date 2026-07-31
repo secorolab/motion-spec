@@ -437,6 +437,9 @@ emit-triggered-snapshot(snap, closures, views) ::= <<
 >>
 
 motion_header(motion, closures, views, wrench_outputs, platform_velocity_solvers, platform_force_solvers, has_mobile_base, backend, declared_pose_components, pose_axis_error_groups) ::= <<
+/// Motion: <motion.name>
+<if(motion.description)>/// <motion.description>
+<endif>
 #pragma once
 
 #include "runtime.hpp"

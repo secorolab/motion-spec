@@ -184,6 +184,12 @@ def _collapse_blank_lines(text: str) -> str:
     return text.strip("\n") + "\n"
 
 
+def _escape_for_line_comment(text: str) -> str:
+    """Escape newlines and comment terminators so authored text can't break out of a `///` comment."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return text.replace("\n", "\\n").replace("*/", "*\\/")
+
+
 def load_ir(input_path: Path):
     """Load an IR JSON file into a dict."""
     with input_path.open() as handle:
@@ -240,8 +246,11 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
         )
 
     for motion in ir.get("motions", []):
+        motion_payload = dict(motion)
+        if motion_payload.get("description"):
+            motion_payload["description"] = _escape_for_line_comment(motion_payload["description"])
         payload = {
-            "motion": motion,
+            "motion": motion_payload,
             "closures": ir["closures"],
             "views": ir["views"],
             "wrench_outputs": ir["wrench_outputs"],

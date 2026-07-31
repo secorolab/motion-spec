@@ -396,6 +396,8 @@ class GuardedMotion:
     until: list[Constraint]
     until_any: bool = False
     when_any: bool = False
+    name: str = ""
+    description: str | None = None
     type: str = field(default="GuardedMotion")
 
 
@@ -636,6 +638,8 @@ class GuardedMotionBlock:
 
     id: str
     handler: str
+    name: str
+    description: str | None
 
     # Evaluators
     when_evaluators: list[ConstraintEvaluator]

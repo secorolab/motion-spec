@@ -420,19 +420,45 @@ int main() {
     assert(pid.control(1.0, 0.0) == 0.0);
     assert(pid.control(2.0, 0.0) == 0.0);
 
-    double progress = 0.0; // activation reset
-    assert(motion_spec::runtime::path_progress_step(
-        progress, false, 1.0, motion_spec::runtime::kControlPeriodS) == 0.0);
-    double previous = progress;
-    for (int i = 0; i < 2000; ++i) {
-        progress = motion_spec::runtime::path_progress_step(
-            progress, true, 1.0, motion_spec::runtime::kControlPeriodS);
-        assert(progress >= previous && progress <= 1.0);
-        previous = progress;
+    // Closest-point projection replaces the deleted clock-driven parameter: a point exactly
+    // on the path projects to its own parameter, an offset point to the nearest one, and the
+    // seeded search stays monotone as the frame advances along the path.
+    const double eps = 1e-3;
+    const auto lerp = [](double s) {
+        const KDL::Vector p = (1.0 - s) * KDL::Vector(0.0, 0.0, 0.0) + s * KDL::Vector(1.0, 0.0, 0.0);
+        KDL::Frame f;
+        f.p = p;
+        return f;
+    };
+    // A point exactly on the path projects to its own parameter when seeded nearby, and an
+    // offset point to the nearest one.
+    assert(std::abs(motion_spec::runtime::path_project(lerp, KDL::Vector(0.3, 0.0, 0.0), 0.3) - 0.3) <= eps);
+    assert(std::abs(motion_spec::runtime::path_project(lerp, KDL::Vector(0.3, 0.05, 0.0), 0.3) - 0.3) <= eps);
+    double prev_proj = 0.0;
+    for (int i = 0; i < 100; ++i) {
+        const double s = 0.01 * (i + 1);
+        const double proj = motion_spec::runtime::path_project(lerp, lerp(s).p, prev_proj);
+        assert(proj >= prev_proj - 1e-9);
+        assert(std::abs(proj - s) <= eps);
+        prev_proj = proj;
     }
-    assert(progress == 1.0);
-    assert(motion_spec::runtime::path_progress_step(
-        progress, false, 1.0, motion_spec::runtime::kControlPeriodS) == 1.0);
+    // The tangent is unit length and, on a lerp, the normalized chord at every parameter.
+    KDL::Vector tangent, normal_a, normal_b;
+    motion_spec::runtime::path_frame(lerp, 0.4, tangent, normal_a, normal_b);
+    assert(std::abs(tangent.Norm() - 1.0) < 1e-9);
+    assert(std::abs(tangent.x() - 1.0) < 1e-6 && std::abs(tangent.y()) < 1e-6 && std::abs(tangent.z()) < 1e-6);
+    assert(std::abs(KDL::dot(tangent, normal_a)) < 1e-6);
+    assert(std::abs(KDL::dot(tangent, normal_b)) < 1e-6);
+
+    // On an arc a point on the path also projects to its own parameter.
+    const double quarter_turn = 4.0 * std::atan(1.0) / 2.0;
+    const auto arc = [quarter_turn](double s) {
+        const double theta = s * quarter_turn;
+        KDL::Frame f;
+        f.p = KDL::Vector(std::cos(theta), std::sin(theta), 0.0);
+        return f;
+    };
+    assert(std::abs(motion_spec::runtime::path_project(arc, arc(0.5).p, 0.5) - 0.5) <= eps);
 }
 '''
     )

@@ -36,11 +36,12 @@ class Subspace(str, Enum):
 
 
 class Axis(str, Enum):
-    """A Cartesian axis: X, Y or Z."""
+    """A Cartesian axis: X, Y or Z, plus a quaternion's scalar component W."""
 
     X = "X"
     Y = "Y"
     Z = "Z"
+    W = "W"
 
 
 class UnilateralConstraintType(str, Enum):
@@ -235,11 +236,12 @@ class Pose:
     quantity_kind: list[QuantityKind]
     as_seen_by: Frame | None
     unit: list[Unit]
-    direction_cosine_x: list[float] | None
-    direction_cosine_y: list[float] | None
-    direction_cosine_z: list[float] | None
+    direction_cosine_x: list[str] | None
+    direction_cosine_y: list[str] | None
+    direction_cosine_z: list[str] | None
     position: list[float] | None
     euler_axes_sequence: str | None = None
+    orientation_representation: str = "euler"
     provenance: Provenance = field(default_factory=Provenance)
     type: str = field(default="Pose")
 
@@ -311,6 +313,8 @@ class View:
     subobject: Quantity
     subspace: Subspace
     axis: Axis | None
+    # A view onto a runtime direction rather than a frame axis: the component along it.
+    direction: "Direction | None" = None
     type: str = field(default="View")
 
 
@@ -357,33 +361,6 @@ class Constraint:
     quantity: Quantity
     parameter: EqualityConstraint | UnilateralConstraint | BilateralConstraint | OutsideConstraint
     type: str = field(default="Constraint")
-
-
-@dataclass
-class ProgressConstraint:
-    """A handler's advancement law: the rate and gating constraints that move a path
-    parameter along one or more geometric paths.
-    """
-
-    id: str
-    parameter: str
-    paths: list[str]
-    constraints: list[str]
-    advancement: float
-    errors: list[str] = field(default_factory=list)
-    type: str = field(default="ProgressConstraint")
-
-
-@dataclass
-class ProgressObjective:
-    """A handler's request that a compatible solver maximize a path parameter along one
-    or more geometric paths. No duration, easing, or fixed advancement rate.
-    """
-
-    id: str
-    parameter: str
-    paths: list[str]
-    type: str = field(default="ProgressObjective")
 
 
 @dataclass
@@ -590,7 +567,6 @@ class ConstraintHandler:
 
     id: str
     motion: GuardedMotion
-    progress: list[ProgressConstraint | ProgressObjective]
     evaluators: list[ConstraintEvaluator]
     controllers: list[Controller]
     monitors: list[Monitor]
@@ -675,7 +651,7 @@ class GuardedMotionBlock:
     when_terms_present: bool = False
     done_terms: list = field(default_factory=list)
     done_terms_present: bool = False
-    progress_constraints: list[ProgressConstraint] = field(default_factory=list)
+    path_projections: list[dict] = field(default_factory=list)
     # Declared pose components referenced by this motion (folded from pose_components).
     declared_pose_components: list = field(default_factory=list)
     # Per-function capability booleans (which context objects each generated function

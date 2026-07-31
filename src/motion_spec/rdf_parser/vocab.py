@@ -223,6 +223,7 @@ class GEOM_COORD(DefinedNamespace):
     AccelerationTwistCoordinate: URIRef
     DirectionCosineXYZ: URIRef
     EulerAngles: URIRef
+    Quaternion: URIRef
     VectorXYZ: URIRef
 
     x: URIRef
@@ -298,11 +299,12 @@ class GEOM_REL_EXT(DefinedNamespace):
 class GEOM_OP_EXT(DefinedNamespace):
     PoseDiffEvaluator: URIRef
     PoseToAngularDistance: URIRef
-    PathEvaluator: URIRef
+    PathProjection: URIRef
     path: URIRef
+    tangent: URIRef
     linear: URIRef
 
-    _extras = ["angular-distance", "path-parameter"]
+    _extras = ["angular-distance", "path-parameter", "normal-a", "normal-b", "along-speed"]
 
     _NS = Namespace(f"{URI_SECORO_MM}/geometry/spatial-operators#")
 
@@ -365,6 +367,7 @@ class MAP(DefinedNamespace):
     x: URIRef
     y: URIRef
     z: URIRef
+    w: URIRef
 
     _extras = ["angular-velocity", "linear-velocity", "angular-acceleration", "linear-acceleration"]
 
@@ -386,7 +389,6 @@ class MAP_EXT(DefinedNamespace):
 
 
 class ALGO_EXT(DefinedNamespace):
-    ProgressObjective: URIRef
     ProgressConstraint: URIRef
     Saturation: URIRef
     Addition: URIRef
@@ -406,7 +408,6 @@ class ALGO_EXT(DefinedNamespace):
     parameter: URIRef
     path: URIRef
     progress: URIRef
-    advancement: URIRef
 
     _extras = [
         "in",

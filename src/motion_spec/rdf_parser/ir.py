@@ -45,7 +45,7 @@ from motion_spec.classes.entities import (
     FreeVector, GuardedMotion, GuardedMotionBlock, HandlerSerialChainSolver, ImpedanceController,
     JointForceSpecification, JointPosition, LevelMonitor, MotionDrivers, Orientation,
     OutsideConstraint, PIDController, Point, Pose, PoseAxisErrorComponent, PoseAxisErrorGroup,
-    PoseDifference, Position, ProgressConstraint, ProgressObjective, Provenance, Quantity, QuantityKind,
+    PoseDifference, Position, Provenance, Quantity, QuantityKind,
     RelativePoseCapture,
     Saturation, SceneAttachment, SceneObject, SceneObjectSpec, SceneRelativePose, SceneRobot,
     SceneSpec, Setpoint, SimplicialComplex, SnapshotCapture, SolverWithInputAndOutput, Subspace,
@@ -91,16 +91,26 @@ from motion_spec.rdf_parser.vocab import (
 
 @dataclass(frozen=True)
 class SpatialAxis:
-    """One ordered linear or angular Cartesian direction."""
+    """One ordered linear or angular Cartesian direction.
+
+    A path-following direction is only known at runtime, so it names the shared vector that
+    carries it instead of a fixed frame axis; `axis` is then the vector's role on the path.
+    """
 
     subspace: str
     axis: str
+    direction: str | None = None
 
     @property
     def suffix(self) -> str:
         """Return the compatibility suffix used by generated IR identifiers."""
         prefix = "lin" if self.subspace == "linear-acceleration" else "ang"
         return f"{prefix}_{self.axis}"
+
+    @property
+    def frame_axis(self) -> str | None:
+        """The fixed frame axis this direction is, or None when it is a runtime vector."""
+        return None if self.direction is not None else self.axis
 
 
 class AccelerationInputKind(str, Enum):
@@ -218,9 +228,45 @@ def _term_name(node) -> str | None:
     return split_uri(str(node))[1]
 
 
+def _path_projection_outputs(g) -> dict[URIRef, dict[str, URIRef]]:
+    """The local frame and measured speed each path projection produces, keyed by its path."""
+    return {
+        g.value(projection, GEOM_OP_EXT.path): {
+            role: g.value(projection, GEOM_OP_EXT[role])
+            for role in ("tangent", "normal-a", "normal-b", "along-speed")
+        }
+        for projection in g.subjects(RDF.type, GEOM_OP_EXT.PathProjection)
+    }
+
+
+def _path_following_axes(
+    outputs: dict[str, URIRef], quantity: URIRef, subspace: str | None
+) -> tuple[SpatialAxis, ...]:
+    """The directions one path-following constraint controls.
+
+    A path fixes geometry but not timing, so the three roles never mix: the driver commands
+    the tangent alone, holding the frame on the path costs the two normals, and orientation
+    tracking is the ordinary angular triple.
+    """
+    if quantity == outputs["along-speed"]:
+        return (SpatialAxis("linear-acceleration", "tangent", outputs["tangent"]),)
+    if subspace == "position":
+        return (
+            SpatialAxis("linear-acceleration", "normal_a", outputs["normal-a"]),
+            SpatialAxis("linear-acceleration", "normal_b", outputs["normal-b"]),
+        )
+    if subspace == "orientation":
+        return ANGULAR_AXES
+    raise ValueError(
+        f"Path-following constraint on '{quantity}' must control the speed along the path, "
+        "its position, or its orientation."
+    )
+
+
 def _authored_controller_axes(g) -> dict[URIRef, tuple[SpatialAxis, ...]]:
     """Cartesian directions derived only from authored controller facts."""
     handler_controllers = set(g.objects(None, CSTR_HDL.controllers))
+    projections = _path_projection_outputs(g)
     result = {}
     for controller in handler_controllers:
         constraint = g.value(controller, CSTR_HDL.constraint)
@@ -228,6 +274,11 @@ def _authored_controller_axes(g) -> dict[URIRef, tuple[SpatialAxis, ...]]:
         if constraint is None or quantity is None:
             continue
         view = next(g.subjects(MAP.subobject, quantity), None)
+        path = g.value(constraint, GEOM_OP_EXT.path)
+        if path is not None:
+            subspace = _term_name(g.value(view, MAP.subspace)) if view is not None else None
+            result[controller] = _path_following_axes(projections[path], quantity, subspace)
+            continue
         subspace = _term_name(g.value(view, MAP.subspace)) if view is not None else None
         axis = _term_name(g.value(view, MAP.axis)) if view is not None else None
         quantity_kind = None
@@ -630,11 +681,12 @@ def _derived_acceleration_constraints(g, p, context, plan: ControllerDerivation)
                     if axis.subspace == "linear-acceleration"
                     else Subspace.Angular
                 ),
-                axis={"x": Axis.X, "y": Axis.Y, "z": Axis.Z}.get(axis.axis),
+                axis={"x": Axis.X, "y": Axis.Y, "z": Axis.Z}.get(axis.frame_axis),
                 acceleration_energy=_derived_quantity(
                     energy_id, "AccelerationEnergy", "N_M2_PER_SEC2"
                 ),
                 as_seen_by=frame,
+                direction=p.direction(axis.direction) if axis.direction is not None else None,
             )
         )
     return result
@@ -667,11 +719,12 @@ def _derived_cartesian_accelerations(g, p, context, plan: ControllerDerivation):
                     if axis.subspace == "linear-acceleration"
                     else Subspace.Angular
                 ),
-                axis={"x": Axis.X, "y": Axis.Y, "z": Axis.Z}.get(axis.axis),
+                axis={"x": Axis.X, "y": Axis.Y, "z": Axis.Z}.get(axis.frame_axis),
                 acceleration=_acceleration_signal(
                     acceleration_id, axis, AccelerationInputKind.CartesianAcceleration
                 ),
                 as_seen_by=frame,
+                direction=p.direction(axis.direction) if axis.direction is not None else None,
             )
         )
     return result
@@ -747,7 +800,7 @@ def _derive_solver_closures(g, p, context, closures: dict) -> None:
                     "reference_signal": getattr(
                         getattr(controller, "reference_signal", None), "id", None
                     ),
-                    "measured_velocity": getattr(
+                    "measured_derivative": getattr(
                         getattr(controller, "measured_derivative", None), "id", None
                     ),
                     "control_signal": controller.control_signal.id,
@@ -775,6 +828,9 @@ def _derive_solver_closures(g, p, context, closures: dict) -> None:
                 "in1": p.id(target),
                 "in2": p.id(reference),
                 "out": ids.pose_difference(),
+                # Only the difference is computed at runtime; without materializing its per-axis
+                # views the progress gate and the logged quantities read a never-written 0.0.
+                "errors": [ids.component_error(axis) for axis in plan.axes],
             }
 
 
@@ -821,7 +877,10 @@ def _derive_solver_data(g, p, context, data: list, views: dict) -> None:
                     difference,
                     error,
                     Subspace.Linear if is_linear else Subspace.Angular,
-                    {"x": Axis.X, "y": Axis.Y, "z": Axis.Z}[axis.axis],
+                    {"x": Axis.X, "y": Axis.Y, "z": Axis.Z}.get(axis.frame_axis),
+                    direction=(
+                        p.direction(axis.direction) if axis.direction is not None else None
+                    ),
                 )
                 measured_source = g.value(plan.controller, CSTR_HDL["measured-velocity"])
                 if measured_source is not None:
@@ -839,7 +898,10 @@ def _derive_solver_data(g, p, context, data: list, views: dict) -> None:
                         p.velocity_twist(measured_source),
                         derivative,
                         Subspace.Linear if is_linear else Subspace.Angular,
-                        {"x": Axis.X, "y": Axis.Y, "z": Axis.Z}[axis.axis],
+                        {"x": Axis.X, "y": Axis.Y, "z": Axis.Z}.get(axis.frame_axis),
+                        direction=(
+                            p.direction(axis.direction) if axis.direction is not None else None
+                        ),
                     )
 
     data[:] = [item for item in data if item.id not in derived_ids]
@@ -1298,9 +1360,16 @@ ops_generic = [
     Specification(type_=MAP["View"], input=[MAP["superobject"]], output=[MAP["subobject"]]),
     *ops_path,
     Operator(
-        type_=GEOM_OP_EXT.PathEvaluator,
-        input=[GEOM_OP_EXT.path, GEOM_OP_EXT["path-parameter"]],
-        output=[GEOM_OP["out"]],
+        type_=GEOM_OP_EXT.PathProjection,
+        input=[GEOM_OP_EXT.path, GEOM_OP["in"], CSTR_HDL["measured-velocity"]],
+        output=[
+            GEOM_OP["out"],
+            GEOM_OP_EXT["path-parameter"],
+            GEOM_OP_EXT.tangent,
+            GEOM_OP_EXT["normal-a"],
+            GEOM_OP_EXT["normal-b"],
+            GEOM_OP_EXT["along-speed"],
+        ],
     ),
     Operator(
         type_=ALGO_EXT["VelocityProfile"],
@@ -1663,6 +1732,7 @@ class Parser:
             MAP["x"]: Axis.X,
             MAP["y"]: Axis.Y,
             MAP["z"]: Axis.Z,
+            MAP["w"]: Axis.W,
             SLV["x"]: Axis.X,
             SLV["y"]: Axis.Y,
             SLV["z"]: Axis.Z,
@@ -1672,30 +1742,10 @@ class Parser:
 
         return d[id_]
 
-    @memoize
-    def _progress_entry(self, id_):
-        """Parse a progress entry: a ProgressConstraint (advancement law) or a
-        ProgressObjective (maximization request), dispatched by rdf:type.
-        """
-        parameter = self.id(self.g.value(id_, ALGO_EXT.parameter))
-        paths = sorted(self.id(path) for path in self.g.objects(id_, ALGO_EXT.path))
-        if ALGO_EXT.ProgressConstraint in self.g[id_ : RDF["type"]]:
-            advancement = float(
-                self.g.value(self.g.value(id_, ALGO_EXT.advancement), QUDT_SCHEMA.value)
-            )
-            constraints = sorted(self.id(c) for c in self.g.objects(id_, CSTR_HDL.constraint))
-            return ProgressConstraint(self.id(id_), parameter, paths, constraints, advancement)
-        self._expect_type(id_, ALGO_EXT.ProgressObjective)
-        return ProgressObjective(self.id(id_), parameter, paths)
-
     def constraint_handler(self, id_):
         """Parse a ConstraintHandler (evaluators, controllers, monitors) at node."""
         self._expect_type(id_, CSTR_HDL["ConstraintHandler"])
         motion = self.guarded_motion(self.g.value(id_, CSTR_HDL["motion"]))
-        progress = [
-            self._progress_entry(entry)
-            for entry in sorted(self.g.objects(id_, ALGO_EXT.progress), key=str)
-        ]
         evaluators = []
         for e in self.g[id_ : CSTR_HDL["evaluators"]]:
             evaluators.append(self.constraint_evaluator(e))
@@ -1707,7 +1757,7 @@ class Parser:
         order_value = self.g.value(id_, APP["order"])
         order = int(order_value.value) if order_value is not None else 0
 
-        return ConstraintHandler(self.id(id_), motion, progress, evaluators, [], monitors, order)
+        return ConstraintHandler(self.id(id_), motion, evaluators, [], monitors, order)
 
     @memoize
     def monitor_entry(self, id_):
@@ -1973,17 +2023,6 @@ class Parser:
 
         return Direction(self.id(id_), quantity_kind, as_seen_by, [Unit(unit)], direction)
 
-    def parse_vector3(self, node):
-        """Parse a 3-vector coordinate list from node, or None."""
-        from rdflib import collection
-
-        items = list(collection.Collection(self.g, node))
-        if len(items) != 3:
-            return None
-
-        # Get the Python representation of the associated RDF literal
-        return [float(v.toPython()) for v in items]
-
     def parse_xyz(self, node):
         """Parse x/y/z scalar coordinates from node, or None."""
         x = self.g.value(node, GEOM_COORD["x"])
@@ -2143,16 +2182,18 @@ class Parser:
         unit = []
         for u in self.g[id_ : QUDT_SCHEMA["unit"]]:
             unit.append(self.id(u))
-        dc_x = self.parse_vector3(self.g.value(id_, GEOM_COORD["direction-cosine-x"]))
-        dc_y = self.parse_vector3(self.g.value(id_, GEOM_COORD["direction-cosine-y"]))
-        dc_z = self.parse_vector3(self.g.value(id_, GEOM_COORD["direction-cosine-z"]))
         pos = self.parse_xyz(id_)
+        orientation_node = self._orientation_coordinate(id_)
+        representation = self.orientation_representation(orientation_node)
+        dc_x, dc_y, dc_z = (
+            self._direction_cosine_axes(orientation_node)
+            if representation == "direction-cosine"
+            else (None, None, None)
+        )
         euler_axes_sequence = None
-        for coord in self.g.objects(id_, GEOM_COORD["has-coordinate"]):
-            if GEOM_COORD["EulerAngles"] in self.g[coord : RDF["type"]]:
-                axes = self.g.value(coord, GEOM_COORD["axes-sequence"])
-                euler_axes_sequence = str(axes) if axes is not None else None
-                break
+        if orientation_node is not None and representation == "euler":
+            axes = self.g.value(orientation_node, GEOM_COORD["axes-sequence"])
+            euler_axes_sequence = str(axes) if axes is not None else None
 
         provenance = self.quantity_provenance(id_)
         return Pose(
@@ -2167,8 +2208,51 @@ class Parser:
             dc_z,
             pos,
             euler_axes_sequence,
+            representation,
             provenance=provenance,
         )
+
+    def _orientation_coordinate(self, id_):
+        """The orientation coordinate hanging off a pose coordinate, or None."""
+        for coord in self.g.objects(id_, GEOM_COORD["has-coordinate"]):
+            if GEOM_COORD["OrientationCoordinate"] in self.g[coord : RDF["type"]]:
+                return coord
+        return None
+
+    def orientation_representation(self, id_):
+        """The authored rotation representation of an orientation coordinate. Sites with no
+        coordinate to inspect are Euler, the RDF builder's default for a derived view."""
+        if id_ is None:
+            return "euler"
+        types = set(self.g[id_ : RDF["type"]])
+        if GEOM_COORD["Quaternion"] in types:
+            return "quaternion"
+        if GEOM_COORD["DirectionCosineXYZ"] in types:
+            return "direction-cosine"
+        return "euler"
+
+    def _coordinate_ids_by_axis(self, container):
+        """Map each coordinate of `container` to the axis label its view names."""
+        by_axis = {}
+        for coord in self.g.objects(container, GEOM_COORD["has-coordinate"]):
+            for view in self.g.subjects(MAP["subobject"], coord):
+                axis = self.g.value(view, MAP["axis"])
+                if axis is not None:
+                    by_axis[split_uri(axis)[1]] = self.id(coord)
+        return by_axis
+
+    def _direction_cosine_axes(self, id_):
+        """The three direction-cosine axes of an orientation coordinate, each the ids of its
+        x/y/z components in order."""
+        axes = []
+        for pred in ("direction-cosine-x", "direction-cosine-y", "direction-cosine-z"):
+            axis_node = self.g.value(id_, GEOM_COORD[pred])
+            if axis_node is None:
+                axes.append(None)
+                continue
+            by_axis = self._coordinate_ids_by_axis(axis_node)
+            axes.append([by_axis.get(label) for label in ("x", "y", "z")])
+        return tuple(axes)
 
     @memoize
     def velocity_twist(self, id_):
@@ -2505,12 +2589,15 @@ class Parser:
                     else None
                 )
                 if cl:
-                    if operator.type_ == GEOM_OP_EXT.PathEvaluator:
-                        # The evaluator's out port is the pose setpoint the motion tracks.
+                    if operator.type_ == GEOM_OP_EXT.PathProjection:
+                        # The projection's out port is the pose on the path the motion tracks.
                         reference = self.g.value(closure, GEOM_OP.out)
                         if reference is not None:
                             cl["setpoint"] = self.id(reference)
-                        cl.update(self._path_fields(self.g.value(closure, GEOM_OP_EXT.path)))
+                        fields = self._path_fields(self.g.value(closure, GEOM_OP_EXT.path))
+                        # The geometry decides the maths, but the projection stays one call.
+                        cl["shape"] = fields.pop("type")
+                        cl.update(fields)
                     if operator.type_ in {ALGO_EXT.VelocityProfile, ALGO_EXT.Admittance}:
                         reference = self.g.value(closure, ALGO_EXT.out)
                         constraint = next(
@@ -3487,28 +3574,11 @@ def build_motion_units(
                         motion_tokens,
                     )
                 ),
-                progress_constraints=[
-                    ProgressConstraint(
-                        entry.id,
-                        entry.parameter,
-                        entry.paths,
-                        entry.constraints,
-                        entry.advancement,
-                        [
-                            controller.error_signal.id
-                            for plan in active_plans
-                            if p.id(plan.constraint) in entry.constraints
-                            for controller in _derived_controllers(g, p, derivation, plan)
-                            if controller.error_signal is not None
-                        ],
-                    )
-                    for entry in handler.progress
-                    if isinstance(entry, ProgressConstraint)
-                ],
+                path_projections=_path_projections_for_motion(
+                    pre_group_schedule + while_schedule, closures
+                ),
             )
         )
-
-    _validate_motion_progress_constraints(motions)
 
     # Invariant: one motion maps to exactly one constraint handler. A repeated
     # motion id (the same motion driven by two handlers) is rejected rather than
@@ -3543,15 +3613,18 @@ def build_motion_units(
     return ordered, fsm_meta
 
 
-def _validate_motion_progress_constraints(motions: list) -> None:
-    """Reject progress bindings that have no controller error to gate advancement."""
-    for motion in motions:
-        for entry in _field(motion, "progress_constraints", []):
-            if not _field(entry, "errors", []):
-                raise ValueError(
-                    f"Motion '{_field(motion, 'id')}' progress constraint "
-                    f"'{_field(entry, 'id')}' has no derived tracking-controller error signal."
-                )
+def _path_projections_for_motion(schedule: list, closures: dict) -> list[dict]:
+    """The path projections a motion runs, with the measurements that re-arm on entry."""
+    return [
+        {
+            "id": call,
+            "parameter": closures[call]["path_parameter"],
+            "along_speed": closures[call]["along_speed"],
+        }
+        for call in dict.fromkeys(schedule)
+        if isinstance(closures.get(call), dict)
+        and closures[call].get("type") == "PathProjection"
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -5531,12 +5604,30 @@ def _index_by_id(items: list) -> dict:
     return out
 
 
+_ORIENTATION_COMPONENTS = {
+    "euler": ("x", "y", "z"),
+    "quaternion": ("x", "y", "z", "w"),
+    "direction-cosine": tuple(f"{row}{col}" for row in "xyz" for col in "xyz"),
+}
+
+
+def _empty_pose_entry(representation: str) -> dict:
+    """Blank component slots for a pose, sized to its rotation representation."""
+    entry = {"representation": representation}
+    entry.update({f"position_{axis}": None for axis in ("x", "y", "z")})
+    entry.update(
+        {f"orientation_{name}": None for name in _ORIENTATION_COMPONENTS[representation]}
+    )
+    return entry
+
+
 def build_pose_components(views: dict, data: list) -> dict:
     """Resolve declared/inline poses into per-axis structured components (a literal value or a
     reference id).
     """
     data_by_id = _index_by_id(data)
     components: dict[str, dict] = {}
+    direction_cosine_poses: dict[str, object] = {}
     for view in views.values():
         superobject = _field(view, "superobject")
         so_type = _field(superobject, "type")
@@ -5555,25 +5646,26 @@ def build_pose_components(views: dict, data: list) -> dict:
         ):
             continue
         pose_id = _field(superobject, "id")
-        entry = components.setdefault(
-            pose_id,
-            {
-                "position_x": None,
-                "position_y": None,
-                "position_z": None,
-                "orientation_x": None,
-                "orientation_y": None,
-                "orientation_z": None,
-            },
-        )
+        representation = _field(superobject, "orientation_representation") or "euler"
+        entry = components.setdefault(pose_id, _empty_pose_entry(representation))
         axis = str(_field(view, "axis") or "").lower()
-        if axis not in {"x", "y", "z"}:
-            continue
         subobject = _field(_field(view, "subobject"), "id")
-        if not subobject:
+        if not subobject or axis not in {"x", "y", "z", "w"}:
             continue
         prefix = "position" if _field(view, "subspace") == "Linear" else "orientation"
+        if prefix == "orientation" and representation == "direction-cosine":
+            # Nine components share three axis labels, so the views alone are ambiguous.
+            direction_cosine_poses[pose_id] = superobject
+            continue
         entry[f"{prefix}_{axis}"] = _pose_component(subobject, data_by_id)
+    for pose_id, superobject in direction_cosine_poses.items():
+        entry = components[pose_id]
+        for row, field_name in zip(
+            "xyz", ("direction_cosine_x", "direction_cosine_y", "direction_cosine_z")
+        ):
+            for col, component_id in zip("xyz", _field(superobject, field_name) or []):
+                if component_id:
+                    entry[f"orientation_{row}{col}"] = _pose_component(component_id, data_by_id)
     for pose_id, parts in components.items():
         missing = [name for name, value in parts.items() if value is None]
         if missing:
@@ -5586,7 +5678,7 @@ def build_pose_components(views: dict, data: list) -> dict:
 def resolve_lerp_closures(closures: dict, pose_components: dict) -> None:
     """Fold each linear-path goal into components or a shared-signal ref."""
     for closure in closures.values():
-        if closure.get("type") != "LinearPath":
+        if closure.get("shape") != "LinearPath":
             continue
         goal = closure.get("goal")
         if not isinstance(goal, str):
@@ -5615,7 +5707,7 @@ def resolve_arc_closures(closures: dict, data: list) -> None:
         )
 
     for closure in closures.values():
-        if closure.get("type") != "Arc":
+        if closure.get("shape") != "Arc":
             continue
         end = closure.get("end")
         end_data = data_by_id.get(end)
@@ -6041,17 +6133,6 @@ def generate_ir(manifest_path):
     (slv_platform_vel, sched1, hdl, sched2, slv_chain, sched3, slv_platform_frc, sched4) = _solver_sections(
         g, p, setups_by_node, default_setup, derivation, scene.objects
     )
-    unsupported_objectives = [
-        entry
-        for handler in hdl
-        for entry in handler.progress
-        if isinstance(entry, ProgressObjective)
-    ]
-    if unsupported_objectives:
-        names = ", ".join(entry.id for entry in unsupported_objectives)
-        raise RuntimeError(
-            f"No executable solver backend consumes progress objective(s): {names}."
-        )
     _assign_monitor_event_indexes(hdl)
 
     closures = p.closures(ops_generic + ops_slv + ops_cstr_hdl)

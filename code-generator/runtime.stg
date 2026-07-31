@@ -47,13 +47,89 @@ inline double clamp01(double v) {
     return v;
 }
 
-inline double path_progress_step(
-        double current,
-        bool tracking_satisfied,
-        double advancement_per_second,
-        double timestep_s) {
-    if (!tracking_satisfied) return clamp01(current);
-    return clamp01(current + advancement_per_second * timestep_s);
+// Local search window around the previous projection. Forward is generous enough to keep up
+// with the commanded speed for a control period; backward is tight so the parameter cannot
+// slip across a fold of a self-intersecting path and reverse.
+inline constexpr double kPathSearchForward = 0.15;
+inline constexpr double kPathSearchBackward = 0.02;
+inline constexpr int kPathSearchSamples = 16;
+inline constexpr int kPathRefineSteps = 24;
+// Central-difference step for the tangent, in path parameter.
+inline constexpr double kPathTangentStep = 1e-4;
+
+// Closest point on a path, refined locally around the previous parameter.
+// Seeding bounds the cost to a fixed number of evaluations per tick and makes the parameter a
+// measurement of where the frame already is, so nothing upstream can run ahead of the robot.
+template \<typename Eval\>
+inline double path_project(const Eval &eval, const KDL::Vector &point, double previous) {
+    const double lo = std::max(0.0, previous - kPathSearchBackward);
+    const double hi = std::min(1.0, previous + kPathSearchForward);
+    const auto distance2 = [&](double s) {
+        const KDL::Vector delta = eval(s).p - point;
+        return KDL::dot(delta, delta);
+    };
+    double best = lo;
+    double best_d2 = distance2(lo);
+    for (int i = 1; i \<= kPathSearchSamples; ++i) {
+        const double s = lo + (hi - lo) * (static_cast\<double\>(i) / kPathSearchSamples);
+        const double d2 = distance2(s);
+        if (d2 \< best_d2) { best_d2 = d2; best = s; }
+    }
+    // Golden-section on the bracket the scan selected: the distance is unimodal there once the
+    // window is narrower than the path's curvature scale.
+    const double step = (hi - lo) / kPathSearchSamples;
+    double a = std::max(lo, best - step);
+    double b = std::min(hi, best + step);
+    constexpr double kInvPhi = 0.6180339887498949;
+    double c = b - kInvPhi * (b - a);
+    double d = a + kInvPhi * (b - a);
+    double fc = distance2(c);
+    double fd = distance2(d);
+    for (int i = 0; i \< kPathRefineSteps; ++i) {
+        if (fc \< fd) {
+            b = d; d = c; fd = fc;
+            c = b - kInvPhi * (b - a);
+            fc = distance2(c);
+        } else {
+            a = c; c = d; fc = fd;
+            d = a + kInvPhi * (b - a);
+            fd = distance2(d);
+        }
+    }
+    return clamp01(0.5 * (a + b));
+}
+
+// Frenet-style frame at a point on the path: the tangent by central difference, then two
+// normals carried forward from the previous tick (parallel transport). Rebuilding the normals
+// from a world axis every tick would flip them as the tangent turns, and the lateral rows
+// would jump with them; transport keeps the frame continuous.
+template \<typename Eval\>
+inline void path_frame(const Eval &eval, double s, KDL::Vector &tangent,
+                       KDL::Vector &normal_a, KDL::Vector &normal_b) {
+    const double lo = std::max(0.0, s - kPathTangentStep);
+    const double hi = std::min(1.0, s + kPathTangentStep);
+    tangent = eval(hi).p - eval(lo).p;
+    if (tangent.Norm() \< 1e-12) {
+        tangent = KDL::Vector(1.0, 0.0, 0.0);
+    } else {
+        tangent.Normalize();
+    }
+    KDL::Vector candidate = normal_a - KDL::dot(normal_a, tangent) * tangent;
+    if (candidate.Norm() \< 1e-6) {
+        // No usable previous normal (first tick, or the tangent turned onto it): start from the
+        // world axis least aligned with the tangent, which keeps the cross product conditioned.
+        const double ax = std::fabs(tangent.x());
+        const double ay = std::fabs(tangent.y());
+        const double az = std::fabs(tangent.z());
+        const KDL::Vector helper = (ax \<= ay && ax \<= az) ? KDL::Vector(1.0, 0.0, 0.0)
+                                 : (ay \<= az)             ? KDL::Vector(0.0, 1.0, 0.0)
+                                                          : KDL::Vector(0.0, 0.0, 1.0);
+        candidate = tangent * helper;
+    }
+    candidate.Normalize();
+    normal_a = candidate;
+    normal_b = tangent * normal_a;
+    normal_b.Normalize();
 }
 
 inline void resolve_cartesian_acceleration(

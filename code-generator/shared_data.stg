@@ -153,7 +153,7 @@ shared.<view.superobject.id>.rot[<axis-to-index.(view.axis)>]
 >>
 
 view-access-expr-VelocityTwist-Linear(view) ::= <<
-shared.<view.superobject.id>.vel[<axis-to-index.(view.axis)>]
+<if(view.direction)>KDL::dot(shared.<view.superobject.id>.vel, shared.<view.direction.id>)<else>shared.<view.superobject.id>.vel[<axis-to-index.(view.axis)>]<endif>
 >>
 
 view-access-expr-AccelerationTwist-Angular(view) ::= <<
@@ -169,7 +169,7 @@ shared.<view.superobject.id>.rot[<axis-to-index.(view.axis)>]
 >>
 
 view-access-expr-PoseDifference-Linear(view) ::= <<
-shared.<view.superobject.id>.vel[<axis-to-index.(view.axis)>]
+<if(view.direction)>KDL::dot(shared.<view.superobject.id>.vel, shared.<view.direction.id>)<else>shared.<view.superobject.id>.vel[<axis-to-index.(view.axis)>]<endif>
 >>
 
 view-access-expr-Wrench-Angular(view) ::= <<

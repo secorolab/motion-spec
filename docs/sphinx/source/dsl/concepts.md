@@ -287,7 +287,7 @@ while active, and what can stop or redirect it:
 
 ```robmot
 guarded-motion (ns=app) approach {
-    move: "Move to the pre-grasp pose"
+    description: "Move to the pre-grasp pose"
     context { spec { /* goals and snapshots */ } }
     when all { ready: <shared.world.gripper-pos> equal to <shared.spec.open> }
     while { follow: keeping <shared.world.tcp-base>.position equal to <spec.goal>.position }

@@ -155,14 +155,41 @@ component-value(comp, views) ::= <<
 <if(comp.ref)><access-expr(comp.ref, views)><else><comp.value><endif>
 >>
 
+rotation-template ::= [
+    "euler": "pose-rotation-euler",
+    "quaternion": "pose-rotation-quaternion",
+    "direction-cosine": "pose-rotation-direction-cosine",
+    default: "pose-rotation-euler"
+]
+
+pose-rotation-euler(pose, views) ::= <%
+KDL::Rotation::RPY(<component-value(pose.orientation_x, views)>, <component-value(pose.orientation_y, views)>, <component-value(pose.orientation_z, views)>)
+%>
+
+pose-rotation-quaternion(pose, views) ::= <%
+KDL::Rotation::Quaternion(<component-value(pose.orientation_x, views)>, <component-value(pose.orientation_y, views)>, <component-value(pose.orientation_z, views)>, <component-value(pose.orientation_w, views)>)
+%>
+
+pose-rotation-direction-cosine(pose, views) ::= <%
+KDL::Rotation(KDL::Vector(<component-value(pose.orientation_xx, views)>, <component-value(pose.orientation_xy, views)>, <component-value(pose.orientation_xz, views)>), KDL::Vector(<component-value(pose.orientation_yx, views)>, <component-value(pose.orientation_yy, views)>, <component-value(pose.orientation_yz, views)>), KDL::Vector(<component-value(pose.orientation_zx, views)>, <component-value(pose.orientation_zy, views)>, <component-value(pose.orientation_zz, views)>))
+%>
+
+pose-rotation(pose, views) ::= <%
+<(rotation-template.(pose.representation))(pose, views)>
+%>
+
+pose-position(pose, views) ::= <%
+KDL::Vector(<component-value(pose.position_x, views)>, <component-value(pose.position_y, views)>, <component-value(pose.position_z, views)>)
+%>
+
 pose-frame-inline(pose, views) ::= <%
-KDL::Frame(KDL::Rotation::RPY(<component-value(pose.orientation_x, views)>, <component-value(pose.orientation_y, views)>, <component-value(pose.orientation_z, views)>), KDL::Vector(<component-value(pose.position_x, views)>, <component-value(pose.position_y, views)>, <component-value(pose.position_z, views)>))
+KDL::Frame(<pose-rotation(pose, views)>, <pose-position(pose, views)>)
 %>
 
 materialize-pose-component(pose, views) ::= <<
     shared.<pose.id> = KDL::Frame(
-        KDL::Rotation::RPY(<component-value(pose.orientation_x, views)>, <component-value(pose.orientation_y, views)>, <component-value(pose.orientation_z, views)>),
-        KDL::Vector(<component-value(pose.position_x, views)>, <component-value(pose.position_y, views)>, <component-value(pose.position_z, views)>));
+        <pose-rotation(pose, views)>,
+        <pose-position(pose, views)>);
 >>
 
 motion-prelude(wrench_outputs, serial_chain_solvers, backend) ::= <<
@@ -217,7 +244,8 @@ app-run-call(motion) ::= <<
         if (!<motion.id>_state_instance.active && can_start_<motion.id>(<sig-args(motion.id, motion.can_start_needs_state, motion.can_start_needs_shared, motion.can_start_needs_robot)>)) {
             <motion.id>_state_instance.active = true;
             <motion.id>_state_instance.active_steps = 0;
-<motion.progress_constraints:{entry |             shared.<entry.parameter> = 0.0;}; separator="\n">
+<motion.path_projections:{proj |             shared.<proj.parameter> = 0.0;
+            shared.<proj.along_speed> = 0.0;}; separator="\n">
 <motion.until_monitors:{m |             <motion.id>_state_instance.<m.id>_previous = false;
             <motion.id>_state_instance.<m.id>_event_triggered = false;}; separator="
 ">
@@ -225,14 +253,6 @@ app-run-call(motion) ::= <<
         if (<motion.id>_state_instance.active) {
             control_<motion.id>(<motion.id>_state_instance, shared, robot);
         \}
->>
-
-progress-block(entries) ::= <<
-<entries:{entry |     shared.<entry.parameter> = motion_spec::runtime::path_progress_step(
-        shared.<entry.parameter>,
-        <entry.errors:{error | motion_spec::runtime::constraint_satisfied(shared.<error>)}; separator=" && ">,
-        <entry.advancement>,
-        motion_spec::runtime::kControlPeriodS);}; separator="\n">
 >>
 
 app-stage-call(motion) ::= <<
@@ -553,9 +573,6 @@ inline void control_<motion.id>(
 <if(motion.serial_chain_solvers)>
 
 <chain-run-block(motion.serial_chain_solvers, backend)>
-<endif>
-<if(first(motion.progress_constraints))>
-<progress-block(motion.progress_constraints)>
 <endif>
 }
 

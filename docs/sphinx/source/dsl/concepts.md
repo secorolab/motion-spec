@@ -382,30 +382,72 @@ available.
 
 ### Solvers
 
-| Algorithm | Role |
-|---|---|
-| `ACHD` | Acceleration-level hybrid dynamics |
-| `RNE` | Recursive Newton-Euler dynamics |
-| `command-forwarding` | Forward joint or device commands directly |
-| `velocity-distribution` | Distribute mobile-base velocity commands |
-| `force-distribution` | Distribute base force commands |
+A solver is authored as one of three closed mechanism families -- never a generic
+algorithm string. Each accepts only its own fields.
 
-Every solver binds an imported scene agent. Dynamics solvers can declare gravity:
+| Mechanism | Algorithm | Role |
+|---|---|---|
+| `serial-chain` | `achd` | Acceleration-level hybrid dynamics over one ordered kinematic chain |
+| `serial-chain` | `rne` | Recursive Newton-Euler dynamics over one ordered kinematic chain |
+| `mobile-platform` | `velocity-composition` | Reconstruct the platform twist from measured wheel/drive velocities |
+| `mobile-platform` | `force-distribution` | Map a desired platform wrench to drive/wheel forces (control allocation) |
+| `command-forwarding` | -- | Forward a feed-forward controller's command directly to a device |
+
+Every solver binds an imported scene agent. A `serial-chain` entry can declare gravity
+and, optionally, a torque limit:
 
 ```robmot
-solver arm-solver {
-    agent: <agents.kinova>,
-    algorithm: ACHD,
-    limits {
-        torque: saturation { max: <shared.spec.max-torque> },
-        linear-acceleration: saturation { lower: -2.0 m/s2, upper: 2.0 m/s2 }
-    },
-    gravity: { x: 0.0, y: 0.0, z: -9.81 m/s2 }
+solvers {
+    arm-solver: serial-chain {
+        agent: <agents.kinova>,
+        algorithm: achd,
+        limits {
+            torque: saturation { max: <shared.spec.max-torque> }
+        },
+        gravity: { x: 0.0, y: 0.0, z: -9.81 m/s2 }
+    }
 }
 ```
 
-Supported limit targets are `torque`, `linear-acceleration`, and
-`angular-acceleration`. Gravity may also reference a context quantity.
+The only supported solver limit target is `torque`, and only `serial-chain` accepts a
+`limits` block at all. Clamping a controller's output (e.g. a Cartesian acceleration)
+is a controller-level concern: use `output-saturation` on the controller instead.
+Gravity may also reference a context quantity.
+
+A `mobile-platform` entry requires exactly one `configuration` (the backend lookup
+key) and exactly one `quantity` context reference. The reference's kind must match the
+algorithm: a `velocity-twist` for `velocity-composition`, a `wrench` for
+`force-distribution`. There is one `mobile-platform` DSL class over the quantity x
+operation matrix; only these two operations are backed by a vendored RDF class
+(`slv:VelocityCompositionSolver`, `slv:ForceDistributionSolver` --
+comp-rob2b `solver-specification.ttl:25,35`), so the `algorithm` enum stays closed to
+them for now:
+
+```robmot
+solvers {
+    platform-velocity: mobile-platform {
+        agent: <agents.platform>,
+        algorithm: velocity-composition,
+        configuration: "hddc2b_example_vel",
+        quantity: <world.platform-twist>
+    },
+    platform-force: mobile-platform {
+        agent: <agents.platform>,
+        algorithm: force-distribution,
+        configuration: "hddc2b_example_frc_sc1",
+        quantity: <world.platform-wrench>
+    }
+}
+```
+
+`command-forwarding` takes only an agent -- it is neither a dynamics solver nor a
+platform kinematics/control-allocation solver:
+
+```robmot
+solvers {
+    gripper-solver: command-forwarding { agent: <agents.gripper> }
+}
+```
 
 ## Scene and FSM integration
 

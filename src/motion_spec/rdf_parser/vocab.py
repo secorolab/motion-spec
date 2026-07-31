@@ -621,5 +621,7 @@ class SLV(DefinedNamespace):
 
 class SLV_EXT(DefinedNamespace):
     CommandForwardingSolver: URIRef
+    VelocityDistributionSolver: URIRef
+    ForceCompositionSolver: URIRef
 
     _NS = Namespace(f"{URI_SECORO_MM}/task/solver-specification#")

@@ -102,59 +102,59 @@ app-main-base-setup() ::= <<
     };
 >>
 
-app-arm-includes(backend, has_arm) ::= <<
-<({app-arm-includes-<backend>})(has_arm)>
+app-chain-includes(backend, has_serial_chain) ::= <<
+<({app-chain-includes-<backend>})(has_serial_chain)>
 >>
 
-app-arm-setup(backend, arm_solvers, scene) ::= <<
-<({app-arm-setup-<backend>})(arm_solvers, scene)>
+app-chain-setup(backend, serial_chain_solvers, scene) ::= <<
+<({app-chain-setup-<backend>})(serial_chain_solvers, scene)>
 >>
 
-app-loop-condition(backend, has_arm) ::= <<
-<({app-loop-condition-<backend>})(has_arm)>
+app-loop-condition(backend, has_serial_chain) ::= <<
+<({app-loop-condition-<backend>})(has_serial_chain)>
 >>
 
-app-arm-cleanup(backend, has_arm) ::= <<
-<({app-arm-cleanup-<backend>})(has_arm)>
+app-chain-cleanup(backend, has_serial_chain) ::= <<
+<({app-chain-cleanup-<backend>})(has_serial_chain)>
 >>
 
-app-arm-post-setup(backend, arm_solvers, motions) ::= <<
-<({app-arm-post-setup-<backend>})(arm_solvers, motions)>
+app-chain-post-setup(backend, serial_chain_solvers, motions) ::= <<
+<({app-chain-post-setup-<backend>})(serial_chain_solvers, motions)>
 >>
 
-app-arm-post-setup-robif2b(arm_solvers, motions) ::= <<
+app-chain-post-setup-robif2b(serial_chain_solvers, motions) ::= <<
 >>
 
-app-arm-loop-reset(backend, arm_solvers, fsm_namespace) ::= <<
-<({app-arm-loop-reset-<backend>})(arm_solvers, fsm_namespace)>
+app-chain-loop-reset(backend, serial_chain_solvers, fsm_namespace) ::= <<
+<({app-chain-loop-reset-<backend>})(serial_chain_solvers, fsm_namespace)>
 >>
 
-app-arm-loop-reset-robif2b(arm_solvers, fsm_namespace) ::= <<
+app-chain-loop-reset-robif2b(serial_chain_solvers, fsm_namespace) ::= <<
 >>
 
-app-arm-runtime-step(backend, arm_solvers) ::= <<
-<({app-arm-runtime-step-<backend>})(arm_solvers)>
+app-chain-runtime-step(backend, serial_chain_solvers) ::= <<
+<({app-chain-runtime-step-<backend>})(serial_chain_solvers)>
 >>
 
-clock-time-source(backend, arm_solvers, has_arm) ::= <<
-<if(has_arm)><({clock-time-source-<backend>})(arm_solvers)><else>motion_spec::runtime::monotonic_time_s()<endif>
+clock-time-source(backend, serial_chain_solvers, has_serial_chain) ::= <<
+<if(has_serial_chain)><({clock-time-source-<backend>})(serial_chain_solvers)><else>motion_spec::runtime::monotonic_time_s()<endif>
 >>
 
-clock-time-source-mj_kdl(arm_solvers) ::= <<
-robot.<first(arm_solvers).id>.robot->data->time
+clock-time-source-mj_kdl(serial_chain_solvers) ::= <<
+robot.<first(serial_chain_solvers).id>.robot->data->time
 >>
 
-clock-time-source-robif2b(arm_solvers) ::= <<
+clock-time-source-robif2b(serial_chain_solvers) ::= <<
 motion_spec::runtime::monotonic_time_s()
 >>
 
-app-arm-trace-update(backend, arm_solvers, trace) ::= <<
-<({app-arm-trace-update-<backend>})(arm_solvers, trace)>
+app-chain-trace-update(backend, serial_chain_solvers, trace) ::= <<
+<({app-chain-trace-update-<backend>})(serial_chain_solvers, trace)>
 >>
 
 
-app-headless-telemetry(backend, shared_data, arm_solvers, scene) ::= <<
-<({app-headless-telemetry-<backend>})(shared_data, arm_solvers, scene)>
+app-headless-telemetry(backend, shared_data, serial_chain_solvers, scene) ::= <<
+<({app-headless-telemetry-<backend>})(shared_data, serial_chain_solvers, scene)>
 >>
 
 // ROS publish is decoupled from the control loop: each RealtimePublisher owns a background
@@ -183,7 +183,7 @@ ros-shutdown(ros_publishers) ::= <<
     rclcpp::shutdown();
 >>
 
-app_main(motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene, trace, needs_clock_time, control_period_ns) ::= <<
+app_main(motions, wrench_outputs, has_serial_chain, has_mobile_base, shared_schedule, closures, views, serial_chain_solvers, platform_velocity_solvers, platform_force_solvers, backend, scene, trace, needs_clock_time, control_period_ns) ::= <<
 #include "runtime.hpp"
 #include "shared_state.hpp"
 #ifdef MOTION_SPEC_ENABLE_INTROSPECTION
@@ -194,7 +194,7 @@ app_main(motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, clo
 <endif>
 <motions:{motion | <motion-include(motion)>}; separator="\n">
 
-<app-arm-includes(backend, has_arm)>
+<app-chain-includes(backend, has_serial_chain)>
 #include \<unistd.h\>
 
 int main(int argc, char **argv) {
@@ -204,9 +204,9 @@ int main(int argc, char **argv) {
 
 <app-main-base-setup()>
 <endif>
-<if(has_arm)>
+<if(has_serial_chain)>
 
-<app-arm-setup(backend, arm_solvers, scene)>
+<app-chain-setup(backend, serial_chain_solvers, scene)>
 <endif>
 <wrench_outputs:{wrench | <wrench-measurement(wrench)>}; separator="\n">
 <wrench_outputs:{wrench |     robot.<wrench.id> = &<wrench.id>_measurement;}; separator="\n">
@@ -219,16 +219,16 @@ int main(int argc, char **argv) {
     robif2b_ethercat_configure(robot.mobile_base.ethercat);
     robif2b_ethercat_start(robot.mobile_base.ethercat);
 <endif>
-<if(has_arm)>
-<arm_solvers:{solver |
+<if(has_serial_chain)>
+<serial_chain_solvers:{solver |
 <robot-configure(solver, backend)>
 }; separator="\n">
 <endif>
 
     timespec _next_tick{};
     clock_gettime(CLOCK_MONOTONIC, &_next_tick);
-    while (<app-loop-condition(backend, has_arm)>) {
-<if(needs_clock_time)>        shared.clock_time_s = <clock-time-source(backend, arm_solvers, has_arm)>;
+    while (<app-loop-condition(backend, has_serial_chain)>) {
+<if(needs_clock_time)>        shared.clock_time_s = <clock-time-source(backend, serial_chain_solvers, has_serial_chain)>;
 <endif>
 <if(has_mobile_base)>
         update_mobile_base(mobile_base_state_instance, shared, robot);
@@ -241,17 +241,17 @@ int main(int argc, char **argv) {
 <if(has_mobile_base)>
         apply_mobile_base(mobile_base_state_instance, shared, robot);
 <endif>
-<if(has_arm)>
-<app-arm-trace-update(backend, arm_solvers, trace)>
-<app-arm-runtime-step(backend, arm_solvers)>
+<if(has_serial_chain)>
+<app-chain-trace-update(backend, serial_chain_solvers, trace)>
+<app-chain-runtime-step(backend, serial_chain_solvers)>
 <endif>
 
         motion_spec::runtime::sleep_until_next(_next_tick, <control_period_ns>);
     }
-<if(has_arm)>
+<if(has_serial_chain)>
 
-<app-arm-cleanup(backend, has_arm)>
-<arm_solvers:{solver |
+<app-chain-cleanup(backend, has_serial_chain)>
+<serial_chain_solvers:{solver |
 <robot-shutdown(solver, backend)>
 }; separator="\n">
 <endif>
@@ -303,7 +303,7 @@ fsm-dispatch(motions, fsm_namespace) ::= <<
     \};
 >>
 
-ref_main(motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, closures, views, shared_data, arm_solvers, base_velocity_solvers, base_force_solvers, backend, scene, trace, fsm_namespace, fsm_step_event, fsm_step_event_idx, needs_clock_time, control_period_ns, has_ros, ros_publishers, ros_node_name) ::= <<
+ref_main(motions, wrench_outputs, has_serial_chain, has_mobile_base, shared_schedule, closures, views, shared_data, serial_chain_solvers, platform_velocity_solvers, platform_force_solvers, backend, scene, trace, fsm_namespace, fsm_step_event, fsm_step_event_idx, needs_clock_time, control_period_ns, has_ros, ros_publishers, ros_node_name) ::= <<
 #include "runtime.hpp"
 #include "shared_state.hpp"
 <if(has_mobile_base)>
@@ -311,7 +311,7 @@ ref_main(motions, wrench_outputs, has_arm, has_mobile_base, shared_schedule, clo
 <endif>
 <motions:{motion | <motion-include(motion)>}; separator="\n">
 
-<app-arm-includes(backend, has_arm)>
+<app-chain-includes(backend, has_serial_chain)>
 #include \<unistd.h\>
 <if(fsm_namespace)>
 
@@ -329,9 +329,9 @@ int main(int argc, char **argv) {
 
 <app-main-base-setup()>
 <endif>
-<if(has_arm)>
+<if(has_serial_chain)>
 
-<app-arm-setup(backend, arm_solvers, scene)>
+<app-chain-setup(backend, serial_chain_solvers, scene)>
 <endif>
 <wrench_outputs:{wrench | <wrench-measurement(wrench)>}; separator="\n">
 <wrench_outputs:{wrench |     robot.<wrench.id> = &<wrench.id>_measurement;}; separator="\n">
@@ -344,14 +344,14 @@ int main(int argc, char **argv) {
     robif2b_ethercat_configure(robot.mobile_base.ethercat);
     robif2b_ethercat_start(robot.mobile_base.ethercat);
 <endif>
-<if(has_arm)>
-<arm_solvers:{solver |
+<if(has_serial_chain)>
+<serial_chain_solvers:{solver |
 <robot-configure(solver, backend)>
 }; separator="\n">
 <endif>
 
-<if(has_arm)>
-<app-arm-post-setup(backend, arm_solvers, motions)>
+<if(has_serial_chain)>
+<app-chain-post-setup(backend, serial_chain_solvers, motions)>
 <endif>
 
 <if(fsm_namespace)>
@@ -373,11 +373,11 @@ int main(int argc, char **argv) {
 #endif
     timespec _next_tick{};
     clock_gettime(CLOCK_MONOTONIC, &_next_tick);
-    while (<app-loop-condition(backend, has_arm)>) {
-<if(needs_clock_time)>        shared.clock_time_s = <clock-time-source(backend, arm_solvers, has_arm)>;
+    while (<app-loop-condition(backend, has_serial_chain)>) {
+<if(needs_clock_time)>        shared.clock_time_s = <clock-time-source(backend, serial_chain_solvers, has_serial_chain)>;
 <endif>
-<if(has_arm)>
-<app-arm-loop-reset(backend, arm_solvers, fsm_namespace)>
+<if(has_serial_chain)>
+<app-chain-loop-reset(backend, serial_chain_solvers, fsm_namespace)>
 <endif>
 <if(fsm_namespace)>
         if (static_cast\<int\>(fsm->currentStateIndex) != _fsm_prev_state) {
@@ -434,9 +434,9 @@ int main(int argc, char **argv) {
             break;
         }
 <endif>
-<if(has_arm)>
-<app-arm-trace-update(backend, arm_solvers, trace)>
-<app-arm-runtime-step(backend, arm_solvers)>
+<if(has_serial_chain)>
+<app-chain-trace-update(backend, serial_chain_solvers, trace)>
+<app-chain-runtime-step(backend, serial_chain_solvers)>
 <endif>
 <if(fsm_namespace)>
         fsm_step_nbx(fsm);
@@ -456,11 +456,11 @@ int main(int argc, char **argv) {
         ++_step;
         motion_spec::runtime::sleep_until_next(_next_tick, <control_period_ns>);
     }
-<app-headless-telemetry(backend, shared_data, arm_solvers, scene)>
-<if(has_arm)>
+<app-headless-telemetry(backend, shared_data, serial_chain_solvers, scene)>
+<if(has_serial_chain)>
 
-<app-arm-cleanup(backend, has_arm)>
-<arm_solvers:{solver |
+<app-chain-cleanup(backend, has_serial_chain)>
+<serial_chain_solvers:{solver |
 <robot-shutdown(solver, backend)>
 }; separator="\n">
 <endif>
@@ -481,7 +481,7 @@ int main(int argc, char **argv) {
 }
 >>
 
-shared_state_header(shared_data, wrench_outputs, has_arm, has_mobile_base, arm_solvers, base_velocity_solvers, base_force_solvers, backend, fsm_namespace, fsm_header, has_ros, ros_publishers) ::= <<
+shared_state_header(shared_data, wrench_outputs, has_serial_chain, has_mobile_base, serial_chain_solvers, platform_velocity_solvers, platform_force_solvers, backend, fsm_namespace, fsm_header, has_ros, ros_publishers) ::= <<
 #pragma once
 
 #include "frame_layout.h"
@@ -503,8 +503,8 @@ shared_state_header(shared_data, wrench_outputs, has_arm, has_mobile_base, arm_s
 #include \<kdl/chainfksolverpos_recursive.hpp\>
 #include \<kdl/chainfksolvervel_recursive.hpp\>
 #include \<kdl/chainhdsolver_vereshchagin_fixed_joint.hpp\>
-<if(has_arm)><solver-rnea-include(backend)><endif>
-<if(has_arm)><robot-driver-include(first(arm_solvers), backend)><endif>
+<if(has_serial_chain)><solver-rnea-include(backend)><endif>
+<if(has_serial_chain)><robot-driver-include(first(serial_chain_solvers), backend)><endif>
 <if(has_mobile_base)>
 #include \<robif2b/functions/ethercat.h\>
 #include \<robif2b/functions/kelo_drive.h\>
@@ -512,7 +512,7 @@ shared_state_header(shared_data, wrench_outputs, has_arm, has_mobile_base, arm_s
 
 #include \<kdl/chainhdsolver_vereshchagin_fext_fixed_joint.hpp\>
 
-<if(has_arm)><robot-num-joints-def(first(arm_solvers))><endif>
+<if(has_serial_chain)><robot-num-joints-def(first(serial_chain_solvers))><endif>
 
 <if(has_mobile_base)>
 struct ecat_state {
@@ -613,12 +613,12 @@ struct mobile_base_runtime_state {
 };
 <endif>
 
-<if(has_arm)>
-<robot-state-struct(first(arm_solvers), backend)>
+<if(has_serial_chain)>
+<robot-state-struct(first(serial_chain_solvers), backend)>
 
-<robot-manipulator-struct(first(arm_solvers), backend)>
+<robot-manipulator-struct(first(serial_chain_solvers), backend)>
 
-<arm-solver-members(arm_solvers, backend)>
+<chain-solver-members(serial_chain_solvers, backend)>
 <endif>
 
 struct robot_io {
@@ -631,7 +631,7 @@ struct robot_io {
 <if(has_ros)>
 <ros-io-members(ros_publishers)>
 <endif>
-<arm_solvers:{solver | <arm-robot-member(solver)>}; separator="\n">
+<serial_chain_solvers:{solver | <chain-robot-member(solver)>}; separator="\n">
 <wrench_outputs:{wrench | <wrench-pointer-member(wrench)>}; separator="\n">
 };
 

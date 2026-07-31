@@ -42,7 +42,7 @@ from motion_spec.classes.entities import (
     CartesianAccelerationSpecification, CartesianForceSpecification, Constraint, ConstraintEvaluator, ConstraintHandler,
     DataclassJSONEncoder, Direction, EdgeMonitor, EqualityConstraint,
     EvaluatorType, FeedForwardController, ForceDistributionSolver, ForwardedCommand, Frame,
-    FreeVector, GuardedMotion, GuardedMotionBlock, HandlerArmSolver, ImpedanceController,
+    FreeVector, GuardedMotion, GuardedMotionBlock, HandlerSerialChainSolver, ImpedanceController,
     JointForceSpecification, JointPosition, LevelMonitor, MotionDrivers, Orientation,
     OutsideConstraint, PIDController, Point, Pose, PoseAxisErrorComponent, PoseAxisErrorGroup,
     PoseDifference, Position, ProgressConstraint, ProgressObjective, Provenance, Quantity, QuantityKind,
@@ -603,25 +603,6 @@ def _derived_controllers(g, p, context, plan: ControllerDerivation):
     return [_derived_controller(g, p, context, plan)]
 
 
-def _solver_limit(g, p, solver: URIRef, axis: SpatialAxis):
-    """Return the solver saturation matching a derived acceleration subspace."""
-    kind = (
-        QUDT_QKIND.LinearAcceleration
-        if axis.subspace == "linear-acceleration"
-        else QUDT_QKIND.AngularAcceleration
-    )
-    node = next(
-        (
-            limit
-            for limit in g.objects(solver, ALGO_EXT.limits)
-            if kind
-            in g[g.value(limit, ALGO_EXT["in"]) : QUDT_SCHEMA.hasQuantityKind]
-        ),
-        None,
-    )
-    return p.saturation(node) if node is not None else None
-
-
 def _derived_acceleration_constraints(g, p, context, plan: ControllerDerivation):
     """Build ordered ACHD acceleration-energy constraints for one controller."""
     ids = SolverIdFactory(p.id(plan.controller), _motion_suffix(p, plan.motion))
@@ -691,7 +672,6 @@ def _derived_cartesian_accelerations(g, p, context, plan: ControllerDerivation):
                     acceleration_id, axis, AccelerationInputKind.CartesianAcceleration
                 ),
                 as_seen_by=frame,
-                saturation=_solver_limit(g, p, plan.solver, axis),
             )
         )
     return result
@@ -2724,11 +2704,11 @@ def _mark_acceleration_constraint_frames(solver):
             constraint.base_aligned = axis_frame is None or _body_name(axis_frame) == root_body
 
 
-def _arm_solvers_for_handler(handler, slv_arm, solver_ids):
+def _serial_chain_solvers_for_handler(handler, slv_chain, solver_ids):
     """Select the arm solvers explicitly referenced by a handler's controllers."""
     result = []
     motion_driver_id = f"driver_{handler.motion.id.removeprefix('motion_')}"
-    for solver in slv_arm:
+    for solver in slv_chain:
         if solver.id not in solver_ids:
             continue
         matched = list(solver.motion_drivers)
@@ -2736,7 +2716,7 @@ def _arm_solvers_for_handler(handler, slv_arm, solver_ids):
             continue
         selected = next((driver for driver in matched if driver.id == motion_driver_id), matched[0])
         result.append(
-            HandlerArmSolver(
+            HandlerSerialChainSolver(
                 id=solver.id,
                 output=solver.output,
                 motion_driver=selected,
@@ -2751,10 +2731,10 @@ def _arm_solvers_for_handler(handler, slv_arm, solver_ids):
     return result
 
 
-def _relative_poses_for_motion(evaluators, view_map, arm_solvers):
+def _relative_poses_for_motion(evaluators, view_map, serial_chain_solvers):
     """Detect Pose quantities whose wrt frame ends in _start and pair them with FK outputs."""
     fk_poses: dict[str, str] = {}  # of_id → FK pose id
-    for solver in arm_solvers:
+    for solver in serial_chain_solvers:
         for out in solver.output:
             if getattr(out, "type", "") == "Pose":
                 of_id = getattr(getattr(out, "of", None), "id", None)
@@ -2925,14 +2905,14 @@ _CLOSURE_OUTPUT_FIELDS = {
 }
 
 
-def _scene_relative_poses_for_motion(view_map, arm_solvers, data_structures=None, evaluators=None):
+def _scene_relative_poses_for_motion(view_map, serial_chain_solvers, data_structures=None, evaluators=None):
     """For each view whose wrt-frame is a scene object, emit the requested relative pose."""
     fk_pose_by_frame: dict[str, str] = {}
     # Keys are the scene-object's id (the "of" of scene-object solver pose outputs).
     # A wrt_id lookup asks: "is this frame the subject of a tracked scene-object pose?"
     scene_pose_by_id: dict[str, tuple[str, str | None]] = {}
     solver_output_ids: set[str] = set()
-    for solver in arm_solvers:
+    for solver in serial_chain_solvers:
         for out in solver.output:
             if getattr(out, "type", "") != "Pose":
                 continue
@@ -3097,7 +3077,7 @@ def build_motion_units(
     p,
     handlers,
     node_by_id,
-    slv_arm,
+    slv_chain,
     snapshot_source_map=None,
     view_map=None,
     closure_output_map=None,
@@ -3127,7 +3107,7 @@ def build_motion_units(
     motion_tokens = {
         _motion_suffix(p, g.value(node_by_id[h.id], CSTR_HDL["motion"])) for h in handlers
     }
-    primary_robot_id = next((s.id for s in slv_arm if getattr(s, "id", "")), "")
+    primary_robot_id = next((s.id for s in slv_chain if getattr(s, "id", "")), "")
 
     for handler in handlers:
         handler_node = node_by_id[handler.id]
@@ -3251,14 +3231,14 @@ def build_motion_units(
             [n for n in when_eval_nodes if not _is_elapsed_eval(n)], ops_generic + ops_cstr_hdl
         )
 
-        handler_arm_solvers = _arm_solvers_for_handler(
+        handler_chain_solvers = _serial_chain_solvers_for_handler(
             handler,
-            slv_arm,
+            slv_chain,
             handler_solver_ids,
         )
         handler_output_ids = {c.control_signal.id for c in handler.controllers}
         cartesian_force_nodes = []
-        for solver in handler_arm_solvers:
+        for solver in handler_chain_solvers:
             driver_node = node_by_id.get(solver.motion_driver.id)
             if driver_node is None:
                 continue
@@ -3412,17 +3392,17 @@ def build_motion_units(
             target_quantity = g.value(view, MAP.superobject) if view is not None else quantity
             target = g.value(target_quantity, KC_STAT["of-joint"])
             agent = g.value(plan.solver, AGN["of-agent"])
-            arm_solver_ids = {
+            chain_solver_ids = {
                 p.id(node)
                 for node in g.subjects(AGN["of-agent"], agent)
                 if SLV.SolverWithInputAndOutput in g[node : RDF.type]
             }
-            arm_solver = next(
+            chain_solver = next(
                 solver
-                for solver in handler_arm_solvers
-                if solver.id in arm_solver_ids
+                for solver in handler_chain_solvers
+                if solver.id in chain_solver_ids
             )
-            runtime_solver = next(solver for solver in slv_arm if solver.id == arm_solver.id)
+            runtime_solver = next(solver for solver in slv_chain if solver.id == chain_solver.id)
             forwarded_commands.append(
                 ForwardedCommand(
                     f"cmd-fwd-{p.id(plan.controller)}",
@@ -3430,7 +3410,7 @@ def build_motion_units(
                     f"{runtime_solver.runtime_prefix}{p.label(target)}"
                     if target is not None
                     else "",
-                    arm_solver.id,
+                    chain_solver.id,
                 )
             )
         when_monitors = [p.monitor_entry(n) for n in when_mon_nodes]
@@ -3464,17 +3444,17 @@ def build_motion_units(
                 has_until_condition=bool(until_evaluators),
                 until_any=handler.motion.until_any,
                 when_any=handler.motion.when_any,
-                arm_solvers=handler_arm_solvers,
+                serial_chain_solvers=handler_chain_solvers,
                 relative_poses=_relative_poses_for_motion(
                     while_evaluators + when_evaluators + until_evaluators,
                     view_map,
-                    _arm_solvers_for_handler(
-                        handler, slv_arm, handler_solver_ids
+                    _serial_chain_solvers_for_handler(
+                        handler, slv_chain, handler_solver_ids
                     ),
                 ),
                 scene_relative_poses=_scene_relative_poses_for_motion(
                     view_map,
-                    handler_arm_solvers,
+                    handler_chain_solvers,
                     data_structures,
                     while_evaluators + when_evaluators + until_evaluators,
                 ),
@@ -4605,16 +4585,16 @@ def _solver_sections(
     schedules.
     """
     sched1 = []
-    slv_base_vel = []
+    slv_platform_vel = []
     sched2 = []
     hdl = []
     sched3 = []
-    slv_arm = []
+    slv_chain = []
     sched4 = []
-    slv_base_frc = []
+    slv_platform_frc = []
 
     for s in g.subjects(RDF.type, SLV["VelocityCompositionSolver"]):
-        slv_base_vel.append(p.velocity_composition_solver(s))
+        slv_platform_vel.append(p.velocity_composition_solver(s))
         sched1.extend(p.schedule([s], ops_generic + ops_slv))
 
     handler_nodes = sorted(
@@ -4697,7 +4677,7 @@ def _solver_sections(
             ]
         )
         _mark_acceleration_constraint_frames(solver)
-        slv_arm.append(solver)
+        slv_chain.append(solver)
         start = g[
             s
             : SLV["motion-drivers"]
@@ -4706,10 +4686,29 @@ def _solver_sections(
         sched3.extend(p.schedule(start, ops_generic + ops_slv))
 
     for s in g.subjects(RDF.type, SLV["ForceDistributionSolver"]):
-        slv_base_frc.append(p.force_distribution_solver(s))
+        slv_platform_frc.append(p.force_distribution_solver(s))
         sched4.extend(p.schedule([s], ops_generic + ops_slv))
 
-    return slv_base_vel, sched1, hdl, sched2, slv_arm, sched3, slv_base_frc, sched4
+    # velocity-distribution and force-composition are authorable in the DSL (they complete
+    # the quantity x operation 2x2 the hddc2b runtime implements), but no motion.stg/hddc2b.stg
+    # wiring exists for them yet: velocity-distribution needs a per-solver actuation-mode
+    # switch (kelo_cmd.ctrl_mode is hardcoded to ROBIF2B_CTRL_MODE_FORCE) and force-composition
+    # needs a measured wheel/drive torque signal that the kelo measurement struct does not
+    # expose. Fail loudly instead of silently dropping them from codegen.
+    for unsupported_type, label in (
+        (SLV_EXT.VelocityDistributionSolver, "velocity-distribution"),
+        (SLV_EXT.ForceCompositionSolver, "force-composition"),
+    ):
+        unsupported = sorted(g.subjects(RDF.type, unsupported_type), key=str)
+        if unsupported:
+            raise ValueError(
+                f"Mobile-platform solver '{unsupported[0]}' uses algorithm '{label}', which "
+                "the motion-spec code generator does not implement yet (no motion.stg/"
+                "hddc2b.stg wiring exists for it). Use velocity-composition or "
+                "force-distribution instead."
+            )
+
+    return slv_platform_vel, sched1, hdl, sched2, slv_chain, sched3, slv_platform_frc, sched4
 
 
 def _assign_monitor_event_indexes(handlers) -> None:
@@ -5095,11 +5094,11 @@ def _apply_monitor_debounce(handlers, control_period_ns: int) -> None:
                 )
 
 
-def _shared_runtime_members(slv_arm) -> list[dict]:
+def _shared_runtime_members(slv_chain) -> list[dict]:
     """Extra shared-data members for force/torque sensor state."""
     members = []
     seen_ft_ids = set()
-    for s in slv_arm:
+    for s in slv_chain:
         for out in s.output:
             if getattr(out, "type", None) == "Wrench" and getattr(out, "sensor_name", ""):
                 if out.id in seen_ft_ids:
@@ -5121,11 +5120,11 @@ def _shared_runtime_members(slv_arm) -> list[dict]:
 SUPPORTED_ROBOT_MODELS = {"KinovaGen3"}
 
 
-def _validate_solvers(arm_solvers, backend: str) -> None:
+def _validate_solvers(serial_chain_solvers, backend: str) -> None:
     """Reject unsupported robot models, and scene-object pose sync on the robif2b backend."""
     unsupported = {
         _field(s, "robot_model")
-        for s in arm_solvers
+        for s in serial_chain_solvers
         if _field(s, "robot_model") and _field(s, "robot_model") not in SUPPORTED_ROBOT_MODELS
     }
     if unsupported:
@@ -5134,13 +5133,13 @@ def _validate_solvers(arm_solvers, backend: str) -> None:
             f"Supported: {', '.join(sorted(SUPPORTED_ROBOT_MODELS))}"
         )
 
-    if backend != "mj_kdl" and any(_field(s, "algorithm") == "RNE" for s in arm_solvers):
+    if backend != "mj_kdl" and any(_field(s, "algorithm") == "RNE" for s in serial_chain_solvers):
         raise RuntimeError("RNE is currently supported only by the MuJoCo mj_kdl backend.")
 
     if backend != "robif2b":
         return
 
-    for solver in arm_solvers:
+    for solver in serial_chain_solvers:
         for out in _field(solver, "output", []):
             if _field(out, "type") != "Pose":
                 continue
@@ -5167,15 +5166,15 @@ def _runtime_signature(solver, backend: str) -> tuple:
     )
 
 
-def _annotate_runtime_robots(arm_solvers, motions, backend: str) -> None:
+def _annotate_runtime_robots(serial_chain_solvers, motions, backend: str) -> None:
     """Assign runtime_id/runtime_owner across solvers sharing a runtime and normalize empty tool
     fields.
     """
     runtime_by_signature: dict[tuple, str] = {}
     owner_by_runtime: dict[str, str] = {}
-    solvers_by_id = {_field(solver, "id"): solver for solver in arm_solvers}
+    solvers_by_id = {_field(solver, "id"): solver for solver in serial_chain_solvers}
 
-    for solver in arm_solvers:
+    for solver in serial_chain_solvers:
         solver_id = _field(solver, "id", "")
         signature = _runtime_signature(solver, backend)
         runtime_id = runtime_by_signature.setdefault(signature, solver_id)
@@ -5191,7 +5190,7 @@ def _annotate_runtime_robots(arm_solvers, motions, backend: str) -> None:
             _set_field(solver, "tcp_site", None)
 
     for motion in motions:
-        for solver in _field(motion, "arm_solvers", []):
+        for solver in _field(motion, "serial_chain_solvers", []):
             canonical = solvers_by_id.get(_field(solver, "id"))
             if canonical is None:
                 continue
@@ -5760,7 +5759,7 @@ def add_motion_function_interfaces(motions: list) -> None:
         when_fsm = any(_field(m, "fsm_namespace") for m in when_mons)
         until_fsm = any(_field(m, "fsm_namespace") for m in until_mons)
         has_forwarded_commands = bool(_field(motion, "forwarded_commands"))
-        has_arm = bool(_field(motion, "arm_solvers"))
+        has_serial_chain = bool(_field(motion, "serial_chain_solvers"))
 
         _set_field(motion, "can_start_needs_state", has_when_elapsed)
         _set_field(motion, "can_start_needs_shared", has_when_logic)
@@ -5786,9 +5785,9 @@ def add_motion_function_interfaces(motions: list) -> None:
         )
         _set_field(motion, "monitor_needs_robot", when_fsm or until_fsm)
 
-        _set_field(motion, "apply_needs_state", has_arm)
+        _set_field(motion, "apply_needs_state", has_serial_chain)
         _set_field(motion, "apply_needs_shared", has_forwarded_commands)
-        _set_field(motion, "apply_needs_robot", has_arm or has_forwarded_commands)
+        _set_field(motion, "apply_needs_robot", has_serial_chain or has_forwarded_commands)
 
 
 _FSM_NS = "https://secorolab.github.io/metamodels/behaviour/fsm#"
@@ -6029,7 +6028,7 @@ def generate_ir(manifest_path):
     _validate_scene(scene)
     derivation = _solver_derivation_context(g)
 
-    (slv_base_vel, sched1, hdl, sched2, slv_arm, sched3, slv_base_frc, sched4) = _solver_sections(
+    (slv_platform_vel, sched1, hdl, sched2, slv_chain, sched3, slv_platform_frc, sched4) = _solver_sections(
         g, p, setups_by_node, default_setup, derivation, scene.objects
     )
     unsupported_objectives = [
@@ -6076,7 +6075,7 @@ def generate_ir(manifest_path):
         p,
         hdl,
         node_by_id,
-        slv_arm,
+        slv_chain,
         snapshot_source_map=snapshot_source_map,
         view_map=view_map,
         closure_output_map=closure_output_map,
@@ -6091,8 +6090,8 @@ def generate_ir(manifest_path):
         snapshot_owner_map=snapshot_owner_map,
         closure_owner_map=closure_owner_map,
     )
-    _validate_solvers(slv_arm, backend)
-    _annotate_runtime_robots(slv_arm, motions, backend)
+    _validate_solvers(slv_chain, backend)
+    _annotate_runtime_robots(slv_chain, motions, backend)
 
     if scene.timestep_s <= 0:
         raise ValueError("ENVIRONMENT timestep must be positive.")
@@ -6107,9 +6106,9 @@ def generate_ir(manifest_path):
         sched1 + sched2 + sched3 + sched4,
         closures,
         view_map=view_map,
-        fk_output_ids={out.id for s in slv_arm for out in s.output},
+        fk_output_ids={out.id for s in slv_chain for out in s.output},
     )
-    shared_data = shared_data + _shared_runtime_members(slv_arm)
+    shared_data = shared_data + _shared_runtime_members(slv_chain)
 
     introspection = _build_introspection(
         app_model_path=app_model_path,
@@ -6153,9 +6152,6 @@ def generate_ir(manifest_path):
     ros_packages = sorted({p["pkg"] for p in ros_publishers})
 
     ir = {
-        "slv_arm": slv_arm,
-        "slv_base_vel": slv_base_vel,
-        "slv_base_frc": slv_base_frc,
         "cstr_hdl": hdl,
         "motions": motions,
         "data": data_structures,
@@ -6169,8 +6165,8 @@ def generate_ir(manifest_path):
             data_structures, pose_components
         ),
         "wrench_outputs": wrench_outputs,
-        "has_arm": bool(slv_arm),
-        "has_mobile_base": bool(slv_base_vel or slv_base_frc),
+        "has_serial_chain": bool(slv_chain),
+        "has_mobile_base": bool(slv_platform_vel or slv_platform_frc),
         "has_ros": bool(ros_publishers),
         "ros_publishers": ros_publishers,
         "ros_packages": ros_packages,
@@ -6179,9 +6175,9 @@ def generate_ir(manifest_path):
         # real monotonic wall clock).
         "needs_clock_time": any(m.has_elapsed for m in motions),
         "control_period_ns": control_period_ns,
-        "arm_solvers": slv_arm,
-        "base_velocity_solvers": slv_base_vel,
-        "base_force_solvers": slv_base_frc,
+        "serial_chain_solvers": slv_chain,
+        "platform_velocity_solvers": slv_platform_vel,
+        "platform_force_solvers": slv_platform_frc,
         "backend": backend,
         "scene": scene,
         "trace": _trace_from_graph(g),

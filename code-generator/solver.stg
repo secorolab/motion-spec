@@ -114,11 +114,7 @@ assign-acceleration-constraint(constraint, solver_state, column, chain_root) ::=
 
 assign-cartesian-acceleration(specification, solver_state, column, chain_root) ::= <<
 <assign-spatial-direction(specification, solver_state, column, chain_root)>
-<if(specification.saturation)>
-    state.<solver_state>.cartesian_acceleration(<column>) = motion_spec::runtime::clamp_range(shared.<specification.acceleration.id>, <saturation-lower(specification.saturation)>, <saturation-upper(specification.saturation)>);
-<else>
     state.<solver_state>.cartesian_acceleration(<column>) = shared.<specification.acceleration.id>;
-<endif>
 >>
 
 // Zero spatial directions is valid for posture-only handlers: Vereshchagin runs

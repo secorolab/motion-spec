@@ -56,8 +56,8 @@ robot-shutdown-mj_kdl-KinovaGen3(solver) ::= <<
 <endif>
 >>
 
-app-arm-includes-mj_kdl(has_arm) ::= <<
-<if(has_arm)>
+app-chain-includes-mj_kdl(has_serial_chain) ::= <<
+<if(has_serial_chain)>
 #ifdef MOTION_SPEC_ENABLE_INTROSPECTION
 #include "introspect_model.hpp"
 #endif
@@ -71,7 +71,7 @@ app-arm-includes-mj_kdl(has_arm) ::= <<
 <endif>
 >>
 
-app-arm-setup-mj_kdl(arm_solvers, scene) ::= <<
+app-chain-setup-mj_kdl(serial_chain_solvers, scene) ::= <<
     bool headless = false;
     int headless_steps = 2000;
     for (int i = 1; i \< argc; ++i) {
@@ -243,14 +243,14 @@ app-arm-setup-mj_kdl(arm_solvers, scene) ::= <<
     mj_env.model->opt.tolerance  = 1e-10;
     mj_env.model->opt.impratio   = 20.0;
     mj_env.model->opt.cone       = mjCONE_ELLIPTIC;
-<arm_solvers:{solver |<robot-state-init(solver, "mj_kdl")>
+<serial_chain_solvers:{solver |<robot-state-init(solver, "mj_kdl")>
 <robot-init(solver, "mj_kdl")>
 <robot-chain(solver, "mj_kdl")>
 <robot-assign(solver, "mj_kdl")>}; separator="\n">
 
     mj_kdl::Viewer mj_viewer{};
     if (!headless) {
-        if (!mj_kdl::init_window_sim(&mj_viewer, &mj_<first(arm_solvers).runtime_id>)) {
+        if (!mj_kdl::init_window_sim(&mj_viewer, &mj_<first(serial_chain_solvers).runtime_id>)) {
             std::cerr \<\< "mj_kdl::init_window_sim() failed\\n";
             mj_kdl::cleanup(&mj_env);
             return 1;
@@ -258,10 +258,10 @@ app-arm-setup-mj_kdl(arm_solvers, scene) ::= <<
     }
 >>
 
-app-arm-post-setup-mj_kdl(arm_solvers, motions) ::= <<
+app-chain-post-setup-mj_kdl(serial_chain_solvers, motions) ::= <<
     mj_env.on_reset = [&](mj_kdl::ResetContext *) {
         const double _q_home[7] = {0.0, 0.2618, 3.1416, -2.2689, 0.0, 0.9599, 1.5708};
-<arm_solvers:{solver | <if(solver.runtime_owner)>        {
+<serial_chain_solvers:{solver | <if(solver.runtime_owner)>        {
             KDL::JntArray _q(mj_<solver.runtime_id>.n_joints);
             for (int _i = 0; _i \< mj_<solver.runtime_id>.n_joints && _i \< 7; ++_i)
                 _q(_i) = _q_home[_i];
@@ -271,11 +271,11 @@ app-arm-post-setup-mj_kdl(arm_solvers, motions) ::= <<
         <motions:{m | reset_<m.id>(<m.id>_state_instance);}; separator="\n        ">
     };
     mj_kdl::reset(&mj_env);
-    double _prev_sim_time = mj_<first(arm_solvers).runtime_id>.data->time;
+    double _prev_sim_time = mj_<first(serial_chain_solvers).runtime_id>.data->time;
 >>
 
-app-arm-loop-reset-mj_kdl(arm_solvers, fsm_namespace) ::= <<
-        if (mj_<first(arm_solvers).runtime_id>.data->time \< _prev_sim_time - 1e-6) {
+app-chain-loop-reset-mj_kdl(serial_chain_solvers, fsm_namespace) ::= <<
+        if (mj_<first(serial_chain_solvers).runtime_id>.data->time \< _prev_sim_time - 1e-6) {
             mj_kdl::reset(&mj_env);
 <if(fsm_namespace)>
             fsm->currentStateIndex = fsm->startStateIndex;
@@ -283,29 +283,29 @@ app-arm-loop-reset-mj_kdl(arm_solvers, fsm_namespace) ::= <<
             current_motion = 0;
 <endif>
         }
-        _prev_sim_time = mj_<first(arm_solvers).runtime_id>.data->time;
+        _prev_sim_time = mj_<first(serial_chain_solvers).runtime_id>.data->time;
 >>
 
-app-loop-condition-mj_kdl(has_arm) ::= <<
+app-loop-condition-mj_kdl(has_serial_chain) ::= <<
 (!headless || headless_steps-- > 0)
 >>
 
-app-arm-cleanup-mj_kdl(has_arm) ::= <<
-<if(has_arm)>    if (!headless) {
+app-chain-cleanup-mj_kdl(has_serial_chain) ::= <<
+<if(has_serial_chain)>    if (!headless) {
         mj_kdl::cleanup(&mj_viewer);
     }
     mj_kdl::cleanup(&mj_env);<endif>
 >>
 
-app-arm-runtime-step-mj_kdl(arm_solvers) ::= <<
-<arm_solvers:{solver | <if(solver.runtime_owner)>        mj_kdl::update(&mj_<solver.runtime_id>);
+app-chain-runtime-step-mj_kdl(serial_chain_solvers) ::= <<
+<serial_chain_solvers:{solver | <if(solver.runtime_owner)>        mj_kdl::update(&mj_<solver.runtime_id>);
 <endif>}; separator="">
-        if (!mj_kdl::step(&mj_<first(arm_solvers).runtime_id>)) {
+        if (!mj_kdl::step(&mj_<first(serial_chain_solvers).runtime_id>)) {
             std::exit(0);
         }
 >>
 
-app-arm-trace-update-mj_kdl(arm_solvers, trace) ::= <<
+app-chain-trace-update-mj_kdl(serial_chain_solvers, trace) ::= <<
 <if(trace.enabled)>
 <if(trace.has_targets)>
         if (!headless) {
@@ -318,7 +318,7 @@ app-arm-trace-update-mj_kdl(arm_solvers, trace) ::= <<
             mj_kdl::clear_trace(&mj_viewer);
 <trace.targets:{target |            static std::deque\<KDL::Vector> _trace<i0>;
             KDL::Frame _f<i0>;
-            if (mj_kdl::get_site_frame(mj_<first(arm_solvers).runtime_id>.model, mj_<first(arm_solvers).runtime_id>.data, "<target.link>", &_f<i0>) || mj_kdl::get_body_frame(mj_<first(arm_solvers).runtime_id>.model, mj_<first(arm_solvers).runtime_id>.data, "<target.link>", &_f<i0>)) _trace<i0>.push_back(_f<i0>.p);
+            if (mj_kdl::get_site_frame(mj_<first(serial_chain_solvers).runtime_id>.model, mj_<first(serial_chain_solvers).runtime_id>.data, "<target.link>", &_f<i0>) || mj_kdl::get_body_frame(mj_<first(serial_chain_solvers).runtime_id>.model, mj_<first(serial_chain_solvers).runtime_id>.data, "<target.link>", &_f<i0>)) _trace<i0>.push_back(_f<i0>.p);
             if (_trace<i0>.size() > kTraceMax) _trace<i0>.pop_front();
             for (size_t _i = 1; _i \< _trace<i0>.size(); ++_i)
                 mj_kdl::add_trace_segment(&mj_viewer, _trace<i0>[_i - 1], _trace<i0>[_i], kTraceRGBA);
@@ -338,8 +338,8 @@ app-arm-trace-update-mj_kdl(arm_solvers, trace) ::= <<
             static KDL::Frame _trace_world_T_base;
             if (!_trace_base_ok) {
                 _trace_base_ok = mj_kdl::get_body_frame(
-                    mj_<first(arm_solvers).runtime_id>.model, mj_<first(arm_solvers).runtime_id>.data,
-                    "<first(arm_solvers).chain_root>", &_trace_world_T_base);
+                    mj_<first(serial_chain_solvers).runtime_id>.model, mj_<first(serial_chain_solvers).runtime_id>.data,
+                    "<first(serial_chain_solvers).chain_root>", &_trace_world_T_base);
             }
             _trace.push_back(_trace_world_T_base * shared.pose_ee_base.p);
             if (_trace.size() > kTraceMax) _trace.pop_front();
@@ -352,11 +352,11 @@ app-arm-trace-update-mj_kdl(arm_solvers, trace) ::= <<
 <endif>
 >>
 
-app-headless-telemetry-mj_kdl(shared_data, arm_solvers, scene) ::= <<
+app-headless-telemetry-mj_kdl(shared_data, serial_chain_solvers, scene) ::= <<
     if (headless) {
-        std::cout \<\< "steps=" \<\< _step \<\< " sim_time=" \<\< mj_<first(arm_solvers).runtime_id>.data->time \<\< "\n";
+        std::cout \<\< "steps=" \<\< _step \<\< " sim_time=" \<\< mj_<first(serial_chain_solvers).runtime_id>.data->time \<\< "\n";
 <scene.objects:{object |        KDL::Frame _obj_<object.body>;
-        if (mj_kdl::get_body_frame(mj_<first(arm_solvers).runtime_id>.model, mj_<first(arm_solvers).runtime_id>.data, "<object.body>", &_obj_<object.body>))
+        if (mj_kdl::get_body_frame(mj_<first(serial_chain_solvers).runtime_id>.model, mj_<first(serial_chain_solvers).runtime_id>.data, "<object.body>", &_obj_<object.body>))
             std::cout \<\< "<object.body> p=[" \<\< _obj_<object.body>.p.x() \<\< " " \<\< _obj_<object.body>.p.y() \<\< " " \<\< _obj_<object.body>.p.z() \<\< "]\n";
 }>    }
 >>

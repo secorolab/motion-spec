@@ -89,19 +89,19 @@ robot-shutdown-robif2b-KinovaGen3(solver) ::= <<
 <endif>
 >>
 
-app-arm-includes-robif2b(has_arm) ::= <<
-<if(has_arm)>
+app-chain-includes-robif2b(has_serial_chain) ::= <<
+<if(has_serial_chain)>
 #include \<urdf_model/model.h\>
 #include \<urdf_parser/urdf_parser.h\>
 #include \<kdl_parser/kdl_parser.hpp\>
 <endif>
 >>
 
-app-arm-setup-robif2b(arm_solvers, scene) ::= <<
-    urdf::ModelInterfaceSharedPtr kinova_model = urdf::parseURDFFile("<first(arm_solvers).urdf>");
+app-chain-setup-robif2b(serial_chain_solvers, scene) ::= <<
+    urdf::ModelInterfaceSharedPtr kinova_model = urdf::parseURDFFile("<first(serial_chain_solvers).urdf>");
     KDL::Tree kinova_tree;
     kdl_parser::treeFromUrdfModel(*kinova_model, kinova_tree);
-<arm_solvers:{solver |
+<serial_chain_solvers:{solver |
 
 <robot-state-init(solver, "robif2b")>
 
@@ -113,19 +113,19 @@ app-arm-setup-robif2b(arm_solvers, scene) ::= <<
 }; separator="\n">
 >>
 
-app-loop-condition-robif2b(has_arm) ::= <<
+app-loop-condition-robif2b(has_serial_chain) ::= <<
 true
 >>
 
-app-arm-runtime-step-robif2b(arm_solvers) ::= <<
-<arm_solvers:{solver | <if(solver.runtime_owner)>        robif2b_kinova_gen3_update(&kinova_<solver.runtime_id>);
+app-chain-runtime-step-robif2b(serial_chain_solvers) ::= <<
+<serial_chain_solvers:{solver | <if(solver.runtime_owner)>        robif2b_kinova_gen3_update(&kinova_<solver.runtime_id>);
 <endif>}; separator="">
 >>
 
-app-arm-trace-update-robif2b(arm_solvers, trace) ::= <<
+app-chain-trace-update-robif2b(serial_chain_solvers, trace) ::= <<
 >>
 
-app-arm-cleanup-robif2b(has_arm) ::= <<
+app-chain-cleanup-robif2b(has_serial_chain) ::= <<
 >>
 
 robif2b-include-ethercat() ::= <<

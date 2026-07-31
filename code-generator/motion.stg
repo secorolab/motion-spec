@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
-// Motion assembly: schedule/monitor blocks, arm/base cycle, per-motion + mobile-base headers.
+// Motion assembly: schedule/monitor blocks, chain/base cycle, per-motion + mobile-base headers.
 
 import "closures.stg"
 import "robif2b_backend.stg"
@@ -165,11 +165,11 @@ materialize-pose-component(pose, views) ::= <<
         KDL::Vector(<component-value(pose.position_x, views)>, <component-value(pose.position_y, views)>, <component-value(pose.position_z, views)>));
 >>
 
-motion-prelude(wrench_outputs, arm_solvers, backend) ::= <<
+motion-prelude(wrench_outputs, serial_chain_solvers, backend) ::= <<
 <wrench_outputs:{wrench | <sync-wrench(wrench)>}; separator="\n">
-<if(arm_solvers)>
+<if(serial_chain_solvers)>
 
-<arm-prepare-block(arm_solvers, backend)>
+<chain-prepare-block(serial_chain_solvers, backend)>
 <endif>
 >>
 
@@ -193,7 +193,7 @@ wrench-measurement(wrench) ::= <<
     KDL::Wrench <wrench.id>_measurement;
 >>
 
-arm-robot-member(solver) ::= <<
+chain-robot-member(solver) ::= <<
     manipulator_robot <solver.id>;
 >>
 
@@ -312,35 +312,35 @@ base-cycle-force(base_force_solvers) ::= <<
     }
 >>
 
-arm-solver-members(arm_solvers, backend) ::= <<
-<arm_solvers:{solver | <solver-state-struct(solver, backend)>}; separator="\n\n">
+chain-solver-members(serial_chain_solvers, backend) ::= <<
+<serial_chain_solvers:{solver | <solver-state-struct(solver, backend)>}; separator="\n\n">
 >>
 
-arm-state-members(arm_solvers) ::= <<
-<arm_solvers:{solver |     <solver.id>_solver_state <solver.id>;}; separator="\n">
+chain-state-members(serial_chain_solvers) ::= <<
+<serial_chain_solvers:{solver |     <solver.id>_solver_state <solver.id>;}; separator="\n">
 >>
 
-arm-init-block(arm_solvers, backend) ::= <<
-<arm_solvers:{solver |     <solver-init(solver, solver.motion_driver, backend)>}; separator="\n">
+chain-init-block(serial_chain_solvers, backend) ::= <<
+<serial_chain_solvers:{solver |     <solver-init(solver, solver.motion_driver, backend)>}; separator="\n">
 >>
 
-arm-prepare-block(arm_solvers, backend) ::= <<
-<arm_solvers:{solver |
+chain-prepare-block(serial_chain_solvers, backend) ::= <<
+<serial_chain_solvers:{solver |
     <solver-sync-input(solver, backend)>
     <solver.output:{out | <solver-output(solver, out, backend)>}; separator="\n\n">
 }; separator="\n\n">
 >>
 
-arm-run-block(arm_solvers, backend) ::= <<
-<arm_solvers:{solver |     <solver-run(solver, solver.motion_driver, backend)>}; separator="\n">
+chain-run-block(serial_chain_solvers, backend) ::= <<
+<serial_chain_solvers:{solver |     <solver-run(solver, solver.motion_driver, backend)>}; separator="\n">
 >>
 
-arm-stage-block(arm_solvers, backend) ::= <<
-<arm_solvers:{solver |     <solver-stage-output(solver, backend)>}; separator="\n">
+chain-stage-block(serial_chain_solvers, backend) ::= <<
+<serial_chain_solvers:{solver |     <solver-stage-output(solver, backend)>}; separator="\n">
 >>
 
-arm-apply-block(arm_solvers, backend) ::= <<
-<arm_solvers:{solver |     <solver-apply-output(solver, backend)>}; separator="\n">
+chain-apply-block(serial_chain_solvers, backend) ::= <<
+<serial_chain_solvers:{solver |     <solver-apply-output(solver, backend)>}; separator="\n">
 >>
 
 command-forwarding(backend, motion) ::= <<
@@ -366,7 +366,7 @@ command-forwarding-mj_kdl(motion) ::= <<
 <endif>}; separator="\n">
 >>
 
-mobile_base_cycle_header(has_mobile_base, base_velocity_solvers, base_force_solvers) ::= <<
+mobile_base_cycle_header(has_mobile_base, platform_velocity_solvers, platform_force_solvers) ::= <<
 #pragma once
 
 #include "shared_state.hpp"
@@ -389,14 +389,14 @@ inline void update_mobile_base(
     shared_data &shared,
     const robot_io &robot) {
     init_mobile_base(state, shared, robot);
-<base-cycle-begin(base_velocity_solvers)>
+<base-cycle-begin(platform_velocity_solvers)>
 }
 
 inline void control_mobile_base(
     mobile_base_state &state,
     shared_data &shared,
     const robot_io &robot) {
-<base-cycle-force(base_force_solvers)>
+<base-cycle-force(platform_force_solvers)>
 }
 
 inline void apply_mobile_base(
@@ -436,7 +436,7 @@ emit-triggered-snapshot(snap, closures, views) ::= <<
 <endif>
 >>
 
-motion_header(motion, closures, views, wrench_outputs, base_velocity_solvers, base_force_solvers, has_mobile_base, backend, declared_pose_components, pose_axis_error_groups) ::= <<
+motion_header(motion, closures, views, wrench_outputs, platform_velocity_solvers, platform_force_solvers, has_mobile_base, backend, declared_pose_components, pose_axis_error_groups) ::= <<
 #pragma once
 
 #include "runtime.hpp"
@@ -449,7 +449,7 @@ struct <motion.id>_state {
 <endif>
 <if(motion.has_when_elapsed)>    double when_start_time = -1.0;
 <endif>
-<arm-state-members(motion.arm_solvers)>
+<chain-state-members(motion.serial_chain_solvers)>
 <if(motion.snapshots)>    bool snapshot_taken = false;
 <endif>
 <motion.relative_poses:{rp |     KDL::Frame <rp.id>_start_frame;
@@ -466,8 +466,8 @@ inline void reset_<motion.id>(<motion.id>_state &state) {
 }
 
 inline void init_<motion.id>(<motion.id>_state &state, const robot_io &robot) {
-<if(motion.arm_solvers)>
-<arm-init-block(motion.arm_solvers, backend)>
+<if(motion.serial_chain_solvers)>
+<chain-init-block(motion.serial_chain_solvers, backend)>
 <endif>
 }
 
@@ -480,7 +480,7 @@ inline void update_<motion.id>(
         state.motion_start_time = shared.clock_time_s;
     }
 <endif>
-<motion-prelude(wrench_outputs, motion.arm_solvers, backend)>
+<motion-prelude(wrench_outputs, motion.serial_chain_solvers, backend)>
 <motion.relative_poses:{rp | <emit-relative-pose(rp)>}; separator="\n">
 <motion.scene_relative_poses:{srp |
 <if(srp.base_seen)>    shared.<srp.id> = KDL::Frame(shared.<srp.fk_pose_id>.M, shared.<srp.fk_pose_id>.p - shared.<srp.scene_pose_id>.p);
@@ -547,9 +547,9 @@ inline void control_<motion.id>(
 
 <monitor-block(motion.while_monitors, true)>
 <endif>
-<if(motion.arm_solvers)>
+<if(motion.serial_chain_solvers)>
 
-<arm-run-block(motion.arm_solvers, backend)>
+<chain-run-block(motion.serial_chain_solvers, backend)>
 <endif>
 <if(first(motion.progress_constraints))>
 <progress-block(motion.progress_constraints)>
@@ -557,9 +557,9 @@ inline void control_<motion.id>(
 }
 
 inline void apply_<motion.id>(<sig-params(motion.id, motion.apply_needs_state, motion.apply_needs_shared, motion.apply_needs_robot)>) {
-<if(motion.arm_solvers)>
-<arm-stage-block(motion.arm_solvers, backend)>
-<arm-apply-block(motion.arm_solvers, backend)>
+<if(motion.serial_chain_solvers)>
+<chain-stage-block(motion.serial_chain_solvers, backend)>
+<chain-apply-block(motion.serial_chain_solvers, backend)>
 <endif>
 <command-forwarding(backend, motion)>
 }

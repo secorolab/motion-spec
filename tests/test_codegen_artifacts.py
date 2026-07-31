@@ -286,11 +286,11 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
     ir.update(
         {
             "backend": "mj_kdl",
-            "has_arm": False,
+            "has_serial_chain": False,
             "has_mobile_base": False,
-            "arm_solvers": [],
-            "base_velocity_solvers": [],
-            "base_force_solvers": [],
+            "serial_chain_solvers": [],
+            "platform_velocity_solvers": [],
+            "platform_force_solvers": [],
             "cstr_hdl": [],
             "motions": ir["unique_motions"],
             "data": [],

@@ -699,7 +699,7 @@ class GuardedMotionBlock:
     fsm_when_gate_calls: list = field(default_factory=list)
 
     # Solver Integration
-    arm_solvers: list = field(default_factory=list)
+    serial_chain_solvers: list = field(default_factory=list)
 
     # Initial sample-and-hold captures.
     snapshots: list = field(default_factory=list)
@@ -746,7 +746,6 @@ class CartesianAccelerationSpecification:
     as_seen_by: Frame | None = None
     base_aligned: bool = True
     direction: "Direction | None" = None
-    saturation: Saturation | None = None
     type: str = field(default="CartesianAccelerationSpecification")
 
 
@@ -786,8 +785,8 @@ class MotionDrivers:
 
 
 @dataclass
-class HandlerArmSolver:
-    """An arm solver sliced to a single handler's motion driver."""
+class HandlerSerialChainSolver:
+    """A serial-chain dynamics solver sliced to a single handler's motion driver."""
 
     id: str
     output: list
@@ -799,7 +798,7 @@ class HandlerArmSolver:
     torque_saturation: Saturation | None = None
     runtime_id: str = ""
     runtime_owner: bool = False
-    type: str = field(default="HandlerArmSolver")
+    type: str = field(default="HandlerSerialChainSolver")
 
 
 @dataclass

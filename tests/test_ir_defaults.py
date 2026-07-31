@@ -96,8 +96,8 @@ def _quantity(graph: Graph, name: str) -> URIRef:
 def test_parser_scopes_repeated_nested_reference_ids() -> None:
     graph = Graph()
     graph.bind("example", "https://example.test/")
-    first = URIRef("https://example.test/motion/Spec/spec/path1/reference")
-    second = URIRef("https://example.test/motion/Spec/spec/path2/reference")
+    first = URIRef("https://example.test/motion/spec/path1/reference")
+    second = URIRef("https://example.test/motion/spec/path2/reference")
     graph.add((first, RDF.type, RDF.Property))
     graph.add((second, RDF.type, RDF.Property))
 

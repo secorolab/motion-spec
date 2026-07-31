@@ -1520,9 +1520,9 @@ class Parser:
     def _context_scope(node) -> tuple[str, str, tuple[str, ...]] | None:
         """Return the owner, section and member path of a context quantity IRI."""
         parts = tuple(part for part in urlsplit(str(node)).path.split("/") if part)
-        for index in range(1, len(parts) - 2):
-            if parts[index : index + 2] in (("Spec", "spec"), ("World", "world")):
-                return parts[index - 1], parts[index], parts[index + 2 :]
+        for index in range(1, len(parts) - 1):
+            if parts[index] in ("spec", "world"):
+                return parts[index - 1], parts[index], parts[index + 1 :]
         return None
 
     def id(self, x):
@@ -1536,7 +1536,7 @@ class Parser:
         except Exception:
             self._id_cache[x] = x
             return x
-        # Only context quantities (a motion's or the shared context's `Spec/spec` / `World/world`
+        # Only context quantities (a motion's or the shared context's `spec` / `world`
         # members) become `shared.*` data fields and are vulnerable to the silent merge; constraint
         # names, metamodel predicates and aliases legitimately share an id and are scoped elsewhere.
         scope = self._context_scope(x)
@@ -3347,6 +3347,25 @@ def build_motion_units(
                     cartesian_force_nodes.append(cf_node)
 
         p_active = Parser(g)
+        # Until monitors run before control each tick, so build until_schedule before the
+        # while passes: derived quantities consumed by an until monitor (e.g. a target
+        # computed from a snapshot) must be scheduled in the earlier phase, or the monitor
+        # sees the previous tick's / default value on the first tick.
+        until_schedule = p_active.schedule(
+            [n for n in until_eval_nodes if not _is_elapsed_eval(n)], ops_generic + ops_cstr_hdl
+        )
+
+        # Until evaluators have no controllers whose error-signal would drive their
+        # backward discovery. Append them explicitly after their dependencies so the
+        # template emits the computation calls in the correct order.
+        for n in until_eval_nodes:
+            if _is_elapsed_eval(n):
+                continue
+            eval_id = p.id(n)
+            if eval_id not in p_active.sched:
+                until_schedule.append(eval_id)
+                p_active.sched.add(eval_id)
+
         pose_axis_error_groups = _pose_axis_error_groups_for_motion(
             while_eval_nodes, p_active, view_map
         )
@@ -3444,21 +3463,6 @@ def build_motion_units(
             for controller in reversed(active_controllers)
             if controller.id not in while_schedule
         )
-        until_schedule = p_active.schedule(
-            [n for n in until_eval_nodes if not _is_elapsed_eval(n)], ops_generic + ops_cstr_hdl
-        )
-
-        # Until evaluators have no controllers whose error-signal would drive their
-        # backward discovery. Append them explicitly after their dependencies so the
-        # template emits the computation calls in the correct order.
-        for n in until_eval_nodes:
-            if _is_elapsed_eval(n):
-                continue
-            eval_id = p.id(n)
-            if eval_id not in p_active.sched:
-                until_schedule.append(eval_id)
-                p_active.sched.add(eval_id)
-
         # Same for when evaluators: the can_start template inlines them via
         # when_evaluators, but any prerequisite generic ops still need scheduling.
         # Append when evaluators that were not discovered through backward traversal.
@@ -4626,7 +4630,7 @@ def _world_solver_outputs(
     ):
         for node in sorted(g.subjects(RDF.type, type_), key=str):
             scope = p._context_scope(node)
-            if scope is None or scope[1] != "World":
+            if scope is None or scope[1] != "world":
                 continue
             if type_ == KC_STAT.JointPositionCoordinate:
                 joint = g.value(node, KC_STAT["of-joint"])
@@ -4820,7 +4824,7 @@ def _closure_owner_map(g, p: Parser, closures) -> dict[str, str]:
 
     The backward schedule walk can reach a closure belonging to another motion, which then
     runs (and mutates its outputs) whenever that unrelated motion is active. Ownership is the
-    motion segment of the quantities it references: <app>/<motion>/Spec/spec/<name>. A closure
+    motion segment of the quantities it references: <app>/<motion>/spec/<name>. A closure
     reading only shared context has no owner and stays available to every motion.
     """
     owner_map: dict[str, str] = {}
@@ -4835,7 +4839,7 @@ def _closure_owner_map(g, p: Parser, closures) -> dict[str, str]:
             if not isinstance(obj, URIRef):
                 continue
             scope = p._context_scope(obj)
-            if scope is not None and scope[1] == "Spec":
+            if scope is not None and scope[1] == "spec":
                 owners.add(get_valid_var_name(scope[0]))
         if len(owners) == 1:
             owner_map[closure_id] = owners.pop()
@@ -4847,7 +4851,7 @@ def _snapshot_owner_map(g, p: Parser) -> dict[str, str]:
 
     Every motion captures each snapshot it *references*, and they all write the same shared
     slot, so a motion re-capturing another's snapshot silently retargets it. The owner is the
-    motion segment of the quantity's URI: <app>/<motion>/Spec/spec/<name>.
+    motion segment of the quantity's URI: <app>/<motion>/spec/<name>.
     """
     owner_map: dict[str, str] = {}
     for snap_node in g.subjects(RDF.type, ALGO_EXT.Snapshot):
@@ -4865,7 +4869,7 @@ def _snapshot_trigger_map(g, p: Parser) -> dict[tuple[str, str], str]:
     """Map each event-triggered snapshot to its trigger event's local name, keyed by
     (declaring motion, output id). Every motion referencing a snapshot captures it, but only
     the motion that declares it re-samples on the trigger, so the key carries the owner. That
-    owner is the motion segment of the quantity's URI: <app>/<motion>/Spec/spec/<name>.
+    owner is the motion segment of the quantity's URI: <app>/<motion>/spec/<name>.
     """
     trigger_map: dict[tuple[str, str], str] = {}
     for snap_node in g.subjects(RDF.type, ALGO_EXT.Snapshot):

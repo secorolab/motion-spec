@@ -73,12 +73,14 @@ app-chain-includes-mj_kdl(has_serial_chain) ::= <<
 
 app-chain-setup-mj_kdl(serial_chain_solvers, scene) ::= <<
     bool headless = false;
-    int headless_steps = 2000;
+    bool steps_limited = false;
+    int headless_steps = 0;
     for (int i = 1; i \< argc; ++i) {
         if (std::strcmp(argv[i], "--headless") == 0) {
             headless = true;
         } else if (std::strcmp(argv[i], "--steps") == 0 && i + 1 \< argc) {
             headless_steps = std::atoi(argv[++i]);
+            steps_limited = true;
         }
     }
 
@@ -287,7 +289,7 @@ app-chain-loop-reset-mj_kdl(serial_chain_solvers, fsm_namespace) ::= <<
 >>
 
 app-loop-condition-mj_kdl(has_serial_chain) ::= <<
-(!headless || headless_steps-- > 0)
+(!headless || !steps_limited || headless_steps-- > 0)
 >>
 
 app-chain-cleanup-mj_kdl(has_serial_chain) ::= <<

@@ -25,8 +25,20 @@ robot-init-mj_kdl-KinovaGen3(solver) ::= <<
     mj_tool_<solver.runtime_id>.tool_body = "<solver.tool_body>";
 <if(solver.tcp_site)>    mj_tool_<solver.runtime_id>.tcp_site = "<solver.tcp_site>";
 <endif><solver.ft_sensors:{ft |    mj_tool_<solver.runtime_id>.ft_sensors.push_back(mj_kdl::ForceTorqueSensorSpec{ .name = "<ft.name>", .frame_site = "<ft.frame_site>" \});
-}>    if (!mj_kdl::init_robot_from_chain(&mj_<solver.runtime_id>, mj_env.model, mj_env.data, scene_kdl::make_chain_<solver.kdl_chain>(), {<solver.kdl_joints:{j |"<j>"}; separator=", ">\}, "", &mj_tool_<solver.runtime_id>)) {
-<else>    if (!mj_kdl::init_robot_from_chain(&mj_<solver.runtime_id>, mj_env.model, mj_env.data, scene_kdl::make_chain_<solver.kdl_chain>(), {<solver.kdl_joints:{j |"<j>"}; separator=", ">\})) {
+}>    KDL::Chain built_chain_<solver.runtime_id>{};
+    if (!scene_kdl::make_chain_<solver.kdl_chain>(&built_chain_<solver.runtime_id>)) {
+        std::cerr \<\< "make_chain_<solver.kdl_chain>() failed for runtime <solver.runtime_id>\n";
+        mj_kdl::cleanup(&mj_env);
+        return 1;
+    \}
+    if (!mj_kdl::init_robot_from_chain(&mj_<solver.runtime_id>, mj_env.model, mj_env.data, built_chain_<solver.runtime_id>, {<solver.kdl_joints:{j |"<j>"}; separator=", ">\}, "", &mj_tool_<solver.runtime_id>)) {
+<else>    KDL::Chain built_chain_<solver.runtime_id>{};
+    if (!scene_kdl::make_chain_<solver.kdl_chain>(&built_chain_<solver.runtime_id>)) {
+        std::cerr \<\< "make_chain_<solver.kdl_chain>() failed for runtime <solver.runtime_id>\n";
+        mj_kdl::cleanup(&mj_env);
+        return 1;
+    \}
+    if (!mj_kdl::init_robot_from_chain(&mj_<solver.runtime_id>, mj_env.model, mj_env.data, built_chain_<solver.runtime_id>, {<solver.kdl_joints:{j |"<j>"}; separator=", ">\})) {
 <endif>
         std::cerr \<\< "init_robot_from_chain() failed for runtime <solver.runtime_id>\n";
         mj_kdl::cleanup(&mj_env);

@@ -26,6 +26,7 @@ from motion_spec.rdf_parser.ir import (
     SceneRobot,
     SceneSpec,
     SolverDerivationContext,
+    _annotate_rne_gravity,
     _build_introspection,
     _derived_controllers,
     _derived_motion_drivers,
@@ -275,12 +276,20 @@ def test_solver_ir_carries_rne_algorithm_and_gravity() -> None:
     graph.add((solver, SLV.gravity, gravity))
     graph.add((gravity, GEOM_COORD["x"], Literal(0.0, datatype=XSD.double)))
     graph.add((gravity, GEOM_COORD["y"], Literal(0.0, datatype=XSD.double)))
-    graph.add((gravity, GEOM_COORD["z"], Literal(-9.81, datatype=XSD.double)))
+    graph.add((gravity, GEOM_COORD["z"], Literal(9.81, datatype=XSD.double)))
 
     entry = Parser(graph).solver_with_input_and_output(solver)
 
     assert entry.algorithm == "RNE"
-    assert entry.root_acc == [0.0, 0.0, -9.81]
+    # The authored value is the ACHD root acceleration, carried through unchanged.
+    assert entry.root_acc == [0.0, 0.0, 9.81]
+    assert entry.gravity is None
+
+    # Only the MuJoCo backend needs the opposite-sign gravity for its RNE bridge.
+    _annotate_rne_gravity([entry], [], "robif2b")
+    assert entry.gravity is None
+    _annotate_rne_gravity([entry], [], "mj_kdl")
+    assert entry.gravity == [0.0, 0.0, -9.81]
 
 
 def test_rne_uses_acceleration_while_achd_uses_acceleration_energy() -> None:

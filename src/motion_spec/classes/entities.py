@@ -772,6 +772,7 @@ class HandlerSerialChainSolver:
     output: list
     motion_driver: MotionDrivers
     algorithm: str = ""
+    gravity: list[float] | None = None
     root_acc: list[float] | None = None
     chain_root: str = ""
     chain_end: str = ""
@@ -799,6 +800,7 @@ class SolverWithInputAndOutput:
     ft_sensors: list[dict] = field(default_factory=list)
     runtime_prefix: str = ""
     owned_trees: list = field(default_factory=list)
+    gravity: list[float] | None = None
     root_acc: list[float] | None = None
     torque_saturation: Saturation | None = None
     runtime_id: str = ""

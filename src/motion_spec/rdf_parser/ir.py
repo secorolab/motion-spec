@@ -1609,10 +1609,9 @@ class Parser:
                 if type_ in self.g[o : RDF["type"]]:
                     out.append(func(o))
 
-        # Authored gravity-value IS the solver root acceleration (KDL Vereshchagin
-        # root_acc.vel) — taken as truth, no sign flip. If a MuJoCo env ever needs a
-        # different world gravity than the solver, hardcode it there with a TODO;
-        # do not re-derive it from this by negation.
+        # The authored value IS the Vereshchagin root acceleration, passed to ACHD as-is.
+        # The opposite-sign gravity RNE wants is a MuJoCo-backend concern, derived in
+        # _annotate_rne_gravity rather than here.
         gravity_node = self.g.value(id_, SLV.gravity)
         root_acc = self.parse_xyz(gravity_node) if gravity_node else None
         algorithm_node = self.g.value(id_, SLV["solver"])
@@ -2816,6 +2815,7 @@ def _serial_chain_solvers_for_handler(handler, slv_chain, solver_ids):
                 output=solver.output,
                 motion_driver=selected,
                 algorithm=solver.algorithm,
+                gravity=solver.gravity,
                 root_acc=solver.root_acc,
                 chain_root=solver.chain_root,
                 chain_end=solver.chain_end,
@@ -5253,6 +5253,23 @@ def _runtime_signature(solver, backend: str) -> tuple:
     )
 
 
+def _annotate_rne_gravity(serial_chain_solvers, motions, backend: str) -> None:
+    """Derive the RNE gravity vector for the MuJoCo backend.
+
+    The authored solver value is the Vereshchagin root acceleration, which ACHD takes as-is.
+    MuJoCo's RNE bridge needs gravity with the opposite sign; no other backend builds an RNE
+    solver, so the negation stays here instead of in the backend-agnostic parse.
+    """
+    if backend != "mj_kdl":
+        return
+    for solver in list(serial_chain_solvers) + [
+        s for motion in motions for s in _field(motion, "serial_chain_solvers", [])
+    ]:
+        root_acc = _field(solver, "root_acc")
+        if root_acc:
+            _set_field(solver, "gravity", [-component or 0.0 for component in root_acc])
+
+
 def _annotate_runtime_robots(serial_chain_solvers, motions, backend: str) -> None:
     """Assign runtime_id/runtime_owner across solvers sharing a runtime and normalize empty tool
     fields.
@@ -6187,6 +6204,7 @@ def generate_ir(manifest_path):
     )
     _validate_solvers(slv_chain, backend)
     _annotate_runtime_robots(slv_chain, motions, backend)
+    _annotate_rne_gravity(slv_chain, motions, backend)
 
     if scene.timestep_s <= 0:
         raise ValueError("ENVIRONMENT timestep must be positive.")

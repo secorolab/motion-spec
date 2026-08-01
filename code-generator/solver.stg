@@ -169,11 +169,11 @@ solver-init-extra-mj_kdl(solver) ::= <<
 >>
 
 solver-init-extra-mj_kdl-ACHD(solver) ::= <<
-        state.<solver.id>.rnea = std::make_unique\<KDL::ChainIdSolver_RNE\>(*robot.<solver.id>.chain, KDL::Vector(<if(solver.root_acc)><solver.root_acc; separator=", "><else>0.0, 0.0, 0.0<endif>));
+        state.<solver.id>.rnea = std::make_unique\<KDL::ChainIdSolver_RNE\>(*robot.<solver.id>.chain, KDL::Vector(<if(solver.gravity)><solver.gravity; separator=", "><else>0.0, 0.0, 0.0<endif>));
 >>
 
 solver-init-extra-mj_kdl-RNE(solver) ::= <<
-        state.<solver.id>.rnea = std::make_unique\<KDL::ChainIdSolver_RNE\>(*robot.<solver.id>.chain, KDL::Vector(<if(solver.root_acc)><solver.root_acc; separator=", "><else>0.0, 0.0, 0.0<endif>));
+        state.<solver.id>.rnea = std::make_unique\<KDL::ChainIdSolver_RNE\>(*robot.<solver.id>.chain, KDL::Vector(<if(solver.gravity)><solver.gravity; separator=", "><else>0.0, 0.0, 0.0<endif>));
         state.<solver.id>.jac_solver = std::make_unique\<KDL::ChainJntToJacSolver\>(*robot.<solver.id>.chain);
         state.<solver.id>.jac_dot_solver = std::make_unique\<KDL::ChainJntToJacDotSolver\>(*robot.<solver.id>.chain);
 >>

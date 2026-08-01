@@ -802,6 +802,9 @@ class SolverWithInputAndOutput:
     ft_sensors: list[dict] = field(default_factory=list)
     runtime_prefix: str = ""
     owned_trees: list = field(default_factory=list)
+    # The scene-derived chain this solver runs on, and its joints as MuJoCo names them.
+    kdl_chain: str = ""
+    kdl_joints: list[str] = field(default_factory=list)
     gravity: list[float] | None = None
     root_acc: list[float] | None = None
     torque_saturation: Saturation | None = None

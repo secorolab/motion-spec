@@ -4418,13 +4418,26 @@ def _validate_scene(scene) -> None:
         require_field(obj.id, "mass", obj.mass)
 
 
+def _scene_chain(scene_chains, assembly):
+    """The scene-derived chain for an assembly, with its joints named as MuJoCo names them.
+
+    A robot attached under a prefix carries that prefix on every element, so the runtime
+    joint name is the prefix plus the name the scene knows it by.
+    """
+    name, joints = scene_chains.get(assembly["chain_root"], ("", []))
+    return name, [f"{assembly['prefix']}{joint}" for joint in joints]
+
+
 def _robot_setups_from_graph(g):
     """Per-robot solver chain setups, sourced from the scene-dsl (`.scenex`) graph.
 
     Returns ``(setups_by_node, ordered)`` where ``setups_by_node`` maps each robot's
     abstract agent node (the target of a solver's ``agn:of-agent``) to its setup tuple
     ``(urdf, chain_root, chain_end, chain_tip, robot_model, tool_body, tcp_site,
-    ft_sensors, runtime_prefix, owned_trees)``.
+    ft_sensors, runtime_prefix, owned_trees, kdl_chain, kdl_joints)``.
+
+    ``kdl_chain`` names the scene-derived chain builder emitted beside the controller and
+    ``kdl_joints`` lists its joints as MuJoCo knows them, in KDL order -- see plan 013.
 
     Chain bodies come from a serial-composition ``geom:KinematicTree``'s
     ``kc-ext:root`` / ``kc-ext:tip`` frames. A scene-dsl frame URI is
@@ -4439,6 +4452,9 @@ def _robot_setups_from_graph(g):
                 return canonical
         return ""
 
+    from motion_spec.generation.scene_kdl import chains_by_root
+
+    scene_chains = chains_by_root(g)
     setups_by_node, ordered = {}, []
     bound_trees = _mapped_targets(g, AGN["AgentModel"], GEOM_ENT.KinematicTree)
     attach_by_body, _root = _fixed_attachments(g, bound_trees)
@@ -4454,6 +4470,7 @@ def _robot_setups_from_graph(g):
             assembly["ft_sensors"],
             assembly["prefix"],
             assembly["trees"],
+            *_scene_chain(scene_chains, assembly),
         )
         setups_by_node[assembly["agent"]] = setup
         ordered.append(setup)
@@ -4990,6 +5007,8 @@ def _solver_sections(
             solver.ft_sensors,
             solver.runtime_prefix,
             solver.owned_trees,
+            solver.kdl_chain,
+            solver.kdl_joints,
         ) = setups_by_node.get(robot_node, default_setup)
         solver.output = _dedupe_by_id(
             [
@@ -6474,7 +6493,7 @@ def generate_ir(manifest_path):
     default_setup = (
         ordered_setups[0]
         if ordered_setups
-        else ("", "", "", "", "", "", "", [], "", [])
+        else ("", "", "", "", "", "", "", [], "", [], "", [])
     )
     # Derive backend + FSM up front: both are pure functions of the graph and are inputs to
     # downstream construction (solver validation, runtime-robot annotation, motion FSM wiring).

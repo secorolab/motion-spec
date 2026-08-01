@@ -178,6 +178,14 @@ def generate_model(model: Path, generation: Path, *, stage: str = "code") -> Pat
             if artifact.is_file():
                 artifact.replace(controller_dir / artifact.name)
         generate_code(ir_path, controller_dir, find_stst() or "stst")
+        # The solver chain is the scene's, so it is emitted from the scene graph (plan 013).
+        from motion_spec.generation.scene_kdl import write_scene_kdl_header
+        from motion_spec.rdf_parser.ir import _load_graph
+
+        _app, scene_graph, _imported, _prov = _load_graph(manifest)
+        write_scene_kdl_header(
+            scene_graph, controller_dir / "headers", model.name, base_dir=model.parent
+        )
         _organize_generation(model_dir, controller_dir)
     else:
         _organize_generation(model_dir)

@@ -1874,7 +1874,7 @@ class Parser:
         event = self.id(event_node)
         fallback_node = self.g.value(id_, CSTR_HDL_EXT["fallback-motion"])
         fallback_motion = self.id(fallback_node) if fallback_node is not None else None
-        debounce_duration_s = self._optional_float(id_, CSTR_HDL_EXT["debounce-duration"])
+        debounce_duration_s = self._optional_seconds(id_, CSTR_HDL_EXT["debounce-duration"])
         ros_kwargs = {}
         ros_channel = self.g.value(id_, ROS["channel-name"])
         if ros_channel is not None:
@@ -1967,6 +1967,14 @@ class Parser:
                 f"Controller '{self.id(subject)}' property '{self.id(predicate)}' must be a literal or a node with qudt:value."
             )
         return float(literal.value)
+
+    def _optional_seconds(self, subject, predicate) -> float | None:
+        """Read an optional duration in seconds, converting from the unit it was written in."""
+        node = self.g.value(subject, predicate)
+        if node is None:
+            return None
+        value = self._optional_float(subject, predicate)
+        return None if value is None else _seconds(value, self.g.value(node, QUDT_SCHEMA.unit))
 
     def _required_float(self, subject, predicate) -> float:
         """Read a required float-valued property, raising when absent."""
@@ -3868,6 +3876,21 @@ _LENGTH_UNIT_FACTORS = {
 }
 
 
+_SECONDS_IN = {QUDT_UNIT["SEC"]: 1.0, QUDT_UNIT["MilliSEC"]: 1e-3}
+
+
+def _seconds(value: float, unit) -> float:
+    """A duration the model authored, in seconds.
+
+    The DSL records the unit a model was written in rather than converting it, so a
+    value only means seconds once its unit says so. Coordinates need no such reading:
+    `rdf_utils` returns those in radians and metres whatever they were authored in.
+    """
+    if unit not in _SECONDS_IN:
+        raise ConstraintViolation("units", f"'{unit}' is not a duration this can read")
+    return value * _SECONDS_IN[unit]
+
+
 def _xyz_or_none(g, node):
     """Read a coordinate node's x/y/z as floats, or None if any axis is missing."""
     if node is None:
@@ -4287,7 +4310,9 @@ def _scene_from_graph(g):
         timestep = g.value(context, EXEC.timestep)
         value = g.value(timestep, QUDT_SCHEMA.value)
         if value is not None:
-            scene.timestep_s = float(value.toPython())
+            scene.timestep_s = _seconds(
+                float(value.toPython()), g.value(timestep, QUDT_SCHEMA.unit)
+            )
 
     bound_trees = _mapped_targets(g, AGN["AgentModel"], GEOM_ENT.KinematicTree)
     attach_by_body, _root = _fixed_attachments(g, bound_trees)

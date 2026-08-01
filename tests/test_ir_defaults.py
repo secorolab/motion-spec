@@ -429,6 +429,19 @@ int main() {
     assert(pid.control(1.0, 0.0) == 0.0);
     assert(pid.control(2.0, 0.0) == 0.0);
 
+    // F=0, K=0, D>0: the filter integrates the damper law, so a non-zero velocity decays
+    // over several cycles instead of being zeroed in one.
+    motion_spec::runtime::AdmittanceFilter adm;
+    const double v0 = adm.step(10.0, 1.0, 5.0, 0.0, 1.0, 0.01);
+    assert(v0 > 0.0);
+    double v_prev = v0;
+    for (int i = 0; i < 5; ++i) {
+        const double v_now = adm.step(0.0, 1.0, 5.0, 0.0, 1.0, 0.01);
+        assert(v_now > 0.0 && v_now < v_prev);
+        v_prev = v_now;
+    }
+    assert(v_prev < v0);
+
     // Closest-point projection replaces the deleted clock-driven parameter: a point exactly
     // on the path projects to its own parameter, an offset point to the nearest one, and the
     // seeded search stays monotone as the frame advances along the path.

@@ -14,7 +14,6 @@ import collections
 import hashlib
 import itertools
 import json
-import math
 import re
 import sys
 import weakref
@@ -26,7 +25,14 @@ from urllib.parse import urlsplit
 
 import rdflib
 from rdf_utils.naming import get_valid_var_name
-from rdf_utils.models.vocab import URI_KC_TYPE_SERIAL
+from rdf_utils.models.geom_coord import OrientCoordModel, get_orientation_coord_vals
+from rdf_utils.models.geom_rel import OrientationModel
+from rdf_utils.models.vocab import (
+    URI_KC_TYPE_SERIAL,
+    URI_QUDT_UNIT_CM,
+    URI_QUDT_UNIT_M,
+    URI_QUDT_UNIT_MM,
+)
 from rdf_utils.namespace import NS_MM_KC_EXT
 from rdf_utils.resolver import IriToFileResolver, install_resolver
 from rdf_utils.uri import (
@@ -2195,11 +2201,9 @@ class Parser:
             euler_axes_sequence = str(axes) if axes is not None else None
 
         provenance = self.quantity_provenance(id_)
-        rel_base = rel_delta = rel_delta_repr = rel_frame = None
+        rel_operands = None
         if representation == "relative":
-            rel_base, rel_delta, rel_delta_repr, rel_frame = self._relative_orientation(
-                orientation_node
-            )
+            rel_operands = self._relative_orientation(orientation_node)
         return Pose(
             self.id(id_),
             of,
@@ -2213,37 +2217,48 @@ class Parser:
             pos,
             euler_axes_sequence,
             representation,
-            orientation_base=rel_base,
-            orientation_delta=rel_delta,
-            orientation_delta_representation=rel_delta_repr,
-            orientation_in_frame=rel_frame,
+            orientation_operands=rel_operands,
             provenance=provenance,
         )
 
     def _relative_orientation(self, orientation_node):
-        """The base pose id, the delta's ordered component values, its representation and the
-        frame the delta turns in (None means the base's own frame)."""
-        base = self.g.value(orientation_node, GEOM_OP_EXT["rotation-base"])
-        delta = self.g.value(orientation_node, GEOM_OP_EXT["rotation-delta"])
-        frame = self.g.value(orientation_node, GEOM_OP_EXT["rotation-in-frame"])
-        delta_repr = self.orientation_representation(delta)
-        order = _ORIENTATION_COMPONENTS.get(delta_repr) or ("x", "y", "z")
-        by_axis = {}
-        for component in self.g.objects(delta, GEOM_COORD["has-coordinate"]):
-            axis = self.g.value(component, MAP["axis"])
-            if axis is None:
-                continue
-            value = self.g.value(component, QUDT_SCHEMA["value"])
-            ref = self.g.value(component, CSTR["reference-value"])
-            by_axis[split_uri(axis)[1]] = (
-                {"ref": self.id(ref)} if ref is not None else {"value": float(value)}
+        """The composition's two operands, in `geom-op:in1`/`in2` order: each is either
+        `{"pose": <id>}` (the base, by id) or `{"delta": [...], "representation": ...}` (the
+        delta's ordered component values and rotation representation)."""
+        in1 = self.g.value(orientation_node, GEOM_OP["in1"])
+        in2 = self.g.value(orientation_node, GEOM_OP["in2"])
+        if in1 is None or in2 is None:
+            raise ValueError(
+                f"Relative orientation '{orientation_node}' must declare both composition operands."
             )
-        return (
-            self.id(base) if base is not None else None,
-            [by_axis[a] for a in order if a in by_axis],
-            delta_repr,
-            self.id(frame) if frame is not None else None,
-        )
+
+        def _operand(node):
+            if GEOM_COORD["OrientationCoordinate"] in self.g[node : RDF["type"]]:
+                delta_repr = self.orientation_representation(node)
+                order = _ORIENTATION_COMPONENTS.get(delta_repr) or ("x", "y", "z")
+                by_axis = {}
+                for component in self.g.objects(node, GEOM_COORD["has-coordinate"]):
+                    axis = self.g.value(component, MAP["axis"])
+                    if axis is None:
+                        continue
+                    value = self.g.value(component, QUDT_SCHEMA["value"])
+                    ref = self.g.value(component, CSTR["reference-value"])
+                    by_axis[split_uri(axis)[1]] = (
+                        {"ref": self.id(ref)} if ref is not None else {"value": float(value)}
+                    )
+                return {
+                    "delta": [by_axis[a] for a in order if a in by_axis],
+                    "representation": delta_repr,
+                }
+            return {"pose": self.id(node)}
+
+        operands = [_operand(in1), _operand(in2)]
+        if sum("pose" in op for op in operands) != 1 or sum("delta" in op for op in operands) != 1:
+            raise ValueError(
+                f"Relative orientation '{orientation_node}' must compose exactly one base pose "
+                "and one delta rotation."
+            )
+        return operands
 
     def _orientation_coordinate(self, id_):
         """The orientation coordinate hanging off a pose coordinate, or None."""
@@ -3723,6 +3738,13 @@ def _dedupe_by_id(items):
     return result
 
 
+_LENGTH_UNIT_FACTORS = {
+    URI_QUDT_UNIT_M: 1.0,
+    URI_QUDT_UNIT_CM: 0.01,
+    URI_QUDT_UNIT_MM: 0.001,
+}
+
+
 def _xyz_or_none(g, node):
     """Read a coordinate node's x/y/z as floats, or None if any axis is missing."""
     if node is None:
@@ -3733,19 +3755,6 @@ def _xyz_or_none(g, node):
     return [float(v.value) for v in values]
 
 
-def _orientation_degrees(g, node):
-    """Read an orientation node's roll/pitch/yaw in degrees, or None if incomplete."""
-    if node is None:
-        return None
-    values = [g.value(node, GEOM_COORD[axis]) for axis in ("alpha", "beta", "gamma")]
-    if any(value is None for value in values):
-        return None
-    result = [float(value) for value in values]
-    if str(g.value(node, QUDT_SCHEMA.unit) or "").endswith("RAD"):
-        result = [math.degrees(value) for value in result]
-    return result
-
-
 def _frames_of(g, node):
     if GEOM_ENT.Frame in g[node : RDF.type]:
         return [node]
@@ -3753,23 +3762,38 @@ def _frames_of(g, node):
 
 
 def _position_of(g, node):
-    """Position of a body or frame from its authored scene-dsl pose, or None."""
+    """Position of a body or frame from its authored scene-dsl pose, in metres, or None."""
     for frame in _frames_of(g, node):
         origin = g.value(frame, GEOM_ENT.origin) or frame
         for position in g.subjects(GEOM_REL.of, origin):
             for coordinate in g.subjects(GEOM_COORD["of-position"], position):
-                if (value := _xyz_or_none(g, coordinate)) is not None:
-                    return value
+                if (value := _xyz_or_none(g, coordinate)) is None:
+                    continue
+                unit = g.value(coordinate, QUDT_SCHEMA.unit)
+                try:
+                    factor = _LENGTH_UNIT_FACTORS[unit]
+                except KeyError as exc:
+                    raise ValueError(
+                        f"Position coordinate '{coordinate}' has an unrecognized or missing "
+                        f"length unit '{unit}'."
+                    ) from exc
+                return [component * factor for component in value]
     return None
 
 
 def _orientation_of(g, node):
-    """Orientation of a body or frame from its authored scene-dsl pose, or None."""
+    """Rotation of a body or frame from its authored scene pose, as a quaternion
+    [x, y, z, w], or None when the pose declares no orientation."""
     for frame in _frames_of(g, node):
-        for orientation in g.subjects(GEOM_REL.of, frame):
-            for coordinate in g.subjects(GEOM_COORD["of-orientation"], orientation):
-                if (value := _orientation_degrees(g, coordinate)) is not None:
-                    return value
+        for orientation_node in g.subjects(GEOM_REL.of, frame):
+            if GEOM_REL.Orientation not in g[orientation_node : RDF.type]:
+                continue
+            orientation = OrientationModel(orn_id=orientation_node, graph=g)
+            for coord_id in orientation.coordinate_ids:
+                coord = OrientCoordModel(coord_id=coord_id, graph=g, orientation=orientation)
+                rotation = get_orientation_coord_vals(coord, g)
+                if rotation is not None:
+                    return list(rotation.as_quat())
     return None
 
 
@@ -4173,7 +4197,7 @@ def _scene_from_graph(g):
                 attach_kind=attach_kind,
                 attach_name=attach_name,
                 pos=_position_of(g, placement_frame),
-                euler=_orientation_of(g, placement_frame),
+                quat=_orientation_of(g, placement_frame),
             )
         )
 
@@ -4186,7 +4210,7 @@ def _scene_from_graph(g):
                 attach_kind=assembly["attach_kind"],
                 attach_name=assembly["attach_name"],
                 pos=_position_of(g, assembly["placement_frame"]),
-                euler=_orientation_of(g, assembly["placement_frame"]),
+                quat=_orientation_of(g, assembly["placement_frame"]),
                 attachments=assembly["attachments"],
             )
         )
@@ -4203,13 +4227,15 @@ def _expand_scene_geometry(scene) -> None:
     scene never depends on a downstream pass."""
     for robot in scene.robots:
         expand_vector_fields(robot, "pos")
-        expand_vector_fields(robot, "euler")
+        expand_vector_fields(robot, "quat", ("x", "y", "z", "w"), default=[0.0, 0.0, 0.0, 1.0])
         for attachment in robot.attachments:
             expand_vector_fields(attachment, "pos")
-            expand_vector_fields(attachment, "euler")
+            expand_vector_fields(
+                attachment, "quat", ("x", "y", "z", "w"), default=[0.0, 0.0, 0.0, 1.0]
+            )
     for obj in scene.objects:
         expand_vector_fields(obj, "pos")
-        expand_vector_fields(obj, "euler")
+        expand_vector_fields(obj, "quat", ("x", "y", "z", "w"), default=[0.0, 0.0, 0.0, 1.0])
         obj.has_path = bool(obj.path)
         if obj.has_path:
             continue
@@ -5392,18 +5418,26 @@ def _motion_done_terms(motion) -> list:
     return terms
 
 
-def expand_vector_fields(item, field: str) -> None:
-    """Expand a 3-vector field into <field>_x/_y/_z components (an omitted value means zero)."""
+def expand_vector_fields(
+    item,
+    field: str,
+    component_names: tuple[str, ...] = ("x", "y", "z"),
+    default: list[float] | None = None,
+) -> None:
+    """Expand a vector field into <field>_<component> parts. An omitted value falls back to
+    ``default`` (zero vector for position, identity quaternion for orientation); a value whose
+    arity does not match component_names raises rather than being padded or truncated."""
     values = _field(item, field)
     if values is None:
         # Env placement shorthand: omitted position/orientation means zero/identity.
-        values = [0.0, 0.0, 0.0]
-    if not isinstance(values, list) or len(values) != 3:
+        values = list(default) if default is not None else [0.0] * len(component_names)
+    if not isinstance(values, list) or len(values) != len(component_names):
         item_id = _field(item, "id", "<unknown>")
-        raise ValueError(f"Scene item '{item_id}' has invalid '{field}'; expected three values.")
-    _set_field(item, f"{field}_x", values[0])
-    _set_field(item, f"{field}_y", values[1])
-    _set_field(item, f"{field}_z", values[2])
+        raise ValueError(
+            f"Scene item '{item_id}' has invalid '{field}'; expected {len(component_names)} values."
+        )
+    for name, value in zip(component_names, values):
+        _set_field(item, f"{field}_{name}", value)
 
 
 def require_field(obj_id: str, field: str, value):
@@ -5705,13 +5739,7 @@ def build_pose_components(views: dict, data: list) -> dict:
         representation = _field(superobject, "orientation_representation") or "euler"
         entry = components.setdefault(pose_id, _empty_pose_entry(representation))
         if representation == "relative":
-            for name in (
-                "orientation_base",
-                "orientation_delta",
-                "orientation_delta_representation",
-                "orientation_in_frame",
-            ):
-                entry[name] = _field(superobject, name)
+            entry["orientation_operands"] = _field(superobject, "orientation_operands")
         axis = str(_field(view, "axis") or "").lower()
         subobject = _field(_field(view, "subobject"), "id")
         if not subobject or axis not in {"x", "y", "z", "w"}:
@@ -5731,12 +5759,7 @@ def build_pose_components(views: dict, data: list) -> dict:
                 if component_id:
                     entry[f"orientation_{row}{col}"] = _pose_component(component_id, data_by_id)
     for pose_id, parts in components.items():
-        # A body-frame relative orientation names no frame, so its slot stays empty.
-        missing = [
-            name
-            for name, value in parts.items()
-            if value is None and name != "orientation_in_frame"
-        ]
+        missing = [name for name, value in parts.items() if value is None]
         if missing:
             raise ValueError(
                 f"Declared pose '{pose_id}' is missing required components: {', '.join(missing)}."

@@ -242,10 +242,7 @@ class Pose:
     position: list[float] | None
     euler_axes_sequence: str | None = None
     orientation_representation: str = "euler"
-    orientation_base: str | None = None
-    orientation_delta: list | None = None
-    orientation_delta_representation: str | None = None
-    orientation_in_frame: str | None = None
+    orientation_operands: list | None = None
     provenance: Provenance = field(default_factory=Provenance)
     type: str = field(default="Pose")
 
@@ -822,14 +819,15 @@ class SceneAttachment:
     attach_kind: str = "Body"
     prefix: str = ""
     pos: list[float] | None = None
-    euler: list[float] | None = None
+    quat: list[float] | None = None
     actuator: str = ""
     pos_x: float | None = None
     pos_y: float | None = None
     pos_z: float | None = None
-    euler_x: float | None = None
-    euler_y: float | None = None
-    euler_z: float | None = None
+    quat_x: float | None = None
+    quat_y: float | None = None
+    quat_z: float | None = None
+    quat_w: float | None = None
     type: str = field(default="SceneAttachment")
 
 
@@ -843,14 +841,15 @@ class SceneRobot:
     attach_kind: str = "World"
     attach_name: str = ""
     pos: list[float] | None = None
-    euler: list[float] | None = None
+    quat: list[float] | None = None
     attachments: list[SceneAttachment] = field(default_factory=list)
     pos_x: float | None = None
     pos_y: float | None = None
     pos_z: float | None = None
-    euler_x: float | None = None
-    euler_y: float | None = None
-    euler_z: float | None = None
+    quat_x: float | None = None
+    quat_y: float | None = None
+    quat_z: float | None = None
+    quat_w: float | None = None
     type: str = field(default="SceneRobot")
 
 
@@ -864,20 +863,21 @@ class SceneObjectSpec:
     attach_kind: str = "World"
     attach_name: str = ""
     pos: list[float] | None = None
-    euler: list[float] | None = None
+    quat: list[float] | None = None
     fixed: bool = False
     shape: str | None = None
     size: list[float] | None = None
     color: list[float] | None = None
     mass: float | None = None
     friction: list[float] | None = None
-    # Folded scalar expansions (pos/euler always; geometry only for non-path objects).
+    # Folded scalar expansions (pos/quat always; geometry only for non-path objects).
     pos_x: float | None = None
     pos_y: float | None = None
     pos_z: float | None = None
-    euler_x: float | None = None
-    euler_y: float | None = None
-    euler_z: float | None = None
+    quat_x: float | None = None
+    quat_y: float | None = None
+    quat_z: float | None = None
+    quat_w: float | None = None
     has_path: bool = False
     size_x: float | None = None
     size_y: float | None = None

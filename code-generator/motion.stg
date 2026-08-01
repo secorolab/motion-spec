@@ -172,16 +172,20 @@ delta-component(c) ::= <%
 <if(c.ref)>shared.<c.ref><else><c.value><endif>
 %>
 
-delta-rotation-euler(pose) ::= <%
-KDL::Rotation::RPY(<pose.orientation_delta:{c | <delta-component(c)>}; separator=", ">)
+delta-rotation-euler(op) ::= <%
+KDL::Rotation::RPY(<op.delta:{c | <delta-component(c)>}; separator=", ">)
 %>
 
-delta-rotation-quaternion(pose) ::= <%
-KDL::Rotation::Quaternion(<pose.orientation_delta:{c | <delta-component(c)>}; separator=", ">)
+delta-rotation-quaternion(op) ::= <%
+KDL::Rotation::Quaternion(<op.delta:{c | <delta-component(c)>}; separator=", ">)
+%>
+
+relative-operand(op) ::= <%
+<if(op.pose)>shared.<op.pose>.M<else><(delta-rotation-template.(op.representation))(op)><endif>
 %>
 
 pose-rotation-relative(pose, views) ::= <%
-<if(pose.orientation_in_frame)><(delta-rotation-template.(pose.orientation_delta_representation))(pose)> * shared.<pose.orientation_base>.M<else>shared.<pose.orientation_base>.M * <(delta-rotation-template.(pose.orientation_delta_representation))(pose)><endif>
+<pose.orientation_operands:{op | <relative-operand(op)>}; separator=" * ">
 %>
 
 pose-rotation-euler(pose, views) ::= <%

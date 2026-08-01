@@ -311,9 +311,6 @@ class GEOM_OP_EXT(DefinedNamespace):
         "normal-a",
         "normal-b",
         "along-speed",
-        "rotation-base",
-        "rotation-delta",
-        "rotation-in-frame",
     ]
 
     _NS = Namespace(f"{URI_SECORO_MM}/geometry/spatial-operators#")

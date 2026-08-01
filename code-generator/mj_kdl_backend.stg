@@ -172,9 +172,10 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene) ::= <<
         mj_robot_spec.pos[0] = <robot.pos_x>;
         mj_robot_spec.pos[1] = <robot.pos_y>;
         mj_robot_spec.pos[2] = <robot.pos_z>;
-        mj_robot_spec.euler[0] = <robot.euler_x>;
-        mj_robot_spec.euler[1] = <robot.euler_y>;
-        mj_robot_spec.euler[2] = <robot.euler_z>;
+        mj_robot_spec.quat[0] = <robot.quat_x>;
+        mj_robot_spec.quat[1] = <robot.quat_y>;
+        mj_robot_spec.quat[2] = <robot.quat_z>;
+        mj_robot_spec.quat[3] = <robot.quat_w>;
 <robot.attachments:{attachment |
         {
             const std::filesystem::path attachment_path = find_asset_path({"<attachment.path>"\});
@@ -191,9 +192,10 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene) ::= <<
             attachment_spec.pos[0] = <attachment.pos_x>;
             attachment_spec.pos[1] = <attachment.pos_y>;
             attachment_spec.pos[2] = <attachment.pos_z>;
-            attachment_spec.euler[0] = <attachment.euler_x>;
-            attachment_spec.euler[1] = <attachment.euler_y>;
-            attachment_spec.euler[2] = <attachment.euler_z>;
+            attachment_spec.quat[0] = <attachment.quat_x>;
+            attachment_spec.quat[1] = <attachment.quat_y>;
+            attachment_spec.quat[2] = <attachment.quat_z>;
+            attachment_spec.quat[3] = <attachment.quat_w>;
             mj_robot_spec.attachments.push_back(attachment_spec);
         \}
 }; separator="\n">
@@ -215,9 +217,10 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene) ::= <<
 <endif>        object_spec.pos[0] = <object.pos_x>;
         object_spec.pos[1] = <object.pos_y>;
         object_spec.pos[2] = <object.pos_z>;
-        object_spec.euler[0] = <object.euler_x>;
-        object_spec.euler[1] = <object.euler_y>;
-        object_spec.euler[2] = <object.euler_z>;
+        object_spec.quat[0] = <object.quat_x>;
+        object_spec.quat[1] = <object.quat_y>;
+        object_spec.quat[2] = <object.quat_z>;
+        object_spec.quat[3] = <object.quat_w>;
         object_spec.fixed = <object.fixed>;
 <if(!object.has_path)>        object_spec.shape = mj_kdl::Shape::<object.shape>;
         object_spec.size[0] = <object.size_x>;

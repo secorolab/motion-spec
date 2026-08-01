@@ -2,19 +2,26 @@
 from __future__ import annotations
 
 import pytest
-from rdflib import Graph, URIRef
+from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import RDF
+from rdf_utils.models.vocab import URI_GEOM_PRED_W, URI_GEOM_TYPE_ORIENT_REF, URI_QUDT_UNIT_CM
+from scipy.spatial.transform import Rotation
 
 from motion_spec.rdf_parser.ir import (
+    Parser,
     _materialize_linear_distance_operations,
     _materialize_pose_reference_transforms,
+    _orientation_of,
+    _position_of,
 )
 from motion_spec.rdf_parser.vocab import (
     CSTR,
     GEOM_COORD,
     GEOM_ENT,
     GEOM_OP,
+    GEOM_OP_EXT,
     GEOM_REL,
+    MAP,
     QUDT_SCHEMA,
 )
 
@@ -156,4 +163,144 @@ def test_pose_reference_rejects_body_mismatch() -> None:
 
     with pytest.raises(ValueError, match="compares a pose"):
         _materialize_pose_reference_transforms(g)
+
+
+# --------------------------------------------------------------------------- #
+# Relative orientation: geom-op:in1/in2 operands, read back in slot order
+# --------------------------------------------------------------------------- #
+def _delta_node(g: Graph, name: str, values: tuple[float, float, float]) -> URIRef:
+    """A frame-less Euler delta coordinate with three axis components."""
+    node = _u(name)
+    g.add((node, RDF.type, GEOM_COORD.OrientationCoordinate))
+    for axis, value in zip("xyz", values):
+        component = _u(f"{name}.{axis}")
+        g.add((component, RDF.type, QUDT_SCHEMA.Quantity))
+        g.add((node, GEOM_COORD["has-coordinate"], component))
+        g.add((component, MAP.axis, MAP[axis]))
+        g.add((component, QUDT_SCHEMA.value, Literal(value)))
+    return node
+
+
+def _relative_orientation_graph(*, in1_is_pose: bool) -> tuple[Graph, URIRef]:
+    """A RelativeOrientation composing `pose-ee-base` with a delta, slotted into
+    `geom-op:in1`/`in2` base-first (`in1_is_pose`) or delta-first.
+    """
+    g = Graph()
+    base = _frame(g, "frame-base")
+    ee = _frame(g, "frame-ee")
+    base_pose = _pose(g, "pose-ee-base", ee, base)
+    delta = _delta_node(g, "delta", (-0.75, 0.0, 0.0))
+
+    orientation = _u("relative-orientation")
+    g.add((orientation, RDF.type, GEOM_OP_EXT.RelativeOrientation))
+    g.add((orientation, GEOM_REL.of, ee))
+    g.add((orientation, GEOM_COORD["as-seen-by"], base))
+    g.add((delta, GEOM_COORD["as-seen-by"], ee if in1_is_pose else base))
+
+    in1, in2 = (base_pose, delta) if in1_is_pose else (delta, base_pose)
+    g.add((orientation, GEOM_OP["in1"], in1))
+    g.add((orientation, GEOM_OP["in2"], in2))
+    return g, orientation
+
+
+def test_relative_orientation_reads_operands_in_slot_order() -> None:
+    g, orientation = _relative_orientation_graph(in1_is_pose=True)
+    operands = Parser(g)._relative_orientation(orientation)
+    assert "pose" in operands[0] and "delta" in operands[1]
+    assert operands[1]["delta"] == [{"value": -0.75}, {"value": 0.0}, {"value": 0.0}]
+    assert operands[1]["representation"] == "euler"
+
+    g, orientation = _relative_orientation_graph(in1_is_pose=False)
+    operands = Parser(g)._relative_orientation(orientation)
+    assert "delta" in operands[0] and "pose" in operands[1]
+
+
+def test_relative_orientation_rejects_a_mismatched_operand_pair() -> None:
+    g, orientation = _relative_orientation_graph(in1_is_pose=True)
+    # Two poses in the slots: not one pose + one delta.
+    other_pose = _pose(
+        g, "pose-other", _frame(g, "frame-other-body"), _frame(g, "frame-other-wrt")
+    )
+    g.remove((orientation, GEOM_OP["in2"], None))
+    g.add((orientation, GEOM_OP["in2"], other_pose))
+
+    with pytest.raises(ValueError, match="exactly one base pose and one delta"):
+        Parser(g)._relative_orientation(orientation)
+
+
+# --------------------------------------------------------------------------- #
+# Scene placement: representation-aware orientation, unit-aware position
+# --------------------------------------------------------------------------- #
+def _scene_frame(g: Graph, name: str) -> URIRef:
+    """A frame with an origin point (rdf-utils's FrameModel requires one)."""
+    frame = _u(name)
+    g.add((frame, RDF.type, GEOM_ENT.Frame))
+    g.add((frame, GEOM_ENT.origin, _u(f"{name}-origin")))
+    return frame
+
+
+def _scene_position_coord(
+    g: Graph, of_frame: URIRef, wrt_frame: URIRef, xyz: tuple[float, float, float]
+) -> URIRef:
+    """A Position coordinate at `of_frame`'s origin, wrt `wrt_frame`'s origin -- `_position_of`
+    looks a frame up by its origin point, matching how scene-dsl authors a placement."""
+    position = _u("position")
+    coord = _u("position-coord")
+    g.add((position, RDF.type, GEOM_REL.Position))
+    g.add((position, GEOM_REL.of, g.value(of_frame, GEOM_ENT.origin)))
+    g.add((position, GEOM_REL["with-respect-to"], g.value(wrt_frame, GEOM_ENT.origin)))
+    g.add((coord, RDF.type, GEOM_COORD.PositionCoordinate))
+    g.add((coord, GEOM_COORD["of-position"], position))
+    g.add((coord, GEOM_COORD["as-seen-by"], wrt_frame))
+    for predicate, value in zip((GEOM_COORD.x, GEOM_COORD.y, GEOM_COORD.z), xyz):
+        g.add((coord, predicate, Literal(float(value))))
+    return coord
+
+
+def test_orientation_of_reads_quaternion_placement_as_quat() -> None:
+    """A quaternion-authored placement is read back as [x, y, z, w], unmodified."""
+    g = Graph()
+    frame = _scene_frame(g, "frame-object")
+    wrt = _scene_frame(g, "frame-world")
+
+    orientation = _u("orientation")
+    coord = _u("orientation-coord")
+    g.add((orientation, RDF.type, GEOM_REL.Orientation))
+    g.add((orientation, GEOM_REL.of, frame))
+    g.add((orientation, GEOM_REL["with-respect-to"], wrt))
+    g.add((coord, RDF.type, GEOM_COORD.OrientationCoordinate))
+    g.add((coord, RDF.type, URI_GEOM_TYPE_ORIENT_REF))
+    g.add((coord, RDF.type, GEOM_COORD.Quaternion))
+    g.add((coord, GEOM_COORD["of-orientation"], orientation))
+    g.add((coord, GEOM_COORD["as-seen-by"], wrt))
+
+    x, y, z, w = Rotation.from_euler("xyz", (0.3, -0.2, 0.75)).as_quat()
+    for predicate, value in zip((GEOM_COORD.x, GEOM_COORD.y, GEOM_COORD.z), (x, y, z)):
+        g.add((coord, predicate, Literal(float(value))))
+    g.add((coord, URI_GEOM_PRED_W, Literal(float(w))))
+
+    result = _orientation_of(g, frame)
+    assert result == pytest.approx((x, y, z, w))
+
+
+def test_position_of_scales_to_metres_and_rejects_a_missing_unit() -> None:
+    """Reading x/y/z alone ignores the coordinate's unit; a cm-authored placement must
+    scale, not pass through as if it were already metres. A missing unit is not a
+    default -- it's an error.
+    """
+    g = Graph()
+    frame = _scene_frame(g, "frame-object")
+    wrt = _scene_frame(g, "frame-world")
+    coord = _scene_position_coord(g, frame, wrt, (150.0, -50.0, 720.0))
+    g.add((coord, QUDT_SCHEMA.unit, URI_QUDT_UNIT_CM))
+
+    assert _position_of(g, frame) == pytest.approx([1.5, -0.5, 7.2])
+
+    g2 = Graph()
+    frame2 = _scene_frame(g2, "frame-object")
+    wrt2 = _scene_frame(g2, "frame-world")
+    _scene_position_coord(g2, frame2, wrt2, (1.0, 2.0, 3.0))  # no unit triple added
+
+    with pytest.raises(ValueError, match="length unit"):
+        _position_of(g2, frame2)
 

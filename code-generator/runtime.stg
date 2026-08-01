@@ -243,13 +243,6 @@ class AdmittanceFilter {
     double step(double force, double mass, double damping, double stiffness,
                 double max_velocity, double dt) {
         mass = std::max(mass, 1e-6);
-        // Zero-force -> zero-velocity guard: with a pure damper the velocity decays
-        // on its own, but an explicit reset guarantees a clean halt on release.
-        if (force == 0.0 && stiffness == 0.0) {
-            vel_ = 0.0;
-            offset_ = 0.0;
-            return 0.0;
-        }
         const double acc = (force - damping * vel_ - stiffness * offset_) / mass;
         vel_ += acc * dt;
         vel_ = std::clamp(vel_, -max_velocity, max_velocity);

@@ -14,7 +14,7 @@ from pathlib import Path
 import rdflib
 
 from motion_spec.introspection.archive import load_manifest, sha256_file
-from motion_spec.rdf_parser.vocab import CSTR_HDL
+from motion_spec_dsl.rdf_parser.vocab import CSTR_HDL
 from motion_spec.introspection.provenance import MSPROV, prov_uri, rec_run_lifecycle, rec_types
 
 

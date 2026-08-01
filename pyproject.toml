@@ -19,6 +19,7 @@ dependencies = [
     "click>=8.1",
     "rdflib",
     "rdf_utils",
+    "motion_spec_dsl",
 ]
 
 [project.optional-dependencies]

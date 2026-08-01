@@ -5,7 +5,8 @@ Setup
 Installation
 ============
 
-The base package provides the CLI, RDF-to-IR lowering, and C++ generation.
+The base package provides the CLI, the authoring DSL, RDF-to-IR lowering, and C++
+generation.
 Install optional features only where they are needed:
 
 .. code-block:: console
@@ -15,12 +16,10 @@ Install optional features only where they are needed:
    $ python -m pip install /path/to/motion-spec
    $ motion-spec install validation
    $ motion-spec install introspection
-   $ motion-spec install dsl
 
-``motion-spec install dsl all`` installs the authoring DSL and every optional
-Python feature. The package extras are ``validation``, ``introspection``, and
-``all``; the sibling ``motion-spec-dsl`` package is installed by the ``dsl``
-feature.
+``motion-spec install all`` installs every optional Python feature. The package
+extras are ``validation``, ``introspection``, and ``all``. ``motion-spec-dsl`` is
+a required dependency because high-level commands accept ``.robmot`` input.
 
 Dependencies
 ============
@@ -39,8 +38,12 @@ Python profiles
      - `Python 3.10+ <https://www.python.org/>`_,
        `Click <https://click.palletsprojects.com/>`_,
        `RDFLib <https://github.com/RDFLib/rdflib>`_, and
-       `rdf-utils <https://github.com/secorolab/rdf-utils>`_
-     - CLI, RDF loading, IR, and code generation
+       `rdf-utils <https://github.com/secorolab/rdf-utils>`_,
+       `motion-spec-dsl <https://github.com/secorolab/motion-spec-dsl>`_,
+       `textX <https://github.com/textX/textX>`_,
+       `coord-dsl <https://github.com/secorolab/coord-dsl>`_, and
+       `scene-dsl <https://github.com/secorolab/scene-dsl>`_
+     - CLI, DSL authoring, RDF loading, IR, and code generation
    * - Validation
      - `pySHACL <https://github.com/RDFLib/pySHACL>`_
      - ``motion-spec check``
@@ -49,12 +52,6 @@ Python profiles
        `REC <https://github.com/secorolab/rec>`_, and
        `Protocol Buffers <https://github.com/protocolbuffers/protobuf>`_
      - Recording, archive verification, replay, and runtime RDF
-   * - DSL
-     - `motion-spec-dsl <https://github.com/secorolab/motion-spec-dsl>`_,
-       `textX <https://github.com/textX/textX>`_,
-       `coord-dsl <https://github.com/secorolab/coord-dsl>`_, and
-       `scene-dsl <https://github.com/secorolab/scene-dsl>`_
-     - Accepting ``.robmot`` models as high-level command input
 
 Generation and common runtime
 -----------------------------
@@ -134,12 +131,12 @@ Health checks
    $ motion-spec health --target mujoco
    $ motion-spec health --target robif2b
 
-The profiles are ``base``, ``validation``, ``introspection``, ``dsl``,
+The health profiles are ``base``, ``validation``, ``introspection``, ``dsl``,
 ``codegen``, ``build``, and ``runtime``. Build and runtime are evaluated per
 target: MuJoCo requires the KDL stack and ``mj_kdl_wrapper``, the real-robot
 target requires ``robif2b``. Missing optional profiles do not invalidate a
-base-only installation; select the profile required by the command you intend to
-run.
+base-only installation; the ``dsl`` profile reports the transitive authoring
+dependencies separately so installation problems are actionable.
 
 Development checkout
 ====================

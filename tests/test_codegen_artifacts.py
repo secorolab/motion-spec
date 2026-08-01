@@ -8,7 +8,7 @@ from pathlib import Path
 from rdflib import Graph
 from rdf_utils.resolver import IriToFileResolver, install_resolver
 
-from motion_spec.closure_semantics import closure_output_ids
+from motion_spec.classes.closures import closure_output_ids
 from motion_spec.generation import codegen
 from motion_spec.rdf_parser.ir import (
     _annotate_controller_signals,

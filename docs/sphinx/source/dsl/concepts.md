@@ -86,6 +86,13 @@ world {
 }
 ```
 
+For an `ft-sensor` wrench, omitting `ref-point` or `as-seen-by` defaults that
+property to the sensor's attached frame. Set `as-seen-by` explicitly when the
+force and torque components must be expressed in another frame, such as the robot
+base; the runtime transforms the observation before constraints consume its axes.
+This sensor binding currently applies to force/torque observations, not RGB or
+depth images.
+
 ### Quantity types
 
 Context quantities support:
@@ -193,7 +200,8 @@ admittance comply-x = {
 }
 ```
 
-Mass, damping, and maximum velocity must be positive; stiffness is optional.
+All four parameters are required: there are no implicit controller defaults. Mass
+and maximum velocity must be positive; damping and stiffness must be non-negative.
 
 ## Views
 
@@ -228,57 +236,32 @@ path approach-path = lerp {
 }
 ```
 
-A path is emitted as geometry, a `geom-path:Path` of the matching kind carrying only its
-shape parameters. A progress binding adds the `geom-op-ext:PathEvaluator` that produces
-the pose setpoint the motion tracks. Timing is never on the geometry — Bruyninckx §8.6's ladder places a
+A path is emitted as geometry, a `geom-path:Path` of the matching kind carrying only
+its shape parameters. Timing is never stored on that geometry—Bruyninckx §8.6 places a
 path one rung less constrained than a trajectory precisely because a path leaves timing
-unimposed, so the keyword names what the DSL actually declares rather than what execution
-generates: per §7.11, a trajectory is never specified, only produced at runtime by
-executing a guarded motion.
+unimposed. Per §7.11, executing a guarded motion produces the trajectory at runtime.
 
-Because a path imposes no timing, its constraint handler declares progress explicitly as required by
-§8.6.3. The normalized parameter is separate from the geometry:
+Path following is therefore expressed by ordinary motion constraints with three distinct
+jobs:
 
 ```robmot
-path-parameter s,
-path approach-path = lerp { start: <spec.start>, goal: <spec.goal> }
-```
-
-```robmot
-constraint-handler (ns=app) handler-approach {
-    handles: <approach>
-    progress {
-        approach: maximizing <approach.spec.s> along <approach.spec.approach-path> advancing at 1.0 Hz
-    }
-    // controllers and solvers
+while {
+    follow-tangent: moving <shared.world.tcp-base>
+                    along <spec.approach-path> at <spec.approach-speed>,
+    follow-position: keeping <shared.world.tcp-base>.position
+                     on <spec.approach-path>,
+    follow-orientation: keeping <shared.world.tcp-base>.orientation
+                        on <spec.approach-path>,
+    advance: progress of <shared.world.tcp-base>
+             along <spec.approach-path> more than <spec.min-approach-speed>
 }
 ```
 
-The handler owns this named controller policy. One policy may synchronize multiple paths with a
-shared parameter:
-
-```robmot
-progress {
-    dual-approach: maximizing <approach.spec.s> along {
-        <approach.spec.arm1-path>,
-        <approach.spec.arm2-path>
-    } advancing at 1.0 Hz
-}
-```
-
-Alternatively, separate named entries provide independent parameters:
-
-```robmot
-progress {
-    arm1: maximizing <approach.spec.alpha1> along <approach.spec.arm1-path> advancing at 1.0 Hz,
-    arm2: maximizing <approach.spec.alpha2> along <approach.spec.arm2-path> advancing at 1.0 Hz
-}
-```
-
-The backend resets each parameter at activation and advances it monotonically only while every
-equality tracking its selected paths is satisfied. Physical velocity and acceleration limits
-remain ordinary controller constraints; progress is not a duration, easing curve, or velocity
-profile.
+`moving ... along ... at ...` drives the tangential speed. `keeping ... on ...`
+constrains the lateral position or orientation to the path. `progress of ... along ...`
+observes the same tangential speed and acts only as a guard or monitor; it contributes no
+solver row. Controllers bind to the driver and geometry constraints in the normal way.
+For multiple arms, declare this constraint set once per moved quantity and path.
 
 ## Guarded motions
 

@@ -16,7 +16,7 @@ from pathlib import Path
 
 import rdflib
 
-from motion_spec.rdf_parser.vocab import APP
+from motion_spec_dsl.rdf_parser.vocab import APP
 
 PROV = rdflib.Namespace("http://www.w3.org/ns/prov#")
 
@@ -149,7 +149,7 @@ def create_generation_dir(model: Path, output_dir: Path | None = None) -> Path:
 
 def generate_model(model: Path, generation: Path, *, stage: str = "code") -> Path:
     """Generate MODEL through IR or C++ code and return its generated-artifact directory."""
-    from motion_spec.rdf_parser.check import validate_manifest
+    from motion_spec_dsl.rdf_parser.check import validate_manifest
     from motion_spec.classes.entities import DataclassJSONEncoder
     from motion_spec.rdf_parser.ir import generate_ir
 

@@ -10,7 +10,7 @@ from rdflib import Graph, URIRef
 from rdflib.namespace import RDF
 
 from motion_spec.rdf_parser.ir import Parser, _solver_derivation_context, _solver_sections
-from motion_spec.rdf_parser.vocab import SLV_EXT
+from motion_spec_dsl.rdf_parser.vocab import SLV_EXT
 
 NS = "https://example.test/"
 

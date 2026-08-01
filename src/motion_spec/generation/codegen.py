@@ -14,7 +14,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from motion_spec.classes.entities import DataclassJSONEncoder
-from motion_spec.closure_semantics import closure_output_ids
+from motion_spec.classes.closures import closure_output_ids
 from motion_spec.generation.artifacts import write_introspection_artifacts
 
 

@@ -30,14 +30,13 @@ from motion_spec.rdf_parser.ir import (
     _orientation_of,
     _position_of,
 )
-from motion_spec.rdf_parser.vocab import (
+from motion_spec_dsl.rdf_parser.vocab import (
     CSTR,
     GEOM_COORD,
     GEOM_ENT,
     GEOM_OP,
     GEOM_OP_EXT,
     GEOM_REL,
-    MAP,
     QUDT_SCHEMA,
 )
 

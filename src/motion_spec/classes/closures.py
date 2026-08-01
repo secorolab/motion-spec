@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 # Author: Vamsi Kalagaturu
-"""Shared semantic roles for values produced by controller closures."""
+"""Semantic roles of values produced by compiler IR closure records."""
 
 from __future__ import annotations
 

@@ -141,8 +141,9 @@ The normal motions are:
 then constructs a Cartesian goal:
 
 ```robmot
-path-parameter s,
 pose start-pose = snapshot of <shared.world.pose-ee-base>,
+linear-velocity approach-speed = 0.08 m/s,
+linear-velocity min-approach-speed = 0.005 m/s,
 linear-distance start-cube-x = snapshot of <shared.world.pose-cube-base>.position.x,
 linear-distance start-cube-y = snapshot of <shared.world.pose-cube-base>.position.y,
 path approach-path = lerp {
@@ -151,39 +152,31 @@ path approach-path = lerp {
 }
 ```
 
-The constraint handler binds that geometry to its controller-owned progress objective:
+The motion gives path following three explicit constraint roles:
 
 ```robmot
-constraint-handler (ns=app) handler-pick-above {
-    handles: <pick-above>
-    progress {
-        approach: maximizing <pick-above.spec.s> along <pick-above.spec.approach-path> advancing at 1.0 Hz
-    }
-    // monitors, controllers, and solvers
-}
-```
-
-Its `when` constraint prevents motion until the gripper is open. Its `while`
-constraints make the TCP position and orientation follow the path:
-
-```robmot
-when {
-    gripper-ready: <shared.world.gripper-pos>
-                   equal to <shared.spec.gripper-open>
-}
 while {
-    follow-pos: keeping <shared.world.pose-ee-base>.position
-                equal to <spec.approach-path>.position,
+    follow-tan: moving <shared.world.pose-ee-base>
+                along <spec.approach-path> at <spec.approach-speed>,
+    follow-lat: keeping <shared.world.pose-ee-base>.position
+                on <spec.approach-path>,
     follow-ori: keeping <shared.world.pose-ee-base>.orientation
-                equal to <spec.approach-path>.orientation
+                on <spec.approach-path>,
+    advance: progress of <shared.world.pose-ee-base>
+             along <spec.approach-path> more than <spec.min-approach-speed>
 }
 ```
+
+`follow-tan` commands the speed along the path, `follow-lat` and `follow-ori`
+keep the TCP on its geometry, and `advance` confirms that measured tangential
+progress stays above the minimum. The separate `when` constraint prevents motion
+until the gripper is open.
 
 `handler-pick-above` gives those declarative constraints runtime behavior:
 
 - the monitor emits `E_PICK_ABOVE_READY` when `gripper-ready` activates;
 - `otherwise hold <home>` supplies the safe motion before it activates;
-- two PID controllers regulate the trajectory constraints;
+- three PID controllers regulate the tangential, lateral, and orientation constraints;
 - the handler reuses the ACHD arm solver from `handler-home`.
 
 That event drives `T_HOME_PICK_ABOVE` in the FSM. The same chain—constraint,

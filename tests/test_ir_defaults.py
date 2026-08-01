@@ -34,7 +34,7 @@ from motion_spec.rdf_parser.ir import (
     _robot_setups_from_graph,
     ops_generic,
 )
-from motion_spec.rdf_parser.vocab import (
+from motion_spec_dsl.rdf_parser.vocab import (
     AGN,
     ALGO_EXT,
     CSTR,

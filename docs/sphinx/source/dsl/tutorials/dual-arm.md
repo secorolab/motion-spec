@@ -41,11 +41,10 @@ motion-spec run \
   src/motion-spec-dsl/models/pick_place_dual/pick_place_dual.robmot \
   -o /tmp/pick-place-dual \
   --prefix /path/to/workspace/install \
-  --run-id tutorial \
-  --headless
+  --run-id tutorial
 ```
 
-Remove `--headless` to open the MuJoCo viewer.
+The MuJoCo viewer opens by default. Add `--headless` only for unattended runs.
 
 ## 3. Follow the two control paths
 

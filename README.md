@@ -29,8 +29,9 @@ pip install -e ".[test]"             # test suite
 pip install -e ".[docs]"             # documentation build
 ```
 
-The base install provides RDF-to-IR and C++ generation. C++ generation still requires
-the external `stst` executable; install its pinned version after installing motion-spec:
+The base install includes the `motion-spec-dsl` authoring frontend, RDF-to-IR lowering,
+and C++ generation. C++ generation still requires the external `stst` executable; install
+its pinned version after installing motion-spec:
 
 ```bash
 motion-spec setup
@@ -71,8 +72,9 @@ the headers via the `stst` StringTemplate engine (`--stst-bin` to point at a cus
 binary). Pass `--help` to any script for the full flag set.
 
 FSM wiring (monitor events bound to a coord2b state machine) is picked up automatically
-from the `fsm_ir.json` that `textx generate --target jsonld` writes alongside the
-manifest when the `.robmot` imports a `.fsm`.
+from the FSM named graph in the emitted JSON-LD dataset when the `.robmot` imports a
+`.fsm`. The compiler derives its FSM IR from that RDF graph; it never treats JSON-LD as
+application JSON.
 
 ## Standalone postmortem analysis
 

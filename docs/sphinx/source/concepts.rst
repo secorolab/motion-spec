@@ -12,8 +12,10 @@ The high-level pipeline crosses an explicit project boundary:
 
 `motion-spec-dsl <https://github.com/secorolab/motion-spec-dsl>`_ defines the
 ``.robmot`` language, composes its scene and FSM imports, resolves DSL semantics,
-and emits the JSON-LD RDF dataset. ``motion-spec`` consumes that boundary. It does
-not define or parse the authoring language itself.
+owns the model classes, RDF vocabulary and manifest validation, and emits the
+JSON-LD RDF dataset. ``motion-spec`` consumes that boundary: its RDF parser lowers
+the combined dataset into compiler IR, after which code generation and runtime
+tooling take over. It does not define or parse the authoring language itself.
 
 The high-level ``motion-spec gen`` and ``motion-spec run MODEL`` commands invoke
 the installed DSL frontend before continuing through their own stages.
@@ -132,4 +134,3 @@ With no option, ``replay`` prints a run summary. ``--verify`` checks manifest
 files and the frame-log header against the generation contract.
 ``--recover-runtime-ttl`` rebuilds runtime RDF from the frame log, and ``--jsonl``
 streams decoded frames for external analysis.
-

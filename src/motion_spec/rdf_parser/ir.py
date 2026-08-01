@@ -108,15 +108,15 @@ from motion_spec.classes.entities import (
     UnilateralConstraint, UnilateralConstraintType, Unit, VelocityCompositionSolver,
     VelocityTwist, View, Wrench,
 )
-from motion_spec.closure_semantics import closure_output_ids
-from motion_spec.rdf_parser.vocab import (
+from motion_spec.classes.closures import closure_output_ids
+from motion_spec_dsl.rdf_parser.vocab import (
     AGN, ALGO_EXT, APP, CSTR, CSTR_EXT, CSTR_HDL, CSTR_HDL_EXT, ENV, EXEC, GEOM_COORD,
     GEOM_ENT, GEOM_OP, GEOM_OP_EXT, GEOM_PATH, GEOM_REL, KC, KC_STAT, MAP, MAP_EXT, MOT, QUDT_QKIND,
     QUDT_SCHEMA, RBDYN_COORD, RBDYN_ENT, RBDYN_OP, SLV, SLV_EXT,
     SENSORS, SOSA, TIME,
 )
 # fmt: on
-from motion_spec.rdf_parser.manifest import build_url_map, metamodel_url_map
+from motion_spec_dsl.rdf_parser.manifest import build_url_map, metamodel_url_map
 
 # ROS interop: a monitor's `also publish to topic` clause is emitted as ros:channel-name /
 # ros:type-name on the monitor node (ns from bdd-dsl's ROS metamodel).

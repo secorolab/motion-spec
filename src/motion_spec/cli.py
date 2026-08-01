@@ -303,7 +303,7 @@ def build(generation: Path, prefixes: tuple[Path, ...], jobs: int | None) -> Non
 )
 def check(manifest: Path, meta_shacl: bool) -> None:
     """Validate MANIFEST against its SHACL constraints."""
-    from motion_spec.rdf_parser.check import validate_manifest
+    from motion_spec_dsl.rdf_parser.check import validate_manifest
 
     conforms, report = validate_manifest(manifest, meta_shacl=meta_shacl)
     click.echo(report)

@@ -27,8 +27,8 @@ from motion_spec.introspection.provenance import (
     record_frame_log_health,
     repositories,
 )
-from motion_spec.rdf_parser.manifest import build_url_map, metamodel_url_map, metamodels_root
-from motion_spec.rdf_parser.vocab import APP
+from motion_spec_dsl.rdf_parser.manifest import build_url_map, metamodel_url_map, metamodels_root
+from motion_spec_dsl.rdf_parser.vocab import APP
 
 PROV = rdflib.Namespace("http://www.w3.org/ns/prov#")
 
@@ -504,7 +504,7 @@ def _verify_model_imports(model_path: Path) -> None:
     resolves its imported graphs to model/'s directory (where they were vendored).
     A dangling import — the graph left behind in the build tree — fails here.
     """
-    from motion_spec.rdf_parser.vocab import APP
+    from motion_spec_dsl.rdf_parser.vocab import APP
 
     try:
         from rdf_utils.resolver import IriToFileResolver, install_resolver

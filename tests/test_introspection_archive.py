@@ -19,7 +19,7 @@ from motion_spec.introspection.provenance import prov_uri, rec_run_lifecycle
 from motion_spec.introspection import replay
 from motion_spec.introspection.replay import decode_frames, summarize, validate_header
 from motion_spec.introspection.runtime_graph import write_runtime_ttl
-from motion_spec.rdf_parser.vocab import APP
+from motion_spec_dsl.rdf_parser.vocab import APP
 from support import _provenance, _schema, _source_tree
 
 REC = rdflib.Namespace("https://secorolab.github.io/metamodels/rec#")

@@ -32,7 +32,7 @@ def test_guarded_motion_without_a_name_raises() -> None:
     from rdflib.namespace import RDF, SDO
 
     from motion_spec.rdf_parser.ir import Parser
-    from motion_spec.rdf_parser.vocab import MOT
+    from motion_spec_dsl.rdf_parser.vocab import MOT
 
     EX = Namespace("https://example.test/")
     graph = Graph()

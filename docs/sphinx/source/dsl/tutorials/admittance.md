@@ -29,14 +29,25 @@ wrench ext-force {
 }
 ```
 
+The sensor is attached at the wrist, but `as-seen-by` requests force and torque
+components expressed in the Kinova base frame. If it were omitted, the wrench
+would remain expressed in the sensor's attached frame. `ref-point` independently
+states the point about which torque is measured.
+
 Constraints then select scalar components such as
 `<shared.world.ext-force>.force.x`.
 
 ## 3. Trace the arc
 
 `arc-motion` captures its start pose on `E_ARC_ENTERED`, constructs an end pose, and
-uses an `arc` trajectory with a plane normal and amplitude. Its `until all` condition
+uses an `arc` path with a plane normal and amplitude. Its `until all` condition
 requires both table proximity and the target y interval.
+
+The path constraints command tangential speed, keep position and orientation on the
+arc, and monitor minimum measured progress. If force interrupts the motion, release
+fires `E_ARC_ENTERED` again: the start snapshot is refreshed from the current TCP pose
+and a new arc is constructed to the unchanged target pose. The robot does not return to
+the interrupted path.
 
 Force constraints use `outside` to detect either sign:
 
@@ -65,6 +76,9 @@ admittance velocity-x = {
 Its `while` constraints command measured linear velocity to equal those generated
 references while holding orientation. Two named `until` groups distinguish release
 from table contact, allowing separate FSM transitions.
+
+`mass`, `damping`, `stiffness`, and `max-velocity` are all required. The DSL supplies
+no defaults; zero stiffness in this example explicitly disables the spring term.
 
 ## 5. Inspect the record
 

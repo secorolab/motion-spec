@@ -12,7 +12,8 @@ Quick start
 
 .. code-block:: console
 
-   $ motion-spec install dsl all
+   $ python -m pip install /path/to/motion-spec
+   $ motion-spec install all
    $ motion-spec setup
    $ motion-spec health --target mujoco
    $ motion-spec run model.robmot -o generation/demo --run-id run-1 --headless

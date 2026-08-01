@@ -159,8 +159,30 @@ rotation-template ::= [
     "euler": "pose-rotation-euler",
     "quaternion": "pose-rotation-quaternion",
     "direction-cosine": "pose-rotation-direction-cosine",
+    "relative": "pose-rotation-relative",
     default: "pose-rotation-euler"
 ]
+
+delta-rotation-template ::= [
+    "quaternion": "delta-rotation-quaternion",
+    default: "delta-rotation-euler"
+]
+
+delta-component(c) ::= <%
+<if(c.ref)>shared.<c.ref><else><c.value><endif>
+%>
+
+delta-rotation-euler(pose) ::= <%
+KDL::Rotation::RPY(<pose.orientation_delta:{c | <delta-component(c)>}; separator=", ">)
+%>
+
+delta-rotation-quaternion(pose) ::= <%
+KDL::Rotation::Quaternion(<pose.orientation_delta:{c | <delta-component(c)>}; separator=", ">)
+%>
+
+pose-rotation-relative(pose, views) ::= <%
+<if(pose.orientation_in_frame)><(delta-rotation-template.(pose.orientation_delta_representation))(pose)> * shared.<pose.orientation_base>.M<else>shared.<pose.orientation_base>.M * <(delta-rotation-template.(pose.orientation_delta_representation))(pose)><endif>
+%>
 
 pose-rotation-euler(pose, views) ::= <%
 KDL::Rotation::RPY(<component-value(pose.orientation_x, views)>, <component-value(pose.orientation_y, views)>, <component-value(pose.orientation_z, views)>)

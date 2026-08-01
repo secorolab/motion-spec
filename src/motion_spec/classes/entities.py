@@ -242,6 +242,10 @@ class Pose:
     position: list[float] | None
     euler_axes_sequence: str | None = None
     orientation_representation: str = "euler"
+    orientation_base: str | None = None
+    orientation_delta: list | None = None
+    orientation_delta_representation: str | None = None
+    orientation_in_frame: str | None = None
     provenance: Provenance = field(default_factory=Provenance)
     type: str = field(default="Pose")
 

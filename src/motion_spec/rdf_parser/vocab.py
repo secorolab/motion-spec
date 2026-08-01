@@ -300,11 +300,21 @@ class GEOM_OP_EXT(DefinedNamespace):
     PoseDiffEvaluator: URIRef
     PoseToAngularDistance: URIRef
     PathProjection: URIRef
+    RelativeOrientation: URIRef
     path: URIRef
     tangent: URIRef
     linear: URIRef
 
-    _extras = ["angular-distance", "path-parameter", "normal-a", "normal-b", "along-speed"]
+    _extras = [
+        "angular-distance",
+        "path-parameter",
+        "normal-a",
+        "normal-b",
+        "along-speed",
+        "rotation-base",
+        "rotation-delta",
+        "rotation-in-frame",
+    ]
 
     _NS = Namespace(f"{URI_SECORO_MM}/geometry/spatial-operators#")
 

@@ -2195,6 +2195,11 @@ class Parser:
             euler_axes_sequence = str(axes) if axes is not None else None
 
         provenance = self.quantity_provenance(id_)
+        rel_base = rel_delta = rel_delta_repr = rel_frame = None
+        if representation == "relative":
+            rel_base, rel_delta, rel_delta_repr, rel_frame = self._relative_orientation(
+                orientation_node
+            )
         return Pose(
             self.id(id_),
             of,
@@ -2208,7 +2213,36 @@ class Parser:
             pos,
             euler_axes_sequence,
             representation,
+            orientation_base=rel_base,
+            orientation_delta=rel_delta,
+            orientation_delta_representation=rel_delta_repr,
+            orientation_in_frame=rel_frame,
             provenance=provenance,
+        )
+
+    def _relative_orientation(self, orientation_node):
+        """The base pose id, the delta's ordered component values, its representation and the
+        frame the delta turns in (None means the base's own frame)."""
+        base = self.g.value(orientation_node, GEOM_OP_EXT["rotation-base"])
+        delta = self.g.value(orientation_node, GEOM_OP_EXT["rotation-delta"])
+        frame = self.g.value(orientation_node, GEOM_OP_EXT["rotation-in-frame"])
+        delta_repr = self.orientation_representation(delta)
+        order = _ORIENTATION_COMPONENTS.get(delta_repr) or ("x", "y", "z")
+        by_axis = {}
+        for component in self.g.objects(delta, GEOM_COORD["has-coordinate"]):
+            axis = self.g.value(component, MAP["axis"])
+            if axis is None:
+                continue
+            value = self.g.value(component, QUDT_SCHEMA["value"])
+            ref = self.g.value(component, CSTR["reference-value"])
+            by_axis[split_uri(axis)[1]] = (
+                {"ref": self.id(ref)} if ref is not None else {"value": float(value)}
+            )
+        return (
+            self.id(base) if base is not None else None,
+            [by_axis[a] for a in order if a in by_axis],
+            delta_repr,
+            self.id(frame) if frame is not None else None,
         )
 
     def _orientation_coordinate(self, id_):
@@ -2224,6 +2258,8 @@ class Parser:
         if id_ is None:
             return "euler"
         types = set(self.g[id_ : RDF["type"]])
+        if GEOM_OP_EXT["RelativeOrientation"] in types:
+            return "relative"
         if GEOM_COORD["Quaternion"] in types:
             return "quaternion"
         if GEOM_COORD["DirectionCosineXYZ"] in types:
@@ -5629,6 +5665,7 @@ _ORIENTATION_COMPONENTS = {
     "euler": ("x", "y", "z"),
     "quaternion": ("x", "y", "z", "w"),
     "direction-cosine": tuple(f"{row}{col}" for row in "xyz" for col in "xyz"),
+    "relative": (),
 }
 
 
@@ -5669,6 +5706,14 @@ def build_pose_components(views: dict, data: list) -> dict:
         pose_id = _field(superobject, "id")
         representation = _field(superobject, "orientation_representation") or "euler"
         entry = components.setdefault(pose_id, _empty_pose_entry(representation))
+        if representation == "relative":
+            for name in (
+                "orientation_base",
+                "orientation_delta",
+                "orientation_delta_representation",
+                "orientation_in_frame",
+            ):
+                entry[name] = _field(superobject, name)
         axis = str(_field(view, "axis") or "").lower()
         subobject = _field(_field(view, "subobject"), "id")
         if not subobject or axis not in {"x", "y", "z", "w"}:
@@ -5688,7 +5733,12 @@ def build_pose_components(views: dict, data: list) -> dict:
                 if component_id:
                     entry[f"orientation_{row}{col}"] = _pose_component(component_id, data_by_id)
     for pose_id, parts in components.items():
-        missing = [name for name, value in parts.items() if value is None]
+        # A body-frame relative orientation names no frame, so its slot stays empty.
+        missing = [
+            name
+            for name, value in parts.items()
+            if value is None and name != "orientation_in_frame"
+        ]
         if missing:
             raise ValueError(
                 f"Declared pose '{pose_id}' is missing required components: {', '.join(missing)}."

@@ -2475,8 +2475,14 @@ class Parser:
         provenance = self.quantity_provenance(id_)
         sensor = self.g.value(id_, SOSA.madeBySensor)
         sensor_name = self.id(sensor) if sensor is not None else ""
+        sensor_frame_node = self.g.value(sensor, SENSORS.frame) if sensor is not None else None
+        if sensor is not None and sensor_frame_node is None:
+            raise ConstraintViolation(
+                "dynamics", f"WrenchCoordinate '{id_}' sensor '{sensor}' has no physical frame"
+            )
+        sensor_frame = self.frame(sensor_frame_node) if sensor_frame_node is not None else None
         return Wrench(
-            self.id(id_), qk, ref, seen, unit, provenance=provenance, sensor_name=sensor_name
+            self.id(id_), qk, ref, seen, unit, provenance, sensor_frame, sensor_name
         )
 
     @memoize
@@ -4832,10 +4838,22 @@ def _world_solver_outputs(
                     continue
             frame_node = None
             if type_ != KC_STAT.JointPositionCoordinate:
-                frame_node = g.value(node, GEOM_COORD["as-seen-by"])
+                seen_by_predicate = (
+                    RBDYN_COORD["as-seen-by"]
+                    if type_ == RBDYN_COORD.WrenchCoordinate
+                    else GEOM_COORD["as-seen-by"]
+                )
+                frame_node = g.value(node, seen_by_predicate)
                 if frame_node is None:
                     _of, _wrt, frame_node = p._derived_reference_frames(node)
-            if frame_node is not None:
+            if type_ == RBDYN_COORD.WrenchCoordinate:
+                sensor = g.value(node, SOSA.madeBySensor)
+                sensor_frame_node = g.value(sensor, SENSORS.frame) if sensor is not None else None
+                if sensor_frame_node is None or not any(
+                    _tree_owns(tree, sensor_frame_node) for tree in owned_trees
+                ):
+                    continue
+            elif frame_node is not None:
                 frame_body = _body_of(frame_node)
                 frame_tree = iri_parent(frame_body)
                 runtime_frame = _leaf(frame_body)
@@ -4846,6 +4864,28 @@ def _world_solver_outputs(
             output = parse(node)
             if type_ == KC_STAT.JointPositionCoordinate:
                 output = replace(output, joint_name=f"{runtime_prefix}{output.joint_name}")
+            elif type_ == RBDYN_COORD.WrenchCoordinate:
+                relation = g.value(node, RBDYN_COORD["of-wrench"])
+                reference_node = g.value(relation, RBDYN_ENT["reference-point"])
+
+                def runtime_frame(frame_node):
+                    """Runtime body/site name for a scene frame owned by this solver."""
+                    frame = p.frame(frame_node)
+                    frame_tree = iri_parent(_body_of(frame_node))
+                    return replace(
+                        frame,
+                        id=f"{runtime_prefix}{frame.id}" if frame_tree in owned_trees else frame.id,
+                    )
+
+                output = replace(
+                    output,
+                    sensor_name=f"{runtime_prefix}{output.sensor_name}",
+                    sensor_frame=runtime_frame(sensor_frame_node),
+                    reference_point=replace(
+                        output.reference_point, id=runtime_frame(reference_node).id
+                    ),
+                    as_seen_by=runtime_frame(frame_node),
+                )
             frame = getattr(output, "as_seen_by", None)
             if frame_node is None and frame is not None and frame.id != chain_root:
                 continue
@@ -5429,7 +5469,7 @@ def _shared_runtime_members(slv_chain) -> list[dict]:
                 if out.id in seen_ft_ids:
                     continue
                 seen_ft_ids.add(out.id)
-                members.append({"id": f"{out.id}_ft_bias", "type": "FreeVector"})
+                members.append({"id": f"{out.id}_ft_bias", "type": "Wrench"})
                 members.append({"id": f"{out.id}_ft_settle", "type": "IntCounter"})
 
     return members

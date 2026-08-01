@@ -442,6 +442,14 @@ int main() {
     }
     assert(v_prev < v0);
 
+    const KDL::Wrench transformed = motion_spec::runtime::transform_wrench(
+        KDL::Wrench(KDL::Vector(1.0, 0.0, 0.0), KDL::Vector(0.0, 1.0, 0.0)),
+        KDL::Frame(KDL::Rotation::RotZ(M_PI_2), KDL::Vector(1.0, 0.0, 0.0)),
+        KDL::Frame(KDL::Vector(2.0, 0.0, 0.0)),
+        KDL::Frame(KDL::Rotation::RotZ(M_PI_2)));
+    assert(KDL::Equal(transformed.force, KDL::Vector(1.0, 0.0, 0.0), 1e-12));
+    assert(KDL::Equal(transformed.torque, KDL::Vector(0.0, 1.0, -1.0), 1e-12));
+
     // Closest-point projection replaces the deleted clock-driven parameter: a point exactly
     // on the path projects to its own parameter, an offset point to the nearest one, and the
     // seeded search stays monotone as the frame advances along the path.

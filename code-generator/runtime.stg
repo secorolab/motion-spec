@@ -16,6 +16,7 @@ runtime_header(has_mobile_base, control_period_ns) ::= <<
 #include \<Eigen/Dense\>
 #include \<iostream\>
 #include \<kdl/chain.hpp\>
+#include \<kdl/frames.hpp\>
 #include \<kdl/jacobian.hpp\>
 #include \<kdl/jntarray.hpp\>
 #include \<stdexcept\>
@@ -45,6 +46,17 @@ inline double clamp01(double v) {
     if (v \< 0.0) return 0.0;
     if (v > 1.0) return 1.0;
     return v;
+}
+
+inline KDL::Wrench transform_wrench(
+    const KDL::Wrench &source_wrench,
+    const KDL::Frame &world_source,
+    const KDL::Frame &world_reference_point,
+    const KDL::Frame &world_observation_frame) {
+    const KDL::Wrench world_wrench = world_source.M * source_wrench;
+    const KDL::Wrench at_reference =
+        world_wrench.RefPoint(world_reference_point.p - world_source.p);
+    return world_observation_frame.M.Inverse(at_reference);
 }
 
 // Local search window around the previous projection. Forward is generous enough to keep up

@@ -298,8 +298,9 @@ class Wrench:
     as_seen_by: Frame
     unit: list[Unit]
     provenance: Provenance = field(default_factory=Provenance)
+    sensor_frame: Frame | None = None
     # Non-empty when this wrench is measured from a force/torque sensor (the FT-read
-    # solver-output reads and tares this sensor into shared.<id>.force). Empty for
+    # solver-output reads and tares this sensor into shared.<id>). Empty for
     # computed/commanded wrenches.
     sensor_name: str = ""
     type: str = field(default="Wrench")

@@ -283,22 +283,29 @@ solver-output-Wrench(solver, out, backend) ::= <<
 
 solver-output-Wrench-mj_kdl(solver, out) ::= <<
 {
-    // FT force -> world, minus startup-tared bias, into shared.<out.id>.force.
-    // startup tare assumes constant tool load; per-entry tare if that changes.
     const mj_kdl::ForceTorqueSensor *ft_<out.id> = mj_kdl::find_ft_sensor(robot.<solver.id>.robot, "<out.sensor_name>");
-    KDL::Vector f_world_<out.id> = KDL::Vector::Zero();
-    if (ft_<out.id> && ft_<out.id>->frame_site_id >= 0) {
-        KDL::Frame site_frame_<out.id>;
-        if (mj_kdl::get_site_frame(robot.<solver.id>.robot->model, robot.<solver.id>.robot->data, ft_<out.id>->frame_site.c_str(), &site_frame_<out.id>)) {
-            f_world_<out.id> = site_frame_<out.id>.M * ft_<out.id>->wrench.force;
-        }
+    if (!ft_<out.id>) {
+        throw std::runtime_error("FT sensor '<out.sensor_name>' is unavailable");
     }
+    const auto frame_<out.id> = [&](const char *name) {
+        KDL::Frame frame;
+        if (!mj_kdl::get_site_frame(robot.<solver.id>.robot->model, robot.<solver.id>.robot->data, name, &frame)
+            && !mj_kdl::get_body_frame(robot.<solver.id>.robot->model, robot.<solver.id>.robot->data, name, &frame)) {
+            throw std::runtime_error(std::string("FT wrench frame '") + name + "' is unavailable");
+        }
+        return frame;
+    };
+    const KDL::Wrench measured_<out.id> = motion_spec::runtime::transform_wrench(
+        ft_<out.id>->wrench,
+        frame_<out.id>("<out.sensor_frame.id>"),
+        frame_<out.id>("<out.reference_point.id>"),
+        frame_<out.id>("<out.as_seen_by.id>"));
     if (shared.<out.id>_ft_settle \< 200) {       // fixed settle; author it if startup transients vary
         ++shared.<out.id>_ft_settle;
-        shared.<out.id>_ft_bias = f_world_<out.id>;   // last settle step is the tare sample
-        shared.<out.id>.force = KDL::Vector::Zero();
+        shared.<out.id>_ft_bias = measured_<out.id>;   // last settle step is the tare sample
+        shared.<out.id> = KDL::Wrench::Zero();
     } else {
-        shared.<out.id>.force = shared.<out.id>_ft_bias - f_world_<out.id>;
+        shared.<out.id> = shared.<out.id>_ft_bias - measured_<out.id>;
     }
 }
 >>

@@ -27,7 +27,7 @@ from urllib.parse import urlsplit
 import rdflib
 from rdf_utils.naming import get_valid_var_name
 from rdf_utils.models.vocab import URI_KC_TYPE_SERIAL
-from rdf_utils.namespace import NS_MM_KC_EXT, NS_MM_QUDT_UNIT
+from rdf_utils.namespace import NS_MM_KC_EXT
 from rdf_utils.resolver import IriToFileResolver, install_resolver
 from rdf_utils.uri import (
     iri_is_descendant,
@@ -4116,10 +4116,8 @@ def _scene_from_graph(g):
     if context is not None:
         timestep = g.value(context, EXEC.timestep)
         value = g.value(timestep, QUDT_SCHEMA.value)
-        unit = g.value(timestep, QUDT_SCHEMA.unit)
         if value is not None:
-            scale = 0.001 if unit == NS_MM_QUDT_UNIT["MilliSEC"] else 1.0
-            scene.timestep_s = float(value.toPython()) * scale
+            scene.timestep_s = float(value.toPython())
 
     bound_trees = _mapped_targets(g, AGN["AgentModel"], GEOM_ENT.KinematicTree)
     attach_by_body, _root = _fixed_attachments(g, bound_trees)

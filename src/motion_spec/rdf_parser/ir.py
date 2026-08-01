@@ -2488,7 +2488,10 @@ class Parser:
     @memoize
     def quantity(self, id_):
         """Parse the quantity at node, dispatching on its RDF type."""
-        if TIME["Duration"] in get_node_types(self.g, id_):
+        if get_node_types(self.g, id_) & {
+            TIME["Duration"],
+            CSTR_EXT["ElapsedDurationCoordinate"],
+        }:
             return self.duration_quantity(id_)
         self._expect_type(id_, QUDT_SCHEMA["Quantity"])
         quantity_kind_node = self.g.value(id_, QUDT_SCHEMA.hasQuantityKind)
@@ -2551,8 +2554,10 @@ class Parser:
 
     @memoize
     def duration_quantity(self, id_):
-        """Parse a native OWL-Time Duration node (elapsed timing) as a generic Quantity."""
-        self._expect_type(id_, TIME["Duration"])
+        """Parse an authored duration or runtime elapsed-duration coordinate."""
+        types = get_node_types(self.g, id_)
+        if not types & {TIME["Duration"], CSTR_EXT["ElapsedDurationCoordinate"]}:
+            raise ValueError(f"Expected a duration at '{id_}'")
         value_node = self.g.value(id_, TIME["numericDuration"])
         value = float(value_node) if value_node is not None else None
         provenance = self.quantity_provenance(id_)

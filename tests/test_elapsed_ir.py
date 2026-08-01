@@ -21,8 +21,11 @@ def _instant(g: Graph, name: str) -> URIRef:
 
 def _duration(g: Graph, name: str, seconds: float | None = None) -> URIRef:
     node = URIRef(f"{NS}{name}")
-    g.add((node, RDF.type, TIME.Duration))
-    if seconds is not None:
+    if seconds is None:
+        g.add((node, RDF.type, CSTR_EXT.ElapsedDurationCoordinate))
+        g.add((node, TIME.unitType, TIME.unitSecond))
+    else:
+        g.add((node, RDF.type, TIME.Duration))
         g.add((node, TIME.numericDuration, Literal(seconds, datatype=XSD.decimal)))
         g.add((node, TIME.unitType, TIME.unitSecond))
     return node
@@ -33,7 +36,6 @@ def _interval(g: Graph, name: str, duration: URIRef) -> None:
     g.add((node, RDF.type, TIME.ProperInterval))
     g.add((node, TIME.hasBeginning, _instant(g, f"{name}-entry")))
     g.add((node, TIME.hasEnd, _instant(g, f"{name}-now")))
-    g.add((node, TIME.hasDuration, duration))
 
 
 def _evaluator(g: Graph, cstr_node: URIRef, measured: URIRef) -> URIRef:

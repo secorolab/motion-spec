@@ -461,12 +461,19 @@ class CSTR_EXT(DefinedNamespace):
     AngleConstraint: URIRef
     AngularDistanceConstraint: URIRef
     TimeConstraint: URIRef
+    ElapsedDurationCoordinate: URIRef
 
     tolerance: URIRef
 
     _extras = ["has-constraint"]
 
     _NS = Namespace(f"{URI_SECORO_MM}/task/constraint#")
+
+
+class QKIND_EXT(DefinedNamespace):
+    LinearJerk: URIRef
+
+    _NS = Namespace(f"{URI_SECORO_MM}/qudt/quantity-kind#")
 
 
 class TIME(DefinedNamespace):
@@ -569,7 +576,6 @@ class CSTR_HDL(DefinedNamespace):
 class CSTR_HDL_EXT(DefinedNamespace):
     FeedForwardController: URIRef
     SetpointGenerator: URIRef
-    LinearJerk: URIRef
     solver: URIRef
 
     _extras = [

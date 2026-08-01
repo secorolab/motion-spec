@@ -4,7 +4,23 @@ from __future__ import annotations
 import pytest
 from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import RDF
-from rdf_utils.models.vocab import URI_GEOM_PRED_W, URI_GEOM_TYPE_ORIENT_REF, URI_QUDT_UNIT_CM
+from rdf_utils.constraints import ConstraintViolation
+from rdf_utils.models.vocab import (
+    URI_DISTRIB_TYPE_SAMPLED_QUANTITY,
+    URI_GEOM_PRED_ALPHA,
+    URI_GEOM_PRED_AXES_SEQ,
+    URI_GEOM_PRED_BETA,
+    URI_GEOM_PRED_GAMMA,
+    URI_GEOM_PRED_W,
+    URI_GEOM_TYPE_ANGLES_ABG,
+    URI_GEOM_TYPE_EULER_ANGLES,
+    URI_GEOM_TYPE_EXTRINSIC,
+    URI_GEOM_TYPE_ORIENT_REF,
+    URI_GEOM_TYPE_POSITION_REF,
+    URI_GEOM_TYPE_VECTOR_XYZ,
+    URI_QUDT_UNIT_CM,
+    URI_QUDT_UNIT_RAD,
+)
 from scipy.spatial.transform import Rotation
 
 from motion_spec.rdf_parser.ir import (
@@ -34,7 +50,10 @@ def _u(name: str) -> URIRef:
 
 def _frame(g: Graph, name: str) -> URIRef:
     node = _u(name)
+    origin = _u(f"{name}-origin")
     g.add((node, RDF.type, GEOM_ENT.Frame))
+    g.add((node, GEOM_ENT.origin, origin))
+    g.add((origin, RDF.type, GEOM_ENT.Point))
     return node
 
 
@@ -99,7 +118,7 @@ def test_distance_cross_frame_composes_reference_path() -> None:
 
     end_in_start = _derived(distance, "end-in-start-reference")
     assert (None, GEOM_OP.composite, end_in_start) in g
-    assert end_in_start in set(g.subjects(RDF.type, GEOM_REL.Pose))
+    assert URIRef(f"{end_in_start}-pose-rel") in set(g.subjects(RDF.type, GEOM_REL.Pose))
 
 
 def test_distance_same_frame_skips_reference_path() -> None:
@@ -144,7 +163,8 @@ def test_pose_reference_cross_frame_reexpresses_reference() -> None:
     assert (compose, RDF.type, GEOM_OP.ComposePose) in g
     assert g.value(compose, GEOM_OP.in2) == reference
     assert g.value(compose, GEOM_OP.composite) == reexpressed
-    assert g.value(reexpressed, GEOM_REL["with-respect-to"]) == _u("frame-base")
+    relation = URIRef(f"{reexpressed}-pose-rel")
+    assert g.value(relation, GEOM_REL["with-respect-to"]) == _u("frame-base")
 
 
 def test_pose_reference_same_frame_is_noop() -> None:
@@ -169,15 +189,17 @@ def test_pose_reference_rejects_body_mismatch() -> None:
 # Relative orientation: geom-op:in1/in2 operands, read back in slot order
 # --------------------------------------------------------------------------- #
 def _delta_node(g: Graph, name: str, values: tuple[float, float, float]) -> URIRef:
-    """A frame-less Euler delta coordinate with three axis components."""
+    """A standalone Euler delta quantity in canonical rdf-utils form."""
     node = _u(name)
-    g.add((node, RDF.type, GEOM_COORD.OrientationCoordinate))
-    for axis, value in zip("xyz", values):
-        component = _u(f"{name}.{axis}")
-        g.add((component, RDF.type, QUDT_SCHEMA.Quantity))
-        g.add((node, GEOM_COORD["has-coordinate"], component))
-        g.add((component, MAP.axis, MAP[axis]))
-        g.add((component, QUDT_SCHEMA.value, Literal(value)))
+    for type_ in (QUDT_SCHEMA.Quantity, URI_GEOM_TYPE_EULER_ANGLES, URI_GEOM_TYPE_ANGLES_ABG):
+        g.add((node, RDF.type, type_))
+    g.add((node, RDF.type, URI_GEOM_TYPE_EXTRINSIC))
+    g.add((node, URI_GEOM_PRED_AXES_SEQ, Literal("xyz")))
+    g.add((node, QUDT_SCHEMA.unit, URI_QUDT_UNIT_RAD))
+    for predicate, value in zip(
+        (URI_GEOM_PRED_ALPHA, URI_GEOM_PRED_BETA, URI_GEOM_PRED_GAMMA), values
+    ):
+        g.add((node, predicate, Literal(float(value))))
     return node
 
 
@@ -250,6 +272,8 @@ def _scene_position_coord(
     g.add((position, GEOM_REL.of, g.value(of_frame, GEOM_ENT.origin)))
     g.add((position, GEOM_REL["with-respect-to"], g.value(wrt_frame, GEOM_ENT.origin)))
     g.add((coord, RDF.type, GEOM_COORD.PositionCoordinate))
+    g.add((coord, RDF.type, URI_GEOM_TYPE_POSITION_REF))
+    g.add((coord, RDF.type, URI_GEOM_TYPE_VECTOR_XYZ))
     g.add((coord, GEOM_COORD["of-position"], position))
     g.add((coord, GEOM_COORD["as-seen-by"], wrt_frame))
     for predicate, value in zip((GEOM_COORD.x, GEOM_COORD.y, GEOM_COORD.z), xyz):
@@ -301,6 +325,18 @@ def test_position_of_scales_to_metres_and_rejects_a_missing_unit() -> None:
     wrt2 = _scene_frame(g2, "frame-world")
     _scene_position_coord(g2, frame2, wrt2, (1.0, 2.0, 3.0))  # no unit triple added
 
-    with pytest.raises(ValueError, match="length unit"):
+    with pytest.raises(ConstraintViolation, match="length unit"):
         _position_of(g2, frame2)
 
+
+def test_sampled_scene_placements_are_rejected() -> None:
+    """Sampling has no motion-spec seed semantics yet, so it must never become identity."""
+    g = Graph()
+    frame = _scene_frame(g, "frame-object")
+    wrt = _scene_frame(g, "frame-world")
+    coord = _scene_position_coord(g, frame, wrt, (1.0, 2.0, 3.0))
+    g.add((coord, RDF.type, URI_DISTRIB_TYPE_SAMPLED_QUANTITY))
+    g.add((coord, QUDT_SCHEMA.unit, URI_QUDT_UNIT_CM))
+
+    with pytest.raises(ConstraintViolation, match="Sampled placement coordinate"):
+        _position_of(g, frame)

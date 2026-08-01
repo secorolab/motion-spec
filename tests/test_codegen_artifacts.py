@@ -8,6 +8,7 @@ from pathlib import Path
 from rdflib import Graph
 from rdf_utils.resolver import IriToFileResolver, install_resolver
 
+from motion_spec.closure_semantics import closure_output_ids
 from motion_spec.generation import codegen
 from motion_spec.rdf_parser.ir import (
     _annotate_controller_signals,
@@ -162,6 +163,18 @@ def _sample_ir() -> dict:
             },
         },
     }
+
+
+def test_closure_output_stays_direct_when_it_is_also_a_view() -> None:
+    view = {
+        "subobject": {"id": "end_x"},
+        "superobject": {"id": "end_pose"},
+        "subspace": "position",
+        "axis": "X",
+    }
+    direct_ids = closure_output_ids({"type": "Addition", "out": "end_x"})
+
+    assert codegen._views_for_access({"end_pose_x": view}, direct_ids) == {}
 
 
 def _sample_fsm() -> dict:

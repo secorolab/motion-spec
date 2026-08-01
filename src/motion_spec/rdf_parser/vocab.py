@@ -152,6 +152,7 @@ class KC(DefinedNamespace):
 
 
 class KC_STAT(DefinedNamespace):
+    JointReference: URIRef
     JointPositionCoordinate: URIRef
     JointVelocityCoordinate: URIRef
     JointAccelerationCoordinate: URIRef
@@ -234,7 +235,6 @@ class GEOM_COORD(DefinedNamespace):
     gamma: URIRef
 
     _extras = [
-        "has-coordinate",
         "of-pose",
         "of-position",
         "of-orientation",
@@ -321,16 +321,17 @@ class RBDYN_ENT(DefinedNamespace):
     Mass: URIRef
     mass: URIRef
 
-    _extras = ["reference-point", "of-body"]
+    _extras = ["reference-point", "acts-on", "of-body"]
 
     _NS = NS_MM_DYN_ENT
 
 
 class RBDYN_COORD(DefinedNamespace):
+    WrenchReference: URIRef
     WrenchCoordinate: URIRef
     UniformGravitationalFieldCoordinate: URIRef
 
-    _extras = ["as-seen-by"]
+    _extras = ["of-wrench", "as-seen-by", "force", "torque"]
 
     _NS = NS_MM_DYN_COORD
 

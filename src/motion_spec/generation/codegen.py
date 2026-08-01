@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from motion_spec.classes.entities import DataclassJSONEncoder
+from motion_spec.closure_semantics import closure_output_ids
 from motion_spec.generation.artifacts import write_introspection_artifacts
 
 
@@ -196,6 +197,32 @@ def load_ir(input_path: Path):
         return json.load(handle)
 
 
+def _views_for_access(views: dict, direct_ids: set[str]) -> dict:
+    """Index unambiguous MAP views by subobject for template access expressions.
+
+    The IR keeps every view by its own identity. Templates instead resolve a quantity ID
+    to its superobject expression; a subobject reused by several views is an ordinary
+    shared quantity and must not select one of those views arbitrarily.
+    """
+    indexed: dict[str, dict | None] = {}
+    for view in views.values():
+        subobject_id = (view.get("subobject") or {}).get("id")
+        if subobject_id and subobject_id not in direct_ids:
+            previous = indexed.get(subobject_id)
+            if previous is None and subobject_id in indexed:
+                continue
+            if previous is None:
+                indexed[subobject_id] = view
+                continue
+            same_access = all(
+                previous.get(field) == view.get(field)
+                for field in ("superobject", "subspace", "axis", "direction")
+            )
+            if not same_access:
+                indexed[subobject_id] = None
+    return {id_: view for id_, view in indexed.items() if view is not None}
+
+
 def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     """Render every C++/artifact file for an IR: introspection headers, runtime and
     shared-state headers, the frame-log proto (compiled to C++), per-motion headers and
@@ -219,7 +246,28 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     payload_dir = output_dir / ".stst"
     payload_dir.mkdir(parents=True, exist_ok=True)
     ir_payload_path = payload_dir / "ir.json"
-    write_json(ir_payload_path, ir)
+    template_ir = dict(ir)
+    direct_ids = {
+        item["id"]
+        for item in ir.get("shared_data", [])
+        if item.get("id")
+        and (
+            item.get("value") is not None
+            or (item.get("provenance") or {}).get("authored", False)
+        )
+    }
+    direct_ids.update(
+        snapshot["target_id"]
+        for motion in ir.get("motions", [])
+        for snapshot in motion.get("snapshots", [])
+    )
+    direct_ids.update(
+        output_id
+        for closure in ir.get("closures", {}).values()
+        for output_id in closure_output_ids(closure)
+    )
+    template_ir["views"] = _views_for_access(ir["views"], direct_ids)
+    write_json(ir_payload_path, template_ir)
 
     render_template(
         stst_bin,
@@ -252,7 +300,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
         payload = {
             "motion": motion_payload,
             "closures": ir["closures"],
-            "views": ir["views"],
+            "views": template_ir["views"],
             "wrench_outputs": ir["wrench_outputs"],
             "platform_velocity_solvers": ir["platform_velocity_solvers"],
             "platform_force_solvers": ir["platform_force_solvers"],

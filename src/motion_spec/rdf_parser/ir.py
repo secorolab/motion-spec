@@ -24,16 +24,66 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import rdflib
+from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.naming import get_valid_var_name
-from rdf_utils.models.geom_coord import OrientCoordModel, get_orientation_coord_vals
-from rdf_utils.models.geom_rel import OrientationModel
+from rdf_utils.models.execution import get_path_of_node
+from rdf_utils.models.geom_coord import (
+    OrientCoordModel,
+    PoseCoordModel,
+    PositionCoordModel,
+    get_coord_vectorxyz,
+    get_direction_cosine_matrix,
+    get_euler_angles_abg,
+    get_orientation_coord_vals,
+    get_quaternion_xyzw,
+)
+from rdf_utils.models.geom_rel import OrientationModel, PoseModel, PositionModel
+from rdf_utils.models.common import ModelBase, get_node_types
 from rdf_utils.models.vocab import (
+    URI_GEOM_PRED_AXES_SEQ,
+    URI_GEOM_PRED_ALPHA,
+    URI_GEOM_PRED_BETA,
+    URI_GEOM_PRED_DIRECTION_COSINE_X,
+    URI_GEOM_PRED_DIRECTION_COSINE_Y,
+    URI_GEOM_PRED_DIRECTION_COSINE_Z,
+    URI_GEOM_PRED_GAMMA,
+    URI_GEOM_PRED_OF,
+    URI_GEOM_PRED_OF_ORIENT,
+    URI_GEOM_PRED_OF_POSE,
+    URI_GEOM_PRED_OF_POSITION,
+    URI_GEOM_PRED_ORIGIN,
+    URI_GEOM_PRED_SEEN_BY,
+    URI_GEOM_PRED_WRT,
+    URI_GEOM_PRED_W,
+    URI_GEOM_PRED_X,
+    URI_GEOM_PRED_Y,
+    URI_GEOM_PRED_Z,
+    URI_GEOM_TYPE_ANGLES_ABG,
+    URI_GEOM_TYPE_DIRECTION_COSINE_XYZ,
+    URI_GEOM_TYPE_EULER_ANGLES,
+    URI_GEOM_TYPE_POSE_COORD,
+    URI_GEOM_TYPE_POSE,
+    URI_GEOM_TYPE_POSITION,
+    URI_GEOM_TYPE_POSITION_COORD,
+    URI_GEOM_TYPE_ORIENT,
+    URI_GEOM_TYPE_ORIENT_COORD,
+    URI_GEOM_TYPE_ORIENT_REF,
+    URI_GEOM_TYPE_FRAME,
+    URI_GEOM_TYPE_POINT,
+    URI_GEOM_TYPE_POSE_REF,
+    URI_GEOM_TYPE_POSITION_REF,
+    URI_GEOM_TYPE_VECTOR_XYZ,
+    URI_DISTRIB_TYPE_SAMPLED_QUANTITY,
+    URI_QUDT_QK_LENGTH,
+    URI_GEOM_TYPE_QUATERNION,
     URI_KC_TYPE_SERIAL,
     URI_QUDT_UNIT_CM,
+    URI_QUDT_UNIT_DEG,
     URI_QUDT_UNIT_M,
     URI_QUDT_UNIT_MM,
+    URI_QUDT_UNIT_RAD,
 )
-from rdf_utils.namespace import NS_MM_KC_EXT
+from rdf_utils.namespace import NS_MM_KC_EXT, NS_MM_QUDT_UNIT as QUDT_UNIT
 from rdf_utils.resolver import IriToFileResolver, install_resolver
 from rdf_utils.uri import (
     iri_is_descendant,
@@ -57,6 +107,13 @@ from motion_spec.classes.entities import (
     SceneSpec, Setpoint, SimplicialComplex, SnapshotCapture, SolverWithInputAndOutput, Subspace,
     UnilateralConstraint, UnilateralConstraintType, Unit, VelocityCompositionSolver,
     VelocityTwist, View, Wrench,
+)
+from motion_spec.closure_semantics import closure_output_ids
+from motion_spec.rdf_parser.vocab import (
+    AGN, ALGO_EXT, APP, CSTR, CSTR_EXT, CSTR_HDL, CSTR_HDL_EXT, ENV, EXEC, GEOM_COORD,
+    GEOM_ENT, GEOM_OP, GEOM_OP_EXT, GEOM_PATH, GEOM_REL, KC, KC_STAT, MAP, MAP_EXT, MOT, QUDT_QKIND,
+    QUDT_SCHEMA, RBDYN_COORD, RBDYN_ENT, RBDYN_OP, SLV, SLV_EXT,
+    SENSORS, SOSA, TIME,
 )
 # fmt: on
 from motion_spec.rdf_parser.manifest import build_url_map, metamodel_url_map
@@ -84,16 +141,6 @@ def _ros_type_parts(ros_type: str) -> tuple[str, str, str]:
     include = f"{pkg}/{sub}/{_ros_camel_to_snake(msg_name)}.hpp"
     cpp_type = f"{pkg}::{sub}::{msg_name}"
     return pkg, include, cpp_type
-
-# fmt: off
-from motion_spec.rdf_parser.vocab import (
-    AGN, ALGO_EXT, APP, CSTR, CSTR_EXT, CSTR_HDL, CSTR_HDL_EXT, ENV, EXEC, GEOM_COORD,
-    GEOM_ENT, GEOM_OP, GEOM_OP_EXT, GEOM_PATH, GEOM_REL, KC, KC_STAT, MAP, MAP_EXT, MOT, QUDT_QKIND,
-    QUDT_SCHEMA, RBDYN_COORD, RBDYN_ENT, RBDYN_OP, SLV, SLV_EXT,
-    SENSORS, SOSA, TIME,
-)
-# fmt: on
-
 
 @dataclass(frozen=True)
 class SpatialAxis:
@@ -217,7 +264,7 @@ def spatial_axes(
 
 def _is_elapsed_constraint(g, cstr_node) -> bool:
     """Whether a constraint node is a timing (elapsed) constraint."""
-    return cstr_node is not None and CSTR_EXT["TimeConstraint"] in g[cstr_node : RDF["type"]]
+    return cstr_node is not None and CSTR_EXT["TimeConstraint"] in get_node_types(g, cstr_node)
 
 
 def _duration_seconds(g, node) -> float:
@@ -289,12 +336,12 @@ def _authored_controller_axes(g) -> dict[URIRef, tuple[SpatialAxis, ...]]:
         axis = _term_name(g.value(view, MAP.axis)) if view is not None else None
         quantity_kind = None
         target = g.value(view, MAP.superobject) if view is not None else quantity
-        target_types = set(g.objects(target, RDF.type))
+        target_types = get_node_types(g, target)
         if GEOM_COORD.PoseCoordinate in target_types:
             quantity_kind = "Pose"
         elif KC_STAT.JointPositionCoordinate in target_types:
             quantity_kind = "JointPosition"
-        controller_types = set(g.objects(controller, RDF.type))
+        controller_types = get_node_types(g, controller)
         controller_type = next(
             (
                 _term_name(type_)
@@ -310,7 +357,7 @@ def _authored_controller_axes(g) -> dict[URIRef, tuple[SpatialAxis, ...]]:
         relation = next(
             (
                 _term_name(type_)
-                for type_ in g.objects(constraint, RDF.type)
+                for type_ in get_node_types(g, constraint)
                 if type_ != CSTR.Constraint and _term_name(type_).endswith("Constraint")
             ),
             "",
@@ -409,7 +456,7 @@ def _solver_derivation_context(g) -> SolverDerivationContext:
 
 def _resolve_solver_semantics(g, solver: URIRef) -> SolverSemantics:
     """Resolve a solver resource to explicit input semantics or reject it."""
-    if SLV_EXT.CommandForwardingSolver in g[solver : RDF.type]:
+    if SLV_EXT.CommandForwardingSolver in get_node_types(g, solver):
         return COMMAND_FORWARDING_SEMANTICS
     algorithm = g.value(solver, SLV["solver"])
     try:
@@ -474,14 +521,14 @@ def _controller_signal_id(
 ) -> str:
     """Derive a scalar controller output ID from its authored command semantics."""
     controller_id = p.id(plan.controller)
-    types = set(g.objects(plan.controller, RDF.type))
+    types = get_node_types(g, plan.controller)
     command_type = str(g.value(plan.controller, APP["command-type"]) or "")
     if CSTR_HDL_EXT.FeedForwardController in types:
         return f"cmd_{controller_id}"
     if CSTR_HDL.ImpedanceController in types or command_type == "Force":
         return f"force_{controller_id}"
     target = g.value(plan.view, MAP.superobject) if plan.view is not None else plan.quantity
-    if command_type == "Torque" and KC_STAT.JointPositionCoordinate in g[target : RDF.type]:
+    if command_type == "Torque" and KC_STAT.JointPositionCoordinate in get_node_types(g, target):
         return f"tau_{controller_id}"
     quantity_id = p.id(plan.quantity)
     suffix = "" if plan.constraint in context.shared_constraints else f"_{_motion_suffix(p, plan.motion)}"
@@ -586,7 +633,7 @@ def _derived_controller(
     else:
         controller_id = source_id
         signal_id = _controller_signal_id(g, p, context, plan)
-        types = set(g.objects(plan.controller, RDF.type))
+        types = get_node_types(g, plan.controller)
         command_type = str(g.value(plan.controller, APP["command-type"]) or "")
         if CSTR_HDL_EXT.FeedForwardController in types:
             source = p.quantity(plan.quantity)
@@ -614,7 +661,7 @@ def _derived_controller(
             g, p, plan.controller, signal
         )
 
-    types = set(g.objects(plan.controller, RDF.type))
+    types = get_node_types(g, plan.controller)
     if CSTR_HDL.ProportionalIntegralDerivative in types:
         decay_rate = None
         if CSTR_HDL.DecayingIntegralTerm in types:
@@ -953,7 +1000,7 @@ def _reference_inputs(g, node):
     a producer by the output-to-input walk. Its parameters are inputs of the operator that
     traverses it, and are yielded here so the walk reaches them.
     """
-    if not g[node : RDF["type"] : GEOM_PATH.Path]:
+    if GEOM_PATH.Path not in get_node_types(g, node):
         return ()
     return tuple(obj for pred, obj in g.predicate_objects(node) if pred != RDF["type"])
 
@@ -1000,7 +1047,7 @@ class Operator:
             op
             for out in self.output
             for op in g.subjects(out, data_out)
-            if g[op : RDF["type"] : self.type_]
+            if self.type_ in get_node_types(g, op)
         ]
 
     def scheduler_step(self, g, data_out):
@@ -1010,7 +1057,7 @@ class Operator:
 
         for out in self.output:
             for call in g[:out:data_out]:
-                if not g[call : RDF["type"] : self.type_]:
+                if self.type_ not in get_node_types(g, call):
                     continue
 
                 # We will only record this call if it has any input
@@ -1059,7 +1106,7 @@ class Specification:
             op
             for out in self.output
             for op in g.subjects(out, data_out)
-            if g[op : RDF["type"] : self.type_]
+            if self.type_ in get_node_types(g, op)
         ]
 
     def scheduler_step(self, g, data_out):
@@ -1116,7 +1163,7 @@ class ErrorEvaluator:
         constraint_id = g.value(closure_id, CSTR_HDL["constraint"])
 
         for operator in self.cstr_op:
-            if operator.type_ not in g[constraint_id : RDF["type"]]:
+            if operator.type_ not in get_node_types(g, constraint_id):
                 continue
 
             closure = {
@@ -1144,8 +1191,10 @@ class ErrorEvaluator:
         """Data-structure nodes feeding the matching constraint's inputs."""
         data_structures = set()
 
+        constraint_id = g.value(operator_id, CSTR_HDL["constraint"])
+        constraint_types = get_node_types(g, constraint_id) if constraint_id is not None else set()
         for op in self.cstr_op:
-            if op.type_ not in g[operator_id : CSTR_HDL["constraint"] / RDF["type"]]:
+            if op.type_ not in constraint_types:
                 continue
 
             for in_ in op.input:
@@ -1161,7 +1210,7 @@ class ErrorEvaluator:
             op
             for out in outputs
             for op in g.subjects(out, data_out)
-            if g[op : RDF["type"] : self.type_]
+            if self.type_ in get_node_types(g, op)
         ]
 
     def scheduler_step(self, g, data_out):
@@ -1172,7 +1221,11 @@ class ErrorEvaluator:
         for op in self.cstr_op:
             for out in op.output:
                 for call in g.subjects(out, data_out):
-                    if op.type_ not in g[call : CSTR_HDL["constraint"] / RDF["type"]]:
+                    constraint_id = g.value(call, CSTR_HDL["constraint"])
+                    constraint_types = (
+                        get_node_types(g, constraint_id) if constraint_id is not None else set()
+                    )
+                    if op.type_ not in constraint_types:
                         continue
 
                     # We will only record this call if it has any input
@@ -1206,7 +1259,7 @@ class AssignmentEvaluator:
         """Build the assignment-evaluator closure (equality constraint only)."""
         constraint_id = g.value(closure_id, CSTR_HDL["constraint"])
 
-        if self.cstr_op.type_ not in g[constraint_id : RDF["type"]]:
+        if self.cstr_op.type_ not in get_node_types(g, constraint_id):
             return None
 
         closure = {
@@ -1225,7 +1278,11 @@ class AssignmentEvaluator:
 
     def from_operator_to_input(self, g, operator_id):
         """Data-structure nodes feeding the assignment's inputs."""
-        if self.cstr_op.type_ not in g[operator_id : CSTR_HDL["constraint"] / RDF["type"]]:
+        constraint_id = g.value(operator_id, CSTR_HDL["constraint"])
+        constraint_types = (
+            get_node_types(g, constraint_id) if constraint_id is not None else set()
+        )
+        if self.cstr_op.type_ not in constraint_types:
             return set()
 
         data_structures = set()
@@ -1506,8 +1563,10 @@ class Parser:
     def _expect_type(self, id_, type_):
         """Raise if `id_` lacks the expected rdf:type. Replaces bare asserts so
         the check survives `python -O` and names the offending node."""
-        if type_ not in self.g[id_ : RDF["type"]]:
-            raise ValueError(f"node {id_} is missing expected rdf:type {type_}")
+        if type_ not in get_node_types(self.g, id_):
+            raise ConstraintViolation(
+                "motion-spec", f"Node '{id_}' is missing expected rdf:type '{type_}'"
+            )
 
     def _compute_ambiguous_context_ids(self):
         """Local names shared by more than one node, which need model-scope prefixing."""
@@ -1612,7 +1671,7 @@ class Parser:
         out = []
         for o in self.g[id_ : SLV["output"]]:
             for type_, func in io_dispatcher:
-                if type_ in self.g[o : RDF["type"]]:
+                if type_ in get_node_types(self.g, o):
                     out.append(func(o))
 
         # The authored value IS the Vereshchagin root acceleration, passed to ACHD as-is.
@@ -1790,7 +1849,7 @@ class Parser:
                 group_constraint_ids = sorted(
                     self.id(c) for c in self.g[group_node : CSTR_EXT["has-constraint"]]
                 )
-                group_any = CSTR_EXT.ConstraintDisjunction in self.g[group_node : RDF.type]
+                group_any = CSTR_EXT.ConstraintDisjunction in get_node_types(self.g, group_node)
         error_node = self.g.value(id_, CSTR_HDL["error"])
         error = (
             None
@@ -1798,7 +1857,7 @@ class Parser:
             else self.quantity(error_node)
         )
 
-        if CSTR_HDL["LevelTriggeredMonitor"] in self.g[id_ : RDF["type"]]:
+        if CSTR_HDL["LevelTriggeredMonitor"] in get_node_types(self.g, id_):
             flag = self.id(self.g.value(id_, CSTR_HDL["flag"]))
             return LevelMonitor(
                 self.id(id_),
@@ -1853,7 +1912,7 @@ class Parser:
         constraint_node = self.g.value(id_, CSTR_HDL["constraint"])
         constraint = self.constraint(constraint_node)
 
-        if CSTR_HDL["AssignmentEvaluator"] in self.g[id_ : RDF["type"]]:
+        if CSTR_HDL["AssignmentEvaluator"] in get_node_types(self.g, id_):
             t = EvaluatorType.AssignmentEvaluator
             error = None
         else:
@@ -1868,7 +1927,7 @@ class Parser:
         elapsed_tolerance_s = None
         if _is_elapsed_constraint(self.g, constraint_node):
             is_elapsed = True
-            types = set(self.g[constraint_node : RDF["type"]])
+            types = get_node_types(self.g, constraint_node)
             if CSTR["GreaterThanConstraint"] in types:
                 elapsed_op = ">="
                 thr = self.g.value(constraint_node, CSTR["threshold"])
@@ -1925,7 +1984,7 @@ class Parser:
         when = []
         when_any = False
         for c in self.g[id_ : MOT["when"]]:
-            if CSTR_EXT.ConstraintDisjunction in self.g[c : RDF["type"]]:
+            if CSTR_EXT.ConstraintDisjunction in get_node_types(self.g, c):
                 when_any = True
                 for member in self.g[c : CSTR_EXT["has-constraint"]]:
                     when.append(self.constraint(member))
@@ -1942,7 +2001,7 @@ class Parser:
             if _is_constraint_aggregate(self.g, c):
                 # A section-wide disjunction makes the whole until 'any'; a named group keeps
                 # its own logic on the monitor that targets it.
-                if CSTR_EXT.ConstraintDisjunction in self.g[c : RDF["type"]]:
+                if CSTR_EXT.ConstraintDisjunction in get_node_types(self.g, c):
                     until_any = True
                 for member in self.g[c : CSTR_EXT["has-constraint"]]:
                     until.append(self.constraint(member))
@@ -1966,11 +2025,11 @@ class Parser:
         quantity = self.quantity(self.g.value(id_, CSTR["quantity"]))
 
         parameter = None
-        if CSTR["EqualityConstraint"] in self.g[id_ : RDF["type"]]:
+        if CSTR["EqualityConstraint"] in get_node_types(self.g, id_):
             parameter = self.equality_constraint(id_)
-        elif CSTR["UnilateralConstraint"] in self.g[id_ : RDF["type"]]:
+        elif CSTR["UnilateralConstraint"] in get_node_types(self.g, id_):
             parameter = self.unilateral_constraint(id_)
-        elif CSTR_EXT["OutsideConstraint"] in self.g[id_ : RDF["type"]]:
+        elif CSTR_EXT["OutsideConstraint"] in get_node_types(self.g, id_):
             parameter = self.outside_constraint(id_)
         else:
             parameter = self.bilateral_constraint(id_)
@@ -1991,7 +2050,7 @@ class Parser:
         self._expect_type(id_, CSTR["UnilateralConstraint"])
         threshold = self.quantity(self.g.value(id_, CSTR["threshold"]))
         type_ = UnilateralConstraintType.LessThan
-        if CSTR["GreaterThanConstraint"] in self.g[id_ : RDF["type"]]:
+        if CSTR["GreaterThanConstraint"] in get_node_types(self.g, id_):
             type_ = UnilateralConstraintType.GreaterThan
 
         return UnilateralConstraint(type_, threshold)
@@ -2064,22 +2123,21 @@ class Parser:
     @memoize
     def position(self, id_):
         """Parse a Position quantity at node."""
-        self._expect_type(id_, GEOM_COORD["PositionCoordinate"])
-        self._expect_type(id_, GEOM_COORD["VectorXYZ"])
-        of_node = self.g.value(id_, GEOM_REL["of"])
-        wrt_node = self.g.value(id_, GEOM_REL["with-respect-to"])
-        as_seen_by_node = self.g.value(id_, GEOM_COORD["as-seen-by"])
-        if of_node is None or wrt_node is None or as_seen_by_node is None:
-            inherited_of, inherited_wrt, inherited_as_seen_by = self._derived_reference_frames(id_)
-            of_node = of_node or inherited_of
-            wrt_node = wrt_node or inherited_wrt
-            as_seen_by_node = as_seen_by_node or inherited_as_seen_by
-        of = self.position_reference(of_node)
-        wrt = self.position_reference(wrt_node)
+        if URI_GEOM_TYPE_POSITION_COORD in get_node_types(self.g, id_):
+            coordinate = PositionCoordModel(id_, self.g)
+            relation = coordinate.position
+        else:
+            relation = PositionModel(id_, self.g)
+            if len(relation.coordinate_ids) != 1:
+                raise ValueError(f"Position '{id_}' needs exactly one coordinate")
+            coordinate = PositionCoordModel(next(iter(relation.coordinate_ids)), self.g, relation)
+        of = self.position_reference(relation.of_id)
+        wrt = self.position_reference(relation.wrt_id)
         quantity_kind = self.id(self.g.value(id_, QUDT_SCHEMA["hasQuantityKind"]))
-        as_seen_by = self.frame(as_seen_by_node)
-        unit = self.id(self.g.value(id_, QUDT_SCHEMA["unit"]))
-        pos = self.parse_xyz(id_)
+        as_seen_by = self.frame(coordinate.as_seen_by)
+        unit = self.id(coordinate.unit)
+        values = get_coord_vectorxyz(coordinate, self.g)
+        pos = list(values) if values is not None else None
 
         return Position(
             self.id(id_), of, wrt, QuantityKind(quantity_kind), as_seen_by, Unit(unit), pos
@@ -2088,25 +2146,45 @@ class Parser:
     @memoize
     def orientation(self, id_):
         """Parse an Orientation quantity at node."""
-        self._expect_type(id_, GEOM_COORD["OrientationCoordinate"])
+        if URI_GEOM_TYPE_ORIENT_COORD in get_node_types(self.g, id_):
+            coordinate = OrientCoordModel(id_, self.g)
+            relation = coordinate.relation
+        else:
+            relation = OrientationModel(id_, self.g)
+            if len(relation.coordinate_ids) != 1:
+                raise ValueError(f"Orientation '{id_}' needs exactly one coordinate")
+            coordinate = OrientCoordModel(next(iter(relation.coordinate_ids)), self.g, relation)
 
         def optional_pose_ref(node):
             """Resolve an optional pose reference (endpoint or bare pose) at node."""
             if node is None:
                 return None
-            if ENV.RigidObject in self.g[node : RDF["type"]]:
+            if ENV.RigidObject in get_node_types(self.g, node):
                 return self.scene_object(node)
-            if GEOM_ENT.Frame in self.g[node : RDF["type"]]:
+            if GEOM_ENT.Frame in get_node_types(self.g, node):
                 return self.frame(node)
             return None
 
-        of = optional_pose_ref(self.g.value(id_, GEOM_REL["of"]))
-        wrt = optional_pose_ref(self.g.value(id_, GEOM_REL["with-respect-to"]))
+        of = optional_pose_ref(relation.of_id)
+        wrt = optional_pose_ref(relation.wrt_id)
         quantity_kind = self.id(self.g.value(id_, QUDT_SCHEMA["hasQuantityKind"]))
-        as_seen_by_node = self.g.value(id_, GEOM_COORD["as-seen-by"])
-        as_seen_by = self.frame(as_seen_by_node) if as_seen_by_node is not None else None
-        unit = self.id(self.g.value(id_, QUDT_SCHEMA["unit"]))
-        axes = self.g.value(id_, GEOM_COORD["axes-sequence"])
+        as_seen_by = self.frame(coordinate.as_seen_by.id)
+        units = set(self.g.objects(coordinate.id, QUDT_SCHEMA["unit"]))
+        if coordinate.types & {
+            URI_GEOM_TYPE_QUATERNION,
+            URI_GEOM_TYPE_DIRECTION_COSINE_XYZ,
+        }:
+            unit = self.id(QUDT_UNIT.UNITLESS)
+        else:
+            angular_units = units & {URI_QUDT_UNIT_RAD, URI_QUDT_UNIT_DEG}
+            if len(angular_units) != 1:
+                raise ConstraintViolation(
+                    "geometry",
+                    f"OrientationCoordinate '{coordinate.id}' needs exactly one angular unit, "
+                    f"found {angular_units}",
+                )
+            unit = self.id(next(iter(angular_units)))
+        axes = self.g.value(coordinate.id, URI_GEOM_PRED_AXES_SEQ)
         provenance = self.quantity_provenance(id_)
         return Orientation(
             self.id(id_),
@@ -2115,7 +2193,7 @@ class Parser:
             QuantityKind(quantity_kind),
             as_seen_by,
             Unit(unit),
-            str(axes) if axes is not None else None,
+            str(axes) if axes is not None else "xyz",
             (id_, ~MAP["subobject"], None) in self.g,
             provenance=provenance,
         )
@@ -2124,9 +2202,9 @@ class Parser:
         """A Position is of a Point with respect to a Point (geometry metamodel)."""
         if id_ is None:
             return None
-        if GEOM_ENT.Point in self.g[id_ : RDF["type"]]:
+        if GEOM_ENT.Point in get_node_types(self.g, id_):
             return self.point(id_)
-        if GEOM_ENT.Frame in self.g[id_ : RDF["type"]]:
+        if GEOM_ENT.Frame in get_node_types(self.g, id_):
             return Point(self.id(id_))
         raise ValueError(f"Position reference must be a Point, got: {id_}")
 
@@ -2135,7 +2213,7 @@ class Parser:
         """Resolve a pose endpoint (frame/scene-object) to its id."""
         if node is None:
             return None
-        if ENV.RigidObject in self.g[node : RDF["type"]]:
+        if ENV.RigidObject in get_node_types(self.g, node):
             return self.scene_object(node)
         return self.frame(node)
 
@@ -2169,38 +2247,63 @@ class Parser:
 
     def pose(self, id_):
         """Parse a Pose quantity (endpoints, orientation, position) at node."""
-        self._expect_type(id_, GEOM_COORD["PoseCoordinate"])
-        of_node = self.g.value(id_, GEOM_REL["of"])
-        wrt_node = self.g.value(id_, GEOM_REL["with-respect-to"])
-        as_seen_by_node = self.g.value(id_, GEOM_COORD["as-seen-by"])
-        if of_node is None or wrt_node is None or as_seen_by_node is None:
-            inherited_of, inherited_wrt, inherited_as_seen_by = self._derived_reference_frames(id_)
-            of_node = of_node or inherited_of
-            wrt_node = wrt_node or inherited_wrt
-            as_seen_by_node = as_seen_by_node or inherited_as_seen_by
-        of = self._pose_endpoint(of_node)
-        wrt = self._pose_endpoint(wrt_node)
-        quantity_kind = []
-        for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]]:
-            quantity_kind.append(self.id(k))
-        as_seen_by = self.frame(as_seen_by_node) if as_seen_by_node is not None else None
-        unit = []
-        for u in self.g[id_ : QUDT_SCHEMA["unit"]]:
-            unit.append(self.id(u))
-        pos = self.parse_xyz(id_)
-        orientation_node = self._orientation_coordinate(id_)
-        representation = self.orientation_representation(orientation_node)
-        dc_x, dc_y, dc_z = (
-            self._direction_cosine_axes(orientation_node)
-            if representation == "direction-cosine"
-            else (None, None, None)
+        coordinate = PoseCoordModel(id_, self.g)
+        relation = coordinate.relation
+        of = self._pose_endpoint(relation.of_id)
+        wrt = self._pose_endpoint(relation.wrt_id)
+        quantity_kind = [
+            self.id(k) for k in self.g[relation.id : QUDT_SCHEMA["hasQuantityKind"]]
+        ]
+        as_seen_by = self.frame(coordinate.as_seen_by.id)
+        unit = list(
+            dict.fromkeys(
+                self.id(u)
+                for component in (coordinate.position_coord.id, coordinate.orientation_coord.id)
+                for u in self.g[component : QUDT_SCHEMA["unit"]]
+            )
         )
+        position_values = get_coord_vectorxyz(coordinate.position_coord, self.g)
+        pos = list(position_values) if position_values is not None else None
+        orientation_node = coordinate.orientation_coord.id
+        representation = self.orientation_representation(orientation_node)
+        dc_x = dc_y = dc_z = None
+        if representation == "direction-cosine":
+            matrix = get_direction_cosine_matrix(coordinate.orientation_coord, self.g)
+            if matrix is not None:
+                dc_x, dc_y, dc_z = (list(row) for row in matrix)
         euler_axes_sequence = None
         if orientation_node is not None and representation == "euler":
-            axes = self.g.value(orientation_node, GEOM_COORD["axes-sequence"])
+            axes = self.g.value(orientation_node, URI_GEOM_PRED_AXES_SEQ)
             euler_axes_sequence = str(axes) if axes is not None else None
+            if URI_GEOM_TYPE_ANGLES_ABG in coordinate.orientation_coord.types:
+                get_euler_angles_abg(coordinate.orientation_coord, self.g)
+        elif representation == "quaternion":
+            get_quaternion_xyzw(coordinate.orientation_coord, self.g)
 
         provenance = self.quantity_provenance(id_)
+        if not provenance.snapshot:
+            provenance = Provenance(
+                authored=any(
+                    self._is_authored(component.id)
+                    for component in (coordinate.position_coord, coordinate.orientation_coord)
+                )
+                or (
+                    bool(
+                        coordinate.orientation_coord.types
+                        & {
+                            URI_GEOM_TYPE_EULER_ANGLES,
+                            URI_GEOM_TYPE_QUATERNION,
+                            URI_GEOM_TYPE_DIRECTION_COSINE_XYZ,
+                            GEOM_OP_EXT["RelativeOrientation"],
+                        }
+                    )
+                    and any(
+                        self.g.value(view, MAP["axis"]) is not None
+                        for view in self.g.subjects(MAP["superobject"], id_)
+                    )
+                ),
+                snapshot=False,
+            )
         rel_operands = None
         if representation == "relative":
             rel_operands = self._relative_orientation(orientation_node)
@@ -2233,24 +2336,38 @@ class Parser:
             )
 
         def _operand(node):
-            if GEOM_COORD["OrientationCoordinate"] in self.g[node : RDF["type"]]:
-                delta_repr = self.orientation_representation(node)
-                order = _ORIENTATION_COMPONENTS.get(delta_repr) or ("x", "y", "z")
-                by_axis = {}
-                for component in self.g.objects(node, GEOM_COORD["has-coordinate"]):
-                    axis = self.g.value(component, MAP["axis"])
-                    if axis is None:
-                        continue
-                    value = self.g.value(component, QUDT_SCHEMA["value"])
-                    ref = self.g.value(component, CSTR["reference-value"])
-                    by_axis[split_uri(axis)[1]] = (
-                        {"ref": self.id(ref)} if ref is not None else {"value": float(value)}
+            types = get_node_types(self.g, node)
+            if URI_GEOM_TYPE_POSE_COORD in types:
+                return {"pose": self.id(node)}
+            representation_types = {
+                URI_GEOM_TYPE_ANGLES_ABG,
+                URI_GEOM_TYPE_QUATERNION,
+                URI_GEOM_TYPE_DIRECTION_COSINE_XYZ,
+            }
+            if types & representation_types:
+                model = ModelBase(node_id=node, graph=self.g)
+                if URI_GEOM_TYPE_QUATERNION in types:
+                    delta_repr = "quaternion"
+                    values = get_quaternion_xyzw(model, self.g)
+                elif URI_GEOM_TYPE_DIRECTION_COSINE_XYZ in types:
+                    delta_repr = "direction-cosine"
+                    matrix = get_direction_cosine_matrix(model, self.g)
+                    values = matrix.reshape(-1) if matrix is not None else None
+                else:
+                    delta_repr = "euler"
+                    euler = get_euler_angles_abg(model, self.g)
+                    values = euler[3] if euler is not None else None
+                if values is None:
+                    raise ValueError(
+                        f"Relative orientation delta '{node}' has no literal components"
                     )
                 return {
-                    "delta": [by_axis[a] for a in order if a in by_axis],
+                    "delta": [{"value": float(value)} for value in values],
                     "representation": delta_repr,
                 }
-            return {"pose": self.id(node)}
+            raise ValueError(
+                f"Relative orientation operand '{node}' is neither a pose nor an orientation"
+            )
 
         operands = [_operand(in1), _operand(in2)]
         if sum("pose" in op for op in operands) != 1 or sum("delta" in op for op in operands) != 1:
@@ -2260,49 +2377,19 @@ class Parser:
             )
         return operands
 
-    def _orientation_coordinate(self, id_):
-        """The orientation coordinate hanging off a pose coordinate, or None."""
-        for coord in self.g.objects(id_, GEOM_COORD["has-coordinate"]):
-            if GEOM_COORD["OrientationCoordinate"] in self.g[coord : RDF["type"]]:
-                return coord
-        return None
-
     def orientation_representation(self, id_):
         """The authored rotation representation of an orientation coordinate. Sites with no
         coordinate to inspect are Euler, the RDF builder's default for a derived view."""
         if id_ is None:
             return "euler"
-        types = set(self.g[id_ : RDF["type"]])
+        types = get_node_types(self.g, id_)
         if GEOM_OP_EXT["RelativeOrientation"] in types:
             return "relative"
-        if GEOM_COORD["Quaternion"] in types:
+        if URI_GEOM_TYPE_QUATERNION in types:
             return "quaternion"
-        if GEOM_COORD["DirectionCosineXYZ"] in types:
+        if URI_GEOM_TYPE_DIRECTION_COSINE_XYZ in types:
             return "direction-cosine"
         return "euler"
-
-    def _coordinate_ids_by_axis(self, container):
-        """Map each coordinate of `container` to the axis label its view names."""
-        by_axis = {}
-        for coord in self.g.objects(container, GEOM_COORD["has-coordinate"]):
-            for view in self.g.subjects(MAP["subobject"], coord):
-                axis = self.g.value(view, MAP["axis"])
-                if axis is not None:
-                    by_axis[split_uri(axis)[1]] = self.id(coord)
-        return by_axis
-
-    def _direction_cosine_axes(self, id_):
-        """The three direction-cosine axes of an orientation coordinate, each the ids of its
-        x/y/z components in order."""
-        axes = []
-        for pred in ("direction-cosine-x", "direction-cosine-y", "direction-cosine-z"):
-            axis_node = self.g.value(id_, GEOM_COORD[pred])
-            if axis_node is None:
-                axes.append(None)
-                continue
-            by_axis = self._coordinate_ids_by_axis(axis_node)
-            axes.append([by_axis.get(label) for label in ("x", "y", "z")])
-        return tuple(axes)
 
     @memoize
     def velocity_twist(self, id_):
@@ -2370,9 +2457,22 @@ class Parser:
     def wrench(self, id_):
         """Parse a Wrench quantity (with any FT sensor) at node."""
         self._expect_type(id_, RBDYN_COORD["WrenchCoordinate"])
-        qk, ref, seen, unit, provenance = self._spatial_coordinate_fields(
-            id_, RBDYN_ENT["reference-point"], RBDYN_COORD["as-seen-by"]
-        )
+        relation = self.g.value(id_, RBDYN_COORD["of-wrench"])
+        if relation is None or RBDYN_ENT.Wrench not in get_node_types(self.g, relation):
+            raise ConstraintViolation(
+                "dynamics", f"WrenchCoordinate '{id_}' has no valid of-wrench relation"
+            )
+        qk = [self.id(k) for k in self.g[relation : QUDT_SCHEMA["hasQuantityKind"]]]
+        reference = self.g.value(relation, RBDYN_ENT["reference-point"])
+        seen_by = self.g.value(id_, RBDYN_COORD["as-seen-by"])
+        if reference is None or seen_by is None:
+            raise ConstraintViolation(
+                "dynamics", f"WrenchCoordinate '{id_}' is missing reference-point/as-seen-by"
+            )
+        ref = self.point(reference)
+        seen = self.frame(seen_by)
+        unit = [self.id(u) for u in self.g[id_ : QUDT_SCHEMA["unit"]]]
+        provenance = self.quantity_provenance(id_)
         sensor = self.g.value(id_, SOSA.madeBySensor)
         sensor_name = self.id(sensor) if sensor is not None else ""
         return Wrench(
@@ -2382,7 +2482,7 @@ class Parser:
     @memoize
     def quantity(self, id_):
         """Parse the quantity at node, dispatching on its RDF type."""
-        if TIME["Duration"] in self.g[id_ : RDF["type"]]:
+        if TIME["Duration"] in get_node_types(self.g, id_):
             return self.duration_quantity(id_)
         self._expect_type(id_, QUDT_SCHEMA["Quantity"])
         quantity_kind_node = self.g.value(id_, QUDT_SCHEMA.hasQuantityKind)
@@ -2391,21 +2491,16 @@ class Parser:
         unit = self.id(self.g.value(id_, QUDT_SCHEMA["unit"]))
         has_view = (id_, ~MAP["subobject"], None) in self.g
 
-        if GEOM_REL["Pose"] in self.g[id_ : RDF["type"]]:
-            if GEOM_COORD["PoseCoordinate"] in self.g[id_ : RDF["type"]]:
-                return self.pose(id_)
+        types = get_node_types(self.g, id_)
+        if URI_GEOM_TYPE_POSE_COORD in types:
+            return self.pose(id_)
+        if URI_GEOM_TYPE_POSE in types:
             return self._bare_pose(id_)
-        if (
-            GEOM_REL["Position"] in self.g[id_ : RDF["type"]]
-            and GEOM_COORD["PositionCoordinate"] in self.g[id_ : RDF["type"]]
-        ):
+        if URI_GEOM_TYPE_POSITION in types:
             return self.position(id_)
-        if (
-            GEOM_REL["Orientation"] in self.g[id_ : RDF["type"]]
-            and GEOM_COORD["OrientationCoordinate"] in self.g[id_ : RDF["type"]]
-        ):
+        if URI_GEOM_TYPE_ORIENT in types:
             return self.orientation(id_)
-        if CSTR_HDL_EXT["SetpointGenerator"] in self.g[id_ : RDF["type"]]:
+        if CSTR_HDL_EXT["SetpointGenerator"] in get_node_types(self.g, id_):
             value_kind_node = next(
                 (k for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]] if k != CSTR_HDL_EXT.SetpointGenerator),
                 None,
@@ -2420,7 +2515,9 @@ class Parser:
                 value_kind=self.id(value_kind_node) if value_kind_node is not None else None,
             )
 
-        if quantity_kind == "FreeVector" and GEOM_COORD["VectorXYZ"] in self.g[id_ : RDF["type"]]:
+        if quantity_kind == "FreeVector" and GEOM_COORD["VectorXYZ"] in get_node_types(
+            self.g, id_
+        ):
             provenance = self.quantity_provenance(id_)
             return FreeVector(
                 self.id(id_),
@@ -2462,7 +2559,12 @@ class Parser:
     def joint_position(self, id_):
         """Parse a JointPosition quantity at node."""
         self._expect_type(id_, KC_STAT["JointPositionCoordinate"])
+        self._expect_type(id_, KC_STAT["JointReference"])
         joint_node = self.g.value(id_, KC_STAT["of-joint"])
+        if not isinstance(joint_node, URIRef):
+            raise ConstraintViolation(
+                "kinematic-chain", f"JointPositionCoordinate '{id_}' has no of-joint URI"
+            )
         joint_name = self.label(joint_node) if joint_node is not None else ""
         return JointPosition(self.id(id_), joint_name)
 
@@ -2470,7 +2572,7 @@ class Parser:
         # Provenance(authored, snapshot), mutually exclusive: snapshot wins (mirrors old roles() elif).
         # authored == carries an authored value/coordinate and is not a runtime snapshot.
         """Parse a quantity's Provenance (authored / snapshot) at node."""
-        snapshot = ALGO_EXT.Snapshot in self.g[id_ : RDF["type"]]
+        snapshot = ALGO_EXT.Snapshot in get_node_types(self.g, id_)
         authored = (not snapshot) and self._is_authored(id_)
         return Provenance(authored=authored, snapshot=snapshot)
 
@@ -2485,18 +2587,20 @@ class Parser:
         if (id_, CSTR["reference-value"], None) in self.g:
             return True
         if any(
-            (id_, GEOM_COORD[c], None) in self.g
-            for c in (
-                "x",
-                "y",
-                "z",
-                "direction-cosine-x",
-                "direction-cosine-y",
-                "direction-cosine-z",
+            (id_, predicate, None) in self.g
+            for predicate in (
+                URI_GEOM_PRED_X,
+                URI_GEOM_PRED_Y,
+                URI_GEOM_PRED_Z,
+                URI_GEOM_PRED_W,
+                URI_GEOM_PRED_ALPHA,
+                URI_GEOM_PRED_BETA,
+                URI_GEOM_PRED_GAMMA,
+                URI_GEOM_PRED_DIRECTION_COSINE_X,
+                URI_GEOM_PRED_DIRECTION_COSINE_Y,
+                URI_GEOM_PRED_DIRECTION_COSINE_Z,
             )
         ):
-            return True
-        if any(True for _ in self.g.objects(id_, GEOM_COORD["has-coordinate"])):
             return True
         return False
 
@@ -2504,7 +2608,7 @@ class Parser:
     def simplicial_complex(self, id_):
         """Parse a SimplicialComplex, mapping a body-origin frame to its runtime body."""
         if not any(
-            type_ in self.g[id_ : RDF.type]
+            type_ in get_node_types(self.g, id_)
             for type_ in (GEOM_ENT.SimplicialComplex, GEOM_ENT.Frame)
         ):
             raise ValueError(f"Expected a rigid body or frame, got: {id_}")
@@ -2512,7 +2616,7 @@ class Parser:
             (
                 owner
                 for owner in self.g.subjects(GEOM_ENT.simplices, id_)
-                if GEOM_ENT.RigidBody in self.g[owner : RDF.type]
+                if GEOM_ENT.RigidBody in get_node_types(self.g, owner)
             ),
             None,
         )
@@ -2534,7 +2638,7 @@ class Parser:
             (
                 owner
                 for owner in self.g.subjects(GEOM_ENT.simplices, id_)
-                if GEOM_ENT.RigidBody in self.g[owner : RDF.type]
+                if GEOM_ENT.RigidBody in get_node_types(self.g, owner)
             ),
             None,
         )
@@ -2545,7 +2649,7 @@ class Parser:
     @memoize
     def point(self, id_):
         """Parse a Point at node."""
-        if not any(type_ in self.g[id_ : RDF.type] for type_ in (GEOM_ENT.Point, GEOM_ENT.Frame)):
+        if not {GEOM_ENT.Point, GEOM_ENT.Frame} & get_node_types(self.g, id_):
             raise ValueError(f"Expected a point or frame, got: {id_}")
         return Point(self.id(id_))
 
@@ -2563,7 +2667,7 @@ class Parser:
         for view in self.g[: RDF["type"] : MAP["View"]]:
             superobject = None
             for type_, func in dispatcher:
-                if type_ not in self.g[view : RDF["type"]]:
+                if type_ not in get_node_types(self.g, view):
                     continue
 
                 superobject_id = self.g.value(view, MAP["superobject"])
@@ -2583,7 +2687,7 @@ class Parser:
                 raise ValueError(
                     f"MAP view {view} has an unrecognized type; no view dispatcher matched"
                 )
-            view_map[self.id(subobject.id)] = View(
+            view_map[self.id(view)] = View(
                 self.id(view), superobject, subobject, subspace, axis
             )
 
@@ -2593,9 +2697,11 @@ class Parser:
         """Parse every data-structure entity in the graph."""
         dispatcher = [
             (GEOM_COORD["DirectionCoordinate"], self.direction),
+            # A combined PoseCoordinate is also a PositionCoordinate and an
+            # OrientationCoordinate; dispatch the most specific type first.
+            (GEOM_COORD["PoseCoordinate"], self.pose),
             (GEOM_COORD["PositionCoordinate"], self.position),
             (GEOM_COORD["OrientationCoordinate"], self.orientation),
-            (GEOM_COORD["PoseCoordinate"], self.pose),
             (GEOM_COORD["VelocityTwistCoordinate"], self.velocity_twist),
             (GEOM_COORD["AccelerationTwistCoordinate"], self.acceleration_twist),
             (GEOM_COORD["PoseDifferenceCoordinate"], self.pose_difference),
@@ -2616,7 +2722,8 @@ class Parser:
         Traversal is one computation: the shape decides the maths, so the closure takes the
         path's type and carries its parameters directly.
         """
-        spec = next((s for s in ops_path if s.type_ in self.g[path_node : RDF["type"]]), None)
+        path_types = get_node_types(self.g, path_node)
+        spec = next((s for s in ops_path if s.type_ in path_types), None)
         if spec is None:
             return {}
         fields = {"type": self.id(spec.type_)}
@@ -2664,7 +2771,7 @@ class Parser:
                                 node
                                 for node in self.g.subjects(CSTR_HDL.constraint, constraint)
                                 if CSTR_HDL.ConstraintEvaluator
-                                not in self.g[node : RDF["type"]]
+                                not in get_node_types(self.g, node)
                             ),
                             None,
                         )
@@ -2690,7 +2797,7 @@ class Parser:
         sched = []
         scheduled_nodes = {}
         for v in start:
-            v_types = set(self.g[v : RDF["type"]])
+            v_types = get_node_types(self.g, v)
             for op in ops:
                 if op.type_ not in v_types:
                     continue
@@ -2733,11 +2840,15 @@ class Parser:
                     q.append(data_in)
                     data_structures.add(data_in)
 
-            # An inline/declared Pose is no operator's output, so follow its coordinate /
-            # reference-value edges to schedule the closures producing its scalar components --
-            # else an Arc/Lerp ending in a declared pose assembles from zeros -> wrong endpoint.
+            # An inline/declared Pose is no operator's output, so follow its per-axis views
+            # to schedule the closures producing its scalar components.
+            view_subobjects = (
+                self.g.value(view, MAP["subobject"])
+                for view in self.g.subjects(MAP["superobject"], data_out)
+                if self.g.value(view, MAP["axis"]) is not None
+            )
             for successor in itertools.chain(
-                self.g.objects(data_out, GEOM_COORD["has-coordinate"]),
+                (node for node in view_subobjects if node is not None),
                 self.g.objects(data_out, CSTR["reference-value"]),
             ):
                 if successor not in data_structures:
@@ -2769,7 +2880,7 @@ class Parser:
                 continue
             inputs = set()
             outputs = set()
-            node_types = set(self.g[node : RDF["type"]])
+            node_types = get_node_types(self.g, node)
             for op in ops:
                 if op.type_ not in node_types:
                     continue
@@ -2877,6 +2988,24 @@ def _serial_chain_solvers_for_handler(handler, slv_chain, solver_ids):
     return result
 
 
+def _views_by_subobject(view_map):
+    indexed: dict[str, list] = {}
+    for view in view_map.values():
+        subobject_id = _field(_field(view, "subobject"), "id")
+        if subobject_id:
+            indexed.setdefault(subobject_id, []).append(view)
+    return indexed
+
+
+def _unique_view_for_subobject(indexed_views, subobject_id, context):
+    matches = indexed_views.get(subobject_id, ())
+    if len(matches) > 1:
+        raise ValueError(
+            f"{context}: quantity '{subobject_id}' is the subobject of multiple MAP views"
+        )
+    return matches[0] if matches else None
+
+
 def _relative_poses_for_motion(evaluators, view_map, serial_chain_solvers):
     """Detect Pose quantities whose wrt frame ends in _start and pair them with FK outputs."""
     fk_poses: dict[str, str] = {}  # of_id → FK pose id
@@ -2888,11 +3017,12 @@ def _relative_poses_for_motion(evaluators, view_map, serial_chain_solvers):
                     fk_poses[of_id] = out.id
 
     start_rel_poses: dict[str, object] = {}
+    indexed_views = _views_by_subobject(view_map)
     for ev in evaluators:
         qty = getattr(getattr(ev, "constraint", None), "quantity", None)
         if qty is None or not getattr(qty, "has_view", False):
             continue
-        view = view_map.get(qty.id)
+        view = _unique_view_for_subobject(indexed_views, qty.id, "relative pose lookup")
         if view is None:
             continue
         wrt = getattr(getattr(view, "superobject", None), "with_respect_to", None)
@@ -3018,7 +3148,9 @@ def _snapshots_for_motion(
             continue
         seen.add(target_id)
         source_id = snapshot_source_map[target_id]
-        source_closure_id = None if source_id in view_map else closure_output_map.get(source_id)
+        source_closure_id = (
+            None if source_id in supers_by_subobject else closure_output_map.get(source_id)
+        )
         result.append(
             SnapshotCapture(
                 target_id=target_id,
@@ -3028,27 +3160,6 @@ def _snapshots_for_motion(
             )
         )
     return result
-
-
-_CLOSURE_OUTPUT_FIELDS = {
-    "PoseToAngleAroundAxis": "angle",
-    "PoseToLinearDistance": "distance",
-    "PoseToDirection": "direction",
-    "RotateDirectionDistalToProximalWithPose": "to",
-    "ComposePose": "composite",
-    "InvertPose": "out",
-    "PoseDiffEvaluator": "out",
-    "RotateVelocityTwistToProximalWithPose": "to",
-    "InvertAngle": "out",
-    "AddWrench": "out",
-    "Addition": "out",
-    "RotateWrenchToDistalWithPose": "to",
-    "RotateWrenchToProximalWithPose": "to",
-    "TransformWrenchToProximal": "to",
-    "WrenchFromPositionDirectionAndMagnitude": "wrench",
-    "VelocityProfile": "out",
-    "Admittance": "out",
-}
 
 
 def _scene_relative_poses_for_motion(view_map, serial_chain_solvers, data_structures=None, evaluators=None):
@@ -3154,8 +3265,9 @@ def _pose_axis_error_groups_for_motion(eval_nodes, p, view_map):
     pose.
     """
     groups: dict[str, PoseAxisErrorGroup] = {}
+    indexed_views = _views_by_subobject(view_map)
     for eval_node in eval_nodes:
-        if CSTR_HDL["ErrorEvaluator"] not in p.g[eval_node : RDF["type"]]:
+        if CSTR_HDL["ErrorEvaluator"] not in get_node_types(p.g, eval_node):
             continue
 
         evaluator = p.constraint_evaluator(eval_node)
@@ -3165,7 +3277,9 @@ def _pose_axis_error_groups_for_motion(eval_nodes, p, view_map):
             continue
 
         quantity = evaluator.constraint.quantity
-        view = view_map.get(quantity.id)
+        view = _unique_view_for_subobject(
+            indexed_views, quantity.id, "pose-axis error grouping"
+        )
         if view is None:
             continue
         so_type = getattr(view.superobject, "type", None)
@@ -3446,9 +3560,9 @@ def build_motion_units(
             ):
                 continue
             plan = plan_by_constraint.get(g.value(node, CSTR_HDL.constraint))
-            if plan is not None and CSTR_HDL_EXT.FeedForwardController not in g[
-                plan.controller : RDF.type
-            ]:
+            if plan is not None and CSTR_HDL_EXT.FeedForwardController not in get_node_types(
+                g, plan.controller
+            ):
                 pre_controller_evaluators.append(node)
             else:
                 trailing_evaluators.append(node)
@@ -3545,7 +3659,7 @@ def build_motion_units(
             chain_solver_ids = {
                 p.id(node)
                 for node in g.subjects(AGN["of-agent"], agent)
-                if SLV.SolverWithInputAndOutput in g[node : RDF.type]
+                if SLV.SolverWithInputAndOutput in get_node_types(g, node)
             }
             chain_solver = next(
                 solver
@@ -3686,9 +3800,7 @@ def _path_projections_for_motion(schedule: list, closures: dict) -> list[dict]:
 # Scene, geometry and robot setups
 # ---------------------------------------------------------------------------
 def _filter_shared_data(data_structures, schedule, closures, view_map=None, fk_output_ids=None):
-    """Select the data structures that become shared_data fields (scheduled/closure/FK outputs),
-    excluding view sub-objects.
-    """
+    """Select data structures needed by scheduled calls, views, closures, or FK outputs."""
     referenced: set[str] = set(schedule)
     for c in closures.values():
         if isinstance(c, dict):
@@ -3699,9 +3811,9 @@ def _filter_shared_data(data_structures, schedule, closures, view_map=None, fk_o
                         referenced.add(item)
     if view_map:
         for view in view_map.values():
-            so = getattr(view, "superobject", None)
-            if so:
-                referenced.add(so.id)
+            for endpoint in (view.superobject, view.subobject):
+                if endpoint:
+                    referenced.add(endpoint.id)
     if fk_output_ids:
         referenced.update(fk_output_ids)
 
@@ -3756,26 +3868,41 @@ def _xyz_or_none(g, node):
 
 
 def _frames_of(g, node):
-    if GEOM_ENT.Frame in g[node : RDF.type]:
+    if GEOM_ENT.Frame in get_node_types(g, node):
         return [node]
-    return [frame for frame in g.objects(node, GEOM_ENT.simplices) if GEOM_ENT.Frame in g[frame : RDF.type]]
+    return [
+        frame
+        for frame in g.objects(node, GEOM_ENT.simplices)
+        if GEOM_ENT.Frame in get_node_types(g, frame)
+    ]
 
 
 def _position_of(g, node):
     """Position of a body or frame from its authored scene-dsl pose, in metres, or None."""
     for frame in _frames_of(g, node):
         origin = g.value(frame, GEOM_ENT.origin) or frame
-        for position in g.subjects(GEOM_REL.of, origin):
-            for coordinate in g.subjects(GEOM_COORD["of-position"], position):
-                if (value := _xyz_or_none(g, coordinate)) is None:
+        for position_id in g.subjects(URI_GEOM_PRED_OF, origin):
+            if URI_GEOM_TYPE_POSITION not in get_node_types(g, position_id):
+                continue
+            position = PositionModel(position_id=position_id, graph=g)
+            for coordinate_id in position.coordinate_ids:
+                coordinate = PositionCoordModel(
+                    coord_id=coordinate_id, graph=g, position=position
+                )
+                if URI_DISTRIB_TYPE_SAMPLED_QUANTITY in coordinate.types:
+                    raise ConstraintViolation(
+                        "geometry",
+                        f"Sampled placement coordinate '{coordinate.id}' is unsupported",
+                    )
+                if (value := get_coord_vectorxyz(coordinate, g)) is None:
                     continue
-                unit = g.value(coordinate, QUDT_SCHEMA.unit)
                 try:
-                    factor = _LENGTH_UNIT_FACTORS[unit]
+                    factor = _LENGTH_UNIT_FACTORS[coordinate.unit]
                 except KeyError as exc:
-                    raise ValueError(
-                        f"Position coordinate '{coordinate}' has an unrecognized or missing "
-                        f"length unit '{unit}'."
+                    raise ConstraintViolation(
+                        "geometry",
+                        f"Position coordinate '{coordinate.id}' has an unrecognized length "
+                        f"unit '{coordinate.unit}'.",
                     ) from exc
                 return [component * factor for component in value]
     return None
@@ -3786,22 +3913,30 @@ def _orientation_of(g, node):
     [x, y, z, w], or None when the pose declares no orientation."""
     for frame in _frames_of(g, node):
         for orientation_node in g.subjects(GEOM_REL.of, frame):
-            if GEOM_REL.Orientation not in g[orientation_node : RDF.type]:
+            if GEOM_REL.Orientation not in get_node_types(g, orientation_node):
                 continue
             orientation = OrientationModel(orn_id=orientation_node, graph=g)
             for coord_id in orientation.coordinate_ids:
                 coord = OrientCoordModel(coord_id=coord_id, graph=g, orientation=orientation)
+                if URI_DISTRIB_TYPE_SAMPLED_QUANTITY in coord.types:
+                    raise ConstraintViolation(
+                        "geometry", f"Sampled placement coordinate '{coord.id}' is unsupported"
+                    )
                 rotation = get_orientation_coord_vals(coord, g)
                 if rotation is not None:
                     return list(rotation.as_quat())
     return None
 
 
-def _path_of_model(g, model_node):
-    """Asset path (exec:path) of a model node, or the empty string."""
-    if not model_node:
-        return ""
-    return str(g.value(model_node, EXEC.path) or "")
+def _optional_path_of_model(g, model_node):
+    """Return an optional agent model path; pathless agent models are not runtime assets."""
+    path = g.value(model_node, EXEC.path) if model_node is not None else None
+    return str(path) if path is not None else ""
+
+
+def _required_path_of_model(g, model_node):
+    """Return the required asset path for a scene-object model."""
+    return get_path_of_node(g, model_node)
 
 
 def _model_mappings(g, model, target_type):
@@ -3810,7 +3945,7 @@ def _model_mappings(g, model, target_type):
         (target, str(g.value(mapping, EXEC["model-entity"]) or ""))
         for mapping in sorted(g.objects(model, EXEC["has-mapping"]), key=str)
         if (target := g.value(mapping, EXEC.maps)) is not None
-        and target_type in g[target : RDF.type]
+        and target_type in get_node_types(g, target)
     ]
     if mappings:
         return mappings
@@ -3823,7 +3958,7 @@ def _model_mappings(g, model, target_type):
     return [
         (target, str(g.value(model, EXEC["model-entity"]) or ""))
         for target in sorted(g.objects(model, legacy_predicate), key=str)
-        if target_type in g[target : RDF.type]
+        if target_type in get_node_types(g, target)
     ]
 
 
@@ -3882,7 +4017,7 @@ def _kinematic_adjacency(g):
             continue
         adjacency[body_a].append((body_b, frames[0], frames[1], joint))
         adjacency[body_b].append((body_a, frames[1], frames[0], joint))
-        if set(g.objects(joint, RDF.type)) == {KC.Joint}:
+        if get_node_types(g, joint) == {KC.Joint}:
             fixed.append((frames[0], frames[1]))
     return adjacency, fixed
 
@@ -3972,7 +4107,7 @@ def _fixed_attachments(g, bound_trees):
 
 def _is_constraint_aggregate(g, node) -> bool:
     """True for an until/when group node: a conjunction or disjunction of constraints."""
-    types = set(g[node : RDF["type"]])
+    types = get_node_types(g, node)
     return bool({CSTR_EXT.ConstraintDisjunction, CSTR_EXT.ConstraintConjunction} & types)
 
 
@@ -4004,7 +4139,7 @@ def _agent_assemblies(g, attach_by_body):
         agent = g.value(modelled, AGN["of-agent"])
         bindings = []
         for model in sorted(g.objects(modelled, AGN["has-agent-model"]), key=str):
-            path = _path_of_model(g, model)
+            path = _optional_path_of_model(g, model)
             for tree, entity in _model_mappings(g, model, GEOM_ENT.KinematicTree):
                 if not path:
                     continue
@@ -4096,7 +4231,7 @@ def _agent_assemblies(g, attach_by_body):
                 "frame_site": f"{runtime_prefix}{_leaf(frame)}",
             }
             for sensor in sorted(g.objects(modelled, SOSA.hosts), key=str)
-            if SENSORS.ForceTorqueSensor in g[sensor : RDF["type"]]
+            if SENSORS.ForceTorqueSensor in get_node_types(g, sensor)
             and (frame := g.value(sensor, SENSORS.frame)) is not None
         ]
         result.append(
@@ -4160,7 +4295,7 @@ def _scene_from_graph(g):
                     reference
                     for pose in g.subjects(GEOM_REL.of, parent_frame)
                     if (reference := g.value(pose, GEOM_REL["with-respect-to"])) is not None
-                    and GEOM_ENT.Frame in g[reference : RDF.type]
+                    and GEOM_ENT.Frame in get_node_types(g, reference)
                     and _body_of(reference) == parent_body
                 ),
                 None,
@@ -4177,14 +4312,13 @@ def _scene_from_graph(g):
                 (model, body)
                 for model in sorted(g.objects(modelled, ENV["has-object-model"]), key=str)
                 for body, _entity in _model_mappings(g, model, GEOM_ENT.RigidBody)
-                if _path_of_model(g, model)
             ),
             None,
         )
         if obj is None or mapped is None:
             continue
         model, body = mapped
-        path = _path_of_model(g, model)
+        path = _required_path_of_model(g, model)
         attach_kind, attach_name, placement_frame, _parent_body = attach_by_body.get(
             body, ("World", "", body, None)
         )
@@ -4696,9 +4830,11 @@ def _world_solver_outputs(
                 joint = g.value(node, KC_STAT["of-joint"])
                 if joint is None or not any(_tree_owns(tree, joint) for tree in owned_trees):
                     continue
-            frame_node = g.value(node, GEOM_COORD["as-seen-by"])
-            if frame_node is None:
-                _of, _wrt, frame_node = p._derived_reference_frames(node)
+            frame_node = None
+            if type_ != KC_STAT.JointPositionCoordinate:
+                frame_node = g.value(node, GEOM_COORD["as-seen-by"])
+                if frame_node is None:
+                    _of, _wrt, frame_node = p._derived_reference_frames(node)
             if frame_node is not None:
                 frame_body = _body_of(frame_node)
                 frame_tree = iri_parent(frame_body)
@@ -4760,9 +4896,9 @@ def _solver_sections(
         sched2.extend(p.schedule(evaluator_nodes, ops_generic + ops_cstr_hdl))
         plans = derivation.controllers_by_handler.get(h, ())
         for plan in plans:
-            if len(plan.axes) > 1 or CSTR_HDL_EXT.FeedForwardController in g[
-                plan.controller : RDF.type
-            ]:
+            if len(plan.axes) > 1 or CSTR_HDL_EXT.FeedForwardController in get_node_types(
+                g, plan.controller
+            ):
                 continue
             error = g.value(plan.controller, CSTR_HDL["error-signal"])
             evaluator = next(g.subjects(CSTR_HDL.error, error), None)
@@ -4784,9 +4920,9 @@ def _solver_sections(
     solver_nodes = []
     for handler in handler_nodes:
         for plan in derivation.controllers_by_handler.get(handler, ()):
-            if plan.solver not in solver_nodes and SLV.SolverWithInputAndOutput in g[
-                plan.solver : RDF.type
-            ]:
+            if plan.solver not in solver_nodes and SLV.SolverWithInputAndOutput in get_node_types(
+                g, plan.solver
+            ):
                 solver_nodes.append(plan.solver)
     solver_nodes.extend(
         sorted(
@@ -4947,11 +5083,61 @@ def _snapshot_trigger_map(g, p: Parser) -> dict[tuple[str, str], str]:
 
 def _pose_frames(g, pose) -> tuple[URIRef, URIRef]:
     """Return a pose quantity's authored `(of, with-respect-to)` frames."""
-    of_frame = g.value(pose, GEOM_REL.of)
-    wrt_frame = g.value(pose, GEOM_REL["with-respect-to"])
-    if not isinstance(of_frame, URIRef) or not isinstance(wrt_frame, URIRef):
-        raise ValueError(f"Pose {pose} needs explicit of/with-respect-to frames.")
-    return of_frame, wrt_frame
+    relation = (
+        PoseModel(pose, g)
+        if URI_GEOM_TYPE_POSE in get_node_types(g, pose)
+        else PoseCoordModel(pose, g).relation
+    )
+    return relation.of_id, relation.wrt_id
+
+
+def _emit_derived_pose(g, node: URIRef, of_frame: URIRef, wrt_frame: URIRef) -> None:
+    """Materialize one runtime-derived pose in comp-rob2b relation/coordinate form."""
+    origins = []
+    for frame in (of_frame, wrt_frame):
+        origin = g.value(frame, URI_GEOM_PRED_ORIGIN)
+        if not isinstance(origin, URIRef):
+            origin = URIRef(f"{frame}-origin")
+            g.add((frame, URI_GEOM_PRED_ORIGIN, origin))
+        g.add((frame, RDF.type, URI_GEOM_TYPE_FRAME))
+        g.add((origin, RDF.type, URI_GEOM_TYPE_POINT))
+        origins.append(origin)
+
+    pose_relation = URIRef(f"{node}-pose-rel")
+    position_relation = URIRef(f"{node}-position-rel")
+    orientation_relation = URIRef(f"{node}-orientation-rel")
+    for relation, relation_type, of_entity, wrt_entity in (
+        (pose_relation, URI_GEOM_TYPE_POSE, of_frame, wrt_frame),
+        (position_relation, URI_GEOM_TYPE_POSITION, origins[0], origins[1]),
+        (orientation_relation, URI_GEOM_TYPE_ORIENT, of_frame, wrt_frame),
+    ):
+        g.add((relation, RDF.type, relation_type))
+        g.add((relation, RDF.type, QUDT_SCHEMA.Quantity))
+        g.add((relation, URI_GEOM_PRED_OF, of_entity))
+        g.add((relation, URI_GEOM_PRED_WRT, wrt_entity))
+    g.add((position_relation, QUDT_SCHEMA.hasQuantityKind, URI_QUDT_QK_LENGTH))
+    for reference_type in (URI_GEOM_TYPE_POSITION_REF, URI_GEOM_TYPE_ORIENT_REF):
+        g.add((pose_relation, RDF.type, reference_type))
+    g.add((pose_relation, URI_GEOM_PRED_OF_POSITION, position_relation))
+    g.add((pose_relation, URI_GEOM_PRED_OF_ORIENT, orientation_relation))
+
+    g.add((node, RDF.type, QUDT_SCHEMA.Quantity))
+    for coordinate_type in (
+        URI_GEOM_TYPE_POSE_COORD,
+        URI_GEOM_TYPE_POSE_REF,
+        URI_GEOM_TYPE_POSITION_COORD,
+        URI_GEOM_TYPE_POSITION_REF,
+        URI_GEOM_TYPE_ORIENT_COORD,
+        URI_GEOM_TYPE_ORIENT_REF,
+        URI_GEOM_TYPE_VECTOR_XYZ,
+    ):
+        g.add((node, RDF.type, coordinate_type))
+    g.add((node, URI_GEOM_PRED_OF_POSE, pose_relation))
+    g.add((node, URI_GEOM_PRED_OF_POSITION, position_relation))
+    g.add((node, URI_GEOM_PRED_OF_ORIENT, orientation_relation))
+    g.add((node, URI_GEOM_PRED_SEEN_BY, wrt_frame))
+    g.add((node, QUDT_SCHEMA.unit, URI_QUDT_UNIT_M))
+    g.add((node, QUDT_SCHEMA.unit, URI_QUDT_UNIT_RAD))
 
 
 def _materialize_linear_distance_operations(g) -> None:
@@ -4965,12 +5151,7 @@ def _materialize_linear_distance_operations(g) -> None:
         return URIRef(f"{node}.derived-{suffix}")
 
     def emit_pose(node, of_frame, wrt_frame):
-        g.add((node, RDF.type, QUDT_SCHEMA.Quantity))
-        g.add((node, RDF.type, GEOM_REL.Pose))
-        g.add((node, RDF.type, GEOM_COORD.PoseCoordinate))
-        g.add((node, GEOM_REL.of, of_frame))
-        g.add((node, GEOM_REL["with-respect-to"], wrt_frame))
-        g.add((node, GEOM_COORD["as-seen-by"], wrt_frame))
+        _emit_derived_pose(g, node, of_frame, wrt_frame)
 
     edges = collections.defaultdict(list)
     for pose in g.subjects(RDF.type, GEOM_REL.Pose):
@@ -5082,12 +5263,7 @@ def _materialize_pose_reference_transforms(g) -> None:
         return URIRef(f"{node}.derived-{suffix}")
 
     def emit_pose(node, of_frame, wrt_frame):
-        g.add((node, RDF.type, QUDT_SCHEMA.Quantity))
-        g.add((node, RDF.type, GEOM_REL.Pose))
-        g.add((node, RDF.type, GEOM_COORD.PoseCoordinate))
-        g.add((node, GEOM_REL.of, of_frame))
-        g.add((node, GEOM_REL["with-respect-to"], wrt_frame))
-        g.add((node, GEOM_COORD["as-seen-by"], wrt_frame))
+        _emit_derived_pose(g, node, of_frame, wrt_frame)
 
     edges = collections.defaultdict(list)
     for pose in g.subjects(RDF.type, GEOM_REL.Pose):
@@ -5103,9 +5279,9 @@ def _materialize_pose_reference_transforms(g) -> None:
         reference = g.value(constraint, CSTR["reference-value"])
         if quantity is None or reference is None:
             continue
-        if GEOM_REL.Pose not in g[quantity : RDF.type]:
+        if GEOM_REL.Pose not in get_node_types(g, quantity):
             continue
-        if GEOM_REL.Pose not in g[reference : RDF.type]:
+        if GEOM_REL.Pose not in get_node_types(g, reference):
             continue
         try:
             target_of, target_wrt = _pose_frames(g, quantity)
@@ -5210,13 +5386,15 @@ def _closure_maps(closures: dict) -> tuple[dict[str, str], dict[str, set[str]]]:
     for cid, c in closures.items():
         if not isinstance(c, dict):
             continue
-        inputs = {v for k, v in c.items() if k not in {"id", "type"} and isinstance(v, str)}
-        out_field = _CLOSURE_OUTPUT_FIELDS.get(c.get("type", ""))
-        if out_field:
-            out_val = c.get(out_field)
-            if isinstance(out_val, str):
-                closure_output_map[out_val] = cid
-                closure_input_map[out_val] = {v for v in inputs if v != out_val}
+        outputs = closure_output_ids(c)
+        inputs = {
+            value
+            for key, value in c.items()
+            if key not in {"id", "type"} and isinstance(value, str) and value not in outputs
+        }
+        for out_val in outputs:
+            closure_output_map[out_val] = cid
+            closure_input_map[out_val] = inputs
     return closure_output_map, closure_input_map
 
 
@@ -5568,6 +5746,7 @@ def add_quantity_samples(introspection: dict, shared_data: list, views: dict) ->
     shared data.
     """
     shared_ids = {_field(item, "id") for item in shared_data if _field(item, "id")}
+    indexed_views = _views_by_subobject(views)
     samples = []
 
     # Each sample carries a backend-agnostic descriptor (kind + ids/axis); the C++
@@ -5596,8 +5775,8 @@ def add_quantity_samples(introspection: dict, shared_data: list, views: dict) ->
 
     def scalar_view(data_id: str) -> bool:
         """True when a data id has no view or its view selects a single axis."""
-        view = views.get(data_id)
-        return not view or _field(view, "axis") is not None
+        matches = indexed_views.get(data_id, ())
+        return not matches or all(_field(view, "axis") is not None for view in matches)
 
     for quantity in introspection.get("quantities", []):
         qid = quantity.get("id")
@@ -5605,18 +5784,28 @@ def add_quantity_samples(introspection: dict, shared_data: list, views: dict) ->
             continue
         qtype = quantity.get("type")
         if qtype == "Quantity":
-            if quantity.get("value") is not None and qid not in shared_ids and qid not in views:
+            if (
+                quantity.get("value") is not None
+                and qid not in shared_ids
+                and qid not in indexed_views
+            ):
                 add(quantity, "", {"kind": "literal", "value": str(quantity["value"])})
-            elif qid in views and scalar_view(qid):
+            elif qid in indexed_views and scalar_view(qid):
                 # A scalar view resolves to a composite-member access only for these
                 # superobject types; other superobjects (e.g. PoseDifference) sample the
                 # quantity's own shared field instead.
-                so_type = _field(_field(views.get(qid), "superobject"), "type")
+                qviews = indexed_views[qid]
+                so_types = {_field(_field(view, "superobject"), "type") for view in qviews}
+                if len(so_types) != 1:
+                    raise ValueError(
+                        f"quantity sampling: '{qid}' belongs to incompatible MAP views"
+                    )
+                so_type = next(iter(so_types))
                 if so_type in {"Pose", "Wrench", "VelocityTwist", "AccelerationTwist"}:
                     add(quantity, "", {"kind": "access", "ref": qid})
                 else:
                     add(quantity, "", {"kind": "shared", "id": qid})
-            elif qid in shared_ids and qid not in views:
+            elif qid in shared_ids and qid not in indexed_views:
                 add(quantity, "", {"kind": "shared", "id": qid})
         elif qtype in {"Position", "Direction", "FreeVector"} and qid in shared_ids:
             add_axes(quantity, "", lambda i, q=qid: {"kind": "vec", "id": q, "axis": i})
@@ -5711,13 +5900,49 @@ def _empty_pose_entry(representation: str) -> dict:
     return entry
 
 
-def build_pose_components(views: dict, data: list) -> dict:
+def build_pose_components(views: dict, data: list, graph=None, pose_nodes=None) -> dict:
     """Resolve declared/inline poses into per-axis structured components (a literal value or a
     reference id).
     """
     data_by_id = _index_by_id(data)
     components: dict[str, dict] = {}
     direction_cosine_poses: dict[str, object] = {}
+    if graph is not None:
+        for pose in data:
+            if _field(pose, "type") != "Pose":
+                continue
+            pose_id = _field(pose, "id")
+            coord_id = (pose_nodes or {}).get(pose_id)
+            if coord_id is None:
+                continue
+            coordinate = PoseCoordModel(coord_id, graph)
+            representation = _field(pose, "orientation_representation") or "euler"
+            entry = _empty_pose_entry(representation)
+            position = get_coord_vectorxyz(coordinate.position_coord, graph)
+            if position is not None:
+                for axis, value in zip("xyz", position):
+                    entry[f"position_{axis}"] = {"value": str(value), "ref": None}
+            if representation == "quaternion":
+                values = get_quaternion_xyzw(coordinate.orientation_coord, graph)
+                labels = "xyzw"
+            elif representation == "direction-cosine":
+                matrix = get_direction_cosine_matrix(coordinate.orientation_coord, graph)
+                values = matrix.reshape(-1) if matrix is not None else None
+                labels = _ORIENTATION_COMPONENTS[representation]
+            elif representation == "euler" and URI_GEOM_TYPE_ANGLES_ABG in coordinate.orientation_coord.types:
+                euler = get_euler_angles_abg(coordinate.orientation_coord, graph)
+                values = euler[3] if euler is not None else None
+                labels = "xyz"
+            else:
+                values = None
+                labels = ()
+            if values is not None:
+                for label, value in zip(labels, values):
+                    entry[f"orientation_{label}"] = {"value": str(float(value)), "ref": None}
+            if representation == "relative":
+                entry["orientation_operands"] = _field(pose, "orientation_operands")
+            if any(value is not None for key, value in entry.items() if key != "representation"):
+                components[pose_id] = entry
     for view in views.values():
         superobject = _field(view, "superobject")
         so_type = _field(superobject, "type")
@@ -5727,23 +5952,15 @@ def build_pose_components(views: dict, data: list) -> dict:
             continue
         if not (is_declared_pose or _field(superobject, "euler_axes_sequence")):
             continue
-        # Only include inline-defined poses (those where components have values/references).
-        subobject_id = _field(_field(view, "subobject"), "id")
-        subobject_data = data_by_id.get(subobject_id)
-        if (
-            not _field(subobject_data, "reference_value")
-            and _field(subobject_data, "value") is None
-        ):
-            continue
         pose_id = _field(superobject, "id")
         representation = _field(superobject, "orientation_representation") or "euler"
-        entry = components.setdefault(pose_id, _empty_pose_entry(representation))
-        if representation == "relative":
-            entry["orientation_operands"] = _field(superobject, "orientation_operands")
         axis = str(_field(view, "axis") or "").lower()
         subobject = _field(_field(view, "subobject"), "id")
         if not subobject or axis not in {"x", "y", "z", "w"}:
             continue
+        entry = components.setdefault(pose_id, _empty_pose_entry(representation))
+        if representation == "relative":
+            entry["orientation_operands"] = _field(superobject, "orientation_operands")
         prefix = "position" if _field(view, "subspace") == "Linear" else "orientation"
         if prefix == "orientation" and representation == "direction-cosine":
             # Nine components share three axis labels, so the views alone are ambiguous.
@@ -6241,7 +6458,10 @@ def generate_ir(manifest_path):
 
     # Resolve declared-pose components and path goals from views/data/closures before
     # motions are built (per-motion declared poses reference them).
-    pose_components = build_pose_components(view_map, data_structures)
+    pose_nodes = {
+        p.id(node): node for node in g.subjects(RDF.type, URI_GEOM_TYPE_POSE_COORD)
+    }
+    pose_components = build_pose_components(view_map, data_structures, g, pose_nodes)
     resolve_lerp_closures(closures, pose_components)
     resolve_arc_closures(closures, data_structures)
 

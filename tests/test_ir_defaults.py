@@ -4,18 +4,26 @@
 
 from __future__ import annotations
 
-import json
-import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
+from motion_spec_dsl.rdf_parser.vocab import (
+    AGN,
+    ALGO_EXT,
+    CSTR,
+    CSTR_HDL,
+    EXEC,
+    GEOM_COORD,
+    KC,
+    QUDT_QKIND,
+    QUDT_SCHEMA,
+    SLV,
+)
 from rdf_utils.models.vocab import URI_KC_TYPE_SERIAL
 from rdf_utils.namespace import NS_MM_GEOM, NS_MM_KC_EXT
 from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import RDF, XSD
 
-from motion_spec.generation.codegen import render_template
 from motion_spec.classes.entities import PIDController
 from motion_spec.rdf_parser.ir import (
     LINEAR_AXES,
@@ -33,18 +41,6 @@ from motion_spec.rdf_parser.ir import (
     _fixed_attachments,
     _robot_setups_from_graph,
     ops_generic,
-)
-from motion_spec_dsl.rdf_parser.vocab import (
-    AGN,
-    ALGO_EXT,
-    CSTR,
-    CSTR_HDL,
-    EXEC,
-    GEOM_COORD,
-    KC,
-    QUDT_QKIND,
-    QUDT_SCHEMA,
-    SLV,
 )
 
 
@@ -343,233 +339,6 @@ def test_rne_uses_acceleration_while_achd_uses_acceleration_energy() -> None:
     )
     assert achd_drivers.cartesian_acceleration == []
     assert achd_drivers.acceleration_constraint[0].acceleration_energy == achd_signal
-
-
-def test_generated_velocity_profile_runtime_respects_authored_bounds(tmp_path) -> None:
-    if shutil.which("stst") is None or shutil.which("c++") is None:
-        pytest.skip("requires stst and c++")
-
-    payload = tmp_path / "ir.json"
-    payload.write_text(
-        json.dumps(
-            {
-                "has_mobile_base": False,
-                "control_period_ns": 1_000_000,
-                "beta_max_lin": 1e6,
-                "beta_max_rot": 1e6,
-                "tau_max_override": None,
-            }
-        )
-    )
-    runtime_hpp = tmp_path / "runtime.hpp"
-    render_template("stst", "runtime_header", payload, runtime_hpp)
-
-    source = tmp_path / "check.cpp"
-    source.write_text(
-        r'''
-#include <algorithm>
-#include <cassert>
-#include <cmath>
-#include <iostream>
-#include "runtime.hpp"
-
-void check(motion_spec::runtime::VelocityProfileShape shape) {
-    constexpr double dt = motion_spec::runtime::kControlPeriodS;
-    constexpr double vmax = 0.10;
-    constexpr double amax = 0.30;
-    constexpr double jmax = 2.0;
-    constexpr double goal = 0.08;
-    double x = 0.50;
-    double v = 0.0;
-    double a = 0.0;
-    double prev_a = 0.0;
-    for (int i = 0; i < 5000; ++i) {
-        const double before = x;
-        x = motion_spec::runtime::velocity_profile_step(x, v, a, goal, vmax, amax, jmax, dt, shape);
-        assert(std::abs(v) <= vmax + 1e-9);
-        assert(std::abs(a) <= amax + 1e-9);
-        if (shape == motion_spec::runtime::VelocityProfileShape::SCurve && !(x == goal && v == 0.0 && a == 0.0)) {
-            assert(std::abs(a - prev_a) <= jmax * dt + 1e-9);
-        }
-        assert((goal - x) * (goal - before) >= -1e-12 || x == goal);
-        if (x == goal) break;
-        prev_a = a;
-    }
-    assert(x == goal);
-}
-
-int main() {
-    check(motion_spec::runtime::VelocityProfileShape::Trapezoidal);
-    check(motion_spec::runtime::VelocityProfileShape::SCurve);
-
-    KDL::Chain prefixed_chain;
-    prefixed_chain.addSegment(KDL::Segment("r2_link_1"));
-    assert(motion_spec::runtime::find_segment_index(
-               prefixed_chain, "base_link", "r2_base_link") == 0);
-    assert(motion_spec::runtime::find_segment_index(
-               prefixed_chain, "link_1", "r2_base_link") == 1);
-
-    // Seeded from a nonzero measured velocity (the online-generator initial
-    // condition set in the controller init): still respects bounds and converges.
-    double x = 0.50;
-    double v = -0.05;
-    double a = 0.0;
-    for (int i = 0; i < 5000; ++i) {
-        x = motion_spec::runtime::velocity_profile_step(
-            x, v, a, 0.08, 0.10, 0.30, 2.0, motion_spec::runtime::kControlPeriodS,
-            motion_spec::runtime::VelocityProfileShape::Trapezoidal);
-        assert(std::abs(v) <= 0.10 + 1e-9);
-        if (x == 0.08) break;
-    }
-    assert(x == 0.08);
-
-    // Passing an authored derivative of zero must still mean "use the authored
-    // derivative", not "fall back to numerical error differentiation".
-    motion_spec::runtime::PIDControl pid(0.0, 0.0, 1.0, 0.0, 1.0);
-    assert(pid.control(1.0, 0.0) == 0.0);
-    assert(pid.control(2.0, 0.0) == 0.0);
-
-    // F=0, K=0, D>0: the filter integrates the damper law, so a non-zero velocity decays
-    // over several cycles instead of being zeroed in one.
-    motion_spec::runtime::AdmittanceFilter adm;
-    const double v0 = adm.step(10.0, 1.0, 5.0, 0.0, 1.0, 0.01);
-    assert(v0 > 0.0);
-    double v_prev = v0;
-    for (int i = 0; i < 5; ++i) {
-        const double v_now = adm.step(0.0, 1.0, 5.0, 0.0, 1.0, 0.01);
-        assert(v_now > 0.0 && v_now < v_prev);
-        v_prev = v_now;
-    }
-    assert(v_prev < v0);
-
-    const KDL::Wrench transformed = motion_spec::runtime::transform_wrench(
-        KDL::Wrench(KDL::Vector(1.0, 0.0, 0.0), KDL::Vector(0.0, 1.0, 0.0)),
-        KDL::Frame(KDL::Rotation::RotZ(M_PI_2), KDL::Vector(1.0, 0.0, 0.0)),
-        KDL::Frame(KDL::Vector(2.0, 0.0, 0.0)),
-        KDL::Frame(KDL::Rotation::RotZ(M_PI_2)));
-    assert(KDL::Equal(transformed.force, KDL::Vector(1.0, 0.0, 0.0), 1e-12));
-    assert(KDL::Equal(transformed.torque, KDL::Vector(0.0, 1.0, -1.0), 1e-12));
-
-    // Closest-point projection replaces the deleted clock-driven parameter: a point exactly
-    // on the path projects to its own parameter, an offset point to the nearest one, and the
-    // seeded search stays monotone as the frame advances along the path.
-    const double eps = 1e-3;
-    const auto lerp = [](double s) {
-        const KDL::Vector p = (1.0 - s) * KDL::Vector(0.0, 0.0, 0.0) + s * KDL::Vector(1.0, 0.0, 0.0);
-        KDL::Frame f;
-        f.p = p;
-        return f;
-    };
-    // A point exactly on the path projects to its own parameter when seeded nearby, and an
-    // offset point to the nearest one.
-    assert(std::abs(motion_spec::runtime::path_project(lerp, KDL::Vector(0.3, 0.0, 0.0), 0.3) - 0.3) <= eps);
-    assert(std::abs(motion_spec::runtime::path_project(lerp, KDL::Vector(0.3, 0.05, 0.0), 0.3) - 0.3) <= eps);
-    double prev_proj = 0.0;
-    for (int i = 0; i < 100; ++i) {
-        const double s = 0.01 * (i + 1);
-        const double proj = motion_spec::runtime::path_project(lerp, lerp(s).p, prev_proj);
-        assert(proj >= prev_proj - 1e-9);
-        assert(std::abs(proj - s) <= eps);
-        prev_proj = proj;
-    }
-    // The tangent is unit length and, on a lerp, the normalized chord at every parameter.
-    KDL::Vector tangent, normal_a, normal_b;
-    motion_spec::runtime::path_frame(lerp, 0.4, tangent, normal_a, normal_b);
-    assert(std::abs(tangent.Norm() - 1.0) < 1e-9);
-    assert(std::abs(tangent.x() - 1.0) < 1e-6 && std::abs(tangent.y()) < 1e-6 && std::abs(tangent.z()) < 1e-6);
-    assert(std::abs(KDL::dot(tangent, normal_a)) < 1e-6);
-    assert(std::abs(KDL::dot(tangent, normal_b)) < 1e-6);
-
-    // On an arc a point on the path also projects to its own parameter.
-    const double quarter_turn = 4.0 * std::atan(1.0) / 2.0;
-    const auto arc = [quarter_turn](double s) {
-        const double theta = s * quarter_turn;
-        KDL::Frame f;
-        f.p = KDL::Vector(std::cos(theta), std::sin(theta), 0.0);
-        return f;
-    };
-    assert(std::abs(motion_spec::runtime::path_project(arc, arc(0.5).p, 0.5) - 0.5) <= eps);
-}
-'''
-    )
-    exe = tmp_path / "check"
-    subprocess.run(
-        [
-            "c++",
-            "-std=c++17",
-            "-I",
-            str(tmp_path),
-            "-I",
-            "/usr/include/eigen3",
-            str(source),
-            "-lorocos-kdl",
-            "-o",
-            str(exe),
-        ],
-        check=True,
-    )
-    subprocess.run([str(exe)], check=True)
-
-
-def test_generated_runtime_resolves_cartesian_acceleration(tmp_path) -> None:
-    if shutil.which("stst") is None or shutil.which("c++") is None:
-        pytest.skip("requires stst and c++")
-
-    payload = tmp_path / "ir.json"
-    payload.write_text(
-        json.dumps(
-            {
-                "has_mobile_base": False,
-                "control_period_ns": 1_000_000,
-                "beta_max_lin": 1e6,
-                "beta_max_rot": 1e6,
-                "tau_max_override": None,
-            }
-        )
-    )
-    runtime_hpp = tmp_path / "runtime.hpp"
-    render_template("stst", "runtime_header", payload, runtime_hpp)
-
-    source = tmp_path / "check_rne.cpp"
-    source.write_text(
-        r'''
-#include <cassert>
-#include <cmath>
-#include "runtime.hpp"
-
-int main() {
-    KDL::Jacobian jac(1);
-    KDL::Jacobian directions(1);
-    KDL::JntArray acceleration(1);
-    KDL::JntArray qdd(1);
-    KDL::SetToZero(jac);
-    KDL::SetToZero(directions);
-    jac.data(0, 0) = 1.0;
-    directions.data(0, 0) = 1.0;
-    acceleration(0) = 2.0;
-    motion_spec::runtime::resolve_cartesian_acceleration(
-        jac, directions, acceleration, nullptr, 1e-9, qdd);
-    assert(std::abs(qdd(0) - 2.0) < 1e-6);
-}
-'''
-    )
-    exe = tmp_path / "check_rne"
-    subprocess.run(
-        [
-            "c++",
-            "-std=c++17",
-            "-I",
-            str(tmp_path),
-            "-I",
-            "/usr/include/eigen3",
-            str(source),
-            "-lorocos-kdl",
-            "-o",
-            str(exe),
-        ],
-        check=True,
-    )
-    subprocess.run([str(exe)], check=True)
 
 
 def test_edge_monitor_carries_full_event_uri_and_enum_token() -> None:

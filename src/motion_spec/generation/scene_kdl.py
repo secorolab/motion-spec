@@ -12,68 +12,30 @@ from __future__ import annotations
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
-from rdf_utils.constraints import ConstraintViolation
 from rdflib import Graph
-from scene_dsl.rdf_parser.kinematics import JointKind, TreeModel, build_kinematic_model
+from scene_dsl.kdl_tree import build_kdl_trees
 
-HEADER_NAME = "scene_kdl.hpp"
 NAMESPACE = "scene_kdl"
 
 
-def _leaf(name: str) -> str:
-    """A scene element as MuJoCo knows it: the `.ktree` already carries the attach prefix."""
-    return name.rsplit("/", 1)[-1]
+def kdl_header_name(source: str | Path) -> str:
+    """The controller-local KDL header named after its source motion model."""
+    name = Path(source).name
+    stem = name[: -len("-app.ld.json")] if name.endswith("-app.ld.json") else Path(name).stem
+    return f"{stem}.kdl.hpp"
 
 
-def _joints_between(tree: TreeModel, root: str, tip: str) -> list[str]:
-    """The joints a chain crosses, root first, named as MuJoCo names them."""
-    by_name = {segment.name: segment for segment in tree.segments}
-    walk, name = [], tip
-    while name != root:
-        segment = by_name.get(name)
-        if segment is None:
-            return []
-        if segment.joint is not None and segment.joint.kind is JointKind.REVOLUTE:
-            walk.append(_leaf(segment.joint.name))
-        name = segment.hook
-    return list(reversed(walk))
-
-
-def chains_by_root(
-    graph: Graph, base_dir: Path | None = None
-) -> dict[str, tuple[str, str, list[str]]]:
-    """Every declared chain, keyed by the runtime name of the body it starts at.
-
-    A robot assembly is identified downstream by its chain root body. One arm names that
-    body bare (`base_link`); two instances of one arm would collide there, so the IR
-    prefixes them with the tree (`kinova1_base_link`). Key both spellings, and drop the
-    bare one when it is ambiguous rather than let a lookup pick an arm at random.
-    """
-    found: dict[str, tuple[str, list[str]]] = {}
-    ambiguous: set[str] = set()
-    try:
-        trees = build_kinematic_model(graph, base_dir)
-    except ConstraintViolation:
-        # A graph that cannot be lowered has no chains to name. Emitting the header is
-        # where that is an error and is reported; here it just means there is nothing.
-        return found
+def chain_for_iri(trees: list[dict], chain_iri: str) -> tuple[str, str, list[str]]:
+    """The generated C++ builders and MuJoCo joints for one declared serial chain."""
     for tree in trees:
-        for chain in tree.chains:
-            # The chain is sliced from its tree, so the caller needs both builders. Both
-            # names are flattened the way the header's `identifier` macro flattens them.
-            entry = (
-                chain.name.replace("/", "_").replace("-", "_"),
-                tree.name.replace("/", "_").replace("-", "_"),
-                _joints_between(tree, chain.root, chain.tip),
-            )
-            found[chain.root.replace("/", "_")] = entry
-            leaf = _leaf(chain.root)
-            if leaf in found:
-                ambiguous.add(leaf)
-            found[leaf] = entry
-    for leaf in ambiguous:
-        found.pop(leaf, None)
-    return found
+        for chain in tree["chains"]:
+            if chain["iri"] == chain_iri:
+                return (
+                    chain["cpp_name"],
+                    tree["cpp_name"],
+                    [joint["local_name"] for joint in chain["joints"]],
+                )
+    return "", "", []
 
 
 def _template_dir() -> Path:
@@ -88,14 +50,14 @@ def write_scene_kdl_header(
     """Render the scene's KDL builders next to the controller that includes them."""
     env = Environment(loader=FileSystemLoader(_template_dir()), keep_trailing_newline=True)
     output_dir.mkdir(parents=True, exist_ok=True)
-    path = output_dir / HEADER_NAME
+    path = output_dir / kdl_header_name(source)
     path.write_text(
         env.get_template("kdl.hpp.jinja2").render(
             {
                 "data": {
                     "name": NAMESPACE,
                     "source": source,
-                    "trees": build_kinematic_model(graph, base_dir),
+                    "trees": build_kdl_trees(graph, base_dir, strict_inertia=False),
                 }
             }
         )

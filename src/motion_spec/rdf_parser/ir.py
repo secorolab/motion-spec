@@ -2178,7 +2178,7 @@ class Parser:
         quantity_kind = self.id(self.g.value(id_, QUDT_SCHEMA["hasQuantityKind"]))
         as_seen_by = self.frame(coordinate.as_seen_by.id)
         units = set(self.g.objects(coordinate.id, QUDT_SCHEMA["unit"]))
-        if coordinate.types & {
+        if self._orientation_composition(coordinate.id) is not None or coordinate.types & {
             URI_GEOM_TYPE_QUATERNION,
             URI_GEOM_TYPE_DIRECTION_COSINE_XYZ,
         }:
@@ -2300,7 +2300,7 @@ class Parser:
                             URI_GEOM_TYPE_DIRECTION_COSINE_XYZ,
                         }
                     )
-                    or (coordinate.orientation_coord.id, GEOM_OP["in1"], None) in self.g
+                    or self._orientation_composition(coordinate.orientation_coord.id) is not None
                     and any(
                         self.g.value(view, MAP["axis"]) is not None
                         for view in self.g.subjects(MAP["superobject"], id_)
@@ -2326,15 +2326,33 @@ class Parser:
             provenance=provenance,
         )
 
+    def _orientation_composition(self, orientation_node):
+        """The `geom-op-ext:ComposeOrientation` operator writing into this orientation, if any."""
+        if orientation_node is None:
+            return None
+        return next(
+            (
+                operation
+                for operation in self.g.subjects(GEOM_OP["composite"], orientation_node)
+                if GEOM_OP_EXT.ComposeOrientation in get_node_types(self.g, operation)
+            ),
+            None,
+        )
+
     def _relative_orientation(self, orientation_node):
         """The composition's two operands, in `geom-op:in1`/`in2` order: each is either
         `{"pose": <id>}` (the base, by id) or `{"delta": [...], "representation": ...}` (the
         delta's ordered component values and rotation representation)."""
-        in1 = self.g.value(orientation_node, GEOM_OP["in1"])
-        in2 = self.g.value(orientation_node, GEOM_OP["in2"])
+        composition = self._orientation_composition(orientation_node)
+        if composition is None:
+            raise ValueError(
+                f"Relative orientation '{orientation_node}' has no composition operator."
+            )
+        in1 = self.g.value(composition, GEOM_OP["in1"])
+        in2 = self.g.value(composition, GEOM_OP["in2"])
         if in1 is None or in2 is None:
             raise ValueError(
-                f"Relative orientation '{orientation_node}' must declare both composition operands."
+                f"Orientation composition '{composition}' must declare both operands."
             )
 
         def _operand(node):
@@ -2383,8 +2401,7 @@ class Parser:
         if id_ is None:
             return "quaternion"
         types = get_node_types(self.g, id_)
-        # A composition is what fills geom-op's two input slots; it needs no class of its own.
-        if (id_, GEOM_OP["in1"], None) in self.g:
+        if self._orientation_composition(id_) is not None:
             return "relative"
         if URI_GEOM_TYPE_EULER_ANGLES in types and URI_GEOM_TYPE_ANGLES_ABG not in types:
             return "euler"
@@ -4284,6 +4301,7 @@ def _agent_assemblies(g, attach_by_body):
                 "path": root_binding["path"],
                 "prefix": runtime_prefix,
                 "trees": [binding["tree"] for binding in bindings],
+                "serial_chain": serial_tree,
                 "root_body": root_body,
                 "chain_root": runtime_root,
                 "chain_tip": f"{runtime_prefix}{_leaf(chain_tip_body)}",
@@ -4452,13 +4470,11 @@ def _validate_scene(scene) -> None:
         require_field(obj.id, "mass", obj.mass)
 
 
-def _scene_chain(scene_chains, assembly):
-    """The scene-derived chain for an assembly, with its joints named as MuJoCo names them.
+def _scene_chain(trees, assembly):
+    """The agent assembly's declared serial chain, with MuJoCo runtime joint names."""
+    from motion_spec.generation.scene_kdl import chain_for_iri
 
-    A robot attached under a prefix carries that prefix on every element, so the runtime
-    joint name is the prefix plus the name the scene knows it by.
-    """
-    name, tree, joints = scene_chains.get(assembly["chain_root"], ("", "", []))
+    name, tree, joints = chain_for_iri(trees, str(assembly["serial_chain"]))
     return name, tree, [f"{assembly['prefix']}{joint}" for joint in joints]
 
 
@@ -4486,9 +4502,14 @@ def _robot_setups_from_graph(g):
                 return canonical
         return ""
 
-    from motion_spec.generation.scene_kdl import chains_by_root
+    from scene_dsl.kdl_tree import build_kdl_trees
 
-    scene_chains = chains_by_root(g)
+    try:
+        trees = build_kdl_trees(g, strict_inertia=False)
+    except ConstraintViolation:
+        # Some graph-only consumers use an incomplete scene fixture. They retain their
+        # assembly metadata but cannot provide a KDL chain until Scene DSL can parse it.
+        trees = []
     setups_by_node, ordered = {}, []
     bound_trees = _mapped_targets(g, AGN["AgentModel"], GEOM_ENT.KinematicTree)
     attach_by_body, _root = _fixed_attachments(g, bound_trees)
@@ -4504,7 +4525,7 @@ def _robot_setups_from_graph(g):
             assembly["ft_sensors"],
             assembly["prefix"],
             assembly["trees"],
-            *_scene_chain(scene_chains, assembly),
+            *_scene_chain(trees, assembly),
         )
         setups_by_node[assembly["agent"]] = setup
         ordered.append(setup)
@@ -6534,6 +6555,9 @@ def _apply_fsm_gate_calls(motions, fsm_namespace) -> None:
 def generate_ir(manifest_path):
     """Build the complete IR for a model manifest in one forward pass and return it as a dict."""
     app_model_path, g, imported_models, imported_provenance = _load_graph(manifest_path)
+    from motion_spec.generation.scene_kdl import kdl_header_name
+
+    kdl_header = kdl_header_name(app_model_path)
     _materialize_pose_reference_transforms(g)
     _materialize_linear_distance_operations(g)
 
@@ -6556,6 +6580,8 @@ def generate_ir(manifest_path):
     (slv_platform_vel, sched1, hdl, sched2, slv_chain, sched3, slv_platform_frc, sched4) = _solver_sections(
         g, p, setups_by_node, default_setup, derivation, scene.objects
     )
+    for solver in slv_chain:
+        solver.kdl_header = kdl_header
     _assign_monitor_event_indexes(hdl)
 
     closures = p.closures(ops_generic + ops_slv + ops_cstr_hdl)

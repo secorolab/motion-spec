@@ -213,15 +213,28 @@ def _relative_orientation_graph(*, in1_is_pose: bool) -> tuple[Graph, URIRef]:
     delta = _delta_node(g, "delta", (-0.75, 0.0, 0.0))
 
     orientation = _u("relative-orientation")
-    # The in1/in2 slots below are what make it a composition.
+    g.add((orientation, RDF.type, GEOM_COORD.OrientationCoordinate))
     g.add((orientation, GEOM_REL.of, ee))
     g.add((orientation, GEOM_COORD["as-seen-by"], base))
     g.add((delta, GEOM_COORD["as-seen-by"], ee if in1_is_pose else base))
 
+    composition = _u("relative-orientation-composition")
+    g.add((composition, RDF.type, GEOM_OP_EXT.ComposeOrientation))
     in1, in2 = (base_pose, delta) if in1_is_pose else (delta, base_pose)
-    g.add((orientation, GEOM_OP["in1"], in1))
-    g.add((orientation, GEOM_OP["in2"], in2))
+    g.add((composition, GEOM_OP["in1"], in1))
+    g.add((composition, GEOM_OP["in2"], in2))
+    g.add((composition, GEOM_OP["composite"], orientation))
     return g, orientation
+
+
+def test_orientation_without_a_composition_operator_is_not_relative() -> None:
+    """The slots alone do not make a composition: only the typed operator does."""
+    g, orientation = _relative_orientation_graph(in1_is_pose=True)
+    g.remove((None, RDF.type, GEOM_OP_EXT.ComposeOrientation))
+
+    assert Parser(g).orientation_representation(orientation) != "relative"
+    with pytest.raises(ValueError, match="no composition operator"):
+        Parser(g)._relative_orientation(orientation)
 
 
 def test_relative_orientation_reads_operands_in_slot_order() -> None:
@@ -245,8 +258,9 @@ def test_relative_orientation_rejects_a_mismatched_operand_pair() -> None:
     other_pose = _pose(
         g, "pose-other", _frame(g, "frame-other-body"), _frame(g, "frame-other-wrt")
     )
-    g.remove((orientation, GEOM_OP["in2"], None))
-    g.add((orientation, GEOM_OP["in2"], other_pose))
+    composition = _u("relative-orientation-composition")
+    g.remove((composition, GEOM_OP["in2"], None))
+    g.add((composition, GEOM_OP["in2"], other_pose))
 
     with pytest.raises(ValueError, match="exactly one base pose and one delta"):
         Parser(g)._relative_orientation(orientation)

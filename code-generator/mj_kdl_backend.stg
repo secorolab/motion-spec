@@ -3,7 +3,7 @@
 
 robot-driver-include-mj_kdl-KinovaGen3(solver) ::= <<
 #include \<mj_kdl_wrapper/mj_kdl_wrapper.hpp\>
-#include "headers/scene_kdl.hpp"
+#include "headers/<solver.kdl_header>"
 >>
 
 robot-state-struct-mj_kdl-KinovaGen3(solver) ::= <<

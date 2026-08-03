@@ -804,6 +804,7 @@ class SolverWithInputAndOutput:
     kdl_chain: str = ""
     kdl_tree: str = ""
     kdl_joints: list[str] = field(default_factory=list)
+    kdl_header: str = ""
     gravity: list[float] | None = None
     root_acc: list[float] | None = None
     torque_saturation: Saturation | None = None

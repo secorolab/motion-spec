@@ -228,8 +228,11 @@ def test_relative_orientation_reads_operands_in_slot_order() -> None:
     g, orientation = _relative_orientation_graph(in1_is_pose=True)
     operands = Parser(g)._relative_orientation(orientation)
     assert "pose" in operands[0] and "delta" in operands[1]
-    assert operands[1]["delta"] == [{"value": -0.75}, {"value": 0.0}, {"value": 0.0}]
-    assert operands[1]["representation"] == "euler"
+    # The delta is authored as an Euler triple and leaves as the quaternion it denotes.
+    assert operands[1]["representation"] == "quaternion"
+    assert [c["value"] for c in operands[1]["delta"]] == pytest.approx(
+        [-0.36627253, 0.0, 0.0, 0.93050762]
+    )
 
     g, orientation = _relative_orientation_graph(in1_is_pose=False)
     operands = Parser(g)._relative_orientation(orientation)

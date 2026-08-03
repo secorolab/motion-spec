@@ -14,6 +14,7 @@ import collections
 import hashlib
 import itertools
 import json
+import math
 import re
 import sys
 import weakref
@@ -32,10 +33,7 @@ from rdf_utils.models.geom_coord import (
     PoseCoordModel,
     PositionCoordModel,
     get_coord_vectorxyz,
-    get_direction_cosine_matrix,
-    get_euler_angles_abg,
     get_orientation_coord_vals,
-    get_quaternion_xyzw,
 )
 from rdf_utils.models.geom_rel import OrientationModel, PoseModel, PositionModel
 from rdf_utils.models.common import ModelBase, get_node_types
@@ -61,6 +59,7 @@ from rdf_utils.models.vocab import (
     URI_GEOM_TYPE_ANGLES_ABG,
     URI_GEOM_TYPE_DIRECTION_COSINE_XYZ,
     URI_GEOM_TYPE_EULER_ANGLES,
+    URI_GEOM_TYPE_INTRINSIC,
     URI_GEOM_TYPE_POSE_COORD,
     URI_GEOM_TYPE_POSE,
     URI_GEOM_TYPE_POSITION,
@@ -2096,7 +2095,7 @@ class Parser:
         return Direction(self.id(id_), quantity_kind, as_seen_by, [Unit(unit)], direction)
 
     def parse_xyz(self, node):
-        """Parse x/y/z scalar coordinates from node, or None."""
+        """Parse x/y/z scalar coordinates from node on SI, or None."""
         x = self.g.value(node, GEOM_COORD["x"])
         y = self.g.value(node, GEOM_COORD["y"])
         z = self.g.value(node, GEOM_COORD["z"])
@@ -2104,7 +2103,7 @@ class Parser:
         if x is None or y is None or z is None:
             return None
 
-        return [float(v.value) for v in (x, y, z)]
+        return _si_all((v.value for v in (x, y, z)), self.g.value(node, QUDT_SCHEMA["unit"]))
 
     def _derived_reference_frames(self, id_):
         """Derive a reference value's frames from its RDF use or snapshot source."""
@@ -2143,9 +2142,10 @@ class Parser:
         wrt = self.position_reference(relation.wrt_id)
         quantity_kind = self.id(self.g.value(id_, QUDT_SCHEMA["hasQuantityKind"]))
         as_seen_by = self.frame(coordinate.as_seen_by)
-        unit = self.id(coordinate.unit)
+        length_unit = _length_unit(coordinate)
+        unit = self.id(_si_unit(length_unit))
         values = get_coord_vectorxyz(coordinate, self.g)
-        pos = list(values) if values is not None else None
+        pos = _si_all(values, length_unit) if values is not None else None
 
         return Position(
             self.id(id_), of, wrt, QuantityKind(quantity_kind), as_seen_by, Unit(unit), pos
@@ -2191,7 +2191,7 @@ class Parser:
                     f"OrientationCoordinate '{coordinate.id}' needs exactly one angular unit, "
                     f"found {angular_units}",
                 )
-            unit = self.id(next(iter(angular_units)))
+            unit = self.id(_si_unit(next(iter(angular_units))))
         axes = self.g.value(coordinate.id, URI_GEOM_PRED_AXES_SEQ)
         provenance = self.quantity_provenance(id_)
         return Orientation(
@@ -2265,28 +2265,24 @@ class Parser:
         as_seen_by = self.frame(coordinate.as_seen_by.id)
         unit = list(
             dict.fromkeys(
-                self.id(u)
+                self.id(_si_unit(u))
                 for component in (coordinate.position_coord.id, coordinate.orientation_coord.id)
                 for u in self.g[component : QUDT_SCHEMA["unit"]]
             )
         )
+        length_unit = _length_unit(coordinate.position_coord)
         position_values = get_coord_vectorxyz(coordinate.position_coord, self.g)
-        pos = list(position_values) if position_values is not None else None
+        pos = _si_all(position_values, length_unit) if position_values is not None else None
         orientation_node = coordinate.orientation_coord.id
         representation = self.orientation_representation(orientation_node)
-        dc_x = dc_y = dc_z = None
-        if representation == "direction-cosine":
-            matrix = get_direction_cosine_matrix(coordinate.orientation_coord, self.g)
-            if matrix is not None:
-                dc_x, dc_y, dc_z = (list(row) for row in matrix)
+        # A symbolic triple keeps its convention: the backend composes per-axis quaternions,
+        # and the sequence decides both the axes and the order they multiply in.
         euler_axes_sequence = None
-        if orientation_node is not None and representation == "euler":
+        euler_intrinsic = False
+        if representation == "euler":
             axes = self.g.value(orientation_node, URI_GEOM_PRED_AXES_SEQ)
             euler_axes_sequence = str(axes) if axes is not None else None
-            if URI_GEOM_TYPE_ANGLES_ABG in coordinate.orientation_coord.types:
-                get_euler_angles_abg(coordinate.orientation_coord, self.g)
-        elif representation == "quaternion":
-            get_quaternion_xyzw(coordinate.orientation_coord, self.g)
+            euler_intrinsic = URI_GEOM_TYPE_INTRINSIC in coordinate.orientation_coord.types
 
         provenance = self.quantity_provenance(id_)
         if not provenance.snapshot:
@@ -2322,11 +2318,9 @@ class Parser:
             quantity_kind,
             as_seen_by,
             unit,
-            dc_x,
-            dc_y,
-            dc_z,
             pos,
             euler_axes_sequence,
+            euler_intrinsic,
             representation,
             orientation_operands=rel_operands,
             provenance=provenance,
@@ -2353,25 +2347,16 @@ class Parser:
                 URI_GEOM_TYPE_DIRECTION_COSINE_XYZ,
             }
             if types & representation_types:
-                model = ModelBase(node_id=node, graph=self.g)
-                if URI_GEOM_TYPE_QUATERNION in types:
-                    delta_repr = "quaternion"
-                    values = get_quaternion_xyzw(model, self.g)
-                elif URI_GEOM_TYPE_DIRECTION_COSINE_XYZ in types:
-                    delta_repr = "direction-cosine"
-                    matrix = get_direction_cosine_matrix(model, self.g)
-                    values = matrix.reshape(-1) if matrix is not None else None
-                else:
-                    delta_repr = "euler"
-                    euler = get_euler_angles_abg(model, self.g)
-                    values = euler[3] if euler is not None else None
-                if values is None:
+                # A delta is literal by construction, so it folds to a quaternion here however
+                # the model wrote it.
+                rotation = get_orientation_coord_vals(ModelBase(node_id=node, graph=self.g), self.g)
+                if rotation is None:
                     raise ValueError(
                         f"Relative orientation delta '{node}' has no literal components"
                     )
                 return {
-                    "delta": [{"value": float(value)} for value in values],
-                    "representation": delta_repr,
+                    "delta": [{"value": float(value)} for value in rotation.as_quat()],
+                    "representation": "quaternion",
                 }
             raise ValueError(
                 f"Relative orientation operand '{node}' is neither a pose nor an orientation"
@@ -2386,18 +2371,23 @@ class Parser:
         return operands
 
     def orientation_representation(self, id_):
-        """The authored rotation representation of an orientation coordinate. Sites with no
-        coordinate to inspect are Euler, the RDF builder's default for a derived view."""
+        """How an orientation's components arrive, not how the model wrote them.
+
+        A rotation whose components are all literal denotes one rotation whichever way it was
+        authored, and scipy resolves Euler angles, quaternions and direction cosines to the
+        same quaternion, so all three report `quaternion`. What cannot be resolved ahead of
+        time keeps its own shape: `euler` is a triple whose angles arrive at runtime (the RDF
+        builder types a literal triple `AnglesAlphaBetaGamma`, so its absence marks one
+        symbolic), and `relative` composes around a runtime pose.
+        """
         if id_ is None:
-            return "euler"
+            return "quaternion"
         types = get_node_types(self.g, id_)
         if GEOM_OP_EXT["RelativeOrientation"] in types:
             return "relative"
-        if URI_GEOM_TYPE_QUATERNION in types:
-            return "quaternion"
-        if URI_GEOM_TYPE_DIRECTION_COSINE_XYZ in types:
-            return "direction-cosine"
-        return "euler"
+        if URI_GEOM_TYPE_EULER_ANGLES in types and URI_GEOM_TYPE_ANGLES_ABG not in types:
+            return "euler"
+        return "quaternion"
 
     @memoize
     def velocity_twist(self, id_):
@@ -2505,7 +2495,8 @@ class Parser:
         quantity_kind_node = self.g.value(id_, QUDT_SCHEMA.hasQuantityKind)
         quantity_kind = self.id(quantity_kind_node)
 
-        unit = self.id(self.g.value(id_, QUDT_SCHEMA["unit"]))
+        # Values below are converted, so the unit reported alongside them is the SI one.
+        unit = self.id(_si_unit(self.g.value(id_, QUDT_SCHEMA["unit"])))
         has_view = (id_, ~MAP["subobject"], None) in self.g
 
         types = get_node_types(self.g, id_)
@@ -2547,7 +2538,8 @@ class Parser:
 
         value = None
         if (id_, QUDT_SCHEMA["value"], None) in self.g:
-            value = float(self.g.value(id_, QUDT_SCHEMA["value"]))
+            authored = self.g.value(id_, QUDT_SCHEMA["value"])
+            value = _si(float(authored), self.g.value(id_, QUDT_SCHEMA["unit"]))
         reference_value = self.g.value(id_, CSTR["reference-value"])
         provenance = self.quantity_provenance(id_)
         return Quantity(
@@ -3874,36 +3866,55 @@ def _dedupe_by_id(items):
     return result
 
 
-_LENGTH_UNIT_FACTORS = {
-    URI_QUDT_UNIT_M: 1.0,
-    URI_QUDT_UNIT_CM: 0.01,
-    URI_QUDT_UNIT_MM: 0.001,
+_LENGTH_UNITS = {URI_QUDT_UNIT_M, URI_QUDT_UNIT_CM, URI_QUDT_UNIT_MM}
+
+_TEMPORAL_UNITS = {QUDT_UNIT["SEC"], QUDT_UNIT["MilliSEC"]}
+
+# The DSL records the unit a model was written in and never rescales a value, so putting one
+# on SI is the reader's job -- codegen emits metres, radians and seconds. A unit absent here
+# is already SI (N, N-M, M-PER-SEC2, KiloGM, UNITLESS, ...).
+_SI_EQUIVALENT = {
+    QUDT_UNIT["CentiM"]: (QUDT_UNIT["M"], 1e-2),
+    QUDT_UNIT["MilliM"]: (QUDT_UNIT["M"], 1e-3),
+    QUDT_UNIT["DEG"]: (QUDT_UNIT["RAD"], math.pi / 180.0),
+    QUDT_UNIT["CentiM-PER-SEC"]: (QUDT_UNIT["M-PER-SEC"], 1e-2),
+    QUDT_UNIT["DEG-PER-SEC"]: (QUDT_UNIT["RAD-PER-SEC"], math.pi / 180.0),
+    QUDT_UNIT["DEG-PER-SEC2"]: (QUDT_UNIT["RAD-PER-SEC2"], math.pi / 180.0),
+    QUDT_UNIT["MilliSEC"]: (QUDT_UNIT["SEC"], 1e-3),
 }
 
 
-_SECONDS_IN = {QUDT_UNIT["SEC"]: 1.0, QUDT_UNIT["MilliSEC"]: 1e-3}
+def _si_unit(unit):
+    """The SI unit `unit` converts to; `unit` itself when it already is SI."""
+    return _SI_EQUIVALENT.get(unit, (unit, 1.0))[0]
+
+
+def _length_unit(coordinate):
+    """A position coordinate's length unit, rejecting anything that is not one."""
+    if coordinate.unit not in _LENGTH_UNITS:
+        raise ConstraintViolation(
+            "geometry",
+            f"Position coordinate '{coordinate.id}' has an unrecognized length "
+            f"unit '{coordinate.unit}'.",
+        )
+    return coordinate.unit
+
+
+def _si(value: float, unit) -> float:
+    """`value`, authored in `unit`, on SI."""
+    return value * _SI_EQUIVALENT.get(unit, (unit, 1.0))[1]
+
+
+def _si_all(values, unit) -> list[float]:
+    """Each of `values`, authored in `unit`, on SI."""
+    return [_si(float(value), unit) for value in values]
 
 
 def _seconds(value: float, unit) -> float:
-    """A duration the model authored, in seconds.
-
-    The DSL records the unit a model was written in rather than converting it, so a
-    value only means seconds once its unit says so. Coordinates need no such reading:
-    `rdf_utils` returns those in radians and metres whatever they were authored in.
-    """
-    if unit not in _SECONDS_IN:
+    """A duration the model authored, in seconds."""
+    if unit not in _TEMPORAL_UNITS:
         raise ConstraintViolation("units", f"'{unit}' is not a duration this can read")
-    return value * _SECONDS_IN[unit]
-
-
-def _xyz_or_none(g, node):
-    """Read a coordinate node's x/y/z as floats, or None if any axis is missing."""
-    if node is None:
-        return None
-    values = [g.value(node, GEOM_COORD[axis]) for axis in ("x", "y", "z")]
-    if any(v is None for v in values):
-        return None
-    return [float(v.value) for v in values]
+    return _si(value, unit)
 
 
 def _frames_of(g, node):
@@ -3935,15 +3946,7 @@ def _position_of(g, node):
                     )
                 if (value := get_coord_vectorxyz(coordinate, g)) is None:
                     continue
-                try:
-                    factor = _LENGTH_UNIT_FACTORS[coordinate.unit]
-                except KeyError as exc:
-                    raise ConstraintViolation(
-                        "geometry",
-                        f"Position coordinate '{coordinate.id}' has an unrecognized length "
-                        f"unit '{coordinate.unit}'.",
-                    ) from exc
-                return [component * factor for component in value]
+                return _si_all(value, _length_unit(coordinate))
     return None
 
 
@@ -5977,20 +5980,23 @@ def _index_by_id(items: list) -> dict:
 
 
 _ORIENTATION_COMPONENTS = {
-    "euler": ("x", "y", "z"),
     "quaternion": ("x", "y", "z", "w"),
-    "direction-cosine": tuple(f"{row}{col}" for row in "xyz" for col in "xyz"),
+    "euler": ("x", "y", "z"),  # symbolic only: the angles arrive at runtime
     "relative": (),
 }
 
 
-def _empty_pose_entry(representation: str) -> dict:
-    """Blank component slots for a pose, sized to its rotation representation."""
+def _empty_pose_entry(representation: str, euler_axes: str | None = None) -> dict:
+    """Blank component slots for a pose, sized to what will fill them.
+
+    A symbolic Euler triple is filled one angle per authored axis, and the axes are the
+    sequence the model wrote -- `zyx` fills z, y and x -- so it is sized by that rather than
+    by a fixed component list.
+    """
     entry = {"representation": representation}
     entry.update({f"position_{axis}": None for axis in ("x", "y", "z")})
-    entry.update(
-        {f"orientation_{name}": None for name in _ORIENTATION_COMPONENTS[representation]}
-    )
+    names = tuple(euler_axes) if euler_axes else _ORIENTATION_COMPONENTS[representation]
+    entry.update({f"orientation_{name}": None for name in names})
     return entry
 
 
@@ -6000,7 +6006,6 @@ def build_pose_components(views: dict, data: list, graph=None, pose_nodes=None) 
     """
     data_by_id = _index_by_id(data)
     components: dict[str, dict] = {}
-    direction_cosine_poses: dict[str, object] = {}
     if graph is not None:
         for pose in data:
             if _field(pose, "type") != "Pose":
@@ -6010,23 +6015,20 @@ def build_pose_components(views: dict, data: list, graph=None, pose_nodes=None) 
             if coord_id is None:
                 continue
             coordinate = PoseCoordModel(coord_id, graph)
-            representation = _field(pose, "orientation_representation") or "euler"
-            entry = _empty_pose_entry(representation)
+            representation = _field(pose, "orientation_representation") or "quaternion"
+            entry = _empty_pose_entry(representation, _field(pose, "euler_axes_sequence"))
             position = get_coord_vectorxyz(coordinate.position_coord, graph)
             if position is not None:
-                for axis, value in zip("xyz", position):
+                length_unit = _length_unit(coordinate.position_coord)
+                for axis, value in zip("xyz", _si_all(position, length_unit)):
                     entry[f"position_{axis}"] = {"value": str(value), "ref": None}
             if representation == "quaternion":
-                values = get_quaternion_xyzw(coordinate.orientation_coord, graph)
+                # Whatever the model authored -- Euler angles, a quaternion, direction cosines --
+                # scipy resolves it to one rotation, and it leaves here as a quaternion. Anything
+                # sourced at runtime keeps its own shape and is rendered, not resolved.
+                rotation = get_orientation_coord_vals(coordinate.orientation_coord, graph)
+                values = rotation.as_quat() if rotation is not None else None
                 labels = "xyzw"
-            elif representation == "direction-cosine":
-                matrix = get_direction_cosine_matrix(coordinate.orientation_coord, graph)
-                values = matrix.reshape(-1) if matrix is not None else None
-                labels = _ORIENTATION_COMPONENTS[representation]
-            elif representation == "euler" and URI_GEOM_TYPE_ANGLES_ABG in coordinate.orientation_coord.types:
-                euler = get_euler_angles_abg(coordinate.orientation_coord, graph)
-                values = euler[3] if euler is not None else None
-                labels = "xyz"
             else:
                 values = None
                 labels = ()
@@ -6047,35 +6049,51 @@ def build_pose_components(views: dict, data: list, graph=None, pose_nodes=None) 
         if not (is_declared_pose or _field(superobject, "euler_axes_sequence")):
             continue
         pose_id = _field(superobject, "id")
-        representation = _field(superobject, "orientation_representation") or "euler"
+        representation = _field(superobject, "orientation_representation") or "quaternion"
         axis = str(_field(view, "axis") or "").lower()
         subobject = _field(_field(view, "subobject"), "id")
         if not subobject or axis not in {"x", "y", "z", "w"}:
             continue
-        entry = components.setdefault(pose_id, _empty_pose_entry(representation))
+        entry = components.setdefault(
+            pose_id,
+            _empty_pose_entry(representation, _field(superobject, "euler_axes_sequence")),
+        )
         if representation == "relative":
             entry["orientation_operands"] = _field(superobject, "orientation_operands")
         prefix = "position" if _field(view, "subspace") == "Linear" else "orientation"
-        if prefix == "orientation" and representation == "direction-cosine":
-            # Nine components share three axis labels, so the views alone are ambiguous.
-            direction_cosine_poses[pose_id] = superobject
-            continue
         entry[f"{prefix}_{axis}"] = _pose_component(subobject, data_by_id)
-    for pose_id, superobject in direction_cosine_poses.items():
-        entry = components[pose_id]
-        for row, field_name in zip(
-            "xyz", ("direction_cosine_x", "direction_cosine_y", "direction_cosine_z")
-        ):
-            for col, component_id in zip("xyz", _field(superobject, field_name) or []):
-                if component_id:
-                    entry[f"orientation_{row}{col}"] = _pose_component(component_id, data_by_id)
     for pose_id, parts in components.items():
         missing = [name for name, value in parts.items() if value is None]
         if missing:
             raise ValueError(
                 f"Declared pose '{pose_id}' is missing required components: {', '.join(missing)}."
             )
+        if parts["representation"] == "euler":
+            parts["euler_factors"] = _euler_factors(pose_id, parts, data_by_id)
     return components
+
+
+def _euler_factors(pose_id: str, parts: dict, data_by_id: dict) -> list[dict]:
+    """A symbolic Euler triple as per-axis rotations, in the order they multiply.
+
+    An extrinsic sequence turns about axes that stay put, so the rotation authored last is
+    applied to the result of the others and multiplies on the left; an intrinsic one turns
+    about axes carried along by the previous rotations, so the order reverses. Each component
+    renders wherever its value comes from, so an angle measured or computed at runtime
+    composes exactly like a constant.
+    """
+    pose = data_by_id.get(pose_id)
+    sequence = _field(pose, "euler_axes_sequence") or "xyz"
+    factors = [
+        {"axis": axis, "component": parts[f"orientation_{axis}"]}
+        for axis in sequence
+        if parts.get(f"orientation_{axis}") is not None
+    ]
+    if len(factors) != len(sequence):
+        raise ValueError(
+            f"Euler pose '{pose_id}' has no component for every axis of '{sequence}'."
+        )
+    return factors if _field(pose, "euler_intrinsic") else list(reversed(factors))
 
 
 def resolve_lerp_closures(closures: dict, pose_components: dict) -> None:

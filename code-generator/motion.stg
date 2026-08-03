@@ -156,24 +156,18 @@ component-value(comp, views) ::= <<
 >>
 
 rotation-template ::= [
-    "euler": "pose-rotation-euler",
     "quaternion": "pose-rotation-quaternion",
-    "direction-cosine": "pose-rotation-direction-cosine",
+    "euler": "pose-rotation-euler",
     "relative": "pose-rotation-relative",
-    default: "pose-rotation-euler"
+    default: "pose-rotation-quaternion"
 ]
 
 delta-rotation-template ::= [
-    "quaternion": "delta-rotation-quaternion",
-    default: "delta-rotation-euler"
+    default: "delta-rotation-quaternion"
 ]
 
 delta-component(c) ::= <%
 <if(c.ref)>shared.<c.ref><else><c.value><endif>
-%>
-
-delta-rotation-euler(op) ::= <%
-KDL::Rotation::RPY(<op.delta:{c | <delta-component(c)>}; separator=", ">)
 %>
 
 delta-rotation-quaternion(op) ::= <%
@@ -188,16 +182,20 @@ pose-rotation-relative(pose, views) ::= <%
 <pose.orientation_operands:{op | <relative-operand(op)>}; separator=" * ">
 %>
 
+euler-axis-quat(factor, views) ::= <%
+motion_spec::runtime::quat_axis('<factor.axis>', <component-value(factor.component, views)>)
+%>
+
+euler-quat(factors, views) ::= <%
+<if(rest(factors))>motion_spec::runtime::quat_mul(<euler-axis-quat(first(factors), views)>, <euler-quat(rest(factors), views)>)<else><euler-axis-quat(first(factors), views)><endif>
+%>
+
 pose-rotation-euler(pose, views) ::= <%
-KDL::Rotation::RPY(<component-value(pose.orientation_x, views)>, <component-value(pose.orientation_y, views)>, <component-value(pose.orientation_z, views)>)
+motion_spec::runtime::quat_rotation(<euler-quat(pose.euler_factors, views)>)
 %>
 
 pose-rotation-quaternion(pose, views) ::= <%
 KDL::Rotation::Quaternion(<component-value(pose.orientation_x, views)>, <component-value(pose.orientation_y, views)>, <component-value(pose.orientation_z, views)>, <component-value(pose.orientation_w, views)>)
-%>
-
-pose-rotation-direction-cosine(pose, views) ::= <%
-KDL::Rotation(KDL::Vector(<component-value(pose.orientation_xx, views)>, <component-value(pose.orientation_xy, views)>, <component-value(pose.orientation_xz, views)>), KDL::Vector(<component-value(pose.orientation_yx, views)>, <component-value(pose.orientation_yy, views)>, <component-value(pose.orientation_yz, views)>), KDL::Vector(<component-value(pose.orientation_zx, views)>, <component-value(pose.orientation_zy, views)>, <component-value(pose.orientation_zz, views)>))
 %>
 
 pose-rotation(pose, views) ::= <%

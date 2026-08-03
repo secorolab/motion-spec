@@ -236,12 +236,10 @@ class Pose:
     quantity_kind: list[QuantityKind]
     as_seen_by: Frame | None
     unit: list[Unit]
-    direction_cosine_x: list[str] | None
-    direction_cosine_y: list[str] | None
-    direction_cosine_z: list[str] | None
     position: list[float] | None
     euler_axes_sequence: str | None = None
-    orientation_representation: str = "euler"
+    euler_intrinsic: bool = False
+    orientation_representation: str = "quaternion"
     orientation_operands: list | None = None
     provenance: Provenance = field(default_factory=Provenance)
     type: str = field(default="Pose")

@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: MPL-2.0
-"""IR parsing for elapsed (timing) constraints: native OWL-Time Duration dispatch."""
+"""IR parsing for elapsed (timing) constraints: native OWL-Time Duration dispatch.
+
+The graph keeps the unit a duration was written in, so the reader is what turns 10 ms
+into seconds for codegen.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +12,8 @@ from rdflib.namespace import RDF, XSD
 
 from motion_spec.classes.entities import ConstraintEvaluator, EvaluatorType
 from motion_spec.rdf_parser.ir import Parser, _evaluator_term
-from motion_spec_dsl.rdf_parser.vocab import CSTR, CSTR_EXT, CSTR_HDL, TIME
+from motion_spec_dsl.rdf_parser.vocab import CSTR, CSTR_EXT, CSTR_HDL, QUDT_SCHEMA, TIME
+from rdf_utils.namespace import NS_MM_QUDT_QTY as QUDT_QKIND, NS_MM_QUDT_UNIT as QUDT_UNIT
 
 NS = "https://example.test/"
 
@@ -19,15 +24,15 @@ def _instant(g: Graph, name: str) -> URIRef:
     return node
 
 
-def _duration(g: Graph, name: str, seconds: float | None = None) -> URIRef:
+def _duration(g: Graph, name: str, value: float | None = None, unit: str = "SEC") -> URIRef:
     node = URIRef(f"{NS}{name}")
-    if seconds is None:
+    g.add((node, QUDT_SCHEMA.hasQuantityKind, QUDT_QKIND["Time"]))
+    g.add((node, QUDT_SCHEMA.unit, QUDT_UNIT[unit]))
+    if value is None:
         g.add((node, RDF.type, CSTR_EXT.ElapsedDurationCoordinate))
-        g.add((node, TIME.unitType, TIME.unitSecond))
     else:
         g.add((node, RDF.type, TIME.Duration))
-        g.add((node, TIME.numericDuration, Literal(seconds, datatype=XSD.decimal)))
-        g.add((node, TIME.unitType, TIME.unitSecond))
+        g.add((node, QUDT_SCHEMA.value, Literal(value, datatype=XSD.double)))
     return node
 
 
@@ -54,7 +59,7 @@ def test_elapsed_greater_than_reads_native_duration_threshold() -> None:
     cstr = URIRef(f"{NS}wait5")
     measured = _duration(g, "wait5-elapsed")
     _interval(g, "wait5-interval", measured)
-    threshold = _duration(g, "wait5-threshold", seconds=5.0)
+    threshold = _duration(g, "wait5-threshold", 5.0)
     g.add((cstr, RDF.type, CSTR.Constraint))
     g.add((cstr, RDF.type, CSTR_EXT.TimeConstraint))
     g.add((cstr, RDF.type, CSTR.UnilateralConstraint))
@@ -76,8 +81,8 @@ def test_elapsed_equality_reads_reference_and_tolerance_normalized_to_seconds() 
     cstr = URIRef(f"{NS}wait-eq")
     measured = _duration(g, "wait-eq-elapsed")
     _interval(g, "wait-eq-interval", measured)
-    reference = _duration(g, "wait-eq-reference", seconds=5.0)
-    tolerance = _duration(g, "wait-eq-tolerance", seconds=0.01)  # 10 ms normalized
+    reference = _duration(g, "wait-eq-reference", 5.0)
+    tolerance = _duration(g, "wait-eq-tolerance", 10.0, unit="MilliSEC")
     g.add((cstr, RDF.type, CSTR.Constraint))
     g.add((cstr, RDF.type, CSTR_EXT.TimeConstraint))
     g.add((cstr, RDF.type, CSTR.EqualityConstraint))

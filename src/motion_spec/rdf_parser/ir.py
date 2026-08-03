@@ -268,8 +268,8 @@ def _is_elapsed_constraint(g, cstr_node) -> bool:
 
 
 def _duration_seconds(g, node) -> float:
-    """The value in seconds of a native OWL-Time Duration node."""
-    return float(g.value(node, TIME["numericDuration"]))
+    """The value in seconds of a Duration node, converting from the unit it was written in."""
+    return _seconds(float(g.value(node, QUDT_SCHEMA["value"])), g.value(node, QUDT_SCHEMA["unit"]))
 
 
 # ---------------------------------------------------------------------------
@@ -2566,8 +2566,13 @@ class Parser:
         types = get_node_types(self.g, id_)
         if not types & {TIME["Duration"], CSTR_EXT["ElapsedDurationCoordinate"]}:
             raise ValueError(f"Expected a duration at '{id_}'")
-        value_node = self.g.value(id_, TIME["numericDuration"])
-        value = float(value_node) if value_node is not None else None
+        # An elapsed coordinate has no authored value; the clock fills it at runtime.
+        value_node = self.g.value(id_, QUDT_SCHEMA["value"])
+        value = (
+            None
+            if value_node is None
+            else _seconds(float(value_node), self.g.value(id_, QUDT_SCHEMA["unit"]))
+        )
         provenance = self.quantity_provenance(id_)
         return Quantity(
             self.id(id_), QuantityKind("Duration"), Unit("Second"), value, False,

@@ -802,6 +802,7 @@ class SolverWithInputAndOutput:
     owned_trees: list = field(default_factory=list)
     # The scene-derived chain this solver runs on, and its joints as MuJoCo names them.
     kdl_chain: str = ""
+    kdl_tree: str = ""
     kdl_joints: list[str] = field(default_factory=list)
     gravity: list[float] | None = None
     root_acc: list[float] | None = None

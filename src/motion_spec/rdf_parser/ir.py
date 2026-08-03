@@ -2298,9 +2298,9 @@ class Parser:
                             URI_GEOM_TYPE_EULER_ANGLES,
                             URI_GEOM_TYPE_QUATERNION,
                             URI_GEOM_TYPE_DIRECTION_COSINE_XYZ,
-                            GEOM_OP_EXT["RelativeOrientation"],
                         }
                     )
+                    or (coordinate.orientation_coord.id, GEOM_OP["in1"], None) in self.g
                     and any(
                         self.g.value(view, MAP["axis"]) is not None
                         for view in self.g.subjects(MAP["superobject"], id_)
@@ -2383,7 +2383,8 @@ class Parser:
         if id_ is None:
             return "quaternion"
         types = get_node_types(self.g, id_)
-        if GEOM_OP_EXT["RelativeOrientation"] in types:
+        # A composition is what fills geom-op's two input slots; it needs no class of its own.
+        if (id_, GEOM_OP["in1"], None) in self.g:
             return "relative"
         if URI_GEOM_TYPE_EULER_ANGLES in types and URI_GEOM_TYPE_ANGLES_ABG not in types:
             return "euler"
@@ -4457,8 +4458,8 @@ def _scene_chain(scene_chains, assembly):
     A robot attached under a prefix carries that prefix on every element, so the runtime
     joint name is the prefix plus the name the scene knows it by.
     """
-    name, joints = scene_chains.get(assembly["chain_root"], ("", []))
-    return name, [f"{assembly['prefix']}{joint}" for joint in joints]
+    name, tree, joints = scene_chains.get(assembly["chain_root"], ("", "", []))
+    return name, tree, [f"{assembly['prefix']}{joint}" for joint in joints]
 
 
 def _robot_setups_from_graph(g):
@@ -4467,7 +4468,7 @@ def _robot_setups_from_graph(g):
     Returns ``(setups_by_node, ordered)`` where ``setups_by_node`` maps each robot's
     abstract agent node (the target of a solver's ``agn:of-agent``) to its setup tuple
     ``(urdf, chain_root, chain_end, chain_tip, robot_model, tool_body, tcp_site,
-    ft_sensors, runtime_prefix, owned_trees, kdl_chain, kdl_joints)``.
+    ft_sensors, runtime_prefix, owned_trees, kdl_chain, kdl_tree, kdl_joints)``.
 
     ``kdl_chain`` names the scene-derived chain builder emitted beside the controller and
     ``kdl_joints`` lists its joints as MuJoCo knows them, in KDL order -- see plan 013.
@@ -5041,6 +5042,7 @@ def _solver_sections(
             solver.runtime_prefix,
             solver.owned_trees,
             solver.kdl_chain,
+            solver.kdl_tree,
             solver.kdl_joints,
         ) = setups_by_node.get(robot_node, default_setup)
         solver.output = _dedupe_by_id(
@@ -6541,7 +6543,7 @@ def generate_ir(manifest_path):
     default_setup = (
         ordered_setups[0]
         if ordered_setups
-        else ("", "", "", "", "", "", "", [], "", [], "", [])
+        else ("", "", "", "", "", "", "", [], "", [], "", "", [])
     )
     # Derive backend + FSM up front: both are pure functions of the graph and are inputs to
     # downstream construction (solver validation, runtime-robot annotation, motion FSM wiring).

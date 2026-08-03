@@ -203,7 +203,7 @@ def _delta_node(g: Graph, name: str, values: tuple[float, float, float]) -> URIR
 
 
 def _relative_orientation_graph(*, in1_is_pose: bool) -> tuple[Graph, URIRef]:
-    """A RelativeOrientation composing `pose-ee-base` with a delta, slotted into
+    """An orientation composing `pose-ee-base` with a delta, slotted into
     `geom-op:in1`/`in2` base-first (`in1_is_pose`) or delta-first.
     """
     g = Graph()
@@ -213,7 +213,7 @@ def _relative_orientation_graph(*, in1_is_pose: bool) -> tuple[Graph, URIRef]:
     delta = _delta_node(g, "delta", (-0.75, 0.0, 0.0))
 
     orientation = _u("relative-orientation")
-    g.add((orientation, RDF.type, GEOM_OP_EXT.RelativeOrientation))
+    # The in1/in2 slots below are what make it a composition.
     g.add((orientation, GEOM_REL.of, ee))
     g.add((orientation, GEOM_COORD["as-seen-by"], base))
     g.add((delta, GEOM_COORD["as-seen-by"], ee if in1_is_pose else base))

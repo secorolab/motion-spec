@@ -39,7 +39,9 @@ def _joints_between(tree: TreeModel, root: str, tip: str) -> list[str]:
     return list(reversed(walk))
 
 
-def chains_by_root(graph: Graph, base_dir: Path | None = None) -> dict[str, tuple[str, list[str]]]:
+def chains_by_root(
+    graph: Graph, base_dir: Path | None = None
+) -> dict[str, tuple[str, str, list[str]]]:
     """Every declared chain, keyed by the runtime name of the body it starts at.
 
     A robot assembly is identified downstream by its chain root body. One arm names that
@@ -57,7 +59,13 @@ def chains_by_root(graph: Graph, base_dir: Path | None = None) -> dict[str, tupl
         return found
     for tree in trees:
         for chain in tree.chains:
-            entry = (chain.name, _joints_between(tree, chain.root, chain.tip))
+            # The chain is sliced from its tree, so the caller needs both builders. Both
+            # names are flattened the way the header's `identifier` macro flattens them.
+            entry = (
+                chain.name.replace("/", "_").replace("-", "_"),
+                tree.name.replace("/", "_").replace("-", "_"),
+                _joints_between(tree, chain.root, chain.tip),
+            )
             found[chain.root.replace("/", "_")] = entry
             leaf = _leaf(chain.root)
             if leaf in found:

@@ -57,7 +57,7 @@ def write_scene_kdl_header(
                 "data": {
                     "name": NAMESPACE,
                     "source": source,
-                    "trees": build_kdl_trees(graph, base_dir, strict_inertia=False),
+                    "trees": build_kdl_trees(graph, base_dir),
                 }
             }
         )

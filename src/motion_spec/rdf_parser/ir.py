@@ -4505,7 +4505,7 @@ def _robot_setups_from_graph(g):
     from scene_dsl.kdl_tree import build_kdl_trees
 
     try:
-        trees = build_kdl_trees(g, strict_inertia=False)
+        trees = build_kdl_trees(g)
     except ConstraintViolation:
         # Some graph-only consumers use an incomplete scene fixture. They retain their
         # assembly metadata but cannot provide a KDL chain until Scene DSL can parse it.

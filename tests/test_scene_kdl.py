@@ -16,7 +16,7 @@ def test_scene_kdl_adapter_derives_solver_chains_and_writes_header(tmp_path: Pat
     scene = MODELS / "pick_place_single" / "pick_place_single.scenex"
     graph = create_scenex_model_graph(scenex_metamodel().model_from_file(scene))
 
-    trees = build_kdl_trees(graph, scene.parent, strict_inertia=False)
+    trees = build_kdl_trees(graph, scene.parent)
     chain = next(chain for tree in trees for chain in tree["chains"])
     assert chain_for_iri(trees, chain["iri"])[2] == [f"joint_{number}" for number in range(1, 8)]
 

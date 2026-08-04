@@ -82,7 +82,11 @@ from rdf_utils.models.vocab import (
     URI_QUDT_UNIT_MM,
     URI_QUDT_UNIT_RAD,
 )
-from rdf_utils.namespace import NS_MM_KC_EXT, NS_MM_QUDT_UNIT as QUDT_UNIT
+from rdf_utils.namespace import (
+    NS_MM_KC_EXT,
+    NS_MM_QUDT_QTY as QUDT_QTY,
+    NS_MM_QUDT_UNIT as QUDT_UNIT,
+)
 from rdf_utils.resolver import IriToFileResolver, install_resolver
 from rdf_utils.uri import (
     iri_is_descendant,
@@ -282,13 +286,19 @@ def _term_name(node) -> str | None:
 
 def _path_projection_outputs(g) -> dict[URIRef, dict[str, URIRef]]:
     """The local frame and measured speed each path projection produces, keyed by its path."""
-    return {
-        g.value(projection, GEOM_OP_EXT.path): {
-            role: g.value(projection, GEOM_OP_EXT[role])
-            for role in ("tangent", "normal-a", "normal-b", "along-speed")
-        }
-        for projection in g.subjects(RDF.type, GEOM_OP_EXT.PathProjection)
+    speed_by_direction = {
+        g.value(op, GEOM_OP["direction"]): g.value(op, GEOM_OP_EXT["along-speed"])
+        for op in g.subjects(RDF.type, GEOM_OP_EXT.TwistToLinearVelocityAlong)
     }
+    outputs = {}
+    for frame in g.subjects(RDF.type, GEOM_OP_EXT.PathTangentFrame):
+        roles = {
+            role: g.value(frame, GEOM_OP_EXT[role])
+            for role in ("tangent", "normal-a", "normal-b")
+        }
+        roles["along-speed"] = speed_by_direction.get(roles["tangent"])
+        outputs[g.value(frame, GEOM_OP_EXT.path)] = roles
+    return outputs
 
 
 def _path_following_axes(
@@ -1423,15 +1433,23 @@ ops_generic = [
     *ops_path,
     Operator(
         type_=GEOM_OP_EXT.PathProjection,
-        input=[GEOM_OP_EXT.path, GEOM_OP["in"], CSTR_HDL["measured-velocity"]],
-        output=[
-            GEOM_OP["out"],
-            GEOM_OP_EXT["path-parameter"],
-            GEOM_OP_EXT.tangent,
-            GEOM_OP_EXT["normal-a"],
-            GEOM_OP_EXT["normal-b"],
-            GEOM_OP_EXT["along-speed"],
-        ],
+        input=[GEOM_OP_EXT.path, GEOM_OP["pose"]],
+        output=[GEOM_OP_EXT["path-parameter"]],
+    ),
+    Operator(
+        type_=GEOM_OP_EXT.PathTangentFrame,
+        input=[GEOM_OP_EXT.path, GEOM_OP_EXT["path-parameter"]],
+        output=[GEOM_OP_EXT.tangent, GEOM_OP_EXT["normal-a"], GEOM_OP_EXT["normal-b"]],
+    ),
+    Operator(
+        type_=GEOM_OP_EXT.TwistToLinearVelocityAlong,
+        input=[GEOM_OP["in"], GEOM_OP["direction"]],
+        output=[GEOM_OP_EXT["along-speed"]],
+    ),
+    Operator(
+        type_=GEOM_OP_EXT.PathEvaluator,
+        input=[GEOM_OP_EXT.path, GEOM_OP_EXT["path-parameter"]],
+        output=[GEOM_OP["out"]],
     ),
     Operator(
         type_=ALGO_EXT["VelocityProfile"],
@@ -2501,13 +2519,17 @@ class Parser:
             self.id(id_), qk, ref, seen, unit, provenance, sensor_frame, sensor_name
         )
 
+    def _is_duration(self, id_):
+        """Authored durations carry the OWL-Time type; runtime elapsed time is a Time-kind
+        quantity the clock fills, so it has a kind but no value."""
+        if TIME["Duration"] in get_node_types(self.g, id_):
+            return True
+        return self.g.value(id_, QUDT_SCHEMA.hasQuantityKind) == QUDT_QTY["Time"]
+
     @memoize
     def quantity(self, id_):
         """Parse the quantity at node, dispatching on its RDF type."""
-        if get_node_types(self.g, id_) & {
-            TIME["Duration"],
-            CSTR_EXT["ElapsedDurationCoordinate"],
-        }:
+        if self._is_duration(id_):
             return self.duration_quantity(id_)
         self._expect_type(id_, QUDT_SCHEMA["Quantity"])
         quantity_kind_node = self.g.value(id_, QUDT_SCHEMA.hasQuantityKind)
@@ -2573,8 +2595,7 @@ class Parser:
     @memoize
     def duration_quantity(self, id_):
         """Parse an authored duration or runtime elapsed-duration coordinate."""
-        types = get_node_types(self.g, id_)
-        if not types & {TIME["Duration"], CSTR_EXT["ElapsedDurationCoordinate"]}:
+        if not self._is_duration(id_):
             raise ValueError(f"Expected a duration at '{id_}'")
         # An elapsed coordinate has no authored value; the clock fills it at runtime.
         value_node = self.g.value(id_, QUDT_SCHEMA["value"])
@@ -2780,13 +2801,17 @@ class Parser:
                     else None
                 )
                 if cl:
-                    if operator.type_ == GEOM_OP_EXT.PathProjection:
-                        # The projection's out port is the pose on the path the motion tracks.
-                        reference = self.g.value(closure, GEOM_OP.out)
-                        if reference is not None:
-                            cl["setpoint"] = self.id(reference)
+                    if operator.type_ in {
+                        GEOM_OP_EXT.PathProjection,
+                        GEOM_OP_EXT.PathTangentFrame,
+                        GEOM_OP_EXT.PathEvaluator,
+                    }:
+                        if operator.type_ == GEOM_OP_EXT.PathEvaluator:
+                            reference = self.g.value(closure, GEOM_OP.out)
+                            if reference is not None:
+                                cl["setpoint"] = self.id(reference)
                         fields = self._path_fields(self.g.value(closure, GEOM_OP_EXT.path))
-                        # The geometry decides the maths, but the projection stays one call.
+                        # The geometry decides the maths; each caller samples the same curve.
                         cl["shape"] = fields.pop("type")
                         cl.update(fields)
                     if operator.type_ in {ALGO_EXT.VelocityProfile, ALGO_EXT.Admittance}:
@@ -3818,15 +3843,27 @@ def build_motion_units(
 
 def _path_projections_for_motion(schedule: list, closures: dict) -> list[dict]:
     """The path projections a motion runs, with the measurements that re-arm on entry."""
+    speeds = [
+        closures[call]["along_speed"]
+        for call in dict.fromkeys(schedule)
+        if isinstance(closures.get(call), dict)
+        and closures[call].get("type") == "TwistToLinearVelocityAlong"
+    ]
     return [
         {
             "id": call,
             "parameter": closures[call]["path_parameter"],
-            "along_speed": closures[call]["along_speed"],
+            "along_speed": speed,
         }
-        for call in dict.fromkeys(schedule)
-        if isinstance(closures.get(call), dict)
-        and closures[call].get("type") == "PathProjection"
+        for (call, speed) in zip(
+            (
+                call
+                for call in dict.fromkeys(schedule)
+                if isinstance(closures.get(call), dict)
+                and closures[call].get("type") == "PathProjection"
+            ),
+            speeds,
+        )
     ]
 
 
@@ -6127,8 +6164,10 @@ def resolve_lerp_closures(closures: dict, pose_components: dict) -> None:
         goal = closure.get("goal")
         if not isinstance(goal, str):
             continue
-        if goal in pose_components:
-            # Emit the structured pose components; the template builds the pose frame.
+        if goal in pose_components and closure.get("type") == "PathProjection":
+            # Emit the structured pose components; the template builds the pose frame. Only
+            # the projection assigns: it is scheduled before the frame and the evaluator,
+            # which read the same shared goal.
             closure["goal_components"] = pose_components[goal]
             closure["assign_goal"] = True
         else:

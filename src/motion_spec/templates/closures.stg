@@ -49,15 +49,30 @@ path-eval(closure, views) ::= <<
 emit-call-PathProjection(closure, views) ::= <<
 {
 <path-eval(closure, views)>
-    const double _s = motion_spec::runtime::path_project(
-        _path_eval, shared.<closure.in>.p, shared.<closure.path_parameter>);
-    shared.<closure.path_parameter> = _s;
+    shared.<closure.path_parameter> = motion_spec::runtime::path_project(
+        _path_eval, shared.<closure.pose>.p, shared.<closure.path_parameter>);
+}
+>>
+
+emit-call-PathTangentFrame(closure, views) ::= <<
+{
+<path-eval(closure, views)>
     motion_spec::runtime::path_frame(
-        _path_eval, _s, shared.<closure.tangent>, shared.<closure.normal_a>, shared.<closure.normal_b>);
-    // Speed along the path is measured at the attachment point, not differentiated from _s,
-    // so it stays honest once the frame reaches the end of the path.
-    shared.<closure.along_speed> = KDL::dot(shared.<closure.measured_velocity>.vel, shared.<closure.tangent>);
-    shared.<closure.setpoint> = _path_eval(_s);
+        _path_eval, shared.<closure.path_parameter>,
+        shared.<closure.tangent>, shared.<closure.normal_a>, shared.<closure.normal_b>);
+}
+>>
+
+// Measured at the attachment point rather than differentiated from the parameter, so it
+// stays honest once the frame reaches the end of the path.
+emit-call-TwistToLinearVelocityAlong(closure, views) ::= <<
+shared.<closure.along_speed> = KDL::dot(shared.<closure.in>.vel, shared.<closure.direction>);
+>>
+
+emit-call-PathEvaluator(closure, views) ::= <<
+{
+<path-eval(closure, views)>
+    shared.<closure.setpoint> = _path_eval(shared.<closure.path_parameter>);
 }
 >>
 

@@ -20,6 +20,7 @@ dependencies = [
     "rdflib",
     "rdf_utils",
     "motion_spec_dsl",
+    "scene-dsl",
 ]
 
 [project.optional-dependencies]

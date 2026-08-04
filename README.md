@@ -220,10 +220,6 @@ artifact, or invalid RDF provenance is a hard error.
 - [DSL concepts and tutorials](docs/sphinx/source/dsl/index.md)
 - [Original RAL tutorial](docs/sphinx/source/tutorial.rst)
 
-## Third-party software
-
-* [`GEN3_URDF_V12.urdf`](thirdparty/kinova/GEN3_URDF_V12.urdf) is licensed under the BSD-3-Clause license and originates from Kinova's [ros_kortex](https://github.com/Kinovarobotics/ros_kortex).
-
 ## Contributors
 
 * [Sven Schneider](https://github.com/svenschneider)

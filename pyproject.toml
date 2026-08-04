@@ -45,14 +45,8 @@ include-package-data = true
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.setuptools.data-files]
-"code-generator" = [
-    "code-generator/*.stg",
-    "code-generator/CMakeLists.txt",
-]
-"thirdparty/kinova" = [
-    "thirdparty/kinova/GEN3_URDF_V12.urdf",
-]
+[tool.setuptools.package-data]
+motion_spec = ["templates/*.stg", "templates/CMakeLists.txt"]
 
 [tool.pytest.ini_options]
 # rdflib's Dataset.parse() internally reads its deprecated default_context

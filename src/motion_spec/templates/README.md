@@ -1,4 +1,4 @@
-# code-generator
+# templates
 
 StringTemplate v4 (`.stg`) templates that motion-spec codegen renders into the
 generated C++ controller, introspection artifacts, and CMake.

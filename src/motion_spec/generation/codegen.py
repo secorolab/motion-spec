@@ -9,9 +9,7 @@ import os
 import re
 import subprocess
 import sys
-from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
-from urllib.parse import urlparse
 
 from motion_spec.classes.entities import DataclassJSONEncoder
 from motion_spec.classes.closures import closure_output_ids
@@ -20,76 +18,8 @@ from motion_spec.generation.artifacts import write_introspection_artifacts
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 MAIN_TEMPLATE = "main"
-DIST_NAME = "motion_spec"
-
-
-def _path_endswith(path, relative_path: Path) -> bool:
-    """True when path ends with the given relative-path components."""
-    path_parts = Path(path).parts
-    relative_parts = relative_path.parts
-    return (
-        len(path_parts) >= len(relative_parts)
-        and path_parts[-len(relative_parts) :] == relative_parts
-    )
-
-
-def _distribution_path(relative_path: Path) -> Path | None:
-    """Locate a resource inside the installed motion_spec distribution, or None."""
-    try:
-        dist = distribution(DIST_NAME)
-    except PackageNotFoundError:
-        return None
-
-    for package_path in dist.files or []:
-        if _path_endswith(package_path, relative_path):
-            candidate = Path(str(dist.locate_file(package_path)))
-            if candidate.exists():
-                return candidate
-    return None
-
-
-def _source_root_from_distribution() -> Path | None:
-    """Editable-install source root from the distribution's direct_url.json, or None."""
-    try:
-        direct_url = distribution(DIST_NAME).read_text("direct_url.json")
-    except (PackageNotFoundError, FileNotFoundError):
-        return None
-    if not direct_url:
-        return None
-    try:
-        url = json.loads(direct_url).get("url", "")
-    except json.JSONDecodeError:
-        return None
-    parsed = urlparse(url)
-    if parsed.scheme != "file":
-        return None
-    return Path(parsed.path)
-
-
-def _source_path(relative_path: Path) -> Path | None:
-    """Locate a resource under the known source roots, or None."""
-    roots = [PACKAGE_ROOT, Path.cwd() / "src" / "motion-spec", Path.cwd()]
-    source_root = _source_root_from_distribution()
-    if source_root is not None:
-        roots.insert(0, source_root)
-
-    for root in roots:
-        candidate = root / relative_path
-        if candidate.exists():
-            return candidate
-    return None
-
-
-def resource_path(relative_path: Path) -> Path:
-    """Absolute path to a packaged resource (installed dist or source tree); raises if missing."""
-    path = _distribution_path(relative_path) or _source_path(relative_path)
-    if path is not None:
-        return path
-
-    raise RuntimeError(
-        f"Could not locate required motion_spec resource '{relative_path}'. "
-        "Reinstall the motion_spec package from this repository."
-    )
+# The templates ship inside the package, so they sit beside it however it was installed.
+TEMPLATES = Path(__file__).resolve().parents[1] / "templates"
 
 
 def write_json(path: Path, payload):
@@ -109,13 +39,12 @@ def render_template(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     stst_path = Path(stst_bin)
     run_cwd = stst_path.resolve().parent if stst_path.parent != Path(".") else PACKAGE_ROOT
-    templates = resource_path(Path("code-generator/main.stg")).parent
     command = [
         stst_bin,
         "-s",
         "<>",
         "-t",
-        str(templates),
+        str(TEMPLATES),
         f"{module_template}.{template_name}",
         str(payload_path),
     ]

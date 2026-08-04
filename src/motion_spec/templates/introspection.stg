@@ -291,7 +291,9 @@ private:
         <introspection_artifacts.frame_layout.protobuf.fields.constraints:{f|{ auto &s = *m->mutable_<f.name>(); const auto &c = frame.constraints[<f.index>]; s.set_active(c.active); s.set_error(c.error); s.set_output(c.output); s.set_satisfied(c.satisfied); s.set_sat_t(c.sat_t); s.set_measured(c.measured); s.set_setpoint(c.setpoint); \}}; separator="\n        ">
         <introspection_artifacts.frame_layout.protobuf.fields.monitors:{f|{ auto &s = *m->mutable_<f.name>(); const auto &x = frame.monitors[<f.index>]; s.set_active(x.active); s.set_value(x.value); s.set_satisfied(x.satisfied); s.set_sat_t(x.sat_t); \}}; separator="\n        ">
         <introspection_artifacts.frame_layout.protobuf.fields.quantities:{f|m->set_<f.name>(frame.quantities[<f.index>]);}; separator="\n        ">
-        <introspection_artifacts.frame_layout.protobuf.fields.triggers:{f|{ auto &s = *m->mutable_<f.name>(); const auto &x = frame.triggers[<f.index>]; s.set_kind(x.kind); s.set_idx(x.idx); s.set_fsm_state(x.fsm_state); s.set_t(x.t); s.set_wall_ns(x.wall_ns); \}}; separator="\n        ">
+        // Only the slots this tick actually filled: mutable_ materializes a sub-message even when
+        // empty, so writing the whole pool would ship 31 empty wrappers on every eventless tick.
+        <introspection_artifacts.frame_layout.protobuf.fields.triggers:{f|if (frame.trigger_count > <f.index>) { auto &s = *m->mutable_<f.name>(); const auto &x = frame.triggers[<f.index>]; s.set_kind(x.kind); s.set_idx(x.idx); s.set_fsm_state(x.fsm_state); s.set_t(x.t); s.set_wall_ns(x.wall_ns); \}}; separator="\n        ">
         <introspection_artifacts.frame_layout.protobuf.fields.poses:{f|{ auto &s = *m->mutable_<f.name>(); const auto &x = frame.poses[<f.index>]; s.set_px(x.px); s.set_py(x.py); s.set_pz(x.pz); s.set_qx(x.qx); s.set_qy(x.qy); s.set_qz(x.qz); s.set_qw(x.qw); \}}; separator="\n        ">
         <introspection_artifacts.frame_layout.protobuf.fields.twists:{f|{ auto &s = *m->mutable_<f.name>(); const auto &x = frame.twists[<f.index>]; s.set_lx(x.lx); s.set_ly(x.ly); s.set_lz(x.lz); s.set_ax(x.ax); s.set_ay(x.ay); s.set_az(x.az); \}}; separator="\n        ">
         <introspection_artifacts.frame_layout.protobuf.fields.wrenches:{f|{ auto &s = *m->mutable_<f.name>(); const auto &x = frame.wrenches[<f.index>]; s.set_fx(x.fx); s.set_fy(x.fy); s.set_fz(x.fz); s.set_tx(x.tx); s.set_ty(x.ty); s.set_tz(x.tz); \}}; separator="\n        ">
@@ -369,14 +371,14 @@ public:
         scratch_.wall_ns = now;
         scratch_.period_ns = last_tick_ns_ == 0 ? 0 : tick_start_ns_ - last_tick_ns_;
         last_tick_ns_ = tick_start_ns_;
-        constraint_count_ = 0;
-        monitor_count_ = 0;
     \}
 
-    void constraint_sample(const char *uri, double error, double output, double measured, double setpoint, bool satisfied) {
-        static_cast\<void\>(uri);
-        if (constraint_count_ \>= kNumConstraints) return;
-        ConstraintSlot &slot = scratch_.constraints[constraint_count_++];
+    // The slot index is declared by the generator, not counted as calls arrive: a constraint's
+    // identity is schema["by_motion"][m]["controllers"][index], which must not depend on how many
+    // samples happened to be emitted before it.
+    void constraint_sample(std::size_t index, double error, double output, double measured, double setpoint, bool satisfied) {
+        if (index \>= kNumConstraints) return;
+        ConstraintSlot &slot = scratch_.constraints[index];
         slot.active = 1;
         slot.error = error;
         slot.output = output;
@@ -386,10 +388,9 @@ public:
         slot.sat_t = scratch_.t;
     \}
 
-    void monitor_sample(const char *uri, double value, bool satisfied) {
-        static_cast\<void\>(uri);
-        if (monitor_count_ \>= kNumMonitors) return;
-        MonitorSlot &slot = scratch_.monitors[monitor_count_++];
+    void monitor_sample(std::size_t index, double value, bool satisfied) {
+        if (index \>= kNumMonitors) return;
+        MonitorSlot &slot = scratch_.monitors[index];
         slot.active = 1;
         slot.value = value;
         slot.satisfied = satisfied ? 1 : 0;
@@ -467,8 +468,6 @@ private:
     Frame scratch_{};
     LatestFramePublisher shm_;
     FrameLogger logger_;
-    std::size_t constraint_count_ = 0;
-    std::size_t monitor_count_ = 0;
     std::int64_t tick_start_ns_ = 0;
     std::int64_t last_tick_ns_ = 0;
     std::int64_t last_event_count_ = 0;
@@ -481,12 +480,14 @@ ctrl-sig(id, views) ::= <<
 <if(id)><access-expr(id, views)><else>0.0<endif>
 >>
 
+// The URI rides as a comment, not as an argument: the wire carries the slot index and the schema
+// carries the identity, so a dead runtime parameter would only invite it being trusted.
 introspection-controller-sample(slot, views) ::= <<
-        pub.constraint_sample(<slot.uri>, <slot.error_expr>, <slot.output_expr>, <ctrl-sig(slot.measured_signal, views)>, <ctrl-sig(slot.setpoint_signal, views)>, motion_spec::runtime::constraint_satisfied(<slot.error_expr>));
+        pub.constraint_sample(<slot.index>, <slot.error_expr>, <slot.output_expr>, <ctrl-sig(slot.measured_signal, views)>, <ctrl-sig(slot.setpoint_signal, views)>, motion_spec::runtime::constraint_satisfied(<slot.error_expr>));  // <slot.uri_comment>
 >>
 
 introspection-monitor-sample(slot) ::= <<
-<if(slot.has_active)>        pub.monitor_sample(<slot.uri>, <if(slot.active_terms_present)><bool-condition(slot.active_terms, slot.active_any)><else>false<endif>, <if(slot.active_terms_present)><bool-condition(slot.active_terms, slot.active_any)><else>false<endif>);<else>        pub.monitor_sample(<slot.uri>, <if(slot.composite_error)>motion_spec::runtime::constraint_error_value(<slot.value_expr>)<else><slot.value_expr><endif>, motion_spec::runtime::constraint_satisfied(<slot.value_expr>));<endif>
+<if(slot.has_active)>        pub.monitor_sample(<slot.index>, <if(slot.active_terms_present)><bool-condition(slot.active_terms, slot.active_any)><else>false<endif>, <if(slot.active_terms_present)><bool-condition(slot.active_terms, slot.active_any)><else>false<endif>);  // <slot.uri_comment><else>        pub.monitor_sample(<slot.index>, <if(slot.composite_error)>motion_spec::runtime::constraint_error_value(<slot.value_expr>)<else><slot.value_expr><endif>, motion_spec::runtime::constraint_satisfied(<slot.value_expr>));  // <slot.uri_comment><endif>
 >>
 
 introspection-quantity-sample(slot, views) ::= <<
@@ -505,10 +506,16 @@ introspection-wrench-sample(slot) ::= <<
     pub.wrench_sample(<slot.index>, shared.<slot.id>.force.x(), shared.<slot.id>.force.y(), shared.<slot.id>.force.z(), shared.<slot.id>.torque.x(), shared.<slot.id>.torque.y(), shared.<slot.id>.torque.z());
 >>
 
-introspection-state-case(state, views) ::= <<
-    case <state.index>:
-<state.controllers:{slot | <introspection-controller-sample(slot, views)>}; separator="\n">
-<state.monitors:{slot | <introspection-monitor-sample(slot)>}; separator="\n">
+// Gated on the motion that computes these values, not on the coordinator state that selected it:
+// an FSM state, a behaviour-tree node and the app_main loop all reduce to "which motion ran".
+introspection-motion-case(motion, views) ::= <<
+    case <motion.index>:
+<motion.quantities:{slot | <introspection-quantity-sample(slot, views)>}; separator="\n">
+<motion.poses:{slot | <introspection-pose-sample(slot)>}; separator="\n">
+<motion.twists:{slot | <introspection-twist-sample(slot)>}; separator="\n">
+<motion.wrenches:{slot | <introspection-wrench-sample(slot)>}; separator="\n">
+<motion.controllers:{slot | <introspection-controller-sample(slot, views)>}; separator="\n">
+<motion.monitors:{slot | <introspection-monitor-sample(slot)>}; separator="\n">
         break;
 >>
 
@@ -524,6 +531,8 @@ introspect_model_header(introspection_artifacts, views) ::= <<
 
 namespace motion_spec::introspection {
 
+// `state_index` is coordinator context recorded in the frame; `active_motion` is what selects the
+// slots, because a motion is what computes them.
 inline void sample_model(RunPublisher &pub, int state_index, int active_motion, double t, std::uint64_t step, shared_data &shared) {
     static_cast\<void\>(shared);
     pub.begin_tick(t, step, active_motion, state_index);
@@ -535,8 +544,8 @@ inline void sample_model(RunPublisher &pub, int state_index, int active_motion, 
 <introspection_artifacts.model.poses:{slot | <introspection-pose-sample(slot)>}; separator="\n">
 <introspection_artifacts.model.twists:{slot | <introspection-twist-sample(slot)>}; separator="\n">
 <introspection_artifacts.model.wrenches:{slot | <introspection-wrench-sample(slot)>}; separator="\n">
-    switch (state_index) {
-<introspection_artifacts.model.states:{state | <introspection-state-case(state, views)>}; separator="\n">
+    switch (active_motion) {
+<introspection_artifacts.model.motions:{motion | <introspection-motion-case(motion, views)>}; separator="\n">
     default:
         break;
     \}

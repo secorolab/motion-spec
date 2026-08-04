@@ -47,8 +47,10 @@ def _schema() -> dict:
             ],
             "end": 1,
         },
-        "by_state": {
-            "S_MOVE": {
+        "platform": {"name": "MuJoCo", "simulated": True, "backend": "mj_kdl"},
+        "by_motion": {
+            "move": {
+                "index": 0,
                 "controllers": [
                     {
                         "index": 0,
@@ -112,6 +114,7 @@ def _write_frame_log(path: Path, schema: dict) -> None:
             t=1.1,
             wall_ns=200,
             fsm_state=1,
+            active_motion=0,  # S_MOVE runs the "move" motion; slots resolve through it
             state_since_wall_ns=200,
             **{
                 "c0.active": 1,
@@ -134,6 +137,7 @@ def _write_frame_log(path: Path, schema: dict) -> None:
             t=1.2,
             wall_ns=300,
             fsm_state=1,
+            active_motion=0,  # S_MOVE runs the "move" motion; slots resolve through it
             state_since_wall_ns=200,
             **{
                 "c0.active": 1,

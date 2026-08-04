@@ -4630,6 +4630,8 @@ def _build_introspection(
     closures,
     views,
     shared_data,
+    serial_chain_solvers,
+    platform,
 ):
     """Build the introspection artifact (uris, motions, controllers, monitors, quantities,
     provenance) and fold in the controller-state and frame-log samples.
@@ -4731,12 +4733,14 @@ def _build_introspection(
         }
         quantities.append({k: v for k, v in quantity_entry.items() if v is not None and v != []})
 
-    runtime_type = {"mj_kdl": "exec:Simulation", "robif2b": "exec:RealWorld"}.get(
-        backend, "exec:ExecutionContext"
-    )
-    runtime_id = "agent:runtime:mujoco" if backend == "mj_kdl" else "agent:runtime:real_robot"
+    # One authored fact -- the exec-context's platform -- decides all three. Never re-derived from
+    # the backend token, and never by matching substrings of the agent id downstream.
+    runtime_type = "exec:Simulation" if platform["simulated"] else "exec:RealWorld"
+    runtime_id = f"agent:runtime:{get_valid_var_name(platform['name']).casefold()}" if platform[
+        "simulated"
+    ] else "agent:runtime:real_robot"
     runtime_activity_type = (
-        "bdd:SimulatedExecution" if backend == "mj_kdl" else "bdd:ScenarioExecution"
+        "bdd:SimulatedExecution" if platform["simulated"] else "bdd:ScenarioExecution"
     )
 
     entities = [
@@ -4871,8 +4875,10 @@ def _build_introspection(
     # then the frame-log quantity/spatial samples that read them.
     _annotate_controller_signals(introspection["controllers"], closures)
     add_controller_internal_state_logging(closures, shared_data, introspection, motions)
+    add_joint_space_logging(serial_chain_solvers, motions, shared_data, introspection, backend)
     add_quantity_samples(introspection, shared_data, views)
     add_spatial_samples(introspection, shared_data)
+    annotate_dataflow(introspection, shared_data, closures, motions, serial_chain_solvers, views)
     return introspection
 
 
@@ -5555,15 +5561,27 @@ def _closure_maps(closures: dict) -> tuple[dict[str, str], dict[str, set[str]]]:
     return closure_output_map, closure_input_map
 
 
-def _backend_from_graph(g) -> str:
-    """Select the runtime backend from the authored execution context."""
+# Which codegen backend serves an authored simulation platform. The platform is the model's; the
+# backend is an implementation detail of running it, so the mapping lives here and nowhere else.
+_SIMULATION_BACKENDS = {"mujoco": "mj_kdl"}
+
+
+def _platform_from_graph(g) -> dict:
+    """The execution platform the model declares, as one record every consumer reads.
+
+    Returns the authored node's IRI, its name, whether it is simulated, and the backend that
+    serves it. Downstream code must take platform identity from here rather than re-deriving it
+    from the backend token or by matching substrings of a file path -- a model that declares
+    `platform: simulation { name: "Gazebo" }` is not MuJoCo, and nothing should have to guess.
+    """
     simulation = next(g.subjects(RDF.type, EXEC.Simulation), None)
-    if simulation is not None:
-        name = str(g.value(simulation, EXEC["platform-name"]) or "").casefold()
-        if name == "mujoco":
-            return "mj_kdl"
+    if simulation is None:
+        return {"uri": None, "name": None, "simulated": False, "backend": "robif2b"}
+    name = str(g.value(simulation, EXEC["platform-name"]) or "")
+    backend = _SIMULATION_BACKENDS.get(name.casefold())
+    if backend is None:
         raise ValueError(f"Unsupported simulation platform '{name}'.")
-    return "robif2b"
+    return {"uri": str(simulation), "name": name, "simulated": True, "backend": backend}
 
 
 def _apply_monitor_debounce(handlers, control_period_ns: int) -> None:
@@ -5898,11 +5916,165 @@ def add_controller_internal_state_logging(
         closure["internal_state_samples"] = closure_samples
 
 
+# One declaration per joint-space channel: what writes it, and what it measures. Kept in one place
+# so the producer cannot drift from the mirror expression -- the template's joint-space-expr-<name>
+# reads exactly the thing named here.
+#
+# Quantity kinds are not a guess: scene-dsl keeps only RevoluteJointModel joints in a chain
+# (`scene_dsl/kdl_tree.py`), so every entry in kdl_joints is revolute and its position is an angle.
+#
+# `backends` is None where every backend carries the signal, or the backends that actually
+# measure it. A channel is logged only where it exists: a slot that is structurally zero is not a
+# measurement, and logging it every tick would say the arm is weightless.
+JointSpaceChannel = collections.namedtuple(
+    "JointSpaceChannel", ("name", "producer", "quantity_kind", "unit", "backends")
+)
+
+_JOINT_SPACE_CHANNELS = (
+    JointSpaceChannel("q", "port", "Angle", "RAD", None),
+    JointSpaceChannel("qd", "port", "AngularVelocity", "RAD_PER_SEC", None),
+    JointSpaceChannel("qdd", "solver", "AngularAcceleration", "RAD_PER_SEC2", None),
+    JointSpaceChannel("tau_ctrl", "solver", "Torque", "N_M", None),
+    # robif2b reads eff_msr off the hardware. mj_kdl has no equivalent: under torque control the
+    # wrapper nulls the position actuator and applies the command through qfrc_applied, so
+    # jnt_trq_msr (which mirrors qfrc_actuator) is zero by construction, not by measurement.
+    # Add "mj_kdl" here the day the wrapper reports the joint's actual generalized force.
+    JointSpaceChannel("tau_msr", "sensor", "Torque", "N_M", ("robif2b",)),
+)
+
+# Emitted only where a torque limit is authored. Its producer is that saturation, not the solver:
+# without a limit the command port just holds tau_ctrl, and the channel does not exist at all.
+_JOINT_SPACE_CMD_CHANNEL = JointSpaceChannel("tau_cmd", "saturation", "Torque", "N_M", None)
+
+
+def _cpp_identifier(name: str) -> str:
+    """Sanitize a MuJoCo joint name into a C++ identifier fragment."""
+    return re.sub(r"[^0-9A-Za-z_]", "_", name)
+
+
+def add_joint_space_logging(
+    serial_chain_solvers, motions, shared_data: list, introspection: dict, backend: str
+) -> None:
+    """Mirror each runtime's joint-space signals into shared_data so the frame log can carry them.
+
+    Keyed by runtime rather than by solver: q/qd/tau_msr/tau_cmd are the arm's ports, and
+    tau_ctrl/qdd follow the same key because the command port is last-writer-wins, so a
+    runtime-keyed slot records what the port received even when several solvers on one runtime
+    are active in the same tick. Keying by solver would multiply the field count by the number of
+    motions (5x on the arc, 10x on the dual arm) to record the same ports.
+    """
+    quantities = introspection.setdefault("quantities", [])
+    shared_ids = {_field(item, "id") for item in shared_data if _field(item, "id")}
+
+    # The per-motion copies (HandlerSerialChainSolver) are what the templates render, and they
+    # carry neither runtime_id nor kdl_joints -- derive from the top-level solvers, assign to both.
+    copies_by_id: dict[str, list] = {}
+    for motion in motions:
+        for solver in _field(motion, "serial_chain_solvers", []) or []:
+            copies_by_id.setdefault(_field(solver, "id"), []).append(solver)
+
+    by_runtime: dict[str, list] = {}
+    for solver in serial_chain_solvers:
+        by_runtime.setdefault(_field(solver, "runtime_id") or _field(solver, "id"), []).append(
+            solver
+        )
+
+    for runtime_id, solvers in by_runtime.items():
+        joints = _field(solvers[0], "kdl_joints") or []
+        if not joints:
+            raise RuntimeError(
+                f"joint-space logging: solver '{_field(solvers[0], 'id')}' has no kdl_joints; "
+                "the shared ids are compile-time names, so a wrong joint count mislabels "
+                "every channel"
+            )
+        # tau_cmd can differ from tau_ctrl only where a limit clamps it, so its producer is that
+        # saturation. Several solvers on one runtime could each carry one; name it only when the
+        # runtime has exactly one, the same rule the rest of the contract uses.
+        saturations = {
+            _field(_field(solver, "torque_saturation"), "id")
+            for solver in solvers
+            if _field(solver, "torque_saturation")
+        }
+        available = tuple(
+            channel
+            for channel in _JOINT_SPACE_CHANNELS
+            if channel.backends is None or backend in channel.backends
+        )
+        channels = available + ((_JOINT_SPACE_CMD_CHANNEL,) if saturations else ())
+        producer_id = {
+            "port": runtime_id,
+            "sensor": runtime_id,
+            "solver": _sole({_field(solver, "id") for solver in solvers}),
+            "saturation": _sole(saturations),
+        }
+
+        ids_by_channel: dict[str, list] = {channel.name: [] for channel in channels}
+        for index, joint in enumerate(joints):
+            for channel in channels:
+                shared_id = f"{runtime_id}_{channel.name}_{_cpp_identifier(joint)}"
+                if shared_id in shared_ids:
+                    raise RuntimeError(
+                        f"joint-space logging: id '{shared_id}' collides with an existing "
+                        "shared value"
+                    )
+                shared_ids.add(shared_id)
+                entry = {
+                    "id": shared_id,
+                    "type": "Quantity",
+                    "quantity_kind": {"id": channel.quantity_kind, "type": "QuantityKind"},
+                    "unit": {"id": channel.unit, "type": "Unit"},
+                    "runtime": runtime_id,
+                    "role": "joint_space",
+                    "channel": channel.name,
+                    "joint": joint,
+                    # Declared where it is known -- the mirror site -- so the dataflow contract
+                    # reads it rather than re-deriving it from the channel name.
+                    "producer": {
+                        "kind": channel.producer,
+                        "id": producer_id[channel.producer],
+                    },
+                }
+                shared_data.append(entry)
+                quantities.append(dict(entry))
+                ids_by_channel[channel.name].append({"id": shared_id, "index": index})
+
+        # Every solver on the runtime mirrors the same ids: whichever motion is active writes them.
+        samples = [
+            {"id": sample["id"], "channel": channel.name, "index": sample["index"]}
+            for channel in available
+            for sample in ids_by_channel[channel.name]
+        ]
+        cmd_ids = ids_by_channel.get(_JOINT_SPACE_CMD_CHANNEL.name, [])
+        for solver in solvers:
+            cmd_samples = cmd_ids if _field(solver, "torque_saturation") else []
+            for target in (solver, *copies_by_id.get(_field(solver, "id"), ())):
+                _set_field(target, "joint_space_samples", samples)
+                _set_field(target, "joint_space_cmd_samples", cmd_samples)
+
+
+# Types that get a whole-object frame-log slot (PoseSlot/TwistSlot/WrenchSlot).
+_SPATIAL_SLOT_KINDS = {"Pose": "poses", "VelocityTwist": "twists", "Wrench": "wrenches"}
+
+
+def _spatial_slot_ids(shared_data: list) -> set:
+    """Ids carried by a whole-object spatial slot, so no per-axis scalar rows are emitted too.
+
+    AccelerationTwist and PoseDifference have no slot, so their scalar rows are the only record
+    of them and must survive.
+    """
+    return {
+        _field(item, "id")
+        for item in shared_data
+        if _field(item, "type") in _SPATIAL_SLOT_KINDS and _field(item, "id")
+    }
+
+
 def add_quantity_samples(introspection: dict, shared_data: list, views: dict) -> None:
     """Build the per-quantity frame-log sample descriptors from the introspection quantities and
     shared data.
     """
     shared_ids = {_field(item, "id") for item in shared_data if _field(item, "id")}
+    spatial_ids = _spatial_slot_ids(shared_data)
     indexed_views = _views_by_subobject(views)
     samples = []
 
@@ -5937,7 +6109,7 @@ def add_quantity_samples(introspection: dict, shared_data: list, views: dict) ->
 
     for quantity in introspection.get("quantities", []):
         qid = quantity.get("id")
-        if not qid:
+        if not qid or qid in spatial_ids:
             continue
         qtype = quantity.get("type")
         if qtype == "Quantity":
@@ -6018,15 +6190,294 @@ def add_quantity_samples(introspection: dict, shared_data: list, views: dict) ->
 def add_spatial_samples(introspection: dict, shared_data: list) -> None:
     """Add per-object pose, velocity-twist and wrench frame-log samples."""
     shared_ids = {_field(item, "id") for item in shared_data if _field(item, "id")}
-    kinds = {"Pose": "poses", "VelocityTwist": "twists", "Wrench": "wrenches"}
     spatial = {"poses": [], "twists": [], "wrenches": []}
     for item in shared_data:
         iid = _field(item, "id")
-        pool = kinds.get(_field(item, "type"))
+        pool = _SPATIAL_SLOT_KINDS.get(_field(item, "type"))
         if not iid or iid not in shared_ids or pool is None:
             continue
         spatial[pool].append({"id": iid, "index": len(spatial[pool])})
     introspection["spatial_samples"] = spatial
+
+
+# Storage follows from write cadence, in one place. A value written once says nothing new when
+# repeated per tick, and one never written is not a runtime value at all.
+_STORAGE_BY_CADENCE = {"never": "absent", "init": "record", "tick": "log"}
+
+_MOTION_SCHEDULES = ("when_schedule", "while_pre_schedule", "while_schedule", "until_schedule")
+
+_LITERAL_FIELDS = ("position", "direction", "orientation", "value", "vector")
+
+# Fields on a shared-data entry that carry the numbers behind a `vec` sample descriptor.
+_LITERAL_VECTORS = ("position", "direction", "vector")
+
+
+def _storage_for(cadence) -> str:
+    """Derive where a value belongs from when it is written (never override this per value)."""
+    return "log" if isinstance(cadence, dict) else _STORAGE_BY_CADENCE[cadence]
+
+
+def _sole(ids: set) -> str | None:
+    """The one id in a set, or None when several instances write the same value."""
+    return next(iter(ids)) if len(ids) == 1 else None
+
+
+def _constant_value(item, desc: dict):
+    """The authored number a `cadence: init` sample row carries, for the schema header."""
+    kind = desc.get("kind")
+    if kind == "literal":
+        return float(desc["value"])
+    if kind in {"shared", "access", "bool", "int"}:
+        return _field(item, "value")
+    if kind == "vec":
+        for field in _LITERAL_VECTORS:
+            values = _field(item, field)
+            if values is not None:
+                return values[desc["axis"]]
+    return None
+
+
+def annotate_dataflow(
+    introspection: dict, shared_data: list, closures: dict, motions, serial_chain_solvers, views
+) -> None:
+    """Give every shared value its producer, its write cadence, and the storage those imply, then
+    apply that contract: drop what nothing writes, and move what is written once into the header.
+
+    Cadence -- not motion membership -- decides gating: under the FSM path only the active state's
+    step function runs, but the non-FSM app_main path runs a global schedule every tick, and a
+    membership gate would drop live data there.
+    """
+    closure_by_output: dict[str, set] = {}
+    for closure_id, closure in closures.items():
+        if isinstance(closure, dict):
+            for out_id in closure_output_ids(closure):
+                closure_by_output.setdefault(out_id, set()).add(closure_id)
+
+    solver_by_output: dict[str, set] = {}
+    sensor_outputs: set = set()
+    for solver in serial_chain_solvers:
+        for out in _field(solver, "output", []) or []:
+            out_id = _field(out, "id")
+            solver_by_output.setdefault(out_id, set()).add(_field(solver, "id"))
+            if _field(out, "sensor_name"):
+                sensor_outputs.add(out_id)
+                # tare state, written alongside the reading (_shared_runtime_members)
+                for companion in (f"{out_id}_ft_bias", f"{out_id}_ft_settle"):
+                    solver_by_output.setdefault(companion, set()).add(_field(solver, "id"))
+                    sensor_outputs.add(companion)
+
+    # Which motions' step functions write a value. A union, never last-writer-wins: every motion
+    # instantiates its own solver over the same shared outputs, and one closure can be scheduled
+    # by several motions -- attributing such a value to one motion would gate away live data.
+    owners: dict[str, set] = {}
+    # Poses, snapshots and per-axis errors are written by the pose-composition, snapshot and
+    # error-decomposition blocks, which are emitted per motion rather than scheduled as closures.
+    pose_ids: set = set()
+    snapshot_ids: set = set()
+    axis_error_ids: set = set()
+
+    def own(data_id, motion_id) -> None:
+        if isinstance(data_id, str):
+            owners.setdefault(data_id, set()).add(motion_id)
+
+    for motion in motions:
+        motion_id = _field(motion, "id")
+        for schedule in _MOTION_SCHEDULES:
+            for closure_id in _field(motion, schedule, []) or []:
+                for out_id in closure_output_ids(closures.get(closure_id) or {}):
+                    own(out_id, motion_id)
+        for solver in _field(motion, "serial_chain_solvers", []) or []:
+            for out in _field(solver, "output", []) or []:
+                out_id = _field(out, "id")
+                own(out_id, motion_id)
+                if _field(out, "sensor_name"):
+                    own(f"{out_id}_ft_bias", motion_id)
+                    own(f"{out_id}_ft_settle", motion_id)
+            # Joint-space mirrors are written by whichever motion's solver ran (add_joint_space_
+            # logging), so the runtime's channels are live in every motion that drives it.
+            for sample in (_field(solver, "joint_space_samples", []) or []) + (
+                _field(solver, "joint_space_cmd_samples", []) or []
+            ):
+                own(_field(sample, "id"), motion_id)
+        for group in (
+            _field(motion, "declared_pose_components", []) or [],
+            _field(motion, "relative_poses", []) or [],
+        ):
+            for entry in group:
+                own(_field(entry, "id"), motion_id)
+                pose_ids.add(_field(entry, "id"))
+        for snapshot in _field(motion, "snapshots", []) or []:
+            own(_field(snapshot, "target_id"), motion_id)
+            snapshot_ids.add(_field(snapshot, "target_id"))
+            # The source closure runs inside the snapshot block, not from a schedule.
+            for out_id in closure_output_ids(
+                closures.get(_field(snapshot, "source_closure_id")) or {}
+            ):
+                own(out_id, motion_id)
+        for group in _field(motion, "pose_axis_error_groups", []) or []:
+            for component in _field(group, "components", []) or []:
+                own(_field(component, "error"), motion_id)
+                axis_error_ids.add(_field(component, "error"))
+
+    def contract(item) -> tuple[dict, object]:
+        """(producer, cadence) for one shared-data member."""
+        item_id = _field(item, "id")
+        motion_ids = owners.get(item_id)
+        cadence = {"motions": sorted(motion_ids)} if motion_ids else "tick"
+        if _field(item, "role") == "joint_space":
+            # Declared at the mirror site (add_joint_space_logging), which is the only place that
+            # knows what the expression reads.
+            return _field(item, "producer"), cadence
+        if item_id in closure_by_output:
+            producer_ids = closure_by_output[item_id]
+            types = {(closures.get(cid) or {}).get("type") for cid in producer_ids}
+            kind = "controller" if types == {"Controller"} else "closure"
+            return {"kind": kind, "id": _sole(producer_ids)}, cadence
+        if item_id in solver_by_output:
+            kind = "sensor" if item_id in sensor_outputs else "solver"
+            return {"kind": kind, "id": _sole(solver_by_output[item_id])}, cadence
+        for kind, ids in (
+            ("pose", pose_ids),
+            ("snapshot", snapshot_ids),
+            ("decomposition", axis_error_ids),
+        ):
+            if item_id in ids:
+                return {"kind": kind, "id": item_id}, cadence
+        # `is not None`, not truthiness: an authored 0.0 is a value, not a missing one.
+        if any(_field(item, field) is not None for field in _LITERAL_FIELDS):
+            return {"kind": "authored", "id": None}, "init"
+        return {"kind": "none", "id": None}, "never"
+
+    # A view is a projection of its superobject, so it is written exactly when that is. One
+    # subobject can MAP into several superobjects, so collect them all rather than let the last
+    # view win -- the value is live whenever any of them is recomputed.
+    superobjects_of: dict[str, set] = {}
+    for view in (views or {}).values():
+        subobject_id = _field(_field(view, "subobject"), "id")
+        superobject_id = _field(_field(view, "superobject"), "id")
+        if subobject_id and superobject_id:
+            superobjects_of.setdefault(subobject_id, set()).add(superobject_id)
+
+    # One artifact holds the contract, rather than three fields smeared over every entity
+    # dataclass: storage is derived from cadence in exactly one place and cannot drift from it.
+    dataflow = {}
+    items_by_id = {}
+    for item in shared_data:
+        item_id = _field(item, "id")
+        if not item_id:
+            continue
+        items_by_id[item_id] = item
+        producer, cadence = contract(item)
+        dataflow[item_id] = {
+            "producer": producer,
+            "cadence": cadence,
+            "storage": _storage_for(cadence),
+        }
+
+    for subobject_id, superobject_ids in superobjects_of.items():
+        entry = dataflow.get(subobject_id)
+        sources = [dataflow[sid] for sid in sorted(superobject_ids) if sid in dataflow]
+        if entry is None or not sources:
+            continue
+        live = [source["cadence"] for source in sources if source["storage"] == "log"]
+        if live:
+            # A read of a recomputed superobject is live even when the view itself was authored
+            # with a literal: the literal is only what the superobject started from.
+            cadence = (
+                "tick"
+                if any(not isinstance(source, dict) for source in live)
+                else {"motions": sorted({m for source in live for m in source["motions"]})}
+            )
+        elif entry["producer"]["kind"] == "none":
+            cadence = sources[0]["cadence"]
+        else:
+            continue
+        entry["producer"] = {"kind": "view", "id": _sole(superobject_ids)}
+        entry["cadence"] = cadence
+        entry["storage"] = _storage_for(cadence)
+
+    for member_id, consumers in _consumers_by_id(introspection, closures).items():
+        entry = dataflow.get(member_id)
+        if entry is not None:
+            entry["consumers"] = consumers
+
+    # A value nothing writes but something reads is not model metadata -- it is a broken binding,
+    # and dropping it would silently feed the reader a zero forever.
+    orphans = {
+        member_id: entry["consumers"]
+        for member_id, entry in dataflow.items()
+        if entry["cadence"] == "never" and entry.get("consumers")
+    }
+    if orphans:
+        raise RuntimeError(
+            "dataflow: read but never written: "
+            + "; ".join(
+                f"{member_id} (read by {', '.join(c['id'] for c in consumers)})"
+                for member_id, consumers in sorted(orphans.items())
+            )
+        )
+
+    introspection["dataflow"] = dataflow
+    _apply_dataflow(introspection, shared_data, items_by_id, dataflow)
+
+
+def _consumers_by_id(introspection: dict, closures: dict) -> dict[str, list]:
+    """Who reads each shared value: the monitors, controllers and closures bound to it."""
+    consumers: dict[str, list] = {}
+
+    def add(member_id, kind: str, reader_id, role: str) -> None:
+        if isinstance(member_id, str) and reader_id:
+            consumers.setdefault(member_id, []).append(
+                {"kind": kind, "id": reader_id, "role": role}
+            )
+
+    for monitor in introspection.get("monitors", []):
+        add(monitor.get("error_signal"), "monitor", monitor.get("id"), "error")
+    for controller in introspection.get("controllers", []):
+        for role in ("error_signal", "measured_signal", "setpoint_signal"):
+            add(controller.get(role), "controller", controller.get("id"), role)
+    for closure_id, closure in closures.items():
+        if not isinstance(closure, dict):
+            continue
+        outputs = closure_output_ids(closure)
+        for key, value in closure.items():
+            if key not in {"id", "type"} and isinstance(value, str) and value not in outputs:
+                add(value, "closure", closure_id, key)
+    return consumers
+
+
+def _apply_dataflow(introspection: dict, shared_data: list, items_by_id: dict, dataflow: dict):
+    """Act on the contract: absent values leave the program, init values leave the per-tick frame."""
+    shared_data[:] = [
+        item
+        for item in shared_data
+        if dataflow.get(_field(item, "id"), {}).get("storage") != "absent"
+    ]
+
+    logged, constants, unattributed = [], [], []
+    for sample in introspection.get("quantity_samples", []):
+        entry = dataflow.get(sample.get("source_id"))
+        if entry is None:
+            unattributed.append(sample.get("id"))
+            continue
+        sample.update(entry)
+        if entry["storage"] == "log":
+            logged.append(sample)
+        elif entry["storage"] == "record":
+            value = _constant_value(items_by_id[sample["source_id"]], sample["sample_desc"])
+            if value is None:
+                unattributed.append(sample.get("id"))
+                continue
+            constants.append({"id": sample["id"], "source_id": sample["source_id"], "value": value})
+    if unattributed:
+        raise RuntimeError(f"dataflow: samples with no resolvable contract: {sorted(unattributed)}")
+    introspection["quantity_samples"] = logged
+    introspection["constants"] = constants
+
+    spatial = introspection.get("spatial_samples") or {}
+    for pool, rows in spatial.items():
+        kept = [row for row in rows if dataflow.get(row["id"], {}).get("storage") == "log"]
+        spatial[pool] = [dict(row, index=idx) for idx, row in enumerate(kept)]
 
 
 def _index_by_id(items: list) -> dict:
@@ -6330,8 +6781,13 @@ def _set_motion_conditions(motion) -> None:
 def add_motion_function_interfaces(motions: list) -> None:
     """Fold per-motion capability booleans (which context objects — state, shared, robot —
     each generated function needs). The C++ signatures and call args are built from these
-    by the sig-params / sig-args templates; ir_gen carries no C++ type names."""
-    for motion in motions:
+    by the sig-params / sig-args templates; ir_gen carries no C++ type names.
+
+    Also assigns each motion its introspection index. It is ir_gen's own ordering, and both the
+    frame-log schema and the generated sample switch read this one field -- so no consumer has to
+    agree with a second generator about which index means which motion."""
+    for index, motion in enumerate(motions):
+        _set_field(motion, "index", index)
         has_when_elapsed = any(
             _field(e, "is_elapsed") for e in _field(motion, "when_evaluators", [])
         )
@@ -6371,7 +6827,14 @@ def add_motion_function_interfaces(motions: list) -> None:
         _set_field(motion, "monitor_needs_robot", when_fsm or until_fsm)
 
         _set_field(motion, "apply_needs_state", has_serial_chain)
-        _set_field(motion, "apply_needs_shared", has_forwarded_commands)
+        # tau_cmd is read back from the command port in the stage block, inside apply_. Gate on
+        # torque_saturation, not on joint_space_cmd_samples: this runs before _build_introspection,
+        # so the sample list does not exist yet. Keep in sync with add_joint_space_logging.
+        logs_joint_cmd = any(
+            _field(solver, "torque_saturation")
+            for solver in (_field(motion, "serial_chain_solvers") or [])
+        )
+        _set_field(motion, "apply_needs_shared", has_forwarded_commands or logs_joint_cmd)
         _set_field(motion, "apply_needs_robot", has_serial_chain or has_forwarded_commands)
 
 
@@ -6481,11 +6944,23 @@ def _apply_fsm_wiring(motions, fsm) -> dict:
     events = fsm.get("events", []) if fsm else []
     fsm_event_index = {event: idx for idx, event in enumerate(events)}
     fsm_step_event = "E_STEP" if "E_STEP" in events else None
+    # The heartbeat is the clock, so it is not logged every tick. Where a transition's guard *is*
+    # the clock, though, that single occurrence is what caused the state change and has to stay
+    # observable -- so name those transitions and let the runtime record the event just for them.
+    transitions_by_id = {t.get("id"): t for t in (fsm.get("transitions_table", []) if fsm else [])}
+    fsm_step_transitions = [
+        {"from": transition.get("from_state"), "to": transition.get("to_state")}
+        for reaction in (fsm.get("reactions_table", []) if fsm else [])
+        if reaction.get("when_event") == fsm_step_event
+        for transition in [transitions_by_id.get(reaction.get("do_transition"))]
+        if transition
+    ]
     meta = {
         "fsm_namespace": fsm_namespace,
         "fsm_header": f"{fsm['name']}.hpp" if fsm else None,
         "fsm_step_event": fsm_step_event,
         "fsm_step_event_idx": fsm_event_index.get(fsm_step_event, -1),
+        "fsm_step_transitions": fsm_step_transitions,
     }
     if fsm_namespace is None:
         return meta
@@ -6610,7 +7085,8 @@ def generate_ir(manifest_path):
     )
     # Derive backend + FSM up front: both are pure functions of the graph and are inputs to
     # downstream construction (solver validation, runtime-robot annotation, motion FSM wiring).
-    backend = _backend_from_graph(g)
+    platform = _platform_from_graph(g)
+    backend = platform["backend"]
     fsm = _fsm_from_graph(g)
     scene = _scene_from_graph(g)
     _validate_scene(scene)
@@ -6707,6 +7183,8 @@ def generate_ir(manifest_path):
         closures=closures,
         views=view_map,
         shared_data=shared_data,
+        serial_chain_solvers=slv_chain,
+        platform=platform,
     )
 
     schedule = sched1 + sched2 + sched3 + sched4
@@ -6762,6 +7240,9 @@ def generate_ir(manifest_path):
         "platform_velocity_solvers": slv_platform_vel,
         "platform_force_solvers": slv_platform_frc,
         "backend": backend,
+        # The authored execution platform, so provenance and the runtime graph read the model's
+        # own answer instead of matching substrings of a derived id.
+        "platform": platform,
         "scene": scene,
         "trace": _trace_from_graph(g),
         "uris": introspection["uris"],

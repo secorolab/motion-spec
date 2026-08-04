@@ -696,6 +696,10 @@ class GuardedMotionBlock:
     # Direct robot command forwarding driven by FeedForward controllers.
     forwarded_commands: list[ForwardedCommand] = field(default_factory=list)
 
+    # This motion's introspection index: the single index space the frame log's active_motion,
+    # the generated sample switch and schema["by_motion"] all share.
+    index: int = -1
+
     type: str = field(default="GuardedMotionBlock")
 
 
@@ -777,6 +781,10 @@ class HandlerSerialChainSolver:
     chain_root: str = ""
     chain_end: str = ""
     torque_saturation: Saturation | None = None
+    # Frame-log mirrors of this runtime's joint-space signals (plan 012); the two lists render at
+    # two different hook sites -- the run block and the command-stage block.
+    joint_space_samples: list = field(default_factory=list)
+    joint_space_cmd_samples: list = field(default_factory=list)
     runtime_id: str = ""
     runtime_owner: bool = False
     type: str = field(default="HandlerSerialChainSolver")
@@ -808,6 +816,10 @@ class SolverWithInputAndOutput:
     gravity: list[float] | None = None
     root_acc: list[float] | None = None
     torque_saturation: Saturation | None = None
+    # Frame-log mirrors of this runtime's joint-space signals (plan 012); the two lists render at
+    # two different hook sites -- the run block and the command-stage block.
+    joint_space_samples: list = field(default_factory=list)
+    joint_space_cmd_samples: list = field(default_factory=list)
     runtime_id: str = ""
     runtime_owner: bool = False
     type: str = field(default="SolverWithInputAndOutput")

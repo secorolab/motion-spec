@@ -202,6 +202,8 @@ def test_introspection_contract_carries_control_and_provenance() -> None:
         closures={},
         views={},
         shared_data=[],
+        serial_chain_solvers=[],
+        platform={"uri": None, "name": None, "simulated": True, "backend": "mj_kdl"},
     )
 
     assert introspection["contract_version"] == 1

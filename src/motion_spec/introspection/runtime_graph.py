@@ -98,11 +98,15 @@ def _state_maps(schema: dict) -> tuple[dict[int, dict], dict[int, dict]]:
     return states, events
 
 
-def _state_meta(schema: dict, states: dict[int, dict], state_idx: int) -> tuple[dict | None, dict]:
-    state = states.get(state_idx)
-    if not state:
-        return None, {}
-    return state, schema.get("by_state", {}).get(state.get("id"), {})
+def _motion_meta(schema: dict) -> dict[int, dict]:
+    """Motion index -> its slot metadata. The frame's active_motion selects it, so the same
+    resolution works whatever coordinator drove the run."""
+    return {entry["index"]: entry for entry in (schema.get("by_motion") or {}).values()}
+
+
+def _state_meta(schema: dict, states: dict[int, dict], state_idx: int) -> dict | None:
+    """The FSM state a frame was in -- coordinator context for the occurrence, not slot identity."""
+    return states.get(state_idx)
 
 
 def _slot_uri(slot: dict, *keys: str) -> rdflib.URIRef | None:
@@ -124,6 +128,24 @@ def _occurrence(g: rdflib.Graph, run_id: str, typename: str, disc, wall_ns, step
     return node
 
 
+def _fired_transition(candidates: list, observed: set):
+    """Which of the transitions between one pair of states actually fired.
+
+    Transitions are identified by their own id, so two transitions between the same pair of states
+    stay distinct. When a pair has several, the events observed around the state change decide
+    which one it was; if that does not single one out, the caller records the state change without
+    naming a transition rather than guessing.
+    """
+    if len(candidates) == 1:
+        return candidates[0]
+    matched = [
+        transition
+        for transition in candidates
+        if observed & set(transition.get("event_indices") or [])
+    ]
+    return matched[0] if len(matched) == 1 else None
+
+
 def _state_change_occurrences(
     g: rdflib.Graph,
     run_id: str,
@@ -135,6 +157,7 @@ def _state_change_occurrences(
     state,
     entry,
     step,
+    observed_events: set | None = None,
 ) -> set:
     anchors = set()
     if state and state.get("uri"):
@@ -143,7 +166,7 @@ def _state_change_occurrences(
         anchors.add(step)
     if prev_state is None:
         return anchors
-    tr = transitions.get((prev_state, cur))
+    tr = _fired_transition(transitions.get((prev_state, cur)) or [], observed_events or set())
     if not tr or not tr.get("uri"):
         return anchors
     occ = _occurrence(g, run_id, "TransitionOccurrence", tr.get("id", f"{prev_state}-{cur}"), entry, step)
@@ -153,7 +176,10 @@ def _state_change_occurrences(
         g.add((occ, MSRUN.fromState, rdflib.URIRef(frm_state["uri"])))
     if state and state.get("uri"):
         g.add((occ, MSRUN.toState, rdflib.URIRef(state["uri"])))
-    ev = events.get(tr.get("event_index")) or {}
+    # Prefer the event actually seen; fall back to the declared one when the transition has only
+    # one, which is how a transition driven by an unlogged event (the heartbeat) stays attributed.
+    fired = observed_events & set(tr.get("event_indices") or []) if observed_events else set()
+    ev = events.get(next(iter(fired), None) if fired else tr.get("event_index")) or {}
     if ev.get("uri"):
         g.add((occ, MSRUN.event, rdflib.URIRef(ev["uri"])))
     anchors.add(step)
@@ -247,8 +273,6 @@ def _trigger_occurrences(
             continue
         eidx = trigger.get("idx")
         event = events.get(eidx) or {}
-        if event.get("id") == "E_STEP":
-            continue
         ekey = (eidx, trigger.get("wall_ns"))
         if ekey in seen_events:
             continue
@@ -275,25 +299,41 @@ def _project_occurrences(
       * ConstraintSatisfied/UnsatisfiedOccurrence on a goal constraint's satisfied edge (both
         directions - a falling edge is a goal lost, e.g. what fires E_GRASP_LOST_*),
       * MonitorOccurrence on a monitor's rising (fired) edge,
-      * EventOccurrence from the runtime's event triggers (E_STEP filtered as per-tick noise).
+      * EventOccurrence from the runtime's event triggers. Nothing needs filtering here: the
+        heartbeat that drives the FSM is deliberately not recorded, because the frame log is a
+        time series and every frame already is the tick.
 
-    Edge detection resets at state boundaries: slot indices are state-local (slot i is a
-    different controller in a different state), so only intra-state comparison is valid.
+    Edge detection resets at state boundaries: slot indices are motion-local (slot i is a
+    different controller under a different motion), so only intra-state comparison is valid.
     """
     states, events = _state_maps(schema)
-    transitions = {
-        (t.get("from"), t.get("to")): t for t in schema.get("fsm", {}).get("transitions", [])
-    }
+    motions = _motion_meta(schema)
+    # Indexed by state pair but holding every transition between that pair, so two transitions
+    # between the same states driven by different events stay distinct.
+    transitions: dict = {}
+    for transition in schema.get("fsm", {}).get("transitions", []):
+        transitions.setdefault((transition.get("from"), transition.get("to")), []).append(
+            transition
+        )
     anchors: set = set()
     prev_state = None
     prev_csat: list | None = None
     prev_msat: list | None = None
     seen_events: set = set()
+    # An event fires on one tick and the state change lands on the next, so the events that could
+    # have caused a change span this frame and the previous one.
+    prev_frame_events: set = set()
     for frame in frames:
         step = frame["step"]
         wall = frame.get("timing", {}).get("wall_ns")
         cur = frame.get("fsm_state", -1)
-        state, meta = _state_meta(schema, states, cur)
+        frame_events = {
+            trigger.get("idx")
+            for trigger in frame.get("triggers", [])
+            if trigger.get("kind") == KIND_EVENT
+        }
+        state = _state_meta(schema, states, cur)
+        meta = motions.get(frame.get("active_motion", -1), {})
         controllers = meta.get("controllers") or meta.get("constraints") or []
         monitors = meta.get("monitors") or []
         csat = [bool(c.get("active")) and bool(c.get("satisfied")) for c in frame.get("constraints", [])]
@@ -303,7 +343,8 @@ def _project_occurrences(
             anchors.update(
                 _state_change_occurrences(
                     g, run_id, states, events, transitions, prev_state, cur, state,
-                    frame.get("state_since_wall_ns") or wall, step
+                    frame.get("state_since_wall_ns") or wall, step,
+                    observed_events=frame_events | prev_frame_events,
                 )
             )
         else:
@@ -317,6 +358,7 @@ def _project_occurrences(
         anchors.update(_trigger_occurrences(g, run_id, states, events, frame, seen_events, step))
 
         prev_state, prev_csat, prev_msat = cur, csat, msat
+        prev_frame_events = frame_events
     return anchors
 
 
@@ -380,7 +422,15 @@ def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int
     g.add((run, rdflib.RDF.type, PROV.Entity))
     g.add((run, rdflib.RDF.type, EXEC.ExecutionContext))
     g.add((activity, rdflib.RDF.type, PROV.Activity))
-    g.add((activity, rdflib.RDF.type, BDD.SimulatedExecution))
+    # Simulated vs real is the model's declaration, not an assumption and not a substring match.
+    platform = schema.get("platform") or {}
+    g.add(
+        (
+            activity,
+            rdflib.RDF.type,
+            BDD.SimulatedExecution if platform.get("simulated") else BDD.ScenarioExecution,
+        )
+    )
     g.add((activity, PROV.wasAssociatedWith, producer))
     g.add((activity, PROV.used, schema_entity))
     g.add((activity, PROV.used, proto_entity))
@@ -390,7 +440,7 @@ def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int
     g.add((producer, rdflib.RDF.type, OBS.ObservationProvider))
     g.add((producer, PROV.actedOnBehalfOf, runtime))
     g.add((runtime, rdflib.RDF.type, PROV.SoftwareAgent))
-    if str(schema.get("runtime_provenance", {}).get("runtime_agent_id", "")).endswith(":mujoco"):
+    if platform.get("simulated"):
         g.add((runtime, rdflib.RDF.type, EXEC.Simulation))
     g.add((frame_log, rdflib.RDF.type, PROV.Entity))
     g.add((frame_log, PROV.wasGeneratedBy, activity))
@@ -453,7 +503,7 @@ def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int
             frame_dt = _dt_literal(frame.get("timing", {}).get("wall_ns"))
             if frame_dt is not None:
                 g.add((frame_node, PROV.generatedAtTime, frame_dt))
-            state, _meta = _state_meta(schema, states, frame.get("fsm_state", -1))
+            state = _state_meta(schema, states, frame.get("fsm_state", -1))
             if state and state.get("uri"):
                 g.add((frame_node, MSRUN.activeState, rdflib.URIRef(state["uri"])))
     return g

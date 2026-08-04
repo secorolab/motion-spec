@@ -152,6 +152,35 @@ def _views_for_access(views: dict, direct_ids: set[str]) -> dict:
     return {id_: view for id_, view in indexed.items() if view is not None}
 
 
+def _adopt_fsm_state_order(ir: dict, *candidates: Path) -> None:
+    """Index FSM states the way the runtime does.
+
+    A frame's ``fsm_state`` is ``fsm->currentStateIndex`` -- coord-dsl's ``e_states`` enum, built
+    from ``fsm_ir.json``. ir_gen re-derives its own state list by iterating the merged app graph,
+    and rdflib hands it back in a different order, so the schema's indices (and every
+    ``case <index>:`` generated from them) named the wrong state. Take the order from the artifact
+    that defines the enum rather than re-deriving it.
+
+    Events deliberately do NOT get the same treatment: a trigger's ``idx`` is ir_gen's own event
+    index (``fsm_event_idx``, emitted into the C++ as ``_motion_spec_record_event(N)``), so the
+    recorded value and ``schema["fsm"]["events"]`` already share one index space. Reordering
+    events here would desynchronise the schema from numbers already baked into the generated code.
+    """
+    fsm = ir.get("fsm")
+    fsm_ir_path = next((path for path in candidates if path.is_file()), None)
+    if not fsm or fsm_ir_path is None:
+        return
+    states = json.loads(fsm_ir_path.read_text()).get("states")
+    if not states:
+        return
+    if set(states) != set(fsm.get("states", [])):
+        raise RuntimeError(
+            f"{fsm_ir_path.name} states {sorted(states)} do not match the model's "
+            f"{sorted(fsm.get('states', []))}"
+        )
+    fsm["states"] = list(states)
+
+
 def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     """Render every C++/artifact file for an IR: introspection headers, runtime and
     shared-state headers, the frame-log proto (compiled to C++), per-motion headers and
@@ -161,6 +190,11 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     wiring); codegen only loads it, writes artifacts, and renders.
     """
     ir = load_ir(ir_path)
+    # The pipeline moves fsm_ir.json into the controller dir before calling codegen; the
+    # standalone `gen code <ir.json>` path leaves it beside the IR.
+    _adopt_fsm_state_order(
+        ir, Path(output_dir) / "fsm_ir.json", Path(ir_path).parent / "fsm_ir.json"
+    )
 
     ir["introspection_artifacts"] = write_introspection_artifacts(
         ir, ir_path=ir_path, output_dir=output_dir

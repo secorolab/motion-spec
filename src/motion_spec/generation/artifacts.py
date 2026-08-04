@@ -11,7 +11,10 @@ from pathlib import Path
 from motion_spec.introspection.provenance import build_provenance_document
 
 SCHEMA_VERSION = 1
-FRAME_LAYOUT_VERSION = 1
+# 2: quantity slots are gated on the writing state, so field presence means "this state wrote it"
+# rather than "the value is non-zero". Decoding a v1 log against a v2 layout would read stale
+# slots as live; schema_hash carries this version, so validate_header rejects the mismatch.
+FRAME_LAYOUT_VERSION = 2
 RUNTIME_RDF_CONTRACT_VERSION = 1
 FIELD_BYTES = 8
 TRIGGER_POOL_SIZE = 32
@@ -190,10 +193,18 @@ def _fsm_meta(fsm_ir: dict | None) -> dict:
         }
     state_index = {state: idx for idx, state in enumerate(fsm_ir.get("states", []))}
     event_index = {event: idx for idx, event in enumerate(fsm_ir.get("events", []))}
-    transition_event = {
-        reaction.get("do_transition"): reaction.get("when_event")
-        for reaction in fsm_ir.get("reactions_table", [])
-    }
+    # A transition can be driven by more than one event, so collect them all rather than let the
+    # last reaction win. `event`/`event_index` stay singular and are only filled when the answer is
+    # unambiguous; a reader that needs the full picture uses `events`/`event_indices`.
+    transition_events: dict[str, list] = {}
+    for reaction in fsm_ir.get("reactions_table", []):
+        transition_events.setdefault(reaction.get("do_transition"), []).append(
+            reaction.get("when_event")
+        )
+
+    def _sole_event(transition_id):
+        events = transition_events.get(transition_id) or []
+        return events[0] if len(events) == 1 else None
     return {
         "namespace": fsm_ir.get("namespace_uri"),
         "start": state_index.get(fsm_ir.get("start_state")),
@@ -217,8 +228,14 @@ def _fsm_meta(fsm_ir: dict | None) -> dict:
                 "uri": transition.get("uri"),
                 "from": state_index.get(transition.get("from_state")),
                 "to": state_index.get(transition.get("to_state")),
-                "event": transition_event.get(transition.get("id")),
-                "event_index": event_index.get(transition_event.get(transition.get("id"))),
+                "event": _sole_event(transition.get("id")),
+                "event_index": event_index.get(_sole_event(transition.get("id"))),
+                "events": transition_events.get(transition.get("id")) or [],
+                "event_indices": [
+                    event_index[event]
+                    for event in transition_events.get(transition.get("id")) or []
+                    if event in event_index
+                ],
             }
             for transition in fsm_ir.get("transitions_table", [])
         ],
@@ -234,7 +251,15 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
     motion_by_id = {motion.get("id"): motion for motion in motions}
     states = fsm["states"]
     state_by_id = {state["id"]: state for state in states}
-    by_state = {}
+    # Slots are keyed by the motion that computes them, not by the coordinator state that happens
+    # to select it: a motion owns the closures and solvers that write its values under an FSM, a
+    # behaviour tree or the plain app_main loop alike. The index space is ir_gen's motion order,
+    # so nothing downstream has to agree with a second generator about what index 3 means.
+    by_motion = {}
+    # ir_gen owns this index (add_motion_function_interfaces); read it, never re-derive it.
+    motion_index = {motion.get("id"): motion.get("index", -1) for motion in motions}
+    if -1 in motion_index.values():
+        raise RuntimeError(f"motions without an introspection index: {sorted(motion_index)}")
 
     for motion in motions:
         state_id = motion.get("fsm_state") or motion.get("id")
@@ -249,8 +274,6 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
                     "motion": motion.get("id"),
                 }
             )
-        else:
-            continue
 
         controller_slots = [
             _controller_slot(controller, idx, motion, uri_by_id)
@@ -272,7 +295,13 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
             _monitor_slot(monitor, idx, owner, uri_by_id, phase)
             for idx, (phase, monitor, owner) in enumerate(monitor_sources)
         ]
-        by_state[state_id] = {"controllers": controller_slots, "monitors": monitor_slots}
+        by_motion[motion["id"]] = {
+            "index": motion_index[motion["id"]],
+            "uri": uri_by_id.get(motion.get("id")),
+            "fsm_state": state_id if state_id in state_by_id else None,
+            "controllers": controller_slots,
+            "monitors": monitor_slots,
+        }
 
     quantities = [
         {"index": idx, **quantity}
@@ -280,19 +309,32 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
             introspection.get("quantity_samples") or introspection.get("quantities", [])
         )
     ]
-    max_controllers = max((len(entry["controllers"]) for entry in by_state.values()), default=0)
-    max_monitors = max((len(entry["monitors"]) for entry in by_state.values()), default=0)
-    heartbeat_events = (
-        1 if any(event.get("id") == "E_STEP" for event in fsm.get("events", [])) else 0
-    )
+    # A gated slot keeps its global index for the whole run -- only the set_ call is gated -- so a
+    # decoder resolves "unset" against the writing motions here rather than guessing from absence.
     spatial = introspection.get("spatial_samples") or {"poses": [], "twists": [], "wrenches": []}
+    dataflow = introspection.get("dataflow") or {}
+
+    def gate(category: str, slot_index: int, cadence) -> None:
+        # cadence is already expressed in motions (plan 011 §2b) -- no coordinator in between.
+        for motion_id in cadence["motions"] if isinstance(cadence, dict) else ():
+            entry = by_motion.get(motion_id)
+            if entry is not None:
+                entry.setdefault(category, []).append(slot_index)
+
+    for quantity in quantities:
+        gate("quantities", quantity["index"], quantity.get("cadence"))
+    for category, rows in spatial.items():
+        for row in rows:
+            gate(category, row["index"], (dataflow.get(row["id"]) or {}).get("cadence"))
+    max_controllers = max((len(entry["controllers"]) for entry in by_motion.values()), default=0)
+    max_monitors = max((len(entry["monitors"]) for entry in by_motion.values()), default=0)
     pools = {
         "constraints": max_controllers,
         "monitors": max_monitors,
         "quantities": len(quantities),
-        "triggers": max(
-            TRIGGER_POOL_SIZE, len(fsm.get("events", [])), max_monitors + heartbeat_events
-        ),
+        # Sized for the events one tick can produce; the heartbeat is not recorded, so it
+        # needs no slot.
+        "triggers": max(TRIGGER_POOL_SIZE, len(fsm.get("events", [])), max_monitors),
         "poses": len(spatial["poses"]),
         "twists": len(spatial["twists"]),
         "wrenches": len(spatial["wrenches"]),
@@ -321,16 +363,28 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
             ),
             Path(ir_path).name,
         ),
+        # The authored execution platform travels with the run so the runtime graph and the
+        # archive validator read one fact rather than sniffing the runtime agent id.
+        "platform": ir.get("platform") or {},
         "context": contexts,
         "pools": pools,
         "timing": {"nominal_period_ns": introspection.get("control_period_ns")},
         "control_period_ns": introspection.get("control_period_ns"),
         "fsm": fsm,
-        "by_state": by_state,
+        "by_motion": by_motion,
         "motions": introspection.get("motions", []),
         "controllers": introspection.get("controllers", []),
         "monitors": introspection.get("monitors", []),
         "quantities": quantities,
+        # Written once at init: one copy in the header says everything repeating it per tick would.
+        "constants": introspection.get("constants", []),
+        # The dataflow contract for everything that survives into the layout, so a reader can see
+        # who writes each value and when without re-deriving it from the model graph.
+        "catalogue": [
+            {"id": member_id, **entry}
+            for member_id, entry in sorted((introspection.get("dataflow") or {}).items())
+            if entry["storage"] != "absent"
+        ],
         "spatial": spatial,
         "signals": introspection.get("signals", []),
         "provenance_contexts": provenance.get("contexts", []),
@@ -490,6 +544,11 @@ def build_frame_log_proto_fields(schema: dict) -> dict:
     return {"runtime_frame": RUNTIME_FRAME_MESSAGE, "fields": fields}
 
 
+def _uri_comment(uri: str | None) -> str:
+    """A model URI safe to drop into a C++ line comment (no newlines, no comment terminator)."""
+    return re.sub(r"[\r\n]|\*/", " ", uri or "")
+
+
 def _shared_expr(signal_id: str | None, shared_ids: set[str]) -> str:
     """C++ access for a shared signal ('shared.<id>'), or '0.0' when it is not a shared field."""
     if signal_id and signal_id in shared_ids:
@@ -504,16 +563,34 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
         for item in ir.get("shared_data", [])
         if isinstance(item, dict) and item.get("id")
     }
-    quantities = [
-        {"index": quantity["index"], "desc": quantity.get("sample_desc")}
-        for quantity in schema.get("quantities", [])
-    ]
-    states = []
-    for state in schema.get("fsm", {}).get("states", []):
-        state_id = state.get("id")
-        if state_id not in schema.get("by_state", {}):
-            continue
-        entry = schema["by_state"][state_id]
+    # A value only its own motion recomputes is stale whenever another motion is active, so its
+    # sample call moves into that motion's case; one written by the global schedule stays
+    # unconditional.
+    spatial = schema.get("spatial", {"poses": [], "twists": [], "wrenches": []})
+    slots = {
+        "quantities": {
+            q["index"]: {"index": q["index"], "desc": q.get("sample_desc")}
+            for q in schema.get("quantities", [])
+        },
+        **{
+            category: {row["index"]: {"index": row["index"], "id": row["id"]} for row in rows}
+            for category, rows in spatial.items()
+        },
+    }
+    gated = {
+        category: {
+            index
+            for entry in schema.get("by_motion", {}).values()
+            for index in entry.get(category, [])
+        }
+        for category in slots
+    }
+    ungated = {
+        category: [slot for index, slot in by_index.items() if index not in gated[category]]
+        for category, by_index in slots.items()
+    }
+    cases = []
+    for entry in schema.get("by_motion", {}).values():
         controllers = []
         for slot in entry.get("controllers", []):
             # error/output are the controller's own dedicated shared fields (never views).
@@ -521,7 +598,8 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
             # template render them via access-expr(id, views).
             controllers.append(
                 {
-                    "uri": json.dumps(slot.get("uri") or ""),
+                    "index": slot.get("index", 0),
+                    "uri_comment": _uri_comment(slot.get("uri")),
                     "error_expr": _shared_expr(slot.get("error_signal"), shared_ids),
                     "output_expr": _shared_expr(slot.get("output_signal"), shared_ids),
                     "measured_signal": slot.get("measured_signal"),
@@ -536,7 +614,8 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
             if slot.get("has_active"):
                 monitors.append(
                     {
-                        "uri": json.dumps(slot.get("uri") or ""),
+                        "index": slot.get("index", 0),
+                        "uri_comment": _uri_comment(slot.get("uri")),
                         "has_active": True,
                         "active_terms": slot.get("active_terms"),
                         "active_terms_present": slot.get("active_terms_present", False),
@@ -547,23 +626,25 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
                 value_expr = _shared_expr(slot.get("error_signal"), shared_ids)
                 monitors.append(
                     {
-                        "uri": json.dumps(slot.get("uri") or ""),
+                        "index": slot.get("index", 0),
+                        "uri_comment": _uri_comment(slot.get("uri")),
                         "has_active": False,
                         "value_expr": value_expr,
                         "composite_error": slot.get("composite_error", False),
                     }
                 )
-        states.append(
-            {"index": state.get("index", -1), "controllers": controllers, "monitors": monitors}
+        cases.append(
+            {
+                "index": entry.get("index", -1),
+                "controllers": controllers,
+                "monitors": monitors,
+                **{
+                    category: [slots[category][index] for index in entry.get(category, [])]
+                    for category in slots
+                },
+            }
         )
-    spatial = schema.get("spatial", {"poses": [], "twists": [], "wrenches": []})
-    return {
-        "states": states,
-        "quantities": quantities,
-        "poses": [{"index": p["index"], "id": p["id"]} for p in spatial["poses"]],
-        "twists": [{"index": t["index"], "id": t["id"]} for t in spatial["twists"]],
-        "wrenches": [{"index": w["index"], "id": w["id"]} for w in spatial["wrenches"]],
-    }
+    return {"motions": cases, **ungated}
 
 
 def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path) -> dict:

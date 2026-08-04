@@ -33,7 +33,8 @@ def _schema() -> dict:
             "events": [],
             "end": 0,
         },
-        "by_state": {},
+        "by_motion": {},
+        "platform": {"name": "MuJoCo", "simulated": True, "backend": "mj_kdl"},
         "quantities": [{"index": 0, "id": "q0"}],
         "provenance_contexts": [{"id": "prov", "source": "src/metamodels/prov.json"}],
         "runtime_provenance": {

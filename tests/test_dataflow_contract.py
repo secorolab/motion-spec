@@ -1,0 +1,229 @@
+# SPDX-License-Identifier: MPL-2.0
+"""The dataflow contract: who writes each shared value, when, and where it is therefore stored."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from motion_spec.generation.artifacts import build_introspection_model, build_schema
+from motion_spec.introspection import frame_log_pb
+from motion_spec.rdf_parser.ir import annotate_dataflow
+
+from frame_log_fixture import flat_frame
+
+# The plan's storage table, restated here so the test pins the contract rather than the constant
+# the implementation happens to use.
+STORAGE_BY_CADENCE = {"never": "absent", "init": "record", "tick": "log"}
+
+
+def _model() -> tuple[dict, list, dict, list, list, dict]:
+    """A two-motion model: one shared FK output, one per-motion error, constants and dead relations.
+
+    `arc_only_error` is written by a closure only motion_arc schedules; `pose_ee` by a solver both
+    motions instantiate; `stiffness` is authored; `pose_ee_position_rel` is a comp-rob2b relation
+    that nothing ever writes.
+    """
+    shared_data = [
+        {"id": "pose_ee", "type": "Pose"},
+        {"id": "arc_only_error", "type": "Quantity", "value": None},
+        {"id": "home_only_error", "type": "Quantity", "value": None},
+        {"id": "stiffness", "type": "Quantity", "value": 800.0},
+        {"id": "path_normal", "type": "Direction", "direction": [0.0, 0.0, 1.0]},
+        {"id": "pose_ee_position_rel", "type": "Position", "position": None},
+    ]
+    closures = {
+        "eval_arc": {"id": "eval_arc", "type": "ErrorEvaluator", "error": "arc_only_error"},
+        "eval_home": {"id": "eval_home", "type": "ErrorEvaluator", "error": "home_only_error"},
+    }
+    solver = {"id": "arm_solver", "output": [{"id": "pose_ee"}]}
+    motions = [
+        {
+            "id": "motion_home",
+            "index": 0,
+            "fsm_state": "S_HOME",
+            "while_schedule": ["eval_home"],
+            "serial_chain_solvers": [solver],
+            "controllers": [],
+        },
+        {
+            "id": "motion_arc",
+            "index": 1,
+            "fsm_state": "S_ARC",
+            "while_schedule": ["eval_arc"],
+            "serial_chain_solvers": [solver],
+            "controllers": [],
+        },
+    ]
+    introspection = {
+        "quantities": [],
+        "controllers": [],
+        "monitors": [],
+        "quantity_samples": [
+            {
+                "id": item["id"],
+                "source_id": item["id"],
+                "source_type": item["type"],
+                "sample_desc": desc,
+            }
+            for item, desc in (
+                (shared_data[1], {"kind": "shared", "id": "arc_only_error"}),
+                (shared_data[2], {"kind": "shared", "id": "home_only_error"}),
+                (shared_data[3], {"kind": "shared", "id": "stiffness"}),
+                (shared_data[4], {"kind": "vec", "id": "path_normal", "axis": 2}),
+                (shared_data[5], {"kind": "vec", "id": "pose_ee_position_rel", "axis": 0}),
+            )
+        ],
+        "spatial_samples": {
+            "poses": [{"id": "pose_ee", "index": 0}],
+            "twists": [],
+            "wrenches": [],
+        },
+        "control_period_ns": 1_000_000,
+        "provenance": {
+            "activities": [
+                {
+                    "id": "activity:controller_execution",
+                    "role": "controller_execution",
+                    "wasAssociatedWith": "agent:controller_process",
+                }
+            ],
+            "agents": [
+                {"id": "agent:controller_process", "role": "controller_process"},
+                {"id": "agent:runtime:mujoco", "role": "runtime_runner"},
+            ],
+        },
+    }
+    return introspection, shared_data, closures, motions, [solver], {}
+
+
+def _annotated() -> tuple[dict, list]:
+    introspection, shared_data, closures, motions, solvers, views = _model()
+    annotate_dataflow(introspection, shared_data, closures, motions, solvers, views)
+    return introspection, shared_data
+
+
+def _schema() -> dict:
+    introspection, _shared = _annotated()
+    ir = {"introspection": introspection, "unique_motions": _model()[3], "shared_data": []}
+    fsm_ir = {"states": ["S_HOME", "S_ARC"], "events": [], "start_state": "S_HOME"}
+    return build_schema(ir, ir_path=Path("ir.json"), output_dir=Path("."), fsm_ir=fsm_ir)
+
+
+def test_every_member_has_a_producer_and_a_cadence() -> None:
+    introspection, _shared = _annotated()
+    for member_id, entry in introspection["dataflow"].items():
+        assert entry["producer"]["kind"], member_id
+        assert entry["producer"]["kind"] != "unknown", member_id
+        assert entry["cadence"] is not None, member_id
+
+
+def test_storage_is_derived_from_cadence_for_every_member() -> None:
+    introspection, _shared = _annotated()
+    for member_id, entry in introspection["dataflow"].items():
+        cadence = entry["cadence"]
+        expected = "log" if isinstance(cadence, dict) else STORAGE_BY_CADENCE[cadence]
+        assert entry["storage"] == expected, member_id
+
+
+def test_a_value_written_by_several_motions_is_one_producer_over_all_of_them() -> None:
+    introspection, _shared = _annotated()
+    pose = introspection["dataflow"]["pose_ee"]
+    assert pose["producer"]["kind"] == "solver"
+    # One solver declaration, instantiated per motion: the cadence unions them rather than
+    # attributing the value to whichever motion happened to be seen last.
+    assert pose["cadence"] == {"motions": ["motion_arc", "motion_home"]}
+
+
+def test_never_written_members_leave_shared_data_and_the_frame() -> None:
+    introspection, shared_data = _annotated()
+    assert introspection["dataflow"]["pose_ee_position_rel"]["cadence"] == "never"
+    assert "pose_ee_position_rel" not in {item["id"] for item in shared_data}
+    assert "pose_ee_position_rel" not in {row["source_id"] for row in introspection["quantity_samples"]}
+
+
+def test_read_but_never_written_members_are_reported_not_dropped() -> None:
+    introspection, shared_data, closures, motions, solvers, views = _model()
+    introspection["monitors"] = [{"id": "mon_hold", "error_signal": "pose_ee_position_rel"}]
+    with pytest.raises(RuntimeError, match="pose_ee_position_rel.*mon_hold"):
+        annotate_dataflow(introspection, shared_data, closures, motions, solvers, views)
+
+
+def test_init_members_become_schema_constants_and_no_per_tick_sample() -> None:
+    schema = _schema()
+    constants = {entry["id"]: entry["value"] for entry in schema["constants"]}
+    # The vector row resolves to its own axis of the authored literal, not to the whole vector.
+    assert constants == {"stiffness": 800.0, "path_normal": 1.0}
+    assert not [q for q in schema["quantities"] if q["source_id"] in ("stiffness", "path_normal")]
+
+
+def test_gated_slots_appear_only_in_the_motions_that_write_them() -> None:
+    schema = _schema()
+    index_of = {q["source_id"]: q["index"] for q in schema["quantities"]}
+    assert schema["by_motion"]["motion_arc"]["quantities"] == [index_of["arc_only_error"]]
+    assert schema["by_motion"]["motion_home"]["quantities"] == [index_of["home_only_error"]]
+
+    model = build_introspection_model(schema, {"shared_data": []})
+    # Gated slots move out of the unconditional block into their motion's case.
+    assert model["quantities"] == []
+    by_index = {
+        case["index"]: [slot["index"] for slot in case["quantities"]] for case in model["motions"]
+    }
+    assert by_index == {0: [index_of["home_only_error"]], 1: [index_of["arc_only_error"]]}
+
+
+def test_decoding_yields_only_the_slots_the_frame_s_motion_writes() -> None:
+    schema = _schema()
+    index_of = {q["source_id"]: q["index"] for q in schema["quantities"]}
+    flat = flat_frame(
+        schema,
+        fsm_state=1,
+        active_motion=1,  # motion_arc
+        **{f"q{index_of['arc_only_error']}": 0.0, f"q{index_of['home_only_error']}": 7.5},
+    )
+    record_cls, _fields = frame_log_pb._record_class(schema)
+    msg = record_cls()
+    msg.ParseFromString(frame_log_pb.frame_record(flat, schema))
+    decoded = frame_log_pb._parse_frame(msg.frame, schema)
+    # A genuine 0.0 in the writing motion survives; the other motion's slot is absent rather than
+    # decoded as zero -- absence never stands in for "inactive" on the wire.
+    assert decoded["quantities"] == {"arc_only_error": 0.0}
+
+
+def test_pose_difference_and_acceleration_twist_rows_survive_dedup() -> None:
+    from motion_spec.rdf_parser.ir import add_quantity_samples
+
+    introspection = {
+        "quantities": [
+            {"id": "pose_ee", "type": "Pose"},
+            {"id": "pose_diff", "type": "PoseDifference"},
+            {"id": "acc_ee", "type": "AccelerationTwist"},
+        ]
+    }
+    shared_data = [
+        {"id": "pose_ee", "type": "Pose"},
+        {"id": "pose_diff", "type": "PoseDifference"},
+        {"id": "acc_ee", "type": "AccelerationTwist"},
+    ]
+    add_quantity_samples(introspection, shared_data, {})
+    sampled = {row["source_id"] for row in introspection["quantity_samples"]}
+    # pose_ee carries a whole-object PoseSlot, so its scalar rows would be a duplicate; the other
+    # two have no slot, so their scalar rows are the only record of them.
+    assert sampled == {"pose_diff", "acc_ee"}
+
+
+def test_run_schema_carries_the_contract_for_every_logged_member(tmp_path: Path) -> None:
+    schema = _schema()
+    (tmp_path / "schema.json").write_text(json.dumps(schema))
+    catalogue = json.loads((tmp_path / "schema.json").read_text())["catalogue"]
+    assert not [entry for entry in catalogue if entry["storage"] == "absent"]
+    assert not [entry for entry in catalogue if not entry.get("producer")]
+    assert {entry["id"] for entry in catalogue} == {
+        "pose_ee",
+        "arc_only_error",
+        "home_only_error",
+        "stiffness",
+        "path_normal",
+    }

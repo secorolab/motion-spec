@@ -33,6 +33,7 @@ def _sample_ir() -> dict:
         "unique_motions": [
             {
                 "id": "move",
+                "index": 0,
                 "handler": "move_handler",
                 "fsm_state": "S_MOVE",
                 "controllers": [
@@ -61,6 +62,7 @@ def _sample_ir() -> dict:
             },
             {
                 "id": "guarded",
+                "index": 1,
                 "handler": "guarded_handler",
                 "controllers": [],
                 "when_monitors": [
@@ -222,9 +224,9 @@ def test_schema_and_frame_layout_are_consistent(tmp_path: Path) -> None:
         "runtime_agent_id": "agent:runtime:mujoco",
     }
     assert schema["fsm"]["states"][1]["motion"] == "move"
-    assert schema["by_state"]["S_MOVE"]["controllers"][0]["id"] == "ctrl_x"
-    assert schema["by_state"]["S_MOVE"]["monitors"][0]["id"] == "done_mon"
-    assert schema["by_state"]["S_MOVE"]["monitors"][1]["id"] == "ready_mon"
+    assert schema["by_motion"]["move"]["controllers"][0]["id"] == "ctrl_x"
+    assert schema["by_motion"]["move"]["monitors"][0]["id"] == "done_mon"
+    assert schema["by_motion"]["move"]["monitors"][1]["id"] == "ready_mon"
     assert layout["fields"] == fields
     assert layout["frame_size_bytes"] == size
     assert layout["pools"] == schema["pools"]
@@ -386,8 +388,9 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
     # sample_desc is the backend-agnostic descriptor; the C++ expression is rendered
     # by the sample-expr template (shared_data.stg).
     assert quantities["err_x"]["sample_desc"] == {"kind": "shared", "id": "err_x"}
-    assert quantities["twist_ee.angular.x"]["sample_desc"] == {
-        "kind": "member", "id": "twist_ee", "member": "rot", "axis": 0}
+    # An object carried by a whole-object spatial slot gets no per-axis scalar rows too --
+    # that pair was the same value on the wire twice, in two representations.
+    assert not [qid for qid in quantities if qid.startswith(("pose_ee.", "twist_ee.", "wrench_ee."))]
     assert "wrench_force" not in quantities
     assert quantities["wrench_force_x"]["sample_desc"] == {"kind": "access", "ref": "wrench_force_x"}
     assert quantities["ready_flag"]["sample_desc"] == {"kind": "bool", "id": "ready_flag"}
@@ -403,14 +406,15 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
     assert schema["pools"]["quantities"] == len(schema["quantities"])
 
     payload = json.loads((tmp_path / ".stst" / "ir.json").read_text())
-    assert {
-        "index": quantities["pose_ee.position.x"]["index"],
-        "desc": {"kind": "pose_pos", "id": "pose_ee", "axis": 0},
-    } in payload["introspection_artifacts"]["model"]["quantities"]
+    assert not [
+        sample
+        for sample in payload["introspection_artifacts"]["model"]["quantities"]
+        if sample["desc"].get("kind") in {"pose_pos", "pose_orient"}
+    ]
     controller = next(
         controller
-        for state in payload["introspection_artifacts"]["model"]["states"]
-        for controller in state["controllers"]
+        for case in payload["introspection_artifacts"]["model"]["motions"]
+        for controller in case["controllers"]
         if controller["error_expr"] == "shared.err_x"
     )
     # measured/setpoint carry abstract signal ids now; the template renders them via
@@ -419,8 +423,8 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
     assert controller["setpoint_signal"] == "setpoint_x"
     monitors = [
         monitor
-        for state in build_introspection_model(schema, ir)["states"]
-        for monitor in state["monitors"]
+        for case in build_introspection_model(schema, ir)["motions"]
+        for monitor in case["monitors"]
         if not monitor["has_active"]
     ]
     assert any(monitor["value_expr"] == "shared.err_x" for monitor in monitors)

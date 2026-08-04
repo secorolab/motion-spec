@@ -334,7 +334,42 @@ solver-run(solver, motion_driver, backend) ::= <<
         KDL::SetToZero(f_ext_zero_<solver.id>[i]);
     }
 <solver-execute-algorithm(solver, motion_driver, backend)>
+<solver-log-joint-space(solver, backend)>
 >>
+
+// Mirror the solver's joint-space signals into shared_data so the frame log can carry them:
+// state.<solver> lives in the per-motion struct, which sample_model never sees.
+solver-log-joint-space(solver, backend) ::= <<
+<solver.joint_space_samples:{s |     shared.<s.id> = <joint-space-expr(s, solver, backend)>;}; separator="\n">
+>>
+
+joint-space-expr(s, solver, backend) ::= <<
+<({joint-space-expr-<s.channel>})(s, solver, backend)>
+>>
+
+joint-space-expr-q(s, solver, backend)        ::= "state.<solver.id>.q(<s.index>)"
+joint-space-expr-qd(s, solver, backend)       ::= "state.<solver.id>.qd(<s.index>)"
+joint-space-expr-qdd(s, solver, backend)      ::= "state.<solver.id>.qdd(<s.index>)"
+joint-space-expr-tau_ctrl(s, solver, backend) ::= "state.<solver.id>.tau_ctrl(<s.index>)"
+
+// Only backends that actually measure joint torque get this channel (see _JOINT_SPACE_CHANNELS).
+// No mj_kdl branch on purpose: its jnt_trq_msr mirrors qfrc_actuator, which torque control zeroes.
+joint-space-expr-tau_msr(s, solver, backend) ::= <<
+<({joint-space-expr-tau_msr-<backend>})(s, solver)>
+>>
+joint-space-expr-tau_msr-robif2b(s, solver) ::= "robot.<solver.id>.state->eff_msr[<s.index>]"
+
+// Read back from the port, so what is logged is what was sent -- not a second evaluation of
+// clamp_range, which could drift from what the store wrote.
+solver-log-joint-space-cmd(solver, backend) ::= <<
+<solver.joint_space_cmd_samples:{s |     shared.<s.id> = <joint-space-cmd-expr(s, solver, backend)>;}; separator="\n">
+>>
+
+joint-space-cmd-expr(s, solver, backend) ::= <<
+<({joint-space-cmd-expr-<backend>})(s, solver)>
+>>
+joint-space-cmd-expr-mj_kdl(s, solver)  ::= "robot.<solver.id>.robot->jnt_trq_cmd[<s.index>]"
+joint-space-cmd-expr-robif2b(s, solver) ::= "robot.<solver.id>.state->eff_cmd[<s.index>]"
 
 solver-clear-external-forces(solver, motion_driver) ::= <<
 <({solver-clear-external-forces-<solver.algorithm>})(solver, motion_driver)>
@@ -424,6 +459,9 @@ solver-run-RNE-mj_kdl(solver, motion_driver) ::= <<
         qdd_des_<solver.id>,
         state.<solver.id>.f_ext,
         state.<solver.id>.tau_ctrl);
+    // Publish the resolved acceleration RNE was given; ACHD writes state.qdd itself, this is the
+    // RNE path's equivalent. Copied after CartToJnt, never passed in as the input in its place.
+    state.<solver.id>.qdd = qdd_des_<solver.id>;
     for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
         state.<solver.id>.tau_ctrl(i) += state.<solver.id>.tau_ff(i);
     }
@@ -499,6 +537,7 @@ state.<solver.id>.f_ext[motion_spec::runtime::find_segment_index(*robot.<solver.
 
 solver-stage-output(solver, backend) ::= <<
 <({solver-stage-output-<backend>})(solver)>
+<solver-log-joint-space-cmd(solver, backend)>
 >>
 solver-stage-output-robif2b(solver) ::= <<
     for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {

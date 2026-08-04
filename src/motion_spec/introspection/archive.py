@@ -491,7 +491,12 @@ def verify_manifest(run_dir_or_manifest: Path | str) -> dict:
                 errors.append(f"{rel}: sha256 mismatch")
         if errors:
             raise ArchiveError("; ".join(errors))
-        _require_rec_provenance(rec_graph, "rec.ld.json")
+        run_schema = json.loads((run_dir / files["schema"]).read_text())
+        _require_rec_provenance(
+            rec_graph,
+            "rec.ld.json",
+            simulated=(run_schema.get("platform") or {}).get("simulated"),
+        )
         _validate_prov_shacl(run_dir / rec_rel)
         _validate_rec_shacl(run_dir / rec_rel)
     return manifest
@@ -569,17 +574,29 @@ def _require_runtime_provenance(graph: rdflib.Graph, label: str) -> None:
         raise ArchiveError(f"{label}: missing runtime provenance relationship(s): {', '.join(missing)}")
 
 
-def _require_rec_provenance(graph: rdflib.Graph, label: str) -> None:
+def _require_rec_provenance(graph: rdflib.Graph, label: str, simulated: bool | None = None) -> None:
     prov = rdflib.Namespace("http://www.w3.org/ns/prov#")
     bdd = rdflib.Namespace("https://secorolab.github.io/metamodels/acceptance-criteria/bdd#")
     obs = rdflib.Namespace("https://secorolab.github.io/metamodels/observation#")
+    # A real-hardware run is a ScenarioExecution. Requiring SimulatedExecution unconditionally
+    # would make the archive enforce a claim the model never made. None means the archive predates
+    # the platform record: assert that *an* execution activity is typed, not which kind.
     checks = {
-        "BDD execution activity": (None, rdflib.RDF.type, bdd.SimulatedExecution),
         "observation provider agent": (None, rdflib.RDF.type, obs.ObservationProvider),
         "generated artifact entity": (None, prov.wasGeneratedBy, None),
         "activity-agent association": (None, prov.wasAssociatedWith, None),
         "activity resource usage": (None, prov.used, None),
     }
+    if simulated is not None:
+        checks["BDD execution activity"] = (
+            None,
+            rdflib.RDF.type,
+            bdd.SimulatedExecution if simulated else bdd.ScenarioExecution,
+        )
+    elif (None, rdflib.RDF.type, bdd.SimulatedExecution) not in graph and (
+        None, rdflib.RDF.type, bdd.ScenarioExecution
+    ) not in graph:
+        raise ArchiveError(f"{label}: missing REC provenance relationship(s): BDD execution activity")
     missing = [name for name, triple in checks.items() if triple not in graph]
     if missing:
         raise ArchiveError(f"{label}: missing REC provenance relationship(s): {', '.join(missing)}")
@@ -632,6 +649,13 @@ def _write_rec_snapshot(
     observer.close()
 
 
+# pyshacl reads a non-absolute source shorter than 140 characters as a filename and anything
+# longer as inline RDF, so a relative archive path fails with a parser error once the run
+# directory name grows. Always hand it an absolute path.
+def _graph_source(path: Path) -> str:
+    return str(Path(path).resolve())
+
+
 def _metamodels_root() -> Path:
     root = metamodels_root()
     if root is None or not (root / "prov.shacl.ttl").exists():
@@ -642,8 +666,8 @@ def _metamodels_root() -> Path:
 def _validate_prov_shacl(path: Path) -> None:
     root = _metamodels_root()
     conforms, _graph, text = validate(
-        data_graph=str(path),
-        shacl_graph=str(root / "prov.shacl.ttl"),
+        data_graph=_graph_source(path),
+        shacl_graph=_graph_source(root / "prov.shacl.ttl"),
         data_graph_format="json-ld",
         shacl_graph_format="turtle",
         inference="rdfs",
@@ -658,8 +682,8 @@ def _validate_rec_shacl(path: Path) -> None:
     if not shape.exists():
         raise ArchiveError(f"{shape}: missing REC SHACL shape")
     conforms, _graph, text = validate(
-        data_graph=str(path),
-        shacl_graph=str(shape),
+        data_graph=_graph_source(path),
+        shacl_graph=_graph_source(shape),
         data_graph_format="json-ld",
         shacl_graph_format="turtle",
         inference="rdfs",
@@ -674,8 +698,8 @@ def _validate_runtime_shacl(path: Path) -> None:
     if not shape.exists():
         raise ArchiveError(f"{shape}: missing runtime SHACL shape")
     conforms, _graph, text = validate(
-        data_graph=str(path),
-        shacl_graph=str(shape),
+        data_graph=_graph_source(path),
+        shacl_graph=_graph_source(shape),
         data_graph_format="turtle",
         shacl_graph_format="turtle",
         inference="rdfs",

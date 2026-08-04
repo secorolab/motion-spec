@@ -403,7 +403,12 @@ def record_agents(run, run_dir: Path, schema: dict) -> None:
     runtime = schema.get("runtime_provenance", {})
     raw_runtime = runtime.get("runtime_agent_id") or "agent:runtime"
     runtime_agent = prov_uri(raw_runtime)
-    runtime_type = "exec:Simulation" if raw_runtime.endswith(":mujoco") else "prov:SoftwareAgent"
+    # The model declares whether this platform is simulated; do not infer it from the agent id.
+    runtime_type = (
+        "exec:Simulation"
+        if (schema.get("platform") or {}).get("simulated")
+        else "prov:SoftwareAgent"
+    )
     run.add_agent(runtime_agent, rec_types(["prov:SoftwareAgent", runtime_type]))
     run.add_agent(
         prov_uri(runtime.get("producer_agent_id") or "agent:controller_process"),
@@ -423,9 +428,14 @@ def record_agents(run, run_dir: Path, schema: dict) -> None:
 def record_activities(run, schema: dict) -> None:
     """Register the run's activities and the agent each is associated with."""
     runtime = schema.get("runtime_provenance", {})
+    execution_type = (
+        "bdd:SimulatedExecution"
+        if (schema.get("platform") or {}).get("simulated")
+        else "bdd:ScenarioExecution"
+    )
     run.add_activity(
         prov_uri(runtime.get("activity_id") or "activity:controller_execution"),
-        rec_types(["prov:Activity", "bdd:SimulatedExecution"]),
+        rec_types(["prov:Activity", execution_type]),
         associated_with=prov_uri(
             runtime.get("producer_agent_id") or "agent:controller_process"
         ),

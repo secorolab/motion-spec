@@ -293,6 +293,24 @@ fsm-dispatch-case(motion, fsm_namespace) ::= <<
 <endif>
 >>
 
+// The frame log records which motion ran, not which coordinator state selected it. Mapping the
+// FSM's state to that motion is symbolic on both sides -- the enum constant by name, the motion by
+// its ir_gen index -- so neither side depends on the other's numbering.
+fsm-active-motion(motions, fsm_namespace) ::= <<
+    auto fsm_active_motion = [&](struct fsm_nbx *fsm) -> int {
+        switch (fsm->currentStateIndex) {
+<motions:{motion | <fsm-active-motion-case(motion, fsm_namespace)>}; separator="\n">
+        default: return -1;
+        \}
+    \};
+>>
+
+fsm-active-motion-case(motion, fsm_namespace) ::= <<
+<if(motion.fsm_state)>
+        case <fsm_namespace>::<motion.fsm_state>: return <motion.index>;
+<endif>
+>>
+
 fsm-dispatch(motions, fsm_namespace) ::= <<
     // The FSM's current state selects which motion runs; the motion's monitor advances the FSM. A
     // fallback hold state additionally re-evaluates the gated motion's WHEN precondition each tick.
@@ -304,7 +322,7 @@ fsm-dispatch(motions, fsm_namespace) ::= <<
     \};
 >>
 
-ref_main(motions, wrench_outputs, has_serial_chain, has_mobile_base, shared_schedule, closures, views, shared_data, serial_chain_solvers, platform_velocity_solvers, platform_force_solvers, backend, scene, trace, fsm_namespace, fsm_step_event, fsm_step_event_idx, needs_clock_time, control_period_ns, has_ros, ros_publishers, ros_node_name) ::= <<
+ref_main(motions, wrench_outputs, has_serial_chain, has_mobile_base, shared_schedule, closures, views, shared_data, serial_chain_solvers, platform_velocity_solvers, platform_force_solvers, backend, scene, trace, fsm_namespace, fsm_step_event, fsm_step_event_idx, fsm_step_transitions, needs_clock_time, control_period_ns, has_ros, ros_publishers, ros_node_name) ::= <<
 #include "runtime.hpp"
 #include "shared_state.hpp"
 <if(has_mobile_base)>
@@ -360,6 +378,7 @@ int main(int argc, char **argv) {
     if (!fsm) return 1;
     robot.fsm_events = fsm->eventData;
 
+<fsm-active-motion(motions, fsm_namespace)>
 <fsm-dispatch(motions, fsm_namespace)>
 
 <endif>
@@ -391,7 +410,9 @@ int main(int argc, char **argv) {
         \}
         if (fsm->currentStateIndex == fsm->endStateIndex) break;
 <if(fsm_step_event)>
-        shared._motion_spec_record_event(<fsm_step_event_idx>);
+        // The heartbeat drives the FSM but is not recorded: the frame log is a time series, so
+        // every frame already *is* the tick (t, step, wall_ns, period_ns). Logging a per-tick
+        // event would restate that 24k times and leave last_event permanently pinned to it.
         produce_event(fsm->eventData, <fsm_namespace>::<fsm_step_event>);
 <endif>
         fsm_dispatch(fsm);
@@ -440,14 +461,21 @@ int main(int argc, char **argv) {
 <app-chain-runtime-step(backend, serial_chain_solvers)>
 <endif>
 <if(fsm_namespace)>
+        const unsigned int _fsm_state_before = fsm->currentStateIndex;
         fsm_step_nbx(fsm);
         reconfig_event_buffers(fsm->eventData);
+<fsm_step_transitions:{t |         // The clock is this transition's guard, so this one heartbeat is the cause of the
+        // state change -- record it, unlike the 24k that drive nothing.
+        if (_fsm_state_before == <fsm_namespace>::<t.from> && fsm->currentStateIndex == <fsm_namespace>::<t.to>) {
+            shared._motion_spec_record_event(<fsm_step_event_idx>);
+        \}}; separator="\n">
+        static_cast\<void\>(_fsm_state_before);
 <endif>
 #ifdef MOTION_SPEC_ENABLE_INTROSPECTION
         motion_spec::introspection::sample_model(
             _introspection_pub,
 <if(fsm_namespace)>            static_cast\<int\>(fsm->currentStateIndex),
-            static_cast\<int\>(fsm->currentStateIndex),
+            fsm_active_motion(fsm),
 <else>            current_motion,
             current_motion,
 <endif>            motion_spec::runtime::monotonic_time_s(),

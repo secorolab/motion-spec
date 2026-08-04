@@ -185,6 +185,37 @@ def frame_record(flat: dict, schema: dict) -> bytes:
 
 
 # --- decode ---
+_GATE_CACHE: dict = {}
+
+
+def _slot_gate(schema: dict) -> dict:
+    """Per category, motion index to the slot indices that motion writes (absent when none gated).
+
+    Proto3 elides a genuine 0.0 exactly as it elides "never written", so absence on the wire
+    cannot tell an inactive slot from a zero one. The frame carries active_motion and the schema
+    says which slots that motion writes; activity is resolved from that, never from a missing
+    field. Keyed on the motion rather than the coordinator's state, so the same decoder reads a
+    log produced under an FSM, a behaviour tree or the plain app_main loop.
+    """
+    key = schema.get("schema_hash")
+    if key in _GATE_CACHE:
+        return _GATE_CACHE[key]
+    by_motion = schema.get("by_motion") or {}
+    spatial = schema.get("spatial") or {}
+    gate = {}
+    for category, rows in (("quantities", schema.get("quantities", ())), *spatial.items()):
+        gated = {index for entry in by_motion.values() for index in entry.get(category, ())}
+        if not gated:
+            continue
+        ungated = {row.get("index", 0) for row in rows} - gated
+        gate[category] = {
+            entry["index"]: ungated | set(entry.get(category, ()))
+            for entry in by_motion.values()
+        }
+    _GATE_CACHE[key] = gate
+    return gate
+
+
 def _parse_frame(msg, schema: dict) -> dict:
     fields = _proto_fields(schema)
     pools = schema["pools"]
@@ -205,7 +236,17 @@ def _parse_frame(msg, schema: dict) -> dict:
     quantities = [getattr(msg, e["name"]) for e in fields["quantities"]]
     triggers = [{k: getattr(getattr(msg, e["name"]), k) for k in _TRIGGER_KEYS} for e in fields["triggers"]]
     qids = [q["id"] for q in sorted(schema["quantities"], key=lambda q: q.get("index", 0))]
-    record["quantities"] = {qids[idx]: quantities[idx] for idx in range(min(len(qids), len(quantities)))}
+    gate = _slot_gate(schema)
+
+    def written(category: str, index: int) -> bool:
+        by_index = gate.get(category)
+        return by_index is None or index in by_index.get(msg.active_motion, ())
+
+    record["quantities"] = {
+        qids[idx]: quantities[idx]
+        for idx in range(min(len(qids), len(quantities)))
+        if written("quantities", idx)
+    }
     trigger_count = msg.trigger_count
     start = max(0, trigger_count - pools["triggers"])
     record["triggers"] = (
@@ -213,8 +254,15 @@ def _parse_frame(msg, schema: dict) -> dict:
         if triggers and pools["triggers"]
         else []
     )
+    # A slot the active state does not write stays a hole in the list rather than a decoded zero;
+    # the list stays positional so a slot keeps one index for the whole run.
     for names, category in ((POSE_NAMES, "poses"), (TWIST_NAMES, "twists"), (WRENCH_NAMES, "wrenches")):
-        record[category] = [{n: getattr(getattr(msg, e["name"]), n) for n in names} for e in fields[category]]
+        record[category] = [
+            {n: getattr(getattr(msg, e["name"]), n) for n in names}
+            if written(category, e["index"])
+            else None
+            for e in fields[category]
+        ]
     return record
 
 

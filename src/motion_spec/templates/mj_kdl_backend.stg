@@ -330,8 +330,11 @@ app-chain-cleanup-mj_kdl(has_serial_chain) ::= <<
 app-chain-runtime-step-mj_kdl(serial_chain_solvers) ::= <<
 <serial_chain_solvers:{solver | <if(solver.runtime_owner)>        mj_kdl::update(&mj_<solver.runtime_id>);
 <endif>}; separator="">
+        // Closing the viewer ends the run, but it must end the same way S_DONE does. std::exit
+        // skips destructors, so the frame logger's writer thread never drained and the log was
+        // left with a half-written record and no health file -- break, and let teardown run.
         if (!mj_kdl::step(&mj_<first(serial_chain_solvers).runtime_id>)) {
-            std::exit(0);
+            break;
         }
 >>
 

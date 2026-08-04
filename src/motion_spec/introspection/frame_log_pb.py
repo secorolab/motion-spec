@@ -72,7 +72,10 @@ def _build_file_descriptor(fields: dict) -> descriptor_pb2.FileDescriptorProto:
     for category, entries in fields.items():
         for entry in entries:
             if category == "quantities":
-                rf.field.add(name=entry["name"], number=entry["number"], label=D.LABEL_OPTIONAL, type=D.TYPE_DOUBLE)
+                rf.field.add(
+                    name=entry["name"], number=entry["number"], label=D.LABEL_OPTIONAL,
+                    type=D.TYPE_BOOL if entry.get("proto_type") == "bool" else D.TYPE_DOUBLE,
+                )
             else:
                 rf.field.add(
                     name=entry["name"], number=entry["number"], label=D.LABEL_OPTIONAL,
@@ -172,7 +175,8 @@ def frame_record(flat: dict, schema: dict) -> bytes:
         s, i = getattr(m, e["name"]), e["index"]
         s.active, s.value, s.satisfied, s.sat_t = flat[f"m{i}.active"], flat[f"m{i}.value"], flat[f"m{i}.satisfied"], flat[f"m{i}.sat_t"]
     for e in fields["quantities"]:
-        setattr(m, e["name"], flat[f"q{e['index']}"])
+        value = flat[f"q{e['index']}"]
+        setattr(m, e["name"], value != 0 if e.get("proto_type") == "bool" else value)
     for e in fields["triggers"]:
         s, i = getattr(m, e["name"]), e["index"]
         s.kind, s.idx, s.fsm_state, s.t, s.wall_ns = flat[f"tr{i}.kind"], flat[f"tr{i}.idx"], flat[f"tr{i}.fsm_state"], flat[f"tr{i}.t"], flat[f"tr{i}.wall_ns"]
@@ -186,6 +190,7 @@ def frame_record(flat: dict, schema: dict) -> bytes:
 
 # --- decode ---
 _GATE_CACHE: dict = {}
+_COUNT_CACHE: dict = {}
 
 
 def _slot_gate(schema: dict) -> dict:
@@ -216,6 +221,21 @@ def _slot_gate(schema: dict) -> dict:
     return gate
 
 
+def _slot_counts(schema: dict) -> dict:
+    """Motion index -> how many constraint/monitor slots that motion drives."""
+    key = schema.get("schema_hash")
+    cached = _COUNT_CACHE.get(key)
+    if cached is None:
+        cached = _COUNT_CACHE[key] = {
+            entry["index"]: {
+                "controllers": len(entry.get("controllers", ())),
+                "monitors": len(entry.get("monitors", ())),
+            }
+            for entry in (schema.get("by_motion") or {}).values()
+        }
+    return cached
+
+
 def _parse_frame(msg, schema: dict) -> dict:
     fields = _proto_fields(schema)
     pools = schema["pools"]
@@ -231,9 +251,22 @@ def _parse_frame(msg, schema: dict) -> dict:
         "event_wall_ns": msg.event_wall_ns,
         "timing": {"wall_ns": msg.wall_ns, "period_ns": msg.period_ns, "compute_ns": msg.compute_ns},
     }
-    record["constraints"] = [{k: getattr(getattr(msg, e["name"]), k) for k in _CONSTRAINT_KEYS} for e in fields["constraints"]]
-    record["monitors"] = [{k: getattr(getattr(msg, e["name"]), k) for k in _MONITOR_KEYS} for e in fields["monitors"]]
-    quantities = [getattr(msg, e["name"]) for e in fields["quantities"]]
+    # `active` is derived, not carried: schema["by_motion"] already says how many constraint and
+    # monitor slots the active motion drives, so writing a constant 1 per slot per tick would only
+    # restate it. Slots beyond that count belong to some other motion and were not written.
+    counts = _slot_counts(schema).get(msg.active_motion, {})
+    record["constraints"] = [
+        {**{k: getattr(getattr(msg, e["name"]), k) for k in _CONSTRAINT_KEYS},
+         "active": 1 if e["index"] < counts.get("controllers", 0) else 0}
+        for e in fields["constraints"]
+    ]
+    record["monitors"] = [
+        {**{k: getattr(getattr(msg, e["name"]), k) for k in _MONITOR_KEYS},
+         "active": 1 if e["index"] < counts.get("monitors", 0) else 0}
+        for e in fields["monitors"]
+    ]
+    # Flags come back as bool; keep the decoded record numeric so readers see one value type.
+    quantities = [float(getattr(msg, e["name"])) for e in fields["quantities"]]
     triggers = [{k: getattr(getattr(msg, e["name"]), k) for k in _TRIGGER_KEYS} for e in fields["triggers"]]
     qids = [q["id"] for q in sorted(schema["quantities"], key=lambda q: q.get("index", 0))]
     gate = _slot_gate(schema)

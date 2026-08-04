@@ -521,8 +521,17 @@ def build_frame_log_proto_fields(schema: dict) -> dict:
         for entry in sorted(entries, key=lambda e: e.get("index", 0)):
             idx = entry.get("index", len(fields[category]))
             name = _proto_field_name(entry.get("id"), used, f"{singular}_{idx}")
+            # A value the model declares as a flag is a flag on the wire too: a proto bool costs
+            # one byte where a double costs eight, and proto3 drops it entirely when false.
+            kind = (entry.get("sample_desc") or {}).get("kind")
             fields[category].append(
-                {"index": idx, "id": entry.get("id"), "name": name, "number": base + idx}
+                {
+                    "index": idx,
+                    "id": entry.get("id"),
+                    "name": name,
+                    "number": base + idx,
+                    "proto_type": "bool" if kind == "bool" else "double",
+                }
             )
         next_number = max((entry["number"] for entry in fields[category]), default=base - 1) + 1
 

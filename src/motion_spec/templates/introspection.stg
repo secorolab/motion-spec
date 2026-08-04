@@ -288,9 +288,11 @@ private:
         m->set_period_ns(frame.period_ns);
         m->set_compute_ns(frame.compute_ns);
         m->set_trigger_count(frame.trigger_count);
-        <introspection_artifacts.frame_layout.protobuf.fields.constraints:{f|{ auto &s = *m->mutable_<f.name>(); const auto &c = frame.constraints[<f.index>]; s.set_active(c.active); s.set_error(c.error); s.set_output(c.output); s.set_satisfied(c.satisfied); s.set_sat_t(c.sat_t); s.set_measured(c.measured); s.set_setpoint(c.setpoint); \}}; separator="\n        ">
-        <introspection_artifacts.frame_layout.protobuf.fields.monitors:{f|{ auto &s = *m->mutable_<f.name>(); const auto &x = frame.monitors[<f.index>]; s.set_active(x.active); s.set_value(x.value); s.set_satisfied(x.satisfied); s.set_sat_t(x.sat_t); \}}; separator="\n        ">
-        <introspection_artifacts.frame_layout.protobuf.fields.quantities:{f|m->set_<f.name>(frame.quantities[<f.index>]);}; separator="\n        ">
+        // `active` is not written: which slots a motion drives is already in schema["by_motion"],
+        // and the decoder resolves it from active_motion exactly as it does for quantity slots.
+        <introspection_artifacts.frame_layout.protobuf.fields.constraints:{f|if (frame.constraints[<f.index>].active) { auto &s = *m->mutable_<f.name>(); const auto &c = frame.constraints[<f.index>]; s.set_error(c.error); s.set_output(c.output); s.set_satisfied(c.satisfied); s.set_sat_t(c.sat_t); s.set_measured(c.measured); s.set_setpoint(c.setpoint); \}}; separator="\n        ">
+        <introspection_artifacts.frame_layout.protobuf.fields.monitors:{f|if (frame.monitors[<f.index>].active) { auto &s = *m->mutable_<f.name>(); const auto &x = frame.monitors[<f.index>]; s.set_value(x.value); s.set_satisfied(x.satisfied); s.set_sat_t(x.sat_t); \}}; separator="\n        ">
+        <introspection_artifacts.frame_layout.protobuf.fields.quantities:{f|<quantity-field-set(f)>}; separator="\n        ">
         // Only the slots this tick actually filled: mutable_ materializes a sub-message even when
         // empty, so writing the whole pool would ship 31 empty wrappers on every eventless tick.
         <introspection_artifacts.frame_layout.protobuf.fields.triggers:{f|if (frame.trigger_count > <f.index>) { auto &s = *m->mutable_<f.name>(); const auto &x = frame.triggers[<f.index>]; s.set_kind(x.kind); s.set_idx(x.idx); s.set_fsm_state(x.fsm_state); s.set_t(x.t); s.set_wall_ns(x.wall_ns); \}}; separator="\n        ">
@@ -371,6 +373,13 @@ public:
         scratch_.wall_ns = now;
         scratch_.period_ns = last_tick_ns_ == 0 ? 0 : tick_start_ns_ - last_tick_ns_;
         last_tick_ns_ = tick_start_ns_;
+        // A slot index is motion-local -- slot 3 is a different constraint under a different
+        // motion -- so the satisfaction latches only mean anything within one motion.
+        if (active_motion != latched_motion_) {
+            latched_motion_ = active_motion;
+            for (std::size_t i = 0; i \< kNumConstraints; ++i) { csat_since_[i] = 0.0; csat_prev_[i] = false; \}
+            for (std::size_t i = 0; i \< kNumMonitors; ++i) { msat_since_[i] = 0.0; msat_prev_[i] = false; \}
+        \}
     \}
 
     // The slot index is declared by the generator, not counted as calls arrive: a constraint's
@@ -385,7 +394,11 @@ public:
         slot.measured = measured;
         slot.setpoint = setpoint;
         slot.satisfied = satisfied ? 1 : 0;
-        slot.sat_t = scratch_.t;
+        // Since *when* it has been satisfied, latched on the rising edge. Writing the current
+        // tick's t here would only restate the frame's own timestamp.
+        if (satisfied && !csat_prev_[index]) csat_since_[index] = scratch_.t;
+        csat_prev_[index] = satisfied;
+        slot.sat_t = satisfied ? csat_since_[index] : 0.0;
     \}
 
     void monitor_sample(std::size_t index, double value, bool satisfied) {
@@ -394,7 +407,9 @@ public:
         slot.active = 1;
         slot.value = value;
         slot.satisfied = satisfied ? 1 : 0;
-        slot.sat_t = scratch_.t;
+        if (satisfied && !msat_prev_[index]) msat_since_[index] = scratch_.t;
+        msat_prev_[index] = satisfied;
+        slot.sat_t = satisfied ? msat_since_[index] : 0.0;
     \}
 
     void quantity_sample(std::size_t index, double value) {
@@ -466,6 +481,12 @@ private:
     \}
 
     Frame scratch_{};
+    // Satisfaction onset per slot, reset when the active motion changes (slots are motion-local).
+    double csat_since_[kNumConstraints ? kNumConstraints : 1]{};
+    bool csat_prev_[kNumConstraints ? kNumConstraints : 1]{};
+    double msat_since_[kNumMonitors ? kNumMonitors : 1]{};
+    bool msat_prev_[kNumMonitors ? kNumMonitors : 1]{};
+    std::int64_t latched_motion_ = -1;
     LatestFramePublisher shm_;
     FrameLogger logger_;
     std::int64_t tick_start_ns_ = 0;
@@ -489,6 +510,13 @@ introspection-controller-sample(slot, views) ::= <<
 introspection-monitor-sample(slot) ::= <<
 <if(slot.has_active)>        pub.monitor_sample(<slot.index>, <if(slot.active_terms_present)><bool-condition(slot.active_terms, slot.active_any)><else>false<endif>, <if(slot.active_terms_present)><bool-condition(slot.active_terms, slot.active_any)><else>false<endif>);  // <slot.uri_comment><else>        pub.monitor_sample(<slot.index>, <if(slot.composite_error)>motion_spec::runtime::constraint_error_value(<slot.value_expr>)<else><slot.value_expr><endif>, motion_spec::runtime::constraint_satisfied(<slot.value_expr>));  // <slot.uri_comment><endif>
 >>
+
+// A flag-typed quantity is stored as a double in the frame ring but written as a proto bool.
+quantity-field-set(f) ::= <<
+<({quantity-field-set-<f.proto_type>})(f)>
+>>
+quantity-field-set-double(f) ::= "m->set_<f.name>(frame.quantities[<f.index>]);"
+quantity-field-set-bool(f)   ::= "m->set_<f.name>(frame.quantities[<f.index>] != 0.0);"
 
 introspection-quantity-sample(slot, views) ::= <<
     pub.quantity_sample(<slot.index>, <sample-expr(slot.desc, views)>);
@@ -640,7 +668,7 @@ message RuntimeFrame {
   sfixed64 compute_ns = 12;
   <introspection_artifacts.frame_layout.protobuf.fields.constraints:{f|ConstraintSlot <f.name> = <f.number>;}; separator="\n">
   <introspection_artifacts.frame_layout.protobuf.fields.monitors:{f|MonitorSlot <f.name> = <f.number>;}; separator="\n">
-  <introspection_artifacts.frame_layout.protobuf.fields.quantities:{f|double <f.name> = <f.number>;}; separator="\n">
+  <introspection_artifacts.frame_layout.protobuf.fields.quantities:{f|<f.proto_type> <f.name> = <f.number>;}; separator="\n">
   <introspection_artifacts.frame_layout.protobuf.fields.triggers:{f|Trigger <f.name> = <f.number>;}; separator="\n">
   sfixed64 trigger_count = 17;
   <introspection_artifacts.frame_layout.protobuf.fields.poses:{f|PoseSlot <f.name> = <f.number>;}; separator="\n">

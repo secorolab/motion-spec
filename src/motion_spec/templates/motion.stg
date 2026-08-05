@@ -25,12 +25,15 @@ cond-term-constraint(t) ::= <<
 motion_spec::runtime::constraint_satisfied(shared.<t.error_id>)
 >>
 
+// The elapsed seconds are a shared value, like every other term's input: the motion owns the
+// phase's start time, and whoever reads the condition -- the motion itself, or the
+// introspection sample running outside its state -- reads the same number.
 cond-term-elapsed(t) ::= <<
-(shared.clock_time_s - state.<t.start_field> <t.op> <t.threshold>)
+(shared.<t.elapsed_id> <t.op> <t.threshold>)
 >>
 
 cond-term-elapsed-eq(t) ::= <<
-(std::abs((shared.clock_time_s - state.<t.start_field>) - <t.threshold>) \<= <t.tolerance>)
+(std::abs(shared.<t.elapsed_id> - <t.threshold>) \<= <t.tolerance>)
 >>
 
 cond-term-flag(t) ::= <<
@@ -538,7 +541,8 @@ inline void update_<motion.id>(
 <if(motion.has_active_elapsed)>    if (state.motion_start_time \< 0.0) {
         state.motion_start_time = shared.clock_time_s;
     }
-<endif>
+<motion.active_elapsed_ids:{c |     shared.<c> = shared.clock_time_s - state.motion_start_time;
+}><endif>
 <motion-prelude(wrench_outputs, motion.serial_chain_solvers, backend)>
 <motion.relative_poses:{rp | <emit-relative-pose(rp)>}; separator="\n">
 <motion.scene_relative_poses:{srp |
@@ -560,7 +564,8 @@ inline bool can_start_<motion.id>(<sig-params(motion.id, motion.can_start_needs_
 <if(motion.has_when_elapsed)>    if (state.when_start_time \< 0.0) {
         state.when_start_time = shared.clock_time_s;
     }
-<endif>
+<motion.when_elapsed_ids:{c |     shared.<c> = shared.clock_time_s - state.when_start_time;
+}><endif>
 <motion-when-block(motion.when_schedule, closures, views)>
     return <if(motion.when_terms_present)><bool-condition(motion.when_terms, motion.when_any)><else>true<endif>;
 }
@@ -569,7 +574,8 @@ inline void monitor_when_<motion.id>(<sig-params(motion.id, motion.when_needs_st
 <if(motion.has_when_elapsed)>    if (state.when_start_time \< 0.0) {
         state.when_start_time = shared.clock_time_s;
     }
-<endif>
+<motion.when_elapsed_ids:{c |     shared.<c> = shared.clock_time_s - state.when_start_time;
+}><endif>
 <declared_pose_components:{pose | <materialize-pose-component(pose, views)>}; separator="\n">
 <shared-schedule-block(motion.when_schedule, closures, views)>
 <if(first(motion.when_monitors))>

@@ -3835,10 +3835,10 @@ def build_motion_units(
         while_monitors = [p.monitor_entry(n) for n in while_mon_nodes]
         until_monitors = [p.monitor_entry(n) for n in until_mon_nodes]
 
-        has_when_elapsed = any(getattr(e, "is_elapsed", False) for e in when_evaluators)
-        has_active_elapsed = any(
-            getattr(e, "is_elapsed", False) for e in while_evaluators + until_evaluators
-        )
+        when_elapsed_ids = _elapsed_coordinate_ids(when_evaluators)
+        active_elapsed_ids = _elapsed_coordinate_ids(while_evaluators + until_evaluators)
+        has_when_elapsed = bool(when_elapsed_ids)
+        has_active_elapsed = bool(active_elapsed_ids)
         has_elapsed = has_when_elapsed or has_active_elapsed
 
         motions.append(
@@ -3850,6 +3850,8 @@ def build_motion_units(
                 command_robot_id=primary_robot_id,
                 has_when_elapsed=has_when_elapsed,
                 has_active_elapsed=has_active_elapsed,
+                when_elapsed_ids=when_elapsed_ids,
+                active_elapsed_ids=active_elapsed_ids,
                 when_evaluators=when_evaluators,
                 while_evaluators=while_evaluators,
                 until_evaluators=until_evaluators,
@@ -7137,10 +7139,37 @@ def collect_motion_references(motion, closures: dict) -> set[str]:
     return refs
 
 
-def _evaluator_term(e, start_field: str) -> dict:
-    """Structured boolean term for an evaluator: an elapsed timing predicate (world clock
-    vs threshold from the selected state timestamp) or a solver constraint-satisfied check.
-    Rendered to C++ by the bool-condition template."""
+def _elapsed_coordinate_id(e) -> str:
+    """The shared value an elapsed constraint measures: its own authored duration coordinate.
+
+    A timing constraint's error signal is the elapsed duration itself, so this is where the
+    motion writes the seconds and where every reader -- the condition inside the motion, the
+    introspection sample outside it, the frame log -- finds them."""
+    coordinate = _field(_field(e, "error"), "id")
+    if not coordinate:
+        raise ValueError(
+            f"elapsed constraint '{_field(e, 'id')}' has no duration coordinate to measure into"
+        )
+    return coordinate
+
+
+def _elapsed_coordinate_ids(evaluators) -> list[str]:
+    """Each phase's elapsed coordinates, deduplicated, in authored order."""
+    return list(
+        dict.fromkeys(
+            _elapsed_coordinate_id(e) for e in evaluators if getattr(e, "is_elapsed", False)
+        )
+    )
+
+
+def _evaluator_term(e) -> dict:
+    """Structured boolean term for an evaluator: an elapsed timing predicate (the seconds a
+    phase has been running, against a threshold) or a solver constraint-satisfied check.
+    Rendered to C++ by the bool-condition template.
+
+    Every term kind reads shared and nothing else, so the same condition renders identically
+    wherever it is needed -- inside the motion, whose state holds the phase's start, and in
+    the introspection sample, which runs outside it."""
     if _field(e, "is_elapsed"):
         op = _field(e, "elapsed_op") or ">="
         thr = _field(e, "elapsed_threshold_s") or 0.0
@@ -7149,28 +7178,31 @@ def _evaluator_term(e, start_field: str) -> dict:
             tol = _field(e, "elapsed_tolerance_s") or 0.0
             return {
                 "kind": "elapsed-eq",
-                "start_field": start_field,
+                "elapsed_id": _elapsed_coordinate_id(e),
                 "threshold": f"{thr:.6f}",
                 "tolerance": f"{tol:.6f}",
             }
-        return {"kind": "elapsed", "start_field": start_field, "op": op, "threshold": f"{thr:.6f}"}
+        return {
+            "kind": "elapsed",
+            "elapsed_id": _elapsed_coordinate_id(e),
+            "op": op,
+            "threshold": f"{thr:.6f}",
+        }
     return {"kind": "constraint", "error_id": _field(_field(e, "error"), "id")}
 
 
-def _set_monitor_conditions(
-    motion, evaluators_key: str, monitors_key: str, start_field: str, any_key: str
-) -> None:
+def _set_monitor_conditions(motion, evaluators_key: str, monitors_key: str, any_key: str) -> None:
     """Stamp the structured active-phase terms onto the aggregate monitor + any
     elapsed-error monitors. Rendered to C++ by the bool-condition template."""
     evaluators = _field(motion, evaluators_key, [])
     terms = [
-        _evaluator_term(e, start_field)
+        _evaluator_term(e)
         for e in evaluators
         if _field(e, "error") or _field(e, "is_elapsed")
     ]
     any_flag = bool(_field(motion, any_key))
     elapsed_terms_by_error = {
-        _field(_field(e, "error"), "id"): _evaluator_term(e, start_field)
+        _field(_field(e, "error"), "id"): _evaluator_term(e)
         for e in evaluators
         if _field(e, "is_elapsed") and _field(e, "error")
     }
@@ -7179,7 +7211,7 @@ def _set_monitor_conditions(
         group_ids = set(_field(monitor, "group_constraint_ids") or ())
         if group_ids:
             group_terms = [
-                _evaluator_term(e, start_field)
+                _evaluator_term(e)
                 for e in evaluators
                 if _field(_field(e, "constraint"), "id") in group_ids
                 and (_field(e, "error") or _field(e, "is_elapsed"))
@@ -7206,19 +7238,15 @@ def _set_monitor_conditions(
 def _set_motion_conditions(motion) -> None:
     """Fold the UNTIL/WHEN/done structured boolean terms onto a motion (rendered to C++ by
     the bool-condition template). WHEN joins with when_any, done with until_any."""
-    _set_monitor_conditions(
-        motion, "until_evaluators", "until_monitors", "motion_start_time", "until_any"
-    )
+    _set_monitor_conditions(motion, "until_evaluators", "until_monitors", "until_any")
     when_terms = [
-        _evaluator_term(e, "when_start_time")
+        _evaluator_term(e)
         for e in _field(motion, "when_evaluators", [])
         if _field(e, "error") or _field(e, "is_elapsed")
     ]
     _set_field(motion, "when_terms", when_terms)
     _set_field(motion, "when_terms_present", bool(when_terms))
-    _set_monitor_conditions(
-        motion, "when_evaluators", "when_monitors", "when_start_time", "when_any"
-    )
+    _set_monitor_conditions(motion, "when_evaluators", "when_monitors", "when_any")
     done_terms = _motion_done_terms(motion)
     _set_field(motion, "done_terms", done_terms)
     _set_field(motion, "done_terms_present", bool(done_terms))

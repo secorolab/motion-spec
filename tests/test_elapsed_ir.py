@@ -104,18 +104,60 @@ def test_evaluator_term_renders_equality_as_abs_within_tolerance() -> None:
         id="wait5",
         type_=EvaluatorType.ErrorEvaluator,
         constraint=None,
-        error=None,
+        error={"id": "wait5_elapsed"},
         is_elapsed=True,
         elapsed_op="==",
         elapsed_threshold_s=5.0,
         elapsed_tolerance_s=0.01,
     )
 
-    term = _evaluator_term(ev, "wait5_start_time")
+    term = _evaluator_term(ev)
 
     assert term == {
         "kind": "elapsed-eq",
-        "start_field": "wait5_start_time",
+        "elapsed_id": "wait5_elapsed",
         "threshold": "5.000000",
         "tolerance": "0.010000",
     }
+
+
+def test_a_monitor_condition_reads_nothing_but_shared() -> None:
+    """The introspection sample renders a monitor's activation outside the motion it belongs
+    to, where neither the motion's state nor its instance exists. Every term a monitor
+    condition can carry must therefore resolve through shared alone -- the elapsed term read
+    `state.motion_start_time` and would not have compiled in that scope, and no model authors
+    one, so nothing rendered it.
+    """
+    import re
+    from pathlib import Path
+
+    template = (
+        Path(__file__).resolve().parents[1] / "src" / "motion_spec" / "templates" / "motion.stg"
+    ).read_text()
+    evaluators = [
+        ConstraintEvaluator(
+            id="wait",
+            type_=EvaluatorType.ErrorEvaluator,
+            constraint=None,
+            error={"id": "wait_elapsed"},
+            is_elapsed=True,
+            elapsed_op=op,
+            elapsed_threshold_s=1.0,
+            elapsed_tolerance_s=0.01,
+        )
+        for op in (">=", "==", "<")
+    ]
+    evaluators.append(
+        ConstraintEvaluator(
+            id="reached",
+            type_=EvaluatorType.ErrorEvaluator,
+            constraint=None,
+            error=None,
+        )
+    )
+    kinds = {_evaluator_term(ev)["kind"] for ev in evaluators}
+    assert kinds == {"elapsed", "elapsed-eq", "constraint"}
+    for kind in sorted(kinds):
+        body = re.search(rf"^cond-term-{kind}\(t\) ::= <<(.*?)^>>", template, re.S | re.M)
+        assert body, f"cond-term-{kind} is no longer in motion.stg"
+        assert "state." not in body.group(1), f"cond-term-{kind} reaches outside shared"

@@ -639,6 +639,10 @@ class GuardedMotionBlock:
     has_elapsed: bool = False
     has_when_elapsed: bool = False
     has_active_elapsed: bool = False
+    # The elapsed-duration coordinates this motion measures, per phase: the authored shared
+    # value each timing constraint compares against, filled from the phase's start time.
+    active_elapsed_ids: list[str] = field(default_factory=list)
+    when_elapsed_ids: list[str] = field(default_factory=list)
     has_until_condition: bool = False
     until_any: bool = False
     when_any: bool = False

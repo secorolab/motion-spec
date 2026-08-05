@@ -14,10 +14,10 @@ from motion_spec.introspection.provenance import (
 )
 
 SCHEMA_VERSION = 1
-# 2: quantity slots are gated on the writing state, so field presence means "this state wrote it"
-# rather than "the value is non-zero". Decoding a v1 log against a v2 layout would read stale
-# slots as live; schema_hash carries this version, so validate_header rejects the mismatch.
-FRAME_LAYOUT_VERSION = 2
+# 3: the log carries its own decode contract in its header record -- the message descriptor,
+# every slot's id and IRI, the per-motion gate and the FSM tables. A v2 log has none of that,
+# so read_contract rejects it rather than guessing.
+FRAME_LAYOUT_VERSION = 3
 RUNTIME_RDF_CONTRACT_VERSION = 1
 FIELD_BYTES = 8
 TRIGGER_POOL_SIZE = 32
@@ -445,6 +445,9 @@ def build_frame_layout(schema: dict) -> dict:
         "frame_size_bytes": frame_size,
         "schema_hash": schema["schema_hash"],
         "runtime_provenance": schema["runtime_provenance"],
+        # The runner records the run before any log exists, so this one fact cannot
+        # come from the log's own header.
+        "platform": schema.get("platform") or {},
         "fields": fields,
     }
     layout["frame_layout_hash"] = hashlib.sha256(
@@ -531,6 +534,8 @@ def build_frame_log_proto_fields(schema: dict) -> dict:
                 {
                     "index": idx,
                     "id": entry.get("id"),
+                    # The slot's model identity travels with the wire field that carries it.
+                    "iri": entry.get("uri"),
                     "name": name,
                     "number": base + idx,
                     "proto_type": "bool" if kind == "bool" else "double",
@@ -660,14 +665,16 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
 
 
 def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path) -> dict:
-    """Write schema.json, frame_layout.json and provenance.ld.json, and return the frame-log
-    header + sample model that codegen folds into the IR. The framed FSM lives in ir["fsm"].
+    """Write frame_layout.json, provenance.ld.json and the derivation graph, and return the
+    frame-log header + sample model that codegen folds into the IR.
+
+    The decode contract is not written here: it is serialized into the frame log's own header
+    record, so a log needs no companion artifact to be read. The framed FSM lives in ir["fsm"].
     """
     schema = build_schema(ir, ir_path=ir_path, output_dir=output_dir, fsm_ir=ir.get("fsm"))
     layout = build_frame_layout(schema)
     end_state = schema.get("fsm", {}).get("end")
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "schema.json").write_text(json.dumps(schema, indent=4) + "\n")
     (output_dir / "frame_layout.json").write_text(json.dumps(layout, indent=4) + "\n")
     (output_dir / "provenance.ld.json").write_text(
         json.dumps(build_provenance_document(ir, output_dir), indent=4) + "\n"
@@ -694,6 +701,101 @@ def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path) 
             "end_state": end_state if end_state is not None else -1,
             "nominal_period_ns": schema.get("control_period_ns") or 0,
             "protobuf": schema["protobuf"],
+            "header_record_rows": _hex_rows(build_frame_log_header_record(schema)),
         },
         "model": build_introspection_model(schema, ir),
     }
+
+
+def _hex_rows(blob: bytes, per_row: int = 16) -> list[list[str]]:
+    """Byte literals grouped into rows, so the emitted array is not one enormous line."""
+    values = [f"0x{byte:02x}" for byte in blob]
+    return [values[i : i + per_row] for i in range(0, len(values), per_row)]
+
+
+def build_frame_log_header_record(schema: dict) -> bytes:
+    """Serialize the run's FrameLogRecord header: everything a decoder needs and the wire cannot say.
+
+    Built here, once, rather than assembled by generated C++: every field is known at generation
+    time, so the runtime only has to write these bytes out verbatim.
+    """
+    from google.protobuf import descriptor_pb2
+
+    from motion_spec.introspection import frame_log_pb
+
+    record_cls, fields = frame_log_pb._record_class(schema)
+    descriptor_set = descriptor_pb2.FileDescriptorSet()
+    descriptor_set.file.add().CopyFrom(frame_log_pb._build_file_descriptor(fields))
+
+    rec = record_cls()
+    header = rec.header
+    header.SetInParent()
+    header.schema_hash = schema["schema_hash"]
+    meta = schema.get("runtime_provenance") or {}
+    header.producer_agent_id = meta.get("producer_agent_id", "")
+    header.activity_id = meta.get("activity_id", "")
+    header.runtime_agent_id = meta.get("runtime_agent_id") or ""
+    header.descriptor_set = descriptor_set.SerializeToString()
+    header.trigger_pool = schema["pools"].get("triggers", 0)
+    platform = schema.get("platform") or {}
+    header.platform_name = platform.get("name") or ""
+    header.simulated = bool(platform.get("simulated"))
+    fsm = schema.get("fsm") or {}
+    end_state = fsm.get("end")
+    header.end_state = end_state if end_state is not None else -1
+    header.nominal_period_ns = schema.get("control_period_ns") or 0
+    header.fsm_namespace = fsm.get("namespace") or ""
+
+    # Slot identity, keyed by the field number that carries it on the wire.
+    for category in ("quantities", "poses", "twists", "wrenches"):
+        for entry in fields.get(category, ()):
+            slot = header.slots.add()
+            slot.number, slot.id = entry["number"], entry["id"]
+            slot.iri = entry.get("iri") or ""
+
+    state_index = {
+        row["id"]: row["index"] for row in (fsm.get("states") or ()) if isinstance(row, dict)
+    }
+    for motion_id, entry in (schema.get("by_motion") or {}).items():
+        gate = header.motions.add()
+        gate.index, gate.id = entry["index"], motion_id
+        gate.iri = entry.get("uri") or ""
+        gate.fsm_state = state_index.get(entry.get("fsm_state"), -1)
+        for category in ("quantities", "poses", "twists", "wrenches"):
+            getattr(gate, category).extend(entry.get(category, ()))
+        for category in ("controllers", "monitors"):
+            for slot_entry in entry.get(category, ()):
+                slot = getattr(gate, category).add()
+                slot.number, slot.id = slot_entry["index"], slot_entry.get("id") or ""
+                slot.iri = slot_entry.get("uri") or ""
+                # A controller slot names the constraint it serves, a monitor slot the event it
+                # fires -- runtime.ttl attributes an occurrence to those, not to the slot.
+                slot.constraint_iri = slot_entry.get("constraint_uri") or ""
+                slot.event_iri = slot_entry.get("event_uri") or ""
+
+    for key, target in (("states", header.fsm_states), ("events", header.fsm_events)):
+        for index, row in enumerate(fsm.get(key) or ()):
+            row = row if isinstance(row, dict) else {"id": row}
+            named = target.add()
+            named.number = row.get("index", index)
+            named.id = str(row.get("id") or "")
+            named.iri = row.get("uri") or ""
+
+    for index, row in enumerate(fsm.get("transitions") or ()):
+        transition = header.fsm_transitions.add()
+        transition.index, transition.id = index, str(row.get("id") or "")
+        transition.iri = row.get("uri") or ""
+        # -1, not 0: 0 is a real state index, so a missing endpoint must not read as one.
+        transition.from_state = row["from"] if row.get("from") is not None else -1
+        transition.to_state = row["to"] if row.get("to") is not None else -1
+        event_index = row.get("event_index")
+        transition.event_index = event_index if event_index is not None else -1
+        transition.event_indices.extend(row.get("event_indices") or ())
+
+    for entry in schema.get("constants") or ():
+        constant = header.constants.add()
+        constant.id = entry["id"]
+        constant.source_id = entry.get("source_id") or ""
+        constant.value = float(entry.get("value") or 0.0)
+
+    return rec.SerializeToString()

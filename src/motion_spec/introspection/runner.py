@@ -57,10 +57,11 @@ def run_cataloged(
     rec_path = run_dir / "rec.ld.json"
 
     _validate_new_run(run_dir, source_dir, executable)
+    # frame_layout.json, not the log: the run is recorded before the log exists.
     schema_path = (
-        source_dir / "contract" / "schema.json"
+        source_dir / "contract" / "frame_layout.json"
         if (source_dir / "contract").is_dir()
-        else source_dir / "schema.json"
+        else source_dir / "frame_layout.json"
     )
     schema = json.loads(schema_path.read_text())
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -112,12 +113,11 @@ def _validate_new_run(run_dir: Path, source_dir: Path, executable: Path) -> None
         raise RunnerError(f"{source_dir}: source directory does not exist")
     required = (
         (
-            source_dir / "contract" / "schema.json",
             source_dir / "contract" / "frame_log.proto",
             source_dir / "provenance" / "motion-spec.ld.json",
         )
         if (source_dir / "contract").is_dir()
-        else tuple(source_dir / rel for rel in ("schema.json", "frame_log.proto", "provenance.ld.json"))
+        else tuple(source_dir / rel for rel in ("frame_log.proto", "provenance.ld.json"))
     )
     for path in required:
         if not path.exists():
@@ -169,13 +169,11 @@ def _record_execution_inputs(
     activity = prov_uri(schema.get("runtime_provenance", {}).get("activity_id") or "activity:controller_execution")
     inputs = (
         (
-            ("contract/schema.json", "schema"),
             ("provenance/motion-spec.ld.json", "provenance"),
             ("model/ir.json", "ir"),
         )
         if (source_dir / "contract").is_dir()
         else (
-            ("schema.json", "schema"),
             ("provenance.ld.json", "provenance"),
             ("model.ld.json", "model"),
             ("ir.json", "ir"),

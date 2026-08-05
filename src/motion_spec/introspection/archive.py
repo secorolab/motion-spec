@@ -208,11 +208,10 @@ def _create_generation_run_manifest(
 ) -> dict:
     """Catalog a run while referencing immutable artifacts owned by its generation."""
     run_dir.mkdir(parents=True, exist_ok=True)
-    schema_path = generated / "contract" / "schema.json"
     proto_path = generated / "contract" / "frame_log.proto"
     provenance_path = generated / "provenance" / "motion-spec.ld.json"
     model_manifests = list((generated / "model").glob("*-app.ld.json"))
-    for required in (schema_path, proto_path, provenance_path, generated / "model" / "ir.json"):
+    for required in (proto_path, provenance_path, generated / "model" / "ir.json"):
         if not required.is_file():
             raise ArchiveError(f"{required}: required generated artifact is missing")
     if len(model_manifests) != 1:
@@ -225,9 +224,11 @@ def _create_generation_run_manifest(
     if frame_log_path.exists() and frame_log_path.resolve() != (run_dir / "logs/frame_log.pb").resolve():
         _copy_file(frame_log_path, run_dir / "logs/frame_log.pb")
     frame_log_path = run_dir / "logs" / "frame_log.pb"
-    schema = json.loads(schema_path.read_text())
+    # The run states its own contract; nothing is read back out of a generated file.
+    from motion_spec.introspection import frame_log_pb
+
+    schema = frame_log_pb.read_contract(frame_log_path).summary()
     files = {
-        "schema": relative(schema_path),
         "frame_log_proto": relative(proto_path),
         "provenance": relative(provenance_path),
         "dsl_provenance": (
@@ -277,7 +278,7 @@ def create_archive_manifest(
     """Create or refresh a local replay manifest for a run folder."""
     run_dir = Path(run_dir)
     source_dir = Path(source_dir) if source_dir else run_dir
-    if (source_dir / "contract" / "schema.json").is_file():
+    if (source_dir / "contract" / "frame_log.proto").is_file():
         return _create_generation_run_manifest(
             run_dir,
             source_dir,
@@ -291,12 +292,11 @@ def create_archive_manifest(
 
     # Contract inputs the archive cannot be self-explanatory without. Fail fast at the source
     # rather than emit an archive that only trips verify_manifest later.
-    for required in ("schema.json", "frame_log.proto"):
+    for required in ("frame_log.proto",):
         if not (source_dir / required).is_file():
             raise ArchiveError(f"{source_dir / required}: required generated artifact is missing")
 
     copies = {
-        "schema.json": "contract/schema.json",
         "frame_log.proto": "contract/frame_log.proto",
         "provenance.ld.json": "provenance/motion-spec.ld.json",
         "provenance/dsl.ld.json": "provenance/dsl.ld.json",
@@ -315,16 +315,18 @@ def create_archive_manifest(
         copies["frame_log.pb"] = frame_log_rel
         if (source_dir / "frame_log.pb.health.json").exists():
             copies["frame_log.pb.health.json"] = frame_log_health_rel
-    schema = json.loads((source_dir / "schema.json").read_text())
-    # schema.graph/ir_path are portable basenames; resolve them against source_dir.
+    from motion_spec.introspection import frame_log_pb
+
+    schema = frame_log_pb.read_contract(
+        source_dir / "frame_log.pb" if (source_dir / "frame_log.pb").exists()
+        else run_dir / frame_log_rel
+    ).summary()
+    # graph/ir_path are portable basenames; resolve them against source_dir.
     model_source = source_dir / "model.ld.json"
     if (source_dir / "model.ld.json").exists():
         copies["model.ld.json"] = "model/model.ld.json"
-    elif schema.get("graph") and (source_dir / Path(schema["graph"]).name).exists():
-        model_source = source_dir / Path(schema["graph"]).name
-        copies[model_source.name] = "model/model.ld.json"
-    if schema.get("ir_path") and (source_dir / Path(schema["ir_path"]).name).exists():
-        copies[Path(schema["ir_path"]).name] = "model/ir.json"
+    if (source_dir / "ir.json").exists():
+        copies["ir.json"] = "model/ir.json"
     # Without it the archived log's derived slot IRIs resolve to nothing.
     for derived in source_dir.glob("*-derived.ld.json"):
         copies[derived.name] = "model/derived.ld.json"
@@ -401,7 +403,6 @@ def create_archive_manifest(
     _rewrite_model_imports(model_manifest, model_imports)
 
     files = {
-        "schema": "contract/schema.json",
         "frame_log_proto": "contract/frame_log.proto",
         "provenance": "provenance/motion-spec.ld.json",
         "dsl_provenance": (
@@ -456,7 +457,7 @@ def verify_manifest(run_dir_or_manifest: Path | str) -> dict:
     run_dir, manifest = load_manifest(run_dir_or_manifest)
     errors = []
     files = manifest.get("files", {})
-    for key in ("schema", "frame_log_proto", "provenance", "frame_log", "rec"):
+    for key in ("frame_log_proto", "provenance", "frame_log", "rec"):
         if not files.get(key):
             errors.append(f"files.{key}: missing")
     for key, value in files.items():
@@ -498,7 +499,9 @@ def verify_manifest(run_dir_or_manifest: Path | str) -> dict:
                 errors.append(f"{rel}: sha256 mismatch")
         if errors:
             raise ArchiveError("; ".join(errors))
-        run_schema = json.loads((run_dir / files["schema"]).read_text())
+        from motion_spec.introspection import frame_log_pb
+
+        run_schema = frame_log_pb.read_contract(run_dir / files["frame_log"]).summary()
         _require_rec_provenance(
             rec_graph,
             "rec.ld.json",

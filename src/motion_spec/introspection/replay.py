@@ -28,11 +28,11 @@ def resolve_archive(path: Path | str) -> tuple[Path, Path, dict, dict]:
     run_dir = run_dir_for(input_path)
     manifest = verify_manifest(run_dir)
     files = manifest["files"]
-    schema = json.loads((run_dir / files["schema"]).read_text())
     log_path = run_dir / files["frame_log"] if input_path.is_dir() else input_path
     if not log_path.exists():
         raise ArchiveError(f"{log_path}: missing frame log")
-    return run_dir, log_path, manifest, schema
+    # The log carries its own decode contract; the manifest only locates it.
+    return run_dir, log_path, manifest, frame_log_pb.read_contract(log_path)
 
 
 def read_meta(log_path: Path | str) -> dict:
@@ -42,19 +42,23 @@ def read_meta(log_path: Path | str) -> dict:
     return frame_log_pb.read_header(path)
 
 
-def validate_header(log_path: Path | str, schema: dict) -> dict:
-    meta = read_meta(log_path)
-    if meta.get("schema_hash") != schema.get("schema_hash"):
-        raise ArchiveError(
-            f"{log_path}: frame log header schema_hash {meta.get('schema_hash')} != schema.json "
-            f"{schema.get('schema_hash')}"
-        )
-    expected = schema.get("runtime_provenance", {})
-    if expected.get("producer_agent_id") and meta.get("producer_agent_id") != expected["producer_agent_id"]:
-        raise ArchiveError(f"{log_path}: producer_agent_id does not match schema runtime provenance")
-    if expected.get("activity_id") and meta.get("activity_id") != expected["activity_id"]:
-        raise ArchiveError(f"{log_path}: activity_id does not match schema runtime provenance")
-    return meta
+def validate_header(log_path: Path | str, contract=None) -> dict:
+    """The log states its own identity, so there is nothing left to cross-check it against.
+
+    A mismatch used to mean the log and schema.json had drifted apart; with the contract
+    inside the log that class of error cannot arise. What can still fail is a log written by
+    a runtime older than the embedded descriptor, which read_contract rejects.
+    """
+    if contract is None:
+        contract = frame_log_pb.read_contract(log_path)
+    header = contract.header
+    if not header.schema_hash:
+        raise ArchiveError(f"{log_path}: frame log header carries no schema hash")
+    return {
+        "schema_hash": header.schema_hash,
+        "producer_agent_id": header.producer_agent_id,
+        "activity_id": header.activity_id,
+    }
 
 
 def read_health(log_path: Path | str) -> dict | None:
@@ -65,9 +69,9 @@ def read_health(log_path: Path | str) -> dict | None:
 
 
 def decode_frames(log_path: Path | str) -> list[dict]:
-    _run_dir, log_path, _manifest, schema = resolve_archive(log_path)
-    validate_header(log_path, schema)
-    return list(frame_log_pb.frame_records(log_path, schema))
+    _run_dir, log_path, _manifest, contract = resolve_archive(log_path)
+    validate_header(log_path, contract)
+    return list(frame_log_pb.frame_records(log_path, contract))
 
 
 def runtime_frames(log_path: Path | str) -> tuple[list[dict], int]:
@@ -76,13 +80,13 @@ def runtime_frames(log_path: Path | str) -> tuple[list[dict], int]:
 
 
 def summarize(log_path: Path | str) -> str:
-    run_dir, log_path, _manifest, schema = resolve_archive(log_path)
-    meta = validate_header(log_path, schema)
+    run_dir, log_path, _manifest, contract = resolve_archive(log_path)
+    meta = validate_header(log_path, contract)
     count = 0
     first = last = None
     periods = []
     computes = []
-    for record in frame_log_pb.frame_records(log_path, schema):
+    for record in frame_log_pb.frame_records(log_path, contract):
         first = first or record
         last = record
         count += 1
@@ -93,9 +97,9 @@ def summarize(log_path: Path | str) -> str:
         return f"log         {log_path}\nframes      0"
     periods.sort()
     computes.sort()
-    states = schema.get("fsm", {}).get("states", [])
+    states = contract.header.fsm_states
     final_state = last["fsm_state"]
-    final_name = states[final_state]["id"] if 0 <= final_state < len(states) else str(final_state)
+    final_name = states[final_state].id if 0 <= final_state < len(states) else str(final_state)
     lines = [
         f"log         {log_path}",
         f"archive     {run_dir}",
@@ -129,13 +133,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.recover_runtime_ttl:
             from motion_spec.introspection.runtime_graph import write_runtime_ttl
 
-            run_dir, log_path, _manifest, _schema = resolve_archive(args.log)
+            run_dir, log_path, _manifest, _contract = resolve_archive(args.log)
             records, frame_count = runtime_frames(log_path)
             out = write_runtime_ttl(run_dir, records, frame_count=frame_count)
             print(out)
         elif args.verify:
-            _run_dir, log_path, _manifest, schema = resolve_archive(args.log)
-            validate_header(log_path, schema)
+            _run_dir, log_path, _manifest, contract = resolve_archive(args.log)
+            validate_header(log_path, contract)
             print("archive OK")
         elif args.jsonl:
             for record in decode_frames(args.log):

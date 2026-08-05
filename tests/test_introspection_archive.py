@@ -54,7 +54,7 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
     # The archived proto is the generated semantic one (copied from source), not a static file.
     assert "double q0 = 3000;" in (run_dir / "contract" / "frame_log.proto").read_text()
     assert verify_manifest(run_dir)["run_id"] == "run-test"
-    header = validate_header(run_dir / "logs" / "frame_log.pb", _schema())
+    header = validate_header(run_dir / "logs" / "frame_log.pb")
     assert header["producer_agent_id"] == "agent:controller_process"
 
     frames = decode_frames(run_dir / "logs" / "frame_log.pb")
@@ -243,9 +243,9 @@ def test_manifest_hash_verification_rejects_mutation(tmp_path: Path) -> None:
     source = _source_tree(tmp_path / "source")
     run_dir = tmp_path / "run"
     create_archive_manifest(run_dir, source_dir=source, run_id="run-test")
-    (run_dir / "contract" / "schema.json").write_text("{}")
+    (run_dir / "contract" / "frame_log.proto").write_text("mutated")
 
-    with pytest.raises(ArchiveError, match="schema.json: sha256 mismatch"):
+    with pytest.raises(ArchiveError, match="frame_log.proto: sha256 mismatch"):
         verify_manifest(run_dir)
 
 
@@ -256,7 +256,6 @@ def test_generation_owned_run_does_not_copy_static_artifacts(tmp_path: Path) -> 
     for directory in ("contract", "model", "controller", "provenance"):
         (generated / directory).mkdir(parents=True, exist_ok=True)
     for source, target in (
-        (flat / "schema.json", generated / "contract/schema.json"),
         (flat / "frame_log.proto", generated / "contract/frame_log.proto"),
         (flat / "provenance.ld.json", generated / "provenance/motion-spec.ld.json"),
         (flat / "provenance/dsl.ld.json", generated / "provenance/dsl.ld.json"),

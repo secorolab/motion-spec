@@ -183,10 +183,16 @@ def test_decoding_yields_only_the_slots_the_frame_s_motion_writes() -> None:
         active_motion=1,  # motion_arc
         **{f"q{index_of['arc_only_error']}": 0.0, f"q{index_of['home_only_error']}": 7.5},
     )
-    record_cls, _fields = frame_log_pb._record_class(schema)
-    msg = record_cls()
-    msg.ParseFromString(frame_log_pb.frame_record(flat, schema))
-    decoded = frame_log_pb._parse_frame(msg.frame, schema)
+    # Round-trip through a real log so the gate comes from the header, as in production.
+    import tempfile
+    from motion_spec.generation.artifacts import build_frame_log_header_record
+
+    with tempfile.TemporaryDirectory() as tmp:
+        log = Path(tmp) / "frame_log.pb"
+        with log.open("wb") as fh:
+            frame_log_pb.write_delimited(fh, build_frame_log_header_record(schema))
+            frame_log_pb.write_delimited(fh, frame_log_pb.frame_record(flat, schema))
+        decoded = next(iter(frame_log_pb.frame_records(log)))
     # A genuine 0.0 in the writing motion survives; the other motion's slot is absent rather than
     # decoded as zero -- absence never stands in for "inactive" on the wire.
     assert decoded["quantities"] == {"arc_only_error": 0.0}
@@ -227,3 +233,74 @@ def test_run_schema_carries_the_contract_for_every_logged_member(tmp_path: Path)
         "stiffness",
         "path_normal",
     }
+
+
+# --- the log describes itself (plan 016) ----------------------------------------------------
+def _written_log(tmp: Path, schema: dict, flats: list[dict]) -> Path:
+    from motion_spec.generation.artifacts import build_frame_log_header_record
+
+    log = tmp / "frame_log.pb"
+    with log.open("wb") as fh:
+        frame_log_pb.write_delimited(fh, build_frame_log_header_record(schema))
+        for flat in flats:
+            frame_log_pb.write_delimited(fh, frame_log_pb.frame_record(flat, schema))
+    return log
+
+
+def test_a_log_decodes_with_no_companion_artifact(tmp_path: Path) -> None:
+    schema = _schema()
+    index_of = {q["source_id"]: q["index"] for q in schema["quantities"]}
+    log = _written_log(
+        tmp_path,
+        schema,
+        [flat_frame(schema, step=3, fsm_state=1, active_motion=1,
+                    **{f"q{index_of['arc_only_error']}": 1.25})],
+    )
+    # Nothing but the log file is in scope here -- no schema, no proto, no descriptor on disk.
+    contract = frame_log_pb.read_contract(log)
+    frames = list(frame_log_pb.frame_records(log, contract))
+    assert len(frames) == 1
+    assert frames[0]["step"] == 3
+    assert frames[0]["quantities"] == {"arc_only_error": 1.25}
+
+
+def test_the_embedded_descriptor_alone_rebuilds_the_frame_message(tmp_path: Path) -> None:
+    from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
+
+    schema = _schema()
+    contract = frame_log_pb.read_contract(_written_log(tmp_path, schema, []))
+    descriptor_set = descriptor_pb2.FileDescriptorSet()
+    descriptor_set.ParseFromString(contract.header.descriptor_set)
+    pool = descriptor_pool.DescriptorPool()
+    for file_proto in descriptor_set.file:
+        pool.Add(file_proto)
+    frame_cls = message_factory.GetMessageClass(
+        pool.FindMessageTypeByName("motion_spec.introspection.log.RuntimeFrame")
+    )
+    names = {field.name for field in frame_cls.DESCRIPTOR.fields}
+    # Slot fields are named from their model id, so the descriptor is readable on its own.
+    assert "arc_only_error" in names and "home_only_error" in names
+
+
+def test_every_slot_carries_its_model_iri(tmp_path: Path) -> None:
+    schema = _schema()
+    contract = frame_log_pb.read_contract(_written_log(tmp_path, schema, []))
+    by_id = {slot.id: slot.iri for slot in contract.header.slots}
+    quantity_ids = {q["id"] for q in schema["quantities"]}
+    assert quantity_ids <= set(by_id)
+    # An id is a lossy projection of its IRI, so the IRI has to travel rather than be recomputed.
+    assert all(by_id[q["id"]] == q["uri"] for q in schema["quantities"] if q.get("uri"))
+
+
+def test_a_log_without_an_embedded_descriptor_is_rejected(tmp_path: Path) -> None:
+    from motion_spec.introspection.archive import ArchiveError
+
+    schema = _schema()
+    record_cls, _ = frame_log_pb._record_class(schema)
+    stale = record_cls()
+    stale.header.schema_hash = schema["schema_hash"]      # a pre-v3 header: identity only
+    log = tmp_path / "frame_log.pb"
+    with log.open("wb") as fh:
+        frame_log_pb.write_delimited(fh, stale.SerializeToString())
+    with pytest.raises(ArchiveError, match="no descriptor set"):
+        frame_log_pb.read_contract(log)

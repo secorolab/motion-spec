@@ -15,6 +15,7 @@ import rdflib
 
 from motion_spec.introspection.archive import load_manifest, sha256_file
 from motion_spec_dsl.rdf_parser.vocab import CSTR_HDL
+from motion_spec.introspection import frame_log_pb
 from motion_spec.introspection.provenance import MSPROV, prov_uri, rec_run_lifecycle, rec_types
 
 
@@ -86,25 +87,60 @@ def _literal(g: rdflib.Graph, subject: rdflib.URIRef, predicate: rdflib.URIRef, 
     g.add((subject, predicate, rdflib.Literal(value)))
 
 
-def _state_maps(schema: dict) -> tuple[dict[int, dict], dict[int, dict]]:
-    states = {
-        state.get("index", idx): state
-        for idx, state in enumerate(schema.get("fsm", {}).get("states", []))
-    }
-    events = {
-        event.get("index", idx): event
-        for idx, event in enumerate(schema.get("fsm", {}).get("events", []))
-    }
-    return states, events
+def _named(rows) -> dict[int, dict]:
+    """Index -> {id, uri} for a header table (FSM states or events)."""
+    return {row.number: {"id": row.id, "uri": row.iri or None} for row in rows}
 
 
-def _motion_meta(schema: dict) -> dict[int, dict]:
+def _state_maps(header) -> tuple[dict[int, dict], dict[int, dict]]:
+    return _named(header.fsm_states), _named(header.fsm_events)
+
+
+def _slot_rows(rows) -> list[dict]:
+    """Header slot messages as the dicts the occurrence builders read."""
+    return [
+        {
+            "index": row.number,
+            "id": row.id,
+            "uri": row.iri or None,
+            "constraint_uri": row.constraint_iri or None,
+            "event_uri": row.event_iri or None,
+        }
+        for row in rows
+    ]
+
+
+def _motion_meta(header) -> dict[int, dict]:
     """Motion index -> its slot metadata. The frame's active_motion selects it, so the same
     resolution works whatever coordinator drove the run."""
-    return {entry["index"]: entry for entry in (schema.get("by_motion") or {}).values()}
+    return {
+        motion.index: {
+            "index": motion.index,
+            "id": motion.id,
+            "uri": motion.iri or None,
+            "controllers": _slot_rows(motion.controllers),
+            "monitors": _slot_rows(motion.monitors),
+        }
+        for motion in header.motions
+    }
 
 
-def _state_meta(schema: dict, states: dict[int, dict], state_idx: int) -> dict | None:
+def _transition_rows(header) -> list[dict]:
+    """Header transition messages as dicts; -1 endpoints mean 'not declared'."""
+    return [
+        {
+            "id": row.id,
+            "uri": row.iri or None,
+            "from": row.from_state if row.from_state >= 0 else None,
+            "to": row.to_state if row.to_state >= 0 else None,
+            "event_index": row.event_index if row.event_index >= 0 else None,
+            "event_indices": list(row.event_indices),
+        }
+        for row in header.fsm_transitions
+    ]
+
+
+def _state_meta(states: dict[int, dict], state_idx: int) -> dict | None:
     """The FSM state a frame was in -- coordinator context for the occurrence, not slot identity."""
     return states.get(state_idx)
 
@@ -289,7 +325,7 @@ def _trigger_occurrences(
 
 
 def _project_occurrences(
-    g: rdflib.Graph, run_id: str, schema: dict, frames: list[dict], cond_map: dict
+    g: rdflib.Graph, run_id: str, header, frames: list[dict], cond_map: dict
 ) -> set:
     """Synthesize the discrete event graph from the per-tick frame scan; return the set of steps
     that carry an occurrence (the frames worth materializing). Continuous scalars stay in
@@ -306,12 +342,12 @@ def _project_occurrences(
     Edge detection resets at state boundaries: slot indices are motion-local (slot i is a
     different controller under a different motion), so only intra-state comparison is valid.
     """
-    states, events = _state_maps(schema)
-    motions = _motion_meta(schema)
+    states, events = _state_maps(header)
+    motions = _motion_meta(header)
     # Indexed by state pair but holding every transition between that pair, so two transitions
     # between the same states driven by different events stay distinct.
     transitions: dict = {}
-    for transition in schema.get("fsm", {}).get("transitions", []):
+    for transition in _transition_rows(header):
         transitions.setdefault((transition.get("from"), transition.get("to")), []).append(
             transition
         )
@@ -332,7 +368,7 @@ def _project_occurrences(
             for trigger in frame.get("triggers", [])
             if trigger.get("kind") == KIND_EVENT
         }
-        state = _state_meta(schema, states, cur)
+        state = _state_meta(states, cur)
         meta = motions.get(frame.get("active_motion", -1), {})
         controllers = meta.get("controllers") or meta.get("constraints") or []
         monitors = meta.get("monitors") or []
@@ -375,7 +411,8 @@ def _add_rec_timing(g: rdflib.Graph, run_dir: Path, manifest: dict, activity: rd
 
 def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int | None = None) -> rdflib.Graph:
     run_dir, manifest = load_manifest(run_dir)
-    schema = json.loads((run_dir / manifest["files"]["schema"]).read_text())
+    # The run's contract comes from the log itself, not a companion artifact.
+    header = frame_log_pb.read_contract(run_dir / manifest["files"]["frame_log"]).header
     g = rdflib.Graph()
     for prefix, ns in {
         "prov": PROV,
@@ -401,7 +438,7 @@ def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int
         ("occ", "occurrence"),
     ):
         g.bind(prefix, rdflib.Namespace(f"{MSRUN}{family}/{run_id}/"))
-    fsm_namespace = schema.get("fsm", {}).get("namespace")
+    fsm_namespace = header.fsm_namespace
     if fsm_namespace:
         g.bind("mfsm", rdflib.Namespace(fsm_namespace))
 
@@ -409,12 +446,10 @@ def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int
     # Agents and the execution activity are shared provenance concepts: emit the same
     # canonical msprov IRIs the codegen graph uses so the runtime, codegen and rec graphs
     # join on one node per concept (rather than three parallel ones).
-    rp = schema.get("runtime_provenance", {})
-    activity = rdflib.URIRef(prov_uri(rp.get("activity_id", "activity:controller_execution")))
-    producer = rdflib.URIRef(prov_uri(rp.get("producer_agent_id", "agent:controller_process")))
-    runtime = rdflib.URIRef(prov_uri(rp.get("runtime_agent_id", "agent:runtime")))
+    activity = rdflib.URIRef(prov_uri(header.activity_id or "activity:controller_execution"))
+    producer = rdflib.URIRef(prov_uri(header.producer_agent_id or "agent:controller_process"))
+    runtime = rdflib.URIRef(prov_uri(header.runtime_agent_id or "agent:runtime"))
     frame_log = _node("entity:frame_log")
-    schema_entity = _node("entity:schema_json")
     proto_entity = _node("entity:frame_log_proto")
     model_entity = _node("entity:model_jsonld")
     provenance_entity = _node("entity:provenance_jsonld")
@@ -423,16 +458,14 @@ def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int
     g.add((run, rdflib.RDF.type, EXEC.ExecutionContext))
     g.add((activity, rdflib.RDF.type, PROV.Activity))
     # Simulated vs real is the model's declaration, not an assumption and not a substring match.
-    platform = schema.get("platform") or {}
     g.add(
         (
             activity,
             rdflib.RDF.type,
-            BDD.SimulatedExecution if platform.get("simulated") else BDD.ScenarioExecution,
+            BDD.SimulatedExecution if header.simulated else BDD.ScenarioExecution,
         )
     )
     g.add((activity, PROV.wasAssociatedWith, producer))
-    g.add((activity, PROV.used, schema_entity))
     g.add((activity, PROV.used, proto_entity))
     g.add((activity, PROV.used, model_entity))
     g.add((activity, PROV.used, provenance_entity))
@@ -440,7 +473,7 @@ def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int
     g.add((producer, rdflib.RDF.type, OBS.ObservationProvider))
     g.add((producer, PROV.actedOnBehalfOf, runtime))
     g.add((runtime, rdflib.RDF.type, PROV.SoftwareAgent))
-    if platform.get("simulated"):
+    if header.simulated:
         g.add((runtime, rdflib.RDF.type, EXEC.Simulation))
     g.add((frame_log, rdflib.RDF.type, PROV.Entity))
     g.add((frame_log, PROV.wasGeneratedBy, activity))
@@ -452,7 +485,6 @@ def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int
         )
     )
     for entity, key in (
-        (schema_entity, "schema"),
         (proto_entity, "frame_log_proto"),
         (model_entity, "model"),
         (provenance_entity, "provenance"),
@@ -490,9 +522,9 @@ def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int
     # actually anchor an occurrence (plus the run's first/last for bounds). The dense per-tick
     # curve — every frame, all continuous scalars — stays in the frame log for numeric analysis.
     if frames:
-        states, _events = _state_maps(schema)
+        states, _events = _state_maps(header)
         cond_map = _condition_map(run_dir, manifest)
-        anchors = _project_occurrences(g, manifest["run_id"], schema, frames, cond_map)
+        anchors = _project_occurrences(g, manifest["run_id"], header, frames, cond_map)
         emit_steps = anchors | {frames[0]["step"], frames[-1]["step"]}
         for frame in frames:
             if frame["step"] not in emit_steps:
@@ -503,7 +535,7 @@ def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int
             frame_dt = _dt_literal(frame.get("timing", {}).get("wall_ns"))
             if frame_dt is not None:
                 g.add((frame_node, PROV.generatedAtTime, frame_dt))
-            state = _state_meta(schema, states, frame.get("fsm_state", -1))
+            state = _state_meta(states, frame.get("fsm_state", -1))
             if state and state.get("uri"):
                 g.add((frame_node, MSRUN.activeState, rdflib.URIRef(state["uri"])))
     return g

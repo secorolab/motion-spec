@@ -12,7 +12,11 @@ import pytest
 
 from motion_spec.generation.codegen import render_template
 from motion_spec.introspection import frame_log_pb
-from motion_spec.generation.artifacts import build_frame_log_proto_fields, field_names_and_format
+from motion_spec.generation.artifacts import (
+    build_frame_log_header_record,
+    build_frame_log_proto_fields,
+    field_names_and_format,
+)
 
 
 def write_frame_log_proto(path: Path, schema: dict) -> None:
@@ -37,6 +41,8 @@ def flat_frame(schema: dict, **values) -> dict:
 
 def write_frame_log_pb(path: Path, schema: dict, flats: list[dict]) -> None:
     with open(path, "wb") as fh:
-        frame_log_pb.write_delimited(fh, frame_log_pb.header_record(schema))
+        # The same header the runtime writes: a fixture log must be as self-describing as a
+        # real one, or it exercises a decode path production never takes.
+        frame_log_pb.write_delimited(fh, build_frame_log_header_record(schema))
         for flat in flats:
             frame_log_pb.write_delimited(fh, frame_log_pb.frame_record(flat, schema))

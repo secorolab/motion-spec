@@ -408,7 +408,8 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
 
     codegen.generate_code(ir_path, tmp_path, "stst")
 
-    schema = json.loads((tmp_path / "schema.json").read_text())
+    # schema.json is not an artifact any more -- the contract lives in the log header.
+    schema = build_schema(ir, ir_path=ir_path, output_dir=tmp_path, fsm_ir=ir.get("fsm"))
     quantities = {quantity["id"]: quantity for quantity in schema["quantities"]}
     # sample_desc is the backend-agnostic descriptor; the C++ expression is rendered
     # by the sample-expr template (shared_data.stg).

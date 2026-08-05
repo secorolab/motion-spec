@@ -57,7 +57,45 @@ def _build_file_descriptor(fields: dict) -> descriptor_pb2.FileDescriptorProto:
         for fname, ftype, number in entries:
             m.field.add(name=fname, number=number, label=D.LABEL_OPTIONAL, type=ftype)
 
-    message("FrameLogHeader", [("schema_hash", D.TYPE_STRING, 1), ("producer_agent_id", D.TYPE_STRING, 2), ("activity_id", D.TYPE_STRING, 3)])
+    message("SlotIri", [("number", D.TYPE_UINT32, 1), ("id", D.TYPE_STRING, 2), ("iri", D.TYPE_STRING, 3),
+                        ("constraint_iri", D.TYPE_STRING, 4), ("event_iri", D.TYPE_STRING, 5)])
+    transition = fdp.message_type.add(name="Transition")
+    for fname, ftype, number in (
+        ("index", D.TYPE_UINT32, 1), ("id", D.TYPE_STRING, 2), ("iri", D.TYPE_STRING, 3),
+        ("from_state", D.TYPE_INT32, 4), ("to_state", D.TYPE_INT32, 5), ("event_index", D.TYPE_INT32, 6),
+    ):
+        transition.field.add(name=fname, number=number, label=D.LABEL_OPTIONAL, type=ftype)
+    transition.field.add(name="event_indices", number=7, label=D.LABEL_REPEATED, type=D.TYPE_UINT32)
+    message("Constant", [("id", D.TYPE_STRING, 1), ("source_id", D.TYPE_STRING, 2), ("value", D.TYPE_DOUBLE, 3)])
+
+    gate = fdp.message_type.add(name="MotionGate")
+    for fname, ftype, number in (
+        ("index", D.TYPE_UINT32, 1), ("id", D.TYPE_STRING, 2), ("iri", D.TYPE_STRING, 3),
+        ("fsm_state", D.TYPE_INT32, 4),
+    ):
+        gate.field.add(name=fname, number=number, label=D.LABEL_OPTIONAL, type=ftype)
+    for fname, number in (("quantities", 5), ("poses", 6), ("twists", 7), ("wrenches", 8)):
+        gate.field.add(name=fname, number=number, label=D.LABEL_REPEATED, type=D.TYPE_UINT32)
+    for fname, number in (("controllers", 9), ("monitors", 10)):
+        gate.field.add(name=fname, number=number, label=D.LABEL_REPEATED,
+                       type=D.TYPE_MESSAGE, type_name=f".{PROTO_PACKAGE}.SlotIri")
+
+    hdr = fdp.message_type.add(name="FrameLogHeader")
+    for fname, ftype, number in (
+        ("schema_hash", D.TYPE_STRING, 1), ("producer_agent_id", D.TYPE_STRING, 2),
+        ("activity_id", D.TYPE_STRING, 3), ("descriptor_set", D.TYPE_BYTES, 4),
+        ("trigger_pool", D.TYPE_UINT32, 7), ("runtime_agent_id", D.TYPE_STRING, 12),
+        ("platform_name", D.TYPE_STRING, 13), ("simulated", D.TYPE_BOOL, 14),
+        ("end_state", D.TYPE_INT32, 15), ("nominal_period_ns", D.TYPE_INT64, 16), ("fsm_namespace", D.TYPE_STRING, 17),
+    ):
+        hdr.field.add(name=fname, number=number, label=D.LABEL_OPTIONAL, type=ftype)
+    for fname, number, type_name in (
+        ("slots", 5, "SlotIri"), ("motions", 6, "MotionGate"), ("fsm_states", 8, "SlotIri"),
+        ("fsm_events", 9, "SlotIri"), ("fsm_transitions", 10, "Transition"),
+        ("constants", 11, "Constant"),
+    ):
+        hdr.field.add(name=fname, number=number, label=D.LABEL_REPEATED,
+                      type=D.TYPE_MESSAGE, type_name=f".{PROTO_PACKAGE}.{type_name}")
     message("ConstraintSlot", [("active", D.TYPE_SFIXED64, 1), ("error", D.TYPE_DOUBLE, 2), ("output", D.TYPE_DOUBLE, 3), ("satisfied", D.TYPE_SFIXED64, 4), ("sat_t", D.TYPE_DOUBLE, 5), ("measured", D.TYPE_DOUBLE, 6), ("setpoint", D.TYPE_DOUBLE, 7)])
     message("MonitorSlot", [("active", D.TYPE_SFIXED64, 1), ("value", D.TYPE_DOUBLE, 2), ("satisfied", D.TYPE_SFIXED64, 3), ("sat_t", D.TYPE_DOUBLE, 4)])
     message("Trigger", [("kind", D.TYPE_SFIXED64, 1), ("idx", D.TYPE_SFIXED64, 2), ("fsm_state", D.TYPE_SFIXED64, 3), ("t", D.TYPE_DOUBLE, 4), ("wall_ns", D.TYPE_SFIXED64, 5)])
@@ -139,16 +177,6 @@ def _read_delimited(fh) -> bytes | None:
 
 
 # --- encode (fixtures/tests) ---
-def header_record(schema: dict) -> bytes:
-    record_cls, _ = _record_class(schema)
-    meta = schema.get("runtime_provenance", {})
-    rec = record_cls()
-    rec.header.schema_hash = schema["schema_hash"]
-    rec.header.producer_agent_id = meta.get("producer_agent_id", "")
-    rec.header.activity_id = meta.get("activity_id", "")
-    return rec.SerializeToString()
-
-
 def frame_record(flat: dict, schema: dict) -> bytes:
     record_cls, fields = _record_class(schema)
     rec = record_cls()
@@ -189,56 +217,160 @@ def frame_record(flat: dict, schema: dict) -> bytes:
 
 
 # --- decode ---
-_GATE_CACHE: dict = {}
-_COUNT_CACHE: dict = {}
+# Core RuntimeFrame fields carry the tick itself, not a slot; everything else is a slot whose
+# category follows from its wire type, so the descriptor alone says what the frame contains.
+_CORE_FIELDS = frozenset(
+    (
+        "t", "step", "fsm_state", "active_motion", "last_event", "state_since_t",
+        "state_since_wall_ns", "event_t", "event_wall_ns", "wall_ns", "period_ns",
+        "compute_ns", "trigger_count",
+    )
+)
+_CATEGORY_BY_MESSAGE = {
+    "ConstraintSlot": "constraints",
+    "MonitorSlot": "monitors",
+    "Trigger": "triggers",
+    "PoseSlot": "poses",
+    "TwistSlot": "twists",
+    "WrenchSlot": "wrenches",
+}
+_SPATIAL = (("poses", POSE_NAMES), ("twists", TWIST_NAMES), ("wrenches", WRENCH_NAMES))
+_BOOTSTRAP_FIELDS = {category: [] for category in (*_SLOT_MESSAGE, "quantities")}
 
 
-def _slot_gate(schema: dict) -> dict:
+class LogContract:
+    """Everything needed to decode a frame log, read from the log's own header record.
+
+    The header carries the message descriptor, each slot's id and IRI, and the per-motion gate --
+    the three things the wire cannot say about itself. Nothing here comes from a companion file.
+    """
+
+    def __init__(self, header, record_cls, fields):
+        self.header = header
+        self.record_cls = record_cls
+        self.fields = fields
+        self.trigger_pool = header.trigger_pool
+        self.gate = _slot_gate(header, fields)
+        self.counts = {
+            motion.index: {
+                "controllers": len(motion.controllers),
+                "monitors": len(motion.monitors),
+            }
+            for motion in header.motions
+        }
+        self.quantity_ids = [entry["id"] for entry in fields["quantities"]]
+        self.iri_by_id = {
+            entry["id"]: entry["iri"]
+            for category in ("quantities", *(name for name, _ in _SPATIAL))
+            for entry in fields[category]
+            if entry["iri"]
+        }
+
+    def summary(self) -> dict:
+        """The run facts the archive and provenance record, read off the log's own header."""
+        return {
+            "schema_hash": self.header.schema_hash,
+            "runtime_provenance": {
+                "activity_id": self.header.activity_id,
+                "producer_agent_id": self.header.producer_agent_id,
+                "runtime_agent_id": self.header.runtime_agent_id,
+            },
+            "platform": {"name": self.header.platform_name, "simulated": self.header.simulated},
+        }
+
+
+def _fields_from_descriptor(frame_descriptor, header) -> dict:
+    """Per-category slot list, derived from the embedded descriptor and the header's slot table."""
+    slot_by_number = {slot.number: slot for slot in header.slots}
+    fields: dict[str, list] = {category: [] for category in (*_SLOT_MESSAGE, "quantities")}
+    for field in sorted(frame_descriptor.fields, key=lambda f: f.number):
+        if field.name in _CORE_FIELDS:
+            continue
+        category = (
+            _CATEGORY_BY_MESSAGE[field.message_type.name]
+            if field.message_type is not None
+            else "quantities"
+        )
+        slot = slot_by_number.get(field.number)
+        fields[category].append(
+            {
+                "index": len(fields[category]),
+                "id": slot.id if slot is not None else field.name,
+                "iri": slot.iri if slot is not None else "",
+                "name": field.name,
+                "number": field.number,
+                "proto_type": "bool" if field.type == field.TYPE_BOOL else "double",
+            }
+        )
+    return fields
+
+
+def _slot_gate(header, fields: dict) -> dict:
     """Per category, motion index to the slot indices that motion writes (absent when none gated).
 
     Proto3 elides a genuine 0.0 exactly as it elides "never written", so absence on the wire
-    cannot tell an inactive slot from a zero one. The frame carries active_motion and the schema
+    cannot tell an inactive slot from a zero one. The frame carries active_motion and the header
     says which slots that motion writes; activity is resolved from that, never from a missing
     field. Keyed on the motion rather than the coordinator's state, so the same decoder reads a
     log produced under an FSM, a behaviour tree or the plain app_main loop.
     """
-    key = schema.get("schema_hash")
-    if key in _GATE_CACHE:
-        return _GATE_CACHE[key]
-    by_motion = schema.get("by_motion") or {}
-    spatial = schema.get("spatial") or {}
     gate = {}
-    for category, rows in (("quantities", schema.get("quantities", ())), *spatial.items()):
-        gated = {index for entry in by_motion.values() for index in entry.get(category, ())}
-        if not gated:
-            continue
-        ungated = {row.get("index", 0) for row in rows} - gated
-        gate[category] = {
-            entry["index"]: ungated | set(entry.get(category, ()))
-            for entry in by_motion.values()
+    for category in ("quantities", *(name for name, _ in _SPATIAL)):
+        claimed = {
+            index for motion in header.motions for index in getattr(motion, category)
         }
-    _GATE_CACHE[key] = gate
+        if not claimed:
+            continue
+        # A slot no motion claims is written unconditionally, so it stays visible everywhere.
+        unclaimed = {entry["index"] for entry in fields[category]} - claimed
+        gate[category] = {
+            motion.index: unclaimed | set(getattr(motion, category))
+            for motion in header.motions
+        }
     return gate
 
 
-def _slot_counts(schema: dict) -> dict:
-    """Motion index -> how many constraint/monitor slots that motion drives."""
-    key = schema.get("schema_hash")
-    cached = _COUNT_CACHE.get(key)
+def _bootstrap_class():
+    """FrameLogRecord class carrying only the header messages, to read record 1 of any log."""
+    cached = _CLASS_CACHE.get("__bootstrap__")
     if cached is None:
-        cached = _COUNT_CACHE[key] = {
-            entry["index"]: {
-                "controllers": len(entry.get("controllers", ())),
-                "monitors": len(entry.get("monitors", ())),
-            }
-            for entry in (schema.get("by_motion") or {}).values()
-        }
+        pool = descriptor_pool.DescriptorPool()
+        pool.Add(_build_file_descriptor(_BOOTSTRAP_FIELDS))
+        cached = _CLASS_CACHE["__bootstrap__"] = message_factory.GetMessageClass(
+            pool.FindMessageTypeByName(f"{PROTO_PACKAGE}.FrameLogRecord")
+        )
     return cached
 
 
-def _parse_frame(msg, schema: dict) -> dict:
-    fields = _proto_fields(schema)
-    pools = schema["pools"]
+def read_contract(path: Path | str) -> LogContract:
+    """Read a log's header record and build its decode contract from that alone."""
+    with Path(path).open("rb") as fh:
+        data = _read_delimited(fh)
+    if data is None:
+        raise ArchiveError(f"{path}: empty frame log")
+    record = _bootstrap_class()()
+    record.ParseFromString(data)
+    if record.WhichOneof("record") != "header":
+        raise ArchiveError(f"{path}: first record is not a frame-log header")
+    header = record.header
+    if not header.descriptor_set:
+        raise ArchiveError(
+            f"{path}: header carries no descriptor set -- written by a pre-v3 runtime"
+        )
+    descriptor_set = descriptor_pb2.FileDescriptorSet()
+    descriptor_set.ParseFromString(header.descriptor_set)
+    pool = descriptor_pool.DescriptorPool()
+    for file_proto in descriptor_set.file:
+        pool.Add(file_proto)
+    record_cls = message_factory.GetMessageClass(
+        pool.FindMessageTypeByName(f"{PROTO_PACKAGE}.FrameLogRecord")
+    )
+    frame_descriptor = pool.FindMessageTypeByName(f"{PROTO_PACKAGE}.RuntimeFrame")
+    return LogContract(header, record_cls, _fields_from_descriptor(frame_descriptor, header))
+
+
+def _parse_frame(msg, contract: LogContract) -> dict:
+    fields = contract.fields
     record = {
         "t": msg.t,
         "step": msg.step,
@@ -251,10 +383,10 @@ def _parse_frame(msg, schema: dict) -> dict:
         "event_wall_ns": msg.event_wall_ns,
         "timing": {"wall_ns": msg.wall_ns, "period_ns": msg.period_ns, "compute_ns": msg.compute_ns},
     }
-    # `active` is derived, not carried: schema["by_motion"] already says how many constraint and
-    # monitor slots the active motion drives, so writing a constant 1 per slot per tick would only
+    # `active` is derived, not carried: the header already says how many constraint and monitor
+    # slots the active motion drives, so writing a constant 1 per slot per tick would only
     # restate it. Slots beyond that count belong to some other motion and were not written.
-    counts = _slot_counts(schema).get(msg.active_motion, {})
+    counts = contract.counts.get(msg.active_motion, {})
     record["constraints"] = [
         {**{k: getattr(getattr(msg, e["name"]), k) for k in _CONSTRAINT_KEYS},
          "active": 1 if e["index"] < counts.get("controllers", 0) else 0}
@@ -268,11 +400,10 @@ def _parse_frame(msg, schema: dict) -> dict:
     # Flags come back as bool; keep the decoded record numeric so readers see one value type.
     quantities = [float(getattr(msg, e["name"])) for e in fields["quantities"]]
     triggers = [{k: getattr(getattr(msg, e["name"]), k) for k in _TRIGGER_KEYS} for e in fields["triggers"]]
-    qids = [q["id"] for q in sorted(schema["quantities"], key=lambda q: q.get("index", 0))]
-    gate = _slot_gate(schema)
+    qids = contract.quantity_ids
 
     def written(category: str, index: int) -> bool:
-        by_index = gate.get(category)
+        by_index = contract.gate.get(category)
         return by_index is None or index in by_index.get(msg.active_motion, ())
 
     record["quantities"] = {
@@ -281,15 +412,16 @@ def _parse_frame(msg, schema: dict) -> dict:
         if written("quantities", idx)
     }
     trigger_count = msg.trigger_count
-    start = max(0, trigger_count - pools["triggers"])
+    pool_size = contract.trigger_pool
+    start = max(0, trigger_count - pool_size)
     record["triggers"] = (
-        [triggers[idx % pools["triggers"]] for idx in range(start, trigger_count)]
-        if triggers and pools["triggers"]
+        [triggers[idx % pool_size] for idx in range(start, trigger_count)]
+        if triggers and pool_size
         else []
     )
     # A slot the active state does not write stays a hole in the list rather than a decoded zero;
     # the list stays positional so a slot keeps one index for the whole run.
-    for names, category in ((POSE_NAMES, "poses"), (TWIST_NAMES, "twists"), (WRENCH_NAMES, "wrenches")):
+    for category, names in _SPATIAL:
         record[category] = [
             {n: getattr(getattr(msg, e["name"]), n) for n in names}
             if written(category, e["index"])
@@ -299,14 +431,16 @@ def _parse_frame(msg, schema: dict) -> dict:
     return record
 
 
-def iter_messages(path: Path | str, schema: dict | None = None) -> Iterator[tuple[str, object]]:
-    record_cls, _ = _record_class(schema if schema is not None else _HEADER_SCHEMA)
+def iter_messages(path: Path | str, contract: LogContract | None = None) -> Iterator[tuple[str, object]]:
+    """Yield ('header', dict) then ('frame', decoded) for each record in a log."""
+    if contract is None:
+        contract = read_contract(path)
     with Path(path).open("rb") as fh:
         while True:
             data = _read_delimited(fh)
             if data is None:
                 return
-            rec = record_cls()
+            rec = contract.record_cls()
             rec.ParseFromString(data)
             which = rec.WhichOneof("record")
             if which == "header":
@@ -315,18 +449,24 @@ def iter_messages(path: Path | str, schema: dict | None = None) -> Iterator[tupl
                     "producer_agent_id": rec.header.producer_agent_id,
                     "activity_id": rec.header.activity_id,
                 }
-            elif which == "frame" and schema is not None:
-                yield "frame", _parse_frame(rec.frame, schema)
+            elif which == "frame":
+                yield "frame", _parse_frame(rec.frame, contract)
 
 
 def read_header(path: Path | str) -> dict:
-    for kind, value in iter_messages(path):
-        if kind == "header":
-            return dict(value)
-    raise ArchiveError(f"{path}: protobuf header not found")
+    """The log's identity record: schema hash and the agents that produced it."""
+    contract = read_contract(path)
+    return {
+        "schema_hash": contract.header.schema_hash,
+        "producer_agent_id": contract.header.producer_agent_id,
+        "activity_id": contract.header.activity_id,
+    }
 
 
-def frame_records(path: Path | str, schema: dict) -> Iterator[dict]:
-    for kind, value in iter_messages(path, schema):
+def frame_records(path: Path | str, contract: LogContract | None = None) -> Iterator[dict]:
+    """Decoded frames, in order. Needs no companion file -- the log describes itself."""
+    if contract is None:
+        contract = read_contract(path)
+    for kind, value in iter_messages(path, contract):
         if kind == "frame":
             yield value

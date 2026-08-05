@@ -194,7 +194,6 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
             input_entity_ids.append(entity_id)
 
     artifact_names = [
-        "schema.json",
         "frame_layout.json",
         "frame_layout.h",
         "frame_log.proto",

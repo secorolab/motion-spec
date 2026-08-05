@@ -29,6 +29,15 @@ inline constexpr const char *kRuntimeAgentId = "<introspection_artifacts.frame_l
 inline constexpr std::int64_t kEndState = <introspection_artifacts.frame_layout.end_state>;
 inline constexpr std::int64_t kNominalPeriodNs = <introspection_artifacts.frame_layout.nominal_period_ns>;
 
+// The frame log's first record, serialized at generation time: the message descriptor, every
+// slot's id and IRI, the per-motion gate, the FSM tables and the init-cadence constants. Built
+// here rather than assembled at startup because every field is known when the code is generated,
+// and embedded rather than read from a file so a log never needs a companion to be decoded.
+inline constexpr unsigned char kFrameLogHeaderRecord[] = {
+<introspection_artifacts.frame_layout.header_record_rows:{row|    <row; separator=", ">}; separator=",\n">
+};
+inline constexpr std::size_t kFrameLogHeaderRecordSize = sizeof(kFrameLogHeaderRecord);
+
 } // namespace motion_spec::introspection
 >>
 
@@ -182,14 +191,12 @@ class FrameLogger {
 public:
     FrameLogger(
         const std::string &path,
-        const char *producer_agent_id,
-        const char *activity_id,
         std::size_t ring_capacity = 8192)
         : ring_(ring_capacity), mask_(ring_capacity - 1), health_path_(path + ".health.json") {
         if (ring_capacity == 0 || (ring_capacity & (ring_capacity - 1)) != 0) return;
         log_ = std::fopen(path.c_str(), "wb");
         if (!log_) return;
-        write_header(producer_agent_id, activity_id);
+        write_header();
         running_.store(true, std::memory_order_relaxed);
         writer_ = std::thread(&FrameLogger::run, this);
     \}
@@ -261,15 +268,14 @@ private:
             && std::fwrite(message.data(), 1, message.size(), log_) == message.size();
     \}
 
-    void write_header(const char *producer_agent_id, const char *activity_id) {
-        record_.Clear();
-        log::FrameLogHeader *h = record_.mutable_header();
-        h->set_schema_hash(kSchemaHash);
-        h->set_producer_agent_id(producer_agent_id ? producer_agent_id : "");
-        h->set_activity_id(activity_id ? activity_id : "");
-        payload_.clear();
-        record_.SerializeToString(&payload_);
-        if (!write_delimited(payload_)) ++write_errors_;
+    // Serialized at generation time (frame_layout.h) and written verbatim -- nothing here is
+    // known only at runtime, so there is nothing to assemble.
+    void write_header() {
+        if (!write_delimited(std::string(
+                reinterpret_cast\<const char *\>(kFrameLogHeaderRecord),
+                kFrameLogHeaderRecordSize))) {
+            ++write_errors_;
+        \}
     \}
 
     void write_frame(const Frame &frame) {
@@ -355,7 +361,7 @@ class RunPublisher {
 public:
     RunPublisher()
         : shm_(shm_name()),
-          logger_(log_path(), kRuntimeProducerAgentId, kRuntimeActivityId) {}
+          logger_(log_path()) {}
 
     void begin_tick(double t, std::uint64_t step, std::int64_t active_motion) {
         begin_tick(t, step, active_motion, active_motion);
@@ -594,10 +600,69 @@ syntax = "proto3";
 
 package motion_spec.introspection.log;
 
+// A slot's identity: the RuntimeFrame field number that carries it, the generated id, and the
+// model IRI it names. An id is a lossy projection of its IRI, so both travel.
+message SlotIri {
+  uint32 number = 1;
+  string id = 2;
+  string iri = 3;
+  // A controller slot names the constraint it serves; a monitor slot names the event it fires.
+  string constraint_iri = 4;
+  string event_iri = 5;
+}
+
+message Transition {
+  uint32 index = 1;
+  string id = 2;
+  string iri = 3;
+  int32 from_state = 4;
+  int32 to_state = 5;
+  int32 event_index = 6;
+  repeated uint32 event_indices = 7;
+}
+
+// Which slots a motion drives. proto3 elides a genuine 0.0 exactly as it elides "never written",
+// so absence on the wire cannot tell an inactive slot from a zero one -- the frame carries
+// active_motion and this says what that motion writes.
+message MotionGate {
+  uint32 index = 1;
+  string id = 2;
+  string iri = 3;
+  int32 fsm_state = 4;
+  repeated uint32 quantities = 5;
+  repeated uint32 poses = 6;
+  repeated uint32 twists = 7;
+  repeated uint32 wrenches = 8;
+  repeated SlotIri controllers = 9;
+  repeated SlotIri monitors = 10;
+}
+
+message Constant {
+  string id = 1;
+  string source_id = 2;
+  double value = 3;
+}
+
 message FrameLogHeader {
   string schema_hash = 1;
   string producer_agent_id = 2;
   string activity_id = 3;
+  // This file's own FileDescriptorSet: the log carries the schema it was written against.
+  bytes descriptor_set = 4;
+  repeated SlotIri slots = 5;
+  repeated MotionGate motions = 6;
+  uint32 trigger_pool = 7;
+  repeated SlotIri fsm_states = 8;
+  repeated SlotIri fsm_events = 9;
+  repeated Transition fsm_transitions = 10;
+  // Written once at init; repeating them per tick would say nothing new.
+  repeated Constant constants = 11;
+  string runtime_agent_id = 12;
+  string platform_name = 13;
+  bool simulated = 14;
+  int32 end_state = 15;
+  int64 nominal_period_ns = 16;
+  string fsm_namespace = 17;
 }
 
 message ConstraintSlot {

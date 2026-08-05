@@ -363,6 +363,11 @@ public:
         : shm_(shm_name()),
           logger_(log_path()) {}
 
+    // Close the log before a backend tears down its GUI, its hardware or its worker threads.
+    // The destructor would otherwise run last, and a teardown that hangs or aborts takes the
+    // health record -- and the run's recoverable tail -- with it. Closing twice is a no-op.
+    void close() { logger_.close(); \}
+
     void begin_tick(double t, std::uint64_t step, std::int64_t active_motion) {
         begin_tick(t, step, active_motion, active_motion);
     \}

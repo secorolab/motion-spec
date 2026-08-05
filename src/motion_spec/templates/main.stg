@@ -489,6 +489,9 @@ int main(int argc, char **argv) {
         motion_spec::runtime::sleep_until_next(_next_tick, <control_period_ns>);
     }
 <app-headless-telemetry(backend, shared_data, serial_chain_solvers, scene)>
+#ifdef MOTION_SPEC_ENABLE_INTROSPECTION
+    _introspection_pub.close();
+#endif
 <if(has_serial_chain)>
 
 <app-chain-cleanup(backend, has_serial_chain)>

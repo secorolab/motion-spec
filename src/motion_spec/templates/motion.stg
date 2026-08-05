@@ -21,8 +21,11 @@ cond-term(t) ::= <<
 <({cond-term-<t.kind>})(t)>
 >>
 
+// The authored band, or the exact zero every non-equality constraint is satisfied within.
+band(tolerance_id) ::= "<if(tolerance_id)>shared.<tolerance_id><else>0.0<endif>"
+
 cond-term-constraint(t) ::= <<
-motion_spec::runtime::constraint_satisfied(shared.<t.error_id>)
+motion_spec::runtime::constraint_satisfied(shared.<t.error_id>, <band(t.tolerance_id)>)
 >>
 
 // The elapsed seconds are a shared value, like every other term's input: the motion owns the
@@ -100,7 +103,7 @@ update-monitor(monitor, suppress_initial_active) ::= <<
 <else>
 <if(monitor.is_edge_triggered)>
     {
-        const bool active = motion_spec::runtime::constraint_satisfied(shared.<monitor.error.id>);
+        const bool active = motion_spec::runtime::constraint_satisfied(shared.<monitor.error.id>, <band(monitor.tolerance.id)>);
         const bool detected = <if(monitor.debounce_steps)>motion_spec::runtime::sustained_edge(
             state.<monitor.id>_hold,
             active,
@@ -129,7 +132,7 @@ update-monitor(monitor, suppress_initial_active) ::= <<
 <else>
     motion_spec::runtime::set_flag(
         state.<monitor.flag>,
-        motion_spec::runtime::constraint_satisfied(shared.<monitor.error.id>));
+        motion_spec::runtime::constraint_satisfied(shared.<monitor.error.id>, <band(monitor.tolerance.id)>));
 <endif>
 <endif>
 >>

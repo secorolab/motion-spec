@@ -498,3 +498,43 @@ def test_a_simulated_run_needs_no_robot_config(tmp_path) -> None:
     (source / "model").mkdir(parents=True)
     (source / "model" / "ir.json").write_text(json.dumps({"platform": {"simulated": True}}))
     _validate_robot_config(source, tmp_path)
+
+
+def test_an_authored_band_rides_the_constraint_term() -> None:
+    """The satisfaction test takes the band the model authored, not the global default.
+
+    The term is what every reader renders from -- the motion's condition, the level monitor and
+    the introspection sample -- so the band has to travel with it or only some of them see it.
+    """
+    from motion_spec.classes.entities import (
+        ConstraintEvaluator,
+        EvaluatorType,
+        Quantity,
+        QuantityKind,
+        Unit,
+    )
+    from motion_spec.rdf_parser.ir import _evaluator_term
+
+    def evaluator(tolerance):
+        return ConstraintEvaluator(
+            id="near",
+            type_=EvaluatorType.ErrorEvaluator,
+            constraint=None,
+            error={"id": "near_err"},
+            tolerance=tolerance,
+        )
+
+    band = Quantity(
+        id="pos_band",
+        quantity_kind=QuantityKind(id="Length"),
+        unit=Unit(id="M"),
+        value=0.002,
+        has_view=False,
+    )
+    assert _evaluator_term(evaluator(band)) == {
+        "kind": "constraint",
+        "error_id": "near_err",
+        "tolerance_id": "pos_band",
+    }
+    # Omitted, not empty: the template reads a present-but-empty id as a shared value.
+    assert _evaluator_term(evaluator(None)) == {"kind": "constraint", "error_id": "near_err"}

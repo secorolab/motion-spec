@@ -386,6 +386,8 @@ class ConstraintEvaluator:
     type_: EvaluatorType
     constraint: Constraint
     error: Quantity | None
+    # The authored band this constraint is satisfied within; unset falls back to the global one.
+    tolerance: Quantity | None = None
     is_elapsed: bool = False
     elapsed_op: str | None = None
     elapsed_threshold_s: float | None = None
@@ -411,6 +413,8 @@ class PIDController:
     # expression is rendered backend-side by access-expr (shared_data.stg).
     measured_signal: str | None = None
     setpoint_signal: str | None = None
+    # The band its constraint is satisfied within, as the model authored it.
+    tolerance_id: str = ""
     type: str = "ProportionalIntegralDerivative"
 
 
@@ -427,6 +431,8 @@ class ImpedanceController:
     output_saturation: Saturation | None = None
     measured_signal: str | None = None
     setpoint_signal: str | None = None
+    # The band its constraint is satisfied within, as the model authored it.
+    tolerance_id: str = ""
     type: str = "ImpedanceController"
 
 
@@ -440,6 +446,8 @@ class FeedForwardController:
     output_saturation: Saturation | None = None
     measured_signal: str | None = None
     setpoint_signal: str | None = None
+    # The band its constraint is satisfied within, as the model authored it.
+    tolerance_id: str = ""
     type: str = "FeedForwardController"
 
 
@@ -465,6 +473,8 @@ class LevelMonitor:
     monitor_type: str
     error: Quantity | None
     flag: str | None
+    # The band its constraint is satisfied within, when the model authored one.
+    tolerance: Quantity | None = None
     is_edge_triggered: bool = False
     is_until_aggregate: bool = False
     is_when_aggregate: bool = False
@@ -490,6 +500,8 @@ class EdgeMonitor:
     error: Quantity | None
     event: str | None
     event_idx: int | None
+    # The band its constraint is satisfied within, when the model authored one.
+    tolerance: Quantity | None = None
     is_edge_triggered: bool = True
     is_until_aggregate: bool = False
     is_when_aggregate: bool = False

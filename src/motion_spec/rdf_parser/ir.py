@@ -735,6 +735,11 @@ def _derived_controller(
         )
 
     types = get_node_types(g, plan.controller)
+    # The band belongs to the constraint this controller serves, so its logged verdict is
+    # taken against the same one the monitor on that constraint uses.
+    band_node = g.value(plan.constraint, CSTR_EXT["tolerance"])
+    tolerance_id = p.id(band_node) if band_node is not None else ""
+
     if CSTR_HDL.ProportionalIntegralDerivative in types:
         decay_rate = None
         if CSTR_HDL.DecayingIntegralTerm in types:
@@ -750,6 +755,7 @@ def _derived_controller(
             decay_rate=decay_rate,
             output_saturation=output_saturation,
             integral_saturation=integral_saturation,
+            tolerance_id=tolerance_id,
             type=p.id(CSTR_HDL.ProportionalIntegralDerivative),
         )
     if CSTR_HDL.ImpedanceController in types:
@@ -761,6 +767,7 @@ def _derived_controller(
             damping=p._required_float(plan.controller, CSTR_HDL.damping),
             integral_gain=p._optional_float(plan.controller, CSTR_HDL["integral-gain"]),
             output_saturation=output_saturation,
+            tolerance_id=tolerance_id,
             type=p.id(CSTR_HDL.ImpedanceController),
         )
     reference_node = g.value(plan.controller, CSTR_HDL_EXT["reference-signal"])
@@ -769,6 +776,7 @@ def _derived_controller(
         control_signal=signal,
         reference_signal=p.quantity(reference_node) if reference_node is not None else None,
         output_saturation=output_saturation,
+        tolerance_id=tolerance_id,
         type=p.id(CSTR_HDL_EXT.FeedForwardController),
     )
 
@@ -1957,6 +1965,13 @@ class Parser:
             if is_until_aggregate or is_when_aggregate or group_constraint_ids or error_node is None
             else self.quantity(error_node)
         )
+        # The band belongs to the constraint, so a monitor carries it only when it watches one.
+        tolerance_node = (
+            self.g.value(next(iter(monitored)), CSTR_EXT["tolerance"])
+            if error is not None and len(monitored) == 1
+            else None
+        )
+        tolerance = self.quantity(tolerance_node) if tolerance_node is not None else None
 
         if CSTR_HDL["LevelTriggeredMonitor"] in get_node_types(self.g, id_):
             flag = self.id(self.g.value(id_, CSTR_HDL["flag"]))
@@ -1965,6 +1980,7 @@ class Parser:
                 "LevelTriggeredMonitor",
                 error,
                 flag,
+                tolerance=tolerance,
                 is_until_aggregate=is_until_aggregate,
                 is_when_aggregate=is_when_aggregate,
                 group_constraint_ids=group_constraint_ids,
@@ -1995,6 +2011,7 @@ class Parser:
             error,
             event,
             None,
+            tolerance=tolerance,
             is_until_aggregate=is_until_aggregate,
             is_when_aggregate=is_when_aggregate,
             group_constraint_ids=group_constraint_ids,
@@ -2044,11 +2061,17 @@ class Parser:
                 thr = self.g.value(constraint_node, CSTR["threshold"])
                 elapsed_threshold_s = _duration_seconds(self.g, thr)
 
+        # An authored band on a spatial equality; the elapsed branch reads its own above, in
+        # seconds, because a duration's magnitude rides on qudt rather than on a shared value.
+        tolerance_node = None if is_elapsed else self.g.value(constraint_node, CSTR_EXT["tolerance"])
+        tolerance = self.quantity(tolerance_node) if tolerance_node is not None else None
+
         return ConstraintEvaluator(
             self.id(id_),
             t,
             constraint,
             error,
+            tolerance=tolerance,
             is_elapsed=is_elapsed,
             elapsed_op=elapsed_op,
             elapsed_threshold_s=elapsed_threshold_s,
@@ -4918,6 +4941,7 @@ def _build_introspection(
                 "stiffness": getattr(controller, "stiffness", None),
                 "damping": getattr(controller, "damping", None),
                 "error_signal": _id_ref(getattr(controller, "error_signal", None)),
+                "tolerance_signal": getattr(controller, "tolerance_id", "") or None,
                 "reference_signal": _id_ref(getattr(controller, "reference_signal", None)),
                 "measured_derivative": _id_ref(getattr(controller, "measured_derivative", None)),
                 "output_signal": _id_ref(controller.control_signal),
@@ -4957,6 +4981,7 @@ def _build_introspection(
                     "event_name": getattr(monitor, "event_name", None),
                     "flag": getattr(monitor, "flag", None),
                     "error_signal": _id_ref(monitor.error),
+                    "tolerance_signal": _id_ref(getattr(monitor, "tolerance", None)),
                     "fallback_motion": getattr(monitor, "fallback_motion", None),
                     "debounce_duration_s": getattr(monitor, "debounce_duration_s", None),
                     "debounce_steps": getattr(monitor, "debounce_steps", None),
@@ -6881,6 +6906,8 @@ def _consumers_by_id(introspection: dict, closures: dict) -> dict[str, list]:
 
     for monitor in introspection.get("monitors", []):
         add(monitor.get("error_signal"), "monitor", monitor.get("id"), "error")
+        # Without this the band is a shared value nothing reads, and the contract drops it.
+        add(monitor.get("tolerance_signal"), "monitor", monitor.get("id"), "tolerance")
     for controller in introspection.get("controllers", []):
         for role in ("error_signal", "measured_signal", "setpoint_signal"):
             add(controller.get(role), "controller", controller.get("id"), role)
@@ -7188,7 +7215,12 @@ def _evaluator_term(e) -> dict:
             "op": op,
             "threshold": f"{thr:.6f}",
         }
-    return {"kind": "constraint", "error_id": _field(_field(e, "error"), "id")}
+    term = {"kind": "constraint", "error_id": _field(_field(e, "error"), "id")}
+    # Omitted, not empty: ST4 reads an empty string as present, and would emit a bare `shared.`.
+    tolerance_id = _field(_field(e, "tolerance"), "id")
+    if tolerance_id:
+        term["tolerance_id"] = tolerance_id
+    return term
 
 
 def _set_monitor_conditions(motion, evaluators_key: str, monitors_key: str, any_key: str) -> None:

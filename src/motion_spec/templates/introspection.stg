@@ -515,11 +515,11 @@ ctrl-sig(id, views) ::= <<
 // The URI rides as a comment, not as an argument: the wire carries the slot index and the schema
 // carries the identity, so a dead runtime parameter would only invite it being trusted.
 introspection-controller-sample(slot, views) ::= <<
-        pub.constraint_sample(<slot.index>, <slot.error_expr>, <slot.output_expr>, <ctrl-sig(slot.measured_signal, views)>, <ctrl-sig(slot.setpoint_signal, views)>, motion_spec::runtime::constraint_satisfied(<slot.error_expr>));  // <slot.uri_comment>
+        pub.constraint_sample(<slot.index>, <slot.error_expr>, <slot.output_expr>, <ctrl-sig(slot.measured_signal, views)>, <ctrl-sig(slot.setpoint_signal, views)>, motion_spec::runtime::constraint_satisfied(<slot.error_expr>, <if(slot.tolerance_expr)><slot.tolerance_expr><else>0.0<endif>));  // <slot.uri_comment>
 >>
 
 introspection-monitor-sample(slot) ::= <<
-<if(slot.has_active)>        pub.monitor_sample(<slot.index>, <if(slot.active_terms_present)><bool-condition(slot.active_terms, slot.active_any)><else>false<endif>, <if(slot.active_terms_present)><bool-condition(slot.active_terms, slot.active_any)><else>false<endif>);  // <slot.uri_comment><else>        pub.monitor_sample(<slot.index>, <if(slot.composite_error)>motion_spec::runtime::constraint_error_value(<slot.value_expr>)<else><slot.value_expr><endif>, motion_spec::runtime::constraint_satisfied(<slot.value_expr>));  // <slot.uri_comment><endif>
+<if(slot.has_active)>        pub.monitor_sample(<slot.index>, <if(slot.active_terms_present)><bool-condition(slot.active_terms, slot.active_any)><else>false<endif>, <if(slot.active_terms_present)><bool-condition(slot.active_terms, slot.active_any)><else>false<endif>);  // <slot.uri_comment><else>        pub.monitor_sample(<slot.index>, <if(slot.composite_error)>motion_spec::runtime::constraint_error_value(<slot.value_expr>)<else><slot.value_expr><endif>, motion_spec::runtime::constraint_satisfied(<slot.value_expr>, <if(slot.tolerance_expr)><slot.tolerance_expr><else>0.0<endif>));  // <slot.uri_comment><endif>
 >>
 
 // A flag-typed quantity is stored as a double in the frame ring but written as a proto bool.

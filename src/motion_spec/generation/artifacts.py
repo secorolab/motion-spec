@@ -120,6 +120,7 @@ def _controller_slot(controller: dict, index: int, motion: dict, uri_by_id: dict
         or controller.get("reference_value")
     )
     measured_derivative_id = _signal_id(controller.get("measured_derivative"))
+    tolerance_id = _signal_id(controller.get("tolerance_signal")) or controller.get("tolerance_id")
     return {
         "index": index,
         "id": controller.get("id"),
@@ -140,6 +141,7 @@ def _controller_slot(controller: dict, index: int, motion: dict, uri_by_id: dict
         },
         "error_signal": error_id,
         "error_signal_uri": uri_by_id.get(error_id),
+        **({"tolerance_signal": tolerance_id} if tolerance_id else {}),
         "reference_signal": reference_id,
         "reference_signal_uri": uri_by_id.get(reference_id),
         "measured_signal": measured_id,
@@ -157,6 +159,7 @@ def _monitor_slot(monitor: dict, index: int, motion: dict, uri_by_id: dict, phas
     """Introspection slot for a monitor: trigger, event/flag and active-condition terms."""
     error = monitor.get("error")
     error_id = _signal_id(error) or monitor.get("error_signal")
+    tolerance_id = _signal_id(monitor.get("tolerance")) or monitor.get("tolerance_signal")
     event_id = monitor.get("event")
     return {
         "index": index,
@@ -173,6 +176,8 @@ def _monitor_slot(monitor: dict, index: int, motion: dict, uri_by_id: dict, phas
         "flag": monitor.get("flag"),
         "error_signal": error_id,
         "error_signal_uri": uri_by_id.get(error_id),
+        # Only when authored: an always-present key would move every schema hash.
+        **({"tolerance_signal": tolerance_id} if tolerance_id else {}),
         "composite_error": isinstance(error, dict)
         and error.get("type") in {"Pose", "VelocityTwist"},
         "has_active": monitor.get("has_active", False),
@@ -618,6 +623,11 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
                     "index": slot.get("index", 0),
                     "uri_comment": _uri_comment(slot.get("uri")),
                     "error_expr": _shared_expr(slot.get("error_signal"), shared_ids),
+                    **(
+                        {"tolerance_expr": _shared_expr(slot["tolerance_signal"], shared_ids)}
+                        if slot.get("tolerance_signal")
+                        else {}
+                    ),
                     "output_expr": _shared_expr(slot.get("output_signal"), shared_ids),
                     "measured_signal": slot.get("measured_signal"),
                     "setpoint_signal": slot.get("setpoint_signal"),
@@ -648,6 +658,11 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
                         "has_active": False,
                         "value_expr": value_expr,
                         "composite_error": slot.get("composite_error", False),
+                        **(
+                            {"tolerance_expr": _shared_expr(slot["tolerance_signal"], shared_ids)}
+                            if slot.get("tolerance_signal")
+                            else {}
+                        ),
                     }
                 )
         cases.append(

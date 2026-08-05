@@ -31,7 +31,6 @@ runtime_header(has_mobile_base, control_period_ns) ::= <<
 
 namespace motion_spec::runtime {
 
-inline constexpr double kConstraintTolerance = 1e-2;
 inline constexpr double kControlPeriodS = <control_period_ns> * 1e-9;
 inline constexpr int kMonitorArmSteps = 100;
 inline constexpr double kRneDampingLambda = 0.05;
@@ -457,8 +456,10 @@ inline double evaluate_outside_constraint(double quantity, double lower, double 
     return std::min(quantity - lower, upper - quantity);
 }
 
-inline bool constraint_satisfied(double error) {
-    return std::fabs(error) \<= kConstraintTolerance;
+// The band comes from the model: an equality authors one, and every other constraint kind
+// evaluates to exactly 0.0 inside its admissible region, so its band is 0.
+inline bool constraint_satisfied(double error, double tolerance) {
+    return std::fabs(error) \<= tolerance;
 }
 
 inline double constraint_error_value(const KDL::Twist &error) {
@@ -471,12 +472,12 @@ inline double constraint_error_value(const KDL::Frame &error) {
     return std::max(error.p.Norm(), std::fabs(angle));
 }
 
-inline bool constraint_satisfied(const KDL::Twist &error) {
-    return constraint_error_value(error) \<= kConstraintTolerance;
+inline bool constraint_satisfied(const KDL::Twist &error, double tolerance) {
+    return constraint_error_value(error) \<= tolerance;
 }
 
-inline bool constraint_satisfied(const KDL::Frame &error) {
-    return constraint_error_value(error) \<= kConstraintTolerance;
+inline bool constraint_satisfied(const KDL::Frame &error, double tolerance) {
+    return constraint_error_value(error) \<= tolerance;
 }
 
 enum class Axis {

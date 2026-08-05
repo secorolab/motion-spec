@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -363,3 +364,79 @@ def test_edge_monitor_carries_full_event_uri_and_enum_token() -> None:
     assert entry.event_uri == event_uri
     # event_name is the coord-dsl FSM enum token (local name, upper-cased, '-' -> '_').
     assert entry.event_name == "E_OBJ_REACHED"
+
+
+# --- real-world execution (plan 019) ---------------------------------------------------------
+def test_real_world_execution_rejects_scene_objects() -> None:
+    """A scene object's pose comes from the simulator; on hardware nothing measures it."""
+    from rdf_utils.constraints import ConstraintViolation
+
+    from motion_spec.rdf_parser.ir import _reject_scene_objects_on_hardware
+    from motion_spec_dsl.rdf_parser.vocab import ENV
+
+    graph = Graph()
+    context = URIRef("https://example.test/real-exec")
+    cube = URIRef("https://example.test/modelled-cube")
+    graph.add((cube, RDF.type, ENV.ModelledObject))
+    with pytest.raises(ConstraintViolation, match="cannot use scene objects"):
+        _reject_scene_objects_on_hardware(graph, context)
+
+
+def test_simulation_keeps_its_scene_objects() -> None:
+    from motion_spec.rdf_parser.ir import _reject_scene_objects_on_hardware
+
+    # No real-world context -> nothing to reject.
+    _reject_scene_objects_on_hardware(Graph(), None)
+
+
+def test_an_authored_sensor_rate_reaches_the_ir() -> None:
+    """scene-dsl emits sens:update-rate as a QUDT quantity; motion-spec used to drop it."""
+    from motion_spec.rdf_parser.ir import _hertz
+    from motion_spec_dsl.rdf_parser.vocab import QUDT_SCHEMA
+    from rdf_utils.namespace import NS_MM_QUDT_UNIT as QUDT_UNIT
+
+    graph = Graph()
+    rate = URIRef("https://example.test/wrist_ft/update-rate")
+    graph.add((rate, QUDT_SCHEMA.value, Literal(1000.0, datatype=XSD.double)))
+    graph.add((rate, QUDT_SCHEMA.unit, QUDT_UNIT["HZ"]))
+    assert _hertz(graph, rate) == 1000.0
+    assert _hertz(graph, None) is None
+
+
+def test_robot_config_must_cover_every_bound_device(tmp_path) -> None:
+    from motion_spec.introspection.runner import RunnerError, _validate_robot_config
+
+    source = tmp_path / "generated"
+    (source / "model").mkdir(parents=True)
+    (source / "model" / "ir.json").write_text(
+        json.dumps(
+            {
+                "platform": {"simulated": False, "config": "robot.toml"},
+                "serial_chain_solvers": [{"id": "arm_solver", "config_key": "agents.arm1"}],
+            }
+        )
+    )
+    config = tmp_path / "robot.toml"
+
+    config.write_text("[agents.arm2]\nip = '10.0.0.1'\n")
+    with pytest.raises(RunnerError, match=r"no \[agents.arm1\] section"):
+        _validate_robot_config(source)
+
+    config.write_text("[agents.arm1]\nip = '10.0.0.1'\n")
+    with pytest.raises(RunnerError, match="is missing user"):
+        _validate_robot_config(source)
+
+    config.write_text(
+        "[agents.arm1]\nip='10.0.0.1'\nuser='u'\npassword='p'\nport=1\n"
+        "port_real_time=2\nsession_timeout_ms=3\nconnection_timeout_ms=4\n"
+    )
+    _validate_robot_config(source)
+
+
+def test_a_simulated_run_needs_no_robot_config(tmp_path) -> None:
+    from motion_spec.introspection.runner import _validate_robot_config
+
+    source = tmp_path / "generated"
+    (source / "model").mkdir(parents=True)
+    (source / "model" / "ir.json").write_text(json.dumps({"platform": {"simulated": True}}))
+    _validate_robot_config(source)

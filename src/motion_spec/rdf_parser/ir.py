@@ -3798,17 +3798,28 @@ def build_motion_units(
             view = next(g.subjects(MAP.subobject, quantity), None)
             target_quantity = g.value(view, MAP.superobject) if view is not None else quantity
             target = g.value(target_quantity, KC_STAT["of-joint"])
-            agent = g.value(plan.solver, AGN["of-agent"])
-            chain_solver_ids = {
-                p.id(node)
-                for node in g.subjects(AGN["of-agent"], agent)
-                if SLV.SolverWithInputAndOutput in get_node_types(g, node)
+            # Resolved from the joint, not the agent: a gripper's joint rides the arm's runtime.
+            trees_by_solver_id = {
+                solver.id: (solver.owned_trees or ()) for solver in slv_chain
             }
             chain_solver = next(
-                solver
-                for solver in handler_chain_solvers
-                if solver.id in chain_solver_ids
+                (
+                    solver
+                    for solver in handler_chain_solvers
+                    if target is not None
+                    and any(
+                        _tree_owns(tree, target)
+                        for tree in trees_by_solver_id.get(solver.id, ())
+                    )
+                ),
+                None,
             )
+            if chain_solver is None:
+                raise RuntimeError(
+                    "command forwarding: joint "
+                    f"'{p.label(target) if target is not None else target}' belongs to no "
+                    "kinematic tree this handler's runtimes own"
+                )
             runtime_solver = next(solver for solver in slv_chain if solver.id == chain_solver.id)
             forwarded_commands.append(
                 ForwardedCommand(
@@ -4054,6 +4065,22 @@ def _seconds(value: float, unit) -> float:
     if unit not in _TEMPORAL_UNITS:
         raise ConstraintViolation("units", f"'{unit}' is not a duration this can read")
     return _si(value, unit)
+
+
+_FREQUENCY_UNITS = {
+    QUDT_UNIT["HZ"]: 1.0,
+    QUDT_UNIT["KiloHZ"]: 1e3,
+}
+
+
+def _hertz(g, node) -> float | None:
+    """An authored update rate in Hz, or None when the sensor declares none."""
+    if node is None:
+        return None
+    unit = g.value(node, QUDT_SCHEMA["unit"])
+    if unit not in _FREQUENCY_UNITS:
+        raise ConstraintViolation("units", f"'{unit}' is not a frequency this can read")
+    return float(g.value(node, QUDT_SCHEMA["value"])) * _FREQUENCY_UNITS[unit]
 
 
 def _frames_of(g, node):
@@ -4315,28 +4342,31 @@ def _agent_assemblies(g, attach_by_body):
         ),
         key=lambda item: str(item[0]),
     )
+    # A chain may span several agents; the agent owning its root drives it.
+    bindings_by_modelled = {}
+    for modelled in sorted(g.subjects(RDF.type, AGN.ModelledAgent), key=str):
+        rows = []
+        for model in sorted(g.objects(modelled, AGN["has-agent-model"]), key=str):
+            path = _optional_path_of_model(g, model)
+            if not path:
+                continue
+            for tree, entity in _model_mappings(g, model, GEOM_ENT.KinematicTree):
+                rows.append({"model": model, "tree": tree, "path": path, "entity": entity})
+        bindings_by_modelled[modelled] = rows
+    bindings = [row for rows in bindings_by_modelled.values() for row in rows]
+
+    def binding_for(node):
+        return next((binding for binding in bindings if _tree_owns(binding["tree"], node)), None)
+
     result = []
     for modelled in sorted(g.subjects(RDF.type, AGN.ModelledAgent), key=str):
         agent = g.value(modelled, AGN["of-agent"])
-        bindings = []
-        for model in sorted(g.objects(modelled, AGN["has-agent-model"]), key=str):
-            path = _optional_path_of_model(g, model)
-            for tree, entity in _model_mappings(g, model, GEOM_ENT.KinematicTree):
-                if not path:
-                    continue
-                bindings.append(
-                    {
-                        "model": model,
-                        "tree": tree,
-                        "path": path,
-                        "entity": entity,
-                    }
-                )
-        if agent is None or not bindings:
+        own = bindings_by_modelled[modelled]
+        if agent is None or not own:
             continue
 
-        def binding_for(node):
-            return next((binding for binding in bindings if _tree_owns(binding["tree"], node)), None)
+        def own_binding_for(node, own=own):
+            return next((binding for binding in own if _tree_owns(binding["tree"], node)), None)
 
         serial = next(
             (
@@ -4345,8 +4375,8 @@ def _agent_assemblies(g, attach_by_body):
                 if root is not None
                 and tip is not None
                 and (
-                    any(binding["tree"] == tree for binding in bindings)
-                    or (binding_for(root) is not None and binding_for(tip) is not None)
+                    any(binding["tree"] == tree for binding in own)
+                    or own_binding_for(root) is not None
                 )
             ),
             None,
@@ -4354,8 +4384,8 @@ def _agent_assemblies(g, attach_by_body):
         if serial is None:
             continue
         serial_tree, root_frame, tip_frame = serial
-        root_binding = binding_for(root_frame) or next(
-            binding for binding in bindings if binding["tree"] == serial_tree
+        root_binding = own_binding_for(root_frame) or next(
+            binding for binding in own if binding["tree"] == serial_tree
         )
         tip_binding = binding_for(tip_frame) or root_binding
         root_body, tip_body = map(_body_of, (root_frame, tip_frame))
@@ -4365,6 +4395,13 @@ def _agent_assemblies(g, attach_by_body):
         runtime_prefix = f"{_leaf(root_binding['tree'])}_" if duplicate_root else ""
         runtime_root = f"{runtime_prefix}{_leaf(root_body)}"
         path = _body_path(adjacency, root_body, tip_body)
+        # Scoped to this chain's path: two arms must not claim each other's models.
+        chain_bodies = [root_body, tip_body, *(body for edge in path for body in edge[:2])]
+        chain_bindings = [
+            binding
+            for binding in bindings
+            if any(_tree_owns(binding["tree"], body) for body in chain_bodies)
+        ]
         chain_tip_body = tip_body if root_binding["tree"] == serial_tree else root_body
         if root_binding["tree"] != serial_tree:
             for parent_body, child_body, *_ in path:
@@ -4375,7 +4412,7 @@ def _agent_assemblies(g, attach_by_body):
                     break
 
         attachments = []
-        for binding in bindings:
+        for binding in chain_bindings:
             if binding is root_binding or binding["path"] == root_binding["path"]:
                 continue
             boundary = next(
@@ -4410,6 +4447,12 @@ def _agent_assemblies(g, attach_by_body):
             {
                 "name": f"{runtime_prefix}{_leaf(sensor)}",
                 "frame_site": f"{runtime_prefix}{_leaf(frame)}",
+                "update_rate_hz": _hertz(g, g.value(sensor, SENSORS["update-rate"])),
+                "observes": sorted(_leaf(kind) for kind in g.objects(sensor, SOSA.observes)),
+                "device": next(
+                    (str(name) for name in g.objects(sensor, EXEC["platform-name"])), ""
+                ),
+                "config_key": next((str(n) for n in g.objects(sensor, SDO.name)), ""),
             }
             for sensor in sorted(g.objects(modelled, SOSA.hosts), key=str)
             if SENSORS.ForceTorqueSensor in get_node_types(g, sensor)
@@ -4418,10 +4461,14 @@ def _agent_assemblies(g, attach_by_body):
         result.append(
             {
                 "agent": agent,
+                "device": next(
+                    (str(name) for name in g.objects(agent, EXEC["platform-name"])), ""
+                ),
+                "config_key": next((str(n) for n in g.objects(agent, SDO.name)), ""),
                 "ft_sensors": ft_sensors,
                 "path": root_binding["path"],
                 "prefix": runtime_prefix,
-                "trees": [binding["tree"] for binding in bindings],
+                "trees": [binding["tree"] for binding in chain_bindings],
                 "serial_chain": serial_tree,
                 "root_body": root_body,
                 "chain_root": runtime_root,
@@ -4605,7 +4652,7 @@ def _robot_setups_from_graph(g):
     Returns ``(setups_by_node, ordered)`` where ``setups_by_node`` maps each robot's
     abstract agent node (the target of a solver's ``agn:of-agent``) to its setup tuple
     ``(urdf, chain_root, chain_end, chain_tip, robot_model, tool_body, tcp_site,
-    ft_sensors, runtime_prefix, owned_trees, kdl_chain, kdl_tree, kdl_joints)``.
+    ft_sensors, runtime_prefix, owned_trees, kdl_chain, kdl_tree, kdl_joints, config_key)``.
 
     ``kdl_chain`` names the scene-derived chain builder emitted beside the controller and
     ``kdl_joints`` lists its joints as MuJoCo knows them, in KDL order -- see plan 013.
@@ -4622,6 +4669,14 @@ def _robot_setups_from_graph(g):
             if hint in low:
                 return canonical
         return ""
+
+    def _robot_model_for(assembly):
+        """The agent's device: authored when bound, else sniffed from the asset path."""
+        # The arm-with-gripper pairing is wiring; the manipulator is still the arm.
+        device = assembly.get("device") or ""
+        if device:
+            return "KinovaGen3" if device == "KinovaGen3-2F85" else device
+        return _robot_model_from_path(assembly["path"])
 
     from scene_dsl.kdl_tree import build_kdl_trees
 
@@ -4640,13 +4695,14 @@ def _robot_setups_from_graph(g):
             assembly["chain_root"],
             assembly["chain_tip"],
             assembly["chain_tip"],
-            _robot_model_from_path(assembly["path"]),
+            _robot_model_for(assembly),
             assembly["tool_body"],
             assembly["tcp_site"],
             assembly["ft_sensors"],
             assembly["prefix"],
             assembly["trees"],
             *_scene_chain(trees, assembly),
+            assembly.get("config_key") or "",
         )
         setups_by_node[assembly["agent"]] = setup
         ordered.append(setup)
@@ -5341,6 +5397,7 @@ def _solver_sections(
             solver.kdl_chain,
             solver.kdl_tree,
             solver.kdl_joints,
+            solver.config_key,
         ) = setups_by_node.get(robot_node, default_setup)
         solver.output = _dedupe_by_id(
             [
@@ -5809,12 +5866,63 @@ def _platform_from_graph(g) -> dict:
     """
     simulation = next(g.subjects(RDF.type, EXEC.Simulation), None)
     if simulation is None:
-        return {"uri": None, "name": None, "simulated": False, "backend": "robif2b"}
+        real = next(g.subjects(RDF.type, EXEC.RealWorld), None)
+        _reject_scene_objects_on_hardware(g, real)
+        _reject_undriven_devices(g, real)
+        return {
+            "uri": str(real) if real is not None else None,
+            "name": None,
+            "simulated": False,
+            "backend": "robif2b",
+            "config": str(_config_path(g, real)) if real is not None else None,
+        }
     name = str(g.value(simulation, EXEC["platform-name"]) or "")
     backend = _SIMULATION_BACKENDS.get(name.casefold())
     if backend is None:
         raise ValueError(f"Unsupported simulation platform '{name}'.")
     return {"uri": str(simulation), "name": name, "simulated": True, "backend": backend}
+
+
+def _config_path(g, context) -> str | None:
+    """The deployment config's path, from exec:has-config -> exec:path."""
+    config = g.value(context, EXEC["has-config"])
+    return str(g.value(config, EXEC.path)) if config is not None else None
+
+
+def _reject_undriven_devices(g, context) -> None:
+    """Reject a bound device the backend would silently ignore."""
+    if context is None:
+        return
+    bound = sorted({str(name) for name in g.objects(None, EXEC["platform-name"])})
+    unknown = [name for name in bound if name not in BINDABLE_DEVICES]
+    if unknown:
+        raise ConstraintViolation(
+            "platform",
+            f"unknown device(s): {', '.join(unknown)}. "
+            f"Known: {', '.join(sorted(BINDABLE_DEVICES))}",
+        )
+    undriven = [name for name in bound if name not in DRIVEN_DEVICES]
+    if undriven:
+        raise ConstraintViolation(
+            "platform",
+            f"no backend support yet for device(s): {', '.join(undriven)}. "
+            f"Currently driven: {', '.join(sorted(DRIVEN_DEVICES))}. Remove the binding, or add "
+            "the driver templates before binding it.",
+        )
+
+
+def _reject_scene_objects_on_hardware(g, context) -> None:
+    """Reject scene objects on hardware: nothing measures their pose without perception."""
+    if context is None:
+        return
+    objects = sorted(_leaf(node) for node in g.subjects(RDF.type, ENV.ModelledObject))
+    if objects:
+        raise ConstraintViolation(
+            "platform",
+            f"real-world execution cannot use scene objects ({', '.join(objects)}): their poses "
+            "come from a simulator, and nothing measures them on hardware. Remove them, or model "
+            "the location as an authored frame.",
+        )
 
 
 def _apply_monitor_debounce(handlers, control_period_ns: int) -> None:
@@ -5862,6 +5970,10 @@ def _shared_runtime_members(slv_chain, iris) -> list[dict]:
 
 
 SUPPORTED_ROBOT_MODELS = {"KinovaGen3"}
+
+# Bindable in a model; driven by the backend. Move a name across as its templates land.
+BINDABLE_DEVICES = {"KinovaGen3", "KinovaGen3-2F85", "Robotiq2F85", "RobotiqFT300s"}
+DRIVEN_DEVICES = {"KinovaGen3"}
 
 
 def _validate_solvers(serial_chain_solvers, backend: str) -> None:
@@ -7348,7 +7460,7 @@ def generate_ir(manifest_path):
     default_setup = (
         ordered_setups[0]
         if ordered_setups
-        else ("", "", "", "", "", "", "", [], "", [], "", "", [])
+        else ("", "", "", "", "", "", "", [], "", [], "", "", [], "")
     )
     # Derive backend + FSM up front: both are pure functions of the graph and are inputs to
     # downstream construction (solver validation, runtime-robot annotation, motion FSM wiring).

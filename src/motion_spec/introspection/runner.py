@@ -108,6 +108,48 @@ def run_cataloged(
     return returncode
 
 
+_ROBOT_CONFIG_KEYS = (
+    "ip", "user", "password", "port", "port_real_time",
+    "session_timeout_ms", "connection_timeout_ms",
+)
+
+
+def _validate_robot_config(source_dir: Path) -> None:
+    """Check the deployment config before launching, so a typo fails here, not against hardware."""
+    import tomllib
+
+    ir_path = source_dir / "model" / "ir.json"
+    if not ir_path.exists():
+        return
+    ir = json.loads(ir_path.read_text())
+    if (ir.get("platform") or {}).get("simulated", True):
+        return
+    declared = (ir["platform"] or {}).get("config") or ""
+    if not declared:
+        raise RunnerError("real-world run declares no config; it has nowhere to read addresses from")
+    config_path = (source_dir.parent / declared) if not Path(declared).is_absolute() else Path(declared)
+    if not config_path.exists():
+        config_path = Path(declared)
+    if not config_path.exists():
+        raise RunnerError(f"{declared}: robot config not found")
+    try:
+        config = tomllib.loads(config_path.read_text())
+    except tomllib.TOMLDecodeError as error:
+        raise RunnerError(f"{config_path}: {error}") from error
+    for solver in ir.get("serial_chain_solvers") or ():
+        key = solver.get("config_key")
+        if not key:
+            continue
+        section = config
+        for part in key.split("."):
+            section = section.get(part) if isinstance(section, dict) else None
+            if section is None:
+                raise RunnerError(f"{config_path}: no [{key}] section for '{solver['id']}'")
+        missing = [field for field in _ROBOT_CONFIG_KEYS if field not in section]
+        if missing:
+            raise RunnerError(f"{config_path}: [{key}] is missing {', '.join(missing)}")
+
+
 def _validate_new_run(run_dir: Path, source_dir: Path, executable: Path) -> None:
     if not source_dir.exists():
         raise RunnerError(f"{source_dir}: source directory does not exist")
@@ -124,6 +166,7 @@ def _validate_new_run(run_dir: Path, source_dir: Path, executable: Path) -> None
             raise RunnerError(f"{path}: required generated artifact is missing")
     if not executable.exists():
         raise RunnerError(f"{executable}: executable does not exist")
+    _validate_robot_config(source_dir)
     if run_dir.exists() and (run_dir / "rec.ld.json").exists():
         raise RunnerError(f"{run_dir}: already contains rec.ld.json; choose a fresh run directory")
     frame_log = run_dir / "logs" / "frame_log.pb"

@@ -96,7 +96,7 @@ app-chain-includes-mj_kdl(has_serial_chain) ::= <<
 <endif>
 >>
 
-app-chain-setup-mj_kdl(serial_chain_solvers, scene) ::= <<
+app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
     bool headless = false;
     bool steps_limited = false;
     int headless_steps = 0;

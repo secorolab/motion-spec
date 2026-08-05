@@ -813,6 +813,8 @@ class SolverWithInputAndOutput:
     kdl_tree: str = ""
     kdl_joints: list[str] = field(default_factory=list)
     kdl_header: str = ""
+    # Section name in the deployment config; empty under simulation.
+    config_key: str = ""
     gravity: list[float] | None = None
     root_acc: list[float] | None = None
     torque_saturation: Saturation | None = None

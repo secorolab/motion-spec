@@ -106,8 +106,8 @@ app-chain-includes(backend, has_serial_chain) ::= <<
 <({app-chain-includes-<backend>})(has_serial_chain)>
 >>
 
-app-chain-setup(backend, serial_chain_solvers, scene) ::= <<
-<({app-chain-setup-<backend>})(serial_chain_solvers, scene)>
+app-chain-setup(backend, serial_chain_solvers, scene, config_path) ::= <<
+<({app-chain-setup-<backend>})(serial_chain_solvers, scene, config_path)>
 >>
 
 app-loop-condition(backend, has_serial_chain) ::= <<
@@ -183,7 +183,7 @@ ros-shutdown(ros_publishers) ::= <<
     rclcpp::shutdown();
 >>
 
-app_main(motions, wrench_outputs, has_serial_chain, has_mobile_base, shared_schedule, closures, views, serial_chain_solvers, platform_velocity_solvers, platform_force_solvers, backend, scene, trace, needs_clock_time, control_period_ns) ::= <<
+app_main(platform, motions, wrench_outputs, has_serial_chain, has_mobile_base, shared_schedule, closures, views, serial_chain_solvers, platform_velocity_solvers, platform_force_solvers, backend, scene, trace, needs_clock_time, control_period_ns) ::= <<
 #include "runtime.hpp"
 #include "shared_state.hpp"
 #ifdef MOTION_SPEC_ENABLE_INTROSPECTION
@@ -206,7 +206,7 @@ int main(int argc, char **argv) {
 <endif>
 <if(has_serial_chain)>
 
-<app-chain-setup(backend, serial_chain_solvers, scene)>
+<app-chain-setup(backend, serial_chain_solvers, scene, platform.config)>
 <endif>
 <wrench_outputs:{wrench | <wrench-measurement(wrench)>}; separator="\n">
 <wrench_outputs:{wrench |     robot.<wrench.id> = &<wrench.id>_measurement;}; separator="\n">
@@ -322,7 +322,7 @@ fsm-dispatch(motions, fsm_namespace) ::= <<
     \};
 >>
 
-ref_main(motions, wrench_outputs, has_serial_chain, has_mobile_base, shared_schedule, closures, views, shared_data, serial_chain_solvers, platform_velocity_solvers, platform_force_solvers, backend, scene, trace, fsm_namespace, fsm_step_event, fsm_step_event_idx, fsm_step_transitions, needs_clock_time, control_period_ns, has_ros, ros_publishers, ros_node_name) ::= <<
+ref_main(platform, motions, wrench_outputs, has_serial_chain, has_mobile_base, shared_schedule, closures, views, shared_data, serial_chain_solvers, platform_velocity_solvers, platform_force_solvers, backend, scene, trace, fsm_namespace, fsm_step_event, fsm_step_event_idx, fsm_step_transitions, needs_clock_time, control_period_ns, has_ros, ros_publishers, ros_node_name) ::= <<
 #include "runtime.hpp"
 #include "shared_state.hpp"
 <if(has_mobile_base)>
@@ -350,7 +350,7 @@ int main(int argc, char **argv) {
 <endif>
 <if(has_serial_chain)>
 
-<app-chain-setup(backend, serial_chain_solvers, scene)>
+<app-chain-setup(backend, serial_chain_solvers, scene, platform.config)>
 <endif>
 <wrench_outputs:{wrench | <wrench-measurement(wrench)>}; separator="\n">
 <wrench_outputs:{wrench |     robot.<wrench.id> = &<wrench.id>_measurement;}; separator="\n">

@@ -155,6 +155,9 @@ device-init-robif2b-KinovaGen3(solver, device) ::= <<
     kinova_<solver.runtime_id>.conf.password = cfg_<solver.runtime_id>.password.c_str();
     kinova_<solver.runtime_id>.conf.session_timeout = cfg_<solver.runtime_id>.session_timeout_ms;
     kinova_<solver.runtime_id>.conf.connection_timeout = cfg_<solver.runtime_id>.connection_timeout_ms;
+    // The arm integrates a velocity command over this, and asserts on it every update: it is
+    // the period the model declares, the same one the loop sleeps to.
+    kinova_<solver.runtime_id>.cycle_time = &motion_spec::runtime::kControlPeriodS;
     kinova_<solver.runtime_id>.ctrl_mode = &kinova_<solver.runtime_id>_state.ctrl_mode;
     kinova_<solver.runtime_id>.jnt_pos_msr = &kinova_<solver.runtime_id>_state.pos_msr[0];
     kinova_<solver.runtime_id>.jnt_vel_msr = &kinova_<solver.runtime_id>_state.vel_msr[0];

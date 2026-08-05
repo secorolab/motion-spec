@@ -403,34 +403,92 @@ def test_an_authored_sensor_rate_reaches_the_ir() -> None:
     assert _hertz(graph, None) is None
 
 
-def test_robot_config_must_cover_every_bound_device(tmp_path) -> None:
-    from motion_spec.introspection.runner import RunnerError, _validate_robot_config
+_ARM_SECTION = (
+    "[agents.arm1]\nip='10.0.0.1'\nuser='u'\npassword='p'\nport=1\n"
+    "port_real_time=2\nsession_timeout_ms=3\nconnection_timeout_ms=4\n"
+)
+_FT_SECTION = "[arm1.wrist_ft]\nport='ttyUSB0'\nbaudrate=19200\nslave_address=9\n"
+_GRIPPER_SECTION = "[agents.gripper1]\nport='ttyUSB1'\nbaudrate=115200\nslave_address=9\n"
 
+
+def _real_source(tmp_path, *devices: dict) -> Path:
+    """A generation whose IR binds `devices` on one real-world chain."""
     source = tmp_path / "generated"
-    (source / "model").mkdir(parents=True)
+    (source / "model").mkdir(parents=True, exist_ok=True)
     (source / "model" / "ir.json").write_text(
         json.dumps(
             {
                 "platform": {"simulated": False, "config": "robot.toml"},
-                "serial_chain_solvers": [{"id": "arm_solver", "config_key": "agents.arm1"}],
+                "serial_chain_solvers": [
+                    {"id": "arm_solver", "config_key": "agents.arm1", "devices": list(devices)}
+                ],
             }
         )
     )
+    return source
+
+
+def test_robot_config_must_cover_every_bound_device(tmp_path) -> None:
+    from motion_spec.introspection.runner import RunnerError, _validate_robot_config
+
+    source = _real_source(
+        tmp_path,
+        {"kind": "KinovaGen3", "config_key": "agents.arm1", "drives": ""},
+        {"kind": "RobotiqFT300s", "config_key": "arm1.wrist_ft", "drives": "wrist_ft"},
+    )
     config = tmp_path / "robot.toml"
 
-    config.write_text("[agents.arm2]\nip = '10.0.0.1'\n")
-    with pytest.raises(RunnerError, match=r"no \[agents.arm1\] section"):
-        _validate_robot_config(source)
+    with pytest.raises(RunnerError, match="robot config not found"):
+        _validate_robot_config(source, tmp_path)
 
     config.write_text("[agents.arm1]\nip = '10.0.0.1'\n")
     with pytest.raises(RunnerError, match="is missing user"):
-        _validate_robot_config(source)
+        _validate_robot_config(source, tmp_path)
 
-    config.write_text(
-        "[agents.arm1]\nip='10.0.0.1'\nuser='u'\npassword='p'\nport=1\n"
-        "port_real_time=2\nsession_timeout_ms=3\nconnection_timeout_ms=4\n"
+    config.write_text(_ARM_SECTION)
+    with pytest.raises(RunnerError, match=r"no \[arm1.wrist_ft\] section for the bound Robotiq"):
+        _validate_robot_config(source, tmp_path)
+
+    # The FT sensor is a serial device: the arm's network keys say nothing about it.
+    config.write_text(_ARM_SECTION + "[arm1.wrist_ft]\nport='ttyUSB0'\n")
+    with pytest.raises(RunnerError, match=r"\[arm1.wrist_ft\] is missing baudrate"):
+        _validate_robot_config(source, tmp_path)
+
+    config.write_text(_ARM_SECTION + _FT_SECTION)
+    _validate_robot_config(source, tmp_path)
+
+    config.write_text(_ARM_SECTION + _FT_SECTION + _GRIPPER_SECTION)
+    with pytest.raises(RunnerError, match=r"\[agents.gripper1\] configures nothing"):
+        _validate_robot_config(source, tmp_path)
+
+
+def test_the_authored_device_decides_which_sections_the_config_needs(tmp_path) -> None:
+    """The gripper's route is authored, not inferred: one section under the arm's device, two
+    under separate ones. A section the run cannot reach is as wrong as a missing one."""
+    from motion_spec.introspection.runner import RunnerError, _validate_robot_config
+
+    ft = {"kind": "RobotiqFT300s", "config_key": "arm1.wrist_ft", "drives": "wrist_ft"}
+    config = tmp_path / "robot.toml"
+
+    interconnect = _real_source(
+        tmp_path, {"kind": "KinovaGen3-2F85", "config_key": "agents.arm1", "drives": ""}, ft
     )
-    _validate_robot_config(source)
+    config.write_text(_ARM_SECTION + _FT_SECTION)
+    _validate_robot_config(interconnect, tmp_path)
+    config.write_text(_ARM_SECTION + _FT_SECTION + _GRIPPER_SECTION)
+    with pytest.raises(RunnerError, match=r"\[agents.gripper1\] configures nothing"):
+        _validate_robot_config(interconnect, tmp_path)
+
+    separate = _real_source(
+        tmp_path,
+        {"kind": "KinovaGen3", "config_key": "agents.arm1", "drives": ""},
+        {"kind": "Robotiq2F85", "config_key": "agents.gripper1", "drives": ""},
+        ft,
+    )
+    _validate_robot_config(separate, tmp_path)
+    config.write_text(_ARM_SECTION + _FT_SECTION)
+    with pytest.raises(RunnerError, match=r"no \[agents.gripper1\] section"):
+        _validate_robot_config(separate, tmp_path)
 
 
 def test_a_simulated_run_needs_no_robot_config(tmp_path) -> None:
@@ -439,4 +497,4 @@ def test_a_simulated_run_needs_no_robot_config(tmp_path) -> None:
     source = tmp_path / "generated"
     (source / "model").mkdir(parents=True)
     (source / "model" / "ir.json").write_text(json.dumps({"platform": {"simulated": True}}))
-    _validate_robot_config(source)
+    _validate_robot_config(source, tmp_path)

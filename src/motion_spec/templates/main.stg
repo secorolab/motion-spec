@@ -325,6 +325,9 @@ fsm-dispatch(motions, fsm_namespace) ::= <<
 ref_main(platform, motions, wrench_outputs, has_serial_chain, has_mobile_base, shared_schedule, closures, views, shared_data, serial_chain_solvers, platform_velocity_solvers, platform_force_solvers, backend, scene, trace, fsm_namespace, fsm_step_event, fsm_step_event_idx, fsm_step_transitions, needs_clock_time, control_period_ns, has_ros, ros_publishers, ros_node_name) ::= <<
 #include "runtime.hpp"
 #include "shared_state.hpp"
+#ifdef MOTION_SPEC_ENABLE_INTROSPECTION
+#include "introspect_model.hpp"
+#endif
 <if(has_mobile_base)>
 <mobile-base-cycle-include()>
 <endif>
@@ -661,6 +664,7 @@ struct robot_io {
 <ros-io-members(ros_publishers)>
 <endif>
 <serial_chain_solvers:{solver | <chain-robot-member(solver)>}; separator="\n">
+<serial_chain_solvers:{solver | <chain-device-members(solver, backend)>}; separator="">
 <wrench_outputs:{wrench | <wrench-pointer-member(wrench)>}; separator="\n">
 };
 

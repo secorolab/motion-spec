@@ -311,8 +311,34 @@ solver-output-Wrench-mj_kdl(solver, out) ::= <<
 >>
 
 solver-output-Wrench-robif2b(solver, out) ::= <<
-    // robif2b has no sim FT sensor; a real build wires a hardware FT driver here.
-    shared.<out.id>.force = KDL::Vector::Zero();
+{
+    // The driver reports in the sensor's own frame; the model asked for it at its reference
+    // point, seen by another frame. Both come off the same forward kinematics as a pose does.
+    const KDL::Wrench measured_<out.id>(
+        KDL::Vector(robot.ft_<out.sensor_name>->force[0], robot.ft_<out.sensor_name>->force[1], robot.ft_<out.sensor_name>->force[2]),
+        KDL::Vector(robot.ft_<out.sensor_name>->moment[0], robot.ft_<out.sensor_name>->moment[1], robot.ft_<out.sensor_name>->moment[2]));
+    const auto frame_<out.id> = [&](const char *name) {
+        KDL::Frame frame;
+        KDL::ChainFkSolverPos_recursive fk(*robot.<solver.id>.chain);
+        fk.JntToCart(
+            state.<solver.id>.q,
+            frame,
+            motion_spec::runtime::find_segment_index(*robot.<solver.id>.chain, name, "<solver.chain_root>"));
+        return frame;
+    };
+    const KDL::Wrench at_<out.id> = motion_spec::runtime::transform_wrench(
+        measured_<out.id>,
+        frame_<out.id>("<out.sensor_frame.id>"),
+        frame_<out.id>("<out.reference_point.id>"),
+        frame_<out.id>("<out.as_seen_by.id>"));
+    if (shared.<out.id>_ft_settle \< robot.ft_<out.sensor_name>_bias_samples) {
+        ++shared.<out.id>_ft_settle;
+        shared.<out.id>_ft_bias = at_<out.id>;   // last settle step is the tare sample
+        shared.<out.id> = KDL::Wrench::Zero();
+    \} else {
+        shared.<out.id> = shared.<out.id>_ft_bias - at_<out.id>;
+    \}
+}
 >>
 
 solver-output(solver, out, backend) ::= <<

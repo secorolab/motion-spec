@@ -2,10 +2,20 @@
 // robif2b backend: EtherCAT/KELO driver bindings and the robif2b KinovaGen3 robot impl.
 
 robot-driver-include-robif2b-KinovaGen3(solver) ::= <<
+#include "headers/<solver.kdl_header>"
 #include \<robif2b/functions/kinova_gen3.h\>
+#include \<robif2b/functions/robotiq_gripper.h\>
+#include \<robif2b/functions/robotiq_ft_sensor.h\>
 >>
 
 robot-state-struct-robif2b-KinovaGen3(solver) ::= <<
+// The gripper closes under its own speed and force loop; the model commands position only.
+// Mid-range on both: fast enough to keep up with a motion, soft enough not to crush.
+static constexpr float kGripperSpeedPct = 50.0f;
+static constexpr float kGripperForcePct = 50.0f;
+static constexpr uint8_t kGripperSpeedByte = 128;
+static constexpr uint8_t kGripperForceByte = 128;
+
 struct kinova_state {
     bool success = false;
     enum robif2b_ctrl_mode ctrl_mode = ROBIF2B_CTRL_MODE_FORCE;
@@ -18,6 +28,38 @@ struct kinova_state {
     double eff_cmd[KINOVA_NUM_JOINTS] = {0.0};
     double cur_cmd[KINOVA_NUM_JOINTS] = {0.0};
 };
+
+// Gripper over the arm's interconnect: every port is a percentage of travel.
+struct kg3_gripper_state {
+    bool success = false;
+    float pos_msr = 0.0f;
+    float vel_msr = 0.0f;
+    float cur_msr = 0.0f;
+    float pos_cmd = 0.0f;
+    float vel_cmd = kGripperSpeedPct;
+    float frc_cmd = kGripperForcePct;
+};
+
+// Gripper on its own serial line: the same ports, counted 0-255.
+struct serial_gripper_state {
+    bool success = false;
+    uint8_t position_msr = 0;
+    bool is_moving = false;
+    robif2b_robotiq_gripper_obj_status obj_status = ROBIF2B_ROBOTIQ_OBJ_UNKNOWN;
+    robif2b_robotiq_gripper_status status = ROBIF2B_ROBOTIQ_UNKNOWN;
+    uint8_t position_cmd = 0;
+    uint8_t speed_cmd = kGripperSpeedByte;
+    uint8_t force_cmd = kGripperForceByte;
+    robif2b_robotiq_gripper_error error = ROBIF2B_ROBOTIQ_NO_ERROR;
+};
+
+struct ft_sensor_state {
+    bool success = false;
+    float force[3] = {0.0f};
+    float force_offset[3] = {0.0f};
+    float moment[3] = {0.0f};
+    float moment_offset[3] = {0.0f};
+};
 >>
 
 robot-manipulator-struct-robif2b-KinovaGen3(solver) ::= <<
@@ -25,17 +67,86 @@ struct manipulator_robot {
     kinova_state *state = nullptr;
     robif2b_kinova_gen3_nbx *robot = nullptr;
     KDL::Chain *chain = nullptr;
+    // The commanded gripper joint position [rad], as the model authored it. Which device that
+    // reaches, and in whose units, is settled at generation by the bound device's rule set.
+    double *gripper_cmd = nullptr;
 };
 >>
 
 robot-state-init-robif2b-KinovaGen3(solver) ::= <<
 <if(solver.runtime_owner)>    kinova_state kinova_<solver.runtime_id>_state{};
     kinova_<solver.runtime_id>_state.ctrl_mode = ROBIF2B_CTRL_MODE_FORCE;
+<solver.devices:{device | <({device-state-init-robif2b-<device.kind>})(solver, device)>}; separator="\n">
 <endif>
 >>
 
-robot-init-robif2b-KinovaGen3(solver) ::= <<
-<if(solver.runtime_owner)>    const auto cfg_<solver.runtime_id> = motion_spec::config::device(robot_config, "<solver.config_key>");
+chain-device-members-robif2b(solver) ::= <<
+<solver.devices:{device | <({device-io-member-robif2b-<device.kind>})(solver, device)>}; separator="">
+>>
+
+device-io-member-robif2b-KinovaGen3(solver, device) ::= <<>>
+
+device-io-member-robif2b-KinovaGen3-2F85(solver, device) ::= <<>>
+
+device-io-member-robif2b-Robotiq2F85(solver, device) ::= <<>>
+
+// The motion functions read the sensor through here; main owns the driver's state.
+device-io-member-robif2b-RobotiqFT300s(solver, device) ::= <<
+    const ft_sensor_state *ft_<device.drives> = nullptr;
+    int ft_<device.drives>_bias_samples = 0;
+>>
+
+device-io-assign-robif2b-KinovaGen3(solver, device) ::= <<>>
+
+device-io-assign-robif2b-KinovaGen3-2F85(solver, device) ::= <<>>
+
+device-io-assign-robif2b-Robotiq2F85(solver, device) ::= <<>>
+
+device-io-assign-robif2b-RobotiqFT300s(solver, device) ::= <<
+    robot.ft_<device.drives> = &ft_<device.drives>_state;
+    robot.ft_<device.drives>_bias_samples = motion_spec::config::bias_samples(robot_config, "<device.config_key>");
+>>
+
+device-state-init-robif2b-KinovaGen3(solver, device) ::= <<>>
+
+device-state-init-robif2b-KinovaGen3-2F85(solver, device) ::= <<
+    kg3_gripper_state gripper_<solver.runtime_id>_state{};
+    double gripper_<solver.runtime_id>_cmd = 0.0;
+>>
+
+device-state-init-robif2b-Robotiq2F85(solver, device) ::= <<
+    serial_gripper_state gripper_<solver.runtime_id>_state{};
+    double gripper_<solver.runtime_id>_cmd = 0.0;
+>>
+
+device-state-init-robif2b-RobotiqFT300s(solver, device) ::= <<
+    ft_sensor_state ft_<device.drives>_state{};
+>>
+
+// Each bound device opens its own connection, except a gripper on the arm's interconnect --
+// there the arm was the device named, so the arm's rule set wires both.
+device-init-robif2b(solver, device) ::= <<
+<({device-init-robif2b-<device.kind>})(solver, device)>
+>>
+
+device-configure-robif2b(solver, device) ::= <<
+<({device-configure-robif2b-<device.kind>})(solver, device)>
+>>
+
+device-update-robif2b(solver, device) ::= <<
+<({device-update-robif2b-<device.kind>})(solver, device)>
+>>
+
+device-shutdown-robif2b(solver, device) ::= <<
+<({device-shutdown-robif2b-<device.kind>})(solver, device)>
+>>
+
+// The 2F-85's driver joint travels 0.8 rad from fully open to fully closed. A device fact:
+// every 2F-85 is the same gripper, whichever route reaches it.
+gripper-travel-Robotiq2F85() ::= "0.8"
+
+device-init-robif2b-KinovaGen3(solver, device) ::= <<
+<if(solver.runtime_owner)>    const auto cfg_<solver.runtime_id> = motion_spec::config::device(robot_config, "<device.config_key>");
     robif2b_kinova_gen3_nbx kinova_<solver.runtime_id>{};
     kinova_<solver.runtime_id>.conf.ip_address = cfg_<solver.runtime_id>.ip.c_str();
     kinova_<solver.runtime_id>.conf.port = cfg_<solver.runtime_id>.port;
@@ -57,9 +168,140 @@ robot-init-robif2b-KinovaGen3(solver) ::= <<
 <endif>
 >>
 
+// One device, one connection: the gripper rides the arm's interconnect and needs no section
+// of its own, so this is the arm's rule set plus the gripper hanging off its comm.
+device-init-robif2b-KinovaGen3-2F85(solver, device) ::= <<
+<device-init-robif2b-KinovaGen3(solver, device)>
+<if(solver.runtime_owner)>    robif2b_kg3_robotiq_gripper_nbx gripper_<solver.runtime_id>{};
+    gripper_<solver.runtime_id>.gripper_pos_msr = &gripper_<solver.runtime_id>_state.pos_msr;
+    gripper_<solver.runtime_id>.gripper_vel_msr = &gripper_<solver.runtime_id>_state.vel_msr;
+    gripper_<solver.runtime_id>.gripper_cur_msr = &gripper_<solver.runtime_id>_state.cur_msr;
+    gripper_<solver.runtime_id>.gripper_pos_cmd = &gripper_<solver.runtime_id>_state.pos_cmd;
+    gripper_<solver.runtime_id>.gripper_vel_cmd = &gripper_<solver.runtime_id>_state.vel_cmd;
+    gripper_<solver.runtime_id>.gripper_frc_cmd = &gripper_<solver.runtime_id>_state.frc_cmd;
+    gripper_<solver.runtime_id>.success = &gripper_<solver.runtime_id>_state.success;
+<endif>
+>>
+
+device-init-robif2b-Robotiq2F85(solver, device) ::= <<
+<if(solver.runtime_owner)>    const auto cfg_gripper_<solver.runtime_id> = motion_spec::config::serial(robot_config, "<device.config_key>");
+    robif2b_robotiq_gripper_nbx gripper_<solver.runtime_id>{};
+    gripper_<solver.runtime_id>.serial.port = cfg_gripper_<solver.runtime_id>.port.c_str();
+    gripper_<solver.runtime_id>.serial.baudrate = cfg_gripper_<solver.runtime_id>.baudrate;
+    gripper_<solver.runtime_id>.serial.timeout_ms = cfg_gripper_<solver.runtime_id>.timeout_ms;
+    gripper_<solver.runtime_id>.serial.slave_address = cfg_gripper_<solver.runtime_id>.slave_address;
+    gripper_<solver.runtime_id>.position_msr = &gripper_<solver.runtime_id>_state.position_msr;
+    gripper_<solver.runtime_id>.is_gripper_moving = &gripper_<solver.runtime_id>_state.is_moving;
+    gripper_<solver.runtime_id>.obj_detection_status = &gripper_<solver.runtime_id>_state.obj_status;
+    gripper_<solver.runtime_id>.gripper_status = &gripper_<solver.runtime_id>_state.status;
+    gripper_<solver.runtime_id>.position_cmd = &gripper_<solver.runtime_id>_state.position_cmd;
+    gripper_<solver.runtime_id>.speed_cmd = &gripper_<solver.runtime_id>_state.speed_cmd;
+    gripper_<solver.runtime_id>.force_cmd = &gripper_<solver.runtime_id>_state.force_cmd;
+    gripper_<solver.runtime_id>.error = &gripper_<solver.runtime_id>_state.error;
+    gripper_<solver.runtime_id>.success = &gripper_<solver.runtime_id>_state.success;
+<endif>
+>>
+
+device-init-robif2b-RobotiqFT300s(solver, device) ::= <<
+<if(solver.runtime_owner)>    const auto cfg_ft_<device.drives> = motion_spec::config::serial(robot_config, "<device.config_key>");
+    robif2b_robotiq_ft_sensor_nbx ft_<device.drives>{};
+    ft_<device.drives>.serial.port = cfg_ft_<device.drives>.port.c_str();
+    ft_<device.drives>.serial.baudrate = cfg_ft_<device.drives>.baudrate;
+    ft_<device.drives>.serial.timeout_ms = cfg_ft_<device.drives>.timeout_ms;
+    ft_<device.drives>.serial.slave_address = cfg_ft_<device.drives>.slave_address;
+    ft_<device.drives>.force_msr = &ft_<device.drives>_state.force[0];
+    ft_<device.drives>.force_offset = &ft_<device.drives>_state.force_offset[0];
+    ft_<device.drives>.moment_msr = &ft_<device.drives>_state.moment[0];
+    ft_<device.drives>.moment_offset = &ft_<device.drives>_state.moment_offset[0];
+    ft_<device.drives>.success = &ft_<device.drives>_state.success;
+<endif>
+>>
+
+device-configure-robif2b-KinovaGen3(solver, device) ::= <<
+    <robif2b-configure-kinova(solver.runtime_id)>
+    <robif2b-recover-kinova(solver.runtime_id)>
+    <robif2b-start-kinova(solver.runtime_id)>
+>>
+
+device-configure-robif2b-KinovaGen3-2F85(solver, device) ::= <<
+<device-configure-robif2b-KinovaGen3(solver, device)>
+    robif2b_kg3_robotiq_gripper_configure(&gripper_<solver.runtime_id>, &kinova_<solver.runtime_id>);
+    robif2b_kg3_robotiq_gripper_start(&gripper_<solver.runtime_id>);
+>>
+
+device-configure-robif2b-Robotiq2F85(solver, device) ::= <<
+    robif2b_robotiq_gripper_configure(&gripper_<solver.runtime_id>);
+>>
+
+device-configure-robif2b-RobotiqFT300s(solver, device) ::= <<
+    robif2b_robotiq_ft_configure(&ft_<device.drives>);
+>>
+
+device-update-robif2b-KinovaGen3(solver, device) ::= <<
+        <robif2b-update-kinova(solver.runtime_id)>
+>>
+
+device-update-robif2b-KinovaGen3-2F85(solver, device) ::= <<
+<device-update-robif2b-KinovaGen3(solver, device)>
+        gripper_<solver.runtime_id>_state.pos_cmd = static_cast\<float\>(
+            100.0 * motion_spec::runtime::gripper_closed_fraction(
+                gripper_<solver.runtime_id>_cmd, <gripper-travel-Robotiq2F85()>));
+        robif2b_kg3_robotiq_gripper_update(&gripper_<solver.runtime_id>);
+>>
+
+device-update-robif2b-Robotiq2F85(solver, device) ::= <<
+        gripper_<solver.runtime_id>_state.position_cmd = static_cast\<uint8_t\>(std::lround(
+            255.0 * motion_spec::runtime::gripper_closed_fraction(
+                gripper_<solver.runtime_id>_cmd, <gripper-travel-Robotiq2F85()>)));
+        robif2b_robotiq_gripper_update(&gripper_<solver.runtime_id>);
+>>
+
+device-update-robif2b-RobotiqFT300s(solver, device) ::= <<
+        robif2b_robotiq_ft_update(&ft_<device.drives>);
+>>
+
+device-shutdown-robif2b-KinovaGen3(solver, device) ::= <<
+    <robif2b-stop-kinova(solver.runtime_id)>
+    <robif2b-shutdown-kinova(solver.runtime_id)>
+>>
+
+device-shutdown-robif2b-KinovaGen3-2F85(solver, device) ::= <<
+    robif2b_kg3_robotiq_gripper_stop(&gripper_<solver.runtime_id>);
+<device-shutdown-robif2b-KinovaGen3(solver, device)>
+>>
+
+device-shutdown-robif2b-Robotiq2F85(solver, device) ::= <<
+    robif2b_robotiq_gripper_shutdown(&gripper_<solver.runtime_id>);
+>>
+
+device-shutdown-robif2b-RobotiqFT300s(solver, device) ::= <<
+    robif2b_robotiq_ft_shutdown(&ft_<device.drives>);
+>>
+
+// Where the forwarding block leaves the commanded joint position for this chain's gripper.
+device-assign-robif2b-KinovaGen3(solver, device) ::= <<>>
+
+device-assign-robif2b-KinovaGen3-2F85(solver, device) ::= <<
+        .gripper_cmd = &gripper_<solver.runtime_id>_cmd,
+>>
+
+device-assign-robif2b-Robotiq2F85(solver, device) ::= <<
+        .gripper_cmd = &gripper_<solver.runtime_id>_cmd,
+>>
+
+device-assign-robif2b-RobotiqFT300s(solver, device) ::= <<>>
+
 robot-chain-robif2b-KinovaGen3(solver) ::= <<
-<if(solver.runtime_owner)>    KDL::Chain chain_<solver.runtime_id>;
-    kinova_tree.getChain("<solver.chain_root>", "<solver.chain_end>", chain_<solver.runtime_id>);
+<if(solver.runtime_owner)>    KDL::Tree built_tree_<solver.runtime_id>{};
+    if (!scene_kdl::make_tree_<solver.kdl_tree>(&built_tree_<solver.runtime_id>)) {
+        std::cerr \<\< "make_tree_<solver.kdl_tree>() failed for runtime <solver.runtime_id>\n";
+        return 1;
+    \}
+    KDL::Chain chain_<solver.runtime_id>{};
+    if (!scene_kdl::make_chain_<solver.kdl_chain>(built_tree_<solver.runtime_id>, &chain_<solver.runtime_id>)) {
+        std::cerr \<\< "make_chain_<solver.kdl_chain>() failed for runtime <solver.runtime_id>\n";
+        return 1;
+    \}
 <endif>
 >>
 
@@ -68,27 +310,23 @@ robot-assign-robif2b-KinovaGen3(solver) ::= <<
         .state = &kinova_<solver.runtime_id>_state,
         .robot = &kinova_<solver.runtime_id>,
         .chain = &chain_<solver.runtime_id>,
+<solver.devices:{device | <({device-assign-robif2b-<device.kind>})(solver, device)>}; separator="">
     };
 >>
 
 robot-configure-robif2b-KinovaGen3(solver) ::= <<
-<if(solver.runtime_owner)>    <robif2b-configure-kinova(solver.runtime_id)>
-    <robif2b-recover-kinova(solver.runtime_id)>
-    <robif2b-start-kinova(solver.runtime_id)>
+<if(solver.runtime_owner)><solver.devices:{device | <device-configure-robif2b(solver, device)>}; separator="\n">
 <endif>
 >>
 
 robot-shutdown-robif2b-KinovaGen3(solver) ::= <<
-<if(solver.runtime_owner)>    <robif2b-stop-kinova(solver.runtime_id)>
-    <robif2b-shutdown-kinova(solver.runtime_id)>
+<if(solver.runtime_owner)><solver.devices:{device | <device-shutdown-robif2b(solver, device)>}; separator="\n">
 <endif>
 >>
 
 app-chain-includes-robif2b(has_serial_chain) ::= <<
 <if(has_serial_chain)>
-#include \<urdf_model/model.h\>
-#include \<urdf_parser/urdf_parser.h\>
-#include \<kdl_parser/kdl_parser.hpp\>
+#include \<iostream\>
 #include "robot_config.hpp"
 <endif>
 >>
@@ -97,7 +335,6 @@ robot_config_header(platform) ::= <<
 // GENERATED by motion-spec codegen. Do not edit.
 #pragma once
 
-#include \<cstdlib\>
 #include \<stdexcept\>
 #include \<string\>
 
@@ -115,16 +352,16 @@ struct Device {
     int connection_timeout_ms = 0;
 };
 
+// The declared path only. Nothing may redirect it at launch: the CLI validates the file the
+// model declares, and a redirected run would connect against a file nothing checked.
 inline toml::table load(const std::string &path) {
-    const char *override_path = std::getenv("MOTION_SPEC_ROBOT_CONFIG");
-    const std::string resolved = override_path && *override_path ? override_path : path;
-    if (resolved.empty()) {
+    if (path.empty()) {
         throw std::runtime_error("no robot config declared; a real-world run needs one");
     }
     try {
-        return toml::parse_file(resolved);
+        return toml::parse_file(path);
     \} catch (const toml::parse_error &error) {
-        throw std::runtime_error(resolved + ": " + std::string(error.description()));
+        throw std::runtime_error(path + ": " + std::string(error.description()));
     \}
 \}
 
@@ -160,6 +397,16 @@ inline Serial serial(const toml::table &config, const std::string &key) {
     return out;
 \}
 
+// How many startup ticks are averaged away as the sensor's zero. Optional: a sensor that is
+// already tared externally sets 0 and the reading passes through untouched.
+inline int bias_samples(const toml::table &config, const std::string &key) {
+    const int value = section(config, key)["bias_samples"].value_or(200);
+    if (value \< 0) {
+        throw std::runtime_error("robot config [" + key + "] has a negative 'bias_samples'");
+    \}
+    return value;
+\}
+
 inline Device device(const toml::table &config, const std::string &key) {
     const toml::table &entry = section(config, key);
     Device out;
@@ -178,18 +425,16 @@ inline Device device(const toml::table &config, const std::string &key) {
 
 app-chain-setup-robif2b(serial_chain_solvers, scene, config_path) ::= <<
     const auto robot_config = motion_spec::config::load("<config_path>");
-    urdf::ModelInterfaceSharedPtr kinova_model = urdf::parseURDFFile("<first(serial_chain_solvers).urdf>");
-    KDL::Tree kinova_tree;
-    kdl_parser::treeFromUrdfModel(*kinova_model, kinova_tree);
 <serial_chain_solvers:{solver |
 
 <robot-state-init(solver, "robif2b")>
 
-<robot-init(solver, "robif2b")>
+<if(solver.runtime_owner)><solver.devices:{device | <device-init-robif2b(solver, device)>}; separator="\n"><endif>
 
 <robot-chain(solver, "robif2b")>
 
 <robot-assign(solver, "robif2b")>
+<if(solver.runtime_owner)><solver.devices:{device | <({device-io-assign-robif2b-<device.kind>})(solver, device)>}; separator=""><endif>
 }; separator="\n">
 >>
 
@@ -198,8 +443,8 @@ true
 >>
 
 app-chain-runtime-step-robif2b(serial_chain_solvers) ::= <<
-<serial_chain_solvers:{solver | <if(solver.runtime_owner)>        robif2b_kinova_gen3_update(&kinova_<solver.runtime_id>);
-<endif>}; separator="">
+<serial_chain_solvers:{solver | <if(solver.runtime_owner)><solver.devices:{device | <device-update-robif2b(solver, device)>
+}; separator=""><endif>}; separator="">
 >>
 
 app-chain-trace-update-robif2b(serial_chain_solvers, trace) ::= <<
@@ -208,6 +453,82 @@ app-chain-trace-update-robif2b(serial_chain_solvers, trace) ::= <<
 app-chain-cleanup-robif2b(has_serial_chain) ::= <<
 >>
 
+
+cmake_robif2b(motions, fsm_namespace, has_ros, ros_packages, serial_chain_solvers) ::= <<
+cmake_minimum_required(VERSION 3.16)
+project(motion_spec_robif2b_target LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+find_package(Eigen3 REQUIRED)
+find_package(orocos_kdl REQUIRED CONFIG)
+find_package(robif2b REQUIRED CONFIG)
+find_package(tomlplusplus REQUIRED CONFIG)
+<if(fsm_namespace)>
+find_package(coord2b REQUIRED)
+<endif>
+find_package(Threads REQUIRED)
+<if(has_ros)>
+find_package(rclcpp REQUIRED)
+find_package(realtime_tools REQUIRED)
+<ros_packages:{pkg | find_package(<pkg> REQUIRED)}; separator="\n">
+<endif>
+
+option(MOTION_SPEC_ENABLE_INTROSPECTION "Enable generated runtime introspection logging" OFF)
+
+add_executable(main
+    ref_main.cpp
+)
+target_include_directories(main PRIVATE
+    ${EIGEN3_INCLUDE_DIRS}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/headers
+<if(fsm_namespace)>
+    ${coord2b_INCLUDE_DIRS}
+<endif>
+)
+target_link_libraries(main PRIVATE
+    orocos-kdl
+    tomlplusplus::tomlplusplus
+<serial_chain_solvers:{solver | <if(solver.runtime_owner)><solver.devices:{device | <({cmake-device-link-<device.kind>})()>}; separator="\n"><endif>}; separator="\n">
+<if(fsm_namespace)>
+    ${coord2b_LIBRARIES}
+<endif>
+<if(has_ros)>
+    rclcpp::rclcpp
+    realtime_tools::realtime_tools
+<ros_packages:{pkg |     ${<pkg>_TARGETS\}}; separator="\n">
+<endif>
+)
+if(MOTION_SPEC_ENABLE_INTROSPECTION)
+    find_package(Protobuf REQUIRED)
+    target_sources(main PRIVATE frame_log.pb.cc)
+    target_include_directories(main PRIVATE ${Protobuf_INCLUDE_DIRS})
+    target_compile_definitions(main PRIVATE MOTION_SPEC_ENABLE_INTROSPECTION)
+    target_link_libraries(main PRIVATE Threads::Threads protobuf::libprotobuf)
+endif()
+target_compile_options(main PRIVATE -Wall -Wextra -ftemplate-depth=2048)
+>>
+
+// Only the drivers a binding actually needs: a deployment without a gripper must not have to
+// build robif2b's Robotiq support.
+cmake-device-link-KinovaGen3() ::= <<
+    robif2b::kinova_gen3
+>>
+
+cmake-device-link-KinovaGen3-2F85() ::= <<
+    robif2b::kinova_gen3
+>>
+
+cmake-device-link-Robotiq2F85() ::= <<
+    robif2b::robotiq_gripper
+>>
+
+cmake-device-link-RobotiqFT300s() ::= <<
+    robif2b::robotiq_ft_sensor
+>>
 
 robif2b-include-ethercat() ::= <<
 #include \<robif2b/functions/ethercat.h\>

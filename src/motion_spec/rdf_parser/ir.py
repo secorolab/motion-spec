@@ -4319,6 +4319,41 @@ def _is_constraint_aggregate(g, node) -> bool:
     return bool({CSTR_EXT.ConstraintDisjunction, CSTR_EXT.ConstraintConjunction} & types)
 
 
+def _sensor_kind(g, sensor) -> str:
+    """The sensor's kind as the IR names it; empty for a kind codegen does not model."""
+    types = get_node_types(g, sensor)
+    return next((name for uri, name in SENSOR_KINDS.items() if uri in types), "")
+
+
+def _bound_devices(g, agent, runtime_prefix, hosted, chain_bindings, agent_by_tree) -> list[dict]:
+    """The hardware bound on this chain: what each device is, where it is configured, what it drives.
+
+    The kind is the authored name, passed through untouched: which device a model named is the
+    deployment fact, and only the backend's templates interpret it. `drives` names the sensor a
+    sensor device reads, and is empty for one that moves a joint.
+    """
+
+    def entry(node, drives=""):
+        kind = next((str(name) for name in g.objects(node, EXEC["platform-name"])), "")
+        if not kind:
+            return None
+        return {
+            "kind": kind,
+            "config_key": next((str(n) for n in g.objects(node, SDO.name)), ""),
+            "drives": drives,
+        }
+
+    owners = [agent]
+    for binding in chain_bindings:
+        owner = agent_by_tree.get(binding["tree"])
+        # A tree may be bound by several models; the agent behind it is named once.
+        if owner is not None and owner not in owners:
+            owners.append(owner)
+    found = [entry(owner) for owner in owners]
+    found += [entry(sensor, f"{runtime_prefix}{_leaf(sensor)}") for sensor in hosted]
+    return [device for device in found if device is not None]
+
+
 def _agent_assemblies(g, attach_by_body):
     """Resolve model bindings into runtime robot assets, attachments, and chain bounds."""
     adjacency, _fixed = _kinematic_adjacency(g)
@@ -4354,6 +4389,11 @@ def _agent_assemblies(g, attach_by_body):
                 rows.append({"model": model, "tree": tree, "path": path, "entity": entity})
         bindings_by_modelled[modelled] = rows
     bindings = [row for rows in bindings_by_modelled.values() for row in rows]
+    agent_by_tree = {
+        row["tree"]: g.value(modelled, AGN["of-agent"])
+        for modelled, rows in bindings_by_modelled.items()
+        for row in rows
+    }
 
     def binding_for(node):
         return next((binding for binding in bindings if _tree_owns(binding["tree"], node)), None)
@@ -4443,29 +4483,30 @@ def _agent_assemblies(g, attach_by_body):
         attach_kind, attach_name, placement_frame, _parent_body = attach_by_body.get(
             root_body, ("World", "", root_frame, None)
         )
-        ft_sensors = [
+        hosted = sorted(g.objects(modelled, SOSA.hosts), key=str)
+        sensors = [
             {
-                "name": f"{runtime_prefix}{_leaf(sensor)}",
+                "id": f"{runtime_prefix}{_leaf(sensor)}",
+                "type": kind,
                 "frame_site": f"{runtime_prefix}{_leaf(frame)}",
                 "update_rate_hz": _hertz(g, g.value(sensor, SENSORS["update-rate"])),
-                "observes": sorted(_leaf(kind) for kind in g.objects(sensor, SOSA.observes)),
-                "device": next(
-                    (str(name) for name in g.objects(sensor, EXEC["platform-name"])), ""
-                ),
-                "config_key": next((str(n) for n in g.objects(sensor, SDO.name)), ""),
+                "observes": sorted(_leaf(observed) for observed in g.objects(sensor, SOSA.observes)),
             }
-            for sensor in sorted(g.objects(modelled, SOSA.hosts), key=str)
-            if SENSORS.ForceTorqueSensor in get_node_types(g, sensor)
+            for sensor in hosted
+            if (kind := _sensor_kind(g, sensor))
             and (frame := g.value(sensor, SENSORS.frame)) is not None
         ]
+        device = next((str(name) for name in g.objects(agent, EXEC["platform-name"])), "")
+        config_key = next((str(n) for n in g.objects(agent, SDO.name)), "")
         result.append(
             {
                 "agent": agent,
-                "device": next(
-                    (str(name) for name in g.objects(agent, EXEC["platform-name"])), ""
+                "device": device,
+                "config_key": config_key,
+                "sensors": sensors,
+                "devices": _bound_devices(
+                    g, agent, runtime_prefix, hosted, chain_bindings, agent_by_tree
                 ),
-                "config_key": next((str(n) for n in g.objects(agent, SDO.name)), ""),
-                "ft_sensors": ft_sensors,
                 "path": root_binding["path"],
                 "prefix": runtime_prefix,
                 "trees": [binding["tree"] for binding in chain_bindings],
@@ -4652,7 +4693,8 @@ def _robot_setups_from_graph(g):
     Returns ``(setups_by_node, ordered)`` where ``setups_by_node`` maps each robot's
     abstract agent node (the target of a solver's ``agn:of-agent``) to its setup tuple
     ``(urdf, chain_root, chain_end, chain_tip, robot_model, tool_body, tcp_site,
-    ft_sensors, runtime_prefix, owned_trees, kdl_chain, kdl_tree, kdl_joints, config_key)``.
+    sensors, devices, runtime_prefix, owned_trees, kdl_chain, kdl_tree, kdl_joints,
+    config_key)``.
 
     ``kdl_chain`` names the scene-derived chain builder emitted beside the controller and
     ``kdl_joints`` lists its joints as MuJoCo knows them, in KDL order -- see plan 013.
@@ -4698,7 +4740,8 @@ def _robot_setups_from_graph(g):
             _robot_model_for(assembly),
             assembly["tool_body"],
             assembly["tcp_site"],
-            assembly["ft_sensors"],
+            assembly["sensors"],
+            assembly["devices"],
             assembly["prefix"],
             assembly["trees"],
             *_scene_chain(trees, assembly),
@@ -5391,7 +5434,8 @@ def _solver_sections(
             solver.robot_model,
             solver.tool_body,
             solver.tcp_site,
-            solver.ft_sensors,
+            solver.sensors,
+            solver.devices,
             solver.runtime_prefix,
             solver.owned_trees,
             solver.kdl_chain,
@@ -5869,6 +5913,7 @@ def _platform_from_graph(g) -> dict:
         real = next(g.subjects(RDF.type, EXEC.RealWorld), None)
         _reject_scene_objects_on_hardware(g, real)
         _reject_undriven_devices(g, real)
+        _reject_unbound_sensors_on_hardware(g, real)
         return {
             "uri": str(real) if real is not None else None,
             "name": None,
@@ -5890,23 +5935,21 @@ def _config_path(g, context) -> str | None:
 
 
 def _reject_undriven_devices(g, context) -> None:
-    """Reject a bound device the backend would silently ignore."""
+    """Reject a bound device the backend would silently ignore.
+
+    The grammar decides what a model may name; this decides what the backend can actually
+    drive. A device the templates do not cover must fail here rather than generate a
+    controller that quietly leaves it dead.
+    """
     if context is None:
         return
     bound = sorted({str(name) for name in g.objects(None, EXEC["platform-name"])})
-    unknown = [name for name in bound if name not in BINDABLE_DEVICES]
-    if unknown:
-        raise ConstraintViolation(
-            "platform",
-            f"unknown device(s): {', '.join(unknown)}. "
-            f"Known: {', '.join(sorted(BINDABLE_DEVICES))}",
-        )
     undriven = [name for name in bound if name not in DRIVEN_DEVICES]
     if undriven:
         raise ConstraintViolation(
             "platform",
-            f"no backend support yet for device(s): {', '.join(undriven)}. "
-            f"Currently driven: {', '.join(sorted(DRIVEN_DEVICES))}. Remove the binding, or add "
+            f"no backend support for device(s): {', '.join(undriven)}. "
+            f"Driven: {', '.join(sorted(DRIVEN_DEVICES))}. Remove the binding, or add "
             "the driver templates before binding it.",
         )
 
@@ -5922,6 +5965,28 @@ def _reject_scene_objects_on_hardware(g, context) -> None:
             f"real-world execution cannot use scene objects ({', '.join(objects)}): their poses "
             "come from a simulator, and nothing measures them on hardware. Remove them, or model "
             "the location as an authored frame.",
+        )
+
+
+def _reject_unbound_sensors_on_hardware(g, context) -> None:
+    """Reject a sensor a model reads from but binds no device to.
+
+    In simulation the simulator answers for every sensor in the scene. On hardware a reading
+    comes from a device or from nowhere, so a wrench sourced from an unbound sensor would
+    generate a controller reading uninitialised memory every tick.
+    """
+    if context is None:
+        return
+    unbound = sorted(
+        _leaf(sensor)
+        for sensor in set(g.objects(None, SOSA.madeBySensor))
+        if not any(g.objects(sensor, EXEC["platform-name"]))
+    )
+    if unbound:
+        raise ConstraintViolation(
+            "platform",
+            f"real-world execution reads sensor(s) with no device bound: {', '.join(unbound)}. "
+            "Bind one in the platform block, or stop reading the sensor.",
         )
 
 
@@ -5971,9 +6036,12 @@ def _shared_runtime_members(slv_chain, iris) -> list[dict]:
 
 SUPPORTED_ROBOT_MODELS = {"KinovaGen3"}
 
-# Bindable in a model; driven by the backend. Move a name across as its templates land.
-BINDABLE_DEVICES = {"KinovaGen3", "KinovaGen3-2F85", "Robotiq2F85", "RobotiqFT300s"}
-DRIVEN_DEVICES = {"KinovaGen3"}
+# The devices this backend has driver templates for. A name the grammar accepts but that is
+# missing here is rejected at generation; add it once its templates land.
+DRIVEN_DEVICES = {"KinovaGen3", "KinovaGen3-2F85", "Robotiq2F85", "RobotiqFT300s"}
+
+# The sensor kinds the IR models, as the graph types them and as templates dispatch on them.
+SENSOR_KINDS = {SENSORS.ForceTorqueSensor: "ForceTorque"}
 
 
 def _validate_solvers(serial_chain_solvers, backend: str) -> None:
@@ -7460,7 +7528,7 @@ def generate_ir(manifest_path):
     default_setup = (
         ordered_setups[0]
         if ordered_setups
-        else ("", "", "", "", "", "", "", [], "", [], "", "", [], "")
+        else ("", "", "", "", "", "", "", [], [], "", [], "", "", [], "")
     )
     # Derive backend + FSM up front: both are pure functions of the graph and are inputs to
     # downstream construction (solver validation, runtime-robot annotation, motion FSM wiring).

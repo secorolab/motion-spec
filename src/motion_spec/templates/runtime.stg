@@ -91,6 +91,17 @@ inline KDL::Wrench transform_wrench(
     return world_observation_frame.M.Inverse(at_reference);
 }
 
+// A commanded gripper joint position as a fraction of the device's travel: 0 fully open, 1
+// fully closed. Clamped, because a controller may overshoot the authored range and no device
+// takes a command outside its stroke -- and on this path an out-of-range value closes a real
+// gripper on whatever is between its fingers.
+inline double gripper_closed_fraction(double joint_position, double travel) {
+    if (!(travel > 0.0)) {
+        throw std::runtime_error("gripper travel must be positive");
+    }
+    return std::clamp(joint_position / travel, 0.0, 1.0);
+}
+
 // Local search window around the previous projection. Forward is generous enough to keep up
 // with the commanded speed for a control period; backward is tight so the parameter cannot
 // slip across a fold of a self-intersecting path and reverse.

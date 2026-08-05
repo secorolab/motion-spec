@@ -805,7 +805,9 @@ class SolverWithInputAndOutput:
     robot_model: str = ""
     tool_body: str = ""
     tcp_site: str = ""
-    ft_sensors: list[dict] = field(default_factory=list)
+    # What the scene mounts on this chain, and what hardware is bound to drive it.
+    sensors: list[dict] = field(default_factory=list)
+    devices: list[dict] = field(default_factory=list)
     runtime_prefix: str = ""
     owned_trees: list = field(default_factory=list)
     # The scene-derived chain this solver runs on, and its joints as MuJoCo names them.

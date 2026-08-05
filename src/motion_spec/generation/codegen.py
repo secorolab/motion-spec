@@ -282,6 +282,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     if ir["backend"] == "mj_kdl":
         render_template(stst_bin, "cmake_mj_kdl", ir_payload_path, output_dir / "CMakeLists.txt")
     else:
+        render_template(stst_bin, "cmake_robif2b", ir_payload_path, output_dir / "CMakeLists.txt")
         render_template(stst_bin, "robot_config_header", ir_payload_path, output_dir / "robot_config.hpp")
 
 

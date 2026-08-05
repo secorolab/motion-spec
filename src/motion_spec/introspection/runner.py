@@ -56,7 +56,7 @@ def run_cataloged(
     frame_log = run_dir / "logs" / "frame_log.pb"
     rec_path = run_dir / "rec.ld.json"
 
-    _validate_new_run(run_dir, source_dir, executable)
+    _validate_new_run(run_dir, source_dir, executable, Path(cwd).resolve() if cwd else None)
     # frame_layout.json, not the log: the run is recorded before the log exists.
     schema_path = (
         source_dir / "contract" / "frame_layout.json"
@@ -113,8 +113,34 @@ _ROBOT_CONFIG_KEYS = (
     "session_timeout_ms", "connection_timeout_ms",
 )
 
+# What each device kind's reader in robot_config.hpp demands of its section. Optional keys
+# (timeout_ms, bias_samples) have documented defaults there and are not required here.
+_DEVICE_CONFIG_KEYS = {
+    "KinovaGen3": _ROBOT_CONFIG_KEYS,
+    "KinovaGen3-2F85": _ROBOT_CONFIG_KEYS,
+    "Robotiq2F85": ("port", "baudrate", "slave_address"),
+    "RobotiqFT300s": ("port", "baudrate", "slave_address"),
+}
 
-def _validate_robot_config(source_dir: Path) -> None:
+
+def _config_sections(table: dict, prefix: str = "") -> list[str]:
+    """Every dotted path in the file that carries values -- what a device's config_key names.
+
+    A table holding only tables is the namespace an authored FQN passes through
+    (`agents` in `[agents.arm1]`), not a section anything is configured in.
+    """
+    found = []
+    for name, value in table.items():
+        if not isinstance(value, dict):
+            continue
+        path = f"{prefix}{name}"
+        if any(not isinstance(entry, dict) for entry in value.values()):
+            found.append(path)
+        found += _config_sections(value, f"{path}.")
+    return found
+
+
+def _validate_robot_config(source_dir: Path, cwd: Path | None = None) -> None:
     """Check the deployment config before launching, so a typo fails here, not against hardware."""
     import tomllib
 
@@ -127,30 +153,45 @@ def _validate_robot_config(source_dir: Path) -> None:
     declared = (ir["platform"] or {}).get("config") or ""
     if not declared:
         raise RunnerError("real-world run declares no config; it has nowhere to read addresses from")
-    config_path = (source_dir.parent / declared) if not Path(declared).is_absolute() else Path(declared)
+    # Resolved exactly as the executable will resolve it: against the working directory the run
+    # gets. Checking any other file would clear a config the run never opens.
+    config_path = Path(declared)
+    if not config_path.is_absolute():
+        config_path = (Path(cwd) if cwd else Path.cwd()) / declared
     if not config_path.exists():
-        config_path = Path(declared)
-    if not config_path.exists():
-        raise RunnerError(f"{declared}: robot config not found")
+        raise RunnerError(f"{config_path}: robot config not found")
     try:
         config = tomllib.loads(config_path.read_text())
     except tomllib.TOMLDecodeError as error:
         raise RunnerError(f"{config_path}: {error}") from error
-    for solver in ir.get("serial_chain_solvers") or ():
-        key = solver.get("config_key")
-        if not key:
-            continue
+    # A chain that shares another's runtime repeats its owner's devices; the pair is the fact.
+    bound = {
+        (device["config_key"], device["kind"])
+        for solver in ir.get("serial_chain_solvers") or ()
+        for device in solver.get("devices") or ()
+        if device.get("config_key")
+    }
+    for key, kind in sorted(bound):
         section = config
         for part in key.split("."):
             section = section.get(part) if isinstance(section, dict) else None
             if section is None:
-                raise RunnerError(f"{config_path}: no [{key}] section for '{solver['id']}'")
-        missing = [field for field in _ROBOT_CONFIG_KEYS if field not in section]
+                raise RunnerError(f"{config_path}: no [{key}] section for the bound {kind}")
+        missing = [field for field in _DEVICE_CONFIG_KEYS.get(kind, ()) if field not in section]
         if missing:
             raise RunnerError(f"{config_path}: [{key}] is missing {', '.join(missing)}")
+    # A section for nothing bound is a mis-key or a stale device: it would connect to hardware
+    # this run never commands. Under KinovaGen3-2F85 a separate gripper section lands here.
+    unbound = sorted(set(_config_sections(config)) - {key for key, _ in bound})
+    if unbound:
+        raise RunnerError(
+            f"{config_path}: [{'], ['.join(unbound)}] configures nothing this run binds"
+        )
 
 
-def _validate_new_run(run_dir: Path, source_dir: Path, executable: Path) -> None:
+def _validate_new_run(
+    run_dir: Path, source_dir: Path, executable: Path, cwd: Path | None = None
+) -> None:
     if not source_dir.exists():
         raise RunnerError(f"{source_dir}: source directory does not exist")
     required = (
@@ -166,7 +207,7 @@ def _validate_new_run(run_dir: Path, source_dir: Path, executable: Path) -> None
             raise RunnerError(f"{path}: required generated artifact is missing")
     if not executable.exists():
         raise RunnerError(f"{executable}: executable does not exist")
-    _validate_robot_config(source_dir)
+    _validate_robot_config(source_dir, cwd)
     if run_dir.exists() and (run_dir / "rec.ld.json").exists():
         raise RunnerError(f"{run_dir}: already contains rec.ld.json; choose a fresh run directory")
     frame_log = run_dir / "logs" / "frame_log.pb"

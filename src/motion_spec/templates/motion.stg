@@ -248,6 +248,14 @@ chain-robot-member(solver) ::= <<
     manipulator_robot <solver.id>;
 >>
 
+// What a bound device exposes to the motion functions. Only a runtime owner declares them:
+// the solvers sharing that runtime reach the same device through it.
+chain-device-members(solver, backend) ::= <<
+<if(solver.runtime_owner)><({chain-device-members-<backend>})(solver)><endif>
+>>
+
+chain-device-members-mj_kdl(solver) ::= <<>>
+
 motion-state-member(motion) ::= <<
     <motion.id>_state <motion.id>_state_instance;
 >>
@@ -391,7 +399,11 @@ command-forwarding(backend, motion) ::= <<
 <({command-forwarding-<backend>})(motion)>
 >>
 
+// A forwarded command exists only where a gripper joint is commanded, and generation rejects
+// that without a gripper bound -- so the target is wired by the time this runs.
 command-forwarding-robif2b(motion) ::= <<
+<motion.forwarded_commands:{cmd | <if(cmd.target)>    *robot.<cmd.robot_id>.gripper_cmd = shared.<cmd.control_signal.id>;
+<endif>}; separator="">
 >>
 
 command-forwarding-mj_kdl(motion) ::= <<

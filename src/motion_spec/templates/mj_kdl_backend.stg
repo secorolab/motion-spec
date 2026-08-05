@@ -19,12 +19,16 @@ struct manipulator_robot {
 robot-state-init-mj_kdl-KinovaGen3(solver) ::= <<
 >>
 
+mj-sensor-ForceTorque(solver, sensor) ::= <<
+    mj_tool_<solver.runtime_id>.ft_sensors.push_back(mj_kdl::ForceTorqueSensorSpec{ .name = "<sensor.id>", .frame_site = "<sensor.frame_site>" \});
+>>
+
 robot-init-mj_kdl-KinovaGen3(solver) ::= <<
 <if(solver.runtime_owner)>    mj_kdl::Robot mj_<solver.runtime_id>{};
 <if(solver.tool_body)>    mj_kdl::ToolFrameSpec mj_tool_<solver.runtime_id>{};
     mj_tool_<solver.runtime_id>.tool_body = "<solver.tool_body>";
 <if(solver.tcp_site)>    mj_tool_<solver.runtime_id>.tcp_site = "<solver.tcp_site>";
-<endif><solver.ft_sensors:{ft |    mj_tool_<solver.runtime_id>.ft_sensors.push_back(mj_kdl::ForceTorqueSensorSpec{ .name = "<ft.name>", .frame_site = "<ft.frame_site>" \});
+<endif><solver.sensors:{s |<({mj-sensor-<s.type>})(solver, s)>
 }>    KDL::Tree built_tree_<solver.runtime_id>{};
     if (!scene_kdl::make_tree_<solver.kdl_tree>(&built_tree_<solver.runtime_id>)) {
         std::cerr \<\< "make_tree_<solver.kdl_tree>() failed for runtime <solver.runtime_id>\n";
@@ -83,9 +87,6 @@ robot-shutdown-mj_kdl-KinovaGen3(solver) ::= <<
 
 app-chain-includes-mj_kdl(has_serial_chain) ::= <<
 <if(has_serial_chain)>
-#ifdef MOTION_SPEC_ENABLE_INTROSPECTION
-#include "introspect_model.hpp"
-#endif
 #include \<cstring\>
 #include \<cstdlib\>
 #include \<deque\>

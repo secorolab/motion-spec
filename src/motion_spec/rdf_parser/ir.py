@@ -222,11 +222,70 @@ class SolverIdFactory:
     def component_acceleration_specification(self, axis: SpatialAxis) -> str:
         return f"cart_acc_{self.controller}_{axis.suffix}"
 
+    def component_measured_derivative(self, axis: SpatialAxis) -> str:
+        return f"{self.controller}_measured_derivative_{axis.suffix}"
+
     def pose_evaluator(self) -> str:
         return f"eval_pose_diff_{self.controller}"
 
     def pose_difference(self) -> str:
         return f"pose_diff_{self.controller}"
+
+    # IRI suffixes. The id puts its tag first (`eacc_<ctrl>_<axis>`); the IRI leads with the
+    # parent, so the same derivation reads as `<ctrl-iri>/eacc-<axis>`.
+    SUFFIXES = {
+        "component_controller": "{axis}",
+        "component_error": "err-{axis}",
+        "component_energy": "eacc-{axis}",
+        "component_acceleration": "acc-{axis}",
+        "component_constraint": "acc-cstr-{axis}",
+        "component_acceleration_specification": "cart-acc-{axis}",
+        "component_measured_derivative": "measured-derivative-{axis}",
+        "pose_evaluator": "eval-pose-diff",
+        "pose_difference": "pose-diff",
+    }
+
+    # Whether a derivation narrows the parent (a per-axis component of it) or computes something
+    # new from it. Decides prov:specializationOf vs prov:wasDerivedFrom.
+    SPECIALIZATIONS = frozenset({"component_controller", "component_error"})
+
+    def suffix(self, kind: str, axis: SpatialAxis | None = None) -> str:
+        """IRI path segment for one derivation kind."""
+        return self.SUFFIXES[kind].format(axis=_kebab(axis.suffix) if axis else "")
+
+
+_AXIS_DERIVATIONS = (
+    "component_controller",
+    "component_error",
+    "component_energy",
+    "component_acceleration",
+    "component_constraint",
+    "component_acceleration_specification",
+    "component_measured_derivative",
+)
+
+
+def _register_derived_family(iris, parent_node, ids: SolverIdFactory, axes) -> None:
+    """Register every IRI this factory can mint for one controller and its axes.
+
+    Registered per family rather than at each inline mint: the sites call different subsets, and
+    a missed one silently leaves a slot unaddressable. An id registered but never used is inert.
+    """
+    parent = str(parent_node)
+    for kind in ("pose_evaluator", "pose_difference"):
+        iris.register(
+            getattr(ids, kind)(), parent, ids.suffix(kind), DerivedIriRegistry.DERIVATION
+        )
+    for axis in axes or ():
+        for kind in _AXIS_DERIVATIONS:
+            iris.register(
+                getattr(ids, kind)(axis),
+                parent,
+                ids.suffix(kind, axis),
+                DerivedIriRegistry.SPECIALIZATION
+                if kind in SolverIdFactory.SPECIALIZATIONS
+                else DerivedIriRegistry.DERIVATION,
+            )
 
 
 LINEAR_AXES = tuple(SpatialAxis("linear-acceleration", axis) for axis in "xyz")
@@ -405,9 +464,12 @@ class SolverDerivationContext:
     controllers_by_solver: dict[URIRef, tuple[ControllerDerivation, ...]]
     semantics_by_solver: dict[URIRef, SolverSemantics]
     shared_constraints: frozenset[URIRef]
+    # Carried here rather than threaded through six derivation signatures: the context already
+    # reaches every site that mints an id, which is the only place the parent node is still known.
+    iris: DerivedIriRegistry
 
 
-def _solver_derivation_context(g) -> SolverDerivationContext:
+def _solver_derivation_context(g, iris: DerivedIriRegistry) -> SolverDerivationContext:
     """Resolve controller ownership and command shape without generated solver nodes."""
     axes_by_controller = _authored_controller_axes(g)
     by_handler = {}
@@ -460,6 +522,7 @@ def _solver_derivation_context(g) -> SolverDerivationContext:
         shared_constraints=frozenset(
             constraint for constraint, count in constraint_counts.items() if count > 1
         ),
+        iris=iris,
     )
 
 
@@ -606,6 +669,7 @@ def _derived_controller(
     """Build a controller dataclass from one authored controller and optional pose axis."""
     source_id = p.id(plan.controller)
     ids = SolverIdFactory(source_id, _motion_suffix(p, plan.motion))
+    _register_derived_family(context.iris, plan.controller, ids, plan.axes)
     input_kind = context.semantics_by_solver[plan.solver].acceleration_input
     if axis is not None:
         controller_id = ids.component_controller(axis)
@@ -719,6 +783,7 @@ def _derived_controllers(g, p, context, plan: ControllerDerivation):
 def _derived_acceleration_constraints(g, p, context, plan: ControllerDerivation):
     """Build ordered ACHD acceleration-energy constraints for one controller."""
     ids = SolverIdFactory(p.id(plan.controller), _motion_suffix(p, plan.motion))
+    _register_derived_family(context.iris, plan.controller, ids, plan.axes)
     target = g.value(plan.view, MAP.superobject) if plan.view is not None else plan.quantity
     frame_node = g.value(target, GEOM_COORD["as-seen-by"])
     frame = p.frame(frame_node) if frame_node is not None else None
@@ -735,6 +800,15 @@ def _derived_acceleration_constraints(g, p, context, plan: ControllerDerivation)
             )
             constraint_id = f"acc_cstr_{p.id(plan.quantity)}{suffix}"
             energy_id = f"eacc_{p.id(plan.quantity)}{suffix}"
+            # Single-axis: the id is built off the quantity, not the controller, so it is the
+            # quantity these derive from.
+            for derived_id, tag in ((constraint_id, "acc-cstr"), (energy_id, "eacc")):
+                context.iris.register(
+                    derived_id,
+                    str(plan.quantity),
+                    f"{tag}{_kebab(suffix)}",
+                    DerivedIriRegistry.DERIVATION,
+                )
         result.append(
             AccelerationConstraint(
                 id=constraint_id,
@@ -757,6 +831,7 @@ def _derived_acceleration_constraints(g, p, context, plan: ControllerDerivation)
 def _derived_cartesian_accelerations(g, p, context, plan: ControllerDerivation):
     """Build Cartesian acceleration commands resolved to joint acceleration before RNEA."""
     ids = SolverIdFactory(p.id(plan.controller), _motion_suffix(p, plan.motion))
+    _register_derived_family(context.iris, plan.controller, ids, plan.axes)
     target = g.value(plan.view, MAP.superobject) if plan.view is not None else plan.quantity
     frame_node = g.value(target, GEOM_COORD["as-seen-by"])
     frame = p.frame(frame_node) if frame_node is not None else None
@@ -773,6 +848,13 @@ def _derived_cartesian_accelerations(g, p, context, plan: ControllerDerivation):
             )
             specification_id = f"cart_acc_{p.id(plan.quantity)}{suffix}"
             acceleration_id = f"acc_{p.id(plan.quantity)}{suffix}"
+            for derived_id, tag in ((specification_id, "cart-acc"), (acceleration_id, "acc")):
+                context.iris.register(
+                    derived_id,
+                    str(plan.quantity),
+                    f"{tag}{_kebab(suffix)}",
+                    DerivedIriRegistry.DERIVATION,
+                )
         result.append(
             CartesianAccelerationSpecification(
                 id=specification_id,
@@ -851,6 +933,7 @@ def _derive_solver_closures(g, p, context, closures: dict) -> None:
         for plan in plans:
             source_id = p.id(plan.controller)
             ids = SolverIdFactory(source_id, _motion_suffix(p, plan.motion))
+            _register_derived_family(context.iris, plan.controller, ids, plan.axes)
             controllers = _derived_controllers(g, p, context, plan)
             closures.pop(source_id, None)
             for controller in controllers:
@@ -911,6 +994,7 @@ def _derive_solver_data(g, p, context, data: list, views: dict) -> None:
             if len(plan.axes) <= 1:
                 continue
             ids = SolverIdFactory(p.id(plan.controller), _motion_suffix(p, plan.motion))
+            _register_derived_family(context.iris, plan.controller, ids, plan.axes)
             target = g.value(plan.view, MAP.superobject)
             frame_node = g.value(target, GEOM_COORD["as-seen-by"])
             difference = PoseDifference(
@@ -4581,6 +4665,78 @@ def _uri_table(id_nodes):
     ]
 
 
+def _kebab(text: str) -> str:
+    """Kebab-case an id fragment for use as an IRI path segment."""
+    return text.replace("_", "-").lower()
+
+
+class DerivedIriRegistry:
+    """IRIs for codegen-derived entities, minted as a path segment under the parent they came from.
+
+    An id is a lossy projection of its IRI (Parser.id keeps only the local name), so a derived
+    entity's IRI cannot be recovered from its id downstream -- it has to be recorded where the
+    derivation happens, against the parent node that is still in hand there.
+    """
+
+    SPECIALIZATION = "specializationOf"
+    DERIVATION = "wasDerivedFrom"
+
+    def __init__(self, id_nodes):
+        self._authored = {
+            id_: str(node) for id_, node in id_nodes if isinstance(node, URIRef)
+        }
+        self._derived: dict[str, dict] = {}
+
+    def iri_of(self, id_):
+        """IRI for an id, authored or already derived; None when neither."""
+        entry = self._derived.get(id_)
+        return entry["uri"] if entry else self._authored.get(id_)
+
+    def register(self, id_, parent_iri, suffix, relation, types=()):
+        """Mint <parent_iri>/<suffix> for id_ and record how it relates to its parent."""
+        if not id_ or not parent_iri:
+            return None
+        # An authored node always wins: a derived IRI must never shadow a model's own.
+        authored = self._authored.get(id_)
+        if authored is not None:
+            return authored
+        uri = f"{parent_iri.rstrip('/')}/{_kebab(suffix)}"
+        existing = self._derived.get(id_)
+        if existing is not None:
+            if existing["uri"] != uri:
+                raise RuntimeError(
+                    f"derived IRI collision: '{id_}' minted as both "
+                    f"{existing['uri']} and {uri}"
+                )
+            return uri
+        self._derived[id_] = {
+            "uri": uri,
+            "parent": parent_iri,
+            "relation": relation,
+            "types": list(types),
+        }
+        return uri
+
+    def rows(self):
+        """[{id, uri}] rows for the introspection uris table, sorted by id."""
+        return [
+            {"id": id_, "uri": entry["uri"]}
+            for id_, entry in sorted(self._derived.items())
+        ]
+
+    def nodes(self):
+        """Derivation-graph nodes: what each derived entity is, and what it came from."""
+        return [
+            {
+                "id": entry["uri"],
+                "types": ["prov:Entity", *entry["types"]],
+                "relation": entry["relation"],
+                "parent": entry["parent"],
+            }
+            for _, entry in sorted(self._derived.items())
+        ]
+
+
 def _id_ref(value):
     """Normalize a value to its id string (str/Enum/.id), or None."""
     if value is None:
@@ -4632,11 +4788,16 @@ def _build_introspection(
     shared_data,
     serial_chain_solvers,
     platform,
+    iris,
 ):
     """Build the introspection artifact (uris, motions, controllers, monitors, quantities,
     provenance) and fold in the controller-state and frame-log samples.
     """
-    uri_rows = _uri_table(id_nodes)
+    # Appended, never substituted: authored nodes keep their own IRIs, derived ones extend them.
+    # Last-wins on a repeated id is deliberate and predates this -- constraint names, metamodel
+    # predicates and aliases legitimately share a bare id (see Parser.assert_no_id_collisions,
+    # which polices only the context quantities where a merge would be silent).
+    uri_rows = _uri_table(id_nodes) + iris.rows()
     uri_by_id = {row["id"]: row["uri"] for row in uri_rows}
 
     controllers = []
@@ -4874,12 +5035,84 @@ def _build_introspection(
     # controller signal ids, controller-internal-state logging (which grows shared_data),
     # then the frame-log quantity/spatial samples that read them.
     _annotate_controller_signals(introspection["controllers"], closures)
-    add_controller_internal_state_logging(closures, shared_data, introspection, motions)
-    add_joint_space_logging(serial_chain_solvers, motions, shared_data, introspection, backend)
+    add_controller_internal_state_logging(closures, shared_data, introspection, motions, iris)
+    add_joint_space_logging(
+        serial_chain_solvers, motions, shared_data, introspection, backend, iris
+    )
     add_quantity_samples(introspection, shared_data, views)
     add_spatial_samples(introspection, shared_data)
     annotate_dataflow(introspection, shared_data, closures, motions, serial_chain_solvers, views)
+    # The derivation registry grew while folding the samples in, so the table is rebuilt here and
+    # the rows built before that are backfilled from it.
+    introspection["uris"] = _uri_table(id_nodes) + iris.rows()
+    introspection["derivations"] = iris.nodes()
+    _backfill_uris(introspection)
+    _assert_every_id_resolves(introspection)
     return introspection
+
+
+def _backfill_uris(introspection: dict) -> None:
+    """Attach the IRI to every row minted before the derivation registry was complete."""
+    uri_by_id = {
+        row["id"]: row["uri"] for row in introspection.get("uris", []) if row.get("uri")
+    }
+    for key in ("controllers", "monitors", "motions", "quantities", "quantity_samples"):
+        for row in introspection.get(key) or ():
+            if isinstance(row, dict) and not row.get("uri"):
+                uri = uri_by_id.get(row.get("source_id") or row.get("id"))
+                if uri:
+                    row["uri"] = uri
+    for rows in (introspection.get("spatial_samples") or {}).values():
+        for row in rows:
+            if isinstance(row, dict) and not row.get("uri"):
+                uri = uri_by_id.get(row.get("id"))
+                if uri:
+                    row["uri"] = uri
+
+
+# Ids that name a slot in the frame log or a row in the introspection artifact. Every one of them
+# has to resolve to an IRI, or a run graph cannot make a statement about what the log recorded.
+def _assert_every_id_resolves(introspection: dict) -> None:
+    """Fail loudly when an introspection id has no IRI, listing every one rather than the first."""
+    uri_by_id = {
+        row["id"]: row["uri"] for row in introspection.get("uris", []) if row.get("uri")
+    }
+    unresolved: dict[str, set] = {}
+
+    def check(id_, origin: str) -> None:
+        if isinstance(id_, str) and id_ and id_ not in uri_by_id:
+            unresolved.setdefault(id_, set()).add(origin)
+
+    def check_row(row, key: str) -> None:
+        """A row is resolved if it carries a uri; otherwise its id must be in the table."""
+        if _field(row, "uri"):
+            return
+        # A signal row is a binding, not an entity: its id is a synthetic `<owner>.<role>` and
+        # its uri is the quantity's, so the quantity is what has to resolve.
+        if key == "signals":
+            check(_field(row, "quantity"), key)
+            return
+        check(_field(row, "source_id") or _field(row, "id"), key)
+
+    for key in ("controllers", "monitors", "motions", "quantities", "signals", "quantity_samples"):
+        for row in introspection.get(key) or ():
+            check_row(row, key)
+    for pool, rows in (introspection.get("spatial_samples") or {}).items():
+        for row in rows:
+            check(_field(row, "id"), f"spatial_samples.{pool}")
+    for member_id, entry in (introspection.get("dataflow") or {}).items():
+        check(member_id, "dataflow")
+        check((entry.get("producer") or {}).get("id"), "dataflow.producer")
+
+    if unresolved:
+        details = "\n".join(
+            f"  '{id_}' (from {', '.join(sorted(origins))})"
+            for id_, origins in sorted(unresolved.items())
+        )
+        raise RuntimeError(
+            "introspection: ids with no IRI -- a derived entity was minted without registering "
+            f"its IRI against the node it came from:\n{details}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -5594,7 +5827,7 @@ def _apply_monitor_debounce(handlers, control_period_ns: int) -> None:
                 )
 
 
-def _shared_runtime_members(slv_chain) -> list[dict]:
+def _shared_runtime_members(slv_chain, iris) -> list[dict]:
     """Extra shared-data members for force/torque sensor state."""
     members = []
     seen_ft_ids = set()
@@ -5604,8 +5837,19 @@ def _shared_runtime_members(slv_chain) -> list[dict]:
                 if out.id in seen_ft_ids:
                     continue
                 seen_ft_ids.add(out.id)
-                members.append({"id": f"{out.id}_ft_bias", "type": "Wrench"})
-                members.append({"id": f"{out.id}_ft_settle", "type": "IntCounter"})
+                # The tare state is computed from the reading, so it derives from that sensor
+                # output's own node.
+                sensor_iri = iris.iri_of(out.id)
+                if sensor_iri is None:
+                    raise RuntimeError(
+                        f"ft tare state: sensor output '{out.id}' has no IRI to derive from"
+                    )
+                for suffix, member_type in (("ft_bias", "Wrench"), ("ft_settle", "IntCounter")):
+                    member_id = f"{out.id}_{suffix}"
+                    members.append({"id": member_id, "type": member_type})
+                    iris.register(
+                        member_id, sensor_iri, suffix, DerivedIriRegistry.DERIVATION
+                    )
 
     return members
 
@@ -5849,7 +6093,7 @@ def _annotate_controller_signals(controllers, closures: dict) -> None:
 
 
 def add_controller_internal_state_logging(
-    closures: dict, shared_data: list, introspection: dict, motions
+    closures: dict, shared_data: list, introspection: dict, motions, iris
 ) -> None:
     """Log stateful controllers' internal state (error integral, previous error, first-sample flag)
     as shared_data items and introspection quantities.
@@ -5907,11 +6151,21 @@ def add_controller_internal_state_logging(
             ("first_sample", "Bool", "is_first_sample"),
         ]
         closure_samples = []
+        # The parent is resolved through the registry, not the graph: a per-axis controller is
+        # itself derived and has no graph node of its own.
+        parent_iri = iris.iri_of(controller_id)
+        if parent_iri is None:
+            raise RuntimeError(
+                f"controller internal state: '{controller_id}' has no IRI to derive from"
+            )
         for state_name, item_type, getter in samples:
             item_id = f"{controller_id}_{state_name}"
             add_shared(item_id, item_type, controller_id, state_name)
             if item_type == "Quantity":
                 add_quantity(item_id, controller_id, state_name)
+            iris.register(
+                item_id, parent_iri, state_name, DerivedIriRegistry.DERIVATION
+            )
             closure_samples.append({"id": item_id, "getter": getter})
         closure["internal_state_samples"] = closure_samples
 
@@ -5953,7 +6207,7 @@ def _cpp_identifier(name: str) -> str:
 
 
 def add_joint_space_logging(
-    serial_chain_solvers, motions, shared_data: list, introspection: dict, backend: str
+    serial_chain_solvers, motions, shared_data: list, introspection: dict, backend: str, iris
 ) -> None:
     """Mirror each runtime's joint-space signals into shared_data so the frame log can carry them.
 
@@ -6009,6 +6263,12 @@ def add_joint_space_logging(
         }
 
         ids_by_channel: dict[str, list] = {channel.name: [] for channel in channels}
+        # Mirrors are keyed by runtime, so they derive from the runtime's solver node.
+        runtime_iri = iris.iri_of(runtime_id) or iris.iri_of(_field(solvers[0], "id"))
+        if runtime_iri is None:
+            raise RuntimeError(
+                f"joint-space logging: runtime '{runtime_id}' has no IRI to derive from"
+            )
         for index, joint in enumerate(joints):
             for channel in channels:
                 shared_id = f"{runtime_id}_{channel.name}_{_cpp_identifier(joint)}"
@@ -6036,6 +6296,12 @@ def add_joint_space_logging(
                 }
                 shared_data.append(entry)
                 quantities.append(dict(entry))
+                iris.register(
+                    shared_id,
+                    runtime_iri,
+                    f"{channel.name}-{_cpp_identifier(joint)}",
+                    DerivedIriRegistry.DERIVATION,
+                )
                 ids_by_channel[channel.name].append({"id": shared_id, "index": index})
 
         # Every solver on the runtime mirrors the same ids: whichever motion is active writes them.
@@ -7077,6 +7343,7 @@ def generate_ir(manifest_path):
 
     p = Parser(g)
     node_by_id, id_nodes = _node_indexes(g, p)
+    iris = DerivedIriRegistry(id_nodes)
     setups_by_node, ordered_setups = _robot_setups_from_graph(g)
     default_setup = (
         ordered_setups[0]
@@ -7090,7 +7357,7 @@ def generate_ir(manifest_path):
     fsm = _fsm_from_graph(g)
     scene = _scene_from_graph(g)
     _validate_scene(scene)
-    derivation = _solver_derivation_context(g)
+    derivation = _solver_derivation_context(g, iris)
 
     (slv_platform_vel, sched1, hdl, sched2, slv_chain, sched3, slv_platform_frc, sched4) = _solver_sections(
         g, p, setups_by_node, default_setup, derivation, scene.objects
@@ -7167,7 +7434,7 @@ def generate_ir(manifest_path):
         view_map=view_map,
         fk_output_ids={out.id for s in slv_chain for out in s.output},
     )
-    shared_data = shared_data + _shared_runtime_members(slv_chain)
+    shared_data = shared_data + _shared_runtime_members(slv_chain, iris)
 
     introspection = _build_introspection(
         app_model_path=app_model_path,
@@ -7185,6 +7452,7 @@ def generate_ir(manifest_path):
         shared_data=shared_data,
         serial_chain_solvers=slv_chain,
         platform=platform,
+        iris=iris,
     )
 
     schedule = sched1 + sched2 + sched3 + sched4

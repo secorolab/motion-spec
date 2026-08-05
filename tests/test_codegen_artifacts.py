@@ -5,13 +5,17 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from rdflib import Graph
 from rdf_utils.resolver import IriToFileResolver, install_resolver
 
 from motion_spec.classes.closures import closure_output_ids
 from motion_spec.generation import codegen
 from motion_spec.rdf_parser.ir import (
+    DerivedIriRegistry,
     _annotate_controller_signals,
+    _assert_every_id_resolves,
     add_controller_internal_state_logging,
     add_quantity_samples,
     add_spatial_samples,
@@ -24,7 +28,22 @@ from motion_spec.generation.artifacts import (
     build_schema,
     fields_with_offsets,
 )
-from motion_spec.introspection.provenance import build_provenance_document
+from motion_spec.introspection.provenance import (
+    build_derivation_document,
+    build_provenance_document,
+)
+
+
+def _stub_registry(introspection: dict) -> DerivedIriRegistry:
+    """Registry seeded with an IRI for every controller the sample IR declares."""
+    from rdflib import URIRef
+
+    return DerivedIriRegistry(
+        [
+            (controller["id"], URIRef(f"https://example.org/model/{controller['id']}"))
+            for controller in introspection.get("controllers", [])
+        ]
+    )
 
 
 def _sample_ir() -> dict:
@@ -373,7 +392,13 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
     for motion in ir["motions"]:
         _annotate_controller_signals(motion.get("controllers", []), ir["closures"])
     _annotate_controller_signals(ir["introspection"]["controllers"], ir["closures"])
-    add_controller_internal_state_logging(ir["closures"], ir["shared_data"], ir["introspection"], ir["motions"])
+    add_controller_internal_state_logging(
+        ir["closures"],
+        ir["shared_data"],
+        ir["introspection"],
+        ir["motions"],
+        _stub_registry(ir["introspection"]),
+    )
     add_quantity_samples(ir["introspection"], ir["shared_data"], ir["views"])
     add_spatial_samples(ir["introspection"], ir["shared_data"])
     ir_path = tmp_path / "ir.json"
@@ -462,3 +487,99 @@ def test_provenance_document_is_jsonld_and_prov_shacl_conformant(tmp_path: Path)
     shape_path = metamodels / "prov.shacl.ttl"
     conforms, _, report = pyshacl.validate(graph, shacl_graph=str(shape_path))
     assert conforms, report
+
+
+# --- derived-entity IRIs (plan 015) ---------------------------------------------------------
+def _registry(**authored):
+    from rdflib import URIRef
+
+    return DerivedIriRegistry([(id_, URIRef(uri)) for id_, uri in authored.items()])
+
+
+def test_derived_iri_extends_its_parent_path():
+    iris = _registry(ctrl_x="https://example.org/m/handler/ctrl-x")
+    minted = iris.register(
+        "ctrl_x_error_integral",
+        "https://example.org/m/handler/ctrl-x",
+        "error_integral",
+        DerivedIriRegistry.DERIVATION,
+    )
+    assert minted == "https://example.org/m/handler/ctrl-x/error-integral"
+    assert iris.iri_of("ctrl_x_error_integral") == minted
+    # A minted IRI is a proper path extension, so the parent is recoverable from it.
+    assert minted.rsplit("/", 1)[0] == iris.iri_of("ctrl_x")
+
+
+def test_authored_iri_is_never_shadowed_by_a_derived_one():
+    iris = _registry(ctrl_x="https://example.org/m/authored/ctrl-x")
+    returned = iris.register(
+        "ctrl_x", "https://example.org/m/other", "ctrl-x", DerivedIriRegistry.DERIVATION
+    )
+    assert returned == "https://example.org/m/authored/ctrl-x"
+    assert iris.rows() == []
+
+
+def test_registering_one_id_with_two_iris_raises():
+    iris = _registry()
+    iris.register("err_x", "https://example.org/m/a", "err", DerivedIriRegistry.DERIVATION)
+    with pytest.raises(RuntimeError, match="derived IRI collision"):
+        iris.register("err_x", "https://example.org/m/b", "err", DerivedIriRegistry.DERIVATION)
+
+
+def test_repeated_identical_registration_is_a_no_op():
+    iris = _registry()
+    for _ in range(2):
+        iris.register("err_x", "https://example.org/m/a", "err", DerivedIriRegistry.DERIVATION)
+    assert len(iris.rows()) == 1
+
+
+def test_totality_assertion_lists_every_unresolved_id():
+    introspection = {
+        "uris": [{"id": "ctrl_x", "uri": "https://example.org/m/ctrl-x"}],
+        "controllers": [{"id": "ctrl_x"}, {"id": "ctrl_y"}],
+        "quantities": [{"id": "q_missing"}],
+        "dataflow": {"member_a": {"producer": {"kind": "closure", "id": "producer_missing"}}},
+    }
+    with pytest.raises(RuntimeError) as excinfo:
+        _assert_every_id_resolves(introspection)
+    message = str(excinfo.value)
+    # Every gap in one build, not just the first.
+    for missing in ("ctrl_y", "q_missing", "member_a", "producer_missing"):
+        assert missing in message
+    assert "ctrl_x" not in message.split("\n", 1)[1]
+
+
+def test_a_row_carrying_its_own_uri_needs_no_table_entry():
+    introspection = {
+        "uris": [],
+        "quantities": [{"id": "q_a", "uri": "https://example.org/m/q-a"}],
+        "signals": [{"id": "ctrl_x.error_signal", "quantity": "q_a", "uri": "https://example.org/m/q-a"}],
+    }
+    _assert_every_id_resolves(introspection)
+
+
+def test_derivation_document_links_each_node_to_its_parent():
+    iris = _registry(ctrl_x="https://example.org/m/ctrl-x")
+    iris.register(
+        "ctrl_x_lin_x", "https://example.org/m/ctrl-x", "lin_x", DerivedIriRegistry.SPECIALIZATION
+    )
+    iris.register(
+        "ctrl_x_error_integral",
+        "https://example.org/m/ctrl-x",
+        "error_integral",
+        DerivedIriRegistry.DERIVATION,
+    )
+    document = build_derivation_document({"introspection": {"derivations": iris.nodes()}})
+    graph = Graph().parse(data=json.dumps(document), format="json-ld")
+    prov = "http://www.w3.org/ns/prov#"
+    links = {
+        (str(s), str(p)): str(o)
+        for s, p, o in graph
+        if str(p) in (f"{prov}specializationOf", f"{prov}wasDerivedFrom")
+    }
+    assert links[("https://example.org/m/ctrl-x/lin-x", f"{prov}specializationOf")] == (
+        "https://example.org/m/ctrl-x"
+    )
+    assert links[("https://example.org/m/ctrl-x/error-integral", f"{prov}wasDerivedFrom")] == (
+        "https://example.org/m/ctrl-x"
+    )

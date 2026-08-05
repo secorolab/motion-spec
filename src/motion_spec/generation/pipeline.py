@@ -121,6 +121,13 @@ def _organize_generation(model_dir: Path, controller_dir: Path | None = None) ->
     if target_coord_provenance.is_file():
         _rewrite_locations(target_coord_provenance, locations)
     if controller_dir:
+        # The derivation graph extends the model's own graphs, so it lives beside them.
+        derived = controller_dir / "derived.ld.json"
+        if derived.is_file():
+            model_name = app_manifest.name.removesuffix("-app.ld.json")
+            target = model_dir / f"{model_name}-derived.ld.json"
+            derived.replace(target)
+            locations[derived.resolve()] = target
         contract_dir = generated / "contract"
         contract_dir.mkdir()
         for artifact in ("schema.json", "frame_layout.json", "frame_log.proto"):

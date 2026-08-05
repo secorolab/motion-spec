@@ -236,6 +236,10 @@ def _create_generation_run_manifest(
             else None
         ),
         "model": relative(model_manifests[0]),
+        # Without it the log's derived slot IRIs resolve to nothing.
+        "derived": next(
+            (relative(path) for path in (generated / "model").glob("*-derived.ld.json")), None
+        ),
         "ir": relative(generated / "model" / "ir.json"),
         "controller": relative(generated / "controller"),
         "log_producer_executable": (
@@ -321,6 +325,9 @@ def create_archive_manifest(
         copies[model_source.name] = "model/model.ld.json"
     if schema.get("ir_path") and (source_dir / Path(schema["ir_path"]).name).exists():
         copies[Path(schema["ir_path"]).name] = "model/ir.json"
+    # Without it the archived log's derived slot IRIs resolve to nothing.
+    for derived in source_dir.glob("*-derived.ld.json"):
+        copies[derived.name] = "model/derived.ld.json"
 
     # Track where each source artifact lands in the archive so provenance atLocations
     # can be rewritten to point at the archived copy (keyed by resolved source path).

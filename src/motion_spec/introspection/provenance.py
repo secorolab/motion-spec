@@ -320,6 +320,34 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
     }
 
 
+# The activity that mints these -- the same one the static provenance already names as the
+# generator of the IR they are part of.
+_DERIVATION_ACTIVITY = "activity:motion_spec_ir_generation"
+
+
+def build_derivation_document(ir: dict) -> dict:
+    """Declare every codegen-derived entity, and what it was derived from.
+
+    A frame-log slot names its value by IRI. Two thirds of those values are minted during IR
+    generation and have no node in the authored model, so without this graph their IRIs resolve
+    to nothing and a run graph cannot make a statement about what the log recorded.
+    """
+    derivations = (ir.get("introspection") or {}).get("derivations") or []
+    return {
+        "schema_version": 1,
+        "@context": [*METAMODEL_CONTEXTS, {"msprov": MSPROV}],
+        "@graph": [
+            {
+                "@id": entry["id"],
+                "@type": [_compact_type(type_id) for type_id in entry["types"]],
+                f"prov:{entry['relation']}": {"@id": entry["parent"]},
+                "prov:wasGeneratedBy": _prov_iri(_DERIVATION_ACTIVITY),
+            }
+            for entry in derivations
+        ],
+    }
+
+
 # REC records a run's state as an rdf:type on the run node, not as a status string. These
 # are the terminal-and-transient states rec.observers.graph_observer.RUN_TYPES defines.
 _REC_RUN_STATUS = {

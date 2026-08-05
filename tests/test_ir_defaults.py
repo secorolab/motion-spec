@@ -35,6 +35,7 @@ from motion_spec.rdf_parser.ir import (
     SceneSpec,
     SolverDerivationContext,
     _annotate_rne_gravity,
+    DerivedIriRegistry,
     _build_introspection,
     _derived_controllers,
     _derived_motion_drivers,
@@ -192,7 +193,11 @@ def test_introspection_contract_carries_control_and_provenance() -> None:
         app_model_path=Path("/tmp/app.json"),
         imported_models=["https://example.test/imported.json"],
         imported_provenance=["/tmp/generated/provenance/dsl.ld.json"],
-        id_nodes=[(parser.id(node), node) for node in graph.subjects()],
+        iris=DerivedIriRegistry([]),
+        # A motion is a subject in every authored model; this hand-built graph has only the
+        # controller and monitor, so its IRI is supplied here.
+        id_nodes=[(parser.id(node), node) for node in graph.subjects()]
+        + [("move", URIRef("https://example.test/move"))],
         node_by_id={parser.id(node): node for node in graph.subjects()},
         motions=[motion],
         data_structures=[controller.error_signal, controller.control_signal],
@@ -317,6 +322,7 @@ def test_rne_uses_acceleration_while_achd_uses_acceleration_energy() -> None:
             {solver: (plan,)},
             {solver: SOLVER_SEMANTICS_BY_ALGORITHM[algorithm]},
             frozenset(),
+            DerivedIriRegistry([]),
         )
         parser = Parser(graph)
         return (

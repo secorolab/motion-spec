@@ -8,7 +8,10 @@ import json
 import re
 from pathlib import Path
 
-from motion_spec.introspection.provenance import build_provenance_document
+from motion_spec.introspection.provenance import (
+    build_derivation_document,
+    build_provenance_document,
+)
 
 SCHEMA_VERSION = 1
 # 2: quantity slots are gated on the writing state, so field presence means "this state wrote it"
@@ -668,6 +671,11 @@ def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path) 
     (output_dir / "frame_layout.json").write_text(json.dumps(layout, indent=4) + "\n")
     (output_dir / "provenance.ld.json").write_text(
         json.dumps(build_provenance_document(ir, output_dir), indent=4) + "\n"
+    )
+    # Declares the IRIs the frame log's derived slots carry; moved beside the model graphs it
+    # extends by _organize_generation.
+    (output_dir / "derived.ld.json").write_text(
+        json.dumps(build_derivation_document(ir), indent=4) + "\n"
     )
     return {
         "schema_hash": schema["schema_hash"],

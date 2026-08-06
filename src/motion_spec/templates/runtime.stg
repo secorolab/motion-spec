@@ -305,7 +305,7 @@ class PIDControl {
   public:
     PIDControl() = default;
 
-    PIDControl(double p_gain, double i_gain, double d_gain, double decay_rate = 0.0, double dt = 0.002,
+    PIDControl(double p_gain, double i_gain, double d_gain, double decay_rate, double dt,
                bool has_integral_limit = false, double integral_lower = 0.0, double integral_upper = 0.0)
         : kp(p_gain), ki(i_gain), kd(d_gain), decay_rate(decay_rate), dt_(dt),
           has_integral_limit(has_integral_limit), integral_lower(integral_lower), integral_upper(integral_upper) {}
@@ -366,7 +366,7 @@ class PIDControl {
     double ki = 0.0;
     double kd = 0.0;
     double decay_rate = 0.0;
-    double dt_ = 0.002;
+    double dt_ = 0.0;
     bool has_integral_limit = false;
     double integral_lower = 0.0;
     double integral_upper = 0.0;
@@ -381,7 +381,7 @@ class ImpedanceControl {
   public:
     ImpedanceControl() = default;
 
-    ImpedanceControl(double stiffness, double damping, double integral = 0.0, double dt = 0.002)
+    ImpedanceControl(double stiffness, double damping, double integral, double dt)
         : ks(stiffness), kd(damping), ki(integral), dt_(dt) {}
 
     double control(double error) {
@@ -412,7 +412,7 @@ class ImpedanceControl {
     double ks = 0.0;
     double kd = 0.0;
     double ki = 0.0;
-    double dt_ = 0.002;
+    double dt_ = 0.0;
 };
 
 inline double evaluate_equality_constraint(double quantity, double reference) {

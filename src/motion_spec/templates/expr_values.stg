@@ -102,7 +102,7 @@ controller-member-ProportionalIntegralDerivative(controller) ::= <<
 >>
 
 controller-member-ImpedanceController(controller) ::= <<
-    motion_spec::runtime::ImpedanceControl <controller.id>{<controller.stiffness>, <controller.damping>, <if(controller.integral_gain)><controller.integral_gain><else>0.0<endif>};
+    motion_spec::runtime::ImpedanceControl <controller.id>{<controller.stiffness>, <controller.damping>, <if(controller.integral_gain)><controller.integral_gain><else>0.0<endif>, motion_spec::runtime::kControlPeriodS};
 >>
 
 controller-member-FeedForwardController(controller) ::= <<

@@ -3,7 +3,7 @@
 // Author: Vamsi Kalagaturu
 // Runtime control-loop math header (profiles/admittance/spring-damper, monitors).
 
-runtime_header(has_mobile_base, control_period_ns) ::= <<
+runtime_header(mobile_base, control_period_ns) ::= <<
 #pragma once
 
 #include \<cassert\>
@@ -22,7 +22,7 @@ runtime_header(has_mobile_base, control_period_ns) ::= <<
 #include \<stdexcept\>
 #include \<string\>
 #include \<string_view\>
-<if(has_mobile_base)>
+<if(mobile_base)>
 #include \<hddc2b/functions/platform.h\>
 #include \<hddc2b/functions/solver.h\>
 #include \<hddc2b/functions/drive.h\>
@@ -275,7 +275,7 @@ inline double velocity_profile_step(double x, double &v, double &a, double goal,
     return nx;
 }
 
-<if(has_mobile_base)>
+<if(mobile_base)>
 inline constexpr int NUM_DRIVES = 4;
 inline constexpr int NUM_SLAVES = 4;
 inline constexpr int NUM_WHL_COORD = 2;
@@ -431,6 +431,13 @@ inline double evaluate_equality_constraint(const KDL::Vector &target, const KDL:
     return (target - current).Norm();
 }
 
+// The geodesic angle between two orientations: the one rotation that carries current onto
+// target, measured the way a satisfaction band on an orientation is authored -- in radians.
+inline double evaluate_equality_constraint(const KDL::Rotation &target, const KDL::Rotation &current) {
+    KDL::Vector axis;
+    return (current.Inverse() * target).GetRotAngle(axis);
+}
+
 inline KDL::Frame evaluate_equality_constraint(const KDL::Frame &target, const KDL::Frame &current) {
     return current.Inverse() * target;
 }
@@ -456,8 +463,9 @@ inline double evaluate_outside_constraint(double quantity, double lower, double 
     return std::min(quantity - lower, upper - quantity);
 }
 
-// The band comes from the model: an equality authors one, and every other constraint kind
-// evaluates to exactly 0.0 inside its admissible region, so its band is 0.
+// The band comes from the model, per constraint kind: an equality's says how close to its
+// target counts as reached, a gate's how close to its threshold counts as arrived. A gate
+// that states none is tested against the boundary itself, which its evaluator returns 0.0 on.
 inline bool constraint_satisfied(double error, double tolerance) {
     return std::fabs(error) \<= tolerance;
 }
@@ -564,7 +572,7 @@ inline unsigned int find_segment_index(
     throw std::runtime_error("KDL segment not found for model name: " + target);
 }
 
-<if(has_mobile_base)>
+<if(mobile_base)>
 inline void hddc2b_pltf_vel_drv_to_pltf(
         int num_drv,
         double eps,

@@ -10,7 +10,7 @@ Diagrams: `current-templates`, `current-ir`, `proposed-templates`, `proposed-ir`
 re-measured at `7b9a291` (2026-08-06); cross-model claims verified on all three maintained models.
 
 The sim/real fork surface, the external-wrench law and the accepted platform seams are a
-separate page: [sim-real-parity.md](sim-real-parity.md).
+separate docs page: [../sphinx/source/sim-real-parity.rst](../sphinx/source/sim-real-parity.rst).
 
 ---
 

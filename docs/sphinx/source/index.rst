@@ -36,6 +36,7 @@ author a model of your own rather than running an existing one.
 
    setup
    concepts
+   sim-real-parity
    tutorials/index
 
 .. toctree::

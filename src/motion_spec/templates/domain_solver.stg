@@ -495,8 +495,8 @@ solver-run-fext-pre(solver, motion_driver, backend) ::= <<
 <({<solver-run-fext-pre-impl.({<solver.algorithm>-<backend>})>})(solver, motion_driver)>
 >>
 
-// On hardware the external-wrench pass runs its own ACHD solve first; mj_kdl reads f_ext straight
-// from the simulator, so nothing precedes it there.
+// robif2b has no RNE pass to carry the wrench, so it resolves it in a dedicated ACHD solve and
+// superposes the torque. mj_kdl instead feeds f_ext to its finalize RNE -- see solver-run-finalize.
 solver-run-fext-pre-ACHD-robif2b(solver, motion_driver) ::= <<
     KDL::JntArray qdd_fext_<solver.id>(state.<solver.id>.num_joints);
     KDL::Jacobian alpha_zero_<solver.id>(state.<solver.id>.num_spatial_directions);
@@ -517,15 +517,9 @@ solver-run-fext-pre-ACHD-robif2b(solver, motion_driver) ::= <<
         tau_cstr_fext_<solver.id>);
 >>
 
+// Always zero on both backends: the wrench reaches tau_ctrl elsewhere -- the _fext pre-solve on
+// robif2b, the finalize RNE on mj_kdl -- so the constrained solve never double-counts it.
 solver-achd-f_ext-arg(solver, motion_driver, backend) ::= <<
-<({solver-achd-f_ext-arg-<backend>})(solver, motion_driver)>
->>
-
-solver-achd-f_ext-arg-mj_kdl(solver, motion_driver) ::= <<
-<if(motion_driver.has_cartesian_force)>state.<solver.id>.f_ext<else>f_ext_zero_<solver.id><endif>
->>
-
-solver-achd-f_ext-arg-robif2b(solver, motion_driver) ::= <<
 f_ext_zero_<solver.id>
 >>
 
@@ -533,12 +527,16 @@ solver-run-finalize(solver, motion_driver, backend) ::= <<
 <({solver-run-finalize-<backend>})(solver, motion_driver)>
 >>
 
+// Sim compensates gravity explicitly (Kinova firmware does it on hardware), so mj_kdl already runs
+// an RNE pass -- the external wrench rides that pass's own f_ext interface. Vereshchagin's output is
+// the constraint torque only, so it cannot carry the wrench for us: keeping the constrained solve
+// f_ext-free is what makes the wrench count exactly once.
 solver-run-finalize-mj_kdl(solver, motion_driver) ::= <<
     state.<solver.id>.rnea->CartToJnt(
         state.<solver.id>.q,
         state.<solver.id>.qd,
         state.<solver.id>.qdd,
-        f_ext_zero_<solver.id>,
+        <if(motion_driver.has_cartesian_force)>state.<solver.id>.f_ext<else>f_ext_zero_<solver.id><endif>,
         state.<solver.id>.tau_ctrl);
 >>
 

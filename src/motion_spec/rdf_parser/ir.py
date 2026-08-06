@@ -9,14 +9,11 @@ a JSON intermediate representation suitable for code generation.
 
 from __future__ import annotations
 
-import argparse
 import collections
 import hashlib
 import itertools
-import json
 import math
 import re
-import sys
 import weakref
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
@@ -7928,57 +7925,3 @@ def generate_ir(manifest_path):
     return ir
 
 
-def main(argv: list[str] | None = None):
-    """Generate intermediate representation (IR) from motion specification models."""
-    parser = argparse.ArgumentParser(
-        prog="motion-spec ir",
-        description="Generate intermediate representation (IR) JSON from motion specification models",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  %(prog)s manifest.json --console           # Print IR to console
-  %(prog)s manifest.json -o output.json     # Save IR to file
-  %(prog)s manifest.json --output -         # Print IR to console (alternative)
-        """,
-    )
-
-    parser.add_argument("manifest", help="Path to the application manifest JSON file")
-
-    output_group = parser.add_mutually_exclusive_group(required=True)
-    output_group.add_argument(
-        "-o", "--output", metavar="FILE", help="Output file path (use '-' for stdout)"
-    )
-    output_group.add_argument(
-        "-c", "--console", action="store_true", help="Print output to console"
-    )
-
-    args = parser.parse_args(argv)
-
-    # Determine output destination
-    if args.console or (args.output and args.output == "-"):
-        output_file = None  # stdout
-    else:
-        output_file = Path(args.output)
-
-    ir = generate_ir(args.manifest)
-
-    # Output IR to file or stdout
-    ir_json = json.dumps(ir, cls=DataclassJSONEncoder, indent=4, sort_keys=True)
-
-    if output_file is None:
-        # Output to stdout
-        print(ir_json)
-    else:
-        # Output to file
-        try:
-            output_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(output_file, "w") as f:
-                f.write(ir_json)
-            print(f"IR written to {output_file}", file=sys.stderr)
-        except IOError as e:
-            print(f"Error writing to {output_file}: {e}", file=sys.stderr)
-            sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()

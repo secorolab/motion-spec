@@ -174,7 +174,9 @@ def generate_model(model: Path, generation: Path, *, stage: str = "code") -> Pat
     if not conforms:
         raise RuntimeError(f"generated RDF failed SHACL validation:\n{report}")
     ir_path = model_dir / "ir.json"
-    ir_path.write_text(json.dumps(generate_ir(manifest), cls=DataclassJSONEncoder, indent=4))
+    ir_path.write_text(
+        json.dumps(generate_ir(manifest), cls=DataclassJSONEncoder, indent=4, sort_keys=True)
+    )
     if stage == "code":
         from motion_spec.generation.codegen import generate_code
         from motion_spec.setup import find_stst

@@ -22,9 +22,13 @@ TEMPLATES = Path(__file__).resolve().parents[1] / "templates"
 
 
 def write_json(path: Path, payload):
-    """Write payload as pretty, dataclass-aware JSON, creating parent directories."""
+    """Write payload as pretty, dataclass-aware JSON, creating parent directories.
+
+    ``sort_keys`` so dict-insertion order can never make two generations of the same model differ."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, cls=DataclassJSONEncoder, indent=4) + "\n")
+    path.write_text(
+        json.dumps(payload, cls=DataclassJSONEncoder, indent=4, sort_keys=True) + "\n"
+    )
 
 
 def render_template(

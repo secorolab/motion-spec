@@ -1159,7 +1159,9 @@ class Operator:
         schedule = []
 
         for out in self.output:
-            for call in g[:out:data_out]:
+            # sorted(): see Parser.schedule -- these come back unordered and the append order
+            # below becomes the emitted schedule order.
+            for call in sorted(g[:out:data_out]):
                 if self.type_ not in get_node_types(g, call):
                     continue
 
@@ -1323,7 +1325,8 @@ class ErrorEvaluator:
 
         for op in self.cstr_op:
             for out in op.output:
-                for call in g.subjects(out, data_out):
+                # sorted(): see Parser.schedule -- append order becomes schedule order.
+                for call in sorted(g.subjects(out, data_out)):
                     constraint_id = g.value(call, CSTR_HDL["constraint"])
                     constraint_types = (
                         get_node_types(g, constraint_id) if constraint_id is not None else set()
@@ -2828,7 +2831,9 @@ class Parser:
         ]
 
         view_map = {}
-        for view in self.g[: RDF["type"] : MAP["View"]]:
+        # Sorted: _views_for_access keeps the first view seen for a subobject, so an unordered
+        # walk would publish a different (equivalent) view id on every generation.
+        for view in sorted(self.g[: RDF["type"] : MAP["View"]]):
             superobject = None
             for type_, func in dispatcher:
                 if type_ not in get_node_types(self.g, view):
@@ -2875,7 +2880,9 @@ class Parser:
 
         data_structures = []
         for type_, func in dispatcher:
-            for dstruct in self.g[: RDF["type"] : type_]:
+            # Sort within the type group: keeps most-specific-type-first dispatch (which the
+            # dedupe below relies on) while making the published order reproducible.
+            for dstruct in sorted(self.g[: RDF["type"] : type_]):
                 data_structures.append(func(dstruct))
 
         return _dedupe_by_id(data_structures)
@@ -3013,14 +3020,16 @@ class Parser:
 
             # An inline/declared Pose is no operator's output, so follow its per-axis views
             # to schedule the closures producing its scalar components.
+            # sorted() for the same reason as above: both walks return unordered sets and the
+            # queue order they set decides the emitted schedule order.
             view_subobjects = (
                 self.g.value(view, MAP["subobject"])
-                for view in self.g.subjects(MAP["superobject"], data_out)
+                for view in sorted(self.g.subjects(MAP["superobject"], data_out))
                 if self.g.value(view, MAP["axis"]) is not None
             )
             for successor in itertools.chain(
                 (node for node in view_subobjects if node is not None),
-                self.g.objects(data_out, CSTR["reference-value"]),
+                sorted(self.g.objects(data_out, CSTR["reference-value"])),
             ):
                 if successor not in data_structures:
                     q.append(successor)
@@ -5225,6 +5234,10 @@ def _build_introspection(
     add_joint_space_logging(
         serial_chain_solvers, motions, shared_data, introspection, backend, iris
     )
+    # Both lists are complete here and the sample passes below turn their order into indices the
+    # frame layout and the generated struct are built from: order them once, before that happens.
+    shared_data.sort(key=lambda item: _field(item, "id") or "")
+    introspection["quantities"].sort(key=lambda row: row.get("id") or "")
     add_quantity_samples(introspection, shared_data, views)
     add_spatial_samples(introspection, shared_data)
     annotate_dataflow(introspection, shared_data, closures, motions, serial_chain_solvers, views)
@@ -7032,6 +7045,9 @@ def _consumers_by_id(introspection: dict, closures: dict) -> dict[str, list]:
         for key, value in closure.items():
             if key not in {"id", "type"} and isinstance(value, str) and value not in outputs:
                 add(value, "closure", closure_id, key)
+    # Readers are collected from dicts whose order is the graph's; the list is an artifact.
+    for readers in consumers.values():
+        readers.sort(key=lambda reader: (reader["kind"], reader["id"], reader["role"]))
     return consumers
 
 
@@ -7479,17 +7495,16 @@ def _fsm_from_graph(g) -> dict | None:
         """FSM identifier token (upper-cased var name) for a graph URI."""
         return get_valid_var_name(g.compute_qname(uri)[2]).upper()
 
-    states, state_uris = [], {}
-    for s in g.objects(fsm_ref, FSM["states"]):
-        key = ident(s)
-        states.append(key)
-        state_uris[key] = str(s)
-    events, event_uris = [], {}
+    # Graph iteration order is rdflib's, not the model's: sort so two generations of the same
+    # model agree on state/event order -- event order especially, since indices are assigned
+    # from it and get baked into the generated C++.
+    state_uris = dict(sorted((ident(s), str(s)) for s in g.objects(fsm_ref, FSM["states"])))
+    states = list(state_uris)
     event_loop_node = g.value(fsm_ref, EL["event-loop"])
-    for e in g.objects(event_loop_node, EL["has-event"]):
-        key = ident(e)
-        events.append(key)
-        event_uris[key] = str(e)
+    event_uris = dict(
+        sorted((ident(e), str(e)) for e in g.objects(event_loop_node, EL["has-event"]))
+    )
+    events = list(event_uris)
 
     transitions_table = []
     for tr in g.objects(fsm_ref, FSM["transitions"]):
@@ -7503,7 +7518,7 @@ def _fsm_from_graph(g) -> dict | None:
         )
     reactions_table = []
     for rx in g.objects(fsm_ref, FSM["reactions"]):
-        fires = [ident(ev) for ev in g.objects(rx, FSM["fires-events"])]
+        fires = sorted(ident(ev) for ev in g.objects(rx, FSM["fires-events"]))
         reactions_table.append(
             {
                 "id": ident(rx),
@@ -7514,6 +7529,8 @@ def _fsm_from_graph(g) -> dict | None:
                 "num_fires": len(fires),
             }
         )
+    transitions_table.sort(key=lambda row: row["id"])
+    reactions_table.sort(key=lambda row: row["id"])
 
     description_node = g.value(fsm_ref, FSM["description"])
     # Event/state IRIs share the FSM node's parent path (…/<model>/fsm/); is_fsm_event
@@ -7928,7 +7945,7 @@ Examples:
     ir = generate_ir(args.manifest)
 
     # Output IR to file or stdout
-    ir_json = json.dumps(ir, cls=DataclassJSONEncoder, indent=4)
+    ir_json = json.dumps(ir, cls=DataclassJSONEncoder, indent=4, sort_keys=True)
 
     if output_file is None:
         # Output to stdout

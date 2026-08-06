@@ -322,7 +322,7 @@ def generate_ir(manifest: Path, output: Path | None, console: bool) -> None:
 
     if console == (output is not None):
         raise click.UsageError("choose exactly one of --output or --console")
-    payload = json.dumps(build_ir(manifest), cls=DataclassJSONEncoder, indent=4)
+    payload = json.dumps(build_ir(manifest), cls=DataclassJSONEncoder, indent=4, sort_keys=True)
     if console or output == Path("-"):
         click.echo(payload)
     else:

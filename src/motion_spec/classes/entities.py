@@ -627,7 +627,9 @@ class GuardedMotionBlock:
     id: str
     handler: str
     name: str
-    description: str | None
+    # Authored description split into lines: the doc comment it renders into is a per-line
+    # construct, so the split belongs to the IR rather than to an escape in the renderer.
+    description: list[str]
 
     # Evaluators
     when_evaluators: list[ConstraintEvaluator]
@@ -659,7 +661,6 @@ class GuardedMotionBlock:
     until_any: bool = False
     when_any: bool = False
     # Primary arm-solver id the motion commands (empty when the model has no arm).
-    command_robot_id: str = ""
     # Structured boolean terms (folded from evaluators/monitors); rendered to C++ by the
     # bool-condition template. WHEN joins with when_any, done joins with until_any. The
     # *_present flags gate the empty-default (JSON empty lists are truthy in the ST4 build).

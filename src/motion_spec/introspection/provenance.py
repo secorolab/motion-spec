@@ -26,9 +26,12 @@ TYPE_PREFIXES = {
     "https://secorolab.github.io/metamodels/agent#": "agn:",
     "https://secorolab.github.io/metamodels/observation#": "obs:",
     "https://secorolab.github.io/metamodels/execution-context#": "exec:",
+    "http://www.w3.org/ns/ssn/": "ssn:",
+    "http://www.w3.org/ns/sosa/": "sosa:",
 }
 METAMODEL_CONTEXTS = [
     "https://secorolab.github.io/metamodels/prov.json",
+    "https://secorolab.github.io/metamodels/ssn.json",
     "https://secorolab.github.io/metamodels/acceptance-criteria/bdd/agent.json",
     "https://secorolab.github.io/metamodels/acceptance-criteria/bdd/bdd.json",
     "https://secorolab.github.io/metamodels/acceptance-criteria/bdd/observation.json",

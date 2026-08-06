@@ -312,7 +312,7 @@ def _slot_gate(header, fields: dict) -> dict:
     cannot tell an inactive slot from a zero one. The frame carries active_motion and the header
     says which slots that motion writes; activity is resolved from that, never from a missing
     field. Keyed on the motion rather than the coordinator's state, so the same decoder reads a
-    log produced under an FSM, a behaviour tree or the plain app_main loop.
+    log produced under an FSM, a behaviour tree or a plain sequencer.
     """
     gate = {}
     for category in ("quantities", *(name for name, _ in _SPATIAL)):

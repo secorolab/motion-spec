@@ -2976,7 +2976,10 @@ class Parser:
                     scheduled_nodes[call] = v
                     self.sched.add(call)
 
-                for data_in in op.from_operator_to_input(self.g, v):
+                # sorted(): these come back as sets, and set order over rdflib nodes varies
+                # between processes. The traversal order decides the emitted schedule order, so
+                # an unordered iteration here makes generation non-reproducible.
+                for data_in in sorted(op.from_operator_to_input(self.g, v)):
                     q.append(data_in)
                     data_structures.add(data_in)
 
@@ -2999,7 +3002,7 @@ class Parser:
                         scheduled_nodes[call] = call_node
                         self.sched.add(call)
 
-                for data_in in res["data_structures"]:
+                for data_in in sorted(res["data_structures"]):
                     # We have already visited this data structure,
                     # so skip it
                     if data_in in data_structures:
@@ -3920,7 +3923,6 @@ def build_motion_units(
                 handler=handler.id,
                 name=handler.motion.name,
                 description=(handler.motion.description or "").splitlines(),
-                command_robot_id=primary_robot_id,
                 has_when_elapsed=has_when_elapsed,
                 has_active_elapsed=has_active_elapsed,
                 when_elapsed_ids=when_elapsed_ids,
@@ -4393,9 +4395,15 @@ def _config_key(g, element, agent, drives: str) -> str:
     """
     if drives:
         return f"{_leaf(agent)}.{_leaf(element)}"
-    segments = urlsplit(str(element)).path.strip("/").split("/")
-    alias = segments[segments.index("models") + 1]
-    return f"{alias}.{_leaf(element)}"
+    # The set the scene declares the agent in -- `agn set (ns=..) pickplace_agents { agent arm1 }`
+    # is addressed as `pickplace_agents.arm1`. Taken from the graph rather than from a segment of
+    # the agent's IRI: the IRI path is namespace layout, not the name the model author wrote, and
+    # the two disagree whenever the namespace is not called after the set.
+    bdd = rdflib.Namespace("https://secorolab.github.io/metamodels/acceptance-criteria/bdd#")
+    owner = next(g.subjects(bdd["elements"], element), None)
+    if owner is None:
+        raise ValueError(f"Agent '{element}' belongs to no declared agent set.")
+    return f"{_leaf(owner)}.{_leaf(element)}"
 
 
 def _bound_devices(g, agent, runtime_prefix, hosted, chain_bindings, agent_by_tree) -> list[dict]:
@@ -4571,7 +4579,10 @@ def _agent_assemblies(g, attach_by_body):
         ]
         agent_device = _device_of(g, agent)
         device = str(g.value(agent_device, SDO.model) or "") if agent_device else ""
-        config_key = _config_key(g, agent, agent, "") if agent_device else ""
+        # An agent is named by the scenex alias it was referred to through, whether or not
+        # hardware is bound to it: a simulated deployment addresses it in exactly the same
+        # way to state where it starts.
+        config_key = _config_key(g, agent, agent, "")
         result.append(
             {
                 "agent": agent,
@@ -6001,11 +6012,21 @@ def _platform_from_graph(g) -> dict:
     backend = _SIMULATION_BACKENDS.get(name.casefold())
     if backend is None:
         raise ValueError(f"Unsupported simulation platform '{name}'.")
-    return {"uri": str(simulation), "name": name, "simulated": True, "backend": backend}
+    return {
+        "uri": str(simulation),
+        "name": name,
+        "simulated": True,
+        "backend": backend,
+        "config": _config_path(g, simulation),
+    }
 
 
 def _config_path(g, context) -> str | None:
-    """The deployment config's path, from exec:has-resource -> exec:path."""
+    """The deployment config's path, from exec:has-resource -> exec:path.
+
+    The DSL resolves it against the model that declares it, so it is a path both codegen and
+    the generated program can open -- neither knows the .robmot's directory.
+    """
     config = g.value(context, EXEC["has-resource"])
     return str(g.value(config, EXEC.path)) if config is not None else None
 
@@ -6758,6 +6779,49 @@ def _constant_value(item, desc: dict):
             if values is not None:
                 return values[desc["axis"]]
     return None
+
+
+def _agent_home_positions(platform, manifest_path, solvers) -> dict:
+    """Each agent's reset joint configuration, keyed the way `_config_key` names it.
+
+    Where a robot starts decides every run, so it is authored beside the model rather than
+    baked into a template no run artifact could report. There is no default: a simulated
+    deployment that states none is rejected, because a wrong home is silent and a missing one
+    should not be.
+    """
+    import tomllib
+
+    if not platform.get("simulated"):
+        return {}
+    owners = [s for s in solvers if _field(s, "runtime_owner")]
+    if not owners:
+        return {}
+    config_path = platform.get("config")
+    if not config_path:
+        raise ValueError(
+            "A simulated platform must declare `config: \"<file>.toml\"` in its exec-context, "
+            "stating a [<agent>] home for every agent it drives."
+        )
+    resolved = Path(config_path)
+    if not resolved.is_file():
+        raise ValueError(f"{resolved} does not exist, but the exec-context declares it.")
+    config = tomllib.loads(resolved.read_text())
+    homes = {
+        f"{alias}.{leaf}": [float(v) for v in entry["home"]]
+        for alias, entries in config.items()
+        if isinstance(entries, dict)
+        for leaf, entry in entries.items()
+        if isinstance(entry, dict) and entry.get("home")
+    }
+    missing = sorted(
+        _field(s, "config_key") for s in owners if _field(s, "config_key") not in homes
+    )
+    if missing:
+        raise ValueError(
+            f"{resolved} states no home for {missing}. Every agent the model drives needs one; "
+            "add a [<agent>] section with `home = [...]`."
+        )
+    return homes
 
 
 def annotate_dataflow(
@@ -7780,18 +7844,12 @@ def generate_ir(manifest_path):
     ros_packages = sorted({p["pkg"] for p in ros_publishers})
 
     ir = {
+        # Read cross-package by motion-spec-dsl's solver-derivation tests.
         "cstr_hdl": hdl,
         "motions": motions,
-        "data": data_structures,
         "closures": closures,
-        "shared_schedule": shared_schedule,
-        "schedule": schedule,
         "views": _views_for_access(view_map, shared_data, motions, closures),
         "shared_data": shared_data,
-        "pose_components": pose_components,
-        "declared_pose_components": declared_pose_component_entries(
-            data_structures, pose_components
-        ),
         "wrench_outputs": wrench_outputs,
         "has_serial_chain": bool(slv_chain),
         # One key per optional subsystem, absent when the model has none. ST4 treats only
@@ -7820,9 +7878,9 @@ def generate_ir(manifest_path):
         # The authored execution platform, so provenance and the runtime graph read the model's
         # own answer instead of matching substrings of a derived id.
         "platform": platform,
+        "agent_homes": _agent_home_positions(platform, manifest_path, slv_chain),
         "scene": scene,
         "trace": _trace_from_graph(g),
-        "uris": introspection["uris"],
         "introspection": introspection,
         # FSM (states/events/transitions/reactions) framed from the FSM named graph that
         # motion-spec-dsl folds into the model dataset, plus the codegen wiring derived from

@@ -23,7 +23,7 @@ from motion_spec_dsl.rdf_parser.vocab import (
 from rdf_utils.models.vocab import URI_KC_TYPE_SERIAL
 from rdf_utils.namespace import NS_MM_GEOM, NS_MM_KC_EXT
 from rdflib import Graph, Literal, URIRef
-from rdflib.namespace import RDF, XSD
+from rdflib.namespace import Namespace, RDF, XSD
 
 from motion_spec.classes.entities import PIDController
 from motion_spec.rdf_parser.ir import (
@@ -136,6 +136,9 @@ def test_agent_model_may_bind_the_assembled_kinematic_tree() -> None:
     modelled = URIRef("https://example.test/modelled-robot")
     model = URIRef("https://example.test/robot-model")
 
+    agent_set = URIRef("https://example.test/robots")
+    bdd = Namespace("https://secorolab.github.io/metamodels/acceptance-criteria/bdd#")
+    graph.add((agent_set, bdd["elements"], agent))
     graph.add((modelled, RDF.type, AGN.ModelledAgent))
     graph.add((modelled, AGN["of-agent"], agent))
     graph.add((modelled, AGN["has-agent-model"], model))

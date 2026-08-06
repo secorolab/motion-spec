@@ -12,7 +12,6 @@ import sys
 from pathlib import Path
 
 from motion_spec.classes.entities import DataclassJSONEncoder
-from motion_spec.classes.closures import closure_output_ids
 from motion_spec.generation.artifacts import write_introspection_artifacts
 
 
@@ -114,42 +113,10 @@ def _collapse_blank_lines(text: str) -> str:
     return text.strip("\n") + "\n"
 
 
-def _escape_for_line_comment(text: str) -> str:
-    """Escape newlines and comment terminators so authored text can't break out of a `///` comment."""
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    return text.replace("\n", "\\n").replace("*/", "*\\/")
-
-
 def load_ir(input_path: Path):
     """Load an IR JSON file into a dict."""
     with input_path.open() as handle:
         return json.load(handle)
-
-
-def _views_for_access(views: dict, direct_ids: set[str]) -> dict:
-    """Index unambiguous MAP views by subobject for template access expressions.
-
-    The IR keeps every view by its own identity. Templates instead resolve a quantity ID
-    to its superobject expression; a subobject reused by several views is an ordinary
-    shared quantity and must not select one of those views arbitrarily.
-    """
-    indexed: dict[str, dict | None] = {}
-    for view in views.values():
-        subobject_id = (view.get("subobject") or {}).get("id")
-        if subobject_id and subobject_id not in direct_ids:
-            previous = indexed.get(subobject_id)
-            if previous is None and subobject_id in indexed:
-                continue
-            if previous is None:
-                indexed[subobject_id] = view
-                continue
-            same_access = all(
-                previous.get(field) == view.get(field)
-                for field in ("superobject", "subspace", "axis", "direction")
-            )
-            if not same_access:
-                indexed[subobject_id] = None
-    return {id_: view for id_, view in indexed.items() if view is not None}
 
 
 def _adopt_fsm_state_order(ir: dict, *candidates: Path) -> None:
@@ -209,28 +176,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     payload_dir = output_dir / ".stst"
     payload_dir.mkdir(parents=True, exist_ok=True)
     ir_payload_path = payload_dir / "ir.json"
-    template_ir = dict(ir)
-    direct_ids = {
-        item["id"]
-        for item in ir.get("shared_data", [])
-        if item.get("id")
-        and (
-            item.get("value") is not None
-            or (item.get("provenance") or {}).get("authored", False)
-        )
-    }
-    direct_ids.update(
-        snapshot["target_id"]
-        for motion in ir.get("motions", [])
-        for snapshot in motion.get("snapshots", [])
-    )
-    direct_ids.update(
-        output_id
-        for closure in ir.get("closures", {}).values()
-        for output_id in closure_output_ids(closure)
-    )
-    template_ir["views"] = _views_for_access(ir["views"], direct_ids)
-    write_json(ir_payload_path, template_ir)
+    write_json(ir_payload_path, ir)
 
     render_template(
         stst_bin,
@@ -248,7 +194,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     render_template(
         stst_bin, "shared_state_header", ir_payload_path, headers_dir / "shared_state.hpp"
     )
-    if ir.get("has_mobile_base"):
+    if ir.get("mobile_base"):
         render_template(
             stst_bin,
             "mobile_base_cycle_header",
@@ -257,20 +203,12 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
         )
 
     for motion in ir.get("motions", []):
-        motion_payload = dict(motion)
-        if motion_payload.get("description"):
-            motion_payload["description"] = _escape_for_line_comment(motion_payload["description"])
         payload = {
-            "motion": motion_payload,
+            "motion": motion,
             "closures": ir["closures"],
-            "views": template_ir["views"],
+            "views": ir["views"],
             "wrench_outputs": ir["wrench_outputs"],
-            "platform_velocity_solvers": ir["platform_velocity_solvers"],
-            "platform_force_solvers": ir["platform_force_solvers"],
-            "has_mobile_base": ir["has_mobile_base"],
             "backend": ir["backend"],
-            "declared_pose_components": motion.get("declared_pose_components", []),
-            "pose_axis_error_groups": motion.get("pose_axis_error_groups", []),
         }
         payload_path = payload_dir / f"{motion['id']}.json"
         write_json(payload_path, payload)

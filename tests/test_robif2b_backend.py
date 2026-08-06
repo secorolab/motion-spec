@@ -13,12 +13,12 @@ from pathlib import Path
 import pytest
 
 TEMPLATES = Path(__file__).resolve().parents[1] / "src" / "motion_spec" / "templates"
-ROBIF2B = (TEMPLATES / "robif2b_backend.stg").read_text()
+ROBIF2B = (TEMPLATES / "backend_robif2b.stg").read_text()
 
 
 def _gripper_travel() -> float:
     travel = re.search(r'gripper-travel-Robotiq2F85\(\) ::= "([\d.]+)"', ROBIF2B)
-    assert travel, "the 2F-85 travel constant is no longer in robif2b_backend.stg"
+    assert travel, "the 2F-85 travel constant is no longer in backend_robif2b.stg"
     return float(travel.group(1))
 
 

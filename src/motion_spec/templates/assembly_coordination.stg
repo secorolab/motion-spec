@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: MPL-2.0
+// L3 assembly — FSM dispatch and the per-state step functions.
+
+import "assembly_motion.stg"
+import "expr_values.stg"
+
+fsm-step-function(motion) ::= <<
+<if(motion.fsm_state)>
+static void step_<motion.id>(<motion.id>_state &<motion.id>_state_instance, shared_data &shared, robot_io &robot) {
+    if (!<motion.id>_state_instance.active) {
+        <motion.id>_state_instance.active = true;
+        <motion.id>_state_instance.active_steps = 0;
+<motion.controllers:{controller |         <controller-reset(motion.id, controller)>}; separator="\n">
+<motion.path_projections:{proj |         shared.<proj.parameter> = 0.0;
+        shared.<proj.along_speed> = 0.0;}; separator="\n">
+    }
+    update_<motion.id>(<motion.id>_state_instance, shared, robot);
+    monitor_until_<motion.id>(<sig-args(motion.id, motion.until_needs_state, motion.until_needs_shared, motion.until_needs_robot)>);
+    control_<motion.id>(<motion.id>_state_instance, shared, robot);
+    apply_<motion.id>(<sig-args(motion.id, motion.apply_needs_state, motion.apply_needs_shared, motion.apply_needs_robot)>);
+    ++<motion.id>_state_instance.active_steps;
+\}
+<endif>
+>>
+
+fsm-dispatch-case(motion, fsm) ::= <<
+<if(motion.fsm_state)>
+        case <fsm.cpp_namespace>::<motion.fsm_state>:
+            step_<motion.id>(<motion.id>_state_instance, shared, robot);
+<motion.fsm_when_gate_calls:{c |             monitor_when_<c.gid>(<sig-args(c.gid, c.needs_state, c.needs_shared, c.needs_robot)>);}; separator="\n">
+            break;
+<endif>
+>>
+
+// The frame log records which motion ran, not which coordinator state selected it. Mapping the
+// FSM's state to that motion is symbolic on both sides -- the enum constant by name, the motion by
+// its ir_gen index -- so neither side depends on the other's numbering.
+
+fsm-active-motion(motions, fsm) ::= <<
+    auto fsm_active_motion = [&](struct fsm_nbx *fsm) -> int {
+        switch (fsm->currentStateIndex) {
+<motions:{motion | <fsm-active-motion-case(motion, fsm)>}; separator="\n">
+        default: return -1;
+        \}
+    \};
+>>
+
+fsm-active-motion-case(motion, fsm) ::= <<
+<if(motion.fsm_state)>
+        case <fsm.cpp_namespace>::<motion.fsm_state>: return <motion.index>;
+<endif>
+>>
+
+fsm-dispatch(motions, fsm) ::= <<
+    // The FSM's current state selects which motion runs; the motion's monitor advances the FSM. A
+    // fallback hold state additionally re-evaluates the gated motion's WHEN precondition each tick.
+    auto fsm_dispatch = [&](struct fsm_nbx *fsm) {
+        switch (fsm->currentStateIndex) {
+<motions:{motion | <fsm-dispatch-case(motion, fsm)>}; separator="\n">
+        default: break;
+        \}
+    \};
+>>

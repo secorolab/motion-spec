@@ -1,0 +1,101 @@
+// SPDX-License-Identifier: MPL-2.0
+// The current IR: the ir_gen/codegen interface, layered by the real construction order in
+// ir.py:generate_ir() and the dependency edges between its products.
+digraph current_ir {
+  rankdir=TB
+  compound=true
+  fontname="Helvetica" labelloc=t labeljust=l
+  label=<<b>current — IR</b><br align="left"/>
+        <font point-size="10">24 flat keys, layered by generate_ir()'s real construction order · the interface starts too high</font><br align="left"/>>
+  node [fontname="Helvetica" fontsize=10 shape=box style=filled height=0.34]
+  edge [fontname="Helvetica" fontsize=9 color="#888888"]
+
+  // ============ ir_gen internals: upstream of the interface, never published ============
+  subgraph cluster_L0 {
+    label="L0  graph facts — read the RDF graph and nothing else" style=filled fillcolor="#eef2fa"
+    node [fillcolor="#cdd9ef"]
+    platform [label="platform"] scene [label="scene"] fsm0 [label="fsm (framed)"]
+    dstruct [label="data_structures"] poseC [label="pose_components"] hdl [label="cstr_hdl"]
+    period [label="control_period_ns"]
+  }
+
+  subgraph cluster_L1 {
+    label="L1  resolution indexes — ir_gen's own working set (never in the interface)" style=filled fillcolor="#f2eefa"
+    node [fillcolor="#dcd2ef"]
+    cmaps [label="closure_output_map\lclosure_input_map\lclosure_owner_map\l"]
+    smaps [label="snapshot_source/trigger/owner_map\ldata_reference_map\l"]
+    deriv [label="derivation\lnode_by_id · id_nodes · iris\l"]
+  }
+
+  // ================= the interface =================
+  subgraph cluster_iface {
+    label="THE INTERFACE — ir.json, handed from ir_gen to codegen. Only what a consumer downstream reads." style=filled fillcolor="#e8f4ea" penwidth=2 color="#3a7d44"
+
+    subgraph cluster_L2 {
+      label="L2  data — what values exist and how to reach them" style=filled fillcolor="#dff0df"
+      node [fillcolor="#bfe3bf"]
+      closures [label="closures"] views [label="views"] shared [label="shared_data"]
+      wrench [label="wrench_outputs\l(projection of data via closure_output_map)" fillcolor="#a8d8a8"]
+    }
+    subgraph cluster_L3 {
+      label="L3  behaviour — what runs, and what drives it" style=filled fillcolor="#e6f4e6"
+      node [fillcolor="#bfe3bf"]
+      motions [label="motions"] solvers [label="serial_chain_solvers"]
+      fsmw [label="fsm (+ codegen wiring)"] mb [label="mobile_base"] ros [label="ros"]
+    }
+    subgraph cluster_L4 {
+      label="L4  observability — derived from every layer above" style=filled fillcolor="#edf7ed"
+      node [fillcolor="#bfe3bf"]
+      intro [label="introspection\l(sole owner of the uris table)"]
+    }
+    subgraph cluster_L5 {
+      label="L5  target selection — read by templates only to choose a variant" style=filled fillcolor="#f3faf3"
+      node [fillcolor="#bfe3bf"]
+      backend [label="backend"] scene5 [label="scene · trace · platform"]
+    }
+  }
+
+  cons [label="consumers: codegen.py + templates/*.stg" shape=box3d fillcolor="#dbe7f5"]
+
+  // ---- real dependency edges, measured ----
+  scene -> period
+  dstruct -> closures [ltail=cluster_L0 lhead=cluster_L2]
+  cmaps -> wrench [label="closure_output_map" fontcolor="#3a7d44"]
+  poseC -> motions
+  fsm0 -> motions
+  cmaps -> motions  smaps -> motions  deriv -> motions
+  closures -> motions [style=dashed]
+  motions -> intro  shared -> intro  platform -> intro  scene -> intro
+  motions -> fsmw [label="fsm_meta comes out of build_motion_units" fontsize=8]
+  intro -> cons [ltail=cluster_iface]
+
+  // ---- the violation ----
+  subgraph cluster_bad {
+    label="published today, read by nobody — every one is an L0/L1 internal in the interface"
+    style=filled fillcolor="#fbe4e4" color="#b03030"
+    node [fillcolor="#f3bdbd" shape=box]
+    v1 [label="cstr_hdl  (L0)  203 KiB"] v2 [label="data  (L0)  171 KiB"]
+    v3 [label="pose_components  (L0)"] v4 [label="declared_pose_components  (L2, global copy)"]
+    v5 [label="schedule  (L2)"] v6 [label="shared_schedule  (L2)"]
+    v7 [label="uris  (L4 duplicate)  1054 KiB" fillcolor="#e89a9a"]
+  }
+  hdl -> v1 [style=dotted color="#b03030"]
+  dstruct -> v2 [style=dotted color="#b03030"]
+  poseC -> v3 [style=dotted color="#b03030"]
+  intro -> v7 [style=dotted color="#b03030" label="copied out\nof introspection" fontcolor="#b03030" fontsize=8]
+
+  note [shape=note fillcolor="#ffffcc" label=<
+    <b>the layering rule, and what it would have caught</b><br align="left"/>
+    <br align="left"/>
+    <b>Publish a key only if something downstream of the interface reads it.</b><br align="left"/>
+    L0 facts and L1 indexes are ir_gen's working set, not its interface (Parnas '72).<br align="left"/>
+    <br align="left"/>
+    All six unread keys are L0/L1 internals that were published anyway;<br align="left"/>
+    `uris` is an L4 field copied up to the top. The rule catches all seven,<br align="left"/>
+    1.6 MiB of the 4.2 MiB IR, without anyone having to notice them one by one.<br align="left"/>
+    <br align="left"/>
+    <b>Read only upward.</b> L2 never reads L3. That is already true in ir.py's<br align="left"/>
+    construction order — the layering is describing what the code does, not<br align="left"/>
+    imposing something new on it.<br align="left"/>
+  >]
+}

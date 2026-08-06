@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: MPL-2.0
+// L2 domain — pose composition: rotation, position, deltas.
+
+import "expr_values.stg"
+
+component-value(comp, views) ::= <<
+<if(comp.ref)><access-expr(comp.ref, views)><else><comp.value><endif>
+>>
+
+rotation-template ::= [
+    "quaternion": "pose-rotation-quaternion",
+    "euler": "pose-rotation-euler",
+    "relative": "pose-rotation-relative",
+    default: "pose-rotation-quaternion"
+]
+
+delta-rotation-template ::= [
+    default: "delta-rotation-quaternion"
+]
+
+delta-component(c) ::= <%
+<if(c.ref)>shared.<c.ref><else><c.value><endif>
+%>
+
+delta-rotation-quaternion(op) ::= <%
+KDL::Rotation::Quaternion(<op.delta:{c | <delta-component(c)>}; separator=", ">)
+%>
+
+relative-operand(op) ::= <%
+<if(op.pose)>shared.<op.pose>.M<else><(delta-rotation-template.(op.representation))(op)><endif>
+%>
+
+pose-rotation-relative(pose, views) ::= <%
+<pose.orientation_operands:{op | <relative-operand(op)>}; separator=" * ">
+%>
+
+euler-axis-quat(factor, views) ::= <%
+motion_spec::runtime::quat_axis('<factor.axis>', <component-value(factor.component, views)>)
+%>
+
+euler-quat(factors, views) ::= <%
+<if(rest(factors))>motion_spec::runtime::quat_mul(<euler-axis-quat(first(factors), views)>, <euler-quat(rest(factors), views)>)<else><euler-axis-quat(first(factors), views)><endif>
+%>
+
+pose-rotation-euler(pose, views) ::= <%
+motion_spec::runtime::quat_rotation(<euler-quat(pose.euler_factors, views)>)
+%>
+
+pose-rotation-quaternion(pose, views) ::= <%
+KDL::Rotation::Quaternion(<component-value(pose.orientation_x, views)>, <component-value(pose.orientation_y, views)>, <component-value(pose.orientation_z, views)>, <component-value(pose.orientation_w, views)>)
+%>
+
+pose-rotation(pose, views) ::= <%
+<(rotation-template.(pose.representation))(pose, views)>
+%>
+
+pose-position(pose, views) ::= <%
+KDL::Vector(<component-value(pose.position_x, views)>, <component-value(pose.position_y, views)>, <component-value(pose.position_z, views)>)
+%>
+
+pose-frame-inline(pose, views) ::= <%
+KDL::Frame(<pose-rotation(pose, views)>, <pose-position(pose, views)>)
+%>
+
+materialize-pose-component(pose, views) ::= <<
+    shared.<pose.id> = KDL::Frame(
+        <pose-rotation(pose, views)>,
+        <pose-position(pose, views)>);
+>>

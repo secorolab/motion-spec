@@ -1,0 +1,173 @@
+// SPDX-License-Identifier: MPL-2.0
+// L3 assembly — schedules, the motion cycle, chain and device members.
+
+import "domain_closures.stg"
+import "domain_monitors.stg"
+import "domain_poses.stg"
+import "domain_solver.stg"
+import "expr_values.stg"
+import "backend_robif2b.stg"
+
+schedule-step(step, closures, views) ::= <<
+    // <step>
+    <emit-call(closures.(step), views)>
+>>
+
+schedule-block(steps, closures, views) ::= <<
+<steps:{step | <schedule-step(step, closures, views)>}; separator="\n">
+>>
+
+// Boolean-condition rendering: fold a list of structured terms into a C++ expression.
+// empty -> empty_default; one term -> the term; many -> parenthesized, joined by any/all.
+
+sig-params(mid, needs_state, needs_shared, needs_robot) ::= <<
+<if(needs_state)>
+    <mid>_state &state<endif><if(needs_shared)><if(needs_state)>,<endif>
+    shared_data &shared<endif><if(needs_robot)><if(needs_state||needs_shared)>,<endif>
+    const robot_io &robot<endif><if(needs_state||needs_shared||needs_robot)>
+<endif>
+>>
+
+sig-args(mid, needs_state, needs_shared, needs_robot) ::= <<
+<if(needs_state)><mid>_state_instance<endif><if(needs_shared)><if(needs_state)>, <endif>shared<endif><if(needs_robot)><if(needs_state||needs_shared)>, <endif>robot<endif>
+>>
+
+motion-done-condition(motion) ::= <<
+<if(motion.done_terms_present)><bool-condition(motion.done_terms, motion.until_any)><else>true<endif>
+>>
+
+motion-prelude(wrench_outputs, serial_chain_solvers, backend) ::= <<
+<wrench_outputs:{wrench | <sync-wrench(wrench)>}; separator="\n">
+<if(serial_chain_solvers)>
+
+<chain-prepare-block(serial_chain_solvers, backend)>
+<endif>
+>>
+
+motion-when-block(steps, closures, views) ::= <<
+<if(first(steps))>
+<schedule-block(steps, closures, views)>
+<endif>
+>>
+
+shared-schedule-block(steps, closures, views) ::= <<
+<if(first(steps))>
+<schedule-block(steps, closures, views)>
+<endif>
+>>
+
+wrench-pointer-member(wrench) ::= <<
+    KDL::Wrench *<wrench.id> = nullptr;
+>>
+
+wrench-measurement(wrench) ::= <<
+    KDL::Wrench <wrench.id>_measurement;
+>>
+
+chain-robot-member(solver) ::= <<
+    manipulator_robot <solver.id>;
+>>
+
+// What a bound device exposes to the motion functions. Only a runtime owner declares them:
+// the solvers sharing that runtime reach the same device through it.
+
+chain-device-members(solver, backend) ::= <<
+<if(solver.runtime_owner)><({chain-device-members-<backend>})(solver)><endif>
+>>
+
+chain-device-members-mj_kdl(solver) ::= <<>>
+
+motion-state-member(motion) ::= <<
+    <motion.id>_state <motion.id>_state_instance;
+>>
+
+motion-include(motion) ::= <<
+#include "<motion.id>.hpp"
+>>
+
+chain-solver-members(serial_chain_solvers, backend) ::= <<
+<serial_chain_solvers:{solver | <solver-state-struct(solver, backend)>}; separator="\n\n">
+>>
+
+chain-state-members(serial_chain_solvers) ::= <<
+<serial_chain_solvers:{solver |     <solver.id>_solver_state <solver.id>;}; separator="\n">
+>>
+
+chain-init-block(serial_chain_solvers, backend) ::= <<
+<serial_chain_solvers:{solver |     <solver-init(solver, solver.motion_driver, backend)>}; separator="\n">
+>>
+
+chain-prepare-block(serial_chain_solvers, backend) ::= <<
+<serial_chain_solvers:{solver |
+    <solver-sync-input(solver, backend)>
+    <solver.output:{out | <solver-output(solver, out, backend)>}; separator="\n\n">
+}; separator="\n\n">
+>>
+
+chain-run-block(serial_chain_solvers, backend) ::= <<
+<serial_chain_solvers:{solver |     <solver-run(solver, solver.motion_driver, backend)>}; separator="\n">
+>>
+
+chain-stage-block(serial_chain_solvers, backend) ::= <<
+<serial_chain_solvers:{solver |     <solver-stage-output(solver, backend)>}; separator="\n">
+>>
+
+chain-apply-block(serial_chain_solvers, backend) ::= <<
+<serial_chain_solvers:{solver |     <solver-apply-output(solver, backend)>}; separator="\n">
+>>
+
+command-forwarding(backend, motion) ::= <<
+<({command-forwarding-<backend>})(motion)>
+>>
+
+// A forwarded command exists only where a gripper joint is commanded, and generation rejects
+// that without a gripper bound -- so the target is wired by the time this runs.
+
+command-forwarding-robif2b(motion) ::= <<
+<motion.forwarded_commands:{cmd | <if(cmd.target)>    *robot.<cmd.robot_id>.gripper_cmd = shared.<cmd.control_signal.id>;
+<endif>}; separator="">
+>>
+
+command-forwarding-mj_kdl(motion) ::= <<
+<motion.forwarded_commands:{cmd | <if(cmd.target)>    {
+        const mjModel *model = robot.<cmd.robot_id>.robot->model;
+        int actuator_id = mj_name2id(model, mjOBJ_ACTUATOR, "<cmd.target>");
+        const int joint_id = mj_name2id(model, mjOBJ_JOINT, "<cmd.target>");
+        for (int i = 0; actuator_id \< 0 && joint_id >= 0 && i \< model->nu; ++i) {
+            if (model->actuator_trntype[i] == mjTRN_JOINT
+                && model->actuator_trnid[2 * i] == joint_id) actuator_id = i;
+        \}
+        if (actuator_id >= 0) {
+            robot.<cmd.robot_id>.robot->data->ctrl[actuator_id] = shared.<cmd.control_signal.id>;
+        \}
+    \}
+<endif>}; separator="\n">
+>>
+
+emit-relative-pose(rp) ::= <<
+    if (!state.<rp.id>_start_captured) {
+        state.<rp.id>_start_frame = shared.<rp.fk_pose_id>;
+        state.<rp.id>_start_captured = true;
+    }
+    shared.<rp.id> = state.<rp.id>_start_frame.Inverse() * shared.<rp.fk_pose_id>;
+>>
+
+emit-snapshot(snap, closures, views) ::= <<
+<if(snap.source_closure_id)>
+        <({emit-call-<closures.(snap.source_closure_id).type>})(closures.(snap.source_closure_id), views)>
+<endif>
+        shared.<snap.target_id> = <access-expr(snap.source_id, views)>;
+>>
+
+// An event-triggered snapshot re-samples on every occurrence of its trigger. The FSM fires
+// the event into the future buffer as it transitions, so it is readable for exactly the one
+// tick that is this motion's first after entry.
+
+emit-triggered-snapshot(snap, closures, views) ::= <<
+<if(snap.trigger_event)>
+
+    if (robot.fsm_events && consume_event(robot.fsm_events, <snap.fsm_namespace>::<snap.trigger_event>)) {
+    <emit-snapshot(snap, closures, views)>
+    \}
+<endif>
+>>

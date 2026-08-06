@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: MPL-2.0
+// Proposed template architecture. Rationale and measurements: README.md.
+digraph proposed_templates {
+  rankdir=TB
+  fontname="Helvetica" labelloc=t labeljust=c fontsize=16
+  label=<<b>templates — layers enforced by the ST4 import graph</b>>
+  node [fontname="Helvetica" fontsize=11 shape=box style="filled,rounded" height=0.4 margin="0.16,0.09"]
+  edge [fontname="Helvetica" fontsize=9 color="#9099a8"]
+
+  subgraph cluster4 { label="L4  entry — one group per generated artifact" style=filled fillcolor="#dff0df" fontsize=11 color="#7fae7f"
+    node [fillcolor="#b8ddb8" color="#7fae7f"]
+    e1 [label="entry_program"] e2 [label="entry_motion"]
+    e3 [label="entry_introspection"] e4 [label="entry_build"] }
+
+  subgraph cluster3 { label="L3  assembly — program shape" style=filled fillcolor="#e6f4e6" fontsize=11 color="#8fb98f"
+    node [fillcolor="#c8e4c8" color="#8fb98f"]
+    a1 [label="assembly_loop"] a2 [label="assembly_coordination"] a3 [label="assembly_motion"] }
+
+  subgraph cluster2 { label="L2  domain" style=filled fillcolor="#edf7ed" fontsize=11 color="#9fc49f"
+    node [fillcolor="#d6ebd6" color="#9fc49f"]
+    d1 [label="domain_solver"] d2 [label="domain_closures"]
+    d3 [label="domain_monitors"] d4 [label="domain_poses"] }
+
+  subgraph cluster1 { label="L1  expression" style=filled fillcolor="#f3faf3" fontsize=11 color="#afd0af"
+    node [fillcolor="#e4f2e4" color="#afd0af"]
+    x1 [label="expr_values"] }
+
+  subgraph cluster0 { label="L0  backend — reached only by dynamic dispatch" style=filled fillcolor="#eef2fa" fontsize=11 color="#9bb0d0"
+    node [fillcolor="#cdd9ef" color="#9bb0d0"]
+    b0 [label="backend_robot\n(dispatch shim)"] b1 [label="backend_mj_kdl"]
+    b2 [label="backend_robif2b"] b3 [label="backend_kelo"] }
+
+  rt [label="runtime.stg\n625 lines, 1% templated" fillcolor="#eaeaf6" color="#a0a0c8"]
+
+  root [label="main.stg — root, imports only" fillcolor="#ffeeba" color="#c8a93a"]
+  root -> {e1 e2 e3 e4}
+  e1 -> {a1 a2 a3}  e2 -> a3  e3 -> d3  e4 -> b2
+  a1 -> {b1 b2}  a2 -> a3  a3 -> {d1 d2 d3 d4}
+  d1 -> x1  d2 -> {d4 x1}  d3 -> x1  d4 -> x1
+  b1 -> b0 [color="#5878b0"]  b2 -> b0 [color="#5878b0"]
+  e1 -> rt [style=dashed]
+  b0 -> b1 [style=dotted color="#5878b0" constraint=false label="dynamic" fontcolor="#5878b0"]
+  b0 -> b2 [style=dotted color="#5878b0" constraint=false]
+}

@@ -10,12 +10,12 @@ import pytest
 from rdflib import Graph
 from rdf_utils.resolver import IriToFileResolver, install_resolver
 
-from motion_spec.classes.closures import closure_output_ids
 from motion_spec.generation import codegen
 from motion_spec.rdf_parser.ir import (
     DerivedIriRegistry,
     _annotate_controller_signals,
     _assert_every_id_resolves,
+    _views_for_access,
     add_controller_internal_state_logging,
     add_quantity_samples,
     add_spatial_samples,
@@ -193,9 +193,9 @@ def test_closure_output_stays_direct_when_it_is_also_a_view() -> None:
         "subspace": "position",
         "axis": "X",
     }
-    direct_ids = closure_output_ids({"type": "Addition", "out": "end_x"})
+    closure = {"type": "Addition", "out": "end_x"}
 
-    assert codegen._views_for_access({"end_pose_x": view}, direct_ids) == {}
+    assert _views_for_access({"end_pose_x": view}, [], [], {"add": closure}) == {}
 
 
 def _sample_fsm() -> dict:
@@ -321,10 +321,8 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
         {
             "backend": "mj_kdl",
             "has_serial_chain": False,
-            "has_mobile_base": False,
+            "mobile_base": None,
             "serial_chain_solvers": [],
-            "platform_velocity_solvers": [],
-            "platform_force_solvers": [],
             "cstr_hdl": [],
             "motions": ir["unique_motions"],
             "data": [],
@@ -441,10 +439,10 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
         controller
         for case in payload["introspection_artifacts"]["model"]["motions"]
         for controller in case["controllers"]
-        if controller["error_expr"] == "shared.err_x"
+        if controller["error_signal"] == "err_x"
     )
-    # measured/setpoint carry abstract signal ids now; the template renders them via
-    # access-expr (here plain shared signals -> shared.measured_x / shared.setpoint_x).
+    # Every signal reaches the template as an abstract id; the C++ access is rendered there
+    # (shared-sig for error/output, access-expr for measured/setpoint).
     assert controller["measured_signal"] == "measured_x"
     assert controller["setpoint_signal"] == "setpoint_x"
     monitors = [
@@ -453,7 +451,7 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
         for monitor in case["monitors"]
         if not monitor["has_active"]
     ]
-    assert any(monitor["value_expr"] == "shared.err_x" for monitor in monitors)
+    assert any(monitor["value_signal"] == "err_x" for monitor in monitors)
     assert any(monitor["composite_error"] for monitor in monitors)
     assert all("satisfied_expr" not in monitor for monitor in monitors)
 

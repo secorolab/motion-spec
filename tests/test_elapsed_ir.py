@@ -132,7 +132,7 @@ def test_a_monitor_condition_reads_nothing_but_shared() -> None:
     from pathlib import Path
 
     template = (
-        Path(__file__).resolve().parents[1] / "src" / "motion_spec" / "templates" / "motion.stg"
+        Path(__file__).resolve().parents[1] / "src" / "motion_spec" / "templates" / "domain_monitors.stg"
     ).read_text()
     evaluators = [
         ConstraintEvaluator(
@@ -159,5 +159,5 @@ def test_a_monitor_condition_reads_nothing_but_shared() -> None:
     assert kinds == {"elapsed", "elapsed-eq", "constraint"}
     for kind in sorted(kinds):
         body = re.search(rf"^cond-term-{kind}\(t\) ::= <<(.*?)^>>", template, re.S | re.M)
-        assert body, f"cond-term-{kind} is no longer in motion.stg"
+        assert body, f"cond-term-{kind} is no longer in domain_monitors.stg"
         assert "state." not in body.group(1), f"cond-term-{kind} reaches outside shared"

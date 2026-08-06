@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 // Closure/evaluator library (emit-call) and pose-axis error groups.
 
-import "shared_data.stg"
+import "expr_values.stg"
+import "domain_poses.stg"
 
 emit-call(closure, views) ::= <<
 <({emit-call-<closure.type>})(closure, views)>

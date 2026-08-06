@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: MPL-2.0
+// Proposed intermediate representation. Rationale and measurements: README.md.
+digraph proposed_ir {
+  rankdir=TB
+  fontname="Helvetica" labelloc=t labeljust=c fontsize=16
+  label=<<b>intermediate representation — model, resolved queries, view</b>>
+  node [fontname="Helvetica" fontsize=11 shape=box style="filled,rounded" height=0.4 margin="0.16,0.09"]
+  edge [fontname="Helvetica" fontsize=9 color="#9099a8"]
+
+  subgraph cluster_p { label="ir_gen internals — not in the interface" style=filled fillcolor="#f2f2f5" fontsize=11 color="#b0b0b8"
+    node [fillcolor="#dcdce4" color="#b0b0b8"]
+    p0 [label="L0  graph facts"] p1 [label="L1  resolution indexes"] }
+
+  subgraph cluster_a { label="A.  MODEL — mechanism · sectioned by the 5Cs · no target syntax" style=filled fillcolor="#e8eef8" fontsize=11 color="#8ba3cc"
+    node [fillcolor="#c3d3ec" color="#8ba3cc"]
+    m1 [label="resources\nrobots[] {kind: serial_chain | mobile_base}"]
+    m2 [label="computation\nvalues[] · closures · views"]
+    m3 [label="coordination\nfsm · monitors · guards"]
+    m4 [label="communication\nintrospection · ros"]
+    m5 [label="configuration\nbackend · scene · period"]
+    m6 [label="composition\nmotions[]"] }
+
+  subgraph cluster_b { label="B.  RESOLVED QUERIES — policy · named by role · structure only" style=filled fillcolor="#e8f4ea" fontsize=11 color="#7fae7f"
+    node [fillcolor="#b8ddb8" color="#7fae7f"]
+    q1 [label="values.externally_measured"] q2 [label="values.logged · initialised_once"]
+    q3 [label="poses.declared"] q4 [label="resources.by_kind"] }
+
+  subgraph cluster_c { label="C.  VIEW — templates · presence tests only · sole home of C++ syntax" style=filled fillcolor="#fdf3e0" fontsize=11 color="#d0b070"
+    node [fillcolor="#f7e3b8" color="#d0b070"]
+    v [label="L4 → L0  (see proposed-templates)"] }
+
+  contract [label="one contract: annotate_dataflow.contract()\nproducer · consumers · cadence · storage" shape=note fillcolor="#dce6f5" color="#8ba3cc" style=filled]
+
+  p0 -> p1 -> m2
+  m2 -> contract [style=dashed color="#5878b0"]
+  contract -> {q1 q2 q3} [color="#4a8a4a"]
+  m1 -> q4 [color="#4a8a4a"]
+  {q1 q2 q3 q4} -> v [color="#4a8a4a"]
+  m5 -> v [style=dashed label="backend: dispatch only" fontcolor="#5878b0" color="#5878b0"]
+}

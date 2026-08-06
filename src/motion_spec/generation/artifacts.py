@@ -261,7 +261,7 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
     state_by_id = {state["id"]: state for state in states}
     # Slots are keyed by the motion that computes them, not by the coordinator state that happens
     # to select it: a motion owns the closures and solvers that write its values under an FSM, a
-    # behaviour tree or the plain app_main loop alike. The index space is ir_gen's motion order,
+    # behaviour tree or a plain sequencer alike. The index space is ir_gen's motion order,
     # so nothing downstream has to agree with a second generator about what index 3 means.
     by_motion = {}
     # ir_gen owns this index (add_motion_function_interfaces); read it, never re-derive it.
@@ -571,11 +571,9 @@ def _uri_comment(uri: str | None) -> str:
     return re.sub(r"[\r\n]|\*/", " ", uri or "")
 
 
-def _shared_expr(signal_id: str | None, shared_ids: set[str]) -> str:
-    """C++ access for a shared signal ('shared.<id>'), or '0.0' when it is not a shared field."""
-    if signal_id and signal_id in shared_ids:
-        return f"shared.{signal_id}"
-    return "0.0"
+def _shared_signal(signal_id: str | None, shared_ids) -> str | None:
+    """The signal id when it names a shared field, else None so the template samples a constant."""
+    return signal_id if signal_id and signal_id in shared_ids else None
 
 
 def build_introspection_model(schema: dict, ir: dict) -> dict:
@@ -615,20 +613,16 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
     for entry in schema.get("by_motion", {}).values():
         controllers = []
         for slot in entry.get("controllers", []):
-            # error/output are the controller's own dedicated shared fields (never views).
-            # measured/setpoint may reference a view, so pass their ids and let the
-            # template render them via access-expr(id, views).
+            # error/output are the controller's own dedicated shared fields (never views), so the
+            # template reads them with shared-sig. measured/setpoint may reference a view, so they
+            # go through access-expr(id, views) instead.
             controllers.append(
                 {
                     "index": slot.get("index", 0),
                     "uri_comment": _uri_comment(slot.get("uri")),
-                    "error_expr": _shared_expr(slot.get("error_signal"), shared_ids),
-                    **(
-                        {"tolerance_expr": _shared_expr(slot["tolerance_signal"], shared_ids)}
-                        if slot.get("tolerance_signal")
-                        else {}
-                    ),
-                    "output_expr": _shared_expr(slot.get("output_signal"), shared_ids),
+                    "error_signal": _shared_signal(slot.get("error_signal"), shared_ids),
+                    "tolerance_signal": _shared_signal(slot.get("tolerance_signal"), shared_ids),
+                    "output_signal": _shared_signal(slot.get("output_signal"), shared_ids),
                     "measured_signal": slot.get("measured_signal"),
                     "setpoint_signal": slot.get("setpoint_signal"),
                 }
@@ -650,18 +644,15 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
                     }
                 )
             else:
-                value_expr = _shared_expr(slot.get("error_signal"), shared_ids)
                 monitors.append(
                     {
                         "index": slot.get("index", 0),
                         "uri_comment": _uri_comment(slot.get("uri")),
                         "has_active": False,
-                        "value_expr": value_expr,
+                        "value_signal": _shared_signal(slot.get("error_signal"), shared_ids),
                         "composite_error": slot.get("composite_error", False),
-                        **(
-                            {"tolerance_expr": _shared_expr(slot["tolerance_signal"], shared_ids)}
-                            if slot.get("tolerance_signal")
-                            else {}
+                        "tolerance_signal": _shared_signal(
+                            slot.get("tolerance_signal"), shared_ids
                         ),
                     }
                 )

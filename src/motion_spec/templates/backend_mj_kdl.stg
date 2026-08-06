@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // mj_kdl backend tool: MuJoCo+KDL simulation robot impl (KinovaGen3) and CMake generation.
 
+import "backend_robot.stg"
 robot-driver-include-mj_kdl-KinovaGen3(solver) ::= <<
 #include \<mj_kdl_wrapper/mj_kdl_wrapper.hpp\>
 #include "headers/<solver.kdl_header>"
@@ -289,12 +290,12 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
     }
 >>
 
-app-chain-post-setup-mj_kdl(serial_chain_solvers, motions) ::= <<
+app-chain-post-setup-mj_kdl(serial_chain_solvers, motions, agent_homes) ::= <<
     mj_env.on_reset = [&](mj_kdl::ResetContext *) {
-        const double _q_home[7] = {0.0, 0.2618, 3.1416, -2.2689, 0.0, 0.9599, 1.5708};
 <serial_chain_solvers:{solver | <if(solver.runtime_owner)>        {
+            const double _q_home[] = {<agent_homes.(solver.config_key); separator=", ">\};
             KDL::JntArray _q(mj_<solver.runtime_id>.n_joints);
-            for (int _i = 0; _i \< mj_<solver.runtime_id>.n_joints && _i \< 7; ++_i)
+            for (int _i = 0; _i \< mj_<solver.runtime_id>.n_joints && _i \< static_cast\<int\>(std::size(_q_home)); ++_i)
                 _q(_i) = _q_home[_i];
             mj_kdl::set_joint_pos(&mj_<solver.runtime_id>, _q, false);
         \}
@@ -305,10 +306,10 @@ app-chain-post-setup-mj_kdl(serial_chain_solvers, motions) ::= <<
     double _prev_sim_time = mj_<first(serial_chain_solvers).runtime_id>.data->time;
 >>
 
-app-chain-loop-reset-mj_kdl(serial_chain_solvers, fsm_namespace) ::= <<
+app-chain-loop-reset-mj_kdl(serial_chain_solvers, fsm) ::= <<
         if (mj_<first(serial_chain_solvers).runtime_id>.data->time \< _prev_sim_time - 1e-6) {
             mj_kdl::reset(&mj_env);
-<if(fsm_namespace)>
+<if(fsm)>
             fsm->currentStateIndex = fsm->startStateIndex;
 <else>
             current_motion = 0;
@@ -413,60 +414,4 @@ app-headless-print-AccelerationTwist-mj_kdl(item) ::= <<
 
 app-headless-print-Quantity-mj_kdl(item) ::= <<
         std::cout \<\< "<item.id>=" \<\< shared.<item.id> \<\< "\n";
->>
-
-cmake_mj_kdl(motions, fsm_namespace, has_ros, ros_packages) ::= <<
-cmake_minimum_required(VERSION 3.16)
-project(motion_spec_mj_kdl_target LANGUAGES CXX)
-
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
-
-find_package(Eigen3 REQUIRED)
-find_package(orocos_kdl REQUIRED CONFIG)
-<if(fsm_namespace)>
-find_package(coord2b REQUIRED)
-<endif>
-find_package(mj_kdl_wrapper 0.2.2 REQUIRED CONFIG)
-find_package(Threads REQUIRED)
-<if(has_ros)>
-find_package(rclcpp REQUIRED)
-find_package(realtime_tools REQUIRED)
-<ros_packages:{pkg | find_package(<pkg> REQUIRED)}; separator="\n">
-<endif>
-
-option(MOTION_SPEC_ENABLE_INTROSPECTION "Enable generated runtime introspection logging" OFF)
-
-add_executable(main
-    ref_main.cpp
-)
-target_include_directories(main PRIVATE
-    ${EIGEN3_INCLUDE_DIRS}
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/headers
-<if(fsm_namespace)>
-    ${coord2b_INCLUDE_DIRS}
-<endif>
-)
-target_link_libraries(main PRIVATE
-    mj_kdl_wrapper::mj_kdl_wrapper
-    orocos-kdl
-<if(fsm_namespace)>
-    ${coord2b_LIBRARIES}
-<endif>
-<if(has_ros)>
-    rclcpp::rclcpp
-    realtime_tools::realtime_tools
-<ros_packages:{pkg |     ${<pkg>_TARGETS\}}; separator="\n">
-<endif>
-)
-if(MOTION_SPEC_ENABLE_INTROSPECTION)
-    find_package(Protobuf REQUIRED)
-    target_sources(main PRIVATE frame_log.pb.cc)
-    target_include_directories(main PRIVATE ${Protobuf_INCLUDE_DIRS})
-    target_compile_definitions(main PRIVATE MOTION_SPEC_ENABLE_INTROSPECTION)
-    target_link_libraries(main PRIVATE Threads::Threads protobuf::libprotobuf)
-endif()
-target_compile_options(main PRIVATE -Wall -Wextra -ftemplate-depth=2048)
 >>

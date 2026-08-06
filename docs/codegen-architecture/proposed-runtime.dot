@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: MPL-2.0
+// The generated program at run time. Rationale and measurements: README.md.
+digraph proposed_runtime {
+  rankdir=LR
+  fontname="Helvetica" labelloc=t labeljust=c fontsize=16
+  label=<<b>generated program — shared_data is a blackboard</b>>
+  node [fontname="Helvetica" fontsize=11 shape=box style="filled,rounded" height=0.4 margin="0.16,0.09"]
+  edge [fontname="Helvetica" fontsize=10]
+
+  subgraph cluster_w { label="writers" style=filled fillcolor="#e8f4ea" fontsize=11 color="#7fae7f"
+    node [fillcolor="#b8ddb8" color="#7fae7f"]
+    w1 [label="solvers"] w2 [label="closures"] w3 [label="snapshots"] w4 [label="sensors / drivers"] }
+
+  bb [label="shared_data — BLACKBOARD\n\nadmission rule:\na member must have a producer/consumer contract"
+      shape=box style="filled,rounded" fillcolor="#ffeeba" color="#c8a93a" penwidth=2 fontsize=12]
+
+  subgraph cluster_r { label="readers" style=filled fillcolor="#eef2fa" fontsize=11 color="#9bb0d0"
+    node [fillcolor="#cdd9ef" color="#9bb0d0"]
+    r1 [label="monitors"] r2 [label="controllers"] r3 [label="frame log + shm"] r4 [label="ROS publishers"] }
+
+  subgraph cluster_c { label="coordination — selects who runs" style=filled fillcolor="#f6eef8" fontsize=11 color="#b090c0"
+    node [fillcolor="#e0cdef" color="#b090c0"]
+    fsm [label="FSM"] ev [label="event buffer"] }
+
+  {w1 w2 w3 w4} -> bb [color="#4a8a4a" label="write"]
+  bb -> {r1 r2 r3 r4} [color="#5878b0" label="read"]
+  r1 -> ev [color="#8e44ad"]  ev -> fsm [color="#8e44ad" dir=both]
+  fsm -> w1 [style=dashed color="#8e44ad" label="dispatch"]
+
+  evict [label="fails the rule today\n\n_motion_spec_events[] · _event_count · _buffer_size\l_motion_spec_record_event()  — a method\lclock_time_s  — unmodelled\lmobile_base_runtime_state  — 17: geometry, tuning, scratch\l"
+         shape=box style="filled,rounded" fillcolor="#f8dcdc" color="#c07070" fontsize=10]
+  evict -> bb [style=dashed color="#c07070" label="evict"]
+}

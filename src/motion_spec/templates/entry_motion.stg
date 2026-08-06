@@ -1,0 +1,141 @@
+// SPDX-License-Identifier: MPL-2.0
+// L4 entry — one generated header per motion.
+
+import "assembly_motion.stg"
+import "domain_monitors.stg"
+import "domain_poses.stg"
+import "domain_closures.stg"
+import "domain_solver.stg"
+import "expr_values.stg"
+import "backend_robif2b.stg"
+
+motion_header(motion, closures, views, wrench_outputs, backend) ::= <<
+/// Motion: <motion.name>
+<motion.description:{line | /// <line>}; separator="\n">
+#pragma once
+
+#include "runtime.hpp"
+#include "shared_state.hpp"
+
+struct <motion.id>_state {
+    bool active = false;
+    int active_steps = 0;
+<if(motion.has_active_elapsed)>    double motion_start_time = -1.0;
+<endif>
+<if(motion.has_when_elapsed)>    double when_start_time = -1.0;
+<endif>
+<chain-state-members(motion.serial_chain_solvers)>
+<if(motion.snapshots)>    bool snapshot_taken = false;
+<endif>
+<motion.relative_poses:{rp |     KDL::Frame <rp.id>_start_frame;
+    bool <rp.id>_start_captured = false;
+}; separator="\n">
+<motion.controllers:{controller | <controller-member(controller)>}; separator="\n">
+<motion.when_monitors:{monitor | <monitor-member(monitor)>}; separator="\n">
+<motion.while_monitors:{monitor | <monitor-member(monitor)>}; separator="\n">
+<motion.until_monitors:{monitor | <monitor-member(monitor)>}; separator="\n">
+};
+
+inline void reset_<motion.id>(<motion.id>_state &state) {
+    state = <motion.id>_state{};
+}
+
+inline void init_<motion.id>(<motion.id>_state &state, const robot_io &robot) {
+<if(motion.serial_chain_solvers)>
+<chain-init-block(motion.serial_chain_solvers, backend)>
+<endif>
+}
+
+inline void update_<motion.id>(
+    <motion.id>_state &state,
+    shared_data &shared,
+    const robot_io &robot) {
+    init_<motion.id>(state, robot);
+<if(motion.has_active_elapsed)>    if (state.motion_start_time \< 0.0) {
+        state.motion_start_time = shared.clock_time_s;
+    }
+<motion.active_elapsed_ids:{c |     shared.<c> = shared.clock_time_s - state.motion_start_time;
+}><endif>
+<motion-prelude(wrench_outputs, motion.serial_chain_solvers, backend)>
+<motion.relative_poses:{rp | <emit-relative-pose(rp)>}; separator="\n">
+<motion.scene_relative_poses:{srp |
+<if(srp.base_seen)>    shared.<srp.id> = KDL::Frame(shared.<srp.fk_pose_id>.M, shared.<srp.fk_pose_id>.p - shared.<srp.scene_pose_id>.p);
+<else>    shared.<srp.id> = shared.<srp.scene_pose_id>.Inverse() * shared.<srp.fk_pose_id>;
+<endif>
+}; separator="\n">
+<if(motion.snapshots)>
+    if (!state.snapshot_taken) {
+<motion.snapshots:{snap | <emit-snapshot(snap, closures, views)>}; separator="\n">
+        state.snapshot_taken = true;
+    }
+<motion.snapshots:{snap | <emit-triggered-snapshot(snap, closures, views)>}; separator="">
+<endif>
+<motion.declared_pose_components:{pose | <materialize-pose-component(pose, views)>}; separator="\n">
+}
+
+inline bool can_start_<motion.id>(<sig-params(motion.id, motion.can_start_needs_state, motion.can_start_needs_shared, motion.can_start_needs_robot)>) {
+<if(motion.has_when_elapsed)>    if (state.when_start_time \< 0.0) {
+        state.when_start_time = shared.clock_time_s;
+    }
+<motion.when_elapsed_ids:{c |     shared.<c> = shared.clock_time_s - state.when_start_time;
+}><endif>
+<motion-when-block(motion.when_schedule, closures, views)>
+    return <if(motion.when_terms_present)><bool-condition(motion.when_terms, motion.when_any)><else>true<endif>;
+}
+
+inline void monitor_when_<motion.id>(<sig-params(motion.id, motion.when_needs_state, motion.when_needs_shared, motion.when_needs_robot)>) {
+<if(motion.has_when_elapsed)>    if (state.when_start_time \< 0.0) {
+        state.when_start_time = shared.clock_time_s;
+    }
+<motion.when_elapsed_ids:{c |     shared.<c> = shared.clock_time_s - state.when_start_time;
+}><endif>
+<motion.declared_pose_components:{pose | <materialize-pose-component(pose, views)>}; separator="\n">
+<shared-schedule-block(motion.when_schedule, closures, views)>
+<if(first(motion.when_monitors))>
+<monitor-block(motion.when_monitors)>
+<endif>
+}
+
+inline void monitor_until_<motion.id>(<sig-params(motion.id, motion.until_needs_state, motion.until_needs_shared, motion.until_needs_robot)>) {
+<shared-schedule-block(motion.until_schedule, closures, views)>
+<if(first(motion.until_monitors))>
+<monitor-block(motion.until_monitors)>
+<endif>
+}
+
+inline void monitor_<motion.id>(<sig-params(motion.id, motion.monitor_needs_state, motion.monitor_needs_shared, motion.monitor_needs_robot)>) {
+<shared-schedule-block(motion.when_schedule, closures, views)>
+<if(first(motion.when_monitors))>
+<monitor-block(motion.when_monitors)>
+<endif>
+<shared-schedule-block(motion.until_schedule, closures, views)>
+<if(first(motion.until_monitors))>
+<monitor-block(motion.until_monitors)>
+<endif>
+}
+
+inline void control_<motion.id>(
+    <motion.id>_state &state,
+    shared_data &shared,
+    const robot_io &robot) {
+<shared-schedule-block(motion.while_pre_schedule, closures, views)>
+<motion.pose_axis_error_groups:{group | <pose-axis-error-group(group, views)>}; separator="\n">
+<shared-schedule-block(motion.while_schedule, closures, views)>
+<if(first(motion.while_monitors))>
+
+<monitor-block(motion.while_monitors)>
+<endif>
+<if(motion.serial_chain_solvers)>
+
+<chain-run-block(motion.serial_chain_solvers, backend)>
+<endif>
+}
+
+inline void apply_<motion.id>(<sig-params(motion.id, motion.apply_needs_state, motion.apply_needs_shared, motion.apply_needs_robot)>) {
+<if(motion.serial_chain_solvers)>
+<chain-stage-block(motion.serial_chain_solvers, backend)>
+<chain-apply-block(motion.serial_chain_solvers, backend)>
+<endif>
+<command-forwarding(backend, motion)>
+}
+>>

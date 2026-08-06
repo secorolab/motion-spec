@@ -32,8 +32,6 @@ runtime_header(mobile_base, control_period_ns) ::= <<
 namespace motion_spec::runtime {
 
 inline constexpr double kControlPeriodS = <control_period_ns> * 1e-9;
-inline constexpr int kMonitorArmSteps = 100;
-inline constexpr double kRneDampingLambda = 0.05;
 
 inline double clamp_range(double v, double lower, double upper) {
     if (v \< lower) return lower;
@@ -101,45 +99,42 @@ inline double gripper_closed_fraction(double joint_position, double travel) {
     return std::clamp(joint_position / travel, 0.0, 1.0);
 }
 
-// Local search window around the previous projection. Forward is generous enough to keep up
-// with the commanded speed for a control period; backward is tight so the parameter cannot
-// slip across a fold of a self-intersecting path and reverse.
-inline constexpr double kPathSearchForward = 0.15;
-inline constexpr double kPathSearchBackward = 0.02;
-inline constexpr int kPathSearchSamples = 16;
-inline constexpr int kPathRefineSteps = 24;
-// Central-difference step for the tangent, in path parameter.
+// Central-difference step for the tangent, in path parameter. Also the resolution the
+// projection converges to: refining the parameter finer than the step the curve is
+// differentiated at buys nothing.
 inline constexpr double kPathTangentStep = 1e-4;
 
 // Closest point on a path, refined locally around the previous parameter.
-// Seeding bounds the cost to a fixed number of evaluations per tick and makes the parameter a
-// measurement of where the frame already is, so nothing upstream can run ahead of the robot.
+// The window is derived, not tuned: how far the frame drifted off the last projection is how
+// far it can have travelled in the control period that passed. The closest point is no farther
+// away than P(previous) already is, so P(s*) is within 2d of P(previous) in arc length, and
+// dividing by the local |dP/ds| turns that into the parameter bound searched here. A tuned window
+// would either lag a fast motion or, when generous, reach across a fold of a self-intersecting
+// path; one control period of measured motion can do neither.
 template \<typename Eval\>
 inline double path_project(const Eval &eval, const KDL::Vector &point, double previous) {
-    const double lo = std::max(0.0, previous - kPathSearchBackward);
-    const double hi = std::min(1.0, previous + kPathSearchForward);
     const auto distance2 = [&](double s) {
         const KDL::Vector delta = eval(s).p - point;
         return KDL::dot(delta, delta);
     };
-    double best = lo;
-    double best_d2 = distance2(lo);
-    for (int i = 1; i \<= kPathSearchSamples; ++i) {
-        const double s = lo + (hi - lo) * (static_cast\<double\>(i) / kPathSearchSamples);
-        const double d2 = distance2(s);
-        if (d2 \< best_d2) { best_d2 = d2; best = s; }
-    }
-    // Golden-section on the bracket the scan selected: the distance is unimodal there once the
-    // window is narrower than the path's curvature scale.
-    const double step = (hi - lo) / kPathSearchSamples;
-    double a = std::max(lo, best - step);
-    double b = std::min(hi, best + step);
+    const double lo_s = std::max(0.0, previous - kPathTangentStep);
+    const double hi_s = std::min(1.0, previous + kPathTangentStep);
+    const double ds = hi_s - lo_s;
+    if (ds \< 1e-12) return clamp01(previous);
+    const double speed = (eval(hi_s).p - eval(lo_s).p).Norm() / ds;
+    if (speed \< 1e-9) return clamp01(previous);  // stationary curve: nothing to search along
+    const double window = 2.0 * std::sqrt(distance2(previous)) / speed;
+    double a = std::max(0.0, previous - window);
+    double b = std::min(1.0, previous + window);
+    // Golden section: the distance is unimodal over a window this size, so no coarse scan is
+    // needed to bracket. The shrink factor bounds the loop -- worst case is a full-length
+    // window, ~19 iterations to the tangent step -- so the tick cost stays deterministic.
     constexpr double kInvPhi = 0.6180339887498949;
     double c = b - kInvPhi * (b - a);
     double d = a + kInvPhi * (b - a);
     double fc = distance2(c);
     double fd = distance2(d);
-    for (int i = 0; i \< kPathRefineSteps; ++i) {
+    while (b - a > kPathTangentStep) {
         if (fc \< fd) {
             b = d; d = c; fd = fc;
             c = b - kInvPhi * (b - a);
@@ -191,7 +186,6 @@ inline void resolve_cartesian_acceleration(
         const KDL::Jacobian &directions,
         const KDL::JntArray &cartesian_acceleration,
         const Eigen::VectorXd *bias,
-        double lambda,
         KDL::JntArray &qdd_out) {
     KDL::SetToZero(qdd_out);
     const int m = cartesian_acceleration.rows();
@@ -204,10 +198,8 @@ inline void resolve_cartesian_acceleration(
     if (bias != nullptr && bias->size() == m) {
         rhs -= *bias;
     }
-    const Eigen::MatrixXd damped =
-        task_jac * task_jac.transpose() +
-        (lambda * lambda) * Eigen::MatrixXd::Identity(m, m);
-    const Eigen::VectorXd qdd = task_jac.transpose() * damped.ldlt().solve(rhs);
+    const Eigen::MatrixXd gram = task_jac * task_jac.transpose();
+    const Eigen::VectorXd qdd = task_jac.transpose() * gram.ldlt().solve(rhs);
     for (int i = 0; i \< static_cast\<int\>(qdd_out.rows()); ++i) {
         qdd_out(i) = qdd(i);
     }
@@ -507,14 +499,6 @@ inline bool rising_edge(bool &previous, bool active) {
     const bool detected = active && !previous;
     previous = active;
     return detected;
-}
-
-inline bool rising_edge_after(bool &previous, bool active, bool armed) {
-    if (!armed) {
-        previous = active;
-        return false;
-    }
-    return rising_edge(previous, active);
 }
 
 // Fire once after `active` has held true for `hold_steps` consecutive calls;

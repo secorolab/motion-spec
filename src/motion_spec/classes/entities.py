@@ -11,8 +11,28 @@ them via the IR dict.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
+
+# Marks a field as a construction input rather than part of the published IR: ir_gen reads
+# it off the live object, ir.json leaves it out. New fields default to internal until a
+# template or a downstream consumer needs them.
+INTERNAL = {"ir_internal": True}
+
+
+def _published(o):
+    """asdict() minus every field marked INTERNAL, at any nesting depth."""
+    if is_dataclass(o) and not isinstance(o, type):
+        return {
+            f.name: _published(getattr(o, f.name))
+            for f in fields(o)
+            if not f.metadata.get("ir_internal")
+        }
+    if isinstance(o, (list, tuple)):
+        return [_published(v) for v in o]
+    if isinstance(o, dict):
+        return {k: _published(v) for k, v in o.items()}
+    return o
 
 
 class DataclassJSONEncoder(json.JSONEncoder):
@@ -20,7 +40,7 @@ class DataclassJSONEncoder(json.JSONEncoder):
 
     def default(self, o):
         if is_dataclass(o) and not isinstance(o, type):
-            return asdict(o)
+            return _published(o)
         return super().default(o)
 
 
@@ -108,10 +128,10 @@ class Quantity:
     """A scalar quantity with its kind, unit and optional value or view."""
 
     id: str
-    quantity_kind: QuantityKind
-    unit: Unit
+    quantity_kind: QuantityKind = field(metadata=INTERNAL)
+    unit: Unit = field(metadata=INTERNAL)
     value: float | None
-    has_view: bool
+    has_view: bool = field(metadata=INTERNAL)
     provenance: Provenance = field(default_factory=Provenance)
     reference_value: str | None = None
     type: str = field(default="Quantity")
@@ -135,10 +155,10 @@ class FreeVector:
     """A free (un-anchored) vector quantity."""
 
     id: str
-    quantity_kind: QuantityKind
-    unit: Unit
+    quantity_kind: QuantityKind = field(metadata=INTERNAL)
+    unit: Unit = field(metadata=INTERNAL)
     vector: list[float] | None
-    has_view: bool = False
+    has_view: bool = field(default=False, metadata=INTERNAL)
     provenance: Provenance = field(default_factory=Provenance)
     type: str = field(default="FreeVector")
 
@@ -148,9 +168,9 @@ class Setpoint:
     """A setpoint-valued quantity produced by a path evaluator."""
 
     id: str
-    quantity_kind: QuantityKind
-    unit: Unit
-    has_view: bool
+    quantity_kind: QuantityKind = field(metadata=INTERNAL)
+    unit: Unit = field(metadata=INTERNAL)
+    has_view: bool = field(metadata=INTERNAL)
     provenance: Provenance = field(default_factory=Provenance)
     value_kind: str | None = None
     type: str = field(default="Setpoint")
@@ -189,9 +209,9 @@ class Direction:
     """A unit-direction quantity."""
 
     id: str
-    quantity_kind: list[QuantityKind]
+    quantity_kind: list[QuantityKind] = field(metadata=INTERNAL)
     as_seen_by: Frame
-    unit: list[Unit]
+    unit: list[Unit] = field(metadata=INTERNAL)
     direction: list[float] | None
     type: str = field(default="Direction")
 
@@ -202,10 +222,10 @@ class Position:
 
     id: str
     of: Point | None
-    with_respect_to: Point | None
-    quantity_kind: QuantityKind
+    with_respect_to: Point | None = field(metadata=INTERNAL)
+    quantity_kind: QuantityKind = field(metadata=INTERNAL)
     as_seen_by: Frame
-    unit: Unit
+    unit: Unit = field(metadata=INTERNAL)
     position: list[float] | None
     type: str = field(default="Position")
 
@@ -216,12 +236,12 @@ class Orientation:
 
     id: str
     of: Frame | SceneObject | None
-    with_respect_to: Frame | SceneObject | None
-    quantity_kind: QuantityKind
+    with_respect_to: Frame | SceneObject | None = field(metadata=INTERNAL)
+    quantity_kind: QuantityKind = field(metadata=INTERNAL)
     as_seen_by: Frame | None
-    unit: Unit
-    euler_axes_sequence: str | None = None
-    has_view: bool = False
+    unit: Unit = field(metadata=INTERNAL)
+    euler_axes_sequence: str | None = field(default=None, metadata=INTERNAL)
+    has_view: bool = field(default=False, metadata=INTERNAL)
     provenance: Provenance = field(default_factory=Provenance)
     type: str = field(default="Orientation")
 
@@ -232,14 +252,14 @@ class Pose:
 
     id: str
     of: SimplicialComplex | Frame | SceneObject | None
-    with_respect_to: SimplicialComplex | Frame | None
-    quantity_kind: list[QuantityKind]
+    with_respect_to: SimplicialComplex | Frame | None = field(metadata=INTERNAL)
+    quantity_kind: list[QuantityKind] = field(metadata=INTERNAL)
     as_seen_by: Frame | None
-    unit: list[Unit]
+    unit: list[Unit] = field(metadata=INTERNAL)
     position: list[float] | None
-    euler_axes_sequence: str | None = None
-    euler_intrinsic: bool = False
-    orientation_representation: str = "quaternion"
+    euler_axes_sequence: str | None = field(default=None, metadata=INTERNAL)
+    euler_intrinsic: bool = field(default=False, metadata=INTERNAL)
+    orientation_representation: str = field(default="quaternion", metadata=INTERNAL)
     orientation_operands: list | None = None
     provenance: Provenance = field(default_factory=Provenance)
     type: str = field(default="Pose")
@@ -251,11 +271,11 @@ class VelocityTwist:
 
     id: str
     of: SimplicialComplex
-    with_respect_to: SimplicialComplex
-    quantity_kind: list[QuantityKind]
+    with_respect_to: SimplicialComplex = field(metadata=INTERNAL)
+    quantity_kind: list[QuantityKind] = field(metadata=INTERNAL)
     reference_point: Point
     as_seen_by: Frame
-    unit: list[Unit]
+    unit: list[Unit] = field(metadata=INTERNAL)
     provenance: Provenance = field(default_factory=Provenance)
     type: str = field(default="VelocityTwist")
 
@@ -265,10 +285,10 @@ class AccelerationTwist:
     """An acceleration-twist quantity."""
 
     id: str
-    quantity_kind: list[QuantityKind]
+    quantity_kind: list[QuantityKind] = field(metadata=INTERNAL)
     reference_point: Point
     as_seen_by: Frame
-    unit: list[Unit]
+    unit: list[Unit] = field(metadata=INTERNAL)
     provenance: Provenance = field(default_factory=Provenance)
     type: str = field(default="AccelerationTwist")
 
@@ -278,10 +298,10 @@ class PoseDifference:
     """A pose-difference quantity."""
 
     id: str
-    quantity_kind: list[QuantityKind]
+    quantity_kind: list[QuantityKind] = field(metadata=INTERNAL)
     reference_point: Point
     as_seen_by: Frame
-    unit: list[Unit]
+    unit: list[Unit] = field(metadata=INTERNAL)
     provenance: Provenance = field(default_factory=Provenance)
     type: str = field(default="PoseDifference")
 
@@ -291,10 +311,10 @@ class Wrench:
     """A wrench (force/torque) quantity, optionally read from a force/torque sensor."""
 
     id: str
-    quantity_kind: list[QuantityKind]
+    quantity_kind: list[QuantityKind] = field(metadata=INTERNAL)
     reference_point: Point
     as_seen_by: Frame
-    unit: list[Unit]
+    unit: list[Unit] = field(metadata=INTERNAL)
     provenance: Provenance = field(default_factory=Provenance)
     sensor_frame: Frame | None = None
     # Non-empty when this wrench is measured from a force/torque sensor (the FT-read
@@ -310,7 +330,7 @@ class View:
 
     id: str
     superobject: Pose | VelocityTwist | AccelerationTwist | PoseDifference | Wrench
-    subobject: Quantity
+    subobject: Quantity = field(metadata=INTERNAL)
     subspace: Subspace
     axis: Axis | None
     # A view onto a runtime direction rather than a frame axis: the component along it.
@@ -503,18 +523,18 @@ class EdgeMonitor:
     # The band its constraint is satisfied within, when the model authored one.
     tolerance: Quantity | None = None
     is_edge_triggered: bool = True
-    is_until_aggregate: bool = False
-    is_when_aggregate: bool = False
+    is_until_aggregate: bool = field(default=False, metadata=INTERNAL)
+    is_when_aggregate: bool = field(default=False, metadata=INTERNAL)
     # Set when the monitor targets a named until group: the member constraint ids it
     # aggregates, and whether they combine with 'any' rather than 'all'.
-    group_constraint_ids: list[str] = field(default_factory=list)
-    group_any: bool = False
+    group_constraint_ids: list[str] = field(default_factory=list, metadata=INTERNAL)
+    group_any: bool = field(default=False, metadata=INTERNAL)
     event_uri: str | None = None
     event_name: str | None = None
     fallback_motion: str | None = None
     # Authored debounce duration (s); converted to debounce_steps once the loop period is known.
     # Stays None (not 0) when absent -- ST4's <if(x)> is true even for integer 0.
-    debounce_duration_s: float | None = None
+    debounce_duration_s: float | None = field(default=None, metadata=INTERNAL)
     debounce_steps: int | None = None
     # Structured active-phase boolean terms (rendered to C++ by the bool-condition template).
     has_active: bool = False
@@ -527,9 +547,9 @@ class EdgeMonitor:
     # ROS topic publish (`also publish to topic`). ros_include/ros_cpp_type are derived
     # from ros_type via the rosidl naming rule; ros_pub_id is the C++ publisher member.
     ros_channel: str | None = None
-    ros_type: str | None = None
-    ros_pkg: str | None = None
-    ros_include: str | None = None
+    ros_type: str | None = field(default=None, metadata=INTERNAL)
+    ros_pkg: str | None = field(default=None, metadata=INTERNAL)
+    ros_include: str | None = field(default=None, metadata=INTERNAL)
     ros_cpp_type: str | None = None
     ros_pub_id: str | None = None
     type: str = field(default="EdgeMonitor")
@@ -579,10 +599,10 @@ class ConstraintHandler:
 
     id: str
     motion: GuardedMotion
-    evaluators: list[ConstraintEvaluator]
+    evaluators: list[ConstraintEvaluator] = field(metadata=INTERNAL)
     controllers: list[Controller]
     monitors: list[Monitor]
-    order: int = 0
+    order: int = field(default=0, metadata=INTERNAL)
     type: str = field(default="ConstraintHandler")
 
 
@@ -625,16 +645,16 @@ class GuardedMotionBlock:
     """A fully built motion unit: schedules, monitors, controllers, conditions, solvers and codegen flags."""
 
     id: str
-    handler: str
+    handler: str = field(metadata=INTERNAL)
     name: str
     # Authored description split into lines: the doc comment it renders into is a per-line
     # construct, so the split belongs to the IR rather than to an escape in the renderer.
     description: list[str]
 
     # Evaluators
-    when_evaluators: list[ConstraintEvaluator]
-    while_evaluators: list[ConstraintEvaluator]
-    until_evaluators: list[ConstraintEvaluator]
+    when_evaluators: list[ConstraintEvaluator] = field(metadata=INTERNAL)
+    while_evaluators: list[ConstraintEvaluator] = field(metadata=INTERNAL)
+    until_evaluators: list[ConstraintEvaluator] = field(metadata=INTERNAL)
 
     # Controllers and Monitors
     controllers: list[Controller]
@@ -650,14 +670,14 @@ class GuardedMotionBlock:
     # Producers feeding a pose-axis error group's reference. The group emits its error inline
     # ahead of while_schedule, so these must run before it, not with the controllers.
     while_pre_schedule: list[str] = field(default_factory=list)
-    has_elapsed: bool = False
+    has_elapsed: bool = field(default=False, metadata=INTERNAL)
     has_when_elapsed: bool = False
     has_active_elapsed: bool = False
     # The elapsed-duration coordinates this motion measures, per phase: the authored shared
     # value each timing constraint compares against, filled from the phase's start time.
     active_elapsed_ids: list[str] = field(default_factory=list)
     when_elapsed_ids: list[str] = field(default_factory=list)
-    has_until_condition: bool = False
+    has_until_condition: bool = field(default=False, metadata=INTERNAL)
     until_any: bool = False
     when_any: bool = False
     # Primary arm-solver id the motion commands (empty when the model has no arm).
@@ -812,21 +832,21 @@ class SolverWithInputAndOutput:
     """A full arm solver: chain, algorithm, drivers and outputs."""
 
     id: str
-    motion_drivers: list[MotionDrivers]
+    motion_drivers: list[MotionDrivers] = field(metadata=INTERNAL)
     output: list
     algorithm: str = ""
-    urdf: str = ""
+    urdf: str = field(default="", metadata=INTERNAL)
     chain_root: str = ""
     chain_end: str = ""
-    chain_tip: str = ""
+    chain_tip: str = field(default="", metadata=INTERNAL)
     robot_model: str = ""
     tool_body: str = ""
     tcp_site: str = ""
     # What the scene mounts on this chain, and what hardware is bound to drive it.
     sensors: list[dict] = field(default_factory=list)
     devices: list[dict] = field(default_factory=list)
-    runtime_prefix: str = ""
-    owned_trees: list = field(default_factory=list)
+    runtime_prefix: str = field(default="", metadata=INTERNAL)
+    owned_trees: list = field(default_factory=list, metadata=INTERNAL)
     # The scene-derived chain this solver runs on, and its joints as MuJoCo names them.
     kdl_chain: str = ""
     kdl_tree: str = ""

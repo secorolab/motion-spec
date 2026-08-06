@@ -4941,16 +4941,6 @@ def _id_ref(value):
     return getattr(value, "id", None)
 
 
-def _id_refs(value):
-    """Map _id_ref over a list of values."""
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [ref for item in value if (ref := _id_ref(item))]
-    ref = _id_ref(value)
-    return [ref] if ref else []
-
-
 def _dedupe_dicts(entries, key="id"):
     """Deduplicate dict rows by id, keeping the first occurrence."""
     result = []
@@ -5076,12 +5066,6 @@ def _build_introspection(
             "id": item.id,
             "uri": uri_by_id.get(item.id),
             "type": item.type,
-            "unit": _id_refs(getattr(item, "unit", None)),
-            "quantity_kind": _id_refs(getattr(item, "quantity_kind", None)),
-            # Reference frame the spatial value is expressed in — the frame_id for the
-            # pose/twist/wrench spatial samples.
-            "reference_frame": _id_ref(getattr(item, "as_seen_by", None))
-            or _id_ref(getattr(item, "with_respect_to", None)),
             "reference_value": getattr(item, "reference_value", None),
             "value": getattr(item, "value", None),
             "authored": getattr(getattr(item, "provenance", None), "authored", False),

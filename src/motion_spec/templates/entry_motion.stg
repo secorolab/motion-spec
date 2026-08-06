@@ -8,7 +8,7 @@ import "domain_closures.stg"
 import "domain_solver.stg"
 import "expr_values.stg"
 
-motion_header(motion, closures, views, wrench_outputs, backend) ::= <<
+motion_header(motion, closures, views, values, backend) ::= <<
 /// Motion: <motion.name>
 <motion.description:{line | /// <line>}; separator="\n">
 #pragma once
@@ -55,7 +55,7 @@ inline void update_<motion.id>(
     }
 <motion.active_elapsed_ids:{c |     shared.<c> = shared.clock_time_s - state.motion_start_time;
 }><endif>
-<motion-prelude(wrench_outputs, motion.serial_chain_solvers, backend)>
+<motion-prelude(values.externally_measured, motion.serial_chain_solvers, backend)>
 <motion.relative_poses:{rp | <emit-relative-pose(rp)>}; separator="\n">
 <motion.scene_relative_poses:{srp |
 <if(srp.base_seen)>    shared.<srp.id> = KDL::Frame(shared.<srp.fk_pose_id>.M, shared.<srp.fk_pose_id>.p - shared.<srp.scene_pose_id>.p);

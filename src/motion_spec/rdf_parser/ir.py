@@ -5224,14 +5224,16 @@ def _build_introspection(
     introspection["quantities"].sort(key=lambda row: row.get("id") or "")
     add_quantity_samples(introspection, shared_data, views)
     add_spatial_samples(introspection, shared_data)
-    annotate_dataflow(introspection, shared_data, closures, motions, serial_chain_solvers, views)
+    values = annotate_dataflow(
+        introspection, shared_data, closures, motions, serial_chain_solvers, views
+    )
     # The derivation registry grew while folding the samples in, so the table is rebuilt here and
     # the rows built before that are backfilled from it.
     introspection["uris"] = _uri_table(id_nodes) + iris.rows()
     introspection["derivations"] = iris.nodes()
     _backfill_uris(introspection)
     _assert_every_id_resolves(introspection)
-    return introspection
+    return introspection, values
 
 
 def _backfill_uris(introspection: dict) -> None:
@@ -6840,9 +6842,10 @@ def _agent_home_positions(platform, manifest_path, solvers) -> dict:
 
 def annotate_dataflow(
     introspection: dict, shared_data: list, closures: dict, motions, serial_chain_solvers, views
-) -> None:
+) -> dict:
     """Give every shared value its producer, its write cadence, and the storage those imply, then
-    apply that contract: drop what nothing writes, and move what is written once into the header.
+    apply that contract: drop what nothing writes, move what is written once into the header, and
+    project the roles the templates ask about (``values``) off the same classification.
 
     Cadence -- not motion membership -- decides gating: a value written by several motions carries
     all of them, and one no motion's step function writes falls back to ``tick``, so nothing live
@@ -6856,12 +6859,16 @@ def annotate_dataflow(
 
     solver_by_output: dict[str, set] = {}
     sensor_outputs: set = set()
+    # The readings themselves, without the tare companions below: only these are supplied by the
+    # platform, and only they get an external-measurement pointer.
+    measured_outputs: set = set()
     for solver in serial_chain_solvers:
         for out in _field(solver, "output", []) or []:
             out_id = _field(out, "id")
             solver_by_output.setdefault(out_id, set()).add(_field(solver, "id"))
             if _field(out, "sensor_name"):
                 sensor_outputs.add(out_id)
+                measured_outputs.add(out_id)
                 # tare state, written alongside the reading (_shared_runtime_members)
                 for companion in (f"{out_id}_ft_bias", f"{out_id}_ft_settle"):
                     solver_by_output.setdefault(companion, set()).add(_field(solver, "id"))
@@ -7022,6 +7029,18 @@ def annotate_dataflow(
 
     introspection["dataflow"] = dataflow
     _apply_dataflow(introspection, shared_data, items_by_id, dataflow)
+
+    # Layer-B projections of the same contract: "which values play role X?" answered from the
+    # producer classification above, never by a second scan with its own rule. Externally
+    # measured = a solver output the platform supplies (it has a sensor), which the view turns
+    # into a pointer member plus a measurement local. Returned, not stored on introspection:
+    # the projection is published once, at the top level.
+    return {
+        "externally_measured": sorted(
+            (item for item in shared_data if _field(item, "id") in measured_outputs),
+            key=lambda item: _field(item, "id"),
+        )
+    }
 
 
 def _consumers_by_id(introspection: dict, closures: dict) -> dict[str, list]:
@@ -7770,14 +7789,6 @@ def generate_ir(manifest_path):
     resolve_lerp_closures(closures, pose_components)
     resolve_arc_closures(closures, data_structures)
 
-    wrench_outputs = _dedupe_by_id(
-        [
-            item
-            for item in data_structures
-            if item.type == "Wrench" and item.id not in closure_output_map
-        ]
-    )
-
     motions, fsm_meta = build_motion_units(
         g,
         p,
@@ -7821,7 +7832,7 @@ def generate_ir(manifest_path):
         slv_chain, iris, control_period_ns, platform.get("uri")
     )
 
-    introspection = _build_introspection(
+    introspection, values = _build_introspection(
         app_model_path=app_model_path,
         imported_models=imported_models,
         imported_provenance=imported_provenance,
@@ -7872,7 +7883,9 @@ def generate_ir(manifest_path):
         "closures": closures,
         "views": _views_for_access(view_map, shared_data, motions, closures),
         "shared_data": shared_data,
-        "wrench_outputs": wrench_outputs,
+        # Layer-B projections of the dataflow contract (annotate_dataflow), keyed by the model
+        # role a value plays -- not by the C++ construct the view builds from it.
+        "values": values,
         "has_serial_chain": bool(slv_chain),
         # One key per optional subsystem, absent when the model has none. ST4 treats only
         # null/absent as falsy -- an empty list is truthy -- so an absent object is the guard

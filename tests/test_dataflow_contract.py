@@ -137,6 +137,39 @@ def test_a_value_written_by_several_motions_is_one_producer_over_all_of_them() -
     assert pose["cadence"] == {"motions": ["motion_arc", "motion_home"]}
 
 
+def test_externally_measured_is_the_sensor_reading_and_nothing_else() -> None:
+    """The projection asks "does the platform supply it?", not "is it a Wrench nobody writes?"."""
+    shared_data = [
+        {"id": "ext_force", "type": "Wrench"},
+        {"id": "ext_force_ft_bias", "type": "Wrench"},
+        {"id": "ext_force_ft_settle", "type": "IntCounter"},
+        {"id": "cmd_wrench", "type": "Wrench"},
+    ]
+    closures = {
+        "push": {
+            "id": "push",
+            "type": "WrenchFromPositionDirectionAndMagnitude",
+            "wrench": "cmd_wrench",
+        }
+    }
+    solver = {"id": "arm_solver", "output": [{"id": "ext_force", "sensor_name": "wrist_ft"}]}
+    motions = [
+        {
+            "id": "motion_arc",
+            "index": 0,
+            "fsm_state": "S_ARC",
+            "while_schedule": ["push"],
+            "serial_chain_solvers": [solver],
+            "controllers": [],
+        }
+    ]
+    introspection: dict = {}
+    values = annotate_dataflow(introspection, shared_data, closures, motions, [solver], {})
+    # The tare state is a Wrench written alongside the reading but computed by the program, and
+    # cmd_wrench is the program's own output: neither is externally measured.
+    assert [item["id"] for item in values["externally_measured"]] == ["ext_force"]
+
+
 def test_never_written_members_leave_shared_data_and_the_frame() -> None:
     introspection, shared_data = _annotated()
     assert introspection["dataflow"]["pose_ee_position_rel"]["cadence"] == "never"

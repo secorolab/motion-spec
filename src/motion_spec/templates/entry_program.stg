@@ -7,7 +7,7 @@ import "assembly_motion.stg"
 import "expr_values.stg"
 import "runtime.stg"
 
-ref_main(platform, motions, wrench_outputs, has_serial_chain, mobile_base, shared_data, serial_chain_solvers, backend, scene, trace, fsm, needs_clock_time, control_period_ns, ros, agent_homes) ::= <<
+ref_main(platform, motions, values, has_serial_chain, mobile_base, shared_data, serial_chain_solvers, backend, scene, trace, fsm, needs_clock_time, control_period_ns, ros, agent_homes) ::= <<
 #include "runtime.hpp"
 #include "shared_state.hpp"
 #ifdef MOTION_SPEC_ENABLE_INTROSPECTION
@@ -40,8 +40,8 @@ int main(int argc, char **argv) {
 
 <app-chain-setup(backend, serial_chain_solvers, scene, platform.config)>
 <endif>
-<wrench_outputs:{wrench | <wrench-measurement(wrench)>}; separator="\n">
-<wrench_outputs:{wrench |     robot.<wrench.id> = &<wrench.id>_measurement;}; separator="\n">
+<values.externally_measured:{wrench | <wrench-measurement(wrench)>}; separator="\n">
+<values.externally_measured:{wrench |     robot.<wrench.id> = &<wrench.id>_measurement;}; separator="\n">
 <motions:{motion | <motion-state-member(motion)>}; separator="\n">
 <if(mobile_base)>
     mobile_base_state mobile_base_state_instance;
@@ -202,7 +202,7 @@ int main(int argc, char **argv) {
 }
 >>
 
-shared_state_header(shared_data, wrench_outputs, has_serial_chain, mobile_base, serial_chain_solvers, backend, fsm, ros) ::= <<
+shared_state_header(shared_data, values, has_serial_chain, mobile_base, serial_chain_solvers, backend, fsm, ros) ::= <<
 #pragma once
 
 #include "frame_layout.h"
@@ -354,7 +354,7 @@ struct robot_io {
 <endif>
 <serial_chain_solvers:{solver | <chain-robot-member(solver)>}; separator="\n">
 <serial_chain_solvers:{solver | <chain-device-members(solver, backend)>}; separator="">
-<wrench_outputs:{wrench | <wrench-pointer-member(wrench)>}; separator="\n">
+<values.externally_measured:{wrench | <wrench-pointer-member(wrench)>}; separator="\n">
 };
 
 struct shared_data {

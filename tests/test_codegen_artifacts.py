@@ -371,7 +371,7 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
                 {"id": "ready_flag", "type": "Bool"},
                 {"id": "settle_count", "type": "IntCounter"},
             ],
-            "wrench_outputs": [],
+            "values": {"externally_measured": []},
             "scene": {},
             "trace": {},
         }

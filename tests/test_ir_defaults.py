@@ -205,7 +205,7 @@ def test_introspection_contract_carries_control_and_provenance() -> None:
         until_schedule=[],
     )
 
-    introspection = _build_introspection(
+    introspection, _values = _build_introspection(
         app_model_path=Path("/tmp/app.json"),
         imported_models=["https://example.test/imported.json"],
         imported_provenance=["/tmp/generated/provenance/dsl.ld.json"],

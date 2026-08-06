@@ -35,8 +35,8 @@ motion-done-condition(motion) ::= <<
 <if(motion.done_terms_present)><bool-condition(motion.done_terms, motion.until_any)><else>true<endif>
 >>
 
-motion-prelude(wrench_outputs, serial_chain_solvers, backend) ::= <<
-<wrench_outputs:{wrench | <sync-wrench(wrench)>}; separator="\n">
+motion-prelude(externally_measured, serial_chain_solvers, backend) ::= <<
+<externally_measured:{wrench | <sync-wrench(wrench)>}; separator="\n">
 <if(serial_chain_solvers)>
 
 <chain-prepare-block(serial_chain_solvers, backend)>

@@ -211,7 +211,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
             "motion": motion,
             "closures": ir["closures"],
             "views": ir["views"],
-            "wrench_outputs": ir["wrench_outputs"],
+            "values": ir["values"],
             "backend": ir["backend"],
         }
         payload_path = payload_dir / f"{motion['id']}.json"

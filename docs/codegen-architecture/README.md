@@ -6,7 +6,11 @@ that replaces it. Every rule below is grounded in literature so the shape is set
 rather than re-litigated per refactor.
 
 Diagrams: `current-templates`, `current-ir`, `proposed-templates`, `proposed-ir`,
-`proposed-runtime` (`.dot` + `.png`). Measurements are from `pick_place_single` unless stated.
+`proposed-runtime` (`.dot` + `.png`). Measurements are from `pick_place_single` unless stated,
+re-measured at `7b9a291` (2026-08-06); cross-model claims verified on all three maintained models.
+
+The sim/real fork surface, the external-wrench law and the accepted platform seams are a
+separate page: [sim-real-parity.md](sim-real-parity.md).
 
 ---
 
@@ -24,54 +28,71 @@ Ordered. Each is grounded in a section below; the section says *why*, this says 
 | `_motion_spec_record_event()` | a **method on a blackboard** — its callers never appear in any `consumers` list, so the read/write contract cannot be checked | not on the blackboard at all |
 | `clock_time_s` | genuinely shared and read by elapsed monitors, but unmodelled: no producer, no cadence, no storage, and so not loggable like every other value | **computation**, as a modelled value |
 
-All five are hardcoded in `entry_program.stg`'s `shared_state_header` with no IR entry. The rule
-they violate — *a blackboard member must have a producer/consumer contract* — is already obeyed
-on the IR side: 602 members, **zero** without one.
+All five are hardcoded in `entry_program.stg`'s `shared_state_header` with no IR entry —
+verified at `7b9a291` on all three maintained models (the orphan set is identical in each). The
+rule they violate — *a blackboard member must have a producer/consumer contract* — is already
+obeyed on the IR side: the contract now lives centrally in `introspection.dataflow`, and it
+covers every `shared_data` member — 606/606 (single), 1144/1144 (dual), 333/333 (arc) — each
+with producer, cadence and storage.
 
 **Cost:** this changes the generated motion-function signatures, because the event buffer has to
 reach `update_*`/`monitor_*` by some route other than `shared`. Not a tidy-up. Verify by running
 the three maintained models, not by diffing text.
 
 **Checkable when done:** every member of the generated `struct shared_data` corresponds to an
-entry in `ir["shared_data"]`. Today four do not.
+entry in `ir["shared_data"]`. Today four members and one method do not.
 
 Separately, and larger: `mobile_base_runtime_state` adds 17 more members mixing configuration
 (magic geometry), solver tuning and pure hddc2b scratch. The serial chain already does this
 correctly — its scratch lives in `<solver>_solver_state` inside the motion's own state struct.
 Fold this into §8's "a mobile base is a robot" rather than treating it separately.
 
-## B. Fold the plan-014 audit back into plan 014 — §10c, §10d
+## B. ~~Fold the plan-014 audit back into plan 014~~ — done (§10c, §10d)
 
-`plans/014-frame-log-delta-encoding.md` §8/§8b opened an audit and left it open. It is now
-answered, but the answers live here rather than in the plan:
+`plans/014-frame-log-delta-encoding.md` §8/§8b opened an audit and left it open. The answers
+are now recorded in the plan itself (2026-08-06); kept here for the architecture argument:
 
 - **§8.1 "where does each gain live?"** — they *are* authored (all present in `ir.json`, 60
   `PIDControl` instances built from them), but baked into constructors rather than blackboard
   values, so they can neither vary nor be logged. §8's own conclusion holds: the contract needs
   no extension, the gains need to *be* values. → §10d
-- **§8b "values that decide behaviour and are invisible"** — completed. Of the 8 runtime
-  constants, **7 appear in no run artifact by name**; only `kControlPeriodS` is explicable,
-  deriving from the modelled `control_period_ns`. → §10c
-- **`kConstraintTolerance`** — §8b's worst finding is **gone**; `constraint_satisfied` now takes
-  an explicit tolerance from the model. §8b should be marked resolved.
-- **`kMonitorArmSteps`** — also gone, replaced by authored `after active for <time>` debounce.
+- **§8b "values that decide behaviour and are invisible"** — completed, and mostly **resolved**
+  since. Of §8b's table: `kConstraintTolerance` gone (tolerances are modelled shared values),
+  `kMonitorArmSteps` gone (authored `after active for <time>` debounce), `kRneDampingLambda`
+  gone with the solver change, `kPathSearchForward/Backward/Samples/RefineSteps` gone (the
+  projection window is derived, `7b9a291`). What remains invisible at HEAD: `kPathTangentStep`,
+  the FT settle count, the MuJoCo solver triplet, and the `ImpedanceControl` dt default — §10c,
+  including one live defect.
 
 Delta encoding itself stays out of scope, and its verification and tests are untouched: it
 changes the wire format, and mixing that into a structural refactor destroys the one check that
 scales. Do it against a clean baseline afterwards.
 
-## C. Refresh the stale parts of this document
+## C. ~~Refresh the stale parts of this document~~ — done
 
-Written before the work landed, so several sections describe a tree that no longer exists:
+Re-measured at `7b9a291` (2026-08-06); §3, §4, §5, §9 and §10 below now carry the measured
+numbers. Two of the earlier refresh claims were themselves wrong and are corrected in place:
+the IR is 19 keys / 5.26 MiB (not 17 / 2.7 — `cstr_hdl` is still published unread, and
+`introspection` doubled with the IRI work), and reproducible generation is **not** achieved —
+see item D.
 
-| section | says | actually |
-|---|---|---|
-| §3 | 6 unread keys + the `uris` duplicate | removed; IR is 17 keys / 2.7 MiB |
-| §4 | 3 call-graph cycles, 5 unsatisfied cross-group calls | both **0** after the restructure |
-| §5 | nondeterminism "should be fixed first" | fixed — `sorted()` on the schedule traversal |
-| §10b, §10c | "31 of 122 exact-equality tolerances" | **wrong.** 9 of 10 zero-tolerance verdicts are inequalities, where `0.0` is deliberate. The real count was 1 (2 in dual), now 0 |
+## D. Generation is nondeterministic — again, or still
 
-§9's findings are still accurate — that work is item A above.
+Two identical `motion-spec gen` runs at `7b9a291` differ in most generated files. Two distinct
+sources, both implicit structural order (§5):
+
+- **FSM state and event lists** come out of `ir_gen` in set-iteration order. Event indices are
+  baked into the C++ (`_motion_spec_record_event(5)` vs `(1)` for the same model), so two
+  builds of one model record differently-numbered events. `codegen._adopt_fsm_state_order`
+  already exists to patch the *state* order back from `fsm_ir.json` — the event order it
+  deliberately leaves alone is exactly the unstable one.
+- **`shared_data` ordering** — the blackboard struct's member order changes run to run
+  (layout-irrelevant, but it defeats any artifact diff and proves the traversal is unordered).
+
+The earlier claim that `sorted()` on the schedule traversal fixed this was tested before the
+FSM and IRI work landed, or tested the wrong artifact. §11 stands — reproducibility is not the
+verification gate — but a build that differs run to run cannot be explained, and run artifacts
+(event tables) are not comparable across two builds of the same model.
 
 ---
 
@@ -166,7 +187,7 @@ The current code violates this exactly once, and it is instructive:
 | | rule | inputs |
 |---|---|---|
 | `contract()` | classify every value's producer | closures **+ solvers + sensors** |
-| `wrench_outputs` (`ir.py:7704`) | `type == "Wrench" and id not in closure_output_map` | closures only |
+| `wrench_outputs` (`ir.py:7853` at `7b9a291`) | `type == "Wrench" and id not in closure_output_map` | closures only |
 
 Both answer the same question. On all three maintained models they agree — and they agree *by
 luck, not by construction*: `ext_force` is `producer.kind == "sensor"`, which the second rule
@@ -181,13 +202,15 @@ Under one contract, adding a construct adds a projection. It cannot add a second
 indexes are `ir_gen`'s **secrets** and must not cross it — Parnas's criterion for module
 decomposition [[7]](#r7): the interface exposes what callers need, not how the module works.
 
-Publishing internals is not a stylistic complaint here; it is measurable. Six top-level keys
-are read by no template and no Python consumer — `cstr_hdl` (203 KiB), `data` (171 KiB),
-`pose_components`, the global `declared_pose_components`, `schedule`, `shared_schedule` — and
-every one is an L0/L1 internal. A seventh, `uris` (1054 KiB), is an L4 field copied to the
-top, where its only reader prefers the nested original (`artifacts.py:97`). One rule —
-*publish a key only if something downstream reads it* — removes 1.6 MiB of a 4.2 MiB IR and
-prevents the eighth.
+Publishing internals is not a stylistic complaint here; it is measurable, and most of it has
+been fixed: `data`, `pose_components`, the global `declared_pose_components`, `schedule`,
+`shared_schedule` and the top-level `uris` duplicate are gone. At `7b9a291` the IR is **19 keys
+/ 5.26 MiB**. One near-dead key survives: `cstr_hdl` (207 KiB, `ir.py:7848`), read by no
+template and no motion-spec consumer — its sole reader is a motion-spec-dsl contract test
+(`tests/test_solver_derivation_contract.py:123`), which iterates `handler.controllers` and
+needs none of the other 200 KiB. The same rule — *publish a key only if something downstream reads it* —
+now applies one level deeper: retiring `schema.json` (`3cb48f3`) silently orphaned the
+per-record metadata fields that schema was the last reader of (§10a).
 
 ## 4. Layers are a DAG, enforced by ST4 itself
 
@@ -216,7 +239,12 @@ That means the layering does not need a bespoke test. ST4 enforces it: a cyclic 
 surfaced during the restructure. The dispatch shim now imports no backend, because backend
 leaves are reached by **dynamic** dispatch, resolved at render time rather than through imports.
 
-Post-restructure: **0 unsatisfied cross-group calls, 0 import cycles.**
+Post-restructure: **0 unsatisfied cross-group calls, 0 import cycles** — re-verified at
+`7b9a291` by walking every group's transitive import closure against every cross-group call.
+One deviation from `proposed-templates.dot` remains: backends are not reached *only* by dynamic
+dispatch. Four static imports survive — `entry_program` → `backend_kelo` + `backend_robot`,
+`assembly_motion` → `backend_robif2b`, `entry_motion` → `backend_robif2b`. All point downward,
+so the DAG holds; they are drift from the diagram, not a layering violation.
 
 ## 5. Two defects the book names directly
 
@@ -226,11 +254,11 @@ Post-restructure: **0 unsatisfied cross-group calls, 0 import cycles.**
   the honest answer was that no such relation exists: a motion with no `until` in a model with
   no FSM cannot be sequenced at all, so it is now rejected rather than capped.
 - **Implicit structural order** [[2, §1.3.6]](#r2) — order that comes from lexical or
-  iteration accident rather than from a modelled relation. Generation is currently
-  nondeterministic: three runs of identical code on `admittance_arc_single` produced two
-  different `motion_arc_motion.hpp` files, with `end_*_add` statements moving relative to
-  their neighbours. Schedule order must come from a modelled partial order, not from set
-  iteration. **Fixed** — see below.
+  iteration accident rather than from a modelled relation. Generation is nondeterministic:
+  the schedule traversal was sorted at one point, but at `7b9a291` two identical runs still
+  differ in FSM state/event numbering and blackboard member order — see item D. Schedule,
+  state, event and member order must all come from a modelled (or at least stable) order, not
+  from set iteration; fixing one traversal at a time is how the claim went stale.
 
 ## 6. What the view is allowed to do
 
@@ -284,13 +312,15 @@ publisher and the ROS topics are one story rather than three.
 writes it and nothing reads it, it is not a shared value — it is scratch, configuration, or
 another concern borrowing the struct because the struct is reachable.
 
-The IR side already obeys this. All 602 members of `shared_data` carry a dataflow producer
-kind (controller 278, closure 93, view 91, authored 85, solver 19, snapshot 17, port 14,
-pose 5) — **zero without one** — and the 232 added after parsing are role-tagged
-(`controller_internal_state` 204, `joint_space` 28).
+The IR side already obeys this. The contract is now one central table, `introspection.dataflow`
+(670 entries at `7b9a291`), and every `shared_data` member has an entry — 606/606, each with
+producer, cadence and storage. Producer kinds: controller 278, closure 93, view 91, authored 89,
+`none` 64 (pose sub-components written by pose sampling), solver 19, snapshot 17, port 14,
+pose 5. The 232 members added after parsing are role-tagged (`controller_internal_state` 204,
+`joint_space` 28). Verified likewise on dual (1144/1144) and arc (333/333).
 
-The **generated** struct does not. Four members and one method are hardcoded in `main.stg`
-with no IR entry:
+The **generated** struct does not. Four members and one method are hardcoded in
+`entry_program.stg` with no IR entry:
 
 | generated member | what it is | concern it belongs to |
 |---|---|---|
@@ -329,78 +359,110 @@ Checkable: every member of the generated `struct shared_data` must correspond to
 
 ## 10. Complete audit — hardcoded values and information loss
 
-### 10a. Every IR field is consumed, bar nine
+### 10a. Unconsumed IR fields — 33, up from 9
 
-Per record type, fields referenced by no template and no Python:
+Per record type at `7b9a291`, fields referenced by no template and no Python consumer
+(token scan over every `.stg` expression and every non-`ir_gen` Python module):
 
 | record | fields | unconsumed |
 |---|---|---|
-| `shared_data[]` (602 records) | 28 | **0** |
+| `shared_data[]` (606 records) | 28 | 8 — `unit`, `quantity_kind`, `producer`, `with_respect_to`, `orientation_representation`, `euler_axes_sequence`, `euler_intrinsic`, `has_view` |
 | `closures{}` (164) | 42 | **0** |
-| `views{}` (76) | 7 | **0** |
-| `introspection.quantities` (646) | 16 | **0** |
-| `introspection.*` (15 keys) | — | **0** |
-| `motions[]` (10) | 56 | 3 — `command_robot_id`, `has_elapsed`, `while_evaluators` |
-| `serial_chain_solvers[]` (10) | 28 | 3 — `motion_drivers`, `owned_trees`, `runtime_prefix` |
-| `motions[].until_monitors[]` (4) | 29 | 3 — `ros_include`, `ros_pkg`, `ros_type` |
+| `views{}` (76) | 7 | 1 — `subobject` |
+| `introspection.quantities` (650) | 16 | 4 — `unit`, `quantity_kind`, `producer`, `reference_frame` |
+| `introspection.*` (15 keys) | — | 1 — `contract_version` |
+| `motions[]` (10) | 55 | 6 — `handler`, `has_elapsed`, `has_until_condition`, `until_evaluators`, `when_evaluators`, `while_evaluators` |
+| `serial_chain_solvers[]` (10) | 28 | 5 — `chain_tip`, `motion_drivers`, `owned_trees`, `runtime_prefix`, `urdf` |
+| `motions[].until_monitors[]` (4) | 29 | 8 — `debounce_duration_s`, `group_any`, `group_constraint_ids`, `is_until_aggregate`, `is_when_aggregate`, `ros_include`, `ros_pkg`, `ros_type` |
 
-Eight of the nine are consumed *inside* `ir_gen` during construction and then published anyway
-— the same Parnas violation as §3's six dead top-level keys, one level deeper.
-`command_robot_id` is written at `ir.py:3923` and read nowhere at all.
+(`command_robot_id`, the field read nowhere at all, has since been removed.)
+
+The count grew from 9 to 32 for two distinct reasons, and they need different fixes:
+
+- **The old pattern, spread wider** — consumed *inside* `ir_gen` during construction, then
+  published anyway (`debounce_duration_s` becomes `debounce_steps`, the `*_evaluators` lists
+  become the schedule): the same Parnas violation as §3, one level deeper.
+- **A new pattern: orphaned by schema retirement.** When the audit first ran, `schema.json` was
+  the consumer of the per-record metadata (`unit`, `quantity_kind`, `producer`,
+  `with_respect_to`, the orientation fields). Retiring it (`3cb48f3`) made the frame log
+  self-describing by IRI — and left the copied-into-IR metadata with no reader. The metadata is
+  not lost (the model graph in the archive still carries it); the IR copies are now dead weight.
 
 **No information is lost between IR and templates.** The leak is the other way: internals
 crossing the interface.
 
-### 10b. Hardcoded values — 101 literals, three categories
+### 10b. Hardcoded values — most of the audit's list is resolved
 
-Numeric literals in template *text* (outside every `<…>` expression):
+Re-scanned at `7b9a291`: numeric literals in template *text* (outside every `<…>` expression),
+SPDX years, comments and pure arithmetic excluded.
 
-**Physical facts that belong in the robot model or config:**
+**Resolved since the first scan:**
+
+| was | now |
+|---|---|
+| EtherCAT product code, device name, interface, slave indices (`backend_kelo`) | `robot.toml` deployment config (`8209898`, `704d617`) |
+| the arm's home pose in a reset lambda (`backend_mj_kdl`) | modelled — `ir["agent_homes"]`, rendered per solver |
+| gripper speed/force raw bytes (`backend_robif2b`) | named `kGripperSpeedByte`/`kGripperForceByte` constexprs (still literal `128`, but named and in one place) |
+| FT bias samples `200` | config-overridable, `bias_samples` with a named default (`entry_build`) |
+| `kMonitorArmSteps`, `kRneDampingLambda`, `kPathSearchForward/Backward/Samples/RefineSteps` | gone — authored debounce, solver change, derived projection window |
+
+**Still hardcoded — physical facts that belong in the robot model or config:**
 
 | value | file | what it is |
 |---|---|---|
-| `0.195, 0.21` ×4 | `backend_kelo` | KELO drive attachment geometry |
-| `0.115`, `0.0775`, `0.01` | `backend_kelo` | wheel diameter, wheel distance, castor offset |
-| `10.0` A, `0.29` Nm/A | `backend_kelo` | drive current limit, torque constant |
-| `0x02001001`, `"KELOD105"`, `"net0"`, slave idx `3,4,6,7` | `backend_kelo` | EtherCAT product code, device name, interface |
-| `{0.0, 0.2618, 3.1416, -2.2689, 0.0, 0.9599, 1.5708}` | `backend_mj_kdl` | **the arm's home pose**, hardcoded in a reset lambda |
-| `0.8` rad | `backend_robif2b` | 2F-85 travel (commented as a device fact) |
-| `128`, `100.0`, `255.0`, `200` | `backend_robif2b` | gripper speed/force defaults, unit scaling, FT bias samples |
+| `0.195, 0.21` ×4, `0.115`, `0.0775`, `0.01` | `entry_program` (moved from `backend_kelo` by the split) | KELO drive attachment geometry, wheel diameter, wheel distance, castor offset — §9's mobile-base finding, unchanged |
+| `0.8` rad | `backend_robif2b` | 2F-85 travel (named template rule, commented as a device fact — acceptable as is) |
 
-**Control policy that decides behaviour:** `kMonitorArmSteps = 100`, `kRneDampingLambda = 0.05`,
-`kPathSearchForward/Backward/Samples/RefineSteps/TangentStep`, and MuJoCo's
-`iterations = 100`, `tolerance = 1e-10`, `impratio = 20.0`.
+**Still hardcoded — control policy that decides behaviour:** MuJoCo's `iterations = 100`,
+`tolerance = 1e-10`, `impratio = 20.0` (`backend_mj_kdl`); the FT settle count
+`< 200` (`domain_solver:299`, commented "author it if startup transients vary"); and the
+`dt = 0.002` constructor defaults in `runtime.stg` — see §10c for the live defect behind the
+last one.
 
 **Infrastructure** (defensible, but unnamed): ring capacity `8192`, shm mode `0666`, shm-name
-truncation `16`, `-ftemplate-depth=2048`.
+truncation `16`, ROS QoS depth `10`.
 
-Pure arithmetic (`0.5`, `2.0`, `M_PI`, `1e-9` guards, `kInvPhi`) is not a finding.
+Pure arithmetic (`0.5`, `2.0`, `M_PI`, `1e-9` guards, `kInvPhi`, LEB128's `128`s) is not a
+finding.
 
-### 10c. Seven of eight runtime constants appear in no artifact
+### 10c. Runtime constants — down from eight to one unexplained, plus one live defect
 
-Completing plan 014 §8b. Of the eight `k*` constants the generated runtime declares, only
-`kControlPeriodS` is explicable from a run's own artifacts — it derives from the modelled
-`control_period_ns`. The other seven are named in **zero** files under `model/`, `contract/`
-or `provenance/`. A run cannot explain why a monitor armed when it did, or why the path search
-converged where it did.
+Plan 014 §8b's finding, re-measured at `7b9a291`. Of the eight behaviour-deciding `k*`
+constants, the generated runtime now declares two: `kControlPeriodS` (modelled — derives from
+`control_period_ns`, and every log header carries `nominal_period_ns`) and `kPathTangentStep`
+(`1e-4`, still in no artifact — but since `7b9a291` it is only the finite-difference seed of a
+*derived* search window, no longer a tuned policy value). The other six are gone, not renamed
+(§10b). What still decides behaviour from template text: the MuJoCo solver triplet and the FT
+settle count (§10b).
 
-`introspection.constants` already carries 197 authored literals (the `cadence: init` values),
-so the mechanism exists — it just does not reach values that live in template text rather than
-in the model.
+`introspection.constants` carries 201 authored literals (the `cadence: init` values), so the
+mechanism for recording such values exists — it just does not reach values that live in
+template text rather than in the model.
 
-**Good news since plan 014 was written:** `kConstraintTolerance` is gone. `constraint_satisfied`
-now takes an explicit tolerance fed from the model via `band(tolerance_id)`. But the default
-moved rather than vanished — **31 of 122 generated calls (25%) pass `0.0`**, i.e. exact float
-equality, for constraints that authored no tolerance. That is the same shape of implicit
-assumption, and it has bitten before (the `S_PLACE` stall was a too-tight equality gate).
+**Zero tolerances are resolved.** `constraint_satisfied` takes its tolerance from modelled
+shared values (`default_tolerance_Distance`/`_Angle`, `satisfied_band(_rot)`). The calls that
+pass a literal `0.0` — 1 (single), 2 (dual), 9 (arc) — all wrap inequality or band evaluators
+(`greater_than`, `less_than`, `outside`, `bilateral`) whose violation value is exactly `0.0`
+when satisfied, so the zero is deliberate. Exact float equality on a converging axis — the
+`S_PLACE`-stall shape — no longer occurs in any maintained model.
+
+**New defect, same family:** the model's period is 1 ms and `PIDControl` instances receive
+`kControlPeriodS` explicitly — but every `ImpedanceControl` instance is constructed with three
+arguments (`{800.0, 80.0, 0.0}`), so it silently keeps the constructor default `dt = 0.002`
+(`runtime.stg`). Every impedance controller integrates and differentiates at **twice the actual
+control period**. `959bf63` fixed this for PID and missed impedance; the fix is to pass
+`kControlPeriodS` there too — or better, delete the `dt` defaults so the omission cannot
+compile.
 
 ### 10d. Gains are authored, but not loggable
 
-Plan 014 §8 asked where gains live. Answer: they *are* in the model — `200.0, 100.0, 40.0` and
-the rest all appear in `ir.json`, and 60 `PIDControl` instances are constructed from them. But
-they are baked into constructors, not shared values, so they cannot vary and cannot be logged.
-§8's own conclusion holds: the contract needs no extension, the gains simply need to *be*
-values on the blackboard.
+Plan 014 §8 asked where gains live. Answer (unchanged at `7b9a291`): they *are* in the model —
+`200.0, 100.0, 40.0` and the rest all appear in `ir.json`, and 60 `PIDControl` plus the
+`ImpedanceControl` instances are constructed from them. But they are baked into constructors,
+not shared values, so they cannot vary and cannot be logged. §8's own conclusion holds: the
+contract needs no extension, the gains simply need to *be* values on the blackboard. (The
+impedance `dt` defect in §10c is one more argument: a constructor argument is invisible
+precisely when it is wrong.)
 
 ## 11. How this is verified
 

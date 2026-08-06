@@ -28,6 +28,9 @@ import rdflib
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.naming import get_valid_var_name
 from rdf_utils.models.execution import get_path_of_node
+from scene_dsl.rdf_parser.kinematics import body_of_frame, get_kinematic_mapping
+from scene_dsl.rdf_parser.sensors import get_update_rate
+from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 from rdf_utils.models.geom_coord import (
     OrientCoordModel,
     PoseCoordModel,
@@ -123,7 +126,6 @@ from motion_spec_dsl.rdf_parser.manifest import build_url_map, metamodel_url_map
 
 # ROS interop: a monitor's `also publish to topic` clause is emitted as ros:channel-name /
 # ros:type-name on the monitor node (ns from bdd-dsl's ROS metamodel).
-ROS = rdflib.Namespace("https://index.ros.org/p/")
 
 
 def _ros_camel_to_snake(name: str) -> str:
@@ -1784,7 +1786,7 @@ class Parser:
                     out.append(func(o))
 
         # The authored value IS the Vereshchagin root acceleration, passed to ACHD as-is.
-        # The opposite-sign gravity RNE wants is a MuJoCo-backend concern, derived in
+        # The opposite-sign gravity KDL's inverse-dynamics solver wants is derived in
         # _annotate_rne_gravity rather than here.
         gravity_node = self.g.value(id_, SLV.gravity)
         root_acc = self.parse_xyz(gravity_node) if gravity_node else None
@@ -1993,9 +1995,9 @@ class Parser:
         fallback_motion = self.id(fallback_node) if fallback_node is not None else None
         debounce_duration_s = self._optional_seconds(id_, CSTR_HDL_EXT["debounce-duration"])
         ros_kwargs = {}
-        ros_channel = self.g.value(id_, ROS["channel-name"])
+        ros_channel = self.g.value(id_, NS_MM_ROS["channel-name"])
         if ros_channel is not None:
-            ros_type = str(self.g.value(id_, ROS["type-name"]) or "")
+            ros_type = str(self.g.value(id_, NS_MM_ROS["type-name"]) or "")
             pkg, include, cpp_type = _ros_type_parts(ros_type)
             ros_kwargs = dict(
                 ros_channel=str(ros_channel),
@@ -3163,6 +3165,54 @@ def _views_by_subobject(view_map):
     return indexed
 
 
+def _views_for_access(view_map, shared_data, motions, closures) -> dict:
+    """Index unambiguous MAP views by subobject, for the template's access expressions.
+
+    Views are keyed by their own identity everywhere else; codegen instead resolves a quantity id
+    to the superobject expression that reads it. A subobject that is written directly -- an
+    authored or literal shared value, a snapshot target, a closure output -- is an ordinary shared
+    quantity and keeps its own field, and one reused by views that disagree on how they access it
+    must not silently pick one of them.
+    """
+    direct_ids = {
+        _field(item, "id")
+        for item in shared_data
+        if _field(item, "id")
+        and (
+            _field(item, "value") is not None
+            or _field(_field(item, "provenance"), "authored", False)
+        )
+    }
+    direct_ids.update(
+        _field(snapshot, "target_id")
+        for motion in motions
+        for snapshot in _field(motion, "snapshots", []) or []
+    )
+    direct_ids.update(
+        output_id
+        for closure in closures.values()
+        for output_id in closure_output_ids(closure)
+    )
+
+    indexed: dict[str, object] = {}
+    for view in view_map.values():
+        subobject_id = _field(_field(view, "subobject"), "id")
+        if not subobject_id or subobject_id in direct_ids:
+            continue
+        if subobject_id not in indexed:
+            indexed[subobject_id] = view
+            continue
+        previous = indexed[subobject_id]
+        if previous is None:
+            continue
+        if any(
+            _field(previous, field) != _field(view, field)
+            for field in ("superobject", "subspace", "axis", "direction")
+        ):
+            indexed[subobject_id] = None
+    return {id_: view for id_, view in indexed.items() if view is not None}
+
+
 def _unique_view_for_subobject(indexed_views, subobject_id, context):
     matches = indexed_views.get(subobject_id, ())
     if len(matches) > 1:
@@ -3869,7 +3919,7 @@ def build_motion_units(
                 id=handler.motion.id,
                 handler=handler.id,
                 name=handler.motion.name,
-                description=handler.motion.description,
+                description=(handler.motion.description or "").splitlines(),
                 command_robot_id=primary_robot_id,
                 has_when_elapsed=has_when_elapsed,
                 has_active_elapsed=has_active_elapsed,
@@ -3957,7 +4007,7 @@ def build_motion_units(
     # function-interface capability booleans, then the gate calls (which read them).
     fsm_meta = _apply_fsm_wiring(ordered, fsm)
     add_motion_function_interfaces(ordered)
-    _apply_fsm_gate_calls(ordered, fsm_meta["fsm_namespace"])
+    _apply_fsm_gate_calls(ordered, fsm_meta["cpp_namespace"])
     return ordered, fsm_meta
 
 
@@ -4092,22 +4142,6 @@ def _seconds(value: float, unit) -> float:
     return _si(value, unit)
 
 
-_FREQUENCY_UNITS = {
-    QUDT_UNIT["HZ"]: 1.0,
-    QUDT_UNIT["KiloHZ"]: 1e3,
-}
-
-
-def _hertz(g, node) -> float | None:
-    """An authored update rate in Hz, or None when the sensor declares none."""
-    if node is None:
-        return None
-    unit = g.value(node, QUDT_SCHEMA["unit"])
-    if unit not in _FREQUENCY_UNITS:
-        raise ConstraintViolation("units", f"'{unit}' is not a frequency this can read")
-    return float(g.value(node, QUDT_SCHEMA["value"])) * _FREQUENCY_UNITS[unit]
-
-
 def _frames_of(g, node):
     if GEOM_ENT.Frame in get_node_types(g, node):
         return [node]
@@ -4167,31 +4201,19 @@ def _optional_path_of_model(g, model_node):
     return str(path) if path is not None else ""
 
 
-def _required_path_of_model(g, model_node):
-    """Return the required asset path for a scene-object model."""
-    return get_path_of_node(g, model_node)
-
-
 def _model_mappings(g, model, target_type):
-    """Return (scene target, model entity) mappings of the requested RDF type."""
-    mappings = [
-        (target, str(g.value(mapping, EXEC["model-entity"]) or ""))
+    """Return (scene target, model entity) mappings of the requested RDF type.
+
+    scene-dsl reads each mapping; what a mapping means is its metamodel's to say, not ours.
+    """
+    mappings = (
+        get_kinematic_mapping(mapping, g)
         for mapping in sorted(g.objects(model, EXEC["has-mapping"]), key=str)
-        if (target := g.value(mapping, EXEC.maps)) is not None
-        and target_type in get_node_types(g, target)
-    ]
-    if mappings:
-        return mappings
-    legacy_predicate = {
-        GEOM_ENT.KinematicTree: EXEC["has-kinematic-tree"],
-        GEOM_ENT.RigidBody: EXEC["has-body"],
-    }.get(target_type)
-    if legacy_predicate is None:
-        return []
+    )
     return [
-        (target, str(g.value(model, EXEC["model-entity"]) or ""))
-        for target in sorted(g.objects(model, legacy_predicate), key=str)
-        if target_type in get_node_types(g, target)
+        (mapping.target_id, mapping.entity or "")
+        for mapping in mappings
+        if mapping.target_type == target_type
     ]
 
 
@@ -4230,10 +4252,6 @@ def _leaf(node):
     return split_uri(str(node))[1]
 
 
-def _body_of(frame):
-    return iri_parent(frame)
-
-
 def _tree_owns(tree, node):
     return iri_is_descendant(tree, node)
 
@@ -4245,7 +4263,7 @@ def _kinematic_adjacency(g):
         frames = list(g.objects(joint, KC["between-attachments"]))
         if len(frames) != 2:
             continue
-        body_a, body_b = map(_body_of, frames)
+        body_a, body_b = (body_of_frame(f, g) for f in frames)
         if body_a == body_b:
             continue
         adjacency[body_a].append((body_b, frames[0], frames[1], joint))
@@ -4295,7 +4313,7 @@ def _fixed_attachments(g, bound_trees):
         return {}, None
     leaves = [body for body in adjacency if len(adjacency[body]) == 1]
     tip_distances = [
-        _distances(adjacency, _body_of(tip))
+        _distances(adjacency, body_of_frame(tip, g))
         for tip in g.objects(None, NS_MM_KC_EXT["tip"])
     ]
 
@@ -4321,11 +4339,11 @@ def _fixed_attachments(g, bound_trees):
     for frame_a, frame_b in fixed:
         parent_frame, child_frame = (
             (frame_a, frame_b)
-            if from_root.get(_body_of(frame_a), 1 << 30)
-            <= from_root.get(_body_of(frame_b), 1 << 30)
+            if from_root.get(body_of_frame(frame_a, g), 1 << 30)
+            <= from_root.get(body_of_frame(frame_b, g), 1 << 30)
             else (frame_b, frame_a)
         )
-        parent_body, child_body = map(_body_of, (parent_frame, child_frame))
+        parent_body, child_body = (body_of_frame(f, g) for f in (parent_frame, child_frame))
         if parent_body == root:
             attachments[child_body] = ("World", "", child_frame, parent_body)
         elif child_body in modelled_bodies or owner(parent_body) != owner(child_body):
@@ -4350,6 +4368,36 @@ def _sensor_kind(g, sensor) -> str:
     return next((name for uri, name in SENSOR_KINDS.items() if uri in types), "")
 
 
+def _device_of(g, element):
+    """The deployed system that realizes `element`, or None when nothing does.
+
+    The device is a node the execution context owns; the element it stands for belongs to the
+    scene, so the binding is read backwards from the device rather than off the element.
+    """
+    return next(iter(g.subjects(EXEC["realizes"], element)), None)
+
+
+def _device_kind(g, element) -> str:
+    """The hardware kind realizing `element`, or empty when it is unbound."""
+    device = _device_of(g, element)
+    return str(g.value(device, SDO.model) or "") if device is not None else ""
+
+
+def _config_key(g, element, agent, drives: str) -> str:
+    """What `robot.toml` calls the device on `element`.
+
+    A hosted sensor is named by its owning agent's leaf plus its own -- `runtime_prefix` inside
+    `drives` is empty on a single-robot model, so it cannot be reused here. An agent is named by
+    the scenex namespace the model referred to it through, which survives in its IRI as the
+    segment before the model's own.
+    """
+    if drives:
+        return f"{_leaf(agent)}.{_leaf(element)}"
+    segments = urlsplit(str(element)).path.strip("/").split("/")
+    alias = segments[segments.index("models") + 1]
+    return f"{alias}.{_leaf(element)}"
+
+
 def _bound_devices(g, agent, runtime_prefix, hosted, chain_bindings, agent_by_tree) -> list[dict]:
     """The hardware bound on this chain: what each device is, where it is configured, what it drives.
 
@@ -4359,12 +4407,12 @@ def _bound_devices(g, agent, runtime_prefix, hosted, chain_bindings, agent_by_tr
     """
 
     def entry(node, drives=""):
-        kind = next((str(name) for name in g.objects(node, EXEC["platform-name"])), "")
-        if not kind:
+        device = _device_of(g, node)
+        if device is None:
             return None
         return {
-            "kind": kind,
-            "config_key": next((str(n) for n in g.objects(node, SDO.name)), ""),
+            "kind": str(g.value(device, SDO.model) or ""),
+            "config_key": _config_key(g, node, agent, drives),
             "drives": drives,
         }
 
@@ -4453,7 +4501,7 @@ def _agent_assemblies(g, attach_by_body):
             binding for binding in own if binding["tree"] == serial_tree
         )
         tip_binding = binding_for(tip_frame) or root_binding
-        root_body, tip_body = map(_body_of, (root_frame, tip_frame))
+        root_body, tip_body = (body_of_frame(f, g) for f in (root_frame, tip_frame))
         duplicate_root = sum(
             _leaf(root_body) in names for names in body_names_by_tree.values()
         ) > 1
@@ -4514,15 +4562,16 @@ def _agent_assemblies(g, attach_by_body):
                 "id": f"{runtime_prefix}{_leaf(sensor)}",
                 "type": kind,
                 "frame_site": f"{runtime_prefix}{_leaf(frame)}",
-                "update_rate_hz": _hertz(g, g.value(sensor, SENSORS["update-rate"])),
+                "update_rate_hz": get_update_rate(g, ModelBase(node_id=sensor, graph=g)),
                 "observes": sorted(_leaf(observed) for observed in g.objects(sensor, SOSA.observes)),
             }
             for sensor in hosted
             if (kind := _sensor_kind(g, sensor))
             and (frame := g.value(sensor, SENSORS.frame)) is not None
         ]
-        device = next((str(name) for name in g.objects(agent, EXEC["platform-name"])), "")
-        config_key = next((str(n) for n in g.objects(agent, SDO.name)), "")
+        agent_device = _device_of(g, agent)
+        device = str(g.value(agent_device, SDO.model) or "") if agent_device else ""
+        config_key = _config_key(g, agent, agent, "") if agent_device else ""
         result.append(
             {
                 "agent": agent,
@@ -4593,7 +4642,7 @@ def _scene_from_graph(g):
                     for pose in g.subjects(GEOM_REL.of, parent_frame)
                     if (reference := g.value(pose, GEOM_REL["with-respect-to"])) is not None
                     and GEOM_ENT.Frame in get_node_types(g, reference)
-                    and _body_of(reference) == parent_body
+                    and body_of_frame(reference, g) == parent_body
                 ),
                 None,
             )
@@ -4615,7 +4664,7 @@ def _scene_from_graph(g):
         if obj is None or mapped is None:
             continue
         model, body = mapped
-        path = _required_path_of_model(g, model)
+        path = get_path_of_node(g, model)
         attach_kind, attach_name, placement_frame, _parent_body = attach_by_body.get(
             body, ("World", "", body, None)
         )
@@ -5333,7 +5382,7 @@ def _world_solver_outputs(
                 ):
                     continue
             elif frame_node is not None:
-                frame_body = _body_of(frame_node)
+                frame_body = body_of_frame(frame_node, g)
                 frame_tree = iri_parent(frame_body)
                 runtime_frame = _leaf(frame_body)
                 if frame_tree in owned_trees:
@@ -5350,7 +5399,7 @@ def _world_solver_outputs(
                 def runtime_frame(frame_node):
                     """Runtime body/site name for a scene frame owned by this solver."""
                     frame = p.frame(frame_node)
-                    frame_tree = iri_parent(_body_of(frame_node))
+                    frame_tree = iri_parent(body_of_frame(frame_node, g))
                     return replace(
                         frame,
                         id=f"{runtime_prefix}{frame.id}" if frame_tree in owned_trees else frame.id,
@@ -5948,7 +5997,7 @@ def _platform_from_graph(g) -> dict:
             "backend": "robif2b",
             "config": str(_config_path(g, real)) if real is not None else None,
         }
-    name = str(g.value(simulation, EXEC["platform-name"]) or "")
+    name = str(g.value(simulation, SDO.name) or "")
     backend = _SIMULATION_BACKENDS.get(name.casefold())
     if backend is None:
         raise ValueError(f"Unsupported simulation platform '{name}'.")
@@ -5956,8 +6005,8 @@ def _platform_from_graph(g) -> dict:
 
 
 def _config_path(g, context) -> str | None:
-    """The deployment config's path, from exec:has-config -> exec:path."""
-    config = g.value(context, EXEC["has-config"])
+    """The deployment config's path, from exec:has-resource -> exec:path."""
+    config = g.value(context, EXEC["has-resource"])
     return str(g.value(config, EXEC.path)) if config is not None else None
 
 
@@ -5970,7 +6019,12 @@ def _reject_undriven_devices(g, context) -> None:
     """
     if context is None:
         return
-    bound = sorted({str(name) for name in g.objects(None, EXEC["platform-name"])})
+    bound = sorted(
+        {
+            str(g.value(device, SDO.model) or "")
+            for device in g.subjects(EXEC["realizes"], None)
+        }
+    )
     undriven = [name for name in bound if name not in DRIVEN_DEVICES]
     if undriven:
         raise ConstraintViolation(
@@ -6007,7 +6061,7 @@ def _reject_unbound_sensors_on_hardware(g, context) -> None:
     unbound = sorted(
         _leaf(sensor)
         for sensor in set(g.objects(None, SOSA.madeBySensor))
-        if not any(g.objects(sensor, EXEC["platform-name"]))
+        if _device_of(g, sensor) is None
     )
     if unbound:
         raise ConstraintViolation(
@@ -6084,9 +6138,6 @@ def _validate_solvers(serial_chain_solvers, backend: str) -> None:
             f"Supported: {', '.join(sorted(SUPPORTED_ROBOT_MODELS))}"
         )
 
-    if backend != "mj_kdl" and any(_field(s, "algorithm") == "RNE" for s in serial_chain_solvers):
-        raise RuntimeError("RNE is currently supported only by the MuJoCo mj_kdl backend.")
-
     if backend != "robif2b":
         return
 
@@ -6117,15 +6168,14 @@ def _runtime_signature(solver, backend: str) -> tuple:
     )
 
 
-def _annotate_rne_gravity(serial_chain_solvers, motions, backend: str) -> None:
-    """Derive the RNE gravity vector for the MuJoCo backend.
+def _annotate_rne_gravity(serial_chain_solvers, motions) -> None:
+    """Derive the gravity vector an RNE solver is built with.
 
     The authored solver value is the Vereshchagin root acceleration, which ACHD takes as-is.
-    MuJoCo's RNE bridge needs gravity with the opposite sign; no other backend builds an RNE
-    solver, so the negation stays here instead of in the backend-agnostic parse.
+    KDL's inverse-dynamics solver wants gravity with the opposite sign, so the negation belongs
+    wherever one is constructed -- which is every backend that runs RNE, not just the simulated
+    one. A solver that never builds an RNE reads the field and finds nothing.
     """
-    if backend != "mj_kdl":
-        return
     for solver in list(serial_chain_solvers) + [
         s for motion in motions for s in _field(motion, "serial_chain_solvers", [])
     ]:
@@ -6716,9 +6766,9 @@ def annotate_dataflow(
     """Give every shared value its producer, its write cadence, and the storage those imply, then
     apply that contract: drop what nothing writes, and move what is written once into the header.
 
-    Cadence -- not motion membership -- decides gating: under the FSM path only the active state's
-    step function runs, but the non-FSM app_main path runs a global schedule every tick, and a
-    membership gate would drop live data there.
+    Cadence -- not motion membership -- decides gating: a value written by several motions carries
+    all of them, and one no motion's step function writes falls back to ``tick``, so nothing live
+    is gated away by being attributed to a single motion.
     """
     closure_by_output: dict[str, set] = {}
     for closure_id, closure in closures.items():
@@ -7443,8 +7493,8 @@ def is_fsm_event(monitor, fsm_ns_uri: str | None) -> bool:
 
 
 def _apply_fsm_wiring(motions, fsm) -> dict:
-    """Tag FSM-event monitors + their motions from the framed FSM, and return the FSM
-    header/step meta fields. Runs before the function-interface pass so the FSM-added robot
+    """Tag FSM-event monitors + their motions from the framed FSM, and return the codegen
+    wiring (C++ namespace, header, heartbeat) that is folded into ``ir["fsm"]``. Runs before the function-interface pass so the FSM-added robot
     param is picked up. No tagging when the model has no FSM. Runs during motion construction."""
     fsm_namespace = fsm["name"].lower() if fsm else None
     events = fsm.get("events", []) if fsm else []
@@ -7462,13 +7512,22 @@ def _apply_fsm_wiring(motions, fsm) -> dict:
         if transition
     ]
     meta = {
-        "fsm_namespace": fsm_namespace,
-        "fsm_header": f"{fsm['name']}.hpp" if fsm else None,
-        "fsm_step_event": fsm_step_event,
-        "fsm_step_event_idx": fsm_event_index.get(fsm_step_event, -1),
-        "fsm_step_transitions": fsm_step_transitions,
+        "cpp_namespace": fsm_namespace,
+        "header": f"{fsm['name']}.hpp" if fsm else None,
+        "step_event": fsm_step_event,
+        "step_event_idx": fsm_event_index.get(fsm_step_event, -1),
+        "step_transitions": fsm_step_transitions,
     }
     if fsm_namespace is None:
+        # Without an FSM the sequencer advances on a motion's own `until`, so a motion that
+        # declares none can never be left and every motion after it is unreachable.
+        stuck = [_field(m, "id") for m in motions if not _field(m, "has_until_condition")]
+        if stuck:
+            raise ValueError(
+                f"motions {sorted(stuck)} declare no 'until' condition and the model imports no "
+                "FSM, so nothing can end them; add an 'until' condition or coordinate the model "
+                "with an FSM"
+            )
         return meta
 
     fsm_ns_uri = fsm.get("namespace_uri")
@@ -7657,7 +7716,7 @@ def generate_ir(manifest_path):
     )
     _validate_solvers(slv_chain, backend)
     _annotate_runtime_robots(slv_chain, motions, backend)
-    _annotate_rne_gravity(slv_chain, motions, backend)
+    _annotate_rne_gravity(slv_chain, motions)
 
     if scene.timestep_s <= 0:
         raise ValueError("ENVIRONMENT timestep must be positive.")
@@ -7727,7 +7786,7 @@ def generate_ir(manifest_path):
         "closures": closures,
         "shared_schedule": shared_schedule,
         "schedule": schedule,
-        "views": view_map,
+        "views": _views_for_access(view_map, shared_data, motions, closures),
         "shared_data": shared_data,
         "pose_components": pose_components,
         "declared_pose_components": declared_pose_component_entries(
@@ -7735,18 +7794,28 @@ def generate_ir(manifest_path):
         ),
         "wrench_outputs": wrench_outputs,
         "has_serial_chain": bool(slv_chain),
-        "has_mobile_base": bool(slv_platform_vel or slv_platform_frc),
-        "has_ros": bool(ros_publishers),
-        "ros_publishers": ros_publishers,
-        "ros_packages": ros_packages,
-        "ros_node_name": "motion_spec_monitor",
+        # One key per optional subsystem, absent when the model has none. ST4 treats only
+        # null/absent as falsy -- an empty list is truthy -- so an absent object is the guard
+        # the templates need, and no separate has_* flag has to be kept in step with it.
+        "mobile_base": (
+            {"velocity_solvers": slv_platform_vel, "force_solvers": slv_platform_frc}
+            if slv_platform_vel or slv_platform_frc
+            else None
+        ),
+        "ros": (
+            {
+                "publishers": ros_publishers,
+                "packages": ros_packages,
+                "node_name": "motion_spec_monitor",
+            }
+            if ros_publishers
+            else None
+        ),
         # Elapsed constraints compare seconds from the runtime clock (MuJoCo sim seconds /
         # real monotonic wall clock).
         "needs_clock_time": any(m.has_elapsed for m in motions),
         "control_period_ns": control_period_ns,
         "serial_chain_solvers": slv_chain,
-        "platform_velocity_solvers": slv_platform_vel,
-        "platform_force_solvers": slv_platform_frc,
         "backend": backend,
         # The authored execution platform, so provenance and the runtime graph read the model's
         # own answer instead of matching substrings of a derived id.
@@ -7756,9 +7825,9 @@ def generate_ir(manifest_path):
         "uris": introspection["uris"],
         "introspection": introspection,
         # FSM (states/events/transitions/reactions) framed from the FSM named graph that
-        # motion-spec-dsl folds into the model dataset; None when no .fsm is imported.
-        "fsm": fsm,
-        **fsm_meta,
+        # motion-spec-dsl folds into the model dataset, plus the codegen wiring derived from
+        # it; None when no .fsm is imported.
+        "fsm": {**fsm, **fsm_meta} if fsm else None,
     }
     # ir is complete by construction — every codegen-facing field was computed while its
     # piece was built (scene / solvers / closures / motions / introspection). Codegen only

@@ -56,18 +56,24 @@ def test_fixed_attachments_root_a_branched_multi_robot_scene_at_world() -> None:
         URIRef("https://example.test/arm2"),
     }
 
+    def frame_on(body: URIRef, frame: URIRef) -> URIRef:
+        """Declare the frame as a simplex of its body, the way a scene graph states it."""
+        graph.add((body, RDF.type, NS_MM_GEOM["RigidBody"]))
+        graph.add((body, NS_MM_GEOM["simplices"], frame))
+        return frame
+
     def fixed(name: str, frame_a: URIRef, frame_b: URIRef) -> None:
         joint = URIRef(f"https://example.test/{name}")
         graph.add((joint, RDF.type, KC.Joint))
         graph.add((joint, KC["between-attachments"], frame_a))
         graph.add((joint, KC["between-attachments"], frame_b))
 
-    fixed("world-table", URIRef(f"{world}/origin"), table_top)
+    fixed("world-table", frame_on(world, URIRef(f"{world}/origin")), frame_on(table, table_top))
     for tree in trees:
         root = URIRef(f"{tree}/base")
-        root_frame = URIRef(f"{root}/origin")
+        root_frame = frame_on(root, URIRef(f"{root}/origin"))
         tip = URIRef(f"{tree}/tip")
-        tip_frame = URIRef(f"{tip}/origin")
+        tip_frame = frame_on(tip, URIRef(f"{tip}/origin"))
         graph.add((tree, NS_MM_KC_EXT["tip"], tip_frame))
         fixed(f"{tree.rsplit('/', 1)[-1]}-table", table_top, root_frame)
         joint = URIRef(f"{tree}/moving")
@@ -133,12 +139,18 @@ def test_agent_model_may_bind_the_assembled_kinematic_tree() -> None:
     graph.add((modelled, RDF.type, AGN.ModelledAgent))
     graph.add((modelled, AGN["of-agent"], agent))
     graph.add((modelled, AGN["has-agent-model"], model))
-    graph.add((model, EXEC["has-kinematic-tree"], tree))
+    mapping = URIRef("https://example.test/robot-model/maps-assembled")
+    graph.add((model, EXEC["has-mapping"], mapping))
+    graph.add((mapping, EXEC.maps, tree))
     graph.add((model, EXEC.path, Literal("kinova_gen3.xml")))
     graph.add((tree, RDF.type, NS_MM_GEOM["KinematicTree"]))
     graph.add((tree, RDF.type, URI_KC_TYPE_SERIAL))
     graph.add((tree, NS_MM_KC_EXT["root"], root))
     graph.add((tree, NS_MM_KC_EXT["tip"], tcp))
+    # Each frame is a simplex of its body, the way a scene graph states it.
+    for body, frame in ((base, root), (tool, tcp)):
+        graph.add((body, RDF.type, NS_MM_GEOM["RigidBody"]))
+        graph.add((body, NS_MM_GEOM["simplices"], frame))
     graph.add((joint, RDF.type, KC.Joint))
     graph.add((joint, KC["between-attachments"], root))
     graph.add((joint, KC["between-attachments"], tcp))
@@ -289,10 +301,9 @@ def test_solver_ir_carries_rne_algorithm_and_gravity() -> None:
     assert entry.root_acc == [0.0, 0.0, 9.81]
     assert entry.gravity is None
 
-    # Only the MuJoCo backend needs the opposite-sign gravity for its RNE bridge.
-    _annotate_rne_gravity([entry], [], "robif2b")
-    assert entry.gravity is None
-    _annotate_rne_gravity([entry], [], "mj_kdl")
+    # The sign flip is KDL's inverse-dynamics convention, not a simulator's, so it is derived
+    # wherever an RNE solver is built -- on hardware a missing gravity is silent and dangerous.
+    _annotate_rne_gravity([entry], [])
     assert entry.gravity == [0.0, 0.0, -9.81]
 
 
@@ -390,17 +401,29 @@ def test_simulation_keeps_its_scene_objects() -> None:
 
 
 def test_an_authored_sensor_rate_reaches_the_ir() -> None:
-    """scene-dsl emits sens:update-rate as a QUDT quantity; motion-spec used to drop it."""
-    from motion_spec.rdf_parser.ir import _hertz
-    from motion_spec_dsl.rdf_parser.vocab import QUDT_SCHEMA
+    """scene-dsl emits sens:update-rate as a QUDT quantity; motion-spec used to drop it.
+
+    Read through scene-dsl's own parser, on the exact call the IR makes."""
+    from motion_spec_dsl.rdf_parser.vocab import QUDT_SCHEMA, SENSORS
+    from rdf_utils.models.common import ModelBase
     from rdf_utils.namespace import NS_MM_QUDT_UNIT as QUDT_UNIT
+    from scene_dsl.rdf_parser.sensors import get_update_rate
 
     graph = Graph()
-    rate = URIRef("https://example.test/wrist_ft/update-rate")
+    sensor = URIRef("https://example.test/wrist_ft")
+    rate = URIRef(f"{sensor}/update-rate")
+    graph.add((sensor, RDF.type, SENSORS.ForceTorqueSensor))
+    graph.add((sensor, SENSORS["update-rate"], rate))
     graph.add((rate, QUDT_SCHEMA.value, Literal(1000.0, datatype=XSD.double)))
     graph.add((rate, QUDT_SCHEMA.unit, QUDT_UNIT["HZ"]))
-    assert _hertz(graph, rate) == 1000.0
-    assert _hertz(graph, None) is None
+    assert get_update_rate(graph, ModelBase(node_id=sensor, graph=graph)) == 1000.0
+
+    # A sensor without a rate is a broken model, not a missing value: the grammar makes
+    # update-rate mandatory on every sensor spec.
+    rateless = URIRef("https://example.test/rateless")
+    graph.add((rateless, RDF.type, SENSORS.ForceTorqueSensor))
+    with pytest.raises(ValueError, match="invalid update-rate"):
+        get_update_rate(graph, ModelBase(node_id=rateless, graph=graph))
 
 
 _ARM_SECTION = (

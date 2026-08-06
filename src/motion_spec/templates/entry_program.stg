@@ -4,8 +4,6 @@
 import "assembly_loop.stg"
 import "assembly_coordination.stg"
 import "assembly_motion.stg"
-import "backend_kelo.stg"
-import "backend_robot.stg"
 import "expr_values.stg"
 import "runtime.stg"
 
@@ -16,7 +14,7 @@ ref_main(platform, motions, wrench_outputs, has_serial_chain, mobile_base, share
 #include "introspect_model.hpp"
 #endif
 <if(mobile_base)>
-<mobile-base-cycle-include()>
+<({<mobile-base-cycle-include-impl.(backend)>})()>
 <endif>
 <motions:{motion | <motion-include(motion)>}; separator="\n">
 
@@ -36,7 +34,7 @@ int main(int argc, char **argv) {
 <endif>
 <if(mobile_base)>
 
-<app-main-base-setup()>
+<({<app-main-base-setup-impl.(backend)>})()>
 <endif>
 <if(has_serial_chain)>
 

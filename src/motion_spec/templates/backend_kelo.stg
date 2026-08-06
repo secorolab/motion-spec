@@ -4,6 +4,20 @@
 // EtherCAT lives here rather than with the robif2b backend because only this base is driven
 // over it.
 
+// The program reaches this base only through these dictionaries, so the backend that carries a
+// KELO base is named here and nowhere in the shared groups.
+base-nothing() ::= <<>>
+
+mobile-base-cycle-include-impl ::= [
+    "robif2b": "mobile-base-cycle-include",
+    default: "base-nothing"
+]
+
+app-main-base-setup-impl ::= [
+    "robif2b": "app-main-base-setup",
+    default: "base-nothing"
+]
+
 robif2b-update-ethercat() ::= <<
 robif2b_ethercat_update(&ecat);
 >>

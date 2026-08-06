@@ -7,7 +7,6 @@ import "domain_poses.stg"
 import "domain_closures.stg"
 import "domain_solver.stg"
 import "expr_values.stg"
-import "backend_robif2b.stg"
 
 motion_header(motion, closures, views, wrench_outputs, backend) ::= <<
 /// Motion: <motion.name>

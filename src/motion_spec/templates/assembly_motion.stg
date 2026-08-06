@@ -6,7 +6,6 @@ import "domain_monitors.stg"
 import "domain_poses.stg"
 import "domain_solver.stg"
 import "expr_values.stg"
-import "backend_robif2b.stg"
 
 schedule-step(step, closures, views) ::= <<
     // <step>

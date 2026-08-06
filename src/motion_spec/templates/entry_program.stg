@@ -7,13 +7,13 @@ import "assembly_motion.stg"
 import "expr_values.stg"
 import "runtime.stg"
 
-ref_main(platform, motions, values, has_serial_chain, mobile_base, shared_data, serial_chain_solvers, backend, scene, trace, fsm, needs_clock_time, control_period_ns, ros, agent_homes) ::= <<
+ref_main(platform, motions, values, has_serial_chain, resources, shared_data, backend, scene, trace, fsm, needs_clock_time, control_period_ns, ros, agent_homes) ::= <<
 #include "runtime.hpp"
 #include "shared_state.hpp"
 #ifdef MOTION_SPEC_ENABLE_INTROSPECTION
 #include "introspect_model.hpp"
 #endif
-<if(mobile_base)>
+<if(resources.by_kind.mobile_base)>
 <({<mobile-base-cycle-include-impl.(backend)>})()>
 <endif>
 <motions:{motion | <motion-include(motion)>}; separator="\n">
@@ -32,33 +32,33 @@ int main(int argc, char **argv) {
 
 <ros-setup(ros)>
 <endif>
-<if(mobile_base)>
+<if(resources.by_kind.mobile_base)>
 
 <({<app-main-base-setup-impl.(backend)>})()>
 <endif>
 <if(has_serial_chain)>
 
-<app-chain-setup(backend, serial_chain_solvers, scene, platform.config)>
+<app-chain-setup(backend, resources.by_kind.serial_chain, scene, platform.config)>
 <endif>
 <values.externally_measured:{wrench | <wrench-measurement(wrench)>}; separator="\n">
 <values.externally_measured:{wrench |     robot.<wrench.id> = &<wrench.id>_measurement;}; separator="\n">
 <motions:{motion | <motion-state-member(motion)>}; separator="\n">
-<if(mobile_base)>
+<if(resources.by_kind.mobile_base)>
     mobile_base_state mobile_base_state_instance;
 <endif>
-<if(mobile_base)>
+<if(resources.by_kind.mobile_base)>
 
     robif2b_ethercat_configure(robot.mobile_base.ethercat);
     robif2b_ethercat_start(robot.mobile_base.ethercat);
 <endif>
 <if(has_serial_chain)>
-<serial_chain_solvers:{solver |
+<resources.by_kind.serial_chain:{solver |
 <robot-configure(solver, backend)>
 }; separator="\n">
 <endif>
 
 <if(has_serial_chain)>
-<app-chain-post-setup(backend, serial_chain_solvers, motions, agent_homes)>
+<app-chain-post-setup(backend, resources.by_kind.serial_chain, motions, agent_homes)>
 <endif>
 
 <if(fsm)>
@@ -83,7 +83,7 @@ int main(int argc, char **argv) {
     clock_gettime(CLOCK_MONOTONIC, &_next_tick);
     double _prev_clock_s = 0.0;
     while (<app-loop-condition(backend, has_serial_chain)>) {
-        shared.clock_time_s = <clock-time-source(backend, serial_chain_solvers, has_serial_chain)>;
+        shared.clock_time_s = <clock-time-source(backend, resources.by_kind.serial_chain, has_serial_chain)>;
         // Integrators step with the time that actually elapsed, not the period we asked for: the
         // loop sleeps to deadlines it can overrun. In sim the clock advances exactly one timestep
         // per tick, so this equals the nominal period.
@@ -94,7 +94,7 @@ int main(int argc, char **argv) {
         shared.dt_measured_s = std::clamp(_dt_raw, motion_spec::runtime::kDtClampMin,
                                           motion_spec::runtime::kDtClampMax);
 <if(has_serial_chain)>
-<app-chain-loop-reset(backend, serial_chain_solvers, fsm)>
+<app-chain-loop-reset(backend, resources.by_kind.serial_chain, fsm)>
 <endif>
 <if(fsm)>
         if (static_cast\<int\>(fsm->currentStateIndex) != _fsm_prev_state) {
@@ -147,8 +147,8 @@ int main(int argc, char **argv) {
         }
 <endif>
 <if(has_serial_chain)>
-<app-chain-trace-update(backend, serial_chain_solvers, trace)>
-<app-chain-runtime-step(backend, serial_chain_solvers)>
+<app-chain-trace-update(backend, resources.by_kind.serial_chain, trace)>
+<app-chain-runtime-step(backend, resources.by_kind.serial_chain)>
 <endif>
 <if(fsm)>
         const unsigned int _fsm_state_before = fsm->currentStateIndex;
@@ -181,11 +181,11 @@ int main(int argc, char **argv) {
 <if(has_serial_chain)>
 
 <app-chain-cleanup(backend, has_serial_chain)>
-<serial_chain_solvers:{solver |
+<resources.by_kind.serial_chain:{solver |
 <robot-shutdown(solver, backend)>
 }; separator="\n">
 <endif>
-<if(mobile_base)>
+<if(resources.by_kind.mobile_base)>
     robif2b_kelo_drive_actuator_stop(robot.mobile_base.wheel_actuator);
     robif2b_ethercat_stop(robot.mobile_base.ethercat);
     robif2b_ethercat_shutdown(robot.mobile_base.ethercat);
@@ -202,7 +202,7 @@ int main(int argc, char **argv) {
 }
 >>
 
-shared_state_header(shared_data, values, has_serial_chain, mobile_base, serial_chain_solvers, backend, fsm, ros) ::= <<
+shared_state_header(shared_data, values, has_serial_chain, resources, backend, fsm, ros) ::= <<
 #pragma once
 
 #include "frame_layout.h"
@@ -225,17 +225,17 @@ shared_state_header(shared_data, values, has_serial_chain, mobile_base, serial_c
 #include \<kdl/chainfksolvervel_recursive.hpp\>
 #include \<kdl/chainhdsolver_vereshchagin_fixed_joint.hpp\>
 <if(has_serial_chain)><solver-rnea-include(backend)><endif>
-<if(has_serial_chain)><robot-driver-include(first(serial_chain_solvers), backend)><endif>
-<if(mobile_base)>
+<if(has_serial_chain)><robot-driver-include(first(resources.by_kind.serial_chain), backend)><endif>
+<if(resources.by_kind.mobile_base)>
 #include \<robif2b/functions/ethercat.h\>
 #include \<robif2b/functions/kelo_drive.h\>
 <endif>
 
 #include \<kdl/chainhdsolver_vereshchagin_fext_fixed_joint.hpp\>
 
-<if(has_serial_chain)><robot-num-joints-def(first(serial_chain_solvers))><endif>
+<if(has_serial_chain)><robot-num-joints-def(first(resources.by_kind.serial_chain))><endif>
 
-<if(mobile_base)>
+<if(resources.by_kind.mobile_base)>
 struct ecat_state {
     const char *ethernet_if = nullptr;
     int error_code = 0;
@@ -288,62 +288,18 @@ struct mobile_base_robot {
     robif2b_kelo_drive_encoder *drive_encoder = nullptr;
     robif2b_kelo_drive_actuator *wheel_actuator = nullptr;
 };
-
-struct mobile_base_runtime_state {
-    double drive_attachment[NUM_DRIVES * 2] = {
-         0.195,  0.21,
-        -0.195,  0.21,
-        -0.195, -0.21,
-         0.195, -0.21,
-    };
-    double wheel_diameter[NUM_DRIVES * 2] = {
-        0.115, 0.115,
-        0.115, 0.115,
-        0.115, 0.115,
-        0.115, 0.115,
-    };
-    double wheel_distance[NUM_DRIVES] = {0.0775, 0.0775, 0.0775, 0.0775};
-    double castor_offset[NUM_DRIVES] = {0.01, 0.01, 0.01, 0.01};
-    double g[NUM_DRIVES * NUM_G_COORD] = {0.0};
-    double f_platform[NUM_PLTF_COORD] = {0.0, 0.0, 0.0};
-    double w_platform[NUM_PLTF_COORD * NUM_PLTF_COORD] = {
-        1.0, 0.0, 0.0,
-        0.0, 1.0, 0.0,
-        0.0, 0.0, 1.0,
-    };
-    double w_drive[NUM_DRIVES * 4] = {
-        1.0, 0.0, 0.0, 1.0,
-        1.0, 0.0, 0.0, 1.0,
-        1.0, 0.0, 0.0, 1.0,
-        1.0, 0.0, 0.0, 1.0,
-    };
-    double f_drive_ref[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
-    double w_align[NUM_DRIVES * 2] = {
-        1.0, 1.0,
-        1.0, 1.0,
-        1.0, 1.0,
-        1.0, 1.0,
-    };
-    double f_drive[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
-    double f_wheel[NUM_DRIVES * NUM_GND_COORD] = {0.0};
-    double f_prim[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
-    double f_scnd[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
-    double xd_ground[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
-    double xd_drive[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
-    double xd_platform[NUM_PLTF_COORD] = {0.0, 0.0, 0.0};
-};
 <endif>
 
 <if(has_serial_chain)>
-<robot-state-struct(first(serial_chain_solvers), backend)>
+<robot-state-struct(first(resources.by_kind.serial_chain), backend)>
 
-<robot-manipulator-struct(first(serial_chain_solvers), backend)>
+<robot-manipulator-struct(first(resources.by_kind.serial_chain), backend)>
 
-<chain-solver-members(serial_chain_solvers, backend)>
+<chain-solver-members(resources.by_kind.serial_chain, backend)>
 <endif>
 
 struct robot_io {
-<if(mobile_base)>
+<if(resources.by_kind.mobile_base)>
     mobile_base_robot mobile_base;
 <endif>
 <if(fsm)>
@@ -352,15 +308,12 @@ struct robot_io {
 <if(ros)>
 <ros-io-members(ros)>
 <endif>
-<serial_chain_solvers:{solver | <chain-robot-member(solver)>}; separator="\n">
-<serial_chain_solvers:{solver | <chain-device-members(solver, backend)>}; separator="">
+<resources.by_kind.serial_chain:{solver | <chain-robot-member(solver)>}; separator="\n">
+<resources.by_kind.serial_chain:{solver | <chain-device-members(solver, backend)>}; separator="">
 <values.externally_measured:{wrench | <wrench-pointer-member(wrench)>}; separator="\n">
 };
 
 struct shared_data {
-<if(mobile_base)>
-    mobile_base_runtime_state mobile_base;
-<endif>
     static constexpr int _motion_spec_event_buffer_size =
         motion_spec::introspection::kNumTriggers > 0
             ? static_cast\<int\>(motion_spec::introspection::kNumTriggers)

@@ -123,18 +123,18 @@ mobile-base-cycle-include() ::= <<
 >>
 
 base-force-solver-hddc2b_example_frc_sc1(solver) ::= <<
-hddc2b_pltf_drv_algn_dst(NUM_DRIVES, mobile_base.drive_attachment, mobile_base.w_align, kelo_msr.pvt_pos, mobile_base.f_platform, &mobile_base.f_drive_ref[1], 2);
-hddc2b_pltf_frc_pltf_to_drv(NUM_DRIVES, EPS, mobile_base.g, mobile_base.w_platform, mobile_base.f_platform, mobile_base.w_drive, mobile_base.f_drive_ref, mobile_base.f_prim, mobile_base.f_scnd);
-motion_spec::runtime::hddc2b_rescale(mobile_base.f_scnd);
-hddc2b_pltf_frc_redu_ref_fini(NUM_DRIVES, mobile_base.f_prim, mobile_base.f_scnd, mobile_base.f_drive);
-hddc2b_drv_frc_pvt_to_gnd(NUM_DRIVES, mobile_base.wheel_distance, mobile_base.castor_offset, mobile_base.f_drive, mobile_base.f_wheel);
-hddc2b_whl_frc_gnd_to_hub(NUM_DRIVES, mobile_base.wheel_diameter, mobile_base.f_wheel, kelo_cmd.trq);
+hddc2b_pltf_drv_algn_dst(NUM_DRIVES, state.cfg.drive_attachment.data(), state.cfg.w_align.data(), kelo_msr.pvt_pos, state.f_platform, &state.f_drive_ref[1], 2);
+hddc2b_pltf_frc_pltf_to_drv(NUM_DRIVES, EPS, state.g, state.cfg.w_platform.data(), state.f_platform, state.cfg.w_drive.data(), state.f_drive_ref, state.f_prim, state.f_scnd);
+motion_spec::runtime::hddc2b_rescale(state.f_scnd);
+hddc2b_pltf_frc_redu_ref_fini(NUM_DRIVES, state.f_prim, state.f_scnd, state.f_drive);
+hddc2b_drv_frc_pvt_to_gnd(NUM_DRIVES, state.cfg.wheel_distance.data(), state.cfg.castor_offset.data(), state.f_drive, state.f_wheel);
+hddc2b_whl_frc_gnd_to_hub(NUM_DRIVES, state.cfg.wheel_diameter.data(), state.f_wheel, kelo_cmd.trq);
 >>
 
 base-force-solver-hddc2b_example_frc_sc2(solver) ::= <<
-hddc2b_pltf_drv_algn_dst(NUM_DRIVES, mobile_base.drive_attachment, mobile_base.w_align, kelo_msr.pvt_pos, mobile_base.f_platform, &mobile_base.f_drive[1], 2);
-hddc2b_drv_frc_pvt_to_gnd(NUM_DRIVES, mobile_base.wheel_distance, mobile_base.castor_offset, mobile_base.f_drive, mobile_base.f_wheel);
-hddc2b_whl_frc_gnd_to_hub(NUM_DRIVES, mobile_base.wheel_diameter, mobile_base.f_wheel, kelo_cmd.trq);
+hddc2b_pltf_drv_algn_dst(NUM_DRIVES, state.cfg.drive_attachment.data(), state.cfg.w_align.data(), kelo_msr.pvt_pos, state.f_platform, &state.f_drive[1], 2);
+hddc2b_drv_frc_pvt_to_gnd(NUM_DRIVES, state.cfg.wheel_distance.data(), state.cfg.castor_offset.data(), state.f_drive, state.f_wheel);
+hddc2b_whl_frc_gnd_to_hub(NUM_DRIVES, state.cfg.wheel_diameter.data(), state.f_wheel, kelo_cmd.trq);
 >>
 
 base-force-solver(solver) ::= <<
@@ -143,56 +143,73 @@ base-force-solver(solver) ::= <<
 
 base-cycle-begin(base_velocity_solvers) ::= <<
     {
-        auto &mobile_base = shared.mobile_base;
         auto &ecat = *robot.mobile_base.ethercat;
         auto &drive_enc = *robot.mobile_base.drive_encoder;
         auto &kelo_msr = *robot.mobile_base.measurement;
 
         <robif2b-update-ethercat()>
         <robif2b-update-kelo-encoder()>
-        hddc2b_pltf_frc_comp_mat(NUM_DRIVES, mobile_base.drive_attachment, kelo_msr.pvt_pos, mobile_base.g);
+        hddc2b_pltf_frc_comp_mat(NUM_DRIVES, state.cfg.drive_attachment.data(), kelo_msr.pvt_pos, state.g);
 <base_velocity_solvers:{solver |
 
-        hddc2b_whl_vel_hub_to_gnd(NUM_DRIVES, mobile_base.wheel_diameter, kelo_msr.whl_vel, mobile_base.xd_ground);
-        hddc2b_drv_vel_gnd_to_pvt(NUM_DRIVES, mobile_base.wheel_distance, mobile_base.castor_offset, mobile_base.xd_ground, mobile_base.xd_drive);
-        motion_spec::runtime::hddc2b_pltf_vel_drv_to_pltf(NUM_DRIVES, EPS, mobile_base.g, mobile_base.w_drive, mobile_base.xd_drive, mobile_base.w_platform, mobile_base.xd_platform);
-        shared.<solver.velocity.id>.vel.x(mobile_base.xd_platform[0]);
-        shared.<solver.velocity.id>.vel.y(mobile_base.xd_platform[1]);
-        shared.<solver.velocity.id>.rot.z(mobile_base.xd_platform[2]);
+        hddc2b_whl_vel_hub_to_gnd(NUM_DRIVES, state.cfg.wheel_diameter.data(), kelo_msr.whl_vel, state.xd_ground);
+        hddc2b_drv_vel_gnd_to_pvt(NUM_DRIVES, state.cfg.wheel_distance.data(), state.cfg.castor_offset.data(), state.xd_ground, state.xd_drive);
+        motion_spec::runtime::hddc2b_pltf_vel_drv_to_pltf(NUM_DRIVES, EPS, state.g, state.cfg.w_drive.data(), state.xd_drive, state.cfg.w_platform.data(), state.xd_platform);
+        shared.<solver.velocity.id>.vel.x(state.xd_platform[0]);
+        shared.<solver.velocity.id>.vel.y(state.xd_platform[1]);
+        shared.<solver.velocity.id>.rot.z(state.xd_platform[2]);
 }; separator="\n">
     }
 >>
 
 base-cycle-force(base_force_solvers) ::= <<
     {
-        auto &mobile_base = shared.mobile_base;
         auto &kelo_msr = *robot.mobile_base.measurement;
         auto &kelo_cmd = *robot.mobile_base.command;
 <base_force_solvers:{solver |
 
-        mobile_base.f_platform[0] = shared.<solver.force.id>.force.x();
-        mobile_base.f_platform[1] = shared.<solver.force.id>.force.y();
-        mobile_base.f_platform[2] = shared.<solver.force.id>.torque.z();
+        state.f_platform[0] = shared.<solver.force.id>.force.x();
+        state.f_platform[1] = shared.<solver.force.id>.force.y();
+        state.f_platform[2] = shared.<solver.force.id>.torque.z();
         <base-force-solver(solver)>
 }; separator="\n">
     }
 >>
 
-mobile_base_cycle_header(mobile_base) ::= <<
+mobile_base_cycle_header(resources, platform) ::= <<
 #pragma once
 
+#include "robot_config.hpp"
 #include "shared_state.hpp"
 
-<if(mobile_base)>
+<if(resources.by_kind.mobile_base)>
+// The base's own solver state, mirroring \<solver\>_solver_state on a serial chain: the
+// platform it drives (read from the deployment config) and the hddc2b solve intermediates.
+// None of it is a shared value, so none of it is on the blackboard.
 struct mobile_base_state {
     bool initialized = false;
+    motion_spec::config::Kelo cfg;
+    double g[NUM_DRIVES * NUM_G_COORD] = {0.0};
+    double f_platform[NUM_PLTF_COORD] = {0.0, 0.0, 0.0};
+    double f_drive_ref[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
+    double f_drive[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
+    double f_wheel[NUM_DRIVES * NUM_GND_COORD] = {0.0};
+    double f_prim[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
+    double f_scnd[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
+    double xd_ground[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
+    double xd_drive[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
+    double xd_platform[NUM_PLTF_COORD] = {0.0, 0.0, 0.0};
 };
 
 inline void reset_mobile_base(mobile_base_state &state) {
     state = mobile_base_state{};
 }
 
+// Reads the config file, so the `initialized` latch is load-bearing: the platform is parsed on
+// the first cycle (or the first after a reset), never per tick.
 inline void init_mobile_base(mobile_base_state &state, shared_data &shared, const robot_io &robot) {
+    if (state.initialized) return;
+    state.cfg = motion_spec::config::kelo(motion_spec::config::load("<platform.config>"), "kelo");
     state.initialized = true;
 }
 
@@ -201,14 +218,14 @@ inline void update_mobile_base(
     shared_data &shared,
     const robot_io &robot) {
     init_mobile_base(state, shared, robot);
-<base-cycle-begin(mobile_base.velocity_solvers)>
+<base-cycle-begin(resources.by_kind.mobile_base.velocity_solvers)>
 }
 
 inline void control_mobile_base(
     mobile_base_state &state,
     shared_data &shared,
     const robot_io &robot) {
-<base-cycle-force(mobile_base.force_solvers)>
+<base-cycle-force(resources.by_kind.mobile_base.force_solvers)>
 }
 
 inline void apply_mobile_base(

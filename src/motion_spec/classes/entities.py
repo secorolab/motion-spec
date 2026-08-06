@@ -863,6 +863,8 @@ class SolverWithInputAndOutput:
     joint_space_cmd_samples: list = field(default_factory=list)
     runtime_id: str = ""
     runtime_owner: bool = False
+    # Which resource this solver commands; `resources.robots` is filtered on it.
+    kind: str = field(default="serial_chain")
     type: str = field(default="SolverWithInputAndOutput")
 
 
@@ -968,6 +970,7 @@ class VelocityCompositionSolver:
     id: str
     configuration: str
     velocity: VelocityTwist
+    kind: str = field(default="mobile_base")
     type: str = field(default="VelocityCompositionSolver")
 
 
@@ -978,4 +981,5 @@ class ForceDistributionSolver:
     id: str
     configuration: str
     force: Wrench
+    kind: str = field(default="mobile_base")
     type: str = field(default="ForceDistributionSolver")

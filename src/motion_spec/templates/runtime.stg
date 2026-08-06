@@ -3,7 +3,7 @@
 // Author: Vamsi Kalagaturu
 // Runtime control-loop math header (profiles/admittance/spring-damper, monitors).
 
-runtime_header(mobile_base, control_period_ns) ::= <<
+runtime_header(resources, control_period_ns) ::= <<
 #pragma once
 
 #include \<cassert\>
@@ -22,7 +22,7 @@ runtime_header(mobile_base, control_period_ns) ::= <<
 #include \<stdexcept\>
 #include \<string\>
 #include \<string_view\>
-<if(mobile_base)>
+<if(resources.by_kind.mobile_base)>
 #include \<hddc2b/functions/platform.h\>
 #include \<hddc2b/functions/solver.h\>
 #include \<hddc2b/functions/drive.h\>
@@ -273,7 +273,7 @@ inline double velocity_profile_step(double x, double &v, double &a, double goal,
     return nx;
 }
 
-<if(mobile_base)>
+<if(resources.by_kind.mobile_base)>
 inline constexpr int NUM_DRIVES = 4;
 inline constexpr int NUM_SLAVES = 4;
 inline constexpr int NUM_WHL_COORD = 2;
@@ -562,7 +562,7 @@ inline unsigned int find_segment_index(
     throw std::runtime_error("KDL segment not found for model name: " + target);
 }
 
-<if(mobile_base)>
+<if(resources.by_kind.mobile_base)>
 inline void hddc2b_pltf_vel_drv_to_pltf(
         int num_drv,
         double eps,

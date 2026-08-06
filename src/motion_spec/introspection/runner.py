@@ -167,7 +167,8 @@ def _validate_robot_config(source_dir: Path, cwd: Path | None = None) -> None:
     # A chain that shares another's runtime repeats its owner's devices; the pair is the fact.
     bound = {
         (device["config_key"], device["kind"])
-        for solver in ir.get("serial_chain_solvers") or ()
+        for solver in ir.get("resources", {}).get("robots") or ()
+        if solver.get("kind") == "serial_chain"
         for device in solver.get("devices") or ()
         if device.get("config_key")
     }

@@ -271,9 +271,13 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
         return 1;
     }
 
-    mj_env.model->opt.iterations = 100;
-    mj_env.model->opt.tolerance  = 1e-10;
-    mj_env.model->opt.impratio   = 20.0;
+    // Contact-solver policy: accuracy and grip fidelity bought with sim time per step.
+    constexpr int kMjSolverIterations = 100;
+    constexpr double kMjSolverTolerance = 1e-10;
+    constexpr double kMjImpratio = 20.0;
+    mj_env.model->opt.iterations = kMjSolverIterations;
+    mj_env.model->opt.tolerance  = kMjSolverTolerance;
+    mj_env.model->opt.impratio   = kMjImpratio;
     mj_env.model->opt.cone       = mjCONE_ELLIPTIC;
 <serial_chain_solvers:{solver |<robot-state-init(solver, "mj_kdl")>
 <robot-init(solver, "mj_kdl")>

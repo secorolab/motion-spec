@@ -445,9 +445,16 @@ def _real_source(tmp_path, *devices: dict) -> Path:
         json.dumps(
             {
                 "platform": {"simulated": False, "config": "robot.toml"},
-                "serial_chain_solvers": [
-                    {"id": "arm_solver", "config_key": "agents.arm1", "devices": list(devices)}
-                ],
+                "resources": {
+                    "robots": [
+                        {
+                            "id": "arm_solver",
+                            "kind": "serial_chain",
+                            "config_key": "agents.arm1",
+                            "devices": list(devices),
+                        }
+                    ]
+                },
             }
         )
     )

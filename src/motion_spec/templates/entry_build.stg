@@ -64,6 +64,7 @@ robot_config_header() ::= <<
 
 #include \<stdexcept\>
 #include \<string\>
+#include \<vector\>
 
 #include \<toml++/toml.hpp\>
 
@@ -134,6 +135,62 @@ inline int bias_samples(const toml::table &config, const std::string &key) {
     return value;
 \}
 
+// An optional numeric array: absent means the built-in default stands, present must match it
+// in length -- a base with four drives cannot be handed three wheel diameters.
+inline std::vector\<double\> doubles_or(const toml::table &table, const std::string &key,
+                                     std::vector\<double\> fallback, const std::string &where) {
+    const toml::array *values = table[key].as_array();
+    if (!values) return fallback;
+    if (values->size() != fallback.size()) {
+        throw std::runtime_error("robot config [" + where + "] '" + key + "' needs " +
+                                 std::to_string(fallback.size()) + " numbers");
+    \}
+    std::vector\<double\> out;
+    out.reserve(values->size());
+    for (const auto &entry : *values) {
+        const auto number = entry.value\<double\>();
+        if (!number) {
+            throw std::runtime_error("robot config [" + where + "] '" + key + "' is not numeric");
+        \}
+        out.push_back(*number);
+    \}
+    return out;
+\}
+
+// A KELO drive platform: its geometry, and the hddc2b weights that decide how a platform
+// wrench is split over the drives. Geometry is per-robot-instance deployment data, like the
+// drive addresses; the weights are solver policy the same deployment tunes. Every key is
+// optional and defaults to the platform this generator was written against.
+struct Kelo {
+    // Drive pivot attachment points on the platform, (x, y) per drive [m].
+    std::vector\<double\> drive_attachment{0.195, 0.21, -0.195, 0.21, -0.195, -0.21, 0.195, -0.21};
+    // Wheel diameter, per wheel (two per drive) [m].
+    std::vector\<double\> wheel_diameter{0.115, 0.115, 0.115, 0.115, 0.115, 0.115, 0.115, 0.115};
+    // Lateral wheel separation and castor offset, per drive [m].
+    std::vector\<double\> wheel_distance{0.0775, 0.0775, 0.0775, 0.0775};
+    std::vector\<double\> castor_offset{0.01, 0.01, 0.01, 0.01};
+    // Platform-wrench weight (3x3), per-drive force weight (2x2 each), pivot-alignment weight.
+    std::vector\<double\> w_platform{1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
+    std::vector\<double\> w_drive{1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0,
+                               1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0};
+    std::vector\<double\> w_align{1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
+};
+
+inline Kelo kelo(const toml::table &config, const std::string &key) {
+    Kelo out;
+    const toml::node *node = config.at_path(key).node();
+    if (!node || !node->is_table()) return out;
+    const toml::table &entry = *node->as_table();
+    out.drive_attachment = doubles_or(entry, "drive_attachment", out.drive_attachment, key);
+    out.wheel_diameter = doubles_or(entry, "wheel_diameter", out.wheel_diameter, key);
+    out.wheel_distance = doubles_or(entry, "wheel_distance", out.wheel_distance, key);
+    out.castor_offset = doubles_or(entry, "castor_offset", out.castor_offset, key);
+    out.w_platform = doubles_or(entry, "w_platform", out.w_platform, key);
+    out.w_drive = doubles_or(entry, "w_drive", out.w_drive, key);
+    out.w_align = doubles_or(entry, "w_align", out.w_align, key);
+    return out;
+\}
+
 inline Device device(const toml::table &config, const std::string &key) {
     const toml::table &entry = section(config, key);
     Device out;
@@ -150,7 +207,7 @@ inline Device device(const toml::table &config, const std::string &key) {
 \} // namespace motion_spec::config
 >>
 
-cmake_robif2b(fsm, ros, serial_chain_solvers) ::= <<
+cmake_robif2b(fsm, ros, resources) ::= <<
 cmake_minimum_required(VERSION 3.16)
 project(motion_spec_robif2b_target LANGUAGES C CXX)
 
@@ -188,7 +245,7 @@ target_include_directories(main PRIVATE
 target_link_libraries(main PRIVATE
     orocos-kdl
     tomlplusplus::tomlplusplus
-<serial_chain_solvers:{solver | <if(solver.runtime_owner)><solver.devices:{device | <({cmake-device-link-<device.kind>})()>}; separator="\n"><endif>}; separator="\n">
+<resources.by_kind.serial_chain:{solver | <if(solver.runtime_owner)><solver.devices:{device | <({cmake-device-link-<device.kind>})()>}; separator="\n"><endif>}; separator="\n">
 <if(fsm)>
     ${coord2b_LIBRARIES}
 <endif>

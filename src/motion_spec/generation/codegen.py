@@ -198,7 +198,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     render_template(
         stst_bin, "shared_state_header", ir_payload_path, headers_dir / "shared_state.hpp"
     )
-    if ir.get("mobile_base"):
+    if ir["resources"]["by_kind"]["mobile_base"]:
         render_template(
             stst_bin,
             "mobile_base_cycle_header",

@@ -321,8 +321,7 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
         {
             "backend": "mj_kdl",
             "has_serial_chain": False,
-            "mobile_base": None,
-            "serial_chain_solvers": [],
+            "resources": {"robots": [], "by_kind": {"serial_chain": [], "mobile_base": None}},
             "cstr_hdl": [],
             "motions": ir["unique_motions"],
             "data": [],

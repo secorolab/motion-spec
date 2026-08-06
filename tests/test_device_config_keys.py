@@ -30,7 +30,7 @@ def _generate_ir(name: str, tmp_path: Path) -> dict:
 def _config_keys(ir: dict) -> set[str]:
     return {
         device["config_key"]
-        for solver in ir["serial_chain_solvers"]
+        for solver in ir["resources"]["by_kind"]["serial_chain"]
         for device in solver.devices
         if device.get("config_key")
     }

@@ -5451,7 +5451,7 @@ def _solver_sections(
     sched4 = []
     slv_platform_frc = []
 
-    for s in g.subjects(RDF.type, SLV["VelocityCompositionSolver"]):
+    for s in sorted(g.subjects(RDF.type, SLV["VelocityCompositionSolver"]), key=str):
         slv_platform_vel.append(p.velocity_composition_solver(s))
         sched1.extend(p.schedule([s], ops_generic + ops_slv))
 
@@ -5548,7 +5548,7 @@ def _solver_sections(
         ]
         sched3.extend(p.schedule(start, ops_generic + ops_slv))
 
-    for s in g.subjects(RDF.type, SLV["ForceDistributionSolver"]):
+    for s in sorted(g.subjects(RDF.type, SLV["ForceDistributionSolver"]), key=str):
         slv_platform_frc.append(p.force_distribution_solver(s))
         sched4.extend(p.schedule([s], ops_generic + ops_slv))
 
@@ -7873,6 +7873,25 @@ def generate_ir(manifest_path):
                 )
     ros_packages = sorted({p["pkg"] for p in ros_publishers})
 
+    # An arm and a wheeled base are both actuated resources the program commands, so they ride
+    # in one kind-tagged collection instead of one top-level list and one optional subsystem.
+    # The by-kind views are filtered off `robots` here, in one place, because the templates
+    # dispatch on kind and ST4 cannot filter.
+    robots = [*slv_chain, *slv_platform_vel, *slv_platform_frc]
+    resources = {
+        "robots": robots,
+        "by_kind": {
+            "serial_chain": [r for r in robots if r.kind == "serial_chain"],
+            # ST4 treats only null/absent as falsy -- an empty list is truthy -- so the base
+            # rides as an object-or-absent, which is the presence guard the templates need.
+            "mobile_base": (
+                {"velocity_solvers": slv_platform_vel, "force_solvers": slv_platform_frc}
+                if any(r.kind == "mobile_base" for r in robots)
+                else None
+            ),
+        },
+    }
+
     ir = {
         # Read cross-package by motion-spec-dsl's solver-derivation tests.
         "cstr_hdl": hdl,
@@ -7884,14 +7903,11 @@ def generate_ir(manifest_path):
         # role a value plays -- not by the C++ construct the view builds from it.
         "values": values,
         "has_serial_chain": bool(slv_chain),
+        # Every actuated resource the program commands, plus the by-kind views built above.
+        "resources": resources,
         # One key per optional subsystem, absent when the model has none. ST4 treats only
         # null/absent as falsy -- an empty list is truthy -- so an absent object is the guard
         # the templates need, and no separate has_* flag has to be kept in step with it.
-        "mobile_base": (
-            {"velocity_solvers": slv_platform_vel, "force_solvers": slv_platform_frc}
-            if slv_platform_vel or slv_platform_frc
-            else None
-        ),
         "ros": (
             {
                 "publishers": ros_publishers,
@@ -7905,7 +7921,6 @@ def generate_ir(manifest_path):
         # real monotonic wall clock).
         "needs_clock_time": any(m.has_elapsed for m in motions),
         "control_period_ns": control_period_ns,
-        "serial_chain_solvers": slv_chain,
         "backend": backend,
         # The authored execution platform, so provenance and the runtime graph read the model's
         # own answer instead of matching substrings of a derived id.

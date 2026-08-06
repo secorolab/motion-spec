@@ -386,32 +386,3 @@ app-chain-trace-update-mj_kdl(serial_chain_solvers, trace) ::= <<
 <endif>
 <endif>
 >>
-
-app-headless-telemetry-mj_kdl(shared_data, serial_chain_solvers, scene) ::= <<
-    if (headless) {
-        std::cout \<\< "steps=" \<\< _step \<\< " sim_time=" \<\< mj_<first(serial_chain_solvers).runtime_id>.data->time \<\< "\n";
-<scene.objects:{object |        KDL::Frame _obj_<object.body>;
-        if (mj_kdl::get_body_frame(mj_<first(serial_chain_solvers).runtime_id>.model, mj_<first(serial_chain_solvers).runtime_id>.data, "<object.body>", &_obj_<object.body>))
-            std::cout \<\< "<object.body> p=[" \<\< _obj_<object.body>.p.x() \<\< " " \<\< _obj_<object.body>.p.y() \<\< " " \<\< _obj_<object.body>.p.z() \<\< "]\n";
-}>    }
->>
-
-app-headless-print-shared-mj_kdl(item) ::= <<
-<({app-headless-print-<item.type>-mj_kdl})(item)>
->>
-
-app-headless-print-Pose-mj_kdl(item) ::= <<
-        std::cout \<\< "<item.id> p=[" \<\< shared.<item.id>.p.x() \<\< " " \<\< shared.<item.id>.p.y() \<\< " " \<\< shared.<item.id>.p.z() \<\< "]\n";
->>
-
-app-headless-print-VelocityTwist-mj_kdl(item) ::= <<
-        std::cout \<\< "<item.id> vel=[" \<\< shared.<item.id>.vel.x() \<\< " " \<\< shared.<item.id>.vel.y() \<\< " " \<\< shared.<item.id>.vel.z() \<\< "] rot=[" \<\< shared.<item.id>.rot.x() \<\< " " \<\< shared.<item.id>.rot.y() \<\< " " \<\< shared.<item.id>.rot.z() \<\< "]\n";
->>
-
-app-headless-print-AccelerationTwist-mj_kdl(item) ::= <<
-        std::cout \<\< "<item.id> vel=[" \<\< shared.<item.id>.vel.x() \<\< " " \<\< shared.<item.id>.vel.y() \<\< " " \<\< shared.<item.id>.vel.z() \<\< "] rot=[" \<\< shared.<item.id>.rot.x() \<\< " " \<\< shared.<item.id>.rot.y() \<\< " " \<\< shared.<item.id>.rot.z() \<\< "]\n";
->>
-
-app-headless-print-Quantity-mj_kdl(item) ::= <<
-        std::cout \<\< "<item.id>=" \<\< shared.<item.id> \<\< "\n";
->>

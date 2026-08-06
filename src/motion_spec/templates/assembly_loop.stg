@@ -56,10 +56,6 @@ app-chain-trace-update(backend, serial_chain_solvers, trace) ::= <<
 <({app-chain-trace-update-<backend>})(serial_chain_solvers, trace)>
 >>
 
-app-headless-telemetry(backend, shared_data, serial_chain_solvers, scene) ::= <<
-<({app-headless-telemetry-<backend>})(shared_data, serial_chain_solvers, scene)>
->>
-
 // ROS publish is decoupled from the control loop: each RealtimePublisher owns a background
 // thread that does the DDS publish; the RT loop only does a non-blocking trylock/unlockAndPublish.
 

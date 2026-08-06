@@ -98,11 +98,11 @@ controller-member(controller) ::= <<
 >>
 
 controller-member-ProportionalIntegralDerivative(controller) ::= <<
-    motion_spec::runtime::PIDControl <controller.id>{<controller.proportional_gain>, <controller.integral_gain>, <controller.derivative_gain>, <if(controller.decay_rate)><controller.decay_rate><else>0.0<endif>, motion_spec::runtime::kControlPeriodS<if(controller.integral_saturation)>, true, <saturation-lower(controller.integral_saturation)>, <saturation-upper(controller.integral_saturation)><endif>};
+    motion_spec::runtime::PIDControl <controller.id>{<controller.proportional_gain>, <controller.integral_gain>, <controller.derivative_gain>, <if(controller.decay_rate)><controller.decay_rate><else>0.0<endif><if(controller.integral_saturation)>, true, <saturation-lower(controller.integral_saturation)>, <saturation-upper(controller.integral_saturation)><endif>};
 >>
 
 controller-member-ImpedanceController(controller) ::= <<
-    motion_spec::runtime::ImpedanceControl <controller.id>{<controller.stiffness>, <controller.damping>, <if(controller.integral_gain)><controller.integral_gain><else>0.0<endif>, motion_spec::runtime::kControlPeriodS};
+    motion_spec::runtime::ImpedanceControl <controller.id>{<controller.stiffness>, <controller.damping>, <if(controller.integral_gain)><controller.integral_gain><else>0.0<endif>};
 >>
 
 controller-member-FeedForwardController(controller) ::= <<

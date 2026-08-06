@@ -6099,9 +6099,18 @@ def _apply_monitor_debounce(handlers, control_period_ns: int) -> None:
                 )
 
 
-def _shared_runtime_members(slv_chain, iris) -> list[dict]:
-    """Extra shared-data members for force/torque sensor state."""
-    members = []
+def _shared_runtime_members(slv_chain, iris, control_period_ns: int, platform_uri) -> list[dict]:
+    """Extra shared-data members for force/torque sensor state and the measured control period."""
+    # The dt every integrator steps with, measured by the loop from the backend clock, nominal
+    # until the first measurement exists. A contracted shared value rather than a hardcoded struct
+    # member, so it carries a producer and lands in the frame log like any other.
+    if not platform_uri:
+        raise RuntimeError("measured dt: the execution platform has no IRI to derive a clock from")
+    # Which clock it is -- sim seconds or monotonic seconds -- is the platform's to say, so the
+    # port derives from the exec context and the measurement derives from the port.
+    clock_iri = iris.register("clock", platform_uri, "clock", DerivedIriRegistry.DERIVATION)
+    iris.register("dt_measured_s", clock_iri, "dt_measured_s", DerivedIriRegistry.DERIVATION)
+    members = [{"id": "dt_measured_s", "type": "Quantity", "value": control_period_ns * 1e-9}]
     seen_ft_ids = set()
     for s in slv_chain:
         for out in s.output:
@@ -6724,6 +6733,9 @@ def add_quantity_samples(introspection: dict, shared_data: list, views: dict) ->
             add(item, "", {"kind": "bool", "id": item_id})
         elif _field(item, "type") == "IntCounter":
             add(item, "", {"kind": "int", "id": item_id})
+        elif item_id in _PORT_PRODUCERS:
+            # No model entity declares it, so it has no `quantities` row to be sampled from.
+            add(item, "", {"kind": "shared", "id": item_id})
 
     introspection["quantity_samples"] = samples
 
@@ -6744,6 +6756,11 @@ def add_spatial_samples(introspection: dict, shared_data: list) -> None:
 # Storage follows from write cadence, in one place. A value written once says nothing new when
 # repeated per tick, and one never written is not a runtime value at all.
 _STORAGE_BY_CADENCE = {"never": "absent", "init": "record", "tick": "log"}
+
+# Shared values the control loop writes from a backend port, not from any model entity. Their
+# initial literal is a fallback, not an authored constant, so the contract is stated here rather
+# than inferred from the value being present.
+_PORT_PRODUCERS = {"dt_measured_s": {"kind": "port", "id": "clock"}}
 
 _MOTION_SCHEDULES = ("when_schedule", "while_pre_schedule", "while_schedule", "until_schedule")
 
@@ -6906,6 +6923,8 @@ def annotate_dataflow(
     def contract(item) -> tuple[dict, object]:
         """(producer, cadence) for one shared-data member."""
         item_id = _field(item, "id")
+        if item_id in _PORT_PRODUCERS:
+            return _PORT_PRODUCERS[item_id], "tick"
         motion_ids = owners.get(item_id)
         cadence = {"motions": sorted(motion_ids)} if motion_ids else "tick"
         if _field(item, "role") == "joint_space":
@@ -7798,7 +7817,9 @@ def generate_ir(manifest_path):
         view_map=view_map,
         fk_output_ids={out.id for s in slv_chain for out in s.output},
     )
-    shared_data = shared_data + _shared_runtime_members(slv_chain, iris)
+    shared_data = shared_data + _shared_runtime_members(
+        slv_chain, iris, control_period_ns, platform.get("uri")
+    )
 
     introspection = _build_introspection(
         app_model_path=app_model_path,

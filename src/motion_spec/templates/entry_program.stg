@@ -81,9 +81,18 @@ int main(int argc, char **argv) {
 #endif
     timespec _next_tick{};
     clock_gettime(CLOCK_MONOTONIC, &_next_tick);
+    double _prev_clock_s = 0.0;
     while (<app-loop-condition(backend, has_serial_chain)>) {
-<if(needs_clock_time)>        shared.clock_time_s = <clock-time-source(backend, serial_chain_solvers, has_serial_chain)>;
-<endif>
+        shared.clock_time_s = <clock-time-source(backend, serial_chain_solvers, has_serial_chain)>;
+        // Integrators step with the time that actually elapsed, not the period we asked for: the
+        // loop sleeps to deadlines it can overrun. In sim the clock advances exactly one timestep
+        // per tick, so this equals the nominal period.
+        const double _dt_raw = (_step == 0)
+            ? motion_spec::runtime::kControlPeriodS
+            : shared.clock_time_s - _prev_clock_s;
+        _prev_clock_s = shared.clock_time_s;
+        shared.dt_measured_s = std::clamp(_dt_raw, motion_spec::runtime::kDtClampMin,
+                                          motion_spec::runtime::kDtClampMax);
 <if(has_serial_chain)>
 <app-chain-loop-reset(backend, serial_chain_solvers, fsm)>
 <endif>

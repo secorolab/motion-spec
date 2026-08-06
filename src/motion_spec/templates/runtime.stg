@@ -33,6 +33,12 @@ namespace motion_spec::runtime {
 
 inline constexpr double kControlPeriodS = <control_period_ns> * 1e-9;
 
+// ponytail: fixed clamp band; author it if real-robot jitter profiles demand
+// Floor on a measured tick: a near-zero dt must not blow up (error - err_last) / dt.
+inline constexpr double kDtClampMin = 0.5 * kControlPeriodS;
+// Ceiling on a measured tick: a scheduler stall must not become one giant integral step.
+inline constexpr double kDtClampMax = 2.0 * kControlPeriodS;
+
 inline double clamp_range(double v, double lower, double upper) {
     if (v \< lower) return lower;
     if (v > upper) return upper;
@@ -305,27 +311,28 @@ class PIDControl {
   public:
     PIDControl() = default;
 
-    PIDControl(double p_gain, double i_gain, double d_gain, double decay_rate, double dt,
+    PIDControl(double p_gain, double i_gain, double d_gain, double decay_rate,
                bool has_integral_limit = false, double integral_lower = 0.0, double integral_upper = 0.0)
-        : kp(p_gain), ki(i_gain), kd(d_gain), decay_rate(decay_rate), dt_(dt),
+        : kp(p_gain), ki(i_gain), kd(d_gain), decay_rate(decay_rate),
           has_integral_limit(has_integral_limit), integral_lower(integral_lower), integral_upper(integral_upper) {}
 
-    double control(double error) {
-        return control_impl(error, 0.0, false);
+    // dt is the time the loop measured for this tick, not the nominal period.
+    double control(double error, double dt) {
+        return control_impl(error, 0.0, false, dt);
     }
 
-    double control(double error, double error_derivative) {
-        return control_impl(error, error_derivative, true);
+    double control(double error, double error_derivative, double dt) {
+        return control_impl(error, error_derivative, true, dt);
     }
 
-    double control_impl(double error, double error_derivative, bool has_error_derivative) {
+    double control_impl(double error, double error_derivative, bool has_error_derivative, double dt) {
         const double err_diff = (decay_rate > 0.0 || first_sample)
             ? 0.0
-            : ((error - err_last) / dt_);
+            : ((error - err_last) / dt);
         if (decay_rate > 0.0) {
-            err_integ = decay_rate * err_integ + error * dt_;
+            err_integ = decay_rate * err_integ + error * dt;
         } else {
-            err_integ = err_integ + error * dt_;
+            err_integ = err_integ + error * dt;
         }
         if (has_integral_limit) {
             err_integ = clamp_range(err_integ, integral_lower, integral_upper);
@@ -366,7 +373,6 @@ class PIDControl {
     double ki = 0.0;
     double kd = 0.0;
     double decay_rate = 0.0;
-    double dt_ = 0.0;
     bool has_integral_limit = false;
     double integral_lower = 0.0;
     double integral_upper = 0.0;
@@ -381,15 +387,16 @@ class ImpedanceControl {
   public:
     ImpedanceControl() = default;
 
-    ImpedanceControl(double stiffness, double damping, double integral, double dt)
-        : ks(stiffness), kd(damping), ki(integral), dt_(dt) {}
+    ImpedanceControl(double stiffness, double damping, double integral)
+        : ks(stiffness), kd(damping), ki(integral) {}
 
-    double control(double error) {
-        const double err_diff = first_sample ? 0.0 : ((error - err_last) / dt_);
+    // dt is the time the loop measured for this tick, not the nominal period.
+    double control(double error, double dt) {
+        const double err_diff = first_sample ? 0.0 : ((error - err_last) / dt);
         err_last = error;
         first_sample = false;
         if (ki > 0.0) {
-            err_int += error * dt_;
+            err_int += error * dt;
         }
         return ks * error + kd * err_diff + ki * err_int;
     }
@@ -412,7 +419,6 @@ class ImpedanceControl {
     double ks = 0.0;
     double kd = 0.0;
     double ki = 0.0;
-    double dt_ = 0.0;
 };
 
 inline double evaluate_equality_constraint(double quantity, double reference) {

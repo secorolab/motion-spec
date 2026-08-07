@@ -17,6 +17,7 @@ from __future__ import annotations
 import collections
 from dataclasses import dataclass, field, replace
 from enum import Enum
+from typing import NamedTuple
 
 from motion_spec_dsl.rdf_parser.vocab import (
     ALGO_EXT,
@@ -634,7 +635,14 @@ def _saturation_for_signal(model, node, signal) -> Saturation | None:
     return Saturation(model.id(node), signal, signal, maximum, lower, upper)
 
 
-def _controller_saturations(model, controller, signal):
+class _Saturations(NamedTuple):
+    """The two bounds a controller may author, both on its derived control signal."""
+
+    output: Saturation | None
+    integral: Saturation | None
+
+
+def _controller_saturations(model, controller, signal) -> _Saturations:
     """The authored output and integral bounds, both bound to the derived control signal."""
     nodes = list(model.graph.objects(controller, ALGO_EXT.limits))
     output_node = next(
@@ -648,7 +656,7 @@ def _controller_saturations(model, controller, signal):
     )
     integral_node = next((node for node in nodes if node != output_node), None)
 
-    return (
+    return _Saturations(
         _saturation_for_signal(model, output_node, signal),
         _saturation_for_signal(model, integral_node, signal),
     )
@@ -803,12 +811,19 @@ _ACCELERATION_DRIVERS = {
 }
 
 
-def _acceleration_driver_ids(model, context, plan, driver, axis, multi_axis):
-    """The `(spec, payload)` ids for one axis, registering them when they derive from a quantity."""
+class _DriverIds(NamedTuple):
+    """The record id and the payload id one acceleration driver mints for one axis."""
+
+    spec: str
+    payload: str
+
+
+def _acceleration_driver_ids(model, context, plan, driver, axis, multi_axis) -> _DriverIds:
+    """The two ids for one axis, registering them when they derive from a quantity."""
     if multi_axis:
-        return driver.spec_id(_solver_ids(model, context, plan), axis), driver.payload_id(
-            _solver_ids(model, context, plan), axis
-        )
+        ids = _solver_ids(model, context, plan)
+
+        return _DriverIds(driver.spec_id(ids, axis), driver.payload_id(ids, axis))
     # Single-axis ids are built off the quantity, so that is what they derive from.
     suffix = _motion_scoped(model, context, plan)
     quantity_id = model.id(plan.quantity)
@@ -820,7 +835,7 @@ def _acceleration_driver_ids(model, context, plan, driver, axis, multi_axis):
         )
         ids.append(derived_id)
 
-    return ids[0], ids[1]
+    return _DriverIds(*ids)
 
 
 def _derived_acceleration_drivers(model, context, plan, input_kind) -> list:

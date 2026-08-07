@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import collections
 import itertools
+from typing import NamedTuple
 
 import rdflib
 from motion_spec_dsl.rdf_parser.vocab import (
@@ -74,6 +75,7 @@ __all__ = [
     "OPS_HANDLER",
     "OPS_SOLVER",
     "AssignmentEvaluator",
+    "ClosureMaps",
     "ErrorEvaluator",
     "Operator",
     "Schedule",
@@ -828,7 +830,14 @@ def _fold_path_evaluator(model, node, closure) -> None:
     _fold_path(model, node, closure)
 
 
-def _filter_controller(model, node, closure):
+class _FilterBinding(NamedTuple):
+    """What an admittance or velocity-profile filter's output is bound to."""
+
+    constraint: object
+    controller: object
+
+
+def _filter_controller(model, node, closure) -> _FilterBinding:
     """The constraint a filter's output drives, and the controller that drives it."""
     graph = model.graph
     reference = graph.value(node, ALGO_EXT.out)
@@ -850,7 +859,7 @@ def _filter_controller(model, node, closure):
     if controller is None:
         raise ValueError(f"{closure['type']} '{closure['id']}' constraint has no controller.")
 
-    return constraint, controller
+    return _FilterBinding(constraint, controller)
 
 
 def _fold_admittance(model, node, closure) -> None:
@@ -1045,13 +1054,15 @@ class Schedule:
         return result
 
 
-def closure_maps(closures: dict) -> tuple[dict[str, str], dict[str, set[str]]]:
-    """Who writes each data id, and what that writer reads.
+class ClosureMaps(NamedTuple):
+    """Per data id: the closure that writes it, and the ids that closure reads."""
 
-    Returns:
-        `(output_map, input_map)`: the id of the closure producing each data id, and the set of
-        ids that closure consumes
-    """
+    producer: dict
+    operands: dict
+
+
+def closure_maps(closures: dict) -> ClosureMaps:
+    """Who writes each data id, and what that writer reads."""
     output_map: dict[str, str] = {}
     input_map: dict[str, set[str]] = {}
     for closure_id, closure in closures.items():
@@ -1065,7 +1076,7 @@ def closure_maps(closures: dict) -> tuple[dict[str, str], dict[str, set[str]]]:
             output_map[output] = closure_id
             input_map[output] = inputs
 
-    return output_map, input_map
+    return ClosureMaps(output_map, input_map)
 
 
 def closure_owner_map(model, closures: dict) -> dict[str, str]:

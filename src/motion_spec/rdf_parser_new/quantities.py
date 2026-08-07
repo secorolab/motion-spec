@@ -13,6 +13,7 @@ of the file is the single answer to *who writes this value*.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from typing import NamedTuple
 
 import rdflib
 from motion_spec_dsl.rdf_parser.vocab import (
@@ -671,11 +672,21 @@ def direction(model, node) -> Direction:
     )
 
 
-def _spatial_fields(model, node):
-    """The fields the 6D coordinate quantities share: they differ only in RDF namespace."""
+class _SpatialFields(NamedTuple):
+    """The fields the 6D coordinate quantities share; they differ only in RDF namespace."""
+
+    quantity_kind: list
+    reference_point: object
+    as_seen_by: object
+    unit: list
+    provenance: object
+
+
+def _spatial_fields(model, node) -> _SpatialFields:
+    """The shared 6D coordinate fields read off one node."""
     graph = model.graph
 
-    return (
+    return _SpatialFields(
         [model.id(kind) for kind in graph[node : QUDT_SCHEMA["hasQuantityKind"]]],
         point(model, graph.value(node, GEOM_REL["reference-point"])),
         frame(model, graph.value(node, GEOM_COORD["as-seen-by"])),
@@ -1195,7 +1206,14 @@ def relative_poses_for_motion(evaluators, views: dict, serial_chain_solvers) -> 
     return result
 
 
-def _fk_and_scene_poses(serial_chain_solvers, views):
+class _TrackedPoses(NamedTuple):
+    """Which FK output tracks each frame, and which tracks each scene object's body."""
+
+    fk_by_frame: dict
+    scene_by_id: dict
+
+
+def _fk_and_scene_poses(serial_chain_solvers, views) -> _TrackedPoses:
     """Which FK output tracks each frame, and which tracks each scene object's body."""
     fk_by_frame: dict[str, str] = {}
     # Keyed by the scene-object's id; a wrt_id lookup asks whether that frame is the subject of a
@@ -1231,7 +1249,7 @@ def _fk_and_scene_poses(serial_chain_solvers, views):
             continue
         fk_by_frame.setdefault(getattr(of, "id", ""), superobject.id)
 
-    return fk_by_frame, scene_by_id
+    return _TrackedPoses(fk_by_frame, scene_by_id)
 
 
 def scene_relative_poses_for_motion(views: dict, serial_chain_solvers, evaluators=()) -> list:
@@ -1652,7 +1670,15 @@ class ComputationIndexes:
     pose_components: dict
 
 
-def _snapshot_maps(model) -> tuple[dict, dict, dict]:
+class _SnapshotMaps(NamedTuple):
+    """The three things a snapshot output is looked up by."""
+
+    source: dict
+    owner: dict
+    trigger: dict
+
+
+def _snapshot_maps(model) -> _SnapshotMaps:
     """One walk over the snapshots for the three maps codegen asks about.
 
     ``source``: each snapshot output to its source quantity. ``owner``: each output to the motion
@@ -1683,7 +1709,7 @@ def _snapshot_maps(model) -> tuple[dict, dict, dict]:
                 local_name(trigger_node)
             ).upper()
 
-    return source, owner, trigger
+    return _SnapshotMaps(source, owner, trigger)
 
 
 def build_indexes(model, closures: dict, data_structures: list, views: dict) -> ComputationIndexes:
@@ -1763,6 +1789,13 @@ _LITERAL_FIELDS = ("position", "direction", "orientation", "value", "vector")
 _LITERAL_VECTORS = ("position", "direction", "vector")
 
 
+class _Contract(NamedTuple):
+    """What a member's dataflow entry is built from, before storage is derived."""
+
+    producer: dict
+    cadence: object
+
+
 def _sole(ids) -> str | None:
     """The one id in a set, or None when several instances write the same value."""
     return next(iter(ids)) if len(ids) == 1 else None
@@ -1794,7 +1827,15 @@ def _solver_outputs(solver):
     return [*solver.output, *solver.gripper_joint_outputs]
 
 
-def _writers_by_output(serial_chain_solvers):
+class _SolverWrites(NamedTuple):
+    """Which solver writes each output, and how the platform is involved in it."""
+
+    by_output: dict
+    sensor_outputs: set
+    measured_outputs: set
+
+
+def _writers_by_output(serial_chain_solvers) -> _SolverWrites:
     """Which solver writes each output, which of those are sensor readings, and which of the
     readings the platform supplies (the tare companions are written alongside, not measured).
     """
@@ -1813,10 +1854,17 @@ def _writers_by_output(serial_chain_solvers):
                 by_output.setdefault(companion, set()).add(solver.id)
                 sensor_outputs.add(companion)
 
-    return by_output, sensor_outputs, measured_outputs
+    return _SolverWrites(by_output, sensor_outputs, measured_outputs)
 
 
-def _owners_by_value(motions, closures: dict):
+class _ValueOwners(NamedTuple):
+    """Which motions write each value, and which values a per-motion block is responsible for."""
+
+    owners: dict
+    block_ids: dict
+
+
+def _owners_by_value(motions, closures: dict) -> _ValueOwners:
     """Which motions write each value, and which values the per-motion blocks -- rather than any
     schedule -- are responsible for.
 
@@ -1861,7 +1909,7 @@ def _owners_by_value(motions, closures: dict):
             for component in group.components:
                 own(component.error, motion.id, "decomposition")
 
-    return owners, block_ids
+    return _ValueOwners(owners, block_ids)
 
 
 def annotate_dataflow(
@@ -1881,34 +1929,34 @@ def annotate_dataflow(
     solver_by_output, sensor_outputs, measured_outputs = _writers_by_output(serial_chain_solvers)
     owners, block_ids = _owners_by_value(motions, closures)
 
-    def contract(item) -> tuple[dict, object]:
+    def contract(item) -> _Contract:
         """The producer and write cadence of one shared-data member."""
         if item.id in PORT_PRODUCERS:
-            return PORT_PRODUCERS[item.id], "tick"
+            return _Contract(PORT_PRODUCERS[item.id], "tick")
         motion_ids = owners.get(item.id)
         cadence = {"motions": sorted(motion_ids)} if motion_ids else "tick"
         if getattr(item, "role", None) == "joint_space":
             # Declared at the mirror site, which is the only place that knows what it reads.
 
-            return item.producer, cadence
+            return _Contract(item.producer, cadence)
         if item.id in closure_by_output:
             producers = closure_by_output[item.id]
             types = {(closures.get(cid) or {}).get("type") for cid in producers}
             kind = "controller" if types == {"Controller"} else "closure"
 
-            return {"kind": kind, "id": _sole(producers)}, cadence
+            return _Contract({"kind": kind, "id": _sole(producers)}, cadence)
         if item.id in solver_by_output:
             kind = "sensor" if item.id in sensor_outputs else "solver"
 
-            return {"kind": kind, "id": _sole(solver_by_output[item.id])}, cadence
+            return _Contract({"kind": kind, "id": _sole(solver_by_output[item.id])}, cadence)
         for kind, ids in block_ids.items():
             if item.id in ids:
-                return {"kind": kind, "id": item.id}, cadence
+                return _Contract({"kind": kind, "id": item.id}, cadence)
         # `is not None`, not truthiness: an authored 0.0 is a value, not a missing one.
         if any(getattr(item, name, None) is not None for name in _LITERAL_FIELDS):
-            return {"kind": "authored", "id": None}, "init"
+            return _Contract({"kind": "authored", "id": None}, "init")
 
-        return {"kind": "none", "id": None}, "never"
+        return _Contract({"kind": "none", "id": None}, "never")
 
     # One artifact holds the contract, so storage is derived from cadence in exactly one place.
     dataflow = {}

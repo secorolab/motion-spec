@@ -183,6 +183,23 @@ def load_model(manifest_path) -> Model:
     )
 
 
+class _DerivedIri(NamedTuple):
+    """One registry row: the IRI minted for an id, and where it came from."""
+
+    uri: str
+    parent: str
+    relation: object
+    types: list
+
+
+class _ContextScope(NamedTuple):
+    """The three parts of a context quantity's IRI."""
+
+    owner: str
+    section: str
+    member_path: tuple
+
+
 class _Index(NamedTuple):
     """The three lookups one walk over the complete graph produces."""
 
@@ -211,18 +228,18 @@ class Model:
         self._ids: dict = {}
         self._id_sources: dict[str, set[str]] = {}
         self._index: _Index | None = None
-        self._derived: dict[str, dict] = {}
+        self._derived: dict[str, _DerivedIri] = {}
 
     # identity
 
-    def context_scope(self, node) -> tuple[str, str, tuple[str, ...]] | None:
+    def context_scope(self, node) -> _ContextScope | None:
         """The owner, section and member path of a context quantity's IRI, or None when the node
         is not one: a context IRI is ``<app>/<owner>/(spec|world)/<member path>``.
         """
         parts = tuple(part for part in urlsplit(str(node)).path.split("/") if part)
         for index in range(1, len(parts) - 1):
             if parts[index] in ("spec", "world"):
-                return parts[index - 1], parts[index], parts[index + 1 :]
+                return _ContextScope(parts[index - 1], parts[index], parts[index + 1 :])
 
         return None
 
@@ -347,7 +364,7 @@ class Model:
         """The IRI an id resolves to, authored or already derived; None when neither."""
         entry = self._derived.get(id_)
 
-        return entry["uri"] if entry else self._indexes().authored_iris.get(id_)
+        return entry.uri if entry else self._indexes().authored_iris.get(id_)
 
     def register_derived(self, id_, parent_iri, suffix, relation, types=()) -> str | None:
         """Mint `<parent_iri>/<suffix>` for an entity the model implies but does not author.
@@ -380,18 +397,13 @@ class Model:
         uri = f"{parent_iri.rstrip('/')}/{kebab(suffix)}"
         existing = self._derived.get(id_)
         if existing is not None:
-            if existing["uri"] != uri:
+            if existing.uri != uri:
                 raise RuntimeError(
-                    f"derived IRI collision: '{id_}' minted as both {existing['uri']} and {uri}"
+                    f"derived IRI collision: '{id_}' minted as both {existing.uri} and {uri}"
                 )
 
             return uri
-        self._derived[id_] = {
-            "uri": uri,
-            "relation": relation,
-            "parent": parent_iri,
-            "types": list(types),
-        }
+        self._derived[id_] = _DerivedIri(uri, parent_iri, relation, list(types))
 
         return uri
 
@@ -420,7 +432,7 @@ class Model:
             for id_, node in sorted(self.id_nodes, key=lambda item: (item[0], str(item[1])))
             if isinstance(node, URIRef)
         ]
-        derived = [{"id": id_, "uri": entry["uri"]} for id_, entry in sorted(self._derived.items())]
+        derived = [{"id": id_, "uri": entry.uri} for id_, entry in sorted(self._derived.items())]
 
         return authored + derived
 
@@ -428,10 +440,10 @@ class Model:
         """Derivation-graph nodes: what each derived entity is, and what it came from."""
         return [
             {
-                "id": entry["uri"],
-                "types": [self.graph.namespace_manager.normalizeUri(PROV.Entity), *entry["types"]],
-                "relation": local_name(entry["relation"]),
-                "parent": entry["parent"],
+                "id": entry.uri,
+                "types": [self.graph.namespace_manager.normalizeUri(PROV.Entity), *entry.types],
+                "relation": local_name(entry.relation),
+                "parent": entry.parent,
             }
             for _, entry in sorted(self._derived.items())
         ]

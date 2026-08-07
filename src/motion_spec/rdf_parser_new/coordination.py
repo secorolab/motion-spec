@@ -17,6 +17,7 @@ import re
 
 import rdflib
 from motion_spec_dsl.rdf_parser.vocab import (
+    APP,
     CSTR,
     CSTR_EXT,
     CSTR_HDL,
@@ -45,7 +46,11 @@ from motion_spec.classes.entities import (
     HandlerSerialChainSolver,
     LevelMonitor,
 )
-from motion_spec.rdf_parser_new import controllers, quantities
+from motion_spec.rdf_parser_new import quantities
+from motion_spec.rdf_parser_new.constraint_handler import (
+    SolverIdFactory,
+    annotate_controller_signals,
+)
 from motion_spec.rdf_parser_new.model import reader
 from motion_spec.rdf_parser_new.operations import (
     OPS_GENERIC,
@@ -93,7 +98,7 @@ def _is_elapsed_constraint(model, node) -> bool:
 
 def _handler_order(model, node) -> int:
     """The order the model declares a handler in; handlers with no order come first."""
-    return int(getattr(model.graph.value(node, controllers.APP.order), "value", 0))
+    return int(getattr(model.graph.value(node, APP.order), "value", 0))
 
 
 @reader
@@ -325,7 +330,7 @@ def build_constraint_handlers(model, schedule, derivation):
     """The constraint handlers, and the calls their evaluators and controllers imply.
 
     The controllers are attached here rather than read: an authored controller becomes one record
-    per axis, and `controllers.py` is the only module that decides how many.
+    per axis, and `constraint_handler.py` is the only module that decides how many.
 
     Returns:
         `(handlers, steps)`: the handler records in declaration order, and every call the
@@ -365,7 +370,7 @@ def build_constraint_handlers(model, schedule, derivation):
             for controller in reversed(derivation.controllers_for(plan))
         )
         steps.extend(
-            controllers.SolverIdFactory(
+            SolverIdFactory(
                 model.id(plan.controller), model.motion_suffix(plan.motion)
             ).pose_evaluator()
             for plan in reversed(plans)
@@ -498,6 +503,7 @@ def _handler_chain_solvers(handler, serial_chains, solver_ids) -> list:
                 output=solver.output,
                 motion_driver=selected,
                 algorithm=solver.algorithm,
+                algorithm_name=solver.algorithm_name,
                 gravity=solver.gravity,
                 root_acc=solver.root_acc,
                 chain_root=solver.chain_root,
@@ -654,7 +660,7 @@ def _pose_command_steps(model, scope, active_plans) -> list:
         if interpolation is not None:
             steps.extend(scope.of([interpolation], OPS_GENERIC + OPS_HANDLER))
         steps.append(
-            controllers.SolverIdFactory(
+            SolverIdFactory(
                 model.id(plan.controller), model.motion_suffix(plan.motion)
             ).pose_evaluator()
         )
@@ -740,7 +746,7 @@ def _handler_solver_ids(model, handler_node, derivation) -> set:
 
 
 def _finish_active_schedule(schedules, active_controllers, computation, model, motion_node) -> None:
-    """Drop the calls another motion owns, then append this motion's controllers.
+    """Drop the calls another motion owns, then append this motion's constraint_handler.
 
     The backward walk can reach another motion's closures; running them here would recompute its
     outputs while it is inactive.
@@ -909,7 +915,7 @@ def _finish_motions(motions, handlers, computation, fsm):
         for group in motion.pose_axis_error_groups:
             for flag, types in _GROUP_TYPE_FLAGS.items():
                 setattr(group, flag, group.superobject_type in types)
-        controllers.annotate_controller_signals(motion.controllers, computation.closures)
+        annotate_controller_signals(motion.controllers, computation.closures)
         motion.declared_pose_components = quantities.declared_pose_component_entries(
             computation.data_structures,
             computation.indexes.pose_components,

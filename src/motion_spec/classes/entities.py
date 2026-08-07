@@ -60,6 +60,31 @@ def dedupe_by_id(items: list) -> list:
     return result
 
 
+class MotionDriveInput(str, Enum):
+    """The physical quantity a solver algorithm is driven by."""
+
+    ACCELERATION_ENERGY = "AccelerationEnergy"
+    CARTESIAN_ACCELERATION = "CartesianAcceleration"
+
+
+@dataclass(frozen=True)
+class SolverAlgorithm:
+    """What one solver family means for the records derived against it.
+
+    Attributes:
+        drive_input: the quantity its motion drivers carry, None when nothing drives it
+        signal_prefix: the tag a control signal derived for it leads with, None when it derives
+            no signal
+        codegen_name: the algorithm name the runtime and the templates dispatch on
+        forwards_commands: whether its controller's output goes straight to a joint
+    """
+
+    drive_input: MotionDriveInput | None
+    signal_prefix: str | None
+    codegen_name: str
+    forwards_commands: bool
+
+
 class Subspace(str, Enum):
     """The linear (translational) or angular (rotational) half of a 6D spatial quantity.
 
@@ -859,7 +884,10 @@ class HandlerSerialChainSolver:
     id: str
     output: list
     motion_driver: MotionDrivers
-    algorithm: str = ""
+    # What drives this chain, resolved once from the algorithm the model names; the runtime and
+    # the templates dispatch on the name, the lowering reads the record.
+    algorithm: SolverAlgorithm | None = field(default=None, metadata=INTERNAL)
+    algorithm_name: str = ""
     gravity: list[float] | None = None
     root_acc: list[float] | None = None
     chain_root: str = ""
@@ -886,7 +914,10 @@ class SolverWithInputAndOutput:
     id: str
     motion_drivers: list[MotionDrivers] = field(metadata=INTERNAL)
     output: list
-    algorithm: str = ""
+    # What drives this chain, resolved once from the algorithm the model names; the runtime and
+    # the templates dispatch on the name, the lowering reads the record.
+    algorithm: SolverAlgorithm | None = field(default=None, metadata=INTERNAL)
+    algorithm_name: str = ""
     urdf: str = field(default="", metadata=INTERNAL)
     chain_root: str = ""
     chain_end: str = ""

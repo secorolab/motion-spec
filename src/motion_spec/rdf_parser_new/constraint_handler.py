@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import collections
 from dataclasses import dataclass, field, replace
-from enum import Enum
 from typing import NamedTuple
 
 from motion_spec_dsl.rdf_parser.vocab import (
@@ -48,6 +47,7 @@ from motion_spec.classes.entities import (
     FeedForwardController,
     ImpedanceController,
     JointForceSpecification,
+    MotionDriveInput,
     MotionDrivers,
     PIDController,
     Point,
@@ -56,6 +56,7 @@ from motion_spec.classes.entities import (
     Quantity,
     QuantityKind,
     Saturation,
+    SolverAlgorithm,
     Unit,
     View,
 )
@@ -86,38 +87,6 @@ __all__ = [
 ]
 
 
-class MotionDriveInput(str, Enum):
-    """The physical quantity a solver algorithm accepts to drive the chain.
-
-    Vereshchagin's acceleration-constrained hybrid dynamics is posed as a constrained optimisation
-    over Gauss's principle, so each constrained direction is driven by an *acceleration energy*
-    (N-m2/s2) rather than by an acceleration. Recursive Newton-Euler is driven by the Cartesian
-    acceleration itself. A command-forwarding solver runs no dynamics and is driven by neither:
-    its controller's output goes straight to the joint.
-    """
-
-    NONE = "None"
-    ACCELERATION_ENERGY = "AccelerationEnergy"
-    CARTESIAN_ACCELERATION = "CartesianAcceleration"
-
-
-@dataclass(frozen=True)
-class SolverAlgorithm:
-    """What one solver family means for the records derived against it.
-
-    Attributes:
-        drive_input: the quantity its motion drivers carry
-        signal_prefix: the tag a control signal derived for it leads with
-        codegen_name: the algorithm name the runtime and the templates dispatch on
-        forwards_commands: whether its controller's output goes straight to a joint
-    """
-
-    drive_input: MotionDriveInput
-    signal_prefix: str | None = None
-    codegen_name: str = ""
-    forwards_commands: bool = False
-
-
 # Every solver family the code generator can run, keyed by the term that identifies it -- the
 # algorithm a solver names, or the type a command-forwarding solver carries.
 #
@@ -128,15 +97,15 @@ class SolverAlgorithm:
 # dynamics at all: its controller's output goes straight to the joint.
 SOLVER_ALGORITHMS = {
     SLV["AccelerationConstrainedHybridDynamicsAlgorithm"]: SolverAlgorithm(
-        MotionDriveInput.ACCELERATION_ENERGY, "eacc", "ACHD"
+        MotionDriveInput.ACCELERATION_ENERGY, "eacc", "ACHD", False
     ),
     SLV["RecursiveNewtonEulerAlgorithm"]: SolverAlgorithm(
-        MotionDriveInput.CARTESIAN_ACCELERATION, "acc", "RNE"
+        MotionDriveInput.CARTESIAN_ACCELERATION, "acc", "RNE", False
     ),
-    SLV_EXT.CommandForwardingSolver: SolverAlgorithm(MotionDriveInput.NONE, forwards_commands=True),
+    SLV_EXT.CommandForwardingSolver: SolverAlgorithm(None, None, "", True),
 }
 # A solver naming no algorithm drives nothing: it is read for state and watched by monitors.
-_MONITOR_ONLY = SolverAlgorithm(MotionDriveInput.NONE)
+_MONITOR_ONLY = SolverAlgorithm(None, None, "", False)
 
 
 def solver_algorithm(model, solver: URIRef) -> SolverAlgorithm:
@@ -444,7 +413,7 @@ def solver_derivation_context(model) -> SolverDerivationContext:
 def _validate_solver_derivations(model, by_handler, by_solver, algorithms) -> None:
     """Enforce executable solver limits, which only hold once authored RDF has resolved to plans."""
     for solver, plans in by_solver.items():
-        if algorithms[solver].drive_input != MotionDriveInput.ACCELERATION_ENERGY:
+        if algorithms[solver].drive_input is not MotionDriveInput.ACCELERATION_ENERGY:
             continue
         axes = [axis for plan in plans for axis in plan.axes]
         duplicates = [axis for axis, count in collections.Counter(axes).items() if count > 1]

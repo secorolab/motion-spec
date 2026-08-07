@@ -32,7 +32,7 @@ struct <solver.id>_solver_state {
 
 // A read-only solver never solves, so it carries no algorithm state (and may author no algorithm).
 solver-state-algorithm-fields(solver) ::= <<
-<if(solver.read_only)><else><({solver-state-algorithm-fields-<solver.algorithm>})(solver)><endif>
+<if(solver.read_only)><else><({solver-state-algorithm-fields-<solver.algorithm_name>})(solver)><endif>
 >>
 
 solver-state-algorithm-fields-ACHD(solver) ::= <<
@@ -59,7 +59,7 @@ solver-state-struct-extra-impl ::= [
 solver-no-extra(solver) ::= <<>>
 
 solver-state-struct-extra(solver, backend) ::= <<
-<if(solver.read_only)><else><({<solver-state-struct-extra-impl.({<solver.algorithm>-<backend>})>})(solver)><endif>
+<if(solver.read_only)><else><({<solver-state-struct-extra-impl.({<solver.algorithm_name>-<backend>})>})(solver)><endif>
 >>
 
 // mj_kdl gravity-compensates the ACHD command with a separate RNE pass.
@@ -141,7 +141,7 @@ if (!state.<solver.id>.initialized) {
 >>
 
 solver-init-algorithm(solver, motion_driver) ::= <<
-<if(solver.read_only)><else><({solver-init-algorithm-<solver.algorithm>})(solver, motion_driver)><endif>
+<if(solver.read_only)><else><({solver-init-algorithm-<solver.algorithm_name>})(solver, motion_driver)><endif>
 >>
 
 solver-init-algorithm-ACHD(solver, motion_driver) ::= <<
@@ -171,7 +171,7 @@ solver-init-extra-impl ::= [
 ]
 
 solver-init-extra(solver, backend) ::= <<
-<if(solver.read_only)><else><({<solver-init-extra-impl.({<solver.algorithm>-<backend>})>})(solver)><endif>
+<if(solver.read_only)><else><({<solver-init-extra-impl.({<solver.algorithm_name>-<backend>})>})(solver)><endif>
 >>
 
 solver-init-extra-ACHD-mj_kdl(solver) ::= <<
@@ -419,7 +419,7 @@ joint-space-cmd-expr-mj_kdl(s, solver)  ::= "robot.<solver.id>.robot->jnt_trq_cm
 joint-space-cmd-expr-robif2b(s, solver) ::= "robot.<solver.id>.state->eff_cmd[<s.index>]"
 
 solver-clear-external-forces(solver, motion_driver) ::= <<
-<({solver-clear-external-forces-<solver.algorithm>})(solver, motion_driver)>
+<({solver-clear-external-forces-<solver.algorithm_name>})(solver, motion_driver)>
 >>
 
 solver-clear-external-forces-ACHD(solver, motion_driver) ::= <<
@@ -437,7 +437,7 @@ solver-clear-external-forces-RNE(solver, motion_driver) ::= <<
 >>
 
 solver-assign-acceleration-input(solver, motion_driver) ::= <<
-<({solver-assign-acceleration-input-<solver.algorithm>})(solver, motion_driver)>
+<({solver-assign-acceleration-input-<solver.algorithm_name>})(solver, motion_driver)>
 >>
 
 solver-assign-acceleration-input-RNE(solver, motion_driver) ::= <<
@@ -453,7 +453,7 @@ solver-assign-acceleration-input-ACHD(solver, motion_driver) ::= <<
 >>
 
 solver-execute-algorithm(solver, motion_driver, backend) ::= <<
-<({solver-execute-algorithm-<solver.algorithm>})(solver, motion_driver, backend)>
+<({solver-execute-algorithm-<solver.algorithm_name>})(solver, motion_driver, backend)>
 >>
 
 solver-execute-algorithm-RNE(solver, motion_driver, backend) ::= <<
@@ -517,7 +517,7 @@ solver-run-fext-pre-impl ::= [
 solver-no-fext-pre(solver, motion_driver) ::= <<>>
 
 solver-run-fext-pre(solver, motion_driver, backend) ::= <<
-<({<solver-run-fext-pre-impl.({<solver.algorithm>-<backend>})>})(solver, motion_driver)>
+<({<solver-run-fext-pre-impl.({<solver.algorithm_name>-<backend>})>})(solver, motion_driver)>
 >>
 
 // On hardware the external-wrench pass runs its own ACHD solve first; mj_kdl reads f_ext straight

@@ -62,7 +62,7 @@ Decomposing Systems into Modules*, CACM 15(12), 1972).
 | `model.py` | 300 | — | every other module reads the graph through it; folding it into one concern would make the other six depend on that concern |
 | `operations.py` | 800 | computation | it never asks what a value *is*; folding it into `quantities.py` would put the scheduler inside the geometry readers |
 | `quantities.py` | 1320 | computation | it never asks in what order a value is written; it is the only module that knows what is on the blackboard |
-| `controllers.py` | 910 | computation | the declared seam for a controller DSL: its inputs and outputs are frozen so that a future DSL replaces this module and nothing else |
+| `constraint_handler.py` | 910 | computation | the declared seam for a controller DSL: its inputs and outputs are frozen so that a future DSL replaces this module and nothing else |
 | `resources.py` | 1040 | resources · composition · configuration | the only module that reads the scene and agent graphs; the platform, the trace and the homes are read alongside the resources they configure |
 | `coordination.py` | 860 | coordination | the only module that decides what runs when; nothing else may sequence |
 | `communication.py` | 495 | communication | the only module that decides what leaves the loop; folding it into `quantities.py` would make the blackboard responsible for its own reporting |
@@ -165,7 +165,7 @@ Public, in three groups:
 - blackboard — `build_indexes`, `ComputationIndexes`, `filter_shared_data`, `views_for_access`,
   `views_by_subobject`, `annotate_dataflow`, `PORT_PRODUCERS`.
 
-### `controllers.py` — the control law
+### `constraint_handler.py` — the control law
 
 Everything that turns an authored controller into derived per-axis controller records: the axis
 decision table, the derived signal/error/energy ids and the IRIs they register, saturations,

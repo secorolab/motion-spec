@@ -14,6 +14,7 @@ and every row itself.
 
 from __future__ import annotations
 
+from enum import Enum
 from functools import partial
 
 from motion_spec_dsl.rdf_parser.vocab import EXEC
@@ -21,7 +22,7 @@ from rdf_utils.naming import get_valid_var_name
 from rdflib.namespace import PROV
 
 from motion_spec.classes.entities import QuantityKind, RuntimeValue, Unit
-from motion_spec.rdf_parser_new import controllers, quantities, resources
+from motion_spec.rdf_parser_new import constraint_handler, quantities, resources
 from motion_spec.rdf_parser_new.model import identifier
 
 __all__ = ["add_quantity_samples", "add_spatial_samples", "build_introspection", "ros_publishers"]
@@ -58,11 +59,13 @@ def _dedupe_by_id(rows: list) -> list:
 
 
 def _id_of(value):
-    """The id a row field names, whether it holds the id, a record or an enum."""
+    """The id a row field names, whether it holds the id itself, a record or an enum."""
     if value is None or isinstance(value, str):
         return value
+    if isinstance(value, Enum):
+        return value.value
 
-    return getattr(value, "value", None) or getattr(value, "id", None)
+    return getattr(value, "id", None)
 
 
 def _controller_rows(controller, motion_id: str, uri_by_id: dict):
@@ -79,7 +82,7 @@ def _controller_rows(controller, motion_id: str, uri_by_id: dict):
             "reference_signal": _id_of(getattr(controller, "reference_signal", None)),
             "measured_derivative": _id_of(getattr(controller, "measured_derivative", None)),
             "output_signal": _id_of(controller.control_signal),
-            # Folded onto the record by `controllers.annotate_controller_signals`, which reads the
+            # Folded onto the record by `constraint_handler.annotate_controller_signals`, which reads the
             # error-evaluator closure this controller consumes.
             "measured_signal": controller.measured_signal,
             "setpoint_signal": controller.setpoint_signal,
@@ -95,7 +98,7 @@ def _controller_rows(controller, motion_id: str, uri_by_id: dict):
                 "owner": controller.id,
             }
         )
-        for role in controllers.CONTROLLER_SIGNAL_ROLES
+        for role in constraint_handler.CONTROLLER_SIGNAL_ROLES
         if (quantity_id := _id_of(getattr(controller, role, None)))
     ]
 
@@ -189,6 +192,28 @@ def _motion_rows(motions, uri_by_id: dict):
     return motion_rows, controller_rows, monitor_rows, signals
 
 
+# Per role, the descriptive fields a runtime value reports beyond its id and type, in the order
+# the artifact emits them. A value with no role -- the clock, the tare state -- reports only what
+# it holds.
+_RUNTIME_ROW_FIELDS = {
+    "controller_internal_state": ("controller", "role", "state"),
+    "control_parameter": ("value", "owner", "role", "parameter"),
+    "joint_space": ("quantity_kind", "unit", "runtime", "role", "channel", "joint", "producer"),
+    None: ("value",),
+}
+
+
+def _runtime_row(member) -> dict:
+    """A runtime value's introspection row: what it is, and what it belongs to."""
+    fields = _RUNTIME_ROW_FIELDS.get(getattr(member, "role", None), ())
+
+    return {
+        "id": member.id,
+        "type": member.type,
+        **{name: getattr(member, name) for name in fields if getattr(member, name) is not None},
+    }
+
+
 def _add_member(model, shared_data, rows, seen, member: RuntimeValue, row, parent, suffix):
     """Add one runtime value to the blackboard, its row to the quantities, and mint its IRI.
 
@@ -211,10 +236,10 @@ def _add_controller_state(model, closures, shared_data, rows, seen, motions) -> 
     be reported, and its step call has nowhere to keep it.
     """
     state_by_controller = {
-        controller.id: controllers.CONTROLLER_STATE_FIELDS[controller.type]
+        controller.id: constraint_handler.CONTROLLER_STATE_FIELDS[controller.type]
         for motion in motions
         for controller in motion.controllers
-        if controller.type in controllers.CONTROLLER_STATE_FIELDS
+        if controller.type in constraint_handler.CONTROLLER_STATE_FIELDS
     }
     for closure in closures.values():
         fields = (
@@ -239,17 +264,7 @@ def _add_controller_state(model, closures, shared_data, rows, seen, motions) -> 
                 state=state.name,
             )
             # A boolean flag has no quantity row: it is sampled straight off the blackboard.
-            row = (
-                {
-                    "id": member_id,
-                    "type": state.type,
-                    "controller": closure["id"],
-                    "role": "controller_internal_state",
-                    "state": state.name,
-                }
-                if state.type == "Quantity"
-                else None
-            )
+            row = _runtime_row(member) if state.type == "Quantity" else None
             _add_member(model, shared_data, rows, seen, member, row, parent, state.name)
             samples.append({"id": member_id, "getter": state.getter})
         closure["internal_state_samples"] = samples
@@ -271,44 +286,27 @@ def _add_control_parameters(model, closures, shared_data, rows, seen, motions) -
             raise RuntimeError(f"control parameter: '{owner_id}' has no IRI to derive from")
         if value is None and required:
             raise RuntimeError(f"control parameter: '{owner_id}' authors no '{name}'")
-        member_id = f"{owner_id}_{name}"
-        number = float(value) if value is not None else 0.0
-        _add_member(
-            model,
-            shared_data,
-            rows,
-            seen,
-            RuntimeValue(
-                id=member_id,
-                type="Quantity",
-                value=number,
-                role="control_parameter",
-                owner=owner_id,
-                parameter=name,
-            ),
-            {
-                "id": member_id,
-                "type": "Quantity",
-                "value": number,
-                "owner": owner_id,
-                "role": "control_parameter",
-                "parameter": name,
-            },
-            parent,
-            name,
+        member = RuntimeValue(
+            id=f"{owner_id}_{name}",
+            type="Quantity",
+            value=float(value) if value is not None else 0.0,
+            role="control_parameter",
+            owner=owner_id,
+            parameter=name,
         )
+        _add_member(model, shared_data, rows, seen, member, _runtime_row(member), parent, name)
 
-        return member_id
+        return member.id
 
     for closure in closures.values():
         if closure.get("type") == "Admittance":
-            for name in controllers.ADMITTANCE_PARAMETERS:
+            for name in constraint_handler.ADMITTANCE_PARAMETERS:
                 closure[name] = publish(closure["id"], name, closure[name])
             continue
         if closure.get("type") != "Controller":
             continue
         controller = controller_by_id.get(closure["id"])
-        gains = controllers.CONTROLLER_GAIN_FIELDS.get(getattr(controller, "type", None))
+        gains = constraint_handler.CONTROLLER_GAIN_FIELDS.get(getattr(controller, "type", None))
         if not gains:
             continue
         closure["controller_type"] = controller.type
@@ -380,34 +378,24 @@ def _add_joint_space_mirrors(model, robots, motions, shared_data, rows, seen, ba
                         f"joint-space logging: id '{member_id}' collides with an existing "
                         "shared value"
                     )
-                producer = {"kind": channel.producer, "id": producer_id[channel.producer]}
+                member = RuntimeValue(
+                    id=member_id,
+                    type="Quantity",
+                    role="joint_space",
+                    producer={"kind": channel.producer, "id": producer_id[channel.producer]},
+                    quantity_kind=QuantityKind(channel.quantity_kind),
+                    unit=Unit(channel.unit),
+                    runtime=runtime_id,
+                    channel=channel.name,
+                    joint=joint,
+                )
                 _add_member(
                     model,
                     shared_data,
                     rows,
                     seen,
-                    RuntimeValue(
-                        id=member_id,
-                        type="Quantity",
-                        role="joint_space",
-                        producer=producer,
-                        quantity_kind=QuantityKind(channel.quantity_kind),
-                        unit=Unit(channel.unit),
-                        runtime=runtime_id,
-                        channel=channel.name,
-                        joint=joint,
-                    ),
-                    {
-                        "id": member_id,
-                        "type": "Quantity",
-                        "quantity_kind": QuantityKind(channel.quantity_kind),
-                        "unit": Unit(channel.unit),
-                        "runtime": runtime_id,
-                        "role": "joint_space",
-                        "channel": channel.name,
-                        "joint": joint,
-                        "producer": producer,
-                    },
+                    member,
+                    _runtime_row(member),
                     parent,
                     f"{channel.name}-{identifier(joint)}",
                 )
@@ -514,13 +502,14 @@ def add_quantity_samples(introspection: dict, shared_data: list, views: dict) ->
     for item in shared_data:
         if not item.id or item.id in sampled:
             continue
+        # A runtime value has no `quantities` row of its own to be sampled from, so its row is
+        # built here from what it carries.
         if item.type == "Bool":
-            add({"id": item.id, "type": item.type}, "", {"kind": "bool", "id": item.id})
+            add(_runtime_row(item), "", {"kind": "bool", "id": item.id})
         elif item.type == "IntCounter":
-            add({"id": item.id, "type": item.type}, "", {"kind": "int", "id": item.id})
+            add(_runtime_row(item), "", {"kind": "int", "id": item.id})
         elif item.id in quantities.PORT_PRODUCERS:
-            # No model entity declares it, so it has no `quantities` row to be sampled from.
-            add({"id": item.id, "type": item.type}, "", {"kind": "shared", "id": item.id})
+            add(_runtime_row(item), "", {"kind": "shared", "id": item.id})
 
     introspection["quantity_samples"] = samples
 

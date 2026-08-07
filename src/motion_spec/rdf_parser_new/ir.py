@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from motion_spec.rdf_parser_new import (
     communication,
-    controllers,
+    constraint_handler,
     coordination,
     operations,
     quantities,
@@ -45,7 +45,7 @@ def generate_ir(manifest_path) -> dict:
     backend = platform["backend"]
     scene = resources.read_scene(model)
     fsm = coordination.read_fsm(model)
-    derivation = controllers.solver_derivation_context(model)
+    derivation = constraint_handler.solver_derivation_context(model)
     setups, _ordered = resources.robot_setups(model)
 
     # One scope for the whole active block: a step reachable from both a solver and a handler is
@@ -59,10 +59,10 @@ def generate_ir(manifest_path) -> dict:
     coordination.assign_event_indexes(handlers)
 
     closures = operations.build_closures(model, _ALL_OPERATORS)
-    controllers.augment_closures(model, derivation, closures)
+    constraint_handler.augment_closures(model, derivation, closures)
     views = quantities.read_views(model)
     data_structures = quantities.read_data_structures(model)
-    controllers.augment_data(model, derivation, data_structures, views)
+    constraint_handler.augment_data(model, derivation, data_structures, views)
     computation = quantities.build_indexes(model, closures, data_structures, views)
     # After pose components exist, before motions are built: a path's goal is one of them.
     operations.resolve_closure_operands(closures, computation.indexes, data_structures)

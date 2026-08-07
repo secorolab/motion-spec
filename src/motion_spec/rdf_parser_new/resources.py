@@ -65,7 +65,7 @@ from motion_spec.classes.entities import (
     VelocityCompositionSolver,
     dedupe_by_id,
 )
-from motion_spec.rdf_parser_new import controllers, quantities
+from motion_spec.rdf_parser_new import constraint_handler, quantities
 from motion_spec.rdf_parser_new.model import local_name, seconds
 from motion_spec.rdf_parser_new.operations import OPS_GENERIC, OPS_SOLVER
 
@@ -824,7 +824,7 @@ def build_robots(model, schedule, setups, derivation, scene_objects, backend: st
     serial_chains = []
     for node in _solver_nodes(model, derivation):
         solver = _solver_with_input_and_output(model, node)
-        solver.motion_drivers = controllers.motion_drivers(model, derivation, node)
+        solver.motion_drivers = constraint_handler.motion_drivers(model, derivation, node)
         setup = setups.get(graph.value(node, AGN["of-agent"]), default_setup)
         for spec in fields(setup):
             setattr(solver, spec.name, getattr(setup, spec.name))
@@ -914,11 +914,7 @@ def _solver_with_input_and_output(model, node) -> SolverWithInputAndOutput:
         if read is not None:
             outputs.append(read(model, output_node))
 
-    algorithm_node = graph.value(node, SLV["solver"])
-    if algorithm_node is None:
-        algorithm = ""
-    else:
-        algorithm = controllers.solver_algorithm(model, node).codegen_name
+    algorithm = constraint_handler.solver_algorithm(model, node)
     torque_limit = next(
         (
             limit
@@ -935,14 +931,15 @@ def _solver_with_input_and_output(model, node) -> SolverWithInputAndOutput:
     return SolverWithInputAndOutput(
         id=model.id(node),
         motion_drivers=[
-            controllers.authored_motion_drivers(model, driver)
+            constraint_handler.authored_motion_drivers(model, driver)
             for driver in graph[node : SLV["motion-drivers"]]
         ],
         output=outputs,
         algorithm=algorithm,
+        algorithm_name=algorithm.codegen_name,
         root_acc=quantities.parse_xyz(model, gravity_node) if gravity_node else None,
         torque_saturation=(
-            controllers.saturation(model, torque_limit) if torque_limit is not None else None
+            constraint_handler.saturation(model, torque_limit) if torque_limit is not None else None
         ),
     )
 

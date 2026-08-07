@@ -17,7 +17,7 @@ SCHEMA_VERSION = 1
 # 3: the log carries its own decode contract in its header record -- the message descriptor,
 # every slot's id and IRI, the per-motion gate and the FSM tables. A v2 log has none of that,
 # so read_contract rejects it rather than guessing.
-FRAME_LAYOUT_VERSION = 3
+FRAME_LAYOUT_VERSION = 4
 RUNTIME_RDF_CONTRACT_VERSION = 1
 FIELD_BYTES = 8
 TRIGGER_POOL_SIZE = 32
@@ -47,9 +47,9 @@ CSLOT = [
 ]
 MSLOT = [("active", "q"), ("value", "d"), ("satisfied", "q"), ("sat_t", "d")]
 TSLOT = [("kind", "q"), ("idx", "q"), ("fsm_state", "q"), ("t", "d"), ("wall_ns", "q")]
-PSLOT = [("px", "d"), ("py", "d"), ("pz", "d"), ("qx", "d"), ("qy", "d"), ("qz", "d"), ("qw", "d")]
-VSLOT = [("lx", "d"), ("ly", "d"), ("lz", "d"), ("ax", "d"), ("ay", "d"), ("az", "d")]
-KSLOT = [("fx", "d"), ("fy", "d"), ("fz", "d"), ("tx", "d"), ("ty", "d"), ("tz", "d")]
+PSLOT = [("active", "q"), ("px", "d"), ("py", "d"), ("pz", "d"), ("qx", "d"), ("qy", "d"), ("qz", "d"), ("qw", "d")]
+VSLOT = [("active", "q"), ("lx", "d"), ("ly", "d"), ("lz", "d"), ("ax", "d"), ("ay", "d"), ("az", "d")]
+KSLOT = [("active", "q"), ("fx", "d"), ("fy", "d"), ("fz", "d"), ("tx", "d"), ("ty", "d"), ("tz", "d")]
 
 
 def field_names_and_format(pools: dict) -> tuple[str, list[str]]:

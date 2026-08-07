@@ -93,16 +93,21 @@ struct Trigger {
 };
 
 // Spatial slots ride the frame ring; the writer serializes them into the frame record's
-// pose/twist/wrench fields.
+// pose/twist/wrench fields. `active` says the motion that ran this tick drives the slot, exactly
+// as it does for a constraint or a monitor: only a driven slot is sampled, and only a sampled
+// slot is worth a sub-message.
 struct PoseSlot {
+    std::int64_t active;
     double px, py, pz, qx, qy, qz, qw;
 };
 
 struct TwistSlot {
+    std::int64_t active;
     double lx, ly, lz, ax, ay, az;
 };
 
 struct WrenchSlot {
+    std::int64_t active;
     double fx, fy, fz, tx, ty, tz;
 };
 
@@ -133,9 +138,9 @@ struct Frame {
 static_assert(sizeof(ConstraintSlot) == 7 * 8, "ConstraintSlot must be padding-free");
 static_assert(sizeof(MonitorSlot) == 4 * 8, "MonitorSlot must be padding-free");
 static_assert(sizeof(Trigger) == 5 * 8, "Trigger must be padding-free");
-static_assert(sizeof(PoseSlot) == 7 * 8, "PoseSlot must be padding-free");
-static_assert(sizeof(TwistSlot) == 6 * 8, "TwistSlot must be padding-free");
-static_assert(sizeof(WrenchSlot) == 6 * 8, "WrenchSlot must be padding-free");
+static_assert(sizeof(PoseSlot) == 8 * 8, "PoseSlot must be padding-free");
+static_assert(sizeof(TwistSlot) == 7 * 8, "TwistSlot must be padding-free");
+static_assert(sizeof(WrenchSlot) == 7 * 8, "WrenchSlot must be padding-free");
 static_assert(sizeof(Frame) == kFrameSizeBytes, "Frame layout must match frame_layout.json");
 static_assert(std::is_trivially_copyable_v\<Frame\>, "Frame must stay trivially copyable");
 
@@ -304,9 +309,9 @@ private:
         // Only the slots this tick actually filled: mutable_ materializes a sub-message even when
         // empty, so writing the whole pool would ship 31 empty wrappers on every eventless tick.
         <introspection_artifacts.frame_layout.protobuf.fields.triggers:{f|if (frame.trigger_count > <f.index>) { auto &s = *m->mutable_<f.name>(); const auto &x = frame.triggers[<f.index>]; s.set_kind(x.kind); s.set_idx(x.idx); s.set_fsm_state(x.fsm_state); s.set_t(x.t); s.set_wall_ns(x.wall_ns); \}}; separator="\n        ">
-        <introspection_artifacts.frame_layout.protobuf.fields.poses:{f|{ auto &s = *m->mutable_<f.name>(); const auto &x = frame.poses[<f.index>]; s.set_px(x.px); s.set_py(x.py); s.set_pz(x.pz); s.set_qx(x.qx); s.set_qy(x.qy); s.set_qz(x.qz); s.set_qw(x.qw); \}}; separator="\n        ">
-        <introspection_artifacts.frame_layout.protobuf.fields.twists:{f|{ auto &s = *m->mutable_<f.name>(); const auto &x = frame.twists[<f.index>]; s.set_lx(x.lx); s.set_ly(x.ly); s.set_lz(x.lz); s.set_ax(x.ax); s.set_ay(x.ay); s.set_az(x.az); \}}; separator="\n        ">
-        <introspection_artifacts.frame_layout.protobuf.fields.wrenches:{f|{ auto &s = *m->mutable_<f.name>(); const auto &x = frame.wrenches[<f.index>]; s.set_fx(x.fx); s.set_fy(x.fy); s.set_fz(x.fz); s.set_tx(x.tx); s.set_ty(x.ty); s.set_tz(x.tz); \}}; separator="\n        ">
+        <introspection_artifacts.frame_layout.protobuf.fields.poses:{f|if (frame.poses[<f.index>].active) { auto &s = *m->mutable_<f.name>(); const auto &x = frame.poses[<f.index>]; s.set_px(x.px); s.set_py(x.py); s.set_pz(x.pz); s.set_qx(x.qx); s.set_qy(x.qy); s.set_qz(x.qz); s.set_qw(x.qw); \}}; separator="\n        ">
+        <introspection_artifacts.frame_layout.protobuf.fields.twists:{f|if (frame.twists[<f.index>].active) { auto &s = *m->mutable_<f.name>(); const auto &x = frame.twists[<f.index>]; s.set_lx(x.lx); s.set_ly(x.ly); s.set_lz(x.lz); s.set_ax(x.ax); s.set_ay(x.ay); s.set_az(x.az); \}}; separator="\n        ">
+        <introspection_artifacts.frame_layout.protobuf.fields.wrenches:{f|if (frame.wrenches[<f.index>].active) { auto &s = *m->mutable_<f.name>(); const auto &x = frame.wrenches[<f.index>]; s.set_fx(x.fx); s.set_fy(x.fy); s.set_fz(x.fz); s.set_tx(x.tx); s.set_ty(x.ty); s.set_tz(x.tz); \}}; separator="\n        ">
         payload_.clear();
         record_.SerializeToString(&payload_);
         if (write_delimited(payload_)) {
@@ -433,18 +438,21 @@ public:
     void pose_sample(std::size_t index, double px, double py, double pz, double qx, double qy, double qz, double qw) {
         if (index \>= kNumPoses) return;
         PoseSlot &s = scratch_.poses[index];
+        s.active = 1;
         s.px = px; s.py = py; s.pz = pz; s.qx = qx; s.qy = qy; s.qz = qz; s.qw = qw;
     \}
 
     void twist_sample(std::size_t index, double lx, double ly, double lz, double ax, double ay, double az) {
         if (index \>= kNumTwists) return;
         TwistSlot &s = scratch_.twists[index];
+        s.active = 1;
         s.lx = lx; s.ly = ly; s.lz = lz; s.ax = ax; s.ay = ay; s.az = az;
     \}
 
     void wrench_sample(std::size_t index, double fx, double fy, double fz, double tx, double ty, double tz) {
         if (index \>= kNumWrenches) return;
         WrenchSlot &s = scratch_.wrenches[index];
+        s.active = 1;
         s.fx = fx; s.fy = fy; s.fz = fz; s.tx = tx; s.ty = ty; s.tz = tz;
     \}
 

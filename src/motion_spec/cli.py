@@ -30,7 +30,9 @@ class MotionSpecGroup(click.Group):
 
     def format_help(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
         with _manual_section(formatter, "NAME"):
-            formatter.write_text("motion-spec - validate, compile, run, and inspect motion specifications")
+            formatter.write_text(
+                "motion-spec - validate, compile, run, and inspect motion specifications"
+            )
         with _manual_section(formatter, "SYNOPSIS"):
             formatter.write_text("motion-spec [OPTIONS] COMMAND [ARGS]...")
         with _manual_section(formatter, "DESCRIPTION"):
@@ -62,7 +64,9 @@ class MotionSpecGroup(click.Group):
                     ("runs/RUN/", "Run-owned logs, runtime RDF, REC graph, and manifest."),
                 ]
             )
-        option_records = [record for param in self.get_params(ctx) if (record := param.get_help_record(ctx))]
+        option_records = [
+            record for param in self.get_params(ctx) if (record := param.get_help_record(ctx))
+        ]
         if option_records:
             with _manual_section(formatter, "OPTIONS"):
                 formatter.write_dl(option_records)
@@ -222,9 +226,7 @@ def health(profiles: tuple[str, ...], targets: tuple[str, ...]) -> None:
                 fg="blue",
             )
         click.secho(
-            f"  {'OK' if check.ok else 'MISSING':<7}  ",
-            fg="green" if check.ok else "red",
-            nl=False,
+            f"  {'OK' if check.ok else 'MISSING':<7}  ", fg="green" if check.ok else "red", nl=False
         )
         click.secho(f"{check.dependency:<{dependency_width}}", fg="cyan", nl=False)
         click.echo(f"  {check.what:<{what_width}}  {check.path or '—'}")
@@ -246,7 +248,9 @@ def health(profiles: tuple[str, ...], targets: tuple[str, ...]) -> None:
 
 @main.command()
 @click.argument("stage-or-model")
-@click.argument("model", required=False, type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument(
+    "model", required=False, type=click.Path(exists=True, dir_okay=False, path_type=Path)
+)
 @click.option("-o", "--output-dir", type=click.Path(file_okay=False, path_type=Path))
 def gen(stage_or_model: str, model: Path | None, output_dir: Path | None) -> None:
     """Generate IR or C++ from a .robmot MODEL; CODE is the default stage."""
@@ -297,9 +301,7 @@ def build(generation: Path, prefixes: tuple[Path, ...], jobs: int | None) -> Non
 @main.command()
 @click.argument("manifest", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option(
-    "--meta-shacl",
-    is_flag=True,
-    help="Validate the SHACL shape graph against SHACL-of-SHACL too.",
+    "--meta-shacl", is_flag=True, help="Validate the SHACL shape graph against SHACL-of-SHACL too."
 )
 def check(manifest: Path, meta_shacl: bool) -> None:
     """Validate MANIFEST against its SHACL constraints."""
@@ -332,9 +334,7 @@ def generate_ir(manifest: Path, output: Path | None, console: bool) -> None:
 
 @main.command()
 @click.argument("input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.option(
-    "-o", "--output-dir", required=True, type=click.Path(file_okay=False, path_type=Path)
-)
+@click.option("-o", "--output-dir", required=True, type=click.Path(file_okay=False, path_type=Path))
 @click.option("--stst-bin", help="STSTv4 executable; defaults to managed STST, then PATH.")
 def codegen(input: Path, output_dir: Path, stst_bin: str | None) -> None:
     """Generate C++ from motion-spec IR INPUT."""
@@ -456,7 +456,12 @@ def run(
     """Run a .robmot INPUT, generating and building it first, or an existing GENERATION."""
     from motion_spec.introspection.archive import ArchiveError
     from motion_spec.introspection.runner import RunnerError, run_cataloged
-    from motion_spec.generation.pipeline import build_generation, create_generation_dir, generate_model, new_id
+    from motion_spec.generation.pipeline import (
+        build_generation,
+        create_generation_dir,
+        generate_model,
+        new_id,
+    )
 
     if steps is not None and not headless:
         raise click.UsageError("--steps requires --headless")

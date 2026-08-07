@@ -90,10 +90,7 @@ def _provenance() -> dict:
                 "used": "https://example.test/entity/schema",
                 "wasAssociatedWith": "https://example.test/agent/producer",
             },
-            {
-                "@id": "https://example.test/agent/producer",
-                "@type": ["SoftwareAgent", "Agent"],
-            },
+            {"@id": "https://example.test/agent/producer", "@type": ["SoftwareAgent", "Agent"]},
         ],
     }
 
@@ -111,13 +108,7 @@ def _write_frame_log(path: Path, schema: dict) -> None:
         wall_ns=100,
         period_ns=1_000_000,
         compute_ns=25_000,
-        **{
-            "c0.active": 1,
-            "c0.satisfied": 1,
-            "m0.active": 1,
-            "m0.satisfied": 1,
-            "q0": 42.0,
-        },
+        **{"c0.active": 1, "c0.satisfied": 1, "m0.active": 1, "m0.satisfied": 1, "q0": 42.0},
     )
     write_frame_log_pb(path, schema, [flat])
 

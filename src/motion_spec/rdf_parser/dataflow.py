@@ -7,9 +7,7 @@ from __future__ import annotations
 
 from motion_spec.classes.closures import closure_output_ids
 
-from motion_spec.rdf_parser.records import (
-    _field, _sole,
-)
+from motion_spec.rdf_parser.records import _field, _sole
 
 # Storage follows from write cadence, in one place. A value written once says nothing new when
 # repeated per tick, and one never written is not a runtime value at all.
@@ -25,9 +23,13 @@ _MOTION_SCHEDULES = ("when_schedule", "while_pre_schedule", "while_schedule", "u
 _LITERAL_FIELDS = ("position", "direction", "orientation", "value", "vector")
 # Fields on a shared-data entry that carry the numbers behind a `vec` sample descriptor.
 _LITERAL_VECTORS = ("position", "direction", "vector")
+
+
 def _storage_for(cadence) -> str:
     """Derive where a value belongs from when it is written (never override this per value)."""
     return "log" if isinstance(cadence, dict) else _STORAGE_BY_CADENCE[cadence]
+
+
 def _constant_value(item, desc: dict):
     """The authored number a `cadence: init` sample row carries, for the schema header."""
     kind = desc.get("kind")
@@ -41,6 +43,8 @@ def _constant_value(item, desc: dict):
             if values is not None:
                 return values[desc["axis"]]
     return None
+
+
 def annotate_dataflow(
     introspection: dict, shared_data: list, closures: dict, motions, serial_chain_solvers, views
 ) -> dict:
@@ -239,6 +243,8 @@ def annotate_dataflow(
             key=lambda item: _field(item, "id"),
         )
     }
+
+
 def _consumers_by_id(introspection: dict, closures: dict) -> dict[str, list]:
     """Who reads each shared value: the monitors, controllers and closures bound to it."""
     consumers: dict[str, list] = {}
@@ -267,6 +273,8 @@ def _consumers_by_id(introspection: dict, closures: dict) -> dict[str, list]:
     for readers in consumers.values():
         readers.sort(key=lambda reader: (reader["kind"], reader["id"], reader["role"]))
     return consumers
+
+
 def _apply_dataflow(introspection: dict, shared_data: list, items_by_id: dict, dataflow: dict):
     """Act on the contract: absent values leave the program, init values leave the per-tick frame."""
     shared_data[:] = [

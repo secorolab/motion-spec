@@ -81,8 +81,7 @@ def test_gen_and_run_compose_the_model_pipeline(monkeypatch, tmp_path) -> None:
 
     run_generation = tmp_path / "run-generation"
     result = CliRunner().invoke(
-        main,
-        ["run", str(model), "-o", str(run_generation), "--headless", "--steps", "10"],
+        main, ["run", str(model), "-o", str(run_generation), "--headless", "--steps", "10"]
     )
     assert result.exit_code == 0
     assert received["stages"] == ["ir", "code"]
@@ -134,9 +133,7 @@ def test_stst_setup_builds_pinned_launcher_once(monkeypatch, tmp_path) -> None:
 
     monkeypatch.setattr(stst_setup.subprocess, "run", run)
     monkeypatch.setattr(
-        stst_setup,
-        "urlretrieve",
-        lambda _url, path: Path(path).write_bytes(b"jar"),
+        stst_setup, "urlretrieve", lambda _url, path: Path(path).write_bytes(b"jar")
     )
 
     launcher = stst_setup.install_stst(tmp_path)

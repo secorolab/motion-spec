@@ -15,6 +15,8 @@ def _ros_camel_to_snake(name: str) -> str:
     s = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", name)
     s = re.sub(r"([a-z\d])([A-Z])", r"\1_\2", s)
     return s.lower()
+
+
 def _ros_type_parts(ros_type: str) -> tuple[str, str, str]:
     """`pkg/msg/CamelType` -> (pkg, "pkg/msg/camel_type.hpp", "pkg::msg::CamelType"), derived from
     the rosidl naming rule rather than hardcoded.
@@ -25,6 +27,8 @@ def _ros_type_parts(ros_type: str) -> tuple[str, str, str]:
     include = f"{pkg}/{sub}/{_ros_camel_to_snake(msg_name)}.hpp"
     cpp_type = f"{pkg}::{sub}::{msg_name}"
     return pkg, include, cpp_type
+
+
 def memoize(func):
     """Decorator caching a Parser method's result per instance, keyed by its arguments."""
 
@@ -38,12 +42,16 @@ def memoize(func):
         return self.cache[key]
 
     return decorator
+
+
 def escape(s):
     """Return a graph-safe identifier for a local name."""
     s = re.sub(r"[^0-9A-Za-z_]", "_", str(s))
     if s and s[0].isdigit():
         s = f"_{s}"
     return s
+
+
 def _dedupe_by_id(items):
     """Deduplicate items by id, keeping the first occurrence."""
     result = []
@@ -58,12 +66,18 @@ def _dedupe_by_id(items):
         seen.add(key)
         result.append(item)
     return result
+
+
 def _kebab(text: str) -> str:
     """Kebab-case an id fragment for use as an IRI path segment."""
     return text.replace("_", "-").lower()
+
+
 def _prune(row: dict) -> dict:
     """Drop the keys an introspection row leaves unset."""
     return {k: v for k, v in row.items() if v is not None and v != []}
+
+
 def _dedupe_dicts(entries):
     """Deduplicate dict rows by id, keeping the first occurrence."""
     result = []
@@ -75,6 +89,8 @@ def _dedupe_dicts(entries):
         seen.add(value)
         result.append(entry)
     return result
+
+
 def _add_group_type_flags(groups: list) -> None:
     """Set is_pose/is_twist/is_wrench on pose-axis error groups from their superobject type."""
     for g in groups:
@@ -82,6 +98,8 @@ def _add_group_type_flags(groups: list) -> None:
         _set_field(g, "is_pose", so_type == "Pose")
         _set_field(g, "is_twist", so_type in ("VelocityTwist", "AccelerationTwist"))
         _set_field(g, "is_wrench", so_type == "Wrench")
+
+
 def _field(obj, key, default=None):
     """Read a field from either a dict or a dataclass instance, so derivations run on the native IR
     without a dict round-trip. str-Enum values are normalized to their string value.
@@ -90,6 +108,8 @@ def _field(obj, key, default=None):
         return default
     val = obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
     return val.value if isinstance(val, Enum) else val
+
+
 def _set_field(obj, key, value) -> None:
     """Set a field on either a dict or a dataclass instance (the field must exist on the
     dataclass for it to serialize)."""
@@ -97,9 +117,13 @@ def _set_field(obj, key, value) -> None:
         obj[key] = value
     else:
         setattr(obj, key, value)
+
+
 def _as_dict(obj) -> dict:
     """Plain-dict view of a dict or dataclass (for building rows from all fields)."""
     return obj if isinstance(obj, dict) else asdict(obj)
+
+
 def expand_vector_fields(
     item,
     field: str,
@@ -120,6 +144,8 @@ def expand_vector_fields(
         )
     for name, value in zip(component_names, values):
         _set_field(item, f"{field}_{name}", value)
+
+
 def require_field(obj_id: str, field: str, value) -> None:
     """Raise if a required procedural scene-object field is missing."""
     if value is None:
@@ -128,6 +154,8 @@ def require_field(obj_id: str, field: str, value) -> None:
             f"'{field}'. Add it to the .robmot model — silent defaults are no "
             f"longer applied."
         )
+
+
 def _pose_component(component_id: str, data_by_id: dict) -> dict:
     """Structured pose component: either a literal ``value`` or a ``ref`` id that the
     backend template renders via access-expr. Backend-agnostic — no C++/KDL here."""
@@ -139,17 +167,25 @@ def _pose_component(component_id: str, data_by_id: dict) -> dict:
     if value is not None:
         return {"value": str(value), "ref": None}
     return {"value": None, "ref": component_id}
+
+
 def _signal_id(value):
     """Id string of a signal value (a str or an object with an id)."""
     if isinstance(value, str):
         return value
     return _field(value, "id")
+
+
 def _cpp_identifier(name: str) -> str:
     """Sanitize a MuJoCo joint name into a C++ identifier fragment."""
     return re.sub(r"[^0-9A-Za-z_]", "_", name)
+
+
 def _sole(ids: set) -> str | None:
     """The one id in a set, or None when several instances write the same value."""
     return next(iter(ids)) if len(ids) == 1 else None
+
+
 def _index_by_id(items: list) -> dict:
     """Index IR items (dicts or dataclasses) by their id (skips id-less entries)."""
     return {iid: item for item in items if (iid := _field(item, "id"))}

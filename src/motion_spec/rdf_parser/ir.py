@@ -11,9 +11,8 @@ from __future__ import annotations
 from rdf_utils.models.vocab import URI_GEOM_TYPE_POSE_COORD
 from rdflib.namespace import RDF
 
-from motion_spec.classes.entities import (
-    GuardedMotionBlock, SceneRobot, SceneSpec,
-)
+from motion_spec.classes.entities import GuardedMotionBlock, SceneRobot, SceneSpec
+
 # fmt: off
 from motion_spec.rdf_parser.graph import (
     DerivedIriRegistry, Parser, SOLVER_SEMANTICS_BY_ALGORITHM, _load_graph, _node_indexes,
@@ -47,26 +46,60 @@ from motion_spec.rdf_parser.computation import (
 # fmt: on
 from motion_spec.rdf_parser.dataflow import annotate_dataflow
 from motion_spec.rdf_parser.coordination import (
-    _apply_monitor_debounce, _assign_monitor_event_indexes, _evaluator_term, _fsm_from_graph,
+    _apply_monitor_debounce,
+    _assign_monitor_event_indexes,
+    _evaluator_term,
+    _fsm_from_graph,
     build_motion_units,
 )
 from motion_spec.rdf_parser.introspection import (
-    _assert_every_id_resolves, _build_introspection, add_quantity_samples, add_spatial_samples,
+    _assert_every_id_resolves,
+    _build_introspection,
+    add_quantity_samples,
+    add_spatial_samples,
 )
 
 # The lowering's public surface. Everything else is a section's own business.
 __all__ = [
-    "ANGULAR_AXES", "ControllerDerivation", "DerivedIriRegistry", "GuardedMotionBlock",
-    "LINEAR_AXES", "POSE_AXES", "Parser", "SOLVER_SEMANTICS_BY_ALGORITHM", "SceneRobot",
-    "SceneSpec", "SolverDerivationContext", "_annotate_controller_signals",
-    "_annotate_rne_gravity", "_assert_every_id_resolves", "_build_introspection",
-    "_derived_controllers", "_derived_motion_drivers", "_evaluator_term", "_fixed_attachments",
-    "_kinematic_adjacency", "_load_graph", "_mapped_targets",
-    "_materialize_linear_distance_operations", "_materialize_pose_reference_transforms",
-    "_orientation_of", "_position_of", "_reject_scene_objects_on_hardware",
-    "_robot_setups_from_graph", "_solver_derivation_context", "_solver_sections", "_tree_owns",
-    "_views_for_access", "add_controller_internal_state_logging", "add_quantity_samples",
-    "add_spatial_samples", "annotate_dataflow", "generate_ir", "ops_generic", "spatial_axes",
+    "ANGULAR_AXES",
+    "ControllerDerivation",
+    "DerivedIriRegistry",
+    "GuardedMotionBlock",
+    "LINEAR_AXES",
+    "POSE_AXES",
+    "Parser",
+    "SOLVER_SEMANTICS_BY_ALGORITHM",
+    "SceneRobot",
+    "SceneSpec",
+    "SolverDerivationContext",
+    "_annotate_controller_signals",
+    "_annotate_rne_gravity",
+    "_assert_every_id_resolves",
+    "_build_introspection",
+    "_derived_controllers",
+    "_derived_motion_drivers",
+    "_evaluator_term",
+    "_fixed_attachments",
+    "_kinematic_adjacency",
+    "_load_graph",
+    "_mapped_targets",
+    "_materialize_linear_distance_operations",
+    "_materialize_pose_reference_transforms",
+    "_orientation_of",
+    "_position_of",
+    "_reject_scene_objects_on_hardware",
+    "_robot_setups_from_graph",
+    "_solver_derivation_context",
+    "_solver_sections",
+    "_tree_owns",
+    "_views_for_access",
+    "add_controller_internal_state_logging",
+    "add_quantity_samples",
+    "add_spatial_samples",
+    "annotate_dataflow",
+    "generate_ir",
+    "ops_generic",
+    "spatial_axes",
 ]
 
 
@@ -96,8 +129,8 @@ def generate_ir(manifest_path):
     _validate_scene(scene)
     derivation = _solver_derivation_context(g, iris)
 
-    (slv_platform_vel, sched1, hdl, sched2, slv_chain, sched3, slv_platform_frc, sched4) = _solver_sections(
-        g, p, setups_by_node, default_setup, derivation, scene.objects
+    (slv_platform_vel, sched1, hdl, sched2, slv_chain, sched3, slv_platform_frc, sched4) = (
+        _solver_sections(g, p, setups_by_node, default_setup, derivation, scene.objects)
     )
     for solver in slv_chain:
         solver.kdl_header = kdl_header
@@ -114,9 +147,7 @@ def generate_ir(manifest_path):
     closure_output_map, closure_input_map = _closure_maps(closures)
 
     # Before motions are built: their declared poses reference these.
-    pose_nodes = {
-        p.id(node): node for node in g.subjects(RDF.type, URI_GEOM_TYPE_POSE_COORD)
-    }
+    pose_nodes = {p.id(node): node for node in g.subjects(RDF.type, URI_GEOM_TYPE_POSE_COORD)}
     pose_components = build_pose_components(view_map, data_structures, g, pose_nodes)
     resolve_lerp_closures(closures, pose_components)
     resolve_arc_closures(closures, data_structures)

@@ -11,34 +11,34 @@ from pathlib import Path
 import rdflib
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.execution import get_path_of_node
-from scene_dsl.rdf_parser.kinematics import (
-    body_of_frame, get_kinematic_mapping,
-)
+from scene_dsl.rdf_parser.kinematics import body_of_frame, get_kinematic_mapping
 from scene_dsl.rdf_parser.sensors import get_update_rate
 from rdf_utils.models.geom_coord import (
-    OrientCoordModel, PositionCoordModel, get_coord_vectorxyz, get_orientation_coord_vals,
+    OrientCoordModel,
+    PositionCoordModel,
+    get_coord_vectorxyz,
+    get_orientation_coord_vals,
 )
-from rdf_utils.models.geom_rel import (
-    OrientationModel, PositionModel,
-)
-from rdf_utils.models.common import (
-    ModelBase, get_node_types,
-)
+from rdf_utils.models.geom_rel import OrientationModel, PositionModel
+from rdf_utils.models.common import ModelBase, get_node_types
 from rdf_utils.models.vocab import (
-    URI_GEOM_PRED_OF, URI_GEOM_TYPE_POSITION, URI_DISTRIB_TYPE_SAMPLED_QUANTITY,
+    URI_GEOM_PRED_OF,
+    URI_GEOM_TYPE_POSITION,
+    URI_DISTRIB_TYPE_SAMPLED_QUANTITY,
     URI_KC_TYPE_SERIAL,
 )
 from rdf_utils.namespace import NS_MM_KC_EXT
-from rdf_utils.uri import (
-    iri_is_descendant, iri_parent,
-)
-from rdflib.namespace import (
-    RDF, SDO, split_uri,
-)
+from rdf_utils.uri import iri_is_descendant, iri_parent
+from rdflib.namespace import RDF, SDO, split_uri
 from motion_spec.classes.entities import (
-    HandlerSerialChainSolver, SceneAttachment, SceneObject, SceneObjectSpec, SceneRobot,
+    HandlerSerialChainSolver,
+    SceneAttachment,
+    SceneObject,
+    SceneObjectSpec,
+    SceneRobot,
     SceneSpec,
 )
+
 # fmt: off
 from motion_spec_dsl.rdf_parser.vocab import (
     AGN, APP, CSTR_HDL, CSTR_HDL_EXT, ENV, EXEC, GEOM_COORD, GEOM_ENT, GEOM_REL, KC, KC_STAT,
@@ -59,9 +59,13 @@ from motion_spec.rdf_parser.graph import (
 )
 # fmt: on
 from motion_spec.rdf_parser.controllers import (
-    SolverDerivationContext, SolverIdFactory, _derived_controllers, _derived_motion_drivers,
+    SolverDerivationContext,
+    SolverIdFactory,
+    _derived_controllers,
+    _derived_motion_drivers,
     _motion_suffix,
 )
+
 
 def _upstream_dependencies(data_id: str, closure_input_map: dict[str, set[str]]) -> set[str]:
     """Transitive set of data ids that feed the given id through the closure input map."""
@@ -74,6 +78,8 @@ def _upstream_dependencies(data_id: str, closure_input_map: dict[str, set[str]])
         result.add(item)
         pending.extend(closure_input_map.get(item, set()))
     return result
+
+
 def _body_name(name: str | None) -> str | None:
     """Strip a frame_/link_ prefix to the bare MuJoCo body name."""
     if name is None:
@@ -82,6 +88,8 @@ def _body_name(name: str | None) -> str | None:
         if name.startswith(prefix):
             return name[len(prefix) :]
     return name
+
+
 def _mark_acceleration_constraint_frames(solver):
     """Flag each of a solver's acceleration constraints as base-aligned when its axis frame is the
     chain root (or unset).
@@ -91,6 +99,8 @@ def _mark_acceleration_constraint_frames(solver):
         for constraint in driver.acceleration_constraint:
             axis_frame = getattr(constraint.as_seen_by, "id", None)
             constraint.base_aligned = axis_frame is None or _body_name(axis_frame) == root_body
+
+
 def _serial_chain_solvers_for_handler(handler, slv_chain, solver_ids):
     """Select the arm solvers explicitly referenced by a handler's controllers."""
     result = []
@@ -123,6 +133,8 @@ def _serial_chain_solvers_for_handler(handler, slv_chain, solver_ids):
         )
 
     return result
+
+
 def _frames_of(g, node):
     if GEOM_ENT.Frame in get_node_types(g, node):
         return [node]
@@ -131,6 +143,8 @@ def _frames_of(g, node):
         for frame in g.objects(node, GEOM_ENT.simplices)
         if GEOM_ENT.Frame in get_node_types(g, frame)
     ]
+
+
 def _position_of(g, node):
     """Position of a body or frame from its authored scene-dsl pose, in metres, or None."""
     for frame in _frames_of(g, node):
@@ -140,18 +154,17 @@ def _position_of(g, node):
                 continue
             position = PositionModel(position_id=position_id, graph=g)
             for coordinate_id in position.coordinate_ids:
-                coordinate = PositionCoordModel(
-                    coord_id=coordinate_id, graph=g, position=position
-                )
+                coordinate = PositionCoordModel(coord_id=coordinate_id, graph=g, position=position)
                 if URI_DISTRIB_TYPE_SAMPLED_QUANTITY in coordinate.types:
                     raise ConstraintViolation(
-                        "geometry",
-                        f"Sampled placement coordinate '{coordinate.id}' is unsupported",
+                        "geometry", f"Sampled placement coordinate '{coordinate.id}' is unsupported"
                     )
                 if (value := get_coord_vectorxyz(coordinate, g)) is None:
                     continue
                 return _si_all(value, _length_unit(coordinate))
     return None
+
+
 def _orientation_of(g, node):
     """Rotation of a body or frame from its authored scene pose, as a quaternion
     [x, y, z, w], or None when the pose declares no orientation."""
@@ -170,10 +183,14 @@ def _orientation_of(g, node):
                 if rotation is not None:
                     return list(rotation.as_quat())
     return None
+
+
 def _optional_path_of_model(g, model_node):
     """Return an optional agent model path; pathless agent models are not runtime assets."""
     path = g.value(model_node, EXEC.path) if model_node is not None else None
     return str(path) if path is not None else ""
+
+
 def _model_mappings(g, model, target_type):
     """Return (scene target, model entity) mappings of the requested RDF type. What a mapping means
     is its metamodel's to say, not ours.
@@ -187,6 +204,8 @@ def _model_mappings(g, model, target_type):
         for mapping in mappings
         if mapping.target_type == target_type
     ]
+
+
 def _mapped_targets(g, model_type, target_type):
     """All scene targets of a given type mapped by models of model_type."""
     return {
@@ -194,6 +213,8 @@ def _mapped_targets(g, model_type, target_type):
         for model in g.subjects(RDF.type, model_type)
         for target, _entity in _model_mappings(g, model, target_type)
     }
+
+
 # The MuJoCo trajectory trace is a viewer-only overlay authored in the scene, not the motion
 # spec; it is no longer part of this graph, so it stays disabled and costs nothing for headless
 # / non-MuJoCo runtimes. Codegen guards on trace.enabled.
@@ -207,10 +228,16 @@ _TRACE_DISABLED = {
     "targets": [],
     "has_targets": False,
 }
+
+
 def _leaf(node):
     return split_uri(str(node))[1]
+
+
 def _tree_owns(tree, node):
     return iri_is_descendant(tree, node)
+
+
 def _kinematic_adjacency(g):
     adjacency = collections.defaultdict(list)
     fixed = []
@@ -226,6 +253,8 @@ def _kinematic_adjacency(g):
         if get_node_types(g, joint) == {KC.Joint}:
             fixed.append((frames[0], frames[1]))
     return adjacency, fixed
+
+
 def _distances(adjacency, source):
     distances = {source: 0}
     queue = collections.deque([source])
@@ -236,6 +265,8 @@ def _distances(adjacency, source):
                 distances[neighbor] = distances[node] + 1
                 queue.append(neighbor)
     return distances
+
+
 def _body_path(adjacency, start, end):
     """Oriented body/frame edges on the shortest kinematic path from start to end."""
     parents = {start: None}
@@ -255,6 +286,8 @@ def _body_path(adjacency, start, end):
         path.append((parent, node, parent_frame, child_frame, joint))
         node = parent
     return list(reversed(path))
+
+
 def _fixed_attachments(g, bound_trees):
     """Fixed scene/model boundaries, oriented from the world's root toward robot tips."""
     adjacency, fixed = _kinematic_adjacency(g)
@@ -262,8 +295,7 @@ def _fixed_attachments(g, bound_trees):
         return {}, None
     leaves = [body for body in adjacency if len(adjacency[body]) == 1]
     tip_distances = [
-        _distances(adjacency, body_of_frame(tip, g))
-        for tip in g.objects(None, NS_MM_KC_EXT["tip"])
+        _distances(adjacency, body_of_frame(tip, g)) for tip in g.objects(None, NS_MM_KC_EXT["tip"])
     ]
 
     def distance_from_nearest_tip(body):
@@ -296,26 +328,29 @@ def _fixed_attachments(g, bound_trees):
         if parent_body == root:
             attachments[child_body] = ("World", "", child_frame, parent_body)
         elif child_body in modelled_bodies or owner(parent_body) != owner(child_body):
-            attachments[child_body] = (
-                "Site",
-                _leaf(parent_frame),
-                child_frame,
-                parent_body,
-            )
+            attachments[child_body] = ("Site", _leaf(parent_frame), child_frame, parent_body)
     return attachments, root
+
+
 def _sensor_kind(g, sensor) -> str:
     """The sensor's kind as the IR names it; empty for a kind codegen does not model."""
     types = get_node_types(g, sensor)
     return next((name for uri, name in SENSOR_KINDS.items() if uri in types), "")
+
+
 def _device_of(g, element):
     """The deployed system that realizes `element`, or None. Read backwards from the device, which
     the execution context owns, because the element it stands for belongs to the scene.
     """
     return next(iter(g.subjects(EXEC["realizes"], element)), None)
+
+
 def _device_kind(g, element) -> str:
     """The hardware kind realizing `element`, or empty when it is unbound."""
     device = _device_of(g, element)
     return str(g.value(device, SDO.model) or "") if device is not None else ""
+
+
 def _config_key(g, element, agent, drives: str) -> str:
     """What `robot.toml` calls the device on `element`.
 
@@ -333,6 +368,8 @@ def _config_key(g, element, agent, drives: str) -> str:
     if owner is None:
         raise ValueError(f"Agent '{element}' belongs to no declared agent set.")
     return f"{_leaf(owner)}.{_leaf(element)}"
+
+
 def _bound_devices(g, agent, runtime_prefix, hosted, chain_bindings, agent_by_tree) -> list[dict]:
     """The hardware bound on this chain: what each device is, where it is configured, what it drives.
 
@@ -359,6 +396,8 @@ def _bound_devices(g, agent, runtime_prefix, hosted, chain_bindings, agent_by_tr
     found = [entry(owner) for owner in owners]
     found += [entry(sensor, f"{runtime_prefix}{_leaf(sensor)}") for sensor in hosted]
     return [device for device in found if device is not None]
+
+
 def _agent_assemblies(g, attach_by_body):
     """Resolve model bindings into runtime robot assets, attachments, and chain bounds."""
     adjacency, _fixed = _kinematic_adjacency(g)
@@ -373,11 +412,7 @@ def _agent_assemblies(g, attach_by_body):
     }
     serials = sorted(
         (
-            (
-                tree,
-                g.value(tree, NS_MM_KC_EXT["root"]),
-                g.value(tree, NS_MM_KC_EXT["tip"]),
-            )
+            (tree, g.value(tree, NS_MM_KC_EXT["root"]), g.value(tree, NS_MM_KC_EXT["tip"]))
             for tree in g.subjects(RDF.type, URI_KC_TYPE_SERIAL)
         ),
         key=lambda item: str(item[0]),
@@ -434,9 +469,7 @@ def _agent_assemblies(g, attach_by_body):
         )
         tip_binding = binding_for(tip_frame) or root_binding
         root_body, tip_body = (body_of_frame(f, g) for f in (root_frame, tip_frame))
-        duplicate_root = sum(
-            _leaf(root_body) in names for names in body_names_by_tree.values()
-        ) > 1
+        duplicate_root = sum(_leaf(root_body) in names for names in body_names_by_tree.values()) > 1
         runtime_prefix = f"{_leaf(root_binding['tree'])}_" if duplicate_root else ""
         runtime_root = f"{runtime_prefix}{_leaf(root_body)}"
         path = _body_path(adjacency, root_body, tip_body)
@@ -495,7 +528,9 @@ def _agent_assemblies(g, attach_by_body):
                 "type": kind,
                 "frame_site": f"{runtime_prefix}{_leaf(frame)}",
                 "update_rate_hz": get_update_rate(g, ModelBase(node_id=sensor, graph=g)),
-                "observes": sorted(_leaf(observed) for observed in g.objects(sensor, SOSA.observes)),
+                "observes": sorted(
+                    _leaf(observed) for observed in g.objects(sensor, SOSA.observes)
+                ),
             }
             for sensor in hosted
             if (kind := _sensor_kind(g, sensor))
@@ -523,14 +558,10 @@ def _agent_assemblies(g, attach_by_body):
                 "chain_root": runtime_root,
                 "chain_tip": f"{runtime_prefix}{_leaf(chain_tip_body)}",
                 "tool_body": (
-                    f"{runtime_prefix}{_leaf(tip_body)}"
-                    if tip_binding is not root_binding
-                    else ""
+                    f"{runtime_prefix}{_leaf(tip_body)}" if tip_binding is not root_binding else ""
                 ),
                 "tcp_site": (
-                    f"{runtime_prefix}{_leaf(tip_frame)}"
-                    if tip_binding is not root_binding
-                    else ""
+                    f"{runtime_prefix}{_leaf(tip_frame)}" if tip_binding is not root_binding else ""
                 ),
                 "attach_kind": attach_kind,
                 "attach_name": attach_name,
@@ -539,6 +570,8 @@ def _agent_assemblies(g, attach_by_body):
             }
         )
     return result
+
+
 def _scene_from_graph(g):
     """Build the scene (robots + objects with model paths, placement and attachment) from the
     scene-dsl (`.scenex`) graph. Geometry comes from the referenced mjcf assets, so procedural
@@ -627,6 +660,8 @@ def _scene_from_graph(g):
 
     _expand_scene_geometry(scene)
     return scene
+
+
 def _expand_scene_geometry(scene) -> None:
     """Expand placement vectors and procedural geometry onto the native scene items so the scene is
     codegen-complete at construction. Path-backed objects take geometry from their MJCF/URDF asset.
@@ -665,6 +700,8 @@ def _expand_scene_geometry(scene) -> None:
                 float(obj.friction[1]),
                 float(obj.friction[2]),
             )
+
+
 def _validate_scene(scene) -> None:
     """Every procedural (non-path) scene object must carry full geometry — the model must
     declare it; silent defaults are not applied. Runs at construction time in generate_ir."""
@@ -676,12 +713,16 @@ def _validate_scene(scene) -> None:
         require_field(obj.id, "friction", obj.friction)
         require_field(obj.id, "shape", obj.shape)
         require_field(obj.id, "mass", obj.mass)
+
+
 def _scene_chain(trees, assembly):
     """The agent assembly's declared serial chain, with MuJoCo runtime joint names."""
     from motion_spec.generation.scene_kdl import chain_for_iri
 
     name, tree, joints = chain_for_iri(trees, str(assembly["serial_chain"]))
     return name, tree, [f"{assembly['prefix']}{joint}" for joint in joints]
+
+
 def _robot_setups_from_graph(g):
     """Per-robot solver chain setups, sourced from the scene-dsl (`.scenex`) graph.
 
@@ -693,6 +734,7 @@ def _robot_setups_from_graph(g):
     A scene-dsl frame URI is ``.../<robot>/<body>/<frame|site>``, so the body is the
     second-to-last path segment and the tip site is the last.
     """
+
     def _robot_model_from_path(path):
         low = str(path).lower()
         for hint, canonical in (("kinova_gen3", "KinovaGen3"), ("gen3", "KinovaGen3")):
@@ -738,6 +780,8 @@ def _robot_setups_from_graph(g):
         setups_by_node[assembly["agent"]] = setup
         ordered.append(setup)
     return setups_by_node, ordered
+
+
 def _world_solver_outputs(
     g, p: Parser, chain_root: str, runtime_prefix: str, owned_trees, scene_objects
 ):
@@ -750,8 +794,7 @@ def _world_solver_outputs(
         frame = p.frame(frame_node)
         frame_tree = iri_parent(body_of_frame(frame_node, g))
         return replace(
-            frame,
-            id=f"{runtime_prefix}{frame.id}" if frame_tree in owned_trees else frame.id,
+            frame, id=f"{runtime_prefix}{frame.id}" if frame_tree in owned_trees else frame.id
         )
 
     for type_, parse in (
@@ -816,6 +859,8 @@ def _world_solver_outputs(
                 output.of = SceneObject(object_ids_by_body[of.id], of.id)
             outputs.append(output)
     return _dedupe_by_id(outputs)
+
+
 def _solver_sections(
     g,
     p: Parser,
@@ -885,10 +930,7 @@ def _solver_sections(
             ):
                 solver_nodes.append(plan.solver)
     solver_nodes.extend(
-        sorted(
-            set(g.subjects(RDF.type, SLV.SolverWithInputAndOutput)) - set(solver_nodes),
-            key=str,
-        )
+        sorted(set(g.subjects(RDF.type, SLV.SolverWithInputAndOutput)) - set(solver_nodes), key=str)
     )
     for s in solver_nodes:
         solver = p.solver_with_input_and_output(s)
@@ -926,11 +968,7 @@ def _solver_sections(
         )
         _mark_acceleration_constraint_frames(solver)
         slv_chain.append(solver)
-        start = g[
-            s
-            : SLV["motion-drivers"]
-            / ((SLV["cartesian-force"]) | (SLV["joint-force"]))
-        ]
+        start = g[s : SLV["motion-drivers"] / ((SLV["cartesian-force"]) | (SLV["joint-force"]))]
         sched3.extend(p.schedule(start, ops_generic + ops_slv))
 
     for s in sorted(g.subjects(RDF.type, SLV["ForceDistributionSolver"]), key=str):
@@ -955,9 +993,13 @@ def _solver_sections(
             )
 
     return slv_platform_vel, sched1, hdl, sched2, slv_chain, sched3, slv_platform_frc, sched4
+
+
 # Which codegen backend serves an authored simulation platform. The platform is the model's; the
 # backend is an implementation detail of running it, so the mapping lives here and nowhere else.
 _SIMULATION_BACKENDS = {"mujoco": "mj_kdl"}
+
+
 def _platform_from_graph(g) -> dict:
     """The execution platform the model declares, as one record every consumer reads: the authored
     node's IRI, its name, whether it is simulated, and the backend serving it. Platform identity
@@ -987,12 +1029,16 @@ def _platform_from_graph(g) -> dict:
         "backend": backend,
         "config": _config_path(g, simulation),
     }
+
+
 def _config_path(g, context) -> str | None:
     """The deployment config's path, from exec:has-resource -> exec:path. The DSL resolves it against
     the model that declares it, so neither codegen nor the generated program needs the .robmot's directory.
     """
     config = g.value(context, EXEC["has-resource"])
     return str(g.value(config, EXEC.path)) if config is not None else None
+
+
 def _reject_undriven_devices(g, context) -> None:
     """Reject a bound device the backend would silently ignore. The grammar decides what a model may
     name; this decides what the backend can drive, so an uncovered device fails here.
@@ -1000,10 +1046,7 @@ def _reject_undriven_devices(g, context) -> None:
     if context is None:
         return
     bound = sorted(
-        {
-            str(g.value(device, SDO.model) or "")
-            for device in g.subjects(EXEC["realizes"], None)
-        }
+        {str(g.value(device, SDO.model) or "") for device in g.subjects(EXEC["realizes"], None)}
     )
     undriven = [name for name in bound if name not in DRIVEN_DEVICES]
     if undriven:
@@ -1013,6 +1056,8 @@ def _reject_undriven_devices(g, context) -> None:
             f"Driven: {', '.join(sorted(DRIVEN_DEVICES))}. Remove the binding, or add "
             "the driver templates before binding it.",
         )
+
+
 def _reject_scene_objects_on_hardware(g, context) -> None:
     """Reject scene objects on hardware: nothing measures their pose without perception."""
     if context is None:
@@ -1025,6 +1070,8 @@ def _reject_scene_objects_on_hardware(g, context) -> None:
             "come from a simulator, and nothing measures them on hardware. Remove them, or model "
             "the location as an authored frame.",
         )
+
+
 def _reject_unbound_sensors_on_hardware(g, context) -> None:
     """Reject a sensor a model reads from but binds no device to. In simulation the simulator answers
     for every sensor; on hardware a reading comes from a device or from uninitialised memory.
@@ -1042,6 +1089,8 @@ def _reject_unbound_sensors_on_hardware(g, context) -> None:
             f"real-world execution reads sensor(s) with no device bound: {', '.join(unbound)}. "
             "Bind one in the platform block, or stop reading the sensor.",
         )
+
+
 def _shared_runtime_members(slv_chain, iris, control_period_ns: int, platform_uri) -> list[dict]:
     """Extra shared-data members for force/torque sensor state and the measured control period."""
     # The dt every integrator steps with, measured from the backend clock and nominal until the
@@ -1074,17 +1123,19 @@ def _shared_runtime_members(slv_chain, iris, control_period_ns: int, platform_ur
                 for suffix, member_type in (("ft_bias", "Wrench"), ("ft_settle", "IntCounter")):
                     member_id = f"{out.id}_{suffix}"
                     members.append({"id": member_id, "type": member_type})
-                    iris.register(
-                        member_id, sensor_iri, suffix, DerivedIriRegistry.DERIVATION
-                    )
+                    iris.register(member_id, sensor_iri, suffix, DerivedIriRegistry.DERIVATION)
 
     return members
+
+
 SUPPORTED_ROBOT_MODELS = {"KinovaGen3"}
 # Devices with driver templates. A name the grammar accepts but that is missing here is rejected.
 DRIVEN_DEVICES = {"KinovaGen3", "KinovaGen3-2F85", "Robotiq2F85", "RobotiqFT300s"}
 GRIPPER_DEVICES = {"KinovaGen3-2F85", "Robotiq2F85"}
 # The sensor kinds the IR models, as the graph types them and as templates dispatch on them.
 SENSOR_KINDS = {SENSORS.ForceTorqueSensor: "ForceTorque"}
+
+
 def _validate_solvers(serial_chain_solvers, backend: str) -> None:
     """Reject unsupported robot models, and scene-object pose sync on the robif2b backend."""
     unsupported = {
@@ -1113,6 +1164,8 @@ def _validate_solvers(serial_chain_solvers, backend: str) -> None:
                     f"'{_field(out, 'id')}' for '{obj_id}'; world/scene object pose sync "
                     "is only implemented for mj_kdl."
                 )
+
+
 def _runtime_signature(solver, backend: str) -> tuple:
     """Identity tuple of a solver's runtime (backend, chain, tool) for deduplicating runtimes."""
     return (
@@ -1124,6 +1177,8 @@ def _runtime_signature(solver, backend: str) -> tuple:
         _field(solver, "tool_body", ""),
         _field(solver, "tcp_site", ""),
     )
+
+
 def _annotate_rne_gravity(serial_chain_solvers, motions) -> None:
     """Derive the gravity vector an RNE solver is built with.
 
@@ -1137,6 +1192,8 @@ def _annotate_rne_gravity(serial_chain_solvers, motions) -> None:
         root_acc = _field(solver, "root_acc")
         if root_acc:
             _set_field(solver, "gravity", [-component or 0.0 for component in root_acc])
+
+
 def _annotate_runtime_robots(serial_chain_solvers, motions, backend: str) -> None:
     """Assign runtime_id/runtime_owner across solvers sharing a runtime and normalize empty tool
     fields.
@@ -1175,9 +1232,7 @@ def _annotate_runtime_robots(serial_chain_solvers, motions, backend: str) -> Non
     # A gripper mimic joint the chain does not articulate splits off `output` the way
     # commands split into forwarding: the bound gripper device reports it.
     for solver in serial_chain_solvers:
-        chain_joints = {
-            str(name).split("/")[-1] for name in (_field(solver, "kdl_joints") or [])
-        }
+        chain_joints = {str(name).split("/")[-1] for name in (_field(solver, "kdl_joints") or [])}
         outputs, gripper_outputs = [], []
         for out in _field(solver, "output", []) or []:
             joint = str(_field(out, "joint_name", "")).split("/")[-1]
@@ -1207,9 +1262,7 @@ def _annotate_runtime_robots(serial_chain_solvers, motions, backend: str) -> Non
             )
             _set_field(solver, "runtime_owner", _field(canonical, "runtime_owner", True))
             _set_field(solver, "output", _field(canonical, "output"))
-            _set_field(
-                solver, "gripper_joint_outputs", _field(canonical, "gripper_joint_outputs")
-            )
+            _set_field(solver, "gripper_joint_outputs", _field(canonical, "gripper_joint_outputs"))
             # A read-only solver on a torque-streamed runtime would stage zero torques while
             # active (arm drops) -- and skipping the stage would leave stale torques applied.
             # Reject the mix on every backend.
@@ -1227,6 +1280,8 @@ def _annotate_runtime_robots(serial_chain_solvers, motions, backend: str) -> Non
             canonical = solvers_by_id.get(_field(command, "robot_id"))
             if canonical is not None:
                 _set_field(command, "robot_id", _field(canonical, "runtime_id"))
+
+
 # Producer and mirror expression declared in one place so they cannot drift; the template's
 # joint-space-expr-<name> reads exactly what is named here. All chain joints are revolute
 # (scene-dsl guarantees it), so position is an angle. `backends=None` means every backend carries
@@ -1245,6 +1300,8 @@ _JOINT_SPACE_CHANNELS = (
 )
 # Emitted only where a torque limit is authored; that saturation is its producer, not the solver.
 _JOINT_SPACE_CMD_CHANNEL = JointSpaceChannel("tau_cmd", "saturation", "Torque", "N_M", None)
+
+
 def add_joint_space_logging(
     serial_chain_solvers, motions, shared_data: list, introspection: dict, backend: str, iris
 ) -> None:
@@ -1325,10 +1382,7 @@ def add_joint_space_logging(
                     "channel": channel.name,
                     "joint": joint,
                     # Declared at the mirror site, so the contract need not re-derive it.
-                    "producer": {
-                        "kind": channel.producer,
-                        "id": producer_id[channel.producer],
-                    },
+                    "producer": {"kind": channel.producer, "id": producer_id[channel.producer]},
                 }
                 shared_data.append(entry)
                 quantities.append(dict(entry))
@@ -1352,6 +1406,8 @@ def add_joint_space_logging(
             for target in (solver, *copies_by_id.get(_field(solver, "id"), ())):
                 _set_field(target, "joint_space_samples", samples)
                 _set_field(target, "joint_space_cmd_samples", cmd_samples)
+
+
 def _agent_home_positions(platform, solvers) -> dict:
     """Each agent's reset joint configuration, keyed the way `_config_key` names it. Authored beside
     the model rather than baked into a template, and with no default: a simulated deployment that
@@ -1367,7 +1423,7 @@ def _agent_home_positions(platform, solvers) -> dict:
     config_path = platform.get("config")
     if not config_path:
         raise ValueError(
-            "A simulated platform must declare `config: \"<file>.toml\"` in its exec-context, "
+            'A simulated platform must declare `config: "<file>.toml"` in its exec-context, '
             "stating a [<agent>] home for every agent it drives."
         )
     resolved = Path(config_path)

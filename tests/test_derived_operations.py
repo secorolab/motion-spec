@@ -140,9 +140,7 @@ def _equality_graph(*, reference_wrt_name: str) -> tuple[Graph, URIRef, URIRef]:
     ee = _frame(g, "frame-ee")
     _pose(g, "pose-table-base", table, base)
     target = _pose(g, "pose-ee-base", ee, base)
-    reference = _pose(
-        g, "ref-ee", ee, base if reference_wrt_name == "frame-base" else table
-    )
+    reference = _pose(g, "ref-ee", ee, base if reference_wrt_name == "frame-base" else table)
 
     constraint = _u("c-eq")
     g.add((constraint, RDF.type, CSTR.Constraint))
@@ -255,9 +253,7 @@ def test_relative_orientation_reads_operands_in_slot_order() -> None:
 def test_relative_orientation_rejects_a_mismatched_operand_pair() -> None:
     g, orientation = _relative_orientation_graph(in1_is_pose=True)
     # Two poses in the slots: not one pose + one delta.
-    other_pose = _pose(
-        g, "pose-other", _frame(g, "frame-other-body"), _frame(g, "frame-other-wrt")
-    )
+    other_pose = _pose(g, "pose-other", _frame(g, "frame-other-body"), _frame(g, "frame-other-wrt"))
     composition = _u("relative-orientation-composition")
     g.remove((composition, GEOM_OP["in2"], None))
     g.add((composition, GEOM_OP["in2"], other_pose))

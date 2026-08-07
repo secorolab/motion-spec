@@ -116,9 +116,13 @@ def summarize(log_path: Path | str) -> str:
             f"dropped {health.get('dropped_frames')}"
         )
     if periods:
-        lines.append(f"period[ms]  mean {sum(periods) / len(periods) / 1e6:.3f} max {periods[-1] / 1e6:.3f}")
+        lines.append(
+            f"period[ms]  mean {sum(periods) / len(periods) / 1e6:.3f} max {periods[-1] / 1e6:.3f}"
+        )
     if computes:
-        lines.append(f"compute[us] mean {sum(computes) / len(computes) / 1e3:.1f} max {computes[-1] / 1e3:.1f}")
+        lines.append(
+            f"compute[us] mean {sum(computes) / len(computes) / 1e3:.1f} max {computes[-1] / 1e3:.1f}"
+        )
     return "\n".join(lines)
 
 
@@ -127,7 +131,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("log", help="frame_log.pb inside a motion-spec run archive")
     parser.add_argument("--jsonl", action="store_true", help="emit decoded frames as JSON Lines")
     parser.add_argument("--verify", action="store_true", help="verify manifest/header only")
-    parser.add_argument("--recover-runtime-ttl", action="store_true", help="write runtime.ttl from the frame log")
+    parser.add_argument(
+        "--recover-runtime-ttl", action="store_true", help="write runtime.ttl from the frame log"
+    )
     args = parser.parse_args(argv)
     try:
         if args.recover_runtime_ttl:

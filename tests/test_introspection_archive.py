@@ -32,15 +32,12 @@ def _rec_entity_path(graph, label: str) -> str:
     entity = next(e for e, value in graph.subject_objects(REC.label) if str(value) == label)
     return str(graph.value(graph.value(entity, PROV.atLocation), REC.path))
 
+
 def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> None:
     source = _source_tree(tmp_path / "source")
     run_dir = tmp_path / "copied-run"
 
-    manifest = create_archive_manifest(
-        run_dir,
-        source_dir=source,
-        run_id="run-test",
-    )
+    manifest = create_archive_manifest(run_dir, source_dir=source, run_id="run-test")
 
     assert "log_producer_executable" not in manifest["files"]
     assert manifest["files"]["rec"] == "rec.ld.json"
@@ -103,9 +100,9 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
     assert _rec_entity_path(rec_graph, "dsl_provenance") == "provenance/dsl.ld.json"
     assert _rec_entity_path(rec_graph, "runtime_ttl") == "runtime/runtime.ttl"
     metrics = {
-        str(rec_graph.value(metric, REC.label) or metric).rsplit("/", 1)[0].rsplit("metric/", 1)[-1]: (
-            rec_graph.value(metric, QUDT.value)
-        )
+        str(rec_graph.value(metric, REC.label) or metric)
+        .rsplit("/", 1)[0]
+        .rsplit("metric/", 1)[-1]: (rec_graph.value(metric, QUDT.value))
         for metric in rec_graph.objects(None, REC.metrics)
     }
     assert metrics["frame_log_attempted_frames"].toPython() == 1
@@ -187,13 +184,21 @@ def test_archive_is_provenance_complete_and_relative(tmp_path: Path) -> None:
     # dsl.ld.json references the authored source -> must be vendored + rewritten.
     dsl = _provenance()
     dsl["@graph"].append(
-        {"@id": "https://example.test/entity/src", "@type": "Entity", "atLocation": authored.resolve().as_uri()}
+        {
+            "@id": "https://example.test/entity/src",
+            "@type": "Entity",
+            "atLocation": authored.resolve().as_uri(),
+        }
     )
     (source / "provenance" / "dsl.ld.json").write_text(json.dumps(dsl, indent=4))
     # motion-spec.ld.json points at a vendor asset -> must be left alone, not archived.
     prov = _provenance()
     prov["@graph"].append(
-        {"@id": "https://example.test/agent/robot", "@type": "Agent", "atLocation": vendor.resolve().as_uri()}
+        {
+            "@id": "https://example.test/agent/robot",
+            "@type": "Agent",
+            "atLocation": vendor.resolve().as_uri(),
+        }
     )
     (source / "provenance.ld.json").write_text(json.dumps(prov, indent=4))
     run_dir = tmp_path / "run"
@@ -207,9 +212,7 @@ def test_archive_is_provenance_complete_and_relative(tmp_path: Path) -> None:
 
     # Vendor asset NOT archived; its reference left untouched.
     assert not (run_dir / "source" / "gen3.xml").exists()
-    codegen = rdflib.Graph().parse(
-        run_dir / "provenance" / "motion-spec.ld.json", format="json-ld"
-    )
+    codegen = rdflib.Graph().parse(run_dir / "provenance" / "motion-spec.ld.json", format="json-ld")
     robot = rdflib.URIRef("https://example.test/agent/robot")
     assert codegen.value(robot, PROV.atLocation) == rdflib.URIRef(vendor.resolve().as_uri())
 
@@ -266,10 +269,7 @@ def test_generation_owned_run_does_not_copy_static_artifacts(tmp_path: Path) -> 
 
     run_dir = generation / "runs" / "run-1"
     manifest = create_archive_manifest(
-        run_dir,
-        source_dir=generated,
-        run_id="run-1",
-        frame_log=flat / "frame_log.pb",
+        run_dir, source_dir=generated, run_id="run-1", frame_log=flat / "frame_log.pb"
     )
 
     assert {path.name for path in run_dir.iterdir()} == {"logs", "rec.ld.json", "manifest.json"}

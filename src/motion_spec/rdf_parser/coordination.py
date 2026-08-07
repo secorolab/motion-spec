@@ -8,31 +8,36 @@ from __future__ import annotations
 import rdflib
 from rdf_utils.naming import get_valid_var_name
 from rdf_utils.models.common import get_node_types
-from rdf_utils.uri import (
-    iri_is_descendant, iri_parent,
-)
+from rdf_utils.uri import iri_is_descendant, iri_parent
 from rdflib.namespace import RDF
-from motion_spec.classes.entities import (
-    ForwardedCommand, GuardedMotionBlock,
-)
+from motion_spec.classes.entities import ForwardedCommand, GuardedMotionBlock
+
 # fmt: off
 from motion_spec_dsl.rdf_parser.vocab import (
     CSTR, CSTR_HDL, CSTR_HDL_EXT, GEOM_OP, KC_STAT, MAP, MOT, SLV, SLV_EXT,
 )
 # fmt: on
 
-from motion_spec.rdf_parser.records import (
-    _add_group_type_flags, _field, _set_field,
-)
+from motion_spec.rdf_parser.records import _add_group_type_flags, _field, _set_field
 from motion_spec.rdf_parser.graph import (
-    Parser, _is_elapsed_constraint, ops_cstr_hdl, ops_generic, ops_slv,
+    Parser,
+    _is_elapsed_constraint,
+    ops_cstr_hdl,
+    ops_generic,
+    ops_slv,
 )
 from motion_spec.rdf_parser.controllers import (
-    SolverIdFactory, _annotate_controller_signals, _derived_controllers, _motion_suffix,
+    SolverIdFactory,
+    _annotate_controller_signals,
+    _derived_controllers,
+    _motion_suffix,
 )
 from motion_spec.rdf_parser.solvers import (
-    _serial_chain_solvers_for_handler, _tree_owns, _upstream_dependencies,
+    _serial_chain_solvers_for_handler,
+    _tree_owns,
+    _upstream_dependencies,
 )
+
 # fmt: off
 from motion_spec.rdf_parser.computation import (
     _elapsed_coordinate_id, _elapsed_coordinate_ids, _expanded_constraints,
@@ -41,6 +46,7 @@ from motion_spec.rdf_parser.computation import (
     declared_pose_component_entries,
 )
 # fmt: on
+
 
 def build_motion_units(
     g,
@@ -185,9 +191,7 @@ def build_motion_units(
         )
 
         handler_chain_solvers = _serial_chain_solvers_for_handler(
-            handler,
-            slv_chain,
-            handler_solver_ids,
+            handler, slv_chain, handler_solver_ids
         )
         handler_output_ids = {c.control_signal.id for c in handler.controllers}
         cartesian_force_nodes = []
@@ -245,9 +249,7 @@ def build_motion_units(
         pre_controller_evaluators = []
         trailing_evaluators = []
         for node in while_eval_nodes:
-            if (
-                node in grouped_while_eval_nodes or _is_elapsed_eval(node)
-            ):
+            if node in grouped_while_eval_nodes or _is_elapsed_eval(node):
                 continue
             plan = plan_by_constraint.get(g.value(node, CSTR_HDL.constraint))
             if plan is not None and CSTR_HDL_EXT.FeedForwardController not in get_node_types(
@@ -257,9 +259,7 @@ def build_motion_units(
             else:
                 trailing_evaluators.append(node)
 
-        while_schedule = p_active.schedule(
-            pre_controller_evaluators, ops_generic + ops_cstr_hdl
-        )
+        while_schedule = p_active.schedule(pre_controller_evaluators, ops_generic + ops_cstr_hdl)
         derived_controller_ids = {controller.id for controller in active_controllers}
         authored_controller_ids = {p.id(plan.controller) for plan in active_plans}
         while_schedule = [
@@ -291,9 +291,7 @@ def build_motion_units(
             cartesian_force_nodes, ops_generic + ops_slv + ops_cstr_hdl
         )
         while_schedule.extend(step for step in force_schedule if step not in while_schedule)
-        while_schedule.extend(
-            p_active.schedule(trailing_evaluators, ops_generic + ops_cstr_hdl)
-        )
+        while_schedule.extend(p_active.schedule(trailing_evaluators, ops_generic + ops_cstr_hdl))
         for node in trailing_evaluators:
             eval_id = p.id(node)
             if eval_id not in while_schedule:
@@ -344,17 +342,14 @@ def build_motion_units(
             target_quantity = g.value(view, MAP.superobject) if view is not None else quantity
             target = g.value(target_quantity, KC_STAT["of-joint"])
             # Resolved from the joint, not the agent: a gripper's joint rides the arm's runtime.
-            trees_by_solver_id = {
-                solver.id: (solver.owned_trees or ()) for solver in slv_chain
-            }
+            trees_by_solver_id = {solver.id: (solver.owned_trees or ()) for solver in slv_chain}
             chain_solver = next(
                 (
                     solver
                     for solver in handler_chain_solvers
                     if target is not None
                     and any(
-                        _tree_owns(tree, target)
-                        for tree in trees_by_solver_id.get(solver.id, ())
+                        _tree_owns(tree, target) for tree in trees_by_solver_id.get(solver.id, ())
                     )
                 ),
                 None,
@@ -476,6 +471,8 @@ def build_motion_units(
     add_motion_function_interfaces(ordered)
     _apply_fsm_gate_calls(ordered, fsm_meta["cpp_namespace"])
     return ordered, fsm_meta
+
+
 def _assign_monitor_event_indexes(handlers) -> None:
     """Assign each monitor a stable per-handler event index."""
     event_idx = 0
@@ -484,6 +481,8 @@ def _assign_monitor_event_indexes(handlers) -> None:
             if monitor.monitor_type == "EdgeTriggeredMonitor":
                 monitor.event_idx = event_idx
                 event_idx += 1
+
+
 def _apply_monitor_debounce(handlers, control_period_ns: int) -> None:
     """Convert each monitor's debounce duration to a step count from the control period."""
     for handler in handlers:
@@ -492,6 +491,8 @@ def _apply_monitor_debounce(handlers, control_period_ns: int) -> None:
                 monitor.debounce_steps = round(
                     monitor.debounce_duration_s / (control_period_ns * 1e-9)
                 )
+
+
 def _motion_done_terms(motion) -> list:
     """Structured UNTIL-member terms that end a motion (edge monitors → event flag, level
     monitors → their boolean flag). Joined by until_any and rendered by bool-condition."""
@@ -503,6 +504,8 @@ def _motion_done_terms(motion) -> list:
         else:
             terms.append({"kind": "flag", "motion_id": mid, "flag": _field(monitor, "flag")})
     return terms
+
+
 def _evaluator_term(e) -> dict:
     """Structured boolean term for an evaluator: an elapsed timing predicate or a solver
     constraint-satisfied check, rendered to C++ by the bool-condition template.
@@ -534,14 +537,14 @@ def _evaluator_term(e) -> dict:
     if tolerance_id:
         term["tolerance_id"] = tolerance_id
     return term
+
+
 def _set_monitor_conditions(motion, evaluators_key: str, monitors_key: str, any_key: str) -> None:
     """Stamp the structured active-phase terms onto the aggregate monitor + any
     elapsed-error monitors. Rendered to C++ by the bool-condition template."""
     evaluators = _field(motion, evaluators_key, [])
     terms = [
-        _evaluator_term(e)
-        for e in evaluators
-        if _field(e, "error") or _field(e, "is_elapsed")
+        _evaluator_term(e) for e in evaluators if _field(e, "error") or _field(e, "is_elapsed")
     ]
     any_flag = bool(_field(motion, any_key))
     elapsed_terms_by_error = {
@@ -577,6 +580,8 @@ def _set_monitor_conditions(motion, evaluators_key: str, monitors_key: str, any_
         error_id = _field(_field(monitor, "error"), "id")
         if error_id in elapsed_terms_by_error:
             _stamp(monitor, [elapsed_terms_by_error[error_id]], False)
+
+
 def _set_motion_conditions(motion) -> None:
     """Fold the UNTIL/WHEN/done structured boolean terms onto a motion (rendered to C++ by
     the bool-condition template). WHEN joins with when_any, done with until_any."""
@@ -592,9 +597,13 @@ def _set_motion_conditions(motion) -> None:
     done_terms = _motion_done_terms(motion)
     _set_field(motion, "done_terms", done_terms)
     _set_field(motion, "done_terms_present", bool(done_terms))
+
+
 def _records_events(monitors: list) -> bool:
     """Whether any of these monitors records an event occurrence into the coordination buffer."""
     return any(_field(m, "is_edge_triggered") for m in monitors)
+
+
 def add_motion_function_interfaces(motions: list) -> None:
     """Fold per-motion capability booleans (which context objects each generated function needs); the
     C++ signatures and call args are built from these by sig-params / sig-args.
@@ -662,8 +671,12 @@ def add_motion_function_interfaces(motions: list) -> None:
         _set_field(motion, "monitor_needs_events", when_events or until_events)
         _set_field(motion, "control_needs_events", control_events)
         _set_field(motion, "step_needs_events", until_events or control_events)
+
+
 _FSM_NS = "https://secorolab.github.io/metamodels/behaviour/fsm#"
 _EL_NS = "https://secorolab.github.io/metamodels/behaviour/event-loop#"
+
+
 def _fsm_from_graph(g) -> dict | None:
     """Frame the FSM named graph (states/events/transitions/reactions, folded into the model dataset
     by motion-spec-dsl) into the same dict shape the standalone .hpp uses, so codegen needs no
@@ -732,6 +745,8 @@ def _fsm_from_graph(g) -> dict | None:
         "reactions_table": reactions_table,
         "namespace_uri": namespace_uri,
     }
+
+
 def _event_to_state(fsm: dict) -> dict[str, str]:
     """Map each FSM event token to the state it transitions out of (the state the motion
     runs in): the from-state of the transition the event's reaction fires."""
@@ -741,6 +756,8 @@ def _event_to_state(fsm: dict) -> dict[str, str]:
         for r in fsm["reactions_table"]
         if r["do_transition"] in transition_from
     }
+
+
 def is_fsm_event(monitor, fsm_ns_uri: str | None) -> bool:
     # A monitor fires the FSM only when its event lives in the FSM's namespace;
     # standalone (monitor-owned) events keep the existing warn stub.
@@ -750,6 +767,8 @@ def is_fsm_event(monitor, fsm_ns_uri: str | None) -> bool:
         and _field(monitor, "is_edge_triggered")
         and iri_is_descendant(fsm_ns_uri, _field(monitor, "event_uri") or "")
     )
+
+
 def _apply_fsm_wiring(motions, fsm) -> dict:
     """Tag FSM-event monitors and their motions from the framed FSM, and return the codegen wiring
     (C++ namespace, header, heartbeat) folded into ``ir["fsm"]``. Runs during motion construction,
@@ -796,9 +815,7 @@ def _apply_fsm_wiring(motions, fsm) -> dict:
         """Bind an FSM-event monitor to the FSM's namespace and event slot."""
         _set_field(monitor, "fsm_namespace", fsm_namespace)
         _set_field(
-            monitor,
-            "fsm_event_idx",
-            fsm_event_index.get(_field(monitor, "event_name") or "", -1),
+            monitor, "fsm_event_idx", fsm_event_index.get(_field(monitor, "event_name") or "", -1)
         )
 
     def tag_run_state(motion, monitors):
@@ -855,6 +872,8 @@ def _apply_fsm_wiring(motions, fsm) -> dict:
             if _field(motion, "id") not in gates:
                 gates.append(_field(motion, "id"))
     return meta
+
+
 def _apply_fsm_gate_calls(motions, fsm_namespace) -> None:
     """Fold each fallback state's WHEN-evaluation gate calls: the gated motion id plus its
     when-signature capability booleans. Runs after function interfaces so when_needs_* exist; the

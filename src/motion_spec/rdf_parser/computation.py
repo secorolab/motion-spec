@@ -8,10 +8,13 @@ from __future__ import annotations
 import collections
 from rdf_utils.naming import get_valid_var_name
 from rdf_utils.models.geom_coord import (
-    PoseCoordModel, get_coord_vectorxyz, get_orientation_coord_vals,
+    PoseCoordModel,
+    get_coord_vectorxyz,
+    get_orientation_coord_vals,
 )
 from rdf_utils.models.geom_rel import PoseModel
 from rdf_utils.models.common import get_node_types
+
 # fmt: off
 from rdf_utils.models.vocab import (
     URI_GEOM_PRED_OF, URI_GEOM_PRED_OF_ORIENT, URI_GEOM_PRED_OF_POSE, URI_GEOM_PRED_OF_POSITION,
@@ -24,6 +27,7 @@ from rdf_utils.models.vocab import (
 # fmt: on
 from rdflib import URIRef
 from rdflib.namespace import RDF
+
 # fmt: off
 from motion_spec.classes.entities import (
     EqualityConstraint, PoseAxisErrorComponent, PoseAxisErrorGroup, RelativePoseCapture,
@@ -31,6 +35,7 @@ from motion_spec.classes.entities import (
 )
 # fmt: on
 from motion_spec.classes.closures import closure_output_ids
+
 # fmt: off
 from motion_spec_dsl.rdf_parser.vocab import (
     ALGO_EXT, CSTR, CSTR_EXT, CSTR_HDL, GEOM_OP, GEOM_REL, QUDT_SCHEMA,
@@ -38,12 +43,15 @@ from motion_spec_dsl.rdf_parser.vocab import (
 # fmt: on
 
 from motion_spec.rdf_parser.records import (
-    _as_dict, _dedupe_by_id, _field, _index_by_id, _pose_component,
+    _as_dict,
+    _dedupe_by_id,
+    _field,
+    _index_by_id,
+    _pose_component,
 )
-from motion_spec.rdf_parser.graph import (
-    Parser, _is_constraint_aggregate, _length_unit, _si_all,
-)
+from motion_spec.rdf_parser.graph import Parser, _is_constraint_aggregate, _length_unit, _si_all
 from motion_spec.rdf_parser.solvers import _leaf
+
 
 def _views_by_subobject(view_map):
     indexed: dict[str, list] = {}
@@ -52,6 +60,8 @@ def _views_by_subobject(view_map):
         if subobject_id:
             indexed.setdefault(subobject_id, []).append(view)
     return indexed
+
+
 def _views_for_access(view_map, shared_data, motions, closures) -> dict:
     """Index unambiguous MAP views by subobject, for the template's access expressions.
 
@@ -74,9 +84,7 @@ def _views_for_access(view_map, shared_data, motions, closures) -> dict:
         for snapshot in _field(motion, "snapshots", []) or []
     )
     direct_ids.update(
-        output_id
-        for closure in closures.values()
-        for output_id in closure_output_ids(closure)
+        output_id for closure in closures.values() for output_id in closure_output_ids(closure)
     )
 
     indexed: dict[str, object] = {}
@@ -96,6 +104,8 @@ def _views_for_access(view_map, shared_data, motions, closures) -> dict:
         ):
             indexed[subobject_id] = None
     return {id_: view for id_, view in indexed.items() if view is not None}
+
+
 def _unique_view_for_subobject(indexed_views, subobject_id, context):
     matches = indexed_views.get(subobject_id, ())
     if len(matches) > 1:
@@ -103,6 +113,8 @@ def _unique_view_for_subobject(indexed_views, subobject_id, context):
             f"{context}: quantity '{subobject_id}' is the subobject of multiple MAP views"
         )
     return matches[0] if matches else None
+
+
 def _relative_poses_for_motion(evaluators, view_map, serial_chain_solvers):
     """Detect Pose quantities whose wrt frame ends in _start and pair them with FK outputs."""
     fk_poses: dict[str, str] = {}  # of_id → FK pose id
@@ -134,11 +146,15 @@ def _relative_poses_for_motion(evaluators, view_map, serial_chain_solvers):
         if fk_pose_id:
             result.append(RelativePoseCapture(id=pose_id, fk_pose_id=fk_pose_id))
     return result
+
+
 def _constraint_reference_value_id(constraint):
     """Id of a constraint's reference-value parameter, or None."""
     param = getattr(constraint, "parameter", None)
     ref = getattr(param, "reference_value", None) if param else None
     return getattr(ref, "id", None)
+
+
 def _snapshot_reference_value_ids(evaluators, constraints):
     """Set of reference-value ids across the given evaluators and constraints."""
     ref_val_ids = set()
@@ -153,6 +169,8 @@ def _snapshot_reference_value_ids(evaluators, constraints):
         if ref_id:
             ref_val_ids.add(ref_id)
     return ref_val_ids
+
+
 def _snapshots_for_motion(
     evaluators,
     constraints,
@@ -238,6 +256,8 @@ def _snapshots_for_motion(
             )
         )
     return result
+
+
 def _scene_relative_poses_for_motion(view_map, serial_chain_solvers, evaluators=None):
     """For each view whose wrt-frame is a scene object, emit the requested relative pose."""
     fk_pose_by_frame: dict[str, str] = {}
@@ -326,11 +346,15 @@ def _scene_relative_poses_for_motion(view_map, serial_chain_solvers, evaluators=
                 )
             )
     return result
+
+
 _GROUPABLE_SO_TYPES = {"Pose", "VelocityTwist", "AccelerationTwist", "Wrench"}
 _SUBSPACE_TO_GROUP_AXIS: dict[Subspace, tuple[str, bool]] = {
     Subspace.Linear: ("linear", False),
     Subspace.Angular: ("angular", True),
 }
+
+
 def _pose_axis_error_groups_for_motion(eval_nodes, p, view_map):
     """Group a motion's per-axis pose error evaluators into PoseAxisErrorGroups, one per superobject pose."""
     groups: dict[str, PoseAxisErrorGroup] = {}
@@ -346,9 +370,7 @@ def _pose_axis_error_groups_for_motion(eval_nodes, p, view_map):
             continue
 
         quantity = evaluator.constraint.quantity
-        view = _unique_view_for_subobject(
-            indexed_views, quantity.id, "pose-axis error grouping"
-        )
+        view = _unique_view_for_subobject(indexed_views, quantity.id, "pose-axis error grouping")
         if view is None:
             continue
         so_type = getattr(view.superobject, "type", None)
@@ -398,6 +420,8 @@ def _pose_axis_error_groups_for_motion(eval_nodes, p, view_map):
         )
 
     return [group for group in groups.values() if len(group.components) > 1]
+
+
 def _path_projections_for_motion(schedule: list, closures: dict) -> list[dict]:
     """The path projections a motion runs, with the measurements that re-arm on entry."""
     speeds = [
@@ -407,11 +431,7 @@ def _path_projections_for_motion(schedule: list, closures: dict) -> list[dict]:
         and closures[call].get("type") == "TwistToLinearVelocityAlong"
     ]
     return [
-        {
-            "id": call,
-            "parameter": closures[call]["path_parameter"],
-            "along_speed": speed,
-        }
+        {"id": call, "parameter": closures[call]["path_parameter"], "along_speed": speed}
         for (call, speed) in zip(
             (
                 call
@@ -422,6 +442,8 @@ def _path_projections_for_motion(schedule: list, closures: dict) -> list[dict]:
             speeds,
         )
     ]
+
+
 def _filter_shared_data(data_structures, schedule, closures, view_map=None, fk_output_ids=None):
     """Select data structures needed by scheduled calls, views, closures, or FK outputs."""
     referenced: set[str] = set(schedule)
@@ -455,6 +477,8 @@ def _filter_shared_data(data_structures, schedule, closures, view_map=None, fk_o
             continue
         result.append(item)
     return _dedupe_by_id(result)
+
+
 def _expanded_constraints(g, raw_nodes) -> set:
     """The phase's constraints, with any when/until aggregate replaced by its members."""
     return {
@@ -464,6 +488,8 @@ def _expanded_constraints(g, raw_nodes) -> set:
             g[node : CSTR_EXT["has-constraint"]] if _is_constraint_aggregate(g, node) else (node,)
         )
     }
+
+
 def _snapshot_maps(g, p: Parser) -> tuple[dict, dict, dict]:
     """One walk over the snapshots for the three maps codegen asks about.
 
@@ -493,6 +519,8 @@ def _snapshot_maps(g, p: Parser) -> tuple[dict, dict, dict]:
         if trigger_node is not None:
             trigger_map[(owner, output_id)] = get_valid_var_name(_leaf(trigger_node)).upper()
     return source_map, owner_map, trigger_map
+
+
 def _closure_owner_map(g, p: Parser, closures) -> dict[str, str]:
     """Map each closure to the motion whose context declares the quantities it reads.
 
@@ -517,6 +545,8 @@ def _closure_owner_map(g, p: Parser, closures) -> dict[str, str]:
         if len(owners) == 1:
             owner_map[closure_id] = owners.pop()
     return owner_map
+
+
 def _pose_frames(g, pose) -> tuple[URIRef, URIRef]:
     """Return a pose quantity's authored `(of, with-respect-to)` frames."""
     relation = (
@@ -525,6 +555,8 @@ def _pose_frames(g, pose) -> tuple[URIRef, URIRef]:
         else PoseCoordModel(pose, g).relation
     )
     return relation.of_id, relation.wrt_id
+
+
 def _emit_derived_pose(g, node: URIRef, of_frame: URIRef, wrt_frame: URIRef) -> None:
     """Materialize one runtime-derived pose in comp-rob2b relation/coordinate form."""
     origins = []
@@ -572,8 +604,12 @@ def _emit_derived_pose(g, node: URIRef, of_frame: URIRef, wrt_frame: URIRef) -> 
     g.add((node, URI_GEOM_PRED_SEEN_BY, wrt_frame))
     g.add((node, QUDT_SCHEMA.unit, URI_QUDT_UNIT_M))
     g.add((node, QUDT_SCHEMA.unit, URI_QUDT_UNIT_RAD))
+
+
 def _derived_node(node, suffix) -> URIRef:
     return URIRef(f"{node}.derived-{suffix}")
+
+
 def _pose_edges(g) -> dict:
     """Frame adjacency over every authored pose, traversable in both directions."""
     edges = collections.defaultdict(list)
@@ -585,6 +621,8 @@ def _pose_edges(g) -> dict:
         edges[wrt_frame].append((of_frame, pose, False))
         edges[of_frame].append((wrt_frame, pose, True))
     return edges
+
+
 def _pose_path(edges, start: URIRef, goal: URIRef) -> tuple:
     """Shortest `(pose, inverted)` chain from `start` to `goal`; empty when unreachable."""
     queue = collections.deque([(start, ())])
@@ -600,6 +638,8 @@ def _pose_path(edges, start: URIRef, goal: URIRef) -> tuple:
             seen.add(next_frame)
             queue.append((next_frame, next_path))
     return ()
+
+
 def _compose_path(g, owner: URIRef, path, start_wrt: URIRef):
     """Emit the invert/compose operations along `path`; return the composed pose, or None."""
     current = None
@@ -629,6 +669,8 @@ def _compose_path(g, owner: URIRef, path, start_wrt: URIRef):
         g.add((operation, GEOM_OP.composite, composite))
         current = composite
     return current
+
+
 def _materialize_linear_distance_operations(g) -> None:
     """Expand authored linear-distance relations into codegen operations.
 
@@ -684,6 +726,8 @@ def _materialize_linear_distance_operations(g) -> None:
         g.add((operation, RDF.type, GEOM_OP.PoseToLinearDistance))
         g.add((operation, GEOM_OP.pose, relative_pose))
         g.add((operation, GEOM_OP.distance, distance))
+
+
 def _materialize_pose_reference_transforms(g) -> None:
     """Re-express a full-pose equality reference into the constrained pose's frame.
 
@@ -734,6 +778,8 @@ def _materialize_pose_reference_transforms(g) -> None:
 
         g.remove((constraint, CSTR["reference-value"], reference))
         g.add((constraint, CSTR["reference-value"], reference_in_target))
+
+
 def _data_reference_map(data_structures, closures: dict) -> dict[str, str]:
     """Map each data id to the ids it references through closures."""
     data_reference_map: dict[str, str] = {}
@@ -750,6 +796,8 @@ def _data_reference_map(data_structures, closures: dict) -> dict[str, str]:
         if isinstance(quantity_id, str) and isinstance(ref_id, str):
             data_reference_map[quantity_id] = ref_id
     return data_reference_map
+
+
 def _closure_maps(closures: dict) -> tuple[dict[str, str], dict[str, set[str]]]:
     """Build (closure_output_map, closure_input_map): data id to the closures producing/consuming it."""
     closure_output_map: dict[str, str] = {}
@@ -767,11 +815,15 @@ def _closure_maps(closures: dict) -> tuple[dict[str, str], dict[str, set[str]]]:
             closure_output_map[out_val] = cid
             closure_input_map[out_val] = inputs
     return closure_output_map, closure_input_map
+
+
 _ORIENTATION_COMPONENTS = {
     "quaternion": ("x", "y", "z", "w"),
     "euler": ("x", "y", "z"),  # symbolic only: the angles arrive at runtime
     "relative": (),
 }
+
+
 def _empty_pose_entry(representation: str, euler_axes: str | None = None) -> dict:
     """Blank component slots for a pose, sized to what will fill them. A symbolic Euler triple is
     filled one angle per authored axis -- `zyx` fills z, y and x -- so it is sized by the sequence
@@ -782,6 +834,8 @@ def _empty_pose_entry(representation: str, euler_axes: str | None = None) -> dic
     names = tuple(euler_axes) if euler_axes else _ORIENTATION_COMPONENTS[representation]
     entry.update({f"orientation_{name}": None for name in names})
     return entry
+
+
 def build_pose_components(views: dict, data: list, graph=None, pose_nodes=None) -> dict:
     """Resolve declared/inline poses into per-axis structured components (a literal value or a reference id)."""
     data_by_id = _index_by_id(data)
@@ -834,8 +888,7 @@ def build_pose_components(views: dict, data: list, graph=None, pose_nodes=None) 
         if not subobject or axis not in {"x", "y", "z", "w"}:
             continue
         entry = components.setdefault(
-            pose_id,
-            _empty_pose_entry(representation, _field(superobject, "euler_axes_sequence")),
+            pose_id, _empty_pose_entry(representation, _field(superobject, "euler_axes_sequence"))
         )
         if representation == "relative":
             entry["orientation_operands"] = _field(superobject, "orientation_operands")
@@ -850,6 +903,8 @@ def build_pose_components(views: dict, data: list, graph=None, pose_nodes=None) 
         if parts["representation"] == "euler":
             parts["euler_factors"] = _euler_factors(pose_id, parts, data_by_id)
     return components
+
+
 def _euler_factors(pose_id: str, parts: dict, data_by_id: dict) -> list[dict]:
     """A symbolic Euler triple as per-axis rotations, in the order they multiply.
 
@@ -865,10 +920,10 @@ def _euler_factors(pose_id: str, parts: dict, data_by_id: dict) -> list[dict]:
         if parts.get(f"orientation_{axis}") is not None
     ]
     if len(factors) != len(sequence):
-        raise ValueError(
-            f"Euler pose '{pose_id}' has no component for every axis of '{sequence}'."
-        )
+        raise ValueError(f"Euler pose '{pose_id}' has no component for every axis of '{sequence}'.")
     return factors if _field(pose, "euler_intrinsic") else list(reversed(factors))
+
+
 def resolve_lerp_closures(closures: dict, pose_components: dict) -> None:
     """Fold each linear-path goal into components or a shared-signal ref."""
     for closure in closures.values():
@@ -885,6 +940,8 @@ def resolve_lerp_closures(closures: dict, pose_components: dict) -> None:
         else:
             # goal is a shared signal id (already on the closure as closure["goal"]).
             closure["assign_goal"] = False
+
+
 def resolve_arc_closures(closures: dict, data: list) -> None:
     """Validate that each Arc closure's end is a Pose (the template renders its position/orientation)."""
     data_by_id = _index_by_id(data)
@@ -904,6 +961,8 @@ def resolve_arc_closures(closures: dict, data: list) -> None:
         end_data = data_by_id.get(end)
         if not isinstance(end, str) or not is_pose(end_data):
             raise ValueError("Arc path end must be a Pose quantity.")
+
+
 def declared_pose_component_entries(
     data: list, pose_components: dict, referenced_ids: set[str] | None = None
 ) -> list[dict]:
@@ -919,6 +978,8 @@ def declared_pose_component_entries(
             continue
         entries.append({"id": pose_id, **parts})
     return entries
+
+
 def collect_motion_references(motion, closures: dict) -> set[str]:
     """Every id a motion references, including through its scheduled closures."""
     refs: set[str] = set()
@@ -941,6 +1002,8 @@ def collect_motion_references(motion, closures: dict) -> set[str]:
             if closure:
                 visit(closure)
     return refs
+
+
 def _elapsed_coordinate_id(e) -> str:
     """The shared value an elapsed constraint measures: its own authored duration coordinate. The
     error signal is the elapsed duration itself, so this is where the motion writes the seconds and
@@ -952,6 +1015,8 @@ def _elapsed_coordinate_id(e) -> str:
             f"elapsed constraint '{_field(e, 'id')}' has no duration coordinate to measure into"
         )
     return coordinate
+
+
 def _elapsed_coordinate_ids(evaluators) -> list[str]:
     """Each phase's elapsed coordinates, deduplicated, in authored order."""
     return list(

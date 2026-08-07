@@ -80,7 +80,8 @@ def _organize_generation(model_dir: Path, controller_dir: Path | None = None) ->
         if source.is_relative_to(model_dir):
             controller_artifact = (
                 controller_dir / source.name
-                if controller_dir and (source.name == "fsm_ir.json" or source.name.endswith("_fsm.hpp"))
+                if controller_dir
+                and (source.name == "fsm_ir.json" or source.name.endswith("_fsm.hpp"))
                 else None
             )
             locations[source.resolve()] = (
@@ -104,9 +105,7 @@ def _organize_generation(model_dir: Path, controller_dir: Path | None = None) ->
 
     app_manifest = next(model_dir.glob("*-app.ld.json"))
     app = rdflib.Dataset().parse(app_manifest, format="json-ld")
-    for subject, predicate, imported, context in list(
-        app.quads((None, APP["import"], None, None))
-    ):
+    for subject, predicate, imported, context in list(app.quads((None, APP["import"], None, None))):
         if str(imported).endswith("provenance/dsl.ld.json"):
             graph = app.graph(context)
             graph.remove((subject, predicate, imported))
@@ -141,6 +140,7 @@ def _organize_generation(model_dir: Path, controller_dir: Path | None = None) ->
         locations[codegen_provenance.resolve()] = motion_spec_provenance
         _rewrite_locations(motion_spec_provenance, locations)
         shutil.rmtree(controller_dir / ".stst")
+
 
 def new_id(name: str) -> str:
     """Return a time-ordered identifier unique to one generation or run."""
@@ -219,7 +219,9 @@ def build_generation(
         "-DMOTION_SPEC_ENABLE_INTROSPECTION=ON",
     ]
     if prefixes:
-        configure.append(f"-DCMAKE_PREFIX_PATH={';'.join(str(path.resolve()) for path in prefixes)}")
+        configure.append(
+            f"-DCMAKE_PREFIX_PATH={';'.join(str(path.resolve()) for path in prefixes)}"
+        )
     subprocess.run(configure, check=True)
     command = ["cmake", "--build", str(build), "--parallel"]
     if jobs is not None:

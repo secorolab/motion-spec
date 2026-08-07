@@ -47,9 +47,34 @@ CSLOT = [
 ]
 MSLOT = [("active", "q"), ("value", "d"), ("satisfied", "q"), ("sat_t", "d")]
 TSLOT = [("kind", "q"), ("idx", "q"), ("fsm_state", "q"), ("t", "d"), ("wall_ns", "q")]
-PSLOT = [("active", "q"), ("px", "d"), ("py", "d"), ("pz", "d"), ("qx", "d"), ("qy", "d"), ("qz", "d"), ("qw", "d")]
-VSLOT = [("active", "q"), ("lx", "d"), ("ly", "d"), ("lz", "d"), ("ax", "d"), ("ay", "d"), ("az", "d")]
-KSLOT = [("active", "q"), ("fx", "d"), ("fy", "d"), ("fz", "d"), ("tx", "d"), ("ty", "d"), ("tz", "d")]
+PSLOT = [
+    ("active", "q"),
+    ("px", "d"),
+    ("py", "d"),
+    ("pz", "d"),
+    ("qx", "d"),
+    ("qy", "d"),
+    ("qz", "d"),
+    ("qw", "d"),
+]
+VSLOT = [
+    ("active", "q"),
+    ("lx", "d"),
+    ("ly", "d"),
+    ("lz", "d"),
+    ("ax", "d"),
+    ("ay", "d"),
+    ("az", "d"),
+]
+KSLOT = [
+    ("active", "q"),
+    ("fx", "d"),
+    ("fy", "d"),
+    ("fz", "d"),
+    ("tx", "d"),
+    ("ty", "d"),
+    ("tz", "d"),
+]
 
 
 def field_names_and_format(pools: dict) -> tuple[str, list[str]]:
@@ -213,6 +238,7 @@ def _fsm_meta(fsm_ir: dict | None) -> dict:
     def _sole_event(transition_id):
         events = transition_events.get(transition_id) or []
         return events[0] if len(events) == 1 else None
+
     return {
         "namespace": fsm_ir.get("namespace_uri"),
         "start": state_index.get(fsm_ir.get("start_state")),

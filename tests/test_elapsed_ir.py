@@ -132,7 +132,11 @@ def test_a_monitor_condition_reads_nothing_but_shared() -> None:
     from pathlib import Path
 
     template = (
-        Path(__file__).resolve().parents[1] / "src" / "motion_spec" / "templates" / "domain_monitors.stg"
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "motion_spec"
+        / "templates"
+        / "domain_monitors.stg"
     ).read_text()
     evaluators = [
         ConstraintEvaluator(
@@ -149,10 +153,7 @@ def test_a_monitor_condition_reads_nothing_but_shared() -> None:
     ]
     evaluators.append(
         ConstraintEvaluator(
-            id="reached",
-            type_=EvaluatorType.ErrorEvaluator,
-            constraint=None,
-            error=None,
+            id="reached", type_=EvaluatorType.ErrorEvaluator, constraint=None, error=None
         )
     )
     kinds = {_evaluator_term(ev)["kind"] for ev in evaluators}

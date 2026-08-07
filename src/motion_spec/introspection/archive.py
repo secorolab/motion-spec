@@ -221,7 +221,10 @@ def _create_generation_run_manifest(
         return os.path.relpath(path, run_dir)
 
     frame_log_path = Path(frame_log) if frame_log else run_dir / "logs" / "frame_log.pb"
-    if frame_log_path.exists() and frame_log_path.resolve() != (run_dir / "logs/frame_log.pb").resolve():
+    if (
+        frame_log_path.exists()
+        and frame_log_path.resolve() != (run_dir / "logs/frame_log.pb").resolve()
+    ):
         _copy_file(frame_log_path, run_dir / "logs/frame_log.pb")
     frame_log_path = run_dir / "logs" / "frame_log.pb"
     # The run states its own contract; nothing is read back out of a generated file.
@@ -318,7 +321,8 @@ def create_archive_manifest(
     from motion_spec.introspection import frame_log_pb
 
     schema = frame_log_pb.read_contract(
-        source_dir / "frame_log.pb" if (source_dir / "frame_log.pb").exists()
+        source_dir / "frame_log.pb"
+        if (source_dir / "frame_log.pb").exists()
         else run_dir / frame_log_rel
     ).summary()
     # graph/ir_path are portable basenames; resolve them against source_dir.
@@ -406,9 +410,7 @@ def create_archive_manifest(
         "frame_log_proto": "contract/frame_log.proto",
         "provenance": "provenance/motion-spec.ld.json",
         "dsl_provenance": (
-            "provenance/dsl.ld.json"
-            if (run_dir / "provenance" / "dsl.ld.json").exists()
-            else None
+            "provenance/dsl.ld.json" if (run_dir / "provenance" / "dsl.ld.json").exists() else None
         ),
         "runtime_ttl": "runtime/runtime.ttl",
         "frame_log": frame_log_rel,
@@ -503,9 +505,7 @@ def verify_manifest(run_dir_or_manifest: Path | str) -> dict:
 
         run_schema = frame_log_pb.read_contract(run_dir / files["frame_log"]).summary()
         _require_rec_provenance(
-            rec_graph,
-            "rec.ld.json",
-            simulated=(run_schema.get("platform") or {}).get("simulated"),
+            rec_graph, "rec.ld.json", simulated=(run_schema.get("platform") or {}).get("simulated")
         )
         _validate_prov_shacl(run_dir / rec_rel)
         _validate_rec_shacl(run_dir / rec_rel)
@@ -537,8 +537,7 @@ def _verify_model_imports(model_path: Path) -> None:
     url_map = {**metamodel_url_map(), **build_url_map(dataset, model_path)}
     install_resolver(
         IriToFileResolver(
-            dict(sorted(url_map.items(), key=lambda x: len(x[0]), reverse=True)),
-            download=False,
+            dict(sorted(url_map.items(), key=lambda x: len(x[0]), reverse=True)), download=False
         )
     )
     for iri in sorted(imports):
@@ -581,7 +580,9 @@ def _require_runtime_provenance(graph: rdflib.Graph, label: str) -> None:
     }
     missing = [name for name, triple in checks.items() if triple not in graph]
     if missing:
-        raise ArchiveError(f"{label}: missing runtime provenance relationship(s): {', '.join(missing)}")
+        raise ArchiveError(
+            f"{label}: missing runtime provenance relationship(s): {', '.join(missing)}"
+        )
 
 
 def _require_rec_provenance(graph: rdflib.Graph, label: str, simulated: bool | None = None) -> None:
@@ -604,9 +605,13 @@ def _require_rec_provenance(graph: rdflib.Graph, label: str, simulated: bool | N
             bdd.SimulatedExecution if simulated else bdd.ScenarioExecution,
         )
     elif (None, rdflib.RDF.type, bdd.SimulatedExecution) not in graph and (
-        None, rdflib.RDF.type, bdd.ScenarioExecution
+        None,
+        rdflib.RDF.type,
+        bdd.ScenarioExecution,
     ) not in graph:
-        raise ArchiveError(f"{label}: missing REC provenance relationship(s): BDD execution activity")
+        raise ArchiveError(
+            f"{label}: missing REC provenance relationship(s): BDD execution activity"
+        )
     missing = [name for name, triple in checks.items() if triple not in graph]
     if missing:
         raise ArchiveError(f"{label}: missing REC provenance relationship(s): {', '.join(missing)}")

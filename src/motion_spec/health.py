@@ -72,7 +72,7 @@ def _cmake_package_path(name: str, *, load_target: str | None = None) -> str | N
         )
         package_probe = (
             f'file(WRITE "${{CMAKE_BINARY_DIR}}/package" "${{{name}_CONFIG}}")\n'
-            f'if(NOT {name}_CONFIG)\n'
+            f"if(NOT {name}_CONFIG)\n"
             f'  file(WRITE "${{CMAKE_BINARY_DIR}}/package" "${{{name}_DIR}}")\n'
             "endif()\n"
         )
@@ -117,7 +117,9 @@ def check_health(profiles: tuple[str, ...], targets: tuple[str, ...] = ()) -> li
                     "Python module",
                     path,
                     path is not None,
-                    "pip install motion_spec" if profile == "base" else f"motion-spec install {profile}",
+                    "pip install motion_spec"
+                    if profile == "base"
+                    else f"motion-spec install {profile}",
                 )
             )
     if "codegen" in selected:
@@ -185,12 +187,8 @@ def check_health(profiles: tuple[str, ...], targets: tuple[str, ...] = ()) -> li
             )
         )
         runtime_targets = {
-            "mujoco": (
-                ("mj_kdl_wrapper", "mj_kdl_wrapper::mj_kdl_wrapper"),
-            ),
-            "robif2b": (
-                ("robif2b", "robif2b::kinova_gen3"),
-            ),
+            "mujoco": (("mj_kdl_wrapper", "mj_kdl_wrapper::mj_kdl_wrapper"),),
+            "robif2b": (("robif2b", "robif2b::kinova_gen3"),),
         }
         for target in targets:
             for package, cmake_target in runtime_targets[target]:

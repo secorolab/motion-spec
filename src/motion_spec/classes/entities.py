@@ -803,9 +803,7 @@ class MotionDrivers:
     id: str
     acceleration_constraint: list[AccelerationConstraint]
     cartesian_force: list[CartesianForceSpecification]
-    cartesian_acceleration: list[CartesianAccelerationSpecification] = field(
-        default_factory=list
-    )
+    cartesian_acceleration: list[CartesianAccelerationSpecification] = field(default_factory=list)
     joint_force: list[JointForceSpecification] = field(default_factory=list)
     has_cartesian_force: bool = False
     type: str = field(default="MotionDrivers")

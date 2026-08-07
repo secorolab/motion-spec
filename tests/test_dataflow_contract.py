@@ -76,11 +76,7 @@ def _model() -> tuple[dict, list, dict, list, list, dict]:
                 (shared_data[5], {"kind": "vec", "id": "pose_ee_position_rel", "axis": 0}),
             )
         ],
-        "spatial_samples": {
-            "poses": [{"id": "pose_ee", "index": 0}],
-            "twists": [],
-            "wrenches": [],
-        },
+        "spatial_samples": {"poses": [{"id": "pose_ee", "index": 0}], "twists": [], "wrenches": []},
         "control_period_ns": 1_000_000,
         "provenance": {
             "activities": [
@@ -174,7 +170,9 @@ def test_never_written_members_leave_shared_data_and_the_frame() -> None:
     introspection, shared_data = _annotated()
     assert introspection["dataflow"]["pose_ee_position_rel"]["cadence"] == "never"
     assert "pose_ee_position_rel" not in {item["id"] for item in shared_data}
-    assert "pose_ee_position_rel" not in {row["source_id"] for row in introspection["quantity_samples"]}
+    assert "pose_ee_position_rel" not in {
+        row["source_id"] for row in introspection["quantity_samples"]
+    }
 
 
 def test_read_but_never_written_members_are_reported_not_dropped() -> None:
@@ -286,8 +284,15 @@ def test_a_log_decodes_with_no_companion_artifact(tmp_path: Path) -> None:
     log = _written_log(
         tmp_path,
         schema,
-        [flat_frame(schema, step=3, fsm_state=1, active_motion=1,
-                    **{f"q{index_of['arc_only_error']}": 1.25})],
+        [
+            flat_frame(
+                schema,
+                step=3,
+                fsm_state=1,
+                active_motion=1,
+                **{f"q{index_of['arc_only_error']}": 1.25},
+            )
+        ],
     )
     # Nothing but the log file is in scope here -- no schema, no proto, no descriptor on disk.
     contract = frame_log_pb.read_contract(log)
@@ -331,7 +336,7 @@ def test_a_log_without_an_embedded_descriptor_is_rejected(tmp_path: Path) -> Non
     schema = _schema()
     record_cls, _ = frame_log_pb._record_class(schema)
     stale = record_cls()
-    stale.header.schema_hash = schema["schema_hash"]      # a pre-v3 header: identity only
+    stale.header.schema_hash = schema["schema_hash"]  # a pre-v3 header: identity only
     log = tmp_path / "frame_log.pb"
     with log.open("wb") as fh:
         frame_log_pb.write_delimited(fh, stale.SerializeToString())

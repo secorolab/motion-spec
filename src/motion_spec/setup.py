@@ -58,7 +58,9 @@ def install_stst(prefix: Path) -> Path:
 
     missing = [command for command in ("git", "ant", "java") if shutil.which(command) is None]
     if missing:
-        raise RuntimeError(f"required command{'s' if len(missing) > 1 else ''} missing: {', '.join(missing)}")
+        raise RuntimeError(
+            f"required command{'s' if len(missing) > 1 else ''} missing: {', '.join(missing)}"
+        )
 
     if not (root / ".git").is_dir():
         root.parent.mkdir(parents=True, exist_ok=True)

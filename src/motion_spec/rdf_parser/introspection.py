@@ -9,21 +9,18 @@ from functools import partial
 from rdf_utils.naming import get_valid_var_name
 from motion_spec_dsl.rdf_parser.vocab import EXEC
 
-from motion_spec.rdf_parser.records import (
-    _as_dict, _dedupe_dicts, _field, _prune,
-)
-from motion_spec.rdf_parser.graph import (
-    _id_ref, _uri_table,
-)
+from motion_spec.rdf_parser.records import _as_dict, _dedupe_dicts, _field, _prune
+from motion_spec.rdf_parser.graph import _id_ref, _uri_table
 from motion_spec.rdf_parser.controllers import (
     controller_rows,
-    _annotate_controller_signals, add_control_parameters, add_controller_internal_state_logging,
+    _annotate_controller_signals,
+    add_control_parameters,
+    add_controller_internal_state_logging,
 )
 from motion_spec.rdf_parser.solvers import add_joint_space_logging
 from motion_spec.rdf_parser.computation import _views_by_subobject
-from motion_spec.rdf_parser.dataflow import (
-    _PORT_PRODUCERS, annotate_dataflow,
-)
+from motion_spec.rdf_parser.dataflow import _PORT_PRODUCERS, annotate_dataflow
+
 
 def _build_introspection(
     *,
@@ -107,9 +104,11 @@ def _build_introspection(
     # One authored fact -- the exec-context's platform -- decides all three; never re-derived
     # from the backend token or from substrings of the agent id.
     runtime_type = "exec:Simulation" if platform["simulated"] else "exec:RealWorld"
-    runtime_id = f"agent:runtime:{get_valid_var_name(platform['name']).casefold()}" if platform[
-        "simulated"
-    ] else "agent:runtime:real_robot"
+    runtime_id = (
+        f"agent:runtime:{get_valid_var_name(platform['name']).casefold()}"
+        if platform["simulated"]
+        else "agent:runtime:real_robot"
+    )
     runtime_activity_type = (
         "bdd:SimulatedExecution" if platform["simulated"] else "bdd:ScenarioExecution"
     )
@@ -261,11 +260,11 @@ def _build_introspection(
     _backfill_uris(introspection)
     _assert_every_id_resolves(introspection)
     return introspection, values
+
+
 def _backfill_uris(introspection: dict) -> None:
     """Attach the IRI to every row minted before the derivation registry was complete."""
-    uri_by_id = {
-        row["id"]: row["uri"] for row in introspection.get("uris", []) if row.get("uri")
-    }
+    uri_by_id = {row["id"]: row["uri"] for row in introspection.get("uris", []) if row.get("uri")}
     for key in ("controllers", "monitors", "motions", "quantities", "quantity_samples"):
         for row in introspection.get(key) or ():
             if isinstance(row, dict) and not row.get("uri"):
@@ -278,13 +277,13 @@ def _backfill_uris(introspection: dict) -> None:
                 uri = uri_by_id.get(row.get("id"))
                 if uri:
                     row["uri"] = uri
+
+
 # Ids that name a slot in the frame log or a row in the introspection artifact. Every one of them
 # has to resolve to an IRI, or a run graph cannot make a statement about what the log recorded.
 def _assert_every_id_resolves(introspection: dict) -> None:
     """Fail loudly when an introspection id has no IRI, listing every one rather than the first."""
-    uri_by_id = {
-        row["id"]: row["uri"] for row in introspection.get("uris", []) if row.get("uri")
-    }
+    uri_by_id = {row["id"]: row["uri"] for row in introspection.get("uris", []) if row.get("uri")}
     unresolved: dict[str, set] = {}
 
     def check(id_, origin: str) -> None:
@@ -321,8 +320,12 @@ def _assert_every_id_resolves(introspection: dict) -> None:
             "introspection: ids with no IRI -- a derived entity was minted without registering "
             f"its IRI against the node it came from:\n{details}"
         )
+
+
 # Types that get a whole-object frame-log slot (PoseSlot/TwistSlot/WrenchSlot).
 _SPATIAL_SLOT_KINDS = {"Pose": "poses", "VelocityTwist": "twists", "Wrench": "wrenches"}
+
+
 def _spatial_slot_ids(shared_data: list) -> set:
     """Ids carried by a whole-object spatial slot, so no per-axis scalar rows are emitted too.
     AccelerationTwist and PoseDifference have no slot, so their scalar rows must survive.
@@ -332,13 +335,22 @@ def _spatial_slot_ids(shared_data: list) -> set:
         for item in shared_data
         if _field(item, "type") in _SPATIAL_SLOT_KINDS and _field(item, "id")
     }
+
+
 def _vec_desc(kind: str):
     return lambda q, i: {"kind": kind, "id": q, "axis": i}
+
+
 def _member_desc(member: str):
     return lambda q, i: {"kind": "member", "id": q, "member": member, "axis": i}
+
+
 # Per quantity type, the `(component prefix, descriptor)` pairs its per-axis rows carry, in
 # emission order. Key order inside each descriptor is load-bearing for the frame layout.
-_POSE_AXIS_SAMPLES = (("position", _vec_desc("pose_pos")), ("orientation", _vec_desc("pose_orient")))
+_POSE_AXIS_SAMPLES = (
+    ("position", _vec_desc("pose_pos")),
+    ("orientation", _vec_desc("pose_orient")),
+)
 _TWIST_AXIS_SAMPLES = (("angular", _member_desc("rot")), ("linear", _member_desc("vel")))
 _AXIS_SAMPLES = {
     "Position": (("", _vec_desc("vec")),),
@@ -352,6 +364,8 @@ _AXIS_SAMPLES = {
     "PoseDifference": _TWIST_AXIS_SAMPLES,
     "Wrench": (("torque", _member_desc("torque")), ("force", _member_desc("force"))),
 }
+
+
 def add_quantity_samples(introspection: dict, shared_data: list, views: dict) -> None:
     """Build the per-quantity frame-log sample descriptors from the introspection quantities and shared data."""
     shared_ids = {_field(item, "id") for item in shared_data if _field(item, "id")}
@@ -435,6 +449,8 @@ def add_quantity_samples(introspection: dict, shared_data: list, views: dict) ->
             add(item, "", {"kind": "shared", "id": item_id})
 
     introspection["quantity_samples"] = samples
+
+
 def add_spatial_samples(introspection: dict, shared_data: list) -> None:
     """Add per-object pose, velocity-twist and wrench frame-log samples."""
     spatial = {"poses": [], "twists": [], "wrenches": []}

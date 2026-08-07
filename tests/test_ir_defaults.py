@@ -51,10 +51,7 @@ def test_fixed_attachments_root_a_branched_multi_robot_scene_at_world() -> None:
     world = URIRef("https://example.test/world")
     table = URIRef("https://example.test/table")
     table_top = URIRef(f"{table}/top")
-    trees = {
-        URIRef("https://example.test/arm1"),
-        URIRef("https://example.test/arm2"),
-    }
+    trees = {URIRef("https://example.test/arm1"), URIRef("https://example.test/arm2")}
 
     def frame_on(body: URIRef, frame: URIRef) -> URIRef:
         """Declare the frame as a simplex of its body, the way a scene graph states it."""
@@ -86,9 +83,9 @@ def test_fixed_attachments_root_a_branched_multi_robot_scene_at_world() -> None:
 
     assert root == world
     assert attachments[table][:2] == ("World", "")
-    assert {attachments[URIRef(f"{tree}/base")][:2] for tree in trees} == {
-        ("Site", "top")
-    }
+    assert {attachments[URIRef(f"{tree}/base")][:2] for tree in trees} == {("Site", "top")}
+
+
 def _quantity(graph: Graph, name: str) -> URIRef:
     node = URIRef(f"https://example.test/{name}")
     graph.add((node, RDF.type, QUDT_SCHEMA.Quantity))
@@ -346,14 +343,9 @@ def test_rne_uses_acceleration_while_achd_uses_acceleration_energy() -> None:
         )
 
     rne_signal, rne_drivers = derive(SLV.RecursiveNewtonEulerAlgorithm)
-    achd_signal, achd_drivers = derive(
-        SLV.AccelerationConstrainedHybridDynamicsAlgorithm
-    )
+    achd_signal, achd_drivers = derive(SLV.AccelerationConstrainedHybridDynamicsAlgorithm)
 
-    assert (rne_signal.quantity_kind.id, rne_signal.unit.id) == (
-        "LinearAcceleration",
-        "M_PER_SEC2",
-    )
+    assert (rne_signal.quantity_kind.id, rne_signal.unit.id) == ("LinearAcceleration", "M_PER_SEC2")
     assert rne_drivers.acceleration_constraint == []
     assert rne_drivers.cartesian_acceleration[0].acceleration == rne_signal
     assert (achd_signal.quantity_kind.id, achd_signal.unit.id) == (

@@ -37,7 +37,9 @@ def _config_keys(ir: dict) -> set[str]:
 
 
 def _toml_sections(name: str) -> set[str]:
-    return set(re.findall(r"^\[([^]]+)\]", (MODELS / name / "robot.toml").read_text(), re.MULTILINE))
+    return set(
+        re.findall(r"^\[([^]]+)\]", (MODELS / name / "robot.toml").read_text(), re.MULTILINE)
+    )
 
 
 @pytest.fixture(scope="module")

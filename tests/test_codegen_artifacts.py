@@ -140,7 +140,7 @@ def _sample_ir() -> dict:
                         "role": "motion_spec_ir",
                         "wasGeneratedBy": "activity:motion_spec_ir_generation",
                         "wasDerivedFrom": "entity:app_manifest",
-                    }
+                    },
                 ],
                 "activities": [
                     {
@@ -151,22 +151,16 @@ def _sample_ir() -> dict:
                     },
                     {
                         "id": "activity:controller_execution",
-                        "types": [
-                            "prov:Activity",
-                            "bdd:SimulatedExecution",
-                        ],
+                        "types": ["prov:Activity", "bdd:SimulatedExecution"],
                         "used": ["entity:motion_spec_ir"],
                         "wasAssociatedWith": "agent:controller_process",
                         "role": "controller_execution",
-                    }
+                    },
                 ],
                 "agents": [
                     {
                         "id": "agent:runtime:mujoco",
-                        "types": [
-                            "prov:SoftwareAgent",
-                            "exec:Simulation",
-                        ],
+                        "types": ["prov:SoftwareAgent", "exec:Simulation"],
                         "role": "runtime_runner",
                     },
                     {
@@ -228,10 +222,7 @@ def _sample_fsm() -> dict:
 
 def test_schema_and_frame_layout_are_consistent(tmp_path: Path) -> None:
     schema = build_schema(
-        _sample_ir(),
-        ir_path=tmp_path / "ir.json",
-        output_dir=tmp_path,
-        fsm_ir=_sample_fsm(),
+        _sample_ir(), ir_path=tmp_path / "ir.json", output_dir=tmp_path, fsm_ir=_sample_fsm()
     )
     layout = build_frame_layout(schema)
     fields, size = fields_with_offsets(schema["pools"])
@@ -314,10 +305,7 @@ def test_frame_log_proto_fields_advance_past_large_categories() -> None:
 
 def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch) -> None:
     ir = _sample_ir()
-    ir["unique_motions"][0]["until_monitors"][0]["error"] = {
-        "id": "pose_ee",
-        "type": "Pose",
-    }
+    ir["unique_motions"][0]["until_monitors"][0]["error"] = {"id": "pose_ee", "type": "Pose"}
     ir.update(
         {
             "backend": "mj_kdl",
@@ -341,7 +329,7 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
                     "quantity": "measured_x",
                     "reference_value": "setpoint_x",
                     "error": "err_x",
-                }
+                },
             },
             "views": {
                 "wrench_force": {
@@ -414,17 +402,27 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
     assert quantities["err_x"]["sample_desc"] == {"kind": "shared", "id": "err_x"}
     # An object carried by a whole-object spatial slot gets no per-axis scalar rows too --
     # that pair was the same value on the wire twice, in two representations.
-    assert not [qid for qid in quantities if qid.startswith(("pose_ee.", "twist_ee.", "wrench_ee."))]
+    assert not [
+        qid for qid in quantities if qid.startswith(("pose_ee.", "twist_ee.", "wrench_ee."))
+    ]
     assert "wrench_force" not in quantities
-    assert quantities["wrench_force_x"]["sample_desc"] == {"kind": "access", "ref": "wrench_force_x"}
+    assert quantities["wrench_force_x"]["sample_desc"] == {
+        "kind": "access",
+        "ref": "wrench_force_x",
+    }
     assert quantities["ready_flag"]["sample_desc"] == {"kind": "bool", "id": "ready_flag"}
     assert quantities["ready_flag"]["source_type"] == "Bool"
     assert quantities["settle_count"]["sample_desc"] == {"kind": "int", "id": "settle_count"}
     assert quantities["settle_count"]["source_type"] == "IntCounter"
     assert quantities["ctrl_x_error_integral"]["sample_desc"] == {
-        "kind": "shared", "id": "ctrl_x_error_integral"}
+        "kind": "shared",
+        "id": "ctrl_x_error_integral",
+    }
     assert quantities["ctrl_x_error_integral"]["role"] == "controller_internal_state"
-    assert quantities["ctrl_x_first_sample"]["sample_desc"] == {"kind": "bool", "id": "ctrl_x_first_sample"}
+    assert quantities["ctrl_x_first_sample"]["sample_desc"] == {
+        "kind": "bool",
+        "id": "ctrl_x_first_sample",
+    }
     assert quantities["ctrl_x_first_sample"]["role"] == "controller_internal_state"
     assert quantities["ctrl_x_first_sample"]["source_type"] == "Bool"
     assert schema["pools"]["quantities"] == len(schema["quantities"])
@@ -458,7 +456,11 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
     # Spatial samples: one pose/twist/wrench per data object, serialized into the frame
     # record's pose/twist/wrench fields.
     model = payload["introspection_artifacts"]["model"]
-    assert (schema["pools"]["poses"], schema["pools"]["twists"], schema["pools"]["wrenches"]) == (1, 1, 1)
+    assert (schema["pools"]["poses"], schema["pools"]["twists"], schema["pools"]["wrenches"]) == (
+        1,
+        1,
+        1,
+    )
     assert schema["spatial"]["poses"][0]["id"] == "pose_ee"
     assert {"index": 0, "id": "pose_ee"} in model["poses"]
     assert {"index": 0, "id": "twist_ee"} in model["twists"]
@@ -473,8 +475,7 @@ def test_provenance_document_is_jsonld_and_prov_shacl_conformant(tmp_path: Path)
     metamodels = Path(__file__).resolve().parents[2] / "metamodels"
     install_resolver(
         IriToFileResolver(
-            {"https://secorolab.github.io/metamodels/": str(metamodels)},
-            download=False,
+            {"https://secorolab.github.io/metamodels/": str(metamodels)}, download=False
         )
     )
     graph = Graph().parse(path, format="json-ld")
@@ -552,7 +553,9 @@ def test_a_row_carrying_its_own_uri_needs_no_table_entry():
     introspection = {
         "uris": [],
         "quantities": [{"id": "q_a", "uri": "https://example.org/m/q-a"}],
-        "signals": [{"id": "ctrl_x.error_signal", "quantity": "q_a", "uri": "https://example.org/m/q-a"}],
+        "signals": [
+            {"id": "ctrl_x.error_signal", "quantity": "q_a", "uri": "https://example.org/m/q-a"}
+        ],
     }
     _assert_every_id_resolves(introspection)
 

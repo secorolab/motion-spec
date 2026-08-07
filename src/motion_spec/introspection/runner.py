@@ -11,10 +11,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from motion_spec.introspection.archive import (
-    create_archive_manifest,
-    verify_manifest,
-)
+from motion_spec.introspection.archive import create_archive_manifest, verify_manifest
 from motion_spec.introspection.provenance import (
     artifact_sha256,
     artifact_size,
@@ -115,8 +112,13 @@ def run_cataloged(
 
 
 _ROBOT_CONFIG_KEYS = (
-    "ip", "user", "password", "port", "port_real_time",
-    "session_timeout_ms", "connection_timeout_ms",
+    "ip",
+    "user",
+    "password",
+    "port",
+    "port_real_time",
+    "session_timeout_ms",
+    "connection_timeout_ms",
 )
 
 # What each device kind's reader in robot_config.hpp demands of its section. Optional keys
@@ -158,7 +160,9 @@ def _validate_robot_config(source_dir: Path, cwd: Path | None = None) -> None:
         return
     declared = (ir["platform"] or {}).get("config") or ""
     if not declared:
-        raise RunnerError("real-world run declares no config; it has nowhere to read addresses from")
+        raise RunnerError(
+            "real-world run declares no config; it has nowhere to read addresses from"
+        )
     # Resolved exactly as the executable will resolve it: against the working directory the run
     # gets. Checking any other file would clear a config the run never opens.
     config_path = Path(declared)
@@ -223,11 +227,7 @@ def _validate_new_run(
 
 
 def _start_rec_run(
-    run_dir: Path,
-    run_id: str,
-    source_dir: Path,
-    executable: Path,
-    schema: dict,
+    run_dir: Path, run_id: str, source_dir: Path, executable: Path, schema: dict
 ) -> None:
     ensure_local_rec_importable()
     from rec import Run
@@ -257,18 +257,13 @@ def _start_rec_run(
 def _record_execution_inputs(
     run, run_dir: Path, source_dir: Path, executable: Path, schema: dict
 ) -> None:
-    activity = prov_uri(schema.get("runtime_provenance", {}).get("activity_id") or "activity:controller_execution")
+    activity = prov_uri(
+        schema.get("runtime_provenance", {}).get("activity_id") or "activity:controller_execution"
+    )
     inputs = (
-        (
-            ("provenance/motion-spec.ld.json", "provenance"),
-            ("model/ir.json", "ir"),
-        )
+        (("provenance/motion-spec.ld.json", "provenance"), ("model/ir.json", "ir"))
         if (source_dir / "contract").is_dir()
-        else (
-            ("provenance.ld.json", "provenance"),
-            ("model.ld.json", "model"),
-            ("ir.json", "ir"),
-        )
+        else (("provenance.ld.json", "provenance"), ("model.ld.json", "model"), ("ir.json", "ir"))
     )
     for rel, role in inputs:
         path = source_dir / rel

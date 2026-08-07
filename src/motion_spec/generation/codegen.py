@@ -26,9 +26,7 @@ def write_json(path: Path, payload):
 
     ``sort_keys`` so dict-insertion order can never make two generations of the same model differ."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, cls=DataclassJSONEncoder, indent=4, sort_keys=True) + "\n"
-    )
+    path.write_text(json.dumps(payload, cls=DataclassJSONEncoder, indent=4, sort_keys=True) + "\n")
 
 
 def render_template(

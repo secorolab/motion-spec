@@ -217,8 +217,17 @@ def test_runtime_ttl_projects_full_observation_graph(tmp_path: Path) -> None:
     # The Sample node families and the continuous streams are gone (they live in the frame log).
     for gone in (MSRUN.ControllerSample, MSRUN.SignalSample, MSRUN.MonitorSample):
         assert not list(graph.subjects(rdflib.RDF.type, gone))
-    for gone in (MSRUN.error, MSRUN.output, MSRUN.measured, MSRUN.setpoint,
-                 MSRUN.t, MSRUN.wall_ns, MSRUN.satSince, MSRUN.compute_ns, MSRUN.period_ns):
+    for gone in (
+        MSRUN.error,
+        MSRUN.output,
+        MSRUN.measured,
+        MSRUN.setpoint,
+        MSRUN.t,
+        MSRUN.wall_ns,
+        MSRUN.satSince,
+        MSRUN.compute_ns,
+        MSRUN.period_ns,
+    ):
         assert not list(graph.triples((None, gone, None)))
 
     # Each monitor/constraint occurrence carries the live residual (msrun:value) and the spec
@@ -230,9 +239,17 @@ def test_runtime_ttl_projects_full_observation_graph(tmp_path: Path) -> None:
     assert graph.value(con, MSRUN.value) == rdflib.Literal(Decimal("1.0"))
     assert graph.value(con, MSRUN.value).datatype == rdflib.XSD.decimal
     # The only floats are those bounded occurrence values, and they stay exact-decimal (never double).
-    floats = [(s, o) for s, p, o in graph.triples((None, MSRUN.value, None)) if isinstance(o, rdflib.Literal)]
+    floats = [
+        (s, o)
+        for s, p, o in graph.triples((None, MSRUN.value, None))
+        if isinstance(o, rdflib.Literal)
+    ]
     assert floats and all(o.datatype == rdflib.XSD.decimal for _, o in floats)
-    assert not [o for o in graph.objects() if isinstance(o, rdflib.Literal) and o.datatype == rdflib.XSD.double]
+    assert not [
+        o
+        for o in graph.objects()
+        if isinstance(o, rdflib.Literal) and o.datatype == rdflib.XSD.double
+    ]
 
     # Time is prov:generatedAtTime (xsd:dateTime).
     stamps = list(graph.subject_objects(PROV.generatedAtTime))
@@ -241,4 +258,6 @@ def test_runtime_ttl_projects_full_observation_graph(tmp_path: Path) -> None:
     # Runtime.ttl self-provenance: who recovered it, and derived from the frame log.
     recovery = rdflib.URIRef(prov_uri("activity:runtime_ttl_recovery"))
     assert _has(graph, None, PROV.wasGeneratedBy, recovery)
-    assert _has(graph, recovery, PROV.wasAssociatedWith, rdflib.URIRef(prov_uri("agent:replay_process")))
+    assert _has(
+        graph, recovery, PROV.wasAssociatedWith, rdflib.URIRef(prov_uri("agent:replay_process"))
+    )

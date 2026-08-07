@@ -22,12 +22,11 @@ consume only these."""
 from __future__ import annotations
 
 import collections
-from dataclasses import (
-    dataclass, replace,
-)
+from dataclasses import dataclass, replace
 from rdf_utils.models.common import get_node_types
 from rdflib import URIRef
 from rdflib.namespace import RDF
+
 # fmt: off
 from motion_spec.classes.entities import (
     AccelerationConstraint, Axis, CartesianAccelerationSpecification, FeedForwardController,
@@ -42,15 +41,16 @@ from motion_spec_dsl.rdf_parser.vocab import (
 )
 # fmt: on
 
-from motion_spec.rdf_parser.records import (
-    _prune,
-    _field, _kebab, _set_field, _signal_id,
-)
+from motion_spec.rdf_parser.records import _prune, _field, _kebab, _set_field, _signal_id
 from motion_spec.rdf_parser.graph import (
     _id_ref,
-    AccelerationInputKind, DerivedIriRegistry, SolverSemantics, _resolve_solver_semantics,
+    AccelerationInputKind,
+    DerivedIriRegistry,
+    SolverSemantics,
+    _resolve_solver_semantics,
     _term_name,
 )
+
 
 @dataclass(frozen=True)
 class SpatialAxis:
@@ -72,6 +72,8 @@ class SpatialAxis:
     def frame_axis(self) -> str | None:
         """The fixed frame axis this direction is, or None when it is a runtime vector."""
         return None if self.direction is not None else self.axis
+
+
 @dataclass(frozen=True)
 class SolverIdFactory:
     """Build compatibility IDs solely from authored RDF resource IDs."""
@@ -127,6 +129,8 @@ class SolverIdFactory:
     def suffix(self, kind: str, axis: SpatialAxis | None = None) -> str:
         """IRI path segment for one derivation kind."""
         return self.SUFFIXES[kind].format(axis=_kebab(axis.suffix) if axis else "")
+
+
 _AXIS_BY_FRAME_AXIS = {"x": Axis.X, "y": Axis.Y, "z": Axis.Z}
 _AXIS_DERIVATIONS = (
     "component_controller",
@@ -137,15 +141,15 @@ _AXIS_DERIVATIONS = (
     "component_acceleration_specification",
     "component_measured_derivative",
 )
+
+
 def _register_derived_family(iris, parent_node, ids: SolverIdFactory, axes) -> None:
     """Register every IRI this factory can mint for one controller and its axes: the sites each mint
     a different subset, and a missed one leaves a slot unaddressable. An unused id is inert.
     """
     parent = str(parent_node)
     for kind in ("pose_evaluator", "pose_difference"):
-        iris.register(
-            getattr(ids, kind)(), parent, ids.suffix(kind), DerivedIriRegistry.DERIVATION
-        )
+        iris.register(getattr(ids, kind)(), parent, ids.suffix(kind), DerivedIriRegistry.DERIVATION)
     for axis in axes or ():
         for kind in _AXIS_DERIVATIONS:
             iris.register(
@@ -156,9 +160,13 @@ def _register_derived_family(iris, parent_node, ids: SolverIdFactory, axes) -> N
                 if kind in SolverIdFactory.SPECIALIZATIONS
                 else DerivedIriRegistry.DERIVATION,
             )
+
+
 LINEAR_AXES = tuple(SpatialAxis("linear-acceleration", axis) for axis in "xyz")
 ANGULAR_AXES = tuple(SpatialAxis("angular-acceleration", axis) for axis in "xyz")
 POSE_AXES = (*LINEAR_AXES, *ANGULAR_AXES)
+
+
 def spatial_axes(
     *,
     controller_type: str,
@@ -188,6 +196,8 @@ def spatial_axes(
     if subspace == "distance" and axis is None:
         return (SpatialAxis("linear-acceleration", "distance"),)
     return ()
+
+
 def _path_projection_outputs(g) -> dict[URIRef, dict[str, URIRef]]:
     """The local frame and measured speed each path projection produces, keyed by its path."""
     speed_by_direction = {
@@ -197,12 +207,13 @@ def _path_projection_outputs(g) -> dict[URIRef, dict[str, URIRef]]:
     outputs = {}
     for frame in g.subjects(RDF.type, GEOM_OP_EXT.PathTangentFrame):
         roles = {
-            role: g.value(frame, GEOM_OP_EXT[role])
-            for role in ("tangent", "normal-a", "normal-b")
+            role: g.value(frame, GEOM_OP_EXT[role]) for role in ("tangent", "normal-a", "normal-b")
         }
         roles["along-speed"] = speed_by_direction.get(roles["tangent"])
         outputs[g.value(frame, GEOM_OP_EXT.path)] = roles
     return outputs
+
+
 def _path_following_axes(
     outputs: dict[str, URIRef], quantity: URIRef, subspace: str | None
 ) -> tuple[SpatialAxis, ...]:
@@ -223,6 +234,8 @@ def _path_following_axes(
         f"Path-following constraint on '{quantity}' must control the speed along the path, "
         "its position, or its orientation."
     )
+
+
 def _authored_controller_axes(g) -> dict[URIRef, tuple[SpatialAxis, ...]]:
     """Cartesian directions derived only from authored controller facts."""
     handler_controllers = set(g.objects(None, CSTR_HDL.controllers))
@@ -279,6 +292,8 @@ def _authored_controller_axes(g) -> dict[URIRef, tuple[SpatialAxis, ...]]:
             quantity_kind=quantity_kind,
         )
     return result
+
+
 @dataclass(frozen=True)
 class ControllerDerivation:
     """Resolved authored facts needed to derive one controller's solver IR."""
@@ -291,6 +306,8 @@ class ControllerDerivation:
     quantity: URIRef
     view: URIRef | None
     axes: tuple[SpatialAxis, ...]
+
+
 @dataclass(frozen=True)
 class SolverDerivationContext:
     """Immutable indexes for solver expansion, built once before IR emission."""
@@ -302,6 +319,8 @@ class SolverDerivationContext:
     # Carried here, not threaded through six signatures: the context reaches every site that
     # mints an id, and those are the only places the parent node is still known.
     iris: DerivedIriRegistry
+
+
 def _solver_derivation_context(g, iris: DerivedIriRegistry) -> SolverDerivationContext:
     """Resolve controller ownership and command shape without generated solver nodes."""
     axes_by_controller = _authored_controller_axes(g)
@@ -342,9 +361,7 @@ def _solver_derivation_context(g, iris: DerivedIriRegistry) -> SolverDerivationC
     constraint_counts = collections.Counter(
         plan.constraint for plans in by_handler.values() for plan in plans
     )
-    solver_nodes = set(by_solver) | set(
-        g.subjects(RDF.type, SLV.SolverWithInputAndOutput)
-    )
+    solver_nodes = set(by_solver) | set(g.subjects(RDF.type, SLV.SolverWithInputAndOutput))
     semantics = {solver: _resolve_solver_semantics(g, solver) for solver in solver_nodes}
     _validate_solver_derivations(g, by_handler, by_solver, semantics)
     return SolverDerivationContext(
@@ -356,6 +373,8 @@ def _solver_derivation_context(g, iris: DerivedIriRegistry) -> SolverDerivationC
         ),
         iris=iris,
     )
+
+
 def _validate_solver_derivations(g, by_handler, by_solver, semantics) -> None:
     """Enforce executable solver limits after authored RDF has resolved to solver plans."""
     for solver, plans in by_solver.items():
@@ -367,7 +386,9 @@ def _validate_solver_derivations(g, by_handler, by_solver, semantics) -> None:
             rendered = ", ".join(f"{axis.subspace}.{axis.axis}" for axis in duplicates)
             raise ValueError(f"ACHD solver '{solver}' repeats acceleration axis: {rendered}.")
         if len(axes) > 6:
-            raise ValueError(f"ACHD solver '{solver}' has {len(axes)} axes; at most 6 are supported.")
+            raise ValueError(
+                f"ACHD solver '{solver}' has {len(axes)} axes; at most 6 are supported."
+            )
 
     for handler, plans in by_handler.items():
         domains: dict[URIRef, set[str]] = collections.defaultdict(set)
@@ -375,7 +396,9 @@ def _validate_solver_derivations(g, by_handler, by_solver, semantics) -> None:
             command = str(g.value(plan.controller, APP["command-type"]) or "")
             subspace = _term_name(g.value(plan.view, MAP.subspace)) if plan.view else None
             domains[semantics[plan.solver].acceleration_input].add(
-                "force" if command in {"Force", "Torque"} or subspace in {"force", "torque"} else "pose"
+                "force"
+                if command in {"Force", "Torque"} or subspace in {"force", "torque"}
+                else "pose"
             )
         achd = domains[AccelerationInputKind.ConstraintEnergy]
         rne = domains[AccelerationInputKind.CartesianAcceleration]
@@ -385,22 +408,19 @@ def _validate_solver_derivations(g, by_handler, by_solver, semantics) -> None:
                 f"Handler '{handler}' assigns ACHD and RNE to the same domain(s): "
                 f"{', '.join(sorted(overlap))}."
             )
-def _derived_quantity(
-    id_: str, kind: str, unit: str, *, has_view: bool = False
-) -> Quantity:
+
+
+def _derived_quantity(id_: str, kind: str, unit: str, *, has_view: bool = False) -> Quantity:
     """Construct a runtime scalar that is implied rather than authored."""
-    return Quantity(
-        id_,
-        QuantityKind(kind),
-        Unit(unit),
-        None,
-        has_view,
-        provenance=Provenance(),
-    )
+    return Quantity(id_, QuantityKind(kind), Unit(unit), None, has_view, provenance=Provenance())
+
+
 def _motion_suffix(p, motion: URIRef) -> str:
     """Return the compatibility motion suffix from its authored motion resource."""
     motion_id = p.id(motion)
     return motion_id.removeprefix("motion_")
+
+
 def _controller_signal_id(
     g, p, context: SolverDerivationContext, plan: ControllerDerivation
 ) -> str:
@@ -416,11 +436,17 @@ def _controller_signal_id(
     if command_type == "Torque" and KC_STAT.JointPositionCoordinate in get_node_types(g, target):
         return f"tau_{controller_id}"
     quantity_id = p.id(plan.quantity)
-    suffix = "" if plan.constraint in context.shared_constraints else f"_{_motion_suffix(p, plan.motion)}"
+    suffix = (
+        ""
+        if plan.constraint in context.shared_constraints
+        else f"_{_motion_suffix(p, plan.motion)}"
+    )
     semantics = context.semantics_by_solver[plan.solver]
     if semantics.signal_prefix is None:
         raise ValueError(f"Solver '{plan.solver}' does not accept acceleration signals.")
     return f"{semantics.signal_prefix}_{quantity_id}{suffix}"
+
+
 def _acceleration_signal(
     id_: str, axis: SpatialAxis, input_kind: AccelerationInputKind
 ) -> Quantity:
@@ -432,13 +458,19 @@ def _acceleration_signal(
             return _derived_quantity(id_, "LinearAcceleration", "M_PER_SEC2")
         return _derived_quantity(id_, "AngularAcceleration", "RAD_PER_SEC2")
     raise ValueError(f"Input kind '{input_kind}' does not carry acceleration.")
+
+
 def _solver_ids(p, context: SolverDerivationContext, plan: ControllerDerivation) -> SolverIdFactory:
     """Ids for one controller, with its whole derived-IRI family registered."""
     ids = SolverIdFactory(p.id(plan.controller), _motion_suffix(p, plan.motion))
     _register_derived_family(context.iris, plan.controller, ids, plan.axes)
     return ids
+
+
 def _axis_subspace(axis: SpatialAxis) -> Subspace:
     return Subspace.Linear if axis.subspace == "linear-acceleration" else Subspace.Angular
+
+
 def _axis_error(ids: SolverIdFactory, axis: SpatialAxis) -> Quantity:
     """The per-axis component of a pose difference the controller drives to zero."""
     linear = axis.subspace == "linear-acceleration"
@@ -448,6 +480,8 @@ def _axis_error(ids: SolverIdFactory, axis: SpatialAxis) -> Quantity:
         "M" if linear else "RAD",
         has_view=True,
     )
+
+
 def _axis_derivative(ids: SolverIdFactory, axis: SpatialAxis) -> Quantity:
     """The per-axis component of the measured velocity feeding a derivative term."""
     linear = axis.subspace == "linear-acceleration"
@@ -457,6 +491,8 @@ def _axis_derivative(ids: SolverIdFactory, axis: SpatialAxis) -> Quantity:
         "M_PER_SEC" if linear else "RAD_PER_SEC",
         has_view=True,
     )
+
+
 def _axis_view(p, superobject, subobject, axis: SpatialAxis) -> View:
     """The view selecting one axis of a spatial superobject."""
     return View(
@@ -467,6 +503,8 @@ def _axis_view(p, superobject, subobject, axis: SpatialAxis) -> View:
         _AXIS_BY_FRAME_AXIS.get(axis.frame_axis),
         direction=p.direction(axis.direction) if axis.direction is not None else None,
     )
+
+
 def _saturation_for_signal(g, p, node, signal):
     """Parse authored saturation bounds and bind them to a derived signal."""
     if node is None:
@@ -482,6 +520,8 @@ def _saturation_for_signal(g, p, node, signal):
         p.quantity(lower) if lower is not None else None,
         p.quantity(upper) if upper is not None else None,
     )
+
+
 def _controller_saturations(g, p, controller, signal):
     """Bind authored output and integral bounds to a derived controller signal."""
     nodes = list(g.objects(controller, ALGO_EXT.limits))
@@ -499,6 +539,8 @@ def _controller_saturations(g, p, controller, signal):
         _saturation_for_signal(g, p, output_node, signal),
         _saturation_for_signal(g, p, integral_node, signal),
     )
+
+
 def _derived_controller(
     g,
     p,
@@ -593,11 +635,15 @@ def _derived_controller(
         tolerance_id=tolerance_id,
         type=p.id(CSTR_HDL_EXT.FeedForwardController),
     )
+
+
 def _derived_controllers(g, p, context, plan: ControllerDerivation):
     """Expand a pose command per axis and leave scalar commands singular."""
     if len(plan.axes) > 1:
         return [_derived_controller(g, p, context, plan, axis) for axis in plan.axes]
     return [_derived_controller(g, p, context, plan)]
+
+
 # Per solver input kind: id-factory kinds for the record and its payload, the IRI tags, the
 # record class, and the field the payload fills. Single-axis ids reuse the tags with `-` as `_`.
 _ACCELERATION_DRIVERS = {
@@ -618,6 +664,8 @@ _ACCELERATION_DRIVERS = {
         "acceleration",
     ),
 }
+
+
 def _derived_acceleration_drivers(
     g, p, context, plan: ControllerDerivation, input_kind: AccelerationInputKind
 ):
@@ -662,15 +710,21 @@ def _derived_acceleration_drivers(
             )
         )
     return result
+
+
 def _derived_motion_drivers(g, p, context, solver: URIRef) -> list[MotionDrivers]:
     """Build a solver's drivers from authored controllers plus authored force specs."""
     plans = context.controllers_by_solver.get(solver, ())
     input_kind = context.semantics_by_solver[solver].acceleration_input
-    records = [
-        record
-        for plan in plans
-        for record in _derived_acceleration_drivers(g, p, context, plan, input_kind)
-    ] if input_kind in _ACCELERATION_DRIVERS else []
+    records = (
+        [
+            record
+            for plan in plans
+            for record in _derived_acceleration_drivers(g, p, context, plan, input_kind)
+        ]
+        if input_kind in _ACCELERATION_DRIVERS
+        else []
+    )
     constraints = records if input_kind == AccelerationInputKind.ConstraintEnergy else []
     accelerations = records if input_kind == AccelerationInputKind.CartesianAcceleration else []
     result = []
@@ -680,8 +734,7 @@ def _derived_motion_drivers(g, p, context, solver: URIRef) -> list[MotionDrivers
             for node in g.objects(driver, SLV["cartesian-force"])
         ]
         joint = [
-            p.joint_force_specification(node)
-            for node in g.objects(driver, SLV["joint-force"])
+            p.joint_force_specification(node) for node in g.objects(driver, SLV["joint-force"])
         ]
         result.append(
             MotionDrivers(
@@ -694,6 +747,8 @@ def _derived_motion_drivers(g, p, context, solver: URIRef) -> list[MotionDrivers
             )
         )
     return result
+
+
 def _derive_solver_closures(g, p, context, closures: dict) -> None:
     """Replace graph-expanded controller closures with authored semantic derivations."""
     for plans in context.controllers_by_handler.values():
@@ -733,6 +788,8 @@ def _derive_solver_closures(g, p, context, closures: dict) -> None:
                 # views the progress gate and the logged quantities read a never-written 0.0.
                 "errors": [ids.component_error(axis) for axis in plan.axes],
             }
+
+
 def _derive_solver_data(g, p, context, data: list, views: dict) -> None:
     """Add pose-command runtime quantities and views without RDF materialization."""
     differences = []
@@ -785,6 +842,8 @@ def _derive_solver_data(g, p, context, data: list, views: dict) -> None:
     data.extend(errors)
     data.extend(derivatives)
     data.extend(signals)
+
+
 def _annotate_controller_signals(controllers, closures: dict) -> None:
     """Fold the measured/setpoint signal ids onto each controller from its error-evaluator closure.
     Abstract ids only; the C++ access expression is rendered by access-expr (shared_data.stg).
@@ -807,6 +866,8 @@ def _annotate_controller_signals(controllers, closures: dict) -> None:
             _set_field(controller, "measured_signal", measured_id)
         if setpoint_id:
             _set_field(controller, "setpoint_signal", setpoint_id)
+
+
 def add_controller_internal_state_logging(
     closures: dict, shared_data: list, introspection: dict, motions, iris
 ) -> None:
@@ -864,11 +925,11 @@ def add_controller_internal_state_logging(
             add_once(shared_data, shared_ids, item_id, item_type, controller_id, state_name)
             if item_type == "Quantity":
                 add_once(quantities, quantity_ids, item_id, "Quantity", controller_id, state_name)
-            iris.register(
-                item_id, parent_iri, state_name, DerivedIriRegistry.DERIVATION
-            )
+            iris.register(item_id, parent_iri, state_name, DerivedIriRegistry.DERIVATION)
             closure_samples.append({"id": item_id, "getter": getter})
         closure["internal_state_samples"] = closure_samples
+
+
 # Gains-struct field name -> the field the parsed controller carries it on, and whether the model
 # must author it. Order is the struct's field order; an absent required one must fail.
 _CONTROL_GAINS = {
@@ -886,6 +947,8 @@ _CONTROL_GAINS = {
 }
 # Admittance parameters, carried on the closure as authored literals.
 _ADMITTANCE_PARAMETERS = ("mass", "damping", "stiffness", "maximum_velocity")
+
+
 def add_control_parameters(closures: dict, shared_data: list, introspection: dict, motions, iris):
     """Publish every authored control parameter as a shared value the step call reads. A gain baked
     into a constructor can neither be reported nor vary; as a shared value it carries a producer

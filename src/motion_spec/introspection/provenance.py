@@ -50,18 +50,9 @@ TOOL_METADATA = {
         "package": "rdf-utils",
         "repository": "https://github.com/secorolab/rdf-utils",
     },
-    "agent:rdflib": {
-        "package": "rdflib",
-        "repository": "https://github.com/RDFLib/rdflib",
-    },
-    "agent:pyshacl": {
-        "package": "pyshacl",
-        "repository": "https://github.com/RDFLib/pySHACL",
-    },
-    "agent:stst": {
-        "version": "0.4.1",
-        "repository": "https://github.com/jsnyders/STSTv4",
-    },
+    "agent:rdflib": {"package": "rdflib", "repository": "https://github.com/RDFLib/rdflib"},
+    "agent:pyshacl": {"package": "pyshacl", "repository": "https://github.com/RDFLib/pySHACL"},
+    "agent:stst": {"version": "0.4.1", "repository": "https://github.com/jsnyders/STSTv4"},
 }
 
 
@@ -95,8 +86,8 @@ def prov_uri(identifier: str) -> str:
     if identifier.startswith(("http://", "https://")):
         return identifier
     if identifier.startswith(MSPROV_PREFIX):
-        return MSPROV + identifier[len(MSPROV_PREFIX):]
-    return MSPROV + _prov_iri(identifier)[len(MSPROV_PREFIX):]
+        return MSPROV + identifier[len(MSPROV_PREFIX) :]
+    return MSPROV + _prov_iri(identifier)[len(MSPROV_PREFIX) :]
 
 
 def _location_iri(value: str | None) -> str | None:
@@ -130,7 +121,7 @@ def _vendor_model_ref(path: str) -> str:
     for marker, vendor in _VENDOR_MARKERS:
         pos = text.find(marker)
         if pos != -1:
-            return f"{vendor}:{text[pos + len(marker):]}"
+            return f"{vendor}:{text[pos + len(marker) :]}"
     return text
 
 
@@ -189,9 +180,7 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
         elif entity.get("wasDerivedFrom"):
             properties["wasDerivedFrom"] = _prov_iri(entity["wasDerivedFrom"])
         entity_id = add_node(
-            entity.get("id", "entity"),
-            entity.get("types") or ["prov:Entity"],
-            **properties,
+            entity.get("id", "entity"), entity.get("types") or ["prov:Entity"], **properties
         )
         if entity.get("role") != "motion_spec_ir":
             input_entity_ids.append(entity_id)
@@ -301,9 +290,7 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
     )
     add_node("agent:build_toolchain", [PROV_SOFTWARE_AGENT, PROV_AGENT], role="build_toolchain")
     add_node(
-        "agent:replay_process",
-        [PROV_SOFTWARE_AGENT, PROV_AGENT],
-        role="expected_replay_process",
+        "agent:replay_process", [PROV_SOFTWARE_AGENT, PROV_AGENT], role="expected_replay_process"
     )
     add_node(
         "agent:dashboard_process",
@@ -315,10 +302,7 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
         "schema_version": 1,
         "runtime_rdf_contract_version": 1,
         "@context": [*METAMODEL_CONTEXTS, {"msprov": MSPROV, "role": "msprov:role"}],
-        "@graph": [
-            {"@id": "msprov:bundle/static-provenance", "@type": "prov:Bundle"},
-            *graph,
-        ],
+        "@graph": [{"@id": "msprov:bundle/static-provenance", "@type": "prov:Bundle"}, *graph],
     }
 
 
@@ -449,10 +433,7 @@ def record_agents(run, run_dir: Path, schema: dict) -> None:
         rec_types(["prov:SoftwareAgent", "obs:ObservationProvider"]),
     )
     for agent_id, agent_types in provenance_nodes(run_dir, "agn:ModelledAgent"):
-        run.add_agent(
-            agent_id,
-            agent_types,
-        )
+        run.add_agent(agent_id, agent_types)
 
 
 def record_activities(run, schema: dict) -> None:
@@ -466,9 +447,7 @@ def record_activities(run, schema: dict) -> None:
     run.add_activity(
         prov_uri(runtime.get("activity_id") or "activity:controller_execution"),
         rec_types(["prov:Activity", execution_type]),
-        associated_with=prov_uri(
-            runtime.get("producer_agent_id") or "agent:controller_process"
-        ),
+        associated_with=prov_uri(runtime.get("producer_agent_id") or "agent:controller_process"),
     )
     run.add_activity(
         prov_uri("activity:archive_creation"),
@@ -500,6 +479,8 @@ def record_files(run, run_dir: Path, manifest: dict, schema: dict) -> None:
                 run.add_artefact(rel, gen_activity=runtime_activity, **common)
             else:
                 run.add_resource(rel, usage_activity=runtime_activity, **common)
+
+
 def record_frame_log_health(run, run_dir: Path, manifest: dict) -> None:
     rel = manifest.get("files", {}).get("frame_log_health")
     if not rel:
@@ -540,11 +521,7 @@ def artifact_sha256(path: Path) -> str:
 def host_info() -> dict:
     # The interpreter identity that matters for reproducibility is its version (python);
     # sys.executable is just the local venv path — machine-specific and provenance-free.
-    return {
-        "hostname": socket.gethostname(),
-        "os": platform.platform(),
-        "python": sys.version,
-    }
+    return {"hostname": socket.gethostname(), "os": platform.platform(), "python": sys.version}
 
 
 def dependencies() -> list[dict]:

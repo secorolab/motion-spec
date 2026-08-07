@@ -34,7 +34,20 @@ _MONITOR_KEYS = ("active", "value", "satisfied", "sat_t")
 _TRIGGER_KEYS = ("kind", "idx", "fsm_state", "t", "wall_ns")
 # Header-only schema: enough to decode the FrameLogHeader without a model's field map.
 _HEADER_SCHEMA = {
-    "protobuf": {"fields": {cat: [] for cat in ("constraints", "monitors", "quantities", "triggers", "poses", "twists", "wrenches")}},
+    "protobuf": {
+        "fields": {
+            cat: []
+            for cat in (
+                "constraints",
+                "monitors",
+                "quantities",
+                "triggers",
+                "poses",
+                "twists",
+                "wrenches",
+            )
+        }
+    },
     "pools": {},
     "quantities": [],
 }
@@ -50,80 +63,179 @@ def _proto_fields(schema: dict) -> dict:
 def _build_file_descriptor(fields: dict) -> descriptor_pb2.FileDescriptorProto:
     """FileDescriptorProto mirroring the generated frame_log.proto, from the schema field map."""
     D = descriptor_pb2.FieldDescriptorProto
-    fdp = descriptor_pb2.FileDescriptorProto(name="frame_log.proto", package=PROTO_PACKAGE, syntax="proto3")
+    fdp = descriptor_pb2.FileDescriptorProto(
+        name="frame_log.proto", package=PROTO_PACKAGE, syntax="proto3"
+    )
 
     def message(name: str, entries: list) -> None:
         m = fdp.message_type.add(name=name)
         for fname, ftype, number in entries:
             m.field.add(name=fname, number=number, label=D.LABEL_OPTIONAL, type=ftype)
 
-    message("SlotIri", [("number", D.TYPE_UINT32, 1), ("id", D.TYPE_STRING, 2), ("iri", D.TYPE_STRING, 3),
-                        ("constraint_iri", D.TYPE_STRING, 4), ("event_iri", D.TYPE_STRING, 5)])
+    message(
+        "SlotIri",
+        [
+            ("number", D.TYPE_UINT32, 1),
+            ("id", D.TYPE_STRING, 2),
+            ("iri", D.TYPE_STRING, 3),
+            ("constraint_iri", D.TYPE_STRING, 4),
+            ("event_iri", D.TYPE_STRING, 5),
+        ],
+    )
     transition = fdp.message_type.add(name="Transition")
     for fname, ftype, number in (
-        ("index", D.TYPE_UINT32, 1), ("id", D.TYPE_STRING, 2), ("iri", D.TYPE_STRING, 3),
-        ("from_state", D.TYPE_INT32, 4), ("to_state", D.TYPE_INT32, 5), ("event_index", D.TYPE_INT32, 6),
+        ("index", D.TYPE_UINT32, 1),
+        ("id", D.TYPE_STRING, 2),
+        ("iri", D.TYPE_STRING, 3),
+        ("from_state", D.TYPE_INT32, 4),
+        ("to_state", D.TYPE_INT32, 5),
+        ("event_index", D.TYPE_INT32, 6),
     ):
         transition.field.add(name=fname, number=number, label=D.LABEL_OPTIONAL, type=ftype)
     transition.field.add(name="event_indices", number=7, label=D.LABEL_REPEATED, type=D.TYPE_UINT32)
-    message("Constant", [("id", D.TYPE_STRING, 1), ("source_id", D.TYPE_STRING, 2), ("value", D.TYPE_DOUBLE, 3)])
+    message(
+        "Constant",
+        [("id", D.TYPE_STRING, 1), ("source_id", D.TYPE_STRING, 2), ("value", D.TYPE_DOUBLE, 3)],
+    )
 
     gate = fdp.message_type.add(name="MotionGate")
     for fname, ftype, number in (
-        ("index", D.TYPE_UINT32, 1), ("id", D.TYPE_STRING, 2), ("iri", D.TYPE_STRING, 3),
+        ("index", D.TYPE_UINT32, 1),
+        ("id", D.TYPE_STRING, 2),
+        ("iri", D.TYPE_STRING, 3),
         ("fsm_state", D.TYPE_INT32, 4),
     ):
         gate.field.add(name=fname, number=number, label=D.LABEL_OPTIONAL, type=ftype)
     for fname, number in (("quantities", 5), ("poses", 6), ("twists", 7), ("wrenches", 8)):
         gate.field.add(name=fname, number=number, label=D.LABEL_REPEATED, type=D.TYPE_UINT32)
     for fname, number in (("controllers", 9), ("monitors", 10)):
-        gate.field.add(name=fname, number=number, label=D.LABEL_REPEATED,
-                       type=D.TYPE_MESSAGE, type_name=f".{PROTO_PACKAGE}.SlotIri")
+        gate.field.add(
+            name=fname,
+            number=number,
+            label=D.LABEL_REPEATED,
+            type=D.TYPE_MESSAGE,
+            type_name=f".{PROTO_PACKAGE}.SlotIri",
+        )
 
     hdr = fdp.message_type.add(name="FrameLogHeader")
     for fname, ftype, number in (
-        ("schema_hash", D.TYPE_STRING, 1), ("producer_agent_id", D.TYPE_STRING, 2),
-        ("activity_id", D.TYPE_STRING, 3), ("descriptor_set", D.TYPE_BYTES, 4),
-        ("trigger_pool", D.TYPE_UINT32, 7), ("runtime_agent_id", D.TYPE_STRING, 12),
-        ("platform_name", D.TYPE_STRING, 13), ("simulated", D.TYPE_BOOL, 14),
-        ("end_state", D.TYPE_INT32, 15), ("nominal_period_ns", D.TYPE_INT64, 16), ("fsm_namespace", D.TYPE_STRING, 17),
+        ("schema_hash", D.TYPE_STRING, 1),
+        ("producer_agent_id", D.TYPE_STRING, 2),
+        ("activity_id", D.TYPE_STRING, 3),
+        ("descriptor_set", D.TYPE_BYTES, 4),
+        ("trigger_pool", D.TYPE_UINT32, 7),
+        ("runtime_agent_id", D.TYPE_STRING, 12),
+        ("platform_name", D.TYPE_STRING, 13),
+        ("simulated", D.TYPE_BOOL, 14),
+        ("end_state", D.TYPE_INT32, 15),
+        ("nominal_period_ns", D.TYPE_INT64, 16),
+        ("fsm_namespace", D.TYPE_STRING, 17),
     ):
         hdr.field.add(name=fname, number=number, label=D.LABEL_OPTIONAL, type=ftype)
     for fname, number, type_name in (
-        ("slots", 5, "SlotIri"), ("motions", 6, "MotionGate"), ("fsm_states", 8, "SlotIri"),
-        ("fsm_events", 9, "SlotIri"), ("fsm_transitions", 10, "Transition"),
+        ("slots", 5, "SlotIri"),
+        ("motions", 6, "MotionGate"),
+        ("fsm_states", 8, "SlotIri"),
+        ("fsm_events", 9, "SlotIri"),
+        ("fsm_transitions", 10, "Transition"),
         ("constants", 11, "Constant"),
     ):
-        hdr.field.add(name=fname, number=number, label=D.LABEL_REPEATED,
-                      type=D.TYPE_MESSAGE, type_name=f".{PROTO_PACKAGE}.{type_name}")
-    message("ConstraintSlot", [("active", D.TYPE_SFIXED64, 1), ("error", D.TYPE_DOUBLE, 2), ("output", D.TYPE_DOUBLE, 3), ("satisfied", D.TYPE_SFIXED64, 4), ("sat_t", D.TYPE_DOUBLE, 5), ("measured", D.TYPE_DOUBLE, 6), ("setpoint", D.TYPE_DOUBLE, 7)])
-    message("MonitorSlot", [("active", D.TYPE_SFIXED64, 1), ("value", D.TYPE_DOUBLE, 2), ("satisfied", D.TYPE_SFIXED64, 3), ("sat_t", D.TYPE_DOUBLE, 4)])
-    message("Trigger", [("kind", D.TYPE_SFIXED64, 1), ("idx", D.TYPE_SFIXED64, 2), ("fsm_state", D.TYPE_SFIXED64, 3), ("t", D.TYPE_DOUBLE, 4), ("wall_ns", D.TYPE_SFIXED64, 5)])
+        hdr.field.add(
+            name=fname,
+            number=number,
+            label=D.LABEL_REPEATED,
+            type=D.TYPE_MESSAGE,
+            type_name=f".{PROTO_PACKAGE}.{type_name}",
+        )
+    message(
+        "ConstraintSlot",
+        [
+            ("active", D.TYPE_SFIXED64, 1),
+            ("error", D.TYPE_DOUBLE, 2),
+            ("output", D.TYPE_DOUBLE, 3),
+            ("satisfied", D.TYPE_SFIXED64, 4),
+            ("sat_t", D.TYPE_DOUBLE, 5),
+            ("measured", D.TYPE_DOUBLE, 6),
+            ("setpoint", D.TYPE_DOUBLE, 7),
+        ],
+    )
+    message(
+        "MonitorSlot",
+        [
+            ("active", D.TYPE_SFIXED64, 1),
+            ("value", D.TYPE_DOUBLE, 2),
+            ("satisfied", D.TYPE_SFIXED64, 3),
+            ("sat_t", D.TYPE_DOUBLE, 4),
+        ],
+    )
+    message(
+        "Trigger",
+        [
+            ("kind", D.TYPE_SFIXED64, 1),
+            ("idx", D.TYPE_SFIXED64, 2),
+            ("fsm_state", D.TYPE_SFIXED64, 3),
+            ("t", D.TYPE_DOUBLE, 4),
+            ("wall_ns", D.TYPE_SFIXED64, 5),
+        ],
+    )
     message("PoseSlot", [(n, D.TYPE_DOUBLE, i) for i, n in enumerate(POSE_NAMES, 1)])
     message("TwistSlot", [(n, D.TYPE_DOUBLE, i) for i, n in enumerate(TWIST_NAMES, 1)])
     message("WrenchSlot", [(n, D.TYPE_DOUBLE, i) for i, n in enumerate(WRENCH_NAMES, 1)])
 
     rf = fdp.message_type.add(name="RuntimeFrame")
-    core = [("t", D.TYPE_DOUBLE, 1), ("step", D.TYPE_UINT64, 2), ("fsm_state", D.TYPE_SFIXED64, 3), ("active_motion", D.TYPE_SFIXED64, 4), ("last_event", D.TYPE_SFIXED64, 5), ("state_since_t", D.TYPE_DOUBLE, 6), ("state_since_wall_ns", D.TYPE_SFIXED64, 7), ("event_t", D.TYPE_DOUBLE, 8), ("event_wall_ns", D.TYPE_SFIXED64, 9), ("wall_ns", D.TYPE_SFIXED64, 10), ("period_ns", D.TYPE_SFIXED64, 11), ("compute_ns", D.TYPE_SFIXED64, 12), ("trigger_count", D.TYPE_SFIXED64, 17)]
+    core = [
+        ("t", D.TYPE_DOUBLE, 1),
+        ("step", D.TYPE_UINT64, 2),
+        ("fsm_state", D.TYPE_SFIXED64, 3),
+        ("active_motion", D.TYPE_SFIXED64, 4),
+        ("last_event", D.TYPE_SFIXED64, 5),
+        ("state_since_t", D.TYPE_DOUBLE, 6),
+        ("state_since_wall_ns", D.TYPE_SFIXED64, 7),
+        ("event_t", D.TYPE_DOUBLE, 8),
+        ("event_wall_ns", D.TYPE_SFIXED64, 9),
+        ("wall_ns", D.TYPE_SFIXED64, 10),
+        ("period_ns", D.TYPE_SFIXED64, 11),
+        ("compute_ns", D.TYPE_SFIXED64, 12),
+        ("trigger_count", D.TYPE_SFIXED64, 17),
+    ]
     for fname, ftype, number in core:
         rf.field.add(name=fname, number=number, label=D.LABEL_OPTIONAL, type=ftype)
     for category, entries in fields.items():
         for entry in entries:
             if category == "quantities":
                 rf.field.add(
-                    name=entry["name"], number=entry["number"], label=D.LABEL_OPTIONAL,
+                    name=entry["name"],
+                    number=entry["number"],
+                    label=D.LABEL_OPTIONAL,
                     type=D.TYPE_BOOL if entry.get("proto_type") == "bool" else D.TYPE_DOUBLE,
                 )
             else:
                 rf.field.add(
-                    name=entry["name"], number=entry["number"], label=D.LABEL_OPTIONAL,
-                    type=D.TYPE_MESSAGE, type_name=f".{PROTO_PACKAGE}.{_SLOT_MESSAGE[category]}",
+                    name=entry["name"],
+                    number=entry["number"],
+                    label=D.LABEL_OPTIONAL,
+                    type=D.TYPE_MESSAGE,
+                    type_name=f".{PROTO_PACKAGE}.{_SLOT_MESSAGE[category]}",
                 )
 
     rec = fdp.message_type.add(name="FrameLogRecord")
     rec.oneof_decl.add(name="record")
-    rec.field.add(name="header", number=1, label=D.LABEL_OPTIONAL, type=D.TYPE_MESSAGE, type_name=f".{PROTO_PACKAGE}.FrameLogHeader", oneof_index=0)
-    rec.field.add(name="frame", number=2, label=D.LABEL_OPTIONAL, type=D.TYPE_MESSAGE, type_name=f".{PROTO_PACKAGE}.RuntimeFrame", oneof_index=0)
+    rec.field.add(
+        name="header",
+        number=1,
+        label=D.LABEL_OPTIONAL,
+        type=D.TYPE_MESSAGE,
+        type_name=f".{PROTO_PACKAGE}.FrameLogHeader",
+        oneof_index=0,
+    )
+    rec.field.add(
+        name="frame",
+        number=2,
+        label=D.LABEL_OPTIONAL,
+        type=D.TYPE_MESSAGE,
+        type_name=f".{PROTO_PACKAGE}.RuntimeFrame",
+        oneof_index=0,
+    )
     return fdp
 
 
@@ -136,7 +248,9 @@ def _record_class(schema: dict):
     fields = _proto_fields(schema)
     pool = descriptor_pool.DescriptorPool()
     pool.Add(_build_file_descriptor(fields))
-    record_cls = message_factory.GetMessageClass(pool.FindMessageTypeByName(f"{PROTO_PACKAGE}.FrameLogRecord"))
+    record_cls = message_factory.GetMessageClass(
+        pool.FindMessageTypeByName(f"{PROTO_PACKAGE}.FrameLogRecord")
+    )
     _CLASS_CACHE[key] = (record_cls, fields)
     return _CLASS_CACHE[key]
 
@@ -197,18 +311,42 @@ def frame_record(flat: dict, schema: dict) -> bytes:
     m.trigger_count = flat["trigger_count"]
     for e in fields["constraints"]:
         s, i = getattr(m, e["name"]), e["index"]
-        s.active, s.error, s.output = flat[f"c{i}.active"], flat[f"c{i}.error"], flat[f"c{i}.output"]
-        s.satisfied, s.sat_t, s.measured, s.setpoint = flat[f"c{i}.satisfied"], flat[f"c{i}.sat_t"], flat[f"c{i}.measured"], flat[f"c{i}.setpoint"]
+        s.active, s.error, s.output = (
+            flat[f"c{i}.active"],
+            flat[f"c{i}.error"],
+            flat[f"c{i}.output"],
+        )
+        s.satisfied, s.sat_t, s.measured, s.setpoint = (
+            flat[f"c{i}.satisfied"],
+            flat[f"c{i}.sat_t"],
+            flat[f"c{i}.measured"],
+            flat[f"c{i}.setpoint"],
+        )
     for e in fields["monitors"]:
         s, i = getattr(m, e["name"]), e["index"]
-        s.active, s.value, s.satisfied, s.sat_t = flat[f"m{i}.active"], flat[f"m{i}.value"], flat[f"m{i}.satisfied"], flat[f"m{i}.sat_t"]
+        s.active, s.value, s.satisfied, s.sat_t = (
+            flat[f"m{i}.active"],
+            flat[f"m{i}.value"],
+            flat[f"m{i}.satisfied"],
+            flat[f"m{i}.sat_t"],
+        )
     for e in fields["quantities"]:
         value = flat[f"q{e['index']}"]
         setattr(m, e["name"], value != 0 if e.get("proto_type") == "bool" else value)
     for e in fields["triggers"]:
         s, i = getattr(m, e["name"]), e["index"]
-        s.kind, s.idx, s.fsm_state, s.t, s.wall_ns = flat[f"tr{i}.kind"], flat[f"tr{i}.idx"], flat[f"tr{i}.fsm_state"], flat[f"tr{i}.t"], flat[f"tr{i}.wall_ns"]
-    for prefix, names, category in (("pose", POSE_NAMES, "poses"), ("twist", TWIST_NAMES, "twists"), ("wrench", WRENCH_NAMES, "wrenches")):
+        s.kind, s.idx, s.fsm_state, s.t, s.wall_ns = (
+            flat[f"tr{i}.kind"],
+            flat[f"tr{i}.idx"],
+            flat[f"tr{i}.fsm_state"],
+            flat[f"tr{i}.t"],
+            flat[f"tr{i}.wall_ns"],
+        )
+    for prefix, names, category in (
+        ("pose", POSE_NAMES, "poses"),
+        ("twist", TWIST_NAMES, "twists"),
+        ("wrench", WRENCH_NAMES, "wrenches"),
+    ):
         for e in fields[category]:
             s, i = getattr(m, e["name"]), e["index"]
             for name in names:
@@ -221,9 +359,19 @@ def frame_record(flat: dict, schema: dict) -> bytes:
 # category follows from its wire type, so the descriptor alone says what the frame contains.
 _CORE_FIELDS = frozenset(
     (
-        "t", "step", "fsm_state", "active_motion", "last_event", "state_since_t",
-        "state_since_wall_ns", "event_t", "event_wall_ns", "wall_ns", "period_ns",
-        "compute_ns", "trigger_count",
+        "t",
+        "step",
+        "fsm_state",
+        "active_motion",
+        "last_event",
+        "state_since_t",
+        "state_since_wall_ns",
+        "event_t",
+        "event_wall_ns",
+        "wall_ns",
+        "period_ns",
+        "compute_ns",
+        "trigger_count",
     )
 )
 _CATEGORY_BY_MESSAGE = {
@@ -252,10 +400,7 @@ class LogContract:
         self.trigger_pool = header.trigger_pool
         self.gate = _slot_gate(header, fields)
         self.counts = {
-            motion.index: {
-                "controllers": len(motion.controllers),
-                "monitors": len(motion.monitors),
-            }
+            motion.index: {"controllers": len(motion.controllers), "monitors": len(motion.monitors)}
             for motion in header.motions
         }
         self.quantity_ids = [entry["id"] for entry in fields["quantities"]]
@@ -316,16 +461,13 @@ def _slot_gate(header, fields: dict) -> dict:
     """
     gate = {}
     for category in ("quantities", *(name for name, _ in _SPATIAL)):
-        claimed = {
-            index for motion in header.motions for index in getattr(motion, category)
-        }
+        claimed = {index for motion in header.motions for index in getattr(motion, category)}
         if not claimed:
             continue
         # A slot no motion claims is written unconditionally, so it stays visible everywhere.
         unclaimed = {entry["index"] for entry in fields[category]} - claimed
         gate[category] = {
-            motion.index: unclaimed | set(getattr(motion, category))
-            for motion in header.motions
+            motion.index: unclaimed | set(getattr(motion, category)) for motion in header.motions
         }
     return gate
 
@@ -381,25 +523,35 @@ def _parse_frame(msg, contract: LogContract) -> dict:
         "state_since_wall_ns": msg.state_since_wall_ns,
         "event_t": msg.event_t,
         "event_wall_ns": msg.event_wall_ns,
-        "timing": {"wall_ns": msg.wall_ns, "period_ns": msg.period_ns, "compute_ns": msg.compute_ns},
+        "timing": {
+            "wall_ns": msg.wall_ns,
+            "period_ns": msg.period_ns,
+            "compute_ns": msg.compute_ns,
+        },
     }
     # `active` is derived, not carried: the header already says how many constraint and monitor
     # slots the active motion drives, so writing a constant 1 per slot per tick would only
     # restate it. Slots beyond that count belong to some other motion and were not written.
     counts = contract.counts.get(msg.active_motion, {})
     record["constraints"] = [
-        {**{k: getattr(getattr(msg, e["name"]), k) for k in _CONSTRAINT_KEYS},
-         "active": 1 if e["index"] < counts.get("controllers", 0) else 0}
+        {
+            **{k: getattr(getattr(msg, e["name"]), k) for k in _CONSTRAINT_KEYS},
+            "active": 1 if e["index"] < counts.get("controllers", 0) else 0,
+        }
         for e in fields["constraints"]
     ]
     record["monitors"] = [
-        {**{k: getattr(getattr(msg, e["name"]), k) for k in _MONITOR_KEYS},
-         "active": 1 if e["index"] < counts.get("monitors", 0) else 0}
+        {
+            **{k: getattr(getattr(msg, e["name"]), k) for k in _MONITOR_KEYS},
+            "active": 1 if e["index"] < counts.get("monitors", 0) else 0,
+        }
         for e in fields["monitors"]
     ]
     # Flags come back as bool; keep the decoded record numeric so readers see one value type.
     quantities = [float(getattr(msg, e["name"])) for e in fields["quantities"]]
-    triggers = [{k: getattr(getattr(msg, e["name"]), k) for k in _TRIGGER_KEYS} for e in fields["triggers"]]
+    triggers = [
+        {k: getattr(getattr(msg, e["name"]), k) for k in _TRIGGER_KEYS} for e in fields["triggers"]
+    ]
     qids = contract.quantity_ids
 
     def written(category: str, index: int) -> bool:
@@ -431,7 +583,9 @@ def _parse_frame(msg, contract: LogContract) -> dict:
     return record
 
 
-def iter_messages(path: Path | str, contract: LogContract | None = None) -> Iterator[tuple[str, object]]:
+def iter_messages(
+    path: Path | str, contract: LogContract | None = None
+) -> Iterator[tuple[str, object]]:
     """Yield ('header', dict) then ('frame', decoded) for each record in a log."""
     if contract is None:
         contract = read_contract(path)
@@ -444,11 +598,14 @@ def iter_messages(path: Path | str, contract: LogContract | None = None) -> Iter
             rec.ParseFromString(data)
             which = rec.WhichOneof("record")
             if which == "header":
-                yield "header", {
-                    "schema_hash": rec.header.schema_hash,
-                    "producer_agent_id": rec.header.producer_agent_id,
-                    "activity_id": rec.header.activity_id,
-                }
+                yield (
+                    "header",
+                    {
+                        "schema_hash": rec.header.schema_hash,
+                        "producer_agent_id": rec.header.producer_agent_id,
+                        "activity_id": rec.header.activity_id,
+                    },
+                )
             elif which == "frame":
                 yield "frame", _parse_frame(rec.frame, contract)
 

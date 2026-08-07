@@ -26,7 +26,9 @@ def write_frame_log_proto(path: Path, schema: dict) -> None:
         pytest.skip("requires stst to render frame_log.proto")
     protobuf = schema.get("protobuf") or build_frame_log_proto_fields(schema)
     payload = path.parent / ".frame_log_proto_payload.json"
-    payload.write_text(json.dumps({"introspection_artifacts": {"frame_layout": {"protobuf": protobuf}}}))
+    payload.write_text(
+        json.dumps({"introspection_artifacts": {"frame_layout": {"protobuf": protobuf}}})
+    )
     render_template("stst", "frame_log_proto", payload, path)
     payload.unlink()
 

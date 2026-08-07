@@ -39,7 +39,8 @@ def test_a_commanded_joint_position_reaches_each_route_as_that_devices_units(tmp
     if compiler is None:
         pytest.skip("no C++ compiler")
     helper = re.search(
-        r"inline double gripper_closed_fraction.*?\n\}", (TEMPLATES / "runtime.stg").read_text(),
+        r"inline double gripper_closed_fraction.*?\n\}",
+        (TEMPLATES / "runtime.stg").read_text(),
         re.S,
     )
     assert helper, "gripper_closed_fraction is no longer in runtime.stg"

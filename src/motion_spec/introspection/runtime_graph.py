@@ -153,7 +153,9 @@ def _slot_uri(slot: dict, *keys: str) -> rdflib.URIRef | None:
     return None
 
 
-def _occurrence(g: rdflib.Graph, run_id: str, typename: str, disc, wall_ns, step: int) -> rdflib.URIRef:
+def _occurrence(
+    g: rdflib.Graph, run_id: str, typename: str, disc, wall_ns, step: int
+) -> rdflib.URIRef:
     """Create a discrete occurrence node, anchored to its frame and stamped with wall time."""
     node = _scoped("occurrence", run_id, typename, wall_ns if wall_ns is not None else 0, disc)
     g.add((node, rdflib.RDF.type, MSRUN[typename]))
@@ -205,7 +207,9 @@ def _state_change_occurrences(
     tr = _fired_transition(transitions.get((prev_state, cur)) or [], observed_events or set())
     if not tr or not tr.get("uri"):
         return anchors
-    occ = _occurrence(g, run_id, "TransitionOccurrence", tr.get("id", f"{prev_state}-{cur}"), entry, step)
+    occ = _occurrence(
+        g, run_id, "TransitionOccurrence", tr.get("id", f"{prev_state}-{cur}"), entry, step
+    )
     g.add((occ, MSRUN.transition, rdflib.URIRef(tr["uri"])))
     frm_state = states.get(prev_state) or {}
     if frm_state.get("uri"):
@@ -372,24 +376,40 @@ def _project_occurrences(
         meta = motions.get(frame.get("active_motion", -1), {})
         controllers = meta.get("controllers") or meta.get("constraints") or []
         monitors = meta.get("monitors") or []
-        csat = [bool(c.get("active")) and bool(c.get("satisfied")) for c in frame.get("constraints", [])]
-        msat = [bool(m.get("active")) and bool(m.get("satisfied")) for m in frame.get("monitors", [])]
+        csat = [
+            bool(c.get("active")) and bool(c.get("satisfied")) for c in frame.get("constraints", [])
+        ]
+        msat = [
+            bool(m.get("active")) and bool(m.get("satisfied")) for m in frame.get("monitors", [])
+        ]
 
         if cur != prev_state:
             anchors.update(
                 _state_change_occurrences(
-                    g, run_id, states, events, transitions, prev_state, cur, state,
-                    frame.get("state_since_wall_ns") or wall, step,
+                    g,
+                    run_id,
+                    states,
+                    events,
+                    transitions,
+                    prev_state,
+                    cur,
+                    state,
+                    frame.get("state_since_wall_ns") or wall,
+                    step,
                     observed_events=frame_events | prev_frame_events,
                 )
             )
         else:
-            anchors.update(_constraint_edge_occurrences(
-                g, run_id, state, controllers, prev_csat, csat, frame, wall, step
-            ))
-            anchors.update(_monitor_edge_occurrences(
-                g, run_id, state, monitors, prev_msat, msat, frame, cond_map, wall, step
-            ))
+            anchors.update(
+                _constraint_edge_occurrences(
+                    g, run_id, state, controllers, prev_csat, csat, frame, wall, step
+                )
+            )
+            anchors.update(
+                _monitor_edge_occurrences(
+                    g, run_id, state, monitors, prev_msat, msat, frame, cond_map, wall, step
+                )
+            )
 
         anchors.update(_trigger_occurrences(g, run_id, states, events, frame, seen_events, step))
 
@@ -398,7 +418,9 @@ def _project_occurrences(
     return anchors
 
 
-def _add_rec_timing(g: rdflib.Graph, run_dir: Path, manifest: dict, activity: rdflib.URIRef) -> None:
+def _add_rec_timing(
+    g: rdflib.Graph, run_dir: Path, manifest: dict, activity: rdflib.URIRef
+) -> None:
     rec_rel = manifest.get("files", {}).get("rec", "rec.ld.json")
     rec_path = run_dir / rec_rel
     if not rec_path.exists():
@@ -409,7 +431,9 @@ def _add_rec_timing(g: rdflib.Graph, run_dir: Path, manifest: dict, activity: rd
             g.add((activity, pred, rdflib.Literal(lifecycle[key], datatype=rdflib.XSD.dateTime)))
 
 
-def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int | None = None) -> rdflib.Graph:
+def project_runtime(
+    run_dir: Path | str, frames: list[dict], *, frame_count: int | None = None
+) -> rdflib.Graph:
     run_dir, manifest = load_manifest(run_dir)
     # The run's contract comes from the log itself, not a companion artifact.
     header = frame_log_pb.read_contract(run_dir / manifest["files"]["frame_log"]).header
@@ -495,7 +519,9 @@ def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int
             g.add((entity, PROV.atLocation, rdflib.URIRef(os.path.relpath(rel, "runtime"))))
     g.add((run, MSRUN.contractVersion, rdflib.Literal(RUNTIME_RDF_CONTRACT_VERSION)))
     g.add((run, MSRUN.runId, rdflib.Literal(manifest["run_id"])))
-    g.add((run, MSRUN.frameCount, rdflib.Literal(len(frames) if frame_count is None else frame_count)))
+    g.add(
+        (run, MSRUN.frameCount, rdflib.Literal(len(frames) if frame_count is None else frame_count))
+    )
     g.add((run, PROV.wasGeneratedBy, activity))
     _add_rec_timing(g, run_dir, manifest, activity)
 
@@ -541,7 +567,9 @@ def project_runtime(run_dir: Path | str, frames: list[dict], *, frame_count: int
     return g
 
 
-def write_runtime_ttl(run_dir: Path | str, frames: list[dict], *, frame_count: int | None = None) -> Path:
+def write_runtime_ttl(
+    run_dir: Path | str, frames: list[dict], *, frame_count: int | None = None
+) -> Path:
     run_dir = Path(run_dir)
     graph = project_runtime(run_dir, frames, frame_count=frame_count)
     manifest_path = run_dir / "manifest.json"

@@ -9,9 +9,7 @@ import collections
 import itertools
 import math
 import weakref
-from dataclasses import (
-    dataclass, field,
-)
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -19,15 +17,15 @@ import rdflib
 from rdf_utils.constraints import ConstraintViolation
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 from rdf_utils.models.geom_coord import (
-    OrientCoordModel, PoseCoordModel, PositionCoordModel, get_coord_vectorxyz,
+    OrientCoordModel,
+    PoseCoordModel,
+    PositionCoordModel,
+    get_coord_vectorxyz,
     get_orientation_coord_vals,
 )
-from rdf_utils.models.geom_rel import (
-    OrientationModel, PositionModel,
-)
-from rdf_utils.models.common import (
-    ModelBase, get_node_types,
-)
+from rdf_utils.models.geom_rel import OrientationModel, PositionModel
+from rdf_utils.models.common import ModelBase, get_node_types
+
 # fmt: off
 from rdf_utils.models.vocab import (
     URI_GEOM_PRED_AXES_SEQ, URI_GEOM_PRED_ALPHA, URI_GEOM_PRED_BETA,
@@ -41,16 +39,11 @@ from rdf_utils.models.vocab import (
     URI_QUDT_UNIT_MM, URI_QUDT_UNIT_RAD,
 )
 # fmt: on
-from rdf_utils.namespace import (
-    NS_MM_QUDT_QTY as QUDT_QTY, NS_MM_QUDT_UNIT as QUDT_UNIT,
-)
-from rdf_utils.resolver import (
-    IriToFileResolver, install_resolver,
-)
+from rdf_utils.namespace import NS_MM_QUDT_QTY as QUDT_QTY, NS_MM_QUDT_UNIT as QUDT_UNIT
+from rdf_utils.resolver import IriToFileResolver, install_resolver
 from rdflib import URIRef
-from rdflib.namespace import (
-    RDF, SDO, split_uri,
-)
+from rdflib.namespace import RDF, SDO, split_uri
+
 # fmt: off
 from motion_spec.classes.entities import (
     AccelerationTwist, Axis, BilateralConstraint, CartesianForceSpecification, Constraint,
@@ -70,17 +63,17 @@ from motion_spec_dsl.rdf_parser.vocab import (
     RBDYN_COORD, RBDYN_ENT, RBDYN_OP, SLV, SLV_EXT, SENSORS, SOSA, TIME,
 )
 # fmt: on
-from motion_spec_dsl.rdf_parser.manifest import (
-    build_url_map, metamodel_url_map,
-)
+from motion_spec_dsl.rdf_parser.manifest import build_url_map, metamodel_url_map
 from rdf_utils.models.vocab import (
-    URI_KC_EXT_PRED_OF_JOINT, URI_KC_EXT_TYPE_JOINT_LIMIT, URI_KC_STAT_JNT_POSITION,
-    URI_KC_TYPE_REVOLUTE_JOINT, URI_KC_TYPE_REVOLUTE_JOINT_ORIENTED_AXIS,
+    URI_KC_EXT_PRED_OF_JOINT,
+    URI_KC_EXT_TYPE_JOINT_LIMIT,
+    URI_KC_STAT_JNT_POSITION,
+    URI_KC_TYPE_REVOLUTE_JOINT,
+    URI_KC_TYPE_REVOLUTE_JOINT_ORIENTED_AXIS,
 )
 
-from motion_spec.rdf_parser.records import (
-    _dedupe_by_id, _kebab, _ros_type_parts, escape, memoize,
-)
+from motion_spec.rdf_parser.records import _dedupe_by_id, _kebab, _ros_type_parts, escape, memoize
+
 
 class AccelerationInputKind(str, Enum):
     """Physical acceleration input accepted by a solver algorithm."""
@@ -88,6 +81,8 @@ class AccelerationInputKind(str, Enum):
     None_ = "None"
     ConstraintEnergy = "ConstraintEnergy"
     CartesianAcceleration = "CartesianAcceleration"
+
+
 @dataclass(frozen=True)
 class SolverSemantics:
     """Algorithm-specific meanings needed while deriving executable solver inputs."""
@@ -95,6 +90,8 @@ class SolverSemantics:
     acceleration_input: AccelerationInputKind
     signal_prefix: str | None = None
     codegen_name: str = ""
+
+
 SOLVER_SEMANTICS_BY_ALGORITHM = {
     SLV["AccelerationConstrainedHybridDynamicsAlgorithm"]: SolverSemantics(
         AccelerationInputKind.ConstraintEnergy, "eacc", "ACHD"
@@ -104,16 +101,24 @@ SOLVER_SEMANTICS_BY_ALGORITHM = {
     ),
 }
 COMMAND_FORWARDING_SEMANTICS = SolverSemantics(AccelerationInputKind.None_)
+
+
 def _is_elapsed_constraint(g, cstr_node) -> bool:
     """Whether a constraint node is a timing (elapsed) constraint."""
     return cstr_node is not None and CSTR_EXT["TimeConstraint"] in get_node_types(g, cstr_node)
+
+
 def _duration_seconds(g, node) -> float:
     """The value in seconds of a Duration node, converting from the unit it was written in."""
     return _seconds(float(g.value(node, QUDT_SCHEMA["value"])), g.value(node, QUDT_SCHEMA["unit"]))
+
+
 def _term_name(node) -> str | None:
     if node is None:
         return None
     return split_uri(str(node))[1]
+
+
 def _resolve_solver_semantics(g, solver: URIRef) -> SolverSemantics:
     """Resolve a solver resource to explicit input semantics or reject it."""
     if SLV_EXT.CommandForwardingSolver in get_node_types(g, solver):
@@ -126,6 +131,8 @@ def _resolve_solver_semantics(g, solver: URIRef) -> SolverSemantics:
         return SOLVER_SEMANTICS_BY_ALGORITHM[algorithm]
     except KeyError as exc:
         raise ValueError(f"Solver '{solver}' has unsupported algorithm '{algorithm}'.") from exc
+
+
 def parse_argument(g, closure_id, argument, to_id, resolve_value=False):
     """Resolve a closure argument (input/output/parameter) to id(s): a lone value collapses to a
     scalar and a qudt:Quantity constant resolves to its scalar value.
@@ -151,6 +158,8 @@ def parse_argument(g, closure_id, argument, to_id, resolve_value=False):
     if len(unique) == 1:
         return unique[0]
     return unique
+
+
 def _reference_inputs(g, node):
     """Inputs a referenced data structure contributes to whoever reads it. A path produces nothing,
     so the output-to-input walk never reaches its parameters as a producer's outputs.
@@ -158,6 +167,8 @@ def _reference_inputs(g, node):
     if GEOM_PATH.Path not in get_node_types(g, node):
         return ()
     return tuple(obj for pred, obj in g.predicate_objects(node) if pred != RDF["type"])
+
+
 def _fill_closure_args(g, closure, to_id, op, closure_id, input_subject) -> None:
     """Fill a closure's input/output/parameter slots; inputs may hang off another subject.
     Insertion order is the emitted JSON key order.
@@ -168,6 +179,8 @@ def _fill_closure_args(g, closure, to_id, op, closure_id, input_subject) -> None
         closure[to_id(output)] = parse_argument(g, closure_id, output, to_id)
     for param in op.parameters:
         closure[to_id(param)] = parse_argument(g, closure_id, param, to_id, resolve_value=True)
+
+
 def _operator_inputs(g, operator_id, inputs) -> set:
     """Data-structure nodes feeding an operator call's inputs, plus any path parameters."""
     data_structures = set()
@@ -176,10 +189,14 @@ def _operator_inputs(g, operator_id, inputs) -> set:
             data_structures.add(data_in)
             data_structures.update(_reference_inputs(g, data_in))
     return data_structures
+
+
 def _constraint_types(g, node) -> set:
     """Types of the constraint a handler call points at; empty when it points at nothing."""
     constraint_id = g.value(node, CSTR_HDL["constraint"])
     return get_node_types(g, constraint_id) if constraint_id is not None else set()
+
+
 def _constraint_inputs(g, operator_id, inputs) -> set:
     """Data-structure nodes reached through a handler call's constraint."""
     return {
@@ -187,6 +204,8 @@ def _constraint_inputs(g, operator_id, inputs) -> set:
         for in_ in inputs
         for data_in in g.objects(operator_id, CSTR_HDL["constraint"] / in_)
     }
+
+
 @dataclass
 class Operator:
     """A schedulable RDF computation: maps graph inputs/outputs/parameters to a closure and
@@ -226,6 +245,8 @@ class Operator:
                     schedule.append(call)
 
         return {"data_structures": data_structures, "schedule": schedule}
+
+
 @dataclass
 class Specification:
     """Not a computation: no closure and no schedule entry, but it propagates outputs to inputs so
@@ -252,6 +273,8 @@ class Specification:
                         data_structures.add(data_in)
 
         return {"data_structures": data_structures, "schedule": []}
+
+
 def _continuous_joint_leaves(g) -> set[str]:
     """Leaf names of revolute joints with no authored position limit: continuous joints,
     whose position error lives on the circle. Read from absence -- scene-dsl emits a
@@ -266,6 +289,8 @@ def _continuous_joint_leaves(g) -> set[str]:
         if URI_KC_STAT_JNT_POSITION in get_node_types(g, limit)
     }
     return {_term_name(joint) for joint in revolute - position_limited}
+
+
 class ErrorEvaluator:
     """Constraint-handler operator emitting a constraint error signal, dispatching on the constraint
     type (equality/greater/less/bilateral/outside).
@@ -320,9 +345,7 @@ class ErrorEvaluator:
             # An equality error on a continuous joint wraps to the shortest arc.
             if operator.type_ == CSTR["EqualityConstraint"]:
                 quantity = g.value(constraint_id, CSTR["quantity"])
-                joint = (
-                    g.value(quantity, KC_STAT["of-joint"]) if quantity is not None else None
-                )
+                joint = g.value(quantity, KC_STAT["of-joint"]) if quantity is not None else None
                 if joint is not None and _term_name(joint) in _continuous_joint_leaves(g):
                     closure["angular_wrap"] = True
 
@@ -358,6 +381,8 @@ class ErrorEvaluator:
                         schedule.append(call)
 
         return {"data_structures": data_structures, "schedule": schedule}
+
+
 class AssignmentEvaluator:
     """Constraint operator that assigns a reference value to a quantity (no error output)."""
 
@@ -392,6 +417,8 @@ class AssignmentEvaluator:
         if self.cstr_op.type_ not in _constraint_types(g, operator_id):
             return set()
         return _constraint_inputs(g, operator_id, self.cstr_op.input)
+
+
 def _op_output_preds(op):
     """Output predicates an operator's scheduler queries; empty when the operator can never match,
     so its scheduler step can be skipped.
@@ -401,14 +428,14 @@ def _op_output_preds(op):
     if isinstance(op, AssignmentEvaluator):
         return set()
     return set(op.output)
+
+
 # A path is geometry: data with no output, so it is never found by the output-to-input walk
 # and yields no closure of its own. The evaluator that traverses it is the computation, and
 # folds the path's geometry into its call.
 ops_path = [
     Specification(
-        type_=GEOM_PATH["LinearPath"],
-        input=[GEOM_PATH["start"], GEOM_PATH["goal"]],
-        output=[],
+        type_=GEOM_PATH["LinearPath"], input=[GEOM_PATH["start"], GEOM_PATH["goal"]], output=[]
     ),
     Specification(
         type_=GEOM_PATH["Circle"],
@@ -438,11 +465,7 @@ ops_path = [
     ),
     Specification(
         type_=GEOM_PATH["Figure8"],
-        input=[
-            GEOM_PATH["anchor"],
-            GEOM_PATH["radius"],
-            GEOM_PATH["plane-normal"],
-        ],
+        input=[GEOM_PATH["anchor"], GEOM_PATH["radius"], GEOM_PATH["plane-normal"]],
         output=[],
         parameters=[GEOM_PATH["form"]],
     ),
@@ -487,11 +510,7 @@ ops_generic = [
         input=[RBDYN_OP["in1"], RBDYN_OP["in2"]],
         output=[RBDYN_OP["out"]],
     ),
-    Operator(
-        type_=ALGO_EXT.Addition,
-        input=[ALGO_EXT["in"]],
-        output=[ALGO_EXT.out],
-    ),
+    Operator(type_=ALGO_EXT.Addition, input=[ALGO_EXT["in"]], output=[ALGO_EXT.out]),
     Operator(
         type_=RBDYN_OP["RotateWrenchToDistalWithPose"],
         input=[RBDYN_OP["pose"], RBDYN_OP["from"]],
@@ -558,15 +577,14 @@ ops_generic = [
         ],
     ),
 ]
-ops_cstr_hdl = [
-    AssignmentEvaluator(),
-    ErrorEvaluator(),
-]
+ops_cstr_hdl = [AssignmentEvaluator(), ErrorEvaluator()]
 ops_slv = [
     Specification(type_=SLV["CartesianForceSpecification"], input=[SLV["force"]], output=[]),
     Specification(type_=SLV["JointForceSpecification"], input=[SLV["force"]], output=[]),
     Specification(type_=SLV["ForceDistributionSolver"], input=[SLV["force"]], output=[]),
 ]
+
+
 class Parser:
     # A context quantity's id is its URI's last segment, so a name reused across motions
     # collapses to one id. Qualify only ambiguous names (same segment, >1 owner).
@@ -872,9 +890,7 @@ class Parser:
         group_constraint_ids: list[str] = []
         group_any = False
         if not is_until_aggregate and not is_when_aggregate:
-            group_node = next(
-                (n for n in monitored if _is_constraint_aggregate(self.g, n)), None
-            )
+            group_node = next((n for n in monitored if _is_constraint_aggregate(self.g, n)), None)
             if group_node is not None:
                 group_constraint_ids = sorted(
                     self.id(c) for c in self.g[group_node : CSTR_EXT["has-constraint"]]
@@ -983,7 +999,9 @@ class Parser:
 
         # An authored band on a spatial equality; the elapsed branch reads its own, in seconds,
         # because a duration's magnitude rides on qudt rather than on a shared value.
-        tolerance_node = None if is_elapsed else self.g.value(constraint_node, CSTR_EXT["tolerance"])
+        tolerance_node = (
+            None if is_elapsed else self.g.value(constraint_node, CSTR_EXT["tolerance"])
+        )
         tolerance = self.quantity(tolerance_node) if tolerance_node is not None else None
 
         return ConstraintEvaluator(
@@ -1066,8 +1084,14 @@ class Parser:
         name = str(name_literal)
         description = self.g.value(id_, SDO.description)
         return GuardedMotion(
-            self.id(id_), when, while_, until, until_any, when_any,
-            name=name, description=str(description) if description is not None else None,
+            self.id(id_),
+            when,
+            while_,
+            until,
+            until_any,
+            when_any,
+            name=name,
+            description=str(description) if description is not None else None,
         )
 
     @memoize
@@ -1303,9 +1327,7 @@ class Parser:
         relation = coordinate.relation
         of = self._pose_endpoint(relation.of_id)
         wrt = self._pose_endpoint(relation.wrt_id)
-        quantity_kind = [
-            self.id(k) for k in self.g[relation.id : QUDT_SCHEMA["hasQuantityKind"]]
-        ]
+        quantity_kind = [self.id(k) for k in self.g[relation.id : QUDT_SCHEMA["hasQuantityKind"]]]
         as_seen_by = self.frame(coordinate.as_seen_by.id)
         unit = list(
             dict.fromkeys(
@@ -1395,9 +1417,7 @@ class Parser:
         in1 = self.g.value(composition, GEOM_OP["in1"])
         in2 = self.g.value(composition, GEOM_OP["in2"])
         if in1 is None or in2 is None:
-            raise ValueError(
-                f"Orientation composition '{composition}' must declare both operands."
-            )
+            raise ValueError(f"Orientation composition '{composition}' must declare both operands.")
 
         def _operand(node):
             types = get_node_types(self.g, node)
@@ -1530,9 +1550,7 @@ class Parser:
                 "dynamics", f"WrenchCoordinate '{id_}' sensor '{sensor}' has no physical frame"
             )
         sensor_frame = self.frame(sensor_frame_node) if sensor_frame_node is not None else None
-        return Wrench(
-            self.id(id_), qk, ref, seen, unit, provenance, sensor_frame, sensor_name
-        )
+        return Wrench(self.id(id_), qk, ref, seen, unit, provenance, sensor_frame, sensor_name)
 
     def _is_duration(self, id_):
         """Authored durations carry the OWL-Time type; runtime elapsed time is a Time-kind
@@ -1565,7 +1583,11 @@ class Parser:
             return self.orientation(id_)
         if CSTR_HDL_EXT["SetpointGenerator"] in get_node_types(self.g, id_):
             value_kind_node = next(
-                (k for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]] if k != CSTR_HDL_EXT.SetpointGenerator),
+                (
+                    k
+                    for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]]
+                    if k != CSTR_HDL_EXT.SetpointGenerator
+                ),
                 None,
             )
             provenance = self.quantity_provenance(id_)
@@ -1578,9 +1600,7 @@ class Parser:
                 value_kind=self.id(value_kind_node) if value_kind_node is not None else None,
             )
 
-        if quantity_kind == "FreeVector" and GEOM_COORD["VectorXYZ"] in get_node_types(
-            self.g, id_
-        ):
+        if quantity_kind == "FreeVector" and GEOM_COORD["VectorXYZ"] in get_node_types(self.g, id_):
             provenance = self.quantity_provenance(id_)
             return FreeVector(
                 self.id(id_),
@@ -1621,7 +1641,11 @@ class Parser:
         )
         provenance = self.quantity_provenance(id_)
         return Quantity(
-            self.id(id_), QuantityKind("Duration"), Unit("Second"), value, False,
+            self.id(id_),
+            QuantityKind("Duration"),
+            Unit("Second"),
+            value,
+            False,
             provenance=provenance,
         )
 
@@ -1757,9 +1781,7 @@ class Parser:
                 raise ValueError(
                     f"MAP view {view} has an unrecognized type; no view dispatcher matched"
                 )
-            view_map[self.id(view)] = View(
-                self.id(view), superobject, subobject, subspace, axis
-            )
+            view_map[self.id(view)] = View(self.id(view), superobject, subobject, subspace, axis)
 
         return view_map
 
@@ -1831,9 +1853,7 @@ class Parser:
                         cl.update(fields)
                     if operator.type_ in {ALGO_EXT.VelocityProfile, ALGO_EXT.Admittance}:
                         reference = self.g.value(closure, ALGO_EXT.out)
-                        constraint = next(
-                            self.g.subjects(CSTR["reference-value"], reference), None
-                        )
+                        constraint = next(self.g.subjects(CSTR["reference-value"], reference), None)
                         if constraint is None:
                             raise ValueError(
                                 f"{self.id(operator.type_)} '{self.id(closure)}' output is not bound to a constraint."
@@ -1844,8 +1864,7 @@ class Parser:
                             (
                                 node
                                 for node in self.g.subjects(CSTR_HDL.constraint, constraint)
-                                if CSTR_HDL.ConstraintEvaluator
-                                not in get_node_types(self.g, node)
+                                if CSTR_HDL.ConstraintEvaluator not in get_node_types(self.g, node)
                             ),
                             None,
                         )
@@ -1990,6 +2009,8 @@ class Parser:
         for call in sched:
             visit(call)
         return result
+
+
 _LENGTH_UNITS = {URI_QUDT_UNIT_M, URI_QUDT_UNIT_CM, URI_QUDT_UNIT_MM}
 _TEMPORAL_UNITS = {QUDT_UNIT["SEC"], QUDT_UNIT["MilliSEC"]}
 # The DSL records the unit a model was written in and never rescales a value, so putting one
@@ -2004,9 +2025,13 @@ _SI_EQUIVALENT = {
     QUDT_UNIT["DEG-PER-SEC2"]: (QUDT_UNIT["RAD-PER-SEC2"], math.pi / 180.0),
     QUDT_UNIT["MilliSEC"]: (QUDT_UNIT["SEC"], 1e-3),
 }
+
+
 def _si_unit(unit):
     """The SI unit `unit` converts to; `unit` itself when it already is SI."""
     return _SI_EQUIVALENT.get(unit, (unit, 1.0))[0]
+
+
 def _length_unit(coordinate):
     """A position coordinate's length unit, rejecting anything that is not one."""
     if coordinate.unit not in _LENGTH_UNITS:
@@ -2016,21 +2041,31 @@ def _length_unit(coordinate):
             f"unit '{coordinate.unit}'.",
         )
     return coordinate.unit
+
+
 def _si(value: float, unit) -> float:
     """`value`, authored in `unit`, on SI."""
     return value * _SI_EQUIVALENT.get(unit, (unit, 1.0))[1]
+
+
 def _si_all(values, unit) -> list[float]:
     """Each of `values`, authored in `unit`, on SI."""
     return [_si(float(value), unit) for value in values]
+
+
 def _seconds(value: float, unit) -> float:
     """A duration the model authored, in seconds."""
     if unit not in _TEMPORAL_UNITS:
         raise ConstraintViolation("units", f"'{unit}' is not a duration this can read")
     return _si(value, unit)
+
+
 def _is_constraint_aggregate(g, node) -> bool:
     """True for an until/when group node: a conjunction or disjunction of constraints."""
     types = get_node_types(g, node)
     return bool({CSTR_EXT.ConstraintDisjunction, CSTR_EXT.ConstraintConjunction} & types)
+
+
 def _uri_table(id_nodes):
     """Sorted [{id, uri}] rows for every id that maps to a URIRef."""
     return [
@@ -2038,6 +2073,8 @@ def _uri_table(id_nodes):
         for id_, node in sorted(id_nodes, key=lambda item: (item[0], str(item[1])))
         if isinstance(node, URIRef)
     ]
+
+
 class DerivedIriRegistry:
     """IRIs for codegen-derived entities, minted as a path segment under the parent they came from.
 
@@ -2049,9 +2086,7 @@ class DerivedIriRegistry:
     DERIVATION = "wasDerivedFrom"
 
     def __init__(self, id_nodes):
-        self._authored = {
-            id_: str(node) for id_, node in id_nodes if isinstance(node, URIRef)
-        }
+        self._authored = {id_: str(node) for id_, node in id_nodes if isinstance(node, URIRef)}
         self._derived: dict[str, dict] = {}
 
     def iri_of(self, id_):
@@ -2072,8 +2107,7 @@ class DerivedIriRegistry:
         if existing is not None:
             if existing["uri"] != uri:
                 raise RuntimeError(
-                    f"derived IRI collision: '{id_}' minted as both "
-                    f"{existing['uri']} and {uri}"
+                    f"derived IRI collision: '{id_}' minted as both {existing['uri']} and {uri}"
                 )
             return uri
         self._derived[id_] = {
@@ -2086,10 +2120,7 @@ class DerivedIriRegistry:
 
     def rows(self):
         """[{id, uri}] rows for the introspection uris table, sorted by id."""
-        return [
-            {"id": id_, "uri": entry["uri"]}
-            for id_, entry in sorted(self._derived.items())
-        ]
+        return [{"id": id_, "uri": entry["uri"]} for id_, entry in sorted(self._derived.items())]
 
     def nodes(self):
         """Derivation-graph nodes: what each derived entity is, and what it came from."""
@@ -2102,6 +2133,8 @@ class DerivedIriRegistry:
             }
             for _, entry in sorted(self._derived.items())
         ]
+
+
 def _id_ref(value):
     """Normalize a value to its id string (str/Enum/.id), or None."""
     if value is None:
@@ -2111,12 +2144,16 @@ def _id_ref(value):
     if isinstance(value, Enum):
         return value.value
     return getattr(value, "id", None)
+
+
 def _resolve_import_location(location: str, url_map: dict[str, str]) -> str:
     """Map an import-location URL to its local file path via the url map."""
     for base, root in sorted(url_map.items(), key=lambda item: len(item[0]), reverse=True):
         if location.startswith(base):
             return str((Path(root) / location[len(base) :]).resolve())
     return location
+
+
 def _load_graph(manifest_path):
     """Load the app manifest and its imports into one dataset; return (app path, graph, imported
     models, imported provenance).
@@ -2141,6 +2178,8 @@ def _load_graph(manifest_path):
     for model in imported_model_locations:
         g.parse(location=model, format="json-ld")
     return app_model_path, g, imported_models, imported_provenance
+
+
 def _node_indexes(g, p: Parser):
     """Build the (node_by_id, id_nodes) lookup indexes from the parser."""
     node_by_id = {}

@@ -84,7 +84,7 @@ def build_motion_units(
         # Declared solvers count even when no controller routes to them: a monitor-only
         # handler still owns its arm runtime for state reading, FK and command forwarding.
         handler_solver_ids = {p.id(plan.solver) for plan in handler_plans} | {
-            p.id(solver) for solver in g.objects(handler_node, CSTR_HDL_EXT.solvers)
+            p.id(solver) for solver in g.objects(handler_node, CSTR_HDL_EXT["runs-solver"])
         }
 
         _raw_when = set(g[motion_node : MOT["when"]])

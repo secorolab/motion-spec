@@ -562,16 +562,19 @@ solver-stage-output(solver, backend) ::= <<
 <({solver-stage-output-<backend>})(solver)>
 <solver-log-joint-space-cmd(solver, backend)>
 >>
+// The authored torque limit binds on every backend: it protects the joint, so the simulator and
+// the real arm must clamp the same command by the same bound.
+solver-torque-command(solver) ::= <<
+<if(solver.torque_saturation)>motion_spec::runtime::clamp_range(state.<solver.id>.tau_ctrl(i), <saturation-lower(solver.torque_saturation)>, <saturation-upper(solver.torque_saturation)>)<else>state.<solver.id>.tau_ctrl(i)<endif>
+>>
 solver-stage-output-robif2b(solver) ::= <<
     for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
-        robot.<solver.id>.state->eff_cmd[i] = state.<solver.id>.tau_ctrl(i);
+        robot.<solver.id>.state->eff_cmd[i] = <solver-torque-command(solver)>;
     }
 >>
 solver-stage-output-mj_kdl(solver) ::= <<
     for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
-<if(solver.torque_saturation)>        robot.<solver.id>.robot->jnt_trq_cmd[i] = motion_spec::runtime::clamp_range(state.<solver.id>.tau_ctrl(i), <saturation-lower(solver.torque_saturation)>, <saturation-upper(solver.torque_saturation)>);
-<else>        robot.<solver.id>.robot->jnt_trq_cmd[i] = state.<solver.id>.tau_ctrl(i);
-<endif>
+        robot.<solver.id>.robot->jnt_trq_cmd[i] = <solver-torque-command(solver)>;
     }
 >>
 

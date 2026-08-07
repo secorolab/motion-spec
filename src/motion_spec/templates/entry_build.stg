@@ -137,6 +137,25 @@ inline int bias_samples(const toml::table &config, const std::string &key) {
     return value;
 \}
 
+// How hard and how fast a gripper closes, as a percentage of the device's own limits. The model
+// commands position; speed and force are the deployment's to state, since they are a property of
+// the hardware and what it may touch. Optional: 50 % is mid-range on every supported gripper --
+// fast enough to keep up with a motion, soft enough not to crush.
+inline double gripper_pct(const toml::table &config, const std::string &key,
+                          const std::string &field) {
+    const double value = section(config, key)[field].value_or(50.0);
+    if (value \< 0.0 || value > 100.0) {
+        throw std::runtime_error("robot config [" + key + "] has '" + field + "' outside 0-100");
+    \}
+    return value;
+\}
+
+// The same percentage for a device that counts 0-255 instead.
+inline uint8_t gripper_pct_byte(const toml::table &config, const std::string &key,
+                                const std::string &field) {
+    return static_cast\<uint8_t\>(gripper_pct(config, key, field) * 255.0 / 100.0 + 0.5);
+\}
+
 // An optional numeric array: absent means the built-in default stands, present must match it
 // in length -- a base with four drives cannot be handed three wheel diameters.
 inline std::vector\<double\> doubles_or(const toml::table &table, const std::string &key,

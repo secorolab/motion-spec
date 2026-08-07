@@ -10,12 +10,8 @@ robot-driver-include-robif2b-KinovaGen3(solver) ::= <<
 >>
 
 robot-state-struct-robif2b-KinovaGen3(solver) ::= <<
-// The gripper closes under its own speed and force loop; the model commands position only.
-// Mid-range on both: fast enough to keep up with a motion, soft enough not to crush.
-static constexpr float kGripperSpeedPct = 50.0f;
-static constexpr float kGripperForcePct = 50.0f;
-static constexpr uint8_t kGripperSpeedByte = 128;
-static constexpr uint8_t kGripperForceByte = 128;
+// The gripper closes under its own speed and force loop; the model commands position only. What
+// speed and what force come from the robot config -- see motion_spec::config::gripper_pct.
 
 struct kinova_state {
     bool success = false;
@@ -37,8 +33,8 @@ struct kg3_gripper_state {
     float vel_msr = 0.0f;
     float cur_msr = 0.0f;
     float pos_cmd = 0.0f;
-    float vel_cmd = kGripperSpeedPct;
-    float frc_cmd = kGripperForcePct;
+    float vel_cmd = 0.0f;
+    float frc_cmd = 0.0f;
 };
 
 // Gripper on its own serial line: the same ports, counted 0-255.
@@ -49,8 +45,8 @@ struct serial_gripper_state {
     robif2b_robotiq_gripper_obj_status obj_status = ROBIF2B_ROBOTIQ_OBJ_UNKNOWN;
     robif2b_robotiq_gripper_status status = ROBIF2B_ROBOTIQ_UNKNOWN;
     uint8_t position_cmd = 0;
-    uint8_t speed_cmd = kGripperSpeedByte;
-    uint8_t force_cmd = kGripperForceByte;
+    uint8_t speed_cmd = 0;
+    uint8_t force_cmd = 0;
     robif2b_robotiq_gripper_error error = ROBIF2B_ROBOTIQ_NO_ERROR;
 };
 
@@ -119,11 +115,15 @@ device-state-init-impl ::= [
 
 device-state-init-robif2b-KinovaGen3-2F85(solver, device) ::= <<
     kg3_gripper_state gripper_<solver.runtime_id>_state{};
+    gripper_<solver.runtime_id>_state.vel_cmd = static_cast\<float\>(motion_spec::config::gripper_pct(robot_config, "<device.config_key>", "gripper_speed_pct"));
+    gripper_<solver.runtime_id>_state.frc_cmd = static_cast\<float\>(motion_spec::config::gripper_pct(robot_config, "<device.config_key>", "gripper_force_pct"));
     double gripper_<solver.runtime_id>_cmd = 0.0;
 >>
 
 device-state-init-robif2b-Robotiq2F85(solver, device) ::= <<
     serial_gripper_state gripper_<solver.runtime_id>_state{};
+    gripper_<solver.runtime_id>_state.speed_cmd = motion_spec::config::gripper_pct_byte(robot_config, "<device.config_key>", "gripper_speed_pct");
+    gripper_<solver.runtime_id>_state.force_cmd = motion_spec::config::gripper_pct_byte(robot_config, "<device.config_key>", "gripper_force_pct");
     double gripper_<solver.runtime_id>_cmd = 0.0;
 >>
 

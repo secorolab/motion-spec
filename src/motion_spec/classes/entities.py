@@ -44,6 +44,22 @@ class DataclassJSONEncoder(json.JSONEncoder):
         return super().default(o)
 
 
+def dedupe_by_id(items: list) -> list:
+    """Records deduplicated by id, keeping the first occurrence. An id-less record always survives:
+    it names nothing, so nothing can be a repeat of it.
+    """
+    result = []
+    seen = set()
+    for item in items:
+        key = getattr(item, "id", None)
+        if key is None:
+            result.append(item)
+        elif key not in seen:
+            seen.add(key)
+            result.append(item)
+    return result
+
+
 class Subspace(str, Enum):
     """The linear (translational) or angular (rotational) half of a 6D spatial quantity.
 
@@ -135,6 +151,33 @@ class Quantity:
     provenance: Provenance = field(default_factory=Provenance)
     reference_value: str | None = None
     type: str = field(default="Quantity")
+
+
+@dataclass(eq=False)
+class RuntimeValue:
+    """A shared value the runtime writes that no model entity declares: the measured period, the
+    FT tare state, a controller's internal state, a control parameter, a joint-space mirror.
+
+    The blackboard publishes what a member is -- its id, its storage type, its initial value and
+    the role it plays. What it was derived from is the introspection artifact's to report, so the
+    descriptive fields are construction inputs that `communication.py` reads to build the row.
+    """
+
+    id: str
+    type: str
+    value: float | None = None
+    role: str | None = None
+    producer: dict | None = field(default=None, metadata=INTERNAL)
+    quantity_kind: QuantityKind | None = field(default=None, metadata=INTERNAL)
+    unit: Unit | None = field(default=None, metadata=INTERNAL)
+    # Who the value belongs to, named the way its introspection row names it.
+    owner: str | None = field(default=None, metadata=INTERNAL)
+    parameter: str | None = field(default=None, metadata=INTERNAL)
+    controller: str | None = field(default=None, metadata=INTERNAL)
+    state: str | None = field(default=None, metadata=INTERNAL)
+    runtime: str | None = field(default=None, metadata=INTERNAL)
+    channel: str | None = field(default=None, metadata=INTERNAL)
+    joint: str | None = field(default=None, metadata=INTERNAL)
 
 
 @dataclass

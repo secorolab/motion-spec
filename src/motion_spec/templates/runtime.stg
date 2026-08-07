@@ -317,6 +317,11 @@ inline double evaluate_equality_constraint(double quantity, double reference) {
     return quantity - reference;
 }
 
+// Shortest signed angular distance, in (-pi, pi]: a continuous joint's error lives on the circle.
+inline double wrap_angle(double angle) {
+    return std::remainder(angle, 2.0 * M_PI);
+}
+
 inline double evaluate_equality_constraint(const KDL::Vector &target, const KDL::Vector &current) {
     return (target - current).Norm();
 }

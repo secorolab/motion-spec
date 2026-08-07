@@ -73,6 +73,10 @@ from motion_spec_dsl.rdf_parser.vocab import (
 from motion_spec_dsl.rdf_parser.manifest import (
     build_url_map, metamodel_url_map,
 )
+from rdf_utils.models.vocab import (
+    URI_KC_EXT_PRED_OF_JOINT, URI_KC_EXT_TYPE_JOINT_LIMIT, URI_KC_STAT_JNT_POSITION,
+    URI_KC_TYPE_REVOLUTE_JOINT, URI_KC_TYPE_REVOLUTE_JOINT_ORIENTED_AXIS,
+)
 
 from motion_spec.rdf_parser.records import (
     _dedupe_by_id, _kebab, _ros_type_parts, escape, memoize,
@@ -248,6 +252,20 @@ class Specification:
                         data_structures.add(data_in)
 
         return {"data_structures": data_structures, "schedule": []}
+def _continuous_joint_leaves(g) -> set[str]:
+    """Leaf names of revolute joints with no authored position limit: continuous joints,
+    whose position error lives on the circle. Read from absence -- scene-dsl emits a
+    kc-ext:JointLimit per authored bound and nothing for a missing one.
+    """
+    revolute = set(g.subjects(RDF.type, URI_KC_TYPE_REVOLUTE_JOINT)) | set(
+        g.subjects(RDF.type, URI_KC_TYPE_REVOLUTE_JOINT_ORIENTED_AXIS)
+    )
+    position_limited = {
+        g.value(limit, URI_KC_EXT_PRED_OF_JOINT)
+        for limit in g.subjects(RDF.type, URI_KC_EXT_TYPE_JOINT_LIMIT)
+        if URI_KC_STAT_JNT_POSITION in get_node_types(g, limit)
+    }
+    return {_term_name(joint) for joint in revolute - position_limited}
 class ErrorEvaluator:
     """Constraint-handler operator emitting a constraint error signal, dispatching on the constraint
     type (equality/greater/less/bilateral/outside).
@@ -298,6 +316,15 @@ class ErrorEvaluator:
                 "type": "ErrorEvaluator",
                 "constraint": to_id(operator.type_),
             }
+
+            # An equality error on a continuous joint wraps to the shortest arc.
+            if operator.type_ == CSTR["EqualityConstraint"]:
+                quantity = g.value(constraint_id, CSTR["quantity"])
+                joint = (
+                    g.value(quantity, KC_STAT["of-joint"]) if quantity is not None else None
+                )
+                if joint is not None and _term_name(joint) in _continuous_joint_leaves(g):
+                    closure["angular_wrap"] = True
 
             _fill_closure_args(g, closure, to_id, operator, closure_id, constraint_id)
             return closure  # first matching constraint type wins

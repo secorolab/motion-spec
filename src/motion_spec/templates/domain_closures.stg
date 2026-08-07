@@ -183,12 +183,12 @@ path-eval-Figure8(closure, views) ::= <<
 <({path-eval-Figure8-<closure.form>})(closure, views)>
 >>
 
-// In-plane reference axis: the authored direction, projected onto the plane and
+// In-plane reference axis: the anchor frame's x-axis, projected onto the plane and
 // normalized (Gram-Schmidt) so it stays perpendicular to plane-normal.
 figure8-plane(closure) ::= <<
     KDL::Vector _n = shared.<closure.plane_normal>;
     _n.Normalize();
-    KDL::Vector _u = shared.<closure.direction>;
+    KDL::Vector _u = shared.<closure.anchor>.M.UnitX();
     _u -= KDL::dot(_u, _n) * _n;
     _u.Normalize();
     const KDL::Vector _v = _n * _u;

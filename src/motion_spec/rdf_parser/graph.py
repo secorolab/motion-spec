@@ -415,7 +415,6 @@ ops_path = [
             GEOM_PATH["anchor"],
             GEOM_PATH["radius"],
             GEOM_PATH["plane-normal"],
-            GEOM_PATH["direction"],
         ],
         output=[],
         parameters=[GEOM_PATH["form"]],

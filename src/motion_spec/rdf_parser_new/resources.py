@@ -918,12 +918,7 @@ def _solver_with_input_and_output(model, node) -> SolverWithInputAndOutput:
     if algorithm_node is None:
         algorithm = ""
     else:
-        try:
-            algorithm = controllers.SOLVER_SEMANTICS_BY_ALGORITHM[algorithm_node].codegen_name
-        except KeyError as exc:
-            raise ValueError(
-                f"Solver '{node}' has unsupported algorithm '{algorithm_node}'."
-            ) from exc
+        algorithm = controllers.solver_algorithm(model, node).codegen_name
     torque_limit = next(
         (
             limit

@@ -1,0 +1,179 @@
+# SPDX-License-Identifier: MPL-2.0
+# SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
+"""The lowering pipeline.
+
+One forward pass from a model manifest to the published IR. Reading this file top to bottom is
+reading the data flow; it holds no derivation of its own, and nothing else in the package is
+reachable except through it.
+"""
+
+from __future__ import annotations
+
+from motion_spec.rdf_parser_new import (
+    communication,
+    controllers,
+    coordination,
+    operations,
+    quantities,
+    resources,
+)
+from motion_spec.rdf_parser_new.model import load_model
+
+__all__ = ["generate_ir"]
+
+_ALL_OPERATORS = operations.OPS_GENERIC + operations.OPS_SOLVER + operations.OPS_HANDLER
+
+
+def generate_ir(manifest_path) -> dict:
+    """Lower a model manifest to the IR codegen renders from.
+
+    Parameters:
+        manifest_path: path to the `<model>-app.ld.json` the DSL generated
+
+    Returns:
+        the IR, sectioned by the 5Cs plus the resources the program commands; complete by
+        construction, so codegen loads it and renders with no derivation pass of its own
+    """
+    from motion_spec.generation.scene_kdl import kdl_header_name
+
+    model = load_model(manifest_path)
+    operations.normalize(model)
+
+    # The platform, the scene and the FSM are pure functions of the graph, and everything the
+    # pass builds afterwards is shaped by them.
+    platform = resources.read_platform(model)
+    backend = platform["backend"]
+    scene = resources.read_scene(model)
+    fsm = coordination.read_fsm(model)
+    derivation = controllers.solver_derivation_context(model)
+    setups, _ordered = resources.robot_setups(model)
+
+    # One scope for the whole active block: a step reachable from both a solver and a handler is
+    # emitted once, and the four sections are only ever read as their union.
+    schedule = operations.Schedule(model)
+    robots = resources.build_robots(model, schedule, setups, derivation, scene.objects, backend)
+    handlers, handler_steps = coordination.build_constraint_handlers(model, schedule, derivation)
+    kdl_header = kdl_header_name(model.app_path)
+    for solver in robots.serial_chains:
+        solver.kdl_header = kdl_header
+    coordination.assign_event_indexes(handlers)
+
+    closures = operations.build_closures(model, _ALL_OPERATORS)
+    controllers.augment_closures(model, derivation, closures)
+    views = quantities.read_views(model)
+    data_structures = quantities.read_data_structures(model)
+    controllers.augment_data(model, derivation, data_structures, views)
+    computation = quantities.build_indexes(model, closures, data_structures, views)
+    # After pose components exist, before motions are built: a path's goal is one of them.
+    operations.resolve_closure_operands(closures, computation.indexes, data_structures)
+
+    motions, fsm_meta = coordination.build_motions(
+        model, handlers, robots, computation, derivation, fsm
+    )
+    resources.annotate_runtime(robots.serial_chains, motions, backend)
+
+    if scene.timestep_s <= 0:
+        raise ValueError("ENVIRONMENT timestep must be positive.")
+    control_period_ns = round(scene.timestep_s * 1e9)
+    coordination.apply_monitor_debounce(handlers, control_period_ns)
+
+    shared_data = quantities.filter_shared_data(
+        data_structures,
+        robots.schedule_steps + handler_steps,
+        closures,
+        views,
+        {out.id for solver in robots.serial_chains for out in solver.output},
+    )
+    shared_data += resources.shared_runtime_members(
+        model, robots.serial_chains, control_period_ns, platform.get("uri")
+    )
+
+    introspection, values = communication.build_introspection(
+        model,
+        motions,
+        computation,
+        shared_data,
+        robots,
+        scene,
+        platform,
+        control_period_ns,
+        backend,
+    )
+
+    return {
+        "configuration": {
+            "control_period_ns": control_period_ns,
+            "backend": backend,
+            # The authored execution platform, so provenance and the runtime graph read the
+            # model's own answer instead of matching substrings of a derived id.
+            "platform": platform,
+            "agent_homes": resources.agent_home_positions(platform, robots.serial_chains),
+            "trace": resources.TRACE_DISABLED,
+        },
+        "resources": _resources_section(robots),
+        "composition": {"scene": scene},
+        "computation": _computation_section(closures, views, shared_data, values, motions),
+        "coordination": _coordination_section(motions, fsm, fsm_meta),
+        "communication": _communication_section(introspection, motions),
+    }
+
+
+def _resources_section(robots) -> dict:
+    """Every actuated resource the program commands, plus the by-kind cuts of it.
+
+    An arm and a wheeled base are both actuated resources with kinematics, solvers and devices, so
+    they ride in one kind-tagged collection; the views are filtered here because ST4 cannot
+    filter, and each is absent rather than empty when the model has none of that kind.
+    """
+    every = [*robots.serial_chains, *robots.platform_velocity, *robots.platform_force]
+    by_kind = {}
+    serial_chains = [robot for robot in every if robot.kind == "serial_chain"]
+    if serial_chains:
+        by_kind["serial_chain"] = serial_chains
+    if any(robot.kind == "mobile_base" for robot in every):
+        by_kind["mobile_base"] = {
+            "velocity_solvers": robots.platform_velocity,
+            "force_solvers": robots.platform_force,
+        }
+
+    return {"robots": every, "by_kind": by_kind}
+
+
+def _computation_section(closures, views, shared_data, values, motions) -> dict:
+    """What is computed each tick, and the blackboard it lives on."""
+    section = {
+        "shared_data": shared_data,
+        # Layer-B projections of the dataflow contract, keyed by model role, not by construct.
+        "values": values,
+        "closures": closures,
+        "views": quantities.views_for_access(views, shared_data, motions, closures),
+    }
+    # Elapsed constraints compare seconds from the runtime clock; naming the clock says what it
+    # is, where a flag would only have asserted that one is wanted.
+    if any(motion.has_elapsed for motion in motions):
+        section["clock"] = {"id": "clock", "time_id": "clock_time_s"}
+
+    return section
+
+
+def _coordination_section(motions, fsm, fsm_meta) -> dict:
+    """What runs when: the motions, and the FSM sequencing them when the model imports one."""
+    section = {"motions": motions}
+    if fsm:
+        section["fsm"] = {**fsm, **fsm_meta}
+
+    return section
+
+
+def _communication_section(introspection, motions) -> dict:
+    """What leaves the loop: the frame log, and the ROS topics when a monitor publishes."""
+    section = {"introspection": introspection}
+    publishers = communication.ros_publishers(motions)
+    if publishers:
+        section["ros"] = {
+            "publishers": publishers,
+            "packages": sorted({publisher["pkg"] for publisher in publishers}),
+            "node_name": "motion_spec_monitor",
+        }
+
+    return section

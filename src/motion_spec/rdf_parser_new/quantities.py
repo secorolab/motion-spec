@@ -136,9 +136,15 @@ from motion_spec.rdf_parser_new.operations import (
 )
 
 __all__ = [
+    "ANGULAR_AXES",
+    "AXIS_BY_NAME",
+    "LINEAR_AXES",
     "PORT_PRODUCERS",
+    "POSE_AXES",
+    "Computation",
     "ComputationIndexes",
     "ReferenceFrames",
+    "SpatialAxis",
     "acceleration_twist",
     "annotate_dataflow",
     "axis",
@@ -178,6 +184,7 @@ __all__ = [
     "scene_relative_poses_for_motion",
     "simplicial_complex",
     "snapshots_for_motion",
+    "spatial_axes",
     "subspace",
     "velocity_twist",
     "views_by_subobject",
@@ -266,6 +273,7 @@ _SUBSPACES = {
     MAP_EXT["linear"]: Subspace.Linear,
     MAP_EXT["angular"]: Subspace.Angular,
 }
+# Every RDF term that names a Cartesian axis, whatever metamodel states it.
 _AXES = {
     MAP["x"]: Axis.X,
     MAP["y"]: Axis.Y,
@@ -275,6 +283,87 @@ _AXES = {
     SLV["y"]: Axis.Y,
     SLV["z"]: Axis.Z,
 }
+# The same axes by the name a derived direction carries, which is a string rather than a term.
+AXIS_BY_NAME = {"x": Axis.X, "y": Axis.Y, "z": Axis.Z}
+
+
+@dataclass(frozen=True)
+class SpatialAxis:
+    """One ordered linear or angular Cartesian direction.
+
+    A path-following direction is known only at runtime, so it names the shared vector carrying it
+    instead of a fixed frame axis.
+    """
+
+    subspace: str
+    axis: str
+    direction: str | None = None
+
+    @property
+    def suffix(self) -> str:
+        """The fragment this direction contributes to a derived id."""
+        prefix = "lin" if self.subspace == "linear-acceleration" else "ang"
+
+        return f"{prefix}_{self.axis}"
+
+    @property
+    def frame_axis(self) -> str | None:
+        """The fixed frame axis this direction is, or None when it is a runtime vector."""
+        return None if self.direction is not None else self.axis
+
+    @property
+    def half(self) -> Subspace:
+        """The half of the 6D space this direction lives in."""
+        return Subspace.Linear if self.subspace == "linear-acceleration" else Subspace.Angular
+
+
+LINEAR_AXES = tuple(SpatialAxis("linear-acceleration", name) for name in "xyz")
+ANGULAR_AXES = tuple(SpatialAxis("angular-acceleration", name) for name in "xyz")
+POSE_AXES = (*LINEAR_AXES, *ANGULAR_AXES)
+
+
+def spatial_axes(
+    *,
+    controller_type: str,
+    subspace: str | None,
+    axis: str | None,
+    command_type: str | None,
+    relation: str,
+    quantity_kind: str | None,
+) -> tuple[SpatialAxis, ...]:
+    """The ordered Cartesian directions an authored command controls.
+
+    Parameters:
+        controller_type: local name of the controller's RDF type
+        subspace: local name of the view's subspace predicate, when it has a view
+        axis: local name of the view's axis predicate, when it selects one
+        command_type: the authored `app:command-type`, when there is one
+        relation: local name of the constraint's relation type
+        quantity_kind: `Pose` or `JointPosition` when the target is one of those coordinates
+
+    Returns:
+        the directions, empty when nothing Cartesian is commanded
+    """
+    if controller_type == "ImpedanceController":
+        command_type = "Force"
+    if command_type == "Force" or subspace == "force":
+        return ()
+    if command_type == "Torque" and quantity_kind == "JointPosition":
+        return ()
+    if quantity_kind == "Pose" and subspace in {None, "pose"} and relation == "EqualityConstraint":
+        return POSE_AXES
+    if subspace in {"position", "linear-velocity"}:
+        return (SpatialAxis("linear-acceleration", axis),) if axis else LINEAR_AXES
+    if subspace in {"orientation", "angular-velocity"}:
+        return (SpatialAxis("angular-acceleration", axis),) if axis else ANGULAR_AXES
+    if subspace == "distance" and axis is not None:
+        return (SpatialAxis("linear-acceleration", axis),)
+    if subspace == "rotation" and axis is not None:
+        return (SpatialAxis("angular-acceleration", axis),)
+    if subspace == "distance" and axis is None:
+        return (SpatialAxis("linear-acceleration", "distance"),)
+
+    return ()
 
 
 _XYZ_PREDICATES = (URI_GEOM_PRED_X, URI_GEOM_PRED_Y, URI_GEOM_PRED_Z)
@@ -1757,7 +1846,19 @@ def _snapshot_maps(model) -> _SnapshotMaps:
     return _SnapshotMaps(source, owner, trigger)
 
 
-def build_indexes(model, closures: dict, data_structures: list, views: dict) -> ComputationIndexes:
+@dataclass(frozen=True)
+class Computation:
+    """What is computed this run: the closures, the values they read and write, the views onto
+    those values, and every lookup a motion makes over the three.
+    """
+
+    closures: dict
+    data_structures: list
+    views: dict
+    indexes: ComputationIndexes
+
+
+def build_indexes(model, closures: dict, data_structures: list, views: dict) -> Computation:
     """Resolve every per-motion lookup once, before any motion is built.
 
     Raises:
@@ -1766,8 +1867,7 @@ def build_indexes(model, closures: dict, data_structures: list, views: dict) -> 
     """
     source, owner, trigger = _snapshot_maps(model)
     closure_output, closure_input = closure_maps(closures)
-
-    return ComputationIndexes(
+    indexes = ComputationIndexes(
         snapshot_source=source,
         snapshot_owner=owner,
         snapshot_trigger=trigger,
@@ -1777,6 +1877,8 @@ def build_indexes(model, closures: dict, data_structures: list, views: dict) -> 
         data_reference=data_reference_map(data_structures, closures),
         pose_components=_build_pose_components(model, views, data_structures),
     )
+
+    return Computation(closures, data_structures, views, indexes)
 
 
 def filter_shared_data(data_structures, schedule, closures: dict, views: dict, fk_output_ids):

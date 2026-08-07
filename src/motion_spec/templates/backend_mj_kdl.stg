@@ -14,6 +14,7 @@ robot-manipulator-struct-mj_kdl-KinovaGen3(solver) ::= <<
 struct manipulator_robot {
     mj_kdl::Robot *robot = nullptr;
     KDL::Chain *chain = nullptr;
+    int ft_bias_samples = 0;
 };
 >>
 
@@ -76,6 +77,13 @@ robot-assign-mj_kdl-KinovaGen3(solver) ::= <<
         .robot = &mj_<solver.runtime_id>,
         .chain = chain_<solver.runtime_id>,
     };
+<solver.sensors:{s |<({mj-sensor-config-<s.type>})(solver, s)>}>
+>>
+
+// The tare length is a deployment property, so the simulator reads the same config key the real
+// driver does rather than carrying a second number of its own.
+mj-sensor-config-ForceTorque(solver, sensor) ::= <<
+    robot.<solver.id>.ft_bias_samples = motion_spec::config::bias_samples(robot_config, "<solver.config_key>");
 >>
 
 robot-configure-mj_kdl-KinovaGen3(solver) ::= <<
@@ -95,10 +103,12 @@ app-chain-includes-mj_kdl(has_serial_chain) ::= <<
 #include \<iostream\>
 #include \<string\>
 #include \<vector\>
+#include "robot_config.hpp"
 <endif>
 >>
 
 app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
+    const auto robot_config = motion_spec::config::load("<config_path>");
     bool headless = false;
     bool steps_limited = false;
     int headless_steps = 0;

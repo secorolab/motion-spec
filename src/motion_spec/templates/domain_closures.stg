@@ -109,7 +109,7 @@ emit-call-VelocityProfile(closure, views) ::= <<
 >>
 
 emit-call-Admittance(closure, views) ::= <<
-shared.<closure.out> = state.<closure.controller>.adm_filter.step(<access-expr(closure.in, views)>, <closure.mass>, <closure.damping>, <closure.stiffness>, <closure.maximum_velocity>, shared.dt_measured_s);
+shared.<closure.out> = state.<closure.controller>.adm_filter.step(<access-expr(closure.in, views)>, shared.<closure.mass>, shared.<closure.damping>, shared.<closure.stiffness>, shared.<closure.maximum_velocity>, shared.dt_measured_s);
 >>
 
 path-eval-Circle(closure, views) ::= <<
@@ -327,7 +327,7 @@ pose-axis-error-group-wrench(g, views) ::= <<
 
 emit-call-Controller(closure, views) ::= <<
 {
-    const double _control_signal = <if(closure.reference_signal)><access-expr(closure.reference_signal, views)><else>state.<closure.id>.control(<access-expr(closure.error_signal, views)><if(closure.measured_derivative)>, -(<access-expr(closure.measured_derivative, views)>)<endif>, shared.dt_measured_s)<endif>;
+    const double _control_signal = <if(closure.reference_signal)><access-expr(closure.reference_signal, views)><else>state.<closure.id>.control(<access-expr(closure.error_signal, views)><if(closure.measured_derivative)>, -(<access-expr(closure.measured_derivative, views)>)<endif>, shared.dt_measured_s, <control-gains(closure)>)<endif>;
 <if(closure.output_saturation)>
     shared.<closure.control_signal> = motion_spec::runtime::clamp_range(_control_signal, <saturation-lower(closure.output_saturation)>, <saturation-upper(closure.output_saturation)>);
 <else>

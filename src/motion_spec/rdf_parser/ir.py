@@ -919,15 +919,6 @@ def _derived_motion_drivers(g, p, context, solver: URIRef) -> list[MotionDrivers
     return result
 
 
-def _literal_text(g, subject, predicate):
-    """Return a controller parameter in the text form used by closure IR."""
-    value = g.value(subject, predicate)
-    if value is None:
-        return None
-    literal = value if isinstance(value, rdflib.Literal) else g.value(value, QUDT_SCHEMA.value)
-    return str(literal) if literal is not None else None
-
-
 def _derive_solver_closures(g, p, context, closures: dict) -> None:
     """Replace graph-expanded controller closures with authored semantic derivations."""
     for plans in context.controllers_by_handler.values():
@@ -950,16 +941,6 @@ def _derive_solver_closures(g, p, context, closures: dict) -> None:
                         getattr(controller, "measured_derivative", None), "id", None
                     ),
                     "control_signal": controller.control_signal.id,
-                    "proportional_gain": _literal_text(
-                        g, plan.controller, CSTR_HDL["proportional-gain"]
-                    ),
-                    "integral_gain": _literal_text(
-                        g, plan.controller, CSTR_HDL["integral-gain"]
-                    ),
-                    "derivative_gain": _literal_text(
-                        g, plan.controller, CSTR_HDL["derivative-gain"]
-                    ),
-                    "decay_rate": _literal_text(g, plan.controller, CSTR_HDL["decay-rate"]),
                 }
             if len(plan.axes) <= 1:
                 continue
@@ -5102,6 +5083,7 @@ def _build_introspection(
     # then the frame-log quantity/spatial samples that read them.
     _annotate_controller_signals(introspection["controllers"], closures)
     add_controller_internal_state_logging(closures, shared_data, introspection, motions, iris)
+    add_control_parameters(closures, shared_data, introspection, motions, iris)
     add_joint_space_logging(
         serial_chain_solvers, motions, shared_data, introspection, backend, iris
     )
@@ -6331,6 +6313,91 @@ def add_controller_internal_state_logging(
             )
             closure_samples.append({"id": item_id, "getter": getter})
         closure["internal_state_samples"] = closure_samples
+
+
+# The authored numbers each controller kind tunes with: gains-struct field name -> the field the
+# parsed controller carries it on, and whether the model must author it. Order is the struct's
+# field order in runtime.stg. The optional ones stood at 0.0 when unauthored before they moved
+# here; the rest were rendered unconditionally, so an absent one must still fail.
+_CONTROL_GAINS = {
+    "ProportionalIntegralDerivative": (
+        ("kp", "proportional_gain", True),
+        ("ki", "integral_gain", True),
+        ("kd", "derivative_gain", True),
+        ("decay_rate", "decay_rate", False),
+    ),
+    "ImpedanceController": (
+        ("stiffness", "stiffness", True),
+        ("damping", "damping", True),
+        ("integral_gain", "integral_gain", False),
+    ),
+}
+
+# Admittance parameters, carried on the closure as authored literals.
+_ADMITTANCE_PARAMETERS = ("mass", "damping", "stiffness", "maximum_velocity")
+
+
+def add_control_parameters(closures: dict, shared_data: list, introspection: dict, motions, iris):
+    """Publish every authored control parameter as a shared value the step call reads.
+
+    A gain baked into a constructor can neither be reported nor ever vary; as a shared value it
+    carries a producer (`authored`, so `init`) and lands in the run's header record like any
+    other authored literal.
+    """
+    quantities = introspection.setdefault("quantities", [])
+    shared_ids = {_field(item, "id") for item in shared_data if _field(item, "id")}
+    quantity_ids = {_field(item, "id") for item in quantities if _field(item, "id")}
+
+    def publish(owner_id: str, name: str, value, required: bool = True) -> str:
+        """Append the shared value and introspection quantity for one parameter; return its id."""
+        parent_iri = iris.iri_of(owner_id)
+        if parent_iri is None:
+            raise RuntimeError(f"control parameter: '{owner_id}' has no IRI to derive from")
+        if value is None and required:
+            raise RuntimeError(f"control parameter: '{owner_id}' authors no '{name}'")
+        item_id = f"{owner_id}_{name}"
+        row = {
+            "id": item_id,
+            "type": "Quantity",
+            "value": float(value) if value is not None else 0.0,
+            "owner": owner_id,
+            "role": "control_parameter",
+            "parameter": name,
+        }
+        if item_id not in shared_ids:
+            shared_data.append(dict(row))
+            shared_ids.add(item_id)
+        if item_id not in quantity_ids:
+            quantities.append(dict(row))
+            quantity_ids.add(item_id)
+        iris.register(item_id, parent_iri, name, DerivedIriRegistry.DERIVATION)
+        return item_id
+
+    controller_by_id = {
+        _field(controller, "id"): controller
+        for motion in motions
+        for controller in (_field(motion, "controllers", []) or [])
+    }
+    for closure in closures.values():
+        if not isinstance(closure, dict):
+            continue
+        if closure.get("type") == "Admittance":
+            for name in _ADMITTANCE_PARAMETERS:
+                closure[name] = publish(closure["id"], name, closure[name])
+            continue
+        if closure.get("type") != "Controller":
+            continue
+        controller = controller_by_id.get(closure.get("id"))
+        gains = _CONTROL_GAINS.get(_field(controller, "type"))
+        if not gains:
+            continue
+        closure["controller_type"] = _field(controller, "type")
+        closure["gains"] = {
+            name: publish(closure["id"], name, _field(controller, source), required)
+            for name, source, required in gains
+        }
+        # The bounds are authored shared quantities already; the call site reads them by id.
+        closure["integral_saturation"] = _field(controller, "integral_saturation")
 
 
 # One declaration per joint-space channel: what writes it, and what it measures. Kept in one place

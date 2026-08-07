@@ -307,40 +307,48 @@ class AdmittanceFilter {
     double offset_ = 0.0;
 };
 
+// The tuning a step applies, handed in per call like dt. Kept out of the controller so the
+// numbers stay blackboard values a run artifact can report rather than construction-time state.
+struct PIDGains {
+    double kp = 0.0;
+    double ki = 0.0;
+    double kd = 0.0;
+    double decay_rate = 0.0;
+    bool has_integral_limit = false;
+    double integral_lower = 0.0;
+    double integral_upper = 0.0;
+};
+
 class PIDControl {
   public:
     PIDControl() = default;
 
-    PIDControl(double p_gain, double i_gain, double d_gain, double decay_rate,
-               bool has_integral_limit = false, double integral_lower = 0.0, double integral_upper = 0.0)
-        : kp(p_gain), ki(i_gain), kd(d_gain), decay_rate(decay_rate),
-          has_integral_limit(has_integral_limit), integral_lower(integral_lower), integral_upper(integral_upper) {}
-
     // dt is the time the loop measured for this tick, not the nominal period.
-    double control(double error, double dt) {
-        return control_impl(error, 0.0, false, dt);
+    double control(double error, double dt, const PIDGains &gains) {
+        return control_impl(error, 0.0, false, dt, gains);
     }
 
-    double control(double error, double error_derivative, double dt) {
-        return control_impl(error, error_derivative, true, dt);
+    double control(double error, double error_derivative, double dt, const PIDGains &gains) {
+        return control_impl(error, error_derivative, true, dt, gains);
     }
 
-    double control_impl(double error, double error_derivative, bool has_error_derivative, double dt) {
-        const double err_diff = (decay_rate > 0.0 || first_sample)
+    double control_impl(double error, double error_derivative, bool has_error_derivative, double dt,
+                        const PIDGains &gains) {
+        const double err_diff = (gains.decay_rate > 0.0 || first_sample)
             ? 0.0
             : ((error - err_last) / dt);
-        if (decay_rate > 0.0) {
-            err_integ = decay_rate * err_integ + error * dt;
+        if (gains.decay_rate > 0.0) {
+            err_integ = gains.decay_rate * err_integ + error * dt;
         } else {
             err_integ = err_integ + error * dt;
         }
-        if (has_integral_limit) {
-            err_integ = clamp_range(err_integ, integral_lower, integral_upper);
+        if (gains.has_integral_limit) {
+            err_integ = clamp_range(err_integ, gains.integral_lower, gains.integral_upper);
         }
         err_last = error;
         first_sample = false;
         const double deriv = has_error_derivative ? error_derivative : err_diff;
-        return kp * error + ki * err_integ + kd * deriv;
+        return gains.kp * error + gains.ki * err_integ + gains.kd * deriv;
     }
 
     double error_integral() const { return err_integ; }
@@ -369,13 +377,6 @@ class PIDControl {
     double err_integ = 0.0;
     double err_last = 0.0;
     bool first_sample = true;
-    double kp = 0.0;
-    double ki = 0.0;
-    double kd = 0.0;
-    double decay_rate = 0.0;
-    bool has_integral_limit = false;
-    double integral_lower = 0.0;
-    double integral_upper = 0.0;
 };
 
 // Spring-damper controller: maps a single scalar constraint error to a
@@ -383,22 +384,25 @@ class PIDControl {
 // approximated by finite difference on successive error samples, so
 // "error" is assumed to be a position or angle error; the damping term
 // then approximates velocity feedback rather than reading it directly.
+struct ImpedanceGains {
+    double stiffness = 0.0;
+    double damping = 0.0;
+    double integral_gain = 0.0;
+};
+
 class ImpedanceControl {
   public:
     ImpedanceControl() = default;
 
-    ImpedanceControl(double stiffness, double damping, double integral)
-        : ks(stiffness), kd(damping), ki(integral) {}
-
     // dt is the time the loop measured for this tick, not the nominal period.
-    double control(double error, double dt) {
+    double control(double error, double dt, const ImpedanceGains &gains) {
         const double err_diff = first_sample ? 0.0 : ((error - err_last) / dt);
         err_last = error;
         first_sample = false;
-        if (ki > 0.0) {
+        if (gains.integral_gain > 0.0) {
             err_int += error * dt;
         }
-        return ks * error + kd * err_diff + ki * err_int;
+        return gains.stiffness * error + gains.damping * err_diff + gains.integral_gain * err_int;
     }
 
     double error_integral() const { return err_int; }
@@ -416,9 +420,6 @@ class ImpedanceControl {
     double err_last = 0.0;
     double err_int = 0.0;
     bool first_sample = true;
-    double ks = 0.0;
-    double kd = 0.0;
-    double ki = 0.0;
 };
 
 inline double evaluate_equality_constraint(double quantity, double reference) {

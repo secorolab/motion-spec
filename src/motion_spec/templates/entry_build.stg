@@ -16,6 +16,7 @@ find_package(orocos_kdl REQUIRED CONFIG)
 find_package(coord2b REQUIRED)
 <endif>
 find_package(mj_kdl_wrapper 0.2.2 REQUIRED CONFIG)
+find_package(tomlplusplus REQUIRED CONFIG)
 find_package(Threads REQUIRED)
 <if(ros)>
 find_package(rclcpp REQUIRED)
@@ -39,6 +40,7 @@ target_include_directories(main PRIVATE
 target_link_libraries(main PRIVATE
     mj_kdl_wrapper::mj_kdl_wrapper
     orocos-kdl
+    tomlplusplus::tomlplusplus
 <if(fsm)>
     ${coord2b_LIBRARIES}
 <endif>

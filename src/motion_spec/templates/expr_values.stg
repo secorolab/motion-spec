@@ -98,11 +98,33 @@ controller-member(controller) ::= <<
 >>
 
 controller-member-ProportionalIntegralDerivative(controller) ::= <<
-    motion_spec::runtime::PIDControl <controller.id>{<controller.proportional_gain>, <controller.integral_gain>, <controller.derivative_gain>, <if(controller.decay_rate)><controller.decay_rate><else>0.0<endif><if(controller.integral_saturation)>, true, <saturation-lower(controller.integral_saturation)>, <saturation-upper(controller.integral_saturation)><endif>};
+    motion_spec::runtime::PIDControl <controller.id>;
 >>
 
 controller-member-ImpedanceController(controller) ::= <<
-    motion_spec::runtime::ImpedanceControl <controller.id>{<controller.stiffness>, <controller.damping>, <if(controller.integral_gain)><controller.integral_gain><else>0.0<endif>};
+    motion_spec::runtime::ImpedanceControl <controller.id>;
+>>
+
+// The tuning a controller's step applies, read off the blackboard at the call site. Field order
+// is the gains struct's in runtime.stg.
+control-gains(closure) ::= <<
+<({control-gains-<closure.controller_type>})(closure)>
+>>
+
+control-gains-ProportionalIntegralDerivative(closure) ::= <<
+{shared.<closure.gains.kp>, shared.<closure.gains.ki>, shared.<closure.gains.kd>, shared.<closure.gains.decay_rate><if(closure.integral_saturation)>, true, <integral-bound-lower(closure.integral_saturation)>, <integral-bound-upper(closure.integral_saturation)><endif>}
+>>
+
+control-gains-ImpedanceController(closure) ::= <<
+{shared.<closure.gains.stiffness>, shared.<closure.gains.damping>, shared.<closure.gains.integral_gain>}
+>>
+
+integral-bound-lower(saturation) ::= <<
+<if(saturation.maximum)>-shared.<saturation.maximum.id><else>shared.<saturation.lower.id><endif>
+>>
+
+integral-bound-upper(saturation) ::= <<
+<if(saturation.maximum)>shared.<saturation.maximum.id><else>shared.<saturation.upper.id><endif>
 >>
 
 controller-member-FeedForwardController(controller) ::= <<

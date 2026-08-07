@@ -28,6 +28,7 @@ ref_main(platform, motions, values, has_serial_chain, resources, shared_data, ba
 int main(int argc, char **argv) {
     robot_io robot{};
     shared_data shared{};
+    motion_spec_event_buffer events{};
 <if(ros)>
 
 <ros-setup(ros)>
@@ -118,7 +119,7 @@ int main(int argc, char **argv) {
 <motions:{motion |
         case <i0>: {
             update_<motion.id>(<motion.id>_state_instance, shared, robot);
-            monitor_<motion.id>(<sig-args(motion.id, motion.monitor_needs_state, motion.monitor_needs_shared, motion.monitor_needs_robot)>);
+            monitor_<motion.id>(<sig-args(motion.id, motion.monitor_needs_state, motion.monitor_needs_shared, motion.monitor_needs_robot, motion.monitor_needs_events)>);
             if (!<motion.id>_state_instance.active && can_start_<motion.id>(<sig-args(motion.id, motion.can_start_needs_state, motion.can_start_needs_shared, motion.can_start_needs_robot)>)) {
                 <motion.id>_state_instance.active = true;
                 <motion.id>_state_instance.active_steps = 0;
@@ -129,7 +130,7 @@ int main(int argc, char **argv) {
 ">
             \}
             if (<motion.id>_state_instance.active) {
-                control_<motion.id>(<motion.id>_state_instance, shared, robot);
+                control_<motion.id>(<motion.id>_state_instance, shared, robot<if(motion.control_needs_events)>, events<endif>);
                 apply_<motion.id>(<sig-args(motion.id, motion.apply_needs_state, motion.apply_needs_shared, motion.apply_needs_robot)>);
                 // TODO: replace this temporary event latch bridge with real event-driven FSM transitions.
                 if (<motion.id>_state_instance.active_steps > 0 && (<motion-done-condition(motion)>)) {
@@ -157,7 +158,7 @@ int main(int argc, char **argv) {
 <fsm.step_transitions:{t |         // The clock is this transition's guard, so this one heartbeat is the cause of the
         // state change -- record it, unlike the 24k that drive nothing.
         if (_fsm_state_before == <fsm.cpp_namespace>::<t.from> && fsm->currentStateIndex == <fsm.cpp_namespace>::<t.to>) {
-            shared._motion_spec_record_event(<fsm.step_event_idx>);
+            events.record(<fsm.step_event_idx>);
         \}}; separator="\n">
         static_cast\<void\>(_fsm_state_before);
 <endif>
@@ -170,7 +171,8 @@ int main(int argc, char **argv) {
             current_motion,
 <endif>            motion_spec::runtime::monotonic_time_s(),
             static_cast\<std::uint64_t\>(_step),
-            shared);
+            shared,
+            events);
 #endif
         ++_step;
         motion_spec::runtime::sleep_until_next(_next_tick, <control_period_ns>);
@@ -313,19 +315,9 @@ struct robot_io {
 <values.externally_measured:{wrench | <wrench-pointer-member(wrench)>}; separator="\n">
 };
 
+<event-buffer-struct()>
+
 struct shared_data {
-    static constexpr int _motion_spec_event_buffer_size =
-        motion_spec::introspection::kNumTriggers > 0
-            ? static_cast\<int\>(motion_spec::introspection::kNumTriggers)
-            : 1;
-    int _motion_spec_event_count = 0;
-    int _motion_spec_events[_motion_spec_event_buffer_size] = {};
-    void _motion_spec_record_event(int event_idx) {
-        if (event_idx \< 0) return;
-        _motion_spec_events[_motion_spec_event_count % _motion_spec_event_buffer_size] = event_idx;
-        ++_motion_spec_event_count;
-    \}
-    double clock_time_s = 0.0;  // runtime clock seconds; MuJoCo sim time or real monotonic time
 <shared_data:{var | <indented-shared-member(var)>}; separator="\n">
 };
 >>

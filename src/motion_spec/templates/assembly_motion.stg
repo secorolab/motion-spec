@@ -19,16 +19,17 @@ schedule-block(steps, closures, views) ::= <<
 // Boolean-condition rendering: fold a list of structured terms into a C++ expression.
 // empty -> empty_default; one term -> the term; many -> parenthesized, joined by any/all.
 
-sig-params(mid, needs_state, needs_shared, needs_robot) ::= <<
+sig-params(mid, needs_state, needs_shared, needs_robot, needs_events=false) ::= <<
 <if(needs_state)>
     <mid>_state &state<endif><if(needs_shared)><if(needs_state)>,<endif>
     shared_data &shared<endif><if(needs_robot)><if(needs_state||needs_shared)>,<endif>
-    const robot_io &robot<endif><if(needs_state||needs_shared||needs_robot)>
+    const robot_io &robot<endif><if(needs_events)><if(needs_state||needs_shared||needs_robot)>,<endif>
+    motion_spec_event_buffer &events<endif><if(needs_state||needs_shared||needs_robot||needs_events)>
 <endif>
 >>
 
-sig-args(mid, needs_state, needs_shared, needs_robot) ::= <<
-<if(needs_state)><mid>_state_instance<endif><if(needs_shared)><if(needs_state)>, <endif>shared<endif><if(needs_robot)><if(needs_state||needs_shared)>, <endif>robot<endif>
+sig-args(mid, needs_state, needs_shared, needs_robot, needs_events=false) ::= <<
+<if(needs_state)><mid>_state_instance<endif><if(needs_shared)><if(needs_state)>, <endif>shared<endif><if(needs_robot)><if(needs_state||needs_shared)>, <endif>robot<endif><if(needs_events)><if(needs_state||needs_shared||needs_robot)>, <endif>events<endif>
 >>
 
 motion-done-condition(motion) ::= <<

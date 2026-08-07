@@ -82,7 +82,7 @@ inline bool can_start_<motion.id>(<sig-params(motion.id, motion.can_start_needs_
     return <if(motion.when_terms_present)><bool-condition(motion.when_terms, motion.when_any)><else>true<endif>;
 }
 
-inline void monitor_when_<motion.id>(<sig-params(motion.id, motion.when_needs_state, motion.when_needs_shared, motion.when_needs_robot)>) {
+inline void monitor_when_<motion.id>(<sig-params(motion.id, motion.when_needs_state, motion.when_needs_shared, motion.when_needs_robot, motion.when_needs_events)>) {
 <if(motion.has_when_elapsed)>    if (state.when_start_time \< 0.0) {
         state.when_start_time = shared.clock_time_s;
     }
@@ -95,14 +95,14 @@ inline void monitor_when_<motion.id>(<sig-params(motion.id, motion.when_needs_st
 <endif>
 }
 
-inline void monitor_until_<motion.id>(<sig-params(motion.id, motion.until_needs_state, motion.until_needs_shared, motion.until_needs_robot)>) {
+inline void monitor_until_<motion.id>(<sig-params(motion.id, motion.until_needs_state, motion.until_needs_shared, motion.until_needs_robot, motion.until_needs_events)>) {
 <shared-schedule-block(motion.until_schedule, closures, views)>
 <if(first(motion.until_monitors))>
 <monitor-block(motion.until_monitors)>
 <endif>
 }
 
-inline void monitor_<motion.id>(<sig-params(motion.id, motion.monitor_needs_state, motion.monitor_needs_shared, motion.monitor_needs_robot)>) {
+inline void monitor_<motion.id>(<sig-params(motion.id, motion.monitor_needs_state, motion.monitor_needs_shared, motion.monitor_needs_robot, motion.monitor_needs_events)>) {
 <shared-schedule-block(motion.when_schedule, closures, views)>
 <if(first(motion.when_monitors))>
 <monitor-block(motion.when_monitors)>
@@ -116,7 +116,8 @@ inline void monitor_<motion.id>(<sig-params(motion.id, motion.monitor_needs_stat
 inline void control_<motion.id>(
     <motion.id>_state &state,
     shared_data &shared,
-    const robot_io &robot) {
+    const robot_io &robot<if(motion.control_needs_events)>,
+    motion_spec_event_buffer &events<endif>) {
 <shared-schedule-block(motion.while_pre_schedule, closures, views)>
 <motion.pose_axis_error_groups:{group | <pose-axis-error-group(group, views)>}; separator="\n">
 <shared-schedule-block(motion.while_schedule, closures, views)>

@@ -4,9 +4,28 @@
 import "assembly_motion.stg"
 import "expr_values.stg"
 
+// Coordination state, not blackboard: the monitors record occurrences into it and the frame
+// sampler drains it, so no model value is produced or consumed here.
+
+event-buffer-struct() ::= <<
+struct motion_spec_event_buffer {
+    static constexpr int size =
+        motion_spec::introspection::kNumTriggers > 0
+            ? static_cast\<int\>(motion_spec::introspection::kNumTriggers)
+            : 1;
+    int count = 0;
+    int buffer[size] = {};
+    void record(int event_idx) {
+        if (event_idx \< 0) return;
+        buffer[count % size] = event_idx;
+        ++count;
+    \}
+};
+>>
+
 fsm-step-function(motion) ::= <<
 <if(motion.fsm_state)>
-static void step_<motion.id>(<motion.id>_state &<motion.id>_state_instance, shared_data &shared, robot_io &robot) {
+static void step_<motion.id>(<motion.id>_state &<motion.id>_state_instance, shared_data &shared, robot_io &robot<if(motion.step_needs_events)>, motion_spec_event_buffer &events<endif>) {
     if (!<motion.id>_state_instance.active) {
         <motion.id>_state_instance.active = true;
         <motion.id>_state_instance.active_steps = 0;
@@ -15,8 +34,8 @@ static void step_<motion.id>(<motion.id>_state &<motion.id>_state_instance, shar
         shared.<proj.along_speed> = 0.0;}; separator="\n">
     }
     update_<motion.id>(<motion.id>_state_instance, shared, robot);
-    monitor_until_<motion.id>(<sig-args(motion.id, motion.until_needs_state, motion.until_needs_shared, motion.until_needs_robot)>);
-    control_<motion.id>(<motion.id>_state_instance, shared, robot);
+    monitor_until_<motion.id>(<sig-args(motion.id, motion.until_needs_state, motion.until_needs_shared, motion.until_needs_robot, motion.until_needs_events)>);
+    control_<motion.id>(<motion.id>_state_instance, shared, robot<if(motion.control_needs_events)>, events<endif>);
     apply_<motion.id>(<sig-args(motion.id, motion.apply_needs_state, motion.apply_needs_shared, motion.apply_needs_robot)>);
     ++<motion.id>_state_instance.active_steps;
 \}
@@ -26,8 +45,8 @@ static void step_<motion.id>(<motion.id>_state &<motion.id>_state_instance, shar
 fsm-dispatch-case(motion, fsm) ::= <<
 <if(motion.fsm_state)>
         case <fsm.cpp_namespace>::<motion.fsm_state>:
-            step_<motion.id>(<motion.id>_state_instance, shared, robot);
-<motion.fsm_when_gate_calls:{c |             monitor_when_<c.gid>(<sig-args(c.gid, c.needs_state, c.needs_shared, c.needs_robot)>);}; separator="\n">
+            step_<motion.id>(<motion.id>_state_instance, shared, robot<if(motion.step_needs_events)>, events<endif>);
+<motion.fsm_when_gate_calls:{c |             monitor_when_<c.gid>(<sig-args(c.gid, c.needs_state, c.needs_shared, c.needs_robot, c.needs_events)>);}; separator="\n">
             break;
 <endif>
 >>

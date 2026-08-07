@@ -5984,8 +5984,14 @@ def _shared_runtime_members(slv_chain, iris, control_period_ns: int, platform_ur
     # Which clock it is -- sim seconds or monotonic seconds -- is the platform's to say, so the
     # port derives from the exec context and the measurement derives from the port.
     clock_iri = iris.register("clock", platform_uri, "clock", DerivedIriRegistry.DERIVATION)
+    iris.register("clock_time_s", clock_iri, "clock_time_s", DerivedIriRegistry.DERIVATION)
     iris.register("dt_measured_s", clock_iri, "dt_measured_s", DerivedIriRegistry.DERIVATION)
-    members = [{"id": "dt_measured_s", "type": "Quantity", "value": control_period_ns * 1e-9}]
+    # The clock reading itself is contracted too: the loop writes it from the same port every
+    # tick, and elapsed conditions read it like any other shared value.
+    members = [
+        {"id": "clock_time_s", "type": "Quantity"},
+        {"id": "dt_measured_s", "type": "Quantity", "value": control_period_ns * 1e-9},
+    ]
     seen_ft_ids = set()
     for s in slv_chain:
         for out in s.output:
@@ -6632,7 +6638,10 @@ _STORAGE_BY_CADENCE = {"never": "absent", "init": "record", "tick": "log"}
 # Shared values the control loop writes from a backend port, not from any model entity. Their
 # initial literal is a fallback, not an authored constant, so the contract is stated here rather
 # than inferred from the value being present.
-_PORT_PRODUCERS = {"dt_measured_s": {"kind": "port", "id": "clock"}}
+_PORT_PRODUCERS = {
+    "clock_time_s": {"kind": "port", "id": "clock"},
+    "dt_measured_s": {"kind": "port", "id": "clock"},
+}
 
 _MOTION_SCHEDULES = ("when_schedule", "while_pre_schedule", "while_schedule", "until_schedule")
 
@@ -7302,6 +7311,11 @@ def _set_motion_conditions(motion) -> None:
     _set_field(motion, "done_terms_present", bool(done_terms))
 
 
+def _records_events(monitors: list) -> bool:
+    """Whether any of these monitors records an event occurrence into the coordination buffer."""
+    return any(_field(m, "is_edge_triggered") for m in monitors)
+
+
 def add_motion_function_interfaces(motions: list) -> None:
     """Fold per-motion capability booleans (which context objects — state, shared, robot —
     each generated function needs). The C++ signatures and call args are built from these
@@ -7318,6 +7332,7 @@ def add_motion_function_interfaces(motions: list) -> None:
         has_when_logic = bool(_field(motion, "when_schedule") or _field(motion, "when_evaluators"))
         when_mons = _field(motion, "when_monitors") or []
         until_mons = _field(motion, "until_monitors") or []
+        while_mons = _field(motion, "while_monitors") or []
         has_pose = bool(_field(motion, "declared_pose_components"))
         when_sched = bool(_field(motion, "when_schedule"))
         until_sched = bool(_field(motion, "until_schedule"))
@@ -7360,6 +7375,17 @@ def add_motion_function_interfaces(motions: list) -> None:
         )
         _set_field(motion, "apply_needs_shared", has_forwarded_commands or logs_joint_cmd)
         _set_field(motion, "apply_needs_robot", has_serial_chain or has_forwarded_commands)
+
+        # An edge is the occurrence, so only an edge-triggered monitor records one -- a flag
+        # monitor holds a level and never reaches the coordination buffer.
+        when_events = _records_events(when_mons)
+        until_events = _records_events(until_mons)
+        control_events = _records_events(while_mons)
+        _set_field(motion, "when_needs_events", when_events)
+        _set_field(motion, "until_needs_events", until_events)
+        _set_field(motion, "monitor_needs_events", when_events or until_events)
+        _set_field(motion, "control_needs_events", control_events)
+        _set_field(motion, "step_needs_events", until_events or control_events)
 
 
 _FSM_NS = "https://secorolab.github.io/metamodels/behaviour/fsm#"
@@ -7589,6 +7615,7 @@ def _apply_fsm_gate_calls(motions, fsm_namespace) -> None:
                     "needs_state": _field(by_id[gate_id], "when_needs_state", False),
                     "needs_shared": _field(by_id[gate_id], "when_needs_shared", False),
                     "needs_robot": _field(by_id[gate_id], "when_needs_robot", False),
+                    "needs_events": _field(by_id[gate_id], "when_needs_events", False),
                 }
                 for gate_id in gate_ids
                 if gate_id in by_id

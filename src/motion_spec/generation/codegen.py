@@ -133,7 +133,7 @@ def _adopt_fsm_state_order(ir: dict, *candidates: Path) -> None:
     that defines the enum rather than re-deriving it.
 
     Events deliberately do NOT get the same treatment: a trigger's ``idx`` is ir_gen's own event
-    index (``fsm_event_idx``, emitted into the C++ as ``_motion_spec_record_event(N)``), so the
+    index (``fsm_event_idx``, emitted into the C++ as ``events.record(N)``), so the
     recorded value and ``schema["fsm"]["events"]`` already share one index space. Reordering
     events here would desynchronise the schema from numbers already baked into the generated code.
     """

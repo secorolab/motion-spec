@@ -709,6 +709,12 @@ class GuardedMotionBlock:
     apply_needs_state: bool = False
     apply_needs_shared: bool = False
     apply_needs_robot: bool = False
+    # Whether the function records into the coordination event buffer (holds an edge monitor).
+    when_needs_events: bool = False
+    until_needs_events: bool = False
+    monitor_needs_events: bool = False
+    control_needs_events: bool = False
+    step_needs_events: bool = False
     # FSM wiring (folded from the FSM named graph): the state this motion runs in,
     # and the WHEN-gated motions this one holds for as a fallback.
     fsm_state: str | None = None

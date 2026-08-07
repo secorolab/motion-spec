@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -581,3 +582,46 @@ def test_derivation_document_links_each_node_to_its_parent():
     assert links[("https://example.org/m/ctrl-x/error-integral", f"{prov}wasDerivedFrom")] == (
         "https://example.org/m/ctrl-x"
     )
+
+
+# A plain data member: a type, then the identifier, then an initialiser, array bound or `;`.
+_MEMBER = re.compile(r"^\s*[\w:]+(?:\s*[*&])?\s+(\w+)\s*(?:=|;|\[)")
+
+
+def test_generated_blackboard_holds_only_contracted_members(tmp_path: Path) -> None:
+    """Every `struct shared_data` member is an `ir["shared_data"]` id, so it carries a
+    producer/consumer contract; anything else belongs in a struct that is not the blackboard."""
+    shared_data = [
+        {"id": "clock_time_s", "type": "Quantity"},
+        {"id": "err_x", "type": "Quantity"},
+        {"id": "pose_ee", "type": "Pose"},
+        {"id": "ready_flag", "type": "Bool"},
+        {"id": "settle_count", "type": "IntCounter"},
+    ]
+    payload = tmp_path / "ir.json"
+    payload.write_text(
+        json.dumps(
+            {
+                "shared_data": shared_data,
+                "values": {"externally_measured": []},
+                "has_serial_chain": False,
+                "resources": {"by_kind": {"serial_chain": [], "mobile_base": None}},
+                "backend": "mj_kdl",
+                "fsm": None,
+                "ros": None,
+            }
+        )
+    )
+    header = tmp_path / "shared_state.hpp"
+    codegen.render_template("stst", "shared_state_header", payload, header)
+
+    body = header.read_text().split("struct shared_data {", 1)[1].split("\n};", 1)[0]
+    members = []
+    for line in body.splitlines():
+        if not line.strip():
+            continue
+        match = _MEMBER.match(line)
+        assert match, f"not a plain data member of the blackboard: {line!r}"
+        members.append(match.group(1))
+    assert members
+    assert set(members) <= {item["id"] for item in shared_data}

@@ -579,13 +579,10 @@ namespace motion_spec::introspection {
 
 // `state_index` is coordinator context recorded in the frame; `active_motion` is what selects the
 // slots, because a motion is what computes them.
-inline void sample_model(RunPublisher &pub, int state_index, int active_motion, double t, std::uint64_t step, shared_data &shared) {
+inline void sample_model(RunPublisher &pub, int state_index, int active_motion, double t, std::uint64_t step, shared_data &shared, const motion_spec_event_buffer &events) {
     static_cast\<void\>(shared);
     pub.begin_tick(t, step, active_motion, state_index);
-    pub.event_occurrences(
-        shared._motion_spec_event_count,
-        shared._motion_spec_events,
-        shared._motion_spec_event_buffer_size);
+    pub.event_occurrences(events.count, events.buffer, events.size);
 <introspection_artifacts.model.quantities:{slot | <introspection-quantity-sample(slot, views)>}; separator="\n">
 <introspection_artifacts.model.poses:{slot | <introspection-pose-sample(slot)>}; separator="\n">
 <introspection_artifacts.model.twists:{slot | <introspection-twist-sample(slot)>}; separator="\n">

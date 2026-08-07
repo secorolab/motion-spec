@@ -58,7 +58,7 @@ update-monitor(monitor) ::= <<
 <if(monitor.fsm_namespace)>
         // coord2b is the sequencer: fire the FSM event on the rising edge while in this state.
         if (detected) {
-            shared._motion_spec_record_event(<monitor.fsm_event_idx>);
+            events.record(<monitor.fsm_event_idx>);
         \}
         if (detected && robot.fsm_events) {
             produce_event(robot.fsm_events, <monitor.fsm_namespace>::<monitor.event_name>);
@@ -66,7 +66,7 @@ update-monitor(monitor) ::= <<
         \}
 <else>
         if (state.active && detected) {
-            shared._motion_spec_record_event(<monitor.event_idx>);
+            events.record(<monitor.event_idx>);
             state.<monitor.id>_event_triggered = true;
             motion_spec::runtime::warn_produce_event_not_implemented("<monitor.event>");
         \}
@@ -87,7 +87,7 @@ update-monitor(monitor) ::= <<
 <if(monitor.fsm_namespace)>
         // coord2b is the sequencer: fire the FSM event on the rising edge while in this state.
         if (detected) {
-            shared._motion_spec_record_event(<monitor.fsm_event_idx>);
+            events.record(<monitor.fsm_event_idx>);
         \}
         if (detected && robot.fsm_events) {
             produce_event(robot.fsm_events, <monitor.fsm_namespace>::<monitor.event_name>);
@@ -95,7 +95,7 @@ update-monitor(monitor) ::= <<
         \}
 <else>
         if (state.active && detected) {
-            shared._motion_spec_record_event(<monitor.event_idx>);
+            events.record(<monitor.event_idx>);
             state.<monitor.id>_event_triggered = true;
             motion_spec::runtime::warn_produce_event_not_implemented("<monitor.event>");
         \}

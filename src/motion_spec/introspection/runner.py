@@ -79,8 +79,14 @@ def run_cataloged(
     except Exception:
         _finish_rec_run(rec_path, run_id, "FAILED")
         raise
-    if returncode != 0 and _rec_status(rec_path) != "INTERRUPTED":
-        _finish_rec_run(rec_path, run_id, "FAILED")
+    if _rec_status(rec_path) != "INTERRUPTED":
+        # 130 is the program leaving its loop on SIGINT/SIGTERM, which it reports rather than
+        # dying from: the run stopped early but its artifacts are complete, so it is not a
+        # failure. Reached when the signal went to the child alone and never raised here.
+        if returncode == 130:
+            _finish_rec_run(rec_path, run_id, "INTERRUPTED")
+        elif returncode != 0:
+            _finish_rec_run(rec_path, run_id, "FAILED")
 
     try:
         create_archive_manifest(

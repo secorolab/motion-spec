@@ -26,6 +26,7 @@ ref_main(platform, motions, values, has_serial_chain, resources, shared_data, ba
 <endif>
 
 int main(int argc, char **argv) {
+    motion_spec::runtime::install_stop_handlers();
     robot_io robot{};
     shared_data shared{};
     motion_spec_event_buffer events{};
@@ -83,7 +84,7 @@ int main(int argc, char **argv) {
     timespec _next_tick{};
     clock_gettime(CLOCK_MONOTONIC, &_next_tick);
     double _prev_clock_s = 0.0;
-    while (<app-loop-condition(backend, has_serial_chain)>) {
+    while (!motion_spec::runtime::stop_requested() && (<app-loop-condition(backend, has_serial_chain)>)) {
         shared.clock_time_s = <clock-time-source(backend, resources.by_kind.serial_chain, has_serial_chain)>;
         // Integrators step with the time that actually elapsed, not the period we asked for: the
         // loop sleeps to deadlines it can overrun. In sim the clock advances exactly one timestep
@@ -200,6 +201,10 @@ int main(int argc, char **argv) {
 <ros-shutdown(ros)>
 <endif>
 
+    if (motion_spec::runtime::stop_requested()) {
+        std::cerr \<\< "[run] interrupted; frame log closed at step " \<\< _step \<\< std::endl;
+        return 130;
+    \}
     return 0;
 }
 >>

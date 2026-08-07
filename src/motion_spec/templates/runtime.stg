@@ -11,6 +11,7 @@ runtime_header(resources, control_period_ns) ::= <<
 #include \<cerrno\>
 #include \<chrono\>
 #include \<cmath\>
+#include \<csignal\>
 #include \<cstdlib\>
 #include \<ctime\>
 #include \<Eigen/Dense\>
@@ -30,6 +31,21 @@ runtime_header(resources, control_period_ns) ::= <<
 <endif>
 
 namespace motion_spec::runtime {
+
+// An interrupted run is still a run: the frame log is closed by a destructor, so letting a
+// signal terminate the process outright truncates it and loses the ticks already recorded. The
+// handler does the one thing that is async-signal-safe -- set a flag -- and the control loop
+// leaves on its own, so shutdown unwinds exactly as a completed run does.
+inline volatile std::sig_atomic_t g_stop_requested = 0;
+
+inline void request_stop(int) { g_stop_requested = 1; \}
+
+inline bool stop_requested() { return g_stop_requested != 0; \}
+
+inline void install_stop_handlers() {
+    std::signal(SIGINT, request_stop);
+    std::signal(SIGTERM, request_stop);
+\}
 
 inline constexpr double kControlPeriodS = <control_period_ns> * 1e-9;
 

@@ -148,8 +148,9 @@ def new_id(name: str) -> str:
 
 
 def create_generation_dir(model: Path, output_dir: Path | None = None) -> Path:
-    """Create a new, uniquely identified generation directory for MODEL."""
-    generation = output_dir or Path.cwd() / "generation" / new_id(model.stem)
+    """Create <base>/<model>/<timestamp> for MODEL, where base is `-o` or ./generation."""
+    base = output_dir or Path.cwd() / "generation"
+    generation = base / model.stem / datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     generation.mkdir(parents=True, exist_ok=False)
     return generation.resolve()
 

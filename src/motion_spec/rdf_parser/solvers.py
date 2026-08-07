@@ -113,6 +113,12 @@ def _serial_chain_solvers_for_handler(handler, slv_chain, solver_ids):
                 chain_root=solver.chain_root,
                 chain_end=solver.chain_end,
                 torque_saturation=solver.torque_saturation,
+                read_only=not (
+                    selected.acceleration_constraint
+                    or selected.cartesian_force
+                    or selected.cartesian_acceleration
+                    or selected.joint_force
+                ),
             )
         )
 
@@ -1076,6 +1082,7 @@ def _shared_runtime_members(slv_chain, iris, control_period_ns: int, platform_ur
 SUPPORTED_ROBOT_MODELS = {"KinovaGen3"}
 # Devices with driver templates. A name the grammar accepts but that is missing here is rejected.
 DRIVEN_DEVICES = {"KinovaGen3", "KinovaGen3-2F85", "Robotiq2F85", "RobotiqFT300s"}
+GRIPPER_DEVICES = {"KinovaGen3-2F85", "Robotiq2F85"}
 # The sensor kinds the IR models, as the graph types them and as templates dispatch on them.
 SENSOR_KINDS = {SENSORS.ForceTorqueSensor: "ForceTorque"}
 def _validate_solvers(serial_chain_solvers, backend: str) -> None:
@@ -1151,6 +1158,45 @@ def _annotate_runtime_robots(serial_chain_solvers, motions, backend: str) -> Non
         if not _field(solver, "tcp_site"):
             _set_field(solver, "tcp_site", None)
 
+    # Runtimes some driver torque-streams; declared-only solvers on any other runtime
+    # stage zero torques.
+    commanding_runtimes = {
+        _field(solver, "runtime_id")
+        for solver in serial_chain_solvers
+        if any(
+            _field(driver, "acceleration_constraint")
+            or _field(driver, "cartesian_force")
+            or _field(driver, "cartesian_acceleration")
+            or _field(driver, "joint_force")
+            for driver in _field(solver, "motion_drivers", [])
+        )
+    }
+
+    # A gripper mimic joint the chain does not articulate splits off `output` the way
+    # commands split into forwarding: the bound gripper device reports it.
+    for solver in serial_chain_solvers:
+        chain_joints = {
+            str(name).split("/")[-1] for name in (_field(solver, "kdl_joints") or [])
+        }
+        outputs, gripper_outputs = [], []
+        for out in _field(solver, "output", []) or []:
+            joint = str(_field(out, "joint_name", "")).split("/")[-1]
+            if _field(out, "type") == "JointPosition" and joint not in chain_joints:
+                gripper_outputs.append(out)
+                if backend == "robif2b" and not any(
+                    _field(device, "kind") in GRIPPER_DEVICES
+                    for device in _field(solver, "devices", []) or []
+                ):
+                    raise ValueError(
+                        f"joint-position '{_field(out, 'id')}' reads joint '{joint}', "
+                        f"which is outside solver '{_field(solver, 'id')}'s chain and no "
+                        "gripper device is bound to report it"
+                    )
+            else:
+                outputs.append(out)
+        _set_field(solver, "output", outputs)
+        _set_field(solver, "gripper_joint_outputs", gripper_outputs)
+
     for motion in motions:
         for solver in _field(motion, "serial_chain_solvers", []):
             canonical = solvers_by_id.get(_field(solver, "id"))
@@ -1160,6 +1206,23 @@ def _annotate_runtime_robots(serial_chain_solvers, motions, backend: str) -> Non
                 solver, "runtime_id", _field(canonical, "runtime_id") or _field(solver, "id", "")
             )
             _set_field(solver, "runtime_owner", _field(canonical, "runtime_owner", True))
+            _set_field(solver, "output", _field(canonical, "output"))
+            _set_field(
+                solver, "gripper_joint_outputs", _field(canonical, "gripper_joint_outputs")
+            )
+            # A read-only solver on a torque-streamed runtime would stage zero torques while
+            # active (arm drops) -- and skipping the stage would leave stale torques applied.
+            # Reject the mix on every backend.
+            if (
+                _field(solver, "read_only")
+                and _field(canonical, "runtime_id") in commanding_runtimes
+            ):
+                raise ValueError(
+                    f"motion '{_field(motion, 'id')}' declares solver "
+                    f"'{_field(solver, 'id')}' without any controller, but runtime "
+                    f"'{_field(canonical, 'runtime_id')}' is torque-commanded elsewhere; "
+                    "drive the solver in every motion or in none"
+                )
         for command in _field(motion, "forwarded_commands", []):
             canonical = solvers_by_id.get(_field(command, "robot_id"))
             if canonical is not None:

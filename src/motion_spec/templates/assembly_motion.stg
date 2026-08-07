@@ -102,6 +102,7 @@ chain-prepare-block(serial_chain_solvers, backend) ::= <<
 <serial_chain_solvers:{solver |
     <solver-sync-input(solver, backend)>
     <solver.output:{out | <solver-output(solver, out, backend)>}; separator="\n\n">
+<solver.gripper_joint_outputs:{out |     <gripper-joint-output(solver, out, backend)>}; separator="\n">
 }; separator="\n\n">
 >>
 

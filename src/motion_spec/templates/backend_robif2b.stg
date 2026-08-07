@@ -67,6 +67,9 @@ struct manipulator_robot {
     // The commanded gripper joint position [rad], as the model authored it. Which device that
     // reaches, and in whose units, is settled at generation by the bound device's rule set.
     double *gripper_cmd = nullptr;
+    // The measured gripper joint position [rad]: the mimic joint is not in the chain, so the
+    // bound gripper device reports it.
+    double *gripper_pos = nullptr;
 };
 >>
 
@@ -118,6 +121,7 @@ device-state-init-robif2b-KinovaGen3-2F85(solver, device) ::= <<
     gripper_<solver.runtime_id>_state.vel_cmd = static_cast\<float\>(motion_spec::config::gripper_pct(robot_config, "<device.config_key>", "gripper_speed_pct"));
     gripper_<solver.runtime_id>_state.frc_cmd = static_cast\<float\>(motion_spec::config::gripper_pct(robot_config, "<device.config_key>", "gripper_force_pct"));
     double gripper_<solver.runtime_id>_cmd = 0.0;
+    double gripper_<solver.runtime_id>_pos_rad = 0.0;
 >>
 
 device-state-init-robif2b-Robotiq2F85(solver, device) ::= <<
@@ -125,6 +129,7 @@ device-state-init-robif2b-Robotiq2F85(solver, device) ::= <<
     gripper_<solver.runtime_id>_state.speed_cmd = motion_spec::config::gripper_pct_byte(robot_config, "<device.config_key>", "gripper_speed_pct");
     gripper_<solver.runtime_id>_state.force_cmd = motion_spec::config::gripper_pct_byte(robot_config, "<device.config_key>", "gripper_force_pct");
     double gripper_<solver.runtime_id>_cmd = 0.0;
+    double gripper_<solver.runtime_id>_pos_rad = 0.0;
 >>
 
 device-state-init-robif2b-RobotiqFT300s(solver, device) ::= <<
@@ -258,6 +263,8 @@ device-update-robif2b-KinovaGen3-2F85(solver, device) ::= <<
             100.0 * motion_spec::runtime::gripper_closed_fraction(
                 gripper_<solver.runtime_id>_cmd, <gripper-travel-Robotiq2F85()>));
         robif2b_kg3_robotiq_gripper_update(&gripper_<solver.runtime_id>);
+        gripper_<solver.runtime_id>_pos_rad =
+            <gripper-travel-Robotiq2F85()> * (gripper_<solver.runtime_id>_state.pos_msr / 100.0);
 >>
 
 device-update-robif2b-Robotiq2F85(solver, device) ::= <<
@@ -265,6 +272,8 @@ device-update-robif2b-Robotiq2F85(solver, device) ::= <<
             255.0 * motion_spec::runtime::gripper_closed_fraction(
                 gripper_<solver.runtime_id>_cmd, <gripper-travel-Robotiq2F85()>)));
         robif2b_robotiq_gripper_update(&gripper_<solver.runtime_id>);
+        gripper_<solver.runtime_id>_pos_rad =
+            <gripper-travel-Robotiq2F85()> * (gripper_<solver.runtime_id>_state.position_msr / 255.0);
 >>
 
 device-update-robif2b-RobotiqFT300s(solver, device) ::= <<
@@ -298,6 +307,7 @@ device-assign-impl ::= [
 
 device-assign-robif2b-gripper-cmd(solver, device) ::= <<
         .gripper_cmd = &gripper_<solver.runtime_id>_cmd,
+        .gripper_pos = &gripper_<solver.runtime_id>_pos_rad,
 >>
 
 robot-chain-robif2b-KinovaGen3(solver) ::= <<

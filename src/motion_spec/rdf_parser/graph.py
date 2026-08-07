@@ -115,6 +115,9 @@ def _resolve_solver_semantics(g, solver: URIRef) -> SolverSemantics:
     if SLV_EXT.CommandForwardingSolver in get_node_types(g, solver):
         return COMMAND_FORWARDING_SEMANTICS
     algorithm = g.value(solver, SLV["solver"])
+    # No algorithm authored: a monitor-only solver, nothing accepts acceleration input.
+    if algorithm is None:
+        return SolverSemantics(AccelerationInputKind.None_)
     try:
         return SOLVER_SEMANTICS_BY_ALGORITHM[algorithm]
     except KeyError as exc:
@@ -678,12 +681,15 @@ class Parser:
         gravity_node = self.g.value(id_, SLV.gravity)
         root_acc = self.parse_xyz(gravity_node) if gravity_node else None
         algorithm_node = self.g.value(id_, SLV["solver"])
-        try:
-            algorithm = SOLVER_SEMANTICS_BY_ALGORITHM[algorithm_node].codegen_name
-        except KeyError as exc:
-            raise ValueError(
-                f"Solver '{id_}' has unsupported algorithm '{algorithm_node}'."
-            ) from exc
+        if algorithm_node is None:
+            algorithm = ""
+        else:
+            try:
+                algorithm = SOLVER_SEMANTICS_BY_ALGORITHM[algorithm_node].codegen_name
+            except KeyError as exc:
+                raise ValueError(
+                    f"Solver '{id_}' has unsupported algorithm '{algorithm_node}'."
+                ) from exc
         torque_saturation_node = next(
             (
                 limit

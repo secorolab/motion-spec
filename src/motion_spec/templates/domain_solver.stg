@@ -30,8 +30,9 @@ struct <solver.id>_solver_state {
 };
 >>
 
+// A read-only solver never solves, so it carries no algorithm state (and may author no algorithm).
 solver-state-algorithm-fields(solver) ::= <<
-<({solver-state-algorithm-fields-<solver.algorithm>})(solver)>
+<if(solver.read_only)><else><({solver-state-algorithm-fields-<solver.algorithm>})(solver)><endif>
 >>
 
 solver-state-algorithm-fields-ACHD(solver) ::= <<
@@ -58,7 +59,7 @@ solver-state-struct-extra-impl ::= [
 solver-no-extra(solver) ::= <<>>
 
 solver-state-struct-extra(solver, backend) ::= <<
-<({<solver-state-struct-extra-impl.({<solver.algorithm>-<backend>})>})(solver)>
+<if(solver.read_only)><else><({<solver-state-struct-extra-impl.({<solver.algorithm>-<backend>})>})(solver)><endif>
 >>
 
 // mj_kdl gravity-compensates the ACHD command with a separate RNE pass.
@@ -140,7 +141,7 @@ if (!state.<solver.id>.initialized) {
 >>
 
 solver-init-algorithm(solver, motion_driver) ::= <<
-<({solver-init-algorithm-<solver.algorithm>})(solver, motion_driver)>
+<if(solver.read_only)><else><({solver-init-algorithm-<solver.algorithm>})(solver, motion_driver)><endif>
 >>
 
 solver-init-algorithm-ACHD(solver, motion_driver) ::= <<
@@ -170,7 +171,7 @@ solver-init-extra-impl ::= [
 ]
 
 solver-init-extra(solver, backend) ::= <<
-<({<solver-init-extra-impl.({<solver.algorithm>-<backend>})>})(solver)>
+<if(solver.read_only)><else><({<solver-init-extra-impl.({<solver.algorithm>-<backend>})>})(solver)><endif>
 >>
 
 solver-init-extra-ACHD-mj_kdl(solver) ::= <<
@@ -258,6 +259,20 @@ solver-output-JointPosition-robif2b(solver, out) ::= <<
 shared.<out.id> = state.<solver.id>.q(motion_spec::runtime::find_joint_index(*robot.<solver.id>.chain, "<out.joint_name>"));
 >>
 
+// A gripper mimic joint the chain does not articulate: the bound gripper device reports it,
+// so the read never touches chain joint state.
+gripper-joint-output(solver, out, backend) ::= <<
+<({gripper-joint-output-<backend>})(solver, out)>
+>>
+
+gripper-joint-output-robif2b(solver, out) ::= <<
+shared.<out.id> = *robot.<solver.id>.gripper_pos;
+>>
+
+gripper-joint-output-mj_kdl(solver, out) ::= <<
+<solver-output-JointPosition-mj_kdl(solver, out)>
+>>
+
 solver-output-JointPosition-mj_kdl(solver, out) ::= <<
 {
     double _joint_position_<out.id> = 0.0;
@@ -341,7 +356,17 @@ solver-output(solver, out, backend) ::= <<
 <({solver-output-<out.type>})(solver, out, backend)>
 >>
 
+// A read-only solver serves state and FK only: no solve runs and the staged command is zero.
+// The q/qd mirrors still publish so the frame log records the observed arm.
 solver-run(solver, motion_driver, backend) ::= <<
+<if(solver.read_only)>
+<solver-log-joint-space(solver, backend)>
+<else>
+<solver-run-full(solver, motion_driver, backend)>
+<endif>
+>>
+
+solver-run-full(solver, motion_driver, backend) ::= <<
     KDL::SetToZero(state.<solver.id>.spatial_directions);
 <solver-assign-acceleration-input(solver, motion_driver)>
     KDL::SetToZero(state.<solver.id>.tau_ff);
@@ -559,8 +584,23 @@ state.<solver.id>.f_ext[motion_spec::runtime::find_segment_index(*robot.<solver.
 >>
 
 solver-stage-output(solver, backend) ::= <<
+<if(solver.read_only)>
+<({solver-stage-zero-<backend>})(solver)>
+<else>
 <({solver-stage-output-<backend>})(solver)>
+<endif>
 <solver-log-joint-space-cmd(solver, backend)>
+>>
+// An undriven solver stages a zero torque command on its runtime.
+solver-stage-zero-robif2b(solver) ::= <<
+    for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
+        robot.<solver.id>.state->eff_cmd[i] = 0.0;
+    }
+>>
+solver-stage-zero-mj_kdl(solver) ::= <<
+    for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
+        robot.<solver.id>.robot->jnt_trq_cmd[i] = 0.0;
+    }
 >>
 // The authored torque limit binds on every backend: it protects the joint, so the simulator and
 // the real arm must clamp the same command by the same bound.

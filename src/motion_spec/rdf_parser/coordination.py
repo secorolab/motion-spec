@@ -81,7 +81,11 @@ def build_motion_units(
         motion_node = g.value(handler_node, CSTR_HDL["motion"])
         motion = handler.motion
         handler_plans = derivation.controllers_by_handler.get(handler_node, ())
-        handler_solver_ids = {p.id(plan.solver) for plan in handler_plans}
+        # Declared solvers count even when no controller routes to them: a monitor-only
+        # handler still owns its arm runtime for state reading, FK and command forwarding.
+        handler_solver_ids = {p.id(plan.solver) for plan in handler_plans} | {
+            p.id(solver) for solver in g.objects(handler_node, CSTR_HDL_EXT.solvers)
+        }
 
         _raw_when = set(g[motion_node : MOT["when"]])
         _raw_until = set(g[motion_node : MOT["until"]])

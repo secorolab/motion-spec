@@ -824,6 +824,11 @@ class HandlerSerialChainSolver:
     chain_root: str = ""
     chain_end: str = ""
     torque_saturation: Saturation | None = None
+    # Nothing drives this solver: no solve runs and it stages a zero torque command.
+    read_only: bool = False
+    # Joint positions the chain does not articulate (gripper mimics); the bound gripper
+    # device reports them, split from `output` the way commands split into forwarding.
+    gripper_joint_outputs: list = field(default_factory=list)
     # Frame-log mirrors of this runtime's joint-space signals (plan 012); the two lists render at
     # two different hook sites -- the run block and the command-stage block.
     joint_space_samples: list = field(default_factory=list)
@@ -869,6 +874,8 @@ class SolverWithInputAndOutput:
     joint_space_cmd_samples: list = field(default_factory=list)
     runtime_id: str = ""
     runtime_owner: bool = False
+    # Joint positions reported by the bound gripper device instead of the chain.
+    gripper_joint_outputs: list = field(default_factory=list)
     # Which resource this solver commands; `resources.robots` is filtered on it.
     kind: str = field(default="serial_chain")
     type: str = field(default="SolverWithInputAndOutput")

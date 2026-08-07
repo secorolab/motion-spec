@@ -63,7 +63,9 @@ def annotate_dataflow(
     # platform, and only they get an external-measurement pointer.
     measured_outputs: set = set()
     for solver in serial_chain_solvers:
-        for out in _field(solver, "output", []) or []:
+        for out in (_field(solver, "output", []) or []) + (
+            _field(solver, "gripper_joint_outputs", []) or []
+        ):
             out_id = _field(out, "id")
             solver_by_output.setdefault(out_id, set()).add(_field(solver, "id"))
             if _field(out, "sensor_name"):
@@ -94,7 +96,9 @@ def annotate_dataflow(
                 for out_id in closure_output_ids(closures.get(closure_id) or {}):
                     own(out_id, motion_id)
         for solver in _field(motion, "serial_chain_solvers", []) or []:
-            for out in _field(solver, "output", []) or []:
+            for out in (_field(solver, "output", []) or []) + (
+                _field(solver, "gripper_joint_outputs", []) or []
+            ):
                 out_id = _field(out, "id")
                 own(out_id, motion_id)
                 if _field(out, "sensor_name"):

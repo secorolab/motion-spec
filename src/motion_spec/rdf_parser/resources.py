@@ -19,7 +19,6 @@ import collections
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 
-import rdflib
 import tomllib
 from motion_spec_dsl.rdf_parser.vocab import (
     AGN,
@@ -1053,7 +1052,7 @@ def _name_object_attachments(model, attach_by_body) -> None:
     for body, (kind, name, frame, parent_body) in list(attach_by_body.items()):
         if kind != "Site" or parent_body not in object_ids_by_body:
             continue
-        parent_frame = rdflib.Namespace(f"{parent_body}/")[name]
+        parent_frame = model.child_node(parent_body, name)
         reference_frame = next(
             (
                 reference
@@ -1333,19 +1332,6 @@ def shared_runtime_members(model, serial_chains, control_period_ns: int, platfor
     return members
 
 
-def _runtime_signature(solver, backend: str) -> tuple:
-    """What makes two solvers the same runtime: the backend, the chain and the tool on it."""
-    return (
-        backend,
-        solver.robot_model,
-        solver.urdf,
-        solver.chain_root,
-        solver.chain_tip or solver.chain_end,
-        solver.tool_body,
-        solver.tcp_site,
-    )
-
-
 def annotate_runtime(serial_chains, motions, backend: str) -> None:
     """Fold onto each solver what running it implies, once every solver is known.
 
@@ -1360,7 +1346,17 @@ def annotate_runtime(serial_chains, motions, backend: str) -> None:
     runtime_by_signature: dict[tuple, str] = {}
     owner_by_runtime: dict[str, str] = {}
     for solver in serial_chains:
-        runtime_id = runtime_by_signature.setdefault(_runtime_signature(solver, backend), solver.id)
+        # Two solvers are one runtime when they drive the same chain with the same tool.
+        signature = (
+            backend,
+            solver.robot_model,
+            solver.urdf,
+            solver.chain_root,
+            solver.chain_tip or solver.chain_end,
+            solver.tool_body,
+            solver.tcp_site,
+        )
+        runtime_id = runtime_by_signature.setdefault(signature, solver.id)
         owner_by_runtime.setdefault(runtime_id, solver.id)
         solver.runtime_id = runtime_id
         solver.runtime_owner = solver.id == owner_by_runtime[runtime_id]

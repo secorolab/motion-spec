@@ -176,7 +176,7 @@ base-cycle-force(base_force_solvers) ::= <<
     }
 >>
 
-mobile_base_cycle_header(resources, platform) ::= <<
+mobile_base_cycle_header(resources, configuration) ::= <<
 #pragma once
 
 #include "robot_config.hpp"
@@ -209,7 +209,7 @@ inline void reset_mobile_base(mobile_base_state &state) {
 // the first cycle (or the first after a reset), never per tick.
 inline void init_mobile_base(mobile_base_state &state, shared_data &shared, const robot_io &robot) {
     if (state.initialized) return;
-    state.cfg = motion_spec::config::kelo(motion_spec::config::load("<platform.config>"), "kelo");
+    state.cfg = motion_spec::config::kelo(motion_spec::config::load("<configuration.platform.config>"), "kelo");
     state.initialized = true;
 }
 

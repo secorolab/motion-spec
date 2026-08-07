@@ -135,7 +135,7 @@ def _adopt_fsm_state_order(ir: dict, *candidates: Path) -> None:
     recorded value and ``schema["fsm"]["events"]`` already share one index space. Reordering
     events here would desynchronise the schema from numbers already baked into the generated code.
     """
-    fsm = ir.get("fsm")
+    fsm = ir["coordination"].get("fsm")
     fsm_ir_path = next((path for path in candidates if path.is_file()), None)
     if not fsm or fsm_ir_path is None:
         return
@@ -165,7 +165,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
         ir, Path(output_dir) / "fsm_ir.json", Path(ir_path).parent / "fsm_ir.json"
     )
 
-    ir["introspection_artifacts"] = write_introspection_artifacts(
+    ir["communication"]["introspection_artifacts"] = write_introspection_artifacts(
         ir, ir_path=ir_path, output_dir=output_dir
     )
 
@@ -199,7 +199,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     render_template(
         stst_bin, "shared_state_header", ir_payload_path, headers_dir / "shared_state.hpp"
     )
-    if ir["resources"]["by_kind"]["mobile_base"]:
+    if ir["resources"]["by_kind"].get("mobile_base"):
         render_template(
             stst_bin,
             "mobile_base_cycle_header",
@@ -207,13 +207,13 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
             headers_dir / "mobile_base_cycle.hpp",
         )
 
-    for motion in ir.get("motions", []):
+    for motion in ir["coordination"]["motions"]:
         payload = {
             "motion": motion,
-            "closures": ir["closures"],
-            "views": ir["views"],
-            "values": ir["values"],
-            "backend": ir["backend"],
+            "closures": ir["computation"]["closures"],
+            "views": ir["computation"]["views"],
+            "values": ir["computation"]["values"],
+            "backend": ir["configuration"]["backend"],
         }
         payload_path = payload_dir / f"{motion['id']}.json"
         write_json(payload_path, payload)
@@ -222,7 +222,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
         )
 
     render_template(stst_bin, "ref_main", ir_payload_path, output_dir / "ref_main.cpp")
-    cmake = "cmake_mj_kdl" if ir["backend"] == "mj_kdl" else "cmake_robif2b"
+    cmake = "cmake_mj_kdl" if ir["configuration"]["backend"] == "mj_kdl" else "cmake_robif2b"
     render_template(stst_bin, cmake, ir_payload_path, output_dir / "CMakeLists.txt")
     # Both backends read deployment properties (the FT tare length) from the same config.
     render_template(

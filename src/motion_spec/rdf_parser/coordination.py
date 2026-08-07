@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import re
 
-import rdflib
 from motion_spec_dsl.rdf_parser.vocab import (
     APP,
     CSTR,
@@ -93,11 +92,6 @@ def _is_elapsed_constraint(model, node) -> bool:
     return node is not None and CSTR_EXT["TimeConstraint"] in get_node_types(model.graph, node)
 
 
-def _handler_order(model, node) -> int:
-    """The order the model declares a handler in; handlers with no order come first."""
-    return int(getattr(model.graph.value(node, APP.order), "value", 0))
-
-
 @reader
 def guarded_motion(model, node) -> GuardedMotion:
     """A GuardedMotion: the constraints it starts on, holds during and ends on.
@@ -153,7 +147,7 @@ def constraint_handler(model, node) -> ConstraintHandler:
         [constraint_evaluator(model, item) for item in graph[node : CSTR_HDL["evaluators"]]],
         [],
         [monitor_entry(model, item) for item in graph[node : CSTR_HDL["monitors"]]],
-        _handler_order(model, node),
+        int(getattr(model.graph.value(node, APP.order), "value", 0)),
     )
 
 
@@ -337,7 +331,7 @@ def build_constraint_handlers(model, schedule, derivation):
     handlers, steps = [], []
     for node in sorted(
         graph.subjects(RDF.type, CSTR_HDL["ConstraintHandler"]),
-        key=lambda item: _handler_order(model, item),
+        key=lambda item: int(getattr(graph.value(item, APP.order), "value", 0)),
     ):
         handler = constraint_handler(model, node)
         plans = derivation.controllers_by_handler.get(node, ())
@@ -833,6 +827,8 @@ def _motion_unit(
 def _forwarded_commands(model, phase, chain_solvers, runtime_solvers, derivation) -> list:
     """The controller outputs written straight to a joint rather than through a solver."""
     graph = model.graph
+    # Resolved from the joint, not the agent: a gripper's joint rides the arm's runtime.
+    owned_trees = {solver.id: solver.owned_trees or () for solver in runtime_solvers}
     commands = []
     for plan in _active_plans(phase, derivation):
         if not derivation.algorithm_by_solver[plan.solver].forwards_commands:
@@ -842,16 +838,12 @@ def _forwarded_commands(model, phase, chain_solvers, runtime_solvers, derivation
         view = next(graph.subjects(MAP.subobject, quantity), None)
         target_quantity = graph.value(view, MAP.superobject) if view is not None else quantity
         target = graph.value(target_quantity, KC_STAT["of-joint"])
-        # Resolved from the joint, not the agent: a gripper's joint rides the arm's runtime.
         chain_solver = next(
             (
                 solver
                 for solver in chain_solvers
                 if target is not None
-                and any(
-                    iri_is_descendant(tree, target)
-                    for tree in _owned_trees(runtime_solvers, solver.id)
-                )
+                and any(iri_is_descendant(tree, target) for tree in owned_trees.get(solver.id, ()))
             ),
             None,
         )
@@ -872,13 +864,6 @@ def _forwarded_commands(model, phase, chain_solvers, runtime_solvers, derivation
         )
 
     return commands
-
-
-def _owned_trees(runtime_solvers, solver_id) -> tuple:
-    """The kinematic trees the runtime behind a handler's solver owns."""
-    return next(
-        (solver.owned_trees or () for solver in runtime_solvers if solver.id == solver_id), ()
-    )
 
 
 # Per superobject type, the branch flags a pose-axis error group renders through.
@@ -1157,17 +1142,8 @@ def read_fsm(model) -> dict | None:
         "reactions_table": reactions,
         # Event and state IRIs share the FSM node's parent path; a monitor's event is matched
         # against it to tell an FSM event from a monitor-owned one.
-        "namespace_uri": str(rdflib.Namespace(f"{iri_parent(fsm_node)}/")),
+        "namespace_uri": str(model.child_node(iri_parent(fsm_node), "")),
     }
-
-
-def _is_fsm_event(monitor, namespace_uri) -> bool:
-    """Whether a monitor fires the FSM: edge-triggered, with its event in the FSM's namespace."""
-    return bool(
-        namespace_uri
-        and monitor.is_edge_triggered
-        and iri_is_descendant(namespace_uri, monitor.event_uri or "")
-    )
 
 
 def _apply_fsm_wiring(motions, fsm) -> dict:
@@ -1219,6 +1195,14 @@ def _apply_fsm_wiring(motions, fsm) -> dict:
     }
     by_id = {motion.id: motion for motion in motions}
 
+    def fires_fsm_event(monitor) -> bool:
+        """A monitor fires the FSM only when its event lives in the FSM's namespace; a
+        standalone, monitor-owned event keeps its own stub."""
+        return bool(
+            monitor.is_edge_triggered
+            and iri_is_descendant(namespace_uri or "", monitor.event_uri or "")
+        )
+
     def stamp(monitor):
         monitor.fsm_namespace = namespace
         monitor.fsm_event_idx = index_by_event.get(monitor.event_name or "", -1)
@@ -1226,14 +1210,14 @@ def _apply_fsm_wiring(motions, fsm) -> dict:
     for motion in motions:
         _check_snapshot_triggers(motion, index_by_event, namespace)
         for monitor in [*motion.until_monitors, *motion.while_monitors]:
-            if not _is_fsm_event(monitor, namespace_uri):
+            if not fires_fsm_event(monitor):
                 continue
             stamp(monitor)
             state = state_by_event.get(monitor.event_name or "")
             if state and not motion.fsm_state:
                 motion.fsm_state = state
         for monitor in motion.when_monitors:
-            if not _is_fsm_event(monitor, namespace_uri):
+            if not fires_fsm_event(monitor):
                 continue
             stamp(monitor)
             fallback = _when_gate_fallback(motion, monitor, by_id)

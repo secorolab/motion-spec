@@ -7,22 +7,22 @@ import "assembly_motion.stg"
 import "expr_values.stg"
 import "runtime.stg"
 
-ref_main(platform, motions, values, has_serial_chain, resources, shared_data, backend, scene, trace, fsm, needs_clock_time, control_period_ns, ros, agent_homes) ::= <<
+ref_main(configuration, resources, composition, computation, coordination, communication) ::= <<
 #include "runtime.hpp"
 #include "shared_state.hpp"
 #ifdef MOTION_SPEC_ENABLE_INTROSPECTION
 #include "introspect_model.hpp"
 #endif
 <if(resources.by_kind.mobile_base)>
-<({<mobile-base-cycle-include-impl.(backend)>})()>
+<({<mobile-base-cycle-include-impl.(configuration.backend)>})()>
 <endif>
-<motions:{motion | <motion-include(motion)>}; separator="\n">
+<coordination.motions:{motion | <motion-include(motion)>}; separator="\n">
 
-<app-chain-includes(backend, has_serial_chain)>
+<app-chain-includes(configuration.backend, resources.by_kind.serial_chain)>
 #include \<unistd.h\>
-<if(fsm)>
+<if(coordination.fsm)>
 
-<motions:{motion | <fsm-step-function(motion)>}; separator="\n\n">
+<coordination.motions:{motion | <fsm-step-function(motion)>}; separator="\n\n">
 <endif>
 
 int main(int argc, char **argv) {
@@ -30,21 +30,21 @@ int main(int argc, char **argv) {
     robot_io robot{};
     shared_data shared{};
     motion_spec_event_buffer events{};
-<if(ros)>
+<if(communication.ros)>
 
-<ros-setup(ros)>
+<ros-setup(communication.ros)>
 <endif>
 <if(resources.by_kind.mobile_base)>
 
-<({<app-main-base-setup-impl.(backend)>})()>
+<({<app-main-base-setup-impl.(configuration.backend)>})()>
 <endif>
-<if(has_serial_chain)>
+<if(resources.by_kind.serial_chain)>
 
-<app-chain-setup(backend, resources.by_kind.serial_chain, scene, platform.config)>
+<app-chain-setup(configuration.backend, resources.by_kind.serial_chain, composition.scene, configuration.platform.config)>
 <endif>
-<values.externally_measured:{wrench | <wrench-measurement(wrench)>}; separator="\n">
-<values.externally_measured:{wrench |     robot.<wrench.id> = &<wrench.id>_measurement;}; separator="\n">
-<motions:{motion | <motion-state-member(motion)>}; separator="\n">
+<computation.values.externally_measured:{wrench | <wrench-measurement(wrench)>}; separator="\n">
+<computation.values.externally_measured:{wrench |     robot.<wrench.id> = &<wrench.id>_measurement;}; separator="\n">
+<coordination.motions:{motion | <motion-state-member(motion)>}; separator="\n">
 <if(resources.by_kind.mobile_base)>
     mobile_base_state mobile_base_state_instance;
 <endif>
@@ -53,27 +53,27 @@ int main(int argc, char **argv) {
     robif2b_ethercat_configure(robot.mobile_base.ethercat);
     robif2b_ethercat_start(robot.mobile_base.ethercat);
 <endif>
-<if(has_serial_chain)>
+<if(resources.by_kind.serial_chain)>
 <resources.by_kind.serial_chain:{solver |
-<robot-configure(solver, backend)>
+<robot-configure(solver, configuration.backend)>
 }; separator="\n">
 <endif>
 
-<if(has_serial_chain)>
-<app-chain-post-setup(backend, resources.by_kind.serial_chain, motions, agent_homes)>
+<if(resources.by_kind.serial_chain)>
+<app-chain-post-setup(configuration.backend, resources.by_kind.serial_chain, coordination.motions, configuration.agent_homes)>
 <endif>
 
-<if(fsm)>
-    struct fsm_nbx *fsm = <fsm.cpp_namespace>::create_fsm();
+<if(coordination.fsm)>
+    struct fsm_nbx *fsm = <coordination.fsm.cpp_namespace>::create_fsm();
     if (!fsm) return 1;
     robot.fsm_events = fsm->eventData;
 
-<fsm-active-motion(motions, fsm)>
-<fsm-dispatch(motions, fsm)>
+<fsm-active-motion(coordination.motions, coordination.fsm)>
+<fsm-dispatch(coordination.motions, coordination.fsm)>
 
 <endif>
     int _step = 0;
-<if(fsm)>
+<if(coordination.fsm)>
     int _fsm_prev_state = -1;
 <else>
     int current_motion = 0;
@@ -84,8 +84,8 @@ int main(int argc, char **argv) {
     timespec _next_tick{};
     clock_gettime(CLOCK_MONOTONIC, &_next_tick);
     double _prev_clock_s = 0.0;
-    while (!motion_spec::runtime::stop_requested() && (<app-loop-condition(backend, has_serial_chain)>)) {
-        shared.clock_time_s = <clock-time-source(backend, resources.by_kind.serial_chain, has_serial_chain)>;
+    while (!motion_spec::runtime::stop_requested() && (<app-loop-condition(configuration.backend, resources.by_kind.serial_chain)>)) {
+        shared.clock_time_s = <clock-time-source(configuration.backend, resources.by_kind.serial_chain, resources.by_kind.serial_chain)>;
         // Integrators step with the time that actually elapsed, not the period we asked for: the
         // loop sleeps to deadlines it can overrun. In sim the clock advances exactly one timestep
         // per tick, so this equals the nominal period.
@@ -95,29 +95,29 @@ int main(int argc, char **argv) {
         _prev_clock_s = shared.clock_time_s;
         shared.dt_measured_s = std::clamp(_dt_raw, motion_spec::runtime::kDtClampMin,
                                           motion_spec::runtime::kDtClampMax);
-<if(has_serial_chain)>
-<app-chain-loop-reset(backend, resources.by_kind.serial_chain, fsm)>
+<if(resources.by_kind.serial_chain)>
+<app-chain-loop-reset(configuration.backend, resources.by_kind.serial_chain, coordination.fsm)>
 <endif>
-<if(fsm)>
+<if(coordination.fsm)>
         if (static_cast\<int\>(fsm->currentStateIndex) != _fsm_prev_state) {
             _fsm_prev_state = static_cast\<int\>(fsm->currentStateIndex);
-            std::cerr \<\< "[fsm] state   " \<\< <fsm.cpp_namespace>::STATE_URIS[fsm->currentStateIndex] \<\< std::endl;
+            std::cerr \<\< "[fsm] state   " \<\< <coordination.fsm.cpp_namespace>::STATE_URIS[fsm->currentStateIndex] \<\< std::endl;
             // Leaving a state ends its motion's activation, so re-entering one is a fresh
             // start: active_steps returns to 0 and any trajectory replans from the current
             // pose instead of resuming the alpha it had when it was interrupted.
-<motions:{motion |             <motion.id>_state_instance.active = false;}; separator="\n">
+<coordination.motions:{motion |             <motion.id>_state_instance.active = false;}; separator="\n">
         \}
         if (fsm->currentStateIndex == fsm->endStateIndex) break;
-<if(fsm.step_event)>
+<if(coordination.fsm.step_event)>
         // The heartbeat drives the FSM but is not recorded: the frame log is a time series, so
         // every frame already *is* the tick (t, step, wall_ns, period_ns). Logging a per-tick
         // event would restate that 24k times and leave last_event permanently pinned to it.
-        produce_event(fsm->eventData, <fsm.cpp_namespace>::<fsm.step_event>);
+        produce_event(fsm->eventData, <coordination.fsm.cpp_namespace>::<coordination.fsm.step_event>);
 <endif>
         fsm_dispatch(fsm);
 <else>
         switch (current_motion) {
-<motions:{motion |
+<coordination.motions:{motion |
         case <i0>: {
             update_<motion.id>(<motion.id>_state_instance, shared, robot);
             monitor_<motion.id>(<sig-args(motion.id, motion.monitor_needs_state, motion.monitor_needs_shared, motion.monitor_needs_robot, motion.monitor_needs_events)>);
@@ -144,29 +144,29 @@ int main(int argc, char **argv) {
         \}
 }; separator="\n">
         default:
-            current_motion = <length(motions)> - 1;
+            current_motion = <length(coordination.motions)> - 1;
             break;
         }
 <endif>
-<if(has_serial_chain)>
-<app-chain-trace-update(backend, resources.by_kind.serial_chain, trace)>
-<app-chain-runtime-step(backend, resources.by_kind.serial_chain)>
+<if(resources.by_kind.serial_chain)>
+<app-chain-trace-update(configuration.backend, resources.by_kind.serial_chain, configuration.trace)>
+<app-chain-runtime-step(configuration.backend, resources.by_kind.serial_chain)>
 <endif>
-<if(fsm)>
+<if(coordination.fsm)>
         const unsigned int _fsm_state_before = fsm->currentStateIndex;
         fsm_step_nbx(fsm);
         reconfig_event_buffers(fsm->eventData);
-<fsm.step_transitions:{t |         // The clock is this transition's guard, so this one heartbeat is the cause of the
+<coordination.fsm.step_transitions:{t |         // The clock is this transition's guard, so this one heartbeat is the cause of the
         // state change -- record it, unlike the 24k that drive nothing.
-        if (_fsm_state_before == <fsm.cpp_namespace>::<t.from> && fsm->currentStateIndex == <fsm.cpp_namespace>::<t.to>) {
-            events.record(<fsm.step_event_idx>);
+        if (_fsm_state_before == <coordination.fsm.cpp_namespace>::<t.from> && fsm->currentStateIndex == <coordination.fsm.cpp_namespace>::<t.to>) {
+            events.record(<coordination.fsm.step_event_idx>);
         \}}; separator="\n">
         static_cast\<void\>(_fsm_state_before);
 <endif>
 #ifdef MOTION_SPEC_ENABLE_INTROSPECTION
         motion_spec::introspection::sample_model(
             _introspection_pub,
-<if(fsm)>            static_cast\<int\>(fsm->currentStateIndex),
+<if(coordination.fsm)>            static_cast\<int\>(fsm->currentStateIndex),
             fsm_active_motion(fsm),
 <else>            current_motion,
             current_motion,
@@ -176,16 +176,16 @@ int main(int argc, char **argv) {
             events);
 #endif
         ++_step;
-        motion_spec::runtime::sleep_until_next(_next_tick, <control_period_ns>);
+        motion_spec::runtime::sleep_until_next(_next_tick, <configuration.control_period_ns>);
     }
 #ifdef MOTION_SPEC_ENABLE_INTROSPECTION
     _introspection_pub.close();
 #endif
-<if(has_serial_chain)>
+<if(resources.by_kind.serial_chain)>
 
-<app-chain-cleanup(backend, has_serial_chain)>
+<app-chain-cleanup(configuration.backend, resources.by_kind.serial_chain)>
 <resources.by_kind.serial_chain:{solver |
-<robot-shutdown(solver, backend)>
+<robot-shutdown(solver, configuration.backend)>
 }; separator="\n">
 <endif>
 <if(resources.by_kind.mobile_base)>
@@ -193,12 +193,12 @@ int main(int argc, char **argv) {
     robif2b_ethercat_stop(robot.mobile_base.ethercat);
     robif2b_ethercat_shutdown(robot.mobile_base.ethercat);
 <endif>
-<if(fsm)>
-    <fsm.cpp_namespace>::destroy_fsm(fsm);
+<if(coordination.fsm)>
+    <coordination.fsm.cpp_namespace>::destroy_fsm(fsm);
 <endif>
-<if(ros)>
+<if(communication.ros)>
 
-<ros-shutdown(ros)>
+<ros-shutdown(communication.ros)>
 <endif>
 
     if (motion_spec::runtime::stop_requested()) {
@@ -209,20 +209,20 @@ int main(int argc, char **argv) {
 }
 >>
 
-shared_state_header(shared_data, values, has_serial_chain, resources, backend, fsm, ros) ::= <<
+shared_state_header(configuration, resources, computation, coordination, communication) ::= <<
 #pragma once
 
 #include "frame_layout.h"
 #include "runtime.hpp"
-<if(fsm)>
+<if(coordination.fsm)>
 #include "coord2b/functions/event_loop.h"
 #include "coord2b/functions/fsm.h"
-#include "<fsm.header>"
+#include "<coordination.fsm.header>"
 <endif>
 
 #include \<memory\>
-<if(ros)>
-<ros-includes(ros)>
+<if(communication.ros)>
+<ros-includes(communication.ros)>
 <endif>
 #include \<kdl/frames.hpp\>
 #include \<kdl/chain.hpp\>
@@ -231,8 +231,8 @@ shared_state_header(shared_data, values, has_serial_chain, resources, backend, f
 #include \<kdl/chainfksolverpos_recursive.hpp\>
 #include \<kdl/chainfksolvervel_recursive.hpp\>
 #include \<kdl/chainhdsolver_vereshchagin_fixed_joint.hpp\>
-<if(has_serial_chain)><solver-rnea-include(backend)><endif>
-<if(has_serial_chain)><robot-driver-include(first(resources.by_kind.serial_chain), backend)><endif>
+<if(resources.by_kind.serial_chain)><solver-rnea-include(configuration.backend)><endif>
+<if(resources.by_kind.serial_chain)><robot-driver-include(first(resources.by_kind.serial_chain), configuration.backend)><endif>
 <if(resources.by_kind.mobile_base)>
 #include \<robif2b/functions/ethercat.h\>
 #include \<robif2b/functions/kelo_drive.h\>
@@ -240,7 +240,7 @@ shared_state_header(shared_data, values, has_serial_chain, resources, backend, f
 
 #include \<kdl/chainhdsolver_vereshchagin_fext_fixed_joint.hpp\>
 
-<if(has_serial_chain)><robot-num-joints-def(first(resources.by_kind.serial_chain))><endif>
+<if(resources.by_kind.serial_chain)><robot-num-joints-def(first(resources.by_kind.serial_chain))><endif>
 
 <if(resources.by_kind.mobile_base)>
 struct ecat_state {
@@ -297,32 +297,32 @@ struct mobile_base_robot {
 };
 <endif>
 
-<if(has_serial_chain)>
-<robot-state-struct(first(resources.by_kind.serial_chain), backend)>
+<if(resources.by_kind.serial_chain)>
+<robot-state-struct(first(resources.by_kind.serial_chain), configuration.backend)>
 
-<robot-manipulator-struct(first(resources.by_kind.serial_chain), backend)>
+<robot-manipulator-struct(first(resources.by_kind.serial_chain), configuration.backend)>
 
-<chain-solver-members(resources.by_kind.serial_chain, backend)>
+<chain-solver-members(resources.by_kind.serial_chain, configuration.backend)>
 <endif>
 
 struct robot_io {
 <if(resources.by_kind.mobile_base)>
     mobile_base_robot mobile_base;
 <endif>
-<if(fsm)>
+<if(coordination.fsm)>
     struct events *fsm_events = nullptr;
 <endif>
-<if(ros)>
-<ros-io-members(ros)>
+<if(communication.ros)>
+<ros-io-members(communication.ros)>
 <endif>
 <resources.by_kind.serial_chain:{solver | <chain-robot-member(solver)>}; separator="\n">
-<resources.by_kind.serial_chain:{solver | <chain-device-members(solver, backend)>}; separator="">
-<values.externally_measured:{wrench | <wrench-pointer-member(wrench)>}; separator="\n">
+<resources.by_kind.serial_chain:{solver | <chain-device-members(solver, configuration.backend)>}; separator="">
+<computation.values.externally_measured:{wrench | <wrench-pointer-member(wrench)>}; separator="\n">
 };
 
 <event-buffer-struct()>
 
 struct shared_data {
-<shared_data:{var | <indented-shared-member(var)>}; separator="\n">
+<computation.shared_data:{var | <indented-shared-member(var)>}; separator="\n">
 };
 >>

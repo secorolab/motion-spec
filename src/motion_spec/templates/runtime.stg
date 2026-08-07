@@ -3,7 +3,7 @@
 // Author: Vamsi Kalagaturu
 // Runtime control-loop math header (profiles/admittance/spring-damper, monitors).
 
-runtime_header(resources, control_period_ns) ::= <<
+runtime_header(resources, configuration) ::= <<
 #pragma once
 
 #include \<cassert\>
@@ -60,7 +60,7 @@ inline double finite_or_stop(double value, int joint) {
     return 0.0;
 \}
 
-inline constexpr double kControlPeriodS = <control_period_ns> * 1e-9;
+inline constexpr double kControlPeriodS = <configuration.control_period_ns> * 1e-9;
 
 // ponytail: fixed clamp band; author it if real-robot jitter profiles demand
 // Floor on a measured tick: a near-zero dt must not blow up (error - err_last) / dt.

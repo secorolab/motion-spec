@@ -394,7 +394,7 @@ class Model:
         authored = self._indexes().authored_iris.get(id_)
         if authored is not None:
             return authored
-        uri = f"{parent_iri.rstrip('/')}/{kebab(suffix)}"
+        uri = str(self.child_node(parent_iri, kebab(suffix)))
         existing = self._derived.get(id_)
         if existing is not None:
             if existing.uri != uri:
@@ -415,11 +415,20 @@ class Model:
         it becomes a graph subject and so an authored IRI in `uri_rows`. The pattern is
         behaviour: these IRIs surface in the introspection artifact and in the run graph.
         """
-        return URIRef(f"{parent}.derived-{suffix}")
+        return self._mint(f"{parent}.derived-{suffix}")
 
     def component_node(self, parent, suffix: str) -> URIRef:
         """The IRI of a part of a node just minted: a frame's origin, a pose's relation."""
-        return URIRef(f"{parent}-{suffix}")
+        return self._mint(f"{parent}-{suffix}")
+
+    def child_node(self, parent, segment: str) -> URIRef:
+        """The IRI one path segment below `parent`, which is how a namespace addresses its own."""
+        return self._mint(f"{str(parent).rstrip('/')}/{segment}")
+
+    @staticmethod
+    def _mint(text: str) -> URIRef:
+        """The one place an IRI becomes a node, so every minting rule reads the same."""
+        return URIRef(text)
 
     def uri_rows(self) -> list[dict]:
         """``[{id, uri}]`` for every authored node then every derived entity.

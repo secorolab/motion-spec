@@ -156,9 +156,9 @@ def _validate_robot_config(source_dir: Path, cwd: Path | None = None) -> None:
     if not ir_path.exists():
         return
     ir = json.loads(ir_path.read_text())
-    if (ir.get("platform") or {}).get("simulated", True):
+    if (ir["configuration"].get("platform") or {}).get("simulated", True):
         return
-    declared = (ir["platform"] or {}).get("config") or ""
+    declared = (ir["configuration"]["platform"] or {}).get("config") or ""
     if not declared:
         raise RunnerError(
             "real-world run declares no config; it has nowhere to read addresses from"

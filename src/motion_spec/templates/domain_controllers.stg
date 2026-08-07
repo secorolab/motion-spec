@@ -7,7 +7,7 @@ import "expr_values.stg"
 
 // Its own generated header rather than part of runtime.hpp, so runtime stays a leaf both in the
 // template import graph and in the generated include graph.
-controller_runtime_header(resources, control_period_ns) ::= <<
+controller_runtime_header(resources, configuration) ::= <<
 #pragma once
 
 #include "runtime.hpp"

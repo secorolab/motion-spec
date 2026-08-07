@@ -119,7 +119,7 @@ def _uri_by_id(ir: dict) -> dict:
     """Map every introspection id to its canonical URI."""
     return {
         row["id"]: row["uri"]
-        for row in ir.get("introspection", {}).get("uris", ir.get("uris", []))
+        for row in ir["communication"]["introspection"].get("uris", [])
         if isinstance(row, dict) and row.get("id") and row.get("uri")
     }
 
@@ -278,10 +278,10 @@ def _fsm_meta(fsm_ir: dict | None) -> dict:
 
 def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | None) -> dict:
     """Build the run's introspection schema (pools, per-state slots, quantities, provenance) and its schema_hash."""
-    introspection = ir.get("introspection") or {}
+    introspection = ir["communication"]["introspection"]
     uri_by_id = _uri_by_id(ir)
     fsm = _fsm_meta(fsm_ir)
-    motions = ir.get("unique_motions") or ir.get("motions", [])
+    motions = ir["coordination"]["motions"]
     motion_by_id = {motion.get("id"): motion for motion in motions}
     states = fsm["states"]
     state_by_id = {state["id"]: state for state in states}
@@ -399,7 +399,7 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
         ),
         # The authored execution platform travels with the run so the runtime graph and the
         # archive validator read one fact rather than sniffing the runtime agent id.
-        "platform": ir.get("platform") or {},
+        "platform": ir["configuration"]["platform"],
         "context": contexts,
         "pools": pools,
         "timing": {"nominal_period_ns": introspection.get("control_period_ns")},
@@ -606,7 +606,7 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
     """Per-FSM-state sample model (controller/monitor exprs, quantity/spatial ids) that the introspect_model template renders."""
     shared_ids = {
         item.get("id")
-        for item in ir.get("shared_data", [])
+        for item in ir["computation"]["shared_data"]
         if isinstance(item, dict) and item.get("id")
     }
     # A value only its own motion recomputes is stale whenever another motion is active, so its
@@ -703,7 +703,7 @@ def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path) 
     The decode contract is not written here: it is serialized into the frame log's own header
     record, so a log needs no companion artifact to be read. The framed FSM lives in ir["fsm"].
     """
-    schema = build_schema(ir, ir_path=ir_path, output_dir=output_dir, fsm_ir=ir.get("fsm"))
+    schema = build_schema(ir, ir_path=ir_path, output_dir=output_dir, fsm_ir=ir["coordination"].get("fsm"))
     layout = build_frame_layout(schema)
     end_state = schema.get("fsm", {}).get("end")
     output_dir.mkdir(parents=True, exist_ok=True)

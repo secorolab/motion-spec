@@ -1336,11 +1336,18 @@ def relative_poses_for_motion(evaluators, views: dict, serial_chain_solvers) -> 
     return result
 
 
+class _ScenePose(NamedTuple):
+    """The solver output tracking a scene object, and the frame it is stated against."""
+
+    pose_id: str
+    with_respect_to: str | None
+
+
 class _TrackedPoses(NamedTuple):
     """Which FK output tracks each frame, and which tracks each scene object's body."""
 
-    fk_by_frame: dict
-    scene_by_id: dict
+    fk_by_frame: dict[str, str]
+    scene_by_id: dict[str, _ScenePose]
 
 
 def _fk_and_scene_poses(serial_chain_solvers, views) -> _TrackedPoses:
@@ -1348,7 +1355,7 @@ def _fk_and_scene_poses(serial_chain_solvers, views) -> _TrackedPoses:
     fk_by_frame: dict[str, str] = {}
     # Keyed by the scene-object's id; a wrt_id lookup asks whether that frame is the subject of a
     # tracked scene-object pose.
-    scene_by_id: dict[str, tuple[str, str | None]] = {}
+    scene_by_id: dict[str, _ScenePose] = {}
     output_ids: set[str] = set()
     for solver in serial_chain_solvers:
         for out in solver.output:
@@ -1361,7 +1368,9 @@ def _fk_and_scene_poses(serial_chain_solvers, views) -> _TrackedPoses:
                     fk_by_frame.setdefault(solver.chain_end, out.id)
                 continue
             if getattr(of, "is_scene_object", False):
-                entry = (out.id, getattr(getattr(out, "with_respect_to", None), "id", None))
+                entry = _ScenePose(
+                    out.id, getattr(getattr(out, "with_respect_to", None), "id", None)
+                )
                 scene_by_id[of.id] = entry
                 if getattr(of, "body", None):
                     scene_by_id[of.body] = entry
@@ -1414,15 +1423,14 @@ def scene_relative_poses_for_motion(views: dict, serial_chain_solvers, evaluator
         fk_pose_id = fk_by_frame.get(getattr(of, "id", ""))
         if not fk_pose_id or not scene_pose:
             continue
-        scene_pose_id, scene_wrt_id = scene_pose
         seen.add(pose_id)
         result.append(
             SceneRelativePose(
                 id=pose_id,
                 fk_pose_id=fk_pose_id,
-                scene_pose_id=scene_pose_id,
+                scene_pose_id=scene_pose.pose_id,
                 base_seen=getattr(getattr(candidate, "as_seen_by", None), "id", None)
-                == scene_wrt_id,
+                == scene_pose.with_respect_to,
             )
         )
 
@@ -1710,6 +1718,8 @@ def _build_pose_components(model, views: dict, data: list) -> dict:
     pose_nodes = {
         model.id(node): node for node in model.graph.subjects(RDF.type, URI_GEOM_TYPE_POSE_COORD)
     }
+    # A component entry is a published payload whose keys are the axes the pose authored, so
+    # no fixed field set describes it (the plan's dict family).
     components: dict[str, dict] = {}
     for item in data:
         if item.type != "Pose" or item.id not in pose_nodes:
@@ -1944,11 +1954,6 @@ def _sole(ids) -> str | None:
     return next(iter(ids)) if len(ids) == 1 else None
 
 
-def _storage_for(cadence) -> str:
-    """Where a value belongs, from when it is written. Never overridden per value."""
-    return "log" if isinstance(cadence, dict) else _STORAGE_BY_CADENCE[cadence]
-
-
 def _constant_value(item, desc: dict):
     """The authored number a `cadence: init` sample row carries, for the schema header."""
     kind = desc.get("kind")
@@ -1963,11 +1968,6 @@ def _constant_value(item, desc: dict):
                 return values[desc["axis"]]
 
     return None
-
-
-def _solver_outputs(solver):
-    """Everything a solver writes: its own outputs plus the gripper joints it reports."""
-    return [*solver.output, *solver.gripper_joint_outputs]
 
 
 class _SolverWrites(NamedTuple):
@@ -1986,7 +1986,7 @@ def _writers_by_output(serial_chain_solvers) -> _SolverWrites:
     sensor_outputs: set = set()
     measured_outputs: set = set()
     for solver in serial_chain_solvers:
-        for out in _solver_outputs(solver):
+        for out in [*solver.output, *solver.gripper_joint_outputs]:
             by_output.setdefault(out.id, set()).add(solver.id)
             if not getattr(out, "sensor_name", ""):
                 continue
@@ -2032,7 +2032,7 @@ def _owners_by_value(motions, closures: dict) -> _ValueOwners:
                 for out_id in closure_output_ids(closures.get(closure_id) or {}):
                     own(out_id, motion.id)
         for solver in motion.serial_chain_solvers:
-            for out in _solver_outputs(solver):
+            for out in [*solver.output, *solver.gripper_joint_outputs]:
                 own(out.id, motion.id)
                 if getattr(out, "sensor_name", ""):
                     own(f"{out.id}_ft_bias", motion.id)
@@ -2112,7 +2112,8 @@ def annotate_dataflow(
         dataflow[item.id] = {
             "producer": producer,
             "cadence": cadence,
-            "storage": _storage_for(cadence),
+            # Storage follows from cadence, here and nowhere else.
+            "storage": "log" if isinstance(cadence, dict) else _STORAGE_BY_CADENCE[cadence],
         }
 
     _apply_view_liveness(dataflow, views)
@@ -2182,7 +2183,7 @@ def _apply_view_liveness(dataflow: dict, views) -> None:
             continue
         entry["producer"] = {"kind": "view", "id": _sole(superobject_ids)}
         entry["cadence"] = cadence
-        entry["storage"] = _storage_for(cadence)
+        entry["storage"] = "log" if isinstance(cadence, dict) else _STORAGE_BY_CADENCE[cadence]
 
 
 def _consumers_by_id(introspection: dict, closures: dict) -> dict[str, list]:

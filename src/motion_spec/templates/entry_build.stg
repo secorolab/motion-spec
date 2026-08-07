@@ -2,7 +2,7 @@
 // L4 entry — the build: CMake projects and the robot config header.
 
 import "backend_robif2b.stg"
-cmake_mj_kdl(fsm, ros) ::= <<
+cmake_mj_kdl(coordination, communication) ::= <<
 cmake_minimum_required(VERSION 3.16)
 project(motion_spec_mj_kdl_target LANGUAGES CXX)
 
@@ -12,16 +12,16 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Eigen3 REQUIRED)
 find_package(orocos_kdl REQUIRED CONFIG)
-<if(fsm)>
+<if(coordination.fsm)>
 find_package(coord2b REQUIRED)
 <endif>
 find_package(mj_kdl_wrapper 0.2.2 REQUIRED CONFIG)
 find_package(tomlplusplus REQUIRED CONFIG)
 find_package(Threads REQUIRED)
-<if(ros)>
+<if(communication.ros)>
 find_package(rclcpp REQUIRED)
 find_package(realtime_tools REQUIRED)
-<ros.packages:{pkg | find_package(<pkg> REQUIRED)}; separator="\n">
+<communication.ros.packages:{pkg | find_package(<pkg> REQUIRED)}; separator="\n">
 <endif>
 
 option(MOTION_SPEC_ENABLE_INTROSPECTION "Enable generated runtime introspection logging" OFF)
@@ -33,7 +33,7 @@ target_include_directories(main PRIVATE
     ${EIGEN3_INCLUDE_DIRS}
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/headers
-<if(fsm)>
+<if(coordination.fsm)>
     ${coord2b_INCLUDE_DIRS}
 <endif>
 )
@@ -41,13 +41,13 @@ target_link_libraries(main PRIVATE
     mj_kdl_wrapper::mj_kdl_wrapper
     orocos-kdl
     tomlplusplus::tomlplusplus
-<if(fsm)>
+<if(coordination.fsm)>
     ${coord2b_LIBRARIES}
 <endif>
-<if(ros)>
+<if(communication.ros)>
     rclcpp::rclcpp
     realtime_tools::realtime_tools
-<ros.packages:{pkg |     ${<pkg>_TARGETS\}}; separator="\n">
+<communication.ros.packages:{pkg |     ${<pkg>_TARGETS\}}; separator="\n">
 <endif>
 )
 if(MOTION_SPEC_ENABLE_INTROSPECTION)
@@ -228,7 +228,7 @@ inline Device device(const toml::table &config, const std::string &key) {
 \} // namespace motion_spec::config
 >>
 
-cmake_robif2b(fsm, ros, resources) ::= <<
+cmake_robif2b(coordination, communication, resources) ::= <<
 cmake_minimum_required(VERSION 3.16)
 project(motion_spec_robif2b_target LANGUAGES C CXX)
 
@@ -240,14 +240,14 @@ find_package(Eigen3 REQUIRED)
 find_package(orocos_kdl REQUIRED CONFIG)
 find_package(robif2b REQUIRED CONFIG)
 find_package(tomlplusplus REQUIRED CONFIG)
-<if(fsm)>
+<if(coordination.fsm)>
 find_package(coord2b REQUIRED)
 <endif>
 find_package(Threads REQUIRED)
-<if(ros)>
+<if(communication.ros)>
 find_package(rclcpp REQUIRED)
 find_package(realtime_tools REQUIRED)
-<ros.packages:{pkg | find_package(<pkg> REQUIRED)}; separator="\n">
+<communication.ros.packages:{pkg | find_package(<pkg> REQUIRED)}; separator="\n">
 <endif>
 
 option(MOTION_SPEC_ENABLE_INTROSPECTION "Enable generated runtime introspection logging" OFF)
@@ -259,7 +259,7 @@ target_include_directories(main PRIVATE
     ${EIGEN3_INCLUDE_DIRS}
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/headers
-<if(fsm)>
+<if(coordination.fsm)>
     ${coord2b_INCLUDE_DIRS}
 <endif>
 )
@@ -267,13 +267,13 @@ target_link_libraries(main PRIVATE
     orocos-kdl
     tomlplusplus::tomlplusplus
 <resources.by_kind.serial_chain:{solver | <if(solver.runtime_owner)><solver.devices:{device | <({cmake-device-link-<device.kind>})()>}; separator="\n"><endif>}; separator="\n">
-<if(fsm)>
+<if(coordination.fsm)>
     ${coord2b_LIBRARIES}
 <endif>
-<if(ros)>
+<if(communication.ros)>
     rclcpp::rclcpp
     realtime_tools::realtime_tools
-<ros.packages:{pkg |     ${<pkg>_TARGETS\}}; separator="\n">
+<communication.ros.packages:{pkg |     ${<pkg>_TARGETS\}}; separator="\n">
 <endif>
 )
 if(MOTION_SPEC_ENABLE_INTROSPECTION)

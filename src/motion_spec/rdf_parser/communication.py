@@ -359,8 +359,9 @@ def _add_joint_space_mirrors(model, robots, motions, shared_data, rows, seen, ba
         producer_id = {
             "port": runtime_id,
             "sensor": runtime_id,
-            "solver": _sole({solver.id for solver in solvers}),
-            "saturation": _sole(saturations),
+            # None where several instances write the value: no one of them is its producer.
+            "solver": next(iter({s.id for s in solvers}), None) if len(solvers) == 1 else None,
+            "saturation": next(iter(saturations)) if len(saturations) == 1 else None,
         }
         # Mirrors are keyed by runtime, so they derive from the runtime's own solver node.
         parent = model.iri_of(runtime_id) or model.iri_of(solvers[0].id)
@@ -412,11 +413,6 @@ def _add_joint_space_mirrors(model, robots, motions, shared_data, rows, seen, ba
             for target in (solver, *copies_by_id.get(solver.id, ())):
                 target.joint_space_samples = samples
                 target.joint_space_cmd_samples = command_ids if solver.torque_saturation else []
-
-
-def _sole(ids) -> str | None:
-    """The one id in a set, or None when several instances write the same value."""
-    return next(iter(ids)) if len(ids) == 1 else None
 
 
 def _vec_desc(kind: str):

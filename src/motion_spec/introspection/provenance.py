@@ -154,7 +154,7 @@ def _tool_properties(agent_id: str) -> dict:
 
 
 def build_provenance_document(ir: dict, output_dir: Path) -> dict:
-    prov = (ir.get("introspection") or {}).get("provenance", {})
+    prov = (ir["communication"]["introspection"]).get("provenance", {})
     graph = []
 
     def add_node(identifier: str, types: list[str], **properties) -> str:
@@ -199,7 +199,7 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
     ]
     artifact_names.extend(
         f"headers/{motion['id']}.hpp"
-        for motion in (ir.get("unique_motions") or ir.get("motions", []))
+        for motion in (ir["coordination"]["motions"])
         if motion.get("id")
     )
     if (output_dir / "fsm_ir.json").exists():
@@ -318,7 +318,7 @@ def build_derivation_document(ir: dict) -> dict:
     generation and have no node in the authored model, so without this graph their IRIs resolve
     to nothing and a run graph cannot make a statement about what the log recorded.
     """
-    derivations = (ir.get("introspection") or {}).get("derivations") or []
+    derivations = ir["communication"]["introspection"].get("derivations") or []
     return {
         "schema_version": 1,
         "@context": [*METAMODEL_CONTEXTS, {"msprov": MSPROV}],

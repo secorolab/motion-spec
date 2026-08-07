@@ -17,7 +17,7 @@ import pytest
 from motion_spec_dsl.rdf_parser.vocab import AGN, GEOM_ENT
 from rdflib.namespace import RDF
 
-import motion_spec.rdf_parser.ir as ir_mod
+from motion_spec.rdf_parser import solvers as solvers_mod
 from motion_spec.rdf_parser.ir import (
     _kinematic_adjacency,
     _load_graph,
@@ -60,14 +60,14 @@ def _characterize(name, tmp_path):
     # Record every (tree, node) pair the real IR pipeline actually asks _tree_owns, not an
     # artificial cross product -- that is what "the lowering asks about" means.
     tree_owns = {}
-    real_tree_owns = ir_mod._tree_owns
+    real_tree_owns = solvers_mod._tree_owns
 
     def recording(tree, node):
         result = real_tree_owns(tree, node)
         tree_owns[(str(tree), str(node))] = result
         return result
 
-    with mock.patch.object(ir_mod, "_tree_owns", recording):
+    with mock.patch.object(solvers_mod, "_tree_owns", recording):
         generate_ir(manifest)
 
     return body_of, targets, edges, tree_owns

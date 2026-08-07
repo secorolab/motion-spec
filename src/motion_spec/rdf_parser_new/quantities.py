@@ -138,6 +138,7 @@ from motion_spec.rdf_parser_new.operations import (
 __all__ = [
     "PORT_PRODUCERS",
     "ComputationIndexes",
+    "ReferenceFrames",
     "acceleration_twist",
     "annotate_dataflow",
     "axis",
@@ -145,6 +146,7 @@ __all__ = [
     "collect_motion_references",
     "constraint",
     "declared_pose_component_entries",
+    "derived_reference_frames",
     "direction",
     "duration_seconds",
     "elapsed_coordinate_id",
@@ -158,11 +160,14 @@ __all__ = [
     "optional_seconds",
     "orientation",
     "orientation_quaternion",
+    "orientation_relation_quaternion",
+    "parse_xyz",
     "point",
     "pose",
     "pose_axis_error_groups_for_motion",
     "pose_difference",
     "position",
+    "position_coordinate_values",
     "position_values",
     "quantity",
     "read_data_structures",
@@ -328,6 +333,34 @@ def orientation_quaternion(model, coordinate) -> list[float] | None:
     rotation = get_orientation_coord_vals(coordinate, model.graph)
 
     return None if rotation is None else [float(value) for value in rotation.as_quat()]
+
+
+def position_coordinate_values(model, position_node) -> list[float] | None:
+    """xyz of a position relation's coordinate, in metres, or None when none carries a vector."""
+    relation = PositionModel(position_id=position_node, graph=model.graph)
+    for coordinate_id in relation.coordinate_ids:
+        coordinate = PositionCoordModel(
+            coord_id=coordinate_id, graph=model.graph, position=relation
+        )
+        values = position_values(model, coordinate)
+        if values is not None:
+            return values
+
+    return None
+
+
+def orientation_relation_quaternion(model, orientation_node) -> list[float] | None:
+    """Rotation of an orientation relation's coordinate as [x, y, z, w], or None."""
+    relation = OrientationModel(orn_id=orientation_node, graph=model.graph)
+    for coordinate_id in relation.coordinate_ids:
+        coordinate = OrientCoordModel(
+            coord_id=coordinate_id, graph=model.graph, orientation=relation
+        )
+        rotation = orientation_quaternion(model, coordinate)
+        if rotation is not None:
+            return rotation
+
+    return None
 
 
 def parse_xyz(model, node) -> list[float] | None:
@@ -532,8 +565,20 @@ def _pose_endpoint(model, node):
     return frame(model, node)
 
 
-def _derived_reference_frames(model, node):
-    """A reference value's frames, taken from its snapshot source or from its RDF use."""
+class ReferenceFrames(NamedTuple):
+    """The three frames a spatial quantity is stated against."""
+
+    of: object
+    with_respect_to: object
+    as_seen_by: object
+
+
+def derived_reference_frames(model, node) -> ReferenceFrames:
+    """A reference value's frames, taken from its snapshot source or from its RDF use.
+
+    A snapshot or reference pose carries no frames of its own: it inherits them from what it
+    captures, or from the quantity whose constraint names it.
+    """
     graph = model.graph
     source = next(
         (
@@ -548,9 +593,9 @@ def _derived_reference_frames(model, node):
         view = next(graph.subjects(MAP.subobject, quantity_node), None)
         source = graph.value(view, MAP.superobject) if view is not None else quantity_node
     if source is None:
-        return None, None, None
+        return ReferenceFrames(None, None, None)
 
-    return (
+    return ReferenceFrames(
         graph.value(source, GEOM_REL.of),
         graph.value(source, GEOM_REL["with-respect-to"]),
         graph.value(source, GEOM_COORD["as-seen-by"]),
@@ -567,7 +612,7 @@ def _bare_pose(model, node) -> Pose:
     wrt_node = graph.value(node, GEOM_REL["with-respect-to"])
     seen_node = graph.value(node, GEOM_COORD["as-seen-by"])
     if of_node is None or wrt_node is None or seen_node is None:
-        inherited_of, inherited_wrt, inherited_seen = _derived_reference_frames(model, node)
+        inherited_of, inherited_wrt, inherited_seen = derived_reference_frames(model, node)
         of_node = of_node or inherited_of
         wrt_node = wrt_node or inherited_wrt
         seen_node = seen_node or inherited_seen

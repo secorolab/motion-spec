@@ -5,6 +5,7 @@ import "assembly_motion.stg"
 import "domain_monitors.stg"
 import "domain_poses.stg"
 import "domain_closures.stg"
+import "domain_controllers.stg"
 import "domain_solver.stg"
 import "expr_values.stg"
 
@@ -13,7 +14,7 @@ motion_header(motion, closures, views, values, backend) ::= <<
 <motion.description:{line | /// <line>}; separator="\n">
 #pragma once
 
-#include "runtime.hpp"
+#include "controllers.hpp"
 #include "shared_state.hpp"
 
 struct <motion.id>_state {

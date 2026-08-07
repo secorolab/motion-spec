@@ -93,59 +93,6 @@ shared-member-Setpoint(var) ::= <<
 KDL::Frame <var.id>;
 >>
 
-controller-member(controller) ::= <<
-<({controller-member-<controller.type>})(controller)>
->>
-
-controller-member-ProportionalIntegralDerivative(controller) ::= <<
-    motion_spec::runtime::PIDControl <controller.id>;
->>
-
-controller-member-ImpedanceController(controller) ::= <<
-    motion_spec::runtime::ImpedanceControl <controller.id>;
->>
-
-// The tuning a controller's step applies, read off the blackboard at the call site. Field order
-// is the gains struct's in runtime.stg.
-control-gains(closure) ::= <<
-<({control-gains-<closure.controller_type>})(closure)>
->>
-
-control-gains-ProportionalIntegralDerivative(closure) ::= <<
-{shared.<closure.gains.kp>, shared.<closure.gains.ki>, shared.<closure.gains.kd>, shared.<closure.gains.decay_rate><if(closure.integral_saturation)>, true, <integral-bound-lower(closure.integral_saturation)>, <integral-bound-upper(closure.integral_saturation)><endif>}
->>
-
-control-gains-ImpedanceController(closure) ::= <<
-{shared.<closure.gains.stiffness>, shared.<closure.gains.damping>, shared.<closure.gains.integral_gain>}
->>
-
-integral-bound-lower(saturation) ::= <<
-<if(saturation.maximum)>-shared.<saturation.maximum.id><else>shared.<saturation.lower.id><endif>
->>
-
-integral-bound-upper(saturation) ::= <<
-<if(saturation.maximum)>shared.<saturation.maximum.id><else>shared.<saturation.upper.id><endif>
->>
-
-controller-member-FeedForwardController(controller) ::= <<
->>
-
-// Re-arm a controller when its motion is entered. FeedForward carries no state.
-controller-reset(motion_id, controller) ::= <<
-<if(controller.type)><({controller-reset-<controller.type>})(motion_id, controller)><endif>
->>
-
-controller-reset-ProportionalIntegralDerivative(motion_id, controller) ::= <<
-<motion_id>_state_instance.<controller.id>.reset();
->>
-
-controller-reset-ImpedanceController(motion_id, controller) ::= <<
-<motion_id>_state_instance.<controller.id>.reset();
->>
-
-controller-reset-FeedForwardController(motion_id, controller) ::= <<
->>
-
 monitor-member(monitor) ::= <<
 <if(monitor.is_edge_triggered)>    bool <monitor.id>_previous = false;
     bool <monitor.id>_event_triggered = false;

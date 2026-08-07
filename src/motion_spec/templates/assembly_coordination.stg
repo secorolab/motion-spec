@@ -2,6 +2,7 @@
 // L3 assembly — FSM dispatch and the per-state step functions.
 
 import "assembly_motion.stg"
+import "domain_controllers.stg"
 import "expr_values.stg"
 
 // Coordination state, not blackboard: the monitors record occurrences into it and the frame

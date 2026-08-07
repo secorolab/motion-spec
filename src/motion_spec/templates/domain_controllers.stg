@@ -1,0 +1,226 @@
+// SPDX-License-Identifier: MPL-2.0
+// SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
+// L2 domain — every line of controller C++ is born here: the runtime classes, the state members
+// each controller kind declares, the tuning its step reads, and its per-tick call.
+
+import "expr_values.stg"
+
+// Its own generated header rather than part of runtime.hpp, so runtime stays a leaf both in the
+// template import graph and in the generated include graph.
+controller_runtime_header(resources, control_period_ns) ::= <<
+#pragma once
+
+#include "runtime.hpp"
+
+namespace motion_spec::runtime {
+
+// Virtual mass-damper(-spring) admittance filter: turns a measured external-force
+// axis into a per-axis velocity setpoint. vel_/offset_ integrate across control
+// steps (persistent state), so the filter must outlive a single step -- it lives
+// as a member of the tracking constraint's PIDControl, mirroring the vp_* members.
+// Velocity-output (not position-with-K): v -> 0 as F -> 0, so the arm halts when
+// the push ends. M/D/K/vmax are authored tuning knobs, passed in each step.
+class AdmittanceFilter {
+  public:
+    double step(double force, double mass, double damping, double stiffness,
+                double max_velocity, double dt) {
+        mass = std::max(mass, 1e-6);
+        const double acc = (force - damping * vel_ - stiffness * offset_) / mass;
+        vel_ += acc * dt;
+        vel_ = std::clamp(vel_, -max_velocity, max_velocity);
+        offset_ += vel_ * dt; // only used when stiffness > 0 (spring return)
+        return vel_;
+    }
+
+  private:
+    double vel_ = 0.0;
+    double offset_ = 0.0;
+};
+
+// The tuning a step applies, handed in per call like dt. Kept out of the controller so the
+// numbers stay blackboard values a run artifact can report rather than construction-time state.
+struct PIDGains {
+    double kp = 0.0;
+    double ki = 0.0;
+    double kd = 0.0;
+    double decay_rate = 0.0;
+    bool has_integral_limit = false;
+    double integral_lower = 0.0;
+    double integral_upper = 0.0;
+};
+
+class PIDControl {
+  public:
+    PIDControl() = default;
+
+    // dt is the time the loop measured for this tick, not the nominal period.
+    double control(double error, double dt, const PIDGains &gains) {
+        return control_impl(error, 0.0, false, dt, gains);
+    }
+
+    double control(double error, double error_derivative, double dt, const PIDGains &gains) {
+        return control_impl(error, error_derivative, true, dt, gains);
+    }
+
+    double control_impl(double error, double error_derivative, bool has_error_derivative, double dt,
+                        const PIDGains &gains) {
+        const double err_diff = (gains.decay_rate > 0.0 || first_sample)
+            ? 0.0
+            : ((error - err_last) / dt);
+        if (gains.decay_rate > 0.0) {
+            err_integ = gains.decay_rate * err_integ + error * dt;
+        } else {
+            err_integ = err_integ + error * dt;
+        }
+        if (gains.has_integral_limit) {
+            err_integ = clamp_range(err_integ, gains.integral_lower, gains.integral_upper);
+        }
+        err_last = error;
+        first_sample = false;
+        const double deriv = has_error_derivative ? error_derivative : err_diff;
+        return gains.kp * error + gains.ki * err_integ + gains.kd * deriv;
+    }
+
+    double error_integral() const { return err_integ; }
+    double previous_error() const { return err_last; }
+    bool is_first_sample() const { return first_sample; }
+
+    // Re-arm on motion entry. The stored error belongs to whenever this motion last ran; if
+    // the setpoint moved while it was inactive, differencing across that gap yields a huge
+    // one-step derivative, and a stale integral would unwind into the fresh motion.
+    void reset() {
+        err_integ = 0.0;
+        err_last = 0.0;
+        first_sample = true;
+        vp_init = false;
+        adm_filter = AdmittanceFilter{};
+    }
+
+    double vp_setpoint = 0.0;
+    double vp_velocity = 0.0;
+    double vp_accel = 0.0;
+    bool vp_init = false;
+
+    AdmittanceFilter adm_filter;
+
+  private:
+    double err_integ = 0.0;
+    double err_last = 0.0;
+    bool first_sample = true;
+};
+
+// Spring-damper controller: maps a single scalar constraint error to a
+// force/torque output as F = ks*e + kd*(de/dt). The derivative is
+// approximated by finite difference on successive error samples, so
+// "error" is assumed to be a position or angle error; the damping term
+// then approximates velocity feedback rather than reading it directly.
+struct ImpedanceGains {
+    double stiffness = 0.0;
+    double damping = 0.0;
+    double integral_gain = 0.0;
+};
+
+class ImpedanceControl {
+  public:
+    ImpedanceControl() = default;
+
+    // dt is the time the loop measured for this tick, not the nominal period.
+    double control(double error, double dt, const ImpedanceGains &gains) {
+        const double err_diff = first_sample ? 0.0 : ((error - err_last) / dt);
+        err_last = error;
+        first_sample = false;
+        if (gains.integral_gain > 0.0) {
+            err_int += error * dt;
+        }
+        return gains.stiffness * error + gains.damping * err_diff + gains.integral_gain * err_int;
+    }
+
+    double error_integral() const { return err_int; }
+    double previous_error() const { return err_last; }
+    bool is_first_sample() const { return first_sample; }
+
+    // See PIDControl::reset().
+    void reset() {
+        err_last = 0.0;
+        err_int = 0.0;
+        first_sample = true;
+    }
+
+  private:
+    double err_last = 0.0;
+    double err_int = 0.0;
+    bool first_sample = true;
+};
+
+}  // namespace motion_spec::runtime
+>>
+
+controller-member(controller) ::= <<
+<({controller-member-<controller.type>})(controller)>
+>>
+
+controller-member-ProportionalIntegralDerivative(controller) ::= <<
+    motion_spec::runtime::PIDControl <controller.id>;
+>>
+
+controller-member-ImpedanceController(controller) ::= <<
+    motion_spec::runtime::ImpedanceControl <controller.id>;
+>>
+
+// The tuning a controller's step applies, read off the blackboard at the call site. Field order
+// is the gains struct's in runtime.stg.
+control-gains(closure) ::= <<
+<({control-gains-<closure.controller_type>})(closure)>
+>>
+
+control-gains-ProportionalIntegralDerivative(closure) ::= <<
+{shared.<closure.gains.kp>, shared.<closure.gains.ki>, shared.<closure.gains.kd>, shared.<closure.gains.decay_rate><if(closure.integral_saturation)>, true, <integral-bound-lower(closure.integral_saturation)>, <integral-bound-upper(closure.integral_saturation)><endif>}
+>>
+
+control-gains-ImpedanceController(closure) ::= <<
+{shared.<closure.gains.stiffness>, shared.<closure.gains.damping>, shared.<closure.gains.integral_gain>}
+>>
+
+integral-bound-lower(saturation) ::= <<
+<if(saturation.maximum)>-shared.<saturation.maximum.id><else>shared.<saturation.lower.id><endif>
+>>
+
+integral-bound-upper(saturation) ::= <<
+<if(saturation.maximum)>shared.<saturation.maximum.id><else>shared.<saturation.upper.id><endif>
+>>
+
+controller-member-FeedForwardController(controller) ::= <<
+>>
+
+// Re-arm a controller when its motion is entered. FeedForward carries no state.
+controller-reset(motion_id, controller) ::= <<
+<if(controller.type)><({controller-reset-<controller.type>})(motion_id, controller)><endif>
+>>
+
+controller-reset-ProportionalIntegralDerivative(motion_id, controller) ::= <<
+<motion_id>_state_instance.<controller.id>.reset();
+>>
+
+controller-reset-ImpedanceController(motion_id, controller) ::= <<
+<motion_id>_state_instance.<controller.id>.reset();
+>>
+
+controller-reset-FeedForwardController(motion_id, controller) ::= <<
+>>
+
+emit-call-Admittance(closure, views) ::= <<
+shared.<closure.out> = state.<closure.controller>.adm_filter.step(<access-expr(closure.in, views)>, shared.<closure.mass>, shared.<closure.damping>, shared.<closure.stiffness>, shared.<closure.maximum_velocity>, shared.dt_measured_s);
+>>
+
+emit-call-Controller(closure, views) ::= <<
+{
+    const double _control_signal = <if(closure.reference_signal)><access-expr(closure.reference_signal, views)><else>state.<closure.id>.control(<access-expr(closure.error_signal, views)><if(closure.measured_derivative)>, -(<access-expr(closure.measured_derivative, views)>)<endif>, shared.dt_measured_s, <control-gains(closure)>)<endif>;
+<if(closure.output_saturation)>
+    shared.<closure.control_signal> = motion_spec::runtime::clamp_range(_control_signal, <saturation-lower(closure.output_saturation)>, <saturation-upper(closure.output_saturation)>);
+<else>
+    shared.<closure.control_signal> = _control_signal;
+<endif>
+<closure.internal_state_samples:{sample |     shared.<sample.id> = state.<closure.id>.<sample.getter>();}; separator="\n">
+}
+>>
+

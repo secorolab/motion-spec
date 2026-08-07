@@ -108,10 +108,6 @@ emit-call-VelocityProfile(closure, views) ::= <<
 }
 >>
 
-emit-call-Admittance(closure, views) ::= <<
-shared.<closure.out> = state.<closure.controller>.adm_filter.step(<access-expr(closure.in, views)>, shared.<closure.mass>, shared.<closure.damping>, shared.<closure.stiffness>, shared.<closure.maximum_velocity>, shared.dt_measured_s);
->>
-
 path-eval-Circle(closure, views) ::= <<
     KDL::Vector _n = shared.<closure.plane_normal>;
     _n.Normalize();
@@ -323,18 +319,6 @@ pose-axis-error-group-wrench(g, views) ::= <<
 <endif>
 <if(g.angular_z)>        const double _pose_axis_error_angular_Z = _pose_axis_error_<g.id>.torque.z();
 <endif>
->>
-
-emit-call-Controller(closure, views) ::= <<
-{
-    const double _control_signal = <if(closure.reference_signal)><access-expr(closure.reference_signal, views)><else>state.<closure.id>.control(<access-expr(closure.error_signal, views)><if(closure.measured_derivative)>, -(<access-expr(closure.measured_derivative, views)>)<endif>, shared.dt_measured_s, <control-gains(closure)>)<endif>;
-<if(closure.output_saturation)>
-    shared.<closure.control_signal> = motion_spec::runtime::clamp_range(_control_signal, <saturation-lower(closure.output_saturation)>, <saturation-upper(closure.output_saturation)>);
-<else>
-    shared.<closure.control_signal> = _control_signal;
-<endif>
-<closure.internal_state_samples:{sample |     shared.<sample.id> = state.<closure.id>.<sample.getter>();}; separator="\n">
-}
 >>
 
 emit-call-PlanarAngleFromDirections(closure, views) ::= <<

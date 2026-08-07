@@ -2,6 +2,7 @@
 // L3 assembly — schedules, the motion cycle, chain and device members.
 
 import "domain_closures.stg"
+import "domain_controllers.stg"
 import "domain_monitors.stg"
 import "domain_poses.stg"
 import "domain_solver.stg"

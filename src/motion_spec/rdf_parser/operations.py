@@ -68,7 +68,7 @@ from rdflib import URIRef
 from rdflib.namespace import RDF
 
 from motion_spec.classes.closures import closure_output_ids
-from motion_spec.rdf_parser_new.model import local_name, reader
+from motion_spec.rdf_parser.model import local_name, reader
 
 __all__ = [
     "OPS_GENERIC",

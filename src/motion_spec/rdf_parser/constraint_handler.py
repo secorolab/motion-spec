@@ -60,8 +60,8 @@ from motion_spec.classes.entities import (
     Unit,
     View,
 )
-from motion_spec.rdf_parser_new import quantities
-from motion_spec.rdf_parser_new.model import kebab, local_name
+from motion_spec.rdf_parser import quantities
+from motion_spec.rdf_parser.model import kebab, local_name
 
 __all__ = [
     "ADMITTANCE_PARAMETERS",

@@ -120,7 +120,7 @@ from motion_spec.classes.entities import (
     Wrench,
     dedupe_by_id,
 )
-from motion_spec.rdf_parser_new.model import (
+from motion_spec.rdf_parser.model import (
     length_unit,
     local_name,
     reader,
@@ -129,11 +129,7 @@ from motion_spec.rdf_parser_new.model import (
     si_all,
     si_unit,
 )
-from motion_spec.rdf_parser_new.operations import (
-    closure_maps,
-    closure_owner_map,
-    data_reference_map,
-)
+from motion_spec.rdf_parser.operations import closure_maps, closure_owner_map, data_reference_map
 
 __all__ = [
     "ANGULAR_AXES",

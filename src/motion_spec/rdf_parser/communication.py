@@ -22,8 +22,8 @@ from rdf_utils.naming import get_valid_var_name
 from rdflib.namespace import PROV
 
 from motion_spec.classes.entities import QuantityKind, RuntimeValue, Unit
-from motion_spec.rdf_parser_new import constraint_handler, quantities, resources
-from motion_spec.rdf_parser_new.model import identifier
+from motion_spec.rdf_parser import constraint_handler, quantities, resources
+from motion_spec.rdf_parser.model import identifier
 
 __all__ = ["add_quantity_samples", "add_spatial_samples", "build_introspection", "ros_publishers"]
 

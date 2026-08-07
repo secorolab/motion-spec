@@ -65,9 +65,9 @@ from motion_spec.classes.entities import (
     VelocityCompositionSolver,
     dedupe_by_id,
 )
-from motion_spec.rdf_parser_new import constraint_handler, quantities
-from motion_spec.rdf_parser_new.model import local_name, seconds
-from motion_spec.rdf_parser_new.operations import OPS_GENERIC, OPS_SOLVER
+from motion_spec.rdf_parser import constraint_handler, quantities
+from motion_spec.rdf_parser.model import local_name, seconds
+from motion_spec.rdf_parser.operations import OPS_GENERIC, OPS_SOLVER
 
 __all__ = [
     "JOINT_SPACE_CHANNELS",

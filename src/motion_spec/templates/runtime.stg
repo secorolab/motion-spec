@@ -47,6 +47,19 @@ inline void install_stop_handlers() {
     std::signal(SIGTERM, request_stop);
 \}
 
+// A non-finite command means the controller diverged, and no value is the right one to send: zero
+// drops a simulated arm, the last good value hides the divergence, and throwing from the loop
+// leaves the log truncated. So ask the loop to leave -- shutdown then closes the frame log the
+// same way an interrupt does, and the record ends at the tick that broke.
+inline double finite_or_stop(double value, int joint) {
+    if (std::isfinite(value)) return value;
+    if (!stop_requested()) {
+        std::cerr \<\< "[run] non-finite command on joint " \<\< joint \<\< "; stopping" \<\< std::endl;
+        request_stop(0);
+    \}
+    return 0.0;
+\}
+
 inline constexpr double kControlPeriodS = <control_period_ns> * 1e-9;
 
 // ponytail: fixed clamp band; author it if real-robot jitter profiles demand

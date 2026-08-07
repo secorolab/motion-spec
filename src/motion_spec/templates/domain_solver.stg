@@ -565,7 +565,7 @@ solver-stage-output(solver, backend) ::= <<
 // The authored torque limit binds on every backend: it protects the joint, so the simulator and
 // the real arm must clamp the same command by the same bound.
 solver-torque-command(solver) ::= <<
-<if(solver.torque_saturation)>motion_spec::runtime::clamp_range(state.<solver.id>.tau_ctrl(i), <saturation-lower(solver.torque_saturation)>, <saturation-upper(solver.torque_saturation)>)<else>state.<solver.id>.tau_ctrl(i)<endif>
+motion_spec::runtime::finite_or_stop(<if(solver.torque_saturation)>motion_spec::runtime::clamp_range(state.<solver.id>.tau_ctrl(i), <saturation-lower(solver.torque_saturation)>, <saturation-upper(solver.torque_saturation)>)<else>state.<solver.id>.tau_ctrl(i)<endif>, i)
 >>
 solver-stage-output-robif2b(solver) ::= <<
     for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {

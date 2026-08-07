@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 # Author: Vamsi Kalagaturu
-"""Intermediate representation (IR) generator for motion specification models.
-
-This module parses RDF graphs containing motion specification models and generates
-a JSON intermediate representation suitable for code generation.
-"""
+"""Lower motion-specification RDF graphs to the JSON intermediate representation codegen renders."""
 
 from __future__ import annotations
 
@@ -16,7 +12,7 @@ import re
 import weakref
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
-from functools import wraps
+from functools import partial, wraps
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -132,9 +128,8 @@ def _ros_camel_to_snake(name: str) -> str:
 
 
 def _ros_type_parts(ros_type: str) -> tuple[str, str, str]:
-    """`pkg/msg/CamelType` -> (pkg, "pkg/msg/camel_type.hpp", "pkg::msg::CamelType").
-
-    Derives the include and C++ type from the rosidl naming rule rather than hardcoding.
+    """`pkg/msg/CamelType` -> (pkg, "pkg/msg/camel_type.hpp", "pkg::msg::CamelType"), derived from
+    the rosidl naming rule rather than hardcoded.
     """
     parts = ros_type.split("/")
     pkg, msg_name = parts[0], parts[-1]
@@ -145,10 +140,8 @@ def _ros_type_parts(ros_type: str) -> tuple[str, str, str]:
 
 @dataclass(frozen=True)
 class SpatialAxis:
-    """One ordered linear or angular Cartesian direction.
-
-    A path-following direction is only known at runtime, so it names the shared vector that
-    carries it instead of a fixed frame axis; `axis` is then the vector's role on the path.
+    """One ordered linear or angular Cartesian direction. A path-following direction is known only
+    at runtime, so it names the shared vector carrying it instead of a fixed frame axis.
     """
 
     subspace: str
@@ -229,8 +222,8 @@ class SolverIdFactory:
     def pose_difference(self) -> str:
         return f"pose_diff_{self.controller}"
 
-    # IRI suffixes. The id puts its tag first (`eacc_<ctrl>_<axis>`); the IRI leads with the
-    # parent, so the same derivation reads as `<ctrl-iri>/eacc-<axis>`.
+    # The id leads with its tag (`eacc_<ctrl>_<axis>`), the IRI with the parent
+    # (`<ctrl-iri>/eacc-<axis>`).
     SUFFIXES = {
         "component_controller": "{axis}",
         "component_error": "err-{axis}",
@@ -266,10 +259,8 @@ _AXIS_DERIVATIONS = (
 
 
 def _register_derived_family(iris, parent_node, ids: SolverIdFactory, axes) -> None:
-    """Register every IRI this factory can mint for one controller and its axes.
-
-    Registered per family rather than at each inline mint: the sites call different subsets, and
-    a missed one silently leaves a slot unaddressable. An id registered but never used is inert.
+    """Register every IRI this factory can mint for one controller and its axes: the sites each mint
+    a different subset, and a missed one leaves a slot unaddressable. An unused id is inert.
     """
     parent = str(parent_node)
     for kind in ("pose_evaluator", "pose_difference"):
@@ -334,9 +325,6 @@ def _duration_seconds(g, node) -> float:
     return _seconds(float(g.value(node, QUDT_SCHEMA["value"])), g.value(node, QUDT_SCHEMA["unit"]))
 
 
-# ---------------------------------------------------------------------------
-# DSL operators and specifications
-# ---------------------------------------------------------------------------
 def _term_name(node) -> str | None:
     if node is None:
         return None
@@ -363,11 +351,9 @@ def _path_projection_outputs(g) -> dict[URIRef, dict[str, URIRef]]:
 def _path_following_axes(
     outputs: dict[str, URIRef], quantity: URIRef, subspace: str | None
 ) -> tuple[SpatialAxis, ...]:
-    """The directions one path-following constraint controls.
-
-    A path fixes geometry but not timing, so the three roles never mix: the driver commands
-    the tangent alone, holding the frame on the path costs the two normals, and orientation
-    tracking is the ordinary angular triple.
+    """The directions one path-following constraint controls. A path fixes geometry but not timing,
+    so the roles never mix: the tangent is timing, the two normals hold the frame on the path, and
+    orientation tracking is the ordinary angular triple.
     """
     if quantity == outputs["along-speed"]:
         return (SpatialAxis("linear-acceleration", "tangent", outputs["tangent"]),)
@@ -464,8 +450,8 @@ class SolverDerivationContext:
     controllers_by_solver: dict[URIRef, tuple[ControllerDerivation, ...]]
     semantics_by_solver: dict[URIRef, SolverSemantics]
     shared_constraints: frozenset[URIRef]
-    # Carried here rather than threaded through six derivation signatures: the context already
-    # reaches every site that mints an id, which is the only place the parent node is still known.
+    # Carried here, not threaded through six signatures: the context reaches every site that
+    # mints an id, and those are the only places the parent node is still known.
     iris: DerivedIriRegistry
 
 
@@ -622,6 +608,51 @@ def _acceleration_signal(
     raise ValueError(f"Input kind '{input_kind}' does not carry acceleration.")
 
 
+def _solver_ids(p, context: SolverDerivationContext, plan: ControllerDerivation) -> SolverIdFactory:
+    """Ids for one controller, with its whole derived-IRI family registered."""
+    ids = SolverIdFactory(p.id(plan.controller), _motion_suffix(p, plan.motion))
+    _register_derived_family(context.iris, plan.controller, ids, plan.axes)
+    return ids
+
+
+def _axis_subspace(axis: SpatialAxis) -> Subspace:
+    return Subspace.Linear if axis.subspace == "linear-acceleration" else Subspace.Angular
+
+
+def _axis_error(ids: SolverIdFactory, axis: SpatialAxis) -> Quantity:
+    """The per-axis component of a pose difference the controller drives to zero."""
+    linear = axis.subspace == "linear-acceleration"
+    return _derived_quantity(
+        ids.component_error(axis),
+        "Length" if linear else "Angle",
+        "M" if linear else "RAD",
+        has_view=True,
+    )
+
+
+def _axis_derivative(ids: SolverIdFactory, axis: SpatialAxis) -> Quantity:
+    """The per-axis component of the measured velocity feeding a derivative term."""
+    linear = axis.subspace == "linear-acceleration"
+    return _derived_quantity(
+        ids.component_measured_derivative(axis),
+        "LinearVelocity" if linear else "AngularVelocity",
+        "M_PER_SEC" if linear else "RAD_PER_SEC",
+        has_view=True,
+    )
+
+
+def _axis_view(p, superobject, subobject, axis: SpatialAxis) -> View:
+    """The view selecting one axis of a spatial superobject."""
+    return View(
+        f"view_{subobject.id}",
+        superobject,
+        subobject,
+        _axis_subspace(axis),
+        _AXIS_BY_FRAME_AXIS.get(axis.frame_axis),
+        direction=p.direction(axis.direction) if axis.direction is not None else None,
+    )
+
+
 def _saturation_for_signal(g, p, node, signal):
     """Parse authored saturation bounds and bind them to a derived signal."""
     if node is None:
@@ -667,39 +698,20 @@ def _derived_controller(
 ):
     """Build a controller dataclass from one authored controller and optional pose axis."""
     source_id = p.id(plan.controller)
-    ids = SolverIdFactory(source_id, _motion_suffix(p, plan.motion))
-    _register_derived_family(context.iris, plan.controller, ids, plan.axes)
+    ids = _solver_ids(p, context, plan)
     input_kind = context.semantics_by_solver[plan.solver].acceleration_input
     types = get_node_types(g, plan.controller)
     if axis is not None:
         controller_id = ids.component_controller(axis)
-        signal = _acceleration_signal(
-            (
-                ids.component_energy(axis)
-                if input_kind == AccelerationInputKind.ConstraintEnergy
-                else ids.component_acceleration(axis)
-            ),
-            axis,
-            input_kind,
+        payload_id = (
+            ids.component_energy(axis)
+            if input_kind == AccelerationInputKind.ConstraintEnergy
+            else ids.component_acceleration(axis)
         )
-        is_linear = axis.subspace == "linear-acceleration"
-        error = _derived_quantity(
-            ids.component_error(axis),
-            "Length" if is_linear else "Angle",
-            "M" if is_linear else "RAD",
-            has_view=True,
-        )
+        signal = _acceleration_signal(payload_id, axis, input_kind)
+        error = _axis_error(ids, axis)
         measured_source = g.value(plan.controller, CSTR_HDL["measured-velocity"])
-        measured_derivative = (
-            _derived_quantity(
-                ids.component_measured_derivative(axis),
-                "LinearVelocity" if is_linear else "AngularVelocity",
-                "M_PER_SEC" if is_linear else "RAD_PER_SEC",
-                has_view=True,
-            )
-            if measured_source is not None
-            else None
-        )
+        measured_derivative = _axis_derivative(ids, axis) if measured_source is not None else None
     else:
         controller_id = source_id
         signal_id = _controller_signal_id(g, p, context, plan)
@@ -728,8 +740,7 @@ def _derived_controller(
         measured_derivative = p.quantity(measured_node) if measured_node is not None else None
 
     output_saturation, integral_saturation = _controller_saturations(g, p, plan.controller, signal)
-    # The band belongs to the constraint this controller serves, so its logged verdict is
-    # taken against the same one the monitor on that constraint uses.
+    # The band belongs to the constraint, so the logged verdict matches the monitor's.
     band_node = g.value(plan.constraint, CSTR_EXT["tolerance"])
     tolerance_id = p.id(band_node) if band_node is not None else ""
 
@@ -781,29 +792,55 @@ def _derived_controllers(g, p, context, plan: ControllerDerivation):
     return [_derived_controller(g, p, context, plan)]
 
 
-def _derived_acceleration_constraints(g, p, context, plan: ControllerDerivation):
-    """Build ordered ACHD acceleration-energy constraints for one controller."""
-    ids = SolverIdFactory(p.id(plan.controller), _motion_suffix(p, plan.motion))
-    _register_derived_family(context.iris, plan.controller, ids, plan.axes)
+# Per solver input kind: id-factory kinds for the record and its payload, the IRI tags, the
+# record class, and the field the payload fills. Single-axis ids reuse the tags with `-` as `_`.
+_ACCELERATION_DRIVERS = {
+    AccelerationInputKind.ConstraintEnergy: (
+        "component_constraint",
+        "component_energy",
+        "acc-cstr",
+        "eacc",
+        AccelerationConstraint,
+        "acceleration_energy",
+    ),
+    AccelerationInputKind.CartesianAcceleration: (
+        "component_acceleration_specification",
+        "component_acceleration",
+        "cart-acc",
+        "acc",
+        CartesianAccelerationSpecification,
+        "acceleration",
+    ),
+}
+
+
+def _derived_acceleration_drivers(
+    g, p, context, plan: ControllerDerivation, input_kind: AccelerationInputKind
+):
+    """Build one controller's ordered per-axis acceleration records for its solver's input."""
+    spec_kind, payload_kind, spec_tag, payload_tag, record, payload_field = _ACCELERATION_DRIVERS[
+        input_kind
+    ]
+    ids = _solver_ids(p, context, plan)
     target = g.value(plan.view, MAP.superobject) if plan.view is not None else plan.quantity
     frame_node = g.value(target, GEOM_COORD["as-seen-by"])
     frame = p.frame(frame_node) if frame_node is not None else None
     result = []
     for axis in plan.axes:
         if len(plan.axes) > 1:
-            constraint_id = ids.component_constraint(axis)
-            energy_id = ids.component_energy(axis)
+            spec_id = getattr(ids, spec_kind)(axis)
+            payload_id = getattr(ids, payload_kind)(axis)
         else:
+            # Single-axis ids are built off the quantity, so that is what they derive from.
             suffix = (
                 ""
                 if plan.constraint in context.shared_constraints
                 else f"_{_motion_suffix(p, plan.motion)}"
             )
-            constraint_id = f"acc_cstr_{p.id(plan.quantity)}{suffix}"
-            energy_id = f"eacc_{p.id(plan.quantity)}{suffix}"
-            # Single-axis: the id is built off the quantity, not the controller, so it is the
-            # quantity these derive from.
-            for derived_id, tag in ((constraint_id, "acc-cstr"), (energy_id, "eacc")):
+            quantity_id = p.id(plan.quantity)
+            spec_id = f"{spec_tag.replace('-', '_')}_{quantity_id}{suffix}"
+            payload_id = f"{payload_tag.replace('-', '_')}_{quantity_id}{suffix}"
+            for derived_id, tag in ((spec_id, spec_tag), (payload_id, payload_tag)):
                 context.iris.register(
                     derived_id,
                     str(plan.quantity),
@@ -811,65 +848,13 @@ def _derived_acceleration_constraints(g, p, context, plan: ControllerDerivation)
                     DerivedIriRegistry.DERIVATION,
                 )
         result.append(
-            AccelerationConstraint(
-                id=constraint_id,
-                subspace=(
-                    Subspace.Linear
-                    if axis.subspace == "linear-acceleration"
-                    else Subspace.Angular
-                ),
+            record(
+                id=spec_id,
+                subspace=_axis_subspace(axis),
                 axis=_AXIS_BY_FRAME_AXIS.get(axis.frame_axis),
-                acceleration_energy=_derived_quantity(
-                    energy_id, "AccelerationEnergy", "N_M2_PER_SEC2"
-                ),
                 as_seen_by=frame,
                 direction=p.direction(axis.direction) if axis.direction is not None else None,
-            )
-        )
-    return result
-
-
-def _derived_cartesian_accelerations(g, p, context, plan: ControllerDerivation):
-    """Build Cartesian acceleration commands resolved to joint acceleration before RNEA."""
-    ids = SolverIdFactory(p.id(plan.controller), _motion_suffix(p, plan.motion))
-    _register_derived_family(context.iris, plan.controller, ids, plan.axes)
-    target = g.value(plan.view, MAP.superobject) if plan.view is not None else plan.quantity
-    frame_node = g.value(target, GEOM_COORD["as-seen-by"])
-    frame = p.frame(frame_node) if frame_node is not None else None
-    result = []
-    for axis in plan.axes:
-        if len(plan.axes) > 1:
-            specification_id = ids.component_acceleration_specification(axis)
-            acceleration_id = ids.component_acceleration(axis)
-        else:
-            suffix = (
-                ""
-                if plan.constraint in context.shared_constraints
-                else f"_{_motion_suffix(p, plan.motion)}"
-            )
-            specification_id = f"cart_acc_{p.id(plan.quantity)}{suffix}"
-            acceleration_id = f"acc_{p.id(plan.quantity)}{suffix}"
-            for derived_id, tag in ((specification_id, "cart-acc"), (acceleration_id, "acc")):
-                context.iris.register(
-                    derived_id,
-                    str(plan.quantity),
-                    f"{tag}{_kebab(suffix)}",
-                    DerivedIriRegistry.DERIVATION,
-                )
-        result.append(
-            CartesianAccelerationSpecification(
-                id=specification_id,
-                subspace=(
-                    Subspace.Linear
-                    if axis.subspace == "linear-acceleration"
-                    else Subspace.Angular
-                ),
-                axis=_AXIS_BY_FRAME_AXIS.get(axis.frame_axis),
-                acceleration=_acceleration_signal(
-                    acceleration_id, axis, AccelerationInputKind.CartesianAcceleration
-                ),
-                as_seen_by=frame,
-                direction=p.direction(axis.direction) if axis.direction is not None else None,
+                **{payload_field: _acceleration_signal(payload_id, axis, input_kind)},
             )
         )
     return result
@@ -879,23 +864,13 @@ def _derived_motion_drivers(g, p, context, solver: URIRef) -> list[MotionDrivers
     """Build a solver's drivers from authored controllers plus authored force specs."""
     plans = context.controllers_by_solver.get(solver, ())
     input_kind = context.semantics_by_solver[solver].acceleration_input
-    if input_kind == AccelerationInputKind.CartesianAcceleration:
-        constraints = []
-        accelerations = [
-            acceleration
-            for plan in plans
-            for acceleration in _derived_cartesian_accelerations(g, p, context, plan)
-        ]
-    elif input_kind == AccelerationInputKind.ConstraintEnergy:
-        constraints = [
-            constraint
-            for plan in plans
-            for constraint in _derived_acceleration_constraints(g, p, context, plan)
-        ]
-        accelerations = []
-    else:
-        constraints = []
-        accelerations = []
+    records = [
+        record
+        for plan in plans
+        for record in _derived_acceleration_drivers(g, p, context, plan, input_kind)
+    ] if input_kind in _ACCELERATION_DRIVERS else []
+    constraints = records if input_kind == AccelerationInputKind.ConstraintEnergy else []
+    accelerations = records if input_kind == AccelerationInputKind.CartesianAcceleration else []
     result = []
     for driver in g.objects(solver, SLV["motion-drivers"]):
         cartesian = [
@@ -924,8 +899,7 @@ def _derive_solver_closures(g, p, context, closures: dict) -> None:
     for plans in context.controllers_by_handler.values():
         for plan in plans:
             source_id = p.id(plan.controller)
-            ids = SolverIdFactory(source_id, _motion_suffix(p, plan.motion))
-            _register_derived_family(context.iris, plan.controller, ids, plan.axes)
+            ids = _solver_ids(p, context, plan)
             controllers = _derived_controllers(g, p, context, plan)
             closures.pop(source_id, None)
             for controller in controllers:
@@ -975,8 +949,7 @@ def _derive_solver_data(g, p, context, data: list, views: dict) -> None:
             derived_ids.update(controller.control_signal.id for controller in controllers)
             if len(plan.axes) <= 1:
                 continue
-            ids = SolverIdFactory(p.id(plan.controller), _motion_suffix(p, plan.motion))
-            _register_derived_family(context.iris, plan.controller, ids, plan.axes)
+            ids = _solver_ids(p, context, plan)
             target = g.value(plan.view, MAP.superobject)
             frame_node = g.value(target, GEOM_COORD["as-seen-by"])
             difference = PoseDifference(
@@ -989,47 +962,21 @@ def _derive_solver_data(g, p, context, data: list, views: dict) -> None:
             )
             differences.append(difference)
             derived_ids.add(difference.id)
+            measured_source = g.value(plan.controller, CSTR_HDL["measured-velocity"])
             for axis in plan.axes:
-                is_linear = axis.subspace == "linear-acceleration"
-                error = _derived_quantity(
-                    ids.component_error(axis),
-                    "Length" if is_linear else "Angle",
-                    "M" if is_linear else "RAD",
-                    has_view=True,
-                )
+                error = _axis_error(ids, axis)
                 errors.append(error)
                 derived_ids.add(error.id)
+                # Re-inserted rather than assigned: position in `views` is the emission order.
                 views.pop(error.id, None)
-                views[error.id] = View(
-                    f"view_{error.id}",
-                    difference,
-                    error,
-                    Subspace.Linear if is_linear else Subspace.Angular,
-                    _AXIS_BY_FRAME_AXIS.get(axis.frame_axis),
-                    direction=(
-                        p.direction(axis.direction) if axis.direction is not None else None
-                    ),
-                )
-                measured_source = g.value(plan.controller, CSTR_HDL["measured-velocity"])
+                views[error.id] = _axis_view(p, difference, error, axis)
                 if measured_source is not None:
-                    derivative = _derived_quantity(
-                        ids.component_measured_derivative(axis),
-                        "LinearVelocity" if is_linear else "AngularVelocity",
-                        "M_PER_SEC" if is_linear else "RAD_PER_SEC",
-                        has_view=True,
-                    )
+                    derivative = _axis_derivative(ids, axis)
                     derivatives.append(derivative)
                     derived_ids.add(derivative.id)
                     views.pop(derivative.id, None)
-                    views[derivative.id] = View(
-                        f"view_{derivative.id}",
-                        p.velocity_twist(measured_source),
-                        derivative,
-                        Subspace.Linear if is_linear else Subspace.Angular,
-                        _AXIS_BY_FRAME_AXIS.get(axis.frame_axis),
-                        direction=(
-                            p.direction(axis.direction) if axis.direction is not None else None
-                        ),
+                    views[derivative.id] = _axis_view(
+                        p, p.velocity_twist(measured_source), derivative, axis
                     )
 
     data[:] = [item for item in data if item.id not in derived_ids]
@@ -1043,18 +990,19 @@ def _derive_solver_data(g, p, context, data: list, views: dict) -> None:
 
 
 def parse_argument(g, closure_id, argument, to_id, resolve_value=False):
-    # For each of the key differentiate if there is one or more associated value
-    """Resolve a closure argument (input/output/parameter) from the graph to id(s); a lone value
-    collapses to a scalar and qudt:Quantity constants resolve to their scalar value.
+    """Resolve a closure argument (input/output/parameter) to id(s): a lone value collapses to a
+    scalar and a qudt:Quantity constant resolves to its scalar value.
     """
     entry = list(g[closure_id:argument])
     if len(entry) == 0:
         return None
 
     def resolve(e):
-        # Parameters are baked into generated code as literal text, so a qudt:Quantity-wrapped
-        # constant must resolve to its scalar qudt:value here (bare literals / IRI refs pass through).
-        """Resolve one graph value to its id, unwrapping a qudt:Quantity constant to its scalar."""
+        """Resolve one graph value to its id, unwrapping a qudt:Quantity constant to its scalar.
+
+        Parameters are baked into generated code as literal text, so the constant must collapse
+        to a scalar here; bare literals and IRI refs pass through.
+        """
         if resolve_value and not isinstance(e, rdflib.Literal):
             qval = g.value(e, QUDT_SCHEMA["value"])
             if qval is not None:
@@ -1069,21 +1017,55 @@ def parse_argument(g, closure_id, argument, to_id, resolve_value=False):
 
 
 def _reference_inputs(g, node):
-    """Inputs a referenced data structure contributes to whoever reads it.
-
-    A path is geometry: it has parameters but produces nothing, so it can never be found as
-    a producer by the output-to-input walk. Its parameters are inputs of the operator that
-    traverses it, and are yielded here so the walk reaches them.
+    """Inputs a referenced data structure contributes to whoever reads it. A path produces nothing,
+    so the output-to-input walk never reaches its parameters as a producer's outputs.
     """
     if GEOM_PATH.Path not in get_node_types(g, node):
         return ()
     return tuple(obj for pred, obj in g.predicate_objects(node) if pred != RDF["type"])
 
 
+def _fill_closure_args(g, closure, to_id, op, closure_id, input_subject) -> None:
+    """Fill a closure's input/output/parameter slots; inputs may hang off another subject.
+    Insertion order is the emitted JSON key order.
+    """
+    for input_ in op.input:
+        closure[to_id(input_)] = parse_argument(g, input_subject, input_, to_id)
+    for output in op.output:
+        closure[to_id(output)] = parse_argument(g, closure_id, output, to_id)
+    for param in op.parameters:
+        closure[to_id(param)] = parse_argument(g, closure_id, param, to_id, resolve_value=True)
+
+
+def _operator_inputs(g, operator_id, inputs) -> set:
+    """Data-structure nodes feeding an operator call's inputs, plus any path parameters."""
+    data_structures = set()
+    for in_ in inputs:
+        for data_in in g.objects(operator_id, in_):
+            data_structures.add(data_in)
+            data_structures.update(_reference_inputs(g, data_in))
+    return data_structures
+
+
+def _constraint_types(g, node) -> set:
+    """Types of the constraint a handler call points at; empty when it points at nothing."""
+    constraint_id = g.value(node, CSTR_HDL["constraint"])
+    return get_node_types(g, constraint_id) if constraint_id is not None else set()
+
+
+def _constraint_inputs(g, operator_id, inputs) -> set:
+    """Data-structure nodes reached through a handler call's constraint."""
+    return {
+        data_in
+        for in_ in inputs
+        for data_in in g.objects(operator_id, CSTR_HDL["constraint"] / in_)
+    }
+
+
 @dataclass
 class Operator:
-    """A schedulable RDF computation mapping graph inputs/outputs/parameters to a closure and
-    participating in output-to-input scheduling.
+    """A schedulable RDF computation: maps graph inputs/outputs/parameters to a closure and
+    participates in output-to-input scheduling.
     """
 
     type_: URIRef
@@ -1095,26 +1077,12 @@ class Operator:
     def closure_step(self, g, to_id, closure_id):
         """Build the closure dict for this operator's call at closure_id."""
         closure = {"id": to_id(closure_id), "type": to_id(self.type_)}
-
-        for input in self.input:
-            closure[to_id(input)] = parse_argument(g, closure_id, input, to_id)
-        for output in self.output:
-            closure[to_id(output)] = parse_argument(g, closure_id, output, to_id)
-        for param in self.parameters:
-            closure[to_id(param)] = parse_argument(g, closure_id, param, to_id, resolve_value=True)
-
+        _fill_closure_args(g, closure, to_id, self, closure_id, closure_id)
         return closure
 
     def from_operator_to_input(self, g, operator_id):
         """Data-structure nodes feeding this operator call's inputs."""
-        data_structures = set()
-
-        for in_ in self.input:
-            for data_in in g.objects(operator_id, in_):
-                data_structures.add(data_in)
-                data_structures.update(_reference_inputs(g, data_in))
-
-        return data_structures
+        return _operator_inputs(g, operator_id, self.input)
 
     def scheduler_step(self, g, data_out):
         """Input data structures and schedulable calls producing data_out for this operator."""
@@ -1122,22 +1090,14 @@ class Operator:
         schedule = []
 
         for out in self.output:
-            # sorted(): see Parser.schedule -- these come back unordered and the append order
-            # below becomes the emitted schedule order.
+            # sorted(): unordered here, and append order becomes the emitted schedule order.
             for call in sorted(g[:out:data_out]):
                 if self.type_ not in get_node_types(g, call):
                     continue
-
-                # We will only record this call if it has any input
-                has_any_input = False
-
-                for in_ in self.input:
-                    for data_in in g.objects(call, in_):
-                        data_structures.add(data_in)
-                        data_structures.update(_reference_inputs(g, data_in))
-                        has_any_input = True
-
-                if has_any_input:
+                # A call with no input cannot be scheduled.
+                inputs = _operator_inputs(g, call, self.input)
+                if inputs:
+                    data_structures |= inputs
                     schedule.append(call)
 
         return {"data_structures": data_structures, "schedule": schedule}
@@ -1145,10 +1105,8 @@ class Operator:
 
 @dataclass
 class Specification:
-    """
-    A specification is not a computation and, hence, has neither a closure nor
-    an entry in a schedule but contributes in finding further computations by
-    propagating from outputs to inputs.
+    """Not a computation: no closure and no schedule entry, but it propagates outputs to inputs so
+    further computations are found.
     """
 
     type_: URIRef
@@ -1159,14 +1117,7 @@ class Specification:
 
     def from_operator_to_input(self, g, operator_id):
         """Data-structure nodes feeding this specification's inputs."""
-        data_structures = set()
-
-        for in_ in self.input:
-            for data_in in g.objects(operator_id, in_):
-                data_structures.add(data_in)
-                data_structures.update(_reference_inputs(g, data_in))
-
-        return data_structures
+        return _operator_inputs(g, operator_id, self.input)
 
     def scheduler_step(self, g, data_out):
         """Input data structures for this specification (never schedulable)."""
@@ -1181,8 +1132,8 @@ class Specification:
 
 
 class ErrorEvaluator:
-    """Constraint-handler operator that emits a constraint error signal, dispatching on the
-    constraint type (equality/greater/less/bilateral/outside).
+    """Constraint-handler operator emitting a constraint error signal, dispatching on the constraint
+    type (equality/greater/less/bilateral/outside).
     """
 
     def __init__(self):
@@ -1231,35 +1182,18 @@ class ErrorEvaluator:
                 "constraint": to_id(operator.type_),
             }
 
-            for input in operator.input:
-                closure[to_id(input)] = parse_argument(g, constraint_id, input, to_id)
-            for output in operator.output:
-                closure[to_id(output)] = parse_argument(g, closure_id, output, to_id)
-            for param in operator.parameters:
-                closure[to_id(param)] = parse_argument(
-                    g, closure_id, param, to_id, resolve_value=True
-                )
+            _fill_closure_args(g, closure, to_id, operator, closure_id, constraint_id)
+            return closure  # first matching constraint type wins
 
-            # Only return the first matching type
-            return closure
-
-        # Should never happen
         return None
 
     def from_operator_to_input(self, g, operator_id):
         """Data-structure nodes feeding the matching constraint's inputs."""
+        constraint_types = _constraint_types(g, operator_id)
         data_structures = set()
-
-        constraint_id = g.value(operator_id, CSTR_HDL["constraint"])
-        constraint_types = get_node_types(g, constraint_id) if constraint_id is not None else set()
         for op in self.cstr_op:
-            if op.type_ not in constraint_types:
-                continue
-
-            for in_ in op.input:
-                for data_in in g.objects(operator_id, CSTR_HDL["constraint"] / in_):
-                    data_structures.add(data_in)
-
+            if op.type_ in constraint_types:
+                data_structures |= _constraint_inputs(g, operator_id, op.input)
         return data_structures
 
     def scheduler_step(self, g, data_out):
@@ -1271,22 +1205,12 @@ class ErrorEvaluator:
             for out in op.output:
                 # sorted(): see Parser.schedule -- append order becomes schedule order.
                 for call in sorted(g.subjects(out, data_out)):
-                    constraint_id = g.value(call, CSTR_HDL["constraint"])
-                    constraint_types = (
-                        get_node_types(g, constraint_id) if constraint_id is not None else set()
-                    )
-                    if op.type_ not in constraint_types:
+                    if op.type_ not in _constraint_types(g, call):
                         continue
-
-                    # We will only record this call if it has any input
-                    has_any_input = False
-
-                    for in_ in op.input:
-                        for data_in in g.objects(call, CSTR_HDL["constraint"] / in_):
-                            data_structures.add(data_in)
-                            has_any_input = True
-
-                    if has_any_input:
+                    # A call with no input cannot be scheduled.
+                    inputs = _constraint_inputs(g, call, op.input)
+                    if inputs:
+                        data_structures |= inputs
                         schedule.append(call)
 
         return {"data_structures": data_structures, "schedule": schedule}
@@ -1318,34 +1242,17 @@ class AssignmentEvaluator:
             "constraint": to_id(self.cstr_op.type_),
         }
 
-        for input in self.cstr_op.input:
-            closure[to_id(input)] = parse_argument(g, constraint_id, input, to_id)
-        for param in self.cstr_op.parameters:
-            closure[to_id(param)] = parse_argument(g, closure_id, param, to_id, resolve_value=True)
-
-        # Only return the first matching type
+        _fill_closure_args(g, closure, to_id, self.cstr_op, closure_id, constraint_id)
         return closure
 
     def from_operator_to_input(self, g, operator_id):
         """Data-structure nodes feeding the assignment's inputs."""
-        constraint_id = g.value(operator_id, CSTR_HDL["constraint"])
-        constraint_types = (
-            get_node_types(g, constraint_id) if constraint_id is not None else set()
-        )
-        if self.cstr_op.type_ not in constraint_types:
+        if self.cstr_op.type_ not in _constraint_types(g, operator_id):
             return set()
-
-        data_structures = set()
-        for in_ in self.cstr_op.input:
-            for data_in in g.objects(operator_id, CSTR_HDL["constraint"] / in_):
-                data_structures.add(data_in)
-
-        return data_structures
+        return _constraint_inputs(g, operator_id, self.cstr_op.input)
 
 
 def _op_output_preds(op):
-    # Predicates op.scheduler_step queries against data_out; if none point into a
-    # node, scheduler_step can only return empty, so it is safe to skip.
     """Output predicates an operator's scheduler queries; empty when the operator can never match,
     so its scheduler step can be skipped.
     """
@@ -1529,16 +1436,12 @@ ops_slv = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# RDF parsing
-# ---------------------------------------------------------------------------
 def memoize(func):
     """Decorator caching a Parser method's result per instance, keyed by its arguments."""
 
     @wraps(func)
     def decorator(self, *args, **kwargs):
-        # Scope by func identity so e.g. position(uri) and quantity(uri)
-        # don't collide on the same (uri,) cache key.
+        # Scope by func identity: position(uri) and quantity(uri) share a (uri,) cache key.
         """Return the cached result, computing and storing it on first call."""
         key = (func.__qualname__,) + args + tuple(kwargs.items())
         if key not in self.cache:
@@ -1557,8 +1460,8 @@ def escape(s):
 
 
 class Parser:
-    # A context quantity's id is its URI's last segment, so a name reused across motions' specs
-    # (e.g. `support-z`) collapses to one id. Qualify only ambiguous names (same segment, >1 owner).
+    # A context quantity's id is its URI's last segment, so a name reused across motions
+    # collapses to one id. Qualify only ambiguous names (same segment, >1 owner).
     """Parses a motion-spec RDF dataset into IR pieces: ids, closures, views, data structures,
     handlers and solvers.
     """
@@ -1620,9 +1523,8 @@ class Parser:
         except Exception:
             self._id_cache[x] = x
             return x
-        # Only context quantities (a motion's or the shared context's `spec` / `world`
-        # members) become `shared.*` data fields and are vulnerable to the silent merge; constraint
-        # names, metamodel predicates and aliases legitimately share an id and are scoped elsewhere.
+        # Only context quantities become `shared.*` fields and can merge silently; constraint
+        # names, metamodel predicates and aliases legitimately share an id.
         scope = self._context_scope(x)
         if scope:
             owner, _section, member_path = scope
@@ -1633,10 +1535,9 @@ class Parser:
         return local
 
     def assert_no_id_collisions(self):
-        """Fail loudly if two distinct context-quantity URIs collapse to one generated id. That
-        would silently merge unrelated `shared.*` fields (the class of bug that hid the support-z
-        collision) -- a genuinely-shared quantity has a single URI, so >1 URI per id is a real
-        collision the motion-qualified id scoping failed to resolve."""
+        """Fail loudly if two distinct context-quantity URIs collapse to one generated id: that would
+        silently merge unrelated `shared.*` fields, and a genuinely shared quantity has one URI.
+        """
         collisions = {i: sorted(u) for i, u in self._id_sources.items() if len(u) > 1}
         if collisions:
             details = "\n".join(f"  '{i}' <- {', '.join(u)}" for i, u in sorted(collisions.items()))
@@ -1693,9 +1594,8 @@ class Parser:
                 if type_ in get_node_types(self.g, o):
                     out.append(func(o))
 
-        # The authored value IS the Vereshchagin root acceleration, passed to ACHD as-is.
-        # The opposite-sign gravity KDL's inverse-dynamics solver wants is derived in
-        # _annotate_rne_gravity rather than here.
+        # The Vereshchagin root acceleration, passed to ACHD as-is; RNE's opposite-sign
+        # gravity is derived in _annotate_rne_gravity.
         gravity_node = self.g.value(id_, SLV.gravity)
         root_acc = self.parse_xyz(gravity_node) if gravity_node else None
         algorithm_node = self.g.value(id_, SLV["solver"])
@@ -1947,8 +1847,7 @@ class Parser:
             t = EvaluatorType.ErrorEvaluator
             error = self.quantity(self.g.value(id_, CSTR_HDL["error"]))
 
-        # Timing constraint: measured quantity is the motion-state elapsed time. No solver
-        # error — codegen compares the world clock against the threshold directly.
+        # Timing constraint: no solver error; codegen compares the world clock to the threshold.
         is_elapsed = False
         elapsed_op = None
         elapsed_threshold_s = None
@@ -1971,8 +1870,8 @@ class Parser:
                 thr = self.g.value(constraint_node, CSTR["threshold"])
                 elapsed_threshold_s = _duration_seconds(self.g, thr)
 
-        # An authored band on a spatial equality; the elapsed branch reads its own above, in
-        # seconds, because a duration's magnitude rides on qudt rather than on a shared value.
+        # An authored band on a spatial equality; the elapsed branch reads its own, in seconds,
+        # because a duration's magnitude rides on qudt rather than on a shared value.
         tolerance_node = None if is_elapsed else self.g.value(constraint_node, CSTR_EXT["tolerance"])
         tolerance = self.quantity(tolerance_node) if tolerance_node is not None else None
 
@@ -2261,9 +2160,8 @@ class Parser:
         return self.frame(node)
 
     def _bare_pose(self, id_):
-        # A geom-rel:Pose with no PoseCoordinate: a snapshot/reference pose whose
-        # KDL::Frame is filled at runtime. Same IR shape as a coordinate pose, with
-        # its frame endpoints but no authored coordinate values.
+        # A geom-rel:Pose with no PoseCoordinate: a snapshot/reference pose filled at runtime.
+        # Same IR shape as a coordinate pose, with frame endpoints but no authored values.
         """Parse a bare Pose (no view) at node."""
         of_node = self.g.value(id_, GEOM_REL["of"])
         wrt_node = self.g.value(id_, GEOM_REL["with-respect-to"])
@@ -2400,8 +2298,7 @@ class Parser:
                 URI_GEOM_TYPE_DIRECTION_COSINE_XYZ,
             }
             if types & representation_types:
-                # A delta is literal by construction, so it folds to a quaternion here however
-                # the model wrote it.
+                # A delta is literal by construction, so it folds to a quaternion here.
                 rotation = get_orientation_coord_vals(ModelBase(node_id=node, graph=self.g), self.g)
                 if rotation is None:
                     raise ValueError(
@@ -2426,12 +2323,9 @@ class Parser:
     def orientation_representation(self, id_):
         """How an orientation's components arrive, not how the model wrote them.
 
-        A rotation whose components are all literal denotes one rotation whichever way it was
-        authored, and scipy resolves Euler angles, quaternions and direction cosines to the
-        same quaternion, so all three report `quaternion`. What cannot be resolved ahead of
-        time keeps its own shape: `euler` is a triple whose angles arrive at runtime (the RDF
-        builder types a literal triple `AnglesAlphaBetaGamma`, so its absence marks one
-        symbolic), and `relative` composes around a runtime pose.
+        All-literal rotations resolve to the same quaternion however they were authored. What cannot be
+        resolved ahead of time keeps its own shape: `euler` is a triple whose angles arrive at runtime,
+        `relative` composes around a runtime pose.
         """
         if id_ is None:
             return "quaternion"
@@ -2471,11 +2365,8 @@ class Parser:
         )
 
     def _spatial_coordinate_fields(self, id_):
-        """Shared field extraction for the 6D coordinate quantities.
-
-        AccelerationTwist, PoseDifference and Wrench are distinct concepts with an
-        identical coordinate structure; only the RDF predicates differ (geometry vs
-        rigid-body-dynamics namespaces).
+        """Shared field extraction for the 6D coordinate quantities: AccelerationTwist, PoseDifference
+        and Wrench share one coordinate structure and differ only in RDF namespace.
         """
         quantity_kind = [self.id(k) for k in self.g[id_ : QUDT_SCHEMA["hasQuantityKind"]]]
         reference_point = self.point(self.g.value(id_, GEOM_REL["reference-point"]))
@@ -2637,8 +2528,8 @@ class Parser:
         return JointPosition(self.id(id_), joint_name)
 
     def quantity_provenance(self, id_):
-        # Provenance(authored, snapshot), mutually exclusive: snapshot wins (mirrors old roles() elif).
-        # authored == carries an authored value/coordinate and is not a runtime snapshot.
+        # authored and snapshot are mutually exclusive: snapshot wins. authored == carries an
+        # authored value/coordinate and is not a runtime snapshot.
         """Parse a quantity's Provenance (authored / snapshot) at node."""
         snapshot = ALGO_EXT.Snapshot in get_node_types(self.g, id_)
         authored = (not snapshot) and self._is_authored(id_)
@@ -2646,8 +2537,7 @@ class Parser:
 
     def _is_authored(self, id_):
         """True when a quantity's value was authored by the user (not computed)."""
-        # A path parameter carries a value only as its starting point on the curve; the
-        # traversal drives it every tick, so the value is not the user's.
+        # A path parameter's value is only its starting point; the traversal drives it per tick.
         if (None, GEOM_OP_EXT["path-parameter"], id_) in self.g:
             return False
         if (id_, QUDT_SCHEMA["value"], None) in self.g:
@@ -2780,18 +2670,16 @@ class Parser:
 
         data_structures = []
         for type_, func in dispatcher:
-            # Sort within the type group: keeps most-specific-type-first dispatch (which the
-            # dedupe below relies on) while making the published order reproducible.
+            # Sort within the type group: keeps the most-specific-first dispatch the dedupe
+            # relies on, while making the published order reproducible.
             for dstruct in sorted(self.g[: RDF["type"] : type_]):
                 data_structures.append(func(dstruct))
 
         return _dedupe_by_id(data_structures)
 
     def _path_fields(self, path_node):
-        """The path's geometry, as fields of the evaluator call that traverses it.
-
-        Traversal is one computation: the shape decides the maths, so the closure takes the
-        path's type and carries its parameters directly.
+        """The path's geometry, as fields of the evaluator call that traverses it: the shape decides the
+        maths, so the closure takes the path's type and carries its parameters directly.
         """
         path_types = get_node_types(self.g, path_node)
         spec = next((s for s in ops_path if s.type_ in path_types), None)
@@ -2864,8 +2752,6 @@ class Parser:
         return closures
 
     def schedule(self, start, ops):
-        # Start at a SolverWithInputAndOutput
-        # Then traverse along data structure and collect function blocks
         """Build the dependency-ordered schedule for the given operators."""
         q = collections.deque()
         data_structures = set()
@@ -2883,15 +2769,13 @@ class Parser:
                     scheduled_nodes[call] = v
                     self.sched.add(call)
 
-                # sorted(): these come back as sets, and set order over rdflib nodes varies
-                # between processes. The traversal order decides the emitted schedule order, so
-                # an unordered iteration here makes generation non-reproducible.
+                # sorted(): set order over rdflib nodes varies between processes, and traversal
+                # order decides the emitted schedule order.
                 for data_in in sorted(op.from_operator_to_input(self.g, v)):
                     q.append(data_in)
                     data_structures.add(data_in)
 
-        # An operator/call: data_in --(in)--> call --(out)--> data_out (traversed backward here;
-        # there may be multiple inputs/outputs).
+        # data_in --(in)--> call --(out)--> data_out, traversed backward.
         op_preds = [(_op_output_preds(op), op) for op in ops]
         while len(q) > 0:
             data_out = q.pop()
@@ -2910,18 +2794,14 @@ class Parser:
                         self.sched.add(call)
 
                 for data_in in sorted(res["data_structures"]):
-                    # We have already visited this data structure,
-                    # so skip it
                     if data_in in data_structures:
                         continue
 
                     q.append(data_in)
                     data_structures.add(data_in)
 
-            # An inline/declared Pose is no operator's output, so follow its per-axis views
-            # to schedule the closures producing its scalar components.
-            # sorted() for the same reason as above: both walks return unordered sets and the
-            # queue order they set decides the emitted schedule order.
+            # An inline/declared Pose is no operator's output, so follow its per-axis views to
+            # schedule the closures producing its components. sorted() for the reason above.
             view_subobjects = (
                 self.g.value(view, MAP["subobject"])
                 for view in sorted(self.g.subjects(MAP["superobject"], data_out))
@@ -2984,9 +2864,7 @@ class Parser:
         permanent = set()
 
         def visit(call):
-            """Recurse operators feeding a data node, appending schedulable calls in dependency
-            order.
-            """
+            """Recurse operators feeding a data node, appending schedulable calls in dependency order."""
             if call in permanent:
                 return
             if call in temporary:
@@ -3003,9 +2881,6 @@ class Parser:
         return result
 
 
-# ---------------------------------------------------------------------------
-# Motion units
-# ---------------------------------------------------------------------------
 def _upstream_dependencies(data_id: str, closure_input_map: dict[str, set[str]]) -> set[str]:
     """Transitive set of data ids that feed the given id through the closure input map."""
     result: set[str] = set()
@@ -3080,11 +2955,9 @@ def _views_by_subobject(view_map):
 def _views_for_access(view_map, shared_data, motions, closures) -> dict:
     """Index unambiguous MAP views by subobject, for the template's access expressions.
 
-    Views are keyed by their own identity everywhere else; codegen instead resolves a quantity id
-    to the superobject expression that reads it. A subobject that is written directly -- an
-    authored or literal shared value, a snapshot target, a closure output -- is an ordinary shared
-    quantity and keeps its own field, and one reused by views that disagree on how they access it
-    must not silently pick one of them.
+    A subobject written directly -- an authored or literal shared value, a snapshot target, a
+    closure output -- is an ordinary shared quantity and keeps its own field; one reused by views
+    that disagree on how they access it must not silently pick one of them.
     """
     direct_ids = {
         _field(item, "id")
@@ -3256,9 +3129,8 @@ def _snapshots_for_motion(
     for target_id in sorted(ref_val_ids):
         if target_id not in snapshot_source_map or target_id in seen:
             continue
-        # Capture only what this motion declares. A snapshot owned by another motion is that
-        # motion's to sample; re-capturing it here would overwrite its value with this
-        # motion's pose. Unowned (shared-context) snapshots stay everyone's to capture.
+        # Capture only what this motion declares: re-capturing another motion's snapshot would
+        # overwrite its value. Unowned (shared-context) snapshots stay everyone's to capture.
         owner = snapshot_owner_map.get(target_id)
         if owner in motion_tokens and owner != motion_token:
             continue
@@ -3281,8 +3153,8 @@ def _snapshots_for_motion(
 def _scene_relative_poses_for_motion(view_map, serial_chain_solvers, evaluators=None):
     """For each view whose wrt-frame is a scene object, emit the requested relative pose."""
     fk_pose_by_frame: dict[str, str] = {}
-    # Keys are the scene-object's id (the "of" of scene-object solver pose outputs).
-    # A wrt_id lookup asks: "is this frame the subject of a tracked scene-object pose?"
+    # Keyed by the scene-object's id; a wrt_id lookup asks whether that frame is the subject
+    # of a tracked scene-object pose.
     scene_pose_by_id: dict[str, tuple[str, str | None]] = {}
     solver_output_ids: set[str] = set()
     for solver in serial_chain_solvers:
@@ -3377,9 +3249,7 @@ _SUBSPACE_TO_GROUP_AXIS: dict[Subspace, tuple[str, bool]] = {
 
 
 def _pose_axis_error_groups_for_motion(eval_nodes, p, view_map):
-    """Group a motion's per-axis pose error evaluators into PoseAxisErrorGroups, one per superobject
-    pose.
-    """
+    """Group a motion's per-axis pose error evaluators into PoseAxisErrorGroups, one per superobject pose."""
     groups: dict[str, PoseAxisErrorGroup] = {}
     indexed_views = _views_by_subobject(view_map)
     for eval_node in eval_nodes:
@@ -3414,9 +3284,8 @@ def _pose_axis_error_groups_for_motion(eval_nodes, p, view_map):
                 continue
         subspace, is_angular = mapping
 
-        # A whole-subspace view (e.g. keeping <pose>.position as a unit) has no per-axis
-        # component, so it cannot join a per-axis pose-error group; it is controlled by its
-        # own equality-constraint controller instead. Skip it rather than deref a None axis.
+        # A whole-subspace view has no per-axis component, so it cannot join a per-axis group;
+        # its own equality-constraint controller drives it. Skip rather than deref a None axis.
         if view.axis is None:
             continue
 
@@ -3468,9 +3337,8 @@ def build_motion_units(
     snapshot_owner_map=None,
     closure_owner_map=None,
 ):
-    """Build the per-motion IR units (one motion per handler), each complete with schedules,
-    monitors, controllers, conditions, declared poses, FSM wiring and function-interface flags;
-    returns (motions, fsm_meta).
+    """Build the per-motion IR units (one per handler) with schedules, monitors, controllers,
+    conditions, declared poses, FSM wiring and function-interface flags; returns (motions, fsm_meta).
     """
     snapshot_source_map = snapshot_source_map or {}
     view_map = view_map or {}
@@ -3490,14 +3358,12 @@ def build_motion_units(
         handler_plans = derivation.controllers_by_handler.get(handler_node, ())
         handler_solver_ids = {p.id(plan.solver) for plan in handler_plans}
 
-        # Classify constraints by motion phase via RDF traversal
         _raw_when = set(g[motion_node : MOT["when"]])
         _raw_until = set(g[motion_node : MOT["until"]])
         when_constraint_nodes = _expanded_constraints(g, _raw_when)
         while_constraint_nodes = set(g[motion_node : MOT["while"]])
         until_constraint_nodes = _expanded_constraints(g, _raw_until)
 
-        # Classify evaluators by which phase their constraint belongs to
         when_eval_nodes, while_eval_nodes, until_eval_nodes = [], [], []
         for eval_node in g[handler_node : CSTR_HDL["evaluators"]]:
             cstr_node = g.value(eval_node, CSTR_HDL["constraint"])
@@ -3511,7 +3377,6 @@ def build_motion_units(
         def _is_elapsed_eval(eval_node):
             return _is_elapsed_constraint(g, g.value(eval_node, CSTR_HDL["constraint"]))
 
-        # Classify controllers by the constraints active during the motion body.
         while_error_nodes = {g.value(n, CSTR_HDL["error"]) for n in while_eval_nodes}
         while_error_nodes.discard(None)
         active_plans = [plan for plan in handler_plans if plan.constraint in while_constraint_nodes]
@@ -3521,8 +3386,7 @@ def build_motion_units(
             for controller in _derived_controllers(g, p, derivation, plan)
         ]
 
-        # Classify monitors by the constraint they watch (via cstr-hdl:constraint).
-        # Fall back to error-signal bucketing for monitors without a constraint link.
+        # Monitors without a cstr-hdl:constraint link fall back to error-signal bucketing.
         when_cstr_nodes = {g.value(n, CSTR_HDL["constraint"]) for n in when_eval_nodes}
         while_cstr_nodes = {g.value(n, CSTR_HDL["constraint"]) for n in while_eval_nodes}
         until_cstr_nodes = {g.value(n, CSTR_HDL["constraint"]) for n in until_eval_nodes}
@@ -3612,17 +3476,15 @@ def build_motion_units(
                     cartesian_force_nodes.append(cf_node)
 
         p_active = Parser(g)
-        # Until monitors run before control each tick, so build until_schedule before the
-        # while passes: derived quantities consumed by an until monitor (e.g. a target
-        # computed from a snapshot) must be scheduled in the earlier phase, or the monitor
-        # sees the previous tick's / default value on the first tick.
+        # Until monitors run before control each tick, so build until_schedule first: a
+        # quantity an until monitor consumes must be scheduled in the earlier phase, or the
+        # monitor reads the previous tick's value on the first tick.
         until_schedule = p_active.schedule(
             [n for n in until_eval_nodes if not _is_elapsed_eval(n)], ops_generic + ops_cstr_hdl
         )
 
-        # Until evaluators have no controllers whose error-signal would drive their
-        # backward discovery. Append them explicitly after their dependencies so the
-        # template emits the computation calls in the correct order.
+        # Until evaluators have no controller error-signal to drive backward discovery, so
+        # append them after their dependencies to keep the emitted call order right.
         for n in until_eval_nodes:
             if _is_elapsed_eval(n):
                 continue
@@ -3640,10 +3502,9 @@ def build_motion_units(
         grouped_while_eval_nodes = {
             node for node in while_eval_nodes if p_active.id(node) in pose_axis_error_eval_ids
         }
-        # A grouped evaluator's error is emitted inline by its group, ahead of the schedule
-        # block, but whatever produces its reference -- an admittance filter, a velocity
-        # profile -- still has to run, and has to run first. Walk the grouped nodes before
-        # the main pass so those producers land here rather than being skipped entirely.
+        # A grouped evaluator's error is emitted inline ahead of the schedule block, but
+        # whatever produces its reference still has to run first -- so walk the grouped nodes
+        # before the main pass rather than skipping those producers entirely.
         pre_group_schedule = [
             step
             for step in p_active.schedule(
@@ -3709,8 +3570,8 @@ def build_motion_units(
             if eval_id not in while_schedule:
                 while_schedule.append(eval_id)
 
-        # Drop closures another motion declares: the backward walk can reach them, and
-        # running them here recomputes that motion's outputs while it is not active.
+        # The backward walk can reach another motion's closures; running them here would
+        # recompute its outputs while it is inactive.
         motion_token_for_closures = _motion_suffix(p, motion_node)
 
         def _owned_steps(steps):
@@ -3728,9 +3589,8 @@ def build_motion_units(
             for controller in reversed(active_controllers)
             if controller.id not in while_schedule
         )
-        # Same for when evaluators: the can_start template inlines them via
-        # when_evaluators, but any prerequisite generic ops still need scheduling.
-        # Append when evaluators that were not discovered through backward traversal.
+        # can_start inlines when evaluators via when_evaluators, but their prerequisite
+        # generic ops still need scheduling.
         for n in when_eval_nodes:
             if _is_elapsed_eval(n):
                 continue
@@ -3739,7 +3599,6 @@ def build_motion_units(
                 when_schedule.append(eval_id)
                 p_when.sched.add(eval_id)
 
-        # Build Python objects from classified RDF nodes
         when_evaluators = [p.constraint_evaluator(n) for n in when_eval_nodes]
         while_evaluators = [p.constraint_evaluator(n) for n in while_eval_nodes]
         until_evaluators = [p.constraint_evaluator(n) for n in until_eval_nodes]
@@ -3858,9 +3717,8 @@ def build_motion_units(
             )
         )
 
-    # Invariant: one motion maps to exactly one constraint handler. A repeated
-    # motion id (the same motion driven by two handlers) is rejected rather than
-    # silently merged — that ambiguity is a modelling error, not a compose feature.
+    # One motion maps to exactly one constraint handler; a repeated motion id is a modelling
+    # error and is rejected rather than silently merged.
     handler_by_motion: dict[str, str] = {}
     for motion in motions:
         if motion.id in handler_by_motion:
@@ -3883,8 +3741,8 @@ def build_motion_units(
         motion.declared_pose_components = declared_pose_component_entries(
             data_structures or [], pose_components or {}, motion_refs
         )
-    # FSM wiring tags monitors/motions and yields the header/step meta; then the
-    # function-interface capability booleans, then the gate calls (which read them).
+    # Ordered: FSM wiring tags monitors/motions, then the capability booleans, then the gate
+    # calls that read them.
     fsm_meta = _apply_fsm_wiring(ordered, fsm)
     add_motion_function_interfaces(ordered)
     _apply_fsm_gate_calls(ordered, fsm_meta["cpp_namespace"])
@@ -3917,9 +3775,6 @@ def _path_projections_for_motion(schedule: list, closures: dict) -> list[dict]:
     ]
 
 
-# ---------------------------------------------------------------------------
-# Scene, geometry and robot setups
-# ---------------------------------------------------------------------------
 def _filter_shared_data(data_structures, schedule, closures, view_map=None, fk_output_ids=None):
     """Select data structures needed by scheduled calls, views, closures, or FK outputs."""
     referenced: set[str] = set(schedule)
@@ -4082,9 +3937,8 @@ def _optional_path_of_model(g, model_node):
 
 
 def _model_mappings(g, model, target_type):
-    """Return (scene target, model entity) mappings of the requested RDF type.
-
-    scene-dsl reads each mapping; what a mapping means is its metamodel's to say, not ours.
+    """Return (scene target, model entity) mappings of the requested RDF type. What a mapping means
+    is its metamodel's to say, not ours.
     """
     mappings = (
         get_kinematic_mapping(mapping, g)
@@ -4253,10 +4107,8 @@ def _sensor_kind(g, sensor) -> str:
 
 
 def _device_of(g, element):
-    """The deployed system that realizes `element`, or None when nothing does.
-
-    The device is a node the execution context owns; the element it stands for belongs to the
-    scene, so the binding is read backwards from the device rather than off the element.
+    """The deployed system that realizes `element`, or None. Read backwards from the device, which
+    the execution context owns, because the element it stands for belongs to the scene.
     """
     return next(iter(g.subjects(EXEC["realizes"], element)), None)
 
@@ -4270,17 +4122,15 @@ def _device_kind(g, element) -> str:
 def _config_key(g, element, agent, drives: str) -> str:
     """What `robot.toml` calls the device on `element`.
 
-    A hosted sensor is named by its owning agent's leaf plus its own -- `runtime_prefix` inside
-    `drives` is empty on a single-robot model, so it cannot be reused here. An agent is named by
-    the scenex namespace the model referred to it through, which survives in its IRI as the
-    segment before the model's own.
+    A hosted sensor is named by its owning agent's leaf plus its own, since `runtime_prefix` inside
+    `drives` is empty on a single-robot model. An agent is named by the scenex namespace it was
+    referred to through, which survives in its IRI as the segment before the model's own.
     """
     if drives:
         return f"{_leaf(agent)}.{_leaf(element)}"
-    # The set the scene declares the agent in -- `agn set (ns=..) pickplace_agents { agent arm1 }`
-    # is addressed as `pickplace_agents.arm1`. Taken from the graph rather than from a segment of
-    # the agent's IRI: the IRI path is namespace layout, not the name the model author wrote, and
-    # the two disagree whenever the namespace is not called after the set.
+    # The set the scene declares the agent in, addressed as `<set>.<agent>`. Taken from the
+    # graph, not from an IRI segment: the IRI path is namespace layout, not the authored name,
+    # and the two disagree when the namespace is not named after the set.
     bdd = rdflib.Namespace("https://secorolab.github.io/metamodels/acceptance-criteria/bdd#")
     owner = next(g.subjects(bdd["elements"], element), None)
     if owner is None:
@@ -4291,9 +4141,8 @@ def _config_key(g, element, agent, drives: str) -> str:
 def _bound_devices(g, agent, runtime_prefix, hosted, chain_bindings, agent_by_tree) -> list[dict]:
     """The hardware bound on this chain: what each device is, where it is configured, what it drives.
 
-    The kind is the authored name, passed through untouched: which device a model named is the
-    deployment fact, and only the backend's templates interpret it. `drives` names the sensor a
-    sensor device reads, and is empty for one that moves a joint.
+    The kind is the authored name passed through untouched -- only the backend's templates
+    interpret it. `drives` names the sensor a sensor device reads, and is empty for a joint mover.
     """
 
     def entry(node, drives=""):
@@ -4461,9 +4310,8 @@ def _agent_assemblies(g, attach_by_body):
         ]
         agent_device = _device_of(g, agent)
         device = str(g.value(agent_device, SDO.model) or "") if agent_device else ""
-        # An agent is named by the scenex alias it was referred to through, whether or not
-        # hardware is bound to it: a simulated deployment addresses it in exactly the same
-        # way to state where it starts.
+        # An agent is named by the scenex alias it was referred to through, bound or not: a
+        # simulated deployment addresses it the same way.
         config_key = _config_key(g, agent, agent, "")
         result.append(
             {
@@ -4501,11 +4349,9 @@ def _agent_assemblies(g, attach_by_body):
 
 
 def _scene_from_graph(g):
-    """Build the scene (robots + objects with model paths, placement and attachment) from
-    the scene-dsl (`.scenex`) graph. Geometry comes from the referenced mjcf assets, so
-    procedural geometry fields stay unset; placement between attached frames is coincident
-    (identity), and the weld target (`attach_kind`/`attach_name`) is derived from the
-    fixed-joint tree by `_fixed_attachments`.
+    """Build the scene (robots + objects with model paths, placement and attachment) from the
+    scene-dsl (`.scenex`) graph. Geometry comes from the referenced mjcf assets, so procedural
+    geometry fields stay unset and placement between attached frames is coincident (identity).
     """
     scene = SceneSpec()
     context = next(g.subjects(RDF.type, EXEC.ExecutionContext), None)
@@ -4592,12 +4438,10 @@ def _scene_from_graph(g):
     return scene
 
 def _expand_scene_geometry(scene) -> None:
-    """Expand placement vectors and (present) procedural geometry onto the native scene
-    items so the scene is codegen-complete at construction. Env placement shorthand: an
-    omitted position/orientation means zero/identity. Path-backed objects take geometry
-    from their MJCF/URDF asset, so their flat size/color/friction fields stay unset.
-    Missing required geometry is not raised here (that is ``_validate_scene``) so building a
-    scene never depends on a downstream pass."""
+    """Expand placement vectors and procedural geometry onto the native scene items so the scene is
+    codegen-complete at construction. Path-backed objects take geometry from their MJCF/URDF asset.
+    Missing required geometry is `_validate_scene`'s to raise, so building never depends on it.
+    """
     for robot in scene.robots:
         expand_vector_fields(robot, "pos")
         expand_vector_fields(robot, "quat", ("x", "y", "z", "w"), default=[0.0, 0.0, 0.0, 1.0])
@@ -4657,20 +4501,13 @@ def _scene_chain(trees, assembly):
 def _robot_setups_from_graph(g):
     """Per-robot solver chain setups, sourced from the scene-dsl (`.scenex`) graph.
 
-    Returns ``(setups_by_node, ordered)`` where ``setups_by_node`` maps each robot's
-    abstract agent node (the target of a solver's ``agn:of-agent``) to its setup tuple
-    ``(urdf, chain_root, chain_end, chain_tip, robot_model, tool_body, tcp_site,
-    sensors, devices, runtime_prefix, owned_trees, kdl_chain, kdl_tree, kdl_joints,
-    config_key)``.
+    Returns ``(setups_by_node, ordered)`` where ``setups_by_node`` maps each robot's abstract agent
+    node (the target of a solver's ``agn:of-agent``) to its setup tuple ``(urdf, chain_root,
+    chain_end, chain_tip, robot_model, tool_body, tcp_site, sensors, devices, runtime_prefix,
+    owned_trees, kdl_chain, kdl_tree, kdl_joints, config_key)``; ``kdl_joints`` is in KDL order.
 
-    ``kdl_chain`` names the scene-derived chain builder emitted beside the controller and
-    ``kdl_joints`` lists its joints as MuJoCo knows them, in KDL order -- see plan 013.
-
-    Chain bodies come from a serial-composition ``geom:KinematicTree``'s
-    ``kc-ext:root`` / ``kc-ext:tip`` frames. A scene-dsl frame URI is
-    ``.../<robot>/<body>/<frame|site>``, so the body is the second-to-last path
-    segment and the tip site is the last. The model path comes from the robot's
-    ``agn:ModelledAgent`` -> ``agn:has-agent-model`` -> ``exec-ctx:path``.
+    A scene-dsl frame URI is ``.../<robot>/<body>/<frame|site>``, so the body is the
+    second-to-last path segment and the tip site is the last.
     """
     def _robot_model_from_path(path):
         low = str(path).lower()
@@ -4692,8 +4529,8 @@ def _robot_setups_from_graph(g):
     try:
         trees = build_kdl_trees(g)
     except ConstraintViolation:
-        # Some graph-only consumers use an incomplete scene fixture. They retain their
-        # assembly metadata but cannot provide a KDL chain until Scene DSL can parse it.
+        # Graph-only consumers may use an incomplete scene fixture: assembly metadata survives,
+        # but there is no KDL chain until Scene DSL can parse it.
         trees = []
     setups_by_node, ordered = {}, []
     bound_trees = _mapped_targets(g, AGN["AgentModel"], GEOM_ENT.KinematicTree)
@@ -4719,9 +4556,6 @@ def _robot_setups_from_graph(g):
     return setups_by_node, ordered
 
 
-# ---------------------------------------------------------------------------
-# Introspection artifact
-# ---------------------------------------------------------------------------
 def _uri_table(id_nodes):
     """Sorted [{id, uri}] rows for every id that maps to a URIRef."""
     return [
@@ -4740,8 +4574,7 @@ class DerivedIriRegistry:
     """IRIs for codegen-derived entities, minted as a path segment under the parent they came from.
 
     An id is a lossy projection of its IRI (Parser.id keeps only the local name), so a derived
-    entity's IRI cannot be recovered from its id downstream -- it has to be recorded where the
-    derivation happens, against the parent node that is still in hand there.
+    entity's IRI has to be recorded where the derivation happens, against the parent still in hand.
     """
 
     SPECIALIZATION = "specializationOf"
@@ -4854,10 +4687,9 @@ def _build_introspection(
     """Build the introspection artifact (uris, motions, controllers, monitors, quantities,
     provenance) and fold in the controller-state and frame-log samples.
     """
-    # Appended, never substituted: authored nodes keep their own IRIs, derived ones extend them.
-    # Last-wins on a repeated id is deliberate and predates this -- constraint names, metamodel
-    # predicates and aliases legitimately share a bare id (see Parser.assert_no_id_collisions,
-    # which polices only the context quantities where a merge would be silent).
+    # Appended, never substituted: authored nodes keep their IRIs, derived ones extend them.
+    # Last-wins on a repeated id is deliberate -- constraint names, metamodel predicates and
+    # aliases legitimately share a bare id (Parser.assert_no_id_collisions polices the rest).
     uri_rows = _uri_table(id_nodes) + iris.rows()
     uri_by_id = {row["id"]: row["uri"] for row in uri_rows}
 
@@ -4943,8 +4775,8 @@ def _build_introspection(
         }
         quantities.append(_prune(quantity_entry))
 
-    # One authored fact -- the exec-context's platform -- decides all three. Never re-derived from
-    # the backend token, and never by matching substrings of the agent id downstream.
+    # One authored fact -- the exec-context's platform -- decides all three; never re-derived
+    # from the backend token or from substrings of the agent id.
     runtime_type = "exec:Simulation" if platform["simulated"] else "exec:RealWorld"
     runtime_id = f"agent:runtime:{get_valid_var_name(platform['name']).casefold()}" if platform[
         "simulated"
@@ -5042,9 +4874,8 @@ def _build_introspection(
         "quantities": _dedupe_dicts(quantities),
         "signals": _dedupe_dicts(signals),
         "provenance": {
-            # Only id/uri are consumed; the canonical uri is the published IRI, which
-            # the rdf-utils resolver maps to a local checkout. No local source/shape
-            # paths are baked in — they were dead metadata and non-portable.
+            # Only id/uri are consumed; the uri is the published IRI, which the rdf-utils
+            # resolver maps to a local checkout. No local paths are baked in.
             "contexts": [
                 {"id": "prov", "uri": "http://www.w3.org/ns/prov#"},
                 {
@@ -5078,17 +4909,16 @@ def _build_introspection(
         },
     }
 
-    # Fold the introspection-facing derivations into the introspection piece itself:
-    # controller signal ids, controller-internal-state logging (which grows shared_data),
-    # then the frame-log quantity/spatial samples that read them.
+    # Ordered: controller signal ids, then internal-state logging (which grows shared_data),
+    # then the frame-log samples that read them.
     _annotate_controller_signals(introspection["controllers"], closures)
     add_controller_internal_state_logging(closures, shared_data, introspection, motions, iris)
     add_control_parameters(closures, shared_data, introspection, motions, iris)
     add_joint_space_logging(
         serial_chain_solvers, motions, shared_data, introspection, backend, iris
     )
-    # Both lists are complete here and the sample passes below turn their order into indices the
-    # frame layout and the generated struct are built from: order them once, before that happens.
+    # The sample passes below turn list order into the indices the frame layout and the
+    # generated struct are built from, so order both lists once, here.
     shared_data.sort(key=lambda item: _field(item, "id") or "")
     introspection["quantities"].sort(key=lambda row: row.get("id") or "")
     add_quantity_samples(introspection, shared_data, views)
@@ -5096,8 +4926,7 @@ def _build_introspection(
     values = annotate_dataflow(
         introspection, shared_data, closures, motions, serial_chain_solvers, views
     )
-    # The derivation registry grew while folding the samples in, so the table is rebuilt here and
-    # the rows built before that are backfilled from it.
+    # The registry grew while folding the samples in: rebuild the table and backfill earlier rows.
     introspection["uris"] = _uri_table(id_nodes) + iris.rows()
     introspection["derivations"] = iris.nodes()
     _backfill_uris(introspection)
@@ -5169,9 +4998,6 @@ def _assert_every_id_resolves(introspection: dict) -> None:
         )
 
 
-# ---------------------------------------------------------------------------
-# Graph loading
-# ---------------------------------------------------------------------------
 def _resolve_import_location(location: str, url_map: dict[str, str]) -> str:
     """Map an import-location URL to its local file path via the url map."""
     for base, root in sorted(url_map.items(), key=lambda item: len(item[0]), reverse=True):
@@ -5220,9 +5046,6 @@ def _node_indexes(g, p: Parser):
     return node_by_id, id_nodes
 
 
-# ---------------------------------------------------------------------------
-# Solver sections
-# ---------------------------------------------------------------------------
 def _world_solver_outputs(
     g, p: Parser, chain_root: str, runtime_prefix: str, owned_trees, scene_objects
 ):
@@ -5424,12 +5247,10 @@ def _solver_sections(
         slv_platform_frc.append(p.force_distribution_solver(s))
         sched4.extend(p.schedule([s], ops_generic + ops_slv))
 
-    # velocity-distribution and force-composition are authorable in the DSL (they complete
-    # the quantity x operation 2x2 the hddc2b runtime implements), but no motion.stg/hddc2b.stg
-    # wiring exists for them yet: velocity-distribution needs a per-solver actuation-mode
-    # switch (kelo_cmd.ctrl_mode is hardcoded to ROBIF2B_CTRL_MODE_FORCE) and force-composition
-    # needs a measured wheel/drive torque signal that the kelo measurement struct does not
-    # expose. Fail loudly instead of silently dropping them from codegen.
+    # velocity-distribution and force-composition are authorable but have no template wiring:
+    # the first needs a per-solver actuation-mode switch (kelo_cmd.ctrl_mode is hardcoded to
+    # ROBIF2B_CTRL_MODE_FORCE), the second a measured wheel torque the kelo struct does not
+    # expose. Fail loudly rather than drop them from codegen.
     for unsupported_type, label in (
         (SLV_EXT.VelocityDistributionSolver, "velocity-distribution"),
         (SLV_EXT.ForceCompositionSolver, "force-composition"),
@@ -5459,16 +5280,11 @@ def _assign_monitor_event_indexes(handlers) -> None:
 def _snapshot_maps(g, p: Parser) -> tuple[dict, dict, dict]:
     """One walk over the snapshots for the three maps codegen asks about.
 
-    ``source``: each snapshot output to its source quantity.
-
-    ``owner``: each snapshot's output to the motion that declares it. Every motion captures each
-    snapshot it *references*, and they all write the same shared slot, so a motion re-capturing
-    another's snapshot silently retargets it. The owner is the motion segment of the quantity's
-    URI: <app>/<motion>/spec/<name>.
-
-    ``trigger``: each event-triggered snapshot to its trigger event's local name, keyed by
-    (declaring motion, output id). Every motion referencing a snapshot captures it, but only the
-    motion that declares it re-samples on the trigger, so the key carries the owner.
+    ``source``: each snapshot output to its source quantity. ``owner``: each output to the motion
+    declaring it, taken from the motion segment of the quantity URI (<app>/<motion>/spec/<name>) --
+    every motion captures each snapshot it references and they share one slot, so without an owner
+    a motion silently retargets another's. ``trigger``: each event-triggered snapshot to its trigger
+    event's local name, keyed by (declaring motion, output id) since only the owner re-samples.
     """
     source_map: dict[str, str] = {}
     owner_map: dict[str, str] = {}
@@ -5495,10 +5311,9 @@ def _snapshot_maps(g, p: Parser) -> tuple[dict, dict, dict]:
 def _closure_owner_map(g, p: Parser, closures) -> dict[str, str]:
     """Map each closure to the motion whose context declares the quantities it reads.
 
-    The backward schedule walk can reach a closure belonging to another motion, which then
-    runs (and mutates its outputs) whenever that unrelated motion is active. Ownership is the
-    motion segment of the quantities it references: <app>/<motion>/spec/<name>. A closure
-    reading only shared context has no owner and stays available to every motion.
+    The backward schedule walk can reach another motion's closure, which would then run whenever
+    that unrelated motion is active. Ownership is the motion segment of the quantities it
+    references; a closure reading only shared context has no owner and stays available to all.
     """
     owner_map: dict[str, str] = {}
     for node in set(g.subjects()):
@@ -5578,19 +5393,12 @@ def _emit_derived_pose(g, node: URIRef, of_frame: URIRef, wrt_frame: URIRef) -> 
     g.add((node, QUDT_SCHEMA.unit, URI_QUDT_UNIT_RAD))
 
 
-def _materialize_linear_distance_operations(g) -> None:
-    """Expand authored linear-distance relations into codegen operations.
+def _derived_node(node, suffix) -> URIRef:
+    return URIRef(f"{node}.derived-{suffix}")
 
-    The DSL graph states only the two pose endpoints. This operational expansion belongs
-    here because its inverse/composition path is derivable from the complete RDF graph.
-    """
 
-    def derived(node, suffix):
-        return URIRef(f"{node}.derived-{suffix}")
-
-    def emit_pose(node, of_frame, wrt_frame):
-        _emit_derived_pose(g, node, of_frame, wrt_frame)
-
+def _pose_edges(g) -> dict:
+    """Frame adjacency over every authored pose, traversable in both directions."""
     edges = collections.defaultdict(list)
     for pose in g.subjects(RDF.type, GEOM_REL.Pose):
         try:
@@ -5599,7 +5407,64 @@ def _materialize_linear_distance_operations(g) -> None:
             continue
         edges[wrt_frame].append((of_frame, pose, False))
         edges[of_frame].append((wrt_frame, pose, True))
+    return edges
 
+
+def _pose_path(edges, start: URIRef, goal: URIRef) -> tuple:
+    """Shortest `(pose, inverted)` chain from `start` to `goal`; empty when unreachable."""
+    queue = collections.deque([(start, ())])
+    seen = {start}
+    while queue:
+        frame, current_path = queue.popleft()
+        for next_frame, pose, inverted in edges[frame]:
+            if next_frame in seen:
+                continue
+            next_path = (*current_path, (pose, inverted))
+            if next_frame == goal:
+                return next_path
+            seen.add(next_frame)
+            queue.append((next_frame, next_path))
+    return ()
+
+
+def _compose_path(g, owner: URIRef, path, start_wrt: URIRef):
+    """Emit the invert/compose operations along `path`; return the composed pose, or None."""
+    current = None
+    current_wrt = start_wrt
+    for index, (pose, inverted) in enumerate(path):
+        pose_of, pose_wrt = _pose_frames(g, pose)
+        step = pose
+        step_of, step_wrt = pose_of, pose_wrt
+        if inverted:
+            step = _derived_node(owner, f"path-{index}-inverse")
+            _emit_derived_pose(g, step, pose_wrt, pose_of)
+            operation = _derived_node(owner, f"path-{index}-invert")
+            g.add((operation, RDF.type, GEOM_OP.InvertPose))
+            g.add((operation, GEOM_OP.pose, pose))
+            g.add((operation, GEOM_OP.out, step))
+            step_of, step_wrt = pose_wrt, pose_of
+        if current is None:
+            current = step
+            current_wrt = step_wrt
+            continue
+        composite = _derived_node(owner, f"path-{index}-pose")
+        _emit_derived_pose(g, composite, step_of, current_wrt)
+        operation = _derived_node(owner, f"path-{index}-compose")
+        g.add((operation, RDF.type, GEOM_OP.ComposePose))
+        g.add((operation, GEOM_OP.in1, current))
+        g.add((operation, GEOM_OP.in2, step))
+        g.add((operation, GEOM_OP.composite, composite))
+        current = composite
+    return current
+
+
+def _materialize_linear_distance_operations(g) -> None:
+    """Expand authored linear-distance relations into codegen operations.
+
+    The DSL graph states only the two pose endpoints; the inverse/composition path between
+    their reference frames is derivable from the complete RDF graph.
+    """
+    edges = _pose_edges(g)
     for distance in list(g.subjects(RDF.type, GEOM_REL.LinearDistance)):
         if next(g.subjects(CSTR.quantity, distance), None) is None:
             continue
@@ -5612,78 +5477,39 @@ def _materialize_linear_distance_operations(g) -> None:
 
         path = ()
         if start_wrt != end_wrt:
-            queue = collections.deque([(start_wrt, ())])
-            seen = {start_wrt}
-            while queue:
-                frame, current_path = queue.popleft()
-                for next_frame, pose, inverted in edges[frame]:
-                    if next_frame in seen:
-                        continue
-                    next_path = (*current_path, (pose, inverted))
-                    if next_frame == end_wrt:
-                        path = next_path
-                        queue.clear()
-                        break
-                    seen.add(next_frame)
-                    queue.append((next_frame, next_path))
+            path = _pose_path(edges, start_wrt, end_wrt)
             if not path:
                 raise ValueError(
                     f"Linear distance {distance} has no pose path from {start_wrt} to {end_wrt}."
                 )
-
-        current = None
-        current_wrt = start_wrt
-        for index, (pose, inverted) in enumerate(path):
-            pose_of, pose_wrt = _pose_frames(g, pose)
-            step = pose
-            step_of, step_wrt = pose_of, pose_wrt
-            if inverted:
-                step = derived(distance, f"path-{index}-inverse")
-                emit_pose(step, pose_wrt, pose_of)
-                operation = derived(distance, f"path-{index}-invert")
-                g.add((operation, RDF.type, GEOM_OP.InvertPose))
-                g.add((operation, GEOM_OP.pose, pose))
-                g.add((operation, GEOM_OP.out, step))
-                step_of, step_wrt = pose_wrt, pose_of
-            if current is None:
-                current = step
-                current_wrt = step_wrt
-                continue
-            composite = derived(distance, f"path-{index}-pose")
-            emit_pose(composite, step_of, current_wrt)
-            operation = derived(distance, f"path-{index}-compose")
-            g.add((operation, RDF.type, GEOM_OP.ComposePose))
-            g.add((operation, GEOM_OP.in1, current))
-            g.add((operation, GEOM_OP.in2, step))
-            g.add((operation, GEOM_OP.composite, composite))
-            current = composite
+        current = _compose_path(g, distance, path, start_wrt)
 
         end_in_start_reference = end
         if current is not None:
-            end_in_start_reference = derived(distance, "end-in-start-reference")
-            emit_pose(end_in_start_reference, end_of, start_wrt)
-            operation = derived(distance, "compose-reference-path")
+            end_in_start_reference = _derived_node(distance, "end-in-start-reference")
+            _emit_derived_pose(g, end_in_start_reference, end_of, start_wrt)
+            operation = _derived_node(distance, "compose-reference-path")
             g.add((operation, RDF.type, GEOM_OP.ComposePose))
             g.add((operation, GEOM_OP.in1, current))
             g.add((operation, GEOM_OP.in2, end))
             g.add((operation, GEOM_OP.composite, end_in_start_reference))
 
-        inverse_start = derived(distance, "inverse-start")
-        emit_pose(inverse_start, start_wrt, start_of)
-        invert_start = derived(distance, "invert-start")
+        inverse_start = _derived_node(distance, "inverse-start")
+        _emit_derived_pose(g, inverse_start, start_wrt, start_of)
+        invert_start = _derived_node(distance, "invert-start")
         g.add((invert_start, RDF.type, GEOM_OP.InvertPose))
         g.add((invert_start, GEOM_OP.pose, start))
         g.add((invert_start, GEOM_OP.out, inverse_start))
 
-        relative_pose = derived(distance, "relative-pose")
-        emit_pose(relative_pose, end_of, start_of)
-        compose_relative = derived(distance, "compose-relative-pose")
+        relative_pose = _derived_node(distance, "relative-pose")
+        _emit_derived_pose(g, relative_pose, end_of, start_of)
+        compose_relative = _derived_node(distance, "compose-relative-pose")
         g.add((compose_relative, RDF.type, GEOM_OP.ComposePose))
         g.add((compose_relative, GEOM_OP.in1, inverse_start))
         g.add((compose_relative, GEOM_OP.in2, end_in_start_reference))
         g.add((compose_relative, GEOM_OP.composite, relative_pose))
 
-        operation = derived(distance, "magnitude")
+        operation = _derived_node(distance, "magnitude")
         g.add((operation, RDF.type, GEOM_OP.PoseToLinearDistance))
         g.add((operation, GEOM_OP.pose, relative_pose))
         g.add((operation, GEOM_OP.distance, distance))
@@ -5692,26 +5518,11 @@ def _materialize_linear_distance_operations(g) -> None:
 def _materialize_pose_reference_transforms(g) -> None:
     """Re-express a full-pose equality reference into the constrained pose's frame.
 
-    A full-pose EqualityConstraint states its reference in whatever frame it was
-    authored; when that differs from the constrained quantity's `with-respect-to`
-    frame the comparison first needs the reference re-expressed. The transform path
-    is derivable from the complete RDF graph, so the composition belongs here.
+    A full-pose EqualityConstraint states its reference in whatever frame it was authored; when
+    that differs from the constrained quantity's `with-respect-to` frame the comparison first
+    needs the reference re-expressed.
     """
-    def derived(node, suffix):
-        return URIRef(f"{node}.derived-{suffix}")
-
-    def emit_pose(node, of_frame, wrt_frame):
-        _emit_derived_pose(g, node, of_frame, wrt_frame)
-
-    edges = collections.defaultdict(list)
-    for pose in g.subjects(RDF.type, GEOM_REL.Pose):
-        try:
-            of_frame, wrt_frame = _pose_frames(g, pose)
-        except ValueError:
-            continue
-        edges[wrt_frame].append((of_frame, pose, False))
-        edges[of_frame].append((wrt_frame, pose, True))
-
+    edges = _pose_edges(g)
     for constraint in list(g.subjects(RDF.type, CSTR.EqualityConstraint)):
         quantity = g.value(constraint, CSTR.quantity)
         reference = g.value(constraint, CSTR["reference-value"])
@@ -5725,9 +5536,8 @@ def _materialize_pose_reference_transforms(g) -> None:
             target_of, target_wrt = _pose_frames(g, quantity)
             source_of, source_wrt = _pose_frames(g, reference)
         except ValueError:
-            # A coordinate-authored goal pose (position/orientation values, no explicit
-            # of/with-respect-to frames) is already stated in the constrained pose's
-            # frame; there is no cross-frame reference to re-express.
+            # A coordinate-authored goal pose carries no of/with-respect-to frames; it is
+            # already stated in the constrained pose's frame.
             continue
         if source_wrt == target_wrt:
             continue
@@ -5737,57 +5547,17 @@ def _materialize_pose_reference_transforms(g) -> None:
                 f"to a reference of {source_of}."
             )
 
-        queue = collections.deque([(target_wrt, ())])
-        seen = {target_wrt}
-        path = ()
-        while queue:
-            frame, current_path = queue.popleft()
-            for next_frame, pose, inverted in edges[frame]:
-                if next_frame in seen:
-                    continue
-                next_path = (*current_path, (pose, inverted))
-                if next_frame == source_wrt:
-                    path = next_path
-                    queue.clear()
-                    break
-                seen.add(next_frame)
-                queue.append((next_frame, next_path))
+        path = _pose_path(edges, target_wrt, source_wrt)
         if not path:
             raise ValueError(
                 f"Equality constraint {constraint} has no pose path from "
                 f"{target_wrt} to {source_wrt}."
             )
+        current = _compose_path(g, constraint, path, target_wrt)
 
-        current = None
-        current_wrt = target_wrt
-        for index, (pose, inverted) in enumerate(path):
-            pose_of, pose_wrt = _pose_frames(g, pose)
-            step = pose
-            step_of, step_wrt = pose_of, pose_wrt
-            if inverted:
-                step = derived(constraint, f"path-{index}-inverse")
-                emit_pose(step, pose_wrt, pose_of)
-                operation = derived(constraint, f"path-{index}-invert")
-                g.add((operation, RDF.type, GEOM_OP.InvertPose))
-                g.add((operation, GEOM_OP.pose, pose))
-                g.add((operation, GEOM_OP.out, step))
-                step_of, step_wrt = pose_wrt, pose_of
-            if current is None:
-                current = step
-                current_wrt = step_wrt
-                continue
-            composite = derived(constraint, f"path-{index}-pose")
-            emit_pose(composite, step_of, current_wrt)
-            operation = derived(constraint, f"path-{index}-compose")
-            g.add((operation, RDF.type, GEOM_OP.ComposePose))
-            g.add((operation, GEOM_OP.in1, current))
-            g.add((operation, GEOM_OP.in2, step))
-            g.add((operation, GEOM_OP.composite, composite))
-            current = composite
-
-        reference_in_target = derived(constraint, "reference-in-target")
-        emit_pose(reference_in_target, source_of, target_wrt)
-        operation = derived(constraint, "compose-reference")
+        reference_in_target = _derived_node(constraint, "reference-in-target")
+        _emit_derived_pose(g, reference_in_target, source_of, target_wrt)
+        operation = _derived_node(constraint, "compose-reference")
         g.add((operation, RDF.type, GEOM_OP.ComposePose))
         g.add((operation, GEOM_OP.in1, current))
         g.add((operation, GEOM_OP.in2, reference))
@@ -5816,9 +5586,7 @@ def _data_reference_map(data_structures, closures: dict) -> dict[str, str]:
 
 
 def _closure_maps(closures: dict) -> tuple[dict[str, str], dict[str, set[str]]]:
-    """Build (closure_output_map, closure_input_map): data id to the closures producing/consuming
-    it.
-    """
+    """Build (closure_output_map, closure_input_map): data id to the closures producing/consuming it."""
     closure_output_map: dict[str, str] = {}
     closure_input_map: dict[str, set[str]] = {}
     for cid, c in closures.items():
@@ -5842,12 +5610,9 @@ _SIMULATION_BACKENDS = {"mujoco": "mj_kdl"}
 
 
 def _platform_from_graph(g) -> dict:
-    """The execution platform the model declares, as one record every consumer reads.
-
-    Returns the authored node's IRI, its name, whether it is simulated, and the backend that
-    serves it. Downstream code must take platform identity from here rather than re-deriving it
-    from the backend token or by matching substrings of a file path -- a model that declares
-    `platform: simulation { name: "Gazebo" }` is not MuJoCo, and nothing should have to guess.
+    """The execution platform the model declares, as one record every consumer reads: the authored
+    node's IRI, its name, whether it is simulated, and the backend serving it. Platform identity
+    comes from here, never re-derived from the backend token or from path substrings.
     """
     simulation = next(g.subjects(RDF.type, EXEC.Simulation), None)
     if simulation is None:
@@ -5876,21 +5641,16 @@ def _platform_from_graph(g) -> dict:
 
 
 def _config_path(g, context) -> str | None:
-    """The deployment config's path, from exec:has-resource -> exec:path.
-
-    The DSL resolves it against the model that declares it, so it is a path both codegen and
-    the generated program can open -- neither knows the .robmot's directory.
+    """The deployment config's path, from exec:has-resource -> exec:path. The DSL resolves it against
+    the model that declares it, so neither codegen nor the generated program needs the .robmot's directory.
     """
     config = g.value(context, EXEC["has-resource"])
     return str(g.value(config, EXEC.path)) if config is not None else None
 
 
 def _reject_undriven_devices(g, context) -> None:
-    """Reject a bound device the backend would silently ignore.
-
-    The grammar decides what a model may name; this decides what the backend can actually
-    drive. A device the templates do not cover must fail here rather than generate a
-    controller that quietly leaves it dead.
+    """Reject a bound device the backend would silently ignore. The grammar decides what a model may
+    name; this decides what the backend can drive, so an uncovered device fails here.
     """
     if context is None:
         return
@@ -5925,11 +5685,8 @@ def _reject_scene_objects_on_hardware(g, context) -> None:
 
 
 def _reject_unbound_sensors_on_hardware(g, context) -> None:
-    """Reject a sensor a model reads from but binds no device to.
-
-    In simulation the simulator answers for every sensor in the scene. On hardware a reading
-    comes from a device or from nowhere, so a wrench sourced from an unbound sensor would
-    generate a controller reading uninitialised memory every tick.
+    """Reject a sensor a model reads from but binds no device to. In simulation the simulator answers
+    for every sensor; on hardware a reading comes from a device or from uninitialised memory.
     """
     if context is None:
         return
@@ -5958,18 +5715,15 @@ def _apply_monitor_debounce(handlers, control_period_ns: int) -> None:
 
 def _shared_runtime_members(slv_chain, iris, control_period_ns: int, platform_uri) -> list[dict]:
     """Extra shared-data members for force/torque sensor state and the measured control period."""
-    # The dt every integrator steps with, measured by the loop from the backend clock, nominal
-    # until the first measurement exists. A contracted shared value rather than a hardcoded struct
-    # member, so it carries a producer and lands in the frame log like any other.
+    # The dt every integrator steps with, measured from the backend clock and nominal until the
+    # first measurement. A contracted shared value, so it carries a producer and is logged.
     if not platform_uri:
         raise RuntimeError("measured dt: the execution platform has no IRI to derive a clock from")
-    # Which clock it is -- sim seconds or monotonic seconds -- is the platform's to say, so the
-    # port derives from the exec context and the measurement derives from the port.
+    # Which clock it is is the platform's to say: the port derives from the exec context.
     clock_iri = iris.register("clock", platform_uri, "clock", DerivedIriRegistry.DERIVATION)
     iris.register("clock_time_s", clock_iri, "clock_time_s", DerivedIriRegistry.DERIVATION)
     iris.register("dt_measured_s", clock_iri, "dt_measured_s", DerivedIriRegistry.DERIVATION)
-    # The clock reading itself is contracted too: the loop writes it from the same port every
-    # tick, and elapsed conditions read it like any other shared value.
+    # The reading is contracted too: written from the same port each tick, read like any value.
     members = [
         {"id": "clock_time_s", "type": "Quantity"},
         {"id": "dt_measured_s", "type": "Quantity", "value": control_period_ns * 1e-9},
@@ -5998,17 +5752,13 @@ def _shared_runtime_members(slv_chain, iris, control_period_ns: int, platform_ur
     return members
 
 
-# ---------------------------------------------------------------------------
-# Codegen-facing helpers. Each is invoked while constructing the piece it belongs to
-# (scene, solvers, closures, motions, introspection) so generate_ir builds a complete IR
-# in one forward pass — the assembled ir dict is final and is never re-processed.
-# ---------------------------------------------------------------------------
+# Codegen-facing helpers, each invoked while its piece is constructed, so generate_ir builds a
+# complete IR in one forward pass and the assembled dict is never re-processed.
 
 
 SUPPORTED_ROBOT_MODELS = {"KinovaGen3"}
 
-# The devices this backend has driver templates for. A name the grammar accepts but that is
-# missing here is rejected at generation; add it once its templates land.
+# Devices with driver templates. A name the grammar accepts but that is missing here is rejected.
 DRIVEN_DEVICES = {"KinovaGen3", "KinovaGen3-2F85", "Robotiq2F85", "RobotiqFT300s"}
 
 # The sensor kinds the IR models, as the graph types them and as templates dispatch on them.
@@ -6061,10 +5811,9 @@ def _runtime_signature(solver, backend: str) -> tuple:
 def _annotate_rne_gravity(serial_chain_solvers, motions) -> None:
     """Derive the gravity vector an RNE solver is built with.
 
-    The authored solver value is the Vereshchagin root acceleration, which ACHD takes as-is.
-    KDL's inverse-dynamics solver wants gravity with the opposite sign, so the negation belongs
-    wherever one is constructed -- which is every backend that runs RNE, not just the simulated
-    one. A solver that never builds an RNE reads the field and finds nothing.
+    The authored solver value is the Vereshchagin root acceleration, which ACHD takes as-is; KDL's
+    inverse-dynamics solver wants the opposite sign, so the negation belongs wherever an RNE is
+    constructed -- every backend that runs one, not just the simulated one.
     """
     for solver in list(serial_chain_solvers) + [
         s for motion in motions for s in _field(motion, "serial_chain_solvers", [])
@@ -6089,9 +5838,7 @@ def _annotate_runtime_robots(serial_chain_solvers, motions, backend: str) -> Non
         owner_by_runtime.setdefault(runtime_id, solver_id)
         _set_field(solver, "runtime_id", runtime_id)
         _set_field(solver, "runtime_owner", solver_id == owner_by_runtime[runtime_id])
-        # ST4's <if(x)> treats "" as truthy. Convert empty strings to None so
-        # the template's <if(solver.tool_body)> branch is correctly skipped
-        # for bare robots (no gripper / tool attached).
+        # ST4's <if(x)> treats "" as truthy, so a bare robot's empty tool fields must be None.
         if not _field(solver, "tool_body"):
             _set_field(solver, "tool_body", None)
         if not _field(solver, "tcp_site"):
@@ -6121,13 +5868,10 @@ def _add_group_type_flags(groups: list) -> None:
         _set_field(g, "is_wrench", so_type == "Wrench")
 
 
-# ---------------------------------------------------------------------------
-# Codegen-facing helpers
-# ---------------------------------------------------------------------------
 def _field(obj, key, default=None):
-    """Read a field from either a dict or a dataclass instance, so derivations can run
-    on the native IR (dataclasses) without a dict round-trip. str-Enum values are
-    normalized to their string value so native access matches the serialized dict."""
+    """Read a field from either a dict or a dataclass instance, so derivations run on the native IR
+    without a dict round-trip. str-Enum values are normalized to their string value.
+    """
     if obj is None:
         return default
     val = obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
@@ -6168,8 +5912,8 @@ def expand_vector_fields(
     default: list[float] | None = None,
 ) -> None:
     """Expand a vector field into <field>_<component> parts. An omitted value falls back to
-    ``default`` (zero vector for position, identity quaternion for orientation); a value whose
-    arity does not match component_names raises rather than being padded or truncated."""
+    ``default``; a value whose arity does not match component_names raises rather than being padded.
+    """
     values = _field(item, field)
     if values is None:
         # Env placement shorthand: omitted position/orientation means zero/identity.
@@ -6214,9 +5958,9 @@ def _signal_id(value):
 
 
 def _annotate_controller_signals(controllers, closures: dict) -> None:
-    """Fold the measured/setpoint signal ids onto each controller from its error-evaluator
-    closure. Emits abstract ids only; the C++ access expression is rendered backend-side by
-    access-expr (shared_data.stg). Runs during construction of the controllers' piece."""
+    """Fold the measured/setpoint signal ids onto each controller from its error-evaluator closure.
+    Abstract ids only; the C++ access expression is rendered by access-expr (shared_data.stg).
+    """
     error_sources = {
         closure.get("error"): closure
         for closure in closures.values()
@@ -6247,33 +5991,20 @@ def add_controller_internal_state_logging(
     shared_ids = {_field(item, "id") for item in shared_data if _field(item, "id")}
     quantity_ids = {_field(item, "id") for item in quantities if _field(item, "id")}
 
-    def add_shared(item_id: str, item_type: str, controller_id: str, state_name: str) -> None:
-        """Append a controller-internal-state shared_data item (once per id)."""
-        if item_id not in shared_ids:
-            shared_data.append(
-                {
-                    "id": item_id,
-                    "type": item_type,
-                    "controller": controller_id,
-                    "role": "controller_internal_state",
-                    "state": state_name,
-                }
-            )
-            shared_ids.add(item_id)
-
-    def add_quantity(item_id: str, controller_id: str, state_name: str) -> None:
-        """Append a controller-internal-state introspection quantity (once per id)."""
-        if item_id not in quantity_ids:
-            quantities.append(
-                {
-                    "id": item_id,
-                    "type": "Quantity",
-                    "controller": controller_id,
-                    "role": "controller_internal_state",
-                    "state": state_name,
-                }
-            )
-            quantity_ids.add(item_id)
+    def add_once(rows, seen, item_id: str, item_type: str, controller_id: str, name: str) -> None:
+        """Append one controller-internal-state row, at most once per id."""
+        if item_id in seen:
+            return
+        rows.append(
+            {
+                "id": item_id,
+                "type": item_type,
+                "controller": controller_id,
+                "role": "controller_internal_state",
+                "state": name,
+            }
+        )
+        seen.add(item_id)
 
     stateful_types = {"ProportionalIntegralDerivative", "ImpedanceController"}
     stateful_ids = {
@@ -6296,8 +6027,7 @@ def add_controller_internal_state_logging(
             ("first_sample", "Bool", "is_first_sample"),
         ]
         closure_samples = []
-        # The parent is resolved through the registry, not the graph: a per-axis controller is
-        # itself derived and has no graph node of its own.
+        # Through the registry, not the graph: a per-axis controller is itself derived.
         parent_iri = iris.iri_of(controller_id)
         if parent_iri is None:
             raise RuntimeError(
@@ -6305,9 +6035,9 @@ def add_controller_internal_state_logging(
             )
         for state_name, item_type, getter in samples:
             item_id = f"{controller_id}_{state_name}"
-            add_shared(item_id, item_type, controller_id, state_name)
+            add_once(shared_data, shared_ids, item_id, item_type, controller_id, state_name)
             if item_type == "Quantity":
-                add_quantity(item_id, controller_id, state_name)
+                add_once(quantities, quantity_ids, item_id, "Quantity", controller_id, state_name)
             iris.register(
                 item_id, parent_iri, state_name, DerivedIriRegistry.DERIVATION
             )
@@ -6315,10 +6045,8 @@ def add_controller_internal_state_logging(
         closure["internal_state_samples"] = closure_samples
 
 
-# The authored numbers each controller kind tunes with: gains-struct field name -> the field the
-# parsed controller carries it on, and whether the model must author it. Order is the struct's
-# field order in runtime.stg. The optional ones stood at 0.0 when unauthored before they moved
-# here; the rest were rendered unconditionally, so an absent one must still fail.
+# Gains-struct field name -> the field the parsed controller carries it on, and whether the model
+# must author it. Order is the struct's field order; an absent required one must fail.
 _CONTROL_GAINS = {
     "ProportionalIntegralDerivative": (
         ("kp", "proportional_gain", True),
@@ -6338,11 +6066,9 @@ _ADMITTANCE_PARAMETERS = ("mass", "damping", "stiffness", "maximum_velocity")
 
 
 def add_control_parameters(closures: dict, shared_data: list, introspection: dict, motions, iris):
-    """Publish every authored control parameter as a shared value the step call reads.
-
-    A gain baked into a constructor can neither be reported nor ever vary; as a shared value it
-    carries a producer (`authored`, so `init`) and lands in the run's header record like any
-    other authored literal.
+    """Publish every authored control parameter as a shared value the step call reads. A gain baked
+    into a constructor can neither be reported nor vary; as a shared value it carries a producer
+    (`authored`, so `init`) and lands in the run's header record.
     """
     quantities = introspection.setdefault("quantities", [])
     shared_ids = {_field(item, "id") for item in shared_data if _field(item, "id")}
@@ -6400,16 +6126,10 @@ def add_control_parameters(closures: dict, shared_data: list, introspection: dic
         closure["integral_saturation"] = _field(controller, "integral_saturation")
 
 
-# One declaration per joint-space channel: what writes it, and what it measures. Kept in one place
-# so the producer cannot drift from the mirror expression -- the template's joint-space-expr-<name>
-# reads exactly the thing named here.
-#
-# Quantity kinds are not a guess: scene-dsl keeps only RevoluteJointModel joints in a chain
-# (`scene_dsl/kdl_tree.py`), so every entry in kdl_joints is revolute and its position is an angle.
-#
-# `backends` is None where every backend carries the signal, or the backends that actually
-# measure it. A channel is logged only where it exists: a slot that is structurally zero is not a
-# measurement, and logging it every tick would say the arm is weightless.
+# Producer and mirror expression declared in one place so they cannot drift; the template's
+# joint-space-expr-<name> reads exactly what is named here. All chain joints are revolute
+# (scene-dsl guarantees it), so position is an angle. `backends=None` means every backend carries
+# the signal; naming backends restricts it to those that actually measure it.
 JointSpaceChannel = collections.namedtuple(
     "JointSpaceChannel", ("name", "producer", "quantity_kind", "unit", "backends")
 )
@@ -6419,15 +6139,12 @@ _JOINT_SPACE_CHANNELS = (
     JointSpaceChannel("qd", "port", "AngularVelocity", "RAD_PER_SEC", None),
     JointSpaceChannel("qdd", "solver", "AngularAcceleration", "RAD_PER_SEC2", None),
     JointSpaceChannel("tau_ctrl", "solver", "Torque", "N_M", None),
-    # robif2b reads eff_msr off the hardware. mj_kdl has no equivalent: under torque control the
-    # wrapper nulls the position actuator and applies the command through qfrc_applied, so
-    # jnt_trq_msr (which mirrors qfrc_actuator) is zero by construction, not by measurement.
-    # Add "mj_kdl" here the day the wrapper reports the joint's actual generalized force.
+    # robif2b reads eff_msr off the hardware; under mj_kdl torque control jnt_trq_msr mirrors
+    # qfrc_actuator and is zero by construction, not by measurement.
     JointSpaceChannel("tau_msr", "sensor", "Torque", "N_M", ("robif2b",)),
 )
 
-# Emitted only where a torque limit is authored. Its producer is that saturation, not the solver:
-# without a limit the command port just holds tau_ctrl, and the channel does not exist at all.
+# Emitted only where a torque limit is authored; that saturation is its producer, not the solver.
 _JOINT_SPACE_CMD_CHANNEL = JointSpaceChannel("tau_cmd", "saturation", "Torque", "N_M", None)
 
 
@@ -6441,17 +6158,16 @@ def add_joint_space_logging(
 ) -> None:
     """Mirror each runtime's joint-space signals into shared_data so the frame log can carry them.
 
-    Keyed by runtime rather than by solver: q/qd/tau_msr/tau_cmd are the arm's ports, and
-    tau_ctrl/qdd follow the same key because the command port is last-writer-wins, so a
-    runtime-keyed slot records what the port received even when several solvers on one runtime
-    are active in the same tick. Keying by solver would multiply the field count by the number of
-    motions (5x on the arc, 10x on the dual arm) to record the same ports.
+    Keyed by runtime, not by solver: these are the arm's ports and the command port is
+    last-writer-wins, so a runtime-keyed slot records what the port received even when several
+    solvers on one runtime run in the same tick. Keying by solver would multiply the field count
+    by the number of motions to record the same ports.
     """
     quantities = introspection.setdefault("quantities", [])
     shared_ids = {_field(item, "id") for item in shared_data if _field(item, "id")}
 
-    # The per-motion copies (HandlerSerialChainSolver) are what the templates render, and they
-    # carry neither runtime_id nor kdl_joints -- derive from the top-level solvers, assign to both.
+    # The per-motion copies the templates render carry neither runtime_id nor kdl_joints:
+    # derive from the top-level solvers, assign to both.
     copies_by_id: dict[str, list] = {}
     for motion in motions:
         for solver in _field(motion, "serial_chain_solvers", []) or []:
@@ -6471,9 +6187,8 @@ def add_joint_space_logging(
                 "the shared ids are compile-time names, so a wrong joint count mislabels "
                 "every channel"
             )
-        # tau_cmd can differ from tau_ctrl only where a limit clamps it, so its producer is that
-        # saturation. Several solvers on one runtime could each carry one; name it only when the
-        # runtime has exactly one, the same rule the rest of the contract uses.
+        # tau_cmd differs from tau_ctrl only where a limit clamps it, so that saturation is its
+        # producer -- named only when the runtime carries exactly one.
         saturations = {
             _field(_field(solver, "torque_saturation"), "id")
             for solver in solvers
@@ -6517,8 +6232,7 @@ def add_joint_space_logging(
                     "role": "joint_space",
                     "channel": channel.name,
                     "joint": joint,
-                    # Declared where it is known -- the mirror site -- so the dataflow contract
-                    # reads it rather than re-deriving it from the channel name.
+                    # Declared at the mirror site, so the contract need not re-derive it.
                     "producer": {
                         "kind": channel.producer,
                         "id": producer_id[channel.producer],
@@ -6554,9 +6268,7 @@ _SPATIAL_SLOT_KINDS = {"Pose": "poses", "VelocityTwist": "twists", "Wrench": "wr
 
 def _spatial_slot_ids(shared_data: list) -> set:
     """Ids carried by a whole-object spatial slot, so no per-axis scalar rows are emitted too.
-
-    AccelerationTwist and PoseDifference have no slot, so their scalar rows are the only record
-    of them and must survive.
+    AccelerationTwist and PoseDifference have no slot, so their scalar rows must survive.
     """
     return {
         _field(item, "id")
@@ -6565,10 +6277,34 @@ def _spatial_slot_ids(shared_data: list) -> set:
     }
 
 
+def _vec_desc(kind: str):
+    return lambda q, i: {"kind": kind, "id": q, "axis": i}
+
+
+def _member_desc(member: str):
+    return lambda q, i: {"kind": "member", "id": q, "member": member, "axis": i}
+
+
+# Per quantity type, the `(component prefix, descriptor)` pairs its per-axis rows carry, in
+# emission order. Key order inside each descriptor is load-bearing for the frame layout.
+_POSE_AXIS_SAMPLES = (("position", _vec_desc("pose_pos")), ("orientation", _vec_desc("pose_orient")))
+_TWIST_AXIS_SAMPLES = (("angular", _member_desc("rot")), ("linear", _member_desc("vel")))
+_AXIS_SAMPLES = {
+    "Position": (("", _vec_desc("vec")),),
+    "Direction": (("", _vec_desc("vec")),),
+    "FreeVector": (("", _vec_desc("vec")),),
+    "Orientation": (("", _vec_desc("orientation")),),
+    "Pose": _POSE_AXIS_SAMPLES,
+    "Setpoint": _POSE_AXIS_SAMPLES,
+    "VelocityTwist": _TWIST_AXIS_SAMPLES,
+    "AccelerationTwist": _TWIST_AXIS_SAMPLES,
+    "PoseDifference": _TWIST_AXIS_SAMPLES,
+    "Wrench": (("torque", _member_desc("torque")), ("force", _member_desc("force"))),
+}
+
+
 def add_quantity_samples(introspection: dict, shared_data: list, views: dict) -> None:
-    """Build the per-quantity frame-log sample descriptors from the introspection quantities and
-    shared data.
-    """
+    """Build the per-quantity frame-log sample descriptors from the introspection quantities and shared data."""
     shared_ids = {_field(item, "id") for item in shared_data if _field(item, "id")}
     spatial_ids = _spatial_slot_ids(shared_data)
     indexed_views = _views_by_subobject(views)
@@ -6632,43 +6368,9 @@ def add_quantity_samples(introspection: dict, shared_data: list, views: dict) ->
                     add(quantity, "", {"kind": "shared", "id": qid})
             elif qid in shared_ids and qid not in indexed_views:
                 add(quantity, "", {"kind": "shared", "id": qid})
-        elif qtype in {"Position", "Direction", "FreeVector"} and qid in shared_ids:
-            add_axes(quantity, "", lambda i, q=qid: {"kind": "vec", "id": q, "axis": i})
-        elif qtype == "Orientation" and qid in shared_ids:
-            add_axes(quantity, "", lambda i, q=qid: {"kind": "orientation", "id": q, "axis": i})
-        elif qtype in {"Pose", "Setpoint"} and qid in shared_ids:
-            add_axes(
-                quantity, "position", lambda i, q=qid: {"kind": "pose_pos", "id": q, "axis": i}
-            )
-            add_axes(
-                quantity,
-                "orientation",
-                lambda i, q=qid: {"kind": "pose_orient", "id": q, "axis": i},
-            )
-        elif (
-            qtype in {"VelocityTwist", "AccelerationTwist", "PoseDifference"} and qid in shared_ids
-        ):
-            add_axes(
-                quantity,
-                "angular",
-                lambda i, q=qid: {"kind": "member", "id": q, "member": "rot", "axis": i},
-            )
-            add_axes(
-                quantity,
-                "linear",
-                lambda i, q=qid: {"kind": "member", "id": q, "member": "vel", "axis": i},
-            )
-        elif qtype == "Wrench" and qid in shared_ids:
-            add_axes(
-                quantity,
-                "torque",
-                lambda i, q=qid: {"kind": "member", "id": q, "member": "torque", "axis": i},
-            )
-            add_axes(
-                quantity,
-                "force",
-                lambda i, q=qid: {"kind": "member", "id": q, "member": "force", "axis": i},
-            )
+        elif qid in shared_ids:
+            for prefix, make_desc in _AXIS_SAMPLES.get(qtype, ()):
+                add_axes(quantity, prefix, partial(make_desc, qid))
 
     sampled_ids = {sample.get("source_id") for sample in samples}
     for item in shared_data:
@@ -6744,12 +6446,9 @@ def _constant_value(item, desc: dict):
 
 
 def _agent_home_positions(platform, solvers) -> dict:
-    """Each agent's reset joint configuration, keyed the way `_config_key` names it.
-
-    Where a robot starts decides every run, so it is authored beside the model rather than
-    baked into a template no run artifact could report. There is no default: a simulated
-    deployment that states none is rejected, because a wrong home is silent and a missing one
-    should not be.
+    """Each agent's reset joint configuration, keyed the way `_config_key` names it. Authored beside
+    the model rather than baked into a template, and with no default: a simulated deployment that
+    states none is rejected, because a wrong home is silent and a missing one should not be.
     """
     import tomllib
 
@@ -6794,8 +6493,7 @@ def annotate_dataflow(
     project the roles the templates ask about (``values``) off the same classification.
 
     Cadence -- not motion membership -- decides gating: a value written by several motions carries
-    all of them, and one no motion's step function writes falls back to ``tick``, so nothing live
-    is gated away by being attributed to a single motion.
+    all of them, and one no motion's step function writes falls back to ``tick``.
     """
     closure_by_output: dict[str, set] = {}
     for closure_id, closure in closures.items():
@@ -6820,9 +6518,8 @@ def annotate_dataflow(
                     solver_by_output.setdefault(companion, set()).add(_field(solver, "id"))
                     sensor_outputs.add(companion)
 
-    # Which motions' step functions write a value. A union, never last-writer-wins: every motion
-    # instantiates its own solver over the same shared outputs, and one closure can be scheduled
-    # by several motions -- attributing such a value to one motion would gate away live data.
+    # A union, never last-writer-wins: several motions can write one value, and attributing it
+    # to a single motion would gate away live data.
     owners: dict[str, set] = {}
     # Poses, snapshots and per-axis errors are written by the pose-composition, snapshot and
     # error-decomposition blocks, which are emitted per motion rather than scheduled as closures.
@@ -6904,9 +6601,8 @@ def annotate_dataflow(
             return {"kind": "authored", "id": None}, "init"
         return {"kind": "none", "id": None}, "never"
 
-    # A view is a projection of its superobject, so it is written exactly when that is. One
-    # subobject can MAP into several superobjects, so collect them all rather than let the last
-    # view win -- the value is live whenever any of them is recomputed.
+    # A view is written exactly when its superobject is. One subobject can MAP into several,
+    # so collect them all: the value is live whenever any is recomputed.
     superobjects_of: dict[str, set] = {}
     for view in (views or {}).values():
         subobject_id = _field(_field(view, "subobject"), "id")
@@ -6914,8 +6610,7 @@ def annotate_dataflow(
         if subobject_id and superobject_id:
             superobjects_of.setdefault(subobject_id, set()).add(superobject_id)
 
-    # One artifact holds the contract, rather than three fields smeared over every entity
-    # dataclass: storage is derived from cadence in exactly one place and cannot drift from it.
+    # One artifact holds the contract, so storage is derived from cadence in exactly one place.
     dataflow = {}
     items_by_id = {}
     for item in shared_data:
@@ -6937,8 +6632,7 @@ def annotate_dataflow(
             continue
         live = [source["cadence"] for source in sources if source["storage"] == "log"]
         if live:
-            # A read of a recomputed superobject is live even when the view itself was authored
-            # with a literal: the literal is only what the superobject started from.
+            # Live even when the view was authored with a literal: that is only the start value.
             cadence = (
                 "tick"
                 if any(not isinstance(source, dict) for source in live)
@@ -6957,8 +6651,8 @@ def annotate_dataflow(
         if entry is not None:
             entry["consumers"] = consumers
 
-    # A value nothing writes but something reads is not model metadata -- it is a broken binding,
-    # and dropping it would silently feed the reader a zero forever.
+    # A value nothing writes but something reads is a broken binding, not metadata: dropping it
+    # would feed the reader a zero forever.
     orphans = {
         member_id: entry["consumers"]
         for member_id, entry in dataflow.items()
@@ -6976,11 +6670,9 @@ def annotate_dataflow(
     introspection["dataflow"] = dataflow
     _apply_dataflow(introspection, shared_data, items_by_id, dataflow)
 
-    # Layer-B projections of the same contract: "which values play role X?" answered from the
-    # producer classification above, never by a second scan with its own rule. Externally
-    # measured = a solver output the platform supplies (it has a sensor), which the view turns
-    # into a pointer member plus a measurement local. Returned, not stored on introspection:
-    # the projection is published once, at the top level.
+    # Layer-B projections of the same contract, answered from the producer classification above
+    # rather than by a second scan. Externally measured = a solver output the platform supplies.
+    # Returned, not stored: the projection is published once, at the top level.
     return {
         "externally_measured": sorted(
             (item for item in shared_data if _field(item, "id") in measured_outputs),
@@ -7066,11 +6758,9 @@ _ORIENTATION_COMPONENTS = {
 
 
 def _empty_pose_entry(representation: str, euler_axes: str | None = None) -> dict:
-    """Blank component slots for a pose, sized to what will fill them.
-
-    A symbolic Euler triple is filled one angle per authored axis, and the axes are the
-    sequence the model wrote -- `zyx` fills z, y and x -- so it is sized by that rather than
-    by a fixed component list.
+    """Blank component slots for a pose, sized to what will fill them. A symbolic Euler triple is
+    filled one angle per authored axis -- `zyx` fills z, y and x -- so it is sized by the sequence
+    the model wrote rather than by a fixed component list.
     """
     entry = {"representation": representation}
     entry.update({f"position_{axis}": None for axis in ("x", "y", "z")})
@@ -7080,9 +6770,7 @@ def _empty_pose_entry(representation: str, euler_axes: str | None = None) -> dic
 
 
 def build_pose_components(views: dict, data: list, graph=None, pose_nodes=None) -> dict:
-    """Resolve declared/inline poses into per-axis structured components (a literal value or a
-    reference id).
-    """
+    """Resolve declared/inline poses into per-axis structured components (a literal value or a reference id)."""
     data_by_id = _index_by_id(data)
     components: dict[str, dict] = {}
     if graph is not None:
@@ -7102,9 +6790,8 @@ def build_pose_components(views: dict, data: list, graph=None, pose_nodes=None) 
                 for axis, value in zip("xyz", _si_all(position, length_unit)):
                     entry[f"position_{axis}"] = {"value": str(value), "ref": None}
             if representation == "quaternion":
-                # Whatever the model authored -- Euler angles, a quaternion, direction cosines --
-                # scipy resolves it to one rotation, and it leaves here as a quaternion. Anything
-                # sourced at runtime keeps its own shape and is rendered, not resolved.
+                # Euler angles, quaternion or direction cosines all resolve to one quaternion
+                # here; anything sourced at runtime keeps its shape and is rendered, not resolved.
                 rotation = get_orientation_coord_vals(coordinate.orientation_coord, graph)
                 values = rotation.as_quat() if rotation is not None else None
                 labels = "xyzw"
@@ -7155,11 +6842,9 @@ def build_pose_components(views: dict, data: list, graph=None, pose_nodes=None) 
 def _euler_factors(pose_id: str, parts: dict, data_by_id: dict) -> list[dict]:
     """A symbolic Euler triple as per-axis rotations, in the order they multiply.
 
-    An extrinsic sequence turns about axes that stay put, so the rotation authored last is
-    applied to the result of the others and multiplies on the left; an intrinsic one turns
-    about axes carried along by the previous rotations, so the order reverses. Each component
-    renders wherever its value comes from, so an angle measured or computed at runtime
-    composes exactly like a constant.
+    An extrinsic sequence turns about axes that stay put, so the rotation authored last multiplies
+    on the left; an intrinsic one turns about axes carried along by the previous rotations, so the
+    order reverses. Each component renders wherever its value comes from.
     """
     pose = data_by_id.get(pose_id)
     sequence = _field(pose, "euler_axes_sequence") or "xyz"
@@ -7184,9 +6869,8 @@ def resolve_lerp_closures(closures: dict, pose_components: dict) -> None:
         if not isinstance(goal, str):
             continue
         if goal in pose_components and closure.get("type") == "PathProjection":
-            # Emit the structured pose components; the template builds the pose frame. Only
-            # the projection assigns: it is scheduled before the frame and the evaluator,
-            # which read the same shared goal.
+            # The template builds the pose frame. Only the projection assigns: it is scheduled
+            # before the frame and the evaluator, which read the same shared goal.
             closure["goal_components"] = pose_components[goal]
             closure["assign_goal"] = True
         else:
@@ -7195,9 +6879,7 @@ def resolve_lerp_closures(closures: dict, pose_components: dict) -> None:
 
 
 def resolve_arc_closures(closures: dict, data: list) -> None:
-    """Validate that each Arc closure's end is a Pose (the template renders its
-    position/orientation).
-    """
+    """Validate that each Arc closure's end is a Pose (the template renders its position/orientation)."""
     data_by_id = _index_by_id(data)
 
     def is_pose(data) -> bool:
@@ -7260,11 +6942,10 @@ def collect_motion_references(motion, closures: dict) -> set[str]:
 
 
 def _elapsed_coordinate_id(e) -> str:
-    """The shared value an elapsed constraint measures: its own authored duration coordinate.
-
-    A timing constraint's error signal is the elapsed duration itself, so this is where the
-    motion writes the seconds and where every reader -- the condition inside the motion, the
-    introspection sample outside it, the frame log -- finds them."""
+    """The shared value an elapsed constraint measures: its own authored duration coordinate. The
+    error signal is the elapsed duration itself, so this is where the motion writes the seconds and
+    where the condition, the introspection sample and the frame log all find them.
+    """
     coordinate = _field(_field(e, "error"), "id")
     if not coordinate:
         raise ValueError(
@@ -7283,13 +6964,12 @@ def _elapsed_coordinate_ids(evaluators) -> list[str]:
 
 
 def _evaluator_term(e) -> dict:
-    """Structured boolean term for an evaluator: an elapsed timing predicate (the seconds a
-    phase has been running, against a threshold) or a solver constraint-satisfied check.
-    Rendered to C++ by the bool-condition template.
+    """Structured boolean term for an evaluator: an elapsed timing predicate or a solver
+    constraint-satisfied check, rendered to C++ by the bool-condition template.
 
-    Every term kind reads shared and nothing else, so the same condition renders identically
-    wherever it is needed -- inside the motion, whose state holds the phase's start, and in
-    the introspection sample, which runs outside it."""
+    Every term kind reads shared and nothing else, so the same condition renders identically inside
+    the motion and in the introspection sample that runs outside it.
+    """
     if _field(e, "is_elapsed"):
         op = _field(e, "elapsed_op") or ">="
         thr = _field(e, "elapsed_threshold_s") or 0.0
@@ -7384,13 +7064,12 @@ def _records_events(monitors: list) -> bool:
 
 
 def add_motion_function_interfaces(motions: list) -> None:
-    """Fold per-motion capability booleans (which context objects — state, shared, robot —
-    each generated function needs). The C++ signatures and call args are built from these
-    by the sig-params / sig-args templates; ir_gen carries no C++ type names.
+    """Fold per-motion capability booleans (which context objects each generated function needs); the
+    C++ signatures and call args are built from these by sig-params / sig-args.
 
-    Also assigns each motion its introspection index. It is ir_gen's own ordering, and both the
-    frame-log schema and the generated sample switch read this one field -- so no consumer has to
-    agree with a second generator about which index means which motion."""
+    Also assigns each motion its introspection index, so the frame-log schema and the generated
+    sample switch read one field rather than agreeing with a second generator.
+    """
     for index, motion in enumerate(motions):
         _set_field(motion, "index", index)
         has_when_elapsed = any(
@@ -7433,9 +7112,8 @@ def add_motion_function_interfaces(motions: list) -> None:
         _set_field(motion, "monitor_needs_robot", when_fsm or until_fsm)
 
         _set_field(motion, "apply_needs_state", has_serial_chain)
-        # tau_cmd is read back from the command port in the stage block, inside apply_. Gate on
-        # torque_saturation, not on joint_space_cmd_samples: this runs before _build_introspection,
-        # so the sample list does not exist yet. Keep in sync with add_joint_space_logging.
+        # Gate on torque_saturation, not on joint_space_cmd_samples: this runs before
+        # _build_introspection, so the sample list does not exist yet.
         logs_joint_cmd = any(
             _field(solver, "torque_saturation")
             for solver in (_field(motion, "serial_chain_solvers") or [])
@@ -7443,8 +7121,7 @@ def add_motion_function_interfaces(motions: list) -> None:
         _set_field(motion, "apply_needs_shared", has_forwarded_commands or logs_joint_cmd)
         _set_field(motion, "apply_needs_robot", has_serial_chain or has_forwarded_commands)
 
-        # An edge is the occurrence, so only an edge-triggered monitor records one -- a flag
-        # monitor holds a level and never reaches the coordination buffer.
+        # An edge is the occurrence: a flag monitor holds a level and never reaches the buffer.
         when_events = _records_events(when_mons)
         until_events = _records_events(until_mons)
         control_events = _records_events(while_mons)
@@ -7459,13 +7136,11 @@ _FSM_NS = "https://secorolab.github.io/metamodels/behaviour/fsm#"
 _EL_NS = "https://secorolab.github.io/metamodels/behaviour/event-loop#"
 
 
-# ---------------------------------------------------------------------------
-# FSM wiring
-# ---------------------------------------------------------------------------
 def _fsm_from_graph(g) -> dict | None:
-    """Frame the FSM named graph (states/events/transitions/reactions, folded into the
-    model dataset by motion-spec-dsl) into the same dict shape the standalone .hpp uses,
-    so codegen needs no fsm_ir.json read. None when the model imports no .fsm."""
+    """Frame the FSM named graph (states/events/transitions/reactions, folded into the model dataset
+    by motion-spec-dsl) into the same dict shape the standalone .hpp uses, so codegen needs no
+    fsm_ir.json read. None when the model imports no .fsm.
+    """
     FSM = rdflib.Namespace(_FSM_NS)
     EL = rdflib.Namespace(_EL_NS)
     fsm_ref = next(iter(g.subjects(RDF["type"], FSM["FiniteStateMachine"])), None)
@@ -7476,9 +7151,8 @@ def _fsm_from_graph(g) -> dict | None:
         """FSM identifier token (upper-cased var name) for a graph URI."""
         return get_valid_var_name(g.compute_qname(uri)[2]).upper()
 
-    # Graph iteration order is rdflib's, not the model's: sort so two generations of the same
-    # model agree on state/event order -- event order especially, since indices are assigned
-    # from it and get baked into the generated C++.
+    # Graph iteration order is rdflib's: sort so two generations agree on state/event order,
+    # since event indices are assigned from it and baked into the generated C++.
     state_uris = dict(sorted((ident(s), str(s)) for s in g.objects(fsm_ref, FSM["states"])))
     states = list(state_uris)
     event_loop_node = g.value(fsm_ref, EL["event-loop"])
@@ -7555,16 +7229,16 @@ def is_fsm_event(monitor, fsm_ns_uri: str | None) -> bool:
 
 
 def _apply_fsm_wiring(motions, fsm) -> dict:
-    """Tag FSM-event monitors + their motions from the framed FSM, and return the codegen
-    wiring (C++ namespace, header, heartbeat) that is folded into ``ir["fsm"]``. Runs before the function-interface pass so the FSM-added robot
-    param is picked up. No tagging when the model has no FSM. Runs during motion construction."""
+    """Tag FSM-event monitors and their motions from the framed FSM, and return the codegen wiring
+    (C++ namespace, header, heartbeat) folded into ``ir["fsm"]``. Runs during motion construction,
+    before the function-interface pass so the FSM-added robot param is picked up.
+    """
     fsm_namespace = fsm["name"].lower() if fsm else None
     events = fsm.get("events", []) if fsm else []
     fsm_event_index = {event: idx for idx, event in enumerate(events)}
     fsm_step_event = "E_STEP" if "E_STEP" in events else None
-    # The heartbeat is the clock, so it is not logged every tick. Where a transition's guard *is*
-    # the clock, though, that single occurrence is what caused the state change and has to stay
-    # observable -- so name those transitions and let the runtime record the event just for them.
+    # The heartbeat is the clock and is not logged every tick, but where a transition's guard is
+    # the clock that occurrence caused the state change, so name those transitions.
     transitions_by_id = {t.get("id"): t for t in (fsm.get("transitions_table", []) if fsm else [])}
     fsm_step_transitions = [
         {"from": transition.get("from_state"), "to": transition.get("to_state")}
@@ -7581,8 +7255,8 @@ def _apply_fsm_wiring(motions, fsm) -> dict:
         "step_transitions": fsm_step_transitions,
     }
     if fsm_namespace is None:
-        # Without an FSM the sequencer advances on a motion's own `until`, so a motion that
-        # declares none can never be left and every motion after it is unreachable.
+        # Without an FSM the sequencer advances on a motion's own `until`, so one declaring none
+        # can never be left and every motion after it is unreachable.
         stuck = [_field(m, "id") for m in motions if not _field(m, "has_until_condition")]
         if stuck:
             raise ValueError(
@@ -7663,9 +7337,9 @@ def _apply_fsm_wiring(motions, fsm) -> dict:
 
 def _apply_fsm_gate_calls(motions, fsm_namespace) -> None:
     """Fold each fallback state's WHEN-evaluation gate calls: the gated motion id plus its
-    when-signature capability booleans. The C++ ``monitor_when_<id>(<args>)`` call is
-    rendered by the template via sig-args. Runs after function interfaces so when_needs_*
-    are available."""
+    when-signature capability booleans. Runs after function interfaces so when_needs_* exist; the
+    C++ ``monitor_when_<id>(<args>)`` call is rendered by the template via sig-args.
+    """
     if fsm_namespace is None:
         return
     by_id = {_field(m, "id"): m for m in motions}
@@ -7690,9 +7364,6 @@ def _apply_fsm_gate_calls(motions, fsm_namespace) -> None:
         )
 
 
-# ---------------------------------------------------------------------------
-# Top-level orchestration
-# ---------------------------------------------------------------------------
 def generate_ir(manifest_path):
     """Build the complete IR for a model manifest in one forward pass and return it as a dict."""
     app_model_path, g, imported_models, imported_provenance = _load_graph(manifest_path)
@@ -7711,8 +7382,7 @@ def generate_ir(manifest_path):
         if ordered_setups
         else ("", "", "", "", "", "", "", [], [], "", [], "", "", [], "")
     )
-    # Derive backend + FSM up front: both are pure functions of the graph and are inputs to
-    # downstream construction (solver validation, runtime-robot annotation, motion FSM wiring).
+    # Backend and FSM are pure functions of the graph and feed downstream construction.
     platform = _platform_from_graph(g)
     backend = platform["backend"]
     fsm = _fsm_from_graph(g)
@@ -7737,8 +7407,7 @@ def generate_ir(manifest_path):
     data_reference_map = _data_reference_map(data_structures, closures)
     closure_output_map, closure_input_map = _closure_maps(closures)
 
-    # Resolve declared-pose components and path goals from views/data/closures before
-    # motions are built (per-motion declared poses reference them).
+    # Before motions are built: their declared poses reference these.
     pose_nodes = {
         p.id(node): node for node in g.subjects(RDF.type, URI_GEOM_TYPE_POSE_COORD)
     }
@@ -7811,8 +7480,7 @@ def generate_ir(manifest_path):
     schedule = sched1 + sched2 + sched3 + sched4
     shared_schedule = sched1 + sched3 + sched4
 
-    # Collect the distinct ROS publishers a monitor's `also publish to topic` needs, so codegen
-    # links rclcpp/realtime_tools and sets up nodes/publishers only when publishing is present.
+    # Codegen links rclcpp/realtime_tools and sets up publishers only when publishing is present.
     _by_pub_id = {}
     for motion in motions:
         for phase in ("when_monitors", "until_monitors", "while_monitors"):
@@ -7833,17 +7501,14 @@ def generate_ir(manifest_path):
     ros_publishers = list(_by_pub_id.values())
     ros_packages = sorted({p["pkg"] for p in ros_publishers})
 
-    # An arm and a wheeled base are both actuated resources the program commands, so they ride
-    # in one kind-tagged collection instead of one top-level list and one optional subsystem.
-    # The by-kind views are filtered off `robots` here, in one place, because the templates
-    # dispatch on kind and ST4 cannot filter.
+    # Arm and wheeled base are both actuated resources, so they ride in one kind-tagged
+    # collection. The by-kind views are filtered off `robots` here because ST4 cannot filter.
     robots = [*slv_chain, *slv_platform_vel, *slv_platform_frc]
     resources = {
         "robots": robots,
         "by_kind": {
             "serial_chain": [r for r in robots if r.kind == "serial_chain"],
-            # ST4 treats only null/absent as falsy -- an empty list is truthy -- so the base
-            # rides as an object-or-absent, which is the presence guard the templates need.
+            # ST4 treats an empty list as truthy, so the base rides as object-or-absent.
             "mobile_base": (
                 {"velocity_solvers": slv_platform_vel, "force_solvers": slv_platform_frc}
                 if any(r.kind == "mobile_base" for r in robots)
@@ -7859,15 +7524,13 @@ def generate_ir(manifest_path):
         "closures": closures,
         "views": _views_for_access(view_map, shared_data, motions, closures),
         "shared_data": shared_data,
-        # Layer-B projections of the dataflow contract (annotate_dataflow), keyed by the model
-        # role a value plays -- not by the C++ construct the view builds from it.
+        # Layer-B projections of the dataflow contract, keyed by model role, not C++ construct.
         "values": values,
         "has_serial_chain": bool(slv_chain),
         # Every actuated resource the program commands, plus the by-kind views built above.
         "resources": resources,
-        # One key per optional subsystem, absent when the model has none. ST4 treats only
-        # null/absent as falsy -- an empty list is truthy -- so an absent object is the guard
-        # the templates need, and no separate has_* flag has to be kept in step with it.
+        # One key per optional subsystem, absent when the model has none: ST4 treats an empty
+        # list as truthy, so absence is the guard and no has_* flag has to track it.
         "ros": (
             {
                 "publishers": ros_publishers,
@@ -7889,14 +7552,10 @@ def generate_ir(manifest_path):
         "scene": scene,
         "trace": _TRACE_DISABLED,
         "introspection": introspection,
-        # FSM (states/events/transitions/reactions) framed from the FSM named graph that
-        # motion-spec-dsl folds into the model dataset, plus the codegen wiring derived from
-        # it; None when no .fsm is imported.
+        # Framed from the FSM named graph plus its derived codegen wiring; None without a .fsm.
         "fsm": {**fsm, **fsm_meta} if fsm else None,
     }
-    # ir is complete by construction — every codegen-facing field was computed while its
-    # piece was built (scene / solvers / closures / motions / introspection). Codegen only
-    # loads ir.json and renders; there is no post-assembly derivation pass.
+    # Complete by construction: codegen loads ir.json and renders, with no derivation pass.
     return ir
 
 

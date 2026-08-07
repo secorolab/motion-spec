@@ -944,7 +944,10 @@ def add_control_parameters(closures: dict, shared_data: list, introspection: dic
             for name, source, required in gains
         }
         # The bounds are authored shared quantities already; the call site reads them by id.
+        # Both bounds cross here: the parser binds them to the same signal, and a bound that
+        # stops at the controller record is a limit the model authored and the robot never sees.
         closure["integral_saturation"] = _field(controller, "integral_saturation")
+        closure["output_saturation"] = _field(controller, "output_saturation")
 
 
 # Row order is the emitted JSON key order.

@@ -53,7 +53,7 @@ def generate_ir(manifest_path) -> dict:
     handlers, handler_steps = coordination.build_constraint_handlers(model, schedule, derivation)
     kdl_header = kdl_header_name(model.app_path)
     for solver in robots.serial_chains:
-        solver.kdl_header = kdl_header
+        solver.chain.kdl_header = kdl_header
     coordination.assign_event_indexes(handlers)
 
     closures = operations.build_closures(model, _ALL_OPERATORS)
@@ -134,7 +134,8 @@ def _resources_section(robots) -> dict:
             "force_solvers": robots.platform_force,
         }
 
-    return {"robots": every, "by_kind": by_kind}
+    # `by_id` is how a per-motion solver slice resolves everything the solver owns.
+    return {"robots": every, "by_kind": by_kind, "by_id": robots.by_id}
 
 
 def _computation_section(closures, views, shared_data, values, motions) -> dict:

@@ -14,7 +14,6 @@ from pathlib import Path
 from motion_spec.classes.base import DataclassJSONEncoder
 from motion_spec.generation.artifacts import write_introspection_artifacts
 
-
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 MAIN_TEMPLATE = "main"
 # The templates ship inside the package, so they sit beside it however it was installed.
@@ -214,6 +213,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
             "views": ir["computation"]["views"],
             "values": ir["computation"]["values"],
             "backend": ir["configuration"]["backend"],
+            "solvers": ir["resources"]["by_id"],
         }
         payload_path = payload_dir / f"{motion['id']}.json"
         write_json(payload_path, payload)

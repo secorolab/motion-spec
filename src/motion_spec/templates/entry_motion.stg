@@ -9,7 +9,7 @@ import "domain_controllers.stg"
 import "domain_solver.stg"
 import "expr_values.stg"
 
-motion_header(motion, closures, views, values, backend) ::= <<
+motion_header(motion, closures, views, values, backend, solvers) ::= <<
 /// Motion: <motion.name>
 <motion.description:{line | /// <line>}; separator="\n">
 #pragma once
@@ -42,7 +42,7 @@ inline void reset_<motion.id>(<motion.id>_state &state) {
 
 inline void init_<motion.id>(<motion.id>_state &state, const robot_io &robot) {
 <if(motion.serial_chain_solvers)>
-<chain-init-block(motion.serial_chain_solvers, backend)>
+<chain-init-block(motion.serial_chain_solvers, solvers, backend)>
 <endif>
 }
 
@@ -56,7 +56,7 @@ inline void update_<motion.id>(
     }
 <motion.active_elapsed_ids:{c |     shared.<c> = shared.clock_time_s - state.motion_start_time;
 }><endif>
-<motion-prelude(values.externally_measured, motion.serial_chain_solvers, backend)>
+<motion-prelude(values.externally_measured, motion.serial_chain_solvers, solvers, backend)>
 <motion.relative_poses:{rp | <emit-relative-pose(rp)>}; separator="\n">
 <motion.scene_relative_poses:{srp |
 <if(srp.base_seen)>    shared.<srp.id> = KDL::Frame(shared.<srp.fk_pose_id>.M, shared.<srp.fk_pose_id>.p - shared.<srp.scene_pose_id>.p);
@@ -128,13 +128,13 @@ inline void control_<motion.id>(
 <endif>
 <if(motion.serial_chain_solvers)>
 
-<chain-run-block(motion.serial_chain_solvers, backend)>
+<chain-run-block(motion.serial_chain_solvers, solvers, backend)>
 <endif>
 }
 
 inline void apply_<motion.id>(<sig-params(motion.id, motion.apply_needs_state, motion.apply_needs_shared, motion.apply_needs_robot)>) {
 <if(motion.serial_chain_solvers)>
-<chain-stage-block(motion.serial_chain_solvers, backend)>
+<chain-stage-block(motion.serial_chain_solvers, solvers, backend)>
 <chain-apply-block(motion.serial_chain_solvers, backend)>
 <endif>
 <command-forwarding(backend, motion)>

@@ -4,7 +4,7 @@
 import "backend_robot.stg"
 robot-driver-include-mj_kdl-KinovaGen3(solver) ::= <<
 #include \<mj_kdl_wrapper/mj_kdl_wrapper.hpp\>
-#include "headers/<solver.kdl_header>"
+#include "headers/<solver.chain.kdl_header>"
 >>
 
 robot-state-struct-mj_kdl-KinovaGen3(solver) ::= <<
@@ -22,60 +22,60 @@ robot-state-init-mj_kdl-KinovaGen3(solver) ::= <<
 >>
 
 mj-sensor-ForceTorque(solver, sensor) ::= <<
-    mj_tool_<solver.runtime_id>.ft_sensors.push_back(mj_kdl::ForceTorqueSensorSpec{ .name = "<sensor.id>", .frame_site = "<sensor.frame_site>" \});
+    mj_tool_<solver.runtime.id>.ft_sensors.push_back(mj_kdl::ForceTorqueSensorSpec{ .name = "<sensor.id>", .frame_site = "<sensor.frame_site>" \});
 >>
 
 robot-init-mj_kdl-KinovaGen3(solver) ::= <<
-<if(solver.runtime_owner)>    mj_kdl::Robot mj_<solver.runtime_id>{};
-<if(solver.tool_body)>    mj_kdl::ToolFrameSpec mj_tool_<solver.runtime_id>{};
-    mj_tool_<solver.runtime_id>.tool_body = "<solver.tool_body>";
-<if(solver.tcp_site)>    mj_tool_<solver.runtime_id>.tcp_site = "<solver.tcp_site>";
+<if(solver.runtime.owner)>    mj_kdl::Robot mj_<solver.runtime.id>{};
+<if(solver.hardware.tool_body)>    mj_kdl::ToolFrameSpec mj_tool_<solver.runtime.id>{};
+    mj_tool_<solver.runtime.id>.tool_body = "<solver.hardware.tool_body>";
+<if(solver.hardware.tcp_site)>    mj_tool_<solver.runtime.id>.tcp_site = "<solver.hardware.tcp_site>";
 <endif><solver.sensors:{s |<({mj-sensor-<s.type>})(solver, s)>
-}>    KDL::Tree built_tree_<solver.runtime_id>{};
-    if (!scene_kdl::make_tree_<solver.kdl_tree>(&built_tree_<solver.runtime_id>)) {
-        std::cerr \<\< "make_tree_<solver.kdl_tree>() failed for runtime <solver.runtime_id>\n";
+}>    KDL::Tree built_tree_<solver.runtime.id>{};
+    if (!scene_kdl::make_tree_<solver.chain.kdl_tree>(&built_tree_<solver.runtime.id>)) {
+        std::cerr \<\< "make_tree_<solver.chain.kdl_tree>() failed for runtime <solver.runtime.id>\n";
         mj_kdl::cleanup(&mj_env);
         return 1;
     \}
-    KDL::Chain built_chain_<solver.runtime_id>{};
-    if (!scene_kdl::make_chain_<solver.kdl_chain>(built_tree_<solver.runtime_id>, &built_chain_<solver.runtime_id>)) {
-        std::cerr \<\< "make_chain_<solver.kdl_chain>() failed for runtime <solver.runtime_id>\n";
+    KDL::Chain built_chain_<solver.runtime.id>{};
+    if (!scene_kdl::make_chain_<solver.chain.kdl_chain>(built_tree_<solver.runtime.id>, &built_chain_<solver.runtime.id>)) {
+        std::cerr \<\< "make_chain_<solver.chain.kdl_chain>() failed for runtime <solver.runtime.id>\n";
         mj_kdl::cleanup(&mj_env);
         return 1;
     \}
-    if (!mj_kdl::init_robot_from_chain(&mj_<solver.runtime_id>, mj_env.model, mj_env.data, built_chain_<solver.runtime_id>, {<solver.kdl_joints:{j |"<j>"}; separator=", ">\}, "", &mj_tool_<solver.runtime_id>)) {
-<else>    KDL::Tree built_tree_<solver.runtime_id>{};
-    if (!scene_kdl::make_tree_<solver.kdl_tree>(&built_tree_<solver.runtime_id>)) {
-        std::cerr \<\< "make_tree_<solver.kdl_tree>() failed for runtime <solver.runtime_id>\n";
+    if (!mj_kdl::init_robot_from_chain(&mj_<solver.runtime.id>, mj_env.model, mj_env.data, built_chain_<solver.runtime.id>, {<solver.chain.kdl_joints:{j |"<j>"}; separator=", ">\}, "", &mj_tool_<solver.runtime.id>)) {
+<else>    KDL::Tree built_tree_<solver.runtime.id>{};
+    if (!scene_kdl::make_tree_<solver.chain.kdl_tree>(&built_tree_<solver.runtime.id>)) {
+        std::cerr \<\< "make_tree_<solver.chain.kdl_tree>() failed for runtime <solver.runtime.id>\n";
         mj_kdl::cleanup(&mj_env);
         return 1;
     \}
-    KDL::Chain built_chain_<solver.runtime_id>{};
-    if (!scene_kdl::make_chain_<solver.kdl_chain>(built_tree_<solver.runtime_id>, &built_chain_<solver.runtime_id>)) {
-        std::cerr \<\< "make_chain_<solver.kdl_chain>() failed for runtime <solver.runtime_id>\n";
+    KDL::Chain built_chain_<solver.runtime.id>{};
+    if (!scene_kdl::make_chain_<solver.chain.kdl_chain>(built_tree_<solver.runtime.id>, &built_chain_<solver.runtime.id>)) {
+        std::cerr \<\< "make_chain_<solver.chain.kdl_chain>() failed for runtime <solver.runtime.id>\n";
         mj_kdl::cleanup(&mj_env);
         return 1;
     \}
-    if (!mj_kdl::init_robot_from_chain(&mj_<solver.runtime_id>, mj_env.model, mj_env.data, built_chain_<solver.runtime_id>, {<solver.kdl_joints:{j |"<j>"}; separator=", ">\})) {
+    if (!mj_kdl::init_robot_from_chain(&mj_<solver.runtime.id>, mj_env.model, mj_env.data, built_chain_<solver.runtime.id>, {<solver.chain.kdl_joints:{j |"<j>"}; separator=", ">\})) {
 <endif>
-        std::cerr \<\< "init_robot_from_chain() failed for runtime <solver.runtime_id>\n";
+        std::cerr \<\< "init_robot_from_chain() failed for runtime <solver.runtime.id>\n";
         mj_kdl::cleanup(&mj_env);
         return 1;
     \}
-    mj_<solver.runtime_id>.ctrl_mode = mj_kdl::CtrlMode::TORQUE;
-    mj_kdl::env_add_robot(&mj_env, &mj_<solver.runtime_id>);
+    mj_<solver.runtime.id>.ctrl_mode = mj_kdl::CtrlMode::TORQUE;
+    mj_kdl::env_add_robot(&mj_env, &mj_<solver.runtime.id>);
 <endif>
 >>
 
 robot-chain-mj_kdl-KinovaGen3(solver) ::= <<
-<if(solver.runtime_owner)>    KDL::Chain *chain_<solver.runtime_id> = &mj_<solver.runtime_id>.chain;
+<if(solver.runtime.owner)>    KDL::Chain *chain_<solver.runtime.id> = &mj_<solver.runtime.id>.chain;
 <endif>
 >>
 
 robot-assign-mj_kdl-KinovaGen3(solver) ::= <<
     robot.<solver.id> = manipulator_robot{
-        .robot = &mj_<solver.runtime_id>,
-        .chain = chain_<solver.runtime_id>,
+        .robot = &mj_<solver.runtime.id>,
+        .chain = chain_<solver.runtime.id>,
     };
 <solver.sensors:{s |<({mj-sensor-config-<s.type>})(solver, s)>}>
 >>
@@ -83,14 +83,14 @@ robot-assign-mj_kdl-KinovaGen3(solver) ::= <<
 // The tare length is a deployment property, so the simulator reads the same config key the real
 // driver does rather than carrying a second number of its own.
 mj-sensor-config-ForceTorque(solver, sensor) ::= <<
-    robot.<solver.id>.ft_bias_samples = motion_spec::config::bias_samples(robot_config, "<solver.config_key>");
+    robot.<solver.id>.ft_bias_samples = motion_spec::config::bias_samples(robot_config, "<solver.runtime.config_key>");
 >>
 
 robot-configure-mj_kdl-KinovaGen3(solver) ::= <<
 >>
 
 robot-shutdown-mj_kdl-KinovaGen3(solver) ::= <<
-<if(solver.runtime_owner)>    mj_kdl::cleanup(&mj_<solver.runtime_id>);
+<if(solver.runtime.owner)>    mj_kdl::cleanup(&mj_<solver.runtime.id>);
 <endif>
 >>
 
@@ -296,7 +296,7 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
 
     mj_kdl::Viewer mj_viewer{};
     if (!headless) {
-        if (!mj_kdl::init_window_sim(&mj_viewer, &mj_<first(serial_chain_solvers).runtime_id>)) {
+        if (!mj_kdl::init_window_sim(&mj_viewer, &mj_<first(serial_chain_solvers).runtime.id>)) {
             std::cerr \<\< "mj_kdl::init_window_sim() failed\\n";
             mj_kdl::cleanup(&mj_env);
             return 1;
@@ -306,22 +306,22 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
 
 app-chain-post-setup-mj_kdl(serial_chain_solvers, motions, agent_homes) ::= <<
     mj_env.on_reset = [&](mj_kdl::ResetContext *) {
-<serial_chain_solvers:{solver | <if(solver.runtime_owner)>        {
-            const double _q_home[] = {<agent_homes.(solver.config_key); separator=", ">\};
-            KDL::JntArray _q(mj_<solver.runtime_id>.n_joints);
-            for (int _i = 0; _i \< mj_<solver.runtime_id>.n_joints && _i \< static_cast\<int\>(std::size(_q_home)); ++_i)
+<serial_chain_solvers:{solver | <if(solver.runtime.owner)>        {
+            const double _q_home[] = {<agent_homes.(solver.runtime.config_key); separator=", ">\};
+            KDL::JntArray _q(mj_<solver.runtime.id>.n_joints);
+            for (int _i = 0; _i \< mj_<solver.runtime.id>.n_joints && _i \< static_cast\<int\>(std::size(_q_home)); ++_i)
                 _q(_i) = _q_home[_i];
-            mj_kdl::set_joint_pos(&mj_<solver.runtime_id>, _q, false);
+            mj_kdl::set_joint_pos(&mj_<solver.runtime.id>, _q, false);
         \}
 <endif>}; separator="">
         <motions:{m | reset_<m.id>(<m.id>_state_instance);}; separator="\n        ">
     };
     mj_kdl::reset(&mj_env);
-    double _prev_sim_time = mj_<first(serial_chain_solvers).runtime_id>.data->time;
+    double _prev_sim_time = mj_<first(serial_chain_solvers).runtime.id>.data->time;
 >>
 
 app-chain-loop-reset-mj_kdl(serial_chain_solvers, fsm) ::= <<
-        if (mj_<first(serial_chain_solvers).runtime_id>.data->time \< _prev_sim_time - 1e-6) {
+        if (mj_<first(serial_chain_solvers).runtime.id>.data->time \< _prev_sim_time - 1e-6) {
             mj_kdl::reset(&mj_env);
 <if(fsm)>
             fsm->currentStateIndex = fsm->startStateIndex;
@@ -329,7 +329,7 @@ app-chain-loop-reset-mj_kdl(serial_chain_solvers, fsm) ::= <<
             current_motion = 0;
 <endif>
         }
-        _prev_sim_time = mj_<first(serial_chain_solvers).runtime_id>.data->time;
+        _prev_sim_time = mj_<first(serial_chain_solvers).runtime.id>.data->time;
 >>
 
 app-loop-condition-mj_kdl(has_serial_chain) ::= <<
@@ -344,12 +344,12 @@ app-chain-cleanup-mj_kdl(has_serial_chain) ::= <<
 >>
 
 app-chain-runtime-step-mj_kdl(serial_chain_solvers) ::= <<
-<serial_chain_solvers:{solver | <if(solver.runtime_owner)>        mj_kdl::update(&mj_<solver.runtime_id>);
+<serial_chain_solvers:{solver | <if(solver.runtime.owner)>        mj_kdl::update(&mj_<solver.runtime.id>);
 <endif>}; separator="">
         // Closing the viewer ends the run, but it must end the same way S_DONE does. std::exit
         // skips destructors, so the frame logger's writer thread never drained and the log was
         // left with a half-written record and no health file -- break, and let teardown run.
-        if (!mj_kdl::step(&mj_<first(serial_chain_solvers).runtime_id>)) {
+        if (!mj_kdl::step(&mj_<first(serial_chain_solvers).runtime.id>)) {
             break;
         }
 >>
@@ -367,7 +367,7 @@ app-chain-trace-update-mj_kdl(serial_chain_solvers, trace) ::= <<
             mj_kdl::clear_trace(&mj_viewer);
 <trace.targets:{target |            static std::deque\<KDL::Vector> _trace<i0>;
             KDL::Frame _f<i0>;
-            if (mj_kdl::get_site_frame(mj_<first(serial_chain_solvers).runtime_id>.model, mj_<first(serial_chain_solvers).runtime_id>.data, "<target.link>", &_f<i0>) || mj_kdl::get_body_frame(mj_<first(serial_chain_solvers).runtime_id>.model, mj_<first(serial_chain_solvers).runtime_id>.data, "<target.link>", &_f<i0>)) _trace<i0>.push_back(_f<i0>.p);
+            if (mj_kdl::get_site_frame(mj_<first(serial_chain_solvers).runtime.id>.model, mj_<first(serial_chain_solvers).runtime.id>.data, "<target.link>", &_f<i0>) || mj_kdl::get_body_frame(mj_<first(serial_chain_solvers).runtime.id>.model, mj_<first(serial_chain_solvers).runtime.id>.data, "<target.link>", &_f<i0>)) _trace<i0>.push_back(_f<i0>.p);
             if (_trace<i0>.size() > kTraceMax) _trace<i0>.pop_front();
             for (size_t _i = 1; _i \< _trace<i0>.size(); ++_i)
                 mj_kdl::add_trace_segment(&mj_viewer, _trace<i0>[_i - 1], _trace<i0>[_i], kTraceRGBA);
@@ -387,8 +387,8 @@ app-chain-trace-update-mj_kdl(serial_chain_solvers, trace) ::= <<
             static KDL::Frame _trace_world_T_base;
             if (!_trace_base_ok) {
                 _trace_base_ok = mj_kdl::get_body_frame(
-                    mj_<first(serial_chain_solvers).runtime_id>.model, mj_<first(serial_chain_solvers).runtime_id>.data,
-                    "<first(serial_chain_solvers).chain_root>", &_trace_world_T_base);
+                    mj_<first(serial_chain_solvers).runtime.id>.model, mj_<first(serial_chain_solvers).runtime.id>.data,
+                    "<first(serial_chain_solvers).chain.root>", &_trace_world_T_base);
             }
             _trace.push_back(_trace_world_T_base * shared.pose_ee_base.p);
             if (_trace.size() > kTraceMax) _trace.pop_front();

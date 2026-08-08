@@ -37,11 +37,11 @@ motion-done-condition(motion) ::= <<
 <if(motion.done_terms_present)><bool-condition(motion.done_terms, motion.until_any)><else>true<endif>
 >>
 
-motion-prelude(externally_measured, serial_chain_solvers, backend) ::= <<
+motion-prelude(externally_measured, serial_chain_solvers, solvers, backend) ::= <<
 <externally_measured:{wrench | <sync-wrench(wrench)>}; separator="\n">
 <if(serial_chain_solvers)>
 
-<chain-prepare-block(serial_chain_solvers, backend)>
+<chain-prepare-block(serial_chain_solvers, solvers, backend)>
 <endif>
 >>
 
@@ -73,7 +73,7 @@ chain-robot-member(solver) ::= <<
 // the solvers sharing that runtime reach the same device through it.
 
 chain-device-members(solver, backend) ::= <<
-<if(solver.runtime_owner)><({chain-device-members-<backend>})(solver)><endif>
+<if(solver.runtime.owner)><({chain-device-members-<backend>})(solver)><endif>
 >>
 
 chain-device-members-mj_kdl(solver) ::= <<>>
@@ -94,24 +94,24 @@ chain-state-members(serial_chain_solvers) ::= <<
 <serial_chain_solvers:{solver |     <solver.id>_solver_state <solver.id>;}; separator="\n">
 >>
 
-chain-init-block(serial_chain_solvers, backend) ::= <<
-<serial_chain_solvers:{solver |     <solver-init(solver, solver.motion_driver, backend)>}; separator="\n">
+chain-init-block(serial_chain_solvers, solvers, backend) ::= <<
+<serial_chain_solvers:{solver |     <solver-init(solver, solvers.(solver.solver_id), solver.motion_driver, backend)>}; separator="\n">
 >>
 
-chain-prepare-block(serial_chain_solvers, backend) ::= <<
+chain-prepare-block(serial_chain_solvers, solvers, backend) ::= <<
 <serial_chain_solvers:{solver |
     <solver-sync-input(solver, backend)>
-    <solver.output:{out | <solver-output(solver, out, backend)>}; separator="\n\n">
+    <solver.output:{out | <solver-output(solver, solvers.(solver.solver_id), out, backend)>}; separator="\n\n">
 <solver.gripper_joint_outputs:{out |     <gripper-joint-output(solver, out, backend)>}; separator="\n">
 }; separator="\n\n">
 >>
 
-chain-run-block(serial_chain_solvers, backend) ::= <<
-<serial_chain_solvers:{solver |     <solver-run(solver, solver.motion_driver, backend)>}; separator="\n">
+chain-run-block(serial_chain_solvers, solvers, backend) ::= <<
+<serial_chain_solvers:{solver |     <solver-run(solver, solvers.(solver.solver_id), solver.motion_driver, backend)>}; separator="\n">
 >>
 
-chain-stage-block(serial_chain_solvers, backend) ::= <<
-<serial_chain_solvers:{solver |     <solver-stage-output(solver, backend)>}; separator="\n">
+chain-stage-block(serial_chain_solvers, solvers, backend) ::= <<
+<serial_chain_solvers:{solver |     <solver-stage-output(solver, solvers.(solver.solver_id), backend)>}; separator="\n">
 >>
 
 chain-apply-block(serial_chain_solvers, backend) ::= <<

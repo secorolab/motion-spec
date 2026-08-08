@@ -3,7 +3,7 @@
 
 import "backend_robot.stg"
 robot-driver-include-robif2b-KinovaGen3(solver) ::= <<
-#include "headers/<solver.kdl_header>"
+#include "headers/<solver.chain.kdl_header>"
 #include \<robif2b/functions/kinova_gen3.h\>
 #include \<robif2b/functions/robotiq_gripper.h\>
 #include \<robif2b/functions/robotiq_ft_sensor.h\>
@@ -74,8 +74,8 @@ struct manipulator_robot {
 >>
 
 robot-state-init-robif2b-KinovaGen3(solver) ::= <<
-<if(solver.runtime_owner)>    kinova_state kinova_<solver.runtime_id>_state{};
-    kinova_<solver.runtime_id>_state.ctrl_mode = ROBIF2B_CTRL_MODE_FORCE;
+<if(solver.runtime.owner)>    kinova_state kinova_<solver.runtime.id>_state{};
+    kinova_<solver.runtime.id>_state.ctrl_mode = ROBIF2B_CTRL_MODE_FORCE;
 <solver.devices:{device | <({<device-state-init-impl.(device.kind)>})(solver, device)>}; separator="\n">
 <endif>
 >>
@@ -117,19 +117,19 @@ device-state-init-impl ::= [
 ]
 
 device-state-init-robif2b-KinovaGen3-2F85(solver, device) ::= <<
-    kg3_gripper_state gripper_<solver.runtime_id>_state{};
-    gripper_<solver.runtime_id>_state.vel_cmd = static_cast\<float\>(motion_spec::config::gripper_pct(robot_config, "<device.config_key>", "gripper_speed_pct"));
-    gripper_<solver.runtime_id>_state.frc_cmd = static_cast\<float\>(motion_spec::config::gripper_pct(robot_config, "<device.config_key>", "gripper_force_pct"));
-    double gripper_<solver.runtime_id>_cmd = 0.0;
-    double gripper_<solver.runtime_id>_pos_rad = 0.0;
+    kg3_gripper_state gripper_<solver.runtime.id>_state{};
+    gripper_<solver.runtime.id>_state.vel_cmd = static_cast\<float\>(motion_spec::config::gripper_pct(robot_config, "<device.config_key>", "gripper_speed_pct"));
+    gripper_<solver.runtime.id>_state.frc_cmd = static_cast\<float\>(motion_spec::config::gripper_pct(robot_config, "<device.config_key>", "gripper_force_pct"));
+    double gripper_<solver.runtime.id>_cmd = 0.0;
+    double gripper_<solver.runtime.id>_pos_rad = 0.0;
 >>
 
 device-state-init-robif2b-Robotiq2F85(solver, device) ::= <<
-    serial_gripper_state gripper_<solver.runtime_id>_state{};
-    gripper_<solver.runtime_id>_state.speed_cmd = motion_spec::config::gripper_pct_byte(robot_config, "<device.config_key>", "gripper_speed_pct");
-    gripper_<solver.runtime_id>_state.force_cmd = motion_spec::config::gripper_pct_byte(robot_config, "<device.config_key>", "gripper_force_pct");
-    double gripper_<solver.runtime_id>_cmd = 0.0;
-    double gripper_<solver.runtime_id>_pos_rad = 0.0;
+    serial_gripper_state gripper_<solver.runtime.id>_state{};
+    gripper_<solver.runtime.id>_state.speed_cmd = motion_spec::config::gripper_pct_byte(robot_config, "<device.config_key>", "gripper_speed_pct");
+    gripper_<solver.runtime.id>_state.force_cmd = motion_spec::config::gripper_pct_byte(robot_config, "<device.config_key>", "gripper_force_pct");
+    double gripper_<solver.runtime.id>_cmd = 0.0;
+    double gripper_<solver.runtime.id>_pos_rad = 0.0;
 >>
 
 device-state-init-robif2b-RobotiqFT300s(solver, device) ::= <<
@@ -159,28 +159,28 @@ device-shutdown-robif2b(solver, device) ::= <<
 gripper-travel-Robotiq2F85() ::= "0.8"
 
 device-init-robif2b-KinovaGen3(solver, device) ::= <<
-<if(solver.runtime_owner)>    const auto cfg_<solver.runtime_id> = motion_spec::config::device(robot_config, "<device.config_key>");
-    robif2b_kinova_gen3_nbx kinova_<solver.runtime_id>{};
-    kinova_<solver.runtime_id>.conf.ip_address = cfg_<solver.runtime_id>.ip.c_str();
-    kinova_<solver.runtime_id>.conf.port = cfg_<solver.runtime_id>.port;
-    kinova_<solver.runtime_id>.conf.port_real_time = cfg_<solver.runtime_id>.port_real_time;
-    kinova_<solver.runtime_id>.conf.user = cfg_<solver.runtime_id>.user.c_str();
-    kinova_<solver.runtime_id>.conf.password = cfg_<solver.runtime_id>.password.c_str();
-    kinova_<solver.runtime_id>.conf.session_timeout = cfg_<solver.runtime_id>.session_timeout_ms;
-    kinova_<solver.runtime_id>.conf.connection_timeout = cfg_<solver.runtime_id>.connection_timeout_ms;
+<if(solver.runtime.owner)>    const auto cfg_<solver.runtime.id> = motion_spec::config::device(robot_config, "<device.config_key>");
+    robif2b_kinova_gen3_nbx kinova_<solver.runtime.id>{};
+    kinova_<solver.runtime.id>.conf.ip_address = cfg_<solver.runtime.id>.ip.c_str();
+    kinova_<solver.runtime.id>.conf.port = cfg_<solver.runtime.id>.port;
+    kinova_<solver.runtime.id>.conf.port_real_time = cfg_<solver.runtime.id>.port_real_time;
+    kinova_<solver.runtime.id>.conf.user = cfg_<solver.runtime.id>.user.c_str();
+    kinova_<solver.runtime.id>.conf.password = cfg_<solver.runtime.id>.password.c_str();
+    kinova_<solver.runtime.id>.conf.session_timeout = cfg_<solver.runtime.id>.session_timeout_ms;
+    kinova_<solver.runtime.id>.conf.connection_timeout = cfg_<solver.runtime.id>.connection_timeout_ms;
     // The arm integrates a velocity command over this, and asserts on it every update: it is
     // the period the model declares, the same one the loop sleeps to.
-    kinova_<solver.runtime_id>.cycle_time = &motion_spec::runtime::kControlPeriodS;
-    kinova_<solver.runtime_id>.ctrl_mode = &kinova_<solver.runtime_id>_state.ctrl_mode;
-    kinova_<solver.runtime_id>.jnt_pos_msr = &kinova_<solver.runtime_id>_state.pos_msr[0];
-    kinova_<solver.runtime_id>.jnt_vel_msr = &kinova_<solver.runtime_id>_state.vel_msr[0];
-    kinova_<solver.runtime_id>.jnt_trq_msr = &kinova_<solver.runtime_id>_state.eff_msr[0];
-    kinova_<solver.runtime_id>.act_cur_msr = &kinova_<solver.runtime_id>_state.cur_msr[0];
-    kinova_<solver.runtime_id>.jnt_pos_cmd = &kinova_<solver.runtime_id>_state.pos_cmd[0];
-    kinova_<solver.runtime_id>.jnt_vel_cmd = &kinova_<solver.runtime_id>_state.vel_cmd[0];
-    kinova_<solver.runtime_id>.jnt_trq_cmd = &kinova_<solver.runtime_id>_state.eff_cmd[0];
-    kinova_<solver.runtime_id>.act_cur_cmd = &kinova_<solver.runtime_id>_state.cur_cmd[0];
-    kinova_<solver.runtime_id>.success = &kinova_<solver.runtime_id>_state.success;
+    kinova_<solver.runtime.id>.cycle_time = &motion_spec::runtime::kControlPeriodS;
+    kinova_<solver.runtime.id>.ctrl_mode = &kinova_<solver.runtime.id>_state.ctrl_mode;
+    kinova_<solver.runtime.id>.jnt_pos_msr = &kinova_<solver.runtime.id>_state.pos_msr[0];
+    kinova_<solver.runtime.id>.jnt_vel_msr = &kinova_<solver.runtime.id>_state.vel_msr[0];
+    kinova_<solver.runtime.id>.jnt_trq_msr = &kinova_<solver.runtime.id>_state.eff_msr[0];
+    kinova_<solver.runtime.id>.act_cur_msr = &kinova_<solver.runtime.id>_state.cur_msr[0];
+    kinova_<solver.runtime.id>.jnt_pos_cmd = &kinova_<solver.runtime.id>_state.pos_cmd[0];
+    kinova_<solver.runtime.id>.jnt_vel_cmd = &kinova_<solver.runtime.id>_state.vel_cmd[0];
+    kinova_<solver.runtime.id>.jnt_trq_cmd = &kinova_<solver.runtime.id>_state.eff_cmd[0];
+    kinova_<solver.runtime.id>.act_cur_cmd = &kinova_<solver.runtime.id>_state.cur_cmd[0];
+    kinova_<solver.runtime.id>.success = &kinova_<solver.runtime.id>_state.success;
 <endif>
 >>
 
@@ -188,38 +188,38 @@ device-init-robif2b-KinovaGen3(solver, device) ::= <<
 // of its own, so this is the arm's rule set plus the gripper hanging off its comm.
 device-init-robif2b-KinovaGen3-2F85(solver, device) ::= <<
 <device-init-robif2b-KinovaGen3(solver, device)>
-<if(solver.runtime_owner)>    robif2b_kg3_robotiq_gripper_nbx gripper_<solver.runtime_id>{};
-    gripper_<solver.runtime_id>.gripper_pos_msr = &gripper_<solver.runtime_id>_state.pos_msr;
-    gripper_<solver.runtime_id>.gripper_vel_msr = &gripper_<solver.runtime_id>_state.vel_msr;
-    gripper_<solver.runtime_id>.gripper_cur_msr = &gripper_<solver.runtime_id>_state.cur_msr;
-    gripper_<solver.runtime_id>.gripper_pos_cmd = &gripper_<solver.runtime_id>_state.pos_cmd;
-    gripper_<solver.runtime_id>.gripper_vel_cmd = &gripper_<solver.runtime_id>_state.vel_cmd;
-    gripper_<solver.runtime_id>.gripper_frc_cmd = &gripper_<solver.runtime_id>_state.frc_cmd;
-    gripper_<solver.runtime_id>.success = &gripper_<solver.runtime_id>_state.success;
+<if(solver.runtime.owner)>    robif2b_kg3_robotiq_gripper_nbx gripper_<solver.runtime.id>{};
+    gripper_<solver.runtime.id>.gripper_pos_msr = &gripper_<solver.runtime.id>_state.pos_msr;
+    gripper_<solver.runtime.id>.gripper_vel_msr = &gripper_<solver.runtime.id>_state.vel_msr;
+    gripper_<solver.runtime.id>.gripper_cur_msr = &gripper_<solver.runtime.id>_state.cur_msr;
+    gripper_<solver.runtime.id>.gripper_pos_cmd = &gripper_<solver.runtime.id>_state.pos_cmd;
+    gripper_<solver.runtime.id>.gripper_vel_cmd = &gripper_<solver.runtime.id>_state.vel_cmd;
+    gripper_<solver.runtime.id>.gripper_frc_cmd = &gripper_<solver.runtime.id>_state.frc_cmd;
+    gripper_<solver.runtime.id>.success = &gripper_<solver.runtime.id>_state.success;
 <endif>
 >>
 
 device-init-robif2b-Robotiq2F85(solver, device) ::= <<
-<if(solver.runtime_owner)>    const auto cfg_gripper_<solver.runtime_id> = motion_spec::config::serial(robot_config, "<device.config_key>");
-    robif2b_robotiq_gripper_nbx gripper_<solver.runtime_id>{};
-    gripper_<solver.runtime_id>.serial.port = cfg_gripper_<solver.runtime_id>.port.c_str();
-    gripper_<solver.runtime_id>.serial.baudrate = cfg_gripper_<solver.runtime_id>.baudrate;
-    gripper_<solver.runtime_id>.serial.timeout_ms = cfg_gripper_<solver.runtime_id>.timeout_ms;
-    gripper_<solver.runtime_id>.serial.slave_address = cfg_gripper_<solver.runtime_id>.slave_address;
-    gripper_<solver.runtime_id>.position_msr = &gripper_<solver.runtime_id>_state.position_msr;
-    gripper_<solver.runtime_id>.is_gripper_moving = &gripper_<solver.runtime_id>_state.is_moving;
-    gripper_<solver.runtime_id>.obj_detection_status = &gripper_<solver.runtime_id>_state.obj_status;
-    gripper_<solver.runtime_id>.gripper_status = &gripper_<solver.runtime_id>_state.status;
-    gripper_<solver.runtime_id>.position_cmd = &gripper_<solver.runtime_id>_state.position_cmd;
-    gripper_<solver.runtime_id>.speed_cmd = &gripper_<solver.runtime_id>_state.speed_cmd;
-    gripper_<solver.runtime_id>.force_cmd = &gripper_<solver.runtime_id>_state.force_cmd;
-    gripper_<solver.runtime_id>.error = &gripper_<solver.runtime_id>_state.error;
-    gripper_<solver.runtime_id>.success = &gripper_<solver.runtime_id>_state.success;
+<if(solver.runtime.owner)>    const auto cfg_gripper_<solver.runtime.id> = motion_spec::config::serial(robot_config, "<device.config_key>");
+    robif2b_robotiq_gripper_nbx gripper_<solver.runtime.id>{};
+    gripper_<solver.runtime.id>.serial.port = cfg_gripper_<solver.runtime.id>.port.c_str();
+    gripper_<solver.runtime.id>.serial.baudrate = cfg_gripper_<solver.runtime.id>.baudrate;
+    gripper_<solver.runtime.id>.serial.timeout_ms = cfg_gripper_<solver.runtime.id>.timeout_ms;
+    gripper_<solver.runtime.id>.serial.slave_address = cfg_gripper_<solver.runtime.id>.slave_address;
+    gripper_<solver.runtime.id>.position_msr = &gripper_<solver.runtime.id>_state.position_msr;
+    gripper_<solver.runtime.id>.is_gripper_moving = &gripper_<solver.runtime.id>_state.is_moving;
+    gripper_<solver.runtime.id>.obj_detection_status = &gripper_<solver.runtime.id>_state.obj_status;
+    gripper_<solver.runtime.id>.gripper_status = &gripper_<solver.runtime.id>_state.status;
+    gripper_<solver.runtime.id>.position_cmd = &gripper_<solver.runtime.id>_state.position_cmd;
+    gripper_<solver.runtime.id>.speed_cmd = &gripper_<solver.runtime.id>_state.speed_cmd;
+    gripper_<solver.runtime.id>.force_cmd = &gripper_<solver.runtime.id>_state.force_cmd;
+    gripper_<solver.runtime.id>.error = &gripper_<solver.runtime.id>_state.error;
+    gripper_<solver.runtime.id>.success = &gripper_<solver.runtime.id>_state.success;
 <endif>
 >>
 
 device-init-robif2b-RobotiqFT300s(solver, device) ::= <<
-<if(solver.runtime_owner)>    const auto cfg_ft_<device.drives> = motion_spec::config::serial(robot_config, "<device.config_key>");
+<if(solver.runtime.owner)>    const auto cfg_ft_<device.drives> = motion_spec::config::serial(robot_config, "<device.config_key>");
     robif2b_robotiq_ft_sensor_nbx ft_<device.drives>{};
     ft_<device.drives>.serial.port = cfg_ft_<device.drives>.port.c_str();
     ft_<device.drives>.serial.baudrate = cfg_ft_<device.drives>.baudrate;
@@ -234,19 +234,19 @@ device-init-robif2b-RobotiqFT300s(solver, device) ::= <<
 >>
 
 device-configure-robif2b-KinovaGen3(solver, device) ::= <<
-    <robif2b-configure-kinova(solver.runtime_id)>
-    <robif2b-recover-kinova(solver.runtime_id)>
-    <robif2b-start-kinova(solver.runtime_id)>
+    <robif2b-configure-kinova(solver.runtime.id)>
+    <robif2b-recover-kinova(solver.runtime.id)>
+    <robif2b-start-kinova(solver.runtime.id)>
 >>
 
 device-configure-robif2b-KinovaGen3-2F85(solver, device) ::= <<
 <device-configure-robif2b-KinovaGen3(solver, device)>
-    robif2b_kg3_robotiq_gripper_configure(&gripper_<solver.runtime_id>, &kinova_<solver.runtime_id>);
-    robif2b_kg3_robotiq_gripper_start(&gripper_<solver.runtime_id>);
+    robif2b_kg3_robotiq_gripper_configure(&gripper_<solver.runtime.id>, &kinova_<solver.runtime.id>);
+    robif2b_kg3_robotiq_gripper_start(&gripper_<solver.runtime.id>);
 >>
 
 device-configure-robif2b-Robotiq2F85(solver, device) ::= <<
-    robif2b_robotiq_gripper_configure(&gripper_<solver.runtime_id>);
+    robif2b_robotiq_gripper_configure(&gripper_<solver.runtime.id>);
 >>
 
 device-configure-robif2b-RobotiqFT300s(solver, device) ::= <<
@@ -254,26 +254,26 @@ device-configure-robif2b-RobotiqFT300s(solver, device) ::= <<
 >>
 
 device-update-robif2b-KinovaGen3(solver, device) ::= <<
-        <robif2b-update-kinova(solver.runtime_id)>
+        <robif2b-update-kinova(solver.runtime.id)>
 >>
 
 device-update-robif2b-KinovaGen3-2F85(solver, device) ::= <<
 <device-update-robif2b-KinovaGen3(solver, device)>
-        gripper_<solver.runtime_id>_state.pos_cmd = static_cast\<float\>(
+        gripper_<solver.runtime.id>_state.pos_cmd = static_cast\<float\>(
             100.0 * motion_spec::runtime::gripper_closed_fraction(
-                gripper_<solver.runtime_id>_cmd, <gripper-travel-Robotiq2F85()>));
-        robif2b_kg3_robotiq_gripper_update(&gripper_<solver.runtime_id>);
-        gripper_<solver.runtime_id>_pos_rad =
-            <gripper-travel-Robotiq2F85()> * (gripper_<solver.runtime_id>_state.pos_msr / 100.0);
+                gripper_<solver.runtime.id>_cmd, <gripper-travel-Robotiq2F85()>));
+        robif2b_kg3_robotiq_gripper_update(&gripper_<solver.runtime.id>);
+        gripper_<solver.runtime.id>_pos_rad =
+            <gripper-travel-Robotiq2F85()> * (gripper_<solver.runtime.id>_state.pos_msr / 100.0);
 >>
 
 device-update-robif2b-Robotiq2F85(solver, device) ::= <<
-        gripper_<solver.runtime_id>_state.position_cmd = static_cast\<uint8_t\>(std::lround(
+        gripper_<solver.runtime.id>_state.position_cmd = static_cast\<uint8_t\>(std::lround(
             255.0 * motion_spec::runtime::gripper_closed_fraction(
-                gripper_<solver.runtime_id>_cmd, <gripper-travel-Robotiq2F85()>)));
-        robif2b_robotiq_gripper_update(&gripper_<solver.runtime_id>);
-        gripper_<solver.runtime_id>_pos_rad =
-            <gripper-travel-Robotiq2F85()> * (gripper_<solver.runtime_id>_state.position_msr / 255.0);
+                gripper_<solver.runtime.id>_cmd, <gripper-travel-Robotiq2F85()>)));
+        robif2b_robotiq_gripper_update(&gripper_<solver.runtime.id>);
+        gripper_<solver.runtime.id>_pos_rad =
+            <gripper-travel-Robotiq2F85()> * (gripper_<solver.runtime.id>_state.position_msr / 255.0);
 >>
 
 device-update-robif2b-RobotiqFT300s(solver, device) ::= <<
@@ -281,17 +281,17 @@ device-update-robif2b-RobotiqFT300s(solver, device) ::= <<
 >>
 
 device-shutdown-robif2b-KinovaGen3(solver, device) ::= <<
-    <robif2b-stop-kinova(solver.runtime_id)>
-    <robif2b-shutdown-kinova(solver.runtime_id)>
+    <robif2b-stop-kinova(solver.runtime.id)>
+    <robif2b-shutdown-kinova(solver.runtime.id)>
 >>
 
 device-shutdown-robif2b-KinovaGen3-2F85(solver, device) ::= <<
-    robif2b_kg3_robotiq_gripper_stop(&gripper_<solver.runtime_id>);
+    robif2b_kg3_robotiq_gripper_stop(&gripper_<solver.runtime.id>);
 <device-shutdown-robif2b-KinovaGen3(solver, device)>
 >>
 
 device-shutdown-robif2b-Robotiq2F85(solver, device) ::= <<
-    robif2b_robotiq_gripper_shutdown(&gripper_<solver.runtime_id>);
+    robif2b_robotiq_gripper_shutdown(&gripper_<solver.runtime.id>);
 >>
 
 device-shutdown-robif2b-RobotiqFT300s(solver, device) ::= <<
@@ -306,19 +306,19 @@ device-assign-impl ::= [
 ]
 
 device-assign-robif2b-gripper-cmd(solver, device) ::= <<
-        .gripper_cmd = &gripper_<solver.runtime_id>_cmd,
-        .gripper_pos = &gripper_<solver.runtime_id>_pos_rad,
+        .gripper_cmd = &gripper_<solver.runtime.id>_cmd,
+        .gripper_pos = &gripper_<solver.runtime.id>_pos_rad,
 >>
 
 robot-chain-robif2b-KinovaGen3(solver) ::= <<
-<if(solver.runtime_owner)>    KDL::Tree built_tree_<solver.runtime_id>{};
-    if (!scene_kdl::make_tree_<solver.kdl_tree>(&built_tree_<solver.runtime_id>)) {
-        std::cerr \<\< "make_tree_<solver.kdl_tree>() failed for runtime <solver.runtime_id>\n";
+<if(solver.runtime.owner)>    KDL::Tree built_tree_<solver.runtime.id>{};
+    if (!scene_kdl::make_tree_<solver.chain.kdl_tree>(&built_tree_<solver.runtime.id>)) {
+        std::cerr \<\< "make_tree_<solver.chain.kdl_tree>() failed for runtime <solver.runtime.id>\n";
         return 1;
     \}
-    KDL::Chain chain_<solver.runtime_id>{};
-    if (!scene_kdl::make_chain_<solver.kdl_chain>(built_tree_<solver.runtime_id>, &chain_<solver.runtime_id>)) {
-        std::cerr \<\< "make_chain_<solver.kdl_chain>() failed for runtime <solver.runtime_id>\n";
+    KDL::Chain chain_<solver.runtime.id>{};
+    if (!scene_kdl::make_chain_<solver.chain.kdl_chain>(built_tree_<solver.runtime.id>, &chain_<solver.runtime.id>)) {
+        std::cerr \<\< "make_chain_<solver.chain.kdl_chain>() failed for runtime <solver.runtime.id>\n";
         return 1;
     \}
 <endif>
@@ -326,20 +326,20 @@ robot-chain-robif2b-KinovaGen3(solver) ::= <<
 
 robot-assign-robif2b-KinovaGen3(solver) ::= <<
     robot.<solver.id> = manipulator_robot{
-        .state = &kinova_<solver.runtime_id>_state,
-        .robot = &kinova_<solver.runtime_id>,
-        .chain = &chain_<solver.runtime_id>,
+        .state = &kinova_<solver.runtime.id>_state,
+        .robot = &kinova_<solver.runtime.id>,
+        .chain = &chain_<solver.runtime.id>,
 <solver.devices:{device | <({<device-assign-impl.(device.kind)>})(solver, device)>}; separator="">
     };
 >>
 
 robot-configure-robif2b-KinovaGen3(solver) ::= <<
-<if(solver.runtime_owner)><solver.devices:{device | <device-configure-robif2b(solver, device)>}; separator="\n">
+<if(solver.runtime.owner)><solver.devices:{device | <device-configure-robif2b(solver, device)>}; separator="\n">
 <endif>
 >>
 
 robot-shutdown-robif2b-KinovaGen3(solver) ::= <<
-<if(solver.runtime_owner)><solver.devices:{device | <device-shutdown-robif2b(solver, device)>}; separator="\n">
+<if(solver.runtime.owner)><solver.devices:{device | <device-shutdown-robif2b(solver, device)>}; separator="\n">
 <endif>
 >>
 
@@ -356,12 +356,12 @@ app-chain-setup-robif2b(serial_chain_solvers, scene, config_path) ::= <<
 
 <robot-state-init(solver, "robif2b")>
 
-<if(solver.runtime_owner)><solver.devices:{device | <device-init-robif2b(solver, device)>}; separator="\n"><endif>
+<if(solver.runtime.owner)><solver.devices:{device | <device-init-robif2b(solver, device)>}; separator="\n"><endif>
 
 <robot-chain(solver, "robif2b")>
 
 <robot-assign(solver, "robif2b")>
-<if(solver.runtime_owner)><solver.devices:{device | <({<device-io-assign-impl.(device.kind)>})(solver, device)>}; separator=""><endif>
+<if(solver.runtime.owner)><solver.devices:{device | <({<device-io-assign-impl.(device.kind)>})(solver, device)>}; separator=""><endif>
 }; separator="\n">
 >>
 
@@ -370,7 +370,7 @@ true
 >>
 
 app-chain-runtime-step-robif2b(serial_chain_solvers) ::= <<
-<serial_chain_solvers:{solver | <if(solver.runtime_owner)><solver.devices:{device | <device-update-robif2b(solver, device)>
+<serial_chain_solvers:{solver | <if(solver.runtime.owner)><solver.devices:{device | <device-update-robif2b(solver, device)>
 }; separator=""><endif>}; separator="">
 >>
 

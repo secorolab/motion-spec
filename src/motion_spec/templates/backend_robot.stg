@@ -3,7 +3,7 @@
 
 
 robot-driver-include(solver, backend) ::= <<
-<({robot-driver-include-<backend>-<solver.robot_model>})(solver)>
+<({robot-driver-include-<backend>-<solver.hardware.model>})(solver)>
 >>
 
 solver-rnea-include(backend) ::= <<
@@ -20,40 +20,40 @@ solver-rnea-include-robif2b() ::= <<
 >>
 
 robot-num-joints-def(solver) ::= <<
-<({robot-num-joints-def-<solver.robot_model>})(solver)>
+<({robot-num-joints-def-<solver.hardware.model>})(solver)>
 >>
 robot-num-joints-def-KinovaGen3(solver) ::= <<
 inline constexpr int KINOVA_NUM_JOINTS = 7;
 >>
 
 robot-state-struct(solver, backend) ::= <<
-<({robot-state-struct-<backend>-<solver.robot_model>})(solver)>
+<({robot-state-struct-<backend>-<solver.hardware.model>})(solver)>
 >>
 
 robot-manipulator-struct(solver, backend) ::= <<
-<({robot-manipulator-struct-<backend>-<solver.robot_model>})(solver)>
+<({robot-manipulator-struct-<backend>-<solver.hardware.model>})(solver)>
 >>
 
 robot-state-init(solver, backend) ::= <<
-<({robot-state-init-<backend>-<solver.robot_model>})(solver)>
+<({robot-state-init-<backend>-<solver.hardware.model>})(solver)>
 >>
 
 robot-init(solver, backend) ::= <<
-<({robot-init-<backend>-<solver.robot_model>})(solver)>
+<({robot-init-<backend>-<solver.hardware.model>})(solver)>
 >>
 
 robot-chain(solver, backend) ::= <<
-<({robot-chain-<backend>-<solver.robot_model>})(solver)>
+<({robot-chain-<backend>-<solver.hardware.model>})(solver)>
 >>
 
 robot-assign(solver, backend) ::= <<
-<({robot-assign-<backend>-<solver.robot_model>})(solver)>
+<({robot-assign-<backend>-<solver.hardware.model>})(solver)>
 >>
 
 robot-configure(solver, backend) ::= <<
-<({robot-configure-<backend>-<solver.robot_model>})(solver)>
+<({robot-configure-<backend>-<solver.hardware.model>})(solver)>
 >>
 
 robot-shutdown(solver, backend) ::= <<
-<({robot-shutdown-<backend>-<solver.robot_model>})(solver)>
+<({robot-shutdown-<backend>-<solver.hardware.model>})(solver)>
 >>

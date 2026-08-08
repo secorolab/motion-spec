@@ -266,7 +266,7 @@ target_include_directories(main PRIVATE
 target_link_libraries(main PRIVATE
     orocos-kdl
     tomlplusplus::tomlplusplus
-<resources.by_kind.serial_chain:{solver | <if(solver.runtime_owner)><solver.devices:{device | <({cmake-device-link-<device.kind>})()>}; separator="\n"><endif>}; separator="\n">
+<resources.by_kind.serial_chain:{solver | <if(solver.runtime.owner)><solver.devices:{device | <({cmake-device-link-<device.kind>})()>}; separator="\n"><endif>}; separator="\n">
 <if(coordination.fsm)>
     ${coord2b_LIBRARIES}
 <endif>

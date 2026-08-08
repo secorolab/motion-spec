@@ -47,6 +47,7 @@ target_link_libraries(main PRIVATE
 <if(communication.ros)>
     rclcpp::rclcpp
     realtime_tools::realtime_tools
+    Threads::Threads
 <communication.ros.packages:{pkg |     ${<pkg>_TARGETS\}}; separator="\n">
 <endif>
 )
@@ -273,6 +274,7 @@ target_link_libraries(main PRIVATE
 <if(communication.ros)>
     rclcpp::rclcpp
     realtime_tools::realtime_tools
+    Threads::Threads
 <communication.ros.packages:{pkg |     ${<pkg>_TARGETS\}}; separator="\n">
 <endif>
 )

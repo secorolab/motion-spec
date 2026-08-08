@@ -556,25 +556,34 @@ def ros_publishers(motions) -> list:
     Codegen links rclcpp and sets up publishers only when a model publishes at all, so a model
     with none contributes nothing rather than an empty section.
     """
-    by_pub_id = {}
-    for motion in motions:
-        for phase in _MONITOR_PHASES:
-            for monitor in getattr(motion, f"{phase}_monitors"):
-                ros = getattr(monitor, "ros", None)
-                if ros is None:
-                    continue
-                by_pub_id.setdefault(
-                    ros.pub_id,
-                    {
-                        "pub_id": ros.pub_id,
-                        "channel": ros.channel,
-                        "cpp_type": ros.cpp_type,
-                        "include": ros.include,
-                        "pkg": ros.pkg,
-                    },
-                )
+    by_channel = {}
+    for ros in ros_publications(motions):
+        # One channel is one publisher: monitors that share a topic share the member too.
+        ros.pub_id = by_channel.setdefault(
+            ros.channel,
+            {
+                "pub_id": ros.pub_id,
+                "channel": ros.channel,
+                "cpp_type": ros.cpp_type,
+                "include": ros.include,
+                "pkg": ros.pkg,
+                "auto_time": ros.auto_time,
+                "auto_context_id": ros.auto_context_id,
+            },
+        )["pub_id"]
 
-    return list(by_pub_id.values())
+    return list(by_channel.values())
+
+
+def ros_publications(motions):
+    """Every monitor publish in the model, in motion order."""
+    return [
+        monitor.ros
+        for motion in motions
+        for phase in _MONITOR_PHASES
+        for monitor in getattr(motion, f"{phase}_monitors")
+        if getattr(monitor, "ros", None) is not None
+    ]
 
 
 def _provenance(model, scene, platform: dict) -> dict:

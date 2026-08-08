@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
-// L2 domain — monitors: conditions, edges, flags, ROS publish.
+// L2 domain — monitors: conditions, edges, flags.
 
 import "expr_values.stg"
 
@@ -45,80 +45,41 @@ bool-condition(terms, any) ::= <<
 // robot). Multiline params match the historical layout: leading "\n    ", ",\n    " joins,
 // trailing "\n"; empty when no context is needed.
 
-update-monitor(monitor) ::= <<
-<if(monitor.has_active)>
-    {
-        const bool active = <if(monitor.active_terms_present)><bool-condition(monitor.active_terms, monitor.active_any)><else>false<endif>;
-<if(monitor.is_edge_triggered)>
-        const bool detected = <if(monitor.debounce_steps)>motion_spec::runtime::sustained_edge(
-            state.<monitor.id>_hold,
-            active,
-            <monitor.debounce_steps>)<else>motion_spec::runtime::rising_edge(state.<monitor.id>_previous, active)<endif>;
-<monitor-ros-publish(monitor)>
-<if(monitor.fsm_namespace)>
-        // coord2b is the sequencer: fire the FSM event on the rising edge while in this state.
-        if (detected) {
-            events.record(<monitor.fsm_event_idx>);
-        \}
-        if (detected && robot.fsm_events) {
-            produce_event(robot.fsm_events, <monitor.fsm_namespace>::<monitor.event_name>);
-            std::cerr \<\< "[fsm] event   " \<\< <monitor.fsm_namespace>::EVENT_URIS[<monitor.fsm_namespace>::<monitor.event_name>] \<\< std::endl;
-        \}
-<else>
-        if (state.active && detected) {
-            events.record(<monitor.event_idx>);
-            state.<monitor.id>_event_triggered = true;
-            motion_spec::runtime::warn_produce_event_not_implemented("<monitor.event>");
-        \}
-<endif>
-<else>
-        motion_spec::runtime::set_flag(state.<monitor.flag>, active);
-<endif>
-    }
-<else>
-<if(monitor.is_edge_triggered)>
-    {
-        const bool active = motion_spec::runtime::constraint_satisfied(shared.<monitor.error.id>, <band(monitor.tolerance.id)>);
-        const bool detected = <if(monitor.debounce_steps)>motion_spec::runtime::sustained_edge(
-            state.<monitor.id>_hold,
-            active,
-            <monitor.debounce_steps>)<else>motion_spec::runtime::rising_edge(state.<monitor.id>_previous, active)<endif>;
-<monitor-ros-publish(monitor)>
-<if(monitor.fsm_namespace)>
-        // coord2b is the sequencer: fire the FSM event on the rising edge while in this state.
-        if (detected) {
-            events.record(<monitor.fsm_event_idx>);
-        \}
-        if (detected && robot.fsm_events) {
-            produce_event(robot.fsm_events, <monitor.fsm_namespace>::<monitor.event_name>);
-            std::cerr \<\< "[fsm] event   " \<\< <monitor.fsm_namespace>::EVENT_URIS[<monitor.fsm_namespace>::<monitor.event_name>] \<\< std::endl;
-        \}
-<else>
-        if (state.active && detected) {
-            events.record(<monitor.event_idx>);
-            state.<monitor.id>_event_triggered = true;
-            motion_spec::runtime::warn_produce_event_not_implemented("<monitor.event>");
-        \}
-<endif>
-    }
-<else>
-    motion_spec::runtime::set_flag(
-        state.<monitor.flag>,
-        motion_spec::runtime::constraint_satisfied(shared.<monitor.error.id>, <band(monitor.tolerance.id)>));
-<endif>
-<endif>
+// Whether the monitored condition holds this cycle: the aggregate's boolean terms, or the
+// error of the one constraint it watches against its band. The publish tick reads the same
+// answer from outside the motion, so both sides can never disagree.
+
+monitor-satisfied-expr(monitor) ::= <<
+<if(monitor.has_active)><if(monitor.active_terms_present)><bool-condition(monitor.active_terms, monitor.active_any)><else>false<endif><else>motion_spec::runtime::constraint_satisfied(shared.<monitor.error.id>, <band(monitor.tolerance.id)>)<endif>
 >>
 
-// RT-safe publish of the monitored condition: non-blocking trylock, the RealtimePublisher's
-// own thread does the DDS publish. Skips the cycle if the publisher thread holds the lock.
-
-monitor-ros-publish(monitor) ::= <<
-<if(monitor.ros_channel)>
-        if (robot.<monitor.ros_pub_id> && robot.<monitor.ros_pub_id>->trylock()) {
-            robot.<monitor.ros_pub_id>->msg_.value =
-                active ? <monitor.ros_cpp_type>::TRUE : <monitor.ros_cpp_type>::FALSE;
-            robot.<monitor.ros_pub_id>->unlockAndPublish();
+update-monitor(monitor) ::= <<
+<if(monitor.is_edge_triggered)>
+    {
+        const bool active = <monitor-satisfied-expr(monitor)>;
+        const bool detected = <if(monitor.debounce_steps)>motion_spec::runtime::sustained_edge(
+            state.<monitor.id>_hold,
+            active,
+            <monitor.debounce_steps>)<else>motion_spec::runtime::rising_edge(state.<monitor.id>_previous, active)<endif>;
+<if(monitor.fsm_namespace)>
+        // coord2b is the sequencer: fire the FSM event on the rising edge while in this state.
+        if (detected) {
+            events.record(<monitor.fsm_event_idx>);
         \}
+        if (detected && robot.fsm_events) {
+            produce_event(robot.fsm_events, <monitor.fsm_namespace>::<monitor.event_name>);
+            std::cerr \<\< "[fsm] event   " \<\< <monitor.fsm_namespace>::EVENT_URIS[<monitor.fsm_namespace>::<monitor.event_name>] \<\< std::endl;
+        \}
+<else>
+        if (state.active && detected) {
+            events.record(<monitor.event_idx>);
+            state.<monitor.id>_event_triggered = true;
+            motion_spec::runtime::warn_produce_event_not_implemented("<monitor.event>");
+        \}
+<endif>
+    }
+<elseif(monitor.flag)>
+    motion_spec::runtime::set_flag(state.<monitor.flag>, <monitor-satisfied-expr(monitor)>);
 <endif>
 >>
 

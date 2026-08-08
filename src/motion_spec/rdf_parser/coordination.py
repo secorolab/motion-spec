@@ -42,7 +42,9 @@ from motion_spec.classes.handlers import (
     EdgeMonitor,
     EvaluatorType,
     LevelMonitor,
+    RosField,
     RosPublication,
+    RosPublishState,
 )
 from motion_spec.classes.motion import ForwardedCommandStep, MotionSolverSlice, MotionUnit
 from motion_spec.classes.solvers import CommandForwarding
@@ -254,10 +256,20 @@ def monitor_entry(model, node):
         "group_constraint_ids": group_ids,
         "group_any": group_any,
     }
-    if CSTR_HDL["LevelTriggeredMonitor"] in get_node_types(graph, node):
-        flag = model.id(graph.value(node, CSTR_HDL["flag"]))
-
-        return LevelMonitor(model.id(node), "LevelTriggeredMonitor", error, flag, **shared)
+    types = get_node_types(graph, node)
+    publication = _ros_publication(model, node)
+    # A monitor that only publishes is neither edge- nor level-triggered: it names no signal,
+    # it just reports the state of the constraint it watches.
+    if CSTR_HDL["EdgeTriggeredMonitor"] not in types:
+        flag_node = graph.value(node, CSTR_HDL["flag"])
+        return LevelMonitor(
+            model.id(node),
+            "LevelTriggeredMonitor",
+            error,
+            model.id(flag_node) if flag_node is not None else None,
+            **shared,
+            **publication,
+        )
 
     event_node = graph.value(node, CSTR_HDL["event"])
     event = model.id(event_node)
@@ -276,30 +288,176 @@ def monitor_entry(model, node):
         debounce_duration_s=quantities.optional_seconds(
             model, node, CSTR_HDL_EXT["debounce-duration"]
         ),
-        **_ros_publication(model, node),
+        **publication,
     )
 
 
+# rosidl reports a nested field as `pkg/Type` and a repeated one wrapped in `sequence<>` or
+# `[]`; everything else is a primitive.
+_MANY = (re.compile(r"^sequence<(.+?)(?:,\s*\d+)?>$"), re.compile(r"^(.+?)\[\d*\]$"))
+# Fields the node owns, never the model: the publish clock, and the scenario a run belongs to.
+_AUTO_TIME_TYPE = "builtin_interfaces/Time"
+_AUTO_CONTEXT_ID = ("scenario_context_id", "unique_identifier_msgs/UUID")
+
+
+def _element_type(field_type: str) -> tuple[str, bool]:
+    """The type one element carries, and whether the field holds many of them."""
+    for pattern in _MANY:
+        match = pattern.fullmatch(field_type)
+        if match:
+            return match.group(1), True
+    return field_type, False
+
+
+def _message_class(type_name: str):
+    """The rosidl-generated Python class for `type_name`, or the error that names the fix."""
+    try:
+        from rosidl_runtime_py.utilities import get_message
+    except ImportError as error:
+        raise ConstraintViolation(
+            "communication",
+            "publishing a ROS topic needs rosidl_runtime_py; source the ROS distribution "
+            "before generating",
+        ) from error
+    try:
+        return get_message(type_name)
+    except (ValueError, ModuleNotFoundError, AttributeError) as error:
+        raise ConstraintViolation(
+            "communication",
+            f"message type '{type_name}' does not resolve; build and source the workspace so "
+            "its interface package is on AMENT_PREFIX_PATH",
+        ) from error
+
+
+def _cpp_names(message) -> tuple[str, str, str]:
+    """`(package, cpp type, include path)` read off the class rosidl generated, so the header
+    name matches the generator's own case conversion by construction.
+    """
+    try:
+        from rosidl_pycommon import convert_camel_case_to_lower_case_underscore
+    except ImportError:
+        from rosidl_cmake import convert_camel_case_to_lower_case_underscore
+
+    package, subfolder, _module = message.__module__.split(".")
+    stem = convert_camel_case_to_lower_case_underscore(message.__name__)
+
+    return (
+        package,
+        f"{package}::{subfolder}::{message.__name__}",
+        f"{package}/{subfolder}/{stem}.hpp",
+    )
+
+
+def _message_shape(type_name: str) -> dict:
+    """What a message type offers a publisher: the leaf fields a model may state, the owning
+    message class of each (its constants live there), and the fields the node auto-fills.
+    """
+    root = _message_class(type_name)
+    package, cpp_type, include = _cpp_names(root)
+    leaves: dict[str, tuple[str, object]] = {}
+    auto: dict[str, str] = {}
+
+    def walk(message, prefix: str) -> None:
+        for name, field_type in message.get_fields_and_field_types().items():
+            path = f"{prefix}{name}"
+            element, many = _element_type(field_type)
+            if not many and element == _AUTO_TIME_TYPE:
+                auto[path] = "time"
+            elif not many and (name, element) == _AUTO_CONTEXT_ID:
+                auto[path] = "context_id"
+            elif not many and "/" in element:
+                walk(_message_class(element), f"{path}.")
+            else:
+                leaves[path] = (element, message)
+
+    walk(root, "")
+
+    return {
+        "type_name": type_name,
+        "package": package,
+        "cpp_type": cpp_type,
+        "include": include,
+        "leaves": leaves,
+        "auto": auto,
+    }
+
+
+def _cpp_value(shape: dict, path: str, authored: str) -> str:
+    """The authored constant or literal, rendered against the type rosidl reports for `path`."""
+    element, owner = shape["leaves"][path]
+    if authored.isidentifier():
+        if not hasattr(owner, authored):
+            raise ConstraintViolation(
+                "communication",
+                f"'{authored}' is not a constant of the message owning '{path}' in "
+                f"{shape['type_name']}",
+            )
+        _package, owner_cpp, _include = _cpp_names(owner)
+        return f"{owner_cpp}::{authored}"
+    if element == "string":
+        return f'"{authored}"'
+    number = float(authored)
+
+    return str(int(number)) if "int" in element or element == "octet" else repr(number)
+
+
+def _publish_states(model, node, shape: dict) -> list[RosPublishState]:
+    """The authored field values, grouped by the monitor state they are published in."""
+    by_state: dict[str, list[RosField]] = {}
+    for field_node in model.graph.objects(node, NS_MM_ROS["field"]):
+        state = str(model.graph.value(field_node, NS_MM_ROS["publish-on"]))
+        path = str(model.graph.value(field_node, NS_MM_ROS["field-path"]) or "")
+        if not path:
+            # A bare `publish: V to <t>` names no field; only the message shape can say which
+            # one it means, and it may mean only one.
+            candidates = sorted(shape["leaves"])
+            if len(candidates) != 1:
+                raise ConstraintViolation(
+                    "communication",
+                    f"{shape['type_name']} has {len(candidates)} fields the model may state, "
+                    "so a bare publish is ambiguous; name the field",
+                )
+            path = candidates[0]
+        elif path not in shape["leaves"]:
+            raise ConstraintViolation(
+                "communication",
+                f"{shape['type_name']} has no field '{path}'; it offers "
+                f"{', '.join(sorted(shape['leaves']))}",
+            )
+        source = model.graph.value(field_node, NS_MM_ROS["value-from"])
+        if source is not None:
+            entry = RosField(path, value_from=model.id(source))
+        else:
+            authored = str(model.graph.value(field_node, NS_MM_ROS["value"]))
+            entry = RosField(path, cpp_value=_cpp_value(shape, path, authored))
+        by_state.setdefault(state, []).append(entry)
+
+    return [
+        RosPublishState(state, sorted(by_state[state], key=lambda item: item.path))
+        for state in sorted(by_state)
+    ]
+
+
 def _ros_publication(model, node) -> dict:
-    """The ROS topic a monitor also publishes on, when the model asks for one."""
+    """What a monitor publishes, when the model asks it to publish at all."""
     channel = model.graph.value(node, NS_MM_ROS["channel-name"])
     if channel is None:
         return {}
-    ros_type = str(model.graph.value(node, NS_MM_ROS["type-name"]) or "")
-    # `pkg/msg/CamelType` split by the rosidl naming rule.
-    parts = ros_type.split("/")
-    package, message = parts[0], parts[-1]
-    sub = parts[1] if len(parts) == 3 else "msg"
-    stem = re.sub(r"([a-z\d])([A-Z])", r"\1_\2", re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", message))
+    type_name = str(model.graph.value(node, NS_MM_ROS["type-name"]) or "")
+    shape = _message_shape(type_name)
+    auto = shape["auto"]
 
     return {
         "ros": RosPublication(
             str(channel),
-            ros_type,
-            package,
-            f"{package}/{sub}/{stem.lower()}.hpp",
-            f"{package}::{sub}::{message}",
+            type_name,
+            shape["package"],
+            shape["include"],
+            shape["cpp_type"],
             f"{model.id(node)}_pub".replace("-", "_"),
+            states=_publish_states(model, node, shape),
+            auto_time=sorted(path for path, kind in auto.items() if kind == "time"),
+            auto_context_id=sorted(path for path, kind in auto.items() if kind == "context_id"),
         )
     }
 

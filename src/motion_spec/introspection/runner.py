@@ -193,7 +193,9 @@ def _validate_robot_config(source_dir: Path, cwd: Path | None = None) -> None:
             raise RunnerError(f"{config_path}: [{key}] is missing {', '.join(missing)}")
     # A section for nothing bound is a mis-key or a stale device: it would connect to hardware
     # this run never commands. Under KinovaGen3-2F85 a separate gripper section lands here.
-    unbound = sorted(set(_config_sections(config)) - {key for key, _ in bound})
+    # [ros.*] configures the generated publishers, not a device this run binds.
+    sections = {key for key in _config_sections(config) if key.split(".")[0] != "ros"}
+    unbound = sorted(sections - {key for key, _ in bound})
     if unbound:
         raise RunnerError(
             f"{config_path}: [{'], ['.join(unbound)}] configures nothing this run binds"

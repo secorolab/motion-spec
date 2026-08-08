@@ -40,6 +40,7 @@ def generate_ir(manifest_path) -> dict:
     # The platform, the scene and the FSM are pure functions of the graph, and everything the
     # pass builds afterwards is shaped by them.
     platform = resources.read_platform(model)
+    platform_config = resources.platform_config(platform)
     backend = platform["backend"]
     scene = resources.read_scene(model)
     fsm = coordination.read_fsm(model)
@@ -105,14 +106,20 @@ def generate_ir(manifest_path) -> dict:
             # The authored execution platform, so provenance and the runtime graph read the
             # model's own answer instead of matching substrings of a derived id.
             "platform": platform,
-            "agent_homes": resources.agent_home_positions(platform, robots.serial_chains),
+            "agent_homes": resources.agent_home_positions(
+                platform, robots.serial_chains, platform_config
+            ),
             "trace": resources.TRACE_DISABLED,
         },
         "resources": _resources_section(robots),
         "composition": {"scene": scene},
         "computation": _computation_section(closures, views, shared_data, values, motions),
         "coordination": _coordination_section(motions, fsm, fsm_meta),
-        "communication": _communication_section(introspection, motions),
+        "communication": _communication_section(
+            introspection,
+            motions,
+            resources.ros_joint_states(platform, platform_config, robots.serial_chains),
+        ),
     }
 
 
@@ -164,15 +171,21 @@ def _coordination_section(motions, fsm, fsm_meta) -> dict:
     return section
 
 
-def _communication_section(introspection, motions) -> dict:
-    """What leaves the loop: the frame log, and the ROS topics when a monitor publishes."""
+def _communication_section(introspection, motions, joint_states) -> dict:
+    """What leaves the loop: the frame log, and the ROS topics a monitor or the deployment asks for."""
     section = {"introspection": introspection}
     publishers = communication.ros_publishers(motions)
-    if publishers:
-        section["ros"] = {
-            "publishers": publishers,
-            "packages": sorted({publisher["pkg"] for publisher in publishers}),
-            "node_name": "motion_spec_monitor",
-        }
+    if not publishers and joint_states is None:
+        return section
+    packages = {publisher["pkg"] for publisher in publishers}
+    ros = {"publishers": publishers, "node_name": "motion_spec_monitor"}
+    # The parameter only exists where a message carries the scenario a run belongs to.
+    if any(publisher["auto_context_id"] for publisher in publishers):
+        ros["scenario_context_id"] = True
+    if joint_states is not None:
+        ros["joint_states"] = joint_states
+        packages.add("sensor_msgs")
+    ros["packages"] = sorted(packages)
+    section["ros"] = ros
 
     return section

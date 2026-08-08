@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
-// L3 assembly — control-loop scaffolding: chain setup, clock, telemetry, ROS.
+// L3 assembly — control-loop scaffolding: chain setup, clock, telemetry.
 
 // The one anchor that puts every backend leaf in the render closure; call sites dispatch.
 import "backend_mj_kdl.stg"
@@ -54,31 +54,4 @@ motion_spec::runtime::monotonic_time_s()
 
 app-chain-trace-update(backend, serial_chain_solvers, trace) ::= <<
 <({app-chain-trace-update-<backend>})(serial_chain_solvers, trace)>
->>
-
-// ROS publish is decoupled from the control loop: each RealtimePublisher owns a background
-// thread that does the DDS publish; the RT loop only does a non-blocking trylock/unlockAndPublish.
-
-ros-includes(ros) ::= <<
-#include \<rclcpp/rclcpp.hpp\>
-#include \<realtime_tools/realtime_publisher.hpp\>
-<ros.publishers:{p | #include "<p.include>"}; separator="\n">
->>
-
-ros-io-members(ros) ::= <<
-    rclcpp::Node::SharedPtr ros_node = nullptr;
-<ros.publishers:{p |     std::shared_ptr\<realtime_tools::RealtimePublisher\<<p.cpp_type>\>\> <p.pub_id> = nullptr;}; separator="\n">
->>
-
-ros-setup(ros) ::= <<
-    rclcpp::init(argc, argv);
-    robot.ros_node = std::make_shared\<rclcpp::Node\>("<ros.node_name>");
-<ros.publishers:{p |     robot.<p.pub_id> = std::make_shared\<realtime_tools::RealtimePublisher\<<p.cpp_type>\>\>(
-        robot.ros_node->create_publisher\<<p.cpp_type>\>("<p.channel>", rclcpp::QoS(10)));}; separator="\n">
->>
-
-ros-shutdown(ros) ::= <<
-<ros.publishers:{p |     robot.<p.pub_id>.reset();}; separator="\n">
-    robot.ros_node.reset();
-    rclcpp::shutdown();
 >>

@@ -1,0 +1,217 @@
+// SPDX-License-Identifier: MPL-2.0
+// L3 assembly — ROS: the node, its executor thread, the publishers, and the per-cycle tick.
+// Every line of ROS text the program carries is written here.
+
+import "domain_monitors.stg"
+
+// The DDS write happens on each RealtimePublisher's own thread; the control loop only hands
+// over a filled message. Parameter services are answered by one executor thread, so a
+// `ros2 param set` returns while the loop keeps its deadline.
+
+ros-includes(ros) ::= <<
+#include \<rclcpp/rclcpp.hpp\>
+#include \<realtime_tools/realtime_publisher.hpp\>
+#include \<array\>
+#include \<cstdint\>
+#include \<mutex\>
+#include \<thread\>
+<ros.publishers:{p | #include "<p.include>"}; separator="\n">
+<if(ros.joint_states)>
+#include \<sensor_msgs/msg/joint_state.hpp\>
+<endif>
+
+namespace motion_spec::ros {
+
+<if(ros.scenario_context_id)>
+// A hex UUID, with or without its dashes. An empty string is the zero UUID: a run that
+// belongs to no scenario says so, rather than failing to start.
+inline bool parse_uuid(const std::string &text, std::array\<std::uint8_t, 16\> &out) {
+    std::string digits;
+    for (const char c : text) {
+        if (c != '-') digits.push_back(c);
+    \}
+    if (digits.empty()) {
+        out.fill(0);
+        return true;
+    \}
+    if (digits.size() != 32) return false;
+    for (std::size_t i = 0; i \< 16; ++i) {
+        const std::string byte = digits.substr(i * 2, 2);
+        if (byte.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos) return false;
+        out[i] = static_cast\<std::uint8_t\>(std::stoul(byte, nullptr, 16));
+    \}
+    return true;
+\}
+
+<endif>
+<if(ros.joint_states)>
+// Publish every Nth control cycle. A rate at or above the loop rate, or none at all, means
+// every cycle -- the loop is the fastest this can go.
+inline int publish_divider(double rate_hz) {
+    if (rate_hz \<= 0.0) return 1;
+    const double every = 1.0 / (rate_hz * motion_spec::runtime::kControlPeriodS);
+    return every \<= 1.0 ? 1 : static_cast\<int\>(every + 0.5);
+\}
+
+<endif>
+}  // namespace motion_spec::ros
+>>
+
+ros-io-members(ros) ::= <<
+    rclcpp::Node::SharedPtr ros_node = nullptr;
+    std::shared_ptr\<rclcpp::executors::SingleThreadedExecutor\> ros_executor = nullptr;
+    std::thread ros_spin_thread;
+<if(ros.scenario_context_id)>
+    rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr ros_param_handle = nullptr;
+    std::mutex ros_context_id_mutex;
+    std::array\<std::uint8_t, 16\> ros_context_id{};
+<endif>
+<ros.publishers:{p |     std::shared_ptr\<realtime_tools::RealtimePublisher\<<p.cpp_type>\>\> <p.pub_id> = nullptr;
+    <p.cpp_type> <p.pub_id>_msg{\};}; separator="\n">
+<if(ros.joint_states)>
+    std::shared_ptr\<realtime_tools::RealtimePublisher\<sensor_msgs::msg::JointState\>\> joint_states_pub = nullptr;
+    sensor_msgs::msg::JointState joint_states_msg{};
+    int joint_states_divider = 1;
+<endif>
+>>
+
+ros-setup(ros) ::= <<
+    rclcpp::init(argc, argv);
+    robot.ros_node = std::make_shared\<rclcpp::Node\>("<ros.node_name>");
+<if(ros.scenario_context_id)>
+<ros-context-id-setup()>
+<endif>
+<ros.publishers:{p |     robot.<p.pub_id> = std::make_shared\<realtime_tools::RealtimePublisher\<<p.cpp_type>\>\>(
+        robot.ros_node->create_publisher\<<p.cpp_type>\>("<p.channel>", rclcpp::QoS(10)));}; separator="\n">
+>>
+
+// Parsed on the executor thread and handed to the loop under a lock the loop never waits on.
+
+ros-context-id-setup() ::= <<
+    robot.ros_node->declare_parameter\<std::string\>("scenario_context_id", "");
+    robot.ros_param_handle = robot.ros_node->add_on_set_parameters_callback(
+        [&robot](const std::vector\<rclcpp::Parameter\> &params) {
+            rcl_interfaces::msg::SetParametersResult result;
+            result.successful = true;
+            for (const auto &param : params) {
+                if (param.get_name() != "scenario_context_id") continue;
+                std::array\<std::uint8_t, 16\> parsed{};
+                if (!motion_spec::ros::parse_uuid(param.as_string(), parsed)) {
+                    result.successful = false;
+                    result.reason = "scenario_context_id must be a hex UUID";
+                    continue;
+                \}
+                const std::lock_guard\<std::mutex\> lock(robot.ros_context_id_mutex);
+                robot.ros_context_id = parsed;
+            \}
+            return result;
+        \});
+>>
+
+// The executor answers parameter services; it starts once every publisher exists so a client
+// that sees the node also sees the topics.
+
+ros-spin-start(ros) ::= <<
+    robot.ros_executor = std::make_shared\<rclcpp::executors::SingleThreadedExecutor\>();
+    robot.ros_executor->add_node(robot.ros_node);
+    robot.ros_spin_thread = std::thread([&robot]() { robot.ros_executor->spin(); \});
+>>
+
+// Sized once, from the joints the model drives; the topic and the rate are deployment data,
+// so they are read from the config file at launch rather than baked in.
+
+ros-joint-states-setup(ros) ::= <<
+<if(ros.joint_states)>
+    {
+        const toml::table &_js_cfg =
+            motion_spec::config::section(robot_config, "<ros.joint_states.config_key>");
+        robot.joint_states_divider =
+            motion_spec::ros::publish_divider(_js_cfg["rate"].value_or(0.0));
+        robot.joint_states_msg.name = {
+<ros.joint_states.joints:{j |             "<j.name>"}; separator=",\n">
+        \};
+        const std::size_t _js_n = robot.joint_states_msg.name.size();
+        robot.joint_states_msg.position.assign(_js_n, 0.0);
+        robot.joint_states_msg.velocity.assign(_js_n, 0.0);
+        robot.joint_states_msg.effort.assign(_js_n, 0.0);
+        robot.joint_states_pub =
+            std::make_shared\<realtime_tools::RealtimePublisher\<sensor_msgs::msg::JointState\>\>(
+                robot.ros_node->create_publisher\<sensor_msgs::msg::JointState\>(
+                    _js_cfg["topic"].value_or(std::string("/joint_states")), rclcpp::QoS(10)));
+    \}
+<endif>
+>>
+
+// One tick per control cycle, for every publishing monitor whether or not its motion is
+// scheduled: a subscriber must be able to tell "not being evaluated" from "evaluated and
+// false", and only a stream that keeps talking while inactive can say that.
+
+ros-publish-tick(coordination, communication) ::= <<
+<if(communication.ros.scenario_context_id)>
+        if (robot.ros_context_id_mutex.try_lock()) {
+            _scenario_context_id = robot.ros_context_id;
+            robot.ros_context_id_mutex.unlock();
+        \}
+<endif>
+<coordination.motions:{m | <m.when_monitors:{mon | <ros-monitor-publish(m, mon)>}><m.while_monitors:{mon | <ros-monitor-publish(m, mon)>}><m.until_monitors:{mon | <ros-monitor-publish(m, mon)>}>}>
+<ros-joint-states-tick(communication.ros)>
+>>
+
+ros-publish-tick-locals(ros) ::= <<
+<if(ros.scenario_context_id)>
+    std::array\<std::uint8_t, 16\> _scenario_context_id{};
+<endif>
+>>
+
+ros-monitor-publish(motion, monitor) ::= <<
+<if(monitor.ros)>
+        {
+            const bool _active = <motion.id>_state_instance.active;
+            const bool _satisfied = _active && (<monitor-satisfied-expr(monitor)>);
+<monitor.ros.states:{s | <ros-publish-state(monitor.ros, s)>}; separator="\n">
+        \}
+<endif>
+>>
+
+ros-publish-state(pub, s) ::= <<
+            if (<({ros-state-guard-<s.state>})()>) {
+<s.fields:{f |                 robot.<pub.pub_id>_msg.<f.path> = <ros-field-value(f)>;}; separator="\n">
+<pub.auto_time:{p |                 robot.<pub.pub_id>_msg.<p> = robot.ros_node->now();}; separator="\n">
+<pub.auto_context_id:{p |                 robot.<pub.pub_id>_msg.<p>.uuid = _scenario_context_id;}; separator="\n">
+                robot.<pub.pub_id>->try_publish(robot.<pub.pub_id>_msg);
+            \}
+>>
+
+ros-state-guard-satisfied() ::= "_satisfied"
+ros-state-guard-violated() ::= "_active && !_satisfied"
+ros-state-guard-inactive() ::= "!_active"
+
+ros-field-value(f) ::= "<if(f.value_from)>shared.<f.value_from><else><f.cpp_value><endif>"
+
+ros-joint-states-tick(ros) ::= <<
+<if(ros.joint_states)>
+        if (robot.joint_states_pub && (_step % robot.joint_states_divider) == 0) {
+            robot.joint_states_msg.header.stamp = robot.ros_node->now();
+<ros.joint_states.joints:{j |             robot.joint_states_msg.position[<i0>] = shared.<j.position>;
+            robot.joint_states_msg.velocity[<i0>] = shared.<j.velocity>;
+            robot.joint_states_msg.effort[<i0>] = shared.<j.effort>;}; separator="\n">
+            robot.joint_states_pub->try_publish(robot.joint_states_msg);
+        \}
+<endif>
+>>
+
+ros-shutdown(ros) ::= <<
+    if (robot.ros_executor) {
+        robot.ros_executor->cancel();
+    \}
+    if (robot.ros_spin_thread.joinable()) {
+        robot.ros_spin_thread.join();
+    \}
+<ros.publishers:{p |     robot.<p.pub_id>.reset();}; separator="\n">
+<if(ros.joint_states)>
+    robot.joint_states_pub.reset();
+<endif>
+    robot.ros_executor.reset();
+    robot.ros_node.reset();
+    rclcpp::shutdown();
+>>

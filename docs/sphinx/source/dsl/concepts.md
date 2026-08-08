@@ -325,24 +325,29 @@ redeclaring them.
 ### Monitors
 
 A monitor observes a constraint, a motion's complete `.when`, or its complete
-`.until`:
+`.until`. It is in exactly one of three states each cycle: `inactive` (its motion is
+not scheduled), `satisfied`, or `violated`. Each state block lists what the monitor
+does while it is in that state:
 
 ```robmot
-ready: monitor <approach.when>
-       on activation trigger event task.E_READY
-       after active for 0.3 s
-       otherwise hold <home>
+ready: monitor <approach.when> {
+    satisfied for 0.3 s { trigger: event <task.E_READY> },
+    violated { hold: <home> },
+}
 ```
 
-Activation monitors can debounce with `after active for`, and a `when` monitor can
-name a safe fallback motion with `otherwise hold`. A level monitor instead writes a
-flag:
+`trigger` fires on entry into the state, and `for <Measure>` debounces that entry.
+`hold` names a safe fallback motion and belongs in `violated`; `flag`, which writes a
+boolean the model can read, belongs in `satisfied`:
 
 ```robmot
-contact: monitor <approach.contact> while active set flag touching
+contact: monitor <approach.contact> { satisfied { flag: touching } }
 ```
 
 Events may be namespaced FSM events or standalone event names.
+
+`publish` is legal in all three states and streams the monitor's state onto a declared
+ROS topic; see [ROS topics](#ros-topics) below.
 
 ### Controllers
 
@@ -431,6 +436,58 @@ solvers {
     gripper-solver: command-forwarding { agent: <agents.gripper> }
 }
 ```
+
+## ROS topics
+
+A model declares the topics it publishes on once, at the top level, and monitors
+reference them by name:
+
+```robmot
+ros-topics (ns=task) {
+    approach-done: topic "/motion/approach_done" message "bdd_ros2_interfaces/msg/TrinaryStamped",
+}
+```
+
+A publishing monitor writes its message every control cycle for as long as it is in a
+state that authored a `publish`, so a subscriber can tell "not being evaluated" from
+"evaluated and false":
+
+```robmot
+done: monitor <approach.until> {
+    satisfied { publish: TRUE to <task.approach-done> },
+    violated  { publish: FALSE to <task.approach-done> },
+    inactive  { publish: UNKNOWN to <task.approach-done> },
+}
+```
+
+The bare form is sugar for a field block, and is legal only when the message has
+exactly one field the model may state. The general form names dotted field paths, whose
+values are message constants, literals, or context quantities:
+
+```robmot
+publish: to <task.approach-done> { trinary.value: TRUE }
+```
+
+Timestamps and the `scenario_context_id` UUID are filled by the node, never authored:
+the clock supplies the stamp, and the `scenario_context_id` node parameter supplies the
+scenario, live-settable with `ros2 param set` while the controller runs.
+
+Every monitor's publishes must target one topic; a second topic is a second monitor.
+
+### Joint states
+
+The deployment, not the model, decides whether joint states are published. The section's
+presence in the platform config turns the publisher on:
+
+```toml
+[ros.joint_states]
+topic = "/joint_states"   # optional, default shown
+rate = 100.0              # Hz, optional; omitted publishes every control cycle
+```
+
+One `sensor_msgs/msg/JointState` reports every chain joint the model drives, under its
+runtime-qualified name. The topic and rate are read at launch, so retuning either needs
+no regeneration.
 
 ## Scene and FSM integration
 

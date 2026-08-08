@@ -2,6 +2,7 @@
 // L4 entry — the program: ref_main and the shared_state header.
 
 import "assembly_loop.stg"
+import "ros.stg"
 import "assembly_coordination.stg"
 import "assembly_motion.stg"
 import "expr_values.stg"
@@ -62,6 +63,10 @@ int main(int argc, char **argv) {
 <if(resources.by_kind.serial_chain)>
 <app-chain-post-setup(configuration.backend, resources.by_kind.serial_chain, coordination.motions, configuration.agent_homes)>
 <endif>
+<if(communication.ros)>
+<ros-joint-states-setup(communication.ros)>
+<ros-spin-start(communication.ros)>
+<endif>
 
 <if(coordination.fsm)>
     struct fsm_nbx *fsm = <coordination.fsm.cpp_namespace>::create_fsm();
@@ -84,7 +89,10 @@ int main(int argc, char **argv) {
     timespec _next_tick{};
     clock_gettime(CLOCK_MONOTONIC, &_next_tick);
     double _prev_clock_s = 0.0;
-    while (!motion_spec::runtime::stop_requested() && (<app-loop-condition(configuration.backend, resources.by_kind.serial_chain)>)) {
+<if(communication.ros)>
+<ros-publish-tick-locals(communication.ros)>
+<endif>
+    while (!motion_spec::runtime::stop_requested() && (<app-loop-condition(configuration.backend, resources.by_kind.serial_chain)>)<if(communication.ros)> && rclcpp::ok()<endif>) {
         shared.clock_time_s = <clock-time-source(configuration.backend, resources.by_kind.serial_chain, resources.by_kind.serial_chain)>;
         // Integrators step with the time that actually elapsed, not the period we asked for: the
         // loop sleeps to deadlines it can overrun. In sim the clock advances exactly one timestep
@@ -147,6 +155,9 @@ int main(int argc, char **argv) {
             current_motion = <length(coordination.motions)> - 1;
             break;
         }
+<endif>
+<if(communication.ros)>
+<ros-publish-tick(coordination, communication)>
 <endif>
 <if(resources.by_kind.serial_chain)>
 <app-chain-trace-update(configuration.backend, resources.by_kind.serial_chain, configuration.trace)>

@@ -97,7 +97,7 @@ monitor-member(monitor) ::= <<
 <if(monitor.is_edge_triggered)>    bool <monitor.id>_previous = false;
     bool <monitor.id>_event_triggered = false;
 <if(monitor.debounce_steps)>    int <monitor.id>_hold = 0;
-<endif><else>    bool <monitor.flag> = false;<endif>
+<endif><elseif(monitor.flag)>    bool <monitor.flag> = false;<endif>
 >>
 
 access-expr(id, views) ::= <<

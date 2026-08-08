@@ -6,10 +6,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
-from motion_spec_dsl.classes.constraint_handler import ROSTopic
 from motion_spec_dsl.gens import _gen_graph
 from motion_spec_dsl.langs import motion_spec_metamodel
 from motion_spec_dsl.rdf.model import ROS
@@ -133,8 +131,8 @@ def test_non_pose_component_views_keep_their_subspace(
 
 
 def test_monitor_publishes_to_ros_topic(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`also publish to topic` marks the event monitor as a ROS topic, reusing the canonical
-    ROS namespace and leaking none of the unused terms from its JSON-LD context."""
+    """A monitor's `publish` actions mark it as a ROS topic and hang one field node per state
+    off it, reusing the canonical ROS namespace."""
     monkeypatch.setenv("METAMODELS_PATH", str(METAMODELS))
     metamodel = motion_spec_metamodel()
     model = metamodel.model_from_file(
@@ -147,16 +145,26 @@ def test_monitor_publishes_to_ros_topic(monkeypatch: pytest.MonkeyPatch) -> None
     monitor = next(graph.subjects(RDF.type, ROS.Topic))
     assert graph.value(monitor, CSTR_HDL.event) is not None
     assert str(graph.value(monitor, ROS["channel-name"])) == "/motion/forward_done"
-    assert str(graph.value(monitor, ROS["type-name"])) == "bdd_ros2_interfaces/msg/Trinary"
+    assert (
+        str(graph.value(monitor, ROS["type-name"])) == "bdd_ros2_interfaces/msg/TrinaryStamped"
+    )
+    # The sugar form names no field: only the message shape can say which one it means.
+    published = {
+        str(graph.value(node, ROS["publish-on"])): (
+            str(graph.value(node, ROS["field-path"])),
+            str(graph.value(node, ROS["value"])),
+        )
+        for node in graph.objects(monitor, ROS["field"])
+    }
+    assert published == {
+        "satisfied": ("", "TRUE"),
+        "violated": ("", "FALSE"),
+        "inactive": ("", "UNKNOWN"),
+    }
 
     document = graph.serialize(format="json-ld", context=context)
     document = document.decode() if isinstance(document, bytes) else document
     assert '"ros": "https://index.ros.org/p/"' in document
-
-    # An omitted `as <type>` falls back to the empty message type.
-    node = URIRef("urn:test:default-topic")
-    builder._emit_ros_topic(SimpleNamespace(ros_topic=ROSTopic(channel_name="/x")), node)
-    assert str(graph.value(node, ROS["type-name"])) == "std_msgs/msg/Empty"
 
 
 def test_ir_derives_forwarded_commands_and_monitors(generated_model: Path) -> None:

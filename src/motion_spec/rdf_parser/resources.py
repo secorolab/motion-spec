@@ -1449,7 +1449,23 @@ JOINT_SPACE_CHANNELS = (
 JOINT_SPACE_COMMAND_CHANNEL = JointSpaceChannel("tau_cmd", "saturation", "Torque", "N_M")
 
 
-def agent_home_positions(platform: dict, serial_chains) -> dict:
+def platform_config(platform: dict) -> dict:
+    """The deployment config the exec-context declares, parsed once for every reader of it.
+
+    Raises:
+        RuntimeError: the declared config file does not exist.
+    """
+    config_path = platform.get("config")
+    if not config_path:
+        return {}
+    resolved = Path(config_path)
+    if not resolved.is_file():
+        raise RuntimeError(f"{resolved} does not exist, but the exec-context declares it.")
+
+    return tomllib.loads(resolved.read_text())
+
+
+def agent_home_positions(platform: dict, serial_chains, config: dict) -> dict:
     """Each agent's reset joint configuration, keyed the way its config key names it.
 
     Authored beside the model rather than baked into a template, and with no default: a simulated
@@ -1459,24 +1475,18 @@ def agent_home_positions(platform: dict, serial_chains) -> dict:
     Raises:
         ConstraintViolation: a simulated platform declares no config, or the config states no home
             for an agent the model drives.
-        RuntimeError: the declared config file does not exist.
     """
     if not platform.get("simulated"):
         return {}
     owners = [solver for solver in serial_chains if solver.runtime.owner]
     if not owners:
         return {}
-    config_path = platform.get("config")
-    if not config_path:
+    if not platform.get("config"):
         raise ConstraintViolation(
             "platform",
             'A simulated platform must declare `config: "<file>.toml"` in its exec-context, '
             "stating a [<agent>] home for every agent it drives.",
         )
-    resolved = Path(config_path)
-    if not resolved.is_file():
-        raise RuntimeError(f"{resolved} does not exist, but the exec-context declares it.")
-    config = tomllib.loads(resolved.read_text())
     homes = {
         f"{alias}.{leaf}": [float(value) for value in entry["home"]]
         for alias, entries in config.items()
@@ -1490,8 +1500,58 @@ def agent_home_positions(platform: dict, serial_chains) -> dict:
     if missing:
         raise ConstraintViolation(
             "platform",
-            f"{resolved} states no home for {missing}. Every agent the model drives needs one; "
-            "add a [<agent>] section with `home = [...]`.",
+            f"{platform['config']} states no home for {missing}. Every agent the model drives "
+            "needs one; add a [<agent>] section with `home = [...]`.",
         )
 
     return homes
+
+
+# The deployment states the topic and the rate; the section's presence is what turns the
+# publisher on, so retuning either needs no regeneration.
+ROS_JOINT_STATES_KEY = "ros.joint_states"
+
+
+def ros_joint_states(platform: dict, config: dict, serial_chains) -> dict | None:
+    """The joint-state publisher the deployment asked for: the config key its topic and rate are
+    read from at runtime, and per joint the blackboard values one message reports.
+
+    Raises:
+        ConstraintViolation: the config declares the section but the exec-context declares no
+            config to read it from, or the model drives no serial chain to report.
+    """
+    # Presence is the switch; an empty section means "on, all defaults".
+    if "joint_states" not in (config.get("ros") or {}):
+        return None
+    if not platform.get("config"):
+        raise ConstraintViolation(
+            "platform",
+            f"[{ROS_JOINT_STATES_KEY}] needs the exec-context to declare `config:`; the topic "
+            "and rate are read from that file at run time.",
+        )
+    joints = []
+    for solver in serial_chains:
+        if not solver.runtime.owner:
+            continue
+        by_channel: dict[str, dict[int, str]] = {}
+        for sample in solver.joint_space_samples:
+            by_channel.setdefault(sample["channel"], {})[sample["index"]] = sample["id"]
+        # Chain joints are stored unprefixed; the runtime's own channels are scoped, so the
+        # published names are too.
+        for index, joint in enumerate(solver.chain.joints):
+            joints.append(
+                {
+                    "name": f"{solver.runtime.prefix}{joint}",
+                    "position": by_channel["q"][index],
+                    "velocity": by_channel["qd"][index],
+                    "effort": by_channel["tau_ctrl"][index],
+                }
+            )
+    if not joints:
+        raise ConstraintViolation(
+            "platform",
+            f"[{ROS_JOINT_STATES_KEY}] is declared, but the model drives no serial chain whose "
+            "joints it could report.",
+        )
+
+    return {"config_key": ROS_JOINT_STATES_KEY, "joints": joints}

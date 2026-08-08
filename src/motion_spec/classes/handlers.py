@@ -126,6 +126,7 @@ class LevelMonitor:
     active_terms: list | None = None
     active_terms_present: bool = False
     active_any: bool = False
+    ros: RosPublication | None = None
     type: str = field(default="LevelMonitor")
 
 
@@ -167,9 +168,30 @@ class EdgeMonitor:
 
 
 @dataclass
+class RosField:
+    """One message field the model states a value for: a resolved constant or literal, or the
+    shared quantity to read it from.
+    """
+
+    path: str
+    cpp_value: str | None = None
+    value_from: str | None = None
+
+
+@dataclass
+class RosPublishState:
+    """The fields written while the monitor is in `state`; a state with none stays silent."""
+
+    state: str
+    fields: list[RosField] = field(default_factory=list)
+
+
+@dataclass
 class RosPublication:
-    """A monitor's ROS topic publish (`also publish to topic`); `include`/`cpp_type` derive from
-    `type` via the rosidl naming rule, `pub_id` is the C++ publisher member.
+    """What a monitor publishes: the topic, and per monitor state the message it fills.
+    `include`/`cpp_type` come from the message class rosidl resolved, `pub_id` is the C++
+    publisher member. `auto_time`/`auto_context_id` are the fields nothing may author -- the
+    node fills them from its clock and its scenario parameter.
     """
 
     channel: str | None = None
@@ -178,6 +200,9 @@ class RosPublication:
     include: str | None = field(default=None, metadata=INTERNAL)
     cpp_type: str | None = None
     pub_id: str | None = None
+    states: list[RosPublishState] = field(default_factory=list)
+    auto_time: list[str] = field(default_factory=list)
+    auto_context_id: list[str] = field(default_factory=list)
 
 
 Monitor = LevelMonitor | EdgeMonitor

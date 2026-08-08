@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MPL-2.0
 """Lowering a monitor's ROS publish: what rosidl says the message is, and what the IR carries.
 
-Only always-installed interface packages are used, so the suite never depends on a workspace
-interface package having been built.
+The trinary contract is what makes a type publishable at all, so the acceptance cases need
+`bdd_ros2_interfaces` on AMENT_PREFIX_PATH; the rejection cases use stock packages.
 """
 
 from __future__ import annotations
@@ -31,18 +31,12 @@ def _model(graph: Graph) -> Model:
     )
 
 
-def _publishing_monitor(type_name: str, fields: list[tuple[str, str, str]]) -> Graph:
-    """A monitor node with `channel-name`/`type-name` and one field node per (state, path)."""
+def _publication(type_name: str):
+    """Lower a monitor node stating only what the graph may state: its channel and its message."""
     graph = Graph()
     graph.add((MONITOR, NS_MM_ROS["channel-name"], Literal("/probe")))
     graph.add((MONITOR, NS_MM_ROS["type-name"], Literal(type_name)))
-    for index, (state, path, value) in enumerate(fields):
-        node = URIRef(f"{NS}mon-x.field{index}")
-        graph.add((MONITOR, NS_MM_ROS["field"], node))
-        graph.add((node, NS_MM_ROS["publish-on"], Literal(state)))
-        graph.add((node, NS_MM_ROS["field-path"], Literal(path)))
-        graph.add((node, NS_MM_ROS["value"], Literal(value)))
-    return graph
+    return _ros_publication(_model(graph), MONITOR)["ros"]
 
 
 def test_message_shape_separates_authorable_fields_from_auto_filled_ones():
@@ -60,29 +54,33 @@ def test_include_stem_comes_from_the_rosidl_converter():
     assert convert_camel_case_to_lower_case_underscore("TrinaryStamped") == "trinary_stamped"
 
 
-def test_constants_resolve_against_the_message_that_owns_the_field():
-    """A nested field's constants live on the nested message, not on the one published."""
-    graph = _publishing_monitor(
-        "sensor_msgs/msg/NavSatFix",
-        [("satisfied", "status.status", "STATUS_FIX"), ("violated", "latitude", "1.5")],
-    )
-    ros = _ros_publication(_model(graph), MONITOR)["ros"]
-    assert ros.cpp_type == "sensor_msgs::msg::NavSatFix"
-    assert ros.include == "sensor_msgs/msg/nav_sat_fix.hpp"
+def test_a_trinary_type_resolves_to_its_payload_and_the_class_owning_its_constants():
+    """Stamp and scenario id are auto-filled away; the one leaf left is the verdict, and its
+    TRUE/FALSE live on the nested message, not on the one published."""
+    ros = _publication("bdd_ros2_interfaces/msg/TrinaryStamped")
+    assert ros.cpp_type == "bdd_ros2_interfaces::msg::TrinaryStamped"
+    assert ros.include == "bdd_ros2_interfaces/msg/trinary_stamped.hpp"
     assert ros.pub_id == "mon_x_pub"
-    assert ros.auto_time == ["header.stamp"]
-    assert [(s.state, [(f.path, f.cpp_value) for f in s.fields]) for s in ros.states] == [
-        ("satisfied", [("status.status", "sensor_msgs::msg::NavSatStatus::STATUS_FIX")]),
-        ("violated", [("latitude", "1.5")]),
-    ]
+    assert ros.payload_path == "trinary.value"
+    assert ros.payload_cpp_type == "bdd_ros2_interfaces::msg::Trinary"
+    assert ros.auto_time == ["stamp"]
+    assert ros.auto_context_id == ["scenario_context_id"]
 
 
-def test_a_bare_publish_resolves_to_the_only_field_the_model_may_state():
-    """`publish: V to <t>` names no field; the message shape says which one it means, and
-    the literal renders as the integer the field type reports."""
-    graph = _publishing_monitor("std_msgs/msg/Int32", [("satisfied", "", "7.0")])
-    ros = _ros_publication(_model(graph), MONITOR)["ros"]
-    assert [(f.path, f.cpp_value) for f in ros.states[0].fields] == [("data", "7")]
+def test_an_unstamped_trinary_owns_its_own_constants():
+    ros = _publication("bdd_ros2_interfaces/msg/Trinary")
+    assert (ros.payload_path, ros.payload_cpp_type) == (
+        "value",
+        "bdd_ros2_interfaces::msg::Trinary",
+    )
+    assert ros.auto_time == [] and ros.auto_context_id == []
+
+
+@pytest.mark.parametrize("type_name", ["std_msgs/msg/String", "sensor_msgs/msg/JointState"])
+def test_a_type_without_trinary_constants_is_rejected(type_name):
+    """A monitor publishes a verdict; a type that cannot say TRUE/FALSE cannot carry one."""
+    with pytest.raises(ConstraintViolation, match="trinary constants"):
+        _publication(type_name)
 
 
 def test_publishers_dedupe_by_channel():

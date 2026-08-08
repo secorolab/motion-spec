@@ -131,8 +131,8 @@ def test_non_pose_component_views_keep_their_subspace(
 
 
 def test_monitor_publishes_to_ros_topic(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A monitor's `publish` actions mark it as a ROS topic and hang one field node per state
-    off it, reusing the canonical ROS namespace."""
+    """A monitor's `publish` marks it as a ROS topic naming a channel and a message type --
+    the only ROS vocabulary the graph carries."""
     monkeypatch.setenv("METAMODELS_PATH", str(METAMODELS))
     metamodel = motion_spec_metamodel()
     model = metamodel.model_from_file(
@@ -145,21 +145,11 @@ def test_monitor_publishes_to_ros_topic(monkeypatch: pytest.MonkeyPatch) -> None
     monitor = next(graph.subjects(RDF.type, ROS.Topic))
     assert graph.value(monitor, CSTR_HDL.event) is not None
     assert str(graph.value(monitor, ROS["channel-name"])) == "/motion/forward_done"
-    assert (
-        str(graph.value(monitor, ROS["type-name"])) == "bdd_ros2_interfaces/msg/TrinaryStamped"
-    )
-    # The sugar form names no field: only the message shape can say which one it means.
-    published = {
-        str(graph.value(node, ROS["publish-on"])): (
-            str(graph.value(node, ROS["field-path"])),
-            str(graph.value(node, ROS["value"])),
-        )
-        for node in graph.objects(monitor, ROS["field"])
-    }
-    assert published == {
-        "satisfied": ("", "TRUE"),
-        "violated": ("", "FALSE"),
-        "inactive": ("", "UNKNOWN"),
+    assert str(graph.value(monitor, ROS["type-name"])) == "bdd_ros2_interfaces/msg/TrinaryStamped"
+    # What goes into the message is the message type's contract, so the graph states no more.
+    assert {p for _s, p, _o in graph if str(p).startswith(str(ROS))} == {
+        ROS["channel-name"],
+        ROS["type-name"],
     }
 
     document = graph.serialize(format="json-ld", context=context)

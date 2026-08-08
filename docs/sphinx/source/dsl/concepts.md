@@ -325,9 +325,9 @@ redeclaring them.
 ### Monitors
 
 A monitor observes a constraint, a motion's complete `.when`, or its complete
-`.until`. It is in exactly one of three states each cycle: `inactive` (its motion is
-not scheduled), `satisfied`, or `violated`. Each state block lists what the monitor
-does while it is in that state:
+`.until`. While its motion is scheduled it is in one of two states each cycle:
+`satisfied` or `violated`. Each state block lists what the monitor does while it is in
+that state:
 
 ```robmot
 ready: monitor <approach.when> {
@@ -346,8 +346,8 @@ contact: monitor <approach.contact> { satisfied { flag: touching } }
 
 Events may be namespaced FSM events or standalone event names.
 
-`publish` is legal in all three states and streams the monitor's state onto a declared
-ROS topic; see [ROS topics](#ros-topics) below.
+`publish`, declared once per monitor rather than inside a state block, streams the
+monitor's verdict onto a declared ROS topic; see [ROS topics](#ros-topics) below.
 
 ### Controllers
 
@@ -448,31 +448,32 @@ ros-topics (ns=task) {
 }
 ```
 
-A publishing monitor writes its message every control cycle for as long as it is in a
-state that authored a `publish`, so a subscriber can tell "not being evaluated" from
-"evaluated and false":
+A monitor declares `publish` once, naming only the topic. What is written is not
+authored: it is the message type's own contract, fixed in codegen.
 
 ```robmot
 done: monitor <approach.until> {
-    satisfied { publish: TRUE to <task.approach-done> },
-    violated  { publish: FALSE to <task.approach-done> },
-    inactive  { publish: UNKNOWN to <task.approach-done> },
+    satisfied { trigger: event <task.E_DONE> },
+    publish: to <task.approach-done>,
 }
 ```
 
-The bare form is sugar for a field block, and is legal only when the message has
-exactly one field the model may state. The general form names dotted field paths, whose
-values are message constants, literals, or context quantities:
+While the monitor's motion is scheduled it publishes every control cycle: the message
+type's `TRUE` constant when the constraint is satisfied, its `FALSE` constant otherwise.
+While the motion is unscheduled the monitor says nothing at all, and a subscriber reads
+that silence as unknown -- so "not being evaluated" and "evaluated and false" stay
+distinguishable without a third published value.
 
-```robmot
-publish: to <task.approach-done> { trinary.value: TRUE }
-```
+That contract makes the supported message types exactly the trinary ones: after the
+auto-filled fields are set aside, the type must have a single payload field whose
+message defines `TRUE`, `FALSE` and `UNKNOWN` constants -- `bdd_ros2_interfaces/msg/Trinary`
+and `bdd_ros2_interfaces/msg/TrinaryStamped`. Any other type is a generation error.
 
 Timestamps and the `scenario_context_id` UUID are filled by the node, never authored:
 the clock supplies the stamp, and the `scenario_context_id` node parameter supplies the
 scenario, live-settable with `ros2 param set` while the controller runs.
 
-Every monitor's publishes must target one topic; a second topic is a second monitor.
+A monitor publishes on at most one topic; a second topic is a second monitor.
 
 ### Joint states
 

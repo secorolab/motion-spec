@@ -168,30 +168,13 @@ class EdgeMonitor:
 
 
 @dataclass
-class RosField:
-    """One message field the model states a value for: a resolved constant or literal, or the
-    shared quantity to read it from.
-    """
-
-    path: str
-    cpp_value: str | None = None
-    value_from: str | None = None
-
-
-@dataclass
-class RosPublishState:
-    """The fields written while the monitor is in `state`; a state with none stays silent."""
-
-    state: str
-    fields: list[RosField] = field(default_factory=list)
-
-
-@dataclass
 class RosPublication:
-    """What a monitor publishes: the topic, and per monitor state the message it fills.
+    """What a monitor publishes: the topic, and where the trinary verdict goes in the message.
     `include`/`cpp_type` come from the message class rosidl resolved, `pub_id` is the C++
-    publisher member. `auto_time`/`auto_context_id` are the fields nothing may author -- the
-    node fills them from its clock and its scenario parameter.
+    publisher member. `payload_path` is the one field the verdict is written to and
+    `payload_cpp_type` the message class owning its TRUE/FALSE constants.
+    `auto_time`/`auto_context_id` are the fields nothing may author -- the node fills them
+    from its clock and its scenario parameter.
     """
 
     channel: str | None = None
@@ -200,7 +183,8 @@ class RosPublication:
     include: str | None = field(default=None, metadata=INTERNAL)
     cpp_type: str | None = None
     pub_id: str | None = None
-    states: list[RosPublishState] = field(default_factory=list)
+    payload_path: str | None = None
+    payload_cpp_type: str | None = None
     auto_time: list[str] = field(default_factory=list)
     auto_context_id: list[str] = field(default_factory=list)
 

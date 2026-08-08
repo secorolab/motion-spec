@@ -142,9 +142,10 @@ ros-joint-states-setup(ros) ::= <<
 <endif>
 >>
 
-// One tick per control cycle, for every publishing monitor whether or not its motion is
-// scheduled: a subscriber must be able to tell "not being evaluated" from "evaluated and
-// false", and only a stream that keeps talking while inactive can say that.
+// One tick per control cycle, for every publishing monitor whose motion is scheduled. What is
+// written is the message type's own contract, never model data: satisfied is the type's TRUE,
+// violated its FALSE. An unscheduled monitor says nothing at all -- silence is what a reader
+// takes for UNKNOWN, so there is no third value to publish.
 
 ros-publish-tick(coordination, communication) ::= <<
 <if(communication.ros.scenario_context_id)>
@@ -165,28 +166,16 @@ ros-publish-tick-locals(ros) ::= <<
 
 ros-monitor-publish(motion, monitor) ::= <<
 <if(monitor.ros)>
-        {
-            const bool _active = <motion.id>_state_instance.active;
-            const bool _satisfied = _active && (<monitor-satisfied-expr(monitor)>);
-<monitor.ros.states:{s | <ros-publish-state(monitor.ros, s)>}; separator="\n">
+        if (<motion.id>_state_instance.active) {
+            const bool _satisfied = <monitor-satisfied-expr(monitor)>;
+            robot.<monitor.ros.pub_id>_msg.<monitor.ros.payload_path> =
+                _satisfied ? <monitor.ros.payload_cpp_type>::TRUE : <monitor.ros.payload_cpp_type>::FALSE;
+<monitor.ros.auto_time:{p |             robot.<monitor.ros.pub_id>_msg.<p> = robot.ros_node->now();}; separator="\n">
+<monitor.ros.auto_context_id:{p |             robot.<monitor.ros.pub_id>_msg.<p>.uuid = _scenario_context_id;}; separator="\n">
+            robot.<monitor.ros.pub_id>->try_publish(robot.<monitor.ros.pub_id>_msg);
         \}
 <endif>
 >>
-
-ros-publish-state(pub, s) ::= <<
-            if (<({ros-state-guard-<s.state>})()>) {
-<s.fields:{f |                 robot.<pub.pub_id>_msg.<f.path> = <ros-field-value(f)>;}; separator="\n">
-<pub.auto_time:{p |                 robot.<pub.pub_id>_msg.<p> = robot.ros_node->now();}; separator="\n">
-<pub.auto_context_id:{p |                 robot.<pub.pub_id>_msg.<p>.uuid = _scenario_context_id;}; separator="\n">
-                robot.<pub.pub_id>->try_publish(robot.<pub.pub_id>_msg);
-            \}
->>
-
-ros-state-guard-satisfied() ::= "_satisfied"
-ros-state-guard-violated() ::= "_active && !_satisfied"
-ros-state-guard-inactive() ::= "!_active"
-
-ros-field-value(f) ::= "<if(f.value_from)>shared.<f.value_from><else><f.cpp_value><endif>"
 
 ros-joint-states-tick(ros) ::= <<
 <if(ros.joint_states)>

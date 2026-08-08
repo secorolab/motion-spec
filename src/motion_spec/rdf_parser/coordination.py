@@ -42,9 +42,7 @@ from motion_spec.classes.handlers import (
     EdgeMonitor,
     EvaluatorType,
     LevelMonitor,
-    RosField,
     RosPublication,
-    RosPublishState,
 )
 from motion_spec.classes.motion import ForwardedCommandStep, MotionSolverSlice, MotionUnit
 from motion_spec.classes.solvers import CommandForwarding
@@ -298,6 +296,8 @@ _MANY = (re.compile(r"^sequence<(.+?)(?:,\s*\d+)?>$"), re.compile(r"^(.+?)\[\d*\
 # Fields the node owns, never the model: the publish clock, and the scenario a run belongs to.
 _AUTO_TIME_TYPE = "builtin_interfaces/Time"
 _AUTO_CONTEXT_ID = ("scenario_context_id", "unique_identifier_msgs/UUID")
+# A publishable message says all three: satisfied, violated, and not evaluated.
+_TRINARY_CONSTANTS = ("TRUE", "FALSE", "UNKNOWN")
 
 
 def _element_type(field_type: str) -> tuple[str, bool]:
@@ -382,60 +382,24 @@ def _message_shape(type_name: str) -> dict:
     }
 
 
-def _cpp_value(shape: dict, path: str, authored: str) -> str:
-    """The authored constant or literal, rendered against the type rosidl reports for `path`."""
-    element, owner = shape["leaves"][path]
-    if authored.isidentifier():
-        if not hasattr(owner, authored):
-            raise ConstraintViolation(
-                "communication",
-                f"'{authored}' is not a constant of the message owning '{path}' in "
-                f"{shape['type_name']}",
-            )
-        _package, owner_cpp, _include = _cpp_names(owner)
-        return f"{owner_cpp}::{authored}"
-    if element == "string":
-        return f'"{authored}"'
-    number = float(authored)
+def _trinary_payload(shape: dict) -> tuple[str, str]:
+    """The one field a verdict is written to, and the message class owning its constants.
 
-    return str(int(number)) if "int" in element or element == "octet" else repr(number)
-
-
-def _publish_states(model, node, shape: dict) -> list[RosPublishState]:
-    """The authored field values, grouped by the monitor state they are published in."""
-    by_state: dict[str, list[RosField]] = {}
-    for field_node in model.graph.objects(node, NS_MM_ROS["field"]):
-        state = str(model.graph.value(field_node, NS_MM_ROS["publish-on"]))
-        path = str(model.graph.value(field_node, NS_MM_ROS["field-path"]) or "")
-        if not path:
-            # A bare `publish: V to <t>` names no field; only the message shape can say which
-            # one it means, and it may mean only one.
-            candidates = sorted(shape["leaves"])
-            if len(candidates) != 1:
-                raise ConstraintViolation(
-                    "communication",
-                    f"{shape['type_name']} has {len(candidates)} fields the model may state, "
-                    "so a bare publish is ambiguous; name the field",
-                )
-            path = candidates[0]
-        elif path not in shape["leaves"]:
-            raise ConstraintViolation(
-                "communication",
-                f"{shape['type_name']} has no field '{path}'; it offers "
-                f"{', '.join(sorted(shape['leaves']))}",
-            )
-        source = model.graph.value(field_node, NS_MM_ROS["value-from"])
-        if source is not None:
-            entry = RosField(path, value_from=model.id(source))
-        else:
-            authored = str(model.graph.value(field_node, NS_MM_ROS["value"]))
-            entry = RosField(path, cpp_value=_cpp_value(shape, path, authored))
-        by_state.setdefault(state, []).append(entry)
-
-    return [
-        RosPublishState(state, sorted(by_state[state], key=lambda item: item.path))
-        for state in sorted(by_state)
-    ]
+    A monitor publishes a verdict, never model data: the only publishable types are those whose
+    single remaining payload leaf belongs to a message defining TRUE/FALSE/UNKNOWN.
+    """
+    leaves = sorted(shape["leaves"])
+    if len(leaves) == 1:
+        _element, owner = shape["leaves"][leaves[0]]
+        if all(hasattr(owner, name) for name in _TRINARY_CONSTANTS):
+            _package, owner_cpp, _include = _cpp_names(owner)
+            return leaves[0], owner_cpp
+    raise ConstraintViolation(
+        "communication",
+        f"message type '{shape['type_name']}' cannot carry a monitor verdict; publishable "
+        "types carry trinary constants -- one payload field whose message defines "
+        f"{'/'.join(_TRINARY_CONSTANTS)}",
+    )
 
 
 def _ros_publication(model, node) -> dict:
@@ -446,6 +410,7 @@ def _ros_publication(model, node) -> dict:
     type_name = str(model.graph.value(node, NS_MM_ROS["type-name"]) or "")
     shape = _message_shape(type_name)
     auto = shape["auto"]
+    payload_path, payload_cpp_type = _trinary_payload(shape)
 
     return {
         "ros": RosPublication(
@@ -455,7 +420,8 @@ def _ros_publication(model, node) -> dict:
             shape["include"],
             shape["cpp_type"],
             f"{model.id(node)}_pub".replace("-", "_"),
-            states=_publish_states(model, node, shape),
+            payload_path,
+            payload_cpp_type,
             auto_time=sorted(path for path, kind in auto.items() if kind == "time"),
             auto_context_id=sorted(path for path, kind in auto.items() if kind == "context_id"),
         )

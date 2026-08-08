@@ -323,8 +323,6 @@ app-chain-loop-reset-mj_kdl(serial_chain_solvers, fsm) ::= <<
             mj_kdl::reset(&mj_env);
 <if(fsm)>
             fsm->currentStateIndex = fsm->startStateIndex;
-<else>
-            current_motion = 0;
 <endif>
         }
         _prev_sim_time = mj_<first(serial_chain_solvers).runtime.id>.data->time;

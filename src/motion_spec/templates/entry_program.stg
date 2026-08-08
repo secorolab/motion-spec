@@ -80,8 +80,6 @@ int main(int argc, char **argv) {
     int _step = 0;
 <if(coordination.fsm)>
     int _fsm_prev_state = -1;
-<else>
-    int current_motion = 0;
 <endif>
 #ifdef MOTION_SPEC_ENABLE_INTROSPECTION
     motion_spec::introspection::RunPublisher _introspection_pub;
@@ -123,38 +121,6 @@ int main(int argc, char **argv) {
         produce_event(fsm->eventData, <coordination.fsm.cpp_namespace>::<coordination.fsm.step_event>);
 <endif>
         fsm_dispatch(fsm);
-<else>
-        switch (current_motion) {
-<coordination.motions:{motion |
-        case <i0>: {
-            update_<motion.id>(<motion.id>_state_instance, shared, robot);
-            monitor_<motion.id>(<sig-args(motion.id, motion.monitor_needs_state, motion.monitor_needs_shared, motion.monitor_needs_robot, motion.monitor_needs_events)>);
-            if (!<motion.id>_state_instance.active && can_start_<motion.id>(<sig-args(motion.id, motion.can_start_needs_state, motion.can_start_needs_shared, motion.can_start_needs_robot)>)) {
-                <motion.id>_state_instance.active = true;
-                <motion.id>_state_instance.active_steps = 0;
-<if(motion.has_active_elapsed)>                <motion.id>_state_instance.motion_start_time = shared.clock_time_s;
-<endif>
-<motion.until_monitors:{m |                 <motion.id>_state_instance.<m.id>_previous = false;
-                <motion.id>_state_instance.<m.id>_event_triggered = false;}; separator="
-">
-            \}
-            if (<motion.id>_state_instance.active) {
-                control_<motion.id>(<motion.id>_state_instance, shared, robot<if(motion.control_needs_events)>, events<endif>);
-                apply_<motion.id>(<sig-args(motion.id, motion.apply_needs_state, motion.apply_needs_shared, motion.apply_needs_robot)>);
-                // TODO: replace this temporary event latch bridge with real event-driven FSM transitions.
-                if (<motion.id>_state_instance.active_steps > 0 && (<motion-done-condition(motion)>)) {
-                    <motion.id>_state_instance.active = false;
-                    current_motion = <i>;
-                \}
-                ++<motion.id>_state_instance.active_steps;
-            \}
-            break;
-        \}
-}; separator="\n">
-        default:
-            current_motion = <length(coordination.motions)> - 1;
-            break;
-        }
 <endif>
 <if(communication.ros)>
 <ros-publish-tick(coordination, communication)>
@@ -179,8 +145,6 @@ int main(int argc, char **argv) {
             _introspection_pub,
 <if(coordination.fsm)>            static_cast\<int\>(fsm->currentStateIndex),
             fsm_active_motion(fsm),
-<else>            current_motion,
-            current_motion,
 <endif>            motion_spec::runtime::monotonic_time_s(),
             static_cast\<std::uint64_t\>(_step),
             shared,

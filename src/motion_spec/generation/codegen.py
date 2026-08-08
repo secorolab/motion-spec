@@ -156,8 +156,16 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
 
     ir.json is complete by construction in ir_gen (every codegen-facing field, incl. FSM
     wiring); codegen only loads it, writes artifacts, and renders.
+
+    Raises:
+        RuntimeError: the IR declares no FSM. The generated program is an FSM dispatcher.
     """
     ir = load_ir(ir_path)
+    if not ir["coordination"].get("fsm"):
+        raise RuntimeError(
+            f"{ir_path}: the model declares no FSM; FSM-less execution is not supported. "
+            "Coordinate the model with an FSM to generate C++."
+        )
     # The pipeline moves fsm_ir.json into the controller dir before calling codegen; the
     # standalone `gen code <ir.json>` path leaves it beside the IR.
     _adopt_fsm_state_order(

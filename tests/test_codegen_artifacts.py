@@ -319,6 +319,8 @@ def test_frame_log_proto_fields_advance_past_large_categories() -> None:
 
 def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch) -> None:
     ir = _sample_ir()
+    # Generation refuses an FSM-less IR, so the fixture carries the FSM it is coordinated by.
+    ir["coordination"]["fsm"] = _sample_fsm()
     ir["coordination"]["motions"][0]["until_monitors"][0]["error"] = {
         "id": "pose_ee",
         "type": "Pose",
@@ -485,6 +487,14 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
     assert {"index": 0, "id": "pose_ee"} in model_payload["poses"]
     assert {"index": 0, "id": "twist_ee"} in model_payload["twists"]
     assert {"index": 0, "id": "wrench_ee"} in model_payload["wrenches"]
+
+
+def test_codegen_refuses_a_model_that_declares_no_fsm(tmp_path: Path) -> None:
+    ir_path = tmp_path / "ir.json"
+    ir_path.write_text(json.dumps(_sample_ir(), cls=DataclassJSONEncoder))
+
+    with pytest.raises(RuntimeError, match="declares no FSM"):
+        codegen.generate_code(ir_path, tmp_path, "stst")
 
 
 def test_provenance_document_is_jsonld_and_prov_shacl_conformant(tmp_path: Path) -> None:

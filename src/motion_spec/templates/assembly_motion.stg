@@ -33,10 +33,6 @@ sig-args(mid, needs_state, needs_shared, needs_robot, needs_events=false) ::= <<
 <if(needs_state)><mid>_state_instance<endif><if(needs_shared)><if(needs_state)>, <endif>shared<endif><if(needs_robot)><if(needs_state||needs_shared)>, <endif>robot<endif><if(needs_events)><if(needs_state||needs_shared||needs_robot)>, <endif>events<endif>
 >>
 
-motion-done-condition(motion) ::= <<
-<if(motion.done_terms_present)><bool-condition(motion.done_terms, motion.done_any)><else>true<endif>
->>
-
 motion-prelude(externally_measured, serial_chain_solvers, solvers, backend) ::= <<
 <externally_measured:{wrench | <sync-wrench(wrench)>}; separator="\n">
 <if(serial_chain_solvers)>

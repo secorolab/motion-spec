@@ -180,16 +180,13 @@ class MotionUnit:
     active_elapsed_ids: list[str] = field(default_factory=list)
     when_elapsed_ids: list[str] = field(default_factory=list)
     has_until_condition: bool = field(default=False, metadata=INTERNAL)
-    # Derived joins: the when phase is one disjunction; the until transitions are alternatives.
+    # Derived join: the when phase is one disjunction.
     when_any: bool = False
-    done_any: bool = False
     # Structured boolean terms (folded from evaluators/monitors); rendered to C++ by the
-    # bool-condition template. WHEN joins with when_any, done joins with done_any. The
-    # *_present flags gate the empty-default (JSON empty lists are truthy in the ST4 build).
+    # bool-condition template, joined by when_any. The *_present flag gates the
+    # empty-default (JSON empty lists are truthy in the ST4 build).
     when_terms: list = field(default_factory=list)
     when_terms_present: bool = False
-    done_terms: list = field(default_factory=list)
-    done_terms_present: bool = False
     path_projections: list[dict] = field(default_factory=list)
     # Declared pose components referenced by this motion (folded from pose_components).
     declared_pose_components: list = field(default_factory=list)

@@ -102,14 +102,6 @@ def _phase_any(transitions) -> bool:
     return len(transitions) == 1 and transitions[0].any
 
 
-def _done_any(transitions) -> bool:
-    """Whether a motion's until transitions are alternatives, so the first to fire ends it.
-
-    Several transitions are independent conditions; a single one ends the motion on its own join.
-    """
-    return len(transitions) > 1 or _phase_any(transitions)
-
-
 @reader
 def guarded_motion(model, node) -> GuardedMotion:
     """A GuardedMotion: the constraints it starts on, holds during and ends on.
@@ -945,7 +937,6 @@ def _motion_unit(
         has_elapsed=bool(when_elapsed or active_elapsed),
         has_until_condition=bool(evaluators["until"]),
         when_any=_phase_any(handler.motion.when_transitions),
-        done_any=_done_any(handler.motion.until_transitions),
         serial_chain_solvers=chain_solvers,
         relative_poses=quantities.relative_poses_for_motion(
             all_evaluators, computation.views, chain_solvers
@@ -1150,7 +1141,7 @@ def _set_monitor_conditions(motion, phase: str) -> None:
 
 
 def _set_motion_conditions(motion) -> None:
-    """Fold the until, when and done boolean terms onto a motion."""
+    """Fold the until and when boolean terms onto a motion."""
     _set_monitor_conditions(motion, "until")
     motion.when_terms = [
         evaluator_term(evaluator)
@@ -1159,14 +1150,6 @@ def _set_motion_conditions(motion) -> None:
     ]
     motion.when_terms_present = bool(motion.when_terms)
     _set_monitor_conditions(motion, "when")
-    # An edge monitor's occurrence ends the motion; a level monitor holds a flag instead.
-    motion.done_terms = [
-        {"kind": "event", "motion_id": motion.id, "monitor_id": monitor.id}
-        if monitor.is_edge_triggered
-        else {"kind": "flag", "motion_id": motion.id, "flag": monitor.flag}
-        for monitor in motion.until_monitors
-    ]
-    motion.done_terms_present = bool(motion.done_terms)
 
 
 def _add_motion_function_interfaces(motions: list, solvers_by_id: dict) -> None:

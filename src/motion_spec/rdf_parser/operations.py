@@ -532,8 +532,14 @@ class ErrorEvaluator:
 
     def closure_step(self, model, node):
         """The error-evaluator closure, dispatching on the constraint type."""
+        from motion_spec.rdf_parser.quantities import goal_status_act
+
         graph = model.graph
         constraint_id = graph.value(node, CSTR_HDL["constraint"])
+        # A goal status is runtime-written, never computed: its equality is read directly by
+        # the monitor's goal-status term, so the evaluator yields no closure (elapsed precedent).
+        if goal_status_act(model, graph.value(constraint_id, CSTR["quantity"])) is not None:
+            return None
         for operator in self.cstr_op:
             if operator.type_ not in get_node_types(graph, constraint_id):
                 continue

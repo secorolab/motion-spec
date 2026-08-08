@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,7 @@ from motion_spec.rdf_parser import (
     resources,
 )
 from motion_spec.rdf_parser.constraint_handler import ControllerDerivation, SolverDerivationContext
+from motion_spec.rdf_parser.ir import generate_ir
 from motion_spec.rdf_parser.model import Model
 from motion_spec.rdf_parser.quantities import LINEAR_AXES
 
@@ -169,7 +171,7 @@ def test_agent_model_may_bind_the_assembled_kinematic_tree() -> None:
         setup.chain.tip,
         setup.hardware.model,
         setup.hardware.tool_body,
-        setup.hardware.tcp_site,
+        setup.hardware.tcp_frame,
     ) == ("base", "tool", "tool", "KinovaGen3", "", "")
 
 
@@ -582,3 +584,35 @@ def test_an_authored_band_rides_the_constraint_term() -> None:
     }
     # Omitted, not empty: the template reads a present-but-empty id as a shared value.
     assert evaluator_term(evaluator(None)) == {"kind": "constraint", "error_id": "near_err"}
+
+
+@pytest.fixture(scope="module")
+def dual_ir(tmp_path_factory) -> dict:
+    """The dual-arm IR, the only maintained model whose runtimes carry a scoping prefix."""
+    outdir = tmp_path_factory.mktemp("pick_place_dual") / "generated" / "model"
+    subprocess.run(
+        ["textx", "generate", "pick_place_dual.robmot", "--target", "jsonld", "-o", str(outdir)],
+        cwd=Path(__file__).parents[2] / "motion-spec-dsl" / "models" / "pick_place_dual",
+        check=True,
+    )
+    return generate_ir(outdir / "pick_place_dual-app.ld.json")
+
+
+def test_chain_joints_are_unprefixed_and_the_runtime_prefix_is_published(dual_ir: dict) -> None:
+    """The chain states the scene's joint names; the runtime states the scope they are read in.
+
+    Publishing both is what lets a backend compose the runtime-scoped name itself instead of the
+    IR shipping one backend's concatenation of them.
+    """
+    solvers = dual_ir["resources"]["by_kind"]["serial_chain"]
+    prefixes = {solver.runtime.prefix for solver in solvers}
+    assert prefixes == {"kinova1_", "kinova2_"}
+    for solver in solvers:
+        assert solver.chain.joints == [f"joint_{number}" for number in range(1, 8)]
+        assert solver.chain.tree == "world_tree"
+        assert solver.chain.name.endswith("_tree_chain")
+
+
+def test_configuration_publishes_the_model_name(dual_ir: dict) -> None:
+    """One scalar the backends name their generated artifacts from, instead of one per solver."""
+    assert dual_ir["configuration"]["model_name"] == "pick_place_dual"

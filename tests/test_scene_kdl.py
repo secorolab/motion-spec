@@ -7,7 +7,12 @@ from scene_dsl.kdl_tree import build_kdl_trees
 from scene_dsl.langs import scenex_metamodel
 from scene_dsl.rdf.scenex import create_scenex_model_graph
 
-from motion_spec.generation.scene_kdl import chain_for_iri, kdl_header_name, write_scene_kdl_header
+from motion_spec.generation.scene_kdl import (
+    chain_for_iri,
+    kdl_header_name,
+    model_stem,
+    write_scene_kdl_header,
+)
 
 MODELS = Path(__file__).parents[2] / "motion-spec-dsl" / "models"
 
@@ -22,5 +27,9 @@ def test_scene_kdl_adapter_derives_solver_chains_and_writes_header(tmp_path: Pat
 
     header = write_scene_kdl_header(graph, tmp_path, scene.name, scene.parent)
     assert header.name == "pick_place_single.kdl.hpp"
-    assert kdl_header_name("pick_place_single-app.ld.json") == header.name
+    # The written header and the IR's published `configuration.model_name` share one derivation,
+    # so the include a backend composes can never name a file the pipeline did not write.
+    manifest = "pick_place_single-app.ld.json"
+    assert kdl_header_name(manifest) == header.name
+    assert kdl_header_name(manifest) == f"{model_stem(manifest)}.kdl.hpp"
     assert "make_chain_kinova_2f85_chain" in header.read_text()

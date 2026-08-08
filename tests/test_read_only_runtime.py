@@ -21,16 +21,8 @@ def solver(sid, chain_end, driven):
             )
         ],
         output=[],
-        chain=ChainBinding(
-            root="base",
-            end=chain_end,
-            tip="",
-            kdl_chain="",
-            kdl_tree="",
-            kdl_joints=[],
-            kdl_header="",
-        ),
-        hardware=HardwareBinding(urdf="arm.urdf", model="arm", tool_body="", tcp_site=""),
+        chain=ChainBinding(root="base", end=chain_end, tip="", tree="", name="", joints=[]),
+        hardware=HardwareBinding(urdf="arm.urdf", model="arm", tool_body="", tcp_frame=""),
         runtime=RuntimeBinding(id="", owner=False, prefix="", owned_trees=[], config_key=""),
     )
 

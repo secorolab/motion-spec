@@ -47,10 +47,8 @@ def _solver(sid: str, output: list) -> SolverWithInputAndOutput:
             MotionDrivers(id=f"{sid}_drivers", acceleration_constraint=[], cartesian_force=[])
         ],
         output=output,
-        chain=ChainBinding(
-            root="base", end="ee", tip="", kdl_chain="", kdl_tree="", kdl_joints=[], kdl_header=""
-        ),
-        hardware=HardwareBinding(urdf="", model="arm", tool_body="", tcp_site=""),
+        chain=ChainBinding(root="base", end="ee", tip="", tree="", name="", joints=[]),
+        hardware=HardwareBinding(urdf="", model="arm", tool_body="", tcp_frame=""),
         runtime=RuntimeBinding(id=sid, owner=True, prefix="", owned_trees=[], config_key=""),
     )
 

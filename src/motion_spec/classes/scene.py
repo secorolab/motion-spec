@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 """The MJCF scene the model runs in: robots, objects, attachments and the control timestep.
 
-Renamed `Mjcf*` (§3): these records carry MJCF asset paths, prefixes and scalar fan-out, and the
+Renamed `Mjcf*`: these records carry MJCF asset paths, prefixes and scalar fan-out, and the
 name should say so.
 """
 

@@ -19,8 +19,6 @@ from motion_spec.rdf_parser import (
 )
 from motion_spec.rdf_parser.model import load_model
 
-__all__ = ["generate_ir"]
-
 _ALL_OPERATORS = operations.OPS_GENERIC + operations.OPS_SOLVER + operations.OPS_HANDLER
 
 

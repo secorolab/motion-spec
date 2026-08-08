@@ -21,11 +21,10 @@ from motion_spec_dsl.rdf_parser.vocab import EXEC
 from rdf_utils.naming import get_valid_var_name
 from rdflib.namespace import PROV
 
-from motion_spec.classes.entities import QuantityKind, RuntimeValue, Unit
+from motion_spec.classes.motion import BlackboardValue
+from motion_spec.classes.qudt import QuantityKind, Unit
 from motion_spec.rdf_parser import constraint_handler, quantities, resources
 from motion_spec.rdf_parser.model import identifier
-
-__all__ = ["add_quantity_samples", "add_spatial_samples", "build_introspection", "ros_publishers"]
 
 # Types that get a whole-object frame-log slot rather than per-axis scalar rows.
 _SPATIAL_SLOT_KINDS = {"Pose": "poses", "VelocityTwist": "twists", "Wrench": "wrenches"}
@@ -105,30 +104,13 @@ def _controller_rows(controller, motion_id: str, uri_by_id: dict):
     return entry, signals
 
 
-def _monitor_row(monitor, motion_id: str, phase: str, uri_by_id: dict) -> dict:
-    """One monitor's introspection row: what it watches, and what it does when it fires."""
-    return _prune(
-        {
-            "id": monitor.id,
-            "uri": uri_by_id.get(monitor.id),
-            "motion": motion_id,
-            "phase": phase,
-            "type": monitor.monitor_type,
-            "trigger": "edge" if monitor.is_edge_triggered else "level",
-            "event": getattr(monitor, "event", None),
-            "event_uri": getattr(monitor, "event_uri", None),
-            "event_name": getattr(monitor, "event_name", None),
-            "flag": getattr(monitor, "flag", None),
-            "error_signal": _id_of(monitor.error),
-            "tolerance_signal": _id_of(monitor.tolerance),
-            "fallback_motion": getattr(monitor, "fallback_motion", None),
-            "debounce_steps": monitor.debounce_steps,
-        }
-    )
+def _quantity_row(item, uri_by_id: dict, snapshot_ids: frozenset) -> dict:
+    """One data structure's introspection row: what it is, and where its value came from.
 
-
-def _quantity_row(item, uri_by_id: dict) -> dict:
-    """One data structure's introspection row: what it is, and where its value came from."""
+    `snapshot` is a graph fact, not `Provenance`'s -- looked up by id against the snapshot
+    targets `quantities.snapshot_target_ids` collects, since this reader holds a record, not a
+    graph node.
+    """
     provenance = getattr(item, "provenance", None)
 
     return _prune(
@@ -139,7 +121,7 @@ def _quantity_row(item, uri_by_id: dict) -> dict:
             "reference_value": getattr(item, "reference_value", None),
             "value": getattr(item, "value", None),
             "authored": getattr(provenance, "authored", False),
-            "snapshot": getattr(provenance, "snapshot", False),
+            "snapshot": item.id in snapshot_ids,
         }
     )
 
@@ -174,7 +156,26 @@ def _motion_rows(motions, uri_by_id: dict):
             signals.extend(controller_signals)
         for phase in _MONITOR_PHASES:
             for monitor in getattr(motion, f"{phase}_monitors"):
-                monitor_rows.append(_monitor_row(monitor, motion.id, phase, uri_by_id))
+                monitor_rows.append(
+                    _prune(
+                        {
+                            "id": monitor.id,
+                            "uri": uri_by_id.get(monitor.id),
+                            "motion": motion.id,
+                            "phase": phase,
+                            "type": monitor.monitor_type,
+                            "trigger": "edge" if monitor.is_edge_triggered else "level",
+                            "event": getattr(monitor, "event", None),
+                            "event_uri": getattr(monitor, "event_uri", None),
+                            "event_name": getattr(monitor, "event_name", None),
+                            "flag": getattr(monitor, "flag", None),
+                            "error_signal": _id_of(monitor.error),
+                            "tolerance_signal": _id_of(monitor.tolerance),
+                            "fallback_motion": getattr(monitor, "fallback_motion", None),
+                            "debounce_steps": monitor.debounce_steps,
+                        }
+                    )
+                )
                 if monitor.error is None:
                     continue
                 signals.append(
@@ -214,7 +215,7 @@ def _runtime_row(member) -> dict:
     }
 
 
-def _add_member(model, shared_data, rows, seen, member: RuntimeValue, row, parent, suffix):
+def _add_member(model, shared_data, rows, seen, member: BlackboardValue, row, parent, suffix):
     """Add one runtime value to the blackboard, its row to the quantities, and mint its IRI.
 
     A member with no row is one the artifact reports through another family -- a boolean flag is
@@ -256,7 +257,7 @@ def _add_controller_state(model, closures, shared_data, rows, seen, motions) -> 
         samples = []
         for state in fields:
             member_id = f"{closure['id']}_{state.name}"
-            member = RuntimeValue(
+            member = BlackboardValue(
                 id=member_id,
                 type=state.type,
                 role="controller_internal_state",
@@ -286,7 +287,7 @@ def _add_control_parameters(model, closures, shared_data, rows, seen, motions) -
             raise RuntimeError(f"control parameter: '{owner_id}' has no IRI to derive from")
         if value is None and required:
             raise RuntimeError(f"control parameter: '{owner_id}' authors no '{name}'")
-        member = RuntimeValue(
+        member = BlackboardValue(
             id=f"{owner_id}_{name}",
             type="Quantity",
             value=float(value) if value is not None else 0.0,
@@ -336,10 +337,10 @@ def _add_joint_space_mirrors(model, robots, motions, shared_data, rows, seen, ba
 
     by_runtime: dict[str, list] = {}
     for solver in robots.serial_chains:
-        by_runtime.setdefault(solver.runtime_id or solver.id, []).append(solver)
+        by_runtime.setdefault(solver.runtime.id or solver.id, []).append(solver)
 
     for runtime_id, solvers in by_runtime.items():
-        joints = solvers[0].kdl_joints
+        joints = solvers[0].chain.kdl_joints
         if not joints:
             raise RuntimeError(
                 f"joint-space logging: solver '{solvers[0].id}' has no kdl_joints; the shared ids "
@@ -379,7 +380,7 @@ def _add_joint_space_mirrors(model, robots, motions, shared_data, rows, seen, ba
                         f"joint-space logging: id '{member_id}' collides with an existing "
                         "shared value"
                     )
-                member = RuntimeValue(
+                member = BlackboardValue(
                     id=member_id,
                     type="Quantity",
                     role="joint_space",
@@ -441,7 +442,7 @@ _AXIS_SAMPLES = {
     "FreeVector": (("", _vec_desc("vec")),),
     "Orientation": (("", _vec_desc("orientation")),),
     "Pose": _POSE_AXIS_SAMPLES,
-    "Setpoint": _POSE_AXIS_SAMPLES,
+    "SetpointQuantity": _POSE_AXIS_SAMPLES,
     "VelocityTwist": _TWIST_AXIS_SAMPLES,
     "AccelerationTwist": _TWIST_AXIS_SAMPLES,
     "PoseDifference": _TWIST_AXIS_SAMPLES,
@@ -560,17 +561,17 @@ def ros_publishers(motions) -> list:
     for motion in motions:
         for phase in _MONITOR_PHASES:
             for monitor in getattr(motion, f"{phase}_monitors"):
-                channel = getattr(monitor, "ros_channel", None)
-                if channel is None:
+                ros = getattr(monitor, "ros", None)
+                if ros is None:
                     continue
                 by_pub_id.setdefault(
-                    monitor.ros_pub_id,
+                    ros.pub_id,
                     {
-                        "pub_id": monitor.ros_pub_id,
-                        "channel": channel,
-                        "cpp_type": monitor.ros_cpp_type,
-                        "include": monitor.ros_include,
-                        "pkg": monitor.ros_pkg,
+                        "pub_id": ros.pub_id,
+                        "channel": ros.channel,
+                        "cpp_type": ros.cpp_type,
+                        "include": ros.include,
+                        "pkg": ros.pkg,
                     },
                 )
 
@@ -698,7 +699,10 @@ def build_introspection(
     # Appended, never substituted: authored nodes keep their IRIs, derived ones extend them.
     uri_by_id = {row["id"]: row["uri"] for row in model.uri_rows()}
     motion_rows, controller_rows, monitor_rows, signals = _motion_rows(motions, uri_by_id)
-    quantity_rows = [_quantity_row(item, uri_by_id) for item in computation.data_structures]
+    snapshot_ids = quantities.snapshot_target_ids(model)
+    quantity_rows = [
+        _quantity_row(item, uri_by_id, snapshot_ids) for item in computation.data_structures
+    ]
 
     introspection = {
         "contract_version": 1,

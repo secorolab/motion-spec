@@ -83,42 +83,49 @@ from rdflib import URIRef
 from rdflib.namespace import RDF
 from scene_dsl.rdf_parser.common import ensure_one_obj_uri
 
-from motion_spec.classes.closures import closure_output_ids
-from motion_spec.classes.entities import (
-    AccelerationTwist,
-    Axis,
+from motion_spec.classes.base import dedupe_by_id
+from motion_spec.classes.constraints import (
     BilateralConstraint,
     Constraint,
-    Direction,
     EqualityConstraint,
-    Frame,
-    FreeVector,
-    JointPosition,
-    Orientation,
     OutsideConstraint,
-    Point,
-    Pose,
-    PoseAxisErrorComponent,
-    PoseAxisErrorGroup,
-    PoseDifference,
-    Position,
-    Provenance,
-    Quantity,
-    QuantityKind,
-    RelativePoseCapture,
-    SceneObject,
-    SceneRelativePose,
-    Setpoint,
-    SimplicialComplex,
-    SnapshotCapture,
-    Subspace,
     UnilateralConstraint,
     UnilateralConstraintType,
-    Unit,
+)
+from motion_spec.classes.dynamics import JointPosition
+from motion_spec.classes.geometry import (
+    AccelerationTwist,
+    Axis,
+    Direction,
+    Frame,
+    Orientation,
+    Point,
+    Pose,
+    PoseDifference,
+    Position,
+    SceneObject,
+    SimplicialComplex,
+    Subspace,
     VelocityTwist,
     View,
     Wrench,
-    dedupe_by_id,
+)
+from motion_spec.classes.motion import (
+    ComponentRef,
+    PoseComponents,
+    PoseErrorComponent,
+    PoseErrorRegroup,
+    RelativePoseCapture,
+    SceneRelativePose,
+    SnapshotCapture,
+)
+from motion_spec.classes.qudt import (
+    FreeVector,
+    Provenance,
+    Quantity,
+    QuantityKind,
+    SetpointQuantity,
+    Unit,
 )
 from motion_spec.rdf_parser.model import (
     length_unit,
@@ -129,64 +136,12 @@ from motion_spec.rdf_parser.model import (
     si_all,
     si_unit,
 )
-from motion_spec.rdf_parser.operations import closure_maps, closure_owner_map, data_reference_map
-
-__all__ = [
-    "ANGULAR_AXES",
-    "AXIS_BY_NAME",
-    "LINEAR_AXES",
-    "PORT_PRODUCERS",
-    "POSE_AXES",
-    "Computation",
-    "ComputationIndexes",
-    "ReferenceFrames",
-    "SpatialAxis",
-    "acceleration_twist",
-    "annotate_dataflow",
-    "axis",
-    "build_indexes",
-    "collect_motion_references",
-    "constraint",
-    "declared_pose_component_entries",
-    "derived_reference_frames",
-    "direction",
-    "duration_seconds",
-    "elapsed_coordinate_id",
-    "elapsed_coordinate_ids",
-    "expanded_constraints",
-    "filter_shared_data",
-    "frame",
-    "is_constraint_aggregate",
-    "joint_position",
-    "optional_float",
-    "optional_seconds",
-    "orientation",
-    "orientation_quaternion",
-    "orientation_relation_quaternion",
-    "parse_xyz",
-    "point",
-    "pose",
-    "pose_axis_error_groups_for_motion",
-    "pose_difference",
-    "position",
-    "position_coordinate_values",
-    "position_values",
-    "quantity",
-    "read_data_structures",
-    "read_views",
-    "relative_poses_for_motion",
-    "required_float",
-    "scene_object",
-    "scene_relative_poses_for_motion",
-    "simplicial_complex",
-    "snapshots_for_motion",
-    "spatial_axes",
-    "subspace",
-    "velocity_twist",
-    "views_by_subobject",
-    "views_for_access",
-    "wrench",
-]
+from motion_spec.rdf_parser.operations import (
+    closure_maps,
+    closure_output_ids,
+    closure_owner_map,
+    data_reference_map,
+)
 
 
 def duration_seconds(model, node) -> float:
@@ -291,14 +246,14 @@ class SpatialAxis:
     instead of a fixed frame axis.
     """
 
-    subspace: str
+    subspace: Subspace
     axis: str
     direction: str | None = None
 
     @property
     def suffix(self) -> str:
         """The fragment this direction contributes to a derived id."""
-        prefix = "lin" if self.subspace == "linear-acceleration" else "ang"
+        prefix = "lin" if self.subspace == Subspace.Linear else "ang"
 
         return f"{prefix}_{self.axis}"
 
@@ -307,14 +262,9 @@ class SpatialAxis:
         """The fixed frame axis this direction is, or None when it is a runtime vector."""
         return None if self.direction is not None else self.axis
 
-    @property
-    def half(self) -> Subspace:
-        """The half of the 6D space this direction lives in."""
-        return Subspace.Linear if self.subspace == "linear-acceleration" else Subspace.Angular
 
-
-LINEAR_AXES = tuple(SpatialAxis("linear-acceleration", name) for name in "xyz")
-ANGULAR_AXES = tuple(SpatialAxis("angular-acceleration", name) for name in "xyz")
+LINEAR_AXES = tuple(SpatialAxis(Subspace.Linear, name) for name in "xyz")
+ANGULAR_AXES = tuple(SpatialAxis(Subspace.Angular, name) for name in "xyz")
 POSE_AXES = (*LINEAR_AXES, *ANGULAR_AXES)
 
 
@@ -349,15 +299,15 @@ def spatial_axes(
     if quantity_kind == "Pose" and subspace in {None, "pose"} and relation == "EqualityConstraint":
         return POSE_AXES
     if subspace in {"position", "linear-velocity"}:
-        return (SpatialAxis("linear-acceleration", axis),) if axis else LINEAR_AXES
+        return (SpatialAxis(Subspace.Linear, axis),) if axis else LINEAR_AXES
     if subspace in {"orientation", "angular-velocity"}:
-        return (SpatialAxis("angular-acceleration", axis),) if axis else ANGULAR_AXES
+        return (SpatialAxis(Subspace.Angular, axis),) if axis else ANGULAR_AXES
     if subspace == "distance" and axis is not None:
-        return (SpatialAxis("linear-acceleration", axis),)
+        return (SpatialAxis(Subspace.Linear, axis),)
     if subspace == "rotation" and axis is not None:
-        return (SpatialAxis("angular-acceleration", axis),)
+        return (SpatialAxis(Subspace.Angular, axis),)
     if subspace == "distance" and axis is None:
-        return (SpatialAxis("linear-acceleration", "distance"),)
+        return (SpatialAxis(Subspace.Linear, "distance"),)
 
     return ()
 
@@ -764,9 +714,8 @@ def _pose_provenance(model, node, coordinate) -> Provenance:
     """A pose is authored when either component carries values, or when its rotation is a literal
     form, or when a composition writes it and a per-axis view reads it back.
     """
-    provenance = quantity_provenance(model, node)
-    if provenance.snapshot:
-        return provenance
+    if _is_snapshot(model, node):
+        return Provenance(authored=False)
     components = (coordinate.position_coord, coordinate.orientation_coord)
     literal_rotation = coordinate.orientation_coord.types & (
         _RESOLVED_ROTATION | {URI_GEOM_TYPE_EULER_ANGLES}
@@ -783,7 +732,7 @@ def _pose_provenance(model, node, coordinate) -> Provenance:
         or composed_and_viewed
     )
 
-    return Provenance(authored=authored, snapshot=False)
+    return Provenance(authored=authored)
 
 
 @reader
@@ -802,27 +751,20 @@ def direction(model, node) -> Direction:
     )
 
 
-class _SpatialFields(NamedTuple):
-    """The fields the 6D coordinate quantities share; they differ only in RDF namespace."""
-
-    quantity_kind: list
-    reference_point: object
-    as_seen_by: object
-    unit: list
-    provenance: object
-
-
-def _spatial_fields(model, node) -> _SpatialFields:
-    """The shared 6D coordinate fields read off one node."""
+def _spatial_fields(model, node) -> dict:
+    """The `SpatialCoordinate` base fields, shared by the 6D coordinate quantities and read off
+    one node the same way regardless of which one subclasses it.
+    """
     graph = model.graph
 
-    return _SpatialFields(
-        [model.id(kind) for kind in graph[node : QUDT_SCHEMA["hasQuantityKind"]]],
-        point(model, graph.value(node, GEOM_REL["reference-point"])),
-        frame(model, graph.value(node, GEOM_COORD["as-seen-by"])),
-        [model.id(unit) for unit in graph[node : QUDT_SCHEMA["unit"]]],
-        quantity_provenance(model, node),
-    )
+    return {
+        "id": model.id(node),
+        "quantity_kind": [model.id(kind) for kind in graph[node : QUDT_SCHEMA["hasQuantityKind"]]],
+        "reference_point": point(model, graph.value(node, GEOM_REL["reference-point"])),
+        "as_seen_by": frame(model, graph.value(node, GEOM_COORD["as-seen-by"])),
+        "unit": [model.id(unit) for unit in graph[node : QUDT_SCHEMA["unit"]]],
+        "provenance": quantity_provenance(model, node),
+    }
 
 
 @reader
@@ -830,17 +772,13 @@ def velocity_twist(model, node) -> VelocityTwist:
     """A VelocityTwist quantity: of a body with respect to another, about a reference point."""
     model.expect_type(node, GEOM_COORD["VelocityTwistCoordinate"])
     model.expect_type(node, GEOM_COORD["VectorXYZ"])
-    kinds, reference, seen_by, units, provenance = _spatial_fields(model, node)
 
     return VelocityTwist(
-        model.id(node),
-        simplicial_complex(model, model.graph.value(node, GEOM_REL["of"])),
-        simplicial_complex(model, model.graph.value(node, GEOM_REL["with-respect-to"])),
-        kinds,
-        reference,
-        seen_by,
-        units,
-        provenance=provenance,
+        of=simplicial_complex(model, model.graph.value(node, GEOM_REL["of"])),
+        with_respect_to=simplicial_complex(
+            model, model.graph.value(node, GEOM_REL["with-respect-to"])
+        ),
+        **_spatial_fields(model, node),
     )
 
 
@@ -849,11 +787,8 @@ def acceleration_twist(model, node) -> AccelerationTwist:
     """An AccelerationTwist quantity."""
     model.expect_type(node, GEOM_COORD["AccelerationTwistCoordinate"])
     model.expect_type(node, GEOM_COORD["VectorXYZ"])
-    kinds, reference, seen_by, units, provenance = _spatial_fields(model, node)
 
-    return AccelerationTwist(
-        model.id(node), kinds, reference, seen_by, units, provenance=provenance
-    )
+    return AccelerationTwist(**_spatial_fields(model, node))
 
 
 @reader
@@ -861,9 +796,8 @@ def pose_difference(model, node) -> PoseDifference:
     """A PoseDifference quantity."""
     model.expect_type(node, GEOM_COORD["PoseDifferenceCoordinate"])
     model.expect_type(node, GEOM_COORD["VectorXYZ"])
-    kinds, reference, seen_by, units, provenance = _spatial_fields(model, node)
 
-    return PoseDifference(model.id(node), kinds, reference, seen_by, units, provenance=provenance)
+    return PoseDifference(**_spatial_fields(model, node))
 
 
 @reader
@@ -890,14 +824,14 @@ def wrench(model, node) -> Wrench:
         )
 
     return Wrench(
-        model.id(node),
-        [model.id(kind) for kind in graph[relation : QUDT_SCHEMA["hasQuantityKind"]]],
-        point(model, reference),
-        frame(model, seen_by),
-        [model.id(unit) for unit in graph[node : QUDT_SCHEMA["unit"]]],
-        quantity_provenance(model, node),
-        frame(model, sensor_frame_node) if sensor_frame_node is not None else None,
-        model.id(sensor) if sensor is not None else "",
+        id=model.id(node),
+        quantity_kind=[model.id(kind) for kind in graph[relation : QUDT_SCHEMA["hasQuantityKind"]]],
+        reference_point=point(model, reference),
+        as_seen_by=frame(model, seen_by),
+        unit=[model.id(unit) for unit in graph[node : QUDT_SCHEMA["unit"]]],
+        provenance=quantity_provenance(model, node),
+        sensor_frame=frame(model, sensor_frame_node) if sensor_frame_node is not None else None,
+        sensor_name=model.id(sensor) if sensor is not None else "",
     )
 
 
@@ -944,7 +878,7 @@ def quantity(model, node):
             None,
         )
 
-        return Setpoint(
+        return SetpointQuantity(
             model.id(node),
             kind,
             unit,
@@ -1037,14 +971,27 @@ def _is_authored(model, node) -> bool:
     return any((node, predicate, None) in model.graph for predicate in _AUTHORED_VALUE_PREDICATES)
 
 
+def _is_snapshot(model, node) -> bool:
+    """Whether a node is itself a runtime sample-and-hold capture target. Its own graph fact
+    -- not carried by `Provenance`, which only states whether a value was authored.
+    """
+    return ALGO_EXT.Snapshot in get_node_types(model.graph, node)
+
+
+@reader
+def snapshot_target_ids(model) -> frozenset:
+    """Every id whose node is a snapshot target, for readers that hold a record id rather than a
+    graph node and so cannot call `_is_snapshot` directly.
+    """
+    return frozenset(model.id(node) for node in model.graph.subjects(RDF.type, ALGO_EXT.Snapshot))
+
+
 def quantity_provenance(model, node) -> Provenance:
     """Where a quantity's value comes from. Authored and snapshot are mutually exclusive: a
     snapshot wins, because its authored literal is only the value it holds before the first
     capture.
     """
-    snapshot = ALGO_EXT.Snapshot in get_node_types(model.graph, node)
-
-    return Provenance(authored=(not snapshot) and _is_authored(model, node), snapshot=snapshot)
+    return Provenance(authored=not _is_snapshot(model, node) and _is_authored(model, node))
 
 
 @reader
@@ -1350,8 +1297,12 @@ class _TrackedPoses(NamedTuple):
     scene_by_id: dict[str, _ScenePose]
 
 
-def _fk_and_scene_poses(serial_chain_solvers, views) -> _TrackedPoses:
-    """Which FK output tracks each frame, and which tracks each scene object's body."""
+def _fk_and_scene_poses(serial_chain_solvers, views, solvers_by_id: dict) -> _TrackedPoses:
+    """Which FK output tracks each frame, and which tracks each scene object's body.
+
+    `serial_chain_solvers` are per-motion slices: their solver is resolved through
+    `solvers_by_id`, as templates do through `resources.by_id`.
+    """
     fk_by_frame: dict[str, str] = {}
     # Keyed by the scene-object's id; a wrt_id lookup asks whether that frame is the subject of a
     # tracked scene-object pose.
@@ -1364,8 +1315,9 @@ def _fk_and_scene_poses(serial_chain_solvers, views) -> _TrackedPoses:
             output_ids.add(out.id)
             of = out.of
             if of is None:
-                if solver.chain_end:
-                    fk_by_frame.setdefault(solver.chain_end, out.id)
+                chain_end = solvers_by_id[solver.solver_id].chain.end
+                if chain_end:
+                    fk_by_frame.setdefault(chain_end, out.id)
                 continue
             if getattr(of, "is_scene_object", False):
                 entry = _ScenePose(
@@ -1391,9 +1343,11 @@ def _fk_and_scene_poses(serial_chain_solvers, views) -> _TrackedPoses:
     return _TrackedPoses(fk_by_frame, scene_by_id)
 
 
-def scene_relative_poses_for_motion(views: dict, serial_chain_solvers, evaluators=()) -> list:
+def scene_relative_poses_for_motion(
+    views: dict, serial_chain_solvers, solvers_by_id: dict, evaluators=()
+) -> list:
     """For each pose stated with respect to a scene object, the relative pose it asks for."""
-    fk_by_frame, scene_by_id = _fk_and_scene_poses(serial_chain_solvers, views)
+    fk_by_frame, scene_by_id = _fk_and_scene_poses(serial_chain_solvers, views, solvers_by_id)
     candidates = [
         view.superobject
         for view in views.values()
@@ -1462,7 +1416,7 @@ def pose_axis_error_groups_for_motion(model, evaluators_by_node: dict, views: di
         the groups with more than one component; a lone axis needs no regrouping, its own
         equality-constraint controller drives it
     """
-    groups: dict[str, PoseAxisErrorGroup] = {}
+    groups: dict[str, PoseErrorRegroup] = {}
     indexed = views_by_subobject(views)
     for node, evaluator in evaluators_by_node.items():
         if CSTR_HDL["ErrorEvaluator"] not in get_node_types(model.graph, node):
@@ -1488,7 +1442,7 @@ def pose_axis_error_groups_for_motion(model, evaluators_by_node: dict, views: di
         superobject_id = view.superobject.id
         group = groups.setdefault(
             superobject_id,
-            PoseAxisErrorGroup(
+            PoseErrorRegroup(
                 id=f"pose_axis_error_{superobject_id}",
                 pose=superobject_id,
                 components=[],
@@ -1498,7 +1452,7 @@ def pose_axis_error_groups_for_motion(model, evaluators_by_node: dict, views: di
         group.has_angular = group.has_angular or is_angular
         reference_id = evaluator.constraint.parameter.reference_value.id
         group.components.append(
-            PoseAxisErrorComponent(
+            PoseErrorComponent(
                 quantity=quantity_record.id,
                 error=evaluator.error.id,
                 reference=reference_id,
@@ -1655,72 +1609,76 @@ def elapsed_coordinate_ids(evaluators) -> list[str]:
     )
 
 
-_ORIENTATION_COMPONENTS = {
-    "quaternion": ("x", "y", "z", "w"),
-    "euler": ("x", "y", "z"),  # symbolic only: the angles arrive at runtime
-    "relative": (),
-}
+_POSITION_FIELDS = ("position_x", "position_y", "position_z")
 
 
-def _empty_pose_entry(representation: str, euler_axes: str | None = None) -> dict:
-    """Blank component slots for a pose, sized to what will fill them. A symbolic Euler triple is
-    filled one angle per authored axis -- `zyx` fills z, y and x -- so it is sized by the sequence
-    the model wrote rather than by a fixed component list.
+def _required_pose_component_fields(representation: str, euler_axes_sequence: str | None) -> tuple:
+    """The component fields a pose's `representation` requires: position always;
+    `orientation_x/y/z/w` for `quaternion`; one `orientation_*` per character of the Euler
+    sequence for `euler`; none for `relative`. Stated once; both the completeness check below
+    and `_euler_factors` read it.
     """
-    entry = {"representation": representation}
-    entry.update({f"position_{name}": None for name in ("x", "y", "z")})
-    names = tuple(euler_axes) if euler_axes else _ORIENTATION_COMPONENTS[representation]
-    entry.update({f"orientation_{name}": None for name in names})
+    if representation == "quaternion":
+        return _POSITION_FIELDS + (
+            "orientation_x",
+            "orientation_y",
+            "orientation_z",
+            "orientation_w",
+        )
+    if representation == "euler":
+        return _POSITION_FIELDS + tuple(
+            f"orientation_{name}" for name in (euler_axes_sequence or "")
+        )
 
-    return entry
+    return _POSITION_FIELDS
 
 
-def _pose_component(component_id: str, data_by_id: dict) -> dict:
+def _pose_component(component_id: str, data_by_id: dict) -> ComponentRef:
     """A pose component as either a literal `value` or a `ref` id the backend template renders
     via access-expr. Backend-agnostic -- no target syntax here.
     """
     component = data_by_id.get(component_id)
     reference = getattr(component, "reference_value", None)
     if reference:
-        return {"value": None, "ref": reference}
+        return ComponentRef(ref=reference)
     value = getattr(component, "value", None)
     if value is not None:
-        return {"value": str(value), "ref": None}
+        return ComponentRef(value=str(value))
 
-    return {"value": None, "ref": component_id}
+    return ComponentRef(ref=component_id)
 
 
-def _authored_pose_entry(model, pose_record, coordinate_node) -> dict | None:
+def _authored_pose_entry(model, pose_record, coordinate_node) -> PoseComponents | None:
     """The literal components a coordinate-authored pose carries, or None when it carries none."""
     coordinate = PoseCoordModel(coordinate_node, model.graph)
     representation = pose_record.orientation_representation or "quaternion"
-    entry = _empty_pose_entry(representation, pose_record.euler_axes_sequence)
+    entry = PoseComponents(representation)
     values = position_values(model, coordinate.position_coord)
     if values is not None:
         for name, value in zip("xyz", values):
-            entry[f"position_{name}"] = {"value": str(value), "ref": None}
+            setattr(entry, f"position_{name}", ComponentRef(value=str(value)))
     if representation == "quaternion":
         # Euler angles, quaternion or direction cosines all resolve to one quaternion here;
         # anything sourced at runtime keeps its shape and is rendered, not resolved.
         rotation = orientation_quaternion(model, coordinate.orientation_coord)
         for name, value in zip("xyzw", rotation or ()):
-            entry[f"orientation_{name}"] = {"value": str(value), "ref": None}
+            setattr(entry, f"orientation_{name}", ComponentRef(value=str(value)))
     if representation == "relative":
-        entry["orientation_operands"] = pose_record.orientation_operands
-    filled = any(value is not None for key, value in entry.items() if key != "representation")
+        entry.orientation_operands = pose_record.orientation_operands
+    filled = any(
+        value is not None for key, value in asdict(entry).items() if key != "representation"
+    )
 
     return entry if filled else None
 
 
 def _build_pose_components(model, views: dict, data: list) -> dict:
-    """Declared and inline poses as per-axis structured components."""
+    """Declared and inline poses as typed, fully-published `PoseComponents` (DECISION 10)."""
     data_by_id = {item.id: item for item in data if getattr(item, "id", None)}
     pose_nodes = {
         model.id(node): node for node in model.graph.subjects(RDF.type, URI_GEOM_TYPE_POSE_COORD)
     }
-    # A component entry is a published payload whose keys are the axes the pose authored, so
-    # no fixed field set describes it (the plan's dict family).
-    components: dict[str, dict] = {}
+    components: dict[str, PoseComponents] = {}
     for item in data:
         if item.type != "Pose" or item.id not in pose_nodes:
             continue
@@ -1728,12 +1686,12 @@ def _build_pose_components(model, views: dict, data: list) -> dict:
         if entry is not None:
             components[item.id] = entry
 
+    snapshot_ids = snapshot_target_ids(model)
     for view in views.values():
         superobject = view.superobject
         if superobject.type != "Pose":
             continue
-        provenance = superobject.provenance
-        declared = provenance.authored or provenance.snapshot
+        declared = superobject.provenance.authored or superobject.id in snapshot_ids
         if not (declared or superobject.euler_axes_sequence):
             continue
         component_axis = str(view.axis.value if view.axis else "").lower()
@@ -1741,27 +1699,27 @@ def _build_pose_components(model, views: dict, data: list) -> dict:
         if not subobject_id or component_axis not in {"x", "y", "z", "w"}:
             continue
         representation = superobject.orientation_representation or "quaternion"
-        entry = components.setdefault(
-            superobject.id, _empty_pose_entry(representation, superobject.euler_axes_sequence)
-        )
+        entry = components.setdefault(superobject.id, PoseComponents(representation))
         if representation == "relative":
-            entry["orientation_operands"] = superobject.orientation_operands
+            entry.orientation_operands = superobject.orientation_operands
         prefix = "position" if view.subspace == Subspace.Linear else "orientation"
-        entry[f"{prefix}_{component_axis}"] = _pose_component(subobject_id, data_by_id)
+        setattr(entry, f"{prefix}_{component_axis}", _pose_component(subobject_id, data_by_id))
 
     for pose_id, parts in components.items():
-        missing = [name for name, value in parts.items() if value is None]
+        euler_axes_sequence = getattr(data_by_id.get(pose_id), "euler_axes_sequence", None)
+        required = _required_pose_component_fields(parts.representation, euler_axes_sequence)
+        missing = [name for name in required if getattr(parts, name) is None]
         if missing:
             raise ValueError(
                 f"Declared pose '{pose_id}' is missing required components: {', '.join(missing)}."
             )
-        if parts["representation"] == "euler":
-            parts["euler_factors"] = _euler_factors(pose_id, parts, data_by_id)
+        if parts.representation == "euler":
+            parts.euler_factors = _euler_factors(pose_id, parts, data_by_id)
 
     return components
 
 
-def _euler_factors(pose_id: str, parts: dict, data_by_id: dict) -> list[dict]:
+def _euler_factors(pose_id: str, parts: PoseComponents, data_by_id: dict) -> list[dict]:
     """A symbolic Euler triple as per-axis rotations, in the order they multiply.
 
     An extrinsic sequence turns about axes that stay put, so the rotation authored last multiplies
@@ -1771,9 +1729,9 @@ def _euler_factors(pose_id: str, parts: dict, data_by_id: dict) -> list[dict]:
     pose_record = data_by_id.get(pose_id)
     sequence = getattr(pose_record, "euler_axes_sequence", None) or "xyz"
     factors = [
-        {"axis": name, "component": parts[f"orientation_{name}"]}
+        {"axis": name, "component": getattr(parts, f"orientation_{name}")}
         for name in sequence
-        if parts.get(f"orientation_{name}") is not None
+        if getattr(parts, f"orientation_{name}") is not None
     ]
     if len(factors) != len(sequence):
         raise ValueError(f"Euler pose '{pose_id}' has no component for every axis of '{sequence}'.")
@@ -1781,17 +1739,20 @@ def _euler_factors(pose_id: str, parts: dict, data_by_id: dict) -> list[dict]:
     return factors if getattr(pose_record, "euler_intrinsic", False) else list(reversed(factors))
 
 
-def declared_pose_component_entries(data: list, pose_components: dict, referenced=None) -> list:
+def declared_pose_component_entries(
+    model, data: list, pose_components: dict, referenced=None
+) -> list:
     """Authored declared-pose component entries, restricted to the ids a motion references."""
     data_by_id = {item.id: item for item in data if getattr(item, "id", None)}
+    snapshot_ids = snapshot_target_ids(model)
     entries = []
     for pose_id, parts in pose_components.items():
         if referenced is not None and pose_id not in referenced:
             continue
         provenance = getattr(data_by_id.get(pose_id), "provenance", None)
-        if provenance is None or not provenance.authored or provenance.snapshot:
+        if provenance is None or not provenance.authored or pose_id in snapshot_ids:
             continue
-        entries.append({"id": pose_id, **parts})
+        entries.append({"id": pose_id, **asdict(parts)})
 
     return entries
 
@@ -1986,7 +1947,9 @@ def _writers_by_output(serial_chain_solvers) -> _SolverWrites:
     sensor_outputs: set = set()
     measured_outputs: set = set()
     for solver in serial_chain_solvers:
-        for out in [*solver.output, *solver.gripper_joint_outputs]:
+        # Full solvers carry gripper outputs on their gripper device(s), not as a flat list.
+        gripper_outputs = [out for device in solver.devices for out in device.joint_outputs]
+        for out in [*solver.output, *gripper_outputs]:
             by_output.setdefault(out.id, set()).add(solver.id)
             if not getattr(out, "sensor_name", ""):
                 continue

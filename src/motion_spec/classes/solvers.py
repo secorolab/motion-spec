@@ -5,8 +5,8 @@ and the solvers built on top of them.
 
 `DynamicsSolverFamily` and its subclasses are never instantiated: they carry a family's
 behaviour as class-level attributes and a `payload()` factory, dispatched on with
-`issubclass()`/`hasattr()` rather than an isinstance check on a built object (§4.1). The
-term -> family map stays in `rdf_parser/constraint_handler.py` -- `classes/` is RDF-free (F8).
+`issubclass()`/`hasattr()` rather than an isinstance check on a built object. The
+term -> family map stays in `rdf_parser/constraint_handler.py` -- `classes/` is RDF-free.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ from motion_spec.classes.qudt import Quantity, QuantityKind, Unit
 class AccelerationConstraint:
     """An acceleration constraint (axis- or direction-aligned) on a solver.
 
-    One driver record for both solver families (§4.5): `acceleration_energy` and `saturation`
+    One driver record for both solver families: `acceleration_energy` and `saturation`
     are set only by `AccelerationEnergyDriven` (ACHD), `acceleration` only by
     `CartesianAccelerationDriven` (RNE). Absent means the other family built this record --
     no sentinel, the family that built it is the fact.

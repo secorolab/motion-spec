@@ -11,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from motion_spec.classes.entities import DataclassJSONEncoder
+from motion_spec.classes.base import DataclassJSONEncoder
 from motion_spec.generation.artifacts import write_introspection_artifacts
 
 

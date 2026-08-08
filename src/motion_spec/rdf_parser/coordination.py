@@ -34,17 +34,17 @@ from rdf_utils.uri import iri_is_descendant, iri_parent
 from rdflib.namespace import RDF, SDO
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 
-from motion_spec.classes.entities import (
+from motion_spec.classes.constraints import GuardedMotion
+from motion_spec.classes.handlers import (
     ConstraintEvaluator,
     ConstraintHandler,
     EdgeMonitor,
     EvaluatorType,
-    ForwardedCommand,
-    GuardedMotion,
-    GuardedMotionBlock,
-    HandlerSerialChainSolver,
     LevelMonitor,
+    RosPublication,
 )
+from motion_spec.classes.motion import ForwardedCommandStep, MotionSolverSlice, MotionUnit
+from motion_spec.classes.solvers import CommandForwarding
 from motion_spec.rdf_parser import quantities
 from motion_spec.rdf_parser.constraint_handler import SolverIdFactory, annotate_controller_signals
 from motion_spec.rdf_parser.model import reader
@@ -69,19 +69,6 @@ from motion_spec.rdf_parser.vocab import (
     URI_FSM_PRED_TRANSITIONS,
     URI_FSM_TYPE_FSM,
 )
-
-__all__ = [
-    "apply_monitor_debounce",
-    "assign_event_indexes",
-    "build_constraint_handlers",
-    "build_motions",
-    "constraint_evaluator",
-    "constraint_handler",
-    "evaluator_term",
-    "guarded_motion",
-    "monitor_entry",
-    "read_fsm",
-]
 
 _PHASES = ("when", "while", "until")
 _PHASE_PREDICATES = {"when": MOT["when"], "while": MOT["while"], "until": MOT["until"]}
@@ -308,12 +295,14 @@ def _ros_publication(model, node) -> dict:
     package, include, cpp_type = _ros_type_parts(ros_type)
 
     return {
-        "ros_channel": str(channel),
-        "ros_type": ros_type,
-        "ros_pkg": package,
-        "ros_include": include,
-        "ros_cpp_type": cpp_type,
-        "ros_pub_id": f"{model.id(node)}_pub".replace("-", "_"),
+        "ros": RosPublication(
+            str(channel),
+            ros_type,
+            package,
+            include,
+            cpp_type,
+            f"{model.id(node)}_pub".replace("-", "_"),
+        )
     }
 
 
@@ -480,7 +469,11 @@ def _upstream_dependencies(data_id: str, closure_inputs: dict) -> set:
 
 
 def _handler_chain_solvers(handler, serial_chains, solver_ids) -> list:
-    """The arm solvers this handler commands, sliced to the motion driver it drives them with."""
+    """The arm solvers this handler commands, sliced to the motion driver it drives them with.
+
+    No copy of the solver's own facts (`algorithm`, `gravity`, `chain.root`, ...) -- a
+    template reaches them through `solver_id` into `resources.by_id`.
+    """
     result = []
     driver_id = f"driver_{handler.motion.id.removeprefix('motion_')}"
     for solver in serial_chains:
@@ -489,17 +482,11 @@ def _handler_chain_solvers(handler, serial_chains, solver_ids) -> list:
         drivers = solver.motion_drivers
         selected = next((driver for driver in drivers if driver.id == driver_id), drivers[0])
         result.append(
-            HandlerSerialChainSolver(
+            MotionSolverSlice(
                 id=solver.id,
+                solver_id=solver.id,
                 output=solver.output,
                 motion_driver=selected,
-                algorithm=solver.algorithm,
-                algorithm_name=solver.algorithm_name,
-                gravity=solver.gravity,
-                root_acc=solver.root_acc,
-                chain_root=solver.chain_root,
-                chain_end=solver.chain_end,
-                torque_saturation=solver.torque_saturation,
                 read_only=not (
                     selected.acceleration_constraint
                     or selected.cartesian_force
@@ -678,6 +665,9 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
         model.motion_suffix(model.graph.value(model.node_by_id[handler.id], CSTR_HDL["motion"]))
         for handler in handlers
     }
+    # A per-motion slice copies nothing off its solver: `solver_id` resolves through the
+    # resources index, exactly as templates do through `resources.by_id`.
+    solvers_by_id = robots.by_id
     for handler in handlers:
         handler_node = model.node_by_id[handler.id]
         motion_node = model.graph.value(handler_node, CSTR_HDL["motion"])
@@ -716,10 +706,11 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
                 computation,
                 motion_node,
                 tokens,
+                solvers_by_id,
             )
         )
 
-    return _finish_motions(motions, handlers, computation, fsm)
+    return _finish_motions(model, motions, handlers, computation, fsm, solvers_by_id)
 
 
 def _handler_solver_ids(model, handler_node, derivation) -> set:
@@ -767,13 +758,14 @@ def _motion_unit(
     computation,
     motion_node,
     tokens,
+    solvers_by_id,
 ):
     """One motion's IR unit: its evaluators, monitors, schedules and everything it captures."""
     all_evaluators = evaluators["while"] + evaluators["when"] + evaluators["until"]
     when_elapsed = quantities.elapsed_coordinate_ids(evaluators["when"])
     active_elapsed = quantities.elapsed_coordinate_ids(evaluators["while"] + evaluators["until"])
 
-    return GuardedMotionBlock(
+    return MotionUnit(
         id=handler.motion.id,
         handler=handler.id,
         name=handler.motion.name,
@@ -801,7 +793,7 @@ def _motion_unit(
             all_evaluators, computation.views, chain_solvers
         ),
         scene_relative_poses=quantities.scene_relative_poses_for_motion(
-            computation.views, chain_solvers, all_evaluators
+            computation.views, chain_solvers, solvers_by_id, all_evaluators
         ),
         pose_axis_error_groups=groups,
         while_pre_schedule=schedules.while_pre,
@@ -828,10 +820,10 @@ def _forwarded_commands(model, phase, chain_solvers, runtime_solvers, derivation
     """The controller outputs written straight to a joint rather than through a solver."""
     graph = model.graph
     # Resolved from the joint, not the agent: a gripper's joint rides the arm's runtime.
-    owned_trees = {solver.id: solver.owned_trees or () for solver in runtime_solvers}
+    owned_trees = {solver.id: solver.runtime.owned_trees or () for solver in runtime_solvers}
     commands = []
     for plan in _active_plans(phase, derivation):
-        if not derivation.algorithm_by_solver[plan.solver].forwards_commands:
+        if not issubclass(derivation.algorithm_by_solver[plan.solver], CommandForwarding):
             continue
         controller = derivation.controllers_for(plan)[0]
         quantity = graph.value(plan.constraint, CSTR.quantity)
@@ -855,10 +847,10 @@ def _forwarded_commands(model, phase, chain_solvers, runtime_solvers, derivation
             )
         runtime = next(s for s in runtime_solvers if s.id == chain_solver.id)
         commands.append(
-            ForwardedCommand(
+            ForwardedCommandStep(
                 f"cmd-fwd-{model.id(plan.controller)}",
                 controller.control_signal,
-                f"{runtime.runtime_prefix}{model.label(target)}" if target is not None else "",
+                f"{runtime.runtime.prefix}{model.label(target)}" if target is not None else "",
                 chain_solver.id,
             )
         )
@@ -874,7 +866,7 @@ _GROUP_TYPE_FLAGS = {
 }
 
 
-def _finish_motions(motions, handlers, computation, fsm):
+def _finish_motions(model, motions, handlers, computation, fsm, solvers_by_id):
     """Fold on everything that needs the whole set of motions to be known.
 
     Raises:
@@ -899,6 +891,7 @@ def _finish_motions(motions, handlers, computation, fsm):
                 setattr(group, flag, group.superobject_type in types)
         annotate_controller_signals(motion.controllers, computation.closures)
         motion.declared_pose_components = quantities.declared_pose_component_entries(
+            model,
             computation.data_structures,
             computation.indexes.pose_components,
             quantities.collect_motion_references(motion, computation.closures),
@@ -906,7 +899,7 @@ def _finish_motions(motions, handlers, computation, fsm):
     # Ordered: the FSM wiring tags monitors and motions, then the capability booleans, then the
     # gate calls that read them.
     meta = _apply_fsm_wiring(ordered, fsm)
-    _add_motion_function_interfaces(ordered)
+    _add_motion_function_interfaces(ordered, solvers_by_id)
     _apply_fsm_gate_calls(ordered, meta["cpp_namespace"])
 
     return ordered, meta
@@ -1015,7 +1008,7 @@ def _set_motion_conditions(motion) -> None:
     motion.done_terms_present = bool(motion.done_terms)
 
 
-def _add_motion_function_interfaces(motions: list) -> None:
+def _add_motion_function_interfaces(motions: list, solvers_by_id: dict) -> None:
     """Fold the capability booleans each generated function's signature is built from.
 
     Also assigns each motion its introspection index, so the frame-log schema and the generated
@@ -1059,7 +1052,8 @@ def _add_motion_function_interfaces(motions: list) -> None:
         # Gate on the torque limit, not on the joint-space samples: this runs before the
         # introspection artifact exists, so the sample list does not yet.
         motion.apply_needs_shared = bool(motion.forwarded_commands) or any(
-            solver.torque_saturation for solver in motion.serial_chain_solvers
+            solvers_by_id[solver.solver_id].torque_saturation
+            for solver in motion.serial_chain_solvers
         )
         motion.apply_needs_robot = has_chain or bool(motion.forwarded_commands)
 

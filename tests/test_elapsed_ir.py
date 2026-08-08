@@ -10,7 +10,7 @@ from __future__ import annotations
 from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import RDF, XSD
 
-from motion_spec.classes.entities import ConstraintEvaluator, EvaluatorType
+from motion_spec.classes.handlers import ConstraintEvaluator, EvaluatorType
 from motion_spec.rdf_parser.ir import Parser, _evaluator_term
 from motion_spec_dsl.rdf_parser.vocab import CSTR, CSTR_EXT, CSTR_HDL, QUDT_SCHEMA, TIME
 from rdf_utils.namespace import NS_MM_QUDT_QTY as QUDT_QKIND, NS_MM_QUDT_UNIT as QUDT_UNIT

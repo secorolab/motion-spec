@@ -703,7 +703,9 @@ def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path) 
     The decode contract is not written here: it is serialized into the frame log's own header
     record, so a log needs no companion artifact to be read. The framed FSM lives in ir["fsm"].
     """
-    schema = build_schema(ir, ir_path=ir_path, output_dir=output_dir, fsm_ir=ir["coordination"].get("fsm"))
+    schema = build_schema(
+        ir, ir_path=ir_path, output_dir=output_dir, fsm_ir=ir["coordination"].get("fsm")
+    )
     layout = build_frame_layout(schema)
     end_state = schema.get("fsm", {}).get("end")
     output_dir.mkdir(parents=True, exist_ok=True)

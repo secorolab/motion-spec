@@ -40,52 +40,27 @@ from rdflib import URIRef
 from rdflib.namespace import PROV, RDF
 from scene_dsl.rdf_parser.common import ensure_one_obj_uri
 
-from motion_spec.classes.entities import (
-    AccelerationConstraint,
-    CartesianAccelerationSpecification,
-    CartesianForceSpecification,
+from motion_spec.classes.dynamics import Saturation
+from motion_spec.classes.geometry import Point, PoseDifference, Subspace, View
+from motion_spec.classes.handlers import (
     FeedForwardController,
     ImpedanceController,
-    JointForceSpecification,
-    MotionDriveInput,
-    MotionDrivers,
     PIDController,
-    Point,
-    PoseDifference,
-    Provenance,
-    Quantity,
-    QuantityKind,
-    Saturation,
-    SolverAlgorithm,
-    Unit,
-    View,
+    StateField,
+)
+from motion_spec.classes.qudt import Provenance, Quantity, QuantityKind, Unit
+from motion_spec.classes.solvers import (
+    AccelerationEnergyDriven,
+    CartesianAccelerationDriven,
+    CartesianForceSpecification,
+    CommandForwarding,
+    DynamicsSolverFamily,
+    JointForceSpecification,
+    MotionDrivers,
+    Unsolved,
 )
 from motion_spec.rdf_parser import quantities
 from motion_spec.rdf_parser.model import kebab, local_name
-
-__all__ = [
-    "ADMITTANCE_PARAMETERS",
-    "CONTROLLER_GAIN_FIELDS",
-    "CONTROLLER_SIGNAL_ROLES",
-    "CONTROLLER_STATE_FIELDS",
-    "SOLVER_ALGORITHMS",
-    "ControllerDerivation",
-    "MotionDriveInput",
-    "SolverAlgorithm",
-    "SolverDerivationContext",
-    "SolverIdFactory",
-    "annotate_controller_signals",
-    "augment_closures",
-    "augment_data",
-    "authored_motion_drivers",
-    "cartesian_force_specification",
-    "joint_force_specification",
-    "motion_drivers",
-    "saturation",
-    "solver_algorithm",
-    "solver_derivation_context",
-]
-
 
 # Every solver family the code generator can run, keyed by the term that identifies it -- the
 # algorithm a solver names, or the type a command-forwarding solver carries.
@@ -94,38 +69,33 @@ __all__ = [
 # over Gauss's principle, so each constrained direction is driven by an acceleration energy
 # (N-m2/s2) and the derived signals lead with `eacc`. Recursive Newton-Euler is driven by the
 # Cartesian acceleration itself, and leads with `acc`. A command-forwarding solver runs no
-# dynamics at all: its controller's output goes straight to the joint.
-SOLVER_ALGORITHMS = {
-    SLV["AccelerationConstrainedHybridDynamicsAlgorithm"]: SolverAlgorithm(
-        MotionDriveInput.ACCELERATION_ENERGY, "eacc", "ACHD", False
-    ),
-    SLV["RecursiveNewtonEulerAlgorithm"]: SolverAlgorithm(
-        MotionDriveInput.CARTESIAN_ACCELERATION, "acc", "RNE", False
-    ),
-    SLV_EXT.CommandForwardingSolver: SolverAlgorithm(None, None, "", True),
+# dynamics at all: its controller's output goes straight to the joint. `slv:ArticulatedBodyAlgorithm`
+# gets no entry: an unmapped algorithm is the "unsupported" answer below, not a fourth class.
+_SOLVER_FAMILIES = {
+    SLV["AccelerationConstrainedHybridDynamicsAlgorithm"]: AccelerationEnergyDriven,
+    SLV["RecursiveNewtonEulerAlgorithm"]: CartesianAccelerationDriven,
+    SLV_EXT.CommandForwardingSolver: CommandForwarding,
 }
-# A solver naming no algorithm drives nothing: it is read for state and watched by monitors.
-_MONITOR_ONLY = SolverAlgorithm(None, None, "", False)
 
 
-def solver_algorithm(model, solver: URIRef) -> SolverAlgorithm:
+def solver_algorithm(model, solver: URIRef) -> type[DynamicsSolverFamily]:
     """The family a solver belongs to, and so what may be derived against it.
 
     Raises:
         ConstraintViolation: the solver names an algorithm no backend implements.
     """
     for type_ in get_node_types(model.graph, solver):
-        if type_ in SOLVER_ALGORITHMS:
-            return SOLVER_ALGORITHMS[type_]
+        if type_ in _SOLVER_FAMILIES:
+            return _SOLVER_FAMILIES[type_]
     algorithm = model.graph.value(solver, SLV["solver"])
     if algorithm is None:
-        return _MONITOR_ONLY
-    if algorithm not in SOLVER_ALGORITHMS:
+        return Unsolved
+    if algorithm not in _SOLVER_FAMILIES:
         raise ConstraintViolation(
             "solver", f"Solver '{solver}' has unsupported algorithm '{algorithm}'."
         )
 
-    return SOLVER_ALGORITHMS[algorithm]
+    return _SOLVER_FAMILIES[algorithm]
 
 
 @dataclass(frozen=True)
@@ -244,11 +214,11 @@ def _path_following_axes(outputs, quantity, subspace) -> tuple[quantities.Spatia
     normals hold the frame on the path, and orientation tracking is the ordinary angular triple.
     """
     if quantity == outputs["along-speed"]:
-        return (quantities.SpatialAxis("linear-acceleration", "tangent", outputs["tangent"]),)
+        return (quantities.SpatialAxis(Subspace.Linear, "tangent", outputs["tangent"]),)
     if subspace == "position":
         return (
-            quantities.SpatialAxis("linear-acceleration", "normal_a", outputs["normal-a"]),
-            quantities.SpatialAxis("linear-acceleration", "normal_b", outputs["normal-b"]),
+            quantities.SpatialAxis(Subspace.Linear, "normal_a", outputs["normal-a"]),
+            quantities.SpatialAxis(Subspace.Linear, "normal_b", outputs["normal-b"]),
         )
     if subspace == "orientation":
         return quantities.ANGULAR_AXES
@@ -425,16 +395,20 @@ def solver_derivation_context(model) -> SolverDerivationContext:
 def _validate_solver_derivations(model, by_handler, by_solver, algorithms) -> None:
     """Enforce executable solver limits, which only hold once authored RDF has resolved to plans."""
     for solver, plans in by_solver.items():
-        if algorithms[solver].drive_input is not MotionDriveInput.ACCELERATION_ENERGY:
-            continue
+        family = algorithms[solver]
         axes = [axis for plan in plans for axis in plan.axes]
-        duplicates = [axis for axis, count in collections.Counter(axes).items() if count > 1]
-        if duplicates:
-            rendered = ", ".join(f"{axis.subspace}.{axis.axis}" for axis in duplicates)
-            raise ValueError(f"ACHD solver '{solver}' repeats acceleration axis: {rendered}.")
-        if len(axes) > 6:
+        if family.axes_must_be_distinct:
+            duplicates = [axis for axis, count in collections.Counter(axes).items() if count > 1]
+            if duplicates:
+                rendered = ", ".join(f"{axis.subspace}.{axis.axis}" for axis in duplicates)
+                raise ValueError(
+                    f"{family.codegen_name} solver '{solver}' repeats acceleration axis: "
+                    f"{rendered}."
+                )
+        if family.max_axes is not None and len(axes) > family.max_axes:
             raise ValueError(
-                f"ACHD solver '{solver}' has {len(axes)} axes; at most 6 are supported."
+                f"{family.codegen_name} solver '{solver}' has {len(axes)} axes; at most "
+                f"{family.max_axes} are supported."
             )
 
     for handler, plans in by_handler.items():
@@ -442,15 +416,12 @@ def _validate_solver_derivations(model, by_handler, by_solver, algorithms) -> No
         for plan in plans:
             command = str(model.graph.value(plan.controller, APP["command-type"]) or "")
             subspace = local_name(model.graph.value(plan.view, MAP.subspace)) if plan.view else None
-            domains[algorithms[plan.solver].drive_input].add(
+            domains[algorithms[plan.solver]].add(
                 "force"
                 if command in {"Force", "Torque"} or subspace in {"force", "torque"}
                 else "pose"
             )
-        overlap = (
-            domains[MotionDriveInput.ACCELERATION_ENERGY]
-            & domains[MotionDriveInput.CARTESIAN_ACCELERATION]
-        )
+        overlap = domains[AccelerationEnergyDriven] & domains[CartesianAccelerationDriven]
         if overlap:
             raise ValueError(
                 f"Handler '{handler}' assigns ACHD and RNE to the same domain(s): "
@@ -461,18 +432,6 @@ def _validate_solver_derivations(model, by_handler, by_solver, algorithms) -> No
 def _derived_quantity(id_: str, kind: str, unit: str, *, has_view: bool = False) -> Quantity:
     """A runtime scalar the model implies rather than authors."""
     return Quantity(id_, QuantityKind(kind), Unit(unit), None, has_view, provenance=Provenance())
-
-
-def _acceleration_signal(id_: str, axis: quantities.SpatialAxis, input_kind) -> Quantity:
-    """The acceleration-energy or Cartesian-acceleration signal a solver input kind accepts."""
-    if input_kind == MotionDriveInput.ACCELERATION_ENERGY:
-        return _derived_quantity(id_, "AccelerationEnergy", "N_M2_PER_SEC2")
-    if input_kind == MotionDriveInput.CARTESIAN_ACCELERATION:
-        if axis.subspace == "linear-acceleration":
-            return _derived_quantity(id_, "LinearAcceleration", "M_PER_SEC2")
-
-        return _derived_quantity(id_, "AngularAcceleration", "RAD_PER_SEC2")
-    raise ValueError(f"Input kind '{input_kind}' does not carry acceleration.")
 
 
 def _motion_scoped(model, context, plan) -> str:
@@ -498,18 +457,16 @@ def _controller_signal_id(model, context, plan) -> str:
         graph, target
     ):
         return f"tau_{controller_id}"
-    algorithm = context.algorithm_by_solver[plan.solver]
-    if algorithm.signal_prefix is None:
+    family = context.algorithm_by_solver[plan.solver]
+    if not hasattr(family, "payload"):
         raise ValueError(f"Solver '{plan.solver}' does not accept acceleration signals.")
 
-    return (
-        f"{algorithm.signal_prefix}_{model.id(plan.quantity)}{_motion_scoped(model, context, plan)}"
-    )
+    return f"{family.signal_prefix}_{model.id(plan.quantity)}{_motion_scoped(model, context, plan)}"
 
 
 def _axis_error(ids: SolverIdFactory, axis: quantities.SpatialAxis) -> Quantity:
     """The per-axis component of a pose difference the controller drives to zero."""
-    linear = axis.subspace == "linear-acceleration"
+    linear = axis.subspace == Subspace.Linear
 
     return _derived_quantity(
         ids.component_error(axis),
@@ -521,7 +478,7 @@ def _axis_error(ids: SolverIdFactory, axis: quantities.SpatialAxis) -> Quantity:
 
 def _axis_derivative(ids: SolverIdFactory, axis: quantities.SpatialAxis) -> Quantity:
     """The per-axis component of the measured velocity feeding a derivative term."""
-    linear = axis.subspace == "linear-acceleration"
+    linear = axis.subspace == Subspace.Linear
 
     return _derived_quantity(
         ids.component_measured_derivative(axis),
@@ -532,12 +489,16 @@ def _axis_derivative(ids: SolverIdFactory, axis: quantities.SpatialAxis) -> Quan
 
 
 def _axis_view(model, superobject, subobject, axis: quantities.SpatialAxis) -> View:
-    """The view selecting one axis of a spatial superobject."""
+    """The view selecting one axis of a spatial superobject.
+
+    Two callers (`augment_data`'s error and measured-derivative views), so it stays a named
+    helper rather than inlining -- assumed one caller and there are two.
+    """
     return View(
         f"view_{subobject.id}",
         superobject,
         subobject,
-        axis.half,
+        axis.subspace,
         quantities.AXIS_BY_NAME.get(axis.frame_axis),
         direction=(
             quantities.direction(model, axis.direction) if axis.direction is not None else None
@@ -611,9 +572,9 @@ def _whole_controller_signal(model, context, plan, types):
         return _derived_quantity(signal_id, "Force", "N")
     if signal_id.startswith("tau_"):
         return _derived_quantity(signal_id, "Torque", "N_M")
-    input_kind = context.algorithm_by_solver[plan.solver].drive_input
-    if input_kind == MotionDriveInput.CARTESIAN_ACCELERATION and plan.axes:
-        return _acceleration_signal(signal_id, plan.axes[0], input_kind)
+    family = context.algorithm_by_solver[plan.solver]
+    if issubclass(family, CartesianAccelerationDriven) and plan.axes:
+        return family.payload(signal_id, plan.axes[0].subspace)
 
     return _derived_quantity(signal_id, "AccelerationEnergy", "N_M2_PER_SEC2")
 
@@ -625,14 +586,14 @@ def _derived_controller(model, context, plan, axis: quantities.SpatialAxis | Non
     types = get_node_types(graph, plan.controller)
     measured_source = graph.value(plan.controller, CSTR_HDL["measured-velocity"])
     if axis is not None:
-        input_kind = context.algorithm_by_solver[plan.solver].drive_input
+        family = context.algorithm_by_solver[plan.solver]
         payload_id = (
             ids.component_energy(axis)
-            if input_kind == MotionDriveInput.ACCELERATION_ENERGY
+            if issubclass(family, AccelerationEnergyDriven)
             else ids.component_acceleration(axis)
         )
         controller_id = ids.component_controller(axis)
-        signal = _acceleration_signal(payload_id, axis, input_kind)
+        signal = family.payload(payload_id, axis.subspace)
         error = _axis_error(ids, axis)
         measured_derivative = _axis_derivative(ids, axis) if measured_source is not None else None
     else:
@@ -708,34 +669,16 @@ def _derived_controllers(model, context, plan) -> list:
     return [_derived_controller(model, context, plan)]
 
 
-@dataclass(frozen=True)
-class AccelerationDriver:
-    """How one solver input kind names and shapes the per-axis records it accepts."""
-
-    spec_id: object
-    payload_id: object
-    spec_tag: str
-    payload_tag: str
-    record: type
-    payload_field: str
-
-
-_ACCELERATION_DRIVERS = {
-    MotionDriveInput.ACCELERATION_ENERGY: AccelerationDriver(
+# Per family, the `SolverIdFactory` methods that mint its multi-axis spec/payload ids. Keyed by
+# the family class itself; `family.id_tags` names the matching single-axis tag pair.
+_DRIVER_ID_METHODS = {
+    AccelerationEnergyDriven: (
         SolverIdFactory.component_constraint,
         SolverIdFactory.component_energy,
-        "acc-cstr",
-        "eacc",
-        AccelerationConstraint,
-        "acceleration_energy",
     ),
-    MotionDriveInput.CARTESIAN_ACCELERATION: AccelerationDriver(
+    CartesianAccelerationDriven: (
         SolverIdFactory.component_acceleration_specification,
         SolverIdFactory.component_acceleration,
-        "cart-acc",
-        "acc",
-        CartesianAccelerationSpecification,
-        "acceleration",
     ),
 }
 
@@ -747,19 +690,21 @@ class _DriverIds(NamedTuple):
     payload: str
 
 
-def _acceleration_driver_ids(model, context, plan, driver, axis, multi_axis) -> _DriverIds:
+def _acceleration_driver_ids(model, context, plan, family, axis, multi_axis) -> _DriverIds:
     """The two ids for one axis, registering them when they derive from a quantity."""
     if multi_axis:
         ids = _solver_ids(model, context, plan)
+        spec_id, payload_id = _DRIVER_ID_METHODS[family]
 
-        return _DriverIds(driver.spec_id(ids, axis), driver.payload_id(ids, axis))
+        return _DriverIds(spec_id(ids, axis), payload_id(ids, axis))
     # Single-axis ids are built off the quantity, so that is what they derive from.
     suffix = _motion_scoped(model, context, plan)
     quantity_id = model.id(plan.quantity)
+    spec_tag, payload_tag = family.id_tags
     ids = []
-    for tag in (driver.spec_tag, driver.payload_tag):
+    for tag in (spec_tag, payload_tag):
         derived_id = f"{tag.replace('-', '_')}_{quantity_id}{suffix}"
-        types = (SLV.AccelerationConstraint,) if tag == driver.spec_tag else ()
+        types = (SLV.AccelerationConstraint,) if tag == spec_tag else ()
         model.register_derived(
             derived_id,
             str(plan.quantity),
@@ -772,9 +717,8 @@ def _acceleration_driver_ids(model, context, plan, driver, axis, multi_axis) -> 
     return _DriverIds(*ids)
 
 
-def _derived_acceleration_drivers(model, context, plan, input_kind) -> list:
-    """One controller's ordered per-axis acceleration records, for its solver's input."""
-    driver = _ACCELERATION_DRIVERS[input_kind]
+def _derived_acceleration_drivers(model, context, plan, family) -> list:
+    """One controller's ordered per-axis acceleration records, for its solver's family."""
     target = (
         model.graph.value(plan.view, MAP.superobject) if plan.view is not None else plan.quantity
     )
@@ -784,12 +728,12 @@ def _derived_acceleration_drivers(model, context, plan, input_kind) -> list:
     records = []
     for axis in plan.axes:
         spec_id, payload_id = _acceleration_driver_ids(
-            model, context, plan, driver, axis, multi_axis
+            model, context, plan, family, axis, multi_axis
         )
         records.append(
-            driver.record(
+            family.driver(
                 id=spec_id,
-                subspace=axis.half,
+                subspace=axis.subspace,
                 axis=quantities.AXIS_BY_NAME.get(axis.frame_axis),
                 as_seen_by=frame,
                 direction=(
@@ -797,7 +741,7 @@ def _derived_acceleration_drivers(model, context, plan, input_kind) -> list:
                     if axis.direction is not None
                     else None
                 ),
-                **{driver.payload_field: _acceleration_signal(payload_id, axis, input_kind)},
+                **{family.payload_field: family.payload(payload_id, axis.subspace)},
             )
         )
 
@@ -814,35 +758,36 @@ def motion_drivers(model, context, solver: URIRef) -> list:
         one `MotionDrivers` record per authored `slv:motion-drivers` node
     """
     plans = context.controllers_by_solver.get(solver, ())
-    input_kind = context.algorithm_by_solver[solver].drive_input
+    family = context.algorithm_by_solver[solver]
+    driven = hasattr(family, "payload")
     accelerations = (
         [
             record
             for plan in plans
-            for record in _derived_acceleration_drivers(model, context, plan, input_kind)
+            for record in _derived_acceleration_drivers(model, context, plan, family)
         ]
-        if input_kind in _ACCELERATION_DRIVERS
+        if driven
         else []
     )
+    # Both slots default empty; only the family's own slot (driver_field) takes the drivers, so
+    # `MotionDrivers.acceleration_constraint` -- which has no default -- is always supplied.
+    driver_slots = {"acceleration_constraint": [], "cartesian_acceleration": []}
+    if driven:
+        driver_slots[family.driver_field] = accelerations
 
     return [
         MotionDrivers(
             id=model.id(node),
-            acceleration_constraint=(
-                accelerations if input_kind == MotionDriveInput.ACCELERATION_ENERGY else []
-            ),
             cartesian_force=[
                 cartesian_force_specification(model, force)
                 for force in model.graph.objects(node, SLV["cartesian-force"])
             ],
-            cartesian_acceleration=(
-                accelerations if input_kind == MotionDriveInput.CARTESIAN_ACCELERATION else []
-            ),
             joint_force=[
                 joint_force_specification(model, force)
                 for force in model.graph.objects(node, SLV["joint-force"])
             ],
             has_cartesian_force=bool(list(model.graph.objects(node, SLV["cartesian-force"]))),
+            **driver_slots,
         )
         for node in model.graph.objects(solver, SLV["motion-drivers"])
     ]
@@ -912,11 +857,11 @@ def augment_data(model, context, data: list, views: dict) -> None:
             ids = _solver_ids(model, context, plan)
             target = graph.value(plan.view, MAP.superobject)
             difference = PoseDifference(
-                ids.pose_difference(),
-                ["Angle", "Length"],
-                Point(f"point_{ids.pose_difference()}_origin"),
-                quantities.frame(model, graph.value(target, GEOM_COORD["as-seen-by"])),
-                ["M", "RAD"],
+                id=ids.pose_difference(),
+                quantity_kind=["Angle", "Length"],
+                reference_point=Point(f"point_{ids.pose_difference()}_origin"),
+                as_seen_by=quantities.frame(model, graph.value(target, GEOM_COORD["as-seen-by"])),
+                unit=["M", "RAD"],
                 provenance=Provenance(),
             )
             differences.append(difference)
@@ -974,15 +919,6 @@ def annotate_controller_signals(controllers, closures: dict) -> None:
             controller.measured_signal = source["quantity"]
         if setpoint_id:
             controller.setpoint_signal = setpoint_id
-
-
-@dataclass(frozen=True)
-class StateField:
-    """One value a stateful controller keeps between ticks, and how its step call reads it."""
-
-    name: str
-    type: str
-    getter: str
 
 
 # Per controller type, the internal state it keeps. A controller type absent here is stateless.

@@ -25,12 +25,12 @@ from rdf_utils.namespace import NS_MM_GEOM, NS_MM_KC_EXT
 from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import Namespace, RDF, XSD
 
-from motion_spec.classes.entities import PIDController
+from motion_spec.classes.handlers import PIDController
 from motion_spec.rdf_parser.ir import (
     LINEAR_AXES,
     SOLVER_SEMANTICS_BY_ALGORITHM,
     ControllerDerivation,
-    GuardedMotionBlock,
+    MotionUnit,
     Parser,
     SceneRobot,
     SceneSpec,
@@ -185,7 +185,7 @@ def test_introspection_contract_carries_control_and_provenance() -> None:
         type=parser.id(CSTR_HDL.ProportionalIntegralDerivative),
     )
     monitor = parser.monitor_entry(monitor_node)
-    motion = GuardedMotionBlock(
+    motion = MotionUnit(
         id="move",
         name="move",
         description=None,
@@ -531,13 +531,8 @@ def test_an_authored_band_rides_the_constraint_term() -> None:
     The term is what every reader renders from -- the motion's condition, the level monitor and
     the introspection sample -- so the band has to travel with it or only some of them see it.
     """
-    from motion_spec.classes.entities import (
-        ConstraintEvaluator,
-        EvaluatorType,
-        Quantity,
-        QuantityKind,
-        Unit,
-    )
+    from motion_spec.classes.handlers import ConstraintEvaluator, EvaluatorType
+    from motion_spec.classes.qudt import Quantity, QuantityKind, Unit
     from motion_spec.rdf_parser.ir import _evaluator_term
 
     def evaluator(tolerance):

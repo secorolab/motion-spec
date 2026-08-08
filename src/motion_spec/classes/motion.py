@@ -125,7 +125,7 @@ class RelativePoseCapture:
 @dataclass
 class MotionSolverSlice:
     """A per-motion slice of a solver: what is genuinely per-motion, nothing copied off the
-    solver (F2). Everything else -- `algorithm`, `gravity`, `chain.root`, `torque_saturation` --
+    solver. Everything else -- `algorithm`, `gravity`, `chain.root`, `torque_saturation` --
     is reached through `solver_id` into `resources.by_id`.
     """
 

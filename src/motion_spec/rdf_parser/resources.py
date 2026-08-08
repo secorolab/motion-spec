@@ -16,8 +16,9 @@ the backend cannot run.
 from __future__ import annotations
 
 import collections
-from dataclasses import dataclass, field, fields, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import NamedTuple
 
 import tomllib
 from motion_spec_dsl.rdf_parser.vocab import (
@@ -52,42 +53,31 @@ from scene_dsl.rdf_parser.kinematics import body_of_frame, get_kinematic_mapping
 from scene_dsl.rdf_parser.sensors import get_update_rate
 from scene_dsl.rdf_parser.vocab import URI_BDD_PRED_ELEMS
 
-from motion_spec.classes.entities import (
+from motion_spec.classes.base import dedupe_by_id
+from motion_spec.classes.bindings import (
+    ChainBinding,
+    DeviceBinding,
+    HardwareBinding,
+    JointSpaceChannel,
+    RuntimeBinding,
+    SensorBinding,
+)
+from motion_spec.classes.geometry import SceneObject
+from motion_spec.classes.motion import BlackboardValue
+from motion_spec.classes.scene import (
+    MjcfSceneAttachment,
+    MjcfSceneObject,
+    MjcfSceneRobot,
+    MjcfSceneSpec,
+)
+from motion_spec.classes.solvers import (
     ForceDistributionSolver,
-    RuntimeValue,
-    SceneAttachment,
-    SceneObject,
-    SceneObjectSpec,
-    SceneRobot,
-    SceneSpec,
     SolverWithInputAndOutput,
     VelocityCompositionSolver,
-    dedupe_by_id,
 )
 from motion_spec.rdf_parser import constraint_handler, quantities
 from motion_spec.rdf_parser.model import local_name, seconds
 from motion_spec.rdf_parser.operations import OPS_GENERIC, OPS_SOLVER
-
-__all__ = [
-    "JOINT_SPACE_CHANNELS",
-    "JOINT_SPACE_COMMAND_CHANNEL",
-    "TRACE_DISABLED",
-    "AgentAssembly",
-    "JointSpaceChannel",
-    "RobotSetup",
-    "Robots",
-    "agent_home_positions",
-    "annotate_runtime",
-    "body_path",
-    "build_robots",
-    "fixed_attachments",
-    "kinematic_adjacency",
-    "mapped_targets",
-    "read_platform",
-    "read_scene",
-    "robot_setups",
-    "shared_runtime_members",
-]
 
 SUPPORTED_ROBOT_MODELS = {"KinovaGen3"}
 # Devices with driver templates. A name the grammar accepts but that is missing here is rejected.
@@ -180,11 +170,11 @@ def _bound_devices(model, agent, runtime_prefix, hosted, chain_bindings, agent_b
         if device is None:
             return None
 
-        return {
-            "kind": str(model.graph.value(device, SDO.model) or ""),
-            "config_key": _config_key(model, node, agent, drives),
-            "drives": drives,
-        }
+        return DeviceBinding(
+            kind=str(model.graph.value(device, SDO.model) or ""),
+            config_key=_config_key(model, node, agent, drives),
+            drives=drives,
+        )
 
     owners = [agent]
     for binding in chain_bindings:
@@ -200,20 +190,24 @@ def _bound_devices(model, agent, runtime_prefix, hosted, chain_bindings, agent_b
 
 @dataclass(frozen=True)
 class AgentAssembly:
-    """One agent's runtime assets: the chain it drives, what is mounted on it, and where it sits."""
+    """One agent's runtime assets: the chain it drives, what is mounted on it, and where it sits.
+
+    Builder-local machinery, not published -- but its fields are named after the bindings' own,
+    so no third naming scheme survives: `urdf`, `owned_trees`, `tip`.
+    """
 
     agent: object
     device: str
     config_key: str
     sensors: list
     devices: list
-    path: str
+    urdf: str
     prefix: str
-    trees: list
+    owned_trees: list
     serial_chain: object
     root_body: object
     chain_root: str
-    chain_tip: str
+    tip: str
     tool_body: str
     tcp_site: str
     attach_kind: str
@@ -404,7 +398,7 @@ def _chain_attachments(model, path, root_binding, chain_bindings) -> list:
         child_name = local_name(child_body)
         prefix = child_name[: -len(entity)] if entity and child_name.endswith(entity) else ""
         attachments.append(
-            SceneAttachment(
+            MjcfSceneAttachment(
                 id=local_name(binding["tree"]),
                 path=binding["path"],
                 attach_to=local_name(parent_frame),
@@ -502,17 +496,33 @@ def _agent_assemblies(model, attach_by_body) -> list:
                 # An agent is named by the scenex alias it was referred to through, bound or not:
                 # a simulated deployment addresses it the same way.
                 config_key=_config_key(model, agent, agent, ""),
-                sensors=_hosted_sensors(model, hosted, runtime_prefix),
+                sensors=[
+                    SensorBinding(
+                        id=f"{runtime_prefix}{local_name(sensor)}",
+                        type=kind,
+                        frame_site=f"{runtime_prefix}{local_name(frame)}",
+                        update_rate_hz=get_update_rate(
+                            model.graph, ModelBase(node_id=sensor, graph=model.graph)
+                        ),
+                        observes=sorted(
+                            local_name(observed)
+                            for observed in model.graph.objects(sensor, SOSA.observes)
+                        ),
+                    )
+                    for sensor in hosted
+                    if (kind := _sensor_kind(model, sensor))
+                    and (frame := model.graph.value(sensor, SENSORS.frame)) is not None
+                ],
                 devices=_bound_devices(
                     model, agent, runtime_prefix, hosted, chain_bindings, agent_by_tree
                 ),
-                path=root_binding["path"],
+                urdf=root_binding["path"],
                 prefix=runtime_prefix,
-                trees=[binding["tree"] for binding in chain_bindings],
+                owned_trees=[binding["tree"] for binding in chain_bindings],
                 serial_chain=serial_tree,
                 root_body=root_body,
                 chain_root=f"{runtime_prefix}{local_name(root_body)}",
-                chain_tip=f"{runtime_prefix}{local_name(chain_tip_body)}",
+                tip=f"{runtime_prefix}{local_name(chain_tip_body)}",
                 tool_body=(
                     f"{runtime_prefix}{local_name(tip_body)}"
                     if tip_binding is not root_binding
@@ -548,50 +558,25 @@ def _chain_tip_body(root_binding, serial_tree, path, tip_body, root_body):
     return chain_tip_body
 
 
-def _hosted_sensors(model, hosted, runtime_prefix) -> list:
-    """The sensors an agent hosts, as the runtime names them."""
-    return [
-        {
-            "id": f"{runtime_prefix}{local_name(sensor)}",
-            "type": kind,
-            "frame_site": f"{runtime_prefix}{local_name(frame)}",
-            "update_rate_hz": get_update_rate(
-                model.graph, ModelBase(node_id=sensor, graph=model.graph)
-            ),
-            "observes": sorted(
-                local_name(observed) for observed in model.graph.objects(sensor, SOSA.observes)
-            ),
-        }
-        for sensor in hosted
-        if (kind := _sensor_kind(model, sensor))
-        and (frame := model.graph.value(sensor, SENSORS.frame)) is not None
-    ]
-
-
-@dataclass(frozen=True)
-class RobotSetup:
-    """The chain one solver runs on, as the scene declares it.
-
-    Every field is named for the solver field it fills, so the setup is applied by name rather
-    than by position.
+class _ChainSetup(NamedTuple):
+    """One robot's chain setup, sourced from the scene-dsl graph: the bindings a solver's
+    `chain`/`hardware`/`runtime`/`sensors`/`devices` are built from.
     """
 
-    urdf: str = ""
-    chain_root: str = ""
-    chain_end: str = ""
-    chain_tip: str = ""
-    robot_model: str = ""
-    tool_body: str = ""
-    tcp_site: str = ""
-    sensors: list = field(default_factory=list)
-    devices: list = field(default_factory=list)
-    runtime_prefix: str = ""
-    owned_trees: list = field(default_factory=list)
-    kdl_chain: str = ""
-    kdl_tree: str = ""
-    kdl_joints: list = field(default_factory=list)
-    config_key: str = ""
+    chain: ChainBinding
+    hardware: HardwareBinding
+    runtime: RuntimeBinding
+    sensors: list
+    devices: list
 
+
+_EMPTY_SETUP = _ChainSetup(
+    ChainBinding(root="", end="", tip="", kdl_chain="", kdl_tree="", kdl_joints=[], kdl_header=""),
+    HardwareBinding(urdf="", model="", tool_body="", tcp_site=""),
+    RuntimeBinding(id="", owner=False, prefix="", owned_trees=[], config_key=""),
+    [],
+    [],
+)
 
 # What an asset path says about the arm it holds, when no device is bound to say it outright.
 _ROBOT_MODEL_HINTS = (("kinova_gen3", "KinovaGen3"), ("gen3", "KinovaGen3"))
@@ -603,7 +588,7 @@ def _robot_model_for(assembly: AgentAssembly) -> str:
     """The agent's arm: the authored device when one is bound, else sniffed from the asset path."""
     if assembly.device:
         return _ROBOT_MODEL_BY_DEVICE.get(assembly.device, assembly.device)
-    low = str(assembly.path).lower()
+    low = str(assembly.urdf).lower()
 
     return next((canonical for hint, canonical in _ROBOT_MODEL_HINTS if hint in low), "")
 
@@ -629,22 +614,31 @@ def robot_setups(model):
     setups_by_node, ordered = {}, []
     for assembly in _agent_assemblies(model, attach_by_body):
         kdl_chain, kdl_tree, joints = chain_for_iri(trees, str(assembly.serial_chain))
-        setup = RobotSetup(
-            urdf=assembly.path,
-            chain_root=assembly.chain_root,
-            chain_end=assembly.chain_tip,
-            chain_tip=assembly.chain_tip,
-            robot_model=_robot_model_for(assembly),
-            tool_body=assembly.tool_body,
-            tcp_site=assembly.tcp_site,
+        setup = _ChainSetup(
+            chain=ChainBinding(
+                root=assembly.chain_root,
+                end=assembly.tip,
+                tip=assembly.tip,
+                kdl_chain=kdl_chain,
+                kdl_tree=kdl_tree,
+                kdl_joints=[f"{assembly.prefix}{joint}" for joint in joints],
+                kdl_header="",
+            ),
+            hardware=HardwareBinding(
+                urdf=assembly.urdf,
+                model=_robot_model_for(assembly),
+                tool_body=assembly.tool_body,
+                tcp_site=assembly.tcp_site,
+            ),
+            runtime=RuntimeBinding(
+                id="",
+                owner=False,
+                prefix=assembly.prefix,
+                owned_trees=assembly.owned_trees,
+                config_key=assembly.config_key,
+            ),
             sensors=assembly.sensors,
             devices=assembly.devices,
-            runtime_prefix=assembly.prefix,
-            owned_trees=assembly.trees,
-            kdl_chain=kdl_chain,
-            kdl_tree=kdl_tree,
-            kdl_joints=[f"{assembly.prefix}{joint}" for joint in joints],
-            config_key=assembly.config_key,
         )
         setups_by_node[assembly.agent] = setup
         ordered.append(setup)
@@ -705,7 +699,7 @@ def _observes_in_frame(model, node, type_, chain_root, runtime_prefix, owned_tre
     return True, frame_node
 
 
-def _world_solver_outputs(model, setup: RobotSetup, scene_objects) -> list:
+def _world_solver_outputs(model, setup: _ChainSetup, scene_objects) -> list:
     """The runtime observations stated in this solver's reference frame."""
     graph = model.graph
     object_ids_by_body = {obj.body: obj.id for obj in scene_objects}
@@ -716,13 +710,18 @@ def _world_solver_outputs(model, setup: RobotSetup, scene_objects) -> list:
             if scope is None or scope.section != "world":
                 continue
             in_frame, frame_node = _observes_in_frame(
-                model, node, type_, setup.chain_root, setup.runtime_prefix, setup.owned_trees
+                model,
+                node,
+                type_,
+                setup.chain.root,
+                setup.runtime.prefix,
+                setup.runtime.owned_trees,
             )
             if not in_frame:
                 continue
             output = _runtime_output(model, read(model, node), type_, node, frame_node, setup)
             frame = getattr(output, "as_seen_by", None)
-            if frame_node is None and frame is not None and frame.id != setup.chain_root:
+            if frame_node is None and frame is not None and frame.id != setup.chain.root:
                 continue
             of = getattr(output, "of", None)
             if getattr(of, "id", None) in object_ids_by_body:
@@ -732,10 +731,10 @@ def _world_solver_outputs(model, setup: RobotSetup, scene_objects) -> list:
     return dedupe_by_id(outputs)
 
 
-def _runtime_output(model, output, type_, node, frame_node, setup: RobotSetup):
+def _runtime_output(model, output, type_, node, frame_node, setup: _ChainSetup):
     """One observation with its frames and names rewritten the way the runtime knows them."""
     if type_ == KC_STAT.JointPositionCoordinate:
-        return replace(output, joint_name=f"{setup.runtime_prefix}{output.joint_name}")
+        return replace(output, joint_name=f"{setup.runtime.prefix}{output.joint_name}")
     if type_ != RBDYN_COORD.WrenchCoordinate:
         return output
 
@@ -744,11 +743,11 @@ def _runtime_output(model, output, type_, node, frame_node, setup: RobotSetup):
     reference_node = graph.value(relation, RBDYN_ENT["reference-point"])
     sensor = graph.value(node, SOSA.madeBySensor)
     sensor_frame_node = graph.value(sensor, SENSORS.frame)
-    runtime = (setup.runtime_prefix, setup.owned_trees)
+    runtime = (setup.runtime.prefix, setup.runtime.owned_trees)
 
     return replace(
         output,
-        sensor_name=f"{setup.runtime_prefix}{output.sensor_name}",
+        sensor_name=f"{setup.runtime.prefix}{output.sensor_name}",
         sensor_frame=_runtime_frame(model, sensor_frame_node, *runtime),
         reference_point=replace(
             output.reference_point, id=_runtime_frame(model, reference_node, *runtime).id
@@ -770,7 +769,7 @@ def _body_name(name: str | None) -> str | None:
 
 def _mark_acceleration_constraint_frames(solver) -> None:
     """Flag each acceleration constraint as base-aligned when its axis frame is the chain root."""
-    root_body = _body_name(solver.chain_root)
+    root_body = _body_name(solver.chain.root)
     for driver in solver.motion_drivers:
         for constraint in driver.acceleration_constraint:
             axis_frame = getattr(constraint.as_seen_by, "id", None)
@@ -785,6 +784,14 @@ class Robots:
     platform_velocity: list
     platform_force: list
     schedule_steps: list
+
+    @property
+    def by_id(self) -> dict:
+        """Every solver by its id: how a per-motion slice's `solver_id` is resolved."""
+        return {
+            solver.id: solver
+            for solver in (*self.serial_chains, *self.platform_velocity, *self.platform_force)
+        }
 
 
 # Mobile-platform algorithms that are authorable but have no template wiring: the first needs a
@@ -813,7 +820,7 @@ def build_robots(model, schedule, setups, derivation, scene_objects, backend: st
     steps = []
     # A solver whose agent the scene does not bind still needs a chain to talk about; the first
     # declared setup is the model's own answer to "which arm", and an empty one says there is none.
-    default_setup = next(iter(setups.values()), RobotSetup())
+    default_setup = next(iter(setups.values()), _EMPTY_SETUP)
 
     platform_velocity = []
     for node in sorted(graph.subjects(RDF.type, SLV["VelocityCompositionSolver"]), key=str):
@@ -822,11 +829,9 @@ def build_robots(model, schedule, setups, derivation, scene_objects, backend: st
 
     serial_chains = []
     for node in _solver_nodes(model, derivation):
-        solver = _solver_with_input_and_output(model, node)
-        solver.motion_drivers = constraint_handler.motion_drivers(model, derivation, node)
         setup = setups.get(graph.value(node, AGN["of-agent"]), default_setup)
-        for spec in fields(setup):
-            setattr(solver, spec.name, getattr(setup, spec.name))
+        solver = _solver_with_input_and_output(model, node, setup)
+        solver.motion_drivers = constraint_handler.motion_drivers(model, derivation, node)
         solver.output = dedupe_by_id(
             [*solver.output, *_world_solver_outputs(model, setup, scene_objects)]
         )
@@ -902,8 +907,13 @@ _SOLVER_OUTPUTS = (
 )
 
 
-def _solver_with_input_and_output(model, node) -> SolverWithInputAndOutput:
-    """A chain solver as authored: its algorithm, its drivers, its outputs and its torque limit."""
+def _solver_with_input_and_output(model, node, setup: _ChainSetup) -> SolverWithInputAndOutput:
+    """A chain solver as authored: its algorithm, its drivers, its outputs and its torque limit.
+
+    `chain`/`hardware`/`runtime` have no default, so the bindings are constructor
+    arguments rather than assigned after the fact; `replace()` gives each solver its own copies,
+    since several solver nodes may share one agent's `setup`.
+    """
     model.expect_type(node, SLV["SolverWithInputAndOutput"])
     graph = model.graph
     outputs = []
@@ -913,7 +923,7 @@ def _solver_with_input_and_output(model, node) -> SolverWithInputAndOutput:
         if read is not None:
             outputs.append(read(model, output_node))
 
-    algorithm = constraint_handler.solver_algorithm(model, node)
+    family = constraint_handler.solver_algorithm(model, node)
     torque_limit = next(
         (
             limit
@@ -934,9 +944,16 @@ def _solver_with_input_and_output(model, node) -> SolverWithInputAndOutput:
             for driver in graph[node : SLV["motion-drivers"]]
         ],
         output=outputs,
-        algorithm=algorithm,
-        algorithm_name=algorithm.codegen_name,
-        root_acc=quantities.parse_xyz(model, gravity_node) if gravity_node else None,
+        chain=replace(setup.chain),
+        hardware=replace(setup.hardware),
+        runtime=replace(setup.runtime),
+        sensors=setup.sensors,
+        devices=setup.devices,
+        algorithm=family,
+        algorithm_name=family.codegen_name,
+        derived_root_acceleration=quantities.parse_xyz(model, gravity_node)
+        if gravity_node
+        else None,
         torque_saturation=(
             constraint_handler.saturation(model, torque_limit) if torque_limit is not None else None
         ),
@@ -946,9 +963,9 @@ def _solver_with_input_and_output(model, node) -> SolverWithInputAndOutput:
 def _validate_solvers(serial_chain_solvers, backend: str) -> None:
     """Reject unsupported robot models, and scene-object pose sync the backend cannot do."""
     unsupported = {
-        solver.robot_model
+        solver.hardware.model
         for solver in serial_chain_solvers
-        if solver.robot_model and solver.robot_model not in SUPPORTED_ROBOT_MODELS
+        if solver.hardware.model and solver.hardware.model not in SUPPORTED_ROBOT_MODELS
     }
     if unsupported:
         raise RuntimeError(
@@ -969,7 +986,7 @@ def _validate_solvers(serial_chain_solvers, backend: str) -> None:
             )
 
 
-def read_scene(model) -> SceneSpec:
+def read_scene(model) -> MjcfSceneSpec:
     """The scene: every robot and object with its asset, placement and attachment.
 
     Geometry comes from the referenced mjcf assets, so procedural geometry fields stay unset and
@@ -979,7 +996,7 @@ def read_scene(model) -> SceneSpec:
         ValueError: a procedural (path-less) object omits geometry the model must declare.
     """
     graph = model.graph
-    scene = SceneSpec()
+    scene = MjcfSceneSpec()
     context = next(graph.subjects(RDF.type, EXEC.ExecutionContext), None)
     timestep = graph.value(context, EXEC.timestep) if context is not None else None
     value = graph.value(timestep, QUDT_SCHEMA.value) if timestep is not None else None
@@ -1007,7 +1024,7 @@ def read_scene(model) -> SceneSpec:
             body, ("World", "", body, None)
         )
         scene.objects.append(
-            SceneObjectSpec(
+            MjcfSceneObject(
                 id=local_name(obj),
                 body=local_name(body),
                 path=get_path_of_node(graph, asset),
@@ -1021,9 +1038,9 @@ def read_scene(model) -> SceneSpec:
 
     for assembly in _agent_assemblies(model, attach_by_body):
         scene.robots.append(
-            SceneRobot(
+            MjcfSceneRobot(
                 id=local_name(assembly.agent),
-                path=assembly.path,
+                path=assembly.urdf,
                 prefix=assembly.prefix,
                 attach_kind=assembly.attach_kind,
                 attach_name=assembly.attach_name,
@@ -1145,7 +1162,7 @@ def _expand_vector(item, name: str, components, default) -> None:
         setattr(item, f"{name}_{component}", float(value))
 
 
-def _expand_scene_geometry(scene: SceneSpec) -> None:
+def _expand_scene_geometry(scene: MjcfSceneSpec) -> None:
     """Expand placement vectors and procedural geometry onto the scene items themselves.
 
     A path-backed object takes its geometry from its asset, so only a procedural one expands. What
@@ -1166,7 +1183,7 @@ def _expand_scene_geometry(scene: SceneSpec) -> None:
                 _expand_vector(obj, name, components, default)
 
 
-def _validate_scene(scene: SceneSpec) -> None:
+def _validate_scene(scene: MjcfSceneSpec) -> None:
     """Reject a procedural scene object that omits geometry: the model must declare it, and a
     silent default would place a body the author never described.
     """
@@ -1308,8 +1325,8 @@ def shared_runtime_members(model, serial_chains, control_period_ns: int, platfor
     for name in ("clock_time_s", "dt_measured_s"):
         model.register_derived(name, clock_iri, name, PROV.wasDerivedFrom)
     members = [
-        RuntimeValue(id="clock_time_s", type="Quantity"),
-        RuntimeValue(id="dt_measured_s", type="Quantity", value=control_period_ns * 1e-9),
+        BlackboardValue(id="clock_time_s", type="Quantity"),
+        BlackboardValue(id="dt_measured_s", type="Quantity", value=control_period_ns * 1e-9),
     ]
 
     seen = set()
@@ -1326,7 +1343,7 @@ def shared_runtime_members(model, serial_chains, control_period_ns: int, platfor
                 )
             for suffix, member_type in (("ft_bias", "Wrench"), ("ft_settle", "IntCounter")):
                 member_id = f"{out.id}_{suffix}"
-                members.append(RuntimeValue(id=member_id, type=member_type))
+                members.append(BlackboardValue(id=member_id, type=member_type))
                 model.register_derived(member_id, sensor_iri, suffix, PROV.wasDerivedFrom)
 
     return members
@@ -1349,24 +1366,24 @@ def annotate_runtime(serial_chains, motions, backend: str) -> None:
         # Two solvers are one runtime when they drive the same chain with the same tool.
         signature = (
             backend,
-            solver.robot_model,
-            solver.urdf,
-            solver.chain_root,
-            solver.chain_tip or solver.chain_end,
-            solver.tool_body,
-            solver.tcp_site,
+            solver.hardware.model,
+            solver.hardware.urdf,
+            solver.chain.root,
+            solver.chain.tip or solver.chain.end,
+            solver.hardware.tool_body,
+            solver.hardware.tcp_site,
         )
         runtime_id = runtime_by_signature.setdefault(signature, solver.id)
         owner_by_runtime.setdefault(runtime_id, solver.id)
-        solver.runtime_id = runtime_id
-        solver.runtime_owner = solver.id == owner_by_runtime[runtime_id]
+        solver.runtime.id = runtime_id
+        solver.runtime.owner = solver.id == owner_by_runtime[runtime_id]
         # ST4's <if(x)> treats "" as truthy, so a bare robot's empty tool fields must be None.
-        solver.tool_body = solver.tool_body or None
-        solver.tcp_site = solver.tcp_site or None
+        solver.hardware.tool_body = solver.hardware.tool_body or None
+        solver.hardware.tcp_site = solver.hardware.tcp_site or None
 
     # Runtimes some driver torque-streams; declared-only solvers on any other runtime stage zeros.
     commanding = {
-        solver.runtime_id
+        solver.runtime.id
         for solver in serial_chains
         if any(
             driver.acceleration_constraint
@@ -1379,16 +1396,20 @@ def annotate_runtime(serial_chains, motions, backend: str) -> None:
     for solver in serial_chains:
         _split_gripper_outputs(solver, backend)
     _apply_runtime_to_motions(serial_chains, motions, commanding)
-    _annotate_rne_gravity(serial_chains, motions)
+    _annotate_rne_gravity(serial_chains)
 
 
 def _split_gripper_outputs(solver, backend: str) -> None:
     """Move a joint the chain does not articulate onto the gripper device that reports it.
 
-    The same split as command forwarding, in the other direction: a mimic joint is neither driven
-    nor measured by the arm, so the bound gripper answers for it.
+    Only where a device is the reporter: the robif2b arm cannot measure a mimic joint, so the
+    bound gripper answers for it and the joint lands on that device's own `joint_outputs`. A
+    simulated backend measures every joint by name, so there the output stays an ordinary
+    solver output and no device carries it.
     """
-    chain_joints = {str(name).split("/")[-1] for name in solver.kdl_joints}
+    if backend != "robif2b":
+        return
+    chain_joints = {str(name).split("/")[-1] for name in solver.chain.kdl_joints}
     outputs, gripper_outputs = [], []
     for out in solver.output:
         joint = str(getattr(out, "joint_name", "")).split("/")[-1]
@@ -1396,70 +1417,63 @@ def _split_gripper_outputs(solver, backend: str) -> None:
             outputs.append(out)
             continue
         gripper_outputs.append(out)
-        if backend == "robif2b" and not any(
-            device["kind"] in GRIPPER_DEVICES for device in solver.devices
-        ):
+        if not any(device.kind in GRIPPER_DEVICES for device in solver.devices):
             raise ValueError(
                 f"joint-position '{out.id}' reads joint '{joint}', which is outside solver "
                 f"'{solver.id}'s chain and no gripper device is bound to report it"
             )
     solver.output = outputs
-    solver.gripper_joint_outputs = gripper_outputs
+    for device in solver.devices:
+        if device.kind in GRIPPER_DEVICES:
+            device.joint_outputs = gripper_outputs
 
 
 def _apply_runtime_to_motions(serial_chains, motions, commanding) -> None:
-    """Copy each runtime's identity and outputs onto the per-motion slices of it."""
+    """Copy each runtime's outputs onto the per-motion slices of it.
+
+    The slice no longer copies `runtime_id`/`runtime_owner`: those are reached through
+    `solver_id` once a template resolves the full solver.
+    """
     by_id = {solver.id: solver for solver in serial_chains}
     for motion in motions:
         for solver in motion.serial_chain_solvers:
             canonical = by_id.get(solver.id)
             if canonical is None:
                 continue
-            solver.runtime_id = canonical.runtime_id or solver.id
-            solver.runtime_owner = canonical.runtime_owner
             solver.output = canonical.output
-            solver.gripper_joint_outputs = canonical.gripper_joint_outputs
+            solver.gripper_joint_outputs = [
+                out
+                for device in canonical.devices
+                if device.kind in GRIPPER_DEVICES
+                for out in device.joint_outputs
+            ]
             # A read-only solver on a torque-streamed runtime would stage zero torques while
             # active (the arm drops) -- and skipping the stage would leave stale torques applied.
-            if solver.read_only and canonical.runtime_id in commanding:
+            if solver.read_only and canonical.runtime.id in commanding:
                 raise ValueError(
                     f"motion '{motion.id}' declares solver '{solver.id}' without any controller, "
-                    f"but runtime '{canonical.runtime_id}' is torque-commanded elsewhere; drive "
+                    f"but runtime '{canonical.runtime.id}' is torque-commanded elsewhere; drive "
                     "the solver in every motion or in none"
                 )
         for command in motion.forwarded_commands:
             canonical = by_id.get(command.robot_id)
             if canonical is not None:
-                command.robot_id = canonical.runtime_id
+                command.robot_id = canonical.runtime.id
 
 
-def _annotate_rne_gravity(serial_chains, motions) -> None:
+def _annotate_rne_gravity(serial_chains) -> None:
     """Derive the gravity vector an RNE solver is built with.
 
     The authored solver value is the Vereshchagin root acceleration, which ACHD takes as-is; KDL's
     inverse-dynamics solver wants the opposite sign, so the negation belongs wherever an RNE is
     constructed -- every backend that runs one, not just the simulated one.
+
+    Full solvers only: the per-motion slice no longer copies `gravity`/`derived_root_acceleration`
+    -- a template resolves them off the full solver through `solver_id`.
     """
-    per_motion = [solver for motion in motions for solver in motion.serial_chain_solvers]
-    for solver in [*serial_chains, *per_motion]:
-        if solver.root_acc:
-            solver.gravity = [-component or 0.0 for component in solver.root_acc]
-
-
-@dataclass(frozen=True)
-class JointSpaceChannel:
-    """One joint-space signal a runtime mirrors into the frame log.
-
-    Declared in one place so the producer and the template's mirror expression cannot drift. All
-    chain joints are revolute, so a position is an angle. `backends` of None means every backend
-    carries the signal; naming backends restricts it to those that actually measure it.
-    """
-
-    name: str
-    producer: str
-    quantity_kind: str
-    unit: str
-    backends: tuple | None = None
+    for solver in serial_chains:
+        if solver.derived_root_acceleration:
+            solver.gravity = [-component or 0.0 for component in solver.derived_root_acceleration]
 
 
 JOINT_SPACE_CHANNELS = (
@@ -1488,7 +1502,7 @@ def agent_home_positions(platform: dict, serial_chains) -> dict:
     """
     if not platform.get("simulated"):
         return {}
-    owners = [solver for solver in serial_chains if solver.runtime_owner]
+    owners = [solver for solver in serial_chains if solver.runtime.owner]
     if not owners:
         return {}
     config_path = platform.get("config")
@@ -1508,7 +1522,9 @@ def agent_home_positions(platform: dict, serial_chains) -> dict:
         for leaf, entry in entries.items()
         if isinstance(entry, dict) and entry.get("home")
     }
-    missing = sorted(solver.config_key for solver in owners if solver.config_key not in homes)
+    missing = sorted(
+        solver.runtime.config_key for solver in owners if solver.runtime.config_key not in homes
+    )
     if missing:
         raise ValueError(
             f"{resolved} states no home for {missing}. Every agent the model drives needs one; "

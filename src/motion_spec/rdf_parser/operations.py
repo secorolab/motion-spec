@@ -67,28 +67,7 @@ from rdf_utils.naming import get_valid_var_name
 from rdflib import URIRef
 from rdflib.namespace import RDF
 
-from motion_spec.classes.closures import closure_output_ids
-from motion_spec.rdf_parser.model import local_name, reader
-
-__all__ = [
-    "OPS_GENERIC",
-    "OPS_HANDLER",
-    "OPS_SOLVER",
-    "AssignmentEvaluator",
-    "ClosureMaps",
-    "ErrorEvaluator",
-    "Operator",
-    "Schedule",
-    "Specification",
-    "build_closures",
-    "closure_maps",
-    "closure_owner_map",
-    "continuous_joint_leaves",
-    "data_reference_map",
-    "normalize",
-    "path_projections_for_motion",
-    "resolve_closure_operands",
-]
+from motion_spec.rdf_parser.model import identifier, local_name, reader
 
 
 def normalize(model) -> None:
@@ -794,6 +773,57 @@ OPS_SOLVER = [
     Specification(SLV["JointForceSpecification"], [SLV["force"]], []),
     Specification(SLV["ForceDistributionSolver"], [SLV["force"]], []),
 ]
+
+# Closure kinds no operator registers: "Controller" and "PoseDiffEvaluator" are hand-built by
+# constraint_handler.augment_closures; AssignmentEvaluator's write is one of its *inputs*
+# (`quantity`, the value it assigns into), not its (empty) declared output; PathEvaluator's
+# `setpoint` is folded on by the PathEvaluator closure hook, not declared as an operator output.
+_EXTRA_CLOSURE_OUTPUTS = {
+    "AssignmentEvaluator": ("quantity",),
+    "PathEvaluator": ("setpoint",),
+    "Controller": ("control_signal",),
+    "PoseDiffEvaluator": ("out",),
+}
+
+
+def _closure_output_fields() -> dict[str, tuple[str, ...]]:
+    """Per closure type, the field names it writes: derived from the operator registries' own
+    declared outputs (a Specification writes no closure at all and is skipped), plus the kinds
+    above that no operator fully accounts for.
+    """
+    table: dict[str, set[str]] = {}
+    for op in [*OPS_GENERIC, *OPS_SOLVER, *OPS_HANDLER]:
+        if isinstance(op, Specification):
+            continue
+        key = identifier(local_name(op.type_))
+        table.setdefault(key, set()).update(
+            identifier(local_name(pred)) for pred in _output_predicates(op)
+        )
+    for key, extra in _EXTRA_CLOSURE_OUTPUTS.items():
+        table.setdefault(key, set()).update(extra)
+
+    return {key: tuple(sorted(fields)) for key, fields in table.items()}
+
+
+_CLOSURE_OUTPUT_FIELDS = _closure_output_fields()
+
+
+def closure_output_ids(closure: dict) -> set[str]:
+    """Data ids written by a generated closure call."""
+    outputs = {
+        value
+        for field in _CLOSURE_OUTPUT_FIELDS.get(closure.get("type"), ())
+        if isinstance((value := closure.get(field)), str)
+    }
+    outputs.update(
+        sample["id"]
+        for sample in closure.get("internal_state_samples", ())
+        if isinstance(sample, dict) and isinstance(sample.get("id"), str)
+    )
+    if closure.get("assign_goal") and isinstance(closure.get("goal"), str):
+        outputs.add(closure["goal"])
+
+    return outputs
 
 
 def _path_fields(model, path_node) -> dict:

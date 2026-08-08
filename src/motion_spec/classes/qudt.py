@@ -29,7 +29,7 @@ class Unit:
 class Provenance:
     """Origin of a quantity's value, shared by all quantity-like entities: whether it was
     authored by the user rather than computed. Whether it is a runtime snapshot capture is
-    SnapshotCapture's fact, not this one's (F3).
+    SnapshotCapture's fact, not this one's.
     """
 
     authored: bool = False

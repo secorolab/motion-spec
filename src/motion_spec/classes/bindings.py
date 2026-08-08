@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 """What a serial-chain solver runs on: the chain, the hardware bound to it, the runtime slot
 it occupies, and what the scene mounts on it -- split out of the flat solver record so each
-fact is named once, by the concept that owns it (§4.2).
+fact is named once, by the concept that owns it.
 """
 
 from __future__ import annotations

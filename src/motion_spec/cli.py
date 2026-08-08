@@ -319,7 +319,7 @@ def check(manifest: Path, meta_shacl: bool) -> None:
 @click.option("-c", "--console", is_flag=True, help="Print IR to stdout.")
 def generate_ir(manifest: Path, output: Path | None, console: bool) -> None:
     """Lower MANIFEST to motion-spec IR."""
-    from motion_spec.classes.entities import DataclassJSONEncoder
+    from motion_spec.classes.base import DataclassJSONEncoder
     from motion_spec.rdf_parser.ir import generate_ir as build_ir
 
     if console == (output is not None):

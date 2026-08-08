@@ -53,9 +53,11 @@ parser module, no orchestrator façade and no helper module: graph readers live 
 that consumes what they read**, the entry point is the pipeline itself, and a helper with one
 consumer lives next to it.
 
-Nothing imports a name that starts with `_` from a sibling: a module's public surface is its
-`__all__`, and everything else is its own business (Parnas, *On the Criteria To Be Used in
-Decomposing Systems into Modules*, CACM 15(12), 1972).
+Nothing imports a name that starts with `_` from a sibling: the underscore convention **is** the
+public-surface contract, enforced by `tests/test_layer_boundary.py`, and everything private is a
+module's own business (Parnas, *On the Criteria To Be Used in Decomposing Systems into Modules*,
+CACM 15(12), 1972). There is no `__all__` anywhere in the package: it duplicated the same rule
+and drifted silently.
 
 | module | ~lines | 5C | why it is not folded into a sibling |
 |---|---|---|---|
@@ -71,7 +73,8 @@ Decomposing Systems into Modules*, CACM 15(12), 1972).
 ### Three rules that hold in every module
 
 **A record that a derivation mutates is a typed entity.** Every such record is a dataclass in
-[`classes/entities.py`](../../src/motion_spec/classes/entities.py), which already carries the
+one of [`classes/`](../../src/motion_spec/classes/)'s domain modules, whose shared
+[`base`](../../src/motion_spec/classes/base.py) carries the
 `INTERNAL` convention that keeps a construction input out of the published document — entities,
 data structures, views, motions, monitors, evaluators, controllers, robots, solvers, scene
 records, constraint handlers, and every member of `shared_data` including the runtime values.

@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MPL-2.0
 """Lowering a monitor's ROS publish: what rosidl says the message is, and what the IR carries.
 
-A row's condition is what gives it its polarity: the constraint the monitor watches, or the
-complement minted beside it. The acceptance cases need `bdd_ros2_interfaces` on
+A row's condition is what gives it its polarity: the constraint the monitor watches, or no
+condition at all -- the otherwise. The acceptance cases need `bdd_ros2_interfaces` on
 AMENT_PREFIX_PATH; the rest use stock packages.
 """
 
@@ -27,7 +27,8 @@ from motion_spec.rdf_parser.resources import ros_joint_states
 NS = "https://example.test/"
 MONITOR = URIRef(f"{NS}mon-x")
 WATCHED = URIRef(f"{NS}reached")
-COMPLEMENT = URIRef(f"{NS}mon-x.complement")
+OTHERWISE = None  # a row with no condition
+UNKNOWN = URIRef(f"{NS}some-other-constraint")
 
 
 def _model(graph: Graph) -> Model:
@@ -45,7 +46,8 @@ def _publication(type_name: str, *rows: tuple[URIRef, str, str]):
     for index, (condition, path, value) in enumerate(rows):
         row = URIRef(f"{NS}mon-x.f{index}")
         graph.add((MONITOR, RDFS.member, row))
-        graph.add((row, CSTR_EXT["has-constraint"], condition))
+        if condition is not None:
+            graph.add((row, CSTR_EXT["has-constraint"], condition))
         graph.add((row, NS_MM_ROS["field-path"], Literal(path)))
         graph.add((row, RDF.value, Literal(value)))
     return _ros_publication(_model(graph), MONITOR)["ros"]
@@ -71,10 +73,10 @@ def test_include_stem_comes_from_the_rosidl_converter():
 
 
 def test_a_rows_condition_gives_it_its_polarity():
-    """The watched constraint means satisfied; the complement minted beside it means violated.
-    The sugar's empty path resolves to the one payload leaf, and TRUE/FALSE render as the
-    constants of the message that owns them."""
-    ros = _trinary((WATCHED, "", "TRUE"), (COMPLEMENT, "", "FALSE"))
+    """The watched constraint means satisfied; no condition at all means violated -- the
+    otherwise. The sugar's empty path resolves to the one payload leaf, and TRUE/FALSE render as
+    the constants of the message that owns them."""
+    ros = _trinary((WATCHED, "", "TRUE"), (OTHERWISE, "", "FALSE"))
     assert ros.cpp_type == "bdd_ros2_interfaces::msg::TrinaryStamped"
     assert ros.include == "bdd_ros2_interfaces/msg/trinary_stamped.hpp"
     assert ros.pub_id == "mon_x_pub"
@@ -104,6 +106,11 @@ def test_an_authored_string_is_quoted_and_a_number_typed_by_its_field():
     assert _publication("std_msgs/msg/Float64", (WATCHED, "data", "0.5")).on_satisfied == [
         {"path": "data", "cpp_value": "0.5"}
     ]
+
+
+def test_a_condition_that_is_not_the_watched_constraint_is_rejected():
+    with pytest.raises(ConstraintViolation, match="not the constraint its monitor watches"):
+        _trinary((UNKNOWN, "", "TRUE"))
 
 
 def test_a_path_the_message_does_not_offer_is_rejected():

@@ -485,11 +485,11 @@ live-settable with `ros2 param set` while the controller runs.
 A monitor publishes on at most one topic; a second topic is a second monitor, and a state
 block publishes at most once.
 
-A `violated` publish needs the complement of what the monitor watches, so it is only legal on
-a monitor watching a single constraint that states an order relation (`greater than`,
-`less than`, `between`, `outside`). Monitoring a whole `until`/`when` section or a named group
-is monitoring a conjunction, whose complement is a disjunction: publish on `satisfied` there,
-or monitor the single constraint.
+A `satisfied` publish holds under the constraint the monitor watches; a `violated` publish
+states no condition at all -- it is the otherwise, taken while the monitor evaluates and its
+constraint does not hold. Any monitor may publish on `violated`, including one watching a whole
+`until`/`when` section, but only alongside a `satisfied` publish: without the case it is
+otherwise to, "otherwise" is not "violated".
 
 ### Joint states
 

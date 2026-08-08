@@ -430,8 +430,8 @@ def _publish_field(shape: dict, path: str, text: str) -> dict:
 def _ros_publication(model, node) -> dict:
     """What a monitor publishes, when the model asks it to publish at all.
 
-    Each row states its field, its value, and the condition it holds under: the constraint the
-    monitor watches (satisfied), or the complement minted beside it (violated).
+    Each row states its field, its value, and the condition it holds under: a row conditioned on
+    the constraint the monitor watches is satisfied; an unconditioned row is the otherwise.
     """
     graph = model.graph
     channel = graph.value(node, NS_MM_ROS["channel-name"])
@@ -446,15 +446,15 @@ def _ros_publication(model, node) -> dict:
 
     for row in sorted(graph.objects(node, RDFS.member)):
         conditions = set(graph.objects(row, CSTR_EXT["has-constraint"]))
-        if conditions == watched:
-            polarity = on_satisfied
-        elif conditions and not conditions & watched:
+        if not conditions:
             polarity = on_violated
+        elif conditions == watched:
+            polarity = on_satisfied
         else:
             raise ConstraintViolation(
                 "communication",
-                f"publish row '{model.id(row)}' states a condition that is neither the "
-                "constraint its monitor watches nor a complement of it",
+                f"publish row '{model.id(row)}' states a condition that is not the constraint "
+                "its monitor watches",
             )
         polarity.append(
             _publish_field(

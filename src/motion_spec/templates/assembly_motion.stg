@@ -34,7 +34,7 @@ sig-args(mid, needs_state, needs_shared, needs_robot, needs_events=false) ::= <<
 >>
 
 motion-done-condition(motion) ::= <<
-<if(motion.done_terms_present)><bool-condition(motion.done_terms, motion.until_any)><else>true<endif>
+<if(motion.done_terms_present)><bool-condition(motion.done_terms, motion.done_any)><else>true<endif>
 >>
 
 motion-prelude(externally_measured, serial_chain_solvers, solvers, backend) ::= <<

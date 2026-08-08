@@ -32,7 +32,7 @@ from rdf_utils.models.common import get_node_types
 from rdf_utils.namespace import NS_MM_EL
 from rdf_utils.naming import get_valid_var_name
 from rdf_utils.uri import iri_is_descendant, iri_parent
-from rdflib.namespace import RDF, SDO
+from rdflib.namespace import RDF, RDFS, SDO
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 
 from motion_spec.classes.constraints import ConstraintTransition, GuardedMotion
@@ -296,8 +296,8 @@ _MANY = (re.compile(r"^sequence<(.+?)(?:,\s*\d+)?>$"), re.compile(r"^(.+?)\[\d*\
 # Fields the node owns, never the model: the publish clock, and the scenario a run belongs to.
 _AUTO_TIME_TYPE = "builtin_interfaces/Time"
 _AUTO_CONTEXT_ID = ("scenario_context_id", "unique_identifier_msgs/UUID")
-# A publishable message says all three: satisfied, violated, and not evaluated.
-_TRINARY_CONSTANTS = ("TRUE", "FALSE", "UNKNOWN")
+# rosidl spells these field types; anything else a model states must read as a number.
+_STRING_TYPES = ("string", "wstring")
 
 
 def _element_type(field_type: str) -> tuple[str, bool]:
@@ -382,35 +382,87 @@ def _message_shape(type_name: str) -> dict:
     }
 
 
-def _trinary_payload(shape: dict) -> tuple[str, str]:
-    """The one field a verdict is written to, and the message class owning its constants.
-
-    A monitor publishes a verdict, never model data: the only publishable types are those whose
-    single remaining payload leaf belongs to a message defining TRUE/FALSE/UNKNOWN.
-    """
+def _sole_payload_path(shape: dict) -> str:
+    """The one field the sugar form means, once the auto-filled ones are set aside."""
     leaves = sorted(shape["leaves"])
-    if len(leaves) == 1:
-        _element, owner = shape["leaves"][leaves[0]]
-        if all(hasattr(owner, name) for name in _TRINARY_CONSTANTS):
-            _package, owner_cpp, _include = _cpp_names(owner)
-            return leaves[0], owner_cpp
-    raise ConstraintViolation(
-        "communication",
-        f"message type '{shape['type_name']}' cannot carry a monitor verdict; publishable "
-        "types carry trinary constants -- one payload field whose message defines "
-        f"{'/'.join(_TRINARY_CONSTANTS)}",
-    )
+    if len(leaves) != 1:
+        raise ConstraintViolation(
+            "communication",
+            f"message type '{shape['type_name']}' carries {len(leaves)} payload fields, so a "
+            "publish must name the field it writes: `publish: to <topic> { path: value }`",
+        )
+    return leaves[0]
+
+
+def _cpp_value(shape: dict, path: str, text: str) -> str:
+    """The C++ the authored value renders to, against the field that owns it: a constant the
+    message class defines, a quoted string, or a number the field's type accepts.
+    """
+    element, owner = shape["leaves"][path]
+    if hasattr(owner, text) and text not in owner.get_fields_and_field_types():
+        _package, owner_cpp, _include = _cpp_names(owner)
+        return f"{owner_cpp}::{text}"
+    if element in _STRING_TYPES:
+        return '"{}"'.format(text.replace("\\", "\\\\").replace('"', '\\"'))
+    try:
+        float(text)
+    except ValueError:
+        raise ConstraintViolation(
+            "communication",
+            f"'{text}' is neither a constant of '{shape['type_name']}' field '{path}' nor a "
+            f"value its type '{element}' accepts",
+        ) from None
+    return text
+
+
+def _publish_field(shape: dict, path: str, text: str) -> dict:
+    """One authored assignment, resolved against the message type."""
+    path = path or _sole_payload_path(shape)
+    if path not in shape["leaves"]:
+        raise ConstraintViolation(
+            "communication",
+            f"'{path}' is not a payload field of '{shape['type_name']}'; it offers "
+            f"{', '.join(sorted(shape['leaves'])) or 'none'}",
+        )
+    return {"path": path, "cpp_value": _cpp_value(shape, path, text)}
 
 
 def _ros_publication(model, node) -> dict:
-    """What a monitor publishes, when the model asks it to publish at all."""
-    channel = model.graph.value(node, NS_MM_ROS["channel-name"])
+    """What a monitor publishes, when the model asks it to publish at all.
+
+    Each row states its field, its value, and the condition it holds under: the constraint the
+    monitor watches (satisfied), or the complement minted beside it (violated).
+    """
+    graph = model.graph
+    channel = graph.value(node, NS_MM_ROS["channel-name"])
     if channel is None:
         return {}
-    type_name = str(model.graph.value(node, NS_MM_ROS["type-name"]) or "")
+    type_name = str(graph.value(node, NS_MM_ROS["type-name"]) or "")
     shape = _message_shape(type_name)
     auto = shape["auto"]
-    payload_path, payload_cpp_type = _trinary_payload(shape)
+    watched = set(graph.objects(node, CSTR_HDL["constraint"]))
+    on_satisfied: list[dict] = []
+    on_violated: list[dict] = []
+
+    for row in sorted(graph.objects(node, RDFS.member)):
+        conditions = set(graph.objects(row, CSTR_EXT["has-constraint"]))
+        if conditions == watched:
+            polarity = on_satisfied
+        elif conditions and not conditions & watched:
+            polarity = on_violated
+        else:
+            raise ConstraintViolation(
+                "communication",
+                f"publish row '{model.id(row)}' states a condition that is neither the "
+                "constraint its monitor watches nor a complement of it",
+            )
+        polarity.append(
+            _publish_field(
+                shape,
+                str(graph.value(row, NS_MM_ROS["field-path"]) or ""),
+                str(graph.value(row, RDF.value)),
+            )
+        )
 
     return {
         "ros": RosPublication(
@@ -420,8 +472,10 @@ def _ros_publication(model, node) -> dict:
             shape["include"],
             shape["cpp_type"],
             f"{model.id(node)}_pub".replace("-", "_"),
-            payload_path,
-            payload_cpp_type,
+            on_satisfied=on_satisfied,
+            on_violated=on_violated,
+            has_satisfied=bool(on_satisfied),
+            has_violated=bool(on_violated),
             auto_time=sorted(path for path, kind in auto.items() if kind == "time"),
             auto_context_id=sorted(path for path, kind in auto.items() if kind == "context_id"),
         )

@@ -169,12 +169,12 @@ class EdgeMonitor:
 
 @dataclass
 class RosPublication:
-    """What a monitor publishes: the topic, and where the trinary verdict goes in the message.
+    """What a monitor publishes: the topic, and the fields each polarity writes.
     `include`/`cpp_type` come from the message class rosidl resolved, `pub_id` is the C++
-    publisher member. `payload_path` is the one field the verdict is written to and
-    `payload_cpp_type` the message class owning its TRUE/FALSE constants.
-    `auto_time`/`auto_context_id` are the fields nothing may author -- the node fills them
-    from its clock and its scenario parameter.
+    publisher member. `on_satisfied`/`on_violated` are the authored `{path, cpp_value}` rows
+    live while the constraint holds and while it does not; either may be empty, so the
+    presence flags say which branches exist. `auto_time`/`auto_context_id` are the fields
+    nothing may author -- the node fills them from its clock and its scenario parameter.
     """
 
     channel: str | None = None
@@ -183,8 +183,10 @@ class RosPublication:
     include: str | None = field(default=None, metadata=INTERNAL)
     cpp_type: str | None = None
     pub_id: str | None = None
-    payload_path: str | None = None
-    payload_cpp_type: str | None = None
+    on_satisfied: list[dict] = field(default_factory=list)
+    on_violated: list[dict] = field(default_factory=list)
+    has_satisfied: bool = False
+    has_violated: bool = False
     auto_time: list[str] = field(default_factory=list)
     auto_context_id: list[str] = field(default_factory=list)
 

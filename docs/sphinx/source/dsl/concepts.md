@@ -448,32 +448,48 @@ ros-topics (ns=task) {
 }
 ```
 
-A monitor declares `publish` once, naming only the topic. What is written is not
-authored: it is the message type's own contract, fixed in codegen.
+A `publish` belongs to a monitor's state block, and states the fields it writes:
 
 ```robmot
-done: monitor <approach.until> {
-    satisfied { trigger: event <task.E_DONE> },
-    publish: to <task.approach-done>,
+done: monitor <approach.reached> {
+    satisfied {
+        trigger: event <task.E_DONE>,
+        publish: to <task.approach-done> { trinary.value: TRUE },
+    },
+    violated { publish: to <task.approach-done> { trinary.value: FALSE } },
 }
 ```
 
-While the monitor's motion is scheduled it publishes every control cycle: the message
-type's `TRUE` constant when the constraint is satisfied, its `FALSE` constant otherwise.
-While the motion is unscheduled the monitor says nothing at all, and a subscriber reads
-that silence as unknown -- so "not being evaluated" and "evaluated and false" stay
-distinguishable without a third published value.
+A field path is the dot-joined member path of the message. A value is a bare constant the
+message class defines (`TRUE`), a quoted string, or a number; a string field takes a quoted
+string, a numeric field a number. When the message type has exactly one payload field left
+after the auto-filled ones are set aside, the sugar `publish: <value> to <topic>` names the
+value alone and the field is resolved at generation:
 
-That contract makes the supported message types exactly the trinary ones: after the
-auto-filled fields are set aside, the type must have a single payload field whose
-message defines `TRUE`, `FALSE` and `UNKNOWN` constants -- `bdd_ros2_interfaces/msg/Trinary`
-and `bdd_ros2_interfaces/msg/TrinaryStamped`. Any other type is a generation error.
+```robmot
+satisfied { publish: TRUE to <task.approach-done> },
+```
 
-Timestamps and the `scenario_context_id` UUID are filled by the node, never authored:
-the clock supplies the stamp, and the `scenario_context_id` node parameter supplies the
-scenario, live-settable with `ros2 param set` while the controller runs.
+A publish is live only while its state holds, and only while the monitor's motion is
+scheduled: every control cycle in that state, the block's fields are written and the message
+goes out. A state with no publish sends nothing, so a satisfied-only publish is a signal that
+appears at satisfaction and is silent otherwise. While the motion is unscheduled the monitor
+says nothing at all, and a subscriber reads that silence as "not being evaluated" -- so it
+stays distinguishable from an evaluated false without a third published value.
 
-A monitor publishes on at most one topic; a second topic is a second monitor.
+Any message type works, as long as every authored path is one of its payload fields.
+Timestamps and the `scenario_context_id` UUID are filled by the node, never authored: the
+clock supplies the stamp, and the `scenario_context_id` node parameter supplies the scenario,
+live-settable with `ros2 param set` while the controller runs.
+
+A monitor publishes on at most one topic; a second topic is a second monitor, and a state
+block publishes at most once.
+
+A `violated` publish needs the complement of what the monitor watches, so it is only legal on
+a monitor watching a single constraint that states an order relation (`greater than`,
+`less than`, `between`, `outside`). Monitoring a whole `until`/`when` section or a named group
+is monitoring a conjunction, whose complement is a disjunction: publish on `satisfied` there,
+or monitor the single constraint.
 
 ### Joint states
 

@@ -142,10 +142,10 @@ ros-joint-states-setup(ros) ::= <<
 <endif>
 >>
 
-// One tick per control cycle, for every publishing monitor whose motion is scheduled. What is
-// written is the message type's own contract, never model data: satisfied is the type's TRUE,
-// violated its FALSE. An unscheduled monitor says nothing at all -- silence is what a reader
-// takes for UNKNOWN, so there is no third value to publish.
+// One tick per control cycle, for every publishing monitor whose motion is scheduled. Each
+// state block writes the fields the model authored for it; a cycle whose polarity authored
+// nothing publishes nothing, and an unscheduled monitor says nothing at all -- silence is what
+// a reader takes for "not evaluated".
 
 ros-publish-tick(coordination, communication) ::= <<
 <if(communication.ros.scenario_context_id)>
@@ -168,11 +168,24 @@ ros-monitor-publish(motion, monitor) ::= <<
 <if(monitor.ros)>
         if (<motion.id>_state_instance.active) {
             const bool _satisfied = <monitor-satisfied-expr(monitor)>;
-            robot.<monitor.ros.pub_id>_msg.<monitor.ros.payload_path> =
-                _satisfied ? <monitor.ros.payload_cpp_type>::TRUE : <monitor.ros.payload_cpp_type>::FALSE;
-<monitor.ros.auto_time:{p |             robot.<monitor.ros.pub_id>_msg.<p> = robot.ros_node->now();}; separator="\n">
-<monitor.ros.auto_context_id:{p |             robot.<monitor.ros.pub_id>_msg.<p>.uuid = _scenario_context_id;}; separator="\n">
-            robot.<monitor.ros.pub_id>->try_publish(robot.<monitor.ros.pub_id>_msg);
+            bool _authored = false;
+<if(monitor.ros.has_satisfied)>
+            if (_satisfied) {
+<monitor.ros.on_satisfied:{f |                 robot.<monitor.ros.pub_id>_msg.<f.path> = <f.cpp_value>;}; separator="\n">
+                _authored = true;
+            \}
+<endif>
+<if(monitor.ros.has_violated)>
+            if (!_satisfied) {
+<monitor.ros.on_violated:{f |                 robot.<monitor.ros.pub_id>_msg.<f.path> = <f.cpp_value>;}; separator="\n">
+                _authored = true;
+            \}
+<endif>
+            if (_authored) {
+<monitor.ros.auto_time:{p |                 robot.<monitor.ros.pub_id>_msg.<p> = robot.ros_node->now();}; separator="\n">
+<monitor.ros.auto_context_id:{p |                 robot.<monitor.ros.pub_id>_msg.<p>.uuid = _scenario_context_id;}; separator="\n">
+                robot.<monitor.ros.pub_id>->try_publish(robot.<monitor.ros.pub_id>_msg);
+            \}
         \}
 <endif>
 >>

@@ -24,7 +24,6 @@ class ChainBinding:
     kdl_chain: str
     kdl_tree: str
     kdl_joints: list[str]
-    kdl_header: str
 
 
 @dataclass

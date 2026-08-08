@@ -18,11 +18,15 @@ from scene_dsl.kdl_tree import build_kdl_trees
 NAMESPACE = "scene_kdl"
 
 
+def model_stem(source: str | Path) -> str:
+    """The motion model's own name, stripped of the manifest suffix it arrives with."""
+    name = Path(source).name
+    return name[: -len("-app.ld.json")] if name.endswith("-app.ld.json") else Path(name).stem
+
+
 def kdl_header_name(source: str | Path) -> str:
     """The controller-local KDL header named after its source motion model."""
-    name = Path(source).name
-    stem = name[: -len("-app.ld.json")] if name.endswith("-app.ld.json") else Path(name).stem
-    return f"{stem}.kdl.hpp"
+    return f"{model_stem(source)}.kdl.hpp"
 
 
 def chain_for_iri(trees: list[dict], chain_iri: str) -> tuple[str, str, list[str]]:

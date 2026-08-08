@@ -32,7 +32,7 @@ def generate_ir(manifest_path) -> dict:
         the IR, sectioned by the 5Cs plus the resources the program commands; complete by
         construction, so codegen loads it and renders with no derivation pass of its own
     """
-    from motion_spec.generation.scene_kdl import kdl_header_name
+    from motion_spec.generation.scene_kdl import model_stem
 
     model = load_model(manifest_path)
     operations.normalize(model)
@@ -51,9 +51,6 @@ def generate_ir(manifest_path) -> dict:
     schedule = operations.Schedule(model)
     robots = resources.build_robots(model, schedule, setups, derivation, scene.objects, backend)
     handlers, handler_steps = coordination.build_constraint_handlers(model, schedule, derivation)
-    kdl_header = kdl_header_name(model.app_path)
-    for solver in robots.serial_chains:
-        solver.chain.kdl_header = kdl_header
     coordination.assign_event_indexes(handlers)
 
     closures = operations.build_closures(model, _ALL_OPERATORS)
@@ -102,6 +99,9 @@ def generate_ir(manifest_path) -> dict:
         "configuration": {
             "control_period_ns": control_period_ns,
             "backend": backend,
+            # The model's own name, so a backend derives its artifact filenames instead of the
+            # IR carrying one backend's spelling of them.
+            "model_name": model_stem(model.app_path),
             # The authored execution platform, so provenance and the runtime graph read the
             # model's own answer instead of matching substrings of a derived id.
             "platform": platform,

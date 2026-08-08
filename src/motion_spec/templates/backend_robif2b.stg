@@ -2,8 +2,8 @@
 // robif2b backend: EtherCAT/KELO driver bindings and the robif2b KinovaGen3 robot impl.
 
 import "backend_robot.stg"
-robot-driver-include-robif2b-KinovaGen3(solver) ::= <<
-#include "headers/<solver.chain.kdl_header>"
+robot-driver-include-robif2b-KinovaGen3(solver, model_name) ::= <<
+#include "headers/<model_name>.kdl.hpp"
 #include \<robif2b/functions/kinova_gen3.h\>
 #include \<robif2b/functions/robotiq_gripper.h\>
 #include \<robif2b/functions/robotiq_ft_sensor.h\>

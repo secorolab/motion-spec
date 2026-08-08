@@ -2,9 +2,9 @@
 // mj_kdl backend tool: MuJoCo+KDL simulation robot impl (KinovaGen3) and CMake generation.
 
 import "backend_robot.stg"
-robot-driver-include-mj_kdl-KinovaGen3(solver) ::= <<
+robot-driver-include-mj_kdl-KinovaGen3(solver, model_name) ::= <<
 #include \<mj_kdl_wrapper/mj_kdl_wrapper.hpp\>
-#include "headers/<solver.chain.kdl_header>"
+#include "headers/<model_name>.kdl.hpp"
 >>
 
 robot-state-struct-mj_kdl-KinovaGen3(solver) ::= <<

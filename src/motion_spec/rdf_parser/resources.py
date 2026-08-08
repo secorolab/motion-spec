@@ -557,7 +557,7 @@ class _ChainSetup(NamedTuple):
 
 
 _EMPTY_SETUP = _ChainSetup(
-    ChainBinding(root="", end="", tip="", kdl_chain="", kdl_tree="", kdl_joints=[], kdl_header=""),
+    ChainBinding(root="", end="", tip="", kdl_chain="", kdl_tree="", kdl_joints=[]),
     HardwareBinding(urdf="", model="", tool_body="", tcp_site=""),
     RuntimeBinding(id="", owner=False, prefix="", owned_trees=[], config_key=""),
     [],
@@ -605,7 +605,6 @@ def robot_setups(model):
                 kdl_chain=kdl_chain,
                 kdl_tree=kdl_tree,
                 kdl_joints=[f"{assembly.prefix}{joint}" for joint in joints],
-                kdl_header="",
             ),
             hardware=HardwareBinding(
                 urdf=assembly.urdf,

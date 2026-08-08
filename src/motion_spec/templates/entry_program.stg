@@ -232,7 +232,7 @@ shared_state_header(configuration, resources, computation, coordination, communi
 #include \<kdl/chainfksolvervel_recursive.hpp\>
 #include \<kdl/chainhdsolver_vereshchagin_fixed_joint.hpp\>
 <if(resources.by_kind.serial_chain)><solver-rnea-include(configuration.backend)><endif>
-<if(resources.by_kind.serial_chain)><robot-driver-include(first(resources.by_kind.serial_chain), configuration.backend)><endif>
+<if(resources.by_kind.serial_chain)><robot-driver-include(first(resources.by_kind.serial_chain), configuration.backend, configuration.model_name)><endif>
 <if(resources.by_kind.mobile_base)>
 #include \<robif2b/functions/ethercat.h\>
 #include \<robif2b/functions/kelo_drive.h\>

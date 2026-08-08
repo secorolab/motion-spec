@@ -19,10 +19,37 @@ ros-includes(ros) ::= <<
 <if(ros.joint_states)>
 #include \<sensor_msgs/msg/joint_state.hpp\>
 <endif>
+<if(ros.behaviour_server)>
+#include \<atomic\>
+#include \<rclcpp_action/rclcpp_action.hpp\>
+#include "bdd_ros2_interfaces/action/behaviour.hpp"
+#include "bdd_ros2_interfaces/msg/event.hpp"
+#include "bdd_ros2_interfaces/msg/trinary.hpp"
+#include "bdd_ros2_interfaces/msg/trinary_stamped.hpp"
+<endif>
 
 namespace motion_spec::ros {
 
+<if(ros.behaviour_server)>
+using BehaviourAction = bdd_ros2_interfaces::action::Behaviour;
+using BehaviourGoalHandle = rclcpp_action::ServerGoalHandle\<BehaviourAction\>;
+
+// The one answer a run ever gives: the scenario it belonged to, when it ended, and whether the
+// behaviour held. A run that stopped before its end state can only honestly say UNKNOWN.
+inline BehaviourAction::Result::SharedPtr behaviour_result(
+        const std::array\<std::uint8_t, 16\> &context_id,
+        const rclcpp::Time &stamp,
+        std::uint8_t trinary) {
+    auto result = std::make_shared\<BehaviourAction::Result\>();
+    result->result.scenario_context_id.uuid = context_id;
+    result->result.stamp = stamp;
+    result->result.trinary.value = trinary;
+    return result;
+\}
+
+<endif>
 <if(ros.scenario_context_id)>
+<if(!ros.behaviour_server)>
 // A hex UUID, with or without its dashes. An empty string is the zero UUID: a run that
 // belongs to no scenario says so, rather than failing to start.
 inline bool parse_uuid(const std::string &text, std::array\<std::uint8_t, 16\> &out) {
@@ -44,6 +71,7 @@ inline bool parse_uuid(const std::string &text, std::array\<std::uint8_t, 16\> &
 \}
 
 <endif>
+<endif>
 <if(ros.joint_states)>
 // Publish every Nth control cycle. A rate at or above the loop rate, or none at all, means
 // every cycle -- the loop is the fastest this can go.
@@ -62,9 +90,19 @@ ros-io-members(ros) ::= <<
     std::shared_ptr\<rclcpp::executors::SingleThreadedExecutor\> ros_executor = nullptr;
     std::thread ros_spin_thread;
 <if(ros.scenario_context_id)>
+<if(!ros.behaviour_server)>
     rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr ros_param_handle = nullptr;
     std::mutex ros_context_id_mutex;
     std::array\<std::uint8_t, 16\> ros_context_id{};
+<endif>
+<endif>
+<if(ros.behaviour_server)>
+    rclcpp_action::Server\<motion_spec::ros::BehaviourAction\>::SharedPtr bhv_server = nullptr;
+    std::mutex bhv_goal_mutex;
+    std::shared_ptr\<motion_spec::ros::BehaviourGoalHandle\> bhv_staged_goal = nullptr;
+    std::atomic\<bool\> bhv_goal_taken{false\};
+    std::shared_ptr\<realtime_tools::RealtimePublisher\<bdd_ros2_interfaces::msg::Event\>\> bhv_events_pub = nullptr;
+    bdd_ros2_interfaces::msg::Event bhv_event_msg{\};
 <endif>
 <ros.publishers:{p |     std::shared_ptr\<realtime_tools::RealtimePublisher\<<p.cpp_type>\>\> <p.pub_id> = nullptr;
     <p.cpp_type> <p.pub_id>_msg{\};}; separator="\n">
@@ -79,10 +117,54 @@ ros-setup(ros) ::= <<
     rclcpp::init(argc, argv);
     robot.ros_node = std::make_shared\<rclcpp::Node\>("<ros.node_name>");
 <if(ros.scenario_context_id)>
+<if(!ros.behaviour_server)>
 <ros-context-id-setup()>
+<endif>
 <endif>
 <ros.publishers:{p |     robot.<p.pub_id> = std::make_shared\<realtime_tools::RealtimePublisher\<<p.cpp_type>\>\>(
         robot.ros_node->create_publisher\<<p.cpp_type>\>("<p.channel>", rclcpp::QoS(10)));}; separator="\n">
+<if(ros.behaviour_server)>
+
+<ros-behaviour-setup(ros.behaviour_server)>
+<endif>
+>>
+
+// One goal per process run. The FSM parks where the model holds it and the goal event is what
+// arms it; nothing routes it back to the parked state, so a second goal would start nothing.
+// The goal's `parameters` and `configs` are read and reported, never mapped: this run answers
+// the specification it was generated from.
+
+ros-behaviour-setup(server) ::= <<
+    robot.bhv_events_pub =
+        std::make_shared\<realtime_tools::RealtimePublisher\<bdd_ros2_interfaces::msg::Event\>\>(
+            robot.ros_node->create_publisher\<bdd_ros2_interfaces::msg::Event\>(
+                "<server.events_channel>", rclcpp::QoS(10)));
+    robot.bhv_server = rclcpp_action::create_server\<motion_spec::ros::BehaviourAction\>(
+        robot.ros_node,
+        "<server.action_name>",
+        [&robot](const rclcpp_action::GoalUUID &,
+                 std::shared_ptr\<const motion_spec::ros::BehaviourAction::Goal\> goal) {
+            if (robot.bhv_goal_taken.exchange(true)) {
+                RCLCPP_WARN(robot.ros_node->get_logger(),
+                            "a behaviour goal was already served this run; rejecting");
+                return rclcpp_action::GoalResponse::REJECT;
+            \}
+            if (!goal->parameters.empty() || !goal->configs.empty()) {
+                RCLCPP_WARN(robot.ros_node->get_logger(),
+                            "ignoring %zu goal parameters and %zu goal configs",
+                            goal->parameters.size(), goal->configs.size());
+            \}
+            return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+        \},
+        [](const std::shared_ptr\<motion_spec::ros::BehaviourGoalHandle\>) {
+            // Accepted so the goal ends up CANCELED, but nothing is routed into the FSM: the run
+            // plays out to its end state either way.
+            return rclcpp_action::CancelResponse::ACCEPT;
+        \},
+        [&robot](const std::shared_ptr\<motion_spec::ros::BehaviourGoalHandle\> handle) {
+            const std::lock_guard\<std::mutex\> lock(robot.bhv_goal_mutex);
+            robot.bhv_staged_goal = handle;
+        \});
 >>
 
 // Parsed on the executor thread and handed to the loop under a lock the loop never waits on.
@@ -151,18 +233,71 @@ ros-joint-states-setup(ros) ::= <<
 
 ros-publish-tick(coordination, communication) ::= <<
 <if(communication.ros.scenario_context_id)>
+<if(!communication.ros.behaviour_server)>
         if (robot.ros_context_id_mutex.try_lock()) {
             _scenario_context_id = robot.ros_context_id;
             robot.ros_context_id_mutex.unlock();
         \}
 <endif>
+<endif>
+<if(communication.ros.behaviour_server)>
+<ros-behaviour-tick(coordination, communication.ros.behaviour_server)>
+<endif>
 <coordination.motions:{m | <m.when_monitors:{mon | <ros-monitor-publish(m, mon)>}><m.while_monitors:{mon | <ros-monitor-publish(m, mon)>}><m.until_monitors:{mon | <ros-monitor-publish(m, mon)>}>}>
 <ros-joint-states-tick(communication.ros)>
+>>
+
+// Taking the goal arms the FSM: the loop produces the goal event once, and from then on stamps
+// every message with the scenario the goal names. An exported event is read where the FSM is
+// about to act on it -- `consume_event` reads the current buffer, which `fsm_step_nbx` reads a
+// few lines later -- so what leaves the process is what actually drove the run.
+
+ros-behaviour-tick(coordination, server) ::= <<
+        if (robot.bhv_goal_mutex.try_lock()) {
+            if (robot.bhv_staged_goal) {
+                _bhv_goal = robot.bhv_staged_goal;
+                robot.bhv_staged_goal.reset();
+            \}
+            robot.bhv_goal_mutex.unlock();
+        \}
+        if (_bhv_goal && !_bhv_goal_armed) {
+            _bhv_goal_armed = true;
+            _scenario_context_id = _bhv_goal->get_goal()->scenario_context_id.uuid;
+            produce_event(robot.fsm_events, <server.goal_event_idx>);
+        \}
+<server.exported:{e |         if (_bhv_goal && consume_event(robot.fsm_events, <e.event_idx>)) {
+            robot.bhv_event_msg.scenario_context_id.uuid = _scenario_context_id;
+            robot.bhv_event_msg.stamp = robot.ros_node->now();
+            robot.bhv_event_msg.uri = <coordination.fsm.cpp_namespace>::EVENT_URIS[<e.event_idx>];
+            robot.bhv_events_pub->try_publish(robot.bhv_event_msg);
+        \}}; separator="\n">
+>>
+
+// The run reached the state the model calls its end, so the behaviour held. A goal whose cancel
+// was accepted still ran to completion; it is reported CANCELED because that is what the client
+// was told to expect.
+
+ros-behaviour-end-state() ::= <<
+            if (_bhv_goal) {
+                auto _bhv_result = motion_spec::ros::behaviour_result(
+                    _scenario_context_id, robot.ros_node->now(),
+                    bdd_ros2_interfaces::msg::Trinary::TRUE);
+                if (_bhv_goal->is_canceling()) {
+                    _bhv_goal->canceled(_bhv_result);
+                \} else {
+                    _bhv_goal->succeed(_bhv_result);
+                \}
+                _bhv_goal.reset();
+            \}
 >>
 
 ros-publish-tick-locals(ros) ::= <<
 <if(ros.scenario_context_id)>
     std::array\<std::uint8_t, 16\> _scenario_context_id{};
+<endif>
+<if(ros.behaviour_server)>
+    std::shared_ptr\<motion_spec::ros::BehaviourGoalHandle\> _bhv_goal = nullptr;
+    bool _bhv_goal_armed = false;
 <endif>
 >>
 
@@ -205,6 +340,20 @@ ros-joint-states-tick(ros) ::= <<
 >>
 
 ros-shutdown(ros) ::= <<
+<if(ros.behaviour_server)>
+    if (_bhv_goal && _bhv_goal->is_active()) {
+        // Stopping before the end state: what the behaviour did is genuinely unknown.
+        auto _bhv_result = motion_spec::ros::behaviour_result(
+            _scenario_context_id, robot.ros_node->now(),
+            bdd_ros2_interfaces::msg::Trinary::UNKNOWN);
+        if (_bhv_goal->is_canceling()) {
+            _bhv_goal->canceled(_bhv_result);
+        \} else {
+            _bhv_goal->abort(_bhv_result);
+        \}
+    \}
+    _bhv_goal.reset();
+<endif>
     if (robot.ros_executor) {
         robot.ros_executor->cancel();
     \}
@@ -214,6 +363,10 @@ ros-shutdown(ros) ::= <<
 <ros.publishers:{p |     robot.<p.pub_id>.reset();}; separator="\n">
 <if(ros.joint_states)>
     robot.joint_states_pub.reset();
+<endif>
+<if(ros.behaviour_server)>
+    robot.bhv_events_pub.reset();
+    robot.bhv_server.reset();
 <endif>
     robot.ros_executor.reset();
     robot.ros_node.reset();

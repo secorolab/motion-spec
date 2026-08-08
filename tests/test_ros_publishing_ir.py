@@ -19,7 +19,7 @@ from rosidl_pycommon import convert_camel_case_to_lower_case_underscore
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 
 from motion_spec.classes.handlers import LevelMonitor, RosPublication
-from motion_spec.rdf_parser.communication import ros_publishers
+from motion_spec.rdf_parser.communication import behaviour_server, ros_publishers
 from motion_spec.rdf_parser.coordination import _message_shape, _ros_publication
 from motion_spec.rdf_parser.model import Model
 from motion_spec.rdf_parser.resources import ros_joint_states
@@ -185,3 +185,51 @@ def test_joint_states_are_gated_on_the_config_section():
 def test_joint_states_need_a_declared_config_to_read_at_runtime():
     with pytest.raises(ConstraintViolation, match="declare `config:`"):
         ros_joint_states({}, {"ros": {"joint_states": {}}}, [_chain("r1_", ["j1"])])
+
+
+FSM_NS = "https://example.test/fsm/"
+# Event order is the FSM's own -- the indices the generated coord2b header was built against.
+FSM = {
+    "name": "demo_fsm",
+    "events": ["E_DONE", "E_GOAL", "E_STEP"],
+    "event_uris": {name: f"{FSM_NS}{name}" for name in ("E_DONE", "E_GOAL", "E_STEP")},
+}
+SERVER = URIRef(f"{NS}pick-place-behaviour")
+
+
+def _behaviour(*exported: str) -> Graph:
+    """A behaviour server node and the topic its exported events leave by."""
+    graph = Graph()
+    graph.add((SERVER, NS_MM_ROS["type-name"], Literal("bdd_ros2_interfaces/action/Behaviour")))
+    graph.add((SERVER, NS_MM_ROS["channel-name"], Literal("pick_place")))
+    graph.add((SERVER, RDFS.member, URIRef(f"{FSM_NS}E_GOAL")))
+    topic = URIRef(f"{SERVER}.events")
+    graph.add((topic, NS_MM_ROS["type-name"], Literal("bdd_ros2_interfaces/msg/Event")))
+    graph.add((topic, NS_MM_ROS["channel-name"], Literal("/bdd/events")))
+    for name in exported:
+        graph.add((topic, RDFS.member, URIRef(f"{FSM_NS}{name}")))
+    return graph
+
+
+def test_a_model_without_a_server_states_none():
+    assert behaviour_server(_model(Graph()), FSM) is None
+
+
+def test_the_server_carries_the_fsms_own_event_indices():
+    server = behaviour_server(_model(_behaviour("E_DONE")), FSM)
+    assert server == {
+        "action_name": "pick_place",
+        "events_channel": "/bdd/events",
+        "goal_event_idx": 1,
+        "exported": [{"event_idx": 0, "uri": f"{FSM_NS}E_DONE"}],
+    }
+
+
+def test_an_event_the_fsm_does_not_declare_is_rejected():
+    with pytest.raises(ConstraintViolation, match="E_INVENTED"):
+        behaviour_server(_model(_behaviour("E_INVENTED")), FSM)
+
+
+def test_serving_goals_without_an_fsm_is_rejected():
+    with pytest.raises(ConstraintViolation, match="imports no FSM"):
+        behaviour_server(_model(_behaviour("E_DONE")), None)

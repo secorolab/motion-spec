@@ -22,15 +22,13 @@ robot-state-init-mj_kdl-KinovaGen3(solver) ::= <<
 >>
 
 mj-sensor-ForceTorque(solver, sensor) ::= <<
-    mj_tool_<solver.runtime.id>.ft_sensors.push_back(mj_kdl::ForceTorqueSensorSpec{ .name = "<sensor.id>", .frame_site = "<sensor.frame_site>" \});
+    mj_tool_<solver.runtime.id>.ft_sensors.push_back(mj_kdl::ForceTorqueSensorSpec{ .name = "<sensor.id>", .frame_site = "<sensor.frame>" \});
 >>
 
 robot-init-mj_kdl-KinovaGen3(solver) ::= <<
 <if(solver.runtime.owner)>    mj_kdl::Robot mj_<solver.runtime.id>{};
 <if(solver.hardware.tool_body)>    mj_kdl::ToolFrameSpec mj_tool_<solver.runtime.id>{};
-    mj_tool_<solver.runtime.id>.tool_body = "<solver.hardware.tool_body>";
-<if(solver.hardware.tcp_site)>    mj_tool_<solver.runtime.id>.tcp_site = "<solver.hardware.tcp_site>";
-<endif><solver.sensors:{s |<({mj-sensor-<s.type>})(solver, s)>
+<solver.sensors:{s |<({mj-sensor-<s.type>})(solver, s)>
 }>    KDL::Tree built_tree_<solver.runtime.id>{};
     if (!scene_kdl::make_tree_<solver.chain.tree>(&built_tree_<solver.runtime.id>)) {
         std::cerr \<\< "make_tree_<solver.chain.tree>() failed for runtime <solver.runtime.id>\n";

@@ -206,7 +206,7 @@ class AgentAssembly:
     chain_root: str
     tip: str
     tool_body: str
-    tcp_site: str
+    tcp_frame: str
     attach_kind: str
     attach_name: str
     placement_frame: object
@@ -486,7 +486,7 @@ def _agent_assemblies(model, attach_by_body) -> list:
                     SensorBinding(
                         id=f"{runtime_prefix}{local_name(sensor)}",
                         type=kind,
-                        frame_site=f"{runtime_prefix}{local_name(frame)}",
+                        frame=f"{runtime_prefix}{local_name(frame)}",
                         update_rate_hz=get_update_rate(
                             model.graph, ModelBase(node_id=sensor, graph=model.graph)
                         ),
@@ -514,7 +514,7 @@ def _agent_assemblies(model, attach_by_body) -> list:
                     if tip_binding is not root_binding
                     else ""
                 ),
-                tcp_site=(
+                tcp_frame=(
                     f"{runtime_prefix}{local_name(tip_frame)}"
                     if tip_binding is not root_binding
                     else ""
@@ -558,7 +558,7 @@ class _ChainSetup(NamedTuple):
 
 _EMPTY_SETUP = _ChainSetup(
     ChainBinding(root="", end="", tip="", tree="", name="", joints=[]),
-    HardwareBinding(urdf="", model="", tool_body="", tcp_site=""),
+    HardwareBinding(urdf="", model="", tool_body="", tcp_frame=""),
     RuntimeBinding(id="", owner=False, prefix="", owned_trees=[], config_key=""),
     [],
     [],
@@ -610,7 +610,7 @@ def robot_setups(model):
                 urdf=assembly.urdf,
                 model=robot_model,
                 tool_body=assembly.tool_body,
-                tcp_site=assembly.tcp_site,
+                tcp_frame=assembly.tcp_frame,
             ),
             runtime=RuntimeBinding(
                 id="",
@@ -1338,7 +1338,7 @@ def annotate_runtime(serial_chains, motions, backend: str) -> None:
             solver.chain.root,
             solver.chain.tip or solver.chain.end,
             solver.hardware.tool_body,
-            solver.hardware.tcp_site,
+            solver.hardware.tcp_frame,
         )
         runtime_id = runtime_by_signature.setdefault(signature, solver.id)
         owner_by_runtime.setdefault(runtime_id, solver.id)
@@ -1346,7 +1346,7 @@ def annotate_runtime(serial_chains, motions, backend: str) -> None:
         solver.runtime.owner = solver.id == owner_by_runtime[runtime_id]
         # ST4's <if(x)> treats "" as truthy, so a bare robot's empty tool fields must be None.
         solver.hardware.tool_body = solver.hardware.tool_body or None
-        solver.hardware.tcp_site = solver.hardware.tcp_site or None
+        solver.hardware.tcp_frame = solver.hardware.tcp_frame or None
 
     # Runtimes some driver torque-streams; declared-only solvers on any other runtime stage zeros.
     commanding = {

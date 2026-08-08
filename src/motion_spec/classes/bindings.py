@@ -34,7 +34,7 @@ class HardwareBinding:
     urdf: str = field(metadata=INTERNAL)
     model: str
     tool_body: str
-    tcp_site: str
+    tcp_frame: str
 
 
 @dataclass
@@ -56,7 +56,7 @@ class SensorBinding:
 
     id: str
     type: str
-    frame_site: str
+    frame: str
     update_rate_hz: float | None
     observes: list[str] = field(default_factory=list)
 

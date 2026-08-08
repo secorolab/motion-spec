@@ -31,6 +31,7 @@ from motion_spec_dsl.rdf_parser.vocab import (
     RBDYN_OP,
     SLV,
 )
+from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import get_node_types
 from rdf_utils.models.geom_coord import PoseCoordModel
 from rdf_utils.models.geom_rel import PoseModel
@@ -92,7 +93,6 @@ def _pose_frames(model, pose) -> tuple[URIRef, URIRef]:
         if URI_GEOM_TYPE_POSE in get_node_types(model.graph, pose)
         else PoseCoordModel(pose, model.graph).relation
     )
-
     return relation.of_id, relation.wrt_id
 
 
@@ -187,7 +187,6 @@ def _pose_path(edges, start: URIRef, goal: URIRef) -> tuple:
 
 
 def _compose(model, owner: URIRef, suffix: str, in1: URIRef, in2: URIRef, out: URIRef) -> None:
-    """Emit one pose composition writing `out`."""
     operation = model.derived_node(owner, suffix)
     model.graph.add((operation, RDF.type, GEOM_OP.ComposePose))
     model.graph.add((operation, GEOM_OP.in1, in1))
@@ -196,7 +195,6 @@ def _compose(model, owner: URIRef, suffix: str, in1: URIRef, in2: URIRef, out: U
 
 
 def _invert(model, owner: URIRef, suffix: str, pose: URIRef, out: URIRef) -> None:
-    """Emit one pose inversion writing `out`."""
     operation = model.derived_node(owner, suffix)
     model.graph.add((operation, RDF.type, GEOM_OP.InvertPose))
     model.graph.add((operation, GEOM_OP.pose, pose))
@@ -241,7 +239,9 @@ def _materialize_linear_distance_operations(model) -> None:
             continue
         endpoints = list(dict.fromkeys(graph.objects(distance, GEOM_REL["between-entities"])))
         if len(endpoints) != 2:
-            raise ValueError(f"Linear distance {distance} needs exactly two pose endpoints.")
+            raise ConstraintViolation(
+                "geometry", f"Linear distance {distance} needs exactly two pose endpoints."
+            )
         start, end = endpoints
         start_of, start_wrt = _pose_frames(model, start)
         end_of, end_wrt = _pose_frames(model, end)
@@ -250,8 +250,9 @@ def _materialize_linear_distance_operations(model) -> None:
         if start_wrt != end_wrt:
             path = _pose_path(edges, start_wrt, end_wrt)
             if not path:
-                raise ValueError(
-                    f"Linear distance {distance} has no pose path from {start_wrt} to {end_wrt}."
+                raise ConstraintViolation(
+                    "geometry",
+                    f"Linear distance {distance} has no pose path from {start_wrt} to {end_wrt}.",
                 )
         current = _compose_path(model, distance, path, start_wrt)
 
@@ -312,16 +313,18 @@ def _materialize_pose_reference_transforms(model) -> None:
         if source_wrt == target_wrt:
             continue
         if source_of != target_of:
-            raise ValueError(
+            raise ConstraintViolation(
+                "geometry",
                 f"Equality constraint {constraint} compares a pose of {target_of} "
-                f"to a reference of {source_of}."
+                f"to a reference of {source_of}.",
             )
 
         path = _pose_path(edges, target_wrt, source_wrt)
         if not path:
-            raise ValueError(
+            raise ConstraintViolation(
+                "geometry",
                 f"Equality constraint {constraint} has no pose path from "
-                f"{target_wrt} to {source_wrt}."
+                f"{target_wrt} to {source_wrt}.",
             )
         current = _compose_path(model, constraint, path, target_wrt)
 
@@ -357,22 +360,11 @@ def _parse_argument(graph, closure_id, argument, to_id, resolve_value=False):
             value = graph.value(node, QUDT_SCHEMA["value"])
             if value is not None:
                 return value
-
         return to_id(node)
 
     unique = list(dict.fromkeys(resolve(node) for node in entry))
 
     return unique[0] if len(unique) == 1 else unique
-
-
-def _reference_inputs(graph, node):
-    """Inputs a referenced data structure contributes to whoever reads it. A path produces nothing,
-    so the output-to-input walk never reaches its parameters as a producer's outputs.
-    """
-    if GEOM_PATH.Path not in get_node_types(graph, node):
-        return ()
-
-    return tuple(obj for pred, obj in graph.predicate_objects(node) if pred != RDF["type"])
 
 
 def _fill_closure_args(graph, closure, to_id, op, closure_id, input_subject) -> None:
@@ -393,7 +385,12 @@ def _operator_inputs(graph, operator_id, inputs) -> set:
     for in_ in inputs:
         for data_in in graph.objects(operator_id, in_):
             data_structures.add(data_in)
-            data_structures.update(_reference_inputs(graph, data_in))
+            # A path produces nothing, so the output-to-input walk never reaches its parameters
+            # as a producer's outputs; they are contributed here instead.
+            if GEOM_PATH.Path in get_node_types(graph, data_in):
+                data_structures.update(
+                    obj for pred, obj in graph.predicate_objects(data_in) if pred != RDF["type"]
+                )
 
     return data_structures
 
@@ -401,7 +398,6 @@ def _operator_inputs(graph, operator_id, inputs) -> set:
 def _constraint_types(graph, node) -> set:
     """Types of the constraint a handler call points at; empty when it points at nothing."""
     constraint_id = graph.value(node, CSTR_HDL["constraint"])
-
     return get_node_types(graph, constraint_id) if constraint_id is not None else set()
 
 
@@ -431,7 +427,6 @@ class Operator:
         """The closure this operator's call at `node` renders to."""
         closure = {"id": model.id(node), "type": model.id(self.type_)}
         _fill_closure_args(model.graph, closure, model.id, self, node, node)
-
         return closure
 
     def operand_inputs(self, model, node):
@@ -476,7 +471,6 @@ class Specification(Operator):
             for call in graph.subjects(out, data_out):
                 for in_ in self.input:
                     data_structures.update(graph.objects(call, in_))
-
         return {"data_structures": data_structures, "schedule": []}
 
 
@@ -563,7 +557,6 @@ class ErrorEvaluator:
     def operand_inputs(self, model, node):
         """Data-structure nodes feeding the matching constraint's inputs."""
         constraint_types = _constraint_types(model.graph, node)
-
         return {
             data_in
             for op in self.cstr_op
@@ -621,7 +614,6 @@ class AssignmentEvaluator:
         """Data-structure nodes feeding the assignment's inputs."""
         if self.cstr_op.type_ not in _constraint_types(model.graph, node):
             return set()
-
         return _constraint_inputs(model.graph, node, self.cstr_op.input)
 
     def scheduler_step(self, model, data_out):
@@ -637,7 +629,6 @@ def _output_predicates(op) -> set:
         return {predicate for sub in op.cstr_op for predicate in sub.output}
     if isinstance(op, AssignmentEvaluator):
         return set()
-
     return set(op.output)
 
 
@@ -873,8 +864,9 @@ def _filter_controller(model, node, closure) -> _FilterBinding:
     reference = graph.value(node, ALGO_EXT.out)
     constraint = next(graph.subjects(CSTR["reference-value"], reference), None)
     if constraint is None:
-        raise ValueError(
-            f"{closure['type']} '{closure['id']}' output is not bound to a constraint."
+        raise ConstraintViolation(
+            "computation",
+            f"{closure['type']} '{closure['id']}' output is not bound to a constraint.",
         )
     # Evaluators carry cstr-hdl:constraint too, and can win this lookup; filter state belongs to
     # the controller.
@@ -887,7 +879,9 @@ def _filter_controller(model, node, closure) -> _FilterBinding:
         None,
     )
     if controller is None:
-        raise ValueError(f"{closure['type']} '{closure['id']}' constraint has no controller.")
+        raise ConstraintViolation(
+            "computation", f"{closure['type']} '{closure['id']}' constraint has no controller."
+        )
 
     return _FilterBinding(constraint, controller)
 
@@ -957,7 +951,6 @@ class Schedule:
         if call_id in self._emitted:
             return False
         self._emitted.add(call_id)
-
         return True
 
     def of(self, start_nodes, operators) -> list[str]:
@@ -1190,7 +1183,6 @@ def _is_pose(item) -> bool:
         return True
     kind = getattr(item, "quantity_kind", None)
     kinds = kind if isinstance(kind, list) else [kind]
-
     return any(getattr(entry, "id", None) == "Pose" for entry in kinds)
 
 
@@ -1202,7 +1194,7 @@ def resolve_closure_operands(closures: dict, indexes, data_structures: list) -> 
     renders its position and its orientation.
 
     Raises:
-        ValueError: an arc path ends at something that is not a pose.
+        ConstraintViolation: an arc path ends at something that is not a pose.
     """
     data_by_id = {item.id: item for item in data_structures if getattr(item, "id", None)}
     for closure in closures.values():
@@ -1222,4 +1214,4 @@ def resolve_closure_operands(closures: dict, indexes, data_structures: list) -> 
         elif shape == "Arc":
             end = closure.get("end")
             if not isinstance(end, str) or not _is_pose(data_by_id.get(end)):
-                raise ValueError("Arc path end must be a Pose quantity.")
+                raise ConstraintViolation("geometry", "Arc path end must be a Pose quantity.")

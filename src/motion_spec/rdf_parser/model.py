@@ -41,7 +41,6 @@ def identifier(name) -> str:
     generated struct is minted here, so a different sanitizer renames all of them.
     """
     text = re.sub(r"[^0-9A-Za-z_]", "_", str(name))
-
     return f"_{text}" if text and text[0].isdigit() else text
 
 
@@ -94,7 +93,6 @@ def length_unit(coordinate):
             f"Position coordinate '{coordinate.id}' has an unrecognized length "
             f"unit '{coordinate.unit}'.",
         )
-
     return coordinate.unit
 
 
@@ -116,7 +114,6 @@ def seconds(value: float, unit) -> float:
     """
     if unit not in _TEMPORAL_UNITS:
         raise ConstraintViolation("units", f"'{unit}' is not a duration this can read")
-
     return si(value, unit)
 
 
@@ -131,7 +128,6 @@ def _import_path(location: str, url_map: dict[str, str]) -> str:
     for base, root in sorted(url_map.items(), key=lambda item: len(item[0]), reverse=True):
         if location.startswith(base):
             return str((Path(root) / location[len(base) :]).resolve())
-
     return location
 
 
@@ -226,7 +222,6 @@ class Model:
         for index in range(1, len(parts) - 1):
             if parts[index] in ("spec", "world"):
                 return _ContextScope(parts[index - 1], parts[index], parts[index + 1 :])
-
         return None
 
     def id(self, node) -> str:
@@ -299,7 +294,6 @@ class Model:
                 if local is not None:
                     sources.setdefault(local, set()).add(str(node))
             self._ambiguous = {name for name, urls in sources.items() if len(urls) > 1}
-
         return self._ambiguous
 
     # the id/IRI index
@@ -337,11 +331,12 @@ class Model:
         if not collisions:
             return
         details = "\n".join(f"  '{i}' <- {', '.join(u)}" for i, u in sorted(collisions.items()))
-        raise ValueError(
+        raise ConstraintViolation(
+            "motion-spec",
             "id collision(s): distinct URIs map to one generated id and would be silently "
             "merged (e.g. a context-quantity name reused across motions with different "
             "definitions). Give them distinct names, or extend the motion-qualified id "
-            f"scoping in Model.id to cover their URI shape:\n{details}"
+            f"scoping in Model.id to cover their URI shape:\n{details}",
         )
 
     # derived IRIs
@@ -349,7 +344,6 @@ class Model:
     def iri_of(self, id_) -> str | None:
         """The IRI an id resolves to, authored or already derived; None when neither."""
         entry = self._derived.get(id_)
-
         return entry.uri if entry else self._indexes().authored_iris.get(id_)
 
     def register_derived(self, id_, parent_iri, suffix, relation, types=()) -> str | None:
@@ -428,7 +422,6 @@ class Model:
             if isinstance(node, URIRef)
         ]
         derived = [{"id": id_, "uri": entry.uri} for id_, entry in sorted(self._derived.items())]
-
         return authored + derived
 
     def derivation_nodes(self) -> list[dict]:
@@ -462,7 +455,6 @@ def reader(func):
         cache = model.cache
         if key not in cache:
             cache[key] = func(model, *args)
-
         return cache[key]
 
     return call

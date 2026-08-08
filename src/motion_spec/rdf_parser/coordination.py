@@ -27,6 +27,7 @@ from motion_spec_dsl.rdf_parser.vocab import (
     MOT,
     SLV,
 )
+from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import get_node_types
 from rdf_utils.namespace import NS_MM_EL
 from rdf_utils.naming import get_valid_var_name
@@ -87,7 +88,8 @@ def guarded_motion(model, node) -> GuardedMotion:
     own logic on the monitor that targets it, so it expands to its members here either way.
 
     Raises:
-        ValueError: the motion carries no `schema:name`, so nothing can name its step function.
+        ConstraintViolation: the motion carries no `schema:name`, so nothing can name its step
+            function.
     """
     graph = model.graph
     phases: dict[str, list] = {}
@@ -108,7 +110,7 @@ def guarded_motion(model, node) -> GuardedMotion:
 
     name = graph.value(node, SDO.name)
     if name is None:
-        raise ValueError(f"GuardedMotion {node} has no schema:name triple")
+        raise ConstraintViolation("coordination", f"GuardedMotion {node} has no schema:name triple")
     description = graph.value(node, SDO.description)
 
     return GuardedMotion(
@@ -146,22 +148,6 @@ _ELAPSED_RELATIONS = (
 )
 
 
-def _elapsed_timing(model, node):
-    """The operator, threshold and band an elapsed constraint compares the clock against."""
-    types = get_node_types(model.graph, node)
-    operator, predicate = next(
-        ((op, pred) for type_, op, pred in _ELAPSED_RELATIONS if type_ in types),
-        ("<", CSTR["threshold"]),
-    )
-    threshold = quantities.duration_seconds(model, model.graph.value(node, predicate))
-    tolerance = None
-    if operator == "==":
-        band = model.graph.value(node, CSTR_EXT["tolerance"])
-        tolerance = quantities.duration_seconds(model, band)
-
-    return operator, threshold, tolerance
-
-
 @reader
 def constraint_evaluator(model, node) -> ConstraintEvaluator:
     """A ConstraintEvaluator: the constraint it watches, and the error signal it writes."""
@@ -172,9 +158,17 @@ def constraint_evaluator(model, node) -> ConstraintEvaluator:
     error_node = None if assignment else graph.value(node, CSTR_HDL["error"])
 
     is_elapsed = _is_elapsed_constraint(model, constraint_node)
-    operator, threshold, elapsed_tolerance = (
-        _elapsed_timing(model, constraint_node) if is_elapsed else (None, None, None)
-    )
+    operator, threshold, elapsed_tolerance = None, None, None
+    if is_elapsed:
+        types = get_node_types(graph, constraint_node)
+        operator, predicate = next(
+            ((op, pred) for type_, op, pred in _ELAPSED_RELATIONS if type_ in types),
+            ("<", CSTR["threshold"]),
+        )
+        threshold = quantities.duration_seconds(model, graph.value(constraint_node, predicate))
+        if operator == "==":
+            band_node = graph.value(constraint_node, CSTR_EXT["tolerance"])
+            elapsed_tolerance = quantities.duration_seconds(model, band_node)
     # An authored band on a spatial equality; the elapsed branch reads its own, in seconds,
     # because a duration's magnitude rides on qudt rather than on a shared value.
     band = None if is_elapsed else graph.value(constraint_node, CSTR_EXT["tolerance"])
@@ -192,16 +186,6 @@ def constraint_evaluator(model, node) -> ConstraintEvaluator:
     )
 
 
-def _ros_type_parts(ros_type: str):
-    """`pkg/msg/CamelType` as `(pkg, include path, C++ type)`, by the rosidl naming rule."""
-    parts = ros_type.split("/")
-    package, message = parts[0], parts[-1]
-    sub = parts[1] if len(parts) == 3 else "msg"
-    stem = re.sub(r"([a-z\d])([A-Z])", r"\1_\2", re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", message))
-
-    return package, f"{package}/{sub}/{stem.lower()}.hpp", f"{package}::{sub}::{message}"
-
-
 def _monitored_group(model, monitored, is_section_aggregate):
     """The named until/when group a monitor targets, as its member ids and its logic.
 
@@ -216,7 +200,6 @@ def _monitored_group(model, monitored, is_section_aggregate):
     if group is None:
         return [], False
     members = sorted(model.id(member) for member in model.graph[group : CSTR_EXT["has-constraint"]])
-
     return members, CSTR_EXT.ConstraintDisjunction in get_node_types(model.graph, group)
 
 
@@ -292,15 +275,19 @@ def _ros_publication(model, node) -> dict:
     if channel is None:
         return {}
     ros_type = str(model.graph.value(node, NS_MM_ROS["type-name"]) or "")
-    package, include, cpp_type = _ros_type_parts(ros_type)
+    # `pkg/msg/CamelType` split by the rosidl naming rule.
+    parts = ros_type.split("/")
+    package, message = parts[0], parts[-1]
+    sub = parts[1] if len(parts) == 3 else "msg"
+    stem = re.sub(r"([a-z\d])([A-Z])", r"\1_\2", re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", message))
 
     return {
         "ros": RosPublication(
             str(channel),
             ros_type,
             package,
-            include,
-            cpp_type,
+            f"{package}/{sub}/{stem.lower()}.hpp",
+            f"{package}::{sub}::{message}",
             f"{model.id(node)}_pub".replace("-", "_"),
         )
     }
@@ -464,7 +451,6 @@ def _upstream_dependencies(data_id: str, closure_inputs: dict) -> set:
             continue
         result.add(item)
         pending.extend(closure_inputs.get(item, set()))
-
     return result
 
 
@@ -649,7 +635,6 @@ def _pose_command_steps(model, scope, active_plans) -> list:
 def _active_plans(phase: PhaseNodes, derivation) -> list:
     """The authored controllers whose constraints this motion holds during."""
     plans = derivation.controllers_by_handler.get(phase.handler_node, ())
-
     return [plan for plan in plans if plan.constraint in phase.constraints["while"]]
 
 
@@ -672,9 +657,16 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
         handler_node = model.node_by_id[handler.id]
         motion_node = model.graph.value(handler_node, CSTR_HDL["motion"])
         phase = PhaseNodes(model, handler, handler_node, motion_node)
-        chain_solvers = _handler_chain_solvers(
-            handler, robots.serial_chains, _handler_solver_ids(model, handler_node, derivation)
-        )
+        # A declared solver counts even when no controller routes to it: a monitor-only handler
+        # still owns its arm runtime for state reading, FK and command forwarding.
+        solver_ids = {
+            model.id(plan.solver)
+            for plan in derivation.controllers_by_handler.get(handler_node, ())
+        } | {
+            model.id(solver)
+            for solver in model.graph.objects(handler_node, CSTR_HDL_EXT["runs-solver"])
+        }
+        chain_solvers = _handler_chain_solvers(handler, robots.serial_chains, solver_ids)
         evaluators = {
             name: [constraint_evaluator(model, node) for node in phase.evaluators[name]]
             for name in _PHASES
@@ -690,7 +682,15 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
             for plan in _active_plans(phase, derivation)
             for controller in derivation.controllers_for(plan)
         ]
-        _finish_active_schedule(schedules, active_controllers, computation, model, motion_node)
+        # Drop the calls another motion owns: the backward walk can reach its closures, and
+        # running them here would recompute its outputs while it is inactive.
+        token = model.motion_suffix(motion_node)
+        owner = computation.indexes.closure_owner
+        schedules.active = [step for step in schedules.active if owner.get(step, token) == token]
+        schedules.while_pre = [
+            step for step in schedules.while_pre if owner.get(step, token) == token
+        ]
+        _append_new(schedules.active, [c.id for c in reversed(active_controllers)])
         motions.append(
             _motion_unit(
                 model,
@@ -711,37 +711,6 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
         )
 
     return _finish_motions(model, motions, handlers, computation, fsm, solvers_by_id)
-
-
-def _handler_solver_ids(model, handler_node, derivation) -> set:
-    """Every solver this handler owns: the ones its controllers route to, plus those it declares.
-
-    A declared solver counts even when no controller routes to it -- a monitor-only handler still
-    owns its arm runtime for state reading, FK and command forwarding.
-    """
-    plans = derivation.controllers_by_handler.get(handler_node, ())
-
-    return {model.id(plan.solver) for plan in plans} | {
-        model.id(solver)
-        for solver in model.graph.objects(handler_node, CSTR_HDL_EXT["runs-solver"])
-    }
-
-
-def _finish_active_schedule(schedules, active_controllers, computation, model, motion_node) -> None:
-    """Drop the calls another motion owns, then append this motion's constraint_handler.
-
-    The backward walk can reach another motion's closures; running them here would recompute its
-    outputs while it is inactive.
-    """
-    token = model.motion_suffix(motion_node)
-    owner = computation.indexes.closure_owner
-
-    def owned(steps):
-        return [step for step in steps if owner.get(step, token) == token]
-
-    schedules.active = owned(schedules.active)
-    schedules.while_pre = owned(schedules.while_pre)
-    _append_new(schedules.active, [c.id for c in reversed(active_controllers)])
 
 
 def _motion_unit(
@@ -870,15 +839,16 @@ def _finish_motions(model, motions, handlers, computation, fsm, solvers_by_id):
     """Fold on everything that needs the whole set of motions to be known.
 
     Raises:
-        ValueError: two handlers govern one motion, so nothing decides which drives it.
+        ConstraintViolation: two handlers govern one motion, so nothing decides which drives it.
     """
     by_motion: dict[str, str] = {}
     for motion in motions:
         if motion.id in by_motion:
-            raise ValueError(
+            raise ConstraintViolation(
+                "coordination",
                 f"Motion '{motion.id}' is governed by more than one constraint handler "
                 f"('{by_motion[motion.id]}' and '{motion.handler}'). Each motion must map to "
-                f"exactly one handler; split the motion or merge the handlers."
+                f"exactly one handler; split the motion or merge the handlers.",
             )
         by_motion[motion.id] = motion.handler
 
@@ -944,7 +914,6 @@ def evaluator_term(evaluator) -> dict:
 
 
 def _stamp_terms(monitor, terms, any_flag) -> None:
-    """Give a monitor the active-phase terms it evaluates."""
     monitor.active_terms = terms
     monitor.active_terms_present = bool(terms)
     monitor.active_any = any_flag
@@ -1144,9 +1113,9 @@ def _apply_fsm_wiring(motions, fsm) -> dict:
     """Tag the monitors that fire the FSM, and return the wiring codegen needs beside it.
 
     Raises:
-        ValueError: a motion declares no `until` and the model imports no FSM, so nothing can end
-            it; a snapshot triggers on an event the FSM does not declare; or a WHEN-gated motion
-            names no hold motion, or an unknown one.
+        ConstraintViolation: a motion declares no `until` and the model imports no FSM, so nothing
+            can end it; a snapshot triggers on an event the FSM does not declare; or a WHEN-gated
+            motion names no hold motion, or an unknown one.
     """
     namespace = fsm["name"].lower() if fsm else None
     events = fsm.get("events", []) if fsm else []
@@ -1173,10 +1142,11 @@ def _apply_fsm_wiring(motions, fsm) -> dict:
         # can never be left and every motion after it is unreachable.
         stuck = [motion.id for motion in motions if not motion.has_until_condition]
         if stuck:
-            raise ValueError(
+            raise ConstraintViolation(
+                "coordination",
                 f"motions {sorted(stuck)} declare no 'until' condition and the model imports no "
                 "FSM, so nothing can end them; add an 'until' condition or coordinate the model "
-                "with an FSM"
+                "with an FSM",
             )
 
         return meta
@@ -1202,7 +1172,17 @@ def _apply_fsm_wiring(motions, fsm) -> dict:
         monitor.fsm_event_idx = index_by_event.get(monitor.event_name or "", -1)
 
     for motion in motions:
-        _check_snapshot_triggers(motion, index_by_event, namespace)
+        # An event-triggered snapshot only compiles when the FSM declares the event it waits on.
+        for snapshot in motion.snapshots:
+            if not snapshot.trigger_event:
+                continue
+            if snapshot.trigger_event not in index_by_event:
+                raise ConstraintViolation(
+                    "coordination",
+                    f"Snapshot '{snapshot.target_id}' in motion '{motion.id}' triggers on "
+                    f"'{snapshot.trigger_event}', which the FSM '{namespace}' does not declare.",
+                )
+            snapshot.fsm_namespace = namespace
         for monitor in [*motion.until_monitors, *motion.while_monitors]:
             if not fires_fsm_event(monitor):
                 continue
@@ -1224,32 +1204,21 @@ def _apply_fsm_wiring(motions, fsm) -> dict:
     return meta
 
 
-def _check_snapshot_triggers(motion, index_by_event, namespace) -> None:
-    """An event-triggered snapshot only compiles when the FSM declares the event it waits on."""
-    for snapshot in motion.snapshots:
-        if not snapshot.trigger_event:
-            continue
-        if snapshot.trigger_event not in index_by_event:
-            raise ValueError(
-                f"Snapshot '{snapshot.target_id}' in motion '{motion.id}' triggers on "
-                f"'{snapshot.trigger_event}', which the FSM '{namespace}' does not declare."
-            )
-        snapshot.fsm_namespace = namespace
-
-
 def _when_gate_fallback(motion, monitor, by_id):
     """The hold motion that runs while a WHEN-gated motion waits for its event."""
     if not monitor.fallback_motion:
-        raise ValueError(
+        raise ConstraintViolation(
+            "coordination",
             f"WHEN monitor '{monitor.id}' on FSM-wired motion '{motion.id}' must declare a "
             "waiting hold motion (e.g. '... otherwise hold <hold-motion>'). A WHEN precondition "
-            "without a fallback would leave the arm uncommanded while waiting."
+            "without a fallback would leave the arm uncommanded while waiting.",
         )
     fallback = by_id.get(monitor.fallback_motion)
     if fallback is None:
-        raise ValueError(
+        raise ConstraintViolation(
+            "coordination",
             f"WHEN monitor '{monitor.id}' names unknown fallback motion "
-            f"'{monitor.fallback_motion}'."
+            f"'{monitor.fallback_motion}'.",
         )
 
     return fallback

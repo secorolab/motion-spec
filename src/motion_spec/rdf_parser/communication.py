@@ -15,9 +15,9 @@ and every row itself.
 from __future__ import annotations
 
 from enum import Enum
-from functools import partial
 
 from motion_spec_dsl.rdf_parser.vocab import EXEC
+from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.naming import get_valid_var_name
 from rdflib.namespace import PROV
 
@@ -53,7 +53,6 @@ def _dedupe_by_id(rows: list) -> list:
             continue
         seen.add(row.get("id"))
         result.append(row)
-
     return result
 
 
@@ -63,7 +62,6 @@ def _id_of(value):
         return value
     if isinstance(value, Enum):
         return value.value
-
     return getattr(value, "id", None)
 
 
@@ -205,9 +203,7 @@ _RUNTIME_ROW_FIELDS = {
 
 
 def _runtime_row(member) -> dict:
-    """A runtime value's introspection row: what it is, and what it belongs to."""
     fields = _RUNTIME_ROW_FIELDS.get(getattr(member, "role", None), ())
-
     return {
         "id": member.id,
         "type": member.type,
@@ -460,7 +456,8 @@ def add_quantity_samples(introspection: dict, shared_data: list, views: dict) ->
     renders the sampling expression from it.
 
     Raises:
-        ValueError: a quantity belongs to MAP views whose superobjects disagree on how to reach it.
+        ConstraintViolation: a quantity belongs to MAP views whose superobjects disagree on how to
+            reach it.
     """
     shared_ids = {item.id for item in shared_data if item.id}
     spatial_ids = {item.id for item in shared_data if item.type in _SPATIAL_SLOT_KINDS and item.id}
@@ -488,8 +485,14 @@ def add_quantity_samples(introspection: dict, shared_data: list, views: dict) ->
             continue
         if quantity.get("type") != "Quantity":
             for prefix, make_desc in _AXIS_SAMPLES.get(quantity.get("type"), ()):
-                if quantity_id in shared_ids:
-                    _add_axes(add, quantity, prefix, partial(make_desc, quantity_id))
+                if quantity_id not in shared_ids:
+                    continue
+                for index, name in enumerate(("x", "y", "z")):
+                    add(
+                        quantity,
+                        f"{prefix}.{name}" if prefix else name,
+                        make_desc(quantity_id, index),
+                    )
             continue
         desc = _scalar_descriptor(quantity, quantity_id, shared_ids, indexed_views)
         if desc is not None:
@@ -511,12 +514,6 @@ def add_quantity_samples(introspection: dict, shared_data: list, views: dict) ->
     introspection["quantity_samples"] = samples
 
 
-def _add_axes(add, source, prefix: str, make_desc) -> None:
-    """Append the x/y/z rows of one vector component group."""
-    for index, name in enumerate(("x", "y", "z")):
-        add(source, f"{prefix}.{name}" if prefix else name, make_desc(index))
-
-
 def _scalar_descriptor(quantity: dict, quantity_id: str, shared_ids, indexed_views):
     """How a scalar quantity is sampled: as a literal, through a view, or off its own field."""
     viewed = quantity_id in indexed_views
@@ -528,8 +525,9 @@ def _scalar_descriptor(quantity: dict, quantity_id: str, shared_ids, indexed_vie
             return None
         types = {view.superobject.type for view in views}
         if len(types) != 1:
-            raise ValueError(
-                f"quantity sampling: '{quantity_id}' belongs to incompatible MAP views"
+            raise ConstraintViolation(
+                "introspection",
+                f"quantity sampling: '{quantity_id}' belongs to incompatible MAP views",
             )
         if next(iter(types)) in _COMPOSITE_SUPEROBJECTS:
             return {"kind": "access", "ref": quantity_id}
@@ -738,10 +736,19 @@ def build_introspection(
         computation.views,
     )
 
-    # The registry grew while folding the samples in: rebuild the table and backfill earlier rows.
+    # The registry grew while folding the samples in: rebuild the table and backfill every row
+    # minted before it was complete.
     introspection["uris"] = model.uri_rows()
     introspection["derivations"] = model.derivation_nodes()
-    _backfill_uris(introspection)
+    complete = {row["id"]: row["uri"] for row in introspection["uris"] if row.get("uri")}
+    for key in _ROW_FAMILIES:
+        for row in introspection.get(key) or ():
+            if not row.get("uri"):
+                row["uri"] = complete.get(row.get("source_id") or row.get("id")) or row.get("uri")
+    for rows in (introspection.get("spatial_samples") or {}).values():
+        for row in rows:
+            if not row.get("uri"):
+                row["uri"] = complete.get(row.get("id")) or row.get("uri")
     _check_every_id_resolves(introspection)
 
     return introspection, values
@@ -749,19 +756,6 @@ def build_introspection(
 
 # The row families that name a slot in the frame log or an entity in the artifact.
 _ROW_FAMILIES = ("controllers", "monitors", "motions", "quantities", "quantity_samples")
-
-
-def _backfill_uris(introspection: dict) -> None:
-    """Attach the IRI to every row minted before the derivation registry was complete."""
-    uri_by_id = {row["id"]: row["uri"] for row in introspection["uris"] if row.get("uri")}
-    for key in _ROW_FAMILIES:
-        for row in introspection.get(key) or ():
-            if not row.get("uri"):
-                row["uri"] = uri_by_id.get(row.get("source_id") or row.get("id")) or row.get("uri")
-    for rows in (introspection.get("spatial_samples") or {}).values():
-        for row in rows:
-            if not row.get("uri"):
-                row["uri"] = uri_by_id.get(row.get("id")) or row.get("uri")
 
 
 def _check_every_id_resolves(introspection: dict) -> None:

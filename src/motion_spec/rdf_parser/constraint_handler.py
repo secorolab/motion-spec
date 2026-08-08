@@ -222,9 +222,10 @@ def _path_following_axes(outputs, quantity, subspace) -> tuple[quantities.Spatia
         )
     if subspace == "orientation":
         return quantities.ANGULAR_AXES
-    raise ValueError(
+    raise ConstraintViolation(
+        "control",
         f"Path-following constraint on '{quantity}' must control the speed along the path, "
-        "its position, or its orientation."
+        "its position, or its orientation.",
     )
 
 
@@ -322,7 +323,6 @@ class SolverDerivationContext:
         """
         if plan not in self._derived:
             self._derived[plan] = tuple(_derived_controllers(self.model, self, plan))
-
         return self._derived[plan]
 
 
@@ -330,7 +330,7 @@ def solver_derivation_context(model) -> SolverDerivationContext:
     """Resolve controller ownership and command shape, before any solver node is generated.
 
     Raises:
-        ValueError: a controller lacks its solver, constraint or quantity, or a handler's
+        ConstraintViolation: a controller lacks its solver, constraint or quantity, or a handler's
             controllers cannot be assigned to solvers that can run them.
     """
     graph = model.graph
@@ -340,7 +340,9 @@ def solver_derivation_context(model) -> SolverDerivationContext:
     for handler in graph.subjects(RDF.type, CSTR_HDL.ConstraintHandler):
         motion = ensure_one_obj_uri(graph, handler, CSTR_HDL.motion)
         if motion is None:
-            raise ValueError(f"Constraint handler '{handler}' is missing its motion.")
+            raise ConstraintViolation(
+                "control", f"Constraint handler '{handler}' is missing its motion."
+            )
         authored = sorted(
             dict.fromkeys(graph.objects(handler, CSTR_HDL.controllers)),
             key=lambda node: int(getattr(graph.value(node, APP.order), "value", 0)),
@@ -355,9 +357,10 @@ def solver_derivation_context(model) -> SolverDerivationContext:
                 else None
             )
             if solver is None or constraint is None or quantity is None:
-                raise ValueError(
+                raise ConstraintViolation(
+                    "control",
                     f"Authored controller '{controller}' needs explicit solver, constraint, "
-                    "and constraint quantity relations."
+                    "and constraint quantity relations.",
                 )
             view = next(graph.subjects(MAP.subobject, quantity), None)
             plan = ControllerDerivation(
@@ -401,14 +404,16 @@ def _validate_solver_derivations(model, by_handler, by_solver, algorithms) -> No
             duplicates = [axis for axis, count in collections.Counter(axes).items() if count > 1]
             if duplicates:
                 rendered = ", ".join(f"{axis.subspace}.{axis.axis}" for axis in duplicates)
-                raise ValueError(
+                raise ConstraintViolation(
+                    "solver",
                     f"{family.codegen_name} solver '{solver}' repeats acceleration axis: "
-                    f"{rendered}."
+                    f"{rendered}.",
                 )
         if family.max_axes is not None and len(axes) > family.max_axes:
-            raise ValueError(
+            raise ConstraintViolation(
+                "solver",
                 f"{family.codegen_name} solver '{solver}' has {len(axes)} axes; at most "
-                f"{family.max_axes} are supported."
+                f"{family.max_axes} are supported.",
             )
 
     for handler, plans in by_handler.items():
@@ -423,9 +428,10 @@ def _validate_solver_derivations(model, by_handler, by_solver, algorithms) -> No
             )
         overlap = domains[AccelerationEnergyDriven] & domains[CartesianAccelerationDriven]
         if overlap:
-            raise ValueError(
+            raise ConstraintViolation(
+                "solver",
                 f"Handler '{handler}' assigns ACHD and RNE to the same domain(s): "
-                f"{', '.join(sorted(overlap))}."
+                f"{', '.join(sorted(overlap))}.",
             )
 
 
@@ -438,7 +444,6 @@ def _motion_scoped(model, context, plan) -> str:
     """The motion suffix a derived id carries, empty when its constraint is shared."""
     if plan.constraint in context.shared_constraints:
         return ""
-
     return f"_{model.motion_suffix(plan.motion)}"
 
 
@@ -459,7 +464,9 @@ def _controller_signal_id(model, context, plan) -> str:
         return f"tau_{controller_id}"
     family = context.algorithm_by_solver[plan.solver]
     if not hasattr(family, "payload"):
-        raise ValueError(f"Solver '{plan.solver}' does not accept acceleration signals.")
+        raise ConstraintViolation(
+            "solver", f"Solver '{plan.solver}' does not accept acceleration signals."
+        )
 
     return f"{family.signal_prefix}_{model.id(plan.quantity)}{_motion_scoped(model, context, plan)}"
 
@@ -467,7 +474,6 @@ def _controller_signal_id(model, context, plan) -> str:
 def _axis_error(ids: SolverIdFactory, axis: quantities.SpatialAxis) -> Quantity:
     """The per-axis component of a pose difference the controller drives to zero."""
     linear = axis.subspace == Subspace.Linear
-
     return _derived_quantity(
         ids.component_error(axis),
         "Length" if linear else "Angle",
@@ -479,7 +485,6 @@ def _axis_error(ids: SolverIdFactory, axis: quantities.SpatialAxis) -> Quantity:
 def _axis_derivative(ids: SolverIdFactory, axis: quantities.SpatialAxis) -> Quantity:
     """The per-axis component of the measured velocity feeding a derivative term."""
     linear = axis.subspace == Subspace.Linear
-
     return _derived_quantity(
         ids.component_measured_derivative(axis),
         "LinearVelocity" if linear else "AngularVelocity",
@@ -489,11 +494,6 @@ def _axis_derivative(ids: SolverIdFactory, axis: quantities.SpatialAxis) -> Quan
 
 
 def _axis_view(model, superobject, subobject, axis: quantities.SpatialAxis) -> View:
-    """The view selecting one axis of a spatial superobject.
-
-    Two callers (`augment_data`'s error and measured-derivative views), so it stays a named
-    helper rather than inlining -- assumed one caller and there are two.
-    """
     return View(
         f"view_{subobject.id}",
         superobject,
@@ -507,7 +507,6 @@ def _axis_view(model, superobject, subobject, axis: quantities.SpatialAxis) -> V
 
 
 def _saturation_for_signal(model, node, signal) -> Saturation | None:
-    """Authored saturation bounds, bound to a derived signal."""
     if node is None:
         return None
     bounds = [
@@ -665,7 +664,6 @@ def _derived_controllers(model, context, plan) -> list:
     """Expand a pose command per axis; a scalar command stays singular."""
     if len(plan.axes) > 1:
         return [_derived_controller(model, context, plan, axis) for axis in plan.axes]
-
     return [_derived_controller(model, context, plan)]
 
 
@@ -995,7 +993,6 @@ def joint_force_specification(model, node) -> JointForceSpecification:
     model.expect_type(node, SLV["JointForceSpecification"])
     force = model.graph.value(node, SLV["force"])
     joint = model.graph.value(node, SLV["attached-to"])
-
     return JointForceSpecification(
         model.id(node),
         model.id(force) if force is not None else "",
@@ -1006,7 +1003,6 @@ def joint_force_specification(model, node) -> JointForceSpecification:
 def cartesian_force_specification(model, node) -> CartesianForceSpecification:
     """An authored Cartesian force: the wrench it applies and the body it acts on."""
     model.expect_type(node, SLV["CartesianForceSpecification"])
-
     return CartesianForceSpecification(
         model.id(node),
         quantities.wrench(model, model.graph.value(node, SLV["force"])),

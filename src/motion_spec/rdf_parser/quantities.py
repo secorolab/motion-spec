@@ -147,7 +147,6 @@ from motion_spec.rdf_parser.operations import (
 def duration_seconds(model, node) -> float:
     """The value in seconds of a Duration node, converting from the unit it was written in."""
     graph = model.graph
-
     return seconds(
         float(graph.value(node, QUDT_SCHEMA["value"])), graph.value(node, QUDT_SCHEMA["unit"])
     )
@@ -159,7 +158,8 @@ def optional_float(model, subject, predicate) -> float | None:
     A model may state the number directly or wrap it in a qudt node; both read the same here.
 
     Raises:
-        ValueError: the property is present but carries neither a literal nor a qudt:value.
+        ConstraintViolation: the property is present but carries neither a literal nor a
+            qudt:value.
     """
     value = model.graph.value(subject, predicate)
     if value is None:
@@ -168,9 +168,10 @@ def optional_float(model, subject, predicate) -> float | None:
         value if isinstance(value, rdflib.Literal) else model.graph.value(value, QUDT_SCHEMA.value)
     )
     if literal is None:
-        raise ValueError(
+        raise ConstraintViolation(
+            "quantity",
             f"Controller '{model.id(subject)}' property '{model.id(predicate)}' must be a "
-            "literal or a node with qudt:value."
+            "literal or a node with qudt:value.",
         )
 
     return float(literal.value)
@@ -182,7 +183,6 @@ def optional_seconds(model, subject, predicate) -> float | None:
     if node is None:
         return None
     value = optional_float(model, subject, predicate)
-
     return None if value is None else seconds(value, model.graph.value(node, QUDT_SCHEMA.unit))
 
 
@@ -190,22 +190,21 @@ def required_float(model, subject, predicate) -> float:
     """A float-valued property the model must author.
 
     Raises:
-        ValueError: the property is absent, or present without a readable number.
+        ConstraintViolation: the property is absent, or present without a readable number.
     """
     value = optional_float(model, subject, predicate)
     if value is None:
-        raise ValueError(
+        raise ConstraintViolation(
+            "quantity",
             f"Controller '{model.id(subject)}' is missing required property "
-            f"'{model.id(predicate)}'."
+            f"'{model.id(predicate)}'.",
         )
-
     return value
 
 
 def is_constraint_aggregate(model, node) -> bool:
     """True for an until/when group node: a conjunction or disjunction of constraints."""
     types = get_node_types(model.graph, node)
-
     return bool({CSTR_EXT.ConstraintDisjunction, CSTR_EXT.ConstraintConjunction} & types)
 
 
@@ -254,7 +253,6 @@ class SpatialAxis:
     def suffix(self) -> str:
         """The fragment this direction contributes to a derived id."""
         prefix = "lin" if self.subspace == Subspace.Linear else "ang"
-
         return f"{prefix}_{self.axis}"
 
     @property
@@ -318,16 +316,14 @@ _XYZ_PREDICATES = (URI_GEOM_PRED_X, URI_GEOM_PRED_Y, URI_GEOM_PRED_Z)
 def subspace(node) -> Subspace:
     """The linear or angular half a view predicate selects."""
     if node not in _SUBSPACES:
-        raise ValueError(f"unknown subspace {node}")
-
+        raise ConstraintViolation("geometry", f"unknown subspace {node}")
     return _SUBSPACES[node]
 
 
 def axis(node) -> Axis:
     """The Cartesian axis a view predicate selects."""
     if node not in _AXES:
-        raise ValueError(f"unknown axis {node}")
-
+        raise ConstraintViolation("geometry", f"unknown axis {node}")
     return _AXES[node]
 
 
@@ -353,7 +349,6 @@ def position_values(model, coordinate) -> list[float] | None:
     """
     _reject_sampled(coordinate)
     values = get_coord_vectorxyz(coordinate, model.graph)
-
     return None if values is None else to_metres(values, coordinate.unit, coordinate.id)
 
 
@@ -366,7 +361,6 @@ def orientation_quaternion(model, coordinate) -> list[float] | None:
     """
     _reject_sampled(coordinate)
     rotation = get_orientation_coord_vals(coordinate, model.graph)
-
     return None if rotation is None else [float(value) for value in rotation.as_quat()]
 
 
@@ -380,7 +374,6 @@ def position_coordinate_values(model, position_node) -> list[float] | None:
         values = position_values(model, coordinate)
         if values is not None:
             return values
-
     return None
 
 
@@ -394,7 +387,6 @@ def orientation_relation_quaternion(model, orientation_node) -> list[float] | No
         rotation = orientation_quaternion(model, coordinate)
         if rotation is not None:
             return rotation
-
     return None
 
 
@@ -408,7 +400,6 @@ def parse_xyz(model, node) -> list[float] | None:
     values = [graph.value(node, predicate) for predicate in _XYZ_PREDICATES]
     if any(value is None for value in values):
         return None
-
     return si_all((value.value for value in values), graph.value(node, QUDT_SCHEMA["unit"]))
 
 
@@ -422,7 +413,7 @@ def position(model, node) -> Position:
     else:
         relation = PositionModel(node, graph)
         if len(relation.coordinate_ids) != 1:
-            raise ValueError(f"Position '{node}' needs exactly one coordinate")
+            raise ConstraintViolation("geometry", f"Position '{node}' needs exactly one coordinate")
         coordinate = PositionCoordModel(next(iter(relation.coordinate_ids)), graph, relation)
 
     return Position(
@@ -444,7 +435,7 @@ def position_reference(model, node) -> Point | None:
         return point(model, node)
     if GEOM_ENT.Frame in get_node_types(model.graph, node):
         return Point(model.id(node))
-    raise ValueError(f"Position reference must be a Point, got: {node}")
+    raise ConstraintViolation("geometry", f"Position reference must be a Point, got: {node}")
 
 
 @reader
@@ -457,7 +448,9 @@ def orientation(model, node) -> Orientation:
     else:
         relation = OrientationModel(node, graph)
         if len(relation.coordinate_ids) != 1:
-            raise ValueError(f"Orientation '{node}' needs exactly one coordinate")
+            raise ConstraintViolation(
+                "geometry", f"Orientation '{node}' needs exactly one coordinate"
+            )
         coordinate = OrientCoordModel(next(iter(relation.coordinate_ids)), graph, relation)
 
     axes = graph.value(coordinate.id, URI_GEOM_PRED_AXES_SEQ)
@@ -484,7 +477,6 @@ def _optional_pose_reference(model, node):
         return scene_object(model, node)
     if GEOM_ENT.Frame in types:
         return frame(model, node)
-
     return None
 
 
@@ -541,7 +533,6 @@ def orientation_representation(model, node) -> str:
         return "relative"
     if URI_GEOM_TYPE_EULER_ANGLES in types and URI_GEOM_TYPE_ANGLES_ABG not in types:
         return "euler"
-
     return "quaternion"
 
 
@@ -553,11 +544,15 @@ def _relative_orientation(model, node) -> list[dict]:
     graph = model.graph
     composition = _orientation_composition(model, node)
     if composition is None:
-        raise ValueError(f"Relative orientation '{node}' has no composition operator.")
+        raise ConstraintViolation(
+            "geometry", f"Relative orientation '{node}' has no composition operator."
+        )
     in1 = ensure_one_obj_uri(graph, composition, GEOM_OP["in1"])
     in2 = ensure_one_obj_uri(graph, composition, GEOM_OP["in2"])
     if in1 is None or in2 is None:
-        raise ValueError(f"Orientation composition '{composition}' must declare both operands.")
+        raise ConstraintViolation(
+            "geometry", f"Orientation composition '{composition}' must declare both operands."
+        )
 
     def operand(operand_node) -> dict:
         types = get_node_types(graph, operand_node)
@@ -567,23 +562,26 @@ def _relative_orientation(model, node) -> list[dict]:
             # A delta is literal by construction, so it folds to a quaternion here.
             rotation = orientation_quaternion(model, ModelBase(node_id=operand_node, graph=graph))
             if rotation is None:
-                raise ValueError(
-                    f"Relative orientation delta '{operand_node}' has no literal components"
+                raise ConstraintViolation(
+                    "geometry",
+                    f"Relative orientation delta '{operand_node}' has no literal components",
                 )
 
             return {
                 "delta": [{"value": value} for value in rotation],
                 "representation": "quaternion",
             }
-        raise ValueError(
-            f"Relative orientation operand '{operand_node}' is neither a pose nor an orientation"
+        raise ConstraintViolation(
+            "geometry",
+            f"Relative orientation operand '{operand_node}' is neither a pose nor an orientation",
         )
 
     operands = [operand(in1), operand(in2)]
     if sum("pose" in op for op in operands) != 1 or sum("delta" in op for op in operands) != 1:
-        raise ValueError(
+        raise ConstraintViolation(
+            "geometry",
             f"Relative orientation '{node}' must compose exactly one base pose "
-            "and one delta rotation."
+            "and one delta rotation.",
         )
 
     return operands
@@ -596,7 +594,6 @@ def _pose_endpoint(model, node):
         return None
     if ENV.RigidObject in get_node_types(model.graph, node):
         return scene_object(model, node)
-
     return frame(model, node)
 
 
@@ -756,7 +753,6 @@ def _spatial_fields(model, node) -> dict:
     one node the same way regardless of which one subclasses it.
     """
     graph = model.graph
-
     return {
         "id": model.id(node),
         "quantity_kind": [model.id(kind) for kind in graph[node : QUDT_SCHEMA["hasQuantityKind"]]],
@@ -772,7 +768,6 @@ def velocity_twist(model, node) -> VelocityTwist:
     """A VelocityTwist quantity: of a body with respect to another, about a reference point."""
     model.expect_type(node, GEOM_COORD["VelocityTwistCoordinate"])
     model.expect_type(node, GEOM_COORD["VectorXYZ"])
-
     return VelocityTwist(
         of=simplicial_complex(model, model.graph.value(node, GEOM_REL["of"])),
         with_respect_to=simplicial_complex(
@@ -787,7 +782,6 @@ def acceleration_twist(model, node) -> AccelerationTwist:
     """An AccelerationTwist quantity."""
     model.expect_type(node, GEOM_COORD["AccelerationTwistCoordinate"])
     model.expect_type(node, GEOM_COORD["VectorXYZ"])
-
     return AccelerationTwist(**_spatial_fields(model, node))
 
 
@@ -796,7 +790,6 @@ def pose_difference(model, node) -> PoseDifference:
     """A PoseDifference quantity."""
     model.expect_type(node, GEOM_COORD["PoseDifferenceCoordinate"])
     model.expect_type(node, GEOM_COORD["VectorXYZ"])
-
     return PoseDifference(**_spatial_fields(model, node))
 
 
@@ -841,7 +834,6 @@ def _is_duration(model, node) -> bool:
     """
     if TIME["Duration"] in get_node_types(model.graph, node):
         return True
-
     return model.graph.value(node, QUDT_SCHEMA.hasQuantityKind) == NS_MM_QUDT_QTY["Time"]
 
 
@@ -941,7 +933,6 @@ def joint_position(model, node) -> JointPosition:
         raise ConstraintViolation(
             "kinematic-chain", f"JointPositionCoordinate '{node}' has no of-joint URI"
         )
-
     return JointPosition(model.id(node), model.label(joint))
 
 
@@ -967,7 +958,6 @@ def _is_authored(model, node) -> bool:
     # A path parameter's value is only its starting point; the traversal drives it per tick.
     if (None, GEOM_OP_EXT["path-parameter"], node) in model.graph:
         return False
-
     return any((node, predicate, None) in model.graph for predicate in _AUTHORED_VALUE_PREDICATES)
 
 
@@ -999,8 +989,7 @@ def simplicial_complex(model, node) -> SimplicialComplex:
     """A rigid body, mapping a body-origin frame to the body itself."""
     types = get_node_types(model.graph, node)
     if not {GEOM_ENT.SimplicialComplex, GEOM_ENT.Frame} & types:
-        raise ValueError(f"Expected a rigid body or frame, got: {node}")
-
+        raise ConstraintViolation("geometry", f"Expected a rigid body or frame, got: {node}")
     return SimplicialComplex(_body_or_self(model, node))
 
 
@@ -1008,7 +997,6 @@ def simplicial_complex(model, node) -> SimplicialComplex:
 def frame(model, node) -> Frame:
     """A reference frame, mapping a scene-dsl body-origin frame to its runtime body."""
     model.expect_type(node, GEOM_ENT["Frame"])
-
     return Frame(_body_or_self(model, node))
 
 
@@ -1032,8 +1020,7 @@ def _body_or_self(model, node) -> str:
 def point(model, node) -> Point:
     """A Point, such as a frame origin."""
     if not {GEOM_ENT.Point, GEOM_ENT.Frame} & get_node_types(model.graph, node):
-        raise ValueError(f"Expected a point or frame, got: {node}")
-
+        raise ConstraintViolation("geometry", f"Expected a point or frame, got: {node}")
     return Point(model.id(node))
 
 
@@ -1041,7 +1028,6 @@ def point(model, node) -> Point:
 def scene_object(model, node) -> SceneObject:
     """A scene object referenced as a spatial endpoint."""
     model.expect_type(node, ENV.RigidObject)
-
     return SceneObject(model.id(node), model.id(node))
 
 
@@ -1071,7 +1057,6 @@ def _threshold(model, node, predicate) -> Quantity:
 @reader
 def _equality_constraint(model, node) -> EqualityConstraint:
     model.expect_type(node, CSTR["EqualityConstraint"])
-
     return EqualityConstraint(_threshold(model, node, CSTR["reference-value"]))
 
 
@@ -1081,14 +1066,12 @@ def _unilateral_constraint(model, node) -> UnilateralConstraint:
     type_ = UnilateralConstraintType.LessThan
     if CSTR["GreaterThanConstraint"] in get_node_types(model.graph, node):
         type_ = UnilateralConstraintType.GreaterThan
-
     return UnilateralConstraint(type_, _threshold(model, node, CSTR["threshold"]))
 
 
 @reader
 def _bilateral_constraint(model, node) -> BilateralConstraint:
     model.expect_type(node, CSTR["BilateralConstraint"])
-
     return BilateralConstraint(
         _threshold(model, node, CSTR["lower-threshold"]),
         _threshold(model, node, CSTR["upper-threshold"]),
@@ -1098,7 +1081,6 @@ def _bilateral_constraint(model, node) -> BilateralConstraint:
 @reader
 def _outside_constraint(model, node) -> OutsideConstraint:
     model.expect_type(node, CSTR_EXT["OutsideConstraint"])
-
     return OutsideConstraint(
         _threshold(model, node, CSTR["lower-threshold"]),
         _threshold(model, node, CSTR["upper-threshold"]),
@@ -1136,7 +1118,7 @@ def read_views(model) -> dict:
         the subspace and, when it selects one, the axis
 
     Raises:
-        ValueError: a view's type matches no superobject reader.
+        ConstraintViolation: a view's type matches no superobject reader.
     """
     graph = model.graph
     views = {}
@@ -1148,7 +1130,9 @@ def read_views(model) -> dict:
         read = next((func for type_, func in _VIEW_SUPEROBJECTS if type_ in types), quantity)
         superobject = read(model, superobject_node)
         if superobject is None:
-            raise ValueError(f"MAP view {node} has an unrecognized type; no view reader matched")
+            raise ConstraintViolation(
+                "geometry", f"MAP view {node} has an unrecognized type; no view reader matched"
+            )
         axis_node = graph.value(node, MAP["axis"])
         views[model.id(node)] = View(
             model.id(node),
@@ -1186,7 +1170,6 @@ def views_by_subobject(views: dict) -> dict[str, list]:
         subobject_id = getattr(view.subobject, "id", None)
         if subobject_id:
             indexed.setdefault(subobject_id, []).append(view)
-
     return indexed
 
 
@@ -1194,10 +1177,10 @@ def _unique_view(indexed, subobject_id, context):
     """The one view onto a subobject, or None; several disagreeing views is an error."""
     matches = indexed.get(subobject_id, ())
     if len(matches) > 1:
-        raise ValueError(
-            f"{context}: quantity '{subobject_id}' is the subobject of multiple MAP views"
+        raise ConstraintViolation(
+            "geometry",
+            f"{context}: quantity '{subobject_id}' is the subobject of multiple MAP views",
         )
-
     return matches[0] if matches else None
 
 
@@ -1395,17 +1378,6 @@ _GROUPABLE_SUPEROBJECTS = {"Pose", "VelocityTwist", "AccelerationTwist", "Wrench
 _GROUP_AXIS_BY_SUBSPACE = {Subspace.Linear: ("linear", False), Subspace.Angular: ("angular", True)}
 
 
-def _group_subspace(view, quantity_record, superobject_type):
-    """Which half of the superobject a view selects, or None when it joins no group."""
-    mapping = _GROUP_AXIS_BY_SUBSPACE.get(view.subspace)
-    if mapping is not None:
-        return mapping
-    kind = getattr(getattr(quantity_record, "quantity_kind", None), "id", "")
-    rotational = "Angle" in kind or "angle" in kind.lower() or "rotation" in quantity_record.id
-
-    return ("angular", True) if superobject_type == "Pose" and rotational else None
-
-
 def pose_axis_error_groups_for_motion(model, evaluators_by_node: dict, views: dict) -> list:
     """A motion's per-axis error evaluators, regrouped into one group per superobject.
 
@@ -1432,7 +1404,12 @@ def pose_axis_error_groups_for_motion(model, evaluators_by_node: dict, views: di
         superobject_type = getattr(view.superobject, "type", None)
         if superobject_type not in _GROUPABLE_SUPEROBJECTS:
             continue
-        mapping = _group_subspace(view, quantity_record, superobject_type)
+        # Which half of the superobject the view selects, or None when it joins no group.
+        mapping = _GROUP_AXIS_BY_SUBSPACE.get(view.subspace)
+        if mapping is None and superobject_type == "Pose":
+            kind = getattr(getattr(quantity_record, "quantity_kind", None), "id", "")
+            if "Angle" in kind or "angle" in kind.lower() or "rotation" in quantity_record.id:
+                mapping = ("angular", True)
         # A whole-subspace view has no per-axis component, so it cannot join a per-axis group;
         # its own equality-constraint controller drives it.
         if mapping is None or view.axis is None:
@@ -1470,7 +1447,6 @@ def _reference_value_id(constraint_record) -> str | None:
     """The id of a constraint's reference-value parameter, or None."""
     parameter = getattr(constraint_record, "parameter", None)
     reference = getattr(parameter, "reference_value", None) if parameter else None
-
     return getattr(reference, "id", None)
 
 
@@ -1593,10 +1569,10 @@ def elapsed_coordinate_id(evaluator) -> str:
     """
     coordinate = getattr(evaluator.error, "id", None)
     if not coordinate:
-        raise ValueError(
-            f"elapsed constraint '{evaluator.id}' has no duration coordinate to measure into"
+        raise ConstraintViolation(
+            "quantity",
+            f"elapsed constraint '{evaluator.id}' has no duration coordinate to measure into",
         )
-
     return coordinate
 
 
@@ -1644,7 +1620,6 @@ def _pose_component(component_id: str, data_by_id: dict) -> ComponentRef:
     value = getattr(component, "value", None)
     if value is not None:
         return ComponentRef(value=str(value))
-
     return ComponentRef(ref=component_id)
 
 
@@ -1710,8 +1685,9 @@ def _build_pose_components(model, views: dict, data: list) -> dict:
         required = _required_pose_component_fields(parts.representation, euler_axes_sequence)
         missing = [name for name in required if getattr(parts, name) is None]
         if missing:
-            raise ValueError(
-                f"Declared pose '{pose_id}' is missing required components: {', '.join(missing)}."
+            raise ConstraintViolation(
+                "geometry",
+                f"Declared pose '{pose_id}' is missing required components: {', '.join(missing)}.",
             )
         if parts.representation == "euler":
             parts.euler_factors = _euler_factors(pose_id, parts, data_by_id)
@@ -1734,7 +1710,9 @@ def _euler_factors(pose_id: str, parts: PoseComponents, data_by_id: dict) -> lis
         if getattr(parts, f"orientation_{name}") is not None
     ]
     if len(factors) != len(sequence):
-        raise ValueError(f"Euler pose '{pose_id}' has no component for every axis of '{sequence}'.")
+        raise ConstraintViolation(
+            "geometry", f"Euler pose '{pose_id}' has no component for every axis of '{sequence}'."
+        )
 
     return factors if getattr(pose_record, "euler_intrinsic", False) else list(reversed(factors))
 
@@ -1829,8 +1807,8 @@ def build_indexes(model, closures: dict, data_structures: list, views: dict) -> 
     """Resolve every per-motion lookup once, before any motion is built.
 
     Raises:
-        ValueError: a declared pose is missing a component, or an Euler pose has no component for
-            every axis of its sequence.
+        ConstraintViolation: a declared pose is missing a component, or an Euler pose has no
+            component for every axis of its sequence.
     """
     source, owner, trigger = _snapshot_maps(model)
     closure_output, closure_input = closure_maps(closures)

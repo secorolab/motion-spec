@@ -5,22 +5,19 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-
-from rdflib import Graph
 from rdf_utils.resolver import IriToFileResolver, install_resolver
+from rdflib import Dataset, Graph, URIRef
+from rdflib.namespace import PROV, RDF
 
+from motion_spec.classes.base import DataclassJSONEncoder
+from motion_spec.classes.geometry import Axis, Frame, Point, Subspace, View, Wrench
+from motion_spec.classes.handlers import PIDController
+from motion_spec.classes.motion import BlackboardValue
+from motion_spec.classes.qudt import Quantity, QuantityKind, Unit
 from motion_spec.generation import codegen
-from motion_spec.rdf_parser.ir import (
-    DerivedIriRegistry,
-    _annotate_controller_signals,
-    _assert_every_id_resolves,
-    _views_for_access,
-    add_controller_internal_state_logging,
-    add_quantity_samples,
-    add_spatial_samples,
-)
 from motion_spec.generation.artifacts import (
     PROTO_FIELD_BASES,
     build_frame_layout,
@@ -33,164 +30,181 @@ from motion_spec.introspection.provenance import (
     build_derivation_document,
     build_provenance_document,
 )
+from motion_spec.rdf_parser import communication, constraint_handler, quantities
+from motion_spec.rdf_parser.model import Model
 
 
-def _stub_registry(introspection: dict) -> DerivedIriRegistry:
-    """Registry seeded with an IRI for every controller the sample IR declares."""
-    from rdflib import URIRef
+def _quantity(id_: str, value: float | None = None) -> Quantity:
+    return Quantity(id_, QuantityKind("Length"), Unit("M"), value, False)
 
-    return DerivedIriRegistry(
-        [
-            (controller["id"], URIRef(f"https://example.org/model/{controller['id']}"))
-            for controller in introspection.get("controllers", [])
-        ]
+
+def _wrench(id_: str) -> Wrench:
+    return Wrench(
+        id=id_,
+        quantity_kind=[],
+        reference_point=Point(f"{id_}_origin"),
+        as_seen_by=Frame(id_),
+        unit=[],
+    )
+
+
+def _model(**authored: str) -> Model:
+    """A `Model` whose graph authors one subject per `id=uri` kwarg."""
+    graph = Dataset(default_union=True)
+    graph.bind("prov", PROV)
+    for uri in authored.values():
+        graph.add((URIRef(uri), RDF.type, PROV.Entity))
+    return Model(
+        graph=graph, app_path=Path("model-app.ld.json"), imported_models=[], imported_provenance=[]
     )
 
 
 def _sample_ir() -> dict:
     return {
-        "control_period_ns": 2_000_000,
-        "unique_motions": [
-            {
-                "id": "move",
-                "index": 0,
-                "handler": "move_handler",
-                "fsm_state": "S_MOVE",
-                "controllers": [
-                    {
-                        "id": "ctrl_x",
-                        "type": "ProportionalIntegralDerivative",
-                        "proportional_gain": 1.0,
-                        "integral_gain": 0.0,
-                        "derivative_gain": 0.1,
-                        "error_signal": {"id": "err_x"},
-                        "control_signal": {"id": "out_x"},
-                    }
-                ],
-                "while_monitors": [],
-                "until_monitors": [
-                    {
-                        "id": "done_mon",
-                        "monitor_type": "EdgeTriggeredMonitor",
-                        "is_edge_triggered": True,
-                        "event": "E_DONE",
-                        "event_uri": "https://example.test/fsm/E_DONE",
-                        "event_name": "E_DONE",
-                    }
-                ],
-                "fsm_when_gate_motions": ["guarded"],
-            },
-            {
-                "id": "guarded",
-                "index": 1,
-                "handler": "guarded_handler",
-                "controllers": [],
-                "when_monitors": [
-                    {
-                        "id": "ready_mon",
-                        "monitor_type": "LevelTriggeredMonitor",
-                        "is_edge_triggered": False,
-                        "flag": "ready",
-                        "error": {"id": "err_x"},
-                        "fallback_motion": "move",
-                    }
-                ],
-            },
-        ],
-        "introspection": {
-            "control_period_ns": 2_000_000,
-            "uris": [
-                {"id": "move", "uri": "https://example.test/move"},
-                {"id": "ctrl_x", "uri": "https://example.test/ctrl_x"},
-                {"id": "err_x", "uri": "https://example.test/err_x"},
-                {"id": "out_x", "uri": "https://example.test/out_x"},
-                {"id": "done_mon", "uri": "https://example.test/done_mon"},
-            ],
-            "motions": [{"id": "move", "handler": "move_handler"}],
-            "controllers": [{"id": "ctrl_x"}],
-            "monitors": [{"id": "done_mon"}],
-            "quantities": [
+        "configuration": {"control_period_ns": 2_000_000, "backend": "mj_kdl", "platform": {}},
+        "resources": {"robots": [], "by_kind": {}, "by_id": {}},
+        "composition": {"scene": {}},
+        "computation": {"shared_data": [], "values": {}, "closures": {}, "views": {}},
+        "coordination": {
+            "motions": [
                 {
-                    "id": "err_x",
-                    "uri": "https://example.test/err_x",
-                    "type": "Quantity",
-                    "unit": ["M"],
-                    "quantity_kind": ["Length"],
-                }
-            ],
-            "signals": [{"id": "ctrl_x.error_signal", "quantity": "err_x"}],
-            "provenance": {
-                "contexts": [
-                    {"id": "prov", "uri": "http://www.w3.org/ns/prov#"},
-                    {
-                        "id": "execution-context",
-                        "uri": "https://secorolab.github.io/metamodels/execution-context#",
-                    },
+                    "id": "move",
+                    "index": 0,
+                    "handler": "move_handler",
+                    "fsm_state": "S_MOVE",
+                    "controllers": [
+                        {
+                            "id": "ctrl_x",
+                            "type": "ProportionalIntegralDerivative",
+                            "proportional_gain": 1.0,
+                            "integral_gain": 0.0,
+                            "derivative_gain": 0.1,
+                            "error_signal": {"id": "err_x"},
+                            "control_signal": {"id": "out_x"},
+                        }
+                    ],
+                    "while_monitors": [],
+                    "until_monitors": [
+                        {
+                            "id": "done_mon",
+                            "monitor_type": "EdgeTriggeredMonitor",
+                            "is_edge_triggered": True,
+                            "event": "E_DONE",
+                            "event_uri": "https://example.test/fsm/E_DONE",
+                            "event_name": "E_DONE",
+                        }
+                    ],
+                    "fsm_when_gate_motions": ["guarded"],
+                },
+                {
+                    "id": "guarded",
+                    "index": 1,
+                    "handler": "guarded_handler",
+                    "controllers": [],
+                    "when_monitors": [
+                        {
+                            "id": "ready_mon",
+                            "monitor_type": "LevelTriggeredMonitor",
+                            "is_edge_triggered": False,
+                            "flag": "ready",
+                            "error": {"id": "err_x"},
+                            "fallback_motion": "move",
+                        }
+                    ],
+                },
+            ]
+        },
+        "communication": {
+            "introspection": {
+                "control_period_ns": 2_000_000,
+                "uris": [
+                    {"id": "move", "uri": "https://example.test/move"},
+                    {"id": "ctrl_x", "uri": "https://example.test/ctrl_x"},
+                    {"id": "err_x", "uri": "https://example.test/err_x"},
+                    {"id": "out_x", "uri": "https://example.test/out_x"},
+                    {"id": "done_mon", "uri": "https://example.test/done_mon"},
                 ],
-                "entities": [
+                "motions": [{"id": "move", "handler": "move_handler"}],
+                "controllers": [{"id": "ctrl_x"}],
+                "monitors": [{"id": "done_mon"}],
+                "quantities": [
                     {
-                        "id": "entity:app_manifest",
-                        "types": ["prov:Entity"],
-                        "role": "app_manifest",
-                        "path": "/tmp/app.json",
-                    },
-                    {
-                        "id": "entity:motion_spec_ir",
-                        "types": ["prov:Entity"],
-                        "role": "motion_spec_ir",
-                        "wasGeneratedBy": "activity:motion_spec_ir_generation",
-                        "wasDerivedFrom": "entity:app_manifest",
-                    },
+                        "id": "err_x",
+                        "uri": "https://example.test/err_x",
+                        "type": "Quantity",
+                        "unit": ["M"],
+                        "quantity_kind": ["Length"],
+                    }
                 ],
-                "activities": [
-                    {
-                        "id": "activity:motion_spec_ir_generation",
-                        "types": ["prov:Activity"],
-                        "used": ["entity:app_manifest"],
-                        "wasAssociatedWith": "agent:motion_spec_ir_gen",
-                    },
-                    {
-                        "id": "activity:controller_execution",
-                        "types": ["prov:Activity", "bdd:SimulatedExecution"],
-                        "used": ["entity:motion_spec_ir"],
-                        "wasAssociatedWith": "agent:controller_process",
-                        "role": "controller_execution",
-                    },
-                ],
-                "agents": [
-                    {
-                        "id": "agent:runtime:mujoco",
-                        "types": ["prov:SoftwareAgent", "exec:Simulation"],
-                        "role": "runtime_runner",
-                    },
-                    {
-                        "id": "agent:controller_process",
-                        "types": ["prov:SoftwareAgent"],
-                        "role": "controller_process",
-                        "actedOnBehalfOf": "agent:runtime:mujoco",
-                    },
-                    {
-                        "id": "agent:modelled:robot",
-                        "types": ["prov:Agent", "agn:ModelledAgent"],
-                        "role": "robot",
-                        "model": "src/mj_kdl_wrapper/third_party/menagerie/kinova_gen3/gen3.xml",
-                    },
-                ],
-            },
+                "signals": [{"id": "ctrl_x.error_signal", "quantity": "err_x"}],
+                "provenance": {
+                    "contexts": [
+                        {"id": "prov", "uri": "http://www.w3.org/ns/prov#"},
+                        {
+                            "id": "execution-context",
+                            "uri": "https://secorolab.github.io/metamodels/execution-context#",
+                        },
+                    ],
+                    "entities": [
+                        {
+                            "id": "entity:app_manifest",
+                            "types": ["prov:Entity"],
+                            "role": "app_manifest",
+                            "path": "/tmp/app.json",
+                        },
+                        {
+                            "id": "entity:motion_spec_ir",
+                            "types": ["prov:Entity"],
+                            "role": "motion_spec_ir",
+                            "wasGeneratedBy": "activity:motion_spec_ir_generation",
+                            "wasDerivedFrom": "entity:app_manifest",
+                        },
+                    ],
+                    "activities": [
+                        {
+                            "id": "activity:motion_spec_ir_generation",
+                            "types": ["prov:Activity"],
+                            "used": ["entity:app_manifest"],
+                            "wasAssociatedWith": "agent:motion_spec_ir_gen",
+                        },
+                        {
+                            "id": "activity:controller_execution",
+                            "types": ["prov:Activity", "bdd:SimulatedExecution"],
+                            "used": ["entity:motion_spec_ir"],
+                            "wasAssociatedWith": "agent:controller_process",
+                            "role": "controller_execution",
+                        },
+                    ],
+                    "agents": [
+                        {
+                            "id": "agent:runtime:mujoco",
+                            "types": ["prov:SoftwareAgent", "exec:Simulation"],
+                            "role": "runtime_runner",
+                        },
+                        {
+                            "id": "agent:controller_process",
+                            "types": ["prov:SoftwareAgent"],
+                            "role": "controller_process",
+                            "actedOnBehalfOf": "agent:runtime:mujoco",
+                        },
+                        {
+                            "id": "agent:modelled:robot",
+                            "types": ["prov:Agent", "agn:ModelledAgent"],
+                            "role": "robot",
+                            "model": "src/mj_kdl_wrapper/third_party/menagerie/kinova_gen3/gen3.xml",
+                        },
+                    ],
+                },
+            }
         },
     }
 
 
 def test_closure_output_stays_direct_when_it_is_also_a_view() -> None:
-    view = {
-        "subobject": {"id": "end_x"},
-        "superobject": {"id": "end_pose"},
-        "subspace": "position",
-        "axis": "X",
-    }
+    view = View("end_pose_x", _quantity("end_pose"), _quantity("end_x"), Subspace.Linear, Axis.X)
     closure = {"type": "Addition", "out": "end_x"}
 
-    assert _views_for_access({"end_pose_x": view}, [], [], {"add": closure}) == {}
+    assert quantities.views_for_access({"end_pose_x": view}, [], [], {"add": closure}) == {}
 
 
 def _sample_fsm() -> dict:
@@ -305,66 +319,54 @@ def test_frame_log_proto_fields_advance_past_large_categories() -> None:
 
 def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch) -> None:
     ir = _sample_ir()
-    ir["unique_motions"][0]["until_monitors"][0]["error"] = {"id": "pose_ee", "type": "Pose"}
-    ir.update(
-        {
-            "backend": "mj_kdl",
-            "has_serial_chain": False,
-            "resources": {"robots": [], "by_kind": {"serial_chain": [], "mobile_base": None}},
-            "cstr_hdl": [],
-            "motions": ir["unique_motions"],
-            "data": [],
-            "pose_components": {},
-            "closures": {
-                "ctrl_x": {
-                    "id": "ctrl_x",
-                    "type": "Controller",
-                    "error_signal": "err_x",
-                    "control_signal": "out_x",
-                },
-                "eval_err_x": {
-                    "id": "eval_err_x",
-                    "type": "ErrorEvaluator",
-                    "constraint": "EqualityConstraint",
-                    "quantity": "measured_x",
-                    "reference_value": "setpoint_x",
-                    "error": "err_x",
-                },
-            },
-            "views": {
-                "wrench_force": {
-                    "superobject": {"id": "wrench_ee", "type": "Wrench"},
-                    "subobject": {"id": "wrench_force", "type": "Quantity"},
-                    "subspace": "Force",
-                    "axis": None,
-                },
-                "wrench_force_x": {
-                    "superobject": {"id": "wrench_ee", "type": "Wrench"},
-                    "subobject": {"id": "wrench_force_x", "type": "Quantity"},
-                    "subspace": "Force",
-                    "axis": "X",
-                },
-            },
-            "shared_schedule": [],
-            "schedule": [],
-            "shared_data": [
-                {"id": "err_x", "type": "Quantity"},
-                {"id": "pose_ee", "type": "Pose"},
-                {"id": "twist_ee", "type": "VelocityTwist"},
-                {"id": "wrench_ee", "type": "Wrench"},
-                {"id": "wrench_force", "type": "Quantity"},
-                {"id": "wrench_force_x", "type": "Quantity"},
-                {"id": "measured_x", "type": "Quantity"},
-                {"id": "setpoint_x", "type": "Quantity"},
-                {"id": "ready_flag", "type": "Bool"},
-                {"id": "settle_count", "type": "IntCounter"},
-            ],
-            "values": {"externally_measured": []},
-            "scene": {},
-            "trace": {},
-        }
+    ir["coordination"]["motions"][0]["until_monitors"][0]["error"] = {
+        "id": "pose_ee",
+        "type": "Pose",
+    }
+
+    closures = {
+        "ctrl_x": {
+            "id": "ctrl_x",
+            "type": "Controller",
+            "error_signal": "err_x",
+            "control_signal": "out_x",
+        },
+        "eval_err_x": {
+            "id": "eval_err_x",
+            "type": "ErrorEvaluator",
+            "constraint": "EqualityConstraint",
+            "quantity": "measured_x",
+            "reference_value": "setpoint_x",
+            "error": "err_x",
+        },
+    }
+    wrench_ee = _wrench("wrench_ee")
+    views = {
+        "wrench_force": View(
+            "wrench_force", wrench_ee, _quantity("wrench_force"), Subspace.Linear, None
+        ),
+        "wrench_force_x": View(
+            "wrench_force_x", wrench_ee, _quantity("wrench_force_x"), Subspace.Linear, Axis.X
+        ),
+    }
+    shared_data = [
+        BlackboardValue(id="err_x", type="Quantity"),
+        BlackboardValue(id="pose_ee", type="Pose"),
+        BlackboardValue(id="twist_ee", type="VelocityTwist"),
+        BlackboardValue(id="wrench_ee", type="Wrench"),
+        BlackboardValue(id="wrench_force", type="Quantity"),
+        BlackboardValue(id="wrench_force_x", type="Quantity"),
+        BlackboardValue(id="measured_x", type="Quantity"),
+        BlackboardValue(id="setpoint_x", type="Quantity"),
+        BlackboardValue(id="ready_flag", type="Bool"),
+        BlackboardValue(id="settle_count", type="IntCounter"),
+    ]
+    ir["computation"].update(
+        {"closures": closures, "views": views, "values": {"externally_measured": []}}
     )
-    ir["introspection"]["quantities"].extend(
+
+    introspection = ir["communication"]["introspection"]
+    introspection["quantities"].extend(
         [
             {"id": "pose_ee", "type": "Pose", "reference_frame": "world"},
             {"id": "twist_ee", "type": "VelocityTwist", "reference_frame": "base"},
@@ -373,69 +375,87 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
             {"id": "wrench_force_x", "type": "Quantity"},
         ]
     )
-    # Run the introspection-piece derivations the way _build_introspection now does
-    # (this synthetic ir is assembled by hand, so drive the pieces directly).
-    for motion in ir["motions"]:
-        _annotate_controller_signals(motion.get("controllers", []), ir["closures"])
-    _annotate_controller_signals(ir["introspection"]["controllers"], ir["closures"])
-    add_controller_internal_state_logging(
-        ir["closures"],
-        ir["shared_data"],
-        ir["introspection"],
-        ir["motions"],
-        _stub_registry(ir["introspection"]),
+
+    # Run the introspection-piece derivations the way `build_introspection` now does (this
+    # synthetic ir is assembled by hand, so drive the pieces directly).
+    ctrl_x = PIDController(
+        id="ctrl_x",
+        control_signal=_quantity("out_x"),
+        error_signal=_quantity("err_x"),
+        proportional_gain=1.0,
+        integral_gain=0.0,
+        derivative_gain=0.1,
     )
-    add_quantity_samples(ir["introspection"], ir["shared_data"], ir["views"])
-    add_spatial_samples(ir["introspection"], ir["shared_data"])
+    constraint_handler.annotate_controller_signals([ctrl_x], closures)
+    model = _model(ctrl_x="https://example.org/model/ctrl_x")
+    rows = introspection["quantities"]
+    seen = {
+        "shared": {item.id for item in shared_data if item.id},
+        "rows": {row["id"] for row in rows if row.get("id")},
+    }
+    communication._add_controller_state(
+        model, closures, shared_data, rows, seen, [SimpleNamespace(controllers=[ctrl_x])]
+    )
+    communication.add_quantity_samples(introspection, shared_data, views)
+    communication.add_spatial_samples(introspection, shared_data)
+
+    # Cross the derivation-stage records into the plain-dict shape the published IR carries.
+    ir["computation"]["shared_data"] = json.loads(json.dumps(shared_data, cls=DataclassJSONEncoder))
+    ir["coordination"]["motions"][0]["controllers"] = [
+        json.loads(json.dumps(ctrl_x, cls=DataclassJSONEncoder))
+    ]
+
     ir_path = tmp_path / "ir.json"
-    ir_path.write_text(json.dumps(ir))
+    ir_path.write_text(json.dumps(ir, cls=DataclassJSONEncoder))
     monkeypatch.setattr(codegen, "render_template", lambda *args, **kwargs: None)
     monkeypatch.setattr(codegen, "compile_frame_log_proto", lambda *args, **kwargs: None)
 
     codegen.generate_code(ir_path, tmp_path, "stst")
 
     # schema.json is not an artifact any more -- the contract lives in the log header.
-    schema = build_schema(ir, ir_path=ir_path, output_dir=tmp_path, fsm_ir=ir.get("fsm"))
-    quantities = {quantity["id"]: quantity for quantity in schema["quantities"]}
+    schema = build_schema(
+        ir, ir_path=ir_path, output_dir=tmp_path, fsm_ir=ir["coordination"].get("fsm")
+    )
+    quantities_by_id = {quantity["id"]: quantity for quantity in schema["quantities"]}
     # sample_desc is the backend-agnostic descriptor; the C++ expression is rendered
     # by the sample-expr template (shared_data.stg).
-    assert quantities["err_x"]["sample_desc"] == {"kind": "shared", "id": "err_x"}
+    assert quantities_by_id["err_x"]["sample_desc"] == {"kind": "shared", "id": "err_x"}
     # An object carried by a whole-object spatial slot gets no per-axis scalar rows too --
     # that pair was the same value on the wire twice, in two representations.
     assert not [
-        qid for qid in quantities if qid.startswith(("pose_ee.", "twist_ee.", "wrench_ee."))
+        qid for qid in quantities_by_id if qid.startswith(("pose_ee.", "twist_ee.", "wrench_ee."))
     ]
-    assert "wrench_force" not in quantities
-    assert quantities["wrench_force_x"]["sample_desc"] == {
+    assert "wrench_force" not in quantities_by_id
+    assert quantities_by_id["wrench_force_x"]["sample_desc"] == {
         "kind": "access",
         "ref": "wrench_force_x",
     }
-    assert quantities["ready_flag"]["sample_desc"] == {"kind": "bool", "id": "ready_flag"}
-    assert quantities["ready_flag"]["source_type"] == "Bool"
-    assert quantities["settle_count"]["sample_desc"] == {"kind": "int", "id": "settle_count"}
-    assert quantities["settle_count"]["source_type"] == "IntCounter"
-    assert quantities["ctrl_x_error_integral"]["sample_desc"] == {
+    assert quantities_by_id["ready_flag"]["sample_desc"] == {"kind": "bool", "id": "ready_flag"}
+    assert quantities_by_id["ready_flag"]["source_type"] == "Bool"
+    assert quantities_by_id["settle_count"]["sample_desc"] == {"kind": "int", "id": "settle_count"}
+    assert quantities_by_id["settle_count"]["source_type"] == "IntCounter"
+    assert quantities_by_id["ctrl_x_error_integral"]["sample_desc"] == {
         "kind": "shared",
         "id": "ctrl_x_error_integral",
     }
-    assert quantities["ctrl_x_error_integral"]["role"] == "controller_internal_state"
-    assert quantities["ctrl_x_first_sample"]["sample_desc"] == {
+    assert quantities_by_id["ctrl_x_error_integral"]["role"] == "controller_internal_state"
+    assert quantities_by_id["ctrl_x_first_sample"]["sample_desc"] == {
         "kind": "bool",
         "id": "ctrl_x_first_sample",
     }
-    assert quantities["ctrl_x_first_sample"]["role"] == "controller_internal_state"
-    assert quantities["ctrl_x_first_sample"]["source_type"] == "Bool"
+    assert quantities_by_id["ctrl_x_first_sample"]["role"] == "controller_internal_state"
+    assert quantities_by_id["ctrl_x_first_sample"]["source_type"] == "Bool"
     assert schema["pools"]["quantities"] == len(schema["quantities"])
 
     payload = json.loads((tmp_path / ".stst" / "ir.json").read_text())
     assert not [
         sample
-        for sample in payload["introspection_artifacts"]["model"]["quantities"]
+        for sample in payload["communication"]["introspection_artifacts"]["model"]["quantities"]
         if sample["desc"].get("kind") in {"pose_pos", "pose_orient"}
     ]
     controller = next(
         controller
-        for case in payload["introspection_artifacts"]["model"]["motions"]
+        for case in payload["communication"]["introspection_artifacts"]["model"]["motions"]
         for controller in case["controllers"]
         if controller["error_signal"] == "err_x"
     )
@@ -455,16 +475,16 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
 
     # Spatial samples: one pose/twist/wrench per data object, serialized into the frame
     # record's pose/twist/wrench fields.
-    model = payload["introspection_artifacts"]["model"]
+    model_payload = payload["communication"]["introspection_artifacts"]["model"]
     assert (schema["pools"]["poses"], schema["pools"]["twists"], schema["pools"]["wrenches"]) == (
         1,
         1,
         1,
     )
     assert schema["spatial"]["poses"][0]["id"] == "pose_ee"
-    assert {"index": 0, "id": "pose_ee"} in model["poses"]
-    assert {"index": 0, "id": "twist_ee"} in model["twists"]
-    assert {"index": 0, "id": "wrench_ee"} in model["wrenches"]
+    assert {"index": 0, "id": "pose_ee"} in model_payload["poses"]
+    assert {"index": 0, "id": "twist_ee"} in model_payload["twists"]
+    assert {"index": 0, "id": "wrench_ee"} in model_payload["wrenches"]
 
 
 def test_provenance_document_is_jsonld_and_prov_shacl_conformant(tmp_path: Path) -> None:
@@ -490,47 +510,43 @@ def test_provenance_document_is_jsonld_and_prov_shacl_conformant(tmp_path: Path)
 
 
 # --- derived-entity IRIs (plan 015) ---------------------------------------------------------
-def _registry(**authored):
-    from rdflib import URIRef
-
-    return DerivedIriRegistry([(id_, URIRef(uri)) for id_, uri in authored.items()])
 
 
 def test_derived_iri_extends_its_parent_path():
-    iris = _registry(ctrl_x="https://example.org/m/handler/ctrl-x")
-    minted = iris.register(
+    model = _model(ctrl_x="https://example.org/m/handler/ctrl-x")
+    minted = model.register_derived(
         "ctrl_x_error_integral",
         "https://example.org/m/handler/ctrl-x",
         "error_integral",
-        DerivedIriRegistry.DERIVATION,
+        PROV.wasDerivedFrom,
     )
     assert minted == "https://example.org/m/handler/ctrl-x/error-integral"
-    assert iris.iri_of("ctrl_x_error_integral") == minted
+    assert model.iri_of("ctrl_x_error_integral") == minted
     # A minted IRI is a proper path extension, so the parent is recoverable from it.
-    assert minted.rsplit("/", 1)[0] == iris.iri_of("ctrl_x")
+    assert minted.rsplit("/", 1)[0] == model.iri_of("ctrl_x")
 
 
 def test_authored_iri_is_never_shadowed_by_a_derived_one():
-    iris = _registry(ctrl_x="https://example.org/m/authored/ctrl-x")
-    returned = iris.register(
-        "ctrl_x", "https://example.org/m/other", "ctrl-x", DerivedIriRegistry.DERIVATION
+    model = _model(ctrl_x="https://example.org/m/authored/ctrl-x")
+    returned = model.register_derived(
+        "ctrl_x", "https://example.org/m/other", "ctrl-x", PROV.wasDerivedFrom
     )
     assert returned == "https://example.org/m/authored/ctrl-x"
-    assert iris.rows() == []
+    assert model.derivation_nodes() == []
 
 
 def test_registering_one_id_with_two_iris_raises():
-    iris = _registry()
-    iris.register("err_x", "https://example.org/m/a", "err", DerivedIriRegistry.DERIVATION)
+    model = _model()
+    model.register_derived("err_x", "https://example.org/m/a", "err", PROV.wasDerivedFrom)
     with pytest.raises(RuntimeError, match="derived IRI collision"):
-        iris.register("err_x", "https://example.org/m/b", "err", DerivedIriRegistry.DERIVATION)
+        model.register_derived("err_x", "https://example.org/m/b", "err", PROV.wasDerivedFrom)
 
 
 def test_repeated_identical_registration_is_a_no_op():
-    iris = _registry()
+    model = _model()
     for _ in range(2):
-        iris.register("err_x", "https://example.org/m/a", "err", DerivedIriRegistry.DERIVATION)
-    assert len(iris.rows()) == 1
+        model.register_derived("err_x", "https://example.org/m/a", "err", PROV.wasDerivedFrom)
+    assert len(model.uri_rows()) == 1
 
 
 def test_totality_assertion_lists_every_unresolved_id():
@@ -541,7 +557,7 @@ def test_totality_assertion_lists_every_unresolved_id():
         "dataflow": {"member_a": {"producer": {"kind": "closure", "id": "producer_missing"}}},
     }
     with pytest.raises(RuntimeError) as excinfo:
-        _assert_every_id_resolves(introspection)
+        communication._check_every_id_resolves(introspection)
     message = str(excinfo.value)
     # Every gap in one build, not just the first.
     for missing in ("ctrl_y", "q_missing", "member_a", "producer_missing"):
@@ -557,21 +573,23 @@ def test_a_row_carrying_its_own_uri_needs_no_table_entry():
             {"id": "ctrl_x.error_signal", "quantity": "q_a", "uri": "https://example.org/m/q-a"}
         ],
     }
-    _assert_every_id_resolves(introspection)
+    communication._check_every_id_resolves(introspection)
 
 
 def test_derivation_document_links_each_node_to_its_parent():
-    iris = _registry(ctrl_x="https://example.org/m/ctrl-x")
-    iris.register(
-        "ctrl_x_lin_x", "https://example.org/m/ctrl-x", "lin_x", DerivedIriRegistry.SPECIALIZATION
+    model = _model(ctrl_x="https://example.org/m/ctrl-x")
+    model.register_derived(
+        "ctrl_x_lin_x", "https://example.org/m/ctrl-x", "lin_x", PROV.specializationOf
     )
-    iris.register(
+    model.register_derived(
         "ctrl_x_error_integral",
         "https://example.org/m/ctrl-x",
         "error_integral",
-        DerivedIriRegistry.DERIVATION,
+        PROV.wasDerivedFrom,
     )
-    document = build_derivation_document({"introspection": {"derivations": iris.nodes()}})
+    document = build_derivation_document(
+        {"communication": {"introspection": {"derivations": model.derivation_nodes()}}}
+    )
     graph = Graph().parse(data=json.dumps(document), format="json-ld")
     prov = "http://www.w3.org/ns/prov#"
     links = {
@@ -592,8 +610,9 @@ _MEMBER = re.compile(r"^\s*[\w:]+(?:\s*[*&])?\s+(\w+)\s*(?:=|;|\[)")
 
 
 def test_generated_blackboard_holds_only_contracted_members(tmp_path: Path) -> None:
-    """Every `struct shared_data` member is an `ir["shared_data"]` id, so it carries a
-    producer/consumer contract; anything else belongs in a struct that is not the blackboard."""
+    """Every `struct shared_data` member is an `ir["computation"]["shared_data"]` id, so it
+    carries a producer/consumer contract; anything else belongs in a struct that is not the
+    blackboard."""
     shared_data = [
         {"id": "clock_time_s", "type": "Quantity"},
         {"id": "err_x", "type": "Quantity"},
@@ -605,13 +624,11 @@ def test_generated_blackboard_holds_only_contracted_members(tmp_path: Path) -> N
     payload.write_text(
         json.dumps(
             {
-                "shared_data": shared_data,
-                "values": {"externally_measured": []},
-                "has_serial_chain": False,
-                "resources": {"by_kind": {"serial_chain": [], "mobile_base": None}},
-                "backend": "mj_kdl",
-                "fsm": None,
-                "ros": None,
+                "configuration": {"backend": "mj_kdl"},
+                "resources": {"by_kind": {}},
+                "computation": {"shared_data": shared_data, "values": {"externally_measured": []}},
+                "coordination": {},
+                "communication": {},
             }
         )
     )

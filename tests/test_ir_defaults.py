@@ -16,38 +16,41 @@ from motion_spec_dsl.rdf_parser.vocab import (
     EXEC,
     GEOM_COORD,
     KC,
+    MOT,
     QUDT_QKIND,
     QUDT_SCHEMA,
     SLV,
 )
 from rdf_utils.models.vocab import URI_KC_TYPE_SERIAL
 from rdf_utils.namespace import NS_MM_GEOM, NS_MM_KC_EXT
-from rdflib import Graph, Literal, URIRef
-from rdflib.namespace import Namespace, RDF, XSD
+from rdflib import Dataset, Literal, URIRef
+from rdflib.namespace import RDF, XSD, Namespace
 
 from motion_spec.classes.handlers import PIDController
-from motion_spec.rdf_parser.ir import (
-    LINEAR_AXES,
-    SOLVER_SEMANTICS_BY_ALGORITHM,
-    ControllerDerivation,
-    MotionUnit,
-    Parser,
-    SceneRobot,
-    SceneSpec,
-    SolverDerivationContext,
-    _annotate_rne_gravity,
-    DerivedIriRegistry,
-    _build_introspection,
-    _derived_controllers,
-    _derived_motion_drivers,
-    _fixed_attachments,
-    _robot_setups_from_graph,
-    ops_generic,
+from motion_spec.classes.motion import MotionUnit
+from motion_spec.classes.scene import MjcfSceneRobot, MjcfSceneSpec
+from motion_spec.classes.solvers import CartesianAccelerationDriven
+from motion_spec.rdf_parser import (
+    communication,
+    constraint_handler,
+    coordination,
+    operations,
+    quantities,
+    resources,
 )
+from motion_spec.rdf_parser.constraint_handler import ControllerDerivation, SolverDerivationContext
+from motion_spec.rdf_parser.model import Model
+from motion_spec.rdf_parser.quantities import LINEAR_AXES
+
+
+def _model(graph: Dataset) -> Model:
+    return Model(
+        graph=graph, app_path=Path("/tmp/app.json"), imported_models=[], imported_provenance=[]
+    )
 
 
 def test_fixed_attachments_root_a_branched_multi_robot_scene_at_world() -> None:
-    graph = Graph()
+    graph = Dataset(default_union=True)
     world = URIRef("https://example.test/world")
     table = URIRef("https://example.test/table")
     table_top = URIRef(f"{table}/top")
@@ -79,14 +82,14 @@ def test_fixed_attachments_root_a_branched_multi_robot_scene_at_world() -> None:
         graph.add((joint, KC["between-attachments"], root_frame))
         graph.add((joint, KC["between-attachments"], tip_frame))
 
-    attachments, root = _fixed_attachments(graph, trees)
+    attachments, root = resources.fixed_attachments(_model(graph), trees)
 
     assert root == world
     assert attachments[table][:2] == ("World", "")
     assert {attachments[URIRef(f"{tree}/base")][:2] for tree in trees} == {("Site", "top")}
 
 
-def _quantity(graph: Graph, name: str) -> URIRef:
+def _quantity(graph: Dataset, name: str) -> URIRef:
     node = URIRef(f"https://example.test/{name}")
     graph.add((node, RDF.type, QUDT_SCHEMA.Quantity))
     graph.add((node, RDF.type, QUDT_QKIND.Force))
@@ -96,21 +99,21 @@ def _quantity(graph: Graph, name: str) -> URIRef:
 
 
 def test_parser_scopes_repeated_nested_reference_ids() -> None:
-    graph = Graph()
+    graph = Dataset(default_union=True)
     graph.bind("example", "https://example.test/")
     first = URIRef("https://example.test/motion/spec/path1/reference")
     second = URIRef("https://example.test/motion/spec/path2/reference")
     graph.add((first, RDF.type, RDF.Property))
     graph.add((second, RDF.type, RDF.Property))
 
-    parser = Parser(graph)
+    model = _model(graph)
 
-    assert parser.id(first) == "motion_path1_reference"
-    assert parser.id(second) == "motion_path2_reference"
+    assert model.id(first) == "motion_path1_reference"
+    assert model.id(second) == "motion_path2_reference"
 
 
-def _pid_graph(*, kp: float | None = 1.0) -> tuple[Graph, URIRef]:
-    graph = Graph()
+def _pid_graph(*, kp: float | None = 1.0) -> tuple[Dataset, URIRef]:
+    graph = Dataset(default_union=True)
     controller = URIRef("https://example.test/controller")
     graph.add((controller, RDF.type, CSTR_HDL.Controller))
     graph.add((controller, RDF.type, CSTR_HDL.ProportionalIntegralDerivative))
@@ -122,7 +125,7 @@ def _pid_graph(*, kp: float | None = 1.0) -> tuple[Graph, URIRef]:
 
 
 def test_agent_model_may_bind_the_assembled_kinematic_tree() -> None:
-    graph = Graph()
+    graph = Dataset(default_union=True)
     base = URIRef("https://example.test/arm/base")
     root = URIRef(f"{base}/root")
     tool = URIRef("https://example.test/gripper/tool")
@@ -131,18 +134,18 @@ def test_agent_model_may_bind_the_assembled_kinematic_tree() -> None:
     joint = URIRef(f"{tree}/fixed")
     agent = URIRef("https://example.test/robot")
     modelled = URIRef("https://example.test/modelled-robot")
-    model = URIRef("https://example.test/robot-model")
+    model_node = URIRef("https://example.test/robot-model")
 
     agent_set = URIRef("https://example.test/robots")
     bdd = Namespace("https://secorolab.github.io/metamodels/acceptance-criteria/bdd#")
     graph.add((agent_set, bdd["elements"], agent))
     graph.add((modelled, RDF.type, AGN.ModelledAgent))
     graph.add((modelled, AGN["of-agent"], agent))
-    graph.add((modelled, AGN["has-agent-model"], model))
+    graph.add((modelled, AGN["has-agent-model"], model_node))
     mapping = URIRef("https://example.test/robot-model/maps-assembled")
-    graph.add((model, EXEC["has-mapping"], mapping))
+    graph.add((model_node, EXEC["has-mapping"], mapping))
     graph.add((mapping, EXEC.maps, tree))
-    graph.add((model, EXEC.path, Literal("kinova_gen3.xml")))
+    graph.add((model_node, EXEC.path, Literal("kinova_gen3.xml")))
     graph.add((tree, RDF.type, NS_MM_GEOM["KinematicTree"]))
     graph.add((tree, RDF.type, URI_KC_TYPE_SERIAL))
     graph.add((tree, NS_MM_KC_EXT["root"], root))
@@ -155,9 +158,19 @@ def test_agent_model_may_bind_the_assembled_kinematic_tree() -> None:
     graph.add((joint, KC["between-attachments"], root))
     graph.add((joint, KC["between-attachments"], tcp))
 
-    setups, _ordered = _robot_setups_from_graph(graph)
+    setups, _ordered = resources.robot_setups(_model(graph))
+    setup = setups[agent]
 
-    assert setups[agent][1:7] == ("base", "tool", "tool", "KinovaGen3", "", "")
+    # `_ChainSetup` composes `chain`/`hardware` bindings now, rather than one flat tuple; the
+    # invariant is unchanged -- root/tool naming and the sniffed robot model.
+    assert (
+        setup.chain.root,
+        setup.chain.end,
+        setup.chain.tip,
+        setup.hardware.model,
+        setup.hardware.tool_body,
+        setup.hardware.tcp_site,
+    ) == ("base", "tool", "tool", "KinovaGen3", "", "")
 
 
 def test_introspection_contract_carries_control_and_provenance() -> None:
@@ -169,12 +182,24 @@ def test_introspection_contract_carries_control_and_provenance() -> None:
     graph.add((monitor_node, RDF.type, CSTR_HDL.Monitor))
     graph.add((monitor_node, RDF.type, CSTR_HDL.EdgeTriggeredMonitor))
     graph.add((monitor_node, CSTR_HDL.event, event_node))
+    # A motion is a subject in every authored model; this hand-built graph has only the
+    # controller and monitor, so its IRI is supplied here for the introspection id/IRI check.
+    graph.add((URIRef("https://example.test/move"), RDF.type, MOT.GuardedMotion))
 
-    parser = Parser(graph)
+    model = Model(
+        graph=graph,
+        app_path=Path("/tmp/app.json"),
+        imported_models=["https://example.test/imported.json"],
+        imported_provenance=["/tmp/generated/provenance/dsl.ld.json"],
+    )
     controller = PIDController(
-        id=parser.id(controller_node),
-        control_signal=parser.quantity(graph.value(controller_node, CSTR_HDL["control-signal"])),
-        error_signal=parser.quantity(graph.value(controller_node, CSTR_HDL["error-signal"])),
+        id=model.id(controller_node),
+        control_signal=quantities.quantity(
+            model, graph.value(controller_node, CSTR_HDL["control-signal"])
+        ),
+        error_signal=quantities.quantity(
+            model, graph.value(controller_node, CSTR_HDL["error-signal"])
+        ),
         measured_derivative=None,
         proportional_gain=2.0,
         integral_gain=0.1,
@@ -182,13 +207,13 @@ def test_introspection_contract_carries_control_and_provenance() -> None:
         decay_rate=None,
         output_saturation=None,
         integral_saturation=None,
-        type=parser.id(CSTR_HDL.ProportionalIntegralDerivative),
+        type=model.id(CSTR_HDL.ProportionalIntegralDerivative),
     )
-    monitor = parser.monitor_entry(monitor_node)
+    monitor = coordination.monitor_entry(model, monitor_node)
     motion = MotionUnit(
         id="move",
         name="move",
-        description=None,
+        description=[],
         handler="move_handler",
         when_evaluators=[],
         while_evaluators=[],
@@ -201,27 +226,17 @@ def test_introspection_contract_carries_control_and_provenance() -> None:
         while_schedule=[],
         until_schedule=[],
     )
+    computation = quantities.build_indexes(
+        model, {}, [controller.error_signal, controller.control_signal], {}
+    )
+    robots = resources.Robots(
+        serial_chains=[], platform_velocity=[], platform_force=[], schedule_steps=[]
+    )
+    scene = MjcfSceneSpec(robots=[MjcfSceneRobot(id="robot", path="robot.xml")])
+    platform = {"uri": None, "name": None, "simulated": True, "backend": "mj_kdl"}
 
-    introspection, _values = _build_introspection(
-        app_model_path=Path("/tmp/app.json"),
-        imported_models=["https://example.test/imported.json"],
-        imported_provenance=["/tmp/generated/provenance/dsl.ld.json"],
-        iris=DerivedIriRegistry([]),
-        # A motion is a subject in every authored model; this hand-built graph has only the
-        # controller and monitor, so its IRI is supplied here.
-        id_nodes=[(parser.id(node), node) for node in graph.subjects()]
-        + [("move", URIRef("https://example.test/move"))],
-        node_by_id={parser.id(node): node for node in graph.subjects()},
-        motions=[motion],
-        data_structures=[controller.error_signal, controller.control_signal],
-        control_period_ns=2_000_000,
-        backend="mj_kdl",
-        scene=SceneSpec(robots=[SceneRobot(id="robot", path="robot.xml")]),
-        closures={},
-        views={},
-        shared_data=[],
-        serial_chain_solvers=[],
-        platform={"uri": None, "name": None, "simulated": True, "backend": "mj_kdl"},
+    introspection, _values = communication.build_introspection(
+        model, [motion], computation, [], robots, scene, platform, 2_000_000, "mj_kdl"
     )
 
     assert introspection["contract_version"] == 1
@@ -239,7 +254,7 @@ def test_introspection_contract_carries_control_and_provenance() -> None:
 
 
 def test_velocity_profile_operator_closure_exposes_codegen_fields() -> None:
-    graph = Graph()
+    graph = Dataset(default_union=True)
     op = URIRef("https://example.test/profile-op")
     graph.add((op, RDF.type, ALGO_EXT.VelocityProfile))
     for pred, name in (
@@ -259,7 +274,7 @@ def test_velocity_profile_operator_closure_exposes_codegen_fields() -> None:
     graph.add((controller, CSTR_HDL.constraint, constraint))
     graph.add((op, ALGO_EXT["shape"], ALGO_EXT["s-curve"]))
 
-    closure = Parser(graph).closures(ops_generic)["profile_op"]
+    closure = operations.build_closures(_model(graph), operations.OPS_GENERIC)["profile_op"]
 
     assert closure["type"] == "VelocityProfile"
     assert closure["goal"] == "goal"
@@ -274,17 +289,19 @@ def test_velocity_profile_operator_closure_exposes_codegen_fields() -> None:
 
 
 def test_velocity_profile_without_controller_fails_clearly() -> None:
-    graph = Graph()
+    from rdf_utils.constraints import ConstraintViolation
+
+    graph = Dataset(default_union=True)
     op = URIRef("https://example.test/profile-op")
     graph.add((op, RDF.type, ALGO_EXT.VelocityProfile))
     graph.add((op, ALGO_EXT["out"], URIRef("https://example.test/reference")))
 
-    with pytest.raises(ValueError, match="not bound to a constraint"):
-        Parser(graph).closures(ops_generic)
+    with pytest.raises(ConstraintViolation, match="not bound to a constraint"):
+        operations.build_closures(_model(graph), operations.OPS_GENERIC)
 
 
 def test_solver_ir_carries_rne_algorithm_and_gravity() -> None:
-    graph = Graph()
+    graph = Dataset(default_union=True)
     solver = URIRef("https://example.test/solver")
     gravity = URIRef("https://example.test/gravity")
     graph.add((solver, RDF.type, SLV.SolverWithInputAndOutput))
@@ -294,22 +311,23 @@ def test_solver_ir_carries_rne_algorithm_and_gravity() -> None:
     graph.add((gravity, GEOM_COORD["y"], Literal(0.0, datatype=XSD.double)))
     graph.add((gravity, GEOM_COORD["z"], Literal(9.81, datatype=XSD.double)))
 
-    entry = Parser(graph).solver_with_input_and_output(solver)
+    entry = resources._solver_with_input_and_output(_model(graph), solver, resources._EMPTY_SETUP)
 
-    assert entry.algorithm == "RNE"
+    assert entry.algorithm is CartesianAccelerationDriven
+    assert entry.algorithm_name == "RNE"
     # The authored value is the ACHD root acceleration, carried through unchanged.
-    assert entry.root_acc == [0.0, 0.0, 9.81]
+    assert entry.derived_root_acceleration == [0.0, 0.0, 9.81]
     assert entry.gravity is None
 
     # The sign flip is KDL's inverse-dynamics convention, not a simulator's, so it is derived
     # wherever an RNE solver is built -- on hardware a missing gravity is silent and dangerous.
-    _annotate_rne_gravity([entry], [])
+    resources.annotate_runtime([entry], [], "mj_kdl")
     assert entry.gravity == [0.0, 0.0, -9.81]
 
 
 def test_rne_uses_acceleration_while_achd_uses_acceleration_energy() -> None:
     def derive(algorithm: URIRef):
-        graph = Graph()
+        graph = Dataset(default_union=True)
         solver = URIRef(f"https://example.test/{algorithm.rsplit('/', 1)[-1]}")
         driver = URIRef(f"{solver}/driver")
         handler = URIRef(f"{solver}/handler")
@@ -329,17 +347,17 @@ def test_rne_uses_acceleration_while_achd_uses_acceleration_energy() -> None:
         plan = ControllerDerivation(
             handler, motion, controller, solver, constraint, quantity, None, LINEAR_AXES[:1]
         )
+        model = _model(graph)
         context = SolverDerivationContext(
-            {handler: (plan,)},
-            {solver: (plan,)},
-            {solver: SOLVER_SEMANTICS_BY_ALGORITHM[algorithm]},
-            frozenset(),
-            DerivedIriRegistry([]),
+            model=model,
+            controllers_by_handler={handler: (plan,)},
+            controllers_by_solver={solver: (plan,)},
+            algorithm_by_solver={solver: constraint_handler.solver_algorithm(model, solver)},
+            shared_constraints=frozenset(),
         )
-        parser = Parser(graph)
         return (
-            _derived_controllers(graph, parser, context, plan)[0].control_signal,
-            _derived_motion_drivers(graph, parser, context, solver)[0],
+            constraint_handler._derived_controllers(model, context, plan)[0].control_signal,
+            constraint_handler.motion_drivers(model, context, solver)[0],
         )
 
     rne_signal, rne_drivers = derive(SLV.RecursiveNewtonEulerAlgorithm)
@@ -357,7 +375,7 @@ def test_rne_uses_acceleration_while_achd_uses_acceleration_energy() -> None:
 
 
 def test_edge_monitor_carries_full_event_uri_and_enum_token() -> None:
-    graph = Graph()
+    graph = Dataset(default_union=True)
     monitor = URIRef("https://example.test/mon")
     event_uri = "http://example.org/coord/E_OBJ_REACHED"
     event = URIRef(event_uri)
@@ -365,7 +383,7 @@ def test_edge_monitor_carries_full_event_uri_and_enum_token() -> None:
     graph.add((monitor, RDF.type, CSTR_HDL.EdgeTriggeredMonitor))
     graph.add((monitor, CSTR_HDL.event, event))
 
-    entry = Parser(graph).monitor_entry(monitor)
+    entry = coordination.monitor_entry(_model(graph), monitor)
 
     assert entry.event_uri == event_uri
     # event_name is the coord-dsl FSM enum token (local name, upper-cased, '-' -> '_').
@@ -375,24 +393,20 @@ def test_edge_monitor_carries_full_event_uri_and_enum_token() -> None:
 # --- real-world execution (plan 019) ---------------------------------------------------------
 def test_real_world_execution_rejects_scene_objects() -> None:
     """A scene object's pose comes from the simulator; on hardware nothing measures it."""
+    from motion_spec_dsl.rdf_parser.vocab import ENV
     from rdf_utils.constraints import ConstraintViolation
 
-    from motion_spec.rdf_parser.ir import _reject_scene_objects_on_hardware
-    from motion_spec_dsl.rdf_parser.vocab import ENV
-
-    graph = Graph()
+    graph = Dataset(default_union=True)
     context = URIRef("https://example.test/real-exec")
     cube = URIRef("https://example.test/modelled-cube")
     graph.add((cube, RDF.type, ENV.ModelledObject))
     with pytest.raises(ConstraintViolation, match="cannot use scene objects"):
-        _reject_scene_objects_on_hardware(graph, context)
+        resources._reject_scene_objects_on_hardware(_model(graph), context)
 
 
 def test_simulation_keeps_its_scene_objects() -> None:
-    from motion_spec.rdf_parser.ir import _reject_scene_objects_on_hardware
-
     # No real-world context -> nothing to reject.
-    _reject_scene_objects_on_hardware(Graph(), None)
+    resources._reject_scene_objects_on_hardware(_model(Dataset(default_union=True)), None)
 
 
 def test_an_authored_sensor_rate_reaches_the_ir() -> None:
@@ -404,7 +418,7 @@ def test_an_authored_sensor_rate_reaches_the_ir() -> None:
     from rdf_utils.namespace import NS_MM_QUDT_UNIT as QUDT_UNIT
     from scene_dsl.rdf_parser.sensors import get_update_rate
 
-    graph = Graph()
+    graph = Dataset(default_union=True)
     sensor = URIRef("https://example.test/wrist_ft")
     rate = URIRef(f"{sensor}/update-rate")
     graph.add((sensor, RDF.type, SENSORS.ForceTorqueSensor))
@@ -436,7 +450,7 @@ def _real_source(tmp_path, *devices: dict) -> Path:
     (source / "model" / "ir.json").write_text(
         json.dumps(
             {
-                "platform": {"simulated": False, "config": "robot.toml"},
+                "configuration": {"platform": {"simulated": False, "config": "robot.toml"}},
                 "resources": {
                     "robots": [
                         {
@@ -521,7 +535,9 @@ def test_a_simulated_run_needs_no_robot_config(tmp_path) -> None:
 
     source = tmp_path / "generated"
     (source / "model").mkdir(parents=True)
-    (source / "model" / "ir.json").write_text(json.dumps({"platform": {"simulated": True}}))
+    (source / "model" / "ir.json").write_text(
+        json.dumps({"configuration": {"platform": {"simulated": True}}})
+    )
     _validate_robot_config(source, tmp_path)
 
 
@@ -533,14 +549,22 @@ def test_an_authored_band_rides_the_constraint_term() -> None:
     """
     from motion_spec.classes.handlers import ConstraintEvaluator, EvaluatorType
     from motion_spec.classes.qudt import Quantity, QuantityKind, Unit
-    from motion_spec.rdf_parser.ir import _evaluator_term
+    from motion_spec.rdf_parser.coordination import evaluator_term
+
+    error = Quantity(
+        id="near_err",
+        quantity_kind=QuantityKind(id="Length"),
+        unit=Unit(id="M"),
+        value=None,
+        has_view=False,
+    )
 
     def evaluator(tolerance):
         return ConstraintEvaluator(
             id="near",
             type_=EvaluatorType.ErrorEvaluator,
             constraint=None,
-            error={"id": "near_err"},
+            error=error,
             tolerance=tolerance,
         )
 
@@ -551,10 +575,10 @@ def test_an_authored_band_rides_the_constraint_term() -> None:
         value=0.002,
         has_view=False,
     )
-    assert _evaluator_term(evaluator(band)) == {
+    assert evaluator_term(evaluator(band)) == {
         "kind": "constraint",
         "error_id": "near_err",
         "tolerance_id": "pos_band",
     }
     # Omitted, not empty: the template reads a present-but-empty id as a shared value.
-    assert _evaluator_term(evaluator(None)) == {"kind": "constraint", "error_id": "near_err"}
+    assert evaluator_term(evaluator(None)) == {"kind": "constraint", "error_id": "near_err"}

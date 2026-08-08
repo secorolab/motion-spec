@@ -3,20 +3,19 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import json
 import shutil
+from pathlib import Path
 
 import pytest
 
-from motion_spec.generation.codegen import render_template
-from motion_spec.introspection import frame_log_pb
 from motion_spec.generation.artifacts import (
     build_frame_log_header_record,
     build_frame_log_proto_fields,
     field_names_and_format,
 )
+from motion_spec.generation.codegen import render_template
+from motion_spec.introspection import frame_log_pb
 
 
 def write_frame_log_proto(path: Path, schema: dict) -> None:
@@ -27,7 +26,9 @@ def write_frame_log_proto(path: Path, schema: dict) -> None:
     protobuf = schema.get("protobuf") or build_frame_log_proto_fields(schema)
     payload = path.parent / ".frame_log_proto_payload.json"
     payload.write_text(
-        json.dumps({"introspection_artifacts": {"frame_layout": {"protobuf": protobuf}}})
+        json.dumps(
+            {"communication": {"introspection_artifacts": {"frame_layout": {"protobuf": protobuf}}}}
+        )
     )
     render_template("stst", "frame_log_proto", payload, path)
     payload.unlink()

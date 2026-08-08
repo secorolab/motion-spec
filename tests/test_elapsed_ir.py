@@ -7,15 +7,31 @@ into seconds for codegen.
 
 from __future__ import annotations
 
-from rdflib import Graph, Literal, URIRef
+from pathlib import Path
+
+from motion_spec_dsl.rdf_parser.vocab import CSTR, CSTR_EXT, CSTR_HDL, QUDT_SCHEMA, TIME
+from rdf_utils.namespace import NS_MM_QUDT_QTY as QUDT_QKIND
+from rdf_utils.namespace import NS_MM_QUDT_UNIT as QUDT_UNIT
+from rdflib import Dataset, Graph, Literal, URIRef
 from rdflib.namespace import RDF, XSD
 
 from motion_spec.classes.handlers import ConstraintEvaluator, EvaluatorType
-from motion_spec.rdf_parser.ir import Parser, _evaluator_term
-from motion_spec_dsl.rdf_parser.vocab import CSTR, CSTR_EXT, CSTR_HDL, QUDT_SCHEMA, TIME
-from rdf_utils.namespace import NS_MM_QUDT_QTY as QUDT_QKIND, NS_MM_QUDT_UNIT as QUDT_UNIT
+from motion_spec.classes.qudt import Quantity, QuantityKind, Unit
+from motion_spec.rdf_parser.coordination import constraint_evaluator, evaluator_term
+from motion_spec.rdf_parser.model import Model
 
 NS = "https://example.test/"
+
+
+def _elapsed(id_: str) -> Quantity:
+    """The duration coordinate an elapsed constraint measures into."""
+    return Quantity(id_, QuantityKind("Time"), Unit("SEC"), None, False)
+
+
+def _model(g: Graph) -> Model:
+    return Model(
+        graph=g, app_path=Path("model-app.ld.json"), imported_models=[], imported_provenance=[]
+    )
 
 
 def _instant(g: Graph, name: str) -> URIRef:
@@ -55,7 +71,7 @@ def _evaluator(g: Graph, cstr_node: URIRef, measured: URIRef) -> URIRef:
 
 
 def test_elapsed_greater_than_reads_native_duration_threshold() -> None:
-    g = Graph()
+    g = Dataset(default_union=True)
     cstr = URIRef(f"{NS}wait5")
     measured = _duration(g, "wait5-elapsed")
     _interval(g, "wait5-interval", measured)
@@ -68,7 +84,7 @@ def test_elapsed_greater_than_reads_native_duration_threshold() -> None:
     g.add((cstr, CSTR.threshold, threshold))
     eval_node = _evaluator(g, cstr, measured)
 
-    ev = Parser(g).constraint_evaluator(eval_node)
+    ev = constraint_evaluator(_model(g), eval_node)
 
     assert ev.is_elapsed is True
     assert ev.elapsed_op == ">="
@@ -77,7 +93,7 @@ def test_elapsed_greater_than_reads_native_duration_threshold() -> None:
 
 
 def test_elapsed_equality_reads_reference_and_tolerance_normalized_to_seconds() -> None:
-    g = Graph()
+    g = Dataset(default_union=True)
     cstr = URIRef(f"{NS}wait-eq")
     measured = _duration(g, "wait-eq-elapsed")
     _interval(g, "wait-eq-interval", measured)
@@ -91,7 +107,7 @@ def test_elapsed_equality_reads_reference_and_tolerance_normalized_to_seconds() 
     g.add((cstr, CSTR_EXT.tolerance, tolerance))
     eval_node = _evaluator(g, cstr, measured)
 
-    ev = Parser(g).constraint_evaluator(eval_node)
+    ev = constraint_evaluator(_model(g), eval_node)
 
     assert ev.is_elapsed is True
     assert ev.elapsed_op == "=="
@@ -104,14 +120,14 @@ def test_evaluator_term_renders_equality_as_abs_within_tolerance() -> None:
         id="wait5",
         type_=EvaluatorType.ErrorEvaluator,
         constraint=None,
-        error={"id": "wait5_elapsed"},
+        error=_elapsed("wait5_elapsed"),
         is_elapsed=True,
         elapsed_op="==",
         elapsed_threshold_s=5.0,
         elapsed_tolerance_s=0.01,
     )
 
-    term = _evaluator_term(ev)
+    term = evaluator_term(ev)
 
     assert term == {
         "kind": "elapsed-eq",
@@ -143,7 +159,7 @@ def test_a_monitor_condition_reads_nothing_but_shared() -> None:
             id="wait",
             type_=EvaluatorType.ErrorEvaluator,
             constraint=None,
-            error={"id": "wait_elapsed"},
+            error=_elapsed("wait_elapsed"),
             is_elapsed=True,
             elapsed_op=op,
             elapsed_threshold_s=1.0,
@@ -156,9 +172,11 @@ def test_a_monitor_condition_reads_nothing_but_shared() -> None:
             id="reached", type_=EvaluatorType.ErrorEvaluator, constraint=None, error=None
         )
     )
-    kinds = {_evaluator_term(ev)["kind"] for ev in evaluators}
+    kinds = {evaluator_term(ev)["kind"] for ev in evaluators}
     assert kinds == {"elapsed", "elapsed-eq", "constraint"}
     for kind in sorted(kinds):
-        body = re.search(rf"^cond-term-{kind}\(t\) ::= <<(.*?)^>>", template, re.S | re.M)
+        body = re.search(
+            rf"^cond-term-{kind}\(t\) ::= <<(.*?)^>>", template, re.DOTALL | re.MULTILINE
+        )
         assert body, f"cond-term-{kind} is no longer in domain_monitors.stg"
         assert "state." not in body.group(1), f"cond-term-{kind} reaches outside shared"

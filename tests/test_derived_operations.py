@@ -1,9 +1,18 @@
 # SPDX-License-Identifier: MPL-2.0
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
-from rdflib import Graph, Literal, URIRef
-from rdflib.namespace import RDF
+from motion_spec_dsl.rdf_parser.vocab import (
+    CSTR,
+    GEOM_COORD,
+    GEOM_ENT,
+    GEOM_OP,
+    GEOM_OP_EXT,
+    GEOM_REL,
+    QUDT_SCHEMA,
+)
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.vocab import (
     URI_DISTRIB_TYPE_SAMPLED_QUANTITY,
@@ -21,30 +30,29 @@ from rdf_utils.models.vocab import (
     URI_QUDT_UNIT_CM,
     URI_QUDT_UNIT_RAD,
 )
+from rdflib import Dataset, Graph, Literal, URIRef
+from rdflib.namespace import RDF
 from scipy.spatial.transform import Rotation
 
-from motion_spec.rdf_parser.ir import (
-    Parser,
+from motion_spec.rdf_parser.model import Model
+from motion_spec.rdf_parser.operations import (
     _materialize_linear_distance_operations,
     _materialize_pose_reference_transforms,
-    _orientation_of,
-    _position_of,
 )
-from motion_spec_dsl.rdf_parser.vocab import (
-    CSTR,
-    GEOM_COORD,
-    GEOM_ENT,
-    GEOM_OP,
-    GEOM_OP_EXT,
-    GEOM_REL,
-    QUDT_SCHEMA,
-)
+from motion_spec.rdf_parser.quantities import _relative_orientation, orientation_representation
+from motion_spec.rdf_parser.resources import _placement_orientation, _placement_position
 
 BASE = "https://example.test/"
 
 
 def _u(name: str) -> URIRef:
     return URIRef(BASE + name)
+
+
+def _model(g: Graph) -> Model:
+    return Model(
+        graph=g, app_path=Path("model-app.ld.json"), imported_models=[], imported_provenance=[]
+    )
 
 
 def _frame(g: Graph, name: str) -> URIRef:
@@ -78,7 +86,7 @@ def _distance_graph(*, end_wrt_name: str) -> tuple[Graph, URIRef]:
     """Distance between `shoulder wrt base` and `ee wrt <end_wrt_name>`, with a
     base<-table connecting pose available for the cross-frame path.
     """
-    g = Graph()
+    g = Dataset(default_union=True)
     base = _frame(g, "frame-base")
     table = _frame(g, "frame-table")
     shoulder = _frame(g, "frame-shoulder")
@@ -99,7 +107,7 @@ def _distance_graph(*, end_wrt_name: str) -> tuple[Graph, URIRef]:
 
 def test_distance_materializes_magnitude_op() -> None:
     g, distance = _distance_graph(end_wrt_name="frame-base")
-    _materialize_linear_distance_operations(g)
+    _materialize_linear_distance_operations(_model(g))
 
     magnitudes = [
         op
@@ -113,7 +121,7 @@ def test_distance_materializes_magnitude_op() -> None:
 
 def test_distance_cross_frame_composes_reference_path() -> None:
     g, distance = _distance_graph(end_wrt_name="frame-table")
-    _materialize_linear_distance_operations(g)
+    _materialize_linear_distance_operations(_model(g))
 
     end_in_start = _derived(distance, "end-in-start-reference")
     assert (None, GEOM_OP.composite, end_in_start) in g
@@ -122,7 +130,7 @@ def test_distance_cross_frame_composes_reference_path() -> None:
 
 def test_distance_same_frame_skips_reference_path() -> None:
     g, distance = _distance_graph(end_wrt_name="frame-base")
-    _materialize_linear_distance_operations(g)
+    _materialize_linear_distance_operations(_model(g))
 
     end_in_start = _derived(distance, "end-in-start-reference")
     assert (None, GEOM_OP.composite, end_in_start) not in g
@@ -134,7 +142,7 @@ def test_distance_same_frame_skips_reference_path() -> None:
 # --------------------------------------------------------------------------- #
 def _equality_graph(*, reference_wrt_name: str) -> tuple[Graph, URIRef, URIRef]:
     """`pose ee-wrt-base` equal to a reference `ee wrt <reference_wrt_name>`."""
-    g = Graph()
+    g = Dataset(default_union=True)
     base = _frame(g, "frame-base")
     table = _frame(g, "frame-table")
     ee = _frame(g, "frame-ee")
@@ -152,7 +160,7 @@ def _equality_graph(*, reference_wrt_name: str) -> tuple[Graph, URIRef, URIRef]:
 
 def test_pose_reference_cross_frame_reexpresses_reference() -> None:
     g, constraint, reference = _equality_graph(reference_wrt_name="frame-table")
-    _materialize_pose_reference_transforms(g)
+    _materialize_pose_reference_transforms(_model(g))
 
     reexpressed = _derived(constraint, "reference-in-target")
     assert g.value(constraint, CSTR["reference-value"]) == reexpressed
@@ -166,7 +174,7 @@ def test_pose_reference_cross_frame_reexpresses_reference() -> None:
 
 def test_pose_reference_same_frame_is_noop() -> None:
     g, constraint, reference = _equality_graph(reference_wrt_name="frame-base")
-    _materialize_pose_reference_transforms(g)
+    _materialize_pose_reference_transforms(_model(g))
 
     assert g.value(constraint, CSTR["reference-value"]) == reference
     assert (None, RDF.type, GEOM_OP.ComposePose) not in g
@@ -178,8 +186,8 @@ def test_pose_reference_rejects_body_mismatch() -> None:
     g.remove((reference, GEOM_REL.of, None))
     g.add((reference, GEOM_REL.of, _frame(g, "frame-other")))
 
-    with pytest.raises(ValueError, match="compares a pose"):
-        _materialize_pose_reference_transforms(g)
+    with pytest.raises(ConstraintViolation, match="compares a pose"):
+        _materialize_pose_reference_transforms(_model(g))
 
 
 # --------------------------------------------------------------------------- #
@@ -204,7 +212,7 @@ def _relative_orientation_graph(*, in1_is_pose: bool) -> tuple[Graph, URIRef]:
     """An orientation composing `pose-ee-base` with a delta, slotted into
     `geom-op:in1`/`in2` base-first (`in1_is_pose`) or delta-first.
     """
-    g = Graph()
+    g = Dataset(default_union=True)
     base = _frame(g, "frame-base")
     ee = _frame(g, "frame-ee")
     base_pose = _pose(g, "pose-ee-base", ee, base)
@@ -230,14 +238,14 @@ def test_orientation_without_a_composition_operator_is_not_relative() -> None:
     g, orientation = _relative_orientation_graph(in1_is_pose=True)
     g.remove((None, RDF.type, GEOM_OP_EXT.ComposeOrientation))
 
-    assert Parser(g).orientation_representation(orientation) != "relative"
-    with pytest.raises(ValueError, match="no composition operator"):
-        Parser(g)._relative_orientation(orientation)
+    assert orientation_representation(_model(g), orientation) != "relative"
+    with pytest.raises(ConstraintViolation, match="no composition operator"):
+        _relative_orientation(_model(g), orientation)
 
 
 def test_relative_orientation_reads_operands_in_slot_order() -> None:
     g, orientation = _relative_orientation_graph(in1_is_pose=True)
-    operands = Parser(g)._relative_orientation(orientation)
+    operands = _relative_orientation(_model(g), orientation)
     assert "pose" in operands[0] and "delta" in operands[1]
     # The delta is authored as an Euler triple and leaves as the quaternion it denotes.
     assert operands[1]["representation"] == "quaternion"
@@ -246,7 +254,7 @@ def test_relative_orientation_reads_operands_in_slot_order() -> None:
     )
 
     g, orientation = _relative_orientation_graph(in1_is_pose=False)
-    operands = Parser(g)._relative_orientation(orientation)
+    operands = _relative_orientation(_model(g), orientation)
     assert "delta" in operands[0] and "pose" in operands[1]
 
 
@@ -258,8 +266,8 @@ def test_relative_orientation_rejects_a_mismatched_operand_pair() -> None:
     g.remove((composition, GEOM_OP["in2"], None))
     g.add((composition, GEOM_OP["in2"], other_pose))
 
-    with pytest.raises(ValueError, match="exactly one base pose and one delta"):
-        Parser(g)._relative_orientation(orientation)
+    with pytest.raises(ConstraintViolation, match="exactly one base pose and one delta"):
+        _relative_orientation(_model(g), orientation)
 
 
 # --------------------------------------------------------------------------- #
@@ -295,7 +303,7 @@ def _scene_position_coord(
 
 def test_orientation_of_reads_quaternion_placement_as_quat() -> None:
     """A quaternion-authored placement is read back as [x, y, z, w], unmodified."""
-    g = Graph()
+    g = Dataset(default_union=True)
     frame = _scene_frame(g, "frame-object")
     wrt = _scene_frame(g, "frame-world")
 
@@ -315,7 +323,7 @@ def test_orientation_of_reads_quaternion_placement_as_quat() -> None:
         g.add((coord, predicate, Literal(float(value))))
     g.add((coord, URI_GEOM_PRED_W, Literal(float(w))))
 
-    result = _orientation_of(g, frame)
+    result = _placement_orientation(_model(g), frame)
     assert result == pytest.approx((x, y, z, w))
 
 
@@ -324,26 +332,26 @@ def test_position_of_scales_to_metres_and_rejects_a_missing_unit() -> None:
     scale, not pass through as if it were already metres. A missing unit is not a
     default -- it's an error.
     """
-    g = Graph()
+    g = Dataset(default_union=True)
     frame = _scene_frame(g, "frame-object")
     wrt = _scene_frame(g, "frame-world")
     coord = _scene_position_coord(g, frame, wrt, (150.0, -50.0, 720.0))
     g.add((coord, QUDT_SCHEMA.unit, URI_QUDT_UNIT_CM))
 
-    assert _position_of(g, frame) == pytest.approx([1.5, -0.5, 7.2])
+    assert _placement_position(_model(g), frame) == pytest.approx([1.5, -0.5, 7.2])
 
-    g2 = Graph()
+    g2 = Dataset(default_union=True)
     frame2 = _scene_frame(g2, "frame-object")
     wrt2 = _scene_frame(g2, "frame-world")
     _scene_position_coord(g2, frame2, wrt2, (1.0, 2.0, 3.0))  # no unit triple added
 
     with pytest.raises(ConstraintViolation, match="length unit"):
-        _position_of(g2, frame2)
+        _placement_position(_model(g2), frame2)
 
 
 def test_sampled_scene_placements_are_rejected() -> None:
     """Sampling has no motion-spec seed semantics yet, so it must never become identity."""
-    g = Graph()
+    g = Dataset(default_union=True)
     frame = _scene_frame(g, "frame-object")
     wrt = _scene_frame(g, "frame-world")
     coord = _scene_position_coord(g, frame, wrt, (1.0, 2.0, 3.0))
@@ -351,4 +359,4 @@ def test_sampled_scene_placements_are_rejected() -> None:
     g.add((coord, QUDT_SCHEMA.unit, URI_QUDT_UNIT_CM))
 
     with pytest.raises(ConstraintViolation, match="Sampled placement coordinate"):
-        _position_of(g, frame)
+        _placement_position(_model(g), frame)

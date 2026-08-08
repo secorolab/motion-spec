@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: MPL-2.0
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 
-from rdflib import Graph, Namespace
-from rdflib.namespace import RDF, split_uri
+from pathlib import Path
 
-from motion_spec.rdf_parser.graph import ErrorEvaluator, _continuous_joint_leaves
 from motion_spec_dsl.rdf_parser.vocab import CSTR, CSTR_HDL, KC_STAT
 from rdf_utils.models.vocab import (
     URI_KC_EXT_PRED_OF_JOINT,
@@ -12,12 +10,17 @@ from rdf_utils.models.vocab import (
     URI_KC_STAT_JNT_POSITION,
     URI_KC_TYPE_REVOLUTE_JOINT,
 )
+from rdflib import Dataset, Namespace
+from rdflib.namespace import RDF
+
+from motion_spec.rdf_parser.model import Model
+from motion_spec.rdf_parser.operations import ErrorEvaluator, continuous_joint_leaves
 
 EX = Namespace("https://example.org/")
 
 
-def _graph(with_position_limit: bool) -> Graph:
-    g = Graph()
+def _model(with_position_limit: bool) -> Model:
+    g = Dataset(default_union=True)
     g.add((EX.joint_1, RDF.type, URI_KC_TYPE_REVOLUTE_JOINT))
     if with_position_limit:
         g.add((EX.limit, RDF.type, URI_KC_EXT_TYPE_JOINT_LIMIT))
@@ -28,20 +31,22 @@ def _graph(with_position_limit: bool) -> Graph:
     g.add((EX.cstr, CSTR["quantity"], EX.q))
     g.add((EX.cstr, CSTR["reference-value"], EX.ref))
     g.add((EX.q, KC_STAT["of-joint"], EX.joint_1))
-    return g
+    return Model(
+        graph=g, app_path=Path("model-app.ld.json"), imported_models=[], imported_provenance=[]
+    )
 
 
 def test_continuous_joint_equality_error_wraps() -> None:
-    g = _graph(with_position_limit=False)
-    assert _continuous_joint_leaves(g) == {"joint_1"}
-    closure = ErrorEvaluator().closure_step(g, lambda node: split_uri(str(node))[1], EX.eval)
+    model = _model(with_position_limit=False)
+    assert continuous_joint_leaves(model) == {"joint_1"}
+    closure = ErrorEvaluator().closure_step(model, EX.eval)
     assert closure is not None
     assert closure["angular_wrap"] is True
 
 
 def test_position_limited_joint_error_does_not_wrap() -> None:
-    g = _graph(with_position_limit=True)
-    assert _continuous_joint_leaves(g) == set()
-    closure = ErrorEvaluator().closure_step(g, lambda node: split_uri(str(node))[1], EX.eval)
+    model = _model(with_position_limit=True)
+    assert continuous_joint_leaves(model) == set()
+    closure = ErrorEvaluator().closure_step(model, EX.eval)
     assert closure is not None
     assert "angular_wrap" not in closure

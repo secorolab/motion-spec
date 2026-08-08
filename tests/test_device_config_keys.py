@@ -13,7 +13,7 @@ import pytest
 from motion_spec.rdf_parser.ir import generate_ir
 
 MODELS = Path(__file__).parents[2] / "motion-spec-dsl" / "models"
-REAL_WORLD_MODELS = ["real_demo", "real_demo_2f85", "real_demo_separate"]
+REAL_WORLD_MODELS = ["real_demo_2f85", "real_demo_monitor"]
 
 
 def _generate_ir(name: str, tmp_path: Path) -> dict:
@@ -29,10 +29,10 @@ def _generate_ir(name: str, tmp_path: Path) -> dict:
 
 def _config_keys(ir: dict) -> set[str]:
     return {
-        device["config_key"]
+        device.config_key
         for solver in ir["resources"]["by_kind"]["serial_chain"]
         for device in solver.devices
-        if device.get("config_key")
+        if device.config_key
     }
 
 
@@ -43,28 +43,28 @@ def _toml_sections(name: str) -> set[str]:
 
 
 @pytest.fixture(scope="module")
-def real_demo_ir(tmp_path_factory) -> dict:
-    return _generate_ir("real_demo", tmp_path_factory.mktemp("real_demo"))
+def one_agent_ir(tmp_path_factory) -> dict:
+    return _generate_ir("real_demo_2f85", tmp_path_factory.mktemp("real_demo_2f85"))
 
 
-def test_the_agent_key_is_its_scenex_alias_then_its_leaf(real_demo_ir: dict) -> None:
+def test_the_agent_key_is_its_scenex_alias_then_its_leaf(one_agent_ir: dict) -> None:
     """The alias survives in the agent's IRI as the path segment right after /models/."""
-    assert "agents.arm1" in _config_keys(real_demo_ir)
+    assert "agents.arm1" in _config_keys(one_agent_ir)
 
 
-def test_a_hosted_sensors_key_is_its_agents_leaf_then_its_own(real_demo_ir: dict) -> None:
+def test_a_hosted_sensors_key_is_its_agents_leaf_then_its_own(one_agent_ir: dict) -> None:
     """Not runtime_prefix: that is empty on every single-robot model, so the sensor's own agent
     -- not the scene's dedup prefix -- is what makes the key line up with robot.toml."""
-    assert "arm1.wrist_ft" in _config_keys(real_demo_ir)
+    assert "arm1.wrist_ft" in _config_keys(one_agent_ir)
 
 
 @pytest.fixture(scope="module")
-def real_demo_separate_ir(tmp_path_factory) -> dict:
-    return _generate_ir("real_demo_separate", tmp_path_factory.mktemp("real_demo_separate"))
+def two_agent_ir(tmp_path_factory) -> dict:
+    return _generate_ir("real_demo_monitor", tmp_path_factory.mktemp("real_demo_monitor"))
 
 
-def test_two_agents_in_one_model_get_distinct_keys(real_demo_separate_ir: dict) -> None:
-    assert {"agents.arm1", "agents.gripper1"} <= _config_keys(real_demo_separate_ir)
+def test_two_agents_in_one_model_get_distinct_keys(two_agent_ir: dict) -> None:
+    assert {"agents.arm1", "agents.gripper1"} <= _config_keys(two_agent_ir)
 
 
 @pytest.mark.parametrize("name", REAL_WORLD_MODELS)

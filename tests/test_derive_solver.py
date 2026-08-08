@@ -2,7 +2,14 @@
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 # Author: Vamsi Kalagaturu
 
-from motion_spec.rdf_parser.ir import ANGULAR_AXES, LINEAR_AXES, POSE_AXES, spatial_axes
+from motion_spec.classes.geometry import Subspace
+from motion_spec.rdf_parser.quantities import (
+    ANGULAR_AXES,
+    LINEAR_AXES,
+    POSE_AXES,
+    SpatialAxis,
+    spatial_axes,
+)
 
 
 def derive(subspace=None, axis=None, **kwargs):
@@ -24,7 +31,7 @@ def test_spatial_axis_decision_table() -> None:
     assert derive("orientation") == ANGULAR_AXES
     assert derive("distance", "y") == LINEAR_AXES[1:2]
     assert derive("rotation", "x") == ANGULAR_AXES[:1]
-    assert derive("distance") == (type(LINEAR_AXES[0])("linear-acceleration", "distance"),)
+    assert derive("distance") == (SpatialAxis(Subspace.Linear, "distance"),)
     assert derive("force", command_type="Force") == ()
     assert derive(None, command_type="Torque", quantity_kind="JointPosition") == ()
     assert derive("position", controller_type="ImpedanceController") == ()

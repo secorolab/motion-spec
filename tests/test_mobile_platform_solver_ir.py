@@ -5,17 +5,16 @@ as empty with no error)."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
-from rdflib import Graph, URIRef
+from motion_spec_dsl.rdf_parser.vocab import SLV_EXT
+from rdf_utils.constraints import ConstraintViolation
+from rdflib import Dataset, URIRef
 from rdflib.namespace import RDF
 
-from motion_spec.rdf_parser.ir import (
-    DerivedIriRegistry,
-    Parser,
-    _solver_derivation_context,
-    _solver_sections,
-)
-from motion_spec_dsl.rdf_parser.vocab import SLV_EXT
+from motion_spec.rdf_parser import constraint_handler, operations, resources
+from motion_spec.rdf_parser.model import Model
 
 NS = "https://example.test/"
 
@@ -28,11 +27,12 @@ NS = "https://example.test/"
     ],
 )
 def test_unimplemented_mobile_platform_algorithm_is_rejected(rdf_type, label) -> None:
-    g = Graph()
-    node = URIRef(f"{NS}bad-solver")
-    g.add((node, RDF.type, rdf_type))
-    p = Parser(g)
-    derivation = _solver_derivation_context(g, DerivedIriRegistry([]))
+    graph = Dataset(default_union=True)
+    graph.add((URIRef(f"{NS}bad-solver"), RDF.type, rdf_type))
+    model = Model(
+        graph=graph, app_path=Path("model-app.ld.json"), imported_models=[], imported_provenance=[]
+    )
+    derivation = constraint_handler.solver_derivation_context(model)
 
-    with pytest.raises(ValueError, match=label):
-        _solver_sections(g, p, {}, None, derivation, None)
+    with pytest.raises(ConstraintViolation, match=label):
+        resources.build_robots(model, operations.Schedule(model), {}, derivation, [], "mj_kdl")

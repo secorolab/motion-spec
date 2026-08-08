@@ -2,43 +2,79 @@
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 
 import pytest
+from rdf_utils.constraints import ConstraintViolation
 
-from motion_spec.rdf_parser.solvers import _annotate_runtime_robots
+from motion_spec.classes.bindings import ChainBinding, HardwareBinding, RuntimeBinding
+from motion_spec.classes.motion import MotionSolverSlice, MotionUnit
+from motion_spec.classes.solvers import MotionDrivers, SolverWithInputAndOutput
+from motion_spec.rdf_parser.resources import annotate_runtime
 
 
 def solver(sid, chain_end, driven):
-    return {
-        "id": sid,
-        "chain_root": "base",
-        "chain_end": chain_end,
-        "robot_model": "arm",
-        "urdf": "arm.urdf",
-        "tool_body": None,
-        "tcp_site": None,
-        "runtime_id": "",
-        "runtime_owner": False,
-        "motion_drivers": [{"acceleration_constraint": ["c"] if driven else []}],
-    }
+    return SolverWithInputAndOutput(
+        id=sid,
+        motion_drivers=[
+            MotionDrivers(
+                id=f"{sid}_drivers",
+                acceleration_constraint=["c"] if driven else [],
+                cartesian_force=[],
+            )
+        ],
+        output=[],
+        chain=ChainBinding(
+            root="base",
+            end=chain_end,
+            tip="",
+            kdl_chain="",
+            kdl_tree="",
+            kdl_joints=[],
+            kdl_header="",
+        ),
+        hardware=HardwareBinding(urdf="arm.urdf", model="arm", tool_body="", tcp_site=""),
+        runtime=RuntimeBinding(id="", owner=False, prefix="", owned_trees=[], config_key=""),
+    )
+
+
+def slice_(sid, read_only):
+    return MotionSolverSlice(
+        id=sid, solver_id=sid, output=[], motion_driver=None, read_only=read_only
+    )
 
 
 def motion(mid, solvers):
-    return {"id": mid, "serial_chain_solvers": solvers, "forwarded_commands": []}
+    return MotionUnit(
+        id=mid,
+        handler="",
+        name=mid,
+        description=[],
+        when_evaluators=[],
+        while_evaluators=[],
+        until_evaluators=[],
+        controllers=[],
+        when_monitors=[],
+        while_monitors=[],
+        until_monitors=[],
+        when_schedule=[],
+        while_schedule=[],
+        until_schedule=[],
+        serial_chain_solvers=solvers,
+    )
 
 
 def test_read_only_on_commanded_runtime_is_rejected() -> None:
     chain = [solver("a", "wrist", driven=True), solver("b", "wrist", driven=False)]
     motions = [
-        motion("m1", [{"id": "a", "read_only": False}]),
-        motion("m2", [{"id": "b", "read_only": True}]),
+        motion("m1", [slice_("a", read_only=False)]),
+        motion("m2", [slice_("b", read_only=True)]),
     ]
-    with pytest.raises(ValueError, match="torque-commanded"):
-        _annotate_runtime_robots(chain, motions, "mj_kdl")
+    with pytest.raises(ConstraintViolation, match="torque-commanded"):
+        annotate_runtime(chain, motions, "mj_kdl")
 
 
 def test_read_only_on_own_runtime_is_allowed() -> None:
     chain = [solver("a", "wrist", driven=True), solver("b", "elbow", driven=False)]
     motions = [
-        motion("m1", [{"id": "a", "read_only": False}]),
-        motion("m2", [{"id": "b", "read_only": True}]),
+        motion("m1", [slice_("a", read_only=False)]),
+        motion("m2", [slice_("b", read_only=True)]),
     ]
-    _annotate_runtime_robots(chain, motions, "mj_kdl")
+    annotate_runtime(chain, motions, "mj_kdl")

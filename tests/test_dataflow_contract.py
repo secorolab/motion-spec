@@ -7,16 +7,79 @@ import json
 from pathlib import Path
 
 import pytest
+from frame_log_fixture import flat_frame
 
+from motion_spec.classes.base import DataclassJSONEncoder
+from motion_spec.classes.bindings import ChainBinding, HardwareBinding, RuntimeBinding
+from motion_spec.classes.geometry import Direction, Pose, Position, Wrench
+from motion_spec.classes.motion import BlackboardValue, MotionSolverSlice, MotionUnit
+from motion_spec.classes.qudt import Quantity, QuantityKind, Unit
+from motion_spec.classes.solvers import MotionDrivers, SolverWithInputAndOutput
 from motion_spec.generation.artifacts import build_introspection_model, build_schema
 from motion_spec.introspection import frame_log_pb
-from motion_spec.rdf_parser.ir import annotate_dataflow
-
-from frame_log_fixture import flat_frame
+from motion_spec.rdf_parser.quantities import annotate_dataflow
 
 # The plan's storage table, restated here so the test pins the contract rather than the constant
 # the implementation happens to use.
 STORAGE_BY_CADENCE = {"never": "absent", "init": "record", "tick": "log"}
+
+
+def _quantity(id_: str, value: float | None) -> Quantity:
+    return Quantity(id_, QuantityKind("Distance"), Unit("M"), value, False)
+
+
+def _wrench(id_: str, sensor_name: str = "") -> Wrench:
+    return Wrench(
+        id=id_,
+        quantity_kind=[],
+        reference_point=None,
+        as_seen_by=None,
+        unit=[],
+        sensor_name=sensor_name,
+    )
+
+
+def _solver(sid: str, output: list) -> SolverWithInputAndOutput:
+    """A full chain solver: what `annotate_dataflow` reads writers off."""
+    return SolverWithInputAndOutput(
+        id=sid,
+        motion_drivers=[
+            MotionDrivers(id=f"{sid}_drivers", acceleration_constraint=[], cartesian_force=[])
+        ],
+        output=output,
+        chain=ChainBinding(
+            root="base", end="ee", tip="", kdl_chain="", kdl_tree="", kdl_joints=[], kdl_header=""
+        ),
+        hardware=HardwareBinding(urdf="", model="arm", tool_body="", tcp_site=""),
+        runtime=RuntimeBinding(id=sid, owner=True, prefix="", owned_trees=[], config_key=""),
+    )
+
+
+def _slice(sid: str, output: list) -> MotionSolverSlice:
+    """The per-motion slice of that solver: by reference, no copies (024 §2 F2)."""
+    return MotionSolverSlice(id=sid, solver_id=sid, output=output, motion_driver=None)
+
+
+def _motion(mid: str, index: int, fsm_state: str, schedule: list, solvers: list) -> MotionUnit:
+    return MotionUnit(
+        id=mid,
+        handler="",
+        name=mid,
+        description=[],
+        when_evaluators=[],
+        while_evaluators=[],
+        until_evaluators=[],
+        controllers=[],
+        when_monitors=[],
+        while_monitors=[],
+        until_monitors=[],
+        when_schedule=[],
+        while_schedule=schedule,
+        until_schedule=[],
+        index=index,
+        fsm_state=fsm_state,
+        serial_chain_solvers=solvers,
+    )
 
 
 def _model() -> tuple[dict, list, dict, list, list, dict]:
@@ -27,47 +90,29 @@ def _model() -> tuple[dict, list, dict, list, list, dict]:
     that nothing ever writes.
     """
     shared_data = [
-        {"id": "pose_ee", "type": "Pose"},
-        {"id": "arc_only_error", "type": "Quantity", "value": None},
-        {"id": "home_only_error", "type": "Quantity", "value": None},
-        {"id": "stiffness", "type": "Quantity", "value": 800.0},
-        {"id": "path_normal", "type": "Direction", "direction": [0.0, 0.0, 1.0]},
-        {"id": "pose_ee_position_rel", "type": "Position", "position": None},
+        Pose("pose_ee", None, None, [], None, [], None),
+        _quantity("arc_only_error", None),
+        _quantity("home_only_error", None),
+        _quantity("stiffness", 800.0),
+        Direction("path_normal", [], None, [], [0.0, 0.0, 1.0]),
+        Position("pose_ee_position_rel", None, None, QuantityKind("Length"), None, Unit("M"), None),
     ]
     closures = {
         "eval_arc": {"id": "eval_arc", "type": "ErrorEvaluator", "error": "arc_only_error"},
         "eval_home": {"id": "eval_home", "type": "ErrorEvaluator", "error": "home_only_error"},
     }
-    solver = {"id": "arm_solver", "output": [{"id": "pose_ee"}]}
+    solver = _solver("arm_solver", output=[shared_data[0]])
+    slice_ = _slice("arm_solver", output=[shared_data[0]])
     motions = [
-        {
-            "id": "motion_home",
-            "index": 0,
-            "fsm_state": "S_HOME",
-            "while_schedule": ["eval_home"],
-            "serial_chain_solvers": [solver],
-            "controllers": [],
-        },
-        {
-            "id": "motion_arc",
-            "index": 1,
-            "fsm_state": "S_ARC",
-            "while_schedule": ["eval_arc"],
-            "serial_chain_solvers": [solver],
-            "controllers": [],
-        },
+        _motion("motion_home", 0, "S_HOME", ["eval_home"], [slice_]),
+        _motion("motion_arc", 1, "S_ARC", ["eval_arc"], [slice_]),
     ]
     introspection = {
         "quantities": [],
         "controllers": [],
         "monitors": [],
         "quantity_samples": [
-            {
-                "id": item["id"],
-                "source_id": item["id"],
-                "source_type": item["type"],
-                "sample_desc": desc,
-            }
+            {"id": item.id, "source_id": item.id, "source_type": item.type, "sample_desc": desc}
             for item, desc in (
                 (shared_data[1], {"kind": "shared", "id": "arc_only_error"}),
                 (shared_data[2], {"kind": "shared", "id": "home_only_error"}),
@@ -103,7 +148,13 @@ def _annotated() -> tuple[dict, list]:
 
 def _schema() -> dict:
     introspection, _shared = _annotated()
-    ir = {"introspection": introspection, "unique_motions": _model()[3], "shared_data": []}
+    # build_schema reads the published IR, so the motions cross as the JSON they serialize to.
+    ir = {
+        "configuration": {"platform": {"name": "MuJoCo", "simulated": True, "backend": "mj_kdl"}},
+        "communication": {"introspection": introspection},
+        "coordination": {"motions": json.loads(json.dumps(_model()[3], cls=DataclassJSONEncoder))},
+        "computation": {"shared_data": []},
+    }
     fsm_ir = {"states": ["S_HOME", "S_ARC"], "events": [], "start_state": "S_HOME"}
     return build_schema(ir, ir_path=Path("ir.json"), output_dir=Path("."), fsm_ir=fsm_ir)
 
@@ -135,11 +186,12 @@ def test_a_value_written_by_several_motions_is_one_producer_over_all_of_them() -
 
 def test_externally_measured_is_the_sensor_reading_and_nothing_else() -> None:
     """The projection asks "does the platform supply it?", not "is it a Wrench nobody writes?"."""
+    reading = _wrench("ext_force", sensor_name="wrist_ft")
     shared_data = [
-        {"id": "ext_force", "type": "Wrench"},
-        {"id": "ext_force_ft_bias", "type": "Wrench"},
-        {"id": "ext_force_ft_settle", "type": "IntCounter"},
-        {"id": "cmd_wrench", "type": "Wrench"},
+        reading,
+        BlackboardValue(id="ext_force_ft_bias", type="Wrench"),
+        BlackboardValue(id="ext_force_ft_settle", type="IntCounter"),
+        _wrench("cmd_wrench"),
     ]
     closures = {
         "push": {
@@ -148,28 +200,19 @@ def test_externally_measured_is_the_sensor_reading_and_nothing_else() -> None:
             "wrench": "cmd_wrench",
         }
     }
-    solver = {"id": "arm_solver", "output": [{"id": "ext_force", "sensor_name": "wrist_ft"}]}
-    motions = [
-        {
-            "id": "motion_arc",
-            "index": 0,
-            "fsm_state": "S_ARC",
-            "while_schedule": ["push"],
-            "serial_chain_solvers": [solver],
-            "controllers": [],
-        }
-    ]
+    solver = _solver("arm_solver", output=[reading])
+    motions = [_motion("motion_arc", 0, "S_ARC", ["push"], [_slice("arm_solver", [reading])])]
     introspection: dict = {}
     values = annotate_dataflow(introspection, shared_data, closures, motions, [solver], {})
     # The tare state is a Wrench written alongside the reading but computed by the program, and
     # cmd_wrench is the program's own output: neither is externally measured.
-    assert [item["id"] for item in values["externally_measured"]] == ["ext_force"]
+    assert [item.id for item in values["externally_measured"]] == ["ext_force"]
 
 
 def test_never_written_members_leave_shared_data_and_the_frame() -> None:
     introspection, shared_data = _annotated()
     assert introspection["dataflow"]["pose_ee_position_rel"]["cadence"] == "never"
-    assert "pose_ee_position_rel" not in {item["id"] for item in shared_data}
+    assert "pose_ee_position_rel" not in {item.id for item in shared_data}
     assert "pose_ee_position_rel" not in {
         row["source_id"] for row in introspection["quantity_samples"]
     }
@@ -196,7 +239,7 @@ def test_gated_slots_appear_only_in_the_motions_that_write_them() -> None:
     assert schema["by_motion"]["motion_arc"]["quantities"] == [index_of["arc_only_error"]]
     assert schema["by_motion"]["motion_home"]["quantities"] == [index_of["home_only_error"]]
 
-    model = build_introspection_model(schema, {"shared_data": []})
+    model = build_introspection_model(schema, {"computation": {"shared_data": []}})
     # Gated slots move out of the unconditional block into their motion's case.
     assert model["quantities"] == []
     by_index = {
@@ -216,6 +259,7 @@ def test_decoding_yields_only_the_slots_the_frame_s_motion_writes() -> None:
     )
     # Round-trip through a real log so the gate comes from the header, as in production.
     import tempfile
+
     from motion_spec.generation.artifacts import build_frame_log_header_record
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -230,7 +274,11 @@ def test_decoding_yields_only_the_slots_the_frame_s_motion_writes() -> None:
 
 
 def test_pose_difference_and_acceleration_twist_rows_survive_dedup() -> None:
-    from motion_spec.rdf_parser.ir import add_quantity_samples
+    from motion_spec.classes.geometry import AccelerationTwist, PoseDifference
+    from motion_spec.rdf_parser.communication import add_quantity_samples
+
+    def spatial(cls, id_):
+        return cls(id=id_, quantity_kind=[], reference_point=None, as_seen_by=None, unit=[])
 
     introspection = {
         "quantities": [
@@ -240,9 +288,9 @@ def test_pose_difference_and_acceleration_twist_rows_survive_dedup() -> None:
         ]
     }
     shared_data = [
-        {"id": "pose_ee", "type": "Pose"},
-        {"id": "pose_diff", "type": "PoseDifference"},
-        {"id": "acc_ee", "type": "AccelerationTwist"},
+        Pose("pose_ee", None, None, [], None, [], None),
+        spatial(PoseDifference, "pose_diff"),
+        spatial(AccelerationTwist, "acc_ee"),
     ]
     add_quantity_samples(introspection, shared_data, {})
     sampled = {row["source_id"] for row in introspection["quantity_samples"]}

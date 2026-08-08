@@ -35,7 +35,7 @@ emit something need a rule.
 | layer | group | holds |
 |---|---|---|
 | root | `main.stg` | imports the entry groups; no rules |
-| L4 entry | `entry_program.stg` | `ref_main`, `shared_state_header` |
+| L4 entry | `entry_program.stg` | `main_source`, `shared_state_header` |
 | | `entry_motion.stg` | `motion_header` |
 | | `entry_introspection.stg` | `frame_layout.h`, the frame-log writer, model samples, `frame_log.proto` |
 | | `entry_build.stg` | `cmake_mj_kdl`, `cmake_robif2b`, `robot_config.hpp` |

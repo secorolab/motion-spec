@@ -425,6 +425,19 @@ def replay(log: Path, jsonl: bool, verify: bool, recover_runtime_ttl: bool) -> N
         raise click.ClickException(str(exc)) from exc
 
 
+def _is_simulated(generation: Path) -> bool:
+    """Whether this generation's controller drives a simulator.
+
+    The platform the model declared, read back from the IR the generation carries -- the backend
+    token is an implementation detail and never the thing asked about.
+    """
+    ir_path = generation / "generated" / "model" / "ir.json"
+    if not ir_path.is_file():
+        raise click.ClickException(f"generation has no IR to read the platform from: {ir_path}")
+    platform = json.loads(ir_path.read_text())["configuration"]["platform"]
+    return bool(platform["simulated"])
+
+
 @main.command(context_settings={"ignore_unknown_options": True})
 @click.argument("input", type=click.Path(exists=True, path_type=Path))
 @click.option("-o", "--output-dir", type=click.Path(file_okay=False, path_type=Path))
@@ -480,6 +493,11 @@ def run(
         if output_dir is not None or prefixes or jobs is not None:
             raise click.UsageError("generation and build options require a .robmot INPUT")
         generation = input.resolve()
+
+    if (headless or steps is not None) and not _is_simulated(generation):
+        raise click.UsageError(
+            "--headless and --steps are simulator options; this generation runs on hardware"
+        )
 
     run_dir = generation / "runs" / (run_id or new_id("run"))
     arguments = (

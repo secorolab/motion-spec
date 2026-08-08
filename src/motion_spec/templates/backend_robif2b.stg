@@ -2,11 +2,12 @@
 // robif2b backend: EtherCAT/KELO driver bindings and the robif2b KinovaGen3 robot impl.
 
 import "backend_robot.stg"
-robot-driver-include-robif2b-KinovaGen3(solver, model_name) ::= <<
+import "backend_robif2b_io.stg"
+// The robotiq driver headers ride in device_io.hpp, which includes them per bound device.
+robot-driver-include-robif2b-KinovaGen3(solver, model_name, resources) ::= <<
 #include "headers/<model_name>.kdl.hpp"
-#include \<robif2b/functions/kinova_gen3.h\>
-#include \<robif2b/functions/robotiq_gripper.h\>
-#include \<robif2b/functions/robotiq_ft_sensor.h\>
+<if(resources.device_kinds.("Robotiq2F85") || resources.device_kinds.("RobotiqFT300s"))>#include "device_io.hpp"
+<endif>#include \<robif2b/functions/kinova_gen3.h\>
 >>
 
 robot-state-struct-robif2b-KinovaGen3(solver) ::= <<
@@ -37,26 +38,6 @@ struct kg3_gripper_state {
     float frc_cmd = 0.0f;
 };
 
-// Gripper on its own serial line: the same ports, counted 0-255.
-struct serial_gripper_state {
-    bool success = false;
-    uint8_t position_msr = 0;
-    bool is_moving = false;
-    robif2b_robotiq_gripper_obj_status obj_status = ROBIF2B_ROBOTIQ_OBJ_UNKNOWN;
-    robif2b_robotiq_gripper_status status = ROBIF2B_ROBOTIQ_UNKNOWN;
-    uint8_t position_cmd = 0;
-    uint8_t speed_cmd = 0;
-    uint8_t force_cmd = 0;
-    robif2b_robotiq_gripper_error error = ROBIF2B_ROBOTIQ_NO_ERROR;
-};
-
-struct ft_sensor_state {
-    bool success = false;
-    float force[3] = {0.0f};
-    float force_offset[3] = {0.0f};
-    float moment[3] = {0.0f};
-    float moment_offset[3] = {0.0f};
-};
 >>
 
 robot-manipulator-struct-robif2b-KinovaGen3(solver) ::= <<
@@ -93,9 +74,10 @@ chain-device-members-robif2b(solver) ::= <<
 <solver.devices:{device | <({<device-io-member-impl.(device.kind)>})(solver, device)>}; separator="">
 >>
 
-// The motion functions read the sensor through here; main owns the driver's state.
+// The motion functions read the sensor through here; main owns the driver's state, and the
+// sensor's own thread is what fills it, so what the loop sees is the last completed reading.
 device-io-member-robif2b-RobotiqFT300s(solver, device) ::= <<
-    const ft_sensor_state *ft_<device.drives> = nullptr;
+    const ft_sensor_sample *ft_<device.drives> = nullptr;
     int ft_<device.drives>_bias_samples = 0;
 >>
 
@@ -105,7 +87,7 @@ device-io-assign-impl ::= [
 ]
 
 device-io-assign-robif2b-RobotiqFT300s(solver, device) ::= <<
-    robot.ft_<device.drives> = &ft_<device.drives>_state;
+    robot.ft_<device.drives> = &ft_<device.drives>_io.sample;
     robot.ft_<device.drives>_bias_samples = motion_spec::config::bias_samples(robot_config, "<device.config_key>");
 >>
 
@@ -124,16 +106,25 @@ device-state-init-robif2b-KinovaGen3-2F85(solver, device) ::= <<
     double gripper_<solver.runtime.id>_pos_rad = 0.0;
 >>
 
+// Two Modbus round trips at 115200 baud do not fit in a control cycle, so the device gets its own
+// thread: the state struct below is the thread's, seeded here because nothing is running yet, and
+// the loop only ever touches the handoff objects.
 device-state-init-robif2b-Robotiq2F85(solver, device) ::= <<
-    serial_gripper_state gripper_<solver.runtime.id>_state{};
-    gripper_<solver.runtime.id>_state.speed_cmd = motion_spec::config::gripper_pct_byte(robot_config, "<device.config_key>", "gripper_speed_pct");
-    gripper_<solver.runtime.id>_state.force_cmd = motion_spec::config::gripper_pct_byte(robot_config, "<device.config_key>", "gripper_force_pct");
+    serial_gripper_io gripper_<solver.runtime.id>_io{};
+    gripper_<solver.runtime.id>_io.state.speed_cmd = motion_spec::config::gripper_pct_byte(robot_config, "<device.config_key>", "gripper_speed_pct");
+    gripper_<solver.runtime.id>_io.state.force_cmd = motion_spec::config::gripper_pct_byte(robot_config, "<device.config_key>", "gripper_force_pct");
+    gripper_<solver.runtime.id>_io.stale.limit = motion_spec::io::stale_after_cycles(
+        motion_spec::config::stale_after_ms(robot_config, "<device.config_key>"),
+        motion_spec::runtime::kControlPeriodS);
     double gripper_<solver.runtime.id>_cmd = 0.0;
     double gripper_<solver.runtime.id>_pos_rad = 0.0;
 >>
 
 device-state-init-robif2b-RobotiqFT300s(solver, device) ::= <<
-    ft_sensor_state ft_<device.drives>_state{};
+    ft_sensor_io ft_<device.drives>_io{};
+    ft_<device.drives>_io.stale.limit = motion_spec::io::stale_after_cycles(
+        motion_spec::config::stale_after_ms(robot_config, "<device.config_key>"),
+        motion_spec::runtime::kControlPeriodS);
 >>
 
 // Each bound device opens its own connection, except a gripper on the arm's interconnect --
@@ -145,6 +136,19 @@ device-init-robif2b(solver, device) ::= <<
 device-configure-robif2b(solver, device) ::= <<
 <({device-configure-robif2b-<device.kind>})(solver, device)>
 >>
+
+// What a device already knows before the first control cycle. Every driver reads the hardware
+// once while connecting, so this only lifts that reading into the ports the loop uses -- no
+// command is sent and no bus transaction is added.
+device-prime-robif2b(solver, device) ::= <<
+<({<device-prime-impl.(device.kind)>})(solver, device)>
+>>
+
+device-prime-impl ::= [
+    "KinovaGen3-2F85": "device-prime-robif2b-KinovaGen3-2F85",
+    "Robotiq2F85": "device-prime-robif2b-Robotiq2F85",
+    default: "device-nothing"
+]
 
 device-update-robif2b(solver, device) ::= <<
 <({device-update-robif2b-<device.kind>})(solver, device)>
@@ -206,15 +210,15 @@ device-init-robif2b-Robotiq2F85(solver, device) ::= <<
     gripper_<solver.runtime.id>.serial.baudrate = cfg_gripper_<solver.runtime.id>.baudrate;
     gripper_<solver.runtime.id>.serial.timeout_ms = cfg_gripper_<solver.runtime.id>.timeout_ms;
     gripper_<solver.runtime.id>.serial.slave_address = cfg_gripper_<solver.runtime.id>.slave_address;
-    gripper_<solver.runtime.id>.position_msr = &gripper_<solver.runtime.id>_state.position_msr;
-    gripper_<solver.runtime.id>.is_gripper_moving = &gripper_<solver.runtime.id>_state.is_moving;
-    gripper_<solver.runtime.id>.obj_detection_status = &gripper_<solver.runtime.id>_state.obj_status;
-    gripper_<solver.runtime.id>.gripper_status = &gripper_<solver.runtime.id>_state.status;
-    gripper_<solver.runtime.id>.position_cmd = &gripper_<solver.runtime.id>_state.position_cmd;
-    gripper_<solver.runtime.id>.speed_cmd = &gripper_<solver.runtime.id>_state.speed_cmd;
-    gripper_<solver.runtime.id>.force_cmd = &gripper_<solver.runtime.id>_state.force_cmd;
-    gripper_<solver.runtime.id>.error = &gripper_<solver.runtime.id>_state.error;
-    gripper_<solver.runtime.id>.success = &gripper_<solver.runtime.id>_state.success;
+    gripper_<solver.runtime.id>.position_msr = &gripper_<solver.runtime.id>_io.state.position_msr;
+    gripper_<solver.runtime.id>.is_gripper_moving = &gripper_<solver.runtime.id>_io.state.is_moving;
+    gripper_<solver.runtime.id>.obj_detection_status = &gripper_<solver.runtime.id>_io.state.obj_status;
+    gripper_<solver.runtime.id>.gripper_status = &gripper_<solver.runtime.id>_io.state.status;
+    gripper_<solver.runtime.id>.position_cmd = &gripper_<solver.runtime.id>_io.state.position_cmd;
+    gripper_<solver.runtime.id>.speed_cmd = &gripper_<solver.runtime.id>_io.state.speed_cmd;
+    gripper_<solver.runtime.id>.force_cmd = &gripper_<solver.runtime.id>_io.state.force_cmd;
+    gripper_<solver.runtime.id>.error = &gripper_<solver.runtime.id>_io.state.error;
+    gripper_<solver.runtime.id>.success = &gripper_<solver.runtime.id>_io.state.success;
 <endif>
 >>
 
@@ -225,59 +229,105 @@ device-init-robif2b-RobotiqFT300s(solver, device) ::= <<
     ft_<device.drives>.serial.baudrate = cfg_ft_<device.drives>.baudrate;
     ft_<device.drives>.serial.timeout_ms = cfg_ft_<device.drives>.timeout_ms;
     ft_<device.drives>.serial.slave_address = cfg_ft_<device.drives>.slave_address;
-    ft_<device.drives>.force_msr = &ft_<device.drives>_state.force[0];
-    ft_<device.drives>.force_offset = &ft_<device.drives>_state.force_offset[0];
-    ft_<device.drives>.moment_msr = &ft_<device.drives>_state.moment[0];
-    ft_<device.drives>.moment_offset = &ft_<device.drives>_state.moment_offset[0];
-    ft_<device.drives>.success = &ft_<device.drives>_state.success;
+    ft_<device.drives>.force_msr = &ft_<device.drives>_io.state.force[0];
+    ft_<device.drives>.force_offset = &ft_<device.drives>_io.state.force_offset[0];
+    ft_<device.drives>.moment_msr = &ft_<device.drives>_io.state.moment[0];
+    ft_<device.drives>.moment_offset = &ft_<device.drives>_io.state.moment_offset[0];
+    ft_<device.drives>.success = &ft_<device.drives>_io.state.success;
 <endif>
+>>
+
+// A driver that cannot connect must not reach the loop: every measurement it owns would keep
+// whatever it was initialised to, and the first solve would price a pose the arm is not in.
+device-configure-check(handle, config_key) ::= <<
+    if (!<handle>.success) {
+        std::cerr \<\< "[run] device '<config_key>' failed to configure\n";
+        return 1;
+    \}
 >>
 
 device-configure-robif2b-KinovaGen3(solver, device) ::= <<
     <robif2b-configure-kinova(solver.runtime.id)>
     <robif2b-recover-kinova(solver.runtime.id)>
     <robif2b-start-kinova(solver.runtime.id)>
+<device-configure-check({kinova_<solver.runtime.id>_state}, device.config_key)>
 >>
 
 device-configure-robif2b-KinovaGen3-2F85(solver, device) ::= <<
 <device-configure-robif2b-KinovaGen3(solver, device)>
     robif2b_kg3_robotiq_gripper_configure(&gripper_<solver.runtime.id>, &kinova_<solver.runtime.id>);
     robif2b_kg3_robotiq_gripper_start(&gripper_<solver.runtime.id>);
+<device-configure-check({gripper_<solver.runtime.id>_state}, device.config_key)>
 >>
 
 device-configure-robif2b-Robotiq2F85(solver, device) ::= <<
     robif2b_robotiq_gripper_configure(&gripper_<solver.runtime.id>);
+<device-configure-check({gripper_<solver.runtime.id>_io.state}, device.config_key)>
+    gripper_<solver.runtime.id>_io.start(gripper_<solver.runtime.id>);
 >>
 
 device-configure-robif2b-RobotiqFT300s(solver, device) ::= <<
     robif2b_robotiq_ft_configure(&ft_<device.drives>);
+<device-configure-check({ft_<device.drives>_io.state}, device.config_key)>
+    ft_<device.drives>_io.start(ft_<device.drives>);
+>>
+
+// The gripper is the one device whose reading the loop derives rather than reads: the driver
+// reports a percentage of travel, the model works in radians. Seed both the derived position
+// and the command with where the gripper already is, so the first cycle neither reports a
+// gripper it has not looked at nor commands one open that was holding something.
+device-prime-robif2b-KinovaGen3-2F85(solver, device) ::= <<
+    publish_gripper_measurement(&gripper_<solver.runtime.id>);
+    gripper_<solver.runtime.id>_pos_rad =
+        <gripper-travel-Robotiq2F85()> * (gripper_<solver.runtime.id>_state.pos_msr / 100.0);
+    gripper_<solver.runtime.id>_cmd = gripper_<solver.runtime.id>_pos_rad;
+>>
+
+// On its own serial line the reading comes from the device's thread, so priming waits for its
+// first completed transaction -- within the same bound the loop holds it to afterwards.
+device-prime-robif2b-Robotiq2F85(solver, device) ::= <<
+    const auto gripper_<solver.runtime.id>_first = gripper_<solver.runtime.id>_io.sample.await(
+        motion_spec::config::stale_after_ms(robot_config, "<device.config_key>"));
+    if (gripper_<solver.runtime.id>_first.seq == 0) {
+        std::cerr \<\< "[run] device '<device.config_key>' completed no transaction\n";
+        return 1;
+    \}
+    gripper_<solver.runtime.id>_pos_rad =
+        <gripper-travel-Robotiq2F85()> * (gripper_<solver.runtime.id>_first.value.position_msr / 255.0);
+    gripper_<solver.runtime.id>_cmd = gripper_<solver.runtime.id>_pos_rad;
 >>
 
 device-update-robif2b-KinovaGen3(solver, device) ::= <<
-        <robif2b-update-kinova(solver.runtime.id)>
+            <robif2b-update-kinova(solver.runtime.id)>
+            motion_spec::runtime::require_driver(kinova_<solver.runtime.id>_state.success, "<device.config_key>");
 >>
 
 device-update-robif2b-KinovaGen3-2F85(solver, device) ::= <<
 <device-update-robif2b-KinovaGen3(solver, device)>
-        gripper_<solver.runtime.id>_state.pos_cmd = static_cast\<float\>(
-            100.0 * motion_spec::runtime::gripper_closed_fraction(
-                gripper_<solver.runtime.id>_cmd, <gripper-travel-Robotiq2F85()>));
-        robif2b_kg3_robotiq_gripper_update(&gripper_<solver.runtime.id>);
-        gripper_<solver.runtime.id>_pos_rad =
-            <gripper-travel-Robotiq2F85()> * (gripper_<solver.runtime.id>_state.pos_msr / 100.0);
+            gripper_<solver.runtime.id>_state.pos_cmd = static_cast\<float\>(
+                100.0 * motion_spec::runtime::gripper_closed_fraction(
+                    gripper_<solver.runtime.id>_cmd, <gripper-travel-Robotiq2F85()>));
+            robif2b_kg3_robotiq_gripper_update(&gripper_<solver.runtime.id>);
+            motion_spec::runtime::require_driver(gripper_<solver.runtime.id>_state.success, "<device.config_key>");
+            gripper_<solver.runtime.id>_pos_rad =
+                <gripper-travel-Robotiq2F85()> * (gripper_<solver.runtime.id>_state.pos_msr / 100.0);
 >>
 
+// No bus transaction here: the radian command is scaled to the device's units and handed over,
+// and what comes back is the last reading its thread completed.
 device-update-robif2b-Robotiq2F85(solver, device) ::= <<
-        gripper_<solver.runtime.id>_state.position_cmd = static_cast\<uint8_t\>(std::lround(
-            255.0 * motion_spec::runtime::gripper_closed_fraction(
-                gripper_<solver.runtime.id>_cmd, <gripper-travel-Robotiq2F85()>)));
-        robif2b_robotiq_gripper_update(&gripper_<solver.runtime.id>);
-        gripper_<solver.runtime.id>_pos_rad =
-            <gripper-travel-Robotiq2F85()> * (gripper_<solver.runtime.id>_state.position_msr / 255.0);
+            gripper_<solver.runtime.id>_io.wire_cmd = static_cast\<std::uint8_t\>(std::lround(
+                255.0 * motion_spec::runtime::gripper_closed_fraction(
+                    gripper_<solver.runtime.id>_cmd, <gripper-travel-Robotiq2F85()>)));
+            const auto gripper_<solver.runtime.id>_msr = gripper_<solver.runtime.id>_io.sample.read();
+            motion_spec::io::require_fresh(gripper_<solver.runtime.id>_io.stale, gripper_<solver.runtime.id>_msr.seq, gripper_<solver.runtime.id>_msr.value.success, "<device.config_key>");
+            gripper_<solver.runtime.id>_pos_rad =
+                <gripper-travel-Robotiq2F85()> * (gripper_<solver.runtime.id>_msr.value.position_msr / 255.0);
 >>
 
 device-update-robif2b-RobotiqFT300s(solver, device) ::= <<
-        robif2b_robotiq_ft_update(&ft_<device.drives>);
+            const auto ft_<device.drives>_msr = ft_<device.drives>_io.sample.read();
+            motion_spec::io::require_fresh(ft_<device.drives>_io.stale, ft_<device.drives>_msr.seq, ft_<device.drives>_msr.value.success, "<device.config_key>");
 >>
 
 device-shutdown-robif2b-KinovaGen3(solver, device) ::= <<
@@ -290,11 +340,14 @@ device-shutdown-robif2b-KinovaGen3-2F85(solver, device) ::= <<
 <device-shutdown-robif2b-KinovaGen3(solver, device)>
 >>
 
+// Join before the driver goes: a thread must not reach a connection that has been torn down.
 device-shutdown-robif2b-Robotiq2F85(solver, device) ::= <<
+    gripper_<solver.runtime.id>_io.stop();
     robif2b_robotiq_gripper_shutdown(&gripper_<solver.runtime.id>);
 >>
 
 device-shutdown-robif2b-RobotiqFT300s(solver, device) ::= <<
+    ft_<device.drives>_io.stop();
     robif2b_robotiq_ft_shutdown(&ft_<device.drives>);
 >>
 
@@ -343,11 +396,12 @@ robot-shutdown-robif2b-KinovaGen3(solver) ::= <<
 <endif>
 >>
 
-app-chain-includes-robif2b(has_serial_chain) ::= <<
+app-chain-includes-robif2b(has_serial_chain, resources) ::= <<
 <if(has_serial_chain)>
 #include \<iostream\>
 #include "robot_config.hpp"
-<endif>
+<if(resources.device_kinds.("Robotiq2F85") || resources.device_kinds.("RobotiqFT300s"))>#include "device_io.hpp"
+<endif><endif>
 >>
 
 app-chain-setup-robif2b(serial_chain_solvers, scene, config_path) ::= <<
@@ -365,13 +419,23 @@ app-chain-setup-robif2b(serial_chain_solvers, scene, config_path) ::= <<
 }; separator="\n">
 >>
 
+app-chain-post-setup-robif2b(serial_chain_solvers, motions, agent_homes) ::= <<
+<serial_chain_solvers:{solver | <if(solver.runtime.owner)><solver.devices:{device | <device-prime-robif2b(solver, device)>}; separator=""><endif>}; separator="">
+>>
+
 app-loop-condition-robif2b(has_serial_chain) ::= <<
 true
 >>
 
+// A cycle that asked the loop to stop -- a diverged command, a failed driver, an interrupt --
+// must not reach the hardware: the staged command is a substitute, not something the model
+// authored. The frame log still samples this cycle, and shutdown follows on the next condition
+// check, so the record still ends at the cycle that broke.
 app-chain-runtime-step-robif2b(serial_chain_solvers) ::= <<
+        if (!motion_spec::runtime::stop_requested()) {
 <serial_chain_solvers:{solver | <if(solver.runtime.owner)><solver.devices:{device | <device-update-robif2b(solver, device)>
 }; separator=""><endif>}; separator="">
+        \}
 >>
 
 app-chain-trace-update-robif2b(serial_chain_solvers, trace) ::= <<

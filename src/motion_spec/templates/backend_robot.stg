@@ -2,8 +2,8 @@
 // Backend-neutral robot driver dispatch (include/state/init/chain/shutdown).
 
 
-robot-driver-include(solver, backend, model_name) ::= <<
-<({robot-driver-include-<backend>-<solver.hardware.model>})(solver, model_name)>
+robot-driver-include(solver, backend, model_name, resources) ::= <<
+<({robot-driver-include-<backend>-<solver.hardware.model>})(solver, model_name, resources)>
 >>
 
 solver-rnea-include(backend) ::= <<

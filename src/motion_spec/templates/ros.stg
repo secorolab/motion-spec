@@ -123,8 +123,10 @@ ros-spin-start(ros) ::= <<
 ros-joint-states-setup(ros) ::= <<
 <if(ros.joint_states)>
     {
-        const toml::table &_js_cfg =
-            motion_spec::config::section(robot_config, "<ros.joint_states.config_key>");
+        // Named, not a literal: `section` returns a reference into robot_config, and gcc reads a
+        // temporary argument as the thing the reference could dangle to.
+        const std::string _js_key = "<ros.joint_states.config_key>";
+        const toml::table &_js_cfg = motion_spec::config::section(robot_config, _js_key);
         robot.joint_states_divider =
             motion_spec::ros::publish_divider(_js_cfg["rate"].value_or(0.0));
         robot.joint_states_msg.name = {

@@ -58,6 +58,9 @@ class SensorBinding:
     type: str
     frame: str
     update_rate_hz: float | None
+    # What `robot.toml` calls this sensor. The same key a bound device is configured under, so a
+    # deployment property of the sensor -- its tare length -- is stated once for both platforms.
+    config_key: str = ""
     observes: list[str] = field(default_factory=list)
 
 

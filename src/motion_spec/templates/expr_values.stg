@@ -96,7 +96,7 @@ KDL::Frame <var.id>;
 monitor-member(monitor) ::= <<
 <if(monitor.is_edge_triggered)>    bool <monitor.id>_previous = false;
     bool <monitor.id>_event_triggered = false;
-<if(monitor.debounce_steps)>    int <monitor.id>_hold = 0;
+<if(monitor.debounce_duration_s)>    double <monitor.id>_hold_s = 0.0;
 <endif><elseif(monitor.flag)>    bool <monitor.flag> = false;<endif>
 >>
 

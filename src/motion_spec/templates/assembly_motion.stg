@@ -72,8 +72,6 @@ chain-device-members(solver, backend) ::= <<
 <if(solver.runtime.owner)><({chain-device-members-<backend>})(solver)><endif>
 >>
 
-chain-device-members-mj_kdl(solver) ::= <<>>
-
 motion-state-member(motion) ::= <<
     <motion.id>_state <motion.id>_state_instance;
 >>

@@ -170,7 +170,7 @@ def _motion_rows(motions, uri_by_id: dict):
                             "error_signal": _id_of(monitor.error),
                             "tolerance_signal": _id_of(monitor.tolerance),
                             "fallback_motion": getattr(monitor, "fallback_motion", None),
-                            "debounce_steps": monitor.debounce_steps,
+                            "debounce_duration_s": getattr(monitor, "debounce_duration_s", None),
                         }
                     )
                 )

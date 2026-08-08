@@ -2,6 +2,8 @@
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 # Author: Vamsi Kalagaturu
 
+import json
+
 from click.testing import CliRunner
 from pathlib import Path
 from types import SimpleNamespace
@@ -55,7 +57,11 @@ def test_gen_and_run_compose_the_model_pipeline(monkeypatch, tmp_path) -> None:
     def generate(_model, generation, *, stage):
         received.setdefault("stages", []).append(stage)
         generated = generation / "generated"
-        generated.mkdir()
+        (generated / "model").mkdir(parents=True)
+        # `run` reads the platform back from here to decide whether simulator options apply.
+        (generated / "model" / "ir.json").write_text(
+            json.dumps({"configuration": {"platform": {"simulated": True}}})
+        )
         return generated
 
     def build(generation, *, prefixes, jobs):

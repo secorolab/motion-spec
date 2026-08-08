@@ -47,10 +47,21 @@ inline void install_stop_handlers() {
     std::signal(SIGTERM, request_stop);
 \}
 
+// A driver that reports a failed cycle has not refreshed anything it owns: its measurements keep
+// the values they last had, so the next solve would price a pose the robot may have left. Stop
+// the loop rather than command against a reading nothing stands behind.
+inline void require_driver(bool ok, std::string_view device) {
+    if (ok || stop_requested()) return;
+    std::cerr \<\< "[run] device '" \<\< device \<\< "' reported a failed cycle; stopping" \<\< std::endl;
+    request_stop(0);
+\}
+
 // A non-finite command means the controller diverged, and no value is the right one to send: zero
 // drops a simulated arm, the last good value hides the divergence, and throwing from the loop
 // leaves the log truncated. So ask the loop to leave -- shutdown then closes the frame log the
-// same way an interrupt does, and the record ends at the tick that broke.
+// same way an interrupt does, and the record ends at the tick that broke. The substitute below
+// reaches a simulator, which is where it has to be a number at all; on hardware the cycle that
+// asked to stop transmits nothing.
 inline double finite_or_stop(double value, int joint) {
     if (std::isfinite(value)) return value;
     if (!stop_requested()) {
@@ -62,7 +73,7 @@ inline double finite_or_stop(double value, int joint) {
 
 inline constexpr double kControlPeriodS = <configuration.control_period_ns> * 1e-9;
 
-// ponytail: fixed clamp band; author it if real-robot jitter profiles demand
+// A fixed band, not an authored one: make it a model property if real-robot jitter demands it.
 // Floor on a measured tick: a near-zero dt must not blow up (error - err_last) / dt.
 inline constexpr double kDtClampMin = 0.5 * kControlPeriodS;
 // Ceiling on a measured tick: a scheduler stall must not become one giant integral step.
@@ -123,7 +134,7 @@ inline KDL::Wrench transform_wrench(
     return world_observation_frame.M.Inverse(at_reference);
 }
 
-// A commanded gripper joint position as a fraction of the device's travel: 0 fully open, 1
+<if(resources.device_kinds.("KinovaGen3-2F85") || resources.device_kinds.("Robotiq2F85"))>// A commanded gripper joint position as a fraction of the device's travel: 0 fully open, 1
 // fully closed. Clamped, because a controller may overshoot the authored range and no device
 // takes a command outside its stroke -- and on this path an out-of-range value closes a real
 // gripper on whatever is between its fingers.
@@ -134,7 +145,7 @@ inline double gripper_closed_fraction(double joint_position, double travel) {
     return std::clamp(joint_position / travel, 0.0, 1.0);
 }
 
-// Central-difference step for the tangent, in path parameter. Also the resolution the
+<endif>// Central-difference step for the tangent, in path parameter. Also the resolution the
 // projection converges to: refining the parameter finer than the step the curve is
 // differentiated at buys nothing.
 inline constexpr double kPathTangentStep = 1e-4;
@@ -404,12 +415,15 @@ inline bool rising_edge(bool &previous, bool active) {
     return detected;
 }
 
-// Fire once after `active` has held true for `hold_steps` consecutive calls;
-// re-arms when `active` drops. Rejects transient threshold crossings.
-inline bool sustained_edge(int &counter, bool active, int hold_steps) {
-    if (!active) { counter = 0; return false; }
-    ++counter;
-    return counter == hold_steps;
+// Fire once after `active` has held true for `hold_s` of measured time; re-arms when `active`
+// drops. The model authors a duration, so the debounce accumulates the time the cycles actually
+// took: counting cycles is that duration only on a loop that never misses its deadline. The dt
+// handed in is already clamped at kDtClampMax, so a stall longer than that still under-counts.
+inline bool sustained_edge(double &held_s, bool active, double dt_s, double hold_s) {
+    if (!active) { held_s = 0.0; return false; }
+    const double before = held_s;
+    held_s += dt_s;
+    return before \< hold_s && held_s >= hold_s;
 }
 
 inline void set_flag(bool &flag, bool active) {

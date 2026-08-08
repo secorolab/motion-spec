@@ -152,7 +152,7 @@ def _adopt_fsm_state_order(ir: dict, *candidates: Path) -> None:
 def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     """Render every C++/artifact file for an IR: introspection headers, runtime and
     shared-state headers, the frame-log proto (compiled to C++), per-motion headers and
-    ref_main.cpp.
+    main.cpp.
 
     ir.json is complete by construction in ir_gen (every codegen-facing field, incl. FSM
     wiring); codegen only loads it, writes artifacts, and renders.
@@ -229,13 +229,21 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
             stst_bin, "motion_header", payload_path, headers_dir / f"{motion['id']}.hpp"
         )
 
-    render_template(stst_bin, "ref_main", ir_payload_path, output_dir / "ref_main.cpp")
+    render_template(stst_bin, "main_source", ir_payload_path, output_dir / "main.cpp")
     cmake = "cmake_mj_kdl" if ir["configuration"]["backend"] == "mj_kdl" else "cmake_robif2b"
     render_template(stst_bin, cmake, ir_payload_path, output_dir / "CMakeLists.txt")
     # Both backends read deployment properties (the FT tare length) from the same config.
     render_template(
         stst_bin, "robot_config_header", ir_payload_path, output_dir / "robot_config.hpp"
     )
+    # Only real hardware has serial devices the loop must not block on: the simulator's are
+    # function calls. Which kinds those are is the backend template's decision
+    # (backend_robif2b_io.stg); this mirror only decides whether the file exists at all.
+    serial_device_kinds = {"Robotiq2F85", "RobotiqFT300s"}
+    if ir["configuration"]["backend"] == "robif2b" and serial_device_kinds & set(
+        ir["resources"]["device_kinds"]
+    ):
+        render_template(stst_bin, "device_io_header", ir_payload_path, output_dir / "device_io.hpp")
 
 
 def main(argv: list[str] | None = None):

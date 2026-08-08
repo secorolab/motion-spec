@@ -2,7 +2,7 @@
 // mj_kdl backend tool: MuJoCo+KDL simulation robot impl (KinovaGen3) and CMake generation.
 
 import "backend_robot.stg"
-robot-driver-include-mj_kdl-KinovaGen3(solver, model_name) ::= <<
+robot-driver-include-mj_kdl-KinovaGen3(solver, model_name, resources) ::= <<
 #include \<mj_kdl_wrapper/mj_kdl_wrapper.hpp\>
 #include "headers/<model_name>.kdl.hpp"
 >>
@@ -14,8 +14,18 @@ robot-manipulator-struct-mj_kdl-KinovaGen3(solver) ::= <<
 struct manipulator_robot {
     mj_kdl::Robot *robot = nullptr;
     KDL::Chain *chain = nullptr;
-    int ft_bias_samples = 0;
 };
+>>
+
+// A simulated sensor exposes the one deployment property it has, under the same member name and
+// the same config key the driven sensor uses -- the tare length belongs to the sensor, not to
+// whichever platform is reading it.
+chain-device-members-mj_kdl(solver) ::= <<
+<solver.sensors:{s | <({mj-sensor-member-<s.type>})(solver, s)>}; separator="">
+>>
+
+mj-sensor-member-ForceTorque(solver, sensor) ::= <<
+    int ft_<sensor.id>_bias_samples = 0;
 >>
 
 robot-state-init-mj_kdl-KinovaGen3(solver) ::= <<
@@ -75,13 +85,14 @@ robot-assign-mj_kdl-KinovaGen3(solver) ::= <<
         .robot = &mj_<solver.runtime.id>,
         .chain = chain_<solver.runtime.id>,
     };
-<solver.sensors:{s |<({mj-sensor-config-<s.type>})(solver, s)>}>
 >>
 
-// The tare length is a deployment property, so the simulator reads the same config key the real
-// driver does rather than carrying a second number of its own.
+mj-sensor-io-assign(solver) ::= <<
+<if(solver.runtime.owner)><solver.sensors:{s | <({mj-sensor-config-<s.type>})(solver, s)>}; separator=""><endif>
+>>
+
 mj-sensor-config-ForceTorque(solver, sensor) ::= <<
-    robot.<solver.id>.ft_bias_samples = motion_spec::config::bias_samples(robot_config, "<solver.runtime.config_key>");
+    robot.ft_<sensor.id>_bias_samples = motion_spec::config::bias_samples(robot_config, "<sensor.config_key>");
 >>
 
 robot-configure-mj_kdl-KinovaGen3(solver) ::= <<
@@ -92,7 +103,7 @@ robot-shutdown-mj_kdl-KinovaGen3(solver) ::= <<
 <endif>
 >>
 
-app-chain-includes-mj_kdl(has_serial_chain) ::= <<
+app-chain-includes-mj_kdl(has_serial_chain, resources) ::= <<
 <if(has_serial_chain)>
 #include \<cstring\>
 #include \<cstdlib\>
@@ -290,7 +301,8 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
 <serial_chain_solvers:{solver |<robot-state-init(solver, "mj_kdl")>
 <robot-init(solver, "mj_kdl")>
 <robot-chain(solver, "mj_kdl")>
-<robot-assign(solver, "mj_kdl")>}; separator="\n">
+<robot-assign(solver, "mj_kdl")>
+<mj-sensor-io-assign(solver)>}; separator="\n">
 
     mj_kdl::Viewer mj_viewer{};
     if (!headless) {

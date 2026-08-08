@@ -212,7 +212,7 @@ Public: `Robots`, `read_scene`, `kinematic_adjacency`, `body_path`, `fixed_attac
 The constraint handlers, and the per-motion unit: which constraints belong to `when` / `while` /
 `until`, the three schedules in the order the loop runs them, the monitors and the conditions
 they evaluate, the FSM framed from its named graph, and the wiring that gives each monitor its
-event, its debounce in ticks and its gate call.
+event, its debounce duration and its gate call.
 
 Public: `build_constraint_handlers`, `build_motions`, `read_fsm`, `evaluator_term`.
 
@@ -245,7 +245,7 @@ Everything above it — the graph, the `Model`, the resolution indexes — is `r
 and never crosses. **Publish a key only if something downstream reads it.**
 
 The IR is sectioned by the 5Cs plus the resources the program commands. This is not imposed: the
-generated `ref_main` loop already conforms to the 4C loop — clock read (communicate) →
+generated `main.cpp` loop already conforms to the 4C loop — clock read (communicate) →
 `fsm_dispatch` (coordinate) → `step_<motion>` (compute) → `fsm_step_nbx` (coordinate + configure)
 → `sample_model` (communicate).
 

@@ -193,7 +193,7 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
         "introspection_runtime.hpp",
         "introspect_model.hpp",
         "CMakeLists.txt",
-        "ref_main.cpp",
+        "main.cpp",
         "headers/runtime.hpp",
         "headers/shared_state.hpp",
     ]

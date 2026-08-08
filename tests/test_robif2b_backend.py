@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: MPL-2.0
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 """What the robif2b templates promise about hardware they cannot be run against here:
-the gripper command scaling, and that no address or credential is authored into them."""
+the gripper command scaling, that no address or credential is authored into them, and that
+each real-world model still generates a controller that compiles."""
 
 from __future__ import annotations
 
@@ -79,3 +80,39 @@ def test_no_deployment_detail_is_authored_into_a_template() -> None:
     for template in sorted(TEMPLATES.glob("*.stg")):
         found = literals.findall(template.read_text())
         assert not found, f"{template.name} carries deployment literals: {sorted(set(found))}"
+
+
+MODELS = Path(__file__).parents[2] / "motion-spec-dsl" / "models"
+# One per route the gripper can take: its own serial line, or the arm's interconnect.
+REAL_WORLD_MODELS = ("real_demo_monitor", "real_demo_2f85")
+
+
+@pytest.mark.parametrize("name", REAL_WORLD_MODELS)
+def test_a_real_world_model_generates_and_compiles(name: str, tmp_path: Path) -> None:
+    """The maintained-model gate runs simulated models; hardware cannot be run here, so
+    compiling is the strongest check the real path still has -- and the one that catches a
+    template rule that exists for mj_kdl and not for robif2b."""
+    if shutil.which("cmake") is None:
+        pytest.skip("no cmake")
+    generation = tmp_path / "gen"
+    subprocess.run(
+        ["motion-spec", "gen", "code", f"{name}.robmot", "-o", str(generation)],
+        cwd=MODELS / name,
+        check=True,
+    )
+    built = next(generation.glob(f"{name}/*"))
+    build = subprocess.run(
+        ["motion-spec", "build", str(built), "--prefix", str(_install_prefix())],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if build.returncode and "robif2b" in build.stderr:
+        pytest.skip("robif2b is not built in this workspace")
+    assert build.returncode == 0, build.stderr
+    assert (built / "build" / "main").is_file()
+
+
+def _install_prefix() -> Path:
+    """The colcon install tree the generated project links against."""
+    return Path(__file__).parents[3] / "install"

@@ -35,7 +35,7 @@ PROV = rdflib.Namespace("http://www.w3.org/ns/prov#")
 MANIFEST_VERSION = 1
 GENERATED_BUNDLE_FILES = (
     "CMakeLists.txt",
-    "ref_main.cpp",
+    "main.cpp",
     "frame_layout.h",
     "introspection_runtime.hpp",
     "introspect_model.hpp",

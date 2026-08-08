@@ -538,16 +538,6 @@ def assign_event_indexes(handlers) -> None:
                 index += 1
 
 
-def apply_monitor_debounce(handlers, control_period_ns: int) -> None:
-    """Convert each monitor's authored debounce duration into a tick count."""
-    for handler in handlers:
-        for monitor in handler.monitors:
-            if getattr(monitor, "debounce_duration_s", None) is not None:
-                monitor.debounce_steps = round(
-                    monitor.debounce_duration_s / (control_period_ns * 1e-9)
-                )
-
-
 class PhaseNodes:
     """Which constraints, evaluators and monitors of one handler belong to which phase.
 

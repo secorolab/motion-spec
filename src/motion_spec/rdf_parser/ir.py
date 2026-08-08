@@ -71,7 +71,6 @@ def generate_ir(manifest_path) -> dict:
     if scene.timestep_s <= 0:
         raise ValueError("ENVIRONMENT timestep must be positive.")
     control_period_ns = round(scene.timestep_s * 1e9)
-    coordination.apply_monitor_debounce(handlers, control_period_ns)
 
     shared_data = quantities.filter_shared_data(
         data_structures,
@@ -141,8 +140,20 @@ def _resources_section(robots) -> dict:
             "force_solvers": robots.platform_force,
         }
 
+    # Every device and sensor kind the model binds, as a membership map: templates emit code for
+    # a kind only when the platform block or the scene names it.
+    device_kinds = sorted(
+        {device.kind for robot in every for device in getattr(robot, "devices", [])}
+        | {sensor.type for robot in every for sensor in getattr(robot, "sensors", [])}
+    )
+
     # `by_id` is how a per-motion solver slice resolves everything the solver owns.
-    return {"robots": every, "by_kind": by_kind, "by_id": robots.by_id}
+    return {
+        "robots": every,
+        "by_kind": by_kind,
+        "by_id": robots.by_id,
+        "device_kinds": {kind: True for kind in device_kinds},
+    }
 
 
 def _computation_section(closures, views, shared_data, values, motions) -> dict:

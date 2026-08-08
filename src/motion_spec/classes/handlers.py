@@ -120,7 +120,6 @@ class LevelMonitor:
     # aggregates, and whether they combine with 'any' rather than 'all'.
     group_constraint_ids: list[str] = field(default_factory=list, metadata=INTERNAL)
     group_any: bool = field(default=False, metadata=INTERNAL)
-    debounce_steps: int | None = None
     # Structured active-phase boolean terms (rendered to C++ by the bool-condition template).
     has_active: bool = False
     active_terms: list | None = None
@@ -151,10 +150,10 @@ class EdgeMonitor:
     event_uri: str | None = None
     event_name: str | None = None
     fallback_motion: str | None = None
-    # Authored debounce duration (s); converted to debounce_steps once the loop period is known.
-    # Stays None (not 0) when absent -- ST4's <if(x)> is true even for integer 0.
-    debounce_duration_s: float | None = field(default=None, metadata=INTERNAL)
-    debounce_steps: int | None = None
+    # How long the constraint must hold before the edge fires [s], as authored. The runtime
+    # accumulates measured cycle time against it, so it stays a duration all the way down.
+    # Stays None (not 0) when absent -- ST4's <if(x)> is true even for a zero number.
+    debounce_duration_s: float | None = None
     # Structured active-phase boolean terms (rendered to C++ by the bool-condition template).
     has_active: bool = False
     active_terms: list | None = None

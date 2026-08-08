@@ -490,6 +490,9 @@ def _agent_assemblies(model, attach_by_body) -> list:
                         update_rate_hz=get_update_rate(
                             model.graph, ModelBase(node_id=sensor, graph=model.graph)
                         ),
+                        config_key=_config_key(
+                            model, sensor, agent, f"{runtime_prefix}{local_name(sensor)}"
+                        ),
                         observes=sorted(
                             local_name(observed)
                             for observed in model.graph.objects(sensor, SOSA.observes)

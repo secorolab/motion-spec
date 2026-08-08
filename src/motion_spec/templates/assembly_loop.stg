@@ -6,8 +6,8 @@ import "backend_mj_kdl.stg"
 import "backend_robif2b.stg"
 import "backend_kelo.stg"
 
-app-chain-includes(backend, has_serial_chain) ::= <<
-<({app-chain-includes-<backend>})(has_serial_chain)>
+app-chain-includes(backend, has_serial_chain, resources) ::= <<
+<({app-chain-includes-<backend>})(has_serial_chain, resources)>
 >>
 
 app-chain-setup(backend, serial_chain_solvers, scene, config_path) ::= <<
@@ -24,9 +24,6 @@ app-chain-cleanup(backend, has_serial_chain) ::= <<
 
 app-chain-post-setup(backend, serial_chain_solvers, motions, agent_homes) ::= <<
 <({app-chain-post-setup-<backend>})(serial_chain_solvers, motions, agent_homes)>
->>
-
-app-chain-post-setup-robif2b(serial_chain_solvers, motions, agent_homes) ::= <<
 >>
 
 app-chain-loop-reset(backend, serial_chain_solvers, fsm) ::= <<

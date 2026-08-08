@@ -57,10 +57,11 @@ update-monitor(monitor) ::= <<
 <if(monitor.is_edge_triggered)>
     {
         const bool active = <monitor-satisfied-expr(monitor)>;
-        const bool detected = <if(monitor.debounce_steps)>motion_spec::runtime::sustained_edge(
-            state.<monitor.id>_hold,
+        const bool detected = <if(monitor.debounce_duration_s)>motion_spec::runtime::sustained_edge(
+            state.<monitor.id>_hold_s,
             active,
-            <monitor.debounce_steps>)<else>motion_spec::runtime::rising_edge(state.<monitor.id>_previous, active)<endif>;
+            shared.dt_measured_s,
+            <monitor.debounce_duration_s>)<else>motion_spec::runtime::rising_edge(state.<monitor.id>_previous, active)<endif>;
 <if(monitor.fsm_namespace)>
         // coord2b is the sequencer: fire the FSM event on the rising edge while in this state.
         if (detected) {

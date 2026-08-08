@@ -307,7 +307,7 @@ solver-output-Wrench-mj_kdl(solver, chain_solver, out) ::= <<
         frame_<out.id>("<out.sensor_frame.id>"),
         frame_<out.id>("<out.reference_point.id>"),
         frame_<out.id>("<out.as_seen_by.id>"));
-    if (shared.<out.id>_ft_settle \< robot.<solver.id>.ft_bias_samples) {
+    if (shared.<out.id>_ft_settle \< robot.ft_<out.sensor_name>_bias_samples) {
         ++shared.<out.id>_ft_settle;
         shared.<out.id>_ft_bias = measured_<out.id>;   // last settle step is the tare sample
         shared.<out.id> = KDL::Wrench::Zero();
@@ -321,9 +321,10 @@ solver-output-Wrench-robif2b(solver, chain_solver, out) ::= <<
 {
     // The driver reports in the sensor's own frame; the model asked for it at its reference
     // point, seen by another frame. Both come off the same forward kinematics as a pose does.
+    const auto <out.id>_sample = robot.ft_<out.sensor_name>->read();
     const KDL::Wrench measured_<out.id>(
-        KDL::Vector(robot.ft_<out.sensor_name>->force[0], robot.ft_<out.sensor_name>->force[1], robot.ft_<out.sensor_name>->force[2]),
-        KDL::Vector(robot.ft_<out.sensor_name>->moment[0], robot.ft_<out.sensor_name>->moment[1], robot.ft_<out.sensor_name>->moment[2]));
+        KDL::Vector(<out.id>_sample.value.force[0], <out.id>_sample.value.force[1], <out.id>_sample.value.force[2]),
+        KDL::Vector(<out.id>_sample.value.moment[0], <out.id>_sample.value.moment[1], <out.id>_sample.value.moment[2]));
     const auto frame_<out.id> = [&](const char *name) {
         KDL::Frame frame;
         KDL::ChainFkSolverPos_recursive fk(*robot.<solver.id>.chain);

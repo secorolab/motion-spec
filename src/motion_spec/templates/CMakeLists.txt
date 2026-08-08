@@ -14,7 +14,7 @@ find_package(Threads)
 option(MOTION_SPEC_ENABLE_INTROSPECTION "Enable generated runtime introspection logging" OFF)
 
 add_executable(main
-  ref_main.cpp
+  main.cpp
 )
 
 target_include_directories(main

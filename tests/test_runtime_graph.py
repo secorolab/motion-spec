@@ -172,7 +172,7 @@ def _source_tree(path: Path) -> Path:
     (path / "ir.json").write_text(json.dumps({"id": "test-ir"}))
     (path / "headers").mkdir()
     (path / "headers" / "runtime.hpp").write_text("// generated\n")
-    (path / "ref_main.cpp").write_text("// generated\n")
+    (path / "main.cpp").write_text("// generated\n")
     _write_frame_log(path / "frame_log.pb", schema)
     return path
 

@@ -19,7 +19,8 @@ from enum import Enum
 from motion_spec_dsl.rdf_parser.vocab import CSTR, CSTR_EXT, EXEC, MOT
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.naming import get_valid_var_name
-from rdflib.namespace import PROV, RDF
+from rdflib import Literal
+from rdflib.namespace import PROV, RDF, RDFS
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 
 from motion_spec.classes.motion import BlackboardValue
@@ -30,6 +31,13 @@ from motion_spec.rdf_parser.model import identifier
 # Types that get a whole-object frame-log slot rather than per-axis scalar rows.
 _SPATIAL_SLOT_KINDS = {"Pose": "poses", "VelocityTwist": "twists", "Wrench": "wrenches"}
 _MONITOR_PHASES = ("when", "while", "until")
+# A behaviour server is found by the contract it answers, not by a class of its own: the goal a
+# robbdd scenario sends, and the message its exported events leave on.
+_BEHAVIOUR_ACTION_TYPE = "bdd_ros2_interfaces/action/Behaviour"
+_BEHAVIOUR_EVENT_TYPE = "bdd_ros2_interfaces/msg/Event"
+# rclcpp_action carries the server; the interface package carries the goal, the result and the
+# exported event message.
+BEHAVIOUR_PACKAGES = ("rclcpp_action", "bdd_ros2_interfaces")
 # The gain fields a controller row reports, in the order they are emitted.
 _GAIN_ROW_FIELDS = (
     "proportional_gain",
@@ -625,6 +633,10 @@ def ros_action_clients(model) -> list:
     clients = []
     for act in sorted(graph.subjects(RDF["type"], NS_MM_ROS["Action"]), key=str):
         type_name = str(graph.value(act, NS_MM_ROS["type-name"]) or "")
+        # An Action node carrying the Behaviour contract is the server the model serves, not
+        # an act it performs.
+        if type_name == _BEHAVIOUR_ACTION_TYPE:
+            continue
         shape = coordination.action_shape(type_name)
         status_slot = _act_status_slot(model, act)
         rows = written[str(act)]
@@ -661,6 +673,61 @@ def _add_goal_status_slots(model, shared_data, rows, seen, action_clients) -> No
         if parent is None:
             raise RuntimeError(f"goal status: '{client['status_id']}' has no IRI to derive from")
         _add_member(model, shared_data, rows, seen, member, None, parent, "status")
+
+
+def behaviour_server(model, fsm) -> dict | None:
+    """The BDD action server the model declares, or None when it declares none.
+
+    The server is the node whose type-name is the Behaviour contract; its one member is the event
+    an accepted goal produces, and the topic carrying the Event contract lists the events a
+    scenario may observe. Every index is the FSM's own event order, so the program produces and
+    reads the numbers coord2b was generated against.
+
+    Raises:
+        ConstraintViolation: the model serves goals without importing an FSM, or names an event
+            that FSM does not declare -- either way nothing could start or be observed
+    """
+    graph = model.graph
+    node = next(iter(graph.subjects(NS_MM_ROS["type-name"], Literal(_BEHAVIOUR_ACTION_TYPE))), None)
+    if node is None:
+        return None
+    if not fsm:
+        raise ConstraintViolation(
+            "communication",
+            f"'{model.id(node)}' serves behaviour goals, but the model imports no FSM, so an "
+            "accepted goal has nothing to start",
+        )
+
+    events = fsm["events"]
+    token_by_uri = {uri: token for token, uri in fsm["event_uris"].items()}
+
+    def event_row(uri) -> dict:
+        token = token_by_uri.get(str(uri))
+        if token is None:
+            raise ConstraintViolation(
+                "communication",
+                f"'{model.id(node)}' names event '{uri}', which FSM '{fsm['name']}' does not "
+                "declare",
+            )
+        return {"event_idx": events.index(token), "uri": str(uri)}
+
+    goal_event = next(iter(graph.objects(node, RDFS.member)), None)
+    if goal_event is None:
+        raise ConstraintViolation(
+            "communication", f"'{model.id(node)}' names no event for an accepted goal to produce"
+        )
+    topic = next(iter(graph.subjects(NS_MM_ROS["type-name"], Literal(_BEHAVIOUR_EVENT_TYPE))), None)
+    if topic is None:
+        raise ConstraintViolation(
+            "communication", f"'{model.id(node)}' states no channel to export its events on"
+        )
+
+    return {
+        "action_name": str(graph.value(node, NS_MM_ROS["channel-name"])),
+        "events_channel": str(graph.value(topic, NS_MM_ROS["channel-name"])),
+        "goal_event_idx": event_row(goal_event)["event_idx"],
+        "exported": [event_row(uri) for uri in sorted(graph.objects(topic, RDFS.member))],
+    }
 
 
 def ros_publications(motions):

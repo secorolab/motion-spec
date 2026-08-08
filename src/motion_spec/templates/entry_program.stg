@@ -116,7 +116,12 @@ int main(int argc, char **argv) {
 <endif>
 <coordination.motions:{motion |             <motion.id>_state_instance.active = false;}; separator="\n">
         \}
-        if (fsm->currentStateIndex == fsm->endStateIndex) break;
+        if (fsm->currentStateIndex == fsm->endStateIndex) {
+<if(communication.ros.behaviour_server)>
+<ros-behaviour-end-state()>
+<endif>
+            break;
+        \}
 <if(coordination.fsm.step_event)>
         // The heartbeat drives the FSM but is not recorded: the frame log is a time series, so
         // every frame already *is* the tick (t, step, wall_ns, period_ns). Logging a per-tick

@@ -170,16 +170,27 @@ class SolverIdFactory:
 # reference; the sites each mint a different subset, and a missed registration leaves a slot
 # unaddressable. An unused registration is inert.
 _AXIS_DERIVATIONS = (
-    (SolverIdFactory.component_controller, "{axis}", PROV.specializationOf),
-    (SolverIdFactory.component_error, "err-{axis}", PROV.specializationOf),
-    (SolverIdFactory.component_energy, "eacc-{axis}", PROV.wasDerivedFrom),
-    (SolverIdFactory.component_acceleration, "acc-{axis}", PROV.wasDerivedFrom),
-    (SolverIdFactory.component_constraint, "acc-cstr-{axis}", PROV.wasDerivedFrom),
-    (SolverIdFactory.component_acceleration_specification, "cart-acc-{axis}", PROV.wasDerivedFrom),
+    (SolverIdFactory.component_controller, "{axis}", PROV.specializationOf, ()),
+    (SolverIdFactory.component_error, "err-{axis}", PROV.specializationOf, ()),
+    (SolverIdFactory.component_energy, "eacc-{axis}", PROV.wasDerivedFrom, ()),
+    (SolverIdFactory.component_acceleration, "acc-{axis}", PROV.wasDerivedFrom, ()),
+    (
+        SolverIdFactory.component_constraint,
+        "acc-cstr-{axis}",
+        PROV.wasDerivedFrom,
+        (SLV.AccelerationConstraint,),
+    ),
+    (
+        SolverIdFactory.component_acceleration_specification,
+        "cart-acc-{axis}",
+        PROV.wasDerivedFrom,
+        (SLV.AccelerationConstraint,),
+    ),
     (
         SolverIdFactory.component_measured_derivative,
         "measured-derivative-{axis}",
         PROV.wasDerivedFrom,
+        (),
     ),
 )
 _WHOLE_DERIVATIONS = (
@@ -195,12 +206,13 @@ def _solver_ids(model, context, plan) -> SolverIdFactory:
     for derive, segment in _WHOLE_DERIVATIONS:
         model.register_derived(derive(ids), parent, segment, PROV.wasDerivedFrom)
     for spatial_axis in plan.axes:
-        for derive, segment, relation in _AXIS_DERIVATIONS:
+        for derive, segment, relation, types in _AXIS_DERIVATIONS:
             model.register_derived(
                 derive(ids, spatial_axis),
                 parent,
                 segment.format(axis=kebab(spatial_axis.suffix)),
                 relation,
+                types=types,
             )
 
     return ids
@@ -747,8 +759,13 @@ def _acceleration_driver_ids(model, context, plan, driver, axis, multi_axis) -> 
     ids = []
     for tag in (driver.spec_tag, driver.payload_tag):
         derived_id = f"{tag.replace('-', '_')}_{quantity_id}{suffix}"
+        types = (SLV.AccelerationConstraint,) if tag == driver.spec_tag else ()
         model.register_derived(
-            derived_id, str(plan.quantity), f"{tag}{kebab(suffix)}", PROV.wasDerivedFrom
+            derived_id,
+            str(plan.quantity),
+            f"{tag}{kebab(suffix)}",
+            PROV.wasDerivedFrom,
+            types=types,
         )
         ids.append(derived_id)
 

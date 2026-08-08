@@ -19,11 +19,12 @@ class ChainBinding:
     root: str
     end: str
     tip: str
-    # Backend leakage: the scene-derived KDL chain and its joints, MuJoCo-named. Stays here
-    # until the backend split that removes it (not this plan).
-    kdl_chain: str
-    kdl_tree: str
-    kdl_joints: list[str]
+    # Identifier-safe (sanitized in Python; ST4 cannot sanitize). `tree` names the kinematic
+    # tree the chain is sliced from; `name` is the chain's own qualified name.
+    tree: str
+    name: str
+    # Ordered revolute joint local names, unprefixed; the runtime prefix is `runtime.prefix`.
+    joints: list[str]
 
 
 @dataclass
@@ -42,7 +43,8 @@ class RuntimeBinding:
 
     id: str
     owner: bool
-    prefix: str = field(metadata=INTERNAL)
+    # Scopes every scene name this runtime owns; backends and log channels apply it themselves.
+    prefix: str
     owned_trees: list = field(metadata=INTERNAL)
     # Section name in the deployment config; empty under simulation.
     config_key: str

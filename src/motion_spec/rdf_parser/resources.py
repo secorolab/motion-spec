@@ -557,7 +557,7 @@ class _ChainSetup(NamedTuple):
 
 
 _EMPTY_SETUP = _ChainSetup(
-    ChainBinding(root="", end="", tip="", kdl_chain="", kdl_tree="", kdl_joints=[]),
+    ChainBinding(root="", end="", tip="", tree="", name="", joints=[]),
     HardwareBinding(urdf="", model="", tool_body="", tcp_site=""),
     RuntimeBinding(id="", owner=False, prefix="", owned_trees=[], config_key=""),
     [],
@@ -590,7 +590,7 @@ def robot_setups(model):
 
     setups_by_node, ordered = {}, []
     for assembly in _agent_assemblies(model, attach_by_body):
-        kdl_chain, kdl_tree, joints = chain_for_iri(trees, str(assembly.serial_chain))
+        chain_name, tree_name, joints = chain_for_iri(trees, str(assembly.serial_chain))
         # The arm is the authored device when one is bound, else sniffed from the asset path.
         if assembly.device:
             robot_model = _ROBOT_MODEL_BY_DEVICE.get(assembly.device, assembly.device)
@@ -602,9 +602,9 @@ def robot_setups(model):
                 root=assembly.chain_root,
                 end=assembly.tip,
                 tip=assembly.tip,
-                kdl_chain=kdl_chain,
-                kdl_tree=kdl_tree,
-                kdl_joints=[f"{assembly.prefix}{joint}" for joint in joints],
+                tree=tree_name,
+                name=chain_name,
+                joints=joints,
             ),
             hardware=HardwareBinding(
                 urdf=assembly.urdf,
@@ -1381,10 +1381,11 @@ def _split_gripper_outputs(solver, backend: str) -> None:
     """
     if backend != "robif2b":
         return
-    chain_joints = {str(name).split("/")[-1] for name in solver.chain.kdl_joints}
+    # Chain joints are published unprefixed; the outputs' joint names arrive runtime-scoped.
+    chain_joints = {f"{solver.runtime.prefix}{joint}" for joint in solver.chain.joints}
     outputs, gripper_outputs = [], []
     for out in solver.output:
-        joint = str(getattr(out, "joint_name", "")).split("/")[-1]
+        joint = str(getattr(out, "joint_name", ""))
         if getattr(out, "type", "") != "JointPosition" or joint in chain_joints:
             outputs.append(out)
             continue

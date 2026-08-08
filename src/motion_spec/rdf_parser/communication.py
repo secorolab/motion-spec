@@ -336,11 +336,12 @@ def _add_joint_space_mirrors(model, robots, motions, shared_data, rows, seen, ba
         by_runtime.setdefault(solver.runtime.id or solver.id, []).append(solver)
 
     for runtime_id, solvers in by_runtime.items():
-        joints = solvers[0].chain.kdl_joints
+        # Channel ids name the runtime's own joints, so the chain's joints get its prefix here.
+        joints = [f"{solvers[0].runtime.prefix}{joint}" for joint in solvers[0].chain.joints]
         if not joints:
             raise RuntimeError(
-                f"joint-space logging: solver '{solvers[0].id}' has no kdl_joints; the shared ids "
-                "are compile-time names, so a wrong joint count mislabels every channel"
+                f"joint-space logging: solver '{solvers[0].id}' has no chain joints; the shared "
+                "ids are compile-time names, so a wrong joint count mislabels every channel"
             )
         # tau_cmd differs from tau_ctrl only where a limit clamps it, so that saturation is its
         # producer -- named only when the runtime carries exactly one.

@@ -64,16 +64,39 @@ class Constraint:
     type: str = field(default="Constraint")
 
 
-@dataclass
-class GuardedMotion:
-    """A guarded motion: its when/while/until constraint sets."""
+@dataclass(frozen=True)
+class ConstraintTransition:
+    """One condition a when or until phase can be met by.
+
+    A lone constraint stands for itself; an expression node is one transition over its members,
+    met when any of them holds or only when all do.
+    """
 
     id: str
-    when: list[Constraint]
+    any: bool
+    constraints: tuple[Constraint, ...]
+
+
+@dataclass
+class GuardedMotion:
+    """A guarded motion: the transitions its when and until phases turn on, and what it holds
+    during.
+    """
+
+    id: str
+    when_transitions: list[ConstraintTransition]
     while_: list[Constraint]
-    until: list[Constraint]
-    until_any: bool = False
-    when_any: bool = False
+    until_transitions: list[ConstraintTransition]
     name: str = ""
     description: str | None = None
     type: str = field(default="GuardedMotion")
+
+    @property
+    def when(self) -> list[Constraint]:
+        """Every constraint the when phase names, in graph order."""
+        return [item for transition in self.when_transitions for item in transition.constraints]
+
+    @property
+    def until(self) -> list[Constraint]:
+        """Every constraint the until phase names, in graph order."""
+        return [item for transition in self.until_transitions for item in transition.constraints]

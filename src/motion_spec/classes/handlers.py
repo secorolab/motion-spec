@@ -116,10 +116,10 @@ class LevelMonitor:
     is_edge_triggered: bool = False
     is_until_aggregate: bool = False
     is_when_aggregate: bool = False
-    # Set when the monitor targets a named until group: the member constraint ids it
+    # Set when the monitor targets an expression node: the member constraint ids it
     # aggregates, and whether they combine with 'any' rather than 'all'.
-    group_constraint_ids: list[str] = field(default_factory=list)
-    group_any: bool = False
+    group_constraint_ids: list[str] = field(default_factory=list, metadata=INTERNAL)
+    group_any: bool = field(default=False, metadata=INTERNAL)
     debounce_steps: int | None = None
     # Structured active-phase boolean terms (rendered to C++ by the bool-condition template).
     has_active: bool = False
@@ -143,7 +143,7 @@ class EdgeMonitor:
     is_edge_triggered: bool = True
     is_until_aggregate: bool = field(default=False, metadata=INTERNAL)
     is_when_aggregate: bool = field(default=False, metadata=INTERNAL)
-    # Set when the monitor targets a named until group: the member constraint ids it
+    # Set when the monitor targets an expression node: the member constraint ids it
     # aggregates, and whether they combine with 'any' rather than 'all'.
     group_constraint_ids: list[str] = field(default_factory=list, metadata=INTERNAL)
     group_any: bool = field(default=False, metadata=INTERNAL)

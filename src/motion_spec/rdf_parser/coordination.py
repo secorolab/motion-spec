@@ -35,7 +35,7 @@ from rdf_utils.uri import iri_is_descendant, iri_parent
 from rdflib.namespace import RDF, SDO
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 
-from motion_spec.classes.constraints import GuardedMotion
+from motion_spec.classes.constraints import ConstraintTransition, GuardedMotion
 from motion_spec.classes.handlers import (
     ConstraintEvaluator,
     ConstraintHandler,
@@ -80,34 +80,48 @@ def _is_elapsed_constraint(model, node) -> bool:
     return node is not None and CSTR_EXT["TimeConstraint"] in get_node_types(model.graph, node)
 
 
+def _constraint_transition(model, node) -> ConstraintTransition:
+    """One when/until object as a transition: an expression node over its members, or a lone
+    constraint standing for itself.
+    """
+    if not quantities.is_constraint_aggregate(model, node):
+        return ConstraintTransition(model.id(node), False, (quantities.constraint(model, node),))
+
+    return ConstraintTransition(
+        model.id(node),
+        CSTR_EXT.ConstraintDisjunction in get_node_types(model.graph, node),
+        tuple(
+            quantities.constraint(model, member)
+            for member in model.graph[node : CSTR_EXT["has-constraint"]]
+        ),
+    )
+
+
+def _phase_any(transitions) -> bool:
+    """Whether a phase is met by a disjunction: one transition, joined by `any`."""
+    return len(transitions) == 1 and transitions[0].any
+
+
+def _done_any(transitions) -> bool:
+    """Whether a motion's until transitions are alternatives, so the first to fire ends it.
+
+    Several transitions are independent conditions; a single one ends the motion on its own join.
+    """
+    return len(transitions) > 1 or _phase_any(transitions)
+
+
 @reader
 def guarded_motion(model, node) -> GuardedMotion:
     """A GuardedMotion: the constraints it starts on, holds during and ends on.
 
-    A section-wide disjunction makes the whole phase an 'any'; a named group inside one keeps its
-    own logic on the monitor that targets it, so it expands to its members here either way.
+    Each when/until object is one transition, so a named group and a whole-section expression
+    keep their own logic rather than collapsing into one flag for the phase.
 
     Raises:
         ConstraintViolation: the motion carries no `schema:name`, so nothing can name its step
             function.
     """
     graph = model.graph
-    phases: dict[str, list] = {}
-    any_flags = {"when": False, "until": False}
-    for phase in _PHASES:
-        members = []
-        for node_ in graph[node : _PHASE_PREDICATES[phase]]:
-            if phase == "while" or not quantities.is_constraint_aggregate(model, node_):
-                members.append(quantities.constraint(model, node_))
-                continue
-            if CSTR_EXT.ConstraintDisjunction in get_node_types(graph, node_):
-                any_flags[phase] = True
-            members.extend(
-                quantities.constraint(model, member)
-                for member in graph[node_ : CSTR_EXT["has-constraint"]]
-            )
-        phases[phase] = members
-
     name = graph.value(node, SDO.name)
     if name is None:
         raise ConstraintViolation("coordination", f"GuardedMotion {node} has no schema:name triple")
@@ -115,11 +129,9 @@ def guarded_motion(model, node) -> GuardedMotion:
 
     return GuardedMotion(
         model.id(node),
-        phases["when"],
-        phases["while"],
-        phases["until"],
-        any_flags["until"],
-        any_flags["when"],
+        [_constraint_transition(model, item) for item in graph[node : MOT["when"]]],
+        [quantities.constraint(model, item) for item in graph[node : MOT["while"]]],
+        [_constraint_transition(model, item) for item in graph[node : MOT["until"]]],
         name=str(name),
         description=str(description) if description is not None else None,
     )
@@ -186,21 +198,22 @@ def constraint_evaluator(model, node) -> ConstraintEvaluator:
     )
 
 
-def _monitored_group(model, monitored, is_section_aggregate):
-    """The named until/when group a monitor targets, as its member ids and its logic.
+def _monitored_expression(model, monitored):
+    """The expression node a monitor targets, as its member ids and its logic.
 
-    A named group is one of several conditions, so it is not the whole section: the monitor
-    carries its members and their logic, and the terms are built from those.
+    A named group and a whole-section conjunction/disjunction are the same thing here: one
+    condition carrying its own members and join, which the monitor's terms are built from.
     """
-    if is_section_aggregate:
-        return [], False
-    group = next(
+    expression = next(
         (node for node in monitored if quantities.is_constraint_aggregate(model, node)), None
     )
-    if group is None:
+    if expression is None:
         return [], False
-    members = sorted(model.id(member) for member in model.graph[group : CSTR_EXT["has-constraint"]])
-    return members, CSTR_EXT.ConstraintDisjunction in get_node_types(model.graph, group)
+    members = sorted(
+        model.id(member) for member in model.graph[expression : CSTR_EXT["has-constraint"]]
+    )
+
+    return members, CSTR_EXT.ConstraintDisjunction in get_node_types(model.graph, expression)
 
 
 @reader
@@ -220,9 +233,7 @@ def monitor_entry(model, node):
     )
     is_until_aggregate = aggregate and monitored == sections["until"]
     is_when_aggregate = aggregate and monitored == sections["when"]
-    group_ids, group_any = _monitored_group(
-        model, monitored, is_until_aggregate or is_when_aggregate
-    )
+    group_ids, group_any = _monitored_expression(model, monitored)
 
     error_node = graph.value(node, CSTR_HDL["error"])
     error = (
@@ -755,8 +766,8 @@ def _motion_unit(
         until_schedule=schedules.until,
         has_elapsed=bool(when_elapsed or active_elapsed),
         has_until_condition=bool(evaluators["until"]),
-        until_any=handler.motion.until_any,
-        when_any=handler.motion.when_any,
+        when_any=_phase_any(handler.motion.when_transitions),
+        done_any=_done_any(handler.motion.until_transitions),
         serial_chain_solvers=chain_solvers,
         relative_poses=quantities.relative_poses_for_motion(
             all_evaluators, computation.views, chain_solvers
@@ -923,7 +934,6 @@ def _stamp_terms(monitor, terms, any_flag) -> None:
 def _set_monitor_conditions(motion, phase: str) -> None:
     """Stamp one phase's terms onto the aggregate monitor and any elapsed-error monitors."""
     evaluators = getattr(motion, f"{phase}_evaluators")
-    any_flag = bool(getattr(motion, f"{phase}_any"))
     aggregate_field = f"is_{phase}_aggregate"
     terms = [
         evaluator_term(evaluator)
@@ -949,8 +959,12 @@ def _set_monitor_conditions(motion, phase: str) -> None:
                 bool(monitor.group_any),
             )
             continue
+        # A whole-section monitor over a flat constraint list, from a graph minted before
+        # sections carried an expression node. Archived generations vendor those graphs and
+        # introspection replay rebuilds the IR from them, so the join is spelled out here: a
+        # section only ever linked flat when it meant a conjunction.
         if getattr(monitor, aggregate_field):
-            _stamp_terms(monitor, terms, any_flag)
+            _stamp_terms(monitor, terms, False)
             continue
         error_id = getattr(monitor.error, "id", None)
         if error_id in elapsed_by_error:

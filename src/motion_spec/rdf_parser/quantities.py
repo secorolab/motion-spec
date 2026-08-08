@@ -80,14 +80,16 @@ from rdf_utils.models.vocab import (
 from rdf_utils.namespace import NS_MM_QUDT_QTY, NS_MM_QUDT_UNIT
 from rdf_utils.naming import get_valid_var_name
 from rdflib import URIRef
-from rdflib.namespace import RDF
+from rdflib.namespace import PROV, RDF, SOSA
 from scene_dsl.rdf_parser.common import ensure_one_obj_uri
+from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 
 from motion_spec.classes.base import dedupe_by_id
 from motion_spec.classes.constraints import (
     BilateralConstraint,
     Constraint,
     EqualityConstraint,
+    GoalStatus,
     OutsideConstraint,
     UnilateralConstraint,
     UnilateralConstraintType,
@@ -837,9 +839,64 @@ def _is_duration(model, node) -> bool:
     return model.graph.value(node, QUDT_SCHEMA.hasQuantityKind) == NS_MM_QUDT_QTY["Time"]
 
 
+def detect_written_poses(model) -> dict[str, list[dict]]:
+    """Per detect act, the world poses its result writes and the frame each must arrive in.
+
+    A world pose `of:` an object an act locates has the act as its one producer, so the
+    kinematics must not also write it -- these are exactly the world-scoped pose coordinates a
+    chain would otherwise observe. The frame is the pose's own `with-respect-to`: a detection
+    stated in any other frame is not the pose the model asked for.
+
+    Raises:
+        ConstraintViolation: an act locates an object no world pose is stated of, so its result
+            has nowhere to land.
+    """
+    graph = model.graph
+    world_poses = [
+        pose(model, node)
+        for node in sorted(graph.subjects(RDF["type"], GEOM_COORD["PoseCoordinate"]), key=str)
+        if getattr(model.context_scope(node), "section", None) == "world"
+    ]
+    written: dict[str, list[dict]] = {}
+    for act in sorted(graph.subjects(RDF["type"], NS_MM_ROS["Action"]), key=str):
+        rows = []
+        for target in sorted(graph.objects(act, SOSA.hasFeatureOfInterest), key=str):
+            located = _body_or_self(model, target)
+            matched = [item for item in world_poses if getattr(item.of, "id", None) == located]
+            if not matched:
+                raise ConstraintViolation(
+                    "communication",
+                    f"action '{model.id(act)}' locates '{located}', but no world pose is stated "
+                    "of it, so the result has nowhere to land",
+                )
+            rows.extend(
+                {"target_iri": str(target), "pose_id": item.id, "frame_id": item.with_respect_to.id}
+                for item in matched
+            )
+        written[str(act)] = rows
+
+    return written
+
+
+def goal_status_act(model, node):
+    """The action node whose goal status this node holds, or None if it holds no status."""
+    if node is None:
+        return None
+    return next(
+        (
+            act
+            for act in model.graph.objects(node, PROV.wasDerivedFrom)
+            if NS_MM_ROS["Action"] in get_node_types(model.graph, act)
+        ),
+        None,
+    )
+
+
 @reader
 def quantity(model, node):
     """The quantity at a node, dispatching on its RDF type."""
+    if goal_status_act(model, node) is not None:
+        return GoalStatus(model.id(node))
     if _is_duration(model, node):
         return duration_quantity(model, node)
     model.expect_type(node, QUDT_SCHEMA["Quantity"])
@@ -1033,8 +1090,15 @@ def scene_object(model, node) -> SceneObject:
 
 @reader
 def constraint(model, node) -> Constraint:
-    """A Constraint: the quantity it bounds, together with its parameter."""
+    """A Constraint: the quantity it bounds, together with its parameter.
+
+    A goal status is not measured against an operand of its own kind: the status it must reach
+    rides on the evaluator, so the constraint states the slot and nothing else.
+    """
     model.expect_type(node, CSTR["Constraint"])
+    quantity_node = model.graph.value(node, CSTR["quantity"])
+    if goal_status_act(model, quantity_node) is not None:
+        return Constraint(model.id(node), quantity(model, quantity_node), None)
     types = get_node_types(model.graph, node)
     if CSTR["EqualityConstraint"] in types:
         parameter = _equality_constraint(model, node)
@@ -2012,11 +2076,24 @@ def annotate_dataflow(
             closure_by_output.setdefault(out_id, set()).add(closure_id)
     solver_by_output, sensor_outputs, measured_outputs = _writers_by_output(serial_chain_solvers)
     owners, block_ids = _owners_by_value(motions, closures)
+    action_by_output = {
+        written_id: client["act_id"]
+        for motion in motions
+        for client in motion.action_clients
+        for written_id in (
+            client["status_id"],
+            *(row["pose_id"] for row in client["written_poses"]),
+        )
+    }
 
     def contract(item) -> _Contract:
         """The producer and write cadence of one shared-data member."""
         if item.id in PORT_PRODUCERS:
             return _Contract(PORT_PRODUCERS[item.id], "tick")
+        if item.id in action_by_output:
+            # A result lands on whatever tick it arrives on, from the executor thread rather
+            # than inside a motion's step, so it is live in every state.
+            return _Contract({"kind": "action", "id": action_by_output[item.id]}, "tick")
         motion_ids = owners.get(item.id)
         cadence = {"motions": sorted(motion_ids)} if motion_ids else "tick"
         if getattr(item, "role", None) == "joint_space":

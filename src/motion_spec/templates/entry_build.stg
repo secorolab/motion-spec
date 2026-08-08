@@ -21,6 +21,9 @@ find_package(Threads REQUIRED)
 <if(communication.ros)>
 find_package(rclcpp REQUIRED)
 find_package(realtime_tools REQUIRED)
+<if(communication.ros.action_clients)>
+find_package(rclcpp_action REQUIRED)
+<endif>
 <communication.ros.packages:{pkg | find_package(<pkg> REQUIRED)}; separator="\n">
 <endif>
 
@@ -47,6 +50,9 @@ target_link_libraries(main PRIVATE
 <if(communication.ros)>
     rclcpp::rclcpp
     realtime_tools::realtime_tools
+<if(communication.ros.action_clients)>
+    rclcpp_action::rclcpp_action
+<endif>
     Threads::Threads
 <communication.ros.packages:{pkg |     ${<pkg>_TARGETS\}}; separator="\n">
 <endif>
@@ -287,6 +293,9 @@ find_package(Threads REQUIRED)
 <if(communication.ros)>
 find_package(rclcpp REQUIRED)
 find_package(realtime_tools REQUIRED)
+<if(communication.ros.action_clients)>
+find_package(rclcpp_action REQUIRED)
+<endif>
 <communication.ros.packages:{pkg | find_package(<pkg> REQUIRED)}; separator="\n">
 <endif>
 
@@ -314,6 +323,9 @@ target_link_libraries(main PRIVATE
 <if(communication.ros)>
     rclcpp::rclcpp
     realtime_tools::realtime_tools
+<if(communication.ros.action_clients)>
+    rclcpp_action::rclcpp_action
+<endif>
     Threads::Threads
 <communication.ros.packages:{pkg |     ${<pkg>_TARGETS\}}; separator="\n">
 <endif>

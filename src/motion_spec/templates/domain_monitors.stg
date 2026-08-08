@@ -27,6 +27,13 @@ cond-term-elapsed-eq(t) ::= <<
 (std::abs(shared.<t.elapsed_id> - <t.threshold>) \<= <t.tolerance>)
 >>
 
+// The status the client staged, against the constant the model named. The constants come from
+// action_msgs, which the client's own header pulls in.
+
+cond-term-goal-status(t) ::= <<
+(shared.<t.status_id> == action_msgs::msg::GoalStatus::<t.value>)
+>>
+
 cond-term-flag(t) ::= <<
 <t.motion_id>_state_instance.<t.flag>
 >>

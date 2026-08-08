@@ -50,7 +50,14 @@ def generate_ir(manifest_path) -> dict:
     # One scope for the whole active block: a step reachable from both a solver and a handler is
     # emitted once, and the four sections are only ever read as their union.
     schedule = operations.Schedule(model)
-    robots = resources.build_robots(model, schedule, setups, derivation, scene.objects, backend)
+    # A pose an act writes has one producer: the detect result. The kinematics must not also
+    # write it, so the chains are built knowing which poses are not theirs.
+    detect_pose_ids = frozenset(
+        row["pose_id"] for rows in quantities.detect_written_poses(model).values() for row in rows
+    )
+    robots = resources.build_robots(
+        model, schedule, setups, derivation, scene.objects, backend, detect_pose_ids
+    )
     handlers, handler_steps = coordination.build_constraint_handlers(model, schedule, derivation)
     coordination.assign_event_indexes(handlers)
 
@@ -72,12 +79,19 @@ def generate_ir(manifest_path) -> dict:
         raise ValueError("ENVIRONMENT timestep must be positive.")
     control_period_ns = round(scene.timestep_s * 1e9)
 
+    action_clients = communication.ros_action_clients(model)
+    clients_by_motion: dict[str, list] = {}
+    for client in action_clients:
+        clients_by_motion.setdefault(client["motion"], []).append(client)
+    for motion in motions:
+        motion.action_clients = clients_by_motion.get(motion.id, [])
+        motion.has_action_clients = bool(motion.action_clients)
     shared_data = quantities.filter_shared_data(
         data_structures,
         robots.schedule_steps + handler_steps,
         closures,
         views,
-        {out.id for solver in robots.serial_chains for out in solver.output},
+        {out.id for solver in robots.serial_chains for out in solver.output} | detect_pose_ids,
     )
     shared_data += resources.shared_runtime_members(
         model, robots.serial_chains, control_period_ns, platform.get("uri")
@@ -93,6 +107,7 @@ def generate_ir(manifest_path) -> dict:
         platform,
         control_period_ns,
         backend,
+        action_clients,
     )
 
     return {
@@ -118,6 +133,7 @@ def generate_ir(manifest_path) -> dict:
             introspection,
             motions,
             resources.ros_joint_states(platform, platform_config, robots.serial_chains),
+            action_clients,
         ),
     }
 
@@ -182,11 +198,11 @@ def _coordination_section(motions, fsm, fsm_meta) -> dict:
     return section
 
 
-def _communication_section(introspection, motions, joint_states) -> dict:
-    """What leaves the loop: the frame log, and the ROS topics a monitor or the deployment asks for."""
+def _communication_section(introspection, motions, joint_states, action_clients=()) -> dict:
+    """What leaves the loop: the frame log, and the ROS topics, goals and results the model asks for."""
     section = {"introspection": introspection}
     publishers = communication.ros_publishers(motions)
-    if not publishers and joint_states is None:
+    if not publishers and joint_states is None and not action_clients:
         return section
     packages = {publisher["pkg"] for publisher in publishers}
     ros = {"publishers": publishers, "node_name": "motion_spec_monitor"}
@@ -196,6 +212,12 @@ def _communication_section(introspection, motions, joint_states) -> dict:
     if joint_states is not None:
         ros["joint_states"] = joint_states
         packages.add("sensor_msgs")
+    if action_clients:
+        ros["action_clients"] = action_clients
+        # The result carries vision_msgs detections and the status carries action_msgs
+        # constants, whichever package defines the action itself.
+        packages.update({client["pkg"] for client in action_clients})
+        packages.update({"action_msgs", "vision_msgs"})
     ros["packages"] = sorted(packages)
     section["ros"] = ros
 

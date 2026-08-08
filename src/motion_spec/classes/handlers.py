@@ -41,6 +41,8 @@ class ConstraintEvaluator:
     elapsed_op: str | None = None
     elapsed_threshold_s: float | None = None
     elapsed_tolerance_s: float | None = None
+    # The action_msgs GoalStatus constant an action goal must reach for this to hold.
+    goal_status: str | None = None
     type: str = field(default="ConstraintEvaluator")
 
 
@@ -119,6 +121,9 @@ class LevelMonitor:
     # Set when the monitor targets an expression node: the member constraint ids it
     # aggregates, and whether they combine with 'any' rather than 'all'.
     group_constraint_ids: list[str] = field(default_factory=list, metadata=INTERNAL)
+    # The constraints this monitor watches, by id: how a term read directly off shared state --
+    # an elapsed clock, an action goal's status -- is matched to the monitor that reads it.
+    constraint_ids: list[str] = field(default_factory=list, metadata=INTERNAL)
     group_any: bool = field(default=False, metadata=INTERNAL)
     # Structured active-phase boolean terms (rendered to C++ by the bool-condition template).
     has_active: bool = False
@@ -146,6 +151,9 @@ class EdgeMonitor:
     # Set when the monitor targets an expression node: the member constraint ids it
     # aggregates, and whether they combine with 'any' rather than 'all'.
     group_constraint_ids: list[str] = field(default_factory=list, metadata=INTERNAL)
+    # The constraints this monitor watches, by id: how a term read directly off shared state --
+    # an elapsed clock, an action goal's status -- is matched to the monitor that reads it.
+    constraint_ids: list[str] = field(default_factory=list, metadata=INTERNAL)
     group_any: bool = field(default=False, metadata=INTERNAL)
     event_uri: str | None = None
     event_name: str | None = None

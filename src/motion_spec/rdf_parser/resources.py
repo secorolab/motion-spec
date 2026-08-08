@@ -777,13 +777,17 @@ _UNIMPLEMENTED_PLATFORM_ALGORITHMS = (
 )
 
 
-def build_robots(model, schedule, setups, derivation, scene_objects, backend: str) -> Robots:
+def build_robots(
+    model, schedule, setups, derivation, scene_objects, backend: str, detect_pose_ids=frozenset()
+) -> Robots:
     """Build every robot the program commands, and schedule the calls that drive them.
 
     Parameters:
         schedule: the active scope; the steps join `Robots.schedule_steps`
         setups: the chain setup per agent node, from `robot_setups`
         scene_objects: the scene's objects, so an observation of one is named by the object
+        detect_pose_ids: the world poses a detect result writes; the kinematics do not compute
+            them, so no chain lists them among its outputs
 
     Raises:
         ConstraintViolation: a mobile-platform solver names an algorithm with no codegen wiring.
@@ -813,9 +817,13 @@ def build_robots(model, schedule, setups, derivation, scene_objects, backend: st
         setup = setups.get(graph.value(node, AGN["of-agent"]), default_setup)
         solver = _solver_with_input_and_output(model, node, setup)
         solver.motion_drivers = constraint_handler.motion_drivers(model, derivation, node)
-        solver.output = dedupe_by_id(
-            [*solver.output, *_world_solver_outputs(model, setup, scene_objects)]
-        )
+        solver.output = [
+            out
+            for out in dedupe_by_id(
+                [*solver.output, *_world_solver_outputs(model, setup, scene_objects)]
+            )
+            if out.id not in detect_pose_ids
+        ]
         # An acceleration constraint is base-aligned when its axis frame is the chain root.
         root_body = _body_name(solver.chain.root)
         for driver in solver.motion_drivers:
@@ -954,7 +962,8 @@ def _validate_solvers(serial_chain_solvers, backend: str) -> None:
             raise RuntimeError(
                 f"robif2b backend cannot sync scene-object pose output '{out.id}' for "
                 f"'{entity.id or entity.body or out.id}'; world/scene object pose sync is only "
-                "implemented for mj_kdl."
+                "implemented for mj_kdl. A pose a detect act writes is exempt: it is produced "
+                "by the perception result on every platform."
             )
 
 

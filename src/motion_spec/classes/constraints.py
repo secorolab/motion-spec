@@ -55,12 +55,22 @@ class OutsideConstraint:
 
 
 @dataclass
+class GoalStatus:
+    """An action goal's terminal status: a slot the client writes, carrying no unit or kind."""
+
+    id: str
+    type: str = field(default="GoalStatus")
+
+
+@dataclass
 class Constraint:
     """A constraint on a quantity together with its parameter."""
 
     id: str
-    quantity: Quantity
-    parameter: EqualityConstraint | UnilateralConstraint | BilateralConstraint | OutsideConstraint
+    quantity: Quantity | GoalStatus
+    parameter: (
+        EqualityConstraint | UnilateralConstraint | BilateralConstraint | OutsideConstraint | None
+    )
     type: str = field(default="Constraint")
 
 

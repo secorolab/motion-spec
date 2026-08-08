@@ -111,6 +111,9 @@ int main(int argc, char **argv) {
             // Leaving a state ends its motion's activation, so re-entering one is a fresh
             // start: active_steps returns to 0 and any trajectory replans from the current
             // pose instead of resuming the alpha it had when it was interrupted.
+<if(communication.ros)>
+<coordination.motions:{motion | <ros-action-cancel-on-exit(motion)>}>
+<endif>
 <coordination.motions:{motion |             <motion.id>_state_instance.active = false;}; separator="\n">
         \}
         if (fsm->currentStateIndex == fsm->endStateIndex) break;

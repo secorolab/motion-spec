@@ -16,6 +16,11 @@ ros-includes(ros) ::= <<
 #include \<mutex\>
 #include \<thread\>
 <ros.publishers:{p | #include "<p.include>"}; separator="\n">
+<if(ros.action_clients)>
+#include \<rclcpp_action/rclcpp_action.hpp\>
+#include \<action_msgs/msg/goal_status.hpp\>
+<ros.action_clients:{c | #include "<c.include>"}; separator="\n">
+<endif>
 <if(ros.joint_states)>
 #include \<sensor_msgs/msg/joint_state.hpp\>
 <endif>
@@ -68,6 +73,7 @@ ros-io-members(ros) ::= <<
 <endif>
 <ros.publishers:{p |     std::shared_ptr\<realtime_tools::RealtimePublisher\<<p.cpp_type>\>\> <p.pub_id> = nullptr;
     <p.cpp_type> <p.pub_id>_msg{\};}; separator="\n">
+<ros.action_clients:{c | <ros-action-members(c)>}; separator="\n">
 <if(ros.joint_states)>
     std::shared_ptr\<realtime_tools::RealtimePublisher\<sensor_msgs::msg::JointState\>\> joint_states_pub = nullptr;
     sensor_msgs::msg::JointState joint_states_msg{};
@@ -83,6 +89,121 @@ ros-setup(ros) ::= <<
 <endif>
 <ros.publishers:{p |     robot.<p.pub_id> = std::make_shared\<realtime_tools::RealtimePublisher\<<p.cpp_type>\>\>(
         robot.ros_node->create_publisher\<<p.cpp_type>\>("<p.channel>", rclcpp::QoS(10)));}; separator="\n">
+<ros.action_clients:{c |     robot.<c.client_id> = rclcpp_action::create_client\<<c.cpp_type>\>(robot.ros_node, "<c.channel>");}; separator="\n">
+>>
+
+// An act's client, the goal it currently has in flight, and the one result it stages for the
+// loop. The executor thread writes the staged fields; the loop copies them out under try_lock,
+// so a cycle never waits on the network.
+
+ros-action-members(c) ::= <<
+    rclcpp_action::Client\<<c.cpp_type>\>::SharedPtr <c.client_id> = nullptr;
+    rclcpp_action::ClientGoalHandle\<<c.cpp_type>\>::SharedPtr <c.client_id>_goal = nullptr;
+    std::mutex <c.client_id>_mutex;
+    bool <c.client_id>_staged = false;
+    int <c.client_id>_staged_status = action_msgs::msg::GoalStatus::STATUS_UNKNOWN;
+<c.written_poses:{w |     KDL::Frame <c.client_id>_staged_<w.pose_id>;}; separator="\n">
+>>
+
+// Sent on the entry edge of the motion that owns the act, never per tick: `async_send_goal` only
+// enqueues, and the executor thread carries it from there.
+//
+// A rejected goal has no GoalStatus of its own; the model asked whether the server will deliver,
+// and it will not, so it stages the same answer an abort does.
+//
+// A detection is the pose the model asked for only when it names the target and arrives in the
+// frame that pose is stated against; anything else is dropped, and a result that does not carry
+// every pose the goal asked for is an abort.
+
+ros-action-send(c) ::= <<
+        shared.<c.status_id> = action_msgs::msg::GoalStatus::STATUS_UNKNOWN;
+        {
+            <c.cpp_type>::Goal _goal;
+            _goal.target_iris = {
+<c.target_iris:{iri |                 "<iri>"}; separator=",\n">
+            \};
+            rclcpp_action::Client\<<c.cpp_type>\>::SendGoalOptions _options;
+            _options.goal_response_callback =
+                [&robot](rclcpp_action::ClientGoalHandle\<<c.cpp_type>\>::SharedPtr handle) {
+                    const std::lock_guard\<std::mutex\> lock(robot.<c.client_id>_mutex);
+                    robot.<c.client_id>_goal = handle;
+                    if (!handle) {
+                        robot.<c.client_id>_staged_status =
+                            action_msgs::msg::GoalStatus::STATUS_ABORTED;
+                        robot.<c.client_id>_staged = true;
+                    \}
+                \};
+            _options.result_callback =
+                [&robot](const rclcpp_action::ClientGoalHandle\<<c.cpp_type>\>::WrappedResult &result) {
+                    const std::lock_guard\<std::mutex\> lock(robot.<c.client_id>_mutex);
+                    robot.<c.client_id>_goal.reset();
+                    robot.<c.client_id>_staged = true;
+                    if (result.code == rclcpp_action::ResultCode::CANCELED) {
+                        robot.<c.client_id>_staged_status =
+                            action_msgs::msg::GoalStatus::STATUS_CANCELED;
+                        return;
+                    \}
+                    if (result.code != rclcpp_action::ResultCode::SUCCEEDED) {
+                        robot.<c.client_id>_staged_status =
+                            action_msgs::msg::GoalStatus::STATUS_ABORTED;
+                        return;
+                    \}
+                    int accepted = 0;
+                    for (const auto &detection : result.result->detections.detections) {
+                        if (detection.results.empty()) continue;
+                        const auto &pose = detection.results[0].pose.pose;
+<c.written_poses:{w |                         if (detection.id == "<w.target_iri>" && detection.header.frame_id == "<w.frame_id>") {
+                            robot.<c.client_id>_staged_<w.pose_id> = KDL::Frame(
+                                KDL::Rotation::Quaternion(pose.orientation.x, pose.orientation.y,
+                                                          pose.orientation.z, pose.orientation.w),
+                                KDL::Vector(pose.position.x, pose.position.y, pose.position.z));
+                            ++accepted;
+                        \}}; separator="\n">
+                    \}
+                    robot.<c.client_id>_staged_status =
+                        accepted == <c.pose_count>
+                            ? action_msgs::msg::GoalStatus::STATUS_SUCCEEDED
+                            : action_msgs::msg::GoalStatus::STATUS_ABORTED;
+                \};
+            robot.<c.client_id>->async_send_goal(_goal, _options);
+        \}
+>>
+
+// Cancelling on the exit edge: a goal still in flight is answering a question the model has
+// stopped asking.
+
+ros-action-cancel(c) ::= <<
+            {
+                const std::lock_guard\<std::mutex\> lock(robot.<c.client_id>_mutex);
+                if (robot.<c.client_id>_goal) {
+                    robot.<c.client_id>->async_cancel_goal(robot.<c.client_id>_goal);
+                    robot.<c.client_id>_goal.reset();
+                \}
+            \}
+>>
+
+// Cancelled on the exit edge, from the loop thread: `async_cancel_goal` only enqueues too.
+
+ros-action-cancel-on-exit(motion) ::= <<
+<if(motion.has_action_clients)>
+            if (<motion.id>_state_instance.active) {
+<motion.action_clients:{c | <ros-action-cancel(c)>}; separator="\n">
+            \}
+<endif>
+>>
+
+// One try_lock per cycle: a staged result moves onto the blackboard, and a cycle that cannot
+// take the lock reads the previous answer and tries again next tick.
+
+ros-actions-tick(ros) ::= <<
+<ros.action_clients:{c |         if (robot.<c.client_id>_mutex.try_lock()) {
+            if (robot.<c.client_id>_staged) {
+                shared.<c.status_id> = robot.<c.client_id>_staged_status;
+<c.written_poses:{w |                 shared.<w.pose_id> = robot.<c.client_id>_staged_<w.pose_id>;}; separator="\n">
+                robot.<c.client_id>_staged = false;
+            \}
+            robot.<c.client_id>_mutex.unlock();
+        \}}; separator="\n">
 >>
 
 // Parsed on the executor thread and handed to the loop under a lock the loop never waits on.
@@ -158,6 +279,7 @@ ros-publish-tick(coordination, communication) ::= <<
 <endif>
 <coordination.motions:{m | <m.when_monitors:{mon | <ros-monitor-publish(m, mon)>}><m.while_monitors:{mon | <ros-monitor-publish(m, mon)>}><m.until_monitors:{mon | <ros-monitor-publish(m, mon)>}>}>
 <ros-joint-states-tick(communication.ros)>
+<ros-actions-tick(communication.ros)>
 >>
 
 ros-publish-tick-locals(ros) ::= <<
@@ -212,6 +334,8 @@ ros-shutdown(ros) ::= <<
         robot.ros_spin_thread.join();
     \}
 <ros.publishers:{p |     robot.<p.pub_id>.reset();}; separator="\n">
+<ros.action_clients:{c |     robot.<c.client_id>_goal.reset();
+    robot.<c.client_id>.reset();}; separator="\n">
 <if(ros.joint_states)>
     robot.joint_states_pub.reset();
 <endif>

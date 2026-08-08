@@ -16,14 +16,15 @@ from __future__ import annotations
 
 from enum import Enum
 
-from motion_spec_dsl.rdf_parser.vocab import EXEC
+from motion_spec_dsl.rdf_parser.vocab import CSTR, CSTR_EXT, EXEC, MOT
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.naming import get_valid_var_name
-from rdflib.namespace import PROV
+from rdflib.namespace import PROV, RDF
+from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 
 from motion_spec.classes.motion import BlackboardValue
 from motion_spec.classes.qudt import QuantityKind, Unit
-from motion_spec.rdf_parser import constraint_handler, quantities, resources
+from motion_spec.rdf_parser import constraint_handler, coordination, quantities, resources
 from motion_spec.rdf_parser.model import identifier
 
 # Types that get a whole-object frame-log slot rather than per-axis scalar rows.
@@ -575,6 +576,93 @@ def ros_publishers(motions) -> list:
     return list(by_channel.values())
 
 
+def _act_status_slot(model, act):
+    """The slot an act's terminal goal status lands in.
+
+    Raises:
+        ConstraintViolation: the act declares no status slot, so nothing can read its outcome.
+    """
+    slot = next(iter(model.graph.subjects(PROV.wasDerivedFrom, act)), None)
+    if slot is None:
+        raise ConstraintViolation(
+            "communication", f"action '{model.id(act)}' declares no goal-status slot"
+        )
+    return slot
+
+
+def _act_motion(model, status_slot) -> str:
+    """The motion that owns an act: the one whose `until` reads the act's status.
+
+    Raises:
+        ConstraintViolation: no motion reads the status, so nothing decides when the goal is
+            sent or when it stops mattering.
+    """
+    graph = model.graph
+    watching = set(graph.subjects(CSTR["quantity"], status_slot))
+    for node in sorted(graph.subjects(RDF["type"], MOT["GuardedMotion"]), key=str):
+        members = set(graph.objects(node, MOT["until"]))
+        members |= {
+            member for item in members for member in graph.objects(item, CSTR_EXT["has-constraint"])
+        }
+        if members & watching:
+            return model.id(node)
+    raise ConstraintViolation(
+        "communication",
+        f"no motion's 'until' reads '{model.id(status_slot)}', so nothing sends the goal or "
+        "ends the act; compare the act's status in the motion that detects",
+    )
+
+
+def ros_action_clients(model) -> list:
+    """The ROS action clients the detect acts ask for, one per act.
+
+    An act is its own client: it names the channel the goal goes out on, the scene objects the
+    goal asks for, and -- per object -- the world pose the result writes and the frame a
+    detection has to arrive in to be that pose.
+    """
+    graph = model.graph
+    written = quantities.detect_written_poses(model)
+    clients = []
+    for act in sorted(graph.subjects(RDF["type"], NS_MM_ROS["Action"]), key=str):
+        type_name = str(graph.value(act, NS_MM_ROS["type-name"]) or "")
+        shape = coordination.action_shape(type_name)
+        status_slot = _act_status_slot(model, act)
+        rows = written[str(act)]
+        clients.append(
+            {
+                "act_id": model.id(act),
+                "client_id": f"{model.id(act)}_client",
+                "channel": str(graph.value(act, NS_MM_ROS["channel-name"]) or ""),
+                "type_name": type_name,
+                "cpp_type": shape["cpp_type"],
+                "include": shape["include"],
+                "pkg": shape["package"],
+                "status_id": model.id(status_slot),
+                "motion": _act_motion(model, status_slot),
+                "target_iris": sorted({row["target_iri"] for row in rows}),
+                "written_poses": rows,
+                # A result is complete only when it carries every pose the goal asked for.
+                "pose_count": len(rows),
+            }
+        )
+
+    return clients
+
+
+def _add_goal_status_slots(model, shared_data, rows, seen, action_clients) -> None:
+    """Publish each act's goal status as a runtime value the client writes and the until reads.
+
+    Without a slot the status is nowhere: the monitor has nothing to compare and the frame log
+    has nothing to report.
+    """
+    for client in action_clients:
+        member = BlackboardValue(id=client["status_id"], type="IntCounter")
+        parent = model.iri_of(client["status_id"])
+        if parent is None:
+            raise RuntimeError(f"goal status: '{client['status_id']}' has no IRI to derive from")
+        _add_member(model, shared_data, rows, seen, member, None, parent, "status")
+
+
 def ros_publications(motions):
     """Every monitor publish in the model, in motion order."""
     return [
@@ -689,7 +777,16 @@ def _provenance(model, scene, platform: dict) -> dict:
 
 
 def build_introspection(
-    model, motions, computation, shared_data, robots, scene, platform, control_period_ns, backend
+    model,
+    motions,
+    computation,
+    shared_data,
+    robots,
+    scene,
+    platform,
+    control_period_ns,
+    backend,
+    action_clients=(),
 ):
     """Build the introspection artifact, and the value projections that ride beside it.
 
@@ -732,6 +829,7 @@ def build_introspection(
     _add_controller_state(model, computation.closures, shared_data, rows, seen, motions)
     _add_control_parameters(model, computation.closures, shared_data, rows, seen, motions)
     _add_joint_space_mirrors(model, robots, motions, shared_data, rows, seen, backend)
+    _add_goal_status_slots(model, shared_data, rows, seen, action_clients)
 
     shared_data.sort(key=lambda item: item.id or "")
     rows.sort(key=lambda row: row.get("id") or "")

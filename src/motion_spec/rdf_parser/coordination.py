@@ -161,6 +161,12 @@ def constraint_evaluator(model, node) -> ConstraintEvaluator:
     assignment = CSTR_HDL["AssignmentEvaluator"] in get_node_types(graph, node)
     error_node = None if assignment else graph.value(node, CSTR_HDL["error"])
 
+    status_slot = quantities.goal_status_act(model, graph.value(constraint_node, CSTR["quantity"]))
+    goal_status = None
+    if status_slot is not None:
+        reference = graph.value(constraint_node, CSTR["reference-value"])
+        goal_status = str(graph.value(reference, RDF.value))
+
     is_elapsed = _is_elapsed_constraint(model, constraint_node)
     operator, threshold, elapsed_tolerance = None, None, None
     if is_elapsed:
@@ -187,6 +193,7 @@ def constraint_evaluator(model, node) -> ConstraintEvaluator:
         elapsed_op=operator,
         elapsed_threshold_s=threshold,
         elapsed_tolerance_s=elapsed_tolerance,
+        goal_status=goal_status,
     )
 
 
@@ -245,6 +252,7 @@ def monitor_entry(model, node):
         "is_when_aggregate": is_when_aggregate,
         "group_constraint_ids": group_ids,
         "group_any": group_any,
+        "constraint_ids": sorted(model.id(item) for item in monitored),
     }
     types = get_node_types(graph, node)
     publication = _ros_publication(model, node)
@@ -319,6 +327,34 @@ def _message_class(type_name: str):
             f"message type '{type_name}' does not resolve; build and source the workspace so "
             "its interface package is on AMENT_PREFIX_PATH",
         ) from error
+
+
+def action_shape(type_name: str) -> dict:
+    """What an action type offers a client: the C++ type it instantiates, and its header.
+
+    Raises:
+        ConstraintViolation: the ROS distribution is not sourced, or the action package is not
+            on AMENT_PREFIX_PATH.
+    """
+    try:
+        from rosidl_runtime_py.utilities import get_action
+    except ImportError as error:
+        raise ConstraintViolation(
+            "communication",
+            "sending a ROS action goal needs rosidl_runtime_py; source the ROS distribution "
+            "before generating",
+        ) from error
+    try:
+        action = get_action(type_name)
+    except (ValueError, ModuleNotFoundError, AttributeError) as error:
+        raise ConstraintViolation(
+            "communication",
+            f"action type '{type_name}' does not resolve; build and source the workspace so "
+            "its interface package is on AMENT_PREFIX_PATH",
+        ) from error
+    package, cpp_type, include = _cpp_names(action)
+
+    return {"package": package, "cpp_type": cpp_type, "include": include}
 
 
 def _cpp_names(message) -> tuple[str, str, str]:
@@ -1052,6 +1088,13 @@ def evaluator_term(evaluator) -> dict:
     shared state and nothing else, so the same condition renders identically inside the motion and
     in the introspection sample that runs outside it.
     """
+    if evaluator.goal_status:
+        return {
+            "kind": "goal-status",
+            "status_id": evaluator.constraint.quantity.id,
+            "value": evaluator.goal_status,
+        }
+
     if evaluator.is_elapsed:
         operator = evaluator.elapsed_op or ">="
         threshold = evaluator.elapsed_threshold_s or 0.0
@@ -1091,7 +1134,9 @@ def _stamp_terms(monitor, terms, any_flag) -> None:
 
 
 def _set_monitor_conditions(motion, phase: str) -> None:
-    """Stamp one phase's terms onto the aggregate monitor and any elapsed-error monitors."""
+    """Stamp one phase's terms onto the aggregate monitor, and onto any monitor whose one
+    constraint is read directly rather than through a solver error -- an elapsed clock or an
+    action goal's status."""
     evaluators = getattr(motion, f"{phase}_evaluators")
     aggregate_field = f"is_{phase}_aggregate"
     terms = [
@@ -1099,10 +1144,12 @@ def _set_monitor_conditions(motion, phase: str) -> None:
         for evaluator in evaluators
         if evaluator.error or evaluator.is_elapsed
     ]
-    elapsed_by_error = {
-        evaluator.error.id: evaluator_term(evaluator)
+    # Keyed by constraint, not by error: two goal-status items on one act share the status slot,
+    # so the error alone cannot say which status a monitor is watching for.
+    direct_by_constraint = {
+        evaluator.constraint.id: evaluator_term(evaluator)
         for evaluator in evaluators
-        if evaluator.is_elapsed and evaluator.error
+        if (evaluator.is_elapsed or evaluator.goal_status) and evaluator.error
     }
     for monitor in getattr(motion, f"{phase}_monitors"):
         group_ids = set(monitor.group_constraint_ids or ())
@@ -1125,9 +1172,13 @@ def _set_monitor_conditions(motion, phase: str) -> None:
         if getattr(monitor, aggregate_field):
             _stamp_terms(monitor, terms, False)
             continue
-        error_id = getattr(monitor.error, "id", None)
-        if error_id in elapsed_by_error:
-            _stamp_terms(monitor, [elapsed_by_error[error_id]], False)
+        direct = [
+            direct_by_constraint[constraint_id]
+            for constraint_id in monitor.constraint_ids
+            if constraint_id in direct_by_constraint
+        ]
+        if direct:
+            _stamp_terms(monitor, direct, False)
 
 
 def _set_motion_conditions(motion) -> None:

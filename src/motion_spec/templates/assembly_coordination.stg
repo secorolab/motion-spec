@@ -4,6 +4,7 @@
 import "assembly_motion.stg"
 import "domain_controllers.stg"
 import "expr_values.stg"
+import "ros.stg"
 
 // Coordination state, not blackboard: the monitors record occurrences into it and the frame
 // sampler drains it, so no model value is produced or consumed here.
@@ -31,7 +32,8 @@ static void step_<motion.id>(<motion.id>_state &<motion.id>_state_instance, shar
         <motion.id>_state_instance.active = true;
         <motion.id>_state_instance.active_steps = 0;
 <if(motion.snapshots)>        <motion.id>_state_instance.snapshot_taken = false;
-<endif><motion.controllers:{controller |         <controller-reset(motion.id, controller)>}; separator="\n">
+<endif><motion.action_clients:{c | <ros-action-send(c)>}; separator="\n">
+<motion.controllers:{controller |         <controller-reset(motion.id, controller)>}; separator="\n">
 <motion.path_projections:{proj |         shared.<proj.parameter> = 0.0;
         shared.<proj.along_speed> = 0.0;}; separator="\n">
     }

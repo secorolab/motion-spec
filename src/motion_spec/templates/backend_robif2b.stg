@@ -312,13 +312,13 @@ device-assign-robif2b-gripper-cmd(solver, device) ::= <<
 
 robot-chain-robif2b-KinovaGen3(solver) ::= <<
 <if(solver.runtime.owner)>    KDL::Tree built_tree_<solver.runtime.id>{};
-    if (!scene_kdl::make_tree_<solver.chain.kdl_tree>(&built_tree_<solver.runtime.id>)) {
-        std::cerr \<\< "make_tree_<solver.chain.kdl_tree>() failed for runtime <solver.runtime.id>\n";
+    if (!scene_kdl::make_tree_<solver.chain.tree>(&built_tree_<solver.runtime.id>)) {
+        std::cerr \<\< "make_tree_<solver.chain.tree>() failed for runtime <solver.runtime.id>\n";
         return 1;
     \}
     KDL::Chain chain_<solver.runtime.id>{};
-    if (!scene_kdl::make_chain_<solver.chain.kdl_chain>(built_tree_<solver.runtime.id>, &chain_<solver.runtime.id>)) {
-        std::cerr \<\< "make_chain_<solver.chain.kdl_chain>() failed for runtime <solver.runtime.id>\n";
+    if (!scene_kdl::make_chain_<solver.chain.name>(built_tree_<solver.runtime.id>, &chain_<solver.runtime.id>)) {
+        std::cerr \<\< "make_chain_<solver.chain.name>() failed for runtime <solver.runtime.id>\n";
         return 1;
     \}
 <endif>

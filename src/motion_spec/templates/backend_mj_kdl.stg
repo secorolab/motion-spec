@@ -32,31 +32,31 @@ robot-init-mj_kdl-KinovaGen3(solver) ::= <<
 <if(solver.hardware.tcp_site)>    mj_tool_<solver.runtime.id>.tcp_site = "<solver.hardware.tcp_site>";
 <endif><solver.sensors:{s |<({mj-sensor-<s.type>})(solver, s)>
 }>    KDL::Tree built_tree_<solver.runtime.id>{};
-    if (!scene_kdl::make_tree_<solver.chain.kdl_tree>(&built_tree_<solver.runtime.id>)) {
-        std::cerr \<\< "make_tree_<solver.chain.kdl_tree>() failed for runtime <solver.runtime.id>\n";
+    if (!scene_kdl::make_tree_<solver.chain.tree>(&built_tree_<solver.runtime.id>)) {
+        std::cerr \<\< "make_tree_<solver.chain.tree>() failed for runtime <solver.runtime.id>\n";
         mj_kdl::cleanup(&mj_env);
         return 1;
     \}
     KDL::Chain built_chain_<solver.runtime.id>{};
-    if (!scene_kdl::make_chain_<solver.chain.kdl_chain>(built_tree_<solver.runtime.id>, &built_chain_<solver.runtime.id>)) {
-        std::cerr \<\< "make_chain_<solver.chain.kdl_chain>() failed for runtime <solver.runtime.id>\n";
+    if (!scene_kdl::make_chain_<solver.chain.name>(built_tree_<solver.runtime.id>, &built_chain_<solver.runtime.id>)) {
+        std::cerr \<\< "make_chain_<solver.chain.name>() failed for runtime <solver.runtime.id>\n";
         mj_kdl::cleanup(&mj_env);
         return 1;
     \}
-    if (!mj_kdl::init_robot_from_chain(&mj_<solver.runtime.id>, mj_env.model, mj_env.data, built_chain_<solver.runtime.id>, {<solver.chain.kdl_joints:{j |"<j>"}; separator=", ">\}, "", &mj_tool_<solver.runtime.id>)) {
+    if (!mj_kdl::init_robot_from_chain(&mj_<solver.runtime.id>, mj_env.model, mj_env.data, built_chain_<solver.runtime.id>, {<solver.chain.joints:{j |"<j>"}; separator=", ">\}, "<solver.runtime.prefix>", &mj_tool_<solver.runtime.id>)) {
 <else>    KDL::Tree built_tree_<solver.runtime.id>{};
-    if (!scene_kdl::make_tree_<solver.chain.kdl_tree>(&built_tree_<solver.runtime.id>)) {
-        std::cerr \<\< "make_tree_<solver.chain.kdl_tree>() failed for runtime <solver.runtime.id>\n";
+    if (!scene_kdl::make_tree_<solver.chain.tree>(&built_tree_<solver.runtime.id>)) {
+        std::cerr \<\< "make_tree_<solver.chain.tree>() failed for runtime <solver.runtime.id>\n";
         mj_kdl::cleanup(&mj_env);
         return 1;
     \}
     KDL::Chain built_chain_<solver.runtime.id>{};
-    if (!scene_kdl::make_chain_<solver.chain.kdl_chain>(built_tree_<solver.runtime.id>, &built_chain_<solver.runtime.id>)) {
-        std::cerr \<\< "make_chain_<solver.chain.kdl_chain>() failed for runtime <solver.runtime.id>\n";
+    if (!scene_kdl::make_chain_<solver.chain.name>(built_tree_<solver.runtime.id>, &built_chain_<solver.runtime.id>)) {
+        std::cerr \<\< "make_chain_<solver.chain.name>() failed for runtime <solver.runtime.id>\n";
         mj_kdl::cleanup(&mj_env);
         return 1;
     \}
-    if (!mj_kdl::init_robot_from_chain(&mj_<solver.runtime.id>, mj_env.model, mj_env.data, built_chain_<solver.runtime.id>, {<solver.chain.kdl_joints:{j |"<j>"}; separator=", ">\})) {
+    if (!mj_kdl::init_robot_from_chain(&mj_<solver.runtime.id>, mj_env.model, mj_env.data, built_chain_<solver.runtime.id>, {<solver.chain.joints:{j |"<j>"}; separator=", ">\}, "<solver.runtime.prefix>")) {
 <endif>
         std::cerr \<\< "init_robot_from_chain() failed for runtime <solver.runtime.id>\n";
         mj_kdl::cleanup(&mj_env);

@@ -313,13 +313,13 @@ struct shared_data {
 };
 >>
 
-// A reaction routing a state back onto itself re-enters that state's acting motion: entry
-// re-arms its goals, so a model retries perception by firing the event.
+// A self-transition's fired event re-enters the state's motion: entry runs again, so a model
+// retries perception by authoring `fires` on the retry reaction.
 
 fsm-motion-reentry(m, fsm) ::= <<
 <if(m.has_reentry_events)>
         if (fsm->currentStateIndex == <fsm.cpp_namespace>::<m.fsm_state>
-                && (<m.reentry_events:{e | robot.fsm_events->currentEvents[<fsm.cpp_namespace>::<e>]}; separator=" || ">)) {
+                && (<m.reentry_events:{e | consume_event(robot.fsm_events, <fsm.cpp_namespace>::<e>)}; separator=" || ">)) {
 <m.action_clients:{c | <ros-action-cancel(c)>}; separator="\n">
             <m.id>_state_instance.active = false;
         \}

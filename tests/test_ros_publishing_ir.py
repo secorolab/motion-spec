@@ -193,6 +193,10 @@ FSM = {
     "name": "demo_fsm",
     "events": ["E_DONE", "E_GOAL", "E_STEP"],
     "event_uris": {name: f"{FSM_NS}{name}" for name in ("E_DONE", "E_GOAL", "E_STEP")},
+    "transitions_table": [{"id": "T_IDLE_RUN", "from_state": "S_IDLE", "to_state": "S_RUN"}],
+    "reactions_table": [
+        {"id": "R_GOAL", "when_event": "E_GOAL", "do_transition": "T_IDLE_RUN", "fires_events": []}
+    ],
 }
 SERVER = URIRef(f"{NS}pick-place-behaviour")
 
@@ -221,6 +225,7 @@ def test_the_server_carries_the_fsms_own_event_tokens():
         "action_name": "pick_place",
         "events_channel": "/bdd/events",
         "goal_event": "E_GOAL",
+        "goal_states": ["S_IDLE"],
         "exported": [{"token": "E_DONE", "uri": f"{FSM_NS}E_DONE"}],
     }
 

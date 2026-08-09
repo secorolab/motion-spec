@@ -379,12 +379,13 @@ ros-behaviour-tick(coordination, server) ::= <<
             \}
             robot.bhv_goal_mutex.unlock();
         \}
-        if (_bhv_goal && !_bhv_goal_armed) {
+        if (_bhv_goal && !_bhv_goal_armed
+                && (<server.goal_states:{s | fsm->currentStateIndex == <coordination.fsm.cpp_namespace>::<s>}; separator=" || ">)) {
             _bhv_goal_armed = true;
             _scenario_context_id = _bhv_goal->get_goal()->scenario_context_id.uuid;
             produce_event(robot.fsm_events, <coordination.fsm.cpp_namespace>::<server.goal_event>);
         \}
-<server.exported:{e |         if (_bhv_goal && robot.fsm_events->currentEvents[<coordination.fsm.cpp_namespace>::<e.token>]) {
+<server.exported:{e |         if (_bhv_goal && consume_event(robot.fsm_events, <coordination.fsm.cpp_namespace>::<e.token>)) {
             robot.bhv_event_msg.scenario_context_id.uuid = _scenario_context_id;
             robot.bhv_event_msg.stamp = robot.ros_node->now();
             robot.bhv_event_msg.uri = <coordination.fsm.cpp_namespace>::EVENT_URIS[<coordination.fsm.cpp_namespace>::<e.token>];

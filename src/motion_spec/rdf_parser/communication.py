@@ -675,28 +675,6 @@ def _add_goal_status_slots(model, shared_data, rows, seen, action_clients) -> No
         _add_member(model, shared_data, rows, seen, member, None, parent, "status")
 
 
-def act_reentry_events(motions, fsm) -> None:
-    """Event-driven retry: an event whose reaction is a self-transition on the state of a
-    motion that owns acts re-enters that motion, so entry re-sends its goals.
-    """
-    tables = fsm or {}
-    self_state = {
-        row["id"]: row["from_state"]
-        for row in tables.get("transitions_table", [])
-        if row["from_state"] == row["to_state"]
-    }
-    by_state: dict = {}
-    for row in tables.get("reactions_table", []):
-        state = self_state.get(row["do_transition"])
-        if state is not None:
-            by_state.setdefault(state, set()).add(row["when_event"])
-    for motion in motions:
-        events = sorted(by_state.get(motion.fsm_state, ())) if motion.action_clients else []
-        motion.reentry_events = events
-        # ST4 renders empty lists truthy, so the template reads this boolean instead.
-        motion.has_reentry_events = bool(events)
-
-
 def behaviour_server(model, fsm) -> dict | None:
     """The BDD action server the model declares, or None when it declares none.
 
@@ -745,10 +723,27 @@ def behaviour_server(model, fsm) -> dict | None:
             "communication", f"'{model.id(node)}' states no channel to export its events on"
         )
 
+    goal_token = event_row(goal_event)["token"]
+    # An FSM event lives one tick, so the goal event is produced only when the FSM sits in a
+    # state that reacts to it -- a goal accepted during startup must not fire into S_START.
+    transitions = {row["id"]: row for row in fsm["transitions_table"]}
+    armed_states = sorted(
+        transitions[row["do_transition"]]["from_state"]
+        for row in fsm["reactions_table"]
+        if row["when_event"] == goal_token
+    )
+    if not armed_states:
+        raise ConstraintViolation(
+            "communication",
+            f"'{model.id(node)}' produces '{goal_token}' on a goal, but no FSM reaction "
+            "consumes it, so an accepted goal could never start anything",
+        )
+
     return {
         "action_name": str(graph.value(node, NS_MM_ROS["channel-name"])),
         "events_channel": str(graph.value(topic, NS_MM_ROS["channel-name"])),
-        "goal_event": event_row(goal_event)["token"],
+        "goal_event": goal_token,
+        "goal_states": armed_states,
         "exported": [event_row(uri) for uri in sorted(graph.objects(topic, RDFS.member))],
     }
 

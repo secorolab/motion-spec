@@ -1417,7 +1417,31 @@ def _apply_fsm_wiring(motions, fsm) -> dict:
             if motion.id not in fallback.fsm_when_gate_motions:
                 fallback.fsm_when_gate_motions.append(motion.id)
 
+    _apply_reentry_events(motions, fsm)
+
     return meta
+
+
+def _apply_reentry_events(motions, fsm) -> None:
+    """A self-transition's fired events re-enter the state's motion.
+
+    The model opts in by authoring `fires` on the retry reaction; the loop consumes the fired
+    event and deactivates the motion, so entry runs again (snapshots re-capture, goals re-send).
+    """
+    tables = fsm or {}
+    self_state = {
+        row["id"]: row["from_state"]
+        for row in tables.get("transitions_table", [])
+        if row["from_state"] == row["to_state"]
+    }
+    fired_by_state: dict = {}
+    for row in tables.get("reactions_table", []):
+        state = self_state.get(row["do_transition"])
+        if state is not None:
+            fired_by_state.setdefault(state, set()).update(row["fires_events"])
+    for motion in motions:
+        motion.reentry_events = sorted(fired_by_state.get(motion.fsm_state, ()))
+        motion.has_reentry_events = bool(motion.reentry_events)
 
 
 def _when_gate_fallback(motion, monitor, by_id):

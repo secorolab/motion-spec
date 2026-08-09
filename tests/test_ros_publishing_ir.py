@@ -19,7 +19,7 @@ from rosidl_pycommon import convert_camel_case_to_lower_case_underscore
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 
 from motion_spec.classes.handlers import LevelMonitor, RosPublication
-from motion_spec.rdf_parser.communication import behaviour_server, ros_publishers
+from motion_spec.rdf_parser.communication import action_server, ros_publishers
 from motion_spec.rdf_parser.coordination import _message_shape, _ros_publication
 from motion_spec.rdf_parser.model import Model
 from motion_spec.rdf_parser.resources import ros_joint_states
@@ -215,46 +215,97 @@ FSM = {
         {"id": "R_GOAL", "when_event": "E_GOAL", "do_transition": "T_IDLE_RUN", "fires_events": []}
     ],
 }
-SERVER = URIRef(f"{NS}pick-place-behaviour")
+SERVER = URIRef(f"{NS}pick-place")
+ACTION_TYPE = "bdd_ros2_interfaces/action/Behaviour"
 
 
-def _behaviour(goal_event: str = "E_GOAL") -> Graph:
-    """A behaviour server node: the action it answers, and the event an accepted goal produces."""
+def _served(goal_event: str = "E_GOAL", *, result: tuple | None = ("result.trinary.value", "TRUE")):
+    """A served action: the goal event it produces, and what a completed run answers with."""
     graph = Graph()
-    graph.add((SERVER, NS_MM_ROS["type-name"], Literal("bdd_ros2_interfaces/action/Behaviour")))
+    graph.add((SERVER, RDF.type, NS_MM_ROS["Action"]))
+    graph.add((SERVER, NS_MM_ROS["type-name"], Literal(ACTION_TYPE)))
     graph.add((SERVER, NS_MM_ROS["channel-name"], Literal("pick_place")))
     graph.add((SERVER, RDFS.member, URIRef(f"{FSM_NS}{goal_event}")))
+    if result is not None:
+        row = URIRef(f"{SERVER}.r0")
+        graph.add((SERVER, RDFS.member, row))
+        graph.add((row, NS_MM_ROS["field-path"], Literal(result[0])))
+        graph.add((row, RDF.value, Literal(result[1])))
     return graph
 
 
 def test_a_model_without_a_server_states_none():
-    assert behaviour_server(_model(Graph()), FSM) is None
+    assert action_server(_model(Graph()), FSM) is None
 
 
 def test_the_server_carries_the_fsms_own_event_tokens():
     """A token, never an index: the generated enum is declaration-ordered, this reader's tables
     are sorted, so only the symbol survives the crossing."""
-    assert behaviour_server(_model(_behaviour()), FSM) == {
-        "action_name": "pick_place",
-        "goal_event": "E_GOAL",
-        "goal_states": ["S_IDLE"],
-    }
+    server = action_server(_model(_served()), FSM)
+    assert server["action_name"] == "pick_place"
+    assert server["goal_event"] == "E_GOAL"
+    assert server["goal_states"] == ["S_IDLE"]
+
+
+def test_the_server_reads_its_whole_shape_off_the_action_it_names():
+    """Nothing about the action is assumed: the C++ type, the header, the packages and the
+    node-owned result fields all come from the type the model stated."""
+    server = action_server(_model(_served()), FSM)
+    assert server["cpp_type"] == "bdd_ros2_interfaces::action::Behaviour"
+    assert server["result_cpp_type"] == "bdd_ros2_interfaces::action::Behaviour_Result"
+    assert server["include"] == "bdd_ros2_interfaces/action/behaviour.hpp"
+    assert server["goal_context_id"] == ["scenario_context_id"]
+    assert server["result_auto_time"] == ["result.stamp"]
+    assert server["result_auto_context_id"] == ["result.scenario_context_id"]
+    assert sorted(server["ignored_goal_fields"]) == ["configs", "parameters"]
+    assert "bdd_ros2_interfaces" in server["packages"]
+
+
+def test_a_completed_run_answers_with_the_fields_the_model_authored():
+    server = action_server(_model(_served()), FSM)
+    assert server["result_fields"] == [
+        {"path": "result.trinary.value", "cpp_value": "bdd_ros2_interfaces::msg::Trinary::TRUE"}
+    ]
+
+
+def test_a_server_authoring_no_result_answers_with_the_types_own_defaults():
+    """A run that never finishes states nothing it did not establish; so does one whose model
+    authored no result at all."""
+    assert action_server(_model(_served(result=None)), FSM)["result_fields"] == []
+
+
+def test_a_result_field_the_action_does_not_offer_is_rejected():
+    graph = _served(result=("result.trinary.invented", "TRUE"))
+    with pytest.raises(ConstraintViolation, match="not a payload field"):
+        action_server(_model(graph), FSM)
 
 
 def test_an_event_the_fsm_does_not_declare_is_rejected():
     with pytest.raises(ConstraintViolation, match="E_INVENTED"):
-        behaviour_server(_model(_behaviour("E_INVENTED")), FSM)
+        action_server(_model(_served("E_INVENTED")), FSM)
 
 
 def test_a_goal_event_no_reaction_consumes_is_rejected():
     """Nothing reacts to E_DONE, so an accepted goal would start nothing."""
     with pytest.raises(ConstraintViolation, match="no FSM reaction"):
-        behaviour_server(_model(_behaviour("E_DONE")), FSM)
+        action_server(_model(_served("E_DONE")), FSM)
 
 
 def test_serving_goals_without_an_fsm_is_rejected():
     with pytest.raises(ConstraintViolation, match="imports no FSM"):
-        behaviour_server(_model(_behaviour()), None)
+        action_server(_model(_served()), None)
+
+
+def test_two_served_actions_are_rejected():
+    """One runtime answers one action."""
+    graph = _served()
+    other = URIRef(f"{NS}other")
+    graph.add((other, RDF.type, NS_MM_ROS["Action"]))
+    graph.add((other, NS_MM_ROS["type-name"], Literal(ACTION_TYPE)))
+    graph.add((other, NS_MM_ROS["channel-name"], Literal("other")))
+    graph.add((other, RDFS.member, URIRef(f"{FSM_NS}E_GOAL")))
+    with pytest.raises(ConstraintViolation, match="serves 2 actions"):
+        action_server(_model(graph), FSM)
 
 
 EVENT = URIRef(f"{FSM_NS}E_DONE")

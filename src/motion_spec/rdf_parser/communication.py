@@ -3,8 +3,9 @@
 """What leaves the loop.
 
 In order: the rows the introspection artifact is made of; the members each concern's table adds
-to the blackboard, and the rows that report them; the frame-log samples; the provenance document;
-and `build_introspection`, which runs all of it in the one order the frame layout depends on.
+to the blackboard, and the rows that report them; the frame-log samples; the ROS interface -- what
+the model publishes, the goals it sends and the one it answers; the provenance document; and
+`build_introspection`, which runs all of it in the one order the frame layout depends on.
 
 No other module appends to the introspection artifact or to the frame log. A concern publishes
 what it knows as a table -- the internal state a PID keeps, the gains a controller carries, the
@@ -19,7 +20,6 @@ from enum import Enum
 from motion_spec_dsl.rdf_parser.vocab import CSTR, CSTR_EXT, EXEC, MOT
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.naming import get_valid_var_name
-from rdflib import Literal
 from rdflib.namespace import PROV, RDF, RDFS
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 
@@ -31,12 +31,6 @@ from motion_spec.rdf_parser.model import identifier
 # Types that get a whole-object frame-log slot rather than per-axis scalar rows.
 _SPATIAL_SLOT_KINDS = {"Pose": "poses", "VelocityTwist": "twists", "Wrench": "wrenches"}
 _MONITOR_PHASES = ("when", "while", "until")
-# A behaviour server is found by the contract it answers, not by a class of its own: the goal a
-# robbdd scenario sends.
-_BEHAVIOUR_ACTION_TYPE = "bdd_ros2_interfaces/action/Behaviour"
-# rclcpp_action carries the server; the interface package carries the goal, the result and the
-# event message a monitor's occurrence rides.
-BEHAVIOUR_PACKAGES = ("rclcpp_action", "bdd_ros2_interfaces")
 # The gain fields a controller row reports, in the order they are emitted.
 _GAIN_ROW_FIELDS = (
     "proportional_gain",
@@ -642,11 +636,10 @@ def ros_action_clients(model) -> list:
     written = quantities.detect_written_poses(model)
     clients = []
     for act in sorted(graph.subjects(RDF["type"], NS_MM_ROS["Action"]), key=str):
-        type_name = str(graph.value(act, NS_MM_ROS["type-name"]) or "")
-        # An Action node carrying the Behaviour contract is the server the model serves, not
-        # an act it performs.
-        if type_name == _BEHAVIOUR_ACTION_TYPE:
+        # A member is a goal arriving: that action is served, not performed.
+        if next(iter(graph.objects(act, RDFS.member)), None) is not None:
             continue
+        type_name = str(graph.value(act, NS_MM_ROS["type-name"]) or "")
         shape = coordination.action_shape(type_name)
         status_slot = _act_status_slot(model, act)
         rows = written[str(act)]
@@ -659,6 +652,7 @@ def ros_action_clients(model) -> list:
                 "cpp_type": shape["cpp_type"],
                 "include": shape["include"],
                 "pkg": shape["package"],
+                "packages": shape["packages"],
                 "status_id": model.id(status_slot),
                 "motion": _act_motion(model, status_slot),
                 "target_iris": sorted({row["target_iri"] for row in rows}),
@@ -685,28 +679,61 @@ def _add_goal_status_slots(model, shared_data, rows, seen, action_clients) -> No
         _add_member(model, shared_data, rows, seen, member, None, parent, "status")
 
 
-def behaviour_server(model, fsm) -> dict | None:
-    """The BDD action server the model declares, or None when it declares none.
+def _served_action(model):
+    """The action the model serves, or None when it serves none.
 
-    The server is the node whose type-name is the Behaviour contract; its one member is the
-    event an accepted goal produces. What a scenario observes rides the monitor publishers.
+    A goal arrives on a served action and starts something: its valueless member is the event an
+    accepted goal produces. An act the model performs has no member -- nothing arrives on it.
+
+    Raises:
+        ConstraintViolation: the model serves more than one action, which one runtime cannot do.
+    """
+    graph = model.graph
+    served = [
+        node
+        for node in sorted(graph.subjects(RDF["type"], NS_MM_ROS["Action"]), key=str)
+        if next(iter(graph.objects(node, RDFS.member)), None) is not None
+    ]
+    if len(served) > 1:
+        raise ConstraintViolation(
+            "communication",
+            f"the model serves {len(served)} actions ({', '.join(model.id(n) for n in served)}); "
+            "a runtime answers one",
+        )
+    return served[0] if served else None
+
+
+def action_server(model, fsm) -> dict | None:
+    """The action server the model declares, or None when it declares none.
+
+    Everything the generated server needs comes off the action the model named: the C++ type it
+    instantiates, its header, the goal field carrying the scenario a run belongs to, and the
+    result fields each outcome writes.
 
     Raises:
         ConstraintViolation: the model serves goals without importing an FSM, or names an event
             that FSM does not declare or react to -- either way nothing could start
     """
     graph = model.graph
-    node = next(iter(graph.subjects(NS_MM_ROS["type-name"], Literal(_BEHAVIOUR_ACTION_TYPE))), None)
+    node = _served_action(model)
     if node is None:
         return None
     if not fsm:
         raise ConstraintViolation(
             "communication",
-            f"'{model.id(node)}' serves behaviour goals, but the model imports no FSM, so an "
+            f"'{model.id(node)}' serves goals, but the model imports no FSM, so an "
             "accepted goal has nothing to start",
         )
 
-    goal_event = next(iter(graph.objects(node, RDFS.member)), None)
+    # A member with no authored value is not a result row: it is the event a goal produces.
+    goal_event = next(
+        (
+            row
+            for row in sorted(graph.objects(node, RDFS.member))
+            if graph.value(row, RDF.value) is None
+        ),
+        None,
+    )
     if goal_event is None:
         raise ConstraintViolation(
             "communication", f"'{model.id(node)}' names no event for an accepted goal to produce"
@@ -736,11 +763,53 @@ def behaviour_server(model, fsm) -> dict | None:
             "consumes it, so an accepted goal could never start anything",
         )
 
+    type_name = str(graph.value(node, NS_MM_ROS["type-name"]) or "")
+    shape = coordination.action_shape(type_name)
+    goal, result = shape["goal"], shape["result"]
+
     return {
         "action_name": str(graph.value(node, NS_MM_ROS["channel-name"])),
+        "type_name": type_name,
+        "cpp_type": shape["cpp_type"],
+        "result_cpp_type": result["cpp_type"],
+        "include": shape["include"],
+        "pkg": shape["package"],
+        "packages": shape["packages"],
         "goal_event": goal_token,
         "goal_states": armed_states,
+        # The scenario a run belongs to arrives on the goal; the run stamps it on everything it
+        # publishes afterwards.
+        "goal_context_id": sorted(
+            path for path, kind in goal["auto"].items() if kind == "context_id"
+        ),
+        # A goal may carry more than the run reads. Repeated fields are the ones it can report
+        # having ignored, since only they can be counted.
+        "ignored_goal_fields": sorted(goal["repeated"]),
+        "result_auto_time": sorted(path for path, kind in result["auto"].items() if kind == "time"),
+        "result_auto_context_id": sorted(
+            path for path, kind in result["auto"].items() if kind == "context_id"
+        ),
+        "result_fields": _result_fields(model, node, result),
     }
+
+
+def _result_fields(model, node, shape: dict) -> list:
+    """What a completed run answers a goal with, resolved against the action's result type.
+
+    A run that stopped before its end state writes none of these: it leaves every field at the
+    default its own message type gives it, which is what the interface chose "unset" to mean.
+    """
+    graph = model.graph
+
+    return [
+        coordination.publish_field(
+            shape,
+            str(graph.value(row, NS_MM_ROS["field-path"]) or ""),
+            str(graph.value(row, RDF.value)),
+        )
+        for row in sorted(graph.objects(node, RDFS.member))
+        if graph.value(row, RDF.value) is not None
+    ]
 
 
 def ros_publications(motions):

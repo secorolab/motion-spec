@@ -330,7 +330,12 @@ def _message_class(type_name: str):
 
 
 def action_shape(type_name: str) -> dict:
-    """What an action type offers a client: the C++ type it instantiates, and its header.
+    """What an action type offers: the C++ type it instantiates, its header, and what its goal
+    and result messages let a model state.
+
+    A goal and a result are not message types of their own -- `get_message` cannot reach them and
+    their own headers are not the ones a caller includes -- so both are walked from the class the
+    action carries, under the action's include.
 
     Raises:
         ConstraintViolation: the ROS distribution is not sourced, or the action package is not
@@ -354,7 +359,24 @@ def action_shape(type_name: str) -> dict:
         ) from error
     package, cpp_type, include = _cpp_names(action)
 
-    return {"package": package, "cpp_type": cpp_type, "include": include}
+    goal = _shape_of(action.Goal, f"{type_name} goal", package, include)
+    result = _shape_of(action.Result, f"{type_name} result", package, include)
+
+    return {
+        "package": package,
+        "cpp_type": cpp_type,
+        "include": include,
+        "goal": goal,
+        "result": result,
+        # A goal or a result may reach into other interface packages; the build needs every one
+        # of them, not just the package the action itself lives in.
+        "packages": sorted({package} | _leaf_packages(goal) | _leaf_packages(result)),
+    }
+
+
+def _leaf_packages(shape: dict) -> set:
+    """The interface packages the message classes owning a shape's leaves come from."""
+    return {owner.__module__.split(".")[0] for _element, owner in shape["leaves"].values()}
 
 
 def _cpp_names(message) -> tuple[str, str, str]:
@@ -376,14 +398,13 @@ def _cpp_names(message) -> tuple[str, str, str]:
     )
 
 
-def _message_shape(type_name: str) -> dict:
-    """What a message type offers a publisher: the leaf fields a model may state, the owning
-    message class of each (its constants live there), and the fields the node auto-fills.
+def _shape_of(root, type_name: str, package: str, include: str) -> dict:
+    """What a message class offers a model: the leaf fields it may state, the owning message
+    class of each (its constants live there), and the fields the node auto-fills.
     """
-    root = _message_class(type_name)
-    package, cpp_type, include = _cpp_names(root)
     leaves: dict[str, tuple[str, object]] = {}
     auto: dict[str, str] = {}
+    repeated: set[str] = set()
 
     def walk(message, prefix: str) -> None:
         for name, field_type in message.get_fields_and_field_types().items():
@@ -397,17 +418,28 @@ def _message_shape(type_name: str) -> dict:
                 walk(_message_class(element), f"{path}.")
             else:
                 leaves[path] = (element, message)
+                if many:
+                    repeated.add(path)
 
     walk(root, "")
 
     return {
         "type_name": type_name,
         "package": package,
-        "cpp_type": cpp_type,
+        "cpp_type": _cpp_names(root)[1],
         "include": include,
         "leaves": leaves,
         "auto": auto,
+        "repeated": repeated,
     }
+
+
+def _message_shape(type_name: str) -> dict:
+    """What a message type offers a publisher, walked from the type the model names."""
+    root = _message_class(type_name)
+    package, _cpp_type, include = _cpp_names(root)
+
+    return _shape_of(root, type_name, package, include)
 
 
 def _sole_payload_path(shape: dict) -> str:
@@ -443,7 +475,7 @@ def _cpp_value(shape: dict, path: str, text: str) -> str:
     return text
 
 
-def _publish_field(shape: dict, path: str, text: str) -> dict:
+def publish_field(shape: dict, path: str, text: str) -> dict:
     """One authored assignment, resolved against the message type."""
     path = path or _sole_payload_path(shape)
     if path not in shape["leaves"]:
@@ -521,7 +553,7 @@ def _ros_publication(model, node) -> dict:
                 "its monitor watches",
             )
         polarity.append(
-            _publish_field(
+            publish_field(
                 shape,
                 str(graph.value(row, NS_MM_ROS["field-path"]) or ""),
                 str(graph.value(row, RDF.value)),

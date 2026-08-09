@@ -134,7 +134,7 @@ def generate_ir(manifest_path) -> dict:
             motions,
             resources.ros_joint_states(platform, platform_config, robots.serial_chains),
             action_clients,
-            communication.behaviour_server(model, fsm),
+            communication.action_server(model, fsm),
         ),
     }
 
@@ -200,30 +200,28 @@ def _coordination_section(motions, fsm, fsm_meta) -> dict:
 
 
 def _communication_section(
-    introspection, motions, joint_states, action_clients=(), behaviour=None
+    introspection, motions, joint_states, action_clients=(), server=None
 ) -> dict:
     """What leaves the loop: the frame log, and the ROS topics, goals and results the model asks for."""
     section = {"introspection": introspection}
     publishers = communication.ros_publishers(motions)
-    if not publishers and joint_states is None and not action_clients and behaviour is None:
+    if not publishers and joint_states is None and not action_clients and server is None:
         return section
     packages = {publisher["pkg"] for publisher in publishers}
     ros = {"publishers": publishers, "node_name": "motion_spec_monitor"}
     # A run belongs to a scenario where a message carries one, and always where a goal names it.
-    if any(publisher["auto_context_id"] for publisher in publishers) or behaviour is not None:
+    if any(publisher["auto_context_id"] for publisher in publishers) or server is not None:
         ros["scenario_context_id"] = True
-    if behaviour is not None:
-        ros["behaviour_server"] = behaviour
-        packages.update(communication.BEHAVIOUR_PACKAGES)
+    if server is not None:
+        ros["action_server"] = server
+        packages.update(server["packages"])
     if joint_states is not None:
         ros["joint_states"] = joint_states
         packages.add("sensor_msgs")
     if action_clients:
         ros["action_clients"] = action_clients
-        # The result carries vision_msgs detections and the status carries action_msgs
-        # constants, whichever package defines the action itself.
-        packages.update({client["pkg"] for client in action_clients})
-        packages.update({"action_msgs", "vision_msgs"})
+        # Whatever the goal and the result reach into, not just the package the action lives in.
+        packages.update(pkg for client in action_clients for pkg in client["packages"])
     ros["packages"] = sorted(packages)
     section["ros"] = ros
 

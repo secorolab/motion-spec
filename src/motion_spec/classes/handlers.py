@@ -196,6 +196,9 @@ class RosPublication:
     has_violated: bool = False
     auto_time: list[str] = field(default_factory=list)
     auto_context_id: list[str] = field(default_factory=list)
+    # Occurrence form: the payload field the monitor's event IRI is written into, instead of
+    # authored field rows. The event itself is the monitor's -- it is what fires.
+    occurrence_path: str | None = None
 
 
 Monitor = LevelMonitor | EdgeMonitor

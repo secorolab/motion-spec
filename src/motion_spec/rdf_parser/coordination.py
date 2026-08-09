@@ -455,6 +455,36 @@ def _publish_field(shape: dict, path: str, text: str) -> dict:
     return {"path": path, "cpp_value": _cpp_value(shape, path, text)}
 
 
+def _occurrence_path(model, node, event, shape: dict) -> str:
+    """The payload field an occurrence writes the event's IRI into.
+
+    Resolved the same way the sugar form resolves its field, so the message type decides what an
+    occurrence looks like rather than the generator assuming a field name.
+
+    Raises:
+        ConstraintViolation: the member is not the event the monitor triggers, or the field the
+            message offers cannot hold an IRI.
+    """
+    triggered = model.graph.value(node, CSTR_HDL["event"])
+    if triggered != event:
+        raise ConstraintViolation(
+            "communication",
+            f"monitor '{model.id(node)}' publishes occurrences of '{event}', which is not the "
+            f"event it triggers ('{triggered}')",
+        )
+    path = _sole_payload_path(shape)
+    element, _owner = shape["leaves"][path]
+    if element not in _STRING_TYPES:
+        raise ConstraintViolation(
+            "communication",
+            f"monitor '{model.id(node)}' publishes an occurrence on '{shape['type_name']}', "
+            f"whose field '{path}' is a '{element}'; an occurrence carries the event's IRI, so "
+            "the message must offer a string to hold it",
+        )
+
+    return path
+
+
 def _ros_publication(model, node) -> dict:
     """What a monitor publishes, when the model asks it to publish at all.
 
@@ -471,8 +501,14 @@ def _ros_publication(model, node) -> dict:
     watched = set(graph.objects(node, CSTR_HDL["constraint"]))
     on_satisfied: list[dict] = []
     on_violated: list[dict] = []
+    occurrence_path = None
 
     for row in sorted(graph.objects(node, RDFS.member)):
+        # A member with no authored value is not a field row: it is the event this monitor
+        # triggers, published as an occurrence.
+        if graph.value(row, RDF.value) is None:
+            occurrence_path = _occurrence_path(model, node, row, shape)
+            continue
         conditions = set(graph.objects(row, CSTR_EXT["has-constraint"]))
         if not conditions:
             polarity = on_violated
@@ -506,6 +542,7 @@ def _ros_publication(model, node) -> dict:
             has_violated=bool(on_violated),
             auto_time=sorted(path for path, kind in auto.items() if kind == "time"),
             auto_context_id=sorted(path for path, kind in auto.items() if kind == "context_id"),
+            occurrence_path=occurrence_path,
         )
     }
 
@@ -1364,6 +1401,7 @@ def _apply_fsm_wiring(motions, fsm) -> dict:
                 "FSM, so nothing can end them; add an 'until' condition or coordinate the model "
                 "with an FSM",
             )
+        _check_occurrence_publishes(motions)
 
         return meta
 
@@ -1418,8 +1456,30 @@ def _apply_fsm_wiring(motions, fsm) -> dict:
                 fallback.fsm_when_gate_motions.append(motion.id)
 
     _apply_reentry_events(motions, fsm)
+    _check_occurrence_publishes(motions)
 
     return meta
+
+
+def _check_occurrence_publishes(motions) -> None:
+    """An occurrence publishes the event's IRI off the generated FSM's event table.
+
+    Raises:
+        ConstraintViolation: a monitor publishes occurrences of an event the FSM does not
+            declare, so there is no table to read the IRI from.
+    """
+    for motion in motions:
+        for phase in ("when", "while", "until"):
+            for monitor in getattr(motion, f"{phase}_monitors"):
+                ros = getattr(monitor, "ros", None)
+                if ros is None or ros.occurrence_path is None or monitor.fsm_namespace:
+                    continue
+                raise ConstraintViolation(
+                    "coordination",
+                    f"monitor '{monitor.id}' publishes occurrences of '{monitor.event_uri}', "
+                    "which no imported FSM declares; a monitor-owned event has no IRI table to "
+                    "publish from",
+                )
 
 
 def _apply_reentry_events(motions, fsm) -> None:

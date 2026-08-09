@@ -106,8 +106,6 @@ ros-io-members(ros) ::= <<
     std::mutex bhv_goal_mutex;
     std::shared_ptr\<motion_spec::ros::BehaviourGoalHandle\> bhv_staged_goal = nullptr;
     std::atomic\<bool\> bhv_goal_taken{false\};
-    std::shared_ptr\<realtime_tools::RealtimePublisher\<bdd_ros2_interfaces::msg::Event\>\> bhv_events_pub = nullptr;
-    bdd_ros2_interfaces::msg::Event bhv_event_msg{\};
 <endif>
 <ros.publishers:{p |     std::shared_ptr\<realtime_tools::RealtimePublisher\<<p.cpp_type>\>\> <p.pub_id> = nullptr;
     <p.cpp_type> <p.pub_id>_msg{\};}; separator="\n">
@@ -256,10 +254,6 @@ ros-actions-tick(ros) ::= <<
 // the specification it was generated from.
 
 ros-behaviour-setup(server) ::= <<
-    robot.bhv_events_pub =
-        std::make_shared\<realtime_tools::RealtimePublisher\<bdd_ros2_interfaces::msg::Event\>\>(
-            robot.ros_node->create_publisher\<bdd_ros2_interfaces::msg::Event\>(
-                "<server.events_channel>", rclcpp::QoS(10)));
     robot.bhv_server = rclcpp_action::create_server\<motion_spec::ros::BehaviourAction\>(
         robot.ros_node,
         "<server.action_name>",
@@ -366,10 +360,9 @@ ros-publish-tick(coordination, communication) ::= <<
 <ros-actions-tick(communication.ros)>
 >>
 
-// Taking the goal arms the FSM: the loop produces the goal event once, and from then on stamps
-// every message with the scenario the goal names. Exported events are peeked -- never consumed --
-// from the current buffer right before `fsm_dispatch` eats them, so what leaves the process is
-// exactly what drives the run this tick.
+// Taking the goal arms the FSM: the loop produces the goal event once -- only while the FSM
+// sits in a state that reacts to it, since an event lives one tick -- and from then on stamps
+// every message with the scenario the goal names.
 
 ros-behaviour-tick(coordination, server) ::= <<
         if (robot.bhv_goal_mutex.try_lock()) {
@@ -385,12 +378,6 @@ ros-behaviour-tick(coordination, server) ::= <<
             _scenario_context_id = _bhv_goal->get_goal()->scenario_context_id.uuid;
             produce_event(robot.fsm_events, <coordination.fsm.cpp_namespace>::<server.goal_event>);
         \}
-<server.exported:{e |         if (_bhv_goal && consume_event(robot.fsm_events, <coordination.fsm.cpp_namespace>::<e.token>)) {
-            robot.bhv_event_msg.scenario_context_id.uuid = _scenario_context_id;
-            robot.bhv_event_msg.stamp = robot.ros_node->now();
-            robot.bhv_event_msg.uri = <coordination.fsm.cpp_namespace>::EVENT_URIS[<coordination.fsm.cpp_namespace>::<e.token>];
-            robot.bhv_events_pub->try_publish(robot.bhv_event_msg);
-        \}}; separator="\n">
 >>
 
 // The run reached the state the model calls its end, so the behaviour held. A goal whose cancel
@@ -421,8 +408,20 @@ ros-publish-tick-locals(ros) ::= <<
 <endif>
 >>
 
+// An occurrence is the event firing, so it rides the event itself rather than the constraint:
+// one message on the cycle the FSM sees the event, whatever state the motion is in. The URI
+// comes from the FSM's own table, so what a scenario observes is the IRI the model declared.
+
 ros-monitor-publish(motion, monitor) ::= <<
-<if(monitor.ros)>
+<if(monitor.ros.occurrence_path)>
+        if (robot.fsm_events && consume_event(robot.fsm_events, <monitor.fsm_namespace>::<monitor.event_name>)) {
+            robot.<monitor.ros.pub_id>_msg.<monitor.ros.occurrence_path> =
+                <monitor.fsm_namespace>::EVENT_URIS[<monitor.fsm_namespace>::<monitor.event_name>];
+<monitor.ros.auto_time:{p |             robot.<monitor.ros.pub_id>_msg.<p> = robot.ros_node->now();}; separator="\n">
+<monitor.ros.auto_context_id:{p |             robot.<monitor.ros.pub_id>_msg.<p>.uuid = _scenario_context_id;}; separator="\n">
+            robot.<monitor.ros.pub_id>->try_publish(robot.<monitor.ros.pub_id>_msg);
+        \}
+<elseif(monitor.ros)>
         if (<motion.id>_state_instance.active) {
             const bool _satisfied = <monitor-satisfied-expr(monitor)>;
             bool _authored = false;
@@ -487,7 +486,6 @@ ros-shutdown(ros) ::= <<
     robot.joint_states_pub.reset();
 <endif>
 <if(ros.behaviour_server)>
-    robot.bhv_events_pub.reset();
     robot.bhv_server.reset();
 <endif>
     robot.ros_executor.reset();

@@ -128,9 +128,9 @@ def test_the_sugar_needs_a_type_with_exactly_one_payload_field():
         _publication("sensor_msgs/msg/JointState", (WATCHED, "", "0"))
 
 
-def test_publishers_dedupe_by_channel():
-    """Two monitors on one topic share one publisher member, so both fill the same message."""
-    shared = [
+def _publishing_motion(*cpp_types: str):
+    """A motion whose monitors all publish on `/probe`, each carrying its own message type."""
+    monitors = [
         LevelMonitor(
             f"mon-{index}",
             "LevelTriggeredMonitor",
@@ -138,18 +138,35 @@ def test_publishers_dedupe_by_channel():
             None,
             ros=RosPublication(
                 channel="/probe",
-                cpp_type="std_msgs::msg::Bool",
+                cpp_type=cpp_type,
                 include="std_msgs/msg/bool.hpp",
                 pkg="std_msgs",
                 pub_id=f"mon_{index}_pub",
             ),
         )
-        for index in (1, 2)
+        for index, cpp_type in enumerate(cpp_types, start=1)
     ]
-    motion = type("M", (), {"when_monitors": [], "while_monitors": shared, "until_monitors": []})()
+    motion = type(
+        "M", (), {"when_monitors": [], "while_monitors": monitors, "until_monitors": []}
+    )()
+
+    return monitors, motion
+
+
+def test_publishers_dedupe_by_channel():
+    """Two monitors on one topic share one publisher member, so both fill the same message."""
+    monitors, motion = _publishing_motion("std_msgs::msg::Bool", "std_msgs::msg::Bool")
     publishers = ros_publishers([motion])
     assert [publisher["channel"] for publisher in publishers] == ["/probe"]
-    assert {monitor.ros.pub_id for monitor in shared} == {"mon_1_pub"}
+    assert {monitor.ros.pub_id for monitor in monitors} == {"mon_1_pub"}
+
+
+def test_one_channel_published_as_two_message_types_is_rejected():
+    """The shared member is typed once, so the second type could only be written into the
+    first's message."""
+    _monitors, motion = _publishing_motion("std_msgs::msg::Bool", "std_msgs::msg::Float64")
+    with pytest.raises(ConstraintViolation, match="one channel carries one message type"):
+        ros_publishers([motion])
 
 
 def _chain(prefix: str, joints: list[str]):
@@ -201,17 +218,12 @@ FSM = {
 SERVER = URIRef(f"{NS}pick-place-behaviour")
 
 
-def _behaviour(*exported: str) -> Graph:
-    """A behaviour server node and the topic its exported events leave by."""
+def _behaviour(goal_event: str = "E_GOAL") -> Graph:
+    """A behaviour server node: the action it answers, and the event an accepted goal produces."""
     graph = Graph()
     graph.add((SERVER, NS_MM_ROS["type-name"], Literal("bdd_ros2_interfaces/action/Behaviour")))
     graph.add((SERVER, NS_MM_ROS["channel-name"], Literal("pick_place")))
-    graph.add((SERVER, RDFS.member, URIRef(f"{FSM_NS}E_GOAL")))
-    topic = URIRef(f"{SERVER}.events")
-    graph.add((topic, NS_MM_ROS["type-name"], Literal("bdd_ros2_interfaces/msg/Event")))
-    graph.add((topic, NS_MM_ROS["channel-name"], Literal("/bdd/events")))
-    for name in exported:
-        graph.add((topic, RDFS.member, URIRef(f"{FSM_NS}{name}")))
+    graph.add((SERVER, RDFS.member, URIRef(f"{FSM_NS}{goal_event}")))
     return graph
 
 
@@ -220,13 +232,12 @@ def test_a_model_without_a_server_states_none():
 
 
 def test_the_server_carries_the_fsms_own_event_tokens():
-    server = behaviour_server(_model(_behaviour("E_DONE")), FSM)
-    assert server == {
+    """A token, never an index: the generated enum is declaration-ordered, this reader's tables
+    are sorted, so only the symbol survives the crossing."""
+    assert behaviour_server(_model(_behaviour()), FSM) == {
         "action_name": "pick_place",
-        "events_channel": "/bdd/events",
         "goal_event": "E_GOAL",
         "goal_states": ["S_IDLE"],
-        "exported": [{"token": "E_DONE", "uri": f"{FSM_NS}E_DONE"}],
     }
 
 
@@ -235,6 +246,47 @@ def test_an_event_the_fsm_does_not_declare_is_rejected():
         behaviour_server(_model(_behaviour("E_INVENTED")), FSM)
 
 
+def test_a_goal_event_no_reaction_consumes_is_rejected():
+    """Nothing reacts to E_DONE, so an accepted goal would start nothing."""
+    with pytest.raises(ConstraintViolation, match="no FSM reaction"):
+        behaviour_server(_model(_behaviour("E_DONE")), FSM)
+
+
 def test_serving_goals_without_an_fsm_is_rejected():
     with pytest.raises(ConstraintViolation, match="imports no FSM"):
-        behaviour_server(_model(_behaviour("E_DONE")), None)
+        behaviour_server(_model(_behaviour()), None)
+
+
+EVENT = URIRef(f"{FSM_NS}E_DONE")
+
+
+def _occurrence(type_name: str, event=EVENT) -> RosPublication:
+    """Lower a monitor that publishes the event it triggers, rather than authored fields."""
+    graph = Graph()
+    graph.add((MONITOR, NS_MM_ROS["channel-name"], Literal("/bdd/events")))
+    graph.add((MONITOR, NS_MM_ROS["type-name"], Literal(type_name)))
+    graph.add((MONITOR, CSTR_HDL["constraint"], WATCHED))
+    graph.add((MONITOR, CSTR_HDL["event"], EVENT))
+    graph.add((MONITOR, RDFS.member, event))
+    return _ros_publication(_model(graph), MONITOR)["ros"]
+
+
+def test_an_occurrence_resolves_its_field_off_the_message_type():
+    """The payload field is the message's own sole leaf, not a name the generator assumes; the
+    authored-row branches stay empty, since the event is the whole payload."""
+    ros = _occurrence("bdd_ros2_interfaces/msg/Event")
+    assert ros.occurrence_path == "uri"
+    assert (ros.on_satisfied, ros.on_violated) == ([], [])
+    assert (ros.has_satisfied, ros.has_violated) == (False, False)
+    assert ros.auto_time == ["stamp"]
+    assert ros.auto_context_id == ["scenario_context_id"]
+
+
+def test_an_occurrence_of_an_event_the_monitor_does_not_trigger_is_rejected():
+    with pytest.raises(ConstraintViolation, match="not the event it triggers"):
+        _occurrence("bdd_ros2_interfaces/msg/Event", event=URIRef(f"{FSM_NS}E_OTHER"))
+
+
+def test_an_occurrence_needs_a_field_that_can_hold_an_iri():
+    with pytest.raises(ConstraintViolation, match="must offer a string"):
+        _occurrence("std_msgs/msg/Float64")

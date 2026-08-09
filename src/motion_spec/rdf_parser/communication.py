@@ -32,11 +32,10 @@ from motion_spec.rdf_parser.model import identifier
 _SPATIAL_SLOT_KINDS = {"Pose": "poses", "VelocityTwist": "twists", "Wrench": "wrenches"}
 _MONITOR_PHASES = ("when", "while", "until")
 # A behaviour server is found by the contract it answers, not by a class of its own: the goal a
-# robbdd scenario sends, and the message its exported events leave on.
+# robbdd scenario sends.
 _BEHAVIOUR_ACTION_TYPE = "bdd_ros2_interfaces/action/Behaviour"
-_BEHAVIOUR_EVENT_TYPE = "bdd_ros2_interfaces/msg/Event"
 # rclcpp_action carries the server; the interface package carries the goal, the result and the
-# exported event message.
+# event message a monitor's occurrence rides.
 BEHAVIOUR_PACKAGES = ("rclcpp_action", "bdd_ros2_interfaces")
 # The gain fields a controller row reports, in the order they are emitted.
 _GAIN_ROW_FIELDS = (
@@ -564,11 +563,15 @@ def ros_publishers(motions) -> list:
 
     Codegen links rclcpp and sets up publishers only when a model publishes at all, so a model
     with none contributes nothing rather than an empty section.
+
+    Raises:
+        ConstraintViolation: two monitors publish one channel as different message types, so
+            the one member they share could only be typed as one of them.
     """
     by_channel = {}
     for ros in ros_publications(motions):
         # One channel is one publisher: monitors that share a topic share the member too.
-        ros.pub_id = by_channel.setdefault(
+        publisher = by_channel.setdefault(
             ros.channel,
             {
                 "pub_id": ros.pub_id,
@@ -579,7 +582,14 @@ def ros_publishers(motions) -> list:
                 "auto_time": ros.auto_time,
                 "auto_context_id": ros.auto_context_id,
             },
-        )["pub_id"]
+        )
+        if publisher["cpp_type"] != ros.cpp_type:
+            raise ConstraintViolation(
+                "communication",
+                f"channel '{ros.channel}' is published as both '{publisher['cpp_type']}' and "
+                f"'{ros.cpp_type}'; one channel carries one message type",
+            )
+        ros.pub_id = publisher["pub_id"]
 
     return list(by_channel.values())
 
@@ -678,14 +688,12 @@ def _add_goal_status_slots(model, shared_data, rows, seen, action_clients) -> No
 def behaviour_server(model, fsm) -> dict | None:
     """The BDD action server the model declares, or None when it declares none.
 
-    The server is the node whose type-name is the Behaviour contract; its one member is the event
-    an accepted goal produces, and the topic carrying the Event contract lists the events a
-    scenario may observe. Every index is the FSM's own event order, so the program produces and
-    reads the numbers coord2b was generated against.
+    The server is the node whose type-name is the Behaviour contract; its one member is the
+    event an accepted goal produces. What a scenario observes rides the monitor publishers.
 
     Raises:
         ConstraintViolation: the model serves goals without importing an FSM, or names an event
-            that FSM does not declare -- either way nothing could start or be observed
+            that FSM does not declare or react to -- either way nothing could start
     """
     graph = model.graph
     node = next(iter(graph.subjects(NS_MM_ROS["type-name"], Literal(_BEHAVIOUR_ACTION_TYPE))), None)
@@ -698,32 +706,21 @@ def behaviour_server(model, fsm) -> dict | None:
             "accepted goal has nothing to start",
         )
 
-    token_by_uri = {uri: token for token, uri in fsm["event_uris"].items()}
-
-    # Tokens, never raw indices: the generated FSM enum is declaration-ordered while this
-    # reader's tables are sorted, so only the enum symbol is stable across the two.
-    def event_row(uri) -> dict:
-        token = token_by_uri.get(str(uri))
-        if token is None:
-            raise ConstraintViolation(
-                "communication",
-                f"'{model.id(node)}' names event '{uri}', which FSM '{fsm['name']}' does not "
-                "declare",
-            )
-        return {"token": token, "uri": str(uri)}
-
     goal_event = next(iter(graph.objects(node, RDFS.member)), None)
     if goal_event is None:
         raise ConstraintViolation(
             "communication", f"'{model.id(node)}' names no event for an accepted goal to produce"
         )
-    topic = next(iter(graph.subjects(NS_MM_ROS["type-name"], Literal(_BEHAVIOUR_EVENT_TYPE))), None)
-    if topic is None:
+    # Tokens, never raw indices: the generated FSM enum is declaration-ordered while this
+    # reader's tables are sorted, so only the enum symbol is stable across the two.
+    token_by_uri = {uri: token for token, uri in fsm["event_uris"].items()}
+    goal_token = token_by_uri.get(str(goal_event))
+    if goal_token is None:
         raise ConstraintViolation(
-            "communication", f"'{model.id(node)}' states no channel to export its events on"
+            "communication",
+            f"'{model.id(node)}' names event '{goal_event}', which FSM '{fsm['name']}' does "
+            "not declare",
         )
-
-    goal_token = event_row(goal_event)["token"]
     # An FSM event lives one tick, so the goal event is produced only when the FSM sits in a
     # state that reacts to it -- a goal accepted during startup must not fire into S_START.
     transitions = {row["id"]: row for row in fsm["transitions_table"]}
@@ -741,10 +738,8 @@ def behaviour_server(model, fsm) -> dict | None:
 
     return {
         "action_name": str(graph.value(node, NS_MM_ROS["channel-name"])),
-        "events_channel": str(graph.value(topic, NS_MM_ROS["channel-name"])),
         "goal_event": goal_token,
         "goal_states": armed_states,
-        "exported": [event_row(uri) for uri in sorted(graph.objects(topic, RDFS.member))],
     }
 
 

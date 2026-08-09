@@ -242,6 +242,10 @@ class MotionUnit:
     # the exit block: JSON empty lists are truthy in the ST4 build.
     action_clients: list = field(default_factory=list)
     has_action_clients: bool = False
+    # Events whose reaction self-transitions on this motion's state: peeking one re-enters the
+    # motion, so entry re-sends its goals (event-driven perception retry).
+    reentry_events: list = field(default_factory=list)
+    has_reentry_events: bool = False
 
     # This motion's introspection index: the single index space the frame log's active_motion,
     # the generated sample switch and schema["by_motion"] all share.

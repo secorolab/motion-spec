@@ -86,6 +86,7 @@ def generate_ir(manifest_path) -> dict:
     for motion in motions:
         motion.action_clients = clients_by_motion.get(motion.id, [])
         motion.has_action_clients = bool(motion.action_clients)
+    communication.act_reentry_events(motions, fsm)
     shared_data = quantities.filter_shared_data(
         data_structures,
         robots.schedule_steps + handler_steps,

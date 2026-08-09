@@ -675,6 +675,28 @@ def _add_goal_status_slots(model, shared_data, rows, seen, action_clients) -> No
         _add_member(model, shared_data, rows, seen, member, None, parent, "status")
 
 
+def act_reentry_events(motions, fsm) -> None:
+    """Event-driven retry: an event whose reaction is a self-transition on the state of a
+    motion that owns acts re-enters that motion, so entry re-sends its goals.
+    """
+    tables = fsm or {}
+    self_state = {
+        row["id"]: row["from_state"]
+        for row in tables.get("transitions_table", [])
+        if row["from_state"] == row["to_state"]
+    }
+    by_state: dict = {}
+    for row in tables.get("reactions_table", []):
+        state = self_state.get(row["do_transition"])
+        if state is not None:
+            by_state.setdefault(state, set()).add(row["when_event"])
+    for motion in motions:
+        events = sorted(by_state.get(motion.fsm_state, ())) if motion.action_clients else []
+        motion.reentry_events = events
+        # ST4 renders empty lists truthy, so the template reads this boolean instead.
+        motion.has_reentry_events = bool(events)
+
+
 def behaviour_server(model, fsm) -> dict | None:
     """The BDD action server the model declares, or None when it declares none.
 

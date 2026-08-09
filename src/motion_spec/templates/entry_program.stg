@@ -122,7 +122,7 @@ int main(int argc, char **argv) {
 <endif>
             break;
         \}
-<if(communication.ros.behaviour_server)>
+<coordination.motions:{m | <fsm-motion-reentry(m, coordination.fsm)>}><if(communication.ros.behaviour_server)>
 <ros-behaviour-tick(coordination, communication.ros.behaviour_server)>
 <endif>
 <if(coordination.fsm.step_event)>
@@ -311,4 +311,17 @@ struct robot_io {
 struct shared_data {
 <computation.shared_data:{var | <indented-shared-member(var)>}; separator="\n">
 };
+>>
+
+// A reaction routing a state back onto itself re-enters that state's acting motion: entry
+// re-arms its goals, so a model retries perception by firing the event.
+
+fsm-motion-reentry(m, fsm) ::= <<
+<if(m.has_reentry_events)>
+        if (fsm->currentStateIndex == <fsm.cpp_namespace>::<m.fsm_state>
+                && (<m.reentry_events:{e | robot.fsm_events->currentEvents[<fsm.cpp_namespace>::<e>]}; separator=" || ">)) {
+<m.action_clients:{c | <ros-action-cancel(c)>}; separator="\n">
+            <m.id>_state_instance.active = false;
+        \}
+<endif>
 >>

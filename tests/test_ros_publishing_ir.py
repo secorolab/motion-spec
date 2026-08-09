@@ -15,7 +15,6 @@ from motion_spec_dsl.rdf_parser.vocab import CSTR_EXT, CSTR_HDL
 from rdf_utils.constraints import ConstraintViolation
 from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import RDF, RDFS
-from rosidl_pycommon import convert_camel_case_to_lower_case_underscore
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 
 from motion_spec.classes.handlers import LevelMonitor, RosPublication
@@ -23,6 +22,16 @@ from motion_spec.rdf_parser.communication import action_server, ros_publishers
 from motion_spec.rdf_parser.coordination import _message_shape, _ros_publication
 from motion_spec.rdf_parser.model import Model
 from motion_spec.rdf_parser.resources import ros_joint_states
+
+from conftest import requires_interfaces
+
+pytestmark = requires_interfaces(
+    "bdd_ros2_interfaces/msg/TrinaryStamped", "bdd_ros2_interfaces/action/Behaviour"
+)
+# A mark skips the cases, not the import, so this one has to skip the module itself.
+convert_camel_case_to_lower_case_underscore = pytest.importorskip(
+    "rosidl_pycommon"
+).convert_camel_case_to_lower_case_underscore
 
 NS = "https://example.test/"
 MONITOR = URIRef(f"{NS}mon-x")

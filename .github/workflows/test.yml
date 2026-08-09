@@ -16,14 +16,18 @@ jobs:
         with:
           python-version: "3.12"
 
-      # rdf_utils and rec are workspace siblings, not on PyPI, so they are installed
-      # from git. pyshacl/protobuf cover the validation/introspection extras.
+      # Workspace siblings, none on PyPI. The DSL packages are what parse a .robmot,
+      # and most test modules import one, so leaving them out fails collection rather
+      # than a test. pyshacl/protobuf cover the validation/introspection extras.
       - name: Install workspace siblings
         run: |
           pip install pytest pyshacl protobuf click
           pip install \
             "git+https://github.com/secorolab/rdf-utils.git@main" \
-            "git+https://github.com/secorolab/rec.git@dev"
+            "git+https://github.com/secorolab/rec.git@dev" \
+            "git+https://github.com/secorolab/scene-dsl.git@main" \
+            "git+https://github.com/secorolab/coord-dsl.git@main" \
+            "git+https://github.com/secorolab/motion-spec-dsl.git@dev"
 
       - name: Install motion_spec
         run: pip install -e . --no-deps

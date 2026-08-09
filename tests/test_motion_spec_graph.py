@@ -29,6 +29,10 @@ from rdflib.namespace import RDF
 from motion_spec.rdf_parser.ir import generate_ir
 from motion_spec.rdf_parser.model import load_model
 
+from conftest import requires_interfaces
+
+pytestmark = requires_interfaces("aruco_perception/action/LocateObjects")
+
 MODELS = Path(__file__).parents[2] / "motion-spec-dsl" / "models"
 METAMODELS = Path(__file__).resolve().parents[2] / "metamodels"
 

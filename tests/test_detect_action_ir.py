@@ -29,6 +29,10 @@ from motion_spec.rdf_parser.communication import _act_motion, _act_status_slot
 from motion_spec.rdf_parser.coordination import constraint_evaluator, evaluator_term
 from motion_spec.rdf_parser.model import Model
 
+from conftest import requires_interfaces
+
+pytestmark = requires_interfaces("aruco_perception/action/LocateObjects")
+
 NS = "https://example.test/"
 MODEL = Path(__file__).parents[2] / "bdd_collab_bhv_cpp" / "models" / "detect_pick_single"
 

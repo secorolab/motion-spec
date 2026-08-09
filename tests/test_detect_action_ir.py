@@ -4,7 +4,8 @@ kinematics -- writes.
 
 The graph cases build the act and its status slot by hand; the model case lowers the maintained
 `detect_pick_single` model, which is the only place the whole chain (act -> written pose -> the
-chain that no longer computes it) can be read at once.
+chain that no longer computes it) can be read at once. It lives with the BDD package that drives
+it, since a scenario goal and a perception mock are what it needs to run.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ from motion_spec.rdf_parser.coordination import constraint_evaluator, evaluator_
 from motion_spec.rdf_parser.model import Model
 
 NS = "https://example.test/"
-MODEL = Path(__file__).parents[2] / "motion-spec-dsl" / "models" / "detect_pick_single"
+MODEL = Path(__file__).parents[2] / "bdd_collab_bhv_cpp" / "models" / "detect_pick_single"
 
 
 def _model(graph: Graph) -> Model:

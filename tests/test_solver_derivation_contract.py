@@ -26,6 +26,10 @@ from motion_spec.rdf_parser.ir import generate_ir
 MODELS = Path(__file__).parents[2] / "motion-spec-dsl" / "models"
 METAMODELS = Path(__file__).resolve().parents[2] / "metamodels"
 
+from conftest import requires_workspace
+
+pytestmark = requires_workspace(MODELS, METAMODELS)
+
 
 @pytest.fixture(scope="module")
 def pick_place_single_jsonld(tmp_path_factory: pytest.TempPathFactory) -> Path:

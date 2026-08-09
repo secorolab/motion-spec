@@ -13,6 +13,10 @@ import pytest
 from motion_spec.rdf_parser.ir import generate_ir
 
 MODELS = Path(__file__).parents[2] / "motion-spec-dsl" / "models"
+
+from conftest import requires_workspace
+
+pytestmark = requires_workspace(MODELS)
 REAL_WORLD_MODELS = ["real_demo_2f85", "real_demo_monitor"]
 
 

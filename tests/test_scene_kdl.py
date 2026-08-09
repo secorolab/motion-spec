@@ -16,6 +16,10 @@ from motion_spec.generation.scene_kdl import (
 
 MODELS = Path(__file__).parents[2] / "motion-spec-dsl" / "models"
 
+from conftest import requires_workspace
+
+pytestmark = requires_workspace(MODELS)
+
 
 def test_scene_kdl_adapter_derives_solver_chains_and_writes_header(tmp_path: Path) -> None:
     scene = MODELS / "pick_place_single" / "pick_place_single.scenex"

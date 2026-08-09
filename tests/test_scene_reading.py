@@ -25,6 +25,10 @@ from motion_spec.rdf_parser.model import load_model
 from motion_spec.rdf_parser.resources import kinematic_adjacency, mapped_targets
 
 MODELS = Path(__file__).parents[2] / "motion-spec-dsl" / "models"
+
+from conftest import requires_workspace
+
+pytestmark = requires_workspace(MODELS)
 MODEL_NAMES = ["pick_place_single", "pick_place_dual", "admittance_arc_single"]
 
 

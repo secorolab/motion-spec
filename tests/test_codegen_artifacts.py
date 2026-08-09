@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from motion_spec.setup import find_stst
 from rdf_utils.resolver import IriToFileResolver, install_resolver
 from rdflib import Dataset, Graph, URIRef
 from rdflib.namespace import PROV, RDF
@@ -498,11 +499,13 @@ def test_codegen_refuses_a_model_that_declares_no_fsm(tmp_path: Path) -> None:
 
 
 def test_provenance_document_is_jsonld_and_prov_shacl_conformant(tmp_path: Path) -> None:
+    metamodels = Path(__file__).resolve().parents[2] / "metamodels"
+    if not metamodels.exists():
+        pytest.skip("metamodels is not in this checkout")
     pyshacl = __import__("pyshacl")
     seed = build_provenance_document(_sample_ir(), tmp_path)
     path = tmp_path / "provenance.ld.json"
     path.write_text(json.dumps(seed))
-    metamodels = Path(__file__).resolve().parents[2] / "metamodels"
     install_resolver(
         IriToFileResolver(
             {"https://secorolab.github.io/metamodels/": str(metamodels)}, download=False
@@ -623,6 +626,8 @@ def test_generated_blackboard_holds_only_contracted_members(tmp_path: Path) -> N
     """Every `struct shared_data` member is an `ir["computation"]["shared_data"]` id, so it
     carries a producer/consumer contract; anything else belongs in a struct that is not the
     blackboard."""
+    if find_stst() is None:
+        pytest.skip("no stst; run `motion-spec setup`")
     shared_data = [
         {"id": "clock_time_s", "type": "Quantity"},
         {"id": "err_x", "type": "Quantity"},

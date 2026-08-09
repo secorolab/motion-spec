@@ -15,6 +15,10 @@ from motion_spec.generation.pipeline import generate_model
 
 MODEL = Path(__file__).parents[2] / "motion-spec-dsl" / "models" / "pick_place_single"
 
+from conftest import requires_workspace
+
+pytestmark = requires_workspace(MODEL)
+
 
 def test_two_generations_of_one_model_lower_to_the_same_ir(tmp_path):
     # Same generation dir both times: ir.json records the manifest's absolute path, which is

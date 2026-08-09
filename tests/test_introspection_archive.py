@@ -280,6 +280,8 @@ def test_generation_owned_run_does_not_copy_static_artifacts(tmp_path: Path) -> 
 
 
 def test_runtime_shacl_rejects_unanchored_occurrence(tmp_path: Path) -> None:
+    if not (Path(__file__).resolve().parents[2] / "metamodels").exists():
+        pytest.skip("metamodels is not in this checkout")
     path = tmp_path / "runtime.ttl"
     path.write_text(
         """

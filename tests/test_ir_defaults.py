@@ -589,10 +589,13 @@ def test_an_authored_band_rides_the_constraint_term() -> None:
 @pytest.fixture(scope="module")
 def dual_ir(tmp_path_factory) -> dict:
     """The dual-arm IR, the only maintained model whose runtimes carry a scoping prefix."""
+    model = Path(__file__).parents[2] / "motion-spec-dsl" / "models" / "pick_place_dual"
+    if not model.exists():
+        pytest.skip("motion-spec-dsl is not in this checkout")
     outdir = tmp_path_factory.mktemp("pick_place_dual") / "generated" / "model"
     subprocess.run(
         ["textx", "generate", "pick_place_dual.robmot", "--target", "jsonld", "-o", str(outdir)],
-        cwd=Path(__file__).parents[2] / "motion-spec-dsl" / "models" / "pick_place_dual",
+        cwd=model,
         check=True,
     )
     return generate_ir(outdir / "pick_place_dual-app.ld.json")

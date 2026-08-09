@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from conftest import requires_workspace
 
 TEMPLATES = Path(__file__).resolve().parents[1] / "src" / "motion_spec" / "templates"
 ROBIF2B = (TEMPLATES / "backend_robif2b.stg").read_text()
@@ -85,6 +86,8 @@ def test_no_deployment_detail_is_authored_into_a_template() -> None:
 MODELS = Path(__file__).parents[2] / "motion-spec-dsl" / "models"
 # One per route the gripper can take: its own serial line, or the arm's interconnect.
 REAL_WORLD_MODELS = ("real_demo_monitor", "real_demo_2f85")
+
+pytestmark = requires_workspace(MODELS)
 
 
 @pytest.mark.parametrize("name", REAL_WORLD_MODELS)

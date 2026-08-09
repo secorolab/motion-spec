@@ -641,6 +641,9 @@ def ros_action_clients(model) -> list:
             continue
         type_name = str(graph.value(act, NS_MM_ROS["type-name"]) or "")
         shape = coordination.action_shape(type_name)
+        detect = coordination.detect_shape(
+            type_name, str(graph.value(act, NS_MM_ROS["field-path"]) or "")
+        )
         status_slot = _act_status_slot(model, act)
         rows = written[str(act)]
         clients.append(
@@ -657,8 +660,7 @@ def ros_action_clients(model) -> list:
                 "motion": _act_motion(model, status_slot),
                 "target_iris": sorted({row["target_iri"] for row in rows}),
                 "written_poses": rows,
-                # A result is complete only when it carries every pose the goal asked for.
-                "pose_count": len(rows),
+                **detect,
             }
         )
 

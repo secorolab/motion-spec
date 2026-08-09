@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 
 import pytest
+from motion_spec.rdf_parser.coordination import detect_shape
 from motion_spec_dsl.rdf_parser.vocab import CSTR, CSTR_HDL, MOT
 from rdf_utils.constraints import ConstraintViolation
 from rdflib import Graph, Literal, URIRef
@@ -148,3 +149,40 @@ def test_no_chain_computes_a_pose_the_detect_result_writes(detect_ir):
     assert "pose_cube_base" not in outputs
     dataflow = detect_ir["communication"]["introspection"]["dataflow"]
     assert dataflow["pose_cube_base"]["producer"] == {"kind": "action", "id": "locate_cube"}
+
+
+def test_the_client_reads_every_path_off_the_action_it_names(detect_ir):
+    """Only the pose is stated by the model, because only it is ambiguous: a detection reaches
+    one through its hypotheses and another through its bounding box."""
+    (client,) = detect_ir["communication"]["ros"]["action_clients"]
+    assert client["targets_path"] == "target_iris"
+    assert client["detections_path"] == "detections.detections"
+    assert client["id_path"] == "id"
+    assert client["frame_path"] == "header.frame_id"
+    assert client["pose_path"] == "results[0].pose.pose"
+    assert client["pose_container"] == "results"
+
+
+def test_an_act_that_says_no_pose_is_rejected():
+    """`results` and `bbox` both reach a pose, so the act has to say which answers the question."""
+    with pytest.raises(ConstraintViolation, match="reaches more than one pose"):
+        detect_shape("aruco_perception/action/LocateObjects", "")
+
+
+def test_a_pose_read_from_a_field_the_detection_does_not_repeat_is_rejected():
+    with pytest.raises(ConstraintViolation, match="no repeated message field 'bbox'"):
+        detect_shape("aruco_perception/action/LocateObjects", "bbox.center")
+
+
+def test_a_pose_field_the_hypothesis_does_not_carry_is_rejected():
+    with pytest.raises(ConstraintViolation, match="no message field 'invented'"):
+        detect_shape("aruco_perception/action/LocateObjects", "results.invented")
+
+
+def test_the_last_hop_to_the_pose_is_derived():
+    """The model names `pose`, which is a covariance wrapper; the pose inside it is the only one
+    down there, so the generator reaches it rather than the model spelling it."""
+    assert (
+        detect_shape("aruco_perception/action/LocateObjects", "results.pose")["pose_path"]
+        == "results[0].pose.pose"
+    )

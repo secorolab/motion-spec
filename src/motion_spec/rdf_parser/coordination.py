@@ -298,6 +298,12 @@ _AUTO_TIME_TYPE = "builtin_interfaces/Time"
 _AUTO_CONTEXT_ID = ("scenario_context_id", "unique_identifier_msgs/UUID")
 # rosidl spells these field types; anything else a model states must read as a number.
 _STRING_TYPES = ("string", "wstring")
+# What a detection states about itself rather than about the object: the frame it arrived in.
+_HEADER_TYPE = "std_msgs/Header"
+_FRAME_FIELD = "frame_id"
+# What a detect act writes: a pose in the world. Reached by descent, so the model names the
+# field that carries it rather than the whole path through it.
+_POSE_TYPE = "geometry_msgs/Pose"
 
 
 def _element_type(field_type: str) -> tuple[str, bool]:
@@ -341,22 +347,7 @@ def action_shape(type_name: str) -> dict:
         ConstraintViolation: the ROS distribution is not sourced, or the action package is not
             on AMENT_PREFIX_PATH.
     """
-    try:
-        from rosidl_runtime_py.utilities import get_action
-    except ImportError as error:
-        raise ConstraintViolation(
-            "communication",
-            "sending a ROS action goal needs rosidl_runtime_py; source the ROS distribution "
-            "before generating",
-        ) from error
-    try:
-        action = get_action(type_name)
-    except (ValueError, ModuleNotFoundError, AttributeError) as error:
-        raise ConstraintViolation(
-            "communication",
-            f"action type '{type_name}' does not resolve; build and source the workspace so "
-            "its interface package is on AMENT_PREFIX_PATH",
-        ) from error
+    action = _action_class(type_name)
     package, cpp_type, include = _cpp_names(action)
 
     goal = _shape_of(action.Goal, f"{type_name} goal", package, include)
@@ -396,6 +387,167 @@ def _cpp_names(message) -> tuple[str, str, str]:
         f"{package}::{subfolder}::{message.__name__}",
         f"{package}/{subfolder}/{stem}.hpp",
     )
+
+
+def _action_class(type_name: str):
+    """The rosidl-generated Python class for an action type, or the error that names the fix."""
+    try:
+        from rosidl_runtime_py.utilities import get_action
+    except ImportError as error:
+        raise ConstraintViolation(
+            "communication",
+            "sending a ROS action goal needs rosidl_runtime_py; source the ROS distribution "
+            "before generating",
+        ) from error
+    try:
+        return get_action(type_name)
+    except (ValueError, ModuleNotFoundError, AttributeError) as error:
+        raise ConstraintViolation(
+            "communication",
+            f"action type '{type_name}' does not resolve; build and source the workspace so "
+            "its interface package is on AMENT_PREFIX_PATH",
+        ) from error
+
+
+def detect_shape(type_name: str, pose_path: str) -> dict:
+    """How a detect act reads one action: where the goal names the objects it asks about, where
+    the result holds its detections, and per detection which object it is, which frame it arrived
+    in, and the pose it reports.
+
+    Only the pose is stated by the model, because only it is ambiguous: a detection may reach
+    several poses (a hypothesis carries one, a bounding box another), so which one answers the
+    question is the model's to say. Everything else the message type settles on its own.
+
+    Raises:
+        ConstraintViolation: the action does not offer exactly one of what a detect act needs,
+            or the fields the model named are not a repeated field and a pose within it.
+    """
+    action = _action_class(type_name)
+    goal_targets = [
+        name for name, element, many in _fields(action.Goal) if many and element in _STRING_TYPES
+    ]
+    detections_path, detection = _repeated_leaf(action.Result, f"{type_name} result")
+    headers = [name for name, element, _many in _fields(detection) if element == _HEADER_TYPE]
+    element_name = _type_name_of(detection)
+    ids = [
+        name for name, element, many in _fields(detection) if not many and element in _STRING_TYPES
+    ]
+
+    return {
+        "targets_path": _sole(goal_targets, "repeated string fields", f"{type_name} goal"),
+        "detections_path": detections_path,
+        "id_path": _sole(ids, "string fields", element_name),
+        "frame_path": f"{_sole(headers, f"'{_HEADER_TYPE}' fields", element_name)}.{_FRAME_FIELD}",
+        "pose_path": _detection_pose(detection, element_name, pose_path),
+        # The repeated field the pose is read out of, so a detection carrying none is skipped
+        # rather than indexed into.
+        "pose_container": pose_path.partition(".")[0],
+    }
+
+
+def _detection_pose(detection, element_name: str, pose_path: str) -> str:
+    """The accessor from one detection to the pose it reports, off the two fields the model named.
+
+    Raises:
+        ConstraintViolation: the model states no pose, names a field the detection does not
+            repeat, or names one holding no single pose.
+    """
+    container, _, field = pose_path.partition(".")
+    if not field:
+        raise ConstraintViolation(
+            "communication",
+            f"'{element_name}' reaches more than one pose, so the act must say which one it "
+            "reads: `<field> from <container>`",
+        )
+    entries = [
+        element
+        for name, element, many in _fields(detection)
+        if name == container and many and "/" in element
+    ]
+    if not entries:
+        raise ConstraintViolation(
+            "communication",
+            f"'{element_name}' has no repeated message field '{container}' for a pose to come from",
+        )
+    entry = _message_class(entries[0])
+    carried = [element for name, element, many in _fields(entry) if name == field and not many]
+    if not carried or "/" not in carried[0]:
+        raise ConstraintViolation(
+            "communication",
+            f"'{_type_name_of(entry)}' has no message field '{field}' to read a pose from",
+        )
+    # The named field may carry the pose rather than be it -- a covariance wrapper does -- so the
+    # last hop is derived, and it is only a hop when it is the one pose down there.
+    descent = _descend_to(_message_class(carried[0]), _POSE_TYPE, f"{container}.{field}")
+
+    return f"{container}[0].{field}{'.' + descent if descent else ''}"
+
+
+def _sole(candidates: list, what: str, where: str):
+    """The one candidate, or the error naming what was offered instead."""
+    if len(candidates) != 1:
+        offered = ", ".join(sorted(str(c) for c in candidates)) or "none"
+        raise ConstraintViolation(
+            "communication", f"'{where}' offers {len(candidates)} {what}: {offered}"
+        )
+    return candidates[0]
+
+
+def _fields(message) -> list[tuple[str, str, bool]]:
+    """`(name, element type, repeated)` per field the message declares."""
+    return [
+        (name, *_element_type(field_type))
+        for name, field_type in message.get_fields_and_field_types().items()
+    ]
+
+
+def _repeated_leaf(message, type_name: str) -> tuple[str, object]:
+    """The one repeated field the message reaches, and the class one entry carries.
+
+    Descends through nested messages so a result that wraps its list in an array message -- the
+    `vision_msgs` convention -- is found at whatever depth it sits.
+    """
+    found = []
+
+    def walk(node, prefix: str) -> None:
+        for name, element, many in _fields(node):
+            path = f"{prefix}{name}"
+            if many and "/" in element:
+                found.append((path, _message_class(element)))
+            elif not many and "/" in element and element != _HEADER_TYPE:
+                walk(_message_class(element), f"{path}.")
+
+    walk(message, "")
+
+    return _sole(found, "repeated message fields", type_name)
+
+
+def _descend_to(message, wanted: str, where: str) -> str:
+    """The path from `message` down to the one field of type `wanted`, empty if it is already it."""
+    if getattr(message, "__module__", "").split(".")[0:2] and _type_name_of(message) == wanted:
+        return ""
+    found = []
+
+    def walk(node, prefix: str) -> None:
+        for name, element, many in _fields(node):
+            if many or "/" not in element:
+                continue
+            path = f"{prefix}{name}"
+            if element == wanted:
+                found.append(path)
+            else:
+                walk(_message_class(element), f"{path}.")
+
+    walk(message, "")
+
+    return _sole(found, f"'{wanted}' fields", where)
+
+
+def _type_name_of(message) -> str:
+    """`pkg/Type` for a rosidl class, as a field type spells it."""
+    package, _subfolder, _module = message.__module__.split(".")
+
+    return f"{package}/{message.__name__}"
 
 
 def _shape_of(root, type_name: str, package: str, include: str) -> dict:

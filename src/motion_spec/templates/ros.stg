@@ -145,7 +145,7 @@ ros-action-send(c) ::= <<
         shared.<c.status_id> = action_msgs::msg::GoalStatus::STATUS_UNKNOWN;
         {
             <c.cpp_type>::Goal _goal;
-            _goal.target_iris = {
+            _goal.<c.targets_path> = {
 <c.target_iris:{iri |                 "<iri>"}; separator=",\n">
             \};
             rclcpp_action::Client\<<c.cpp_type>\>::SendGoalOptions _options;
@@ -174,20 +174,22 @@ ros-action-send(c) ::= <<
                             action_msgs::msg::GoalStatus::STATUS_ABORTED;
                         return;
                     \}
-                    int accepted = 0;
-                    for (const auto &detection : result.result->detections.detections) {
-                        if (detection.results.empty()) continue;
-                        const auto &pose = detection.results[0].pose.pose;
-<c.written_poses:{w |                         if (detection.id == "<w.target_iri>" && detection.header.frame_id == "<w.frame_id>") {
+<c.written_poses:{w |                     bool _got_<w.pose_id> = false;}; separator="\n">
+                    for (const auto &detection : result.result-><c.detections_path>) {
+                        if (detection.<c.pose_container>.empty()) continue;
+                        const auto &pose = detection.<c.pose_path>;
+<c.written_poses:{w |                         if (detection.<c.id_path> == "<w.target_iri>" && detection.<c.frame_path> == "<w.frame_id>") {
                             robot.<c.client_id>_staged_<w.pose_id> = KDL::Frame(
                                 KDL::Rotation::Quaternion(pose.orientation.x, pose.orientation.y,
                                                           pose.orientation.z, pose.orientation.w),
                                 KDL::Vector(pose.position.x, pose.position.y, pose.position.z));
-                            ++accepted;
+                            _got_<w.pose_id> = true;
                         \}}; separator="\n">
                     \}
+                    // Every object the goal asked about, not merely as many detections as it
+                    // asked for: one object seen twice must not stand in for another unseen.
                     robot.<c.client_id>_staged_status =
-                        accepted == <c.pose_count>
+                        <c.written_poses:{w | _got_<w.pose_id>}; separator=" && ">
                             ? action_msgs::msg::GoalStatus::STATUS_SUCCEEDED
                             : action_msgs::msg::GoalStatus::STATUS_ABORTED;
                 \};

@@ -215,13 +215,13 @@ def test_a_model_without_a_server_states_none():
     assert behaviour_server(_model(Graph()), FSM) is None
 
 
-def test_the_server_carries_the_fsms_own_event_indices():
+def test_the_server_carries_the_fsms_own_event_tokens():
     server = behaviour_server(_model(_behaviour("E_DONE")), FSM)
     assert server == {
         "action_name": "pick_place",
         "events_channel": "/bdd/events",
-        "goal_event_idx": 1,
-        "exported": [{"event_idx": 0, "uri": f"{FSM_NS}E_DONE"}],
+        "goal_event": "E_GOAL",
+        "exported": [{"token": "E_DONE", "uri": f"{FSM_NS}E_DONE"}],
     }
 
 

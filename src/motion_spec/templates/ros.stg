@@ -361,18 +361,15 @@ ros-publish-tick(coordination, communication) ::= <<
         \}
 <endif>
 <endif>
-<if(communication.ros.behaviour_server)>
-<ros-behaviour-tick(coordination, communication.ros.behaviour_server)>
-<endif>
 <coordination.motions:{m | <m.when_monitors:{mon | <ros-monitor-publish(m, mon)>}><m.while_monitors:{mon | <ros-monitor-publish(m, mon)>}><m.until_monitors:{mon | <ros-monitor-publish(m, mon)>}>}>
 <ros-joint-states-tick(communication.ros)>
 <ros-actions-tick(communication.ros)>
 >>
 
 // Taking the goal arms the FSM: the loop produces the goal event once, and from then on stamps
-// every message with the scenario the goal names. An exported event is read where the FSM is
-// about to act on it -- `consume_event` reads the current buffer, which `fsm_step_nbx` reads a
-// few lines later -- so what leaves the process is what actually drove the run.
+// every message with the scenario the goal names. Exported events are peeked -- never consumed --
+// from the current buffer right before `fsm_dispatch` eats them, so what leaves the process is
+// exactly what drives the run this tick.
 
 ros-behaviour-tick(coordination, server) ::= <<
         if (robot.bhv_goal_mutex.try_lock()) {
@@ -385,12 +382,12 @@ ros-behaviour-tick(coordination, server) ::= <<
         if (_bhv_goal && !_bhv_goal_armed) {
             _bhv_goal_armed = true;
             _scenario_context_id = _bhv_goal->get_goal()->scenario_context_id.uuid;
-            produce_event(robot.fsm_events, <server.goal_event_idx>);
+            produce_event(robot.fsm_events, <coordination.fsm.cpp_namespace>::<server.goal_event>);
         \}
-<server.exported:{e |         if (_bhv_goal && consume_event(robot.fsm_events, <e.event_idx>)) {
+<server.exported:{e |         if (_bhv_goal && robot.fsm_events->currentEvents[<coordination.fsm.cpp_namespace>::<e.token>]) {
             robot.bhv_event_msg.scenario_context_id.uuid = _scenario_context_id;
             robot.bhv_event_msg.stamp = robot.ros_node->now();
-            robot.bhv_event_msg.uri = <coordination.fsm.cpp_namespace>::EVENT_URIS[<e.event_idx>];
+            robot.bhv_event_msg.uri = <coordination.fsm.cpp_namespace>::EVENT_URIS[<coordination.fsm.cpp_namespace>::<e.token>];
             robot.bhv_events_pub->try_publish(robot.bhv_event_msg);
         \}}; separator="\n">
 >>

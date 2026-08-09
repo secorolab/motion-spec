@@ -122,6 +122,9 @@ int main(int argc, char **argv) {
 <endif>
             break;
         \}
+<if(communication.ros.behaviour_server)>
+<ros-behaviour-tick(coordination, communication.ros.behaviour_server)>
+<endif>
 <if(coordination.fsm.step_event)>
         // The heartbeat drives the FSM but is not recorded: the frame log is a time series, so
         // every frame already *is* the tick (t, step, wall_ns, period_ns). Logging a per-tick

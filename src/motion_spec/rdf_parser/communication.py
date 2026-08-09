@@ -698,9 +698,10 @@ def behaviour_server(model, fsm) -> dict | None:
             "accepted goal has nothing to start",
         )
 
-    events = fsm["events"]
     token_by_uri = {uri: token for token, uri in fsm["event_uris"].items()}
 
+    # Tokens, never raw indices: the generated FSM enum is declaration-ordered while this
+    # reader's tables are sorted, so only the enum symbol is stable across the two.
     def event_row(uri) -> dict:
         token = token_by_uri.get(str(uri))
         if token is None:
@@ -709,7 +710,7 @@ def behaviour_server(model, fsm) -> dict | None:
                 f"'{model.id(node)}' names event '{uri}', which FSM '{fsm['name']}' does not "
                 "declare",
             )
-        return {"event_idx": events.index(token), "uri": str(uri)}
+        return {"token": token, "uri": str(uri)}
 
     goal_event = next(iter(graph.objects(node, RDFS.member)), None)
     if goal_event is None:
@@ -725,7 +726,7 @@ def behaviour_server(model, fsm) -> dict | None:
     return {
         "action_name": str(graph.value(node, NS_MM_ROS["channel-name"])),
         "events_channel": str(graph.value(topic, NS_MM_ROS["channel-name"])),
-        "goal_event_idx": event_row(goal_event)["event_idx"],
+        "goal_event": event_row(goal_event)["token"],
         "exported": [event_row(uri) for uri in sorted(graph.objects(topic, RDFS.member))],
     }
 

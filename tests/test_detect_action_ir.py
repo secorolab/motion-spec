@@ -133,10 +133,11 @@ def test_the_client_names_the_pose_it_writes_and_the_frame_it_must_arrive_in(det
     assert client["cpp_type"] == "aruco_perception::action::LocateObjects"
     assert client["motion"] == "motion_detect_cube"
     assert client["status_id"] == "locate_cube_status"
-    (written,) = client["written_poses"]
-    assert written["pose_id"] == "pose_cube_base"
-    assert written["frame_id"] == "base_link"
-    assert client["target_iris"] == [written["target_iri"]]
+    written = client["written_poses"]
+    assert [row["pose_id"] for row in written] == ["pose_cube_base", "pose_cube2_base"]
+    assert {row["frame_id"] for row in written} == {"base_link"}
+    # One goal asks about every object the act names, and one result answers for all of them.
+    assert client["target_iris"] == sorted(row["target_iri"] for row in written)
 
 
 def test_no_chain_computes_a_pose_the_detect_result_writes(detect_ir):

@@ -100,6 +100,15 @@ monitor-member(monitor) ::= <<
 <endif><elseif(monitor.flag)>    bool <monitor.flag> = false;<endif>
 >>
 
+// An edge is an edge within one activation: a condition still true from the previous one must
+// hold afresh before it fires again, or a re-entered motion carries a monitor that can never
+// re-trigger. A flag monitor needs none -- it is recomputed every tick.
+monitor-rearm(motion_id, monitor) ::= <<
+<if(monitor.is_edge_triggered)>        <motion_id>_state_instance.<monitor.id>_previous = false;
+        <motion_id>_state_instance.<monitor.id>_event_triggered = false;
+<if(monitor.debounce_duration_s)>        <motion_id>_state_instance.<monitor.id>_hold_s = 0.0;<endif><endif>
+>>
+
 access-expr(id, views) ::= <<
 <if(views.(id))><view-access-expr(views.(id))><else>shared.<id><endif>
 >>

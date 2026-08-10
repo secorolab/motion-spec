@@ -33,6 +33,9 @@ static void step_<motion.id>(<motion.id>_state &<motion.id>_state_instance, shar
         <motion.id>_state_instance.active_steps = 0;
 <if(motion.snapshots)>        <motion.id>_state_instance.snapshot_taken = false;
 <endif><motion.action_clients:{c | <ros-action-send(c)>}; separator="\n">
+<motion.when_monitors:{monitor | <monitor-rearm(motion.id, monitor)>}; separator="\n">
+<motion.while_monitors:{monitor | <monitor-rearm(motion.id, monitor)>}; separator="\n">
+<motion.until_monitors:{monitor | <monitor-rearm(motion.id, monitor)>}; separator="\n">
 <motion.controllers:{controller |         <controller-reset(motion.id, controller)>}; separator="\n">
 <motion.path_projections:{proj |         shared.<proj.parameter> = 0.0;
         shared.<proj.along_speed> = 0.0;}; separator="\n">

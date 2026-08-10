@@ -85,6 +85,12 @@ def run_cataloged(
         elif returncode != 0:
             _finish_rec_run(rec_path, run_id, "FAILED")
 
+    # A run that died before its first frame has nothing to catalogue. The rec run is already
+    # FAILED, and what the caller needs to see is the executable's own error -- not a missing
+    # frame log raised from the manifest on top of it.
+    if returncode != 0 and not frame_log.exists():
+        return returncode
+
     try:
         create_archive_manifest(
             run_dir,

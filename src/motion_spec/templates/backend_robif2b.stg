@@ -257,15 +257,6 @@ device-configure-robif2b-KinovaGen3(solver, device) ::= <<
     <robif2b-recover-kinova(solver.runtime.id)>
     <robif2b-start-kinova(solver.runtime.id)>
 <device-configure-check({kinova_<solver.runtime.id>_state}, device.config_key)>
-    // The actuators enter torque mode on the first update that sees FORCE, and that same call
-    // sends a command -- so whatever is staged now is what the arm is handed the instant it
-    // stops holding itself. Configure has already published a reading, so stage the torque the
-    // arm is producing and it is asked to keep doing what it is doing; the controller takes
-    // over on the next tick. Negated because the arm reports the torque it feels where the
-    // command states the torque to apply: logged tau_msr and tau_ctrl cancel on every joint.
-    for (int i = 0; i \< KINOVA_NUM_JOINTS; ++i) {
-        kinova_<solver.runtime.id>_state.eff_cmd[i] = -kinova_<solver.runtime.id>_state.eff_msr[i];
-    \}
 >>
 
 device-configure-robif2b-KinovaGen3-2F85(solver, device) ::= <<

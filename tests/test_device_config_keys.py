@@ -17,7 +17,7 @@ MODELS = Path(__file__).parents[2] / "motion-spec-dsl" / "models"
 from conftest import requires_workspace
 
 pytestmark = requires_workspace(MODELS)
-REAL_WORLD_MODELS = ["real_demo_2f85", "real_demo_monitor"]
+REAL_WORLD_MODELS = ["real_demo_hold", "real_demo_monitor"]
 
 
 def _generate_ir(name: str, tmp_path: Path) -> dict:
@@ -49,7 +49,7 @@ def _toml_sections(name: str) -> set[str]:
 
 @pytest.fixture(scope="module")
 def one_agent_ir(tmp_path_factory) -> dict:
-    return _generate_ir("real_demo_2f85", tmp_path_factory.mktemp("real_demo_2f85"))
+    return _generate_ir("real_demo_hold", tmp_path_factory.mktemp("real_demo_hold"))
 
 
 def test_the_agent_key_is_its_scenex_alias_then_its_leaf(one_agent_ir: dict) -> None:

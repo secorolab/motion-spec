@@ -1641,8 +1641,28 @@ def _apply_fsm_wiring(motions, fsm) -> dict:
 
     _apply_reentry_events(motions, fsm)
     _check_occurrence_publishes(motions)
+    _check_every_commanding_motion_runs(motions, namespace)
 
     return meta
+
+
+def _check_every_commanding_motion_runs(motions, namespace: str) -> None:
+    """A motion that commands a robot has to be a state the FSM can be in.
+
+    A motion reaches its state by firing the event that leaves it, so a motion that fires
+    nothing is bound to nothing: the dispatch gets no case, the motion never steps, and the
+    generated program runs its loop commanding whatever the drivers start at -- zero torque on
+    a torque-controlled arm, which is an arm that falls. That has to be an error here rather
+    than silence that only shows up on hardware.
+    """
+    orphaned = [motion.id for motion in motions if motion.controllers and not motion.fsm_state]
+    if orphaned:
+        raise ConstraintViolation(
+            "coordination",
+            f"{', '.join(orphaned)} command a robot but no state of the FSM '{namespace}' runs "
+            "them. A motion is bound to the state its monitor's event leaves, so a motion that "
+            "declares no monitor firing an FSM event is never stepped.",
+        )
 
 
 def _check_occurrence_publishes(motions) -> None:

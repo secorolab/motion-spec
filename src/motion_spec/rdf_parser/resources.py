@@ -1003,7 +1003,7 @@ def _solver_with_input_and_output(model, node, setup: _ChainSetup) -> SolverWith
         sensors=setup.sensors,
         devices=setup.devices,
         algorithm=family,
-        algorithm_name=family.codegen_name,
+        algorithm_name=family.codegen_name or None,
         derived_root_acceleration=quantities.parse_xyz(model, gravity_node)
         if gravity_node
         else None,

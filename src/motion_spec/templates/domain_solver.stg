@@ -30,9 +30,11 @@ struct <solver.id>_solver_state {
 };
 >>
 
-// A read-only solver never solves, so it carries no algorithm state (and may author no algorithm).
+// A solver nothing drives never solves, so it carries no algorithm state. This hook is handed the
+// resource solver, which states the algorithm it was resolved to; `read_only` is a motion slice's
+// word for the same thing and is not a field here.
 solver-state-algorithm-fields(solver) ::= <<
-<if(solver.read_only)><else><({solver-state-algorithm-fields-<solver.algorithm_name>})(solver)><endif>
+<if(solver.algorithm_name)><({solver-state-algorithm-fields-<solver.algorithm_name>})(solver)><endif>
 >>
 
 solver-state-algorithm-fields-ACHD(solver) ::= <<
@@ -59,7 +61,7 @@ solver-state-struct-extra-impl ::= [
 solver-no-extra(solver, chain_solver="") ::= <<>>
 
 solver-state-struct-extra(solver, backend) ::= <<
-<if(solver.read_only)><else><({<solver-state-struct-extra-impl.({<solver.algorithm_name>-<backend>})>})(solver)><endif>
+<if(solver.algorithm_name)><({<solver-state-struct-extra-impl.({<solver.algorithm_name>-<backend>})>})(solver)><endif>
 >>
 
 // mj_kdl gravity-compensates the ACHD command with a separate RNE pass.

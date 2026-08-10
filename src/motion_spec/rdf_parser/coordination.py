@@ -1658,20 +1658,50 @@ def _apply_fsm_wiring(motions, fsm) -> dict:
 
     _apply_reentry_events(motions, fsm)
     _check_occurrence_publishes(motions)
-    _check_every_commanding_motion_runs(motions, namespace)
+    _check_every_commanding_motion_runs(motions, fsm, meta)
 
     return meta
 
 
-def _check_every_commanding_motion_runs(motions, namespace: str) -> None:
-    """A motion that commands a robot has to be a state the FSM can be in.
+def _reachable_states(fsm) -> set:
+    """The states the FSM can reach from its start state.
+
+    A transition fires only when a reaction names it, so one no reaction refers to is not an
+    edge: following it would call a state reachable that the generated FSM can never enter.
+    """
+    transitions = {row["id"]: row for row in fsm["transitions_table"]}
+    outgoing: dict = {}
+    for reaction in fsm["reactions_table"]:
+        transition = transitions.get(reaction["do_transition"])
+        if transition is not None:
+            outgoing.setdefault(transition["from_state"], set()).add(transition["to_state"])
+
+    reached = {fsm["start_state"]}
+    pending = [fsm["start_state"]]
+    while pending:
+        for state in outgoing.get(pending.pop(), ()):
+            if state not in reached:
+                reached.add(state)
+                pending.append(state)
+
+    return reached
+
+
+def _check_every_commanding_motion_runs(motions, fsm, meta) -> None:
+    """Motions and the states that run them have to cover each other.
 
     A motion reaches its state by firing the event that leaves it, so a motion that fires
     nothing is bound to nothing: the dispatch gets no case, the motion never steps, and the
     generated program runs its loop commanding whatever the drivers start at -- zero torque on
-    a torque-controlled arm, which is an arm that falls. That has to be an error here rather
-    than silence that only shows up on hardware.
+    a torque-controlled arm, which is an arm that falls.
+
+    The same hole opens from the other side. A state the FSM can sit in with no motion bound to
+    it renders no `case` either, and the loop keeps calling the driver every tick with whatever
+    was staged last, so the arm is uncommanded for exactly as long as the FSM stays there. Only
+    two states are allowed to run nothing: the end state, which the loop breaks on before it
+    dispatches, and a state the heartbeat leaves, which the FSM does not dwell in.
     """
+    namespace = meta["cpp_namespace"]
     orphaned = [motion.id for motion in motions if motion.controllers and not motion.fsm_state]
     if orphaned:
         raise ConstraintViolation(
@@ -1679,6 +1709,23 @@ def _check_every_commanding_motion_runs(motions, namespace: str) -> None:
             f"{', '.join(orphaned)} command a robot but no state of the FSM '{namespace}' runs "
             "them. A motion is bound to the state its monitor's event leaves, so a motion that "
             "declares no monitor firing an FSM event is never stepped.",
+        )
+
+    passed_through = {transition["from"] for transition in meta["step_transitions"]}
+    idle = sorted(
+        _reachable_states(fsm)
+        - {motion.fsm_state for motion in motions}
+        - passed_through
+        - {fsm["end_state"]}
+    )
+    if idle:
+        raise ConstraintViolation(
+            "coordination",
+            f"the FSM '{namespace}' can be in {', '.join(idle)}, but no motion runs there. The "
+            "dispatch gets no case for a state nothing is bound to, so the loop steps no motion "
+            "while the FSM sits in it and the robot keeps whatever command was staged last -- "
+            "zero torque, if nothing has run yet. Bind a motion to it with 'runs-in', or give "
+            "the state a transition the heartbeat takes so the FSM passes straight through.",
         )
 
 

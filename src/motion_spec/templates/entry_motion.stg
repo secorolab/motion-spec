@@ -25,7 +25,7 @@ struct <motion.id>_state {
 <if(motion.has_when_elapsed)>    double when_start_time = -1.0;
 <endif>
 <chain-state-members(motion.serial_chain_solvers)>
-<if(first(motion.entry_snapshots))>    bool snapshot_taken = false;
+<if(motion.has_entry_snapshots)>    bool snapshot_taken = false;
 <endif>
 <motion.relative_poses:{rp |     KDL::Frame <rp.id>_start_frame;
     bool <rp.id>_start_captured = false;
@@ -63,7 +63,7 @@ inline void update_<motion.id>(
 <else>    shared.<srp.id> = shared.<srp.scene_pose_id>.Inverse() * shared.<srp.fk_pose_id>;
 <endif>
 }; separator="\n">
-<if(first(motion.entry_snapshots))>
+<if(motion.has_entry_snapshots)>
     if (!state.snapshot_taken) {
 <motion.entry_snapshots:{snap | <emit-snapshot(snap, closures, views)>}; separator="\n">
         state.snapshot_taken = true;

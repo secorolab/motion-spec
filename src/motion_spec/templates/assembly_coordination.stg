@@ -31,7 +31,7 @@ static void step_<motion.id>(<motion.id>_state &<motion.id>_state_instance, shar
     if (!<motion.id>_state_instance.active) {
         <motion.id>_state_instance.active = true;
         <motion.id>_state_instance.active_steps = 0;
-<if(first(motion.entry_snapshots))>        <motion.id>_state_instance.snapshot_taken = false;
+<if(motion.has_entry_snapshots)>        <motion.id>_state_instance.snapshot_taken = false;
 <endif><if(motion.has_active_elapsed)>        <motion.id>_state_instance.motion_start_time = -1.0;
 <endif><if(motion.has_when_elapsed)>        <motion.id>_state_instance.when_start_time = -1.0;
 <endif><motion.action_clients:{c | <ros-action-send(c)>}; separator="\n">

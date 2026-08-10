@@ -1145,6 +1145,7 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
         unit = motions[-1]
         unit.entry_snapshots = [s for s in unit.snapshots if s.scope == "entry"]
         unit.task_snapshots = [s for s in unit.snapshots if s.scope == "task"]
+        unit.has_entry_snapshots = bool(unit.entry_snapshots)
 
     return _finish_motions(model, motions, handlers, computation, fsm, solvers_by_id)
 

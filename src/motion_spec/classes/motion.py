@@ -234,6 +234,8 @@ class MotionUnit:
     # The same captures cut by when they are taken: ST4 cannot filter, and each scope is
     # guarded differently -- per activation, once for the run, or on an event.
     entry_snapshots: list[SnapshotCapture] = field(default_factory=list)
+    # Stated, not inferred from the list: ST4 reads an empty list as present.
+    has_entry_snapshots: bool = False
     task_snapshots: list[SnapshotCapture] = field(default_factory=list)
 
     # Relative-from-start pose computations (e.g. pose_start_ee)

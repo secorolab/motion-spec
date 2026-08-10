@@ -23,6 +23,7 @@ ros-includes(ros) ::= <<
 <endif>
 <if(ros.joint_states)>
 #include \<sensor_msgs/msg/joint_state.hpp\>
+#include \<limits\>
 <endif>
 <if(ros.action_server)>
 #include \<atomic\>
@@ -316,8 +317,11 @@ ros-joint-states-setup(ros) ::= <<
         \};
         const std::size_t _js_n = robot.joint_states_msg.name.size();
         robot.joint_states_msg.position.assign(_js_n, 0.0);
-        robot.joint_states_msg.velocity.assign(_js_n, 0.0);
-        robot.joint_states_msg.effort.assign(_js_n, 0.0);
+        // sensor_msgs/JointState has no per-joint "not reported" -- its arrays are equal-length
+        // or empty -- so a joint nothing measures a velocity or an effort for keeps the NaN it
+        // was filled with, rather than a zero claiming it is standing still and unloaded.
+        robot.joint_states_msg.velocity.assign(_js_n, std::numeric_limits\<double\>::quiet_NaN());
+        robot.joint_states_msg.effort.assign(_js_n, std::numeric_limits\<double\>::quiet_NaN());
         robot.joint_states_pub =
             std::make_shared\<realtime_tools::RealtimePublisher\<sensor_msgs::msg::JointState\>\>(
                 robot.ros_node->create_publisher\<sensor_msgs::msg::JointState\>(
@@ -457,9 +461,9 @@ ros-joint-states-tick(ros) ::= <<
 <if(ros.joint_states)>
         if (robot.joint_states_pub && (_step % robot.joint_states_divider) == 0) {
             robot.joint_states_msg.header.stamp = robot.ros_node->now();
-<ros.joint_states.joints:{j |             robot.joint_states_msg.position[<i0>] = shared.<j.position>;
-            robot.joint_states_msg.velocity[<i0>] = shared.<j.velocity>;
-            robot.joint_states_msg.effort[<i0>] = shared.<j.effort>;}; separator="\n">
+<ros.joint_states.joints:{j |             robot.joint_states_msg.position[<i0>] = shared.<j.position>;<if(j.velocity)>
+            robot.joint_states_msg.velocity[<i0>] = shared.<j.velocity>;<endif><if(j.effort)>
+            robot.joint_states_msg.effort[<i0>] = shared.<j.effort>;<endif>}; separator="\n">
             robot.joint_states_pub->try_publish(robot.joint_states_msg);
         \}
 <endif>

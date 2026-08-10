@@ -1681,6 +1681,15 @@ def ros_joint_states(platform: dict, config: dict, serial_chains) -> dict | None
                     "effort": by_channel["tau_ctrl"][index],
                 }
             )
+        # A joint the chain does not articulate -- a gripper's driver joint -- is measured
+        # elsewhere: under robif2b by the device `_split_gripper_outputs` moved it onto, under a
+        # simulated backend by the simulator answering for its name. Its name is already
+        # runtime-scoped, and only its position is read on either route: neither the serial nor
+        # the interconnect gripper reports a joint velocity or effort, and a zero there would
+        # claim the finger is standing still and unloaded.
+        for out in [*solver.output, *(o for d in solver.devices for o in d.joint_outputs)]:
+            if getattr(out, "type", "") == "JointPosition" and out.joint_index is None:
+                joints.append({"name": out.joint_name, "position": out.id})
     if not joints:
         raise ConstraintViolation(
             "platform",

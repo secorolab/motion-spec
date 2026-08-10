@@ -17,6 +17,7 @@ from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import RDF, RDFS
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 
+from motion_spec.classes.dynamics import JointPosition
 from motion_spec.classes.handlers import LevelMonitor, RosPublication
 from motion_spec.rdf_parser.communication import action_server, ros_publishers
 from motion_spec.rdf_parser.coordination import _message_shape, _ros_publication
@@ -178,7 +179,7 @@ def test_one_channel_published_as_two_message_types_is_rejected():
         ros_publishers([motion])
 
 
-def _chain(prefix: str, joints: list[str]):
+def _chain(prefix: str, joints: list[str], output=(), device_output=()):
     """A serial chain whose joint-space channels are already mirrored onto the blackboard."""
     samples = [
         {"id": f"arm_{channel}_{prefix}{joint}", "channel": channel, "index": index}
@@ -192,6 +193,8 @@ def _chain(prefix: str, joints: list[str]):
             "runtime": type("R", (), {"owner": True, "prefix": prefix})(),
             "chain": type("Ch", (), {"joints": joints})(),
             "joint_space_samples": samples,
+            "output": list(output),
+            "devices": [type("D", (), {"joint_outputs": list(device_output)})()],
         },
     )()
 
@@ -206,6 +209,21 @@ def test_joint_states_are_gated_on_the_config_section():
     assert [joint["name"] for joint in section["joints"]] == ["r1_j1", "r1_j2"]
     assert section["joints"][0]["position"] == "arm_q_r1_j1"
     assert section["joints"][1]["effort"] == "arm_tau_ctrl_r1_j2"
+
+
+@pytest.mark.parametrize("reporter", ("output", "device_output"))
+def test_a_joint_the_chain_does_not_articulate_is_still_published(reporter: str):
+    """A gripper's driver joint is a mimic the chain never articulates, so whoever answers for it
+    -- the bound device on hardware, the simulator otherwise -- is the only route to it, and
+    iterating the chain alone drops it from the message it belongs in."""
+    driver = JointPosition("gripper_pos", "r1_g_left_driver_joint")
+    chain = _chain("r1_", ["j1"], **{reporter: [driver]})
+    section = ros_joint_states({"config": "robot.toml"}, {"ros": {"joint_states": {}}}, [chain])
+    assert [joint["name"] for joint in section["joints"]] == ["r1_j1", "r1_g_left_driver_joint"]
+    gripper = section["joints"][1]
+    assert gripper["position"] == "gripper_pos"
+    # Neither gripper route measures one, and a zero would claim it is still and unloaded.
+    assert "velocity" not in gripper and "effort" not in gripper
 
 
 def test_joint_states_need_a_declared_config_to_read_at_runtime():

@@ -147,6 +147,8 @@ class JointForceSpecification:
     id: str
     force_id: str
     joint_name: str
+    # Where the joint sits in the chain's joint array, resolved while generating.
+    joint_index: int | None = None
     type: str = field(default="JointForceSpecification")
 
 

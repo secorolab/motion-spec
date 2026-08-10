@@ -15,6 +15,9 @@ class JointPosition:
 
     id: str
     joint_name: str
+    # Where the joint sits in the chain's joint array, resolved while generating. None for a
+    # joint the chain does not articulate, which only a simulated backend can read.
+    joint_index: int | None = None
     type: str = field(default="JointPosition")
 
 

@@ -434,26 +434,6 @@ inline void warn_produce_event_not_implemented(std::string_view event_id) {
     std::cerr \<\< "produce_event(" \<\< event_id \<\< ") not implemented yet\\n";
 }
 
-inline bool runtime_name_matches(std::string_view actual, std::string_view target) {
-    return actual == target ||
-           (actual.size() > target.size() && actual.substr(actual.size() - target.size()) == target);
-}
-
-inline unsigned int find_joint_index(const KDL::Chain &chain, std::string_view joint_name) {
-    unsigned int idx = 0;
-    for (unsigned int i = 0; i \< chain.getNrOfSegments(); ++i) {
-        const auto &joint = chain.getSegment(i).getJoint();
-        if (joint.getType() == KDL::Joint::None) {
-            continue;
-        }
-        if (runtime_name_matches(joint.getName(), joint_name)) {
-            return idx;
-        }
-        ++idx;
-    }
-    throw std::runtime_error("KDL joint not found: " + std::string(joint_name));
-}
-
 <if(resources.by_kind.mobile_base)>
 inline void hddc2b_pltf_vel_drv_to_pltf(
         int num_drv,

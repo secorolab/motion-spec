@@ -258,7 +258,7 @@ solver-output-JointPosition(solver, chain_solver, out, backend) ::= <<
 >>
 
 solver-output-JointPosition-robif2b(solver, out) ::= <<
-shared.<out.id> = state.<solver.id>.q(motion_spec::runtime::find_joint_index(*robot.<solver.id>.chain, "<out.joint_name>"));
+shared.<out.id> = state.<solver.id>.q(<out.joint_index>);  // <out.joint_name>
 >>
 
 // A gripper mimic joint the chain does not articulate: the bound gripper device reports it,
@@ -271,6 +271,9 @@ gripper-joint-output-robif2b(solver, out) ::= <<
 shared.<out.id> = *robot.<solver.id>.gripper_pos;
 >>
 
+// The simulator answers for a joint the chain does not articulate -- a gripper mimic -- so the
+// name is asked of it first. A joint that is on the chain falls back to the resolved index; one
+// that is not has nowhere else to come from, so a miss has to say so.
 solver-output-JointPosition-mj_kdl(solver, out) ::= <<
 {
     double _joint_position_<out.id> = 0.0;
@@ -281,8 +284,9 @@ solver-output-JointPosition-mj_kdl(solver, out) ::= <<
             &_joint_position_<out.id>)) {
         shared.<out.id> = _joint_position_<out.id>;
     } else {
-        shared.<out.id> = state.<solver.id>.q(motion_spec::runtime::find_joint_index(*robot.<solver.id>.chain, "<out.joint_name>"));
-    }
+<if(out.joint_index)>        shared.<out.id> = state.<solver.id>.q(<out.joint_index>);
+<else>        throw std::runtime_error("MuJoCo reports no joint '<out.joint_name>', and it is not on the chain");
+<endif>    }
 }
 >>
 
@@ -369,7 +373,7 @@ solver-run-full(solver, chain_solver, motion_driver, backend) ::= <<
     KDL::SetToZero(state.<solver.id>.spatial_directions);
 <solver-assign-acceleration-input(solver, chain_solver, motion_driver)>
     KDL::SetToZero(state.<solver.id>.tau_ff);
-<motion_driver.joint_force:{jf |     state.<solver.id>.tau_ff(motion_spec::runtime::find_joint_index(*robot.<solver.id>.chain, "<jf.joint_name>")) += shared.<jf.force_id>;}; separator="\n">
+<motion_driver.joint_force:{jf |     state.<solver.id>.tau_ff(<jf.joint_index>) += shared.<jf.force_id>;  // <jf.joint_name>}; separator="\n">
 <solver-clear-external-forces(solver, chain_solver, motion_driver)>
 <if(motion_driver.has_cartesian_force)>
 <motion_driver.cartesian_force:{f |     <solver-assign-f-ext-modular(solver, chain_solver, f)>}; separator="\n">

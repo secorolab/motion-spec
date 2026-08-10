@@ -72,7 +72,12 @@ int main(int argc, char **argv) {
 
 <if(coordination.fsm)>
     struct fsm_nbx *fsm = <coordination.fsm.cpp_namespace>::create_fsm();
-    if (!fsm) return 1;
+    if (!fsm) {
+<if(communication.ros)>
+        <ros-stop-before-loop(communication.ros)>
+<endif>
+        return 1;
+    \}
     robot.fsm_events = fsm->eventData;
 
 <fsm-active-motion(coordination.motions, coordination.fsm)>

@@ -183,6 +183,28 @@ ros-subscription-setup(s) ::= <<
 // Entering the loop before that snapshots an identity pose, and the arm drives at the origin of
 // its own base frame. The wait is deployment data, so its bound comes from the config file.
 
+// Every early exit taken after the executor is spinning shares this. The node is reachable from
+// the moment the executor starts, so a goal may already be parked: rclcpp_action throws when an
+// accepted goal is finalized unanswered, and a joinable spin thread destructing is its own
+// std::terminate. A run that stops here established none of what the model authored, so the goal
+// is aborted rather than answered -- `_active_goal` is a loop local that does not exist yet.
+
+ros-stop-before-loop(ros) ::= <<
+<if(ros.action_server)>
+{
+    const std::lock_guard\<std::mutex\> lock(robot.goal_mutex);
+    if (robot.staged_goal) {
+        <ros-goal-result-unset(ros.action_server)>
+        robot.staged_goal->abort(_result);
+        robot.staged_goal.reset();
+    \}
+\}
+<endif>
+robot.ros_executor->cancel();
+if (robot.ros_spin_thread.joinable()) robot.ros_spin_thread.join();
+rclcpp::shutdown();
+>>
+
 ros-subscriptions-wait(ros) ::= <<
 <if(ros.subscriptions)>
     {
@@ -207,23 +229,7 @@ ros-subscriptions-wait(ros) ::= <<
                                  "no pose published for '%s' within %.1f s", _iri.c_str(),
                                  _perception_wait_s);
                 \}
-<if(ros.action_server)>
-                // The server has been live since setup, so a goal may already be parked; the run
-                // never started, so it establishes none of what the model authored. Answering it
-                // here is also the only chance: `_active_goal` is a loop local that does not
-                // exist yet, and rclcpp_action throws when an accepted goal is finalized unanswered.
-                {
-                    const std::lock_guard\<std::mutex\> lock(robot.goal_mutex);
-                    if (robot.staged_goal) {
-                        <ros-goal-result-unset(ros.action_server)>
-                        robot.staged_goal->abort(_result);
-                        robot.staged_goal.reset();
-                    \}
-                \}
-<endif>
-                robot.ros_executor->cancel();
-                if (robot.ros_spin_thread.joinable()) robot.ros_spin_thread.join();
-                rclcpp::shutdown();
+                <ros-stop-before-loop(ros)>
                 return 1;
             \}
             std::this_thread::sleep_for(std::chrono::milliseconds(50));

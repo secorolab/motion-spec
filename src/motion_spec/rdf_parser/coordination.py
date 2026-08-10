@@ -1119,6 +1119,9 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
             step for step in schedules.while_pre if owner.get(step, token) == token
         ]
         _append_new(schedules.active, [c.id for c in reversed(active_controllers)])
+        # What state runs this motion, when the model says so rather than leaving it derived from
+        # the event that ends the motion -- which a motion meant to keep running never fires.
+        runs_in = model.graph.value(handler_node, CSTR_HDL_EXT["runs-in-state"])
         motions.append(
             _motion_unit(
                 model,
@@ -1137,6 +1140,8 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
                 solvers_by_id,
             )
         )
+        if runs_in is not None:
+            motions[-1].runs_in_state = str(runs_in)
 
     return _finish_motions(model, motions, handlers, computation, fsm, solvers_by_id)
 
@@ -1596,6 +1601,18 @@ def _apply_fsm_wiring(motions, fsm) -> dict:
         if reaction["do_transition"] in transitions
     }
     by_id = {motion.id: motion for motion in motions}
+    state_by_uri = {uri: name for name, uri in fsm.get("state_uris", {}).items()}
+    for motion in motions:
+        if not motion.runs_in_state:
+            continue
+        state = state_by_uri.get(motion.runs_in_state)
+        if state is None:
+            raise ConstraintViolation(
+                "coordination",
+                f"motion '{motion.id}' says it runs in '{motion.runs_in_state}', which the FSM "
+                f"'{namespace}' does not declare as a state.",
+            )
+        motion.fsm_state = state
 
     def fires_fsm_event(monitor) -> bool:
         """A monitor fires the FSM only when its event lives in the FSM's namespace; a

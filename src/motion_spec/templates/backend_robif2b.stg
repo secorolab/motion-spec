@@ -25,6 +25,10 @@ struct kinova_state {
     double vel_cmd[KINOVA_NUM_JOINTS] = {0.0};
     double eff_cmd[KINOVA_NUM_JOINTS] = {0.0};
     double cur_cmd[KINOVA_NUM_JOINTS] = {0.0};
+    // The base IMU is not optional: the driver writes it on every measurement it publishes,
+    // whether or not the model asks for it, and asserts on the buffer being there.
+    double imu_ang_vel_msr[3] = {0.0};
+    double imu_lin_acc_msr[3] = {0.0};
 };
 
 // Gripper over the arm's interconnect: every port is a percentage of travel.
@@ -180,6 +184,8 @@ device-init-robif2b-KinovaGen3(solver, device) ::= <<
     kinova_<solver.runtime.id>.jnt_vel_msr = &kinova_<solver.runtime.id>_state.vel_msr[0];
     kinova_<solver.runtime.id>.jnt_trq_msr = &kinova_<solver.runtime.id>_state.eff_msr[0];
     kinova_<solver.runtime.id>.act_cur_msr = &kinova_<solver.runtime.id>_state.cur_msr[0];
+    kinova_<solver.runtime.id>.imu_ang_vel_msr = &kinova_<solver.runtime.id>_state.imu_ang_vel_msr[0];
+    kinova_<solver.runtime.id>.imu_lin_acc_msr = &kinova_<solver.runtime.id>_state.imu_lin_acc_msr[0];
     kinova_<solver.runtime.id>.jnt_pos_cmd = &kinova_<solver.runtime.id>_state.pos_cmd[0];
     kinova_<solver.runtime.id>.jnt_vel_cmd = &kinova_<solver.runtime.id>_state.vel_cmd[0];
     kinova_<solver.runtime.id>.jnt_trq_cmd = &kinova_<solver.runtime.id>_state.eff_cmd[0];

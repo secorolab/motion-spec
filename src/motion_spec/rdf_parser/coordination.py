@@ -1142,6 +1142,9 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
         )
         if runs_in is not None:
             motions[-1].runs_in_state = str(runs_in)
+        unit = motions[-1]
+        unit.entry_snapshots = [s for s in unit.snapshots if s.scope == "entry"]
+        unit.task_snapshots = [s for s in unit.snapshots if s.scope == "task"]
 
     return _finish_motions(model, motions, handlers, computation, fsm, solvers_by_id)
 

@@ -17,6 +17,9 @@ from motion_spec.rdf_parser import (
     quantities,
     resources,
 )
+from rdflib.namespace import PROV
+
+from motion_spec.classes.motion import BlackboardValue
 from motion_spec.rdf_parser.model import load_model
 
 _ALL_OPERATORS = operations.OPS_GENERIC + operations.OPS_SOLVER + operations.OPS_HANDLER
@@ -96,6 +99,16 @@ def generate_ir(manifest_path) -> dict:
     shared_data += resources.shared_runtime_members(
         model, robots.serial_chains, control_period_ns, platform.get("uri")
     )
+    # A snapshot the shared context declares is captured once for the run, so its guard belongs
+    # to the run and not to whichever motion happened to reach it first.
+    for target_id in sorted({s.target_id for motion in motions for s in motion.task_snapshots}):
+        node = model.node_by_id.get(target_id)
+        if node is None:
+            raise RuntimeError(f"task snapshot '{target_id}' has no node to derive its guard from")
+        model.register_derived(f"{target_id}_captured", node, "captured", PROV.wasDerivedFrom)
+        # Carries its initial value, which is also what gives it a dataflow contract: a
+        # member nothing produces is pruned as absent.
+        shared_data.append(BlackboardValue(id=f"{target_id}_captured", type="Bool", value=False))
 
     introspection, values = communication.build_introspection(
         model,

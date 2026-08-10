@@ -25,7 +25,7 @@ struct <motion.id>_state {
 <if(motion.has_when_elapsed)>    double when_start_time = -1.0;
 <endif>
 <chain-state-members(motion.serial_chain_solvers)>
-<if(motion.snapshots)>    bool snapshot_taken = false;
+<if(first(motion.entry_snapshots))>    bool snapshot_taken = false;
 <endif>
 <motion.relative_poses:{rp |     KDL::Frame <rp.id>_start_frame;
     bool <rp.id>_start_captured = false;
@@ -63,13 +63,17 @@ inline void update_<motion.id>(
 <else>    shared.<srp.id> = shared.<srp.scene_pose_id>.Inverse() * shared.<srp.fk_pose_id>;
 <endif>
 }; separator="\n">
-<if(motion.snapshots)>
+<if(first(motion.entry_snapshots))>
     if (!state.snapshot_taken) {
-<motion.snapshots:{snap | <emit-snapshot(snap, closures, views)>}; separator="\n">
+<motion.entry_snapshots:{snap | <emit-snapshot(snap, closures, views)>}; separator="\n">
         state.snapshot_taken = true;
     }
-<motion.snapshots:{snap | <emit-triggered-snapshot(snap, closures, views)>}; separator="">
 <endif>
+<motion.task_snapshots:{snap |     if (!shared.<snap.target_id>_captured) {
+<emit-snapshot(snap, closures, views)>
+        shared.<snap.target_id>_captured = true;
+    \}}; separator="\n">
+<motion.snapshots:{snap | <emit-triggered-snapshot(snap, closures, views)>}; separator="">
 <motion.declared_pose_components:{pose | <materialize-pose-component(pose, views)>}; separator="\n">
 }
 

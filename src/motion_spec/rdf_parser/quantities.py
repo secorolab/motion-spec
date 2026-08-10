@@ -1576,21 +1576,24 @@ def snapshots_for_motion(
         if target_id not in indexes.snapshot_source:
             continue
         # Capture only what this motion declares: re-capturing another motion's snapshot would
-        # overwrite its value. Unowned (shared-context) snapshots stay everyone's to capture.
+        # overwrite its value. A shared-context snapshot is owned by no motion, so every motion
+        # that reads it emits the capture -- guarded once for the run, not once per activation.
         owner = indexes.snapshot_owner.get(target_id)
         if owner in tokens and owner != token:
             continue
+        trigger = indexes.snapshot_trigger.get((token, target_id))
         source_id = indexes.snapshot_source[target_id]
         result.append(
             SnapshotCapture(
                 target_id=target_id,
                 source_id=source_id,
+                scope="event" if trigger else ("entry" if owner in tokens else "task"),
                 source_closure_id=(
                     None
                     if source_id in supers_by_subobject
                     else indexes.closure_output.get(source_id)
                 ),
-                trigger_event=indexes.snapshot_trigger.get((token, target_id)),
+                trigger_event=trigger,
             )
         )
 

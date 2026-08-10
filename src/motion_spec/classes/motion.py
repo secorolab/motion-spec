@@ -90,12 +90,16 @@ class PoseErrorRegroup:
 
 @dataclass
 class SnapshotCapture:
-    """A sample-and-hold capture of a fluent: always sampled once when its motion first
-    runs, and re-sampled on every occurrence of `trigger_event` when one is declared.
+    """A sample-and-hold capture of a fluent, and when it is taken.
+
+    `scope` is the declaration site made operative: a snapshot a motion declares is captured
+    at the start of each of its activations, one the shared context declares is captured once
+    for the run, and one naming a trigger is re-captured on every occurrence of that event.
     """
 
     target_id: str
     source_id: str
+    scope: str = "entry"
     source_closure_id: str | None = None
     trigger_event: str | None = None
     fsm_namespace: str | None = None
@@ -227,6 +231,10 @@ class MotionUnit:
 
     # Initial sample-and-hold captures.
     snapshots: list[SnapshotCapture] = field(default_factory=list)
+    # The same captures cut by when they are taken: ST4 cannot filter, and each scope is
+    # guarded differently -- per activation, once for the run, or on an event.
+    entry_snapshots: list[SnapshotCapture] = field(default_factory=list)
+    task_snapshots: list[SnapshotCapture] = field(default_factory=list)
 
     # Relative-from-start pose computations (e.g. pose_start_ee)
     relative_poses: list[RelativePoseCapture] = field(default_factory=list)

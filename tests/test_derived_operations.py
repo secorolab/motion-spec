@@ -82,6 +82,17 @@ def _derived(node: URIRef, suffix: str) -> URIRef:
 # --------------------------------------------------------------------------- #
 # Linear-distance materialization
 # --------------------------------------------------------------------------- #
+def _distance_coordinate(g: Graph, name: str, relation: URIRef) -> URIRef:
+    """One constrained sampling of `relation`: the node the operations hang off."""
+    coordinate = _u(name)
+    g.add((coordinate, RDF.type, GEOM_COORD.DistanceReference))
+    g.add((coordinate, GEOM_COORD.of, relation))
+    constraint = _u(f"c-{name}")
+    g.add((constraint, RDF.type, CSTR.Constraint))
+    g.add((constraint, CSTR.quantity, coordinate))
+    return coordinate
+
+
 def _distance_graph(*, end_wrt_name: str) -> tuple[Graph, URIRef]:
     """Distance between `shoulder wrt base` and `ee wrt <end_wrt_name>`, with a
     base<-table connecting pose available for the cross-frame path.
@@ -95,14 +106,11 @@ def _distance_graph(*, end_wrt_name: str) -> tuple[Graph, URIRef]:
     start = _pose(g, "pose-shoulder-base", shoulder, base)
     end = _pose(g, "pose-ee-x", ee, base if end_wrt_name == "frame-base" else table)
 
-    distance = _u("dist")
-    g.add((distance, RDF.type, GEOM_REL.LinearDistance))
-    g.add((distance, GEOM_REL["between-entities"], start))
-    g.add((distance, GEOM_REL["between-entities"], end))
-    constraint = _u("c-dist")
-    g.add((constraint, RDF.type, CSTR.Constraint))
-    g.add((constraint, CSTR.quantity, distance))
-    return g, distance
+    relation = _u("dist-rel")
+    g.add((relation, RDF.type, GEOM_REL.LinearDistance))
+    g.add((relation, GEOM_REL["between-entities"], start))
+    g.add((relation, GEOM_REL["between-entities"], end))
+    return g, _distance_coordinate(g, "dist", relation)
 
 
 def test_distance_materializes_magnitude_op() -> None:
@@ -135,6 +143,21 @@ def test_distance_same_frame_skips_reference_path() -> None:
     end_in_start = _derived(distance, "end-in-start-reference")
     assert (None, GEOM_OP.composite, end_in_start) not in g
     assert (None, RDF.type, GEOM_OP.PoseToLinearDistance) in g
+
+
+def test_each_coordinate_of_one_relation_computes_its_own_value() -> None:
+    """Two motions measuring the same two poses share the relation; sharing the derivation
+    would leave the second reading the first's value.
+    """
+    g, first = _distance_graph(end_wrt_name="frame-base")
+    second = _distance_coordinate(g, "dist-2", g.value(first, GEOM_COORD.of))
+    _materialize_linear_distance_operations(_model(g))
+
+    outputs = {
+        g.value(op, GEOM_OP.distance) for op in g.subjects(RDF.type, GEOM_OP.PoseToLinearDistance)
+    }
+    assert outputs == {first, second}
+    assert _derived(first, "relative-pose") != _derived(second, "relative-pose")
 
 
 # --------------------------------------------------------------------------- #

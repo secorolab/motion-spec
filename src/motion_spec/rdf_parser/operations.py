@@ -21,6 +21,7 @@ from motion_spec_dsl.rdf_parser.vocab import (
     CSTR,
     CSTR_EXT,
     CSTR_HDL,
+    GEOM_COORD,
     GEOM_OP,
     GEOM_OP_EXT,
     GEOM_PATH,
@@ -231,16 +232,25 @@ def _materialize_linear_distance_operations(model) -> None:
 
     The DSL graph states only the two pose endpoints; the inverse/composition path between their
     reference frames is derivable from the complete RDF graph.
+
+    The operations hang off the constraint's distance *coordinate*, not the relation it samples:
+    motions measuring the same two poses share one relation, and each still computes its own
+    value from its own operands.
     """
     graph = model.graph
     edges = _pose_edges(model)
-    for distance in list(graph.subjects(RDF.type, GEOM_REL.LinearDistance)):
+    for distance in list(graph.subjects(RDF.type, GEOM_COORD.DistanceReference)):
         if next(graph.subjects(CSTR.quantity, distance), None) is None:
             continue
-        endpoints = list(dict.fromkeys(graph.objects(distance, GEOM_REL["between-entities"])))
+        relation = graph.value(distance, GEOM_COORD["of"])
+        if relation is None:
+            raise ConstraintViolation(
+                "geometry", f"Distance coordinate {distance} states no linear distance."
+            )
+        endpoints = list(dict.fromkeys(graph.objects(relation, GEOM_REL["between-entities"])))
         if len(endpoints) != 2:
             raise ConstraintViolation(
-                "geometry", f"Linear distance {distance} needs exactly two pose endpoints."
+                "geometry", f"Linear distance {relation} needs exactly two pose endpoints."
             )
         start, end = endpoints
         start_of, start_wrt = _pose_frames(model, start)

@@ -254,7 +254,7 @@ inline void resolve_cartesian_acceleration(
 inline double monotonic_time_s() {
     using clock = std::chrono::steady_clock;
     static const auto start = clock::now();
-    return std::chrono::duration<double>(clock::now() - start).count();
+    return std::chrono::duration\<double\>(clock::now() - start).count();
 }
 
 inline bool timespec_less(const timespec &a, const timespec &b) {

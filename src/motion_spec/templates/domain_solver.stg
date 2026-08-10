@@ -80,7 +80,7 @@ assign-spatial-direction(specification, solver_state, column, chain_root) ::= <<
         alpha_fk_<solver_state>_<column>.JntToCart(
             state.<solver_state>.q,
             alpha_frame_<solver_state>_<column>,
-            motion_spec::runtime::find_segment_index(*robot.<solver_state>.chain, "<specification.as_seen_by.id>", "<chain_root>"));
+            <specification.as_seen_by.segment>);
         const KDL::Vector alpha_axis_<solver_state>_<column> =
             alpha_frame_<solver_state>_<column>.M * shared.<specification.direction.id>;
         state.<solver_state>.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::X), <column>) = alpha_axis_<solver_state>_<column>[0];
@@ -98,7 +98,7 @@ assign-spatial-direction(specification, solver_state, column, chain_root) ::= <<
         alpha_fk_<solver_state>_<column>.JntToCart(
             state.<solver_state>.q,
             alpha_frame_<solver_state>_<column>,
-            motion_spec::runtime::find_segment_index(*robot.<solver_state>.chain, "<specification.as_seen_by.id>", "<chain_root>"));
+            <specification.as_seen_by.segment>);
         const KDL::Vector alpha_axis_<solver_state>_<column> =
             alpha_frame_<solver_state>_<column>.M * KDL::Vector(<axis-to-vector.(specification.axis)>);
         state.<solver_state>.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::X), <column>) = alpha_axis_<solver_state>_<column>[0];
@@ -207,7 +207,7 @@ solver-output-Pose-robif2b(solver, chain_solver, out) ::= <<
     fk.JntToCart(
         state.<solver.id>.q,
         shared.<out.id>,
-        motion_spec::runtime::find_segment_index(*robot.<solver.id>.chain, "<out.of.id>", "<chain_solver.chain.root>"));
+        <out.of.segment>);
 }
 >>
 
@@ -234,7 +234,7 @@ solver-output-Pose-mj_kdl(solver, chain_solver, out) ::= <<
     fk.JntToCart(
         state.<solver.id>.q,
         shared.<out.id>,
-        motion_spec::runtime::find_segment_index(*robot.<solver.id>.chain, "<if(out.of.id)><out.of.id><else><chain_solver.chain.end><endif>", "<chain_solver.chain.root>"));
+        <if(out.of.id)><out.of.segment><else><chain_solver.chain.tip_segment><endif>);
 <endif>
 }
 >>
@@ -246,7 +246,7 @@ solver-output-VelocityTwist(solver, chain_solver, out, backend) ::= <<
     fk.JntToCart(
         q_qd_<solver.id>,
         tmp,
-        motion_spec::runtime::find_segment_index(*robot.<solver.id>.chain, "<out.of.id>", "<chain_solver.chain.root>"));
+        <out.of.segment>);
     shared.<out.id> = tmp.deriv();
 }
 >>
@@ -325,20 +325,20 @@ solver-output-Wrench-robif2b(solver, chain_solver, out) ::= <<
     const KDL::Wrench measured_<out.id>(
         KDL::Vector(<out.id>_sample.value.force[0], <out.id>_sample.value.force[1], <out.id>_sample.value.force[2]),
         KDL::Vector(<out.id>_sample.value.moment[0], <out.id>_sample.value.moment[1], <out.id>_sample.value.moment[2]));
-    const auto frame_<out.id> = [&](const char *name) {
+    const auto frame_<out.id> = [&](unsigned int segment) {
         KDL::Frame frame;
         KDL::ChainFkSolverPos_recursive fk(*robot.<solver.id>.chain);
         fk.JntToCart(
             state.<solver.id>.q,
             frame,
-            motion_spec::runtime::find_segment_index(*robot.<solver.id>.chain, name, "<chain_solver.chain.root>"));
+            segment);
         return frame;
     };
     const KDL::Wrench at_<out.id> = motion_spec::runtime::transform_wrench(
         measured_<out.id>,
-        frame_<out.id>("<out.sensor_frame.id>"),
-        frame_<out.id>("<out.reference_point.id>"),
-        frame_<out.id>("<out.as_seen_by.id>"));
+        frame_<out.id>(<out.sensor_frame.segment>),
+        frame_<out.id>(<out.reference_point.segment>),
+        frame_<out.id>(<out.as_seen_by.segment>));
     if (shared.<out.id>_ft_settle \< robot.ft_<out.sensor_name>_bias_samples) {
         ++shared.<out.id>_ft_settle;
         shared.<out.id>_ft_bias = at_<out.id>;   // last settle step is the tare sample
@@ -577,7 +577,7 @@ solver-run-finalize-robif2b(solver, motion_driver) ::= <<
 >>
 
 solver-assign-f-ext-modular(solver, chain_solver, force) ::= <<
-state.<solver.id>.f_ext[motion_spec::runtime::find_segment_index(*robot.<solver.id>.chain, "<force.attached_to.id>", "<chain_solver.chain.root>") - 1] += shared.<force.force.id>;
+state.<solver.id>.f_ext[<force.attached_to.segment> - 1] += shared.<force.force.id>;
 >>
 
 solver-stage-output(solver, chain_solver, backend) ::= <<

@@ -1047,14 +1047,14 @@ def simplicial_complex(model, node) -> SimplicialComplex:
     types = get_node_types(model.graph, node)
     if not {GEOM_ENT.SimplicialComplex, GEOM_ENT.Frame} & types:
         raise ConstraintViolation("geometry", f"Expected a rigid body or frame, got: {node}")
-    return SimplicialComplex(_body_or_self(model, node))
+    return SimplicialComplex(_body_or_self(model, node), uri=str(node))
 
 
 @reader
 def frame(model, node) -> Frame:
     """A reference frame, mapping a scene-dsl body-origin frame to its runtime body."""
     model.expect_type(node, GEOM_ENT["Frame"])
-    return Frame(_body_or_self(model, node))
+    return Frame(_body_or_self(model, node), uri=str(node))
 
 
 def _body_or_self(model, node) -> str:
@@ -1078,7 +1078,7 @@ def point(model, node) -> Point:
     """A Point, such as a frame origin."""
     if not {GEOM_ENT.Point, GEOM_ENT.Frame} & get_node_types(model.graph, node):
         raise ConstraintViolation("geometry", f"Expected a point or frame, got: {node}")
-    return Point(model.id(node))
+    return Point(model.id(node), uri=str(node))
 
 
 @reader

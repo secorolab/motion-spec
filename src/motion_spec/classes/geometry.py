@@ -38,6 +38,9 @@ class Point:
     """A named point, such as a frame origin."""
 
     id: str
+    uri: str = field(default="", metadata=INTERNAL)
+    segment: int | None = None
+    offset: dict | None = None
     type: str = field(default="Point")
 
 
@@ -47,6 +50,14 @@ class Frame:
 
     id: str
     is_scene_object: bool = False
+    # The scene node this stands for, kept so lowering can place it on a solver's chain.
+    uri: str = field(default="", metadata=INTERNAL)
+    # Where the frame sits on that chain, once a solver has resolved it: the segment index the
+    # forward kinematics is asked for, and the frame's constant pose on that segment when it is
+    # not the segment's own. Both are resolved while generating, so nothing is searched for at
+    # run time.
+    segment: int | None = None
+    offset: dict | None = None
     type: str = field(default="Frame")
 
 
@@ -56,6 +67,8 @@ class SimplicialComplex:
 
     id: str
     is_scene_object: bool = False
+    uri: str = field(default="", metadata=INTERNAL)
+    segment: int | None = None
     type: str = field(default="SimplicialComplex")
 
 

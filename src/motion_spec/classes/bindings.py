@@ -25,6 +25,13 @@ class ChainBinding:
     name: str
     # Ordered revolute joint local names, unprefixed; the runtime prefix is `runtime.prefix`.
     joints: list[str]
+    # Where a scene frame or body sits on this chain: the index of the segment standing for it
+    # and, for a frame, its constant pose on that segment. Keyed by IRI, filled from the scene.
+    # Lowering resolves against these, so no name reaches the generated code to be searched for.
+    frames: dict = field(default_factory=dict, metadata=INTERNAL)
+    bodies: dict = field(default_factory=dict, metadata=INTERNAL)
+    # The index the chain ends at, for generated code that means "the tip" without a frame.
+    tip_segment: int = 0
 
 
 @dataclass

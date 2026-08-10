@@ -454,25 +454,6 @@ inline unsigned int find_joint_index(const KDL::Chain &chain, std::string_view j
     throw std::runtime_error("KDL joint not found: " + std::string(joint_name));
 }
 
-inline unsigned int find_segment_index(
-        const KDL::Chain &chain,
-        std::string_view model_name,
-        std::string_view chain_root = {}) {
-    std::string target(model_name);
-    if (target.rfind("frame_", 0) == 0) {
-        target.replace(0, 6, "link_");
-    }
-    if (runtime_name_matches(chain_root, target)) {
-        return 0;
-    }
-    for (unsigned int i = 0; i \< chain.getNrOfSegments(); ++i) {
-        if (runtime_name_matches(chain.getSegment(i).getName(), target)) {
-            return i + 1;
-        }
-    }
-    throw std::runtime_error("KDL segment not found for model name: " + target);
-}
-
 <if(resources.by_kind.mobile_base)>
 inline void hddc2b_pltf_vel_drv_to_pltf(
         int num_drv,

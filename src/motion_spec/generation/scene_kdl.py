@@ -29,8 +29,8 @@ def kdl_header_name(source: str | Path) -> str:
     return f"{model_stem(source)}.kdl.hpp"
 
 
-def chain_for_iri(trees: list[dict], chain_iri: str) -> tuple[str, str, list[str]]:
-    """The generated C++ builders and MuJoCo joints for one declared serial chain."""
+def chain_for_iri(trees: list[dict], chain_iri: str) -> tuple[str, str, list[str], dict, dict, int]:
+    """The generated C++ builders, MuJoCo joints and segment lookups for one declared chain."""
     for tree in trees:
         for chain in tree["chains"]:
             if chain["iri"] == chain_iri:
@@ -38,8 +38,11 @@ def chain_for_iri(trees: list[dict], chain_iri: str) -> tuple[str, str, list[str
                     chain["cpp_name"],
                     tree["cpp_name"],
                     [joint["local_name"] for joint in chain["joints"]],
+                    chain["frames"],
+                    chain["bodies"],
+                    chain["tip_index"],
                 )
-    return "", "", []
+    return "", "", [], {}, {}, 0
 
 
 def _template_dir() -> Path:

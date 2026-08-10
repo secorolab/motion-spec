@@ -593,7 +593,9 @@ def robot_setups(model):
 
     setups_by_node, ordered = {}, []
     for assembly in _agent_assemblies(model, attach_by_body):
-        chain_name, tree_name, joints = chain_for_iri(trees, str(assembly.serial_chain))
+        chain_name, tree_name, joints, chain_frames, chain_bodies, chain_tip = chain_for_iri(
+            trees, str(assembly.serial_chain)
+        )
         # The arm is the authored device when one is bound, else sniffed from the asset path.
         if assembly.device:
             robot_model = _ROBOT_MODEL_BY_DEVICE.get(assembly.device, assembly.device)
@@ -608,6 +610,9 @@ def robot_setups(model):
                 tree=tree_name,
                 name=chain_name,
                 joints=joints,
+                frames=chain_frames,
+                bodies=chain_bodies,
+                tip_segment=chain_tip,
             ),
             hardware=HardwareBinding(
                 urdf=assembly.urdf,
@@ -629,6 +634,74 @@ def robot_setups(model):
         ordered.append(setup)
 
     return setups_by_node, ordered
+
+
+def _placed_on_chain(carrier) -> tuple[str, ...]:
+    """What of one carrier the generated code asks forward kinematics for.
+
+    Only these reach a `JntToCart`, so only these need a segment. A record may name frames it
+    never resolves through the chain -- a twist states the point it is taken about -- and
+    placing those would reject a model over a frame nothing looks up.
+    """
+    if hasattr(carrier, "sensor_frame"):
+        # A sensed wrench: read at the sensor, moved to the point the model asked for, and
+        # expressed in the frame it asked to see it in.
+        return ("sensor_frame", "reference_point", "as_seen_by")
+    if hasattr(carrier, "attached_to"):
+        return ("attached_to",)
+    if hasattr(carrier, "subspace"):
+        # An acceleration constraint whose direction is taken in a frame that moves with the arm.
+        return ("as_seen_by",)
+    return ("of",)
+
+
+def _place_on_chain(chain, item, owner: str) -> None:
+    """Resolve where one frame, point or body sits on `chain`, once, while generating.
+
+    The generated code is handed a segment index and a constant pose, never a name: a name
+    would have to be matched against the built chain at run time, and a frame that matched
+    nothing would surface as a dead controller on the first tick instead of an error here.
+    """
+    # A scene object carries no segment to fill: where it is comes from the simulator's own
+    # scene, not from this chain's kinematics.
+    if item is None or not hasattr(item, "segment") or item.segment is not None:
+        return
+    if getattr(item, "is_scene_object", False):
+        return
+    placement = chain.frames.get(item.uri)
+    if placement is None and item.uri in chain.bodies:
+        placement = {"index": chain.bodies[item.uri], "offset": None}
+    if placement is None:
+        raise ConstraintViolation(
+            "geometry",
+            f"'{item.id}' is not on the chain '{chain.name}' that {owner} runs on, so no "
+            f"forward kinematics reaches it. It has to be a frame or body the chain from "
+            f"'{chain.root}' to '{chain.tip}' passes through.",
+        )
+    if placement["offset"] is not None:
+        raise ConstraintViolation(
+            "geometry",
+            f"'{item.id}' sits at a pose on its body that no segment of '{chain.name}' stands "
+            f"for. Composing that offset onto the forward kinematics is not implemented; give "
+            f"the frame a segment of its own, by making it a chain endpoint or its body's root.",
+        )
+    item.segment = placement["index"]
+
+
+def _place_solver_on_chain(solver) -> None:
+    """Place every frame, point and body the solver's generated code asks kinematics for."""
+    carriers = [
+        *solver.output,
+        *(
+            constraint
+            for driver in solver.motion_drivers
+            for constraint in (*driver.acceleration_constraint, *driver.cartesian_acceleration)
+        ),
+        *(force for driver in solver.motion_drivers for force in driver.cartesian_force),
+    ]
+    for carrier in carriers:
+        for attribute in _placed_on_chain(carrier):
+            _place_on_chain(solver.chain, getattr(carrier, attribute, None), solver.id)
 
 
 def _runtime_frame(model, frame_node, runtime_prefix, owned_trees):
@@ -917,7 +990,7 @@ def _solver_with_input_and_output(model, node, setup: _ChainSetup) -> SolverWith
     # derived in `annotate_runtime`.
     gravity_node = graph.value(node, SLV.gravity)
 
-    return SolverWithInputAndOutput(
+    solver = SolverWithInputAndOutput(
         id=model.id(node),
         motion_drivers=[
             constraint_handler.authored_motion_drivers(model, driver)
@@ -938,6 +1011,7 @@ def _solver_with_input_and_output(model, node, setup: _ChainSetup) -> SolverWith
             constraint_handler.saturation(model, torque_limit) if torque_limit is not None else None
         ),
     )
+    return solver
 
 
 def _validate_solvers(serial_chain_solvers, backend: str) -> None:
@@ -1332,13 +1406,17 @@ def annotate_runtime(serial_chains, motions, backend: str) -> None:
     """Fold onto each solver what running it implies, once every solver is known.
 
     Which runtime it shares, whether it owns that runtime, which of its joint outputs a gripper
-    device reports rather than the chain, and -- last, so it sees the runtime flags -- the gravity
-    an RNE solver is built with.
+    device reports rather than the chain, where on its chain every frame it asks kinematics for
+    sits, and -- last, so it sees the runtime flags -- the gravity an RNE solver is built with.
 
     Raises:
         ConstraintViolation: a joint output falls outside the chain with no gripper bound to report
-            it, or a motion declares a read-only solver on a runtime torque-commanded elsewhere.
+            it, a frame is named that the solver's chain never reaches, or a motion declares a
+            read-only solver on a runtime torque-commanded elsewhere.
     """
+    for solver in serial_chains:
+        _place_solver_on_chain(solver)
+
     runtime_by_signature: dict[tuple, str] = {}
     owner_by_runtime: dict[str, str] = {}
     for solver in serial_chains:

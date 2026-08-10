@@ -30,9 +30,11 @@ struct <solver.id>_solver_state {
 };
 >>
 
-// A read-only solver never solves, so it carries no algorithm state (and may author no algorithm).
+// A solver nothing drives never solves, so it carries no algorithm state. This hook is handed the
+// resource solver, which states the algorithm it was resolved to; `read_only` is a motion slice's
+// word for the same thing and is not a field here.
 solver-state-algorithm-fields(solver) ::= <<
-<if(solver.read_only)><else><({solver-state-algorithm-fields-<solver.algorithm_name>})(solver)><endif>
+<if(solver.algorithm_name)><({solver-state-algorithm-fields-<solver.algorithm_name>})(solver)><endif>
 >>
 
 solver-state-algorithm-fields-ACHD(solver) ::= <<
@@ -59,7 +61,7 @@ solver-state-struct-extra-impl ::= [
 solver-no-extra(solver, chain_solver="") ::= <<>>
 
 solver-state-struct-extra(solver, backend) ::= <<
-<if(solver.read_only)><else><({<solver-state-struct-extra-impl.({<solver.algorithm_name>-<backend>})>})(solver)><endif>
+<if(solver.algorithm_name)><({<solver-state-struct-extra-impl.({<solver.algorithm_name>-<backend>})>})(solver)><endif>
 >>
 
 // mj_kdl gravity-compensates the ACHD command with a separate RNE pass.
@@ -222,12 +224,17 @@ solver-output-Pose-mj_kdl(solver, chain_solver, out) ::= <<
             &_body_frame_<out.id>)) {
         throw std::runtime_error("MuJoCo body not found for scene object pose output: <out.of.body>");
     }
+    // Unchecked, a miss leaves the default-constructed identity here and the pose below comes
+    // out stated in world rather than in the chain's base -- a target off by the whole base
+    // transform, with nothing said about it.
     KDL::Frame _base_world_frame_<solver.id>;
-    mj_kdl::get_body_frame(
+    if (!mj_kdl::get_body_frame(
             robot.<solver.id>.robot->model,
             robot.<solver.id>.robot->data,
             "<chain_solver.chain.root>",
-            &_base_world_frame_<solver.id>);
+            &_base_world_frame_<solver.id>)) {
+        throw std::runtime_error("MuJoCo body not found for chain root: <chain_solver.chain.root>");
+    }
     shared.<out.id> = _base_world_frame_<solver.id>.Inverse() * _body_frame_<out.id>;
 <else>
     KDL::ChainFkSolverPos_recursive fk(*robot.<solver.id>.chain);
@@ -256,7 +263,7 @@ solver-output-JointPosition(solver, chain_solver, out, backend) ::= <<
 >>
 
 solver-output-JointPosition-robif2b(solver, out) ::= <<
-shared.<out.id> = state.<solver.id>.q(motion_spec::runtime::find_joint_index(*robot.<solver.id>.chain, "<out.joint_name>"));
+shared.<out.id> = state.<solver.id>.q(<out.joint_index>);  // <out.joint_name>
 >>
 
 // A gripper mimic joint the chain does not articulate: the bound gripper device reports it,
@@ -269,6 +276,9 @@ gripper-joint-output-robif2b(solver, out) ::= <<
 shared.<out.id> = *robot.<solver.id>.gripper_pos;
 >>
 
+// The simulator answers for a joint the chain does not articulate -- a gripper mimic -- so the
+// name is asked of it first. A joint that is on the chain falls back to the resolved index; one
+// that is not has nowhere else to come from, so a miss has to say so.
 solver-output-JointPosition-mj_kdl(solver, out) ::= <<
 {
     double _joint_position_<out.id> = 0.0;
@@ -279,8 +289,9 @@ solver-output-JointPosition-mj_kdl(solver, out) ::= <<
             &_joint_position_<out.id>)) {
         shared.<out.id> = _joint_position_<out.id>;
     } else {
-        shared.<out.id> = state.<solver.id>.q(motion_spec::runtime::find_joint_index(*robot.<solver.id>.chain, "<out.joint_name>"));
-    }
+<if(out.joint_index)>        shared.<out.id> = state.<solver.id>.q(<out.joint_index>);
+<else>        throw std::runtime_error("MuJoCo reports no joint '<out.joint_name>', and it is not on the chain");
+<endif>    }
 }
 >>
 
@@ -367,7 +378,7 @@ solver-run-full(solver, chain_solver, motion_driver, backend) ::= <<
     KDL::SetToZero(state.<solver.id>.spatial_directions);
 <solver-assign-acceleration-input(solver, chain_solver, motion_driver)>
     KDL::SetToZero(state.<solver.id>.tau_ff);
-<motion_driver.joint_force:{jf |     state.<solver.id>.tau_ff(motion_spec::runtime::find_joint_index(*robot.<solver.id>.chain, "<jf.joint_name>")) += shared.<jf.force_id>;}; separator="\n">
+<motion_driver.joint_force:{jf |     state.<solver.id>.tau_ff(<jf.joint_index>) += shared.<jf.force_id>;  // <jf.joint_name>}; separator="\n">
 <solver-clear-external-forces(solver, chain_solver, motion_driver)>
 <if(motion_driver.has_cartesian_force)>
 <motion_driver.cartesian_force:{f |     <solver-assign-f-ext-modular(solver, chain_solver, f)>}; separator="\n">

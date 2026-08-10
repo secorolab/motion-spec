@@ -1352,7 +1352,22 @@ def evaluator_term(evaluator) -> dict:
     return term
 
 
-def _stamp_terms(monitor, terms, any_flag) -> None:
+def _stamp_terms(monitor, terms, any_flag, where: str) -> None:
+    """Give a monitor the boolean terms its condition is built from.
+
+    Raises:
+        ConstraintViolation: the condition lowered to no terms at all, which renders as a
+            constant false -- a monitor that can never fire, and an FSM that can never leave the
+            state it watches.
+    """
+    if not terms:
+        raise ConstraintViolation(
+            "coordination",
+            f"monitor '{monitor.id}' ({where}) watches a condition that lowered to no terms, so "
+            "it renders as a constant false: it can never fire, and the FSM can never leave the "
+            "state it runs in. Every constraint it names is one nothing evaluates -- give it a "
+            "constraint with an error to watch, or an elapsed time.",
+        )
     monitor.active_terms = terms
     monitor.active_terms_present = bool(terms)
     monitor.active_any = any_flag
@@ -1389,6 +1404,7 @@ def _set_monitor_conditions(motion, phase: str) -> None:
                     and (evaluator.error or evaluator.is_elapsed)
                 ],
                 bool(monitor.group_any),
+                f"the '{phase}' group in motion '{motion.id}'",
             )
             continue
         # A whole-section monitor over a flat constraint list, from a graph minted before
@@ -1396,7 +1412,7 @@ def _set_monitor_conditions(motion, phase: str) -> None:
         # introspection replay rebuilds the IR from them, so the join is spelled out here: a
         # section only ever linked flat when it meant a conjunction.
         if getattr(monitor, aggregate_field):
-            _stamp_terms(monitor, terms, False)
+            _stamp_terms(monitor, terms, False, f"the whole '{phase}' section of '{motion.id}'")
             continue
         direct = [
             direct_by_constraint[constraint_id]
@@ -1404,17 +1420,31 @@ def _set_monitor_conditions(motion, phase: str) -> None:
             if constraint_id in direct_by_constraint
         ]
         if direct:
-            _stamp_terms(monitor, direct, False)
+            _stamp_terms(monitor, direct, False, f"the '{phase}' phase of '{motion.id}'")
 
 
 def _set_motion_conditions(motion) -> None:
-    """Fold the until and when boolean terms onto a motion."""
+    """Fold the until and when boolean terms onto a motion.
+
+    Raises:
+        ConstraintViolation: the motion states a `when` precondition none of whose conditions
+            lowered to a term. Declaring none is fine and means the motion is always ready;
+            stating one that evaluates to nothing renders as `can_start` returning a constant
+            true, so the motion starts as if the precondition had been met.
+    """
     _set_monitor_conditions(motion, "until")
     motion.when_terms = [
         evaluator_term(evaluator)
         for evaluator in motion.when_evaluators
         if evaluator.error or evaluator.is_elapsed
     ]
+    if motion.when_evaluators and not motion.when_terms:
+        raise ConstraintViolation(
+            "coordination",
+            f"motion '{motion.id}' states a 'when' precondition that lowered to no terms, so it "
+            "would start unconditionally -- the gate reads as always open, not as the condition "
+            "the model states. Every condition it names is one nothing evaluates.",
+        )
     motion.when_terms_present = bool(motion.when_terms)
     _set_monitor_conditions(motion, "when")
 
@@ -1658,20 +1688,50 @@ def _apply_fsm_wiring(motions, fsm) -> dict:
 
     _apply_reentry_events(motions, fsm)
     _check_occurrence_publishes(motions)
-    _check_every_commanding_motion_runs(motions, namespace)
+    _check_every_commanding_motion_runs(motions, fsm, meta)
 
     return meta
 
 
-def _check_every_commanding_motion_runs(motions, namespace: str) -> None:
-    """A motion that commands a robot has to be a state the FSM can be in.
+def _reachable_states(fsm) -> set:
+    """The states the FSM can reach from its start state.
+
+    A transition fires only when a reaction names it, so one no reaction refers to is not an
+    edge: following it would call a state reachable that the generated FSM can never enter.
+    """
+    transitions = {row["id"]: row for row in fsm["transitions_table"]}
+    outgoing: dict = {}
+    for reaction in fsm["reactions_table"]:
+        transition = transitions.get(reaction["do_transition"])
+        if transition is not None:
+            outgoing.setdefault(transition["from_state"], set()).add(transition["to_state"])
+
+    reached = {fsm["start_state"]}
+    pending = [fsm["start_state"]]
+    while pending:
+        for state in outgoing.get(pending.pop(), ()):
+            if state not in reached:
+                reached.add(state)
+                pending.append(state)
+
+    return reached
+
+
+def _check_every_commanding_motion_runs(motions, fsm, meta) -> None:
+    """Motions and the states that run them have to cover each other.
 
     A motion reaches its state by firing the event that leaves it, so a motion that fires
     nothing is bound to nothing: the dispatch gets no case, the motion never steps, and the
     generated program runs its loop commanding whatever the drivers start at -- zero torque on
-    a torque-controlled arm, which is an arm that falls. That has to be an error here rather
-    than silence that only shows up on hardware.
+    a torque-controlled arm, which is an arm that falls.
+
+    The same hole opens from the other side. A state the FSM can sit in with no motion bound to
+    it renders no `case` either, and the loop keeps calling the driver every tick with whatever
+    was staged last, so the arm is uncommanded for exactly as long as the FSM stays there. Only
+    two states are allowed to run nothing: the end state, which the loop breaks on before it
+    dispatches, and a state the heartbeat leaves, which the FSM does not dwell in.
     """
+    namespace = meta["cpp_namespace"]
     orphaned = [motion.id for motion in motions if motion.controllers and not motion.fsm_state]
     if orphaned:
         raise ConstraintViolation(
@@ -1679,6 +1739,23 @@ def _check_every_commanding_motion_runs(motions, namespace: str) -> None:
             f"{', '.join(orphaned)} command a robot but no state of the FSM '{namespace}' runs "
             "them. A motion is bound to the state its monitor's event leaves, so a motion that "
             "declares no monitor firing an FSM event is never stepped.",
+        )
+
+    passed_through = {transition["from"] for transition in meta["step_transitions"]}
+    idle = sorted(
+        _reachable_states(fsm)
+        - {motion.fsm_state for motion in motions}
+        - passed_through
+        - {fsm["end_state"]}
+    )
+    if idle:
+        raise ConstraintViolation(
+            "coordination",
+            f"the FSM '{namespace}' can be in {', '.join(idle)}, but no motion runs there. The "
+            "dispatch gets no case for a state nothing is bound to, so the loop steps no motion "
+            "while the FSM sits in it and the robot keeps whatever command was staged last -- "
+            "zero torque, if nothing has run yet. Bind a motion to it with 'runs-in', or give "
+            "the state a transition the heartbeat takes so the FSM passes straight through.",
         )
 
 

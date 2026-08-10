@@ -1003,7 +1003,7 @@ def _solver_with_input_and_output(model, node, setup: _ChainSetup) -> SolverWith
         sensors=setup.sensors,
         devices=setup.devices,
         algorithm=family,
-        algorithm_name=family.codegen_name,
+        algorithm_name=family.codegen_name or None,
         derived_root_acceleration=quantities.parse_xyz(model, gravity_node)
         if gravity_node
         else None,
@@ -1452,6 +1452,7 @@ def annotate_runtime(serial_chains, motions, backend: str) -> None:
     }
     for solver in serial_chains:
         _split_gripper_outputs(solver, backend)
+        _index_chain_joints(solver)
     _apply_runtime_to_motions(serial_chains, motions, commanding)
     # The authored solver value is the Vereshchagin root acceleration, which ACHD takes as-is;
     # KDL's inverse-dynamics solver wants the opposite sign, so every backend running an RNE
@@ -1490,6 +1491,49 @@ def _split_gripper_outputs(solver, backend: str) -> None:
     for device in solver.devices:
         if device.kind in GRIPPER_DEVICES:
             device.joint_outputs = gripper_outputs
+
+
+def _chain_joint_index(solver, joint_name: str) -> int | None:
+    """Where a joint sits in the chain's joint array, or None when it is not on the chain.
+
+    Outputs carry the joint runtime-scoped and an authored joint force carries it bare, so both
+    spellings are tried; the exact name wins, so a prefix that is also part of a joint's own name
+    cannot resolve to the wrong one.
+    """
+    joints = solver.chain.joints
+    for candidate in (joint_name, joint_name.removeprefix(solver.runtime.prefix)):
+        if candidate in joints:
+            return joints.index(candidate)
+
+    return None
+
+
+def _index_chain_joints(solver) -> None:
+    """Resolve every joint the generated code addresses to its index on this chain.
+
+    The alternative is handing the name to the generated program and searching the built chain on
+    the first tick, which can only fail where nothing can act on it -- and searching by name has
+    to match loosely enough that it can answer with the wrong joint, which on the feed-forward
+    path means torque on a joint the model never named.
+
+    Raises:
+        ConstraintViolation: a joint force names a joint the chain does not articulate, so there
+            is no joint-array slot to add it to.
+    """
+    for out in solver.output:
+        if getattr(out, "type", "") == "JointPosition":
+            out.joint_index = _chain_joint_index(solver, out.joint_name)
+    for driver in solver.motion_drivers:
+        for force in driver.joint_force:
+            force.joint_index = _chain_joint_index(solver, force.joint_name)
+            if force.joint_index is None:
+                raise ConstraintViolation(
+                    "solver",
+                    f"joint force '{force.id}' acts on joint '{force.joint_name}', which is not "
+                    f"on solver '{solver.id}'s chain from '{solver.chain.root}' to "
+                    f"'{solver.chain.tip}'. A joint force is added to that chain's joint torques, "
+                    "so it has to name a joint the chain articulates.",
+                )
 
 
 def _apply_runtime_to_motions(serial_chains, motions, commanding) -> None:

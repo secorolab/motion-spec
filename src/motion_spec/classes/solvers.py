@@ -147,6 +147,8 @@ class JointForceSpecification:
     id: str
     force_id: str
     joint_name: str
+    # Where the joint sits in the chain's joint array, resolved while generating.
+    joint_index: int | None = None
     type: str = field(default="JointForceSpecification")
 
 
@@ -176,7 +178,9 @@ class SolverWithInputAndOutput:
     # What drives this chain, resolved once from the algorithm the model names; the runtime and
     # the templates dispatch on the name, the lowering reads the record.
     algorithm: type[DynamicsSolverFamily] | None = field(default=None, metadata=INTERNAL)
-    algorithm_name: str = ""
+    # None, not "", when the model names no algorithm: ST4 reads an empty string as present and
+    # would dispatch on it.
+    algorithm_name: str | None = None
     # What the scene mounts on this chain, and what hardware is bound to drive it.
     sensors: list[SensorBinding] = field(default_factory=list)
     devices: list[DeviceBinding] = field(default_factory=list)

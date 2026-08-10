@@ -41,9 +41,10 @@ def _config_keys(ir: dict) -> set[str]:
 
 
 def _toml_sections(name: str) -> set[str]:
-    return set(
-        re.findall(r"^\[([^]]+)\]", (MODELS / name / "robot.toml").read_text(), re.MULTILINE)
-    )
+    """The device sections, the same cut runner.py makes: [ros.*] configures the generated
+    publishers, not a device the run binds, so no derived key ever answers to it."""
+    found = re.findall(r"^\[([^]]+)\]", (MODELS / name / "robot.toml").read_text(), re.MULTILINE)
+    return {key for key in found if key.split(".")[0] != "ros"}
 
 
 @pytest.fixture(scope="module")

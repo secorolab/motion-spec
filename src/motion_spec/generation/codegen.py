@@ -19,6 +19,15 @@ MAIN_TEMPLATE = "main"
 # The templates ship inside the package, so they sit beside it however it was installed.
 TEMPLATES = Path(__file__).resolve().parents[1] / "templates"
 
+# A render that reaches the end of the group still exits 0; anything it could not resolve is
+# reported on stderr under this prefix. A group that fails to parse or a template that does not
+# exist exits non-zero instead, so those never reach here.
+ST_RUNTIME_ERROR = "Runtime Error:"
+# ST4 reports a read of an absent JSON property this way while still returning null, and the
+# templates rely on exactly that to ask whether an optional section was emitted at all
+# (`<if(resources.by_kind.mobile_base)>`). It is the one runtime error that means nothing.
+ST_OPTIONAL_READ = "no such property or can't access"
+
 
 def write_json(path: Path, payload):
     """Write payload as pretty, dataclass-aware JSON, creating parent directories.
@@ -73,7 +82,32 @@ def render_template(
             ) from exc
         raise RuntimeError(error_text) from exc
 
+    _reject_dropped_output(template_name, output_path, result.stderr)
     output_path.write_text(_collapse_blank_lines(result.stdout))
+
+
+def _reject_dropped_output(template_name: str, output_path: Path, stderr: str) -> None:
+    """Fail on the ST4 errors that silently shorten the generated C++.
+
+    ST4 exits 0 after a dispatch that found no template, a call with the wrong arity, or an
+    undefined attribute: it renders the fragment as nothing and reports the reason on stderr.
+    Written out, that is C++ which compiles and does less than the model asked -- the empty
+    `switch` that stepped no motion and left a torque-controlled arm commanding zero. Reading
+    the reason is the whole check.
+
+    Raises:
+        RuntimeError: the render reported anything other than a read of an absent property.
+    """
+    dropped = [
+        line.strip()
+        for line in stderr.splitlines()
+        if line.startswith(ST_RUNTIME_ERROR) and ST_OPTIONAL_READ not in line
+    ]
+    if dropped:
+        raise RuntimeError(
+            f"{template_name}: StringTemplate emitted nothing where it meant to emit code, so "
+            f"{output_path.name} would be written incomplete:\n  " + "\n  ".join(dropped)
+        )
 
 
 def compile_frame_log_proto(proto_path: Path) -> None:

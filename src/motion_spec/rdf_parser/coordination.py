@@ -445,6 +445,45 @@ def detect_shape(type_name: str, pose_path: str) -> dict:
     }
 
 
+def observation_shape(type_name: str, pose_path: str) -> dict:
+    """How a subscription reads one message: where it holds its detections, and per detection
+    which object it is, which frame it arrived in, and the pose it reports.
+
+    The same questions `detect_shape` asks of an action result, asked of a message that stands
+    on its own -- there is no goal, so nothing names the targets in the payload.
+
+    Raises:
+        ConstraintViolation: the message does not offer exactly one of what an observation needs,
+            or the fields the model named are not a repeated field and a pose within it.
+    """
+    root = _message_class(type_name)
+    package, cpp_type, include = _cpp_names(root)
+    detections_path, detection = _repeated_leaf(root, type_name)
+    headers = [name for name, element, _many in _fields(detection) if element == _HEADER_TYPE]
+    element_name = _type_name_of(detection)
+    ids = [
+        name for name, element, many in _fields(detection) if not many and element in _STRING_TYPES
+    ]
+    header = _sole(headers, f"'{_HEADER_TYPE}' fields", element_name)
+
+    return {
+        "package": package,
+        "cpp_type": cpp_type,
+        "include": include,
+        # The message may reach into other interface packages; the build needs every one of them.
+        "packages": sorted(
+            {package} | _leaf_packages(_shape_of(root, type_name, package, include))
+        ),
+        "detections_path": detections_path,
+        "id_path": _sole(ids, "string fields", element_name),
+        "frame_path": f"{header}.{_FRAME_FIELD}",
+        "pose_path": _detection_pose(detection, element_name, pose_path),
+        # The repeated field the pose is read out of, so a detection carrying none is skipped
+        # rather than indexed into.
+        "pose_container": pose_path.partition(".")[0],
+    }
+
+
 def _detection_pose(detection, element_name: str, pose_path: str) -> str:
     """The accessor from one detection to the pose it reports, off the two fields the model named.
 

@@ -633,7 +633,7 @@ def ros_action_clients(model) -> list:
     detection has to arrive in to be that pose.
     """
     graph = model.graph
-    written = quantities.detect_written_poses(model)
+    written = quantities.perceived_written_poses(model)
     clients = []
     for act in sorted(graph.subjects(RDF["type"], NS_MM_ROS["Action"]), key=str):
         # A member is a goal arriving: that action is served, not performed.
@@ -665,6 +665,51 @@ def ros_action_clients(model) -> list:
         )
 
     return clients
+
+
+def ros_subscriptions(model) -> list:
+    """The topics the model reads object poses off, one per channel.
+
+    A topic the model subscribes to is one it states features of interest for: it says which
+    objects the channel informs it about, and -- per object -- the world pose a detection writes
+    and the frame it has to arrive in to be that pose. A topic the model publishes carries field
+    rows and no feature of interest, so it is not one of these.
+    """
+    graph = model.graph
+    written = quantities.perceived_written_poses(model)
+    subscriptions = []
+    for node in sorted(graph.subjects(RDF["type"], NS_MM_ROS["Topic"]), key=str):
+        rows = written.get(str(node)) or []
+        if not rows:
+            continue
+        type_name = str(graph.value(node, NS_MM_ROS["type-name"]) or "")
+        shape = coordination.observation_shape(
+            type_name, str(graph.value(node, NS_MM_ROS["field-path"]) or "")
+        )
+        subscriptions.append(
+            {
+                "sub_id": model.id(node),
+                "channel": str(graph.value(node, NS_MM_ROS["channel-name"]) or ""),
+                "type_name": type_name,
+                "cpp_type": shape["cpp_type"],
+                "include": shape["include"],
+                "pkg": shape["package"],
+                "packages": shape["packages"],
+                "written_poses": rows,
+                **{
+                    key: shape[key]
+                    for key in (
+                        "detections_path",
+                        "id_path",
+                        "frame_path",
+                        "pose_path",
+                        "pose_container",
+                    )
+                },
+            }
+        )
+
+    return subscriptions
 
 
 def _add_goal_status_slots(model, shared_data, rows, seen, action_clients) -> None:
@@ -938,6 +983,7 @@ def build_introspection(
     control_period_ns,
     backend,
     action_clients=(),
+    subscriptions=(),
 ):
     """Build the introspection artifact, and the value projections that ride beside it.
 
@@ -993,6 +1039,7 @@ def build_introspection(
         motions,
         robots.serial_chains,
         computation.views,
+        subscriptions,
     )
 
     # The registry grew while folding the samples in: rebuild the table and backfill every row

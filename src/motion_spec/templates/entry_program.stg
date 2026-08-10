@@ -66,6 +66,8 @@ int main(int argc, char **argv) {
 <if(communication.ros)>
 <ros-joint-states-setup(communication.ros)>
 <ros-spin-start(communication.ros)>
+<ros-publish-tick-locals(communication.ros)>
+<ros-subscriptions-wait(communication.ros)>
 <endif>
 
 <if(coordination.fsm)>
@@ -87,9 +89,6 @@ int main(int argc, char **argv) {
     timespec _next_tick{};
     clock_gettime(CLOCK_MONOTONIC, &_next_tick);
     double _prev_clock_s = 0.0;
-<if(communication.ros)>
-<ros-publish-tick-locals(communication.ros)>
-<endif>
     while (!motion_spec::runtime::stop_requested() && (<app-loop-condition(configuration.backend, resources.by_kind.serial_chain)>)<if(communication.ros)> && rclcpp::ok()<endif>) {
         shared.clock_time_s = <clock-time-source(configuration.backend, resources.by_kind.serial_chain, resources.by_kind.serial_chain)>;
         // Integrators step with the time that actually elapsed, not the period we asked for: the

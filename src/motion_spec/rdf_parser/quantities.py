@@ -839,17 +839,21 @@ def _is_duration(model, node) -> bool:
     return model.graph.value(node, QUDT_SCHEMA.hasQuantityKind) == NS_MM_QUDT_QTY["Time"]
 
 
-def detect_written_poses(model) -> dict[str, list[dict]]:
-    """Per detect act, the world poses its result writes and the frame each must arrive in.
+def perceived_written_poses(model) -> dict[str, list[dict]]:
+    """Per perception source, the world poses it writes and the frame each must arrive in.
 
-    A world pose `of:` an object an act locates has the act as its one producer, so the
-    kinematics must not also write it -- these are exactly the world-scoped pose coordinates a
-    chain would otherwise observe. The frame is the pose's own `with-respect-to`: a detection
-    stated in any other frame is not the pose the model asked for.
+    A source is any node stating the objects it observes -- a detect act that asks once, or a
+    topic the model stands subscribed to. A world pose `of:` an object a source observes has that
+    source as its one producer, so the kinematics must not also write it -- these are exactly the
+    world-scoped pose coordinates a chain would otherwise observe. The frame is the pose's own
+    `with-respect-to`: a detection stated in any other frame is not the pose the model asked for.
+
+    A node that observes nothing -- a published topic -- contributes no rows, so every consumer
+    passes over it without filtering.
 
     Raises:
-        ConstraintViolation: an act locates an object no world pose is stated of, so its result
-            has nowhere to land.
+        ConstraintViolation: a source observes an object no world pose is stated of, so a
+            detection has nowhere to land.
     """
     graph = model.graph
     world_poses = [
@@ -857,8 +861,13 @@ def detect_written_poses(model) -> dict[str, list[dict]]:
         for node in sorted(graph.subjects(RDF["type"], GEOM_COORD["PoseCoordinate"]), key=str)
         if getattr(model.context_scope(node), "section", None) == "world"
     ]
+    sources = sorted(
+        set(graph.subjects(RDF["type"], NS_MM_ROS["Action"]))
+        | set(graph.subjects(RDF["type"], NS_MM_ROS["Topic"])),
+        key=str,
+    )
     written: dict[str, list[dict]] = {}
-    for act in sorted(graph.subjects(RDF["type"], NS_MM_ROS["Action"]), key=str):
+    for act in sources:
         rows = []
         for target in sorted(graph.objects(act, SOSA.hasFeatureOfInterest), key=str):
             located = _body_or_self(model, target)
@@ -866,8 +875,8 @@ def detect_written_poses(model) -> dict[str, list[dict]]:
             if not matched:
                 raise ConstraintViolation(
                     "communication",
-                    f"action '{model.id(act)}' locates '{located}', but no world pose is stated "
-                    "of it, so the result has nowhere to land",
+                    f"source '{model.id(act)}' observes '{located}', but no world pose is stated "
+                    "of it, so a detection has nowhere to land",
                 )
             rows.extend(
                 {"target_iri": str(target), "pose_id": item.id, "frame_id": item.with_respect_to.id}
@@ -2064,7 +2073,13 @@ def _owners_by_value(motions, closures: dict) -> _ValueOwners:
 
 
 def annotate_dataflow(
-    introspection: dict, shared_data: list, closures: dict, motions, serial_chain_solvers, views
+    introspection: dict,
+    shared_data: list,
+    closures: dict,
+    motions,
+    serial_chain_solvers,
+    views,
+    subscriptions=(),
 ) -> dict:
     """Give every shared value its producer, its write cadence and the storage those imply, then
     apply that contract: drop what nothing writes, move what is written once into the header, and
@@ -2079,24 +2094,33 @@ def annotate_dataflow(
             closure_by_output.setdefault(out_id, set()).add(closure_id)
     solver_by_output, sensor_outputs, measured_outputs = _writers_by_output(serial_chain_solvers)
     owners, block_ids = _owners_by_value(motions, closures)
-    action_by_output = {
-        written_id: client["act_id"]
-        for motion in motions
-        for client in motion.action_clients
-        for written_id in (
-            client["status_id"],
-            *(row["pose_id"] for row in client["written_poses"]),
-        )
+    # Named by the mechanism that produced the value, so the artifact says whether a pose was
+    # asked for once or arrived on a standing channel.
+    perceived_by_output = {
+        **{
+            written_id: {"kind": "action", "id": client["act_id"]}
+            for motion in motions
+            for client in motion.action_clients
+            for written_id in (
+                client["status_id"],
+                *(row["pose_id"] for row in client["written_poses"]),
+            )
+        },
+        **{
+            row["pose_id"]: {"kind": "subscription", "id": sub["sub_id"]}
+            for sub in subscriptions
+            for row in sub["written_poses"]
+        },
     }
 
     def contract(item) -> _Contract:
         """The producer and write cadence of one shared-data member."""
         if item.id in PORT_PRODUCERS:
             return _Contract(PORT_PRODUCERS[item.id], "tick")
-        if item.id in action_by_output:
-            # A result lands on whatever tick it arrives on, from the executor thread rather
+        if item.id in perceived_by_output:
+            # A detection lands on whatever tick it arrives on, from the executor thread rather
             # than inside a motion's step, so it is live in every state.
-            return _Contract({"kind": "action", "id": action_by_output[item.id]}, "tick")
+            return _Contract(perceived_by_output[item.id], "tick")
         motion_ids = owners.get(item.id)
         cadence = {"motions": sorted(motion_ids)} if motion_ids else "tick"
         if getattr(item, "role", None) == "joint_space":

@@ -27,7 +27,16 @@ def test_scene_kdl_adapter_derives_solver_chains_and_writes_header(tmp_path: Pat
 
     trees = build_kdl_trees(graph, scene.parent)
     chain = next(chain for tree in trees for chain in tree["chains"])
-    assert chain_for_iri(trees, chain["iri"])[2] == [f"joint_{number}" for number in range(1, 8)]
+    record = chain_for_iri(trees, chain["iri"])
+    assert record["joints"] == [f"joint_{number}" for number in range(1, 8)]
+    # The world model binds a measurement to the segment a joint moves, so every chain joint has
+    # to name one -- and the chain's own endpoints have to be nameable in the whole tree.
+    assert len(record["joint_segments"]) == len(record["joints"])
+    assert all(record["joint_segments"])
+    names = set(record["world_segments"].values())
+    assert record["world_root"] in names
+    assert record["world_tip"] in names
+    assert set(record["joint_segments"]) <= names
 
     header = write_scene_kdl_header(graph, tmp_path, scene.name, scene.parent)
     assert header.name == "pick_place_single.kdl.hpp"

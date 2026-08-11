@@ -32,6 +32,14 @@ class ChainBinding:
     bodies: dict = field(default_factory=dict, metadata=INTERNAL)
     # The index the chain ends at, for generated code that means "the tip" without a frame.
     tip_segment: int = 0
+    # The world model works in the built tree's own names, not in this chain's numbering: the
+    # segment each chain joint moves, and the chain's endpoints as the whole tree names them.
+    joint_segments: list[str] = field(default_factory=list)
+    world_root: str = ""
+    world_tip: str = ""
+    # Every scene element this chain reaches, by IRI, named as the tree names it. Startup wiring
+    # resolves an index from a name, so only lowering needs the whole lookup.
+    world_segments: dict = field(default_factory=dict, metadata=INTERNAL)
 
 
 @dataclass

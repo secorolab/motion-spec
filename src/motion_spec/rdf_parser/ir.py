@@ -48,7 +48,7 @@ def generate_ir(manifest_path) -> dict:
     scene = resources.read_scene(model)
     fsm = coordination.read_fsm(model)
     derivation = constraint_handler.solver_derivation_context(model)
-    setups, _ordered = resources.robot_setups(model)
+    setups, _ordered, world_trees = resources.robot_setups(model)
 
     # One scope for the whole active block: a step reachable from both a solver and a handler is
     # emitted once, and the four sections are only ever read as their union.
@@ -78,7 +78,7 @@ def generate_ir(manifest_path) -> dict:
     motions, fsm_meta = coordination.build_motions(
         model, handlers, robots, computation, derivation, fsm
     )
-    resources.annotate_runtime(robots.serial_chains, motions, backend)
+    world_frames = resources.annotate_runtime(robots.serial_chains, motions, backend)
 
     if scene.timestep_s <= 0:
         raise ValueError("ENVIRONMENT timestep must be positive.")
@@ -142,7 +142,7 @@ def generate_ir(manifest_path) -> dict:
             ),
             "trace": resources.TRACE_DISABLED,
         },
-        "resources": _resources_section(robots),
+        "resources": _resources_section(robots, world_trees, world_frames),
         "composition": {"scene": scene},
         "computation": _computation_section(closures, views, shared_data, values, motions),
         "coordination": _coordination_section(motions, fsm, fsm_meta),
@@ -157,12 +157,15 @@ def generate_ir(manifest_path) -> dict:
     }
 
 
-def _resources_section(robots) -> dict:
+def _resources_section(robots, world_trees, world_frames) -> dict:
     """Every actuated resource the program commands, plus the by-kind cuts of it.
 
     An arm and a wheeled base are both actuated resources with kinematics, solvers and devices, so
     they ride in one kind-tagged collection; the views are filtered here because ST4 cannot
     filter, and each is absent rather than empty when the model has none of that kind.
+
+    `world_trees` is every distinct scene tree, once -- several robots may share one -- and
+    `world_frames` every pose the one world model is asked for.
     """
     every = [*robots.serial_chains, *robots.platform_velocity, *robots.platform_force]
     by_kind = {}
@@ -183,12 +186,20 @@ def _resources_section(robots) -> dict:
     )
 
     # `by_id` is how a per-motion solver slice resolves everything the solver owns.
-    return {
+    section = {
         "robots": every,
         "by_kind": by_kind,
         "by_id": robots.by_id,
         "device_kinds": {kind: True for kind in device_kinds},
     }
+    if world_trees:
+        section["world_trees"] = [
+            {"name": tree["name"], "cpp_name": tree["cpp_name"]} for tree in world_trees
+        ]
+    if world_frames:
+        section["world_frames"] = world_frames
+
+    return section
 
 
 def _computation_section(closures, views, shared_data, values, motions) -> dict:

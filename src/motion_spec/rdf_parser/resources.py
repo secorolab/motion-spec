@@ -577,8 +577,9 @@ def robot_setups(model):
     """Per-robot chain setups, sourced from the scene-dsl graph.
 
     Returns:
-        `(setups_by_node, ordered)`: the setup for each robot's abstract agent node -- the target
-        of a solver's `agn:of-agent` -- and the same setups in declaration order
+        `(setups_by_node, ordered, trees)`: the setup for each robot's abstract agent node -- the
+        target of a solver's `agn:of-agent` -- the same setups in declaration order, and every
+        distinct scene tree, which the one world model is built from
     """
     from motion_spec.generation.scene_kdl import chain_for_iri
 
@@ -593,9 +594,7 @@ def robot_setups(model):
 
     setups_by_node, ordered = {}, []
     for assembly in _agent_assemblies(model, attach_by_body):
-        chain_name, tree_name, joints, chain_frames, chain_bodies, chain_tip = chain_for_iri(
-            trees, str(assembly.serial_chain)
-        )
+        chain = chain_for_iri(trees, str(assembly.serial_chain))
         # The arm is the authored device when one is bound, else sniffed from the asset path.
         if assembly.device:
             robot_model = _ROBOT_MODEL_BY_DEVICE.get(assembly.device, assembly.device)
@@ -607,12 +606,16 @@ def robot_setups(model):
                 root=assembly.chain_root,
                 end=assembly.tip,
                 tip=assembly.tip,
-                tree=tree_name,
-                name=chain_name,
-                joints=joints,
-                frames=chain_frames,
-                bodies=chain_bodies,
-                tip_segment=chain_tip,
+                tree=chain["tree"],
+                name=chain["name"],
+                joints=chain["joints"],
+                frames=chain["frames"],
+                bodies=chain["bodies"],
+                tip_segment=chain["tip_segment"],
+                joint_segments=chain["joint_segments"],
+                world_root=chain["world_root"],
+                world_tip=chain["world_tip"],
+                world_segments=chain["world_segments"],
             ),
             hardware=HardwareBinding(
                 urdf=assembly.urdf,
@@ -633,41 +636,52 @@ def robot_setups(model):
         setups_by_node[assembly.agent] = setup
         ordered.append(setup)
 
-    return setups_by_node, ordered
+    return setups_by_node, ordered, trees
 
 
-def _placed_on_chain(carrier) -> tuple[str, ...]:
-    """What of one carrier the generated code asks forward kinematics for.
+def _placed_on_chain(carrier, backend: str) -> tuple[tuple[str, bool], ...]:
+    """What of one carrier the generated code asks forward kinematics for, and which authority
+    answers: the one world model, or this chain's own numbering.
 
-    Only these reach a `JntToCart`, so only these need a segment. A record may name frames it
-    never resolves through the chain -- a twist states the point it is taken about -- and
-    placing those would reject a model over a frame nothing looks up.
+    Only these reach kinematics, so only these need placing. A record may name frames it never
+    resolves through the chain -- a twist states the point it is taken about -- and placing
+    those would reject a model over a frame nothing looks up.
     """
     if hasattr(carrier, "sensor_frame"):
         # A sensed wrench: read at the sensor, moved to the point the model asked for, and
-        # expressed in the frame it asked to see it in.
-        return ("sensor_frame", "reference_point", "as_seen_by")
+        # expressed in the frame it asked to see it in. The simulator answers those by name from
+        # its own scene, so only the driven arm resolves them through kinematics at all.
+        if backend != "robif2b":
+            return ()
+        return (("sensor_frame", True), ("reference_point", True), ("as_seen_by", True))
     if hasattr(carrier, "attached_to"):
-        return ("attached_to",)
+        # `f_ext` is indexed chain-relative, so this one stays the chain's own segment.
+        return (("attached_to", False),)
     if hasattr(carrier, "subspace"):
         # An acceleration constraint whose direction is taken in a frame that moves with the arm.
-        return ("as_seen_by",)
-    return ("of",)
+        return (("as_seen_by", True),)
+    # A pose reads the world model; a velocity twist keeps chain FK until plan 06.
+    return (("of", getattr(carrier, "type", "") == "Pose"),)
 
 
-def _place_on_chain(chain, item, owner: str) -> None:
-    """Resolve where one frame, point or body sits on `chain`, once, while generating.
+def _place_on_chain(chain, item, owner: str, world_fk: bool) -> str | None:
+    """Resolve where one frame, point or body sits, once, while generating.
 
-    The generated code is handed a segment index and a constant pose, never a name: a name
-    would have to be matched against the built chain at run time, and a frame that matched
-    nothing would surface as a dead controller on the first tick instead of an error here.
+    The generated code is handed a resolved index, never a name: a name would have to be matched
+    at run time, and a frame that matched nothing would surface as a dead controller on the first
+    tick instead of an error here. A world-model read resolves to the exact tree segment, which
+    plan 04 gives every posed frame, so its constant offset needs no run-time math; a chain-local
+    read still resolves to the chain's own segment index, which has no offset to compose onto.
+
+    Returns:
+        the full tree segment name for a world-model read, else None
     """
     # A scene object carries no segment to fill: where it is comes from the simulator's own
     # scene, not from this chain's kinematics.
-    if item is None or not hasattr(item, "segment") or item.segment is not None:
-        return
+    if item is None or not hasattr(item, "segment"):
+        return None
     if getattr(item, "is_scene_object", False):
-        return
+        return None
     placement = chain.frames.get(item.uri)
     if placement is None and item.uri in chain.bodies:
         placement = {"index": chain.bodies[item.uri], "offset": None}
@@ -678,18 +692,35 @@ def _place_on_chain(chain, item, owner: str) -> None:
             f"forward kinematics reaches it. It has to be a frame or body the chain from "
             f"'{chain.root}' to '{chain.tip}' passes through.",
         )
-    if placement["offset"] is not None:
+    if not world_fk and placement["offset"] is not None:
         raise ConstraintViolation(
             "geometry",
             f"'{item.id}' sits at a pose on its body that no segment of '{chain.name}' stands "
             f"for. Composing that offset onto the forward kinematics is not implemented; give "
             f"the frame a segment of its own, by making it a chain endpoint or its body's root.",
         )
-    item.segment = placement["index"]
+    if item.segment is None and placement["offset"] is None:
+        item.segment = placement["index"]
+    if not world_fk:
+        return None
+    segment = chain.world_segments.get(item.uri)
+    if segment is None:
+        raise ConstraintViolation(
+            "geometry",
+            f"'{item.id}' is on the chain '{chain.name}' that {owner} runs on, but the built "
+            f"tree carries no segment standing for it, so the world model cannot be asked "
+            f"where it is.",
+        )
+
+    return segment
 
 
-def _place_solver_on_chain(solver) -> None:
-    """Place every frame, point and body the solver's generated code asks kinematics for."""
+def _place_solver_on_chain(solver, backend: str) -> list[dict]:
+    """Place every frame, point and body the solver's generated code asks kinematics for.
+
+    Returns:
+        one `{solver_id, frame_id, segment_name}` record per world-model read this solver makes
+    """
     carriers = [
         *solver.output,
         *(
@@ -699,9 +730,25 @@ def _place_solver_on_chain(solver) -> None:
         ),
         *(force for driver in solver.motion_drivers for force in driver.cartesian_force),
     ]
+    segment_by_frame: dict[str, str] = {}
     for carrier in carriers:
-        for attribute in _placed_on_chain(carrier):
-            _place_on_chain(solver.chain, getattr(carrier, attribute, None), solver.id)
+        for attribute, world_fk in _placed_on_chain(carrier, backend):
+            item = getattr(carrier, attribute, None)
+            segment = _place_on_chain(solver.chain, item, solver.id, world_fk)
+            if segment is None:
+                continue
+            if segment_by_frame.setdefault(item.id, segment) != segment:
+                raise ConstraintViolation(
+                    "geometry",
+                    f"'{item.id}' resolves to two segments of the tree solver '{solver.id}' "
+                    f"runs on: '{segment_by_frame[item.id]}' and '{segment}'. One name cannot "
+                    f"stand for two places in the world model.",
+                )
+
+    return [
+        {"solver_id": solver.id, "frame_id": frame_id, "segment_name": segment}
+        for frame_id, segment in sorted(segment_by_frame.items())
+    ]
 
 
 def _runtime_frame(model, frame_node, runtime_prefix, owned_trees):
@@ -1402,20 +1449,24 @@ def shared_runtime_members(model, serial_chains, control_period_ns: int, platfor
     return members
 
 
-def annotate_runtime(serial_chains, motions, backend: str) -> None:
+def annotate_runtime(serial_chains, motions, backend: str) -> list[dict]:
     """Fold onto each solver what running it implies, once every solver is known.
 
     Which runtime it shares, whether it owns that runtime, which of its joint outputs a gripper
     device reports rather than the chain, where on its chain every frame it asks kinematics for
     sits, and -- last, so it sees the runtime flags -- the gravity an RNE solver is built with.
 
+    Returns:
+        every world-model read the program makes, as `{solver_id, frame_id, segment_name}`
+
     Raises:
         ConstraintViolation: a joint output falls outside the chain with no gripper bound to report
             it, a frame is named that the solver's chain never reaches, or a motion declares a
             read-only solver on a runtime torque-commanded elsewhere.
     """
+    world_frames = []
     for solver in serial_chains:
-        _place_solver_on_chain(solver)
+        world_frames.extend(_place_solver_on_chain(solver, backend))
 
     runtime_by_signature: dict[tuple, str] = {}
     owner_by_runtime: dict[str, str] = {}
@@ -1460,6 +1511,8 @@ def annotate_runtime(serial_chains, motions, backend: str) -> None:
     for solver in serial_chains:
         if solver.derived_root_acceleration:
             solver.gravity = [-component or 0.0 for component in solver.derived_root_acceleration]
+
+    return world_frames
 
 
 def _split_gripper_outputs(solver, backend: str) -> None:

@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from motion_spec_dsl.rdf_parser.vocab import (
@@ -40,7 +41,7 @@ from motion_spec.rdf_parser import (
     resources,
 )
 from motion_spec.rdf_parser.constraint_handler import ControllerDerivation, SolverDerivationContext
-from motion_spec.rdf_parser.ir import generate_ir
+from motion_spec.rdf_parser.ir import _resources_section, generate_ir
 from motion_spec.rdf_parser.model import Model
 from motion_spec.rdf_parser.quantities import LINEAR_AXES
 
@@ -160,7 +161,7 @@ def test_agent_model_may_bind_the_assembled_kinematic_tree() -> None:
     graph.add((joint, KC["between-attachments"], root))
     graph.add((joint, KC["between-attachments"], tcp))
 
-    setups, _ordered = resources.robot_setups(_model(graph))
+    setups, _ordered, _trees = resources.robot_setups(_model(graph))
     setup = setups[agent]
 
     # `_ChainSetup` composes `chain`/`hardware` bindings now, rather than one flat tuple; the
@@ -173,6 +174,31 @@ def test_agent_model_may_bind_the_assembled_kinematic_tree() -> None:
         setup.hardware.tool_body,
         setup.hardware.tcp_frame,
     ) == ("base", "tool", "tool", "KinovaGen3", "", "")
+
+
+def _serial_chain(name: str):
+    return SimpleNamespace(id=name, kind="serial_chain", devices=[], sensors=[])
+
+
+@pytest.mark.parametrize(
+    "trees",
+    [
+        [{"name": "world_tree", "cpp_name": "world_tree"}],
+        [
+            {"name": "world_tree", "cpp_name": "world_tree"},
+            {"name": "ft_tree", "cpp_name": "ft_tree"},
+        ],
+    ],
+)
+def test_the_world_model_holds_every_distinct_tree_once_however_many_robots(trees) -> None:
+    # One forest, not one model per robot: two arms sharing a tree publish that tree once, and a
+    # scene with two trees publishes both -- still into the one world model.
+    robots = resources.Robots([_serial_chain("arm1"), _serial_chain("arm2")], [], [], [])
+    section = _resources_section(robots, trees, [])
+
+    assert section["world_trees"] == [
+        {"name": tree["name"], "cpp_name": tree["cpp_name"]} for tree in trees
+    ]
 
 
 def test_introspection_contract_carries_control_and_provenance() -> None:

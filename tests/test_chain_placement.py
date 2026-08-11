@@ -10,16 +10,28 @@ from rdf_utils.constraints import ConstraintViolation
 
 from motion_spec.classes.bindings import ChainBinding, HardwareBinding, RuntimeBinding
 from motion_spec.classes.dynamics import JointPosition
-from motion_spec.classes.geometry import Frame, SimplicialComplex
+from motion_spec.classes.geometry import (
+    Frame,
+    Pose,
+    SimplicialComplex,
+    Subspace,
+    VelocityTwist,
+    Wrench,
+)
 from motion_spec.classes.solvers import (
+    AccelerationConstraint,
+    CartesianForceSpecification,
     JointForceSpecification,
     MotionDrivers,
     SolverWithInputAndOutput,
 )
-from motion_spec.rdf_parser.resources import _index_chain_joints, _place_on_chain
+from motion_spec.rdf_parser.resources import _index_chain_joints, _place_on_chain, _placed_on_chain
 
 SITE = "https://example.test/ft_tree/wrist_ft_body/wrist_ft_site"
 BODY = "https://example.test/ft_tree/wrist_ft_body"
+OFFSET_SITE = "https://example.test/ft_tree/wrist_ft_body/wrist_ft_offset"
+SEGMENT = "wrist_ft_body/wrist_ft_site"
+OFFSET_SEGMENT = "wrist_ft_body/wrist_ft_offset"
 
 
 def _chain() -> ChainBinding:
@@ -30,26 +42,81 @@ def _chain() -> ChainBinding:
         tree="tree",
         name="chain",
         joints=[],
-        frames={SITE: {"index": 8, "offset": None}},
+        frames={
+            SITE: {"index": 8, "offset": None},
+            OFFSET_SITE: {"index": 8, "offset": {"x": 0.1}},
+        },
         bodies={BODY: 8},
+        world_segments={SITE: SEGMENT, OFFSET_SITE: OFFSET_SEGMENT, BODY: "wrist_ft_body"},
     )
 
 
 def test_a_frame_that_is_no_segment_resolves_through_the_body_carrying_it() -> None:
     frame = Frame("wrist_ft_site", uri=SITE)
-    _place_on_chain(_chain(), frame, "solver")
+    _place_on_chain(_chain(), frame, "solver", False)
     assert frame.segment == 8
 
 
 def test_a_body_resolves_to_the_segment_standing_for_it() -> None:
     body = SimplicialComplex("wrist_ft_body", uri=BODY)
-    _place_on_chain(_chain(), body, "solver")
+    _place_on_chain(_chain(), body, "solver", False)
     assert body.segment == 8
 
 
 def test_a_frame_the_chain_never_reaches_fails_while_generating() -> None:
     with pytest.raises(ConstraintViolation, match="not on the chain"):
-        _place_on_chain(_chain(), Frame("elbow", uri="https://example.test/other/elbow"), "solver")
+        _place_on_chain(
+            _chain(), Frame("elbow", uri="https://example.test/other/elbow"), "solver", False
+        )
+
+
+def test_an_offset_frame_a_world_read_asks_for_resolves_to_its_own_leaf_segment() -> None:
+    # Plan 04 gives it a segment of its own, so the offset is composed in the tree, not at run time.
+    frame = Frame("wrist_ft_offset", uri=OFFSET_SITE)
+    assert _place_on_chain(_chain(), frame, "solver", True) == OFFSET_SEGMENT
+
+
+def test_the_same_offset_still_fails_where_the_read_stays_chain_relative() -> None:
+    # `f_ext[index - 1]` and the velocity solver are indexed by the chain, which has no segment
+    # standing for a frame that only hangs off one.
+    with pytest.raises(ConstraintViolation, match="no segment of 'chain' stands for"):
+        _place_on_chain(_chain(), Frame("wrist_ft_offset", uri=OFFSET_SITE), "solver", False)
+    with pytest.raises(ConstraintViolation, match="no segment of 'chain' stands for"):
+        _place_on_chain(
+            _chain(), SimplicialComplex("wrist_ft_offset", uri=OFFSET_SITE), "solver", False
+        )
+
+
+def _spatial(cls, **extra):
+    return cls(id="q", quantity_kind=[], reference_point=None, as_seen_by=None, unit=[], **extra)
+
+
+def test_which_reads_move_to_the_world_model_is_decided_once() -> None:
+    pose = Pose(
+        "pose_ee",
+        of=None,
+        with_respect_to=None,
+        quantity_kind=[],
+        as_seen_by=None,
+        unit=[],
+        position=None,
+    )
+    assert _placed_on_chain(pose, "mj_kdl") == (("of", True),)
+    # A twist states the point it is taken about, and stays on chain FK until plan 06.
+    twist = _spatial(VelocityTwist, of=None, with_respect_to=None)
+    assert _placed_on_chain(twist, "mj_kdl") == (("of", False),)
+    force = CartesianForceSpecification("f", force=None, attached_to=None)
+    assert _placed_on_chain(force, "robif2b") == (("attached_to", False),)
+    constraint = AccelerationConstraint("c", subspace=Subspace.Linear, axis=None)
+    assert _placed_on_chain(constraint, "mj_kdl") == (("as_seen_by", True),)
+    # The simulator answers a wrench's frames from its own scene, by name, so nothing is placed.
+    wrench = _spatial(Wrench, sensor_frame=None)
+    assert _placed_on_chain(wrench, "mj_kdl") == ()
+    assert [attribute for attribute, _ in _placed_on_chain(wrench, "robif2b")] == [
+        "sensor_frame",
+        "reference_point",
+        "as_seen_by",
+    ]
 
 
 def _solver(prefix: str, joint_forces=()) -> SolverWithInputAndOutput:

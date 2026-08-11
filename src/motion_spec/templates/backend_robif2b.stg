@@ -55,7 +55,15 @@ struct manipulator_robot {
     // The measured gripper joint position [rad]: the mimic joint is not in the chain, so the
     // bound gripper device reports it.
     double *gripper_pos = nullptr;
+    // Where this chain's endpoints sit in the one world model. Per instance, though the struct
+    // type is shared: two arms sliced from one tree end at different segments.
+    int world_root = -1;
+    int world_tip = -1;
 };
+>>
+
+world-joint-address-robif2b(solver, index) ::= <<
+&robot.<solver.id>.state->pos_msr[<index>]
 >>
 
 robot-state-init-robif2b-KinovaGen3(solver) ::= <<
@@ -370,13 +378,8 @@ device-assign-robif2b-gripper-cmd(solver, device) ::= <<
 >>
 
 robot-chain-robif2b-KinovaGen3(solver) ::= <<
-<if(solver.runtime.owner)>    KDL::Tree built_tree_<solver.runtime.id>{};
-    if (!scene_kdl::make_tree_<solver.chain.tree>(&built_tree_<solver.runtime.id>)) {
-        std::cerr \<\< "make_tree_<solver.chain.tree>() failed for runtime <solver.runtime.id>\n";
-        return 1;
-    \}
-    KDL::Chain chain_<solver.runtime.id>{};
-    if (!scene_kdl::make_chain_<solver.chain.name>(built_tree_<solver.runtime.id>, &chain_<solver.runtime.id>)) {
+<if(solver.runtime.owner)>    KDL::Chain chain_<solver.runtime.id>{};
+    if (!scene_kdl::make_chain_<solver.chain.name>(world_tree_<solver.chain.tree>, &chain_<solver.runtime.id>)) {
         std::cerr \<\< "make_chain_<solver.chain.name>() failed for runtime <solver.runtime.id>\n";
         return 1;
     \}

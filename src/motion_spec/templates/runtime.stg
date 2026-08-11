@@ -12,6 +12,7 @@ runtime_header(resources, configuration) ::= <<
 #include \<chrono\>
 #include \<cmath\>
 #include \<csignal\>
+#include \<cstdint\>
 #include \<cstdlib\>
 #include \<ctime\>
 #include \<Eigen/Dense\>
@@ -20,9 +21,15 @@ runtime_header(resources, configuration) ::= <<
 #include \<kdl/frames.hpp\>
 #include \<kdl/jacobian.hpp\>
 #include \<kdl/jntarray.hpp\>
+#include \<kdl/tree.hpp\>
+#include \<limits\>
+#include \<queue\>
 #include \<stdexcept\>
 #include \<string\>
 #include \<string_view\>
+#include \<unordered_map\>
+#include \<utility\>
+#include \<vector\>
 <if(resources.by_kind.mobile_base)>
 #include \<hddc2b/functions/platform.h\>
 #include \<hddc2b/functions/solver.h\>
@@ -70,6 +77,190 @@ inline double finite_or_stop(double value, int joint) {
     \}
     return 0.0;
 \}
+
+// One pose authority for the whole application. Every scene tree is flattened into one set of
+// arrays, parents before children -- a forest, so any number of robots in any number of trees
+// share one object. Each cycle walks that order once and composes every body's pose from its
+// parent's already-computed one (Featherstone, Rigid Body Dynamics Algorithms, example 4.3).
+//
+// It owns no measurement: startup binds each moving segment to the address the backend already
+// writes its measured position to, so the world model and the dynamics solvers are two readers
+// of one buffer rather than two authorities.
+class WorldModel {
+  public:
+    // Startup. These return failure and fill `error` rather than throwing: main is still holding
+    // driver handles that its own exit paths release.
+
+    bool add_tree(const KDL::Tree &tree, std::string &error) {
+        if (sealed_) {
+            error = "the world model is sealed; no tree can be added";
+            return false;
+        }
+        const int tree_id = trees_seen_++;
+        std::queue\<std::pair\<KDL::SegmentMap::const_iterator, int\>\> pending;
+        pending.push({tree.getRootSegment(), -1});
+        while (!pending.empty()) {
+            const auto element = pending.front();
+            pending.pop();
+            const KDL::Segment &segment = GetTreeElementSegment(element.first->second);
+            const int index = static_cast\<int\>(segments_.size());
+            if (!indexes_.emplace(segment.getName(), index).second) {
+                error = "two segments are named '" + segment.getName() + "'";
+                return false;
+            }
+            segments_.push_back(segment);
+            parents_.push_back(element.second);
+            trees_.push_back(tree_id);
+            joints_.push_back(nullptr);
+            poses_.push_back(KDL::Frame::Identity());
+            // Breadth-first, so a child is appended only once its parent holds an index.
+            for (const auto &child : GetTreeElementChildren(element.first->second)) {
+                pending.push({child, index});
+            }
+        }
+        return true;
+    }
+
+    int index_of(const std::string &name) const {
+        const auto found = indexes_.find(name);
+        return found == indexes_.end() ? -1 : found->second;
+    }
+
+    bool bind_joint(const std::string &segment, const double *position, std::string &error) {
+        if (sealed_) {
+            error = "the world model is sealed; no joint can be bound";
+            return false;
+        }
+        if (position == nullptr) {
+            error = "segment '" + segment + "' was bound to no measurement";
+            return false;
+        }
+        const int index = index_of(segment);
+        if (index \< 0) {
+            error = "no segment is named '" + segment + "'";
+            return false;
+        }
+        if (segments_[index].getJoint().getType() == KDL::Joint::None) {
+            error = "segment '" + segment + "' is fixed, so no measurement moves it";
+            return false;
+        }
+        // Several solver records may share one runtime, so binding the same address again is the
+        // same fact stated twice. A second, different address is two authorities for one joint.
+        if (joints_[index] != nullptr && joints_[index] != position) {
+            error = "segment '" + segment + "' is already bound to another measurement";
+            return false;
+        }
+        joints_[index] = position;
+        return true;
+    }
+
+    bool require_path(int reference, int target, std::string &error) {
+        if (sealed_) {
+            error = "the world model is sealed; no path can be required";
+            return false;
+        }
+        const int count = static_cast\<int\>(segments_.size());
+        if (reference \< 0 || reference >= count || target \< 0 || target >= count) {
+            error = "a required path names a segment the world model does not hold";
+            return false;
+        }
+        if (trees_[reference] != trees_[target]) {
+            error = "'" + segments_[target].getName() + "' is not in the same tree as '"
+                  + segments_[reference].getName() + "', so no pose relates them";
+            return false;
+        }
+        for (int index = target; index >= 0; index = parents_[index]) {
+            if (index == reference) {
+                required_paths_.push_back({reference, target});
+                return true;
+            }
+        }
+        error = "'" + segments_[target].getName() + "' is not below '"
+              + segments_[reference].getName() + "'";
+        return false;
+    }
+
+    bool seal(std::string &error) {
+        for (const auto &path : required_paths_) {
+            for (int index = path.second; index != path.first; index = parents_[index]) {
+                if (segments_[index].getJoint().getType() != KDL::Joint::None
+                        && joints_[index] == nullptr) {
+                    error = "'" + segments_[path.second].getName() + "' is read through joint '"
+                          + segments_[index].getJoint().getName() + "', which nothing measures";
+                    return false;
+                }
+            }
+        }
+        sealed_ = true;
+        return true;
+    }
+
+    // The hot path: one flat pass, then reads by index. No lookup, allocation, resize, recursion,
+    // lock or exception on the valid path.
+
+    void update(std::uint64_t cycle) {
+        if (!sealed_) {
+            report("updated before it was sealed");
+            return;
+        }
+        // The same token twice would traverse again for the same measurements, and a token that
+        // went backwards means the loop lost its place, so neither is a second update.
+        if (cycle_ != kNoCycle && cycle \<= cycle_) {
+            report("updated twice in one control cycle");
+            return;
+        }
+        for (std::size_t i = 0; i \< segments_.size(); ++i) {
+            if (parents_[i] \< 0) {
+                poses_[i] = KDL::Frame::Identity();
+                continue;
+            }
+            // KDL owns the joint convention: an unbound moving joint reads zero, and sealing has
+            // already proved that no required path depends on one.
+            const double q = joints_[i] ? *joints_[i] : 0.0;
+            poses_[i] = poses_[parents_[i]] * segments_[i].pose(q);
+        }
+        cycle_ = cycle;
+    }
+
+    // Always on, in every build: a pose from another cycle is a command against a place the robot
+    // may have left. The hardware backend suppresses its device update once stop is requested, so
+    // the identity returned here never reaches an arm.
+    const KDL::Frame &pose(int index, std::uint64_t cycle) const {
+        if (index \< 0 || index >= static_cast\<int\>(poses_.size())) {
+            report("asked for a segment it does not hold");
+            return identity_;
+        }
+        if (cycle != cycle_) {
+            report("read at a cycle it was not updated for");
+            return identity_;
+        }
+        return poses_[index];
+    }
+
+  private:
+    static constexpr std::uint64_t kNoCycle = std::numeric_limits\<std::uint64_t\>::max();
+
+    void report(const char *what) const {
+        if (!reported_) {
+            reported_ = true;
+            std::cerr \<\< "[world] the world model was " \<\< what \<\< "; stopping" \<\< std::endl;
+        }
+        request_stop(0);
+    }
+
+    std::vector\<KDL::Segment\> segments_;
+    std::vector\<int\> parents_;            // -1 for each forest root
+    std::vector\<int\> trees_;              // rejects a required path across two roots
+    std::vector\<const double *\> joints_;  // null for a fixed or unbound moving segment
+    std::vector\<KDL::Frame\> poses_;
+    std::vector\<std::pair\<int, int\>\> required_paths_;
+    std::unordered_map\<std::string, int\> indexes_;  // startup lookup only
+    KDL::Frame identity_ = KDL::Frame::Identity();
+    std::uint64_t cycle_ = kNoCycle;
+    int trees_seen_ = 0;
+    bool sealed_ = false;
+    mutable bool reported_ = false;
+};
 
 inline constexpr double kControlPeriodS = <configuration.control_period_ns> * 1e-9;
 
@@ -227,27 +418,52 @@ inline void path_frame(const Eval &eval, double s, KDL::Vector &tangent,
     normal_b.Normalize();
 }
 
+// Every dynamically sized term the task-space resolve needs, at its final size. Sized once when
+// the solver initializes, so the control cycle only writes into it.
+struct CartesianAccelerationWorkspace {
+    Eigen::MatrixXd task_jac;
+    Eigen::VectorXd rhs;
+    Eigen::MatrixXd gram;
+    Eigen::VectorXd lambda;
+    Eigen::VectorXd qdd;
+    Eigen::LDLT\<Eigen::MatrixXd\> factorization;
+
+    void resize(int constraints, int joints) {
+        task_jac.resize(constraints, joints);
+        rhs.resize(constraints);
+        gram.resize(constraints, constraints);
+        lambda.resize(constraints);
+        qdd.resize(joints);
+        factorization = Eigen::LDLT\<Eigen::MatrixXd\>(constraints);
+    }
+};
+
 inline void resolve_cartesian_acceleration(
         const KDL::Jacobian &jac,
         const KDL::Jacobian &directions,
         const KDL::JntArray &cartesian_acceleration,
         const Eigen::VectorXd *bias,
+        CartesianAccelerationWorkspace &work,
         KDL::JntArray &qdd_out) {
     KDL::SetToZero(qdd_out);
     const int m = cartesian_acceleration.rows();
     if (m == 0) return;
-    const Eigen::MatrixXd task_jac = directions.data.transpose() * jac.data;
-    Eigen::VectorXd rhs(m);
+    work.task_jac.noalias() = directions.data.transpose() * jac.data;
     for (int i = 0; i \< m; ++i) {
-        rhs(i) = cartesian_acceleration(i);
+        work.rhs(i) = cartesian_acceleration(i);
     }
     if (bias != nullptr && bias->size() == m) {
-        rhs -= *bias;
+        work.rhs -= *bias;
     }
-    const Eigen::MatrixXd gram = task_jac * task_jac.transpose();
-    const Eigen::VectorXd qdd = task_jac.transpose() * gram.ldlt().solve(rhs);
+    work.gram.noalias() = work.task_jac * work.task_jac.transpose();
+    // Factor and solve in place: the same LDLT the explicit inverse would have been, without a
+    // temporary per cycle.
+    work.factorization.compute(work.gram);
+    work.lambda = work.rhs;
+    work.factorization.solveInPlace(work.lambda);
+    work.qdd.noalias() = work.task_jac.transpose() * work.lambda;
     for (int i = 0; i \< static_cast\<int\>(qdd_out.rows()); ++i) {
-        qdd_out(i) = qdd(i);
+        qdd_out(i) = work.qdd(i);
     }
 }
 

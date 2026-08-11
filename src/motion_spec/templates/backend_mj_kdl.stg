@@ -14,7 +14,15 @@ robot-manipulator-struct-mj_kdl-KinovaGen3(solver) ::= <<
 struct manipulator_robot {
     mj_kdl::Robot *robot = nullptr;
     KDL::Chain *chain = nullptr;
+    // Where this chain's endpoints sit in the one world model. Per instance, though the struct
+    // type is shared: two arms sliced from one tree end at different segments.
+    int world_root = -1;
+    int world_tip = -1;
 };
+>>
+
+world-joint-address-mj_kdl(solver, index) ::= <<
+&robot.<solver.id>.robot->jnt_pos_msr[<index>]
 >>
 
 // A simulated sensor exposes the one deployment property it has, under the same member name and
@@ -39,27 +47,15 @@ robot-init-mj_kdl-KinovaGen3(solver) ::= <<
 <if(solver.runtime.owner)>    mj_kdl::Robot mj_<solver.runtime.id>{};
 <if(solver.hardware.tool_body)>    mj_kdl::ToolFrameSpec mj_tool_<solver.runtime.id>{};
 <solver.sensors:{s |<({mj-sensor-<s.type>})(solver, s)>
-}>    KDL::Tree built_tree_<solver.runtime.id>{};
-    if (!scene_kdl::make_tree_<solver.chain.tree>(&built_tree_<solver.runtime.id>)) {
-        std::cerr \<\< "make_tree_<solver.chain.tree>() failed for runtime <solver.runtime.id>\n";
-        mj_kdl::cleanup(&mj_env);
-        return 1;
-    \}
-    KDL::Chain built_chain_<solver.runtime.id>{};
-    if (!scene_kdl::make_chain_<solver.chain.name>(built_tree_<solver.runtime.id>, &built_chain_<solver.runtime.id>)) {
+}>    KDL::Chain built_chain_<solver.runtime.id>{};
+    if (!scene_kdl::make_chain_<solver.chain.name>(world_tree_<solver.chain.tree>, &built_chain_<solver.runtime.id>)) {
         std::cerr \<\< "make_chain_<solver.chain.name>() failed for runtime <solver.runtime.id>\n";
         mj_kdl::cleanup(&mj_env);
         return 1;
     \}
     if (!mj_kdl::init_robot_from_chain(&mj_<solver.runtime.id>, mj_env.model, mj_env.data, built_chain_<solver.runtime.id>, {<solver.chain.joints:{j |"<j>"}; separator=", ">\}, "<solver.runtime.prefix>", &mj_tool_<solver.runtime.id>)) {
-<else>    KDL::Tree built_tree_<solver.runtime.id>{};
-    if (!scene_kdl::make_tree_<solver.chain.tree>(&built_tree_<solver.runtime.id>)) {
-        std::cerr \<\< "make_tree_<solver.chain.tree>() failed for runtime <solver.runtime.id>\n";
-        mj_kdl::cleanup(&mj_env);
-        return 1;
-    \}
-    KDL::Chain built_chain_<solver.runtime.id>{};
-    if (!scene_kdl::make_chain_<solver.chain.name>(built_tree_<solver.runtime.id>, &built_chain_<solver.runtime.id>)) {
+<else>    KDL::Chain built_chain_<solver.runtime.id>{};
+    if (!scene_kdl::make_chain_<solver.chain.name>(world_tree_<solver.chain.tree>, &built_chain_<solver.runtime.id>)) {
         std::cerr \<\< "make_chain_<solver.chain.name>() failed for runtime <solver.runtime.id>\n";
         mj_kdl::cleanup(&mj_env);
         return 1;

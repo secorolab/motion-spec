@@ -57,3 +57,10 @@ robot-configure(solver, backend) ::= <<
 robot-shutdown(solver, backend) ::= <<
 <({robot-shutdown-<backend>-<solver.hardware.model>})(solver)>
 >>
+
+// The one backend-specific fact the world model's wiring needs: where this backend already keeps
+// the measured position of the chain's nth joint. The world model binds that address rather than
+// copying, so it and the dynamics read one buffer.
+world-joint-address(solver, backend, index) ::= <<
+<({world-joint-address-<backend>})(solver, index)>
+>>

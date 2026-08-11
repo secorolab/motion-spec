@@ -92,9 +92,18 @@ chain-init-block(serial_chain_solvers, solvers, backend) ::= <<
 <serial_chain_solvers:{solver |     <solver-init(solver, solvers.(solver.solver_id), solver.motion_driver, backend)>}; separator="\n">
 >>
 
+// Three passes, in this order and visibly separate: every solver synchronizes its measurements,
+// then the one world model is updated once, then every solver reads. Interleaved, arm 1 would
+// read forward kinematics from before arm 2 had synchronized.
 chain-prepare-block(serial_chain_solvers, solvers, backend) ::= <<
 <serial_chain_solvers:{solver |
-    <solver-sync-input(solver, backend)>
+    <solver-sync-input(solver, backend)>}; separator="\n">
+
+    robot.world->update(robot.control_cycle);
+<serial_chain_solvers:{solver |
+    // This chain's root is not the tree's, so every pose it reports is relative to that root.
+    state.<solver.id>.world_to_root =
+        robot.world->pose(robot.<solver.id>.world_root, robot.control_cycle).Inverse();
     <solver.output:{out | <solver-output(solver, solvers.(solver.solver_id), out, backend)>}; separator="\n\n">
 <solver.gripper_joint_outputs:{out |     <gripper-joint-output(solver, out, backend)>}; separator="\n">
 }; separator="\n\n">

@@ -119,6 +119,9 @@ int main(int argc, char **argv) {
             // Skip the whole tick: the clock never advanced, so an FSM step or a frame here
             // would be a duplicate, and the controllers would wind up against a frozen plant.
             usleep(20000);
+            // The deadline is meaningless across a pause, and carrying a stale one would report
+            // the resuming tick as an overrun that never happened.
+            motion_spec::runtime::advance_uncapped(_next_tick);
             continue;
         \}
 #endif

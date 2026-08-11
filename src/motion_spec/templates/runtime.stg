@@ -13,6 +13,10 @@ runtime_header(resources, configuration) ::= <<
 #include \<cmath\>
 #include \<csignal\>
 #include \<sys/prctl.h\>
+#include \<condition_variable\>
+#include \<memory\>
+#include \<mutex\>
+#include \<thread\>
 #include \<cstdint\>
 #include \<cstdlib\>
 #include \<ctime\>

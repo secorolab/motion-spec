@@ -317,12 +317,92 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
 <if(scene.cameras)>
 #ifdef MOTION_SPEC_ENABLE_INTROSPECTION
     const std::vector\<std::string\> _mj_camera_names = mj_kdl::get_camera_names(mj_env.model);
+
+    // An offscreen render costs milliseconds; the control loop has one. Rendering inside the
+    // tick made a camera model miss its deadline on every published frame -- ~300 of 9967 ticks,
+    // peaking at 9.4ms against a 1ms period, while the same model without a camera peaked at 2ms.
+    // So the render runs on its own thread, off a copy of the simulation state.
+    class CameraWorker {
+      public:
+        CameraWorker(std::string id, int width, int height, mjModel *model, std::string camera)
+            : id_(std::move(id)), width_(width), height_(height), model_(model),
+              camera_(std::move(camera)), pub_(id_, width, height) {
+            rgb_.resize(static_cast\<std::size_t\>(width) * height * 3);
+            copy_ = mj_makeData(model);
+            thread_ = std::thread([this] { run(); \});
+        \}
+
+        ~CameraWorker() {
+            {
+                std::lock_guard\<std::mutex\> lock(mutex_);
+                quit_ = true;
+            \}
+            ready_.notify_all();
+            if (thread_.joinable()) thread_.join();
+            if (copy_) mj_deleteData(copy_);
+        \}
+
+        // Called from the control thread, which must never wait on a camera: if the previous
+        // frame is still rendering, this one is dropped. A dropped frame costs the dashboard a
+        // frame; a blocked controller costs the deadline.
+        void submit(mjData *data, double t) {
+            std::unique_lock\<std::mutex\> lock(mutex_, std::try_to_lock);
+            if (!lock.owns_lock() || pending_) return;
+            mj_copyData(copy_, model_, data);
+            stamp_ = t;
+            pending_ = true;
+            lock.unlock();
+            ready_.notify_one();
+        \}
+
+      private:
+        void run() {
+            // A GL context belongs to the thread that created it, so this one is created here
+            // rather than handed over from startup.
+            if (!mj_kdl::init_offscreen(&recorder_, model_, width_, height_)
+                || !mj_kdl::use_camera(&recorder_, model_, camera_.c_str())) {
+                std::cerr \<\< "camera '" \<\< id_ \<\< "': offscreen init failed; not published\n";
+                return;
+            \}
+            for (;;) {
+                double t = 0.0;
+                {
+                    std::unique_lock\<std::mutex\> lock(mutex_);
+                    ready_.wait(lock, [this] { return pending_ || quit_; \});
+                    if (quit_) break;
+                    t = stamp_;
+                \}
+                // Safe to read copy_ unlocked: submit() leaves it alone while pending_ is set.
+                if (mj_kdl::render_rgb(&recorder_, model_, copy_, rgb_.data())) {
+                    pub_.publish(rgb_.data(), t);
+                \}
+                {
+                    std::lock_guard\<std::mutex\> lock(mutex_);
+                    pending_ = false;
+                \}
+            \}
+            mj_kdl::cleanup(&recorder_);
+        \}
+
+        std::string id_;
+        int width_ = 0;
+        int height_ = 0;
+        mjModel *model_ = nullptr;
+        std::string camera_;
+        motion_spec::introspection::CameraPublisher pub_;
+        mj_kdl::VideoRecorder recorder_{\};
+        mjData *copy_ = nullptr;
+        std::vector\<std::uint8_t\> rgb_;
+        std::thread thread_;
+        std::mutex mutex_;
+        std::condition_variable ready_;
+        bool pending_ = false;
+        bool quit_ = false;
+        double stamp_ = 0.0;
+    \};
 <scene.cameras:{camera |
-    mj_kdl::VideoRecorder _cam_<camera.id>{\};
-    std::vector\<std::uint8_t\> _cam_<camera.id>_rgb;
-    motion_spec::introspection::CameraPublisher _cam_<camera.id>_pub("<camera.id>", <camera.width>, <camera.height>);
+    std::unique_ptr\<CameraWorker\> _cam_<camera.id>;
     double _cam_<camera.id>_due_s = 0.0;
-    bool _cam_<camera.id>_ready = false;
     {
         // The compiled scene prefixes a robot's cameras with the robot's name; the model does not.
         const std::string _target = "<camera.id>";
@@ -335,14 +415,10 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
         \}
         if (_name.empty()) {
             std::cerr \<\< "camera '<camera.id>' names no camera in the compiled scene; not published\\n";
-        \} else if (!mj_kdl::init_offscreen(&_cam_<camera.id>, mj_env.model, <camera.width>, <camera.height>)) {
-            std::cerr \<\< "camera '<camera.id>': offscreen render init failed; not published\\n";
-        \} else if (!mj_kdl::use_camera(&_cam_<camera.id>, mj_env.model, _name.c_str())) {
-            std::cerr \<\< "camera '<camera.id>': '" \<\< _name \<\< "' is not a usable camera; not published\\n";
-            mj_kdl::cleanup(&_cam_<camera.id>);
         \} else {
-            _cam_<camera.id>_rgb.resize(static_cast\<std::size_t\>(<camera.width>) * <camera.height> * 3);
-            _cam_<camera.id>_ready = true;
+            // The worker opens its own render context; a failure there reports and stays silent.
+            _cam_<camera.id> = std::make_unique\<CameraWorker\>(
+              "<camera.id>", <camera.width>, <camera.height>, mj_env.model, _name);
         \}
     \}
 }; separator="\n">
@@ -384,17 +460,16 @@ app-loop-condition-mj_kdl(has_serial_chain) ::= <<
 // for in the world the camera looks at, not at the rate the wall clock ticks.
 app-chain-camera-publish-mj_kdl(cameras) ::= <<
 <cameras:{camera |
-        if (_cam_<camera.id>_ready && shared.clock_time_s \>= _cam_<camera.id>_due_s) {
+        if (_cam_<camera.id> && shared.clock_time_s \>= _cam_<camera.id>_due_s) {
             _cam_<camera.id>_due_s = shared.clock_time_s + 1.0 / <camera.rate_hz>;
-            if (mj_kdl::render_rgb(&_cam_<camera.id>, mj_env.model, mj_env.data, _cam_<camera.id>_rgb.data())) {
-                _cam_<camera.id>_pub.publish(_cam_<camera.id>_rgb.data(), shared.clock_time_s);
-            \}
+            // Copies the state and returns; the render happens on the worker's thread.
+            _cam_<camera.id>->submit(mj_env.data, shared.clock_time_s);
         \}}; separator="\n">
 >>
 
 app-chain-camera-cleanup-mj_kdl(cameras) ::= <<
 <cameras:{camera |
-    if (_cam_<camera.id>_ready) mj_kdl::cleanup(&_cam_<camera.id>);}; separator="\n">
+    _cam_<camera.id>.reset();   // joins the render thread and releases its context}; separator="\n">
 >>
 
 app-chain-cleanup-mj_kdl(has_serial_chain) ::= <<

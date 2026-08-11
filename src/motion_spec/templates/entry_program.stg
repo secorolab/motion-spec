@@ -187,6 +187,9 @@ int main(int argc, char **argv) {
         static_cast\<void\>(_fsm_state_before);
 <endif>
 #ifdef MOTION_SPEC_ENABLE_INTROSPECTION
+<if(resources.by_kind.serial_chain)>
+<app-chain-camera-publish(configuration.backend, composition.scene.cameras)>
+<endif>
         motion_spec::introspection::sample_model(
             _introspection_pub,
 <if(coordination.fsm)>            static_cast\<int\>(fsm->currentStateIndex),
@@ -210,6 +213,9 @@ int main(int argc, char **argv) {
     }
 #ifdef MOTION_SPEC_ENABLE_INTROSPECTION
     _introspection_pub.close();
+<if(resources.by_kind.serial_chain)>
+<app-chain-camera-cleanup(configuration.backend, composition.scene.cameras)>
+<endif>
 #endif
 <if(resources.by_kind.serial_chain)>
 

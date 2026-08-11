@@ -314,6 +314,40 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
             return 1;
         }
     }
+<if(scene.cameras)>
+#ifdef MOTION_SPEC_ENABLE_INTROSPECTION
+    const std::vector\<std::string\> _mj_camera_names = mj_kdl::get_camera_names(mj_env.model);
+<scene.cameras:{camera |
+    mj_kdl::VideoRecorder _cam_<camera.id>{\};
+    std::vector\<std::uint8_t\> _cam_<camera.id>_rgb;
+    motion_spec::introspection::CameraPublisher _cam_<camera.id>_pub("<camera.id>", <camera.width>, <camera.height>);
+    double _cam_<camera.id>_due_s = 0.0;
+    bool _cam_<camera.id>_ready = false;
+    {
+        // The compiled scene prefixes a robot's cameras with the robot's name; the model does not.
+        const std::string _target = "<camera.id>";
+        std::string _name;
+        for (const auto &_candidate : _mj_camera_names) {
+            if (_candidate.size() \>= _target.size() && _candidate.compare(_candidate.size() - _target.size(), _target.size(), _target) == 0) {
+                _name = _candidate;
+                break;
+            \}
+        \}
+        if (_name.empty()) {
+            std::cerr \<\< "camera '<camera.id>' names no camera in the compiled scene; not published\\n";
+        \} else if (!mj_kdl::init_offscreen(&_cam_<camera.id>, mj_env.model, <camera.width>, <camera.height>)) {
+            std::cerr \<\< "camera '<camera.id>': offscreen render init failed; not published\\n";
+        \} else if (!mj_kdl::use_camera(&_cam_<camera.id>, mj_env.model, _name.c_str())) {
+            std::cerr \<\< "camera '<camera.id>': '" \<\< _name \<\< "' is not a usable camera; not published\\n";
+            mj_kdl::cleanup(&_cam_<camera.id>);
+        \} else {
+            _cam_<camera.id>_rgb.resize(static_cast\<std::size_t\>(<camera.width>) * <camera.height> * 3);
+            _cam_<camera.id>_ready = true;
+        \}
+    \}
+}; separator="\n">
+#endif
+<endif>
 >>
 
 app-chain-post-setup-mj_kdl(serial_chain_solvers, motions, agent_homes) ::= <<
@@ -344,6 +378,23 @@ app-chain-loop-reset-mj_kdl(serial_chain_solvers, fsm) ::= <<
 
 app-loop-condition-mj_kdl(has_serial_chain) ::= <<
 (!headless || !steps_limited || headless_steps-- > 0)
+>>
+
+// Sim time drives the cadence, so a paused or slowed run publishes at the rate the model asked
+// for in the world the camera looks at, not at the rate the wall clock ticks.
+app-chain-camera-publish-mj_kdl(cameras) ::= <<
+<cameras:{camera |
+        if (_cam_<camera.id>_ready && shared.clock_time_s \>= _cam_<camera.id>_due_s) {
+            _cam_<camera.id>_due_s = shared.clock_time_s + 1.0 / <camera.rate_hz>;
+            if (mj_kdl::render_rgb(&_cam_<camera.id>, mj_env.model, mj_env.data, _cam_<camera.id>_rgb.data())) {
+                _cam_<camera.id>_pub.publish(_cam_<camera.id>_rgb.data(), shared.clock_time_s);
+            \}
+        \}}; separator="\n">
+>>
+
+app-chain-camera-cleanup-mj_kdl(cameras) ::= <<
+<cameras:{camera |
+    if (_cam_<camera.id>_ready) mj_kdl::cleanup(&_cam_<camera.id>);}; separator="\n">
 >>
 
 app-chain-cleanup-mj_kdl(has_serial_chain) ::= <<

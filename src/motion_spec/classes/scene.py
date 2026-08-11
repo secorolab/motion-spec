@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from motion_spec.classes.bindings import CameraBinding
+
 
 @dataclass
 class MjcfSceneAttachment:
@@ -96,10 +98,13 @@ class MjcfSceneObject:
 
 @dataclass
 class MjcfSceneSpec:
-    """The scene: robots, objects and the control timestep."""
+    """The scene: robots, objects, cameras and the control timestep."""
 
     robots: list[MjcfSceneRobot] = field(default_factory=list)
     objects: list[MjcfSceneObject] = field(default_factory=list)
+    # Cameras are rendered against the composed scene, not read by a solver, so they belong here
+    # and not on the agent that hosts them.
+    cameras: list[CameraBinding] = field(default_factory=list)
     # Physics/control timestep from ENVIRONMENT.timestep; defaults to the backend
     # interval when the model omits it.
     timestep_s: float = 0.002

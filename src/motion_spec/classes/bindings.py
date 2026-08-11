@@ -80,6 +80,21 @@ class SensorBinding:
 
 
 @dataclass
+class CameraBinding:
+    """A camera declared in the scene: what it is called, what it renders, how often.
+
+    Separate from `SensorBinding` because nothing a camera carries is a field a mounted sensor
+    carries -- a resolution is not a tare length, and no solver reads a camera.
+    """
+
+    id: str
+    width: int
+    height: int
+    rate_hz: float
+    uri: str
+
+
+@dataclass
 class DeviceBinding:
     """Hardware bound on this chain: what it is, where it is configured, what it drives."""
 

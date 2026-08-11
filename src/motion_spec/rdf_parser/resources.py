@@ -16,6 +16,7 @@ the backend cannot run.
 from __future__ import annotations
 
 import collections
+import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NamedTuple
@@ -50,11 +51,19 @@ from rdf_utils.uri import iri_is_descendant, iri_parent
 from rdflib.namespace import PROV, RDF, SDO
 from scene_dsl.kdl_tree import build_kdl_trees
 from scene_dsl.rdf_parser.kinematics import body_of_frame, get_kinematic_mapping
+from scene_dsl.rdf.sensors import (
+    CAMERA_TYPES,
+    URI_SENS_PRED_CAMERA_KIND,
+    URI_SENS_PRED_RESOLUTION_HEIGHT,
+    URI_SENS_PRED_RESOLUTION_WIDTH,
+    URI_SENS_TYPE_CAMERA,
+)
 from scene_dsl.rdf_parser.sensors import get_update_rate
 from scene_dsl.rdf_parser.vocab import URI_BDD_PRED_ELEMS
 
 from motion_spec.classes.base import dedupe_by_id
 from motion_spec.classes.bindings import (
+    CameraBinding,
     ChainBinding,
     DeviceBinding,
     HardwareBinding,
@@ -197,6 +206,7 @@ class AgentAssembly:
     device: str
     config_key: str
     sensors: list
+    cameras: list
     devices: list
     urdf: str
     prefix: str
@@ -334,6 +344,34 @@ def _sensor_kind(model, sensor) -> str:
     """The sensor's kind as the IR names it; empty for a kind codegen does not model."""
     types = get_node_types(model.graph, sensor)
     return next((name for uri, name in SENSOR_KINDS.items() if uri in types), "")
+
+
+def _cameras(model, hosted, runtime_prefix) -> list:
+    """The cameras among an agent's hosted sensors, as the runtime renders them.
+
+    Only rgb lowers: nothing downstream renders a depth image, so a depth camera is reported and
+    dropped rather than generating code that cannot run.
+    """
+    graph = model.graph
+    cameras = []
+    for sensor in hosted:
+        if URI_SENS_TYPE_CAMERA not in get_node_types(graph, sensor):
+            continue
+        if graph.value(sensor, URI_SENS_PRED_CAMERA_KIND) != CAMERA_TYPES["rgb"]:
+            print(
+                f"camera '{local_name(sensor)}' is not an rgb camera; not lowered", file=sys.stderr
+            )
+            continue
+        cameras.append(
+            CameraBinding(
+                id=f"{runtime_prefix}{local_name(sensor)}",
+                width=int(graph.value(sensor, URI_SENS_PRED_RESOLUTION_WIDTH).toPython()),
+                height=int(graph.value(sensor, URI_SENS_PRED_RESOLUTION_HEIGHT).toPython()),
+                rate_hz=get_update_rate(graph, ModelBase(node_id=sensor, graph=graph)),
+                uri=str(sensor),
+            )
+        )
+    return cameras
 
 
 def _agent_bindings(model):
@@ -502,6 +540,7 @@ def _agent_assemblies(model, attach_by_body) -> list:
                     if (kind := _sensor_kind(model, sensor))
                     and (frame := model.graph.value(sensor, SENSORS.frame)) is not None
                 ],
+                cameras=_cameras(model, hosted, runtime_prefix),
                 devices=_bound_devices(
                     model, agent, runtime_prefix, hosted, chain_bindings, agent_by_tree
                 ),
@@ -1151,6 +1190,7 @@ def read_scene(model) -> MjcfSceneSpec:
                 attachments=assembly.attachments,
             )
         )
+        scene.cameras.extend(assembly.cameras)
 
     _expand_scene_geometry(scene)
     _validate_scene(scene)

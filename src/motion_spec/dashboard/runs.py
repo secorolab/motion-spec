@@ -14,6 +14,9 @@ from motion_spec.introspection.replay import read_health
 
 LAYOUT_REL = Path("generated") / "contract" / "frame_layout.json"
 LOG_REL = Path("logs") / "frame_log.pb"
+# REC's run-state vocabulary (see provenance._REC_RUN_STATUS); the rest -- QUEUED, RUNNING --
+# mean the run may still produce frames.
+TERMINAL_STATUS = frozenset({"COMPLETED", "FAILED", "INTERRUPTED", "CANCELLED"})
 
 
 @dataclass
@@ -37,16 +40,23 @@ class RunInfo:
 
     @property
     def status(self) -> str | None:
-        """STARTED / COMPLETED / FAILED / INTERRUPTED, as REC recorded it."""
+        """QUEUED / RUNNING / COMPLETED / FAILED / INTERRUPTED / CANCELLED, as REC recorded it."""
         return rec_run_lifecycle_from_file(self.dir / "rec.ld.json").get("status")
 
     @property
     def health(self) -> dict | None:
         return read_health(self.log_path)
 
-    def is_live(self, within_s: float = 3.0) -> bool:
-        """Started, and the frame log grew within the last `within_s` seconds."""
-        if self.status != "STARTED" or not self.log_path.exists():
+    def is_live(self, within_s: float = 10.0) -> bool:
+        """Not finished, and the frame log grew within the last `within_s` seconds.
+
+        Asking the status alone is not enough: a run killed outright never records a terminal
+        state, so a stale log is what actually distinguishes it from one still ticking. The log
+        is written through buffered stdio, so mtime lags the tick by an unpredictable margin --
+        hence the wide window. A caller already polling the shm block has the sharper signal in
+        its advancing seq and should prefer it.
+        """
+        if self.status in TERMINAL_STATUS or not self.log_path.exists():
             return False
         return time.time() - self.log_path.stat().st_mtime <= within_s
 

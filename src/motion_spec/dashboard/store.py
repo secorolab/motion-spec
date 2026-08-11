@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import threading
 
-TERMINAL_STATUS = frozenset({"COMPLETED", "FAILED", "INTERRUPTED"})
+from motion_spec.dashboard.runs import TERMINAL_STATUS
 
 
 class RunStore:

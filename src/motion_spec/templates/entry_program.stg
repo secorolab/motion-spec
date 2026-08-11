@@ -94,7 +94,28 @@ int main(int argc, char **argv) {
     timespec _next_tick{};
     clock_gettime(CLOCK_MONOTONIC, &_next_tick);
     double _prev_clock_s = 0.0;
+<if(configuration.platform.simulated)>
+    double _ctrl_speed_applied = 1.0;
+<endif>
     while (!motion_spec::runtime::stop_requested() && (<app-loop-condition(configuration.backend, resources.by_kind.serial_chain)>)<if(communication.ros)> && rclcpp::ok()<endif>) {
+<if(configuration.platform.simulated)>
+#ifdef MOTION_SPEC_ENABLE_INTROSPECTION
+        const auto _ctrl = _introspection_pub.poll_control();
+        if (_ctrl.stop) motion_spec::runtime::request_stop(0);
+<if(resources.by_kind.serial_chain)>
+<app-chain-control-apply(configuration.backend, resources.by_kind.serial_chain)>
+<endif>
+        if (_ctrl.pause && !motion_spec::runtime::stop_requested()) {
+<if(resources.by_kind.serial_chain)>
+<app-chain-control-paused-step(configuration.backend, resources.by_kind.serial_chain)>
+<endif>
+            // Skip the whole tick: the clock never advanced, so an FSM step or a frame here
+            // would be a duplicate, and the controllers would wind up against a frozen plant.
+            usleep(20000);
+            continue;
+        \}
+#endif
+<endif>
         shared.clock_time_s = <clock-time-source(configuration.backend, resources.by_kind.serial_chain, resources.by_kind.serial_chain)>;
         // Integrators step with the time that actually elapsed, not the period we asked for: the
         // loop sleeps to deadlines it can overrun. In sim the clock advances exactly one timestep
@@ -166,7 +187,14 @@ int main(int argc, char **argv) {
             events);
 #endif
         ++_step;
+<if(configuration.platform.simulated)>
+        // The GUI paces itself off the viewer's realtime factor, but headless -- and the
+        // deadline this loop keeps -- only follow the speed through the period.
+        motion_spec::runtime::sleep_until_next(
+            _next_tick, static_cast\<long\>(<configuration.control_period_ns> / _ctrl_speed_applied));
+<else>
         motion_spec::runtime::sleep_until_next(_next_tick, <configuration.control_period_ns>);
+<endif>
     }
 #ifdef MOTION_SPEC_ENABLE_INTROSPECTION
     _introspection_pub.close();

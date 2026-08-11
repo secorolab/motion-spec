@@ -362,6 +362,21 @@ app-chain-runtime-step-mj_kdl(serial_chain_solvers) ::= <<
         }
 >>
 
+app-chain-control-apply-mj_kdl(serial_chain_solvers) ::= <<
+        if (_ctrl.speed != _ctrl_speed_applied) {
+            // Only on change, so the viewer's own ,/. speed keys keep working in between.
+            _ctrl_speed_applied = _ctrl.speed;
+            if (!headless) mj_viewer.realtime_factor = _ctrl.speed;
+        \}
+>>
+
+app-chain-control-paused-step-mj_kdl(serial_chain_solvers) ::= <<
+            // step() is the sole physics driver, so not calling it is the pause; the GUI's own
+            // render thread keeps the window drawing and responding. Only the window-close
+            // request still has to end the run, and that is readable without stepping.
+            if (!headless && !mj_kdl::is_running(&mj_viewer)) break;
+>>
+
 app-chain-trace-update-mj_kdl(serial_chain_solvers, trace) ::= <<
 <if(trace.enabled)>
 <if(trace.has_targets)>

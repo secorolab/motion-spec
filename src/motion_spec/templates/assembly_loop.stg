@@ -37,6 +37,21 @@ app-chain-runtime-step(backend, serial_chain_solvers) ::= <<
 <({app-chain-runtime-step-<backend>})(serial_chain_solvers)>
 >>
 
+// Cameras render against the simulated scene, so only a simulation backend serves them.
+app-chain-camera-publish(backend, cameras) ::= <<
+<({app-chain-camera-publish-<backend>})(cameras)>
+>>
+
+app-chain-camera-publish-robif2b(cameras) ::= <<
+>>
+
+app-chain-camera-cleanup(backend, cameras) ::= <<
+<({app-chain-camera-cleanup-<backend>})(cameras)>
+>>
+
+app-chain-camera-cleanup-robif2b(cameras) ::= <<
+>>
+
 clock-time-source(backend, serial_chain_solvers, has_serial_chain) ::= <<
 <if(has_serial_chain)><({clock-time-source-<backend>})(serial_chain_solvers)><else>motion_spec::runtime::monotonic_time_s()<endif>
 >>

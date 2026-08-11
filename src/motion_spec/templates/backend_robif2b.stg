@@ -450,6 +450,14 @@ app-chain-runtime-step-robif2b(serial_chain_solvers) ::= <<
 app-chain-trace-update-robif2b(serial_chain_solvers, trace) ::= <<
 >>
 
+// A real robot is not paused, sped up or stepped by a dashboard; the control channel is not
+// generated for it at all.
+app-chain-control-apply-robif2b(serial_chain_solvers) ::= <<
+>>
+
+app-chain-control-paused-step-robif2b(serial_chain_solvers) ::= <<
+>>
+
 app-chain-cleanup-robif2b(has_serial_chain) ::= <<
 >>
 

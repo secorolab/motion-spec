@@ -28,6 +28,7 @@ main_source(configuration, resources, composition, computation, coordination, co
 
 int main(int argc, char **argv) {
     motion_spec::runtime::install_stop_handlers();
+    motion_spec::runtime::tighten_timer_slack();
     robot_io robot{};
     shared_data shared{};
     motion_spec_event_buffer events{};
@@ -175,7 +176,16 @@ int main(int argc, char **argv) {
             events);
 #endif
         ++_step;
-        motion_spec::runtime::sleep_until_next(_next_tick, <configuration.control_period_ns>);
+        // One pacer for this loop. The real-time factor scales the period rather than adding a
+        // second sleep somewhere else: in simulation it is the viewer's live setting, so the
+        // speed keys work mid-run; on hardware it is 1.0.
+        const double _rtf = <loop-rtf-source(configuration.backend, resources.by_kind.serial_chain, resources.by_kind.serial_chain)>;
+        if (_rtf > 0.0) {
+            motion_spec::runtime::sleep_until_next(
+              _next_tick, static_cast\<long>(<configuration.control_period_ns> / _rtf));
+        \} else {
+            motion_spec::runtime::advance_uncapped(_next_tick);
+        \}
     }
 #ifdef MOTION_SPEC_ENABLE_INTROSPECTION
     _introspection_pub.close();
@@ -200,6 +210,10 @@ int main(int argc, char **argv) {
 <ros-shutdown(communication.ros)>
 <endif>
 
+    if (motion_spec::runtime::overrun_count() > 0) {
+        std::cerr \<\< "[run] " \<\< motion_spec::runtime::overrun_count() \<\< " of " \<\< _step
+                  \<\< " cycles overran the control period" \<\< std::endl;
+    \}
     if (motion_spec::runtime::stop_requested()) {
         std::cerr \<\< "[run] interrupted; frame log closed at step " \<\< _step \<\< std::endl;
         return 130;

@@ -12,6 +12,7 @@ runtime_header(resources, configuration) ::= <<
 #include \<chrono\>
 #include \<cmath\>
 #include \<csignal\>
+#include \<sys/prctl.h\>
 #include \<cstdint\>
 #include \<cstdlib\>
 #include \<ctime\>
@@ -477,6 +478,35 @@ inline bool timespec_less(const timespec &a, const timespec &b) {
     return a.tv_sec \< b.tv_sec || (a.tv_sec == b.tv_sec && a.tv_nsec \< b.tv_nsec);
 }
 
+// A normal-priority thread is granted 50us of timer slack, and the kernel may fire the timer
+// that late. Asking for one nanosecond is what a SCHED_FIFO thread gets for free.
+inline void tighten_timer_slack() { prctl(PR_SET_TIMERSLACK, 1UL, 0UL, 0UL, 0UL); \}
+
+// Yield the pipeline to the SMT sibling while polling. No-op where there is nothing to say.
+inline void spin_hint() {
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#elif defined(__aarch64__) || defined(__arm__)
+    __asm__ __volatile__("yield");
+#endif
+}
+
+// The last stretch before the deadline is spun rather than slept: a wakeup lands late by more
+// than this on a stock kernel, and the loop uses under 1% of its period computing.
+inline constexpr long kSpinMarginNs = 150000L;  // 150us
+
+// Deadlines the work did not fit into. Published per cycle; a missed deadline is otherwise
+// indistinguishable from a normal one after the fact.
+inline unsigned long long &overrun_count() {
+    static unsigned long long count = 0;
+    return count;
+}
+
+// Uncapped: the loop runs as fast as it can, so there is no deadline to wait for and none to
+// miss. Re-phase onto now rather than letting the deadline arithmetic fall behind, which would
+// otherwise count every cycle as an overrun.
+inline void advance_uncapped(timespec &next) { clock_gettime(CLOCK_MONOTONIC, &next); \}
+
 inline void sleep_until_next(timespec &next, long period_ns) {
     next.tv_nsec += period_ns;
     while (next.tv_nsec >= 1000000000L) {
@@ -486,10 +516,27 @@ inline void sleep_until_next(timespec &next, long period_ns) {
     timespec now{};
     clock_gettime(CLOCK_MONOTONIC, &now);
     if (!timespec_less(now, next)) {
+        // Overrun. Re-phase onto now rather than running compressed cycles to repay the time:
+        // dt_measured_s already tells the controllers what actually elapsed.
+        ++overrun_count();
         next = now;
         return;
     }
-    while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, nullptr) == EINTR) {}
+
+    timespec wake = next;
+    wake.tv_nsec -= kSpinMarginNs;
+    if (wake.tv_nsec \< 0) {
+        wake.tv_nsec += 1000000000L;
+        --wake.tv_sec;
+    }
+    // Skipped when less than the margin remains, so the spin is never longer than the margin.
+    if (timespec_less(now, wake)) {
+        while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &wake, nullptr) == EINTR) {}
+    }
+    do {
+        spin_hint();
+        clock_gettime(CLOCK_MONOTONIC, &now);
+    } while (timespec_less(now, next));
 }
 
 enum class VelocityProfileShape { Trapezoidal, SCurve };

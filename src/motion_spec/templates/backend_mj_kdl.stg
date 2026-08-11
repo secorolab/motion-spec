@@ -117,12 +117,17 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
     bool headless = false;
     bool steps_limited = false;
     int headless_steps = 0;
+    // Headless runs as fast as the machine allows unless asked for a rate: the simulation clock
+    // drives dt, so wall speed changes how long the run takes and nothing about what it does.
+    double _headless_rtf = 0.0;
     for (int i = 1; i \< argc; ++i) {
         if (std::strcmp(argv[i], "--headless") == 0) {
             headless = true;
         } else if (std::strcmp(argv[i], "--steps") == 0 && i + 1 \< argc) {
             headless_steps = std::atoi(argv[++i]);
             steps_limited = true;
+        } else if (std::strcmp(argv[i], "--rtf") == 0 && i + 1 \< argc) {
+            _headless_rtf = std::atof(argv[++i]);
         }
     }
 
@@ -301,6 +306,7 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
 <mj-sensor-io-assign(solver)>}; separator="\n">
 
     mj_kdl::Viewer mj_viewer{};
+    if (_headless_rtf > 0.0) mj_viewer.realtime_factor = _headless_rtf;
     if (!headless) {
         if (!mj_kdl::init_window_sim(&mj_viewer, &mj_<first(serial_chain_solvers).runtime.id>)) {
             std::cerr \<\< "mj_kdl::init_window_sim() failed\\n";

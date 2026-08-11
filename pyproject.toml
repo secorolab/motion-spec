@@ -31,7 +31,8 @@ introspection = [
     # frame_log_pb reads .pb logs via message_factory.GetMessageClass, added in 4.22.
     "protobuf>=4.22",
 ]
-all = ["pyshacl>=0.25.0", "rec", "protobuf>=4.22"]
+dashboard = ["nicegui>=2.0", "pillow"]
+all = ["pyshacl>=0.25.0", "rec", "protobuf>=4.22", "nicegui>=2.0", "pillow"]
 test = ["pytest"]
 docs = ["sphinx", "myst-parser", "furo", "sphinx-autobuild"]
 dev = ["pytest", "ruff"]

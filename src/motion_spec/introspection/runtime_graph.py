@@ -605,15 +605,11 @@ def _add_rec_timing(
             g.add((activity, pred, rdflib.Literal(lifecycle[key], datatype=rdflib.XSD.dateTime)))
 
 
-def project_runtime(
-    run_dir: Path | str, frames: list[dict], *, frame_count: int | None = None
-) -> rdflib.Graph:
-    run_dir, manifest = load_manifest(run_dir)
-    # The run's contract comes from the log itself, not a companion artifact.
-    header = frame_log_pb.read_contract(run_dir / manifest["files"]["frame_log"]).header
-    g = rdflib.Graph()
+def bind_namespaces(g, run_id: str, *, fsm_namespace: str = "") -> None:
+    """Bind the runtime graph's prefixes, so every emitted node displays as a CURIE."""
     for prefix, ns in {
         "prov": PROV,
+        "sosa": SOSA,
         "bdd": BDD,
         "agn": AGN,
         "obs": OBS,
@@ -627,18 +623,27 @@ def project_runtime(
         g.bind(prefix, ns)
     # Compact the per-run node families and model FSM nodes into CURIEs by binding a prefix at
     # each family's `<family>/<run_id>/` boundary (locals are slash-free — see _scoped).
-    run_id = manifest["run_id"]
     for prefix, family in (
         ("frm", "frame"),
         ("cs", "controller-sample"),
         ("mons", "monitor-sample"),
         ("sig", "signal"),
         ("occ", "occurrence"),
+        ("obsv", "observation"),
     ):
         g.bind(prefix, rdflib.Namespace(f"{MSRUN}{family}/{run_id}/"))
-    fsm_namespace = header.fsm_namespace
     if fsm_namespace:
         g.bind("mfsm", rdflib.Namespace(fsm_namespace))
+
+
+def project_runtime(
+    run_dir: Path | str, frames: list[dict], *, frame_count: int | None = None
+) -> rdflib.Graph:
+    run_dir, manifest = load_manifest(run_dir)
+    # The run's contract comes from the log itself, not a companion artifact.
+    header = frame_log_pb.read_contract(run_dir / manifest["files"]["frame_log"]).header
+    g = rdflib.Graph()
+    bind_namespaces(g, manifest["run_id"], fsm_namespace=header.fsm_namespace)
 
     run = _node(f"run:{manifest['run_id']}")
     # Agents and the execution activity are shared provenance concepts: emit the same

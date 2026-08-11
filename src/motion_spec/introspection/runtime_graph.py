@@ -29,14 +29,14 @@ def _dt_literal(wall_ns) -> rdflib.Literal | None:
     return rdflib.Literal(dt)
 
 
-def _condition_map(run_dir: Path, manifest: dict) -> dict[str, rdflib.URIRef]:
-    """Map monitor IRI -> its constraint-condition IRI, read from the co-archived model graph
+def condition_map_from_paths(paths) -> dict[str, rdflib.URIRef]:
+    """Map monitor IRI -> its constraint-condition IRI, read from the model graph
     (the compiled-from-.robmot jsonld). The condition node already carries the operator (@type),
     measured quantity, and setpoint/threshold, so occurrences reference it by URI rather than
     copying those values in — the model graph stays the single source for the spec."""
     mapping: dict[str, rdflib.URIRef] = {}
-    for rel in manifest.get("files", {}).get("model_imports") or []:
-        path = run_dir / rel
+    for path in paths:
+        path = Path(path)
         if not path.exists() or path.suffix != ".json":
             continue
         try:
@@ -49,7 +49,15 @@ def _condition_map(run_dir: Path, manifest: dict) -> dict[str, rdflib.URIRef]:
     return mapping
 
 
+def _condition_map(run_dir: Path, manifest: dict) -> dict[str, rdflib.URIRef]:
+    """`condition_map_from_paths` over the model graphs the run archive vendored."""
+    return condition_map_from_paths(
+        run_dir / rel for rel in manifest.get("files", {}).get("model_imports") or []
+    )
+
+
 PROV = rdflib.Namespace("http://www.w3.org/ns/prov#")
+SOSA = rdflib.Namespace("http://www.w3.org/ns/sosa/")
 BDD = rdflib.Namespace("https://secorolab.github.io/metamodels/acceptance-criteria/bdd#")
 AGN = rdflib.Namespace("https://secorolab.github.io/metamodels/agent#")
 OBS = rdflib.Namespace("https://secorolab.github.io/metamodels/observation#")
@@ -328,12 +336,123 @@ def _trigger_occurrences(
     return anchors
 
 
-def _project_occurrences(
-    g: rdflib.Graph, run_id: str, header, frames: list[dict], cond_map: dict
-) -> set:
-    """Synthesize the discrete event graph from the per-tick frame scan; return the set of steps
-    that carry an occurrence (the frames worth materializing). Continuous scalars stay in
-    the frame log; only semantic edges land in the graph:
+def _observation(
+    g: rdflib.Graph,
+    run_id: str,
+    step,
+    wall_ns,
+    sensor: rdflib.URIRef,
+    kind: str,
+    slot,
+    role: str,
+    prop: rdflib.URIRef,
+    value,
+    feature: rdflib.URIRef | None = None,
+) -> rdflib.URIRef:
+    """One sosa:Observation of a slot's value at a frame -- an instance node, no new vocabulary."""
+    node = _scoped("observation", run_id, step, f"{kind}{slot}", role)
+    g.add((node, rdflib.RDF.type, SOSA.Observation))
+    g.add((node, SOSA.observedProperty, prop))
+    g.add((node, SOSA.madeBySensor, sensor))
+    if feature is not None:
+        g.add((node, SOSA.hasFeatureOfInterest, feature))
+    _literal(g, node, SOSA.hasSimpleResult, value)
+    dt = _dt_literal(wall_ns)
+    if dt is not None:
+        g.add((node, SOSA.resultTime, dt))
+    return node
+
+
+def frame_observations(
+    g: rdflib.Graph,
+    run_id: str,
+    header,
+    frame: dict,
+    *,
+    signal_map: dict | None = None,
+    quantity_iris: dict | None = None,
+    satisfied: bool = False,
+) -> None:
+    """sosa:Observations for one frame's active slots.
+
+    Controller error/output and monitor values always; constraint satisfaction and quantities
+    only when asked for. Sampled history takes the former, the live tier takes all of them --
+    dense per-tick quantities would swamp the graph and the frame log already holds them.
+    """
+    sensor = rdflib.URIRef(prov_uri(header.producer_agent_id or "agent:controller_process"))
+    wall_ns = frame.get("timing", {}).get("wall_ns")
+    step = frame["step"]
+    meta = _motion_meta(header).get(frame.get("active_motion", -1), {})
+    controllers = meta.get("controllers") or []
+    monitors = meta.get("monitors") or []
+    for idx, slot in enumerate(frame.get("constraints", [])):
+        if not slot.get("active") or idx >= len(controllers):
+            continue
+        controller_uri = _slot_uri(controllers[idx], "uri")
+        constraint_uri = _slot_uri(controllers[idx], "constraint_uri")
+        signals = (signal_map or {}).get(str(controller_uri)) or {}
+        for role, value in (("error", slot.get("error")), ("output", slot.get("output"))):
+            prop = signals.get(role)
+            if prop is None:
+                continue
+            _observation(
+                g,
+                run_id,
+                step,
+                wall_ns,
+                sensor,
+                "c",
+                idx,
+                role,
+                prop,
+                float(value),
+                feature=constraint_uri,
+            )
+        if satisfied and constraint_uri is not None:
+            _observation(
+                g,
+                run_id,
+                step,
+                wall_ns,
+                sensor,
+                "c",
+                idx,
+                "satisfied",
+                constraint_uri,
+                bool(slot.get("satisfied")),
+            )
+    for idx, slot in enumerate(frame.get("monitors", [])):
+        if not slot.get("active") or idx >= len(monitors):
+            continue
+        monitor_uri = _slot_uri(monitors[idx], "uri")
+        if monitor_uri is None:
+            continue
+        _observation(
+            g, run_id, step, wall_ns, sensor, "m", idx, "value", monitor_uri, float(slot["value"])
+        )
+    for idx, (qid, iri) in enumerate(sorted((quantity_iris or {}).items())):
+        if qid not in frame.get("quantities", {}):
+            continue
+        _observation(
+            g,
+            run_id,
+            step,
+            wall_ns,
+            sensor,
+            "q",
+            idx,
+            "value",
+            rdflib.URIRef(iri),
+            float(frame["quantities"][qid]),
+        )
+
+
+class IncrementalProjector:
+    """One run's occurrence projection, fed a frame at a time.
+
+    Owns the state the per-tick scan carries across frames, so a batch replay and a live
+    dashboard session drive the identical projection code. Continuous scalars stay in the
+    frame log; only semantic edges land in the graph:
 
       * StateOccurrence / TransitionOccurrence on FSM state changes,
       * ConstraintSatisfied/UnsatisfiedOccurrence on a goal constraint's satisfied edge (both
@@ -345,25 +464,50 @@ def _project_occurrences(
 
     Edge detection resets at state boundaries: slot indices are motion-local (slot i is a
     different controller under a different motion), so only intra-state comparison is valid.
+
+    With `sample_interval_s` set, controller and monitor values are additionally sampled at
+    that spacing in sim time. Left None (the archive path) the graph is byte-identical to the
+    projection before sampling existed.
     """
-    states, events = _state_maps(header)
-    motions = _motion_meta(header)
-    # Indexed by state pair but holding every transition between that pair, so two transitions
-    # between the same states driven by different events stay distinct.
-    transitions: dict = {}
-    for transition in _transition_rows(header):
-        transitions.setdefault((transition.get("from"), transition.get("to")), []).append(
-            transition
-        )
-    anchors: set = set()
-    prev_state = None
-    prev_csat: list | None = None
-    prev_msat: list | None = None
-    seen_events: set = set()
-    # An event fires on one tick and the state change lands on the next, so the events that could
-    # have caused a change span this frame and the previous one.
-    prev_frame_events: set = set()
-    for frame in frames:
+
+    def __init__(
+        self,
+        g: rdflib.Graph,
+        run_id: str,
+        header,
+        cond_map: dict,
+        *,
+        sample_interval_s: float | None = None,
+        signal_map: dict | None = None,
+    ):
+        self.g = g
+        self.run_id = run_id
+        self.header = header
+        self.cond_map = cond_map
+        self.sample_interval_s = sample_interval_s
+        self.signal_map = signal_map or {}
+        self.states, self.events = _state_maps(header)
+        self.motions = _motion_meta(header)
+        # Indexed by state pair but holding every transition between that pair, so two
+        # transitions between the same states driven by different events stay distinct.
+        self.transitions: dict = {}
+        for transition in _transition_rows(header):
+            self.transitions.setdefault((transition.get("from"), transition.get("to")), []).append(
+                transition
+            )
+        self.anchors: set = set()
+        self.prev_state = None
+        self.prev_csat: list | None = None
+        self.prev_msat: list | None = None
+        self.seen_events: set = set()
+        # An event fires on one tick and the state change lands on the next, so the events that
+        # could have caused a change span this frame and the previous one.
+        self.prev_frame_events: set = set()
+        self.last_sample_t: float | None = None
+
+    def feed(self, frame: dict) -> set:
+        """Project one frame; return the steps it anchored an occurrence at."""
+        g, run_id = self.g, self.run_id
         step = frame["step"]
         wall = frame.get("timing", {}).get("wall_ns")
         cur = frame.get("fsm_state", -1)
@@ -372,8 +516,8 @@ def _project_occurrences(
             for trigger in frame.get("triggers", [])
             if trigger.get("kind") == KIND_EVENT
         }
-        state = _state_meta(states, cur)
-        meta = motions.get(frame.get("active_motion", -1), {})
+        state = _state_meta(self.states, cur)
+        meta = self.motions.get(frame.get("active_motion", -1), {})
         controllers = meta.get("controllers") or meta.get("constraints") or []
         monitors = meta.get("monitors") or []
         csat = [
@@ -383,39 +527,69 @@ def _project_occurrences(
             bool(m.get("active")) and bool(m.get("satisfied")) for m in frame.get("monitors", [])
         ]
 
-        if cur != prev_state:
-            anchors.update(
+        added: set = set()
+        if cur != self.prev_state:
+            added.update(
                 _state_change_occurrences(
                     g,
                     run_id,
-                    states,
-                    events,
-                    transitions,
-                    prev_state,
+                    self.states,
+                    self.events,
+                    self.transitions,
+                    self.prev_state,
                     cur,
                     state,
                     frame.get("state_since_wall_ns") or wall,
                     step,
-                    observed_events=frame_events | prev_frame_events,
+                    observed_events=frame_events | self.prev_frame_events,
                 )
             )
         else:
-            anchors.update(
+            added.update(
                 _constraint_edge_occurrences(
-                    g, run_id, state, controllers, prev_csat, csat, frame, wall, step
+                    g, run_id, state, controllers, self.prev_csat, csat, frame, wall, step
                 )
             )
-            anchors.update(
+            added.update(
                 _monitor_edge_occurrences(
-                    g, run_id, state, monitors, prev_msat, msat, frame, cond_map, wall, step
+                    g,
+                    run_id,
+                    state,
+                    monitors,
+                    self.prev_msat,
+                    msat,
+                    frame,
+                    self.cond_map,
+                    wall,
+                    step,
                 )
             )
 
-        anchors.update(_trigger_occurrences(g, run_id, states, events, frame, seen_events, step))
+        added.update(
+            _trigger_occurrences(g, run_id, self.states, self.events, frame, self.seen_events, step)
+        )
 
-        prev_state, prev_csat, prev_msat = cur, csat, msat
-        prev_frame_events = frame_events
-    return anchors
+        if self.sample_interval_s is not None:
+            t = frame.get("t", 0.0)
+            if self.last_sample_t is None or t >= self.last_sample_t + self.sample_interval_s:
+                self.last_sample_t = t
+                frame_observations(g, run_id, self.header, frame, signal_map=self.signal_map)
+
+        self.prev_state, self.prev_csat, self.prev_msat = cur, csat, msat
+        self.prev_frame_events = frame_events
+        self.anchors |= added
+        return added
+
+
+def _project_occurrences(
+    g: rdflib.Graph, run_id: str, header, frames: list[dict], cond_map: dict
+) -> set:
+    """Synthesize the discrete event graph from the per-tick frame scan; return the set of steps
+    that carry an occurrence (the frames worth materializing)."""
+    projector = IncrementalProjector(g, run_id, header, cond_map)
+    for frame in frames:
+        projector.feed(frame)
+    return projector.anchors
 
 
 def _add_rec_timing(
@@ -431,15 +605,11 @@ def _add_rec_timing(
             g.add((activity, pred, rdflib.Literal(lifecycle[key], datatype=rdflib.XSD.dateTime)))
 
 
-def project_runtime(
-    run_dir: Path | str, frames: list[dict], *, frame_count: int | None = None
-) -> rdflib.Graph:
-    run_dir, manifest = load_manifest(run_dir)
-    # The run's contract comes from the log itself, not a companion artifact.
-    header = frame_log_pb.read_contract(run_dir / manifest["files"]["frame_log"]).header
-    g = rdflib.Graph()
+def bind_namespaces(g, run_id: str, *, fsm_namespace: str = "") -> None:
+    """Bind the runtime graph's prefixes, so every emitted node displays as a CURIE."""
     for prefix, ns in {
         "prov": PROV,
+        "sosa": SOSA,
         "bdd": BDD,
         "agn": AGN,
         "obs": OBS,
@@ -453,18 +623,27 @@ def project_runtime(
         g.bind(prefix, ns)
     # Compact the per-run node families and model FSM nodes into CURIEs by binding a prefix at
     # each family's `<family>/<run_id>/` boundary (locals are slash-free — see _scoped).
-    run_id = manifest["run_id"]
     for prefix, family in (
         ("frm", "frame"),
         ("cs", "controller-sample"),
         ("mons", "monitor-sample"),
         ("sig", "signal"),
         ("occ", "occurrence"),
+        ("obsv", "observation"),
     ):
         g.bind(prefix, rdflib.Namespace(f"{MSRUN}{family}/{run_id}/"))
-    fsm_namespace = header.fsm_namespace
     if fsm_namespace:
         g.bind("mfsm", rdflib.Namespace(fsm_namespace))
+
+
+def project_runtime(
+    run_dir: Path | str, frames: list[dict], *, frame_count: int | None = None
+) -> rdflib.Graph:
+    run_dir, manifest = load_manifest(run_dir)
+    # The run's contract comes from the log itself, not a companion artifact.
+    header = frame_log_pb.read_contract(run_dir / manifest["files"]["frame_log"]).header
+    g = rdflib.Graph()
+    bind_namespaces(g, manifest["run_id"], fsm_namespace=header.fsm_namespace)
 
     run = _node(f"run:{manifest['run_id']}")
     # Agents and the execution activity are shared provenance concepts: emit the same

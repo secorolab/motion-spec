@@ -270,23 +270,41 @@ def write_delimited(fh, message: bytes) -> None:
     fh.write(message)
 
 
-def _read_delimited(fh) -> bytes | None:
+def _read_delimited_at(fh, offset: int) -> tuple[bytes | None, int]:
+    """One message starting at `offset`, plus the offset past it.
+
+    A record still being appended to (short prefix or short payload) reads as (None, offset) --
+    the caller keeps its offset and retries once the writer has finished the record.
+    """
+    fh.seek(offset)
     prefix = bytearray()
     while True:
         byte = fh.read(1)
         if not byte:
-            if not prefix:
-                return None
-            raise ArchiveError("truncated protobuf frame log length")
+            return None, offset
         prefix.extend(byte)
         if not byte[0] & 0x80:
             break
+        if len(prefix) > 10:
+            raise ArchiveError("frame log length prefix is not a varint")
     size = 0
     for shift, b in enumerate(prefix):
         size |= (b & 0x7F) << (7 * shift)
     data = fh.read(size)
     if len(data) != size:
+        return None, offset
+    return data, offset + len(prefix) + size
+
+
+def _read_delimited(fh) -> bytes | None:
+    start = fh.tell()
+    data, end = _read_delimited_at(fh, start)
+    if data is None:
+        # A complete file ends on a record boundary; anything short of one is a truncated log.
+        if fh.seek(0, 2) == start:
+            return None
         raise ArchiveError("truncated protobuf frame log")
+    fh.seek(end)
     return data
 
 
@@ -627,3 +645,22 @@ def frame_records(path: Path | str, contract: LogContract | None = None) -> Iter
     for kind, value in iter_messages(path, contract):
         if kind == "frame":
             yield value
+
+
+def stream_records(fh, contract: LogContract, offset: int) -> tuple[list[dict], int]:
+    """Frames appended since `offset`, plus the offset to resume from.
+
+    Tailing a log the runtime is still writing: a partial trailing record leaves the offset
+    where it was, so the next call re-reads it once the writer has completed it. Header
+    records are skipped, exactly as `frame_records` skips them.
+    """
+    records = []
+    while True:
+        data, next_offset = _read_delimited_at(fh, offset)
+        if data is None:
+            return records, offset
+        offset = next_offset
+        record = contract.record_cls()
+        record.ParseFromString(data)
+        if record.WhichOneof("record") == "frame":
+            records.append(_parse_frame(record.frame, contract))

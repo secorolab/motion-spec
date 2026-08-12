@@ -254,6 +254,8 @@ def health(profiles: tuple[str, ...], targets: tuple[str, ...]) -> None:
 @click.option("-o", "--output-dir", type=click.Path(file_okay=False, path_type=Path))
 def gen(stage_or_model: str, model: Path | None, output_dir: Path | None) -> None:
     """Generate IR or C++ from a .robmot MODEL; CODE is the default stage."""
+    from rdf_utils.constraints import ConstraintViolation
+
     from motion_spec.generation.pipeline import create_generation_dir, generate_model
 
     if stage_or_model in {"ir", "code"}:
@@ -272,6 +274,8 @@ def gen(stage_or_model: str, model: Path | None, output_dir: Path | None) -> Non
     try:
         generation = create_generation_dir(model, output_dir)
         generate_model(model, generation, stage=stage)
+    except ConstraintViolation as exc:
+        raise click.ClickException(f"the model was rejected: {exc}") from exc
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
         raise click.ClickException(f"generation failed: {exc}") from exc
     click.echo(generation)
@@ -467,6 +471,8 @@ def run(
     executable_args: tuple[str, ...],
 ) -> None:
     """Run a .robmot INPUT, generating and building it first, or an existing GENERATION."""
+    from rdf_utils.constraints import ConstraintViolation
+
     from motion_spec.introspection.archive import ArchiveError
     from motion_spec.introspection.runner import RunnerError, run_cataloged
     from motion_spec.generation.pipeline import (
@@ -483,6 +489,8 @@ def run(
             generation = create_generation_dir(input, output_dir)
             generate_model(input, generation, stage="code")
             build_generation(generation, prefixes=prefixes, jobs=jobs)
+        except ConstraintViolation as exc:
+            raise click.ClickException(f"the model was rejected: {exc}") from exc
         except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
             raise click.ClickException(f"pipeline failed: {exc}") from exc
     else:

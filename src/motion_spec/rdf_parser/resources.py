@@ -20,6 +20,7 @@ import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NamedTuple
+from xml.etree import ElementTree
 
 import tomllib
 from motion_spec_dsl.rdf_parser.vocab import (
@@ -1222,7 +1223,7 @@ def read_scene(model) -> MjcfSceneSpec:
         scene.cameras.extend(assembly.cameras)
 
     _expand_scene_geometry(scene)
-    _validate_scene(scene)
+    _validate_scene(scene, model.app_path)
 
     return scene
 
@@ -1256,7 +1257,9 @@ def _name_object_attachments(model, attach_by_body) -> None:
             frame = parent_frame
         attach_by_body[body] = (
             kind,
-            f"{object_ids_by_body[parent_body]}_{name}",
+            # The runtime composes this as the object's name and the site, and it names the
+            # object after the body it maps -- so the prefix has to be that body, not the object.
+            f"{local_name(parent_body)}_{name}",
             frame,
             parent_body,
         )
@@ -1407,10 +1410,61 @@ def _expand_scene_geometry(scene: MjcfSceneSpec) -> None:
                 _expand_vector(obj, name, components, default)
 
 
-def _validate_scene(scene: MjcfSceneSpec) -> None:
+def _asset_file(path: str, app_path: Path) -> Path | None:
+    """The file the runtime would open for an asset, or None when the search comes up empty.
+
+    Mirrors the generated controller's search so a check here reads the same file the run does:
+    the path as given, or one below a directory the working directory or the generation sits in.
+    """
+    candidate = Path(path)
+    if candidate.is_absolute():
+        return candidate if candidate.is_file() else None
+    starts = (Path.cwd(), app_path.parent)
+    return next(
+        (
+            root / candidate
+            for start in starts
+            for root in (start, *start.parents)
+            if (root / candidate).is_file()
+        ),
+        None,
+    )
+
+
+def _validate_object_attachments(scene: MjcfSceneSpec, app_path: Path) -> None:
+    """Reject an attachment onto a scene object whose asset states no site to hold it.
+
+    The runtime reaches such a site by the object's name and the site's, and only the asset can
+    say the site is there -- unchecked, the model builds and the scene fails to assemble.
+    """
+    for robot in scene.robots:
+        if robot.attach_kind != "Site":
+            continue
+        obj = next(
+            (item for item in scene.objects if robot.attach_name.startswith(f"{item.body}_")), None
+        )
+        if obj is None or not obj.path or (asset := _asset_file(obj.path, app_path)) is None:
+            continue
+        site = robot.attach_name[len(obj.body) + 1 :]
+        declared = sorted(
+            name
+            for element in ElementTree.parse(asset).iter("site")
+            if (name := element.get("name"))
+        )
+        if site not in declared:
+            raise ConstraintViolation(
+                "scene",
+                f"'{robot.id}' attaches to frame '{site}' of scene object '{obj.id}', which "
+                f"'{obj.path}' states no site for. The asset holds an attachment by a site of "
+                f"the same name; it declares {declared or 'none'}.",
+            )
+
+
+def _validate_scene(scene: MjcfSceneSpec, app_path: Path) -> None:
     """Reject a procedural scene object that omits geometry: the model must declare it, and a
     silent default would place a body the author never described.
     """
+    _validate_object_attachments(scene, app_path)
     for obj in scene.objects:
         if obj.path:
             continue

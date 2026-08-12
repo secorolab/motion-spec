@@ -15,7 +15,7 @@ find_package(orocos_kdl REQUIRED CONFIG)
 <if(coordination.fsm)>
 find_package(coord2b REQUIRED)
 <endif>
-find_package(mj_kdl_wrapper 0.3.3 REQUIRED CONFIG)
+find_package(mj_kdl_wrapper 0.3.4 REQUIRED CONFIG)
 find_package(tomlplusplus REQUIRED CONFIG)
 find_package(Threads REQUIRED)
 <if(communication.ros)>

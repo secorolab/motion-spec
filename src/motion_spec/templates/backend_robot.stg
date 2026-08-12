@@ -17,6 +17,9 @@ solver-rnea-include-mj_kdl() ::= <<
 >>
 
 solver-rnea-include-robif2b() ::= <<
+#include \<kdl/chainidsolver_recursive_newton_euler.hpp\>
+#include \<kdl/chainjnttojacsolver.hpp\>
+#include \<kdl/chainjnttojacdotsolver.hpp\>
 >>
 
 robot-num-joints-def(solver) ::= <<

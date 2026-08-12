@@ -296,16 +296,33 @@ def _read_delimited_at(fh, offset: int) -> tuple[bytes | None, int]:
     return data, offset + len(prefix) + size
 
 
-def _read_delimited(fh) -> bytes | None:
+def _read_delimited(fh, *, partial_ok: bool = False) -> bytes | None:
+    """One message, or None at the end of the stream.
+
+    A complete file ends on a record boundary. A run killed mid-write leaves a short final
+    record: `partial_ok` readers stop there and keep every whole record before it, which is
+    all a crashed run has to say. The header is read strictly -- a log whose contract is
+    half-written describes nothing.
+    """
     start = fh.tell()
     data, end = _read_delimited_at(fh, start)
     if data is None:
-        # A complete file ends on a record boundary; anything short of one is a truncated log.
-        if fh.seek(0, 2) == start:
+        if partial_ok or fh.seek(0, 2) == start:
             return None
         raise ArchiveError("truncated protobuf frame log")
     fh.seek(end)
     return data
+
+
+def tail_is_partial(path: Path | str) -> bool:
+    """Whether the log ends mid-record, i.e. the writer never closed it."""
+    with Path(path).open("rb") as fh:
+        offset = 0
+        while True:
+            data, next_offset = _read_delimited_at(fh, offset)
+            if data is None:
+                return fh.seek(0, 2) != offset
+            offset = next_offset
 
 
 # --- encode (fixtures/tests) ---
@@ -604,12 +621,16 @@ def _parse_frame(msg, contract: LogContract) -> dict:
 def iter_messages(
     path: Path | str, contract: LogContract | None = None
 ) -> Iterator[tuple[str, object]]:
-    """Yield ('header', dict) then ('frame', decoded) for each record in a log."""
+    """Yield ('header', dict) then ('frame', decoded) for every whole record in a log.
+
+    A log left truncated by a crashed run ends here at its last complete record instead of
+    raising: the frames leading up to the crash are the ones worth reading.
+    """
     if contract is None:
         contract = read_contract(path)
     with Path(path).open("rb") as fh:
         while True:
-            data = _read_delimited(fh)
+            data = _read_delimited(fh, partial_ok=True)
             if data is None:
                 return
             rec = contract.record_cls()

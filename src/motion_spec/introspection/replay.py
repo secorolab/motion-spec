@@ -107,6 +107,8 @@ def summarize(log_path: Path | str) -> str:
         f"writer      {meta.get('producer_agent_id', '')} {meta.get('activity_id', '')}",
         f"final state {final_name}",
     ]
+    if frame_log_pb.tail_is_partial(log_path):
+        lines.append("log         truncated: the last record is short, the writer never closed")
     health = read_health(log_path)
     if health:
         lines.append(

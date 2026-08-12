@@ -164,6 +164,9 @@ class VelocityTwist(SpatialCoordinate):
 
     of: SimplicialComplex
     with_respect_to: SimplicialComplex = field(metadata=INTERNAL)
+    # Chain FK answers in the chain's root frame, so a twist seen there is already the answer
+    # and one seen elsewhere is that answer rotated into a frame that moves with the arm.
+    seen_by_root: bool = True
     type: str = field(default="VelocityTwist")
 
 

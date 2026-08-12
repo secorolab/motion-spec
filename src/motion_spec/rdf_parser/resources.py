@@ -703,7 +703,11 @@ def _placed_on_chain(carrier, backend: str) -> tuple[tuple[str, bool], ...]:
     if hasattr(carrier, "subspace"):
         # An acceleration constraint whose direction is taken in a frame that moves with the arm.
         return (("as_seen_by", True),)
-    # A pose reads the world model; a velocity twist keeps chain FK until plan 06.
+    if getattr(carrier, "type", "") == "VelocityTwist":
+        # Chain FK answers the twist itself, in the chain's own root frame. A twist the model
+        # asked to see in another frame is that same twist rotated, and the frame it rotates
+        # into is read off the world model like any other posed frame.
+        return (("of", False), ("as_seen_by", True))
     return (("of", getattr(carrier, "type", "") == "Pose"),)
 
 
@@ -837,9 +841,14 @@ def _observes_in_frame(model, node, type_, chain_root, runtime_prefix, owned_tre
         return owned, frame_node
     if frame_node is not None:
         frame_body = body_of_frame(frame_node, graph)
+        on_this_chain = iri_parent(frame_body) in owned_trees
         runtime_frame = local_name(frame_body)
-        if iri_parent(frame_body) in owned_trees:
+        if on_this_chain:
             runtime_frame = f"{runtime_prefix}{local_name(frame_body)}"
+        # A twist seen by a frame this chain carries is this chain's to answer: it is the FK
+        # twist rotated into a frame that moves with the arm, which only this chain can place.
+        if runtime_frame != chain_root and type_ == GEOM_COORD.VelocityTwistCoordinate:
+            return on_this_chain, frame_node
 
         return runtime_frame == chain_root, frame_node
 
@@ -882,6 +891,9 @@ def _runtime_output(model, output, type_, node, frame_node, setup: _ChainSetup):
     """One observation with its frames and names rewritten the way the runtime knows them."""
     if type_ == KC_STAT.JointPositionCoordinate:
         return replace(output, joint_name=f"{setup.runtime.prefix}{output.joint_name}")
+    if type_ == GEOM_COORD.VelocityTwistCoordinate:
+        seen_by = _runtime_frame(model, frame_node, setup.runtime.prefix, setup.runtime.owned_trees)
+        return replace(output, as_seen_by=seen_by, seen_by_root=seen_by.id == setup.chain.root)
     if type_ != RBDYN_COORD.WrenchCoordinate:
         return output
 
@@ -987,10 +999,12 @@ def build_robots(
             )
             if out.id not in detect_pose_ids
         ]
-        # An acceleration constraint is base-aligned when its axis frame is the chain root.
+        # An acceleration constraint is base-aligned when its axis frame is the chain root. Both
+        # solver families ask: the row is a direction in the solver's frame either way, and one
+        # taken in a frame that moves with the arm has to be turned into the root's axes.
         root_body = _body_name(solver.chain.root)
         for driver in solver.motion_drivers:
-            for constraint in driver.acceleration_constraint:
+            for constraint in (*driver.acceleration_constraint, *driver.cartesian_acceleration):
                 axis_frame = getattr(constraint.as_seen_by, "id", None)
                 constraint.base_aligned = axis_frame is None or _body_name(axis_frame) == root_body
         serial_chains.append(solver)

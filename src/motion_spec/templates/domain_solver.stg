@@ -303,7 +303,13 @@ solver-output-VelocityTwist(solver, chain_solver, out, backend) ::= <<
         state.<solver.id>.q_qd,
         tmp,
         <out.of.segment>);
+<if(out.seen_by_root)>
     shared.<out.id> = tmp.deriv();
+<else>
+    // Seen by a frame that moves with the arm: the same twist about the same point, turned
+    // into that frame's axes, so a rotation the arm carries along reads as a constant.
+    shared.<out.id> = (<world-pose(solver, {robot.world_<solver.id>_<out.as_seen_by.id>})>).M.Inverse() * tmp.deriv();
+<endif>
 }
 >>
 

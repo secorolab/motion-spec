@@ -102,9 +102,10 @@ def test_which_reads_move_to_the_world_model_is_decided_once() -> None:
         position=None,
     )
     assert _placed_on_chain(pose, "mj_kdl") == (("of", True),)
-    # A twist states the point it is taken about, and stays on chain FK until plan 06.
+    # A twist states the point it is taken about, which stays on chain FK; the frame it asked
+    # to be seen in is a posed frame like any other, so that one reads the world model.
     twist = _spatial(VelocityTwist, of=None, with_respect_to=None)
-    assert _placed_on_chain(twist, "mj_kdl") == (("of", False),)
+    assert _placed_on_chain(twist, "mj_kdl") == (("of", False), ("as_seen_by", True))
     force = CartesianForceSpecification("f", force=None, attached_to=None)
     assert _placed_on_chain(force, "robif2b") == (("attached_to", False),)
     constraint = AccelerationConstraint("c", subspace=Subspace.Linear, axis=None)

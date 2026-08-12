@@ -1257,13 +1257,28 @@ def _unique_view(indexed, subobject_id, context):
     return matches[0] if matches else None
 
 
-def views_for_access(views: dict, shared_data: list, motions, closures: dict) -> dict:
+def views_for_access(
+    views: dict, shared_data: list, motions, closures: dict, pose_components: dict
+) -> dict:
     """Unambiguous MAP views by subobject, for the view's access expressions.
 
     A subobject written directly -- an authored or literal shared value, a snapshot target, a
     closure output -- is an ordinary shared quantity and keeps its own field; one reused by views
     that disagree on how they access it must not silently pick one of them.
+
+    Raises:
+        ConstraintViolation: a subobject is left with neither a direct write nor one agreed
+            reading, so nothing could compute it.
     """
+    # A declared pose's components are bound *into* it. Reading one back off the pose it helps
+    # define is circular -- and it is the quantity's own superobject that says how to read it --
+    # so the binding is not a candidate reading, however much it looks like one.
+    bound_into_pose = {
+        (pose_id, component["ref"])
+        for pose_id, parts in pose_components.items()
+        for component in asdict(parts).values()
+        if isinstance(component, dict) and component.get("ref")
+    }
     direct_ids = {
         item.id
         for item in shared_data
@@ -1283,6 +1298,8 @@ def views_for_access(views: dict, shared_data: list, motions, closures: dict) ->
         subobject_id = getattr(view.subobject, "id", None)
         if not subobject_id or subobject_id in direct_ids:
             continue
+        if (getattr(view.superobject, "id", None), subobject_id) in bound_into_pose:
+            continue
         previous = indexed.setdefault(subobject_id, view)
         if previous is view or previous is None:
             continue
@@ -1292,7 +1309,19 @@ def views_for_access(views: dict, shared_data: list, motions, closures: dict) ->
         ):
             indexed[subobject_id] = None
 
-    return {id_: view for id_, view in indexed.items() if view is not None}
+    # Dropping the reading here used to leave the quantity to render as its own shared field --
+    # a field nothing writes, which compiles to a zero and flies the robot at it. Nothing can
+    # compute this quantity, so say so instead of emitting the zero.
+    unreadable = sorted(id_ for id_, view in indexed.items() if view is None)
+    if unreadable:
+        raise ConstraintViolation(
+            "geometry",
+            "no way to compute "
+            + ", ".join(f"'{id_}'" for id_ in unreadable)
+            + ": neither written directly nor read through a single agreed MAP view",
+        )
+
+    return dict(indexed)
 
 
 def expanded_constraints(model, nodes) -> set:

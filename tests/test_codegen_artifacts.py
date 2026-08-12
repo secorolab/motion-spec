@@ -16,7 +16,7 @@ from rdflib.namespace import PROV, RDF
 from motion_spec.classes.base import DataclassJSONEncoder
 from motion_spec.classes.geometry import Axis, Frame, Point, Subspace, View, Wrench
 from motion_spec.classes.handlers import PIDController
-from motion_spec.classes.motion import BlackboardValue
+from motion_spec.classes.motion import BlackboardValue, ComponentRef, PoseComponents
 from motion_spec.classes.qudt import Quantity, QuantityKind, Unit
 from motion_spec.generation import codegen
 from motion_spec.generation.artifacts import (
@@ -33,6 +33,7 @@ from motion_spec.introspection.provenance import (
 )
 from motion_spec.rdf_parser import communication, constraint_handler, quantities
 from motion_spec.rdf_parser.model import Model
+from rdf_utils.constraints import ConstraintViolation
 
 
 def _quantity(id_: str, value: float | None = None) -> Quantity:
@@ -205,7 +206,38 @@ def test_closure_output_stays_direct_when_it_is_also_a_view() -> None:
     view = View("end_pose_x", _quantity("end_pose"), _quantity("end_x"), Subspace.Linear, Axis.X)
     closure = {"type": "Addition", "out": "end_x"}
 
-    assert quantities.views_for_access({"end_pose_x": view}, [], [], {"add": closure}) == {}
+    assert quantities.views_for_access({"end_pose_x": view}, [], [], {"add": closure}, {}) == {}
+
+
+def _component_views() -> dict:
+    """One pose's z read off itself, and the same quantity bound into another pose's z."""
+    source = _quantity("home_pose")
+    component = _quantity("home_pose_position_z")
+    return {
+        "read": View("read", source, component, Subspace.Linear, Axis.Z),
+        "bind": View("bind", _quantity("target_pose"), component, Subspace.Linear, Axis.Z),
+    }
+
+
+def test_component_bound_into_a_pose_is_not_a_reading_of_it() -> None:
+    """The binding must not compete with the source pose's own view (both are axis z of a
+    pose, so the ambiguity rule would otherwise drop the reading and leave a zero)."""
+    components = {
+        "target_pose": PoseComponents(
+            "quaternion", position_z=ComponentRef(ref="home_pose_position_z")
+        )
+    }
+
+    index = quantities.views_for_access(_component_views(), [], [], {}, components)
+
+    assert index["home_pose_position_z"].superobject.id == "home_pose"
+
+
+def test_a_quantity_no_view_agrees_on_is_rejected() -> None:
+    """Two readings that disagree and no direct write: nothing can compute it, and rendering
+    it as its own shared field would compile to a zero."""
+    with pytest.raises(ConstraintViolation, match="home_pose_position_z"):
+        quantities.views_for_access(_component_views(), [], [], {}, {})
 
 
 def _sample_fsm() -> dict:

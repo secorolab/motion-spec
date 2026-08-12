@@ -144,7 +144,9 @@ def generate_ir(manifest_path) -> dict:
         },
         "resources": _resources_section(robots, world_trees, world_frames),
         "composition": {"scene": scene},
-        "computation": _computation_section(closures, views, shared_data, values, motions),
+        "computation": _computation_section(
+            closures, views, shared_data, values, motions, computation.indexes.pose_components
+        ),
         "coordination": _coordination_section(motions, fsm, fsm_meta),
         "communication": _communication_section(
             introspection,
@@ -202,14 +204,16 @@ def _resources_section(robots, world_trees, world_frames) -> dict:
     return section
 
 
-def _computation_section(closures, views, shared_data, values, motions) -> dict:
+def _computation_section(closures, views, shared_data, values, motions, pose_components) -> dict:
     """What is computed each tick, and the blackboard it lives on."""
     section = {
         "shared_data": shared_data,
         # Layer-B projections of the dataflow contract, keyed by model role, not by construct.
         "values": values,
         "closures": closures,
-        "views": quantities.views_for_access(views, shared_data, motions, closures),
+        "views": quantities.views_for_access(
+            views, shared_data, motions, closures, pose_components
+        ),
     }
     # Elapsed constraints compare seconds from the runtime clock; naming the clock says what it
     # is, where a flag would only have asserted that one is wanted.

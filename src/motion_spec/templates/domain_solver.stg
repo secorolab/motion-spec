@@ -62,6 +62,9 @@ solver-state-algorithm-fields-RNE(solver) ::= <<
     std::unique_ptr\<KDL::ChainIdSolver_RNE\> rnea;
     std::unique_ptr\<KDL::ChainJntToJacSolver\> jac_solver;
     std::unique_ptr\<KDL::ChainJntToJacDotSolver\> jac_dot_solver;
+    // Where each externally-forced segment sits this cycle: RNEA reads f_ext in the segment's
+    // own frame, so the modelled wrench has to be rotated onto it.
+    std::unique_ptr\<KDL::ChainFkSolverPos_recursive\> fk_pos;
 >>
 
 // Solver state beyond the algorithm's own fields depends on the algorithm *and* the backend, so
@@ -196,6 +199,9 @@ solver-init-algorithm-RNE(solver, chain_solver, motion_driver) ::= <<
         state.<solver.id>.rnea = std::make_unique\<KDL::ChainIdSolver_RNE\>(*robot.<solver.id>.chain, KDL::Vector(<if(chain_solver.gravity)><chain_solver.gravity; separator=", "><else>0.0, 0.0, 0.0<endif>));
         state.<solver.id>.jac_solver = std::make_unique\<KDL::ChainJntToJacSolver\>(*robot.<solver.id>.chain);
         state.<solver.id>.jac_dot_solver = std::make_unique\<KDL::ChainJntToJacDotSolver\>(*robot.<solver.id>.chain);
+<if(motion_driver.has_cartesian_force)>
+        state.<solver.id>.fk_pos = std::make_unique\<KDL::ChainFkSolverPos_recursive\>(*robot.<solver.id>.chain);
+<endif>
 >>
 
 solver-init-extra-impl ::= [
@@ -606,8 +612,29 @@ solver-run-finalize-robif2b(solver, motion_driver) ::= <<
 <endif>
 >>
 
+// The modelled wrench is one the arm generates on the segment it is attached to, stated in the
+// chain root's orientation about that segment's origin. What each algorithm wants of it differs
+// on both counts, so the two take separate rules.
 solver-assign-f-ext-modular(solver, chain_solver, force) ::= <<
+<({solver-assign-f-ext-<chain_solver.algorithm_name>})(solver, force)>
+>>
+
+// Vereshchagin rotates f_ext onto the segment itself and enters it as a bias force of the sign
+// the model states, so the wrench goes in as authored.
+solver-assign-f-ext-ACHD(solver, force) ::= <<
 state.<solver.id>.f_ext[<force.attached_to.segment> - 1] += shared.<force.force.id>;
+>>
+
+// RNEA does neither: it reads f_ext[i] in segment i's own frame, and enters it as `-J_i^T f_ext`
+// -- the wrench the environment applies to the arm. Rotating onto the segment and negating is
+// what turns that into the force the arm generates there.
+solver-assign-f-ext-RNE(solver, force) ::= <<
+{
+    KDL::Frame f_ext_frame_<force.force.id>;
+    state.<solver.id>.fk_pos->JntToCart(state.<solver.id>.q, f_ext_frame_<force.force.id>, <force.attached_to.segment>);
+    state.<solver.id>.f_ext[<force.attached_to.segment> - 1] -=
+        f_ext_frame_<force.force.id>.M.Inverse() * shared.<force.force.id>;
+}
 >>
 
 solver-stage-output(solver, chain_solver, backend) ::= <<

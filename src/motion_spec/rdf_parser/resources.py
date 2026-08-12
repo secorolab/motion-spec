@@ -1145,8 +1145,9 @@ def read_scene(model) -> MjcfSceneSpec:
         scene.timestep_s = seconds(float(value.toPython()), graph.value(timestep, QUDT_SCHEMA.unit))
 
     bound_trees = mapped_targets(model, AGN["AgentModel"], GEOM_ENT.KinematicTree)
-    attach_by_body, _root = fixed_attachments(model, bound_trees)
+    attach_by_body, root = fixed_attachments(model, bound_trees)
     _name_object_attachments(model, attach_by_body)
+    scene.floor_z = _floor_height(model, root)
 
     for modelled in sorted(graph.subjects(RDF.type, ENV["ModelledObject"]), key=str):
         obj = graph.value(modelled, ENV["of-object"])
@@ -1231,6 +1232,26 @@ def _name_object_attachments(model, attach_by_body) -> None:
             frame,
             parent_body,
         )
+
+
+def _floor_height(model, root) -> float:
+    """How far the ground sits below the world frame, from what the scene places against it.
+
+    The world frame is free to sit anywhere the scene author puts it -- on the ground, or on a
+    table top. Whatever it is placed on top of is the frame it references at the lowest z, and
+    nothing is authored below the ground, so that z is where the ground plane belongs.
+    """
+    if root is None:
+        return 0.0
+    heights = [
+        values[2]
+        for frame in _frames_of(model, root)
+        for reference in [model.graph.value(frame, GEOM_ENT.origin) or frame]
+        for position in model.graph.subjects(GEOM_REL["with-respect-to"], reference)
+        if URI_GEOM_TYPE_POSITION in get_node_types(model.graph, position)
+        and (values := quantities.position_coordinate_values(model, position)) is not None
+    ]
+    return min(heights + [0.0])
 
 
 def _frames_of(model, node) -> list:

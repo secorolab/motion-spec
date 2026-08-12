@@ -108,4 +108,7 @@ class MjcfSceneSpec:
     # Physics/control timestep from ENVIRONMENT.timestep; defaults to the backend
     # interval when the model omits it.
     timestep_s: float = 0.002
+    # Ground height in the world frame: the lowest the scene places anything against the
+    # world, so a world frame anchored above the ground still gets its floor.
+    floor_z: float = 0.0
     type: str = field(default="MjcfSceneSpec")

@@ -201,6 +201,7 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
     mj_kdl::SceneSpec mj_scene{};
     mj_scene.timestep = <scene.timestep_s>;
     mj_scene.add_floor = true;
+    mj_scene.floor_z = <scene.floor_z>;
     mj_scene.add_skybox = true;
     std::deque\<std::string\> mj_path_storage;
 <scene.robots:{robot |

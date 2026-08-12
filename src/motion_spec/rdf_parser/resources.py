@@ -45,12 +45,22 @@ from motion_spec_dsl.rdf_parser.vocab import (
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import ModelBase, get_node_types
 from rdf_utils.models.execution import URI_EXEC_PRED_PATH, get_path_of_node
-from rdf_utils.models.vocab import URI_GEOM_PRED_OF, URI_GEOM_TYPE_POSITION, URI_KC_TYPE_SERIAL
+from rdf_utils.models.vocab import (
+    URI_GEOM_PRED_OF,
+    URI_GEOM_TYPE_KGRAPH,
+    URI_GEOM_TYPE_POSITION,
+    URI_KC_TYPE_SERIAL,
+)
 from rdf_utils.namespace import NS_MM_KC_EXT, NS_MM_QUDT_QTY
 from rdf_utils.uri import iri_is_descendant, iri_parent
 from rdflib.namespace import PROV, RDF, SDO
 from scene_dsl.kdl_tree import build_kdl_trees
-from scene_dsl.rdf_parser.kinematics import body_of_frame, get_kinematic_mapping
+from scene_dsl.rdf_parser.kinematics import (
+    body_of_frame,
+    get_kinematic_mapping,
+    is_attached,
+    root_bodies,
+)
 from scene_dsl.rdf.sensors import (
     CAMERA_TYPES,
     URI_SENS_PRED_CAMERA_KIND,
@@ -59,7 +69,7 @@ from scene_dsl.rdf.sensors import (
     URI_SENS_TYPE_CAMERA,
 )
 from scene_dsl.rdf_parser.sensors import get_update_rate
-from scene_dsl.rdf_parser.vocab import URI_BDD_PRED_ELEMS
+from scene_dsl.rdf_parser.vocab import URI_BDD_PRED_ELEMS, URI_ROS_PRED_PACKAGE_NAME
 
 from motion_spec.classes.base import dedupe_by_id
 from motion_spec.classes.bindings import (
@@ -1165,7 +1175,7 @@ def read_scene(model) -> MjcfSceneSpec:
     bound_trees = mapped_targets(model, AGN["AgentModel"], GEOM_ENT.KinematicTree)
     attach_by_body, root = fixed_attachments(model, bound_trees)
     _name_object_attachments(model, attach_by_body)
-    scene.floor_z = _floor_height(model, root)
+    scene.floor_z = _floor_height(model, _world_body(model) or root)
 
     for modelled in sorted(graph.subjects(RDF.type, ENV["ModelledObject"]), key=str):
         obj = graph.value(modelled, ENV["of-object"])
@@ -1187,7 +1197,7 @@ def read_scene(model) -> MjcfSceneSpec:
             MjcfSceneObject(
                 id=local_name(obj),
                 body=local_name(body),
-                path=get_path_of_node(graph, asset),
+                path=_asset_path(graph, asset),
                 fixed=body in attach_by_body,
                 attach_kind=attach_kind,
                 attach_name=attach_name,
@@ -1250,6 +1260,41 @@ def _name_object_attachments(model, attach_by_body) -> None:
             frame,
             parent_body,
         )
+
+
+def _asset_path(graph, asset) -> str:
+    """Where an asset file is, from how the model says to find it.
+
+    A path in a ROS package is only meaningful against that package's share directory, so it is
+    resolved here; the runtime is handed a path it can open without knowing about ROS. Anything
+    else keeps the path the model authored.
+    """
+    path = get_path_of_node(graph, asset)
+    package = graph.value(asset, URI_ROS_PRED_PACKAGE_NAME)
+    if package is None:
+        return path
+    # Imported here: a model with no ROS asset still generates without ROS on the path.
+    from ament_index_python.packages import get_package_share_directory
+
+    return str(Path(get_package_share_directory(str(package))) / path)
+
+
+def _world_body(model):
+    """The body the scene is anchored at: a graph root no joint holds, only a pose places.
+
+    The body the arm bolts to is a graph root too, so it cannot stand in for this one -- what a
+    scene places against the ground it places in the world frame, not on the mount.
+    """
+    graph = model.graph
+    return next(
+        (
+            body
+            for kgraph in sorted(graph.subjects(RDF.type, URI_GEOM_TYPE_KGRAPH), key=str)
+            for body in sorted(root_bodies(kgraph, graph), key=str)
+            if not is_attached(body, graph)
+        ),
+        None,
+    )
 
 
 def _floor_height(model, root) -> float:

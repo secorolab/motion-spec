@@ -398,9 +398,13 @@ def parse_rec_time(value: str) -> datetime:
 
 def ensure_local_rec_importable() -> None:
     try:
-        import rec  # noqa: F401
+        import rec
 
-        return
+        # A bare `<ws>/src/rec` on sys.path imports as a namespace package (__file__ is
+        # None) and has no Run; drop it so the real package below wins.
+        if getattr(rec, "__file__", None):
+            return
+        del sys.modules["rec"]
     except ImportError:
         pass
     rec_root = local_rec_root()

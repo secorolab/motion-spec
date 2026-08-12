@@ -52,6 +52,33 @@ def _model(graph: Dataset) -> Model:
     )
 
 
+def test_chain_attachments_follow_root_to_tip_order() -> None:
+    root = {"tree": URIRef("https://example.test/arm"), "path": "arm.xml"}
+    ft = {"tree": URIRef("https://example.test/ft"), "path": "ft.xml", "entity": "ft_body"}
+    gripper = {
+        "tree": URIRef("https://example.test/gripper"),
+        "path": "gripper.xml",
+        "entity": "base",
+    }
+    arm_body = URIRef("https://example.test/arm/base")
+    ft_body = URIRef("https://example.test/ft/ft_body")
+    gripper_body = URIRef("https://example.test/gripper/base")
+    path = [
+        (arm_body, ft_body, URIRef(f"{arm_body}/pinch_site"), URIRef(f"{ft_body}/root"), None),
+        (
+            ft_body,
+            gripper_body,
+            URIRef(f"{ft_body}/wrist_ft_site"),
+            URIRef(f"{gripper_body}/root"),
+            None,
+        ),
+    ]
+
+    attachments = resources._chain_attachments(None, path, root, [gripper, ft, root])
+
+    assert [attachment.path for attachment in attachments] == ["ft.xml", "gripper.xml"]
+
+
 def test_fixed_attachments_root_a_branched_multi_robot_scene_at_world() -> None:
     graph = Dataset(default_union=True)
     world = URIRef("https://example.test/world")

@@ -409,8 +409,8 @@ def _chain_attachments(model, path, root_binding, chain_bindings) -> list:
             continue
         boundary = next(
             (
-                edge
-                for edge in path
+                (index, edge)
+                for index, edge in enumerate(path)
                 if iri_is_descendant(binding["tree"], edge[1])
                 and not iri_is_descendant(binding["tree"], edge[0])
             ),
@@ -418,21 +418,25 @@ def _chain_attachments(model, path, root_binding, chain_bindings) -> list:
         )
         if boundary is None:
             continue
+        index, boundary = boundary
         _parent_body, child_body, parent_frame, _child_frame, _joint = boundary
         entity = binding["entity"]
         child_name = local_name(child_body)
         prefix = child_name[: -len(entity)] if entity and child_name.endswith(entity) else ""
         attachments.append(
-            MjcfSceneAttachment(
-                id=local_name(binding["tree"]),
-                path=binding["path"],
-                attach_to=local_name(parent_frame),
-                attach_kind="Site",
-                prefix=prefix,
+            (
+                index,
+                MjcfSceneAttachment(
+                    id=local_name(binding["tree"]),
+                    path=binding["path"],
+                    attach_to=local_name(parent_frame),
+                    attach_kind="Site",
+                    prefix=prefix,
+                ),
             )
         )
 
-    return attachments
+    return [attachment for _, attachment in sorted(attachments, key=lambda item: item[0])]
 
 
 def _agent_assemblies(model, attach_by_body) -> list:

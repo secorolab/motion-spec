@@ -598,6 +598,11 @@ def _derived_controller(model, context, plan, axis: quantities.SpatialAxis | Non
     else:
         controller_id = model.id(plan.controller)
         signal = _whole_controller_signal(model, context, plan, types)
+        if not plan.axes:
+            # A scalar controller output has no authored graph node of its own.  Publish it as
+            # an entity derived from the controller so introspection can identify the generated
+            # slot.  Axis-constrained controllers register their payloads at the driver instead.
+            model.register_derived(signal.id, str(plan.controller), "output", PROV.wasDerivedFrom)
         error_node = graph.value(plan.controller, CSTR_HDL["error-signal"])
         error = quantities.quantity(model, error_node) if error_node is not None else None
         measured_derivative = (

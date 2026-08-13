@@ -20,13 +20,24 @@ from motion_spec.setup import DEFAULT_PREFIX
 def _internal_failure(what: str, exc: Exception) -> click.ClickException:
     """Report a failure that is ours, not the model's, with the stack that produced it.
 
-    A ConstraintViolation says the model is wrong and reads fine as one line. Anything else
-    reaching here is a defect in the generator or the environment, and the one thing needed to
-    fix it -- where it came from -- is exactly what wrapping the message throws away.
+    Anything reaching here is a defect in the generator or the environment, and the one thing
+    needed to fix it -- where it came from -- is exactly what wrapping the message throws away.
     """
     traceback.print_exception(exc, file=sys.stderr)
 
     return click.ClickException(f"{what}: {exc}")
+
+
+def _model_rejected(exc: Exception) -> click.ClickException:
+    """Report a model the checks refused, with the check that refused it.
+
+    The message says what is wrong with the model and is the last line read. The stack says
+    which check decided that, which is the only way to find the rule from the sentence it
+    prints -- there are hundreds of them, and the sentence names none.
+    """
+    traceback.print_exception(exc, file=sys.stderr)
+
+    return click.ClickException(f"the model was rejected: {exc}")
 
 
 @contextmanager
@@ -288,7 +299,7 @@ def gen(stage_or_model: str, model: Path | None, output_dir: Path | None) -> Non
         generation = create_generation_dir(model, output_dir)
         generate_model(model, generation, stage=stage)
     except ConstraintViolation as exc:
-        raise click.ClickException(f"the model was rejected: {exc}") from exc
+        raise _model_rejected(exc) from exc
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
         raise _internal_failure("generation failed", exc) from exc
     click.echo(generation)
@@ -503,7 +514,7 @@ def run(
             generate_model(input, generation, stage="code")
             build_generation(generation, prefixes=prefixes, jobs=jobs)
         except ConstraintViolation as exc:
-            raise click.ClickException(f"the model was rejected: {exc}") from exc
+            raise _model_rejected(exc) from exc
         except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
             raise _internal_failure("pipeline failed", exc) from exc
     else:

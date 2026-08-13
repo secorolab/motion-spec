@@ -94,10 +94,11 @@ from motion_spec.classes.scene import (
 )
 from motion_spec.classes.solvers import (
     ForceDistributionSolver,
+    JointNormalization,
     SolverWithInputAndOutput,
     VelocityCompositionSolver,
 )
-from motion_spec.rdf_parser import constraint_handler, quantities
+from motion_spec.rdf_parser import constraint_handler, operations, quantities
 from motion_spec.rdf_parser.model import local_name, seconds
 from motion_spec.rdf_parser.operations import OPS_GENERIC, OPS_SOLVER
 
@@ -1122,8 +1123,21 @@ def _solver_with_input_and_output(model, node, setup: _ChainSetup) -> SolverWith
         torque_saturation=(
             constraint_handler.saturation(model, torque_limit) if torque_limit is not None else None
         ),
+        joint_position_normalization=_joint_position_normalization(model, setup.chain),
     )
     return solver
+
+
+def _joint_position_normalization(model, chain) -> list[JointNormalization]:
+    """The chain's position-bounded joints, by the index the solver's joint arrays use."""
+    bounds = operations.position_limited_joints(model)
+    return [
+        JointNormalization(
+            index=index, joint_name=joint, lower=bounds[joint][0], upper=bounds[joint][1]
+        )
+        for index, joint in enumerate(chain.joints)
+        if joint in bounds
+    ]
 
 
 def _validate_solvers(serial_chain_solvers, backend: str) -> None:

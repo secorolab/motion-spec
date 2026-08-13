@@ -691,6 +691,24 @@ def test_chain_joints_are_unprefixed_and_the_runtime_prefix_is_published(dual_ir
         assert solver.chain.name.endswith("_tree_chain")
 
 
+def test_only_position_limited_joints_are_normalized_on_read(dual_ir: dict) -> None:
+    """A joint states the interval its reading is normalized into; one that states none is not.
+
+    Kinova's odd joints turn continuously and author no position limit, so nothing says which
+    turn to read them onto. The even ones bound their travel, and a reading a turn away from
+    that interval describes the same pose the model does not.
+    """
+    solver = dual_ir["resources"]["by_kind"]["serial_chain"][0]
+    normalized = {
+        jn.joint_name: (jn.index, jn.lower, jn.upper) for jn in solver.joint_position_normalization
+    }
+
+    assert set(normalized) == {"joint_2", "joint_4", "joint_6"}
+    # The index is the solver's joint-array index, not the joint's number.
+    assert normalized["joint_2"] == (1, -2.24, 2.24)
+    assert normalized["joint_4"] == (3, -2.57, 2.57)
+
+
 def test_configuration_publishes_the_model_name(dual_ir: dict) -> None:
     """One scalar the backends name their generated artifacts from, instead of one per solver."""
     assert dual_ir["configuration"]["model_name"] == "pick_place_dual"

@@ -56,7 +56,9 @@ from rdf_utils.models.vocab import (
     URI_GEOM_TYPE_POSITION_COORD,
     URI_GEOM_TYPE_POSITION_REF,
     URI_GEOM_TYPE_VECTOR_XYZ,
+    URI_KC_EXT_PRED_LOWER,
     URI_KC_EXT_PRED_OF_JOINT,
+    URI_KC_EXT_PRED_UPPER,
     URI_KC_EXT_TYPE_JOINT_LIMIT,
     URI_KC_STAT_JNT_POSITION,
     URI_KC_TYPE_REVOLUTE_JOINT,
@@ -501,6 +503,30 @@ def continuous_joint_leaves(model) -> set[str]:
     }
 
     return {local_name(joint) for joint in revolute - position_limited}
+
+
+@reader
+def position_limited_joints(model) -> dict[str, tuple[float, float]]:
+    """Authored position bounds per revolute joint leaf name, in the unit the model wrote them.
+
+    The interval a reading is normalized into: the model states it, so a joint that authored no
+    position limit states no interval and is left as measured.
+    """
+    graph = model.graph
+    bounds: dict[str, tuple[float, float]] = {}
+    for limit in graph.subjects(RDF.type, URI_KC_EXT_TYPE_JOINT_LIMIT):
+        if URI_KC_STAT_JNT_POSITION not in get_node_types(graph, limit):
+            continue
+        joint = graph.value(limit, URI_KC_EXT_PRED_OF_JOINT)
+        lower = graph.value(limit, URI_KC_EXT_PRED_LOWER)
+        upper = graph.value(limit, URI_KC_EXT_PRED_UPPER)
+        if joint is None or lower is None or upper is None:
+            continue
+        bounds[local_name(joint)] = (
+            float(graph.value(lower, QUDT_SCHEMA.value)),
+            float(graph.value(upper, QUDT_SCHEMA.value)),
+        )
+    return bounds
 
 
 class ErrorEvaluator:

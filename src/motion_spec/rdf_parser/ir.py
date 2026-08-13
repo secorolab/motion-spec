@@ -193,6 +193,10 @@ def _resources_section(robots, world_trees, world_frames) -> dict:
         "by_kind": by_kind,
         "by_id": robots.by_id,
         "device_kinds": {kind: True for kind in device_kinds},
+        # One entry per shared observation, not per solver that could answer it: several
+        # solvers drive the same chain, and computing a value once per solver would repeat the
+        # same reading -- ten times over, in a scene with ten motions.
+        "world_observations": resources.world_observations(robots.serial_chains),
     }
     if world_trees:
         section["world_trees"] = [

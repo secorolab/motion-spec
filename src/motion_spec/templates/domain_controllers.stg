@@ -64,9 +64,7 @@ class PIDControl {
 
     double control_impl(double error, double error_derivative, bool has_error_derivative, double dt,
                         const PIDGains &gains) {
-        const double err_diff = (gains.decay_rate > 0.0 || first_sample)
-            ? 0.0
-            : ((error - err_last) / dt);
+        const double err_diff = first_sample ? 0.0 : ((error - err_last) / dt);
         if (gains.decay_rate > 0.0) {
             err_integ = gains.decay_rate * err_integ + error * dt;
         } else {

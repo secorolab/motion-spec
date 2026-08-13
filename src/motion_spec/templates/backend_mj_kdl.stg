@@ -18,6 +18,10 @@ struct manipulator_robot {
     // type is shared: two arms sliced from one tree end at different segments.
     int world_root = -1;
     int world_tip = -1;
+    // This chain's root, inverted, for the cycle the world was last updated for. Held here
+    // rather than in a motion's state: it is a fact about the world, and the loop computes it
+    // whether or not a motion that reads it is running.
+    KDL::Frame world_to_root;
 };
 >>
 
@@ -492,6 +496,14 @@ app-chain-cleanup-mj_kdl(has_serial_chain) ::= <<
         mj_kdl::cleanup(&mj_viewer);
     }
     mj_kdl::cleanup(&mj_env);<endif>
+>>
+
+// Reads every robot before anything reads the world it feeds. update() also applies whatever
+// commands are staged, so the pass before step() is a separate call and not a duplicate of
+// this one: this reads what the last step produced, that one applies what this tick decided.
+app-chain-provider-update-mj_kdl(serial_chain_solvers) ::= <<
+<serial_chain_solvers:{solver | <if(solver.runtime.owner)>        mj_kdl::update(&mj_<solver.runtime.id>);
+<endif>}; separator="">
 >>
 
 app-chain-runtime-step-mj_kdl(serial_chain_solvers) ::= <<

@@ -31,7 +31,6 @@ struct <solver.id>_solver_state {
     // this, so the chain-relative reading is unchanged by where the arm stands in the scene. It
     // is a member because positional outputs run in `update_motion_*` while alpha directions are
     // consumed later, in `control_motion_*` of the same dispatch.
-    KDL::Frame world_to_root;
 <solver-state-algorithm-fields(solver)>
 <solver-state-struct-extra(solver, backend)>
 };
@@ -101,7 +100,7 @@ solver-state-struct-extra-ACHD-robif2b(solver) ::= <<
 // chain's root. Only that source changes here: the constraint's row and column are untouched.
 alpha-frame(specification, solver_state, column) ::= <<
         const KDL::Frame alpha_frame_<solver_state>_<column> =
-            state.<solver_state>.world_to_root
+            robot.<solver_state>.world_to_root
             * robot.world->pose(robot.world_<solver_state>_<specification.as_seen_by.id>, robot.control_cycle);
 >>
 
@@ -214,8 +213,10 @@ solver-init-extra(solver, chain_solver, motion_driver, backend) ::= <<
 <if(solver.read_only)><else><({<solver-init-extra-impl.({<chain_solver.algorithm_name>-<backend>})>})(solver, chain_solver, motion_driver)><endif>
 >>
 
+// The one place a sign is not the author's: this pass gravity-compensates the ACHD command, so
+// it is built with the field itself rather than with the root acceleration ACHD was given.
 solver-init-extra-ACHD-mj_kdl(solver, chain_solver, motion_driver) ::= <<
-        state.<solver.id>.rnea = std::make_unique\<KDL::ChainIdSolver_RNE\>(*robot.<solver.id>.chain, KDL::Vector(<if(chain_solver.gravity)><chain_solver.gravity; separator=", "><else>0.0, 0.0, 0.0<endif>));
+        state.<solver.id>.rnea = std::make_unique\<KDL::ChainIdSolver_RNE\>(*robot.<solver.id>.chain, KDL::Vector(<if(chain_solver.gravity_compensation)><chain_solver.gravity_compensation; separator=", "><else>0.0, 0.0, 0.0<endif>));
 >>
 
 solver-init-extra-ACHD-robif2b(solver, chain_solver, motion_driver) ::= <<
@@ -242,8 +243,9 @@ for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
     state.<solver.id>.q_qd.qdot(i) = state.<solver.id>.qd(i);
 }
 >>
+// The robot was read once for this cycle before the FSM was dispatched; this mirrors that
+// reading into the solver's own joint arrays.
 solver-sync-input-mj_kdl(solver) ::= <<
-mj_kdl::update(robot.<solver.id>.robot);
 for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
     state.<solver.id>.q(i) = robot.<solver.id>.robot->jnt_pos_msr[i];
     state.<solver.id>.qd(i) = robot.<solver.id>.robot->jnt_vel_msr[i];
@@ -259,7 +261,7 @@ solver-output-Pose(solver, chain_solver, out, backend) ::= <<
 // One indexed read out of this cycle's world update, composed back onto the chain's own root --
 // the same "target relative to this chain's base" the chain solver reported.
 world-pose(solver, index) ::= <<
-state.<solver.id>.world_to_root * robot.world->pose(<index>, robot.control_cycle)
+robot.<solver.id>.world_to_root * robot.world->pose(<index>, robot.control_cycle)
 >>
 
 solver-output-Pose-robif2b(solver, chain_solver, out) ::= <<

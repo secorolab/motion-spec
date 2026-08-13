@@ -185,10 +185,19 @@ class SolverWithInputAndOutput:
     sensors: list[SensorBinding] = field(default_factory=list)
     devices: list[DeviceBinding] = field(default_factory=list)
     gravity: list[float] | None = None
+    # The gravity field a simulated ACHD run's compensation pass is built with: the opposite of
+    # the root acceleration ACHD itself takes. Nothing else derives a sign from the author.
+    gravity_compensation: list[float] | None = None
     derived_root_acceleration: list[float] | None = None
     torque_saturation: Saturation | None = None
     # Frame-log mirrors of this runtime's joint-space signals (plan 012); the two lists render at
     # two different hook sites -- the run block and the command-stage block.
+    # `output` split by what each observation reads. A world output is answered by the one world
+    # model, so the loop computes it every tick whether or not a motion that wants it is running;
+    # a state output is read off this solver's synchronized joint mirror, which only the motion
+    # driving the chain fills.
+    world_output: list = field(default_factory=list)
+    state_output: list = field(default_factory=list)
     joint_space_samples: list = field(default_factory=list)
     joint_space_cmd_samples: list = field(default_factory=list)
     # Which resource this solver commands; `resources.robots` is filtered on it.

@@ -33,6 +33,10 @@ app-chain-loop-reset(backend, serial_chain_solvers, fsm) ::= <<
 app-chain-loop-reset-robif2b(serial_chain_solvers, fsm) ::= <<
 >>
 
+app-chain-provider-update(backend, serial_chain_solvers) ::= <<
+<({app-chain-provider-update-<backend>})(serial_chain_solvers)>
+>>
+
 app-chain-runtime-step(backend, serial_chain_solvers) ::= <<
 <({app-chain-runtime-step-<backend>})(serial_chain_solvers)>
 >>

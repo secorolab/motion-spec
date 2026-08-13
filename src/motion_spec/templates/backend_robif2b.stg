@@ -59,6 +59,10 @@ struct manipulator_robot {
     // type is shared: two arms sliced from one tree end at different segments.
     int world_root = -1;
     int world_tip = -1;
+    // This chain's root, inverted, for the cycle the world was last updated for. Held here
+    // rather than in a motion's state: it is a fact about the world, and the loop computes it
+    // whether or not a motion that reads it is running.
+    KDL::Frame world_to_root;
 };
 >>
 
@@ -440,6 +444,10 @@ true
 // must not reach the hardware: the staged command is a substitute, not something the model
 // authored. The frame log still samples this cycle, and shutdown follows on the next condition
 // check, so the record still ends at the cycle that broke.
+// The driver fills its own state on its own schedule; nothing to read here.
+app-chain-provider-update-robif2b(serial_chain_solvers) ::= <<
+>>
+
 app-chain-runtime-step-robif2b(serial_chain_solvers) ::= <<
         if (!motion_spec::runtime::stop_requested()) {
 <serial_chain_solvers:{solver | <if(solver.runtime.owner)><solver.devices:{device | <device-update-robif2b(solver, device)>

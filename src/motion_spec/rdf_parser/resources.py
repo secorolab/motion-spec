@@ -1686,6 +1686,33 @@ def shared_runtime_members(model, serial_chains, control_period_ns: int, platfor
     return members
 
 
+# What answers an observation, per backend. A twist is derived by KDL from the solver's joint
+# mirror on either backend; a joint position is read off the simulator on mj_kdl but off that
+# mirror on robif2b. Everything else is answered by the world model or a sensor, so the loop can
+# compute it whether or not a motion that reads it is running.
+_STATE_ANSWERED = {"mj_kdl": {"VelocityTwist"}, "robif2b": {"VelocityTwist", "JointPosition"}}
+
+
+def _split_outputs(solver, backend: str) -> None:
+    """Split a solver's observations into the ones the loop answers and the ones its motion does."""
+    from_state = _STATE_ANSWERED.get(backend, {"VelocityTwist"})
+    solver.state_output = [out for out in solver.output if out.type in from_state]
+    solver.world_output = [out for out in solver.output if out.type not in from_state]
+
+
+def world_observations(serial_chains) -> list[dict]:
+    """Every observation the loop answers, once, with the solver whose frame it is stated in.
+
+    Two solvers driving one chain report the same value from the same root, so the first to
+    claim an observation answers it for the run.
+    """
+    claimed: dict[str, dict] = {}
+    for solver in serial_chains:
+        for out in solver.world_output:
+            claimed.setdefault(out.id, {"solver_id": solver.id, "out": out})
+    return list(claimed.values())
+
+
 def annotate_runtime(serial_chains, motions, backend: str) -> list[dict]:
     """Fold onto each solver what running it implies, once every solver is known.
 
@@ -1740,14 +1767,22 @@ def annotate_runtime(serial_chains, motions, backend: str) -> list[dict]:
     }
     for solver in serial_chains:
         _split_gripper_outputs(solver, backend)
+        # Last, so it sees the outputs a gripper device took over: what the loop answers is
+        # decided from the list as it finally stands.
+        _split_outputs(solver, backend)
         _index_chain_joints(solver)
     _apply_runtime_to_motions(serial_chains, motions, commanding)
-    # The authored solver value is the Vereshchagin root acceleration, which ACHD takes as-is;
-    # KDL's inverse-dynamics solver wants the opposite sign, so every backend running an RNE
-    # negates it here. Full solvers only: a slice resolves gravity through `solver_id`.
+    # What the model authored, passed to whatever solver it names exactly as written. The one
+    # exception is the RNE pass a simulated ACHD run adds to gravity-compensate its command:
+    # that pass wants the field, and the value beside it is the root acceleration ACHD takes,
+    # so its opposite is derived here rather than being asked of the author twice.
+    # Full solvers only: a slice resolves gravity through `solver_id`.
     for solver in serial_chains:
         if solver.derived_root_acceleration:
-            solver.gravity = [-component or 0.0 for component in solver.derived_root_acceleration]
+            solver.gravity = list(solver.derived_root_acceleration)
+            solver.gravity_compensation = [
+                -component or 0.0 for component in solver.derived_root_acceleration
+            ]
 
     return world_frames
 

@@ -224,7 +224,7 @@ def test_agent_model_may_bind_the_assembled_kinematic_tree() -> None:
 
 
 def _serial_chain(name: str):
-    return SimpleNamespace(id=name, kind="serial_chain", devices=[], sensors=[])
+    return SimpleNamespace(id=name, kind="serial_chain", devices=[], sensors=[], world_output=[])
 
 
 @pytest.mark.parametrize(
@@ -390,14 +390,16 @@ def test_solver_ir_carries_rne_algorithm_and_gravity() -> None:
 
     assert entry.algorithm is CartesianAccelerationDriven
     assert entry.algorithm_name == "RNE"
-    # The authored value is the ACHD root acceleration, carried through unchanged.
     assert entry.derived_root_acceleration == [0.0, 0.0, 9.81]
     assert entry.gravity is None
 
-    # The sign flip is KDL's inverse-dynamics convention, not a simulator's, so it is derived
-    # wherever an RNE solver is built -- on hardware a missing gravity is silent and dangerous.
     resources.annotate_runtime([entry], [], "mj_kdl")
-    assert entry.gravity == [0.0, 0.0, -9.81]
+    # What the model wrote is what its solver is built with: no sign is inferred from a value
+    # the author chose.
+    assert entry.gravity == [0.0, 0.0, 9.81]
+    # The one exception, read by nothing else: the RNE pass a simulated ACHD run adds to
+    # gravity-compensate its command wants the field, not the root acceleration beside it.
+    assert entry.gravity_compensation == [0.0, 0.0, -9.81]
 
 
 def test_rne_uses_acceleration_while_achd_uses_acceleration_energy() -> None:

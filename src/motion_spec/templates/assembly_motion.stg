@@ -92,21 +92,32 @@ chain-init-block(serial_chain_solvers, solvers, backend) ::= <<
 <serial_chain_solvers:{solver |     <solver-init(solver, solvers.(solver.solver_id), solver.motion_driver, backend)>}; separator="\n">
 >>
 
-// Three passes, in this order and visibly separate: every solver synchronizes its measurements,
-// then the one world model is updated once, then every solver reads. Interleaved, arm 1 would
-// read forward kinematics from before arm 2 had synchronized.
+// The motion mirrors the measurements its own solve reads, and reads what only that mirror can
+// answer. The world model and everything answered by it were updated for this cycle before the
+// FSM was dispatched, so a quantity the scene shares is fresh whether or not this motion runs.
 chain-prepare-block(serial_chain_solvers, solvers, backend) ::= <<
 <serial_chain_solvers:{solver |
     <solver-sync-input(solver, backend)>}; separator="\n">
-
-    robot.world->update(robot.control_cycle);
 <serial_chain_solvers:{solver |
-    // This chain's root is not the tree's, so every pose it reports is relative to that root.
-    state.<solver.id>.world_to_root =
-        robot.world->pose(robot.<solver.id>.world_root, robot.control_cycle).Inverse();
-    <solver.output:{out | <solver-output(solver, solvers.(solver.solver_id), out, backend)>}; separator="\n\n">
+    <solvers.(solver.solver_id).state_output:{out | <solver-output(solver, solvers.(solver.solver_id), out, backend)>}; separator="\n\n">
 <solver.gripper_joint_outputs:{out |     <gripper-joint-output(solver, out, backend)>}; separator="\n">
 }; separator="\n\n">
+>>
+
+// One pass per tick, before the FSM is dispatched: every provider is read, the one world model is
+// updated from those readings, and every observation it answers is written. Interleaved with the
+// motions, arm 1 would read forward kinematics from before arm 2 had been read.
+world-state-block(observations, serial_chain_solvers, solvers, backend) ::= <<
+<app-chain-provider-update(backend, serial_chain_solvers)>
+        robot.world->update(robot.control_cycle);
+<serial_chain_solvers:{solver |
+        // This chain's root is not the tree's, so every pose it reports is relative to that root.
+        robot.<solver.id>.world_to_root =
+            robot.world->pose(robot.<solver.id>.world_root, robot.control_cycle).Inverse();
+}; separator="\n">
+<observations:{obs |
+        <solver-output(solvers.(obs.solver_id), solvers.(obs.solver_id), obs.out, backend)>
+}; separator="\n">
 >>
 
 chain-run-block(serial_chain_solvers, solvers, backend) ::= <<

@@ -448,27 +448,47 @@ def _motion_scoped(model, context, plan) -> str:
 
 
 def _controller_signal_id(model, context, plan) -> str:
-    """The scalar output id a controller writes, from its authored command type."""
+    """The scalar output id a controller writes, from its authored command type.
+
+    The id is registered here because this is where it is minted, and the only place that knows
+    which of the forms below it took -- and so what the signal derives from. A command the
+    controller alone decides derives from the controller; an acceleration payload is named after
+    the quantity it drives, and is the same id the acceleration driver mints per axis.
+    """
     graph = model.graph
     controller_id = model.id(plan.controller)
     types = get_node_types(graph, plan.controller)
     command_type = str(graph.value(plan.controller, APP["command-type"]) or "")
+
+    def controller_output(signal_id: str) -> str:
+        model.register_derived(signal_id, str(plan.controller), "output", PROV.wasDerivedFrom)
+        return signal_id
+
     if CSTR_HDL_EXT.FeedForwardController in types:
-        return f"cmd_{controller_id}"
+        return controller_output(f"cmd_{controller_id}")
     if CSTR_HDL.ImpedanceController in types or command_type == "Force":
-        return f"force_{controller_id}"
+        return controller_output(f"force_{controller_id}")
     target = graph.value(plan.view, MAP.superobject) if plan.view is not None else plan.quantity
     if command_type == "Torque" and KC_STAT.JointPositionCoordinate in get_node_types(
         graph, target
     ):
-        return f"tau_{controller_id}"
+        return controller_output(f"tau_{controller_id}")
     family = context.algorithm_by_solver[plan.solver]
     if not hasattr(family, "payload"):
         raise ConstraintViolation(
             "solver", f"Solver '{plan.solver}' does not accept acceleration signals."
         )
 
-    return f"{family.signal_prefix}_{model.id(plan.quantity)}{_motion_scoped(model, context, plan)}"
+    suffix = _motion_scoped(model, context, plan)
+    signal_id = f"{family.signal_prefix}_{model.id(plan.quantity)}{suffix}"
+    # Same id and same IRI the single-axis driver mints, so registering it twice is one fact
+    # stated twice rather than a collision -- and a controller with no axis has no driver to
+    # state it at all.
+    model.register_derived(
+        signal_id, str(plan.quantity), f"{family.signal_prefix}{kebab(suffix)}", PROV.wasDerivedFrom
+    )
+
+    return signal_id
 
 
 def _axis_error(ids: SolverIdFactory, axis: quantities.SpatialAxis) -> Quantity:
@@ -598,11 +618,6 @@ def _derived_controller(model, context, plan, axis: quantities.SpatialAxis | Non
     else:
         controller_id = model.id(plan.controller)
         signal = _whole_controller_signal(model, context, plan, types)
-        if not plan.axes:
-            # A scalar controller output has no authored graph node of its own.  Publish it as
-            # an entity derived from the controller so introspection can identify the generated
-            # slot.  Axis-constrained controllers register their payloads at the driver instead.
-            model.register_derived(signal.id, str(plan.controller), "output", PROV.wasDerivedFrom)
         error_node = graph.value(plan.controller, CSTR_HDL["error-signal"])
         error = quantities.quantity(model, error_node) if error_node is not None else None
         measured_derivative = (

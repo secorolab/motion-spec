@@ -66,7 +66,7 @@ def _sample_ir() -> dict:
         "configuration": {"control_period_ns": 2_000_000, "backend": "mj_kdl", "platform": {}},
         "resources": {"robots": [], "by_kind": {}, "by_id": {}},
         "composition": {"scene": {}},
-        "computation": {"shared_data": [], "values": {}, "closures": {}, "views": {}},
+        "computation": {"shared_data": [], "closures": {}, "views": {}},
         "coordination": {
             "motions": [
                 {
@@ -396,9 +396,7 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
         BlackboardValue(id="ready_flag", type="Bool"),
         BlackboardValue(id="settle_count", type="IntCounter"),
     ]
-    ir["computation"].update(
-        {"closures": closures, "views": views, "values": {"externally_measured": []}}
-    )
+    ir["computation"].update({"closures": closures, "views": views})
 
     introspection = ir["communication"]["introspection"]
     introspection["quantities"].extend(
@@ -673,7 +671,7 @@ def test_generated_blackboard_holds_only_contracted_members(tmp_path: Path) -> N
             {
                 "configuration": {"backend": "mj_kdl"},
                 "resources": {"by_kind": {}},
-                "computation": {"shared_data": shared_data, "values": {"externally_measured": []}},
+                "computation": {"shared_data": shared_data},
                 "coordination": {},
                 "communication": {},
             }

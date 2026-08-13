@@ -310,7 +310,7 @@ def test_introspection_contract_carries_control_and_provenance() -> None:
     scene = MjcfSceneSpec(robots=[MjcfSceneRobot(id="robot", path="robot.xml")])
     platform = {"uri": None, "name": None, "simulated": True, "backend": "mj_kdl"}
 
-    introspection, _values = communication.build_introspection(
+    introspection = communication.build_introspection(
         model, [motion], computation, [], robots, scene, platform, 2_000_000, "mj_kdl"
     )
 

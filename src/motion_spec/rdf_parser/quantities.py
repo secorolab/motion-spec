@@ -2033,20 +2033,18 @@ def _constant_value(item, desc: dict):
 
 
 class _SolverWrites(NamedTuple):
-    """Which solver writes each output, and how the platform is involved in it."""
+    """Which solver writes each output, and which of those are sensor readings."""
 
     by_output: dict
     sensor_outputs: set
-    measured_outputs: set
 
 
 def _writers_by_output(serial_chain_solvers) -> _SolverWrites:
-    """Which solver writes each output, which of those are sensor readings, and which of the
-    readings the platform supplies (the tare companions are written alongside, not measured).
+    """Which solver writes each output, and which of those are sensor readings (the tare
+    companions are written alongside the reading, not measured).
     """
     by_output: dict[str, set] = {}
     sensor_outputs: set = set()
-    measured_outputs: set = set()
     for solver in serial_chain_solvers:
         # Full solvers carry gripper outputs on their gripper device(s), not as a flat list.
         gripper_outputs = [out for device in solver.devices for out in device.joint_outputs]
@@ -2055,13 +2053,12 @@ def _writers_by_output(serial_chain_solvers) -> _SolverWrites:
             if not getattr(out, "sensor_name", ""):
                 continue
             sensor_outputs.add(out.id)
-            measured_outputs.add(out.id)
             # tare state, written alongside the reading (resources.shared_runtime_members)
             for companion in (f"{out.id}_ft_bias", f"{out.id}_ft_settle"):
                 by_output.setdefault(companion, set()).add(solver.id)
                 sensor_outputs.add(companion)
 
-    return _SolverWrites(by_output, sensor_outputs, measured_outputs)
+    return _SolverWrites(by_output, sensor_outputs)
 
 
 class _ValueOwners(NamedTuple):
@@ -2127,10 +2124,9 @@ def annotate_dataflow(
     serial_chain_solvers,
     views,
     subscriptions=(),
-) -> dict:
+) -> None:
     """Give every shared value its producer, its write cadence and the storage those imply, then
-    apply that contract: drop what nothing writes, move what is written once into the header, and
-    project the roles the templates ask about (``values``) off the same classification.
+    apply that contract: drop what nothing writes and move what is written once into the header.
 
     Cadence -- not motion membership -- decides gating: a value written by several motions carries
     all of them, and one no motion's step function writes falls back to ``tick``.
@@ -2139,7 +2135,7 @@ def annotate_dataflow(
     for closure_id, closure in closures.items():
         for out_id in closure_output_ids(closure):
             closure_by_output.setdefault(out_id, set()).add(closure_id)
-    solver_by_output, sensor_outputs, measured_outputs = _writers_by_output(serial_chain_solvers)
+    solver_by_output, sensor_outputs = _writers_by_output(serial_chain_solvers)
     owners, block_ids = _owners_by_value(motions, closures)
     # Named by the mechanism that produced the value, so the artifact says whether a pose was
     # asked for once or arrived on a standing channel.
@@ -2231,16 +2227,6 @@ def annotate_dataflow(
 
     introspection["dataflow"] = dataflow
     _apply_dataflow(introspection, shared_data, items_by_id, dataflow)
-
-    # A layer-B projection of the same contract, answered from the producer classification above
-    # rather than by a second scan. Externally measured = a solver output the platform supplies.
-    # Returned, not stored: the projection is published once, at the top level.
-
-    return {
-        "externally_measured": sorted(
-            (item for item in shared_data if item.id in measured_outputs), key=lambda i: i.id
-        )
-    }
 
 
 def _apply_view_liveness(dataflow: dict, views) -> None:

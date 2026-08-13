@@ -182,8 +182,9 @@ def test_a_value_written_by_several_motions_is_one_producer_over_all_of_them() -
     assert pose["cadence"] == {"motions": ["motion_arc", "motion_home"]}
 
 
-def test_externally_measured_is_the_sensor_reading_and_nothing_else() -> None:
-    """The projection asks "does the platform supply it?", not "is it a Wrench nobody writes?"."""
+def test_a_sensor_reading_is_produced_by_the_solver_that_reads_it() -> None:
+    """The solver block reads the sensor, tares it and writes the reading: on every platform it is
+    the one producer, so nothing else may claim to supply it and overwrite what it wrote."""
     reading = _wrench("ext_force", sensor_name="wrist_ft")
     shared_data = [
         reading,
@@ -201,10 +202,12 @@ def test_externally_measured_is_the_sensor_reading_and_nothing_else() -> None:
     solver = _solver("arm_solver", output=[reading])
     motions = [_motion("motion_arc", 0, "S_ARC", ["push"], [_slice("arm_solver", [reading])])]
     introspection: dict = {}
-    values = annotate_dataflow(introspection, shared_data, closures, motions, [solver], {})
-    # The tare state is a Wrench written alongside the reading but computed by the program, and
-    # cmd_wrench is the program's own output: neither is externally measured.
-    assert [item.id for item in values["externally_measured"]] == ["ext_force"]
+    annotate_dataflow(introspection, shared_data, closures, motions, [solver], {})
+    dataflow = introspection["dataflow"]
+    assert dataflow["ext_force"]["producer"] == {"kind": "sensor", "id": "arm_solver"}
+    # The tare state is written alongside the reading; cmd_wrench is the program's own output.
+    assert dataflow["ext_force_ft_bias"]["producer"]["kind"] == "sensor"
+    assert dataflow["cmd_wrench"]["producer"]["kind"] == "closure"
 
 
 def test_never_written_members_leave_shared_data_and_the_frame() -> None:

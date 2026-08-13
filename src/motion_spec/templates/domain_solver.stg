@@ -5,12 +5,6 @@
 
 import "expr_values.stg"
 
-sync-wrench(wrench) ::= <<
-    if (robot.<wrench.id> != nullptr) {
-        shared.<wrench.id> = *robot.<wrench.id>;
-    }
->>
-
 solver-state-struct(solver, backend) ::= <<
 struct <solver.id>_solver_state {
     bool initialized = false;

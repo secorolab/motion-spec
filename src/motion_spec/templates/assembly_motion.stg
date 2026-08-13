@@ -33,10 +33,8 @@ sig-args(mid, needs_state, needs_shared, needs_robot, needs_events=false) ::= <<
 <if(needs_state)><mid>_state_instance<endif><if(needs_shared)><if(needs_state)>, <endif>shared<endif><if(needs_robot)><if(needs_state||needs_shared)>, <endif>robot<endif><if(needs_events)><if(needs_state||needs_shared||needs_robot)>, <endif>events<endif>
 >>
 
-motion-prelude(externally_measured, serial_chain_solvers, solvers, backend) ::= <<
-<externally_measured:{wrench | <sync-wrench(wrench)>}; separator="\n">
+motion-prelude(serial_chain_solvers, solvers, backend) ::= <<
 <if(serial_chain_solvers)>
-
 <chain-prepare-block(serial_chain_solvers, solvers, backend)>
 <endif>
 >>
@@ -51,14 +49,6 @@ shared-schedule-block(steps, closures, views) ::= <<
 <if(first(steps))>
 <schedule-block(steps, closures, views)>
 <endif>
->>
-
-wrench-pointer-member(wrench) ::= <<
-    KDL::Wrench *<wrench.id> = nullptr;
->>
-
-wrench-measurement(wrench) ::= <<
-    KDL::Wrench <wrench.id>_measurement;
 >>
 
 chain-robot-member(solver) ::= <<

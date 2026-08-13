@@ -118,7 +118,7 @@ def generate_ir(manifest_path) -> dict:
         # member nothing produces is pruned as absent.
         shared_data.append(BlackboardValue(id=f"{target_id}_captured", type="Bool", value=False))
 
-    introspection, values = communication.build_introspection(
+    introspection = communication.build_introspection(
         model,
         motions,
         computation,
@@ -150,7 +150,7 @@ def generate_ir(manifest_path) -> dict:
         "resources": _resources_section(robots, world_trees, world_frames),
         "composition": {"scene": scene},
         "computation": _computation_section(
-            closures, views, shared_data, values, motions, computation.indexes.pose_components
+            closures, views, shared_data, motions, computation.indexes.pose_components
         ),
         "coordination": _coordination_section(motions, fsm, fsm_meta),
         "communication": _communication_section(
@@ -214,12 +214,10 @@ def _resources_section(robots, world_trees, world_frames) -> dict:
     return section
 
 
-def _computation_section(closures, views, shared_data, values, motions, pose_components) -> dict:
+def _computation_section(closures, views, shared_data, motions, pose_components) -> dict:
     """What is computed each tick, and the blackboard it lives on."""
     section = {
         "shared_data": shared_data,
-        # Layer-B projections of the dataflow contract, keyed by model role, not by construct.
-        "values": values,
         "closures": closures,
         "views": quantities.views_for_access(
             views, shared_data, motions, closures, pose_components

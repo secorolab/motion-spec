@@ -1103,15 +1103,11 @@ def build_introspection(
     action_clients=(),
     subscriptions=(),
 ):
-    """Build the introspection artifact, and the value projections that ride beside it.
+    """Build the introspection artifact.
 
     The order here is the frame layout: the members each concern contributes are added before the
     two sorts, and the two sorts turn list order into the positional indices the frame log and the
     generated struct are built from. Moving either moves the frame layout.
-
-    Returns:
-        `(introspection, values)`: the artifact, and the layer-B role projections
-        `quantities.annotate_dataflow` answers off the same contract
 
     Raises:
         RuntimeError: a published id has no IRI, or a member has no resolvable dataflow contract.
@@ -1150,7 +1146,7 @@ def build_introspection(
     rows.sort(key=lambda row: row.get("id") or "")
     add_quantity_samples(introspection, shared_data, computation.views)
     add_spatial_samples(introspection, shared_data)
-    values = quantities.annotate_dataflow(
+    quantities.annotate_dataflow(
         introspection,
         shared_data,
         computation.closures,
@@ -1175,7 +1171,7 @@ def build_introspection(
                 row["uri"] = complete.get(row.get("id")) or row.get("uri")
     _check_every_id_resolves(introspection)
 
-    return introspection, values
+    return introspection
 
 
 # The row families that name a slot in the frame log or an entity in the artifact.

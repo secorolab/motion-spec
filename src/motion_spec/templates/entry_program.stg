@@ -50,8 +50,6 @@ int main(int argc, char **argv) {
 
 <world-model-wiring(resources, configuration.backend)>
 <endif>
-<computation.values.externally_measured:{wrench | <wrench-measurement(wrench)>}; separator="\n">
-<computation.values.externally_measured:{wrench |     robot.<wrench.id> = &<wrench.id>_measurement;}; separator="\n">
 <coordination.motions:{motion | <motion-state-member(motion)>}; separator="\n">
 <if(resources.by_kind.mobile_base)>
     mobile_base_state mobile_base_state_instance;
@@ -421,7 +419,6 @@ struct robot_io {
 <endif>
 <resources.by_kind.serial_chain:{solver | <chain-robot-member(solver)>}; separator="\n">
 <resources.by_kind.serial_chain:{solver | <chain-device-members(solver, configuration.backend)>}; separator="">
-<computation.values.externally_measured:{wrench | <wrench-pointer-member(wrench)>}; separator="\n">
 <if(resources.world_trees)>
     // The one pose authority, and the cycle its poses were computed for.
     motion_spec::runtime::WorldModel *world = nullptr;

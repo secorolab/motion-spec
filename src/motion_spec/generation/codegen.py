@@ -253,7 +253,6 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
             "motion": motion,
             "closures": ir["computation"]["closures"],
             "views": ir["computation"]["views"],
-            "values": ir["computation"]["values"],
             "backend": ir["configuration"]["backend"],
             "solvers": ir["resources"]["by_id"],
         }

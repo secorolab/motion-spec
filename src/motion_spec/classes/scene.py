@@ -97,6 +97,26 @@ class MjcfSceneObject:
 
 
 @dataclass
+class MjcfSceneFrame:
+    """A frame the scene declares, marked on the body that carries it.
+
+    The runtime draws and addresses these as sites, so what the model states about where
+    things are is visible in the scene rather than only inside the placement arithmetic.
+    """
+
+    body: str
+    name: str
+    pos_x: float = 0.0
+    pos_y: float = 0.0
+    pos_z: float = 0.0
+    quat_x: float = 0.0
+    quat_y: float = 0.0
+    quat_z: float = 0.0
+    quat_w: float = 1.0
+    type: str = field(default="MjcfSceneFrame")
+
+
+@dataclass
 class MjcfSceneSpec:
     """The scene: robots, objects, cameras and the control timestep."""
 
@@ -105,10 +125,9 @@ class MjcfSceneSpec:
     # Cameras are rendered against the composed scene, not read by a solver, so they belong here
     # and not on the agent that hosts them.
     cameras: list[CameraBinding] = field(default_factory=list)
+    # Every frame the kgraph declares, as a site on its body.
+    frames: list[MjcfSceneFrame] = field(default_factory=list)
     # Physics/control timestep from ENVIRONMENT.timestep; defaults to the backend
     # interval when the model omits it.
     timestep_s: float = 0.002
-    # Ground height in the world frame: the lowest the scene places anything against the
-    # world, so a world frame anchored above the ground still gets its floor.
-    floor_z: float = 0.0
     type: str = field(default="MjcfSceneSpec")

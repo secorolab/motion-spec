@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import collections
 import sys
+from collections import Counter
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NamedTuple
@@ -32,7 +33,6 @@ from motion_spec_dsl.rdf_parser.vocab import (
     EXEC,
     GEOM_COORD,
     GEOM_ENT,
-    GEOM_REL,
     KC,
     KC_STAT,
     QUDT_SCHEMA,
@@ -46,22 +46,22 @@ from motion_spec_dsl.rdf_parser.vocab import (
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import ModelBase, get_node_types
 from rdf_utils.models.execution import URI_EXEC_PRED_PATH, get_path_of_node
+from rdf_utils.models.geom_coord import (
+    find_pose_path,
+    get_pose_coords,
+    get_transform_between_frames,
+)
 from rdf_utils.models.vocab import (
-    URI_GEOM_PRED_OF,
+    URI_DISTRIB_TYPE_SAMPLED_QUANTITY,
     URI_GEOM_TYPE_KGRAPH,
-    URI_GEOM_TYPE_POSITION,
+    URI_KC_PRED_BETWEEN_ATTACHMENTS,
+    URI_KC_TYPE_JOINT,
     URI_KC_TYPE_SERIAL,
 )
 from rdf_utils.namespace import NS_MM_KC_EXT, NS_MM_QUDT_QTY
 from rdf_utils.uri import iri_is_descendant, iri_parent
 from rdflib.namespace import PROV, RDF, SDO
 from scene_dsl.kdl_tree import build_kdl_trees
-from scene_dsl.rdf_parser.kinematics import (
-    body_of_frame,
-    get_kinematic_mapping,
-    is_attached,
-    root_bodies,
-)
 from scene_dsl.rdf.sensors import (
     CAMERA_TYPES,
     URI_SENS_PRED_CAMERA_KIND,
@@ -69,6 +69,7 @@ from scene_dsl.rdf.sensors import (
     URI_SENS_PRED_RESOLUTION_WIDTH,
     URI_SENS_TYPE_CAMERA,
 )
+from scene_dsl.rdf_parser.kinematics import body_of_frame, get_kinematic_mapping, root_bodies
 from scene_dsl.rdf_parser.sensors import get_update_rate
 from scene_dsl.rdf_parser.vocab import URI_BDD_PRED_ELEMS, URI_ROS_PRED_PACKAGE_NAME
 
@@ -86,6 +87,7 @@ from motion_spec.classes.geometry import SceneObject
 from motion_spec.classes.motion import BlackboardValue
 from motion_spec.classes.scene import (
     MjcfSceneAttachment,
+    MjcfSceneFrame,
     MjcfSceneObject,
     MjcfSceneRobot,
     MjcfSceneSpec,
@@ -230,7 +232,8 @@ class AgentAssembly:
     tcp_frame: str
     attach_kind: str
     attach_name: str
-    placement_frame: object
+    pos: list | None
+    quat: list | None
     attachments: list
 
 
@@ -310,17 +313,8 @@ def fixed_attachments(model, bound_trees):
     adjacency, fixed = kinematic_adjacency(model)
     if not fixed:
         return {}, None
-    leaves = [body for body in adjacency if len(adjacency[body]) == 1]
-    tip_distances = [
-        _distances(adjacency, body_of_frame(tip, graph))
-        for tip in graph.objects(None, NS_MM_KC_EXT["tip"])
-    ]
-
-    def distance_from_nearest_tip(body):
-        return min((distance[body] for distance in tip_distances if body in distance), default=-1)
-
-    root = max(leaves, key=distance_from_nearest_tip) if leaves else None
-    from_root = _distances(adjacency, root) if root is not None else {}
+    root = body_of_frame(anchor_frame(model), graph)
+    from_root = _distances(adjacency, root)
 
     def owner(body):
         """The innermost bound tree owning a body: the longest IRI it descends from."""
@@ -343,7 +337,9 @@ def fixed_attachments(model, bound_trees):
             else (frame_b, frame_a)
         )
         parent_body, child_body = (body_of_frame(f, graph) for f in (parent_frame, child_frame))
-        if parent_body == root:
+        # A body no asset backs carries no site to bolt to -- it only says where its child
+        # sits, which the placement composed against the anchor already accounts for.
+        if parent_body not in modelled_bodies and owner(parent_body) is None:
             attachments[child_body] = ("World", "", child_frame, parent_body)
         elif child_body in modelled_bodies or owner(parent_body) != owner(child_body):
             attachments[child_body] = ("Site", local_name(parent_frame), child_frame, parent_body)
@@ -524,9 +520,9 @@ def _agent_assemblies(model, attach_by_body) -> list:
         chain_tip_body = _chain_tip_body(root_binding, serial_tree, path, tip_body, root_body)
 
         hosted = sorted(graph.objects(modelled, SOSA.hosts), key=str)
-        attach_kind, attach_name, placement_frame, _parent = attach_by_body.get(
-            root_body, ("World", "", root_frame, None)
-        )
+        attachment = attach_by_body.get(root_body, ("World", "", root_frame, None))
+        attach_kind, attach_name, _frame, _parent = attachment
+        position, orientation = _placement_of(model, attachment, anchor_frame(model))
         agent_device = _device_of(model, agent)
         result.append(
             AgentAssembly(
@@ -578,7 +574,8 @@ def _agent_assemblies(model, attach_by_body) -> list:
                 ),
                 attach_kind=attach_kind,
                 attach_name=attach_name,
-                placement_frame=placement_frame,
+                pos=position,
+                quat=orientation,
                 attachments=_chain_attachments(model, path, root_binding, chain_bindings),
             )
         )
@@ -1174,9 +1171,9 @@ def read_scene(model) -> MjcfSceneSpec:
         scene.timestep_s = seconds(float(value.toPython()), graph.value(timestep, QUDT_SCHEMA.unit))
 
     bound_trees = mapped_targets(model, AGN["AgentModel"], GEOM_ENT.KinematicTree)
-    attach_by_body, root = fixed_attachments(model, bound_trees)
+    attach_by_body, _root = fixed_attachments(model, bound_trees)
     _name_object_attachments(model, attach_by_body)
-    scene.floor_z = _floor_height(model, _world_body(model) or root)
+    anchor = anchor_frame(model)
 
     for modelled in sorted(graph.subjects(RDF.type, ENV["ModelledObject"]), key=str):
         obj = graph.value(modelled, ENV["of-object"])
@@ -1191,9 +1188,9 @@ def read_scene(model) -> MjcfSceneSpec:
         if obj is None or mapped is None:
             continue
         asset, body = mapped
-        attach_kind, attach_name, placement_frame, _parent = attach_by_body.get(
-            body, ("World", "", body, None)
-        )
+        attachment = attach_by_body.get(body, ("World", "", body, None))
+        attach_kind, attach_name, _frame, _parent = attachment
+        position, orientation = _placement_of(model, attachment, anchor)
         scene.objects.append(
             MjcfSceneObject(
                 id=local_name(obj),
@@ -1202,8 +1199,8 @@ def read_scene(model) -> MjcfSceneSpec:
                 fixed=body in attach_by_body,
                 attach_kind=attach_kind,
                 attach_name=attach_name,
-                pos=_placement_position(model, placement_frame),
-                quat=_placement_orientation(model, placement_frame),
+                pos=position,
+                quat=orientation,
             )
         )
 
@@ -1215,17 +1212,64 @@ def read_scene(model) -> MjcfSceneSpec:
                 prefix=assembly.prefix,
                 attach_kind=assembly.attach_kind,
                 attach_name=assembly.attach_name,
-                pos=_placement_position(model, assembly.placement_frame),
-                quat=_placement_orientation(model, assembly.placement_frame),
+                pos=assembly.pos,
+                quat=assembly.quat,
                 attachments=assembly.attachments,
             )
         )
         scene.cameras.extend(assembly.cameras)
 
+    scene.frames = _scene_frames(model)
     _expand_scene_geometry(scene)
     _validate_scene(scene, model.app_path)
 
     return scene
+
+
+def _scene_frames(model) -> list:
+    """Every frame the kgraph declares, placed on the body that carries it.
+
+    A body's own root frame is where the body is, so it needs no marker of its own; the rest
+    are posed against it, which is the frame the runtime builds each body on. A frame no pose
+    leads to is left out rather than placed at the body's origin, which would invent a spot.
+    """
+    graph = model.graph
+    marked = [
+        (body, frame)
+        for kgraph in sorted(graph.subjects(RDF.type, URI_GEOM_TYPE_KGRAPH), key=str)
+        for body in sorted(_kgraph_bodies(model, kgraph), key=str)
+        for frame in sorted(graph.objects(body, GEOM_ENT.simplices), key=str)
+        if frame != _placement_frame(model, body) and GEOM_ENT.Frame in get_node_types(graph, frame)
+    ]
+    # A site is named after its frame, and carries its body only when another body has a frame
+    # of the same name -- the name has to be unique, and it has to stay readable in a viewer.
+    counts = Counter(local_name(frame) for _body, frame in marked)
+
+    frames = []
+    for body, frame in marked:
+        position, orientation = _placement(model, frame, _placement_frame(model, body))
+        if position is None:
+            continue
+        name = local_name(frame)
+        frames.append(
+            MjcfSceneFrame(
+                body=local_name(body),
+                name=f"{local_name(body)}_{name}" if counts[name] > 1 else name,
+                **dict(zip(("pos_x", "pos_y", "pos_z"), position)),
+                **dict(zip(("quat_x", "quat_y", "quat_z", "quat_w"), orientation)),
+            )
+        )
+    return frames
+
+
+def _kgraph_bodies(model, kgraph) -> set:
+    """Every body the graph holds: the ones it roots, and everything a joint reaches."""
+    graph = model.graph
+    bodies = set(root_bodies(kgraph, graph))
+    for joint in graph.subjects(RDF.type, URI_KC_TYPE_JOINT):
+        for frame in graph.objects(joint, URI_KC_PRED_BETWEEN_ATTACHMENTS):
+            bodies.add(body_of_frame(frame, graph))
+    return {body for body in bodies if body is not None}
 
 
 def _name_object_attachments(model, attach_by_body) -> None:
@@ -1241,20 +1285,11 @@ def _name_object_attachments(model, attach_by_body) -> None:
     for body, (kind, name, frame, parent_body) in list(attach_by_body.items()):
         if kind != "Site" or parent_body not in object_ids_by_body:
             continue
-        parent_frame = model.child_node(parent_body, name)
-        reference_frame = next(
-            (
-                reference
-                for pose in graph.subjects(GEOM_REL.of, parent_frame)
-                if (reference := graph.value(pose, GEOM_REL["with-respect-to"])) is not None
-                and GEOM_ENT.Frame in get_node_types(graph, reference)
-                and body_of_frame(reference, graph) == parent_body
-            ),
-            None,
-        )
-        if reference_frame is not None:
-            name = local_name(reference_frame)
-            frame = parent_frame
+        # The site is the object's root frame, which is the one an asset exposes and the one
+        # the placement is composed against. Naming any other frame on the way up would
+        # measure the offset from one frame and apply it at another.
+        frame = model.child_node(parent_body, name)
+        name = local_name(_placement_frame(model, parent_body))
         attach_by_body[body] = (
             kind,
             # The runtime composes this as the object's name and the site, and it names the
@@ -1282,42 +1317,24 @@ def _asset_path(graph, asset) -> str:
     return str(Path(get_package_share_directory(str(package))) / path)
 
 
-def _world_body(model):
-    """The body the scene is anchored at: a graph root no joint holds, only a pose places.
+def anchor_frame(model):
+    """The frame the scene stands on: its ground, and the origin every placement resolves into.
 
-    The body the arm bolts to is a graph root too, so it cannot stand in for this one -- what a
-    scene places against the ground it places in the world frame, not on the mount.
+    The graph declares it, so nothing here guesses which of its roots the scene hangs from.
     """
     graph = model.graph
-    return next(
-        (
-            body
-            for kgraph in sorted(graph.subjects(RDF.type, URI_GEOM_TYPE_KGRAPH), key=str)
-            for body in sorted(root_bodies(kgraph, graph), key=str)
-            if not is_attached(body, graph)
-        ),
-        None,
-    )
-
-
-def _floor_height(model, root) -> float:
-    """How far the ground sits below the world frame, from what the scene places against it.
-
-    The world frame is free to sit anywhere the scene author puts it -- on the ground, or on a
-    table top. Whatever it is placed on top of is the frame it references at the lowest z, and
-    nothing is authored below the ground, so that z is where the ground plane belongs.
-    """
-    if root is None:
-        return 0.0
-    heights = [
-        values[2]
-        for frame in _frames_of(model, root)
-        for reference in [model.graph.value(frame, GEOM_ENT.origin) or frame]
-        for position in model.graph.subjects(GEOM_REL["with-respect-to"], reference)
-        if URI_GEOM_TYPE_POSITION in get_node_types(model.graph, position)
-        and (values := quantities.position_coordinate_values(model, position)) is not None
-    ]
-    return min(heights + [0.0])
+    anchors = {
+        anchor
+        for kgraph in graph.subjects(RDF.type, URI_GEOM_TYPE_KGRAPH)
+        for anchor in graph.objects(kgraph, NS_MM_KC_EXT["anchor"])
+    }
+    if len(anchors) != 1:
+        raise ConstraintViolation(
+            "kinematics",
+            f"the scene needs exactly one anchor to stand on, found {len(anchors)}"
+            f"{': ' + ', '.join(sorted(map(str, anchors))) if anchors else ''}",
+        )
+    return anchors.pop()
 
 
 def _frames_of(model, node) -> list:
@@ -1331,29 +1348,71 @@ def _frames_of(model, node) -> list:
     ]
 
 
-def _placement_position(model, node) -> list[float] | None:
-    """Where a body or frame is placed, in metres, from its authored scene pose."""
-    for frame in _frames_of(model, node):
-        origin = model.graph.value(frame, GEOM_ENT.origin) or frame
-        for position_node in model.graph.subjects(URI_GEOM_PRED_OF, origin):
-            if URI_GEOM_TYPE_POSITION not in get_node_types(model.graph, position_node):
-                continue
-            values = quantities.position_coordinate_values(model, position_node)
-            if values is not None:
-                return values
-    return None
+def _placement_of(model, attachment, anchor):
+    """Where an attached body sits, in the frame of whatever it is bolted to.
+
+    A body the scene places itself resolves against the anchor the runtime is built on. One
+    bolted to another model resolves against that model's own root frame, which is where its
+    site is: composing to the anchor instead would count its host's placement twice.
+    """
+    kind, _name, frame, parent = attachment
+    if kind != "World":
+        return _placement(model, frame, _placement_frame(model, parent))
+    # What the runtime places is the body, so its root frame -- not whichever of its frames a
+    # joint happens to hang it by, which may sit anywhere on it.
+    is_frame = GEOM_ENT.Frame in get_node_types(model.graph, frame)
+    return _placement(model, body_of_frame(frame, model.graph) if is_frame else frame, anchor)
 
 
-def _placement_orientation(model, node) -> list[float] | None:
-    """How a body or frame is rotated, as [x, y, z, w], from its authored scene pose."""
-    for frame in _frames_of(model, node):
-        for orientation_node in model.graph.subjects(GEOM_REL.of, frame):
-            if GEOM_REL.Orientation not in get_node_types(model.graph, orientation_node):
-                continue
-            rotation = quantities.orientation_relation_quaternion(model, orientation_node)
-            if rotation is not None:
-                return rotation
-    return None
+def _reject_sampled_placement(model, frame, wrt) -> None:
+    """A sampled placement has no seed semantics here, so it must not resolve to one value.
+
+    Composing reads whatever coordinates a sampled quantity happens to carry, which would put
+    the body at one draw of a distribution and never say so.
+
+    Raises:
+        ConstraintViolation: a pose placing this frame is sampled.
+    """
+    for pose, coords in get_pose_coords(
+        graph=model.graph, poses=find_pose_path(frame, wrt, model.graph) or []
+    ):
+        for coord in coords:
+            for node in (coord.id, coord.position_coord.id, coord.orientation_coord.id):
+                if URI_DISTRIB_TYPE_SAMPLED_QUANTITY in get_node_types(model.graph, node):
+                    raise ConstraintViolation(
+                        "geometry",
+                        f"sampled placement coordinate '{node}' places '{pose.id}': motion-spec "
+                        f"has no seed for it, so it cannot be resolved to a single placement",
+                    )
+
+
+def _placement(model, node, wrt):
+    """Where a body or frame sits in `wrt`, in metres and [x, y, z, w].
+
+    Composed along the poses that place it, so a scene may author a placement against any
+    frame it likes and still be read against the one it is assembled on. A body no pose
+    leads to is placed by the joint that holds it, and comes back coincident.
+    """
+    frame = _placement_frame(model, node)
+    if frame is None:
+        return None, None
+    _reject_sampled_placement(model, frame, wrt)
+    transform = get_transform_between_frames(frame, wrt, model.graph)
+    if transform is None:
+        # A pose reads one way, but it relates both frames: a scene that places a body's root
+        # against one of its own frames still says where that frame is on the body.
+        reverse = get_transform_between_frames(wrt, frame, model.graph)
+        transform = reverse.inv() if reverse is not None else None
+    if transform is None:
+        return None, None
+    return list(transform.translation), list(transform.rotation.as_quat())
+
+
+def _placement_frame(model, node):
+    """The frame a body is at, or the node itself when it already is one."""
+    if GEOM_ENT.Frame in get_node_types(model.graph, node):
+        return node
+    return model.graph.value(node, NS_MM_KC_EXT["root"])
 
 
 # Per scene item, the vector fields expanded into scalar components, with the value an omitted

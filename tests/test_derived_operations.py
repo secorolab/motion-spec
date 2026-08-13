@@ -24,23 +24,31 @@ from rdf_utils.models.vocab import (
     URI_GEOM_TYPE_ANGLES_ABG,
     URI_GEOM_TYPE_EULER_ANGLES,
     URI_GEOM_TYPE_EXTRINSIC,
+    URI_GEOM_PRED_OF_ORIENT,
+    URI_GEOM_PRED_OF_POSE,
+    URI_GEOM_PRED_OF_POSITION,
+    URI_GEOM_PRED_SEEN_BY,
     URI_GEOM_TYPE_ORIENT_REF,
+    URI_GEOM_TYPE_POSE,
+    URI_GEOM_TYPE_POSE_COORD,
+    URI_GEOM_TYPE_POSE_REF,
     URI_GEOM_TYPE_POSITION_REF,
     URI_GEOM_TYPE_VECTOR_XYZ,
     URI_QUDT_UNIT_CM,
+    URI_QUDT_UNIT_M,
     URI_QUDT_UNIT_RAD,
 )
 from rdflib import Dataset, Graph, Literal, URIRef
 from rdflib.namespace import RDF
 from scipy.spatial.transform import Rotation
 
-from motion_spec.rdf_parser.model import Model
+from motion_spec.rdf_parser.model import Model, local_name
 from motion_spec.rdf_parser.operations import (
     _materialize_linear_distance_operations,
     _materialize_pose_reference_transforms,
 )
 from motion_spec.rdf_parser.quantities import _relative_orientation, orientation_representation
-from motion_spec.rdf_parser.resources import _placement_orientation, _placement_position
+from motion_spec.rdf_parser.resources import _placement
 
 BASE = "https://example.test/"
 
@@ -309,8 +317,8 @@ def _scene_position_coord(
 ) -> URIRef:
     """A Position coordinate at `of_frame`'s origin, wrt `wrt_frame`'s origin -- `_position_of`
     looks a frame up by its origin point, matching how scene-dsl authors a placement."""
-    position = _u("position")
-    coord = _u("position-coord")
+    position = _u(f"position-{local_name(of_frame)}")
+    coord = _u(f"position-coord-{local_name(of_frame)}")
     g.add((position, RDF.type, GEOM_REL.Position))
     g.add((position, GEOM_REL.of, g.value(of_frame, GEOM_ENT.origin)))
     g.add((position, GEOM_REL["with-respect-to"], g.value(wrt_frame, GEOM_ENT.origin)))
@@ -321,7 +329,51 @@ def _scene_position_coord(
     g.add((coord, GEOM_COORD["as-seen-by"], wrt_frame))
     for predicate, value in zip((GEOM_COORD.x, GEOM_COORD.y, GEOM_COORD.z), xyz):
         g.add((coord, predicate, Literal(float(value))))
+    g.add((coord, QUDT_SCHEMA.unit, URI_QUDT_UNIT_M))
     return coord
+
+
+def _scene_orientation_coord(g: Graph, of_frame: URIRef, wrt_frame: URIRef, quat) -> URIRef:
+    """An Orientation coordinate at `of_frame`, wrt `wrt_frame`, as a quaternion."""
+    orientation = _u(f"orientation-{local_name(of_frame)}")
+    coord = _u(f"orientation-coord-{local_name(of_frame)}")
+    g.add((orientation, RDF.type, GEOM_REL.Orientation))
+    g.add((orientation, GEOM_REL.of, of_frame))
+    g.add((orientation, GEOM_REL["with-respect-to"], wrt_frame))
+    g.add((coord, RDF.type, GEOM_COORD.OrientationCoordinate))
+    g.add((coord, RDF.type, URI_GEOM_TYPE_ORIENT_REF))
+    g.add((coord, RDF.type, GEOM_COORD.Quaternion))
+    g.add((coord, GEOM_COORD["of-orientation"], orientation))
+    g.add((coord, GEOM_COORD["as-seen-by"], wrt_frame))
+    x, y, z, w = quat
+    for predicate, value in zip((GEOM_COORD.x, GEOM_COORD.y, GEOM_COORD.z), (x, y, z)):
+        g.add((coord, predicate, Literal(float(value))))
+    g.add((coord, URI_GEOM_PRED_W, Literal(float(w))))
+    return coord
+
+
+def _scene_pose(g: Graph, of_frame: URIRef, wrt_frame: URIRef, xyz, quat=(0.0, 0.0, 0.0, 1.0)):
+    """A placement as scene-dsl emits one: a Pose over a position and an orientation.
+
+    `_placement` composes whole poses, so a position with no orientation beside it places
+    nothing -- which is what a scene author writes anyway.
+    """
+    position_coord = _scene_position_coord(g, of_frame, wrt_frame, xyz)
+    orientation_coord = _scene_orientation_coord(g, of_frame, wrt_frame, quat)
+    pose = _u(f"pose-{local_name(of_frame)}")
+    coord = _u(f"pose-coord-{local_name(of_frame)}")
+    g.add((pose, RDF.type, URI_GEOM_TYPE_POSE))
+    g.add((pose, GEOM_REL.of, of_frame))
+    g.add((pose, GEOM_REL["with-respect-to"], wrt_frame))
+    g.add((pose, RDF.type, URI_GEOM_TYPE_POSITION_REF))
+    g.add((pose, URI_GEOM_PRED_OF_POSITION, g.value(position_coord, GEOM_COORD["of-position"])))
+    g.add((pose, RDF.type, URI_GEOM_TYPE_ORIENT_REF))
+    g.add((pose, URI_GEOM_PRED_OF_ORIENT, g.value(orientation_coord, GEOM_COORD["of-orientation"])))
+    g.add((coord, RDF.type, URI_GEOM_TYPE_POSE_REF))
+    g.add((coord, RDF.type, URI_GEOM_TYPE_POSE_COORD))
+    g.add((coord, URI_GEOM_PRED_OF_POSE, pose))
+    g.add((coord, URI_GEOM_PRED_SEEN_BY, wrt_frame))
+    return position_coord
 
 
 def test_orientation_of_reads_quaternion_placement_as_quat() -> None:
@@ -329,25 +381,31 @@ def test_orientation_of_reads_quaternion_placement_as_quat() -> None:
     g = Dataset(default_union=True)
     frame = _scene_frame(g, "frame-object")
     wrt = _scene_frame(g, "frame-world")
+    quat = tuple(Rotation.from_euler("xyz", (0.3, -0.2, 0.75)).as_quat())
+    _scene_pose(g, frame, wrt, (0.0, 0.0, 0.0), quat)
 
-    orientation = _u("orientation")
-    coord = _u("orientation-coord")
-    g.add((orientation, RDF.type, GEOM_REL.Orientation))
-    g.add((orientation, GEOM_REL.of, frame))
-    g.add((orientation, GEOM_REL["with-respect-to"], wrt))
-    g.add((coord, RDF.type, GEOM_COORD.OrientationCoordinate))
-    g.add((coord, RDF.type, URI_GEOM_TYPE_ORIENT_REF))
-    g.add((coord, RDF.type, GEOM_COORD.Quaternion))
-    g.add((coord, GEOM_COORD["of-orientation"], orientation))
-    g.add((coord, GEOM_COORD["as-seen-by"], wrt))
+    assert _placement(_model(g), frame, wrt)[1] == pytest.approx(quat)
 
-    x, y, z, w = Rotation.from_euler("xyz", (0.3, -0.2, 0.75)).as_quat()
-    for predicate, value in zip((GEOM_COORD.x, GEOM_COORD.y, GEOM_COORD.z), (x, y, z)):
-        g.add((coord, predicate, Literal(float(value))))
-    g.add((coord, URI_GEOM_PRED_W, Literal(float(w))))
 
-    result = _placement_orientation(_model(g), frame)
-    assert result == pytest.approx((x, y, z, w))
+def test_a_placement_composes_through_the_frames_between_it_and_the_anchor() -> None:
+    """A scene places against whatever frame it likes; the runtime is built on one."""
+    g = Dataset(default_union=True)
+    anchor = _scene_frame(g, "frame-ground")
+    middle = _scene_frame(g, "frame-world")
+    frame = _scene_frame(g, "frame-object")
+    _scene_pose(g, middle, anchor, (0.0, 0.0, 0.72))
+    _scene_pose(g, frame, middle, (-0.9, 1.8, 0.05))
+
+    assert _placement(_model(g), frame, anchor)[0] == pytest.approx([-0.9, 1.8, 0.77])
+
+
+def test_a_frame_no_pose_leads_to_is_coincident() -> None:
+    """A body a joint holds is placed by the joint, not by a pose, so it composes to nothing."""
+    g = Dataset(default_union=True)
+    anchor = _scene_frame(g, "frame-ground")
+    frame = _scene_frame(g, "frame-jointed")
+
+    assert _placement(_model(g), frame, anchor) == (None, None)
 
 
 def test_position_of_scales_to_metres_and_rejects_a_missing_unit() -> None:
@@ -358,18 +416,20 @@ def test_position_of_scales_to_metres_and_rejects_a_missing_unit() -> None:
     g = Dataset(default_union=True)
     frame = _scene_frame(g, "frame-object")
     wrt = _scene_frame(g, "frame-world")
-    coord = _scene_position_coord(g, frame, wrt, (150.0, -50.0, 720.0))
+    coord = _scene_pose(g, frame, wrt, (150.0, -50.0, 720.0))
+    g.remove((coord, QUDT_SCHEMA.unit, URI_QUDT_UNIT_M))
     g.add((coord, QUDT_SCHEMA.unit, URI_QUDT_UNIT_CM))
 
-    assert _placement_position(_model(g), frame) == pytest.approx([1.5, -0.5, 7.2])
+    assert _placement(_model(g), frame, wrt)[0] == pytest.approx([1.5, -0.5, 7.2])
 
     g2 = Dataset(default_union=True)
     frame2 = _scene_frame(g2, "frame-object")
     wrt2 = _scene_frame(g2, "frame-world")
-    _scene_position_coord(g2, frame2, wrt2, (1.0, 2.0, 3.0))  # no unit triple added
+    coord2 = _scene_pose(g2, frame2, wrt2, (1.0, 2.0, 3.0))
+    g2.remove((coord2, QUDT_SCHEMA.unit, URI_QUDT_UNIT_M))  # a placement with no unit at all
 
-    with pytest.raises(ConstraintViolation, match="length unit"):
-        _placement_position(_model(g2), frame2)
+    with pytest.raises(ConstraintViolation):
+        _placement(_model(g2), frame2, wrt2)
 
 
 def test_sampled_scene_placements_are_rejected() -> None:
@@ -377,9 +437,8 @@ def test_sampled_scene_placements_are_rejected() -> None:
     g = Dataset(default_union=True)
     frame = _scene_frame(g, "frame-object")
     wrt = _scene_frame(g, "frame-world")
-    coord = _scene_position_coord(g, frame, wrt, (1.0, 2.0, 3.0))
+    coord = _scene_pose(g, frame, wrt, (1.0, 2.0, 3.0))
     g.add((coord, RDF.type, URI_DISTRIB_TYPE_SAMPLED_QUANTITY))
-    g.add((coord, QUDT_SCHEMA.unit, URI_QUDT_UNIT_CM))
 
-    with pytest.raises(ConstraintViolation, match="Sampled placement coordinate"):
-        _placement_position(_model(g), frame)
+    with pytest.raises(ConstraintViolation):
+        _placement(_model(g), frame, wrt)

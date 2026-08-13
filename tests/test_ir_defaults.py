@@ -15,6 +15,7 @@ from motion_spec_dsl.rdf_parser.vocab import (
     ALGO_EXT,
     CSTR,
     CSTR_HDL,
+    ENV,
     EXEC,
     GEOM_COORD,
     KC,
@@ -79,6 +80,13 @@ def test_chain_attachments_follow_root_to_tip_order() -> None:
     assert [attachment.path for attachment in attachments] == ["ft.xml", "gripper.xml"]
 
 
+def _anchor(graph: Dataset, frame: URIRef) -> None:
+    """Declare the frame the scene stands on, the way a kgraph states it."""
+    kgraph = URIRef("https://example.test/kgraph")
+    graph.add((kgraph, RDF.type, NS_MM_GEOM["KinematicGraph"]))
+    graph.add((kgraph, NS_MM_KC_EXT["anchor"], frame))
+
+
 def test_fixed_attachments_root_a_branched_multi_robot_scene_at_world() -> None:
     graph = Dataset(default_union=True)
     world = URIRef("https://example.test/world")
@@ -98,7 +106,18 @@ def test_fixed_attachments_root_a_branched_multi_robot_scene_at_world() -> None:
         graph.add((joint, KC["between-attachments"], frame_a))
         graph.add((joint, KC["between-attachments"], frame_b))
 
-    fixed("world-table", frame_on(world, URIRef(f"{world}/origin")), frame_on(table, table_top))
+    world_origin = frame_on(world, URIRef(f"{world}/origin"))
+    _anchor(graph, world_origin)
+    fixed("world-table", world_origin, frame_on(table, table_top))
+
+    # The table is an asset in the scene, so it carries a site the arms can bolt to. The world
+    # is not, which is what makes the table itself world-placed.
+    table_model = URIRef("https://example.test/table-model")
+    table_mapping = URIRef("https://example.test/table-model/maps-table")
+    graph.add((table_model, RDF.type, ENV["ObjectModel"]))
+    graph.add((table_model, EXEC["has-mapping"], table_mapping))
+    graph.add((table_mapping, EXEC.maps, table))
+    graph.add((table, RDF.type, NS_MM_GEOM["RigidBody"]))
     for tree in trees:
         root = URIRef(f"{tree}/base")
         root_frame = frame_on(root, URIRef(f"{root}/origin"))
@@ -187,6 +206,7 @@ def test_agent_model_may_bind_the_assembled_kinematic_tree() -> None:
     graph.add((joint, RDF.type, KC.Joint))
     graph.add((joint, KC["between-attachments"], root))
     graph.add((joint, KC["between-attachments"], tcp))
+    _anchor(graph, root)
 
     setups, _ordered, _trees = resources.robot_setups(_model(graph))
     setup = setups[agent]

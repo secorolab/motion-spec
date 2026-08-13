@@ -201,7 +201,6 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
     mj_kdl::SceneSpec mj_scene{};
     mj_scene.timestep = <scene.timestep_s>;
     mj_scene.add_floor = true;
-    mj_scene.floor_z = <scene.floor_z>;
     mj_scene.add_skybox = true;
     std::deque\<std::string\> mj_path_storage;
 <scene.robots:{robot |
@@ -284,6 +283,21 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
         object_spec.friction[1] = <object.friction_torsion>;
         object_spec.friction[2] = <object.friction_roll>;
 <endif>        mj_scene.objects.push_back(object_spec);
+    \}
+}; separator="\n">
+<scene.frames:{frame |
+    {
+        mj_kdl::SiteSpec site_spec{\};
+        site_spec.body = "<frame.body>";
+        site_spec.name = "<frame.name>";
+        site_spec.pos[0] = <frame.pos_x>;
+        site_spec.pos[1] = <frame.pos_y>;
+        site_spec.pos[2] = <frame.pos_z>;
+        site_spec.quat[0] = <frame.quat_x>;
+        site_spec.quat[1] = <frame.quat_y>;
+        site_spec.quat[2] = <frame.quat_z>;
+        site_spec.quat[3] = <frame.quat_w>;
+        mj_scene.sites.push_back(site_spec);
     \}
 }; separator="\n">
 

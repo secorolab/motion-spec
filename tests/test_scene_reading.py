@@ -95,6 +95,7 @@ def test_kinematic_adjacency_edges(characterized):
 _BODY_OF = {
     "pick_place_single": {
         "https://secorolab.github.io/models/scenes/pick-place-single-mjc/ft_tree/wrist_ft_body/wrist_ft_body_origin": "https://secorolab.github.io/models/scenes/pick-place-single-mjc/ft_tree/wrist_ft_body",
+        "https://secorolab.github.io/models/scenes/pick-place-single-mjc/ft_tree/wrist_ft_body/wrist_ft_mount": "https://secorolab.github.io/models/scenes/pick-place-single-mjc/ft_tree/wrist_ft_body",
         "https://secorolab.github.io/models/scenes/pick-place-single-mjc/ft_tree/wrist_ft_body/wrist_ft_site": "https://secorolab.github.io/models/scenes/pick-place-single-mjc/ft_tree/wrist_ft_body",
         "https://secorolab.github.io/models/scenes/pick-place-single-mjc/gripper/g_base/g_base_com": "https://secorolab.github.io/models/scenes/pick-place-single-mjc/gripper/g_base",
         "https://secorolab.github.io/models/scenes/pick-place-single-mjc/gripper/g_base/g_base_lumped_com": "https://secorolab.github.io/models/scenes/pick-place-single-mjc/gripper/g_base",
@@ -217,6 +218,7 @@ _BODY_OF = {
     },
     "admittance_arc_single": {
         "https://secorolab.github.io/models/scenes/admittance-arc-single-mjc/ft_tree/wrist_ft_body/wrist_ft_body_origin": "https://secorolab.github.io/models/scenes/admittance-arc-single-mjc/ft_tree/wrist_ft_body",
+        "https://secorolab.github.io/models/scenes/admittance-arc-single-mjc/ft_tree/wrist_ft_body/wrist_ft_mount": "https://secorolab.github.io/models/scenes/admittance-arc-single-mjc/ft_tree/wrist_ft_body",
         "https://secorolab.github.io/models/scenes/admittance-arc-single-mjc/ft_tree/wrist_ft_body/wrist_ft_site": "https://secorolab.github.io/models/scenes/admittance-arc-single-mjc/ft_tree/wrist_ft_body",
         "https://secorolab.github.io/models/scenes/admittance-arc-single-mjc/gripper/g_base/g_base_com": "https://secorolab.github.io/models/scenes/admittance-arc-single-mjc/gripper/g_base",
         "https://secorolab.github.io/models/scenes/admittance-arc-single-mjc/gripper/g_base/g_base_lumped_com": "https://secorolab.github.io/models/scenes/admittance-arc-single-mjc/gripper/g_base",

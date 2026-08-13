@@ -600,6 +600,17 @@ inline double wrap_angle(double angle) {
     return std::remainder(angle, 2.0 * M_PI);
 }
 
+// A measured joint position, moved onto the turn the model's normalization interval is stated
+// on. A backend reporting [0, 2*pi) and a model stating (-pi, pi] describe the same pose one
+// turn apart; normalizing where the reading is taken means every constraint, solve and log
+// downstream sees the same one. Whole turns only, so a reading outside the interval stays
+// outside rather than being clamped onto it.
+inline double normalize_joint_position(double position, double lower, double upper) {
+    const double turn = 2.0 * M_PI;
+    const double centre = 0.5 * (lower + upper);
+    return position - turn * std::round((position - centre) / turn);
+}
+
 inline double evaluate_equality_constraint(const KDL::Vector &target, const KDL::Vector &current) {
     return (target - current).Norm();
 }

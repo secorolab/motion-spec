@@ -18,6 +18,9 @@ class JointPosition:
     # Where the joint sits in the chain's joint array, resolved while generating. None for a
     # joint the chain does not articulate, which only a simulated backend can read.
     joint_index: int | None = None
+    # The interval this measurement is read into, as its world block states it; None when the
+    # block states none and the reading is taken as the backend reports it.
+    normalization: dict | None = None
     type: str = field(default="JointPosition")
 
 

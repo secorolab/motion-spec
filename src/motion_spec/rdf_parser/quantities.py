@@ -999,7 +999,25 @@ def joint_position(model, node) -> JointPosition:
         raise ConstraintViolation(
             "kinematic-chain", f"JointPositionCoordinate '{node}' has no of-joint URI"
         )
-    return JointPosition(model.id(node), model.label(joint))
+    return JointPosition(
+        model.id(node), model.label(joint), normalization=_normalization(model, node)
+    )
+
+
+def _normalization(model, node) -> dict | None:
+    """The interval a measurement is read into, as its world block stated it."""
+    graph = model.graph
+    interval = graph.value(node, ALGO_EXT["normalization"])
+    if interval is None:
+        return None
+    bounds = {}
+    for edge in ("lower", "upper"):
+        bound = graph.value(interval, ALGO_EXT[f"{edge}-bound"])
+        value = graph.value(bound, QUDT_SCHEMA.value) if bound is not None else None
+        if value is None:
+            return None
+        bounds[edge] = float(value.toPython())
+    return bounds
 
 
 # The predicates whose presence means a user wrote the value down.

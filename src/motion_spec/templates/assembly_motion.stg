@@ -97,10 +97,10 @@ chain-init-block(serial_chain_solvers, solvers, backend) ::= <<
 // FSM was dispatched, so a quantity the scene shares is fresh whether or not this motion runs.
 chain-prepare-block(serial_chain_solvers, solvers, backend) ::= <<
 <serial_chain_solvers:{solver |
-    <solver-sync-input(solver, backend)>}; separator="\n">
+    <solver-sync-input(solver, backend, solvers.(solver.solver_id).joint_normalization)>}; separator="\n">
 <serial_chain_solvers:{solver |
     <solvers.(solver.solver_id).state_output:{out | <solver-output(solver, solvers.(solver.solver_id), out, backend)>}; separator="\n\n">
-<solver.gripper_joint_outputs:{out |     <gripper-joint-output(solver, out, backend)>}; separator="\n">
+<solver.gripper_joint_outputs:{out |     <gripper-joint-output(solver, solvers.(solver.solver_id), out, backend)>}; separator="\n">
 }; separator="\n\n">
 >>
 

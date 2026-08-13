@@ -232,8 +232,15 @@ solver-init-extra-ACHD-robif2b(solver, chain_solver, motion_driver) ::= <<
 <endif>
 >>
 
-solver-sync-input(solver, backend) ::= <<
+solver-sync-input(solver, backend, joint_normalization) ::= <<
 <({solver-sync-input-<backend>})(solver)>
+>>
+
+// The turn a measured joint angle is read onto. Applied to the measurement a model names and
+// constraints read -- not to the solver's own joint array, which FK and the dynamics see only
+// through sin/cos and which a joint resting on the interval's edge would make discontinuous.
+normalized-joint-read(expression, joint_normalization) ::= <<
+<if(joint_normalization)>motion_spec::runtime::normalize_joint_position(<expression>, <joint_normalization.lower>, <joint_normalization.upper>)<else><expression><endif>
 >>
 solver-sync-input-robif2b(solver) ::= <<
 for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
@@ -316,27 +323,27 @@ solver-output-VelocityTwist(solver, chain_solver, out, backend) ::= <<
 >>
 
 solver-output-JointPosition(solver, chain_solver, out, backend) ::= <<
-<({solver-output-JointPosition-<backend>})(solver, out)>
+<({solver-output-JointPosition-<backend>})(solver, chain_solver, out)>
 >>
 
-solver-output-JointPosition-robif2b(solver, out) ::= <<
-shared.<out.id> = state.<solver.id>.q(<out.joint_index>);  // <out.joint_name>
+solver-output-JointPosition-robif2b(solver, chain_solver, out) ::= <<
+shared.<out.id> = <normalized-joint-read({state.<solver.id>.q(<out.joint_index>)}, out.normalization)>;  // <out.joint_name>
 >>
 
 // A gripper mimic joint the chain does not articulate: the bound gripper device reports it,
 // so the read never touches chain joint state.
-gripper-joint-output(solver, out, backend) ::= <<
-<({gripper-joint-output-<backend>})(solver, out)>
+gripper-joint-output(solver, chain_solver, out, backend) ::= <<
+<({gripper-joint-output-<backend>})(solver, chain_solver, out)>
 >>
 
-gripper-joint-output-robif2b(solver, out) ::= <<
-shared.<out.id> = *robot.<solver.id>.gripper_pos;
+gripper-joint-output-robif2b(solver, chain_solver, out) ::= <<
+shared.<out.id> = <normalized-joint-read({*robot.<solver.id>.gripper_pos}, out.normalization)>;
 >>
 
 // The simulator answers for a joint the chain does not articulate -- a gripper mimic -- so the
 // name is asked of it first. A joint that is on the chain falls back to the resolved index; one
 // that is not has nowhere else to come from, so a miss has to say so.
-solver-output-JointPosition-mj_kdl(solver, out) ::= <<
+solver-output-JointPosition-mj_kdl(solver, chain_solver, out) ::= <<
 {
     double _joint_position_<out.id> = 0.0;
     if (mj_kdl::get_joint_position(
@@ -344,9 +351,9 @@ solver-output-JointPosition-mj_kdl(solver, out) ::= <<
             robot.<solver.id>.robot->data,
             "<out.joint_name>",
             &_joint_position_<out.id>)) {
-        shared.<out.id> = _joint_position_<out.id>;
+        shared.<out.id> = <normalized-joint-read({_joint_position_<out.id>}, out.normalization)>;
     } else {
-<if(out.joint_index)>        shared.<out.id> = state.<solver.id>.q(<out.joint_index>);
+<if(out.joint_index)>        shared.<out.id> = <normalized-joint-read({state.<solver.id>.q(<out.joint_index>)}, out.normalization)>;
 <else>        throw std::runtime_error("MuJoCo reports no joint '<out.joint_name>', and it is not on the chain");
 <endif>    }
 }

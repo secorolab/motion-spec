@@ -97,23 +97,25 @@ depth images.
 
 Context quantities support:
 
-- geometry: `pose`, `position`, `orientation`, `distance`, `angle`,
-  `linear-distance`, `angular-distance`, `direction`, `free-vector`;
+- geometry: `pose`, `position`, `orientation`, `length`, `distance`, `angle`,
+  `direction`, `free-vector`;
 - motion: `velocity-twist`, `acceleration-twist`, `angular-velocity`,
   `linear-velocity`, `linear-acceleration`, `angular-acceleration`, `linear-jerk`;
 - dynamics: `wrench`, `force`, `torque`;
 - scalar/control: `dimensionless`, `duration`, `path-parameter`;
 - generators: `velocity-profile`, `admittance`.
 
-`linear-distance` and `angular-distance` are authoring aliases for `distance` and
-`angle`.
+`length` is the general scalar linear quantity (ISO 80000-3 3-1.1): it may be signed,
+so it covers a coordinate or an offset as well as a separation. `distance` is the
+non-negative length between two points. Use `length` unless the value really cannot be
+negative.
 
 ### Values and references
 
 Scalars and vectors carry units:
 
 ```robmot
-linear-distance clearance = 0.10 m,
+length clearance = 0.10 m,
 direction normal = { x: 0.0, y: 0.0, z: 1.0 }
 ```
 
@@ -149,7 +151,7 @@ on an FSM event:
 
 ```robmot
 pose start = snapshot of <shared.world.tcp-base>,
-linear-distance target-x = snapshot of <shared.world.tcp-base>.position.x
+length target-x = snapshot of <shared.world.tcp-base>.position.x
                            + <shared.spec.offset>,
 pose entered = snapshot of <shared.world.tcp-base> on event task.E_ENTERED
 ```
@@ -157,7 +159,7 @@ pose entered = snapshot of <shared.world.tcp-base> on event task.E_ENTERED
 A reference value can also be a named reference plus an optional offset:
 
 ```robmot
-linear-distance shifted = <shared.spec.origin> + <shared.spec.offset>
+length shifted = <shared.spec.origin> + <shared.spec.offset>
 ```
 
 ### Velocity profiles

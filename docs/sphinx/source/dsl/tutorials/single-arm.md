@@ -144,8 +144,8 @@ then constructs a Cartesian goal:
 pose start-pose = snapshot of <shared.world.pose-ee-base>,
 linear-velocity approach-speed = 0.08 m/s,
 linear-velocity min-approach-speed = 0.005 m/s,
-linear-distance start-cube-x = snapshot of <shared.world.pose-cube-base>.position.x,
-linear-distance start-cube-y = snapshot of <shared.world.pose-cube-base>.position.y,
+length start-cube-x = snapshot of <shared.world.pose-cube-base>.position.x,
+length start-cube-y = snapshot of <shared.world.pose-cube-base>.position.y,
 path approach-path = lerp {
     start: <spec.start-pose>,
     goal: <spec.goal-pose>

@@ -353,7 +353,7 @@ solver-output-JointPosition-mj_kdl(solver, chain_solver, out) ::= <<
             &_joint_position_<out.id>)) {
         shared.<out.id> = <normalized-joint-read({_joint_position_<out.id>}, out.normalization)>;
     } else {
-<if(out.joint_index)>        shared.<out.id> = <normalized-joint-read({state.<solver.id>.q(<out.joint_index>)}, out.normalization)>;
+<if(out.joint_index)>        shared.<out.id> = <normalized-joint-read({robot.<solver.id>.robot->jnt_pos_msr[<out.joint_index>]}, out.normalization)>;
 <else>        throw std::runtime_error("MuJoCo reports no joint '<out.joint_name>', and it is not on the chain");
 <endif>    }
 }

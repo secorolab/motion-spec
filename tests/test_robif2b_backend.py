@@ -6,6 +6,7 @@ each real-world model still generates a controller that compiles."""
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -114,6 +115,34 @@ def test_a_real_world_model_generates_and_compiles(name: str, tmp_path: Path) ->
         pytest.skip("robif2b is not built in this workspace")
     assert build.returncode == 0, build.stderr
     assert (built / "build" / "main").is_file()
+    _check_sensor_readings_have_one_writer(built / "generated")
+
+
+def _check_sensor_readings_have_one_writer(generated: Path) -> None:
+    """A sensor reading is written where it is read and tared -- the solver's own block -- and
+    nowhere else.
+
+    A second writer elsewhere in the tick does not fail to compile and does not fail a run: it
+    silently replaces the reading, and every consumer downstream of it reads whatever that
+    writer held. One such copy, run per motion against a member nothing filled, left the
+    external wrench at zero for whole runs on both backends.
+    """
+    introspection = json.loads((generated / "model" / "ir.json").read_text())["communication"][
+        "introspection"
+    ]
+    dataflow = introspection["dataflow"]
+    # The wrenches a sensor produces: the reading and the tare it is measured against. A
+    # joint-space channel is mirrored by the motion that reads it, so it is not one of these.
+    readings = sorted(
+        row["id"]
+        for row in introspection["spatial_samples"]["wrenches"]
+        if dataflow[row["id"]]["producer"]["kind"] == "sensor"
+    )
+    assert readings, "the real-world models carry an FT sensor; this checks nothing without one"
+    for header in sorted((generated / "controller" / "headers").glob("motion_*.hpp")):
+        text = header.read_text()
+        for reading in readings:
+            assert f"shared.{reading} =" not in text, f"{header.name} writes '{reading}'"
 
 
 def _install_prefix() -> Path:

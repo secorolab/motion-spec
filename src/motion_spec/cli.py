@@ -7,6 +7,7 @@
 import json
 import subprocess
 import sys
+import traceback
 from contextlib import contextmanager
 from importlib.metadata import distribution
 from pathlib import Path
@@ -14,6 +15,18 @@ from pathlib import Path
 import click
 
 from motion_spec.setup import DEFAULT_PREFIX
+
+
+def _internal_failure(what: str, exc: Exception) -> click.ClickException:
+    """Report a failure that is ours, not the model's, with the stack that produced it.
+
+    A ConstraintViolation says the model is wrong and reads fine as one line. Anything else
+    reaching here is a defect in the generator or the environment, and the one thing needed to
+    fix it -- where it came from -- is exactly what wrapping the message throws away.
+    """
+    traceback.print_exception(exc, file=sys.stderr)
+
+    return click.ClickException(f"{what}: {exc}")
 
 
 @contextmanager
@@ -157,7 +170,7 @@ def setup(prefix: Path, clean: bool) -> None:
             return
         launcher = install_stst(prefix)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
-        raise click.ClickException(f"STST setup failed: {exc}") from exc
+        raise _internal_failure("STST setup failed", exc) from exc
     click.echo(launcher)
 
 
@@ -277,7 +290,7 @@ def gen(stage_or_model: str, model: Path | None, output_dir: Path | None) -> Non
     except ConstraintViolation as exc:
         raise click.ClickException(f"the model was rejected: {exc}") from exc
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
-        raise click.ClickException(f"generation failed: {exc}") from exc
+        raise _internal_failure("generation failed", exc) from exc
     click.echo(generation)
 
 
@@ -298,7 +311,7 @@ def build(generation: Path, prefixes: tuple[Path, ...], jobs: int | None) -> Non
     try:
         executable = build_generation(generation.resolve(), prefixes=prefixes, jobs=jobs)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
-        raise click.ClickException(f"build failed: {exc}") from exc
+        raise _internal_failure("build failed", exc) from exc
     click.echo(executable)
 
 
@@ -348,7 +361,7 @@ def codegen(input: Path, output_dir: Path, stst_bin: str | None) -> None:
     try:
         generate_code(input.resolve(), output_dir.resolve(), stst_bin or find_stst() or "stst")
     except RuntimeError as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise _internal_failure("code generation failed", exc) from exc
 
 
 @main.command()
@@ -473,14 +486,14 @@ def run(
     """Run a .robmot INPUT, generating and building it first, or an existing GENERATION."""
     from rdf_utils.constraints import ConstraintViolation
 
-    from motion_spec.introspection.archive import ArchiveError
-    from motion_spec.introspection.runner import RunnerError, run_cataloged
     from motion_spec.generation.pipeline import (
         build_generation,
         create_generation_dir,
         generate_model,
         new_id,
     )
+    from motion_spec.introspection.archive import ArchiveError
+    from motion_spec.introspection.runner import RunnerError, run_cataloged
 
     if steps is not None and not headless:
         raise click.UsageError("--steps requires --headless")
@@ -492,7 +505,7 @@ def run(
         except ConstraintViolation as exc:
             raise click.ClickException(f"the model was rejected: {exc}") from exc
         except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
-            raise click.ClickException(f"pipeline failed: {exc}") from exc
+            raise _internal_failure("pipeline failed", exc) from exc
     else:
         if not input.is_dir():
             raise click.BadParameter(

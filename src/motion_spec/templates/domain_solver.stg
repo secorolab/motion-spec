@@ -232,9 +232,8 @@ solver-init-extra-ACHD-robif2b(solver, chain_solver, motion_driver) ::= <<
 <endif>
 >>
 
-solver-sync-input(solver, chain_solver, backend) ::= <<
+solver-sync-input(solver, backend) ::= <<
 <({solver-sync-input-<backend>})(solver)>
-<solver-normalize-joint-positions(solver, chain_solver)>
 >>
 solver-sync-input-robif2b(solver) ::= <<
 for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
@@ -253,15 +252,6 @@ for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
     state.<solver.id>.q_qd.q(i) = state.<solver.id>.q(i);
     state.<solver.id>.q_qd.qdot(i) = state.<solver.id>.qd(i);
 }
->>
-
-// Read into the interval the model's position limits are stated on, so what the constraints,
-// the solve and the frame log all see is one turn -- the authored one. Backend-independent:
-// every backend reports a joint position, and none of them promise which turn.
-solver-normalize-joint-positions(solver, chain_solver) ::= <<
-<chain_solver.joint_position_normalization:{jn |
-state.<solver.id>.q(<jn.index>) = motion_spec::runtime::normalize_joint_position(state.<solver.id>.q(<jn.index>), <jn.lower>, <jn.upper>);  // <jn.joint_name>
-state.<solver.id>.q_qd.q(<jn.index>) = state.<solver.id>.q(<jn.index>);}; separator="\n">
 >>
 
 solver-output-Pose(solver, chain_solver, out, backend) ::= <<

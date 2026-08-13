@@ -166,16 +166,6 @@ class MotionDrivers:
 
 
 @dataclass
-class JointNormalization:
-    """The interval one chain joint's measured position is normalized into."""
-
-    index: int
-    joint_name: str
-    lower: float
-    upper: float
-
-
-@dataclass
 class SolverWithInputAndOutput:
     """A full arm solver: chain, algorithm, drivers and outputs."""
 
@@ -200,10 +190,6 @@ class SolverWithInputAndOutput:
     gravity_compensation: list[float] | None = None
     derived_root_acceleration: list[float] | None = None
     torque_saturation: Saturation | None = None
-    # The interval each measured joint position is normalized into, for the chain joints whose
-    # model authored position limits. A joint that authored none states no interval and is left
-    # as measured, so this list is shorter than the chain when only some joints are bounded.
-    joint_position_normalization: list[JointNormalization] = field(default_factory=list)
     # Frame-log mirrors of this runtime's joint-space signals (plan 012); the two lists render at
     # two different hook sites -- the run block and the command-stage block.
     # `output` split by what each observation reads. A world output is answered by the one world

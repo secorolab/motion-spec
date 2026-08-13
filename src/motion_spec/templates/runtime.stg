@@ -600,16 +600,6 @@ inline double wrap_angle(double angle) {
     return std::remainder(angle, 2.0 * M_PI);
 }
 
-// A measured joint position, moved onto the turn its model's position limits are stated on. A
-// robot reporting [0, 2*pi) and a model stating (-2.57, 2.57) describe the same pose one turn
-// apart; this reads them into the interval the model authored. Only the turn changes, so a
-// reading genuinely outside the limits stays outside and is still visible as a fault.
-inline double normalize_joint_position(double position, double lower, double upper) {
-    const double turn = 2.0 * M_PI;
-    const double centre = 0.5 * (lower + upper);
-    return position - turn * std::round((position - centre) / turn);
-}
-
 inline double evaluate_equality_constraint(const KDL::Vector &target, const KDL::Vector &current) {
     return (target - current).Norm();
 }

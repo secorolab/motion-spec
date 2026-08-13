@@ -33,7 +33,7 @@ CHAIN_JOINT = """    world {
 """
 
 
-@requires_workspace
+@requires_workspace(MODELS / MODEL)
 def test_a_chain_joint_measurement_generates_and_compiles(tmp_path: Path) -> None:
     if shutil.which("cmake") is None:
         pytest.skip("no cmake")

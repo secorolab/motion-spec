@@ -83,11 +83,16 @@ class PIDControl {
     double previous_error() const { return err_last; }
     bool is_first_sample() const { return first_sample; }
 
-    // Re-arm on motion entry. The stored error belongs to whenever this motion last ran; if
-    // the setpoint moved while it was inactive, differencing across that gap yields a huge
-    // one-step derivative, and a stale integral would unwind into the fresh motion.
-    void reset() {
-        err_integ = 0.0;
+    // Re-arm on motion entry. The stored error belongs to whenever this motion last ran, so
+    // differencing across that gap would yield a huge one-step derivative.
+    //
+    // retain_integral says the setpoint cannot move between entries, so the accumulated effort
+    // still describes the same standing disturbance. Dropping it there re-opens the offset on
+    // every entry, which a motion re-entered faster than the integral rebuilds never closes.
+    void reset(bool retain_integral = false) {
+        if (!retain_integral) {
+            err_integ = 0.0;
+        }
         err_last = 0.0;
         first_sample = true;
         vp_init = false;
@@ -138,9 +143,11 @@ class ImpedanceControl {
     bool is_first_sample() const { return first_sample; }
 
     // See PIDControl::reset().
-    void reset() {
+    void reset(bool retain_integral = false) {
+        if (!retain_integral) {
+            err_int = 0.0;
+        }
         err_last = 0.0;
-        err_int = 0.0;
         first_sample = true;
     }
 
@@ -191,19 +198,21 @@ controller-member-FeedForwardController(controller) ::= <<
 >>
 
 // Re-arm a controller when its motion is entered. FeedForward carries no state.
-controller-reset(motion_id, controller) ::= <<
-<if(controller.type)><({controller-reset-<controller.type>})(motion_id, controller)><endif>
+// resamples: the motion re-captures a snapshot on entry, so its setpoint may have moved and
+// the accumulated integral no longer describes the error it was built from.
+controller-reset(motion_id, controller, resamples) ::= <<
+<if(controller.type)><({controller-reset-<controller.type>})(motion_id, controller, resamples)><endif>
 >>
 
-controller-reset-ProportionalIntegralDerivative(motion_id, controller) ::= <<
-<motion_id>_state_instance.<controller.id>.reset();
+controller-reset-ProportionalIntegralDerivative(motion_id, controller, resamples) ::= <<
+<motion_id>_state_instance.<controller.id>.reset(<if(!resamples)>true<endif>);
 >>
 
-controller-reset-ImpedanceController(motion_id, controller) ::= <<
-<motion_id>_state_instance.<controller.id>.reset();
+controller-reset-ImpedanceController(motion_id, controller, resamples) ::= <<
+<motion_id>_state_instance.<controller.id>.reset(<if(!resamples)>true<endif>);
 >>
 
-controller-reset-FeedForwardController(motion_id, controller) ::= <<
+controller-reset-FeedForwardController(motion_id, controller, resamples) ::= <<
 >>
 
 emit-call-Admittance(closure, views) ::= <<

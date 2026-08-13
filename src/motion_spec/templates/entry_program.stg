@@ -175,7 +175,7 @@ int main(int argc, char **argv) {
         fsm_dispatch(fsm);
 <endif>
 <if(communication.ros)>
-<ros-publish-tick(coordination, communication)>
+<ros-publish-tick(coordination, communication, computation.views)>
 <endif>
 <if(resources.by_kind.serial_chain)>
 <app-chain-trace-update(configuration.backend, resources.by_kind.serial_chain, configuration.trace)>

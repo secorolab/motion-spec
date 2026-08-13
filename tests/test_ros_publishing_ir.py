@@ -11,15 +11,16 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from motion_spec_dsl.rdf_parser.vocab import CSTR_EXT, CSTR_HDL
+from motion_spec_dsl.rdf_parser.vocab import CSTR_EXT, CSTR_HDL, QUDT_SCHEMA, SENSORS
 from rdf_utils.constraints import ConstraintViolation
+from rdf_utils.namespace import NS_MM_QUDT_QTY
 from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import RDF, RDFS
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 
 from motion_spec.classes.dynamics import JointPosition
 from motion_spec.classes.handlers import LevelMonitor, RosPublication
-from motion_spec.rdf_parser.communication import action_server, ros_publishers
+from motion_spec.rdf_parser.communication import action_server, ros_publishers, ros_standing
 from motion_spec.rdf_parser.coordination import _message_shape, _ros_publication
 from motion_spec.rdf_parser.model import Model
 from motion_spec.rdf_parser.resources import ros_joint_states
@@ -177,6 +178,80 @@ def test_one_channel_published_as_two_message_types_is_rejected():
     _monitors, motion = _publishing_motion("std_msgs::msg::Bool", "std_msgs::msg::Float64")
     with pytest.raises(ConstraintViolation, match="one channel carries one message type"):
         ros_publishers([motion])
+
+
+STANDING = URIRef(f"{NS}wrist-ft")
+REPORTED = URIRef(f"{NS}ext-force")
+
+
+def _reported(type_: str = "Wrench"):
+    """A data structure on the blackboard, as the standing publish finds it."""
+    return type(
+        "Q",
+        (),
+        {"id": "ext_force", "type": type_, "as_seen_by": type("F", (), {"id": "base_link"})()},
+    )()
+
+
+def _standing(type_name: str = "geometry_msgs/msg/WrenchStamped", rate: float = 100.0, **kwargs):
+    """A topic published for the whole run: the quantity it reports, and how often."""
+    graph = Graph()
+    graph.add((STANDING, RDF.type, NS_MM_ROS["Topic"]))
+    graph.add((STANDING, NS_MM_ROS["channel-name"], Literal("/wrist_ft")))
+    graph.add((STANDING, NS_MM_ROS["type-name"], Literal(type_name)))
+    graph.add((STANDING, RDF.value, REPORTED))
+    rate_node = URIRef(f"{STANDING}.rate")
+    graph.add((STANDING, SENSORS["update-rate"], rate_node))
+    graph.add((rate_node, RDF["type"], QUDT_SCHEMA.Quantity))
+    graph.add((rate_node, QUDT_SCHEMA["hasQuantityKind"], NS_MM_QUDT_QTY["Frequency"]))
+    graph.add((rate_node, QUDT_SCHEMA["unit"], URIRef("http://qudt.org/vocab/unit/HZ")))
+    graph.add((rate_node, QUDT_SCHEMA["value"], Literal(rate)))
+    # 1 kHz control loop, so 100 Hz is every tenth cycle.
+    return ros_standing(_model(graph), [_reported(**kwargs)], 1_000_000)
+
+
+def test_a_standing_publish_reports_its_quantity_whole_at_its_own_rate():
+    """The rate becomes cycles between messages, and the payload is reached by descending the
+    message to the ROS type the quantity maps to -- no field name the generator assumed."""
+    (publish,) = _standing()
+    assert publish["channel"] == "/wrist_ft"
+    assert publish["pub_id"] == "wrist_ft_pub"
+    assert publish["divider"] == 10
+    assert (publish["value_id"], publish["value_type"]) == ("ext_force", "Wrench")
+    assert publish["payload_path"] == "wrench."
+    assert publish["cpp_type"] == "geometry_msgs::msg::WrenchStamped"
+    # The node stamps it; the frame it is stated against is the quantity's own.
+    assert publish["auto_time"] == ["header.stamp"]
+    assert (publish["frame_path"], publish["frame_id"]) == ("header.frame_id", "base_link")
+
+
+def test_a_rate_at_or_above_the_loop_rate_publishes_every_cycle():
+    assert _standing(rate=4000.0)[0]["divider"] == 1
+
+
+def test_a_standing_publish_shares_the_channels_publisher_member():
+    """A monitor and a standing publish on one topic fill one message through one member."""
+    monitors, motion = _publishing_motion("geometry_msgs::msg::WrenchStamped")
+    standing = _standing()
+    publishers = ros_publishers([motion], standing)
+    assert [publisher["channel"] for publisher in publishers] == ["/probe", "/wrist_ft"]
+    assert monitors[0].ros.pub_id == "mon_1_pub"
+    assert standing[0]["pub_id"] == "wrist_ft_pub"
+
+
+def test_a_quantity_no_ros_type_carries_whole_is_rejected():
+    with pytest.raises(ConstraintViolation, match="no ROS type that carries it whole"):
+        _standing(type_="JointPosition")
+
+
+def test_a_message_that_does_not_carry_the_quantity_is_rejected():
+    with pytest.raises(ConstraintViolation, match="geometry_msgs/Wrench"):
+        _standing("geometry_msgs/msg/PoseStamped")
+
+
+def test_a_rate_that_is_not_positive_is_rejected():
+    with pytest.raises(ConstraintViolation, match="a rate says how often"):
+        _standing(rate=0.0)
 
 
 def _chain(prefix: str, joints: list[str], output=(), device_output=()):

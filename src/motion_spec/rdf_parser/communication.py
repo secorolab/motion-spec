@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from motion_spec_dsl.rdf_parser.vocab import CSTR, CSTR_EXT, EXEC, MOT
+from motion_spec_dsl.rdf_parser.vocab import CSTR, CSTR_EXT, EXEC, MOT, SENSORS
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.naming import get_valid_var_name
 from rdflib.namespace import PROV, RDF, RDFS
@@ -552,21 +552,35 @@ def add_spatial_samples(introspection: dict, shared_data: list) -> None:
     introspection["spatial_samples"] = spatial
 
 
-def ros_publishers(motions) -> list:
-    """The ROS publishers the monitors ask for, one per distinct topic.
+def _publisher_member(by_channel: dict, entry: dict) -> str:
+    """The publisher member a channel's writers share, added on first use.
+
+    Raises:
+        ConstraintViolation: one channel is written as two message types, so the one member they
+            share could only be typed as one of them.
+    """
+    publisher = by_channel.setdefault(entry["channel"], entry)
+    if publisher["cpp_type"] != entry["cpp_type"]:
+        raise ConstraintViolation(
+            "communication",
+            f"channel '{entry['channel']}' is published as both '{publisher['cpp_type']}' and "
+            f"'{entry['cpp_type']}'; one channel carries one message type",
+        )
+
+    return publisher["pub_id"]
+
+
+def ros_publishers(motions, standing=()) -> list:
+    """The ROS publishers the model asks for, one per distinct topic.
 
     Codegen links rclcpp and sets up publishers only when a model publishes at all, so a model
     with none contributes nothing rather than an empty section.
-
-    Raises:
-        ConstraintViolation: two monitors publish one channel as different message types, so
-            the one member they share could only be typed as one of them.
     """
-    by_channel = {}
+    by_channel: dict = {}
     for ros in ros_publications(motions):
-        # One channel is one publisher: monitors that share a topic share the member too.
-        publisher = by_channel.setdefault(
-            ros.channel,
+        # One channel is one publisher: writers that share a topic share the member too.
+        ros.pub_id = _publisher_member(
+            by_channel,
             {
                 "pub_id": ros.pub_id,
                 "channel": ros.channel,
@@ -577,15 +591,119 @@ def ros_publishers(motions) -> list:
                 "auto_context_id": ros.auto_context_id,
             },
         )
-        if publisher["cpp_type"] != ros.cpp_type:
-            raise ConstraintViolation(
-                "communication",
-                f"channel '{ros.channel}' is published as both '{publisher['cpp_type']}' and "
-                f"'{ros.cpp_type}'; one channel carries one message type",
-            )
-        ros.pub_id = publisher["pub_id"]
+    for publish in standing:
+        publish["pub_id"] = _publisher_member(
+            by_channel, {key: publish.get(key) for key in _PUBLISHER_KEYS}
+        )
 
     return list(by_channel.values())
+
+
+# What a standing publish contributes to the publisher member it writes through.
+_PUBLISHER_KEYS = (
+    "pub_id",
+    "channel",
+    "cpp_type",
+    "include",
+    "pkg",
+    "auto_time",
+    "auto_context_id",
+)
+
+
+def ros_standing(model, data_structures, control_period_ns: int) -> list:
+    """The topics published for the whole run, one per standing publish.
+
+    A standing publish reports readings rather than a verdict, so it belongs to the run and keeps
+    publishing between motions. Its rate is the model's, stated on the topic: it becomes the
+    number of control cycles between two messages, since the loop is the fastest it can go.
+
+    Raises:
+        ConstraintViolation: the publish names no quantity, states no positive rate, reports a
+            quantity that never reaches the blackboard, or maps a field the message does not
+            offer.
+    """
+    graph = model.graph
+    by_id = {item.id: item for item in data_structures}
+    period_s = control_period_ns * 1e-9
+    standing = []
+    for node in sorted(graph.subjects(RDF["type"], NS_MM_ROS["Topic"]), key=str):
+        rate_node = graph.value(node, SENSORS["update-rate"])
+        if rate_node is None:
+            continue
+        value_node = graph.value(node, RDF.value)
+        if value_node is None:
+            raise ConstraintViolation(
+                "communication",
+                f"'{model.id(node)}' publishes at a rate but names no quantity to report",
+            )
+        record = by_id.get(model.id(value_node))
+        if record is None:
+            raise ConstraintViolation(
+                "communication",
+                f"'{model.id(node)}' publishes '{model.id(value_node)}', which is no data "
+                "structure the run computes",
+            )
+        rate_hz = quantities.quantity(model, rate_node).value
+        if not rate_hz or rate_hz <= 0.0:
+            raise ConstraintViolation(
+                "communication",
+                f"'{model.id(node)}' publishes at {rate_hz} Hz; a rate says how often, so it is "
+                "positive",
+            )
+        shape = coordination.standing_shape(
+            str(graph.value(node, NS_MM_ROS["type-name"]) or ""), record.type
+        )
+        seen_by = getattr(record, "as_seen_by", None)
+        standing.append(
+            _prune(
+                {
+                    "pub_id": f"{model.id(node)}_pub".replace("-", "_"),
+                    "channel": str(graph.value(node, NS_MM_ROS["channel-name"]) or ""),
+                    # Every Nth cycle: a rate at or above the loop rate publishes each one.
+                    "divider": max(1, round(1.0 / (rate_hz * period_s))),
+                    "value_id": record.id,
+                    "value_type": record.type,
+                    "frame_id": getattr(seen_by, "id", None),
+                    "fields": _standing_fields(model, node, shape),
+                    "pkg": shape["package"],
+                    **{
+                        key: shape[key]
+                        for key in (
+                            "type_name",
+                            "cpp_type",
+                            "include",
+                            "packages",
+                            "payload_path",
+                            "frame_path",
+                            "auto_time",
+                            "auto_context_id",
+                        )
+                    },
+                }
+            )
+        )
+
+    return standing
+
+
+def _standing_fields(model, node, shape: dict) -> list:
+    """The fields a standing publish maps itself, each naming the value it reports instead of the
+    component of the quantity that field would carry.
+    """
+    graph = model.graph
+    rows = []
+    for row in sorted(graph.objects(node, RDFS.member)):
+        path = str(graph.value(row, NS_MM_ROS["field-path"]) or "")
+        if path not in shape["leaves"]:
+            raise ConstraintViolation(
+                "communication",
+                f"'{path}' is not a payload field of '{shape['type_name']}'; it offers "
+                f"{', '.join(sorted(shape['leaves'])) or 'none'}",
+            )
+        rows.append({"path": path, "ref": model.id(graph.value(row, RDF.value))})
+
+    return rows
 
 
 def _act_status_slot(model, act):

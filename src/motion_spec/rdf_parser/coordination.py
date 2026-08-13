@@ -304,6 +304,12 @@ _FRAME_FIELD = "frame_id"
 # What a detect act writes: a pose in the world. Reached by descent, so the model names the
 # field that carries it rather than the whole path through it.
 _POSE_TYPE = "geometry_msgs/Pose"
+# The ROS type that carries a quantity published whole, per quantity type that has one.
+_PAYLOAD_TYPES = {
+    "Pose": _POSE_TYPE,
+    "VelocityTwist": "geometry_msgs/Twist",
+    "Wrench": "geometry_msgs/Wrench",
+}
 
 
 def _element_type(field_type: str) -> tuple[str, bool]:
@@ -631,6 +637,46 @@ def _message_shape(type_name: str) -> dict:
     package, _cpp_type, include = _cpp_names(root)
 
     return _shape_of(root, type_name, package, include)
+
+
+def standing_shape(type_name: str, quantity_type: str) -> dict:
+    """What a message offers a publish that reports one quantity whole.
+
+    The quantity's own type decides which ROS type carries it and the message is descended to
+    that type, so the model states the topic it publishes on rather than a path into its fields.
+
+    Raises:
+        ConstraintViolation: no ROS type carries that quantity whole, or the message does not
+            reach exactly one of the type it maps to.
+    """
+    wanted = _PAYLOAD_TYPES.get(quantity_type)
+    if wanted is None:
+        raise ConstraintViolation(
+            "communication",
+            f"a '{quantity_type}' has no ROS type that carries it whole; a standing publish "
+            f"reports {', '.join(sorted(_PAYLOAD_TYPES))}",
+        )
+    root = _message_class(type_name)
+    package, _cpp_type, include = _cpp_names(root)
+    shape = _shape_of(root, type_name, package, include)
+    payload_path = _descend_to(root, wanted, type_name)
+    headers = [
+        name for name, element, many in _fields(root) if not many and element == _HEADER_TYPE
+    ]
+
+    return {
+        **shape,
+        # The message may reach into other interface packages; the build needs every one of them.
+        "packages": sorted({package} | _leaf_packages(shape)),
+        # Dotted prefix, empty when the message is the quantity and nothing else.
+        "payload_path": f"{payload_path}." if payload_path else "",
+        # The frame the quantity is stated against is the message's to carry, when it has a header.
+        "frame_path": f"{headers[0]}.{_FRAME_FIELD}" if headers else None,
+        "auto_time": sorted(path for path, kind in shape["auto"].items() if kind == "time"),
+        "auto_context_id": sorted(
+            path for path, kind in shape["auto"].items() if kind == "context_id"
+        ),
+    }
 
 
 def _sole_payload_path(shape: dict) -> str:

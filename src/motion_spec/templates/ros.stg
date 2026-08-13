@@ -3,6 +3,7 @@
 // Every line of ROS text the program carries is written here.
 
 import "domain_monitors.stg"
+import "expr_values.stg"
 
 // The DDS write happens on each RealtimePublisher's own thread; the control loop only hands
 // over a filled message. Parameter services are answered by one executor thread, so a
@@ -121,6 +122,7 @@ ros-setup(ros) ::= <<
         robot.ros_node->create_publisher\<<p.cpp_type>\>("<p.channel>", rclcpp::QoS(10)));}; separator="\n">
 <ros.action_clients:{c |     robot.<c.client_id> = rclcpp_action::create_client\<<c.cpp_type>\>(robot.ros_node, "<c.channel>");}; separator="\n">
 <ros.subscriptions:{s | <ros-subscription-setup(s)>}; separator="\n">
+<ros.standing:{s | <if(s.frame_path)>    robot.<s.pub_id>_msg.<s.frame_path> = "<s.frame_id>";<endif>}; separator="\n">
 <if(ros.action_server)>
 
 <ros-goal-server-setup(ros.action_server)>
@@ -454,7 +456,7 @@ ros-joint-states-setup(ros) ::= <<
 // nothing publishes nothing, and an unscheduled monitor says nothing at all -- silence is what
 // a reader takes for "not evaluated".
 
-ros-publish-tick(coordination, communication) ::= <<
+ros-publish-tick(coordination, communication, views) ::= <<
 <if(communication.ros.scenario_context_id)>
 <if(!communication.ros.action_server)>
         if (robot.ros_context_id_mutex.try_lock()) {
@@ -467,6 +469,58 @@ ros-publish-tick(coordination, communication) ::= <<
 <ros-joint-states-tick(communication.ros)>
 <ros-actions-tick(communication.ros)>
 <ros-subscriptions-tick(communication.ros)>
+<ros-standing-tick(communication.ros, views)>
+>>
+
+// A topic the run publishes rather than a motion: it keeps reporting whichever motion is
+// active, so its rate is its own. The authored rate is already the number of cycles between two
+// messages, and the quantity is written whole -- a field the model mapped itself overrides the
+// component that field would otherwise carry.
+
+ros-standing-tick(ros, views) ::= <<
+<ros.standing:{s |         if ((_step % <s.divider>) == 0) {
+<standing-payload(s)>
+<s.fields:{f |             robot.<s.pub_id>_msg.<f.path> = <access-expr(f.ref, views)>;}; separator="\n">
+<s.auto_time:{p |             robot.<s.pub_id>_msg.<p> = robot.ros_node->now();}; separator="\n">
+<s.auto_context_id:{p |             robot.<s.pub_id>_msg.<p>.uuid = _scenario_context_id;}; separator="\n">
+            robot.<s.pub_id>->try_publish(robot.<s.pub_id>_msg);
+        \}}; separator="\n">
+>>
+
+standing-payload(s) ::= <<
+<({standing-payload-<s.value_type>})(s)>
+>>
+
+standing-payload-Wrench(s) ::= <<
+            robot.<s.pub_id>_msg.<s.payload_path>force.x = shared.<s.value_id>.force.x();
+            robot.<s.pub_id>_msg.<s.payload_path>force.y = shared.<s.value_id>.force.y();
+            robot.<s.pub_id>_msg.<s.payload_path>force.z = shared.<s.value_id>.force.z();
+            robot.<s.pub_id>_msg.<s.payload_path>torque.x = shared.<s.value_id>.torque.x();
+            robot.<s.pub_id>_msg.<s.payload_path>torque.y = shared.<s.value_id>.torque.y();
+            robot.<s.pub_id>_msg.<s.payload_path>torque.z = shared.<s.value_id>.torque.z();
+>>
+
+standing-payload-VelocityTwist(s) ::= <<
+            robot.<s.pub_id>_msg.<s.payload_path>linear.x = shared.<s.value_id>.vel.x();
+            robot.<s.pub_id>_msg.<s.payload_path>linear.y = shared.<s.value_id>.vel.y();
+            robot.<s.pub_id>_msg.<s.payload_path>linear.z = shared.<s.value_id>.vel.z();
+            robot.<s.pub_id>_msg.<s.payload_path>angular.x = shared.<s.value_id>.rot.x();
+            robot.<s.pub_id>_msg.<s.payload_path>angular.y = shared.<s.value_id>.rot.y();
+            robot.<s.pub_id>_msg.<s.payload_path>angular.z = shared.<s.value_id>.rot.z();
+>>
+
+standing-payload-Pose(s) ::= <<
+            {
+                double _qx, _qy, _qz, _qw;
+                shared.<s.value_id>.M.GetQuaternion(_qx, _qy, _qz, _qw);
+                robot.<s.pub_id>_msg.<s.payload_path>position.x = shared.<s.value_id>.p.x();
+                robot.<s.pub_id>_msg.<s.payload_path>position.y = shared.<s.value_id>.p.y();
+                robot.<s.pub_id>_msg.<s.payload_path>position.z = shared.<s.value_id>.p.z();
+                robot.<s.pub_id>_msg.<s.payload_path>orientation.x = _qx;
+                robot.<s.pub_id>_msg.<s.payload_path>orientation.y = _qy;
+                robot.<s.pub_id>_msg.<s.payload_path>orientation.z = _qz;
+                robot.<s.pub_id>_msg.<s.payload_path>orientation.w = _qw;
+            \}
 >>
 
 // Taking the goal arms the FSM: the loop produces the goal event once -- only while the FSM

@@ -86,6 +86,7 @@ def generate_ir(manifest_path) -> dict:
 
     action_clients = communication.ros_action_clients(model)
     subscriptions = communication.ros_subscriptions(model)
+    standing = communication.ros_standing(model, data_structures, control_period_ns)
     clients_by_motion: dict[str, list] = {}
     for client in action_clients:
         clients_by_motion.setdefault(client["motion"], []).append(client)
@@ -97,7 +98,11 @@ def generate_ir(manifest_path) -> dict:
         robots.schedule_steps + handler_steps,
         closures,
         views,
-        {out.id for solver in robots.serial_chains for out in solver.output} | perceived_pose_ids,
+        {out.id for solver in robots.serial_chains for out in solver.output}
+        | perceived_pose_ids
+        # A standing publish is the only reader of what it reports, and it reads it off the
+        # blackboard: without this the quantity drops out and the message has nothing to carry.
+        | {publish["value_id"] for publish in standing},
     )
     shared_data += resources.shared_runtime_members(
         model, robots.serial_chains, control_period_ns, platform.get("uri")
@@ -155,6 +160,7 @@ def generate_ir(manifest_path) -> dict:
             action_clients,
             communication.action_server(model, fsm),
             subscriptions,
+            standing,
         ),
     }
 
@@ -237,11 +243,17 @@ def _coordination_section(motions, fsm, fsm_meta) -> dict:
 
 
 def _communication_section(
-    introspection, motions, joint_states, action_clients=(), server=None, subscriptions=()
+    introspection,
+    motions,
+    joint_states,
+    action_clients=(),
+    server=None,
+    subscriptions=(),
+    standing=(),
 ) -> dict:
     """What leaves the loop: the frame log, and the ROS topics, goals and results the model asks for."""
     section = {"introspection": introspection}
-    publishers = communication.ros_publishers(motions)
+    publishers = communication.ros_publishers(motions, standing)
     if (
         not publishers
         and joint_states is None
@@ -268,6 +280,9 @@ def _communication_section(
     if subscriptions:
         ros["subscriptions"] = subscriptions
         packages.update(pkg for sub in subscriptions for pkg in sub["packages"])
+    if standing:
+        ros["standing"] = standing
+        packages.update(pkg for publish in standing for pkg in publish["packages"])
     ros["packages"] = sorted(packages)
     section["ros"] = ros
 

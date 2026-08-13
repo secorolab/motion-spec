@@ -484,6 +484,26 @@ class Specification(Operator):
         return {"data_structures": data_structures, "schedule": []}
 
 
+def _authored_error_normalization(model, constraint_id) -> dict | None:
+    """The interval a controller states its error is read into, for the controller driving this
+    constraint. Authored beats derived: a model that says which turn is not second-guessed.
+    """
+    graph = model.graph
+    for controller in graph.subjects(CSTR_HDL["constraint"], constraint_id):
+        interval = graph.value(controller, ALGO_EXT["normalization"])
+        if interval is None:
+            continue
+        bounds = {}
+        for edge in ("lower", "upper"):
+            bound = graph.value(interval, ALGO_EXT[f"{edge}-bound"])
+            value = graph.value(bound, QUDT_SCHEMA.value) if bound is not None else None
+            if value is None:
+                return None
+            bounds[edge] = float(value.toPython())
+        return bounds
+    return None
+
+
 @reader
 def continuous_joint_leaves(model) -> set[str]:
     """Leaf names of revolute joints with no authored position limit: continuous joints, whose
@@ -558,12 +578,19 @@ class ErrorEvaluator:
                 "type": "ErrorEvaluator",
                 "constraint": model.id(operator.type_),
             }
-            # An equality error on a continuous joint wraps to the shortest arc.
+            # An equality error on a continuous joint wraps to the shortest arc, unless the
+            # controller driving it states the interval its error is read into.
             if operator.type_ == CSTR["EqualityConstraint"]:
-                quantity = graph.value(constraint_id, CSTR["quantity"])
-                joint = graph.value(quantity, KC_STAT["of-joint"]) if quantity is not None else None
-                if joint is not None and local_name(joint) in continuous_joint_leaves(model):
-                    closure["angular_wrap"] = True
+                authored = _authored_error_normalization(model, constraint_id)
+                if authored is not None:
+                    closure["error_normalization"] = authored
+                else:
+                    quantity = graph.value(constraint_id, CSTR["quantity"])
+                    joint = (
+                        graph.value(quantity, KC_STAT["of-joint"]) if quantity is not None else None
+                    )
+                    if joint is not None and local_name(joint) in continuous_joint_leaves(model):
+                        closure["angular_wrap"] = True
             _fill_closure_args(graph, closure, model.id, operator, node, constraint_id)
 
             return closure  # first matching constraint type wins

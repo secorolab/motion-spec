@@ -12,9 +12,10 @@ emit-call-AssignmentEvaluator(closure, views) ::= <<
 shared.<closure.quantity> = <access-expr(closure.reference_value, views)>;
 >>
 
+// error_normalization: the controller states the interval its error is read into.
 // angular_wrap: the joint is continuous, so the error is the shortest arc, never the long way round.
 emit-call-ErrorEvaluator-EqualityConstraint(closure, views) ::= <<
-shared.<closure.error> = <if(closure.angular_wrap)>motion_spec::runtime::wrap_angle(motion_spec::runtime::evaluate_equality_constraint(<access-expr(closure.reference_value, views)>, <access-expr(closure.quantity, views)>))<else>motion_spec::runtime::evaluate_equality_constraint(<access-expr(closure.reference_value, views)>, <access-expr(closure.quantity, views)>)<endif>;
+shared.<closure.error> = <if(closure.error_normalization)>motion_spec::runtime::normalize_joint_position(motion_spec::runtime::evaluate_equality_constraint(<access-expr(closure.reference_value, views)>, <access-expr(closure.quantity, views)>), <closure.error_normalization.lower>, <closure.error_normalization.upper>)<elseif(closure.angular_wrap)>motion_spec::runtime::wrap_angle(motion_spec::runtime::evaluate_equality_constraint(<access-expr(closure.reference_value, views)>, <access-expr(closure.quantity, views)>))<else>motion_spec::runtime::evaluate_equality_constraint(<access-expr(closure.reference_value, views)>, <access-expr(closure.quantity, views)>)<endif>;
 >>
 
 emit-call-ErrorEvaluator-GreaterThanConstraint(closure, views) ::= <<

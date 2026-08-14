@@ -173,16 +173,6 @@ ros-subscription-wiring(s) ::= <<
 // failed, but a stream reports whatever it currently sees, and a message carrying two of three
 // objects is not a failure.
 //
-// A detection is the pose the model asked for only when it names the target and states itself in
-// a frame the scene holds; anything else is dropped. The frame comes off the header rather than
-// from the model, because it is the sender's to choose -- one channel may carry two cameras, and
-// the header is the only thing that tells them apart. What is staged is the raw reading and the
-// frame it came in: the transform between that frame and the pose's is the loop's to apply, not
-// this thread's, which has no kinematics.
-//
-// `index_of` reads a map nothing writes after the world model is sealed, and sealing happens
-// before the executor spins, so resolving here is a lookup against a fixed table.
-
 ros-subscription-setup(s) ::= <<
     robot.<s.sub_id>_sub = robot.ros_node->create_subscription\<<s.cpp_type>\>(
         "<s.channel>", rclcpp::QoS(10),
@@ -190,21 +180,13 @@ ros-subscription-setup(s) ::= <<
             const std::lock_guard\<std::mutex\> lock(robot.<s.sub_id>_mutex);
             for (const auto &detection : msg-><s.detections_path>) {
                 if (detection.<s.pose_container>.empty()) continue;
-                const int _stated_in = robot.world->index_of(detection.<s.frame_path>);
-                if (_stated_in \< 0) {
-                    RCLCPP_WARN_ONCE(robot.ros_node->get_logger(),
-                                     "dropping detections stated in '%s': the scene holds no "
-                                     "frame of that name",
-                                     detection.<s.frame_path>.c_str());
-                    continue;
-                \}
                 const auto &pose = detection.<s.pose_path>;
 <s.written_poses:{w |                 if (detection.<s.id_path> == "<w.target_iri>") {
                     robot.<s.sub_id>_staged_<w.pose_id> = KDL::Frame(
                         KDL::Rotation::Quaternion(pose.orientation.x, pose.orientation.y,
                                                   pose.orientation.z, pose.orientation.w),
                         KDL::Vector(pose.position.x, pose.position.y, pose.position.z));
-                    robot.<s.sub_id>_staged_from_<w.pose_id> = _stated_in;
+                    robot.<s.sub_id>_staged_from_<w.pose_id> = robot.<s.sub_id>_segment_<w.pose_id>;
                     robot.<s.sub_id>_seen_<w.pose_id> = true;
                     robot.<s.sub_id>_staged = true;
                 \}}; separator="\n">

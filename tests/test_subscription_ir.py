@@ -61,11 +61,11 @@ def test_a_topic_stating_no_feature_of_interest_is_one_the_model_publishes():
     assert communication.ros_subscriptions(model, {}) == []
 
 
-def test_a_topic_observing_an_object_no_world_pose_is_stated_of_is_rejected():
-    """A detection with nowhere to land is a broken binding, not a channel that reports nothing."""
+def test_a_topic_observing_an_object_is_rejected():
+    """A subscription writes a declared world pose, not an object it happens to describe."""
     graph = Graph()
     _topic(graph, f"{NS}pick_place_graph/cube/cube_origin")
-    with pytest.raises(ConstraintViolation, match="observes 'cube_origin'"):
+    with pytest.raises(ConstraintViolation, match="PoseCoordinate"):
         quantities.perceived_written_poses(_model(graph))
 
 

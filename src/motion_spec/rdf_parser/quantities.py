@@ -843,10 +843,9 @@ def perceived_written_poses(model) -> dict[str, list[dict]]:
     """Per perception source, the world poses it writes and the frame each must arrive in.
 
     A source is any node stating the objects it observes -- a detect act that asks once, or a
-    topic the model stands subscribed to. A world pose `of:` an object a source observes has that
-    source as its one producer, so the kinematics must not also write it -- these are exactly the
-    world-scoped pose coordinates a chain would otherwise observe. The frame is the pose's own
-    `with-respect-to`: a detection stated in any other frame is not the pose the model asked for.
+    topic the model stands subscribed to. A subscription names the world pose it writes, so its
+    reference frame is the fixed frame the pose arrives in. A detect target remains an object and
+    resolves to its one world pose.
 
     A node that observes nothing -- a published topic -- contributes no rows, so every consumer
     passes over it without filtering.
@@ -870,6 +869,18 @@ def perceived_written_poses(model) -> dict[str, list[dict]]:
     for act in sources:
         rows = []
         for target in sorted(graph.objects(act, SOSA.hasFeatureOfInterest), key=str):
+            if NS_MM_ROS["Topic"] in get_node_types(graph, act):
+                item = pose(model, target)
+                target_iri = item.of.uri
+                rows.append(
+                    {
+                        "target_iri": target_iri,
+                        "pose_id": item.id,
+                        "frame_id": item.with_respect_to.id,
+                        "frame_iri": getattr(item.with_respect_to, "uri", ""),
+                    }
+                )
+                continue
             located = _body_or_self(model, target)
             matched = [item for item in world_poses if getattr(item.of, "id", None) == located]
             if not matched:

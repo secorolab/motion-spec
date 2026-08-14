@@ -889,10 +889,9 @@ def _observes_in_frame(model, node, type_, chain_root, runtime_prefix, owned_tre
     return True, frame_node
 
 
-def _world_solver_outputs(model, setup: _ChainSetup, scene_objects) -> list:
+def _world_solver_outputs(model, setup: _ChainSetup, scene: MjcfSceneSpec) -> list:
     """The runtime observations stated in this solver's reference frame."""
     graph = model.graph
-    object_ids_by_body = {obj.body: obj.id for obj in scene_objects}
     outputs = []
     for type_, read in _WORLD_OUTPUTS:
         for node in sorted(graph.subjects(RDF.type, type_), key=str):
@@ -913,12 +912,50 @@ def _world_solver_outputs(model, setup: _ChainSetup, scene_objects) -> list:
             frame = getattr(output, "as_seen_by", None)
             if frame_node is None and frame is not None and frame.id != setup.chain.root:
                 continue
-            of = getattr(output, "of", None)
-            if getattr(of, "id", None) in object_ids_by_body:
-                output.of = SceneObject(object_ids_by_body[of.id], of.id)
+            scene_object = _scene_object_of(model, getattr(output, "of", None), scene)
+            if scene_object is not None:
+                output.of = scene_object
             outputs.append(output)
 
     return dedupe_by_id(outputs)
+
+
+def _scene_object_of(model, of, scene: MjcfSceneSpec) -> SceneObject | None:
+    """The scene object a pose is stated of, when the simulator's scene is what answers it.
+
+    A pose of the object itself is the body's own frame; a pose of one of its other frames is
+    the site the scene already marks that frame with. Either way the runtime reads it out of the
+    scene rather than off a chain, which no forward kinematics of the arm reaches.
+
+    Returns:
+        the scene object with the marker to read, or None when the frame is not on one
+    """
+    if of is None or not getattr(of, "uri", ""):
+        return None
+    node = URIRef(of.uri)
+    # The id a frame reports is its body's when it is that body's root, so the body is looked up
+    # through the graph rather than by matching that id against a body name.
+    body = (
+        node
+        if GEOM_ENT.RigidBody in get_node_types(model.graph, node)
+        else quantities.body_of(model, node)
+    )
+    if body is None:
+        return None
+    object_id = next((obj.id for obj in scene.objects if obj.body == local_name(body)), None)
+    if object_id is None:
+        return None
+    if quantities.placement_frame(model, body) == node:
+        return SceneObject(object_id, local_name(body))
+    site = next((frame.name for frame in scene.frames if frame.uri == str(node)), None)
+    if site is None:
+        raise ConstraintViolation(
+            "geometry",
+            f"'{model.id(node)}' is a frame of scene object '{object_id}', but the scene marks "
+            f"no site for it, so the runtime cannot ask where it is. A frame is marked only "
+            f"once a pose places it on its body.",
+        )
+    return SceneObject(object_id, local_name(body), site)
 
 
 def _runtime_output(model, output, type_, node, frame_node, setup: _ChainSetup):
@@ -987,14 +1024,21 @@ _UNIMPLEMENTED_PLATFORM_ALGORITHMS = (
 
 
 def build_robots(
-    model, schedule, setups, derivation, scene_objects, backend: str, detect_pose_ids=frozenset()
+    model,
+    schedule,
+    setups,
+    derivation,
+    scene: MjcfSceneSpec,
+    backend: str,
+    detect_pose_ids=frozenset(),
 ) -> Robots:
     """Build every robot the program commands, and schedule the calls that drive them.
 
     Parameters:
         schedule: the active scope; the steps join `Robots.schedule_steps`
         setups: the chain setup per agent node, from `robot_setups`
-        scene_objects: the scene's objects, so an observation of one is named by the object
+        scene: the built scene, so an observation of one of its objects is named by that object
+            and read off the marker the scene carries for it
         detect_pose_ids: the world poses a detect result writes; the kinematics do not compute
             them, so no chain lists them among its outputs
 
@@ -1028,9 +1072,7 @@ def build_robots(
         solver.motion_drivers = constraint_handler.motion_drivers(model, derivation, node)
         solver.output = [
             out
-            for out in dedupe_by_id(
-                [*solver.output, *_world_solver_outputs(model, setup, scene_objects)]
-            )
+            for out in dedupe_by_id([*solver.output, *_world_solver_outputs(model, setup, scene)])
             if out.id not in detect_pose_ids
         ]
         # An acceleration constraint is base-aligned when its axis frame is the chain root. Both
@@ -1265,7 +1307,8 @@ def _scene_frames(model) -> list:
         for kgraph in sorted(graph.subjects(RDF.type, URI_GEOM_TYPE_KGRAPH), key=str)
         for body in sorted(_kgraph_bodies(model, kgraph), key=str)
         for frame in sorted(graph.objects(body, GEOM_ENT.simplices), key=str)
-        if frame != _placement_frame(model, body) and GEOM_ENT.Frame in get_node_types(graph, frame)
+        if frame != quantities.placement_frame(model, body)
+        and GEOM_ENT.Frame in get_node_types(graph, frame)
     ]
     # A site is named after its frame, and carries its body only when another body has a frame
     # of the same name -- the name has to be unique, and it has to stay readable in a viewer.
@@ -1273,7 +1316,7 @@ def _scene_frames(model) -> list:
 
     frames = []
     for body, frame in marked:
-        position, orientation = _placement(model, frame, _placement_frame(model, body))
+        position, orientation = _placement(model, frame, quantities.placement_frame(model, body))
         if position is None:
             continue
         name = local_name(frame)
@@ -1281,6 +1324,7 @@ def _scene_frames(model) -> list:
             MjcfSceneFrame(
                 body=local_name(body),
                 name=f"{local_name(body)}_{name}" if counts[name] > 1 else name,
+                uri=str(frame),
                 **dict(zip(("pos_x", "pos_y", "pos_z"), position)),
                 **dict(zip(("quat_x", "quat_y", "quat_z", "quat_w"), orientation)),
             )
@@ -1315,7 +1359,7 @@ def _name_object_attachments(model, attach_by_body) -> None:
         # the placement is composed against. Naming any other frame on the way up would
         # measure the offset from one frame and apply it at another.
         frame = model.child_node(parent_body, name)
-        name = local_name(_placement_frame(model, parent_body))
+        name = local_name(quantities.placement_frame(model, parent_body))
         attach_by_body[body] = (
             kind,
             # The runtime composes this as the object's name and the site, and it names the
@@ -1383,7 +1427,7 @@ def _placement_of(model, attachment, anchor):
     """
     kind, _name, frame, parent = attachment
     if kind != "World":
-        return _placement(model, frame, _placement_frame(model, parent))
+        return _placement(model, frame, quantities.placement_frame(model, parent))
     # What the runtime places is the body, so its root frame -- not whichever of its frames a
     # joint happens to hang it by, which may sit anywhere on it.
     is_frame = GEOM_ENT.Frame in get_node_types(model.graph, frame)
@@ -1419,7 +1463,7 @@ def _placement(model, node, wrt):
     frame it likes and still be read against the one it is assembled on. A body no pose
     leads to is placed by the joint that holds it, and comes back coincident.
     """
-    frame = _placement_frame(model, node)
+    frame = quantities.placement_frame(model, node)
     if frame is None:
         return None, None
     _reject_sampled_placement(model, frame, wrt)
@@ -1432,13 +1476,6 @@ def _placement(model, node, wrt):
     if transform is None:
         return None, None
     return list(transform.translation), list(transform.rotation.as_quat())
-
-
-def _placement_frame(model, node):
-    """The frame a body is at, or the node itself when it already is one."""
-    if GEOM_ENT.Frame in get_node_types(model.graph, node):
-        return node
-    return model.graph.value(node, NS_MM_KC_EXT["root"])
 
 
 # Per scene item, the vector fields expanded into scalar components, with the value an omitted

@@ -77,7 +77,7 @@ from rdf_utils.models.vocab import (
     URI_QUDT_UNIT_DEG,
     URI_QUDT_UNIT_RAD,
 )
-from rdf_utils.namespace import NS_MM_QUDT_QTY, NS_MM_QUDT_UNIT
+from rdf_utils.namespace import NS_MM_KC_EXT, NS_MM_QUDT_QTY, NS_MM_QUDT_UNIT
 from rdf_utils.naming import get_valid_var_name
 from rdflib import URIRef
 from rdflib.namespace import PROV, RDF, SOSA
@@ -1103,9 +1103,9 @@ def frame(model, node) -> Frame:
     return Frame(_body_or_self(model, node), uri=str(node))
 
 
-def _body_or_self(model, node) -> str:
-    """The id of the body a frame is the origin of, or the node's own id."""
-    body = next(
+def body_of(model, node):
+    """The rigid body a frame is a simplex of, or None when no body carries it."""
+    return next(
         (
             owner
             for owner in model.graph.subjects(GEOM_ENT.simplices, node)
@@ -1113,7 +1113,23 @@ def _body_or_self(model, node) -> str:
         ),
         None,
     )
-    if body is not None and model.id(node) == f"{model.id(body)}_origin":
+
+
+def placement_frame(model, node):
+    """The frame a body is at, or the node itself when it already is one."""
+    if GEOM_ENT.Frame in get_node_types(model.graph, node):
+        return node
+    return model.graph.value(node, NS_MM_KC_EXT["root"])
+
+
+def _body_or_self(model, node) -> str:
+    """The id of the body a frame is the root of, or the node's own id.
+
+    The body states its root in the graph, so that relation answers this rather than the
+    frame's name: a root named anything but `<body>_origin` stands for its body just as much.
+    """
+    body = body_of(model, node)
+    if body is not None and placement_frame(model, body) == node:
         return model.id(body)
 
     return model.id(node)

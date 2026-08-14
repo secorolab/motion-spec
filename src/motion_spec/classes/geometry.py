@@ -74,10 +74,16 @@ class SimplicialComplex:
 
 @dataclass
 class SceneObject:
-    """A scene object referenced as a spatial endpoint."""
+    """A scene object referenced as a spatial endpoint.
+
+    `site` names the marker a pose stated of one of the object's own frames is read off, and is
+    None when the pose is of the object itself and the body frame answers it. None rather than
+    "": a template asks `<if(of.site)>`, and ST4 reads an empty string as true.
+    """
 
     id: str
     body: str = ""
+    site: str | None = None
     is_scene_object: bool = True
     type: str = field(default="SceneObject")
 

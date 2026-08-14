@@ -61,7 +61,7 @@ def generate_ir(manifest_path) -> dict:
         for row in rows
     )
     robots = resources.build_robots(
-        model, schedule, setups, derivation, scene.objects, backend, perceived_pose_ids
+        model, schedule, setups, derivation, scene, backend, perceived_pose_ids
     )
     handlers, handler_steps = coordination.build_constraint_handlers(model, schedule, derivation)
     coordination.assign_event_indexes(handlers)

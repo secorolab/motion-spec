@@ -273,13 +273,21 @@ solver-output-Pose-mj_kdl(solver, chain_solver, out) ::= <<
 {
 <if(out.of.is_scene_object)>
     KDL::Frame _body_frame_<out.id>;
-    if (!mj_kdl::get_body_frame(
+<if(out.of.site)>    if (!mj_kdl::get_site_frame(
+            robot.<solver.id>.robot->model,
+            robot.<solver.id>.robot->data,
+            "<out.of.site>",
+            &_body_frame_<out.id>)) {
+        throw std::runtime_error("MuJoCo site not found for scene object frame pose output: <out.of.site>");
+    }
+<else>    if (!mj_kdl::get_body_frame(
             robot.<solver.id>.robot->model,
             robot.<solver.id>.robot->data,
             "<out.of.body>",
             &_body_frame_<out.id>)) {
         throw std::runtime_error("MuJoCo body not found for scene object pose output: <out.of.body>");
     }
+<endif>
     // Unchecked, a miss leaves the default-constructed identity here and the pose below comes
     // out stated in world rather than in the chain's base -- a target off by the whole base
     // transform, with nothing said about it.

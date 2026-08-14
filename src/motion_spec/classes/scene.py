@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from motion_spec.classes.base import INTERNAL
 from motion_spec.classes.bindings import CameraBinding
 
 
@@ -106,6 +107,9 @@ class MjcfSceneFrame:
 
     body: str
     name: str
+    # The scene node this marks, kept so a pose stated of this frame resolves to the site name
+    # minted here rather than minting a second one that could drift from it.
+    uri: str = field(default="", metadata=INTERNAL)
     pos_x: float = 0.0
     pos_y: float = 0.0
     pos_z: float = 0.0

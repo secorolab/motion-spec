@@ -48,7 +48,7 @@ int main(int argc, char **argv) {
 
 <app-chain-setup(configuration.backend, resources.by_kind.serial_chain, composition.scene, configuration.platform.config)>
 
-<world-model-wiring(resources, configuration.backend)>
+<world-model-wiring(resources, communication, configuration.backend)>
 <endif>
 <coordination.motions:{motion | <motion-state-member(motion)>}; separator="\n">
 <if(resources.by_kind.mobile_base)>
@@ -272,10 +272,11 @@ world-model-trees(resources) ::= <<
 // Wired after the backends have assigned their driver pointers, because binding takes the
 // address the driver already writes its measurement to. Every name is resolved here, so the
 // control loop only ever indexes.
-world-model-wiring(resources, backend) ::= <<
+world-model-wiring(resources, communication, backend) ::= <<
     robot.world = &world;
 <resources.by_kind.serial_chain:{solver | <world-solver-wiring(solver, backend)>}; separator="\n">
 <resources.world_frames:{frame | <world-frame-wiring(frame)>}; separator="\n">
+<communication.ros.subscriptions:{s | <ros-subscription-wiring(s)>}; separator="\n">
     if (!world.seal(world_error)) {
         std::cerr \<\< "[world] " \<\< world_error \<\< std::endl;
         return 1;

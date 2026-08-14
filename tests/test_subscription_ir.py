@@ -58,7 +58,7 @@ def test_a_topic_stating_no_feature_of_interest_is_one_the_model_publishes():
     node = _topic(graph)
     model = _model(graph)
     assert quantities.perceived_written_poses(model)[str(node)] == []
-    assert communication.ros_subscriptions(model) == []
+    assert communication.ros_subscriptions(model, {}) == []
 
 
 def test_a_topic_observing_an_object_no_world_pose_is_stated_of_is_rejected():
@@ -116,9 +116,27 @@ def test_the_subscription_names_the_poses_it_writes_and_the_frame_they_must_arri
     assert subscription["cpp_type"] == "vision_msgs::msg::Detection3DArray"
     written = subscription["written_poses"]
     assert {row["pose_id"] for row in written} == {"pose_cube_base", "pose_cube2_base"}
-    # The frame a detection has to arrive in is the pose's own `wrt`, not the publisher's choice.
+    # The frame the pose is stated against. What frame a detection arrives in is the sender's to
+    # say, so it is read off the header at run time and is not here.
     assert {row["frame_id"] for row in written} == {"base_link"}
     assert all(split_uri(URIRef(row["target_iri"]))[1].startswith("aruco_") for row in written)
+
+
+@requires_interfaces(TYPE_NAME)
+def test_the_frame_a_written_pose_is_stated_against_resolves_to_a_world_model_segment(
+    subscription_ir,
+):
+    """The runtime composes the arriving pose into this frame, so it is handed the segment it is
+    read off -- a name it looks up once, never searches for on a tick."""
+    (subscription,) = subscription_ir["communication"]["ros"]["subscriptions"]
+    assert {row["frame_segment"] for row in subscription["written_poses"]} == {"kinova/base_link"}
+
+
+def test_a_frame_the_tree_has_no_segment_for_is_rejected():
+    """A frame the world model does not hold is one the runtime could not ask about, and a
+    detection composed against nothing would land wherever the identity puts it."""
+    with pytest.raises(ConstraintViolation, match="no segment standing for it"):
+        communication._segment_of({}, f"{NS}camera", "object-poses")
 
 
 @requires_interfaces(TYPE_NAME)

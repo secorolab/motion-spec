@@ -151,15 +151,37 @@ ros-subscription-members(s) ::= <<
     std::mutex <s.sub_id>_mutex;
     bool <s.sub_id>_staged = false;
 <s.written_poses:{w |     KDL::Frame <s.sub_id>_staged_<w.pose_id>;
-    bool <s.sub_id>_seen_<w.pose_id> = false;}; separator="\n">
+    bool <s.sub_id>_seen_<w.pose_id> = false;
+    // The two segments a staged reading is composed between: the frame the sender stated it in,
+    // which is whatever its header named, and the one this pose is stated against.
+    int <s.sub_id>_staged_from_<w.pose_id> = -1;
+    int <s.sub_id>_segment_<w.pose_id> = -1;}; separator="\n">
+>>
+
+// The pose's own frame is the model's statement, so it is resolved once here and read by index
+// on the hot path. A name the world model does not hold is a broken model and stops the run.
+
+ros-subscription-wiring(s) ::= <<
+<s.written_poses:{w |     robot.<s.sub_id>_segment_<w.pose_id> = world.index_of("<w.frame_segment>");
+    if (robot.<s.sub_id>_segment_<w.pose_id> \< 0) {
+        std::cerr \<\< "[world] no segment is named '<w.frame_segment>'" \<\< std::endl;
+        return 1;
+    \}}; separator="\n">
 >>
 
 // Staging is per message, not all-or-nothing: a goal asked one question and either answered it or
 // failed, but a stream reports whatever it currently sees, and a message carrying two of three
 // objects is not a failure.
 //
-// A detection is the pose the model asked for only when it names the target and arrives in the
-// frame that pose is stated against; anything else is dropped.
+// A detection is the pose the model asked for only when it names the target and states itself in
+// a frame the scene holds; anything else is dropped. The frame comes off the header rather than
+// from the model, because it is the sender's to choose -- one channel may carry two cameras, and
+// the header is the only thing that tells them apart. What is staged is the raw reading and the
+// frame it came in: the transform between that frame and the pose's is the loop's to apply, not
+// this thread's, which has no kinematics.
+//
+// `index_of` reads a map nothing writes after the world model is sealed, and sealing happens
+// before the executor spins, so resolving here is a lookup against a fixed table.
 
 ros-subscription-setup(s) ::= <<
     robot.<s.sub_id>_sub = robot.ros_node->create_subscription\<<s.cpp_type>\>(
@@ -168,12 +190,21 @@ ros-subscription-setup(s) ::= <<
             const std::lock_guard\<std::mutex\> lock(robot.<s.sub_id>_mutex);
             for (const auto &detection : msg-><s.detections_path>) {
                 if (detection.<s.pose_container>.empty()) continue;
+                const int _stated_in = robot.world->index_of(detection.<s.frame_path>);
+                if (_stated_in \< 0) {
+                    RCLCPP_WARN_ONCE(robot.ros_node->get_logger(),
+                                     "dropping detections stated in '%s': the scene holds no "
+                                     "frame of that name",
+                                     detection.<s.frame_path>.c_str());
+                    continue;
+                \}
                 const auto &pose = detection.<s.pose_path>;
-<s.written_poses:{w |                 if (detection.<s.id_path> == "<w.target_iri>" && detection.<s.frame_path> == "<w.frame_id>") {
+<s.written_poses:{w |                 if (detection.<s.id_path> == "<w.target_iri>") {
                     robot.<s.sub_id>_staged_<w.pose_id> = KDL::Frame(
                         KDL::Rotation::Quaternion(pose.orientation.x, pose.orientation.y,
                                                   pose.orientation.z, pose.orientation.w),
                         KDL::Vector(pose.position.x, pose.position.y, pose.position.z));
+                    robot.<s.sub_id>_staged_from_<w.pose_id> = _stated_in;
                     robot.<s.sub_id>_seen_<w.pose_id> = true;
                     robot.<s.sub_id>_staged = true;
                 \}}; separator="\n">
@@ -345,11 +376,28 @@ ros-actions-tick(ros) ::= <<
 
 // The same try_lock, for a channel that keeps reporting: whatever the last message staged moves
 // onto the blackboard, and a cycle that cannot take the lock reads the previous pose.
+//
+// The staged reading is stated in the sender's frame, so it is composed here, where kinematics
+// exist: X(pose frame -> sender frame) * X(sender frame -> target). Composing on arrival and not
+// every cycle is the point -- the result is where the object is, which does not move when the
+// camera does, and re-composing an old reading against a newer camera pose would drag the object
+// along with the arm. The camera pose used is the arriving cycle's rather than the image's, so a
+// reading taken while the arm was elsewhere lands where the arm is now: true while the arm is
+// still when it looks, and an arm that detects while moving needs the camera pose at the image
+// stamp, which nothing here keeps.
+//
+// A pose no message has ever carried is left alone rather than written as the identity, which
+// would put the object at the origin of its own reference frame and say nothing about it.
 
 ros-subscriptions-tick(ros) ::= <<
 <ros.subscriptions:{s |         if (robot.<s.sub_id>_mutex.try_lock()) {
             if (robot.<s.sub_id>_staged) {
-<s.written_poses:{w |                 shared.<w.pose_id> = robot.<s.sub_id>_staged_<w.pose_id>;}; separator="\n">
+<s.written_poses:{w |                 if (robot.<s.sub_id>_seen_<w.pose_id>) {
+                    shared.<w.pose_id> =
+                        robot.world->pose(robot.<s.sub_id>_segment_<w.pose_id>, robot.control_cycle).Inverse()
+                        * robot.world->pose(robot.<s.sub_id>_staged_from_<w.pose_id>, robot.control_cycle)
+                        * robot.<s.sub_id>_staged_<w.pose_id>;
+                \}}; separator="\n">
                 robot.<s.sub_id>_staged = false;
             \}
             robot.<s.sub_id>_mutex.unlock();

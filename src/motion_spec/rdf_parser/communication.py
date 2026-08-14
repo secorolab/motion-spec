@@ -785,13 +785,27 @@ def ros_action_clients(model) -> list:
     return clients
 
 
-def ros_subscriptions(model) -> list:
+def ros_subscriptions(model, segment_by_iri: dict) -> list:
     """The topics the model reads object poses off, one per channel.
 
     A topic the model subscribes to is one it states features of interest for: it says which
-    objects the channel informs it about, and -- per object -- the world pose a detection writes
-    and the frame it has to arrive in to be that pose. A topic the model publishes carries field
-    rows and no feature of interest, so it is not one of these.
+    objects the channel informs it about and -- per object -- the world pose a detection writes.
+    A topic the model publishes carries field rows and no feature of interest, so it is not one
+    of these.
+
+    A detection arrives stated in whatever frame its sender put in the header, which is a
+    camera's and not the frame the world pose is stated against. Only the pose's own frame is
+    the model's to state, so only that one is resolved here to the world-model segment the
+    runtime reads it off; the sender's is resolved by name as each message arrives, since one
+    channel may carry two cameras and only the header tells them apart.
+
+    Parameters:
+        segment_by_iri: every scene element the built tree carries, by IRI, as `robot_setups`
+            resolved it
+
+    Raises:
+        ConstraintViolation: a pose a detection writes is stated against a frame the built tree
+            has no segment for, so the runtime could not ask where it is.
     """
     graph = model.graph
     written = quantities.perceived_written_poses(model)
@@ -813,7 +827,15 @@ def ros_subscriptions(model) -> list:
                 "include": shape["include"],
                 "pkg": shape["package"],
                 "packages": shape["packages"],
-                "written_poses": rows,
+                "written_poses": [
+                    {
+                        **row,
+                        "frame_segment": _segment_of(
+                            segment_by_iri, row["frame_iri"], model.id(node)
+                        ),
+                    }
+                    for row in rows
+                ],
                 **{
                     key: shape[key]
                     for key in (
@@ -828,6 +850,23 @@ def ros_subscriptions(model) -> list:
         )
 
     return subscriptions
+
+
+def _segment_of(segment_by_iri: dict, iri, where: str) -> str:
+    """The world-model segment standing for one frame, as the built tree names it.
+
+    Resolved here rather than at run time: the pose's frame is the model's own statement, so a
+    frame the tree does not carry is a broken model, not a message to drop.
+    """
+    segment = segment_by_iri.get(str(iri))
+    if segment is None:
+        raise ConstraintViolation(
+            "communication",
+            f"topic '{where}' reads a pose against '{iri}', but the built tree carries no "
+            "segment standing for it, so the world model cannot be asked where it is.",
+        )
+
+    return segment
 
 
 def _add_goal_status_slots(model, shared_data, rows, seen, action_clients) -> None:

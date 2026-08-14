@@ -259,7 +259,9 @@ class WorldModel {
     std::vector\<const double *\> joints_;  // null for a fixed or unbound moving segment
     std::vector\<KDL::Frame\> poses_;
     std::vector\<std::pair\<int, int\>\> required_paths_;
-    std::unordered_map\<std::string, int\> indexes_;  // startup lookup only
+    // Written only while trees are added, so after sealing it is a fixed table any thread may
+    // read -- which is how a subscription resolves the frame a message states itself in.
+    std::unordered_map\<std::string, int\> indexes_;
     KDL::Frame identity_ = KDL::Frame::Identity();
     std::uint64_t cycle_ = kNoCycle;
     int trees_seen_ = 0;

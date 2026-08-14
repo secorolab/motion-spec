@@ -879,7 +879,14 @@ def perceived_written_poses(model) -> dict[str, list[dict]]:
                     "of it, so a detection has nowhere to land",
                 )
             rows.extend(
-                {"target_iri": str(target), "pose_id": item.id, "frame_id": item.with_respect_to.id}
+                {
+                    "target_iri": str(target),
+                    "pose_id": item.id,
+                    "frame_id": item.with_respect_to.id,
+                    # A scene object as an endpoint carries no frame IRI; the consumer that needs
+                    # one to place the pose says so itself.
+                    "frame_iri": getattr(item.with_respect_to, "uri", ""),
+                }
                 for item in matched
             )
         written[str(act)] = rows

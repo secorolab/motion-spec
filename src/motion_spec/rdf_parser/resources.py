@@ -703,6 +703,19 @@ def robot_setups(model):
     return setups_by_node, ordered, trees
 
 
+def tree_segments(setups) -> dict:
+    """Every scene element the built trees carry, by IRI, named as the world model names it.
+
+    A chain resolves the whole tree it is sliced from, not only the part it articulates, so a
+    frame no chain reaches -- a fixed camera watching the scene -- resolves here just the same.
+    """
+    return {
+        iri: segment
+        for setup in setups.values()
+        for iri, segment in setup.chain.world_segments.items()
+    }
+
+
 def _placed_on_chain(carrier, backend: str) -> tuple[tuple[str, bool], ...]:
     """What of one carrier the generated code asks forward kinematics for, and which authority
     answers: the one world model, or this chain's own numbering.
@@ -1622,26 +1635,30 @@ def _reject_undriven_devices(model, context) -> None:
 
 
 def _reject_scene_objects_on_hardware(model, context) -> None:
-    """Reject a scene object a constraint is stated on: nothing measures its pose on hardware.
+    """Reject a scene object a constraint is stated on and nothing observes: on hardware its pose
+    would come from a simulator that is not running.
 
     An object the scene only places -- the table the arm stands on, the furniture around it --
-    is left alone: no run-time value is read off it, so the simulator is the source of nothing
-    the run uses.
+    is left alone: no run-time value is read off it. So is one a perception source observes,
+    which is the case the simulator was standing in for.
     """
     if context is None:
         return
+    graph = model.graph
     constrained = _constrained_entities(model)
+    observed = set(graph.objects(None, SOSA.hasFeatureOfInterest))
     objects = sorted(
         local_name(modelled)
-        for modelled in model.graph.subjects(RDF.type, ENV.ModelledObject)
-        if constrained & _object_entities(model, modelled)
+        for modelled in graph.subjects(RDF.type, ENV.ModelledObject)
+        if (entities := _object_entities(model, modelled)) & constrained and not entities & observed
     )
     if objects:
         raise ConstraintViolation(
             "platform",
-            f"real-world execution constrains scene object(s) ({', '.join(objects)}): their poses "
-            "come from a simulator, and nothing measures them on hardware. Drop the constraint, "
-            "or model the location as an authored frame.",
+            f"real-world execution constrains scene object(s) ({', '.join(objects)}) that nothing "
+            "observes: their poses come from a simulator, and nothing measures them on hardware. "
+            "Subscribe to a perception channel that observes them, drop the constraint, or model "
+            "the location as an authored frame.",
         )
 
 

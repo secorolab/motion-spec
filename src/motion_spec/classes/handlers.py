@@ -196,9 +196,12 @@ class RosPublication:
     has_violated: bool = False
     auto_time: list[str] = field(default_factory=list)
     auto_context_id: list[str] = field(default_factory=list)
-    # Occurrence form: the payload field the monitor's event IRI is written into, instead of
-    # authored field rows. The event itself is the monitor's -- it is what fires.
+    # Occurrence form: the payload field an announced event's IRI is written into, instead of
+    # authored field rows. `occurrence_events` are the events the monitor announces, resolved to
+    # their FSM enum tokens; one message is published per event that fired this cycle.
     occurrence_path: str | None = None
+    occurrence_events: list = field(default_factory=list)
+    occurrence_namespace: str | None = None
 
 
 Monitor = LevelMonitor | EdgeMonitor

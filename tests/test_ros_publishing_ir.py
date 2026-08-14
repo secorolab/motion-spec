@@ -413,14 +413,14 @@ def test_two_served_actions_are_rejected():
 EVENT = URIRef(f"{FSM_NS}E_DONE")
 
 
-def _occurrence(type_name: str, event=EVENT) -> RosPublication:
-    """Lower a monitor that publishes the event it triggers, rather than authored fields."""
+def _occurrence(type_name: str, *events: URIRef) -> RosPublication:
+    """Lower a monitor that announces events, rather than authored fields."""
     graph = Graph()
     graph.add((MONITOR, NS_MM_ROS["channel-name"], Literal("/bdd/events")))
     graph.add((MONITOR, NS_MM_ROS["type-name"], Literal(type_name)))
     graph.add((MONITOR, CSTR_HDL["constraint"], WATCHED))
-    graph.add((MONITOR, CSTR_HDL["event"], EVENT))
-    graph.add((MONITOR, RDFS.member, event))
+    for event in events or (EVENT,):
+        graph.add((MONITOR, RDFS.member, event))
     return _ros_publication(_model(graph), MONITOR)["ros"]
 
 
@@ -429,15 +429,20 @@ def test_an_occurrence_resolves_its_field_off_the_message_type():
     authored-row branches stay empty, since the event is the whole payload."""
     ros = _occurrence("bdd_ros2_interfaces/msg/Event")
     assert ros.occurrence_path == "uri"
+    assert ros.occurrence_events == [str(EVENT)]
     assert (ros.on_satisfied, ros.on_violated) == ([], [])
     assert (ros.has_satisfied, ros.has_violated) == (False, False)
     assert ros.auto_time == ["stamp"]
     assert ros.auto_context_id == ["scenario_context_id"]
 
 
-def test_an_occurrence_of_an_event_the_monitor_does_not_trigger_is_rejected():
-    with pytest.raises(ConstraintViolation, match="not the event it triggers"):
-        _occurrence("bdd_ros2_interfaces/msg/Event", event=URIRef(f"{FSM_NS}E_OTHER"))
+def test_every_announced_event_is_carried_whatever_the_monitor_triggers():
+    """The set is the author's choice, so an event the monitor never fires is carried too; each
+    one becomes its own message at generation."""
+    other = URIRef(f"{FSM_NS}E_OTHER")
+    ros = _occurrence("bdd_ros2_interfaces/msg/Event", EVENT, other)
+    assert sorted(ros.occurrence_events) == sorted([str(EVENT), str(other)])
+    assert ros.occurrence_path == "uri"
 
 
 def test_an_occurrence_needs_a_field_that_can_hold_an_iri():

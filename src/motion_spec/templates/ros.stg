@@ -249,7 +249,11 @@ ros-subscriptions-wait(ros) ::= <<
         const auto _perception_deadline = std::chrono::steady_clock::now() +
             std::chrono::milliseconds(static_cast\<long\>(_perception_wait_s * 1000.0));
         std::vector\<std::string\> _perception_missing;
-        while (rclcpp::ok()) {
+        // A deployment that steers by nothing perception writes has nothing to wait for: the
+        // poses are reported as they arrive, and until then they are the identity, which is
+        // only safe because no constraint reads them. Waiting is the default for the same
+        // reason it exists -- an arm that drives at an unwritten pose drives at its own origin.
+        while (_perception_wait_s > 0.0 && rclcpp::ok()) {
             _perception_missing.clear();
 <ros.subscriptions:{s |             {
                 const std::lock_guard\<std::mutex\> lock(robot.<s.sub_id>_mutex);
@@ -641,19 +645,24 @@ ros-publish-tick-locals(ros) ::= <<
 <endif>
 >>
 
-// An occurrence is the event firing, so it rides the event itself rather than the constraint:
-// one message on the cycle the FSM sees the event, whatever state the motion is in. The URI
-// comes from the FSM's own table, so what a scenario observes is the IRI the model declared.
+// An announced event is the event firing, so it rides the event itself rather than the
+// constraint: one message per event on the cycle the FSM sees it, whatever state the motion is
+// in. The URI comes from the FSM's own table, so what a scenario observes is the IRI the model
+// declared.
 
-ros-monitor-publish(motion, monitor) ::= <<
-<if(monitor.ros.occurrence_path)>
-        if (robot.fsm_events && consume_event(robot.fsm_events, <monitor.fsm_namespace>::<monitor.event_name>)) {
+ros-monitor-announce(monitor, event) ::= <<
+        if (robot.fsm_events && consume_event(robot.fsm_events, <monitor.ros.occurrence_namespace>::<event>)) {
             robot.<monitor.ros.pub_id>_msg.<monitor.ros.occurrence_path> =
-                <monitor.fsm_namespace>::EVENT_URIS[<monitor.fsm_namespace>::<monitor.event_name>];
+                <monitor.ros.occurrence_namespace>::EVENT_URIS[<monitor.ros.occurrence_namespace>::<event>];
 <monitor.ros.auto_time:{p |             robot.<monitor.ros.pub_id>_msg.<p> = robot.ros_node->now();}; separator="\n">
 <monitor.ros.auto_context_id:{p |             robot.<monitor.ros.pub_id>_msg.<p>.uuid = _scenario_context_id;}; separator="\n">
             robot.<monitor.ros.pub_id>->try_publish(robot.<monitor.ros.pub_id>_msg);
         \}
+>>
+
+ros-monitor-publish(motion, monitor) ::= <<
+<if(monitor.ros.occurrence_path)>
+<monitor.ros.occurrence_events:{e | <ros-monitor-announce(monitor, e)>}; separator="\n">
 <elseif(monitor.ros)>
         if (<motion.id>_state_instance.active) {
             const bool _satisfied = <monitor-satisfied-expr(monitor)>;

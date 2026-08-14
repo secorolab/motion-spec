@@ -122,6 +122,8 @@ def test_generation_base_prefers_o_then_the_environment(monkeypatch, tmp_path) -
     assert result.exit_code == 0
     assert received["output"] == configured
     assert "MOTION_SPEC_GEN is not set" not in result.stderr
+    # Where it is goes out before the DSL and the compiler bury it in their own output.
+    assert result.stderr.splitlines()[0] == f"generation: {configured}"
 
     # Unset, the library keeps deciding: the CLI passes no base and says where things will land.
     monkeypatch.delenv("MOTION_SPEC_GEN")

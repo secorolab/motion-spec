@@ -54,6 +54,22 @@ def _generation_base(output_dir: Path | None) -> Path | None:
     return None
 
 
+def _new_generation(model: Path, output_dir: Path | None) -> Path:
+    """Create this run's generation directory, and say where it is before anything fills it.
+
+    Announced up front rather than only on success: the DSL and the compiler write pages of
+    their own output next, and where it all landed is the one thing needed to go look at it --
+    including when the run fails partway and never reaches the closing line. Stderr, because
+    `gen` writes that closing line to stdout for a caller to read.
+    """
+    from motion_spec.generation.pipeline import create_generation_dir
+
+    generation = create_generation_dir(model, _generation_base(output_dir))
+    click.echo(f"generation: {generation}", err=True)
+
+    return generation
+
+
 def _model_rejected(exc: Exception) -> click.ClickException:
     """Report a model the checks refused, with the check that refused it.
 
@@ -316,7 +332,7 @@ def gen(stage_or_model: str, model: Path | None, output_dir: Path | None) -> Non
     """Generate IR or C++ from a .robmot MODEL; CODE is the default stage."""
     from rdf_utils.constraints import ConstraintViolation
 
-    from motion_spec.generation.pipeline import create_generation_dir, generate_model
+    from motion_spec.generation.pipeline import generate_model
 
     if stage_or_model in {"ir", "code"}:
         if model is None:
@@ -332,7 +348,7 @@ def gen(stage_or_model: str, model: Path | None, output_dir: Path | None) -> Non
     if model.suffix != ".robmot":
         raise click.BadParameter("MODEL must be a .robmot file", param_hint="MODEL")
     try:
-        generation = create_generation_dir(model, _generation_base(output_dir))
+        generation = _new_generation(model, output_dir)
         generate_model(model, generation, stage=stage)
     except ConstraintViolation as exc:
         raise _model_rejected(exc) from exc
@@ -533,12 +549,7 @@ def run(
     """Run a .robmot INPUT, generating and building it first, or an existing GENERATION."""
     from rdf_utils.constraints import ConstraintViolation
 
-    from motion_spec.generation.pipeline import (
-        build_generation,
-        create_generation_dir,
-        generate_model,
-        new_id,
-    )
+    from motion_spec.generation.pipeline import build_generation, generate_model, new_id
     from motion_spec.introspection.archive import ArchiveError
     from motion_spec.introspection.runner import RunnerError, run_cataloged
 
@@ -546,7 +557,7 @@ def run(
         raise click.UsageError("--steps requires --headless")
     if input.suffix == ".robmot":
         try:
-            generation = create_generation_dir(input, _generation_base(output_dir))
+            generation = _new_generation(input, output_dir)
             generate_model(input, generation, stage="code")
             build_generation(generation, prefixes=prefixes, jobs=jobs)
         except ConstraintViolation as exc:

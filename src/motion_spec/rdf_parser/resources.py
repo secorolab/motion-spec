@@ -28,6 +28,7 @@ from motion_spec_dsl.rdf_parser.vocab import (
     AGN,
     ALGO_EXT,
     APP,
+    CSTR,
     CSTR_HDL,
     ENV,
     EXEC,
@@ -35,6 +36,7 @@ from motion_spec_dsl.rdf_parser.vocab import (
     GEOM_ENT,
     KC,
     KC_STAT,
+    MAP,
     QUDT_SCHEMA,
     RBDYN_COORD,
     RBDYN_ENT,
@@ -60,6 +62,7 @@ from rdf_utils.models.vocab import (
 )
 from rdf_utils.namespace import NS_MM_KC_EXT, NS_MM_QUDT_QTY
 from rdf_utils.uri import iri_is_descendant, iri_parent
+from rdflib import URIRef
 from rdflib.namespace import PROV, RDF, SDO
 from scene_dsl.kdl_tree import build_kdl_trees
 from scene_dsl.rdf.sensors import (
@@ -107,6 +110,16 @@ DRIVEN_DEVICES = {"KinovaGen3", "KinovaGen3-2F85", "Robotiq2F85", "RobotiqFT300s
 GRIPPER_DEVICES = {"KinovaGen3-2F85", "Robotiq2F85"}
 # The sensor kinds the IR models, as the graph types them and as the templates dispatch on them.
 SENSOR_KINDS = {SENSORS.ForceTorqueSensor: "ForceTorque"}
+# What a quantity is ultimately stated on, and where a walk from a constraint stops.
+_GEOMETRIC_ENTITY_TYPES = frozenset(
+    {
+        GEOM_ENT.Point,
+        GEOM_ENT.Frame,
+        GEOM_ENT.SimplicialComplex,
+        GEOM_ENT.RigidBody,
+        ENV.RigidObject,
+    }
+)
 # Which codegen backend serves an authored simulation platform. The platform is the model's; the
 # backend is an implementation detail of running it, so the mapping lives here and nowhere else.
 SIMULATION_BACKENDS = {"mujoco": "mj_kdl"}
@@ -1546,8 +1559,8 @@ def read_platform(model) -> dict:
 
     Raises:
         ConstraintViolation: the model names a simulation platform with no backend, real-world
-            execution uses scene objects, binds a device no backend drives, or reads a sensor with
-            no device bound.
+            execution constrains a scene object, binds a device no backend drives, or reads a
+            sensor with no device bound.
     """
     graph = model.graph
     simulation = next(graph.subjects(RDF.type, EXEC.Simulation), None)
@@ -1609,19 +1622,75 @@ def _reject_undriven_devices(model, context) -> None:
 
 
 def _reject_scene_objects_on_hardware(model, context) -> None:
-    """Reject scene objects on hardware: nothing measures their pose without perception."""
+    """Reject a scene object a constraint is stated on: nothing measures its pose on hardware.
+
+    An object the scene only places -- the table the arm stands on, the furniture around it --
+    is left alone: no run-time value is read off it, so the simulator is the source of nothing
+    the run uses.
+    """
     if context is None:
         return
+    constrained = _constrained_entities(model)
     objects = sorted(
-        local_name(node) for node in model.graph.subjects(RDF.type, ENV.ModelledObject)
+        local_name(modelled)
+        for modelled in model.graph.subjects(RDF.type, ENV.ModelledObject)
+        if constrained & _object_entities(model, modelled)
     )
     if objects:
         raise ConstraintViolation(
             "platform",
-            f"real-world execution cannot use scene objects ({', '.join(objects)}): their poses "
-            "come from a simulator, and nothing measures them on hardware. Remove them, or model "
-            "the location as an authored frame.",
+            f"real-world execution constrains scene object(s) ({', '.join(objects)}): their poses "
+            "come from a simulator, and nothing measures them on hardware. Drop the constraint, "
+            "or model the location as an authored frame.",
         )
+
+
+def _constrained_entities(model) -> set:
+    """Every geometric entity a constraint is stated on.
+
+    A constraint names a quantity, and a quantity leads to its entities through the view,
+    coordinate and relation nodes that stand between them -- so the walk follows every link and
+    stops at the first entity, which is what keeps it out of the placement chain that puts that
+    entity in the scene.
+    """
+    graph = model.graph
+    queue = [
+        quantity
+        for constraint in graph.subjects(RDF.type, CSTR.Constraint)
+        for quantity in graph.objects(constraint, CSTR.quantity)
+    ]
+    seen, entities = set(), set()
+    while queue:
+        node = queue.pop()
+        if node in seen or not isinstance(node, URIRef):
+            continue
+        seen.add(node)
+        if _GEOMETRIC_ENTITY_TYPES & get_node_types(graph, node):
+            entities.add(node)
+            continue
+        queue.extend(graph.objects(node, None))
+        # A view holds no frames of its own: they belong to the quantity it reads, which it
+        # points at rather than being pointed at by.
+        for view in graph.subjects(MAP.subobject, node):
+            queue.extend(graph.objects(view, MAP.superobject))
+
+    return entities
+
+
+def _object_entities(model, modelled) -> set:
+    """The nodes that stand for one scene object: the object, the bodies it maps, their frames."""
+    graph = model.graph
+    bodies = [
+        body
+        for asset in graph.objects(modelled, ENV["has-object-model"])
+        for body, _entity in _model_mappings(model, asset, GEOM_ENT.RigidBody)
+    ]
+
+    return {
+        graph.value(modelled, ENV["of-object"]),
+        *bodies,
+        *(frame for body in bodies for frame in graph.objects(body, GEOM_ENT.simplices)),
+    }
 
 
 def _reject_unbound_sensors_on_hardware(model, context) -> None:

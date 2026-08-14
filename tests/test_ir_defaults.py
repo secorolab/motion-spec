@@ -468,17 +468,52 @@ def test_edge_monitor_carries_full_event_uri_and_enum_token() -> None:
 
 
 # --- real-world execution (plan 019) ---------------------------------------------------------
-def test_real_world_execution_rejects_scene_objects() -> None:
-    """A scene object's pose comes from the simulator; on hardware nothing measures it."""
-    from motion_spec_dsl.rdf_parser.vocab import ENV
-    from rdf_utils.constraints import ConstraintViolation
+def _scene_object_graph(constrained: bool) -> Dataset:
+    """A real-world model with one scene object, optionally constrained against its own frame."""
+    from motion_spec_dsl.rdf_parser.vocab import GEOM_ENT, GEOM_REL
 
     graph = Dataset(default_union=True)
-    context = URIRef("https://example.test/real-exec")
-    cube = URIRef("https://example.test/modelled-cube")
+    cube, body, frame = (
+        URIRef("https://example.test/modelled-cube"),
+        URIRef("https://example.test/cube-body"),
+        URIRef("https://example.test/cube-frame"),
+    )
     graph.add((cube, RDF.type, ENV.ModelledObject))
-    with pytest.raises(ConstraintViolation, match="cannot use scene objects"):
-        resources._reject_scene_objects_on_hardware(_model(graph), context)
+    graph.add((body, RDF.type, GEOM_ENT.RigidBody))
+    graph.add((body, GEOM_ENT.simplices, frame))
+    graph.add((frame, RDF.type, GEOM_ENT.Frame))
+    asset, mapping = (
+        URIRef("https://example.test/cube-asset"),
+        URIRef("https://example.test/cube-mapping"),
+    )
+    graph.add((cube, ENV["has-object-model"], asset))
+    graph.add((asset, EXEC["has-mapping"], mapping))
+    graph.add((mapping, EXEC["maps"], body))
+    if constrained:
+        constraint, position = (
+            URIRef("https://example.test/near-cube"),
+            URIRef("https://example.test/pose-cube-position"),
+        )
+        graph.add((constraint, RDF.type, CSTR.Constraint))
+        graph.add((constraint, CSTR.quantity, position))
+        graph.add((position, GEOM_REL.of, frame))
+
+    return graph
+
+
+def test_real_world_execution_rejects_a_constrained_scene_object() -> None:
+    """A scene object's pose comes from the simulator; on hardware nothing measures it."""
+    from rdf_utils.constraints import ConstraintViolation
+
+    context = URIRef("https://example.test/real-exec")
+    with pytest.raises(ConstraintViolation, match="constrains scene object"):
+        resources._reject_scene_objects_on_hardware(_model(_scene_object_graph(True)), context)
+
+
+def test_real_world_execution_keeps_an_unconstrained_scene_object() -> None:
+    # Furniture the scene only places is never read back, so hardware has nothing to measure.
+    context = URIRef("https://example.test/real-exec")
+    resources._reject_scene_objects_on_hardware(_model(_scene_object_graph(False)), context)
 
 
 def test_simulation_keeps_its_scene_objects() -> None:

@@ -1024,13 +1024,25 @@ def _append_new(steps: list, candidates) -> None:
 
 
 class MotionSchedules:
-    """The three call sequences one motion runs, in the order the loop runs them."""
+    """The three call sequences one motion runs, in the order the loop runs them.
 
-    def __init__(self, when: list, while_pre: list, active: list, until: list):
+    `commanded_force` is held back rather than folded into `active`: a commanded wrench is built
+    from control signals, so it can only run once the control laws have written them this tick.
+    """
+
+    def __init__(
+        self,
+        when: list,
+        while_pre: list,
+        active: list,
+        until: list,
+        commanded_force: list | None = None,
+    ):
         self.when = when
         self.while_pre = while_pre
         self.active = active
         self.until = until
+        self.commanded_force = commanded_force or []
 
 
 def _when_schedule(model, phase: PhaseNodes) -> list:
@@ -1110,11 +1122,13 @@ def _motion_schedules(
     _append_new(active, _pose_command_steps(model, scope, active_plans))
     _append_new(active, [model.id(node) for node in leading])
     force_nodes = _cartesian_force_nodes(model, chain_solvers, handler, computation)
-    _append_new(active, scope.of(force_nodes, OPS_GENERIC + OPS_SOLVER + OPS_HANDLER))
+    # Claimed here so the walk still resolves shared prerequisites in this position, but emitted
+    # after the control laws run: the wrench reads the control signal they write this tick.
+    commanded_force = scope.of(force_nodes, OPS_GENERIC + OPS_SOLVER + OPS_HANDLER)
     active.extend(scope.of(trailing, OPS_GENERIC + OPS_HANDLER))
     _append_new(active, [model.id(node) for node in trailing])
 
-    return MotionSchedules(_when_schedule(model, phase), while_pre, active, until)
+    return MotionSchedules(_when_schedule(model, phase), while_pre, active, until, commanded_force)
 
 
 def _pose_command_steps(model, scope, active_plans) -> list:
@@ -1199,6 +1213,10 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
             step for step in schedules.while_pre if owner.get(step, token) == token
         ]
         _append_new(schedules.active, [c.id for c in reversed(active_controllers)])
+        _append_new(
+            schedules.active,
+            [step for step in schedules.commanded_force if owner.get(step, token) == token],
+        )
         # What state runs this motion, when the model says so rather than leaving it derived from
         # the event that ends the motion -- which a motion meant to keep running never fires.
         runs_in = model.graph.value(handler_node, CSTR_HDL_EXT["runs-in-state"])

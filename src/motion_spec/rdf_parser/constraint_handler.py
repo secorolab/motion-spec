@@ -464,10 +464,12 @@ def _controller_signal_id(model, context, plan) -> str:
         model.register_derived(signal_id, str(plan.controller), "output", PROV.wasDerivedFrom)
         return signal_id
 
-    if CSTR_HDL_EXT.FeedForwardController in types:
-        return controller_output(f"cmd_{controller_id}")
+    # A force command is named after the wrench magnitude it feeds, whichever control law
+    # produced it; only a command that goes straight to a device is named `cmd_`.
     if CSTR_HDL.ImpedanceController in types or command_type == "Force":
         return controller_output(f"force_{controller_id}")
+    if CSTR_HDL_EXT.FeedForwardController in types:
+        return controller_output(f"cmd_{controller_id}")
     target = graph.value(plan.view, MAP.superobject) if plan.view is not None else plan.quantity
     if command_type == "Torque" and KC_STAT.JointPositionCoordinate in get_node_types(
         graph, target

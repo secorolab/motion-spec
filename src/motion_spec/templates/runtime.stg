@@ -445,6 +445,11 @@ struct CartesianAccelerationWorkspace {
     }
 };
 
+// Damped least-squares regularization for J^T (J J^T + lambda^2 I)^-1. This is
+// deliberately small: it removes the singular inverse without materially changing a
+// well-conditioned task. Keep it named because hardware may justify model-level tuning later.
+inline constexpr double kCartesianAccelerationDamping = 0.05;
+
 inline void resolve_cartesian_acceleration(
         const KDL::Jacobian &jac,
         const KDL::Jacobian &directions,
@@ -463,8 +468,9 @@ inline void resolve_cartesian_acceleration(
         work.rhs -= *bias;
     }
     work.gram.noalias() = work.task_jac * work.task_jac.transpose();
-    // Factor and solve in place: the same LDLT the explicit inverse would have been, without a
-    // temporary per cycle.
+    work.gram.diagonal().array() +=
+        kCartesianAccelerationDamping * kCartesianAccelerationDamping;
+    // Factor and solve the damped normal equations in place, without a temporary per cycle.
     work.factorization.compute(work.gram);
     work.lambda = work.rhs;
     work.factorization.solveInPlace(work.lambda);

@@ -2052,6 +2052,44 @@ def agent_home_positions(platform: dict, serial_chains, config: dict) -> dict:
     return homes
 
 
+def config_poses(model, config: dict) -> list[dict]:
+    """Poses the deployment states rather than the model: what to fill and where to read it.
+
+    A device's key is derived, because the element it realizes already names it. A pose's is
+    authored -- the model writes `[config.<key>]`, and that key is the only statement of which
+    section it means. Presence and shape are checked here and the numbers are not, so retuning
+    a pose needs no regeneration.
+
+    Raises:
+        ConstraintViolation: the config states no section for a pose, or one that is not a
+            position and an orientation of three numbers each.
+    """
+    entries = []
+    for node in sorted(model.graph.subjects(EXEC["has-resource"], None), key=str):
+        if EXEC.ExecutionContext in get_node_types(model.graph, node):
+            continue
+        key = str(model.graph.value(node, SDO.identifier))
+        section = config
+        for segment in key.split("."):
+            section = section.get(segment, {}) if isinstance(section, dict) else {}
+        if not section:
+            raise ConstraintViolation(
+                "platform",
+                f"Pose '{local_name(node)}' reads [config.{key}], which the deployment config "
+                f"does not state. Add a [{key}] section with `position = [x, y, z]` and "
+                "`orientation = [rx, ry, rz]`.",
+            )
+        for field_name in ("position", "orientation"):
+            values = section.get(field_name)
+            if not isinstance(values, list) or len(values) != 3:
+                raise ConstraintViolation(
+                    "platform", f"[{key}] states no three-number `{field_name}`."
+                )
+        entries.append({"id": model.id(node), "config_key": key})
+
+    return entries
+
+
 # The deployment states the topic and the rate; the section's presence is what turns the
 # publisher on, so retuning either needs no regeneration.
 ROS_JOINT_STATES_KEY = "ros.joint_states"

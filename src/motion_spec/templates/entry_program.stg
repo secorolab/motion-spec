@@ -49,7 +49,8 @@ int main(int argc, char **argv) {
 <app-chain-setup(configuration.backend, resources.by_kind.serial_chain, composition.scene, configuration.platform.config)>
 
 <world-model-wiring(resources, communication, configuration.backend)>
-<endif>
+<configuration.config_poses:{pose |     shared.<pose.id> = motion_spec::config::pose(robot_config, "<pose.config_key>");
+}><endif>
 <coordination.motions:{motion | <motion-state-member(motion)>}; separator="\n">
 <if(resources.by_kind.mobile_base)>
     mobile_base_state mobile_base_state_instance;

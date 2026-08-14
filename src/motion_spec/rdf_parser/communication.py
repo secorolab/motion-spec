@@ -1141,6 +1141,7 @@ def build_introspection(
     backend,
     action_clients=(),
     subscriptions=(),
+    config_poses=(),
 ):
     """Build the introspection artifact.
 
@@ -1193,6 +1194,7 @@ def build_introspection(
         robots.serial_chains,
         computation.views,
         subscriptions,
+        config_poses,
     )
 
     # The registry grew while folding the samples in: rebuild the table and backfill every row

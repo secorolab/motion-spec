@@ -2131,6 +2131,7 @@ def annotate_dataflow(
     serial_chain_solvers,
     views,
     subscriptions=(),
+    config_poses=(),
 ) -> None:
     """Give every shared value its producer, its write cadence and the storage those imply, then
     apply that contract: drop what nothing writes and move what is written once into the header.
@@ -2163,8 +2164,15 @@ def annotate_dataflow(
         },
     }
 
+    config_pose_ids = {entry["id"] for entry in config_poses}
+
     def contract(item) -> _Contract:
         """The producer and write cadence of one shared-data member."""
+        if item.id in config_pose_ids:
+            # Read from the deployment config before the loop, so it is live in every state. Not
+            # `init`: that storage is a constant the artifact carries, and this number is only
+            # known once the run has read the file it is named for.
+            return _Contract({"kind": "config", "id": item.id}, "tick")
         if item.id in PORT_PRODUCERS:
             return _Contract(PORT_PRODUCERS[item.id], "tick")
         if item.id in perceived_by_output:

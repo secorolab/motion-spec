@@ -120,6 +120,7 @@ def generate_ir(manifest_path) -> dict:
         # member nothing produces is pruned as absent.
         shared_data.append(BlackboardValue(id=f"{target_id}_captured", type="Bool", value=False))
 
+    config_poses = resources.config_poses(model, platform_config)
     introspection = communication.build_introspection(
         model,
         motions,
@@ -132,6 +133,7 @@ def generate_ir(manifest_path) -> dict:
         backend,
         action_clients,
         subscriptions,
+        config_poses,
     )
 
     return {
@@ -147,6 +149,7 @@ def generate_ir(manifest_path) -> dict:
             "agent_homes": resources.agent_home_positions(
                 platform, robots.serial_chains, platform_config
             ),
+            "config_poses": config_poses,
             "trace": resources.TRACE_DISABLED,
         },
         "resources": _resources_section(robots, world_trees, world_frames),

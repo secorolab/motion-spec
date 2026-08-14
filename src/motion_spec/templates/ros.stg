@@ -238,43 +238,6 @@ if (robot.ros_spin_thread.joinable()) robot.ros_spin_thread.join();
 rclcpp::shutdown();
 >>
 
-ros-subscriptions-wait(ros) ::= <<
-<if(ros.subscriptions)>
-    {
-        // Named, not a literal: `section` returns a reference into robot_config, and gcc reads a
-        // temporary argument as the thing the reference could dangle to.
-        const std::string _perception_key = "ros.perception";
-        const double _perception_wait_s =
-            motion_spec::config::section(robot_config, _perception_key)["wait_s"].value_or(10.0);
-        const auto _perception_deadline = std::chrono::steady_clock::now() +
-            std::chrono::milliseconds(static_cast\<long\>(_perception_wait_s * 1000.0));
-        std::vector\<std::string\> _perception_missing;
-        // A deployment that steers by nothing perception writes has nothing to wait for: the
-        // poses are reported as they arrive, and until then they are the identity, which is
-        // only safe because no constraint reads them. Waiting is the default for the same
-        // reason it exists -- an arm that drives at an unwritten pose drives at its own origin.
-        while (_perception_wait_s > 0.0 && rclcpp::ok()) {
-            _perception_missing.clear();
-<ros.subscriptions:{s |             {
-                const std::lock_guard\<std::mutex\> lock(robot.<s.sub_id>_mutex);
-<s.written_poses:{w |                 if (!robot.<s.sub_id>_seen_<w.pose_id>) _perception_missing.emplace_back("<w.target_iri>");}; separator="\n">
-            \}}; separator="\n">
-            if (_perception_missing.empty()) break;
-            if (std::chrono::steady_clock::now() > _perception_deadline) {
-                for (const auto &_iri : _perception_missing) {
-                    RCLCPP_ERROR(robot.ros_node->get_logger(),
-                                 "no pose published for '%s' within %.1f s", _iri.c_str(),
-                                 _perception_wait_s);
-                \}
-                <ros-stop-before-loop(ros)>
-                return 1;
-            \}
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        \}
-    \}
-<endif>
->>
-
 // Sent on the entry edge of the motion that owns the act, never per tick: `async_send_goal` only
 // enqueues, and the executor thread carries it from there.
 //

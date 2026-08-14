@@ -73,7 +73,6 @@ int main(int argc, char **argv) {
 <ros-joint-states-setup(communication.ros)>
 <ros-spin-start(communication.ros)>
 <ros-publish-tick-locals(communication.ros)>
-<ros-subscriptions-wait(communication.ros)>
 <endif>
 
 <if(coordination.fsm)>

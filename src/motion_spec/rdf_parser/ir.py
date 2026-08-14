@@ -93,7 +93,7 @@ def generate_ir(manifest_path) -> dict:
     for client in action_clients:
         clients_by_motion.setdefault(client["motion"], []).append(client)
     for motion in motions:
-        motion.action_clients = clients_by_motion.get(motion.id, [])
+        motion.action_clients = clients_by_motion.get(motion.motion_id, [])
         motion.has_action_clients = bool(motion.action_clients)
     shared_data = quantities.filter_shared_data(
         data_structures,

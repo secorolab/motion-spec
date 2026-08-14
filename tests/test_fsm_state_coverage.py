@@ -41,7 +41,7 @@ def fsm(states, transitions, reactions):
 def motion(mid, state):
     unit = MotionUnit(
         id=mid,
-        handler="",
+        motion_id="",
         name=mid,
         description=[],
         when_evaluators=[],

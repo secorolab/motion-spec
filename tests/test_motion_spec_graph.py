@@ -86,7 +86,9 @@ def test_dual_arm_physical_profiles_and_path_progress_reach_ir(generated_dual_mo
     assert all(str(profile["shape"]) == "s_curve" and profile["in"] for profile in motion_profiles)
     assert all(profile["maximum_jerk"] == "max_lower_jerk" for profile in motion_profiles)
     pick_above = next(
-        motion for motion in ir["coordination"]["motions"] if motion.id == "motion_pick_above"
+        motion
+        for motion in ir["coordination"]["motions"]
+        if motion.motion_id == "motion_pick_above"
     )
     assert {entry["parameter"] for entry in pick_above.path_projections} == {
         "arm1_approach_path_s",
@@ -190,7 +192,9 @@ def test_ir_derives_forwarded_commands_and_monitors(generated_model: Path) -> No
     )
 
     pick_above = next(
-        motion for motion in ir["coordination"]["motions"] if motion.id == "motion_pick_above"
+        motion
+        for motion in ir["coordination"]["motions"]
+        if motion.motion_id == "motion_pick_above"
     )
     scheduled = [ir["computation"]["closures"][step] for step in pick_above.while_schedule]
     # The parameter is measured by the projection; the pose the motion tracks is the

@@ -289,7 +289,7 @@ def test_introspection_contract_carries_control_and_provenance() -> None:
         id="move",
         name="move",
         description=[],
-        handler="move_handler",
+        motion_id="motion_move",
         when_evaluators=[],
         while_evaluators=[],
         until_evaluators=[],

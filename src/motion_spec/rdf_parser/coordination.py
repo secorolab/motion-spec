@@ -969,7 +969,7 @@ def _handler_chain_solvers(handler, serial_chains, solver_ids) -> list:
     template reaches them through `solver_id` into `resources.by_id`.
     """
     result = []
-    driver_id = f"driver_{handler.motion.id.removeprefix('motion_')}"
+    driver_id = f"driver_{handler.id}"
     for solver in serial_chains:
         if solver.id not in solver_ids or not solver.motion_drivers:
             continue
@@ -1252,8 +1252,8 @@ def _motion_unit(
     active_elapsed = quantities.elapsed_coordinate_ids(evaluators["while"] + evaluators["until"])
 
     return MotionUnit(
-        id=handler.motion.id,
-        handler=handler.id,
+        id=handler.id,
+        motion_id=handler.motion.id,
         name=handler.motion.name,
         description=(handler.motion.description or "").splitlines(),
         has_when_elapsed=bool(when_elapsed),
@@ -1352,24 +1352,9 @@ _GROUP_TYPE_FLAGS = {
 
 
 def _finish_motions(model, motions, handlers, computation, fsm, solvers_by_id):
-    """Fold on everything that needs the whole set of motions to be known.
-
-    Raises:
-        ConstraintViolation: two handlers govern one motion, so nothing decides which drives it.
-    """
-    by_motion: dict[str, str] = {}
-    for motion in motions:
-        if motion.id in by_motion:
-            raise ConstraintViolation(
-                "coordination",
-                f"Motion '{motion.id}' is governed by more than one constraint handler "
-                f"('{by_motion[motion.id]}' and '{motion.handler}'). Each motion must map to "
-                f"exactly one handler; split the motion or merge the handlers.",
-            )
-        by_motion[motion.id] = motion.handler
-
+    """Fold on everything that needs the whole set of motions to be known."""
     order_by_handler = {handler.id: handler.order for handler in handlers}
-    ordered = sorted(motions, key=lambda motion: order_by_handler[motion.handler])
+    ordered = sorted(motions, key=lambda motion: order_by_handler[motion.id])
     for motion in ordered:
         _set_motion_conditions(motion)
         for group in motion.pose_axis_error_groups:
@@ -1714,7 +1699,10 @@ def _apply_fsm_wiring(motions, fsm) -> dict:
         for reaction in fsm["reactions_table"]
         if reaction["do_transition"] in transitions
     }
-    by_id = {motion.id: motion for motion in motions}
+    # A fallback names the motion specification, which several handlers may realize.
+    units_by_motion: dict[str, list] = {}
+    for motion in motions:
+        units_by_motion.setdefault(motion.motion_id, []).append(motion)
     state_by_uri = {uri: name for name, uri in fsm.get("state_uris", {}).items()}
     for motion in motions:
         if not motion.runs_in_state:
@@ -1763,7 +1751,7 @@ def _apply_fsm_wiring(motions, fsm) -> dict:
             if not fires_fsm_event(monitor):
                 continue
             stamp(monitor)
-            fallback = _when_gate_fallback(motion, monitor, by_id)
+            fallback = _when_gate_fallback(motion, monitor, units_by_motion)
             state = state_by_event.get(monitor.event_name or "")
             if state and not fallback.fsm_state:
                 fallback.fsm_state = state
@@ -1896,8 +1884,13 @@ def _apply_reentry_events(motions, fsm) -> None:
         motion.has_reentry_events = bool(motion.reentry_events)
 
 
-def _when_gate_fallback(motion, monitor, by_id):
-    """The hold motion that runs while a WHEN-gated motion waits for its event."""
+def _when_gate_fallback(motion, monitor, units_by_motion):
+    """The hold motion that runs while a WHEN-gated motion waits for its event.
+
+    Raises:
+        ConstraintViolation: the fallback names a motion two handlers realize, so nothing says
+            which of them holds while the gated motion waits.
+    """
     if not monitor.fallback_motion:
         raise ConstraintViolation(
             "coordination",
@@ -1905,15 +1898,23 @@ def _when_gate_fallback(motion, monitor, by_id):
             "waiting hold motion (e.g. '... otherwise hold <hold-motion>'). A WHEN precondition "
             "without a fallback would leave the arm uncommanded while waiting.",
         )
-    fallback = by_id.get(monitor.fallback_motion)
-    if fallback is None:
+    candidates = units_by_motion.get(monitor.fallback_motion, [])
+    if not candidates:
         raise ConstraintViolation(
             "coordination",
             f"WHEN monitor '{monitor.id}' names unknown fallback motion "
             f"'{monitor.fallback_motion}'.",
         )
+    if len(candidates) > 1:
+        raise ConstraintViolation(
+            "coordination",
+            f"WHEN monitor '{monitor.id}' on motion '{motion.id}' falls back to "
+            f"'{monitor.fallback_motion}', which is realized by more than one constraint "
+            f"handler ({', '.join(sorted(unit.id for unit in candidates))}), so nothing says "
+            "which of them holds while the gated motion waits. Name the handler's own motion.",
+        )
 
-    return fallback
+    return candidates[0]
 
 
 def _apply_fsm_gate_calls(motions, namespace) -> None:

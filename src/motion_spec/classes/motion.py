@@ -147,11 +147,14 @@ class MotionSolverSlice:
 @dataclass
 class MotionUnit:
     """A fully built motion unit: schedules, monitors, controllers, conditions, solvers and
-    codegen flags. The compiler's per-motion unit -- `mot:GuardedMotion` is one row above it.
+    codegen flags. The compiler's per-handler unit -- `mot:GuardedMotion` is one row above it,
+    and several handlers may realize the same one, each with its own gains, solvers and state.
     """
 
+    # The handler's id: one unit per handler, so this is what names the generated symbols and
+    # the state instance. `motion_id` is the specification it realizes, which is not unique.
     id: str
-    handler: str = field(metadata=INTERNAL)
+    motion_id: str = field(metadata=INTERNAL)
     name: str
     # Authored description split into lines: the doc comment it renders into is a per-line
     # construct, so the split belongs to the IR rather than to an escape in the renderer.

@@ -36,7 +36,7 @@ def slice_(sid, read_only):
 def motion(mid, solvers):
     return MotionUnit(
         id=mid,
-        handler="",
+        motion_id="",
         name=mid,
         description=[],
         when_evaluators=[],

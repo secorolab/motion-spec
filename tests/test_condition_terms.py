@@ -28,7 +28,7 @@ def evaluator(cid: str) -> ConstraintEvaluator:
 def motion(**kwargs) -> MotionUnit:
     fields = dict(
         id="motion_probe",
-        handler="",
+        motion_id="",
         name="probe",
         description=[],
         when_evaluators=[],

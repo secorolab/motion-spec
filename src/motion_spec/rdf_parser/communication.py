@@ -135,8 +135,8 @@ def _motion_rows(motions, uri_by_id: dict):
                 {
                     "id": motion.id,
                     "uri": uri_by_id.get(motion.id),
-                    "handler": motion.handler,
-                    "handler_uri": uri_by_id.get(motion.handler),
+                    "motion": motion.motion_id,
+                    "motion_uri": uri_by_id.get(motion.motion_id),
                     "controllers": [controller.id for controller in motion.controllers],
                     "monitors": [
                         monitor.id

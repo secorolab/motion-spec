@@ -61,7 +61,7 @@ def _slice(sid: str, output: list) -> MotionSolverSlice:
 def _motion(mid: str, index: int, fsm_state: str, schedule: list, solvers: list) -> MotionUnit:
     return MotionUnit(
         id=mid,
-        handler="",
+        motion_id="",
         name=mid,
         description=[],
         when_evaluators=[],

@@ -155,6 +155,7 @@ int main(int argc, char **argv) {
 <endif>
             break;
         \}
+        const int _active_motion = fsm_active_motion(fsm);
 <coordination.motions:{m | <fsm-motion-reentry(m, coordination.fsm)>}><if(communication.ros.action_server)>
 <ros-goal-arm-tick(coordination, communication.ros.action_server)>
 <endif>
@@ -177,7 +178,7 @@ int main(int argc, char **argv) {
 <endif>
 <if(resources.by_kind.serial_chain)>
 <app-chain-trace-update(configuration.backend, resources.by_kind.serial_chain, configuration.trace)>
-<app-chain-runtime-step(configuration.backend, resources.by_kind.serial_chain)>
+<app-chain-runtime-step(configuration.backend, resources.by_kind.serial_chain, "_active_motion")>
 <endif>
 <if(coordination.fsm)>
         const unsigned int _fsm_state_before = fsm->currentStateIndex;
@@ -194,14 +195,20 @@ int main(int argc, char **argv) {
 <if(resources.by_kind.serial_chain)>
 <app-chain-camera-publish(configuration.backend, composition.scene.cameras)>
 <endif>
+        _introspection_pub.begin_tick(
+            motion_spec::runtime::monotonic_time_s(),
+            static_cast\<std::uint64_t\>(_step),
+            _active_motion,
+            static_cast\<int\>(fsm->currentStateIndex));
+        _introspection_pub.event_occurrences(events.count, events.buffer, events.size);
         motion_spec::introspection::sample_model(
             _introspection_pub,
-<if(coordination.fsm)>            static_cast\<int\>(fsm->currentStateIndex),
-            fsm_active_motion(fsm),
-<endif>            motion_spec::runtime::monotonic_time_s(),
-            static_cast\<std::uint64_t\>(_step),
-            shared,
-            events);
+            _active_motion,
+            shared);
+<if(resources.by_kind.serial_chain)>
+<app-chain-introspection-sample(configuration.backend, resources.by_kind.serial_chain)>
+<endif>
+        _introspection_pub.end_tick();
 #endif
         ++_step;
         // One pacer for this loop. The real-time factor scales the period rather than adding a

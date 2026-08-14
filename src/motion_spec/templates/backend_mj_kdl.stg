@@ -506,7 +506,7 @@ app-chain-provider-update-mj_kdl(serial_chain_solvers) ::= <<
 <endif>}; separator="">
 >>
 
-app-chain-runtime-step-mj_kdl(serial_chain_solvers) ::= <<
+app-chain-runtime-step-mj_kdl(serial_chain_solvers, active_motion) ::= <<
 <serial_chain_solvers:{solver | <if(solver.runtime.owner)>        mj_kdl::update(&mj_<solver.runtime.id>);
 <endif>}; separator="">
         // Closing the viewer ends the run, but it must end the same way S_DONE does. std::exit
@@ -515,6 +515,9 @@ app-chain-runtime-step-mj_kdl(serial_chain_solvers) ::= <<
         if (!mj_kdl::step(&mj_<first(serial_chain_solvers).runtime.id>)) {
             break;
         }
+>>
+
+app-chain-introspection-sample-mj_kdl(serial_chain_solvers) ::= <<
 >>
 
 app-chain-control-apply-mj_kdl(serial_chain_solvers) ::= <<

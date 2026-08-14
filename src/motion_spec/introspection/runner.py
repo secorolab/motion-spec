@@ -128,7 +128,8 @@ _ROBOT_CONFIG_KEYS = (
 )
 
 # What each device kind's reader in robot_config.hpp demands of its section. Optional keys
-# (timeout_ms, bias_samples) have documented defaults there and are not required here.
+# (timeout_ms, bias_samples, poll_interval_ms) have documented defaults there and are not
+# required here.
 _DEVICE_CONFIG_KEYS = {
     "KinovaGen3": _ROBOT_CONFIG_KEYS,
     "KinovaGen3-2F85": _ROBOT_CONFIG_KEYS,

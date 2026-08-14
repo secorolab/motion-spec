@@ -79,6 +79,8 @@ def generate_ir(manifest_path) -> dict:
         model, handlers, robots, computation, derivation, fsm
     )
     world_frames = resources.annotate_runtime(robots.serial_chains, motions, backend)
+    coordination.annotate_sensor_dependencies(motions, computation)
+    resources.annotate_device_dependencies(robots.serial_chains, motions)
 
     if scene.timestep_s <= 0:
         raise ValueError("ENVIRONMENT timestep must be positive.")

@@ -14,8 +14,8 @@ from pathlib import Path
 
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
-from motion_spec.introspection.archive import ArchiveError
 from motion_spec.generation.artifacts import build_frame_log_proto_fields
+from motion_spec.introspection.archive import ArchiveError
 
 PROTO_PACKAGE = "motion_spec.introspection.log"
 POSE_NAMES = ("px", "py", "pz", "qx", "qy", "qz", "qw")
@@ -28,6 +28,7 @@ _SLOT_MESSAGE = {
     "poses": "PoseSlot",
     "twists": "TwistSlot",
     "wrenches": "WrenchSlot",
+    "devices": "DeviceSlot",
 }
 _CONSTRAINT_KEYS = ("active", "error", "output", "satisfied", "sat_t", "measured", "setpoint")
 _MONITOR_KEYS = ("active", "value", "satisfied", "sat_t")
@@ -45,6 +46,7 @@ _HEADER_SCHEMA = {
                 "poses",
                 "twists",
                 "wrenches",
+                "devices",
             )
         }
     },
@@ -181,6 +183,7 @@ def _build_file_descriptor(fields: dict) -> descriptor_pb2.FileDescriptorProto:
     message("PoseSlot", [(n, D.TYPE_DOUBLE, i) for i, n in enumerate(POSE_NAMES, 1)])
     message("TwistSlot", [(n, D.TYPE_DOUBLE, i) for i, n in enumerate(TWIST_NAMES, 1)])
     message("WrenchSlot", [(n, D.TYPE_DOUBLE, i) for i, n in enumerate(WRENCH_NAMES, 1)])
+    message("DeviceSlot", [("seq", D.TYPE_UINT64, 1), ("success", D.TYPE_BOOL, 2)])
 
     rf = fdp.message_type.add(name="RuntimeFrame")
     core = [
@@ -368,6 +371,10 @@ def frame_record(flat: dict, schema: dict) -> bytes:
     for e in fields["quantities"]:
         value = flat[f"q{e['index']}"]
         setattr(m, e["name"], value != 0 if e.get("proto_type") == "bool" else value)
+    for e in fields.get("devices", []):
+        s, i = getattr(m, e["name"]), e["index"]
+        s.seq = flat.get(f"device{i}.seq", 0)
+        s.success = bool(flat.get(f"device{i}.success", 0))
     for e in fields["triggers"]:
         s, i = getattr(m, e["name"]), e["index"]
         s.kind, s.idx, s.fsm_state, s.t, s.wall_ns = (
@@ -416,6 +423,7 @@ _CATEGORY_BY_MESSAGE = {
     "PoseSlot": "poses",
     "TwistSlot": "twists",
     "WrenchSlot": "wrenches",
+    "DeviceSlot": "devices",
 }
 _SPATIAL = (("poses", POSE_NAMES), ("twists", TWIST_NAMES), ("wrenches", WRENCH_NAMES))
 _BOOTSTRAP_FIELDS = {category: [] for category in (*_SLOT_MESSAGE, "quantities")}
@@ -597,6 +605,13 @@ def _parse_frame(msg, contract: LogContract) -> dict:
         qids[idx]: quantities[idx]
         for idx in range(min(len(qids), len(quantities)))
         if written("quantities", idx)
+    }
+    record["devices"] = {
+        entry["id"]: {
+            "seq": getattr(msg, entry["name"]).seq,
+            "success": bool(getattr(msg, entry["name"]).success),
+        }
+        for entry in fields.get("devices", [])
     }
     trigger_count = msg.trigger_count
     pool_size = contract.trigger_pool

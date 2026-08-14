@@ -17,7 +17,7 @@ SCHEMA_VERSION = 1
 # 3: the log carries its own decode contract in its header record -- the message descriptor,
 # every slot's id and IRI, the per-motion gate and the FSM tables. A v2 log has none of that,
 # so read_contract rejects it rather than guessing.
-FRAME_LAYOUT_VERSION = 4
+FRAME_LAYOUT_VERSION = 5
 RUNTIME_RDF_CONTRACT_VERSION = 1
 FIELD_BYTES = 8
 TRIGGER_POOL_SIZE = 32
@@ -46,6 +46,7 @@ CSLOT = [
     ("setpoint", "d"),
 ]
 MSLOT = [("active", "q"), ("value", "d"), ("satisfied", "q"), ("sat_t", "d")]
+DSLOT = [("seq", "Q"), ("success", "q")]
 TSLOT = [("kind", "q"), ("idx", "q"), ("fsm_state", "q"), ("t", "d"), ("wall_ns", "q")]
 PSLOT = [
     ("active", "q"),
@@ -89,6 +90,9 @@ def field_names_and_format(pools: dict) -> tuple[str, list[str]]:
         names.extend(f"m{idx}.{name}" for name, _ in MSLOT)
     fmt += "d" * pools["quantities"]
     names.extend(f"q{idx}" for idx in range(pools["quantities"]))
+    for idx in range(pools.get("devices", 0)):
+        fmt += "".join(code for _, code in DSLOT)
+        names.extend(f"device{idx}.{name}" for name, _ in DSLOT)
     for idx in range(pools["triggers"]):
         fmt += "".join(code for _, code in TSLOT)
         names.extend(f"tr{idx}.{name}" for name, _ in TSLOT)
@@ -347,6 +351,20 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
     # decoder resolves "unset" against the writing motions here rather than guessing from absence.
     spatial = introspection.get("spatial_samples") or {"poses": [], "twists": [], "wrenches": []}
     dataflow = introspection.get("dataflow") or {}
+    devices = sorted(
+        (
+            {
+                "index": device["health_index"],
+                "id": device["config_key"],
+                "required_by_motion": device.get("required_by_motion") or [],
+            }
+            for solver in ir.get("resources", {}).get("by_kind", {}).get("serial_chain", [])
+            if solver.get("runtime", {}).get("owner")
+            for device in solver.get("devices", [])
+            if device.get("health_index") is not None
+        ),
+        key=lambda device: device["index"],
+    )
 
     def gate(category: str, slot_index: int, cadence) -> None:
         # cadence is already expressed in motions (plan 011 §2b) -- no coordinator in between.
@@ -366,6 +384,7 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
         "constraints": max_controllers,
         "monitors": max_monitors,
         "quantities": len(quantities),
+        "devices": len(devices),
         # Sized for the events one tick can produce; the heartbeat is not recorded, so it
         # needs no slot.
         "triggers": max(TRIGGER_POOL_SIZE, len(fsm.get("events", [])), max_monitors),
@@ -410,6 +429,7 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
         "controllers": introspection.get("controllers", []),
         "monitors": introspection.get("monitors", []),
         "quantities": quantities,
+        "devices": devices,
         # Written once at init: one copy in the header says everything repeating it per tick would.
         "constants": introspection.get("constants", []),
         # The dataflow contract for everything that survives into the layout, so a reader can see
@@ -497,6 +517,7 @@ PROTO_FIELD_BASES = {
     "poses": 5000,
     "twists": 6000,
     "wrenches": 7000,
+    "devices": 8000,
 }
 PROTO_MAX_FIELD_NUMBER = 536870911
 RUNTIME_FRAME_MESSAGE = "RuntimeFrame"
@@ -581,6 +602,7 @@ def build_frame_log_proto_fields(schema: dict) -> dict:
     _semantic_slots("poses", spatial.get("poses", []))
     _semantic_slots("twists", spatial.get("twists", []))
     _semantic_slots("wrenches", spatial.get("wrenches", []))
+    _semantic_slots("devices", schema.get("devices", []))
 
     for category, entries in fields.items():
         for entry in entries:
@@ -781,7 +803,7 @@ def build_frame_log_header_record(schema: dict) -> bytes:
     header.fsm_namespace = fsm.get("namespace") or ""
 
     # Slot identity, keyed by the field number that carries it on the wire.
-    for category in ("quantities", "poses", "twists", "wrenches"):
+    for category in ("quantities", "poses", "twists", "wrenches", "devices"):
         for entry in fields.get(category, ()):
             slot = header.slots.add()
             slot.number, slot.id = entry["number"], entry["id"]

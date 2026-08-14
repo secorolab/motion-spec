@@ -18,6 +18,7 @@ inline constexpr std::uint32_t kRuntimeRdfContractVersion = <communication.intro
 inline constexpr std::size_t kNumConstraints = <communication.introspection_artifacts.frame_layout.pools.constraints>;
 inline constexpr std::size_t kNumMonitors = <communication.introspection_artifacts.frame_layout.pools.monitors>;
 inline constexpr std::size_t kNumQuantities = <communication.introspection_artifacts.frame_layout.pools.quantities>;
+inline constexpr std::size_t kNumDevices = <communication.introspection_artifacts.frame_layout.pools.devices>;
 inline constexpr std::size_t kNumTriggers = <communication.introspection_artifacts.frame_layout.pools.triggers>;
 inline constexpr std::size_t kNumPoses = <communication.introspection_artifacts.frame_layout.pools.poses>;
 inline constexpr std::size_t kNumTwists = <communication.introspection_artifacts.frame_layout.pools.twists>;
@@ -84,6 +85,11 @@ struct MonitorSlot {
     double sat_t;
 };
 
+struct DeviceSlot {
+    std::uint64_t seq;
+    std::int64_t success;
+};
+
 struct Trigger {
     std::int64_t kind;
     std::int64_t idx;
@@ -128,6 +134,7 @@ struct Frame {
     ConstraintSlot constraints[kNumConstraints];
     MonitorSlot monitors[kNumMonitors];
     double quantities[kNumQuantities];
+    DeviceSlot devices[kNumDevices];
     Trigger triggers[kNumTriggers];
     std::int64_t trigger_count;
     PoseSlot poses[kNumPoses];
@@ -137,6 +144,7 @@ struct Frame {
 
 static_assert(sizeof(ConstraintSlot) == 7 * 8, "ConstraintSlot must be padding-free");
 static_assert(sizeof(MonitorSlot) == 4 * 8, "MonitorSlot must be padding-free");
+static_assert(sizeof(DeviceSlot) == 2 * 8, "DeviceSlot must be padding-free");
 static_assert(sizeof(Trigger) == 5 * 8, "Trigger must be padding-free");
 static_assert(sizeof(PoseSlot) == 8 * 8, "PoseSlot must be padding-free");
 static_assert(sizeof(TwistSlot) == 7 * 8, "TwistSlot must be padding-free");
@@ -435,6 +443,7 @@ private:
         <communication.introspection_artifacts.frame_layout.protobuf.fields.constraints:{f|if (frame.constraints[<f.index>].active) { auto &s = *m->mutable_<f.name>(); const auto &c = frame.constraints[<f.index>]; s.set_error(c.error); s.set_output(c.output); s.set_satisfied(c.satisfied); s.set_sat_t(c.sat_t); s.set_measured(c.measured); s.set_setpoint(c.setpoint); \}}; separator="\n        ">
         <communication.introspection_artifacts.frame_layout.protobuf.fields.monitors:{f|if (frame.monitors[<f.index>].active) { auto &s = *m->mutable_<f.name>(); const auto &x = frame.monitors[<f.index>]; s.set_value(x.value); s.set_satisfied(x.satisfied); s.set_sat_t(x.sat_t); \}}; separator="\n        ">
         <communication.introspection_artifacts.frame_layout.protobuf.fields.quantities:{f|<quantity-field-set(f)>}; separator="\n        ">
+        <communication.introspection_artifacts.frame_layout.protobuf.fields.devices:{f|{ auto &s = *m->mutable_<f.name>(); const auto &x = frame.devices[<f.index>]; s.set_seq(x.seq); s.set_success(x.success); \}}; separator="\n        ">
         // Only the slots this tick actually filled: mutable_ materializes a sub-message even when
         // empty, so writing the whole pool would ship 31 empty wrappers on every eventless tick.
         <communication.introspection_artifacts.frame_layout.protobuf.fields.triggers:{f|if (frame.trigger_count > <f.index>) { auto &s = *m->mutable_<f.name>(); const auto &x = frame.triggers[<f.index>]; s.set_kind(x.kind); s.set_idx(x.idx); s.set_fsm_state(x.fsm_state); s.set_t(x.t); s.set_wall_ns(x.wall_ns); \}}; separator="\n        ">
@@ -569,6 +578,11 @@ public:
     void quantity_sample(std::size_t index, double value) {
         if (index \>= kNumQuantities) return;
         scratch_.quantities[index] = value;
+    \}
+
+    void device_sample(std::size_t index, std::uint64_t seq, bool success) {
+        if (index \>= kNumDevices) return;
+        scratch_.devices[index] = DeviceSlot{seq, success ? 1 : 0};
     \}
 
     void pose_sample(std::size_t index, double px, double py, double pz, double qx, double qy, double qz, double qw) {
@@ -735,10 +749,8 @@ namespace motion_spec::introspection {
 
 // `state_index` is coordinator context recorded in the frame; `active_motion` is what selects the
 // slots, because a motion is what computes them.
-inline void sample_model(RunPublisher &pub, int state_index, int active_motion, double t, std::uint64_t step, shared_data &shared, const motion_spec_event_buffer &events) {
+inline void sample_model(RunPublisher &pub, int active_motion, shared_data &shared) {
     static_cast\<void\>(shared);
-    pub.begin_tick(t, step, active_motion, state_index);
-    pub.event_occurrences(events.count, events.buffer, events.size);
 <communication.introspection_artifacts.model.quantities:{slot | <introspection-quantity-sample(slot, computation.views)>}; separator="\n">
 <communication.introspection_artifacts.model.poses:{slot | <introspection-pose-sample(slot)>}; separator="\n">
 <communication.introspection_artifacts.model.twists:{slot | <introspection-twist-sample(slot)>}; separator="\n">
@@ -748,7 +760,6 @@ inline void sample_model(RunPublisher &pub, int state_index, int active_motion, 
     default:
         break;
     \}
-    pub.end_tick();
 }
 
 } // namespace motion_spec::introspection
@@ -847,6 +858,11 @@ message MonitorSlot {
   double sat_t = 4;
 }
 
+message DeviceSlot {
+  uint64 seq = 1;
+  bool success = 2;
+}
+
 message Trigger {
   sfixed64 kind = 1;
   sfixed64 idx = 2;
@@ -899,6 +915,7 @@ message RuntimeFrame {
   <communication.introspection_artifacts.frame_layout.protobuf.fields.constraints:{f|ConstraintSlot <f.name> = <f.number>;}; separator="\n">
   <communication.introspection_artifacts.frame_layout.protobuf.fields.monitors:{f|MonitorSlot <f.name> = <f.number>;}; separator="\n">
   <communication.introspection_artifacts.frame_layout.protobuf.fields.quantities:{f|<f.proto_type> <f.name> = <f.number>;}; separator="\n">
+  <communication.introspection_artifacts.frame_layout.protobuf.fields.devices:{f|DeviceSlot <f.name> = <f.number>;}; separator="\n">
   <communication.introspection_artifacts.frame_layout.protobuf.fields.triggers:{f|Trigger <f.name> = <f.number>;}; separator="\n">
   sfixed64 trigger_count = 17;
   <communication.introspection_artifacts.frame_layout.protobuf.fields.poses:{f|PoseSlot <f.name> = <f.number>;}; separator="\n">

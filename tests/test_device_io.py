@@ -16,14 +16,33 @@ import pytest
 TEMPLATES = Path(__file__).resolve().parents[1] / "src" / "motion_spec" / "templates"
 
 
-def _sampled() -> str:
+def _sampled(state: str = "Reading", sample: str = "reading_sample") -> str:
     """The C++ of the handoff buffer, with the StringTemplate escapes undone and the rule's
     state/sample parameters filled in the way the backend template fills them."""
     text = (TEMPLATES / "backend_robif2b_io.stg").read_text()
-    found = re.search(r"^sampled-buffer\(state, sample\) ::= <<\n(.*?)\n>>", text, re.S | re.M)
+    found = re.search(
+        r"^sampled-buffer\(state, sample\) ::= <<\n(.*?)\n>>",
+        text,
+        re.DOTALL | re.MULTILINE,
+    )
     assert found, "sampled-buffer is no longer in backend_robif2b_io.stg"
     body = found.group(1).replace("\\<", "<").replace("\\>", ">").replace("\\}", "}")
-    return body.replace("<state>", "Reading").replace("<sample>", "reading_sample")
+    return body.replace("<state>", state).replace("<sample>", sample)
+
+
+def _ft_io() -> str:
+    text = (TEMPLATES / "backend_robif2b_io.stg").read_text()
+    found = re.search(
+        r"^device-io-section-RobotiqFT300s\(solver, device\) ::= <<\n(.*?)\n>>",
+        text,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert found, "the FT worker is no longer in backend_robif2b_io.stg"
+    body = found.group(1).replace("\\<", "<").replace("\\>", ">").replace("\\}", "}")
+    return body.replace(
+        "<sampled-buffer({ft_sensor_state}, {ft_sensor_sample})>",
+        _sampled("ft_sensor_state", "ft_sensor_sample"),
+    )
 
 
 HAMMER = """
@@ -43,7 +62,7 @@ struct Reading {
     bool ok = false;
 };
 
-%s
+/* SAMPLED_BUFFER */
 
 int main() {
     reading_sample sampled;
@@ -104,8 +123,51 @@ def test_a_reader_never_sees_a_torn_measurement(tmp_path: Path) -> None:
     if compiler is None:
         pytest.skip("no C++ compiler")
     source = tmp_path / "device_io.cpp"
-    source.write_text(HAMMER % _sampled())
+    source.write_text(HAMMER.replace("/* SAMPLED_BUFFER */", _sampled()))
     binary = tmp_path / "device_io"
+    subprocess.run(
+        [compiler, "-std=c++20", "-O2", "-pthread", str(source), "-o", str(binary)], check=True
+    )
+    subprocess.run([str(binary)], check=True)
+
+
+def test_ft_worker_publishes_failure_then_recovers(tmp_path: Path) -> None:
+    compiler = shutil.which("g++") or shutil.which("c++")
+    if compiler is None:
+        pytest.skip("no C++ compiler")
+    source = tmp_path / "ft_failure.cpp"
+    source.write_text(
+        """
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <stop_token>
+#include <thread>
+#include <type_traits>
+
+namespace motion_spec::io { struct Staleness {}; }
+
+struct robif2b_robotiq_ft_sensor_nbx { bool *success = nullptr; };
+inline std::atomic<int> calls{0};
+inline void robif2b_robotiq_ft_update(robif2b_robotiq_ft_sensor_nbx *driver) {
+    *driver->success = ++calls > 1;
+}
+
+/* FT_IO */
+
+int main() {
+    ft_sensor_io io;
+    robif2b_robotiq_ft_sensor_nbx driver{&io.state.success};
+    io.state.success = true;
+    io.start(driver, 1.0);
+    while (calls.load() < 2) std::this_thread::yield();
+    io.stop();
+    const auto recovered = io.sample.read();
+    return calls.load() >= 2 && recovered.seq >= 2 && recovered.value.success ? 0 : 1;
+}
+""".replace("/* FT_IO */", _ft_io())
+    )
+    binary = tmp_path / "ft_failure"
     subprocess.run(
         [compiler, "-std=c++20", "-O2", "-pthread", str(source), "-o", str(binary)], check=True
     )

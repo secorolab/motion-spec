@@ -1376,6 +1376,24 @@ def _finish_motions(model, motions, handlers, computation, fsm, solvers_by_id):
     return ordered, meta
 
 
+def annotate_sensor_dependencies(motions, computation) -> None:
+    """Resolve which mounted sensor readings each motion's computations consume."""
+    for motion in motions:
+        references = quantities.collect_motion_input_references(motion, computation.closures)
+        referenced_outputs = {
+            view.superobject.id
+            for view in computation.views.values()
+            if view.subobject.id in references
+        }
+        for solver in motion.serial_chain_solvers:
+            solver.required_sensors = sorted(
+                output.sensor_name
+                for output in solver.output
+                if (output.id in references or output.id in referenced_outputs)
+                and getattr(output, "sensor_name", "")
+            )
+
+
 def evaluator_term(evaluator) -> dict:
     """The boolean term one evaluator contributes to a condition.
 

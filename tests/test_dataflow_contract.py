@@ -15,7 +15,11 @@ from motion_spec.classes.geometry import Direction, Pose, Position, Wrench
 from motion_spec.classes.motion import BlackboardValue, MotionSolverSlice, MotionUnit
 from motion_spec.classes.qudt import Quantity, QuantityKind, Unit
 from motion_spec.classes.solvers import MotionDrivers, SolverWithInputAndOutput
-from motion_spec.generation.artifacts import build_introspection_model, build_schema
+from motion_spec.generation.artifacts import (
+    build_frame_log_proto_fields,
+    build_introspection_model,
+    build_schema,
+)
 from motion_spec.introspection import frame_log_pb
 from motion_spec.rdf_parser.quantities import annotate_dataflow
 
@@ -325,6 +329,21 @@ def _written_log(tmp: Path, schema: dict, flats: list[dict]) -> Path:
         for flat in flats:
             frame_log_pb.write_delimited(fh, frame_log_pb.frame_record(flat, schema))
     return log
+
+
+def test_ft_communication_failure_survives_the_log_round_trip(tmp_path: Path) -> None:
+    schema = _schema()
+    schema["devices"] = [{"index": 0, "id": "arm1.wrist_ft", "required_by_motion": [1]}]
+    schema["pools"]["devices"] = 1
+    schema["protobuf"] = build_frame_log_proto_fields(schema)
+    schema["schema_hash"] += "-ft-health"
+    log = _written_log(
+        tmp_path,
+        schema,
+        [flat_frame(schema, **{"device0.seq": 42, "device0.success": 0})],
+    )
+    frame = next(iter(frame_log_pb.frame_records(log)))
+    assert frame["devices"] == {"arm1.wrist_ft": {"seq": 42, "success": False}}
 
 
 def test_a_log_decodes_with_no_companion_artifact(tmp_path: Path) -> None:

@@ -138,6 +138,7 @@ device-state-init-robif2b-Robotiq2F85(solver, device) ::= <<
 
 device-state-init-robif2b-RobotiqFT300s(solver, device) ::= <<
     ft_sensor_io ft_<device.drives>_io{};
+    bool ft_<device.drives>_configured = false;
     ft_<device.drives>_io.stale.limit = motion_spec::io::stale_after_cycles(
         motion_spec::config::stale_after_ms(robot_config, "<device.config_key>"),
         motion_spec::runtime::kControlPeriodS);
@@ -166,8 +167,8 @@ device-prime-impl ::= [
     default: "device-nothing"
 ]
 
-device-update-robif2b(solver, device) ::= <<
-<({device-update-robif2b-<device.kind>})(solver, device)>
+device-update-robif2b(solver, device, active_motion) ::= <<
+<({device-update-robif2b-<device.kind>})(solver, device, active_motion)>
 >>
 
 device-shutdown-robif2b(solver, device) ::= <<
@@ -286,8 +287,14 @@ device-configure-robif2b-Robotiq2F85(solver, device) ::= <<
 
 device-configure-robif2b-RobotiqFT300s(solver, device) ::= <<
     robif2b_robotiq_ft_configure(&ft_<device.drives>);
-<device-configure-check({ft_<device.drives>_io.state}, device.config_key)>
-    ft_<device.drives>_io.start(ft_<device.drives>);
+    if (!ft_<device.drives>_io.state.success) {
+        std::cerr \<\< "[run] device '<device.config_key>' failed to configure\n";
+    \} else {
+        ft_<device.drives>_configured = true;
+        ft_<device.drives>_io.start(
+            ft_<device.drives>,
+            motion_spec::config::ft_poll_interval_ms(robot_config, "<device.config_key>"));
+    \}
 >>
 
 // The gripper is the one device whose reading the loop derives rather than reads: the driver
@@ -315,13 +322,13 @@ device-prime-robif2b-Robotiq2F85(solver, device) ::= <<
     gripper_<solver.runtime.id>_cmd = gripper_<solver.runtime.id>_pos_rad;
 >>
 
-device-update-robif2b-KinovaGen3(solver, device) ::= <<
+device-update-robif2b-KinovaGen3(solver, device, active_motion) ::= <<
             <robif2b-update-kinova(solver.runtime.id)>
             motion_spec::runtime::require_driver(kinova_<solver.runtime.id>_state.success, "<device.config_key>");
 >>
 
-device-update-robif2b-KinovaGen3-2F85(solver, device) ::= <<
-<device-update-robif2b-KinovaGen3(solver, device)>
+device-update-robif2b-KinovaGen3-2F85(solver, device, active_motion) ::= <<
+<device-update-robif2b-KinovaGen3(solver, device, active_motion)>
             gripper_<solver.runtime.id>_state.pos_cmd = static_cast\<float\>(
                 100.0 * motion_spec::runtime::gripper_closed_fraction(
                     gripper_<solver.runtime.id>_cmd, <gripper-travel-Robotiq2F85()>));
@@ -333,19 +340,24 @@ device-update-robif2b-KinovaGen3-2F85(solver, device) ::= <<
 
 // No bus transaction here: the radian command is scaled to the device's units and handed over,
 // and what comes back is the last reading its thread completed.
-device-update-robif2b-Robotiq2F85(solver, device) ::= <<
+device-update-robif2b-Robotiq2F85(solver, device, active_motion) ::= <<
             gripper_<solver.runtime.id>_io.wire_cmd = static_cast\<std::uint8_t\>(std::lround(
                 255.0 * motion_spec::runtime::gripper_closed_fraction(
                     gripper_<solver.runtime.id>_cmd, <gripper-travel-Robotiq2F85()>)));
             const auto gripper_<solver.runtime.id>_msr = gripper_<solver.runtime.id>_io.sample.read();
-            motion_spec::io::require_fresh(gripper_<solver.runtime.id>_io.stale, gripper_<solver.runtime.id>_msr.seq, gripper_<solver.runtime.id>_msr.value.success, "<device.config_key>");
+            motion_spec::io::require_fresh(gripper_<solver.runtime.id>_io.stale, gripper_<solver.runtime.id>_msr.seq, gripper_<solver.runtime.id>_msr.value.success, true, "<device.config_key>");
             gripper_<solver.runtime.id>_pos_rad =
                 <gripper-travel-Robotiq2F85()> * (gripper_<solver.runtime.id>_msr.value.position_msr / 255.0);
 >>
 
-device-update-robif2b-RobotiqFT300s(solver, device) ::= <<
+device-update-robif2b-RobotiqFT300s(solver, device, active_motion) ::= <<
             const auto ft_<device.drives>_msr = ft_<device.drives>_io.sample.read();
-            motion_spec::io::require_fresh(ft_<device.drives>_io.stale, ft_<device.drives>_msr.seq, ft_<device.drives>_msr.value.success, "<device.config_key>");
+            motion_spec::io::require_fresh(
+                ft_<device.drives>_io.stale,
+                ft_<device.drives>_msr.seq,
+                ft_<device.drives>_msr.value.success,
+                <if(device.has_required_motions)>(<device.required_by_motion:{index | <active_motion> == <index>}; separator=" || ">)<else>false<endif>,
+                "<device.config_key>");
 >>
 
 device-shutdown-robif2b-KinovaGen3(solver, device) ::= <<
@@ -365,8 +377,10 @@ device-shutdown-robif2b-Robotiq2F85(solver, device) ::= <<
 >>
 
 device-shutdown-robif2b-RobotiqFT300s(solver, device) ::= <<
-    ft_<device.drives>_io.stop();
-    robif2b_robotiq_ft_shutdown(&ft_<device.drives>);
+    if (ft_<device.drives>_configured) {
+        ft_<device.drives>_io.stop();
+        robif2b_robotiq_ft_shutdown(&ft_<device.drives>);
+    \}
 >>
 
 // Where the forwarding block leaves the commanded joint position for this chain's gripper.
@@ -448,11 +462,24 @@ true
 app-chain-provider-update-robif2b(serial_chain_solvers) ::= <<
 >>
 
-app-chain-runtime-step-robif2b(serial_chain_solvers) ::= <<
+app-chain-runtime-step-robif2b(serial_chain_solvers, active_motion) ::= <<
         if (!motion_spec::runtime::stop_requested()) {
-<serial_chain_solvers:{solver | <if(solver.runtime.owner)><solver.devices:{device | <device-update-robif2b(solver, device)>
+<serial_chain_solvers:{solver | <if(solver.runtime.owner)><solver.devices:{device | <device-update-robif2b(solver, device, active_motion)>
 }; separator=""><endif>}; separator="">
         \}
+>>
+
+device-introspection-sample-impl ::= [
+    "RobotiqFT300s": "device-introspection-sample-robif2b-RobotiqFT300s",
+    default: "device-nothing"
+]
+
+device-introspection-sample-robif2b-RobotiqFT300s(solver, device) ::= <<
+        { const auto health = ft_<device.drives>_io.sample.read(); _introspection_pub.device_sample(<device.health_index>, health.seq, health.value.success); \}
+>>
+
+app-chain-introspection-sample-robif2b(serial_chain_solvers) ::= <<
+<serial_chain_solvers:{solver | <if(solver.runtime.owner)><solver.devices:{device | <({<device-introspection-sample-impl.(device.kind)>})(solver, device)>}; separator=""><endif>}; separator="">
 >>
 
 app-chain-trace-update-robif2b(serial_chain_solvers, trace) ::= <<

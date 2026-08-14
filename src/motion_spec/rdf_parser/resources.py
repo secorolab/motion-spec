@@ -1858,6 +1858,14 @@ def annotate_runtime(serial_chains, motions, backend: str) -> list[dict]:
         _split_outputs(solver, backend)
         _index_chain_joints(solver)
     _apply_runtime_to_motions(serial_chains, motions, commanding)
+    health_index = 0
+    for solver in serial_chains:
+        if not solver.runtime.owner:
+            continue
+        for device in solver.devices:
+            if device.kind == "RobotiqFT300s":
+                device.health_index = health_index
+                health_index += 1
     # What the model authored, passed to whatever solver it names exactly as written. The one
     # exception is the RNE pass a simulated ACHD run adds to gravity-compensate its command:
     # that pass wants the field, and the value beside it is the root acceleration ACHD takes,
@@ -1871,6 +1879,27 @@ def annotate_runtime(serial_chains, motions, backend: str) -> list[dict]:
             ]
 
     return world_frames
+
+
+def annotate_device_dependencies(serial_chains, motions) -> None:
+    """Fold each FT device's consuming motion indexes onto its runtime binding."""
+    by_id = {solver.id: solver for solver in serial_chains}
+    for solver in serial_chains:
+        if not solver.runtime.owner:
+            continue
+        for device in solver.devices:
+            if device.kind != "RobotiqFT300s":
+                continue
+            device.required_by_motion = [
+                motion.index
+                for motion in motions
+                if any(
+                    by_id[part.solver_id].runtime.id == solver.runtime.id
+                    and device.drives in part.required_sensors
+                    for part in motion.serial_chain_solvers
+                )
+            ]
+            device.has_required_motions = bool(device.required_by_motion)
 
 
 def _split_gripper_outputs(solver, backend: str) -> None:

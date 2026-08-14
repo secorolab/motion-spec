@@ -149,6 +149,21 @@ class ShmFrameReader:
             for idx in range(min(len(qids), pools["quantities"]))
             if written is None or idx in written
         }
+        devices = (
+            contract.fields.get("devices", [])
+            if contract is not None
+            else [
+                {"index": idx, "id": f"device{idx}"}
+                for idx in range(pools.get("devices", 0))
+            ]
+        )
+        record["devices"] = {
+            entry["id"]: {
+                "seq": flat[f"device{entry['index']}.seq"],
+                "success": bool(flat[f"device{entry['index']}.success"]),
+            }
+            for entry in devices
+        }
         pool_size, count = pools["triggers"], flat["trigger_count"]
         record["triggers"] = (
             [

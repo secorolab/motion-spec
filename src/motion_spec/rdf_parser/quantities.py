@@ -1691,6 +1691,27 @@ def collect_motion_references(motion, closures: dict) -> set[str]:
     return references
 
 
+def collect_motion_input_references(motion, closures: dict) -> set[str]:
+    """Every value the motion's computations and captures read, excluding solver outputs."""
+    references: set[str] = set()
+
+    def visit(value) -> None:
+        if isinstance(value, str):
+            references.add(value)
+        elif isinstance(value, dict):
+            for item in value.values():
+                visit(item)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+
+    for name in ("when_schedule", "while_pre_schedule", "while_schedule", "until_schedule"):
+        for step in getattr(motion, name):
+            visit(closures.get(step))
+    visit([asdict(snapshot) for snapshot in motion.snapshots])
+    return references
+
+
 def elapsed_coordinate_id(evaluator) -> str:
     """The shared value an elapsed constraint measures: its own authored duration coordinate.
 

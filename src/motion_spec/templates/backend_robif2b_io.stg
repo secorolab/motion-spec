@@ -33,6 +33,16 @@ inline double stale_after_ms(const toml::table &config, const std::string &key) 
     return value;
 \}
 
+// The Robotiq example leaves this gap after each update. The driver already waits while reading;
+// this is the quiet time before the next read, kept tunable for the real serial adapter.
+inline double ft_poll_interval_ms(const toml::table &config, const std::string &key) {
+    const double value = config.at_path(key + ".poll_interval_ms").value_or(10.0);
+    if (value \< 0.0) {
+        throw std::runtime_error("robot config [" + key + "] has a negative 'poll_interval_ms'");
+    \}
+    return value;
+\}
+
 \} // namespace motion_spec::config
 
 namespace motion_spec::io {
@@ -57,14 +67,25 @@ struct Staleness {
 // A device thread that stops advancing is as bad as one that fails: its measurement keeps the
 // value it last had, so the next solve would price a pose nothing stands behind. The loop cannot
 // see a transaction in flight, so freshness is what it checks instead of a per-cycle result.
-inline void require_fresh(Staleness &staleness, std::uint64_t seq, bool ok,
+inline void require_fresh(Staleness &staleness, std::uint64_t seq, bool ok, bool required,
                           std::string_view device) {
     if (motion_spec::runtime::stop_requested()) return;
     if (seq != staleness.last) {
         staleness.last = seq;
         staleness.cycles = 0;
         if (ok) return;
+        if (!required) return;
         std::cerr \<\< "[run] device '" \<\< device \<\< "' reported a failed transaction; stopping"
+                  \<\< std::endl;
+        motion_spec::runtime::request_stop(0);
+        return;
+    \}
+    if (!required) {
+        staleness.cycles = 0;
+        return;
+    \}
+    if (!ok) {
+        std::cerr \<\< "[run] device '" \<\< device \<\< "' has no valid reading; stopping"
                   \<\< std::endl;
         motion_spec::runtime::request_stop(0);
         return;
@@ -170,12 +191,13 @@ struct ft_sensor_io {
     motion_spec::io::Staleness stale;
     std::jthread thread;
 
-    // rq_com_listen_stream blocks on the stream, so this thread paces itself on the sensor.
-    void start(robif2b_robotiq_ft_sensor_nbx &driver) {
-        thread = std::jthread([this, &driver](std::stop_token token) {
+    void start(robif2b_robotiq_ft_sensor_nbx &driver, double poll_interval_ms) {
+        thread = std::jthread([this, &driver, poll_interval_ms](std::stop_token token) {
             while (!token.stop_requested()) {
                 robif2b_robotiq_ft_update(&driver);
                 sample.publish(state);
+                std::this_thread::sleep_for(
+                    std::chrono::duration\<double, std::milli\>(poll_interval_ms));
             \}
         \});
     \}

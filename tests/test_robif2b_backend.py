@@ -87,6 +87,7 @@ def test_no_deployment_detail_is_authored_into_a_template() -> None:
 MODELS = Path(__file__).parents[2] / "motion-spec-dsl" / "models"
 # One per route the gripper can take: its own serial line, or the arm's interconnect.
 REAL_WORLD_MODELS = ("real_demo_monitor", "real_demo_hold")
+FT_REQUIRED_BY_MOTION = {"real_demo_monitor": [0, 1], "real_demo_hold": []}
 
 pytestmark = requires_workspace(MODELS)
 
@@ -116,6 +117,21 @@ def test_a_real_world_model_generates_and_compiles(name: str, tmp_path: Path) ->
     assert build.returncode == 0, build.stderr
     assert (built / "build" / "main").is_file()
     _check_sensor_readings_have_one_writer(built / "generated")
+    _check_ft_dependency(built / "generated", FT_REQUIRED_BY_MOTION[name])
+
+
+def _check_ft_dependency(generated: Path, expected: list[int]) -> None:
+    """Only motions whose computation reads the FT wrench depend on FT health."""
+    ir = json.loads((generated / "model" / "ir.json").read_text())
+    devices = [
+        device
+        for solver in ir["resources"]["by_kind"]["serial_chain"]
+        if solver["runtime"]["owner"]
+        for device in solver["devices"]
+        if device["kind"] == "RobotiqFT300s"
+    ]
+    assert len(devices) == 1
+    assert devices[0]["required_by_motion"] == expected
 
 
 def _check_sensor_readings_have_one_writer(generated: Path) -> None:

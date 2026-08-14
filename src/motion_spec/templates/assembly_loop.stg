@@ -37,8 +37,12 @@ app-chain-provider-update(backend, serial_chain_solvers) ::= <<
 <({app-chain-provider-update-<backend>})(serial_chain_solvers)>
 >>
 
-app-chain-runtime-step(backend, serial_chain_solvers) ::= <<
-<({app-chain-runtime-step-<backend>})(serial_chain_solvers)>
+app-chain-runtime-step(backend, serial_chain_solvers, active_motion) ::= <<
+<({app-chain-runtime-step-<backend>})(serial_chain_solvers, active_motion)>
+>>
+
+app-chain-introspection-sample(backend, serial_chain_solvers) ::= <<
+<({app-chain-introspection-sample-<backend>})(serial_chain_solvers)>
 >>
 
 app-chain-control-apply(backend, serial_chain_solvers) ::= <<

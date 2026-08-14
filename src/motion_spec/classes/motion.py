@@ -141,6 +141,7 @@ class MotionSolverSlice:
     gripper_joint_outputs: list = field(default_factory=list)
     joint_space_samples: list = field(default_factory=list)
     joint_space_cmd_samples: list = field(default_factory=list)
+    required_sensors: list[str] = field(default_factory=list)
     type: str = field(default="MotionSolverSlice")
 
 

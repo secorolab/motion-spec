@@ -5,6 +5,7 @@
 """Unified Click command-line interface for motion-spec."""
 
 import json
+import os
 import subprocess
 import sys
 import traceback
@@ -26,6 +27,31 @@ def _internal_failure(what: str, exc: Exception) -> click.ClickException:
     traceback.print_exception(exc, file=sys.stderr)
 
     return click.ClickException(f"{what}: {exc}")
+
+
+GENERATION_DIR_ENV = "MOTION_SPEC_GEN"
+
+
+def _generation_base(output_dir: Path | None) -> Path | None:
+    """Where a new generation goes: `-o` if given, else `$MOTION_SPEC_GEN`.
+
+    Neither set leaves the decision to `create_generation_dir`, which puts it under the working
+    directory -- workable, but it scatters generations across wherever the command was run from,
+    so say so once rather than let them accumulate unnoticed. The notice goes to stderr: `gen`
+    writes the generation path to stdout for a caller to read.
+    """
+    if output_dir is not None:
+        return output_dir
+    configured = os.environ.get(GENERATION_DIR_ENV, "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    click.echo(
+        f"{GENERATION_DIR_ENV} is not set, so this generation goes under the working directory. "
+        f"Export {GENERATION_DIR_ENV}=/path/to/generations to keep them all in one place.",
+        err=True,
+    )
+
+    return None
 
 
 def _model_rejected(exc: Exception) -> click.ClickException:
@@ -86,6 +112,16 @@ class MotionSpecGroup(click.Group):
                     ("generated/provenance/", "DSL, coordinate, and motion-spec provenance."),
                     ("build/", "Reusable compiled controller."),
                     ("runs/RUN/", "Run-owned logs, runtime RDF, REC graph, and manifest."),
+                ]
+            )
+        with _manual_section(formatter, "ENVIRONMENT"):
+            formatter.write_dl(
+                [
+                    (
+                        GENERATION_DIR_ENV,
+                        "Where 'gen' and 'run' put a new generation when given no -o. "
+                        "Unset, they fall back to the working directory and say so.",
+                    )
                 ]
             )
         option_records = [
@@ -296,7 +332,7 @@ def gen(stage_or_model: str, model: Path | None, output_dir: Path | None) -> Non
     if model.suffix != ".robmot":
         raise click.BadParameter("MODEL must be a .robmot file", param_hint="MODEL")
     try:
-        generation = create_generation_dir(model, output_dir)
+        generation = create_generation_dir(model, _generation_base(output_dir))
         generate_model(model, generation, stage=stage)
     except ConstraintViolation as exc:
         raise _model_rejected(exc) from exc
@@ -510,7 +546,7 @@ def run(
         raise click.UsageError("--steps requires --headless")
     if input.suffix == ".robmot":
         try:
-            generation = create_generation_dir(input, output_dir)
+            generation = create_generation_dir(input, _generation_base(output_dir))
             generate_model(input, generation, stage="code")
             build_generation(generation, prefixes=prefixes, jobs=jobs)
         except ConstraintViolation as exc:

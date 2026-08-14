@@ -95,6 +95,44 @@ def test_gen_and_run_compose_the_model_pipeline(monkeypatch, tmp_path) -> None:
     assert str(run_generation / "runs" / "run-1") in result.output
 
 
+def test_generation_base_prefers_o_then_the_environment(monkeypatch, tmp_path) -> None:
+    """-o wins over $MOTION_SPEC_GEN, which wins over the working-directory fallback."""
+    model = tmp_path / "demo.robmot"
+    model.write_text("")
+    received = {}
+
+    def create_generation(_model, output):
+        received["output"] = output
+        generation = output or tmp_path / "fallback"
+        generation.mkdir(exist_ok=True)
+        return generation
+
+    monkeypatch.setattr("motion_spec.generation.pipeline.create_generation_dir", create_generation)
+    monkeypatch.setattr(
+        "motion_spec.generation.pipeline.generate_model",
+        lambda _model, generation, *, stage: generation / "generated",
+    )
+
+    explicit, configured = tmp_path / "explicit", tmp_path / "configured"
+    monkeypatch.setenv("MOTION_SPEC_GEN", str(configured))
+    assert CliRunner().invoke(main, ["gen", "ir", str(model), "-o", str(explicit)]).exit_code == 0
+    assert received["output"] == explicit
+
+    result = CliRunner().invoke(main, ["gen", "ir", str(model)])
+    assert result.exit_code == 0
+    assert received["output"] == configured
+    assert "MOTION_SPEC_GEN is not set" not in result.stderr
+
+    # Unset, the library keeps deciding: the CLI passes no base and says where things will land.
+    monkeypatch.delenv("MOTION_SPEC_GEN")
+    result = CliRunner().invoke(main, ["gen", "ir", str(model)])
+    assert result.exit_code == 0
+    assert received["output"] is None
+    assert "MOTION_SPEC_GEN is not set" in result.stderr
+    # The generation path stays the only thing on stdout, for a caller reading it.
+    assert result.stdout.strip() == str(tmp_path / "fallback")
+
+
 def test_install_uses_package_extras(monkeypatch) -> None:
     received = {}
     monkeypatch.setattr(

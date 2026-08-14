@@ -639,7 +639,7 @@ inline double evaluate_less_than_constraint(double quantity, double threshold) {
 }
 
 inline double evaluate_greater_than_constraint(double quantity, double threshold) {
-    return (quantity \> threshold) ? 0.0 : quantity - threshold;
+    return (quantity \> threshold) ? 0.0 : threshold - quantity;
 }
 
 inline double evaluate_bilateral_constraint(double quantity, double lower, double upper) {

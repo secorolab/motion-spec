@@ -365,6 +365,10 @@ emit-call-WrenchFromPositionDirectionAndMagnitude(closure, views) ::= <<
 shared.<closure.wrench> = KDL::Wrench(<access-expr(closure.direction, views)> * <access-expr(closure.magnitude, views)>, KDL::Vector(0.0, 0.0, 0.0)).RefPoint(-<access-expr(closure.position, views)>);
 >>
 
+emit-call-WrenchFromDirectionAndMoment(closure, views) ::= <<
+shared.<closure.wrench> = KDL::Wrench(KDL::Vector::Zero(), <access-expr(closure.direction, views)> * <access-expr(closure.moment, views)>);
+>>
+
 emit-call-RotateWrenchToDistalWithPose(closure, views) ::= <<
 shared.<closure.to> = shared.<closure.pose>.M.Inverse(<access-expr(closure.from, views)>);
 >>

@@ -30,6 +30,7 @@ from motion_spec_dsl.rdf_parser.vocab import (
     MAP,
     QUDT_SCHEMA,
     RBDYN_OP,
+    RBDYN_OP_EXT,
     SLV,
 )
 from rdf_utils.constraints import ConstraintViolation
@@ -751,6 +752,11 @@ OPS_GENERIC = [
     Operator(
         RBDYN_OP["WrenchFromPositionDirectionAndMagnitude"],
         [RBDYN_OP["magnitude"], RBDYN_OP["direction"], RBDYN_OP["position"]],
+        [RBDYN_OP["wrench"]],
+    ),
+    Operator(
+        RBDYN_OP_EXT["WrenchFromDirectionAndMoment"],
+        [RBDYN_OP_EXT["moment"], RBDYN_OP["direction"]],
         [RBDYN_OP["wrench"]],
     ),
     Specification(MAP["View"], [MAP["superobject"]], [MAP["subobject"]]),

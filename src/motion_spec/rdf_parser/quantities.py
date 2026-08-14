@@ -290,7 +290,8 @@ def spatial_axes(
     Returns:
         the directions, empty when nothing Cartesian is commanded
     """
-    if controller_type == "ImpedanceController":
+    # An impedance on an angular subspace states Torque; only an unstated one defaults to Force.
+    if controller_type == "ImpedanceController" and command_type != "Torque":
         command_type = "Force"
     if command_type == "Force" or subspace == "force":
         return ()

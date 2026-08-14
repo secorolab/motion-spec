@@ -126,6 +126,9 @@ class SolverIdFactory:
     def component_measured_derivative(self, axis: quantities.SpatialAxis) -> str:
         return f"{self.controller}_measured_derivative_{axis.suffix}"
 
+    def component_moment(self, axis: quantities.SpatialAxis) -> str:
+        return f"moment_{self.controller}_{axis.suffix}"
+
     def pose_evaluator(self) -> str:
         return f"eval_pose_diff_{self.controller}"
 
@@ -162,6 +165,7 @@ _AXIS_DERIVATIONS = (
         PROV.wasDerivedFrom,
         (),
     ),
+    (SolverIdFactory.component_moment, "moment-{axis}", PROV.wasDerivedFrom, ()),
 )
 _WHOLE_DERIVATIONS = (
     (SolverIdFactory.pose_evaluator, "eval-pose-diff"),
@@ -240,6 +244,15 @@ _TARGET_QUANTITY_KINDS = (
     (GEOM_COORD.PoseCoordinate, "Pose"),
     (KC_STAT.JointPositionCoordinate, "JointPosition"),
 )
+
+
+def _is_moment_plan(model, plan) -> bool:
+    """Whether a controller commands a Cartesian moment: an `f_ext` couple, not a solver row."""
+    graph = model.graph
+    if str(graph.value(plan.controller, APP["command-type"]) or "") != "Torque":
+        return False
+    target = graph.value(plan.view, MAP.superobject) if plan.view is not None else plan.quantity
+    return KC_STAT.JointPositionCoordinate not in get_node_types(graph, target)
 
 
 def _authored_controller_axes(model) -> dict:
@@ -399,7 +412,8 @@ def _validate_solver_derivations(model, by_handler, by_solver, algorithms) -> No
     """Enforce executable solver limits, which only hold once authored RDF has resolved to plans."""
     for solver, plans in by_solver.items():
         family = algorithms[solver]
-        axes = [axis for plan in plans for axis in plan.axes]
+        # A moment plan's axes are f_ext directions, not solver rows, so they claim no budget.
+        axes = [axis for plan in plans if not _is_moment_plan(model, plan) for axis in plan.axes]
         if family.axes_must_be_distinct:
             duplicates = [axis for axis, count in collections.Counter(axes).items() if count > 1]
             if duplicates:
@@ -464,6 +478,9 @@ def _controller_signal_id(model, context, plan) -> str:
         model.register_derived(signal_id, str(plan.controller), "output", PROV.wasDerivedFrom)
         return signal_id
 
+    # A Cartesian moment feeds the moment slot of a wrench, so it is named after that.
+    if _is_moment_plan(model, plan):
+        return controller_output(f"moment_{controller_id}")
     # A force command is named after the wrench magnitude it feeds, whichever control law
     # produced it; only a command that goes straight to a device is named `cmd_`.
     if CSTR_HDL.ImpedanceController in types or command_type == "Force":
@@ -589,6 +606,8 @@ def _whole_controller_signal(model, context, plan, types):
             provenance=Provenance(),
             reference_value=None,
         )
+    if _is_moment_plan(model, plan):
+        return _derived_quantity(signal_id, "Torque", "N_M")
     if CSTR_HDL.ImpedanceController in types or command_type == "Force":
         return _derived_quantity(signal_id, "Force", "N")
     if signal_id.startswith("tau_"):
@@ -607,14 +626,18 @@ def _derived_controller(model, context, plan, axis: quantities.SpatialAxis | Non
     types = get_node_types(graph, plan.controller)
     measured_source = graph.value(plan.controller, CSTR_HDL["measured-velocity"])
     if axis is not None:
-        family = context.algorithm_by_solver[plan.solver]
-        payload_id = (
-            ids.component_energy(axis)
-            if issubclass(family, AccelerationEnergyDriven)
-            else ids.component_acceleration(axis)
-        )
         controller_id = ids.component_controller(axis)
-        signal = family.payload(payload_id, axis.subspace)
+        if _is_moment_plan(model, plan):
+            # A moment feeds f_ext, so its payload is the wrench's moment magnitude, not a row.
+            signal = _derived_quantity(ids.component_moment(axis), "Torque", "N_M")
+        else:
+            family = context.algorithm_by_solver[plan.solver]
+            payload_id = (
+                ids.component_energy(axis)
+                if issubclass(family, AccelerationEnergyDriven)
+                else ids.component_acceleration(axis)
+            )
+            signal = family.payload(payload_id, axis.subspace)
         error = _axis_error(ids, axis)
         measured_derivative = _axis_derivative(ids, axis) if measured_source is not None else None
     else:
@@ -784,6 +807,7 @@ def motion_drivers(model, context, solver: URIRef) -> list:
         [
             record
             for plan in plans
+            if not _is_moment_plan(model, plan)
             for record in _derived_acceleration_drivers(model, context, plan, family)
         ]
         if driven

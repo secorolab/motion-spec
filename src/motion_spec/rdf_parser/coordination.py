@@ -43,6 +43,7 @@ from motion_spec.classes.handlers import (
     EdgeMonitor,
     EvaluatorType,
     LevelMonitor,
+    RosGoalAnswer,
     RosPublication,
 )
 from motion_spec.classes.motion import ForwardedCommandStep, MotionSolverSlice, MotionUnit
@@ -828,9 +829,10 @@ def _ros_publication(model, node) -> dict:
     the constraint the monitor watches is satisfied; an unconditioned row is the otherwise.
     """
     graph = model.graph
+    answer = _ros_answer(model, node)
     channel = graph.value(node, NS_MM_ROS["channel-name"])
     if channel is None:
-        return {}
+        return answer
     type_name = str(graph.value(node, NS_MM_ROS["type-name"]) or "")
     shape = _message_shape(type_name)
     auto = shape["auto"]
@@ -841,6 +843,9 @@ def _ros_publication(model, node) -> dict:
     occurrence_events: list[str] = []
 
     for row in sorted(graph.objects(node, RDFS.member)):
+        # An action member is the goal this monitor answers, which is nothing this topic carries.
+        if (row, RDF.type, NS_MM_ROS["Action"]) in graph:
+            continue
         # A member with no authored value is not a field row: it is one event this monitor
         # announces, published as an occurrence.
         if graph.value(row, RDF.value) is None:
@@ -867,6 +872,7 @@ def _ros_publication(model, node) -> dict:
         )
 
     return {
+        **answer,
         "ros": RosPublication(
             str(channel),
             type_name,
@@ -883,6 +889,67 @@ def _ros_publication(model, node) -> dict:
             occurrence_path=occurrence_path,
             occurrence_events=occurrence_events,
             rate_hz=_publish_rate(model, node),
+        ),
+    }
+
+
+# The status a run may answer its own goal with, and the goal-handle call that reports it. A
+# cancel is the client's to ask for, so the runtime reports it where it stops, never as an answer.
+_ANSWER_METHODS = {"STATUS_SUCCEEDED": "succeed", "STATUS_ABORTED": "abort"}
+
+
+def _ros_answer(model, node) -> dict:
+    """How this monitor answers the goal in flight: the status it reports, and the result fields
+    it fills, or nothing when it answers no goal.
+
+    The answer is a member of the monitor rather than the monitor itself, so a monitor that
+    publishes may answer too. Its own outcome member carries the status and, when the answering
+    state is the satisfied one, the constraint that state holds under; every other member of it
+    is one field of the result.
+
+    Raises:
+        ConstraintViolation: the monitor states a status a run cannot reach on its own, or none
+            at all.
+    """
+    graph = model.graph
+    answer = next(
+        (
+            member
+            for member in sorted(graph.objects(node, RDFS.member))
+            if (member, RDF.type, NS_MM_ROS["Action"]) in graph
+        ),
+        None,
+    )
+    if answer is None:
+        return {}
+    shape = action_shape(str(graph.value(answer, NS_MM_ROS["type-name"]) or ""))["result"]
+    watched = set(graph.objects(node, CSTR_HDL["constraint"]))
+    outcome, satisfied, fields = None, True, []
+    for member in sorted(graph.objects(answer, RDFS.member)):
+        path = graph.value(member, NS_MM_ROS["field-path"])
+        if path is None:
+            outcome = str(graph.value(member, RDF.value))
+            satisfied = set(graph.objects(member, CSTR_EXT["has-constraint"])) == watched
+            continue
+        fields.append(publish_field(shape, str(path), str(graph.value(member, RDF.value))))
+    if outcome not in _ANSWER_METHODS:
+        raise ConstraintViolation(
+            "communication",
+            f"monitor '{model.id(node)}' answers its goal '{outcome}'; a run answers "
+            f"{' or '.join(sorted(_ANSWER_METHODS))}",
+        )
+
+    return {
+        "answer": RosGoalAnswer(
+            outcome,
+            _ANSWER_METHODS[outcome],
+            shape["cpp_type"],
+            fields=fields,
+            satisfied=satisfied,
+            auto_time=sorted(path for path, kind in shape["auto"].items() if kind == "time"),
+            auto_context_id=sorted(
+                path for path, kind in shape["auto"].items() if kind == "context_id"
+            ),
         )
     }
 

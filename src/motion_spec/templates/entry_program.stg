@@ -150,9 +150,6 @@ int main(int argc, char **argv) {
 <coordination.motions:{motion |             <motion.id>_state_instance.active = false;}; separator="\n">
         \}
         if (fsm->currentStateIndex == fsm->endStateIndex) {
-<if(communication.ros.action_server)>
-<ros-goal-end-state(communication.ros.action_server)>
-<endif>
             break;
         \}
         const int _active_motion = fsm_active_motion(fsm);

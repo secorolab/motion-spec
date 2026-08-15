@@ -474,16 +474,40 @@ SERVER = URIRef(f"{NS}pick-place")
 ACTION_TYPE = "bdd_ros2_interfaces/action/Behaviour"
 
 
-def _served(goal_event: str = "E_GOAL", *, result: tuple | None = ("result.trinary.value", "TRUE")):
-    """A served action: the goal event it produces, and what a completed run answers with."""
+def _served(goal_event: str = "E_GOAL"):
+    """A served action: the channel goals arrive on, and the event an accepted one produces."""
     graph = Graph()
     graph.add((SERVER, RDF.type, NS_MM_ROS["Action"]))
     graph.add((SERVER, NS_MM_ROS["type-name"], Literal(ACTION_TYPE)))
     graph.add((SERVER, NS_MM_ROS["channel-name"], Literal("pick_place")))
     graph.add((SERVER, RDFS.member, URIRef(f"{FSM_NS}{goal_event}")))
+    return graph
+
+
+def _answer(
+    outcome: str = "STATUS_SUCCEEDED",
+    *,
+    result: tuple | None = ("result.trinary.value", "TRUE"),
+    satisfied: bool = True,
+):
+    """A monitor that answers the goal in flight: the status it reports, and the result fields
+    it states. The answer is a member of the monitor, and its own outcome member carries the
+    constraint it holds under when the answering state is the satisfied one."""
+    graph = Graph()
+    answer = URIRef(f"{MONITOR}.answer")
+    graph.add((MONITOR, CSTR_HDL["constraint"], WATCHED))
+    graph.add((MONITOR, RDFS.member, answer))
+    graph.add((answer, RDF.type, NS_MM_ROS["Action"]))
+    graph.add((answer, NS_MM_ROS["type-name"], Literal(ACTION_TYPE)))
+    graph.add((answer, NS_MM_ROS["channel-name"], Literal("pick_place")))
+    node = URIRef(f"{answer}.outcome")
+    graph.add((answer, RDFS.member, node))
+    graph.add((node, RDF.value, Literal(outcome)))
+    if satisfied:
+        graph.add((node, CSTR_EXT["has-constraint"], WATCHED))
     if result is not None:
-        row = URIRef(f"{SERVER}.r0")
-        graph.add((SERVER, RDFS.member, row))
+        row = URIRef(f"{answer}.f0")
+        graph.add((answer, RDFS.member, row))
         graph.add((row, NS_MM_ROS["field-path"], Literal(result[0])))
         graph.add((row, RDF.value, Literal(result[1])))
     return graph
@@ -516,23 +540,51 @@ def test_the_server_reads_its_whole_shape_off_the_action_it_names():
     assert "bdd_ros2_interfaces" in server["packages"]
 
 
-def test_a_completed_run_answers_with_the_fields_the_model_authored():
-    server = action_server(_model(_served()), FSM)
-    assert server["result_fields"] == [
+def test_the_monitor_that_answers_states_the_status_and_the_fields():
+    """The run reaches its finish at a monitor, so the answer is read there: the status it
+    reports, the handle call that reports it, and the result type it fills."""
+    answer = _ros_publication(_model(_answer()), MONITOR)["answer"]
+    assert (answer.outcome, answer.method) == ("STATUS_SUCCEEDED", "succeed")
+    assert answer.result_cpp_type == "bdd_ros2_interfaces::action::Behaviour_Result"
+    assert answer.fields == [
         {"path": "result.trinary.value", "cpp_value": "bdd_ros2_interfaces::msg::Trinary::TRUE"}
     ]
+    assert answer.auto_time == ["result.stamp"]
+    assert answer.auto_context_id == ["result.scenario_context_id"]
 
 
-def test_a_server_authoring_no_result_answers_with_the_types_own_defaults():
-    """A run that never finishes states nothing it did not establish; so does one whose model
-    authored no result at all."""
-    assert action_server(_model(_served(result=None)), FSM)["result_fields"] == []
+def test_an_answer_states_which_polarity_of_its_monitor_answers():
+    """A satisfied answer holds under the constraint the monitor watches; one that states no
+    condition is the otherwise, and answers when the constraint fails."""
+    assert _ros_publication(_model(_answer()), MONITOR)["answer"].satisfied
+    violated = _ros_publication(_model(_answer("STATUS_ABORTED", satisfied=False)), MONITOR)
+    assert violated["answer"].satisfied is False
+    assert violated["answer"].method == "abort"
+
+
+def test_an_answer_stating_no_field_answers_with_the_types_own_defaults():
+    assert _ros_publication(_model(_answer(result=None)), MONITOR)["answer"].fields == []
 
 
 def test_a_result_field_the_action_does_not_offer_is_rejected():
-    graph = _served(result=("result.trinary.invented", "TRUE"))
+    graph = _answer(result=("result.trinary.invented", "TRUE"))
     with pytest.raises(ConstraintViolation, match="not a payload field"):
-        action_server(_model(graph), FSM)
+        _ros_publication(_model(graph), MONITOR)
+
+
+def test_a_status_a_run_cannot_reach_on_its_own_is_rejected():
+    """A cancel is the client's to ask for; the runtime reports it wherever it stops."""
+    with pytest.raises(ConstraintViolation, match="answers its goal"):
+        _ros_publication(_model(_answer("STATUS_CANCELED")), MONITOR)
+
+
+def test_a_monitor_answering_is_not_read_as_the_served_action():
+    """Every member of an answer carries a value -- each is one field of the result -- so the
+    action a goal arrives on stays the one with the valueless member."""
+    graph = _served()
+    for triple in _answer():
+        graph.add(triple)
+    assert action_server(_model(graph), FSM)["action_name"] == "pick_place"
 
 
 def test_an_event_the_fsm_does_not_declare_is_rejected():

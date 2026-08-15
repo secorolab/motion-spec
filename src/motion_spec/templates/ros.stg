@@ -562,36 +562,12 @@ ros-goal-result-own(server) ::= <<
 <server.result_auto_context_id:{p | _result-><p>.uuid = _scenario_context_id;}; separator="\n">
 >>
 
-// What the model says a completed run answers with.
-
-ros-goal-result(server) ::= <<
-auto _result = std::make_shared\<<server.result_cpp_type>\>();
-<server.result_fields:{f | _result-><f.path> = <f.cpp_value>;}; separator="\n">
-<ros-goal-result-own(server)>
->>
-
 // Stopping early establishes none of what the model authored, so none of it is stated: every
 // field keeps the default its own message type gives it.
 
 ros-goal-result-unset(server) ::= <<
 auto _result = std::make_shared\<<server.result_cpp_type>\>();
 <ros-goal-result-own(server)>
->>
-
-// The run reached the state the model calls its end, so the goal succeeded. A goal whose cancel
-// was accepted still ran to completion; it is reported CANCELED because that is what the client
-// was told to expect.
-
-ros-goal-end-state(server) ::= <<
-            if (_active_goal) {
-                <ros-goal-result(server)>
-                if (_active_goal->is_canceling()) {
-                    _active_goal->canceled(_result);
-                \} else {
-                    _active_goal->succeed(_result);
-                \}
-                _active_goal.reset();
-            \}
 >>
 
 ros-publish-tick-locals(ros) ::= <<
@@ -619,6 +595,30 @@ ros-monitor-announce(monitor, event) ::= <<
         \}
 >>
 
+// Reaching this monitor's state is what the model calls the goal finished, so the goal is
+// answered there and once: the handle is dropped, and nothing else in the run still holds it.
+// A goal whose cancel was accepted is reported CANCELED whatever the model states, because that
+// is what the client was told to expect.
+
+ros-monitor-answer(motion, monitor) ::= <<
+        if (_active_goal && <motion.id>_state_instance.active
+                && <if(!monitor.answer.satisfied)>!<endif>(<monitor-satisfied-expr(monitor)>)) {
+            auto _result = std::make_shared\<<monitor.answer.result_cpp_type>\>();
+<monitor.answer.fields:{f |             _result-><f.path> = <f.cpp_value>;}; separator="\n">
+<monitor.answer.auto_time:{p |             _result-><p> = robot.ros_node->now();}; separator="\n">
+<monitor.answer.auto_context_id:{p |             _result-><p>.uuid = _scenario_context_id;}; separator="\n">
+            if (_active_goal->is_canceling()) {
+                _active_goal->canceled(_result);
+            \} else {
+                _active_goal-><monitor.answer.method>(_result);
+            \}
+            _active_goal.reset();
+        \}
+>>
+
+// What the monitor says while its motion runs, and then the goal it answers: a scenario sees
+// every occurrence the run states before it is told the run is over.
+
 ros-monitor-publish(motion, monitor) ::= <<
 <if(monitor.ros.occurrence_path)>
 <monitor.ros.occurrence_events:{e | <ros-monitor-announce(monitor, e)>}; separator="\n">
@@ -644,6 +644,9 @@ ros-monitor-publish(motion, monitor) ::= <<
                 robot.<monitor.ros.pub_id>->try_publish(robot.<monitor.ros.pub_id>_msg);
             \}
         \}
+<endif>
+<if(monitor.answer)>
+<ros-monitor-answer(motion, monitor)>
 <endif>
 >>
 

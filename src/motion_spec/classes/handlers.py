@@ -131,6 +131,7 @@ class LevelMonitor:
     active_terms_present: bool = False
     active_any: bool = False
     ros: RosPublication | None = None
+    answer: RosGoalAnswer | None = None
     type: str = field(default="LevelMonitor")
 
 
@@ -171,6 +172,7 @@ class EdgeMonitor:
     fsm_namespace: str | None = None
     fsm_event_idx: int | None = None
     ros: RosPublication | None = None
+    answer: RosGoalAnswer | None = None
     type: str = field(default="EdgeMonitor")
 
 
@@ -206,6 +208,26 @@ class RosPublication:
     occurrence_path: str | None = None
     occurrence_events: list = field(default_factory=list)
     occurrence_namespace: str | None = None
+
+
+@dataclass
+class RosGoalAnswer:
+    """How a monitor answers the goal in flight: the status it reports, the C++ result type it
+    fills, and the authored `{path, cpp_value}` rows it fills it with.
+
+    `satisfied` says which polarity of the monitor answers -- the state block the model wrote it
+    in -- so the loop answers on the same condition the monitor's other actions run under.
+    `auto_time`/`auto_context_id` are the result fields nothing may author: the node fills them
+    from its clock and its scenario parameter.
+    """
+
+    outcome: str
+    method: str
+    result_cpp_type: str
+    fields: list[dict] = field(default_factory=list)
+    satisfied: bool = True
+    auto_time: list[str] = field(default_factory=list)
+    auto_context_id: list[str] = field(default_factory=list)
 
 
 Monitor = LevelMonitor | EdgeMonitor

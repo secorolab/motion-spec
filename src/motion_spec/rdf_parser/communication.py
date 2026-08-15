@@ -991,7 +991,9 @@ def _served_action(model):
     """The action the model serves, or None when it serves none.
 
     A goal arrives on a served action and starts something: its valueless member is the event an
-    accepted goal produces. An act the model performs has no member -- nothing arrives on it.
+    accepted goal produces. An act the model performs has no member -- nothing arrives on it --
+    and a monitor answering a goal states every member with a value, since each is one field of
+    the result it answers with.
 
     Raises:
         ConstraintViolation: the model serves more than one action, which one runtime cannot do.
@@ -1000,7 +1002,9 @@ def _served_action(model):
     served = [
         node
         for node in sorted(graph.subjects(RDF["type"], NS_MM_ROS["Action"]), key=str)
-        if next(iter(graph.objects(node, RDFS.member)), None) is not None
+        if any(
+            graph.value(member, RDF.value) is None for member in graph.objects(node, RDFS.member)
+        )
     ]
     if len(served) > 1:
         raise ConstraintViolation(
@@ -1016,7 +1020,8 @@ def action_server(model, fsm) -> dict | None:
 
     Everything the generated server needs comes off the action the model named: the C++ type it
     instantiates, its header, the goal field carrying the scenario a run belongs to, and the
-    result fields each outcome writes.
+    result fields the node owns rather than the model. What the goal is answered with comes off
+    the monitor that answers it, which is where the run reaches that point.
 
     Raises:
         ConstraintViolation: the model serves goals without importing an FSM, or names an event
@@ -1097,27 +1102,7 @@ def action_server(model, fsm) -> dict | None:
         "result_auto_context_id": sorted(
             path for path, kind in result["auto"].items() if kind == "context_id"
         ),
-        "result_fields": _result_fields(model, node, result),
     }
-
-
-def _result_fields(model, node, shape: dict) -> list:
-    """What a completed run answers a goal with, resolved against the action's result type.
-
-    A run that stopped before its end state writes none of these: it leaves every field at the
-    default its own message type gives it, which is what the interface chose "unset" to mean.
-    """
-    graph = model.graph
-
-    return [
-        coordination.publish_field(
-            shape,
-            str(graph.value(row, NS_MM_ROS["field-path"]) or ""),
-            str(graph.value(row, RDF.value)),
-        )
-        for row in sorted(graph.objects(node, RDFS.member))
-        if graph.value(row, RDF.value) is not None
-    ]
 
 
 def ros_publications(motions):

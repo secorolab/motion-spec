@@ -546,8 +546,8 @@ def _fields(message) -> list[tuple[str, str, bool]]:
     ]
 
 
-def _repeated_leaf(message, type_name: str) -> tuple[str, object]:
-    """The one repeated field the message reaches, and the class one entry carries.
+def _repeated_leaves(message) -> list[tuple[str, object]]:
+    """Every repeated field the message reaches, and the class one entry of each carries.
 
     Descends through nested messages so a result that wraps its list in an array message -- the
     `vision_msgs` convention -- is found at whatever depth it sits.
@@ -564,13 +564,20 @@ def _repeated_leaf(message, type_name: str) -> tuple[str, object]:
 
     walk(message, "")
 
-    return _sole(found, "repeated message fields", type_name)
+    return found
 
 
-def _descend_to(message, wanted: str, where: str) -> str:
-    """The path from `message` down to the one field of type `wanted`, empty if it is already it."""
-    if getattr(message, "__module__", "").split(".")[0:2] and _type_name_of(message) == wanted:
-        return ""
+def _repeated_leaf(message, type_name: str) -> tuple[str, object]:
+    """The one repeated field the message reaches, and the class one entry carries."""
+    return _sole(_repeated_leaves(message), "repeated message fields", type_name)
+
+
+def _paths_to(message, wanted: str) -> list[str]:
+    """Every path from `message` down to a field of type `wanted`.
+
+    Repeated fields are not descended into: what one entry of an array holds is a question about
+    the entry, asked of the entry.
+    """
     found = []
 
     def walk(node, prefix: str) -> None:
@@ -585,7 +592,22 @@ def _descend_to(message, wanted: str, where: str) -> str:
 
     walk(message, "")
 
-    return _sole(found, f"'{wanted}' fields", where)
+    return found
+
+
+def _is_type(message, wanted: str) -> bool:
+    """Whether the message is the wanted type itself rather than something reaching it."""
+    return bool(getattr(message, "__module__", "").split(".")[0:2]) and (
+        _type_name_of(message) == wanted
+    )
+
+
+def _descend_to(message, wanted: str, where: str) -> str:
+    """The path from `message` down to the one field of type `wanted`, empty if it is already it."""
+    if _is_type(message, wanted):
+        return ""
+
+    return _sole(_paths_to(message, wanted), f"'{wanted}' fields", where)
 
 
 def _type_name_of(message) -> str:
@@ -640,14 +662,17 @@ def _message_shape(type_name: str) -> dict:
 
 
 def standing_shape(type_name: str, quantity_type: str) -> dict:
-    """What a message offers a publish that reports one quantity whole.
+    """What a message offers a publish that reports quantities whole.
 
     The quantity's own type decides which ROS type carries it and the message is descended to
     that type, so the model states the topic it publishes on rather than a path into its fields.
+    A message that reaches it nowhere but inside a repeated field carries many of them, and
+    `entry` says what one of them looks like; a message that reaches it directly carries one, and
+    `entry` is None.
 
     Raises:
-        ConstraintViolation: no ROS type carries that quantity whole, or the message does not
-            reach exactly one of the type it maps to.
+        ConstraintViolation: no ROS type carries that quantity whole, or the message reaches
+            neither one of the type it maps to nor one array of something that does.
     """
     wanted = _PAYLOAD_TYPES.get(quantity_type)
     if wanted is None:
@@ -659,24 +684,73 @@ def standing_shape(type_name: str, quantity_type: str) -> dict:
     root = _message_class(type_name)
     package, _cpp_type, include = _cpp_names(root)
     shape = _shape_of(root, type_name, package, include)
-    payload_path = _descend_to(root, wanted, type_name)
-    headers = [
-        name for name, element, many in _fields(root) if not many and element == _HEADER_TYPE
-    ]
-
-    return {
+    # A message reaching it nowhere and holding no array of anything reaches it nowhere: the
+    # descent below says so about the quantity, which is what the model got wrong.
+    carries_one = _is_type(root, wanted) or _paths_to(root, wanted) or not _repeated_leaves(root)
+    entry = None if carries_one else _entry_shape(root, wanted, type_name)
+    shape = {
         **shape,
         # The message may reach into other interface packages; the build needs every one of them.
         "packages": sorted({package} | _leaf_packages(shape)),
         # Dotted prefix, empty when the message is the quantity and nothing else.
-        "payload_path": f"{payload_path}." if payload_path else "",
+        "payload_path": "" if entry else _prefix(_descend_to(root, wanted, type_name)),
         # The frame the quantity is stated against is the message's to carry, when it has a header.
-        "frame_path": f"{headers[0]}.{_FRAME_FIELD}" if headers else None,
+        "frame_path": _frame_path(root),
         "auto_time": sorted(path for path, kind in shape["auto"].items() if kind == "time"),
         "auto_context_id": sorted(
             path for path, kind in shape["auto"].items() if kind == "context_id"
         ),
+        "entry": entry,
     }
+    if entry:
+        shape["packages"] = sorted(set(shape["packages"]) | set(entry["packages"]))
+
+    return shape
+
+
+def _entry_shape(root, wanted: str, type_name: str) -> dict:
+    """What one entry of the array a message carries offers: where its quantity goes, which
+    entity it says it is about, and the frame it says that in.
+
+    The same questions `observation_shape` asks of an arriving detection, asked of one the run
+    writes -- so a topic can be published in the shape another model already reads.
+
+    Raises:
+        ConstraintViolation: the message holds no single array of entries, or one entry offers
+            no single place for the quantity, or no single string to name what it is about.
+    """
+    entry_path, entry = _repeated_leaf(root, type_name)
+    entry_name = _type_name_of(entry)
+    package, cpp_type, include = _cpp_names(entry)
+    shape = _shape_of(entry, entry_name, package, include)
+    ids = [name for name, element, many in _fields(entry) if not many and element in _STRING_TYPES]
+
+    return {
+        "path": entry_path,
+        "type_name": entry_name,
+        "cpp_type": cpp_type,
+        "payload_path": _prefix(_descend_to(entry, wanted, entry_name)),
+        # What the entry says it is about. A run writes the model's own IRI here, which is what
+        # the read side compares against.
+        "id_path": _sole(ids, "string fields", entry_name),
+        "frame_path": _frame_path(entry),
+        "auto_time": sorted(path for path, kind in shape["auto"].items() if kind == "time"),
+        "packages": sorted({package} | _leaf_packages(shape)),
+    }
+
+
+def _prefix(path: str) -> str:
+    """A dotted path as a prefix to write fields under, empty when there is nothing to descend."""
+    return f"{path}." if path else ""
+
+
+def _frame_path(message) -> str | None:
+    """Where the message states the frame it holds, when it carries a header at all."""
+    headers = [
+        name for name, element, many in _fields(message) if not many and element == _HEADER_TYPE
+    ]
+
+    return f"{headers[0]}.{_FRAME_FIELD}" if headers else None
 
 
 def _sole_payload_path(shape: dict) -> str:

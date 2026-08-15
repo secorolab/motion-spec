@@ -122,7 +122,7 @@ ros-setup(ros) ::= <<
         robot.ros_node->create_publisher\<<p.cpp_type>\>("<p.channel>", rclcpp::QoS(10)));}; separator="\n">
 <ros.action_clients:{c |     robot.<c.client_id> = rclcpp_action::create_client\<<c.cpp_type>\>(robot.ros_node, "<c.channel>");}; separator="\n">
 <ros.subscriptions:{s | <ros-subscription-setup(s)>}; separator="\n">
-<ros.standing:{s | <if(s.frame_path)>    robot.<s.pub_id>_msg.<s.frame_path> = "<s.frame_id>";<endif>}; separator="\n">
+<ros.standing:{s | <ros-standing-setup(s)>}>
 <if(ros.action_server)>
 
 <ros-goal-server-setup(ros.action_server)>
@@ -476,12 +476,26 @@ ros-publish-tick(coordination, communication, views) ::= <<
 
 ros-standing-tick(ros, views) ::= <<
 <ros.standing:{s |         if ((_step % <s.divider>) == 0) {
-<standing-payload(s)>
+<s.entries:{e |<standing-payload(e)>
+<e.auto_time:{p |             robot.<e.pub_id>_msg.<p> = robot.ros_node->now();
+}>}>
 <s.fields:{f |             robot.<s.pub_id>_msg.<f.path> = <access-expr(f.ref, views)>;}; separator="\n">
 <s.auto_time:{p |             robot.<s.pub_id>_msg.<p> = robot.ros_node->now();}; separator="\n">
 <s.auto_context_id:{p |             robot.<s.pub_id>_msg.<p>.uuid = _scenario_context_id;}; separator="\n">
             robot.<s.pub_id>->try_publish(robot.<s.pub_id>_msg);
         \}}; separator="\n">
+>>
+
+// What the model already settles stays out of the loop: how many entries there are, which
+// entity each is about, and the frame each states it in are the model's own statements, so they
+// are written once and only the quantity itself is written per cycle.
+
+ros-standing-setup(s) ::= <<
+<s.resize:{r |     robot.<s.pub_id>_msg.<r.path>.resize(<r.size>);}; separator="\n">
+<if(s.frame_id)>    robot.<s.pub_id>_msg.<s.frame_path> = "<s.frame_id>";<endif>
+<s.entries:{e | <if(e.id_path)>    robot.<e.pub_id>_msg.<e.id_path> = "<e.id_value>";
+<endif><if(e.frame_id)>    robot.<e.pub_id>_msg.<e.frame_path> = "<e.frame_id>";
+<endif>}>
 >>
 
 standing-payload(s) ::= <<

@@ -20,7 +20,7 @@ from enum import Enum
 from motion_spec_dsl.rdf_parser.vocab import CSTR, CSTR_EXT, EXEC, MOT, SENSORS
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.naming import get_valid_var_name
-from rdflib.namespace import PROV, RDF, RDFS
+from rdflib.namespace import PROV, RDF, RDFS, SOSA
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 
 from motion_spec.classes.motion import BlackboardValue
@@ -631,18 +631,38 @@ def ros_standing(model, data_structures, control_period_ns: int) -> list:
         rate_node = graph.value(node, SENSORS["update-rate"])
         if rate_node is None:
             continue
-        value_node = graph.value(node, RDF.value)
-        if value_node is None:
+        # A member stating a field path maps one field; one stating none is an entry the message
+        # carries whole.
+        reported = sorted(
+            (
+                row
+                for row in graph.objects(node, RDFS.member)
+                if graph.value(row, NS_MM_ROS["field-path"]) is None
+            ),
+            key=str,
+        )
+        if not reported:
             raise ConstraintViolation(
                 "communication",
                 f"'{model.id(node)}' publishes at a rate but names no quantity to report",
             )
-        record = by_id.get(model.id(value_node))
-        if record is None:
+        records = []
+        for row in reported:
+            value_node = graph.value(row, RDF.value)
+            record = by_id.get(model.id(value_node))
+            if record is None:
+                raise ConstraintViolation(
+                    "communication",
+                    f"'{model.id(node)}' publishes '{model.id(value_node)}', which is no data "
+                    "structure the run computes",
+                )
+            records.append((row, record))
+        kinds = {record.type for _row, record in records}
+        if len(kinds) > 1:
             raise ConstraintViolation(
                 "communication",
-                f"'{model.id(node)}' publishes '{model.id(value_node)}', which is no data "
-                "structure the run computes",
+                f"'{model.id(node)}' reports {', '.join(sorted(kinds))} on one message; a "
+                "message carries one kind of quantity",
             )
         rate_hz = quantities.quantity(model, rate_node).value
         if not rate_hz or rate_hz <= 0.0:
@@ -651,20 +671,37 @@ def ros_standing(model, data_structures, control_period_ns: int) -> list:
                 f"'{model.id(node)}' publishes at {rate_hz} Hz; a rate says how often, so it is "
                 "positive",
             )
-        shape = coordination.standing_shape(
-            str(graph.value(node, NS_MM_ROS["type-name"]) or ""), record.type
+        pub_id = f"{model.id(node)}_pub".replace("-", "_")
+        type_name = str(graph.value(node, NS_MM_ROS["type-name"]) or "")
+        shape = coordination.standing_shape(type_name, records[0][1].type)
+        if shape["entry"] is None and len(records) > 1:
+            raise ConstraintViolation(
+                "communication",
+                f"'{model.id(node)}' reports {len(records)} quantities on '{type_name}', which "
+                "carries one; a message reporting many holds an array of them",
+            )
+        entries = _standing_entries(model, pub_id, shape, records)
+        frames = (
+            {frame for _row, record in records if (frame := _stated_against(record))}
+            if shape["frame_path"]
+            else set()
         )
-        seen_by = getattr(record, "as_seen_by", None)
         standing.append(
             _prune(
                 {
-                    "pub_id": f"{model.id(node)}_pub".replace("-", "_"),
+                    "pub_id": pub_id,
                     "channel": str(graph.value(node, NS_MM_ROS["channel-name"]) or ""),
                     # Every Nth cycle: a rate at or above the loop rate publishes each one.
                     "divider": max(1, round(1.0 / (rate_hz * period_s))),
-                    "value_id": record.id,
-                    "value_type": record.type,
-                    "frame_id": getattr(seen_by, "id", None),
+                    "entries": entries,
+                    # The array's own header states a frame only when its entries agree on one:
+                    # two cameras on one topic leave the message with no single frame to name.
+                    "frame_id": frames.pop() if len(frames) == 1 else None,
+                    "resize": (
+                        [{"path": shape["entry"]["path"], "size": len(entries)}]
+                        if shape["entry"]
+                        else []
+                    ),
                     "fields": _standing_fields(model, node, shape),
                     "pkg": shape["package"],
                     **{
@@ -674,7 +711,6 @@ def ros_standing(model, data_structures, control_period_ns: int) -> list:
                             "cpp_type",
                             "include",
                             "packages",
-                            "payload_path",
                             "frame_path",
                             "auto_time",
                             "auto_context_id",
@@ -687,6 +723,68 @@ def ros_standing(model, data_structures, control_period_ns: int) -> list:
     return standing
 
 
+def _standing_entries(model, pub_id: str, shape: dict, records: list) -> list:
+    """Where in the message each reported quantity is written.
+
+    A message carrying one quantity has one entry writing straight into it. A message carrying an
+    array has one entry per quantity, each stating which entity it is about and the frame it says
+    that in -- the two things a reader needs to tell one entry from another.
+    """
+    entry = shape["entry"]
+    rows = []
+    for index, (node, record) in enumerate(records):
+        row = {"pub_id": pub_id, "value_id": record.id, "value_type": record.type}
+        if entry is None:
+            # The message is the quantity: its frame and its stamp are the message's own, and
+            # the run writes them where the message states them.
+            rows.append(_prune({**row, "payload_path": shape["payload_path"]}))
+            continue
+        at = f"{entry['path']}[{index}]."
+        # An entry states a frame only where it carries a header to state it in.
+        stated_in = entry["frame_path"]
+        rows.append(
+            _prune(
+                {
+                    **row,
+                    "payload_path": f"{at}{entry['payload_path']}",
+                    "frame_path": f"{at}{stated_in}" if stated_in else None,
+                    "frame_id": _stated_against(record) if stated_in else None,
+                    "id_path": f"{at}{entry['id_path']}",
+                    "id_value": _reported_subject(model, node, record),
+                    "auto_time": [f"{at}{path}" for path in entry["auto_time"]],
+                }
+            )
+        )
+
+    return rows
+
+
+def _stated_against(record) -> str | None:
+    """The frame a reported quantity is stated against, when it is stated against one."""
+    return getattr(getattr(record, "as_seen_by", None), "id", None)
+
+
+def _reported_subject(model, node, record) -> str:
+    """The entity an entry says it is about, as the model names it.
+
+    Stated rather than derived: a reader of the message matches the entity it models, and a pose
+    is a pose of a frame on that entity rather than of the entity itself.
+
+    Raises:
+        ConstraintViolation: the entry names no entity, so it could not say which of the several
+            the message carries it is.
+    """
+    subject = model.graph.value(node, SOSA.hasFeatureOfInterest)
+    if subject is None:
+        raise ConstraintViolation(
+            "communication",
+            f"'{record.id}' is one entry of an array the message carries, but the publish names "
+            "no entity it reports it of, so the entry could not say what it is an entry for",
+        )
+
+    return str(subject)
+
+
 def _standing_fields(model, node, shape: dict) -> list:
     """The fields a standing publish maps itself, each naming the value it reports instead of the
     component of the quantity that field would carry.
@@ -694,7 +792,10 @@ def _standing_fields(model, node, shape: dict) -> list:
     graph = model.graph
     rows = []
     for row in sorted(graph.objects(node, RDFS.member)):
-        path = str(graph.value(row, NS_MM_ROS["field-path"]) or "")
+        authored = graph.value(row, NS_MM_ROS["field-path"])
+        if authored is None:
+            continue
+        path = str(authored)
         if path not in shape["leaves"]:
             raise ConstraintViolation(
                 "communication",

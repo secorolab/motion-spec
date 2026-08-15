@@ -106,7 +106,7 @@ def generate_ir(manifest_path) -> dict:
         | perceived_pose_ids
         # A standing publish is the only reader of what it reports, and it reads it off the
         # blackboard: without this the quantity drops out and the message has nothing to carry.
-        | {publish["value_id"] for publish in standing},
+        | {entry["value_id"] for publish in standing for entry in publish["entries"]},
     )
     shared_data += resources.shared_runtime_members(
         model, robots.serial_chains, control_period_ns, platform.get("uri")

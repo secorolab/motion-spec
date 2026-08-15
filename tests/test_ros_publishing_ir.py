@@ -15,7 +15,7 @@ from motion_spec_dsl.rdf_parser.vocab import CSTR_EXT, CSTR_HDL, QUDT_SCHEMA, SE
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.namespace import NS_MM_QUDT_QTY
 from rdflib import Graph, Literal, URIRef
-from rdflib.namespace import RDF, RDFS
+from rdflib.namespace import RDF, RDFS, SOSA
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 
 from motion_spec.classes.dynamics import JointPosition
@@ -191,22 +191,30 @@ STANDING = URIRef(f"{NS}wrist-ft")
 REPORTED = URIRef(f"{NS}ext-force")
 
 
-def _reported(type_: str = "Wrench"):
+def _reported(name: str = "ext_force", type_: str = "Wrench", frame: str = "base_link"):
     """A data structure on the blackboard, as the standing publish finds it."""
     return type(
-        "Q",
-        (),
-        {"id": "ext_force", "type": type_, "as_seen_by": type("F", (), {"id": "base_link"})()},
+        "Q", (), {"id": name, "type": type_, "as_seen_by": type("F", (), {"id": frame})()}
     )()
 
 
 def _standing(type_name: str = "geometry_msgs/msg/WrenchStamped", rate: float = 100.0, **kwargs):
     """A topic published for the whole run: the quantity it reports, and how often."""
+    return _standing_many(type_name, rate, (REPORTED, None, _reported(**kwargs)))
+
+
+def _standing_many(type_name: str, rate: float, *entries):
+    """The same, reporting several quantities -- each stating the entity it is an entry for."""
     graph = Graph()
     graph.add((STANDING, RDF.type, NS_MM_ROS["Topic"]))
     graph.add((STANDING, NS_MM_ROS["channel-name"], Literal("/wrist_ft")))
     graph.add((STANDING, NS_MM_ROS["type-name"], Literal(type_name)))
-    graph.add((STANDING, RDF.value, REPORTED))
+    for index, (quantity, subject, _record) in enumerate(entries):
+        row = URIRef(f"{STANDING}.e{index}")
+        graph.add((STANDING, RDFS.member, row))
+        graph.add((row, RDF.value, quantity))
+        if subject is not None:
+            graph.add((row, SOSA.hasFeatureOfInterest, subject))
     rate_node = URIRef(f"{STANDING}.rate")
     graph.add((STANDING, SENSORS["update-rate"], rate_node))
     graph.add((rate_node, RDF["type"], QUDT_SCHEMA.Quantity))
@@ -214,7 +222,7 @@ def _standing(type_name: str = "geometry_msgs/msg/WrenchStamped", rate: float = 
     graph.add((rate_node, QUDT_SCHEMA["unit"], URIRef("http://qudt.org/vocab/unit/HZ")))
     graph.add((rate_node, QUDT_SCHEMA["value"], Literal(rate)))
     # 1 kHz control loop, so 100 Hz is every tenth cycle.
-    return ros_standing(_model(graph), [_reported(**kwargs)], 1_000_000)
+    return ros_standing(_model(graph), [record for _q, _s, record in entries], 1_000_000)
 
 
 def test_a_standing_publish_reports_its_quantity_whole_at_its_own_rate():
@@ -224,9 +232,13 @@ def test_a_standing_publish_reports_its_quantity_whole_at_its_own_rate():
     assert publish["channel"] == "/wrist_ft"
     assert publish["pub_id"] == "wrist_ft_pub"
     assert publish["divider"] == 10
-    assert (publish["value_id"], publish["value_type"]) == ("ext_force", "Wrench")
-    assert publish["payload_path"] == "wrench."
+    (entry,) = publish["entries"]
+    assert (entry["value_id"], entry["value_type"]) == ("ext_force", "Wrench")
+    assert entry["payload_path"] == "wrench."
     assert publish["cpp_type"] == "geometry_msgs::msg::WrenchStamped"
+    # Nothing to size and nothing to tell apart: the message is the quantity.
+    assert "resize" not in publish
+    assert "id_path" not in entry
     # The node stamps it; the frame it is stated against is the quantity's own.
     assert publish["auto_time"] == ["header.stamp"]
     assert (publish["frame_path"], publish["frame_id"]) == ("header.frame_id", "base_link")
@@ -259,6 +271,81 @@ def test_a_message_that_does_not_carry_the_quantity_is_rejected():
 def test_a_rate_that_is_not_positive_is_rejected():
     with pytest.raises(ConstraintViolation, match="a rate says how often"):
         _standing(rate=0.0)
+
+
+def test_a_message_with_no_header_states_no_frame():
+    """The quantity is against a frame either way; a message with nowhere to say so does not."""
+    (publish,) = _standing("geometry_msgs/msg/Wrench")
+    # The message is the quantity, so there is nothing to descend through to reach it.
+    assert publish["entries"][0]["payload_path"] == ""
+    assert "frame_path" not in publish
+    assert "frame_id" not in publish
+
+
+# A message holding an array of what it reports: one entry per quantity, each stating what it is
+# an entry for. `vision_msgs` is stock, so these need no workspace package.
+DETECTIONS = "vision_msgs/msg/Detection3DArray"
+DRAWER = URIRef(f"{NS}scene/drawer")
+TABLE = URIRef(f"{NS}scene/table")
+
+
+def _entry(name: str, subject, type_: str = "Pose", frame: str = "camera_optical"):
+    """One reported quantity: the node the publish names, and the record it resolves to."""
+    return (URIRef(f"{NS}{name.replace('_', '-')}"), subject, _reported(name, type_, frame))
+
+
+def _detections(*entries, rate: float = 10.0):
+    return _standing_many(DETECTIONS, rate, *entries)
+
+
+def test_a_message_holding_an_array_reports_one_quantity_per_entry():
+    """Every path is walked off the message class: which field holds the entries, where in one
+    the pose goes, and which fields say what that entry is and when it was taken."""
+    (publish,) = _detections(_entry("pose_drawer", DRAWER), _entry("pose_table", TABLE))
+    assert publish["resize"] == [{"path": "detections", "size": 2}]
+    first, second = publish["entries"]
+    assert first["payload_path"] == "detections[0].bbox.center."
+    assert second["payload_path"] == "detections[1].bbox.center."
+    assert (first["id_path"], first["id_value"]) == ("detections[0].id", str(DRAWER))
+    assert (second["id_path"], second["id_value"]) == ("detections[1].id", str(TABLE))
+    # Each entry states the frame its own quantity is against, and is stamped in its own header.
+    assert (first["frame_path"], first["frame_id"]) == (
+        "detections[0].header.frame_id",
+        "camera_optical",
+    )
+    assert first["auto_time"] == ["detections[0].header.stamp"]
+    # The array's own header, and the packages the entries reach into.
+    assert (publish["frame_path"], publish["frame_id"]) == ("header.frame_id", "camera_optical")
+    assert "geometry_msgs" in publish["packages"]
+
+
+def test_the_array_states_no_frame_when_its_entries_disagree():
+    """Two cameras on one topic: each detection says where it was seen, the message cannot."""
+    (publish,) = _detections(
+        _entry("pose_drawer", DRAWER, frame="left_optical"),
+        _entry("pose_table", TABLE, frame="right_optical"),
+    )
+    assert "frame_id" not in publish
+
+
+def test_an_entry_naming_no_entity_is_rejected():
+    with pytest.raises(ConstraintViolation, match="could not say what it is an entry for"):
+        _detections(_entry("pose_drawer", None))
+
+
+def test_reporting_several_quantities_on_a_message_carrying_one_is_rejected():
+    with pytest.raises(ConstraintViolation, match="carries one"):
+        _standing_many(
+            "geometry_msgs/msg/PoseStamped",
+            10.0,
+            _entry("pose_drawer", DRAWER),
+            _entry("pose_table", TABLE),
+        )
+
+
+def test_reporting_two_kinds_of_quantity_on_one_message_is_rejected():
+    with pytest.raises(ConstraintViolation, match="one kind of quantity"):
+        _detections(_entry("pose_drawer", DRAWER), _entry("ext_force", TABLE, "Wrench"))
 
 
 def _chain(prefix: str, joints: list[str], output=(), device_output=()):

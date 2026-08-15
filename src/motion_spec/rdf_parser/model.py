@@ -310,18 +310,21 @@ class Model:
         and normalization nodes beside them, and on everything derived under them. The handler
         prefix restores the scope the id dropped. An alias is one controller a second handler
         lists, not a second controller: it stays under its own handler and keeps its one id.
+
+        Anywhere below the handler counts, not just directly under it: a node the model hangs
+        under a controller (`<handler>/<controller>/<name>`) took its name from that controller,
+        so it is as handler-scoped as the controller is.
         """
         if self._shared_handlers is None:
-            owners = {
-                f"{handler}/": handler
+            owners = tuple(
+                (f"{handler}/", handler)
                 for handler in self.graph.subjects(RDF.type, CSTR_HDL.ConstraintHandler)
-            }
+            )
             by_name: dict[str, dict] = {}
             for node in set(self.graph.subjects()):
-                try:
-                    handler = owners.get(split_uri(str(node))[0])
-                except ValueError:
-                    continue
+                handler = next(
+                    (owner for prefix, owner in owners if str(node).startswith(prefix)), None
+                )
                 local = self._qname(node) if handler is not None else None
                 if local is not None:
                     by_name.setdefault(local, {}).setdefault(node, handler)

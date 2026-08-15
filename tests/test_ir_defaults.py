@@ -172,6 +172,9 @@ def test_parser_scopes_names_two_handlers_share() -> None:
     hold_position = URIRef("https://example.test/handler-hold/hold-position")
     home_limit = URIRef("https://example.test/handler-home/sat-output-hold-position")
     hold_limit = URIRef("https://example.test/handler-hold/sat-output-hold-position")
+    # A node the model hangs under the controller rather than beside it, one level deeper.
+    home_profile = URIRef(f"{home_position}/profile-tangent-hold-position")
+    hold_profile = URIRef(f"{hold_position}/profile-tangent-hold-position")
     aliased = URIRef("https://example.test/handler-home/turn")
     for handler in (home, hold):
         graph.add((handler, RDF.type, CSTR_HDL.ConstraintHandler))
@@ -180,6 +183,8 @@ def test_parser_scopes_names_two_handlers_share() -> None:
         graph.add((controller, RDF.type, CSTR_HDL.Controller))
     for node in (home_limit, hold_limit):
         graph.add((node, RDF.type, ALGO_EXT.Saturation))
+    for node in (home_profile, hold_profile):
+        graph.add((node, RDF.type, ALGO_EXT.VelocityProfile))
 
     model = _model(graph)
 
@@ -188,6 +193,10 @@ def test_parser_scopes_names_two_handlers_share() -> None:
     # The nodes a handler owns beside a controller carry its name and split the same way.
     assert model.id(home_limit) == "handler_home_sat_output_hold_position"
     assert model.id(hold_limit) == "handler_hold_sat_output_hold_position"
+    # Anywhere below the handler is handler-scoped, not just directly under it: a node under
+    # the controller took the controller's name, so it splits with it.
+    assert model.id(home_profile) == "handler_home_profile_tangent_hold_position"
+    assert model.id(hold_profile) == "handler_hold_profile_tangent_hold_position"
     # One controller a second handler lists is an alias, not a second controller: one id.
     assert model.id(aliased) == "turn"
 

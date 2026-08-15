@@ -198,14 +198,34 @@ def _validate_robot_config(source_dir: Path, cwd: Path | None = None) -> None:
         missing = [field for field in _DEVICE_CONFIG_KEYS.get(kind, ()) if field not in section]
         if missing:
             raise RunnerError(f"{config_path}: [{key}] is missing {', '.join(missing)}")
+    # A pose the model reads with `[config.<key>]` binds its section as much as a device does:
+    # generation refuses a model whose pose section is absent, so the run must not refuse it for
+    # being present. Its numbers are re-read here because they may change without regeneration.
+    poses = {
+        entry["config_key"]
+        for entry in (ir["configuration"].get("config_poses") or ())
+        if entry.get("config_key")
+    }
+    for key in sorted(poses):
+        section = config
+        for part in key.split("."):
+            section = section.get(part) if isinstance(section, dict) else None
+        for field in ("position", "orientation"):
+            values = (section or {}).get(field)
+            if not isinstance(values, list) or len(values) != 3:
+                raise RunnerError(f"{config_path}: [{key}] states no three-number `{field}`")
     # A section for nothing bound is a mis-key or a stale device: it would connect to hardware
     # this run never commands. Under KinovaGen3-2F85 a separate gripper section lands here.
     # [ros.*] configures the generated publishers, not a device this run binds.
     sections = {key for key in _config_sections(config) if key.split(".")[0] != "ros"}
-    unbound = sorted(sections - {key for key, _ in bound})
+    unbound = sorted(sections - {key for key, _ in bound} - poses)
     if unbound:
+        binds = ", ".join(f"[{key}]" for key in sorted({key for key, _ in bound} | poses))
         raise RunnerError(
-            f"{config_path}: [{'], ['.join(unbound)}] configures nothing this run binds"
+            f"{config_path}: [{'], ['.join(unbound)}] configures nothing this run binds.\n"
+            f"  This run binds {binds or 'no sections'}: a device section is named by the agent "
+            "its solver realizes, a pose section by a `[config.<key>]` declaration in the model.\n"
+            f"  Remove the section, or state it in the model {ir_path} was generated from."
         )
 
 

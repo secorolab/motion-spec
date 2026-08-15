@@ -627,14 +627,17 @@ _FT_SECTION = "[arm1.wrist_ft]\nport='ttyUSB0'\nbaudrate=19200\nslave_address=9\
 _GRIPPER_SECTION = "[agents.gripper1]\nport='ttyUSB1'\nbaudrate=115200\nslave_address=9\n"
 
 
-def _real_source(tmp_path, *devices: dict) -> Path:
+def _real_source(tmp_path, *devices: dict, config_poses: list | None = None) -> Path:
     """A generation whose IR binds `devices` on one real-world chain."""
     source = tmp_path / "generated"
     (source / "model").mkdir(parents=True, exist_ok=True)
     (source / "model" / "ir.json").write_text(
         json.dumps(
             {
-                "configuration": {"platform": {"simulated": False, "config": "robot.toml"}},
+                "configuration": {
+                    "platform": {"simulated": False, "config": "robot.toml"},
+                    "config_poses": config_poses or [],
+                },
                 "resources": {
                     "robots": [
                         {
@@ -683,6 +686,36 @@ def test_robot_config_must_cover_every_bound_device(tmp_path) -> None:
     config.write_text(_ARM_SECTION + _FT_SECTION + _GRIPPER_SECTION)
     with pytest.raises(RunnerError, match=r"\[agents.gripper1\] configures nothing"):
         _validate_robot_config(source, tmp_path)
+
+
+def test_a_pose_the_model_reads_binds_its_section(tmp_path) -> None:
+    """`config_poses` refuses to generate a model whose pose section is absent, so the run must
+    not refuse it for being present -- between them, no real-world model could run at all."""
+    from motion_spec.introspection.runner import RunnerError, _validate_robot_config
+
+    source = _real_source(
+        tmp_path,
+        {"kind": "KinovaGen3", "config_key": "agents.arm1", "drives": ""},
+        config_poses=[{"id": "home", "config_key": "poses.home"}],
+    )
+    config = tmp_path / "robot.toml"
+    pose = "[poses.home]\nposition = [0.1, 0.2, 0.3]\norientation = [0.0, 0.0, 0.0]\n"
+
+    config.write_text(_ARM_SECTION + pose)
+    _validate_robot_config(source, tmp_path)
+
+    # The numbers may be retuned without regenerating, so their shape is checked on the way in.
+    config.write_text(
+        _ARM_SECTION + "[poses.home]\nposition = [0.1, 0.2]\norientation = [0, 0, 0]\n"
+    )
+    with pytest.raises(RunnerError, match=r"\[poses.home\] states no three-number `position`"):
+        _validate_robot_config(source, tmp_path)
+
+    # A section no pose and no device names still fails, and the message says what does bind.
+    config.write_text(_ARM_SECTION + pose + "[poses.stale]\nposition = [0, 0, 0]\n")
+    with pytest.raises(RunnerError, match=r"\[poses.stale\] configures nothing") as raised:
+        _validate_robot_config(source, tmp_path)
+    assert "[agents.arm1], [poses.home]" in str(raised.value)
 
 
 def test_the_authored_device_decides_which_sections_the_config_needs(tmp_path) -> None:

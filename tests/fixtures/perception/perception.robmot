@@ -14,6 +14,9 @@ exec-context (ns=app) perception-exec {
 }
 
 ros (ns=app) {
+    publishers {
+        table-moved: topic "/perception/table_moved" message "action_msgs/msg/GoalStatus",
+    },
     subscribers {
         table-top: topic "/recognized_objects" message "vision_msgs/msg/Detection3DArray" {
             observes { <shared.world.pose-table-cam> }
@@ -68,7 +71,10 @@ constraint-handler (ns=app) handler-watch {
     runs-in: <pcp.S_WATCH>
     monitors {
         mon-table: monitor <watch-table.table-moved> {
-            satisfied for 0.3 s { trigger: event <pcp.E_ANCHOR_SEEN> },
+            satisfied for 0.3 s {
+                trigger: event <pcp.E_ANCHOR_SEEN>,
+                publish: to <ros.publishers.table-moved> { status: STATUS_SUCCEEDED }
+            },
         }
     }
     controllers { }

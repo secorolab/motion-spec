@@ -34,6 +34,7 @@ from conftest import requires_interfaces
 pytestmark = requires_interfaces("aruco_perception/action/LocateObjects")
 
 MODELS = Path(__file__).parents[2] / "motion-spec-dsl" / "models"
+FIXTURES = Path(__file__).parent / "fixtures"
 METAMODELS = Path(__file__).resolve().parents[2] / "metamodels"
 
 
@@ -146,17 +147,19 @@ def test_monitor_publishes_to_ros_topic(monkeypatch: pytest.MonkeyPatch) -> None
     field-path row per authored assignment -- the only ROS vocabulary the graph carries."""
     monkeypatch.setenv("METAMODELS_PATH", str(METAMODELS))
     metamodel = motion_spec_metamodel()
-    model = metamodel.model_from_file(
-        MODELS / "admittance_arc_single" / "admittance_arc_single.robmot"
-    )
+    model = metamodel.model_from_file(FIXTURES / "perception" / "perception.robmot")
     builder = MotionSpecDatasetBuilder(model)
     dataset, context = builder.build()
     graph = dataset.default_graph
 
-    monitor = next(graph.subjects(RDF.type, ROS.Topic))
-    assert graph.value(monitor, CSTR_HDL.event) is not None
-    assert str(graph.value(monitor, ROS["channel-name"])) == "/motion/forward_done"
-    assert str(graph.value(monitor, ROS["type-name"])) == "bdd_ros2_interfaces/msg/TrinaryStamped"
+    # The subscription is a topic too, so the monitor is the one that fires an event.
+    monitor = next(
+        node
+        for node in graph.subjects(RDF.type, ROS.Topic)
+        if graph.value(node, CSTR_HDL.event) is not None
+    )
+    assert str(graph.value(monitor, ROS["channel-name"])) == "/perception/table_moved"
+    assert str(graph.value(monitor, ROS["type-name"])) == "action_msgs/msg/GoalStatus"
     assert {p for _s, p, _o in graph if str(p).startswith(str(ROS))} == {
         ROS["channel-name"],
         ROS["type-name"],

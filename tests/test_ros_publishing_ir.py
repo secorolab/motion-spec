@@ -621,7 +621,7 @@ EVENT = URIRef(f"{FSM_NS}E_DONE")
 def _occurrence(type_name: str, *events: URIRef) -> RosPublication:
     """Lower a monitor that announces events, rather than authored fields."""
     graph = Graph()
-    graph.add((MONITOR, NS_MM_ROS["channel-name"], Literal("/bdd/events")))
+    graph.add((MONITOR, NS_MM_ROS["channel-name"], Literal("/events")))
     graph.add((MONITOR, NS_MM_ROS["type-name"], Literal(type_name)))
     graph.add((MONITOR, CSTR_HDL["constraint"], WATCHED))
     for event in events or (EVENT,):

@@ -56,13 +56,14 @@ from rdf_utils.models.geom_coord import (
 from rdf_utils.models.vocab import (
     URI_DISTRIB_TYPE_SAMPLED_QUANTITY,
     URI_GEOM_TYPE_KGRAPH,
+    URI_GEOM_TYPE_POSE,
     URI_KC_PRED_BETWEEN_ATTACHMENTS,
     URI_KC_TYPE_JOINT,
     URI_KC_TYPE_SERIAL,
 )
 from rdf_utils.namespace import NS_MM_KC_EXT, NS_MM_QUDT_QTY
 from rdf_utils.uri import iri_is_descendant, iri_parent
-from rdflib import URIRef
+from rdflib import Graph, URIRef
 from rdflib.namespace import PROV, RDF, SDO
 from scene_dsl.kdl_tree import build_kdl_trees
 from scene_dsl.rdf.sensors import (
@@ -1434,6 +1435,28 @@ def _placement_of(model, attachment, anchor):
     return _placement(model, body_of_frame(frame, model.graph) if is_frame else frame, anchor)
 
 
+def _placement_graph(model):
+    """The poses that place something, which is not every pose the graph relates.
+
+    A context quantity relates two frames the scene has already placed: a world pose the run
+    computes each cycle, a spec pose it aims at. Both are the shortest way between their frames,
+    so a search left to walk them answers where a body sits with a target the arm is moving to,
+    or with a coordinate that holds no value until the first cycle.
+    """
+    graph = model.cache.get("placement_graph")
+    if graph is not None:
+        return graph
+    graph = Graph()
+    for triple in model.graph.triples((None, None, None)):
+        graph.add(triple)
+    for relation in model.graph.subjects(RDF["type"], URI_GEOM_TYPE_POSE):
+        if model.context_scope(relation) is not None:
+            graph.remove((relation, None, None))
+    model.cache["placement_graph"] = graph
+
+    return graph
+
+
 def _reject_sampled_placement(model, frame, wrt) -> None:
     """A sampled placement has no seed semantics here, so it must not resolve to one value.
 
@@ -1443,9 +1466,8 @@ def _reject_sampled_placement(model, frame, wrt) -> None:
     Raises:
         ConstraintViolation: a pose placing this frame is sampled.
     """
-    for pose, coords in get_pose_coords(
-        graph=model.graph, poses=find_pose_path(frame, wrt, model.graph) or []
-    ):
+    graph = _placement_graph(model)
+    for pose, coords in get_pose_coords(graph=graph, poses=find_pose_path(frame, wrt, graph) or []):
         for coord in coords:
             for node in (coord.id, coord.position_coord.id, coord.orientation_coord.id):
                 if URI_DISTRIB_TYPE_SAMPLED_QUANTITY in get_node_types(model.graph, node):
@@ -1467,11 +1489,12 @@ def _placement(model, node, wrt):
     if frame is None:
         return None, None
     _reject_sampled_placement(model, frame, wrt)
-    transform = get_transform_between_frames(frame, wrt, model.graph)
+    graph = _placement_graph(model)
+    transform = get_transform_between_frames(frame, wrt, graph)
     if transform is None:
         # A pose reads one way, but it relates both frames: a scene that places a body's root
         # against one of its own frames still says where that frame is on the body.
-        reverse = get_transform_between_frames(wrt, frame, model.graph)
+        reverse = get_transform_between_frames(wrt, frame, graph)
         transform = reverse.inv() if reverse is not None else None
     if transform is None:
         return None, None

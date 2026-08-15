@@ -23,6 +23,7 @@ from motion_spec_dsl.rdf_parser.vocab import (
     CSTR_HDL,
     CSTR_HDL_EXT,
     ENV,
+    EXEC,
     GEOM_COORD,
     GEOM_ENT,
     GEOM_OP,
@@ -676,10 +677,12 @@ def pose(model, node) -> Pose:
     representation = orientation_representation(model, orientation_node)
 
     # A symbolic triple keeps its convention: the backend composes per-axis quaternions, and the
-    # sequence decides both the axes and the order they multiply in.
+    # sequence decides both the axes and the order they multiply in. A config pose is stamped
+    # Euler for lack of an authored coordinate to inspect, but it carries no per-axis factors --
+    # its whole frame is read from the deployment config, not composed from a sequence.
     euler_axes_sequence = None
     euler_intrinsic = False
-    if representation == "euler":
+    if representation == "euler" and not _is_config_pose(model, node):
         axes = graph.value(orientation_node, URI_GEOM_PRED_AXES_SEQ)
         euler_axes_sequence = str(axes) if axes is not None else None
         euler_intrinsic = URI_GEOM_TYPE_INTRINSIC in coordinate.orientation_coord.types
@@ -714,7 +717,7 @@ def _pose_provenance(model, node, coordinate) -> Provenance:
     """A pose is authored when either component carries values, or when its rotation is a literal
     form, or when a composition writes it and a per-axis view reads it back.
     """
-    if _is_snapshot(model, node):
+    if _is_snapshot(model, node) or _is_config_pose(model, node):
         return Provenance(authored=False)
     components = (coordinate.position_coord, coordinate.orientation_coord)
     literal_rotation = coordinate.orientation_coord.types & (
@@ -1069,6 +1072,14 @@ def _is_snapshot(model, node) -> bool:
     -- not carried by `Provenance`, which only states whether a value was authored.
     """
     return ALGO_EXT.Snapshot in get_node_types(model.graph, node)
+
+
+def _is_config_pose(model, node) -> bool:
+    """Whether a pose's value is read from the deployment config file rather than authored in
+    the model. Its orientation is stamped Euler-typed by the DSL for lack of an authored
+    coordinate to inspect -- that stamp must not be read as a literal, decomposed pose.
+    """
+    return (node, EXEC["has-resource"], None) in model.graph
 
 
 @reader

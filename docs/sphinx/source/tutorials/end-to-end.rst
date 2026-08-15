@@ -112,10 +112,10 @@ the generation and one over all the models -- the way a colcon workspace carries
    $MOTION_SPEC_GEN/latest                   -> look_joint1_test/20260815T155542360467Z
    $MOTION_SPEC_GEN/look_joint1_test/latest  -> 20260815T155542360467Z
 
-``rerun`` follows the first of those and launches it the way it was last
-launched, arguments and working directory included, into a run of its own. It
-generates and builds nothing, so it is the command to reach for while tuning a
-deployment config or a scene the controller reads at startup.
+``rerun`` follows the first of those: it is ``run`` for the generation already
+built, under a run id of its own, taking the same options. It generates and
+builds nothing, so it is the command to reach for while tuning a deployment
+config or a scene the controller reads at startup.
 
 The links are ordinary paths, so they work with every other command too --
 ``motion-spec run "$MOTION_SPEC_GEN/look_joint1_test/latest"`` goes back to one

@@ -45,38 +45,27 @@ def test_cli_exposes_lazy_click_commands(monkeypatch, tmp_path) -> None:
     assert received["args"][0] == generation / "runs" / "run-2"
 
 
-def test_rerun_repeats_the_last_run_of_a_generation(monkeypatch, tmp_path) -> None:
-    """It launches what the last run recorded -- same executable, same arguments, same working
-    directory -- into a run of its own, and generates and builds nothing."""
-    from motion_spec.introspection.runner import INVOCATION_FILE
-
+def test_rerun_runs_a_generation_again_under_a_new_id(monkeypatch, tmp_path) -> None:
+    """It is `run` for a generation already built: a run of its own, generating nothing."""
     generation = tmp_path / "generation"
-    previous = generation / "runs" / "run-1"
-    previous.mkdir(parents=True)
-    (previous / INVOCATION_FILE).write_text(
-        json.dumps(
-            {
-                "source_dir": str(generation / "generated"),
-                "executable": str(generation / "build" / "main"),
-                "executable_args": ["--headless", "--steps", "10"],
-                "cwd": str(tmp_path),
-            }
-        )
-    )
+    (generation / "generated").mkdir(parents=True)
+    (generation / "build").mkdir()
+    (generation / "build" / "main").write_text("")
     received = {}
     monkeypatch.setattr(
         "motion_spec.introspection.runner.run_cataloged",
         lambda *args, **kwargs: received.update(args=args, kwargs=kwargs) or 0,
     )
 
-    result = CliRunner().invoke(main, ["rerun", str(generation), "--run-id", "run-2"])
+    result = CliRunner().invoke(
+        main, ["rerun", str(generation), "--run-id", "run-2", "--", "--headless"]
+    )
 
     assert result.exit_code == 0
-    assert received["kwargs"]["executable_args"] == ["--headless", "--steps", "10"]
-    assert received["kwargs"]["cwd"] == str(tmp_path)
-    assert received["kwargs"]["executable"] == str(generation / "build" / "main")
+    assert received["kwargs"]["executable_args"] == ["--headless"]
+    assert received["kwargs"]["source_dir"] == generation.resolve() / "generated"
+    assert received["kwargs"]["executable"] == generation.resolve() / "build" / "main"
     assert received["args"][0] == generation.resolve() / "runs" / "run-2"
-    assert "repeating run-1" in result.output
 
 
 def test_rerun_takes_the_generation_latest_points_at(monkeypatch, tmp_path) -> None:
@@ -98,10 +87,8 @@ def test_rerun_takes_the_generation_latest_points_at(monkeypatch, tmp_path) -> N
 
     assert result.exit_code == 0
     assert received["args"][0] == generation / "runs" / "run-1"
-    # Nothing has been run yet, so there is nothing to repeat -- it launches the build plainly.
-    assert received["kwargs"]["executable_args"] == []
     assert received["kwargs"]["executable"] == generation / "build" / "main"
-    assert "no recorded run to repeat" in result.output
+    assert f"generation: {generation}" in result.output
 
 
 def test_latest_follows_the_newest_generation(monkeypatch, tmp_path) -> None:

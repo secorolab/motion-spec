@@ -178,7 +178,7 @@ class MotionSpecGroup(click.Group):
                     ("generated/contract/", "Schema, frame layout, and frame-log protocol."),
                     ("generated/provenance/", "DSL, coordinate, and motion-spec provenance."),
                     ("build/", "Reusable compiled controller."),
-                    ("runs/RUN/", "Run-owned logs, runtime RDF, REC graph, manifest, invocation."),
+                    ("runs/RUN/", "Run-owned logs, runtime RDF, REC graph, and manifest."),
                     ("latest", "Symlink to the newest generation, beside it and per model."),
                 ]
             )
@@ -655,53 +655,44 @@ def run(
     click.echo(run_dir)
 
 
-@main.command()
+@main.command(context_settings={"ignore_unknown_options": True})
 @click.argument(
     "generation", required=False, type=click.Path(exists=True, file_okay=False, path_type=Path)
 )
 @click.option("--run-id")
+@click.option("--cwd", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.option("--no-verify", is_flag=True)
-def rerun(generation: Path | None, run_id: str | None, no_verify: bool) -> None:
-    """Run a generation again, the way it was last run.
+@click.option("--headless", is_flag=True, help="Run without a GUI.")
+@click.option("--steps", type=click.IntRange(min=1), help="Maximum headless simulation steps.")
+@click.argument("executable-args", nargs=-1, type=click.UNPROCESSED)
+@click.pass_context
+def rerun(
+    ctx: click.Context,
+    generation: Path | None,
+    run_id: str | None,
+    cwd: Path | None,
+    no_verify: bool,
+    headless: bool,
+    steps: int | None,
+    executable_args: tuple[str, ...],
+) -> None:
+    """Run a generation again, in a run of its own.
 
-    Takes the one `latest` points at when GENERATION is not named, so the timestamped path a
-    `gen` just made need not be pasted back. Generates and builds nothing.
+    `run` for the generation `latest` points at, so the timestamped path a `gen` just made need
+    not be pasted back. Name a GENERATION to take that one instead. Generates and builds nothing.
     """
-    from motion_spec.generation.pipeline import new_id
-    from motion_spec.introspection.archive import ArchiveError
-    from motion_spec.introspection.runner import RunnerError, last_invocation, run_cataloged
-
     generation = (generation or _latest_generation()).resolve()
     click.echo(f"generation: {generation}", err=True)
-    repeated = last_invocation(generation)
-    if repeated is None:
-        # Generated but never run, or run before the record existed: there is nothing to repeat,
-        # but the build is right there, so launch it the way `run GENERATION` would.
-        click.echo("no recorded run to repeat; launching with no arguments", err=True)
-        invocation = {
-            "source_dir": generation / "generated",
-            "executable": generation / "build" / "main",
-            "executable_args": [],
-            "cwd": None,
-        }
-    else:
-        previous, invocation = repeated
-        click.echo(f"repeating {previous.name}", err=True)
-
-    run_dir = generation / "runs" / (run_id or new_id("run"))
-    try:
-        returncode = run_cataloged(
-            run_dir,
-            source_dir=invocation["source_dir"],
-            executable=invocation["executable"],
-            executable_args=invocation["executable_args"],
-            run_id=run_id,
-            cwd=invocation["cwd"],
-            recover_runtime_ttl=True,
-            verify=not no_verify,
-        )
-    except (ArchiveError, RunnerError) as exc:
-        raise click.ClickException(str(exc)) from exc
-    if returncode:
-        raise click.exceptions.Exit(returncode)
-    click.echo(run_dir)
+    ctx.invoke(
+        run,
+        input=generation,
+        output_dir=None,
+        prefixes=(),
+        jobs=None,
+        run_id=run_id,
+        cwd=cwd,
+        no_verify=no_verify,
+        headless=headless,
+        steps=steps,
+        executable_args=executable_args,
+    )

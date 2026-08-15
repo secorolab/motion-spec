@@ -62,7 +62,6 @@ def run_cataloged(
     )
     schema = json.loads(schema_path.read_text())
     run_dir.mkdir(parents=True, exist_ok=True)
-    _record_invocation(run_dir, source_dir, executable, executable_args, cwd)
     _start_rec_run(run_dir, run_id, source_dir, executable, schema)
 
     try:
@@ -116,51 +115,6 @@ def run_cataloged(
             _finish_rec_run(rec_path, run_id, "FAILED")
         raise
     return returncode
-
-
-INVOCATION_FILE = "invocation.json"
-
-
-def _record_invocation(
-    run_dir: Path,
-    source_dir: Path,
-    executable: Path,
-    executable_args: list[str],
-    cwd: Path | str | None,
-) -> None:
-    """Record how this run was launched, so it can be repeated without being restated.
-
-    Written before the executable starts, because a run worth repeating is often one that
-    failed. The archive manifest names the files it carries, so this one rides alongside without
-    entering it: it describes the launch, not the recording.
-    """
-    (run_dir / INVOCATION_FILE).write_text(
-        json.dumps(
-            {
-                "source_dir": str(source_dir.resolve()),
-                "executable": str(executable),
-                "executable_args": list(executable_args),
-                "cwd": str(Path(cwd).resolve()) if cwd else None,
-            },
-            indent=2,
-        )
-        + "\n"
-    )
-
-
-def last_invocation(generation: Path) -> tuple[Path, dict] | None:
-    """The most recent run of `generation` and how it was launched, None when it has none.
-
-    None is an answer, not a failure: a generation that has never been run, or whose runs predate
-    this record, is one there is nothing to repeat about -- it can still be launched plainly.
-    """
-    recorded = sorted(
-        (generation / "runs").glob(f"*/{INVOCATION_FILE}"),
-        key=lambda path: (path.stat().st_mtime, path.parent.name),
-    )
-    if not recorded:
-        return None
-    return recorded[-1].parent, json.loads(recorded[-1].read_text())
 
 
 _ROBOT_CONFIG_KEYS = (

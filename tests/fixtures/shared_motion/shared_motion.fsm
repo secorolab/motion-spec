@@ -1,0 +1,35 @@
+ns sm = "https://secorolab.github.io/models/shared-motion/fsm/"
+
+evt loop (ns=sm) shared_motion_fsm_events {
+    evt E_STEP,
+    evt E_FIRST_SETTLED,
+    evt E_SECOND_SETTLED
+}
+
+fsm (ns=sm) shared_motion_fsm {
+    description: "Hold one pose in two states, so one motion is realized by two handlers."
+
+    states {
+        S_START,
+        S_FIRST,
+        S_SECOND,
+        S_DONE
+    }
+
+    evt loop: <shared_motion_fsm_events>
+
+    start: <S_START>
+    end:   <S_DONE>
+
+    transitions {
+        T_START_FIRST  { from: <S_START>,  to: <S_FIRST> },
+        T_FIRST_SECOND { from: <S_FIRST>,  to: <S_SECOND> },
+        T_SECOND_DONE  { from: <S_SECOND>, to: <S_DONE> }
+    }
+
+    reactions {
+        R_STEP_START     { when: <shared_motion_fsm_events.E_STEP>,           do: <T_START_FIRST> },
+        R_FIRST_SETTLED  { when: <shared_motion_fsm_events.E_FIRST_SETTLED>,  do: <T_FIRST_SECOND> },
+        R_SECOND_SETTLED { when: <shared_motion_fsm_events.E_SECOND_SETTLED>, do: <T_SECOND_DONE> }
+    }
+}

@@ -1,0 +1,31 @@
+ns pcp = "https://secorolab.github.io/models/perception-fixture/fsm/"
+
+evt loop (ns=pcp) perception_fsm_events {
+    evt E_STEP,
+    evt E_ANCHOR_SEEN
+}
+
+fsm (ns=pcp) perception_fsm {
+    description: "Watch what the camera reports until the anchor is seen to move."
+
+    states {
+        S_START,
+        S_WATCH,
+        S_DONE
+    }
+
+    evt loop: <perception_fsm_events>
+
+    start: <S_START>
+    end:   <S_DONE>
+
+    transitions {
+        T_START_WATCH { from: <S_START>, to: <S_WATCH> },
+        T_WATCH_DONE  { from: <S_WATCH>, to: <S_DONE> }
+    }
+
+    reactions {
+        R_STEP_START   { when: <perception_fsm_events.E_STEP>,        do: <T_START_WATCH> },
+        R_ANCHOR_MOVED { when: <perception_fsm_events.E_ANCHOR_SEEN>, do: <T_WATCH_DONE> }
+    }
+}

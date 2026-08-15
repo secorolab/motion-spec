@@ -1,0 +1,113 @@
+// One motion specification, two constraint handlers: the same hold is realized in S_FIRST and
+// in S_SECOND, which is what makes two motion units out of one specification. No shipped demo
+// model states this, so the invariant is pinned here rather than against one that may be
+// restructured for reasons of its own.
+import "./shared_motion.fsm"
+import "../../../../motion-spec-dsl/models/admittance_arc_single/admittance_arc_single.scenex"
+ns app = "https://secorolab.github.io/models/shared-motion/"
+ns sm = "https://secorolab.github.io/models/shared-motion/fsm/"
+
+exec-context (ns=app) shared-motion-exec {
+    runs-scene: <admittance_arc_scene_mjc>
+    platform:   simulation { name: "MuJoCo" }
+    config:     "robot.toml"
+    timestep:   1.0 ms
+}
+
+context (ns=app) shared {
+    world {
+        pose pose-ee-base {
+            of:         <gripper.g_base.g_pinch>,
+            wrt:        <kinova.base_link.base_link_origin>,
+            as-seen-by: <kinova.base_link.base_link_origin>
+        },
+        velocity-twist twist-ee-base {
+            of:         <gripper.g_base.g_pinch>,
+            wrt:        <kinova.base_link.base_link_origin>,
+            as-seen-by: <kinova.base_link.base_link_origin>
+        },
+        // A frame the scene marks on a scene object, and one the arm's chain carries: no chain
+        // reaches the table, so the two are answered by different things.
+        pose pose-table-top {
+            of:         <world_tree.table.table_top>,
+            wrt:        <kinova.base_link.base_link_origin>,
+            as-seen-by: <kinova.base_link.base_link_origin>
+        },
+        // A frame the object carries but is not its root: the scene marks it with a site.
+        pose pose-table-com {
+            of:         <world_tree.table.table_com>,
+            wrt:        <kinova.base_link.base_link_origin>,
+            as-seen-by: <kinova.base_link.base_link_origin>
+        },
+        pose pose-bracelet-base {
+            of:         <kinova.bracelet_link.bracelet_link_origin>,
+            wrt:        <kinova.base_link.base_link_origin>,
+            as-seen-by: <kinova.base_link.base_link_origin>
+        }
+    },
+    spec {
+        length satisfied-band              = 0.01 m,
+        linear-velocity satisfied-band-vel = 0.01 m/s,
+        linear-velocity zero-linvel        = 0.0 m/s,
+        distance table-clearance           = 0.05 m
+    }
+}
+
+guarded-motion (ns=app) hold {
+    description: "Hold the pose the state was entered in"
+
+    context {
+        spec {
+            pose hold-pose = snapshot of <shared.world.pose-ee-base>
+        }
+    }
+
+    when {}
+
+    while {
+        hold-position: keeping <shared.world.pose-ee-base>.position equal to <spec.hold-pose>.position within <shared.spec.satisfied-band>
+    }
+
+    until all {
+        settled-z: <shared.world.twist-ee-base>.linvel.z equal to <shared.spec.zero-linvel> within <shared.spec.satisfied-band-vel>,
+        clear-of-table: distance between <shared.world.pose-ee-base> and <shared.world.pose-table-top> greater than <shared.spec.table-clearance>,
+        elbow-clear-of-table: distance between <shared.world.pose-bracelet-base> and <shared.world.pose-table-top> greater than <shared.spec.table-clearance>,
+        clear-of-table-centre: distance between <shared.world.pose-ee-base> and <shared.world.pose-table-com> greater than <shared.spec.table-clearance>
+    }
+}
+
+constraint-handler (ns=app) handler-first {
+    handles: <hold>
+    runs-in: <sm.S_FIRST>
+    monitors {
+        mon-first-settled: monitor <hold.until> {
+            satisfied for 0.3 s { trigger: event <sm.E_FIRST_SETTLED> },
+        }
+    }
+    controllers {
+        pid ctrl-first-position { constraint: <hold.hold-position>, Kp: 200, Ki: 100, Kd: 40, decay: 0 }
+    }
+    solvers {
+        arm-solver: serial-chain {
+            agent: <agents.kinova_ft_2f85>,
+            algorithm: achd,
+            gravity: (0.0, 0.0, 9.81) m/s^2
+        }
+    }
+}
+
+constraint-handler (ns=app) handler-second {
+    handles: <hold>
+    runs-in: <sm.S_SECOND>
+    monitors {
+        mon-second-settled: monitor <hold.until> {
+            satisfied for 0.3 s { trigger: event <sm.E_SECOND_SETTLED> },
+        }
+    }
+    controllers {
+        pid ctrl-second-position { constraint: <hold.hold-position>, Kp: 120, Ki: 60, Kd: 25, decay: 0 }
+    }
+    solvers {
+        <handler-first.arm-solver>
+    }
+}

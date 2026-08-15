@@ -2,8 +2,8 @@
 """Lowering a monitor's ROS publish: what rosidl says the message is, and what the IR carries.
 
 A row's condition is what gives it its polarity: the constraint the monitor watches, or no
-condition at all -- the otherwise. The acceptance cases need `bdd_ros2_interfaces` on
-AMENT_PREFIX_PATH; the rest use stock packages.
+condition at all -- the otherwise. Every type read here is one a ROS install already carries,
+so the cases need no interface package of their own.
 """
 
 from __future__ import annotations
@@ -32,9 +32,7 @@ from motion_spec.rdf_parser.resources import ros_joint_states
 
 from conftest import requires_interfaces
 
-pytestmark = requires_interfaces(
-    "bdd_ros2_interfaces/msg/TrinaryStamped", "bdd_ros2_interfaces/action/Behaviour"
-)
+pytestmark = requires_interfaces("action_msgs/msg/GoalStatus", "control_msgs/action/GripperCommand")
 # A mark skips the cases, not the import, so this one has to skip the module itself.
 convert_camel_case_to_lower_case_underscore = pytest.importorskip(
     "rosidl_pycommon"
@@ -76,8 +74,10 @@ def _publication(type_name: str, *rows: tuple[URIRef, str, str], rate: float | N
     return _ros_publication(_model(graph), MONITOR)["ros"]
 
 
-def _trinary(*rows: tuple[URIRef, str, str], rate: float | None = None):
-    return _publication("bdd_ros2_interfaces/msg/TrinaryStamped", *rows, rate=rate)
+def _status(*rows: tuple[URIRef, str, str], rate: float | None = None):
+    """A verdict published as a goal status: a constant-bearing field beside a stamp the node
+    fills, which is what a monitor's publish has to render."""
+    return _publication("action_msgs/msg/GoalStatus", *rows, rate=rate)
 
 
 def _monitor_motion(publication):
@@ -89,7 +89,7 @@ def _monitor_motion(publication):
 
 def test_a_monitor_publishing_at_a_rate_counts_the_cycles_between_messages():
     """A verdict a reader wants twenty times a second, off a loop running a thousand."""
-    ros = _trinary((WATCHED, "trinary.value", "TRUE"), rate=20.0)
+    ros = _status((WATCHED, "status", "STATUS_SUCCEEDED"), rate=20.0)
     assert ros.rate_hz == 20.0
     annotate_publish_rates([_monitor_motion(ros)], 1_000_000)
     assert ros.divider == 50
@@ -97,21 +97,21 @@ def test_a_monitor_publishing_at_a_rate_counts_the_cycles_between_messages():
 
 def test_a_monitor_stating_no_rate_publishes_every_cycle():
     """No divider at all rather than one, so the loop tests nothing it need not."""
-    ros = _trinary((WATCHED, "trinary.value", "TRUE"))
+    ros = _status((WATCHED, "status", "STATUS_SUCCEEDED"))
     assert ros.rate_hz is None
     annotate_publish_rates([_monitor_motion(ros)], 1_000_000)
     assert ros.divider is None
 
 
 def test_a_monitor_rate_at_or_above_the_loop_rate_publishes_every_cycle():
-    ros = _trinary((WATCHED, "trinary.value", "TRUE"), rate=4000.0)
+    ros = _status((WATCHED, "status", "STATUS_SUCCEEDED"), rate=4000.0)
     annotate_publish_rates([_monitor_motion(ros)], 1_000_000)
     assert ros.divider == 1
 
 
 def test_a_monitor_rate_that_is_not_positive_is_rejected():
     with pytest.raises(ConstraintViolation, match="a rate says how often"):
-        _trinary((WATCHED, "trinary.value", "TRUE"), rate=0.0)
+        _status((WATCHED, "status", "STATUS_SUCCEEDED"), rate=0.0)
 
 
 def test_a_monitors_rate_does_not_make_it_a_standing_publish():
@@ -139,29 +139,29 @@ def test_message_shape_separates_authorable_fields_from_auto_filled_ones():
 
 def test_include_stem_comes_from_the_rosidl_converter():
     """The generated header name matches rosidl's own case conversion by construction."""
-    assert convert_camel_case_to_lower_case_underscore("TrinaryStamped") == "trinary_stamped"
+    assert convert_camel_case_to_lower_case_underscore("GoalStatus") == "goal_status"
 
 
 def test_a_rows_condition_gives_it_its_polarity():
     """The watched constraint means satisfied; no condition at all means violated -- the
     otherwise. TRUE/FALSE render as the constants of the message that owns them."""
-    ros = _trinary((WATCHED, "trinary.value", "TRUE"), (OTHERWISE, "trinary.value", "FALSE"))
-    assert ros.cpp_type == "bdd_ros2_interfaces::msg::TrinaryStamped"
-    assert ros.include == "bdd_ros2_interfaces/msg/trinary_stamped.hpp"
+    ros = _status((WATCHED, "status", "STATUS_SUCCEEDED"), (OTHERWISE, "status", "STATUS_ABORTED"))
+    assert ros.cpp_type == "action_msgs::msg::GoalStatus"
+    assert ros.include == "action_msgs/msg/goal_status.hpp"
     assert ros.pub_id == "mon_x_pub"
     assert ros.on_satisfied == [
-        {"path": "trinary.value", "cpp_value": "bdd_ros2_interfaces::msg::Trinary::TRUE"}
+        {"path": "status", "cpp_value": "action_msgs::msg::GoalStatus::STATUS_SUCCEEDED"}
     ]
     assert ros.on_violated == [
-        {"path": "trinary.value", "cpp_value": "bdd_ros2_interfaces::msg::Trinary::FALSE"}
+        {"path": "status", "cpp_value": "action_msgs::msg::GoalStatus::STATUS_ABORTED"}
     ]
     assert (ros.has_satisfied, ros.has_violated) == (True, True)
-    assert ros.auto_time == ["stamp"]
-    assert ros.auto_context_id == ["scenario_context_id"]
+    assert ros.auto_time == ["goal_info.stamp"]
+    assert ros.auto_context_id == []
 
 
 def test_a_satisfied_only_publish_leaves_the_violated_branch_empty():
-    ros = _trinary((WATCHED, "trinary.value", "TRUE"))
+    ros = _status((WATCHED, "status", "STATUS_SUCCEEDED"))
     assert (ros.has_satisfied, ros.has_violated) == (True, False)
     assert ros.on_violated == []
 
@@ -179,17 +179,17 @@ def test_an_authored_string_is_quoted_and_a_number_typed_by_its_field():
 
 def test_a_condition_that_is_not_the_watched_constraint_is_rejected():
     with pytest.raises(ConstraintViolation, match="not the constraint its monitor watches"):
-        _trinary((UNKNOWN, "", "TRUE"))
+        _status((UNKNOWN, "", "STATUS_SUCCEEDED"))
 
 
 def test_a_path_the_message_does_not_offer_is_rejected():
     with pytest.raises(ConstraintViolation, match="not a payload field"):
-        _trinary((WATCHED, "trinary.verdict", "TRUE"))
+        _status((WATCHED, "goal_info.verdict", "STATUS_SUCCEEDED"))
 
 
 def test_a_value_a_numeric_field_cannot_take_is_rejected():
     with pytest.raises(ConstraintViolation, match="neither a constant"):
-        _trinary((WATCHED, "trinary.value", "MAYBE"))
+        _status((WATCHED, "status", "MAYBE"))
 
 
 def test_the_sugar_resolves_to_the_one_payload_field_a_type_offers():
@@ -471,7 +471,7 @@ FSM = {
     ],
 }
 SERVER = URIRef(f"{NS}pick-place")
-ACTION_TYPE = "bdd_ros2_interfaces/action/Behaviour"
+ACTION_TYPE = "control_msgs/action/GripperCommand"
 
 
 def _served(goal_event: str = "E_GOAL"):
@@ -487,7 +487,7 @@ def _served(goal_event: str = "E_GOAL"):
 def _answer(
     outcome: str = "STATUS_SUCCEEDED",
     *,
-    result: tuple | None = ("result.trinary.value", "TRUE"),
+    result: tuple | None = ("position", "0.5"),
     satisfied: bool = True,
 ):
     """A monitor that answers the goal in flight: the status it reports, and the result fields
@@ -530,14 +530,16 @@ def test_the_server_reads_its_whole_shape_off_the_action_it_names():
     """Nothing about the action is assumed: the C++ type, the header, the packages and the
     node-owned result fields all come from the type the model stated."""
     server = action_server(_model(_served()), FSM)
-    assert server["cpp_type"] == "bdd_ros2_interfaces::action::Behaviour"
-    assert server["result_cpp_type"] == "bdd_ros2_interfaces::action::Behaviour_Result"
-    assert server["include"] == "bdd_ros2_interfaces/action/behaviour.hpp"
-    assert server["goal_context_id"] == ["scenario_context_id"]
-    assert server["result_auto_time"] == ["result.stamp"]
-    assert server["result_auto_context_id"] == ["result.scenario_context_id"]
-    assert sorted(server["ignored_goal_fields"]) == ["configs", "parameters"]
-    assert "bdd_ros2_interfaces" in server["packages"]
+    assert server["cpp_type"] == "control_msgs::action::GripperCommand"
+    assert server["result_cpp_type"] == "control_msgs::action::GripperCommand_Result"
+    assert server["include"] == "control_msgs/action/gripper_command.hpp"
+    # This action carries none of the fields the node fills itself: an interface that names no
+    # stamp and no scenario is answered with what the model states and nothing more.
+    assert server["goal_context_id"] == []
+    assert server["result_auto_time"] == []
+    assert server["result_auto_context_id"] == []
+    assert server["ignored_goal_fields"] == []
+    assert "control_msgs" in server["packages"]
 
 
 def test_the_monitor_that_answers_states_the_status_and_the_fields():
@@ -545,12 +547,10 @@ def test_the_monitor_that_answers_states_the_status_and_the_fields():
     reports, the handle call that reports it, and the result type it fills."""
     answer = _ros_publication(_model(_answer()), MONITOR)["answer"]
     assert (answer.outcome, answer.method) == ("STATUS_SUCCEEDED", "succeed")
-    assert answer.result_cpp_type == "bdd_ros2_interfaces::action::Behaviour_Result"
-    assert answer.fields == [
-        {"path": "result.trinary.value", "cpp_value": "bdd_ros2_interfaces::msg::Trinary::TRUE"}
-    ]
-    assert answer.auto_time == ["result.stamp"]
-    assert answer.auto_context_id == ["result.scenario_context_id"]
+    assert answer.result_cpp_type == "control_msgs::action::GripperCommand_Result"
+    assert answer.fields == [{"path": "position", "cpp_value": "0.5"}]
+    assert answer.auto_time == []
+    assert answer.auto_context_id == []
 
 
 def test_an_answer_states_which_polarity_of_its_monitor_answers():
@@ -567,7 +567,7 @@ def test_an_answer_stating_no_field_answers_with_the_types_own_defaults():
 
 
 def test_a_result_field_the_action_does_not_offer_is_rejected():
-    graph = _answer(result=("result.trinary.invented", "TRUE"))
+    graph = _answer(result=("position.invented", "0.5"))
     with pytest.raises(ConstraintViolation, match="not a payload field"):
         _ros_publication(_model(graph), MONITOR)
 
@@ -632,22 +632,22 @@ def _occurrence(type_name: str, *events: URIRef) -> RosPublication:
 def test_an_occurrence_resolves_its_field_off_the_message_type():
     """The payload field is the message's own sole leaf, not a name the generator assumes; the
     authored-row branches stay empty, since the event is the whole payload."""
-    ros = _occurrence("bdd_ros2_interfaces/msg/Event")
-    assert ros.occurrence_path == "uri"
+    ros = _occurrence("std_msgs/msg/String")
+    assert ros.occurrence_path == "data"
     assert ros.occurrence_events == [str(EVENT)]
     assert (ros.on_satisfied, ros.on_violated) == ([], [])
     assert (ros.has_satisfied, ros.has_violated) == (False, False)
-    assert ros.auto_time == ["stamp"]
-    assert ros.auto_context_id == ["scenario_context_id"]
+    assert ros.auto_time == []
+    assert ros.auto_context_id == []
 
 
 def test_every_announced_event_is_carried_whatever_the_monitor_triggers():
     """The set is the author's choice, so an event the monitor never fires is carried too; each
     one becomes its own message at generation."""
     other = URIRef(f"{FSM_NS}E_OTHER")
-    ros = _occurrence("bdd_ros2_interfaces/msg/Event", EVENT, other)
+    ros = _occurrence("std_msgs/msg/String", EVENT, other)
     assert sorted(ros.occurrence_events) == sorted([str(EVENT), str(other)])
-    assert ros.occurrence_path == "uri"
+    assert ros.occurrence_path == "data"
 
 
 def test_an_occurrence_needs_a_field_that_can_hold_an_iri():

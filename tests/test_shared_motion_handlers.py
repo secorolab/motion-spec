@@ -17,28 +17,30 @@ from motion_spec_dsl.langs import motion_spec_metamodel
 
 from motion_spec.rdf_parser.ir import generate_ir
 
-from conftest import requires_interfaces, requires_workspace
+from conftest import requires_workspace
 
-MODEL = Path(__file__).parents[2] / "bdd_collab_bhv_cpp" / "models" / "collab_sim"
+MODEL = Path(__file__).parent / "fixtures" / "shared_motion"
+SCENE = Path(__file__).parents[2] / "motion-spec-dsl" / "models" / "admittance_arc_single"
 METAMODELS = Path(__file__).resolve().parents[2] / "metamodels"
 
-pytestmark = [
-    requires_workspace(MODEL, METAMODELS),
-    requires_interfaces("bdd_ros2_interfaces/action/Behaviour"),
-]
+pytestmark = requires_workspace(SCENE, METAMODELS)
 
 
 @pytest.fixture(scope="module")
 def shared_motion_ir(tmp_path_factory: pytest.TempPathFactory) -> dict:
-    """The IR of a model whose S_LOOK/S_SLIDE and S_TOUCH/S_CLOSE states hold the same pose."""
-    tmp_path = tmp_path_factory.mktemp("collab_sim")
+    """The IR of a model whose S_FIRST and S_SECOND states realize the same hold.
+
+    A fixture of its own rather than a demo model: the invariant is about the lowering, and a
+    demo restructured for reasons of its own has twice left it untested.
+    """
+    tmp_path = tmp_path_factory.mktemp("shared_motion")
     with pytest.MonkeyPatch.context() as mp:
         mp.setenv("METAMODELS_PATH", str(METAMODELS))
         metamodel = motion_spec_metamodel()
-        model = metamodel.model_from_file(MODEL / "collab_sim.robmot")
+        model = metamodel.model_from_file(MODEL / "shared_motion.robmot")
         _gen_graph(metamodel, model, tmp_path, overwrite=True, debug=False)
 
-    return generate_ir(tmp_path / "collab_sim-app.ld.json")
+    return generate_ir(tmp_path / "shared_motion-app.ld.json")
 
 
 def _shared_units(ir: dict) -> dict[str, list]:

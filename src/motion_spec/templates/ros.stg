@@ -623,7 +623,7 @@ ros-monitor-publish(motion, monitor) ::= <<
 <if(monitor.ros.occurrence_path)>
 <monitor.ros.occurrence_events:{e | <ros-monitor-announce(monitor, e)>}; separator="\n">
 <elseif(monitor.ros)>
-        if (<motion.id>_state_instance.active) {
+        if (<motion.id>_state_instance.active<if(monitor.ros.divider)> && (_step % <monitor.ros.divider>) == 0<endif>) {
             const bool _satisfied = <monitor-satisfied-expr(monitor)>;
             bool _authored = false;
 <if(monitor.ros.has_satisfied)>

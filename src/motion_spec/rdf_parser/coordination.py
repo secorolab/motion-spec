@@ -25,6 +25,7 @@ from motion_spec_dsl.rdf_parser.vocab import (
     KC_STAT,
     MAP,
     MOT,
+    SENSORS,
     SLV,
 )
 from rdf_utils.constraints import ConstraintViolation
@@ -881,8 +882,29 @@ def _ros_publication(model, node) -> dict:
             auto_context_id=sorted(path for path, kind in auto.items() if kind == "context_id"),
             occurrence_path=occurrence_path,
             occurrence_events=occurrence_events,
+            rate_hz=_publish_rate(model, node),
         )
     }
+
+
+def _publish_rate(model, node) -> float | None:
+    """How often a monitor publishes, when the model says. Unstated is every cycle.
+
+    Raises:
+        ConstraintViolation: the rate does not say how often.
+    """
+    rate_node = model.graph.value(node, SENSORS["update-rate"])
+    if rate_node is None:
+        return None
+    rate_hz = quantities.quantity(model, rate_node).value
+    if not rate_hz or rate_hz <= 0.0:
+        raise ConstraintViolation(
+            "communication",
+            f"monitor '{model.id(node)}' publishes at {rate_hz} Hz; a rate says how often, so "
+            "it is positive",
+        )
+
+    return rate_hz
 
 
 def build_constraint_handlers(model, schedule, derivation):

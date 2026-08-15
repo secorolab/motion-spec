@@ -20,7 +20,12 @@ from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 
 from motion_spec.classes.dynamics import JointPosition
 from motion_spec.classes.handlers import LevelMonitor, RosPublication
-from motion_spec.rdf_parser.communication import action_server, ros_publishers, ros_standing
+from motion_spec.rdf_parser.communication import (
+    action_server,
+    annotate_publish_rates,
+    ros_publishers,
+    ros_standing,
+)
 from motion_spec.rdf_parser.coordination import _message_shape, _ros_publication
 from motion_spec.rdf_parser.model import Model
 from motion_spec.rdf_parser.resources import ros_joint_states
@@ -48,12 +53,19 @@ def _model(graph: Graph) -> Model:
     )
 
 
-def _publication(type_name: str, *rows: tuple[URIRef, str, str]):
+def _publication(type_name: str, *rows: tuple[URIRef, str, str], rate: float | None = None):
     """Lower a monitor node: its channel, its message, and the rows it states."""
     graph = Graph()
     graph.add((MONITOR, NS_MM_ROS["channel-name"], Literal("/probe")))
     graph.add((MONITOR, NS_MM_ROS["type-name"], Literal(type_name)))
     graph.add((MONITOR, CSTR_HDL["constraint"], WATCHED))
+    if rate is not None:
+        rate_node = URIRef(f"{MONITOR}.rate")
+        graph.add((MONITOR, SENSORS["update-rate"], rate_node))
+        graph.add((rate_node, RDF["type"], QUDT_SCHEMA.Quantity))
+        graph.add((rate_node, QUDT_SCHEMA["hasQuantityKind"], NS_MM_QUDT_QTY["Frequency"]))
+        graph.add((rate_node, QUDT_SCHEMA["unit"], URIRef("http://qudt.org/vocab/unit/HZ")))
+        graph.add((rate_node, QUDT_SCHEMA["value"], Literal(rate)))
     for index, (condition, path, value) in enumerate(rows):
         row = URIRef(f"{NS}mon-x.f{index}")
         graph.add((MONITOR, RDFS.member, row))
@@ -64,8 +76,55 @@ def _publication(type_name: str, *rows: tuple[URIRef, str, str]):
     return _ros_publication(_model(graph), MONITOR)["ros"]
 
 
-def _trinary(*rows: tuple[URIRef, str, str]):
-    return _publication("bdd_ros2_interfaces/msg/TrinaryStamped", *rows)
+def _trinary(*rows: tuple[URIRef, str, str], rate: float | None = None):
+    return _publication("bdd_ros2_interfaces/msg/TrinaryStamped", *rows, rate=rate)
+
+
+def _monitor_motion(publication):
+    """A motion with one publishing monitor, as the divider pass walks it."""
+    monitor = LevelMonitor("mon-x", "LevelTriggeredMonitor", None, None, ros=publication)
+
+    return type("M", (), {"when_monitors": [], "while_monitors": [monitor], "until_monitors": []})()
+
+
+def test_a_monitor_publishing_at_a_rate_counts_the_cycles_between_messages():
+    """A verdict a reader wants twenty times a second, off a loop running a thousand."""
+    ros = _trinary((WATCHED, "trinary.value", "TRUE"), rate=20.0)
+    assert ros.rate_hz == 20.0
+    annotate_publish_rates([_monitor_motion(ros)], 1_000_000)
+    assert ros.divider == 50
+
+
+def test_a_monitor_stating_no_rate_publishes_every_cycle():
+    """No divider at all rather than one, so the loop tests nothing it need not."""
+    ros = _trinary((WATCHED, "trinary.value", "TRUE"))
+    assert ros.rate_hz is None
+    annotate_publish_rates([_monitor_motion(ros)], 1_000_000)
+    assert ros.divider is None
+
+
+def test_a_monitor_rate_at_or_above_the_loop_rate_publishes_every_cycle():
+    ros = _trinary((WATCHED, "trinary.value", "TRUE"), rate=4000.0)
+    annotate_publish_rates([_monitor_motion(ros)], 1_000_000)
+    assert ros.divider == 1
+
+
+def test_a_monitor_rate_that_is_not_positive_is_rejected():
+    with pytest.raises(ConstraintViolation, match="a rate says how often"):
+        _trinary((WATCHED, "trinary.value", "TRUE"), rate=0.0)
+
+
+def test_a_monitors_rate_does_not_make_it_a_standing_publish():
+    """Both state a rate with the same term. What a monitor publishes belongs to its motion, so
+    it is published where the motion is and never from the run."""
+    graph = Graph()
+    graph.add((MONITOR, RDF["type"], NS_MM_ROS["Topic"]))
+    graph.add((MONITOR, RDF["type"], CSTR_HDL["Monitor"]))
+    graph.add((MONITOR, NS_MM_ROS["channel-name"], Literal("/probe")))
+    graph.add((MONITOR, NS_MM_ROS["type-name"], Literal("std_msgs/msg/Bool")))
+    rate_node = URIRef(f"{MONITOR}.rate")
+    graph.add((MONITOR, SENSORS["update-rate"], rate_node))
+    assert ros_standing(_model(graph), [], 1_000_000) == []
 
 
 def test_message_shape_separates_authorable_fields_from_auto_filled_ones():

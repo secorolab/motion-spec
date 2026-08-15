@@ -196,6 +196,10 @@ class RosPublication:
     has_violated: bool = False
     auto_time: list[str] = field(default_factory=list)
     auto_context_id: list[str] = field(default_factory=list)
+    # How often the verdict goes out, as the model states it and as the loop counts it. Without
+    # a rate it goes out every cycle the motion is active, so `divider` stays unset.
+    rate_hz: float | None = field(default=None, metadata=INTERNAL)
+    divider: int | None = None
     # Occurrence form: the payload field an announced event's IRI is written into, instead of
     # authored field rows. `occurrence_events` are the events the monitor announces, resolved to
     # their FSM enum tokens; one message is published per event that fired this cycle.

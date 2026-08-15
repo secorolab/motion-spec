@@ -86,6 +86,8 @@ def generate_ir(manifest_path) -> dict:
         raise ValueError("ENVIRONMENT timestep must be positive.")
     control_period_ns = round(scene.timestep_s * 1e9)
 
+    communication.annotate_publish_rates(motions, control_period_ns)
+
     action_clients = communication.ros_action_clients(model)
     # A subscription places its detections through the world model, so it is built against the
     # same segment names the chains resolved against.

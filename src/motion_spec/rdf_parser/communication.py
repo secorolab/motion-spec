@@ -17,8 +17,9 @@ from __future__ import annotations
 
 from enum import Enum
 
-from motion_spec_dsl.rdf_parser.vocab import CSTR, CSTR_EXT, EXEC, MOT, SENSORS
+from motion_spec_dsl.rdf_parser.vocab import CSTR, CSTR_EXT, CSTR_HDL, EXEC, MOT, SENSORS
 from rdf_utils.constraints import ConstraintViolation
+from rdf_utils.models.common import get_node_types
 from rdf_utils.naming import get_valid_var_name
 from rdflib.namespace import PROV, RDF, RDFS, SOSA
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS
@@ -629,7 +630,9 @@ def ros_standing(model, data_structures, control_period_ns: int) -> list:
     standing = []
     for node in sorted(graph.subjects(RDF["type"], NS_MM_ROS["Topic"]), key=str):
         rate_node = graph.value(node, SENSORS["update-rate"])
-        if rate_node is None:
+        # A monitor states a rate too, but what it publishes belongs to its motion rather than
+        # to the run, so it is published where the motion is and not from here.
+        if rate_node is None or CSTR_HDL["Monitor"] in get_node_types(graph, node):
             continue
         # A member stating a field path maps one field; one stating none is an entry the message
         # carries whole.
@@ -1126,6 +1129,19 @@ def ros_publications(motions):
         for monitor in getattr(motion, f"{phase}_monitors")
         if getattr(monitor, "ros", None) is not None
     ]
+
+
+def annotate_publish_rates(motions, control_period_ns: int) -> None:
+    """Turn each monitor publish's authored rate into cycles between two messages.
+
+    Done here rather than where the publish is read, because a rate says how often in seconds and
+    only the loop knows how many cycles that is. A publish stating no rate goes out every cycle
+    its motion is active, and carries no divider to say so.
+    """
+    period_s = control_period_ns * 1e-9
+    for publication in ros_publications(motions):
+        if publication.rate_hz:
+            publication.divider = max(1, round(1.0 / (publication.rate_hz * period_s)))
 
 
 def _provenance(model, scene, platform: dict) -> dict:

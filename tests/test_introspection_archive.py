@@ -20,7 +20,7 @@ from motion_spec.introspection import replay
 from motion_spec.introspection.replay import decode_frames, summarize, validate_header
 from motion_spec.introspection.runtime_graph import write_runtime_ttl
 from motion_spec_dsl.rdf_parser.vocab import APP
-from support import _provenance, _schema, _source_tree
+from support import _provenance, _schema, _source_tree, _write_frame_log
 
 REC = rdflib.Namespace("https://secorolab.github.io/metamodels/rec#")
 PROV = rdflib.Namespace("http://www.w3.org/ns/prov#")
@@ -109,6 +109,22 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
     assert metrics["frame_log_written_frames"].toPython() == 1
     assert metrics["frame_log_dropped_frames"].toPython() == 0
     assert metrics["frame_log_complete"].toPython() == 1
+
+
+def test_replay_works_on_aborted_run_without_manifest(tmp_path: Path) -> None:
+    # A run killed before the archiving step ran leaves logs/frame_log.pb but no
+    # manifest.json. Replay must still read it -- the log carries its own decode contract.
+    schema = _schema()
+    run_dir = tmp_path / "aborted-run"
+    (run_dir / "logs").mkdir(parents=True)
+    _write_frame_log(run_dir / "logs" / "frame_log.pb", schema)
+    assert not (run_dir / "manifest.json").exists()
+
+    frame_log = run_dir / "logs" / "frame_log.pb"
+    assert decode_frames(frame_log)[0]["step"] == 7
+    assert decode_frames(run_dir)[0]["step"] == 7
+    assert f"archive     {run_dir}" in summarize(frame_log)
+    assert replay.main([str(frame_log), "--verify"]) == 0
 
 
 def _importing_manifest() -> dict:

@@ -8,30 +8,38 @@ import json
 import sys
 from pathlib import Path
 
-from motion_spec.introspection.archive import ArchiveError, verify_manifest
+from motion_spec.introspection.archive import ArchiveError, load_manifest, verify_manifest
 from motion_spec.introspection import frame_log_pb
 
 
 def run_dir_for(log_path: Path) -> Path:
     if not log_path.exists():
         raise ArchiveError(f"{log_path}: does not exist")
-    if log_path.is_dir() and (log_path / "manifest.json").exists():
-        return log_path
-    for path in (log_path.parent, *log_path.parent.parents):
+    search_start = log_path if log_path.is_dir() else log_path.parent
+    for path in (search_start, *search_start.parents):
         if (path / "manifest.json").exists():
             return path
-    return log_path.parent
+    # No manifest yet -- e.g. a run killed before the archiving step ran. Fall back to the
+    # conventional layout every archive writer uses instead of rejecting outright: a directory
+    # passed directly is the run dir itself, and a bare frame log lives at <run_dir>/logs/.
+    if log_path.is_dir():
+        return log_path
+    return search_start.parent if search_start.name == "logs" else search_start
 
 
-def resolve_archive(path: Path | str) -> tuple[Path, Path, dict, dict]:
+def resolve_archive(path: Path | str) -> tuple[Path, Path, dict | None, dict]:
     input_path = Path(path)
     run_dir = run_dir_for(input_path)
-    manifest = verify_manifest(run_dir)
-    files = manifest["files"]
-    log_path = run_dir / files["frame_log"] if input_path.is_dir() else input_path
+    manifest_path = run_dir / "manifest.json"
+    manifest = None
+    frame_log_rel = "logs/frame_log.pb"
+    if manifest_path.exists():
+        _, manifest = load_manifest(run_dir)
+        frame_log_rel = manifest["files"]["frame_log"]
+    log_path = run_dir / frame_log_rel if input_path.is_dir() else input_path
     if not log_path.exists():
         raise ArchiveError(f"{log_path}: missing frame log")
-    # The log carries its own decode contract; the manifest only locates it.
+    # The log carries its own decode contract; the manifest, when present, only locates it.
     return run_dir, log_path, manifest, frame_log_pb.read_contract(log_path)
 
 
@@ -146,9 +154,13 @@ def main(argv: list[str] | None = None) -> int:
             out = write_runtime_ttl(run_dir, records, frame_count=frame_count)
             print(out)
         elif args.verify:
-            _run_dir, log_path, _manifest, contract = resolve_archive(args.log)
+            run_dir, log_path, manifest, contract = resolve_archive(args.log)
             validate_header(log_path, contract)
-            print("archive OK")
+            if manifest is not None:
+                verify_manifest(run_dir)
+                print("archive OK")
+            else:
+                print("archive OK (no manifest.json yet -- header verified only)")
         elif args.jsonl:
             for record in decode_frames(args.log):
                 print(json.dumps(record, separators=(",", ":")))

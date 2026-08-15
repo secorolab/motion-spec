@@ -2,14 +2,14 @@
 Generate, build, and run
 ========================
 
-This tutorial executes each stage separately first. That makes the input, output,
+This page executes each stage separately first. That makes the input, output,
 and ownership boundary of every command visible before using the combined
 ``motion-spec run MODEL`` shortcut.
 
 Choose the model and generation
 ===============================
 
-Run from the workspace root and define two paths used throughout the tutorial:
+Run from the workspace root and define two paths used throughout this page:
 
 .. code-block:: console
 

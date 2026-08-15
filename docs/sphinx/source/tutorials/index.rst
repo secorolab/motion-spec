@@ -1,8 +1,8 @@
-=========
-Tutorials
-=========
+=============
+Build and run
+=============
 
-These tutorials follow one generation through the CLI in order:
+This walkthrough follows one generation through the CLI in order:
 
 1. generate model artifacts;
 2. build the generated controller;

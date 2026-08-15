@@ -75,6 +75,8 @@ High-level commands
      - Create a generation, build it, execute it, recover runtime RDF, and archive the run
    * - ``run GENERATION``
      - Execute an existing generation again, as a new run beside the earlier ones
+   * - ``rerun [GENERATION]``
+     - ``run`` for the generation ``latest`` points at (or a named one); generates and builds nothing
    * - ``replay RUN``
      - Summarize, verify, decode, or recover a recorded run
 
@@ -130,7 +132,10 @@ other consumers need. Runtime artifact hashes and lifecycle provenance live in
 Replay
 ======
 
-With no option, ``replay`` prints a run summary. ``--verify`` checks manifest
-files and the frame-log header against the generation contract.
-``--recover-runtime-ttl`` rebuilds runtime RDF from the frame log, and ``--jsonl``
-streams decoded frames for external analysis.
+With no option, ``replay`` prints a run summary. ``--verify`` checks the manifest's
+required files and PROV/REC provenance, then validates the frame-log header --
+the log embeds its own schema hash, so there is no separate generation contract
+to cross-check it against. Without a manifest (a run recorded before archiving
+finished), ``--verify`` falls back to the header check alone rather than
+rejecting the run. ``--recover-runtime-ttl`` rebuilds runtime RDF from the frame
+log, and ``--jsonl`` streams decoded frames for external analysis.

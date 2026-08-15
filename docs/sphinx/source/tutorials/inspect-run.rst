@@ -47,7 +47,10 @@ Summarize and verify a run
    $ motion-spec replay "$RUN_DIR" --verify
 
 Summary mode reports the run without rewriting it. Verification checks required
-files and confirms that the frame-log schema hash matches the generation contract.
+files and the manifest's PROV/REC provenance; the frame log carries its own
+schema hash, so there is nothing external left to cross-check it against. A run
+recorded before ``manifest.json`` was written (e.g. one killed mid-run) still
+replays and verifies -- verification just falls back to the frame-log header.
 
 Recover runtime RDF
 ===================

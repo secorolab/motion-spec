@@ -27,8 +27,9 @@ Where to go next
 ================
 
 Start with :doc:`setup`, read :doc:`concepts` for the pipeline and artifact
-contracts, then follow the :doc:`tutorials/index`. Read :doc:`dsl/index` when you
-author a model of your own rather than running an existing one.
+contracts, then work through :doc:`tutorials/index` to generate, build, and run
+one. Read :doc:`dsl/index` when you author a model of your own rather than
+running an existing one.
 
 .. toctree::
    :maxdepth: 2

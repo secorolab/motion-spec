@@ -711,9 +711,15 @@ def test_a_pose_the_model_reads_binds_its_section(tmp_path) -> None:
     with pytest.raises(RunnerError, match=r"\[poses.home\] states no three-number `position`"):
         _validate_robot_config(source, tmp_path)
 
-    # A section no pose and no device names still fails, and the message says what does bind.
-    config.write_text(_ARM_SECTION + pose + "[poses.stale]\nposition = [0, 0, 0]\n")
-    with pytest.raises(RunnerError, match=r"\[poses.stale\] configures nothing") as raised:
+    # A deployment may keep more poses than the model reads, so an unread one is skipped -- even
+    # a half-written one, since nothing reads it to care.
+    config.write_text(_ARM_SECTION + pose + "[poses.spare]\nposition = [0, 0, 0]\n")
+    _validate_robot_config(source, tmp_path)
+
+    # A section that is no pose and no device still fails: it would reach hardware this run
+    # never commands. The message says what the run does bind.
+    config.write_text(_ARM_SECTION + pose + _GRIPPER_SECTION)
+    with pytest.raises(RunnerError, match=r"\[agents.gripper1\] configures nothing") as raised:
         _validate_robot_config(source, tmp_path)
     assert "[agents.arm1], [poses.home]" in str(raised.value)
 

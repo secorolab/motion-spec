@@ -234,20 +234,31 @@ def _validate_robot_config(source_dir: Path, cwd: Path | None = None) -> None:
             values = section.get(field)
             if not isinstance(values, list) or len(values) != 3:
                 raise RunnerError(f"{config_path}: [{key}] states no three-number `{field}`")
+
+    def offers_a_pose(key: str) -> bool:
+        """Whether a section states a pose rather than a device.
+
+        A deployment keeps as many poses as it likes and a model reads the ones it names, so an
+        unread one is a pose on offer, not a mistake. The shape of the ones actually read is
+        checked above; nothing reads this one, so nothing here has an opinion on it.
+        """
+        section = _config_section(config, key) or {}
+        return any(field in section for field in CONFIG_POSE_FIELDS)
+
     # A section for nothing bound is a mis-key or a stale device: it would connect to hardware
     # this run never commands. Under KinovaGen3-2F85 a separate gripper section lands here.
     # [ros.*] configures the generated publishers, not a device this run binds.
     sections = {key for key in _config_sections(config) if key.split(".")[0] != "ros"}
-    unbound = sorted(sections - {key for key, _ in bound} - poses)
+    unbound = sorted(
+        key for key in sections - {key for key, _ in bound} - poses if not offers_a_pose(key)
+    )
     if unbound:
         binds = ", ".join(f"[{key}]" for key in sorted({key for key, _ in bound} | poses))
         raise RunnerError(
             f"{config_path}: [{'], ['.join(unbound)}] configures nothing this run binds.\n"
-            f"  This run binds {binds or 'no sections'}: a device section is named by the agent "
-            "its solver realizes, a pose section by a `[config.<key>]` declaration in the model.\n"
-            f"  Comment the section out, or have the model read it -- a pose is read by declaring "
-            f"`pose <name> = [config.{unbound[0]}] for <a world pose>` in its shared context.\n"
-            f"  The model this run was generated from is the one behind {ir_path}."
+            f"  This run binds {binds or 'no sections'}, and a device section is named by the "
+            "agent its solver realizes -- so this one reaches hardware the run never commands.\n"
+            f"  Comment it out, or correct its name. This run was generated at {ir_path}."
         )
 
 

@@ -85,9 +85,8 @@ def test_include_stem_comes_from_the_rosidl_converter():
 
 def test_a_rows_condition_gives_it_its_polarity():
     """The watched constraint means satisfied; no condition at all means violated -- the
-    otherwise. The sugar's empty path resolves to the one payload leaf, and TRUE/FALSE render as
-    the constants of the message that owns them."""
-    ros = _trinary((WATCHED, "", "TRUE"), (OTHERWISE, "", "FALSE"))
+    otherwise. TRUE/FALSE render as the constants of the message that owns them."""
+    ros = _trinary((WATCHED, "trinary.value", "TRUE"), (OTHERWISE, "trinary.value", "FALSE"))
     assert ros.cpp_type == "bdd_ros2_interfaces::msg::TrinaryStamped"
     assert ros.include == "bdd_ros2_interfaces/msg/trinary_stamped.hpp"
     assert ros.pub_id == "mon_x_pub"
@@ -132,6 +131,14 @@ def test_a_path_the_message_does_not_offer_is_rejected():
 def test_a_value_a_numeric_field_cannot_take_is_rejected():
     with pytest.raises(ConstraintViolation, match="neither a constant"):
         _trinary((WATCHED, "trinary.value", "MAYBE"))
+
+
+def test_the_sugar_resolves_to_the_one_payload_field_a_type_offers():
+    """An empty path is the author saying the message is the value: it holds only when the type
+    leaves no choice about which field that is."""
+    assert _publication("std_msgs/msg/Bool", (WATCHED, "", "1")).on_satisfied == [
+        {"path": "data", "cpp_value": "1"}
+    ]
 
 
 def test_the_sugar_needs_a_type_with_exactly_one_payload_field():

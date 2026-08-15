@@ -6,8 +6,8 @@ read, and who the blackboard says wrote the pose.
 Direction is derived, not declared: a channel the model reads states the features of interest it
 informs the model about, where a published one carries field rows and none. The graph cases build
 the topic by hand; the message case reads a real type, so it needs the workspace. The model cases
-lower the maintained `detect_pick_single`, which is the only place the whole chain -- subscription
--> written pose -> the chain that no longer computes it -- can be read at once.
+lower the maintained `real_perception_test`, which is the only place the whole chain --
+subscription -> written pose -> the chain that no longer computes it -- can be read at once.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from conftest import requires_interfaces
 
 NS = "https://example.test/"
 TYPE_NAME = "vision_msgs/msg/Detection3DArray"
-MODEL = Path(__file__).parents[2] / "bdd_collab_bhv_cpp" / "models" / "detect_pick_single"
+MODEL = Path(__file__).parents[2] / "bdd_collab_bhv_cpp" / "models" / "real_perception_test"
 
 
 def _model(graph: Graph) -> Model:
@@ -103,7 +103,7 @@ def test_a_subscribed_pose_names_the_subscription_as_its_producer():
 @pytest.fixture(scope="module")
 def subscription_ir(tmp_path_factory) -> dict:
     generation = tmp_path_factory.mktemp("subscription_generation")
-    generated = generate_model(MODEL / "detect_pick_single.robmot", generation, stage="ir")
+    generated = generate_model(MODEL / "real_perception_test.robmot", generation, stage="ir")
     return json.loads((generated / "model" / "ir.json").read_text())
 
 
@@ -112,14 +112,15 @@ def test_the_subscription_names_the_poses_it_writes_and_the_frame_they_must_arri
     subscription_ir,
 ):
     (subscription,) = subscription_ir["communication"]["ros"]["subscriptions"]
-    assert subscription["channel"] == "/perception/objects"
+    assert subscription["channel"] == "/recognized_objects"
     assert subscription["cpp_type"] == "vision_msgs::msg::Detection3DArray"
     written = subscription["written_poses"]
-    assert {row["pose_id"] for row in written} == {"pose_cube_base", "pose_cube2_base"}
+    assert {row["pose_id"] for row in written} == {"pose_table_anchor_cam"}
     # The frame the pose is stated against. What frame a detection arrives in is the sender's to
     # say, so it is read off the header at run time and is not here.
-    assert {row["frame_id"] for row in written} == {"base_link"}
-    assert all(split_uri(URIRef(row["target_iri"]))[1].startswith("aruco_") for row in written)
+    assert {row["frame_id"] for row in written} == {"ws_camera_optical"}
+    # The pose is written onto the frame the model says the detection is of.
+    assert {split_uri(URIRef(row["target_iri"]))[1] for row in written} == {"table_anchor"}
 
 
 @requires_interfaces(TYPE_NAME)
@@ -129,7 +130,9 @@ def test_the_frame_a_written_pose_is_stated_against_resolves_to_a_world_model_se
     """The runtime composes the arriving pose into this frame, so it is handed the segment it is
     read off -- a name it looks up once, never searches for on a tick."""
     (subscription,) = subscription_ir["communication"]["ros"]["subscriptions"]
-    assert {row["frame_segment"] for row in subscription["written_poses"]} == {"kinova/base_link"}
+    assert {row["frame_segment"] for row in subscription["written_poses"]} == {
+        "world_tree/ws-camera-body/ws_camera_optical"
+    }
 
 
 def test_a_frame_the_tree_has_no_segment_for_is_rejected():
@@ -147,6 +150,9 @@ def test_no_chain_computes_a_pose_the_subscription_writes(subscription_ir):
         for solver in subscription_ir["resources"]["by_kind"]["serial_chain"]
         for out in solver["output"]
     }
-    assert "pose_cube_base" not in outputs
+    assert "pose_table_anchor_cam" not in outputs
     dataflow = subscription_ir["communication"]["introspection"]["dataflow"]
-    assert dataflow["pose_cube_base"]["producer"] == {"kind": "subscription", "id": "object_poses"}
+    assert dataflow["pose_table_anchor_cam"]["producer"] == {
+        "kind": "subscription",
+        "id": "table_anchor",
+    }

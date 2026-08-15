@@ -81,10 +81,15 @@ def test_dual_arm_physical_profiles_and_path_progress_reach_ir(generated_dual_mo
         if value.get("type") == "VelocityProfile"
     ]
 
-    motion_profiles = profiles
+    # Two kinds, one pair per arm: a profile shaping a measured input, and a path driver that
+    # owns its tangent speed and so reads none.
+    motion_profiles = [profile for profile in profiles if profile["in"]]
     assert len(motion_profiles) == 2
-    assert all(str(profile["shape"]) == "s_curve" and profile["in"] for profile in motion_profiles)
+    assert all(str(profile["shape"]) == "s_curve" for profile in motion_profiles)
     assert all(profile["maximum_jerk"] == "max_lower_jerk" for profile in motion_profiles)
+    tangent_profiles = [profile for profile in profiles if not profile["in"]]
+    assert len(tangent_profiles) == 2
+    assert all(profile["profile_shape"] == "trapezoidal" for profile in tangent_profiles)
     pick_above = next(
         motion
         for motion in ir["coordination"]["motions"]
@@ -222,7 +227,14 @@ def test_ir_derives_forwarded_commands_and_monitors(generated_model: Path) -> No
     )
     assert len(pick_above.while_monitors) == 1
     assert pick_above.while_monitors[0].monitor_type == "LevelTriggeredMonitor"
-    assert all(closure["type"] != "VelocityProfile" for closure in scheduled)
+    # The path driver owns its tangent speed, so its profile runs once the projection has
+    # measured the parameter and before the evaluator samples the curve there.
+    (profile_call,) = [closure for closure in scheduled if closure["type"] == "VelocityProfile"]
+    assert (
+        scheduled.index(projection_call)
+        < scheduled.index(profile_call)
+        < scheduled.index(evaluator_call)
+    )
 
 
 def test_generated_manifest_is_portable(generated_model: Path) -> None:

@@ -155,9 +155,19 @@ def _config_sections(table: dict, prefix: str = "") -> list[str]:
     return found
 
 
+def _config_section(table: dict, key: str) -> dict | None:
+    """The table a dotted config key names, or None when the file states no such path."""
+    section = table
+    for part in key.split("."):
+        section = section.get(part) if isinstance(section, dict) else None
+    return section if isinstance(section, dict) else None
+
+
 def _validate_robot_config(source_dir: Path, cwd: Path | None = None) -> None:
     """Check the deployment config before launching, so a typo fails here, not against hardware."""
     import tomllib
+
+    from motion_spec.rdf_parser.resources import AGENT_HOME_KEY, CONFIG_POSE_FIELDS
 
     ir_path = source_dir / "model" / "ir.json"
     if not ir_path.exists():
@@ -190,14 +200,26 @@ def _validate_robot_config(source_dir: Path, cwd: Path | None = None) -> None:
         if device.get("config_key")
     }
     for key, kind in sorted(bound):
-        section = config
-        for part in key.split("."):
-            section = section.get(part) if isinstance(section, dict) else None
-            if section is None:
-                raise RunnerError(f"{config_path}: no [{key}] section for the bound {kind}")
+        section = _config_section(config, key)
+        if section is None:
+            raise RunnerError(f"{config_path}: no [{key}] section for the bound {kind}")
         missing = [field for field in _DEVICE_CONFIG_KEYS.get(kind, ()) if field not in section]
         if missing:
             raise RunnerError(f"{config_path}: [{key}] is missing {', '.join(missing)}")
+    # Only a simulated run resets an agent to a home; on hardware the arm is wherever it was left,
+    # so a home here is a number the deployment believes in and nothing acts on.
+    homed = sorted(
+        key for key, _ in bound if AGENT_HOME_KEY in (_config_section(config, key) or {})
+    )
+    if homed:
+        raise RunnerError(
+            f"{config_path}: `{AGENT_HOME_KEY}` in [{'], ['.join(homed)}] is read only by a "
+            "simulated run.\n"
+            "  This run drives the real devices, which start wherever they were left, so nothing "
+            "resets to it.\n"
+            f"  Comment the `{AGENT_HOME_KEY}` line out -- keeping the numbers for the simulated "
+            "platform -- or run that platform instead."
+        )
     # A pose the model reads with `[config.<key>]` binds its section as much as a device does:
     # generation refuses a model whose pose section is absent, so the run must not refuse it for
     # being present. Its numbers are re-read here because they may change without regeneration.
@@ -207,11 +229,9 @@ def _validate_robot_config(source_dir: Path, cwd: Path | None = None) -> None:
         if entry.get("config_key")
     }
     for key in sorted(poses):
-        section = config
-        for part in key.split("."):
-            section = section.get(part) if isinstance(section, dict) else None
-        for field in ("position", "orientation"):
-            values = (section or {}).get(field)
+        section = _config_section(config, key) or {}
+        for field in CONFIG_POSE_FIELDS:
+            values = section.get(field)
             if not isinstance(values, list) or len(values) != 3:
                 raise RunnerError(f"{config_path}: [{key}] states no three-number `{field}`")
     # A section for nothing bound is a mis-key or a stale device: it would connect to hardware

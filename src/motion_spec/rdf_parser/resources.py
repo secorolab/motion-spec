@@ -2076,6 +2076,15 @@ def platform_config(platform: dict) -> dict:
     return tomllib.loads(resolved.read_text())
 
 
+# The key an agent's reset configuration is stated under. Only a simulated run resets to it: a
+# real arm is wherever it was left, so nothing reads this on hardware.
+AGENT_HOME_KEY = "home"
+
+# What a `[config.<key>]` pose section states. Checked at generation for presence and here for
+# shape, and again before a run, which reads the numbers the deployment may have retuned since.
+CONFIG_POSE_FIELDS = ("position", "orientation")
+
+
 def agent_home_positions(platform: dict, serial_chains, config: dict) -> dict:
     """Each agent's reset joint configuration, keyed the way its config key names it.
 
@@ -2099,11 +2108,11 @@ def agent_home_positions(platform: dict, serial_chains, config: dict) -> dict:
             "stating a [<agent>] home for every agent it drives.",
         )
     homes = {
-        f"{alias}.{leaf}": [float(value) for value in entry["home"]]
+        f"{alias}.{leaf}": [float(value) for value in entry[AGENT_HOME_KEY]]
         for alias, entries in config.items()
         if isinstance(entries, dict)
         for leaf, entry in entries.items()
-        if isinstance(entry, dict) and entry.get("home")
+        if isinstance(entry, dict) and entry.get(AGENT_HOME_KEY)
     }
     missing = sorted(
         solver.runtime.config_key for solver in owners if solver.runtime.config_key not in homes
@@ -2145,7 +2154,7 @@ def config_poses(model, config: dict) -> list[dict]:
                 f"does not state. Add a [{key}] section with `position = [x, y, z]` and "
                 "`orientation = [rx, ry, rz]`.",
             )
-        for field_name in ("position", "orientation"):
+        for field_name in CONFIG_POSE_FIELDS:
             values = section.get(field_name)
             if not isinstance(values, list) or len(values) != 3:
                 raise ConstraintViolation(

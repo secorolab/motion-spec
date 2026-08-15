@@ -718,6 +718,26 @@ def test_a_pose_the_model_reads_binds_its_section(tmp_path) -> None:
     assert "[agents.arm1], [poses.home]" in str(raised.value)
 
 
+def test_a_home_is_rejected_on_a_real_device(tmp_path) -> None:
+    """`agent_home_positions` reads homes only for a simulated platform, so a home stated for a
+    real run is a number the deployment believes in and nothing acts on."""
+    from motion_spec.introspection.runner import RunnerError, _validate_robot_config
+
+    source = _real_source(
+        tmp_path, {"kind": "KinovaGen3", "config_key": "agents.arm1", "drives": ""}
+    )
+    config = tmp_path / "robot.toml"
+
+    config.write_text(_ARM_SECTION + "home = [0.0, 0.6, 3.14, -2.0, 0.0, 1.1, 1.57]\n")
+    with pytest.raises(RunnerError, match=r"`home` in \[agents.arm1\]") as raised:
+        _validate_robot_config(source, tmp_path)
+    # Commenting it out keeps the numbers for the simulated platform, which does reset to them.
+    assert "Comment the `home` line out" in str(raised.value)
+
+    config.write_text(_ARM_SECTION)
+    _validate_robot_config(source, tmp_path)
+
+
 def test_the_authored_device_decides_which_sections_the_config_needs(tmp_path) -> None:
     """The gripper's route is authored, not inferred: one section under the arm's device, two
     under separate ones. A section the run cannot reach is as wrong as a missing one."""

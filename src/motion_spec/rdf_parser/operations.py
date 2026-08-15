@@ -734,6 +734,7 @@ OPS_GENERIC = [
     Operator(GEOM_OP["InvertAngle"], [GEOM_OP["in"]], [GEOM_OP["out"]]),
     Operator(RBDYN_OP["AddWrench"], [RBDYN_OP["in1"], RBDYN_OP["in2"]], [RBDYN_OP["out"]]),
     Operator(ALGO_EXT.Addition, [ALGO_EXT["in"]], [ALGO_EXT.out]),
+    Operator(ALGO_EXT.Subtraction, [ALGO_EXT["minuend"], ALGO_EXT["subtrahend"]], [ALGO_EXT.out]),
     Operator(
         RBDYN_OP["RotateWrenchToDistalWithPose"],
         [RBDYN_OP["pose"], RBDYN_OP["from"]],

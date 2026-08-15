@@ -99,12 +99,10 @@ def test_the_last_run_is_the_one_repeated(tmp_path: Path) -> None:
     generation = tmp_path / "generation"
     (generation / "runs").mkdir(parents=True)
 
-    with pytest.raises(runner.RunnerError, match="has not been run yet"):
-        runner.last_invocation(generation)
-
+    # Never run, and run before the record existed: both are "nothing to repeat", not failures.
+    assert runner.last_invocation(generation) is None
     (generation / "runs" / "run-old").mkdir()
-    with pytest.raises(runner.RunnerError, match="predates the invocation record"):
-        runner.last_invocation(generation)
+    assert runner.last_invocation(generation) is None
 
     for name, args in (("run-001", ["first"]), ("run-002", ["second"])):
         path = generation / "runs" / name

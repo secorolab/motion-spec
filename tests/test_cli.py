@@ -79,14 +79,40 @@ def test_rerun_repeats_the_last_run_of_a_generation(monkeypatch, tmp_path) -> No
     assert "repeating run-1" in result.output
 
 
-def test_rerun_says_a_generation_has_nothing_to_repeat(tmp_path) -> None:
-    generation = tmp_path / "generation"
-    generation.mkdir()
+def test_rerun_takes_the_generation_the_last_gen_made(monkeypatch, tmp_path) -> None:
+    """The path a `gen` just printed is the one nobody should have to paste back."""
+    from motion_spec import cli
 
-    result = CliRunner().invoke(main, ["rerun", str(generation)])
+    generation = tmp_path / "generation" / "model" / "20260815T000000000000Z"
+    (generation / "build").mkdir(parents=True)
+    (generation / "build" / "main").write_text("")
+    monkeypatch.setattr(cli, "_state_file", lambda: tmp_path / "state" / "last")
+    cli._remember_generation(generation)
+    received = {}
+    monkeypatch.setattr(
+        "motion_spec.introspection.runner.run_cataloged",
+        lambda *args, **kwargs: received.update(args=args, kwargs=kwargs) or 0,
+    )
+
+    result = CliRunner().invoke(main, ["rerun", "--run-id", "run-1"])
+
+    assert result.exit_code == 0
+    assert received["args"][0] == generation / "runs" / "run-1"
+    # Nothing has been run yet, so there is nothing to repeat -- it launches the build plainly.
+    assert received["kwargs"]["executable_args"] == []
+    assert received["kwargs"]["executable"] == generation / "build" / "main"
+    assert "no recorded run to repeat" in result.output
+
+
+def test_rerun_says_when_nothing_has_been_generated(monkeypatch, tmp_path) -> None:
+    from motion_spec import cli
+
+    monkeypatch.setattr(cli, "_state_file", lambda: tmp_path / "state" / "last")
+
+    result = CliRunner().invoke(main, ["rerun"])
 
     assert result.exit_code != 0
-    assert "has not been run yet" in result.output
+    assert "nothing has been generated yet" in result.output
 
 
 def test_gen_and_run_compose_the_model_pipeline(monkeypatch, tmp_path) -> None:

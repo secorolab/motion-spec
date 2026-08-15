@@ -66,6 +66,53 @@ def _new_generation(model: Path, output_dir: Path | None) -> Path:
 
     generation = create_generation_dir(model, _generation_base(output_dir))
     click.echo(f"generation: {generation}", err=True)
+    _remember_generation(generation)
+
+    return generation
+
+
+def _state_file() -> Path:
+    """Where the CLI keeps what it has to remember between commands."""
+    state = os.environ.get("XDG_STATE_HOME", "").strip()
+    return (Path(state) if state else Path.home() / ".local" / "state") / "motion-spec" / "last"
+
+
+def _remember_generation(generation: Path) -> None:
+    """Note the generation just made, so the next command need not be told where it went.
+
+    A generation's path carries a timestamp nobody types twice: the whole reason `rerun` exists
+    is that the terminal already knows which one was meant.
+    """
+    path = _state_file()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"{generation.resolve()}\n")
+    except OSError:
+        # Remembering is a convenience; a read-only or missing state directory must not fail a
+        # generation that otherwise worked. `rerun` says what to do when it finds nothing.
+        pass
+
+
+def _last_generation() -> Path:
+    """The generation the last `gen` or `run` made.
+
+    Raises:
+        ClickException: nothing was generated yet, or what was is gone.
+    """
+    path = _state_file()
+    remembered = path.read_text().strip() if path.is_file() else ""
+    if not remembered:
+        raise click.ClickException(
+            "no generation to rerun: nothing has been generated yet, so there is nothing to "
+            "repeat. Run `motion-spec gen MODEL` or `motion-spec run MODEL` first, or name a "
+            "generation directory."
+        )
+    generation = Path(remembered)
+    if not (generation / "build" / "main").is_file():
+        raise click.ClickException(
+            f"{generation}: the last generation is gone or was never built. Name a generation "
+            "directory, or generate again."
+        )
 
     return generation
 
@@ -115,7 +162,7 @@ class MotionSpecGroup(click.Group):
                     ("gen", "Generate IR or C++ from a .robmot model."),
                     ("build", "Configure and compile a generation."),
                     ("run", "Execute the controller and create a recorded run archive."),
-                    ("rerun", "Run a generation again the way it was last run."),
+                    ("rerun", "Run the last generation again, without naming it."),
                     ("replay", "Verify, summarize, or recover data from a recorded run."),
                 ]
             )
@@ -604,21 +651,37 @@ def run(
 
 
 @main.command()
-@click.argument("generation", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument(
+    "generation", required=False, type=click.Path(exists=True, file_okay=False, path_type=Path)
+)
 @click.option("--run-id")
 @click.option("--no-verify", is_flag=True)
-def rerun(generation: Path, run_id: str | None, no_verify: bool) -> None:
-    """Run GENERATION again the way it was last run, without generating or building."""
+def rerun(generation: Path | None, run_id: str | None, no_verify: bool) -> None:
+    """Run the last generation again, the way it was last run.
+
+    Takes the generation the last `gen` or `run` made, so the path a `gen` just printed need not
+    be pasted back. Name a GENERATION to repeat that one instead. Generates and builds nothing.
+    """
     from motion_spec.generation.pipeline import new_id
     from motion_spec.introspection.archive import ArchiveError
     from motion_spec.introspection.runner import RunnerError, last_invocation, run_cataloged
 
-    generation = generation.resolve()
-    try:
-        previous, invocation = last_invocation(generation)
-    except RunnerError as exc:
-        raise click.ClickException(str(exc)) from exc
-    click.echo(f"repeating {previous.name}", err=True)
+    generation = (generation or _last_generation()).resolve()
+    click.echo(f"generation: {generation}", err=True)
+    repeated = last_invocation(generation)
+    if repeated is None:
+        # Generated but never run, or run before the record existed: there is nothing to repeat,
+        # but the build is right there, so launch it the way `run GENERATION` would.
+        click.echo("no recorded run to repeat; launching with no arguments", err=True)
+        invocation = {
+            "source_dir": generation / "generated",
+            "executable": generation / "build" / "main",
+            "executable_args": [],
+            "cwd": None,
+        }
+    else:
+        previous, invocation = repeated
+        click.echo(f"repeating {previous.name}", err=True)
 
     run_dir = generation / "runs" / (run_id or new_id("run"))
     try:

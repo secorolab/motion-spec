@@ -148,27 +148,18 @@ def _record_invocation(
     )
 
 
-def last_invocation(generation: Path) -> tuple[Path, dict]:
-    """The most recent run of `generation` and how it was launched.
+def last_invocation(generation: Path) -> tuple[Path, dict] | None:
+    """The most recent run of `generation` and how it was launched, None when it has none.
 
-    Returns:
-        the run directory and its recorded invocation.
-
-    Raises:
-        RunnerError: the generation has no run to repeat, or its runs predate the record.
+    None is an answer, not a failure: a generation that has never been run, or whose runs predate
+    this record, is one there is nothing to repeat about -- it can still be launched plainly.
     """
-    runs = generation / "runs"
     recorded = sorted(
-        (path for path in runs.glob(f"*/{INVOCATION_FILE}")),
+        (generation / "runs").glob(f"*/{INVOCATION_FILE}"),
         key=lambda path: (path.stat().st_mtime, path.parent.name),
     )
     if not recorded:
-        if runs.is_dir() and any(path.is_dir() for path in runs.iterdir()):
-            raise RunnerError(
-                f"{runs}: every run here predates the invocation record, so there is nothing "
-                "stating how to repeat one. Launch it once with `motion-spec run`."
-            )
-        raise RunnerError(f"{runs}: this generation has not been run yet")
+        return None
     return recorded[-1].parent, json.loads(recorded[-1].read_text())
 
 

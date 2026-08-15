@@ -34,7 +34,7 @@ introspection = [
 dashboard = ["nicegui>=2.0", "pillow"]
 all = ["pyshacl>=0.25.0", "rec", "protobuf>=4.22", "nicegui>=2.0", "pillow"]
 test = ["pytest"]
-docs = ["sphinx", "myst-parser", "furo", "sphinx-autobuild"]
+docs = ["sphinx", "myst-parser", "furo", "sphinx-autobuild", "matplotlib"]
 dev = ["pytest", "ruff"]
 
 [project.scripts]

@@ -20,6 +20,10 @@ The top-level specifications are:
 
 - `exec-context`: scene, platform, and control period;
 - `context`: reusable world and specification quantities;
+- `tolerances`: model-wide satisfaction bands, one per quantity kind (see
+  [Constraint relations](#constraint-relations));
+- `ros`: the topics, subscriptions, and actions a model talks to (see
+  [ROS topics](#ros-topics));
 - `guarded-motion`: context plus `when`, `while`, and `until` constraints;
 - `constraint-handler`: monitors, controllers, and solvers for one motion.
 
@@ -41,13 +45,17 @@ Exactly which scene and backend a model runs against is explicit:
 ```robmot
 exec-context (ns=app) task-exec {
     runs-scene: <task_scene_mjc>
-    platform: simulation { name: "MuJoCo", version: "3.9" }
+    platform: simulation { name: "MuJoCo" }
+    config: "robot.toml"
     timestep: 1.0 ms
 }
 ```
 
-Platforms are `simulation { name: ..., version: ... }` and `real-world`, optionally
-with a name and version. The timestep must be positive.
+`platform` is `simulation { name: STRING }` or `real-world`, optionally with a
+`{ <agent> realized by DEVICE, ... }` block binding scene agents to hardware kinds
+(`KinovaGen3`, `KinovaGen3-2F85`, `Robotiq2F85`, `RobotiqFT300s`). `config` is an
+optional path to the deployment TOML a real-world run reads addresses and poses
+from; `timestep` must be positive.
 
 ## Context scopes
 
@@ -116,8 +124,10 @@ Scalars and vectors carry units:
 
 ```robmot
 length clearance = 0.10 m,
-direction normal = { x: 0.0, y: 0.0, z: 1.0 }
+direction normal = (0.0, 0.0, 1.0)
 ```
+
+Vectors are always a parenthesized, positional `(x, y, z)` -- never `{x: .., y: .., z: ..}`.
 
 References preserve type and may select a subspace or axis:
 
@@ -127,13 +137,12 @@ References preserve type and may select a subspace or axis:
 <shared.world.external-force>.force.y
 ```
 
-`[quantity = value]` overrides a named quantity at the reference site. `pre [...]`,
-`spec [...]`, and `post [...]` declare an inline scoped quantity. A bare measure,
-such as `0.3 s`, is also a context reference where its type is unambiguous.
+A reference is either a named `<...>` with an optional selector tail, or a bare measure such
+as `0.3 s`, which is itself a context reference where its type is unambiguous.
 
 Supported view subspaces are `position`, `orientation`, `linvel`, `angvel`,
-`linacc`, `angacc`, `force`, and `torque`. Linear axes are `x`, `y`, `z`; angular
-axes are `roll`, `pitch`, `yaw`.
+`linacc`, `angacc`, `force`, and `torque`. Every subspace's axis is `x`, `y`, or `z`; there is
+no `roll`/`pitch`/`yaw` selector.
 
 ### Poses, snapshots, and derived references
 
@@ -141,10 +150,16 @@ A pose combines position and orientation components:
 
 ```robmot
 pose goal = {
-    position: { x: 0.40 m, y: <spec.goal-y>, z: 0.20 m },
-    orientation: { roll: 3.14159 rad, pitch: 0.0 rad, yaw: 1.5708 rad }
+    position: (0.40, <spec.goal-y>, 0.20) m,
+    orientation: euler { axes: xyz extrinsic, angles: (3.14159, 0.0, 1.5708) rad }
 }
 ```
+
+Position is a `(x, y, z)` tuple, each element independently a literal or a reference.
+Orientation has no direct roll/pitch/yaw literal: it is `euler { axes: ..., angles: (...) }`
+(`axes` one of the six axis orders, e.g. `xyz`, optionally `extrinsic`), a `quat { xyzw: (...) }`,
+a `direction-cosine { x: ..., y: ..., z: ... }`, a plain `<...>` reference, or a rotation
+relative to another orientation (`<ref> rotated by ...`).
 
 Snapshots sample a world quantity or view. They may add an offset and may resample
 on an FSM event:
@@ -160,6 +175,13 @@ A reference value can also be a named reference plus an optional offset:
 
 ```robmot
 length shifted = <shared.spec.origin> + <shared.spec.offset>
+```
+
+A value can instead be read from the deployment config at generation time, keyed by a dotted
+path, taking its type from what the given view resolves to:
+
+```robmot
+pose home-pose = [config.poses.home] for <shared.world.pose-ee-base>
 ```
 
 ### Velocity profiles
@@ -203,26 +225,31 @@ admittance comply-x = {
 }
 ```
 
-All four parameters are required: there are no implicit controller defaults. Mass
+All five parameters are required: there are no implicit controller defaults. Mass
 and maximum velocity must be positive; damping and stiffness must be non-negative.
 
 ## Views
 
-A constraint reads one of four view forms:
+A constraint reads one of six view forms:
 
 ```robmot
 <shared.world.tcp-base>.position.x
 distance between <shared.world.tcp-base> and <shared.world.object-base>
 elapsed
-<shared.world.gripper-pos>
+progress of <shared.world.tcp-base> along <spec.approach-path>
+moving <shared.world.tcp-base> along <spec.approach-path> with <spec.approach-profile>
+<shared.world.tcp-base>.position on <spec.approach-path>
 ```
 
-Selectors determine the resulting type. For example, a pose is a pose,
-`.position` is a position, and `.position.x` is a distance.
+Selectors (`.position`, `.position.x`, ...) are optional on the first form and determine the
+resulting type: a bare quantity like `<shared.world.tcp-base>` is a pose, `.position` is a
+position, and `.position.x` is a distance. `progress`, `moving`, and `on` read against a
+`path` context quantity; see [Paths](#paths) for what each of them does.
 
 ## Paths
 
-A path is a pose-valued geometric function over a normalized parameter:
+A path is a pose-valued function of a normalized parameter, not a trajectory: it fixes
+shape and leaves timing free.
 
 ```{math}
 :label: path-pose
@@ -235,9 +262,9 @@ A path is a pose-valued geometric function over a normalized parameter:
 \in SE(3), \qquad s \in [0,1].
 ```
 
-Here, {math}`\mathbf{p}(s)` is position and {math}`\mathbf{R}(s)` is orientation.
-The parameter orders progress, but is neither time nor necessarily arc length. A trajectory
-appears only when execution supplies a time law {math}`s(t)`:
+{math}`\mathbf{p}(s)` is position, {math}`\mathbf{R}(s)` is orientation, and {math}`s` orders
+progress along the shape -- it is neither time nor necessarily arc length. A trajectory only
+appears once execution supplies a time law {math}`s(t)`:
 
 ```{math}
 :label: path-trajectory
@@ -245,13 +272,13 @@ appears only when execution supplies a time law {math}`s(t)`:
 \mathbf{T}_d(t) = \mathbf{T}(s(t)).
 ```
 
-This distinction is deliberate: a path fixes geometry while leaving timing free. It follows
-the ordering in Bruyninckx, Sections 7.11 and 8.6, where runtime motion generation resolves
-the degrees of freedom that the task did not constrain.
+Keeping shape and timing separate follows Bruyninckx, Sections 7.11 and 8.6: runtime motion
+generation resolves the degrees of freedom the task left unconstrained, rather than the model
+committing to a timing choice up front.
 
 ### Path kinds
 
-The DSL provides these path functions:
+The DSL provides five path functions:
 
 | Kind | Required fields | Optional fields |
 |---|---|---|
@@ -261,22 +288,44 @@ The DSL provides these path functions:
 | `helix` | `start`, `center`, `axis`, `pitch`, `revolutions` | — |
 | `figure8` | `anchor`, `radius`, `plane-normal` | `form`: `gerono` or `bernoulli` |
 
-```robmot
-path approach-path = lerp {
-    start: <spec.start>,
-    goal: <spec.goal>
-}
+A path is emitted as a `geom-path:Path` carrying only its shape parameters; the runtime
+evaluates the selected function every control cycle. {numref}`fig-path-kinds` shows all five,
+labeled with the variables their equations below use. {math}`\operatorname{Rot}(\mathbf{u},
+\theta)` always means "rotate by {math}`\theta` around unit axis {math}`\mathbf{u}`", and the
+runtime clamps {math}`s` to {math}`[0,1]` before evaluating.
+
+```{figure} /_static/dsl-paths/path_kinds.svg
+:name: fig-path-kinds
+:width: 85%
+
+The five path kinds and the variables their equations use, each plotted from its actual
+closed-form equation below rather than a hand-drawn approximation.
 ```
 
-A path is emitted as a `geom-path:Path` carrying only its shape parameters. The runtime
-clamps {math}`s` to {math}`[0,1]` and evaluates the selected function below. In these
-equations, {math}`\operatorname{Rot}(\mathbf{u},\theta)` rotates by {math}`\theta`
-around unit axis {math}`\mathbf{u}`.
+Each subsection below reads the same way: a `.robmot` excerpt (authored input), a table mapping
+each authored field to the symbol its equation uses, then the equation (output). Only the fields
+in the table are authored -- every other symbol in an equation is computed from them.
 
 #### Linear interpolation (`lerp`)
 
-For start pose {math}`(\mathbf{R}_0,\mathbf{p}_0)` and goal pose
-{math}`(\mathbf{R}_1,\mathbf{p}_1)`:
+```robmot
+path approach-path = lerp {
+    start: <spec.start-pose>,
+    goal:  <spec.goal-pose>
+}
+```
+
+| `.robmot` field | equation symbol | meaning |
+|---|---|---|
+| `start` | {math}`(\mathbf{R}_0,\mathbf{p}_0)` | pose the path leaves from |
+| `goal` | {math}`(\mathbf{R}_1,\mathbf{p}_1)` | pose the path arrives at |
+
+```{image} /_static/dsl-paths/path_kind_lerp.svg
+:width: 45%
+```
+
+The straight line between them: position interpolates linearly, orientation follows the
+shortest rotation from start to goal.
 
 ```{math}
 :label: path-lerp
@@ -289,13 +338,33 @@ For start pose {math}`(\mathbf{R}_0,\mathbf{p}_0)` and goal pose
 \end{aligned}
 ```
 
-The rotational expression is the shortest rotation interpolation used by the pose-difference
-operation; it is not component-wise interpolation of Euler angles.
+**Output:** {math}`\mathbf{p}(s),\mathbf{R}(s)` -- the pose at parameter {math}`s`, read back
+by whatever constraint follows this path (see
+[Tangent, position, and orientation constraints](#tangent-position-and-orientation-constraints)
+below). The rotational term is the same pose-difference operation used elsewhere in the DSL,
+not component-wise Euler interpolation.
 
 #### Circle
 
-For center {math}`\mathbf{c}`, start position {math}`\mathbf{p}_0`, and plane normal
-{math}`\mathbf{n}`:
+```robmot
+path orbit-path = circle {
+    start:        <spec.start-pose>,
+    center:       <spec.center-pose>,
+    plane-normal: <spec.plane-normal>
+}
+```
+
+| `.robmot` field | equation symbol | meaning |
+|---|---|---|
+| `start` | {math}`(\mathbf{R}_0,\mathbf{p}_0)` | a point on the circle; also the fixed orientation held throughout |
+| `center` | {math}`\mathbf{c}` | the circle's center |
+| `plane-normal` | {math}`\mathbf{n}` | unit normal of the circle's plane |
+
+```{image} /_static/dsl-paths/path_kind_circle.svg
+:width: 45%
+```
+
+One full revolution around {math}`\mathbf{c}`, starting and ending at {math}`\mathbf{p}_0`:
 
 ```{math}
 :label: path-circle
@@ -305,12 +374,34 @@ For center {math}`\mathbf{c}`, start position {math}`\mathbf{p}_0`, and plane no
 \qquad \mathbf{R}(s)=\mathbf{R}_0.
 ```
 
-One traversal covers a full revolution and returns to the start pose.
+**Output:** {math}`\mathbf{p}(s)` sweeps a circle of radius {math}`|\mathbf{p}_0-\mathbf{c}|`;
+{math}`\mathbf{R}(s)` stays fixed at the start orientation rather than interpolating.
 
 #### Arc
 
-An arc is defined by its endpoints, plane normal, and positive sagitta (bulge amplitude)
-{math}`a`. Let
+```robmot
+path arc-path = arc {
+    start:        <spec.start-pose>,
+    end:          <spec.end-pose>,
+    amplitude:    <spec.arc-height>,
+    plane-normal: <spec.path-normal>
+}
+```
+
+| `.robmot` field | equation symbol | meaning |
+|---|---|---|
+| `start` | {math}`(\mathbf{R}_0,\mathbf{p}_0)` | pose the arc leaves from |
+| `end` | {math}`(\mathbf{R}_1,\mathbf{p}_1)` | pose the arc arrives at |
+| `amplitude` | {math}`a` | sagitta: bulge height from the chord midpoint {math}`\mathbf{m}` to the arc, shown in {numref}`fig-path-kinds` |
+| `plane-normal` | {math}`\mathbf{n}` | unit normal of the arc's plane |
+
+```{image} /_static/dsl-paths/path_kind_arc.svg
+:width: 45%
+```
+
+Nothing else here is authored: the chord {math}`\mathbf{q}`, its length {math}`\ell`, half-length
+{math}`m`, radius {math}`r`, center {math}`\mathbf{c}`, and included angle {math}`\theta` are all
+derived from the four fields above.
 
 ```{math}
 :label: path-arc-derived
@@ -327,23 +418,54 @@ d &= \frac{a^2-m^2}{2a}, \\
 \end{aligned}
 ```
 
-Then
+...then sweeps like the circle, over the included angle instead of a full turn:
 
 ```{math}
 :label: path-arc
 
-\mathbf{p}(s)=\mathbf{c}+
-\operatorname{Rot}(\mathbf{n},-\theta s)(\mathbf{p}_0-\mathbf{c}),
+\begin{aligned}
+\mathbf{p}(s) &=\mathbf{c}+
+\operatorname{Rot}(\mathbf{n},-\theta s)(\mathbf{p}_0-\mathbf{c}), \\
+\mathbf{R}(s) &= \mathbf{R}_0
+\operatorname{Exp}\!\left(s\operatorname{Log}
+\left(\mathbf{R}_0^{\mathsf T}\mathbf{R}_1\right)\right).
+\end{aligned}
 ```
 
-while orientation interpolates as in {eq}`path-lerp`. The special case
-{math}`a=\ell/2` gives a semicircle. A zero chord or non-positive amplitude is degenerate;
-the runtime holds the start pose instead of dividing by zero.
+**Output:** {math}`\mathbf{p}(s)` sweeps the arc from {math}`\mathbf{p}_0` to
+{math}`\mathbf{p}_1`; {math}`\mathbf{R}(s)` interpolates {math}`\mathbf{R}_0` to
+{math}`\mathbf{R}_1` by the identical formula as {eq}`path-lerp`. {math}`a=\ell/2` gives a
+semicircle. A zero chord or non-positive amplitude is degenerate; the runtime holds the start
+pose instead of dividing by zero.
 
 #### Helix
 
-For axis {math}`\mathbf{u}`, center {math}`\mathbf{c}`, pitch {math}`h`, and number of
-revolutions {math}`N`:
+```robmot
+path helix-path = helix {
+    start:       <spec.start-pose>,
+    center:      <spec.center-pose>,
+    axis:        <spec.axis>,
+    pitch:       <spec.pitch>,
+    revolutions: <spec.revolutions>
+}
+```
+
+| `.robmot` field | equation symbol | meaning |
+|---|---|---|
+| `start` | {math}`(\mathbf{R}_0,\mathbf{p}_0)` | a point on the helix; also the fixed orientation held throughout |
+| `center` | {math}`\mathbf{c}` | center of the swept circle |
+| `axis` | {math}`\mathbf{u}` | unit axis the helix climbs along |
+| `pitch` | {math}`h` | rise per revolution, along {math}`\mathbf{u}` |
+| `revolutions` | {math}`N` | number of turns over the whole path |
+
+There is no separate `radius` field: like the circle, the swept radius is
+{math}`|\mathbf{p}_0-\mathbf{c}|`, fixed by `start` and `center` together.
+
+```{image} /_static/dsl-paths/path_kind_helix.svg
+:width: 45%
+```
+
+A circle swept along its axis while it turns, so it both revolves and climbs:
 
 ```{math}
 :label: path-helix
@@ -354,12 +476,36 @@ revolutions {math}`N`:
 \qquad \mathbf{R}(s)=\mathbf{R}_0.
 ```
 
+**Output:** {math}`\mathbf{p}(s)` completes {math}`N` revolutions of radius
+{math}`|\mathbf{p}_0-\mathbf{c}|` around {math}`\mathbf{c}`, while climbing a total of
+{math}`hN` along {math}`\mathbf{u}`; {math}`\mathbf{R}(s)` stays fixed at the start orientation,
+as in the circle.
+
 #### Figure eight
 
-Let {math}`\mathbf{a}` be the anchor position, {math}`\mathbf{n}` the plane normal,
-and {math}`\mathbf{u}` the anchor frame's x-axis projected into that plane and normalized.
-Set {math}`\mathbf{v}=\mathbf{n}\times\mathbf{u}` and
-{math}`\tau=2\pi s+\pi/2`. Both forms start and finish at the anchor:
+```robmot
+path weave-path = figure8 {
+    anchor:       <spec.anchor-pose>,
+    radius:       <spec.radius>,
+    plane-normal: <spec.plane-normal>,
+    form:         gerono
+}
+```
+
+| `.robmot` field | equation symbol | meaning |
+|---|---|---|
+| `anchor` | {math}`(\mathbf{R}_a,\mathbf{a})` | pose both lobes start and finish at |
+| `radius` | {math}`r` | lobe size |
+| `plane-normal` | {math}`\mathbf{n}` | unit normal of the figure's plane |
+| `form` (optional) | selects the equation | `gerono` or `bernoulli` below |
+
+```{image} /_static/dsl-paths/path_kind_figure8.svg
+:width: 45%
+```
+
+{math}`\mathbf{u}` is not a separate field: it is the anchor frame's own in-plane x-axis, and
+{math}`\mathbf{v}=\mathbf{n}\times\mathbf{u}` completes the frame. Set
+{math}`\tau=2\pi s+\pi/2`; both forms start and finish at the anchor:
 
 ```{math}
 :label: path-figure-eight
@@ -376,10 +522,17 @@ Set {math}`\mathbf{v}=\mathbf{n}\times\mathbf{u}` and
 \end{aligned}
 ```
 
+**Output:** {math}`\mathbf{p}(s)` traces two lobes through the anchor, shaped by whichever form
+was selected; {math}`\mathbf{R}(s)` stays fixed at the anchor orientation.
+
 ### Projection and the moving path frame
 
-Each control cycle projects the measured TCP position {math}`\mathbf{p}_{m,k}` onto a local
-window {math}`\mathcal{W}_k\subseteq[0,1]` around the preceding projection:
+A path knows its geometry as a function of {math}`s`, but execution only ever measures a
+position {math}`\mathbf{p}_{m,k}` -- it does not know {math}`s` directly. Each control cycle
+therefore finds the closest point on the path to what was measured, searching a small window
+{math}`\mathcal{W}_k` around the previous cycle's answer -- sized from how far off the last
+measurement was -- rather than the whole path, so tracking stays on the current branch through a
+self-intersection instead of jumping to another geometrically close one:
 
 ```{math}
 :label: path-projection
@@ -388,24 +541,34 @@ s_k^*=\underset{s\in\mathcal{W}_k}{\operatorname{argmin}}
 \;\lVert\mathbf{p}(s)-\mathbf{p}_{m,k}\rVert^2.
 ```
 
-The implementation derives {math}`\mathcal{W}_k` from the preceding {math}`s_{k-1}^*` and
-the measured deviation. This preserves the current branch at a self-intersection
-instead of jumping to another geometrically close branch.
+{numref}`fig-path-frame` shows the result: the projected point {math}`\mathbf{p}(s^*)`, the
+measured point {math}`\mathbf{p}_m`, and the local frame built at {math}`\mathbf{p}(s^*)` that
+the next section's three constraints track against.
 
-The unit tangent is evaluated by a central difference with {math}`\delta_s=10^{-4}` and
-endpoint-clamped parameters {math}`s_- = \max(0,s^*-\delta_s)` and
-{math}`s_+ = \min(1,s^*+\delta_s)`:
+```{figure} /_static/dsl-paths/path_frame.svg
+:name: fig-path-frame
+:width: 75%
+
+The projected point, the measured position, and the tangent/normal frame built there,
+computed by running the actual projection, tangent, and frame equations below on an
+illustrative curve.
+```
+
+The unit tangent {math}`\mathbf{t}` is a central difference around {math}`s^*`, clamped at the
+path's endpoints ({math}`\delta_s=10^{-4}`):
 
 ```{math}
 :label: path-tangent
 
 \mathbf{t}(s^*)=
 \frac{\mathbf{p}(s_+)-\mathbf{p}(s_-)}
-{\left\lVert\mathbf{p}(s_+)-\mathbf{p}(s_-)\right\rVert}.
+{\left\lVert\mathbf{p}(s_+)-\mathbf{p}(s_-)\right\rVert},
+\qquad s_\pm = \operatorname{clip}(s^*\pm\delta_s,\,0,\,1).
 ```
 
-Two normals complete the local orthonormal frame. The first normal is parallel-transported
-from the previous cycle and the second is its cross product with the tangent:
+Two normals complete the frame: {math}`\mathbf{n}_1` is parallel-transported from the previous
+cycle rather than recomputed from scratch, so it does not flip as the curve turns, and
+{math}`\mathbf{n}_2` is simply {math}`\mathbf{t}\times\mathbf{n}_1`:
 
 ```{math}
 :label: path-frame
@@ -419,13 +582,13 @@ from the previous cycle and the second is its cross product with the tangent:
 \end{aligned}
 ```
 
-Transport avoids discontinuous normal-axis flips as the curve turns. At initialization or a
-singularity, the runtime chooses the world axis least aligned with the tangent.
+At initialization, or at a singularity where the transport is undefined, the runtime picks the
+world axis least aligned with the tangent instead.
 
 ### Tangent, position, and orientation constraints
 
-Path following is therefore expressed by ordinary motion constraints with three distinct
-jobs:
+The frame in {numref}`fig-path-frame` is what path following actually tracks against. Three
+ordinary motion constraints, each with one job, together cover all six degrees of freedom:
 
 ```robmot
 while {
@@ -440,58 +603,42 @@ while {
 }
 ```
 
-Let the measured rigid-body twist be
-{math}`\mathbf{V}_m=[\boldsymbol{\omega}_m^{\mathsf T}\;
-\mathbf{v}_m^{\mathsf T}]^{\mathsf T}`, following Featherstone's spatial-velocity
-decomposition (Section 2.2). The measured speed along the path is
+- **Tangent** (`moving ... along ... with ...`) drives along {math}`\mathbf{t}`. Given the
+  measured twist {math}`\mathbf{V}_m=[\boldsymbol{\omega}_m^{\mathsf T}\;
+  \mathbf{v}_m^{\mathsf T}]^{\mathsf T}` (Featherstone, Section 2.2), it regulates the along-path
+  speed {math}`v_{\parallel}=\mathbf{t}^{\mathsf T}\mathbf{v}_m` toward the profile's commanded
+  speed. It sets progress and timing but never pulls the TCP toward an endpoint position.
+- **Position** (`keeping ... .position on ...`) regulates the position error
+  {math}`\mathbf{e}_p=\mathbf{p}(s^*)-\mathbf{p}_m` -- the {math}`e_p` in
+  {numref}`fig-path-frame` -- but contributes only its two lateral components
+  {math}`[\mathbf{n}_1^{\mathsf T}\mathbf{e}_p\;\mathbf{n}_2^{\mathsf T}\mathbf{e}_p]^{\mathsf
+  T}`. It corrects cross-track drift without fighting the tangent controller over speed.
+- **Orientation** (`keeping ... .orientation on ...`) regulates the rotation error
+  {math}`\mathbf{e}_R=\operatorname{Log}(\mathbf{R}_m^{\mathsf T}\mathbf{R}(s^*))^\vee` between
+  the measured and path-stored orientation at the same {math}`s^*`.
 
-```{math}
-:label: path-along-speed
-
-v_{\parallel}=\mathbf{t}^{\mathsf T}\mathbf{v}_m.
-```
-
-The three controllers occupy complementary directions:
-
-- **Tangent:** `moving ... along ... with ...` regulates
-  {math}`e_t=v_{\mathrm{cmd}}-v_{\parallel}` along {math}`\mathbf{t}`. It determines
-  progress and timing, but does not pull the TCP toward an endpoint position.
-- **Position:** `keeping ... .position on ...` uses
-  {math}`\mathbf{e}_p=\mathbf{p}(s^*)-\mathbf{p}_m`, but contributes only the two lateral
-  components
-  {math}`[\mathbf{n}_1^{\mathsf T}\mathbf{e}_p\;
-  \mathbf{n}_2^{\mathsf T}\mathbf{e}_p]^{\mathsf T}`. It corrects cross-track error without
-  competing with the tangent-speed controller.
-- **Orientation:** `keeping ... .orientation on ...` regulates the three-component rotation
-  error
-  {math}`\mathbf{e}_R=\operatorname{Log}
-  (\mathbf{R}_m^{\mathsf T}\mathbf{R}(s^*))^\vee`. It aligns the body with the orientation
-  stored at the same projected path parameter.
-
-Together these form one six-dimensional task decomposition: one tangential linear direction,
-two normal linear directions, and three angular directions. This is why tangent and position
-are not duplicate Cartesian controllers.
-
-`progress of ... along ...` observes {math}`v_{\parallel}` and acts only as a guard or
-monitor; it contributes no solver row. Controllers bind to the driver and geometry constraints
-in the normal way. For multiple arms, declare this constraint set once per moved quantity and
-path.
+One tangential direction, two lateral directions, three angular directions: six independent
+controllers, not two competing Cartesian ones. `progress of ... along ...` only observes
+{math}`v_{\parallel}` as a guard or monitor -- it contributes no solver row. Declare this set
+once per moved quantity and path; for multiple arms, repeat it per arm.
 
 ### Path-speed profile
 
-The velocity profile in `moving ... along ... with <profile>` is the single authority for
-path speed. Its `max-velocity` is the cruise speed {math}`v_c`; there is no second `at` speed.
-To brake before the endpoint, the runtime estimates the remaining arc length with 16 line
-segments. For {math}`s_i=s^*+(1-s^*)i/16`:
+The velocity profile in `moving ... along ... with <profile>` is the only authority over path
+speed -- there is no separate braking speed to configure. Its `max-velocity` is the cruise speed
+{math}`v_c`; the runtime works out braking on its own by estimating the remaining arc length
+with 16 line-segment samples ahead of {math}`s^*`:
 
 ```{math}
 :label: path-remaining-length
 
 L_{\mathrm{rem}}\approx
-\sum_{i=1}^{16}\lVert\mathbf{p}(s_i)-\mathbf{p}(s_{i-1})\rVert.
+\sum_{i=1}^{16}\lVert\mathbf{p}(s_i)-\mathbf{p}(s_{i-1})\rVert,
+\qquad s_i=s^*+(1-s^*)i/16,
 ```
 
-It then applies the constant-acceleration bound
+and bounding the target speed so the profile can still stop within that distance at
+{math}`a_{\max}`:
 
 ```{math}
 :label: path-braking-speed
@@ -501,7 +648,8 @@ v_{\mathrm{target}}=\operatorname{sgn}(v_c)
 \min(|v_c|,v_b).
 ```
 
-For a trapezoidal profile, one cycle of duration {math}`\Delta t` is
+{numref}`fig-speed-profile` compares the two profile shapes this target then feeds. A trapezoidal
+profile ramps at the acceleration limit alone, one cycle of duration {math}`\Delta t` at a time:
 
 ```{math}
 :label: path-trapezoidal-profile
@@ -511,7 +659,16 @@ v_{k+1}=v_k+
 -a_{\max}\Delta t,a_{\max}\Delta t).
 ```
 
-For an S-curve profile, the acceleration change is additionally jerk-limited:
+```{figure} /_static/dsl-paths/speed_profile.svg
+:name: fig-speed-profile
+:width: 75%
+
+Trapezoidal versus S-curve speed, each ramping to the cruise speed and braking from its own
+actual remaining distance, simulated by running the equations below.
+```
+
+An S-curve profile additionally limits how fast the acceleration itself may change, rounding the
+corners the trapezoidal profile leaves sharp:
 
 ```{math}
 :label: path-s-curve-profile
@@ -526,8 +683,8 @@ v_{k+1} &= \operatorname{clip}
 \end{aligned}
 ```
 
-The tangent PID tracks this generated {math}`v_{k+1}`. Position and orientation continue to
-track the path geometry during acceleration and braking.
+The tangent PID tracks this generated {math}`v_{k+1}`; position and orientation keep tracking
+the path geometry throughout, including during acceleration and braking.
 
 ### References
 
@@ -571,12 +728,34 @@ another constraint with `<motion.constraint>`; until groups can also be referenc
 | Relation | Syntax |
 |---|---|
 | Equality | `equal to REF` |
-| Greater than | `greater than REF`, `is larger than REF`, `away from REF` |
+| Greater than | `greater than REF`, `more than REF`, `is larger than REF`, `away from REF` |
 | Less than | `less than REF`, `is smaller than REF`, `up to REF` |
 | Inside interval | `between LOWER and UPPER` |
 | Outside interval | `outside LOWER and UPPER` |
 
 The view and references must resolve to compatible quantity types and units.
+
+A constraint may carry its own tolerance with a trailing `within REF`:
+
+```robmot
+hold-position: keeping <shared.world.tcp-base>.position
+               equal to <spec.goal>.position
+               within <shared.spec.satisfied-band>
+```
+
+A constraint that authors no `within` instead takes the model-wide default for the kind its
+error carries, declared once at the top level:
+
+```robmot
+tolerances {
+    position:         0.01 m,
+    linear-velocity:  0.01 m/s,
+    orientation:      5 deg
+}
+```
+
+One entry per quantity kind that needs a default; a kind with no entry and no `within` on the
+constraint has no band at all.
 
 ## Constraint handlers
 
@@ -619,12 +798,14 @@ contact: monitor <approach.contact> { satisfied { flag: touching } }
 
 Events may be namespaced FSM events or standalone event names.
 
-`publish`, declared once per monitor rather than inside a state block, streams the
-monitor's verdict onto a declared ROS topic; see [ROS topics](#ros-topics) below.
+`publish`, declared inside the state block whose condition should drive it (`satisfied` or
+`violated`, exactly like `trigger`, `hold`, and `flag`), streams the monitor's verdict onto a
+declared ROS topic. A monitor answering a served ROS action instead uses `result` in the same
+position. See [ROS topics](#ros-topics) below for both.
 
 ### Controllers
 
-Controller kinds are `pid`, `impedance`, `abag`, and `feed-forward`.
+Controller kinds are `pid`, `impedance`, and `feed-forward`.
 
 | Field | Use |
 |---|---|
@@ -633,8 +814,9 @@ Controller kinds are `pid`, `impedance`, `abag`, and `feed-forward`.
 | `measured-derivative` | World view used by derivative action |
 | `output-saturation` | `max` or `lower`/`upper` output bound |
 | `integral-saturation` | `max` or `lower`/`upper` integral bound |
-| `Kp`, `Ki`, `Kd`, `decay` | PID/ABAG parameters as applicable |
-| `stiffness`, `damping` | Impedance parameters |
+| `Kp`, `Kd`, `decay` | PID only: `Kp` and `Kd` required, `decay` optional |
+| `Ki` | Required on `pid`; optional anti-windup integral on `impedance` |
+| `stiffness`, `damping` | Impedance only, at least one of the two required |
 
 `as TYPE` declares the command quantity where inference is insufficient.
 `apply at <body>` selects the rigid body for a force command. `via <solver>` selects
@@ -651,6 +833,8 @@ algorithm string. Each accepts only its own fields.
 | `serial-chain` | `achd` | Acceleration-level hybrid dynamics over one ordered kinematic chain |
 | `serial-chain` | `rne` | Recursive Newton-Euler dynamics over one ordered kinematic chain |
 | `mobile-platform` | `velocity-composition` | Reconstruct the platform twist from measured wheel/drive velocities |
+| `mobile-platform` | `velocity-distribution` | Map a desired platform twist to drive/wheel velocity commands (control allocation) |
+| `mobile-platform` | `force-composition` | Reconstruct the platform wrench from measured wheel/drive forces |
 | `mobile-platform` | `force-distribution` | Map a desired platform wrench to drive/wheel forces (control allocation) |
 | `command-forwarding` | -- | Forward a feed-forward controller's command directly to a device |
 
@@ -665,7 +849,7 @@ solvers {
         limits {
             torque: saturation { max: <shared.spec.max-torque> }
         },
-        gravity: { x: 0.0, y: 0.0, z: -9.81 m/s2 }
+        gravity: (0.0, 0.0, 9.81) m/s^2
     }
 }
 ```
@@ -677,12 +861,10 @@ Gravity may also reference a context quantity.
 
 A `mobile-platform` entry requires exactly one `configuration` (the backend lookup
 key) and exactly one `quantity` context reference. The reference's kind must match the
-algorithm: a `velocity-twist` for `velocity-composition`, a `wrench` for
-`force-distribution`. There is one `mobile-platform` DSL class over the quantity x
-operation matrix; only these two operations are backed by a vendored RDF class
-(`slv:VelocityCompositionSolver`, `slv:ForceDistributionSolver` --
-comp-rob2b `solver-specification.ttl:25,35`), so the `algorithm` enum stays closed to
-them for now:
+algorithm's quantity axis: a `velocity-twist` for `velocity-composition`/`velocity-distribution`,
+a `wrench` for `force-composition`/`force-distribution`. The operation axis (composition vs.
+distribution) lives in the algorithm token, not a separate field, so no combination is
+representable as illegal state:
 
 ```robmot
 solvers {
@@ -712,24 +894,48 @@ solvers {
 
 ## ROS topics
 
-A model declares the topics it publishes on once, at the top level, and monitors
-reference them by name:
+A model declares everything it talks to over ROS once, at the top level, in one `ros` block.
+Each of its five groups -- `publishers`, `subscribers`, `action-clients`, `action-servers`,
+and `always` -- is its own scope, so an entry is referred to by what it is,
+`<ros.publishers.table-anchor-pose>`, rather than by the namespace it happens to mint IRIs in:
 
 ```robmot
-ros-topics (ns=task) {
-    approach-done: topic "/motion/approach_done" message "bdd_ros2_interfaces/msg/TrinaryStamped",
+ros (ns=app) {
+    publishers {
+        table-anchor-pose: topic "/table_anchor_pose" message "geometry_msgs/msg/PoseStamped",
+    },
+    subscribers {
+        table-anchor: topic "/recognized_objects" message "vision_msgs/msg/Detection3DArray" {
+            observes { <shared.world.pose-table-anchor-cam> }
+            pose from results
+        },
+    },
+    action-servers {
+        collab-bhv: action "/bdd/collab_bhv_server" type "control_msgs/action/GripperCommand" {
+            on-goal: produce event <collab-coord.E_GOAL>,
+        },
+    },
+    always {
+        publish at 10.0 Hz to <ros.publishers.table-anchor-pose>
+                with <shared.world.pose-table-anchor-cam>,
+    },
 }
 ```
 
-A `publish` belongs to a monitor's state block, and states the fields it writes:
+All five groups are optional, and a model declares only the ones it needs.
+
+### Publishing from a monitor
+
+A `publish` belongs to a monitor's state block (`satisfied` or `violated`), and states the
+fields it writes:
 
 ```robmot
 done: monitor <approach.reached> {
     satisfied {
         trigger: event <task.E_DONE>,
-        publish: to <task.approach-done> { trinary.value: TRUE },
+        publish: to <ros.publishers.approach-done> { trinary.value: TRUE },
     },
-    violated { publish: to <task.approach-done> { trinary.value: FALSE } },
+    violated { publish: to <ros.publishers.approach-done> { trinary.value: FALSE } },
 }
 ```
 
@@ -740,7 +946,13 @@ after the auto-filled ones are set aside, the sugar `publish: <value> to <topic>
 value alone and the field is resolved at generation:
 
 ```robmot
-satisfied { publish: TRUE to <task.approach-done> },
+satisfied { publish: TRUE to <ros.publishers.approach-done> },
+```
+
+A third form fires one or more FSM events as the message instead of naming fields directly:
+
+```robmot
+satisfied { publish: events { <task.E_PICK_END> } to <ros.publishers.bdd-events> },
 ```
 
 A publish is live only while its state holds, and only while the monitor's motion is
@@ -763,6 +975,83 @@ states no condition at all -- it is the otherwise, taken while the monitor evalu
 constraint does not hold. Any monitor may publish on `violated`, including one watching a whole
 `until`/`when` section, but only alongside a `satisfied` publish: without the case it is
 otherwise to, "otherwise" is not "violated".
+
+### Answering a served action
+
+`action-servers` declares an action this model's own FSM serves; `on-goal` is the only field --
+a new goal produces the named event and nothing else is authored on the server itself:
+
+```robmot
+action-servers {
+    collab-bhv: action "/bdd/collab_bhv_server" type "control_msgs/action/GripperCommand" {
+        on-goal: produce event <collab-coord.E_GOAL>,
+    },
+}
+```
+
+A monitor answers that goal with `result`, in the same position as `publish` inside a
+`satisfied` or `violated` state block:
+
+```robmot
+mon-opened: monitor <hold-close.until> {
+    satisfied {
+        trigger: event <collab-coord.E_OBJ_GRASPED>,
+        publish: events { <collab-coord.E_PICK_END> } to <ros.publishers.bdd-events>,
+        result: succeeded <ros.action-servers.collab-bhv> { result.trinary.value: TRUE }
+    },
+}
+```
+
+A monitor may `publish` and `result` in the same state -- they answer different things. Only
+`succeeded` and `aborted` are authorable outcomes: a cancel is the client's to ask for, and a
+goal whose cancel is accepted is always reported `CANCELED`, whatever the model states. A run
+that ends without an authored answer -- shutdown, or reaching the FSM end state with no
+`result` -- aborts with the result type's own defaults; the FSM `end:` state itself answers
+nothing, it only ends the loop. At most one monitor answers a given action.
+
+### Subscribing and detecting
+
+`subscribers` reads a topic into a world quantity. `observes` names the quantities the message
+updates, and `pose from` says which message field carries the pose (`results` above is the
+detection array's own field name, not a model-authored one):
+
+```robmot
+subscribers {
+    table-anchor: topic "/recognized_objects" message "vision_msgs/msg/Detection3DArray" {
+        observes { <shared.world.pose-table-anchor-cam> }
+        pose from results
+    },
+}
+```
+
+`action-clients` declares an action this model calls out to, for `detect ... using <action>` to
+drive:
+
+```robmot
+action-clients {
+    find-table: action "/perception/find_table" type "vision_msgs/action/Detect3D",
+}
+```
+
+```robmot
+locate: detect <table.anchor_frame> using <ros.action-clients.find-table>
+```
+
+### Standing publications
+
+`always` publishes independent of any monitor, at a fixed rate, for as long as the model runs.
+`with <quantity>` reports one world quantity whole; `with { <subject>: <quantity>, ... }` tags
+each entry when the message carries more than one:
+
+```robmot
+always {
+    publish at 10.0 Hz to <ros.publishers.table-anchor-pose>
+            with <shared.world.pose-table-anchor-cam>,
+    publish at 10.0 Hz to <ros.publishers.seen-objects> with {
+        <world_tree.robot-table-body>: <shared.world.pose-table-anchor-cam>,
+    },
+}
+```
 
 ### Joint states
 
@@ -793,10 +1082,11 @@ received.
 
 ## Units
 
-Authored unit spellings are deliberately compact:
+Authored unit spellings are deliberately compact; every exponentiated unit uses `^`, never a
+bare digit:
 
-`rad/s2`, `rad/s`, `m/s3`, `m/s2`, `m/s`, `cm/s`, `deg/s`, `Nm`, `rad`, `deg`,
-`cm`, `ms`, `m`, `s`, `N`, and `1`.
+`rad/s^2`, `rad/s`, `deg/s^2`, `deg/s`, `m/s^3`, `m/s^2`, `m/s`, `cm/s`, `Nm`, `N`, `rad`, `deg`,
+`mm`, `cm`, `m`, `ms`, `s`, `Hz`, and `1`.
 
 The generated RDF uses the corresponding QUDT terms.
 

@@ -6,6 +6,7 @@ build/
 generated/
 runs/
 docs/_build/
+docs/sphinx/source/_static/dsl-paths/
 
 # Python packaging artifacts
 *.egg-info/

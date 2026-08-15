@@ -168,8 +168,8 @@ A velocity profile limits how a controller approaches a scalar reference:
 
 ```robmot
 linear-velocity max-v = 0.08 m/s,
-linear-acceleration max-a = 0.30 m/s2,
-linear-jerk max-j = 1.0 m/s3,
+linear-acceleration max-a = 0.30 m/s^2,
+linear-jerk max-j = 1.0 m/s^3,
 velocity-profile lower-profile = profile {
     max-velocity: <spec.max-v>,
     max-acceleration: <spec.max-a>,
@@ -180,8 +180,9 @@ velocity-profile lower-profile = profile {
 ```
 
 Shapes are `trapezoidal` and `s-curve`. Maximum velocity and acceleration are
-required and positive; jerk and measured velocity are optional. Attach the profile
-to a controller with `profile: <...>`.
+required and positive; jerk and measured velocity are optional. Attach a scalar
+reference profile to a controller with `profile: <...>`. A path-speed profile belongs
+to the path driver instead, using `moving ... along ... with <profile>`.
 
 A profiled controller drives its constraint's reference as a target rather than tracking
 it directly: the profile emits a setpoint that approaches the target within the limits,
@@ -221,7 +222,36 @@ Selectors determine the resulting type. For example, a pose is a pose,
 
 ## Paths
 
-A path is a geometric context value:
+A path is a pose-valued geometric function over a normalized parameter:
+
+```{math}
+:label: path-pose
+
+\mathbf{T}(s) =
+\begin{bmatrix}
+\mathbf{R}(s) & \mathbf{p}(s) \\
+\mathbf{0}^{\mathsf T} & 1
+\end{bmatrix}
+\in SE(3), \qquad s \in [0,1].
+```
+
+Here, {math}`\mathbf{p}(s)` is position and {math}`\mathbf{R}(s)` is orientation.
+The parameter orders progress, but is neither time nor necessarily arc length. A trajectory
+appears only when execution supplies a time law {math}`s(t)`:
+
+```{math}
+:label: path-trajectory
+
+\mathbf{T}_d(t) = \mathbf{T}(s(t)).
+```
+
+This distinction is deliberate: a path fixes geometry while leaving timing free. It follows
+the ordering in Bruyninckx, Sections 7.11 and 8.6, where runtime motion generation resolves
+the degrees of freedom that the task did not constrain.
+
+### Path kinds
+
+The DSL provides these path functions:
 
 | Kind | Required fields | Optional fields |
 |---|---|---|
@@ -238,10 +268,161 @@ path approach-path = lerp {
 }
 ```
 
-A path is emitted as geometry, a `geom-path:Path` of the matching kind carrying only
-its shape parameters. Timing is never stored on that geometry—Bruyninckx §8.6 places a
-path one rung less constrained than a trajectory precisely because a path leaves timing
-unimposed. Per §7.11, executing a guarded motion produces the trajectory at runtime.
+A path is emitted as a `geom-path:Path` carrying only its shape parameters. The runtime
+clamps {math}`s` to {math}`[0,1]` and evaluates the selected function below. In these
+equations, {math}`\operatorname{Rot}(\mathbf{u},\theta)` rotates by {math}`\theta`
+around unit axis {math}`\mathbf{u}`.
+
+#### Linear interpolation (`lerp`)
+
+For start pose {math}`(\mathbf{R}_0,\mathbf{p}_0)` and goal pose
+{math}`(\mathbf{R}_1,\mathbf{p}_1)`:
+
+```{math}
+:label: path-lerp
+
+\begin{aligned}
+\mathbf{p}(s) &= (1-s)\mathbf{p}_0+s\mathbf{p}_1, \\
+\mathbf{R}(s) &= \mathbf{R}_0
+\operatorname{Exp}\!\left(s\operatorname{Log}
+\left(\mathbf{R}_0^{\mathsf T}\mathbf{R}_1\right)\right).
+\end{aligned}
+```
+
+The rotational expression is the shortest rotation interpolation used by the pose-difference
+operation; it is not component-wise interpolation of Euler angles.
+
+#### Circle
+
+For center {math}`\mathbf{c}`, start position {math}`\mathbf{p}_0`, and plane normal
+{math}`\mathbf{n}`:
+
+```{math}
+:label: path-circle
+
+\mathbf{p}(s)=\mathbf{c}+
+\operatorname{Rot}(\mathbf{n},2\pi s)(\mathbf{p}_0-\mathbf{c}),
+\qquad \mathbf{R}(s)=\mathbf{R}_0.
+```
+
+One traversal covers a full revolution and returns to the start pose.
+
+#### Arc
+
+An arc is defined by its endpoints, plane normal, and positive sagitta (bulge amplitude)
+{math}`a`. Let
+
+```{math}
+:label: path-arc-derived
+
+\begin{aligned}
+\mathbf{q} &= \mathbf{p}_1-\mathbf{p}_0, &
+\ell &= \lVert\mathbf{q}\rVert, & m &= \ell/2, \\
+\hat{\mathbf{q}} &= \mathbf{q}/\ell, &
+\mathbf{b} &= \mathbf{n}\times\hat{\mathbf{q}}, \\
+r &= \frac{a^2+m^2}{2a}, &
+d &= \frac{a^2-m^2}{2a}, \\
+\mathbf{c} &= \frac{\mathbf{p}_0+\mathbf{p}_1}{2}+d\mathbf{b}, &
+\theta &= 2\cos^{-1}(-d/r).
+\end{aligned}
+```
+
+Then
+
+```{math}
+:label: path-arc
+
+\mathbf{p}(s)=\mathbf{c}+
+\operatorname{Rot}(\mathbf{n},-\theta s)(\mathbf{p}_0-\mathbf{c}),
+```
+
+while orientation interpolates as in {eq}`path-lerp`. The special case
+{math}`a=\ell/2` gives a semicircle. A zero chord or non-positive amplitude is degenerate;
+the runtime holds the start pose instead of dividing by zero.
+
+#### Helix
+
+For axis {math}`\mathbf{u}`, center {math}`\mathbf{c}`, pitch {math}`h`, and number of
+revolutions {math}`N`:
+
+```{math}
+:label: path-helix
+
+\mathbf{p}(s)=\mathbf{c}+
+\operatorname{Rot}(\mathbf{u},2\pi Ns)(\mathbf{p}_0-\mathbf{c})
++\mathbf{u}hNs,
+\qquad \mathbf{R}(s)=\mathbf{R}_0.
+```
+
+#### Figure eight
+
+Let {math}`\mathbf{a}` be the anchor position, {math}`\mathbf{n}` the plane normal,
+and {math}`\mathbf{u}` the anchor frame's x-axis projected into that plane and normalized.
+Set {math}`\mathbf{v}=\mathbf{n}\times\mathbf{u}` and
+{math}`\tau=2\pi s+\pi/2`. Both forms start and finish at the anchor:
+
+```{math}
+:label: path-figure-eight
+
+\begin{aligned}
+\mathbf{p}_{\text{Gerono}}(s)
+ &= \mathbf{a}+r\left(\cos\tau\,\mathbf{u}
+ +\sin\tau\cos\tau\,\mathbf{v}\right), \\
+\mathbf{p}_{\text{Bernoulli}}(s)
+ &= \mathbf{a}+\frac{r}{1+\sin^2\tau}
+ \left(\cos\tau\,\mathbf{u}
+ +\sin\tau\cos\tau\,\mathbf{v}\right), \\
+\mathbf{R}(s) &= \mathbf{R}_a.
+\end{aligned}
+```
+
+### Projection and the moving path frame
+
+Each control cycle projects the measured TCP position {math}`\mathbf{p}_{m,k}` onto a local
+window {math}`\mathcal{W}_k\subseteq[0,1]` around the preceding projection:
+
+```{math}
+:label: path-projection
+
+s_k^*=\underset{s\in\mathcal{W}_k}{\operatorname{argmin}}
+\;\lVert\mathbf{p}(s)-\mathbf{p}_{m,k}\rVert^2.
+```
+
+The implementation derives {math}`\mathcal{W}_k` from the preceding {math}`s_{k-1}^*` and
+the measured deviation. This preserves the current branch at a self-intersection
+instead of jumping to another geometrically close branch.
+
+The unit tangent is evaluated by a central difference with {math}`\delta_s=10^{-4}` and
+endpoint-clamped parameters {math}`s_- = \max(0,s^*-\delta_s)` and
+{math}`s_+ = \min(1,s^*+\delta_s)`:
+
+```{math}
+:label: path-tangent
+
+\mathbf{t}(s^*)=
+\frac{\mathbf{p}(s_+)-\mathbf{p}(s_-)}
+{\left\lVert\mathbf{p}(s_+)-\mathbf{p}(s_-)\right\rVert}.
+```
+
+Two normals complete the local orthonormal frame. The first normal is parallel-transported
+from the previous cycle and the second is its cross product with the tangent:
+
+```{math}
+:label: path-frame
+
+\begin{aligned}
+\tilde{\mathbf{n}}_1 &=(\mathbf{I}-\mathbf{t}\mathbf{t}^{\mathsf T})
+\mathbf{n}_{1,k-1}, &
+\mathbf{n}_{1,k}&=\tilde{\mathbf{n}}_1/
+\lVert\tilde{\mathbf{n}}_1\rVert, \\
+\mathbf{n}_{2,k}&=\mathbf{t}_k\times\mathbf{n}_{1,k}.
+\end{aligned}
+```
+
+Transport avoids discontinuous normal-axis flips as the curve turns. At initialization or a
+singularity, the runtime chooses the world axis least aligned with the tangent.
+
+### Tangent, position, and orientation constraints
 
 Path following is therefore expressed by ordinary motion constraints with three distinct
 jobs:
@@ -259,11 +440,101 @@ while {
 }
 ```
 
-`moving ... along ... with ...` drives the profiled tangential speed. `keeping ... on ...`
-constrains the lateral position or orientation to the path. `progress of ... along ...`
-observes the same tangential speed and acts only as a guard or monitor; it contributes no
-solver row. Controllers bind to the driver and geometry constraints in the normal way.
-For multiple arms, declare this constraint set once per moved quantity and path.
+Let the measured rigid-body twist be
+{math}`\mathbf{V}_m=[\boldsymbol{\omega}_m^{\mathsf T}\;
+\mathbf{v}_m^{\mathsf T}]^{\mathsf T}`, following Featherstone's spatial-velocity
+decomposition (Section 2.2). The measured speed along the path is
+
+```{math}
+:label: path-along-speed
+
+v_{\parallel}=\mathbf{t}^{\mathsf T}\mathbf{v}_m.
+```
+
+The three controllers occupy complementary directions:
+
+- **Tangent:** `moving ... along ... with ...` regulates
+  {math}`e_t=v_{\mathrm{cmd}}-v_{\parallel}` along {math}`\mathbf{t}`. It determines
+  progress and timing, but does not pull the TCP toward an endpoint position.
+- **Position:** `keeping ... .position on ...` uses
+  {math}`\mathbf{e}_p=\mathbf{p}(s^*)-\mathbf{p}_m`, but contributes only the two lateral
+  components
+  {math}`[\mathbf{n}_1^{\mathsf T}\mathbf{e}_p\;
+  \mathbf{n}_2^{\mathsf T}\mathbf{e}_p]^{\mathsf T}`. It corrects cross-track error without
+  competing with the tangent-speed controller.
+- **Orientation:** `keeping ... .orientation on ...` regulates the three-component rotation
+  error
+  {math}`\mathbf{e}_R=\operatorname{Log}
+  (\mathbf{R}_m^{\mathsf T}\mathbf{R}(s^*))^\vee`. It aligns the body with the orientation
+  stored at the same projected path parameter.
+
+Together these form one six-dimensional task decomposition: one tangential linear direction,
+two normal linear directions, and three angular directions. This is why tangent and position
+are not duplicate Cartesian controllers.
+
+`progress of ... along ...` observes {math}`v_{\parallel}` and acts only as a guard or
+monitor; it contributes no solver row. Controllers bind to the driver and geometry constraints
+in the normal way. For multiple arms, declare this constraint set once per moved quantity and
+path.
+
+### Path-speed profile
+
+The velocity profile in `moving ... along ... with <profile>` is the single authority for
+path speed. Its `max-velocity` is the cruise speed {math}`v_c`; there is no second `at` speed.
+To brake before the endpoint, the runtime estimates the remaining arc length with 16 line
+segments. For {math}`s_i=s^*+(1-s^*)i/16`:
+
+```{math}
+:label: path-remaining-length
+
+L_{\mathrm{rem}}\approx
+\sum_{i=1}^{16}\lVert\mathbf{p}(s_i)-\mathbf{p}(s_{i-1})\rVert.
+```
+
+It then applies the constant-acceleration bound
+
+```{math}
+:label: path-braking-speed
+
+v_b=\sqrt{2a_{\max}L_{\mathrm{rem}}}, \qquad
+v_{\mathrm{target}}=\operatorname{sgn}(v_c)
+\min(|v_c|,v_b).
+```
+
+For a trapezoidal profile, one cycle of duration {math}`\Delta t` is
+
+```{math}
+:label: path-trapezoidal-profile
+
+v_{k+1}=v_k+
+\operatorname{clip}(v_{\mathrm{target}}-v_k,
+-a_{\max}\Delta t,a_{\max}\Delta t).
+```
+
+For an S-curve profile, the acceleration change is additionally jerk-limited:
+
+```{math}
+:label: path-s-curve-profile
+
+\begin{aligned}
+a^* &= \operatorname{clip}
+\left(\frac{v_{\mathrm{target}}-v_k}{\Delta t},-a_{\max},a_{\max}\right), \\
+a_{k+1} &= a_k+\operatorname{clip}
+(a^*-a_k,-j_{\max}\Delta t,j_{\max}\Delta t), \\
+v_{k+1} &= \operatorname{clip}
+(v_k+a_{k+1}\Delta t,-|v_c|,|v_c|).
+\end{aligned}
+```
+
+The tangent PID tracks this generated {math}`v_{k+1}`. Position and orientation continue to
+track the path geometry during acceleration and braking.
+
+### References
+
+- Herman Bruyninckx, *Composable and Explainable Systems of Systems*, Sections 7.11,
+  8.6, and 8.6.3.
+- Roy Featherstone, *Rigid Body Dynamics Algorithms*, Section 2.2,
+  [doi:10.1007/978-1-4899-7560-7](https://doi.org/10.1007/978-1-4899-7560-7).
 
 ## Guarded motions
 

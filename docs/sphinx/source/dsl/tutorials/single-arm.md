@@ -142,8 +142,12 @@ then constructs a Cartesian goal:
 
 ```robmot
 pose start-pose = snapshot of <shared.world.pose-ee-base>,
-linear-velocity approach-speed = 0.08 m/s,
 linear-velocity min-approach-speed = 0.005 m/s,
+velocity-profile approach-profile = profile {
+    max-velocity: 0.08 m/s,
+    max-acceleration: 0.05 m/s^2,
+    shape: trapezoidal
+},
 length start-cube-x = snapshot of <shared.world.pose-cube-base>.position.x,
 length start-cube-y = snapshot of <shared.world.pose-cube-base>.position.y,
 path approach-path = lerp {
@@ -157,7 +161,7 @@ The motion gives path following three explicit constraint roles:
 ```robmot
 while {
     follow-tan: moving <shared.world.pose-ee-base>
-                along <spec.approach-path> at <spec.approach-speed>,
+                along <spec.approach-path> with <spec.approach-profile>,
     follow-lat: keeping <shared.world.pose-ee-base>.position
                 on <spec.approach-path>,
     follow-ori: keeping <shared.world.pose-ee-base>.orientation

@@ -18,6 +18,8 @@ from motion_spec_dsl.rdf_parser.vocab import (
     ENV,
     EXEC,
     GEOM_COORD,
+    GEOM_OP_EXT,
+    GEOM_PATH,
     KC,
     MOT,
     QUDT_QKIND,
@@ -381,7 +383,7 @@ def test_velocity_profile_operator_closure_exposes_codegen_fields() -> None:
     closure = operations.build_closures(_model(graph), operations.OPS_GENERIC)["profile_op"]
 
     assert closure["type"] == "VelocityProfile"
-    assert closure["goal"] == "goal"
+    assert closure["profile_target"] == "goal"
     assert closure["measured"] == "measured"
     assert closure["in"] == "measured_velocity"
     assert closure["maximum_velocity"] == "max_velocity"
@@ -390,6 +392,47 @@ def test_velocity_profile_operator_closure_exposes_codegen_fields() -> None:
     assert closure["out"] == "reference"
     assert closure["controller"] == "controller"
     assert str(closure["shape"]) == "s_curve"
+
+
+def test_path_velocity_profile_carries_geometry_and_profile_shape() -> None:
+    graph = Dataset(default_union=True)
+    op = URIRef("https://example.test/profile-op")
+    path = URIRef("https://example.test/path")
+    graph.add((op, RDF.type, ALGO_EXT.VelocityProfile))
+    graph.add((path, RDF.type, GEOM_PATH.Arc))
+    for pred, name in (
+        (ALGO_EXT["target"], "goal"),
+        (ALGO_EXT["maximum-velocity"], "max-velocity"),
+        (ALGO_EXT["maximum-acceleration"], "max-acceleration"),
+        (ALGO_EXT["out"], "reference"),
+        (GEOM_OP_EXT.path, "path"),
+        (GEOM_OP_EXT["path-parameter"], "path-parameter"),
+    ):
+        graph.add(
+            (op, pred, path if pred == GEOM_OP_EXT.path else URIRef(f"https://example.test/{name}"))
+        )
+    for pred, name in (
+        (GEOM_PATH.start, "start"),
+        (GEOM_PATH.end, "end"),
+        (GEOM_PATH.amplitude, "amplitude"),
+        (GEOM_PATH["plane-normal"], "plane-normal"),
+    ):
+        graph.add((path, pred, URIRef(f"https://example.test/{name}")))
+    constraint = URIRef("https://example.test/constraint")
+    controller = URIRef("https://example.test/controller")
+    graph.add((constraint, CSTR["reference-value"], URIRef("https://example.test/reference")))
+    graph.add((constraint, CSTR.quantity, URIRef("https://example.test/measured")))
+    graph.add((controller, CSTR_HDL.constraint, constraint))
+    graph.add((op, ALGO_EXT.shape, ALGO_EXT.trapezoidal))
+
+    closure = operations.build_closures(_model(graph), operations.OPS_GENERIC)["profile_op"]
+
+    assert closure["path_parameter"] == "path_parameter"
+    assert closure["shape"] == "Arc"
+    assert closure["profile_shape"] == "trapezoidal"
+    assert closure["profile_target"] == "goal"
+    assert closure["start"] == "start"
+    assert closure["end"] == "end"
 
 
 def test_velocity_profile_without_controller_fails_clearly() -> None:

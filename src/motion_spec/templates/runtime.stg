@@ -588,6 +588,50 @@ inline double velocity_profile_step(double x, double &v, double &a, double goal,
     return nx;
 }
 
+template \<typename PathEvaluator\>
+inline double remaining_path_length(const PathEvaluator &evaluate, double parameter) {
+    constexpr int samples = 16;
+    const double start = clamp01(parameter);
+    KDL::Vector previous = evaluate(start).p;
+    double length = 0.0;
+    for (int i = 1; i \<= samples; ++i) {
+        const double s = start + (1.0 - start) * static_cast\<double\>(i) / samples;
+        const KDL::Vector current = evaluate(s).p;
+        length += (current - previous).Norm();
+        previous = current;
+    }
+    return length;
+}
+
+inline double path_velocity_profile_step(double velocity, double &acceleration,
+                                         double cruise_velocity, double maximum_velocity,
+                                         double maximum_acceleration, double maximum_jerk,
+                                         double remaining_distance, double dt,
+                                         VelocityProfileShape shape) {
+    maximum_velocity = std::max(std::abs(maximum_velocity), 1e-9);
+    maximum_acceleration = std::max(std::abs(maximum_acceleration), 1e-9);
+    const double direction = cruise_velocity >= 0.0 ? 1.0 : -1.0;
+    const double cruise = std::min(std::abs(cruise_velocity), maximum_velocity);
+    const double braking = std::sqrt(2.0 * maximum_acceleration
+                                     * std::max(remaining_distance, 0.0));
+    const double target = direction * std::min(cruise, braking);
+    if (shape == VelocityProfileShape::Trapezoidal) {
+        const double delta = std::clamp(target - velocity,
+                                        -maximum_acceleration * dt,
+                                        maximum_acceleration * dt);
+        velocity += delta;
+        acceleration = delta / dt;
+    } else {
+        maximum_jerk = std::max(std::abs(maximum_jerk), 1e-9);
+        const double target_acceleration = std::clamp(
+            (target - velocity) / dt, -maximum_acceleration, maximum_acceleration);
+        acceleration += std::clamp(target_acceleration - acceleration,
+                                   -maximum_jerk * dt, maximum_jerk * dt);
+        velocity += acceleration * dt;
+    }
+    return std::clamp(velocity, -maximum_velocity, maximum_velocity);
+}
+
 <if(resources.by_kind.mobile_base)>
 inline constexpr int NUM_DRIVES = 4;
 inline constexpr int NUM_SLAVES = 4;

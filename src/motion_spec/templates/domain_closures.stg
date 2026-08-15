@@ -89,6 +89,10 @@ path-eval-LinearPath(closure, views) ::= <<
 >>
 
 emit-call-VelocityProfile(closure, views) ::= <<
+<if(closure.path_parameter)><emit-call-PathVelocityProfile(closure, views)><else><emit-call-TargetVelocityProfile(closure, views)><endif>
+>>
+
+emit-call-TargetVelocityProfile(closure, views) ::= <<
 {
     if (!state.<closure.controller>.vp_init) {
         state.<closure.controller>.vp_setpoint = <access-expr(closure.measured, views)>;
@@ -100,12 +104,36 @@ emit-call-VelocityProfile(closure, views) ::= <<
         state.<closure.controller>.vp_setpoint,
         state.<closure.controller>.vp_velocity,
         state.<closure.controller>.vp_accel,
-        <access-expr(closure.goal, views)>,
+        <access-expr(closure.profile_target, views)>,
         <access-expr(closure.maximum_velocity, views)>,
         <access-expr(closure.maximum_acceleration, views)>,
         <if(closure.maximum_jerk)><access-expr(closure.maximum_jerk, views)><else>0.0<endif>,
         shared.dt_measured_s,
         <velocity-profile-shape.(closure.shape)>);
+    state.<closure.controller>.vp_setpoint = shared.<closure.out>;
+}
+>>
+
+emit-call-PathVelocityProfile(closure, views) ::= <<
+{
+<path-eval(closure, views)>
+    if (!state.<closure.controller>.vp_init) {
+        state.<closure.controller>.vp_setpoint = <access-expr(closure.measured, views)>;
+        state.<closure.controller>.vp_accel = 0.0;
+        state.<closure.controller>.vp_init = true;
+    }
+    const double _remaining = motion_spec::runtime::remaining_path_length(
+        _path_eval, shared.<closure.path_parameter>);
+    shared.<closure.out> = motion_spec::runtime::path_velocity_profile_step(
+        state.<closure.controller>.vp_setpoint,
+        state.<closure.controller>.vp_accel,
+        <access-expr(closure.profile_target, views)>,
+        <access-expr(closure.maximum_velocity, views)>,
+        <access-expr(closure.maximum_acceleration, views)>,
+        <if(closure.maximum_jerk)><access-expr(closure.maximum_jerk, views)><else>0.0<endif>,
+        _remaining,
+        shared.dt_measured_s,
+        <velocity-profile-shape.(closure.profile_shape)>);
     state.<closure.controller>.vp_setpoint = shared.<closure.out>;
 }
 >>

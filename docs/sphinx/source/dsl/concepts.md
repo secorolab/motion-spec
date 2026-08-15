@@ -249,7 +249,7 @@ jobs:
 ```robmot
 while {
     follow-tangent: moving <shared.world.tcp-base>
-                    along <spec.approach-path> at <spec.approach-speed>,
+                    along <spec.approach-path> with <spec.approach-profile>,
     follow-position: keeping <shared.world.tcp-base>.position
                      on <spec.approach-path>,
     follow-orientation: keeping <shared.world.tcp-base>.orientation
@@ -259,7 +259,7 @@ while {
 }
 ```
 
-`moving ... along ... at ...` drives the tangential speed. `keeping ... on ...`
+`moving ... along ... with ...` drives the profiled tangential speed. `keeping ... on ...`
 constrains the lateral position or orientation to the path. `progress of ... along ...`
 observes the same tangential speed and acts only as a guard or monitor; it contributes no
 solver row. Controllers bind to the driver and geometry constraints in the normal way.

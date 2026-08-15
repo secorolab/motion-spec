@@ -789,6 +789,8 @@ OPS_GENERIC = [
             ALGO_EXT["maximum-velocity"],
             ALGO_EXT["maximum-acceleration"],
             ALGO_EXT["maximum-jerk"],
+            GEOM_OP_EXT.path,
+            GEOM_OP_EXT["path-parameter"],
         ],
         [ALGO_EXT["out"]],
         [ALGO_EXT["shape"]],
@@ -946,7 +948,10 @@ def _fold_velocity_profile(model, node, closure) -> None:
     constraint, controller = _filter_controller(model, node, closure)
     closure["controller"] = model.id(controller)
     closure["measured"] = model.id(model.graph.value(constraint, CSTR.quantity))
-    closure["goal"] = closure.pop("target")
+    closure["profile_target"] = closure.pop("target")
+    if closure.get("path") is not None:
+        closure["profile_shape"] = closure["shape"]
+        _fold_path(model, node, closure)
 
 
 # Per operator type, the post-processing its closure needs beyond its declared operands.

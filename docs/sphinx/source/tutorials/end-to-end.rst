@@ -97,6 +97,18 @@ For an existing build:
 archive-local frame-log path, catalogs runtime outputs, and verifies the result.
 It refuses to overwrite a run that already contains a REC record or frame log.
 
+To do the same run again -- same arguments, same working directory -- without
+restating them:
+
+.. code-block:: console
+
+   $ motion-spec rerun "$GENERATION_DIR"
+
+Each run records how it was launched in ``runs/RUN/invocation.json``, and
+``rerun`` repeats the most recent one into a run of its own. It generates and
+builds nothing, so it is the command to reach for while tuning a deployment
+config or a scene the controller reads at startup.
+
 4. Inspect the run
 ==================
 

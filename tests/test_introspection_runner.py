@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
 import shutil
 
+import pytest
 import rdflib
 
 from motion_spec.introspection import runner
@@ -64,6 +67,54 @@ def test_runner_catalogs_run_from_start_and_archives_outputs(tmp_path: Path) -> 
         rdflib.RDF.type,
         rdflib.URIRef("http://www.w3.org/ns/prov#Activity"),
     ) in rec_graph
+
+
+def test_a_run_records_how_it_was_launched(tmp_path: Path) -> None:
+    """`rerun` repeats a run, so the run states what repeating it means -- nothing else does."""
+    source = _source_tree(tmp_path / "source")
+    executable = _log_copy_executable(tmp_path / "log-copy")
+    generation = tmp_path / "generation"
+    run_dir = generation / "runs" / "run-001"
+    work = tmp_path / "work"
+    work.mkdir()
+
+    run_cataloged(
+        run_dir,
+        source_dir=source,
+        executable=executable,
+        executable_args=[str(source / "frame_log.pb"), "--headless"],
+        run_id="run-001",
+        cwd=work,
+    )
+
+    previous, invocation = runner.last_invocation(generation)
+    assert previous == run_dir
+    assert invocation["executable_args"] == [str(source / "frame_log.pb"), "--headless"]
+    assert invocation["cwd"] == str(work)
+    assert Path(invocation["executable"]) == executable.resolve()
+    assert Path(invocation["source_dir"]) == source.resolve()
+
+
+def test_the_last_run_is_the_one_repeated(tmp_path: Path) -> None:
+    generation = tmp_path / "generation"
+    (generation / "runs").mkdir(parents=True)
+
+    with pytest.raises(runner.RunnerError, match="has not been run yet"):
+        runner.last_invocation(generation)
+
+    (generation / "runs" / "run-old").mkdir()
+    with pytest.raises(runner.RunnerError, match="predates the invocation record"):
+        runner.last_invocation(generation)
+
+    for name, args in (("run-001", ["first"]), ("run-002", ["second"])):
+        path = generation / "runs" / name
+        path.mkdir()
+        (path / runner.INVOCATION_FILE).write_text(json.dumps({"executable_args": args}))
+        os.utime(path / runner.INVOCATION_FILE, (1, 1 if name == "run-001" else 2))
+
+    previous, invocation = runner.last_invocation(generation)
+    assert previous.name == "run-002"
+    assert invocation["executable_args"] == ["second"]
 
 
 def test_interrupted_runner_recovers_runtime_ttl(tmp_path: Path, monkeypatch) -> None:

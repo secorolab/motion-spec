@@ -115,6 +115,7 @@ class MotionSpecGroup(click.Group):
                     ("gen", "Generate IR or C++ from a .robmot model."),
                     ("build", "Configure and compile a generation."),
                     ("run", "Execute the controller and create a recorded run archive."),
+                    ("rerun", "Run a generation again the way it was last run."),
                     ("replay", "Verify, summarize, or recover data from a recorded run."),
                 ]
             )
@@ -127,7 +128,7 @@ class MotionSpecGroup(click.Group):
                     ("generated/contract/", "Schema, frame layout, and frame-log protocol."),
                     ("generated/provenance/", "DSL, coordinate, and motion-spec provenance."),
                     ("build/", "Reusable compiled controller."),
-                    ("runs/RUN/", "Run-owned logs, runtime RDF, REC graph, and manifest."),
+                    ("runs/RUN/", "Run-owned logs, runtime RDF, REC graph, manifest, invocation."),
                 ]
             )
         with _manual_section(formatter, "ENVIRONMENT"):
@@ -592,6 +593,42 @@ def run(
             executable_args=arguments,
             run_id=run_id,
             cwd=cwd,
+            recover_runtime_ttl=True,
+            verify=not no_verify,
+        )
+    except (ArchiveError, RunnerError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    if returncode:
+        raise click.exceptions.Exit(returncode)
+    click.echo(run_dir)
+
+
+@main.command()
+@click.argument("generation", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--run-id")
+@click.option("--no-verify", is_flag=True)
+def rerun(generation: Path, run_id: str | None, no_verify: bool) -> None:
+    """Run GENERATION again the way it was last run, without generating or building."""
+    from motion_spec.generation.pipeline import new_id
+    from motion_spec.introspection.archive import ArchiveError
+    from motion_spec.introspection.runner import RunnerError, last_invocation, run_cataloged
+
+    generation = generation.resolve()
+    try:
+        previous, invocation = last_invocation(generation)
+    except RunnerError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"repeating {previous.name}", err=True)
+
+    run_dir = generation / "runs" / (run_id or new_id("run"))
+    try:
+        returncode = run_cataloged(
+            run_dir,
+            source_dir=invocation["source_dir"],
+            executable=invocation["executable"],
+            executable_args=invocation["executable_args"],
+            run_id=run_id,
+            cwd=invocation["cwd"],
             recover_runtime_ttl=True,
             verify=not no_verify,
         )

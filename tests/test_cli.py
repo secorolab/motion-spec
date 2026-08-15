@@ -45,6 +45,50 @@ def test_cli_exposes_lazy_click_commands(monkeypatch, tmp_path) -> None:
     assert received["args"][0] == generation / "runs" / "run-2"
 
 
+def test_rerun_repeats_the_last_run_of_a_generation(monkeypatch, tmp_path) -> None:
+    """It launches what the last run recorded -- same executable, same arguments, same working
+    directory -- into a run of its own, and generates and builds nothing."""
+    from motion_spec.introspection.runner import INVOCATION_FILE
+
+    generation = tmp_path / "generation"
+    previous = generation / "runs" / "run-1"
+    previous.mkdir(parents=True)
+    (previous / INVOCATION_FILE).write_text(
+        json.dumps(
+            {
+                "source_dir": str(generation / "generated"),
+                "executable": str(generation / "build" / "main"),
+                "executable_args": ["--headless", "--steps", "10"],
+                "cwd": str(tmp_path),
+            }
+        )
+    )
+    received = {}
+    monkeypatch.setattr(
+        "motion_spec.introspection.runner.run_cataloged",
+        lambda *args, **kwargs: received.update(args=args, kwargs=kwargs) or 0,
+    )
+
+    result = CliRunner().invoke(main, ["rerun", str(generation), "--run-id", "run-2"])
+
+    assert result.exit_code == 0
+    assert received["kwargs"]["executable_args"] == ["--headless", "--steps", "10"]
+    assert received["kwargs"]["cwd"] == str(tmp_path)
+    assert received["kwargs"]["executable"] == str(generation / "build" / "main")
+    assert received["args"][0] == generation.resolve() / "runs" / "run-2"
+    assert "repeating run-1" in result.output
+
+
+def test_rerun_says_a_generation_has_nothing_to_repeat(tmp_path) -> None:
+    generation = tmp_path / "generation"
+    generation.mkdir()
+
+    result = CliRunner().invoke(main, ["rerun", str(generation)])
+
+    assert result.exit_code != 0
+    assert "has not been run yet" in result.output
+
+
 def test_gen_and_run_compose_the_model_pipeline(monkeypatch, tmp_path) -> None:
     model = tmp_path / "demo.robmot"
     model.write_text("")

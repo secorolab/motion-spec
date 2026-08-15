@@ -30,6 +30,7 @@ def _internal_failure(what: str, exc: Exception) -> click.ClickException:
 
 
 GENERATION_DIR_ENV = "MOTION_SPEC_GEN"
+LATEST_LINK = "latest"
 
 
 def _generation_base(output_dir: Path | None) -> Path | None:
@@ -66,52 +67,54 @@ def _new_generation(model: Path, output_dir: Path | None) -> Path:
 
     generation = create_generation_dir(model, _generation_base(output_dir))
     click.echo(f"generation: {generation}", err=True)
-    _remember_generation(generation)
+    _point_latest(generation)
 
     return generation
 
 
-def _state_file() -> Path:
-    """Where the CLI keeps what it has to remember between commands."""
-    state = os.environ.get("XDG_STATE_HOME", "").strip()
-    return (Path(state) if state else Path.home() / ".local" / "state") / "motion-spec" / "last"
+def _point_latest(generation: Path) -> None:
+    """Point `latest` at the generation just made: one beside it, one beside every model's.
 
-
-def _remember_generation(generation: Path) -> None:
-    """Note the generation just made, so the next command need not be told where it went.
-
-    A generation's path carries a timestamp nobody types twice: the whole reason `rerun` exists
-    is that the terminal already knows which one was meant.
+    A generation's directory is a timestamp nobody types twice, so the tree carries a name that
+    does not change -- the way a colcon workspace has `log/latest` and a Bazel one has
+    `bazel-bin`. Relative targets, so moving the tree keeps them pointing at what they name, and
+    replaced in one step, so a reader never finds the link missing.
     """
-    path = _state_file()
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"{generation.resolve()}\n")
-    except OSError:
-        # Remembering is a convenience; a read-only or missing state directory must not fail a
-        # generation that otherwise worked. `rerun` says what to do when it finds nothing.
-        pass
+    for link, target in (
+        (generation.parent / LATEST_LINK, generation.name),
+        (generation.parent.parent / LATEST_LINK, f"{generation.parent.name}/{generation.name}"),
+    ):
+        pending = link.with_name(f".{LATEST_LINK}.new")
+        try:
+            pending.unlink(missing_ok=True)
+            pending.symlink_to(target, target_is_directory=True)
+            os.replace(pending, link)
+        except OSError:
+            # A convenience, not the generation: a filesystem without symlinks, or a tree only
+            # readable, must not fail a generation that otherwise worked. `rerun` says what to
+            # do when it finds no link.
+            pending.unlink(missing_ok=True)
 
 
-def _last_generation() -> Path:
-    """The generation the last `gen` or `run` made.
+def _latest_generation() -> Path:
+    """The generation `latest` points at, under `-o`'s default or the working directory.
 
     Raises:
-        ClickException: nothing was generated yet, or what was is gone.
+        ClickException: nothing has been generated there, or what was is not built.
     """
-    path = _state_file()
-    remembered = path.read_text().strip() if path.is_file() else ""
-    if not remembered:
+    base = Path(os.environ.get(GENERATION_DIR_ENV, "").strip() or ".").expanduser()
+    link = base / LATEST_LINK
+    if not link.is_dir():
         raise click.ClickException(
-            "no generation to rerun: nothing has been generated yet, so there is nothing to "
-            "repeat. Run `motion-spec gen MODEL` or `motion-spec run MODEL` first, or name a "
-            "generation directory."
+            f"{link}: nothing generated here to rerun. `gen` and `run` point it at what they "
+            f"make, so generate once, or name a generation directory. Generations go under "
+            f"${GENERATION_DIR_ENV} when it is set, else the working directory."
         )
-    generation = Path(remembered)
+    generation = link.resolve()
     if not (generation / "build" / "main").is_file():
         raise click.ClickException(
-            f"{generation}: the last generation is gone or was never built. Name a generation "
-            "directory, or generate again."
+            f"{generation}: the latest generation is not built. Build it with `motion-spec "
+            "build`, or name a generation directory."
         )
 
     return generation
@@ -176,6 +179,7 @@ class MotionSpecGroup(click.Group):
                     ("generated/provenance/", "DSL, coordinate, and motion-spec provenance."),
                     ("build/", "Reusable compiled controller."),
                     ("runs/RUN/", "Run-owned logs, runtime RDF, REC graph, manifest, invocation."),
+                    ("latest", "Symlink to the newest generation, beside it and per model."),
                 ]
             )
         with _manual_section(formatter, "ENVIRONMENT"):
@@ -184,7 +188,8 @@ class MotionSpecGroup(click.Group):
                     (
                         GENERATION_DIR_ENV,
                         "Where 'gen' and 'run' put a new generation when given no -o. "
-                        "Unset, they fall back to the working directory and say so.",
+                        "Unset, they fall back to the working directory and say so. "
+                        "'latest' there names the one 'rerun' takes.",
                     )
                 ]
             )
@@ -657,16 +662,16 @@ def run(
 @click.option("--run-id")
 @click.option("--no-verify", is_flag=True)
 def rerun(generation: Path | None, run_id: str | None, no_verify: bool) -> None:
-    """Run the last generation again, the way it was last run.
+    """Run a generation again, the way it was last run.
 
-    Takes the generation the last `gen` or `run` made, so the path a `gen` just printed need not
-    be pasted back. Name a GENERATION to repeat that one instead. Generates and builds nothing.
+    Takes the one `latest` points at when GENERATION is not named, so the timestamped path a
+    `gen` just made need not be pasted back. Generates and builds nothing.
     """
     from motion_spec.generation.pipeline import new_id
     from motion_spec.introspection.archive import ArchiveError
     from motion_spec.introspection.runner import RunnerError, last_invocation, run_cataloged
 
-    generation = (generation or _last_generation()).resolve()
+    generation = (generation or _latest_generation()).resolve()
     click.echo(f"generation: {generation}", err=True)
     repeated = last_invocation(generation)
     if repeated is None:

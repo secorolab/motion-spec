@@ -103,14 +103,25 @@ To run that same build again, without naming it:
 
    $ motion-spec rerun
 
-``rerun`` takes the generation the last ``gen`` or ``run`` made -- the path with
-the timestamp in it that nobody wants to paste twice -- and launches it the way
-it was last launched, arguments and working directory included, into a run of
-its own. It generates and builds nothing, so it is the command to reach for
-while tuning a deployment config or a scene the controller reads at startup.
+``gen`` and ``run`` point a ``latest`` symlink at what they make -- one beside
+the generation and one over all the models -- the way a colcon workspace carries
+``log/latest``:
 
-Name a ``GENERATION`` to repeat that one instead. A generation that has never
-been run has nothing to repeat, so it is launched with no arguments.
+.. code-block:: text
+
+   $MOTION_SPEC_GEN/latest                   -> look_joint1_test/20260815T155542360467Z
+   $MOTION_SPEC_GEN/look_joint1_test/latest  -> 20260815T155542360467Z
+
+``rerun`` follows the first of those and launches it the way it was last
+launched, arguments and working directory included, into a run of its own. It
+generates and builds nothing, so it is the command to reach for while tuning a
+deployment config or a scene the controller reads at startup.
+
+The links are ordinary paths, so they work with every other command too --
+``motion-spec run "$MOTION_SPEC_GEN/look_joint1_test/latest"`` goes back to one
+model after another has been generated since. Name a ``GENERATION`` to repeat
+that one instead. A generation that has never been run has nothing to repeat, so
+it is launched with no arguments.
 
 4. Inspect the run
 ==================

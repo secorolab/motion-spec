@@ -79,15 +79,15 @@ def test_rerun_repeats_the_last_run_of_a_generation(monkeypatch, tmp_path) -> No
     assert "repeating run-1" in result.output
 
 
-def test_rerun_takes_the_generation_the_last_gen_made(monkeypatch, tmp_path) -> None:
-    """The path a `gen` just printed is the one nobody should have to paste back."""
+def test_rerun_takes_the_generation_latest_points_at(monkeypatch, tmp_path) -> None:
+    """The timestamped path a `gen` just made is the one nobody should have to paste back."""
     from motion_spec import cli
 
     generation = tmp_path / "generation" / "model" / "20260815T000000000000Z"
     (generation / "build").mkdir(parents=True)
     (generation / "build" / "main").write_text("")
-    monkeypatch.setattr(cli, "_state_file", lambda: tmp_path / "state" / "last")
-    cli._remember_generation(generation)
+    cli._point_latest(generation)
+    monkeypatch.setenv(cli.GENERATION_DIR_ENV, str(tmp_path / "generation"))
     received = {}
     monkeypatch.setattr(
         "motion_spec.introspection.runner.run_cataloged",
@@ -104,15 +104,46 @@ def test_rerun_takes_the_generation_the_last_gen_made(monkeypatch, tmp_path) -> 
     assert "no recorded run to repeat" in result.output
 
 
-def test_rerun_says_when_nothing_has_been_generated(monkeypatch, tmp_path) -> None:
+def test_latest_follows_the_newest_generation(monkeypatch, tmp_path) -> None:
+    """One link per model and one over all of them, both relative, both replaced in place."""
     from motion_spec import cli
 
-    monkeypatch.setattr(cli, "_state_file", lambda: tmp_path / "state" / "last")
+    first = tmp_path / "model" / "20260815T000000000000Z"
+    second = tmp_path / "model" / "20260815T111111111111Z"
+    other = tmp_path / "other-model" / "20260815T222222222222Z"
+    for generation in (first, second, other):
+        generation.mkdir(parents=True)
+        cli._point_latest(generation)
+
+    assert (tmp_path / "model" / cli.LATEST_LINK).resolve() == second
+    assert (tmp_path / cli.LATEST_LINK).resolve() == other
+    # Relative, so the tree can be moved or copied without the links pointing back at the old one.
+    assert not Path((tmp_path / cli.LATEST_LINK).readlink()).is_absolute()
+
+
+def test_rerun_says_where_it_looked_for_a_generation(monkeypatch, tmp_path) -> None:
+    from motion_spec import cli
+
+    monkeypatch.setenv(cli.GENERATION_DIR_ENV, str(tmp_path))
 
     result = CliRunner().invoke(main, ["rerun"])
 
     assert result.exit_code != 0
-    assert "nothing has been generated yet" in result.output
+    assert f"{tmp_path / cli.LATEST_LINK}: nothing generated here to rerun" in result.output
+
+
+def test_rerun_reports_a_latest_generation_that_is_not_built(monkeypatch, tmp_path) -> None:
+    from motion_spec import cli
+
+    generation = tmp_path / "model" / "20260815T000000000000Z"
+    generation.mkdir(parents=True)
+    cli._point_latest(generation)
+    monkeypatch.setenv(cli.GENERATION_DIR_ENV, str(tmp_path))
+
+    result = CliRunner().invoke(main, ["rerun"])
+
+    assert result.exit_code != 0
+    assert "is not built" in result.output
 
 
 def test_gen_and_run_compose_the_model_pipeline(monkeypatch, tmp_path) -> None:

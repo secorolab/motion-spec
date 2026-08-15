@@ -592,6 +592,10 @@ template \<typename PathEvaluator\>
 inline double remaining_path_length(const PathEvaluator &evaluate, double parameter) {
     constexpr int samples = 16;
     const double start = clamp01(parameter);
+    // path_project resolves the parameter only to kPathTangentStep, so a start within that of
+    // the end is the end. Reporting the sub-resolution tail floors the profile's braking
+    // velocity at sqrt(2*a*tail) and the motion creeps past the goal instead of stopping.
+    if (1.0 - start \<= kPathTangentStep) return 0.0;
     KDL::Vector previous = evaluate(start).p;
     double length = 0.0;
     for (int i = 1; i \<= samples; ++i) {

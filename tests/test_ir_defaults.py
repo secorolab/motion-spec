@@ -161,6 +161,35 @@ def test_parser_scopes_repeated_nested_reference_ids() -> None:
     assert model.id(second) == "motion_path2_reference"
 
 
+def test_parser_scopes_names_two_handlers_share() -> None:
+    graph = Dataset(default_union=True)
+    graph.bind("example", "https://example.test/")
+    home = URIRef("https://example.test/handler-home")
+    hold = URIRef("https://example.test/handler-hold")
+    home_position = URIRef("https://example.test/handler-home/hold-position")
+    hold_position = URIRef("https://example.test/handler-hold/hold-position")
+    home_limit = URIRef("https://example.test/handler-home/sat-output-hold-position")
+    hold_limit = URIRef("https://example.test/handler-hold/sat-output-hold-position")
+    aliased = URIRef("https://example.test/handler-home/turn")
+    for handler in (home, hold):
+        graph.add((handler, RDF.type, CSTR_HDL.ConstraintHandler))
+    for handler, controller in ((home, home_position), (hold, hold_position), (hold, aliased)):
+        graph.add((handler, CSTR_HDL.controllers, controller))
+        graph.add((controller, RDF.type, CSTR_HDL.Controller))
+    for node in (home_limit, hold_limit):
+        graph.add((node, RDF.type, ALGO_EXT.Saturation))
+
+    model = _model(graph)
+
+    assert model.id(home_position) == "handler_home_hold_position"
+    assert model.id(hold_position) == "handler_hold_hold_position"
+    # The nodes a handler owns beside a controller carry its name and split the same way.
+    assert model.id(home_limit) == "handler_home_sat_output_hold_position"
+    assert model.id(hold_limit) == "handler_hold_sat_output_hold_position"
+    # One controller a second handler lists is an alias, not a second controller: one id.
+    assert model.id(aliased) == "turn"
+
+
 def _pid_graph(*, kp: float | None = 1.0) -> tuple[Dataset, URIRef]:
     graph = Dataset(default_union=True)
     controller = URIRef("https://example.test/controller")

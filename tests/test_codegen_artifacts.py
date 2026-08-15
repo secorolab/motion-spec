@@ -581,7 +581,7 @@ def test_authored_iri_is_never_shadowed_by_a_derived_one():
 def test_registering_one_id_with_two_iris_raises():
     model = _model()
     model.register_derived("err_x", "https://example.org/m/a", "err", PROV.wasDerivedFrom)
-    with pytest.raises(RuntimeError, match="derived IRI collision"):
+    with pytest.raises(ConstraintViolation, match="minted for two derived entities"):
         model.register_derived("err_x", "https://example.org/m/b", "err", PROV.wasDerivedFrom)
 
 

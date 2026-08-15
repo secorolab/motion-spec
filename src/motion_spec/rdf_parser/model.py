@@ -22,14 +22,14 @@ from urllib.parse import urlsplit
 
 import rdflib
 from motion_spec_dsl.rdf_parser.manifest import build_url_map, metamodel_url_map
-from motion_spec_dsl.rdf_parser.vocab import APP
+from motion_spec_dsl.rdf_parser.vocab import APP, CSTR_HDL
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import get_node_types
 from rdf_utils.models.vocab import URI_QUDT_UNIT_CM, URI_QUDT_UNIT_M, URI_QUDT_UNIT_MM
 from rdf_utils.namespace import NS_MM_QUDT_UNIT
 from rdf_utils.resolver import IriToFileResolver, install_resolver
 from rdflib import URIRef
-from rdflib.namespace import PROV, split_uri
+from rdflib.namespace import PROV, RDF, split_uri
 
 
 def identifier(name) -> str:
@@ -207,6 +207,7 @@ class Model:
 
     def __post_init__(self) -> None:
         self._ambiguous: set[str] | None = None
+        self._shared_handlers: dict | None = None
         self._ids: dict = {}
         self._id_sources: dict[str, set[str]] = {}
         self._index: _Index | None = None
@@ -227,9 +228,10 @@ class Model:
     def id(self, node) -> str:
         """The stable generated id of a node.
 
-        Its URI's local name, qualified by its owner when that name is shared by more than one
-        context quantity -- a context quantity becomes a field on the blackboard, so two of them
-        collapsing onto one id would silently merge unrelated values.
+        Its URI's local name, qualified by its owner when that name is shared -- by more than one
+        context quantity, or by nodes under more than one constraint handler. A context quantity
+        becomes a field on the blackboard and a handler-owned name a family of derived entities,
+        so two of either collapsing onto one id would silently merge unrelated things.
 
         Returns:
             the id, or the node itself when it has no qname to take one from
@@ -244,13 +246,16 @@ class Model:
             self._ids[node] = node
 
             return node
-        # Only context quantities become shared fields and can merge silently; constraint names,
+        # Only context quantities and handler-owned names can merge silently; constraint names,
         # metamodel predicates and aliases legitimately share an id.
         scope = self.context_scope(node)
         if scope:
             owner, _section, member_path = scope
             if local in self._ambiguous_names():
                 local = identifier("-".join((owner, *member_path)))
+            self._id_sources.setdefault(local, set()).add(str(node))
+        elif (handler := self._shared_handler_names().get(node)) is not None:
+            local = identifier(f"{self._qname(handler)}-{local}")
             self._id_sources.setdefault(local, set()).add(str(node))
         self._ids[node] = local
 
@@ -296,6 +301,38 @@ class Model:
             self._ambiguous = {name for name, urls in sources.items() if len(urls) > 1}
         return self._ambiguous
 
+    def _shared_handler_names(self) -> dict:
+        """The handler owning each node whose name a node under a second handler also carries.
+
+        A name written inside a `constraint-handler` block is handler-scoped, and the IRI keeps
+        that scope (`<handler>/<name>`) -- the id, being the local name alone, drops it. So two
+        handlers reusing a controller name would put one id on two controllers, on the saturation
+        and normalization nodes beside them, and on everything derived under them. The handler
+        prefix restores the scope the id dropped. An alias is one controller a second handler
+        lists, not a second controller: it stays under its own handler and keeps its one id.
+        """
+        if self._shared_handlers is None:
+            owners = {
+                f"{handler}/": handler
+                for handler in self.graph.subjects(RDF.type, CSTR_HDL.ConstraintHandler)
+            }
+            by_name: dict[str, dict] = {}
+            for node in set(self.graph.subjects()):
+                try:
+                    handler = owners.get(split_uri(str(node))[0])
+                except ValueError:
+                    continue
+                local = self._qname(node) if handler is not None else None
+                if local is not None:
+                    by_name.setdefault(local, {}).setdefault(node, handler)
+            self._shared_handlers = {
+                node: handler
+                for shared in by_name.values()
+                if len(shared) > 1
+                for node, handler in shared.items()
+            }
+        return self._shared_handlers
+
     # the id/IRI index
 
     @property
@@ -324,19 +361,23 @@ class Model:
         return self._index
 
     def _assert_no_id_collisions(self) -> None:
-        """Fail loudly when two distinct context-quantity URIs collapse to one generated id: that
-        would silently merge unrelated shared fields, and a genuinely shared quantity has one URI.
+        """Fail loudly when two distinct context-quantity or handler-owned URIs collapse to one
+        generated id even after owner-qualification: that would silently merge unrelated shared
+        fields, and a genuinely shared quantity has one URI.
         """
         collisions = {i: sorted(u) for i, u in self._id_sources.items() if len(u) > 1}
         if not collisions:
             return
-        details = "\n".join(f"  '{i}' <- {', '.join(u)}" for i, u in sorted(collisions.items()))
+        details = "\n".join(
+            f"  id '{i}' is claimed by:\n" + "\n".join(f"    {u}" for u in uris)
+            for i, uris in sorted(collisions.items())
+        )
         raise ConstraintViolation(
             "motion-spec",
-            "id collision(s): distinct URIs map to one generated id and would be silently "
-            "merged (e.g. a context-quantity name reused across motions with different "
-            "definitions). Give them distinct names, or extend the motion-qualified id "
-            f"scoping in Model.id to cover their URI shape:\n{details}",
+            "an id names one entity in the generated code, but these ids each name several, so "
+            "their values would silently merge. Owner-qualification (the context quantity's "
+            "owner, the controller's handler) did not separate them, so the names collide even "
+            f"after it -- rename one of each pair in the model:\n{details}",
         )
 
     # derived IRIs
@@ -366,7 +407,7 @@ class Model:
             nothing to derive from
 
         Raises:
-            RuntimeError: the id was already minted under a different IRI.
+            ConstraintViolation: the id was already minted under a different IRI.
         """
         if not id_ or not parent_iri:
             return None
@@ -378,8 +419,13 @@ class Model:
         existing = self._derived.get(id_)
         if existing is not None:
             if existing.uri != uri:
-                raise RuntimeError(
-                    f"derived IRI collision: '{id_}' minted as both {existing.uri} and {uri}"
+                raise ConstraintViolation(
+                    "motion-spec",
+                    f"id '{id_}' is minted for two derived entities:\n"
+                    f"    {existing.uri}\n    {uri}\n"
+                    "An id names one entity in the generated code, so the two would merge. Their "
+                    "parents share a name the id keeps but the IRI does not -- rename one in the "
+                    "model, or qualify the id by its parent's owner in Model.id.",
                 )
 
             return uri

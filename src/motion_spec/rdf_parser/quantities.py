@@ -1665,6 +1665,14 @@ def snapshots_for_motion(
             # climb back to capture the composite).
             pending.extend(subobjects_by_super.get(current, ()))
             pending.extend(supers_by_subobject.get(current, ()))
+            # A composed orientation names its base pose only through the compose operator.
+            parts = indexes.pose_components.get(current)
+            if parts is not None:
+                pending.extend(
+                    operand["pose"]
+                    for operand in parts.orientation_operands or ()
+                    if isinstance(operand.get("pose"), str)
+                )
 
     for reference_id in list(referenced):
         expand(reference_id)
@@ -2038,6 +2046,13 @@ def filter_shared_data(data_structures, schedule, closures: dict, views: dict, f
         for endpoint in (view.superobject, view.subobject):
             if endpoint:
                 referenced.add(endpoint.id)
+    # A composed orientation's base pose is read by the pose materializer, not by any
+    # schedule, closure or view.
+    for item in data_structures:
+        for operand in getattr(item, "orientation_operands", None) or ():
+            base = operand.get("pose")
+            if isinstance(base, str):
+                referenced.add(base)
 
     result = []
     for item in data_structures:

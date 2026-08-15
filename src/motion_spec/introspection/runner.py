@@ -245,7 +245,9 @@ def _validate_robot_config(source_dir: Path, cwd: Path | None = None) -> None:
             f"{config_path}: [{'], ['.join(unbound)}] configures nothing this run binds.\n"
             f"  This run binds {binds or 'no sections'}: a device section is named by the agent "
             "its solver realizes, a pose section by a `[config.<key>]` declaration in the model.\n"
-            f"  Remove the section, or state it in the model {ir_path} was generated from."
+            f"  Comment the section out, or have the model read it -- a pose is read by declaring "
+            f"`pose <name> = [config.{unbound[0]}] for <a world pose>` in its shared context.\n"
+            f"  The model this run was generated from is the one behind {ir_path}."
         )
 
 

@@ -119,6 +119,19 @@ def test_rerun_says_where_it_looked_for_a_generation(monkeypatch, tmp_path) -> N
     assert f"{tmp_path / cli.LATEST_LINK}: nothing generated here to rerun" in result.output
 
 
+def test_rerun_says_when_env_var_is_unset(monkeypatch, tmp_path) -> None:
+    from motion_spec import cli
+
+    monkeypatch.delenv(cli.GENERATION_DIR_ENV, raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(main, ["rerun"])
+
+    assert result.exit_code != 0
+    assert f"{cli.GENERATION_DIR_ENV} is not set" in result.stderr
+    assert str(tmp_path) in result.stderr
+
+
 def test_rerun_reports_a_latest_generation_that_is_not_built(monkeypatch, tmp_path) -> None:
     from motion_spec import cli
 

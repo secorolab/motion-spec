@@ -102,7 +102,17 @@ def _latest_generation() -> Path:
     Raises:
         ClickException: nothing has been generated there, or what was is not built.
     """
-    base = Path(os.environ.get(GENERATION_DIR_ENV, "").strip() or ".").expanduser()
+    configured = os.environ.get(GENERATION_DIR_ENV, "").strip()
+    if configured:
+        base = Path(configured).expanduser()
+    else:
+        base = Path.cwd()
+        click.echo(
+            f"{GENERATION_DIR_ENV} is not set, so this looks for `latest` under the working "
+            f"directory ({base}). Export {GENERATION_DIR_ENV}=/path/to/generations to keep them "
+            "all in one place.",
+            err=True,
+        )
     link = base / LATEST_LINK
     if not link.is_dir():
         raise click.ClickException(

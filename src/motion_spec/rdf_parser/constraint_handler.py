@@ -255,6 +255,26 @@ def _is_moment_plan(model, plan) -> bool:
     return KC_STAT.JointPositionCoordinate not in get_node_types(graph, target)
 
 
+def alignment_axes(model, quantity):
+    """The angular axes an alignment drives: every axis but the reference direction's own, whose
+    rotation-vector component is identically zero. `()` when `quantity` is not an alignment angle.
+    """
+    rotation_op = alignment_rotation_op(model, quantity)
+    if rotation_op is None:
+        return ()
+    graph = model.graph
+    reference = graph.value(rotation_op, GEOM_OP.in2)
+    components = [graph.value(reference, GEOM_COORD[axis]) for axis in "xyz"]
+    if any(value is None for value in components):
+        return ()
+    free = max(range(3), key=lambda i: abs(float(components[i])))
+    return tuple(
+        quantities.SpatialAxis(subspace=quantities.Subspace.Angular, axis=axis, direction=None)
+        for index, axis in enumerate("xyz")
+        if index != free
+    )
+
+
 def _authored_controller_axes(model) -> dict:
     """Cartesian directions per authored controller, derived only from authored facts."""
     graph = model.graph
@@ -267,6 +287,10 @@ def _authored_controller_axes(model) -> dict:
             continue
         view = next(graph.subjects(MAP.subobject, quantity), None)
         subspace = local_name(graph.value(view, MAP.subspace)) if view is not None else None
+        aligned = alignment_axes(model, quantity)
+        if aligned:
+            result[controller] = aligned
+            continue
         path = graph.value(constraint, GEOM_OP_EXT.path)
         if path is not None:
             result[controller] = _path_following_axes(projections[path], quantity, subspace)
@@ -865,6 +889,10 @@ def augment_closures(model, context, closures: dict) -> None:
                 }
             if len(plan.axes) <= 1:
                 continue
+            # An alignment drives the rotation vector's components; there is no pose pair to
+            # difference, and its ops already produce the error.
+            if alignment_rotation_op(model, graph.value(plan.constraint, CSTR.quantity)):
+                continue
             target = graph.value(plan.view, MAP.superobject)
             reference = graph.value(plan.constraint, CSTR["reference-value"])
             reference_view = next(graph.subjects(MAP.subobject, reference), None)
@@ -899,6 +927,16 @@ def augment_data(model, context, data: list, views: dict) -> None:
             if len(plan.axes) <= 1:
                 continue
             ids = _solver_ids(model, context, plan)
+            rotation_op = alignment_rotation_op(model, graph.value(plan.constraint, CSTR.quantity))
+            if rotation_op is not None:
+                vector = quantities.quantity(model, graph.value(rotation_op, GEOM_OP.out))
+                for axis in plan.axes:
+                    error = _axis_error(ids, axis)
+                    errors.append(error)
+                    derived_ids.add(error.id)
+                    views.pop(error.id, None)
+                    views[error.id] = _axis_view(model, vector, error, axis)
+                continue
             target = graph.value(plan.view, MAP.superobject)
             difference = PoseDifference(
                 id=ids.pose_difference(),
@@ -1073,4 +1111,52 @@ def authored_motion_drivers(model, node) -> MotionDrivers:
             for force in model.graph[node : SLV["joint-force"]]
         ],
         has_cartesian_force=bool(cartesian),
+    )
+
+
+def alignment_chain_ops(model, quantity):
+    """The rotate-direction and angle ops producing the alignment angle `quantity`, in
+    dependency order, or `[]` when `quantity` is not an alignment angle."""
+    graph = model.graph
+    angle_op = next(
+        (
+            op
+            for op in graph.subjects(GEOM_OP.angle, quantity)
+            if GEOM_OP.PlanarAngleFromDirections in get_node_types(graph, op)
+        ),
+        None,
+    )
+    if angle_op is None:
+        return []
+    rotate_ops = [
+        op
+        for direction in graph.objects(angle_op, GEOM_OP["from-directions"])
+        for op in graph.subjects(GEOM_OP.to, direction)
+        if GEOM_OP.RotateDirectionDistalToProximalWithPose in get_node_types(graph, op)
+    ]
+    return [*rotate_ops, angle_op]
+
+
+def alignment_rotation_op(model, quantity):
+    """The `RotationVectorFromDirections` op paired with `quantity`'s `PlanarAngleFromDirections`
+    angle op (same two rotated/reference directions), or None when `quantity` is not one."""
+    graph = model.graph
+    angle_op = next(
+        (
+            op
+            for op in graph.subjects(GEOM_OP.angle, quantity)
+            if GEOM_OP.PlanarAngleFromDirections in get_node_types(graph, op)
+        ),
+        None,
+    )
+    if angle_op is None:
+        return None
+    directions = set(graph.objects(angle_op, GEOM_OP["from-directions"]))
+    return next(
+        (
+            op
+            for op in graph.subjects(RDF.type, GEOM_OP_EXT.RotationVectorFromDirections)
+            if {graph.value(op, GEOM_OP.in1), graph.value(op, GEOM_OP.in2)} == directions
+        ),
+        None,
     )

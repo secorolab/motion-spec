@@ -49,7 +49,12 @@ from motion_spec.classes.handlers import (
 from motion_spec.classes.motion import ForwardedCommandStep, MotionSolverSlice, MotionUnit
 from motion_spec.classes.solvers import CommandForwarding
 from motion_spec.rdf_parser import quantities
-from motion_spec.rdf_parser.constraint_handler import SolverIdFactory, annotate_controller_signals
+from motion_spec.rdf_parser.constraint_handler import (
+    SolverIdFactory,
+    alignment_chain_ops,
+    alignment_rotation_op,
+    annotate_controller_signals,
+)
 from motion_spec.rdf_parser.model import reader
 from motion_spec.rdf_parser.operations import (
     OPS_GENERIC,
@@ -1022,7 +1027,7 @@ def build_constraint_handlers(model, schedule, derivation):
                 model.id(plan.controller), model.motion_suffix(plan.motion)
             ).pose_evaluator()
             for plan in reversed(plans)
-            if len(plan.axes) > 1
+            if len(plan.axes) > 1 and alignment_rotation_op(model, plan.quantity) is None
         )
 
     return handlers, steps
@@ -1282,6 +1287,7 @@ def _motion_schedules(
         controller.id for plan in active_plans for controller in derivation.controllers_for(plan)
     } | {model.id(plan.controller) for plan in active_plans}
     active = [step for step in active if step not in controller_ids]
+    _append_new(active, _alignment_chain_steps(model, phase))
     _append_new(active, _pose_command_steps(model, scope, active_plans))
     _append_new(active, [model.id(node) for node in leading])
     force_nodes = _cartesian_force_nodes(model, chain_solvers, handler, computation)
@@ -1294,12 +1300,38 @@ def _motion_schedules(
     return MotionSchedules(_when_schedule(model, phase), while_pre, active, until, commanded_force)
 
 
+def _alignment_chain_steps(model, phase) -> list:
+    """Compute ops for every alignment this motion holds during: rotated direction, angle, then
+    rotation vector. A moment controller reads the rotation vector through shared state, so the
+    backward walk from its wrench never reaches these, and the ops are emitted once for the whole
+    model -- every motion that holds the constraint has to name them itself.
+    """
+    graph = model.graph
+    steps = []
+    for constraint in phase.constraints["while"]:
+        quantity = graph.value(constraint, CSTR.quantity)
+        if quantity is None:
+            continue
+        rotation_op = alignment_rotation_op(model, quantity)
+        if rotation_op is None:
+            continue
+        _append_new(steps, [model.id(op) for op in alignment_chain_ops(model, quantity)])
+        _append_new(steps, [model.id(rotation_op)])
+    return steps
+
+
 def _pose_command_steps(model, scope, active_plans) -> list:
     """The interpolation and difference calls a per-axis pose command adds to the active block."""
     graph = model.graph
     steps = []
     for plan in active_plans:
         if len(plan.axes) <= 1:
+            continue
+        rotation_op = alignment_rotation_op(model, plan.quantity)
+        if rotation_op is not None:
+            # The angle/rotated-direction ops are reachable from the evaluator that reads theta;
+            # the rotation-vector op is not (only the per-axis views read it), so schedule it here.
+            steps.append(model.id(rotation_op))
             continue
         reference = graph.value(plan.constraint, CSTR["reference-value"])
         reference_view = next(graph.subjects(MAP.subobject, reference), None)
@@ -1371,7 +1403,15 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
         # running them here would recompute its outputs while it is inactive.
         token = model.motion_suffix(motion_node)
         owner = computation.indexes.closure_owner
-        schedules.active = [step for step in schedules.active if owner.get(step, token) == token]
+        # The alignment chain is emitted once for the whole model but is a pure function of
+        # this tick's pose and two constant directions, so every motion holding the
+        # constraint recomputes it rather than reading another motion's stale output.
+        shared_alignment = set(_alignment_chain_steps(model, phase))
+        schedules.active = [
+            step
+            for step in schedules.active
+            if step in shared_alignment or owner.get(step, token) == token
+        ]
         schedules.while_pre = [
             step for step in schedules.while_pre if owner.get(step, token) == token
         ]

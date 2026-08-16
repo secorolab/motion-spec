@@ -352,11 +352,24 @@ pose-axis-error-group-wrench(g, views) ::= <<
 >>
 
 emit-call-PlanarAngleFromDirections(closure, views) ::= <<
-shared.<closure.angle> = KDL::dot(<closure.from_directions:{d | <access-expr(d, views)>}; separator=", ">);
+shared.<closure.angle> = std::atan2(
+    (<access-expr(first(closure.from_directions), views)> * <access-expr(first(rest(closure.from_directions)), views)>).Norm(),
+    KDL::dot(<closure.from_directions:{d | <access-expr(d, views)>}; separator=", ">));
 >>
 
 emit-call-InvertAngle(closure, views) ::= <<
 shared.<closure.out> = -<access-expr(closure.in, views)>;
+>>
+
+emit-call-RotationVectorFromDirections(closure, views) ::= <<
+{
+    const KDL::Vector _cross_<closure.out> = <access-expr(closure.in1, views)> * <access-expr(closure.in2, views)>;
+    const double _sin_<closure.out> = _cross_<closure.out>.Norm();
+    // theta/sin(theta) scaling: exact rotation vector, -> raw cross as theta -> 0.
+    shared.<closure.out> = (_sin_<closure.out> > 1e-9)
+        ? _cross_<closure.out> * (std::atan2(_sin_<closure.out>, KDL::dot(<access-expr(closure.in1, views)>, <access-expr(closure.in2, views)>)) / _sin_<closure.out>)
+        : _cross_<closure.out>;
+}
 >>
 
 emit-call-RotateDirectionDistalToProximalWithPose(closure, views) ::= <<

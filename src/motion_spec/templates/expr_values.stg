@@ -150,6 +150,10 @@ view-access-expr-PoseDifference-Linear(view) ::= <<
 <if(view.direction)>KDL::dot(shared.<view.superobject.id>.vel, shared.<view.direction.id>)<else>shared.<view.superobject.id>.vel[<axis-to-index.(view.axis)>]<endif>
 >>
 
+view-access-expr-FreeVector-Angular(view) ::= <<
+shared.<view.superobject.id>[<axis-to-index.(view.axis)>]
+>>
+
 view-access-expr-Wrench-Angular(view) ::= <<
 <if(view.axis)>shared.<view.superobject.id>.torque[<axis-to-index.(view.axis)>]<else>shared.<view.superobject.id>.torque<endif>
 >>

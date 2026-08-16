@@ -732,6 +732,11 @@ OPS_GENERIC = [
         GEOM_OP["PlanarAngleFromDirections"], [GEOM_OP["from-directions"]], [GEOM_OP["angle"]]
     ),
     Operator(GEOM_OP["InvertAngle"], [GEOM_OP["in"]], [GEOM_OP["out"]]),
+    Operator(
+        GEOM_OP_EXT["RotationVectorFromDirections"],
+        [GEOM_OP["in1"], GEOM_OP["in2"]],
+        [GEOM_OP["out"]],
+    ),
     Operator(RBDYN_OP["AddWrench"], [RBDYN_OP["in1"], RBDYN_OP["in2"]], [RBDYN_OP["out"]]),
     Operator(ALGO_EXT.Addition, [ALGO_EXT["in"]], [ALGO_EXT.out]),
     Operator(ALGO_EXT.Subtraction, [ALGO_EXT["minuend"], ALGO_EXT["subtrahend"]], [ALGO_EXT.out]),

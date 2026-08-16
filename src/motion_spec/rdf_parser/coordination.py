@@ -1327,11 +1327,8 @@ def _pose_command_steps(model, scope, active_plans) -> list:
     for plan in active_plans:
         if len(plan.axes) <= 1:
             continue
-        rotation_op = alignment_rotation_op(model, plan.quantity)
-        if rotation_op is not None:
-            # The angle/rotated-direction ops are reachable from the evaluator that reads theta;
-            # the rotation-vector op is not (only the per-axis views read it), so schedule it here.
-            steps.append(model.id(rotation_op))
+        # An alignment has no pose pair to interpolate or difference; its own chain is scheduled.
+        if alignment_rotation_op(model, plan.quantity) is not None:
             continue
         reference = graph.value(plan.constraint, CSTR["reference-value"])
         reference_view = next(graph.subjects(MAP.subobject, reference), None)
@@ -1403,15 +1400,7 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
         # running them here would recompute its outputs while it is inactive.
         token = model.motion_suffix(motion_node)
         owner = computation.indexes.closure_owner
-        # The alignment chain is emitted once for the whole model but is a pure function of
-        # this tick's pose and two constant directions, so every motion holding the
-        # constraint recomputes it rather than reading another motion's stale output.
-        shared_alignment = set(_alignment_chain_steps(model, phase))
-        schedules.active = [
-            step
-            for step in schedules.active
-            if step in shared_alignment or owner.get(step, token) == token
-        ]
+        schedules.active = [step for step in schedules.active if owner.get(step, token) == token]
         schedules.while_pre = [
             step for step in schedules.while_pre if owner.get(step, token) == token
         ]

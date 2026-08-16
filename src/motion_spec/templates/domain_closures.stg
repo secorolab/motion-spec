@@ -365,10 +365,13 @@ emit-call-RotationVectorFromDirections(closure, views) ::= <<
 {
     const KDL::Vector _cross_<closure.out> = <access-expr(closure.in1, views)> * <access-expr(closure.in2, views)>;
     const double _sin_<closure.out> = _cross_<closure.out>.Norm();
-    // theta/sin(theta) scaling: exact rotation vector, -> raw cross as theta -> 0.
+    const double _angle_<closure.out> = std::atan2(_sin_<closure.out>, KDL::dot(<access-expr(closure.in1, views)>, <access-expr(closure.in2, views)>));
+    // The rotation to answer for: the whole angle, or only what exceeds the band the
+    // constraint tolerates. Scaling the cross product by it gives the rotation vector.
+    const double _drive_<closure.out> = <if(closure.band)>std::max(0.0, _angle_<closure.out> - shared.<closure.band>)<else>_angle_<closure.out><endif>;
     shared.<closure.out> = (_sin_<closure.out> > 1e-9)
-        ? _cross_<closure.out> * (std::atan2(_sin_<closure.out>, KDL::dot(<access-expr(closure.in1, views)>, <access-expr(closure.in2, views)>)) / _sin_<closure.out>)
-        : _cross_<closure.out>;
+        ? _cross_<closure.out> * (_drive_<closure.out> / _sin_<closure.out>)
+        : KDL::Vector::Zero();
 }
 >>
 

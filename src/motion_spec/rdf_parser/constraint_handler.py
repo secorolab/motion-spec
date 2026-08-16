@@ -861,6 +861,28 @@ def motion_drivers(model, context, solver: URIRef) -> list:
     ]
 
 
+def _bind_alignment_band(model, plan, closure) -> None:
+    """Give an alignment's rotation-vector op the angle it is allowed to keep.
+
+    The ops are one set for the whole model, so two motions banding the same alignment
+    differently would need two of them; say so rather than let the last one win.
+
+    Raises:
+        ConstraintViolation: two motions state different bands for one alignment.
+    """
+    if closure is None:
+        return
+    upper = model.graph.value(plan.constraint, CSTR["upper-threshold"])
+    band = model.id(upper) if upper is not None else None
+    if "band" in closure and closure["band"] != band:
+        raise ConstraintViolation(
+            "constraint-handler",
+            f"alignment '{closure['id']}' is banded differently by two motions "
+            f"('{closure['band']}' and '{band}'); state one band for it.",
+        )
+    closure["band"] = band
+
+
 def augment_closures(model, context, closures: dict) -> None:
     """Replace the graph-expanded controller closures with the authored semantic derivations.
 
@@ -890,8 +912,11 @@ def augment_closures(model, context, closures: dict) -> None:
             if len(plan.axes) <= 1:
                 continue
             # An alignment drives the rotation vector's components; there is no pose pair to
-            # difference, and its ops already produce the error.
-            if alignment_rotation_op(model, graph.value(plan.constraint, CSTR.quantity)):
+            # difference, and its ops already produce the error. A banded alignment tolerates a
+            # cone, so the op carries the band and returns only the rotation beyond it.
+            rotation_op = alignment_rotation_op(model, graph.value(plan.constraint, CSTR.quantity))
+            if rotation_op is not None:
+                _bind_alignment_band(model, plan, closures.get(model.id(rotation_op)))
                 continue
             target = graph.value(plan.view, MAP.superobject)
             reference = graph.value(plan.constraint, CSTR["reference-value"])
@@ -934,7 +959,6 @@ def augment_data(model, context, data: list, views: dict) -> None:
                     error = _axis_error(ids, axis)
                     errors.append(error)
                     derived_ids.add(error.id)
-                    views.pop(error.id, None)
                     views[error.id] = _axis_view(model, vector, error, axis)
                 continue
             target = graph.value(plan.view, MAP.superobject)

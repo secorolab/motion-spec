@@ -1171,6 +1171,12 @@ def closure_owner_map(model, closures: dict) -> dict[str, str]:
     that unrelated motion is active. Ownership is the motion segment of the quantities it
     references; a closure reading only shared context has no owner and stays available to all.
     """
+    # Only a motion's own context names an owner. A shared context block sits at the same depth
+    # in the IRI, so matching on the section alone would hand every motion-independent closure
+    # the block's name and strand it: no motion answers to it.
+    motions = {
+        model.motion_suffix(node) for node in set(model.graph.objects(None, CSTR_HDL["motion"]))
+    }
     owner_map: dict[str, str] = {}
     for node in set(model.graph.subjects()):
         if not isinstance(node, URIRef):
@@ -1184,7 +1190,9 @@ def closure_owner_map(model, closures: dict) -> dict[str, str]:
                 continue
             scope = model.context_scope(obj)
             if scope is not None and scope[1] == "spec":
-                owners.add(get_valid_var_name(scope[0]))
+                owner = get_valid_var_name(scope[0])
+                if owner in motions:
+                    owners.add(owner)
         if len(owners) == 1:
             owner_map[closure_id] = owners.pop()
 

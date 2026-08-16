@@ -692,7 +692,7 @@ shared-sig(id) ::= <<
 // The URI rides as a comment, not as an argument: the wire carries the slot index and the schema
 // carries the identity, so a dead runtime parameter would only invite it being trusted.
 introspection-controller-sample(slot, views) ::= <<
-        pub.constraint_sample(<slot.index>, <shared-sig(slot.error_signal)>, <shared-sig(slot.output_signal)>, <ctrl-sig(slot.measured_signal, views)>, <ctrl-sig(slot.setpoint_signal, views)>, motion_spec::runtime::constraint_satisfied(<shared-sig(slot.error_signal)>, <shared-sig(slot.tolerance_signal)>));  // <slot.uri_comment>
+        pub.constraint_sample(<slot.index>, <ctrl-sig(slot.error_signal, views)>, <shared-sig(slot.output_signal)>, <ctrl-sig(slot.measured_signal, views)>, <ctrl-sig(slot.setpoint_signal, views)>, motion_spec::runtime::constraint_satisfied(<ctrl-sig(slot.error_signal, views)>, <shared-sig(slot.tolerance_signal)>));  // <slot.uri_comment>
 >>
 
 introspection-monitor-sample(slot) ::= <<

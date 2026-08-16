@@ -222,9 +222,9 @@ def test_ir_derives_forwarded_commands_and_monitors(generated_model: Path) -> No
     assert any(closure["type"] == "PoseDiffEvaluator" for closure in scheduled)
     assert any(component["id"] == "goal_pose" for component in pick_above.declared_pose_components)
     # The progress guard is a monitored condition, never a solver row: the schedule holds
-    # exactly the 1 tangent + 2 normal + 3 angular controllers, and the guard appears only as
-    # a while monitor over its along-speed error.
-    assert [closure["type"] for closure in scheduled].count("Controller") == 6
+    # exactly the 1 tangent + 2 normal + 3 angular controllers and the 2 the forearm alignment
+    # drives; the guard appears only as a while monitor over its along-speed error.
+    assert [closure["type"] for closure in scheduled].count("Controller") == 8
     assert not any(
         "advance" in closure["id"] and closure["type"] == "Controller" for closure in scheduled
     )

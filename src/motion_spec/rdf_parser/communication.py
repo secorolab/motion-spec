@@ -450,7 +450,7 @@ _AXIS_SAMPLES = {
 }
 # The superobject types whose scalar view resolves to a composite-member access; a view onto any
 # other superobject samples the quantity's own shared field instead.
-_COMPOSITE_SUPEROBJECTS = {"Pose", "Wrench", "VelocityTwist", "AccelerationTwist"}
+_COMPOSITE_SUPEROBJECTS = {"Pose", "Wrench", "VelocityTwist", "AccelerationTwist", "FreeVector"}
 
 
 def add_quantity_samples(introspection: dict, shared_data: list, views: dict) -> None:

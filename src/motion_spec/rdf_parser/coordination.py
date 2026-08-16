@@ -1579,7 +1579,7 @@ def _finish_motions(model, motions, handlers, computation, fsm, solvers_by_id):
         )
     # Ordered: the FSM wiring tags monitors and motions, then the capability booleans, then the
     # gate calls that read them.
-    meta = _apply_fsm_wiring(ordered, fsm)
+    meta = _apply_fsm_wiring(ordered, fsm, solvers_by_id.values())
     _add_motion_function_interfaces(ordered, solvers_by_id)
     _apply_fsm_gate_calls(ordered, meta["cpp_namespace"])
 
@@ -1878,7 +1878,7 @@ def read_fsm(model) -> dict | None:
     }
 
 
-def _apply_fsm_wiring(motions, fsm) -> dict:
+def _apply_fsm_wiring(motions, fsm, solvers) -> dict:
     """Tag the monitors that fire the FSM, and return the wiring codegen needs beside it.
 
     Raises:
@@ -1955,6 +1955,23 @@ def _apply_fsm_wiring(motions, fsm) -> dict:
     def stamp(monitor):
         monitor.fsm_namespace = namespace
         monitor.fsm_event_idx = index_by_event.get(monitor.event_name or "", -1)
+
+    # A sensor re-tares on occurrences the same way a snapshot re-samples on them.
+    for solver in solvers:
+        for out in getattr(solver, "output", ()):
+            if not getattr(out, "retare_event_uris", ()):
+                continue
+            names = []
+            for uri in out.retare_event_uris:
+                name = uri.rsplit("/", 1)[-1].rsplit("#", 1)[-1]
+                if not iri_is_descendant(namespace_uri or "", uri) or name not in index_by_event:
+                    raise ConstraintViolation(
+                        "coordination",
+                        f"Wrench '{out.id}' re-tares on '{name}', which '{namespace}' does not "
+                        "declare.",
+                    )
+                names.append(f"{namespace}::{name}")
+            out.retare_events = tuple(names)
 
     for motion in motions:
         # An event-triggered snapshot only compiles when the FSM declares the event it waits on.

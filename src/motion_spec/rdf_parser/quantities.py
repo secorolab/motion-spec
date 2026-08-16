@@ -831,6 +831,7 @@ def wrench(model, node) -> Wrench:
         provenance=quantity_provenance(model, node),
         sensor_frame=frame(model, sensor_frame_node) if sensor_frame_node is not None else None,
         sensor_name=model.id(sensor) if sensor is not None else "",
+        retare_event_uris=tuple(str(event) for event in graph[node : ALGO_EXT["trigger"]]),
     )
 
 

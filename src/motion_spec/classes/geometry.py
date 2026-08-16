@@ -199,6 +199,10 @@ class Wrench(SpatialCoordinate):
     # solver-output reads and tares this sensor into shared.<id>). Empty for
     # computed/commanded wrenches.
     sensor_name: str = ""
+    # Events that re-take the tare. IRIs as authored; coordination resolves them to the symbols
+    # codegen emits.
+    retare_event_uris: tuple[str, ...] = ()
+    retare_events: tuple[str, ...] = ()
     type: str = field(default="Wrench")
 
 

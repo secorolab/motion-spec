@@ -811,7 +811,10 @@ OPS_GENERIC = [
             ALGO_EXT["mass"],
             ALGO_EXT["damping"],
             ALGO_EXT["stiffness"],
-            CSTR_HDL["maximum-velocity"],
+            ALGO_EXT["maximum-velocity"],
+            ALGO_EXT["maximum-absolute-value"],
+            CSTR["lower-threshold"],
+            CSTR["upper-threshold"],
         ],
     ),
 ]

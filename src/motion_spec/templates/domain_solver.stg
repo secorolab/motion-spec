@@ -384,7 +384,7 @@ solver-output-Wrench-mj_kdl(solver, chain_solver, out) ::= <<
         frame_<out.id>("<out.sensor_frame.id>"),
         frame_<out.id>("<out.reference_point.id>"),
         frame_<out.id>("<out.as_seen_by.id>"));
-    if (shared.<out.id>_ft_settle \< robot.ft_<out.sensor_name>_bias_samples) {
+<retare-on(out)>    if (shared.<out.id>_ft_settle \< robot.ft_<out.sensor_name>_bias_samples) {
         ++shared.<out.id>_ft_settle;
         shared.<out.id>_ft_bias = measured_<out.id>;   // last settle step is the tare sample
         shared.<out.id> = KDL::Wrench::Zero();
@@ -392,6 +392,14 @@ solver-output-Wrench-mj_kdl(solver, chain_solver, out) ::= <<
         shared.<out.id> = shared.<out.id>_ft_bias - measured_<out.id>;
     }
 }
+>>
+
+// Re-arm the settle: the bias is only what the sensor reads unloaded, and the load changes.
+retare-on(out) ::= <<
+<if(out.retare_events)>    if (robot.fsm_events && (<out.retare_events:{e | consume_event(robot.fsm_events, <e>)}; separator=" || ">)) {
+        shared.<out.id>_ft_settle = 0;
+    \}
+<endif>
 >>
 
 solver-output-Wrench-robif2b(solver, chain_solver, out) ::= <<
@@ -407,7 +415,7 @@ solver-output-Wrench-robif2b(solver, chain_solver, out) ::= <<
         <world-pose(solver, {robot.world_<solver.id>_<out.sensor_frame.id>})>,
         <world-pose(solver, {robot.world_<solver.id>_<out.reference_point.id>})>,
         <world-pose(solver, {robot.world_<solver.id>_<out.as_seen_by.id>})>);
-    if (shared.<out.id>_ft_settle \< robot.ft_<out.sensor_name>_bias_samples) {
+<retare-on(out)>    if (shared.<out.id>_ft_settle \< robot.ft_<out.sensor_name>_bias_samples) {
         ++shared.<out.id>_ft_settle;
         shared.<out.id>_ft_bias = at_<out.id>;   // last settle step is the tare sample
         shared.<out.id> = KDL::Wrench::Zero();

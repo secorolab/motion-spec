@@ -600,9 +600,17 @@ ros-monitor-announce(monitor, event) ::= <<
 // A goal whose cancel was accepted is reported CANCELED whatever the model states, because that
 // is what the client was told to expect.
 
+// An edge-triggered monitor already decided when its state was reached, debounce and all, and
+// said so as an occurrence. Re-deriving that from the raw constraint here would answer the goal
+// on a graze the coordination rejected -- the client told the run finished while the run carries
+// on. So the answer keys off the occurrence, which reaches this block the tick after it fires.
+answer-condition(monitor) ::= <<
+<if(monitor.answer.satisfied && monitor.fsm_namespace)>consume_event(robot.fsm_events, <monitor.fsm_namespace>::<monitor.event_name>)<else><if(!monitor.answer.satisfied)>!<endif>(<monitor-satisfied-expr(monitor)>)<endif>
+>>
+
 ros-monitor-answer(motion, monitor) ::= <<
         if (_active_goal && <motion.id>_state_instance.active
-                && <if(!monitor.answer.satisfied)>!<endif>(<monitor-satisfied-expr(monitor)>)) {
+                && <answer-condition(monitor)>) {
             auto _result = std::make_shared\<<monitor.answer.result_cpp_type>\>();
 <monitor.answer.fields:{f |             _result-><f.path> = <f.cpp_value>;}; separator="\n">
 <monitor.answer.auto_time:{p |             _result-><p> = robot.ros_node->now();}; separator="\n">

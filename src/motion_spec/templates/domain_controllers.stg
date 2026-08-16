@@ -23,12 +23,26 @@ namespace motion_spec::runtime {
 class AdmittanceFilter {
   public:
     double step(double force, double mass, double damping, double stiffness,
-                double max_velocity, double dt) {
+                double max_velocity, double max_excursion,
+                double lower_threshold, double upper_threshold, double dt) {
         mass = std::max(mass, 1e-6);
+        // Only force outside the band counts as a push -- what the tare left behind is otherwise
+        // indistinguishable from a small steady one, and with stiffness 0 a standing offset
+        // becomes a velocity that never decays. Shifted, not zeroed, so force stays continuous.
+        force = (force > upper_threshold) ? force - upper_threshold
+              : (force \< lower_threshold) ? force - lower_threshold
+                                          : 0.0;
         const double acc = (force - damping * vel_ - stiffness * offset_) / mass;
         vel_ += acc * dt;
         vel_ = std::clamp(vel_, -max_velocity, max_velocity);
-        offset_ += vel_ * dt; // only used when stiffness > 0 (spring return)
+        // Stop yielding once the excursion is spent, but never refuse to come back: only the
+        // component that would travel further out is dropped. Zero means no limit. A limit and
+        // not a spring, so releasing the push leaves the arm where it stopped.
+        if (max_excursion > 0.0) {
+            if (offset_ >= max_excursion) vel_ = std::min(vel_, 0.0);
+            if (offset_ \<= -max_excursion) vel_ = std::max(vel_, 0.0);
+        }
+        offset_ += vel_ * dt;
         return vel_;
     }
 
@@ -216,7 +230,7 @@ controller-reset-FeedForwardController(motion_id, controller, resamples) ::= <<
 >>
 
 emit-call-Admittance(closure, views) ::= <<
-shared.<closure.out> = state.<closure.controller>.adm_filter.step(<access-expr(closure.in, views)>, shared.<closure.mass>, shared.<closure.damping>, shared.<closure.stiffness>, shared.<closure.maximum_velocity>, shared.dt_measured_s);
+shared.<closure.out> = state.<closure.controller>.adm_filter.step(<access-expr(closure.in, views)>, shared.<closure.mass>, shared.<closure.damping>, shared.<closure.stiffness>, shared.<closure.maximum_velocity>, shared.<closure.maximum_absolute_value>, shared.<closure.lower_threshold>, shared.<closure.upper_threshold>, shared.dt_measured_s);
 >>
 
 emit-call-Controller(closure, views) ::= <<

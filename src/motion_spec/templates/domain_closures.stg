@@ -417,6 +417,14 @@ emit-call-Subtraction(closure, views) ::= <<
 shared.<closure.out> = <access-expr(closure.minuend, views)> - <access-expr(closure.subtrahend, views)>;
 >>
 
+emit-call-Multiplication(closure, views) ::= <<
+shared.<closure.out> = <closure.in:{operand | <access-expr(operand, views)>}; separator=" * ">;
+>>
+
+emit-call-Division(closure, views) ::= <<
+shared.<closure.out> = <access-expr(closure.dividend, views)> / <access-expr(closure.divisor, views)>;
+>>
+
 emit-call-AddWrench(closure, views) ::= <<
 shared.<closure.out> = <access-expr(closure.in1, views)> + <access-expr(closure.in2, views)>;
 >>

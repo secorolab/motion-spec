@@ -32,7 +32,7 @@ jobs:
           python-version: "3.12"
       # conf.py imports nothing from motion_spec, so the package itself is not built.
       - name: Install documentation dependencies
-        run: pip install sphinx myst-parser furo
+        run: pip install sphinx myst-parser furo matplotlib
       - name: Build documentation
         run: sphinx-build -W -b html docs/sphinx/source docs/_build/html
       - name: Setup Pages

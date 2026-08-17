@@ -15,6 +15,7 @@ contributes to introspection is exported as a table for `communication.py` to re
 from __future__ import annotations
 
 import collections
+import math
 from dataclasses import dataclass, field, replace
 from typing import NamedTuple
 
@@ -36,8 +37,9 @@ from motion_spec_dsl.rdf_parser.vocab import (
 )
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import get_node_types
-from rdflib import URIRef
-from rdflib.namespace import PROV, RDF
+from rdf_utils.namespace import NS_MM_QUDT_QTY, NS_MM_QUDT_UNIT
+from rdflib import Literal, URIRef
+from rdflib.namespace import PROV, RDF, XSD
 from scene_dsl.rdf_parser.common import ensure_one_obj_uri
 
 from motion_spec.classes.dynamics import Saturation
@@ -60,7 +62,7 @@ from motion_spec.classes.solvers import (
     Unsolved,
 )
 from motion_spec.rdf_parser import quantities
-from motion_spec.rdf_parser.model import kebab, local_name
+from motion_spec.rdf_parser.model import kebab, local_name, si
 
 # Every solver family the code generator can run, keyed by the term that identifies it -- the
 # algorithm a solver names, or the type a command-forwarding solver carries.
@@ -255,6 +257,273 @@ def _is_moment_plan(model, plan) -> bool:
     return KC_STAT.JointPositionCoordinate not in get_node_types(graph, target)
 
 
+class ControlDirections(NamedTuple):
+    """What one controller's constraint contributes to its solver: the Cartesian directions, the
+    view they are taken in, the norm of the gradient they came from, and the frame that gradient
+    is stated in. Only an expression constraint sets the last two to anything but the default.
+    """
+
+    axes: tuple
+    view: URIRef | None = None
+    gradient_norm: float = 1.0
+    gradient_frame: URIRef | None = None
+
+
+class _LinearForm(NamedTuple):
+    """An expression read as `sum(coefficient * measured leaf) + constant`.
+
+    `constant` is None when the constant part is a runtime value: nothing is wrong with that in
+    itself, it only stops a subtree from being used as a coefficient.
+    """
+
+    coefficients: dict
+    constant: float | None
+
+
+# The four arithmetic operations an expression tree is built from, each as the operand
+# predicates to read it back through. A commutative operation states its operands on one
+# repeated predicate; the two ordered ones name each role.
+_EXPRESSION_OPS = {
+    ALGO_EXT.Addition: ("add", (ALGO_EXT["in"],)),
+    ALGO_EXT.Subtraction: ("subtract", (ALGO_EXT["minuend"], ALGO_EXT["subtrahend"])),
+    ALGO_EXT.Multiplication: ("multiply", (ALGO_EXT["in"],)),
+    ALGO_EXT.Division: ("divide", (ALGO_EXT["dividend"], ALGO_EXT["divisor"])),
+}
+# Below this the gradient states no direction: a normalized one would be numerical noise.
+_GRADIENT_EPSILON = 1e-9
+
+
+def expression_operation(graph, node):
+    """The arithmetic operation writing `node`, as `(name, operands)`, or None when `node` is an
+    ordinary quantity nothing computes.
+    """
+    for op in graph.subjects(ALGO_EXT.out, node):
+        types = get_node_types(graph, op)
+        for type_, (name, predicates) in _EXPRESSION_OPS.items():
+            if type_ not in types:
+                continue
+            if len(predicates) == 1:
+                # sorted(): a commutative operation states its operands unordered.
+                return name, sorted(graph.objects(op, predicates[0]), key=str)
+            return name, [graph.value(op, predicate) for predicate in predicates]
+    return None
+
+
+def _constant_product(forms) -> float | None:
+    """The product of forms that carry no measured leaf, or None when any is runtime-valued."""
+    product = 1.0
+    for form in forms:
+        if form.constant is None:
+            return None
+        product *= form.constant
+    return product
+
+
+def _scaled(form: _LinearForm, factor: float) -> _LinearForm:
+    return _LinearForm(
+        {leaf: value * factor for leaf, value in form.coefficients.items()},
+        None if form.constant is None else form.constant * factor,
+    )
+
+
+def _linear_form(model, node, constraint) -> _LinearForm:
+    """`node` as a linear form over the measured leaves it is built from.
+
+    Raises:
+        ConstraintViolation: the expression is not affine in its measured leaves, or a
+            coefficient is only known at runtime -- either way the alpha row it would need
+            cannot be stated before the cycle runs.
+    """
+    graph = model.graph
+    operation = expression_operation(graph, node)
+    if operation is None:
+        if next(graph.subjects(MAP.subobject, node), None) is not None:
+            return _LinearForm({node: 1.0}, 0.0)
+        value = graph.value(node, QUDT_SCHEMA.value)
+        unit = graph.value(node, QUDT_SCHEMA.unit)
+        return _LinearForm({}, None if value is None else si(float(value), unit))
+
+    name, operands = operation
+    forms = [_linear_form(model, operand, constraint) for operand in operands]
+    if name == "add":
+        return _sum_forms(forms)
+    if name == "subtract":
+        return _sum_forms([forms[0], _scaled(forms[1], -1.0)])
+    if name == "multiply":
+        measured = [form for form in forms if form.coefficients]
+        if len(measured) > 1:
+            raise ConstraintViolation(
+                "control",
+                f"Constraint '{model.id(constraint)}' multiplies two measured views, so its "
+                "gradient depends on what it measures; a controller cannot drive that yet. A "
+                "monitor accepts it.",
+            )
+        if not measured:
+            return _LinearForm({}, _constant_product(forms))
+        scale = _constant_product([form for form in forms if not form.coefficients])
+        if scale is None:
+            raise ConstraintViolation(
+                "control",
+                f"Constraint '{model.id(constraint)}' scales a measured view by a runtime "
+                "value; a controlled expression needs coefficients it can state at generation "
+                "time. A monitor accepts it.",
+            )
+        return _scaled(measured[0], scale)
+
+    dividend, divisor = forms
+    if divisor.coefficients or divisor.constant is None:
+        raise ConstraintViolation(
+            "control",
+            f"Constraint '{model.id(constraint)}' divides by a value it measures; a controlled "
+            "expression divides only by a constant. A monitor accepts it.",
+        )
+    if divisor.constant == 0.0:
+        raise ConstraintViolation(
+            "control", f"Constraint '{model.id(constraint)}' divides by zero."
+        )
+    return _scaled(dividend, 1.0 / divisor.constant)
+
+
+def _sum_forms(forms) -> _LinearForm:
+    coefficients: dict = {}
+    for form in forms:
+        for leaf, value in form.coefficients.items():
+            coefficients[leaf] = coefficients.get(leaf, 0.0) + value
+    constants = [form.constant for form in forms]
+    return _LinearForm(coefficients, None if None in constants else sum(constants))
+
+
+def _gradient_direction(model, controller, frame_node, components) -> URIRef:
+    """Materialize the unit gradient as a direction coordinate the solver row reads, composed of
+    the same DirectionCoordinate/VectorXYZ/as-seen-by terms an authored direction carries.
+    """
+    node = URIRef(f"{controller}-gradient")
+    graph = model.graph
+    graph.add((node, RDF.type, GEOM_COORD.DirectionCoordinate))
+    graph.add((node, RDF.type, GEOM_COORD.VectorXYZ))
+    graph.add((node, QUDT_SCHEMA["hasQuantityKind"], NS_MM_QUDT_QTY["Dimensionless"]))
+    graph.add((node, QUDT_SCHEMA.unit, NS_MM_QUDT_UNIT["UNITLESS"]))
+    graph.add((node, GEOM_COORD["as-seen-by"], frame_node))
+    for name in "xyz":
+        graph.add((node, GEOM_COORD[name], Literal(components.get(name, 0.0), datatype=XSD.double)))
+    return node
+
+
+def _view_axes(model, controller, constraint, view_node, target_node):
+    """The Cartesian directions one view of a driven quantity contributes to `controller`.
+
+    Every branch of the axis decision asks the same question of one view; an expression asks it
+    once per measured leaf instead of once for the whole constraint.
+    """
+    graph = model.graph
+    target = graph.value(view_node, MAP.superobject) if view_node is not None else target_node
+    command_type = graph.value(controller, APP["command-type"])
+
+    return quantities.spatial_axes(
+        controller_type=next(
+            (
+                local_name(type_)
+                for type_ in _CONTROLLER_TYPES
+                if type_ in get_node_types(graph, controller)
+            ),
+            "",
+        ),
+        subspace=local_name(graph.value(view_node, MAP.subspace))
+        if view_node is not None
+        else None,
+        axis=local_name(graph.value(view_node, MAP.axis)) if view_node is not None else None,
+        command_type=str(command_type) if command_type is not None else None,
+        relation=next(
+            (
+                local_name(type_)
+                for type_ in get_node_types(graph, constraint)
+                if type_ != CSTR.Constraint and local_name(type_).endswith("Constraint")
+            ),
+            "",
+        ),
+        quantity_kind=next(
+            (
+                name
+                for type_, name in _TARGET_QUANTITY_KINDS
+                if type_ in get_node_types(graph, target)
+            ),
+            None,
+        ),
+    )
+
+
+def gradient_directions(model, controller, constraint, quantity):
+    """The one alpha column a controlled expression drives.
+
+    An expression is driven along its own gradient: each measured leaf contributes its
+    coefficient to that leaf's own Cartesian direction, and the column is their normalized sum.
+    A single positive coefficient on one axis leaves the frame axis itself -- exactly the row the
+    same constraint gets when it is written as a plain view.
+
+    Raises:
+        ConstraintViolation: the expression measures nothing, its gradient vanishes, its leaves
+            are seen by different frames, or it spans both the linear and the angular half.
+    """
+    graph = model.graph
+    form = _linear_form(model, quantity, constraint)
+    components: dict = {}
+    frames = set()
+    leaf_view = None
+    for leaf, coefficient in sorted(form.coefficients.items(), key=lambda item: str(item[0])):
+        view = next(graph.subjects(MAP.subobject, leaf), None)
+        axes = _view_axes(model, controller, constraint, view, leaf)
+        if not axes:
+            # This command drives no solver row at all (a force command); neither does the
+            # expression built from it.
+            return ControlDirections((), view)
+        if len(axes) != 1:
+            raise ConstraintViolation(
+                "control",
+                f"Constraint '{model.id(constraint)}' combines '{model.id(leaf)}', which names a "
+                "whole subspace; select one axis of it.",
+            )
+        leaf_view = leaf_view if leaf_view is not None else view
+        components[axes[0]] = components.get(axes[0], 0.0) + coefficient
+        frames.add(graph.value(graph.value(view, MAP.superobject), GEOM_COORD["as-seen-by"]))
+
+    components = {
+        axis: value for axis, value in components.items() if abs(value) > _GRADIENT_EPSILON
+    }
+    if not components:
+        raise ConstraintViolation(
+            "control",
+            f"Constraint '{model.id(constraint)}' has no measured view a solver moves, so there "
+            "is no direction to drive it along.",
+        )
+    if len(frames) > 1:
+        raise ConstraintViolation(
+            "control",
+            f"Constraint '{model.id(constraint)}' combines views seen by different frames "
+            f"({', '.join(sorted(model.id(frame) for frame in frames))}); state them all in one "
+            "frame, since the gradient is one vector in one frame.",
+        )
+    if len({axis.subspace for axis in components}) > 1:
+        raise ConstraintViolation(
+            "control",
+            f"Constraint '{model.id(constraint)}' spans the linear and the angular subspace; one "
+            "solver row carries one of them, so split it into one constraint per subspace.",
+        )
+    frame_node = next(iter(frames))
+    norm = math.sqrt(sum(value * value for value in components.values()))
+    axis, coefficient = next(iter(components.items()))
+    if len(components) == 1 and coefficient > 0.0:
+        return ControlDirections((axis,), leaf_view, norm, frame_node)
+    direction = _gradient_direction(
+        model,
+        controller,
+        frame_node,
+        {component.axis: value / norm for component, value in components.items()},
+    )
+    column = quantities.SpatialAxis(axis.subspace, "gradient", direction)
+
+    return ControlDirections((column,), leaf_view, norm, frame_node)
+
+
 def alignment_axes(model, quantity):
     """The angular axes an alignment drives: every axis but the reference direction's own, whose
     rotation-vector component is identically zero. `()` when `quantity` is not an alignment angle.
@@ -289,34 +558,21 @@ def _authored_controller_axes(model) -> dict:
         subspace = local_name(graph.value(view, MAP.subspace)) if view is not None else None
         aligned = alignment_axes(model, quantity)
         if aligned:
-            result[controller] = aligned
+            result[controller] = ControlDirections(aligned, view)
             continue
         path = graph.value(constraint, GEOM_OP_EXT.path)
         if path is not None:
-            result[controller] = _path_following_axes(projections[path], quantity, subspace)
+            result[controller] = ControlDirections(
+                _path_following_axes(projections[path], quantity, subspace), view
+            )
             continue
-        target = graph.value(view, MAP.superobject) if view is not None else quantity
-        target_types = get_node_types(graph, target)
-        controller_types = get_node_types(graph, controller)
-        command_type = graph.value(controller, APP["command-type"])
-        result[controller] = quantities.spatial_axes(
-            controller_type=next(
-                (local_name(t) for t in _CONTROLLER_TYPES if t in controller_types), ""
-            ),
-            subspace=subspace,
-            axis=local_name(graph.value(view, MAP.axis)) if view is not None else None,
-            command_type=str(command_type) if command_type is not None else None,
-            relation=next(
-                (
-                    local_name(type_)
-                    for type_ in get_node_types(graph, constraint)
-                    if type_ != CSTR.Constraint and local_name(type_).endswith("Constraint")
-                ),
-                "",
-            ),
-            quantity_kind=next(
-                (name for type_, name in _TARGET_QUANTITY_KINDS if type_ in target_types), None
-            ),
+        # An expression names no view of its own: its row is the gradient over the views it is
+        # built from, so the axes and the frame come from those leaves instead.
+        if expression_operation(graph, quantity) is not None:
+            result[controller] = gradient_directions(model, controller, constraint, quantity)
+            continue
+        result[controller] = ControlDirections(
+            _view_axes(model, controller, constraint, view, quantity), view
         )
 
     return result
@@ -334,6 +590,10 @@ class ControllerDerivation:
     quantity: URIRef
     view: URIRef | None
     axes: tuple[quantities.SpatialAxis, ...]
+    # An expression is driven along a normalized gradient, so the error the controller reads is
+    # this many times the one along the direction it drives. 1.0 for every plain view.
+    gradient_norm: float = 1.0
+    gradient_frame: URIRef | None = None
 
 
 @dataclass(frozen=True)
@@ -399,7 +659,9 @@ def solver_derivation_context(model) -> SolverDerivationContext:
                     f"Authored controller '{controller}' needs explicit solver, constraint, "
                     "and constraint quantity relations.",
                 )
-            view = next(graph.subjects(MAP.subobject, quantity), None)
+            directions = axes_by_controller.get(controller) or ControlDirections(
+                (), next(graph.subjects(MAP.subobject, quantity), None)
+            )
             plan = ControllerDerivation(
                 handler,
                 motion,
@@ -407,8 +669,10 @@ def solver_derivation_context(model) -> SolverDerivationContext:
                 solver,
                 constraint,
                 quantity,
-                view if isinstance(view, URIRef) else None,
-                axes_by_controller.get(controller, ()),
+                directions.view if isinstance(directions.view, URIRef) else None,
+                directions.axes,
+                directions.gradient_norm,
+                directions.gradient_frame,
             )
             plans.append(plan)
             by_solver[solver].append(plan)
@@ -471,6 +735,19 @@ def _validate_solver_derivations(model, by_handler, by_solver, algorithms) -> No
                 f"Handler '{handler}' assigns ACHD and RNE to the same domain(s): "
                 f"{', '.join(sorted(overlap))}.",
             )
+
+
+def _gain(model, plan, predicate, *, required=True) -> float | None:
+    """An authored gain, divided by the norm of the gradient its constraint is driven along.
+
+    A controller on an expression reads an error in the expression's units while it drives a
+    normalized direction, and the two differ by exactly that norm; carrying it here leaves the
+    authored gain acting on the error along the direction, which is what the model states. Every
+    plain view has norm 1, so nothing else moves.
+    """
+    read = quantities.required_float if required else quantities.optional_float
+    value = read(model, plan.controller, predicate)
+    return None if value is None else value / plan.gradient_norm
 
 
 def _derived_quantity(id_: str, kind: str, unit: str, *, has_view: bool = False) -> Quantity:
@@ -686,15 +963,9 @@ def _derived_controller(model, context, plan, axis: quantities.SpatialAxis | Non
             control_signal=signal,
             error_signal=error,
             measured_derivative=measured_derivative,
-            proportional_gain=quantities.required_float(
-                model, plan.controller, CSTR_HDL["proportional-gain"]
-            ),
-            integral_gain=quantities.required_float(
-                model, plan.controller, CSTR_HDL["integral-gain"]
-            ),
-            derivative_gain=quantities.required_float(
-                model, plan.controller, CSTR_HDL["derivative-gain"]
-            ),
+            proportional_gain=_gain(model, plan, CSTR_HDL["proportional-gain"]),
+            integral_gain=_gain(model, plan, CSTR_HDL["integral-gain"]),
+            derivative_gain=_gain(model, plan, CSTR_HDL["derivative-gain"]),
             decay_rate=decay.value if CSTR_HDL.DecayingIntegralTerm in types else None,
             output_saturation=output_saturation,
             integral_saturation=integral_saturation,
@@ -706,11 +977,9 @@ def _derived_controller(model, context, plan, axis: quantities.SpatialAxis | Non
             id=controller_id,
             control_signal=signal,
             error_signal=error,
-            stiffness=quantities.required_float(model, plan.controller, CSTR_HDL.stiffness),
-            damping=quantities.required_float(model, plan.controller, CSTR_HDL.damping),
-            integral_gain=quantities.optional_float(
-                model, plan.controller, CSTR_HDL["integral-gain"]
-            ),
+            stiffness=_gain(model, plan, CSTR_HDL.stiffness),
+            damping=_gain(model, plan, CSTR_HDL.damping),
+            integral_gain=_gain(model, plan, CSTR_HDL["integral-gain"], required=False),
             output_saturation=output_saturation,
             tolerance_id=tolerance_id,
             type=model.id(CSTR_HDL.ImpedanceController),
@@ -789,7 +1058,7 @@ def _derived_acceleration_drivers(model, context, plan, family) -> list:
     target = (
         model.graph.value(plan.view, MAP.superobject) if plan.view is not None else plan.quantity
     )
-    frame_node = model.graph.value(target, GEOM_COORD["as-seen-by"])
+    frame_node = model.graph.value(target, GEOM_COORD["as-seen-by"]) or plan.gradient_frame
     frame = quantities.frame(model, frame_node) if frame_node is not None else None
     multi_axis = len(plan.axes) > 1
     records = []

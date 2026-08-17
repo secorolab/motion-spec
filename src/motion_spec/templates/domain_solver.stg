@@ -396,7 +396,7 @@ solver-output-Wrench-mj_kdl(solver, chain_solver, out) ::= <<
 
 // Re-arm the settle: the bias is only what the sensor reads unloaded, and the load changes.
 retare-on(out) ::= <<
-<if(out.retare_events)>    if (robot.fsm_events && (<out.retare_events:{e | consume_event(robot.fsm_events, <e>)}; separator=" || ">)) {
+<if(out.retare_events_present)>    if (robot.fsm_events && (<out.retare_events:{e | consume_event(robot.fsm_events, <e>)}; separator=" || ">)) {
         shared.<out.id>_ft_settle = 0;
     \}
 <endif>

@@ -1972,6 +1972,7 @@ def _apply_fsm_wiring(motions, fsm, solvers) -> dict:
                     )
                 names.append(f"{namespace}::{name}")
             out.retare_events = tuple(names)
+            out.retare_events_present = bool(names)
 
     for motion in motions:
         # An event-triggered snapshot only compiles when the FSM declares the event it waits on.

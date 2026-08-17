@@ -31,6 +31,8 @@ jobs:
         with:
           python-version: "3.12"
       # conf.py imports nothing from motion_spec, so the package itself is not built.
+      # Keep this list in sync with the [docs] extra in pyproject.toml (minus sphinx-autobuild);
+      # installing the extra directly would pull workspace deps that are not on PyPI.
       - name: Install documentation dependencies
         run: pip install sphinx myst-parser furo matplotlib
       - name: Build documentation

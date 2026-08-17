@@ -73,6 +73,38 @@ length support-z = snapshot of <shared.world.pose-ee-base>.position.z - <spec.li
   validation error naming both.
 - Dividing by a literal zero is a validation error, not a runtime one.
 
+## Controlled expressions
+
+A monitor accepts the full algebra. A *controlled* expression constraint -- one a PID or
+impedance controller drives through a solver -- is driven along the expression's gradient: each
+measured view contributes its coefficient to that view's own Cartesian direction, and the solver
+row is their normalized sum. The controller's gains are divided by the gradient's norm, so the
+loop gain is invariant and a single-view expression degenerates to exactly the row the plain
+view gets.
+
+That gradient must be one constant vector in one frame, which is what the extra rules below
+guard; an expression that breaks one is still fine to monitor.
+
+- **Affine in what it measures**: no product of two measured views, and no measured view in a
+  divisor -- the gradient would depend on the measurement.
+- **Generation-time coefficients**: a measured view is scaled only by literals or
+  literal-valued context quantities (`mass k = 1.2 kg` works; a snapshot, config, or derived
+  gain does not).
+- **One frame**: every measured view is `as-seen-by` the same frame -- the gradient is one
+  vector in one frame.
+- **One subspace family**: all linear or all angular axes; one solver row carries one of them,
+  so split a mixed expression into one constraint per subspace.
+- **A direction to drive**: coefficients that cancel, or an expression measuring nothing a
+  solver moves, are rejected at generation time.
+
+```robmot
+// Driven along z: identical to constraining .position.z directly.
+hold-z: keeping (<shared.world.pose-ee-base>.position.z + 0.0 m) equal to <spec.hold-height>,
+// Driven along the (1,1,0)/sqrt(2) diagonal; authored gains are divided by sqrt(2).
+diag:   keeping (<shared.world.pose-ee-base>.position.x + <shared.world.pose-ee-base>.position.y)
+        equal to <spec.diag-target>
+```
+
 ## Errors
 
 ```{list-table}

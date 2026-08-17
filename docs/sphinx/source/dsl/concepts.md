@@ -161,8 +161,8 @@ Orientation has no direct roll/pitch/yaw literal: it is `euler { axes: ..., angl
 a `direction-cosine { x: ..., y: ..., z: ... }`, a plain `<...>` reference, or a rotation
 relative to another orientation (`<ref> rotated by ...`).
 
-Snapshots sample a world quantity or view. They may add an offset and may resample
-on an FSM event:
+Snapshots sample a world quantity or view. They may carry a trailing arithmetic expression
+and may resample on an FSM event:
 
 ```robmot
 pose start = snapshot of <shared.world.tcp-base>,
@@ -171,11 +171,17 @@ length target-x = snapshot of <shared.world.tcp-base>.position.x
 pose entered = snapshot of <shared.world.tcp-base> on event task.E_ENTERED
 ```
 
-A reference value can also be a named reference plus an optional offset:
+A reference value can also be a named reference under a full arithmetic expression -- standard
+precedence, parentheses, mixed operators -- not just one repeated operator:
 
 ```robmot
-length shifted = <shared.spec.origin> + <shared.spec.offset>
+length shifted   = <shared.spec.origin> + <shared.spec.offset>,
+force  residual  = <shared.world.ext-force>.force.x - <spec.mass-k> * <shared.world.acc>.linacc.x
 ```
+
+See [quantity expressions](expressions.md) for precedence, dimension-checking rules, and where
+else (constraint views/thresholds/tolerances, saturation bounds, profile limits, solver
+gravity) a parenthesized inline expression is accepted.
 
 A value can instead be read from the deployment config at generation time, keyed by a dotted
 path, taking its type from what the given view resolves to:
@@ -230,10 +236,12 @@ and maximum velocity must be positive; damping and stiffness must be non-negativ
 
 ## Views
 
-A constraint reads one of six view forms:
+A constraint reads one of these view forms:
 
 ```robmot
 <shared.world.tcp-base>.position.x
+<spec.residual>
+(<shared.world.ext-force>.force.x - <spec.mass-k> * <shared.world.acc>.linacc.x)
 distance between <shared.world.tcp-base> and <shared.world.object-base>
 elapsed
 progress of <shared.world.tcp-base> along <spec.approach-path>
@@ -243,8 +251,10 @@ moving <shared.world.tcp-base> along <spec.approach-path> with <spec.approach-pr
 
 Selectors (`.position`, `.position.x`, ...) are optional on the first form and determine the
 resulting type: a bare quantity like `<shared.world.tcp-base>` is a pose, `.position` is a
-position, and `.position.x` is a distance. `progress`, `moving`, and `on` read against a
-`path` context quantity; see [Paths](#paths) for what each of them does.
+position, and `.position.x` is a distance. The same bare-quantity form also names a scalar
+context quantity directly (`<spec.residual>`), and a parenthesized inline expression is
+accepted too -- see [quantity expressions](expressions.md). `progress`, `moving`, and `on`
+read against a `path` context quantity; see [Paths](#paths) for what each of them does.
 
 ## Paths
 
@@ -733,7 +743,9 @@ another constraint with `<motion.constraint>`; until groups can also be referenc
 | Inside interval | `between LOWER and UPPER` |
 | Outside interval | `outside LOWER and UPPER` |
 
-The view and references must resolve to compatible quantity types and units.
+The view and references must resolve to compatible quantity types and units. Every `REF` above
+also accepts a parenthesized inline expression (`outside (0.0 N - <spec.thr>) and <spec.thr>`);
+see [quantity expressions](expressions.md).
 
 A constraint may carry its own tolerance with a trailing `within REF`:
 

@@ -1224,11 +1224,23 @@ def augment_data(model, context, data: list, views: dict) -> None:
             rotation_op = alignment_rotation_op(model, graph.value(plan.constraint, CSTR.quantity))
             if rotation_op is not None:
                 vector = quantities.quantity(model, graph.value(rotation_op, GEOM_OP.out))
+                measured_source = graph.value(plan.controller, CSTR_HDL["measured-velocity"])
                 for axis in plan.axes:
                     error = _axis_error(ids, axis)
                     errors.append(error)
                     derived_ids.add(error.id)
                     views[error.id] = _axis_view(model, vector, error, axis)
+                    # An alignment error is a rotation vector, so its derivative is the measured
+                    # angular velocity on the same axis -- the pose-difference branch's term.
+                    if measured_source is None:
+                        continue
+                    derivative = _axis_derivative(ids, axis)
+                    derivatives.append(derivative)
+                    derived_ids.add(derivative.id)
+                    views.pop(derivative.id, None)
+                    views[derivative.id] = _axis_view(
+                        model, quantities.velocity_twist(model, measured_source), derivative, axis
+                    )
                 continue
             target = graph.value(plan.view, MAP.superobject)
             difference = PoseDifference(

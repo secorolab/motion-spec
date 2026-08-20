@@ -1,0 +1,708 @@
+// SPDX-License-Identifier: MPL-2.0
+// SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
+// Author: Vamsi Kalagaturu
+
+const state = { replay: null, runPath: null, generationPath: null, tab: "logs", frame: 0, charts: [], selected: new Set(), timer: null, roots: {}, cache: {}, listRequest: 0 };
+const $ = (selector) => document.querySelector(selector);
+let snackTimer;
+
+async function copyText(value) {
+  await navigator.clipboard.writeText(value);
+  $("#snack").textContent = "Copied path";
+  $("#snack").classList.add("visible");
+  clearTimeout(snackTimer);
+  snackTimer = setTimeout(() => $("#snack").classList.remove("visible"), 1400);
+}
+
+async function api(path) {
+  const response = await fetch(path);
+  const data = await response.json();
+  if (!response.ok) throw Error(data.error);
+  return data;
+}
+
+async function post(path, body) {
+  const response = await fetch(path, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  const data = await response.json();
+  if (!response.ok) throw Error(data.error);
+  return data;
+}
+
+function listItem(name, detail, click, path) {
+  const button = document.createElement("button");
+  button.className = "item";
+  button.dataset.path = path;
+  button.classList.toggle("picked", state.selected.has(path));
+  const label = document.createElement("span");
+  label.className = "item-name";
+  label.textContent = name;
+  const viewport = document.createElement("span");
+  viewport.className = "item-name-viewport";
+  viewport.append(label);
+  button.append(viewport);
+  if (detail) {
+    const small = document.createElement("small");
+    small.textContent = detail;
+    button.append(small);
+  }
+  button.onclick = (event) => click(event);
+  return button;
+}
+
+function fact(label, value) {
+  return `<div class="fact"><label>${label}</label>${value ?? "—"}</div>`;
+}
+
+function formatBytes(bytes) {
+  return bytes >= 1024 ** 3
+    ? `${(bytes / 1024 ** 3).toFixed(1)} GB`
+    : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+async function loadGenerations(refresh = false) {
+  const request = ++state.listRequest;
+  if (refresh || !state.cache.generations) {
+    const [generations, storage, roots] = await Promise.all([api("/api/generations"), api("/api/storage"), api("/api/roots")]);
+    state.cache.generations = { generations, storage, roots };
+  }
+  if (request !== state.listRequest || state.tab !== "logs") return;
+  $("#list-title").textContent = "GENERATIONS";
+  const { generations, storage, roots } = state.cache.generations;
+  state.roots = roots;
+  $("#storage").textContent = formatBytes(storage.generations_bytes);
+  $("#generation-root").hidden = false;
+  $("#generation-root").value = roots.logs;
+  const groups = new Map();
+  generations.forEach((generation) => groups.set(generation.name, [...(groups.get(generation.name) ?? []), generation]));
+  $("#browser").replaceChildren(...[...groups].map(([model, entries]) => {
+    const group = document.createElement("details");
+    group.className = "generation-group";
+    group.open = true;
+    const summary = document.createElement("summary");
+    summary.textContent = model;
+    group.append(summary, ...entries.map((generation) => listItem(
+      generation.created,
+      `${generation.runs} runs · ${formatBytes(generation.size_bytes)}`,
+      (event) => event.metaKey || event.ctrlKey ? toggleSelection(generation.path) : selectGeneration(generation.path),
+      generation.path,
+    )));
+    return group;
+  }));
+  filterGenerations($("#search").value);
+  highlightGeneration();
+}
+
+function filterGenerations(value) {
+  const query = value.toLowerCase();
+  document.querySelectorAll(".generation-group").forEach((group) => {
+    let visible = false;
+    group.querySelectorAll(".item").forEach((item) => {
+      item.hidden = !item.textContent.toLowerCase().includes(query);
+      visible ||= !item.hidden;
+    });
+    group.hidden = !visible;
+    if (query && visible) group.open = true;
+  });
+}
+
+async function selectGeneration(path) {
+  setView("generation", path);
+  state.generationPath = path;
+  const generation = await api(`/api/generation?path=${encodeURIComponent(path)}`);
+  const runs = await api(`/api/runs?path=${encodeURIComponent(path)}`);
+  $("#status").textContent = generation.path;
+  highlightGeneration();
+
+  const page = $("#generation-template").content.cloneNode(true);
+  page.querySelector("h1").textContent = generation.spec_name ?? generation.name;
+  page.querySelector(".path").textContent = generation.folder;
+  page.querySelector(".copy-generation-path").onclick = () => copyText(generation.folder);
+  page.querySelector(".generation-description").textContent = generation.description ?? "";
+  page.querySelector(".facts").innerHTML = [
+    fact("Source", generation.source),
+    fact("Generated", generation.created),
+    fact("Backend", generation.backend),
+    fact("Platform", generation.platform),
+    fact("Runtime", generation.simulated ? "Simulated" : "Hardware"),
+    fact("Motions", generation.motions),
+    fact("Authored constraints", generation.authored_constraints),
+    fact("Schema", generation.schema_hash),
+    fact("Runs", generation.runs),
+    fact("Folder size", formatBytes(generation.size_bytes)),
+  ].join("");
+  page.querySelector(".source-files").replaceChildren(...generation.source_files.map((source) => {
+    const entry = document.createElement("div");
+    entry.className = "source-file";
+    entry.title = source.path;
+    entry.innerHTML = `<span>${source.name}</span><button title="Copy full path">⧉</button>`;
+    entry.querySelector("button").onclick = () => copyText(source.path);
+    return entry;
+  }));
+  const generatedGroups = new Map();
+  generation.generated_files.forEach((source) => {
+    const [folder, ...rest] = source.name.split("/");
+    generatedGroups.set(folder, [...(generatedGroups.get(folder) ?? []), { ...source, name: rest.join("/") || folder }]);
+  });
+  page.querySelector(".generated-files").replaceChildren(...[...generatedGroups].map(([folder, files]) => {
+    const group = document.createElement("details");
+    group.className = "generated-folder";
+    const summary = document.createElement("summary");
+    summary.textContent = `${folder} · ${files.length}`;
+    group.append(summary, ...files.map((source) => {
+      const entry = document.createElement("div");
+      entry.className = "source-file";
+      entry.title = source.path;
+      entry.innerHTML = `<span>${source.name}</span><button title="Copy full path">⧉</button>`;
+      entry.querySelector("button").onclick = () => copyText(source.path);
+      return entry;
+    }));
+    return group;
+  }));
+  const runList = page.querySelector(".runs");
+  const pages = Math.ceil(runs.length / 10);
+  let runPage = 0;
+  const renderRuns = () => runList.replaceChildren(...runs.slice(runPage * 10, runPage * 10 + 10).map((run, index) => {
+    const row = document.createElement("div");
+    row.className = "run";
+    row.dataset.path = run.path;
+    row.classList.toggle("picked", state.selected.has(run.path));
+    row.innerHTML = `<span>${runPage * 10 + index + 1}</span><strong>${run.id}</strong><span>${run.started}</span><span>${run.duration_s.toFixed(2)} s</span><span>${(run.written_frames ?? 0).toLocaleString()}</span><span class="badge">${run.status ?? (run.complete ? "COMPLETED" : "incomplete")}</span>`;
+    row.title = "Open replay; Ctrl/Cmd-click to select";
+    row.onclick = (event) => event.metaKey || event.ctrlKey ? toggleSelection(run.path) : loadReplay(run.path);
+    return row;
+  }));
+  renderRuns();
+  const pager = page.querySelector(".run-pagination");
+  if (pages > 1) pager.innerHTML = `<button>‹</button><span>1 / ${pages}</span><button>›</button>`;
+  pager.querySelectorAll("button")[0]?.addEventListener("click", () => { runPage = Math.max(0, runPage - 1); renderRuns(); pager.querySelector("span").textContent = `${runPage + 1} / ${pages}`; });
+  pager.querySelectorAll("button")[1]?.addEventListener("click", () => { runPage = Math.min(pages - 1, runPage + 1); renderRuns(); pager.querySelector("span").textContent = `${runPage + 1} / ${pages}`; });
+  $("#content").replaceChildren(page);
+  const graphPage = $("#content");
+  const options = graphPage.querySelector(".graph-options");
+  const graphStatus = graphPage.querySelector(".graph-status");
+  const graphSearch = graphPage.querySelector(".graph-search");
+  const graphMatches = graphPage.querySelector(".graph-matches");
+  const shell = graphPage.querySelector(".graph-shell");
+  const target = graphPage.querySelector(".generation-graph");
+  const details = graphPage.querySelector(".graph-details");
+  let graphRequest = 0;
+  options.replaceChildren(...generation.rdf_graphs.map((name) => {
+    const label = document.createElement("label");
+    label.innerHTML = `<input type="checkbox" value="${name}"> ${name}`;
+    return label;
+  }));
+  const selectedFiles = () => [...options.querySelectorAll("input:checked")].map((input) => input.value);
+  const renderGraph = async () => {
+    const selected = selectedFiles();
+    const request = ++graphRequest;
+    if (!selected.length) {
+      shell.hidden = true;
+      graphSearch.disabled = true;
+      graphMatches.replaceChildren();
+      graphStatus.textContent = "Select an RDF file to render its complete graph.";
+      return;
+    }
+    const query = new URLSearchParams({ path });
+    selected.forEach((name) => query.append("graph", name));
+    graphStatus.textContent = "Rendering RDF graph…";
+    try {
+      const data = await api(`/api/generation-graph?${query}`);
+      if (request !== graphRequest) return;
+      const [{ default: Sigma }, { default: Graphology }, { default: ForceAtlas2Layout }] = await Promise.all([
+        import("https://esm.sh/sigma@3.0.2?bundle"),
+        import("https://esm.sh/graphology@0.25.4?bundle"),
+        import("https://esm.sh/graphology-layout-forceatlas2@0.10.1/worker?bundle"),
+      ]);
+      if (request !== graphRequest) return;
+      state.graphRenderer?.kill();
+      state.graphLayout?.kill();
+      shell.hidden = false;
+      target.replaceChildren();
+      if (!data.nodes.length) {
+        graphSearch.disabled = true;
+        graphStatus.textContent = "This JSON-LD file contains no RDF triples.";
+        target.innerHTML = '<div class="graph-empty">No RDF resources or relationships to render.</div>';
+        return;
+      }
+      const graph = new Graphology.MultiDirectedGraph();
+      data.nodes.forEach((node, index) => graph.addNode(node.id, { ...node, x: Math.cos(index * 2.399), y: Math.sin(index * 2.399), size: 3, color: "#607fd4" }));
+      data.links.forEach((edge, index) => graph.addEdgeWithKey(String(index), edge.source, edge.target, { ...edge, size: .4, color: "#73777d", type: "arrow" }));
+      let selectedNode = null;
+      let selectedNeighbors = new Set();
+      let selectedEdges = new Set();
+      let hasSelection = false;
+      const renderer = new Sigma(graph, target, {
+        renderEdgeLabels: false,
+        renderLabels: true,
+        labelRenderedSizeThreshold: 0,
+        labelColor: { color: "#f1eee7" },
+        defaultDrawNodeHover: (context, data, settings) => {
+          if (!data.label) return;
+          const font = `${settings.labelWeight} ${settings.labelSize}px ${settings.labelFont}`;
+          context.font = font;
+          const x = data.x + data.size + 6;
+          const y = data.y - settings.labelSize / 2 - 5;
+          const width = context.measureText(data.label).width + 12;
+          context.fillStyle = "#202327";
+          context.fillRect(x - 6, y, width, settings.labelSize + 10);
+          context.fillStyle = "#f1eee7";
+          context.fillText(data.label, x, y + settings.labelSize + 1);
+        },
+        nodeReducer: (node, attributes) => !hasSelection ? attributes : { ...attributes, color: node === selectedNode || selectedNeighbors.has(node) ? "#e07a5f" : "#4b4e53", forceLabel: node === selectedNode },
+        edgeReducer: (edge, attributes) => !hasSelection ? attributes : { ...attributes, color: selectedEdges.has(edge) ? "#e07a5f" : "#30343a", size: selectedEdges.has(edge) ? 1.5 : .2 },
+      });
+      const focus = (id) => {
+        selectedNode = id;
+        selectedNeighbors = new Set(graph.neighbors(id));
+        selectedEdges = new Set(graph.edges(id));
+        hasSelection = true;
+        const node = graph.getNodeAttributes(id);
+        details.textContent = `${node.label}\n${node.value}`;
+        renderer.refresh();
+      };
+      const focusEdge = (id) => {
+        const edge = graph.getEdgeAttributes(id);
+        selectedNode = null;
+        selectedNeighbors = new Set([edge.source, edge.target]);
+        selectedEdges = new Set([id]);
+        hasSelection = true;
+        details.textContent = `${edge.label}\n${edge.value}`;
+        renderer.refresh();
+      };
+      renderer.on("clickNode", ({ node }) => focus(node));
+      renderer.on("downNode", ({ node }) => focus(node));
+      state.graphRenderer = renderer;
+      const layout = new ForceAtlas2Layout(graph, { settings: { barnesHutOptimize: true, gravity: 1, scalingRatio: 8 } });
+      state.graphLayout = layout;
+      layout.start();
+      graphStatus.textContent = "Arranging RDF graph…";
+      setTimeout(() => {
+        if (state.graphLayout !== layout) return;
+        layout.stop();
+        graphStatus.textContent = `${data.nodes.length} resources · ${data.links.length} relationships`;
+      }, 50);
+      graphSearch.disabled = false;
+      graphSearch.value = "";
+      graphMatches.replaceChildren();
+      graphSearch.oninput = () => {
+        const query = graphSearch.value.toLowerCase().trim();
+        if (!query) { graphMatches.replaceChildren(); selectedNode = null; selectedNeighbors = new Set(); selectedEdges = new Set(); hasSelection = false; renderer.refresh(); return; }
+        const matches = [
+          ...data.nodes.filter((node) => `${node.label} ${node.value}`.toLowerCase().includes(query)).map((node) => ({ kind: "node", label: node.label, select: () => focus(node.id) })),
+          ...data.links.map((edge, index) => ({ ...edge, id: String(index) })).filter((edge) => `${edge.label} ${edge.value}`.toLowerCase().includes(query)).map((edge) => ({
+            kind: "edge",
+            label: `${data.nodes.find((node) => node.id === edge.source)?.label ?? edge.source} → ${edge.label} → ${data.nodes.find((node) => node.id === edge.target)?.label ?? edge.target}`,
+            select: () => focusEdge(edge.id),
+          })),
+        ];
+        graphMatches.replaceChildren(...matches.slice(0, 12).map((match) => {
+          const button = document.createElement("button");
+          button.dataset.kind = match.kind;
+          button.textContent = match.label;
+          button.onclick = match.select;
+          return button;
+        }));
+      };
+      graphPage.querySelector(".graph-fullscreen").onclick = () => shell.requestFullscreen();
+    } catch (error) { if (request === graphRequest) { shell.hidden = true; graphStatus.textContent = error.message; } }
+  };
+  options.addEventListener("change", renderGraph);
+}
+
+async function loadReplay(path) {
+  stopPlayback();
+  setView("run", path);
+  state.replay = await api(`/api/replay?path=${encodeURIComponent(path)}`);
+  state.runPath = path;
+  state.generationPath = state.replay.generation;
+  highlightGeneration();
+  state.frame = 0;
+  state.charts.forEach((chart) => chart.dispose());
+  state.charts = [];
+  $("#status").textContent = "";
+  $("#content").innerHTML = `<div class="replay"><div class="replay-heading"><div><div class="eyebrow">REPLAY</div><h1>${path.split("/").pop()}</h1><p class="path">${state.replay.frames.toLocaleString()} frames · ${state.replay.duration.toFixed(3)} s</p></div><button id="back" title="Back to generation">← Back</button></div><div class="constraint-panel"><div class="eyebrow">SOURCE CONSTRAINTS</div><input id="constraint-search" type="search" placeholder="Search .robmot constraints"><div id="constraints" class="constraints"></div></div><div class="chart-controls"><button id="plot">Add empty plot</button></div><div id="plots" class="plots"></div></div><div class="transport"><div class="transport-controls"><button id="step-back" title="Previous frame">‹</button><button id="play">Play</button><button id="step-forward" title="Next frame">›</button><span id="readout" class="path"></span></div><div class="markers"></div><input class="timeline" type="range" min="0" max="${state.replay.frames - 1}" value="0"></div>`;
+
+  populateConstraints();
+  $("#plot").onclick = () => addPlot([]);
+  bindTransport();
+  $("#back").onclick = () => selectGeneration(state.replay.generation);
+  updateReadout();
+}
+
+function populateConstraints() {
+  const groups = new Map();
+  state.replay.constraints.forEach((constraint) => {
+    const motion = constraint.motion ?? "shared";
+    groups.set(motion, [...(groups.get(motion) ?? []), constraint]);
+  });
+  const container = $("#constraints");
+  container.replaceChildren(...[...groups].flatMap(([motion, constraints]) => {
+    const heading = document.createElement("div");
+    heading.className = "constraint-motion";
+    heading.textContent = motion;
+    return [heading, ...constraints.map((constraint) => {
+    const row = document.createElement("div");
+    const line = document.createElement("span");
+    const name = document.createElement("strong");
+    const expression = document.createElement("span");
+    row.className = "constraint";
+    line.textContent = `L${constraint.line}`;
+    name.textContent = constraint.name;
+    expression.textContent = constraint.expression;
+    row.append(line, name, expression);
+    if (constraint.signals.length) {
+      row.dataset.plottable = "true";
+      row.title = "Plot recorded controller signals";
+      row.onclick = () => {
+        row.dataset.plotted = "true";
+        addPlot(
+          constraint.signals,
+          `${constraint.motion ?? "shared"} / ${constraint.name}`,
+          `L${constraint.line}: ${constraint.expression}`,
+        );
+      };
+    } else {
+      row.dataset.unavailable = "true";
+      row.title = "No recorded controller signal";
+    }
+    return row;
+    })];
+  }));
+  $("#constraint-search").oninput = (event) => filter(".constraint", event.target.value);
+}
+
+function bindTransport() {
+  $(".timeline").oninput = (event) => seek(Number(event.target.value));
+  $("#step-back").onclick = () => seek(state.frame - 1);
+  $("#step-forward").onclick = () => seek(state.frame + 1);
+  $("#play").onclick = togglePlayback;
+  renderMarkers();
+}
+
+function renderMarkers() {
+  $(".markers").replaceChildren();
+  state.replay.events.forEach((event) => {
+    const marker = document.createElement("button");
+    marker.className = "marker";
+    marker.style.left = `${event.frame / Math.max(1, state.replay.frames - 1) * 100}%`;
+    marker.title = `${event.state} @ frame ${event.frame}`;
+    marker.onclick = () => seek(event.frame);
+    $(".markers").append(marker);
+  });
+}
+
+function filter(selector, value) {
+  const query = value.toLowerCase();
+  document.querySelectorAll(selector).forEach((item) => {
+    item.hidden = !item.textContent.toLowerCase().includes(query);
+  });
+}
+
+function highlightGeneration() {
+  document.querySelectorAll("#browser .item").forEach((item) => {
+    item.classList.toggle("selected", item.dataset.path === state.generationPath);
+  });
+  document.querySelector("#browser .item.selected")?.scrollIntoView({ block: "start" });
+}
+
+function toggleSelection(path) {
+  state.selected.has(path) ? state.selected.delete(path) : state.selected.add(path);
+  document.querySelectorAll("[data-path]").forEach((item) => {
+    if (item.dataset.path === path) item.classList.toggle("picked", state.selected.has(path));
+  });
+  const button = $("#delete-selected");
+  $("#selection-actions").hidden = !state.selected.size;
+  $("#selection-count").textContent = `${state.selected.size} selected`;
+  button.textContent = "Delete";
+}
+
+function seek(frame) {
+  state.frame = Math.max(0, Math.min(state.replay.frames - 1, frame));
+  $(".timeline").value = state.frame;
+  updateReadout();
+}
+
+function togglePlayback() {
+  if (state.timer) return stopPlayback();
+  const rate = state.replay.frames / Math.max(state.replay.duration, 1);
+  const step = Math.max(1, Math.round(rate / 60));
+  state.timer = setInterval(() => {
+    if (state.frame >= state.replay.frames - 1) stopPlayback();
+    else seek(state.frame + step);
+  }, 1000 / 60);
+  $("#play").textContent = "Pause";
+}
+
+function stopPlayback() {
+  if (!state.timer) return;
+  clearInterval(state.timer);
+  state.timer = null;
+  if ($("#play")) $("#play").textContent = "Play";
+}
+
+function updateReadout() {
+  const event = [...state.replay.events].reverse().find((item) => item.frame <= state.frame);
+  const time = state.replay.duration * state.frame / Math.max(1, state.replay.frames - 1);
+  $("#readout").textContent = `${time.toFixed(3)} s · frame ${state.frame.toLocaleString()} / ${state.replay.frames.toLocaleString()} · ${event?.state ?? "—"}`;
+}
+
+function addPlot(signals = [], title = signals.join(" · ") || "New plot", detail = "") {
+  const card = document.createElement("section");
+  card.className = "plot-card";
+  card.innerHTML = '<header><div><strong></strong><small></small></div><button class="remove-plot" title="Remove plot">×</button></header><div class="plot-tools"><select></select><button class="add-signal">Add signal</button></div><div class="plot-chart"></div>';
+  card.querySelector("strong").textContent = title;
+  card.querySelector("small").textContent = detail;
+  const select = card.querySelector("select");
+  state.replay.signals.forEach((signal) => select.add(new Option(signal, signal)));
+  $("#plots").append(card);
+  const chart = echarts.init(card.querySelector(".plot-chart"));
+  state.charts.push(chart);
+  card.querySelector(".remove-plot").onclick = () => {
+    chart.dispose();
+    state.charts = state.charts.filter((item) => item !== chart);
+    card.remove();
+  };
+  card.querySelector(".add-signal").onclick = () => {
+    if (signals.includes(select.value)) return;
+    chart.dispose();
+    state.charts = state.charts.filter((item) => item !== chart);
+    card.remove();
+    addPlot([...signals, select.value], title, detail);
+  };
+  if (!signals.length) {
+    chart.setOption({ graphic: { type: "text", left: "center", top: "middle", style: { text: "Choose a signal above", fill: "#73777d" } } });
+    return;
+  }
+  chart.showLoading("default", { text: "Loading recorded data…" });
+  const query = new URLSearchParams({ path: state.runPath });
+  signals.forEach((signal) => query.append("signal", signal));
+  api(`/api/plot?${query}`).then((data) => {
+    state.replay.events = data.events;
+    renderMarkers();
+    chart.hideLoading();
+    chart.setOption({
+    animation: false,
+    color: ["#e07a5f", "#79c6a5", "#9da9c7", "#f0c36a"],
+    grid: { left: 62, right: 20, top: 32, bottom: 42 },
+    tooltip: { trigger: "axis", backgroundColor: "#202327", borderColor: "#383d45", textStyle: { color: "#f1eee7" } },
+    legend: { data: signals, textStyle: { color: "#a7a8a4" }, top: 4 },
+    xAxis: {
+      type: "value", scale: true, name: "frame", nameTextStyle: { color: "#73777d" },
+      axisLabel: { color: "#73777d" }, axisLine: { lineStyle: { color: "#73777d" } },
+      splitLine: { lineStyle: { color: "#383d45" } },
+    },
+    yAxis: {
+      type: "value", axisLabel: { color: "#73777d" }, axisLine: { lineStyle: { color: "#73777d" } },
+      splitLine: { lineStyle: { color: "#383d45" } },
+    },
+    series: signals.map((signal) => ({
+      name: signal,
+      type: "line",
+      showSymbol: false,
+      data: data.signals[signal]
+        .map((value, point) => value == null ? null : [point * data.sample_step, value])
+        .filter(Boolean),
+      lineStyle: { width: 1.5 },
+    })),
+    });
+  }).catch((error) => chart.showLoading("default", { text: error.message }));
+}
+
+async function loadSources(refresh = false) {
+  const request = ++state.listRequest;
+  if (refresh || !state.cache.sources) {
+    const [sources, roots] = await Promise.all([api("/api/sources"), api("/api/roots")]);
+    state.cache.sources = { sources, roots };
+  }
+  if (request !== state.listRequest || state.tab !== "sources") return;
+  $("#list-title").textContent = "SOURCES";
+  $("#storage").textContent = "";
+  $("#generation-root").hidden = false;
+  const { sources, roots } = state.cache.sources;
+  state.roots = roots;
+  $("#generation-root").value = roots.sources;
+  const root = { folders: new Map(), files: [] };
+  sources.forEach((source) => {
+    const parts = source.split("/");
+    const file = parts.pop();
+    let node = root;
+    parts.forEach((part) => {
+      node.folders.set(part, node.folders.get(part) ?? { folders: new Map(), files: [] });
+      node = node.folders.get(part);
+    });
+    node.files.push({ file, source });
+  });
+  $("#browser").replaceChildren(...renderSourceNode(root, "", 0, true));
+  filterSources($("#search").value);
+}
+
+function renderSourceNode(node, name, depth, isRoot = false) {
+  const children = [];
+  if (!isRoot) {
+    const branch = document.createElement("details");
+    branch.className = "source-node";
+    branch.open = true;
+    branch.style.setProperty("--depth", depth);
+    const summary = document.createElement("summary");
+    summary.textContent = name;
+    branch.append(summary);
+    branch.append(...renderSourceNode(node, "", depth + 1, true));
+    return [branch];
+  }
+  [...node.folders].sort(([left], [right]) => left.localeCompare(right)).forEach(([folder, child]) => {
+    children.push(...renderSourceNode(child, folder, depth));
+  });
+  node.files.sort((left, right) => left.file.localeCompare(right.file)).forEach(({ file, source }) => {
+    const leaf = document.createElement("div");
+    leaf.className = "source-leaf";
+    leaf.style.setProperty("--depth", depth);
+    const item = listItem(file, null, () => { $("#status").textContent = `${state.roots.sources}/${source}`; }, source);
+    item.onmouseenter = () => {
+      const style = getComputedStyle(item);
+      const available = item.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      const distance = Math.max(0, item.querySelector(".item-name").scrollWidth - available);
+      item.style.setProperty("--scroll-distance", `${distance}px`);
+      item.classList.toggle("is-scrolling", distance > 0);
+    };
+    item.onmouseleave = () => item.classList.remove("is-scrolling");
+    const copy = document.createElement("button");
+    copy.className = "copy-path";
+    copy.textContent = "⧉";
+    copy.title = "Copy full path";
+    copy.onclick = async () => {
+      await copyText(`${state.roots.sources}/${source}`);
+      copy.textContent = "✓";
+      setTimeout(() => { copy.textContent = "⧉"; }, 900);
+    };
+    leaf.append(item, copy);
+    children.push(leaf);
+  });
+  return children;
+}
+
+function filterSources(value) {
+  const query = value.toLowerCase();
+  document.querySelectorAll(".source-leaf").forEach((item) => {
+    item.hidden = !item.textContent.toLowerCase().includes(query);
+  });
+  [...document.querySelectorAll(".source-node")].reverse().forEach((node) => {
+    const visible = [...node.querySelectorAll(".source-leaf")].some((item) => !item.hidden);
+    node.hidden = !visible;
+    if (query && visible) node.open = true;
+  });
+}
+
+document.querySelectorAll("nav button[data-tab]").forEach((button) => {
+  button.onclick = () => {
+    setTab(button.dataset.tab);
+    (state.tab === "logs" ? loadGenerations : loadSources)().catch(showError);
+  };
+});
+const lifecycleEvents = new EventSource("/api/events");
+lifecycleEvents.addEventListener("lifecycle", () => {
+  state.cache.generations = null;
+  if (state.tab === "logs") loadGenerations().catch(showError);
+});
+$("#refresh").onclick = () => {
+  const load = state.tab === "logs" ? loadGenerations : loadSources;
+  load(true).catch(showError);
+};
+$("#delete-selected").onclick = async () => {
+  if (!state.selected.size || !confirm(`Delete ${state.selected.size} selected generation(s) or run(s)?`)) return;
+  const response = await fetch("/api/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ paths: [...state.selected] }),
+  });
+  const data = await response.json();
+  if (!response.ok) return showError(Error(data.error));
+  state.selected.clear();
+  $("#selection-actions").hidden = true;
+  state.cache = {};
+  loadGenerations(true).catch(showError);
+};
+$("#clear-selection").onclick = () => {
+  state.selected.clear();
+  document.querySelectorAll(".picked").forEach((item) => item.classList.remove("picked"));
+  $("#selection-actions").hidden = true;
+};
+document.onkeydown = (event) => {
+  if (event.key === "Escape" && state.selected.size) $("#clear-selection").click();
+};
+$("#search").oninput = (event) => {
+  if (state.tab === "sources") filterSources(event.target.value);
+  else filterGenerations(event.target.value);
+};
+async function updateRoot(path) {
+  const kind = state.tab === "logs" ? "logs" : "sources";
+  state.roots = await post("/api/roots", { kind, path });
+  state.cache = {};
+  (kind === "logs" ? loadGenerations : loadSources)(true).catch(showError);
+}
+
+$("#generation-root").onchange = (event) => updateRoot(event.target.value).catch(showError);
+$("#pick-root").onclick = async () => {
+  const kind = state.tab === "logs" ? "logs" : "sources";
+  state.roots = await api(`/api/pick-root?kind=${kind}`);
+  state.cache = {};
+  (kind === "logs" ? loadGenerations : loadSources)(true).catch(showError);
+};
+$("#sidebar-toggle").onclick = () => {
+  document.body.classList.toggle("sidebar-collapsed");
+  const collapsed = document.body.classList.contains("sidebar-collapsed");
+  localStorage.setItem("motion-spec.sidebar-collapsed", collapsed);
+  $("#sidebar-toggle").textContent = collapsed ? "☰" : "×";
+  $("#sidebar-toggle").title = collapsed ? "Expand navigation" : "Collapse navigation";
+};
+if (document.body.classList.contains("sidebar-collapsed")) {
+  $("#sidebar-toggle").textContent = "☰";
+  $("#sidebar-toggle").title = "Expand navigation";
+}
+$("#home").onclick = () => {
+  stopPlayback();
+  state.generationPath = null;
+  setTab("logs");
+  history.replaceState(null, "", `${location.pathname}#tab=logs`);
+  $("#status").textContent = "Choose a generation";
+  $("#content").innerHTML = '<div class="empty"><span>REPLAY / 01</span><h1>Choose a generation.</h1><p>Its build metadata and recorded runs will appear here.</p></div>';
+  loadGenerations().catch(showError);
+};
+
+function setView(kind, path) {
+  const view = new URLSearchParams(location.hash.slice(1));
+  const unchanged = view.get(kind) === path && !view.has(kind === "run" ? "generation" : "run");
+  view.delete("run");
+  view.delete("generation");
+  view.set(kind, path);
+  view.set("tab", state.tab);
+  history[unchanged ? "replaceState" : "pushState"](null, "", `#${view}`);
+}
+
+function setTab(tab, push = true) {
+  state.tab = tab;
+  document.querySelectorAll("nav button[data-tab]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.tab === tab);
+  });
+  const view = new URLSearchParams(location.hash.slice(1));
+  view.set("tab", tab);
+  history[push ? "pushState" : "replaceState"](null, "", `#${view}`);
+}
+
+function showError(error) {
+  $("#content").innerHTML = `<div class="empty"><span>ERROR</span><h1>Could not load data.</h1><p>${error.message}</p></div>`;
+}
+
+function loadLocation() {
+  const view = new URLSearchParams(location.hash.slice(1));
+  state.generationPath = view.get("generation") ?? view.get("run")?.split("/runs/")[0] ?? null;
+  setTab(view.get("tab") ?? "logs", false);
+  const loadSidebar = state.tab === "logs" ? loadGenerations : loadSources;
+  if (view.has("run")) loadSidebar().then(() => loadReplay(view.get("run"))).catch(showError);
+  else if (view.has("generation")) loadSidebar().then(() => selectGeneration(view.get("generation"))).catch(showError);
+  else loadSidebar().catch(showError);
+}
+
+window.onpopstate = loadLocation;
+loadLocation();

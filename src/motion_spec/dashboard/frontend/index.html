@@ -1,0 +1,96 @@
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de) -->
+<!-- Author: Vamsi Kalagaturu -->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>motion-spec replay</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+  </head>
+  <body>
+    <script>
+      if (localStorage.getItem("motion-spec.sidebar-collapsed") === "true") document.body.classList.add("sidebar-collapsed");
+    </script>
+    <header>
+      <button id="home" class="brand">motion-spec</button>
+      <span id="status">Choose a generation</span>
+    </header>
+    <button id="sidebar-toggle" title="Collapse navigation" aria-label="Collapse navigation">×</button>
+
+    <main>
+      <aside>
+        <div class="sidebar-header">
+          <nav>
+            <button class="active" data-tab="logs">Logs</button>
+            <button data-tab="sources">Sources</button>
+          </nav>
+
+          <div class="aside-head">
+            <span id="list-title">GENERATIONS</span>
+            <span id="storage"></span>
+            <button id="refresh" title="Refresh">↻</button>
+          </div>
+          <div class="root-control">
+            <input id="generation-root" value="/home/batsy/work/ms/generations" title="Edit path">
+            <button id="pick-root" title="Choose folder" aria-label="Choose folder"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h7l2 2h9v10H3z"/></svg></button>
+          </div>
+          <script>
+            if (new URLSearchParams(location.hash.slice(1)).get("tab") === "sources") {
+              document.querySelector("nav button[data-tab=logs]").classList.remove("active");
+              document.querySelector("nav button[data-tab=sources]").classList.add("active");
+              document.querySelector("#list-title").textContent = "SOURCES";
+              document.querySelector("#generation-root").value = "";
+            }
+          </script>
+
+          <div class="search">
+            <input id="search" type="search" placeholder="Filter list">
+          </div>
+        </div>
+
+        <div id="browser"></div>
+      </aside>
+
+      <section id="content">
+        <div class="empty">
+          <span>REPLAY / 01</span>
+          <h1>Choose a generation.</h1>
+          <p>Its build metadata and recorded runs will appear here.</p>
+        </div>
+      </section>
+    </main>
+
+    <div id="selection-actions" hidden>
+      <span id="selection-count"></span>
+      <button id="clear-selection">Cancel</button>
+      <button id="delete-selected">Delete</button>
+    </div>
+    <div id="snack" role="status" aria-live="polite"></div>
+
+    <template id="generation-template">
+      <article class="generation">
+        <div class="eyebrow">GENERATION</div>
+        <h1></h1>
+        <div class="generation-path"><p class="path"></p><button class="copy-generation-path" title="Copy folder path" aria-label="Copy folder path">⧉</button></div>
+        <div class="facts"></div>
+        <p class="generation-description"></p>
+        <div class="source-files"></div>
+        <h2>Recorded runs</h2>
+        <div class="run-header"><span>#</span><span>Run</span><span>Started</span><span>Duration</span><span>Frames</span><span>Status</span></div>
+        <div class="runs"></div>
+        <div class="run-pagination"></div>
+        <div class="graph-heading"><h2>RDF graph viz</h2></div>
+        <p class="graph-help">Select RDF files to render their complete RDF graph.</p>
+        <div class="graph-options"></div>
+        <div class="graph-actions"><span class="graph-status"></span></div>
+        <div class="graph-shell" hidden><div class="graph-search-panel"><input class="graph-search" type="search" placeholder="Search resources" disabled><div class="graph-matches"></div></div><button class="graph-fullscreen" title="Fullscreen graph">⛶</button><div class="generation-graph"></div><div class="graph-details">Select a resource or relationship for its RDF details.</div></div>
+        <h2>Generated files</h2><div class="generated-files"></div>
+      </article>
+    </template>
+
+    <script src="app.js?v=webgl-rdf-18"></script>
+  </body>
+</html>

@@ -48,7 +48,7 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-motion_spec = ["templates/*.stg", "templates/CMakeLists.txt"]
+motion_spec = ["templates/*.stg", "templates/CMakeLists.txt", "dashboard/frontend/*"]
 
 [tool.pytest.ini_options]
 # rdflib's Dataset.parse() internally reads its deprecated default_context

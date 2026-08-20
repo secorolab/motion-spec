@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from motion_spec.introspection.archive import create_archive_manifest, verify_manifest
+from motion_spec.introspection.lifecycle_events import publish_lifecycle
 from motion_spec.introspection.provenance import (
     artifact_sha256,
     artifact_size,
@@ -19,10 +20,10 @@ from motion_spec.introspection.provenance import (
     ensure_local_rec_importable,
     host_info,
     parse_rec_time,
-    rec_types,
+    prov_uri,
     rec_run_lifecycle,
     rec_run_lifecycle_from_file,
-    prov_uri,
+    rec_types,
     record_activities,
     record_agents,
     repositories,
@@ -314,6 +315,7 @@ def _start_rec_run(
     )
     _record_execution_inputs(run, run_dir, source_dir, executable, schema)
     observer.close()
+    publish_lifecycle(run_dir, run_id, rec_run_lifecycle_from_file(run_dir / "rec.ld.json")["status"])
 
 
 def _record_execution_inputs(
@@ -408,6 +410,7 @@ def _finish_rec_run(rec_path: Path, run_id: str, status: str) -> None:
     else:
         run._emit_failed()
     observer.close()
+    publish_lifecycle(rec_path.parent, run_id, rec_run_lifecycle_from_file(rec_path)["status"])
 
 
 def _rec_status(rec_path: Path) -> str | None:

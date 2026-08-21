@@ -68,7 +68,7 @@ from rdf_utils.models.vocab import (
 )
 from rdf_utils.naming import get_valid_var_name
 from rdflib import URIRef
-from rdflib.namespace import RDF
+from rdflib.namespace import PROV, RDF
 
 from motion_spec.rdf_parser.model import identifier, local_name, reader
 
@@ -86,6 +86,24 @@ def normalize(model) -> None:
     """
     _materialize_pose_reference_transforms(model)
     _materialize_linear_distance_operations(model)
+    _materialize_link_pair_poses(model)
+
+
+def recorded_coord_policy(candidates, graph=None, coord_id=None, component=None, **kwargs):
+    """The coordinate the DSL recorded for this pose component.
+
+    The writer runs the authored choice and minutes it as PROV under the deterministic
+    activity name `{coordinate}-{component}-selection`; this is the read half of that pact.
+    """
+    activity = URIRef(f"{coord_id}-{component}-selection")
+    for usage in graph.objects(activity, PROV.qualifiedUsage):
+        chosen = graph.value(usage, PROV.entity)
+        if chosen is not None:
+            return chosen
+    raise ConstraintViolation(
+        "geometry",
+        f"Pose coordinate '{coord_id}' records no {component} selection among: {candidates}",
+    )
 
 
 def _pose_frames(model, pose) -> tuple[URIRef, URIRef]:
@@ -93,7 +111,7 @@ def _pose_frames(model, pose) -> tuple[URIRef, URIRef]:
     relation = (
         PoseModel(pose, model.graph)
         if URI_GEOM_TYPE_POSE in get_node_types(model.graph, pose)
-        else PoseCoordModel(pose, model.graph).relation
+        else PoseCoordModel(pose, model.graph, coord_policy=recorded_coord_policy).relation
     )
     return relation.of_id, relation.wrt_id
 
@@ -228,6 +246,12 @@ def _compose_path(model, owner: URIRef, path, start_wrt: URIRef):
     return current
 
 
+def _recorded_distance_operand(graph, distance, role):
+    """The pose coordinate the DSL recorded for one distance endpoint, or None if unrecorded."""
+    usage = graph.value(URIRef(f"{distance}-{role}-selection"), PROV.qualifiedUsage)
+    return graph.value(usage, PROV.entity) if usage is not None else None
+
+
 def _materialize_linear_distance_operations(model) -> None:
     """Expand authored linear-distance relations into codegen operations.
 
@@ -248,12 +272,17 @@ def _materialize_linear_distance_operations(model) -> None:
             raise ConstraintViolation(
                 "geometry", f"Distance coordinate {distance} states no linear distance."
             )
-        endpoints = list(dict.fromkeys(graph.objects(relation, GEOM_REL["between-entities"])))
-        if len(endpoints) != 2:
-            raise ConstraintViolation(
-                "geometry", f"Linear distance {relation} needs exactly two pose endpoints."
-            )
-        start, end = endpoints
+        # `between-entities` names frame-origin Points; which pose coordinate each endpoint
+        # reads is the selection the DSL recorded per role (see `recorded_coord_policy`).
+        start = _recorded_distance_operand(graph, distance, "start")
+        end = _recorded_distance_operand(graph, distance, "end")
+        if start is None or end is None:
+            endpoints = list(dict.fromkeys(graph.objects(relation, GEOM_REL["between-entities"])))
+            if len(endpoints) != 2:
+                raise ConstraintViolation(
+                    "geometry", f"Linear distance {relation} needs exactly two pose endpoints."
+                )
+            start, end = endpoints
         start_of, start_wrt = _pose_frames(model, start)
         end_of, end_wrt = _pose_frames(model, end)
 
@@ -345,6 +374,56 @@ def _materialize_pose_reference_transforms(model) -> None:
 
         graph.remove((constraint, CSTR["reference-value"], reference))
         graph.add((constraint, CSTR["reference-value"], reference_in_target))
+
+
+def _shared_reference_pair(frames, node, of_frame, wrt_frame):
+    """Two other poses `(of_frame, C)` and `(wrt_frame, C)` sharing one reference frame C."""
+    through_of = {
+        reference: pose
+        for pose, (pose_of, reference) in frames.items()
+        if pose != node and pose_of == of_frame and reference not in (of_frame, wrt_frame)
+    }
+    for pose, (pose_of, reference) in frames.items():
+        if pose != node and pose_of == wrt_frame and reference in through_of:
+            return through_of[reference], pose
+
+    return None
+
+
+def _materialize_link_pair_poses(model) -> None:
+    """Compose a pose stated between two links out of the two poses that share a reference frame.
+
+    Forward kinematics publishes a link's pose only with respect to the chain root, so a pose of
+    one link with respect to another has no producer. When both links are also stated in one
+    common frame C, the link-pair pose is their composition:
+    ``X_wrt_of = Inverse(X_C_wrt) * X_C_of``. With no such pair the pose stays unwritten, which
+    the dataflow check reports -- and authoring the two common-frame poses is the fix.
+    """
+    graph = model.graph
+    frames = {}
+    for node in graph.subjects(RDF.type, URI_GEOM_TYPE_POSE_COORD):
+        scope = model.context_scope(node)
+        if scope is None or scope.section != "world":
+            continue
+        try:
+            frames[node] = _pose_frames(model, node)
+        except ValueError:
+            # A pose stated in coordinates alone names no frames to triangulate between.
+            continue
+
+    for node, (of_frame, wrt_frame) in frames.items():
+        if next(graph.subjects(GEOM_OP.composite, node), None) is not None:
+            continue
+        pair = _shared_reference_pair(frames, node, of_frame, wrt_frame)
+        if pair is None:
+            continue
+        of_in_shared, wrt_in_shared = pair
+        _, shared_frame = frames[wrt_in_shared]
+
+        inverted = model.derived_node(node, "wrt-inverse")
+        _emit_derived_pose(model, inverted, shared_frame, wrt_frame)
+        _invert(model, node, "invert-wrt", wrt_in_shared, inverted)
+        _compose(model, node, "compose-link-pair", inverted, of_in_shared, node)
 
 
 # Every operator answers three questions, and each answers all three: what closure one of its
@@ -737,6 +816,42 @@ OPS_GENERIC = [
         [GEOM_OP["in1"], GEOM_OP["in2"]],
         [GEOM_OP["out"]],
     ),
+    Operator(
+        GEOM_OP_EXT["PointPlaneToLinearDistance"],
+        [GEOM_OP["in1"], GEOM_OP["in2"], GEOM_OP["direction"]],
+        [GEOM_OP["distance"], GEOM_OP_EXT["gradient"]],
+    ),
+    Operator(
+        GEOM_OP_EXT["PointLineToLinearDistance"],
+        [GEOM_OP["in1"], GEOM_OP["in2"], GEOM_OP["direction"]],
+        [GEOM_OP["distance"], GEOM_OP_EXT["gradient"]],
+    ),
+    Operator(
+        GEOM_OP_EXT["PointOnLineProjection"],
+        [GEOM_OP["in1"], GEOM_OP["in2"], GEOM_OP["direction"]],
+        [GEOM_OP["distance"], GEOM_OP_EXT["gradient"]],
+    ),
+    Operator(GEOM_OP_EXT["PoseDiffEvaluator"], [GEOM_OP["in1"], GEOM_OP["in2"]], [GEOM_OP["out"]]),
+    Operator(
+        GEOM_OP_EXT["LineLineToLinearDistance"],
+        [GEOM_OP["in1"], GEOM_OP["in2"], GEOM_OP["pose"]],
+        [GEOM_OP["distance"], GEOM_OP_EXT["gradient"]],
+    ),
+    Operator(
+        GEOM_OP_EXT["LineOnLineProjection"],
+        [GEOM_OP["in1"], GEOM_OP["in2"], GEOM_OP["pose"]],
+        [GEOM_OP["distance"], GEOM_OP_EXT["gradient"]],
+    ),
+    Operator(
+        GEOM_OP_EXT["DirectionPlaneToAngularDistance"],
+        [GEOM_OP["in1"], GEOM_OP["in2"]],
+        [GEOM_OP["angle"], GEOM_OP_EXT["gradient"]],
+    ),
+    Operator(
+        GEOM_OP_EXT["AngleGradientFromDirections"],
+        [GEOM_OP["in1"], GEOM_OP["in2"]],
+        [GEOM_OP_EXT["gradient"]],
+    ),
     Operator(RBDYN_OP["AddWrench"], [RBDYN_OP["in1"], RBDYN_OP["in2"]], [RBDYN_OP["out"]]),
     Operator(ALGO_EXT.Addition, [ALGO_EXT["in"]], [ALGO_EXT.out]),
     Operator(ALGO_EXT.Subtraction, [ALGO_EXT["minuend"], ALGO_EXT["subtrahend"]], [ALGO_EXT.out]),
@@ -827,7 +942,8 @@ OPS_SOLVER = [
     Specification(SLV["ForceDistributionSolver"], [SLV["force"]], []),
 ]
 
-# Closure kinds no operator registers: "Controller" and "PoseDiffEvaluator" are hand-built by
+# Closure kinds no operator fully registers: "Controller" and the pose-equality
+# "PoseDiffEvaluator" closures are hand-built by
 # constraint_handler.augment_closures; AssignmentEvaluator's write is one of its *inputs*
 # (`quantity`, the value it assigns into), not its (empty) declared output; PathEvaluator's
 # `setpoint` is folded on by the PathEvaluator closure hook, not declared as an operator output.

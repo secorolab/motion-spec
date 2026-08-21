@@ -42,6 +42,11 @@ from motion_spec_dsl.rdf_parser.vocab import (
 )
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import ModelBase, get_node_types
+from rdf_utils.models.vocab import (
+    URI_TIME_PRED_AFTER_EVT,
+    URI_TIME_PRED_OF_CONSTRAINT,
+    URI_TIME_TYPE_AFTER_EVT,
+)
 from rdf_utils.models.geom_coord import (
     OrientCoordModel,
     PoseCoordModel,
@@ -141,6 +146,7 @@ from motion_spec.rdf_parser.model import (
 )
 from motion_spec.rdf_parser.operations import (
     closure_maps,
+    recorded_coord_policy,
     closure_output_ids,
     closure_owner_map,
     data_reference_map,
@@ -601,6 +607,15 @@ def _pose_endpoint(model, node):
     return frame(model, node)
 
 
+def view_of(graph, operand):
+    """The MAP view an operand resolves through. A constraint names the view itself (relations
+    are pooled per frame pair); an operand that is a subobject still finds the view sampling it.
+    """
+    if graph.value(operand, MAP.subobject) is not None:
+        return operand
+    return next(graph.subjects(MAP.subobject, operand), None)
+
+
 class ReferenceFrames(NamedTuple):
     """The three frames a spatial quantity is stated against."""
 
@@ -616,17 +631,11 @@ def derived_reference_frames(model, node) -> ReferenceFrames:
     captures, or from the quantity whose constraint names it.
     """
     graph = model.graph
-    source = next(
-        (
-            graph.value(snapshot, ALGO_EXT["in"])
-            for snapshot in graph.subjects(ALGO_EXT["out"], node)
-        ),
-        None,
-    )
+    source = graph.value(node, PROV.wasDerivedFrom)
     if source is None:
         owner = next(graph.subjects(CSTR["reference-value"], node), None)
         quantity_node = graph.value(owner, CSTR.quantity) if owner is not None else None
-        view = next(graph.subjects(MAP.subobject, quantity_node), None)
+        view = view_of(graph, quantity_node) if quantity_node is not None else None
         source = graph.value(view, MAP.superobject) if view is not None else quantity_node
     if source is None:
         return ReferenceFrames(None, None, None)
@@ -671,7 +680,7 @@ def _bare_pose(model, node) -> Pose:
 def pose(model, node) -> Pose:
     """A Pose quantity: its endpoints, its position and how its orientation arrives."""
     graph = model.graph
-    coordinate = PoseCoordModel(node, graph)
+    coordinate = PoseCoordModel(node, graph, coord_policy=recorded_coord_policy)
     relation = coordinate.relation
     orientation_node = coordinate.orientation_coord.id
     representation = orientation_representation(model, orientation_node)
@@ -831,7 +840,11 @@ def wrench(model, node) -> Wrench:
         provenance=quantity_provenance(model, node),
         sensor_frame=frame(model, sensor_frame_node) if sensor_frame_node is not None else None,
         sensor_name=model.id(sensor) if sensor is not None else "",
-        retare_event_uris=tuple(str(event) for event in graph[node : ALGO_EXT["trigger"]]),
+        retare_event_uris=tuple(
+            str(event)
+            for schedule in graph.subjects(URI_TIME_PRED_OF_CONSTRAINT, node)
+            for event in graph.objects(schedule, URI_TIME_PRED_AFTER_EVT)
+        ),
     )
 
 
@@ -927,6 +940,33 @@ def goal_status_act(model, node):
 @reader
 def quantity(model, node):
     """The quantity at a node, dispatching on its RDF type."""
+    viewed = model.graph.value(node, MAP.subobject)
+    if viewed is not None:
+        # A constraint names the per-quantity view. The subobject is the pooled relation (or
+        # scalar); when the relation carries several coordinates the view's superobject pins
+        # which sampling is meant, so a component-typed superobject dispatches as coordinate.
+        graph = model.graph
+        superobject = graph.value(node, MAP.superobject)
+        subspace = graph.value(node, MAP.subspace)
+        if graph.value(node, MAP.axis) is not None:
+            # A single-axis view names its own scalar; only whole-component views need the
+            # superobject to pin one sampling of the pooled relation.
+            superobject = None
+        sup_types = get_node_types(graph, superobject) if superobject is not None else set()
+        if subspace == MAP_EXT.position and URI_GEOM_TYPE_POSITION_COORD in sup_types:
+            node = superobject
+        elif subspace == MAP_EXT.orientation and URI_GEOM_TYPE_ORIENT_COORD in sup_types:
+            node = superobject
+        elif subspace in (MAP_EXT.position, MAP_EXT.orientation) and superobject is not None:
+            # A composite pose: its own component coordinate is the recorded selection.
+            component = local_name(subspace)
+            usage = graph.value(
+                rdflib.URIRef(f"{superobject}-{component}-selection"), PROV.qualifiedUsage
+            )
+            chosen = graph.value(usage, PROV.entity) if usage is not None else None
+            node = chosen if chosen is not None else viewed
+        else:
+            node = viewed
     if goal_status_act(model, node) is not None:
         return GoalStatus(model.id(node))
     if _is_duration(model, node):
@@ -1071,8 +1111,16 @@ def _is_authored(model, node) -> bool:
 def _is_snapshot(model, node) -> bool:
     """Whether a node is itself a runtime sample-and-hold capture target. Its own graph fact
     -- not carried by `Provenance`, which only states whether a value was authored.
+
+    A snapshot derives from its source (`prov:wasDerivedFrom`) and is sampled on a scheduled
+    event (a time constraint stated `of-constraint` the quantity); a sensor tare carries the
+    schedule but no derivation, and a derived slot the derivation but no schedule.
     """
-    return ALGO_EXT.Snapshot in get_node_types(model.graph, node)
+    graph = model.graph
+    return (
+        graph.value(node, PROV.wasDerivedFrom) is not None
+        and next(graph.subjects(URI_TIME_PRED_OF_CONSTRAINT, node), None) is not None
+    )
 
 
 def _is_config_pose(model, node) -> bool:
@@ -1088,7 +1136,12 @@ def snapshot_target_ids(model) -> frozenset:
     """Every id whose node is a snapshot target, for readers that hold a record id rather than a
     graph node and so cannot call `_is_snapshot` directly.
     """
-    return frozenset(model.id(node) for node in model.graph.subjects(RDF.type, ALGO_EXT.Snapshot))
+    graph = model.graph
+    return frozenset(
+        model.id(node)
+        for node in set(graph.objects(None, URI_TIME_PRED_OF_CONSTRAINT))
+        if graph.value(node, PROV.wasDerivedFrom) is not None
+    )
 
 
 def quantity_provenance(model, node) -> Provenance:
@@ -1275,12 +1328,24 @@ def read_views(model) -> dict:
         views[model.id(node)] = View(
             model.id(node),
             superobject,
-            quantity(model, graph.value(node, MAP["subobject"])),
+            # The view itself, not its bare subobject: a pooled relation has several
+            # coordinates and the view's superobject pins which sampling is meant.
+            quantity(model, node),
             subspace(graph.value(node, MAP["subspace"])),
             axis(axis_node) if axis_node is not None else None,
         )
 
     return views
+
+
+def _is_pooled_relation(model, node) -> bool:
+    """A relation sampled by several coordinates: the samplings are the data, not the relation."""
+    types = get_node_types(model.graph, node)
+    if URI_GEOM_TYPE_POSITION in types and URI_GEOM_TYPE_POSITION_COORD not in types:
+        return len(PositionModel(node, model.graph).coordinate_ids) > 1
+    if URI_GEOM_TYPE_ORIENT in types and URI_GEOM_TYPE_ORIENT_COORD not in types:
+        return len(OrientationModel(node, model.graph).coordinate_ids) > 1
+    return False
 
 
 def read_data_structures(model) -> list:
@@ -1297,6 +1362,8 @@ def read_data_structures(model) -> list:
             # relies on, while making the published order reproducible.
             for type_, read in _DATA_STRUCTURE_READERS
             for node in sorted(model.graph[: RDF["type"] : type_])
+            # A pooled relation is no slot of its own: each of its samplings is one.
+            if not _is_pooled_relation(model, node)
         ]
     )
 
@@ -1360,8 +1427,15 @@ def views_for_access(
 
     indexed: dict[str, object] = {}
     for view in views.values():
+        # A constraint may name the view itself (relations are pooled), so every view also
+        # maps under its own id; view ids are unique, so this never conflicts.
+        indexed.setdefault(view.id, view)
         subobject_id = getattr(view.subobject, "id", None)
         if not subobject_id or subobject_id in direct_ids:
+            continue
+        if subobject_id == getattr(view.superobject, "id", None):
+            # A whole-component view of a pooled relation reads the superobject's own
+            # sampling; the superobject is computed elsewhere, not through this view.
             continue
         if (getattr(view.superobject, "id", None), subobject_id) in bound_into_pose:
             continue
@@ -1824,7 +1898,7 @@ def _pose_component(component_id: str, data_by_id: dict) -> ComponentRef:
 
 def _authored_pose_entry(model, pose_record, coordinate_node) -> PoseComponents | None:
     """The literal components a coordinate-authored pose carries, or None when it carries none."""
-    coordinate = PoseCoordModel(coordinate_node, model.graph)
+    coordinate = PoseCoordModel(coordinate_node, model.graph, coord_policy=recorded_coord_policy)
     representation = pose_record.orientation_representation or "quaternion"
     entry = PoseComponents(representation)
     values = position_values(model, coordinate.position_coord)
@@ -1863,10 +1937,11 @@ def _build_pose_components(model, views: dict, data: list) -> dict:
     snapshot_ids = snapshot_target_ids(model)
     for view in views.values():
         superobject = view.superobject
-        if superobject.type != "Pose":
+        # A snapshot pose is captured whole at runtime, so a per-axis view of it is a reading
+        # off the captured frame, never a component bound into the pose.
+        if superobject.type != "Pose" or superobject.id in snapshot_ids:
             continue
-        declared = superobject.provenance.authored or superobject.id in snapshot_ids
-        if not (declared or superobject.euler_axes_sequence):
+        if not (superobject.provenance.authored or superobject.euler_axes_sequence):
             continue
         component_axis = str(view.axis.value if view.axis else "").lower()
         subobject_id = getattr(view.subobject, "id", None)
@@ -1969,19 +2044,21 @@ def _snapshot_maps(model) -> _SnapshotMaps:
     source: dict[str, str] = {}
     owner: dict[str, str] = {}
     trigger: dict[tuple[str, str], str] = {}
-    for node in graph.subjects(RDF.type, ALGO_EXT.Snapshot):
-        output_node = graph.value(node, ALGO_EXT.out)
+    for schedule in graph.subjects(RDF.type, URI_TIME_TYPE_AFTER_EVT):
+        output_node = graph.value(schedule, URI_TIME_PRED_OF_CONSTRAINT)
         if output_node is None:
             continue
+        source_node = graph.value(output_node, PROV.wasDerivedFrom)
+        if source_node is None:
+            # A sensor tare: scheduled the same way, but nothing is derived.
+            continue
         output_id = model.id(output_node)
-        source_node = graph.value(node, ALGO_EXT["in"])
-        if source_node is not None:
-            source[output_id] = model.id(source_node)
+        source[output_id] = model.id(source_node)
         scope = model.context_scope(output_node)
         if scope is None:
             continue
         owner[output_id] = get_valid_var_name(scope[0])
-        trigger_node = graph.value(node, ALGO_EXT["trigger"])
+        trigger_node = graph.value(schedule, URI_TIME_PRED_AFTER_EVT)
         if trigger_node is not None:
             trigger[(owner[output_id], output_id)] = get_valid_var_name(
                 local_name(trigger_node)

@@ -58,7 +58,7 @@ guarded-motion (ns=app) hold {
 
     context {
         spec {
-            pose hold-pose = snapshot of <shared.world.pose-ee-base>
+            pose hold-pose = snapshot of <shared.world.pose-ee-base> on event <sm.E_HOLD_ENTERED>
         }
     }
 

@@ -129,6 +129,14 @@ direction normal = (0.0, 0.0, 1.0)
 
 Vectors are always a parenthesized, positional `(x, y, z)` -- never `{x: .., y: .., z: ..}`.
 
+A `direction` is what Borghesan et al. (2016) call a *versor*: a unit, position-free
+3-vector -- three components, an `as-seen-by` frame, no anchor and no magnitude (validation
+rejects a non-unit direction; magnitudes are separate scalar quantities). The word follows the
+Italian *versore* (unit vector) tradition, not Hamilton's versor, which is a unit *quaternion*
+-- a four-component rotation operator, an unrelated object that shares only the name. Unit
+quaternions appear in this DSL too, but as orientation coordinates (`quat { xyzw: ... }`),
+never as directions.
+
 References preserve type and may select a subspace or axis:
 
 ```robmot

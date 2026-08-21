@@ -53,7 +53,7 @@ guarded-motion (ns=app) watch-table {
 
     context {
         spec {
-            pose table-ref = snapshot of <shared.world.pose-table-cam>
+            pose table-ref = snapshot of <shared.world.pose-table-cam> on event <pcp.E_WATCH_ENTERED>
         }
     }
 

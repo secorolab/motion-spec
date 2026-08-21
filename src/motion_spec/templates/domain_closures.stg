@@ -375,6 +375,109 @@ emit-call-RotationVectorFromDirections(closure, views) ::= <<
 }
 >>
 
+// Table IIa: signed distance of a point from a plane, along the plane's normal. The gradient is
+// the normal itself -- the direction the point moves to increase the distance.
+emit-call-PointPlaneToLinearDistance(closure, views) ::= <<
+{
+    KDL::Vector _n_<closure.distance> = <access-expr(closure.direction, views)>;
+    _n_<closure.distance>.Normalize();
+    shared.<closure.distance> = KDL::dot(_n_<closure.distance>, shared.<closure.in1>.p - shared.<closure.in2>.p);
+    shared.<closure.gradient> = _n_<closure.distance>;
+}
+>>
+
+// Table IIa: unsigned distance from a point to a line; the gradient points from the line's
+// nearest point to the point. On the line the distance is zero and the gradient commands nothing.
+emit-call-PointLineToLinearDistance(closure, views) ::= <<
+{
+    KDL::Vector _d_<closure.distance> = <access-expr(closure.direction, views)>;
+    _d_<closure.distance>.Normalize();
+    const KDL::Vector _v_<closure.distance> = shared.<closure.in1>.p - shared.<closure.in2>.p;
+    const KDL::Vector _perp_<closure.distance> = _v_<closure.distance> - _d_<closure.distance> * KDL::dot(_v_<closure.distance>, _d_<closure.distance>);
+    const double _norm_<closure.distance> = _perp_<closure.distance>.Norm();
+    shared.<closure.distance> = _norm_<closure.distance>;
+    shared.<closure.gradient> = (_norm_<closure.distance> > 1e-9)
+        ? _perp_<closure.distance> / _norm_<closure.distance>
+        : KDL::Vector::Zero();
+}
+>>
+
+// Table IIa: signed travel of a point along a line's axis, from the line's origin.
+emit-call-PointOnLineProjection(closure, views) ::= <<
+{
+    KDL::Vector _d_<closure.distance> = <access-expr(closure.direction, views)>;
+    _d_<closure.distance>.Normalize();
+    shared.<closure.distance> = KDL::dot(shared.<closure.in1>.p - shared.<closure.in2>.p, _d_<closure.distance>);
+    shared.<closure.gradient> = _d_<closure.distance>;
+}
+>>
+
+// Table IIa: signed distance between two lines along their common normal. Parallel lines have
+// no common normal, so the distance falls back to the perpendicular offset and the gradient
+// commands nothing.
+emit-call-LineLineToLinearDistance(closure, views) ::= <<
+{
+    const KDL::Vector _a_<closure.distance> = <access-expr(closure.in1, views)>;
+    KDL::Vector _b_<closure.distance> = <access-expr(closure.in2, views)>;
+    // `pose` is KDL::diff(A's origin, B's origin), so its vel runs B-to-A the wrong way round:
+    // the signed value is A's origin relative to B's, as it is for every point-family operator.
+    const KDL::Vector _dp_<closure.distance> = -shared.<closure.pose>.vel;
+    KDL::Vector _n_<closure.distance> = _a_<closure.distance> * _b_<closure.distance>;
+    const double _norm_<closure.distance> = _n_<closure.distance>.Norm();
+    if (_norm_<closure.distance> > 1e-9) {
+        _n_<closure.distance> = _n_<closure.distance> / _norm_<closure.distance>;
+        shared.<closure.distance> = KDL::dot(_dp_<closure.distance>, _n_<closure.distance>);
+        shared.<closure.gradient> = _n_<closure.distance>;
+    } else {
+        _b_<closure.distance>.Normalize();
+        const KDL::Vector _perp_<closure.distance> = _dp_<closure.distance> - _b_<closure.distance> * KDL::dot(_dp_<closure.distance>, _b_<closure.distance>);
+        shared.<closure.distance> = _perp_<closure.distance>.Norm();
+        shared.<closure.gradient> = KDL::Vector::Zero();
+    }
+}
+>>
+
+// Table IIa: signed travel of line A's origin along line B's axis, from B's origin.
+emit-call-LineOnLineProjection(closure, views) ::= <<
+{
+    KDL::Vector _b_<closure.distance> = <access-expr(closure.in2, views)>;
+    _b_<closure.distance>.Normalize();
+    // `pose` is KDL::diff(A's origin, B's origin), so its vel runs B-to-A the wrong way round:
+    // the travel is A's origin from B's, as it is for every point-family operator.
+    const KDL::Vector _dp_<closure.distance> = -shared.<closure.pose>.vel;
+    shared.<closure.distance> = KDL::dot(_dp_<closure.distance>, _b_<closure.distance>);
+    shared.<closure.gradient> = _b_<closure.distance>;
+}
+>>
+
+// Table IIb: the incident angle a direction makes with a plane, signed positive on the normal's
+// side. The gradient is the axis a positive rotation of the direction turns about to open it.
+emit-call-DirectionPlaneToAngularDistance(closure, views) ::= <<
+{
+    const KDL::Vector _d_<closure.angle> = <access-expr(closure.in1, views)>;
+    const KDL::Vector _n_<closure.angle> = <access-expr(closure.in2, views)>;
+    shared.<closure.angle> = std::asin(std::clamp(KDL::dot(_d_<closure.angle>, _n_<closure.angle>), -1.0, 1.0));
+    const KDL::Vector _axis_<closure.angle> = _d_<closure.angle> * _n_<closure.angle>;
+    const double _norm_<closure.angle> = _axis_<closure.angle>.Norm();
+    // Parallel to the normal there is no axis to turn about, so the gradient vanishes.
+    shared.<closure.gradient> = (_norm_<closure.angle> > 1e-9)
+        ? _axis_<closure.angle> / _norm_<closure.angle>
+        : KDL::Vector::Zero();
+}
+>>
+
+// The axis a positive moment turns `in1` toward `in2` about, matching the drive direction
+// RotationVectorFromDirections takes.
+emit-call-AngleGradientFromDirections(closure, views) ::= <<
+{
+    const KDL::Vector _axis_<closure.gradient> = <access-expr(closure.in1, views)> * <access-expr(closure.in2, views)>;
+    const double _norm_<closure.gradient> = _axis_<closure.gradient>.Norm();
+    shared.<closure.gradient> = (_norm_<closure.gradient> > 1e-9)
+        ? _axis_<closure.gradient> / _norm_<closure.gradient>
+        : KDL::Vector::Zero();
+}
+>>
+
 emit-call-RotateDirectionDistalToProximalWithPose(closure, views) ::= <<
 shared.<closure.to> = shared.<closure.pose>.M * <access-expr(closure.from, views)>;
 >>

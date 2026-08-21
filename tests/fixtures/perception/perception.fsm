@@ -2,6 +2,7 @@ ns pcp = "https://secorolab.github.io/models/perception-fixture/fsm/"
 
 evt loop (ns=pcp) perception_fsm_events {
     evt E_STEP,
+    evt E_WATCH_ENTERED,
     evt E_ANCHOR_SEEN
 }
 
@@ -25,7 +26,7 @@ fsm (ns=pcp) perception_fsm {
     }
 
     reactions {
-        R_STEP_START   { when: <perception_fsm_events.E_STEP>,        do: <T_START_WATCH> },
+        R_STEP_START   { when: <perception_fsm_events.E_STEP>,        do: <T_START_WATCH>, fires { <perception_fsm_events.E_WATCH_ENTERED> } },
         R_ANCHOR_MOVED { when: <perception_fsm_events.E_ANCHOR_SEEN>, do: <T_WATCH_DONE> }
     }
 }

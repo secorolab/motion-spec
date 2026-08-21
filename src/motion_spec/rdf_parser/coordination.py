@@ -52,6 +52,7 @@ from motion_spec.rdf_parser import quantities
 from motion_spec.rdf_parser.constraint_handler import (
     SolverIdFactory,
     alignment_chain_ops,
+    alignment_gradient_op,
     alignment_rotation_op,
     annotate_controller_signals,
 )
@@ -1302,9 +1303,10 @@ def _motion_schedules(
 
 def _alignment_chain_steps(model, phase) -> list:
     """Compute ops for every alignment this motion holds during: rotated direction, angle, then
-    rotation vector. A moment controller reads the rotation vector through shared state, so the
-    backward walk from its wrench never reaches these, and the ops are emitted once for the whole
-    model -- every motion that holds the constraint has to name them itself.
+    the direction the constraint is driven along -- a rotation vector onto the reference, or, off
+    zero, the gradient axis. Both are read through shared state, by a moment controller's wrench
+    or by a solver row, so the backward walk from either never reaches these; the ops are emitted
+    once for the whole model, and every motion that holds the constraint has to name them itself.
     """
     graph = model.graph
     steps = []
@@ -1312,11 +1314,11 @@ def _alignment_chain_steps(model, phase) -> list:
         quantity = graph.value(constraint, CSTR.quantity)
         if quantity is None:
             continue
-        rotation_op = alignment_rotation_op(model, quantity)
-        if rotation_op is None:
+        drive_op = alignment_rotation_op(model, quantity) or alignment_gradient_op(model, quantity)
+        if drive_op is None:
             continue
         _append_new(steps, [model.id(op) for op in alignment_chain_ops(model, quantity)])
-        _append_new(steps, [model.id(rotation_op)])
+        _append_new(steps, [model.id(drive_op)])
     return steps
 
 
@@ -1331,7 +1333,7 @@ def _pose_command_steps(model, scope, active_plans) -> list:
         if alignment_rotation_op(model, plan.quantity) is not None:
             continue
         reference = graph.value(plan.constraint, CSTR["reference-value"])
-        reference_view = next(graph.subjects(MAP.subobject, reference), None)
+        reference_view = quantities.view_of(graph, reference)
         interpolation = next(
             graph.subjects(GEOM_OP.out, graph.value(reference_view, MAP.superobject)), None
         )
@@ -1522,7 +1524,7 @@ def _forwarded_commands(model, phase, chain_solvers, runtime_solvers, derivation
             continue
         controller = derivation.controllers_for(plan)[0]
         quantity = graph.value(plan.constraint, CSTR.quantity)
-        view = next(graph.subjects(MAP.subobject, quantity), None)
+        view = quantities.view_of(graph, quantity)
         target_quantity = graph.value(view, MAP.superobject) if view is not None else quantity
         target = graph.value(target_quantity, KC_STAT["of-joint"])
         chain_solver = next(

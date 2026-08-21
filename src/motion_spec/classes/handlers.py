@@ -130,6 +130,8 @@ class LevelMonitor:
     # Set when the monitor targets an expression node: the member constraint ids it
     # aggregates, and whether they combine with 'any' rather than 'all'.
     group_constraint_ids: list[str] = field(default_factory=list, metadata=INTERNAL)
+    group_constraint_uris: list[str] = field(default_factory=list, metadata=INTERNAL)
+    group_constraint_tolerances: list[str] = field(default_factory=list, metadata=INTERNAL)
     # The constraints this monitor watches, by id: how a term read directly off shared state --
     # an elapsed clock, an action goal's status -- is matched to the monitor that reads it.
     constraint_ids: list[str] = field(default_factory=list, metadata=INTERNAL)
@@ -163,6 +165,8 @@ class EdgeMonitor:
     # Set when the monitor targets an expression node: the member constraint ids it
     # aggregates, and whether they combine with 'any' rather than 'all'.
     group_constraint_ids: list[str] = field(default_factory=list, metadata=INTERNAL)
+    group_constraint_uris: list[str] = field(default_factory=list, metadata=INTERNAL)
+    group_constraint_tolerances: list[str] = field(default_factory=list, metadata=INTERNAL)
     # The constraints this monitor watches, by id: how a term read directly off shared state --
     # an elapsed clock, an action goal's status -- is matched to the monitor that reads it.
     constraint_ids: list[str] = field(default_factory=list, metadata=INTERNAL)

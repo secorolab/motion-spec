@@ -401,10 +401,35 @@ function populateConstraints() {
     row.className = "constraint";
     row.dataset.kind = constraint.kind;
     if (!constraint.window) row.dataset.idle = "true";
-    line.textContent = `L${constraint.line}`;
+    line.textContent = constraint.line ? `L${constraint.line}` : "";
     name.textContent = constraint.name;
     expression.textContent = constraint.expression;
     row.append(line, name, expression);
+    if (constraint.members?.length) {
+      const members = document.createElement("button");
+      members.className = "plot-members";
+      members.textContent = `plot ${constraint.members.length} members`;
+      members.title = "One plot per watched constraint: they are not the same quantity";
+      members.onclick = (event) => {
+        event.stopPropagation();
+        row.dataset.plotted = "true";
+        constraint.members.forEach((member) => addPlot(
+          [member.error],
+          `${constraint.motion ?? "shared"} / ${member.id}`,
+          `watched by ${constraint.name}`,
+          {
+            row,
+            // the member's error is judged against its own band, around satisfied
+            constraint: {
+              ...constraint,
+              tolerance: member.tolerance ?? constraint.tolerance,
+              setpoints: [{ label: "satisfied", value: 0 }],
+            },
+          },
+        ));
+      };
+      row.append(members);
+    }
     if (constraint.tracking.length || constraint.control.length || constraint.monitors.length) {
       row.dataset.plottable = "true";
       row.title = constraint.window
@@ -419,7 +444,8 @@ function populateConstraints() {
         row.dataset.plotted = "true";
         const title = `${constraint.motion ?? "shared"} / ${constraint.name}`;
         const between = constraint.between.length ? ` · ${constraint.between.join(" vs ")}` : "";
-        const detail = `L${constraint.line}: ${constraint.expression}${between}`;
+        const where = constraint.line ? `L${constraint.line}: ` : "";
+        const detail = `${where}${constraint.expression ?? constraint.name}${between}`;
         // measured against its setpoint where there is one; otherwise the error against zero
         const tracked = constraint.tracking.length ? constraint.tracking : constraint.error;
         const bands = constraint.tracking.length
@@ -713,7 +739,11 @@ function setpointBands(constraint) {
     },
     markArea: {
       silent: true,
-      itemStyle: { color: "rgba(240, 195, 106, .1)" },
+      itemStyle: { color: "rgba(240, 195, 106, .12)", borderColor: "rgba(240, 195, 106, .35)", borderWidth: 1, borderType: "dashed" },
+      label: {
+        show: tolerance > 0, position: "insideEndBottom", color: "#f0c36a", fontSize: 10,
+        formatter: `±${tolerance}`,
+      },
       data: constraint.setpoints.map((point) => [
         { yAxis: point.value - tolerance }, { yAxis: point.value + tolerance },
       ]),

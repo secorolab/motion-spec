@@ -657,6 +657,10 @@ class ErrorEvaluator:
                 "id": model.id(node),
                 "type": "ErrorEvaluator",
                 "constraint": model.id(operator.type_),
+                # Which constraint this evaluates, not just what kind: a monitor watching an
+                # aggregate reaches its members' errors through this.
+                "constraint_id": model.id(constraint_id),
+                "constraint_uri": str(constraint_id),
             }
             # An equality error on a continuous joint wraps to the shortest arc, unless the
             # controller driving it states the interval its error is read into.

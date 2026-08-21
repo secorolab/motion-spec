@@ -194,7 +194,7 @@ h1 { margin: 7px 0; font-size: 30px; }
 .constraint-panel input { margin: 10px 0; }
 .constraints { max-height: 280px; overflow: auto; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .constraint {
-  display: grid; grid-template-columns: 64px 210px minmax(0, 1fr); gap: 12px; padding: 8px 10px;
+  display: grid; grid-template-columns: 64px 210px minmax(0, 1fr) auto; gap: 12px; padding: 8px 10px;
   border-bottom: 1px solid #292d33; color: var(--muted); font: 12px var(--mono);
 }
 .constraint span:first-child { color: var(--dim); }
@@ -274,7 +274,7 @@ h1 { margin: 7px 0; font-size: 30px; }
   body.sidebar-collapsed .transport { left: 0; }
   .item { display: inline-block; width: auto; border-right: 1px solid var(--line); }
   #browser { overflow: auto; white-space: nowrap; }
-  .constraint { grid-template-columns: 54px 150px minmax(0, 1fr); }
+  .constraint { grid-template-columns: 54px 150px minmax(0, 1fr) auto; }
   .chart-controls { flex-direction: column; align-items: stretch; }
   .chart-controls select { min-width: 0; }
   .plots { grid-template-columns: 1fr; }
@@ -369,3 +369,6 @@ body:has(.notebook) #content { position: relative; max-width: none; padding: 0; 
 .ask-actions button:hover { border-color: var(--muted); color: var(--text); }
 .ask-actions .ask-yes { border-color: var(--accent); color: var(--accent); }
 .ask-actions .ask-yes:hover { background: #382b29; color: var(--accent); }
+.plot-members { align-self: center; padding: 3px 9px; border: 1px solid var(--line); background: var(--bg); color: var(--dim); font: 9px var(--mono); letter-spacing: .06em; cursor: pointer; }
+.constraint:hover .plot-members { color: var(--muted); }
+.plot-members:hover { border-color: var(--accent); color: var(--accent); }

@@ -796,11 +796,21 @@ message SlotIri {
   string tolerance_id = 12;
   // Every watched constraint: an aggregate monitor watches more than the scalar can say.
   repeated string constraint_iris = 13;
+  // Each one with the error it is judged by, so a conjunction can be read member by member.
+  repeated WatchedConstraint watched = 18;
   repeated SlotGain gains = 14;
   // The two quantities the evaluator compares, the difference it writes, and the closure itself.
   repeated string operand_ids = 15;
   string difference_id = 16;
   string evaluator_id = 17;
+}
+
+// One constraint an aggregate monitor watches, and the error its evaluator writes.
+message WatchedConstraint {
+  string id = 1;
+  string iri = 2;
+  string error_id = 3;
+  string tolerance_id = 4;
 }
 
 // A controller's gains: literals folded into the controller, so no quantity slot carries them.

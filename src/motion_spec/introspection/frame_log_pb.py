@@ -97,6 +97,13 @@ def _build_file_descriptor(fields: dict) -> descriptor_pb2.FileDescriptorProto:
     )
     slot_iri.field.add(name="operand_ids", number=15, label=D.LABEL_REPEATED, type=D.TYPE_STRING)
     slot_iri.field.add(
+        name="watched",
+        number=18,
+        label=D.LABEL_REPEATED,
+        type=D.TYPE_MESSAGE,
+        type_name=f".{PROTO_PACKAGE}.WatchedConstraint",
+    )
+    slot_iri.field.add(
         name="gains",
         number=14,
         label=D.LABEL_REPEATED,
@@ -115,6 +122,9 @@ def _build_file_descriptor(fields: dict) -> descriptor_pb2.FileDescriptorProto:
     ):
         transition.field.add(name=fname, number=number, label=D.LABEL_OPTIONAL, type=ftype)
     transition.field.add(name="event_indices", number=7, label=D.LABEL_REPEATED, type=D.TYPE_UINT32)
+    watched = fdp.message_type.add(name="WatchedConstraint")
+    for fname, number in (("id", 1), ("iri", 2), ("error_id", 3), ("tolerance_id", 4)):
+        watched.field.add(name=fname, number=number, label=D.LABEL_OPTIONAL, type=D.TYPE_STRING)
     constant = fdp.message_type.add(name="Constant")
     for fname, ftype, number in (
         ("id", D.TYPE_STRING, 1),

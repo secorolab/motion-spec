@@ -142,7 +142,35 @@ def _quantity_row(item, uri_by_id: dict, snapshot_ids: frozenset) -> dict:
     )
 
 
-def _motion_rows(motions, uri_by_id: dict):
+def _watched_constraints(monitor, closures: dict, uri_by_id: dict) -> list:
+    """What an aggregate monitor watches: each member constraint and the error it is judged by.
+
+    The scalar a conjunction writes says only whether every member holds. A reader asking why
+    it does not needs the members: each one's error, as its evaluator writes it, and the band
+    that error is judged against.
+    """
+    errors = {
+        closure["constraint_id"]: closure.get("error")
+        for closure in closures.values()
+        if closure.get("type") == "ErrorEvaluator" and closure.get("constraint_id")
+    }
+    return [
+        _prune({
+            "id": member,
+            "uri": uri,
+            "error_signal": errors.get(member),
+            "tolerance_signal": band or None,
+        })
+        for member, uri, band in zip(
+            monitor.group_constraint_ids or (),
+            monitor.group_constraint_uris or (),
+            monitor.group_constraint_tolerances or [""] * len(monitor.group_constraint_ids or ()),
+            strict=False,
+        )
+    ]
+
+
+def _motion_rows(motions, uri_by_id: dict, closures: dict):
     """The motion, controller, monitor and signal rows, walked in one pass over the motions."""
     motion_rows, controller_rows, monitor_rows, signals = [], [], [], []
     for motion in motions:
@@ -189,6 +217,7 @@ def _motion_rows(motions, uri_by_id: dict):
                             "tolerance_signal": _id_of(monitor.tolerance),
                             "constraint_ids": monitor.constraint_ids,
                             "constraint_uris": monitor.constraint_uris,
+                            "watched": _watched_constraints(monitor, closures, uri_by_id),
                             "fallback_motion": getattr(monitor, "fallback_motion", None),
                             "debounce_duration_s": getattr(monitor, "debounce_duration_s", None),
                         }
@@ -1283,7 +1312,9 @@ def build_introspection(
     """
     # Appended, never substituted: authored nodes keep their IRIs, derived ones extend them.
     uri_by_id = {row["id"]: row["uri"] for row in model.uri_rows()}
-    motion_rows, controller_rows, monitor_rows, signals = _motion_rows(motions, uri_by_id)
+    motion_rows, controller_rows, monitor_rows, signals = _motion_rows(
+        motions, uri_by_id, computation.closures
+    )
     snapshot_ids = quantities.snapshot_target_ids(model)
     quantity_rows = [
         _quantity_row(item, uri_by_id, snapshot_ids) for item in computation.data_structures

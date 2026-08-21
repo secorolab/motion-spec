@@ -264,6 +264,7 @@ def _monitor_slot(
         "phase": phase,
         "constraint_ids": row.get("constraint_ids") or [],
         "constraint_uris": row.get("constraint_uris") or [],
+        "watched": row.get("watched") or [],
         "type": monitor.get("monitor_type") or monitor.get("type"),
         "trigger": "edge" if monitor.get("is_edge_triggered") else "level",
         "event": event_id,
@@ -939,6 +940,15 @@ def build_frame_log_header_record(schema: dict) -> bytes:
                     setattr(slot, field, slot_entry.get(key) or "")
                 # The two quantities the evaluator compares: what "between" is drawn from.
                 slot.operand_ids.extend(slot_entry.get("operand_ids") or ())
+                # An aggregate monitor's members, each with the error it is judged by.
+                for member in slot_entry.get("watched") or ():
+                    watched = slot.watched.add()
+                    watched.id = member.get("id") or ""
+                    watched.iri = member.get("uri") or member.get("iri") or ""
+                    watched.error_id = member.get("error_signal") or member.get("error_id") or ""
+                    watched.tolerance_id = (
+                        member.get("tolerance_signal") or member.get("tolerance_id") or ""
+                    )
                 # Gains are literals folded into the controller: no quantity slot carries them.
                 for role, value in (slot_entry.get("gains") or {}).items():
                     gain = slot.gains.add()

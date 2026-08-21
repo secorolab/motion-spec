@@ -206,7 +206,7 @@ def constraint_evaluator(model, node) -> ConstraintEvaluator:
 
 
 def _monitored_expression(model, monitored):
-    """The expression node a monitor targets, as its member ids and its logic.
+    """The expression node a monitor targets: its member ids, IRIs, tolerances, and its logic.
 
     A named group and a whole-section conjunction/disjunction are the same thing here: one
     condition carrying its own members and join, which the monitor's terms are built from.
@@ -215,12 +215,17 @@ def _monitored_expression(model, monitored):
         (node for node in monitored if quantities.is_constraint_aggregate(model, node)), None
     )
     if expression is None:
-        return [], False
-    members = sorted(
-        model.id(member) for member in model.graph[expression : CSTR_EXT["has-constraint"]]
-    )
+        return [], [], [], False
+    nodes = sorted(model.graph[expression : CSTR_EXT["has-constraint"]])
+    members = [model.id(member) for member in nodes]
+    bands = [model.graph.value(member, CSTR_EXT["tolerance"]) for member in nodes]
 
-    return members, CSTR_EXT.ConstraintDisjunction in get_node_types(model.graph, expression)
+    return (
+        members,
+        [str(member) for member in nodes],
+        [model.id(band) if band is not None else "" for band in bands],
+        CSTR_EXT.ConstraintDisjunction in get_node_types(model.graph, expression),
+    )
 
 
 @reader
@@ -240,7 +245,7 @@ def monitor_entry(model, node):
     )
     is_until_aggregate = aggregate and monitored == sections["until"]
     is_when_aggregate = aggregate and monitored == sections["when"]
-    group_ids, group_any = _monitored_expression(model, monitored)
+    group_ids, group_uris, group_bands, group_any = _monitored_expression(model, monitored)
 
     error_node = graph.value(node, CSTR_HDL["error"])
     error = (
@@ -259,6 +264,8 @@ def monitor_entry(model, node):
         "is_until_aggregate": is_until_aggregate,
         "is_when_aggregate": is_when_aggregate,
         "group_constraint_ids": group_ids,
+        "group_constraint_uris": group_uris,
+        "group_constraint_tolerances": group_bands,
         "group_any": group_any,
         "constraint_ids": sorted(model.id(item) for item in monitored),
         "constraint_uris": sorted(str(item) for item in monitored),

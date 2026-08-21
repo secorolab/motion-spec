@@ -9,6 +9,7 @@ import shutil
 from motion_spec.dashboard import server
 from motion_spec.dashboard.runs import GenerationCatalog, GenerationInfo, RunInfo
 from motion_spec.generation.artifacts import build_frame_layout
+from motion_spec.introspection.replay import resolve_archive
 
 from dashboard_fixture import CONSTRAINT, CTRL, MONITOR, QUANTITY, schema
 from frame_log_fixture import flat_frame, write_frame_log_pb
@@ -150,6 +151,11 @@ def _contract_schema(evaluator: dict | None = None) -> dict:
             "constraint_ids": ["settled"],
             "constraint_uris": [SETTLED],
             "error_signal": "err_x",
+            # What an aggregate watches: each member and the error it is judged by.
+            "watched": [
+                {"id": "settled", "uri": SETTLED, "error_signal": "err_x"},
+                {"id": "at_rest", "uri": "https://example.test/at_rest", "error_signal": "dist"},
+            ],
         }
     ]
     doc["schema_hash"] = _hash_doc(doc)
@@ -259,3 +265,102 @@ def test_a_generation_counts_its_constraints_before_any_run(tmp_path, monkeypatc
 
     details = server.generation_details(gen)
     assert (details["authored_constraints"], details["motions"]) == (2, 1)
+
+
+TWO_MOTION_ROBMOT = """
+guarded-motion (ns=demo) home {
+    while {
+        align-forearm: angle within <align-band>,
+    }
+}
+
+guarded-motion (ns=demo) touchdown {
+    while {
+        align-forearm: angle within <align-band>,
+    }
+}
+"""
+
+
+def _two_motion_schema() -> dict:
+    """Two motions authoring the same constraint name, as a real model reuses one everywhere."""
+    doc = _contract_schema()
+    doc["pools"]["constraints"] = 2
+    for index, (motion, iri) in enumerate(
+        (("home", "https://example.test/demo/home/while/align-forearm"),
+         ("touchdown", "https://example.test/demo/touchdown/while/align-forearm")),
+    ):
+        # The gate is the handler, the source authors the motion: the two names differ, as
+        # they do in a real model, so a row cannot be attributed by the gate's name alone.
+        doc["by_motion"][f"handler_{motion}"] = {
+            "index": index,
+            "id": f"handler_{motion}",
+            "uri": f"https://example.test/demo/handler-{motion}",
+            "controllers": [
+                {
+                    "index": index,
+                    "id": f"ctrl_{motion}_align",
+                    "uri": f"https://example.test/demo/ctrl-{motion}-align",
+                    "constraint": "align-forearm",
+                    "constraint_uri": iri,
+                    "error_signal": "err_x",
+                }
+            ],
+            "monitors": [],
+        }
+    doc["by_motion"].pop("move", None)
+    doc["schema_hash"] = _hash_doc(doc)
+    return doc
+
+
+def _two_motion_run(tmp_path) -> object:
+    doc = _two_motion_schema()
+    run = tmp_path / "demo" / "20260821T000000Z" / "runs" / "run-1"
+    (run / "logs").mkdir(parents=True)
+    (run / "source").mkdir()
+    (run / "source" / "demo.robmot").write_text(TWO_MOTION_ROBMOT)
+    frame = flat_frame(doc, t=0.001, step=1, fsm_state=0, active_motion=0, last_event=-1)
+    write_frame_log_pb(run / "logs" / "frame_log.pb", doc, [frame])
+    (run / "manifest.json").write_text(
+        json.dumps({
+            "run_id": "run-1",
+            "files": {"frame_log": "logs/frame_log.pb", "sources": ["source/demo.robmot"]},
+        })
+    )
+    return run
+
+
+def test_one_name_authored_in_two_motions_keeps_each_motion_and_line(tmp_path):
+    """The IRI says which motion a slot serves; a shared name must not take the first one's line."""
+    run = _two_motion_run(tmp_path)
+    _, log, manifest, contract = resolve_archive(run)
+    rows = server.source_constraints(run, manifest, contract)
+
+    by_motion = {row["motion"]: row for row in rows if row["name"] == "align-forearm"}
+    assert set(by_motion) == {"home", "touchdown"}
+    assert by_motion["home"]["line"] != by_motion["touchdown"]["line"]
+    assert by_motion["home"]["error"] == ["err_x"]
+
+
+def test_a_slot_the_source_does_not_author_borrows_no_line(tmp_path):
+    """A generated monitor has no authored line, and must not take one from a like-named row."""
+    run = _two_motion_run(tmp_path)
+    _, log, manifest, contract = resolve_archive(run)
+    rows = server.source_constraints(run, manifest, contract)
+    invented = [row for row in rows if row["name"] not in {"align-forearm"}]
+
+    assert all(row["line"] is None for row in invented)
+
+
+def test_an_aggregate_monitor_offers_the_members_it_watches(tmp_path):
+    """The scalar says every member holds; the members say which one does not, each on its own."""
+    run = _archived_run(tmp_path, vendored=True)
+    _, log, manifest, contract = resolve_archive(run)
+    row = next(
+        row for row in server.source_constraints(run, manifest, contract) if row["kind"] == "monitored"
+    )
+
+    assert [member["id"] for member in row["members"]] == ["settled", "at_rest"]
+    assert [member["error"] for member in row["members"]] == ["err_x", "dist"]
+    # The monitor's own scalar stays its own: a member error is not folded into it.
+    assert row["error"] == ["err_x"]

@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import parse_qs, urlparse
 
 import rdflib
@@ -403,21 +403,36 @@ def _by_constraint(slots) -> dict:
     return groups
 
 
+def authored_key(slot, motion, name: str) -> tuple[str, str]:
+    """The (motion, constraint) a slot was authored as, from the IRI the header carries.
+
+    A constraint IRI reads `<model>/<motion>/<phase>/<constraint>`, so it says which motion the
+    slot serves. A name alone does not: one authored in several motions -- an elbow held
+    everywhere -- would otherwise take the first motion's line for all of them.
+    """
+    # A generated conjunction has no motion of its own in its IRI, but what it watches does:
+    # it is the motion's `until`, so it belongs in that motion, not in a block beside it.
+    for iri in (slot.constraint_iri, *(member.iri for member in slot.watched)):
+        segments = PurePosixPath(urlparse(iri or "").path).parts
+        if len(segments) >= 3 and segments[-2] in ("while", "until", "when"):
+            return (_key(segments[-3]), _key(name))
+    return (_key(motion.id), _key(name))
+
+
 def _constraint_row(motion, kind: str, group: list, constants: dict, authored: dict) -> dict:
+    spelled = {_key(name): name for _, _, name in authored.values()}
     """One constraint's row: its identity and signals from the header, its line from the source."""
     first = group[0]
     name = first.constraint_id or rdf_name(first.constraint_iri) or first.id
-    key = (_key(motion.id).removeprefix("motion_"), _key(name))
-    line, expression, authored_motion = authored.get(key) or next(
-        (value for (_motion, authored_name), value in authored.items() if authored_name == key[1]),
-        (None, None, None),
-    )
+    key = authored_key(first, motion, name)
+    line, expression, authored_motion = authored.get(key, (None, None, None))
     # The header names the pair the evaluator compares; measured/setpoint only where it does not.
     operands = list(dict.fromkeys(value for slot in group for value in slot.operand_ids))
     compared = operands or [*_slot_ids(group, "measured_id"), *_slot_ids(group, "setpoint_id")]
     evaluator = next(iter(_slot_ids(group, "evaluator_id")), None)
     return {
-        "motion": authored_motion or motion.id,
+        # As the source spells it, so a generated row lands in the motion's own block
+        "motion": authored_motion or spelled.get(key[0]) or key[0] or motion.id,
         "handler": motion.id,
         "line": line,
         "name": name,
@@ -427,6 +442,17 @@ def _constraint_row(motion, kind: str, group: list, constants: dict, authored: d
         "evaluator": evaluator or first.iri or first.id or None,
         "between": compared,
         "tracking": [value for value in compared if value not in constants],
+        # An aggregate monitor's scalar says only that every member holds; each member says why,
+        # and they are not one plot: a velocity and a distance share no axis.
+        "members": list({
+            member.id: {
+                "id": member.id,
+                "iri": member.iri,
+                "error": member.error_id,
+                "tolerance": constants.get(member.tolerance_id),
+            }
+            for slot in group for member in slot.watched if member.error_id
+        }.values()),
         "error": _slot_ids(group, "error_id"),
         "control": _slot_ids(group, "output_id"),
         "monitors": [slot.id for slot in group] if kind == "monitored" else [],

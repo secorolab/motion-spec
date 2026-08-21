@@ -104,8 +104,12 @@ def test_generations_expose_their_runs_newest_first(tmp_path):
     assert GenerationInfo(gen).runs[0].health is None  # no health sidecar written
 
 
-def _contract_schema() -> dict:
-    """The dashboard schema, with the identity a controller and a monitor slot carry in a header."""
+def _contract_schema(evaluator: dict | None = None) -> dict:
+    """The dashboard schema, with the identity a controller and a monitor slot carry in a header.
+
+    `evaluator` is what a slot whose error comes from a closure adds: the pair it compares, the
+    difference it writes and the closure itself.
+    """
     doc = schema()
     doc["pools"].update({"quantities": 2, "wrenches": 1})
     doc["quantities"] = [
@@ -132,6 +136,7 @@ def _contract_schema() -> dict:
             "measured_signal": "dist",
             "setpoint_signal": "target_height",
             "tolerance_signal": "tol_height",
+            **(evaluator or {}),
         }
     ]
     doc["by_motion"]["move"]["monitors"] = [
@@ -149,9 +154,9 @@ def _contract_schema() -> dict:
     return doc
 
 
-def _archived_run(tmp_path, *, vendored: bool):
+def _archived_run(tmp_path, *, vendored: bool, evaluator: dict | None = None):
     """A run archive whose log carries the contract, with its source vendored or generation-side."""
-    doc = _contract_schema()
+    doc = _contract_schema(evaluator)
     run = tmp_path / "demo" / "20260821T000000Z" / "runs" / "run-1"
     (run / "logs").mkdir(parents=True)
     frame = flat_frame(
@@ -196,6 +201,23 @@ def test_constraint_rows_are_read_off_the_log_header(tmp_path):
     assert (settled["kind"], settled["line"]) == ("monitored", 7)
     assert settled["monitors"] == ["done_mon.value", "done_mon.satisfied"]
     assert settled["error"] == ["err_x"]
+
+
+def test_between_names_the_pair_the_evaluator_compares(tmp_path):
+    """A pose constraint has no measured/setpoint pair to plot, so the row reads the two operands
+    the header says its evaluator differences, and names the closure rather than the slot."""
+    run = _archived_run(
+        tmp_path,
+        vendored=True,
+        evaluator={
+            "operand_ids": ["pose_ee", "pose_target"],
+            "difference_id": "pose_diff",
+            "evaluator_id": "eval_pose",
+        },
+    )
+    held = {row["name"]: row for row in server.replay_data(run)["constraints"]}["hold-height"]
+    assert held["between"] == ["pose_ee", "pose_target"]
+    assert held["evaluator"] == "eval_pose"
 
 
 def test_the_authored_line_falls_back_to_the_generation_source(tmp_path):

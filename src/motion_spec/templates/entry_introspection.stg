@@ -797,6 +797,10 @@ message SlotIri {
   // Every watched constraint: an aggregate monitor watches more than the scalar can say.
   repeated string constraint_iris = 13;
   repeated SlotGain gains = 14;
+  // The two quantities the evaluator compares, the difference it writes, and the closure itself.
+  repeated string operand_ids = 15;
+  string difference_id = 16;
+  string evaluator_id = 17;
 }
 
 // A controller's gains: literals folded into the controller, so no quantity slot carries them.

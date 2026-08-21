@@ -88,11 +88,14 @@ def _build_file_descriptor(fields: dict) -> descriptor_pb2.FileDescriptorProto:
         ("measured_id", D.TYPE_STRING, 10),
         ("setpoint_id", D.TYPE_STRING, 11),
         ("tolerance_id", D.TYPE_STRING, 12),
+        ("difference_id", D.TYPE_STRING, 16),
+        ("evaluator_id", D.TYPE_STRING, 17),
     ):
         slot_iri.field.add(name=fname, number=number, label=D.LABEL_OPTIONAL, type=ftype)
     slot_iri.field.add(
         name="constraint_iris", number=13, label=D.LABEL_REPEATED, type=D.TYPE_STRING
     )
+    slot_iri.field.add(name="operand_ids", number=15, label=D.LABEL_REPEATED, type=D.TYPE_STRING)
     slot_iri.field.add(
         name="gains",
         number=14,

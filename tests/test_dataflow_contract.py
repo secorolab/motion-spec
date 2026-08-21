@@ -149,14 +149,17 @@ def _annotated() -> tuple[dict, list]:
     return introspection, shared_data
 
 
-def _schema() -> dict:
+def _schema(*, closures: dict | None = None, controllers: list | None = None) -> dict:
     introspection, _shared = _annotated()
     # build_schema reads the published IR, so the motions cross as the JSON they serialize to.
+    motions = json.loads(json.dumps(_model()[3], cls=DataclassJSONEncoder))
+    if controllers is not None:
+        motions[1]["controllers"] = controllers  # motion_arc
     ir = {
         "configuration": {"platform": {"name": "MuJoCo", "simulated": True, "backend": "mj_kdl"}},
         "communication": {"introspection": introspection},
-        "coordination": {"motions": json.loads(json.dumps(_model()[3], cls=DataclassJSONEncoder))},
-        "computation": {"shared_data": []},
+        "coordination": {"motions": motions},
+        "computation": {"shared_data": [], "closures": closures or {}},
     }
     fsm_ir = {"states": ["S_HOME", "S_ARC"], "events": [], "start_state": "S_HOME"}
     return build_schema(ir, ir_path=Path("ir.json"), output_dir=Path("."), fsm_ir=fsm_ir)
@@ -499,6 +502,48 @@ def test_a_slot_carries_what_it_serves_and_a_constant_who_reads_it(tmp_path: Pat
     assert [(c.kind, c.id, c.role) for c in logged.consumers] == [
         ("controller", "ctrl_push", "setpoint_signal")
     ]
+
+
+def test_a_slot_names_the_evaluator_and_the_pair_it_compares(tmp_path: Path) -> None:
+    """The header says what a constraint's error is computed from: the evaluator closure, the two
+    quantities it compares and the difference it writes. A pose pair fills no measured/setpoint,
+    so a reader holding only those had nothing to plot."""
+    schema = _schema(
+        closures={
+            "eval_pose": {
+                "id": "eval_pose",
+                "type": "PoseDiffEvaluator",
+                "in1": "pose_ee",
+                "in2": "pose_target",
+                "out": "pose_diff",
+                # Only the difference is computed; the per-axis errors are views onto it.
+                "errors": ["arc_only_error"],
+            },
+            "eval_reach": {
+                "id": "eval_reach",
+                "type": "ErrorEvaluator",
+                "quantity": "home_only_error",
+                "reference_value": 0.25,
+                "error": "home_only_error",
+            },
+        },
+        controllers=[
+            {"id": "ctrl_pose", "error_signal": "arc_only_error"},
+            {"id": "ctrl_reach", "error_signal": "home_only_error"},
+            {"id": "ctrl_free", "error_signal": "stiffness"},
+        ],
+    )
+    header = frame_log_pb.read_contract(_written_log(tmp_path, schema, [])).header
+    gate = next(motion for motion in header.motions if motion.id == "motion_arc")
+    pose, reach, free = gate.controllers
+    assert list(pose.operand_ids) == ["pose_ee", "pose_target"]
+    assert (pose.difference_id, pose.evaluator_id) == ("pose_diff", "eval_pose")
+    assert (pose.measured_id, pose.setpoint_id) == ("", "")
+    # A numeric reference value is a value, not an id: only the measured quantity is an operand.
+    assert list(reach.operand_ids) == ["home_only_error"]
+    assert (reach.difference_id, reach.evaluator_id) == ("", "eval_reach")
+    # No closure produces this error, so the slot says nothing rather than guessing.
+    assert (list(free.operand_ids), free.difference_id, free.evaluator_id) == ([], "", "")
 
 
 # Proto type words the descriptor builder's scalar types render as in the .proto text.

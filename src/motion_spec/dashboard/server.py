@@ -397,7 +397,10 @@ def _constraint_row(motion, kind: str, group: list, constants: dict, authored: d
         (value for (_motion, authored_name), value in authored.items() if authored_name == key[1]),
         (None, None, None),
     )
-    compared = [*_slot_ids(group, "measured_id"), *_slot_ids(group, "setpoint_id")]
+    # The header names the pair the evaluator compares; measured/setpoint only where it does not.
+    operands = list(dict.fromkeys(value for slot in group for value in slot.operand_ids))
+    compared = operands or [*_slot_ids(group, "measured_id"), *_slot_ids(group, "setpoint_id")]
+    evaluator = next(iter(_slot_ids(group, "evaluator_id")), None)
     return {
         "motion": authored_motion or motion.id,
         "handler": motion.id,
@@ -405,9 +408,8 @@ def _constraint_row(motion, kind: str, group: list, constants: dict, authored: d
         "name": name,
         "expression": expression,
         "kind": kind,
-        # The header names no closure: the slot computing the error is what evaluates the
-        # constraint at runtime.
-        "evaluator": first.iri or first.id or None,
+        # The closure the header names, or the slot computing the error where it names none.
+        "evaluator": evaluator or first.iri or first.id or None,
         "between": compared,
         "tracking": [value for value in compared if value not in constants],
         "error": _slot_ids(group, "error_id"),

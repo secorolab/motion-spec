@@ -78,7 +78,14 @@ def signal_map(model: rdflib.Graph) -> dict[str, dict]:
 class GraphService:
     """One run's queryable graph, kept current from its store."""
 
-    def __init__(self, generation_dir: Path | str, store, *, sample_interval_s: float | None = 1.0):
+    def __init__(
+        self,
+        generation_dir: Path | str,
+        store,
+        *,
+        sample_interval_s: float | None = 1.0,
+        manifest: Path | None = None,
+    ):
         self.generation_dir = Path(generation_dir)
         self.store = store
         self.sample_interval_s = sample_interval_s
@@ -90,7 +97,8 @@ class GraphService:
         self.live = self.dataset.graph(LIVE_GRAPH)
         self._projector: IncrementalProjector | None = None
         self._fed = 0
-        manifest = model_manifest(self.generation_dir)
+        # A run names its own model graph; the generation is only where one is found without it.
+        manifest = manifest if manifest and manifest.is_file() else model_manifest(self.generation_dir)
         if manifest is not None:
             load_model_graph(manifest, self.dataset, self.model)
         self.signals = signal_map(self.model)

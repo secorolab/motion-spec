@@ -755,6 +755,16 @@ GRAPH_SAMPLE_S = 0.1  # the graph wants the shape of a run, not its every tick
 _GRAPHS: dict[tuple[str, int, bool], GraphService] = {}
 
 
+def run_model_manifest(run_dir: Path) -> Path | None:
+    """The model graph this run names, wherever the manifest says it lives."""
+    manifest = json_file(run_dir / "manifest.json").get("files", {})
+    named = manifest.get("model")
+    if not named:
+        return None
+    path = (run_dir / named).resolve()
+    return path if path.is_file() else None
+
+
 def run_graph(run_dir: Path, *, frames: bool) -> GraphService:
     """One run's queryable dataset: its model, plus what the recording says happened.
 
@@ -775,7 +785,9 @@ def run_graph(run_dir: Path, *, frames: bool) -> GraphService:
                 store.add_frames(records)
             tail.close()
         _GRAPHS.clear()
-        _GRAPHS[key] = GraphService(run_dir.parent.parent, store)
+        _GRAPHS[key] = GraphService(
+            run_dir.parent.parent, store, manifest=run_model_manifest(run_dir)
+        )
     return _GRAPHS[key]
 
 
@@ -804,11 +816,19 @@ def run_query(run_dir: Path, sparql: str) -> dict:
     service = run_graph(run_dir, frames=recorded)
     started = time.perf_counter()
     try:
-        headers, rows = service.query(sparql)
+        headers, rows = _query_rows(service, sparql)
     except Exception as exc:
-        raise ValueError(f"{type(exc).__name__}: {exc}") from exc
+        detail = f"{type(exc).__name__}: {exc}"
+        if not len(service.model):
+            # no prefixes, no model triples: the generation this run names is not there
+            detail += (
+                ". This run's model graph is unavailable -- the generation it names is missing, "
+                "so only its recorded observations can be queried."
+            )
+        raise ValueError(detail) from exc
     prefixes = service.namespaces()
     return {
+        "model_triples": len(service.model),
         "headers": headers or ["result"],
         "rows": [[curie(term, prefixes) for term in row] for row in rows[:500]],
         "count": len(rows),
@@ -816,6 +836,17 @@ def run_query(run_dir: Path, sparql: str) -> dict:
         "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
         "namespaces": prefixes,
     }
+
+
+def _query_rows(service: GraphService, sparql: str) -> tuple[list[str], list]:
+    """Answer any query shape as headers and rows: ASK says so, a graph comes back as text."""
+    service.sync()
+    result = service.dataset.query(sparql)
+    if result.type == "ASK":
+        return ["answer"], [(result.askAnswer,)]
+    if result.type in ("CONSTRUCT", "DESCRIBE"):
+        return ["triples"], [(line,) for line in result.serialize(format="turtle").decode().splitlines() if line]
+    return [str(var) for var in (result.vars or [])], [tuple(row) for row in result]
 
 
 def curie(term, prefixes: dict) -> str | None:

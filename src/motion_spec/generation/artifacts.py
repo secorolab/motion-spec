@@ -137,7 +137,57 @@ def _signal_id(value) -> str | None:
     return None
 
 
-def _controller_slot(controller: dict, index: int, motion: dict, uri_by_id: dict) -> dict:
+# What an evaluator compares, by closure type: the operand keys, in the order the closure reads
+# them. A numeric literal in one of these slots is a value, not an id, so only strings travel.
+_EVALUATOR_OPERANDS = {
+    "PoseDiffEvaluator": ("in1", "in2"),
+    "ErrorEvaluator": (
+        "quantity",
+        "reference_value",
+        "threshold",
+        "lower_threshold",
+        "upper_threshold",
+    ),
+}
+
+
+def _evaluator_by_error(ir: dict) -> dict:
+    """Evaluator closure keyed by every error signal it produces: what computes that error."""
+    index: dict = {}
+    for closure in (ir.get("computation", {}).get("closures") or {}).values():
+        if not isinstance(closure, dict) or not str(closure.get("type", "")).endswith("Evaluator"):
+            continue
+        for error in (closure.get("error"), *(closure.get("errors") or ())):
+            error_id = _signal_id(error)
+            if error_id:
+                index.setdefault(error_id, closure)
+    return index
+
+
+def _evaluator_terms(evaluators: dict, error_id: str | None) -> dict:
+    """The slot's evaluator, the quantities it compares and the difference it writes.
+
+    Empty when no closure produces this error: a slot says what the run computes, never a guess.
+    """
+    closure = evaluators.get(error_id) if error_id else None
+    if closure is None:
+        return {}
+    operands = [
+        value
+        for key in _EVALUATOR_OPERANDS.get(closure.get("type"), ())
+        if isinstance(value := closure.get(key), str)
+    ]
+    difference_id = _signal_id(closure.get("out"))
+    return {
+        "evaluator_id": closure.get("id"),
+        **({"operand_ids": operands} if operands else {}),
+        **({"difference_id": difference_id} if difference_id else {}),
+    }
+
+
+def _controller_slot(
+    controller: dict, index: int, motion: dict, uri_by_id: dict, evaluators: dict
+) -> dict:
     """Introspection slot for a controller: gains and resolved signal ids/URIs."""
     error_id = _signal_id(controller.get("error_signal"))
     output_id = _signal_id(controller.get("control_signal")) or controller.get("output_signal")
@@ -156,6 +206,9 @@ def _controller_slot(controller: dict, index: int, motion: dict, uri_by_id: dict
         "uri": uri_by_id.get(controller.get("id")),
         "motion": motion.get("id"),
         "type": controller.get("type"),
+        # The constraint this controller serves: what a plot of its error is about.
+        "constraint": controller.get("constraint"),
+        "constraint_uri": controller.get("constraint_uri"),
         "gains": {
             key: controller[key]
             for key in (
@@ -181,11 +234,24 @@ def _controller_slot(controller: dict, index: int, motion: dict, uri_by_id: dict
         "setpoint_signal_uri": uri_by_id.get(setpoint_id),
         "output_signal": output_id,
         "output_signal_uri": uri_by_id.get(output_id),
+        **_evaluator_terms(evaluators, error_id),
     }
 
 
-def _monitor_slot(monitor: dict, index: int, motion: dict, uri_by_id: dict, phase: str) -> dict:
-    """Introspection slot for a monitor: trigger, event/flag and active-condition terms."""
+def _monitor_slot(
+    monitor: dict,
+    index: int,
+    motion: dict,
+    uri_by_id: dict,
+    phase: str,
+    row: dict,
+    evaluators: dict,
+) -> dict:
+    """Introspection slot for a monitor: trigger, event/flag and active-condition terms.
+
+    `row` is the monitor's published introspection row: it carries the watched constraints, which
+    are construction-only on the coordination record.
+    """
     error = monitor.get("error")
     error_id = _signal_id(error) or monitor.get("error_signal")
     tolerance_id = _signal_id(monitor.get("tolerance")) or monitor.get("tolerance_signal")
@@ -196,6 +262,8 @@ def _monitor_slot(monitor: dict, index: int, motion: dict, uri_by_id: dict, phas
         "uri": uri_by_id.get(monitor.get("id")),
         "motion": motion.get("id"),
         "phase": phase,
+        "constraint_ids": row.get("constraint_ids") or [],
+        "constraint_uris": row.get("constraint_uris") or [],
         "type": monitor.get("monitor_type") or monitor.get("type"),
         "trigger": "edge" if monitor.get("is_edge_triggered") else "level",
         "event": event_id,
@@ -214,6 +282,7 @@ def _monitor_slot(monitor: dict, index: int, motion: dict, uri_by_id: dict, phas
         "active_terms_present": monitor.get("active_terms_present", False),
         "active_any": monitor.get("active_any", False),
         "fallback_motion": monitor.get("fallback_motion"),
+        **_evaluator_terms(evaluators, error_id),
     }
 
 
@@ -284,9 +353,11 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
     """Build the run's introspection schema (pools, per-state slots, quantities, provenance) and its schema_hash."""
     introspection = ir["communication"]["introspection"]
     uri_by_id = _uri_by_id(ir)
+    evaluators = _evaluator_by_error(ir)
     fsm = _fsm_meta(fsm_ir)
     motions = ir["coordination"]["motions"]
     motion_by_id = {motion.get("id"): motion for motion in motions}
+    monitor_rows = {row.get("id"): row for row in introspection.get("monitors") or ()}
     states = fsm["states"]
     state_by_id = {state["id"]: state for state in states}
     # Slots are keyed by the motion that computes them, not by the coordinator state that happens
@@ -314,7 +385,7 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
             )
 
         controller_slots = [
-            _controller_slot(controller, idx, motion, uri_by_id)
+            _controller_slot(controller, idx, motion, uri_by_id, evaluators)
             for idx, controller in enumerate(motion.get("controllers", []))
         ]
         monitor_sources = []
@@ -330,7 +401,15 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
                 ("when", monitor, gate_motion) for monitor in gate_motion.get("when_monitors", [])
             )
         monitor_slots = [
-            _monitor_slot(monitor, idx, owner, uri_by_id, phase)
+            _monitor_slot(
+                monitor,
+                idx,
+                owner,
+                uri_by_id,
+                phase,
+                monitor_rows.get(monitor.get("id"), {}),
+                evaluators,
+            )
             for idx, (phase, monitor, owner) in enumerate(monitor_sources)
         ]
         by_motion[motion["id"]] = {
@@ -769,6 +848,24 @@ def _hex_rows(blob: bytes, per_row: int = 16) -> list[list[str]]:
     return [values[i : i + per_row] for i in range(0, len(values), per_row)]
 
 
+# Header field <- slot-entry key: the quantity ids that join a slot to the quantity pool.
+_SLOT_SIGNAL_FIELDS = (
+    ("error_id", "error_signal"),
+    ("output_id", "output_signal"),
+    ("measured_id", "measured_signal"),
+    ("setpoint_id", "setpoint_signal"),
+    ("tolerance_id", "tolerance_signal"),
+    # The closure that evaluates the constraint, and the difference it writes.
+    ("difference_id", "difference_id"),
+    ("evaluator_id", "evaluator_id"),
+)
+
+
+def _as_list(value) -> list:
+    """A scalar as the one-element list the repeated field wants, or empty when unset."""
+    return [value] if value else []
+
+
 def build_frame_log_header_record(schema: dict) -> bytes:
     """Serialize the run's FrameLogRecord header: everything a decoder needs and the wire cannot say.
 
@@ -826,8 +923,26 @@ def build_frame_log_header_record(schema: dict) -> bytes:
                 slot.iri = slot_entry.get("uri") or ""
                 # A controller slot names the constraint it serves, a monitor slot the event it
                 # fires -- runtime.ttl attributes an occurrence to those, not to the slot.
-                slot.constraint_iri = slot_entry.get("constraint_uri") or ""
                 slot.event_iri = slot_entry.get("event_uri") or ""
+                slot.phase = slot_entry.get("phase") or ""
+                iris = slot_entry.get("constraint_uris") or _as_list(
+                    slot_entry.get("constraint_uri")
+                )
+                slot.constraint_iris.extend(iris)
+                # The scalar only when it is unambiguous: an aggregate monitor watches several.
+                if len(iris) == 1:
+                    slot.constraint_iri = iris[0]
+                ids = slot_entry.get("constraint_ids") or _as_list(slot_entry.get("constraint"))
+                if len(ids) == 1:
+                    slot.constraint_id = ids[0]
+                for field, key in _SLOT_SIGNAL_FIELDS:
+                    setattr(slot, field, slot_entry.get(key) or "")
+                # The two quantities the evaluator compares: what "between" is drawn from.
+                slot.operand_ids.extend(slot_entry.get("operand_ids") or ())
+                # Gains are literals folded into the controller: no quantity slot carries them.
+                for role, value in (slot_entry.get("gains") or {}).items():
+                    gain = slot.gains.add()
+                    gain.role, gain.value = role, float(value)
 
     for key, target in (("states", header.fsm_states), ("events", header.fsm_events)):
         for index, row in enumerate(fsm.get(key) or ()):
@@ -853,5 +968,12 @@ def build_frame_log_header_record(schema: dict) -> bytes:
         constant.id = entry["id"]
         constant.source_id = entry.get("source_id") or ""
         constant.value = float(entry.get("value") or 0.0)
+        constant.uri = entry.get("uri") or ""
+        # Gain constants have no consumer: they are folded into the controller, not read off it.
+        for reader in entry.get("consumers") or ():
+            consumer = constant.consumers.add()
+            consumer.id = reader.get("id") or ""
+            consumer.kind = reader.get("kind") or ""
+            consumer.role = reader.get("role") or ""
 
     return rec.SerializeToString()

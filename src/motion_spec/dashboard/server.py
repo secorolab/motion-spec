@@ -239,12 +239,14 @@ def generation_info(path: Path) -> dict:
 def generation_details(path: Path) -> dict:
     """Add authored motion metadata without slowing the generation sidebar."""
     details = generation_info(path)
-    constraints = source_constraints(path)
     source_files = sorted((path / "generated/source").glob("*"))
+    robmot = next((source for source in source_files if source.suffix == ".robmot"), None)
     fsm = next((source for source in source_files if source.suffix == ".fsm"), None)
     description = re.search(r'description:\s*"([^"]+)"', fsm.read_text()) if fsm else None
+    # A generation with no run yet has no log to read, so the count comes off the source.
+    constraints = authored_lines(robmot.read_text()) if robmot else {}
     details["authored_constraints"] = len(constraints)
-    details["motions"] = len({constraint["motion"] for constraint in constraints})
+    details["motions"] = len({motion for motion, _name in constraints})
     details["folder"] = str(path)
     details["spec_name"] = Path(details["source"] or path.name).stem
     details["description"] = description.group(1) if description else None
@@ -331,35 +333,27 @@ def slot_signals(contract) -> dict:
     }
 
 
-def source_constraints(generation_dir: Path) -> list[dict]:
-    """Return the motion constraints as their authored `.robmot` source lines.
+# How the dashboard labels the gain roles a controller slot carries; others keep their role name.
+GAIN_LABELS = {
+    "proportional_gain": "Kp",
+    "integral_gain": "Ki",
+    "derivative_gain": "Kd",
+    "decay_rate": "decay",
+}
 
-    What a constraint compares is its evaluator's business, so each source line is joined to
-    the closure the motion schedules for it: an ErrorEvaluator names the measured quantity and
-    the reference it is held against, a PoseDiffEvaluator names the two poses and the per-axis
-    errors between them. The controllers or monitors acting on the constraint come separately,
-    so the constraint plots apart from the machinery working on it.
+
+def _key(name: str | None) -> str:
+    """One spelling for a name authored with dashes and generated with underscores."""
+    return (name or "").replace("-", "_")
+
+
+def authored_lines(text: str) -> dict:
+    """(motion, constraint) -> (line number, expression, authored motion name) per source line.
+
+    Display only: what a constraint is and what it drives comes off the log header, this says
+    where the reader can go and read it.
     """
-    source = next((path for path in (generation_dir / "generated/source").glob("*.robmot")), None)
-    if source is None:
-        return []
-    ir = json_file(generation_dir / "generated/model/ir.json")
-    introspection = ir.get("communication", {}).get("introspection", {})
-    closures = ir.get("computation", {}).get("closures", {})
-    schedules = {motion["name"]: motion for motion in ir.get("coordination", {}).get("motions", [])}
-    constants = {item["id"]: item["value"] for item in introspection.get("constants", [])}
-    controllers = introspection.get("controllers", [])
-    handlers = {motion["motion"]: motion["id"] for motion in introspection.get("motions", [])}
-    text = source.read_text()
-    bindings = {}
-    for name, target in re.findall(
-        r"(?:pid|impedance|feed-forward)\s+([\w-]+)\s*\{\s*(?:constraint:\s*)?<([^>]+)>", text
-    ):
-        bindings.setdefault(target, []).extend(
-            controller for controller in controllers
-            if controller["id"].startswith(name.replace("-", "_"))
-        )
-    constraints = []
+    lines = {}
     motion = section = None
     for number, line in enumerate(text.splitlines(), 1):
         line = line.strip().rstrip(",")
@@ -375,120 +369,113 @@ def source_constraints(generation_dir: Path) -> list[dict]:
             continue
         name, _, expression = line.partition(":")
         name, expression = name.strip(), expression.strip()
-        if not re.fullmatch(r"[\w-]+", name) or not expression:
-            continue
-        handler = handlers.get(f"motion_{motion.replace('-', '_')}")
-        bound = bindings.get(f"{motion}.{name}", [])
-        closure = _constraint_closure(name, section, schedules.get(motion), closures, bound)
-        measured, reference, errors = _closure_signals(closure)
-        if measured is None and bound:
-            measured = bound[0].get("measured_signal")
-            reference = bound[0].get("setpoint_signal")
-            errors = _signal_list(bound, ("error_signal",))
-        constraints.append({
-            "motion": motion,
-            "handler": handler,
-            "line": number,
-            "name": name,
-            "expression": expression,
-            "kind": "controlled" if section == "while" else "monitored",
-            "evaluator": closure["id"] if closure else None,
-            "between": [closure[key] for key in ("in1", "in2") if closure and closure.get(key)],
-            "component": next(
-                (word for word in ("position", "orientation", "linear", "angular")
-                 if f".{word}" in expression), None,
-            ),
-            "difference": closure.get("out") if closure else None,
-            "tracking": [
-                signal for signal in (measured, reference)
-                if signal and signal not in constants
-            ],
-            "error": errors,
-            "control": _signal_list(bound, ("output_signal",)),
-            "monitors": [
-                item["id"] for item in introspection.get("monitors", [])
-                if item["motion"] == handler and item["phase"] == section
-            ] if section == "until" else [],
-            "setpoints": (
-                [{"label": reference, "value": constants[reference]}]
-                if reference in constants else []
-            ),
-            "gains": _gains(bound),
-            "tolerance": _tolerance(bound, expression, constants),
-        })
-    return constraints
+        if re.fullmatch(r"[\w-]+", name) and expression:
+            lines[(_key(motion), _key(name))] = (number, expression, motion)
+    return lines
 
 
-def _signal_list(controllers: list[dict], keys: tuple[str, ...]) -> list[str]:
-    """The named signals of these controllers, in order, without repeats."""
-    return list(dict.fromkeys(
-        controller[key] for controller in controllers for key in keys if controller.get(key)
-    ))
+def run_source_text(run_dir: Path, manifest: dict | None) -> str:
+    """The authored `.robmot` this run was generated from, vendored in the run or beside it."""
+    vendored = [
+        run_dir / rel
+        for rel in (manifest or {}).get("files", {}).get("sources", ())
+        if rel.endswith(".robmot")
+    ]
+    generated = sorted((run_dir.parent.parent / "generated/source").glob("*.robmot"))
+    source = next((path for path in (*vendored, *generated) if path.is_file()), None)
+    return source.read_text() if source else ""
 
 
-def _gains(controllers: list[dict]) -> dict:
-    """The gains these controllers run, taken from the first -- axes of one constraint share them."""
-    keys = {"Kp": "proportional_gain", "Ki": "integral_gain", "Kd": "derivative_gain",
-            "decay": "decay_rate"}
+def _slot_ids(slots: list, field: str) -> list[str]:
+    """The ids these slots name in one role, in order, without repeats or blanks."""
+    return list(dict.fromkeys(value for slot in slots if (value := getattr(slot, field))))
+
+
+def _by_constraint(slots) -> dict:
+    """Slots grouped by the constraint they serve -- the axis controllers of one share it.
+
+    An aggregate monitor watches several constraints and names none of them singly, so it
+    groups under its own id and stays one row.
+    """
+    groups: dict[str, list] = {}
+    for slot in slots:
+        groups.setdefault(slot.constraint_iri or slot.id, []).append(slot)
+    return groups
+
+
+def _constraint_row(motion, kind: str, group: list, constants: dict, authored: dict) -> dict:
+    """One constraint's row: its identity and signals from the header, its line from the source."""
+    first = group[0]
+    name = first.constraint_id or rdf_name(first.constraint_iri) or first.id
+    key = (_key(motion.id).removeprefix("motion_"), _key(name))
+    line, expression, authored_motion = authored.get(key) or next(
+        (value for (_motion, authored_name), value in authored.items() if authored_name == key[1]),
+        (None, None, None),
+    )
+    # The header names the pair the evaluator compares; measured/setpoint only where it does not.
+    operands = list(dict.fromkeys(value for slot in group for value in slot.operand_ids))
+    compared = operands or [*_slot_ids(group, "measured_id"), *_slot_ids(group, "setpoint_id")]
+    evaluator = next(iter(_slot_ids(group, "evaluator_id")), None)
     return {
-        label: controllers[0][key]
-        for label, key in keys.items()
-        if controllers and controllers[0].get(key) is not None
+        "motion": authored_motion or motion.id,
+        "handler": motion.id,
+        "line": line,
+        "name": name,
+        "expression": expression,
+        "kind": kind,
+        # The closure the header names, or the slot computing the error where it names none.
+        "evaluator": evaluator or first.iri or first.id or None,
+        "between": compared,
+        "tracking": [value for value in compared if value not in constants],
+        "error": _slot_ids(group, "error_id"),
+        "control": _slot_ids(group, "output_id"),
+        "monitors": [slot.id for slot in group] if kind == "monitored" else [],
+        "setpoints": [
+            {"label": value, "value": constants[value]}
+            for value in _slot_ids(group, "setpoint_id")
+            if value in constants
+        ],
+        "gains": {
+            GAIN_LABELS.get(gain.role, gain.role): gain.value
+            for slot in group
+            for gain in slot.gains
+        },
+        "tolerance": next(
+            (constants[slot.tolerance_id] for slot in group if slot.tolerance_id in constants), None
+        ),
     }
 
 
-def _tolerance(controllers: list[dict], expression: str, constants: dict) -> float | None:
-    """A controller's tolerance, or the band a monitored constraint is compared within."""
-    for controller in controllers:
-        if controller.get("tolerance_signal") in constants:
-            return constants[controller["tolerance_signal"]]
-    band = re.search(r"within\s+<([^>]+)>", expression)
-    if band:
-        return constants.get(band.group(1).rsplit(".", 1)[-1].replace("-", "_"))
-    return None
+def source_constraints(run_dir: Path, manifest: dict | None, contract) -> list[dict]:
+    """Return one row per constraint this run recorded, read off the log's own header.
 
+    The header says which constraint every controller and monitor slot serves, which quantity
+    ids carry its error, output, measurement and setpoint, which constant holds its tolerance
+    and which gains the controller runs -- so the join is on identity the run wrote down rather
+    than on names recovered from the source, and a run plots wherever it is stored.
 
-def _constraint_closure(name: str, phase: str, motion: dict | None, closures: dict, bound: list) -> dict | None:
-    """The evaluator this motion schedules for one constraint.
-
-    Preferably joined on signal identity -- a closure that produces a bound controller's error
-    signal evaluates that controller's constraint. Failing that (a monitored constraint has no
-    controller), the closure the motion schedules in this phase whose id ends in the authored
-    constraint name.
+    The row shape is a contract with the frontend: motion, handler, line, name, expression,
+    kind, evaluator, between, tracking, error, control, monitors, setpoints, gains, tolerance.
     """
-    if motion is None:
-        return None
-    scheduled = [
-        closures[item] for item in motion.get(f"{phase}_schedule", []) if item in closures
+    authored = authored_lines(run_source_text(run_dir, manifest))
+    constants = {
+        key: row.value
+        for row in contract.header.constants
+        for key in (row.id, row.source_id)
+        if key
+    }
+    return [
+        _constraint_row(motion, kind, group, constants, authored)
+        for motion in contract.header.motions
+        for kind, slots in (("controlled", motion.controllers), ("monitored", motion.monitors))
+        for group in _by_constraint(slots).values()
     ]
-    wanted = {controller["error_signal"] for controller in bound if controller.get("error_signal")}
-    for closure in scheduled:
-        produced = {closure.get("error"), *closure.get("errors", ())}
-        if wanted & produced:
-            return closure
-    suffix = name.replace("-", "_")
-    return next(
-        (closure for closure in scheduled
-         if closure["id"].endswith(suffix) and closure["type"].endswith("Evaluator")),
-        None,
-    )
-
-
-def _closure_signals(closure: dict | None) -> tuple:
-    """What one evaluator measures, what it holds that against, and the errors it produces."""
-    if closure is None:
-        return None, None, []
-    if closure["type"] == "PoseDiffEvaluator":
-        # the constraint is "these poses agree": its state is the per-axis difference, target 0
-        return None, None, list(closure.get("errors", ()))
-    error = closure.get("error")
-    return closure.get("quantity"), closure.get("reference_value"), [error] if error else []
 
 
 def replay_data(run_dir: Path) -> dict:
     """Return replay metadata without decoding the complete frame log."""
-    _, log, _manifest, contract = resolve_archive(run_dir)
-    constraints = source_constraints(run_dir.parent.parent)
+    run_dir, log, manifest, contract = resolve_archive(run_dir)
+    constraints = source_constraints(run_dir, manifest, contract)
     health = read_health(log) or {}
     frame_count = health.get("written_frames", 0)
     signals = ["timing.compute_ms", "timing.period_ms"]
@@ -519,22 +506,19 @@ def replay_data(run_dir: Path) -> dict:
                 signal for name in constraint[key]
                 for signal in ([name] if name in logged else sorted(parts.get(name, ())))
             ]
-        difference = constraint.pop("difference", None)
-        if not constraint["error"] and difference in parts:
-            constraint["error"] = sorted(parts[difference])
-        component = constraint.pop("component", None)
-        if not constraint["tracking"] and component:
-            constraint["tracking"] = sorted(
-                name for operand in constraint["between"] for name in logged
-                if name.startswith(f"{operand}.{component}.")
-            )
         constraint["window"] = windows.get(indices.get(constraint.pop("handler")))
     signals.extend(
         signal for constraint in constraints
         for signal in (*constraint["tracking"], *constraint["control"], *constraint["monitors"])
     )
+    # A run copied out of its generation has none to go back to; the log says everything else.
+    generation = run_dir.parent.parent
     return {
-        "generation": str(run_dir.parent.parent.relative_to(GENERATIONS)),
+        "generation": (
+            str(generation.relative_to(GENERATIONS))
+            if GENERATIONS.resolve() in generation.resolve().parents
+            else None
+        ),
         "frames": frame_count,
         "duration": frame_count * contract.header.nominal_period_ns / 1e9,
         "states": [state.id for state in contract.header.fsm_states],

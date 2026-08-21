@@ -1021,6 +1021,8 @@ def _derived_controller(model, context, plan, axis: quantities.SpatialAxis | Non
             output_saturation=output_saturation,
             integral_saturation=integral_saturation,
             tolerance_id=tolerance_id,
+            constraint=model.id(plan.constraint),
+            constraint_uri=str(plan.constraint),
             type=model.id(CSTR_HDL.ProportionalIntegralDerivative),
         )
     if CSTR_HDL.ImpedanceController in types:
@@ -1033,6 +1035,8 @@ def _derived_controller(model, context, plan, axis: quantities.SpatialAxis | Non
             integral_gain=_gain(model, plan, CSTR_HDL["integral-gain"], required=False),
             output_saturation=output_saturation,
             tolerance_id=tolerance_id,
+            constraint=model.id(plan.constraint),
+            constraint_uri=str(plan.constraint),
             type=model.id(CSTR_HDL.ImpedanceController),
         )
     reference_node = graph.value(plan.controller, CSTR_HDL_EXT["reference-signal"])
@@ -1045,6 +1049,8 @@ def _derived_controller(model, context, plan, axis: quantities.SpatialAxis | Non
         ),
         output_saturation=output_saturation,
         tolerance_id=tolerance_id,
+        constraint=model.id(plan.constraint),
+        constraint_uri=str(plan.constraint),
         type=model.id(CSTR_HDL_EXT.FeedForwardController),
     )
 
@@ -1403,6 +1409,8 @@ CONTROLLER_SIGNAL_ROLES = (
     "reference_signal",
     "measured_derivative",
     "control_signal",
+    "measured_signal",
+    "setpoint_signal",
 )
 
 

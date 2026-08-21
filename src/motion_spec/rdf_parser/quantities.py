@@ -2486,7 +2486,15 @@ def _apply_dataflow(introspection: dict, shared_data: list, items_by_id: dict, d
             if value is None:
                 unattributed.append(sample.get("id"))
                 continue
-            constants.append({"id": sample["id"], "source_id": sample["source_id"], "value": value})
+            row = {
+                "id": sample["id"],
+                "source_id": sample["source_id"],
+                "value": value,
+                "uri": sample.get("uri"),
+                # Who reads it, as the dataflow contract already resolved it.
+                "consumers": entry.get("consumers"),
+            }
+            constants.append({key: val for key, val in row.items() if val is not None})
     if unattributed:
         raise RuntimeError(f"dataflow: samples with no resolvable contract: {sorted(unattributed)}")
     introspection["quantity_samples"] = logged

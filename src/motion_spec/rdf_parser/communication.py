@@ -76,6 +76,8 @@ def _controller_rows(controller, motion_id: str, uri_by_id: dict):
             "uri": uri_by_id.get(controller.id),
             "motion": motion_id,
             "type": controller.type,
+            "constraint": controller.constraint,
+            "constraint_uri": controller.constraint_uri,
             **{name: getattr(controller, name, None) for name in _GAIN_ROW_FIELDS},
             "error_signal": _id_of(getattr(controller, "error_signal", None)),
             "tolerance_signal": controller.tolerance_id or None,
@@ -101,6 +103,19 @@ def _controller_rows(controller, motion_id: str, uri_by_id: dict):
         for role in constraint_handler.CONTROLLER_SIGNAL_ROLES
         if (quantity_id := _id_of(getattr(controller, role, None)))
     ]
+    # Named `tolerance_id` on the record, so the role loop cannot pick it up.
+    if controller.tolerance_id:
+        signals.append(
+            _prune(
+                {
+                    "id": f"{controller.id}.tolerance_signal",
+                    "uri": uri_by_id.get(controller.tolerance_id),
+                    "quantity": controller.tolerance_id,
+                    "role": "tolerance_signal",
+                    "owner": controller.id,
+                }
+            )
+        )
 
     return entry, signals
 
@@ -172,6 +187,8 @@ def _motion_rows(motions, uri_by_id: dict):
                             "flag": getattr(monitor, "flag", None),
                             "error_signal": _id_of(monitor.error),
                             "tolerance_signal": _id_of(monitor.tolerance),
+                            "constraint_ids": monitor.constraint_ids,
+                            "constraint_uris": monitor.constraint_uris,
                             "fallback_motion": getattr(monitor, "fallback_motion", None),
                             "debounce_duration_s": getattr(monitor, "debounce_duration_s", None),
                         }
@@ -498,7 +515,7 @@ def add_quantity_samples(introspection: dict, shared_data: list, views: dict) ->
                         make_desc(quantity_id, index),
                     )
             continue
-        desc = _scalar_descriptor(quantity, quantity_id, shared_ids, indexed_views)
+        desc = _scalar_descriptor(quantity, quantity_id, shared_ids, spatial_ids, indexed_views)
         if desc is not None:
             add(quantity, "", desc)
 
@@ -518,7 +535,7 @@ def add_quantity_samples(introspection: dict, shared_data: list, views: dict) ->
     introspection["quantity_samples"] = samples
 
 
-def _scalar_descriptor(quantity: dict, quantity_id: str, shared_ids, indexed_views):
+def _scalar_descriptor(quantity: dict, quantity_id: str, shared_ids, spatial_ids, indexed_views):
     """How a scalar quantity is sampled: as a literal, through a view, or off its own field."""
     viewed = quantity_id in indexed_views
     if quantity.get("value") is not None and quantity_id not in shared_ids and not viewed:
@@ -526,6 +543,16 @@ def _scalar_descriptor(quantity: dict, quantity_id: str, shared_ids, indexed_vie
     if viewed:
         views = indexed_views[quantity_id]
         if not all(view.axis is not None for view in views):
+            # An axis-less view names no field, but a shared value is still sampled off its
+            # own. A directionless one is a whole-subspace alias: when a logged spatial slot
+            # carries its superobject, sampling it would put the same value on the wire twice.
+            # A directed projection is new information the superobject slot cannot restate.
+            if quantity_id in shared_ids and not any(
+                getattr(view, "direction", None) is None
+                and getattr(view.superobject, "id", None) in spatial_ids
+                for view in views
+            ):
+                return {"kind": "shared", "id": quantity_id}
             return None
         types = {view.superobject.type for view in views}
         if len(types) != 1:
@@ -1263,7 +1290,7 @@ def build_introspection(
     ]
 
     introspection = {
-        "contract_version": 1,
+        "contract_version": 2,
         "control_period_ns": control_period_ns,
         "uris": model.uri_rows(),
         "motions": motion_rows,

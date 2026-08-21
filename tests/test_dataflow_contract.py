@@ -7,7 +7,8 @@ import json
 from pathlib import Path
 
 import pytest
-from frame_log_fixture import flat_frame
+from frame_log_fixture import flat_frame, write_frame_log_proto
+from google.protobuf import descriptor_pb2
 
 from motion_spec.classes.base import DataclassJSONEncoder
 from motion_spec.classes.bindings import ChainBinding, HardwareBinding, RuntimeBinding
@@ -148,14 +149,17 @@ def _annotated() -> tuple[dict, list]:
     return introspection, shared_data
 
 
-def _schema() -> dict:
+def _schema(*, closures: dict | None = None, controllers: list | None = None) -> dict:
     introspection, _shared = _annotated()
     # build_schema reads the published IR, so the motions cross as the JSON they serialize to.
+    motions = json.loads(json.dumps(_model()[3], cls=DataclassJSONEncoder))
+    if controllers is not None:
+        motions[1]["controllers"] = controllers  # motion_arc
     ir = {
         "configuration": {"platform": {"name": "MuJoCo", "simulated": True, "backend": "mj_kdl"}},
         "communication": {"introspection": introspection},
-        "coordination": {"motions": json.loads(json.dumps(_model()[3], cls=DataclassJSONEncoder))},
-        "computation": {"shared_data": []},
+        "coordination": {"motions": motions},
+        "computation": {"shared_data": [], "closures": closures or {}},
     }
     fsm_ir = {"states": ["S_HOME", "S_ARC"], "events": [], "start_state": "S_HOME"}
     return build_schema(ir, ir_path=Path("ir.json"), output_dir=Path("."), fsm_ir=fsm_ir)
@@ -212,6 +216,54 @@ def test_a_sensor_reading_is_produced_by_the_solver_that_reads_it() -> None:
     # The tare state is written alongside the reading; cmd_wrench is the program's own output.
     assert dataflow["ext_force_ft_bias"]["producer"]["kind"] == "sensor"
     assert dataflow["cmd_wrench"]["producer"]["kind"] == "closure"
+
+
+def test_a_recorded_constant_carries_its_iri_and_who_reads_it() -> None:
+    """A constant is a model term someone reads, not just a number: both facts travel with it."""
+    stiffness = _quantity("stiffness", 800.0)
+    introspection = {
+        "quantities": [],
+        "controllers": [{"id": "ctrl_push", "setpoint_signal": "stiffness"}],
+        "monitors": [],
+        "quantity_samples": [
+            {
+                "id": "stiffness",
+                "source_id": "stiffness",
+                "source_type": stiffness.type,
+                "uri": "https://example.test/stiffness",
+                "sample_desc": {"kind": "shared", "id": "stiffness"},
+            }
+        ],
+    }
+    annotate_dataflow(introspection, [stiffness], {}, [], [], {})
+    (constant,) = introspection["constants"]
+    assert constant["uri"] == "https://example.test/stiffness"
+    assert constant["consumers"] == [
+        {"kind": "controller", "id": "ctrl_push", "role": "setpoint_signal"}
+    ]
+
+
+def test_a_shared_quantity_behind_an_axis_less_view_is_still_sampled() -> None:
+    """An axis-less MAP view names no field to read, but the value has a shared field of its own."""
+    from motion_spec.classes.geometry import Subspace, View
+    from motion_spec.rdf_parser.communication import add_quantity_samples
+
+    error = _quantity("err_lin_normal_a", None)
+    pose = Pose("pose_ee", None, None, [], None, [], None)
+    views = {
+        "err_view": View(
+            id="err_view",
+            superobject=pose,
+            subobject=error,
+            subspace=Subspace.Linear,
+            axis=None,
+            direction=Direction("path_normal", [], None, [], [0.0, 0.0, 1.0]),
+        )
+    }
+    introspection: dict = {"quantities": [{"id": error.id, "type": error.type}]}
+    add_quantity_samples(introspection, [error, pose], views)
+    descs = {row["source_id"]: row["sample_desc"] for row in introspection["quantity_samples"]}
+    assert descs["err_lin_normal_a"] == {"kind": "shared", "id": "err_lin_normal_a"}
 
 
 def test_never_written_members_leave_shared_data_and_the_frame() -> None:
@@ -396,6 +448,172 @@ def test_every_slot_carries_its_model_iri(tmp_path: Path) -> None:
     assert quantity_ids <= set(by_id)
     # An id is a lossy projection of its IRI, so the IRI has to travel rather than be recomputed.
     assert all(by_id[q["id"]] == q["uri"] for q in schema["quantities"] if q.get("uri"))
+
+
+def test_a_slot_carries_what_it_serves_and_a_constant_who_reads_it(tmp_path: Path) -> None:
+    """Identity beyond the slot number: the constraint, the phase, the joined quantity ids, the
+    gains, and a constant's model term with its readers -- all header-only, none per frame."""
+    schema = _schema()
+    schema["by_motion"]["motion_arc"]["controllers"] = [
+        {
+            "index": 0,
+            "id": "ctrl_push",
+            "uri": "https://example.test/ctrl_push",
+            "constraint": "hold",
+            "constraint_uri": "https://example.test/hold",
+            "gains": {"proportional_gain": 12.0},
+            "error_signal": "arc_only_error",
+            "output_signal": "cmd_wrench",
+            "measured_signal": "pose_ee",
+            "setpoint_signal": "stiffness",
+        }
+    ]
+    schema["by_motion"]["motion_arc"]["monitors"] = [
+        {
+            "index": 0,
+            "id": "mon_done",
+            "phase": "until",
+            "constraint_ids": ["hold", "settled"],
+            "constraint_uris": ["https://example.test/hold", "https://example.test/settled"],
+            "error_signal": "arc_only_error",
+        }
+    ]
+    (stiffness,) = [row for row in schema["constants"] if row["id"] == "stiffness"]
+    stiffness["uri"] = "https://example.test/stiffness"
+    stiffness["consumers"] = [{"kind": "controller", "id": "ctrl_push", "role": "setpoint_signal"}]
+
+    header = frame_log_pb.read_contract(_written_log(tmp_path, schema, [])).header
+    gate = next(motion for motion in header.motions if motion.id == "motion_arc")
+    (controller,) = gate.controllers
+    assert controller.constraint_iri == "https://example.test/hold"
+    assert controller.constraint_id == "hold"
+    assert (controller.measured_id, controller.setpoint_id) == ("pose_ee", "stiffness")
+    assert (controller.error_id, controller.output_id) == ("arc_only_error", "cmd_wrench")
+    assert [(gain.role, gain.value) for gain in controller.gains] == [("proportional_gain", 12.0)]
+    (monitor,) = gate.monitors
+    assert monitor.phase == "until"
+    # An aggregate watches several constraints, so the scalar stays empty rather than picking one.
+    assert list(monitor.constraint_iris) == list(
+        schema["by_motion"]["motion_arc"]["monitors"][0]["constraint_uris"]
+    )
+    assert monitor.constraint_iri == "" and monitor.constraint_id == ""
+    logged = next(row for row in header.constants if row.id == "stiffness")
+    assert logged.uri == "https://example.test/stiffness"
+    assert [(c.kind, c.id, c.role) for c in logged.consumers] == [
+        ("controller", "ctrl_push", "setpoint_signal")
+    ]
+
+
+def test_a_slot_names_the_evaluator_and_the_pair_it_compares(tmp_path: Path) -> None:
+    """The header says what a constraint's error is computed from: the evaluator closure, the two
+    quantities it compares and the difference it writes. A pose pair fills no measured/setpoint,
+    so a reader holding only those had nothing to plot."""
+    schema = _schema(
+        closures={
+            "eval_pose": {
+                "id": "eval_pose",
+                "type": "PoseDiffEvaluator",
+                "in1": "pose_ee",
+                "in2": "pose_target",
+                "out": "pose_diff",
+                # Only the difference is computed; the per-axis errors are views onto it.
+                "errors": ["arc_only_error"],
+            },
+            "eval_reach": {
+                "id": "eval_reach",
+                "type": "ErrorEvaluator",
+                "quantity": "home_only_error",
+                "reference_value": 0.25,
+                "error": "home_only_error",
+            },
+        },
+        controllers=[
+            {"id": "ctrl_pose", "error_signal": "arc_only_error"},
+            {"id": "ctrl_reach", "error_signal": "home_only_error"},
+            {"id": "ctrl_free", "error_signal": "stiffness"},
+        ],
+    )
+    header = frame_log_pb.read_contract(_written_log(tmp_path, schema, [])).header
+    gate = next(motion for motion in header.motions if motion.id == "motion_arc")
+    pose, reach, free = gate.controllers
+    assert list(pose.operand_ids) == ["pose_ee", "pose_target"]
+    assert (pose.difference_id, pose.evaluator_id) == ("pose_diff", "eval_pose")
+    assert (pose.measured_id, pose.setpoint_id) == ("", "")
+    # A numeric reference value is a value, not an id: only the measured quantity is an operand.
+    assert list(reach.operand_ids) == ["home_only_error"]
+    assert (reach.difference_id, reach.evaluator_id) == ("", "eval_reach")
+    # No closure produces this error, so the slot says nothing rather than guessing.
+    assert (list(free.operand_ids), free.difference_id, free.evaluator_id) == ([], "", "")
+
+
+# Proto type words the descriptor builder's scalar types render as in the .proto text.
+_PROTO_WORD = {
+    getattr(descriptor_pb2.FieldDescriptorProto, f"TYPE_{word.upper()}"): word
+    for word in (
+        "uint32",
+        "uint64",
+        "int32",
+        "int64",
+        "string",
+        "bytes",
+        "bool",
+        "double",
+        "sfixed64",
+    )
+}
+
+
+def _declared_in_proto_text(text: str) -> dict:
+    """{message: {field: (type word, number, repeated)}}, parsed off the rendered .proto."""
+    messages: dict = {}
+    current, depth = None, 0
+    for raw in text.splitlines():
+        line = raw.split("//")[0].strip()
+        if line.startswith("message "):
+            current, depth = line.split()[1], 1
+            messages[current] = {}
+        elif current is None or not line:
+            continue
+        elif line.endswith("{"):
+            depth += 1
+        elif line == "}":
+            depth -= 1
+            if depth == 0:
+                current = None
+        elif line.endswith(";"):
+            parts = line[:-1].split()
+            repeated = parts[0] == "repeated"
+            type_word, name, _eq, number = parts[1:] if repeated else parts
+            messages[current][name] = (type_word, int(number), repeated)
+    return messages
+
+
+def _declared_in_descriptor(fields: dict) -> dict:
+    D = descriptor_pb2.FieldDescriptorProto
+    return {
+        message.name: {
+            field.name: (
+                field.type_name.rsplit(".", 1)[-1]
+                if field.type == D.TYPE_MESSAGE
+                else _PROTO_WORD[field.type],
+                field.number,
+                field.label == D.LABEL_REPEATED,
+            )
+            for field in message.field
+        }
+        for message in frame_log_pb._build_file_descriptor(fields).message_type
+    }
+
+
+def test_the_proto_text_and_the_python_descriptor_declare_the_same_wire(tmp_path: Path) -> None:
+    """protoc reads the template's .proto, replay reads the Python descriptor: one contract, so a
+    field added to either without the other would decode a log nobody wrote."""
+    schema = _schema()
+    proto = tmp_path / "frame_log.proto"
+    write_frame_log_proto(proto, schema)
+    assert _declared_in_proto_text(proto.read_text()) == _declared_in_descriptor(
+        frame_log_pb._proto_fields(schema)
+    )
 
 
 def test_a_log_without_an_embedded_descriptor_is_rejected(tmp_path: Path) -> None:

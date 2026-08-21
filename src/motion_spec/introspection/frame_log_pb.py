@@ -74,16 +74,36 @@ def _build_file_descriptor(fields: dict) -> descriptor_pb2.FileDescriptorProto:
         for fname, ftype, number in entries:
             m.field.add(name=fname, number=number, label=D.LABEL_OPTIONAL, type=ftype)
 
-    message(
-        "SlotIri",
-        [
-            ("number", D.TYPE_UINT32, 1),
-            ("id", D.TYPE_STRING, 2),
-            ("iri", D.TYPE_STRING, 3),
-            ("constraint_iri", D.TYPE_STRING, 4),
-            ("event_iri", D.TYPE_STRING, 5),
-        ],
+    slot_iri = fdp.message_type.add(name="SlotIri")
+    for fname, ftype, number in (
+        ("number", D.TYPE_UINT32, 1),
+        ("id", D.TYPE_STRING, 2),
+        ("iri", D.TYPE_STRING, 3),
+        ("constraint_iri", D.TYPE_STRING, 4),
+        ("event_iri", D.TYPE_STRING, 5),
+        ("constraint_id", D.TYPE_STRING, 6),
+        ("phase", D.TYPE_STRING, 7),
+        ("error_id", D.TYPE_STRING, 8),
+        ("output_id", D.TYPE_STRING, 9),
+        ("measured_id", D.TYPE_STRING, 10),
+        ("setpoint_id", D.TYPE_STRING, 11),
+        ("tolerance_id", D.TYPE_STRING, 12),
+        ("difference_id", D.TYPE_STRING, 16),
+        ("evaluator_id", D.TYPE_STRING, 17),
+    ):
+        slot_iri.field.add(name=fname, number=number, label=D.LABEL_OPTIONAL, type=ftype)
+    slot_iri.field.add(
+        name="constraint_iris", number=13, label=D.LABEL_REPEATED, type=D.TYPE_STRING
     )
+    slot_iri.field.add(name="operand_ids", number=15, label=D.LABEL_REPEATED, type=D.TYPE_STRING)
+    slot_iri.field.add(
+        name="gains",
+        number=14,
+        label=D.LABEL_REPEATED,
+        type=D.TYPE_MESSAGE,
+        type_name=f".{PROTO_PACKAGE}.SlotGain",
+    )
+    message("SlotGain", [("role", D.TYPE_STRING, 1), ("value", D.TYPE_DOUBLE, 2)])
     transition = fdp.message_type.add(name="Transition")
     for fname, ftype, number in (
         ("index", D.TYPE_UINT32, 1),
@@ -95,9 +115,24 @@ def _build_file_descriptor(fields: dict) -> descriptor_pb2.FileDescriptorProto:
     ):
         transition.field.add(name=fname, number=number, label=D.LABEL_OPTIONAL, type=ftype)
     transition.field.add(name="event_indices", number=7, label=D.LABEL_REPEATED, type=D.TYPE_UINT32)
+    constant = fdp.message_type.add(name="Constant")
+    for fname, ftype, number in (
+        ("id", D.TYPE_STRING, 1),
+        ("source_id", D.TYPE_STRING, 2),
+        ("value", D.TYPE_DOUBLE, 3),
+        ("uri", D.TYPE_STRING, 4),
+    ):
+        constant.field.add(name=fname, number=number, label=D.LABEL_OPTIONAL, type=ftype)
+    constant.field.add(
+        name="consumers",
+        number=5,
+        label=D.LABEL_REPEATED,
+        type=D.TYPE_MESSAGE,
+        type_name=f".{PROTO_PACKAGE}.ConstantConsumer",
+    )
     message(
-        "Constant",
-        [("id", D.TYPE_STRING, 1), ("source_id", D.TYPE_STRING, 2), ("value", D.TYPE_DOUBLE, 3)],
+        "ConstantConsumer",
+        [("id", D.TYPE_STRING, 1), ("kind", D.TYPE_STRING, 2), ("role", D.TYPE_STRING, 3)],
     )
 
     gate = fdp.message_type.add(name="MotionGate")

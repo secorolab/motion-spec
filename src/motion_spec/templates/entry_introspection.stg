@@ -785,6 +785,28 @@ message SlotIri {
   // A controller slot names the constraint it serves; a monitor slot names the event it fires.
   string constraint_iri = 4;
   string event_iri = 5;
+  string constraint_id = 6;
+  // "while" | "until" | "when" on a monitor slot, empty elsewhere.
+  string phase = 7;
+  // The quantity slots this slot joins to, by id: what a plot of it is drawn from.
+  string error_id = 8;
+  string output_id = 9;
+  string measured_id = 10;
+  string setpoint_id = 11;
+  string tolerance_id = 12;
+  // Every watched constraint: an aggregate monitor watches more than the scalar can say.
+  repeated string constraint_iris = 13;
+  repeated SlotGain gains = 14;
+  // The two quantities the evaluator compares, the difference it writes, and the closure itself.
+  repeated string operand_ids = 15;
+  string difference_id = 16;
+  string evaluator_id = 17;
+}
+
+// A controller's gains: literals folded into the controller, so no quantity slot carries them.
+message SlotGain {
+  string role = 1;
+  double value = 2;
 }
 
 message Transition {
@@ -817,6 +839,15 @@ message Constant {
   string id = 1;
   string source_id = 2;
   double value = 3;
+  // The model term this number projects, and who reads it.
+  string uri = 4;
+  repeated ConstantConsumer consumers = 5;
+}
+
+message ConstantConsumer {
+  string id = 1;
+  string kind = 2;
+  string role = 3;
 }
 
 message FrameLogHeader {

@@ -30,6 +30,23 @@ def _log_copy_executable(path: Path) -> Path:
     return path
 
 
+def _noisy_executable(path: Path, exit_code: int) -> Path:
+    """Writes to both streams, copies a frame log when given one, then exits `exit_code`."""
+    path.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os\n"
+        "import shutil\n"
+        "import sys\n"
+        "print('hello from the run', flush=True)\n"
+        "print('boom', file=sys.stderr, flush=True)\n"
+        "if len(sys.argv) > 1:\n"
+        "    shutil.copyfile(sys.argv[1], os.environ['MOTION_SPEC_FRAME_LOG'])\n"
+        f"sys.exit({exit_code})\n"
+    )
+    path.chmod(path.stat().st_mode | 0o111)
+    return path
+
+
 def test_runner_catalogs_run_from_start_and_archives_outputs(tmp_path: Path) -> None:
     source = _source_tree(tmp_path / "source")
     executable = _log_copy_executable(tmp_path / "log-copy")
@@ -50,6 +67,8 @@ def test_runner_catalogs_run_from_start_and_archives_outputs(tmp_path: Path) -> 
     assert manifest["files"]["frame_log"] == "logs/frame_log.pb"
     assert manifest["files"]["log_producer_executable"] == "controller/executable/log-copy"
     assert (run_dir / "runtime" / "runtime.ttl").exists()
+    # Recovery ran, so the manifest names the file it wrote.
+    assert manifest["files"]["runtime_ttl"] == "runtime/runtime.ttl"
 
     # REC writes a PROV graph: lifecycle is an rdf:type on the run, roles are rec:label.
     rec_graph = rdflib.Graph().parse(run_dir / "rec.ld.json", format="json-ld")
@@ -91,3 +110,40 @@ def test_interrupted_runner_recovers_runtime_ttl(tmp_path: Path, monkeypatch) ->
     assert (run_dir / "runtime" / "runtime.ttl").exists()
     rec_graph = rdflib.Graph().parse(run_dir / "rec.ld.json", format="json-ld")
     assert rec_run_lifecycle(rec_graph)["status"] == "INTERRUPTED"
+
+
+def test_console_is_captured_and_mirrored(tmp_path: Path, capfd) -> None:
+    source = _source_tree(tmp_path / "source")
+    executable = _noisy_executable(tmp_path / "noisy", 0)
+    run_dir = tmp_path / "run-003"
+
+    result = run_cataloged(
+        run_dir,
+        source_dir=source,
+        executable=executable,
+        executable_args=[str(source / "frame_log.pb")],
+        run_id="run-003",
+    )
+
+    assert result == 0
+    console = (run_dir / "logs" / "console.log").read_text()
+    assert "hello from the run" in console
+    assert "boom" in console
+    assert "hello from the run" in capfd.readouterr().out
+    manifest = verify_manifest(run_dir)
+    assert manifest["files"]["console"] == "logs/console.log"
+    # Nothing recovered runtime.ttl here, so nothing promises it.
+    assert "runtime_ttl" not in manifest["files"]
+
+
+def test_crashed_run_leaves_its_error_output(tmp_path: Path) -> None:
+    # No frame log, no manifest -- console.log is the only evidence of why the run died.
+    source = _source_tree(tmp_path / "source")
+    executable = _noisy_executable(tmp_path / "noisy-fail", 3)
+    run_dir = tmp_path / "run-004"
+
+    result = run_cataloged(run_dir, source_dir=source, executable=executable, run_id="run-004")
+
+    assert result == 3
+    assert not (run_dir / "manifest.json").exists()
+    assert "boom" in (run_dir / "logs" / "console.log").read_text()

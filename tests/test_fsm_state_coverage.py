@@ -68,7 +68,7 @@ def test_a_state_the_fsm_can_sit_in_with_no_motion_is_rejected() -> None:
         [("R_STEP", "E_STEP", "T_START_WAIT")],
     )
     with pytest.raises(ConstraintViolation, match="S_WAIT"):
-        _apply_fsm_wiring([motion("m_hold", "S_HOLD")], document)
+        _apply_fsm_wiring([motion("m_hold", "S_HOLD")], document, [])
 
 
 def test_the_start_and_end_states_need_no_motion() -> None:
@@ -79,7 +79,7 @@ def test_the_start_and_end_states_need_no_motion() -> None:
         [("T_START_HOLD", "S_START", "S_HOLD"), ("T_HOLD_DONE", "S_HOLD", "S_DONE")],
         [("R_STEP", "E_STEP", "T_START_HOLD"), ("R_HELD", "E_HELD", "T_HOLD_DONE")],
     )
-    _apply_fsm_wiring([motion("m_hold", "S_HOLD")], document)
+    _apply_fsm_wiring([motion("m_hold", "S_HOLD")], document, [])
 
 
 def test_a_state_no_reaction_transitions_into_is_not_reachable() -> None:
@@ -90,4 +90,4 @@ def test_a_state_no_reaction_transitions_into_is_not_reachable() -> None:
         [("T_START_HOLD", "S_START", "S_HOLD"), ("T_HOLD_ORPHAN", "S_HOLD", "S_ORPHAN")],
         [("R_STEP", "E_STEP", "T_START_HOLD")],
     )
-    _apply_fsm_wiring([motion("m_hold", "S_HOLD")], document)
+    _apply_fsm_wiring([motion("m_hold", "S_HOLD")], document, [])

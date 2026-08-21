@@ -206,7 +206,11 @@ def test_closure_output_stays_direct_when_it_is_also_a_view() -> None:
     view = View("end_pose_x", _quantity("end_pose"), _quantity("end_x"), Subspace.Linear, Axis.X)
     closure = {"type": "Addition", "out": "end_x"}
 
-    assert quantities.views_for_access({"end_pose_x": view}, [], [], {"add": closure}, {}) == {}
+    access = quantities.views_for_access({"end_pose_x": view}, [], [], {"add": closure}, {})
+    # The closure writes end_x, so nothing reads it through the view; the view stays addressable
+    # by its own id, which is how a constraint naming a pooled relation reaches it.
+    assert "end_x" not in access
+    assert access == {"end_pose_x": view}
 
 
 def _component_views() -> dict:

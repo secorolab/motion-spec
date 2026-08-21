@@ -70,8 +70,10 @@ def test_controllers_reference_their_solver(constraint_graph: Graph) -> None:
         for controller in controllers
     )
 
-    components = set(constraint_graph.subjects(PROV.wasDerivedFrom, None))
-    assert not components
+    # Derivation provenance belongs to the model's own entities -- a spec pose taken from a
+    # scene object carries it -- never to the solver wiring this test is about.
+    derived = set(constraint_graph.subjects(PROV.wasDerivedFrom, None))
+    assert not derived & (controllers | solvers | handlers)
     assert {
         constraint_graph.value(controller, CSTR_HDL_EXT.solver) for controller in controllers
     } <= solvers

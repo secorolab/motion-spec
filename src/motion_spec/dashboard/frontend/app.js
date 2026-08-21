@@ -549,7 +549,9 @@ async function runQuery() {
     const data = await post("/api/sparql", { path: state.runPath, query });
     entry.data = data;
     entry.status = `${data.count} row${data.count === 1 ? "" : "s"}`
-      + `${data.truncated ? " (first 500)" : ""} · ${data.elapsed_ms} ms`;
+      + `${data.truncated ? " (first 500)" : ""} · ${data.elapsed_ms} ms`
+      // an empty model graph is a run detached from its generation, not a query that found nothing
+      + `${data.model_triples ? "" : " · model graph unavailable"}`;
     $("#query-status").textContent = entry.status;
     renderAnswer(data);
   } catch (error) {

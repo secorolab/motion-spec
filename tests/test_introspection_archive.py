@@ -258,6 +258,33 @@ def test_archive_is_provenance_complete_and_relative(tmp_path: Path) -> None:
     assert verify_manifest(run_dir)["run_id"] == "run-test"
 
 
+def test_manifest_lists_runtime_ttl_and_console_only_when_present(tmp_path: Path) -> None:
+    # A manifest that promises runtime/runtime.ttl a run never wrote is a false record.
+    source = _source_tree(tmp_path / "source")
+    run_dir = tmp_path / "run"
+
+    manifest = create_archive_manifest(run_dir, source_dir=source, run_id="run-test")
+    assert "runtime_ttl" not in manifest["files"]
+    assert "console" not in manifest["files"]
+    assert verify_manifest(run_dir)["run_id"] == "run-test"
+
+    (run_dir / "logs" / "console.log").write_text("started\n")
+    write_runtime_ttl(run_dir, decode_frames(run_dir / "logs" / "frame_log.pb"))
+    manifest = create_archive_manifest(run_dir, source_dir=source, run_id="run-test")
+    assert manifest["files"]["runtime_ttl"] == "runtime/runtime.ttl"
+    assert manifest["files"]["console"] == "logs/console.log"
+    assert verify_manifest(run_dir)["run_id"] == "run-test"
+
+    # The generation-owned builder follows the same rule.
+    flat, generated = _generation_tree(tmp_path)
+    generation_run = generated.parent / "runs" / "run-1"
+    manifest = create_archive_manifest(
+        generation_run, source_dir=generated, run_id="run-1", frame_log=flat / "frame_log.pb"
+    )
+    assert "runtime_ttl" not in manifest["files"]
+    assert "console" not in manifest["files"]
+
+
 def test_manifest_hash_verification_rejects_mutation(tmp_path: Path) -> None:
     source = _source_tree(tmp_path / "source")
     run_dir = tmp_path / "run"

@@ -57,6 +57,11 @@ def _copy_file(src: Path, dst: Path) -> None:
     shutil.copy2(src, dst)
 
 
+def _existing(run_dir: Path, rel: str) -> str | None:
+    """A manifest entry for a file written outside the manifest builder, or None."""
+    return rel if (run_dir / rel).is_file() else None
+
+
 def _parse_jsonld(path: Path) -> rdflib.Dataset:
     """Parse JSON-LD with the workspace resolver, without network fallback."""
     from rdf_utils.resolver import IriToFileResolver, install_resolver
@@ -259,7 +264,9 @@ def _create_generation_run_manifest(
         ),
         "frame_log": "logs/frame_log.pb",
         "frame_log_health": "logs/frame_log.pb.health.json",
-        "runtime_ttl": "runtime/runtime.ttl",
+        # Listed only when written: a manifest never promises a file the run dir lacks.
+        "runtime_ttl": _existing(run_dir, "runtime/runtime.ttl"),
+        "console": _existing(run_dir, "logs/console.log"),
         "rec": "rec.ld.json",
     }
     files = {key: value for key, value in files.items() if value is not None}
@@ -420,7 +427,9 @@ def create_archive_manifest(
         "dsl_provenance": (
             "provenance/dsl.ld.json" if (run_dir / "provenance" / "dsl.ld.json").exists() else None
         ),
-        "runtime_ttl": "runtime/runtime.ttl",
+        # Listed only when written: a manifest never promises a file the run dir lacks.
+        "runtime_ttl": _existing(run_dir, "runtime/runtime.ttl"),
+        "console": _existing(run_dir, "logs/console.log"),
         "frame_log": frame_log_rel,
         "frame_log_health": frame_log_health_rel,
         "model": "model/model.ld.json",
@@ -472,7 +481,10 @@ def verify_manifest(run_dir_or_manifest: Path | str) -> dict:
             errors.append(f"files.{key}: missing")
     for key, value in files.items():
         for rel in value if isinstance(value, list) else [value]:
-            if key in {"frame_log_health", "runtime_ttl"} and not (run_dir / rel).exists():
+            if (
+                key in {"frame_log_health", "runtime_ttl", "console"}
+                and not (run_dir / rel).exists()
+            ):
                 continue
             if not (run_dir / rel).exists():
                 errors.append(f"{rel}: missing")

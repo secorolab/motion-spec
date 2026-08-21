@@ -8,6 +8,9 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -105,8 +108,16 @@ def run_cataloged(
             from motion_spec.introspection.replay import runtime_frames
             from motion_spec.introspection.runtime_graph import write_runtime_ttl
 
-            records, frame_count = runtime_frames(frame_log)
-            write_runtime_ttl(run_dir, records, frame_count=frame_count)
+            # Recovery reads the whole frame log: report how long it took, and never let a
+            # failure vanish behind whatever the caller does with the raise.
+            started = time.monotonic()
+            try:
+                records, frame_count = runtime_frames(frame_log)
+                write_runtime_ttl(run_dir, records, frame_count=frame_count)
+            except Exception as exc:
+                print(f"runtime.ttl recovery failed: {exc!r}", file=sys.stderr)
+                raise
+            print(f"runtime.ttl recovered in {time.monotonic() - started:.1f}s")
         if returncode == 0:
             _finish_rec_run(rec_path, run_id, "COMPLETED")
             if verify:
@@ -315,7 +326,9 @@ def _start_rec_run(
     )
     _record_execution_inputs(run, run_dir, source_dir, executable, schema)
     observer.close()
-    publish_lifecycle(run_dir, run_id, rec_run_lifecycle_from_file(run_dir / "rec.ld.json")["status"])
+    publish_lifecycle(
+        run_dir, run_id, rec_run_lifecycle_from_file(run_dir / "rec.ld.json")["status"]
+    )
 
 
 def _record_execution_inputs(
@@ -367,10 +380,25 @@ def _run_executable(
     env["MOTION_SPEC_RUN_ID"] = run_id
     env["MOTION_SPEC_REC_PATH"] = str(rec_path.resolve())
     command = [str(executable), *executable_args]
+    # Why a run died is otherwise only on the operator's terminal: tee it into the run dir.
+    console = (frame_log.parent / "console.log").open("w", encoding="utf-8", errors="replace")
     try:
-        process = subprocess.Popen(command, cwd=str(cwd) if cwd else None, env=env)
+        process = subprocess.Popen(
+            command,
+            cwd=str(cwd) if cwd else None,
+            env=env,
+            stdout=subprocess.PIPE,
+            # Merged so one pump drains both and no half-read pipe can block the exit.
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+            bufsize=1,
+        )
     except OSError as exc:
+        console.close()
         raise RunnerError(f"{executable}: failed to launch: {exc}") from exc
+    pump = threading.Thread(target=_tee, args=(process.stdout, console), daemon=True)
+    pump.start()
     try:
         return process.wait()
     except KeyboardInterrupt:
@@ -382,6 +410,23 @@ def _run_executable(
             process.wait()
         _finish_rec_run(rec_path, run_id, "INTERRUPTED")
         return 130
+    finally:
+        # A grandchild holding the pipe open must not stall the run's bookkeeping.
+        pump.join(timeout=5)
+        process.stdout.close()
+        console.close()
+
+
+def _tee(stream, sink) -> None:
+    """Mirror the child's merged output to the operator's terminal and the run's console log."""
+    try:
+        for line in stream:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            sink.write(line)
+            sink.flush()
+    except ValueError:
+        return  # the run gave up waiting for this pump and closed the log under it
 
 
 def _finish_rec_run(rec_path: Path, run_id: str, status: str) -> None:

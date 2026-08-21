@@ -117,7 +117,7 @@ inline const toml::table &section(const toml::table &config, const std::string &
 
 <endif><if(resources.device_kinds.("Robotiq2F85") || resources.device_kinds.("RobotiqFT300s"))><config-serial()>
 
-<endif><if(resources.device_kinds.("RobotiqFT300s") || resources.device_kinds.("ForceTorque"))><config-bias-samples()>
+<endif><if(resources.device_kinds.("RobotiqFT300s") || resources.device_kinds.("ForceTorque"))><config-bias-samples()><config-bias-max-drift()>
 
 <endif><if(resources.device_kinds.("KinovaGen3-2F85") || resources.device_kinds.("Robotiq2F85"))><config-gripper-pct()>
 
@@ -174,6 +174,20 @@ inline int bias_samples(const toml::table &config, const std::string &key) {
     const int value = config.at_path(key + ".bias_samples").value_or(200);
     if (value \< 0) {
         throw std::runtime_error("robot config [" + key + "] has a negative 'bias_samples'");
+    \}
+    return value;
+\}
+>>
+
+config-bias-max-drift() ::= <<
+// How steady the reading must be before it is taken as a zero, in newtons. A tare is what the
+// sensor reads unloaded and at rest; a sample that drifts this far from the window's running mean
+// is the arm still moving, so the window starts over. Optional: 0 accepts whatever the window
+// catches, which is what a deployment that only ever tares standing still wants.
+inline double bias_max_drift(const toml::table &config, const std::string &key) {
+    const double value = config.at_path(key + ".bias_max_drift").value_or(1.0);
+    if (value \< 0.0) {
+        throw std::runtime_error("robot config [" + key + "] has a negative 'bias_max_drift'");
     \}
     return value;
 \}

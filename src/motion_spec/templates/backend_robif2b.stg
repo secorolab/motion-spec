@@ -95,6 +95,7 @@ chain-device-members-robif2b(solver) ::= <<
 device-io-member-robif2b-RobotiqFT300s(solver, device) ::= <<
     const ft_sensor_sample *ft_<device.drives> = nullptr;
     int ft_<device.drives>_bias_samples = 0;
+    double ft_<device.drives>_bias_max_drift = 0.0;
 >>
 
 device-io-assign-impl ::= [
@@ -105,6 +106,7 @@ device-io-assign-impl ::= [
 device-io-assign-robif2b-RobotiqFT300s(solver, device) ::= <<
     robot.ft_<device.drives> = &ft_<device.drives>_io.sample;
     robot.ft_<device.drives>_bias_samples = motion_spec::config::bias_samples(robot_config, "<device.config_key>");
+    robot.ft_<device.drives>_bias_max_drift = motion_spec::config::bias_max_drift(robot_config, "<device.config_key>");
 >>
 
 device-state-init-impl ::= [

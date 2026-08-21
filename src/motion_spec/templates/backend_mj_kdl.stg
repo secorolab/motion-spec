@@ -38,6 +38,7 @@ chain-device-members-mj_kdl(solver) ::= <<
 
 mj-sensor-member-ForceTorque(solver, sensor) ::= <<
     int ft_<sensor.id>_bias_samples = 0;
+    double ft_<sensor.id>_bias_max_drift = 0.0;
 >>
 
 robot-state-init-mj_kdl-KinovaGen3(solver) ::= <<
@@ -93,6 +94,7 @@ mj-sensor-io-assign(solver) ::= <<
 
 mj-sensor-config-ForceTorque(solver, sensor) ::= <<
     robot.ft_<sensor.id>_bias_samples = motion_spec::config::bias_samples(robot_config, "<sensor.config_key>");
+    robot.ft_<sensor.id>_bias_max_drift = motion_spec::config::bias_max_drift(robot_config, "<sensor.config_key>");
 >>
 
 robot-configure-mj_kdl-KinovaGen3(solver) ::= <<

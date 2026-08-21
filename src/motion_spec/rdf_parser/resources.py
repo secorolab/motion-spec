@@ -1833,7 +1833,12 @@ def shared_runtime_members(model, serial_chains, control_period_ns: int, platfor
                 raise RuntimeError(
                     f"ft tare state: sensor output '{out.id}' has no IRI to derive from"
                 )
-            for suffix, member_type in (("ft_bias", "Wrench"), ("ft_settle", "IntCounter")):
+            for suffix, member_type in (
+                ("ft_bias", "Wrench"),
+                ("ft_bias_new", "Wrench"),
+                ("ft_settle", "IntCounter"),
+                ("ft_tares", "IntCounter"),
+            ):
                 member_id = f"{out.id}_{suffix}"
                 members.append(BlackboardValue(id=member_id, type=member_type))
                 model.register_derived(member_id, sensor_iri, suffix, PROV.wasDerivedFrom)

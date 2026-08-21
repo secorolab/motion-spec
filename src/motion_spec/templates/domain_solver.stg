@@ -384,14 +384,31 @@ solver-output-Wrench-mj_kdl(solver, chain_solver, out) ::= <<
         frame_<out.id>("<out.sensor_frame.id>"),
         frame_<out.id>("<out.reference_point.id>"),
         frame_<out.id>("<out.as_seen_by.id>"));
-<retare-on(out)>    if (shared.<out.id>_ft_settle \< robot.ft_<out.sensor_name>_bias_samples) {
-        ++shared.<out.id>_ft_settle;
-        shared.<out.id>_ft_bias = measured_<out.id>;   // last settle step is the tare sample
-        shared.<out.id> = KDL::Wrench::Zero();
-    } else {
-        shared.<out.id> = shared.<out.id>_ft_bias - measured_<out.id>;
-    }
+<ft-tare(out, {measured_<out.id>})>
 }
+>>
+
+// A tare is what the sensor reads unloaded and at rest. The window keeps a running mean rather
+// than its last sample, and a reading that drifts from that mean is the arm still moving, so the
+// window starts over. Only a completed window replaces the standing bias: re-taring therefore
+// leaves the previous zero in force instead of blinding every consumer for the window's length.
+ft-tare(out, sample) ::= <<
+<retare-on(out)>    if (robot.ft_<out.sensor_name>_bias_samples > 0 && shared.<out.id>_ft_settle \< robot.ft_<out.sensor_name>_bias_samples) {
+        if (shared.<out.id>_ft_settle > 0 && robot.ft_<out.sensor_name>_bias_max_drift > 0.0
+            && (<sample> - shared.<out.id>_ft_bias_new).force.Norm() > robot.ft_<out.sensor_name>_bias_max_drift) {
+            shared.<out.id>_ft_settle = 0;
+        \}
+        ++shared.<out.id>_ft_settle;
+        shared.<out.id>_ft_bias_new = shared.<out.id>_ft_bias_new
+            + (<sample> - shared.<out.id>_ft_bias_new) / static_cast\<double>(shared.<out.id>_ft_settle);
+        if (shared.<out.id>_ft_settle >= robot.ft_<out.sensor_name>_bias_samples) {
+            shared.<out.id>_ft_bias = shared.<out.id>_ft_bias_new;
+            ++shared.<out.id>_ft_tares;
+        \}
+    \}
+    shared.<out.id> = (shared.<out.id>_ft_tares > 0 || robot.ft_<out.sensor_name>_bias_samples == 0)
+        ? shared.<out.id>_ft_bias - <sample>
+        : KDL::Wrench::Zero();
 >>
 
 // Re-arm the settle: the bias is only what the sensor reads unloaded, and the load changes.
@@ -415,13 +432,7 @@ solver-output-Wrench-robif2b(solver, chain_solver, out) ::= <<
         <world-pose(solver, {robot.world_<solver.id>_<out.sensor_frame.id>})>,
         <world-pose(solver, {robot.world_<solver.id>_<out.reference_point.id>})>,
         <world-pose(solver, {robot.world_<solver.id>_<out.as_seen_by.id>})>);
-<retare-on(out)>    if (shared.<out.id>_ft_settle \< robot.ft_<out.sensor_name>_bias_samples) {
-        ++shared.<out.id>_ft_settle;
-        shared.<out.id>_ft_bias = at_<out.id>;   // last settle step is the tare sample
-        shared.<out.id> = KDL::Wrench::Zero();
-    \} else {
-        shared.<out.id> = shared.<out.id>_ft_bias - at_<out.id>;
-    \}
+<ft-tare(out, {at_<out.id>})>
 }
 >>
 

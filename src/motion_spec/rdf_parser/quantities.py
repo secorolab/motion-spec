@@ -2214,7 +2214,12 @@ def _writers_by_output(serial_chain_solvers) -> _SolverWrites:
                 continue
             sensor_outputs.add(out.id)
             # tare state, written alongside the reading (resources.shared_runtime_members)
-            for companion in (f"{out.id}_ft_bias", f"{out.id}_ft_settle"):
+            for companion in (
+                f"{out.id}_ft_bias",
+                f"{out.id}_ft_bias_new",
+                f"{out.id}_ft_settle",
+                f"{out.id}_ft_tares",
+            ):
                 by_output.setdefault(companion, set()).add(solver.id)
                 sensor_outputs.add(companion)
 

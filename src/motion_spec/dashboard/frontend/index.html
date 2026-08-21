@@ -13,16 +13,21 @@
   <body>
     <script>
       if (localStorage.getItem("motion-spec.sidebar-collapsed") === "true") document.body.classList.add("sidebar-collapsed");
+      // Before the first paint: the width this sidebar was left at, and no empty state on a
+      // reload that already names what to open -- both would otherwise be seen changing.
+      const width = Number(localStorage.getItem("motion-spec.aside"));
+      if (width) document.documentElement.style.setProperty("--aside", `${width}px`);
+      const view = new URLSearchParams(location.hash.slice(1));
+      if (view.has("run") || view.has("generation")) {
+        document.documentElement.classList.add("restoring");
+      }
     </script>
-    <header>
-      <button id="home" class="brand">motion-spec</button>
-      <span id="status">Choose a generation</span>
-    </header>
     <button id="sidebar-toggle" title="Collapse navigation" aria-label="Collapse navigation">×</button>
 
     <main>
       <aside>
         <div class="sidebar-header">
+          <button id="home" class="brand">motion-spec</button>
           <nav>
             <button class="active" data-tab="logs">Logs</button>
             <button data-tab="sources">Sources</button>
@@ -53,6 +58,7 @@
         </div>
 
         <div id="browser"></div>
+        <span id="status"></span>
         <div id="aside-resize" title="Drag to resize · double-click to reset"></div>
       </aside>
 
@@ -93,6 +99,6 @@
       </article>
     </template>
 
-    <script src="app.js?v=webgl-rdf-84"></script>
+    <script src="app.js?v=webgl-rdf-101"></script>
   </body>
 </html>

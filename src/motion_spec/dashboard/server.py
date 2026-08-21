@@ -498,6 +498,60 @@ def source_constraints(run_dir: Path, manifest: dict | None, contract) -> list[d
     ]
 
 
+SLOT_ROLES = (
+    ("error_id", "error"),
+    ("output_id", "output"),
+    ("measured_id", "measured"),
+    ("setpoint_id", "setpoint"),
+    ("tolerance_id", "tolerance"),
+)
+
+
+def signal_index(contract) -> dict:
+    """signal id -> what it is: the motion and constraint it belongs to, and its role there.
+
+    A picker offering `constraint_0.error` beside `eacc_ctrl_home_x` asks the reader to know
+    the schema. The header says which constraint each slot serves, so say that instead.
+    """
+    index: dict[str, dict] = {}
+    for motion in contract.header.motions:
+        # a controller writes a constraint slot; a monitor writes a monitor slot
+        for pool, slots, keys in (
+            ("constraints", motion.controllers,
+             ("error", "output", "measured", "setpoint", "satisfied")),
+            ("monitors", motion.monitors, ("value", "satisfied")),
+        ):
+            for slot in slots:
+                owner = slot.constraint_id or rdf_name(slot.constraint_iri) or slot.id
+                fields = contract.fields.get(pool) or ()
+                field = fields[slot.number]["id"] if slot.number < len(fields) else None
+                named = {role for attribute, role in SLOT_ROLES if getattr(slot, attribute, "")}
+                for key in keys:
+                    where = {
+                        "motion": motion.id, "constraint": owner, "role": key, "slot": slot.id
+                    }
+                    # The pooled slot mirrors a signal the header already names: offering both
+                    # is the same series twice, under a name nobody can read.
+                    if field and key not in named:
+                        index[f"{field}.{key}"] = where
+                    if pool == "monitors":
+                        index[f"{slot.id}.{key}"] = where
+                for attribute, role in SLOT_ROLES:
+                    signal = getattr(slot, attribute, "")
+                    if signal:
+                        index.setdefault(signal, {
+                            "motion": motion.id, "constraint": owner, "role": role,
+                            "slot": slot.id,
+                        })
+                for member in slot.watched:
+                    if member.error_id:
+                        index.setdefault(member.error_id, {
+                            "motion": motion.id, "constraint": member.id, "role": "error",
+                            "slot": slot.id,
+                        })
+    return index
+
+
 def replay_data(run_dir: Path) -> dict:
     """Return replay metadata without decoding the complete frame log."""
     run_dir, log, manifest, contract = resolve_archive(run_dir)
@@ -505,10 +559,18 @@ def replay_data(run_dir: Path) -> dict:
     health = read_health(log) or {}
     frame_count = health.get("written_frames", 0)
     signals = ["timing.compute_ms", "timing.period_ms"]
+    mirrored = {
+        f"{contract.fields['constraints'][slot.number]['id']}.{role}"
+        for motion in contract.header.motions for slot in motion.controllers
+        if slot.number < len(contract.fields["constraints"])
+        for attribute, role in SLOT_ROLES
+        if getattr(slot, attribute, "")
+    }
     signals.extend(
-        f"{field['id']}.{key}"
+        name
         for field in contract.fields["constraints"]
         for key in ("error", "output", "measured", "setpoint", "satisfied")
+        if (name := f"{field['id']}.{key}") not in mirrored
     )
     signals.extend(
         f"{slot.id}.{key}"
@@ -517,6 +579,7 @@ def replay_data(run_dir: Path) -> dict:
     )
     signals.extend(slot_signals(contract))
     indices = {motion.id: motion.index for motion in contract.header.motions}
+    spelling: dict[str, str] = {}  # gate id -> the motion name the source uses
     windows = log_events(log, contract)["windows"]
     logged = set(signals) | {field["id"] for field in contract.fields["quantities"]}
     parts = {}
@@ -532,7 +595,9 @@ def replay_data(run_dir: Path) -> dict:
                 signal for name in constraint[key]
                 for signal in ([name] if name in logged else sorted(parts.get(name, ())))
             ]
-        constraint["window"] = windows.get(indices.get(constraint.pop("handler")))
+        handler = constraint.pop("handler")
+        spelling.setdefault(handler, constraint["motion"])
+        constraint["window"] = windows.get(indices.get(handler))
     signals.extend(
         signal for constraint in constraints
         for signal in (*constraint["tracking"], *constraint["control"], *constraint["monitors"])
@@ -550,6 +615,10 @@ def replay_data(run_dir: Path) -> dict:
         "states": [state.id for state in contract.header.fsm_states],
         "events": log_events(log, contract)["events"],
         "signals": list(dict.fromkeys(signals)),
+        "signal_index": {
+            name: {**where, "motion": spelling.get(where["motion"], where["motion"])}
+            for name, where in signal_index(contract).items()
+        },
         "constraints": constraints,
         "header": validate_header(log, contract),
         "health": health,

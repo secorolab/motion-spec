@@ -151,8 +151,18 @@ async function selectGeneration(path) {
   state.anchor = path;
   setView("generation", path);
   state.generationPath = path;
-  const generation = await api(`/api/generation?path=${encodeURIComponent(path)}`);
-  const runs = await api(`/api/runs?path=${encodeURIComponent(path)}`);
+  // Coming back to a generation already built: put it back and refresh what can have changed,
+  // rather than tearing the page down and laying it out again around the same facts.
+  if (state.generation?.path === path) {
+    $("#content").replaceChildren(state.generation.node);
+    $("#status").textContent = state.generation.folder;
+    highlightGeneration();
+    return api(`/api/runs?path=${encodeURIComponent(path)}`).then(state.generation.setRuns);
+  }
+  const [generation, runs] = await Promise.all([
+    api(`/api/generation?path=${encodeURIComponent(path)}`),
+    api(`/api/runs?path=${encodeURIComponent(path)}`),
+  ]);
   $("#status").textContent = generation.path;
   highlightGeneration();
 
@@ -204,7 +214,8 @@ async function selectGeneration(path) {
   const runList = page.querySelector(".runs");
   const pages = Math.ceil(runs.length / 10);
   let runPage = 0;
-  const renderRuns = () => runList.replaceChildren(...runs.slice(runPage * 10, runPage * 10 + 10).map((run, index) => {
+  let rows = runs;
+  const renderRuns = () => runList.replaceChildren(...rows.slice(runPage * 10, runPage * 10 + 10).map((run, index) => {
     const row = document.createElement("div");
     row.className = "run";
     row.dataset.path = run.path;
@@ -225,6 +236,16 @@ async function selectGeneration(path) {
   pager.querySelectorAll("button")[0]?.addEventListener("click", () => { runPage = Math.max(0, runPage - 1); renderRuns(); pager.querySelector("span").textContent = `${runPage + 1} / ${pages}`; });
   pager.querySelectorAll("button")[1]?.addEventListener("click", () => { runPage = Math.min(pages - 1, runPage + 1); renderRuns(); pager.querySelector("span").textContent = `${runPage + 1} / ${pages}`; });
   $("#content").replaceChildren(page);
+  state.generation = {
+    path,
+    folder: generation.folder,
+    node: $("#content .generation"),
+    setRuns: (fresh) => {
+      rows = fresh;
+      runPage = Math.min(runPage, Math.max(0, Math.ceil(fresh.length / 10) - 1));
+      renderRuns();
+    },
+  };
   const graphPage = $("#content");
   const options = graphPage.querySelector(".graph-options");
   const graphStatus = graphPage.querySelector(".graph-status");
@@ -363,15 +384,23 @@ async function loadReplay(path) {
   stopPlayback();
   setView("run", path);
   state.replay = await api(`/api/replay?path=${encodeURIComponent(path)}`);
+  state.charts.forEach((chart) => chart.dispose());
+  state.charts = [];
+  $("#status").textContent = "";
+  $("#content").innerHTML = replayShell(path);
   state.runPath = path;
   state.generationPath = state.replay.generation;
   highlightGeneration();
   state.frame = 0;
-  state.charts.forEach((chart) => chart.dispose());
-  state.charts = [];
-  $("#status").textContent = "";
-  $("#content").innerHTML = `<div class="replay"><div class="replay-heading"><div><div class="eyebrow">REPLAY</div><h1>${path.split("/").pop()}</h1><p class="path">${state.replay.frames.toLocaleString()} frames · ${state.replay.duration.toFixed(3)} s</p></div><button id="back" title="Back to generation">← Back</button></div><div class="replay-tabs"><button data-panel="plots" class="active">Plots</button><button data-panel="sparql">SPARQL</button></div><section id="panel-plots"><div class="constraint-panel"><div class="eyebrow">SOURCE CONSTRAINTS</div><input id="constraint-search" type="search" placeholder="Search .robmot constraints"><div id="constraints" class="constraints"></div></div><div class="chart-controls"><button id="plot">Add empty plot</button><button id="notebook">Open in Jupyter</button></div><div id="plots" class="plots"></div></section><section id="panel-sparql" hidden><div class="sparql"><div class="query-rail"><button id="new-query" class="new-query">+ query</button></div><div class="sparql-body"><div class="sparql-canned"></div><textarea id="query" spellcheck="false"></textarea><div class="sparql-run"><button id="ask">Run query</button><span id="query-status" class="path"></span></div><div id="answer"></div></div></div></section></div><div class="transport"><div class="transport-controls"><button id="step-back" title="Previous frame">‹</button><button id="play">Play</button><button id="step-forward" title="Next frame">›</button><span id="readout" class="path"></span></div><div class="markers"></div><input class="timeline" type="range" min="0" max="${state.replay.frames - 1}" value="0"></div>`;
+  $(".replay-heading .path").textContent =
+    `${state.replay.frames.toLocaleString()} frames · ${state.replay.duration.toFixed(3)} s`;
+  const timeline = $(".timeline");
+  timeline.max = Math.max(0, state.replay.frames - 1);
+  timeline.disabled = false;
 
+  state.motionOf = Object.fromEntries(
+    state.replay.constraints.filter((row) => row.handler).map((row) => [row.handler, row.motion]),
+  );
   populateConstraints();
   $("#plot").onclick = () => addPlot([]);
   $("#notebook").onclick = () => openNotebook(state.runPath).catch((error) => snack(error.message));
@@ -487,6 +516,12 @@ const CANNED = {
   "graph sizes": "SELECT ?graph (COUNT(*) AS ?triples) WHERE {\n"
     + "  GRAPH ?graph { ?s ?p ?o }\n} GROUP BY ?graph",
 };
+
+function replayShell(path) {
+  // The run page's markup, with what the reply fills left blank: the numbers, the timeline's
+  // range and the constraint list.
+  return `<div class="replay"><div class="replay-heading"><button id="back" title="Back to generation">←</button><h1>${path.split("/").pop()}</h1><span class="path">reading the log…</span></div><div class="replay-tabs"><button data-panel="plots" class="active">Plots</button><button data-panel="sparql">SPARQL</button></div><section id="panel-plots"><div class="constraint-panel"><div class="eyebrow">SOURCE CONSTRAINTS</div><input id="constraint-search" type="search" placeholder="Search .robmot constraints"><div id="constraints" class="constraints"></div></div><div class="chart-controls"><button id="plot">Add empty plot</button><button id="notebook">Open in Jupyter</button></div><div id="plots" class="plots"></div></section><section id="panel-sparql" hidden><div class="sparql"><div class="query-rail"><button id="new-query" class="new-query">+ query</button></div><div class="sparql-body"><div class="sparql-canned"></div><textarea id="query" spellcheck="false"></textarea><div class="sparql-run"><button id="ask">Run query</button><span id="query-status" class="path"></span></div><div id="answer"></div></div></div></section></div><div class="transport"><div class="transport-controls"><button id="step-back" title="Previous frame">‹</button><button id="play">Play</button><button id="step-forward" title="Next frame">›</button><span id="readout" class="path"></span></div><div class="markers"></div><input class="timeline" type="range" min="0" max="0" value="0" disabled></div>`;
+}
 
 function bindPanels() {
   const show = (panel, remember = true) => {
@@ -724,6 +759,46 @@ function printVector(svg, width, height) {
   setTimeout(() => frame.remove(), 60000);
 }
 
+function nameApart(entries) {
+  // Three axes of one constraint all read "error": tell them apart by what is left of the
+  // slot's name once the part they share is gone.
+  const repeated = new Set(
+    entries.map((entry) => entry.label)
+      .filter((label, index, all) => all.indexOf(label) !== index),
+  );
+  if (!repeated.size) return;
+  const slots = entries.filter((entry) => entry.slot).map((entry) => entry.slot);
+  let shared = 0;
+  while (slots.length > 1 && slots.every((slot) => slot.startsWith(slots[0].slice(0, shared + 1)))) {
+    shared += 1;
+  }
+  entries.forEach((entry) => {
+    if (!repeated.has(entry.label) || !entry.slot) return;
+    entry.label = `${entry.label} · ${entry.slot.slice(shared).replace(/^_/, "") || entry.slot}`;
+  });
+}
+
+function signalPlace(signal) {
+  // Where a signal belongs and what to call it there: the constraint it serves if the header
+  // says, otherwise the slot it is a component of, so a pose is one entry and not seven.
+  const where = state.replay.signal_index?.[signal];
+  if (where) {
+    const motion = state.motionOf?.[where.motion] ?? where.motion;
+    return [`${motion} · ${where.constraint}`, where.role];
+  }
+  if (signal.startsWith("timing.")) return ["timing", signal.slice("timing.".length)];
+  const [slot, ...part] = signal.split(".");
+  if (part.length) return [`${spatialKind(part[0])} · ${slot}`, part.join(".")];
+  return ["quantities", signal];
+}
+
+function spatialKind(part) {
+  if (part === "position" || part === "orientation") return "pose";
+  if (part === "linear" || part === "angular") return "twist";
+  if (part === "force" || part === "torque") return "wrench";
+  return "slot";
+}
+
 function setpointBands(constraint) {
   if (!constraint?.setpoints?.length) return {};
   const tolerance = constraint.tolerance ?? 0;
@@ -855,7 +930,7 @@ function addPlot(signals = [], title = signals.join(" · ") || "New plot", detai
   const { row = null, constraint = null, gains = null } = options;
   const card = document.createElement("section");
   card.className = "plot-card";
-  card.innerHTML = '<header><div><strong></strong><small></small></div><div class="plot-actions"><details class="export-plot"><summary title="Export plot"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="square"><path d="M9.5 2.5h4v4"/><path d="M13.5 2.5 8 8"/><path d="M12 9v4.5H2.5V4h4.5"/></svg></summary><div class="export-menu"><button value="png">PNG</button><button value="jpg">JPG</button><button value="svg">SVG</button><button value="pdf">PDF</button></div></details><button class="expand-plot" title="Fullscreen plot">⛶</button><button class="remove-plot" title="Remove plot">×</button></div></header><div class="plot-tools"><select></select><button class="add-signal">Add signal</button></div><div class="plot-signals"></div><div class="plot-chart"></div><div class="plot-facts"></div>';
+  card.innerHTML = '<header><div><strong></strong><small></small></div><div class="plot-actions"><details class="export-plot"><summary title="Export plot"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="square"><path d="M9.5 2.5h4v4"/><path d="M13.5 2.5 8 8"/><path d="M12 9v4.5H2.5V4h4.5"/></svg></summary><div class="export-menu"><button value="png">PNG</button><button value="jpg">JPG</button><button value="svg">SVG</button><button value="pdf">PDF</button></div></details><button class="expand-plot" title="Fullscreen plot">⛶</button><button class="remove-plot" title="Remove plot">×</button></div></header><details class="signal-menu"><summary>+ add signal</summary><div class="signal-panel"><input class="signal-filter" type="search" placeholder="Filter signals"><div class="signal-list"></div></div></details><div class="plot-signals"></div><div class="plot-chart"></div><div class="plot-facts"></div>';
   card.querySelector("strong").textContent = title;
   card.querySelector("small").textContent = detail;
   card.querySelector(".plot-facts").replaceChildren(...Object.entries(gains ?? {}).map(([key, value]) => {
@@ -865,8 +940,6 @@ function addPlot(signals = [], title = signals.join(" · ") || "New plot", detai
     fact.querySelector("i").textContent = value;
     return fact;
   }));
-  const select = card.querySelector(".plot-tools select");
-  state.replay.signals.forEach((signal) => select.add(new Option(signal, signal)));
   $("#plots").append(card);
   const chart = echarts.init(card.querySelector(".plot-chart"));
   state.charts.push(chart);
@@ -910,14 +983,53 @@ function addPlot(signals = [], title = signals.join(" · ") || "New plot", detai
       exportChart(chart, title.replace(/[^\w.-]+/g, "_"), option.value);
     };
   });
+  const menu = card.querySelector(".signal-menu");
+  const filter = card.querySelector(".signal-filter");
+  const list = card.querySelector(".signal-list");
+  const fillSignals = () => {
+    const query = filter.value.toLowerCase().trim();
+    const groups = new Map();
+    state.replay.signals.forEach((signal) => {
+      const [group, label] = signalPlace(signal);
+      if (query && !`${signal} ${label} ${group}`.toLowerCase().includes(query)) return;
+      groups.set(group, [...(groups.get(group) ?? []), {
+        signal, label, slot: state.replay.signal_index?.[signal]?.slot,
+      }]);
+    });
+    groups.forEach(nameApart);
+    list.replaceChildren(...[...groups].flatMap(([group, entries]) => {
+      const heading = document.createElement("div");
+      heading.className = "signal-group";
+      heading.textContent = group;
+      return [heading, ...entries.map(({ signal, label }) => {
+        const option = document.createElement("button");
+        option.className = "signal-option";
+        option.textContent = label;
+        option.title = signal;
+        option.disabled = signals.includes(signal);
+        option.onclick = () => {
+          menu.open = false;
+          discard();
+          addPlot([...signals, signal], title, detail, { row, constraint, gains });
+        };
+        return option;
+      })];
+    }));
+  };
+  filter.oninput = fillSignals;
+  menu.ontoggle = () => {
+    if (!menu.open) return;
+    filter.value = "";
+    fillSignals();
+    filter.focus();
+  };
+  menu.onkeydown = (event) => {
+    if (event.key === "Escape") menu.open = false;
+  };
+  fillSignals();
   card.querySelector(".remove-plot").onclick = () => {
     discard();
     if (row && !$(`#plots [data-row="${card.dataset.row}"]`)) delete row.dataset.plotted;
-  };
-  card.querySelector(".add-signal").onclick = () => {
-    if (signals.includes(select.value)) return;
-    discard();
-    addPlot([...signals, select.value], title, detail, { row, constraint, gains });
   };
   if (!signals.length) {
     chart.setOption({ graphic: { type: "text", left: "center", top: "middle", style: { text: "Choose a signal above", fill: "#73777d" } } });
@@ -1180,6 +1292,7 @@ $("#delete-selected").onclick = async () => {
   state.selected.clear();
   $("#selection-actions").hidden = true;
   state.cache = {};
+  state.generation = null;
   if (gone) return goHome();
   loadGenerations(true).catch(showError);
 };
@@ -1290,9 +1403,14 @@ function loadLocation() {
   state.generationPath = view.get("generation") ?? view.get("run")?.split("/runs/")[0] ?? null;
   setTab(view.get("tab") ?? "logs", false);
   const loadSidebar = state.tab === "logs" ? loadGenerations : loadSources;
-  if (view.has("run")) loadSidebar().then(() => loadReplay(view.get("run"))).catch(showError);
-  else if (view.has("generation")) loadSidebar().then(() => selectGeneration(view.get("generation"))).catch(showError);
-  else loadSidebar().catch(showError);
+  const rendered = () => document.documentElement.classList.remove("restoring");
+  if (view.has("run")) {
+    loadSidebar().then(() => loadReplay(view.get("run"))).then(rendered).catch(showError);
+  }
+  else if (view.has("generation")) {
+    loadSidebar().then(() => selectGeneration(view.get("generation"))).then(rendered).catch(showError);
+  }
+  else loadSidebar().then(rendered).catch(showError);
 }
 
 window.onpopstate = loadLocation;

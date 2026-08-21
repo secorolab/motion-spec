@@ -332,10 +332,11 @@ async function loadReplay(path) {
   state.charts.forEach((chart) => chart.dispose());
   state.charts = [];
   $("#status").textContent = "";
-  $("#content").innerHTML = `<div class="replay"><div class="replay-heading"><div><div class="eyebrow">REPLAY</div><h1>${path.split("/").pop()}</h1><p class="path">${state.replay.frames.toLocaleString()} frames · ${state.replay.duration.toFixed(3)} s</p></div><button id="back" title="Back to generation">← Back</button></div><div class="constraint-panel"><div class="eyebrow">SOURCE CONSTRAINTS</div><input id="constraint-search" type="search" placeholder="Search .robmot constraints"><div id="constraints" class="constraints"></div></div><div class="chart-controls"><button id="plot">Add empty plot</button></div><div id="plots" class="plots"></div></div><div class="transport"><div class="transport-controls"><button id="step-back" title="Previous frame">‹</button><button id="play">Play</button><button id="step-forward" title="Next frame">›</button><span id="readout" class="path"></span></div><div class="markers"></div><input class="timeline" type="range" min="0" max="${state.replay.frames - 1}" value="0"></div>`;
+  $("#content").innerHTML = `<div class="replay"><div class="replay-heading"><div><div class="eyebrow">REPLAY</div><h1>${path.split("/").pop()}</h1><p class="path">${state.replay.frames.toLocaleString()} frames · ${state.replay.duration.toFixed(3)} s</p></div><button id="back" title="Back to generation">← Back</button></div><div class="constraint-panel"><div class="eyebrow">SOURCE CONSTRAINTS</div><input id="constraint-search" type="search" placeholder="Search .robmot constraints"><div id="constraints" class="constraints"></div></div><div class="chart-controls"><button id="plot">Add empty plot</button><button id="notebook">Open in Jupyter</button></div><div id="plots" class="plots"></div></div><div class="transport"><div class="transport-controls"><button id="step-back" title="Previous frame">‹</button><button id="play">Play</button><button id="step-forward" title="Next frame">›</button><span id="readout" class="path"></span></div><div class="markers"></div><input class="timeline" type="range" min="0" max="${state.replay.frames - 1}" value="0"></div>`;
 
   populateConstraints();
   $("#plot").onclick = () => addPlot([]);
+  $("#notebook").onclick = () => openNotebook(state.runPath).catch(showError);
   bindTransport();
   $("#back").onclick = () => selectGeneration(state.replay.generation);
   updateReadout();
@@ -381,15 +382,15 @@ function populateConstraints() {
         const bands = constraint.tracking.length
           ? constraint
           : { ...constraint, setpoints: [{ label: "satisfied", value: 0 }] };
-        if (tracked.length) addPlot(tracked, `${title} · constraint`, detail, row, bands);
+        if (tracked.length) addPlot(tracked, `${title} · constraint`, detail, { row, constraint: bands });
         if (constraint.kind === "monitored") {
           if (constraint.monitors.length) {
-            addPlot(constraint.monitors, `${title} · monitor`, detail, row, constraint);
+            addPlot(constraint.monitors, `${title} · monitor`, detail, { row, constraint });
           }
           return;
         }
         const machinery = [...constraint.error, ...constraint.control];
-        if (machinery.length) addPlot(machinery, `${title} · controller`, detail, row, constraint, constraint.gains);
+        if (machinery.length) addPlot(machinery, `${title} · controller`, detail, { row, constraint, gains: constraint.gains });
       };
     } else {
       row.dataset.unavailable = "true";
@@ -586,7 +587,8 @@ function updateReadout() {
   $("#readout").textContent = `${time.toFixed(3)} s · frame ${state.frame.toLocaleString()} / ${state.replay.frames.toLocaleString()} · ${entered?.label ?? "—"}`;
 }
 
-function addPlot(signals = [], title = signals.join(" · ") || "New plot", detail = "", row = null, constraint = null, gains = null) {
+function addPlot(signals = [], title = signals.join(" · ") || "New plot", detail = "", options = {}) {
+  const { row = null, constraint = null, gains = null } = options;
   const card = document.createElement("section");
   card.className = "plot-card";
   card.innerHTML = '<header><div><strong></strong><small></small></div><div class="plot-actions"><details class="export-plot"><summary title="Export plot"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="square"><path d="M9.5 2.5h4v4"/><path d="M13.5 2.5 8 8"/><path d="M12 9v4.5H2.5V4h4.5"/></svg></summary><div class="export-menu"><button value="png">PNG</button><button value="jpg">JPG</button><button value="svg">SVG</button><button value="pdf">PDF</button></div></details><button class="expand-plot" title="Fullscreen plot">⛶</button><button class="remove-plot" title="Remove plot">×</button></div></header><div class="plot-tools"><select></select><button class="add-signal">Add signal</button></div><div class="plot-signals"></div><div class="plot-chart"></div><div class="plot-facts"></div>';
@@ -640,7 +642,7 @@ function addPlot(signals = [], title = signals.join(" · ") || "New plot", detai
   card.querySelector(".add-signal").onclick = () => {
     if (signals.includes(select.value)) return;
     discard();
-    addPlot([...signals, select.value], title, detail, row, constraint);
+    addPlot([...signals, select.value], title, detail, { row, constraint, gains });
   };
   if (!signals.length) {
     chart.setOption({ graphic: { type: "text", left: "center", top: "middle", style: { text: "Choose a signal above", fill: "#73777d" } } });
@@ -655,7 +657,7 @@ function addPlot(signals = [], title = signals.join(" · ") || "New plot", detai
     chip.title = "Remove this signal";
     chip.onclick = () => {
       discard();
-      addPlot(signals.filter((item) => item !== signal), title, detail, row, constraint);
+      addPlot(signals.filter((item) => item !== signal), title, detail, { row, constraint, gains });
     };
     return chip;
   }));
@@ -840,9 +842,27 @@ function filterSources(value) {
 document.querySelectorAll("nav button[data-tab]").forEach((button) => {
   button.onclick = () => {
     setTab(button.dataset.tab);
+    if (state.tab === "notebook") return loadNotebook().catch(showError);
     (state.tab === "logs" ? loadGenerations : loadSources)().catch(showError);
   };
 });
+
+async function loadNotebook(url = null) {
+  stopPlayback();
+  $("#list-title").textContent = "NOTEBOOK";
+  $("#browser").replaceChildren();
+  $("#content").innerHTML = '<div class="notebook"><iframe title="JupyterLab"></iframe></div>';
+  $("#status").textContent = "Starting JupyterLab…";
+  const lab = url ? { url } : await api("/api/jupyter");
+  $(".notebook iframe").src = lab.url;
+  $("#status").textContent = lab.url.split("?")[0];
+}
+
+async function openNotebook(runPath) {
+  setTab("notebook");
+  const { url } = await post("/api/notebook", { path: runPath });
+  await loadNotebook(url);
+}
 const lifecycleEvents = new EventSource("/api/events");
 lifecycleEvents.addEventListener("lifecycle", () => {
   state.cache.generations = null;

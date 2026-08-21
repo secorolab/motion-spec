@@ -360,13 +360,16 @@ function populateConstraints() {
     const expression = document.createElement("span");
     row.className = "constraint";
     row.dataset.kind = constraint.kind;
+    if (!constraint.window) row.dataset.idle = "true";
     line.textContent = `L${constraint.line}`;
     name.textContent = constraint.name;
     expression.textContent = constraint.expression;
     row.append(line, name, expression);
     if (constraint.tracking.length || constraint.control.length || constraint.monitors.length) {
       row.dataset.plottable = "true";
-      row.title = `Plot this ${constraint.kind} constraint`;
+      row.title = constraint.window
+        ? `Plot this ${constraint.kind} constraint`
+        : "This motion never ran in this recording";
       row.onclick = () => {
         if (row.dataset.plotted) {
           $("#plots").querySelectorAll(`[data-row="${row.dataset.plotKey}"] .remove-plot`)
@@ -394,7 +397,9 @@ function populateConstraints() {
       };
     } else {
       row.dataset.unavailable = "true";
-      row.title = "No recorded signal";
+      row.title = constraint.evaluator
+        ? "No recorded signal"
+        : "Nothing evaluates this constraint in this generation";
     }
     return row;
     })];
@@ -664,6 +669,8 @@ function addPlot(signals = [], title = signals.join(" · ") || "New plot", detai
   chart.showLoading("default", { text: "Loading recorded data…" });
   const query = new URLSearchParams({ path: state.runPath });
   signals.forEach((signal) => query.append("signal", signal));
+  // sample inside the motion's window, or a short motion falls between two samples
+  (constraint?.window ?? []).forEach((bound) => query.append("window", bound));
   api(`/api/plot?${query}`).then((data) => {
     chart.hideLoading();
     chart.setOption({
@@ -709,7 +716,7 @@ function addPlot(signals = [], title = signals.join(" · ") || "New plot", detai
         type: "line",
         showSymbol: false,
         data: data.signals[signal]
-          .map((value, point) => value == null ? null : [point * data.sample_step, value])
+          .map((value, point) => value == null ? null : [(data.first_frame ?? 0) + point * data.sample_step, value])
           .filter(Boolean),
         lineStyle: { width: 1.5 },
         ...(index === 0 ? setpointBands(constraint) : {}),

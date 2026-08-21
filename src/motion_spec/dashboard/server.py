@@ -7,14 +7,17 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
 import re
 import secrets
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 from datetime import datetime, timezone
@@ -564,8 +567,12 @@ def log_events(log: Path, contract) -> list:
     return _EVENTS[key]
 
 
-def plot_data(run_dir: Path, names: list[str]) -> dict:
-    """Stream and downsample requested fields without shaping complete frames."""
+def plot_data(run_dir: Path, names: list[str], window: tuple | None = None) -> dict:
+    """Stream and downsample requested fields without shaping complete frames.
+
+    Sampling follows the window asked for, so a motion that lasted a handful of frames is
+    drawn from those frames rather than missed between two samples of the whole run.
+    """
     _, log, _manifest, contract = resolve_archive(run_dir)
     constraint_slots = {field["id"]: index for index, field in enumerate(contract.fields["constraints"])}
     slots = slot_signals(contract)
@@ -576,7 +583,8 @@ def plot_data(run_dir: Path, names: list[str]) -> dict:
     }
     quantities = {field["id"]: field for field in contract.fields["quantities"]}
     health = read_health(log) or {}
-    step = max(1, health.get("written_frames", 0) // 1600)
+    first, last = window or (0, max(0, health.get("written_frames", 0) - 1))
+    step = max(1, (last - first + 1) // 1600)
     series = {name: [] for name in names}
 
     def value(frame, name: str):
@@ -616,7 +624,7 @@ def plot_data(run_dir: Path, names: list[str]) -> dict:
             if record.WhichOneof("record") != "frame":
                 continue
             frame = record.frame
-            if index % step == 0:
+            if first <= index <= last and (index - first) % step == 0:
                 for name in names:
                     series[name].append(value(frame, name))
             index += 1
@@ -624,6 +632,7 @@ def plot_data(run_dir: Path, names: list[str]) -> dict:
         "signals": series,
         "events": log_events(log, contract)["events"],
         "sample_step": step,
+        "first_frame": first,
     }
 
 
@@ -668,6 +677,18 @@ def jupyter_server() -> dict:
     JUPYTER["base"] = f"http://127.0.0.1:{port}"
     JUPYTER["token"] = token
     return {"url": JUPYTER["url"], "root": str(WORKSPACE)}
+
+
+def stop_jupyter() -> None:
+    """Take the embedded lab down with the dashboard that started it."""
+    process = JUPYTER.get("process")
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(5)
+    except subprocess.TimeoutExpired:
+        process.kill()
 
 
 def run_notebook(run_dir: Path) -> dict:
@@ -821,7 +842,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/replay":
                 return self.send_json(replay_data(relative_path(GENERATIONS, value)))
             if parsed.path == "/api/plot":
-                return self.send_json(plot_data(relative_path(GENERATIONS, value), query.get("signal", [])))
+                bounds = query.get("window", [])
+                return self.send_json(plot_data(
+                    relative_path(GENERATIONS, value), query.get("signal", []),
+                    (int(bounds[0]), int(bounds[1])) if len(bounds) == 2 else None,
+                ))
             if parsed.path == "/api/sources":
                 files = [
                     str(path.relative_to(WORKSPACE))
@@ -892,6 +917,9 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8080)
     args = parser.parse_args()
     LIFECYCLE = LifecycleListener()
+    atexit.register(stop_jupyter)
+    for name in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(name, lambda *_: sys.exit(0))
     server = ThreadingHTTPServer(("127.0.0.1", args.port), DashboardHandler)
     print(f"motion-spec dashboard: http://127.0.0.1:{args.port}")
     server.serve_forever()

@@ -268,10 +268,10 @@ def test_manifest_hash_verification_rejects_mutation(tmp_path: Path) -> None:
         verify_manifest(run_dir)
 
 
-def test_generation_owned_run_does_not_copy_static_artifacts(tmp_path: Path) -> None:
+def _generation_tree(tmp_path: Path) -> tuple[Path, Path]:
+    """A generation bundle and the flat source tree its artifacts were copied from."""
     flat = _source_tree(tmp_path / "flat")
-    generation = tmp_path / "generation"
-    generated = generation / "generated"
+    generated = tmp_path / "generation" / "generated"
     for directory in ("contract", "model", "controller", "provenance"):
         (generated / directory).mkdir(parents=True, exist_ok=True)
     for source, target in (
@@ -282,8 +282,13 @@ def test_generation_owned_run_does_not_copy_static_artifacts(tmp_path: Path) -> 
         (flat / "ir.json", generated / "model/ir.json"),
     ):
         target.write_bytes(source.read_bytes())
+    return flat, generated
 
-    run_dir = generation / "runs" / "run-1"
+
+def test_generation_owned_run_does_not_copy_static_artifacts(tmp_path: Path) -> None:
+    flat, generated = _generation_tree(tmp_path)
+
+    run_dir = generated.parent / "runs" / "run-1"
     manifest = create_archive_manifest(
         run_dir, source_dir=generated, run_id="run-1", frame_log=flat / "frame_log.pb"
     )
@@ -293,6 +298,33 @@ def test_generation_owned_run_does_not_copy_static_artifacts(tmp_path: Path) -> 
     assert "rec" not in manifest
     assert json.dumps(manifest).count("../../generated/provenance/motion-spec.ld.json") == 1
     assert "artifacts" not in manifest
+
+
+def test_generation_run_vendors_its_authored_source(tmp_path: Path) -> None:
+    # The generated artifacts stay generation-relative, but the authored source is copied in:
+    # it is kilobytes, and without it a run moved out of its generation shows no source lines.
+    flat, generated = _generation_tree(tmp_path)
+    (generated / "source").mkdir()
+    (generated / "source" / "demo.robmot").write_text("guarded-motion (ns=demo) move {\n}\n")
+    (generated / "source" / "demo.fsm").write_text("fsm demo {\n}\n")
+
+    run_dir = generated.parent / "runs" / "run-1"
+    manifest = create_archive_manifest(
+        run_dir, source_dir=generated, run_id="run-1", frame_log=flat / "frame_log.pb"
+    )
+
+    assert manifest["files"]["sources"] == ["source/demo.fsm", "source/demo.robmot"]
+    assert (run_dir / "source" / "demo.robmot").read_text().startswith("guarded-motion")
+    # Everything the generation owns is still referenced where it lives, not duplicated.
+    assert manifest["files"]["ir"] == "../../generated/model/ir.json"
+    assert not (run_dir / "model").exists()
+    # REC records each vendored source as its own entity, at its archive-relative path.
+    rec_graph = rdflib.Graph().parse(run_dir / "rec.ld.json", format="json-ld")
+    assert {
+        str(rec_graph.value(rec_graph.value(entity, PROV.atLocation), REC.path))
+        for entity, label in rec_graph.subject_objects(REC.label)
+        if str(label) == "source_model"
+    } == {"source/demo.fsm", "source/demo.robmot"}
 
 
 def test_runtime_shacl_rejects_unanchored_occurrence(tmp_path: Path) -> None:

@@ -231,6 +231,13 @@ def _create_generation_run_manifest(
     from motion_spec.introspection import frame_log_pb
 
     schema = frame_log_pb.read_contract(frame_log_path).summary()
+    # The authored source travels with the run: it is kilobytes next to a gigabyte log, and a run
+    # moved out of its generation still shows the lines its constraints were written on.
+    sources = []
+    for authored in sorted((generated / "source").glob("*")):
+        if authored.is_file():
+            _copy_file(authored, run_dir / "source" / authored.name)
+            sources.append(f"source/{authored.name}")
     files = {
         "frame_log_proto": relative(proto_path),
         "provenance": relative(provenance_path),
@@ -245,6 +252,7 @@ def _create_generation_run_manifest(
             (relative(path) for path in (generated / "model").glob("*-derived.ld.json")), None
         ),
         "ir": relative(generated / "model" / "ir.json"),
+        "sources": sources or None,
         "controller": relative(generated / "controller"),
         "log_producer_executable": (
             relative(Path(log_producer_executable)) if log_producer_executable else None

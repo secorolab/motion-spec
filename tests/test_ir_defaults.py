@@ -292,11 +292,16 @@ def test_introspection_contract_carries_control_and_provenance() -> None:
     graph, controller_node = _pid_graph(kp=2.0)
     graph.add((controller_node, CSTR_HDL["integral-gain"], Literal(0.1, datatype=XSD.double)))
     graph.add((controller_node, CSTR_HDL["derivative-gain"], Literal(0.3, datatype=XSD.double)))
+    constraint_node = URIRef("https://example.test/hold")
+    graph.add((constraint_node, RDF.type, CSTR.Constraint))
+    tolerance_node = _quantity(graph, "tolerance")
+    graph.add((controller_node, CSTR_HDL.constraint, constraint_node))
     monitor_node = URIRef("https://example.test/monitor")
     event_node = URIRef("https://example.test/events/complete")
     graph.add((monitor_node, RDF.type, CSTR_HDL.Monitor))
     graph.add((monitor_node, RDF.type, CSTR_HDL.EdgeTriggeredMonitor))
     graph.add((monitor_node, CSTR_HDL.event, event_node))
+    graph.add((monitor_node, CSTR_HDL.constraint, constraint_node))
     # A motion is a subject in every authored model; this hand-built graph has only the
     # controller and monitor, so its IRI is supplied here for the introspection id/IRI check.
     graph.add((URIRef("https://example.test/move"), RDF.type, MOT.GuardedMotion))
@@ -322,6 +327,11 @@ def test_introspection_contract_carries_control_and_provenance() -> None:
         decay_rate=None,
         output_saturation=None,
         integral_saturation=None,
+        measured_signal="error",
+        setpoint_signal="control",
+        tolerance_id=model.id(tolerance_node),
+        constraint=model.id(constraint_node),
+        constraint_uri=str(constraint_node),
         type=model.id(CSTR_HDL.ProportionalIntegralDerivative),
     )
     monitor = coordination.monitor_entry(model, monitor_node)
@@ -342,7 +352,14 @@ def test_introspection_contract_carries_control_and_provenance() -> None:
         until_schedule=[],
     )
     computation = quantities.build_indexes(
-        model, {}, [controller.error_signal, controller.control_signal], {}
+        model,
+        {},
+        [
+            controller.error_signal,
+            controller.control_signal,
+            quantities.quantity(model, tolerance_node),
+        ],
+        {},
     )
     robots = resources.Robots(
         serial_chains=[], platform_velocity=[], platform_force=[], schedule_steps=[]
@@ -359,6 +376,13 @@ def test_introspection_contract_carries_control_and_provenance() -> None:
     assert introspection["controllers"][0]["output_signal"] == "control"
     assert introspection["monitors"][0]["trigger"] == "edge"
     assert introspection["monitors"][0]["event_uri"] == "https://example.test/events/complete"
+    # Every slot names the constraint it serves, so a logged row joins back to the model.
+    assert introspection["controllers"][0]["constraint"] == "hold"
+    assert introspection["controllers"][0]["constraint_uri"] == str(constraint_node)
+    assert introspection["monitors"][0]["constraint_ids"] == ["hold"]
+    assert introspection["monitors"][0]["constraint_uris"] == [str(constraint_node)]
+    roles = {signal["role"] for signal in introspection["signals"]}
+    assert {"measured_signal", "setpoint_signal", "tolerance_signal"} <= roles
     assert {"id": "control", "uri": "https://example.test/control"} in introspection["uris"]
     runtime_activity = next(
         activity

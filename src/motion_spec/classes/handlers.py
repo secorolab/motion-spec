@@ -66,6 +66,9 @@ class PIDController:
     setpoint_signal: str | None = None
     # The band its constraint is satisfied within, as the model authored it.
     tolerance_id: str = ""
+    # The constraint this controller serves; per-axis controllers share the authored one.
+    constraint: str | None = None
+    constraint_uri: str | None = None
     type: str = "ProportionalIntegralDerivative"
 
 
@@ -84,6 +87,9 @@ class ImpedanceController:
     setpoint_signal: str | None = None
     # The band its constraint is satisfied within, as the model authored it.
     tolerance_id: str = ""
+    # The constraint this controller serves; per-axis controllers share the authored one.
+    constraint: str | None = None
+    constraint_uri: str | None = None
     type: str = "ImpedanceController"
 
 
@@ -99,6 +105,9 @@ class FeedForwardController:
     setpoint_signal: str | None = None
     # The band its constraint is satisfied within, as the model authored it.
     tolerance_id: str = ""
+    # The constraint this controller serves; per-axis controllers share the authored one.
+    constraint: str | None = None
+    constraint_uri: str | None = None
     type: str = "FeedForwardController"
 
 
@@ -124,6 +133,8 @@ class LevelMonitor:
     # The constraints this monitor watches, by id: how a term read directly off shared state --
     # an elapsed clock, an action goal's status -- is matched to the monitor that reads it.
     constraint_ids: list[str] = field(default_factory=list, metadata=INTERNAL)
+    # The same constraints by URI, for joins against the model graph.
+    constraint_uris: list[str] = field(default_factory=list, metadata=INTERNAL)
     group_any: bool = field(default=False, metadata=INTERNAL)
     # Structured active-phase boolean terms (rendered to C++ by the bool-condition template).
     has_active: bool = False
@@ -155,6 +166,8 @@ class EdgeMonitor:
     # The constraints this monitor watches, by id: how a term read directly off shared state --
     # an elapsed clock, an action goal's status -- is matched to the monitor that reads it.
     constraint_ids: list[str] = field(default_factory=list, metadata=INTERNAL)
+    # The same constraints by URI, for joins against the model graph.
+    constraint_uris: list[str] = field(default_factory=list, metadata=INTERNAL)
     group_any: bool = field(default=False, metadata=INTERNAL)
     event_uri: str | None = None
     event_name: str | None = None

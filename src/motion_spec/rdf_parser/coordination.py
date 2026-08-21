@@ -261,6 +261,7 @@ def monitor_entry(model, node):
         "group_constraint_ids": group_ids,
         "group_any": group_any,
         "constraint_ids": sorted(model.id(item) for item in monitored),
+        "constraint_uris": sorted(str(item) for item in monitored),
     }
     types = get_node_types(graph, node)
     publication = _ros_publication(model, node)

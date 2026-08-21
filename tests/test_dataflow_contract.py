@@ -214,6 +214,54 @@ def test_a_sensor_reading_is_produced_by_the_solver_that_reads_it() -> None:
     assert dataflow["cmd_wrench"]["producer"]["kind"] == "closure"
 
 
+def test_a_recorded_constant_carries_its_iri_and_who_reads_it() -> None:
+    """A constant is a model term someone reads, not just a number: both facts travel with it."""
+    stiffness = _quantity("stiffness", 800.0)
+    introspection = {
+        "quantities": [],
+        "controllers": [{"id": "ctrl_push", "setpoint_signal": "stiffness"}],
+        "monitors": [],
+        "quantity_samples": [
+            {
+                "id": "stiffness",
+                "source_id": "stiffness",
+                "source_type": stiffness.type,
+                "uri": "https://example.test/stiffness",
+                "sample_desc": {"kind": "shared", "id": "stiffness"},
+            }
+        ],
+    }
+    annotate_dataflow(introspection, [stiffness], {}, [], [], {})
+    (constant,) = introspection["constants"]
+    assert constant["uri"] == "https://example.test/stiffness"
+    assert constant["consumers"] == [
+        {"kind": "controller", "id": "ctrl_push", "role": "setpoint_signal"}
+    ]
+
+
+def test_a_shared_quantity_behind_an_axis_less_view_is_still_sampled() -> None:
+    """An axis-less MAP view names no field to read, but the value has a shared field of its own."""
+    from motion_spec.classes.geometry import Subspace, View
+    from motion_spec.rdf_parser.communication import add_quantity_samples
+
+    error = _quantity("err_lin_normal_a", None)
+    pose = Pose("pose_ee", None, None, [], None, [], None)
+    views = {
+        "err_view": View(
+            id="err_view",
+            superobject=pose,
+            subobject=error,
+            subspace=Subspace.Linear,
+            axis=None,
+            direction=Direction("path_normal", [], None, [], [0.0, 0.0, 1.0]),
+        )
+    }
+    introspection: dict = {"quantities": [{"id": error.id, "type": error.type}]}
+    add_quantity_samples(introspection, [error, pose], views)
+    descs = {row["source_id"]: row["sample_desc"] for row in introspection["quantity_samples"]}
+    assert descs["err_lin_normal_a"] == {"kind": "shared", "id": "err_lin_normal_a"}
+
+
 def test_never_written_members_leave_shared_data_and_the_frame() -> None:
     introspection, shared_data = _annotated()
     assert introspection["dataflow"]["pose_ee_position_rel"]["cadence"] == "never"

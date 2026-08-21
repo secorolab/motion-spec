@@ -34,7 +34,7 @@ METAMODEL_CONTEXTS = [
     "https://secorolab.github.io/metamodels/ssn.json",
     "https://secorolab.github.io/metamodels/acceptance-criteria/bdd/agent.json",
     "https://secorolab.github.io/metamodels/acceptance-criteria/bdd/bdd.json",
-    "https://secorolab.github.io/metamodels/acceptance-criteria/bdd/observation.json",
+    "https://secorolab.github.io/metamodels/observation.json",
     "https://secorolab.github.io/metamodels/acceptance-criteria/bdd/execution-context.json",
 ]
 TOOL_METADATA = {

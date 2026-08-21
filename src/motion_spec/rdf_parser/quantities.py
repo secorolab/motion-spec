@@ -1937,10 +1937,11 @@ def _build_pose_components(model, views: dict, data: list) -> dict:
     snapshot_ids = snapshot_target_ids(model)
     for view in views.values():
         superobject = view.superobject
-        if superobject.type != "Pose":
+        # A snapshot pose is captured whole at runtime, so a per-axis view of it is a reading
+        # off the captured frame, never a component bound into the pose.
+        if superobject.type != "Pose" or superobject.id in snapshot_ids:
             continue
-        declared = superobject.provenance.authored or superobject.id in snapshot_ids
-        if not (declared or superobject.euler_axes_sequence):
+        if not (superobject.provenance.authored or superobject.euler_axes_sequence):
             continue
         component_axis = str(view.axis.value if view.axis else "").lower()
         subobject_id = getattr(view.subobject, "id", None)
@@ -1954,10 +1955,6 @@ def _build_pose_components(model, views: dict, data: list) -> dict:
         setattr(entry, f"{prefix}_{component_axis}", _pose_component(subobject_id, data_by_id))
 
     for pose_id, parts in components.items():
-        if pose_id in snapshot_ids:
-            # A snapshot pose is captured wholesale at runtime; its per-axis entries only
-            # mirror the axes the model actually reads, so nothing more is required.
-            continue
         euler_axes_sequence = getattr(data_by_id.get(pose_id), "euler_axes_sequence", None)
         required = _required_pose_component_fields(parts.representation, euler_axes_sequence)
         missing = [name for name in required if getattr(parts, name) is None]

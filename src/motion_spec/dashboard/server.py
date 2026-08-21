@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -35,6 +37,7 @@ WORKSPACE = Path("/home/batsy/work/ms")
 GENERATIONS = WORKSPACE / "generations"
 FRONTEND = Path(__file__).with_name("frontend")
 IGNORED = {"build", ".git", ".venv", "generations", "install", "log", "__pycache__", "test", "tests"}
+AUTHORED = (".robmot", ".fsm", ".scenex")
 LIFECYCLE = None
 
 
@@ -80,6 +83,93 @@ def relative_path(root: Path, value: str) -> Path:
     if root.resolve() not in (path, *path.parents) or not path.exists():
         raise ValueError("unknown path")
     return path
+
+
+def source_path(value: str) -> Path:
+    """Resolve an authored DSL file inside the sources root."""
+    path = relative_path(WORKSPACE, value)
+    if path.suffix not in AUTHORED or not path.is_file():
+        raise ValueError(f"not an authored model file: {value}")
+    return path
+
+
+def read_source(value: str) -> dict:
+    path = source_path(value)
+    return {
+        "path": value,
+        "text": path.read_text(),
+        "editors": list(editors()),
+        "terminal": (terminal() or (None,))[0],
+    }
+
+
+# GUI editors take the file directly; terminal ones need a terminal emulator to live in.
+GUI_EDITORS = {"code": ["code", "--goto"], "zed": ["zed"], "kate": ["kate"], "gedit": ["gedit"]}
+TERMINAL_EDITORS = ("nvim", "vim", "hx", "emacs", "nano", "micro")
+# How each terminal takes "then run this command"; -e is the x-terminal-emulator convention.
+TERMINAL_ARGS = {
+    "xdg-terminal-exec": [], "kitty": [], "foot": [], "ghostty": ["-e"], "alacritty": ["-e"],
+    "wezterm": ["start", "--"], "gnome-terminal": ["--"], "konsole": ["-e"], "xterm": ["-e"],
+}
+
+
+def terminal() -> tuple[str, list[str]] | None:
+    """The desktop's terminal and the argv that runs a command in a new window.
+
+    $TERMINAL, then the freedesktop and Debian pointers at the user's chosen terminal, and
+    only then a known one off PATH -- picking a favourite here would override their default.
+    """
+    override = os.environ.get("TERMINAL")
+    for name in (override, "xdg-terminal-exec", "x-terminal-emulator", *TERMINAL_ARGS):
+        path = shutil.which(name) if name else None
+        if path:
+            real = Path(os.path.realpath(path)).name
+            return real, [path, *TERMINAL_ARGS.get(real, ["-e"])]
+    return None
+
+
+def editors() -> dict[str, list[str]]:
+    """Every editor that can open a source file here, as name -> argv prefix.
+
+    MS_DASHBOARD_EDITOR is always offered; terminal editors only when a terminal exists to
+    host them, since the server has none of its own.
+    """
+    host = terminal()
+    found = {}
+    if host:
+        found.update({
+            name: [*host[1], name] for name in TERMINAL_EDITORS if shutil.which(name)
+        })
+    found.update({name: argv for name, argv in GUI_EDITORS.items() if shutil.which(name)})
+    override = os.environ.get("MS_DASHBOARD_EDITOR")
+    if override:
+        argv = shlex.split(override)
+        found[Path(argv[0]).name] = argv
+    return found or {"xdg-open": ["xdg-open"]}
+
+
+def open_terminal(value: str) -> dict:
+    """Open a terminal in the folder that holds one authored DSL file."""
+    host = terminal()
+    if host is None:
+        raise ValueError("no terminal emulator found")
+    name, argv = host
+    folder = source_path(value).parent
+    shell = os.environ.get("SHELL", "/bin/sh")
+    command = f"cd {shlex.quote(str(folder))} && exec {shlex.quote(shell)}"
+    subprocess.Popen([*argv, "sh", "-c", command], start_new_session=True)
+    return {"opened": str(folder), "terminal": name}
+
+
+def open_source(value: str, name: str | None = None) -> dict:
+    """Open one authored DSL file in the chosen editor."""
+    path = source_path(value)
+    available = editors()
+    name = name or next(iter(available))
+    if name not in available:
+        raise ValueError(f"unknown editor: {name}")
+    subprocess.Popen([*available[name], str(path)], start_new_session=True)
+    return {"opened": value, "editor": name}
 
 
 def json_file(path: Path) -> dict:
@@ -193,50 +283,181 @@ def downsample(values: list[float], target: int = 1600) -> list[float]:
     return values[::step]
 
 
+# How a spatial slot's proto fields read as authored components.
+SLOT_PARTS = {
+    "poses": {"position.x": "px", "position.y": "py", "position.z": "pz",
+              "orientation.x": "qx", "orientation.y": "qy", "orientation.z": "qz",
+              "orientation.w": "qw"},
+    "twists": {"linear.x": "lx", "linear.y": "ly", "linear.z": "lz",
+               "angular.x": "ax", "angular.y": "ay", "angular.z": "az"},
+    "wrenches": {"force.x": "fx", "force.y": "fy", "force.z": "fz",
+                 "torque.x": "tx", "torque.y": "ty", "torque.z": "tz"},
+}
+
+
+def slot_signals(contract) -> dict:
+    """Every spatial slot component as signal name -> (kind, field, component)."""
+    return {
+        f"{field['id']}.{part}": (kind, field, attribute)
+        for kind, parts in SLOT_PARTS.items()
+        for field in contract.fields.get(kind, ())
+        for part, attribute in parts.items()
+        if hasattr(contract.record_cls().frame, field["name"])
+    }
+
+
 def source_constraints(generation_dir: Path) -> list[dict]:
-    """Return the motion constraints as their authored `.robmot` source lines."""
+    """Return the motion constraints as their authored `.robmot` source lines.
+
+    What a constraint compares is its evaluator's business, so each source line is joined to
+    the closure the motion schedules for it: an ErrorEvaluator names the measured quantity and
+    the reference it is held against, a PoseDiffEvaluator names the two poses and the per-axis
+    errors between them. The controllers or monitors acting on the constraint come separately,
+    so the constraint plots apart from the machinery working on it.
+    """
     source = next((path for path in (generation_dir / "generated/source").glob("*.robmot")), None)
     if source is None:
         return []
-    controllers = json_file(generation_dir / "generated/model/ir.json").get("communication", {}).get(
-        "introspection", {}
-    ).get("controllers", [])
-    controller_signals = {
-        controller["id"]: [controller[key] for key in ("error_signal", "output_signal") if controller.get(key)]
-        for controller in controllers
-    }
+    ir = json_file(generation_dir / "generated/model/ir.json")
+    introspection = ir.get("communication", {}).get("introspection", {})
+    closures = ir.get("computation", {}).get("closures", {})
+    schedules = {motion["name"]: motion for motion in ir.get("coordination", {}).get("motions", [])}
+    constants = {item["id"]: item["value"] for item in introspection.get("constants", [])}
+    controllers = introspection.get("controllers", [])
+    handlers = {motion["motion"]: motion["id"] for motion in introspection.get("motions", [])}
+    text = source.read_text()
     bindings = {}
     for name, target in re.findall(
-        r"(?:pid|impedance|feed-forward)\s+([\w-]+)\s*\{\s*(?:constraint:\s*)?<([^>]+)>",
-        source.read_text(),
+        r"(?:pid|impedance|feed-forward)\s+([\w-]+)\s*\{\s*(?:constraint:\s*)?<([^>]+)>", text
     ):
         bindings.setdefault(target, []).extend(
-            signal
-            for controller, signals in controller_signals.items()
-            if controller.startswith(name.replace("-", "_"))
-            for signal in signals
+            controller for controller in controllers
+            if controller["id"].startswith(name.replace("-", "_"))
         )
     constraints = []
-    motion = None
-    for number, line in enumerate(source.read_text().splitlines(), 1):
-        text = line.strip().rstrip(",")
-        match = re.match(r"guarded-motion\s+\(ns=[^)]+\)\s+([\w-]+)", text)
+    motion = section = None
+    for number, line in enumerate(text.splitlines(), 1):
+        line = line.strip().rstrip(",")
+        match = re.match(r"guarded-motion\s+\(ns=[^)]+\)\s+([\w-]+)", line)
         if match:
             motion = match.group(1)
-        if ":" not in text or not any(word in text for word in ("keeping ", "moving ", "progress ")):
+        block = re.match(r"(while|until|when)\b.*\{$", line)
+        if block:
+            section = block.group(1)
+        elif line == "}":
+            section = None
+        if section not in ("while", "until") or ":" not in line:
             continue
-        name, expression = text.split(":", 1)
-        signals = list(dict.fromkeys(bindings.get(f"{motion}.{name}", [])))
-        constraints.append(
-            {
-                "motion": motion,
-                "line": number,
-                "name": name,
-                "expression": expression.strip(),
-                "signals": signals,
-            }
-        )
+        name, _, expression = line.partition(":")
+        name, expression = name.strip(), expression.strip()
+        if not re.fullmatch(r"[\w-]+", name) or not expression:
+            continue
+        handler = handlers.get(f"motion_{motion.replace('-', '_')}")
+        bound = bindings.get(f"{motion}.{name}", [])
+        closure = _constraint_closure(name, section, schedules.get(motion), closures, bound)
+        measured, reference, errors = _closure_signals(closure)
+        if measured is None and bound:
+            measured = bound[0].get("measured_signal")
+            reference = bound[0].get("setpoint_signal")
+            errors = _signal_list(bound, ("error_signal",))
+        constraints.append({
+            "motion": motion,
+            "handler": handler,
+            "line": number,
+            "name": name,
+            "expression": expression,
+            "kind": "controlled" if section == "while" else "monitored",
+            "evaluator": closure["id"] if closure else None,
+            "between": [closure[key] for key in ("in1", "in2") if closure and closure.get(key)],
+            "component": next(
+                (word for word in ("position", "orientation", "linear", "angular")
+                 if f".{word}" in expression), None,
+            ),
+            "difference": closure.get("out") if closure else None,
+            "tracking": [
+                signal for signal in (measured, reference)
+                if signal and signal not in constants
+            ],
+            "error": errors,
+            "control": _signal_list(bound, ("output_signal",)),
+            "monitors": [
+                item["id"] for item in introspection.get("monitors", [])
+                if item["motion"] == handler and item["phase"] == section
+            ] if section == "until" else [],
+            "setpoints": (
+                [{"label": reference, "value": constants[reference]}]
+                if reference in constants else []
+            ),
+            "gains": _gains(bound),
+            "tolerance": _tolerance(bound, expression, constants),
+        })
     return constraints
+
+
+def _signal_list(controllers: list[dict], keys: tuple[str, ...]) -> list[str]:
+    """The named signals of these controllers, in order, without repeats."""
+    return list(dict.fromkeys(
+        controller[key] for controller in controllers for key in keys if controller.get(key)
+    ))
+
+
+def _gains(controllers: list[dict]) -> dict:
+    """The gains these controllers run, taken from the first -- axes of one constraint share them."""
+    keys = {"Kp": "proportional_gain", "Ki": "integral_gain", "Kd": "derivative_gain",
+            "decay": "decay_rate"}
+    return {
+        label: controllers[0][key]
+        for label, key in keys.items()
+        if controllers and controllers[0].get(key) is not None
+    }
+
+
+def _tolerance(controllers: list[dict], expression: str, constants: dict) -> float | None:
+    """A controller's tolerance, or the band a monitored constraint is compared within."""
+    for controller in controllers:
+        if controller.get("tolerance_signal") in constants:
+            return constants[controller["tolerance_signal"]]
+    band = re.search(r"within\s+<([^>]+)>", expression)
+    if band:
+        return constants.get(band.group(1).rsplit(".", 1)[-1].replace("-", "_"))
+    return None
+
+
+def _constraint_closure(name: str, phase: str, motion: dict | None, closures: dict, bound: list) -> dict | None:
+    """The evaluator this motion schedules for one constraint.
+
+    Preferably joined on signal identity -- a closure that produces a bound controller's error
+    signal evaluates that controller's constraint. Failing that (a monitored constraint has no
+    controller), the closure the motion schedules in this phase whose id ends in the authored
+    constraint name.
+    """
+    if motion is None:
+        return None
+    scheduled = [
+        closures[item] for item in motion.get(f"{phase}_schedule", []) if item in closures
+    ]
+    wanted = {controller["error_signal"] for controller in bound if controller.get("error_signal")}
+    for closure in scheduled:
+        produced = {closure.get("error"), *closure.get("errors", ())}
+        if wanted & produced:
+            return closure
+    suffix = name.replace("-", "_")
+    return next(
+        (closure for closure in scheduled
+         if closure["id"].endswith(suffix) and closure["type"].endswith("Evaluator")),
+        None,
+    )
+
+
+def _closure_signals(closure: dict | None) -> tuple:
+    """What one evaluator measures, what it holds that against, and the errors it produces."""
+    if closure is None:
+        return None, None, []
+    if closure["type"] == "PoseDiffEvaluator":
+        # the constraint is "these poses agree": its state is the per-axis difference, target 0
+        return None, None, list(closure.get("errors", ()))
+    error = closure.get("error")
+    return closure.get("quantity"), closure.get("reference_value"), [error] if error else []
 
 
 def replay_data(run_dir: Path) -> dict:
@@ -252,17 +473,47 @@ def replay_data(run_dir: Path) -> dict:
         for key in ("error", "output", "measured", "setpoint", "satisfied")
     )
     signals.extend(
-        f"{field['id']}.{key}"
-        for field in contract.fields["monitors"]
+        f"{slot.id}.{key}"
+        for motion in contract.header.motions for slot in motion.monitors
         for key in ("value", "satisfied")
     )
-    signals.extend(signal for constraint in constraints for signal in constraint["signals"])
+    signals.extend(slot_signals(contract))
+    indices = {motion.id: motion.index for motion in contract.header.motions}
+    windows = log_events(log, contract)["windows"]
+    logged = set(signals) | {field["id"] for field in contract.fields["quantities"]}
+    parts = {}
+    for name in logged:
+        prefix, _, _ = name.partition(".")
+        parts.setdefault(prefix, []).append(name)
+    for constraint in constraints:
+        constraint["monitors"] = [
+            f"{name}.{key}" for name in constraint["monitors"] for key in ("value", "satisfied")
+        ]
+        for key in ("tracking", "control", "monitors", "error"):
+            constraint[key] = [
+                signal for name in constraint[key]
+                for signal in ([name] if name in logged else sorted(parts.get(name, ())))
+            ]
+        difference = constraint.pop("difference", None)
+        if not constraint["error"] and difference in parts:
+            constraint["error"] = sorted(parts[difference])
+        component = constraint.pop("component", None)
+        if not constraint["tracking"] and component:
+            constraint["tracking"] = sorted(
+                name for operand in constraint["between"] for name in logged
+                if name.startswith(f"{operand}.{component}.")
+            )
+        constraint["window"] = windows.get(indices.get(constraint.pop("handler")))
+    signals.extend(
+        signal for constraint in constraints
+        for signal in (*constraint["tracking"], *constraint["control"], *constraint["monitors"])
+    )
     return {
         "generation": str(run_dir.parent.parent.relative_to(GENERATIONS)),
         "frames": frame_count,
         "duration": frame_count * contract.header.nominal_period_ns / 1e9,
         "states": [state.id for state in contract.header.fsm_states],
-        "events": [],
+        "events": log_events(log, contract)["events"],
         "signals": list(dict.fromkeys(signals)),
         "constraints": constraints,
         "header": validate_header(log, contract),
@@ -270,11 +521,57 @@ def replay_data(run_dir: Path) -> dict:
     }
 
 
+_EVENTS: dict[tuple[str, int], list] = {}
+
+
+def log_events(log: Path, contract) -> list:
+    """Every FSM state entry and fired event in one log, scanned once per log revision.
+
+    A frame carries both: fsm_state is where the machine is, last_event is what fired to put
+    it there, so a transition shows up as an event marker and a state marker on the same frame.
+    Keyed by size, so a live log that grew is rescanned and a finished one never is.
+    """
+    key = (str(log), log.stat().st_size)
+    if key not in _EVENTS:
+        states = [state.id for state in contract.header.fsm_states]
+        fired = [event.id for event in contract.header.fsm_events]
+        events, windows, index = [], {}, 0
+        state_was = event_was = None
+        with log.open("rb") as fh:
+            frame_log_pb._read_delimited(fh)
+            while data := frame_log_pb._read_delimited(fh, partial_ok=True):
+                record = contract.record_cls()
+                record.ParseFromString(data)
+                if record.WhichOneof("record") != "frame":
+                    continue
+                frame = record.frame
+                if frame.last_event != event_was:
+                    event_was = frame.last_event
+                    if 0 <= event_was < len(fired):
+                        events.append({"frame": index, "kind": "event", "label": fired[event_was]})
+                if frame.fsm_state != state_was:
+                    state_was = frame.fsm_state
+                    label = states[state_was] if 0 <= state_was < len(states) else str(state_was)
+                    events.append({"frame": index, "kind": "state", "label": label})
+                window = windows.setdefault(frame.active_motion, [index, index])
+                window[1] = index
+                index += 1
+        if len(_EVENTS) > 32:
+            _EVENTS.pop(next(iter(_EVENTS)))
+        _EVENTS[key] = {"events": events, "windows": windows}
+    return _EVENTS[key]
+
+
 def plot_data(run_dir: Path, names: list[str]) -> dict:
     """Stream and downsample requested fields without shaping complete frames."""
     _, log, _manifest, contract = resolve_archive(run_dir)
     constraint_slots = {field["id"]: index for index, field in enumerate(contract.fields["constraints"])}
-    monitor_slots = {field["id"]: index for index, field in enumerate(contract.fields["monitors"])}
+    slots = slot_signals(contract)
+    monitor_slots = {
+        slot.id: (contract.fields["monitors"][slot.number], motion.index)
+        for motion in contract.header.motions for slot in motion.monitors
+        if slot.number < len(contract.fields["monitors"])
+    }
     quantities = {field["id"]: field for field in contract.fields["quantities"]}
     health = read_health(log) or {}
     step = max(1, health.get("written_frames", 0) // 1600)
@@ -291,17 +588,23 @@ def plot_data(run_dir: Path, names: list[str]) -> dict:
             if gate is not None and field["index"] not in gate.get(frame.active_motion, ()):
                 return None
             return float(getattr(frame, field["name"]))
-        prefix, key = name.rsplit(".", 1)
+        if name in slots:
+            kind, field, attribute = slots[name]
+            gate = contract.gate.get(kind)
+            if gate is not None and field["index"] not in gate.get(frame.active_motion, ()):
+                return None
+            return float(getattr(getattr(frame, field["name"]), attribute))
+        prefix, _, key = name.rpartition(".")
         if prefix in constraint_slots:
             field = contract.fields["constraints"][constraint_slots[prefix]]
             return getattr(getattr(frame, field["name"]), key)
         if prefix in monitor_slots:
-            field = contract.fields["monitors"][monitor_slots[prefix]]
+            field, owner = monitor_slots[prefix]
+            if frame.active_motion != owner:
+                return None
             return getattr(getattr(frame, field["name"]), key)
         raise ValueError(f"unknown signal: {name}")
 
-    events, previous = [], None
-    states = [state.id for state in contract.header.fsm_states]
     index = 0
     with log.open("rb") as fh:
         frame_log_pb._read_delimited(fh)
@@ -311,17 +614,13 @@ def plot_data(run_dir: Path, names: list[str]) -> dict:
             if record.WhichOneof("record") != "frame":
                 continue
             frame = record.frame
-            if frame.fsm_state != previous:
-                state = frame.fsm_state
-                events.append({"frame": index, "state": states[state] if 0 <= state < len(states) else str(state)})
-                previous = state
             if index % step == 0:
                 for name in names:
                     series[name].append(value(frame, name))
             index += 1
     return {
         "signals": series,
-        "events": events,
+        "events": log_events(log, contract)["events"],
         "sample_step": step,
     }
 
@@ -429,22 +728,31 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/sources":
                 files = [
                     str(path.relative_to(WORKSPACE))
-                    for path in WORKSPACE.rglob("*.robmot")
-                    if not IGNORED.intersection(path.relative_to(WORKSPACE).parts)
+                    for path in WORKSPACE.rglob("*")
+                    if path.suffix in AUTHORED
+                    and not IGNORED.intersection(path.relative_to(WORKSPACE).parts)
                     and not any(part.startswith(".") for part in path.relative_to(WORKSPACE).parts)
                 ]
                 return self.send_json(sorted(files))
+            if parsed.path == "/api/source":
+                return self.send_json(read_source(value))
             self.send_json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
         except (OSError, ValueError, KeyError, IndexError, json.JSONDecodeError) as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
 
     def do_POST(self) -> None:
-        """Update dashboard roots or delete selected run archives and generations."""
+        """Update dashboard roots, open a source, or delete selected runs and generations."""
+        if not self._same_origin():
+            return self.send_json({"error": "cross-origin request"}, HTTPStatus.FORBIDDEN)
         try:
             length = int(self.headers["Content-Length"])
             body = json.loads(self.rfile.read(length))
             if self.path == "/api/roots":
                 return self.send_json(set_root(body["kind"], body["path"]))
+            if self.path == "/api/open":
+                return self.send_json(open_source(body["path"], body.get("editor")))
+            if self.path == "/api/terminal":
+                return self.send_json(open_terminal(body["path"]))
             if self.path != "/api/delete":
                 return self.send_json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
             selected = body["paths"]
@@ -462,6 +770,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_json({"deleted": len(targets)})
         except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+    def _same_origin(self) -> bool:
+        """Only the dashboard's own page may POST: these endpoints delete and spawn."""
+        if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
+            return False
+        origin = self.headers.get("Origin")
+        return origin is None or urlparse(origin).hostname in ("127.0.0.1", "localhost")
 
     @staticmethod
     def _deletable(path: Path) -> bool:

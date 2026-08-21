@@ -2,16 +2,25 @@
 // SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 // Author: Vamsi Kalagaturu
 
+const MAGNIFIER = "M8.2,2 A6,6 0 1,0 8.2,14.2 A6,6 0 1,0 8.2,2 M12.7,12.7 L17.4,17.4";
+const MAGNIFIER_IN = `path://${MAGNIFIER} M5.4,8.1 L11,8.1 M8.2,5.3 L8.2,10.9`;
+const MAGNIFIER_OUT = `path://${MAGNIFIER} M5.4,8.1 L11,8.1`;
+const RESET_ARROW = "path://M15.4,9.6 A6.2,6.2 0 1,1 9.2,3.4 M9.2,0.7 L9.2,6.1 M6.5,3.4 L11.9,3.4";
+let plotKeys = 0;
 const state = { replay: null, runPath: null, generationPath: null, tab: "logs", frame: 0, charts: [], selected: new Set(), timer: null, roots: {}, cache: {}, listRequest: 0 };
 const $ = (selector) => document.querySelector(selector);
 let snackTimer;
 
-async function copyText(value) {
-  await navigator.clipboard.writeText(value);
-  $("#snack").textContent = "Copied path";
+function snack(message) {
+  $("#snack").textContent = message;
   $("#snack").classList.add("visible");
   clearTimeout(snackTimer);
   snackTimer = setTimeout(() => $("#snack").classList.remove("visible"), 1400);
+}
+
+async function copyText(value) {
+  await navigator.clipboard.writeText(value);
+  snack("Copied path");
 }
 
 async function api(path) {
@@ -282,7 +291,7 @@ async function selectGeneration(path) {
         if (state.graphLayout !== layout) return;
         layout.stop();
         graphStatus.textContent = `${data.nodes.length} resources · ${data.links.length} relationships`;
-      }, 50);
+      }, Math.min(5000, 500 + data.nodes.length * 10));
       graphSearch.disabled = false;
       graphSearch.value = "";
       graphMatches.replaceChildren();
@@ -305,7 +314,8 @@ async function selectGeneration(path) {
           return button;
         }));
       };
-      graphPage.querySelector(".graph-fullscreen").onclick = () => shell.requestFullscreen();
+      graphPage.querySelector(".graph-fullscreen").onclick = () =>
+        document.fullscreenElement ? document.exitFullscreen() : shell.requestFullscreen();
     } catch (error) { if (request === graphRequest) { shell.hidden = true; graphStatus.textContent = error.message; } }
   };
   options.addEventListener("change", renderGraph);
@@ -348,24 +358,42 @@ function populateConstraints() {
     const name = document.createElement("strong");
     const expression = document.createElement("span");
     row.className = "constraint";
+    row.dataset.kind = constraint.kind;
     line.textContent = `L${constraint.line}`;
     name.textContent = constraint.name;
     expression.textContent = constraint.expression;
     row.append(line, name, expression);
-    if (constraint.signals.length) {
+    if (constraint.tracking.length || constraint.control.length || constraint.monitors.length) {
       row.dataset.plottable = "true";
-      row.title = "Plot recorded controller signals";
+      row.title = `Plot this ${constraint.kind} constraint`;
       row.onclick = () => {
+        if (row.dataset.plotted) {
+          $("#plots").querySelectorAll(`[data-row="${row.dataset.plotKey}"] .remove-plot`)
+            .forEach((button) => button.click());
+          return;
+        }
         row.dataset.plotted = "true";
-        addPlot(
-          constraint.signals,
-          `${constraint.motion ?? "shared"} / ${constraint.name}`,
-          `L${constraint.line}: ${constraint.expression}`,
-        );
+        const title = `${constraint.motion ?? "shared"} / ${constraint.name}`;
+        const between = constraint.between.length ? ` · ${constraint.between.join(" vs ")}` : "";
+        const detail = `L${constraint.line}: ${constraint.expression}${between}`;
+        // measured against its setpoint where there is one; otherwise the error against zero
+        const tracked = constraint.tracking.length ? constraint.tracking : constraint.error;
+        const bands = constraint.tracking.length
+          ? constraint
+          : { ...constraint, setpoints: [{ label: "satisfied", value: 0 }] };
+        if (tracked.length) addPlot(tracked, `${title} · constraint`, detail, row, bands);
+        if (constraint.kind === "monitored") {
+          if (constraint.monitors.length) {
+            addPlot(constraint.monitors, `${title} · monitor`, detail, row, constraint);
+          }
+          return;
+        }
+        const machinery = [...constraint.error, ...constraint.control];
+        if (machinery.length) addPlot(machinery, `${title} · controller`, detail, row, constraint, constraint.gains);
       };
     } else {
       row.dataset.unavailable = "true";
-      row.title = "No recorded controller signal";
+      row.title = "No recorded signal";
     }
     return row;
     })];
@@ -382,15 +410,114 @@ function bindTransport() {
 }
 
 function renderMarkers() {
-  $(".markers").replaceChildren();
-  state.replay.events.forEach((event) => {
+  $(".markers").replaceChildren(...state.replay.events.map((event) => {
     const marker = document.createElement("button");
-    marker.className = "marker";
-    marker.style.left = `${event.frame / Math.max(1, state.replay.frames - 1) * 100}%`;
-    marker.title = `${event.state} @ frame ${event.frame}`;
+    marker.className = `marker marker-${event.kind}`;
+    marker.style.left = trackLeft(event.frame);
+    marker.title = `${event.label} @ frame ${event.frame}`;
     marker.onclick = () => seek(event.frame);
-    $(".markers").append(marker);
-  });
+    return marker;
+  }));
+  const playhead = document.createElement("div");
+  playhead.className = "playhead";
+  $(".markers").append(playhead);
+  movePlayhead();
+}
+
+function trackFraction(frame) {
+  return frame / Math.max(1, state.replay.frames - 1);
+}
+
+function trackLeft(frame) {
+  // the thumb travels inset by half its width, so markers must follow the same geometry
+  return `calc(var(--thumb) / 2 + ${trackFraction(frame)} * (100% - var(--thumb)))`;
+}
+
+function movePlayhead() {
+  $(".transport").style.setProperty("--f", trackFraction(state.frame));
+}
+
+function exportChart(chart, name, format) {
+  if (format === "png" || format === "jpg") {
+    const link = document.createElement("a");
+    link.download = `${name}.${format}`;
+    link.href = chart.getDataURL({
+      type: format === "png" ? "png" : "jpeg", pixelRatio: 2, backgroundColor: "#16181b",
+    });
+    return link.click();
+  }
+  const svg = vectorSvg(chart);
+  if (format === "svg") {
+    const link = document.createElement("a");
+    link.download = `${name}.svg`;
+    link.href = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+    link.click();
+    return setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  }
+  printVector(svg, chart.getWidth(), chart.getHeight());
+}
+
+function vectorSvg(chart) {
+  // the on-screen chart is canvas; re-render the same option through the SVG renderer
+  const holder = document.createElement("div");
+  holder.style.cssText =
+    `position:fixed;left:-10000px;top:0;width:${chart.getWidth()}px;height:${chart.getHeight()}px`;
+  document.body.append(holder);
+  const vector = echarts.init(holder, null, { renderer: "svg" });
+  vector.setOption({ ...chart.getOption(), animation: false, toolbox: { show: false } });
+  const svg = vector.renderToSVGString();
+  vector.dispose();
+  holder.remove();
+  return svg;
+}
+
+function printVector(svg, width, height) {
+  const frame = document.createElement("iframe");
+  frame.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0";
+  document.body.append(frame);
+  frame.contentDocument.write(
+    `<style>@page{size:${width}px ${height}px;margin:0}body{margin:0}</style>${svg}`,
+  );
+  frame.contentDocument.close();
+  frame.contentWindow.focus();
+  frame.contentWindow.print();
+  setTimeout(() => frame.remove(), 60000);
+}
+
+function setpointBands(constraint) {
+  if (!constraint?.setpoints?.length) return {};
+  const tolerance = constraint.tolerance ?? 0;
+  return {
+    markLine: {
+      symbol: "none", animation: false, silent: true,
+      label: {
+        color: "#f0c36a", position: "insideEndTop",
+        formatter: ({ value }) => `setpoint ${value}`,
+      },
+      lineStyle: { color: "#f0c36a", type: "dashed", width: 1 },
+      data: constraint.setpoints.map((point) => ({ yAxis: point.value })),
+    },
+    markArea: {
+      silent: true,
+      itemStyle: { color: "rgba(240, 195, 106, .1)" },
+      data: constraint.setpoints.map((point) => [
+        { yAxis: point.value - tolerance }, { yAxis: point.value + tolerance },
+      ]),
+    },
+  };
+}
+
+function cursorOption(frame, index = 0) {
+  return { series: [...Array.from({ length: index }, () => ({})), { markLine: {
+    symbol: "none", animation: false, silent: true,
+    label: { show: false },
+    lineStyle: { color: "#f1eee7", width: 1, opacity: .7 },
+    data: [{ xAxis: frame }],
+  } }] };
+}
+
+function updateCursor() {
+  state.charts.forEach((chart) => chart.setOption(cursorOption(state.frame, chart.cursorIndex ?? 0)));
 }
 
 function filter(selector, value) {
@@ -422,74 +549,151 @@ function seek(frame) {
   state.frame = Math.max(0, Math.min(state.replay.frames - 1, frame));
   $(".timeline").value = state.frame;
   updateReadout();
+  updateCursor();
+  movePlayhead();
 }
 
 function togglePlayback() {
   if (state.timer) return stopPlayback();
-  const rate = state.replay.frames / Math.max(state.replay.duration, 1);
-  const step = Math.max(1, Math.round(rate / 60));
-  state.timer = setInterval(() => {
-    if (state.frame >= state.replay.frames - 1) stopPlayback();
-    else seek(state.frame + step);
-  }, 1000 / 60);
+  const fps = state.replay.frames / Math.max(state.replay.duration, 1e-9);
+  let cursor = state.frame >= state.replay.frames - 1 ? 0 : state.frame;
+  let last = performance.now();
+  const tick = (now) => {
+    cursor += (now - last) * fps / 1000;
+    last = now;
+    if (cursor >= state.replay.frames - 1) {
+      seek(state.replay.frames - 1);
+      return stopPlayback();
+    }
+    seek(Math.round(cursor));
+    state.timer = requestAnimationFrame(tick);
+  };
+  state.timer = requestAnimationFrame(tick);
   $("#play").textContent = "Pause";
 }
 
 function stopPlayback() {
   if (!state.timer) return;
-  clearInterval(state.timer);
+  cancelAnimationFrame(state.timer);
   state.timer = null;
   if ($("#play")) $("#play").textContent = "Play";
 }
 
 function updateReadout() {
-  const event = [...state.replay.events].reverse().find((item) => item.frame <= state.frame);
+  const entered = [...state.replay.events].reverse()
+    .find((item) => item.kind === "state" && item.frame <= state.frame);
   const time = state.replay.duration * state.frame / Math.max(1, state.replay.frames - 1);
-  $("#readout").textContent = `${time.toFixed(3)} s · frame ${state.frame.toLocaleString()} / ${state.replay.frames.toLocaleString()} · ${event?.state ?? "—"}`;
+  $("#readout").textContent = `${time.toFixed(3)} s · frame ${state.frame.toLocaleString()} / ${state.replay.frames.toLocaleString()} · ${entered?.label ?? "—"}`;
 }
 
-function addPlot(signals = [], title = signals.join(" · ") || "New plot", detail = "") {
+function addPlot(signals = [], title = signals.join(" · ") || "New plot", detail = "", row = null, constraint = null, gains = null) {
   const card = document.createElement("section");
   card.className = "plot-card";
-  card.innerHTML = '<header><div><strong></strong><small></small></div><button class="remove-plot" title="Remove plot">×</button></header><div class="plot-tools"><select></select><button class="add-signal">Add signal</button></div><div class="plot-chart"></div>';
+  card.innerHTML = '<header><div><strong></strong><small></small></div><div class="plot-actions"><details class="export-plot"><summary title="Export plot"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="square"><path d="M9.5 2.5h4v4"/><path d="M13.5 2.5 8 8"/><path d="M12 9v4.5H2.5V4h4.5"/></svg></summary><div class="export-menu"><button value="png">PNG</button><button value="jpg">JPG</button><button value="svg">SVG</button><button value="pdf">PDF</button></div></details><button class="expand-plot" title="Fullscreen plot">⛶</button><button class="remove-plot" title="Remove plot">×</button></div></header><div class="plot-tools"><select></select><button class="add-signal">Add signal</button></div><div class="plot-signals"></div><div class="plot-chart"></div><div class="plot-facts"></div>';
   card.querySelector("strong").textContent = title;
   card.querySelector("small").textContent = detail;
-  const select = card.querySelector("select");
+  card.querySelector(".plot-facts").replaceChildren(...Object.entries(gains ?? {}).map(([key, value]) => {
+    const fact = document.createElement("span");
+    fact.innerHTML = "<b></b><i></i>";
+    fact.querySelector("b").textContent = key;
+    fact.querySelector("i").textContent = value;
+    return fact;
+  }));
+  const select = card.querySelector(".plot-tools select");
   state.replay.signals.forEach((signal) => select.add(new Option(signal, signal)));
   $("#plots").append(card);
   const chart = echarts.init(card.querySelector(".plot-chart"));
   state.charts.push(chart);
-  card.querySelector(".remove-plot").onclick = () => {
+  // the plot grid reflows as cards come and go; the canvas only follows if told
+  const observer = new ResizeObserver(() => chart.resize());
+  observer.observe(card.querySelector(".plot-chart"));
+  if (row) card.dataset.row = `${row.dataset.plotKey ??= String(++plotKeys)}`;
+  const discard = () => {
+    observer.disconnect();
     chart.dispose();
     state.charts = state.charts.filter((item) => item !== chart);
     card.remove();
   };
+  card.querySelector(".expand-plot").onclick = () =>
+    document.fullscreenElement ? document.exitFullscreen() : card.requestFullscreen();
+  function zoom(factor) {
+    const [{ start = 0, end = 100 } = {}] = chart.getOption().dataZoom ?? [];
+    const middle = (start + end) / 2;
+    const half = Math.min(50, (end - start) * factor / 2);
+    chart.dispatchAction({
+      type: "dataZoom",
+      start: Math.max(0, middle - half),
+      end: Math.min(100, middle + half),
+    });
+  }
+  const exporter = card.querySelector(".export-plot");
+  exporter.querySelectorAll(".export-menu button").forEach((option) => {
+    option.onclick = () => {
+      exporter.open = false;
+      exportChart(chart, title.replace(/[^\w.-]+/g, "_"), option.value);
+    };
+  });
+  card.querySelector(".remove-plot").onclick = () => {
+    discard();
+    if (row && !$(`#plots [data-row="${card.dataset.row}"]`)) delete row.dataset.plotted;
+  };
   card.querySelector(".add-signal").onclick = () => {
     if (signals.includes(select.value)) return;
-    chart.dispose();
-    state.charts = state.charts.filter((item) => item !== chart);
-    card.remove();
-    addPlot([...signals, select.value], title, detail);
+    discard();
+    addPlot([...signals, select.value], title, detail, row, constraint);
   };
   if (!signals.length) {
     chart.setOption({ graphic: { type: "text", left: "center", top: "middle", style: { text: "Choose a signal above", fill: "#73777d" } } });
     return;
   }
+  const palette = ["#e07a5f", "#79c6a5", "#9da9c7", "#f0c36a"];
+  card.querySelector(".plot-signals").replaceChildren(...signals.map((signal, index) => {
+    const chip = document.createElement("button");
+    chip.className = "plot-signal";
+    chip.style.setProperty("--series", palette[index % palette.length]);
+    chip.textContent = signal;
+    chip.title = "Remove this signal";
+    chip.onclick = () => {
+      discard();
+      addPlot(signals.filter((item) => item !== signal), title, detail, row, constraint);
+    };
+    return chip;
+  }));
   chart.showLoading("default", { text: "Loading recorded data…" });
   const query = new URLSearchParams({ path: state.runPath });
   signals.forEach((signal) => query.append("signal", signal));
   api(`/api/plot?${query}`).then((data) => {
-    state.replay.events = data.events;
-    renderMarkers();
     chart.hideLoading();
     chart.setOption({
     animation: false,
     color: ["#e07a5f", "#79c6a5", "#9da9c7", "#f0c36a"],
-    grid: { left: 62, right: 20, top: 32, bottom: 42 },
+    grid: { left: 62, right: 22, top: 34, bottom: 52 },
+    dataZoom: [{ type: "inside", filterMode: "none" }],
+    toolbox: {
+      right: 8, top: 2, itemSize: 15, itemGap: 12,
+      iconStyle: { color: "none", borderColor: "#73777d", borderWidth: 1.1 },
+      emphasis: { iconStyle: { borderColor: "#e07a5f" } },
+      feature: {
+        myZoomIn: {
+          show: true, title: "Zoom in", icon: MAGNIFIER_IN,
+          onclick: () => zoom(0.5),
+        },
+        myZoomOut: {
+          show: true, title: "Zoom out", icon: MAGNIFIER_OUT,
+          onclick: () => zoom(2),
+        },
+        myZoomReset: {
+          show: true, title: "Reset zoom", icon: RESET_ARROW,
+          onclick: () => chart.dispatchAction({ type: "dataZoom", start: 0, end: 100 }),
+        },
+      },
+    },
     tooltip: { trigger: "axis", backgroundColor: "#202327", borderColor: "#383d45", textStyle: { color: "#f1eee7" } },
-    legend: { data: signals, textStyle: { color: "#a7a8a4" }, top: 4 },
+    legend: { show: false },
     xAxis: {
-      type: "value", scale: true, name: "frame", nameTextStyle: { color: "#73777d" },
+      type: "value", scale: true, name: "frame", nameLocation: "middle", nameGap: 26,
+      nameTextStyle: { color: "#73777d" },
+      min: constraint?.window?.[0], max: constraint?.window?.[1],
       axisLabel: { color: "#73777d" }, axisLine: { lineStyle: { color: "#73777d" } },
       splitLine: { lineStyle: { color: "#383d45" } },
     },
@@ -497,16 +701,22 @@ function addPlot(signals = [], title = signals.join(" · ") || "New plot", detai
       type: "value", axisLabel: { color: "#73777d" }, axisLine: { lineStyle: { color: "#73777d" } },
       splitLine: { lineStyle: { color: "#383d45" } },
     },
-    series: signals.map((signal) => ({
-      name: signal,
-      type: "line",
-      showSymbol: false,
-      data: data.signals[signal]
-        .map((value, point) => value == null ? null : [point * data.sample_step, value])
-        .filter(Boolean),
-      lineStyle: { width: 1.5 },
-    })),
+    series: [
+      ...signals.map((signal, index) => ({
+        name: signal,
+        type: "line",
+        showSymbol: false,
+        data: data.signals[signal]
+          .map((value, point) => value == null ? null : [point * data.sample_step, value])
+          .filter(Boolean),
+        lineStyle: { width: 1.5 },
+        ...(index === 0 ? setpointBands(constraint) : {}),
+      })),
+      { name: "__cursor", type: "line", data: [], silent: true },
+    ],
     });
+    chart.cursorIndex = signals.length;
+    chart.setOption(cursorOption(state.frame, chart.cursorIndex));
   }).catch((error) => chart.showLoading("default", { text: error.message }));
 }
 
@@ -558,7 +768,7 @@ function renderSourceNode(node, name, depth, isRoot = false) {
     const leaf = document.createElement("div");
     leaf.className = "source-leaf";
     leaf.style.setProperty("--depth", depth);
-    const item = listItem(file, null, () => { $("#status").textContent = `${state.roots.sources}/${source}`; }, source);
+    const item = listItem(file, null, () => { $("#status").textContent = `${state.roots.sources}/${source}`; openSource(source); }, source);
     item.onmouseenter = () => {
       const style = getComputedStyle(item);
       const available = item.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
@@ -580,6 +790,39 @@ function renderSourceNode(node, name, depth, isRoot = false) {
     children.push(leaf);
   });
   return children;
+}
+
+async function openSource(source) {
+  state.viewing = source;
+  const { text, editors, terminal } = await api(`/api/source?path=${encodeURIComponent(source)}`);
+  if (state.viewing !== source) return;
+  $("#content").innerHTML = `<div class="viewer"><div class="viewer-heading"><div><div class="eyebrow">SOURCE</div><h1></h1><p class="path"></p></div><div class="open-with"><select id="editor-choice"></select><button id="open-editor">Open</button></div></div><pre id="source-text"></pre></div>`;
+  $(".viewer h1").textContent = source.split("/").pop();
+  $(".viewer .path").textContent = `${state.roots.sources}/${source}`;
+  $("#source-text").replaceChildren(...text.replace(/\n$/, "").split("\n").map((line) => {
+    const row = document.createElement("span");
+    row.className = "code-line";
+    row.textContent = line;
+    return row;
+  }));
+  const options = [...editors];
+  if (terminal) options.push("terminal");
+  const choice = $("#editor-choice");
+  choice.replaceChildren(...options.map((name) => new Option(name === "terminal" ? `terminal (${terminal}) · folder` : name, name)));
+  const remembered = localStorage.getItem("motion-spec.editor");
+  if (options.includes(remembered)) choice.value = remembered;
+  choice.onchange = () => localStorage.setItem("motion-spec.editor", choice.value);
+  $("#open-editor").onclick = async () => {
+    try {
+      if (choice.value === "terminal") {
+        const { opened } = await post("/api/terminal", { path: source });
+        snack(`${terminal} at ${opened}`);
+      } else {
+        await post("/api/open", { path: source, editor: choice.value });
+        snack(`Opened in ${choice.value}`);
+      }
+    } catch (error) { snack(error.message); }
+  };
 }
 
 function filterSources(value) {
@@ -706,3 +949,24 @@ function loadLocation() {
 
 window.onpopstate = loadLocation;
 loadLocation();
+
+const asideWidth = (value) => {
+  const width = Math.min(720, Math.max(200, value));
+  document.documentElement.style.setProperty("--aside", `${width}px`);
+  localStorage.setItem("motion-spec.aside", width);
+};
+
+asideWidth(Number(localStorage.getItem("motion-spec.aside")) || 290);
+$("#aside-resize").onpointerdown = (event) => {
+  event.preventDefault();
+  document.body.classList.add("resizing");
+  const move = (moved) => asideWidth(moved.clientX);
+  const up = () => {
+    document.body.classList.remove("resizing");
+    removeEventListener("pointermove", move);
+    removeEventListener("pointerup", up);
+  };
+  addEventListener("pointermove", move);
+  addEventListener("pointerup", up);
+};
+$("#aside-resize").ondblclick = () => asideWidth(290);

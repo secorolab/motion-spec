@@ -6,6 +6,7 @@
   --bg: #141516; --side: #1a1c1f; --surface: #202327; --line: #383d45;
   --text: #f1eee7; --muted: #a7a8a4; --dim: #73777d; --accent: #e07a5f;
   --good: #79c6a5; --mono: "SFMono-Regular", Consolas, monospace;
+  --code: "JetBrainsMono Nerd Font", "JetBrains Mono", var(--mono);
 }
 
 * { box-sizing: border-box; }
@@ -23,14 +24,14 @@ header {
 .brand { color: var(--text); font-weight: 800; letter-spacing: .1em; }
 #status { margin-left: auto; color: var(--dim); font-size: 11px; }
 
-main { display: grid; grid-template-columns: 290px minmax(0, 1fr); height: calc(100vh - 58px); transition: grid-template-columns 180ms cubic-bezier(.2, .8, .2, 1); }
+main { display: grid; grid-template-columns: var(--aside, 290px) minmax(0, 1fr); height: calc(100vh - 58px); transition: grid-template-columns 180ms cubic-bezier(.2, .8, .2, 1); }
 aside { position: relative; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; background: var(--side); border-right: 1px solid var(--line); transition: border-color 120ms ease-out, opacity 120ms ease-out; }
 .sidebar-header { position: sticky; top: 0; z-index: 1; background: var(--side); }
 
 nav { display: flex; height: 48px; border-bottom: 1px solid var(--line); }
 nav button { flex: 1; border-bottom: 2px solid transparent; }
 #sidebar-toggle {
-  position: fixed; top: 68px; left: 289px; z-index: 5; display: grid; width: 24px; height: 28px;
+  position: fixed; top: 68px; left: calc(var(--aside, 290px) - 1px); z-index: 5; display: grid; width: 24px; height: 28px;
   place-items: center; padding: 0; border: 1px solid var(--line); border-left: 0; border-radius: 0 3px 3px 0; background: var(--surface); color: var(--text); font-size: 20px; line-height: 1; transition: left 180ms cubic-bezier(.2, .8, .2, 1);
 }
 #sidebar-toggle:hover { border-color: var(--accent); color: var(--accent); }
@@ -145,6 +146,7 @@ h1 { margin: 7px 0; font-size: 30px; }
 .graph-shell:fullscreen, .graph-shell:-webkit-full-screen { display: grid; grid-template-rows: minmax(0, 1fr) auto; width: 100vw !important; height: 100vh !important; margin: 0; padding: 24px; background: var(--bg); }
 .graph-shell:fullscreen .generation-graph, .graph-shell:-webkit-full-screen .generation-graph { width: 100%; height: auto; }
 .graph-shell:fullscreen .graph-search-panel, .graph-shell:-webkit-full-screen .graph-search-panel { top: 34px; left: 34px; width: min(340px, calc(100% - 92px)); }
+.graph-shell:fullscreen .graph-fullscreen, .graph-shell:-webkit-full-screen .graph-fullscreen { top: 34px; right: 34px; }
 .graph-heading { display: flex; align-items: center; justify-content: space-between; }
 .graph-heading h2 { margin-bottom: 0; }
 .graph-fullscreen { position: absolute; top: 10px; right: 10px; z-index: 1; width: 28px; height: 28px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); }
@@ -205,28 +207,42 @@ h1 { margin: 7px 0; font-size: 30px; }
 .chart-controls button { padding: 7px 10px; border: 1px solid var(--accent); color: var(--accent); }
 .plots { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 12px; }
 .plot-card { border: 1px solid var(--line); background: var(--surface); }
-.plot-card header { height: auto; min-height: 42px; padding: 7px 10px; border-bottom: 1px solid var(--line); }
-.plot-card header div { min-width: 0; }
+.plot-card header { display: flex; align-items: flex-start; gap: 10px; height: auto; min-height: 42px; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+.plot-card header > div:first-child { flex: 1; min-width: 0; }
 .plot-card header strong, .plot-card header small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
 .plot-card header strong { color: var(--text); font-size: 12px; }
 .plot-card header small { margin-top: 2px; color: var(--dim); font-size: 10px; }
-.plot-card header .remove-plot { margin-left: auto; font-size: 18px; }
+.plot-card header .plot-actions { flex: none; margin-left: auto; }
 .plot-tools { display: flex; gap: 6px; padding: 7px 10px; border-bottom: 1px solid var(--line); }
 .plot-tools select { min-width: 0; flex: 1; padding: 5px 7px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font: 11px var(--mono); }
 .plot-tools button { padding: 5px 8px; border: 1px solid var(--accent); color: var(--accent); font: 11px var(--mono); }
 .plot-chart { height: 300px; }
 
 .transport {
-  position: fixed; right: 0; bottom: 0; left: 290px; z-index: 2; padding: 10px 24px;
+  --thumb: 14px;
+  position: fixed; right: 0; bottom: 0; left: var(--aside, 290px); z-index: 2; padding: 10px 24px;
   border-top: 1px solid var(--line); background: var(--bg); transition: left 180ms cubic-bezier(.2, .8, .2, 1);
 }
 .transport-controls { display: flex; align-items: center; gap: 8px; }
 .transport-controls button { padding: 6px 12px; border: 1px solid var(--line); color: var(--text); }
 .transport-controls button:hover { border-color: var(--accent); }
 .transport #readout { margin-left: 10px; }
-.timeline { width: 100%; accent-color: var(--accent); }
-.markers { position: relative; height: 16px; margin-top: 8px; border-top: 1px solid var(--line); }
-.marker { position: absolute; top: -4px; width: 7px; height: 7px; transform: rotate(45deg); background: var(--accent); }
+.timeline {
+  -webkit-appearance: none; appearance: none; width: 100%; height: var(--thumb); background: transparent; cursor: pointer;
+}
+.timeline::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: linear-gradient(var(--accent) 0 0) no-repeat 0 / calc(var(--f, 0) * 100%) 100%, var(--line); }
+.timeline::-webkit-slider-thumb { -webkit-appearance: none; width: var(--thumb); height: var(--thumb); margin-top: calc((4px - var(--thumb)) / 2); border-radius: 50%; background: var(--accent); }
+.timeline::-moz-range-track { height: 4px; border-radius: 2px; background: var(--line); }
+.timeline::-moz-range-progress { height: 4px; border-radius: 2px; background: var(--accent); }
+.timeline::-moz-range-thumb { width: var(--thumb); height: var(--thumb); border: 0; border-radius: 50%; background: var(--accent); }
+.markers { position: relative; height: 26px; margin-top: 8px; }
+.markers::before, .markers::after { content: ""; position: absolute; left: calc(var(--thumb) / 2); right: calc(var(--thumb) / 2); height: 1px; background: var(--line); }
+.markers::before { top: 1px; }
+.markers::after { top: 15px; }
+.marker { position: absolute; top: -5px; width: 5px; height: 12px; margin-left: -2px; padding: 0; border: 1px solid var(--accent); border-radius: 1px; transform: rotate(-45deg); background: var(--accent); cursor: pointer; }
+.marker-event { top: 12px; width: 7px; height: 7px; margin-left: -3px; border-radius: 0; border-color: var(--muted); background: transparent; transform: rotate(45deg); }
+.marker:hover { z-index: 1; border-color: var(--text); background: var(--text); }
+.playhead { position: absolute; top: -6px; bottom: -8px; left: calc(var(--thumb) / 2 + var(--f, 0) * (100% - var(--thumb))); width: 0; border-left: 1px dotted var(--accent); pointer-events: none; }
 
 #browser, #content, .constraints { scrollbar-color: var(--dim) var(--surface); scrollbar-width: thin; }
 #browser::-webkit-scrollbar, #content::-webkit-scrollbar, .constraints::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -256,3 +272,48 @@ h1 { margin: 7px 0; font-size: 30px; }
   .chart-controls select { min-width: 0; }
   .plots { grid-template-columns: 1fr; }
 }
+
+.viewer { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 16px; height: 100%; }
+.viewer-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.viewer-heading h1 { margin: 4px 0; }
+.open-with { display: flex; gap: 8px; }
+#editor-choice { padding: 7px 8px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 11px var(--mono); cursor: pointer; }
+#editor-choice:hover { border-color: var(--accent); color: var(--accent); }
+#aside-resize { position: absolute; top: 0; right: 0; bottom: 0; z-index: 3; width: 5px; cursor: col-resize; }
+#aside-resize:hover { background: var(--accent); }
+body.resizing { cursor: col-resize; user-select: none; }
+body.resizing main, body.resizing #sidebar-toggle, body.resizing .transport { transition: none; }
+#open-editor { padding: 7px 14px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 11px var(--mono); cursor: pointer; white-space: nowrap; }
+#open-editor:hover { border-color: var(--accent); color: var(--accent); }
+#source-text { margin: 0; padding: 14px 14px 14px 0; overflow: auto; border: 1px solid var(--line); background: var(--surface); color: var(--text); font: 12.5px/1.6 var(--code); tab-size: 2; counter-reset: line; }
+.code-line { display: block; min-height: 1.6em; counter-increment: line; }
+.code-line::before { content: counter(line); position: sticky; left: 0; display: inline-block; width: 3.5em; padding-right: 1.2em; background: var(--surface); color: var(--dim); text-align: right; user-select: none; }
+
+.constraint[data-kind="monitored"] strong::after { content: "monitored"; margin-left: 8px; color: var(--dim); font: 9px var(--mono); letter-spacing: .06em; }
+
+.plot-signals { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; }
+.plot-signal { display: flex; align-items: center; gap: 6px; padding: 3px 8px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 10px var(--mono); cursor: pointer; }
+.plot-signal::before { content: ""; width: 8px; height: 2px; background: var(--series); }
+.plot-signal::after { content: "×"; color: var(--dim); }
+.plot-signal:hover { border-color: var(--accent); color: var(--text); }
+.plot-signal:hover::after { color: var(--accent); }
+
+.plot-card header small { display: block; overflow: hidden; text-overflow: ellipsis; }
+.plot-facts { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 10px 10px; }
+.plot-facts span { display: flex; gap: 6px; padding: 3px 8px; border: 1px solid var(--line); background: var(--bg); font: 10px var(--mono); }
+.plot-facts b { color: var(--dim); font-weight: 400; }
+.plot-facts i { color: var(--text); font-style: normal; }
+.plot-actions { display: flex; align-items: center; gap: 2px; }
+.plot-actions > button { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 1px solid transparent; background: none; color: var(--muted); font: 16px var(--mono); line-height: 1; cursor: pointer; }
+.plot-actions > button:hover { border-color: var(--line); color: var(--accent); }
+.plot-actions .remove-plot { margin-left: 6px; font-size: 19px; }
+.export-plot { position: relative; }
+.export-plot summary { display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid transparent; color: var(--muted); list-style: none; cursor: pointer; }
+.export-plot summary::-webkit-details-marker { display: none; }
+.export-plot summary svg { width: 15px; height: 15px; }
+.export-plot[open] summary, .export-plot summary:hover { border-color: var(--line); color: var(--accent); }
+.export-menu { position: absolute; top: 30px; right: 0; z-index: 3; display: grid; min-width: 78px; border: 1px solid var(--line); background: var(--surface); }
+.export-menu button { display: block; width: 100%; padding: 7px 12px; border: 0; background: none; color: var(--muted); font: 11px var(--mono); text-align: left; cursor: pointer; }
+.export-menu button:hover { background: var(--bg); color: var(--accent); }
+.plot-card:fullscreen { display: flex; flex-direction: column; width: 100vw; height: 100vh; padding: 24px; background: var(--bg); }
+.plot-card:fullscreen .plot-chart { flex: 1; min-height: 0; height: auto; }

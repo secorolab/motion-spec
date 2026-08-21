@@ -75,8 +75,8 @@ def test_rerun_takes_the_generation_latest_points_at(monkeypatch, tmp_path) -> N
     generation = tmp_path / "generation" / "model" / "20260815T000000000000Z"
     (generation / "build").mkdir(parents=True)
     (generation / "build" / "main").write_text("")
-    cli._point_latest(generation)
     monkeypatch.setenv(cli.GENERATION_DIR_ENV, str(tmp_path / "generation"))
+    cli._point_latest(generation)
     received = {}
     monkeypatch.setattr(
         "motion_spec.introspection.runner.run_cataloged",
@@ -92,19 +92,22 @@ def test_rerun_takes_the_generation_latest_points_at(monkeypatch, tmp_path) -> N
 
 
 def test_latest_follows_the_newest_generation(monkeypatch, tmp_path) -> None:
-    """One link per model and one over all of them, both relative, both replaced in place."""
+    """One link, under the generation root, relative, replaced in place."""
     from motion_spec import cli
 
+    monkeypatch.setenv(cli.GENERATION_DIR_ENV, str(tmp_path))
     first = tmp_path / "model" / "20260815T000000000000Z"
     second = tmp_path / "model" / "20260815T111111111111Z"
-    other = tmp_path / "other-model" / "20260815T222222222222Z"
+    other = tmp_path / "named-run" / "other-model" / "20260815T222222222222Z"
     for generation in (first, second, other):
         generation.mkdir(parents=True)
         cli._point_latest(generation)
 
-    assert (tmp_path / "model" / cli.LATEST_LINK).resolve() == second
     assert (tmp_path / cli.LATEST_LINK).resolve() == other
-    # Relative, so the tree can be moved or copied without the links pointing back at the old one.
+    # No link per output directory or per model: one name, where `rerun` reads it.
+    assert not (tmp_path / "model" / cli.LATEST_LINK).exists()
+    assert not (tmp_path / "named-run" / cli.LATEST_LINK).exists()
+    # Relative, so the tree can be moved or copied without the link pointing back at the old one.
     assert not Path((tmp_path / cli.LATEST_LINK).readlink()).is_absolute()
 
 
@@ -137,8 +140,8 @@ def test_rerun_reports_a_latest_generation_that_is_not_built(monkeypatch, tmp_pa
 
     generation = tmp_path / "model" / "20260815T000000000000Z"
     generation.mkdir(parents=True)
-    cli._point_latest(generation)
     monkeypatch.setenv(cli.GENERATION_DIR_ENV, str(tmp_path))
+    cli._point_latest(generation)
 
     result = CliRunner().invoke(main, ["rerun"])
 
@@ -147,6 +150,7 @@ def test_rerun_reports_a_latest_generation_that_is_not_built(monkeypatch, tmp_pa
 
 
 def test_gen_and_run_compose_the_model_pipeline(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MOTION_SPEC_GEN", str(tmp_path))  # `latest` belongs to this tree, not the user's
     model = tmp_path / "demo.robmot"
     model.write_text("")
     received = {}
@@ -198,6 +202,7 @@ def test_gen_and_run_compose_the_model_pipeline(monkeypatch, tmp_path) -> None:
 
 def test_generation_base_prefers_o_then_the_environment(monkeypatch, tmp_path) -> None:
     """-o wins over $MOTION_SPEC_GEN, which wins over the working-directory fallback."""
+    monkeypatch.chdir(tmp_path)  # the unset case points `latest` at the working directory
     model = tmp_path / "demo.robmot"
     model.write_text("")
     received = {}

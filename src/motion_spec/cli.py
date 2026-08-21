@@ -6,8 +6,11 @@
 
 import json
 import os
+import signal
+import socket
 import subprocess
 import sys
+import time
 import traceback
 from contextlib import contextmanager
 from importlib.metadata import distribution
@@ -31,6 +34,7 @@ def _internal_failure(what: str, exc: Exception) -> click.ClickException:
 
 GENERATION_DIR_ENV = "MOTION_SPEC_GEN"
 LATEST_LINK = "latest"
+LAB_SETTINGS_DIR = "motion-spec-lab-settings"
 
 
 def _generation_base(output_dir: Path | None) -> Path | None:
@@ -73,27 +77,33 @@ def _new_generation(model: Path, output_dir: Path | None) -> Path:
 
 
 def _point_latest(generation: Path) -> None:
-    """Point `latest` at the generation just made: one beside it, one beside every model's.
+    """Point the one `latest` at the generation just made.
 
     A generation's directory is a timestamp nobody types twice, so the tree carries a name that
-    does not change -- the way a colcon workspace has `log/latest` and a Bazel one has
-    `bazel-bin`. Relative targets, so moving the tree keeps them pointing at what they name, and
-    replaced in one step, so a reader never finds the link missing.
+    does not change -- the way a colcon workspace has `log/latest`. One link, under the root
+    `rerun` reads, because a link per output directory is a link nobody asked for. The target is
+    relative, so moving the tree keeps it pointing at what it names, and it is replaced in one
+    step, so a reader never finds it missing.
     """
-    for link, target in (
-        (generation.parent / LATEST_LINK, generation.name),
-        (generation.parent.parent / LATEST_LINK, f"{generation.parent.name}/{generation.name}"),
-    ):
+    base = _generation_root()
+    link = base / LATEST_LINK
+    try:
+        target = os.path.relpath(generation, base)
         pending = link.with_name(f".{LATEST_LINK}.new")
-        try:
-            pending.unlink(missing_ok=True)
-            pending.symlink_to(target, target_is_directory=True)
-            os.replace(pending, link)
-        except OSError:
-            # A convenience, not the generation: a filesystem without symlinks, or a tree only
-            # readable, must not fail a generation that otherwise worked. `rerun` says what to
-            # do when it finds no link.
-            pending.unlink(missing_ok=True)
+        pending.unlink(missing_ok=True)
+        pending.symlink_to(target, target_is_directory=True)
+        os.replace(pending, link)
+    except OSError:
+        # A convenience, not the generation: a filesystem without symlinks, or a tree only
+        # readable, must not fail a generation that otherwise worked. `rerun` says what to
+        # do when it finds no link.
+        link.with_name(f".{LATEST_LINK}.new").unlink(missing_ok=True)
+
+
+def _generation_root() -> Path:
+    """Where `latest` lives: $MOTION_SPEC_GEN, or the working directory when it is unset."""
+    configured = os.environ.get(GENERATION_DIR_ENV, "").strip()
+    return Path(configured).expanduser() if configured else Path.cwd()
 
 
 def _latest_generation() -> Path:
@@ -102,11 +112,8 @@ def _latest_generation() -> Path:
     Raises:
         ClickException: nothing has been generated there, or what was is not built.
     """
-    configured = os.environ.get(GENERATION_DIR_ENV, "").strip()
-    if configured:
-        base = Path(configured).expanduser()
-    else:
-        base = Path.cwd()
+    base = _generation_root()
+    if not os.environ.get(GENERATION_DIR_ENV, "").strip():
         click.echo(
             f"{GENERATION_DIR_ENV} is not set, so this looks for `latest` under the working "
             f"directory ({base}). Export {GENERATION_DIR_ENV}=/path/to/generations to keep them "
@@ -189,7 +196,7 @@ class MotionSpecGroup(click.Group):
                     ("generated/provenance/", "DSL, coordinate, and motion-spec provenance."),
                     ("build/", "Reusable compiled controller."),
                     ("runs/RUN/", "Run-owned logs, runtime RDF, REC graph, and manifest."),
-                    ("latest", "Symlink to the newest generation, beside it and per model."),
+                    ("latest", f"Symlink to the newest generation, under ${GENERATION_DIR_ENV}."),
                 ]
             )
         with _manual_section(formatter, "ENVIRONMENT"):
@@ -274,6 +281,133 @@ def _dsl_requirement() -> str:
 @click.version_option(package_name="motion_spec")
 def main() -> None:
     """The motion-spec toolchain."""
+
+
+@main.command()
+@click.option("--port", default=8080, show_default=True, help="Port to serve on.")
+@click.option(
+    "--logs",
+    type=click.Path(file_okay=False, path_type=Path),
+    help=f"Generation root to browse. Default: ${GENERATION_DIR_ENV}, else the working directory.",
+)
+@click.option(
+    "--sources",
+    type=click.Path(file_okay=False, path_type=Path),
+    help="Model source root. Default: the logs root's parent.",
+)
+@click.option(
+    "-b", "--background", is_flag=True, help="Serve detached and return, logging to a file."
+)
+@click.option(
+    "-k", "--kill", is_flag=True, help="Stop a dashboard already serving, on --port if given."
+)
+@click.option(
+    "--log-file",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Where --background writes output. Default: dashboard.log in the logs root.",
+)
+def dashboard(
+    port: int,
+    logs: Path | None,
+    sources: Path | None,
+    background: bool,
+    kill: bool,
+    log_file: Path | None,
+) -> None:
+    """Browse generations, replay runs, and query them in a browser."""
+    from motion_spec.dashboard.server import serve
+
+    if kill:
+        return _stop_dashboards(port if "--port" in sys.argv or "-p" in sys.argv else None)
+    logs = (logs or _generation_root()).expanduser()
+    if _port_taken(port):
+        raise click.ClickException(
+            f"port {port} is already serving. Stop it, or pass --port for a second dashboard."
+        )
+    if not background:
+        return serve(port, logs, sources)
+
+    destination = (log_file or logs / "dashboard.log").expanduser()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    argv = [sys.executable, "-m", "motion_spec.dashboard", "--port", str(port), "--logs", str(logs)]
+    if sources is not None:
+        argv += ["--sources", str(sources)]
+    with destination.open("ab") as sink:
+        child = subprocess.Popen(argv, stdout=sink, stderr=sink, start_new_session=True)
+    click.echo(f"motion-spec dashboard: http://127.0.0.1:{port}")
+    click.echo(f"  pid {child.pid}, logging to {destination}")
+    click.echo(f"  stop it with: kill {child.pid}")
+
+
+def _stop_dashboards(port: int | None) -> None:
+    """Stop the dashboards this machine is serving, whoever started them, and their labs.
+
+    A dashboard takes its JupyterLab with it when asked to stop, so a lab still running with
+    no dashboard left was orphaned by one that had to be killed outright. Sweep those too, or
+    the next dashboard starts a second lab beside a stranded one.
+    """
+    found = _dashboard_pids(port)
+    for pid in found:
+        os.kill(pid, signal.SIGTERM)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and _dashboard_pids(port):
+        time.sleep(0.2)
+    for pid in _dashboard_pids(port):
+        os.kill(pid, signal.SIGKILL)
+
+    orphans = [] if _dashboard_pids(None) else _lab_pids()
+    for pid in orphans:
+        os.kill(pid, signal.SIGTERM)
+
+    if not found and not orphans:
+        where = f" on port {port}" if port else ""
+        raise click.ClickException(f"no dashboard is serving{where}.")
+    if found:
+        click.echo(f"stopped {len(found)} dashboard{'' if len(found) == 1 else 's'}: {found}")
+    if orphans:
+        click.echo(f"stopped {len(orphans)} stranded JupyterLab: {orphans}")
+
+
+def _dashboard_pids(port: int | None) -> list[int]:
+    """Processes serving the dashboard, by what they were started as."""
+    return _matching_pids(
+        lambda argv: "motion_spec.dashboard" in argv and (port is None or str(port) in argv)
+    )
+
+
+def _lab_pids() -> list[int]:
+    """JupyterLabs a dashboard started, known by the settings directory it hands them."""
+    return _matching_pids(
+        lambda argv: any(part.endswith(LAB_SETTINGS_DIR) for part in argv)
+    )
+
+
+def _matching_pids(wanted) -> list[int]:
+    """Live processes whose argv this accepts, never this one.
+
+    Matching whole arguments, not a substring of the line: a shell that merely mentions the
+    dashboard in its own command would otherwise be killed along with it.
+    """
+    found = []
+    for entry in Path("/proc").glob("[0-9]*"):
+        pid = int(entry.name)
+        if pid != os.getpid() and wanted(_argv_of(pid)):
+            found.append(pid)
+    return sorted(found)
+
+
+def _argv_of(pid: int) -> list[str]:
+    try:
+        return Path(f"/proc/{pid}/cmdline").read_bytes().decode().split("\0")
+    except OSError:
+        return []  # it exited while we looked
+
+
+def _port_taken(port: int) -> bool:
+    """Whether something already answers on the loopback port."""
+    with socket.socket() as probe:
+        probe.settimeout(0.2)
+        return probe.connect_ex(("127.0.0.1", port)) == 0
 
 
 @main.command()

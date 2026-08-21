@@ -43,8 +43,10 @@ from motion_spec.introspection.replay import (
     validate_header,
 )
 
-WORKSPACE = Path("/home/batsy/work/ms")
-GENERATIONS = WORKSPACE / "generations"
+GENERATION_DIR_ENV = "MOTION_SPEC_GEN"
+# Roots the dashboard browses, replaced at startup by `serve` and by /api/roots.
+GENERATIONS = Path(os.environ.get(GENERATION_DIR_ENV, "").strip() or Path.cwd())
+WORKSPACE = GENERATIONS.parent
 FRONTEND = Path(__file__).with_name("frontend")
 IGNORED = {"build", ".git", ".venv", "generations", "install", "log", "__pycache__", "test", "tests"}
 AUTHORED = (".robmot", ".fsm", ".scenex")
@@ -216,8 +218,11 @@ def generation_info(path: Path) -> dict:
     source = next((item for item in (path / "generated/source").glob("*.robmot")), None)
     return {
         "path": str(path.relative_to(GENERATIONS)),
-        "name": GenerationInfo(path).model,
+        "name": GenerationInfo(path, GENERATIONS).model,
         "created": GenerationInfo(path).timestamp,
+        "variant": (
+            path.parent.name if path.parent.parent != GENERATIONS else None
+        ),
         "built_at": datetime.fromtimestamp(GenerationInfo(path).built_at, timezone.utc).isoformat(),
         "source": source.name if source else None,
         "backend": layout.get("platform", {}).get("backend"),
@@ -669,6 +674,10 @@ def jupyter_server() -> dict:
     """The embedded JupyterLab, started on first use and framed by this dashboard only."""
     if JUPYTER.get("process") and JUPYTER["process"].poll() is None:
         return {"url": JUPYTER["url"], "root": str(WORKSPACE)}
+    if shutil.which("jupyter") is None:
+        raise ValueError(
+            "JupyterLab is not installed. Install it with: pip install 'motion-spec[replay]'"
+        )
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
@@ -1023,18 +1032,31 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         )
 
 
-def main() -> None:
-    global LIFECYCLE
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", type=int, default=8080)
-    args = parser.parse_args()
+def serve(port: int = 8080, logs: Path | None = None, sources: Path | None = None) -> None:
+    """Serve the dashboard for one pair of roots until interrupted."""
+    global GENERATIONS, LIFECYCLE, WORKSPACE
+    if logs is not None:
+        GENERATIONS = Path(logs).expanduser().resolve()
+        WORKSPACE = GENERATIONS.parent
+    if sources is not None:
+        WORKSPACE = Path(sources).expanduser().resolve()
     LIFECYCLE = LifecycleListener()
     atexit.register(stop_jupyter)
     for name in (signal.SIGTERM, signal.SIGINT):
         signal.signal(name, lambda *_: sys.exit(0))
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), DashboardHandler)
-    print(f"motion-spec dashboard: http://127.0.0.1:{args.port}")
+    server = ThreadingHTTPServer(("127.0.0.1", port), DashboardHandler)
+    print(f"motion-spec dashboard: http://127.0.0.1:{port}")
+    print(f"  runs from {GENERATIONS}\n  sources from {WORKSPACE}")
     server.serve_forever()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--logs", type=Path, help=f"generation root (default ${GENERATION_DIR_ENV})")
+    parser.add_argument("--sources", type=Path, help="model sources root (default: the logs root's parent)")
+    args = parser.parse_args()
+    serve(args.port, args.logs, args.sources)
 
 
 if __name__ == "__main__":

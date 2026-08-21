@@ -32,7 +32,9 @@ introspection = [
     "protobuf>=4.22",
 ]
 dashboard = ["nicegui>=2.0", "pillow"]
-all = ["pyshacl>=0.25.0", "rec", "protobuf>=4.22", "nicegui>=2.0", "pillow"]
+# The browser dashboard: rdflib for its SPARQL console, jupyterlab for its notebook tab.
+replay = ["rdflib>=7.0", "jupyterlab>=4.0", "matplotlib"]
+all = ["pyshacl>=0.25.0", "rec", "protobuf>=4.22", "nicegui>=2.0", "pillow", "rdflib>=7.0", "jupyterlab>=4.0", "matplotlib"]
 test = ["pytest"]
 docs = ["sphinx", "myst-parser", "furo", "sphinx-autobuild", "matplotlib"]
 dev = ["pytest", "ruff"]

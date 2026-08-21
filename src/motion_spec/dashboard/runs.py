@@ -63,13 +63,21 @@ class RunInfo:
 
 @dataclass
 class GenerationInfo:
-    """One `<root>/<model>/<timestamp>` generation bundle."""
+    """One generation bundle, at `<root>/<model>/<timestamp>` or under a named output dir.
+
+    `motion-spec gen -o <dir>` writes `<dir>/<model>/<timestamp>` and a `<dir>/latest` link,
+    so the folder someone named is the first segment under the root either way.
+    """
 
     dir: Path
+    root: Path | None = None
 
     @property
     def model(self) -> str:
-        return self.dir.parent.name
+        if self.root is None:
+            return self.dir.parent.name
+        parts = self.dir.relative_to(self.root).parts
+        return parts[0] if len(parts) > 1 else self.dir.parent.name
 
     @property
     def timestamp(self) -> str:
@@ -103,13 +111,16 @@ class GenerationCatalog:
         self.roots = [Path(root) for root in roots]
 
     def generations(self) -> list[GenerationInfo]:
+        # a bundle sits two or three levels down, and `latest` is a link to one already found
         found = {
-            layout.parent.parent.parent
+            layout.parent.parent.parent: root
             for root in self.roots
             if root.is_dir()
-            for layout in root.glob(str(Path("*") / "*" / LAYOUT_REL))
+            for depth in ("*/*", "*/*/*")
+            for layout in root.glob(f"{depth}/{LAYOUT_REL}")
+            if not any(part.is_symlink() for part in (layout.parent.parent.parent,))
         }
-        generations = [GenerationInfo(d) for d in found]
+        generations = [GenerationInfo(d, root) for d, root in found.items()]
         # a model is as recent as its newest generation, so the list leads with what was last built
         newest: dict[str, float] = {}
         for generation in generations:

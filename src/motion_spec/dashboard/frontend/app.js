@@ -118,7 +118,8 @@ async function loadGenerations(refresh = false) {
     summary.append(all);
     group.append(summary, ...entries.map((generation) => listItem(
       generation.created,
-      `${stampText(generation.built_at)} · ${generation.runs} runs · ${formatBytes(generation.size_bytes)}`,
+      [generation.variant, stampText(generation.built_at),
+       `${generation.runs} runs`, formatBytes(generation.size_bytes)].filter(Boolean).join(" · "),
       (event) => {
         if (event.shiftKey) return pickRange(generation.path, $("#browser"), "sidebar");
         return event.metaKey || event.ctrlKey
@@ -373,7 +374,7 @@ async function loadReplay(path) {
 
   populateConstraints();
   $("#plot").onclick = () => addPlot([]);
-  $("#notebook").onclick = () => openNotebook(state.runPath).catch(showError);
+  $("#notebook").onclick = () => openNotebook(state.runPath).catch((error) => snack(error.message));
   bindPanels();
   bindSparql().catch(showError);
   bindTransport();
@@ -1097,9 +1098,17 @@ async function loadNotebook(url = null) {
   $("#browser").replaceChildren();
   $("#content").innerHTML = '<div class="notebook"><iframe title="JupyterLab"></iframe></div>';
   $("#status").textContent = "Starting JupyterLab…";
-  const lab = url ? { url } : await api("/api/jupyter");
-  $(".notebook iframe").src = lab.url;
-  $("#status").textContent = lab.url.split("?")[0];
+  try {
+    const lab = url ? { url } : await api("/api/jupyter");
+    $(".notebook iframe").src = lab.url;
+    $("#status").textContent = lab.url.split("?")[0];
+  } catch (error) {
+    // a missing JupyterLab is a thing to install, not a page that failed to load
+    $("#status").textContent = "";
+    $("#content").innerHTML = '<div class="empty"><span>NOTEBOOK</span><h1></h1><p></p></div>';
+    $(".empty h1").textContent = "JupyterLab is not available.";
+    $(".empty p").textContent = error.message;
+  }
 }
 
 async function openNotebook(runPath) {

@@ -7,7 +7,8 @@ import json
 from pathlib import Path
 
 import pytest
-from frame_log_fixture import flat_frame
+from frame_log_fixture import flat_frame, write_frame_log_proto
+from google.protobuf import descriptor_pb2
 
 from motion_spec.classes.base import DataclassJSONEncoder
 from motion_spec.classes.bindings import ChainBinding, HardwareBinding, RuntimeBinding
@@ -444,6 +445,130 @@ def test_every_slot_carries_its_model_iri(tmp_path: Path) -> None:
     assert quantity_ids <= set(by_id)
     # An id is a lossy projection of its IRI, so the IRI has to travel rather than be recomputed.
     assert all(by_id[q["id"]] == q["uri"] for q in schema["quantities"] if q.get("uri"))
+
+
+def test_a_slot_carries_what_it_serves_and_a_constant_who_reads_it(tmp_path: Path) -> None:
+    """Identity beyond the slot number: the constraint, the phase, the joined quantity ids, the
+    gains, and a constant's model term with its readers -- all header-only, none per frame."""
+    schema = _schema()
+    schema["by_motion"]["motion_arc"]["controllers"] = [
+        {
+            "index": 0,
+            "id": "ctrl_push",
+            "uri": "https://example.test/ctrl_push",
+            "constraint": "hold",
+            "constraint_uri": "https://example.test/hold",
+            "gains": {"proportional_gain": 12.0},
+            "error_signal": "arc_only_error",
+            "output_signal": "cmd_wrench",
+            "measured_signal": "pose_ee",
+            "setpoint_signal": "stiffness",
+        }
+    ]
+    schema["by_motion"]["motion_arc"]["monitors"] = [
+        {
+            "index": 0,
+            "id": "mon_done",
+            "phase": "until",
+            "constraint_ids": ["hold", "settled"],
+            "constraint_uris": ["https://example.test/hold", "https://example.test/settled"],
+            "error_signal": "arc_only_error",
+        }
+    ]
+    (stiffness,) = [row for row in schema["constants"] if row["id"] == "stiffness"]
+    stiffness["uri"] = "https://example.test/stiffness"
+    stiffness["consumers"] = [{"kind": "controller", "id": "ctrl_push", "role": "setpoint_signal"}]
+
+    header = frame_log_pb.read_contract(_written_log(tmp_path, schema, [])).header
+    gate = next(motion for motion in header.motions if motion.id == "motion_arc")
+    (controller,) = gate.controllers
+    assert controller.constraint_iri == "https://example.test/hold"
+    assert controller.constraint_id == "hold"
+    assert (controller.measured_id, controller.setpoint_id) == ("pose_ee", "stiffness")
+    assert (controller.error_id, controller.output_id) == ("arc_only_error", "cmd_wrench")
+    assert [(gain.role, gain.value) for gain in controller.gains] == [("proportional_gain", 12.0)]
+    (monitor,) = gate.monitors
+    assert monitor.phase == "until"
+    # An aggregate watches several constraints, so the scalar stays empty rather than picking one.
+    assert list(monitor.constraint_iris) == list(
+        schema["by_motion"]["motion_arc"]["monitors"][0]["constraint_uris"]
+    )
+    assert monitor.constraint_iri == "" and monitor.constraint_id == ""
+    logged = next(row for row in header.constants if row.id == "stiffness")
+    assert logged.uri == "https://example.test/stiffness"
+    assert [(c.kind, c.id, c.role) for c in logged.consumers] == [
+        ("controller", "ctrl_push", "setpoint_signal")
+    ]
+
+
+# Proto type words the descriptor builder's scalar types render as in the .proto text.
+_PROTO_WORD = {
+    getattr(descriptor_pb2.FieldDescriptorProto, f"TYPE_{word.upper()}"): word
+    for word in (
+        "uint32",
+        "uint64",
+        "int32",
+        "int64",
+        "string",
+        "bytes",
+        "bool",
+        "double",
+        "sfixed64",
+    )
+}
+
+
+def _declared_in_proto_text(text: str) -> dict:
+    """{message: {field: (type word, number, repeated)}}, parsed off the rendered .proto."""
+    messages: dict = {}
+    current, depth = None, 0
+    for raw in text.splitlines():
+        line = raw.split("//")[0].strip()
+        if line.startswith("message "):
+            current, depth = line.split()[1], 1
+            messages[current] = {}
+        elif current is None or not line:
+            continue
+        elif line.endswith("{"):
+            depth += 1
+        elif line == "}":
+            depth -= 1
+            if depth == 0:
+                current = None
+        elif line.endswith(";"):
+            parts = line[:-1].split()
+            repeated = parts[0] == "repeated"
+            type_word, name, _eq, number = parts[1:] if repeated else parts
+            messages[current][name] = (type_word, int(number), repeated)
+    return messages
+
+
+def _declared_in_descriptor(fields: dict) -> dict:
+    D = descriptor_pb2.FieldDescriptorProto
+    return {
+        message.name: {
+            field.name: (
+                field.type_name.rsplit(".", 1)[-1]
+                if field.type == D.TYPE_MESSAGE
+                else _PROTO_WORD[field.type],
+                field.number,
+                field.label == D.LABEL_REPEATED,
+            )
+            for field in message.field
+        }
+        for message in frame_log_pb._build_file_descriptor(fields).message_type
+    }
+
+
+def test_the_proto_text_and_the_python_descriptor_declare_the_same_wire(tmp_path: Path) -> None:
+    """protoc reads the template's .proto, replay reads the Python descriptor: one contract, so a
+    field added to either without the other would decode a log nobody wrote."""
+    schema = _schema()
+    proto = tmp_path / "frame_log.proto"
+    write_frame_log_proto(proto, schema)
+    assert _declared_in_proto_text(proto.read_text()) == _declared_in_descriptor(
+        frame_log_pb._proto_fields(schema)
+    )
 
 
 def test_a_log_without_an_embedded_descriptor_is_rejected(tmp_path: Path) -> None:

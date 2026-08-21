@@ -1281,7 +1281,7 @@ def build_introspection(
     ]
 
     introspection = {
-        "contract_version": 1,
+        "contract_version": 2,
         "control_period_ns": control_period_ns,
         "uris": model.uri_rows(),
         "motions": motion_rows,

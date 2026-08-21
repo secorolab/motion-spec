@@ -371,7 +371,7 @@ def test_introspection_contract_carries_control_and_provenance() -> None:
         model, [motion], computation, [], robots, scene, platform, 2_000_000, "mj_kdl"
     )
 
-    assert introspection["contract_version"] == 1
+    assert introspection["contract_version"] == 2
     assert introspection["controllers"][0]["proportional_gain"] == 2.0
     assert introspection["controllers"][0]["output_signal"] == "control"
     assert introspection["monitors"][0]["trigger"] == "edge"

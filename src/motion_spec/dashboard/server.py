@@ -87,6 +87,15 @@ def pick_root(kind: str) -> dict:
     return set_root(kind, result.stdout.strip())
 
 
+def trash(path: Path) -> None:
+    """Move a path to the desktop trash. Nothing the dashboard removes should be unrecoverable."""
+    result = subprocess.run(
+        ["gio", "trash", "--", str(path)], check=False, capture_output=True, text=True
+    )
+    if result.returncode:
+        raise ValueError(f"could not move {path.name} to trash: {result.stderr.strip()}")
+
+
 def relative_path(root: Path, value: str) -> Path:
     """Resolve a request path inside root, rejecting traversal and missing paths."""
     path = (root / value).resolve()
@@ -209,6 +218,7 @@ def generation_info(path: Path) -> dict:
         "path": str(path.relative_to(GENERATIONS)),
         "name": GenerationInfo(path).model,
         "created": GenerationInfo(path).timestamp,
+        "built_at": datetime.fromtimestamp(GenerationInfo(path).built_at, timezone.utc).isoformat(),
         "source": source.name if source else None,
         "backend": layout.get("platform", {}).get("backend"),
         "platform": layout.get("platform", {}).get("name"),
@@ -776,6 +786,24 @@ def run_graph(run_dir: Path, *, frames: bool) -> GraphService:
     return _GRAPHS[key]
 
 
+QUERIES_REL = "queries.json"
+
+
+def saved_queries(run_dir: Path) -> list:
+    """The queries kept beside this run."""
+    stored = json_file(run_dir / QUERIES_REL)
+    return stored.get("queries", []) if isinstance(stored, dict) else []
+
+
+def save_queries(run_dir: Path, queries: list) -> dict:
+    """Keep a run's queries with the run, so they outlive the browser that wrote them."""
+    if not (run_dir / "logs" / "frame_log.pb").exists():
+        raise ValueError("queries belong to a run")
+    texts = [str(query) for query in queries][:200]
+    (run_dir / QUERIES_REL).write_text(json.dumps({"queries": texts}, indent=1))
+    return {"saved": len(texts)}
+
+
 def run_query(run_dir: Path, sparql: str) -> dict:
     """Answer one SPARQL query against a run, or say why it could not be answered."""
     # only a query that reaches for the recording pays for reading it
@@ -907,6 +935,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 generation = relative_path(GENERATIONS, value)
                 runs = sorted(path for path in generation.glob("runs/*") if path.is_dir())
                 return self.send_json([run_info(path) for path in reversed(runs)])
+            if parsed.path == "/api/queries":
+                return self.send_json(saved_queries(relative_path(GENERATIONS, value)))
             if parsed.path == "/api/replay":
                 return self.send_json(replay_data(relative_path(GENERATIONS, value)))
             if parsed.path == "/api/plot":
@@ -945,6 +975,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return self.send_json(open_source(body["path"], body.get("editor")))
             if self.path == "/api/terminal":
                 return self.send_json(open_terminal(body["path"]))
+            if self.path == "/api/queries":
+                return self.send_json(
+                    save_queries(relative_path(GENERATIONS, body["path"]), body["queries"])
+                )
             if self.path == "/api/sparql":
                 return self.send_json(
                     run_query(relative_path(GENERATIONS, body["path"]), body["query"])
@@ -962,10 +996,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 if not any(target in other.parents for other in targets)
             ]
             for target in sorted(targets, key=lambda item: len(item.parts), reverse=True):
-                shutil.rmtree(target)
+                trash(target)
+            # a model folder emptied of its generations is no longer a model folder
+            folders = 0
+            for folder in {target.parent for target in targets}:
+                if GENERATIONS in folder.parents and folder.is_dir() and not any(folder.iterdir()):
+                    trash(folder)
+                    folders += 1
             directory_size.cache_clear()
             storage_info.cache_clear()
-            self.send_json({"deleted": len(targets)})
+            self.send_json({"deleted": len(targets), "folders": folders})
         except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
 

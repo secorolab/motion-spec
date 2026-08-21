@@ -49,10 +49,12 @@ def test_the_catalog_finds_generations_by_their_contract(tmp_path):
 
     generations = GenerationCatalog([tmp_path]).generations()
     assert len(generations) == 3
-    assert [g.model for g in generations][0] == "pick_place_single"  # newest first
-    assert generations[0].timestamp == "20260811T010000Z"
-    assert generations[0].built is False
-    assert generations[0].layout.schema_hash == schema()["schema_hash"]
+    # most recently written first, and a model ranks by its newest generation
+    assert [g.model for g in generations][0] == "admittance_arc_single"
+    newest = next(g for g in generations if g.model == "pick_place_single")
+    assert newest.timestamp == "20260811T010000Z"
+    assert newest.built is False
+    assert newest.layout.schema_hash == schema()["schema_hash"]
 
 
 def test_a_run_still_ticking_is_live(tmp_path):

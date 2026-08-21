@@ -76,6 +76,11 @@ class GenerationInfo:
         return self.dir.name
 
     @property
+    def built_at(self) -> float:
+        """When this bundle was last written, which is what "latest" means to someone reading."""
+        return self.dir.stat().st_mtime
+
+    @property
     def built(self) -> bool:
         return (self.dir / "build" / "main").exists()
 
@@ -104,9 +109,15 @@ class GenerationCatalog:
             if root.is_dir()
             for layout in root.glob(str(Path("*") / "*" / LAYOUT_REL))
         }
+        generations = [GenerationInfo(d) for d in found]
+        # a model is as recent as its newest generation, so the list leads with what was last built
+        newest: dict[str, float] = {}
+        for generation in generations:
+            built = generation.built_at
+            newest[generation.model] = max(newest.get(generation.model, built), built)
         return sorted(
-            (GenerationInfo(d) for d in found),
-            key=lambda gen: (gen.model, gen.timestamp),
+            generations,
+            key=lambda gen: (newest[gen.model], gen.built_at),
             reverse=True,
         )
 

@@ -7,7 +7,7 @@ const MAGNIFIER_IN = `path://${MAGNIFIER} M5.4,8.1 L11,8.1 M8.2,5.3 L8.2,10.9`;
 const MAGNIFIER_OUT = `path://${MAGNIFIER} M5.4,8.1 L11,8.1`;
 const RESET_ARROW = "path://M15.4,9.6 A6.2,6.2 0 1,1 9.2,3.4 M9.2,0.7 L9.2,6.1 M6.5,3.4 L11.9,3.4";
 let plotKeys = 0;
-const state = { replay: null, runPath: null, generationPath: null, tab: "logs", frame: 0, charts: [], selected: new Set(), timer: null, roots: {}, cache: {}, listRequest: 0 };
+const state = { replay: null, queries: [], query: -1, anchor: null, runPath: null, generationPath: null, tab: "logs", frame: 0, charts: [], selected: new Set(), timer: null, roots: {}, cache: {}, listRequest: 0 };
 const $ = (selector) => document.querySelector(selector);
 let snackTimer;
 
@@ -64,6 +64,14 @@ function fact(label, value) {
   return `<div class="fact"><label>${label}</label>${value ?? "—"}</div>`;
 }
 
+function stampText(iso) {
+  if (!iso) return "unknown time";
+  return new Date(iso).toLocaleString(undefined, {
+    day: "2-digit", month: "short", year: "numeric",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+  });
+}
+
 function formatBytes(bytes) {
   return bytes >= 1024 ** 3
     ? `${(bytes / 1024 ** 3).toFixed(1)} GB`
@@ -90,11 +98,33 @@ async function loadGenerations(refresh = false) {
     group.className = "generation-group";
     group.open = true;
     const summary = document.createElement("summary");
-    summary.textContent = model;
+    const label = document.createElement("span");
+    label.className = "group-name";
+    label.textContent = model;
+    summary.append(label);
+    const all = document.createElement("button");
+    all.className = "select-group";
+    all.title = `Select every generation of ${model}`;
+    all.textContent = "select all";
+    all.onclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const paths = entries.map((generation) => generation.path);
+      const adding = paths.some((path) => !state.selected.has(path));
+      paths.forEach((path) => {
+        if (state.selected.has(path) !== adding) toggleSelection(path, "sidebar");
+      });
+    };
+    summary.append(all);
     group.append(summary, ...entries.map((generation) => listItem(
       generation.created,
-      `${generation.runs} runs · ${formatBytes(generation.size_bytes)}`,
-      (event) => event.metaKey || event.ctrlKey ? toggleSelection(generation.path) : selectGeneration(generation.path),
+      `${stampText(generation.built_at)} · ${generation.runs} runs · ${formatBytes(generation.size_bytes)}`,
+      (event) => {
+        if (event.shiftKey) return pickRange(generation.path, $("#browser"), "sidebar");
+        return event.metaKey || event.ctrlKey
+          ? toggleSelection(generation.path, "sidebar")
+          : selectGeneration(generation.path);
+      },
       generation.path,
     )));
     return group;
@@ -117,6 +147,7 @@ function filterGenerations(value) {
 }
 
 async function selectGeneration(path) {
+  state.anchor = path;
   setView("generation", path);
   state.generationPath = path;
   const generation = await api(`/api/generation?path=${encodeURIComponent(path)}`);
@@ -179,7 +210,12 @@ async function selectGeneration(path) {
     row.classList.toggle("picked", state.selected.has(run.path));
     row.innerHTML = `<span>${runPage * 10 + index + 1}</span><strong>${run.id}</strong><span>${run.started}</span><span>${run.duration_s.toFixed(2)} s</span><span>${(run.written_frames ?? 0).toLocaleString()}</span><span class="badge">${run.status ?? (run.complete ? "COMPLETED" : "incomplete")}</span>`;
     row.title = "Open replay; Ctrl/Cmd-click to select";
-    row.onclick = (event) => event.metaKey || event.ctrlKey ? toggleSelection(run.path) : loadReplay(run.path);
+    row.onclick = (event) => {
+      if (event.shiftKey) return pickRange(run.path, row.parentElement, "main");
+      return event.metaKey || event.ctrlKey
+        ? toggleSelection(run.path, "main")
+        : loadReplay(run.path);
+    };
     return row;
   }));
   renderRuns();
@@ -322,6 +358,7 @@ async function selectGeneration(path) {
 }
 
 async function loadReplay(path) {
+  state.anchor = path;
   stopPlayback();
   setView("run", path);
   state.replay = await api(`/api/replay?path=${encodeURIComponent(path)}`);
@@ -332,12 +369,13 @@ async function loadReplay(path) {
   state.charts.forEach((chart) => chart.dispose());
   state.charts = [];
   $("#status").textContent = "";
-  $("#content").innerHTML = `<div class="replay"><div class="replay-heading"><div><div class="eyebrow">REPLAY</div><h1>${path.split("/").pop()}</h1><p class="path">${state.replay.frames.toLocaleString()} frames · ${state.replay.duration.toFixed(3)} s</p></div><button id="back" title="Back to generation">← Back</button></div><div class="constraint-panel"><div class="eyebrow">SOURCE CONSTRAINTS</div><input id="constraint-search" type="search" placeholder="Search .robmot constraints"><div id="constraints" class="constraints"></div></div><details class="sparql"><summary>SPARQL</summary><div class="sparql-body"><div class="sparql-canned"></div><textarea id="query" spellcheck="false"></textarea><div class="sparql-run"><button id="ask">Run query</button><span id="query-status" class="path"></span></div><div id="answer"></div></div></details><div class="chart-controls"><button id="plot">Add empty plot</button><button id="notebook">Open in Jupyter</button></div><div id="plots" class="plots"></div></div><div class="transport"><div class="transport-controls"><button id="step-back" title="Previous frame">‹</button><button id="play">Play</button><button id="step-forward" title="Next frame">›</button><span id="readout" class="path"></span></div><div class="markers"></div><input class="timeline" type="range" min="0" max="${state.replay.frames - 1}" value="0"></div>`;
+  $("#content").innerHTML = `<div class="replay"><div class="replay-heading"><div><div class="eyebrow">REPLAY</div><h1>${path.split("/").pop()}</h1><p class="path">${state.replay.frames.toLocaleString()} frames · ${state.replay.duration.toFixed(3)} s</p></div><button id="back" title="Back to generation">← Back</button></div><div class="replay-tabs"><button data-panel="plots" class="active">Plots</button><button data-panel="sparql">SPARQL</button></div><section id="panel-plots"><div class="constraint-panel"><div class="eyebrow">SOURCE CONSTRAINTS</div><input id="constraint-search" type="search" placeholder="Search .robmot constraints"><div id="constraints" class="constraints"></div></div><div class="chart-controls"><button id="plot">Add empty plot</button><button id="notebook">Open in Jupyter</button></div><div id="plots" class="plots"></div></section><section id="panel-sparql" hidden><div class="sparql"><div class="query-rail"><button id="new-query" class="new-query">+ query</button></div><div class="sparql-body"><div class="sparql-canned"></div><textarea id="query" spellcheck="false"></textarea><div class="sparql-run"><button id="ask">Run query</button><span id="query-status" class="path"></span></div><div id="answer"></div></div></div></section></div><div class="transport"><div class="transport-controls"><button id="step-back" title="Previous frame">‹</button><button id="play">Play</button><button id="step-forward" title="Next frame">›</button><span id="readout" class="path"></span></div><div class="markers"></div><input class="timeline" type="range" min="0" max="${state.replay.frames - 1}" value="0"></div>`;
 
   populateConstraints();
   $("#plot").onclick = () => addPlot([]);
   $("#notebook").onclick = () => openNotebook(state.runPath).catch(showError);
-  bindSparql();
+  bindPanels();
+  bindSparql().catch(showError);
   bindTransport();
   $("#back").onclick = () => selectGeneration(state.replay.generation);
   updateReadout();
@@ -423,31 +461,134 @@ const CANNED = {
     + "  GRAPH ?graph { ?s ?p ?o }\n} GROUP BY ?graph",
 };
 
-function bindSparql() {
-  const editor = $("#query");
-  editor.value = CANNED["controller gains"];
+function bindPanels() {
+  const show = (panel, remember = true) => {
+    document.querySelectorAll(".replay-tabs button").forEach((button) =>
+      button.classList.toggle("active", button.dataset.panel === panel));
+    $("#panel-plots").hidden = panel !== "plots";
+    $("#panel-sparql").hidden = panel !== "sparql";
+    state.charts.forEach((chart) => chart.resize());
+    if (!remember) return;
+    const view = new URLSearchParams(location.hash.slice(1));
+    view.set("panel", panel);
+    history.replaceState(null, "", `#${view}`);
+  };
+  document.querySelectorAll(".replay-tabs button").forEach((button) => {
+    button.onclick = () => show(button.dataset.panel);
+  });
+  // a reload lands back where it left off, like the run it reopens
+  show(new URLSearchParams(location.hash.slice(1)).get("panel") ?? "plots", false);
+}
+
+function queryLabel(query) {
+  const line = query.split("\n").map((text) => text.trim())
+    .find((text) => text && !text.startsWith("#")) ?? "query";
+  return line.length > 30 ? `${line.slice(0, 29)}…` : line;
+}
+
+function renderRail() {
+  const rail = $(".query-rail");
+  rail.replaceChildren(...state.queries.map((entry, index) => {
+    const tab = document.createElement("button");
+    tab.className = "query-tab";
+    tab.classList.toggle("active", index === state.query);
+    tab.classList.toggle("draft", !entry.data);
+    tab.title = entry.query;
+    tab.textContent = queryLabel(entry.query);
+    tab.onclick = () => selectQuery(index);
+    const close = document.createElement("span");
+    close.className = "query-close";
+    close.textContent = "×";
+    close.onclick = (event) => {
+      event.stopPropagation();
+      state.queries.splice(index, 1);
+      state.query = Math.min(state.query, state.queries.length - 1);
+      saveQueries();
+      state.queries.length ? selectQuery(state.query) : renderRail();
+    };
+    tab.append(close);
+    return tab;
+  }), $("#new-query"));
+}
+
+function selectQuery(index) {
+  state.query = index;
+  const entry = state.queries[index];
+  $("#query").value = entry.query;
+  renderRail();
+  if (entry.data) {
+    $("#query-status").textContent = entry.status;
+    renderAnswer(entry.data);
+  } else {
+    runQuery();
+  }
+}
+
+function saveQueries() {
+  // beside the run, so they outlive this browser and travel with the archive
+  post("/api/queries", { path: state.runPath, queries: state.queries.map((entry) => entry.query) })
+    .catch((error) => { $("#query-status").textContent = `not saved: ${error.message}`; });
+}
+
+async function runQuery() {
+  const query = $("#query").value;
+  $("#query-status").textContent = "Running…";
+  let entry = state.queries[state.query];
+  if (entry && entry.query !== query && !entry.data) {
+    entry.query = query;
+    saveQueries();
+  } else if (!entry || entry.query !== query) {
+    entry = { query };
+    state.queries.push(entry);
+    state.query = state.queries.length - 1;
+    saveQueries();
+  }
+  renderRail();
+  try {
+    const data = await post("/api/sparql", { path: state.runPath, query });
+    entry.data = data;
+    entry.status = `${data.count} row${data.count === 1 ? "" : "s"}`
+      + `${data.truncated ? " (first 500)" : ""} · ${data.elapsed_ms} ms`;
+    $("#query-status").textContent = entry.status;
+    renderAnswer(data);
+  } catch (error) {
+    entry.data = null;
+    entry.status = error.message;
+    $("#query-status").textContent = error.message;
+    $("#answer").replaceChildren();
+  }
+}
+
+async function bindSparql() {
+  state.queries = [];
+  state.query = -1;
   $(".sparql-canned").replaceChildren(...Object.entries(CANNED).map(([label, query]) => {
     const button = document.createElement("button");
     button.textContent = label;
-    button.onclick = () => { editor.value = query; ask(); };
+    button.onclick = () => { $("#query").value = query; runQuery(); };
     return button;
   }));
-  const ask = async () => {
-    $("#query-status").textContent = "Running…";
-    try {
-      const data = await post("/api/sparql", { path: state.runPath, query: editor.value });
-      $("#query-status").textContent =
-        `${data.count} row${data.count === 1 ? "" : "s"}${data.truncated ? " (first 500)" : ""} · ${data.elapsed_ms} ms`;
-      renderAnswer(data);
-    } catch (error) {
-      $("#query-status").textContent = error.message;
-      $("#answer").replaceChildren();
-    }
+  $("#new-query").onclick = () => {
+    state.queries.push({ query: "SELECT ?s ?p ?o WHERE {\n  ?s ?p ?o\n} LIMIT 20" });
+    state.query = state.queries.length - 1;
+    $("#query").value = state.queries[state.query].query;
+    $("#answer").replaceChildren();
+    $("#query-status").textContent = "not run yet";
+    saveQueries();
+    renderRail();
+    $("#query").focus();
   };
-  $("#ask").onclick = ask;
-  editor.onkeydown = (event) => {
-    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") ask();
+  $("#ask").onclick = runQuery;
+  $("#query").onkeydown = (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") runQuery();
   };
+  $("#query").value = CANNED["controller gains"];
+  renderRail();
+  const stored = await api(`/api/queries?path=${encodeURIComponent(state.runPath)}`);
+  if (state.runPath && stored.length) {
+    state.queries = stored.map((query) => ({ query }));
+    renderRail();
+  }
 }
 
 function renderAnswer(data) {
@@ -601,15 +742,36 @@ function highlightGeneration() {
   document.querySelectorAll("#browser .item").forEach((item) => {
     item.classList.toggle("selected", item.dataset.path === state.generationPath);
   });
-  document.querySelector("#browser .item.selected")?.scrollIntoView({ block: "start" });
+  // only bring it into view if it is not already there; scrolling a visible item is disorienting
+  const selected = document.querySelector("#browser .item.selected");
+  if (!selected) return;
+  const list = $("#browser").getBoundingClientRect();
+  const item = selected.getBoundingClientRect();
+  if (item.top < list.top || item.bottom > list.bottom) selected.scrollIntoView({ block: "nearest" });
 }
 
-function toggleSelection(path) {
+function pickRange(path, container, source) {
+  // shift extends from the last item picked, over what is actually on screen
+  const paths = [...container.querySelectorAll("[data-path]")]
+    .filter((item) => item.offsetParent !== null)
+    .map((item) => item.dataset.path);
+  const from = paths.indexOf(state.anchor ?? path);
+  const to = paths.indexOf(path);
+  if (from < 0 || to < 0) return toggleSelection(path, source);
+  const [start, end] = from < to ? [from, to] : [to, from];
+  paths.slice(start, end + 1).forEach((item) => {
+    if (!state.selected.has(item)) toggleSelection(item, source, false);
+  });
+}
+
+function toggleSelection(path, source = "sidebar", anchor = true) {
+  if (anchor) state.anchor = path;
   state.selected.has(path) ? state.selected.delete(path) : state.selected.add(path);
   document.querySelectorAll("[data-path]").forEach((item) => {
     if (item.dataset.path === path) item.classList.toggle("picked", state.selected.has(path));
   });
   const button = $("#delete-selected");
+  $("#selection-actions").dataset.side = source;
   $("#selection-actions").hidden = !state.selected.size;
   $("#selection-count").textContent = `${state.selected.size} selected`;
   button.textContent = "Delete";
@@ -698,6 +860,17 @@ function addPlot(signals = [], title = signals.join(" · ") || "New plot", detai
     });
   }
   const exporter = card.querySelector(".export-plot");
+  exporter.ontoggle = () => {
+    if (exporter.open) exporter.querySelector(".export-menu button").focus();
+  };
+  exporter.onkeydown = (event) => {
+    if (event.key !== "Escape") return;
+    exporter.open = false;
+    exporter.querySelector("summary").focus();
+  };
+  exporter.addEventListener("focusout", (event) => {
+    if (!exporter.contains(event.relatedTarget)) exporter.open = false;
+  });
   exporter.querySelectorAll(".export-menu button").forEach((option) => {
     option.onclick = () => {
       exporter.open = false;
@@ -944,7 +1117,12 @@ $("#refresh").onclick = () => {
   load(true).catch(showError);
 };
 $("#delete-selected").onclick = async () => {
-  if (!state.selected.size || !confirm(`Delete ${state.selected.size} selected generation(s) or run(s)?`)) return;
+  if (!state.selected.size) return;
+  const ok = await askConfirm({
+    message: `Delete ${state.selected.size} selected generation${state.selected.size === 1 ? "" : "s"} or run${state.selected.size === 1 ? "" : "s"}? This cannot be undone.`,
+    confirmLabel: "Delete",
+  });
+  if (!ok) return;
   const response = await fetch("/api/delete", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -952,9 +1130,16 @@ $("#delete-selected").onclick = async () => {
   });
   const data = await response.json();
   if (!response.ok) return showError(Error(data.error));
+  const parts = [`${data.deleted} item${data.deleted === 1 ? "" : "s"}`];
+  if (data.folders) parts.push(`${data.folders} empty folder${data.folders === 1 ? "" : "s"}`);
+  snack(`Moved ${parts.join(" and ")} to Trash`);
+  // what was open may be what was just trashed
+  const gone = [...state.selected].some((path) =>
+    [state.generationPath, state.runPath].some((open) => open === path || open?.startsWith(`${path}/`)));
   state.selected.clear();
   $("#selection-actions").hidden = true;
   state.cache = {};
+  if (gone) return goHome();
   loadGenerations(true).catch(showError);
 };
 $("#clear-selection").onclick = () => {
@@ -994,15 +1179,18 @@ if (document.body.classList.contains("sidebar-collapsed")) {
   $("#sidebar-toggle").textContent = "☰";
   $("#sidebar-toggle").title = "Expand navigation";
 }
-$("#home").onclick = () => {
+function goHome() {
   stopPlayback();
   state.generationPath = null;
+  state.runPath = null;
   setTab("logs");
   history.replaceState(null, "", `${location.pathname}#tab=logs`);
   $("#status").textContent = "Choose a generation";
   $("#content").innerHTML = '<div class="empty"><span>REPLAY / 01</span><h1>Choose a generation.</h1><p>Its build metadata and recorded runs will appear here.</p></div>';
-  loadGenerations().catch(showError);
-};
+  return loadGenerations().catch(showError);
+}
+
+$("#home").onclick = goHome;
 
 function setView(kind, path) {
   const view = new URLSearchParams(location.hash.slice(1));
@@ -1011,6 +1199,7 @@ function setView(kind, path) {
   view.delete("generation");
   view.set(kind, path);
   view.set("tab", state.tab);
+  if (kind !== "run") view.delete("panel");
   history[unchanged ? "replaceState" : "pushState"](null, "", `#${view}`);
 }
 
@@ -1022,6 +1211,33 @@ function setTab(tab, push = true) {
   const view = new URLSearchParams(location.hash.slice(1));
   view.set("tab", tab);
   history[push ? "pushState" : "replaceState"](null, "", `#${view}`);
+}
+
+function askConfirm({ message, confirmLabel = "Confirm" }) {
+  return new Promise((resolve) => {
+    const dialog = document.createElement("dialog");
+    dialog.className = "ask";
+    dialog.innerHTML = '<p></p><div class="ask-actions"><button value="no">Cancel</button>'
+      + '<button value="yes" class="ask-yes"></button></div>';
+    dialog.querySelector("p").textContent = message;
+    dialog.querySelector(".ask-yes").textContent = confirmLabel;
+    dialog.querySelectorAll("button").forEach((button) => {
+      button.onclick = () => dialog.close(button.value);
+    });
+    dialog.onclose = () => {
+      dialog.remove();
+      resolve(dialog.returnValue === "yes");
+    };
+    dialog.onkeydown = (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        dialog.close("yes");
+      }
+    };
+    document.body.append(dialog);
+    dialog.showModal();
+    dialog.querySelector(".ask-yes").focus();
+  });
 }
 
 function showError(error) {

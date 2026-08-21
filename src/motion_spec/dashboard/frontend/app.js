@@ -332,11 +332,12 @@ async function loadReplay(path) {
   state.charts.forEach((chart) => chart.dispose());
   state.charts = [];
   $("#status").textContent = "";
-  $("#content").innerHTML = `<div class="replay"><div class="replay-heading"><div><div class="eyebrow">REPLAY</div><h1>${path.split("/").pop()}</h1><p class="path">${state.replay.frames.toLocaleString()} frames · ${state.replay.duration.toFixed(3)} s</p></div><button id="back" title="Back to generation">← Back</button></div><div class="constraint-panel"><div class="eyebrow">SOURCE CONSTRAINTS</div><input id="constraint-search" type="search" placeholder="Search .robmot constraints"><div id="constraints" class="constraints"></div></div><div class="chart-controls"><button id="plot">Add empty plot</button><button id="notebook">Open in Jupyter</button></div><div id="plots" class="plots"></div></div><div class="transport"><div class="transport-controls"><button id="step-back" title="Previous frame">‹</button><button id="play">Play</button><button id="step-forward" title="Next frame">›</button><span id="readout" class="path"></span></div><div class="markers"></div><input class="timeline" type="range" min="0" max="${state.replay.frames - 1}" value="0"></div>`;
+  $("#content").innerHTML = `<div class="replay"><div class="replay-heading"><div><div class="eyebrow">REPLAY</div><h1>${path.split("/").pop()}</h1><p class="path">${state.replay.frames.toLocaleString()} frames · ${state.replay.duration.toFixed(3)} s</p></div><button id="back" title="Back to generation">← Back</button></div><div class="constraint-panel"><div class="eyebrow">SOURCE CONSTRAINTS</div><input id="constraint-search" type="search" placeholder="Search .robmot constraints"><div id="constraints" class="constraints"></div></div><details class="sparql"><summary>SPARQL</summary><div class="sparql-body"><div class="sparql-canned"></div><textarea id="query" spellcheck="false"></textarea><div class="sparql-run"><button id="ask">Run query</button><span id="query-status" class="path"></span></div><div id="answer"></div></div></details><div class="chart-controls"><button id="plot">Add empty plot</button><button id="notebook">Open in Jupyter</button></div><div id="plots" class="plots"></div></div><div class="transport"><div class="transport-controls"><button id="step-back" title="Previous frame">‹</button><button id="play">Play</button><button id="step-forward" title="Next frame">›</button><span id="readout" class="path"></span></div><div class="markers"></div><input class="timeline" type="range" min="0" max="${state.replay.frames - 1}" value="0"></div>`;
 
   populateConstraints();
   $("#plot").onclick = () => addPlot([]);
   $("#notebook").onclick = () => openNotebook(state.runPath).catch(showError);
+  bindSparql();
   bindTransport();
   $("#back").onclick = () => selectGeneration(state.replay.generation);
   updateReadout();
@@ -405,6 +406,69 @@ function populateConstraints() {
     })];
   }));
   $("#constraint-search").oninput = (event) => filter(".constraint", event.target.value);
+}
+
+const CANNED = {
+  "controller gains": "SELECT ?controller ?kp ?ki ?kd WHERE {\n"
+    + "  ?controller cstr-hdl:proportional-gain ?kp ;\n"
+    + "              cstr-hdl:integral-gain ?ki ;\n"
+    + "              cstr-hdl:derivative-gain ?kd .\n} LIMIT 50",
+  "what this run observed": "SELECT ?property (COUNT(*) AS ?observations) WHERE {\n"
+    + "  GRAPH <urn:runtime> { ?o sosa:observedProperty ?property }\n"
+    + "} GROUP BY ?property ORDER BY DESC(?observations) LIMIT 50",
+  "latest values": "SELECT ?property ?value WHERE {\n"
+    + "  GRAPH <urn:live> { ?o sosa:observedProperty ?property ; sosa:hasSimpleResult ?value }\n"
+    + "} LIMIT 50",
+  "graph sizes": "SELECT ?graph (COUNT(*) AS ?triples) WHERE {\n"
+    + "  GRAPH ?graph { ?s ?p ?o }\n} GROUP BY ?graph",
+};
+
+function bindSparql() {
+  const editor = $("#query");
+  editor.value = CANNED["controller gains"];
+  $(".sparql-canned").replaceChildren(...Object.entries(CANNED).map(([label, query]) => {
+    const button = document.createElement("button");
+    button.textContent = label;
+    button.onclick = () => { editor.value = query; ask(); };
+    return button;
+  }));
+  const ask = async () => {
+    $("#query-status").textContent = "Running…";
+    try {
+      const data = await post("/api/sparql", { path: state.runPath, query: editor.value });
+      $("#query-status").textContent =
+        `${data.count} row${data.count === 1 ? "" : "s"}${data.truncated ? " (first 500)" : ""} · ${data.elapsed_ms} ms`;
+      renderAnswer(data);
+    } catch (error) {
+      $("#query-status").textContent = error.message;
+      $("#answer").replaceChildren();
+    }
+  };
+  $("#ask").onclick = ask;
+  editor.onkeydown = (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") ask();
+  };
+}
+
+function renderAnswer(data) {
+  const table = document.createElement("table");
+  const head = document.createElement("tr");
+  data.headers.forEach((name) => {
+    const cell = document.createElement("th");
+    cell.textContent = name;
+    head.append(cell);
+  });
+  table.append(head);
+  data.rows.forEach((row) => {
+    const line = document.createElement("tr");
+    row.forEach((term) => {
+      const cell = document.createElement("td");
+      cell.textContent = term ?? "";
+      line.append(cell);
+    });
+    table.append(line);
+  });
+  $("#answer").replaceChildren(table);
 }
 
 function bindTransport() {

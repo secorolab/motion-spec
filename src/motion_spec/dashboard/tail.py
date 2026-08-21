@@ -39,11 +39,13 @@ class FrameLogTail:
         self._offset = 0
         return True
 
-    def poll(self) -> list[dict]:
-        """Frames appended since the previous poll, in order."""
+    def poll(self, stride: int = 1) -> list[dict]:
+        """Frames appended since the previous poll, in order, keeping every nth record."""
         if not self.open():
             return []
-        records, self._offset = frame_log_pb.stream_records(self._fh, self.contract, self._offset)
+        records, self._offset = frame_log_pb.stream_records(
+            self._fh, self.contract, self._offset, stride
+        )
         return records
 
     def close(self) -> None:

@@ -683,14 +683,21 @@ def frame_records(path: Path | str, contract: LogContract | None = None) -> Iter
             yield value
 
 
-def stream_records(fh, contract: LogContract, offset: int) -> tuple[list[dict], int]:
+def stream_records(fh, contract: LogContract, offset: int, stride: int = 1) -> tuple[list[dict], int]:
     """Frames appended since `offset`, plus the offset to resume from.
 
     Tailing a log the runtime is still writing: a partial trailing record leaves the offset
     where it was, so the next call re-reads it once the writer has completed it. Header
     records are skipped, exactly as `frame_records` skips them.
+
+    A stride above one is for a reader that wants the shape of a run rather than its every
+    tick: it keeps one frame in n by the frame's own step, plus every frame that enters a
+    state or fires an event, so no transition falls between two samples. Shaping a frame into
+    a dict costs some thirty times what parsing the record costs, so the saving is in what is
+    not shaped.
     """
     records = []
+    state = event = None
     while True:
         data, next_offset = _read_delimited_at(fh, offset)
         if data is None:
@@ -698,5 +705,10 @@ def stream_records(fh, contract: LogContract, offset: int) -> tuple[list[dict], 
         offset = next_offset
         record = contract.record_cls()
         record.ParseFromString(data)
-        if record.WhichOneof("record") == "frame":
-            records.append(_parse_frame(record.frame, contract))
+        if record.WhichOneof("record") != "frame":
+            continue
+        frame = record.frame
+        moved = frame.fsm_state != state or frame.last_event != event
+        state, event = frame.fsm_state, frame.last_event
+        if moved or frame.step % stride == 0:
+            records.append(_parse_frame(frame, contract))

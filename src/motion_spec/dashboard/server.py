@@ -19,6 +19,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import threading
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -27,9 +28,13 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import rdflib
 from rdflib import Dataset
 
+from motion_spec.dashboard.graph import GraphService
 from motion_spec.dashboard.runs import GenerationCatalog, GenerationInfo, RunInfo
+from motion_spec.dashboard.store import RunStore
+from motion_spec.dashboard.tail import FrameLogTail
 from motion_spec.introspection import frame_log_pb
 from motion_spec.introspection.lifecycle_events import socket_path
 from motion_spec.introspection.replay import (
@@ -743,6 +748,69 @@ def NOTEBOOK_TEMPLATE(run_dir: Path) -> dict:
     }
 
 
+GRAPH_SAMPLE_S = 0.1  # the graph wants the shape of a run, not its every tick
+_GRAPHS: dict[tuple[str, int, bool], GraphService] = {}
+
+
+def run_graph(run_dir: Path, *, frames: bool) -> GraphService:
+    """One run's queryable dataset: its model, plus what the recording says happened.
+
+    Reading the frames is what fills `urn:runtime` and `urn:live`, and on a long run that
+    costs tens of seconds, so a query that asks only about the model does not pay for it.
+    Kept per log revision: a finished run is read once, a growing one is read again.
+    """
+    _, log, _manifest, contract = resolve_archive(run_dir)
+    key = (str(log), log.stat().st_size, frames)
+    if key not in _GRAPHS:
+        store = RunStore(run_dir.name, contract)
+        tail = FrameLogTail(log)
+        if frames and tail.open():
+            # shaping every frame to project a tenth of them is the waste, not the reading
+            period = (contract.header.nominal_period_ns or 1_000_000) / 1e9
+            stride = max(1, round(GRAPH_SAMPLE_S / period))
+            while records := tail.poll(stride):
+                store.add_frames(records)
+            tail.close()
+        _GRAPHS.clear()
+        _GRAPHS[key] = GraphService(run_dir.parent.parent, store)
+    return _GRAPHS[key]
+
+
+def run_query(run_dir: Path, sparql: str) -> dict:
+    """Answer one SPARQL query against a run, or say why it could not be answered."""
+    # only a query that reaches for the recording pays for reading it
+    recorded = any(word in sparql for word in ("urn:runtime", "urn:live", "sosa", "GRAPH ?"))
+    service = run_graph(run_dir, frames=recorded)
+    started = time.perf_counter()
+    try:
+        headers, rows = service.query(sparql)
+    except Exception as exc:
+        raise ValueError(f"{type(exc).__name__}: {exc}") from exc
+    prefixes = service.namespaces()
+    return {
+        "headers": headers or ["result"],
+        "rows": [[curie(term, prefixes) for term in row] for row in rows[:500]],
+        "count": len(rows),
+        "truncated": len(rows) > 500,
+        "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
+        "namespaces": prefixes,
+    }
+
+
+def curie(term, prefixes: dict) -> str | None:
+    """A term as its shortest bound prefix form, so a table stays readable."""
+    if term is None:
+        return None
+    text = str(term)
+    if not isinstance(term, rdflib.URIRef):
+        return text
+    prefix, namespace = max(
+        ((prefix, ns) for prefix, ns in prefixes.items() if text.startswith(ns)),
+        key=lambda item: len(item[1]), default=(None, None),
+    )
+    return f"{prefix}:{text[len(namespace):]}" if prefix else text
+
+
 class LifecycleListener:
     """Bridge REC lifecycle datagrams into one dashboard revision stream."""
 
@@ -877,6 +945,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return self.send_json(open_source(body["path"], body.get("editor")))
             if self.path == "/api/terminal":
                 return self.send_json(open_terminal(body["path"]))
+            if self.path == "/api/sparql":
+                return self.send_json(
+                    run_query(relative_path(GENERATIONS, body["path"]), body["query"])
+                )
             if self.path == "/api/notebook":
                 return self.send_json(run_notebook(relative_path(GENERATIONS, body["path"])))
             if self.path != "/api/delete":

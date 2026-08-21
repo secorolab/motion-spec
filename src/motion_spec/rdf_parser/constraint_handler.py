@@ -409,11 +409,12 @@ def _gradient_direction(model, controller, frame_node, components) -> URIRef:
     return node
 
 
-def _view_axes(model, controller, constraint, view_node, target_node):
+def _view_axes(model, controller, constraint, view_node, target_node, *, subspace=None, axis=None):
     """The Cartesian directions one view of a driven quantity contributes to `controller`.
 
     Every branch of the axis decision asks the same question of one view; an expression asks it
-    once per measured leaf instead of once for the whole constraint.
+    once per measured leaf instead of once for the whole constraint. `subspace`/`axis` name the
+    half a quantity is driven in when it has no view to read them off, and are ignored otherwise.
     """
     graph = model.graph
     target = graph.value(view_node, MAP.superobject) if view_node is not None else target_node
@@ -430,8 +431,8 @@ def _view_axes(model, controller, constraint, view_node, target_node):
         ),
         subspace=local_name(graph.value(view_node, MAP.subspace))
         if view_node is not None
-        else None,
-        axis=local_name(graph.value(view_node, MAP.axis)) if view_node is not None else None,
+        else subspace,
+        axis=local_name(graph.value(view_node, MAP.axis)) if view_node is not None else axis,
         command_type=str(command_type) if command_type is not None else None,
         relation=next(
             (
@@ -449,6 +450,52 @@ def _view_axes(model, controller, constraint, view_node, target_node):
             ),
             None,
         ),
+    )
+
+
+# The output a geometric operator writes its scalar to, and the subspace the gradient paired with
+# it drives: a distance moves along its gradient, an angle turns about it.
+_GRADIENT_OUTPUTS = {GEOM_OP["distance"]: "distance", GEOM_OP["angle"]: "rotation"}
+
+
+def _operator_gradient(model, quantity):
+    """The direction `quantity` is driven along and the subspace that row sits in.
+
+    Written either by the operator that writes the scalar itself, or -- for a direction pair held
+    off zero, whose angle comes from a `PlanarAngleFromDirections` with no gradient output of its
+    own -- by the `AngleGradientFromDirections` op paired with it.
+    """
+    graph = model.graph
+    for predicate, subspace in _GRADIENT_OUTPUTS.items():
+        for op in sorted(graph.subjects(predicate, quantity), key=str):
+            gradient = graph.value(op, GEOM_OP_EXT["gradient"])
+            if gradient is not None:
+                return gradient, subspace
+    op = alignment_gradient_op(model, quantity)
+    if op is not None:
+        return graph.value(op, GEOM_OP_EXT["gradient"]), _GRADIENT_OUTPUTS[GEOM_OP["angle"]]
+    return None, None
+
+
+def operator_gradient_directions(model, controller, constraint, quantity):
+    """The one solver row a plane/line operator's scalar is driven along, or None when nothing
+    writes `quantity` that way.
+
+    The operator recomputes the direction every cycle, so the row names the shared vector carrying
+    it instead of a frame axis -- the shape a path-following row already takes.
+    """
+    graph = model.graph
+    gradient, subspace = _operator_gradient(model, quantity)
+    if gradient is None:
+        return None
+    axes = _view_axes(
+        model, controller, constraint, None, quantity, subspace=subspace, axis="gradient"
+    )
+    return ControlDirections(
+        tuple(replace(axis, direction=gradient) for axis in axes),
+        None,
+        1.0,
+        graph.value(gradient, GEOM_COORD["as-seen-by"]),
     )
 
 
@@ -565,6 +612,10 @@ def _authored_controller_axes(model) -> dict:
             result[controller] = ControlDirections(
                 _path_following_axes(projections[path], quantity, subspace), view
             )
+            continue
+        operator_gradient = operator_gradient_directions(model, controller, constraint, quantity)
+        if operator_gradient is not None:
+            result[controller] = operator_gradient
             continue
         # An expression names no view of its own: its row is the gradient over the views it is
         # built from, so the axes and the frame come from those leaves instead.
@@ -1450,9 +1501,10 @@ def alignment_chain_ops(model, quantity):
     return [*rotate_ops, angle_op]
 
 
-def alignment_rotation_op(model, quantity):
-    """The `RotationVectorFromDirections` op paired with `quantity`'s `PlanarAngleFromDirections`
-    angle op (same two rotated/reference directions), or None when `quantity` is not one."""
+def _alignment_op(model, quantity, type_):
+    """The `type_` op paired with `quantity`'s `PlanarAngleFromDirections` angle op -- the one
+    reading the same two rotated/reference directions -- or None when `quantity` is not one.
+    """
     graph = model.graph
     angle_op = next(
         (
@@ -1468,8 +1520,20 @@ def alignment_rotation_op(model, quantity):
     return next(
         (
             op
-            for op in graph.subjects(RDF.type, GEOM_OP_EXT.RotationVectorFromDirections)
+            for op in graph.subjects(RDF.type, type_)
             if {graph.value(op, GEOM_OP.in1), graph.value(op, GEOM_OP.in2)} == directions
         ),
         None,
     )
+
+
+def alignment_rotation_op(model, quantity):
+    """The `RotationVectorFromDirections` op driving `quantity` pointwise onto its reference: the
+    2-DOF row shape a cone or a zero target takes."""
+    return _alignment_op(model, quantity, GEOM_OP_EXT.RotationVectorFromDirections)
+
+
+def alignment_gradient_op(model, quantity):
+    """The `AngleGradientFromDirections` op driving `quantity` to a target off zero: one axis to
+    turn about, so one row, and the angle op it pairs with writes no gradient itself."""
+    return _alignment_op(model, quantity, GEOM_OP_EXT.AngleGradientFromDirections)

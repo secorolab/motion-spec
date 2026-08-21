@@ -419,7 +419,9 @@ emit-call-LineLineToLinearDistance(closure, views) ::= <<
 {
     const KDL::Vector _a_<closure.distance> = <access-expr(closure.in1, views)>;
     KDL::Vector _b_<closure.distance> = <access-expr(closure.in2, views)>;
-    const KDL::Vector _dp_<closure.distance> = shared.<closure.pose>.vel;
+    // `pose` is KDL::diff(A's origin, B's origin), so its vel runs B-to-A the wrong way round:
+    // the signed value is A's origin relative to B's, as it is for every point-family operator.
+    const KDL::Vector _dp_<closure.distance> = -shared.<closure.pose>.vel;
     KDL::Vector _n_<closure.distance> = _a_<closure.distance> * _b_<closure.distance>;
     const double _norm_<closure.distance> = _n_<closure.distance>.Norm();
     if (_norm_<closure.distance> > 1e-9) {
@@ -440,7 +442,10 @@ emit-call-LineOnLineProjection(closure, views) ::= <<
 {
     KDL::Vector _b_<closure.distance> = <access-expr(closure.in2, views)>;
     _b_<closure.distance>.Normalize();
-    shared.<closure.distance> = KDL::dot(shared.<closure.pose>.vel, _b_<closure.distance>);
+    // `pose` is KDL::diff(A's origin, B's origin), so its vel runs B-to-A the wrong way round:
+    // the travel is A's origin from B's, as it is for every point-family operator.
+    const KDL::Vector _dp_<closure.distance> = -shared.<closure.pose>.vel;
+    shared.<closure.distance> = KDL::dot(_dp_<closure.distance>, _b_<closure.distance>);
     shared.<closure.gradient> = _b_<closure.distance>;
 }
 >>

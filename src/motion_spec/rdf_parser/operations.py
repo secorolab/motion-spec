@@ -86,6 +86,7 @@ def normalize(model) -> None:
     """
     _materialize_pose_reference_transforms(model)
     _materialize_linear_distance_operations(model)
+    _materialize_link_pair_poses(model)
 
 
 def recorded_coord_policy(candidates, graph=None, coord_id=None, component=None, **kwargs):
@@ -373,6 +374,56 @@ def _materialize_pose_reference_transforms(model) -> None:
 
         graph.remove((constraint, CSTR["reference-value"], reference))
         graph.add((constraint, CSTR["reference-value"], reference_in_target))
+
+
+def _shared_reference_pair(frames, node, of_frame, wrt_frame):
+    """Two other poses `(of_frame, C)` and `(wrt_frame, C)` sharing one reference frame C."""
+    through_of = {
+        reference: pose
+        for pose, (pose_of, reference) in frames.items()
+        if pose != node and pose_of == of_frame and reference not in (of_frame, wrt_frame)
+    }
+    for pose, (pose_of, reference) in frames.items():
+        if pose != node and pose_of == wrt_frame and reference in through_of:
+            return through_of[reference], pose
+
+    return None
+
+
+def _materialize_link_pair_poses(model) -> None:
+    """Compose a pose stated between two links out of the two poses that share a reference frame.
+
+    Forward kinematics publishes a link's pose only with respect to the chain root, so a pose of
+    one link with respect to another has no producer. When both links are also stated in one
+    common frame C, the link-pair pose is their composition:
+    ``X_wrt_of = Inverse(X_C_wrt) * X_C_of``. With no such pair the pose stays unwritten, which
+    the dataflow check reports -- and authoring the two common-frame poses is the fix.
+    """
+    graph = model.graph
+    frames = {}
+    for node in graph.subjects(RDF.type, URI_GEOM_TYPE_POSE_COORD):
+        scope = model.context_scope(node)
+        if scope is None or scope.section != "world":
+            continue
+        try:
+            frames[node] = _pose_frames(model, node)
+        except ValueError:
+            # A pose stated in coordinates alone names no frames to triangulate between.
+            continue
+
+    for node, (of_frame, wrt_frame) in frames.items():
+        if next(graph.subjects(GEOM_OP.composite, node), None) is not None:
+            continue
+        pair = _shared_reference_pair(frames, node, of_frame, wrt_frame)
+        if pair is None:
+            continue
+        of_in_shared, wrt_in_shared = pair
+        _, shared_frame = frames[wrt_in_shared]
+
+        inverted = model.derived_node(node, "wrt-inverse")
+        _emit_derived_pose(model, inverted, shared_frame, wrt_frame)
+        _invert(model, node, "invert-wrt", wrt_in_shared, inverted)
+        _compose(model, node, "compose-link-pair", inverted, of_in_shared, node)
 
 
 # Every operator answers three questions, and each answers all three: what closure one of its
@@ -764,6 +815,21 @@ OPS_GENERIC = [
         GEOM_OP_EXT["RotationVectorFromDirections"],
         [GEOM_OP["in1"], GEOM_OP["in2"]],
         [GEOM_OP["out"]],
+    ),
+    Operator(
+        GEOM_OP_EXT["PointPlaneToLinearDistance"],
+        [GEOM_OP["in1"], GEOM_OP["in2"], GEOM_OP["direction"]],
+        [GEOM_OP["distance"], GEOM_OP_EXT["gradient"]],
+    ),
+    Operator(
+        GEOM_OP_EXT["DirectionPlaneToAngularDistance"],
+        [GEOM_OP["in1"], GEOM_OP["in2"]],
+        [GEOM_OP["angle"], GEOM_OP_EXT["gradient"]],
+    ),
+    Operator(
+        GEOM_OP_EXT["AngleGradientFromDirections"],
+        [GEOM_OP["in1"], GEOM_OP["in2"]],
+        [GEOM_OP_EXT["gradient"]],
     ),
     Operator(RBDYN_OP["AddWrench"], [RBDYN_OP["in1"], RBDYN_OP["in2"]], [RBDYN_OP["out"]]),
     Operator(ALGO_EXT.Addition, [ALGO_EXT["in"]], [ALGO_EXT.out]),

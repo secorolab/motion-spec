@@ -375,6 +375,45 @@ emit-call-RotationVectorFromDirections(closure, views) ::= <<
 }
 >>
 
+// Table IIa: signed distance of a point from a plane, along the plane's normal. The gradient is
+// the normal itself -- the direction the point moves to increase the distance.
+emit-call-PointPlaneToLinearDistance(closure, views) ::= <<
+{
+    KDL::Vector _n_<closure.distance> = <access-expr(closure.direction, views)>;
+    _n_<closure.distance>.Normalize();
+    shared.<closure.distance> = KDL::dot(_n_<closure.distance>, shared.<closure.in1>.p - shared.<closure.in2>.p);
+    shared.<closure.gradient> = _n_<closure.distance>;
+}
+>>
+
+// Table IIb: the incident angle a direction makes with a plane, signed positive on the normal's
+// side. The gradient is the axis a positive rotation of the direction turns about to open it.
+emit-call-DirectionPlaneToAngularDistance(closure, views) ::= <<
+{
+    const KDL::Vector _d_<closure.angle> = <access-expr(closure.in1, views)>;
+    const KDL::Vector _n_<closure.angle> = <access-expr(closure.in2, views)>;
+    shared.<closure.angle> = std::asin(std::clamp(KDL::dot(_d_<closure.angle>, _n_<closure.angle>), -1.0, 1.0));
+    const KDL::Vector _axis_<closure.angle> = _d_<closure.angle> * _n_<closure.angle>;
+    const double _norm_<closure.angle> = _axis_<closure.angle>.Norm();
+    // Parallel to the normal there is no axis to turn about, so the gradient vanishes.
+    shared.<closure.gradient> = (_norm_<closure.angle> > 1e-9)
+        ? _axis_<closure.angle> / _norm_<closure.angle>
+        : KDL::Vector::Zero();
+}
+>>
+
+// The axis a positive moment turns `in1` toward `in2` about, matching the drive direction
+// RotationVectorFromDirections takes.
+emit-call-AngleGradientFromDirections(closure, views) ::= <<
+{
+    const KDL::Vector _axis_<closure.gradient> = <access-expr(closure.in1, views)> * <access-expr(closure.in2, views)>;
+    const double _norm_<closure.gradient> = _axis_<closure.gradient>.Norm();
+    shared.<closure.gradient> = (_norm_<closure.gradient> > 1e-9)
+        ? _axis_<closure.gradient> / _norm_<closure.gradient>
+        : KDL::Vector::Zero();
+}
+>>
+
 emit-call-RotateDirectionDistalToProximalWithPose(closure, views) ::= <<
 shared.<closure.to> = shared.<closure.pose>.M * <access-expr(closure.from, views)>;
 >>

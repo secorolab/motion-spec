@@ -822,6 +822,27 @@ OPS_GENERIC = [
         [GEOM_OP["distance"], GEOM_OP_EXT["gradient"]],
     ),
     Operator(
+        GEOM_OP_EXT["PointLineToLinearDistance"],
+        [GEOM_OP["in1"], GEOM_OP["in2"], GEOM_OP["direction"]],
+        [GEOM_OP["distance"], GEOM_OP_EXT["gradient"]],
+    ),
+    Operator(
+        GEOM_OP_EXT["PointOnLineProjection"],
+        [GEOM_OP["in1"], GEOM_OP["in2"], GEOM_OP["direction"]],
+        [GEOM_OP["distance"], GEOM_OP_EXT["gradient"]],
+    ),
+    Operator(GEOM_OP_EXT["PoseDiffEvaluator"], [GEOM_OP["in1"], GEOM_OP["in2"]], [GEOM_OP["out"]]),
+    Operator(
+        GEOM_OP_EXT["LineLineToLinearDistance"],
+        [GEOM_OP["in1"], GEOM_OP["in2"], GEOM_OP["pose"]],
+        [GEOM_OP["distance"], GEOM_OP_EXT["gradient"]],
+    ),
+    Operator(
+        GEOM_OP_EXT["LineOnLineProjection"],
+        [GEOM_OP["in1"], GEOM_OP["in2"], GEOM_OP["pose"]],
+        [GEOM_OP["distance"], GEOM_OP_EXT["gradient"]],
+    ),
+    Operator(
         GEOM_OP_EXT["DirectionPlaneToAngularDistance"],
         [GEOM_OP["in1"], GEOM_OP["in2"]],
         [GEOM_OP["angle"], GEOM_OP_EXT["gradient"]],
@@ -921,7 +942,8 @@ OPS_SOLVER = [
     Specification(SLV["ForceDistributionSolver"], [SLV["force"]], []),
 ]
 
-# Closure kinds no operator registers: "Controller" and "PoseDiffEvaluator" are hand-built by
+# Closure kinds no operator fully registers: "Controller" and the pose-equality
+# "PoseDiffEvaluator" closures are hand-built by
 # constraint_handler.augment_closures; AssignmentEvaluator's write is one of its *inputs*
 # (`quantity`, the value it assigns into), not its (empty) declared output; PathEvaluator's
 # `setpoint` is folded on by the PathEvaluator closure hook, not declared as an operator output.

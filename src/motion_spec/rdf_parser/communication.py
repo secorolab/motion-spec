@@ -515,7 +515,7 @@ def add_quantity_samples(introspection: dict, shared_data: list, views: dict) ->
                         make_desc(quantity_id, index),
                     )
             continue
-        desc = _scalar_descriptor(quantity, quantity_id, shared_ids, indexed_views)
+        desc = _scalar_descriptor(quantity, quantity_id, shared_ids, spatial_ids, indexed_views)
         if desc is not None:
             add(quantity, "", desc)
 
@@ -535,7 +535,7 @@ def add_quantity_samples(introspection: dict, shared_data: list, views: dict) ->
     introspection["quantity_samples"] = samples
 
 
-def _scalar_descriptor(quantity: dict, quantity_id: str, shared_ids, indexed_views):
+def _scalar_descriptor(quantity: dict, quantity_id: str, shared_ids, spatial_ids, indexed_views):
     """How a scalar quantity is sampled: as a literal, through a view, or off its own field."""
     viewed = quantity_id in indexed_views
     if quantity.get("value") is not None and quantity_id not in shared_ids and not viewed:
@@ -543,8 +543,17 @@ def _scalar_descriptor(quantity: dict, quantity_id: str, shared_ids, indexed_vie
     if viewed:
         views = indexed_views[quantity_id]
         if not all(view.axis is not None for view in views):
-            # An axis-less view names no field, but a shared value is still sampled off its own.
-            return {"kind": "shared", "id": quantity_id} if quantity_id in shared_ids else None
+            # An axis-less view names no field, but a shared value is still sampled off its
+            # own. A directionless one is a whole-subspace alias: when a logged spatial slot
+            # carries its superobject, sampling it would put the same value on the wire twice.
+            # A directed projection is new information the superobject slot cannot restate.
+            if quantity_id in shared_ids and not any(
+                getattr(view, "direction", None) is None
+                and getattr(view.superobject, "id", None) in spatial_ids
+                for view in views
+            ):
+                return {"kind": "shared", "id": quantity_id}
+            return None
         types = {view.superobject.type for view in views}
         if len(types) != 1:
             raise ConstraintViolation(

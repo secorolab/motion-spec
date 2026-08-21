@@ -86,7 +86,17 @@ fsm-dispatch(motions, fsm) ::= <<
     auto fsm_dispatch = [&](struct fsm_nbx *fsm) {
         switch (fsm->currentStateIndex) {
 <motions:{motion | <fsm-dispatch-case(motion, fsm)>}; separator="\n">
-        default: break;
+<fsm-dispatch-start(motions, fsm)>        default: break;
         \}
     \};
+>>
+
+// Before the first transition no motion has staged a command, so the joints would be driven to
+// the zero the array starts at. One motion holds them: every motion driving a chain writes the
+// same command array.
+fsm-dispatch-start(motions, fsm) ::= <<
+<if(first(motions).serial_chain_solvers)>        case <fsm.cpp_namespace>::<fsm.start_state>:
+            hold_gravity_<first(motions).id>(<first(motions).id>_state_instance, robot);
+            break;
+<endif>
 >>

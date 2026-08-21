@@ -122,6 +122,10 @@ chain-apply-block(serial_chain_solvers, backend) ::= <<
 <serial_chain_solvers:{solver |     <solver-apply-output(solver, backend)>}; separator="\n">
 >>
 
+chain-gravity-block(serial_chain_solvers, solvers, backend) ::= <<
+<serial_chain_solvers:{solver | <solver-gravity-hold(solver, solvers.(solver.solver_id), backend)>}; separator="\n">
+>>
+
 command-forwarding(backend, motion) ::= <<
 <({command-forwarding-<backend>})(motion)>
 >>

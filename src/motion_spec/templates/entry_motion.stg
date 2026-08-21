@@ -143,4 +143,11 @@ inline void apply_<motion.id>(<sig-params(motion.id, motion.apply_needs_state, m
 <endif>
 <command-forwarding(backend, motion)>
 }
+<if(motion.serial_chain_solvers)>
+
+// Holds this motion's chains where they stand, for the coordinator states that select no motion.
+inline void hold_gravity_<motion.id>(<motion.id>_state &state, const robot_io &robot) {
+<chain-gravity-block(motion.serial_chain_solvers, solvers, backend)>
+}
+<endif>
 >>

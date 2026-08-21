@@ -255,6 +255,28 @@ for (int i = 0; i \< state.<solver.id>.num_joints; ++i) {
 }
 >>
 
+// The command that means "stay put": RNE at the measured configuration, at rest, unloaded. Uses
+// the solver's own arrays -- the motion owning them is not running, and it refills them on entry.
+solver-gravity-hold(solver, chain_solver, backend) ::= <<
+    {
+        static KDL::ChainIdSolver_RNE _gravity_<solver.id>(*robot.<solver.id>.chain, KDL::Vector(<if(chain_solver.gravity)><chain_solver.gravity; separator=", "><else>0.0, 0.0, 0.0<endif>));
+        <solver-sync-input(solver, backend, "")>
+        KDL::SetToZero(state.<solver.id>.qd);
+        KDL::SetToZero(state.<solver.id>.qdd);
+        for (auto &_w : state.<solver.id>.f_ext) {
+            _w = KDL::Wrench::Zero();
+        \}
+        _gravity_<solver.id>.CartToJnt(
+            state.<solver.id>.q,
+            state.<solver.id>.qd,
+            state.<solver.id>.qdd,
+            state.<solver.id>.f_ext,
+            state.<solver.id>.tau_ctrl);
+    <({solver-stage-output-<backend>})(solver, chain_solver)>
+    <solver-apply-output(solver, backend)>
+    \}
+>>
+
 solver-output-Pose(solver, chain_solver, out, backend) ::= <<
 <({solver-output-Pose-<backend>})(solver, chain_solver, out)>
 >>

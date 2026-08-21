@@ -68,7 +68,7 @@ from rdf_utils.models.vocab import (
 )
 from rdf_utils.naming import get_valid_var_name
 from rdflib import URIRef
-from rdflib.namespace import RDF
+from rdflib.namespace import PROV, RDF
 
 from motion_spec.rdf_parser.model import identifier, local_name, reader
 
@@ -88,12 +88,29 @@ def normalize(model) -> None:
     _materialize_linear_distance_operations(model)
 
 
+def recorded_coord_policy(candidates, graph=None, coord_id=None, component=None, **kwargs):
+    """The coordinate the DSL recorded for this pose component.
+
+    The writer runs the authored choice and minutes it as PROV under the deterministic
+    activity name `{coordinate}-{component}-selection`; this is the read half of that pact.
+    """
+    activity = URIRef(f"{coord_id}-{component}-selection")
+    for usage in graph.objects(activity, PROV.qualifiedUsage):
+        chosen = graph.value(usage, PROV.entity)
+        if chosen is not None:
+            return chosen
+    raise ConstraintViolation(
+        "geometry",
+        f"Pose coordinate '{coord_id}' records no {component} selection among: {candidates}",
+    )
+
+
 def _pose_frames(model, pose) -> tuple[URIRef, URIRef]:
     """A pose quantity's authored `(of, with-respect-to)` frames."""
     relation = (
         PoseModel(pose, model.graph)
         if URI_GEOM_TYPE_POSE in get_node_types(model.graph, pose)
-        else PoseCoordModel(pose, model.graph).relation
+        else PoseCoordModel(pose, model.graph, coord_policy=recorded_coord_policy).relation
     )
     return relation.of_id, relation.wrt_id
 
@@ -228,6 +245,12 @@ def _compose_path(model, owner: URIRef, path, start_wrt: URIRef):
     return current
 
 
+def _recorded_distance_operand(graph, distance, role):
+    """The pose coordinate the DSL recorded for one distance endpoint, or None if unrecorded."""
+    usage = graph.value(URIRef(f"{distance}-{role}-selection"), PROV.qualifiedUsage)
+    return graph.value(usage, PROV.entity) if usage is not None else None
+
+
 def _materialize_linear_distance_operations(model) -> None:
     """Expand authored linear-distance relations into codegen operations.
 
@@ -248,12 +271,17 @@ def _materialize_linear_distance_operations(model) -> None:
             raise ConstraintViolation(
                 "geometry", f"Distance coordinate {distance} states no linear distance."
             )
-        endpoints = list(dict.fromkeys(graph.objects(relation, GEOM_REL["between-entities"])))
-        if len(endpoints) != 2:
-            raise ConstraintViolation(
-                "geometry", f"Linear distance {relation} needs exactly two pose endpoints."
-            )
-        start, end = endpoints
+        # `between-entities` names frame-origin Points; which pose coordinate each endpoint
+        # reads is the selection the DSL recorded per role (see `recorded_coord_policy`).
+        start = _recorded_distance_operand(graph, distance, "start")
+        end = _recorded_distance_operand(graph, distance, "end")
+        if start is None or end is None:
+            endpoints = list(dict.fromkeys(graph.objects(relation, GEOM_REL["between-entities"])))
+            if len(endpoints) != 2:
+                raise ConstraintViolation(
+                    "geometry", f"Linear distance {relation} needs exactly two pose endpoints."
+                )
+            start, end = endpoints
         start_of, start_wrt = _pose_frames(model, start)
         end_of, end_wrt = _pose_frames(model, end)
 

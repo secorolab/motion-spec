@@ -1331,7 +1331,7 @@ def _pose_command_steps(model, scope, active_plans) -> list:
         if alignment_rotation_op(model, plan.quantity) is not None:
             continue
         reference = graph.value(plan.constraint, CSTR["reference-value"])
-        reference_view = next(graph.subjects(MAP.subobject, reference), None)
+        reference_view = quantities.view_of(graph, reference)
         interpolation = next(
             graph.subjects(GEOM_OP.out, graph.value(reference_view, MAP.superobject)), None
         )
@@ -1522,7 +1522,7 @@ def _forwarded_commands(model, phase, chain_solvers, runtime_solvers, derivation
             continue
         controller = derivation.controllers_for(plan)[0]
         quantity = graph.value(plan.constraint, CSTR.quantity)
-        view = next(graph.subjects(MAP.subobject, quantity), None)
+        view = quantities.view_of(graph, quantity)
         target_quantity = graph.value(view, MAP.superobject) if view is not None else quantity
         target = graph.value(target_quantity, KC_STAT["of-joint"])
         chain_solver = next(

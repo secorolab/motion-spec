@@ -337,7 +337,7 @@ def _linear_form(model, node, constraint) -> _LinearForm:
     graph = model.graph
     operation = expression_operation(graph, node)
     if operation is None:
-        if next(graph.subjects(MAP.subobject, node), None) is not None:
+        if quantities.view_of(graph, node) is not None:
             return _LinearForm({node: 1.0}, 0.0)
         value = graph.value(node, QUDT_SCHEMA.value)
         unit = graph.value(node, QUDT_SCHEMA.unit)
@@ -470,7 +470,7 @@ def gradient_directions(model, controller, constraint, quantity):
     frames = set()
     leaf_view = None
     for leaf, coefficient in sorted(form.coefficients.items(), key=lambda item: str(item[0])):
-        view = next(graph.subjects(MAP.subobject, leaf), None)
+        view = quantities.view_of(graph, leaf)
         axes = _view_axes(model, controller, constraint, view, leaf)
         if not axes:
             # This command drives no solver row at all (a force command); neither does the
@@ -554,7 +554,7 @@ def _authored_controller_axes(model) -> dict:
         quantity = graph.value(constraint, CSTR.quantity) if constraint is not None else None
         if constraint is None or quantity is None:
             continue
-        view = next(graph.subjects(MAP.subobject, quantity), None)
+        view = quantities.view_of(graph, quantity)
         subspace = local_name(graph.value(view, MAP.subspace)) if view is not None else None
         aligned = alignment_axes(model, quantity)
         if aligned:
@@ -660,7 +660,7 @@ def solver_derivation_context(model) -> SolverDerivationContext:
                     "and constraint quantity relations.",
                 )
             directions = axes_by_controller.get(controller) or ControlDirections(
-                (), next(graph.subjects(MAP.subobject, quantity), None)
+                (), quantities.view_of(graph, quantity)
             )
             plan = ControllerDerivation(
                 handler,
@@ -1189,7 +1189,7 @@ def augment_closures(model, context, closures: dict) -> None:
                 continue
             target = graph.value(plan.view, MAP.superobject)
             reference = graph.value(plan.constraint, CSTR["reference-value"])
-            reference_view = next(graph.subjects(MAP.subobject, reference), None)
+            reference_view = quantities.view_of(graph, reference)
             if reference_view is not None:
                 reference = graph.value(reference_view, MAP.superobject)
             closures[ids.pose_evaluator()] = {

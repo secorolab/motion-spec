@@ -2,6 +2,7 @@ ns sm = "https://secorolab.github.io/models/shared-motion/fsm/"
 
 evt loop (ns=sm) shared_motion_fsm_events {
     evt E_STEP,
+    evt E_HOLD_ENTERED,
     evt E_FIRST_SETTLED,
     evt E_SECOND_SETTLED
 }
@@ -28,8 +29,8 @@ fsm (ns=sm) shared_motion_fsm {
     }
 
     reactions {
-        R_STEP_START     { when: <shared_motion_fsm_events.E_STEP>,           do: <T_START_FIRST> },
-        R_FIRST_SETTLED  { when: <shared_motion_fsm_events.E_FIRST_SETTLED>,  do: <T_FIRST_SECOND> },
+        R_STEP_START     { when: <shared_motion_fsm_events.E_STEP>,           do: <T_START_FIRST>, fires { <shared_motion_fsm_events.E_HOLD_ENTERED> } },
+        R_FIRST_SETTLED  { when: <shared_motion_fsm_events.E_FIRST_SETTLED>,  do: <T_FIRST_SECOND>, fires { <shared_motion_fsm_events.E_HOLD_ENTERED> } },
         R_SECOND_SETTLED { when: <shared_motion_fsm_events.E_SECOND_SETTLED>, do: <T_SECOND_DONE> }
     }
 }

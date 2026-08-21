@@ -57,6 +57,8 @@ from rdf_utils.models.vocab import (
     URI_DISTRIB_TYPE_SAMPLED_QUANTITY,
     URI_GEOM_TYPE_KGRAPH,
     URI_GEOM_TYPE_POSE,
+    URI_GEOM_TYPE_POSE_COORD,
+    URI_GEOM_PRED_OF_POSE,
     URI_KC_PRED_BETWEEN_ATTACHMENTS,
     URI_KC_TYPE_JOINT,
     URI_KC_TYPE_SERIAL,
@@ -1449,8 +1451,15 @@ def _placement_graph(model):
     graph = Graph()
     for triple in model.graph.triples((None, None, None)):
         graph.add(triple)
-    for relation in model.graph.subjects(RDF["type"], URI_GEOM_TYPE_POSE):
-        if model.context_scope(relation) is not None:
+    # A relation is pooled per frame pair, so a context quantity is a coordinate on a
+    # relation the scene also samples: strip the quantity's own nodes, keep the relation --
+    # unless nothing places it any more, in which case the relation goes too.
+    for type_ in (URI_GEOM_TYPE_POSE, URI_GEOM_TYPE_POSE_COORD):
+        for node in model.graph.subjects(RDF["type"], type_):
+            if model.context_scope(node) is not None:
+                graph.remove((node, None, None))
+    for relation in list(graph.subjects(RDF["type"], URI_GEOM_TYPE_POSE)):
+        if next(graph.subjects(URI_GEOM_PRED_OF_POSE, relation), None) is None:
             graph.remove((relation, None, None))
     model.cache["placement_graph"] = graph
 

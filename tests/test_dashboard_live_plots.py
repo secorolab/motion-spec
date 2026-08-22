@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from motion_spec.dashboard import server
+from motion_spec.dashboard import jobs, live, replay, roots
 from motion_spec.dashboard.frames import FrameLayout
 from motion_spec.generation.artifacts import build_frame_layout, build_frame_log_header_record
 from motion_spec.introspection import frame_log_pb
@@ -78,8 +78,8 @@ def live_run(tmp_path, monkeypatch):
     block.write_bytes(bytes(layout.struct.size))
     handle = block.open("r+b")
     monkeypatch.setenv("MOTION_SPEC_SHM_NAME", str(block))
-    monkeypatch.setattr(server, "GENERATIONS", tmp_path)
-    server._LIVE.clear()
+    monkeypatch.setattr(roots, "GENERATIONS", tmp_path)
+    live._LIVE.clear()
 
     def append(steps):
         """Frames into the log, which only the no-block fallback and /api/plot ever read."""
@@ -92,7 +92,7 @@ def live_run(tmp_path, monkeypatch):
         return layout.struct.pack(*(dict(flat, seq=2)[name] for name in layout.names))
 
     def sampler():
-        session = server._LIVE.get(str(run))
+        session = live._LIVE.get(str(run))
         return session["sampler"] if session else None
 
     seq = [0]
@@ -114,7 +114,7 @@ def live_run(tmp_path, monkeypatch):
         for step in steps:
             sampler().absorb(pack(step, **values))
 
-    server.live_state(run)  # the first poll is what opens the sampler
+    live.live_state(run)  # the first poll is what opens the sampler
     yield type(
         "LiveRun",
         (),
@@ -129,9 +129,9 @@ def live_run(tmp_path, monkeypatch):
     )
     fh.close()
     handle.close()
-    for session in list(server._LIVE.values()):
-        server._close_live(session)
-    server._LIVE.clear()
+    for session in list(live._LIVE.values()):
+        live._close_live(session)
+    live._LIVE.clear()
 
 
 def _raw_frames(log, contract):
@@ -150,9 +150,9 @@ def test_the_reader_reads_a_raw_frame_the_way_the_plots_do(live_run):
     """One lookup for both paths: a live point must mean what the same point means in history."""
     live_run.append(range(4))
     _run, log, _manifest, contract = resolve_archive(live_run.path)
-    read = server.signal_reader(contract)
+    read = replay.signal_reader(contract)
 
-    recorded = server.plot_data(live_run.path, SIGNALS, (0, 3))["signals"]
+    recorded = replay.plot_data(live_run.path, SIGNALS, (0, 3))["signals"]
     for name in SIGNALS:
         assert [read(frame, name) for frame in _raw_frames(log, contract)] == recorded[name]
     assert recorded["constraint_0.error"] == [0.0, 1.0, 2.0, 3.0]
@@ -168,7 +168,7 @@ def test_the_sampler_reads_the_block_the_runtime_republishes(live_run):
 
     live_run.publish(1)
     assert _until(lambda: sampler.taken == 1)
-    assert server.live_state(live_run.path)["frames"] == 2
+    assert live.live_state(live_run.path)["frames"] == 2
 
 
 def test_a_block_that_republishes_the_same_step_is_not_a_new_sample(live_run):
@@ -185,7 +185,7 @@ def test_the_sampler_marks_a_state_and_an_event_where_they_change(live_run):
     live_run.feed([0])
     live_run.feed([1])
     live_run.feed([2], fsm_state=1, last_event=0)
-    events = server.live_state(live_run.path)["events"]
+    events = live.live_state(live_run.path)["events"]
     assert [(entry["frame"], entry["kind"]) for entry in events] == [
         (1, "state"),
         (2, "event"),
@@ -197,28 +197,28 @@ def test_the_sampler_marks_a_state_and_an_event_where_they_change(live_run):
 def test_the_first_poll_with_signals_starts_the_stream_at_the_ring_s_end(live_run):
     """History is the chart's /api/plot backfill; the stream must not replay it."""
     live_run.feed(range(5))
-    first = server.live_state(live_run.path, SIGNALS)
+    first = live.live_state(live_run.path, SIGNALS)
     assert first["plot"] == {"frames": [], "series": {name: [] for name in SIGNALS}}
 
     live_run.feed(range(5, 8))
-    plot = server.live_state(live_run.path, SIGNALS)["plot"]
+    plot = live.live_state(live_run.path, SIGNALS)["plot"]
     assert plot["frames"] == [5, 6, 7]
     assert plot["series"]["constraint_0.error"] == [5.0, 6.0, 7.0]
 
-    assert server.live_state(live_run.path, SIGNALS)["plot"]["frames"] == []  # nothing repeated
+    assert live.live_state(live_run.path, SIGNALS)["plot"]["frames"] == []  # nothing repeated
 
 
 def test_a_poll_returns_at_most_the_point_cap_per_signal(live_run):
     live_run.feed(range(2))
-    server.live_state(live_run.path, SIGNALS)
-    live_run.feed(range(2, 2 + 4 * server.LIVE_PLOT_POINTS))
+    live.live_state(live_run.path, SIGNALS)
+    live_run.feed(range(2, 2 + 4 * live.LIVE_PLOT_POINTS))
 
-    plot = server.live_state(live_run.path, SIGNALS)["plot"]
-    assert 0 < len(plot["frames"]) <= server.LIVE_PLOT_POINTS
+    plot = live.live_state(live_run.path, SIGNALS)["plot"]
+    assert 0 < len(plot["frames"]) <= live.LIVE_PLOT_POINTS
     assert plot["frames"] == sorted(set(plot["frames"]))
     assert len(plot["series"]["constraint_0.error"]) == len(plot["frames"])
     # decimated, not truncated: the sample spans the whole increment
-    assert plot["frames"][-1] > 3 * server.LIVE_PLOT_POINTS
+    assert plot["frames"][-1] > 3 * live.LIVE_PLOT_POINTS
 
 
 def test_changing_the_signal_set_keeps_every_sample_since_the_last_poll(live_run):
@@ -228,23 +228,23 @@ def test_changing_the_signal_set_keeps_every_sample_since_the_last_poll(live_run
     change -- a motion that satisfies in milliseconds still gets its points.
     """
     live_run.feed(range(5))
-    server.live_state(live_run.path, ["constraint_0.error"])
+    live.live_state(live_run.path, ["constraint_0.error"])
     live_run.feed(range(5, 10))
 
-    plot = server.live_state(live_run.path, SIGNALS)["plot"]
+    plot = live.live_state(live_run.path, SIGNALS)["plot"]
     assert plot["frames"] == [5, 6, 7, 8, 9]
     assert plot["series"]["constraint_0.error"] == [5.0, 6.0, 7.0, 8.0, 9.0]
     live_run.feed(range(10, 12))
-    assert server.live_state(live_run.path, SIGNALS)["plot"]["frames"] == [10, 11]
+    assert live.live_state(live_run.path, SIGNALS)["plot"]["frames"] == [10, 11]
 
 
 def test_a_signal_added_mid_stream_carries_its_own_values_from_then_on(live_run):
     """The new name reads from the same samples as the old one; its history is /api/plot's."""
     live_run.feed(range(4))
-    server.live_state(live_run.path, ["constraint_0.error"])
+    live.live_state(live_run.path, ["constraint_0.error"])
     live_run.feed(range(4, 7))
 
-    plot = server.live_state(live_run.path, SIGNALS)["plot"]
+    plot = live.live_state(live_run.path, SIGNALS)["plot"]
     assert plot["frames"] == [4, 5, 6]
     assert plot["series"]["timing.compute_ms"] == [0.004, 0.005, 0.006]
 
@@ -252,54 +252,54 @@ def test_a_signal_added_mid_stream_carries_its_own_values_from_then_on(live_run)
 def test_a_run_with_no_block_to_read_still_follows_its_log(live_run):
     """Hardware and builds older than the block: the log is all there is, and it still says."""
     live_run.append(range(3))
-    answer = server.live_state(live_run.path)
+    answer = live.live_state(live_run.path)
     assert "plot" not in answer
     assert answer["frames"] == 1 and answer["events"][0]["kind"] == "state"
 
     live_run.append(range(3, 200))
-    later = server.live_state(live_run.path)
+    later = live.live_state(live_run.path)
     assert "plot" not in later and later["frames"] > answer["frames"]
 
 
 def test_only_a_headless_simulation_asks_the_runtime_to_run_in_realtime():
     """A headless loop is uncapped, which is nothing to watch: realtime is what a plot needs."""
-    assert server.run_arguments({"headless": True}, True) == [
+    assert jobs.run_arguments({"headless": True}, True) == [
         "--headless",
         "--rtf",
         "1",
         "--start-paused",
     ]
-    assert server.run_arguments({"headless": True, "realtime": False}, True) == [
+    assert jobs.run_arguments({"headless": True, "realtime": False}, True) == [
         "--headless",
         "--start-paused",
     ]
-    assert server.run_arguments({"headless": False, "realtime": True}, True) == ["--start-paused"]
-    assert server.run_arguments({"headless": True, "realtime": True}, False) == []
+    assert jobs.run_arguments({"headless": False, "realtime": True}, True) == ["--start-paused"]
+    assert jobs.run_arguments({"headless": True, "realtime": True}, False) == []
 
 
 def test_logs_off_asks_the_cli_for_a_run_that_writes_none():
     """The frame log is the runtime's cost on any platform, so the choice is offered on all."""
-    assert server.run_arguments({"headless": True, "log": False}, True) == [
+    assert jobs.run_arguments({"headless": True, "log": False}, True) == [
         "--headless",
         "--rtf",
         "1",
         "--no-log",
         "--start-paused",
     ]
-    assert server.run_arguments({"headless": False, "log": False}, True) == [
+    assert jobs.run_arguments({"headless": False, "log": False}, True) == [
         "--no-log",
         "--start-paused",
     ]
-    assert server.run_arguments({"log": False}, False) == ["--no-log"]
-    assert server.run_arguments({"headless": False, "log": True}, True) == ["--start-paused"]
-    assert server.run_arguments({"headless": False}, True) == ["--start-paused"]
+    assert jobs.run_arguments({"log": False}, False) == ["--no-log"]
+    assert jobs.run_arguments({"headless": False, "log": True}, True) == ["--start-paused"]
+    assert jobs.run_arguments({"headless": False}, True) == ["--start-paused"]
 
 
 def test_a_run_started_from_the_page_arms_paused_unless_it_is_hardware():
     """The page has the transport: a simulation waits for play; a robot has no pause to seed."""
     for options in ({}, {"headless": True}, {"headless": False, "log": False}):
-        assert "--start-paused" in server.run_arguments(options, True)
-        assert "--start-paused" not in server.run_arguments(options, False)
+        assert "--start-paused" in jobs.run_arguments(options, True)
+        assert "--start-paused" not in jobs.run_arguments(options, False)
 
 
 def test_run_status_says_whether_the_run_kept_a_frame_log(live_run, monkeypatch):
@@ -307,17 +307,17 @@ def test_run_status_says_whether_the_run_kept_a_frame_log(live_run, monkeypatch)
     generation = live_run.path.parent.parent
     finished = type("Finished", (), {"poll": lambda self: 0, "returncode": 0, "pid": 1})()
     monkeypatch.setitem(
-        server.RUNNING, str(generation), {"process": finished, "run_id": live_run.path.name}
+        jobs.RUNNING, str(generation), {"process": finished, "run_id": live_run.path.name}
     )
     manifest = live_run.path / "manifest.json"
 
-    assert server.run_status(generation)["recorded"] is None  # nothing has said yet
+    assert jobs.run_status(generation)["recorded"] is None  # nothing has said yet
     manifest.write_text(json.dumps({"run_id": "run-1", "recorded": False, "files": {}}))
-    assert server.run_status(generation)["recorded"] is False
+    assert jobs.run_status(generation)["recorded"] is False
     manifest.write_text(json.dumps({"run_id": "run-1", "files": {}}))
-    assert server.run_status(generation)["recorded"] is True
+    assert jobs.run_status(generation)["recorded"] is True
 
 
 def test_the_response_names_the_motion_of_the_newest_sample(live_run):
     live_run.feed(range(4))
-    assert server.live_state(live_run.path, SIGNALS)["active_motion"] == "move"
+    assert live.live_state(live_run.path, SIGNALS)["active_motion"] == "move"

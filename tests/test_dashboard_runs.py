@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import shutil
 
-from motion_spec.dashboard import server
+from motion_spec.dashboard import catalog, replay, roots
 from motion_spec.dashboard.runs import GenerationCatalog, GenerationInfo, RunInfo
 from motion_spec.generation.artifacts import build_frame_layout
 from motion_spec.introspection.replay import resolve_archive
@@ -187,7 +187,7 @@ def test_constraint_rows_are_read_off_the_log_header(tmp_path):
     """Constraint, phase, signals, gains and tolerance all come from the header the run wrote."""
     rows = {
         row["name"]: row
-        for row in server.replay_data(_archived_run(tmp_path, vendored=True))["constraints"]
+        for row in replay.replay_data(_archived_run(tmp_path, vendored=True))["constraints"]
     }
     assert set(rows) == {"hold-height", "settled"}
 
@@ -223,14 +223,14 @@ def test_between_names_the_pair_the_evaluator_compares(tmp_path):
             "evaluator_id": "eval_pose",
         },
     )
-    held = {row["name"]: row for row in server.replay_data(run)["constraints"]}["hold-height"]
+    held = {row["name"]: row for row in replay.replay_data(run)["constraints"]}["hold-height"]
     assert held["between"] == ["pose_ee", "pose_target"]
     assert held["evaluator"] == "eval_pose"
 
 
 def test_the_authored_line_falls_back_to_the_generation_source(tmp_path):
     run = _archived_run(tmp_path, vendored=False)
-    rows = {row["name"]: row for row in server.replay_data(run)["constraints"]}
+    rows = {row["name"]: row for row in replay.replay_data(run)["constraints"]}
     assert rows["hold-height"]["expression"] == "dist within <target-height>"
 
 
@@ -239,7 +239,7 @@ def test_a_run_copied_out_of_its_generation_still_plots(tmp_path):
     copy = tmp_path / "run_copy"
     shutil.copytree(_archived_run(tmp_path, vendored=True), copy)
 
-    data = server.replay_data(copy)
+    data = replay.replay_data(copy)
     assert data["generation"] is None
     rows = {row["name"]: row for row in data["constraints"]}
     assert rows["hold-height"]["line"] == 4
@@ -251,19 +251,19 @@ def test_a_constraint_whose_source_is_gone_keeps_its_row(tmp_path):
     copy = tmp_path / "run_copy"
     shutil.copytree(_archived_run(tmp_path, vendored=False), copy)
 
-    rows = {row["name"]: row for row in server.replay_data(copy)["constraints"]}
+    rows = {row["name"]: row for row in replay.replay_data(copy)["constraints"]}
     assert set(rows) == {"hold-height", "settled"}
     assert rows["hold-height"]["expression"] is None and rows["hold-height"]["line"] is None
     assert rows["hold-height"]["error"] == ["err_x"]
 
 
 def test_a_generation_counts_its_constraints_before_any_run(tmp_path, monkeypatch):
-    monkeypatch.setattr(server, "GENERATIONS", tmp_path)
+    monkeypatch.setattr(roots, "GENERATIONS", tmp_path)
     gen = _generation(tmp_path)
     (gen / "generated" / "source").mkdir(parents=True)
     (gen / "generated" / "source" / "demo.robmot").write_text(ROBMOT)
 
-    details = server.generation_details(gen)
+    details = catalog.generation_details(gen)
     assert (details["authored_constraints"], details["motions"]) == (2, 1)
 
 
@@ -287,8 +287,10 @@ def _two_motion_schema() -> dict:
     doc = _contract_schema()
     doc["pools"]["constraints"] = 2
     for index, (motion, iri) in enumerate(
-        (("home", "https://example.test/demo/home/while/align-forearm"),
-         ("touchdown", "https://example.test/demo/touchdown/while/align-forearm")),
+        (
+            ("home", "https://example.test/demo/home/while/align-forearm"),
+            ("touchdown", "https://example.test/demo/touchdown/while/align-forearm"),
+        )
     ):
         # The gate is the handler, the source authors the motion: the two names differ, as
         # they do in a real model, so a row cannot be attributed by the gate's name alone.
@@ -322,10 +324,12 @@ def _two_motion_run(tmp_path) -> object:
     frame = flat_frame(doc, t=0.001, step=1, fsm_state=0, active_motion=0, last_event=-1)
     write_frame_log_pb(run / "logs" / "frame_log.pb", doc, [frame])
     (run / "manifest.json").write_text(
-        json.dumps({
-            "run_id": "run-1",
-            "files": {"frame_log": "logs/frame_log.pb", "sources": ["source/demo.robmot"]},
-        })
+        json.dumps(
+            {
+                "run_id": "run-1",
+                "files": {"frame_log": "logs/frame_log.pb", "sources": ["source/demo.robmot"]},
+            }
+        )
     )
     return run
 
@@ -334,7 +338,7 @@ def test_one_name_authored_in_two_motions_keeps_each_motion_and_line(tmp_path):
     """The IRI says which motion a slot serves; a shared name must not take the first one's line."""
     run = _two_motion_run(tmp_path)
     _, log, manifest, contract = resolve_archive(run)
-    rows = server.source_constraints(run, manifest, contract)
+    rows = replay.source_constraints(run, manifest, contract)
 
     by_motion = {row["motion"]: row for row in rows if row["name"] == "align-forearm"}
     assert set(by_motion) == {"home", "touchdown"}
@@ -346,7 +350,7 @@ def test_a_slot_the_source_does_not_author_borrows_no_line(tmp_path):
     """A generated monitor has no authored line, and must not take one from a like-named row."""
     run = _two_motion_run(tmp_path)
     _, log, manifest, contract = resolve_archive(run)
-    rows = server.source_constraints(run, manifest, contract)
+    rows = replay.source_constraints(run, manifest, contract)
     invented = [row for row in rows if row["name"] not in {"align-forearm"}]
 
     assert all(row["line"] is None for row in invented)
@@ -357,7 +361,9 @@ def test_an_aggregate_monitor_offers_the_members_it_watches(tmp_path):
     run = _archived_run(tmp_path, vendored=True)
     _, log, manifest, contract = resolve_archive(run)
     row = next(
-        row for row in server.source_constraints(run, manifest, contract) if row["kind"] == "monitored"
+        row
+        for row in replay.source_constraints(run, manifest, contract)
+        if row["kind"] == "monitored"
     )
 
     assert [member["id"] for member in row["members"]] == ["settled", "at_rest"]

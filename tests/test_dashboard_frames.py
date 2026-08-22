@@ -8,7 +8,7 @@ import struct
 
 import pytest
 
-from motion_spec.dashboard import server
+from motion_spec.dashboard import replay
 from motion_spec.dashboard.frames import (
     FrameLayout,
     ShmFrameReader,
@@ -181,7 +181,7 @@ def _both_readers(tmp_path, active_motion):
         frame_log_pb._read_delimited(fh)
         record = contract.record_cls()
         record.ParseFromString(frame_log_pb._read_delimited(fh))
-    read = server.signal_reader(contract)
+    read = replay.signal_reader(contract)
     fields = SignalFields(layout, contract)
     raw = layout.struct.pack(*(dict(flat, seq=2)[name] for name in layout.names))
     return layout, fields, [read(record.frame, name) for name in SIGNALS], raw

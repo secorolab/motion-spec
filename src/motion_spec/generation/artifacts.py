@@ -445,6 +445,13 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
         ),
         key=lambda device: device["index"],
     )
+    # What this program can record, named as the runtime names it. A reader of the run -- the
+    # dashboard, a script -- asks the contract what the cameras are; the model behind them is
+    # the generator's to read, not theirs.
+    cameras = [
+        {key: camera[key] for key in ("id", "width", "height", "rate_hz", "uri")}
+        for camera in ir.get("composition", {}).get("scene", {}).get("cameras") or []
+    ]
 
     def gate(category: str, slot_index: int, cadence) -> None:
         # cadence is already expressed in motions (plan 011 §2b) -- no coordinator in between.
@@ -510,6 +517,7 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
         "monitors": introspection.get("monitors", []),
         "quantities": quantities,
         "devices": devices,
+        "cameras": cameras,
         # Written once at init: one copy in the header says everything repeating it per tick would.
         "constants": introspection.get("constants", []),
         # The dataflow contract for everything that survives into the layout, so a reader can see
@@ -579,6 +587,8 @@ def build_frame_layout(schema: dict) -> dict:
         # The runner records the run before any log exists, so this one fact cannot
         # come from the log's own header.
         "platform": schema.get("platform") or {},
+        # Recording is chosen before a run starts, so the choice is offered from here.
+        "cameras": schema.get("cameras") or [],
         "fields": fields,
     }
     layout["frame_layout_hash"] = hashlib.sha256(

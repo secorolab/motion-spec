@@ -16,7 +16,7 @@ from http.server import ThreadingHTTPServer
 
 import pytest
 
-from motion_spec.dashboard import server
+from motion_spec.dashboard import roots, server, sources
 
 from motion_spec.generation.artifacts import build_frame_layout
 
@@ -32,8 +32,8 @@ def dashboard(tmp_path, monkeypatch):
     layout.parent.mkdir(parents=True)
     layout.write_text(json.dumps(build_frame_layout(_contract_schema())))
     (run / "logs" / "frame_log.pb.health.json").write_text(json.dumps({"written_frames": 1}))
-    monkeypatch.setattr(server, "GENERATIONS", tmp_path)
-    monkeypatch.setattr(server, "WORKSPACE", tmp_path)
+    monkeypatch.setattr(roots, "GENERATIONS", tmp_path)
+    monkeypatch.setattr(roots, "WORKSPACE", tmp_path)
     monkeypatch.setattr(server, "LIFECYCLE", None)
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.DashboardHandler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
@@ -53,8 +53,17 @@ def dashboard(tmp_path, monkeypatch):
         with urllib.request.urlopen(request) as response:
             return json.load(response)
 
-    yield type("Dashboard", (), {"get": staticmethod(get), "post": staticmethod(post),
-                                 "host": host, "run": run, "root": tmp_path})
+    yield type(
+        "Dashboard",
+        (),
+        {
+            "get": staticmethod(get),
+            "post": staticmethod(post),
+            "host": host,
+            "run": run,
+            "root": tmp_path,
+        },
+    )
     httpd.shutdown()
 
 
@@ -160,15 +169,17 @@ def test_only_generations_and_runs_can_be_deleted(dashboard, monkeypatch):
 
 
 def test_a_missing_jupyter_says_what_to_install(dashboard, monkeypatch):
-    monkeypatch.setattr(server.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(sources.shutil, "which", lambda _name: None)
     with pytest.raises(urllib.error.HTTPError) as raised:
         dashboard.get("/api/jupyter")
     assert "pip install 'motion-spec[replay]'" in json.loads(raised.value.read())["error"]
 
 
 def test_an_unknown_endpoint_is_a_404(dashboard):
-    for call in (lambda: dashboard.get("/api/nonsense"),
-                 lambda: dashboard.post("/api/nonsense", {})):
+    for call in (
+        lambda: dashboard.get("/api/nonsense"),
+        lambda: dashboard.post("/api/nonsense", {}),
+    ):
         with pytest.raises(urllib.error.HTTPError) as raised:
             call()
         assert raised.value.code == 404

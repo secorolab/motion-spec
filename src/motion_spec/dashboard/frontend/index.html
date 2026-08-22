@@ -8,10 +8,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>motion-spec replay</title>
     <link rel="stylesheet" href="style.css">
-    <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+    <!-- Vendored, not fetched: a robot's machine is often on a network with no way out, and
+         a dashboard whose charts depend on a CDN is a dashboard that is blank there. -->
+    <script src="vendor/echarts.min.js"></script>
     <!-- live cards stream through uPlot; echarts stays for replay's zoom/cursor/export -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.32/dist/uPlot.min.css">
-    <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.32/dist/uPlot.iife.min.js"></script>
+    <link rel="stylesheet" href="vendor/uPlot.min.css">
+    <script src="vendor/uPlot.iife.min.js"></script>
   </head>
   <body>
     <script>
@@ -105,6 +107,6 @@
       </article>
     </template>
 
-    <script src="app.js?v=editor-187"></script>
+    <script type="module" src="app.js"></script>
   </body>
 </html>

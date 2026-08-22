@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MPL-2.0
-"""The sim-control writer against the frozen 48-byte block layout."""
+"""The sim-control writer against the frozen 56-byte block layout."""
 
 from __future__ import annotations
 
@@ -8,13 +8,13 @@ import struct
 from motion_spec.dashboard.control import SIZE, ControlChannel, ctrl_shm_name
 
 # The contract, restated independently of the implementation: version, seq, pause, speed,
-# stop, ack_seq -- one 8-byte word each, little-endian.
-BLOCK = struct.Struct("<QQqdqQ")
+# stop, ack_seq, steps -- one 8-byte word each, little-endian.
+BLOCK = struct.Struct("<QQqdqQq")
 
 
 def _block(tmp_path, version=1):
     path = tmp_path / "ctrl_block"
-    path.write_bytes(BLOCK.pack(version, 0, 0, 0.0, 0, 0))
+    path.write_bytes(BLOCK.pack(version, 0, 0, 0.0, 0, 0, 0))
     return path
 
 
@@ -22,14 +22,14 @@ def _read(path):
     return BLOCK.unpack(path.read_bytes())
 
 
-def test_the_block_is_forty_eight_bytes_in_the_declared_order(tmp_path):
-    assert SIZE == 48 and BLOCK.size == 48
+def test_the_block_is_fifty_six_bytes_in_the_declared_order(tmp_path):
+    assert SIZE == 56 and BLOCK.size == 56
     path = _block(tmp_path)
     channel = ControlChannel(name=str(path))
     assert channel.available and channel.version == 1
 
     channel.set_pause(True)
-    version, seq, pause, speed, stop, ack = _read(path)
+    version, seq, pause, speed, stop, ack, _steps = _read(path)
     assert (version, pause, stop, ack) == (1, 1, 0, 0)
     assert seq == 1  # the field is set first, then published by bumping seq
     assert speed == 0.0
@@ -45,7 +45,7 @@ def test_each_command_bumps_seq_once(tmp_path):
     assert channel.request_stop() == 3
     assert channel.seq == 3
 
-    _version, _seq, pause, speed, stop, _ack = _read(path)
+    _version, _seq, pause, speed, stop, _ack, _steps = _read(path)
     assert (pause, speed, stop) == (1, 2.0, 1)
     assert channel.paused is True
     channel.close()
@@ -74,14 +74,25 @@ def test_applied_tracks_the_runtimes_ack(tmp_path):
     channel.set_pause(True)
     assert channel.applied == 0 and channel.seq == 1  # not yet acknowledged
 
-    version, seq, pause, speed, stop, _ack = _read(path)
-    path.write_bytes(BLOCK.pack(version, seq, pause, speed, stop, seq))  # the C++ side acks
+    version, seq, pause, speed, stop, _ack, steps = _read(path)
+    path.write_bytes(BLOCK.pack(version, seq, pause, speed, stop, seq, steps))  # the C++ acks
     assert channel.applied == channel.seq
     channel.close()
 
 
+def test_a_paused_run_is_owed_the_ticks_it_is_asked_to_step(tmp_path):
+    """Steps accumulate: two single steps owe two ticks, not one twice over."""
+    path = _block(tmp_path)
+    channel = ControlChannel(name=str(path))
+
+    channel.request_steps()
+    channel.request_steps(3)
+    assert _read(path)[6] == 4
+    channel.close()
+
+
 def test_a_run_without_a_control_block_is_simply_unavailable(tmp_path):
-    """What plan 1a not having landed -- or a real platform -- looks like from here."""
+    """What a real platform -- or a run with no sim control -- looks like from here."""
     channel = ControlChannel(name=str(tmp_path / "absent"))
     assert channel.available is False
     assert channel.set_pause(True) is None

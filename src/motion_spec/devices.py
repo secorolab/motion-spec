@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import os
 import socket
-import tomllib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+import tomllib
 
 ROBOT_TOML_REL = "generated/source/robot.toml"
 # What a device says to wait for a connection, where its table says nothing.
@@ -74,28 +76,51 @@ def _serial_probe(device: str) -> dict:
 
 
 def probe_devices(generation_dir: Path) -> dict:
-    """Try each endpoint one generation names once, now: TCP connect, or stat for serial."""
+    """Try each endpoint one generation names once, now: TCP connect, or stat for serial.
+
+    All of them at the same time. Every unanswered address costs its own connect timeout, and
+    waiting them out one after another is how a refusal takes as long as the robot has ports.
+    """
     toml_path = generation_dir / ROBOT_TOML_REL
     if not toml_path.is_file():
         return {"devices": [], "config": None}
-    devices = []
-    for endpoint in device_endpoints(toml_path):
-        if endpoint["kind"] == "network":
-            timeout_s = endpoint["timeout_ms"] / 1000
-            probes = [
-                _tcp_probe(endpoint["host"], port, timeout_s) for port in endpoint["ports"].values()
-            ]
-            # A host named with no port to knock on is listed, and answers for nothing.
-            devices.append(
-                {
-                    **endpoint,
-                    "ports": probes,
-                    "ok": all(p["ok"] for p in probes) if probes else None,
-                }
-            )
-        else:
-            devices.append({**endpoint, **_serial_probe(endpoint["device"])})
-    return {"devices": devices, "config": str(toml_path)}
+    endpoints = device_endpoints(toml_path)
+    # One job per address, so a host with two ports is two jobs and every job is a leaf. Flat
+    # on purpose: a probe that waits inside the pool for another probe in the same pool stops
+    # dead as soon as the pool runs out of threads.
+    jobs = [
+        (index, port)
+        for index, endpoint in enumerate(endpoints)
+        for port in (endpoint["ports"].values() if endpoint["kind"] == "network" else (None,))
+    ]
+    if not jobs:
+        return {"devices": [dict(endpoint) for endpoint in endpoints], "config": str(toml_path)}
+    with ThreadPoolExecutor(max_workers=min(16, len(jobs))) as pool:
+        answers = list(pool.map(lambda job: _probe(endpoints[job[0]], job[1]), jobs))
+    replies: dict[int, list] = {}
+    for (index, _), answer in zip(jobs, answers):
+        replies.setdefault(index, []).append(answer)
+    return {
+        "devices": [
+            _answered(endpoint, replies.get(index, [])) for index, endpoint in enumerate(endpoints)
+        ],
+        "config": str(toml_path),
+    }
+
+
+def _probe(endpoint: dict, port: int | None) -> dict:
+    """One address, tried once: a port on a host, or a device node."""
+    if port is None:
+        return _serial_probe(endpoint["device"])
+    return _tcp_probe(endpoint["host"], port, endpoint["timeout_ms"] / 1000)
+
+
+def _answered(endpoint: dict, replies: list[dict]) -> dict:
+    """One endpoint and what its addresses said."""
+    if endpoint["kind"] != "network":
+        return {**endpoint, **replies[0]}
+    # A host named with no port to knock on is listed, and answers for nothing.
+    return {**endpoint, "ports": replies, "ok": all(p["ok"] for p in replies) if replies else None}
 
 
 def unreachable(report: dict) -> list[dict]:

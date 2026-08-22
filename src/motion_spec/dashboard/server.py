@@ -1280,8 +1280,7 @@ def start_run(generation_dir: Path, options: dict) -> dict:
     # Only a simulator has a display to drop or a frame to record, whatever the browser posted.
     simulated = is_simulated(generation_dir)
     argv += run_arguments(options, simulated)
-    # The runtime records: it holds the rendered frame, so it writes the video itself rather
-    # than a reader sampling the live block it publishes for viewing.
+    # The runtime records: it holds the rendered frame, so it writes the video itself.
     declared = {camera["id"] for camera in generation_cameras(generation_dir)}
     recording = [
         camera

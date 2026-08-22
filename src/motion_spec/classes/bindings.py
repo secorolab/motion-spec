@@ -92,6 +92,9 @@ class CameraBinding:
     height: int
     rate_hz: float
     uri: str
+    # The frame the camera reports in, named by the sensor the uri points at. A publisher stamps
+    # its images with this, so it must name a frame in the ROS optical convention.
+    frame_id: str = ""
 
 
 @dataclass

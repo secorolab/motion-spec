@@ -105,7 +105,7 @@ robot-shutdown-mj_kdl-KinovaGen3(solver) ::= <<
 <endif>
 >>
 
-app-chain-includes-mj_kdl(has_serial_chain, resources) ::= <<
+app-chain-includes-mj_kdl(has_serial_chain, resources, ros) ::= <<
 <if(has_serial_chain)>
 #include \<algorithm\>
 #include \<cstring\>
@@ -116,10 +116,13 @@ app-chain-includes-mj_kdl(has_serial_chain, resources) ::= <<
 #include \<string\>
 #include \<vector\>
 #include "robot_config.hpp"
+<if(ros)>
+#include \<mj_kdl_wrapper/camera_ros.hpp\>
+<endif>
 <endif>
 >>
 
-app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
+app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros) ::= <<
     const auto robot_config = motion_spec::config::load("<config_path>");
     bool headless = false;
     bool steps_limited = false;
@@ -384,9 +387,14 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
     class CameraWorker {
       public:
         CameraWorker(std::string id, int width, int height, mjModel *model, std::string camera,
-                     std::string video_path, int fps)
+                     std::string video_path, int fps<if(ros)>,
+                     std::unique_ptr\<mj_kdl::CameraRosPublisher\> ros_pub<endif>)
             : id_(std::move(id)), width_(width), height_(height), model_(model),
-              camera_(std::move(camera)), video_path_(std::move(video_path)), fps_(fps) {
+              camera_(std::move(camera)), video_path_(std::move(video_path)), fps_(fps)<if(ros)>,
+              ros_pub_(std::move(ros_pub))<endif> {
+<if(ros)>
+            if (ros_pub_) rgb_.resize(static_cast\<std::size_t\>(width) * height * 3);
+<endif>
             copy_ = mj_makeData(model);
             thread_ = std::thread([this] { run(); \});
         \}
@@ -404,10 +412,11 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
         // Called from the control thread, which must never wait on a camera: if the previous
         // frame is still rendering, this one is dropped. A dropped frame costs the video a
         // frame; a blocked controller costs the deadline.
-        void submit(mjData *data) {
+        void submit(mjData *data, double t) {
             std::unique_lock\<std::mutex\> lock(mutex_, std::try_to_lock);
             if (!lock.owns_lock() || pending_) return;
             mj_copyData(copy_, model_, data);
+            stamp_ = t;
             pending_ = true;
             lock.unlock();
             ready_.notify_one();
@@ -417,20 +426,50 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
         void run() {
             // A GL context belongs to the thread that created it, so this one is created here
             // rather than handed over from startup.
+<if(ros)>
+            const bool recording = !video_path_.empty();
+            const bool ready = recording
+                                 ? mj_kdl::init_video_recorder(
+                                     &recorder_, model_, video_path_.c_str(), width_, height_, fps_)
+                                 : mj_kdl::init_offscreen(&recorder_, model_, width_, height_);
+            if (!ready || !mj_kdl::use_camera(&recorder_, model_, camera_.c_str())) {
+                std::cerr \<\< "camera '" \<\< id_ \<\< "': offscreen init failed; "
+                          \<\< (recording ? "not recorded" : "not published") \<\< "\n";
+                return;
+            \}
+<else>
             const bool ready = mj_kdl::init_video_recorder(
                 &recorder_, model_, video_path_.c_str(), width_, height_, fps_);
             if (!ready || !mj_kdl::use_camera(&recorder_, model_, camera_.c_str())) {
                 std::cerr \<\< "camera '" \<\< id_ \<\< "': offscreen init failed; not recorded\n";
                 return;
             \}
+<endif>
             for (;;) {
+<if(ros)>
+                double t = 0.0;
+<endif>
                 {
                     std::unique_lock\<std::mutex\> lock(mutex_);
                     ready_.wait(lock, [this] { return pending_ || quit_; \});
                     if (quit_) break;
+<if(ros)>
+                    t = stamp_;
+<endif>
                 \}
                 // Safe to read copy_ unlocked: submit() leaves it alone while pending_ is set.
+<if(ros)>
+                if (recording) mj_kdl::record_frame(&recorder_, model_, copy_);
+                // record_frame() renders into the recorder's own buffer and hands nothing back, so
+                // a recorded camera renders a second time to publish -- but only when the frame is
+                // due and somebody is subscribed, so an unwatched topic costs nothing.
+                if (ros_pub_ && ros_pub_->wants_frame(t)
+                    && mj_kdl::render_rgb(&recorder_, model_, copy_, rgb_.data())) {
+                    ros_pub_->publish(rgb_.data(), t);
+                \}
+<else>
                 mj_kdl::record_frame(&recorder_, model_, copy_);
+<endif>
                 {
                     std::lock_guard\<std::mutex\> lock(mutex_);
                     pending_ = false;
@@ -446,6 +485,10 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
         std::string camera_;
         std::string video_path_;
         int fps_ = 30;
+<if(ros)>
+        std::unique_ptr\<mj_kdl::CameraRosPublisher\> ros_pub_;
+        std::vector\<std::uint8_t\> rgb_;
+<endif>
         mj_kdl::VideoRecorder recorder_{\};
         mjData *copy_ = nullptr;
         std::thread thread_;
@@ -453,6 +496,7 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
         std::condition_variable ready_;
         bool pending_ = false;
         bool quit_ = false;
+        double stamp_ = 0.0;
     \};
 
     // 'default' is the standard free-camera view a fresh window opens with
@@ -463,7 +507,9 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
         const std::string _default_video = _record_video_path("default");
         if (!_default_video.empty()) {
             _cam_default = std::make_unique\<CameraWorker\>(
-              "default", 1280, 720, mj_env.model, /*camera=*/"", _default_video, 30);
+              "default", 1280, 720, mj_env.model, /*camera=*/"", _default_video, 30<if(ros)>,
+              // The free camera is a view of the scene, not a modelled sensor: no frame to stamp.
+              /*ros_pub=*/nullptr<endif>);
         \}
     \}
 <if(scene.cameras)>
@@ -473,7 +519,12 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
     double _cam_<camera.id>_due_s = 0.0;
     {
         const std::string _video = _record_video_path("<camera.id>");
+<if(ros)>
+        // A camera renders when its frames go somewhere: a recording, a ROS topic, or both.
+        if (!_video.empty() || robot.ros_node) {
+<else>
         if (!_video.empty()) {
+<endif>
             // The compiled scene prefixes a robot's cameras with the robot's name; the model does not.
             const std::string _target = "<camera.id>";
             std::string _name;
@@ -484,12 +535,31 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
                 \}
             \}
             if (_name.empty()) {
+<if(ros)>
+                std::cerr \<\< "camera '<camera.id>' names no camera in the compiled scene; not rendered\\n";
+<else>
                 std::cerr \<\< "camera '<camera.id>' names no camera in the compiled scene; not recorded\\n";
+<endif>
             \} else {
+<if(ros)>
+                mj_kdl::CameraConf _conf;
+                _conf.camera = _name;
+                // The scene's own name for the camera; it must name a ROS-optical frame in TF.
+                _conf.frame_id = "<camera.frame_id>";
+                _conf.topic_ns = "<camera.id>";
+                _conf.width = <camera.width>;
+                _conf.height = <camera.height>;
+                _conf.rate_hz = <camera.rate_hz>;
+<endif>
                 // The worker opens its own render context; a failure there reports and stays silent.
                 _cam_<camera.id> = std::make_unique\<CameraWorker\>(
                   "<camera.id>", <camera.width>, <camera.height>, mj_env.model, _name,
+<if(ros)>
+                  _video, static_cast\<int\>(<camera.rate_hz>),
+                  std::make_unique\<mj_kdl::CameraRosPublisher\>(*robot.ros_node, mj_env.model, _conf));
+<else>
                   _video, static_cast\<int\>(<camera.rate_hz>));
+<endif>
             \}
         \}
     \}
@@ -534,13 +604,13 @@ app-chain-camera-publish-mj_kdl(cameras) ::= <<
         // The default camera records the standard view, scene cameras or not.
         if (_cam_default && shared.clock_time_s \>= _cam_default_due_s) {
             _cam_default_due_s = shared.clock_time_s + 1.0 / 30.0;
-            _cam_default->submit(mj_env.data);
+            _cam_default->submit(mj_env.data, shared.clock_time_s);
         \}
 <cameras:{camera |
         if (_cam_<camera.id> && shared.clock_time_s \>= _cam_<camera.id>_due_s) {
             _cam_<camera.id>_due_s = shared.clock_time_s + 1.0 / <camera.rate_hz>;
             // Copies the state and returns; the render happens on the worker's thread.
-            _cam_<camera.id>->submit(mj_env.data);
+            _cam_<camera.id>->submit(mj_env.data, shared.clock_time_s);
         \}}; separator="\n">
 >>
 

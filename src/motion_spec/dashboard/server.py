@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import dataclasses
 import json
 import os
 import re
@@ -21,6 +22,7 @@ import sys
 import tempfile
 import time
 import threading
+import tomllib
 from datetime import datetime, timezone
 from functools import lru_cache
 from http import HTTPStatus
@@ -937,6 +939,11 @@ def generation_cameras(generation_dir: Path) -> list[dict]:
 LAYOUT_REL = "generated/contract/frame_layout.json"
 
 
+def is_simulated(generation_dir: Path) -> bool:
+    """Whether this generation targets a simulator, which is what makes a display a choice."""
+    return bool(json_file(generation_dir / LAYOUT_REL).get("platform", {}).get("simulated"))
+
+
 def run_videos(run_dir: Path) -> list[str]:
     """The cameras this run recorded, named by their video beside the log."""
     return sorted(path.stem for path in (run_dir / "logs").glob("*.mp4"))
@@ -1017,13 +1024,17 @@ def start_run(generation_dir: Path, options: dict) -> dict:
     # What a browser can meaningfully choose: the rest the dashboard already knows or the CLI
     # decides. A run always verifies what it archived; a recording nobody checked is not
     # worth the disk it sits on.
-    if options.get("headless"):
+    # Only a simulator has a display to drop or a frame to record, whatever the browser posted.
+    simulated = is_simulated(generation_dir)
+    if simulated and options.get("headless"):
         argv.append("--headless")
     # The runtime records: it holds the rendered frame, so it writes the video itself rather
     # than a reader sampling the live block it publishes for viewing.
     declared = {camera["id"] for camera in generation_cameras(generation_dir)}
     recording = [
-        camera for camera in options.get("cameras") or () if camera in declared or camera == "gui"
+        camera
+        for camera in (options.get("cameras") or () if simulated else ())
+        if camera in declared or camera == "default"
     ]
     for camera in recording:
         argv += ["--record", camera]
@@ -1038,6 +1049,217 @@ def start_run(generation_dir: Path, options: dict) -> dict:
         "recording": recording,
         "run": str((generation_dir / "runs" / run_id).relative_to(GENERATIONS)),
     }
+
+
+ROBOT_TOML_REL = "generated/source/robot.toml"
+# What a device says to wait for a connection, where its table says nothing.
+CONNECT_TIMEOUT_MS = 1000
+
+
+def _endpoints(table: dict, name: str):
+    """Every endpoint one table tree names, as what it is rather than what it is called.
+
+    A table with a host is reached over the network on every port it names; one whose port is a
+    device path is reached over serial. Everything else -- topics, poses, tunings -- names
+    nothing to connect to.
+    """
+    port = table.get("port")
+    if name and isinstance(table.get("ip"), str):
+        yield {
+            "name": name,
+            "kind": "network",
+            "host": table["ip"],
+            "ports": {
+                key: value
+                for key, value in table.items()
+                if key.startswith("port") and isinstance(value, int) and not isinstance(value, bool)
+            },
+            "timeout_ms": table.get("connection_timeout_ms") or CONNECT_TIMEOUT_MS,
+        }
+    elif name and isinstance(port, str):
+        # a bare name is one the driver itself resolves under /dev/
+        yield {"name": name, "kind": "serial", "device": port if "/" in port else f"/dev/{port}"}
+    for key, value in table.items():
+        if isinstance(value, dict):
+            yield from _endpoints(value, f"{name}.{key}" if name else key)
+
+
+def device_endpoints(toml_path: Path) -> list[dict]:
+    """What the config connects to: derived from the data, never from section names."""
+    with toml_path.open("rb") as fh:
+        return list(_endpoints(tomllib.load(fh), ""))
+
+
+def _tcp_probe(host: str, port: int, timeout_s: float) -> dict:
+    """Whether something answers on one port, right now."""
+    try:
+        socket.create_connection((host, port), timeout_s).close()
+    except OSError as exc:
+        return {"port": port, "ok": False, "detail": str(exc)}
+    return {"port": port, "ok": True, "detail": None}
+
+
+def _serial_probe(device: str) -> dict:
+    """Whether one serial device is there and this user may open it."""
+    if not Path(device).exists():
+        return {"ok": False, "detail": "no such device"}
+    if not os.access(device, os.R_OK | os.W_OK):
+        return {"ok": False, "detail": "device is not readable and writable by this user"}
+    return {"ok": True, "detail": None}
+
+
+def probe_devices(generation_dir: Path) -> dict:
+    """Try each endpoint once, now: TCP connect for network, stat for serial.
+
+    The wire only: this says a port answers and a device node is openable, never that the
+    protocol behind it agrees. The config's credentials stay in the config.
+    """
+    toml_path = generation_dir / ROBOT_TOML_REL
+    if not toml_path.is_file():
+        return {"devices": [], "config": None}
+    devices = []
+    for endpoint in device_endpoints(toml_path):
+        if endpoint["kind"] == "network":
+            timeout_s = endpoint["timeout_ms"] / 1000
+            probes = [
+                _tcp_probe(endpoint["host"], port, timeout_s) for port in endpoint["ports"].values()
+            ]
+            # A host named with no port to knock on is listed, and answers for nothing.
+            devices.append(
+                {
+                    **endpoint,
+                    "ports": probes,
+                    "ok": all(p["ok"] for p in probes) if probes else None,
+                }
+            )
+        else:
+            devices.append({**endpoint, **_serial_probe(endpoint["device"])})
+    return {"devices": devices, "config": str(toml_path)}
+
+
+HEALTH: dict = {"checks": None, "stamp": None, "thread": None}
+
+
+def health_report(refresh: bool = False) -> dict:
+    """The CLI's health checks, run once and remembered; refresh reruns them.
+
+    Some checks configure CMake projects, so they take seconds: run them on a thread the page
+    polls rather than holding a request open, and keep the answer for the server's lifetime.
+    """
+    thread = HEALTH["thread"]
+    running = thread is not None and thread.is_alive()
+    if not running and (refresh or HEALTH["checks"] is None):
+        from motion_spec.health import check_health
+
+        def collect() -> None:
+            checks = check_health(("all",), ("mujoco", "robif2b"))
+            HEALTH["checks"] = [dataclasses.asdict(check) for check in checks]
+            HEALTH["stamp"] = time.time()
+
+        HEALTH["thread"] = threading.Thread(target=collect, daemon=True)
+        HEALTH["thread"].start()
+        running = True
+    return {"running": running, "checks": HEALTH["checks"], "stamp": HEALTH["stamp"]}
+
+
+CONSOLE_CHUNK = 256 * 1024
+
+
+def console_slice(log: Path, offset: int) -> dict:
+    """One poll of a text log: the bytes from offset, and where to ask from next.
+
+    Raw text, ANSI escapes included: the page renders the colors and drops the rest.
+    """
+    if not log.is_file():
+        return {"text": "", "offset": 0, "size": 0}
+    size = log.stat().st_size
+    if offset > size:
+        offset = 0  # the log was replaced; start over
+    with log.open("rb") as fh:
+        fh.seek(offset)
+        data = fh.read(CONSOLE_CHUNK)
+    return {
+        "text": data.decode("utf-8", errors="replace"),
+        "offset": offset + len(data),
+        "size": size,
+    }
+
+
+def console_log_for(path: Path) -> Path:
+    """Which terminal log a dashboard path means: a run's console, or a generation's runner log."""
+    if (path / "generated/model/ir.json").is_file():
+        return path / RUN_LOG
+    return path / "logs" / "console.log"
+
+
+GENERATING: dict[str, dict] = {}
+# under GENERATIONS; the catalog only lists generation dirs, but keep the logs out of the way
+GENERATE_LOGS = ".dashboard"
+
+
+def start_generate(source: Path, run: bool = True) -> dict:
+    """Generate a .robmot from its page -- and run it, unless asked only to make it.
+
+    Either way the terminal words are the record. Generate-only still builds, so the
+    generation's own page can run it later; `gen` prints the directory it made on stdout,
+    which is what hands it to `build`.
+    """
+    from motion_spec.generation.pipeline import new_id
+
+    job = new_id("gen")
+    log_dir = GENERATIONS / GENERATE_LOGS
+    log_dir.mkdir(exist_ok=True)
+    log = log_dir / f"{job}.log"
+    if run:
+        argv = ["motion-spec", "run", str(source), "-o", str(GENERATIONS), "--cwd", str(WORKSPACE)]
+    else:
+        # gen narrates on stdout and ends with the bare generation path; the capture eats
+        # both. Announce the path into the log ourselves -- generate_status reads it from
+        # there -- and let build's output carry the rest. (No tee back into the log: a
+        # /dev/fd reopen starts at offset 0 and overwrites what the others wrote.)
+        chain = (
+            f"g=$(motion-spec gen code {shlex.quote(str(source))}"
+            f" -o {shlex.quote(str(GENERATIONS))} | tail -n 1)"
+            f' && printf "generation: %s\\n" "$g" && exec motion-spec build "$g"'
+        )
+        argv = ["sh", "-c", chain]
+    sink = log.open("wb")
+    process = subprocess.Popen(
+        argv, cwd=WORKSPACE, stdout=sink, stderr=sink, start_new_session=True
+    )
+    GENERATING[job] = {"process": process, "log": log, "generation": None}
+    return {"job": job, **generate_status(job)}
+
+
+def generate_status(job: str) -> dict:
+    """How far a page-started generation has got, and which generation it made."""
+    started = GENERATING.get(job)
+    if started is None:
+        raise ValueError("unknown job")
+    process = started["process"]
+    busy = process.poll() is None
+    if started["generation"] is None:
+        # the CLI names the generation before generating: "generation: <abs path>" on stderr
+        for line in started["log"].read_text(errors="replace").splitlines():
+            if line.startswith("generation: "):
+                made = Path(line.removeprefix("generation: ").strip())
+                if GENERATIONS.resolve() in made.resolve().parents:
+                    started["generation"] = str(made.resolve().relative_to(GENERATIONS.resolve()))
+                break
+    return {
+        "busy": busy,
+        "pid": process.pid if busy else None,
+        "exit_code": None if busy else process.returncode,
+        "generation": started["generation"],
+    }
+
+
+def generate_console(job: str, offset: int) -> dict:
+    """The terminal output of a page-started generation, followed by byte offset."""
+    started = GENERATING.get(job)
+    if started is None:
+        raise ValueError("unknown job")
+    return console_slice(started["log"], offset)
 
 
 _LIVE: dict[str, dict] = {}
@@ -1451,6 +1673,20 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return self.send_json([run_info(path) for path in reversed(runs)])
             if parsed.path == "/api/run":
                 return self.send_json(run_status(relative_path(GENERATIONS, value)))
+            if parsed.path == "/api/devices":
+                return self.send_json(probe_devices(relative_path(GENERATIONS, value)))
+            if parsed.path == "/api/health":
+                return self.send_json(health_report(bool(query.get("refresh", [""])[0])))
+            if parsed.path == "/api/generate":
+                return self.send_json(generate_status(query.get("job", [""])[0]))
+            if parsed.path == "/api/console":
+                offset = int(query.get("offset", ["0"])[0])
+                job = query.get("job", [""])[0]
+                if job:
+                    return self.send_json(generate_console(job, offset))
+                # expected_path, not relative_path: a run directory is named before it exists
+                target = expected_path(GENERATIONS, value)
+                return self.send_json(console_slice(console_log_for(target), offset))
             if parsed.path == "/api/queries":
                 return self.send_json(saved_queries(expected_path(GENERATIONS, value)))
             if parsed.path == "/api/video":
@@ -1500,6 +1736,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if self.path == "/api/run":
                 return self.send_json(
                     start_run(relative_path(GENERATIONS, body["path"]), body.get("options") or {})
+                )
+            if self.path == "/api/generate":
+                # source_path takes any authored file; only a .robmot is a whole run to make
+                if not body["path"].endswith(".robmot"):
+                    raise ValueError("only a .robmot generates")
+                return self.send_json(
+                    start_generate(source_path(body["path"]), run=body.get("run", True))
                 )
             if self.path == "/api/live":
                 return self.send_json(live_state(relative_path(GENERATIONS, body["path"])))

@@ -733,8 +733,9 @@ def _is_simulated(generation: Path) -> bool:
     "record",
     multiple=True,
     metavar="CAMERA",
-    help="Record this camera to MP4 beside the log. 'gui' is the window's own view and "
-    "needs a GUI run; others are the cameras the scene declares. Repeatable.",
+    help="Record this camera to MP4 beside the log. 'default' is the standard camera view "
+    "(the pose a fresh GUI window opens with) and records with or without a window; others "
+    "are the cameras the scene declares. Repeatable.",
 )
 @click.option("--steps", type=click.IntRange(min=1), help="Maximum headless simulation steps.")
 @click.argument("executable-args", nargs=-1, type=click.UNPROCESSED)
@@ -818,8 +819,9 @@ def run(
     "record",
     multiple=True,
     metavar="CAMERA",
-    help="Record this camera to MP4 beside the log. 'gui' is the window's own view and "
-    "needs a GUI run; others are the cameras the scene declares. Repeatable.",
+    help="Record this camera to MP4 beside the log. 'default' is the standard camera view "
+    "(the pose a fresh GUI window opens with) and records with or without a window; others "
+    "are the cameras the scene declares. Repeatable.",
 )
 @click.option("--steps", type=click.IntRange(min=1), help="Maximum headless simulation steps.")
 @click.argument("executable-args", nargs=-1, type=click.UNPROCESSED)

@@ -355,20 +355,9 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
         return std::string();
     \};
 
-    // 'gui' is the window's own view, read back rather than rendered again.
-    const std::string _gui_video = _record_video_path("gui");
-    if (!_gui_video.empty()) {
-        if (headless) {
-            std::cerr \<\< "--record gui needs a window; declare a camera in the scene to "
-                         "record a headless run\\n";
-        \} else if (!mj_kdl::start_window_recording(&mj_viewer, _gui_video.c_str(), 30)) {
-            std::cerr \<\< "recording the window failed; the run continues without it\\n";
-        \}
-    \}
-
     // A camera this build knows nothing about would otherwise be skipped in silence.
     {
-        const std::vector\<std::string\> _recordable = {"gui"<scene.cameras:{camera |, "<camera.id>"}>\};
+        const std::vector\<std::string\> _recordable = {"default"<scene.cameras:{camera |, "<camera.id>"}>\};
         const char *_asked = std::getenv("MOTION_SPEC_RECORD_CAMERAS");
         const std::string _list(_asked ? _asked : "");
         for (std::size_t _start = 0; !_list.empty() && _start \<= _list.size();) {
@@ -383,10 +372,6 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
             _start = _end + 1;
         \}
     \}
-#endif
-<if(scene.cameras)>
-#ifdef MOTION_SPEC_ENABLE_INTROSPECTION
-    const std::vector\<std::string\> _mj_camera_names = mj_kdl::get_camera_names(mj_env.model);
 
     // An offscreen render costs milliseconds; the control loop has one. Rendering inside the
     // tick made a camera model miss its deadline on every published frame -- ~300 of 9967 ticks,
@@ -483,6 +468,20 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
         bool quit_ = false;
         double stamp_ = 0.0;
     \};
+
+    // 'default' is the standard free-camera view a fresh window opens with
+    // (mjv_defaultFreeCamera), rendered offscreen; it does not follow the window.
+    std::unique_ptr\<CameraWorker\> _cam_default;
+    double _cam_default_due_s = 0.0;
+    {
+        const std::string _default_video = _record_video_path("default");
+        if (!_default_video.empty()) {
+            _cam_default = std::make_unique\<CameraWorker\>(
+              "default", 1280, 720, mj_env.model, /*camera=*/"", _default_video, 30);
+        \}
+    \}
+<if(scene.cameras)>
+    const std::vector\<std::string\> _mj_camera_names = mj_kdl::get_camera_names(mj_env.model);
 <scene.cameras:{camera |
     std::unique_ptr\<CameraWorker\> _cam_<camera.id>;
     double _cam_<camera.id>_due_s = 0.0;
@@ -506,8 +505,8 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
         \}
     \}
 }; separator="\n">
-#endif
 <endif>
+#endif
 >>
 
 app-chain-post-setup-mj_kdl(serial_chain_solvers, motions, agent_homes) ::= <<
@@ -543,6 +542,11 @@ app-loop-condition-mj_kdl(has_serial_chain) ::= <<
 // Sim time drives the cadence, so a paused or slowed run publishes at the rate the model asked
 // for in the world the camera looks at, not at the rate the wall clock ticks.
 app-chain-camera-publish-mj_kdl(cameras) ::= <<
+        // The default camera records the standard view, scene cameras or not.
+        if (_cam_default && shared.clock_time_s \>= _cam_default_due_s) {
+            _cam_default_due_s = shared.clock_time_s + 1.0 / 30.0;
+            _cam_default->submit(mj_env.data, shared.clock_time_s);
+        \}
 <cameras:{camera |
         if (_cam_<camera.id> && shared.clock_time_s \>= _cam_<camera.id>_due_s) {
             _cam_<camera.id>_due_s = shared.clock_time_s + 1.0 / <camera.rate_hz>;
@@ -552,6 +556,7 @@ app-chain-camera-publish-mj_kdl(cameras) ::= <<
 >>
 
 app-chain-camera-cleanup-mj_kdl(cameras) ::= <<
+    _cam_default.reset();   // joins the render thread and releases its context
 <cameras:{camera |
     _cam_<camera.id>.reset();   // joins the render thread and releases its context}; separator="\n">
 >>

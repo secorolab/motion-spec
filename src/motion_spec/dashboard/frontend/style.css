@@ -38,6 +38,8 @@ nav button.active { color: var(--text); border-color: var(--accent); }
   padding: 0 14px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px;
 }
 #storage { margin-left: auto; color: var(--dim); font-size: 9px; white-space: nowrap; }
+#health { margin-left: 10px; color: var(--dim); font-size: 9px; letter-spacing: .06em; }
+#health:hover { color: var(--accent); }
 .root-control { display: flex; border-bottom: 1px solid var(--line); }
 #generation-root {
   min-width: 0; flex: 1; padding: 5px 14px; border: 0; outline: 0;
@@ -360,6 +362,18 @@ body:has(.notebook) #content { position: relative; max-width: none; padding: 0; 
 .sparql-run { display: flex; align-items: center; gap: 10px; }
 .sparql-run button { padding: 6px 14px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 11px var(--mono); cursor: pointer; }
 .sparql-run button:hover { border-color: var(--accent); color: var(--accent); }
+.console { max-height: 420px; margin: 0; padding: 12px 14px; overflow-y: auto; border: 1px solid var(--line); background: var(--surface); color: var(--text); font: 11.5px/1.55 var(--code); white-space: pre-wrap; overflow-wrap: anywhere; }
+.console[hidden] { display: none; }
+/* Terminal SGR palette, muted to sit on --surface. */
+.ansi-b { font-weight: 600; }
+.ansi-30, .ansi-90 { color: #6b7480; }
+.ansi-31, .ansi-91 { color: #e06c75; }
+.ansi-32, .ansi-92 { color: #98c379; }
+.ansi-33, .ansi-93 { color: #d19a66; }
+.ansi-34, .ansi-94 { color: #61afef; }
+.ansi-35, .ansi-95 { color: #c678dd; }
+.ansi-36, .ansi-96 { color: #56b6c2; }
+.ansi-37, .ansi-97 { color: #d7dae0; }
 #answer { max-height: 420px; overflow: auto; border: 1px solid var(--line); }
 #answer table { width: 100%; border-collapse: collapse; font: 11px var(--code); }
 #answer th { position: sticky; top: 0; padding: 6px 8px; background: var(--bg); color: var(--dim); text-align: left; font-weight: 400; }
@@ -462,3 +476,33 @@ body.sidebar-collapsed .run-bar { left: calc(24px + (100vw - 24px) / 2); }
 .transport-controls #cancel-run:hover { background: #382b29; }
 .transport-live .timeline { cursor: default; }
 .transport-live .playhead { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+
+.devices { margin: 0 0 28px; }
+.devices[hidden] { display: none; }
+.devices-head { display: flex; align-items: center; gap: 12px; }
+.devices-head h2 { margin: 0; }
+.devices-test { padding: 4px 10px; border: 1px solid var(--line); color: var(--muted); font: 10px var(--mono); letter-spacing: .06em; }
+.devices-test:hover { border-color: var(--accent); color: var(--accent); }
+.devices-state { color: var(--dim); font: 10px var(--mono); }
+.device-rows { display: grid; gap: 1px; margin-top: 14px; background: var(--line); }
+.device-rows:empty { display: none; }
+.device { display: flex; align-items: center; gap: 10px; padding: 6px 9px; background: var(--surface); color: var(--muted); font: 11px var(--mono); }
+.device-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
+.device[data-ok="true"] .device-dot { background: var(--good); }
+.device[data-ok="false"] .device-dot { background: var(--accent); }
+.device-where { color: var(--text); }
+.device-detail { margin-left: auto; color: var(--accent); }
+
+.health-bar { display: flex; align-items: center; gap: 12px; margin: 20px 0; }
+.health-recheck { padding: 5px 12px; border: 1px solid var(--accent); color: var(--accent); font: 10px var(--mono); letter-spacing: .08em; }
+.health-recheck:hover:enabled { background: #382b29; }
+.health-recheck:disabled { border-color: var(--line); color: var(--dim); cursor: default; }
+.health-state { color: var(--dim); font: 10px var(--mono); }
+.health-groups { display: grid; gap: 20px; }
+.health-group { display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); }
+.health-profile { padding: 6px 9px; background: var(--bg); color: var(--accent); font: 10px var(--mono); letter-spacing: .08em; }
+.health-check { display: flex; align-items: center; gap: 10px; padding: 6px 9px; background: var(--surface); color: var(--muted); font: 11px var(--mono); }
+.health-check strong { color: var(--text); }
+.health-mark { width: 12px; color: var(--good); }
+.health-check[data-ok="false"] .health-mark { color: var(--accent); }
+.health-remedy { margin-left: auto; color: var(--accent); font: 10px var(--code); }

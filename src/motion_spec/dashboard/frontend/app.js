@@ -7,7 +7,7 @@ const MAGNIFIER_IN = `path://${MAGNIFIER} M5.4,8.1 L11,8.1 M8.2,5.3 L8.2,10.9`;
 const MAGNIFIER_OUT = `path://${MAGNIFIER} M5.4,8.1 L11,8.1`;
 const RESET_ARROW = "path://M15.4,9.6 A6.2,6.2 0 1,1 9.2,3.4 M9.2,0.7 L9.2,6.1 M6.5,3.4 L11.9,3.4";
 let plotKeys = 0;
-const state = { replay: null, queries: [], query: -1, anchor: null, runPath: null, generationPath: null, tab: "logs", frame: 0, charts: [], selected: new Set(), timer: null, roots: {}, cache: {}, listRequest: 0, live: null, speed: 1 };
+const state = { replay: null, queries: [], query: -1, anchor: null, runPath: null, generationPath: null, tab: "logs", frame: 0, charts: [], selected: new Set(), timer: null, roots: {}, cache: {}, listRequest: 0, live: null, speed: 1, consoleWatch: null };
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 let snackTimer;
@@ -148,10 +148,11 @@ function filterGenerations(value) {
   });
 }
 
-function bindRunAgain(page, path, cameras) {
+function bindRunAgain(page, path, cameras, simulated) {
   const bar = page.querySelector(".run-bar");
   const state_ = bar.querySelector(".run-state");
   const start = bar.querySelector(".run-start");
+  const failed = page.querySelector(".run-console");
   // Each option is a choice between two named states, not a flag to guess the meaning of.
   bar.querySelectorAll(".run-choice").forEach((choice) => {
     choice.querySelectorAll("button").forEach((option) => {
@@ -159,59 +160,53 @@ function bindRunAgain(page, path, cameras) {
         other.setAttribute("aria-pressed", other === option));
     });
   });
-  // The cameras the model declares, plus the window's own view, which needs no declaring.
-  // A list that opens: a scene can declare more cameras than a bar has room for.
-  const record = bar.querySelector(".run-record");
-  const offered = [{ id: "gui", title: "the window's own view; needs a GUI run" }, ...cameras];
-  const menu = document.createElement("details");
-  menu.className = "picker camera-menu";
-  menu.innerHTML = '<summary></summary><div class="picker-panel"></div>';
-  const summary = menu.querySelector("summary");
-  const chosen = () => [...menu.querySelectorAll('.run-camera[aria-pressed="true"]')]
-    .filter((chip) => !chip.hidden).map((chip) => chip.dataset.camera);
-  const label = () => {
-    const available = [...menu.querySelectorAll(".run-camera")].filter((chip) => !chip.hidden);
-    const picked = chosen().length;
-    summary.textContent = picked ? `${picked} camera${picked === 1 ? "" : "s"}` : "none";
-    // Nothing to record from is not an empty menu to open: the whole control goes away.
-    record.hidden = !available.length;
-    if (!available.length) menu.open = false;
-  };
-  menu.querySelector(".picker-panel").append(...offered.map((camera) => {
-    const chip = document.createElement("button");
-    chip.className = "run-camera";
-    chip.dataset.camera = camera.id;
-    chip.setAttribute("aria-pressed", "false");
-    chip.textContent = camera.id;
-    chip.title = camera.width ? `${camera.width}×${camera.height}` : camera.title ?? camera.id;
-    chip.onclick = () => {
-      chip.setAttribute("aria-pressed", chip.getAttribute("aria-pressed") !== "true");
-      label();
+  // Hardware takes neither: the CLI rejects a headless real run, and recording one comes later.
+  bar.querySelector('.run-choice[data-option="headless"]').hidden = !simulated;
+  let chosen = () => [];
+  if (simulated) {
+    // The cameras the model declares, plus the standard view, which needs no declaring.
+    // A list that opens: a scene can declare more cameras than a bar has room for.
+    const record = bar.querySelector(".run-record");
+    const offered = [{ id: "default", title: "standard camera view" }, ...cameras];
+    const menu = document.createElement("details");
+    menu.className = "picker camera-menu";
+    menu.innerHTML = '<summary></summary><div class="picker-panel"></div>';
+    const summary = menu.querySelector("summary");
+    chosen = () => [...menu.querySelectorAll('.run-camera[aria-pressed="true"]')]
+      .filter((chip) => !chip.hidden).map((chip) => chip.dataset.camera);
+    const label = () => {
+      const available = [...menu.querySelectorAll(".run-camera")].filter((chip) => !chip.hidden);
+      const picked = chosen().length;
+      summary.textContent = picked ? `${picked} camera${picked === 1 ? "" : "s"}` : "none";
+      // Nothing to record from is not an empty menu to open: the whole control goes away.
+      record.hidden = !available.length;
+      if (!available.length) menu.open = false;
     };
-    return chip;
-  }));
-  record.append(menu);
-  menu.onkeydown = (event) => {
-    if (event.key === "Escape") menu.open = false;
-  };
-  // Same as the other menus on this page: clicking away closes it.
-  document.addEventListener("click", (event) => {
-    if (menu.open && !menu.contains(event.target)) menu.open = false;
-  });
-  label();
-  // Headless has no window to read back, so the view that comes from one is not on offer.
-  const guiOnly = () => {
-    const headless = bar.querySelector('.run-choice[data-option="headless"] button[aria-pressed="true"]');
-    const chip = record.querySelector('.run-camera[data-camera="gui"]');
-    chip.hidden = headless?.dataset.value === "true";
-    if (chip.hidden) chip.setAttribute("aria-pressed", "false");
+    menu.querySelector(".picker-panel").append(...offered.map((camera) => {
+      const chip = document.createElement("button");
+      chip.className = "run-camera";
+      chip.dataset.camera = camera.id;
+      chip.setAttribute("aria-pressed", "false");
+      chip.textContent = camera.id;
+      chip.title = camera.width ? `${camera.width}×${camera.height}` : camera.title ?? camera.id;
+      chip.onclick = () => {
+        chip.setAttribute("aria-pressed", chip.getAttribute("aria-pressed") !== "true");
+        label();
+      };
+      return chip;
+    }));
+    record.append(menu);
+    menu.onkeydown = (event) => {
+      if (event.key === "Escape") menu.open = false;
+    };
+    // Same as the other menus on this page: clicking away closes it.
+    document.addEventListener("click", (event) => {
+      if (menu.open && !menu.contains(event.target)) menu.open = false;
+    });
     label();
-  };
-  bar.querySelectorAll('.run-choice[data-option="headless"] button').forEach((option) =>
-    option.addEventListener("click", guiOnly));
-  guiOnly();
+  }
 
-  const options = () => ({
+  const options = () => (simulated ? {
     ...Object.fromEntries(
       [...bar.querySelectorAll(".run-choice[data-option]")].map((choice) => [
         choice.dataset.option,
@@ -219,7 +214,7 @@ function bindRunAgain(page, path, cameras) {
       ]),
     ),
     cameras: chosen(),
-  });
+  } : {});
   // While it runs the page cannot say more than the runner does; watch until it stops, then
   // put the run it made in the list.
   let sawRunning = false;
@@ -229,6 +224,7 @@ function bindRunAgain(page, path, cameras) {
     if (status.running) {
       sawRunning = true;
       start.disabled = true;
+      failed.hidden = true;
       state_.textContent = status.pid ? `running · pid ${status.pid}` : "running";
       return;
     }
@@ -237,6 +233,13 @@ function bindRunAgain(page, path, cameras) {
     state_.textContent = sawRunning
       ? (status.exit_code ? `exited ${status.exit_code}` : "run finished")
       : "";
+    // A run that failed says why here rather than sending the reader to a file.
+    if (sawRunning && status.exit_code) {
+      consoleExcerpt(path).then((pre) => {
+        failed.replaceChildren(...pre.childNodes);
+        failed.hidden = !failed.textContent;
+      });
+    }
     api(`/api/runs?path=${encodeURIComponent(path)}`).then(state.generation?.setRuns);
     // Only an ending this page watched happen is news, and the run's own page may have said
     // it already, seconds earlier.
@@ -280,9 +283,50 @@ function bindRunAgain(page, path, cameras) {
   }).catch(() => {});
 }
 
+// A hardware generation names every endpoint it drives, so the wire can be tested here rather
+// than failing into the run console. Only when asked: a probe is a connection attempt.
+function bindDevices(page, path) {
+  const panel = page.querySelector(".devices");
+  const rows = panel.querySelector(".device-rows");
+  const state_ = panel.querySelector(".devices-state");
+  panel.hidden = false;
+  panel.querySelector(".devices-test").onclick = async () => {
+    state_.textContent = "testing…";
+    rows.replaceChildren();
+    try {
+      const report = await api(`/api/devices?path=${encodeURIComponent(path)}`);
+      state_.textContent = report.config ? "" : "this generation archived no robot.toml";
+      rows.replaceChildren(...report.devices.flatMap(deviceRows));
+    } catch (error) {
+      state_.textContent = error.message;
+    }
+  };
+}
+
+// One row per thing actually knocked on: a network device has a row per port, a serial one its
+// device node. Host, port and path only -- what the config holds to log in with stays there.
+function deviceRows(device) {
+  const targets = device.kind === "network"
+    ? device.ports.map((probe) => ({ ...probe, where: `${device.host}:${probe.port}` }))
+    : [{ ok: device.ok, detail: device.detail, where: device.device }];
+  if (!targets.length) targets.push({ ok: null, detail: "no port to test", where: device.host });
+  return targets.map((target) => {
+    const row = document.createElement("div");
+    row.className = "device";
+    row.dataset.ok = String(target.ok);
+    row.innerHTML = '<span class="device-dot"></span><strong></strong>'
+      + '<span class="device-where"></span><span class="device-detail"></span>';
+    row.querySelector("strong").textContent = device.name;
+    row.querySelector(".device-where").textContent = target.where;
+    row.querySelector(".device-detail").textContent = target.ok ? "" : target.detail ?? "";
+    return row;
+  });
+}
+
 async function selectGeneration(path) {
   state.anchor = path;
   clearInterval(state.liveWatch);   // following a live run belongs to the run page that left
+  clearInterval(state.consoleWatch);
   state.runPath = null;
   state.live = state.following = null;
   setView("generation", path);
@@ -374,7 +418,8 @@ async function selectGeneration(path) {
   if (pages > 1) pager.innerHTML = `<button>‹</button><span>1 / ${pages}</span><button>›</button>`;
   pager.querySelectorAll("button")[0]?.addEventListener("click", () => { runPage = Math.max(0, runPage - 1); renderRuns(); pager.querySelector("span").textContent = `${runPage + 1} / ${pages}`; });
   pager.querySelectorAll("button")[1]?.addEventListener("click", () => { runPage = Math.min(pages - 1, runPage + 1); renderRuns(); pager.querySelector("span").textContent = `${runPage + 1} / ${pages}`; });
-  bindRunAgain(page, path, generation.cameras ?? []);
+  bindRunAgain(page, path, generation.cameras ?? [], generation.simulated);
+  if (!generation.simulated) bindDevices(page, path);
   $("#content").replaceChildren(page);
   state.generation = {
     path,
@@ -544,9 +589,7 @@ async function openPendingRun(runPath) {
     if (status && !status.busy) {
       // over without ever writing a log: the runner's own words are all there is to show
       clearInterval(hop);
-      $("#content").innerHTML = `<div class="empty"><span>ERROR</span><h1>The run never `
-        + `started.</h1><p>exited ${status.exit_code ?? "?"}; see dashboard-run.log in the `
-        + "generation directory.</p></div>";
+      await showRunNeverStarted(state.generationPath, status.exit_code);
     }
   }, 300);
 }
@@ -582,6 +625,7 @@ async function loadReplay(path) {
   setTransportMode();
   showVideos(path, state.replay.videos ?? []);
   followLiveRun(path);
+  followConsole(path);
   // Built from the generation's contract before the runtime wrote anything: hold the page
   // until the log begins.
   if (state.replay.pending) settle(true, "waiting for the run to start…");
@@ -619,6 +663,12 @@ function showVideos(runPath, cameras) {
     `/api/video?path=${encodeURIComponent(runPath)}&camera=${encodeURIComponent(camera)}`;
   const main = panel.querySelector("video");
   main.oncontextmenu = (event) => event.preventDefault();
+  // The other half of syncVideo's one-seek-at-a-time: a drag's newest target lands here.
+  main.onseeked = () => {
+    const queued = main._queuedSeek;
+    main._queuedSeek = undefined;
+    if (queued !== undefined) main.currentTime = queued;
+  };
   const minimize = panel.querySelector(".video-min");
   const setMinimized = (small) => {
     panel.classList.toggle("minimized", small);
@@ -694,9 +744,7 @@ async function followLiveRun(runPath) {
       if (status && !status.busy) {
         clearInterval(state.liveWatch);
         settle(false);
-        $("#content").innerHTML = `<div class="empty"><span>ERROR</span><h1>The run never `
-          + `started.</h1><p>exited ${status.exit_code ?? "?"}; see dashboard-run.log in the `
-          + "generation directory.</p></div>";
+        await showRunNeverStarted(state.replay.generation, status.exit_code);
       }
       return;
     }
@@ -738,6 +786,83 @@ async function followLiveRun(runPath) {
   };
   await poll();
   state.liveWatch = setInterval(poll, 1000);
+}
+
+// Stay on the newest line, unless the reader scrolled up to read an older one.
+function appendConsole(pre, text) {
+  const follow = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+  // The log is terminal output: render its SGR color escapes as spans (built with
+  // textContent, so log content can never become markup) and draw nothing for the rest.
+  text = (pre._ansiTail ?? "") + text;
+  // An escape split across two polls would render as junk once; hold the tail back instead.
+  const cut = text.match(/\x1b(\[[0-9;]*)?$/);
+  pre._ansiTail = cut ? cut[0] : "";
+  if (cut) text = text.slice(0, -cut[0].length);
+  for (const part of text.split(/(\x1b\[[0-9;]*[A-Za-z])/)) {
+    if (!part) continue;
+    if (part.startsWith("\x1b")) {
+      if (part.endsWith("m")) pre._ansiClasses = sgrClasses(pre._ansiClasses ?? [], part);
+      continue;   // cursor-movement escapes draw nothing on a page
+    }
+    if (!pre._ansiClasses?.length) {
+      pre.append(document.createTextNode(part));
+    } else {
+      const span = document.createElement("span");
+      span.className = pre._ansiClasses.join(" ");
+      span.textContent = part;
+      pre.append(span);
+    }
+  }
+  if (follow) pre.scrollTop = pre.scrollHeight;
+}
+
+// One SGR escape applied to the classes in force: reset clears, bold and the 16 foreground
+// colors map to .ansi-* rules; anything else changes nothing.
+function sgrClasses(classes, escape) {
+  for (const code of escape.slice(2, -1).split(";").map((n) => Number(n || 0))) {
+    if (code === 0) classes = [];
+    else if (code === 1) classes = [...classes.filter((c) => c !== "ansi-b"), "ansi-b"];
+    else if (code === 22) classes = classes.filter((c) => c !== "ansi-b");
+    else if (code === 39) classes = classes.filter((c) => c === "ansi-b");
+    else if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97)) {
+      classes = [...classes.filter((c) => !c.startsWith("ansi-3") && !c.startsWith("ansi-9")), `ansi-${code}`];
+    }
+  }
+  return classes;
+}
+
+// Follow the run's terminal words the way the plots follow its frames.
+function followConsole(runPath) {
+  clearInterval(state.consoleWatch);
+  let offset = 0;
+  const pre = $("#console-text");
+  const poll = async () => {
+    if (state.runPath !== runPath || !pre.isConnected) return clearInterval(state.consoleWatch);
+    const slice = await api(`/api/console?path=${encodeURIComponent(runPath)}&offset=${offset}`)
+      .catch(() => null);
+    if (!slice || !slice.text) return;
+    offset = slice.offset;
+    appendConsole(pre, slice.text);
+  };
+  poll();
+  state.consoleWatch = setInterval(poll, 1000);
+}
+
+// The runner's last words, for a page that would otherwise name a file to go read in a terminal.
+async function consoleExcerpt(path, lines = 50) {
+  const slice = await api(`/api/console?path=${encodeURIComponent(path)}`).catch(() => null);
+  const pre = document.createElement("pre");
+  pre.className = "console";
+  appendConsole(pre, (slice?.text ?? "").trimEnd().split("\n").slice(-lines).join("\n"));
+  return pre;
+}
+
+// A run that ended before it wrote anything: what the runner printed is all there is to show.
+async function showRunNeverStarted(generationPath, exitCode) {
+  $("#content").innerHTML = '<div class="empty"><span>ERROR</span>'
+    + "<h1>The run never started.</h1><p></p></div>";
+  $(".empty p").textContent = `exited ${exitCode ?? "?"}`;
+  $(".empty").append(await consoleExcerpt(generationPath));
 }
 
 function populateConstraints() {
@@ -849,7 +974,7 @@ const CANNED = {
 function replayShell(path) {
   // The run page's markup, with what the reply fills left blank: the numbers, the timeline's
   // range and the constraint list.
-  return `<div class="replay"><div class="replay-heading"><button id="back" title="Back to generation">←</button><h1>${path.split("/").pop()}</h1><div class="replay-tabs"><button data-panel="plots" class="active">Plots</button><button data-panel="sparql">SPARQL</button></div><span class="eyebrow">RUN</span></div><section id="panel-plots"><div class="constraint-panel"><div class="eyebrow">SOURCE CONSTRAINTS</div><input id="constraint-search" type="search" placeholder="Search .robmot constraints"><div id="constraints" class="constraints"></div></div><div class="chart-controls"><button id="plot">Add empty plot</button><button id="notebook">Open in Jupyter</button></div><div id="plots" class="plots"></div></section><section id="panel-sparql" hidden><div class="sparql"><div class="query-rail"><button id="new-query" class="new-query">+ query</button></div><div class="sparql-body"><div class="sparql-canned"></div><textarea id="query" spellcheck="false"></textarea><div class="sparql-run"><button id="ask">Run query</button><span id="query-status" class="path"></span></div><div id="answer"></div></div></div></section></div><div class="settling" hidden><div class="spinner"></div><span>archiving the run…</span></div><div class="videos" hidden><button class="video-min" title="Minimize"></button><div class="video-main"><video preload="auto" playsinline disablepictureinpicture controlslist="nodownload noplaybackrate noremoteplayback"></video><span class="video-name"></span></div><div class="video-strip"></div></div><div class="transport"><div class="transport-controls"><button id="step-back" title="Previous frame">‹</button><button id="play">Play</button><button id="step-forward" title="Next frame">›</button><details class="picker speed-menu"><summary>1×</summary><div class="picker-panel"><button data-value="0.25">0.25×</button><button data-value="0.5">0.5×</button><button data-value="1" aria-pressed="true">1×</button><button data-value="2">2×</button><button data-value="5">5×</button></div></details><span id="readout" class="path"></span><button id="cancel-run" title="End the run" hidden>cancel</button></div><div class="markers"></div><input class="timeline" type="range" min="0" max="0" value="0" disabled></div>`;
+  return `<div class="replay"><div class="replay-heading"><button id="back" title="Back to generation">←</button><h1>${path.split("/").pop()}</h1><div class="replay-tabs"><button data-panel="plots" class="active">Plots</button><button data-panel="sparql">SPARQL</button><button data-panel="console">Console</button></div><span class="eyebrow">RUN</span></div><section id="panel-plots"><div class="constraint-panel"><div class="eyebrow">SOURCE CONSTRAINTS</div><input id="constraint-search" type="search" placeholder="Search .robmot constraints"><div id="constraints" class="constraints"></div></div><div class="chart-controls"><button id="plot">Add empty plot</button><button id="notebook">Open in Jupyter</button></div><div id="plots" class="plots"></div></section><section id="panel-sparql" hidden><div class="sparql"><div class="query-rail"><button id="new-query" class="new-query">+ query</button></div><div class="sparql-body"><div class="sparql-canned"></div><textarea id="query" spellcheck="false"></textarea><div class="sparql-run"><button id="ask">Run query</button><span id="query-status" class="path"></span></div><div id="answer"></div></div></div></section><section id="panel-console" hidden><pre id="console-text" class="console"></pre></section></div><div class="settling" hidden><div class="spinner"></div><span>archiving the run…</span></div><div class="videos" hidden><button class="video-min" title="Minimize"></button><div class="video-main"><video preload="auto" playsinline disablepictureinpicture controlslist="nodownload noplaybackrate noremoteplayback"></video><span class="video-name"></span></div><div class="video-strip"></div></div><div class="transport"><div class="transport-controls"><button id="step-back" title="Previous frame">‹</button><button id="play">Play</button><button id="step-forward" title="Next frame">›</button><details class="picker speed-menu"><summary>1×</summary><div class="picker-panel"><button data-value="0.25">0.25×</button><button data-value="0.5">0.5×</button><button data-value="1" aria-pressed="true">1×</button><button data-value="2">2×</button><button data-value="5">5×</button></div></details><span id="readout" class="path"></span><button id="cancel-run" title="End the run" hidden>cancel</button></div><div class="markers"></div><input class="timeline" type="range" min="0" max="0" value="0" disabled></div>`;
 }
 
 function bindPanels() {
@@ -858,6 +983,7 @@ function bindPanels() {
       button.classList.toggle("active", button.dataset.panel === panel));
     $("#panel-plots").hidden = panel !== "plots";
     $("#panel-sparql").hidden = panel !== "sparql";
+    $("#panel-console").hidden = panel !== "console";
     state.charts.forEach((chart) => chart.resize());
     if (!remember) return;
     const view = new URLSearchParams(location.hash.slice(1));
@@ -1285,7 +1411,12 @@ function syncVideo(force = false) {
   const video = playingVideo();
   if (!video) return;
   const target = trackFraction(state.frame) * video.duration;
-  if (force || Math.abs(video.currentTime - target) > 0.25) video.currentTime = target;
+  if (!force && Math.abs(video.currentTime - target) <= 0.25) return;
+  // Scrubbing fires seeks faster than the decoder lands them, and each new one aborts the
+  // last mid-decode: the picture stutters. Land one seek at a time; a drag only queues its
+  // newest target, applied by the seeked handler when the decoder is free.
+  if (video.seeking) video._queuedSeek = target;
+  else video.currentTime = target;
 }
 
 function togglePlayback() {
@@ -1619,6 +1750,89 @@ async function openSource(source) {
       }
     } catch (error) { snack(error.message); }
   };
+  // Only a .robmot is a whole generation to make; the other authored files are parts of one.
+  if (source.endsWith(".robmot")) bindGenerate(source);
+}
+
+// Generate, build and run a model from its own page, showing the terminal that does it.
+function bindGenerate(source) {
+  // Two ways in: make the generation and stop, or make it and watch it run.
+  const generate = document.createElement("button");
+  generate.className = "run-start";
+  generate.textContent = "generate";
+  const start = document.createElement("button");
+  start.className = "run-start";
+  start.textContent = "▶ generate & run";
+  const state_ = document.createElement("span");
+  state_.className = "run-state";
+  const open = document.createElement("button");
+  open.className = "run-start";
+  open.textContent = "open generation";
+  open.hidden = true;
+  $(".viewer .open-with").append(generate, start, open, state_);
+  const pre = document.createElement("pre");
+  pre.className = "console";
+  pre.hidden = true;
+  $(".viewer-heading").after(pre);
+
+  const stop = () => {
+    clearInterval(state.generateWatch);
+    clearInterval(state.generateConsole);
+  };
+  const busy = (working) => { generate.disabled = start.disabled = working; };
+  const gone = () => state.viewing !== source || !pre.isConnected;
+  const launch = async (run) => {
+    stop();
+    busy(true);
+    open.hidden = true;
+    state_.textContent = "starting…";
+    pre.textContent = "";
+    pre.hidden = false;
+    let offset = 0;
+    try {
+      const started = await post("/api/generate", { path: source, run });
+      state_.textContent = `running · pid ${started.pid}`;
+      const tail = async () => {
+        if (gone()) return stop();
+        const slice = await api(`/api/console?job=${encodeURIComponent(started.job)}&offset=${offset}`)
+          .catch(() => null);
+        if (!slice || !slice.text) return;
+        offset = slice.offset;
+        appendConsole(pre, slice.text);
+      };
+      const check = async () => {
+        if (gone()) return stop();
+        const status = await api(`/api/generate?job=${encodeURIComponent(started.job)}`)
+          .catch(() => null);
+        if (!status) return;
+        state_.textContent = status.busy
+          ? `running · pid ${status.pid}`
+          : `exited ${status.exit_code}`;
+        if (status.generation) {
+          open.hidden = false;
+          open.onclick = () => {
+            setTab("logs");
+            // the generation is new: the sidebar has not listed it yet
+            loadGenerations(true).then(() => selectGeneration(status.generation)).catch(showError);
+          };
+        }
+        if (status.busy) return;
+        clearInterval(state.generateWatch);
+        busy(false);
+        await tail();   // the closing lines land after the process is already gone
+        clearInterval(state.generateConsole);
+      };
+      await tail();
+      state.generateConsole = setInterval(tail, 1000);
+      state.generateWatch = setInterval(check, 2000);
+    } catch (error) {
+      stop();
+      busy(false);
+      state_.textContent = error.message;
+    }
+  };
+  generate.onclick = () => launch(false);
+  start.onclick = () => launch(true);
 }
 
 function filterSources(value) {
@@ -1674,6 +1888,58 @@ $("#refresh").onclick = () => {
   const load = state.tab === "logs" ? loadGenerations : loadSources;
   load(true).catch(showError);
 };
+$("#health").onclick = () => loadHealth().catch(showError);
+
+// Why a build or a run cannot work, before it is tried: the CLI's own checks, on the page.
+// The checks cost seconds, so the server runs them on a thread and this follows it.
+async function loadHealth(refresh = false) {
+  clearTimeout(state.healthWatch);
+  const report = await api(`/api/health${refresh ? "?refresh=1" : ""}`);
+  renderHealth(report);
+  if (report.running) state.healthWatch = setTimeout(() => loadHealth().catch(showError), 2000);
+}
+
+function renderHealth(report) {
+  const page = document.createElement("article");
+  page.className = "health";
+  page.innerHTML = '<div class="page-heading"><h1>Installation health</h1>'
+    + '<span class="eyebrow">HEALTH</span></div>'
+    + '<div class="health-bar"><button class="health-recheck">re-check</button>'
+    + '<span class="health-state"></span></div><div class="health-groups"></div>';
+  page.querySelector(".health-state").textContent = report.running
+    ? "checking…"
+    : report.stamp ? `checked ${stampText(new Date(report.stamp * 1000).toISOString())}` : "";
+  const recheck = page.querySelector(".health-recheck");
+  recheck.disabled = report.running;
+  recheck.onclick = () => loadHealth(true).catch(showError);
+  const groups = new Map();
+  (report.checks ?? []).forEach((check) => {
+    groups.set(check.profile, [...(groups.get(check.profile) ?? []), check]);
+  });
+  page.querySelector(".health-groups").replaceChildren(...[...groups].map(([profile, checks]) => {
+    const group = document.createElement("div");
+    group.className = "health-group";
+    const heading = document.createElement("div");
+    heading.className = "health-profile";
+    heading.textContent = profile;
+    group.append(heading, ...checks.map((check) => {
+      const row = document.createElement("div");
+      row.className = "health-check";
+      row.dataset.ok = String(check.ok);
+      row.innerHTML = '<span class="health-mark"></span><strong></strong>'
+        + '<span class="health-what"></span><code class="health-remedy"></code>';
+      row.querySelector(".health-mark").textContent = check.ok ? "✓" : "✗";
+      row.querySelector("strong").textContent = check.dependency;
+      row.querySelector(".health-what").textContent = check.what;
+      // A failing check without the command that fixes it is a complaint, not a report.
+      row.querySelector(".health-remedy").textContent = check.ok ? "" : check.detail;
+      return row;
+    }));
+    return group;
+  }));
+  $("#content").replaceChildren(page);
+  $("#status").textContent = "installation health";
+}
 $("#delete-selected").onclick = async () => {
   if (!state.selected.size) return;
   const ok = await askConfirm({

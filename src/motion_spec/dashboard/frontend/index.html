@@ -37,6 +37,7 @@
           <div class="aside-head">
             <span id="list-title">GENERATIONS</span>
             <span id="storage"></span>
+            <button id="health" title="Installation health">health</button>
             <button id="refresh" title="Refresh">↻</button>
           </div>
           <div class="root-control">
@@ -83,12 +84,14 @@
         <div class="page-heading"><h1></h1><span class="eyebrow">GENERATION</span></div>
         <div class="generation-path"><p class="path"></p><button class="copy-generation-path" title="Copy folder path" aria-label="Copy folder path">⧉</button></div>
         <div class="facts"></div>
+        <div class="devices" hidden><div class="devices-head"><h2>Devices</h2><button class="devices-test">test connections</button><span class="devices-state"></span></div><div class="device-rows"></div></div>
         <p class="generation-description"></p>
         <div class="source-files"></div>
         <div class="run-heading"><h2>Recorded runs</h2><div class="run-bar"><span class="run-choice" data-option="headless"><em>display</em><button data-value="false" aria-pressed="true">GUI</button><button data-value="true" aria-pressed="false">headless</button></span><span class="run-choice run-record" hidden><em>record</em></span><button class="run-start">▶ run</button><span class="run-state"></span></div></div>
         <div class="run-header"><span>#</span><span>Run</span><span>Started</span><span>Duration</span><span>Frames</span><span>Status</span></div>
         <div class="runs"></div>
         <div class="run-pagination"></div>
+        <pre class="console run-console" hidden></pre>
         <div class="graph-heading"><h2>RDF graph viz</h2></div>
         <p class="graph-help">Select RDF files to render their complete RDF graph.</p>
         <div class="graph-options"></div>
@@ -98,6 +101,6 @@
       </article>
     </template>
 
-    <script src="app.js?v=webgl-rdf-149"></script>
+    <script src="app.js?v=default-151"></script>
   </body>
 </html>

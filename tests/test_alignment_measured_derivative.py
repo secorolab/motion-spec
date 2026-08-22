@@ -23,10 +23,10 @@ from motion_spec.rdf_parser.ir import generate_ir
 MODELS = Path(__file__).parents[2] / "motion-spec-dsl" / "models"
 METAMODELS = Path(__file__).resolve().parents[2] / "metamodels"
 
-# The stock motion pairs its alignment with a full orientation hold and drives the alignment as an
-# f_ext moment, so the alignment claims no solver row. Driving it with a pid instead makes it two
-# angular rows, which the orientation hold already owns -- hence dropping that hold as well, or the
-# solve is rejected for repeating an acceleration axis.
+# The stock motion holds full orientation and leaves its alignment cone monitored-only, so the
+# alignment claims no solver row. Driving it with a pid instead makes it two angular rows, which
+# the orientation hold already owns -- hence dropping that hold as well, or the solve is rejected
+# for repeating an acceleration axis.
 WHILE_ORI = (
     "        comply-ori: keeping <shared.world.pose-ee-base>.orientation equal to "
     "<spec.hold-orientation>.orientation within <shared.spec.satisfied-band-rot>,\n"
@@ -41,15 +41,11 @@ CTRL_ORI = (
     "            decay: 0\n"
     "        },\n"
 )
-MOMENT_ALIGN = (
-    "        impedance ctrl-comply-align-forearm { constraint: <compliance.align-forearm>, "
-    "output-saturation: saturation { max: <shared.spec.align-moment-max> }, "
-    "stiffness: 40, damping: 8 }\n            apply at <kinova.forearm_link>"
-)
+ELBOW_CTRL = "        pid ctrl-comply-elbow {"
 ROW_ALIGN = (
     "        pid ctrl-comply-align-forearm { constraint: <compliance.align-forearm>, "
     "measured-derivative: <shared.world.twist-ee-base>.angvel, "
-    "Kp: 240, Ki: 0, Kd: 32, decay: 0 }"
+    "Kp: 240, Ki: 0, Kd: 32, decay: 0 },\n"
 )
 
 
@@ -65,10 +61,10 @@ def _model_driving_alignment_with_a_pid(tmp_path: Path) -> Path:
 
     path = model_dir / "admittance_arc_single.robmot"
     text = path.read_text()
-    for anchor in (WHILE_ORI, CTRL_ORI, MOMENT_ALIGN):
+    for anchor in (WHILE_ORI, CTRL_ORI, ELBOW_CTRL):
         assert anchor in text, f"model no longer carries the anchor:\n{anchor}"
     text = text.replace(WHILE_ORI, "", 1).replace(CTRL_ORI, "", 1)
-    path.write_text(text.replace(MOMENT_ALIGN, ROW_ALIGN, 1))
+    path.write_text(text.replace(ELBOW_CTRL, ROW_ALIGN + ELBOW_CTRL, 1))
     return path
 
 

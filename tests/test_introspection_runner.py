@@ -91,7 +91,7 @@ def test_interrupted_runner_recovers_runtime_ttl(tmp_path: Path, monkeypatch) ->
     executable = _log_copy_executable(tmp_path / "log-copy")
     run_dir = tmp_path / "run-002"
 
-    def interrupt(_executable, _args, *, cwd, frame_log, run_id, rec_path):
+    def interrupt(_executable, _args, *, cwd, frame_log, run_id, rec_path, **_recording):
         frame_log.parent.mkdir(parents=True)
         shutil.copyfile(source / "frame_log.pb", frame_log)
         runner._finish_rec_run(rec_path, run_id, "INTERRUPTED")

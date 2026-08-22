@@ -12,6 +12,13 @@ from motion_spec.cli import main
 from motion_spec import setup as stst_setup
 
 
+def _declare_simulated(generation: Path) -> None:
+    """The IR slice `run` reads before touching hardware: a simulated platform, nothing else."""
+    model = generation / "generated" / "model"
+    model.mkdir(parents=True, exist_ok=True)
+    (model / "ir.json").write_text(json.dumps({"configuration": {"platform": {"simulated": True}}}))
+
+
 def test_cli_exposes_lazy_click_commands(monkeypatch, tmp_path) -> None:
     runner = CliRunner()
 
@@ -30,6 +37,7 @@ def test_cli_exposes_lazy_click_commands(monkeypatch, tmp_path) -> None:
     (generation / "generated").mkdir(parents=True)
     (generation / "build").mkdir()
     (generation / "build" / "main").write_text("")
+    _declare_simulated(generation)
     received = {}
     monkeypatch.setattr(
         "motion_spec.introspection.runner.run_cataloged",
@@ -51,6 +59,7 @@ def test_rerun_runs_a_generation_again_under_a_new_id(monkeypatch, tmp_path) -> 
     (generation / "generated").mkdir(parents=True)
     (generation / "build").mkdir()
     (generation / "build" / "main").write_text("")
+    _declare_simulated(generation)
     received = {}
     monkeypatch.setattr(
         "motion_spec.introspection.runner.run_cataloged",
@@ -75,6 +84,7 @@ def test_rerun_takes_the_generation_latest_points_at(monkeypatch, tmp_path) -> N
     generation = tmp_path / "generation" / "model" / "20260815T000000000000Z"
     (generation / "build").mkdir(parents=True)
     (generation / "build" / "main").write_text("")
+    _declare_simulated(generation)
     monkeypatch.setenv(cli.GENERATION_DIR_ENV, str(tmp_path / "generation"))
     cli._point_latest(generation)
     received = {}
@@ -150,7 +160,9 @@ def test_rerun_reports_a_latest_generation_that_is_not_built(monkeypatch, tmp_pa
 
 
 def test_gen_and_run_compose_the_model_pipeline(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("MOTION_SPEC_GEN", str(tmp_path))  # `latest` belongs to this tree, not the user's
+    monkeypatch.setenv(
+        "MOTION_SPEC_GEN", str(tmp_path)
+    )  # `latest` belongs to this tree, not the user's
     model = tmp_path / "demo.robmot"
     model.write_text("")
     received = {}

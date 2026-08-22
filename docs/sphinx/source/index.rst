@@ -39,6 +39,7 @@ running an existing one.
    concepts
    sim-real-parity
    loop-timing
+   dashboard
    tutorials/index
 
 .. toctree::

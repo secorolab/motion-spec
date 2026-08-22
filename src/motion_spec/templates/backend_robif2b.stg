@@ -425,7 +425,7 @@ robot-shutdown-robif2b-KinovaGen3(solver) ::= <<
 <endif>
 >>
 
-app-chain-includes-robif2b(has_serial_chain, resources) ::= <<
+app-chain-includes-robif2b(has_serial_chain, resources, ros) ::= <<
 <if(has_serial_chain)>
 #include \<iostream\>
 #include "robot_config.hpp"
@@ -433,7 +433,7 @@ app-chain-includes-robif2b(has_serial_chain, resources) ::= <<
 <endif><endif>
 >>
 
-app-chain-setup-robif2b(serial_chain_solvers, scene, config_path) ::= <<
+app-chain-setup-robif2b(serial_chain_solvers, scene, config_path, ros) ::= <<
     const auto robot_config = motion_spec::config::load("<config_path>");
 <serial_chain_solvers:{solver |
 

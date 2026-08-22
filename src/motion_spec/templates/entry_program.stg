@@ -19,7 +19,7 @@ main_source(configuration, resources, composition, computation, coordination, co
 <endif>
 <coordination.motions:{motion | <motion-include(motion)>}; separator="\n">
 
-<app-chain-includes(configuration.backend, resources.by_kind.serial_chain, resources)>
+<app-chain-includes(configuration.backend, resources.by_kind.serial_chain, resources, communication.ros)>
 #include \<unistd.h\>
 <if(coordination.fsm)>
 
@@ -46,7 +46,7 @@ int main(int argc, char **argv) {
 <endif>
 <if(resources.by_kind.serial_chain)>
 
-<app-chain-setup(configuration.backend, resources.by_kind.serial_chain, composition.scene, configuration.platform.config)>
+<app-chain-setup(configuration.backend, resources.by_kind.serial_chain, composition.scene, configuration.platform.config, communication.ros)>
 
 <world-model-wiring(resources, communication, configuration.backend)>
 <configuration.config_poses:{pose |     shared.<pose.id> = motion_spec::config::pose(robot_config, "<pose.config_key>");

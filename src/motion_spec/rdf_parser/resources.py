@@ -392,6 +392,8 @@ def _cameras(model, hosted, runtime_prefix) -> list:
                 height=int(graph.value(sensor, URI_SENS_PRED_RESOLUTION_HEIGHT).toPython()),
                 rate_hz=get_update_rate(graph, ModelBase(node_id=sensor, graph=graph)),
                 uri=str(sensor),
+                # Prefixed like id: two arms' wrist cameras must not share a frame name.
+                frame_id=f"{runtime_prefix}{local_name(sensor)}",
             )
         )
     return cameras

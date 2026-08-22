@@ -39,7 +39,7 @@ emit-call-ErrorEvaluator(closure, views) ::= <<
 >>
 
 emit-call-PoseDiffEvaluator(closure, views) ::= <<
-shared.<closure.out> = KDL::diff(shared.<closure.in1>, shared.<closure.in2>);
+shared.<closure.out> = motion_spec::runtime::short_way_rotation(KDL::diff(shared.<closure.in1>, shared.<closure.in2>));
 <closure.errors:{error | shared.<error> = <access-expr(error, views)>;}; separator="\n">
 >>
 
@@ -273,12 +273,19 @@ pose-axis-error-group-pose(g, views) ::= <<
 <endif>
 <if(g.linear_z)>        _pose_axis_target_<g.id>.p[2] = <access-expr(g.linear_z, views)>;
 <endif>
-<if(g.has_angular)>        const double _pose_axis_roll_<g.id> = <if(g.angular_x)><access-expr(g.angular_x, views)><else>0.0<endif>;
-        const double _pose_axis_pitch_<g.id> = <if(g.angular_y)><access-expr(g.angular_y, views)><else>0.0<endif>;
-        const double _pose_axis_yaw_<g.id> = <if(g.angular_z)><access-expr(g.angular_z, views)><else>0.0<endif>;
+<if(g.has_angular)>        // An angular axis the motion does not state keeps the rotation the arm is at, so it
+        // contributes nothing to the error instead of being driven to zero.
+        double _pose_axis_roll_<g.id>, _pose_axis_pitch_<g.id>, _pose_axis_yaw_<g.id>;
+        shared.<g.pose>.M.GetRPY(_pose_axis_roll_<g.id>, _pose_axis_pitch_<g.id>, _pose_axis_yaw_<g.id>);
+<if(g.angular_x)>        _pose_axis_roll_<g.id> = <access-expr(g.angular_x, views)>;
+<endif>
+<if(g.angular_y)>        _pose_axis_pitch_<g.id> = <access-expr(g.angular_y, views)>;
+<endif>
+<if(g.angular_z)>        _pose_axis_yaw_<g.id> = <access-expr(g.angular_z, views)>;
+<endif>
         _pose_axis_target_<g.id>.M = KDL::Rotation::RPY(_pose_axis_roll_<g.id>, _pose_axis_pitch_<g.id>, _pose_axis_yaw_<g.id>);
 <endif>
-        const KDL::Twist _pose_axis_error_<g.id> = KDL::diff(shared.<g.pose>, _pose_axis_target_<g.id>);
+        const KDL::Twist _pose_axis_error_<g.id> = motion_spec::runtime::short_way_rotation(KDL::diff(shared.<g.pose>, _pose_axis_target_<g.id>));
 <if(g.linear_x)>        const double _pose_axis_error_linear_X = _pose_axis_error_<g.id>.vel.x();
 <endif>
 <if(g.linear_y)>        const double _pose_axis_error_linear_Y = _pose_axis_error_<g.id>.vel.y();

@@ -145,6 +145,9 @@ class Pose:
     euler_intrinsic: bool = field(default=False, metadata=INTERNAL)
     orientation_representation: str = field(default="quaternion", metadata=INTERNAL)
     orientation_operands: list | None = None
+    # Set when wrt/as-seen-by name a chain frame other than the root: the pose is then composed
+    # from two world-model reads instead of one read off the chain root. Codegen-facing.
+    relative_to_frame: Frame | None = None
     provenance: Provenance = field(default_factory=Provenance)
     type: str = field(default="Pose")
 

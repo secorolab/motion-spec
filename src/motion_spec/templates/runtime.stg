@@ -289,6 +289,21 @@ inline double clamp01(double v) {
     return v;
 }
 
+// A rotation error past pi is the same rotation taken the short way round. Handed the long way,
+// a controller drives the tumble on instead of unwinding it.
+inline KDL::Vector short_way_rotation(KDL::Vector error) {
+    const double angle = error.Norm();
+    if (angle > M_PI) {
+        error -= (2.0 * M_PI / angle) * error;
+    }
+    return error;
+}
+
+inline KDL::Twist short_way_rotation(KDL::Twist difference) {
+    difference.rot = short_way_rotation(difference.rot);
+    return difference;
+}
+
 // A rotation authored as literals is resolved to a quaternion before it reaches here. One
 // whose angles arrive at runtime is composed from these, so the control loop still turns a
 // quaternion rather than rebuilding a matrix from angles.

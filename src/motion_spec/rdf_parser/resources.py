@@ -745,6 +745,9 @@ def _placed_on_chain(carrier, backend: str) -> tuple[tuple[str, bool], ...]:
         # asked to see in another frame is that same twist rotated, and the frame it rotates
         # into is read off the world model like any other posed frame.
         return (("of", False), ("as_seen_by", True))
+    if getattr(carrier, "relative_to_frame", None) is not None:
+        # A link-relative pose reads both of its ends off the world model.
+        return (("of", True), ("relative_to_frame", True))
     return (("of", getattr(carrier, "type", "") == "Pose"),)
 
 
@@ -884,7 +887,11 @@ def _observes_in_frame(model, node, type_, chain_root, runtime_prefix, owned_tre
             runtime_frame = f"{runtime_prefix}{local_name(frame_body)}"
         # A twist seen by a frame this chain carries is this chain's to answer: it is the FK
         # twist rotated into a frame that moves with the arm, which only this chain can place.
-        if runtime_frame != chain_root and type_ == GEOM_COORD.VelocityTwistCoordinate:
+        # A pose likewise: wrt any frame the chain carries, it is two world reads composed.
+        if runtime_frame != chain_root and type_ in (
+            GEOM_COORD.VelocityTwistCoordinate,
+            GEOM_COORD.PoseCoordinate,
+        ):
             return on_this_chain, frame_node
 
         return runtime_frame == chain_root, frame_node
@@ -968,6 +975,15 @@ def _runtime_output(model, output, type_, node, frame_node, setup: _ChainSetup):
     if type_ == GEOM_COORD.VelocityTwistCoordinate:
         seen_by = _runtime_frame(model, frame_node, setup.runtime.prefix, setup.runtime.owned_trees)
         return replace(output, as_seen_by=seen_by, seen_by_root=seen_by.id == setup.chain.root)
+    if type_ == GEOM_COORD.PoseCoordinate and frame_node is not None:
+        seen_by = _runtime_frame(model, frame_node, setup.runtime.prefix, setup.runtime.owned_trees)
+        if seen_by.id == setup.chain.root:
+            return output
+        # Only wrt == as-seen-by composes as one relative pose; anything else stays unwritten.
+        wrt_id = getattr(getattr(output, "with_respect_to", None), "id", None)
+        if wrt_id != getattr(getattr(output, "as_seen_by", None), "id", None):
+            return output
+        return replace(output, as_seen_by=seen_by, relative_to_frame=seen_by)
     if type_ != RBDYN_COORD.WrenchCoordinate:
         return output
 

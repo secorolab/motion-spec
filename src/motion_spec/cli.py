@@ -727,8 +727,15 @@ def _is_simulated(generation: Path) -> bool:
 @click.option("-j", "--jobs", type=click.IntRange(min=1))
 @click.option("--run-id")
 @click.option("--cwd", type=click.Path(exists=True, file_okay=False, path_type=Path))
-@click.option("--no-verify", is_flag=True)
 @click.option("--headless", is_flag=True, help="Run without a GUI.")
+@click.option(
+    "--record",
+    "record",
+    multiple=True,
+    metavar="CAMERA",
+    help="Record this camera to MP4 beside the log. 'gui' is the window's own view and "
+    "needs a GUI run; others are the cameras the scene declares. Repeatable.",
+)
 @click.option("--steps", type=click.IntRange(min=1), help="Maximum headless simulation steps.")
 @click.argument("executable-args", nargs=-1, type=click.UNPROCESSED)
 def run(
@@ -738,8 +745,8 @@ def run(
     jobs: int | None,
     run_id: str | None,
     cwd: Path | None,
-    no_verify: bool,
     headless: bool,
+    record: tuple[str, ...],
     steps: int | None,
     executable_args: tuple[str, ...],
 ) -> None:
@@ -790,7 +797,7 @@ def run(
             run_id=run_id,
             cwd=cwd,
             recover_runtime_ttl=True,
-            verify=not no_verify,
+            record=list(record),
         )
     except (ArchiveError, RunnerError) as exc:
         raise click.ClickException(str(exc)) from exc
@@ -805,8 +812,15 @@ def run(
 )
 @click.option("--run-id")
 @click.option("--cwd", type=click.Path(exists=True, file_okay=False, path_type=Path))
-@click.option("--no-verify", is_flag=True)
 @click.option("--headless", is_flag=True, help="Run without a GUI.")
+@click.option(
+    "--record",
+    "record",
+    multiple=True,
+    metavar="CAMERA",
+    help="Record this camera to MP4 beside the log. 'gui' is the window's own view and "
+    "needs a GUI run; others are the cameras the scene declares. Repeatable.",
+)
 @click.option("--steps", type=click.IntRange(min=1), help="Maximum headless simulation steps.")
 @click.argument("executable-args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
@@ -815,8 +829,8 @@ def rerun(
     generation: Path | None,
     run_id: str | None,
     cwd: Path | None,
-    no_verify: bool,
     headless: bool,
+    record: tuple[str, ...],
     steps: int | None,
     executable_args: tuple[str, ...],
 ) -> None:
@@ -835,8 +849,8 @@ def rerun(
         jobs=None,
         run_id=run_id,
         cwd=cwd,
-        no_verify=no_verify,
         headless=headless,
+        record=record,
         steps=steps,
         executable_args=executable_args,
     )

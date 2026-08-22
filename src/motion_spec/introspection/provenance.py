@@ -189,6 +189,7 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
         "frame_layout.json",
         "frame_layout.h",
         "frame_log.proto",
+        "frame_log_header.pb",
         "provenance.ld.json",
         "introspection_runtime.hpp",
         "introspect_model.hpp",

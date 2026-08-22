@@ -110,7 +110,7 @@ int main(int argc, char **argv) {
 <if(resources.by_kind.serial_chain)>
 <app-chain-control-apply(configuration.backend, resources.by_kind.serial_chain)>
 <endif>
-        if (_ctrl.pause && !motion_spec::runtime::stop_requested()) {
+        if (_ctrl.pause && !_ctrl.step && !motion_spec::runtime::stop_requested()) {
 <if(resources.by_kind.serial_chain)>
 <app-chain-control-paused-step(configuration.backend, resources.by_kind.serial_chain)>
 <endif>

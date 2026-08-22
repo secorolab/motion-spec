@@ -812,6 +812,13 @@ def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path) 
     end_state = schema.get("fsm", {}).get("end")
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "frame_layout.json").write_text(json.dumps(layout, indent=4) + "\n")
+    header_record = build_frame_log_header_record(schema)
+    # The same delimited record the runtime writes as the log's first bytes: a reader gets the
+    # decode contract from the generation before any run has written a log.
+    from motion_spec.introspection import frame_log_pb
+
+    with (output_dir / "frame_log_header.pb").open("wb") as fh:
+        frame_log_pb.write_delimited(fh, header_record)
     (output_dir / "provenance.ld.json").write_text(
         json.dumps(build_provenance_document(ir, output_dir), indent=4) + "\n"
     )
@@ -837,7 +844,7 @@ def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path) 
             "end_state": end_state if end_state is not None else -1,
             "nominal_period_ns": schema.get("control_period_ns") or 0,
             "protobuf": schema["protobuf"],
-            "header_record_rows": _hex_rows(build_frame_log_header_record(schema)),
+            "header_record_rows": _hex_rows(header_record),
         },
         "model": build_introspection_model(schema, ir),
     }

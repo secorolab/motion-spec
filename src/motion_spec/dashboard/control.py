@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 """Write the generated loop's sim-control block.
 
-48 bytes, little-endian, one 8-byte word per field, so each word is individually atomic and
+56 bytes, little-endian, one 8-byte word per field, so each word is individually atomic and
 no seqlock is needed: set the field, then bump seq. The runtime copies ack_seq back once it
 has applied that seq. Simulated platforms only -- on a real one the block is never created.
 """
@@ -13,9 +13,11 @@ import struct
 
 from motion_spec.dashboard.frames import shm_path
 
-SIZE = 48
+SIZE = 56
 VERSION = 1
-_VERSION_OFF, _SEQ_OFF, _PAUSE_OFF, _SPEED_OFF, _STOP_OFF, _ACK_OFF = range(0, SIZE, 8)
+(_VERSION_OFF, _SEQ_OFF, _PAUSE_OFF, _SPEED_OFF, _STOP_OFF, _ACK_OFF, _STEPS_OFF) = range(
+    0, SIZE, 8
+)
 SPEED_MIN, SPEED_MAX = 0.1, 10.0
 
 
@@ -71,6 +73,13 @@ class ControlChannel:
 
     def request_stop(self) -> int | None:
         return self._write(_STOP_OFF, "<q", 1)
+
+    def request_steps(self, ticks: int = 1) -> int | None:
+        """Owe a paused run this many more ticks; it counts them down one per poll."""
+        if not self.available:
+            return None
+        pending = struct.unpack_from("<q", self._mm, _STEPS_OFF)[0]
+        return self._write(_STEPS_OFF, "<q", max(0, pending) + max(1, int(ticks)))
 
     @property
     def version(self) -> int | None:

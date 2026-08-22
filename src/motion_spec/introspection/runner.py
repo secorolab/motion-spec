@@ -46,7 +46,7 @@ def run_cataloged(
     run_id: str | None = None,
     cwd: Path | str | None = None,
     recover_runtime_ttl: bool = False,
-    verify: bool = True,
+    record: list[str] | None = None,
 ) -> int:
     """Run a generated executable with REC lifecycle and archive provenance."""
     run_dir = Path(run_dir)
@@ -76,6 +76,7 @@ def run_cataloged(
             frame_log=frame_log,
             run_id=run_id,
             rec_path=rec_path,
+            record=record,
         )
     except Exception:
         _finish_rec_run(rec_path, run_id, "FAILED")
@@ -120,8 +121,8 @@ def run_cataloged(
             print(f"runtime.ttl recovered in {time.monotonic() - started:.1f}s")
         if returncode == 0:
             _finish_rec_run(rec_path, run_id, "COMPLETED")
-            if verify:
-                verify_manifest(run_dir)
+            # A recording nobody checked is not worth the disk it sits on.
+            verify_manifest(run_dir)
     except Exception:
         if returncode == 0:
             _finish_rec_run(rec_path, run_id, "FAILED")
@@ -373,12 +374,18 @@ def _run_executable(
     frame_log: Path,
     run_id: str,
     rec_path: Path,
+    record: list[str] | None = None,
 ) -> int:
     frame_log.parent.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env["MOTION_SPEC_FRAME_LOG"] = str(frame_log.resolve())
     env["MOTION_SPEC_RUN_ID"] = run_id
     env["MOTION_SPEC_REC_PATH"] = str(rec_path.resolve())
+    # A camera to record, and where the video goes: the runtime renders the frame, so it
+    # writes the file, beside the log of the same run.
+    if record:
+        env["MOTION_SPEC_RECORD_CAMERAS"] = ",".join(record)
+        env["MOTION_SPEC_RECORD_DIR"] = str(frame_log.parent.resolve())
     command = [str(executable), *executable_args]
     # Why a run died is otherwise only on the operator's terminal: tee it into the run dir.
     console = (frame_log.parent / "console.log").open("w", encoding="utf-8", errors="replace")

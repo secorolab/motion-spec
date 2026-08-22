@@ -7,8 +7,9 @@ const MAGNIFIER_IN = `path://${MAGNIFIER} M5.4,8.1 L11,8.1 M8.2,5.3 L8.2,10.9`;
 const MAGNIFIER_OUT = `path://${MAGNIFIER} M5.4,8.1 L11,8.1`;
 const RESET_ARROW = "path://M15.4,9.6 A6.2,6.2 0 1,1 9.2,3.4 M9.2,0.7 L9.2,6.1 M6.5,3.4 L11.9,3.4";
 let plotKeys = 0;
-const state = { replay: null, queries: [], query: -1, anchor: null, runPath: null, generationPath: null, tab: "logs", frame: 0, charts: [], selected: new Set(), timer: null, roots: {}, cache: {}, listRequest: 0 };
+const state = { replay: null, queries: [], query: -1, anchor: null, runPath: null, generationPath: null, tab: "logs", frame: 0, charts: [], selected: new Set(), timer: null, roots: {}, cache: {}, listRequest: 0, live: null, speed: 1 };
 const $ = (selector) => document.querySelector(selector);
+const $$ = (selector) => [...document.querySelectorAll(selector)];
 let snackTimer;
 
 function snack(message) {
@@ -117,7 +118,7 @@ async function loadGenerations(refresh = false) {
     };
     summary.append(all);
     group.append(summary, ...entries.map((generation) => listItem(
-      generation.created,
+      stampText(generation.created),
       [generation.variant, stampText(generation.built_at),
        `${generation.runs} runs`, formatBytes(generation.size_bytes)].filter(Boolean).join(" · "),
       (event) => {
@@ -147,8 +148,143 @@ function filterGenerations(value) {
   });
 }
 
+function bindRunAgain(page, path, cameras) {
+  const bar = page.querySelector(".run-bar");
+  const state_ = bar.querySelector(".run-state");
+  const start = bar.querySelector(".run-start");
+  // Each option is a choice between two named states, not a flag to guess the meaning of.
+  bar.querySelectorAll(".run-choice").forEach((choice) => {
+    choice.querySelectorAll("button").forEach((option) => {
+      option.onclick = () => choice.querySelectorAll("button").forEach((other) =>
+        other.setAttribute("aria-pressed", other === option));
+    });
+  });
+  // The cameras the model declares, plus the window's own view, which needs no declaring.
+  // A list that opens: a scene can declare more cameras than a bar has room for.
+  const record = bar.querySelector(".run-record");
+  const offered = [{ id: "gui", title: "the window's own view; needs a GUI run" }, ...cameras];
+  const menu = document.createElement("details");
+  menu.className = "picker camera-menu";
+  menu.innerHTML = '<summary></summary><div class="picker-panel"></div>';
+  const summary = menu.querySelector("summary");
+  const chosen = () => [...menu.querySelectorAll('.run-camera[aria-pressed="true"]')]
+    .filter((chip) => !chip.hidden).map((chip) => chip.dataset.camera);
+  const label = () => {
+    const available = [...menu.querySelectorAll(".run-camera")].filter((chip) => !chip.hidden);
+    const picked = chosen().length;
+    summary.textContent = picked ? `${picked} camera${picked === 1 ? "" : "s"}` : "none";
+    // Nothing to record from is not an empty menu to open: the whole control goes away.
+    record.hidden = !available.length;
+    if (!available.length) menu.open = false;
+  };
+  menu.querySelector(".picker-panel").append(...offered.map((camera) => {
+    const chip = document.createElement("button");
+    chip.className = "run-camera";
+    chip.dataset.camera = camera.id;
+    chip.setAttribute("aria-pressed", "false");
+    chip.textContent = camera.id;
+    chip.title = camera.width ? `${camera.width}×${camera.height}` : camera.title ?? camera.id;
+    chip.onclick = () => {
+      chip.setAttribute("aria-pressed", chip.getAttribute("aria-pressed") !== "true");
+      label();
+    };
+    return chip;
+  }));
+  record.append(menu);
+  menu.onkeydown = (event) => {
+    if (event.key === "Escape") menu.open = false;
+  };
+  // Same as the other menus on this page: clicking away closes it.
+  document.addEventListener("click", (event) => {
+    if (menu.open && !menu.contains(event.target)) menu.open = false;
+  });
+  label();
+  // Headless has no window to read back, so the view that comes from one is not on offer.
+  const guiOnly = () => {
+    const headless = bar.querySelector('.run-choice[data-option="headless"] button[aria-pressed="true"]');
+    const chip = record.querySelector('.run-camera[data-camera="gui"]');
+    chip.hidden = headless?.dataset.value === "true";
+    if (chip.hidden) chip.setAttribute("aria-pressed", "false");
+    label();
+  };
+  bar.querySelectorAll('.run-choice[data-option="headless"] button').forEach((option) =>
+    option.addEventListener("click", guiOnly));
+  guiOnly();
+
+  const options = () => ({
+    ...Object.fromEntries(
+      [...bar.querySelectorAll(".run-choice[data-option]")].map((choice) => [
+        choice.dataset.option,
+        choice.querySelector('button[aria-pressed="true"]')?.dataset.value === "true",
+      ]),
+    ),
+    cameras: chosen(),
+  });
+  // While it runs the page cannot say more than the runner does; watch until it stops, then
+  // put the run it made in the list.
+  let sawRunning = false;
+  const check = async () => {
+    const status = await api(`/api/run?path=${encodeURIComponent(path)}`).catch(() => null);
+    if (!status) return;
+    if (status.running) {
+      sawRunning = true;
+      start.disabled = true;
+      state_.textContent = status.pid ? `running · pid ${status.pid}` : "running";
+      return;
+    }
+    clearInterval(state.runWatch);
+    start.disabled = false;
+    state_.textContent = sawRunning
+      ? (status.exit_code ? `exited ${status.exit_code}` : "run finished")
+      : "";
+    api(`/api/runs?path=${encodeURIComponent(path)}`).then(state.generation?.setRuns);
+    // Only an ending this page watched happen is news, and the run's own page may have said
+    // it already, seconds earlier.
+    if (sawRunning && !state.announced) {
+      snack(status.exit_code ? `run failed (${status.exit_code})` : "run finished");
+    }
+    if (sawRunning) state.announced = true;
+    sawRunning = false;
+  };
+  page.querySelector(".run-bar").refreshRun = check;
+  const watch = () => {
+    clearInterval(state.runWatch);
+    // the run directory exists as it starts, so look once now
+    check();
+    state.runWatch = setInterval(check, 2000);
+  };
+  start.onclick = async () => {
+    start.disabled = true;
+    state_.textContent = "starting…";
+    state.announced = false;   // this run has not reported its ending yet
+    try {
+      const started = await post("/api/run", { path, options: options() });
+      state_.textContent = started.recording?.length
+        ? `running · pid ${started.pid} · recording ${started.recording.join(", ")}`
+        : `running · pid ${started.pid}`;
+      watch();
+      // The server named the run before anything is on disk: open its page now and let it
+      // wait for the log, so nothing of the run happens off-screen.
+      await openPendingRun(started.run);
+    } catch (error) {
+      start.disabled = false;
+      state_.textContent = error.message;
+    }
+  };
+  api(`/api/run?path=${encodeURIComponent(path)}`).then((status) => {
+    if (!status.running) return;
+    sawRunning = true;
+    start.disabled = true;
+    state_.textContent = `running · pid ${status.pid}`;
+    watch();
+  }).catch(() => {});
+}
+
 async function selectGeneration(path) {
   state.anchor = path;
+  clearInterval(state.liveWatch);   // following a live run belongs to the run page that left
+  state.runPath = null;
+  state.live = state.following = null;
   setView("generation", path);
   state.generationPath = path;
   // Coming back to a generation already built: put it back and refresh what can have changed,
@@ -157,6 +293,8 @@ async function selectGeneration(path) {
     $("#content").replaceChildren(state.generation.node);
     $("#status").textContent = state.generation.folder;
     highlightGeneration();
+    // This page was put aside mid-run; what it says about that run is only what was true then.
+    $(".run-bar")?.refreshRun?.();
     return api(`/api/runs?path=${encodeURIComponent(path)}`).then(state.generation.setRuns);
   }
   const [generation, runs] = await Promise.all([
@@ -173,7 +311,7 @@ async function selectGeneration(path) {
   page.querySelector(".generation-description").textContent = generation.description ?? "";
   page.querySelector(".facts").innerHTML = [
     fact("Source", generation.source),
-    fact("Generated", generation.created),
+    fact("Generated", stampText(generation.created)),
     fact("Backend", generation.backend),
     fact("Platform", generation.platform),
     fact("Runtime", generation.simulated ? "Simulated" : "Hardware"),
@@ -220,7 +358,8 @@ async function selectGeneration(path) {
     row.className = "run";
     row.dataset.path = run.path;
     row.classList.toggle("picked", state.selected.has(run.path));
-    row.innerHTML = `<span>${runPage * 10 + index + 1}</span><strong>${run.id}</strong><span>${run.started}</span><span>${run.duration_s.toFixed(2)} s</span><span>${(run.written_frames ?? 0).toLocaleString()}</span><span class="badge">${run.status ?? (run.complete ? "COMPLETED" : "incomplete")}</span>`;
+    const status = run.status ?? (run.complete ? "COMPLETED" : "INCOMPLETE");
+    row.innerHTML = `<span>${runPage * 10 + index + 1}</span><strong>${run.id}</strong><span>${stampText(run.started)}</span><span>${run.duration_s.toFixed(2)} s</span><span>${(run.written_frames ?? 0).toLocaleString()}</span><span class="badge badge-${status.toLowerCase()}">${status}</span>`;
     row.title = "Open replay; Ctrl/Cmd-click to select";
     row.onclick = (event) => {
       if (event.shiftKey) return pickRange(run.path, row.parentElement, "main");
@@ -235,6 +374,7 @@ async function selectGeneration(path) {
   if (pages > 1) pager.innerHTML = `<button>‹</button><span>1 / ${pages}</span><button>›</button>`;
   pager.querySelectorAll("button")[0]?.addEventListener("click", () => { runPage = Math.max(0, runPage - 1); renderRuns(); pager.querySelector("span").textContent = `${runPage + 1} / ${pages}`; });
   pager.querySelectorAll("button")[1]?.addEventListener("click", () => { runPage = Math.min(pages - 1, runPage + 1); renderRuns(); pager.querySelector("span").textContent = `${runPage + 1} / ${pages}`; });
+  bindRunAgain(page, path, generation.cameras ?? []);
   $("#content").replaceChildren(page);
   state.generation = {
     path,
@@ -379,6 +519,38 @@ async function selectGeneration(path) {
   options.addEventListener("change", renderGraph);
 }
 
+// A run that was just started: its page, open before its log exists. The server names the
+// run as it starts it and /api/replay answers from the generation's serialized contract, so
+// the page is normally complete before the runtime is even up. Generations from before that
+// contract file existed fall back to a holding card until the log begins.
+async function openPendingRun(runPath) {
+  if (await loadReplay(runPath).then(() => true).catch(() => false)) return;
+  state.anchor = runPath;
+  stopPlayback();
+  setView("run", runPath);
+  state.runPath = runPath;
+  state.generationPath = runPath.split("/runs/")[0];
+  state.live = state.following = null;
+  highlightGeneration();
+  $("#status").textContent = "";
+  $("#content").innerHTML =
+    '<div class="empty"><div class="spinner"></div><h1>Run starting…</h1>'
+    + "<p>Waiting for the first frames of the log.</p></div>";
+  const hop = setInterval(async () => {
+    if (state.runPath !== runPath) return clearInterval(hop);   // the user went elsewhere
+    if (await loadReplay(runPath).then(() => true).catch(() => false)) return clearInterval(hop);
+    const status = await api(`/api/run?path=${encodeURIComponent(state.generationPath)}`)
+      .catch(() => null);
+    if (status && !status.busy) {
+      // over without ever writing a log: the runner's own words are all there is to show
+      clearInterval(hop);
+      $("#content").innerHTML = `<div class="empty"><span>ERROR</span><h1>The run never `
+        + `started.</h1><p>exited ${status.exit_code ?? "?"}; see dashboard-run.log in the `
+        + "generation directory.</p></div>";
+    }
+  }, 300);
+}
+
 async function loadReplay(path) {
   state.anchor = path;
   stopPlayback();
@@ -390,10 +562,9 @@ async function loadReplay(path) {
   $("#content").innerHTML = replayShell(path);
   state.runPath = path;
   state.generationPath = state.replay.generation;
+  state.live = null;
   highlightGeneration();
   state.frame = 0;
-  $(".replay-heading .path").textContent =
-    `${state.replay.frames.toLocaleString()} frames · ${state.replay.duration.toFixed(3)} s`;
   const timeline = $(".timeline");
   timeline.max = Math.max(0, state.replay.frames - 1);
   timeline.disabled = false;
@@ -405,10 +576,168 @@ async function loadReplay(path) {
   $("#plot").onclick = () => addPlot([]);
   $("#notebook").onclick = () => openNotebook(state.runPath).catch((error) => snack(error.message));
   bindPanels();
-  bindSparql().catch(showError);
+  // A side panel that cannot load is not the page failing to load.
+  bindSparql().catch((error) => snack(error.message));
   bindTransport();
+  setTransportMode();
+  showVideos(path, state.replay.videos ?? []);
+  followLiveRun(path);
+  // Built from the generation's contract before the runtime wrote anything: hold the page
+  // until the log begins.
+  if (state.replay.pending) settle(true, "waiting for the run to start…");
   $("#back").onclick = () => selectGeneration(state.replay.generation);
   updateReadout();
+}
+
+// The panel floats over the page, so the page ends above it rather than behind it.
+function reserveVideoSpace() {
+  const transport = $(".transport");
+  if (transport) {
+    document.documentElement.style.setProperty("--transport-h", `${transport.offsetHeight}px`);
+  }
+  const panel = $(".videos");
+  const covered = panel && !panel.hidden && !panel.classList.contains("minimized");
+  const style = document.documentElement.style;
+  style.setProperty("--video-h", covered ? `${panel.offsetHeight + 16}px` : "0px");
+  style.setProperty("--video-w", covered ? `${panel.offsetWidth + 16}px` : "0px");
+}
+
+// Waiting on the run: nothing on the page is worth clicking yet.
+function settle(waiting, message = "archiving the run…") {
+  $(".settling").hidden = !waiting;
+  $(".settling span").textContent = message;
+  $(".replay").classList.toggle("busy", waiting);
+  $(".transport").classList.toggle("busy", waiting);
+}
+
+// What the run recorded: one camera large, the rest alongside to swap in.
+function showVideos(runPath, cameras) {
+  const panel = $(".videos");
+  panel.hidden = !cameras.length;
+  if (!cameras.length) return reserveVideoSpace();
+  const url = (camera) =>
+    `/api/video?path=${encodeURIComponent(runPath)}&camera=${encodeURIComponent(camera)}`;
+  const main = panel.querySelector("video");
+  main.oncontextmenu = (event) => event.preventDefault();
+  const minimize = panel.querySelector(".video-min");
+  const setMinimized = (small) => {
+    panel.classList.toggle("minimized", small);
+    minimize.textContent = small ? "\u25a1" : "\u2013";
+    minimize.title = small ? "Show the recording" : "Minimize";
+    try { localStorage.setItem("motion-spec.video-minimized", String(small)); } catch { /* private */ }
+    reserveVideoSpace();
+  };
+  let small = false;
+  try { small = localStorage.getItem("motion-spec.video-minimized") === "true"; } catch { /* private */ }
+  minimize.onclick = () => setMinimized(!panel.classList.contains("minimized"));
+  setMinimized(small);
+  const show = (camera) => {
+    main.src = url(camera);
+    // A video that is never played paints nothing: put it where the cursor is once it knows
+    // how long it is.
+    main.onloadedmetadata = () => {
+      // Fit the box to the recording rather than the recording to the box: a 3D view with the
+      // panels open is portrait, and a landscape box would letterbox it.
+      const portrait = main.videoHeight > main.videoWidth;
+      main.style.width = portrait ? "auto" : "100%";
+      main.style.height = portrait ? "34vh" : "auto";
+      reserveVideoSpace();
+      syncVideo(true);
+    };
+    panel.querySelector(".video-name").textContent = camera;
+    panel.querySelectorAll(".video-pick").forEach((pick) =>
+      pick.setAttribute("aria-pressed", pick.dataset.camera === camera));
+  };
+  // Nothing to swap between with one camera: the strip would be the same view again.
+  const strip = panel.querySelector(".video-strip");
+  strip.hidden = cameras.length < 2;
+  panel.classList.toggle("one-camera", cameras.length < 2);
+  strip.replaceChildren(...cameras.map((camera) => {
+    const pick = document.createElement("button");
+    pick.className = "video-pick";
+    pick.dataset.camera = camera;
+    pick.innerHTML = `<video muted playsinline preload="metadata"></video><span>${camera}</span>`;
+    const thumb = pick.querySelector("video");
+    thumb.src = url(camera);
+    // Show something of the run rather than the black frame it opens on.
+    thumb.onloadedmetadata = () => { thumb.currentTime = Math.min(1, thumb.duration / 2); };
+    pick.onclick = () => show(camera);
+    return pick;
+  }));
+  show(cameras[0]);
+  reserveVideoSpace();
+}
+
+// Drive the sim this run belongs to; alive is the loop's own ack.
+async function simControl(options) {
+  const answer = await post("/api/control", { path: state.runPath, options }).catch(() => null);
+  state.live = answer?.alive ? answer : null;
+  if (state.live) showSpeed(state.live.speed);
+  setTransportMode();
+  return answer;
+}
+
+// Follow the log as it is written; when it stops, load the finished run.
+async function followLiveRun(runPath) {
+  clearInterval(state.liveWatch);
+  let settling = false;   // writing stopped, archive not yet written
+  const poll = async () => {
+    if (state.runPath !== runPath) return clearInterval(state.liveWatch);
+    const wasFollowing = state.following;
+    const live = await post("/api/live", { path: runPath }).catch(() => null);
+    if (!live && state.replay.pending) {
+      // named before anything is on disk: hold until the log begins or the runner gives up
+      const status = state.replay.generation
+        ? await api(`/api/run?path=${encodeURIComponent(state.replay.generation)}`)
+            .catch(() => null)
+        : null;
+      if (status && !status.busy) {
+        clearInterval(state.liveWatch);
+        settle(false);
+        $("#content").innerHTML = `<div class="empty"><span>ERROR</span><h1>The run never `
+          + `started.</h1><p>exited ${status.exit_code ?? "?"}; see dashboard-run.log in the `
+          + "generation directory.</p></div>";
+      }
+      return;
+    }
+    if (live?.writing && state.replay.pending) {
+      state.replay.pending = false;
+      settle(false);
+    }
+    state.following = Boolean(live?.writing);
+    state.live = state.following && live.control?.alive ? live.control : null;
+    if (!state.following) {
+      // The run stops writing before it is archived and verified; until that lands the page
+      // has nothing final to show, so it waits rather than showing half a run.
+      if ((wasFollowing || settling) && live && !live.archived) {
+        settling = true;
+        return settle(true);
+      }
+      clearInterval(state.liveWatch);
+      settle(false);
+      setTransportMode();
+      // read the finished run back, for its health and full frame count
+      if (!wasFollowing && !settling) return null;
+      settling = false;
+      if (!state.announced) snack("run finished");
+      state.announced = true;
+      return loadReplay(runPath).catch(() => {});
+    }
+    if (state.live) showSpeed(state.live.speed);
+    state.replay.frames = live.frames;
+    state.replay.duration = live.duration;
+    state.replay.events = live.events;
+    $(".timeline").max = Math.max(0, live.frames - 1);
+    renderMarkers();
+    if (!state.live?.paused) state.frame = live.frames - 1;
+    state.frame = Math.min(state.frame, live.frames - 1);
+    $(".timeline").value = state.frame;
+    updateReadout();
+    movePlayhead();
+    setTransportMode();
+  };
+  await poll();
+  state.liveWatch = setInterval(poll, 1000);
 }
 
 function populateConstraints() {
@@ -520,7 +849,7 @@ const CANNED = {
 function replayShell(path) {
   // The run page's markup, with what the reply fills left blank: the numbers, the timeline's
   // range and the constraint list.
-  return `<div class="replay"><div class="replay-heading"><button id="back" title="Back to generation">←</button><h1>${path.split("/").pop()}</h1><span class="path">reading the log…</span></div><div class="replay-tabs"><button data-panel="plots" class="active">Plots</button><button data-panel="sparql">SPARQL</button></div><section id="panel-plots"><div class="constraint-panel"><div class="eyebrow">SOURCE CONSTRAINTS</div><input id="constraint-search" type="search" placeholder="Search .robmot constraints"><div id="constraints" class="constraints"></div></div><div class="chart-controls"><button id="plot">Add empty plot</button><button id="notebook">Open in Jupyter</button></div><div id="plots" class="plots"></div></section><section id="panel-sparql" hidden><div class="sparql"><div class="query-rail"><button id="new-query" class="new-query">+ query</button></div><div class="sparql-body"><div class="sparql-canned"></div><textarea id="query" spellcheck="false"></textarea><div class="sparql-run"><button id="ask">Run query</button><span id="query-status" class="path"></span></div><div id="answer"></div></div></div></section></div><div class="transport"><div class="transport-controls"><button id="step-back" title="Previous frame">‹</button><button id="play">Play</button><button id="step-forward" title="Next frame">›</button><span id="readout" class="path"></span></div><div class="markers"></div><input class="timeline" type="range" min="0" max="0" value="0" disabled></div>`;
+  return `<div class="replay"><div class="replay-heading"><button id="back" title="Back to generation">←</button><h1>${path.split("/").pop()}</h1><div class="replay-tabs"><button data-panel="plots" class="active">Plots</button><button data-panel="sparql">SPARQL</button></div><span class="eyebrow">RUN</span></div><section id="panel-plots"><div class="constraint-panel"><div class="eyebrow">SOURCE CONSTRAINTS</div><input id="constraint-search" type="search" placeholder="Search .robmot constraints"><div id="constraints" class="constraints"></div></div><div class="chart-controls"><button id="plot">Add empty plot</button><button id="notebook">Open in Jupyter</button></div><div id="plots" class="plots"></div></section><section id="panel-sparql" hidden><div class="sparql"><div class="query-rail"><button id="new-query" class="new-query">+ query</button></div><div class="sparql-body"><div class="sparql-canned"></div><textarea id="query" spellcheck="false"></textarea><div class="sparql-run"><button id="ask">Run query</button><span id="query-status" class="path"></span></div><div id="answer"></div></div></div></section></div><div class="settling" hidden><div class="spinner"></div><span>archiving the run…</span></div><div class="videos" hidden><button class="video-min" title="Minimize"></button><div class="video-main"><video preload="auto" playsinline disablepictureinpicture controlslist="nodownload noplaybackrate noremoteplayback"></video><span class="video-name"></span></div><div class="video-strip"></div></div><div class="transport"><div class="transport-controls"><button id="step-back" title="Previous frame">‹</button><button id="play">Play</button><button id="step-forward" title="Next frame">›</button><details class="picker speed-menu"><summary>1×</summary><div class="picker-panel"><button data-value="0.25">0.25×</button><button data-value="0.5">0.5×</button><button data-value="1" aria-pressed="true">1×</button><button data-value="2">2×</button><button data-value="5">5×</button></div></details><span id="readout" class="path"></span><button id="cancel-run" title="End the run" hidden>cancel</button></div><div class="markers"></div><input class="timeline" type="range" min="0" max="0" value="0" disabled></div>`;
 }
 
 function bindPanels() {
@@ -676,12 +1005,61 @@ function renderAnswer(data) {
   $("#answer").replaceChildren(table);
 }
 
+// One transport for a recording or the live run writing it.
 function bindTransport() {
   $(".timeline").oninput = (event) => seek(Number(event.target.value));
   $("#step-back").onclick = () => seek(state.frame - 1);
-  $("#step-forward").onclick = () => seek(state.frame + 1);
-  $("#play").onclick = togglePlayback;
+  $("#step-forward").onclick = () =>
+    state.live ? simControl({ action: "step" }) : seek(state.frame + 1);
+  $("#play").onclick = () =>
+    state.live ? simControl({ action: state.live.paused ? "resume" : "pause" }) : togglePlayback();
+  $("#cancel-run").onclick = () => simControl({ action: "cancel" });
+  $$(".speed-menu .picker-panel button").forEach((option) => {
+    option.onclick = () => {
+      $(".speed-menu").open = false;
+      setSpeed(Number(option.dataset.value));
+    };
+  });
+  document.addEventListener("click", (event) => {
+    const speed = $(".speed-menu");
+    if (speed?.open && !speed.contains(event.target)) speed.open = false;
+  });
+  showSpeed(state.speed);
   renderMarkers();
+}
+
+// Replay speed is the page's; a live run's is the loop's.
+function setSpeed(speed) {
+  state.speed = speed;
+  showSpeed(speed);
+  const video = playingVideo();
+  if (video) video.playbackRate = speed;
+  if (state.live) return simControl({ action: "speed", speed });
+  if (state.timer) {   // restart the animation on the new rate
+    stopPlayback();
+    togglePlayback();
+  }
+}
+
+function showSpeed(speed) {
+  $$(".speed-menu .picker-panel button").forEach((option) =>
+    option.setAttribute("aria-pressed", Number(option.dataset.value) === speed));
+  const summary = $(".speed-menu summary");
+  if (summary) summary.textContent = `${speed}×`;
+}
+
+// A growing log is followed; only a loop that answers can be paused.
+function setTransportMode() {
+  const following = Boolean(state.following);
+  const driving = Boolean(state.live);
+  $("#play").textContent = driving ? (state.live.paused ? "Play" : "Pause") : "Play";
+  $("#play").title = driving ? "Pause the simulation" : "Play the recording";
+  $("#step-back").disabled = driving;
+  $("#step-forward").disabled = driving && !state.live.paused;
+  $("#step-forward").title = driving ? "Advance one tick" : "Next frame";
+  $(".timeline").disabled = driving || !state.replay.frames;
+  $("#cancel-run").hidden = !driving;
+  $(".transport").classList.toggle("transport-live", following);
 }
 
 function renderMarkers() {
@@ -891,15 +1269,40 @@ function seek(frame) {
   updateReadout();
   updateCursor();
   movePlayhead();
+  syncVideo();
+}
+
+// The recording of the run, if this run has one on screen.
+function playingVideo() {
+  const panel = $(".videos");
+  const video = panel && !panel.hidden ? panel.querySelector("video") : null;
+  return video && video.duration && isFinite(video.duration) ? video : null;
+}
+
+// Frames and video are two clocks over the same run: map by position, not by seconds, and
+// leave a deadband so the video playing itself does not fight the cursor it is driving.
+function syncVideo(force = false) {
+  const video = playingVideo();
+  if (!video) return;
+  const target = trackFraction(state.frame) * video.duration;
+  if (force || Math.abs(video.currentTime - target) > 0.25) video.currentTime = target;
 }
 
 function togglePlayback() {
   if (state.timer) return stopPlayback();
-  const fps = state.replay.frames / Math.max(state.replay.duration, 1e-9);
+  const fps = state.speed * state.replay.frames / Math.max(state.replay.duration, 1e-9);
   let cursor = state.frame >= state.replay.frames - 1 ? 0 : state.frame;
   let last = performance.now();
+  const video = playingVideo();
+  if (video) {
+    video.playbackRate = state.speed;
+    if (cursor === 0) video.currentTime = 0;
+    video.play().catch(() => {});
+  }
   const tick = (now) => {
-    cursor += (now - last) * fps / 1000;
+    // With a recording the video is the clock, so the cursor follows what is on screen.
+    if (video && !video.paused) cursor = (video.currentTime / video.duration) * (state.replay.frames - 1);
+    else cursor += (now - last) * fps / 1000;
     last = now;
     if (cursor >= state.replay.frames - 1) {
       seek(state.replay.frames - 1);
@@ -913,6 +1316,7 @@ function togglePlayback() {
 }
 
 function stopPlayback() {
+  playingVideo()?.pause();
   if (!state.timer) return;
   cancelAnimationFrame(state.timer);
   state.timer = null;
@@ -920,10 +1324,11 @@ function stopPlayback() {
 }
 
 function updateReadout() {
-  const entered = [...state.replay.events].reverse()
-    .find((item) => item.kind === "state" && item.frame <= state.frame);
-  const time = state.replay.duration * state.frame / Math.max(1, state.replay.frames - 1);
-  $("#readout").textContent = `${time.toFixed(3)} s · frame ${state.frame.toLocaleString()} / ${state.replay.frames.toLocaleString()} · ${entered?.label ?? "—"}`;
+  const duration = state.replay.duration;
+  const time = duration * state.frame / Math.max(1, state.replay.frames - 1);
+  const frames = `${state.frame.toLocaleString()} / ${state.replay.frames.toLocaleString()}`;
+  $("#readout").textContent =
+    `${time.toFixed(3)} / ${duration.toFixed(3)} s · frame ${frames}${state.following ? " · live" : ""}`;
 }
 
 function addPlot(signals = [], title = signals.join(" · ") || "New plot", detail = "", options = {}) {
@@ -1286,15 +1691,21 @@ $("#delete-selected").onclick = async () => {
   const parts = [`${data.deleted} item${data.deleted === 1 ? "" : "s"}`];
   if (data.folders) parts.push(`${data.folders} empty folder${data.folders === 1 ? "" : "s"}`);
   snack(`Moved ${parts.join(" and ")} to Trash`);
-  // what was open may be what was just trashed
-  const gone = [...state.selected].some((path) =>
-    [state.generationPath, state.runPath].some((open) => open === path || open?.startsWith(`${path}/`)));
+  // Only the page being looked at has to move, and then only as far as its parent.
+  const trashed = [...state.selected];
+  const inTrash = (path) => path && trashed.some((gone) => path === gone || path.startsWith(`${gone}/`));
+  const generation = state.generationPath;
   state.selected.clear();
   $("#selection-actions").hidden = true;
   state.cache = {};
-  state.generation = null;
-  if (gone) return goHome();
-  loadGenerations(true).catch(showError);
+  if (inTrash(generation)) {
+    state.generation = null;
+    return goHome();
+  }
+  await loadGenerations(true).catch(showError);
+  if (!generation) return;
+  if (inTrash(state.runPath)) return selectGeneration(generation).catch(showError);
+  api(`/api/runs?path=${encodeURIComponent(generation)}`).then(state.generation?.setRuns);
 };
 $("#clear-selection").onclick = () => {
   state.selected.clear();
@@ -1326,13 +1737,34 @@ $("#sidebar-toggle").onclick = () => {
   document.body.classList.toggle("sidebar-collapsed");
   const collapsed = document.body.classList.contains("sidebar-collapsed");
   localStorage.setItem("motion-spec.sidebar-collapsed", collapsed);
+  state.autoCollapsed = false;   // a deliberate choice outlives the width that suggested it
+  showSidebarState();
+  reserveVideoSpace();
+};
+function showSidebarState() {
+  const collapsed = document.body.classList.contains("sidebar-collapsed");
   $("#sidebar-toggle").textContent = collapsed ? "☰" : "×";
   $("#sidebar-toggle").title = collapsed ? "Expand navigation" : "Collapse navigation";
-};
-if (document.body.classList.contains("sidebar-collapsed")) {
-  $("#sidebar-toggle").textContent = "☰";
-  $("#sidebar-toggle").title = "Expand navigation";
 }
+showSidebarState();
+
+// A narrow window has no room for both: the sidebar folds away and comes back with the width,
+// without overwriting what the reader chose at a width where both fit.
+const NARROW = 1000;
+function fitSidebar() {
+  const narrow = window.innerWidth < NARROW;
+  if (narrow && !document.body.classList.contains("sidebar-collapsed")) {
+    document.body.classList.add("sidebar-collapsed");
+    state.autoCollapsed = true;
+  } else if (!narrow && state.autoCollapsed) {
+    document.body.classList.remove("sidebar-collapsed");
+    state.autoCollapsed = false;
+  }
+  showSidebarState();
+  reserveVideoSpace();
+}
+window.addEventListener("resize", fitSidebar);
+fitSidebar();
 function goHome() {
   stopPlayback();
   state.generationPath = null;

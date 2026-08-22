@@ -107,6 +107,7 @@ robot-shutdown-mj_kdl-KinovaGen3(solver) ::= <<
 
 app-chain-includes-mj_kdl(has_serial_chain, resources) ::= <<
 <if(has_serial_chain)>
+#include \<algorithm\>
 #include \<cstring\>
 #include \<cstdlib\>
 #include \<deque\>
@@ -335,6 +336,54 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
             return 1;
         }
     }
+#ifdef MOTION_SPEC_ENABLE_INTROSPECTION
+    // Cameras this run records: a named one writes a video instead of publishing frames.
+    const auto _record_video_path = [](const std::string &id) {
+        const char *wanted = std::getenv("MOTION_SPEC_RECORD_CAMERAS");
+        if (!wanted || !*wanted) return std::string();
+        std::string list(wanted);
+        for (std::size_t start = 0; start \<= list.size();) {
+            const std::size_t end = list.find(',', start);
+            const std::string name = list.substr(start, end == std::string::npos ? end : end - start);
+            if (name == id) {
+                const char *dir = std::getenv("MOTION_SPEC_RECORD_DIR");
+                return (dir && *dir ? std::string(dir) : std::string(".")) + "/" + id + ".mp4";
+            \}
+            if (end == std::string::npos) break;
+            start = end + 1;
+        \}
+        return std::string();
+    \};
+
+    // 'gui' is the window's own view, read back rather than rendered again.
+    const std::string _gui_video = _record_video_path("gui");
+    if (!_gui_video.empty()) {
+        if (headless) {
+            std::cerr \<\< "--record gui needs a window; declare a camera in the scene to "
+                         "record a headless run\\n";
+        \} else if (!mj_kdl::start_window_recording(&mj_viewer, _gui_video.c_str(), 30)) {
+            std::cerr \<\< "recording the window failed; the run continues without it\\n";
+        \}
+    \}
+
+    // A camera this build knows nothing about would otherwise be skipped in silence.
+    {
+        const std::vector\<std::string\> _recordable = {"gui"<scene.cameras:{camera |, "<camera.id>"}>\};
+        const char *_asked = std::getenv("MOTION_SPEC_RECORD_CAMERAS");
+        const std::string _list(_asked ? _asked : "");
+        for (std::size_t _start = 0; !_list.empty() && _start \<= _list.size();) {
+            const std::size_t _end = _list.find(',', _start);
+            const std::string _name = _list.substr(_start, _end == std::string::npos ? _end : _end - _start);
+            if (!_name.empty()
+                && std::find(_recordable.begin(), _recordable.end(), _name) == _recordable.end()) {
+                std::cerr \<\< "--record " \<\< _name
+                          \<\< ": this build has no such camera; recording nothing for it\\n";
+            \}
+            if (_end == std::string::npos) break;
+            _start = _end + 1;
+        \}
+    \}
+#endif
 <if(scene.cameras)>
 #ifdef MOTION_SPEC_ENABLE_INTROSPECTION
     const std::vector\<std::string\> _mj_camera_names = mj_kdl::get_camera_names(mj_env.model);
@@ -345,9 +394,11 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
     // So the render runs on its own thread, off a copy of the simulation state.
     class CameraWorker {
       public:
-        CameraWorker(std::string id, int width, int height, mjModel *model, std::string camera)
+        // A video_path records this camera instead of publishing it; one render either way.
+        CameraWorker(std::string id, int width, int height, mjModel *model, std::string camera,
+                     std::string video_path, int fps)
             : id_(std::move(id)), width_(width), height_(height), model_(model),
-              camera_(std::move(camera)), pub_(id_, width, height) {
+              camera_(std::move(camera)), video_path_(std::move(video_path)), fps_(fps) {
             rgb_.resize(static_cast\<std::size_t\>(width) * height * 3);
             copy_ = mj_makeData(model);
             thread_ = std::thread([this] { run(); \});
@@ -380,11 +431,18 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
         void run() {
             // A GL context belongs to the thread that created it, so this one is created here
             // rather than handed over from startup.
-            if (!mj_kdl::init_offscreen(&recorder_, model_, width_, height_)
-                || !mj_kdl::use_camera(&recorder_, model_, camera_.c_str())) {
-                std::cerr \<\< "camera '" \<\< id_ \<\< "': offscreen init failed; not published\n";
+            const bool recording = !video_path_.empty();
+            const bool ready = recording
+                                 ? mj_kdl::init_video_recorder(
+                                     &recorder_, model_, video_path_.c_str(), width_, height_, fps_)
+                                 : mj_kdl::init_offscreen(&recorder_, model_, width_, height_);
+            if (!ready || !mj_kdl::use_camera(&recorder_, model_, camera_.c_str())) {
+                std::cerr \<\< "camera '" \<\< id_ \<\< "': offscreen init failed; "
+                          \<\< (recording ? "not recorded" : "not published") \<\< "\n";
                 return;
             \}
+            if (!recording) pub_ = std::make_unique\<motion_spec::introspection::CameraPublisher\>(
+                                id_, width_, height_);
             for (;;) {
                 double t = 0.0;
                 {
@@ -394,8 +452,10 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
                     t = stamp_;
                 \}
                 // Safe to read copy_ unlocked: submit() leaves it alone while pending_ is set.
-                if (mj_kdl::render_rgb(&recorder_, model_, copy_, rgb_.data())) {
-                    pub_.publish(rgb_.data(), t);
+                if (recording) {
+                    mj_kdl::record_frame(&recorder_, model_, copy_);
+                \} else if (mj_kdl::render_rgb(&recorder_, model_, copy_, rgb_.data())) {
+                    pub_->publish(rgb_.data(), t);
                 \}
                 {
                     std::lock_guard\<std::mutex\> lock(mutex_);
@@ -410,7 +470,9 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
         int height_ = 0;
         mjModel *model_ = nullptr;
         std::string camera_;
-        motion_spec::introspection::CameraPublisher pub_;
+        std::string video_path_;
+        int fps_ = 30;
+        std::unique_ptr\<motion_spec::introspection::CameraPublisher\> pub_;
         mj_kdl::VideoRecorder recorder_{\};
         mjData *copy_ = nullptr;
         std::vector\<std::uint8_t\> rgb_;
@@ -439,7 +501,8 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
         \} else {
             // The worker opens its own render context; a failure there reports and stays silent.
             _cam_<camera.id> = std::make_unique\<CameraWorker\>(
-              "<camera.id>", <camera.width>, <camera.height>, mj_env.model, _name);
+              "<camera.id>", <camera.width>, <camera.height>, mj_env.model, _name,
+              _record_video_path("<camera.id>"), static_cast\<int\>(<camera.rate_hz>));
         \}
     \}
 }; separator="\n">

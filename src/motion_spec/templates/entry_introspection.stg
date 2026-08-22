@@ -207,6 +207,7 @@ struct ControlState {
     bool pause;
     double speed;
     bool stop;
+    bool step;   // advance exactly one tick, though the run is paused
 };
 
 // Pause / speed / stop, set from outside the run (the dashboard) and read once per tick.
@@ -219,8 +220,9 @@ struct ControlBlock {
     std::uint64_t speed_bits;  // an f64 bit pattern; doubles are not valid __atomic operands
     std::int64_t stop;
     std::uint64_t ack_seq;  // last seq this run has applied
+    std::int64_t steps;     // ticks the run still owes a paused stepper; it counts them down
 };
-static_assert(sizeof(ControlBlock) == 48, "ControlBlock must match the dashboard's layout");
+static_assert(sizeof(ControlBlock) == 56, "ControlBlock must match the dashboard's layout");
 
 inline constexpr double kMinControlSpeed = 0.1;
 inline constexpr double kMaxControlSpeed = 10.0;
@@ -256,9 +258,15 @@ public:
     \}
 
     ControlState poll() {
-        ControlState state{false, 1.0, false};
+        ControlState state{false, 1.0, false, false};
         if (!block_) return state;
         state.pause = __atomic_load_n(&block_->pause, __ATOMIC_RELAXED) != 0;
+        /* Stepping is a pause that owes ticks: the writer adds them, the run takes one per
+           poll, so a click advances exactly one tick however long the click lasted. */
+        if (state.pause && __atomic_load_n(&block_->steps, __ATOMIC_RELAXED) \> 0) {
+            __atomic_fetch_sub(&block_->steps, 1, __ATOMIC_RELAXED);
+            state.step = true;
+        \}
         state.stop = __atomic_load_n(&block_->stop, __ATOMIC_RELAXED) != 0;
         const std::uint64_t bits = __atomic_load_n(&block_->speed_bits, __ATOMIC_RELAXED);
         double speed = 0.0;

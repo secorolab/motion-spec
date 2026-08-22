@@ -80,13 +80,12 @@
 
     <template id="generation-template">
       <article class="generation">
-        <div class="eyebrow">GENERATION</div>
-        <h1></h1>
+        <div class="page-heading"><h1></h1><span class="eyebrow">GENERATION</span></div>
         <div class="generation-path"><p class="path"></p><button class="copy-generation-path" title="Copy folder path" aria-label="Copy folder path">⧉</button></div>
         <div class="facts"></div>
         <p class="generation-description"></p>
         <div class="source-files"></div>
-        <h2>Recorded runs</h2>
+        <div class="run-heading"><h2>Recorded runs</h2><div class="run-bar"><span class="run-choice" data-option="headless"><em>display</em><button data-value="false" aria-pressed="true">GUI</button><button data-value="true" aria-pressed="false">headless</button></span><span class="run-choice run-record" hidden><em>record</em></span><button class="run-start">▶ run</button><span class="run-state"></span></div></div>
         <div class="run-header"><span>#</span><span>Run</span><span>Started</span><span>Duration</span><span>Frames</span><span>Status</span></div>
         <div class="runs"></div>
         <div class="run-pagination"></div>
@@ -99,6 +98,6 @@
       </article>
     </template>
 
-    <script src="app.js?v=webgl-rdf-101"></script>
+    <script src="app.js?v=webgl-rdf-149"></script>
   </body>
 </html>

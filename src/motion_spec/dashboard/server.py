@@ -31,25 +31,37 @@ from urllib.parse import parse_qs, urlparse
 import rdflib
 from rdflib import Dataset
 
+from motion_spec.dashboard.control import SPEED_MAX, SPEED_MIN, ControlChannel
 from motion_spec.dashboard.graph import GraphService
 from motion_spec.dashboard.runs import GenerationCatalog, GenerationInfo, RunInfo
 from motion_spec.dashboard.store import RunStore
 from motion_spec.dashboard.tail import FrameLogTail
+from google.protobuf.message import DecodeError
+
 from motion_spec.introspection import frame_log_pb
+from motion_spec.introspection.archive import ArchiveError
 from motion_spec.introspection.lifecycle_events import socket_path
-from motion_spec.introspection.replay import (
-    read_health,
-    resolve_archive,
-    validate_header,
-)
+from motion_spec.introspection.replay import read_health, resolve_archive, validate_header
 
 GENERATION_DIR_ENV = "MOTION_SPEC_GEN"
 # Roots the dashboard browses, replaced at startup by `serve` and by /api/roots.
 GENERATIONS = Path(os.environ.get(GENERATION_DIR_ENV, "").strip() or Path.cwd())
 WORKSPACE = GENERATIONS.parent
 FRONTEND = Path(__file__).with_name("frontend")
-IGNORED = {"build", ".git", ".venv", "generations", "install", "log", "__pycache__", "test", "tests"}
+IGNORED = {
+    "build",
+    ".git",
+    ".venv",
+    "generations",
+    "install",
+    "log",
+    "__pycache__",
+    "test",
+    "tests",
+}
 AUTHORED = (".robmot", ".fsm", ".scenex")
+# How REC says a run is over; anything else (QUEUED, RUNNING) means it still has work to do.
+RUN_ENDED = {"COMPLETED", "FAILED", "INTERRUPTED", "CANCELLED"}
 LIFECYCLE = None
 
 
@@ -82,7 +94,10 @@ def pick_root(kind: str) -> dict:
         raise ValueError("unknown root")
     result = subprocess.run(
         ["zenity", "--file-selection", "--directory", "--filename", f"{initial}/"],
-        check=False, capture_output=True, text=True, timeout=300,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=300,
     )
     if result.returncode:
         raise ValueError("folder selection cancelled")
@@ -102,6 +117,14 @@ def relative_path(root: Path, value: str) -> Path:
     """Resolve a request path inside root, rejecting traversal and missing paths."""
     path = (root / value).resolve()
     if root.resolve() not in (path, *path.parents) or not path.exists():
+        raise ValueError("unknown path")
+    return path
+
+
+def expected_path(root: Path, value: str) -> Path:
+    """Resolve a request path inside root that need not exist yet, e.g. a run just named."""
+    path = (root / value).resolve()
+    if root.resolve() not in (path, *path.parents):
         raise ValueError("unknown path")
     return path
 
@@ -129,8 +152,15 @@ GUI_EDITORS = {"code": ["code", "--goto"], "zed": ["zed"], "kate": ["kate"], "ge
 TERMINAL_EDITORS = ("nvim", "vim", "hx", "emacs", "nano", "micro")
 # How each terminal takes "then run this command"; -e is the x-terminal-emulator convention.
 TERMINAL_ARGS = {
-    "xdg-terminal-exec": [], "kitty": [], "foot": [], "ghostty": ["-e"], "alacritty": ["-e"],
-    "wezterm": ["start", "--"], "gnome-terminal": ["--"], "konsole": ["-e"], "xterm": ["-e"],
+    "xdg-terminal-exec": [],
+    "kitty": [],
+    "foot": [],
+    "ghostty": ["-e"],
+    "alacritty": ["-e"],
+    "wezterm": ["start", "--"],
+    "gnome-terminal": ["--"],
+    "konsole": ["-e"],
+    "xterm": ["-e"],
 }
 
 
@@ -158,9 +188,7 @@ def editors() -> dict[str, list[str]]:
     host = terminal()
     found = {}
     if host:
-        found.update({
-            name: [*host[1], name] for name in TERMINAL_EDITORS if shutil.which(name)
-        })
+        found.update({name: [*host[1], name] for name in TERMINAL_EDITORS if shutil.which(name)})
     found.update({name: argv for name, argv in GUI_EDITORS.items() if shutil.which(name)})
     override = os.environ.get("MS_DASHBOARD_EDITOR")
     if override:
@@ -219,10 +247,8 @@ def generation_info(path: Path) -> dict:
     return {
         "path": str(path.relative_to(GENERATIONS)),
         "name": GenerationInfo(path, GENERATIONS).model,
-        "created": GenerationInfo(path).timestamp,
-        "variant": (
-            path.parent.name if path.parent.parent != GENERATIONS else None
-        ),
+        "created": stamp_iso(GenerationInfo(path).timestamp),
+        "variant": (path.parent.name if path.parent.parent != GENERATIONS else None),
         "built_at": datetime.fromtimestamp(GenerationInfo(path).built_at, timezone.utc).isoformat(),
         "source": source.name if source else None,
         "backend": layout.get("platform", {}).get("backend"),
@@ -233,6 +259,7 @@ def generation_info(path: Path) -> dict:
         "pools": layout.get("pools", {}),
         "runs": len(GenerationInfo(path).runs),
         "has_fsm": any((path / "generated/model").glob("*_fsm.svg")),
+        "cameras": generation_cameras(path),
     }
 
 
@@ -250,14 +277,18 @@ def generation_details(path: Path) -> dict:
     details["folder"] = str(path)
     details["spec_name"] = Path(details["source"] or path.name).stem
     details["description"] = description.group(1) if description else None
-    details["source_files"] = [{"name": source.name, "path": str(source)} for source in source_files if source.is_file()]
+    details["source_files"] = [
+        {"name": source.name, "path": str(source)} for source in source_files if source.is_file()
+    ]
     details["generated_files"] = [
         {"name": str(source.relative_to(path / "generated")), "path": str(source)}
         for source in sorted((path / "generated").rglob("*"))
         if source.is_file() and "source" not in source.relative_to(path / "generated").parts
     ]
     generated = path / "generated"
-    details["rdf_graphs"] = sorted(str(source.relative_to(generated)) for source in generated.rglob("*.ld.json"))
+    details["rdf_graphs"] = sorted(
+        str(source.relative_to(generated)) for source in generated.rglob("*.ld.json")
+    )
     return details
 
 
@@ -275,32 +306,60 @@ def provenance_graph(path: Path, selected: list[str]) -> dict:
         if generated not in source.parents or source.suffix != ".json" or not source.is_file():
             raise ValueError("unknown RDF graph")
         graph.parse(source, format="json-ld")
-    triples = [(subject, predicate, obj) for subject, predicate, obj, _context in graph.quads((None, None, None, None))]
-    terms = sorted({term for subject, _predicate, obj in triples for term in (subject, obj)}, key=str)
+    triples = [
+        (subject, predicate, obj)
+        for subject, predicate, obj, _context in graph.quads((None, None, None, None))
+    ]
+    terms = sorted(
+        {term for subject, _predicate, obj in triples for term in (subject, obj)}, key=str
+    )
     node_ids = {term: str(index) for index, term in enumerate(terms)}
     return {
-        "nodes": [{"id": node_ids[term], "label": rdf_name(term), "value": str(term)} for term in terms],
+        "nodes": [
+            {"id": node_ids[term], "label": rdf_name(term), "value": str(term)} for term in terms
+        ],
         "links": [
-            {"source": node_ids[subject], "target": node_ids[obj], "label": rdf_name(predicate), "value": str(predicate)}
+            {
+                "source": node_ids[subject],
+                "target": node_ids[obj],
+                "label": rdf_name(predicate),
+                "value": str(predicate),
+            }
             for subject, predicate, obj in triples
         ],
     }
+
+
+def stamp_iso(name: str) -> str | None:
+    """A run or generation stamp as ISO 8601 UTC, for the browser to show in local time."""
+    match = re.fullmatch(r"(\d{8}T\d{6}\d{6})Z", name)
+    if not match:
+        return None
+    return (
+        datetime.strptime(match.group(1), "%Y%m%dT%H%M%S%f")
+        .replace(tzinfo=timezone.utc)
+        .isoformat()
+    )
 
 
 def run_info(path: Path) -> dict:
     log = path / "logs/frame_log.pb"
     health = read_health(log) or {}
     run_id = RunInfo(path).run_id
-    _, _, _, contract = resolve_archive(path)
+    # A run that has only just started has no readable log yet; it still belongs in the list.
+    try:
+        period_ns = resolve_archive(path)[3].header.nominal_period_ns
+    except (ArchiveError, DecodeError, OSError):
+        period_ns = 0
     match = re.fullmatch(r"run-(\d{8}T\d{6}\d{6}Z)", run_id)
     return {
         "path": str(path.relative_to(GENERATIONS)),
         "id": run_id,
-        "started": datetime.strptime(match.group(1), "%Y%m%dT%H%M%S%fZ").replace(tzinfo=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC") if match else "—",
+        "started": stamp_iso(match.group(1)) if match else None,
         "complete": health.get("complete") or RunInfo(path).status == "COMPLETED",
         "status": RunInfo(path).status,
         "written_frames": health.get("written_frames"),
-        "duration_s": health.get("written_frames", 0) * contract.header.nominal_period_ns / 1e9,
+        "duration_s": health.get("written_frames", 0) * period_ns / 1e9,
         "dropped_frames": health.get("dropped_frames"),
     }
 
@@ -312,13 +371,31 @@ def downsample(values: list[float], target: int = 1600) -> list[float]:
 
 # How a spatial slot's proto fields read as authored components.
 SLOT_PARTS = {
-    "poses": {"position.x": "px", "position.y": "py", "position.z": "pz",
-              "orientation.x": "qx", "orientation.y": "qy", "orientation.z": "qz",
-              "orientation.w": "qw"},
-    "twists": {"linear.x": "lx", "linear.y": "ly", "linear.z": "lz",
-               "angular.x": "ax", "angular.y": "ay", "angular.z": "az"},
-    "wrenches": {"force.x": "fx", "force.y": "fy", "force.z": "fz",
-                 "torque.x": "tx", "torque.y": "ty", "torque.z": "tz"},
+    "poses": {
+        "position.x": "px",
+        "position.y": "py",
+        "position.z": "pz",
+        "orientation.x": "qx",
+        "orientation.y": "qy",
+        "orientation.z": "qz",
+        "orientation.w": "qw",
+    },
+    "twists": {
+        "linear.x": "lx",
+        "linear.y": "ly",
+        "linear.z": "lz",
+        "angular.x": "ax",
+        "angular.y": "ay",
+        "angular.z": "az",
+    },
+    "wrenches": {
+        "force.x": "fx",
+        "force.y": "fy",
+        "force.z": "fz",
+        "torque.x": "tx",
+        "torque.y": "ty",
+        "torque.z": "tz",
+    },
 }
 
 
@@ -444,15 +521,19 @@ def _constraint_row(motion, kind: str, group: list, constants: dict, authored: d
         "tracking": [value for value in compared if value not in constants],
         # An aggregate monitor's scalar says only that every member holds; each member says why,
         # and they are not one plot: a velocity and a distance share no axis.
-        "members": list({
-            member.id: {
-                "id": member.id,
-                "iri": member.iri,
-                "error": member.error_id,
-                "tolerance": constants.get(member.tolerance_id),
-            }
-            for slot in group for member in slot.watched if member.error_id
-        }.values()),
+        "members": list(
+            {
+                member.id: {
+                    "id": member.id,
+                    "iri": member.iri,
+                    "error": member.error_id,
+                    "tolerance": constants.get(member.tolerance_id),
+                }
+                for slot in group
+                for member in slot.watched
+                if member.error_id
+            }.values()
+        ),
         "error": _slot_ids(group, "error_id"),
         "control": _slot_ids(group, "output_id"),
         "monitors": [slot.id for slot in group] if kind == "monitored" else [],
@@ -517,8 +598,11 @@ def signal_index(contract) -> dict:
     for motion in contract.header.motions:
         # a controller writes a constraint slot; a monitor writes a monitor slot
         for pool, slots, keys in (
-            ("constraints", motion.controllers,
-             ("error", "output", "measured", "setpoint", "satisfied")),
+            (
+                "constraints",
+                motion.controllers,
+                ("error", "output", "measured", "setpoint", "satisfied"),
+            ),
             ("monitors", motion.monitors, ("value", "satisfied")),
         ):
             for slot in slots:
@@ -527,9 +611,7 @@ def signal_index(contract) -> dict:
                 field = fields[slot.number]["id"] if slot.number < len(fields) else None
                 named = {role for attribute, role in SLOT_ROLES if getattr(slot, attribute, "")}
                 for key in keys:
-                    where = {
-                        "motion": motion.id, "constraint": owner, "role": key, "slot": slot.id
-                    }
+                    where = {"motion": motion.id, "constraint": owner, "role": key, "slot": slot.id}
                     # The pooled slot mirrors a signal the header already names: offering both
                     # is the same series twice, under a name nobody can read.
                     if field and key not in named:
@@ -539,29 +621,51 @@ def signal_index(contract) -> dict:
                 for attribute, role in SLOT_ROLES:
                     signal = getattr(slot, attribute, "")
                     if signal:
-                        index.setdefault(signal, {
-                            "motion": motion.id, "constraint": owner, "role": role,
-                            "slot": slot.id,
-                        })
+                        index.setdefault(
+                            signal,
+                            {
+                                "motion": motion.id,
+                                "constraint": owner,
+                                "role": role,
+                                "slot": slot.id,
+                            },
+                        )
                 for member in slot.watched:
                     if member.error_id:
-                        index.setdefault(member.error_id, {
-                            "motion": motion.id, "constraint": member.id, "role": "error",
-                            "slot": slot.id,
-                        })
+                        index.setdefault(
+                            member.error_id,
+                            {
+                                "motion": motion.id,
+                                "constraint": member.id,
+                                "role": "error",
+                                "slot": slot.id,
+                            },
+                        )
     return index
 
 
 def replay_data(run_dir: Path) -> dict:
     """Return replay metadata without decoding the complete frame log."""
-    run_dir, log, manifest, contract = resolve_archive(run_dir)
+    pending = False
+    try:
+        run_dir, log, manifest, contract = resolve_archive(run_dir)
+    except ArchiveError:
+        # A run named but not yet writing: the generation carries the same header record the
+        # runtime will put at the front of the log, and that record is itself a zero-frame
+        # log -- so the page is built from it and follows the real log when it begins.
+        record = run_dir.parent.parent / "generated/contract/frame_log_header.pb"
+        if not record.is_file():
+            raise
+        log, manifest, contract = record, None, frame_log_pb.read_contract(record)
+        pending = True
     constraints = source_constraints(run_dir, manifest, contract)
     health = read_health(log) or {}
     frame_count = health.get("written_frames", 0)
     signals = ["timing.compute_ms", "timing.period_ms"]
     mirrored = {
         f"{contract.fields['constraints'][slot.number]['id']}.{role}"
-        for motion in contract.header.motions for slot in motion.controllers
+        for motion in contract.header.motions
+        for slot in motion.controllers
         if slot.number < len(contract.fields["constraints"])
         for attribute, role in SLOT_ROLES
         if getattr(slot, attribute, "")
@@ -574,7 +678,8 @@ def replay_data(run_dir: Path) -> dict:
     )
     signals.extend(
         f"{slot.id}.{key}"
-        for motion in contract.header.motions for slot in motion.monitors
+        for motion in contract.header.motions
+        for slot in motion.monitors
         for key in ("value", "satisfied")
     )
     signals.extend(slot_signals(contract))
@@ -592,14 +697,16 @@ def replay_data(run_dir: Path) -> dict:
         ]
         for key in ("tracking", "control", "monitors", "error"):
             constraint[key] = [
-                signal for name in constraint[key]
+                signal
+                for name in constraint[key]
                 for signal in ([name] if name in logged else sorted(parts.get(name, ())))
             ]
         handler = constraint.pop("handler")
         spelling.setdefault(handler, constraint["motion"])
         constraint["window"] = windows.get(indices.get(handler))
     signals.extend(
-        signal for constraint in constraints
+        signal
+        for constraint in constraints
         for signal in (*constraint["tracking"], *constraint["control"], *constraint["monitors"])
     )
     # A run copied out of its generation has none to go back to; the log says everything else.
@@ -620,8 +727,10 @@ def replay_data(run_dir: Path) -> dict:
             for name, where in signal_index(contract).items()
         },
         "constraints": constraints,
+        "videos": run_videos(run_dir),
         "header": validate_header(log, contract),
         "health": health,
+        "pending": pending,
     }
 
 
@@ -673,11 +782,14 @@ def plot_data(run_dir: Path, names: list[str], window: tuple | None = None) -> d
     drawn from those frames rather than missed between two samples of the whole run.
     """
     _, log, _manifest, contract = resolve_archive(run_dir)
-    constraint_slots = {field["id"]: index for index, field in enumerate(contract.fields["constraints"])}
+    constraint_slots = {
+        field["id"]: index for index, field in enumerate(contract.fields["constraints"])
+    }
     slots = slot_signals(contract)
     monitor_slots = {
         slot.id: (contract.fields["monitors"][slot.number], motion.index)
-        for motion in contract.header.motions for slot in motion.monitors
+        for motion in contract.header.motions
+        for slot in motion.monitors
         if slot.number < len(contract.fields["monitors"])
     }
     quantities = {field["id"]: field for field in contract.fields["quantities"]}
@@ -762,19 +874,30 @@ def jupyter_server() -> dict:
         port = probe.getsockname()[1]
     token = secrets.token_urlsafe(24)
     settings = lab_settings()
-    framing = json.dumps({"headers": {
-        "Content-Security-Policy": "frame-ancestors 'self' http://127.0.0.1:8080 http://localhost:8080",
-    }})
+    framing = json.dumps(
+        {
+            "headers": {
+                "Content-Security-Policy": "frame-ancestors 'self' http://127.0.0.1:8080 http://localhost:8080"
+            }
+        }
+    )
     JUPYTER["process"] = subprocess.Popen(
         [
-            "jupyter", "lab", "--no-browser", f"--port={port}",
-            f"--ServerApp.root_dir={WORKSPACE}", f"--IdentityProvider.token={token}",
+            "jupyter",
+            "lab",
+            "--no-browser",
+            f"--port={port}",
+            f"--ServerApp.root_dir={WORKSPACE}",
+            f"--IdentityProvider.token={token}",
             f"--LabServerApp.user_settings_dir={settings}",
             f"--ServerApp.tornado_settings={framing}",
-            "--ServerApp.disable_check_xsrf=True", "--ServerApp.open_browser=False",
+            "--ServerApp.disable_check_xsrf=True",
+            "--ServerApp.open_browser=False",
         ],
-        cwd=WORKSPACE, start_new_session=True,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        cwd=WORKSPACE,
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     JUPYTER["url"] = f"http://127.0.0.1:{port}/lab?token={token}"
     JUPYTER["base"] = f"http://127.0.0.1:{port}"
@@ -792,6 +915,244 @@ def stop_jupyter() -> None:
         process.wait(5)
     except subprocess.TimeoutExpired:
         process.kill()
+
+
+RUNNING: dict[str, dict] = {}
+
+
+def generation_cameras(generation_dir: Path) -> list[dict]:
+    """The cameras this generation declares, which are the ones that publish frames to record."""
+    scene = (
+        json_file(generation_dir / "generated/model/ir.json")
+        .get("composition", {})
+        .get("scene", {})
+    )
+    return [
+        {"id": camera.get("id"), "width": camera.get("width"), "height": camera.get("height")}
+        for camera in scene.get("cameras") or []
+        if camera.get("id")
+    ]
+
+
+LAYOUT_REL = "generated/contract/frame_layout.json"
+
+
+def run_videos(run_dir: Path) -> list[str]:
+    """The cameras this run recorded, named by their video beside the log."""
+    return sorted(path.stem for path in (run_dir / "logs").glob("*.mp4"))
+
+
+def video_file(run_dir: Path, camera: str) -> Path:
+    path = (run_dir / "logs" / f"{camera}.mp4").resolve()
+    if path.parent != (run_dir / "logs").resolve() or not path.is_file():
+        raise ValueError(f"no recording for camera: {camera}")
+    return path
+
+
+def run_ended(run_dir: Path) -> bool:
+    """Whether this run is written and marked: archived, and REC says how it ended."""
+    archived = (run_dir / "manifest.json").exists()
+    status = RunInfo(run_dir).status
+    trace(f"run_ended {run_dir.name}: archived={archived} status={status}")
+    return archived and status in RUN_ENDED
+
+
+_TRACED: dict[str, str] = {}
+
+
+def trace(line: str) -> None:
+    """Print a state line the first time it changes, so a run leaves a readable trail."""
+    key = line.split(":")[0]
+    if _TRACED.get(key) != line:
+        _TRACED[key] = line
+        print(f"[trace] {time.strftime('%H:%M:%S')} {line}", file=sys.stderr, flush=True)
+
+
+def run_status(generation_dir: Path) -> dict:
+    """Whether this generation has a run in progress, and where its output is going.
+
+    A run is over when its archive is written, not when the process that started it exits:
+    the CLI still verifies and reports for a while after, which is no longer this run.
+    """
+    started = RUNNING.get(str(generation_dir))
+    process = started["process"] if started else None
+    busy = process is not None and process.poll() is None
+    # The dashboard names the run when it starts it, so the directory to watch is known
+    # before anything exists on disk.
+    run_dir = generation_dir / "runs" / started["run_id"] if started else None
+    run = run_dir if run_dir is not None and run_dir.is_dir() else None
+    live = busy and not (run is not None and run_ended(run))
+    trace(
+        f"run_status {generation_dir.name}: busy={busy} running={live} run={run.name if run else None}"
+    )
+    return {
+        "running": live,
+        "busy": busy,
+        "pid": process.pid if busy else None,
+        "run": str(run.relative_to(GENERATIONS)) if live and run else None,
+        "exit_code": None if busy or process is None else process.returncode,
+        "log": str(generation_dir / RUN_LOG) if process is not None else None,
+    }
+
+
+RUN_LOG = "dashboard-run.log"
+
+
+def start_run(generation_dir: Path, options: dict) -> dict:
+    """Run a generation again, with the options `motion-spec run` takes for one.
+
+    The CLI owns what a run is -- the run directory, the archive, the recovery afterwards --
+    so start it rather than reimplementing it here, and let it say what it made.
+    """
+    if not (generation_dir / "generated/model/ir.json").exists():
+        raise ValueError("not a generation")
+    if run_status(generation_dir)["busy"]:
+        raise ValueError("this generation is already running")
+    from motion_spec.generation.pipeline import new_id
+
+    # Name the run here rather than letting the CLI pick: the browser can then open the run
+    # page at once and wait for the log, instead of polling for a directory to appear.
+    run_id = new_id("run")
+    argv = ["motion-spec", "run", str(generation_dir), "--cwd", str(WORKSPACE), "--run-id", run_id]
+    # What a browser can meaningfully choose: the rest the dashboard already knows or the CLI
+    # decides. A run always verifies what it archived; a recording nobody checked is not
+    # worth the disk it sits on.
+    if options.get("headless"):
+        argv.append("--headless")
+    # The runtime records: it holds the rendered frame, so it writes the video itself rather
+    # than a reader sampling the live block it publishes for viewing.
+    declared = {camera["id"] for camera in generation_cameras(generation_dir)}
+    recording = [
+        camera for camera in options.get("cameras") or () if camera in declared or camera == "gui"
+    ]
+    for camera in recording:
+        argv += ["--record", camera]
+    sink = (generation_dir / RUN_LOG).open("wb")
+    process = subprocess.Popen(
+        argv, cwd=WORKSPACE, stdout=sink, stderr=sink, start_new_session=True
+    )
+    RUNNING[str(generation_dir)] = {"process": process, "run_id": run_id}
+    return {
+        **run_status(generation_dir),
+        "command": argv,
+        "recording": recording,
+        "run": str((generation_dir / "runs" / run_id).relative_to(GENERATIONS)),
+    }
+
+
+_LIVE: dict[str, dict] = {}
+# A log nobody has appended to for this long is one nobody is writing any more.
+LIVE_IDLE_S = 3.0
+
+
+def live_state(run_dir: Path) -> dict:
+    """How far a run being written has got, and the states and events it has passed.
+
+    Followed forward, not re-read: the tail keeps every transition whatever the stride.
+    """
+    _, log, _manifest, contract = resolve_archive(run_dir)
+    session = _LIVE.get(str(run_dir))
+    if session is None or session["log"] != str(log):
+        for stale in list(_LIVE.values()):
+            stale["tail"].close()
+        _LIVE.clear()
+        session = _LIVE[str(run_dir)] = {
+            "log": str(log),
+            "tail": FrameLogTail(log),
+            "events": [],
+            "frame": 0,
+            "size": -1,
+            "state": None,
+            "event": None,
+        }
+    period = (contract.header.nominal_period_ns or 1_000_000) / 1e9
+    states = [state.id for state in contract.header.fsm_states]
+    fired = [event.id for event in contract.header.fsm_events]
+    for frame in session["tail"].poll(max(1, round(0.05 / period))):
+        index = frame["step"]
+        session["frame"] = index
+        session["t"] = frame["t"]
+        if frame["last_event"] != session["event"]:
+            session["event"] = frame["last_event"]
+            if 0 <= session["event"] < len(fired):
+                session["events"].append(
+                    {"frame": index, "kind": "event", "label": fired[session["event"]]}
+                )
+        if frame["fsm_state"] != session["state"]:
+            session["state"] = frame["fsm_state"]
+            label = (
+                states[session["state"]]
+                if 0 <= session["state"] < len(states)
+                else str(session["state"])
+            )
+            session["events"].append({"frame": index, "kind": "state", "label": label})
+    # A loop that answers is live even while paused. Only a run with no control block to ask
+    # -- real hardware, or a build older than it -- has to be judged by its log growing.
+    control = run_control(run_dir, {})
+    stat = log.stat()
+    grew = stat.st_size > session["size"] >= 0
+    writing = control["alive"] or grew
+    if not control["available"]:
+        writing = writing or time.time() - stat.st_mtime < LIVE_IDLE_S
+    session["size"] = stat.st_size
+    return {
+        "writing": writing,
+        # Finished means archived and marked: the run row can only say how it ended once REC
+        # has recorded that.
+        "archived": run_ended(run_dir),
+        "frames": session["frame"] + 1,
+        "duration": session.get("t") or (session["frame"] + 1) * period,
+        "events": session["events"],
+        "control": control,
+    }
+
+
+def run_control(path: Path, options: dict) -> dict:
+    """Pause, step, cancel, or slow a simulation through the block its loop polls.
+
+    Takes a run or its generation. `alive` is the loop's own ack, not a guess about who
+    started it; only a simulated run creates the block.
+    """
+    generation_dir = path if (path / LAYOUT_REL).exists() else path.parent.parent
+    channel = ControlChannel(json_file(generation_dir / LAYOUT_REL).get("schema_hash"))
+    action = options.get("action")
+    if action == "pause":
+        channel.set_pause(True)
+    elif action == "resume":
+        channel.set_pause(False)
+    elif action == "step":
+        channel.set_pause(True)
+        channel.request_steps(int(options.get("ticks") or 1))
+    elif action == "speed":
+        channel.set_speed(float(options.get("speed")))
+    elif action == "cancel":
+        channel.request_stop()
+    elif action is None:
+        # re-publish what the block says, to ask the loop for an ack
+        channel.set_pause(bool(channel.paused))
+    else:
+        raise ValueError(f"unknown control action: {action}")
+    return {
+        "available": channel.available,
+        "alive": acknowledged(channel),
+        "paused": channel.paused,
+        "speed": channel.speed,
+        "seq": channel.seq,
+        "applied": channel.applied,
+        "speed_range": [SPEED_MIN, SPEED_MAX],
+    }
+
+
+def acknowledged(channel: ControlChannel, timeout_s: float = 0.4) -> bool:
+    """Whether the loop reads the block: it copies each seq back once applied."""
+    if not channel.available:
+        return False
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if (channel.applied or 0) >= (channel.seq or 0):
+            return True
+        time.sleep(0.01)
+    return False
 
 
 def run_notebook(run_dir: Path) -> dict:
@@ -816,10 +1177,7 @@ def NOTEBOOK_TEMPLATE(run_dir: Path) -> dict:
             "meta = replay_data(run)\n",
             "meta['frames'], meta['duration'], len(meta['signals'])",
         ],
-        [
-            "# every signal this run can answer for\n",
-            "meta['signals'][:20]",
-        ],
+        ["# every signal this run can answer for\n", "meta['signals'][:20]"],
         [
             "import matplotlib.pyplot as plt\n",
             "\n",
@@ -837,10 +1195,17 @@ def NOTEBOOK_TEMPLATE(run_dir: Path) -> dict:
         ],
     ]
     return {
-        "nbformat": 4, "nbformat_minor": 5,
+        "nbformat": 4,
+        "nbformat_minor": 5,
         "metadata": {"kernelspec": {"name": "python3", "display_name": "Python 3"}},
         "cells": [
-            {"cell_type": "code", "execution_count": None, "metadata": {}, "outputs": [], "source": source}
+            {
+                "cell_type": "code",
+                "execution_count": None,
+                "metadata": {},
+                "outputs": [],
+                "source": source,
+            }
             for source in cells
         ],
     }
@@ -940,7 +1305,9 @@ def _query_rows(service: GraphService, sparql: str) -> tuple[list[str], list]:
     if result.type == "ASK":
         return ["answer"], [(result.askAnswer,)]
     if result.type in ("CONSTRUCT", "DESCRIBE"):
-        return ["triples"], [(line,) for line in result.serialize(format="turtle").decode().splitlines() if line]
+        return ["triples"], [
+            (line,) for line in result.serialize(format="turtle").decode().splitlines() if line
+        ]
     return [str(var) for var in (result.vars or [])], [tuple(row) for row in result]
 
 
@@ -953,9 +1320,10 @@ def curie(term, prefixes: dict) -> str | None:
         return text
     prefix, namespace = max(
         ((prefix, ns) for prefix, ns in prefixes.items() if text.startswith(ns)),
-        key=lambda item: len(item[1]), default=(None, None),
+        key=lambda item: len(item[1]),
+        default=(None, None),
     )
-    return f"{prefix}:{text[len(namespace):]}" if prefix else text
+    return f"{prefix}:{text[len(namespace) :]}" if prefix else text
 
 
 class LifecycleListener:
@@ -993,6 +1361,33 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         """Always serve the local dashboard shell and scripts fresh."""
         self.send_header("Cache-Control", "no-store")
         super().end_headers()
+
+    def send_video(self, path: Path) -> None:
+        """Serve one recording, honouring Range so the player can seek."""
+        size = path.stat().st_size
+        start, end = 0, size - 1
+        asked = re.fullmatch(r"bytes=(\d*)-(\d*)", self.headers.get("Range", "") or "")
+        if asked and (asked.group(1) or asked.group(2)):
+            if asked.group(1):
+                start = min(int(asked.group(1)), size - 1)
+                end = int(asked.group(2)) if asked.group(2) else end
+            else:
+                start = max(0, size - int(asked.group(2)))
+            end = min(end, size - 1)
+        partial = asked is not None
+        self.send_response(HTTPStatus.PARTIAL_CONTENT if partial else HTTPStatus.OK)
+        self.send_header("Content-Type", "video/mp4")
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(end - start + 1))
+        if partial:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.end_headers()
+        with path.open("rb") as fh:
+            fh.seek(start)
+            remaining = end - start + 1
+            while remaining > 0 and (chunk := fh.read(min(1 << 16, remaining))):
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
 
     def send_json(self, data: object, status: HTTPStatus = HTTPStatus.OK) -> None:
         body = json.dumps(data, separators=(",", ":")).encode()
@@ -1037,7 +1432,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return self.send_json(pick_root(query.get("kind", [""])[0]))
             if parsed.path == "/api/generations":
                 return self.send_json(
-                    [generation_info(generation.dir) for generation in GenerationCatalog([GENERATIONS]).generations()]
+                    [
+                        generation_info(generation.dir)
+                        for generation in GenerationCatalog([GENERATIONS]).generations()
+                    ]
                 )
             if parsed.path == "/api/storage":
                 return self.send_json(storage_info())
@@ -1045,25 +1443,30 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return self.send_json(generation_details(relative_path(GENERATIONS, value)))
             if parsed.path == "/api/generation-graph":
                 return self.send_json(
-                    provenance_graph(
-                        relative_path(GENERATIONS, value),
-                        query.get("graph", []),
-                    )
+                    provenance_graph(relative_path(GENERATIONS, value), query.get("graph", []))
                 )
             if parsed.path == "/api/runs":
                 generation = relative_path(GENERATIONS, value)
                 runs = sorted(path for path in generation.glob("runs/*") if path.is_dir())
                 return self.send_json([run_info(path) for path in reversed(runs)])
+            if parsed.path == "/api/run":
+                return self.send_json(run_status(relative_path(GENERATIONS, value)))
             if parsed.path == "/api/queries":
-                return self.send_json(saved_queries(relative_path(GENERATIONS, value)))
+                return self.send_json(saved_queries(expected_path(GENERATIONS, value)))
+            if parsed.path == "/api/video":
+                run = relative_path(GENERATIONS, value)
+                return self.send_video(video_file(run, query.get("camera", [""])[0]))
             if parsed.path == "/api/replay":
-                return self.send_json(replay_data(relative_path(GENERATIONS, value)))
+                return self.send_json(replay_data(expected_path(GENERATIONS, value)))
             if parsed.path == "/api/plot":
                 bounds = query.get("window", [])
-                return self.send_json(plot_data(
-                    relative_path(GENERATIONS, value), query.get("signal", []),
-                    (int(bounds[0]), int(bounds[1])) if len(bounds) == 2 else None,
-                ))
+                return self.send_json(
+                    plot_data(
+                        relative_path(GENERATIONS, value),
+                        query.get("signal", []),
+                        (int(bounds[0]), int(bounds[1])) if len(bounds) == 2 else None,
+                    )
+                )
             if parsed.path == "/api/sources":
                 files = [
                     str(path.relative_to(WORKSPACE))
@@ -1094,9 +1497,19 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return self.send_json(open_source(body["path"], body.get("editor")))
             if self.path == "/api/terminal":
                 return self.send_json(open_terminal(body["path"]))
+            if self.path == "/api/run":
+                return self.send_json(
+                    start_run(relative_path(GENERATIONS, body["path"]), body.get("options") or {})
+                )
+            if self.path == "/api/live":
+                return self.send_json(live_state(relative_path(GENERATIONS, body["path"])))
+            if self.path == "/api/control":
+                return self.send_json(
+                    run_control(relative_path(GENERATIONS, body["path"]), body.get("options") or {})
+                )
             if self.path == "/api/queries":
                 return self.send_json(
-                    save_queries(relative_path(GENERATIONS, body["path"]), body["queries"])
+                    save_queries(expected_path(GENERATIONS, body["path"]), body["queries"])
                 )
             if self.path == "/api/sparql":
                 return self.send_json(
@@ -1111,7 +1524,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if not targets or any(not self._deletable(path) for path in targets):
                 raise ValueError("only generation bundles and run archives can be deleted")
             targets = [
-                target for target in targets
+                target
+                for target in targets
                 if not any(target in other.parents for other in targets)
             ]
             for target in sorted(targets, key=lambda item: len(item.parts), reverse=True):
@@ -1163,8 +1577,12 @@ def serve(port: int = 8080, logs: Path | None = None, sources: Path | None = Non
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument("--logs", type=Path, help=f"generation root (default ${GENERATION_DIR_ENV})")
-    parser.add_argument("--sources", type=Path, help="model sources root (default: the logs root's parent)")
+    parser.add_argument(
+        "--logs", type=Path, help=f"generation root (default ${GENERATION_DIR_ENV})"
+    )
+    parser.add_argument(
+        "--sources", type=Path, help="model sources root (default: the logs root's parent)"
+    )
     args = parser.parse_args()
     serve(args.port, args.logs, args.sources)
 

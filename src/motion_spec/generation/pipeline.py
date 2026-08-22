@@ -129,7 +129,7 @@ def _organize_generation(model_dir: Path, controller_dir: Path | None = None) ->
             locations[derived.resolve()] = target
         contract_dir = generated / "contract"
         contract_dir.mkdir()
-        for artifact in ("frame_layout.json", "frame_log.proto"):
+        for artifact in ("frame_layout.json", "frame_log.proto", "frame_log_header.pb"):
             source = controller_dir / artifact
             target = contract_dir / artifact
             source.replace(target)

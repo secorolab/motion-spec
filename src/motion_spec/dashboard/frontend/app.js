@@ -72,8 +72,23 @@ function listItem(name, detail, click, path) {
   return button;
 }
 
-function fact(label, value) {
-  return `<div class="fact"><label>${label}</label>${value ?? "—"}</div>`;
+function fact(label, value, kind = "", version = null) {
+  const cell = document.createElement("div");
+  cell.className = `fact ${kind}`.trim();
+  const name = document.createElement("label");
+  const text = document.createElement("span");
+  name.textContent = label;
+  text.textContent = value ?? "—";
+  text.title = [value, version].filter(Boolean).join(" ");
+  // A version is about the thing, not the thing: it rides along in its own hand.
+  if (version) {
+    const tag = document.createElement("i");
+    tag.className = "fact-version";
+    tag.textContent = version;
+    text.append(" ", tag);
+  }
+  cell.append(name, text);
+  return cell.outerHTML;
 }
 
 function stampText(iso) {
@@ -361,17 +376,15 @@ async function selectGeneration(path) {
   // rather than tearing the page down and laying it out again around the same facts.
   if (state.generation?.path === path) {
     $("#content").replaceChildren(state.generation.node);
-    $("#status").textContent = state.generation.folder;
     highlightGeneration();
     // This page was put aside mid-run; what it says about that run is only what was true then.
     $(".run-bar")?.refreshRun?.();
     return api(`/api/runs?path=${encodeURIComponent(path)}`).then(state.generation.setRuns);
   }
-  const [generation, runs] = await Promise.all([
+  let [generation, runs] = await Promise.all([
     api(`/api/generation?path=${encodeURIComponent(path)}`),
     api(`/api/runs?path=${encodeURIComponent(path)}`),
   ]);
-  $("#status").textContent = generation.path;
   highlightGeneration();
 
   const page = $("#generation-template").content.cloneNode(true);
@@ -380,23 +393,33 @@ async function selectGeneration(path) {
   page.querySelector(".copy-generation-path").onclick = () => copyText(generation.folder);
   page.querySelector(".generation-description").textContent = generation.description ?? "";
   page.querySelector(".facts").innerHTML = [
-    fact("Source", generation.source),
-    fact("Generated", stampText(generation.created)),
-    fact("Backend", generation.backend),
-    fact("Platform", generation.platform),
-    fact("Runtime", generation.simulated ? "Simulated" : "Hardware"),
+    // What a run does first: where it runs and on what. Then what it is made of, then its
+    // bookkeeping -- read left to right, the page answers "what will run" before "how big".
+    fact("Runtime", generation.simulated ? "Simulated" : "Hardware", "fact-key"),
+    // The version belongs to the thing it versions, not to a box of its own.
+    fact("Platform", generation.platform, "fact-key", generation.toolchain?.mujoco),
+    fact("Backend", generation.backend, "", generation.toolchain?.wrapper),
     fact("Motions", generation.motions),
     fact("Authored constraints", generation.authored_constraints),
-    fact("Schema", generation.schema_hash),
     fact("Runs", generation.runs),
+    fact("Generated", stampText(generation.created)),
     fact("Folder size", formatBytes(generation.size_bytes)),
+    fact("Schema", generation.schema_hash, "fact-mono"),
   ].join("");
   page.querySelector(".source-files").replaceChildren(...generation.source_files.map((source) => {
     const entry = document.createElement("div");
-    entry.className = "source-file";
-    entry.title = source.path;
-    entry.innerHTML = `<span>${source.name}</span><button title="Copy full path">⧉</button>`;
-    entry.querySelector("button").onclick = () => copyText(source.path);
+    // The .robmot this generation was made from is marked here rather than named twice.
+    entry.className = source.model ? "source-file is-model" : "source-file";
+    // The model is the file `gen` is pointed at again: reading it, generating from it and
+    // seeing what it has become since are all things to do with it, so clicking it asks
+    // which. Its imports are archived copies -- their path is all there is to take.
+    entry.title = source.model
+      ? `${source.path} — the model this was generated from`
+      : `${source.path} — click to copy the path`;
+    entry.innerHTML = `<span>${source.name}</span>`;
+    entry.onclick = source.model
+      ? (event) => modelMenu(entry, source, path, event)
+      : () => copyText(source.path);
     return entry;
   }));
   const generatedGroups = new Map();
@@ -412,25 +435,35 @@ async function selectGeneration(path) {
     group.append(summary, ...files.map((source) => {
       const entry = document.createElement("div");
       entry.className = "source-file";
-      entry.title = source.path;
-      entry.innerHTML = `<span>${source.name}</span><button title="Copy full path">⧉</button>`;
-      entry.querySelector("button").onclick = () => copyText(source.path);
+      // Generated output, not a source: there is nothing in the tree to open it in.
+      entry.title = `${source.path} — click to copy the path`;
+      entry.innerHTML = `<span>${source.name}</span>`;
+      entry.onclick = () => copyText(source.path);
       return entry;
     }));
     return group;
   }));
   const runList = page.querySelector(".runs");
-  const pages = Math.ceil(runs.length / 10);
   let runPage = 0;
   let rows = runs;
-  const renderRuns = () => runList.replaceChildren(...rows.slice(runPage * 10, runPage * 10 + 10).map((run, index) => {
+  const countRuns = () => {
+    const label = page.querySelector(".run-count");
+    if (!label) return;
+    const all = runs.length;
+    label.textContent = rows.length === all
+      ? (all ? `${all} recorded` : "none yet")
+      : `${rows.length} of ${all}`;
+  };
+  const renderRuns = () => (countRuns(), runList.replaceChildren(...rows.slice(runPage * 10, runPage * 10 + 10).map((run, index) => {
     const row = document.createElement("div");
     row.className = "run";
     row.dataset.path = run.path;
     row.classList.toggle("picked", state.selected.has(run.path));
     const status = run.status ?? (run.complete ? "COMPLETED" : "INCOMPLETE");
-    row.innerHTML = `<span>${runPage * 10 + index + 1}</span><strong>${run.id}</strong><span>${stampText(run.started)}</span><span>${run.duration_s.toFixed(2)} s</span><span>${(run.written_frames ?? 0).toLocaleString()}</span><span class="badge badge-${status.toLowerCase()}">${status}</span>`;
-    row.title = "Open replay; Ctrl/Cmd-click to select";
+    // Every id begins `run-<date>T`; what distinguishes one row from the next is the time.
+    const short = run.id.replace(/^run-\d{8}T/, "").replace(/Z$/, "");
+    row.innerHTML = `<span>${runPage * 10 + index + 1}</span><strong>${short}</strong><span>${stampText(run.started)}</span><span>${run.duration_s.toFixed(2)} s</span><span>${(run.written_frames ?? 0).toLocaleString()}</span><span class="badge badge-${status.toLowerCase()}">${status}</span>`;
+    row.title = `${run.id} — open replay; Ctrl/Cmd-click to select`;
     row.onclick = (event) => {
       if (event.shiftKey) return pickRange(run.path, row.parentElement, "main");
       return event.metaKey || event.ctrlKey
@@ -438,12 +471,44 @@ async function selectGeneration(path) {
         : loadReplay(run.path);
     };
     return row;
-  }));
-  renderRuns();
+  })));
   const pager = page.querySelector(".run-pagination");
-  if (pages > 1) pager.innerHTML = `<button>‹</button><span>1 / ${pages}</span><button>›</button>`;
-  pager.querySelectorAll("button")[0]?.addEventListener("click", () => { runPage = Math.max(0, runPage - 1); renderRuns(); pager.querySelector("span").textContent = `${runPage + 1} / ${pages}`; });
-  pager.querySelectorAll("button")[1]?.addEventListener("click", () => { runPage = Math.min(pages - 1, runPage + 1); renderRuns(); pager.querySelector("span").textContent = `${runPage + 1} / ${pages}`; });
+  // Pages follow whatever the filter left, so they are counted per draw, not once.
+  const drawPager = () => {
+    const total = Math.max(1, Math.ceil(rows.length / 10));
+    if (total < 2) return pager.replaceChildren();
+    pager.innerHTML = `<button>‹</button><span>${runPage + 1} / ${total}</span><button>›</button>`;
+    const [back, next] = pager.querySelectorAll("button");
+    back.onclick = () => { runPage = Math.max(0, runPage - 1); draw(); };
+    next.onclick = () => { runPage = Math.min(total - 1, runPage + 1); draw(); };
+  };
+  const empty = document.createElement("div");
+  empty.className = "runs-empty";
+  empty.textContent = "No run started in that window.";
+  const draw = () => {
+    renderRuns();
+    empty.remove();
+    if (!rows.length && runs.length) runList.after(empty);
+    drawPager();
+  };
+  // The list is what someone reaches for when they know roughly when a run happened.
+  const from = page.querySelector(".run-from");
+  const to = page.querySelector(".run-to");
+  const clear = page.querySelector(".run-filter-clear");
+  const applyFilter = () => {
+    const after = from.value ? new Date(from.value).getTime() : -Infinity;
+    const before = to.value ? new Date(to.value).getTime() : Infinity;
+    rows = runs.filter((run) => {
+      const started = run.started ? new Date(run.started).getTime() : NaN;
+      return Number.isNaN(started) ? !from.value && !to.value : started >= after && started <= before;
+    });
+    clear.hidden = !from.value && !to.value;
+    runPage = 0;
+    draw();
+  };
+  from.onchange = to.oninput = from.oninput = to.onchange = applyFilter;
+  clear.onclick = () => { from.value = to.value = ""; applyFilter(); };
+  draw();
   bindRunAgain(page, path, generation.cameras ?? [], generation.simulated);
   if (!generation.simulated) bindDevices(page, path);
   $("#content").replaceChildren(page);
@@ -452,9 +517,8 @@ async function selectGeneration(path) {
     folder: generation.folder,
     node: $("#content .generation"),
     setRuns: (fresh) => {
-      rows = fresh;
-      runPage = Math.min(runPage, Math.max(0, Math.ceil(fresh.length / 10) - 1));
-      renderRuns();
+      runs = fresh;
+      applyFilter();
     },
   };
   const graphPage = $("#content");
@@ -606,7 +670,6 @@ async function openPendingRun(runPath) {
   state.generationPath = runPath.split("/runs/")[0];
   state.live = state.following = null;
   highlightGeneration();
-  $("#status").textContent = "";
   $("#content").innerHTML =
     '<div class="empty"><div class="spinner"></div><h1>Run starting…</h1>'
     + "<p>Waiting for the first frames of the log.</p></div>";
@@ -634,7 +697,6 @@ async function loadReplay(path) {
   state.pendingSignals.clear();
   state.liveBuffer.clear();
   state.activeMotion = null;
-  $("#status").textContent = "";
   $("#content").innerHTML = replayShell(path);
   state.runPath = path;
   state.generationPath = state.replay.generation;
@@ -2065,7 +2127,7 @@ function renderSourceNode(node, name, depth, isRoot = false) {
     const leaf = document.createElement("div");
     leaf.className = "source-leaf";
     leaf.style.setProperty("--depth", depth);
-    const item = listItem(file, null, () => { $("#status").textContent = `${state.roots.sources}/${source}`; openSource(source); }, source);
+    const item = listItem(file, null, () => { openSource(source); }, source);
     item.onmouseenter = () => {
       const style = getComputedStyle(item);
       const available = item.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
@@ -2089,34 +2151,401 @@ function renderSourceNode(node, name, depth, isRoot = false) {
   return children;
 }
 
-async function openSource(source) {
-  state.viewing = source;
-  const { text, editors, terminal } = await api(`/api/source?path=${encodeURIComponent(source)}`);
-  if (state.viewing !== source) return;
-  $("#content").innerHTML = `<div class="viewer"><div class="viewer-heading"><div><div class="eyebrow">SOURCE</div><h1></h1><p class="path"></p></div><div class="open-with"><select id="editor-choice"></select><button id="open-editor">Open</button></div></div><pre id="source-text"></pre></div>`;
-  $(".viewer h1").textContent = source.split("/").pop();
-  $(".viewer .path").textContent = `${state.roots.sources}/${source}`;
-  $("#source-text").replaceChildren(...text.replace(/\n$/, "").split("\n").map((line) => {
-    const row = document.createElement("span");
-    row.className = "code-line";
-    row.textContent = line;
-    return row;
+// A file named on a generation page, read on the Sources tab where files are read. The path
+// is resolved against whichever root holds it, since a generation's copies are not under the
+// sources root; anything the viewer cannot open falls back to copying its path.
+// What there is to do with the model a generation was built from. Anchored under the row it
+// belongs to, and closed by the next click anywhere -- the page's other menus behave so.
+function modelMenu(row, source, generationPath, event) {
+  event.stopPropagation();
+  document.querySelector(".row-menu")?.remove();
+  const menu = document.createElement("div");
+  menu.className = "row-menu picker-panel";
+  const missing = !source.workspace;
+  const actions = [
+    ["open in sources", () => showSource(source.workspace, source.path), missing],
+    ["diff against source", () => showDrift(generationPath, source.name), false],
+    ["copy archived path", () => copyText(source.path), false],
+  ];
+  menu.append(...actions.map(([name, run, disabled]) => {
+    const action = document.createElement("button");
+    action.textContent = name;
+    action.disabled = disabled;
+    if (disabled) action.title = "this model is no longer in the sources tree";
+    action.onclick = (click) => { click.stopPropagation(); menu.remove(); run(); };
+    return action;
   }));
+  row.append(menu);
+  setTimeout(() => document.addEventListener("click", function away() {
+    menu.remove();
+    document.removeEventListener("click", away);
+  }, { once: true }));
+}
+
+// What the model has become since this generation was made: a page of its own, the archived
+// copy beside the file as it is authored now.
+async function showDrift(generationPath, file = null, push = true) {
+  state.anchor = generationPath;
+  stopPlayback();
+  state.runPath = null;
+  state.generationPath = generationPath;
+  state.diffPath = generationPath;
+  if (push) {
+    const view = new URLSearchParams(location.hash.slice(1));
+    const unchanged = view.get("diff") === generationPath && view.get("file") === file;
+    view.delete("run");
+    view.delete("generation");
+    view.delete("source");
+    view.delete("panel");
+    view.set("diff", generationPath);
+    if (file) view.set("file", file); else view.delete("file");
+    view.set("tab", "logs");
+    history[unchanged ? "replaceState" : "pushState"](null, "", `#${view}`);
+  }
+  // The run's own sources take over the list while its differences are what is being read.
+  const summary = await api(
+    `/api/source-drift?path=${encodeURIComponent(generationPath)}&summary=1`,
+  ).catch(() => ({ files: [] }));
+  renderDriftList(generationPath, summary.files ?? [], file);
+  const query = new URLSearchParams({ path: generationPath });
+  if (file) query.set("file", file);
+  const drift = await api(`/api/source-drift?${query}`).catch((error) => ({ error: error.message }));
+  const page = document.createElement("article");
+  page.className = "diff-page";
+  page.innerHTML = '<div class="page-heading"><button id="back" title="Back to generation">←</button>'
+    + '<h1></h1><span class="eyebrow">DIFF</span></div><p class="diff-state"></p>'
+    + '<div class="diff-columns"><div class="diff-head"></div><div class="diff-head"></div></div>'
+    + '<div class="diff-body"></div>';
+  page.querySelector("h1").textContent = drift.name ?? "model";
+  const [leftHead, rightHead] = page.querySelectorAll(".diff-head");
+  leftHead.textContent = drift.archived ? `archived · ${drift.archived}` : "archived";
+  rightHead.textContent = drift.workspace_path
+    ? `authored now · ${drift.workspace_path}`
+    : "not in the sources tree";
+  const state_ = page.querySelector(".diff-state");
+  state_.textContent = drift.error
+    ? drift.error
+    : !drift.workspace
+      ? "This model is no longer in the sources tree, so there is nothing to compare it with."
+      : drift.same
+        ? "Unchanged — generating again would start from the same model."
+        : `${drift.rows.filter((row) => row.kind !== "equal").length} lines differ.`;
+  page.querySelector(".diff-body").replaceChildren(...(drift.rows ?? []).map((row) => {
+    const line = document.createElement("div");
+    line.className = "diff-row";
+    line.dataset.kind = row.kind;
+    for (const [side, cell] of [["left", row.left], ["right", row.right]]) {
+      const number = document.createElement("span");
+      number.className = "diff-n";
+      number.textContent = cell ? cell.n : "";
+      const text = document.createElement("span");
+      text.className = `diff-text diff-${side}`;
+      text.textContent = cell ? cell.text : "";
+      if (!cell) text.dataset.blank = "true";
+      line.append(number, text);
+    }
+    return line;
+  }));
+  $("#content").replaceChildren(page);
+  page.querySelector("#back").onclick = async () => {
+    state.diffPath = null;
+    await loadGenerations(true).catch(() => {});
+    selectGeneration(generationPath);
+  };
+}
+
+// The generation's own sources, in the sidebar, each saying whether the working tree still
+// matches what this run was built from.
+function renderDriftList(generationPath, files, selected) {
+  $("#list-title").textContent = "RUN SOURCES";
+  $("#storage").textContent = "";
+  const chosen = selected ?? files.find((file) => file.model)?.name;
+  $("#browser").replaceChildren(...files.map((file) => {
+    const item = document.createElement("button");
+    item.className = "item drift-item";
+    item.dataset.status = file.status;
+    item.classList.toggle("selected", file.name === chosen);
+    const name = document.createElement("span");
+    name.className = "item-name";
+    name.textContent = file.name;
+    const mark = document.createElement("small");
+    mark.textContent = file.status === "missing"
+      ? "not in sources"
+      : file.status === "changed" ? "changed" : "unchanged";
+    item.append(name, mark);
+    item.onclick = () => showDrift(generationPath, file.name);
+    return item;
+  }));
+}
+
+// Read the file that is still authored, in the tree that lists it. A generation's own copy is
+// a snapshot the working tree may have moved past, so it is never what gets opened.
+async function showSource(workspace, absolute) {
+  if (!workspace) {
+    await copyText(absolute);
+    return snack("not in the sources tree any more — path copied");
+  }
+  setTab("sources");
+  await loadSources().catch(() => {});
+  try {
+    await openSource(workspace);
+  } catch (error) {
+    await copyText(absolute);
+    snack(`${error.message} — path copied`);
+  }
+}
+
+// The file, in an editor rather than a rendering of one: arrows move a cursor through the
+// text, the line under it is marked by the editor itself, and small changes can be made and
+// saved here instead of round-tripping through a terminal. CodeMirror does all of that; the
+// module is fetched once and kept.
+let codemirror = null;
+
+// The URL `codemirror` itself imports its view from. Asking for the same string gets the same
+// module instance; a different spelling of the same package (@codemirror/view@6.26.3, say)
+// is a second copy of the library, whose decorations the first copy quietly ignores.
+const CM_VIEW = "https://esm.sh/@codemirror/view@^6.0.0?target=es2022";
+
+async function editorModule() {
+  codemirror ??= Promise.all([
+    import("https://esm.sh/codemirror@6.0.1"),
+    import(CM_VIEW),
+  ]).then(([setup, view]) => ({ ...setup, ...view }));
+  return codemirror;
+}
+
+async function mountEditor(holder, source, text) {
+  let cm;
+  try {
+    cm = await editorModule();
+  } catch (error) {
+    // No editor to be had: the file still has to be readable.
+    holder.textContent = text;
+    holder.classList.add("plain-source");
+    return snack(`code editor unavailable (${error.message}) — showing plain text`);
+  }
+  const { EditorView, basicSetup, Decoration, ViewPlugin } = cm;
+  const save = $("#save-source");
+  // A button for something there is nothing to do is clutter: it arrives with the first edit.
+  const dirty = (is) => {
+    save.hidden = !is;
+    save.textContent = "save";
+  };
+  const write = async (target) => {
+    if (save.hidden) return true;
+    const written = target.state.doc.toString();
+    try {
+      await post("/api/source", { path: source, text: written });
+      // What is on disk is what the marks are measured against, so saving clears them.
+      saved.lines = written.split("\n");
+      saved.version += 1;
+      target.dispatch({});   // nothing to change; it asks the marks to be recounted
+      save.hidden = false;
+      save.textContent = "saved";
+      setTimeout(() => dirty(false), 1200);
+    } catch (error) {
+      snack(error.message);
+    }
+    return true;
+  };
+  const saved = { lines: text.split("\n"), version: 0 };
+  const changedLine = Decoration.line({ class: "cm-changedLine" });
+  const marked = (doc) => {
+    const now = [];
+    for (let n = 1; n <= doc.lines; n += 1) now.push(doc.line(n).text);
+    const was = saved.lines;
+    // The matching ends are not part of any change; trimming them is what keeps the alignment
+    // below small enough to run on every keystroke.
+    let head = 0;
+    while (head < now.length && head < was.length && now[head] === was[head]) head += 1;
+    let tail = 0;
+    while (
+      tail < now.length - head
+      && tail < was.length - head
+      && now[now.length - 1 - tail] === was[was.length - 1 - tail]
+    ) {
+      tail += 1;
+    }
+    const before = was.slice(head, was.length - tail);
+    const after = now.slice(head, now.length - tail);
+    const changed = new Set();
+    if (!after.length) return changed;
+    // Two edits far apart leave everything between them untouched, so the lines still common
+    // to both sides have to be found rather than assumed: longest common subsequence, and
+    // only what is not on it is marked. Beyond this size the band itself is the honest answer.
+    if (before.length * after.length > 400000) {
+      for (let index = 0; index < after.length; index += 1) changed.add(head + index + 1);
+      return changed;
+    }
+    const width = after.length + 1;
+    const common = new Uint32Array((before.length + 1) * width);
+    for (let i = before.length - 1; i >= 0; i -= 1) {
+      for (let j = after.length - 1; j >= 0; j -= 1) {
+        common[i * width + j] = before[i] === after[j]
+          ? common[(i + 1) * width + j + 1] + 1
+          : Math.max(common[(i + 1) * width + j], common[i * width + j + 1]);
+      }
+    }
+    let i = 0;
+    let j = 0;
+    while (i < before.length && j < after.length) {
+      if (before[i] === after[j]) { i += 1; j += 1; continue; }
+      if (common[(i + 1) * width + j] >= common[i * width + j + 1]) i += 1;   // line removed
+      else changed.add(head + (j += 1));                                      // line is new
+    }
+    while (j < after.length) changed.add(head + (j += 1));
+    return changed;
+  };
+  const changes = (doc) => Decoration.set(
+    [...marked(doc)].sort((left, right) => left - right).map((n) => changedLine.range(doc.line(n).from)),
+  );
+  const trackChanges = ViewPlugin.fromClass(
+    class {
+      constructor(target) {
+        this.version = saved.version;
+        this.decorations = changes(target.state.doc);
+      }
+
+      // Only when the text moved or a save reset what it is compared against -- not on the
+      // updates that merely scrolled the viewport.
+      update(target) {
+        if (target.docChanged || this.version !== saved.version) {
+          this.version = saved.version;
+          this.decorations = changes(target.state.doc);
+        }
+      }
+    },
+    { decorations: (plugin) => plugin.decorations },
+  );
+  const view = new EditorView({
+    parent: holder,
+    doc: text,
+    extensions: [
+        basicSetup,
+        trackChanges,
+        EditorView.lineWrapping,
+        EditorView.updateListener.of((update) => {
+          if (update.docChanged) dirty(true);
+        }),
+        EditorView.theme({
+          "&": { color: "var(--text)", backgroundColor: "transparent", fontSize: "12.5px" },
+          ".cm-content": { fontFamily: "var(--code)", padding: "0" },
+          ".cm-gutters": {
+            backgroundColor: "transparent", color: "var(--dim)", border: "0",
+            fontFamily: "var(--code)",
+          },
+          ".cm-activeLine": { backgroundColor: "#202327" },
+          // Unsaved lines carry a mark down their edge, the way an editor's gutter does.
+          ".cm-changedLine": { boxShadow: "inset 2px 0 0 var(--accent)" },
+          ".cm-activeLineGutter": { backgroundColor: "transparent", color: "var(--muted)" },
+          "&.cm-focused": { outline: "none" },
+          ".cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection": {
+            backgroundColor: "#38414d",
+          },
+          ".cm-cursor": { borderLeftColor: "var(--accent)" },
+          ".cm-searchMatch": { backgroundColor: "#3a3320" },
+          ".cm-searchMatch.cm-searchMatch-selected": { backgroundColor: "#5a4a1e" },
+        }, { dark: true }),
+    ],
+  });
+  dirty(false);
+  save.onclick = () => write(view);
+  // The binding people expect from an editor, without importing a second package for it.
+  holder.addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key === "s") {
+      event.preventDefault();
+      write(view);
+    }
+  });
+  view.focus();
+}
+
+async function openSource(source, absolute = null, push = true) {
+  state.viewing = source;
+  // A file being read is a place in the app: name it in the URL so a reload comes back to it.
+  if (push) {
+    const view = new URLSearchParams(location.hash.slice(1));
+    const unchanged = view.get("source") === source;
+    view.delete("run");
+    view.delete("generation");
+    view.delete("panel");
+    view.set("source", source);
+    view.set("tab", "sources");
+    history[unchanged ? "replaceState" : "pushState"](null, "", `#${view}`);
+  }
+  const { text, editors, terminal, absolute: where } = await api(
+    `/api/source?path=${encodeURIComponent(source)}`,
+  );
+  if (state.viewing !== source) return;
+  // The same picker the transport and camera menus use: a native select paints its popup in
+  // the platform's colours, which is the one control on the page that ignores the theme.
+  // The same heading every other page uses, so the title sits on the same line as theirs.
+  // One bar of quiet actions with a single emphasis: opening an external editor is one split
+  // control rather than a chooser plus a button, and save only appears when there is
+  // something to save.
+  // Two groups, because they are two things: what to do with the file, and what to make from
+  // it. Opening an external editor is one split control rather than a chooser plus a button,
+  // and save only appears once there is something to save.
+  $("#content").innerHTML = `<div class="viewer"><div class="viewer-top"><div class="page-heading"><h1></h1><span class="eyebrow">SOURCE</span></div><div class="viewer-heading"><p class="path"></p><div class="open-with"><span class="bar file-bar"><button id="save-source" hidden>save</button><span class="split"><button id="open-editor"></button><details class="picker picker-down" id="editor-choice"><summary title="Choose the editor"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5"/></svg></summary><div class="picker-panel"></div></details></span></span><span class="bar build-bar"><button id="gen-source">generate</button><button id="gen-run-source" class="is-primary">generate &amp; run</button></span></div></div></div><div id="source-text"></div></div>`;
+  $(".viewer h1").textContent = source.split("/").pop();
+  // A generation's vendored copy is not under the sources root; show where it really is.
+  $(".viewer .path").textContent = where ?? absolute ?? source;
+  // Say where this file sits in the list, and bring it into view when it was reached from
+  // somewhere else -- a file opened from a generation is otherwise unfindable in the tree.
+  $$("#browser .item").forEach((item) => item.classList.toggle("selected", item.dataset.path === source));
+  const listed = $(`#browser .item[data-path="${CSS.escape(source)}"]`);
+  if (listed) {
+    // Every collapsed folder above it, not just the nearest, or the entry stays hidden.
+    for (let node = listed.closest("details"); node; node = node.parentElement?.closest("details")) {
+      node.open = true;
+    }
+    // Only when it cannot be seen: scrolling an entry the reader is already looking at moves
+    // the list under their eyes for nothing.
+    const browser = $("#browser");
+    const list = browser.getBoundingClientRect();
+    const entry = listed.getBoundingClientRect();
+    if (entry.top < list.top || entry.bottom > list.bottom) {
+      browser.scrollTop += entry.top - list.top - browser.clientHeight / 2 + entry.height / 2;
+    }
+  }
+  await mountEditor($("#source-text"), source, text);
   const options = [...editors];
   if (terminal) options.push("terminal");
-  const choice = $("#editor-choice");
-  choice.replaceChildren(...options.map((name) => new Option(name === "terminal" ? `terminal (${terminal}) · folder` : name, name)));
-  const remembered = localStorage.getItem("motion-spec.editor");
-  if (options.includes(remembered)) choice.value = remembered;
-  choice.onchange = () => localStorage.setItem("motion-spec.editor", choice.value);
+  const menu = $("#editor-choice");
+  const opener = $("#open-editor");
+  const label = (name) => (name === "terminal" ? `terminal (${terminal})` : name);
+  let chosen = localStorage.getItem("motion-spec.editor");
+  if (!options.includes(chosen)) chosen = options[0] ?? "";
+  // One control that does the usual thing in one click, with the choice behind its caret.
+  const name = () => { opener.textContent = chosen ? `open in ${label(chosen)}` : "no editor found"; };
+  name();
+  opener.disabled = !chosen;
+  menu.hidden = options.length < 2;
+  menu.querySelector(".picker-panel").replaceChildren(...options.map((option) => {
+    const pick = document.createElement("button");
+    pick.textContent = label(option);
+    pick.setAttribute("aria-pressed", String(option === chosen));
+    pick.onclick = () => {
+      chosen = option;
+      localStorage.setItem("motion-spec.editor", option);
+      name();
+      menu.querySelectorAll(".picker-panel button").forEach((other) =>
+        other.setAttribute("aria-pressed", String(other === pick)));
+      menu.open = false;
+    };
+    return pick;
+  }));
+  document.addEventListener("click", (event) => {
+    if (menu.open && !menu.contains(event.target)) menu.open = false;
+  });
   $("#open-editor").onclick = async () => {
     try {
-      if (choice.value === "terminal") {
+      if (chosen === "terminal") {
         const { opened } = await post("/api/terminal", { path: source });
         snack(`${terminal} at ${opened}`);
       } else {
-        await post("/api/open", { path: source, editor: choice.value });
-        snack(`Opened in ${choice.value}`);
+        await post("/api/open", { path: source, editor: chosen });
+        snack(`Opened in ${chosen}`);
       }
     } catch (error) { snack(error.message); }
   };
@@ -2126,24 +2555,22 @@ async function openSource(source) {
 
 // Generate, build and run a model from its own page, showing the terminal that does it.
 function bindGenerate(source) {
-  // Two ways in: make the generation and stop, or make it and watch it run.
-  const generate = document.createElement("button");
-  generate.className = "run-start";
-  generate.textContent = "generate";
-  const start = document.createElement("button");
-  start.className = "run-start";
-  start.textContent = "▶ generate & run";
+  // Two ways in -- make the generation and stop, or make it and watch it run -- both already
+  // in the page's toolbar; what a run produces is announced beside them.
+  const generate = $("#gen-source");
+  const start = $("#gen-run-source");
   const state_ = document.createElement("span");
   state_.className = "run-state";
   const open = document.createElement("button");
-  open.className = "run-start";
   open.textContent = "open generation";
   open.hidden = true;
-  $(".viewer .open-with").append(generate, start, open, state_);
+  // What a generation produced belongs with the buttons that produced it.
+  $(".viewer .build-bar").append(open);
+  $(".viewer .open-with").append(state_);
   const pre = document.createElement("pre");
   pre.className = "console";
   pre.hidden = true;
-  $(".viewer-heading").after(pre);
+  $(".viewer-top").after(pre);
 
   const stop = () => {
     clearInterval(state.generateWatch);
@@ -2230,14 +2657,11 @@ async function loadNotebook(url = null) {
   $("#list-title").textContent = "NOTEBOOK";
   $("#browser").replaceChildren();
   $("#content").innerHTML = '<div class="notebook"><iframe title="JupyterLab"></iframe></div>';
-  $("#status").textContent = "Starting JupyterLab…";
   try {
     const lab = url ? { url } : await api("/api/jupyter");
     $(".notebook iframe").src = lab.url;
-    $("#status").textContent = lab.url.split("?")[0];
   } catch (error) {
     // a missing JupyterLab is a thing to install, not a page that failed to load
-    $("#status").textContent = "";
     $("#content").innerHTML = '<div class="empty"><span>NOTEBOOK</span><h1></h1><p></p></div>';
     $(".empty h1").textContent = "JupyterLab is not available.";
     $(".empty p").textContent = error.message;
@@ -2308,7 +2732,6 @@ function renderHealth(report) {
     return group;
   }));
   $("#content").replaceChildren(page);
-  $("#status").textContent = "installation health";
 }
 $("#delete-selected").onclick = async () => {
   if (!state.selected.size) return;
@@ -2407,7 +2830,6 @@ function goHome() {
   state.runPath = null;
   setTab("logs");
   history.replaceState(null, "", `${location.pathname}#tab=logs`);
-  $("#status").textContent = "Choose a generation";
   $("#content").innerHTML = '<div class="empty"><span>REPLAY / 01</span><h1>Choose a generation.</h1><p>Its build metadata and recorded runs will appear here.</p></div>';
   return loadGenerations().catch(showError);
 }
@@ -2416,9 +2838,13 @@ $("#home").onclick = goHome;
 
 function setView(kind, path) {
   const view = new URLSearchParams(location.hash.slice(1));
-  const unchanged = view.get(kind) === path && !view.has(kind === "run" ? "generation" : "run");
+  const unchanged = view.get(kind) === path
+    && !view.has(kind === "run" ? "generation" : "run")
+    && !view.has("source") && !view.has("diff");
   view.delete("run");
   view.delete("generation");
+  view.delete("source");
+  view.delete("diff");
   view.set(kind, path);
   view.set("tab", state.tab);
   if (kind !== "run") view.delete("panel");
@@ -2468,12 +2894,20 @@ function showError(error) {
 
 function loadLocation() {
   const view = new URLSearchParams(location.hash.slice(1));
-  state.generationPath = view.get("generation") ?? view.get("run")?.split("/runs/")[0] ?? null;
+  state.generationPath = view.get("generation") ?? view.get("diff")
+    ?? view.get("run")?.split("/runs/")[0] ?? null;
   setTab(view.get("tab") ?? "logs", false);
   const loadSidebar = state.tab === "logs" ? loadGenerations : loadSources;
   const rendered = () => document.documentElement.classList.remove("restoring");
   if (view.has("run")) {
     loadSidebar().then(() => loadReplay(view.get("run"))).then(rendered).catch(showError);
+  }
+  else if (view.has("diff")) {
+    showDrift(view.get("diff"), view.get("file"), false).then(rendered).catch(showError);
+  }
+  else if (view.has("source")) {
+    // The viewer re-renders itself; it must not push the entry it is restoring back on.
+    loadSidebar().then(() => openSource(view.get("source"), null, false)).then(rendered).catch(showError);
   }
   else if (view.has("generation")) {
     loadSidebar().then(() => selectGeneration(view.get("generation"))).then(rendered).catch(showError);

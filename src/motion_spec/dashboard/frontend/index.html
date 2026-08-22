@@ -21,7 +21,7 @@
       const width = Number(localStorage.getItem("motion-spec.aside"));
       if (width) document.documentElement.style.setProperty("--aside", `${width}px`);
       const view = new URLSearchParams(location.hash.slice(1));
-      if (view.has("run") || view.has("generation")) {
+      if (view.has("run") || view.has("generation") || view.has("source") || view.has("diff")) {
         document.documentElement.classList.add("restoring");
       }
     </script>
@@ -62,7 +62,6 @@
         </div>
 
         <div id="browser"></div>
-        <span id="status"></span>
         <div id="aside-resize" title="Drag to resize · double-click to reset"></div>
       </aside>
 
@@ -86,14 +85,16 @@
       <article class="generation">
         <div class="page-heading"><h1></h1><span class="eyebrow">GENERATION</span></div>
         <div class="generation-path"><p class="path"></p><button class="copy-generation-path" title="Copy folder path" aria-label="Copy folder path">⧉</button></div>
+        <p class="generation-description"></p>
+        <div class="run-bar"><span class="run-choice" data-option="headless"><em>display</em><button data-value="false" aria-pressed="true">GUI</button><button data-value="true" aria-pressed="false">headless</button></span><span class="run-choice run-speed" data-option="realtime" hidden><em>speed</em><button data-value="true" aria-pressed="true">realtime</button><button data-value="false" aria-pressed="false">fast</button></span><span class="run-choice run-record" hidden><em>record</em></span><span class="run-choice" data-option="log"><em>log</em><button data-value="true" aria-pressed="true">on</button><button data-value="false" aria-pressed="false">off</button></span><button class="run-start">▶ run</button><span class="run-state"></span></div>
         <div class="facts"></div>
         <div class="devices" hidden><div class="devices-head"><h2>Devices</h2><button class="devices-test">test connections</button><span class="devices-state"></span></div><div class="device-rows"></div></div>
-        <p class="generation-description"></p>
+        <h2 class="source-heading">Authored source</h2>
         <div class="source-files"></div>
-        <div class="run-heading"><h2>Recorded runs</h2><div class="run-bar"><span class="run-choice" data-option="headless"><em>display</em><button data-value="false" aria-pressed="true">GUI</button><button data-value="true" aria-pressed="false">headless</button></span><span class="run-choice run-speed" data-option="realtime" hidden><em>speed</em><button data-value="true" aria-pressed="true">realtime</button><button data-value="false" aria-pressed="false">fast</button></span><span class="run-choice run-record" hidden><em>record</em></span><span class="run-choice" data-option="log"><em>log</em><button data-value="true" aria-pressed="true">on</button><button data-value="false" aria-pressed="false">off</button></span><button class="run-start">▶ run</button><span class="run-state"></span></div></div>
-        <div class="run-header"><span>#</span><span>Run</span><span>Started</span><span>Duration</span><span>Frames</span><span>Status</span></div>
+        <div class="run-heading"><h2>Recorded runs</h2><span class="run-count"></span></div>
+        <div class="run-header"><span>#</span><span>Run (time)</span><span>Started</span><span>Duration</span><span>Frames</span><span>Status</span></div>
         <div class="runs"></div>
-        <div class="run-pagination"></div>
+        <div class="run-tools"><span class="run-filter"><label>from<input type="datetime-local" class="run-from"></label><label>to<input type="datetime-local" class="run-to"></label><button class="run-filter-clear" hidden>clear</button></span><div class="run-pagination"></div></div>
         <pre class="console run-console" hidden></pre>
         <div class="graph-heading"><h2>RDF graph viz</h2></div>
         <p class="graph-help">Select RDF files to render their complete RDF graph.</p>
@@ -104,6 +105,6 @@
       </article>
     </template>
 
-    <script src="app.js?v=default-152"></script>
+    <script src="app.js?v=editor-187"></script>
   </body>
 </html>

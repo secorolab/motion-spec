@@ -15,10 +15,9 @@ button, input, select { font: inherit; }
 button { border: 0; background: transparent; color: var(--muted); cursor: pointer; transition: background 100ms ease-out, color 100ms ease-out, transform 80ms ease-out; }
 button:active { background: #383d45; color: var(--text); transform: translateY(1px); }
 
-.brand, .eyebrow, .aside-head, #status, button, select, input { font-family: var(--mono); }
+.brand, .eyebrow, .aside-head, button, select, input { font-family: var(--mono); }
 .brand { display: block; width: 100%; padding: 16px 14px 12px; color: var(--text); font-size: 17px; font-weight: 800; letter-spacing: .1em; text-align: left; }
 .brand:hover { color: var(--accent); }
-#status { position: absolute; right: 0; bottom: 0; left: 0; z-index: 2; overflow: hidden; padding: 5px 10px; border-top: 1px solid var(--line); background: var(--side); color: var(--dim); font: 10px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 
 main { display: grid; grid-template-columns: var(--aside, 290px) minmax(0, 1fr); height: 100vh; transition: grid-template-columns 180ms cubic-bezier(.2, .8, .2, 1); }
 aside { position: relative; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; background: var(--side); border-right: 1px solid var(--line); transition: border-color 120ms ease-out, opacity 120ms ease-out; }
@@ -118,32 +117,82 @@ body.sidebar-collapsed .transport { left: 24px; }
 .eyebrow { color: var(--accent); font-size: 11px; letter-spacing: .14em; }
 .page-heading, .replay-heading { display: flex; align-items: center; gap: 12px; min-height: 36px; }
 .page-heading h1, .replay-heading h1 { margin: 0; font: 600 19px var(--mono); }
-.page-heading .eyebrow, .replay-heading .eyebrow { padding: 4px 11px; border: 1px solid var(--line); font-size: 12px; }
+/* What kind of page this is, said rather than offered: a bordered box beside real buttons
+   reads as one more button to press. A dim label with a rule under it does not. */
+.page-heading .eyebrow, .replay-heading .eyebrow {
+  padding: 0 0 3px; border-bottom: 1px solid var(--line);
+  color: var(--dim); font-size: 10px; letter-spacing: .18em;
+}
 .page-heading .eyebrow { margin-left: auto; }
 .replay-heading .eyebrow { margin-left: 10px; }
 h1 { margin: 7px 0; font-size: 30px; }
 
-.facts {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 1px;
-  margin: 28px 0; border: 1px solid var(--line); background: var(--line);
-}
-.fact { padding: 14px; background: var(--surface); }
-.fact label { display: block; margin-bottom: 6px; color: var(--dim); font: 10px var(--mono); }
+/* Wrapping cells, each with its own border: a row that does not fill leaves space, not the
+   slab of grid background a gapped grid shows through where cells are missing. */
+/* auto-FILL, not auto-fit: a last row of three keeps the column width the first row set,
+   instead of three cells stretching across the page. */
+.facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(178px, 1fr)); gap: 8px; margin: 22px 0 26px; }
+.fact { padding: 10px 12px; border: 1px solid var(--line); background: var(--surface); }
+.fact label { display: block; margin-bottom: 5px; color: var(--dim); font: 10px var(--mono); letter-spacing: .06em; }
+.fact span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.fact-mono span { font-family: var(--mono); font-size: 12px; }
+.fact-version { margin-left: 6px; color: var(--dim); font: 11px var(--mono); font-style: normal; letter-spacing: .04em; }
+/* What changes how a run behaves reads differently from what merely describes it. */
+.fact-key span { color: var(--accent); }
 .generation-path { display: flex; align-items: center; gap: 6px; }
 .generation-path .path { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .copy-generation-path { display: grid; width: 24px; height: 24px; place-items: center; border: 1px solid var(--line); color: var(--muted); font-size: 15px; }
 .copy-generation-path:hover { border-color: var(--accent); color: var(--accent); }
-.generation-description { max-width: 780px; color: var(--muted); }
-.source-files { display: grid; gap: 1px; margin: 14px 0 28px; border: 1px solid var(--line); background: var(--line); }
-.generated-files { display: grid; gap: 1px; margin: 14px 0 28px; border: 1px solid var(--line); background: var(--line); }
-.generated-folder summary { padding: 7px 9px; background: var(--surface); color: var(--accent); cursor: pointer; font: 11px var(--mono); list-style: none; }
+/* The model's own words, in a box of their own so they are not mistaken for page chrome. */
+.generation-description {
+  margin: 16px 0 0; padding: 12px 14px;
+  border: 1px solid var(--line); background: var(--side);
+  color: var(--muted); font-size: 13px; line-height: 1.6;
+}
+.generation-description:empty { display: none; }
+.source-heading { margin-bottom: 0; }
+/* Seven short filenames are seven columns' worth of names, not seven rows. */
+.source-files { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px; margin: 12px 0 28px; }
+.generated-files { display: grid; margin: 14px 0 28px; border: 1px solid var(--line); }
+.generated-files .source-file { border: 0; }
+.generated-files .source-file + .source-file, .generated-folder + .generated-folder { border-top: 1px solid var(--bg); }
+.generated-files .source-file:hover { background: #282c31; color: var(--text); }
+.generated-folder summary { padding: 9px 10px; background: var(--surface); color: var(--accent); cursor: pointer; font: 11px var(--mono); list-style: none; }
+.generated-folder summary:hover { background: #282c31; }
+.generated-folder[open] summary { border-bottom: 1px solid var(--bg); }
 .generated-folder summary::before { content: "›"; display: inline-block; width: 12px; color: var(--dim); }
 .generated-folder[open] summary::before { content: "⌄"; }
-.source-file { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 5px 9px; background: var(--surface); color: var(--muted); font: 11px var(--mono); }
+.source-file { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 7px 9px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 11px var(--mono); }
+.source-file:hover { border-color: var(--accent); }
+/* The file the generation was made from, marked where it lives rather than repeated above.
+   By its own colour, not by a border: hover already owns the border. */
+.source-file.is-model { color: var(--accent); }
+.source-file span { order: 1; flex: 1 1 auto; }
+.source-file { position: relative; cursor: pointer; }
+/* Anchored under the row it acts on, opening downward like the list it sits in. Qualified by
+   .source-file to outrank .picker-panel's own `bottom`, which is set later in this file and
+   would otherwise pin both edges and squeeze the menu to the gap between them. */
+.source-file .row-menu { top: calc(100% + 4px); bottom: auto; left: 0; min-width: 180px; }
+.source-file .row-menu button:disabled { color: var(--dim); cursor: default; }
+.source-file .row-menu button:disabled:hover { background: none; color: var(--dim); }
+/* The archived model beside the authored one: the columns share a row per line, so what
+   moved on one side stays level with where it was on the other. */
+.diff-state { margin: 4px 0 16px; color: var(--muted); font: 12px var(--mono); }
+.drift-item { font-family: var(--mono); font-size: 11px; }
+.drift-item small { color: var(--dim); font-size: 9px; letter-spacing: .06em; }
+.drift-item[data-status="changed"] small { color: var(--accent); }
+.drift-item[data-status="missing"] small { color: var(--dim); font-style: italic; }
+.diff-columns, .diff-row { display: grid; grid-template-columns: 46px minmax(0, 1fr) 46px minmax(0, 1fr); }
+.diff-columns { gap: 0; }
+.diff-head { grid-column: span 2; overflow: hidden; padding: 7px 10px; border: 1px solid var(--line); border-bottom: 0; background: var(--side); color: var(--dim); text-overflow: ellipsis; white-space: nowrap; font: 10px var(--mono); }
+.diff-head + .diff-head { border-left: 0; }
+.diff-body { max-height: calc(100vh - 260px); overflow: auto; border: 1px solid var(--line); background: var(--surface); }
+.diff-n { padding: 1px 6px; color: var(--dim); text-align: right; font: 11px/1.55 var(--code); user-select: none; }
+.diff-text { padding: 1px 8px; overflow-wrap: anywhere; white-space: pre-wrap; font: 11.5px/1.55 var(--code); }
+.diff-text[data-blank] { background: #1b1c1e; }
+.diff-row[data-kind="delete"] .diff-left, .diff-row[data-kind="replace"] .diff-left { background: #382b29; color: var(--accent); }
+.diff-row[data-kind="insert"] .diff-right, .diff-row[data-kind="replace"] .diff-right { background: #23302a; color: var(--good); }
 .source-file span { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.source-file button { display: grid; place-items: center; flex: none; width: 22px; height: 22px; border: 1px solid transparent; opacity: 0; color: var(--dim); }
-.source-file:hover button, .source-file button:focus-visible { opacity: 1; }
-.source-file button:hover { border-color: var(--line); background: var(--bg); color: var(--accent); }
 .graph-help { margin: 4px 0 12px; color: var(--muted); font-size: 12px; }
 .graph-shell { position: relative; margin: 12px 0 28px; }
 .generation-graph { height: 360px; overflow: hidden; border: 1px solid var(--line); background: var(--surface); }
@@ -157,13 +206,15 @@ h1 { margin: 7px 0; font-size: 30px; }
 .graph-shell:fullscreen .generation-graph, .graph-shell:-webkit-full-screen .generation-graph { width: 100%; height: auto; }
 .graph-shell:fullscreen .graph-search-panel, .graph-shell:-webkit-full-screen .graph-search-panel { top: 34px; left: 34px; width: min(340px, calc(100% - 92px)); }
 .graph-shell:fullscreen .graph-fullscreen, .graph-shell:-webkit-full-screen .graph-fullscreen { top: 34px; right: 34px; }
-.graph-heading { display: flex; align-items: center; justify-content: space-between; }
-.graph-heading h2 { margin-bottom: 0; }
+.graph-heading { display: flex; align-items: center; justify-content: space-between; margin-top: 30px; }
+.graph-heading h2 { margin: 0; }
 .graph-fullscreen { position: absolute; top: 10px; right: 10px; z-index: 1; width: 28px; height: 28px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); }
 .graph-fullscreen:hover { border-color: var(--accent); color: var(--accent); }
-.graph-options { display: grid; gap: 1px; border: 1px solid var(--line); background: var(--line); }
-.graph-options { margin: 12px 0; }
-.graph-options label { display: flex; align-items: center; gap: 8px; padding: 7px 9px; background: var(--surface); color: var(--muted); font: 11px var(--mono); cursor: pointer; }
+/* Same rows as the run list: separated by the page's own background, lit on hover. */
+.graph-options { display: grid; margin: 12px 0; border: 1px solid var(--line); }
+.graph-options label { display: flex; align-items: center; gap: 8px; padding: 9px 10px; background: var(--surface); color: var(--muted); font: 11px var(--mono); cursor: pointer; }
+.graph-options label + label { border-top: 1px solid var(--bg); }
+.graph-options label:hover { background: #282c31; color: var(--text); }
 .graph-options input { appearance: none; width: 14px; height: 14px; margin: 0; border: 1px solid var(--dim); background: var(--bg); cursor: pointer; }
 .graph-options input:checked { border-color: var(--accent); background: var(--accent); box-shadow: inset 0 0 0 3px var(--surface); }
 .graph-actions { display: flex; align-items: center; gap: 10px; }
@@ -178,16 +229,38 @@ h1 { margin: 7px 0; font-size: 30px; }
 .run-pagination button { padding: 6px 8px; border: 1px solid var(--line); color: var(--muted); font: 11px var(--mono); }
 .graph-status { color: var(--dim); font: 11px var(--mono); }
 .graph-details { min-height: 42px; padding: 8px 10px; border: 1px solid var(--line); border-top: 0; color: var(--muted); white-space: pre-wrap; font: 11px var(--mono); }
-.run-pagination { display: flex; justify-content: end; gap: 8px; margin: 8px 0 28px; color: var(--muted); font: 11px var(--mono); }
+.run-pagination { display: flex; align-items: center; justify-content: end; gap: 8px; margin-left: auto; color: var(--muted); font: 11px var(--mono); }
+.run-pagination span { line-height: 1; }
 .runs { border: 1px solid var(--line); }
-.run, .run-header { display: grid; grid-template-columns: 32px minmax(0, 1fr) 170px 80px 100px 72px; align-items: center; gap: 12px; padding: 8px 10px; font-size: 12px; }
-.run { border-bottom: 1px solid var(--line); background: var(--surface); cursor: pointer; }
-.run-header { color: var(--dim); font: 10px var(--mono); }
+/* The id is a timestamp nobody reads to the digit; the numbers are what gets compared, so
+   they sit together on the right, right-aligned, instead of drifting on a 1fr id column. */
+.run, .run-header {
+  display: grid; grid-template-columns: 30px 170px 165px 78px 84px 96px;
+  align-items: center; gap: 16px; padding: 9px 12px; font-size: 12px;
+}
+.run-header { padding-bottom: 6px; }
+/* The numbers end and the outcome begins; let the gap say so. */
+.run > :nth-child(6), .run-header > :nth-child(6) { margin-left: 14px; }
+/* Sized to its columns rather than stretched across the page: a 1fr column only turns the
+   slack into a void between two of them. */
+.runs, .run-header, .run-pagination { max-width: 720px; }
+/* Ten ruled rows and ten outlined badges read as a grid of boxes; the rows are separated by
+   the page's own background instead, and the outcome by its colour alone. */
+.run { background: var(--surface); cursor: pointer; }
+.run + .run { border-top: 1px solid var(--bg); }
+.run-header { color: var(--dim); font: 10px var(--mono); letter-spacing: .06em; }
 .run:last-child { border-bottom: 0; }
-.run strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
+.run > span:first-child, .run-header > span:first-child { color: var(--dim); font: 10px var(--mono); }
+.run > span:nth-child(4), .run > span:nth-child(5),
+.run-header > span:nth-child(4), .run-header > span:nth-child(5) { text-align: right; font-family: var(--mono); }
+.run strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-family: var(--mono); font-weight: 400; }
 .run:hover { background: #282c31; }
+.run:hover strong { color: var(--accent); }
 .run.picked { background: #382b29; }
-.badge { color: var(--good); font: 10px var(--mono); }
+.badge { justify-self: start; color: var(--dim); font: 9px var(--mono); letter-spacing: .06em; }
+.badge-completed { color: var(--good); }
+.badge-failed, .badge-interrupted, .badge-cancelled { color: var(--accent); }
+.run-count { color: var(--dim); font: 11px var(--mono); }
 .badge-completed { color: var(--good); }
 .badge-interrupted { color: #e8c468; }
 .badge-failed { color: #e0685f; }
@@ -297,21 +370,68 @@ h1 { margin: 7px 0; font-size: 30px; }
   .plots { grid-template-columns: 1fr; }
 }
 
-.viewer { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 16px; height: 100%; }
-.viewer-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-.viewer-heading h1 { margin: 4px 0; }
-.open-with { display: flex; gap: 8px; }
-#editor-choice { padding: 7px 8px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 11px var(--mono); cursor: pointer; }
-#editor-choice:hover { border-color: var(--accent); color: var(--accent); }
+/* A grid item's min-width is auto, so a long source line pushes the pre past the page instead
+   of scrolling inside it; the tracks say so explicitly. */
+.viewer { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; min-width: 0; }
+/* Which file this is, and what to open it with, stay put while the file scrolls past -- one
+   sticky block, so nothing shows through between the title and the path under it. */
+/* The page's own top padding is inside the scrollport, so lines would slide through the strip
+   above a header stuck at 0. The viewer carries that padding itself instead. */
+#content:has(.viewer) { padding-top: 0; }
+.viewer-top {
+  position: sticky; top: 0; z-index: 3;
+  padding: 9px 0 10px; border-bottom: 1px solid var(--line); background: var(--bg);
+}
+.viewer-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 30px; }
+.viewer-heading .path { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The pickers elsewhere sit at the foot of the page and open upward; this one is at the top. */
+.picker-down .picker-panel { top: calc(100% + 5px); bottom: auto; right: 0; left: auto; }
 #aside-resize { position: absolute; top: 0; right: 0; bottom: 0; z-index: 3; width: 5px; cursor: col-resize; }
 #aside-resize:hover { background: var(--accent); }
 body.resizing { cursor: col-resize; user-select: none; }
 body.resizing main, body.resizing #sidebar-toggle, body.resizing .transport { transition: none; }
-#open-editor { padding: 7px 14px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 11px var(--mono); cursor: pointer; white-space: nowrap; }
-#open-editor:hover { border-color: var(--accent); color: var(--accent); }
-#source-text { margin: 0; padding: 14px 14px 14px 0; overflow: auto; border: 1px solid var(--line); background: var(--surface); color: var(--text); font: 12.5px/1.6 var(--code); tab-size: 2; counter-reset: line; }
-.code-line { display: block; min-height: 1.6em; counter-increment: line; }
-.code-line::before { content: counter(line); position: sticky; left: 0; display: inline-block; width: 3.5em; padding-right: 1.2em; background: var(--surface); color: var(--dim); text-align: right; user-select: none; }
+/* The editor is the page, not a window inside it: it grows to the file and #content scrolls. */
+#source-text { min-width: 0; }
+#source-text .cm-editor { height: auto; }
+#source-text .cm-scroller { overflow: visible; line-height: 1.6; }
+/* A file the editor could not be fetched for still has to be readable. */
+.plain-source { white-space: pre-wrap; overflow-wrap: anywhere; font: 12.5px/1.6 var(--code); }
+/* Quiet actions in two groups -- what to do with the file, and what to build from it -- each
+   boxed once rather than once per button, with a single accent on the primary action. */
+.open-with { display: flex; align-items: center; gap: 14px; }
+.open-with .bar { display: flex; align-items: stretch; border: 1px solid var(--line); background: var(--surface); }
+.open-with .bar > button, .open-with .split > button, .open-with #editor-choice summary {
+  display: flex; align-items: center; padding: 5px 11px; border: 0; background: none;
+  color: var(--muted); font: 10px var(--mono); letter-spacing: .04em; white-space: nowrap;
+  cursor: pointer;
+}
+.open-with .bar > button + button, .open-with .bar > .split + button, .open-with #editor-choice { border-left: 1px solid var(--line); }
+.open-with .bar > button:not([hidden]) + .split { border-left: 1px solid var(--line); }
+.open-with .bar > button:hover, .open-with .split > button:hover { background: var(--bg); color: var(--text); }
+.open-with .is-primary { color: var(--accent); }
+.open-with .is-primary:hover { background: #382b29; }
+.open-with #save-source { color: var(--accent); }
+/* The bar sets display on its buttons, so hiding one has to outrank that, not merely say so. */
+.open-with .bar > button[hidden], .open-with .bar > [hidden], .open-with [hidden] { display: none; }
+/* Acts on click; the caret beside it is only for choosing what it acts with. The details box
+   stretches to the bar, but the summary inside it does not, so the caret would centre itself
+   in a box shorter than the cell it appears to sit in. */
+.split { display: flex; align-items: stretch; }
+.split #editor-choice { display: flex; align-items: stretch; }
+.split #editor-choice summary { flex: 1; }
+/* Only a caret inside: space-between would push it to one edge of its own box. */
+.split #editor-choice summary { min-width: 0; gap: 0; justify-content: center; padding: 5px 9px; border: 0; background: none; }
+.split #editor-choice summary:hover, .split #editor-choice[open] summary { background: var(--bg); border: 0; color: var(--text); }
+/* A drawn chevron, not a glyph or a border triangle: at this size a text arrow is a smudge,
+   and a zero-width bordered box sits by its own top edge. */
+.split #editor-choice summary::after { content: none; }
+.split #editor-choice summary svg {
+  width: 12px; height: 12px; fill: none;
+  stroke: var(--muted); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round;
+}
+.split #editor-choice summary:hover svg, .split #editor-choice[open] summary svg { stroke: var(--accent); }
+.split #editor-choice[open] summary svg { transform: rotate(180deg); }
+.split #editor-choice[hidden] { display: none; }
 
 .constraint[data-kind="monitored"] strong::after { content: "monitored"; margin-left: 8px; color: var(--dim); font: 9px var(--mono); letter-spacing: .06em; }
 
@@ -417,16 +537,25 @@ body:has(.notebook) #content { position: relative; max-width: none; padding: 0; 
 .signal-option:disabled::after { content: " · plotted"; font-size: 9px; }
 html.restoring #content .empty { visibility: hidden; }
 
-.run-heading { display: flex; align-items: center; gap: 16px; }
+.run-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; margin-top: 30px; }
 .run-heading h2 { margin: 0; }
+/* Filters and pager are both list controls: one row under the list, not two places. */
+.run-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; max-width: 720px; margin: 10px 0 0; }
+.run-filter { display: flex; align-items: center; gap: 10px; color: var(--dim); font: 10px var(--mono); }
+.run-filter label { display: flex; align-items: center; gap: 5px; }
+.run-filter input { padding: 3px 6px; border: 1px solid var(--line); background: var(--bg); color: var(--muted); font: 10px var(--mono); color-scheme: dark; }
+.run-filter input:focus { border-color: var(--accent); outline: 0; }
+.run-filter-clear { padding: 3px 8px; border: 1px solid var(--line); color: var(--dim); font: 10px var(--mono); }
+.run-filter-clear:hover { border-color: var(--accent); color: var(--accent); }
+.runs-empty { max-width: 720px; padding: 14px 12px; border: 1px solid var(--line); border-top: 0; background: var(--surface); color: var(--dim); font: 11px var(--mono); }
+/* In the flow, under the model it runs: a fixed bar covered whatever section the reader had
+   scrolled to, and hid the page's primary action behind the fold on the way down. */
 .run-bar {
-  position: fixed; bottom: 22px; z-index: 4;
-  left: calc(var(--aside, 290px) + (100vw - var(--aside, 290px)) / 2); transform: translateX(-50%);
-  display: flex; align-items: center; gap: 14px; padding: 10px 14px;
-  border: 1px solid var(--line); background: var(--surface);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, .5); font: 10px var(--mono);
+  display: flex; flex-wrap: wrap; align-items: center; gap: 16px;
+  margin: 20px 0 0; padding: 12px 14px;
+  border: 1px solid var(--line); background: var(--surface); font: 10px var(--mono);
 }
-body.sidebar-collapsed .run-bar { left: calc(24px + (100vw - 24px) / 2); }
+.run-bar .run-start { margin-left: auto; }
 .run-choice { display: flex; align-items: center; gap: 6px; }
 .run-choice em { color: var(--dim); font-style: normal; letter-spacing: .08em; }
 .run-choice button { padding: 4px 10px; border: 1px solid var(--line); background: var(--bg); color: var(--dim); letter-spacing: .04em; cursor: pointer; }

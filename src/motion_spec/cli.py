@@ -301,6 +301,7 @@ def main() -> None:
 @click.option(
     "-k", "--kill", is_flag=True, help="Stop a dashboard already serving, on --port if given."
 )
+@click.option("-r", "--restart", is_flag=True, help="Stop whatever is serving, then serve again.")
 @click.option(
     "--log-file",
     type=click.Path(dir_okay=False, path_type=Path),
@@ -312,13 +313,23 @@ def dashboard(
     sources: Path | None,
     background: bool,
     kill: bool,
+    restart: bool,
     log_file: Path | None,
 ) -> None:
     """Browse generations, replay runs, and query them in a browser."""
     from motion_spec.dashboard.server import serve
 
+    named_port = "--port" in sys.argv or "-p" in sys.argv
     if kill:
-        return _stop_dashboards(port if "--port" in sys.argv or "-p" in sys.argv else None)
+        return _stop_dashboards(port if named_port else None)
+    if restart:
+        # Stopping frees the port asynchronously; serving before it does would only report the
+        # port as taken, so wait for the socket to actually let go.
+        _stop_dashboards(port if named_port else None)
+        for _ in range(50):
+            if not _port_taken(port):
+                break
+            time.sleep(0.1)
     logs = (logs or _generation_root()).expanduser()
     if _port_taken(port):
         raise click.ClickException(

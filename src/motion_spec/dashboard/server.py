@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import dataclasses
+import difflib
 import json
 import os
 import re
@@ -69,7 +70,10 @@ IGNORED = {
     "test",
     "tests",
 }
-AUTHORED = (".robmot", ".fsm", ".scenex")
+# The DSL's own file types. A model's other files -- robot.toml, a yaml beside it -- are
+# listed by where they sit instead (see authored_sources), so this stays free of suffixes
+# like .toml that mean something else everywhere else in the workspace.
+AUTHORED = (".robmot", ".fsm", ".scenex", ".scene", ".ktree", ".bdd", ".bddx")
 # How REC says a run is over; anything else (QUEUED, RUNNING) means it still has work to do.
 RUN_ENDED = {"COMPLETED", "FAILED", "INTERRUPTED", "CANCELLED"}
 LIFECYCLE = None
@@ -139,18 +143,77 @@ def expected_path(root: Path, value: str) -> Path:
     return path
 
 
+def browsable(path: Path) -> bool:
+    """Whether the sources tree shows this one file.
+
+    Two rules, both read off the tree itself: a DSL file anywhere, and anything sitting in a
+    directory a `.robmot` lives in -- that is what makes `robot.toml` a model's config here
+    and a package's build file everywhere else.
+    """
+    if path.suffix in AUTHORED:
+        return True
+    return path.is_file() and any(path.parent.glob("*.robmot"))
+
+
+def authored_sources() -> list[str]:
+    """Every source file the tree lists, relative to the sources root.
+
+    Pruned rather than filtered: rglob descends into `build`, `install` and `.git` and yields
+    every file in them before anything can reject it, which is a hundred thousand paths to
+    walk for the hundred this returns. os.walk lets the ignored directories be dropped before
+    they are entered.
+    """
+    listed = []
+    for folder, folders, files in os.walk(WORKSPACE):
+        folders[:] = [name for name in folders if name not in IGNORED and not name.startswith(".")]
+        here = Path(folder)
+        # A directory a model lives in holds that model's other files -- its robot.toml, a
+        # yaml beside it -- whatever they are named.
+        model_dir = any(name.endswith(".robmot") for name in files)
+        listed += [
+            str((here / name).relative_to(WORKSPACE))
+            for name in files
+            if (model_dir or Path(name).suffix in AUTHORED) and not name.startswith(".")
+        ]
+    return listed
+
+
 def source_path(value: str) -> Path:
-    """Resolve an authored DSL file inside the sources root."""
+    """Resolve a source file inside the sources root.
+
+    Only the working tree: a generation's vendored copies are a record of what was built, and
+    reading them here would show a file the tree cannot point at and that the working copy may
+    already have moved past.
+    """
     path = relative_path(WORKSPACE, value)
-    if path.suffix not in AUTHORED or not path.is_file():
+    if not path.is_file() or not browsable(path):
         raise ValueError(f"not an authored model file: {value}")
     return path
+
+
+def save_source(value: str, text: str) -> dict:
+    """Write an authored file back, so a small change can be made where it is read.
+
+    Only what the tree already lists and only under the sources root -- `source_path` decides
+    that, the same as reading does. Written through a neighbouring temporary file so a failed
+    write cannot leave a half-saved model behind.
+    """
+    path = source_path(value)
+    pending = path.with_name(f".{path.name}.saving")
+    try:
+        pending.write_text(text)
+        os.replace(pending, path)
+    finally:
+        pending.unlink(missing_ok=True)
+    return {"saved": True, "bytes": len(text.encode()), "absolute": str(path)}
 
 
 def read_source(value: str) -> dict:
     path = source_path(value)
     return {
         "path": value,
+        # The page shows where the file is; it should not have to join a root onto a name.
+        "absolute": str(path),
         "text": path.read_text(),
         "editors": list(editors()),
         "terminal": (terminal() or (None,))[0],
@@ -273,6 +336,157 @@ def generation_info(path: Path) -> dict:
     }
 
 
+def build_toolchain(generation_dir: Path) -> dict:
+    """What this generation was actually built against, read out of its own CMake cache.
+
+    Per generation rather than per machine: an old bundle keeps the versions it was built
+    with, and a build that never ran reports nothing rather than today's install.
+    """
+    cache = generation_dir / "build" / "CMakeCache.txt"
+    if not cache.is_file():
+        return {}
+    found = re.search(r"^mj_kdl_wrapper_DIR:PATH=(.+)$", cache.read_text(), re.MULTILINE)
+    if not found:
+        return {}
+    config_dir = Path(found.group(1).strip())
+    toolchain = {}
+    version_file = config_dir / "mj_kdl_wrapperConfigVersion.cmake"
+    if version_file.is_file():
+        version = re.search(r'set\(PACKAGE_VERSION\s+"([^"]+)"', version_file.read_text())
+        if version:
+            toolchain["wrapper"] = version.group(1)
+    # The wrapper's exported config names the MuJoCo it links; the version is in that path.
+    for exported in sorted(config_dir.glob("*.cmake")):
+        mujoco = re.search(r"mujoco-(\d+\.\d+\.\d+)", exported.read_text())
+        if mujoco:
+            toolchain["mujoco"] = mujoco.group(1)
+            break
+    return toolchain
+
+
+def drift_summary(generation_dir: Path) -> dict:
+    """Every source this generation archived, and whether the working tree still matches it.
+
+    Provenance records where each file was archived, not where it came from, so the working
+    copy is found the way the model imported it -- by name, nearest the model first.
+    """
+    model_dir = generation_model_dir(generation_dir)
+    files = []
+    for archived in sorted((generation_dir / "generated/source").glob("*")):
+        if not archived.is_file():
+            continue
+        twin = workspace_twin(archived.name, model_dir)
+        if twin is None:
+            status = "missing"
+        else:
+            status = (
+                "same" if (WORKSPACE / twin).read_bytes() == archived.read_bytes() else "changed"
+            )
+        files.append(
+            {
+                "name": archived.name,
+                "workspace": twin,
+                "status": status,
+                "model": archived.suffix == ".robmot",
+            }
+        )
+    return {"files": files}
+
+
+def source_drift(generation_dir: Path, name: str | None = None) -> dict:
+    """What one archived source has been edited into since this generation was made.
+
+    The generation keeps what it was built from; the working tree has whatever it has been
+    edited into. Comparing the two is the only honest answer to "would generating again give
+    me this?". The sides are aligned here, where difflib is, so the page only draws rows.
+    """
+    source_dir = generation_dir / "generated/source"
+    if name:
+        archived = source_dir / Path(name).name  # a name, never a path out of the archive
+        archived = archived if archived.is_file() else None
+    else:
+        archived = next(source_dir.glob("*.robmot"), None)
+    if archived is None:
+        raise ValueError("this generation archived no such source")
+    twin = workspace_twin(archived.name, generation_model_dir(generation_dir))
+    if twin is None:
+        return {
+            "name": archived.name,
+            "workspace": None,
+            "archived": str(archived),
+            "same": False,
+            "rows": [],
+        }
+    was = archived.read_text().splitlines()
+    now = (WORKSPACE / twin).read_text().splitlines()
+    rows, changed = [], False
+    for kind, left_from, left_to, right_from, right_to in difflib.SequenceMatcher(
+        None, was, now, autojunk=False
+    ).get_opcodes():
+        left = list(range(left_from, left_to))
+        right = list(range(right_from, right_to))
+        changed = changed or kind != "equal"
+        # A replaced block pairs line for line, and the shorter side runs out into blanks
+        # rather than shifting everything below it out of step with the other column.
+        for index in range(max(len(left), len(right))):
+            here = left[index] if index < len(left) else None
+            there = right[index] if index < len(right) else None
+            rows.append(
+                {
+                    "kind": kind,
+                    "left": None if here is None else {"n": here + 1, "text": was[here]},
+                    "right": None if there is None else {"n": there + 1, "text": now[there]},
+                }
+            )
+    return {
+        "workspace": twin,
+        # Where it actually is, not a root the page has to remember and join a name onto.
+        "workspace_path": str(WORKSPACE / twin),
+        "archived": str(archived),
+        "name": archived.name,
+        "same": not changed,
+        "rows": rows,
+    }
+
+
+def generation_model_dir(generation_dir: Path) -> str | None:
+    """The working directory this generation's model was authored in, if it is still there.
+
+    The IR records the absolute config path the run was generated from; its parent is the
+    model's own directory, which is where most of a generation's sources came from.
+    """
+    ir = generation_dir / "generated/model/ir.json"
+    if not ir.is_file():
+        return None
+    config = json.loads(ir.read_text()).get("configuration", {}).get("platform", {}).get("config")
+    if not config:
+        return None
+    folder = Path(config).parent
+    try:
+        return str(folder.relative_to(WORKSPACE)) if folder.is_dir() else None
+    except ValueError:
+        return None  # authored outside the sources root
+
+
+def workspace_twin(name: str, model_dir: str | None) -> str | None:
+    """The working-tree file a vendored source came from, or None if it is not there any more.
+
+    Nearest first, the way the model imported it: the file beside the model, then the folder
+    above it, as `../shared.ktree` does. A handful of `is_file()` checks -- searching the tree
+    by name would cost a walk per page and could only ever guess between two matches anyway.
+    """
+    if not model_dir:
+        return None
+    folder = Path(model_dir)
+    while True:
+        candidate = folder / name if str(folder) != "." else Path(name)
+        if (WORKSPACE / candidate).is_file():
+            return str(candidate)
+        if folder.parent == folder or str(folder) == ".":
+            return None
+        folder = folder.parent
+
+
 def generation_details(path: Path) -> dict:
     """Add authored motion metadata without slowing the generation sidebar."""
     details = generation_info(path)
@@ -287,9 +501,23 @@ def generation_details(path: Path) -> dict:
     details["folder"] = str(path)
     details["spec_name"] = Path(details["source"] or path.name).stem
     details["description"] = description.group(1) if description else None
+    # A generation vendors a copy of what it was built from; the tree lists the working file
+    # that copy came from. Name it here so the page can open the file that is still authored,
+    # not the snapshot -- and say nothing where the working tree no longer has one.
+    # Only the model needs the way back: it is what `gen` is pointed at again. The rest are
+    # its imports, kept here as the record of what this generation was built from.
+    model_dir = generation_model_dir(path)
     details["source_files"] = [
-        {"name": source.name, "path": str(source)} for source in source_files if source.is_file()
+        {
+            "name": source.name,
+            "path": str(source),
+            "model": source == robmot,
+            "workspace": workspace_twin(source.name, model_dir) if source == robmot else None,
+        }
+        for source in source_files
+        if source.is_file()
     ]
+    details["toolchain"] = build_toolchain(path)
     details["generated_files"] = [
         {"name": str(source.relative_to(path / "generated")), "path": str(source)}
         for source in sorted((path / "generated").rglob("*"))
@@ -1909,6 +2137,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return self.send_json(storage_info())
             if parsed.path == "/api/generation":
                 return self.send_json(generation_details(relative_path(GENERATIONS, value)))
+            if parsed.path == "/api/source-drift":
+                generation = relative_path(GENERATIONS, value)
+                file = query.get("file", [""])[0]
+                if query.get("summary"):
+                    return self.send_json(drift_summary(generation))
+                return self.send_json(source_drift(generation, file or None))
             if parsed.path == "/api/generation-graph":
                 return self.send_json(
                     provenance_graph(relative_path(GENERATIONS, value), query.get("graph", []))
@@ -1950,14 +2184,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     )
                 )
             if parsed.path == "/api/sources":
-                files = [
-                    str(path.relative_to(WORKSPACE))
-                    for path in WORKSPACE.rglob("*")
-                    if path.suffix in AUTHORED
-                    and not IGNORED.intersection(path.relative_to(WORKSPACE).parts)
-                    and not any(part.startswith(".") for part in path.relative_to(WORKSPACE).parts)
-                ]
-                return self.send_json(sorted(files))
+                return self.send_json(sorted(authored_sources()))
             if parsed.path == "/api/jupyter":
                 return self.send_json(jupyter_server())
             if parsed.path == "/api/source":
@@ -1975,6 +2202,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             body = json.loads(self.rfile.read(length))
             if self.path == "/api/roots":
                 return self.send_json(set_root(body["kind"], body["path"]))
+            if self.path == "/api/source":
+                return self.send_json(save_source(body["path"], body["text"]))
             if self.path == "/api/open":
                 return self.send_json(open_source(body["path"], body.get("editor")))
             if self.path == "/api/terminal":

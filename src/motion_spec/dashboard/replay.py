@@ -326,18 +326,33 @@ _EVENTS: dict[tuple[str, int], list] = {}
 
 
 def log_events(log: Path, contract) -> list:
-    """Every FSM state entry and fired event in one log, scanned once per log revision.
+    """Every FSM state entry, fired event and satisfied edge in one log, scanned once per revision.
 
-    A frame carries both: fsm_state is where the machine is, last_event is what fired to put
-    it there, so a transition shows up as an event marker and a state marker on the same frame.
-    Keyed by size, so a live log that grew is rescanned and a finished one never is.
+    A frame carries the first two: fsm_state is where the machine is, last_event is what fired to
+    put it there, so a transition shows up as an event marker and a state marker on the same frame.
+    The satisfied edges are the same ones runtime_graph projects into occurrences -- rise and fall
+    for a goal constraint, rise only for a monitor -- so a marker and an occurrence say the same
+    thing about the same tick. Keyed by size, so a live log that grew is rescanned and a finished
+    one never is.
     """
     key = (str(log), log.stat().st_size)
     if key not in _EVENTS:
         states = [state.id for state in contract.header.fsm_states]
         fired = [event.id for event in contract.header.fsm_events]
+        # Slot indices are motion-local: the active motion says which controller and monitor
+        # slot i is, and a slot that motion does not claim is not written at all.
+        by_motion = {
+            motion.index: (
+                {slot.number: slot for slot in motion.controllers},
+                {slot.number: slot for slot in motion.monitors},
+            )
+            for motion in contract.header.motions
+        }
+        constraint_names = [field["name"] for field in contract.fields["constraints"]]
+        monitor_names = [field["name"] for field in contract.fields["monitors"]]
         events, windows, index = [], {}, 0
-        state_was = event_was = None
+        state_was = event_was = motion_was = None
+        csat_was = msat_was = None
         with log.open("rb") as fh:
             frame_log_pb._read_delimited(fh)
             while data := frame_log_pb._read_delimited(fh, partial_ok=True):
@@ -350,10 +365,40 @@ def log_events(log: Path, contract) -> list:
                     event_was = frame.last_event
                     if 0 <= event_was < len(fired):
                         events.append({"frame": index, "kind": "event", "label": fired[event_was]})
+                controllers, monitors = by_motion.get(frame.active_motion, ({}, {}))
+                csat = [
+                    slot in controllers and bool(getattr(frame, name).satisfied)
+                    for slot, name in enumerate(constraint_names)
+                ]
+                msat = [
+                    slot in monitors and bool(getattr(frame, name).satisfied)
+                    for slot, name in enumerate(monitor_names)
+                ]
+                # The latch is only valid within one state and motion: across a change slot i is
+                # a different controller, so the projection compares nothing there either.
+                held = frame.fsm_state == state_was and frame.active_motion == motion_was
                 if frame.fsm_state != state_was:
                     state_was = frame.fsm_state
                     label = states[state_was] if 0 <= state_was < len(states) else str(state_was)
                     events.append({"frame": index, "kind": "state", "label": label})
+                if held:
+                    for slot, (now, before) in enumerate(zip(csat, csat_was)):
+                        # only goal constraints, not pure regulation -- runtime_graph's own rule
+                        if now == before or not controllers[slot].constraint_iri:
+                            continue
+                        events.append(
+                            {
+                                "frame": index,
+                                "kind": "satisfied" if now else "unsatisfied",
+                                "label": controllers[slot].id,
+                            }
+                        )
+                    for slot, (now, before) in enumerate(zip(msat, msat_was)):
+                        if now and not before:
+                            events.append(
+                                {"frame": index, "kind": "monitor", "label": monitors[slot].id}
+                            )
+                motion_was, csat_was, msat_was = frame.active_motion, csat, msat
                 window = windows.setdefault(frame.active_motion, [index, index])
                 window[1] = index
                 index += 1

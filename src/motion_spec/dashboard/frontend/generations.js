@@ -425,6 +425,8 @@ export async function selectGeneration(path) {
   state.generation = {
     path,
     folder: generation.folder,
+    // The run page asks this to decide between the recording and the live ROS camera.
+    simulated: generation.simulated,
     node: $("#content .generation"),
     setRuns: (fresh) => {
       runs = fresh;

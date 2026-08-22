@@ -117,6 +117,8 @@ export async function loadReplay(path) {
   bindTransport();
   setTransportMode();
   showVideos(path, state.replay.videos ?? []);
+  // Nothing recorded: a real platform has a camera, but only ROS to reach it through.
+  if (!state.replay.videos?.length) showRosCamera(state.replay.generation);
   followLiveRun(path);
   followConsole(path);
   // Built from the generation's contract before the runtime wrote anything: hold the page
@@ -208,6 +210,50 @@ export function showVideos(runPath, cameras) {
     return pick;
   }));
   show(cameras[0]);
+  reserveVideoSpace();
+}
+
+// The same pane, pointed at a live ROS topic: hardware records nothing to replay afterwards,
+// so the picture is whatever the camera is publishing now -- not a track the timeline drives.
+async function showRosCamera(generationPath) {
+  if (!generationPath) return;
+  const generation = state.generation?.path === generationPath
+    ? state.generation
+    : await api(`/api/generation?path=${encodeURIComponent(generationPath)}`).catch(() => null);
+  if (generation?.simulated !== false || state.replay?.generation !== generationPath) return;
+  // The model names its cameras, and a published camera is <id>/color -- the external driver
+  // for the same sensor is expected on the same name. Anything else is typed in.
+  const declared = generation.cameras?.[0]?.id;
+  const defaultTopic = declared ? `/${declared}/color` : "";
+  const panel = $(".videos");
+  panel.hidden = false;
+  panel.classList.add("one-camera", "ros-camera");
+  panel.querySelector(".video-strip").hidden = true;
+  // The minimize button belongs to showVideos' recording panel; this one is a single live view.
+  panel.querySelector(".video-min").hidden = true;
+  const main = panel.querySelector(".video-main");
+  main.innerHTML = `<img class="ros-frame" alt=""><div class="ros-topic"><input type="text" spellcheck="false" title="ROS image topic"><span class="ros-status"></span></div>`;
+  const frame = main.querySelector(".ros-frame");
+  const topic = main.querySelector("input");
+  const status = main.querySelector(".ros-status");
+  topic.value = state.rosTopic ?? defaultTopic;
+  topic.placeholder = "ROS image topic";
+  const subscribe = () => {
+    state.rosTopic = topic.value.trim() || defaultTopic;
+    topic.value = state.rosTopic;
+    status.textContent = "";
+    if (!state.rosTopic) return;
+    // A new query each time, so the browser reconnects rather than showing the stalled stream.
+    frame.src = `/api/ros-camera?topic=${encodeURIComponent(state.rosTopic)}&t=${Date.now()}`;
+  };
+  frame.onerror = () => {
+    frame.removeAttribute("src");
+    status.textContent = "source unavailable (no ROS env)";
+    reserveVideoSpace();
+  };
+  frame.onload = () => reserveVideoSpace();
+  topic.onchange = subscribe;
+  subscribe();
   reserveVideoSpace();
 }
 
@@ -452,8 +498,21 @@ export function setTransportMode() {
   $(".transport").classList.toggle("transport-live", following);
 }
 
+// A constraint that chatters would bury the state markers it happened under.
+const SATISFIED_MARKER_CAP = 12;
+
 export function renderMarkers() {
-  $(".markers").replaceChildren(...state.replay.events.map((event) => {
+  // A satisfied bit can rise and fall a hundred times under one state: keep the first few per
+  // slot, and draw them behind the state and event markers rather than over them.
+  const seen = new Map();
+  const kept = state.replay.events.filter((event) => {
+    if (event.kind !== "satisfied" && event.kind !== "unsatisfied") return true;
+    const count = (seen.get(event.label) ?? 0) + 1;
+    seen.set(event.label, count);
+    return count <= SATISFIED_MARKER_CAP;
+  });
+  const weight = (event) => (event.kind === "state" || event.kind === "event" ? 1 : 0);
+  $(".markers").replaceChildren(...kept.sort((a, b) => weight(a) - weight(b)).map((event) => {
     const marker = document.createElement("button");
     marker.className = `marker marker-${event.kind}`;
     marker.style.left = trackLeft(event.frame);

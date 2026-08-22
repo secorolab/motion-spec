@@ -18,7 +18,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from motion_spec.dashboard import roots
+from motion_spec.dashboard import roots, ros_camera
 from motion_spec.dashboard.catalog import (
     drift_summary,
     generation_details,
@@ -134,6 +134,25 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self.wfile.write(chunk)
                 remaining -= len(chunk)
 
+    def stream_ros_camera(self, topic: str) -> None:
+        """Stream a ROS image topic as MJPEG: the live view a real platform records nothing of."""
+        source = ros_camera.source_for(topic)
+        if not source.alive():
+            return self.send_json(
+                {"error": source.error or "no ROS env"}, HTTPStatus.SERVICE_UNAVAILABLE
+            )
+        self.send_response(HTTPStatus.OK)
+        self.send_header(
+            "Content-Type", f"multipart/x-mixed-replace; boundary={ros_camera.BOUNDARY}"
+        )
+        self.end_headers()
+        try:
+            for part in ros_camera.mjpeg_stream(source, source.alive):
+                self.wfile.write(part)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
     def send_json(self, data: object, status: HTTPStatus = HTTPStatus.OK) -> None:
         body = json.dumps(data, separators=(",", ":")).encode()
         self.send_response(status)
@@ -225,6 +244,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/video":
                 run = relative_path(roots.GENERATIONS, value)
                 return self.send_video(video_file(run, query.get("camera", [""])[0]))
+            if parsed.path == "/api/ros-camera":
+                return self.stream_ros_camera(query.get("topic", [""])[0])
             if parsed.path == "/api/replay":
                 return self.send_json(replay_data(expected_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/plot":

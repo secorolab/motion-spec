@@ -338,7 +338,13 @@ h1 { margin: 7px 0; font-size: 30px; }
 .markers::after { top: 15px; }
 .marker { position: absolute; top: -5px; width: 5px; height: 12px; margin-left: -2px; padding: 0; border: 1px solid var(--accent); border-radius: 1px; transform: rotate(-45deg); background: var(--accent); cursor: pointer; }
 .marker-event { top: 12px; width: 7px; height: 7px; margin-left: -3px; border-radius: 0; border-color: var(--muted); background: transparent; transform: rotate(45deg); }
-.marker:hover { z-index: 1; border-color: var(--text); background: var(--text); }
+/* Satisfied edges are ticks in the band between the rails: a chattering constraint stays
+   readable as texture without covering the state and event markers above it. */
+.marker-satisfied, .marker-unsatisfied { top: 4px; width: 2px; height: 9px; margin-left: -1px; border-radius: 0; opacity: .55; transform: none; }
+.marker-satisfied { border-color: var(--good); background: var(--good); }
+.marker-unsatisfied { border-color: var(--dim); background: var(--dim); }
+.marker-monitor { top: 4px; width: 7px; height: 7px; margin-left: -3px; border-radius: 50%; border-color: var(--good); background: transparent; opacity: .8; transform: none; }
+.marker:hover { z-index: 1; border-color: var(--text); background: var(--text); opacity: 1; }
 .playhead { position: absolute; top: -6px; bottom: -8px; left: calc(var(--thumb) / 2 + var(--f, 0) * (100% - var(--thumb))); width: 0; border-left: 1px dotted var(--accent); pointer-events: none; }
 
 #browser, #content, .constraints { scrollbar-color: var(--dim) var(--surface); scrollbar-width: thin; }
@@ -610,6 +616,11 @@ html.restoring #content .empty { visibility: hidden; }
 .video-main video { display: block; max-width: 100%; max-height: 34vh; background: #000; }
 .video-name { position: absolute; top: 6px; left: 6px; padding: 3px 7px; border: 1px solid var(--line); background: #0d0e10cc; color: var(--text); font: 10px var(--mono); letter-spacing: .08em; }
 .videos.one-camera { grid-template-columns: 1fr; }
+.ros-frame { display: block; min-width: 200px; min-height: 112px; max-width: 100%; max-height: 34vh; background: #000; }
+.ros-topic { display: flex; align-items: center; gap: 6px; padding-top: 6px; }
+.ros-topic input { min-width: 0; flex: 1; padding: 3px 6px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font-size: 11px; }
+.ros-topic input:focus { border-color: var(--accent); outline: none; }
+.ros-status { color: var(--dim); font: 10px var(--mono); }
 .video-strip[hidden] { display: none; }
 .video-strip { display: flex; max-height: 34vh; flex-direction: column; overflow-y: auto; gap: 6px; }
 .video-pick { position: relative; display: block; flex: none; padding: 0; border: 1px solid var(--line); }

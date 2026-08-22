@@ -377,9 +377,7 @@ def _dashboard_pids(port: int | None) -> list[int]:
 
 def _lab_pids() -> list[int]:
     """JupyterLabs a dashboard started, known by the settings directory it hands them."""
-    return _matching_pids(
-        lambda argv: any(part.endswith(LAB_SETTINGS_DIR) for part in argv)
-    )
+    return _matching_pids(lambda argv: any(part.endswith(LAB_SETTINGS_DIR) for part in argv))
 
 
 def _matching_pids(wanted) -> list[int]:
@@ -738,6 +736,7 @@ def _is_simulated(generation: Path) -> bool:
     "are the cameras the scene declares. Repeatable.",
 )
 @click.option("--steps", type=click.IntRange(min=1), help="Maximum headless simulation steps.")
+@click.option("--no-log", is_flag=True, help="Do not write the frame log; the run has no replay.")
 @click.argument("executable-args", nargs=-1, type=click.UNPROCESSED)
 def run(
     input: Path,
@@ -749,6 +748,7 @@ def run(
     headless: bool,
     record: tuple[str, ...],
     steps: int | None,
+    no_log: bool,
     executable_args: tuple[str, ...],
 ) -> None:
     """Run a .robmot INPUT, generating and building it first, or an existing GENERATION."""
@@ -799,6 +799,7 @@ def run(
             cwd=cwd,
             recover_runtime_ttl=True,
             record=list(record),
+            record_log=not no_log,
         )
     except (ArchiveError, RunnerError) as exc:
         raise click.ClickException(str(exc)) from exc
@@ -824,6 +825,7 @@ def run(
     "are the cameras the scene declares. Repeatable.",
 )
 @click.option("--steps", type=click.IntRange(min=1), help="Maximum headless simulation steps.")
+@click.option("--no-log", is_flag=True, help="Do not write the frame log; the run has no replay.")
 @click.argument("executable-args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def rerun(
@@ -834,6 +836,7 @@ def rerun(
     headless: bool,
     record: tuple[str, ...],
     steps: int | None,
+    no_log: bool,
     executable_args: tuple[str, ...],
 ) -> None:
     """Run a generation again, in a run of its own.
@@ -854,5 +857,6 @@ def rerun(
         headless=headless,
         record=record,
         steps=steps,
+        no_log=no_log,
         executable_args=executable_args,
     )

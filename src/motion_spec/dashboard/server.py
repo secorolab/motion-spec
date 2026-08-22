@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from collections import deque
 from pathlib import Path, PurePosixPath
 from urllib.parse import parse_qs, urlparse
 
@@ -34,6 +35,13 @@ import rdflib
 from rdflib import Dataset
 
 from motion_spec.dashboard.control import SPEED_MAX, SPEED_MIN, ControlChannel
+from motion_spec.dashboard.frames import (
+    FrameLayout,
+    ShmFrameReader,
+    SignalFields,
+    shm_path,
+    slot_signals,
+)
 from motion_spec.dashboard.graph import GraphService
 from motion_spec.dashboard.runs import GenerationCatalog, GenerationInfo, RunInfo
 from motion_spec.dashboard.store import RunStore
@@ -371,47 +379,6 @@ def downsample(values: list[float], target: int = 1600) -> list[float]:
     return values[::step]
 
 
-# How a spatial slot's proto fields read as authored components.
-SLOT_PARTS = {
-    "poses": {
-        "position.x": "px",
-        "position.y": "py",
-        "position.z": "pz",
-        "orientation.x": "qx",
-        "orientation.y": "qy",
-        "orientation.z": "qz",
-        "orientation.w": "qw",
-    },
-    "twists": {
-        "linear.x": "lx",
-        "linear.y": "ly",
-        "linear.z": "lz",
-        "angular.x": "ax",
-        "angular.y": "ay",
-        "angular.z": "az",
-    },
-    "wrenches": {
-        "force.x": "fx",
-        "force.y": "fy",
-        "force.z": "fz",
-        "torque.x": "tx",
-        "torque.y": "ty",
-        "torque.z": "tz",
-    },
-}
-
-
-def slot_signals(contract) -> dict:
-    """Every spatial slot component as signal name -> (kind, field, component)."""
-    return {
-        f"{field['id']}.{part}": (kind, field, attribute)
-        for kind, parts in SLOT_PARTS.items()
-        for field in contract.fields.get(kind, ())
-        for part, attribute in parts.items()
-        if hasattr(contract.record_cls().frame, field["name"])
-    }
-
-
 # How the dashboard labels the gain roles a controller slot carries; others keep their role name.
 GAIN_LABELS = {
     "proportional_gain": "Kp",
@@ -729,6 +696,15 @@ def replay_data(run_dir: Path) -> dict:
             for name, where in signal_index(contract).items()
         },
         "constraints": constraints,
+        # The live poll names the motion by its gate; the panel is headed by the authored name.
+        "motion_names": spelling,
+        # A `when` guard's monitor runs while the PREDECESSOR motion is active: the contract's
+        # owner, not the block it was authored in, says whose window carries its data.
+        "monitor_owners": {
+            slot.id: spelling.get(motion.id, motion.id)
+            for motion in contract.header.motions
+            for slot in motion.monitors
+        },
         "videos": run_videos(run_dir),
         "header": validate_header(log, contract),
         "health": health,
@@ -777,13 +753,12 @@ def log_events(log: Path, contract) -> list:
     return _EVENTS[key]
 
 
-def plot_data(run_dir: Path, names: list[str], window: tuple | None = None) -> dict:
-    """Stream and downsample requested fields without shaping complete frames.
+def signal_reader(contract):
+    """Map a signal name onto a raw frame, the way the plots read one.
 
-    Sampling follows the window asked for, so a motion that lasted a handful of frames is
-    drawn from those frames rather than missed between two samples of the whole run.
+    The plot history and the live increments read the same log; sharing the lookup means a
+    signal cannot mean one thing while the run writes and another once it is finished.
     """
-    _, log, _manifest, contract = resolve_archive(run_dir)
     constraint_slots = {
         field["id"]: index for index, field in enumerate(contract.fields["constraints"])
     }
@@ -795,10 +770,6 @@ def plot_data(run_dir: Path, names: list[str], window: tuple | None = None) -> d
         if slot.number < len(contract.fields["monitors"])
     }
     quantities = {field["id"]: field for field in contract.fields["quantities"]}
-    health = read_health(log) or {}
-    first, last = window or (0, max(0, health.get("written_frames", 0) - 1))
-    step = max(1, (last - first + 1) // 1600)
-    series = {name: [] for name in names}
 
     def value(frame, name: str):
         if name == "timing.compute_ms":
@@ -828,6 +799,21 @@ def plot_data(run_dir: Path, names: list[str], window: tuple | None = None) -> d
             return getattr(getattr(frame, field["name"]), key)
         raise ValueError(f"unknown signal: {name}")
 
+    return value
+
+
+def plot_data(run_dir: Path, names: list[str], window: tuple | None = None) -> dict:
+    """Stream and downsample requested fields without shaping complete frames.
+
+    Sampling follows the window asked for, so a motion that lasted a handful of frames is
+    drawn from those frames rather than missed between two samples of the whole run.
+    """
+    _, log, _manifest, contract = resolve_archive(run_dir)
+    value = signal_reader(contract)
+    health = read_health(log) or {}
+    first, last = window or (0, max(0, health.get("written_frames", 0) - 1))
+    step = max(1, (last - first + 1) // 1600)
+    series = {name: [] for name in names}
     index = 0
     with log.open("rb") as fh:
         frame_log_pb._read_delimited(fh)
@@ -958,10 +944,13 @@ def video_file(run_dir: Path, camera: str) -> Path:
 
 def run_ended(run_dir: Path) -> bool:
     """Whether this run is written and marked: archived, and REC says how it ended."""
-    archived = (run_dir / "manifest.json").exists()
+    if not (run_dir / "manifest.json").exists():
+        # No manifest, no archive -- and no reason to pay the REC parse on every live poll.
+        trace(f"run_ended {run_dir.name}: archived=False")
+        return False
     status = RunInfo(run_dir).status
-    trace(f"run_ended {run_dir.name}: archived={archived} status={status}")
-    return archived and status in RUN_ENDED
+    trace(f"run_ended {run_dir.name}: archived=True status={status}")
+    return status in RUN_ENDED
 
 
 _TRACED: dict[str, str] = {}
@@ -999,10 +988,46 @@ def run_status(generation_dir: Path) -> dict:
         "run": str(run.relative_to(GENERATIONS)) if live and run else None,
         "exit_code": None if busy or process is None else process.returncode,
         "log": str(generation_dir / RUN_LOG) if process is not None else None,
+        # What the run says about its own frame log, once it has written a manifest to say it in:
+        # false means it kept none on purpose, and the page shows its console instead of waiting.
+        "recorded": run_recorded(run_dir),
     }
 
 
+def run_recorded(run_dir: Path | None) -> bool | None:
+    """Whether the run wrote a frame log, per its manifest. None until the manifest exists."""
+    manifest = run_dir / "manifest.json" if run_dir else None
+    if manifest is None or not manifest.is_file():
+        return None
+    try:
+        return json.loads(manifest.read_text()).get("recorded", True)
+    except (OSError, ValueError):
+        return None
+
+
 RUN_LOG = "dashboard-run.log"
+
+
+def run_arguments(options: dict, simulated: bool) -> list[str]:
+    """The run flags a browser's choices amount to. Only a simulator has a display or a pace.
+
+    A window paces itself, but a headless loop runs as fast as the machine allows, which is
+    nothing to watch live plots of: realtime asks the runtime for `--rtf 1`, which the CLI
+    forwards to the executable untouched. Fast keeps the uncapped loop.
+    """
+    argv = (
+        ["--headless"] + (["--rtf", "1"] if options.get("realtime", True) else [])
+        if simulated and options.get("headless")
+        else []
+    )
+    # Whether to record is a choice on any platform: no log means no replay and no live plots.
+    if options.get("log", True) is False:
+        argv.append("--no-log")
+    # A run started from the page arms and waits for play: the transport is right there, and a
+    # simulation that takes off on its own is already past what the operator wanted to watch.
+    if simulated:
+        argv.append("--start-paused")
+    return argv
 
 
 def start_run(generation_dir: Path, options: dict) -> dict:
@@ -1026,8 +1051,7 @@ def start_run(generation_dir: Path, options: dict) -> dict:
     # worth the disk it sits on.
     # Only a simulator has a display to drop or a frame to record, whatever the browser posted.
     simulated = is_simulated(generation_dir)
-    if simulated and options.get("headless"):
-        argv.append("--headless")
+    argv += run_arguments(options, simulated)
     # The runtime records: it holds the rendered frame, so it writes the video itself rather
     # than a reader sampling the live block it publishes for viewing.
     declared = {camera["id"] for camera in generation_cameras(generation_dir)}
@@ -1265,35 +1289,139 @@ def generate_console(job: str, offset: int) -> dict:
 _LIVE: dict[str, dict] = {}
 # A log nobody has appended to for this long is one nobody is writing any more.
 LIVE_IDLE_S = 3.0
+# The most points one poll returns per signal; a poll's worth of ticks is decimated onto this.
+LIVE_PLOT_POINTS = 300
+# How often the sampler copies the runtime's latest-frame block.
+LIVE_SAMPLE_HZ = 200
+# ~20 s of run at that rate: how far back a poll can still reach.
+LIVE_RING = 4000
+# A session nobody has polled for this long has no page behind it any more.
+LIVE_SESSION_S = 5.0
 
 
-def live_state(run_dir: Path) -> dict:
-    """How far a run being written has got, and the states and events it has passed.
+class ShmSampler(threading.Thread):
+    """Copy the runtime's latest-frame block into a ring the live polls serve from.
 
-    Followed forward, not re-read: the tail keeps every transition whatever the stride.
+    The block holds one frame, so a state that lasts under ~5 ms can pass between two samples;
+    the frame log keeps every tick and the archive stays what a reader goes back to. This feeds
+    the live view only, where re-reading the log once per poll is what made the page lag.
     """
-    _, log, _manifest, contract = resolve_archive(run_dir)
-    session = _LIVE.get(str(run_dir))
-    if session is None or session["log"] != str(log):
-        for stale in list(_LIVE.values()):
-            stale["tail"].close()
-        _LIVE.clear()
-        session = _LIVE[str(run_dir)] = {
-            "log": str(log),
-            "tail": FrameLogTail(log),
-            "events": [],
-            "frame": 0,
-            "size": -1,
-            "state": None,
-            "event": None,
-        }
-    period = (contract.header.nominal_period_ns or 1_000_000) / 1e9
+
+    def __init__(self, reader: ShmFrameReader, fields: SignalFields, states: list, fired: list):
+        super().__init__(daemon=True)
+        self.reader, self.fields = reader, fields
+        self.states, self.fired = states, fired
+        self.lock = threading.Lock()
+        self.ring = deque(maxlen=LIVE_RING)
+        self.taken = 0  # samples ever appended; a poll cursor counts in these
+        self.events: list = []
+        self.frame, self.t, self.motion = 0, 0.0, None
+        self.reading = False  # the block has published at least one frame
+        self.advanced = 0.0  # monotonic clock at the last step advance
+        self.touched = time.monotonic()
+        self.stopped = threading.Event()
+        self.seen = None  # step of the last frame read, advance or not
+        self._state = self._event = None
+
+    def touch(self) -> None:
+        self.touched = time.monotonic()
+
+    def moving(self) -> bool:
+        """Whether the run stepped recently -- what `writing` means with no log to watch."""
+        return time.monotonic() - self.advanced < LIVE_IDLE_S
+
+    def since(self, cursor: int) -> tuple:
+        """The samples appended since `cursor`, and the cursor that follows them."""
+        with self.lock:
+            ring, taken = list(self.ring), self.taken
+        return ring[max(0, cursor - (taken - len(ring))) :], taken
+
+    def close(self) -> None:
+        self.stopped.set()
+
+    def run(self) -> None:
+        period = 1.0 / LIVE_SAMPLE_HZ
+        checks = 0
+        while not self.stopped.wait(period):
+            if time.monotonic() - self.touched > LIVE_SESSION_S:
+                break
+            raw = self.reader.latest_raw()
+            if raw is None:
+                # The block appears when the runtime starts and goes when the run unlinks it;
+                # a stat every sample would be its own load, so ask about once a second.
+                checks += 1
+                gone = self.reading and checks % LIVE_SAMPLE_HZ == 0
+                if gone and not shm_path(self.reader.name).exists():
+                    break
+                continue
+            self.absorb(raw)
+        self.reader.close()
+
+    def absorb(self, raw: bytes) -> None:
+        """One sample, dropped unless the run has stepped since the last one."""
+        self.reading = True
+        core = self.fields.core(raw)
+        step = core["step"]
+        if step == self.seen:
+            return
+        # The block's standing frame is not an advance: a run armed at the play button may have
+        # published one already, and armed means no events yet.
+        first, self.seen = self.seen is None, step
+        if first:
+            return
+        with self.lock:
+            self.ring.append((self.taken, step, core["t"], core["active_motion"], raw))
+            self.taken += 1
+            self.frame, self.t, self.motion = step, core["t"], core["active_motion"]
+            self.advanced = time.monotonic()
+            if core["last_event"] != self._event:
+                self._event = core["last_event"]
+                if 0 <= self._event < len(self.fired):
+                    self.events.append(
+                        {"frame": step, "kind": "event", "label": self.fired[self._event]}
+                    )
+            if core["fsm_state"] != self._state:
+                self._state = core["fsm_state"]
+                label = (
+                    self.states[self._state]
+                    if 0 <= self._state < len(self.states)
+                    else str(self._state)
+                )
+                self.events.append({"frame": step, "kind": "state", "label": label})
+
+
+def _live_sampler(run_dir: Path, contract) -> ShmSampler | None:
+    """This run's frame-block sampler, started, or None when the generation names no layout."""
+    try:
+        layout = FrameLayout.for_generation(run_dir.parent.parent)
+        fields = SignalFields(layout, contract)
+    except (OSError, ValueError, KeyError) as error:
+        trace(f"live sampler {run_dir.name}: no frame layout ({error})")
+        return None
+    sampler = ShmSampler(
+        ShmFrameReader(os.environ.get("MOTION_SPEC_SHM_NAME") or layout.shm_name, layout, contract),
+        fields,
+        [state.id for state in contract.header.fsm_states],
+        [event.id for event in contract.header.fsm_events],
+    )
+    sampler.start()
+    return sampler
+
+
+def _follow_log(session: dict, log: Path, contract, period: float) -> None:
+    """Where the run is, read off the log itself -- for a build that publishes no frame block.
+
+    The archive is protobuf, so this parses; it is the fallback, never the live path.
+    """
+    if session["tail"] is None:
+        session["tail"] = FrameLogTail(log)
     states = [state.id for state in contract.header.fsm_states]
     fired = [event.id for event in contract.header.fsm_events]
     for frame in session["tail"].poll(max(1, round(0.05 / period))):
         index = frame["step"]
         session["frame"] = index
         session["t"] = frame["t"]
+        session["motion"] = frame["active_motion"]
         if frame["last_event"] != session["event"]:
             session["event"] = frame["last_event"]
             if 0 <= session["event"] < len(fired):
@@ -1308,24 +1436,142 @@ def live_state(run_dir: Path) -> dict:
                 else str(session["state"])
             )
             session["events"].append({"frame": index, "kind": "state", "label": label})
+
+
+def _close_live(session: dict) -> None:
+    """A session that ends drops its sampler and whatever log handle it fell back to."""
+    if session.get("sampler") is not None:
+        session["sampler"].close()
+    if session.get("tail") is not None:
+        session["tail"].close()
+    if session.get("channel") is not None:
+        session["channel"].close()
+
+
+def live_state(run_dir: Path, signals=()) -> dict:
+    """How far a run being written has got, and the states and events it has passed.
+
+    Live is the runtime's shared-memory frame, sampled at LIVE_SAMPLE_HZ into a ring: `signals`
+    is served out of that ring as the increment since this page's last poll, values and events
+    and states alike. Only a build that publishes no block falls back to following the log.
+    """
+    session = _LIVE.get(str(run_dir))
+    if session is None:
+        # Resolving parses the full header contract -- once per session, never per poll.
+        _, log, _manifest, contract = resolve_archive(run_dir)
+        for stale in list(_LIVE.values()):
+            _close_live(stale)
+        _LIVE.clear()
+        session = _LIVE[str(run_dir)] = {
+            "log": str(log),
+            "contract": contract,
+            "sampler": _live_sampler(run_dir, contract),
+            "cursor": None,
+            "tail": None,
+            "events": [],
+            "frame": 0,
+            "size": -1,
+            "state": None,
+            "event": None,
+            "motion": None,
+        }
+    log, contract = Path(session["log"]), session["contract"]
+    sampler = session["sampler"]
+    if sampler is not None and not sampler.is_alive():
+        # A page whose tab was backgrounded stops polling; the sampler gives up and this asks
+        # again. What it missed meanwhile is the archive's, not the live view's.
+        sampler = session["sampler"] = _live_sampler(run_dir, contract)
+        session["cursor"] = None
+    if sampler is not None:
+        sampler.touch()
+    live = sampler is not None and sampler.reading
+    period = (contract.header.nominal_period_ns or 1_000_000) / 1e9
+    if not live:
+        _follow_log(session, log, contract, period)
+    names = tuple(signals)
+    plot = None
+    if names and live:
+        # Only a cursor being created skips to the ring's end: history is the page's /api/plot
+        # backfill. The cursor counts samples, not names, so a signal set that changes mid-run
+        # -- a motion entering opens new charts -- keeps every sample since the last poll.
+        if session["cursor"] is None:
+            session["cursor"] = sampler.taken
+        new, session["cursor"] = sampler.since(session["cursor"])
+        stride = max(1, -(-len(new) // LIVE_PLOT_POINTS))
+        sampled = new[::stride]
+        rows = [
+            sampler.fields.extract(raw, motion, names) for _index, _step, _t, motion, raw in sampled
+        ]
+        plot = {
+            "frames": [step for _index, step, _t, _motion, _raw in sampled],
+            "series": {name: [row[at] for row in rows] for at, name in enumerate(names)},
+        }
+    frame = sampler.frame if live else session["frame"]
+    t = sampler.t if live else session.get("t")
+    motion = sampler.motion if live else session["motion"]
+    events = list(sampler.events) if live else session["events"]
+    motions = contract.header.motions
     # A loop that answers is live even while paused. Only a run with no control block to ask
     # -- real hardware, or a build older than it -- has to be judged by its log growing.
-    control = run_control(run_dir, {})
+    control = _control_status(session, run_dir, sampler.moving() if live else False)
     stat = log.stat()
     grew = stat.st_size > session["size"] >= 0
-    writing = control["alive"] or grew
-    if not control["available"]:
-        writing = writing or time.time() - stat.st_mtime < LIVE_IDLE_S
     session["size"] = stat.st_size
+    writing = control["alive"] or (sampler.moving() if live else grew)
+    if not control["available"] and not live:
+        writing = writing or time.time() - stat.st_mtime < LIVE_IDLE_S
     return {
         "writing": writing,
         # Finished means archived and marked: the run row can only say how it ended once REC
         # has recorded that.
         "archived": run_ended(run_dir),
-        "frames": session["frame"] + 1,
-        "duration": session.get("t") or (session["frame"] + 1) * period,
-        "events": session["events"],
+        "frames": frame + 1,
+        "duration": t or (frame + 1) * period,
+        "events": events,
         "control": control,
+        "active_motion": (
+            motions[motion].id if motion is not None and 0 <= motion < len(motions) else None
+        ),
+        **({"plot": plot} if plot is not None else {}),
+    }
+
+
+def _control_status(session: dict, run_dir: Path, moving: bool) -> dict:
+    """The control block read, not pinged: a status poll must never write and wait.
+
+    A moving sampler is proof of life for free; only an idle run gets the publish-and-ack
+    ping, at most once every couple of seconds, so an armed run's polls stay cheap and a
+    dead runtime is still found out.
+    """
+    channel = session.get("channel")
+    if channel is None:
+        generation_dir = run_dir.parents[1]
+        channel = session["channel"] = ControlChannel(
+            json_file(generation_dir / LAYOUT_REL).get("schema_hash")
+        )
+    now = time.monotonic()
+    if moving:
+        alive = True
+        session["control_alive"] = (True, now)
+    else:
+        cached = session.get("control_alive")
+        if cached is not None and now - cached[1] < 2.0:
+            alive = cached[0]
+        else:
+            if channel.available:
+                channel.set_pause(bool(channel.paused))
+                alive = acknowledged(channel)
+            else:
+                alive = False
+            session["control_alive"] = (alive, now)
+    return {
+        "available": channel.available,
+        "alive": alive,
+        "paused": channel.paused,
+        "speed": channel.speed,
+        "seq": channel.seq,
+        "applied": channel.applied,
+        "speed_range": [SPEED_MIN, SPEED_MAX],
     }
 
 
@@ -1745,7 +1991,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     start_generate(source_path(body["path"]), run=body.get("run", True))
                 )
             if self.path == "/api/live":
-                return self.send_json(live_state(relative_path(GENERATIONS, body["path"])))
+                return self.send_json(
+                    live_state(relative_path(GENERATIONS, body["path"]), body.get("signals") or ())
+                )
             if self.path == "/api/control":
                 return self.send_json(
                     run_control(relative_path(GENERATIONS, body["path"]), body.get("options") or {})

@@ -38,6 +38,7 @@ def _noisy_executable(path: Path, exit_code: int) -> Path:
         "import shutil\n"
         "import sys\n"
         "print('hello from the run', flush=True)\n"
+        "print('frame log:', repr(os.environ['MOTION_SPEC_FRAME_LOG']), flush=True)\n"
         "print('boom', file=sys.stderr, flush=True)\n"
         "if len(sys.argv) > 1:\n"
         "    shutil.copyfile(sys.argv[1], os.environ['MOTION_SPEC_FRAME_LOG'])\n"
@@ -134,6 +135,34 @@ def test_console_is_captured_and_mirrored(tmp_path: Path, capfd) -> None:
     assert manifest["files"]["console"] == "logs/console.log"
     # Nothing recovered runtime.ttl here, so nothing promises it.
     assert "runtime_ttl" not in manifest["files"]
+
+
+def test_run_without_a_log_still_catalogs_itself(tmp_path: Path) -> None:
+    # --no-log: the runtime is told to record nothing (an empty path), and what the run leaves
+    # -- console, rec, a manifest that says so -- must still stand on its own.
+    source = _source_tree(tmp_path / "source")
+    executable = _noisy_executable(tmp_path / "noisy-quiet", 0)
+    run_dir = tmp_path / "run-005"
+
+    # recover_runtime_ttl on: a logless run has nothing to recover and must not try.
+    result = run_cataloged(
+        run_dir,
+        source_dir=source,
+        executable=executable,
+        run_id="run-005",
+        record_log=False,
+        recover_runtime_ttl=True,
+    )
+
+    assert result == 0
+    console = (run_dir / "logs" / "console.log").read_text()
+    assert "frame log: ''" in console
+    assert not (run_dir / "logs" / "frame_log.pb").exists()
+    assert (run_dir / "rec.ld.json").exists()
+    manifest = verify_manifest(run_dir)
+    assert manifest["recorded"] is False
+    assert "frame_log" not in manifest["files"]
+    assert manifest["files"]["console"] == "logs/console.log"
 
 
 def test_crashed_run_leaves_its_error_output(tmp_path: Path) -> None:

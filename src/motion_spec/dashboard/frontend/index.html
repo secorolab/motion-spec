@@ -9,6 +9,9 @@
     <title>motion-spec replay</title>
     <link rel="stylesheet" href="style.css">
     <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+    <!-- live cards stream through uPlot; echarts stays for replay's zoom/cursor/export -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.32/dist/uPlot.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.32/dist/uPlot.iife.min.js"></script>
   </head>
   <body>
     <script>
@@ -87,7 +90,7 @@
         <div class="devices" hidden><div class="devices-head"><h2>Devices</h2><button class="devices-test">test connections</button><span class="devices-state"></span></div><div class="device-rows"></div></div>
         <p class="generation-description"></p>
         <div class="source-files"></div>
-        <div class="run-heading"><h2>Recorded runs</h2><div class="run-bar"><span class="run-choice" data-option="headless"><em>display</em><button data-value="false" aria-pressed="true">GUI</button><button data-value="true" aria-pressed="false">headless</button></span><span class="run-choice run-record" hidden><em>record</em></span><button class="run-start">▶ run</button><span class="run-state"></span></div></div>
+        <div class="run-heading"><h2>Recorded runs</h2><div class="run-bar"><span class="run-choice" data-option="headless"><em>display</em><button data-value="false" aria-pressed="true">GUI</button><button data-value="true" aria-pressed="false">headless</button></span><span class="run-choice run-speed" data-option="realtime" hidden><em>speed</em><button data-value="true" aria-pressed="true">realtime</button><button data-value="false" aria-pressed="false">fast</button></span><span class="run-choice run-record" hidden><em>record</em></span><span class="run-choice" data-option="log"><em>log</em><button data-value="true" aria-pressed="true">on</button><button data-value="false" aria-pressed="false">off</button></span><button class="run-start">▶ run</button><span class="run-state"></span></div></div>
         <div class="run-header"><span>#</span><span>Run</span><span>Started</span><span>Duration</span><span>Frames</span><span>Status</span></div>
         <div class="runs"></div>
         <div class="run-pagination"></div>
@@ -101,6 +104,6 @@
       </article>
     </template>
 
-    <script src="app.js?v=default-151"></script>
+    <script src="app.js?v=default-152"></script>
   </body>
 </html>

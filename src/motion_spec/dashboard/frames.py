@@ -32,6 +32,50 @@ _CORE_KEYS = (
 )
 _TIMING_KEYS = ("wall_ns", "period_ns", "compute_ns")
 _SPATIAL_PREFIX = {"poses": "pose", "twists": "twist", "wrenches": "wrench"}
+# The words a live sampler steers by: where the run is, and what put it there.
+CORE_SIGNALS = ("step", "t", "fsm_state", "active_motion", "last_event")
+# Timing signals are nanoseconds in the frame and milliseconds on a plot.
+_TIMING_MS = {"timing.compute_ms": ("compute_ns", 1e6), "timing.period_ms": ("period_ns", 1e6)}
+
+# How a spatial slot's proto fields read as authored components.
+SLOT_PARTS = {
+    "poses": {
+        "position.x": "px",
+        "position.y": "py",
+        "position.z": "pz",
+        "orientation.x": "qx",
+        "orientation.y": "qy",
+        "orientation.z": "qz",
+        "orientation.w": "qw",
+    },
+    "twists": {
+        "linear.x": "lx",
+        "linear.y": "ly",
+        "linear.z": "lz",
+        "angular.x": "ax",
+        "angular.y": "ay",
+        "angular.z": "az",
+    },
+    "wrenches": {
+        "force.x": "fx",
+        "force.y": "fy",
+        "force.z": "fz",
+        "torque.x": "tx",
+        "torque.y": "ty",
+        "torque.z": "tz",
+    },
+}
+
+
+def slot_signals(contract) -> dict:
+    """Every spatial slot component as signal name -> (kind, field, component)."""
+    return {
+        f"{field['id']}.{part}": (kind, field, attribute)
+        for kind, parts in SLOT_PARTS.items()
+        for field in contract.fields.get(kind, ())
+        for part, attribute in parts.items()
+        if hasattr(contract.record_cls().frame, field["name"])
+    }
 
 
 def shm_name_for(schema_hash: str) -> str:
@@ -106,9 +150,10 @@ class ShmFrameReader:
             self._mm.close()
             self._mm = None
 
-    def latest(self, retries: int = 8) -> dict | None:
-        """The newest whole frame, or None while the writer keeps tearing it (or has yet to
-        publish one). A torn read is never returned: seq brackets every publish."""
+    def latest_raw(self, retries: int = 8) -> bytes | None:
+        """The newest whole frame as the bytes it was published as, or None while the writer
+        keeps tearing it (or has yet to publish one). A torn read is never returned: seq
+        brackets every publish."""
         if not self.open():
             return None
         mm, size = self._mm, self.layout.struct.size
@@ -119,8 +164,16 @@ class ShmFrameReader:
             raw = mm[:size]
             if struct.unpack_from("<Q", mm, 0)[0] != seq:
                 continue
-            return self.shape(dict(zip(self.layout.names, self.layout.struct.unpack(raw))))
+            return raw
         return None
+
+    def latest(self, retries: int = 8) -> dict | None:
+        """The newest whole frame, shaped as the log's records are. Shaping costs some thirty
+        times the read, so a sampler reading every tick takes latest_raw instead."""
+        raw = self.latest_raw(retries)
+        if raw is None:
+            return None
+        return self.shape(dict(zip(self.layout.names, self.layout.struct.unpack(raw))))
 
     def shape(self, flat: dict) -> dict:
         """A flat struct read as the record shape frame_log_pb.frame_records yields."""
@@ -152,10 +205,7 @@ class ShmFrameReader:
         devices = (
             contract.fields.get("devices", [])
             if contract is not None
-            else [
-                {"index": idx, "id": f"device{idx}"}
-                for idx in range(pools.get("devices", 0))
-            ]
+            else [{"index": idx, "id": f"device{idx}"} for idx in range(pools.get("devices", 0))]
         )
         record["devices"] = {
             entry["id"]: {
@@ -184,3 +234,97 @@ class ShmFrameReader:
                 for idx in range(pools.get(category, 0))
             ]
         return record
+
+
+class SignalFields:
+    """Signal names resolved to their (offset, struct) in a raw frame, plus the motion gate.
+
+    server.signal_reader reads the same names off a protobuf frame; the gates and the units here
+    are that reader's, so a live point means what the same point means in history. A flat layout
+    name is positional (c0.error, m0.value, q0, wrench0.fx) while the contract names the same
+    slot semantically -- the slot index is what joins the two.
+    """
+
+    def __init__(self, layout: FrameLayout, contract):
+        self.layout, self.contract = layout, contract
+        self.offsets: dict[str, tuple[int, struct.Struct]] = {}
+        offset = 0
+        for field in layout.fields:
+            item = struct.Struct("<" + field["fmt"])
+            self.offsets[field["name"]] = (offset, item)
+            offset += item.size
+        if offset != layout.struct.size:
+            raise ValueError(
+                f"frame_layout.json field formats pack to {offset} bytes, but the frame "
+                f"struct is {layout.struct.size}"
+            )
+        self._constraints = {
+            field["id"]: field["index"] for field in contract.fields["constraints"]
+        }
+        self._monitors = {
+            slot.id: (contract.fields["monitors"][slot.number]["index"], motion.index)
+            for motion in contract.header.motions
+            for slot in motion.monitors
+            if slot.number < len(contract.fields["monitors"])
+        }
+        self._quantities = {field["id"]: field["index"] for field in contract.fields["quantities"]}
+        self._slots = slot_signals(contract)
+        self._resolved: dict[str, tuple] = {}
+
+    def core(self, raw: bytes) -> dict:
+        """The words a sampler steers by, straight out of the frame."""
+        return {key: _read(self.offsets[key], raw) for key in CORE_SIGNALS}
+
+    def extract(self, raw: bytes, active_motion: int, names) -> list:
+        """Each name's value in this frame; None where the active motion does not write it."""
+        values = []
+        for name in names:
+            where, divisor, gate = self._resolve(name)
+            if gate is not None and not self._written(gate, active_motion):
+                values.append(None)
+                continue
+            value = _read(where, raw)
+            values.append(value / divisor if divisor else value)
+        return values
+
+    def _written(self, gate: tuple, motion: int) -> bool:
+        """Whether the active motion writes this slot -- signal_reader's gate, same source."""
+        kind, index = gate
+        if kind == "owner":
+            return motion == index
+        table = self.contract.gate.get(kind)
+        return table is None or index in table.get(motion, ())
+
+    def _resolve(self, name: str) -> tuple:
+        if name not in self._resolved:
+            self._resolved[name] = self._locate(name)
+        return self._resolved[name]
+
+    def _locate(self, name: str) -> tuple:
+        if name in _TIMING_MS:
+            flat, divisor = _TIMING_MS[name]
+            return self._field(name, flat), divisor, None
+        if name in self._quantities:
+            index = self._quantities[name]
+            return self._field(name, f"q{index}"), None, ("quantities", index)
+        if name in self._slots:
+            kind, field, attribute = self._slots[name]
+            flat = f"{_SPATIAL_PREFIX[kind]}{field['index']}.{attribute}"
+            return self._field(name, flat), None, (kind, field["index"])
+        prefix, _, key = name.rpartition(".")
+        if prefix in self._constraints:
+            return self._field(name, f"c{self._constraints[prefix]}.{key}"), None, None
+        if prefix in self._monitors:
+            index, owner = self._monitors[prefix]
+            return self._field(name, f"m{index}.{key}"), None, ("owner", owner)
+        raise ValueError(f"unknown signal: {name}")
+
+    def _field(self, name: str, flat: str) -> tuple:
+        if flat not in self.offsets:
+            raise ValueError(f"signal {name} wants frame field {flat}, which this layout has not")
+        return self.offsets[flat]
+
+
+def _read(where: tuple, raw: bytes):
+    offset, item = where
+    return item.unpack_from(raw, offset)[0]

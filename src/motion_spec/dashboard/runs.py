@@ -18,6 +18,24 @@ LOG_REL = Path("logs") / "frame_log.pb"
 # mean the run may still produce frames.
 TERMINAL_STATUS = frozenset({"COMPLETED", "FAILED", "INTERRUPTED", "CANCELLED"})
 
+# Parsing one rec.ld.json costs ~150 ms of rdflib; a run list pays it per row on every load.
+# The doc only changes when the runner appends a transition, so mtime+size gates a re-parse.
+_LIFECYCLE_CACHE: dict[str, tuple[tuple, dict]] = {}
+
+
+def _lifecycle(path: Path) -> dict:
+    try:
+        stat = path.stat()
+    except OSError:
+        return {}
+    key = (stat.st_mtime_ns, stat.st_size)
+    cached = _LIFECYCLE_CACHE.get(str(path))
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    doc = rec_run_lifecycle_from_file(path)
+    _LIFECYCLE_CACHE[str(path)] = (key, doc)
+    return doc
+
 
 @dataclass
 class RunInfo:
@@ -41,7 +59,7 @@ class RunInfo:
     @property
     def status(self) -> str | None:
         """QUEUED / RUNNING / COMPLETED / FAILED / INTERRUPTED / CANCELLED, as REC recorded it."""
-        return rec_run_lifecycle_from_file(self.dir / "rec.ld.json").get("status")
+        return _lifecycle(self.dir / "rec.ld.json").get("status")
 
     @property
     def health(self) -> dict | None:
@@ -126,11 +144,7 @@ class GenerationCatalog:
         for generation in generations:
             built = generation.built_at
             newest[generation.model] = max(newest.get(generation.model, built), built)
-        return sorted(
-            generations,
-            key=lambda gen: (newest[gen.model], gen.built_at),
-            reverse=True,
-        )
+        return sorted(generations, key=lambda gen: (newest[gen.model], gen.built_at), reverse=True)
 
     def runs(self) -> list[tuple[GenerationInfo, RunInfo]]:
         return [(gen, run) for gen in self.generations() for run in gen.runs]

@@ -214,11 +214,16 @@ h1 { margin: 7px 0; font-size: 30px; }
   position: sticky; top: 0; z-index: 1; padding: 7px 10px; border-bottom: 1px solid var(--line);
   background: var(--bg); color: var(--accent); font: 11px var(--mono); letter-spacing: .08em;
 }
+/* The motion the live run is in right now. */
+.constraint-motion.active-motion { box-shadow: inset 3px 0 var(--accent); background: #282c31; color: var(--text); }
 
 .chart-controls { display: flex; align-items: center; gap: 8px; margin: 16px 0; }
 .chart-controls select { min-width: 260px; padding: 7px; border: 1px solid var(--line); background: var(--surface); color: var(--text); }
 .chart-controls button { padding: 5px 9px; border: 1px solid var(--line); color: var(--muted); font: 10px var(--mono); letter-spacing: .06em; }
 .chart-controls button:hover { border-color: var(--accent); color: var(--accent); }
+/* A state, not an action: the reader's live-plot choice sits apart from the buttons that do things. */
+.chart-controls #live-plots { margin-left: auto; }
+.chart-controls #live-plots[aria-pressed="true"] { color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
 /* Only the plots make room for the video, and only while it is expanded. */
 .plots { padding-right: var(--video-w, 0px); padding-bottom: var(--video-h, 0px); display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 12px; }
 .plot-card { border: 1px solid var(--line); background: var(--surface); }
@@ -228,6 +233,11 @@ h1 { margin: 7px 0; font-size: 30px; }
 .plot-card header strong { color: var(--text); font-size: 12px; }
 .plot-card header small { margin-top: 2px; color: var(--dim); font-size: 10px; }
 .plot-card header .plot-actions { flex: none; margin-left: auto; }
+/* A chart still growing with the run, badged ahead of its title rather than inside it. */
+.plot-card[data-live] header::after {
+  order: -1; align-self: center; flex: none; padding: 2px 5px; border: 1px solid var(--accent);
+  color: var(--accent); content: "LIVE"; font: 9px var(--mono); letter-spacing: .1em;
+}
 .plot-chart { height: 300px; }
 
 .transport {

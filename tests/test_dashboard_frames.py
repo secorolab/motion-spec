@@ -6,12 +6,22 @@ from __future__ import annotations
 import json
 import struct
 
-from motion_spec.dashboard.frames import FrameLayout, ShmFrameReader, shm_name_for, shm_path
+import pytest
+
+from motion_spec.dashboard import server
+from motion_spec.dashboard.frames import (
+    FrameLayout,
+    ShmFrameReader,
+    SignalFields,
+    shm_name_for,
+    shm_path,
+)
 from motion_spec.generation.artifacts import build_frame_layout
 from motion_spec.introspection import frame_log_pb
 
 from dashboard_fixture import schema
 from frame_log_fixture import flat_frame, write_frame_log_pb
+from test_dashboard_runs import _contract_schema
 
 FRAME = {
     "t": 2.5,
@@ -131,3 +141,84 @@ def test_the_layout_struct_matches_the_declared_frame_size(tmp_path):
     layout = _layout(tmp_path, doc)
     assert layout.struct.size == layout.layout["frame_size_bytes"]
     assert struct.calcsize(layout.struct.format) == len(layout.fields) * 8
+
+
+# One name per class signal_reader knows: constraint, monitor, quantity, spatial slot, timing.
+SIGNALS = (
+    "constraint_0.error",
+    "constraint_0.satisfied",
+    "done_mon.value",
+    "dist",
+    "err_x",
+    "cmd_wrench.force.x",
+    "timing.compute_ms",
+    "timing.period_ms",
+)
+LIVE_FRAME = {
+    "t": 0.5,
+    "step": 7,
+    "period_ns": 1_000_000,
+    "compute_ns": 25_000,
+    "c0.error": 0.125,
+    "c0.satisfied": 1,
+    "m0.value": 0.004,
+    "q0": 42.5,
+    "q1": 0.02,
+    "wrench0.active": 1,
+    "wrench0.fx": -3.5,
+}
+
+
+def _both_readers(tmp_path, active_motion):
+    """The same frame read off the packed block and off the log, by name."""
+    doc = _contract_schema()
+    layout = _layout(tmp_path, doc)
+    flat = flat_frame(doc, **LIVE_FRAME, active_motion=active_motion, last_event=-1)
+    log = tmp_path / "frame_log.pb"
+    write_frame_log_pb(log, doc, [flat])
+    contract = frame_log_pb.read_contract(log)
+    with log.open("rb") as fh:
+        frame_log_pb._read_delimited(fh)
+        record = contract.record_cls()
+        record.ParseFromString(frame_log_pb._read_delimited(fh))
+    read = server.signal_reader(contract)
+    fields = SignalFields(layout, contract)
+    raw = layout.struct.pack(*(dict(flat, seq=2)[name] for name in layout.names))
+    return layout, fields, [read(record.frame, name) for name in SIGNALS], raw
+
+
+def test_a_signal_reads_the_same_off_the_frame_as_off_the_log(tmp_path):
+    """One lookup for both transports: a live point must mean what the same point means later."""
+    _layouted, fields, logged, raw = _both_readers(tmp_path, active_motion=0)
+    assert fields.extract(raw, 0, SIGNALS) == logged
+    assert logged[SIGNALS.index("constraint_0.error")] == 0.125
+    assert logged[SIGNALS.index("timing.compute_ms")] == 0.025
+
+
+def test_a_signal_the_active_motion_does_not_write_reads_as_nothing(tmp_path):
+    """The gate is signal_reader's own, so a gated-out signal is a hole in both readers."""
+    _layouted, fields, logged, raw = _both_readers(tmp_path, active_motion=1)
+    assert fields.extract(raw, 1, SIGNALS) == logged
+    assert None in logged
+
+
+def test_every_frame_field_sits_where_the_layout_says_it_does(tmp_path):
+    doc = _contract_schema()
+    layout = _layout(tmp_path, doc)
+    log = tmp_path / "frame_log.pb"
+    write_frame_log_pb(log, doc, [flat_frame(doc)])
+    fields = SignalFields(layout, frame_log_pb.read_contract(log))
+    assert [fields.offsets[field["name"]][0] for field in layout.fields] == [
+        field["offset"] for field in layout.fields
+    ]
+    assert sum(item.size for _offset, item in fields.offsets.values()) == layout.struct.size
+
+
+def test_a_name_no_signal_carries_is_refused(tmp_path):
+    doc = _contract_schema()
+    layout = _layout(tmp_path, doc)
+    log = tmp_path / "frame_log.pb"
+    write_frame_log_pb(log, doc, [flat_frame(doc)])
+    fields = SignalFields(layout, frame_log_pb.read_contract(log))
+    with pytest.raises(ValueError, match="unknown signal"):
+        fields.extract(b"\0" * layout.struct.size, 0, ["no.such.signal"])

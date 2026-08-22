@@ -210,6 +210,7 @@ def _create_generation_run_manifest(
     log_producer_executable: Path | str | None,
     rec: Path | str | None,
     complete_rec: bool,
+    recorded: bool = True,
 ) -> dict:
     """Catalog a run while referencing immutable artifacts owned by its generation."""
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -225,17 +226,22 @@ def _create_generation_run_manifest(
     def relative(path: Path) -> str:
         return os.path.relpath(path, run_dir)
 
-    frame_log_path = Path(frame_log) if frame_log else run_dir / "logs" / "frame_log.pb"
-    if (
-        frame_log_path.exists()
-        and frame_log_path.resolve() != (run_dir / "logs/frame_log.pb").resolve()
-    ):
-        _copy_file(frame_log_path, run_dir / "logs/frame_log.pb")
-    frame_log_path = run_dir / "logs" / "frame_log.pb"
-    # The run states its own contract; nothing is read back out of a generated file.
-    from motion_spec.introspection import frame_log_pb
+    if recorded:
+        frame_log_path = Path(frame_log) if frame_log else run_dir / "logs" / "frame_log.pb"
+        if (
+            frame_log_path.exists()
+            and frame_log_path.resolve() != (run_dir / "logs/frame_log.pb").resolve()
+        ):
+            _copy_file(frame_log_path, run_dir / "logs/frame_log.pb")
+        frame_log_path = run_dir / "logs" / "frame_log.pb"
+        # The run states its own contract; nothing is read back out of a generated file.
+        from motion_spec.introspection import frame_log_pb
 
-    schema = frame_log_pb.read_contract(frame_log_path).summary()
+        schema = frame_log_pb.read_contract(frame_log_path).summary()
+    else:
+        # No log to state the contract, so read the one it would have carried -- the same
+        # frame_layout.json the runner records the run from before any frame exists.
+        schema = json.loads((generated / "contract" / "frame_layout.json").read_text())
     # The authored source travels with the run: it is kilobytes next to a gigabyte log, and a run
     # moved out of its generation still shows the lines its constraints were written on.
     sources = []
@@ -262,8 +268,8 @@ def _create_generation_run_manifest(
         "log_producer_executable": (
             relative(Path(log_producer_executable)) if log_producer_executable else None
         ),
-        "frame_log": "logs/frame_log.pb",
-        "frame_log_health": "logs/frame_log.pb.health.json",
+        "frame_log": "logs/frame_log.pb" if recorded else None,
+        "frame_log_health": "logs/frame_log.pb.health.json" if recorded else None,
         # Listed only when written: a manifest never promises a file the run dir lacks.
         "runtime_ttl": _existing(run_dir, "runtime/runtime.ttl"),
         "console": _existing(run_dir, "logs/console.log"),
@@ -275,6 +281,10 @@ def _create_generation_run_manifest(
         "run_id": run_id or run_dir.name,
         "files": files,
     }
+    # The single marker for "no frame log by choice": replay, live plots and verify all read it
+    # rather than guessing from a file that is merely absent.
+    if not recorded:
+        manifest["recorded"] = False
     if rec and Path(rec).exists():
         _copy_file(Path(rec), run_dir / "rec.ld.json")
     else:
@@ -292,6 +302,7 @@ def create_archive_manifest(
     log_producer_executable: Path | str | None = None,
     rec: Path | str | None = None,
     complete_rec: bool = True,
+    recorded: bool = True,
 ) -> dict:
     """Create or refresh a local replay manifest for a run folder."""
     run_dir = Path(run_dir)
@@ -305,6 +316,7 @@ def create_archive_manifest(
             log_producer_executable=log_producer_executable,
             rec=rec,
             complete_rec=complete_rec,
+            recorded=recorded,
         )
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -321,25 +333,29 @@ def create_archive_manifest(
     }
     frame_log_rel = "logs/frame_log.pb"
     frame_log_health_rel = "logs/frame_log.pb.health.json"
-    if frame_log and Path(frame_log).exists():
-        frame_log_path = Path(frame_log)
-        frame_log_rel = f"logs/{frame_log_path.name}"
-        frame_log_health_rel = f"logs/{frame_log_path.name}.health.json"
-        copies[str(frame_log_path.resolve())] = frame_log_rel
-        health = Path(str(frame_log_path) + ".health.json")
-        if health.exists():
-            copies[str(health.resolve())] = frame_log_health_rel
-    elif (source_dir / "frame_log.pb").exists():
-        copies["frame_log.pb"] = frame_log_rel
-        if (source_dir / "frame_log.pb.health.json").exists():
-            copies["frame_log.pb.health.json"] = frame_log_health_rel
-    from motion_spec.introspection import frame_log_pb
+    if not recorded:
+        # No log to state the contract: read the layout the run would have written.
+        schema = json.loads((source_dir / "frame_layout.json").read_text())
+    else:
+        if frame_log and Path(frame_log).exists():
+            frame_log_path = Path(frame_log)
+            frame_log_rel = f"logs/{frame_log_path.name}"
+            frame_log_health_rel = f"logs/{frame_log_path.name}.health.json"
+            copies[str(frame_log_path.resolve())] = frame_log_rel
+            health = Path(str(frame_log_path) + ".health.json")
+            if health.exists():
+                copies[str(health.resolve())] = frame_log_health_rel
+        elif (source_dir / "frame_log.pb").exists():
+            copies["frame_log.pb"] = frame_log_rel
+            if (source_dir / "frame_log.pb.health.json").exists():
+                copies["frame_log.pb.health.json"] = frame_log_health_rel
+        from motion_spec.introspection import frame_log_pb
 
-    schema = frame_log_pb.read_contract(
-        source_dir / "frame_log.pb"
-        if (source_dir / "frame_log.pb").exists()
-        else run_dir / frame_log_rel
-    ).summary()
+        schema = frame_log_pb.read_contract(
+            source_dir / "frame_log.pb"
+            if (source_dir / "frame_log.pb").exists()
+            else run_dir / frame_log_rel
+        ).summary()
     # graph/ir_path are portable basenames; resolve them against source_dir.
     model_source = source_dir / "model.ld.json"
     if (source_dir / "model.ld.json").exists():
@@ -430,8 +446,8 @@ def create_archive_manifest(
         # Listed only when written: a manifest never promises a file the run dir lacks.
         "runtime_ttl": _existing(run_dir, "runtime/runtime.ttl"),
         "console": _existing(run_dir, "logs/console.log"),
-        "frame_log": frame_log_rel,
-        "frame_log_health": frame_log_health_rel,
+        "frame_log": frame_log_rel if recorded else None,
+        "frame_log_health": frame_log_health_rel if recorded else None,
         "model": "model/model.ld.json",
         "model_imports": model_imports or None,
         "sources": source_artifacts or None,
@@ -449,6 +465,8 @@ def create_archive_manifest(
         "run_id": run_id or run_dir.name,
         "files": {key: value for key, value in files.items() if value is not None},
     }
+    if not recorded:
+        manifest["recorded"] = False
     if rec and Path(rec).exists():
         _copy_file(Path(rec), run_dir / "rec.ld.json")
     else:
@@ -476,7 +494,15 @@ def verify_manifest(run_dir_or_manifest: Path | str) -> dict:
     run_dir, manifest = load_manifest(run_dir_or_manifest)
     errors = []
     files = manifest.get("files", {})
-    for key in ("frame_log_proto", "provenance", "frame_log", "rec"):
+    # `recorded: false` is the run stating it kept no frame log; only that opt-in marker excuses
+    # it. A manifest that merely lost its log still fails here.
+    recorded = manifest.get("recorded") is not False
+    required = (
+        ("frame_log_proto", "provenance", "frame_log", "rec")
+        if recorded
+        else ("frame_log_proto", "provenance", "rec")
+    )
+    for key in required:
         if not files.get(key):
             errors.append(f"files.{key}: missing")
     for key, value in files.items():
@@ -521,12 +547,13 @@ def verify_manifest(run_dir_or_manifest: Path | str) -> dict:
                 errors.append(f"{rel}: sha256 mismatch")
         if errors:
             raise ArchiveError("; ".join(errors))
-        from motion_spec.introspection import frame_log_pb
+        simulated = None
+        if recorded:
+            from motion_spec.introspection import frame_log_pb
 
-        run_schema = frame_log_pb.read_contract(run_dir / files["frame_log"]).summary()
-        _require_rec_provenance(
-            rec_graph, "rec.ld.json", simulated=(run_schema.get("platform") or {}).get("simulated")
-        )
+            run_schema = frame_log_pb.read_contract(run_dir / files["frame_log"]).summary()
+            simulated = (run_schema.get("platform") or {}).get("simulated")
+        _require_rec_provenance(rec_graph, "rec.ld.json", simulated=simulated)
         _validate_prov_shacl(run_dir / rec_rel)
         _validate_rec_shacl(run_dir / rec_rel)
     return manifest

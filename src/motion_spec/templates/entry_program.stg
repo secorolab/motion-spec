@@ -95,6 +95,10 @@ int main(int argc, char **argv) {
 <endif>
 #ifdef MOTION_SPEC_ENABLE_INTROSPECTION
     motion_spec::introspection::RunPublisher _introspection_pub;
+<if(configuration.platform.simulated)>
+    // The operator asked to arm the run and press play.
+    if (_start_paused) _introspection_pub.start_paused();
+<endif>
 #endif
     timespec _next_tick{};
     clock_gettime(CLOCK_MONOTONIC, &_next_tick);

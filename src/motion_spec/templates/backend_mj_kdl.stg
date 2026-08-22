@@ -127,9 +127,13 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path) ::= <<
     // Headless runs as fast as the machine allows unless asked for a rate: the simulation clock
     // drives dt, so wall speed changes how long the run takes and nothing about what it does.
     double _headless_rtf = 0.0;
+    // Arm the run paused: the loop holds on its first tick until something resumes it.
+    bool _start_paused = false;
     for (int i = 1; i \< argc; ++i) {
         if (std::strcmp(argv[i], "--headless") == 0) {
             headless = true;
+        } else if (std::strcmp(argv[i], "--start-paused") == 0) {
+            _start_paused = true;
         } else if (std::strcmp(argv[i], "--steps") == 0 && i + 1 \< argc) {
             headless_steps = std::atoi(argv[++i]);
             steps_limited = true;

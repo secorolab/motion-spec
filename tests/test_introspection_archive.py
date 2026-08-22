@@ -285,6 +285,29 @@ def test_manifest_lists_runtime_ttl_and_console_only_when_present(tmp_path: Path
     assert "console" not in manifest["files"]
 
 
+def test_logless_manifest_says_so_and_only_then_verifies_without_a_log(tmp_path: Path) -> None:
+    # "recorded": false is the run stating it kept no log on purpose. A manifest that merely
+    # lost its log claims nothing, and still fails.
+    source = _source_tree(tmp_path / "source")
+    run_dir = tmp_path / "run"
+    # What such a run leaves instead: its console is the record, and the only thing it generated.
+    (run_dir / "logs").mkdir(parents=True)
+    (run_dir / "logs" / "console.log").write_text("started\n")
+
+    manifest = create_archive_manifest(
+        run_dir, source_dir=source, run_id="run-test", recorded=False
+    )
+    assert manifest["recorded"] is False
+    assert "frame_log" not in manifest["files"]
+    assert "frame_log_health" not in manifest["files"]
+    assert verify_manifest(run_dir)["run_id"] == "run-test"
+
+    del manifest["recorded"]
+    (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=4) + "\n")
+    with pytest.raises(ArchiveError, match="files.frame_log: missing"):
+        verify_manifest(run_dir)
+
+
 def test_manifest_hash_verification_rejects_mutation(tmp_path: Path) -> None:
     source = _source_tree(tmp_path / "source")
     run_dir = tmp_path / "run"

@@ -47,6 +47,7 @@ def run_cataloged(
     cwd: Path | str | None = None,
     recover_runtime_ttl: bool = False,
     record: list[str] | None = None,
+    record_log: bool = True,
 ) -> int:
     """Run a generated executable with REC lifecycle and archive provenance."""
     run_dir = Path(run_dir)
@@ -77,6 +78,7 @@ def run_cataloged(
             run_id=run_id,
             rec_path=rec_path,
             record=record,
+            record_log=record_log,
         )
     except Exception:
         _finish_rec_run(rec_path, run_id, "FAILED")
@@ -93,7 +95,9 @@ def run_cataloged(
     # A run that died before its first frame has nothing to catalogue. The rec run is already
     # FAILED, and what the caller needs to see is the executable's own error -- not a missing
     # frame log raised from the manifest on top of it.
-    if returncode != 0 and not frame_log.exists():
+    # A log-less run has no such signal -- catalogue it anyway, or an interrupted --no-log run
+    # would leave nothing saying it ran.
+    if returncode != 0 and record_log and not frame_log.exists():
         return returncode
 
     try:
@@ -104,8 +108,9 @@ def run_cataloged(
             frame_log=frame_log,
             log_producer_executable=executable,
             complete_rec=False,
+            recorded=record_log,
         )
-        if recover_runtime_ttl and (returncode == 0 or frame_log.exists()):
+        if recover_runtime_ttl and record_log and (returncode == 0 or frame_log.exists()):
             from motion_spec.introspection.replay import runtime_frames
             from motion_spec.introspection.runtime_graph import write_runtime_ttl
 
@@ -375,10 +380,14 @@ def _run_executable(
     run_id: str,
     rec_path: Path,
     record: list[str] | None = None,
+    record_log: bool = True,
 ) -> int:
+    # logs/ holds the console tee and any camera videos too, so it is made whether or not the
+    # frame log goes in it.
     frame_log.parent.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
-    env["MOTION_SPEC_FRAME_LOG"] = str(frame_log.resolve())
+    # An empty path is how the runtime is told to record nothing (--no-log).
+    env["MOTION_SPEC_FRAME_LOG"] = str(frame_log.resolve()) if record_log else ""
     env["MOTION_SPEC_RUN_ID"] = run_id
     env["MOTION_SPEC_REC_PATH"] = str(rec_path.resolve())
     # A camera to record, and where the video goes: the runtime renders the frame, so it

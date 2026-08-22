@@ -7,7 +7,18 @@ const MAGNIFIER_IN = `path://${MAGNIFIER} M5.4,8.1 L11,8.1 M8.2,5.3 L8.2,10.9`;
 const MAGNIFIER_OUT = `path://${MAGNIFIER} M5.4,8.1 L11,8.1`;
 const RESET_ARROW = "path://M15.4,9.6 A6.2,6.2 0 1,1 9.2,3.4 M9.2,0.7 L9.2,6.1 M6.5,3.4 L11.9,3.4";
 let plotKeys = 0;
-const state = { replay: null, queries: [], query: -1, anchor: null, runPath: null, generationPath: null, tab: "logs", frame: 0, charts: [], selected: new Set(), timer: null, roots: {}, cache: {}, listRequest: 0, live: null, speed: 1, consoleWatch: null };
+const state = { replay: null, queries: [], query: -1, anchor: null, runPath: null, generationPath: null, tab: "logs", frame: 0, charts: [], selected: new Set(), timer: null, roots: {}, cache: {}, listRequest: 0, live: null, speed: 1, consoleWatch: null, livePlots: new Map(), pendingSignals: new Set(), liveBuffer: new Map(), activeMotion: null, autoPlot: null };
+// A long run would grow a live series without bound; the finished-run reload replaces it anyway.
+const LIVE_POINT_CAP = 20000;
+// What a live chart renders: enough for the recent story at constant redraw cost.
+const LIVE_WINDOW = 4000;
+// What a chart that is still loading its history can be handed when it registers: enough for
+// the second or two an /api/plot read takes, not a second copy of the run.
+const LIVE_BUFFER_CAP = 5000;
+// A 500 ms poll drawn in five steps: growth the eye follows, at a fifth of the redraws a
+// 100 ms poll would cost.
+const LIVE_DRIP_SLICES = 5;
+const LIVE_DRIP_MS = 50;
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 let snackTimer;
@@ -161,7 +172,16 @@ function bindRunAgain(page, path, cameras, simulated) {
     });
   });
   // Hardware takes neither: the CLI rejects a headless real run, and recording one comes later.
-  bar.querySelector('.run-choice[data-option="headless"]').hidden = !simulated;
+  const headless = bar.querySelector('.run-choice[data-option="headless"]');
+  headless.hidden = !simulated;
+  // Only a run with no window to pace it has a speed to choose; a GUI run is realtime already.
+  const speed = bar.querySelector(".run-speed");
+  const showSpeed = () => {
+    speed.hidden = !simulated
+      || headless.querySelector('button[aria-pressed="true"]')?.dataset.value !== "true";
+  };
+  headless.querySelectorAll("button").forEach((option) => option.addEventListener("click", showSpeed));
+  showSpeed();
   let chosen = () => [];
   if (simulated) {
     // The cameras the model declares, plus the standard view, which needs no declaring.
@@ -206,15 +226,17 @@ function bindRunAgain(page, path, cameras, simulated) {
     label();
   }
 
-  const options = () => (simulated ? {
+  // Every named choice, hardware included: only the display, the speed and the cameras are a
+  // simulator's alone, and the server drops those for a real run. Whether to log is not.
+  const options = () => ({
     ...Object.fromEntries(
       [...bar.querySelectorAll(".run-choice[data-option]")].map((choice) => [
         choice.dataset.option,
         choice.querySelector('button[aria-pressed="true"]')?.dataset.value === "true",
       ]),
     ),
-    cameras: chosen(),
-  } : {});
+    ...(simulated ? { cameras: chosen() } : {}),
+  });
   // While it runs the page cannot say more than the runner does; watch until it stops, then
   // put the run it made in the list.
   let sawRunning = false;
@@ -329,6 +351,10 @@ async function selectGeneration(path) {
   clearInterval(state.consoleWatch);
   state.runPath = null;
   state.live = state.following = null;
+  state.livePlots.clear();
+  state.pendingSignals.clear();
+  state.liveBuffer.clear();
+  state.activeMotion = null;
   setView("generation", path);
   state.generationPath = path;
   // Coming back to a generation already built: put it back and refresh what can have changed,
@@ -569,6 +595,9 @@ async function selectGeneration(path) {
 // the page is normally complete before the runtime is even up. Generations from before that
 // contract file existed fall back to a holding card until the log begins.
 async function openPendingRun(runPath) {
+  // A run this page started plots itself -- live as motions enter, or all at once when a
+  // headless run outpaces the page and only its archive is left to show.
+  state.autoPlot = runPath;
   if (await loadReplay(runPath).then(() => true).catch(() => false)) return;
   state.anchor = runPath;
   stopPlayback();
@@ -589,7 +618,7 @@ async function openPendingRun(runPath) {
     if (status && !status.busy) {
       // over without ever writing a log: the runner's own words are all there is to show
       clearInterval(hop);
-      await showRunNeverStarted(state.generationPath, status.exit_code);
+      await showRunWithoutLog(state.generationPath, runPath, status);
     }
   }, 300);
 }
@@ -601,6 +630,10 @@ async function loadReplay(path) {
   state.replay = await api(`/api/replay?path=${encodeURIComponent(path)}`);
   state.charts.forEach((chart) => chart.dispose());
   state.charts = [];
+  state.livePlots.clear();
+  state.pendingSignals.clear();
+  state.liveBuffer.clear();
+  state.activeMotion = null;
   $("#status").textContent = "";
   $("#content").innerHTML = replayShell(path);
   state.runPath = path;
@@ -612,12 +645,40 @@ async function loadReplay(path) {
   timeline.max = Math.max(0, state.replay.frames - 1);
   timeline.disabled = false;
 
-  state.motionOf = Object.fromEntries(
-    state.replay.constraints.filter((row) => row.handler).map((row) => [row.handler, row.motion]),
-  );
+  // gate id -> the name the source spells it: a row carries the name, not the gate it ran under
+  state.motionOf = state.replay.motion_names ?? {};
   populateConstraints();
+  // The archive of a run this page started: reopen the cards that were open when it ended --
+  // or, when none were (a run faster than the page), the last motion that ran. Never the
+  // whole run's card set: eighty charts in one page is what made live pages crawl.
+  if (state.autoPlot === path && !state.replay.pending && livePlotsOn()) {
+    state.autoPlot = null;
+    const keys = state.reopenRows ?? [];
+    let lastMotion = state.reopenMotion;
+    state.reopenRows = state.reopenMotion = null;
+    if (!keys.length && !lastMotion) {
+      lastMotion = state.replay.constraints
+        .filter((constraint) => constraint.window)
+        .sort((a, b) => b.window[1] - a.window[1])[0]?.motion;
+    }
+    // Each row is a full-log /api/plot read: click them apart so several never land in one
+    // frame. Detached on purpose -- the page is usable while the cards fill in.
+    (async () => {
+      const rows = $$("#constraints .constraint").filter((row) => {
+        if (!row.dataset.plottable || row.dataset.plotted || row.dataset.idle) return false;
+        const key = `${row.dataset.motion}/${row.querySelector("strong")?.textContent}`;
+        return keys.length ? keys.includes(key) : row.dataset.motion === lastMotion;
+      });
+      for (const row of rows) {
+        if (state.runPath !== path) return;   // the reader moved on
+        row.click();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    })();
+  }
   $("#plot").onclick = () => addPlot([]);
   $("#notebook").onclick = () => openNotebook(state.runPath).catch((error) => snack(error.message));
+  bindLivePlots();
   bindPanels();
   // A side panel that cannot load is not the page failing to load.
   bindSparql().catch((error) => snack(error.message));
@@ -727,14 +788,24 @@ async function simControl(options) {
   return answer;
 }
 
+// The plot drip belongs to the poll that fed it: both timers stop together.
+function stopLiveWatch() {
+  clearInterval(state.liveWatch);
+  clearInterval(state.liveDrip);
+  state.dripping = null;
+}
+
 // Follow the log as it is written; when it stops, load the finished run.
 async function followLiveRun(runPath) {
-  clearInterval(state.liveWatch);
+  stopLiveWatch();
   let settling = false;   // writing stopped, archive not yet written
+  let handed = false;     // the finished run is being loaded; nothing may hand over twice
   const poll = async () => {
-    if (state.runPath !== runPath) return clearInterval(state.liveWatch);
+    if (state.runPath !== runPath) return stopLiveWatch();
     const wasFollowing = state.following;
-    const live = await post("/api/live", { path: runPath }).catch(() => null);
+    // Plots off asks for no series: the run's frames, events and states still come back.
+    const signals = livePlotsOn() ? liveSignals() : [];
+    const live = await post("/api/live", { path: runPath, signals }).catch(() => null);
     if (!live && state.replay.pending) {
       // named before anything is on disk: hold until the log begins or the runner gives up
       const status = state.replay.generation
@@ -742,26 +813,32 @@ async function followLiveRun(runPath) {
             .catch(() => null)
         : null;
       if (status && !status.busy) {
-        clearInterval(state.liveWatch);
+        stopLiveWatch();
         settle(false);
-        await showRunNeverStarted(state.replay.generation, status.exit_code);
+        await showRunWithoutLog(state.replay.generation, runPath, status);
       }
       return;
     }
-    if (live?.writing && state.replay.pending) {
+    // Armed: the loop answers and is paused before its first frame, so no log growth will ever
+    // lift the holding overlay. Drop it -- what the run waits for is the play button.
+    // No frame has been read yet exactly while the tail has produced no state line at all.
+    const armed = Boolean(live?.control?.alive && live.control.paused && !live.events.length);
+    if ((live?.writing || armed) && state.replay.pending) {
       state.replay.pending = false;
       settle(false);
     }
     state.following = Boolean(live?.writing);
     state.live = state.following && live.control?.alive ? live.control : null;
     if (!state.following) {
+      // A poll still in flight when the handover began would settle a page that has moved on.
+      if (handed) return;
       // The run stops writing before it is archived and verified; until that lands the page
       // has nothing final to show, so it waits rather than showing half a run.
       if ((wasFollowing || settling) && live && !live.archived) {
         settling = true;
         return settle(true);
       }
-      clearInterval(state.liveWatch);
+      stopLiveWatch();
       settle(false);
       setTransportMode();
       // read the finished run back, for its health and full frame count
@@ -769,6 +846,14 @@ async function followLiveRun(runPath) {
       settling = false;
       if (!state.announced) snack("run finished");
       state.announced = true;
+      handed = true;
+      // Carry the open cards across the reload: the archive page reopens exactly these, or
+      // falls back to the last motion that ran when the page held none.
+      state.reopenRows = $$("#constraints .constraint")
+        .filter((row) => row.dataset.plotted)
+        .map((row) => `${row.dataset.motion}/${row.querySelector("strong")?.textContent}`);
+      state.reopenMotion = state.activeMotion;
+      state.autoPlot = runPath;
       return loadReplay(runPath).catch(() => {});
     }
     if (state.live) showSpeed(state.live.speed);
@@ -781,11 +866,223 @@ async function followLiveRun(runPath) {
     state.frame = Math.min(state.frame, live.frames - 1);
     $(".timeline").value = state.frame;
     updateReadout();
+    if (armed) $("#readout").textContent = "armed — press play";
     movePlayhead();
     setTransportMode();
+    appendLivePoints(live.plot);
+    trackActiveMotion(live.active_motion);
   };
   await poll();
-  state.liveWatch = setInterval(poll, 1000);
+  // One timer for events and plot increments both; a 1 kHz run reads stale at a slower beat.
+  // The server answers out of its shm ring in microseconds, so the beat is what the eye wants.
+  state.liveWatch = setInterval(poll, 250);
+}
+
+// What the poll must ask for: what the registered charts draw, plus what the motion that just
+// entered will draw once its cards have loaded. A gated signal is only non-null while its
+// motion runs, so asking from the card's first render on would ask after the motion is over.
+function liveSignals() {
+  const registered = new Set([...state.livePlots.values()].flat());
+  state.pendingSignals.forEach((signal) => {
+    if (registered.has(signal)) state.pendingSignals.delete(signal);
+  });
+  return [...registered, ...state.pendingSignals];
+}
+
+// Extend each live chart with the increment this poll carried; its history came from /api/plot.
+function appendLivePoints(plot) {
+  if (!plot?.frames?.length) return;
+  const arrived = new Map(Object.entries(plot.series ?? {}).map(([signal, values]) => [
+    signal,
+    plot.frames.map((frame, point) => [frame, values[point]]).filter(([, value]) => value != null),
+  ]));
+  // Keep every increment, whether or not a chart carries it yet: a card registers only after
+  // its history render, and by then what landed meanwhile is gone from the server.
+  arrived.forEach((points, signal) => {
+    if (!points.length) return;
+    const kept = [...(state.liveBuffer.get(signal) ?? []), ...points];
+    state.liveBuffer.set(signal, kept.slice(Math.max(0, kept.length - LIVE_BUFFER_CAP)));
+  });
+  const batch = new Map();
+  state.livePlots.forEach((signals, chart) => {
+    // The drip consumes what it is handed, so each chart draws from its own copy.
+    const added = signals.map((signal) => [...(arrived.get(signal) ?? [])]);
+    // A chart whose signals were all gated off this poll has nothing to redraw.
+    if (added.some((points) => points.length)) batch.set(chart, added);
+  });
+  dripLivePoints(batch);
+}
+
+// One poll carries half a second of run, and drawing it in one go reads as a jump. Spread each
+// batch over the poll period on one shared timer -- no per-chart timers, no echarts animation.
+function dripLivePoints(batch) {
+  clearInterval(state.liveDrip);
+  // Whatever the last batch had left goes in now: the charts never fall behind the run.
+  if (state.dripping) drawLivePoints(state.dripping, 1);
+  state.dripping = batch.size ? batch : null;
+  if (!state.dripping) return;
+  let slices = LIVE_DRIP_SLICES;
+  state.liveDrip = setInterval(() => {
+    drawLivePoints(batch, slices);
+    if (--slices > 0) return;
+    clearInterval(state.liveDrip);
+    state.dripping = null;
+  }, LIVE_DRIP_MS);
+}
+
+// One slice of a batch: an even share of what each card has left, appended and dropped.
+// Live cards are uPlot adapters -- a canvas chart built for streaming, where a full setData
+// costs a millisecond; nothing here touches the replay library.
+function drawLivePoints(batch, slices) {
+  batch.forEach((added, adapter) => {
+    if (adapter.isDisposed?.()) return;   // its card closed while this batch was dripping
+    const take = added.map((points) => points.splice(0, Math.ceil(points.length / slices)));
+    if (!take.some((points) => points.length)) return;
+    adapter.push(take);
+  });
+}
+
+// A live card: the same chrome as a replay card, drawn by uPlot. Each signal keeps its own
+// (x, y) table -- a gated signal misses frames its siblings have -- and uPlot.join aligns
+// them per redraw. On the finished-run reload these cards are rebuilt as echarts replay cards.
+function addLivePlot(signals, title, detail, { row = null, data = null } = {}) {
+  const card = document.createElement("section");
+  card.className = "plot-card";
+  card.dataset.live = "true";
+  card.innerHTML = '<header><div><strong></strong><small></small></div><div class="plot-actions"><button class="remove-plot" title="Remove plot">×</button></div></header><div class="plot-signals"></div><div class="plot-chart"></div>';
+  card.querySelector("strong").textContent = title;
+  card.querySelector("small").textContent = detail;
+  const palette = ["#e07a5f", "#79c6a5", "#9da9c7", "#f0c36a"];
+  card.querySelector(".plot-signals").replaceChildren(...signals.map((signal, index) => {
+    const chip = document.createElement("span");
+    chip.className = "plot-signal";
+    chip.style.setProperty("--series", palette[index % palette.length]);
+    chip.textContent = signal;
+    return chip;
+  }));
+  $("#plots").append(card);
+  if (row) card.dataset.row = `${row.dataset.plotKey ??= String(++plotKeys)}`;
+  const holder = card.querySelector(".plot-chart");
+  const axis = { stroke: "#73777d", grid: { stroke: "#383d45", width: 1 }, ticks: { stroke: "#383d45" } };
+  const u = new uPlot({
+    width: Math.max(holder.clientWidth, 320), height: 240,
+    legend: { show: false }, cursor: { show: false },
+    scales: { x: { time: false } },
+    series: [{}, ...signals.map((_signal, index) => ({
+      stroke: palette[index % palette.length], width: 1.5, spanGaps: false, points: { show: false },
+    }))],
+    axes: [axis, axis],
+  }, uPlot.join(signals.map(() => [[], []])), holder);
+  const tables = signals.map(() => [[], []]);
+  signals.forEach((signal, index) => {
+    const [xs, ys] = tables[index];
+    (data?.signals?.[signal] ?? []).forEach((value, point) => {
+      if (value == null) return;
+      xs.push((data.first_frame ?? 0) + point * (data.sample_step ?? 1));
+      ys.push(value);
+    });
+    // What landed while this card was opening sits in the buffer, nowhere else.
+    const last = xs.at(-1) ?? -Infinity;
+    (state.liveBuffer.get(signal) ?? []).forEach(([frame, value]) => {
+      if (frame > last) { xs.push(frame); ys.push(value); }
+    });
+  });
+  const adapter = {
+    uplot: u,
+    push(added) {
+      added.forEach((points, index) => {
+        const [xs, ys] = tables[index];
+        for (const [frame, value] of points) { xs.push(frame); ys.push(value); }
+        if (xs.length > LIVE_POINT_CAP) {
+          xs.splice(0, xs.length - LIVE_POINT_CAP);
+          ys.splice(0, ys.length - LIVE_POINT_CAP);
+        }
+      });
+      u.setData(uPlot.join(tables));
+    },
+    resize() { u.setSize({ width: Math.max(holder.clientWidth, 320), height: 240 }); },
+    isDisposed: () => !card.isConnected,
+  };
+  u.setData(uPlot.join(tables));
+  const observer = new ResizeObserver(() => card.isConnected && adapter.resize());
+  observer.observe(holder);
+  card.querySelector(".remove-plot").onclick = () => {
+    observer.disconnect();
+    state.livePlots.delete(adapter);
+    u.destroy();
+    card.remove();
+    if (row && !$(`#plots [data-row="${card.dataset.row}"]`)) delete row.dataset.plotted;
+  };
+  state.livePlots.set(adapter, signals);
+}
+
+// Where the run is now: highlight that motion's block and put every one of its constraints
+// on screen -- the constraint itself and its controller/monitor machinery -- as it enters.
+function trackActiveMotion(handler) {
+  const motion = state.motionOf?.[handler] ?? handler;
+  if (!motion || motion === state.activeMotion) return;
+  // A motion this page watched enter has nothing behind it: it starts where the live ring
+  // already is. Only the motion the page opened onto was running before anyone was looking.
+  const watched = state.activeMotion !== null;
+  state.activeMotion = motion;
+  $$("#constraints .constraint-motion").forEach((heading) =>
+    heading.classList.toggle("active-motion", heading.textContent === motion));
+  // The panel reads along: the active motion's block scrolls into view as the run enters it.
+  const panel = $("#constraints");
+  const heading = $$("#constraints .constraint-motion").find((h) => h.textContent === motion);
+  if (panel && heading) {
+    panel.scrollTo({ top: heading.offsetTop - panel.offsetTop, behavior: "smooth" });
+  }
+  // Where the run is stays visible with plots off; only the opening of charts is the choice.
+  if (!livePlotsOn()) return;
+  // Ask for this motion's signals from the next poll on, before a single card exists: the
+  // rows below open charts that only register a second later, and by then a short motion is
+  // over. The same fields the row click plots, plus what its members plot.
+  // A row belongs to this entry when its data flows now: authored here with its monitor's
+  // owner elsewhere means the guard already ran during the predecessor -- skip it; a guard
+  // authored elsewhere but owned here is exactly what runs now.
+  const owns = (row) => (row.dataset.monitorOwner ?? row.dataset.motion) === motion;
+  state.replay.constraints
+    .filter((constraint) => (constraint.motion ?? "shared") === motion)
+    .forEach((constraint) => [
+      ...constraint.tracking, ...constraint.error, ...constraint.control,
+      ...(constraint.members ?? []).map((member) => member.error),
+    ].forEach((signal) => state.pendingSignals.add(signal)));
+  $$("#constraints .constraint")
+    .filter((row) => owns(row) && row.dataset.kind === "monitored")
+    .forEach((row) => (row.plotSignals ?? []).forEach((signal) => state.pendingSignals.add(signal)));
+  // Cards follow the run: everything auto-opened that does not belong to THIS entry closes
+  // on the transition, so the page carries one motion's charts, not the whole run's. Rows a
+  // person clicked are not in autoRows and stay.
+  for (const row of state.autoRows ?? []) {
+    if (row.isConnected && row.dataset.plotted && !owns(row)) row.click();
+  }
+  const rows = $$("#constraints .constraint")
+    .filter((row) => owns(row) && row.dataset.plottable && !row.dataset.plotted);
+  state.autoRows = new Set(rows);
+  if (rows.length) openRowsTogether(rows, watched);
+}
+
+// Every card of one motion off ONE history read: a dozen rows clicked apart is a dozen
+// full-log parses, and each one blocks the poll behind it.
+async function openRowsTogether(rows, watched) {
+  // Nothing to read for a motion that just entered -- the poll's ring increments are its whole
+  // history, and the buffered gap addPlot draws already covers what landed while cards opened.
+  let data = { signals: {}, first_frame: 0, sample_step: 1 };
+  const signals = [...new Set(rows.flatMap((row) => row.plotSignals ?? []))];
+  if (!watched && signals.length) {
+    const query = new URLSearchParams({ path: state.runPath });
+    signals.forEach((signal) => query.append("signal", signal));
+    data = await api(`/api/plot?${query}`).catch(() => data);
+  }
+  // A motion can bring a dozen cards; each echarts init costs a frame's worth of work, so
+  // opening them all at once is a visible hitch. One card per animation frame reads as the
+  // panel unfolding instead.
+  for (const row of rows) {
+    if (!row.isConnected) continue;   // the page moved on mid-unfold
+    row.openPlots(data);
+    await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+  }
 }
 
 // Stay on the newest line, unless the reader scrolled up to read an older one.
@@ -857,6 +1154,16 @@ async function consoleExcerpt(path, lines = 50) {
   return pre;
 }
 
+// A run over with no log to open. Told not to write one is not the same as never having run:
+// the run's manifest says which, and a log-less run still has its console to show.
+async function showRunWithoutLog(generationPath, runPath, status) {
+  if (status?.recorded !== false) return showRunNeverStarted(generationPath, status?.exit_code);
+  $("#content").innerHTML = '<div class="empty"><span>NO LOG</span>'
+    + "<h1>This run recorded no frame log (logs off).</h1>"
+    + "<p>No replay and no plots. The console is what the run left behind.</p></div>";
+  $(".empty").append(await consoleExcerpt(runPath, 500));
+}
+
 // A run that ended before it wrote anything: what the runner printed is all there is to show.
 async function showRunNeverStarted(generationPath, exitCode) {
   $("#content").innerHTML = '<div class="empty"><span>ERROR</span>'
@@ -883,6 +1190,12 @@ function populateConstraints() {
     const expression = document.createElement("span");
     row.className = "constraint";
     row.dataset.kind = constraint.kind;
+    row.dataset.motion = motion;   // which block a live run's active motion lights up
+    // A when-guard's monitor is owned by the predecessor motion: its data flows in THAT
+    // motion's window, so plots and auto-opening follow the owner, not the authored block.
+    const monitorPrefix = constraint.monitors?.[0]?.split(".")[0];
+    const owner = state.replay.monitor_owners?.[monitorPrefix];
+    if (owner && owner !== motion) row.dataset.monitorOwner = owner;
     if (!constraint.window) row.dataset.idle = "true";
     line.textContent = constraint.line ? `L${constraint.line}` : "";
     name.textContent = constraint.name;
@@ -918,31 +1231,57 @@ function populateConstraints() {
       row.title = constraint.window
         ? `Plot this ${constraint.kind} constraint`
         : "This motion never ran in this recording";
+      // measured against its setpoint where there is one; otherwise the error against zero
+      const tracked = constraint.tracking.length ? constraint.tracking : constraint.error;
+      const machinery = constraint.kind === "monitored"
+        ? constraint.monitors
+        : [...constraint.error, ...constraint.control];
+      // What one history read has to cover for this row's cards to draw themselves.
+      row.plotSignals = [...tracked, ...machinery];
+      // `data` is a prefetched /api/plot answer shared with the other rows of the same motion;
+      // without one each card fetches its own, which is what a lone human click wants.
+      row.openPlots = (data = null) => {
+        row.dataset.plotted = "true";
+        const title = `${constraint.motion ?? "shared"} / ${constraint.name}`;
+        const between = constraint.between.length ? ` · ${constraint.between.join(" vs ")}` : "";
+        const where = constraint.line ? `L${constraint.line}: ` : "";
+        const detail = `${where}${constraint.expression ?? constraint.name}${between}`;
+        // A when-guard's monitor runs during the predecessor motion; say so on the card.
+        const owner = row.dataset.monitorOwner;
+        const monitorDetail = owner ? `${detail} · evaluated during ${owner}` : detail;
+        if (state.following && livePlotsOn()) {
+          // Live: ONE uPlot card per constraint -- its tracked signal and its controller
+          // machinery share the frame axis; the monitor keeps its own card, value and
+          // satisfied live on a scale of their own. The archive reload rebuilds the full
+          // replay card set.
+          const combined = [
+            ...new Set([...tracked, ...(constraint.kind === "monitored" ? [] : machinery)]),
+          ];
+          if (combined.length) addLivePlot(combined, title, detail, { row, data });
+          if (constraint.kind === "monitored" && constraint.monitors.length) {
+            addLivePlot(constraint.monitors, `${title} · monitor`, monitorDetail, { row, data });
+          }
+          return;
+        }
+        const bands = constraint.tracking.length
+          ? constraint
+          : { ...constraint, setpoints: [{ label: "satisfied", value: 0 }] };
+        if (tracked.length) addPlot(tracked, `${title} · constraint`, detail, { row, constraint: bands, data });
+        if (constraint.kind === "monitored") {
+          if (constraint.monitors.length) {
+            addPlot(constraint.monitors, `${title} · monitor`, monitorDetail, { row, constraint, data });
+          }
+          return;
+        }
+        if (machinery.length) addPlot(machinery, `${title} · controller`, detail, { row, constraint, gains: constraint.gains, data });
+      };
       row.onclick = () => {
         if (row.dataset.plotted) {
           $("#plots").querySelectorAll(`[data-row="${row.dataset.plotKey}"] .remove-plot`)
             .forEach((button) => button.click());
           return;
         }
-        row.dataset.plotted = "true";
-        const title = `${constraint.motion ?? "shared"} / ${constraint.name}`;
-        const between = constraint.between.length ? ` · ${constraint.between.join(" vs ")}` : "";
-        const where = constraint.line ? `L${constraint.line}: ` : "";
-        const detail = `${where}${constraint.expression ?? constraint.name}${between}`;
-        // measured against its setpoint where there is one; otherwise the error against zero
-        const tracked = constraint.tracking.length ? constraint.tracking : constraint.error;
-        const bands = constraint.tracking.length
-          ? constraint
-          : { ...constraint, setpoints: [{ label: "satisfied", value: 0 }] };
-        if (tracked.length) addPlot(tracked, `${title} · constraint`, detail, { row, constraint: bands });
-        if (constraint.kind === "monitored") {
-          if (constraint.monitors.length) {
-            addPlot(constraint.monitors, `${title} · monitor`, detail, { row, constraint });
-          }
-          return;
-        }
-        const machinery = [...constraint.error, ...constraint.control];
-        if (machinery.length) addPlot(machinery, `${title} · controller`, detail, { row, constraint, gains: constraint.gains });
+        row.openPlots();
       };
     } else {
       row.dataset.unavailable = "true";
@@ -974,7 +1313,31 @@ const CANNED = {
 function replayShell(path) {
   // The run page's markup, with what the reply fills left blank: the numbers, the timeline's
   // range and the constraint list.
-  return `<div class="replay"><div class="replay-heading"><button id="back" title="Back to generation">←</button><h1>${path.split("/").pop()}</h1><div class="replay-tabs"><button data-panel="plots" class="active">Plots</button><button data-panel="sparql">SPARQL</button><button data-panel="console">Console</button></div><span class="eyebrow">RUN</span></div><section id="panel-plots"><div class="constraint-panel"><div class="eyebrow">SOURCE CONSTRAINTS</div><input id="constraint-search" type="search" placeholder="Search .robmot constraints"><div id="constraints" class="constraints"></div></div><div class="chart-controls"><button id="plot">Add empty plot</button><button id="notebook">Open in Jupyter</button></div><div id="plots" class="plots"></div></section><section id="panel-sparql" hidden><div class="sparql"><div class="query-rail"><button id="new-query" class="new-query">+ query</button></div><div class="sparql-body"><div class="sparql-canned"></div><textarea id="query" spellcheck="false"></textarea><div class="sparql-run"><button id="ask">Run query</button><span id="query-status" class="path"></span></div><div id="answer"></div></div></div></section><section id="panel-console" hidden><pre id="console-text" class="console"></pre></section></div><div class="settling" hidden><div class="spinner"></div><span>archiving the run…</span></div><div class="videos" hidden><button class="video-min" title="Minimize"></button><div class="video-main"><video preload="auto" playsinline disablepictureinpicture controlslist="nodownload noplaybackrate noremoteplayback"></video><span class="video-name"></span></div><div class="video-strip"></div></div><div class="transport"><div class="transport-controls"><button id="step-back" title="Previous frame">‹</button><button id="play">Play</button><button id="step-forward" title="Next frame">›</button><details class="picker speed-menu"><summary>1×</summary><div class="picker-panel"><button data-value="0.25">0.25×</button><button data-value="0.5">0.5×</button><button data-value="1" aria-pressed="true">1×</button><button data-value="2">2×</button><button data-value="5">5×</button></div></details><span id="readout" class="path"></span><button id="cancel-run" title="End the run" hidden>cancel</button></div><div class="markers"></div><input class="timeline" type="range" min="0" max="0" value="0" disabled></div>`;
+  return `<div class="replay"><div class="replay-heading"><button id="back" title="Back to generation">←</button><h1>${path.split("/").pop()}</h1><div class="replay-tabs"><button data-panel="plots" class="active">Plots</button><button data-panel="sparql">SPARQL</button><button data-panel="console">Console</button></div><span class="eyebrow">RUN</span></div><section id="panel-plots"><div class="constraint-panel"><div class="eyebrow">SOURCE CONSTRAINTS</div><input id="constraint-search" type="search" placeholder="Search .robmot constraints"><div id="constraints" class="constraints"></div></div><div class="chart-controls"><button id="plot">Add empty plot</button><button id="notebook">Open in Jupyter</button><button id="live-plots" title="Plot signals as the run writes them">live plots: on</button></div><div id="plots" class="plots"></div></section><section id="panel-sparql" hidden><div class="sparql"><div class="query-rail"><button id="new-query" class="new-query">+ query</button></div><div class="sparql-body"><div class="sparql-canned"></div><textarea id="query" spellcheck="false"></textarea><div class="sparql-run"><button id="ask">Run query</button><span id="query-status" class="path"></span></div><div id="answer"></div></div></div></section><section id="panel-console" hidden><pre id="console-text" class="console"></pre></section></div><div class="settling" hidden><div class="spinner"></div><span>archiving the run…</span></div><div class="videos" hidden><button class="video-min" title="Minimize"></button><div class="video-main"><video preload="auto" playsinline disablepictureinpicture controlslist="nodownload noplaybackrate noremoteplayback"></video><span class="video-name"></span></div><div class="video-strip"></div></div><div class="transport"><div class="transport-controls"><button id="step-back" title="Previous frame">‹</button><button id="play">Play</button><button id="step-forward" title="Next frame">›</button><details class="picker speed-menu"><summary>1×</summary><div class="picker-panel"><button data-value="0.25">0.25×</button><button data-value="0.5">0.5×</button><button data-value="1" aria-pressed="true">1×</button><button data-value="2">2×</button><button data-value="5">5×</button></div></details><span id="readout" class="path"></span><button id="cancel-run" title="End the run" hidden>cancel</button></div><div class="markers"></div><input class="timeline" type="range" min="0" max="0" value="0" disabled></div>`;
+}
+
+// Plotting as the run writes is the reader's choice, not the run's: events, states and the
+// console stream either way. Kept per browser, like the editor and the video panel.
+const LIVE_PLOTS_KEY = "motion-spec.live-plots";
+let livePlots = true;
+try { livePlots = localStorage.getItem(LIVE_PLOTS_KEY) !== "off"; } catch { /* private */ }
+
+function livePlotsOn() {
+  return livePlots;
+}
+
+function bindLivePlots() {
+  const button = $("#live-plots");
+  const label = () => {
+    button.setAttribute("aria-pressed", String(livePlots));
+    button.textContent = `live plots: ${livePlots ? "on" : "off"}`;
+  };
+  button.onclick = () => {
+    livePlots = !livePlots;
+    try { localStorage.setItem(LIVE_PLOTS_KEY, livePlots ? "on" : "off"); } catch { /* private */ }
+    label();
+  };
+  label();
 }
 
 function bindPanels() {
@@ -1340,6 +1703,9 @@ function cursorOption(frame, index = 0) {
 }
 
 function updateCursor() {
+  // A cursor pinned to the live edge draws nothing worth a setOption on every chart; it comes
+  // back by itself when following ends and the finished run is on screen.
+  if (state.following) return;
   state.charts.forEach((chart) => chart.setOption(cursorOption(state.frame, chart.cursorIndex ?? 0)));
 }
 
@@ -1463,7 +1829,7 @@ function updateReadout() {
 }
 
 function addPlot(signals = [], title = signals.join(" · ") || "New plot", detail = "", options = {}) {
-  const { row = null, constraint = null, gains = null } = options;
+  const { row = null, constraint = null, gains = null, data: prefetched = null } = options;
   const card = document.createElement("section");
   card.className = "plot-card";
   card.innerHTML = '<header><div><strong></strong><small></small></div><div class="plot-actions"><details class="export-plot"><summary title="Export plot"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="square"><path d="M9.5 2.5h4v4"/><path d="M13.5 2.5 8 8"/><path d="M12 9v4.5H2.5V4h4.5"/></svg></summary><div class="export-menu"><button value="png">PNG</button><button value="jpg">JPG</button><button value="svg">SVG</button><button value="pdf">PDF</button></div></details><button class="expand-plot" title="Fullscreen plot">⛶</button><button class="remove-plot" title="Remove plot">×</button></div></header><details class="signal-menu"><summary>+ add signal</summary><div class="signal-panel"><input class="signal-filter" type="search" placeholder="Filter signals"><div class="signal-list"></div></div></details><div class="plot-signals"></div><div class="plot-chart"></div><div class="plot-facts"></div>';
@@ -1487,6 +1853,7 @@ function addPlot(signals = [], title = signals.join(" · ") || "New plot", detai
     observer.disconnect();
     chart.dispose();
     state.charts = state.charts.filter((item) => item !== chart);
+    state.livePlots.delete(chart);
     card.remove();
   };
   card.querySelector(".expand-plot").onclick = () =>
@@ -1589,7 +1956,7 @@ function addPlot(signals = [], title = signals.join(" · ") || "New plot", detai
   signals.forEach((signal) => query.append("signal", signal));
   // sample inside the motion's window, or a short motion falls between two samples
   (constraint?.window ?? []).forEach((bound) => query.append("window", bound));
-  api(`/api/plot?${query}`).then((data) => {
+  (prefetched ? Promise.resolve(prefetched) : api(`/api/plot?${query}`)).then((data) => {
     chart.hideLoading();
     chart.setOption({
     animation: false,
@@ -1633,7 +2000,8 @@ function addPlot(signals = [], title = signals.join(" · ") || "New plot", detai
         name: signal,
         type: "line",
         showSymbol: false,
-        data: data.signals[signal]
+        // A shared prefetch carries the whole motion's signals; a card asks only for its own.
+        data: (data.signals?.[signal] ?? [])
           .map((value, point) => value == null ? null : [(data.first_frame ?? 0) + point * data.sample_step, value])
           .filter(Boolean),
         lineStyle: { width: 1.5 },
@@ -1643,7 +2011,9 @@ function addPlot(signals = [], title = signals.join(" · ") || "New plot", detai
     ],
     });
     chart.cursorIndex = signals.length;
-    chart.setOption(cursorOption(state.frame, chart.cursorIndex));
+    // Same as updateCursor: while the run is being followed the cursor sits on the live edge.
+    if (!state.following) chart.setOption(cursorOption(state.frame, chart.cursorIndex));
+    // Live cards are addLivePlot's uPlot adapters; a replay card never registers for streaming.
   }).catch((error) => chart.showLoading("default", { text: error.message }));
 }
 

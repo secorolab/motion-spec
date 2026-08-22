@@ -379,12 +379,20 @@ def rec_run_lifecycle(graph) -> dict:
 
 
 def rec_run_lifecycle_from_file(path) -> dict:
-    """`rec_run_lifecycle` for an archive on disk; empty when it does not exist."""
+    """`rec_run_lifecycle` for an archive on disk; empty when it does not exist.
+
+    Through the workspace resolver, as every other JSON-LD read here: the REC context is a
+    github.io URL, so an unresolved parse fetches it over the network -- twice per document,
+    which a run list pays per row and an offline reader waits out.
+    """
     import rdflib
+    from motion_spec_dsl.rdf_parser.manifest import metamodel_url_map
+    from rdf_utils.resolver import IriToFileResolver, install_resolver
 
     path = Path(path)
     if not path.exists():
         return {}
+    install_resolver(IriToFileResolver(metamodel_url_map(), download=False))
     graph = rdflib.Graph()
     graph.parse(path, format="json-ld")
     return rec_run_lifecycle(graph)
@@ -463,7 +471,9 @@ def record_activities(run, schema: dict) -> None:
 
 def record_files(run, run_dir: Path, manifest: dict, schema: dict) -> None:
     """Record manifest files and their integrity metadata as PROV entities."""
-    generated_roles = {"frame_log", "frame_log_health"}
+    # What the execution produced, not what it read. The console is one of them -- and the only
+    # one a run told not to log produces at all.
+    generated_roles = {"frame_log", "frame_log_health", "console"}
     labels = {"model_imports": "imported_model_graph", "sources": "source_model"}
     runtime_activity = prov_uri(
         schema.get("runtime_provenance", {}).get("activity_id") or "activity:controller_execution"

@@ -14,12 +14,14 @@ dashboard mints no vocabulary of its own.
 
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 
 import rdflib
 from motion_spec_dsl.rdf_parser.manifest import build_url_map, metamodel_url_map
-from motion_spec_dsl.rdf_parser.vocab import APP, CSTR_HDL
+from motion_spec_dsl.rdf_parser.vocab import APP, CSTR_HDL, EXEC
 from rdf_utils.resolver import IriToFileResolver, install_resolver
+from rdflib.namespace import SDO
 
 from motion_spec.introspection.runtime_graph import (
     IncrementalProjector,
@@ -56,6 +58,29 @@ def load_model_graph(manifest_path: Path | str, dataset: rdflib.Dataset, graph: 
     for target in {o for _s, _p, o, _g in dataset.quads((None, APP["import"], None, None))}:
         graph.parse(location=str(target), format="json-ld")
     return graph
+
+
+@lru_cache(maxsize=64)
+def deployed_devices(generation_dir: Path | str) -> tuple[str, ...]:
+    """The device models the execution context realizes, as the model names them.
+
+    This is what a real platform is made of; a simulation carries a name of its own instead, so
+    nothing here has to tell one platform kind from another.
+    """
+    manifest = model_manifest(generation_dir)
+    if manifest is None:
+        return ()
+    dataset = rdflib.Dataset(default_union=True)
+    model = load_model_graph(manifest, dataset, dataset.graph(MODEL_GRAPH))
+    return tuple(
+        sorted(
+            {
+                str(model.value(device, SDO.model))
+                for device in model.subjects(EXEC["realizes"], None)
+                if model.value(device, SDO.model)
+            }
+        )
+    )
 
 
 def signal_map(model: rdflib.Graph) -> dict[str, dict]:
@@ -98,7 +123,9 @@ class GraphService:
         self._projector: IncrementalProjector | None = None
         self._fed = 0
         # A run names its own model graph; the generation is only where one is found without it.
-        manifest = manifest if manifest and manifest.is_file() else model_manifest(self.generation_dir)
+        manifest = (
+            manifest if manifest and manifest.is_file() else model_manifest(self.generation_dir)
+        )
         if manifest is not None:
             load_model_graph(manifest, self.dataset, self.model)
         self.signals = signal_map(self.model)

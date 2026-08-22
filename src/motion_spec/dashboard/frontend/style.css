@@ -134,7 +134,9 @@ h1 { margin: 7px 0; font-size: 30px; }
 .facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(178px, 1fr)); gap: 8px; margin: 22px 0 26px; }
 .fact { padding: 10px 12px; border: 1px solid var(--line); background: var(--surface); }
 .fact label { display: block; margin-bottom: 5px; color: var(--dim); font: 10px var(--mono); letter-spacing: .06em; }
-.fact span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+/* a fact is short enough to read whole; a list of devices wraps rather than losing its tail */
+.fact span { display: block; overflow-wrap: anywhere; font-size: 13px; }
+.fact-wide { grid-column: span 2; }
 .fact-mono span { font-family: var(--mono); font-size: 12px; }
 .fact-version { margin-left: 6px; color: var(--dim); font: 11px var(--mono); font-style: normal; letter-spacing: .04em; }
 /* What changes how a run behaves reads differently from what merely describes it. */
@@ -557,6 +559,8 @@ html.restoring #content .empty { visibility: hidden; }
 }
 .run-bar .run-start { margin-left: auto; }
 .run-choice { display: flex; align-items: center; gap: 6px; }
+/* a display rule outranks the browser's own [hidden]: hardware has no display, speed or camera */
+.run-choice[hidden] { display: none; }
 .run-choice em { color: var(--dim); font-style: normal; letter-spacing: .08em; }
 .run-choice button { padding: 4px 10px; border: 1px solid var(--line); background: var(--bg); color: var(--dim); letter-spacing: .04em; cursor: pointer; }
 .run-choice button + button { border-left: 0; }
@@ -580,6 +584,10 @@ html.restoring #content .empty { visibility: hidden; }
 .run-start { padding: 5px 14px; border: 1px solid var(--accent); background: none; color: var(--accent); font: 10px var(--mono); letter-spacing: .08em; cursor: pointer; }
 .run-start:hover:enabled { background: #382b29; }
 .run-start:disabled { border-color: var(--line); color: var(--dim); cursor: default; }
+/* the same control as ▶ run, in the quiet colours of undoing one */
+.run-stop, #stop-pending { padding: 5px 14px; border: 1px solid var(--line); background: none; color: var(--muted); font: 10px var(--mono); letter-spacing: .08em; cursor: pointer; }
+.run-stop:hover:enabled, #stop-pending:hover:enabled { border-color: var(--accent); color: var(--accent); }
+#stop-pending { margin-top: 18px; }
 .run-state { color: var(--dim); }
 .transport-controls button:disabled { border-color: var(--line); color: var(--dim); cursor: default; }
 .busy { pointer-events: none; opacity: .45; }

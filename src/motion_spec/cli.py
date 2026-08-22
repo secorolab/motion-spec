@@ -711,6 +711,24 @@ def replay(log: Path, jsonl: bool, verify: bool, recover_runtime_ttl: bool) -> N
         raise click.ClickException(str(exc)) from exc
 
 
+def _require_devices(generation: Path) -> None:
+    """Refuse a hardware run whose devices do not answer, before anything names a run.
+
+    A driver handed an address nothing listens on does not fail, it waits -- so the run would
+    exist as a directory with no frames in it, and have to be killed. Knocking first costs one
+    connect attempt per endpoint and turns that into a sentence.
+    """
+    from motion_spec.devices import probe_devices, unreachable, where
+
+    missing = unreachable(probe_devices(generation))
+    if not missing:
+        return
+    raise click.ClickException(
+        "these devices did not answer:\n"
+        + "\n".join(f"  {device['name']} at {where(device)}" for device in missing)
+    )
+
+
 def _is_simulated(generation: Path) -> bool:
     """Whether this generation's controller drives a simulator.
 
@@ -793,6 +811,8 @@ def run(
         raise click.UsageError(
             "--headless and --steps are simulator options; this generation runs on hardware"
         )
+    if not _is_simulated(generation):
+        _require_devices(generation)
 
     run_dir = generation / "runs" / (run_id or new_id("run"))
     arguments = (

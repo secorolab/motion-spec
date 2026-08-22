@@ -43,10 +43,17 @@ from motion_spec.dashboard.frames import (
     shm_path,
     slot_signals,
 )
-from motion_spec.dashboard.graph import GraphService
+from motion_spec.dashboard.graph import GraphService, deployed_devices
 from motion_spec.dashboard.runs import GenerationCatalog, GenerationInfo, RunInfo
 from motion_spec.dashboard.store import RunStore
 from motion_spec.dashboard.tail import FrameLogTail
+from motion_spec.devices import (
+    CONNECT_TIMEOUT_MS,
+    ROBOT_TOML_REL,
+    device_endpoints,
+    probe_devices,
+    unreachable,
+)
 from google.protobuf.message import DecodeError
 
 from motion_spec.introspection import frame_log_pb
@@ -496,6 +503,9 @@ def generation_details(path: Path) -> dict:
     description = re.search(r'description:\s*"([^"]+)"', fsm.read_text()) if fsm else None
     # A generation with no run yet has no log to read, so the count comes off the source.
     constraints = authored_lines(robmot.read_text()) if robmot else {}
+    # A simulation is a platform with a name; hardware is the devices it deploys, which the
+    # model graph names one by one. Reading them costs a graph parse, so it stays off the list.
+    details["platform"] = details["platform"] or " · ".join(deployed_devices(path)) or None
     details["authored_constraints"] = len(constraints)
     details["motions"] = len({motion for motion, _name in constraints})
     details["folder"] = str(path)
@@ -1258,6 +1268,14 @@ def run_arguments(options: dict, simulated: bool) -> list[str]:
     return argv
 
 
+class Unreachable(ValueError):
+    """A refusal that carries the probe behind it, so the page shows rows and not a sentence."""
+
+    def __init__(self, message: str, report: dict):
+        super().__init__(message)
+        self.report = report
+
+
 def start_run(generation_dir: Path, options: dict) -> dict:
     """Run a generation again, with the options `motion-spec run` takes for one.
 
@@ -1268,6 +1286,15 @@ def start_run(generation_dir: Path, options: dict) -> dict:
         raise ValueError("not a generation")
     if run_status(generation_dir)["busy"]:
         raise ValueError("this generation is already running")
+    # Only a simulator has a display to drop or a frame to record, whatever the browser posted.
+    simulated = is_simulated(generation_dir)
+    # Hardware that does not answer is not a run to start: the driver would block on the
+    # connect, and the run would exist as a named, empty directory that never records a frame.
+    if not simulated:
+        report = probe_devices(generation_dir)
+        missing = [device["name"] for device in unreachable(report)]
+        if missing:
+            raise Unreachable(f"not reachable: {', '.join(missing)}", report)
     from motion_spec.generation.pipeline import new_id
 
     # Name the run here rather than letting the CLI pick: the browser can then open the run
@@ -1277,8 +1304,6 @@ def start_run(generation_dir: Path, options: dict) -> dict:
     # What a browser can meaningfully choose: the rest the dashboard already knows or the CLI
     # decides. A run always verifies what it archived; a recording nobody checked is not
     # worth the disk it sits on.
-    # Only a simulator has a display to drop or a frame to record, whatever the browser posted.
-    simulated = is_simulated(generation_dir)
     argv += run_arguments(options, simulated)
     # The runtime records: it holds the rendered frame, so it writes the video itself.
     declared = {camera["id"] for camera in generation_cameras(generation_dir)}
@@ -1302,90 +1327,32 @@ def start_run(generation_dir: Path, options: dict) -> dict:
     }
 
 
-ROBOT_TOML_REL = "generated/source/robot.toml"
-# What a device says to wait for a connection, where its table says nothing.
-CONNECT_TIMEOUT_MS = 1000
+# How long a run gets to end on a TERM before it is killed outright.
+STOP_GRACE_S = 5
 
 
-def _endpoints(table: dict, name: str):
-    """Every endpoint one table tree names, as what it is rather than what it is called.
+def stop_run(path: Path) -> dict:
+    """End a run this dashboard started, by signalling the process group it was started in.
 
-    A table with a host is reached over the network on every port it names; one whose port is a
-    device path is reached over serial. Everything else -- topics, poses, tunings -- names
-    nothing to connect to.
+    The control block is the polite way to stop a loop, and only a loop already ticking reads
+    it: a run still connecting to its hardware, or one that never gets that far, answers
+    nothing. This is the signal for that. Takes a run or its generation, as `run_control` does.
     """
-    port = table.get("port")
-    if name and isinstance(table.get("ip"), str):
-        yield {
-            "name": name,
-            "kind": "network",
-            "host": table["ip"],
-            "ports": {
-                key: value
-                for key, value in table.items()
-                if key.startswith("port") and isinstance(value, int) and not isinstance(value, bool)
-            },
-            "timeout_ms": table.get("connection_timeout_ms") or CONNECT_TIMEOUT_MS,
-        }
-    elif name and isinstance(port, str):
-        # a bare name is one the driver itself resolves under /dev/
-        yield {"name": name, "kind": "serial", "device": port if "/" in port else f"/dev/{port}"}
-    for key, value in table.items():
-        if isinstance(value, dict):
-            yield from _endpoints(value, f"{name}.{key}" if name else key)
-
-
-def device_endpoints(toml_path: Path) -> list[dict]:
-    """What the config connects to: derived from the data, never from section names."""
-    with toml_path.open("rb") as fh:
-        return list(_endpoints(tomllib.load(fh), ""))
-
-
-def _tcp_probe(host: str, port: int, timeout_s: float) -> dict:
-    """Whether something answers on one port, right now."""
+    generation_dir = path if (path / LAYOUT_REL).exists() else path.parent.parent
+    started = RUNNING.get(str(generation_dir))
+    process = started["process"] if started else None
+    if process is None or process.poll() is not None:
+        raise ValueError("no run of this generation is running here")
+    # The whole session: the CLI starts the runtime as a child, and it is the one holding the
+    # devices open.
+    group = os.getpgid(process.pid)
+    os.killpg(group, signal.SIGTERM)
     try:
-        socket.create_connection((host, port), timeout_s).close()
-    except OSError as exc:
-        return {"port": port, "ok": False, "detail": str(exc)}
-    return {"port": port, "ok": True, "detail": None}
-
-
-def _serial_probe(device: str) -> dict:
-    """Whether one serial device is there and this user may open it."""
-    if not Path(device).exists():
-        return {"ok": False, "detail": "no such device"}
-    if not os.access(device, os.R_OK | os.W_OK):
-        return {"ok": False, "detail": "device is not readable and writable by this user"}
-    return {"ok": True, "detail": None}
-
-
-def probe_devices(generation_dir: Path) -> dict:
-    """Try each endpoint once, now: TCP connect for network, stat for serial.
-
-    The wire only: this says a port answers and a device node is openable, never that the
-    protocol behind it agrees. The config's credentials stay in the config.
-    """
-    toml_path = generation_dir / ROBOT_TOML_REL
-    if not toml_path.is_file():
-        return {"devices": [], "config": None}
-    devices = []
-    for endpoint in device_endpoints(toml_path):
-        if endpoint["kind"] == "network":
-            timeout_s = endpoint["timeout_ms"] / 1000
-            probes = [
-                _tcp_probe(endpoint["host"], port, timeout_s) for port in endpoint["ports"].values()
-            ]
-            # A host named with no port to knock on is listed, and answers for nothing.
-            devices.append(
-                {
-                    **endpoint,
-                    "ports": probes,
-                    "ok": all(p["ok"] for p in probes) if probes else None,
-                }
-            )
-        else:
-            devices.append({**endpoint, **_serial_probe(endpoint["device"])})
-    return {"devices": devices, "config": str(toml_path)}
+        process.wait(timeout=STOP_GRACE_S)
+    except subprocess.TimeoutExpired:
+        os.killpg(group, signal.SIGKILL)
+        process.wait(timeout=STOP_GRACE_S)
+    return run_status(generation_dir)
 
 
 HEALTH: dict = {"checks": None, "stamp": None, "thread": None}
@@ -1448,12 +1415,12 @@ GENERATING: dict[str, dict] = {}
 GENERATE_LOGS = ".dashboard"
 
 
-def start_generate(source: Path, run: bool = True) -> dict:
-    """Generate a .robmot from its page -- and run it, unless asked only to make it.
+def start_generate(source: Path) -> dict:
+    """Generate a .robmot from its page, and build what it made.
 
-    Either way the terminal words are the record. Generate-only still builds, so the
-    generation's own page can run it later; `gen` prints the directory it made on stdout,
-    which is what hands it to `build`.
+    Making is all this does: a run starts from the generation's own page, where the devices are
+    tested, the run is named and its page follows it. `gen` prints the directory it made on
+    stdout, which is what hands it to `build`; the terminal words are the record.
     """
     from motion_spec.generation.pipeline import new_id
 
@@ -1461,19 +1428,16 @@ def start_generate(source: Path, run: bool = True) -> dict:
     log_dir = GENERATIONS / GENERATE_LOGS
     log_dir.mkdir(exist_ok=True)
     log = log_dir / f"{job}.log"
-    if run:
-        argv = ["motion-spec", "run", str(source), "-o", str(GENERATIONS), "--cwd", str(WORKSPACE)]
-    else:
-        # gen narrates on stdout and ends with the bare generation path; the capture eats
-        # both. Announce the path into the log ourselves -- generate_status reads it from
-        # there -- and let build's output carry the rest. (No tee back into the log: a
-        # /dev/fd reopen starts at offset 0 and overwrites what the others wrote.)
-        chain = (
-            f"g=$(motion-spec gen code {shlex.quote(str(source))}"
-            f" -o {shlex.quote(str(GENERATIONS))} | tail -n 1)"
-            f' && printf "generation: %s\\n" "$g" && exec motion-spec build "$g"'
-        )
-        argv = ["sh", "-c", chain]
+    # gen narrates on stdout and ends with the bare generation path; the capture eats both.
+    # Announce the path into the log ourselves -- generate_status reads it from there -- and
+    # let build's output carry the rest. (No tee back into the log: a /dev/fd reopen starts at
+    # offset 0 and overwrites what the others wrote.)
+    chain = (
+        f"g=$(motion-spec gen code {shlex.quote(str(source))}"
+        f" -o {shlex.quote(str(GENERATIONS))} | tail -n 1)"
+        f' && printf "generation: %s\\n" "$g" && exec motion-spec build "$g"'
+    )
+    argv = ["sh", "-c", chain]
     sink = log.open("wb")
     process = subprocess.Popen(
         argv, cwd=WORKSPACE, stdout=sink, stderr=sink, start_new_session=True
@@ -2211,13 +2175,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return self.send_json(
                     start_run(relative_path(GENERATIONS, body["path"]), body.get("options") or {})
                 )
+            if self.path == "/api/run/stop":
+                return self.send_json(stop_run(relative_path(GENERATIONS, body["path"])))
             if self.path == "/api/generate":
                 # source_path takes any authored file; only a .robmot is a whole run to make
                 if not body["path"].endswith(".robmot"):
                     raise ValueError("only a .robmot generates")
-                return self.send_json(
-                    start_generate(source_path(body["path"]), run=body.get("run", True))
-                )
+                return self.send_json(start_generate(source_path(body["path"])))
             if self.path == "/api/live":
                 return self.send_json(
                     live_state(relative_path(GENERATIONS, body["path"]), body.get("signals") or ())
@@ -2259,7 +2223,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             storage_info.cache_clear()
             self.send_json({"deleted": len(targets), "folders": folders})
         except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
-            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            # A refusal that probed something says what it found, beside why it said no.
+            report = getattr(exc, "report", {})
+            self.send_json({"error": str(exc), **report}, HTTPStatus.BAD_REQUEST)
 
     def _same_origin(self) -> bool:
         """Only the dashboard's own page may POST: these endpoints delete and spawn."""

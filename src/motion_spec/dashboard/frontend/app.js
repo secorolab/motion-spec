@@ -47,7 +47,8 @@ async function post(path, body) {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   });
   const data = await response.json();
-  if (!response.ok) throw Error(data.error);
+  // A refusal can carry what it found out; the message alone would throw that away.
+  if (!response.ok) throw Object.assign(Error(data.error), data);
   return data;
 }
 
@@ -144,7 +145,8 @@ async function loadGenerations(refresh = false) {
     };
     summary.append(all);
     group.append(summary, ...entries.map((generation) => listItem(
-      stampText(generation.created),
+      // The folder as it is on disk; when it was made is the line under it, not this one.
+      generation.path.split("/").pop(),
       [generation.variant, stampText(generation.built_at),
        `${generation.runs} runs`, formatBytes(generation.size_bytes)].filter(Boolean).join(" · "),
       (event) => {
@@ -174,11 +176,19 @@ function filterGenerations(value) {
   });
 }
 
+// End a run the way a process ends. The transport's cancel asks the loop to stop, which only a
+// loop already ticking can hear; this reaches a run that is still connecting, or hung.
+function stopRun(path) {
+  return post("/api/run/stop", { path });
+}
+
 function bindRunAgain(page, path, cameras, simulated) {
   const bar = page.querySelector(".run-bar");
   const state_ = bar.querySelector(".run-state");
   const start = bar.querySelector(".run-start");
+  const halt = bar.querySelector(".run-stop");
   const failed = page.querySelector(".run-console");
+  const devices = page.querySelector(".devices");
   // Each option is a choice between two named states, not a flag to guess the meaning of.
   bar.querySelectorAll(".run-choice").forEach((choice) => {
     choice.querySelectorAll("button").forEach((option) => {
@@ -262,11 +272,13 @@ function bindRunAgain(page, path, cameras, simulated) {
       sawRunning = true;
       start.disabled = true;
       failed.hidden = true;
+      halt.hidden = false;
       state_.textContent = status.pid ? `running · pid ${status.pid}` : "running";
       return;
     }
     clearInterval(state.runWatch);
     start.disabled = false;
+    halt.hidden = true;
     state_.textContent = sawRunning
       ? (status.exit_code ? `exited ${status.exit_code}` : "run finished")
       : "";
@@ -285,6 +297,17 @@ function bindRunAgain(page, path, cameras, simulated) {
     }
     if (sawRunning) state.announced = true;
     sawRunning = false;
+  };
+  halt.onclick = async () => {
+    halt.disabled = true;
+    state_.textContent = "stopping…";
+    try {
+      await stopRun(path);
+    } catch (error) {
+      state_.textContent = error.message;
+    }
+    halt.disabled = false;
+    check();
   };
   page.querySelector(".run-bar").refreshRun = check;
   const watch = () => {
@@ -309,6 +332,8 @@ function bindRunAgain(page, path, cameras, simulated) {
     } catch (error) {
       start.disabled = false;
       state_.textContent = error.message;
+      // A run refused over the wire already probed it: show that where devices are reported.
+      if (error.devices) devices?.showReport(error);
     }
   };
   api(`/api/run?path=${encodeURIComponent(path)}`).then((status) => {
@@ -327,13 +352,17 @@ function bindDevices(page, path) {
   const rows = panel.querySelector(".device-rows");
   const state_ = panel.querySelector(".devices-state");
   panel.hidden = false;
+  // A probe from anywhere lands here: the refused run's is the same report this button asks for.
+  panel.showReport = (report) => {
+    state_.textContent = report.config ? "" : "this generation archived no robot.toml";
+    rows.replaceChildren(...report.devices.flatMap(deviceRows));
+    panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  };
   panel.querySelector(".devices-test").onclick = async () => {
     state_.textContent = "testing…";
     rows.replaceChildren();
     try {
-      const report = await api(`/api/devices?path=${encodeURIComponent(path)}`);
-      state_.textContent = report.config ? "" : "this generation archived no robot.toml";
-      rows.replaceChildren(...report.devices.flatMap(deviceRows));
+      panel.showReport(await api(`/api/devices?path=${encodeURIComponent(path)}`));
     } catch (error) {
       state_.textContent = error.message;
     }
@@ -397,7 +426,8 @@ async function selectGeneration(path) {
     // bookkeeping -- read left to right, the page answers "what will run" before "how big".
     fact("Runtime", generation.simulated ? "Simulated" : "Hardware", "fact-key"),
     // The version belongs to the thing it versions, not to a box of its own.
-    fact("Platform", generation.platform, "fact-key", generation.toolchain?.mujoco),
+    // Wider than the rest: a simulation is one name, hardware is every device it deploys.
+    fact("Platform", generation.platform, "fact-key fact-wide", generation.toolchain?.mujoco),
     fact("Backend", generation.backend, "", generation.toolchain?.wrapper),
     fact("Motions", generation.motions),
     fact("Authored constraints", generation.authored_constraints),
@@ -670,9 +700,14 @@ async function openPendingRun(runPath) {
   state.generationPath = runPath.split("/runs/")[0];
   state.live = state.following = null;
   highlightGeneration();
+  // A run that never reaches its first frame is waited on here, so this is where it is ended.
   $("#content").innerHTML =
     '<div class="empty"><div class="spinner"></div><h1>Run starting…</h1>'
-    + "<p>Waiting for the first frames of the log.</p></div>";
+    + '<p>Waiting for the first frames of the log.</p><button id="stop-pending">stop run</button></div>';
+  $("#stop-pending").onclick = async (event) => {
+    event.target.disabled = true;
+    await stopRun(state.generationPath).catch((error) => snack(error.message));
+  };
   const hop = setInterval(async () => {
     if (state.runPath !== runPath) return clearInterval(hop);   // the user went elsewhere
     if (await loadReplay(runPath).then(() => true).catch(() => false)) return clearInterval(hop);
@@ -2305,12 +2340,16 @@ let codemirror = null;
 // module instance; a different spelling of the same package (@codemirror/view@6.26.3, say)
 // is a second copy of the library, whose decorations the first copy quietly ignores.
 const CM_VIEW = "https://esm.sh/@codemirror/view@^6.0.0?target=es2022";
+// Same rule for search: `basicSetup` already carries it, and this is where its panel is
+// configured -- so it has to be the copy of the package that setup itself imported.
+const CM_SEARCH = "https://esm.sh/@codemirror/search@^6.0.0?target=es2022";
 
 async function editorModule() {
   codemirror ??= Promise.all([
     import("https://esm.sh/codemirror@6.0.1"),
     import(CM_VIEW),
-  ]).then(([setup, view]) => ({ ...setup, ...view }));
+    import(CM_SEARCH),
+  ]).then(([setup, view, find]) => ({ ...setup, ...view, ...find }));
   return codemirror;
 }
 
@@ -2324,7 +2363,7 @@ async function mountEditor(holder, source, text) {
     holder.classList.add("plain-source");
     return snack(`code editor unavailable (${error.message}) — showing plain text`);
   }
-  const { EditorView, basicSetup, Decoration, ViewPlugin } = cm;
+  const { EditorView, basicSetup, Decoration, ViewPlugin, search } = cm;
   const save = $("#save-source");
   // A button for something there is nothing to do is clutter: it arrives with the first edit.
   const dirty = (is) => {
@@ -2348,6 +2387,8 @@ async function mountEditor(holder, source, text) {
     }
     return true;
   };
+  // Where the find box parks: just under the file header, which is as tall as its own contents.
+  holder.style.setProperty("--head", `${$(".viewer-top")?.offsetHeight ?? 60}px`);
   const saved = { lines: text.split("\n"), version: 0 };
   const changedLine = Decoration.line({ class: "cm-changedLine" });
   const marked = (doc) => {
@@ -2422,6 +2463,9 @@ async function mountEditor(holder, source, text) {
     doc: text,
     extensions: [
         basicSetup,
+        // Ctrl-F opens at the foot of the file by default, which on a page-scrolled editor is
+        // nowhere in particular.
+        search({ top: true }),
         trackChanges,
         EditorView.lineWrapping,
         EditorView.updateListener.of((update) => {
@@ -2434,7 +2478,9 @@ async function mountEditor(holder, source, text) {
             backgroundColor: "transparent", color: "var(--dim)", border: "0",
             fontFamily: "var(--code)",
           },
-          ".cm-activeLine": { backgroundColor: "#202327" },
+          // Translucent on purpose: the selection is drawn in a layer behind the lines, so an
+          // opaque active line would hide every selection made inside it.
+          ".cm-activeLine": { backgroundColor: "rgba(255, 255, 255, .06)" },
           // Unsaved lines carry a mark down their edge, the way an editor's gutter does.
           ".cm-changedLine": { boxShadow: "inset 2px 0 0 var(--accent)" },
           ".cm-activeLineGutter": { backgroundColor: "transparent", color: "var(--muted)" },
@@ -2445,6 +2491,72 @@ async function mountEditor(holder, source, text) {
           ".cm-cursor": { borderLeftColor: "var(--accent)" },
           ".cm-searchMatch": { backgroundColor: "#3a3320" },
           ".cm-searchMatch.cm-searchMatch-selected": { backgroundColor: "#5a4a1e" },
+          // Search arrives as bare browser widgets in a bar across the top. It belongs in the
+          // corner instead, out of the way of the text it is searching: a box of no height,
+          // stuck to the top so scrolling the results keeps it in sight.
+          ".cm-panels": {
+            position: "sticky", top: "var(--head, 60px)", zIndex: "2",
+            height: "0", overflow: "visible",
+            backgroundColor: "transparent", border: "0", color: "var(--muted)",
+          },
+          // Two rows: find, its three buttons and its three options above; replace and its two
+          // buttons below. Seven columns because the first row has seven controls -- the panel
+          // is built by the search extension, and this is the shape it hands over. A grid, not
+          // a wrapping flex row: the box is sized to its contents, and a shrink-to-fit flex
+          // container measures as if nothing wrapped, so the panel's own <br> never breaks.
+          ".cm-panel.cm-search": {
+            position: "absolute", top: "8px", right: "0", maxWidth: "100%",
+            display: "grid", gridTemplateColumns: "repeat(7, auto)",
+            justifyItems: "start", alignItems: "center", gap: "6px",
+            padding: "8px 30px 8px 10px",
+            backgroundColor: "var(--side)", border: "1px solid var(--line)",
+            boxShadow: "0 8px 22px rgba(0, 0, 0, .5)",
+            fontFamily: "var(--mono)", fontSize: "10px",
+          },
+          ".cm-panel.cm-search label": {
+            display: "inline-flex", alignItems: "center", gap: "5px",
+            margin: "0", color: "var(--dim)", fontSize: "10px", letterSpacing: ".06em",
+          },
+          // A native checkbox is a white box whatever the page around it is; this is the same
+          // box the rest of the bar's controls are drawn as, filled when it is on.
+          ".cm-panel.cm-search input[type=checkbox]": {
+            appearance: "none", WebkitAppearance: "none",
+            width: "12px", height: "12px", margin: "0", padding: "0",
+            border: "1px solid var(--line)", borderRadius: "0",
+            backgroundColor: "var(--bg)", cursor: "pointer",
+          },
+          ".cm-panel.cm-search input[type=checkbox]:hover": { borderColor: "var(--muted)" },
+          ".cm-panel.cm-search input[type=checkbox]:checked": {
+            backgroundColor: "var(--accent)", borderColor: "var(--accent)",
+            boxShadow: "inset 0 0 0 2px var(--side)",
+          },
+          ".cm-panel.cm-search label:has(input:checked)": { color: "var(--text)" },
+          // The break is the grid's business now; a hidden element is not a grid item at all,
+          // so the replace field starts the second row by itself.
+          ".cm-panel.cm-search br": { display: "none" },
+          ".cm-textfield": {
+            padding: "4px 8px", border: "1px solid var(--line)", borderRadius: "0",
+            backgroundColor: "var(--bg)", color: "var(--text)",
+            fontFamily: "var(--mono)", fontSize: "11px",
+          },
+          ".cm-textfield:focus": { outline: "none", borderColor: "var(--accent)" },
+          ".cm-button": {
+            padding: "4px 10px", border: "1px solid var(--line)", borderRadius: "0",
+            backgroundColor: "transparent", backgroundImage: "none", color: "var(--muted)",
+            fontFamily: "var(--mono)", fontSize: "10px", letterSpacing: ".06em", cursor: "pointer",
+          },
+          ".cm-button:hover": { borderColor: "var(--accent)", color: "var(--accent)" },
+          ".cm-button:active": { backgroundImage: "none", backgroundColor: "var(--surface)" },
+          // Closing is a control of its own, not a stray character in the corner.
+          ".cm-panel.cm-search [name=close]": {
+            top: "6px", right: "6px",
+            display: "grid", placeItems: "center", width: "18px", height: "18px", padding: "0",
+            border: "1px solid var(--line)", backgroundColor: "var(--bg)",
+            color: "var(--muted)", fontSize: "14px", lineHeight: "1", cursor: "pointer",
+          },
+          ".cm-panel.cm-search [name=close]:hover": {
+            borderColor: "var(--accent)", color: "var(--accent)",
+          },
         }, { dark: true }),
     ],
   });
@@ -2553,6 +2665,17 @@ async function openSource(source, absolute = null, push = true) {
   if (source.endsWith(".robmot")) bindGenerate(source);
 }
 
+// Leave the source page for a generation just made: the tab, the sidebar list and the URL all
+// move with it, and the list has to be re-read because the new generation is not in it yet.
+function showGeneration(path, run = false) {
+  setTab("logs");
+  loadGenerations(true)
+    .then(() => selectGeneration(path))
+    // Running is that page's own act: it tests the devices, names the run and follows it.
+    .then(() => { if (run) $(".run-bar .run-start")?.click(); })
+    .catch(showError);
+}
+
 // Generate, build and run a model from its own page, showing the terminal that does it.
 function bindGenerate(source) {
   // Two ways in -- make the generation and stop, or make it and watch it run -- both already
@@ -2587,7 +2710,7 @@ function bindGenerate(source) {
     pre.hidden = false;
     let offset = 0;
     try {
-      const started = await post("/api/generate", { path: source, run });
+      const started = await post("/api/generate", { path: source });
       state_.textContent = `running · pid ${started.pid}`;
       const tail = async () => {
         if (gone()) return stop();
@@ -2605,19 +2728,20 @@ function bindGenerate(source) {
         state_.textContent = status.busy
           ? `running · pid ${status.pid}`
           : `exited ${status.exit_code}`;
-        if (status.generation) {
-          open.hidden = false;
-          open.onclick = () => {
-            setTab("logs");
-            // the generation is new: the sidebar has not listed it yet
-            loadGenerations(true).then(() => selectGeneration(status.generation)).catch(showError);
-          };
-        }
         if (status.busy) return;
         clearInterval(state.generateWatch);
         busy(false);
         await tail();   // the closing lines land after the process is already gone
         clearInterval(state.generateConsole);
+        if (!status.generation) return;
+        // What it made is where to go next. A failure stays put, where its console is, and
+        // offers the way in instead.
+        if (status.exit_code) {
+          open.hidden = false;
+          open.onclick = () => showGeneration(status.generation);
+          return;
+        }
+        showGeneration(status.generation, run);
       };
       await tail();
       state.generateConsole = setInterval(tail, 1000);
@@ -2774,6 +2898,18 @@ $("#clear-selection").onclick = () => {
 document.onkeydown = (event) => {
   if (event.key === "Escape" && state.selected.size) $("#clear-selection").click();
 };
+// Escape closes the editor's find box, wherever the key was pressed: its field and the text
+// are different key-handling scopes inside the editor library, and this is neither -- it is
+// the page, closing a panel it can see, with the panel's own button. First refusal of the key:
+// with a find box open, escape means this and not clearing a selection.
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  const close = $(".cm-panel.cm-search button[name=close]");
+  if (!close) return;
+  event.preventDefault();
+  event.stopPropagation();
+  close.click();
+}, true);
 $("#search").oninput = (event) => {
   if (state.tab === "sources") filterSources(event.target.value);
   else filterGenerations(event.target.value);

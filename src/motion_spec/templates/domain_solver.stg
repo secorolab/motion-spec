@@ -287,8 +287,13 @@ world-pose(solver, index) ::= <<
 robot.<solver.id>.world_to_root * robot.world->pose(<index>, robot.control_cycle)
 >>
 
+// Both ends read off the world model; world_to_root cancels in a relative pose.
+relative-world-pose(solver, out) ::= <<
+shared.<out.id> = (robot.world->pose(robot.world_<solver.id>_<out.relative_to_frame.id>, robot.control_cycle)).Inverse() * robot.world->pose(robot.world_<solver.id>_<out.of.id>, robot.control_cycle);
+>>
+
 solver-output-Pose-robif2b(solver, chain_solver, out) ::= <<
-shared.<out.id> = <world-pose(solver, {robot.world_<solver.id>_<out.of.id>})>;
+<if(out.relative_to_frame)><relative-world-pose(solver, out)><else>shared.<out.id> = <world-pose(solver, {robot.world_<solver.id>_<out.of.id>})>;<endif>
 >>
 
 solver-output-Pose-mj_kdl(solver, chain_solver, out) ::= <<
@@ -322,6 +327,8 @@ solver-output-Pose-mj_kdl(solver, chain_solver, out) ::= <<
         throw std::runtime_error("MuJoCo body not found for chain root: <chain_solver.chain.root>");
     }
     shared.<out.id> = _base_world_frame_<solver.id>.Inverse() * _body_frame_<out.id>;
+<elseif(out.relative_to_frame)>
+    <relative-world-pose(solver, out)>
 <else>
     shared.<out.id> = <world-pose(solver, {<if(out.of.id)>robot.world_<solver.id>_<out.of.id><else>robot.<solver.id>.world_tip<endif>})>;
 <endif>
@@ -672,7 +679,8 @@ solver-run-finalize-robif2b(solver, motion_driver) ::= <<
 
 // The modelled wrench is one the arm generates on the segment it is attached to, stated in the
 // chain root's orientation about that segment's origin. What each algorithm wants of it differs
-// on both counts, so the two take separate rules.
+// on both counts, so the two take separate rules. A sensed wrench is the same wrench read the
+// other way round -- what the environment exerts on the arm -- so it enters with the sign flipped.
 solver-assign-f-ext-modular(solver, chain_solver, force) ::= <<
 <({solver-assign-f-ext-<chain_solver.algorithm_name>})(solver, force)>
 >>

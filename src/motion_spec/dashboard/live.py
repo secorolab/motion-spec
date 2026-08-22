@@ -13,6 +13,7 @@ from pathlib import Path
 from motion_spec.dashboard.catalog import run_ended
 from motion_spec.dashboard.control import SPEED_MAX, SPEED_MIN, ControlChannel
 from motion_spec.dashboard.frames import FrameLayout, ShmFrameReader, SignalFields, shm_path
+from motion_spec.dashboard.replay import log_events
 from motion_spec.dashboard.roots import LAYOUT_REL, json_file, trace
 from motion_spec.dashboard.tail import FrameLogTail
 from motion_spec.introspection.replay import resolve_archive
@@ -250,7 +251,16 @@ def live_state(run_dir: Path, signals=()) -> dict:
     frame = sampler.frame if live else session["frame"]
     t = sampler.t if live else session.get("t")
     motion = sampler.motion if live else session["motion"]
-    events = list(sampler.events) if live else session["events"]
+    # Markers come off the log, which keeps every tick: the sampled block misses any trigger or
+    # satisfied edge that falls between two samples. The scan is incremental, so a poll pays
+    # for the frames written since the last one, not the run so far. A run whose log has
+    # nothing yet -- or records nothing at all -- falls back to what the block said.
+    try:
+        events = list(log_events(log, contract)["events"])
+    except OSError:
+        events = []
+    if not events:
+        events = list(sampler.events) if live else session["events"]
     motions = contract.header.motions
     # A loop that answers is live even while paused. Only a run with no control block to ask
     # -- real hardware, or a build older than it -- has to be judged by its log growing.

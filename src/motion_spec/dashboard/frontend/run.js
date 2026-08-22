@@ -164,6 +164,7 @@ export function showVideos(runPath, cameras) {
     main._queuedSeek = undefined;
     if (queued !== undefined) main.currentTime = queued;
   };
+  bindVideoExpand(panel);
   const minimize = panel.querySelector(".video-min");
   const setMinimized = (small) => {
     panel.classList.toggle("minimized", small);
@@ -185,7 +186,7 @@ export function showVideos(runPath, cameras) {
       // panels open is portrait, and a landscape box would letterbox it.
       const portrait = main.videoHeight > main.videoWidth;
       main.style.width = portrait ? "auto" : "100%";
-      main.style.height = portrait ? "34vh" : "auto";
+      main.style.height = portrait ? "var(--video-h, 34vh)" : "auto";
       reserveVideoSpace();
       syncVideo(true);
     };
@@ -213,6 +214,23 @@ export function showVideos(runPath, cameras) {
   reserveVideoSpace();
 }
 
+// The expand toggle is shared by the recording pane and the ROS pane: one class, one size
+// custom property the video rules read, remembered like the minimize state.
+function bindVideoExpand(panel) {
+  const expand = panel.querySelector(".video-max");
+  const setExpanded = (large) => {
+    panel.classList.toggle("expanded", large);
+    expand.textContent = large ? "⤡" : "⤢";
+    expand.title = large ? "Shrink" : "Expand";
+    try { localStorage.setItem("motion-spec.video-expanded", String(large)); } catch { /* private */ }
+    reserveVideoSpace();
+  };
+  let large = false;
+  try { large = localStorage.getItem("motion-spec.video-expanded") === "true"; } catch { /* private */ }
+  expand.onclick = () => setExpanded(!panel.classList.contains("expanded"));
+  setExpanded(large);
+}
+
 // The same pane, pointed at a live ROS topic: hardware records nothing to replay afterwards,
 // so the picture is whatever the camera is publishing now -- not a track the timeline drives.
 async function showRosCamera(generationPath) {
@@ -231,6 +249,7 @@ async function showRosCamera(generationPath) {
   panel.querySelector(".video-strip").hidden = true;
   // The minimize button belongs to showVideos' recording panel; this one is a single live view.
   panel.querySelector(".video-min").hidden = true;
+  bindVideoExpand(panel);
   const main = panel.querySelector(".video-main");
   main.innerHTML = `<img class="ros-frame" alt=""><div class="ros-topic"><input type="text" spellcheck="false" title="ROS image topic"><span class="ros-status"></span></div>`;
   const frame = main.querySelector(".ros-frame");
@@ -422,7 +441,7 @@ export function populateConstraints() {
 export function replayShell(path) {
   // The run page's markup, with what the reply fills left blank: the numbers, the timeline's
   // range and the constraint list.
-  return `<div class="replay"><div class="replay-heading"><button id="back" title="Back to generation">←</button><h1>${path.split("/").pop()}</h1><div class="replay-tabs"><button data-panel="plots" class="active">Plots</button><button data-panel="sparql">SPARQL</button><button data-panel="console">Console</button></div><span class="eyebrow">RUN</span></div><section id="panel-plots"><div class="constraint-panel"><div class="eyebrow">SOURCE CONSTRAINTS</div><input id="constraint-search" type="search" placeholder="Search .robmot constraints"><div id="constraints" class="constraints"></div></div><div class="chart-controls"><button id="plot">Add empty plot</button><button id="notebook">Open in Jupyter</button><button id="live-plots" title="Plot signals as the run writes them">live plots: on</button></div><div id="plots" class="plots"></div></section><section id="panel-sparql" hidden><div class="sparql"><div class="query-rail"><button id="new-query" class="new-query">+ query</button></div><div class="sparql-body"><div class="sparql-canned"></div><textarea id="query" spellcheck="false"></textarea><div class="sparql-run"><button id="ask">Run query</button><span id="query-status" class="path"></span></div><div id="answer"></div></div></div></section><section id="panel-console" hidden><pre id="console-text" class="console"></pre></section></div><div class="settling" hidden><div class="spinner"></div><span>archiving the run…</span></div><div class="videos" hidden><button class="video-min" title="Minimize"></button><div class="video-main"><video preload="auto" playsinline disablepictureinpicture controlslist="nodownload noplaybackrate noremoteplayback"></video><span class="video-name"></span></div><div class="video-strip"></div></div><div class="transport"><div class="transport-controls"><button id="step-back" title="Previous frame">‹</button><button id="play">Play</button><button id="step-forward" title="Next frame">›</button><details class="picker speed-menu"><summary>1×</summary><div class="picker-panel"><button data-value="0.25">0.25×</button><button data-value="0.5">0.5×</button><button data-value="1" aria-pressed="true">1×</button><button data-value="2">2×</button><button data-value="5">5×</button></div></details><span id="readout" class="path"></span><button id="cancel-run" title="End the run" hidden>cancel</button></div><div class="markers"></div><input class="timeline" type="range" min="0" max="0" value="0" disabled></div>`;
+  return `<div class="replay"><div class="replay-heading"><button id="back" title="Back to generation">←</button><h1>${path.split("/").pop()}</h1><div class="replay-tabs"><button data-panel="plots" class="active">Plots</button><button data-panel="sparql">SPARQL</button><button data-panel="console">Console</button></div><span class="eyebrow">RUN</span></div><section id="panel-plots"><div class="constraint-panel"><div class="eyebrow">SOURCE CONSTRAINTS</div><input id="constraint-search" type="search" placeholder="Search .robmot constraints"><div id="constraints" class="constraints"></div></div><div class="chart-controls"><button id="plot">Add empty plot</button><button id="notebook">Open in Jupyter</button><button id="live-plots" title="Plot signals as the run writes them">live plots: on</button></div><div id="plots" class="plots"></div></section><section id="panel-sparql" hidden><div class="sparql"><div class="query-rail"><button id="new-query" class="new-query">+ query</button></div><div class="sparql-body"><div class="sparql-canned"></div><textarea id="query" spellcheck="false"></textarea><div class="sparql-run"><button id="ask">Run query</button><span id="query-status" class="path"></span></div><div id="answer"></div></div></div></section><section id="panel-console" hidden><pre id="console-text" class="console"></pre></section></div><div class="settling" hidden><div class="spinner"></div><span>archiving the run…</span></div><div class="videos" hidden><button class="video-max" title="Expand"></button><button class="video-min" title="Minimize"></button><div class="video-main"><video preload="auto" playsinline disablepictureinpicture controlslist="nodownload noplaybackrate noremoteplayback"></video><span class="video-name"></span></div><div class="video-strip"></div></div><div class="transport"><div class="transport-controls"><button id="step-back" title="Previous frame">‹</button><button id="play">Play</button><button id="step-forward" title="Next frame">›</button><details class="picker speed-menu"><summary>1×</summary><div class="picker-panel"><button data-value="0.25">0.25×</button><button data-value="0.5">0.5×</button><button data-value="1" aria-pressed="true">1×</button><button data-value="2">2×</button><button data-value="5">5×</button></div></details><span id="readout" class="path"></span><span class="marker-legend"><i class="lg lg-state"></i>state <i class="lg lg-event"></i>event <i class="lg lg-satisfied"></i>satisfied <i class="lg lg-unsatisfied"></i>lost <i class="lg lg-monitor"></i>monitor</span><button id="cancel-run" title="End the run" hidden>cancel</button></div><div class="markers"></div><input class="timeline" type="range" min="0" max="0" value="0" disabled></div>`;
 }
 
 export function bindPanels() {

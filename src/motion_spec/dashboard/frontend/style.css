@@ -337,7 +337,7 @@ h1 { margin: 7px 0; font-size: 30px; }
 .markers::before { top: 1px; }
 .markers::after { top: 15px; }
 .marker { position: absolute; top: -5px; width: 5px; height: 12px; margin-left: -2px; padding: 0; border: 1px solid var(--accent); border-radius: 1px; transform: rotate(-45deg); background: var(--accent); cursor: pointer; }
-.marker-event { top: 12px; width: 7px; height: 7px; margin-left: -3px; border-radius: 0; border-color: var(--muted); background: transparent; transform: rotate(45deg); }
+.marker-event { top: 12px; width: 7px; height: 7px; margin-left: -3px; border-radius: 0; border-color: var(--text); background: var(--muted); transform: rotate(45deg); }
 /* Satisfied edges are ticks in the band between the rails: a chattering constraint stays
    readable as texture without covering the state and event markers above it. */
 .marker-satisfied, .marker-unsatisfied { top: 4px; width: 2px; height: 9px; margin-left: -1px; border-radius: 0; opacity: .55; transform: none; }
@@ -606,17 +606,31 @@ html.restoring #content .empty { visibility: hidden; }
 .spinner { width: 13px; height: 13px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 700ms linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.videos { position: fixed; right: 24px; bottom: calc(var(--transport-h, 108px) + 10px); z-index: 3; display: grid; grid-template-columns: auto auto; gap: 8px; max-width: min(520px, 40vw); padding: 8px; border: 1px solid var(--line); background: var(--surface); }
+.videos { --video-h: 45vh; position: fixed; right: 24px; bottom: calc(var(--transport-h, 108px) + 10px); z-index: 3; display: grid; grid-template-columns: auto auto; gap: 8px; max-width: min(720px, 52vw); padding: 8px; border: 1px solid var(--line); background: var(--surface); }
 .video-min { position: absolute; top: 8px; right: 8px; z-index: 1; width: 20px; height: 20px; padding: 0; border: 1px solid var(--line); background: #0d0e10cc; color: var(--muted); font: 11px var(--mono); line-height: 1; }
 .video-min:hover { border-color: var(--accent); color: var(--accent); }
+.video-max { position: absolute; top: 8px; right: 32px; z-index: 1; width: 20px; height: 20px; padding: 0; border: 1px solid var(--line); background: #0d0e10cc; color: var(--muted); font: 11px var(--mono); line-height: 1; }
+.video-max:hover { border-color: var(--accent); color: var(--accent); }
+.videos.minimized .video-max { display: none; }
+/* One knob for how tall a video may stand; the expand toggle turns it. */
+.videos.expanded { max-width: min(1400px, 85vw); --video-h: 75vh; }
+
+/* The timeline's marker shapes, once more at caption size, each next to its name. */
+.marker-legend { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; color: var(--dim); font: 10px var(--mono); letter-spacing: .04em; }
+.marker-legend .lg { display: inline-block; width: 6px; height: 6px; margin-left: 8px; border: 1px solid var(--accent); }
+.marker-legend .lg-state { background: var(--accent); border-radius: 1px; transform: rotate(-45deg); }
+.marker-legend .lg-event { border-color: var(--text); background: var(--muted); transform: rotate(45deg); }
+.marker-legend .lg-satisfied { width: 2px; border-color: var(--good); background: var(--good); }
+.marker-legend .lg-unsatisfied { width: 2px; border-color: var(--dim); background: var(--dim); }
+.marker-legend .lg-monitor { border-color: var(--good); background: transparent; border-radius: 50%; }
 .videos.minimized { width: auto; grid-template-columns: auto; justify-self: end; padding: 6px 34px 6px 8px; }
 .videos.minimized .video-main video, .videos.minimized .video-strip { display: none; }
 .videos.minimized .video-name { position: static; border: 0; background: none; }
 .video-main { position: relative; }
-.video-main video { display: block; max-width: 100%; max-height: 34vh; background: #000; }
+.video-main video { display: block; max-width: 100%; max-height: var(--video-h, 34vh); background: #000; }
 .video-name { position: absolute; top: 6px; left: 6px; padding: 3px 7px; border: 1px solid var(--line); background: #0d0e10cc; color: var(--text); font: 10px var(--mono); letter-spacing: .08em; }
 .videos.one-camera { grid-template-columns: 1fr; }
-.ros-frame { display: block; min-width: 200px; min-height: 112px; max-width: 100%; max-height: 34vh; background: #000; }
+.ros-frame { display: block; min-width: 200px; min-height: 112px; max-width: 100%; max-height: var(--video-h, 34vh); background: #000; }
 .ros-topic { display: flex; align-items: center; gap: 6px; padding-top: 6px; }
 .ros-topic input { min-width: 0; flex: 1; padding: 3px 6px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font-size: 11px; }
 .ros-topic input:focus { border-color: var(--accent); outline: none; }

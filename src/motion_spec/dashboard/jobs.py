@@ -287,9 +287,21 @@ def _reap_jobs() -> None:
     for job in finished[:-GENERATE_LOGS_KEPT]:
         GENERATING.pop(job)
     # On disk too, including logs left by earlier dashboards: their jobs went with the process
-    # that started them, so nothing is reading those at all.
+    # that started them, so nothing is reading those at all. The directory appears with the
+    # first job; a root nothing generated under has nothing to reap. Another dashboard may be
+    # reaping the same logs, so one vanishing between the listing and the stat is not an error.
+    log_dir = roots.GENERATIONS / GENERATE_LOGS
+    if not log_dir.is_dir():
+        return
     kept = {started["log"] for started in GENERATING.values()}
-    written = sorted((roots.GENERATIONS / GENERATE_LOGS).glob("gen-*.log"), key=os.path.getmtime)
+
+    def _mtime(path: Path) -> float:
+        try:
+            return os.path.getmtime(path)
+        except OSError:
+            return 0.0
+
+    written = sorted(log_dir.glob("gen-*.log"), key=_mtime)
     for log in written[:-GENERATE_LOGS_KEPT]:
         if log not in kept:
             log.unlink(missing_ok=True)

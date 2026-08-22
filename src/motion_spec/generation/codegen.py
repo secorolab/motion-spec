@@ -155,32 +155,49 @@ def load_ir(input_path: Path):
 
 
 def _adopt_fsm_state_order(ir: dict, *candidates: Path) -> None:
-    """Index FSM states the way the runtime does.
+    """Index FSM states and events the way the runtime does.
 
-    A frame's ``fsm_state`` is ``fsm->currentStateIndex`` -- coord-dsl's ``e_states`` enum, built
-    from ``fsm_ir.json``. ir_gen re-derives its own state list by iterating the merged app graph,
-    and rdflib hands it back in a different order, so the schema's indices (and every
-    ``case <index>:`` generated from them) named the wrong state. Take the order from the artifact
-    that defines the enum rather than re-deriving it.
-
-    Events deliberately do NOT get the same treatment: a trigger's ``idx`` is ir_gen's own event
-    index (``fsm_event_idx``, emitted into the C++ as ``events.record(N)``), so the
-    recorded value and ``schema["fsm"]["events"]`` already share one index space. Reordering
-    events here would desynchronise the schema from numbers already baked into the generated code.
+    A frame's ``fsm_state`` is ``fsm->currentStateIndex`` and a produced event's flag sits at
+    the coord-dsl enum's value -- both enums are built from ``fsm_ir.json``. ir_gen re-derives
+    its own lists by iterating the merged app graph, and rdflib hands them back in a different
+    order, so the schema's indices named the wrong state or event. Take the order from the
+    artifact that defines the enums, and remap every event index ir_gen already baked
+    (``step_event_idx``, each monitor's ``fsm_event_idx``): after this there is exactly one
+    index space -- enum value, schema index and recorded value all agree.
     """
     fsm = ir["coordination"].get("fsm")
     fsm_ir_path = next((path for path in candidates if path.is_file()), None)
     if not fsm or fsm_ir_path is None:
         return
-    states = json.loads(fsm_ir_path.read_text()).get("states")
-    if not states:
-        return
-    if set(states) != set(fsm.get("states", [])):
-        raise RuntimeError(
-            f"{fsm_ir_path.name} states {sorted(states)} do not match the model's "
-            f"{sorted(fsm.get('states', []))}"
-        )
-    fsm["states"] = list(states)
+    doc = json.loads(fsm_ir_path.read_text())
+    for kind in ("states", "events"):
+        adopted = doc.get(kind)
+        if not adopted:
+            continue
+        if set(adopted) != set(fsm.get(kind, [])):
+            raise RuntimeError(
+                f"{fsm_ir_path.name} {kind} {sorted(adopted)} do not match the model's "
+                f"{sorted(fsm.get(kind, []))}"
+            )
+        if kind == "events":
+            remap = {old: adopted.index(name) for old, name in enumerate(fsm["events"])}
+            if fsm.get("step_event_idx", -1) >= 0:
+                fsm["step_event_idx"] = remap[fsm["step_event_idx"]]
+            _remap_event_indices(ir["coordination"], remap)
+        fsm[kind] = list(adopted)
+
+
+def _remap_event_indices(node, remap: dict) -> None:
+    """Rewrite every ``fsm_event_idx`` under `node` into the adopted index space."""
+    if isinstance(node, dict):
+        idx = node.get("fsm_event_idx")
+        if isinstance(idx, int) and idx >= 0:
+            node["fsm_event_idx"] = remap[idx]
+        for value in node.values():
+            _remap_event_indices(value, remap)
+    elif isinstance(node, list):
+        for value in node:
+            _remap_event_indices(value, remap)
 
 
 def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):

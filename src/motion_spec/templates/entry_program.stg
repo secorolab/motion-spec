@@ -185,6 +185,15 @@ int main(int argc, char **argv) {
         const unsigned int _fsm_state_before = fsm->currentStateIndex;
         fsm_step_nbx(fsm);
         reconfig_event_buffers(fsm->eventData);
+        // After the swap, currentEvents holds exactly what this tick produced -- by a monitor,
+        // a reaction chain, or a goal -- each flag current for one cycle. Recording here, the
+        // one point every producer routes through, is what makes the log carry every fire, and
+        // enum value == log index by construction (codegen adopts fsm_ir's order for both).
+        // The heartbeat stays excluded as ever; the transition it causes is recorded below.
+        for (unsigned int _e = 0; _e \< fsm->eventData->numEvents; ++_e) {
+<if(coordination.fsm.step_event)>            if (_e == static_cast\<unsigned int\>(<coordination.fsm.cpp_namespace>::<coordination.fsm.step_event>)) continue;
+<endif>            if (fsm->eventData->currentEvents[_e]) events.record(static_cast\<int\>(_e));
+        \}
 <coordination.fsm.step_transitions:{t |         // The clock is this transition's guard, so this one heartbeat is the cause of the
         // state change -- record it, unlike the 24k that drive nothing.
         if (_fsm_state_before == <coordination.fsm.cpp_namespace>::<t.from> && fsm->currentStateIndex == <coordination.fsm.cpp_namespace>::<t.to>) {

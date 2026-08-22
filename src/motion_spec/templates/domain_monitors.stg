@@ -71,9 +71,8 @@ update-monitor(monitor) ::= <<
             <monitor.debounce_duration_s>)<else>motion_spec::runtime::rising_edge(state.<monitor.id>_previous, active)<endif>;
 <if(monitor.fsm_namespace)>
         // coord2b is the sequencer: fire the FSM event on the rising edge while in this state.
-        if (detected) {
-            events.record(<monitor.fsm_event_idx>);
-        \}
+        // The produce is the record: the loop sweeps currentEvents after the swap, so every
+        // produced event -- this one included -- reaches the log from that one point.
         if (detected && robot.fsm_events) {
             produce_event(robot.fsm_events, <monitor.fsm_namespace>::<monitor.event_name>);
             std::cerr \<\< "[fsm] event   " \<\< <monitor.fsm_namespace>::EVENT_URIS[<monitor.fsm_namespace>::<monitor.event_name>] \<\< std::endl;

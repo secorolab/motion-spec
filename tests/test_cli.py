@@ -324,7 +324,7 @@ def test_health_is_profile_scoped() -> None:
     assert "VALIDATION — required for validation" in result.output
     assert "pyshacl    Python module" in result.output
     assert "stst" not in result.output
-    assert "Summary: 4 good, 0 missing" in result.output
+    assert "Summary: 5 good, 0 missing" in result.output
 
 
 def test_managed_stst_wins_over_path(monkeypatch, tmp_path) -> None:

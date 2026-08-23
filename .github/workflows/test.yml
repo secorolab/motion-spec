@@ -23,11 +23,11 @@ jobs:
         run: |
           pip install pytest pyshacl protobuf click textx PyLD numpy scipy jinja2
           pip install \
-            "git+https://github.com/secorolab/rdf-utils.git@main" \
+            "git+https://github.com/minhnh/rdf-utils.git@main" \
             "git+https://github.com/secorolab/rec.git@dev"
-          # --no-deps: motion-spec-dsl asks for rdflib>=8.0.0, which nothing provides -- the
-          # patched fork every workspace package actually runs on reports 7.6.0. Their real
-          # imports are installed above; the pin below settles rdflib for all of them.
+          # --no-deps: these three depend on each other and on unpublished siblings, so a
+          # resolver run reaches PyPI for names that are not there. Their real imports are
+          # installed above; the pin below settles rdflib for all of them.
           pip install --no-deps \
             "git+https://github.com/secorolab/scene-dsl.git@main" \
             "git+https://github.com/secorolab/coord-dsl.git@main" \

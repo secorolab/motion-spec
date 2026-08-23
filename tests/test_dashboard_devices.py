@@ -178,21 +178,28 @@ CHECKS = [
 ]
 
 
+def _progress(report):
+    """How far the checks have got. The report also carries the environment, which is this
+    machine's own versions and roots -- not something a run of the checks can be asserted on."""
+    return {key: report[key] for key in ("running", "checks", "stamp")}
+
+
 def test_the_checks_are_run_once_and_then_remembered(monkeypatch):
     _health(monkeypatch, CHECKS, delay=0.2)
-    assert jobs.health_report() == {"running": True, "checks": None, "stamp": None}
+    assert _progress(jobs.health_report()) == {"running": True, "checks": None, "stamp": None}
     jobs.HEALTH["thread"].join(5)
     report = jobs.health_report()
     assert report["running"] is False
     assert report["stamp"] > 0
-    assert report["checks"][1] == {
+    reported = report["checks"][1]
+    assert {key: reported[key] for key in ("profile", "dependency", "what", "path", "ok")} == {
         "profile": "build",
         "dependency": "cmake",
         "what": "executable",
         "path": None,
         "ok": False,
-        "detail": "apt install cmake",
     }
+    assert reported["detail"] == "apt install cmake"
     # nothing was started again: the answer is the one already taken
     assert not jobs.HEALTH["thread"].is_alive()
 
@@ -209,6 +216,6 @@ def test_a_re_check_runs_them_again(monkeypatch):
 def test_a_report_asked_for_while_they_run_says_so(monkeypatch):
     _health(monkeypatch, CHECKS, delay=0.5)
     jobs.health_report()
-    assert jobs.health_report() == {"running": True, "checks": None, "stamp": None}
+    assert _progress(jobs.health_report()) == {"running": True, "checks": None, "stamp": None}
     assert isinstance(jobs.HEALTH["thread"], threading.Thread)
     jobs.HEALTH["thread"].join(5)

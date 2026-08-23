@@ -150,7 +150,7 @@ DETAILS: dict[str, dict[str, str]] = {
     },
     "rdf_utils": {
         "why": "shared RDF loaders, resolvers and vocabularies every secorolab tool uses",
-        "source": "https://github.com/secorolab/rdf-utils",
+        "source": "https://github.com/minhnh/rdf-utils",
     },
     "pyshacl": {
         "why": "validates a generated model graph against the published SHACL shapes",

@@ -1,5 +1,8 @@
 # motion-spec
 
+[![test](https://github.com/secorolab/motion-spec/actions/workflows/test.yml/badge.svg?branch=dev)](https://github.com/secorolab/motion-spec/actions/workflows/test.yml)
+[![docs](https://github.com/secorolab/motion-spec/actions/workflows/gh-pages.yml/badge.svg?branch=dev)](https://github.com/secorolab/motion-spec/actions/workflows/gh-pages.yml)
+
 Validate, compile, build, run, and inspect guarded robot motion specifications.
 
 `motion-spec` consumes the RDF dataset that

@@ -21,7 +21,7 @@ jobs:
       # than a test. pyshacl/protobuf cover the validation/introspection extras.
       - name: Install workspace siblings
         run: |
-          pip install pytest pyshacl protobuf click textx PyLD numpy scipy jinja2
+          pip install pytest pyshacl protobuf click textx PyLD numpy scipy jinja2 pillow
           pip install \
             "git+https://github.com/minhnh/rdf-utils.git@main" \
             "git+https://github.com/secorolab/rec.git@dev"

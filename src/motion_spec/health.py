@@ -11,41 +11,44 @@ import importlib.util
 import shutil
 import subprocess
 import tempfile
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 
 PROFILE_IMPORTS = {
-    "base": ("click", "rdflib", "rdf_utils"),
+    "base": ("click", "rdflib", "rdf_utils", "jinja2"),
     "validation": ("pyshacl",),
     "introspection": ("pyshacl", "rec", "google.protobuf"),
     "dsl": ("textx", "motion_spec_dsl", "coord_dsl", "scene_dsl"),
 }
 PROFILES = (*PROFILE_IMPORTS, "codegen", "build", "runtime")
-# Every generated CMakeLists asks for these, whichever backend it targets.
-GENERAL_BUILD_PACKAGES = ("coord2b", "Eigen3", "tomlplusplus")
+# Every generated CMakeLists asks for these, whichever backend it targets: the kinematics and
+# the frame types are the same on a simulator and on a real arm.
+GENERAL_BUILD_PACKAGES = ("coord2b", "Eigen3", "orocos_kdl", "kdl_parser", "tomlplusplus")
 # A model that publishes, sends a goal or answers one links these; one that talks to nothing
 # does not, so a report for a purely offline model can show these missing and still build.
 ROS_BUILD_PACKAGES = ("rclcpp", "realtime_tools", "action_msgs", "rclcpp_action")
 # `(package, version)`; the generated CMakeLists asks for that version, so a check that ignores
 # it passes on an install the build then rejects.
-MUJOCO_BUILD_PACKAGES = ("orocos_kdl", "kdl_parser", ("mj_kdl_wrapper", "0.3.6"))
+MUJOCO_BUILD_PACKAGES = (("mj_kdl_wrapper", "0.3.11"),)
 # Reading a ROS message's shape is what turns a declared type into fields, headers and packages.
 # rosidl spells its case-conversion helper differently across distros; either will do.
 CODEGEN_IMPORTS = ("rosidl_runtime_py",)
 CODEGEN_ALTERNATIVES = (("rosidl_pycommon", "rosidl_cmake"),)
+# `stst` is a Java program built by ant, and `protoc` compiles the frame-log schema every
+# generation carries: the generator shells out to all three.
+CODEGEN_EXECUTABLES = ("java", "ant", "protoc")
 ROBIF2B_BUILD_PACKAGES = (
     "robif2b",
-    "Eigen3",
-    "orocos_kdl",
     "urdfdom_headers",
     "urdfdom",
-    "kdl_parser",
-    # The gripper and the force-torque sensor are their own drivers; robif2b wraps them, and
-    # builds neither wrapper unless it finds them.
     "serial",
     "robotiq_driver_noros",
     "robotiq_ft",
 )
+# Present only when the workspace was built with that device wrapper enabled. A model that
+# binds none of them builds and runs regardless, so a miss here is a note, not a failure.
+OPTIONAL_BUILD_PACKAGES = frozenset({"serial", "robotiq_driver_noros", "robotiq_ft"})
 # TODO: Check hddc2b only when the generated model selects an HDDC2B base solver.
 
 _WORKSPACE = "$GRC_WS"
@@ -57,7 +60,9 @@ _REMEDIES = {
     "cmake": "apt install cmake",
     "c++": "apt install build-essential",
     "Eigen3": "apt install libeigen3-dev",
-    "orocos_kdl": "apt install liborocos-kdl-dev",
+    "java": "apt install default-jdk",
+    "ant": "apt install ant",
+    "protoc": "apt install protobuf-compiler",
     "urdfdom": "apt install liburdfdom-dev",
     "urdfdom_headers": "apt install liburdfdom-headers-dev",
     "tomlplusplus": "apt install libtomlplusplus-dev",
@@ -69,10 +74,13 @@ _REMEDIES = {
     "rosidl_runtime_py": "source /opt/ros/$ROS_DISTRO/setup.bash",
     "rosidl_pycommon": "source /opt/ros/$ROS_DISTRO/setup.bash",
 }
-# Everything else is a workspace package: grc_meta lists where each one comes from.
+# Everything else is a workspace package: grc_meta lists where each one comes from. orocos_kdl
+# is here rather than on apt: the templates call Vereshchagin solvers with fixed joints, which
+# only the secorolab fork carries, so a distro liborocos-kdl-dev configures and then fails.
 _WORKSPACE_PACKAGES = (
     "coord2b",
     "kdl_parser",
+    "orocos_kdl",
     "mj_kdl_wrapper",
     "robif2b",
     "serial",
@@ -123,6 +131,168 @@ class HealthCheck:
     path: str | None
     ok: bool
     detail: str
+    # A failure a reader can act on says all three: the job the dependency does, where it
+    # lives, and how it arrives. Filled from DETAILS for every dependency it names.
+    why: str = ""
+    source: str = ""
+    # Absent by choice rather than by mistake: reported, but not counted against the install.
+    optional: bool = False
+
+
+# What each dependency is for and where it comes from -- the words every "not found" carries,
+# here once, read by the CLI's boxes and the dashboard's health page alike.
+DETAILS: dict[str, dict[str, str]] = {
+    "click": {"why": "the CLI itself runs on it", "source": "https://github.com/pallets/click"},
+    "rdflib": {
+        "why": "every model is an RDF graph; parsing, querying and serializing run on it "
+        "(the secorolab fork carries the multi-type scoped-context fix)",
+        "source": "https://github.com/secorolab/rdflib",
+    },
+    "rdf_utils": {
+        "why": "shared RDF loaders, resolvers and vocabularies every secorolab tool uses",
+        "source": "https://github.com/secorolab/rdf-utils",
+    },
+    "pyshacl": {
+        "why": "validates a generated model graph against the published SHACL shapes",
+        "source": "https://github.com/RDFLib/pySHACL",
+    },
+    "rec": {
+        "why": "the archive contract: what a recorded run keeps and how it is read back",
+        "source": "https://github.com/secorolab/rec",
+    },
+    "google.protobuf": {
+        "why": "decodes the frame log every run writes",
+        "source": "https://github.com/protocolbuffers/protobuf",
+    },
+    "jinja2": {
+        "why": "renders the scene's KDL headers from the shipped templates",
+        "source": "https://github.com/pallets/jinja",
+    },
+    "java": {
+        "why": "runs stst, the StringTemplate engine the C++ generator drives",
+        "source": "https://openjdk.org",
+    },
+    "ant": {
+        "why": "builds STSTv4 from source when `motion-spec setup` installs it",
+        "source": "https://ant.apache.org",
+    },
+    "protoc": {
+        "why": "compiles the frame-log schema into the C++ every recorded run links",
+        "source": "https://github.com/protocolbuffers/protobuf",
+    },
+    "textx": {
+        "why": "parses the DSL grammars; every .robmot compile starts in it",
+        "source": "https://github.com/textX/textX",
+    },
+    "motion_spec_dsl": {
+        "why": "compiles .robmot models into the RDF graphs every later stage reads",
+        "source": "https://github.com/secorolab/motion-spec-dsl",
+    },
+    "coord_dsl": {
+        "why": "compiles .fsm coordination models into the FSM the runtime dispatches",
+        "source": "https://github.com/secorolab/coord-dsl",
+    },
+    "scene_dsl": {
+        "why": "compiles .scenex/.ktree scenes into the kinematic tree and simulator assets",
+        "source": "https://github.com/secorolab/scene-dsl",
+    },
+    "rosidl_runtime_py": {
+        "why": "reads a ROS message's shape, turning declared types into fields and headers",
+        "source": "https://github.com/ros2/rosidl_runtime_py",
+    },
+    "stst": {
+        "why": "renders the generated C++ from the packaged StringTemplate groups",
+        "source": "https://github.com/jsnyders/STSTv4",
+    },
+    "cmake": {"why": "configures every generated controller build", "source": "https://cmake.org"},
+    "c++": {"why": "compiles the generated controller", "source": "https://gcc.gnu.org"},
+    "Protobuf": {
+        "why": "the generated runtime links it to write the frame log",
+        "source": "https://github.com/protocolbuffers/protobuf",
+    },
+    "coord2b": {
+        "why": "the FSM event loop the generated controller links and dispatches through",
+        "source": "https://github.com/secorolab/coord2b",
+    },
+    "Eigen3": {
+        "why": "the linear algebra under KDL's kinematics",
+        "source": "https://gitlab.com/libeigen/eigen",
+    },
+    "tomlplusplus": {
+        "why": "reads the deployment's robot.toml at controller startup",
+        "source": "https://github.com/marzer/tomlplusplus",
+    },
+    "orocos_kdl": {
+        "why": "chains, solvers and frames: the kinematics the generated control math runs on",
+        "source": "https://github.com/orocos/orocos_kinematics_dynamics",
+    },
+    "kdl_parser": {
+        "why": "builds KDL chains from robot descriptions",
+        "source": "https://github.com/ros/kdl_parser",
+    },
+    "mj_kdl_wrapper": {
+        "why": "the MuJoCo simulation the generated controller drives, and its camera publisher",
+        "source": "https://github.com/vamsikalagaturu/mj_kdl_wrapper",
+    },
+    "rclcpp": {
+        "why": "the ROS node a model with a ros block publishes and serves through",
+        "source": "https://github.com/ros2/rclcpp",
+    },
+    "realtime_tools": {
+        "why": "lock-free publishers, so the control loop hands off messages without blocking",
+        "source": "https://github.com/ros-controls/realtime_tools",
+    },
+    "action_msgs": {
+        "why": "the goal/result plumbing under every served behaviour action",
+        "source": "https://github.com/ros2/rcl_interfaces",
+    },
+    "rclcpp_action": {
+        "why": "serves the behaviour action a coordinator sends goals to",
+        "source": "https://github.com/ros2/rclcpp",
+    },
+    "rosidl_pycommon": {
+        "why": "reads a ROS message's shape, turning declared types into fields and headers",
+        "source": "https://github.com/ros2/rosidl",
+    },
+    "robif2b": {
+        "why": "the real-robot hardware drivers the robif2b backend generates against",
+        "source": "https://github.com/rosym-project/robif2b",
+    },
+    "urdfdom": {
+        "why": "parses the robot's URDF for the real-platform chain",
+        "source": "https://github.com/ros/urdfdom",
+    },
+    "urdfdom_headers": {
+        "why": "parses the robot's URDF for the real-platform chain",
+        "source": "https://github.com/ros/urdfdom_headers",
+    },
+    "serial": {
+        "why": "the serial line the Robotiq devices are driven over",
+        "source": "https://github.com/wjwwood/serial",
+    },
+    "robotiq_driver_noros": {
+        "why": "drives the Robotiq gripper on a real platform",
+        "source": "https://github.com/secorolab/robotiq_driver_noros",
+    },
+    "robotiq_ft": {
+        "why": "reads the Robotiq force-torque sensor on a real platform",
+        "source": "https://github.com/secorolab/robotiq_ft",
+    },
+}
+
+
+def _enrich(check: HealthCheck) -> HealthCheck:
+    """The check, carrying its dependency's why and source when DETAILS knows them.
+
+    A dependency may be named with a version ("mj_kdl_wrapper 0.3.11"), as a cmake target
+    ("robif2b::kinova_gen3") or as alternatives ("rosidl_pycommon or rosidl_cmake"); the
+    details belong to the bare name either way.
+    """
+    name = check.dependency.partition(" or ")[0].partition("::")[0].split()[0]
+    spec = DETAILS.get(check.dependency) or DETAILS.get(name)
+    if spec is None:
+        return check
+    return dataclasses.replace(check, why=spec.get("why", ""), source=spec.get("source", ""))
 
 
 def _module_path(name: str) -> str | None:
@@ -135,6 +305,20 @@ def _module_path(name: str) -> str | None:
     if spec.origin:
         return spec.origin
     return next(iter(spec.submodule_search_locations or ()), None)
+
+
+def _module_what(path: str | None) -> str:
+    """`Python module`, marked editable when it imports from a source tree.
+
+    A pip editable install and a checkout on PYTHONPATH both resolve outside any
+    site-packages, and both mean the same thing to a reader: edits here take effect.
+    The distribution's own `direct_url.json` names only the first of the two.
+    """
+    if path is None:
+        return "Python module"
+    parts = Path(path).parts
+    installed = "site-packages" in parts or "dist-packages" in parts
+    return "Python module" if installed else "Python module, editable"
 
 
 def _cmake_package_path(
@@ -200,7 +384,7 @@ def check_health(profiles: tuple[str, ...], targets: tuple[str, ...] = ()) -> li
                 HealthCheck(
                     profile,
                     module,
-                    "Python module",
+                    _module_what(path),
                     path,
                     path is not None,
                     "pip install motion_spec"
@@ -227,7 +411,7 @@ def check_health(profiles: tuple[str, ...], targets: tuple[str, ...] = ()) -> li
             path = _module_path(module)
             checks.append(
                 HealthCheck(
-                    "codegen", module, "Python module", path, path is not None, _remedy(module)
+                    "codegen", module, _module_what(path), path, path is not None, _remedy(module)
                 )
             )
         for alternatives in CODEGEN_ALTERNATIVES:
@@ -236,7 +420,7 @@ def check_health(profiles: tuple[str, ...], targets: tuple[str, ...] = ()) -> li
                 HealthCheck(
                     "codegen",
                     " or ".join(alternatives),
-                    "Python module",
+                    _module_what(path),
                     path,
                     path is not None,
                     _remedy(alternatives[0]),
@@ -250,6 +434,13 @@ def check_health(profiles: tuple[str, ...], targets: tuple[str, ...] = ()) -> li
                 "codegen", "stst", "executable", path, path is not None, "install STSTv4 on PATH"
             )
         )
+        for executable in CODEGEN_EXECUTABLES:
+            path = shutil.which(executable)
+            checks.append(
+                HealthCheck(
+                    "codegen", executable, "executable", path, path is not None, _remedy(executable)
+                )
+            )
     if "build" in selected:
         for executable in ("cmake", "c++"):
             path = shutil.which(executable)
@@ -286,6 +477,7 @@ def check_health(profiles: tuple[str, ...], targets: tuple[str, ...] = ()) -> li
                         path,
                         path is not None,
                         _remedy(name),
+                        optional=name in OPTIONAL_BUILD_PACKAGES,
                     )
                 )
     if "runtime" in selected:
@@ -319,4 +511,4 @@ def check_health(profiles: tuple[str, ...], targets: tuple[str, ...] = ()) -> li
                         _device_remedy(cmake_target),
                     )
                 )
-    return checks
+    return [_enrich(check) for check in checks]

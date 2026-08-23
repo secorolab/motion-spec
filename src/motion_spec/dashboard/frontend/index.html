@@ -23,7 +23,10 @@
       const width = Number(localStorage.getItem("motion-spec.aside"));
       if (width) document.documentElement.style.setProperty("--aside", `${width}px`);
       const view = new URLSearchParams(location.hash.slice(1));
-      if (view.has("run") || view.has("generation") || view.has("source") || view.has("diff")) {
+      // Anything but the bare logs tab replaces the empty state below, so do not let it be
+      // seen first. Whatever renders instead takes the class back off.
+      if ((view.get("tab") ?? "logs") !== "logs" || view.has("run") || view.has("generation")
+          || view.has("source") || view.has("diff")) {
         document.documentElement.classList.add("restoring");
       }
     </script>
@@ -42,7 +45,6 @@
           <div class="aside-head">
             <span id="list-title">GENERATIONS</span>
             <span id="storage"></span>
-            <button id="health" title="Installation health">health</button>
             <button id="refresh" title="Refresh">↻</button>
           </div>
           <div class="root-control">
@@ -64,6 +66,11 @@
         </div>
 
         <div id="browser"></div>
+        <footer class="aside-foot">
+          <button data-tab="health">Health</button>
+          <a href="https://github.com/secorolab/motion-spec" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://secorolab.github.io/motion-spec/" target="_blank" rel="noopener">Docs</a>
+        </footer>
         <div id="aside-resize" title="Drag to resize · double-click to reset"></div>
       </aside>
 

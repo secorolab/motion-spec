@@ -19,6 +19,7 @@ dependencies = [
     "click>=8.1",
     "rdflib",
     "rdf_utils",
+    "jinja2",
     "motion_spec_dsl",
     "scene-dsl",
 ]

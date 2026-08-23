@@ -13,8 +13,10 @@ import sys
 import time
 import traceback
 from contextlib import contextmanager
-from importlib.metadata import distribution
+from importlib.metadata import PackageNotFoundError, distribution
+from importlib.util import find_spec
 from pathlib import Path
+from urllib.parse import urlparse
 
 import click
 
@@ -265,16 +267,90 @@ def _install_features() -> tuple[str, ...]:
     return (*sorted(extras), "dsl")
 
 
-def _dsl_requirement() -> str:
-    from motion_spec.generation.codegen import _source_root_from_distribution
+def _editable_source_root() -> Path | None:
+    """Editable-install source root from the distribution's direct_url.json, or None."""
+    try:
+        direct_url = distribution("motion_spec").read_text("direct_url.json")
+    except (PackageNotFoundError, FileNotFoundError):
+        return None
+    if not direct_url:
+        return None
+    try:
+        url = json.loads(direct_url).get("url", "")
+    except json.JSONDecodeError:
+        return None
+    parsed = urlparse(url)
+    return Path(parsed.path) if parsed.scheme == "file" else None
 
-    root = _source_root_from_distribution()
-    sibling = root.parent / "motion-spec-dsl" if root else None
-    return (
-        str(sibling)
-        if sibling and sibling.is_dir()
-        else "motion_spec_dsl @ git+https://github.com/secorolab/motion-spec-dsl.git"
-    )
+
+# None of these are on PyPI: motion-spec-dsl and the compilers it depends on each come
+# from a sibling checkout when there is one, from GitHub otherwise.
+_DSL_REPOS = {
+    "motion_spec_dsl": "motion-spec-dsl",
+    "coord_dsl": "coord-dsl",
+    "scene_dsl": "scene-dsl",
+}
+
+
+def _dsl_requirements() -> list[str]:
+    root = _editable_source_root()
+    requirements = []
+    for module, repo in _DSL_REPOS.items():
+        # An already-importable dependency stays as installed; pip would rebuild it from git.
+        if module != "motion_spec_dsl" and find_spec(module) is not None:
+            continue
+        sibling = root.parent / repo if root else None
+        requirements.append(
+            str(sibling)
+            if sibling and sibling.is_dir()
+            else f"{module} @ git+https://github.com/secorolab/{repo}.git"
+        )
+    return requirements
+
+
+# How each optional dependency arrives; its why and source live in health.DETAILS, once.
+_INSTALLS = {
+    "motion_spec_dsl": "motion-spec install dsl",
+    "coord_dsl": "motion-spec install dsl",
+    "scene_dsl": "motion-spec install dsl",
+    "textx": "motion-spec install dsl",
+    "pyshacl": "motion-spec install validation",
+    "rec": "motion-spec install introspection",
+    "google.protobuf": "motion-spec install introspection",
+    "stst": "motion-spec setup",
+}
+
+
+def _requirement_box(dependency: str) -> click.ClickException | None:
+    """The dependency's box, when both its details and its install command are known."""
+    from motion_spec.health import DETAILS
+
+    spec = DETAILS.get(dependency)
+    install = _INSTALLS.get(dependency)
+    if spec is None or install is None:
+        return None
+    return _missing(dependency, spec["why"], spec["source"], install)
+
+
+def _missing(name: str, why: str, source: str, install: str) -> click.ClickException:
+    """A dependency that is not there, reported as a box: what, why, where from, how to get it."""
+    rows = [("why", why), ("source", source), ("install", install)]
+    body = [f"│ {key:<8} {value}" for key, value in rows]
+    width = max(len(name) + 14, *(len(line) for line in body)) + 1
+    top = f"┌─ {name} not found " + "─" * (width - len(name) - 14)
+    return click.ClickException("\n".join(["", top, *body, "└" + "─" * width]))
+
+
+@contextmanager
+def _requirements_reported():
+    """Turn a missing optional dependency into its box instead of a raw traceback."""
+    try:
+        yield
+    except ImportError as exc:
+        box = _requirement_box((getattr(exc, "name", "") or "").partition(".")[0])
+        if box is None:
+            raise
+        raise box from exc
 
 
 @click.group(cls=MotionSpecGroup, no_args_is_help=True)
@@ -452,7 +528,7 @@ def install(features: tuple[str, ...]) -> None:
     extras = sorted(set(features) - {"dsl"})
     requirements = [f"motion_spec[{','.join(extras)}]"] if extras else []
     if "dsl" in features:
-        requirements.append(_dsl_requirement())
+        requirements.extend(_dsl_requirements())
     result = subprocess.run([sys.executable, "-m", "pip", "install", *requirements])
     if result.returncode:
         raise click.ClickException("installation failed")
@@ -507,24 +583,31 @@ def health(profiles: tuple[str, ...], targets: tuple[str, ...]) -> None:
                 bold=True,
                 fg="blue",
             )
-        click.secho(
-            f"  {'OK' if check.ok else 'MISSING':<7}  ", fg="green" if check.ok else "red", nl=False
-        )
+        status = "OK" if check.ok else "ABSENT" if check.optional else "MISSING"
+        colour = "green" if check.ok else "yellow" if check.optional else "red"
+        click.secho(f"  {status:<7}  ", fg=colour, nl=False)
         click.secho(f"{check.dependency:<{dependency_width}}", fg="cyan", nl=False)
         click.echo(f"  {check.what:<{what_width}}  {check.path or '—'}")
-        if not check.ok:
-            click.secho(f"          Fix: {check.detail}", fg="yellow")
-    missing = sum(not check.ok for check in checks)
+        if not check.ok and not check.optional:
+            if check.why:
+                click.secho(f"          why: {check.why}", fg="yellow")
+            if check.source:
+                click.secho(f"          source: {check.source}", fg="yellow")
+            click.secho(f"          fix: {check.detail}", fg="yellow")
+    missing = sum(not check.ok and not check.optional for check in checks)
+    absent = sum(not check.ok and check.optional for check in checks)
     click.echo()
     click.secho("Summary:", bold=True, fg="blue", nl=False)
     click.echo(" ", nl=False)
-    click.secho(f"{len(checks) - missing} good", fg="green", nl=False)
+    click.secho(f"{sum(check.ok for check in checks)} good", fg="green", nl=False)
     click.echo(", ", nl=False)
     if missing:
-        click.secho(f"{missing} missing", fg="red")
+        click.secho(f"{missing} missing", fg="red", nl=False)
     else:
-        click.echo("0 missing")
-    if not all(check.ok for check in checks):
+        click.echo("0 missing", nl=False)
+    # An absent optional is a fact about this workspace, not a fault: say it, do not fail on it.
+    click.echo(f", {absent} absent by build option" if absent else "")
+    if missing:
         raise click.exceptions.Exit(1)
 
 
@@ -538,7 +621,8 @@ def gen(stage_or_model: str, model: Path | None, output_dir: Path | None) -> Non
     """Generate IR or C++ from a .robmot MODEL; CODE is the default stage."""
     from rdf_utils.constraints import ConstraintViolation
 
-    from motion_spec.generation.pipeline import generate_model
+    with _requirements_reported():
+        from motion_spec.generation.pipeline import generate_model
 
     if stage_or_model in {"ir", "code"}:
         if model is None:
@@ -591,7 +675,8 @@ def build(generation: Path, prefixes: tuple[Path, ...], jobs: int | None) -> Non
 )
 def check(manifest: Path, meta_shacl: bool) -> None:
     """Validate MANIFEST against its SHACL constraints."""
-    from motion_spec_dsl.rdf_parser.check import validate_manifest
+    with _requirements_reported():
+        from motion_spec_dsl.rdf_parser.check import validate_manifest
 
     conforms, report = validate_manifest(manifest, meta_shacl=meta_shacl)
     click.echo(report)
@@ -627,8 +712,11 @@ def codegen(input: Path, output_dir: Path, stst_bin: str | None) -> None:
     from motion_spec.generation.codegen import generate_code
     from motion_spec.setup import find_stst
 
+    stst = stst_bin or find_stst()
+    if not stst:
+        raise _requirement_box("stst") or click.ClickException("stst not found")
     try:
-        generate_code(input.resolve(), output_dir.resolve(), stst_bin or find_stst() or "stst")
+        generate_code(input.resolve(), output_dir.resolve(), stst)
     except RuntimeError as exc:
         raise _internal_failure("code generation failed", exc) from exc
 

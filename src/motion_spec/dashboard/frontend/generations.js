@@ -19,7 +19,9 @@ export async function loadGenerations(refresh = false) {
     const [generations, storage, roots] = await Promise.all([api("/api/generations"), api("/api/storage"), api("/api/roots")]);
     state.cache.generations = { generations, storage, roots };
   }
-  if (request !== state.listRequest || state.tab !== "logs") return;
+  // Only the sources tab takes the sidebar away; health and notebook still browse generations,
+  // so asking for "logs" here drops the list on the floor and leaves the sidebar blank.
+  if (request !== state.listRequest || state.tab === "sources") return;
   $("#list-title").textContent = "GENERATIONS";
   const { generations, storage, roots } = state.cache.generations;
   state.roots = roots;

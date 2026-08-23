@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import platform
 import shlex
 import signal
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -194,7 +196,29 @@ def health_report(refresh: bool = False) -> dict:
         HEALTH["thread"] = threading.Thread(target=collect, daemon=True)
         HEALTH["thread"].start()
         running = True
-    return {"running": running, "checks": HEALTH["checks"], "stamp": HEALTH["stamp"]}
+    return {
+        "running": running,
+        "checks": HEALTH["checks"],
+        "stamp": HEALTH["stamp"],
+        "environment": _environment(),
+    }
+
+
+def _environment() -> dict:
+    """What this installation is, beside whether it works: versions, interpreter, roots."""
+    from importlib import metadata
+
+    try:
+        version = metadata.version("motion_spec")
+    except metadata.PackageNotFoundError:
+        version = None
+    return {
+        "motion_spec": version,
+        "python": platform.python_version(),
+        "executable": sys.executable,
+        "ros_distro": os.environ.get("ROS_DISTRO"),
+        "generations": str(roots.GENERATIONS),
+    }
 
 
 CONSOLE_CHUNK = 256 * 1024

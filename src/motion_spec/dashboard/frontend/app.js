@@ -8,33 +8,22 @@
 
 import { $, api, askConfirm, post, showError, snack, state } from "./core.js";
 import { filterGenerations, loadGenerations, selectGeneration } from "./generations.js";
-import { loadHealth } from "./health.js";
-import { loadNotebook } from "./notebook.js";
-import { goHome, loadLocation, setTab } from "./routing.js";
+import { goHome, loadLocation, openTab, sidebarLoader } from "./routing.js";
 import { reserveVideoSpace } from "./run.js";
 import { filterSources, loadSources } from "./sources.js";
 
-document.querySelectorAll("nav button[data-tab]").forEach((button) => {
-  button.onclick = () => {
-    setTab(button.dataset.tab);
-    if (state.tab === "notebook") return loadNotebook().catch(showError);
-    (state.tab === "logs" ? loadGenerations : loadSources)().catch(showError);
-  };
+document.querySelectorAll("aside button[data-tab]").forEach((button) => {
+  button.onclick = () => openTab(button.dataset.tab);
 });
 
 export const lifecycleEvents = new EventSource("/api/events");
 
 lifecycleEvents.addEventListener("lifecycle", () => {
   state.cache.generations = null;
-  if (state.tab === "logs") loadGenerations().catch(showError);
+  if (state.tab !== "sources") loadGenerations().catch(showError);
 });
 
-$("#refresh").onclick = () => {
-  const load = state.tab === "logs" ? loadGenerations : loadSources;
-  load(true).catch(showError);
-};
-
-$("#health").onclick = () => loadHealth().catch(showError);
+$("#refresh").onclick = () => sidebarLoader()(true).catch(showError);
 
 $("#delete-selected").onclick = async () => {
   if (!state.selected.size) return;
@@ -99,7 +88,7 @@ $("#search").oninput = (event) => {
 };
 
 export async function updateRoot(path) {
-  const kind = state.tab === "logs" ? "logs" : "sources";
+  const kind = state.tab === "sources" ? "sources" : "logs";
   state.roots = await post("/api/roots", { kind, path });
   state.cache = {};
   (kind === "logs" ? loadGenerations : loadSources)(true).catch(showError);
@@ -108,7 +97,7 @@ export async function updateRoot(path) {
 $("#generation-root").onchange = (event) => updateRoot(event.target.value).catch(showError);
 
 $("#pick-root").onclick = async () => {
-  const kind = state.tab === "logs" ? "logs" : "sources";
+  const kind = state.tab === "sources" ? "sources" : "logs";
   state.roots = await api(`/api/pick-root?kind=${kind}`);
   state.cache = {};
   (kind === "logs" ? loadGenerations : loadSources)(true).catch(showError);

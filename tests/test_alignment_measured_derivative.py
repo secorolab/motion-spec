@@ -15,6 +15,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+from conftest import requires_workspace
 from motion_spec_dsl.gens import _gen_graph
 from motion_spec_dsl.langs import motion_spec_metamodel
 
@@ -22,6 +23,8 @@ from motion_spec.rdf_parser.ir import generate_ir
 
 MODELS = Path(__file__).parents[2] / "motion-spec-dsl" / "models"
 METAMODELS = Path(__file__).resolve().parents[2] / "metamodels"
+
+pytestmark = requires_workspace(MODELS, METAMODELS)
 
 # The stock motion holds full orientation and leaves its alignment cone monitored-only, so the
 # alignment claims no solver row. Driving it with a pid instead makes it two angular rows, which

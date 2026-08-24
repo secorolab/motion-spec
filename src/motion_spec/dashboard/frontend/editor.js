@@ -24,13 +24,139 @@ export const CM_VIEW = "https://esm.sh/@codemirror/view@^6.0.0?target=es2022";
 // configured -- so it has to be the copy of the package that setup itself imported.
 export const CM_SEARCH = "https://esm.sh/@codemirror/search@^6.0.0?target=es2022";
 
+// And again for the language support the highlighting is hung off: `basicSetup` already
+// carries the highlighter, so the mode has to come from the copy of the package it uses.
+export const CM_LANGUAGE = "https://esm.sh/@codemirror/language@^6.0.0?target=es2022";
+
+// The tag vocabulary a highlight style is written against, which the language package takes
+// but does not re-export.
+export const CM_TAGS = "https://esm.sh/@lezer/highlight@^1.0.0?target=es2022";
+
 export async function editorModule() {
   codemirror ??= Promise.all([
     import("https://esm.sh/codemirror@6.0.1"),
     import(CM_VIEW),
     import(CM_SEARCH),
-  ]).then(([setup, view, find]) => ({ ...setup, ...view, ...find }));
+    import(CM_LANGUAGE),
+    import(CM_TAGS),
+  ]).then(([setup, view, find, language, highlight]) => (
+    { ...setup, ...view, ...find, ...language, ...highlight }
+  ));
   return codemirror;
+}
+
+// Tokyo Night (night). The page's own palette is warm and deliberately narrow -- one accent
+// for everything that stands out -- which is why the stock highlighter clashed with it; code
+// wants more colours than the surrounding page does, so this is a palette of its own.
+export const TOKYO_NIGHT = {
+  comment: "#565f89",
+  red: "#f7768e",
+  orange: "#ff9e64",
+  yellow: "#e0af68",
+  green: "#9ece6a",
+  teal: "#73daca",
+  cyan: "#2ac3de",
+  sky: "#89ddff",
+  blue: "#7aa2f7",
+  purple: "#bb9af7",
+  text: "#c0caf5",
+  dim: "#a9b1d6",
+};
+
+export function tokyoNightStyle(HighlightStyle, tags) {
+  return HighlightStyle.define([
+    { tag: tags.comment, color: TOKYO_NIGHT.comment, fontStyle: "italic" },
+    { tag: tags.keyword, color: TOKYO_NIGHT.purple },
+    { tag: tags.string, color: TOKYO_NIGHT.green },
+    { tag: tags.number, color: TOKYO_NIGHT.orange },
+    { tag: tags.typeName, color: TOKYO_NIGHT.cyan },
+    { tag: tags.propertyName, color: TOKYO_NIGHT.blue },
+    { tag: tags.variableName, color: TOKYO_NIGHT.text },
+    { tag: tags.operator, color: TOKYO_NIGHT.sky },
+    { tag: tags.punctuation, color: TOKYO_NIGHT.dim },
+    { tag: tags.bool, color: TOKYO_NIGHT.orange },
+    { tag: tags.atom, color: TOKYO_NIGHT.orange },
+    { tag: tags.invalid, color: TOKYO_NIGHT.red },
+  ]);
+}
+
+// Highlighting by shape rather than by vocabulary: one mode for every DSL here, because what
+// they share is punctuation, not keywords. A word is only a keyword if it opens a block or
+// labels a field -- which the text says structurally, so nothing has to keep a list of terms
+// per language and go stale when a grammar gains one.
+export function structuralMode(StreamLanguage) {
+  return StreamLanguage.define({
+    // `kind` is whether the word just read was one that declares, so the next word is the
+    // name it declares; `depth` keeps the parameters inside `(ns=app)` from being mistaken
+    // for that name, since they sit between the two.
+    startState: () => ({ kind: false, depth: 0 }),
+    token(stream, state) {
+      if (stream.match(/^\/\/.*/)) return "comment";
+      if (stream.match(/^\/\*/)) {
+        stream.match(/^[\s\S]*?(\*\/|$)/);
+        return "comment";
+      }
+      // Both quotes: .scenex spells its asset paths with single ones, .bdd its namespaces.
+      if (stream.match(/^"(?:[^"\\]|\\.)*"?/)) return "string";
+      if (stream.match(/^'(?:[^'\\]|\\.)*'?/)) return "string";
+      // A reference to something named elsewhere: <kinova.joint_3>, the DSLs' one sigil.
+      if (stream.match(/^<[^<>\n]*>?/)) return "typeName";
+      // A number carries its unit with it -- 0.05 m/s, -45.0 deg, 100.0 Hz -- and the unit is
+      // part of the value, not a word beside it.
+      if (stream.match(/^-?\d+(?:\.\d+)?(?:e-?\d+)?/)) {
+        stream.match(/^\s*[a-zA-Z]+(?:\^-?\d)?(?:\/[a-zA-Z]+(?:\^-?\d)?)*\b/);
+        return "number";
+      }
+      // A label may be several words -- `time extractor:`, `entity mapper:` -- so the whole
+      // run up to the colon is one name, not a word coloured beside an uncoloured one.
+      if (stream.match(/^[A-Za-z_][\w-]*(?:[ \t]+[A-Za-z_][\w-]*)*(?=[ \t]*:)/)) {
+        state.kind = false;
+        return "propertyName";
+      }
+      // `KIND... (ns=..) NAME` is how every one of these languages declares a thing, and the
+      // bracket is what divides it: whatever many words came before is the kind, whatever
+      // follows is the name. Nothing else in these grammars puts a name after a bracket, so
+      // it needs no trailing `{` to be sure -- `obs policy (ns=..) trin` declares as much as
+      // `observation (ns=..) pose {` does.
+      if (stream.match(
+        /^[A-Za-z_][\w-]*(?:[ \t]+[A-Za-z_][\w-]*)*(?=[ \t]*\([^)]*\)[ \t]*[A-Za-z_][\w-]*)/,
+      )) {
+        state.kind = true;
+        return "keyword";
+      }
+      const word = stream.match(/^[A-Za-z_][\w-]*/);
+      if (word) {
+        // Inside `(...)` this is a parameter, not the name being declared: leave the flag
+        // standing so it still belongs to the name that follows the closing bracket.
+        if (state.depth > 0) return null;
+        const kind = state.kind;
+        state.kind = false;
+        // The word after a declaring word is what is being declared -- the name in
+        // `linear-velocity descend-vel =` or in `pid ctrl-home-position {`.
+        if (kind) return "variableName";
+        // A word declares when a name and then `=` or `{` follow it, which is what separates
+        // `linear-velocity descend-vel =` from `equal to <...>`: same shape of two words, but
+        // only one of them is a declaration. A word sitting straight against `{` opens a
+        // block with no name of its own -- `context {`, `while {`.
+        if (stream.match(/^\s*\{/, false)) return "keyword";
+        if (stream.match(/^\s+(?:\([^)]*\)\s*)?[A-Za-z_][\w-]*\s*[={]/, false)) {
+          state.kind = true;
+          return "keyword";
+        }
+        return null;
+      }
+      const mark = stream.match(/^[{}[\](),]/);
+      if (mark) {
+        if (mark[0] === "(") state.depth += 1;
+        if (mark[0] === ")") state.depth = Math.max(0, state.depth - 1);
+        return "punctuation";
+      }
+      if (stream.match(/^[=.]/)) return "operator";
+      stream.next();
+      return null;
+    },
+    languageData: { commentTokens: { line: "//", block: { open: "/*", close: "*/" } } },
+  });
 }
 
 // Which lines of `b` are additions or changes against `a`, by Myers' O(ND) shortest-edit-script
@@ -89,7 +215,10 @@ export async function mountEditor(holder, source, text, readOnly = false, gitHea
     holder.classList.add("plain-source");
     return snack(`code editor unavailable (${error.message}) — showing plain text`);
   }
-  const { EditorView, basicSetup, Decoration, ViewPlugin, search } = cm;
+  const {
+    EditorView, basicSetup, Decoration, ViewPlugin, search,
+    StreamLanguage, HighlightStyle, syntaxHighlighting, tags, forceParsing,
+  } = cm;
   const save = $("#save-source");
   // A button for something there is nothing to do is clutter: it arrives with the first edit.
   const dirty = (is) => {
@@ -206,6 +335,10 @@ export async function mountEditor(holder, source, text, readOnly = false, gitHea
         // Ctrl-F opens at the foot of the file by default, which on a page-scrolled editor is
         // nowhere in particular.
         search({ top: true }),
+        structuralMode(StreamLanguage),
+        // After basicSetup, whose own highlighter is registered as a fallback: this one is
+        // asked first, and the stock palette only answers for tags this does not name.
+        syntaxHighlighting(tokyoNightStyle(HighlightStyle, tags)),
         trackChanges,
         trackProblem,
         EditorView.lineWrapping,
@@ -321,5 +454,12 @@ export async function mountEditor(holder, source, text, readOnly = false, gitHea
       write(view);
     }
   });
+  // Tokenising stops at whatever the viewport needed, so scrolling into the rest of the file
+  // arrives before its colours do -- a line of plain text for a frame, then the highlight.
+  // These files run to hundreds of lines, not hundreds of thousands, and the whole of one
+  // tokenises in single-digit milliseconds: parse it all now and there is nothing left to
+  // catch up on later. The budget is what keeps that promise honest on a file big enough to
+  // break it, which then simply falls back to highlighting as it goes.
+  forceParsing(view, view.state.doc.length, 150);
   view.focus();
 }

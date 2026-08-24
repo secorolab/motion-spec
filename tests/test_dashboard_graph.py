@@ -10,6 +10,7 @@ import rdflib
 from rdflib.namespace import split_uri
 
 from motion_spec.dashboard.graph import LIVE_GRAPH, RUNTIME_GRAPH, GraphService
+from motion_spec.dashboard.queries import model_lint
 from motion_spec.dashboard.store import RunStore
 from motion_spec.generation.artifacts import build_frame_layout
 from motion_spec.introspection import frame_log_pb
@@ -185,3 +186,104 @@ def test_the_dashboard_mints_no_vocabulary(tmp_path):
             if isinstance(o, rdflib.Literal) and o.datatype is not None
         }
         assert namespaces(datatypes) <= {str(rdflib.XSD)}
+
+
+# The design-graph lint, on a model shaped like the one that motivated it: two zero-valued
+# tolerances that look redundant and are not, one band declared and read by nothing.
+LINT_APP = "https://example.test/exec/"
+LINT_MODEL = {
+    "@context": {
+        "app": LINT_APP,
+        "cstr": "https://comp-rob2b.github.io/metamodels/task/constraint#",
+        "cstr-ext": "https://secorolab.github.io/metamodels/task/constraint#",
+        "qudt": "http://qudt.org/schema/qudt/",
+        "qudt:value": {"@id": "http://qudt.org/schema/qudt/value", "@type": "xsd:double"},
+        "xsd": "http://www.w3.org/2001/XMLSchema#",
+    },
+    "@graph": [
+        {"@id": "app:shared/spec/zero-length", "@type": "qudt:Quantity", "qudt:value": "0.0"},
+        {"@id": "app:shared/spec/zero-angle", "@type": "qudt:Quantity", "qudt:value": "0.0"},
+        {"@id": "app:shared/spec/lift-height-z", "@type": "qudt:Quantity", "qudt:value": "0.2"},
+        {"@id": "app:shared/spec/pose-band", "@type": "qudt:Quantity", "qudt:value": "0.03"},
+        # `within <zero-length>`: a gate saying "no band" rather than inheriting a tolerance.
+        {
+            "@id": "app:lift-up/until/above-lift-up-z",
+            "@type": "cstr:Constraint",
+            "cstr-ext:tolerance": {"@id": "app:shared/spec/zero-length"},
+            "cstr:threshold": {"@id": "app:shared/spec/lift-height-z"},
+        },
+        {
+            "@id": "app:hold-close/until/grasped",
+            "@type": "cstr:Constraint",
+            "cstr-ext:tolerance": {"@id": "app:shared/spec/zero-angle"},
+        },
+    ],
+}
+LINT_SOURCE = """context (ns=app) shared {
+    spec {
+        length zero-length   = 0.0 m,
+        angle  zero-angle    = 0.0 rad,
+        length lift-height-z = 0.2 m,
+        length pose-band     = 0.03 m
+    }
+}
+"""
+
+
+def _lint_generation(tmp_path, model=LINT_MODEL, source=LINT_SOURCE, name="lint-gen"):
+    gen = tmp_path / name
+    (gen / "generated" / "model").mkdir(parents=True)
+    (gen / "generated" / "source").mkdir(parents=True)
+    if model is not None:
+        (gen / "generated/model/test-app.ld.json").write_text(json.dumps(model))
+    (gen / "generated/source/test.robmot").write_text(source)
+    return gen
+
+
+def test_a_declared_value_nothing_reads_is_flagged_with_its_iri_and_line(tmp_path):
+    items = model_lint(_lint_generation(tmp_path))["items"]
+
+    assert [item["name"] for item in items] == ["pose-band"]
+    assert items[0]["iri"] == LINT_APP + "shared/spec/pose-band"
+    assert items[0]["rule"] == "unused-declaration"
+    assert items[0]["source_line"] == 6
+    assert LINT_SOURCE.splitlines()[5].strip().startswith("length pose-band")
+
+
+def test_a_zero_tolerance_is_referenced_and_must_never_be_flagged(tmp_path):
+    """`zero-length` and `zero-angle` exist so a gate can say "no band" instead of inheriting
+    the quantity's tolerance. They look redundant and are load-bearing: a constraint names
+    them, so a lint that reads references rather than values leaves them alone. Flagging one
+    means the query stopped asking about references -- fix the query, never the name."""
+    flagged = {item["name"] for item in model_lint(_lint_generation(tmp_path))["items"]}
+
+    assert "zero-length" not in flagged
+    assert "zero-angle" not in flagged
+    # ...and not because zero-valued terms are excluded: the same 0.0 unreferenced is flagged.
+    orphan = json.loads(json.dumps(LINT_MODEL))
+    orphan["@graph"][4].pop("cstr-ext:tolerance")
+    assert "zero-length" in {
+        item["name"]
+        for item in model_lint(_lint_generation(tmp_path, orphan, name="orphan-gen"))["items"]
+    }
+
+
+def test_the_lint_never_raises_above_a_warning(tmp_path):
+    """The graph can see that nothing reads a value; only the author knows whether that is a
+    mistake, so no finding is ever an error."""
+    assert {item["severity"] for item in model_lint(_lint_generation(tmp_path))["items"]} == {
+        "warn"
+    }
+
+
+def test_a_generation_with_no_model_graph_lints_to_nothing(tmp_path):
+    assert model_lint(_lint_generation(tmp_path, model=None)) == {"items": []}
+
+
+def test_a_term_the_source_does_not_declare_is_still_reported(tmp_path):
+    """An imported graph -- a scene, an FSM -- has no line in the model being read. The finding
+    is still true, so it is still listed, with no line to jump to."""
+    items = model_lint(_lint_generation(tmp_path, source="context (ns=app) shared {}\n"))["items"]
+
+    assert [item["name"] for item in items] == ["pose-band"]
+    assert items[0]["source_line"] is None

@@ -43,7 +43,7 @@ from motion_spec.dashboard.jobs import (
 )
 from motion_spec.dashboard.live import live_state, run_control
 from motion_spec.dashboard.notebook import jupyter_server, run_notebook, stop_jupyter
-from motion_spec.dashboard.queries import run_query, save_queries, saved_queries
+from motion_spec.dashboard.queries import model_lint, run_query, save_queries, saved_queries
 from motion_spec.dashboard.replay import plot_data, replay_data
 from motion_spec.dashboard.roots import (
     FRONTEND,
@@ -86,6 +86,7 @@ LAN_GET_ALLOWED = frozenset(
         "/api/generations",
         "/api/generation",
         "/api/generation-graph",
+        "/api/model/lint",
         "/api/source-drift",
         "/api/storage",
         "/api/runs",
@@ -271,6 +272,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         relative_path(roots.GENERATIONS, value), query.get("graph", [])
                     )
                 )
+            if parsed.path == "/api/model/lint":
+                return self.send_json(model_lint(relative_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/runs":
                 generation = relative_path(roots.GENERATIONS, value)
                 runs = sorted(path for path in generation.glob("runs/*") if path.is_dir())

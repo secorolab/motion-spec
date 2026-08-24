@@ -363,3 +363,18 @@ def authored_lines(text: str) -> dict:
         if re.fullmatch(r"[\w-]+", name) and expression:
             lines[(_key(motion), _key(name))] = (number, expression, motion)
     return lines
+
+
+def declaration_lines(text: str) -> dict:
+    """authored name -> the line that declares it, for `<kind> <name> = ...` and `<kind> <name> {`.
+
+    `authored_lines` covers constraints, which are named inside `while`/`until`; a spec quantity
+    is declared instead, so its line is found by the shape of a declaration. First one wins: a
+    name reused in two contexts points at where it was first written rather than the last.
+    """
+    lines: dict[str, int] = {}
+    for number, line in enumerate(text.splitlines(), 1):
+        match = re.match(r"\s*[\w-]+\s+([A-Za-z][\w-]*)\s*[={]", line)
+        if match:
+            lines.setdefault(match.group(1), number)
+    return lines

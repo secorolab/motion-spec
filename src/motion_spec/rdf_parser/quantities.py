@@ -12,7 +12,7 @@ of the file is the single answer to *who writes this value*.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from typing import NamedTuple
 
 import rdflib
@@ -2378,7 +2378,9 @@ def annotate_dataflow(
         }
 
     _apply_view_liveness(dataflow, views)
-    for member_id, consumers in _consumers_by_id(introspection, closures).items():
+    for member_id, consumers in _consumers_by_id(
+        introspection, closures, serial_chain_solvers
+    ).items():
         if member_id in dataflow:
             dataflow[member_id]["consumers"] = consumers
 
@@ -2437,8 +2439,34 @@ def _apply_view_liveness(dataflow: dict, views) -> None:
         entry["storage"] = "log" if isinstance(cadence, dict) else _STORAGE_BY_CADENCE[cadence]
 
 
-def _consumers_by_id(introspection: dict, closures: dict) -> dict[str, list]:
-    """Who reads each shared value: the monitors, controllers and closures bound to it."""
+def _bound_ids(value, path: str):
+    """Every string a reader record binds, with the dotted field path that named it.
+
+    Nested, because a record does not keep all its bindings at the top: a controller closure
+    holds its gains in a `gains` sub-dict and its integral bounds as whole quantity records
+    under `integral_saturation`, and a flat scan reports both as read by nobody. A nested
+    record's own `id` is the value the field binds; the record's own `id` and `type` are not.
+
+    A closure holds some of those sub-records as the dataclass the parser built (a controller's
+    saturation bounds), so a record reads the same here whether or not it has been serialized.
+    """
+    if is_dataclass(value) and not isinstance(value, type):
+        value = vars(value)
+    if isinstance(value, str):
+        yield value, path
+    elif isinstance(value, dict):
+        if path and isinstance(value.get("id"), str):
+            yield value["id"], path
+        for key, item in value.items():
+            if key not in {"id", "type"}:
+                yield from _bound_ids(item, f"{path}.{key}" if path else key)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _bound_ids(item, path)
+
+
+def _consumers_by_id(introspection: dict, closures: dict, serial_chain_solvers) -> dict[str, list]:
+    """Who reads each shared value: the monitors, controllers, closures and solvers bound to it."""
     consumers: dict[str, list] = {}
 
     def add(member_id, kind: str, reader_id, role: str) -> None:
@@ -2448,20 +2476,32 @@ def _consumers_by_id(introspection: dict, closures: dict) -> dict[str, list]:
             )
 
     for monitor in introspection.get("monitors", []):
-        add(monitor.get("error_signal"), "monitor", monitor.get("id"), "error")
-        # Without this the band is a shared value nothing reads, and the contract drops it.
-        add(monitor.get("tolerance_signal"), "monitor", monitor.get("id"), "tolerance")
+        # An aggregate monitor judges each member constraint on its own band, so the terms bind
+        # values the monitor's own two signals never name.
+        for source in (monitor, *(monitor.get("watched") or ())):
+            add(source.get("error_signal"), "monitor", monitor.get("id"), "error")
+            # Without this the band is a shared value nothing reads, and the contract drops it.
+            add(source.get("tolerance_signal"), "monitor", monitor.get("id"), "tolerance")
     for controller in introspection.get("controllers", []):
-        for role in ("error_signal", "measured_signal", "setpoint_signal"):
+        for role in ("error_signal", "measured_signal", "setpoint_signal", "tolerance_signal"):
             add(controller.get(role), "controller", controller.get("id"), role)
     for closure_id, closure in closures.items():
         outputs = closure_output_ids(closure)
-        for key, value in closure.items():
-            if key not in {"id", "type"} and isinstance(value, str) and value not in outputs:
-                add(value, "closure", closure_id, key)
+        for value, role in _bound_ids(closure, ""):
+            if value not in outputs:
+                add(value, "closure", closure_id, role)
+    for solver in serial_chain_solvers:
+        # The gravity field and the torque bound are the shared values a solver binds; everything
+        # else on the record is a chain, a device or an output it writes.
+        add(getattr(solver, "gravity_source", None), "solver", solver.id, "gravity")
+        saturation = getattr(solver, "torque_saturation", None)
+        for bound in ("maximum", "lower", "upper"):
+            quantity = getattr(saturation, bound, None)
+            add(getattr(quantity, "id", None), "solver", solver.id, f"torque_saturation.{bound}")
     # Readers are collected from dicts whose order is the graph's; the list is an artifact.
-    for readers in consumers.values():
-        readers.sort(key=lambda entry: (entry["kind"], entry["id"], entry["role"]))
+    for member_id, readers in consumers.items():
+        unique = {(entry["kind"], entry["id"], entry["role"]): entry for entry in readers}
+        consumers[member_id] = [unique[key] for key in sorted(unique)]
 
     return consumers
 

@@ -189,6 +189,9 @@ class SolverWithInputAndOutput:
     # the root acceleration ACHD itself takes. Nothing else derives a sign from the author.
     gravity_compensation: list[float] | None = None
     derived_root_acceleration: list[float] | None = None
+    # The shared value the gravity vector was read from; templates take the numbers above, this
+    # says which recorded constant they came from.
+    gravity_source: str | None = field(default=None, metadata=INTERNAL)
     torque_saturation: Saturation | None = None
     # Frame-log mirrors of this runtime's joint-space signals (plan 012); the two lists render at
     # two different hook sites -- the run block and the command-stage block.

@@ -13,6 +13,9 @@ from motion_spec.introspection.archive import ArchiveError, load_manifest, verif
 
 
 def run_dir_for(log_path: Path) -> Path:
+    # Callers name the log the way it is written, and an archived one has since been packed;
+    # resolve before asking whether it is there, or the conventional name reads as missing.
+    log_path = frame_log_pb.log_path(log_path)
     if not log_path.exists():
         raise ArchiveError(f"{log_path}: does not exist")
     search_start = log_path if log_path.is_dir() else log_path.parent

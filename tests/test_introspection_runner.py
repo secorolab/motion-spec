@@ -65,7 +65,8 @@ def test_runner_catalogs_run_from_start_and_archives_outputs(tmp_path: Path) -> 
     assert result == 0
     manifest = verify_manifest(run_dir)
     assert manifest["run_id"] == "run-001"
-    assert manifest["files"]["frame_log"] == "logs/frame_log.pb"
+    # Archiving packs the log, so the manifest names it as it now is on disk.
+    assert manifest["files"]["frame_log"] == "logs/frame_log.pb.zst"
     assert manifest["files"]["log_producer_executable"] == "controller/executable/log-copy"
     assert (run_dir / "runtime" / "runtime.ttl").exists()
     # Recovery ran, so the manifest names the file it wrote.

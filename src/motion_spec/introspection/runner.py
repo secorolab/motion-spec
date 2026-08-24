@@ -14,6 +14,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from motion_spec.introspection import frame_log_pb
 from motion_spec.introspection.archive import create_archive_manifest, verify_manifest
 from motion_spec.introspection.lifecycle_events import publish_lifecycle
 from motion_spec.introspection.provenance import (
@@ -110,7 +111,10 @@ def run_cataloged(
             complete_rec=False,
             recorded=record_log,
         )
-        if recover_runtime_ttl and record_log and (returncode == 0 or frame_log.exists()):
+        # Archiving has just packed the log, so ask after it by whichever name it now has --
+        # by the one it was written under, an interrupted run looks like it recorded nothing.
+        archived_log = frame_log_pb.log_path(frame_log)
+        if recover_runtime_ttl and record_log and (returncode == 0 or archived_log.exists()):
             from motion_spec.introspection.replay import runtime_frames
             from motion_spec.introspection.runtime_graph import write_runtime_ttl
 
@@ -118,7 +122,7 @@ def run_cataloged(
             # failure vanish behind whatever the caller does with the raise.
             started = time.monotonic()
             try:
-                records, frame_count = runtime_frames(frame_log)
+                records, frame_count = runtime_frames(archived_log)
                 write_runtime_ttl(run_dir, records, frame_count=frame_count)
             except Exception as exc:
                 print(f"runtime.ttl recovery failed: {exc!r}", file=sys.stderr)

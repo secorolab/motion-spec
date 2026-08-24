@@ -2379,7 +2379,7 @@ def annotate_dataflow(
 
     _apply_view_liveness(dataflow, views)
     for member_id, consumers in _consumers_by_id(
-        introspection, closures, serial_chain_solvers
+        introspection, closures, serial_chain_solvers, motions
     ).items():
         if member_id in dataflow:
             dataflow[member_id]["consumers"] = consumers
@@ -2465,8 +2465,11 @@ def _bound_ids(value, path: str):
             yield from _bound_ids(item, path)
 
 
-def _consumers_by_id(introspection: dict, closures: dict, serial_chain_solvers) -> dict[str, list]:
-    """Who reads each shared value: the monitors, controllers, closures and solvers bound to it."""
+def _consumers_by_id(
+    introspection: dict, closures: dict, serial_chain_solvers, motions=()
+) -> dict[str, list]:
+    """Who reads each shared value: the monitors, controllers, closures, solvers and motion
+    entry code bound to it."""
     consumers: dict[str, list] = {}
 
     def add(member_id, kind: str, reader_id, role: str) -> None:
@@ -2498,6 +2501,10 @@ def _consumers_by_id(introspection: dict, closures: dict, serial_chain_solvers) 
         for bound in ("maximum", "lower", "upper"):
             quantity = getattr(saturation, bound, None)
             add(getattr(quantity, "id", None), "solver", solver.id, f"torque_saturation.{bound}")
+    for motion in motions:
+        for snapshot in getattr(motion, "task_snapshots", ()):
+            add(snapshot.target_id, "motion", motion.id, "snapshot.target")
+            add(f"{snapshot.target_id}_captured", "motion", motion.id, "snapshot.captured")
     # Readers are collected from dicts whose order is the graph's; the list is an artifact.
     for member_id, readers in consumers.items():
         unique = {(entry["kind"], entry["id"], entry["role"]): entry for entry in readers}

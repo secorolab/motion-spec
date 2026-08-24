@@ -19,6 +19,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from motion_spec.dashboard import roots, ros_camera
+from motion_spec.dashboard.analysis import run_reports
 from motion_spec.dashboard.catalog import (
     drift_summary,
     generation_details,
@@ -95,6 +96,7 @@ LAN_GET_ALLOWED = frozenset(
         "/api/ros-camera",
         "/api/replay",
         "/api/plot",
+        "/api/reports",
         "/api/roots",
         "/api/sources",
         "/api/source",
@@ -298,6 +300,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return self.stream_ros_camera(query.get("topic", [""])[0])
             if parsed.path == "/api/replay":
                 return self.send_json(replay_data(expected_path(roots.GENERATIONS, value)))
+            if parsed.path == "/api/reports":
+                # All three reports off one sweep: three passes over a 160 MB log is the cost
+                # that would matter, so the route asks for them together or not at all.
+                return self.send_json(run_reports(relative_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/plot":
                 bounds = query.get("window", [])
                 return self.send_json(

@@ -523,6 +523,18 @@ body:has(.notebook) #content { position: relative; max-width: none; padding: 0; 
 #answer td { padding: 5px 8px; border-top: 1px solid var(--line); color: var(--text); white-space: nowrap; }
 #answer tr:hover td { background: var(--bg); }
 
+#panel-reports { display: flex; flex-direction: column; gap: 10px; padding: 12px 0; }
+#panel-reports > .path { margin: 0; }
+.report { border: 1px solid var(--line); background: var(--surface); }
+.report summary { display: flex; gap: 14px; padding: 9px 12px; color: var(--muted); font: 11px var(--mono); list-style: none; cursor: pointer; }
+.report summary::-webkit-details-marker { display: none; }
+.report summary b { min-width: 84px; color: var(--accent); font-weight: 400; }
+.report[open] summary, .report summary:hover { color: var(--text); }
+.report table { width: 100%; border-collapse: collapse; font: 11px var(--code); }
+.report th { padding: 6px 12px; background: var(--bg); color: var(--dim); text-align: left; font-weight: 400; }
+.report td { padding: 5px 12px; border-top: 1px solid var(--line); color: var(--text); white-space: nowrap; }
+.report tr:hover td { background: var(--bg); }
+
 .ask { max-width: 340px; padding: 16px 18px; border: 1px solid var(--line); background: var(--surface); color: var(--text); font: 12px/1.5 var(--mono); }
 .ask::backdrop { background: rgba(11, 12, 14, .55); }
 .ask p { margin: 0 0 12px; }

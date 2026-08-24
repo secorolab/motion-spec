@@ -69,6 +69,7 @@ from motion_spec.dashboard.sources import (
     source_path,
 )
 from motion_spec.devices import probe_devices
+from motion_spec.introspection import frame_log_pb
 from motion_spec.introspection.lifecycle_events import socket_path
 
 LIFECYCLE = None
@@ -455,7 +456,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     @staticmethod
     def _deletable(path: Path) -> bool:
         return (path / LAYOUT_REL).exists() or (
-            path.parent.name == "runs" and (path / "logs/frame_log.pb").exists()
+            path.parent.name == "runs"
+            and frame_log_pb.log_path(path / "logs/frame_log.pb").exists()
         )
 
 

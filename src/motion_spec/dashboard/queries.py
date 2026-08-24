@@ -14,6 +14,7 @@ from motion_spec.dashboard.graph import GraphService
 from motion_spec.dashboard.roots import json_file
 from motion_spec.dashboard.store import RunStore
 from motion_spec.dashboard.tail import FrameLogTail
+from motion_spec.introspection import frame_log_pb
 from motion_spec.introspection.replay import resolve_archive
 
 GRAPH_SAMPLE_S = 0.1  # the graph wants the shape of a run, not its every tick
@@ -69,7 +70,7 @@ def saved_queries(run_dir: Path) -> list:
 
 def save_queries(run_dir: Path, queries: list) -> dict:
     """Keep a run's queries with the run, so they outlive the browser that wrote them."""
-    if not (run_dir / "logs" / "frame_log.pb").exists():
+    if not frame_log_pb.log_path(run_dir / "logs" / "frame_log.pb").exists():
         raise ValueError("queries belong to a run")
     texts = [str(query) for query in queries][:200]
     (run_dir / QUERIES_REL).write_text(json.dumps({"queries": texts}, indent=1))

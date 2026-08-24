@@ -382,7 +382,7 @@ def _extend_events(log: Path, contract, scan: dict) -> None:
     index = scan["index"]
     state_was, event_was, motion_was = scan["state_was"], scan["event_was"], scan["motion_was"]
     csat_was, msat_was = scan["csat_was"], scan["msat_was"]
-    with log.open("rb") as fh:
+    with frame_log_pb.open_log(log) as fh:
         while True:
             data, next_offset = frame_log_pb._read_delimited_at(fh, scan["offset"])
             if data is None:
@@ -506,7 +506,7 @@ def plot_data(run_dir: Path, names: list[str], window: tuple | None = None) -> d
     step = max(1, (last - first + 1) // 1600)
     series = {name: [] for name in names}
     index = 0
-    with log.open("rb") as fh:
+    with frame_log_pb.open_log(log) as fh:
         frame_log_pb._read_delimited(fh)
         while data := frame_log_pb._read_delimited(fh, partial_ok=True):
             record = contract.record_cls()

@@ -8,8 +8,8 @@ import json
 import sys
 from pathlib import Path
 
-from motion_spec.introspection.archive import ArchiveError, load_manifest, verify_manifest
 from motion_spec.introspection import frame_log_pb
+from motion_spec.introspection.archive import ArchiveError, load_manifest, verify_manifest
 
 
 def run_dir_for(log_path: Path) -> Path:
@@ -36,7 +36,8 @@ def resolve_archive(path: Path | str) -> tuple[Path, Path, dict | None, dict]:
     if manifest_path.exists():
         _, manifest = load_manifest(run_dir)
         frame_log_rel = manifest["files"]["frame_log"]
-    log_path = run_dir / frame_log_rel if input_path.is_dir() else input_path
+    # Either name: a run still being written has the plain log, an archived one the packed.
+    log_path = frame_log_pb.log_path(run_dir / frame_log_rel if input_path.is_dir() else input_path)
     if not log_path.exists():
         raise ArchiveError(f"{log_path}: missing frame log")
     # The log carries its own decode contract; the manifest, when present, only locates it.
@@ -70,7 +71,10 @@ def validate_header(log_path: Path | str, contract=None) -> dict:
 
 
 def read_health(log_path: Path | str) -> dict | None:
-    health_path = Path(str(log_path) + ".health.json")
+    # The writer names the health file beside the log it wrote, and archiving compresses only
+    # the log -- so the health file keeps the uncompressed name whatever the log is called now.
+    name = str(log_path).removesuffix(frame_log_pb.LOG_SUFFIX)
+    health_path = Path(name + ".health.json")
     if not health_path.exists():
         return None
     return json.loads(health_path.read_text())

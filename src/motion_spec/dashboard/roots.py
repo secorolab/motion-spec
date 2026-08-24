@@ -53,13 +53,7 @@ AUTHORED = (".robmot", ".fsm", ".scenex", ".scene", ".ktree", ".bdd", ".bddx", "
 
 # .toml is the one extension here that belongs to the wider world as much as to a model, so
 # the tooling files that spell it are named and dropped -- packaging, theming, site config.
-NOT_AUTHORED = {
-    "METADATA.toml",
-    "netlify.toml",
-    "pixi.toml",
-    "pyproject.toml",
-    "theme.toml",
-}
+NOT_AUTHORED = {"METADATA.toml", "netlify.toml", "pixi.toml", "pyproject.toml", "theme.toml"}
 
 
 def current_roots() -> dict:
@@ -156,7 +150,12 @@ def storage_info() -> dict:
     files = [path for path in GENERATIONS.rglob("*") if path.is_file()]
     return {
         "generations_bytes": sum(path.stat().st_size for path in files),
-        "logs_bytes": sum(path.stat().st_size for path in files if path.name == "frame_log.pb"),
+        # Either name: a run still being written, and an archived one that has been packed.
+        "logs_bytes": sum(
+            path.stat().st_size
+            for path in files
+            if path.name in ("frame_log.pb", "frame_log.pb.zst")
+        ),
     }
 
 

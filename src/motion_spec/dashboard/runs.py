@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from motion_spec.dashboard.frames import FrameLayout
+from motion_spec.introspection import frame_log_pb
 from motion_spec.introspection.provenance import rec_run_lifecycle_from_file
 from motion_spec.introspection.replay import read_health
 
@@ -49,7 +50,7 @@ class RunInfo:
 
     @property
     def log_path(self) -> Path:
-        return self.dir / LOG_REL
+        return frame_log_pb.log_path(self.dir / LOG_REL)
 
     @property
     def manifest(self) -> dict | None:

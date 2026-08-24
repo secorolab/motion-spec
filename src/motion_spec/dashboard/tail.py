@@ -35,7 +35,8 @@ class FrameLogTail:
             self.contract = frame_log_pb.read_contract(self.path)
         except (ArchiveError, DecodeError):
             return False  # header still being written
-        self._fh = self.path.open("rb")
+        # A live log is tailed as it grows; an archived one is packed and no longer moves.
+        self._fh = frame_log_pb.open_log(self.path)
         self._offset = 0
         return True
 

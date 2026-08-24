@@ -21,6 +21,7 @@ from motion_spec.dashboard.graph import deployed_devices
 from motion_spec.dashboard.roots import LAYOUT_REL, directory_size, json_file, stamp_iso, trace
 from motion_spec.dashboard.runs import GenerationInfo, RunInfo
 from motion_spec.dashboard.sources import aligned_rows, authored_lines
+from motion_spec.introspection import frame_log_pb
 from motion_spec.introspection.archive import ArchiveError
 from motion_spec.introspection.replay import read_health, resolve_archive
 
@@ -265,7 +266,7 @@ def provenance_graph(path: Path, selected: list[str]) -> dict:
 
 
 def run_info(path: Path) -> dict:
-    log = path / "logs/frame_log.pb"
+    log = frame_log_pb.log_path(path / "logs/frame_log.pb")
     health = read_health(log) or {}
     run_id = RunInfo(path).run_id
     # A run that has only just started has no readable log yet; it still belongs in the list.

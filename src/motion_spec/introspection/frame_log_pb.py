@@ -9,6 +9,7 @@ so replay stays a pure-Python, dependency-light reader."""
 
 from __future__ import annotations
 
+import io
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -18,6 +19,38 @@ from motion_spec.generation.artifacts import build_frame_log_proto_fields
 from motion_spec.introspection.archive import ArchiveError
 
 PROTO_PACKAGE = "motion_spec.introspection.log"
+
+# A run writes its log uncompressed -- the writer is on the control loop's heels and the
+# dashboard tails the file while it grows -- and archiving compresses it once, afterwards.
+# So a log on disk is one of two files, and everything that reads one has to accept either.
+LOG_SUFFIX = ".zst"
+
+
+def log_path(path: Path | str) -> Path:
+    """The frame log that is actually there, compressed or not, given either name."""
+    path = Path(path)
+    if path.suffix == LOG_SUFFIX:
+        return path if path.exists() or not path.with_suffix("").exists() else path.with_suffix("")
+    packed = path.with_name(path.name + LOG_SUFFIX)
+    return packed if packed.exists() and not path.exists() else path
+
+
+def open_log(path: Path | str):
+    """Open a frame log for reading, unpacking it first if it was archived compressed.
+
+    Into memory rather than through a streaming decompressor: the readers seek -- to the end
+    to see whether the writer stopped mid-record, and by offset to walk records -- and a
+    zstd stream only goes forwards. A decoded log costs more than this anyway.
+    """
+    path = log_path(path)
+    if path.suffix != LOG_SUFFIX:
+        return path.open("rb")
+    import zstandard
+
+    with path.open("rb") as packed:
+        return io.BytesIO(zstandard.ZstdDecompressor().stream_reader(packed).read())
+
+
 POSE_NAMES = ("px", "py", "pz", "qx", "qy", "qz", "qw")
 TWIST_NAMES = ("lx", "ly", "lz", "ax", "ay", "az")
 WRENCH_NAMES = ("fx", "fy", "fz", "tx", "ty", "tz")
@@ -364,7 +397,7 @@ def _read_delimited(fh, *, partial_ok: bool = False) -> bytes | None:
 
 def tail_is_partial(path: Path | str) -> bool:
     """Whether the log ends mid-record, i.e. the writer never closed it."""
-    with Path(path).open("rb") as fh:
+    with open_log(path) as fh:
         offset = 0
         while True:
             data, next_offset = _read_delimited_at(fh, offset)
@@ -574,7 +607,7 @@ def _bootstrap_class():
 
 def read_contract(path: Path | str) -> LogContract:
     """Read a log's header record and build its decode contract from that alone."""
-    with Path(path).open("rb") as fh:
+    with open_log(path) as fh:
         data = _read_delimited(fh)
     if data is None:
         raise ArchiveError(f"{path}: empty frame log")
@@ -688,7 +721,7 @@ def iter_messages(
     """
     if contract is None:
         contract = read_contract(path)
-    with Path(path).open("rb") as fh:
+    with open_log(path) as fh:
         while True:
             data = _read_delimited(fh, partial_ok=True)
             if data is None:
@@ -728,7 +761,9 @@ def frame_records(path: Path | str, contract: LogContract | None = None) -> Iter
             yield value
 
 
-def stream_records(fh, contract: LogContract, offset: int, stride: int = 1) -> tuple[list[dict], int]:
+def stream_records(
+    fh, contract: LogContract, offset: int, stride: int = 1
+) -> tuple[list[dict], int]:
     """Frames appended since `offset`, plus the offset to resume from.
 
     Tailing a log the runtime is still writing: a partial trailing record leaves the offset

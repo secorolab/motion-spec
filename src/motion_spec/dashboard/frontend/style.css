@@ -179,6 +179,18 @@ h1 { margin: 7px 0; font-size: 30px; }
 .source-file .row-menu { top: calc(100% + 4px); bottom: auto; left: 0; min-width: 180px; }
 .source-file .row-menu button:disabled { color: var(--dim); cursor: default; }
 .source-file .row-menu button:disabled:hover { background: none; color: var(--dim); }
+/* What the design graph says about the model being read. A flat list of rows in the same
+   surface the tables above use, tinted rather than edge-marked so a finding does not read as
+   an uncommitted change. */
+.lint { display: grid; margin: 6px 0 14px; border: 1px solid var(--line); }
+.lint-head { margin: 0; padding: 7px 10px; background: var(--side); color: var(--dim); font: 10px var(--mono); letter-spacing: .06em; }
+.lint-item { display: grid; grid-template-columns: 34px minmax(0, 170px) 40px minmax(0, 1fr); align-items: baseline; gap: 10px; padding: 6px 10px; border: 0; border-top: 1px solid var(--bg); background: rgba(232, 196, 104, .06); color: var(--muted); font: 11px var(--code); text-align: left; cursor: pointer; }
+.lint-item:hover:not(:disabled) { background: rgba(232, 196, 104, .13); }
+.lint-item:disabled { cursor: default; }
+.lint-sev { color: #e8c468; font: 9px var(--mono); letter-spacing: .06em; }
+.lint-name { overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
+.lint-line { color: var(--dim); text-align: right; }
+.lint-why { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The archived model beside the authored one: the columns share a row per line, so what
    moved on one side stays level with where it was on the other. */
 .diff-state { margin: 4px 0 16px; color: var(--muted); font: 12px var(--mono); }

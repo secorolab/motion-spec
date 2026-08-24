@@ -33,7 +33,9 @@ ROS_BUILD_PACKAGES = ("rclcpp", "realtime_tools", "action_msgs", "rclcpp_action"
 MUJOCO_BUILD_PACKAGES = (("mj_kdl_wrapper", "0.3.11"),)
 # Reading a ROS message's shape is what turns a declared type into fields, headers and packages.
 # rosidl spells its case-conversion helper differently across distros; either will do.
-CODEGEN_IMPORTS = ("rosidl_runtime_py",)
+# ament_index_python resolves a scene asset that names a package rather than a path, so a
+# generation reaches for it long before anything ROS-shaped appears in the model.
+CODEGEN_IMPORTS = ("rosidl_runtime_py", "ament_index_python")
 CODEGEN_ALTERNATIVES = (("rosidl_pycommon", "rosidl_cmake"),)
 # `stst` is a Java program built by ant, and `protoc` compiles the frame-log schema every
 # generation carries: the generator shells out to all three.
@@ -73,6 +75,7 @@ _REMEDIES = {
     "rclcpp_action": "apt install ros-$ROS_DISTRO-rclcpp-action",
     "rosidl_runtime_py": "source /opt/ros/$ROS_DISTRO/setup.bash",
     "rosidl_pycommon": "source /opt/ros/$ROS_DISTRO/setup.bash",
+    "ament_index_python": "source /opt/ros/$ROS_DISTRO/setup.bash",
 }
 # Everything else is a workspace package: grc_meta lists where each one comes from. orocos_kdl
 # is here rather than on apt: the templates call Vereshchagin solvers with fixed joints, which

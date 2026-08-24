@@ -1403,7 +1403,16 @@ def _asset_path(graph, asset) -> str:
     if package is None:
         return path
     # Imported here: a model with no ROS asset still generates without ROS on the path.
-    from ament_index_python.packages import get_package_share_directory
+    try:
+        from ament_index_python.packages import get_package_share_directory
+    except ImportError as missing:
+        # This is the one thing that made the asset need ROS at all, so it is the only place
+        # that can say which asset, and what to do about it, instead of a bare import error.
+        raise RuntimeError(
+            f"asset '{path}' is in ROS package '{package}', which cannot be located without "
+            f"ROS on the path: source /opt/ros/$ROS_DISTRO/setup.bash (and the workspace's "
+            f"own setup) in the shell this is running from, then try again"
+        ) from missing
 
     return str(Path(get_package_share_directory(str(package))) / path)
 

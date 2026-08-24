@@ -153,7 +153,6 @@ path-eval-Circle(closure, views) ::= <<
 
 path-eval-Arc(closure, views) ::= <<
     KDL::Vector _n = shared.<closure.plane_normal>;
-    _n.Normalize();
     // Circular arc from start to end that bows out of the chord by `amplitude` (the
     // sagitta). center, radius and swept angle are derived so the path begins at start,
     // ends exactly at end, and apexes amplitude away from the chord midpoint.
@@ -163,22 +162,28 @@ path-eval-Arc(closure, views) ::= <<
     const double _chordlen = _chord.Norm();
     // A dynamically-resolved start/end can still land on a degenerate chord at runtime;
     // hold at start rather than dividing by zero.
-    const bool _valid = _chordlen > 1e-9 && _a > 1e-9;
+    bool _valid = _chordlen > 1e-9 && _a > 1e-9;
     KDL::Vector _center = shared.<closure.start>.p;
     KDL::Vector _v0 = KDL::Vector::Zero();
     double _theta = 0.0;
     if (_valid) {
         const KDL::Vector _chord_hat = _chord * (1.0 / _chordlen);
-        const KDL::Vector _mid = 0.5 * (shared.<closure.start>.p + shared.<closure.end>.p);
-        const double _m = 0.5 * _chordlen;
-        // plane-normal is authored perpendicular to the chord, so normal x chord_hat is
-        // the unit bulge direction directly, with no fallback axis needed.
-        const KDL::Vector _perp = _n * _chord_hat;
-        const double _R = (_a * _a + _m * _m) / (2.0 * _a);
-        const double _d = (_a * _a - _m * _m) / (2.0 * _a);
-        _center = _mid + _d * _perp;
-        _theta = 2.0 * std::acos(std::max(-1.0, std::min(1.0, -_d / _R)));
-        _v0 = shared.<closure.start>.p - _center;
+        // plane-normal only names which side the arc bows to. A component along the chord
+        // would tilt the sweep out of the plane and miss the end point, so drop it; a
+        // normal parallel to the chord names no plane at all.
+        _n = _n - KDL::dot(_n, _chord_hat) * _chord_hat;
+        _valid = _n.Normalize() > 1e-9;
+        if (_valid) {
+            const KDL::Vector _mid = 0.5 * (shared.<closure.start>.p + shared.<closure.end>.p);
+            const double _m = 0.5 * _chordlen;
+            // normal x chord_hat is now the unit bulge direction directly.
+            const KDL::Vector _perp = _n * _chord_hat;
+            const double _R = (_a * _a + _m * _m) / (2.0 * _a);
+            const double _d = (_a * _a - _m * _m) / (2.0 * _a);
+            _center = _mid + _d * _perp;
+            _theta = 2.0 * std::acos(std::max(-1.0, std::min(1.0, -_d / _R)));
+            _v0 = shared.<closure.start>.p - _center;
+        }
     }
     const KDL::Frame _rot_start(shared.<closure.start>.M, KDL::Vector(0.0, 0.0, 0.0));
     const KDL::Frame _rot_goal(shared.<closure.end>.M, KDL::Vector(0.0, 0.0, 0.0));

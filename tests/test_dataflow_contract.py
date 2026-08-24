@@ -12,9 +12,10 @@ from google.protobuf import descriptor_pb2
 
 from motion_spec.classes.base import DataclassJSONEncoder
 from motion_spec.classes.bindings import ChainBinding, HardwareBinding, RuntimeBinding
+from motion_spec.classes.dynamics import Saturation
 from motion_spec.classes.geometry import Direction, Pose, Position, Wrench
 from motion_spec.classes.motion import BlackboardValue, MotionSolverSlice, MotionUnit
-from motion_spec.classes.qudt import Quantity, QuantityKind, Unit
+from motion_spec.classes.qudt import FreeVector, Quantity, QuantityKind, Unit
 from motion_spec.classes.solvers import MotionDrivers, SolverWithInputAndOutput
 from motion_spec.generation.artifacts import (
     build_frame_log_proto_fields,
@@ -243,6 +244,76 @@ def test_a_recorded_constant_carries_its_iri_and_who_reads_it() -> None:
     ]
 
 
+def _sample(item, desc: dict) -> dict:
+    return {"id": item.id, "source_id": item.id, "source_type": item.type, "sample_desc": desc}
+
+
+def test_a_solver_is_recorded_as_the_reader_of_the_limits_it_is_built_with() -> None:
+    """A torque bound and a gravity field are read by the solver the model hung them on. Without
+    that the recorded limit says nothing about whose limit it is."""
+    limit = _quantity("arm_torque_limit", 39.0)
+    gravity = FreeVector(
+        "gravity_value_arm", QuantityKind("Acceleration"), Unit("M_PER_SEC2"), [0.0, 0.0, -9.81]
+    )
+    tau = _quantity("tau_arm", None)
+    solver = _solver("arm_solver", output=[])
+    solver.torque_saturation = Saturation("sat_torque_arm", tau, tau, limit, None, None)
+    solver.gravity_source = gravity.id
+    introspection = {
+        "quantity_samples": [
+            _sample(limit, {"kind": "shared", "id": limit.id}),
+            _sample(gravity, {"kind": "vec", "id": gravity.id, "axis": 2}),
+        ]
+    }
+    annotate_dataflow(introspection, [limit, gravity], {}, [], [solver], {})
+    by_id = {row["id"]: row for row in introspection["constants"]}
+    assert by_id["arm_torque_limit"]["consumers"] == [
+        {"kind": "solver", "id": "arm_solver", "role": "torque_saturation.maximum"}
+    ]
+    assert by_id["gravity_value_arm"]["consumers"] == [
+        {"kind": "solver", "id": "arm_solver", "role": "gravity"}
+    ]
+
+
+def test_a_gain_published_as_a_shared_value_is_read_by_its_controller() -> None:
+    """Gains live in a sub-dict of the controller closure, so a flat scan of its fields reports
+    every gain in the model as read by nobody."""
+    kp = _quantity("ctrl_push_kp", 200.0)
+    closures = {
+        "ctrl_push": {
+            "id": "ctrl_push",
+            "type": "Controller",
+            "control_signal": "cmd_push",
+            "gains": {"kp": kp.id, "kd": None},
+        }
+    }
+    introspection = {"quantity_samples": [_sample(kp, {"kind": "shared", "id": kp.id})]}
+    annotate_dataflow(introspection, [kp], closures, [], [], {})
+    (constant,) = introspection["constants"]
+    assert constant["consumers"] == [{"kind": "closure", "id": "ctrl_push", "role": "gains.kp"}]
+
+
+def test_a_value_no_reader_binds_is_recorded_with_no_consumers() -> None:
+    """Scene geometry is baked into a pose while generating; nothing reads it per tick. The
+    empty answer is the deriver's, not a gap -- so no reader may be invented to fill it."""
+    anchor = Position(
+        "anchor_on_table_position_coord",
+        None,
+        None,
+        QuantityKind("Length"),
+        None,
+        Unit("M"),
+        [0.0, 0.0, 0.4],
+    )
+    introspection = {
+        "quantity_samples": [_sample(anchor, {"kind": "vec", "id": anchor.id, "axis": 2})]
+    }
+    annotate_dataflow(introspection, [anchor], {}, [], [], {})
+    (constant,) = introspection["constants"]
+    assert constant["value"] == 0.4
+    assert "consumers" not in constant
+
+
 def test_a_shared_quantity_behind_an_axis_less_view_is_still_sampled() -> None:
     """An axis-less MAP view names no field to read, but the value has a shared field of its own."""
     from motion_spec.classes.geometry import Subspace, View
@@ -390,9 +461,7 @@ def test_ft_communication_failure_survives_the_log_round_trip(tmp_path: Path) ->
     schema["protobuf"] = build_frame_log_proto_fields(schema)
     schema["schema_hash"] += "-ft-health"
     log = _written_log(
-        tmp_path,
-        schema,
-        [flat_frame(schema, **{"device0.seq": 42, "device0.success": 0})],
+        tmp_path, schema, [flat_frame(schema, **{"device0.seq": 42, "device0.success": 0})]
     )
     frame = next(iter(frame_log_pb.frame_records(log)))
     assert frame["devices"] == {"arm1.wrist_ft": {"seq": 42, "success": False}}

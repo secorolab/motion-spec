@@ -1208,6 +1208,7 @@ def _solver_with_input_and_output(model, node, setup: _ChainSetup) -> SolverWith
         derived_root_acceleration=quantities.parse_xyz(model, gravity_node)
         if gravity_node
         else None,
+        gravity_source=model.id(gravity_node) if gravity_node else None,
         torque_saturation=(
             constraint_handler.saturation(model, torque_limit) if torque_limit is not None else None
         ),

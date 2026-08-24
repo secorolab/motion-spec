@@ -4,7 +4,7 @@
 
 /**
  * The editor itself: CodeMirror, fetched once, themed to the page, and told which lines
- * have changed since the file was last saved.
+ * have changed since git HEAD.
  */
 
 import { $, api, post, snack } from "./core.js";
@@ -33,7 +33,53 @@ export async function editorModule() {
   return codemirror;
 }
 
-export async function mountEditor(holder, source, text) {
+// Which lines of `b` are additions or changes against `a`, by Myers' O(ND) shortest-edit-script
+// algorithm -- the same family git diff itself uses. Cost tracks the number of *differences*,
+// not the file size, so a small edit stays cheap even in a large file no matter where in it the
+// edit sits; a same-size table indexed purely by line counts (what this replaced) can't offer
+// that; it has to give up past some size and mark everything changed instead of guessing.
+function myersInsertions(a, b) {
+  const n = a.length;
+  const m = b.length;
+  const max = n + m;
+  let v = new Map([[1, 0]]);
+  const trace = [];
+  let dEnd = -1;
+  outer:
+  for (let d = 0; d <= max; d += 1) {
+    trace.push(v);
+    const next = new Map(v);
+    for (let k = -d; k <= d; k += 2) {
+      let x;
+      if (k === -d || (k !== d && (v.get(k - 1) ?? -1) < (v.get(k + 1) ?? -1))) {
+        x = v.get(k + 1) ?? 0;
+      } else {
+        x = (v.get(k - 1) ?? 0) + 1;
+      }
+      let y = x - k;
+      while (x < n && y < m && a[x] === b[y]) { x += 1; y += 1; }
+      next.set(k, x);
+      if (x >= n && y >= m) { dEnd = d; break outer; }
+    }
+    v = next;
+  }
+  const added = new Set();
+  let x = n;
+  let y = m;
+  for (let d = dEnd; d > 0; d -= 1) {
+    const vPrev = trace[d];
+    const k = x - y;
+    const prevK = k === -d || (k !== d && (vPrev.get(k - 1) ?? -1) < (vPrev.get(k + 1) ?? -1))
+      ? k + 1 : k - 1;
+    const prevX = vPrev.get(prevK) ?? 0;
+    const prevY = prevX - prevK;
+    while (x > prevX && y > prevY) { x -= 1; y -= 1; }
+    if (x === prevX) { y -= 1; added.add(y); } else { x -= 1; }
+  }
+  return added;
+}
+
+export async function mountEditor(holder, source, text, readOnly = false, gitHead = null) {
   let cm;
   try {
     cm = await editorModule();
@@ -54,29 +100,72 @@ export async function mountEditor(holder, source, text) {
     if (save.hidden) return true;
     const written = target.state.doc.toString();
     try {
-      await post("/api/source", { path: source, text: written });
-      // What is on disk is what the marks are measured against, so saving clears them.
-      saved.lines = written.split("\n");
-      saved.version += 1;
-      target.dispatch({});   // nothing to change; it asks the marks to be recounted
+      save.textContent = "saving…";
+      const { check } = await post("/api/source", { path: source, text: written });
+      // The comparison stays against git, not against what was just written: an uncommitted
+      // save is still a change from HEAD's point of view.
       save.hidden = false;
       save.textContent = "saved";
       setTimeout(() => dirty(false), 1200);
+      // The file is written either way; a model that no longer parses is worth saying out
+      // loud, and worth pointing at, rather than left to be discovered by a failed generate.
+      showCheck(target, check);
     } catch (error) {
       snack(error.message);
+      dirty(true);
     }
     return true;
   };
+  // Where the parse gave up, marked on the line it names and said in the bar above the file.
+  // The verdict belongs to the text that was checked: the next edit clears it rather than
+  // leaving a stale mark pointing at a line that has since moved or been fixed.
+  const badLine = Decoration.line({ class: "cm-badLine" });
+  const problem = { line: null };
+  const badMarks = (doc) => (problem.line && problem.line <= doc.lines
+    ? Decoration.set([badLine.range(doc.line(problem.line).from)])
+    : Decoration.none);
+  const trackProblem = ViewPlugin.fromClass(
+    class {
+      constructor(target) {
+        this.decorations = badMarks(target.state.doc);
+      }
+
+      update(target) {
+        if (target.docChanged) problem.line = null;
+        this.decorations = badMarks(target.state.doc);
+      }
+    },
+    { decorations: (plugin) => plugin.decorations },
+  );
+  const showCheck = (target, check) => {
+    problem.line = check && !check.ok && check.line ? check.line : null;
+    target.dispatch({});   // nothing to change; it asks the mark to be redrawn
+    const banner = $(".syntax-state");
+    if (!banner) return;
+    banner.hidden = !check || check.ok;
+    if (!check || check.ok) return;
+    banner.textContent = check.line ? `line ${check.line}: ${check.message}` : check.message;
+    banner.onclick = () => {
+      if (!check.line || check.line > target.state.doc.lines) return;
+      const line = target.state.doc.line(check.line);
+      target.dispatch({ selection: { anchor: line.from }, scrollIntoView: true });
+      target.focus();
+    };
+  };
   // Where the find box parks: just under the file header, which is as tall as its own contents.
   holder.style.setProperty("--head", `${$(".viewer-top")?.offsetHeight ?? 60}px`);
-  const saved = { lines: text.split("\n"), version: 0 };
+  // Marks are measured against git HEAD, not against what the file looked like when this
+  // session opened it -- so a file already dirty in the working tree shows that on open, and
+  // a fresh commit is the only thing that ever clears them. No commit yet (new file, no repo,
+  // no git installed) falls back to the open-time text, which marks nothing.
+  const saved = { lines: (gitHead ?? text).split("\n") };
   const changedLine = Decoration.line({ class: "cm-changedLine" });
   const marked = (doc) => {
     const now = [];
     for (let n = 1; n <= doc.lines; n += 1) now.push(doc.line(n).text);
     const was = saved.lines;
-    // The matching ends are not part of any change; trimming them is what keeps the alignment
-    // below small enough to run on every keystroke.
+    // The matching ends are not part of any change; trimming them first keeps what Myers has
+    // to search small in the common case of one edit in an otherwise-untouched file.
     let head = 0;
     while (head < now.length && head < was.length && now[head] === was[head]) head += 1;
     let tail = 0;
@@ -89,33 +178,8 @@ export async function mountEditor(holder, source, text) {
     }
     const before = was.slice(head, was.length - tail);
     const after = now.slice(head, now.length - tail);
-    const changed = new Set();
-    if (!after.length) return changed;
-    // Two edits far apart leave everything between them untouched, so the lines still common
-    // to both sides have to be found rather than assumed: longest common subsequence, and
-    // only what is not on it is marked. Beyond this size the band itself is the honest answer.
-    if (before.length * after.length > 400000) {
-      for (let index = 0; index < after.length; index += 1) changed.add(head + index + 1);
-      return changed;
-    }
-    const width = after.length + 1;
-    const common = new Uint32Array((before.length + 1) * width);
-    for (let i = before.length - 1; i >= 0; i -= 1) {
-      for (let j = after.length - 1; j >= 0; j -= 1) {
-        common[i * width + j] = before[i] === after[j]
-          ? common[(i + 1) * width + j + 1] + 1
-          : Math.max(common[(i + 1) * width + j], common[i * width + j + 1]);
-      }
-    }
-    let i = 0;
-    let j = 0;
-    while (i < before.length && j < after.length) {
-      if (before[i] === after[j]) { i += 1; j += 1; continue; }
-      if (common[(i + 1) * width + j] >= common[i * width + j + 1]) i += 1;   // line removed
-      else changed.add(head + (j += 1));                                      // line is new
-    }
-    while (j < after.length) changed.add(head + (j += 1));
-    return changed;
+    if (!after.length) return new Set();
+    return new Set([...myersInsertions(before, after)].map((index) => head + index + 1));
   };
   const changes = (doc) => Decoration.set(
     [...marked(doc)].sort((left, right) => left - right).map((n) => changedLine.range(doc.line(n).from)),
@@ -123,17 +187,13 @@ export async function mountEditor(holder, source, text) {
   const trackChanges = ViewPlugin.fromClass(
     class {
       constructor(target) {
-        this.version = saved.version;
         this.decorations = changes(target.state.doc);
       }
 
-      // Only when the text moved or a save reset what it is compared against -- not on the
-      // updates that merely scrolled the viewport.
+      // The baseline is fixed to git HEAD for the life of this editor, so only the text
+      // itself moving is worth recomputing over -- not the updates that merely scrolled.
       update(target) {
-        if (target.docChanged || this.version !== saved.version) {
-          this.version = saved.version;
-          this.decorations = changes(target.state.doc);
-        }
+        if (target.docChanged) this.decorations = changes(target.state.doc);
       }
     },
     { decorations: (plugin) => plugin.decorations },
@@ -147,7 +207,9 @@ export async function mountEditor(holder, source, text) {
         // nowhere in particular.
         search({ top: true }),
         trackChanges,
+        trackProblem,
         EditorView.lineWrapping,
+        EditorView.editable.of(!readOnly),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) dirty(true);
         }),
@@ -163,6 +225,9 @@ export async function mountEditor(holder, source, text) {
           ".cm-activeLine": { backgroundColor: "rgba(255, 255, 255, .06)" },
           // Unsaved lines carry a mark down their edge, the way an editor's gutter does.
           ".cm-changedLine": { boxShadow: "inset 2px 0 0 var(--accent)" },
+          // Where the parser stopped: the one line to look at, tinted rather than edge-marked
+          // so it does not read as another uncommitted change.
+          ".cm-badLine": { backgroundColor: "rgba(224, 122, 95, .18)" },
           ".cm-activeLineGutter": { backgroundColor: "transparent", color: "var(--muted)" },
           "&.cm-focused": { outline: "none" },
           ".cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection": {

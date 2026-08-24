@@ -13,7 +13,14 @@ export let plotKeys = 0;
 
 export const nextPlotKey = () => String(++plotKeys);
 
-export const state = { replay: null, queries: [], query: -1, anchor: null, runPath: null, generationPath: null, tab: "logs", frame: 0, charts: [], selected: new Set(), timer: null, roots: {}, cache: {}, listRequest: 0, live: null, speed: 1, consoleWatch: null, livePlots: new Map(), pendingSignals: new Set(), liveBuffer: new Map(), activeMotion: null, autoPlot: null, rosTopic: null };
+export const state = { replay: null, queries: [], query: -1, anchor: null, runPath: null, generationPath: null, tab: "logs", frame: 0, charts: [], selected: new Set(), timer: null, roots: {}, cache: {}, listRequest: 0, live: null, speed: 1, consoleWatch: null, livePlots: new Map(), pendingSignals: new Set(), liveBuffer: new Map(), activeMotion: null, autoPlot: null, rosTopic: null, restricted: false };
+
+// Tabs the server drops entirely with a 403 for a LAN viewer (Jupyter spawn, host diagnostics):
+// kept out of reach client-side too, rather than left to fail open. Sources stays reachable --
+// reading a model is allowed -- but its write affordances (save, open editor, terminal,
+// generate) are hidden separately in sources.js, since the read/write split happens within
+// that one tab rather than at the tab boundary.
+export const RESTRICTED_TABS = ["notebook", "health"];
 
 export const $ = (selector) => document.querySelector(selector);
 

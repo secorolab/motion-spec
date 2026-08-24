@@ -45,10 +45,21 @@ IGNORED = {
 }
 
 
-# The DSL's own file types. A model's other files -- robot.toml, a yaml beside it -- are
-# listed by where they sit instead (see authored_sources), so this stays free of suffixes
-# like .toml that mean something else everywhere else in the workspace.
-AUTHORED = (".robmot", ".fsm", ".scenex", ".scene", ".ktree", ".bdd", ".bddx")
+# The DSL's own file types, plus .toml for the config a model names in its exec-context.
+# Listed by extension alone: "anything sitting beside a model" swept in the whole repository
+# as soon as one .robmot was left at the top of a workspace.
+AUTHORED = (".robmot", ".fsm", ".scenex", ".scene", ".ktree", ".bdd", ".bddx", ".toml")
+
+
+# .toml is the one extension here that belongs to the wider world as much as to a model, so
+# the tooling files that spell it are named and dropped -- packaging, theming, site config.
+NOT_AUTHORED = {
+    "METADATA.toml",
+    "netlify.toml",
+    "pixi.toml",
+    "pyproject.toml",
+    "theme.toml",
+}
 
 
 def current_roots() -> dict:

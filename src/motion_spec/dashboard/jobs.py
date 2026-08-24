@@ -27,6 +27,18 @@ from motion_spec.devices import probe_devices, unreachable
 RUNNING: dict[str, dict] = {}
 
 
+def _real_run_active() -> Path | None:
+    """The generation directory of a real-hardware run still in progress, if any is.
+
+    Two generations can each believe they own the real robot; the dashboard tracks one entry
+    per generation, so this is the one place that looks across all of them at once.
+    """
+    for key, started in RUNNING.items():
+        if started["process"].poll() is None and not is_simulated(Path(key)):
+            return Path(key)
+    return None
+
+
 def run_status(generation_dir: Path) -> dict:
     """Whether this generation has a run in progress, and where its output is going.
 
@@ -102,6 +114,9 @@ def start_run(generation_dir: Path, options: dict) -> dict:
     # Hardware that does not answer is not a run to start: the driver would block on the
     # connect, and the run would exist as a named, empty directory that never records a frame.
     if not simulated:
+        other = _real_run_active()
+        if other is not None:
+            raise ValueError(f"the real robot is already running {other.name}")
         report = probe_devices(generation_dir)
         missing = [device["name"] for device in unreachable(report)]
         if missing:

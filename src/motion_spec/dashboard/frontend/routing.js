@@ -8,8 +8,8 @@
  */
 
 import { showEmpty } from "./components.js";
-import { $, showError, state } from "./core.js";
-import { loadGenerations, selectGeneration, showDrift } from "./generations.js";
+import { $, RESTRICTED_TABS, showError, state } from "./core.js";
+import { loadGenerations, selectGeneration, showDrift, showGitDiff } from "./generations.js";
 import { loadHealth } from "./health.js";
 import { loadNotebook } from "./notebook.js";
 import { loadReplay, stopPlayback } from "./run.js";
@@ -20,7 +20,7 @@ import { loadSources, openSource } from "./sources.js";
 // and restoring one wins over that view -- otherwise the hash names two and a reload picks the
 // other. Every other tab only chooses which list the sidebar shows.
 const PAGE_TABS = { health: loadHealth, notebook: loadNotebook };
-const VIEW_PARAMS = ["run", "generation", "source", "diff", "file", "panel"];
+const VIEW_PARAMS = ["run", "generation", "source", "diff", "gitdiff", "file", "panel"];
 
 export function goHome() {
   stopPlayback();
@@ -69,6 +69,7 @@ export function sidebarLoader() {
 }
 
 export function openTab(tab) {
+  if (state.restricted && RESTRICTED_TABS.includes(tab)) return;
   setTab(tab);
   const page = PAGE_TABS[tab] ?? (tab === "logs" ? loadGenerations : loadSources);
   return page().catch(showError);
@@ -76,7 +77,10 @@ export function openTab(tab) {
 
 export function loadLocation() {
   const view = new URLSearchParams(location.hash.slice(1));
-  setTab(view.get("tab") ?? "logs", false);
+  const requested = view.get("tab") ?? "logs";
+  // A restricted viewer gets the ordinary landing tab instead, not a dead end from a
+  // restored or shared #tab=notebook link.
+  setTab(state.restricted && RESTRICTED_TABS.includes(requested) ? "logs" : requested, false);
   const loadSidebar = sidebarLoader();
   // The empty state is hidden until something replaces it, so uncover it even when nothing
   // could be loaded -- a failed restore must not leave the pane blank with no way back.
@@ -94,6 +98,9 @@ export function loadLocation() {
   }
   else if (view.has("diff")) {
     settle(showDrift(view.get("diff"), view.get("file"), false));
+  }
+  else if (view.has("gitdiff")) {
+    settle(loadSidebar().then(() => showGitDiff(view.get("gitdiff"), false)));
   }
   else if (view.has("source")) {
     // The viewer re-renders itself; it must not push the entry it is restoring back on.

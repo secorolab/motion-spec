@@ -394,6 +394,9 @@ h1 { margin: 7px 0; font-size: 30px; }
 }
 .viewer-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 30px; }
 .viewer-heading .path { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* What the parser said about the file as it was last saved; clicking it goes to the line. */
+.syntax-state { margin: 8px 0 0; padding: 6px 9px; background: #382b29; color: var(--accent); font: 11px var(--mono); cursor: pointer; }
+.syntax-state[hidden] { display: none; }
 /* The pickers elsewhere sit at the foot of the page and open upward; this one is at the top. */
 .picker-down .picker-panel { top: calc(100% + 5px); bottom: auto; right: 0; left: auto; }
 #aside-resize { position: absolute; top: 0; right: 0; bottom: 0; z-index: 3; width: 5px; cursor: col-resize; }
@@ -445,7 +448,7 @@ body.resizing main, body.resizing #sidebar-toggle, body.resizing .transport { tr
 
 .constraint[data-kind="monitored"] strong::after { content: "monitored"; margin-left: 8px; color: var(--dim); font: 9px var(--mono); letter-spacing: .06em; }
 
-.plot-signals { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; }
+.plot-signals { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; max-height: 64px; overflow-y: auto; }
 .plot-signal { display: flex; align-items: center; gap: 6px; padding: 3px 8px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 10px var(--mono); cursor: pointer; }
 .plot-signal::before { content: ""; width: 8px; height: 2px; background: var(--series); }
 .plot-signal::after { content: "×"; color: var(--dim); }

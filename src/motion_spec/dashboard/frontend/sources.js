@@ -7,9 +7,9 @@
  */
 
 import { appendConsole, listItem } from "./components.js";
-import { $, $$, api, copyText, post, snack, state } from "./core.js";
+import { $, $$, api, askConfirm, copyText, post, snack, state } from "./core.js";
 import { mountEditor } from "./editor.js";
-import { showGeneration } from "./generations.js";
+import { showGeneration, showGitDiff } from "./generations.js";
 import { setTab } from "./routing.js";
 
 export async function loadSources(refresh = false) {
@@ -114,7 +114,7 @@ export async function openSource(source, absolute = null, push = true) {
     view.set("tab", "sources");
     history[unchanged ? "replaceState" : "pushState"](null, "", `#${view}`);
   }
-  const { text, editors, terminal, absolute: where } = await api(
+  const { text, git_head: gitHead, editors, terminal, absolute: where } = await api(
     `/api/source?path=${encodeURIComponent(source)}`,
   );
   if (state.viewing !== source) return;
@@ -127,7 +127,7 @@ export async function openSource(source, absolute = null, push = true) {
   // Two groups, because they are two things: what to do with the file, and what to make from
   // it. Opening an external editor is one split control rather than a chooser plus a button,
   // and save only appears once there is something to save.
-  $("#content").innerHTML = `<div class="viewer"><div class="viewer-top"><div class="page-heading"><h1></h1><span class="eyebrow">SOURCE</span></div><div class="viewer-heading"><p class="path"></p><div class="open-with"><span class="bar file-bar"><button id="save-source" hidden>save</button><span class="split"><button id="open-editor"></button><details class="picker picker-down" id="editor-choice"><summary title="Choose the editor"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5"/></svg></summary><div class="picker-panel"></div></details></span></span><span class="bar build-bar"><button id="gen-source">generate</button><button id="gen-run-source" class="is-primary">generate &amp; run</button></span></div></div></div><div id="source-text"></div></div>`;
+  $("#content").innerHTML = `<div class="viewer"><div class="viewer-top"><div class="page-heading"><h1></h1><span class="eyebrow">SOURCE</span></div><div class="viewer-heading"><p class="path"></p><div class="open-with"><span class="bar file-bar"><button id="save-source" hidden>save</button><button id="diff-source" hidden>diff</button><button id="checkout-source" hidden>checkout</button><span class="split"><button id="open-editor"></button><details class="picker picker-down" id="editor-choice"><summary title="Choose the editor"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5"/></svg></summary><div class="picker-panel"></div></details></span></span><span class="bar build-bar"><button id="gen-source">generate</button><button id="gen-run-source" class="is-primary">generate &amp; run</button></span></div></div><p class="syntax-state" hidden></p></div><div id="source-text"></div></div>`;
   $(".viewer h1").textContent = source.split("/").pop();
   // A generation's vendored copy is not under the sources root; show where it really is.
   $(".viewer .path").textContent = where ?? absolute ?? source;
@@ -149,44 +149,74 @@ export async function openSource(source, absolute = null, push = true) {
       browser.scrollTop += entry.top - list.top - browser.clientHeight / 2 + entry.height / 2;
     }
   }
-  await mountEditor($("#source-text"), source, text);
-  const options = [...editors];
-  if (terminal) options.push("terminal");
-  const menu = $("#editor-choice");
-  const opener = $("#open-editor");
-  const label = (name) => (name === "terminal" ? `terminal (${terminal})` : name);
-  let chosen = localStorage.getItem("motion-spec.editor");
-  if (!options.includes(chosen)) chosen = options[0] ?? "";
-  // One control that does the usual thing in one click, with the choice behind its caret.
-  const name = () => { opener.textContent = chosen ? `open in ${label(chosen)}` : "no editor found"; };
-  name();
-  opener.disabled = !chosen;
-  menu.hidden = options.length < 2;
-  menu.querySelector(".picker-panel").replaceChildren(...options.map((option) => {
-    const pick = document.createElement("button");
-    pick.textContent = label(option);
-    pick.setAttribute("aria-pressed", String(option === chosen));
-    pick.onclick = () => {
-      chosen = option;
-      localStorage.setItem("motion-spec.editor", option);
-      name();
-      menu.querySelectorAll(".picker-panel button").forEach((other) =>
-        other.setAttribute("aria-pressed", String(other === pick)));
-      menu.open = false;
+  await mountEditor($("#source-text"), source, text, state.restricted, gitHead);
+  // Both only mean anything for a committed file that has since been edited: with no commit
+  // to compare against there is no diff to show and nothing to go back to.
+  const dirty = gitHead != null && gitHead !== text;
+  $("#diff-source").hidden = !dirty;
+  $("#diff-source").onclick = () => showGitDiff(source).catch((error) => snack(error.message));
+  if (!state.restricted) {
+    $("#checkout-source").hidden = !dirty;
+    $("#checkout-source").title = "Discard uncommitted changes, restoring this file from git HEAD";
+    $("#checkout-source").onclick = async () => {
+      const ok = await askConfirm({
+        message: `Discard uncommitted changes to ${source.split("/").pop()} and restore it from git HEAD? This cannot be undone.`,
+        confirmLabel: "Discard changes",
+      });
+      if (!ok) return;
+      try {
+        await post("/api/source-checkout", { path: source });
+        snack("Restored from git HEAD");
+        await openSource(source, absolute, false);   // re-read: the file on disk has changed
+      } catch (error) { snack(error.message); }
     };
-    return pick;
-  }));
-  $("#open-editor").onclick = async () => {
-    try {
-      if (chosen === "terminal") {
-        const { opened } = await post("/api/terminal", { path: source });
-        snack(`${terminal} at ${opened}`);
-      } else {
-        await post("/api/open", { path: source, editor: chosen });
-        snack(`Opened in ${chosen}`);
-      }
-    } catch (error) { snack(error.message); }
-  };
+  }
+  if (state.restricted) {
+    // Reading a model, and generating + running it (which flows through the already-gated
+    // /api/run, so a real robot still refuses it) is fine over the network; opening this
+    // machine's editor or a terminal on it is not. `.file-bar` sets its own `display: flex`
+    // at higher specificity than the browser's `[hidden]` default, so an inline style is
+    // what actually hides it.
+    $(".viewer .file-bar").style.display = "none";
+  } else {
+    const options = [...editors];
+    if (terminal) options.push("terminal");
+    const menu = $("#editor-choice");
+    const opener = $("#open-editor");
+    const label = (name) => (name === "terminal" ? `terminal (${terminal})` : name);
+    let chosen = localStorage.getItem("motion-spec.editor");
+    if (!options.includes(chosen)) chosen = options[0] ?? "";
+    // One control that does the usual thing in one click, with the choice behind its caret.
+    const name = () => { opener.textContent = chosen ? `open in ${label(chosen)}` : "no editor found"; };
+    name();
+    opener.disabled = !chosen;
+    menu.hidden = options.length < 2;
+    menu.querySelector(".picker-panel").replaceChildren(...options.map((option) => {
+      const pick = document.createElement("button");
+      pick.textContent = label(option);
+      pick.setAttribute("aria-pressed", String(option === chosen));
+      pick.onclick = () => {
+        chosen = option;
+        localStorage.setItem("motion-spec.editor", option);
+        name();
+        menu.querySelectorAll(".picker-panel button").forEach((other) =>
+          other.setAttribute("aria-pressed", String(other === pick)));
+        menu.open = false;
+      };
+      return pick;
+    }));
+    $("#open-editor").onclick = async () => {
+      try {
+        if (chosen === "terminal") {
+          const { opened } = await post("/api/terminal", { path: source });
+          snack(`${terminal} at ${opened}`);
+        } else {
+          await post("/api/open", { path: source, editor: chosen });
+          snack(`Opened in ${chosen}`);
+        }
+      } catch (error) { snack(error.message); }
+    };
+  }
   // Only a .robmot is a whole generation to make; the other authored files are parts of one.
   if (source.endsWith(".robmot")) bindGenerate(source);
 }

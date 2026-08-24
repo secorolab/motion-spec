@@ -272,6 +272,34 @@ export function addPlot(signals = [], title = signals.join(" · ") || "New plot"
   (constraint?.window ?? []).forEach((bound) => query.append("window", bound));
   (prefetched ? Promise.resolve(prefetched) : api(`/api/plot?${query}`)).then((data) => {
     chart.hideLoading();
+    // The tooltip already lists every signal at this frame; track which line the pointer is
+    // closest to (by value, not just x) so that one entry can stand out from a crowded list.
+    const seriesValues = signals.map((signal) => data.signals?.[signal] ?? []);
+    const step = data.sample_step || 1;
+    const firstFrame = data.first_frame ?? 0;
+    let nearestIndex = -1;
+    // A constraint's whole point is its value converging onto a setpoint, so two lines sitting
+    // pixel-adjacent (or crossing) is the common case, not the exception -- pick in pixel space
+    // for a scale-fair distance, and stick with the current line unless another is genuinely
+    // closer, or the choice flickers between them on every mouse-move near the crossing.
+    const HYSTERESIS_PX = 6;
+    const plotDom = card.querySelector(".plot-chart");
+    plotDom.addEventListener("mousemove", (event) => {
+      const [x] = chart.convertFromPixel({ xAxisIndex: 0, yAxisIndex: 0 }, [event.offsetX, event.offsetY]);
+      const point = Math.round((x - firstFrame) / step);
+      const distances = seriesValues.map((values) => {
+        const value = values[point];
+        if (value == null) return Infinity;
+        const pixelY = chart.convertToPixel({ xAxisIndex: 0, yAxisIndex: 0 }, [x, value])[1];
+        return Math.abs(pixelY - event.offsetY);
+      });
+      let best = distances.indexOf(Math.min(...distances));
+      if (distances[best] === Infinity) best = -1;
+      if (nearestIndex >= 0 && best !== nearestIndex
+        && distances[nearestIndex] - distances[best] < HYSTERESIS_PX) best = nearestIndex;
+      nearestIndex = best;
+    });
+    plotDom.addEventListener("mouseleave", () => { nearestIndex = -1; });
     chart.setOption({
     animation: false,
     color: ["#e07a5f", "#79c6a5", "#9da9c7", "#f0c36a"],
@@ -296,7 +324,22 @@ export function addPlot(signals = [], title = signals.join(" · ") || "New plot"
         },
       },
     },
-    tooltip: { trigger: "axis", backgroundColor: "#202327", borderColor: "#383d45", textStyle: { color: "#f1eee7" } },
+    tooltip: {
+      trigger: "axis", backgroundColor: "#202327", borderColor: "#383d45", textStyle: { color: "#f1eee7" },
+      formatter: (params) => {
+        const frame = params[0]?.axisValue ?? "";
+        const rows = params.filter((entry) => entry.seriesName !== "__cursor").map((entry) => {
+          const active = entry.seriesIndex === nearestIndex;
+          const value = Array.isArray(entry.value) ? entry.value[1] : entry.value;
+          const style = active ? "color:#f1eee7;font-weight:700" : "color:#9aa0a6";
+          return `<div style="display:flex;align-items:center;gap:6px;${style}">`
+            + `<span style="width:8px;height:8px;border-radius:50%;background:${entry.color};flex:none"></span>`
+            + `<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${entry.seriesName}</span>`
+            + `<span style="margin-left:auto;padding-left:10px">${value ?? "—"}</span></div>`;
+        }).join("");
+        return `<div style="color:#73777d;margin-bottom:4px">frame ${frame}</div>${rows}`;
+      },
+    },
     legend: { show: false },
     xAxis: {
       type: "value", scale: true, name: "frame", nameLocation: "middle", nameGap: 26,

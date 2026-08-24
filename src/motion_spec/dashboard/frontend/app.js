@@ -6,7 +6,7 @@
  * The dashboard: what is wired to what, once, when the page loads.
  */
 
-import { $, api, askConfirm, post, showError, snack, state } from "./core.js";
+import { $, RESTRICTED_TABS, api, askConfirm, post, showError, snack, state } from "./core.js";
 import { filterGenerations, loadGenerations, selectGeneration } from "./generations.js";
 import { goHome, loadLocation, openTab, sidebarLoader } from "./routing.js";
 import { reserveVideoSpace } from "./run.js";
@@ -144,6 +144,16 @@ fitSidebar();
 $("#home").onclick = goHome;
 
 window.onpopstate = loadLocation;
+
+// Known before the first tab renders, so a restored #tab=notebook never gets a chance to
+// try and fail: the server drops those requests for a LAN viewer, this just hides the door.
+state.roots = await api("/api/roots").catch(() => ({}));
+state.restricted = Boolean(state.roots.restricted);
+if (state.restricted) {
+  RESTRICTED_TABS.forEach((tab) => {
+    document.querySelectorAll(`[data-tab="${tab}"]`).forEach((button) => { button.style.display = "none"; });
+  });
+}
 
 loadLocation();
 

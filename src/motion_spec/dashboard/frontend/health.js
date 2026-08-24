@@ -6,18 +6,32 @@
  * Whether this installation can build and run anything at all -- and what it is made of.
  */
 
-import { $, api, showError, stampText, state } from "./core.js";
+import { $, api, showError, snack, stampText, state } from "./core.js";
 
 // Why a build or a run cannot work, before it is tried: the CLI's own checks, on the page.
-// The checks cost seconds, so the server runs them on a thread and this follows it.
+// The checks cost seconds, so the server runs them on a thread and this follows it. The poll
+// keeps running even after the reader leaves the tab, but it must never drag them back: it only
+// touches #content while they are still looking at it, and announces the result otherwise.
 export async function loadHealth(refresh = false) {
   clearTimeout(state.healthWatch);
+  const onTab = () => state.tab === "health";
   const [report, storage] = await Promise.all([
     api(`/api/health${refresh ? "?refresh=1" : ""}`),
-    api("/api/storage").catch(() => null),
+    onTab() ? api("/api/storage").catch(() => null) : null,
   ]);
-  renderHealth(report, storage);
-  if (report.running) state.healthWatch = setTimeout(() => loadHealth().catch(showError), 2000);
+  if (onTab()) renderHealth(report, storage);
+  if (report.running) {
+    state.healthChecking = true;
+    state.healthWatch = setTimeout(() => loadHealth().catch(showError), 2000);
+  } else if (state.healthChecking) {
+    state.healthChecking = false;
+    if (!onTab()) {
+      const failing = (report.checks ?? []).filter((check) => !check.ok && !check.optional);
+      snack(failing.length
+        ? `Health check done: ${failing.length} of ${report.checks.length} checks failing`
+        : `Health check done: all ${report.checks.length} checks pass`);
+    }
+  }
 }
 
 export function renderHealth(report, storage) {

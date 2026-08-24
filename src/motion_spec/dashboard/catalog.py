@@ -8,7 +8,6 @@ graph, the files it vendored. The IR is the generator's, and is never read here.
 
 from __future__ import annotations
 
-import difflib
 import json
 import re
 from datetime import datetime, timezone
@@ -21,7 +20,7 @@ from motion_spec.dashboard import roots
 from motion_spec.dashboard.graph import deployed_devices
 from motion_spec.dashboard.roots import LAYOUT_REL, directory_size, json_file, stamp_iso, trace
 from motion_spec.dashboard.runs import GenerationInfo, RunInfo
-from motion_spec.dashboard.sources import authored_lines
+from motion_spec.dashboard.sources import aligned_rows, authored_lines
 from motion_spec.introspection.archive import ArchiveError
 from motion_spec.introspection.replay import read_health, resolve_archive
 
@@ -115,7 +114,7 @@ def source_drift(generation_dir: Path, name: str | None = None) -> dict:
 
     The generation keeps what it was built from; the working tree has whatever it has been
     edited into. Comparing the two is the only honest answer to "would generating again give
-    me this?". The sides are aligned here, where difflib is, so the page only draws rows.
+    me this?". The sides are aligned by `aligned_rows`, so the page only draws rows.
     """
     source_dir = generation_dir / "generated/source"
     if name:
@@ -134,35 +133,15 @@ def source_drift(generation_dir: Path, name: str | None = None) -> dict:
             "same": False,
             "rows": [],
         }
-    was = archived.read_text().splitlines()
-    now = (roots.WORKSPACE / twin).read_text().splitlines()
-    rows, changed = [], False
-    for kind, left_from, left_to, right_from, right_to in difflib.SequenceMatcher(
-        None, was, now, autojunk=False
-    ).get_opcodes():
-        left = list(range(left_from, left_to))
-        right = list(range(right_from, right_to))
-        changed = changed or kind != "equal"
-        # A replaced block pairs line for line, and the shorter side runs out into blanks
-        # rather than shifting everything below it out of step with the other column.
-        for index in range(max(len(left), len(right))):
-            here = left[index] if index < len(left) else None
-            there = right[index] if index < len(right) else None
-            rows.append(
-                {
-                    "kind": kind,
-                    "left": None if here is None else {"n": here + 1, "text": was[here]},
-                    "right": None if there is None else {"n": there + 1, "text": now[there]},
-                }
-            )
     return {
         "workspace": twin,
         # Where it actually is, not a root the page has to remember and join a name onto.
         "workspace_path": str(roots.WORKSPACE / twin),
         "archived": str(archived),
         "name": archived.name,
-        "same": not changed,
-        "rows": rows,
+        **aligned_rows(
+            archived.read_text().splitlines(), (roots.WORKSPACE / twin).read_text().splitlines()
+        ),
     }
 
 

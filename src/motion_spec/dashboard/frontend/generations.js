@@ -11,7 +11,7 @@ import { consoleExcerpt, deviceRows, fact, listItem } from "./components.js";
 import { $, api, copyText, formatBytes, post, showError, snack, stampText, state } from "./core.js";
 import { setTab, setView } from "./routing.js";
 import { filter, loadReplay, openPendingRun, showSpeed, stopPlayback } from "./run.js";
-import { showSource } from "./sources.js";
+import { openSource, showSource } from "./sources.js";
 
 export async function loadGenerations(refresh = false) {
   const request = ++state.listRequest;
@@ -108,6 +108,16 @@ export function bindRunAgain(page, path, cameras, simulated) {
   // Hardware takes neither: the CLI rejects a headless real run, and recording one comes later.
   const headless = bar.querySelector('.run-choice[data-option="headless"]');
   headless.hidden = !simulated;
+  if (state.restricted) {
+    // A GUI window opens on this machine's display, not the LAN viewer's -- nothing here
+    // could watch it or close it, so the server forces headless regardless; show that
+    // instead of a GUI choice that would quietly do something else.
+    const gui = headless.querySelector('button[data-value="false"]');
+    gui.disabled = true;
+    gui.title = "GUI is disabled for network access: it would open on this machine's display, not yours";
+    gui.setAttribute("aria-pressed", "false");
+    headless.querySelector('button[data-value="true"]').setAttribute("aria-pressed", "true");
+  }
   // Only a run with no window to pace it has a speed to choose; a GUI run is realtime already.
   const speed = bar.querySelector(".run-speed");
   const showSpeed = () => {
@@ -638,6 +648,33 @@ export function modelMenu(row, source, generationPath, event) {
   }, { once: true }));
 }
 
+// The same page for the same question asked of git: what this file has become since it was
+// last committed. Reuses the drift page whole -- the reply carries the same rows.
+export async function showGitDiff(source, push = true) {
+  state.viewing = null;
+  if (push) {
+    const view = new URLSearchParams(location.hash.slice(1));
+    const unchanged = view.get("gitdiff") === source;
+    view.delete("run");
+    view.delete("generation");
+    view.delete("source");
+    view.delete("diff");
+    view.delete("file");
+    view.delete("panel");
+    view.set("gitdiff", source);
+    view.set("tab", "sources");
+    history[unchanged ? "replaceState" : "pushState"](null, "", `#${view}`);
+  }
+  const diff = await api(`/api/source-diff?path=${encodeURIComponent(source)}`)
+    .catch((error) => ({ error: error.message }));
+  $("#content").replaceChildren(driftPage(diff, {
+    left: diff.archived ? `committed · ${diff.archived}` : "committed",
+    right: diff.workspace_path ? `working tree · ${diff.workspace_path}` : "working tree",
+    unchanged: "Unchanged — the working tree matches the last commit.",
+    back: () => openSource(source),
+  }));
+}
+
 // What the model has become since this generation was made: a page of its own, the archived
 // copy beside the file as it is authored now.
 export async function showDrift(generationPath, file = null, push = true) {
@@ -666,25 +703,38 @@ export async function showDrift(generationPath, file = null, push = true) {
   const query = new URLSearchParams({ path: generationPath });
   if (file) query.set("file", file);
   const drift = await api(`/api/source-drift?${query}`).catch((error) => ({ error: error.message }));
+  $("#content").replaceChildren(driftPage(drift, {
+    left: drift.archived ? `archived · ${drift.archived}` : "archived",
+    right: drift.workspace_path ? `authored now · ${drift.workspace_path}` : "not in the sources tree",
+    missing: "This model is no longer in the sources tree, so there is nothing to compare it with.",
+    unchanged: "Unchanged — generating again would start from the same model.",
+    back: async () => {
+      state.diffPath = null;
+      await loadGenerations(true).catch(() => {});
+      selectGeneration(generationPath);
+    },
+  }));
+}
+
+// One page for both diffs: the reply says what the two sides are, this says what to call them
+// and where the back button goes.
+export function driftPage(drift, { left, right, missing, unchanged, back }) {
   const page = document.createElement("article");
   page.className = "diff-page";
-  page.innerHTML = '<div class="page-heading"><button id="back" title="Back to generation">←</button>'
+  page.innerHTML = '<div class="page-heading"><button id="back" title="Back">←</button>'
     + '<h1></h1><span class="eyebrow">DIFF</span></div><p class="diff-state"></p>'
     + '<div class="diff-columns"><div class="diff-head"></div><div class="diff-head"></div></div>'
     + '<div class="diff-body"></div>';
   page.querySelector("h1").textContent = drift.name ?? "model";
   const [leftHead, rightHead] = page.querySelectorAll(".diff-head");
-  leftHead.textContent = drift.archived ? `archived · ${drift.archived}` : "archived";
-  rightHead.textContent = drift.workspace_path
-    ? `authored now · ${drift.workspace_path}`
-    : "not in the sources tree";
-  const state_ = page.querySelector(".diff-state");
-  state_.textContent = drift.error
+  leftHead.textContent = left;
+  rightHead.textContent = right;
+  page.querySelector(".diff-state").textContent = drift.error
     ? drift.error
     : !drift.workspace
-      ? "This model is no longer in the sources tree, so there is nothing to compare it with."
+      ? missing ?? "There is nothing to compare this with."
       : drift.same
-        ? "Unchanged — generating again would start from the same model."
+        ? unchanged
         : `${drift.rows.filter((row) => row.kind !== "equal").length} lines differ.`;
   page.querySelector(".diff-body").replaceChildren(...(drift.rows ?? []).map((row) => {
     const line = document.createElement("div");
@@ -702,12 +752,8 @@ export async function showDrift(generationPath, file = null, push = true) {
     }
     return line;
   }));
-  $("#content").replaceChildren(page);
-  page.querySelector("#back").onclick = async () => {
-    state.diffPath = null;
-    await loadGenerations(true).catch(() => {});
-    selectGeneration(generationPath);
-  };
+  page.querySelector("#back").onclick = back;
+  return page;
 }
 
 // The generation's own sources, in the sidebar, each saying whether the working tree still

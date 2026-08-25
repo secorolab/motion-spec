@@ -9,42 +9,36 @@ from pathlib import Path
 import rdflib
 
 from motion_spec.introspection.archive import create_archive_manifest
-from motion_spec.introspection.provenance import prov_uri
+from motion_spec.introspection.provenance import prov_uri, run_entity_uri
 from motion_spec.generation.artifacts import field_names_and_format
 from motion_spec.introspection.replay import runtime_frames
 from motion_spec.introspection.runtime_graph import (
     DCTERMS,
     MEMBER_EDGE_LIMIT,
     MSRUN,
+    MS_PROV,
     PROV,
     QKIND,
     QUDT,
     SENS,
     SOSA,
     TIME,
-    TRACE,
     UNIT,
     write_runtime_ttl,
 )
 
 S_START = rdflib.URIRef("https://example.test/S_START")
 S_MOVE = rdflib.URIRef("https://example.test/S_MOVE")
+MOTION_MOVE = rdflib.URIRef("https://example.test/motion_move")
 T_START_MOVE = rdflib.URIRef("https://example.test/T_START_MOVE")
 E_DONE = rdflib.URIRef("https://example.test/E_DONE")
 CONSTRAINT_X = rdflib.URIRef("https://example.test/constraint_x")
 DONE_MON = rdflib.URIRef("https://example.test/done_mon")
+RUN = rdflib.URIRef(prov_uri("run:run-test"))
 
-# The whole ms-exec-trace vocabulary. Everything else composes from prov/time/sosa/dcterms/sens.
-TRACE_TERMS = {
-    "atFrame",
-    "seq",
-    "step",
-    "slotIndex",
-    "rearmCount",
-    "Frame",
-    "ActivityOccurrence",
-    "ControlFlowOccurrence",
-}
+# The classes the runtime graph is allowed to mint. Everything else composes from
+# prov/time/sosa/dcterms/sens; ms-prov:SpecCompilation belongs to generation, not to a run.
+MS_PROV_TERMS = {"TaskExecution", "MotionExecution", "ConstraintMaintenance"}
 
 from frame_log_fixture import write_frame_log_pb, write_frame_log_proto
 from support import _hash_doc, _layout, _provenance
@@ -84,6 +78,7 @@ def _schema() -> dict:
         "by_motion": {
             "move": {
                 "index": 0,
+                "uri": "https://example.test/motion_move",
                 "controllers": [
                     {
                         "index": 0,
@@ -229,6 +224,23 @@ def _has(graph: rdflib.Graph, subject=None, predicate=None, object_=None) -> boo
     return (subject, predicate, object_) in graph
 
 
+def _pos(graph: rdflib.Graph, instant) -> int:
+    """The tick an instant sits at, read the way every query reads it."""
+    return int(graph.value(graph.value(instant, TIME.inTimePosition), TIME.numericPosition))
+
+
+def _spans(graph: rdflib.Graph, cls, referent):
+    """Every occurrence of `cls` that used `referent`, in the order they began."""
+    return sorted(
+        (
+            occ
+            for occ in graph.subjects(PROV.used, referent)
+            if (occ, rdflib.RDF.type, cls) in graph
+        ),
+        key=lambda occ: _pos(graph, graph.value(occ, TIME.hasBeginning)),
+    )
+
+
 def test_runtime_ttl_projects_full_observation_graph(tmp_path: Path) -> None:
     source = _source_tree(tmp_path / "source")
     run_dir = tmp_path / "run"
@@ -244,34 +256,34 @@ def test_runtime_ttl_projects_full_observation_graph(tmp_path: Path) -> None:
 
     graph = rdflib.Graph().parse(runtime_ttl, format="turtle")
 
-    # Sparse event graph: a Frame node only where an occurrence anchors (here all 4 steps).
-    assert len(list(graph.subjects(rdflib.RDF.type, TRACE.Frame))) == 4
-    # Two occurrence classes only: a span for what was in force, an instant for control moving.
-    assert _has(graph, None, rdflib.RDF.type, TRACE.ActivityOccurrence)
-    assert _has(graph, None, rdflib.RDF.type, TRACE.ControlFlowOccurrence)
+    # The run is the one activity every other occurrence hangs off, and it is an activity:
+    # neither an entity nor an execution context.
+    assert set(graph.objects(RUN, rdflib.RDF.type)) == {MS_PROV.TaskExecution}
+    assert graph.value(RUN, TIME.hasBeginning) is not None
+    assert graph.value(RUN, TIME.hasEnd) is not None
+    # Sparse event graph: an instant only where an occurrence anchors (here all 4 steps).
+    assert len(list(graph.subjects(rdflib.RDF.type, TIME.Instant))) == 4
+    # The nesting is the spine: run informs each motion, each motion informs its maintenances.
+    motions = set(graph.subjects(rdflib.RDF.type, MS_PROV.MotionExecution))
+    holds = set(graph.subjects(rdflib.RDF.type, MS_PROV.ConstraintMaintenance))
+    assert motions and holds
+    assert all(RUN in graph.objects(motion, PROV.wasInformedBy) for motion in motions)
+    assert all(set(graph.objects(hold, PROV.wasInformedBy)) & motions for hold in holds)
     # Every referent is named through the one prov:used, never through a per-kind predicate:
-    # the design graph's own rdf:type says which kind of element it is.
-    for referent in (S_START, S_MOVE, T_START_MOVE, E_DONE, CONSTRAINT_X, DONE_MON):
+    # the design graph's own rdf:type says which kind of element it is. A motion span names
+    # the motion it ran; the entry state, whose motion never resolved, names the state.
+    for referent in (S_START, MOTION_MOVE, T_START_MOVE, E_DONE, CONSTRAINT_X, DONE_MON):
         assert _has(graph, None, PROV.used, referent)
     # ... and exactly one per occurrence, so an occurrence never conflates two referents.
-    for occ in set(graph.subjects(rdflib.RDF.type, PROV.Activity)):
-        if (occ, TRACE.seq, None) in graph:
-            assert len(list(graph.objects(occ, PROV.used))) == 1
+    for occ in motions | holds | set(graph.subjects(TIME.hasTime, None)):
+        assert len(list(graph.objects(occ, PROV.used))) == 1
+    # Every occurrence says which agent ran it.
+    for occ in motions | holds | set(graph.subjects(TIME.hasTime, None)):
+        assert graph.value(occ, PROV.wasAssociatedWith) is not None
     # The contract version composes from dcterms; run id and frame count are not restated.
     assert _has(graph, None, DCTERMS.hasVersion, None)
     # Nothing is named after a state machine any more.
-    for gone in (
-        MSRUN.state,
-        MSRUN.transition,
-        MSRUN.fsmState,
-        MSRUN.fromState,
-        MSRUN.toState,
-        TRACE.state,
-        TRACE.transition,
-        TRACE.fsmState,
-        TRACE.fromState,
-        TRACE.toState,
-    ):
+    for gone in (MSRUN.state, MSRUN.transition, MSRUN.fsmState, MSRUN.fromState, MSRUN.toState):
         assert not list(graph.triples((None, gone, None)))
 
     # The Sample node families and the continuous streams are gone (they live in the frame log).
@@ -294,14 +306,17 @@ def test_runtime_ttl_projects_full_observation_graph(tmp_path: Path) -> None:
     # (setpoint/threshold/operator) is referenced by URI, not copied in.
     mon = next(graph.subjects(PROV.used, DONE_MON))
     assert graph.value(mon, SOSA.hasSimpleResult) == rdflib.Literal(Decimal("0.004"))
-    # Satisfied on entry, lost at step 2, regained at step 3: two spans, and the goal lost is
-    # the gap between them. The entry span is what makes the loss visible at all.
-    con_spans = sorted(
-        graph.subjects(PROV.used, CONSTRAINT_X), key=lambda occ: int(graph.value(occ, TRACE.seq))
-    )
+    # Satisfied on entry, lost at step 2, regained at step 3: two maintenances, and what the
+    # first held was invalidated by the activity that broke it.
+    con_spans = _spans(graph, MS_PROV.ConstraintMaintenance, CONSTRAINT_X)
     assert len(con_spans) == 2
     assert graph.value(con_spans[0], SOSA.hasSimpleResult) == rdflib.Literal(Decimal("0.0"))
-    assert graph.value(graph.value(con_spans[0], TIME.hasEnd), TRACE.step) == rdflib.Literal(2)
+    assert _pos(graph, graph.value(con_spans[0], TIME.hasEnd)) == 2
+    lost = next(graph.subjects(PROV.wasGeneratedBy, con_spans[0]))
+    assert graph.value(lost, PROV.wasInvalidatedBy) is not None
+    # The one that was never lost is generated and never invalidated.
+    held = next(graph.subjects(PROV.wasGeneratedBy, con_spans[1]))
+    assert graph.value(held, PROV.wasInvalidatedBy) is None
     # int-valued measurement coerced to xsd:decimal (not xsd:integer, which the runtime SHACL rejects)
     assert graph.value(con_spans[1], SOSA.hasSimpleResult) == rdflib.Literal(Decimal("1.0"))
     assert graph.value(con_spans[1], SOSA.hasSimpleResult).datatype == rdflib.XSD.decimal
@@ -318,15 +333,20 @@ def test_runtime_ttl_projects_full_observation_graph(tmp_path: Path) -> None:
         if isinstance(o, rdflib.Literal) and o.datatype == rdflib.XSD.double
     ]
 
-    # Time is xsd:dateTime; a frame is generated at one, an occurrence starts at one.
+    # Time is xsd:dateTime; an instant is generated at one, a run starts at one.
     stamps = list(graph.subject_objects(PROV.generatedAtTime)) + list(
         graph.subject_objects(PROV.startedAtTime)
     )
     assert stamps and all(o.datatype == rdflib.XSD.dateTime for _, o in stamps)
 
-    # Runtime.ttl self-provenance: who recovered it, and derived from the frame log.
+    # Runtime.ttl self-provenance: who recovered it, and derived from the frame log. Its entity
+    # is run-scoped, so two runs of one generation never collapse onto one document node.
     recovery = rdflib.URIRef(prov_uri("activity:runtime_ttl_recovery"))
-    assert _has(graph, None, PROV.wasGeneratedBy, recovery)
+    doc = rdflib.URIRef(run_entity_uri("run-test", "runtime_ttl"))
+    assert _has(graph, doc, PROV.wasGeneratedBy, recovery)
+    assert _has(
+        graph, doc, PROV.wasDerivedFrom, rdflib.URIRef(run_entity_uri("run-test", "frame_log"))
+    )
     assert _has(
         graph, recovery, PROV.wasAssociatedWith, rdflib.URIRef(prov_uri("agent:replay_process"))
     )
@@ -338,15 +358,14 @@ def test_runtime_ttl_projects_full_observation_graph(tmp_path: Path) -> None:
 ALLOWED_PREDICATES = {
     rdflib.RDF.type,
     rdflib.RDFS.label,
-    TRACE.atFrame,
-    TRACE.rearmCount,
-    TRACE.seq,
-    TRACE.slotIndex,
-    TRACE.step,
     DCTERMS.hasVersion,
     SOSA.hasSimpleResult,
     TIME.hasBeginning,
     TIME.hasEnd,
+    TIME.hasTime,
+    TIME.hasTRS,
+    TIME.inTimePosition,
+    TIME.numericPosition,
     PROV.actedOnBehalfOf,
     PROV.atLocation,
     PROV.endedAtTime,
@@ -357,6 +376,7 @@ ALLOWED_PREDICATES = {
     PROV.wasDerivedFrom,
     PROV.wasGeneratedBy,
     PROV.wasInformedBy,
+    PROV.wasInvalidatedBy,
     QUDT.hasQuantityKind,
     QUDT.unit,
     QUDT.value,
@@ -373,10 +393,6 @@ def _graph(tmp_path: Path) -> tuple[rdflib.Graph, Path]:
     return rdflib.Graph().parse(runtime_ttl, format="turtle"), run_dir
 
 
-def _step(graph: rdflib.Graph, frame) -> int:
-    return int(graph.value(frame, TRACE.step))
-
-
 def test_runtime_graph_carries_no_design_values(tmp_path: Path) -> None:
     """The separation invariant, asserted by predicate set rather than by spot check."""
     graph, _run_dir = _graph(tmp_path)
@@ -384,68 +400,91 @@ def test_runtime_graph_carries_no_design_values(tmp_path: Path) -> None:
     assert used <= ALLOWED_PREDICATES, sorted(str(p) for p in used - ALLOWED_PREDICATES)
 
 
-def test_only_the_eight_trace_terms_appear(tmp_path: Path) -> None:
+def test_only_the_approved_ms_prov_classes_appear(tmp_path: Path) -> None:
     """The cheapest guard against the vocabulary creeping back."""
     graph, _run_dir = _graph(tmp_path)
     seen = {
-        str(term)[len(TRACE) :]
+        str(term)[len(MS_PROV) :]
         for triple in graph
         for term in triple
-        if isinstance(term, rdflib.URIRef) and str(term).startswith(str(TRACE))
+        if isinstance(term, rdflib.URIRef) and str(term).startswith(str(MS_PROV))
     }
-    assert seen and seen <= TRACE_TERMS, sorted(seen - TRACE_TERMS)
+    assert seen and seen <= MS_PROV_TERMS, sorted(seen - MS_PROV_TERMS)
 
 
 def test_spans_are_closed_and_instants_have_no_interval(tmp_path: Path) -> None:
     graph, _run_dir = _graph(tmp_path)
-    spans = set(graph.subjects(rdflib.RDF.type, TRACE.ActivityOccurrence))
-    assert spans == set(graph.subjects(rdflib.RDF.type, TIME.ProperInterval))
+    spans = set(graph.subjects(rdflib.RDF.type, MS_PROV.MotionExecution)) | set(
+        graph.subjects(rdflib.RDF.type, MS_PROV.ConstraintMaintenance)
+    )
+    assert spans
     for span in spans:
         assert graph.value(span, TIME.hasBeginning) is not None
         # Including the run's final occupancy: without its end it drops out of every
         # duration query and the durations no longer sum to the run.
         assert graph.value(span, TIME.hasEnd) is not None
-        assert graph.value(span, TRACE.atFrame) is None
-    instants = set(graph.subjects(rdflib.RDF.type, TRACE.ControlFlowOccurrence))
+        assert graph.value(span, TIME.hasTime) is None
+    instants = set(graph.subjects(TIME.hasTime, None))
     assert instants
     for occ in instants:
-        assert graph.value(occ, TRACE.atFrame) is not None
+        # Control flow is not one of the four classes, so it invents none: a plain activity.
+        assert set(graph.objects(occ, rdflib.RDF.type)) == {PROV.Activity}
         assert graph.value(occ, TIME.hasBeginning) is None
+
+
+def test_every_instant_is_positioned_on_the_run_tick_scale(tmp_path: Path) -> None:
+    """One TRS per run carries the tick rate, and every position is counted on it."""
+    graph, _run_dir = _graph(tmp_path)
+    trs = next(graph.subjects(rdflib.RDF.type, TIME.TRS))
+    instants = set(graph.subjects(rdflib.RDF.type, TIME.Instant))
+    assert instants
+    for instant in instants:
+        position = graph.value(instant, TIME.inTimePosition)
+        assert graph.value(position, TIME.hasTRS) == trs
+        assert int(graph.value(position, TIME.numericPosition)) >= 0
 
 
 def test_activity_spans_tile_the_run(tmp_path: Path) -> None:
     """Coordination occupancies are contiguous, so their extents sum to the run's own extent."""
     graph, _run_dir = _graph(tmp_path)
     total = sum(
-        _step(graph, graph.value(a, TIME.hasEnd)) - _step(graph, graph.value(a, TIME.hasBeginning))
-        for a in graph.subjects(rdflib.RDF.type, TRACE.ActivityOccurrence)
-        if graph.value(a, PROV.used) in (S_START, S_MOVE)
+        _pos(graph, graph.value(a, TIME.hasEnd)) - _pos(graph, graph.value(a, TIME.hasBeginning))
+        for a in graph.subjects(rdflib.RDF.type, MS_PROV.MotionExecution)
     )
-    steps = [_step(graph, f) for f in graph.subjects(rdflib.RDF.type, TRACE.Frame)]
+    steps = [_pos(graph, i) for i in graph.subjects(rdflib.RDF.type, TIME.Instant)]
     assert total == max(steps) - min(steps)
+    # ... and the run's own extent is exactly that span.
+    assert _pos(graph, graph.value(RUN, TIME.hasBeginning)) == min(steps)
+    assert _pos(graph, graph.value(RUN, TIME.hasEnd)) == max(steps)
 
 
-def test_tick_rate_comes_from_the_header(tmp_path: Path) -> None:
+def test_tick_rate_hangs_off_the_time_reference_system(tmp_path: Path) -> None:
     """A step converts to seconds without opening the frame log."""
     graph, _run_dir = _graph(tmp_path)
-    rate = next(graph.objects(None, SENS["update-rate"]))
+    trs = next(graph.subjects(rdflib.RDF.type, TIME.TRS))
+    rate = graph.value(trs, SENS["update-rate"])
     assert graph.value(rate, QUDT.hasQuantityKind) == QKIND.Frequency
     assert graph.value(rate, QUDT.unit) == UNIT.HZ
     assert float(graph.value(rate, QUDT.value)) == 1e9 / _schema()["control_period_ns"]
+    # One mechanism only: no second period anywhere else in the graph.
+    assert len(list(graph.subject_objects(SENS["update-rate"]))) == 1
 
 
 def test_occurrences_link_to_what_informed_them(tmp_path: Path) -> None:
     """The causal chain is a walk, and it names instances rather than definitions."""
     graph, _run_dir = _graph(tmp_path)
     flow = next(graph.subjects(PROV.used, T_START_MOVE))
-    # The event that moved control is itself a control-flow instant, named by its own prov:used.
+    # The event that moved control is itself an instant-anchored activity, named by prov:used.
     cause = graph.value(flow, PROV.wasInformedBy)
     assert cause is not None
-    assert (cause, rdflib.RDF.type, TRACE.ControlFlowOccurrence) in graph
+    assert graph.value(cause, TIME.hasTime) is not None
     assert graph.value(cause, PROV.used) == E_DONE
-    entered = next(graph.subjects(PROV.wasInformedBy, flow))
-    assert (entered, rdflib.RDF.type, TRACE.ActivityOccurrence) in graph
-    assert graph.value(entered, PROV.used) == S_MOVE
+    entered = next(
+        occ
+        for occ in graph.subjects(PROV.wasInformedBy, flow)
+        if (occ, rdflib.RDF.type, MS_PROV.MotionExecution) in graph
+    )
+    assert graph.value(entered, PROV.used) == MOTION_MOVE
 
 
 def test_recover_runtime_ttl_rewrites_with_the_new_terms(tmp_path: Path) -> None:
@@ -460,9 +499,9 @@ def test_recover_runtime_ttl_rewrites_with_the_new_terms(tmp_path: Path) -> None
     runtime_ttl.write_text("# stale\n")
     assert main([str(run_dir), "--recover-runtime-ttl"]) == 0
     graph = rdflib.Graph().parse(runtime_ttl, format="turtle")
-    assert _has(graph, None, rdflib.RDF.type, TRACE.ActivityOccurrence)
+    assert _has(graph, None, rdflib.RDF.type, MS_PROV.MotionExecution)
+    assert _has(graph, None, rdflib.RDF.type, MS_PROV.ConstraintMaintenance)
     assert list(graph.triples((None, TIME.hasEnd, None)))
-    assert list(graph.triples((None, TRACE.rearmCount, None)))
 
 
 def _gate_schema(*, members: bool = True) -> dict:
@@ -564,8 +603,9 @@ def _gate_graph(tmp_path: Path, *, breaks: int, member_flaps: int = 1, **kw) -> 
     return rdflib.Graph().parse(write_runtime_ttl(run_dir, frames), format="turtle")
 
 
-def _monitor(graph: rdflib.Graph):
-    return next(graph.subjects(PROV.used, DONE_MON))
+def _armings(graph: rdflib.Graph) -> list:
+    """Every maintenance of the gate, in order: each arming is one of them."""
+    return _spans(graph, MS_PROV.ConstraintMaintenance, DONE_MON)
 
 
 def _members(graph: rdflib.Graph) -> list:
@@ -576,42 +616,47 @@ def _members(graph: rdflib.Graph) -> list:
     ]
 
 
-def test_rearm_count_and_first_hold(tmp_path: Path) -> None:
-    """A condition that breaks twice before firing records it, and the arming's interval
-    begins at the hold that led to the firing -- not at the firing edge."""
+def test_each_rearm_is_its_own_maintenance(tmp_path: Path) -> None:
+    """A condition that breaks twice before firing arms three times, so the re-arm count is
+    COUNT(*); the arming that fired begins at the hold that led to the firing, and each broken
+    one records what invalidated the hold."""
     graph = _gate_graph(tmp_path, breaks=2)
-    mon = _monitor(graph)
-    assert int(graph.value(mon, TRACE.rearmCount)) == 2
-    began = _step(graph, graph.value(mon, TIME.hasBeginning))
-    fired = _step(graph, graph.value(mon, TIME.hasEnd))
-    assert began < fired
+    armings = _armings(graph)
+    assert len(armings) == 3
+    fired = armings[-1]
+    assert _pos(graph, graph.value(fired, TIME.hasBeginning)) < _pos(
+        graph, graph.value(fired, TIME.hasEnd)
+    )
+    for broken in armings[:-1]:
+        goal = next(graph.subjects(PROV.wasGeneratedBy, broken))
+        assert graph.value(goal, PROV.wasInvalidatedBy) is not None
+    # Only the arming that fired carries an observed value.
+    assert [occ for occ in armings if graph.value(occ, SOSA.hasSimpleResult) is not None] == [fired]
 
 
 def test_boring_gate_emits_no_member_edges(tmp_path: Path) -> None:
     """A gate that armed once and fired says nothing a member lane could show."""
     graph = _gate_graph(tmp_path, breaks=0)
-    mon = _monitor(graph)
-    assert int(graph.value(mon, TRACE.rearmCount)) == 0
+    assert len(_armings(graph)) == 1
     assert not _members(graph)
 
 
 def test_interesting_gate_emits_member_edges_linked_to_the_arming(tmp_path: Path) -> None:
     graph = _gate_graph(tmp_path, breaks=2)
-    mon = _monitor(graph)
+    fired = _armings(graph)[-1]
     members = _members(graph)
     assert members
     # Each member span informed the arming, so the lanes hang off the firing that wanted them.
-    assert set(members) <= set(graph.objects(mon, PROV.wasInformedBy))
+    assert set(members) <= set(graph.objects(fired, PROV.wasInformedBy))
     for occ in members:
         assert graph.value(occ, TIME.hasEnd) is not None
 
 
-def test_truncated_member_series_keeps_the_true_rearm_count(tmp_path: Path) -> None:
-    """The member series is capped; rearmCount is not, so truncation stays visible."""
+def test_truncated_member_series_keeps_every_arming(tmp_path: Path) -> None:
+    """The member series is capped; the armings are not, so truncation stays visible."""
     breaks = MEMBER_EDGE_LIMIT * 4
     graph = _gate_graph(tmp_path, breaks=breaks)
-    mon = _monitor(graph)
-    assert int(graph.value(mon, TRACE.rearmCount)) == breaks
+    assert len(_armings(graph)) == breaks + 1
     per_member: dict = {}
     for occ in _members(graph):
         per_member.setdefault(str(graph.value(occ, PROV.used)), []).append(occ)

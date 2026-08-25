@@ -29,8 +29,10 @@ from frame_log_fixture import flat_frame, write_frame_log_pb
 SOSA = "http://www.w3.org/ns/sosa/"
 PROV = "http://www.w3.org/ns/prov#"
 MSRUN = "https://secorolab.github.io/motion-spec/runtime/"
-TRACE = "https://secorolab.github.io/metamodels/motion-spec/execution-trace/"
+MS_PROV = "https://secorolab.github.io/metamodels/motion-spec/prov#"
 TIME = "http://www.w3.org/2006/time#"
+QUDT = "http://qudt.org/schema/qudt/"
+SENS = "https://secorolab.github.io/metamodels/robot/sensors#"
 ERROR_VALUE = 0.125
 OBSERVATIONS = f"""
 PREFIX sosa: <{SOSA}>
@@ -144,8 +146,8 @@ def test_history_carries_no_values_when_sampling_is_off(tmp_path):
 def test_occurrences_and_live_values_answer_one_query_together(tmp_path):
     service = _service(tmp_path)
     _headers, rows = service.query(f"""
-        PREFIX trace: <{TRACE}>
-        SELECT ?occ WHERE {{ ?occ a trace:ActivityOccurrence }}
+        PREFIX ms-prov: <{MS_PROV}>
+        SELECT ?occ WHERE {{ ?occ a ms-prov:ConstraintMaintenance }}
     """)
     assert rows, "the satisfaction edge should be projected into urn:runtime"
 
@@ -164,7 +166,8 @@ def test_the_dashboard_mints_no_vocabulary(tmp_path):
     def namespaces(nodes):
         return {split_uri(str(node))[0] for node in nodes}
 
-    # The value overlay is the dashboard's own emission: SOSA plus rdf:type, nothing else.
+    # The value overlay is the dashboard's own emission: SOSA plus the OWL-Time instant each
+    # result time is counted at, and rdf:type. Nothing else.
     live_predicates = {str(p) for p in set(live.predicates())}
     assert live_predicates - {str(rdflib.RDF.type)} == {
         SOSA + name
@@ -175,10 +178,15 @@ def test_the_dashboard_mints_no_vocabulary(tmp_path):
             "madeBySensor",
             "resultTime",
         )
+    } | {TIME + name for name in ("inTimePosition", "numericPosition", "hasTRS")} | {
+        PROV + "generatedAtTime"
     }
-    assert {str(o) for o in live.objects(None, rdflib.RDF.type)} == {SOSA + "Observation"}
+    assert {str(o) for o in live.objects(None, rdflib.RDF.type)} == {
+        SOSA + "Observation",
+        TIME + "Instant",
+    }
 
-    allowed = {SOSA, PROV, MSRUN, TRACE, TIME, str(rdflib.RDF)}
+    allowed = {SOSA, PROV, MSRUN, MS_PROV, TIME, QUDT, SENS, str(rdflib.RDF)}
     for graph in (live, runtime):
         assert namespaces(graph.predicates()) <= allowed
         assert namespaces(graph.objects(None, rdflib.RDF.type)) <= allowed

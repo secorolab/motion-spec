@@ -377,27 +377,43 @@ def test_generation_run_vendors_its_authored_source(tmp_path: Path) -> None:
     } == {"source/demo.fsm", "source/demo.robmot"}
 
 
-def test_runtime_shacl_rejects_unanchored_occurrence(tmp_path: Path) -> None:
+_RUNTIME_TTL = """
+@prefix ms-prov: <https://secorolab.github.io/metamodels/motion-spec/prov#> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix time: <http://www.w3.org/2006/time#> .
+
+<run> a ms-prov:TaskExecution ;
+    prov:used <entity/model> ;
+    prov:wasAssociatedWith <agent/controller> ;
+    time:hasBeginning <t0> ; time:hasEnd <t9> .
+
+<motion> a ms-prov:MotionExecution ;
+    prov:used <https://example.test/motion_move> ;
+    prov:wasAssociatedWith <agent/controller> ;
+    prov:wasInformedBy <run> ;
+    time:hasBeginning <t0> ; time:hasEnd <t9> .
+
+<t0> a time:Instant ; time:inTimePosition [ time:numericPosition %s ; time:hasTRS <trs> ] .
+<t9> a time:Instant ; time:inTimePosition [ time:numericPosition 9 ; time:hasTRS <trs> ] .
+"""
+
+
+def _runtime_ttl(tmp_path: Path, first_position: str) -> Path:
+    path = tmp_path / "runtime.ttl"
+    path.write_text((_RUNTIME_TTL % first_position).lstrip())
+    return path
+
+
+def test_runtime_shacl_accepts_a_positioned_run(tmp_path: Path) -> None:
+    """The half that has to pass: a run and its motion, positioned on the tick scale."""
     if not (Path(__file__).resolve().parents[2] / "metamodels").exists():
         pytest.skip("metamodels is not in this checkout")
-    path = tmp_path / "runtime.ttl"
-    path.write_text(
-        """
-@prefix dcterms: <http://purl.org/dc/terms/> .
-@prefix ms-exec-trace: <https://secorolab.github.io/metamodels/motion-spec/execution-trace/> .
-@prefix prov: <http://www.w3.org/ns/prov#> .
-@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+    _validate_runtime_shacl(_runtime_ttl(tmp_path, "0"))
 
-<run> a <https://secorolab.github.io/metamodels/execution-context#ExecutionContext> ;
-    dcterms:hasVersion 3 ;
-    prov:wasGeneratedBy <activity> .
 
-# No atFrame: InstantOccurrenceShape requires exactly one, so the shape must reject this.
-<event> a ms-exec-trace:ControlFlowOccurrence, prov:Activity ;
-    prov:used <https://example.test/E_DONE> ;
-    ms-exec-trace:seq 0 .
-""".lstrip()
-    )
-
+def test_runtime_shacl_rejects_a_negative_position(tmp_path: Path) -> None:
+    """The half that has to fail: a tick before the run began is not a position."""
+    if not (Path(__file__).resolve().parents[2] / "metamodels").exists():
+        pytest.skip("metamodels is not in this checkout")
     with pytest.raises(ArchiveError, match="runtime SHACL validation failed"):
-        _validate_runtime_shacl(path)
+        _validate_runtime_shacl(_runtime_ttl(tmp_path, "-1"))

@@ -800,13 +800,12 @@ def _validate_rec_shacl(path: Path) -> None:
 
 def _validate_runtime_shacl(path: Path) -> None:
     root = _metamodels_root()
-    # The trace shape covers occurrences and frames; the tick rate is a sensors update-rate, so
-    # its frequency shape comes from the metamodel that defines it rather than being restated.
+    # The ms-prov shape covers the run, its motions and their maintenances; the tick rate is a
+    # sensors update-rate, so its frequency shape comes from the metamodel that defines it
+    # rather than being restated. The W3C prov shape is deliberately not loaded: it requires
+    # every prov:used object to be a typed prov:Entity, and design IRIs are not.
     shapes = rdflib.Graph()
-    for shape in (
-        root / "motion-spec" / "execution-trace.shacl.ttl",
-        root / "robot" / "sensors.shacl.ttl",
-    ):
+    for shape in (root / "motion-spec" / "prov.shacl.ttl", root / "robot" / "sensors.shacl.ttl"):
         if not shape.exists():
             raise ArchiveError(f"{shape}: missing runtime SHACL shape")
         shapes.parse(_graph_source(shape), format="turtle")

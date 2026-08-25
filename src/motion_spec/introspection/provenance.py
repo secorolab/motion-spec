@@ -56,13 +56,15 @@ TOOL_METADATA = {
 }
 
 
+def _slug(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("_") or "item"
+
+
 def _prov_iri(identifier: str) -> str:
     kind, _, name = identifier.partition(":")
     if not name:
         kind, name = "id", identifier
-    kind_slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", kind).strip("_") or "item"
-    name_slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_") or "item"
-    return f"{MSPROV_PREFIX}{kind_slug}/{name_slug}"
+    return f"{MSPROV_PREFIX}{_slug(kind)}/{_slug(name)}"
 
 
 # REC expands only the `rec:` and `prov:` prefixes it owns; every other CURIE would be stored
@@ -82,12 +84,25 @@ def rec_types(types) -> list[str]:
 
 
 def prov_uri(identifier: str) -> str:
-    """Canonical full provenance IRI for an agent/activity id."""
+    """Canonical full provenance IRI for an agent/activity/run id.
+
+    `run:<run-id>` is what makes the runtime, rec and consolidated graphs describe one run
+    rather than three, so every document mints the run through here.
+    """
     if identifier.startswith(("http://", "https://")):
         return identifier
     if identifier.startswith(MSPROV_PREFIX):
         return MSPROV + identifier[len(MSPROV_PREFIX) :]
     return MSPROV + _prov_iri(identifier)[len(MSPROV_PREFIX) :]
+
+
+def run_entity_uri(run_id: str, slug: str) -> str:
+    """Canonical IRI for a file entity belonging to one run.
+
+    Run-scoped, so unioning two runs of one generation keeps their artefacts apart instead of
+    collapsing them onto one node with conflicting locations and hashes.
+    """
+    return f"{MSPROV}entity/run/{_slug(run_id)}/{_slug(slug)}"
 
 
 def _location_iri(value: str | None) -> str | None:

@@ -381,13 +381,9 @@ def test_q7a_any_output_is_empty_on_every_solver_interface(consolidated):
     assert not expected, "an authored constraint compiled to no output entity at all"
 
 
-def test_the_force_solver_inputs_carry_no_lineage_to_their_controller(consolidated):
-    """Why Q7a's residue is a recorded gap, not a defect of the query.
-
-    The joint- and Cartesian-force specifications are already correctly classed and already
-    minted under their controller's own IRI, but they are authored nodes carrying no
-    `prov:wasDerivedFrom` -- the one edge Q7a joins on. Until their writer adds it, a
-    torque- or wrench-mediated constraint answers Q7a despite having compiled.
+def test_every_force_solver_input_carries_lineage_to_its_controller(consolidated):
+    """Every solver input joins Q7a: the joint- and Cartesian-force specifications carry
+    `prov:wasDerivedFrom` to the controller that compiled them, same as the acceleration rows.
     """
     design = consolidated.graph(DESIGN_GRAPH)
     for solver_input in (
@@ -396,7 +392,7 @@ def test_the_force_solver_inputs_carry_no_lineage_to_their_controller(consolidat
     ):
         nodes = set(design.subjects(rdflib.RDF.type, solver_input))
         assert nodes, f"the archive exercises no {solver_input}"
-        assert not any(design.value(node, PROV.wasDerivedFrom) for node in nodes)
+        assert all(design.value(node, PROV.wasDerivedFrom) for node in nodes)
 
 
 def test_q7b_reports_the_compiled_constraints_no_occurrence_ever_held(consolidated):

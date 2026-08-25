@@ -18,12 +18,10 @@ from motion_spec_dsl.rdf_parser.vocab import CSTR_HDL
 from motion_spec.introspection import frame_log_pb
 from motion_spec.introspection.provenance import (
     MSPROV,
-    plan_iri,
     prov_uri,
     rec_run_lifecycle,
     rec_types,
     run_entity_uri,
-    step_iri,
 )
 
 
@@ -81,7 +79,6 @@ MSRUN = rdflib.Namespace("https://secorolab.github.io/motion-spec/runtime/")
 # for this run's instance nodes. Emitting types under MSRUN left every sh:targetClass
 # unmatched, so the shape validated nothing.
 MS_PROV = rdflib.Namespace("https://secorolab.github.io/metamodels/motion-spec/prov#")
-P_PLAN = rdflib.Namespace("http://purl.org/net/p-plan#")
 TIME = rdflib.Namespace("http://www.w3.org/2006/time#")
 DCTERMS = rdflib.Namespace("http://purl.org/dc/terms/")
 SENS = rdflib.Namespace("https://secorolab.github.io/metamodels/robot/sensors#")
@@ -535,15 +532,8 @@ class IncrementalProjector:
         self.g.add((node, TIME.hasEnd, self._instant(step)))
 
     def _used(self, occ: rdflib.URIRef, referent: rdflib.URIRef) -> None:
-        """The design element this occurrence carried out, and the plan step it corresponds to.
-
-        The step IRI is derived from the design IRI, so the record joins the generated plan
-        without either side carrying the other's identifiers.
-        """
+        """The design element this occurrence carried out, named by its own design IRI."""
         self.g.add((occ, PROV.used, referent))
-        self.g.add(
-            (occ, P_PLAN.correspondsToStep, rdflib.URIRef(prov_uri(step_iri(str(referent)))))
-        )
 
     def _informed_by(self, node: rdflib.URIRef, cause: rdflib.URIRef | None) -> None:
         if cause is not None:
@@ -915,7 +905,6 @@ def bind_namespaces(g, run_id: str, *, fsm_namespace: str = "") -> None:
         "exec": EXEC,
         "msrun": MSRUN,
         "ms-prov": MS_PROV,
-        "p-plan": P_PLAN,
         "time": TIME,
         "dcterms": DCTERMS,
         "sens": SENS,
@@ -973,15 +962,6 @@ def project_runtime(run_dir: Path | str, frames: list[dict]) -> rdflib.Graph:
     g.add((run, rdflib.RDF.type, MS_PROV.TaskExecution))
     g.add((run, PROV.used, model_entity))
     g.add((run, PROV.wasAssociatedWith, producer))
-    # Which generation's record plan this run was meant to carry out. The plan IRI comes from
-    # the app-manifest name both sides already read, so no identifier is copied between them.
-    model_rel = manifest.get("files", {}).get("model")
-    if model_rel:
-        association = rdflib.BNode()
-        g.add((run, PROV.qualifiedAssociation, association))
-        g.add((association, rdflib.RDF.type, PROV.Association))
-        g.add((association, PROV.agent, producer))
-        g.add((association, PROV.hadPlan, rdflib.URIRef(prov_uri(plan_iri(model_rel)))))
     g.add((activity, rdflib.RDF.type, PROV.Activity))
     # Simulated vs real is the model's declaration, not an assumption and not a substring match.
     g.add(

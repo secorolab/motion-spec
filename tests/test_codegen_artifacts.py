@@ -29,10 +29,7 @@ from motion_spec.generation.artifacts import (
 )
 from motion_spec.introspection.provenance import (
     build_derivation_document,
-    build_plan_document,
     build_provenance_document,
-    plan_iri,
-    step_iri,
 )
 from motion_spec.rdf_parser import communication, constraint_handler, quantities
 from motion_spec.rdf_parser.model import Model
@@ -592,43 +589,6 @@ def test_compilation_activities_are_typed_but_execution_is_not(tmp_path: Path) -
         "bdd:SimulatedExecution",
     ]
     assert types["msprov:activity/build"] == ["prov:Activity"]
-
-
-# --- the prospective graph (plan 026 §4.4) --------------------------------------------------
-
-
-def test_plan_document_has_one_step_per_motion_and_commanded_constraint(tmp_path: Path) -> None:
-    ir = _sample_ir()
-    schema = build_schema(ir, ir_path=tmp_path / "ir.json", output_dir=tmp_path, fsm_ir=None)
-    document = build_plan_document(schema)
-
-    plan = plan_iri(schema["graph"])
-    steps = [node for node in document["@graph"] if node["@type"] == "p-plan:Step"]
-    # The one motion with a design IRI, and the gate it is judged by. `ctrl_x` serves no goal
-    # constraint, so nothing commands it and it is nothing a run has to record.
-    assert {step["used"] for step in steps} == {
-        "https://example.test/move",
-        "https://example.test/done_mon",
-    }
-    assert all(step["p-plan:isStepOfPlan"] == {"@id": plan} for step in steps)
-    # The step IRI is a function of the design IRI alone -- that is what lets a run rebuild it.
-    assert {step["@id"] for step in steps} == {step_iri(step["used"]) for step in steps}
-    variables = {node["@id"] for node in document["@graph"] if node["@type"] == "p-plan:Variable"}
-    assert variables == {"msprov:var/frame_log", "msprov:var/runtime_ttl", "msprov:var/rec"}
-
-
-def test_plan_document_is_generated_by_the_compilation_activity(tmp_path: Path) -> None:
-    ir = _sample_ir()
-    schema = build_schema(ir, ir_path=tmp_path / "ir.json", output_dir=tmp_path, fsm_ir=None)
-    plan = next(
-        node
-        for node in build_plan_document(schema)["@graph"]
-        if "p-plan:Plan" in node.get("@type", [])
-    )
-    assert plan["wasGeneratedBy"] == "msprov:activity/code_generation"
-    # The other document declares the same activity, and declares this file as its artefact.
-    artifacts = {node["@id"] for node in build_provenance_document(ir, tmp_path)["@graph"]}
-    assert "msprov:entity/generated_plan.ld.json" in artifacts
 
 
 # --- derived-entity IRIs (plan 015) ---------------------------------------------------------

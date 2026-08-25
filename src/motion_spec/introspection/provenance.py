@@ -22,7 +22,6 @@ MSPROV_PREFIX = "msprov:"
 # document's context rather than pulled in as a context URL: these files are not published yet,
 # and an unresolvable context makes the document unparseable.
 MS_PROV_NS = "https://secorolab.github.io/metamodels/motion-spec/prov#"
-P_PLAN_NS = "http://purl.org/net/p-plan#"
 PROV_AGENT = "http://www.w3.org/ns/prov#Agent"
 PROV_SOFTWARE_AGENT = "http://www.w3.org/ns/prov#SoftwareAgent"
 TYPE_PREFIXES = {
@@ -109,34 +108,6 @@ def run_entity_uri(run_id: str, slug: str) -> str:
     collapsing them onto one node with conflicting locations and hashes.
     """
     return f"{MSPROV}entity/run/{_slug(run_id)}/{_slug(slug)}"
-
-
-def plan_iri(app_manifest_name: str) -> str:
-    """The generation's record plan, named after the model the app manifest is for.
-
-    Generation reads the manifest name off the schema, a run reads it off its own manifest, so
-    both reach the same IRI without either carrying the other's identifiers.
-    """
-    stem = Path(app_manifest_name).name.removesuffix("-app.ld.json")
-    return f"{MSPROV_PREFIX}plan/{_slug(stem)}"
-
-
-def step_iri(design_iri: str) -> str:
-    """The plan step for one design element, derived from its design IRI alone.
-
-    That is the whole contract: a run reconstructs the step from what an occurrence used, and
-    the generated plan reconstructs it from what it declared, with no table in between.
-    """
-    return f"{MSPROV_PREFIX}step/{_slug(design_iri)}"
-
-
-def var_iri(name: str) -> str:
-    return f"{MSPROV_PREFIX}var/{_slug(name)}"
-
-
-# The run artefacts a conforming run must produce, under the slugs the runtime graph already
-# mints its own entities with (run_entity_uri).
-EXPECTED_RUN_ARTEFACTS = ("frame_log", "runtime_ttl", "rec")
 
 
 def _location_iri(value: str | None) -> str | None:
@@ -244,7 +215,6 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
         "frame_log.proto",
         "frame_log_header.pb",
         "provenance.ld.json",
-        "plan.ld.json",
         "introspection_runtime.hpp",
         "introspect_model.hpp",
         "CMakeLists.txt",
@@ -350,54 +320,6 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
         "runtime_rdf_contract_version": 1,
         "@context": [*METAMODEL_CONTEXTS, {"msprov": MSPROV, "ms-prov": MS_PROV_NS}],
         "@graph": [{"@id": "msprov:bundle/static-provenance", "@type": "prov:Bundle"}, *graph],
-    }
-
-
-def build_plan_document(schema: dict) -> dict:
-    """What a conforming run must record, generated with the code that will produce it.
-
-    One step per motion, per goal constraint it commands and per gate it is judged by, named by
-    a step IRI derived from the design IRI alone -- so a run rebuilds the same IRI from what its
-    occurrences used, and "planned but never recorded" is one query rather than a diff of two
-    enumerations. Steps are keyed by design IRI, so a constraint two motions share is one step.
-    """
-    plan = plan_iri(schema.get("graph") or "")
-    steps: dict[str, None] = {}
-    for entry in schema.get("by_motion", {}).values():
-        for referent in (
-            entry.get("uri"),
-            *(slot.get("constraint_uri") for slot in entry.get("controllers") or []),
-            *(slot.get("uri") for slot in entry.get("monitors") or []),
-        ):
-            if referent:
-                steps.setdefault(referent, None)
-    variables = [var_iri(name) for name in EXPECTED_RUN_ARTEFACTS]
-    return {
-        "schema_version": 1,
-        "@context": [
-            *METAMODEL_CONTEXTS,
-            {"msprov": MSPROV, "ms-prov": MS_PROV_NS, "p-plan": P_PLAN_NS},
-        ],
-        "@graph": [
-            {
-                "@id": plan,
-                "@type": ["p-plan:Plan", "prov:Plan"],
-                "wasGeneratedBy": _prov_iri("activity:code_generation"),
-                # p-plan:isVariableOfPlan is not among the declared aliases, so the plan holds
-                # its expected artefacts as members instead of inventing a term for it.
-                "hadMember": variables,
-            },
-            *(
-                {
-                    "@id": step_iri(referent),
-                    "@type": "p-plan:Step",
-                    "p-plan:isStepOfPlan": {"@id": plan},
-                    "used": referent,
-                }
-                for referent in steps
-            ),
-            *({"@id": variable, "@type": "p-plan:Variable"} for variable in variables),
-        ],
     }
 
 

@@ -158,11 +158,6 @@ def _organize_generation(model_dir: Path, controller_dir: Path | None = None) ->
             target = contract_dir / artifact
             source.replace(target)
             locations[source.resolve()] = target
-        plan_provenance = controller_dir / "plan.ld.json"
-        if plan_provenance.is_file():
-            target = provenance_dir / "plan.ld.json"
-            plan_provenance.replace(target)
-            locations[plan_provenance.resolve()] = target
         motion_spec_provenance = provenance_dir / "motion-spec.ld.json"
         codegen_provenance = controller_dir / "provenance.ld.json"
         codegen_provenance.replace(motion_spec_provenance)

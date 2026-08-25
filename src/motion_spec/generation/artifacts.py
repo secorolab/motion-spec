@@ -10,7 +10,6 @@ from pathlib import Path
 
 from motion_spec.introspection.provenance import (
     build_derivation_document,
-    build_plan_document,
     build_provenance_document,
 )
 
@@ -832,11 +831,6 @@ def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path) 
         frame_log_pb.write_delimited(fh, header_record)
     (output_dir / "provenance.ld.json").write_text(
         json.dumps(build_provenance_document(ir, output_dir), indent=4) + "\n"
-    )
-    # What a conforming run must record; moved beside the other provenance documents by
-    # _organize_generation.
-    (output_dir / "plan.ld.json").write_text(
-        json.dumps(build_plan_document(schema), indent=4) + "\n"
     )
     # Declares the IRIs the frame log's derived slots carry; moved beside the model graphs it
     # extends by _organize_generation.

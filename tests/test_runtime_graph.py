@@ -9,7 +9,7 @@ from pathlib import Path
 import rdflib
 
 from motion_spec.introspection.archive import create_archive_manifest
-from motion_spec.introspection.provenance import plan_iri, prov_uri, run_entity_uri, step_iri
+from motion_spec.introspection.provenance import prov_uri, run_entity_uri
 from motion_spec.generation.artifacts import field_names_and_format
 from motion_spec.introspection.replay import runtime_frames
 from motion_spec.introspection.runtime_graph import (
@@ -17,7 +17,6 @@ from motion_spec.introspection.runtime_graph import (
     MEMBER_EDGE_LIMIT,
     MSRUN,
     MS_PROV,
-    P_PLAN,
     PROV,
     QKIND,
     QUDT,
@@ -367,14 +366,10 @@ ALLOWED_PREDICATES = {
     TIME.hasTRS,
     TIME.inTimePosition,
     TIME.numericPosition,
-    P_PLAN.correspondsToStep,
     PROV.actedOnBehalfOf,
-    PROV.agent,
     PROV.atLocation,
     PROV.endedAtTime,
     PROV.generatedAtTime,
-    PROV.hadPlan,
-    PROV.qualifiedAssociation,
     PROV.startedAtTime,
     PROV.used,
     PROV.wasAssociatedWith,
@@ -405,17 +400,8 @@ def test_runtime_graph_carries_no_design_values(tmp_path: Path) -> None:
     assert used <= ALLOWED_PREDICATES, sorted(str(p) for p in used - ALLOWED_PREDICATES)
 
 
-def test_the_run_carries_the_plan_it_was_meant_to_follow(tmp_path: Path) -> None:
-    """The prospective side of the join: which generation's record plan this run answers to."""
-    graph, _run_dir = _graph(tmp_path)
-    association = graph.value(RUN, PROV.qualifiedAssociation)
-    assert (association, rdflib.RDF.type, PROV.Association) in graph
-    assert (association, PROV.agent, rdflib.URIRef(prov_uri("agent:controller_process"))) in graph
-    assert (association, PROV.hadPlan, rdflib.URIRef(prov_uri(plan_iri("model.ld.json")))) in graph
-
-
-def test_occurrences_correspond_to_the_plan_step_of_what_they_used(tmp_path: Path) -> None:
-    """Q7's join, and it holds without either side carrying the other's identifiers."""
+def test_occurrences_name_the_design_element_they_carried_out(tmp_path: Path) -> None:
+    """Q7b's join: an occurrence points at the authored IRI, carrying no identifier of its own."""
     graph, _run_dir = _graph(tmp_path)
     for cls, referent in (
         (MS_PROV.MotionExecution, MOTION_MOVE),
@@ -424,12 +410,7 @@ def test_occurrences_correspond_to_the_plan_step_of_what_they_used(tmp_path: Pat
     ):
         occurrences = _spans(graph, cls, referent)
         assert occurrences
-        step = rdflib.URIRef(prov_uri(step_iri(str(referent))))
-        assert all((occ, P_PLAN.correspondsToStep, step) in graph for occ in occurrences)
-    # A span that never resolved a motion names the coordination state instead, and the plan
-    # promises no step for a state.
-    for occ in graph.subjects(PROV.used, S_START):
-        assert not list(graph.objects(occ, P_PLAN.correspondsToStep))
+        assert all((occ, PROV.used, referent) in graph for occ in occurrences)
 
 
 def test_only_the_approved_ms_prov_classes_appear(tmp_path: Path) -> None:

@@ -30,7 +30,6 @@ SOSA = "http://www.w3.org/ns/sosa/"
 PROV = "http://www.w3.org/ns/prov#"
 MSRUN = "https://secorolab.github.io/motion-spec/runtime/"
 MS_PROV = "https://secorolab.github.io/metamodels/motion-spec/prov#"
-P_PLAN = "http://purl.org/net/p-plan#"
 TIME = "http://www.w3.org/2006/time#"
 QUDT = "http://qudt.org/schema/qudt/"
 SENS = "https://secorolab.github.io/metamodels/robot/sensors#"
@@ -187,7 +186,7 @@ def test_the_dashboard_mints_no_vocabulary(tmp_path):
         TIME + "Instant",
     }
 
-    allowed = {SOSA, PROV, MSRUN, MS_PROV, P_PLAN, TIME, QUDT, SENS, str(rdflib.RDF)}
+    allowed = {SOSA, PROV, MSRUN, MS_PROV, TIME, QUDT, SENS, str(rdflib.RDF)}
     for graph in (live, runtime):
         assert namespaces(graph.predicates()) <= allowed
         assert namespaces(graph.objects(None, rdflib.RDF.type)) <= allowed

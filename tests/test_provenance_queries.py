@@ -34,10 +34,11 @@ METAMODELS = Path(__file__).resolve().parents[2] / "metamodels"
 
 PREFIXES = """
 PREFIX bdd: <https://secorolab.github.io/metamodels/acceptance-criteria/bdd#>
+PREFIX cstr-hdl: <https://comp-rob2b.github.io/metamodels/task/constraint-handler#>
 PREFIX ms-prov: <https://secorolab.github.io/metamodels/motion-spec/prov#>
-PREFIX p-plan: <http://purl.org/net/p-plan#>
 PREFIX prov: <http://www.w3.org/ns/prov#>
 PREFIX rec: <https://secorolab.github.io/metamodels/rec#>
+PREFIX solver-spec: <https://comp-rob2b.github.io/metamodels/task/solver-specification#>
 PREFIX sosa: <http://www.w3.org/ns/sosa/>
 PREFIX time: <http://www.w3.org/2006/time#>
 """
@@ -79,11 +80,11 @@ SELECT ?constraint ?motion ?at ?value WHERE {
 Q2 = (
     PREFIXES
     + """
-SELECT ?constraint ?kind ?step ?model ?location WHERE {
+SELECT ?constraint ?kind ?handler ?model ?location WHERE {
   ?occ a ms-prov:ConstraintMaintenance ; prov:used ?constraint ;
-       p-plan:correspondsToStep ?step ; sosa:hasSimpleResult ?value .
-  ?step p-plan:isStepOfPlan ?plan ; prov:used ?constraint .
-  ?run prov:qualifiedAssociation/prov:hadPlan ?plan ; prov:used ?model .
+       sosa:hasSimpleResult ?value .
+  ?handler cstr-hdl:constraint ?constraint .
+  ?run a ms-prov:TaskExecution ; prov:used ?model .
   ?model prov:atLocation ?location .
   ?constraint a ?kind .
 }
@@ -133,14 +134,56 @@ SELECT ?constraint ?earlier ?later (COUNT(*) AS ?pairs) WHERE {
 """
 )
 
-# Q7 -- planned but never recorded: a dead spec line, or a recorder that missed it.
-Q7 = (
+# Q7a -- compile-time coverage: an authored constraint whose controller compiled to no solver
+# input at all. The compiled layer is the derived design graph, so this is a question about it.
+#
+# Solver-algorithm-agnostic by construction: it asks for the union of the three input-spec
+# classes the solver-specification metamodel defines, never for one algorithm's. An
+# acceleration-constrained motion drives its solver through solver-spec:AccelerationConstraint,
+# an RNE motion through none of them, and a posture-torque or external-wrench controller through
+# the joint- and Cartesian-force specifications -- so naming only the acceleration class would
+# report every other interface as uncompiled.
+Q7A = (
     PREFIXES
     + """
-SELECT ?step ?referent WHERE {
-  ?step p-plan:isStepOfPlan ?plan ; prov:used ?referent .
-  ?run  prov:qualifiedAssociation/prov:hadPlan ?plan .
-  FILTER NOT EXISTS { ?occ p-plan:correspondsToStep ?step }
+SELECT ?ctrl ?c WHERE {
+  ?ctrl a cstr-hdl:Controller ; cstr-hdl:constraint ?c .
+  FILTER NOT EXISTS {
+    ?spec prov:wasDerivedFrom ?ctrl .
+    VALUES ?kind { solver-spec:AccelerationConstraint solver-spec:CartesianForceSpecification
+                   solver-spec:JointForceSpecification }
+    ?spec a ?kind .
+  }
+}
+"""
+)
+
+# The sanity secondary: a controller that derived no output entity whatsoever. Free of any
+# assumption about which interface a solver takes, so it is the form that must be empty even
+# where Q7a's residue is a known lineage gap rather than a defect.
+Q7A_ANY = (
+    PREFIXES
+    + """
+SELECT ?ctrl ?c WHERE {
+  ?ctrl a cstr-hdl:Controller ; cstr-hdl:constraint ?c .
+  FILTER NOT EXISTS { ?out prov:wasDerivedFrom ?ctrl }
+}
+"""
+)
+
+# Q7b -- runtime coverage: an authored constraint that did compile to a solver row and that no
+# occurrence ever held. A state the run never entered, or a recorder that missed it.
+Q7B = (
+    PREFIXES
+    + """
+SELECT DISTINCT ?c WHERE {
+  GRAPH <urn:design> {
+    ?ctrl cstr-hdl:constraint ?c .
+    ?row a solver-spec:AccelerationConstraint ; prov:wasDerivedFrom ?ctrl .
+  }
+  FILTER NOT EXISTS {
+    GRAPH <urn:runtime> { ?occ a ms-prov:ConstraintMaintenance ; prov:used ?c }
+  }
 }
 """
 )
@@ -172,13 +215,20 @@ SELECT ?run ?trace ?goal ?failure WHERE {
 """
 )
 
+CSTR_HDL = rdflib.Namespace("https://comp-rob2b.github.io/metamodels/task/constraint-handler#")
 MS_PROV = rdflib.Namespace("https://secorolab.github.io/metamodels/motion-spec/prov#")
-P_PLAN = rdflib.Namespace("http://purl.org/net/p-plan#")
 PROV = rdflib.Namespace("http://www.w3.org/ns/prov#")
+SOLVER_SPEC = rdflib.Namespace("https://comp-rob2b.github.io/metamodels/task/solver-specification#")
+# Every input a solver takes, whichever algorithm runs it -- the classes Q7a unions over.
+_SOLVER_INPUT_SPECS = (
+    SOLVER_SPEC.AccelerationConstraint,
+    SOLVER_SPEC.CartesianForceSpecification,
+    SOLVER_SPEC.JointForceSpecification,
+)
 TIME = rdflib.Namespace("http://www.w3.org/2006/time#")
 RUNTIME_GRAPH = rdflib.URIRef("urn:runtime")
 INFERRED_GRAPH = rdflib.URIRef("urn:inferred")
-PLAN_GRAPH = rdflib.URIRef("urn:plan")
+DESIGN_GRAPH = rdflib.URIRef("urn:design")
 
 
 def _generations_root() -> Path | None:
@@ -254,8 +304,8 @@ def test_q1_walks_an_authored_line_to_what_the_robot_did(consolidated):
 def test_q2_walks_back_to_the_authored_model(consolidated):
     rows = list(consolidated.query(Q2))
     assert rows
-    for _constraint, _kind, step, _model, location in rows:
-        assert str(step).startswith("https://secorolab.github.io/motion-spec/provenance/step/")
+    for constraint, _kind, handler, _model, location in rows:
+        assert (handler, CSTR_HDL.constraint, constraint) in consolidated
         assert str(location)
 
 
@@ -293,16 +343,77 @@ def test_q6_joins_two_generations_on_the_design_iri(tmp_path):
         assert earlier != later
 
 
-def test_q7_reports_exactly_what_was_planned_and_never_recorded(consolidated):
-    plan, runtime = consolidated.graph(PLAN_GRAPH), consolidated.graph(RUNTIME_GRAPH)
-    recorded = set(runtime.objects(None, P_PLAN.correspondsToStep))
-    expected = {
-        (step, referent)
-        for step in plan.subjects(P_PLAN.isStepOfPlan)
-        if step not in recorded
-        for referent in plan.objects(step, PROV.used)
+def _authored_controllers(design) -> set:
+    return {
+        (handler, constraint)
+        for handler, constraint in design.subject_objects(CSTR_HDL.constraint)
+        if (handler, rdflib.RDF.type, CSTR_HDL.Controller) in design
     }
-    assert {(row.step, row.referent) for row in consolidated.query(Q7)} == expected
+
+
+def test_q7a_reports_the_controllers_that_compiled_to_no_solver_input(consolidated):
+    design = consolidated.graph(DESIGN_GRAPH)
+    # The derived document is part of the design graph -- that is what makes the compiled layer
+    # queryable at all, and Q7a is a question about it.
+    assert set(design.subjects(rdflib.RDF.type, SOLVER_SPEC.AccelerationConstraint)), (
+        "urn:design carries no derived solver rows"
+    )
+    compiled = {
+        ctrl
+        for kind in _SOLVER_INPUT_SPECS
+        for spec in design.subjects(rdflib.RDF.type, kind)
+        for ctrl in design.objects(spec, PROV.wasDerivedFrom)
+    }
+    expected = {(h, c) for h, c in _authored_controllers(design) if h not in compiled}
+    assert {(row.ctrl, row.c) for row in design.query(Q7A)} == expected
+
+
+def test_q7a_any_output_is_empty_on_every_solver_interface(consolidated):
+    """The sanity secondary: no controller compiled to nothing whatsoever.
+
+    Free of any assumption about which input a solver takes, so it must be empty even where Q7a
+    still reports the lineage gap below.
+    """
+    design = consolidated.graph(DESIGN_GRAPH)
+    compiled = set(design.objects(None, PROV.wasDerivedFrom))
+    expected = {(h, c) for h, c in _authored_controllers(design) if h not in compiled}
+    assert {(row.ctrl, row.c) for row in design.query(Q7A_ANY)} == expected
+    assert not expected, "an authored constraint compiled to no output entity at all"
+
+
+def test_the_force_solver_inputs_carry_no_lineage_to_their_controller(consolidated):
+    """Why Q7a's residue is a recorded gap, not a defect of the query.
+
+    The joint- and Cartesian-force specifications are already correctly classed and already
+    minted under their controller's own IRI, but they are authored nodes carrying no
+    `prov:wasDerivedFrom` -- the one edge Q7a joins on. Until their writer adds it, a
+    torque- or wrench-mediated constraint answers Q7a despite having compiled.
+    """
+    design = consolidated.graph(DESIGN_GRAPH)
+    for solver_input in (
+        SOLVER_SPEC.JointForceSpecification,
+        SOLVER_SPEC.CartesianForceSpecification,
+    ):
+        nodes = set(design.subjects(rdflib.RDF.type, solver_input))
+        assert nodes, f"the archive exercises no {solver_input}"
+        assert not any(design.value(node, PROV.wasDerivedFrom) for node in nodes)
+
+
+def test_q7b_reports_the_compiled_constraints_no_occurrence_ever_held(consolidated):
+    design, runtime = consolidated.graph(DESIGN_GRAPH), consolidated.graph(RUNTIME_GRAPH)
+    held = {
+        constraint
+        for occ in runtime.subjects(rdflib.RDF.type, MS_PROV.ConstraintMaintenance)
+        for constraint in runtime.objects(occ, PROV.used)
+    }
+    compiled = {
+        constraint
+        for row in design.subjects(rdflib.RDF.type, SOLVER_SPEC.AccelerationConstraint)
+        for ctrl in design.objects(row, PROV.wasDerivedFrom)
+        for constraint in design.objects(ctrl, CSTR_HDL.constraint)
+    }
+    assert compiled
+    assert {row.c for row in consolidated.query(Q7B)} == compiled - held
 
 
 def test_q8_names_the_motion_a_failing_fluent_fell_in(tmp_path):

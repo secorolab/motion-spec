@@ -1266,8 +1266,10 @@ def _provenance(model, scene, platform: dict) -> dict:
         "entities": entities,
         "activities": [
             {
+                # Compiling the spec, not building or running it: what a walk back from an
+                # artefact through prov:wasGeneratedBy separates on.
                 "id": "activity:motion_spec_ir_generation",
-                "types": ["prov:Activity"],
+                "types": ["prov:Activity", "ms-prov:SpecCompilation"],
                 "used": [entity["id"] for entity in entities if entity["role"] != "motion_spec_ir"],
                 "wasAssociatedWith": "agent:motion_spec_ir_gen",
                 "role": "motion_spec_ir_generation",

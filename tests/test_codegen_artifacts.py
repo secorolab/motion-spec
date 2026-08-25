@@ -29,7 +29,10 @@ from motion_spec.generation.artifacts import (
 )
 from motion_spec.introspection.provenance import (
     build_derivation_document,
+    build_plan_document,
     build_provenance_document,
+    plan_iri,
+    step_iri,
 )
 from motion_spec.rdf_parser import communication, constraint_handler, quantities
 from motion_spec.rdf_parser.model import Model
@@ -165,7 +168,7 @@ def _sample_ir() -> dict:
                     "activities": [
                         {
                             "id": "activity:motion_spec_ir_generation",
-                            "types": ["prov:Activity"],
+                            "types": ["prov:Activity", "ms-prov:SpecCompilation"],
                             "used": ["entity:app_manifest"],
                             "wasAssociatedWith": "agent:motion_spec_ir_gen",
                         },
@@ -549,11 +552,83 @@ def test_provenance_document_is_jsonld_and_prov_shacl_conformant(tmp_path: Path)
     assert (None, None, None) in graph
     # The robot model is recorded as a portable vendor-qualified reference (matching the
     # mj_kdl_wrapper cache layout), never a machine-specific absolute path.
-    model_ref = next(n for n in seed["@graph"] if n.get("role") == "robot")["has-agn-model"]
-    assert model_ref == "menagerie:kinova_gen3/gen3.xml"
+    robot = next(n for n in seed["@graph"] if n["@id"].endswith("agent/modelled_robot"))
+    assert robot["has-agn-model"] == "menagerie:kinova_gen3/gen3.xml"
     shape_path = metamodels / "prov.shacl.ttl"
     conforms, _, report = pyshacl.validate(graph, shacl_graph=str(shape_path))
     assert conforms, report
+
+
+def test_usage_roles_replace_the_minted_role_predicate(tmp_path: Path) -> None:
+    """A role is the part an entity played for one activity, not a label hung on the entity."""
+    document = build_provenance_document(_sample_ir(), tmp_path)
+    assert not any("role" in node for node in document["@graph"])
+    assert "role" not in dict(document["@context"][-1])
+    usages = [
+        usage
+        for node in document["@graph"]
+        for usage in node.get("qualifiedUsage", [])
+        if node["@id"].endswith("activity/motion_spec_ir_generation")
+    ]
+    assert usages == [
+        {
+            "@type": "Usage",
+            "entity": "msprov:entity/app_manifest",
+            "hadRole": "msprov:role/app_manifest",
+        }
+    ]
+    assert {"@id": "msprov:role/app_manifest", "@type": ["prov:Role"]} in document["@graph"]
+
+
+def test_compilation_activities_are_typed_but_execution_is_not(tmp_path: Path) -> None:
+    types = {
+        node["@id"]: node["@type"]
+        for node in build_provenance_document(_sample_ir(), tmp_path)["@graph"]
+    }
+    assert "ms-prov:SpecCompilation" in types["msprov:activity/code_generation"]
+    assert "ms-prov:SpecCompilation" in types["msprov:activity/motion_spec_ir_generation"]
+    assert types["msprov:activity/controller_execution"] == [
+        "prov:Activity",
+        "bdd:SimulatedExecution",
+    ]
+    assert types["msprov:activity/build"] == ["prov:Activity"]
+
+
+# --- the prospective graph (plan 026 §4.4) --------------------------------------------------
+
+
+def test_plan_document_has_one_step_per_motion_and_commanded_constraint(tmp_path: Path) -> None:
+    ir = _sample_ir()
+    schema = build_schema(ir, ir_path=tmp_path / "ir.json", output_dir=tmp_path, fsm_ir=None)
+    document = build_plan_document(schema)
+
+    plan = plan_iri(schema["graph"])
+    steps = [node for node in document["@graph"] if node["@type"] == "p-plan:Step"]
+    # The one motion with a design IRI, and the gate it is judged by. `ctrl_x` serves no goal
+    # constraint, so nothing commands it and it is nothing a run has to record.
+    assert {step["used"] for step in steps} == {
+        "https://example.test/move",
+        "https://example.test/done_mon",
+    }
+    assert all(step["p-plan:isStepOfPlan"] == {"@id": plan} for step in steps)
+    # The step IRI is a function of the design IRI alone -- that is what lets a run rebuild it.
+    assert {step["@id"] for step in steps} == {step_iri(step["used"]) for step in steps}
+    variables = {node["@id"] for node in document["@graph"] if node["@type"] == "p-plan:Variable"}
+    assert variables == {"msprov:var/frame_log", "msprov:var/runtime_ttl", "msprov:var/rec"}
+
+
+def test_plan_document_is_generated_by_the_compilation_activity(tmp_path: Path) -> None:
+    ir = _sample_ir()
+    schema = build_schema(ir, ir_path=tmp_path / "ir.json", output_dir=tmp_path, fsm_ir=None)
+    plan = next(
+        node
+        for node in build_plan_document(schema)["@graph"]
+        if "p-plan:Plan" in node.get("@type", [])
+    )
+    assert plan["wasGeneratedBy"] == "msprov:activity/code_generation"
+    # The other document declares the same activity, and declares this file as its artefact.
+    artifacts = {node["@id"] for node in build_provenance_document(ir, tmp_path)["@graph"]}
+    assert "msprov:entity/generated_plan.ld.json" in artifacts
 
 
 # --- derived-entity IRIs (plan 015) ---------------------------------------------------------

@@ -18,10 +18,12 @@ from motion_spec_dsl.rdf_parser.vocab import CSTR_HDL
 from motion_spec.introspection import frame_log_pb
 from motion_spec.introspection.provenance import (
     MSPROV,
+    plan_iri,
     prov_uri,
     rec_run_lifecycle,
     rec_types,
     run_entity_uri,
+    step_iri,
 )
 
 
@@ -79,6 +81,7 @@ MSRUN = rdflib.Namespace("https://secorolab.github.io/motion-spec/runtime/")
 # for this run's instance nodes. Emitting types under MSRUN left every sh:targetClass
 # unmatched, so the shape validated nothing.
 MS_PROV = rdflib.Namespace("https://secorolab.github.io/metamodels/motion-spec/prov#")
+P_PLAN = rdflib.Namespace("http://purl.org/net/p-plan#")
 TIME = rdflib.Namespace("http://www.w3.org/2006/time#")
 DCTERMS = rdflib.Namespace("http://purl.org/dc/terms/")
 SENS = rdflib.Namespace("https://secorolab.github.io/metamodels/robot/sensors#")
@@ -531,6 +534,17 @@ class IncrementalProjector:
             return
         self.g.add((node, TIME.hasEnd, self._instant(step)))
 
+    def _used(self, occ: rdflib.URIRef, referent: rdflib.URIRef) -> None:
+        """The design element this occurrence carried out, and the plan step it corresponds to.
+
+        The step IRI is derived from the design IRI, so the record joins the generated plan
+        without either side carrying the other's identifiers.
+        """
+        self.g.add((occ, PROV.used, referent))
+        self.g.add(
+            (occ, P_PLAN.correspondsToStep, rdflib.URIRef(prov_uri(step_iri(str(referent)))))
+        )
+
     def _informed_by(self, node: rdflib.URIRef, cause: rdflib.URIRef | None) -> None:
         if cause is not None:
             self.g.add((node, PROV.wasInformedBy, cause))
@@ -574,7 +588,7 @@ class IncrementalProjector:
             return
         motion_uri = _slot_uri(meta, "uri")
         if motion_uri is not None:
-            self.g.add((self.open_activity, PROV.used, motion_uri))
+            self._used(self.open_activity, motion_uri)
             self.open_referent = motion_uri
 
     def _finish_activity(self, step: int) -> None:
@@ -632,10 +646,18 @@ class IncrementalProjector:
                 f"c{idx}", constraint_uri, None if value is None else float(value), wall, step
             )
 
-    def _maintenance(self, disc, referent, value, wall, step: int):
-        """One interval a commanded constraint was held for, and the goal it thereby held."""
+    def _maintenance(self, disc, referent, value, wall, step: int, *, plan_step: bool = True):
+        """One interval a commanded constraint was held for, and the goal it thereby held.
+
+        `plan_step` is false for a gate's watched members: they are already steps in their own
+        right, and this occurrence is a detail of the arming that wanted them rather than the
+        span that carries out the step.
+        """
         occ = self._occurrence(MS_PROV.ConstraintMaintenance, disc, wall, step, span=True)
-        self.g.add((occ, PROV.used, referent))
+        if plan_step:
+            self._used(occ, referent)
+        else:
+            self.g.add((occ, PROV.used, referent))
         self._informed_by(occ, self.open_activity or self.run)
         _literal(self.g, occ, SOSA.hasSimpleResult, value)
         goal = _scoped("goal", self.run_id, wall if wall is not None else 0, disc)
@@ -746,7 +768,12 @@ class IncrementalProjector:
                     continue
                 ends_at = next((e[3] for e in edges[order + 1 :] if not e[0]), fired)
                 occ = self._maintenance(
-                    f"w{idx}-{member_id}-{order}", rdflib.URIRef(member_uri), error, wall, step
+                    f"w{idx}-{member_id}-{order}",
+                    rdflib.URIRef(member_uri),
+                    error,
+                    wall,
+                    step,
+                    plan_step=False,
                 )
                 self._close(occ, ends_at)
                 self._informed_by(monitor_occ, occ)
@@ -888,6 +915,7 @@ def bind_namespaces(g, run_id: str, *, fsm_namespace: str = "") -> None:
         "exec": EXEC,
         "msrun": MSRUN,
         "ms-prov": MS_PROV,
+        "p-plan": P_PLAN,
         "time": TIME,
         "dcterms": DCTERMS,
         "sens": SENS,
@@ -945,6 +973,15 @@ def project_runtime(run_dir: Path | str, frames: list[dict]) -> rdflib.Graph:
     g.add((run, rdflib.RDF.type, MS_PROV.TaskExecution))
     g.add((run, PROV.used, model_entity))
     g.add((run, PROV.wasAssociatedWith, producer))
+    # Which generation's record plan this run was meant to carry out. The plan IRI comes from
+    # the app-manifest name both sides already read, so no identifier is copied between them.
+    model_rel = manifest.get("files", {}).get("model")
+    if model_rel:
+        association = rdflib.BNode()
+        g.add((run, PROV.qualifiedAssociation, association))
+        g.add((association, rdflib.RDF.type, PROV.Association))
+        g.add((association, PROV.agent, producer))
+        g.add((association, PROV.hadPlan, rdflib.URIRef(prov_uri(plan_iri(model_rel)))))
     g.add((activity, rdflib.RDF.type, PROV.Activity))
     # Simulated vs real is the model's declaration, not an assumption and not a substring match.
     g.add(

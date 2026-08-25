@@ -26,34 +26,58 @@ def _file_path(value: rdflib.term.Identifier) -> Path | None:
     return Path(urllib.parse.unquote(parsed.path)) if parsed.scheme == "file" else None
 
 
-def _rewrite_locations(document: Path, locations: dict[Path, Path]) -> None:
-    dataset = rdflib.Dataset().parse(document, format="json-ld")
-    for subject, predicate, location, context in list(
-        dataset.quads((None, PROV.atLocation, None, None))
-    ):
-        source = _file_path(location)
-        target = locations.get(source.resolve()) if source else None
-        if (
-            target is None
-            and source is not None
-            and source.exists()
-            and source.is_relative_to(document.parent.parent)
-        ):
-            target = source
-        if target is None:
-            continue
-        graph = dataset.graph(context)
-        graph.remove((subject, predicate, location))
-        graph.add(
-            (
-                subject,
-                predicate,
-                rdflib.URIRef(
-                    urllib.parse.quote(os.path.relpath(target, document.parent), safe="/..")
-                ),
-            )
+# Every spelling of prov:atLocation a compacted JSON-LD document can carry: the alias the
+# metamodel context defines, the CURIE, and the expanded IRI.
+_LOCATION_KEYS = ("atLocation", "prov:atLocation", "http://www.w3.org/ns/prov#atLocation")
+
+
+def _json_objects(node):
+    """Every node object in a parsed JSON-LD document. `@context` is term definitions, not data,
+    so it is not descended into."""
+    if isinstance(node, dict):
+        yield node
+        for key, value in node.items():
+            if key != "@context":
+                yield from _json_objects(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _json_objects(item)
+
+
+def _relocated(value, document: Path, locations: dict[Path, Path]):
+    """The archive-relative path for one location value, or it unchanged."""
+    if isinstance(value, list):
+        return [_relocated(item, document, locations) for item in value]
+    if isinstance(value, dict):
+        return (
+            {**value, "@id": _relocated(value["@id"], document, locations)}
+            if "@id" in value
+            else value
         )
-    dataset.serialize(document, format="json-ld", indent=2)
+    source = _file_path(rdflib.URIRef(value)) if isinstance(value, str) else None
+    if source is None:
+        return value
+    target = locations.get(source.resolve())
+    if target is None and source.exists() and source.is_relative_to(document.parent.parent):
+        target = source
+    if target is None:
+        return value
+    return urllib.parse.quote(os.path.relpath(target, document.parent), safe="/..")
+
+
+def _rewrite_locations(document: Path, locations: dict[Path, Path]) -> None:
+    """Point every prov:atLocation at where the artifact now lives.
+
+    Edits the parsed JSON in place rather than round-tripping through rdflib: a serialized
+    Dataset carries only triples, and rewriting through one dropped the document's @context and
+    its schema_version / runtime_rdf_contract_version keys on the way out.
+    """
+    data = json.loads(document.read_text())
+    for node in _json_objects(data):
+        for key in _LOCATION_KEYS:
+            if key in node:
+                node[key] = _relocated(node[key], document, locations)
+    document.write_text(json.dumps(data, indent=2) + "\n")
 
 
 def _organize_generation(model_dir: Path, controller_dir: Path | None = None) -> None:
@@ -134,6 +158,11 @@ def _organize_generation(model_dir: Path, controller_dir: Path | None = None) ->
             target = contract_dir / artifact
             source.replace(target)
             locations[source.resolve()] = target
+        plan_provenance = controller_dir / "plan.ld.json"
+        if plan_provenance.is_file():
+            target = provenance_dir / "plan.ld.json"
+            plan_provenance.replace(target)
+            locations[plan_provenance.resolve()] = target
         motion_spec_provenance = provenance_dir / "motion-spec.ld.json"
         codegen_provenance = controller_dir / "provenance.ld.json"
         codegen_provenance.replace(motion_spec_provenance)

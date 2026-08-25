@@ -15,7 +15,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from motion_spec.introspection import frame_log_pb
-from motion_spec.introspection.archive import create_archive_manifest, verify_manifest
+from motion_spec.introspection.archive import (
+    consolidate_provenance,
+    create_archive_manifest,
+    verify_manifest,
+)
 from motion_spec.introspection.lifecycle_events import publish_lifecycle
 from motion_spec.introspection.provenance import (
     artifact_sha256,
@@ -130,6 +134,9 @@ def run_cataloged(
             print(f"runtime.ttl recovered in {time.monotonic() - started:.1f}s")
         if returncode == 0:
             _finish_rec_run(rec_path, run_id, "COMPLETED")
+            # The lifecycle is terminal, so the run's documents are final and join into one
+            # dataset -- the thing every cross-layer question is asked of.
+            consolidate_provenance(run_dir)
             # A recording nobody checked is not worth the disk it sits on.
             verify_manifest(run_dir)
     except Exception:

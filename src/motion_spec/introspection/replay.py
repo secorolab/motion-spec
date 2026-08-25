@@ -9,7 +9,12 @@ import sys
 from pathlib import Path
 
 from motion_spec.introspection import frame_log_pb
-from motion_spec.introspection.archive import ArchiveError, load_manifest, verify_manifest
+from motion_spec.introspection.archive import (
+    ArchiveError,
+    consolidate_provenance,
+    load_manifest,
+    verify_manifest,
+)
 
 
 def run_dir_for(log_path: Path) -> Path:
@@ -159,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
             run_dir, log_path, _manifest, _contract = resolve_archive(args.log)
             records, _frame_count = runtime_frames(log_path)
             out = write_runtime_ttl(run_dir, records)
+            consolidate_provenance(run_dir)
             print(out)
         elif args.verify:
             run_dir, log_path, manifest, contract = resolve_archive(args.log)

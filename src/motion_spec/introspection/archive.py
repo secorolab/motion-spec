@@ -800,14 +800,20 @@ def _validate_rec_shacl(path: Path) -> None:
 
 def _validate_runtime_shacl(path: Path) -> None:
     root = _metamodels_root()
-    shape = root / "motion-spec" / "execution-trace.shacl.ttl"
-    if not shape.exists():
-        raise ArchiveError(f"{shape}: missing runtime SHACL shape")
+    # The trace shape covers occurrences and frames; the tick rate is a sensors update-rate, so
+    # its frequency shape comes from the metamodel that defines it rather than being restated.
+    shapes = rdflib.Graph()
+    for shape in (
+        root / "motion-spec" / "execution-trace.shacl.ttl",
+        root / "robot" / "sensors.shacl.ttl",
+    ):
+        if not shape.exists():
+            raise ArchiveError(f"{shape}: missing runtime SHACL shape")
+        shapes.parse(_graph_source(shape), format="turtle")
     conforms, _graph, text = validate(
         data_graph=_graph_source(path),
-        shacl_graph=_graph_source(shape),
+        shacl_graph=shapes,
         data_graph_format="turtle",
-        shacl_graph_format="turtle",
         inference="rdfs",
     )
     if not conforms:

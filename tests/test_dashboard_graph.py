@@ -28,6 +28,8 @@ from frame_log_fixture import flat_frame, write_frame_log_pb
 SOSA = "http://www.w3.org/ns/sosa/"
 PROV = "http://www.w3.org/ns/prov#"
 MSRUN = "https://secorolab.github.io/motion-spec/runtime/"
+TRACE = "https://secorolab.github.io/metamodels/motion-spec/execution-trace/"
+TIME = "http://www.w3.org/2006/time#"
 ERROR_VALUE = 0.125
 OBSERVATIONS = f"""
 PREFIX sosa: <{SOSA}>
@@ -135,14 +137,14 @@ def test_history_carries_no_values_when_sampling_is_off(tmp_path):
 
     assert list(runtime.subjects(rdflib.RDF.type, rdflib.URIRef(SOSA + "Observation"))) == []
     # ...but the semantic edges are still there: the constraint became satisfied at step 51.
-    assert (None, rdflib.URIRef(MSRUN + "constraint"), rdflib.URIRef(CONSTRAINT)) in runtime
+    assert (None, rdflib.URIRef(PROV + "used"), rdflib.URIRef(CONSTRAINT)) in runtime
 
 
 def test_occurrences_and_live_values_answer_one_query_together(tmp_path):
     service = _service(tmp_path)
     _headers, rows = service.query(f"""
-        PREFIX msrun: <{MSRUN}>
-        SELECT ?occ WHERE {{ ?occ a msrun:ConstraintSatisfiedOccurrence }}
+        PREFIX trace: <{TRACE}>
+        SELECT ?occ WHERE {{ ?occ a trace:ActivityOccurrence }}
     """)
     assert rows, "the satisfaction edge should be projected into urn:runtime"
 
@@ -175,7 +177,7 @@ def test_the_dashboard_mints_no_vocabulary(tmp_path):
     }
     assert {str(o) for o in live.objects(None, rdflib.RDF.type)} == {SOSA + "Observation"}
 
-    allowed = {SOSA, PROV, MSRUN, str(rdflib.RDF)}
+    allowed = {SOSA, PROV, MSRUN, TRACE, TIME, str(rdflib.RDF)}
     for graph in (live, runtime):
         assert namespaces(graph.predicates()) <= allowed
         assert namespaces(graph.objects(None, rdflib.RDF.type)) <= allowed

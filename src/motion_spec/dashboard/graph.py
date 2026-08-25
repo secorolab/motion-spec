@@ -26,7 +26,6 @@ from rdflib.namespace import SDO
 from motion_spec.introspection.runtime_graph import (
     IncrementalProjector,
     bind_namespaces,
-    condition_map_from_paths,
     frame_observations,
 )
 
@@ -139,7 +138,6 @@ class GraphService:
                 self.runtime,
                 self.store.run_id,
                 header,
-                condition_map_from_paths(sorted((self.generation_dir / MODEL_REL).glob("*.json"))),
                 sample_interval_s=self.sample_interval_s,
                 signal_map=self.signals,
             )

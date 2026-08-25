@@ -219,7 +219,7 @@ def _motion_rows(motions, uri_by_id: dict, closures: dict):
                             "constraint_uris": monitor.constraint_uris,
                             "watched": _watched_constraints(monitor, closures, uri_by_id),
                             "fallback_motion": getattr(monitor, "fallback_motion", None),
-                            "debounce_duration_s": getattr(monitor, "debounce_duration_s", None),
+                            "debounce_signal": getattr(monitor, "debounce_id", None),
                         }
                     )
                 )
@@ -345,10 +345,8 @@ def _add_control_parameters(model, closures, shared_data, rows, seen, motions) -
         return member.id
 
     for closure in closures.values():
-        if closure.get("type") == "Admittance":
-            for name in constraint_handler.ADMITTANCE_PARAMETERS:
-                closure[name] = publish(closure["id"], name, closure[name])
-            continue
+        # An admittance's parameters are authored quantities the closure already names, so they
+        # are shared values on their own; publishing them again would be a second source of truth.
         if closure.get("type") != "Controller":
             continue
         controller = controller_by_id.get(closure["id"])

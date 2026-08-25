@@ -1392,17 +1392,6 @@ CONTROLLER_GAIN_FIELDS = {
     ),
 }
 
-# Admittance parameters, carried on the closure as authored literals.
-ADMITTANCE_PARAMETERS = (
-    "mass",
-    "damping",
-    "stiffness",
-    "maximum_velocity",
-    "maximum_absolute_value",
-    "lower_threshold",
-    "upper_threshold",
-)
-
 # The signals a controller binds, in the order their introspection rows are emitted.
 CONTROLLER_SIGNAL_ROLES = (
     "error_signal",

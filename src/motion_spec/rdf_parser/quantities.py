@@ -186,15 +186,6 @@ def optional_float(model, subject, predicate) -> float | None:
     return float(literal.value)
 
 
-def optional_seconds(model, subject, predicate) -> float | None:
-    """A duration-valued property in seconds, converting from the unit it was written in."""
-    node = model.graph.value(subject, predicate)
-    if node is None:
-        return None
-    value = optional_float(model, subject, predicate)
-    return None if value is None else seconds(value, model.graph.value(node, QUDT_SCHEMA.unit))
-
-
 def required_float(model, subject, predicate) -> float:
     """A float-valued property the model must author.
 
@@ -1768,11 +1759,14 @@ def snapshots_for_motion(
             continue
         trigger = indexes.snapshot_trigger.get((token, target_id))
         source_id = indexes.snapshot_source[target_id]
+        scope = "event" if trigger else ("entry" if owner in tokens else "task")
         result.append(
             SnapshotCapture(
                 target_id=target_id,
                 source_id=source_id,
-                scope="event" if trigger else ("entry" if owner in tokens else "task"),
+                scope=scope,
+                # Only a run-scoped capture is latched; an entry- or event-scoped one re-captures.
+                captured_id=f"{target_id}_captured" if scope == "task" else None,
                 source_closure_id=(
                     None
                     if source_id in supers_by_subobject
@@ -2485,6 +2479,8 @@ def _consumers_by_id(
             add(source.get("error_signal"), "monitor", monitor.get("id"), "error")
             # Without this the band is a shared value nothing reads, and the contract drops it.
             add(source.get("tolerance_signal"), "monitor", monitor.get("id"), "tolerance")
+        # The debounce is the monitor's own, never a watched member's.
+        add(monitor.get("debounce_signal"), "monitor", monitor.get("id"), "debounce")
     for controller in introspection.get("controllers", []):
         for role in ("error_signal", "measured_signal", "setpoint_signal", "tolerance_signal"):
             add(controller.get(role), "controller", controller.get("id"), role)
@@ -2504,7 +2500,7 @@ def _consumers_by_id(
     for motion in motions:
         for snapshot in getattr(motion, "task_snapshots", ()):
             add(snapshot.target_id, "motion", motion.id, "snapshot.target")
-            add(f"{snapshot.target_id}_captured", "motion", motion.id, "snapshot.captured")
+            add(snapshot.captured_id, "motion", motion.id, "snapshot.captured")
     # Readers are collected from dicts whose order is the graph's; the list is an artifact.
     for member_id, readers in consumers.items():
         unique = {(entry["kind"], entry["id"], entry["role"]): entry for entry in readers}

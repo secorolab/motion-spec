@@ -184,8 +184,8 @@ controller/driver records. No other module derives a controller.
 Public: `SpatialAxis`, `LINEAR_AXES`, `ANGULAR_AXES`, `POSE_AXES`, `spatial_axes`,
 `SolverIdFactory`, `ControllerDerivation`, `SolverDerivationContext`, `solver_derivation_context`,
 `motion_drivers`, `augment_closures`, `augment_data`, `annotate_controller_signals`,
-`CONTROLLER_STATE_FIELDS`, `CONTROLLER_GAIN_FIELDS`, `ADMITTANCE_PARAMETERS`,
-`CONTROLLER_SIGNAL_ROLES`, `SOLVER_SEMANTICS_BY_ALGORITHM`.
+`CONTROLLER_STATE_FIELDS`, `CONTROLLER_GAIN_FIELDS`, `CONTROLLER_SIGNAL_ROLES`,
+`SOLVER_SEMANTICS_BY_ALGORITHM`.
 
 ### `resources.py` — what the program commands
 

@@ -15,7 +15,6 @@ import collections
 import itertools
 from typing import NamedTuple
 
-import rdflib
 from motion_spec_dsl.rdf_parser.vocab import (
     ALGO_EXT,
     CSTR,
@@ -432,27 +431,15 @@ def _materialize_link_pair_poses(model) -> None:
 # empty step rather than omitting the method, so `Schedule` never probes for one.
 
 
-def _parse_argument(graph, closure_id, argument, to_id, resolve_value=False):
-    """Resolve a closure argument (input/output/parameter) to id(s): a lone value collapses to a
-    scalar and a qudt:Quantity constant resolves to its scalar value.
+def _parse_argument(graph, closure_id, argument, to_id):
+    """Resolve a closure argument (input/output/parameter) to id(s); a lone one collapses to a
+    scalar. An authored bound is named, never copied: the closure carries the quantity's id and
+    the call site reads it off the blackboard, so the model's number has one source of truth.
     """
     entry = list(graph[closure_id:argument])
     if len(entry) == 0:
         return None
-
-    def resolve(node):
-        """One graph value as its id, unwrapping a qudt:Quantity constant to its scalar.
-
-        Parameters are baked into generated code as literal text, so the constant must collapse to
-        a scalar here; bare literals and IRI refs pass through.
-        """
-        if resolve_value and not isinstance(node, rdflib.Literal):
-            value = graph.value(node, QUDT_SCHEMA["value"])
-            if value is not None:
-                return value
-        return to_id(node)
-
-    unique = list(dict.fromkeys(resolve(node) for node in entry))
+    unique = list(dict.fromkeys(to_id(node) for node in entry))
 
     return unique[0] if len(unique) == 1 else unique
 
@@ -466,7 +453,7 @@ def _fill_closure_args(graph, closure, to_id, op, closure_id, input_subject) -> 
     for output in op.output:
         closure[to_id(output)] = _parse_argument(graph, closure_id, output, to_id)
     for param in op.parameters:
-        closure[to_id(param)] = _parse_argument(graph, closure_id, param, to_id, resolve_value=True)
+        closure[to_id(param)] = _parse_argument(graph, closure_id, param, to_id)
 
 
 def _operator_inputs(graph, operator_id, inputs) -> set:
@@ -1011,9 +998,7 @@ def _path_fields(model, path_node) -> dict:
     for input_ in spec.input:
         fields[model.id(input_)] = _parse_argument(model.graph, path_node, input_, model.id)
     for param in spec.parameters:
-        fields[model.id(param)] = _parse_argument(
-            model.graph, path_node, param, model.id, resolve_value=True
-        )
+        fields[model.id(param)] = _parse_argument(model.graph, path_node, param, model.id)
 
     return fields
 

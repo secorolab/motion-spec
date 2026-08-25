@@ -96,7 +96,7 @@ KDL::Frame <var.id>;
 monitor-member(monitor) ::= <<
 <if(monitor.is_edge_triggered)>    bool <monitor.id>_previous = false;
     bool <monitor.id>_event_triggered = false;
-<if(monitor.debounce_duration_s)>    double <monitor.id>_hold_s = 0.0;
+<if(monitor.debounce_id)>    double <monitor.id>_hold_s = 0.0;
 <endif><elseif(monitor.flag)>    bool <monitor.flag> = false;<endif>
 >>
 
@@ -106,7 +106,7 @@ monitor-member(monitor) ::= <<
 monitor-rearm(motion_id, monitor) ::= <<
 <if(monitor.is_edge_triggered)>        <motion_id>_state_instance.<monitor.id>_previous = false;
         <motion_id>_state_instance.<monitor.id>_event_triggered = false;
-<if(monitor.debounce_duration_s)>        <motion_id>_state_instance.<monitor.id>_hold_s = 0.0;<endif><endif>
+<if(monitor.debounce_id)>        <motion_id>_state_instance.<monitor.id>_hold_s = 0.0;<endif><endif>
 >>
 
 access-expr(id, views) ::= <<

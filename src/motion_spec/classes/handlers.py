@@ -176,10 +176,10 @@ class EdgeMonitor:
     event_uri: str | None = None
     event_name: str | None = None
     fallback_motion: str | None = None
-    # How long the constraint must hold before the edge fires [s], as authored. The runtime
-    # accumulates measured cycle time against it, so it stays a duration all the way down.
-    # Stays None (not 0) when absent -- ST4's <if(x)> is true even for a zero number.
-    debounce_duration_s: float | None = None
+    # The authored duration the constraint must hold before the edge fires, by id: the runtime
+    # accumulates measured cycle time against that shared value, so the model's bound has one
+    # source of truth. None when absent.
+    debounce_id: str | None = None
     # Structured active-phase boolean terms (rendered to C++ by the bool-condition template).
     has_active: bool = False
     active_terms: list | None = None

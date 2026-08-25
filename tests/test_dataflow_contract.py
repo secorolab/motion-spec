@@ -293,6 +293,39 @@ def test_a_gain_published_as_a_shared_value_is_read_by_its_controller() -> None:
     assert constant["consumers"] == [{"kind": "closure", "id": "ctrl_push", "role": "gains.kp"}]
 
 
+def test_a_snapshot_latch_is_read_by_the_motion_that_captures_it() -> None:
+    """The guard on a run-scoped capture is a shared value, and the IR names it. A template that
+    spelled the name itself would leave the latch with no recorded reader at all."""
+    from motion_spec.classes.motion import SnapshotCapture
+
+    latch = BlackboardValue(id="hold_pose_captured", type="Bool", value=False)
+    motion = _motion("motion_home", 0, "S_HOME", [], [])
+    motion.task_snapshots = [
+        SnapshotCapture(
+            target_id="hold_pose", source_id="pose_ee", scope="task", captured_id=latch.id
+        )
+    ]
+    introspection = {"quantity_samples": [_sample(latch, {"kind": "bool", "id": latch.id})]}
+    annotate_dataflow(introspection, [latch], {}, [motion], [], {})
+    (constant,) = introspection["constants"]
+    assert constant["consumers"] == [
+        {"kind": "motion", "id": "motion_home", "role": "snapshot.captured"}
+    ]
+
+
+def test_a_monitor_debounce_is_read_by_the_monitor_it_gates() -> None:
+    """The hold duration is the model's own quantity, read off the blackboard rather than copied
+    into the edge test: one source of truth, and a recorded reader."""
+    debounce = _quantity("mon_settled_debounce", 0.3)
+    introspection = {
+        "monitors": [{"id": "mon_settled", "debounce_signal": debounce.id}],
+        "quantity_samples": [_sample(debounce, {"kind": "shared", "id": debounce.id})],
+    }
+    annotate_dataflow(introspection, [debounce], {}, [], [], {})
+    (constant,) = introspection["constants"]
+    assert constant["consumers"] == [{"kind": "monitor", "id": "mon_settled", "role": "debounce"}]
+
+
 def test_a_value_no_reader_binds_is_recorded_with_no_consumers() -> None:
     """Scene geometry is baked into a pose while generating; nothing reads it per tick. The
     empty answer is the deriver's, not a gap -- so no reader may be invented to fill it."""

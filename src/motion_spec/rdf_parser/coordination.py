@@ -288,6 +288,7 @@ def monitor_entry(model, node):
     event_node = graph.value(node, CSTR_HDL["event"])
     event = model.id(event_node)
     fallback = graph.value(node, CSTR_HDL_EXT["fallback-motion"])
+    debounce = graph.value(node, CSTR_HDL_EXT["debounce-duration"])
 
     return EdgeMonitor(
         model.id(node),
@@ -299,9 +300,7 @@ def monitor_entry(model, node):
         event_uri=str(event_node),
         event_name=event.upper(),
         fallback_motion=model.id(fallback) if fallback is not None else None,
-        debounce_duration_s=quantities.optional_seconds(
-            model, node, CSTR_HDL_EXT["debounce-duration"]
-        ),
+        debounce_id=model.id(debounce) if debounce is not None else None,
         **publication,
     )
 

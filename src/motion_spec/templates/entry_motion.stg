@@ -69,9 +69,9 @@ inline void update_<motion.id>(
         state.snapshot_taken = true;
     }
 <endif>
-<motion.task_snapshots:{snap |     if (!shared.<snap.target_id>_captured) {
+<motion.task_snapshots:{snap |     if (!shared.<snap.captured_id>) {
 <emit-snapshot(snap, closures, views)>
-        shared.<snap.target_id>_captured = true;
+        shared.<snap.captured_id> = true;
     \}}; separator="\n">
 <motion.snapshots:{snap | <emit-triggered-snapshot(snap, closures, views)>}; separator="">
 <motion.declared_pose_components:{pose | <materialize-pose-component(pose, views)>}; separator="\n">

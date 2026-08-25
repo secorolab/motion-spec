@@ -1061,8 +1061,9 @@ def _record_runtime_ttl_with_rec(run_dir: Path, manifest: dict, runtime_ttl: Pat
     rec_path = run_dir / manifest.get("files", {}).get("rec", "rec.ld.json")
     if not rec_path.exists():
         return
-    observer = FileObserver(rec_path)
-    run = Run(observers=[observer], run_id=manifest.get("run_id"))
+    run_id = manifest.get("run_id")
+    observer = FileObserver(rec_path, run_iri=prov_uri(f"run:{run_id}"))
+    run = Run(observers=[observer], run_id=run_id)
     run.add_agent(
         prov_uri("agent:replay_process"),
         rec_types(["prov:SoftwareAgent", "obs:ObservationProvider"]),

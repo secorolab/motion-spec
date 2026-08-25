@@ -22,6 +22,7 @@ from motion_spec.introspection.provenance import (
     ensure_local_rec_importable,
     host_info,
     parse_rec_time,
+    prov_uri,
     rec_run_lifecycle,
     record_activities,
     record_agents,
@@ -723,7 +724,7 @@ def _write_rec_snapshot(
         ) from exc
 
     run_id = manifest["run_id"]
-    observer = FileObserver(run_dir / "rec.ld.json")
+    observer = FileObserver(run_dir / "rec.ld.json", run_iri=prov_uri(f"run:{run_id}"))
     run = Run(observers=[observer], run_id=run_id)
     lifecycle = rec_run_lifecycle(observer.graph)
     started_time = lifecycle.get("started_time")

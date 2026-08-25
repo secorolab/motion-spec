@@ -317,7 +317,9 @@ def _start_rec_run(
     from rec import Run
     from rec.observers import FileObserver
 
-    observer = FileObserver(run_dir / "rec.ld.json")
+    # One run, one node: rec describes the same IRI the runtime graph and the generation
+    # provenance describe, so the three documents union instead of standing side by side.
+    observer = FileObserver(run_dir / "rec.ld.json", run_iri=prov_uri(f"run:{run_id}"))
     run = Run(observers=[observer], run_id=run_id)
     run._emit_started()
     run.log_host_info(host_info())
@@ -454,7 +456,7 @@ def _finish_rec_run(rec_path: Path, run_id: str, status: str) -> None:
     from rec import Run
     from rec.observers import FileObserver
 
-    observer = FileObserver(rec_path)
+    observer = FileObserver(rec_path, run_iri=prov_uri(f"run:{run_id}"))
     lifecycle = rec_run_lifecycle(observer.graph)
     if lifecycle.get("status") == status and (
         status != "COMPLETED" or lifecycle.get("completed_time")

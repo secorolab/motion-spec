@@ -29,7 +29,7 @@ QUDT = rdflib.Namespace("http://qudt.org/schema/qudt/")
 
 def _rec_entity_path(graph, label: str) -> str:
     """The archive-relative path REC recorded for the entity carrying `label`."""
-    entity = next(e for e, value in graph.subject_objects(REC.label) if str(value) == label)
+    entity = next(e for e, value in graph.subject_objects(rdflib.RDFS.label) if str(value) == label)
     return str(graph.value(graph.value(entity, PROV.atLocation), REC.path))
 
 
@@ -70,20 +70,22 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
     verify_manifest(run_dir)
 
     # REC records the archive as a PROV graph: lifecycle is an rdf:type on the run, and an
-    # entity's role is its rec:label. See metamodels rec.shacl.ttl (RunExecutionShape).
+    # entity's role is its rdfs:label. See metamodels rec.shacl.ttl (RunExecutionShape).
     rec_graph = rdflib.Graph().parse(run_dir / "rec.ld.json", format="json-ld")
     assert rec_run_lifecycle(rec_graph)["status"] == "COMPLETED"
-    labels = {str(value) for value in rec_graph.objects(None, REC.label)}
+    # One run, one node: rec types the same IRI the runtime graph does.
+    assert (rdflib.URIRef(prov_uri("run:run-test")), rdflib.RDF.type, REC.CompletedRun) in rec_graph
+    labels = {str(value) for value in rec_graph.objects(None, rdflib.RDFS.label)}
     assert {"frame_log", "frame_log_health", "runtime_ttl"} <= labels
     runtime_entity = next(
         entity
-        for entity, label in rec_graph.subject_objects(REC.label)
+        for entity, label in rec_graph.subject_objects(rdflib.RDFS.label)
         if str(label) == "runtime_ttl"
     )
     assert str(rec_graph.value(runtime_entity, REC.sha256)) == sha256_file(runtime_ttl)
     health = next(
         entity
-        for entity, value in rec_graph.subject_objects(REC.label)
+        for entity, value in rec_graph.subject_objects(rdflib.RDFS.label)
         if str(value) == "frame_log_health"
     )
     assert (
@@ -100,7 +102,7 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
     assert _rec_entity_path(rec_graph, "dsl_provenance") == "provenance/dsl.ld.json"
     assert _rec_entity_path(rec_graph, "runtime_ttl") == "runtime/runtime.ttl"
     metrics = {
-        str(rec_graph.value(metric, REC.label) or metric)
+        str(rec_graph.value(metric, rdflib.RDFS.label) or metric)
         .rsplit("/", 1)[0]
         .rsplit("metric/", 1)[-1]: (rec_graph.value(metric, QUDT.value))
         for metric in rec_graph.objects(None, REC.metrics)
@@ -372,7 +374,7 @@ def test_generation_run_vendors_its_authored_source(tmp_path: Path) -> None:
     rec_graph = rdflib.Graph().parse(run_dir / "rec.ld.json", format="json-ld")
     assert {
         str(rec_graph.value(rec_graph.value(entity, PROV.atLocation), REC.path))
-        for entity, label in rec_graph.subject_objects(REC.label)
+        for entity, label in rec_graph.subject_objects(rdflib.RDFS.label)
         if str(label) == "source_model"
     } == {"source/demo.fsm", "source/demo.robmot"}
 

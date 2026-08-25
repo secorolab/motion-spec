@@ -293,6 +293,31 @@ def test_a_gain_published_as_a_shared_value_is_read_by_its_controller() -> None:
     assert constant["consumers"] == [{"kind": "closure", "id": "ctrl_push", "role": "gains.kp"}]
 
 
+def test_a_while_constraints_cone_is_read_by_the_evaluator_that_compares_it() -> None:
+    """A `while` constraint no controller drives and no monitor watches still gets its evaluator,
+    so the cone it is banded by has a recorded reader instead of reaching the program as a
+    constant nothing compares."""
+    cone = _quantity("align_cone", 0.35)
+    error = _quantity("eval_home_while_align_forearm_err", None)
+    closures = {
+        "eval_home_while_align_forearm": {
+            "id": "eval_home_while_align_forearm",
+            "type": "ErrorEvaluator",
+            "constraint": "BilateralConstraint",
+            "quantity": "forearm_alignment",
+            "lower_threshold": "align_forearm_lower",
+            "upper_threshold": cone.id,
+            "error": error.id,
+        }
+    }
+    introspection = {"quantity_samples": [_sample(cone, {"kind": "shared", "id": cone.id})]}
+    annotate_dataflow(introspection, [cone, error], closures, [], [], {})
+    (constant,) = introspection["constants"]
+    assert constant["consumers"] == [
+        {"kind": "closure", "id": "eval_home_while_align_forearm", "role": "upper_threshold"}
+    ]
+
+
 def test_a_snapshot_latch_is_read_by_the_motion_that_captures_it() -> None:
     """The guard on a run-scoped capture is a shared value, and the IR names it. A template that
     spelled the name itself would leave the latch with no recorded reader at all."""

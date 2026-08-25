@@ -666,7 +666,19 @@ class ErrorEvaluator:
 
             return closure  # first matching constraint type wins
 
-        return None
+        # An authored bound that reaches no evaluator is never compared anywhere in the program,
+        # so say which constraint states it rather than emit a program that ignores it.
+        stated = sorted(
+            local_name(type_)
+            for type_ in get_node_types(graph, constraint_id)
+            if type_ != CSTR["Constraint"] and local_name(type_).endswith("Constraint")
+        )
+        raise ConstraintViolation(
+            "constraint-handler",
+            f"Constraint '{model.id(constraint_id)}' relates its quantity as "
+            f"{', '.join(stated) or 'nothing an evaluator reads'}; no evaluator compiles that, "
+            "so its bound would never be compared.",
+        )
 
     def operand_inputs(self, model, node):
         """Data-structure nodes feeding the matching constraint's inputs."""
@@ -1088,7 +1100,7 @@ def build_closures(model, operators) -> dict:
 
     Returns:
         one closure dict per call, keyed by the call's generated id; an operator that yields no
-        closure for a call (a specification, an evaluator whose constraint type does not match)
+        closure for a call (a specification, a goal-status evaluator the monitor reads directly)
         contributes nothing
     """
     closures = {}

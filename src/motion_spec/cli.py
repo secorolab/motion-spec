@@ -784,8 +784,8 @@ def replay(log: Path, jsonl: bool, verify: bool, recover_runtime_ttl: bool) -> N
             from motion_spec.introspection.runtime_graph import write_runtime_ttl
 
             run_dir, log_path, _manifest, _schema = resolve_archive(log)
-            records, frame_count = runtime_frames(log_path)
-            click.echo(write_runtime_ttl(run_dir, records, frame_count=frame_count))
+            records, _frame_count = runtime_frames(log_path)
+            click.echo(write_runtime_ttl(run_dir, records))
         elif verify:
             _run_dir, log_path, _manifest, schema = resolve_archive(log)
             validate_header(log_path, schema)

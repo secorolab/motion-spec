@@ -157,8 +157,8 @@ def main(argv: list[str] | None = None) -> int:
             from motion_spec.introspection.runtime_graph import write_runtime_ttl
 
             run_dir, log_path, _manifest, _contract = resolve_archive(args.log)
-            records, frame_count = runtime_frames(log_path)
-            out = write_runtime_ttl(run_dir, records, frame_count=frame_count)
+            records, _frame_count = runtime_frames(log_path)
+            out = write_runtime_ttl(run_dir, records)
             print(out)
         elif args.verify:
             run_dir, log_path, manifest, contract = resolve_archive(args.log)

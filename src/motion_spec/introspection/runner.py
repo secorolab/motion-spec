@@ -122,8 +122,8 @@ def run_cataloged(
             # failure vanish behind whatever the caller does with the raise.
             started = time.monotonic()
             try:
-                records, frame_count = runtime_frames(archived_log)
-                write_runtime_ttl(run_dir, records, frame_count=frame_count)
+                records, _frame_count = runtime_frames(archived_log)
+                write_runtime_ttl(run_dir, records)
             except Exception as exc:
                 print(f"runtime.ttl recovery failed: {exc!r}", file=sys.stderr)
                 raise

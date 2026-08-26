@@ -42,7 +42,7 @@ from motion_spec.dashboard.jobs import (
 )
 from motion_spec.dashboard.live import live_state, run_control
 from motion_spec.dashboard.notebook import jupyter_server, run_notebook, stop_jupyter
-from motion_spec.dashboard.queries import run_query, save_queries, saved_queries
+from motion_spec.dashboard.queries import generation_graph, run_query, save_queries, saved_queries
 from motion_spec.dashboard.replay import plot_data, replay_data
 from motion_spec.dashboard.roots import (
     FRONTEND,
@@ -264,10 +264,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     return self.send_json(drift_summary(generation))
                 return self.send_json(source_drift(generation, file or None))
             if parsed.path == "/api/generation-graph":
+                # The whole model graph, imports followed -- not the picked files, which cut
+                # the graph at file boundaries the model does not have.
                 return self.send_json(
-                    provenance_graph(
-                        relative_path(roots.GENERATIONS, value), query.get("graph", [])
-                    )
+                    provenance_graph(generation_graph(relative_path(roots.GENERATIONS, value)))
                 )
             if parsed.path == "/api/runs":
                 generation = relative_path(roots.GENERATIONS, value)

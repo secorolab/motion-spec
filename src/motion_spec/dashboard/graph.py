@@ -4,7 +4,8 @@
 Three named graphs, each with a different lifetime:
 
 * ``urn:model``   -- parsed once from the generation's app manifest and its imports.
-* ``urn:runtime`` -- occurrences plus interval-sampled values, appended as frames arrive.
+* ``urn:runtime`` -- the run's archived ``runtime.ttl`` where it has one, otherwise occurrences
+  plus interval-sampled values projected from frames as they arrive. Never both.
 * ``urn:live``    -- the newest frame only, cleared and refilled per query so per-tick values
   never accumulate.
 
@@ -26,7 +27,6 @@ from rdflib.namespace import SDO
 from motion_spec.introspection.runtime_graph import (
     IncrementalProjector,
     bind_namespaces,
-    condition_map_from_paths,
     frame_observations,
 )
 
@@ -110,6 +110,7 @@ class GraphService:
         *,
         sample_interval_s: float | None = 1.0,
         manifest: Path | None = None,
+        runtime_ttl: Path | None = None,
     ):
         self.generation_dir = Path(generation_dir)
         self.store = store
@@ -122,6 +123,7 @@ class GraphService:
         self.live = self.dataset.graph(LIVE_GRAPH)
         self._projector: IncrementalProjector | None = None
         self._fed = 0
+        self.runtime_source: str | None = None
         # A run names its own model graph; the generation is only where one is found without it.
         manifest = (
             manifest if manifest and manifest.is_file() else model_manifest(self.generation_dir)
@@ -130,6 +132,11 @@ class GraphService:
             load_model_graph(manifest, self.dataset, self.model)
         self.signals = signal_map(self.model)
         bind_namespaces(self.dataset, store.run_id)
+        # The archived record, where the run kept one. Projecting on top of it would emit a
+        # second occurrence for every one already recorded, and double every span read off them.
+        if runtime_ttl is not None and Path(runtime_ttl).is_file():
+            self.runtime.parse(runtime_ttl, format="turtle")
+            self.runtime_source = "archive"
 
     def _ensure_projector(self) -> IncrementalProjector | None:
         """Build the projector once the run's log contract is known (it carries the header)."""
@@ -139,7 +146,6 @@ class GraphService:
                 self.runtime,
                 self.store.run_id,
                 header,
-                condition_map_from_paths(sorted((self.generation_dir / MODEL_REL).glob("*.json"))),
                 sample_interval_s=self.sample_interval_s,
                 signal_map=self.signals,
             )
@@ -157,13 +163,19 @@ class GraphService:
         }
 
     def sync(self) -> None:
-        """Project whatever frames the store has gained, then refresh the live overlay."""
-        projector = self._ensure_projector()
-        if projector is not None:
-            frames = self.store.snapshot()
-            for frame in frames[self._fed :]:
-                projector.feed(frame)
-            self._fed = len(frames)
+        """Project whatever frames the store has gained, then refresh the live overlay.
+
+        An archived run is never projected: its `urn:runtime` is already the whole record.
+        """
+        if self.runtime_source != "archive":
+            projector = self._ensure_projector()
+            if projector is not None:
+                frames = self.store.snapshot()
+                for frame in frames[self._fed :]:
+                    projector.feed(frame)
+                self._fed = len(frames)
+                if self._fed:
+                    self.runtime_source = "projected"
         self.refresh_live()
 
     def refresh_live(self) -> None:
@@ -182,12 +194,20 @@ class GraphService:
             satisfied=True,
         )
 
-    def query(self, sparql: str) -> tuple[list[str], list[tuple]]:
-        """(variable names, rows) for a SPARQL query over the current dataset."""
+    def query(self, sparql: str) -> tuple[str, object]:
+        """(result type, payload) for a SPARQL query over the current dataset.
+
+        SELECT and ASK answer with `(variable names, rows)`. CONSTRUCT and DESCRIBE answer with
+        their triples: `result.vars` is None for both, so rows alone would flatten them away.
+        """
         self.sync()
         result = self.dataset.query(sparql)
+        if result.type in ("CONSTRUCT", "DESCRIBE"):
+            return result.type, [tuple(triple) for triple in result]
+        if result.type == "ASK":
+            return result.type, (["answer"], [(result.askAnswer,)])
         headers = [str(var) for var in (result.vars or [])]
-        return headers, [tuple(row) for row in result]
+        return result.type, (headers, [tuple(row) for row in result])
 
     def namespaces(self) -> dict[str, str]:
         """Bound prefix -> IRI, for CURIE display and query autocompletion."""

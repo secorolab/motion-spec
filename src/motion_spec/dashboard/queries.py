@@ -33,6 +33,20 @@ def run_model_manifest(run_dir: Path) -> Path | None:
     return path if path.is_file() else None
 
 
+def run_runtime_ttl(run_dir: Path) -> Path | None:
+    """The archived runtime graph this run names -- the validated record, not a re-projection."""
+    named = json_file(run_dir / "manifest.json").get("files", {}).get("runtime_ttl")
+    if not named:
+        return None
+    path = (run_dir / named).resolve()
+    return path if path.is_file() else None
+
+
+def generation_graph(generation_dir: Path) -> GraphService:
+    """A generation's model graph on its own -- no run, so nothing recorded to merge in."""
+    return GraphService(generation_dir, RunStore(generation_dir.name))
+
+
 def run_graph(run_dir: Path, *, frames: bool) -> GraphService:
     """One run's queryable dataset: its model, plus what the recording says happened.
 
@@ -54,7 +68,10 @@ def run_graph(run_dir: Path, *, frames: bool) -> GraphService:
             tail.close()
         _GRAPHS.clear()
         _GRAPHS[key] = GraphService(
-            run_dir.parent.parent, store, manifest=run_model_manifest(run_dir)
+            run_dir.parent.parent,
+            store,
+            manifest=run_model_manifest(run_dir),
+            runtime_ttl=run_runtime_ttl(run_dir),
         )
     return _GRAPHS[key]
 

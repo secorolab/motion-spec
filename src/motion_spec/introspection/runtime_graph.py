@@ -42,24 +42,6 @@ def _model_graphs(paths):
             continue
 
 
-def condition_map_from_paths(paths) -> dict[str, rdflib.URIRef]:
-    """Map monitor IRI -> its constraint-condition IRI, read from the model graph
-    (the compiled-from-.robmot jsonld). The condition node already carries the operator (@type),
-    measured quantity, and setpoint/threshold, so occurrences reference it by URI rather than
-    copying those values in — the model graph stays the single source for the spec."""
-    mapping: dict[str, rdflib.URIRef] = {}
-    for mg in _model_graphs(paths):
-        for s, p, o in mg:
-            if isinstance(o, rdflib.URIRef) and p == CSTR_HDL["constraint"]:
-                mapping[str(s)] = o
-    return mapping
-
-
-def _condition_map(run_dir: Path, manifest: dict) -> dict[str, rdflib.URIRef]:
-    """`condition_map_from_paths` over the model graphs the run archive vendored."""
-    return condition_map_from_paths(_model_paths(run_dir, manifest))
-
-
 def _model_paths(run_dir: Path, manifest: dict):
     return [run_dir / rel for rel in manifest.get("files", {}).get("model_imports") or []]
 
@@ -92,11 +74,12 @@ MSRUN = rdflib.Namespace("https://secorolab.github.io/motion-spec/runtime/")
 # unmatched, so the shape validated nothing.
 TRACE = rdflib.Namespace("https://secorolab.github.io/metamodels/motion-spec/execution-trace/")
 TIME = rdflib.Namespace("http://www.w3.org/2006/time#")
+DCTERMS = rdflib.Namespace("http://purl.org/dc/terms/")
 SENS = rdflib.Namespace("https://secorolab.github.io/metamodels/robot/sensors#")
 QUDT = rdflib.Namespace("http://qudt.org/schema/qudt/")
 QKIND = rdflib.Namespace("http://qudt.org/vocab/quantitykind/")
 UNIT = rdflib.Namespace("http://qudt.org/vocab/unit/")
-RUNTIME_RDF_CONTRACT_VERSION = 2
+RUNTIME_RDF_CONTRACT_VERSION = 3
 # Member edge occurrences kept per watched member of one interesting arming. The arming's
 # rearmCount is never capped, so a consumer comparing the two always sees a truncated series
 # for what it is.
@@ -350,19 +333,18 @@ class IncrementalProjector:
 
     Owns the state the per-tick scan carries across frames, so a batch replay and a live
     dashboard session drive the identical projection code. Continuous scalars stay in the
-    frame log; only semantic edges land in the graph:
+    frame log; only semantic edges land in the graph, under two classes:
 
-      * ActivityOccurrence spans the interval one coordination element was active for, and
-        ControlFlowOccurrence marks the instant control moved. Neither is named after a state
-        or a transition: prov:used points at the design IRI, whose own rdf:type says whether
-        the coordinator was a state machine or a behaviour tree.
-      * ConstraintSatisfied/UnsatisfiedOccurrence span a goal constraint's satisfied and
-        unsatisfied stretches (a falling edge is a goal lost, e.g. what fires E_GRASP_LOST_*),
-      * MonitorOccurrence spans one arming, from the frame its watched condition first held to
-        the frame it fired at, and counts the times that condition broke and re-armed first,
-      * EventOccurrence from the runtime's event triggers. Nothing needs filtering here: the
-        heartbeat that drives the FSM is deliberately not recorded, because the frame log is a
-        time series and every frame already is the tick.
+      * ActivityOccurrence spans an interval something was in force for -- a coordination
+        element active, a goal constraint satisfied, a monitor's condition holding until it
+        fired, a watched member of a gate holding. Unsatisfied needs no occurrence: it is the
+        gap between two satisfied spans.
+      * ControlFlowOccurrence marks the instant control moved -- a transition, or the event
+        that drove it. The heartbeat that drives the FSM is deliberately not recorded, because
+        the frame log is a time series and every frame already is the tick.
+
+    Neither class is named after a state or a transition: the single prov:used points at the
+    design IRI, whose own rdf:type says what kind of element it was.
 
     Occurrences are linked to the occurrence that informed them (prov:wasInformedBy), so
     "which monitor firing caused this transition" is a graph walk. A cause is written only
@@ -380,7 +362,6 @@ class IncrementalProjector:
         g: rdflib.Graph,
         run_id: str,
         header,
-        cond_map: dict,
         *,
         sample_interval_s: float | None = None,
         signal_map: dict | None = None,
@@ -389,7 +370,6 @@ class IncrementalProjector:
         self.g = g
         self.run_id = run_id
         self.header = header
-        self.cond_map = cond_map
         self.sample_interval_s = sample_interval_s
         self.signal_map = signal_map or {}
         # Read to decide whether an arming is worth its member detail, never written: the
@@ -482,7 +462,7 @@ class IncrementalProjector:
         if prev_state is not None:
             control_flow = self._control_flow(prev_state, cur, entry, step, observed_events)
         if state and state.get("uri"):
-            occ = self._occurrence("ActivityOccurrence", cur, entry, step, span=True)
+            occ = self._occurrence("ActivityOccurrence", f"s{cur}", entry, step, span=True)
             self.g.add((occ, PROV.used, rdflib.URIRef(state["uri"])))
             self._informed_by(occ, control_flow)
             self.open_activity = occ
@@ -492,67 +472,58 @@ class IncrementalProjector:
         if not tr or not tr.get("uri"):
             return None
         occ = self._occurrence(
-            "ControlFlowOccurrence", tr.get("id", f"{prev_state}-{cur}"), entry, step, span=False
+            "ControlFlowOccurrence",
+            f"t{tr.get('id', f'{prev_state}-{cur}')}",
+            entry,
+            step,
+            span=False,
         )
         self.g.add((occ, PROV.used, rdflib.URIRef(tr["uri"])))
-        # Prefer the event actually seen; fall back to the declared one when the transition has
-        # only one, which is how a transition driven by an unlogged event (the heartbeat) stays
-        # attributed. The instance cause is written only when exactly one event matched.
+        # The event that drove it survives as the link to its own occurrence, written only when
+        # exactly one observed event matched what the transition declares.
         declared = set(tr.get("event_indices") or [])
         if tr.get("event_index") is not None:
             declared.add(tr["event_index"])
         fired = observed_events & declared
-        eidx = next(iter(fired)) if len(fired) == 1 else None
-        ev = self.events.get(eidx if eidx is not None else tr.get("event_index")) or {}
-        if ev.get("uri"):
-            self.g.add((occ, TRACE.event, rdflib.URIRef(ev["uri"])))
-        if eidx is not None:
-            self._informed_by(occ, self.event_occ.get(eidx))
+        if len(fired) == 1:
+            self._informed_by(occ, self.event_occ.get(next(iter(fired))))
         return occ
 
     def _constraint_edges(
-        self, controllers: list, csat: list, frame: dict, wall, step: int
+        self, controllers: list, csat: list, prev: list, frame: dict, wall, step: int
     ) -> None:
-        """Open a satisfied/unsatisfied span on each goal constraint's edge, closing its
-        predecessor. The value carried is the observed error, never the declared band."""
-        prev = self.prev_csat
-        if prev is None:
-            return
+        """Span each goal constraint's satisfied stretches, closing one on its falling edge.
+
+        Unsatisfied gets no occurrence of its own: it is the gap between two satisfied spans.
+        The value carried is the observed error, never the declared band.
+
+        Entry passes an all-unsatisfied `prev`, so a constraint that is already satisfied when
+        its motion begins opens a span there. Without that its later loss -- the falling edge
+        that fires a goal-lost event -- would close nothing and leave no trace of the loss.
+        """
         for idx, now in enumerate(csat):
             if idx >= len(prev) or idx >= len(controllers) or now == prev[idx]:
                 continue
             constraint_uri = _slot_uri(controllers[idx], "constraint_uri")
             if constraint_uri is None:  # only goal constraints, not pure regulation
                 continue
-            self._close(self.open_constraint.get(idx), step)
+            self._close(self.open_constraint.pop(idx, None), step)
+            if not now:
+                continue
             value = frame["constraints"][idx].get("error")
             self.open_constraint[idx] = self._constraint_span(
-                now,
-                idx,
-                constraint_uri,
-                _slot_uri(controllers[idx], "uri", "controller_uri"),
-                idx,
-                None if value is None else float(value),
-                wall,
-                step,
+                f"c{idx}", constraint_uri, idx, None if value is None else float(value), wall, step
             )
 
-    def _constraint_span(
-        self, satisfied, disc, constraint_uri, controller_uri, slot_index, value, wall, step: int
-    ) -> rdflib.URIRef:
-        typename = (
-            "ConstraintSatisfiedOccurrence" if satisfied else "ConstraintUnsatisfiedOccurrence"
-        )
-        occ = self._occurrence(typename, disc, wall, step, span=True)
-        if controller_uri is not None:
-            self.g.add((occ, TRACE.controller, controller_uri))
-        self.g.add((occ, TRACE.constraint, constraint_uri))
+    def _constraint_span(self, disc, constraint_uri, slot_index, value, wall, step: int):
+        occ = self._occurrence("ActivityOccurrence", disc, wall, step, span=True)
+        self.g.add((occ, PROV.used, constraint_uri))
         _literal(self.g, occ, TRACE.slotIndex, slot_index)
-        _literal(self.g, occ, TRACE.value, value)
+        _literal(self.g, occ, SOSA.hasSimpleResult, value)
         return occ
 
     def _monitor_edges(self, monitors: list, msat: list, frame: dict, wall, step: int) -> None:
-        """Track each monitor's arming, and close it into a MonitorOccurrence when it fires.
+        """Track each monitor's arming, and close it into a span when it fires.
 
         The observed dwell is the interval this emits; the *declared* dwell stays in the design
         graph, where a query joins it. The two are compared, never copied together.
@@ -581,19 +552,16 @@ class IncrementalProjector:
             return
         began = self.first_held.get(idx, step)
         rearm = self.rearm.get(idx, 0)
-        occ = self._occurrence("MonitorOccurrence", idx, wall, began, span=True)
+        occ = self._occurrence("ActivityOccurrence", f"m{idx}", wall, began, span=True)
         self._close(occ, step)
-        self.g.add((occ, TRACE.monitor, monitor_uri))
-        condition = self.cond_map.get(str(monitor_uri))
-        if condition is not None:
-            self.g.add((occ, TRACE.constraint, condition))
+        self.g.add((occ, PROV.used, monitor_uri))
         _literal(self.g, occ, TRACE.slotIndex, idx)
         _literal(self.g, occ, TRACE.rearmCount, rearm)
         slots = frame.get("monitors") or []
         value = slots[idx].get("value") if idx < len(slots) else None
-        _literal(self.g, occ, TRACE.value, None if value is None else float(value))
+        _literal(self.g, occ, SOSA.hasSimpleResult, None if value is None else float(value))
         if self._interesting(monitor_uri, rearm, step):
-            self._emit_members(idx, occ, wall)
+            self._emit_members(idx, occ, wall, step)
         self.member_pending.pop(idx, None)
         self.rearm[idx] = 0
         self.first_held.pop(idx, None)
@@ -643,21 +611,23 @@ class IncrementalProjector:
                 continue
             pending.append((held, member_uri, float(error), step))
 
-    def _emit_members(self, idx: int, monitor_occ: rdflib.URIRef, wall) -> None:
-        """Materialize the buffered member edges and hang them off the arming that informed."""
+    def _emit_members(self, idx: int, monitor_occ: rdflib.URIRef, wall, fired: int) -> None:
+        """Span each buffered held stretch of a gate's members, hung off the arming that wanted
+        them. A stretch ends at the next not-held edge, or at the firing if it never broke."""
         for member_id, edges in (self.member_pending.get(idx) or {}).items():
             for order, (held, member_uri, error, step) in enumerate(edges):
+                if not held:
+                    continue
+                ends_at = next((e[3] for e in edges[order + 1 :] if not e[0]), fired)
                 occ = self._constraint_span(
-                    held,
-                    f"{idx}-{member_id}-{order}",
+                    f"w{idx}-{member_id}-{order}",
                     rdflib.URIRef(member_uri),
-                    None,
                     None,
                     error,
                     wall,
                     step,
                 )
-                self._close(occ, step)
+                self._close(occ, ends_at)
                 self._informed_by(monitor_occ, occ)
 
     def _triggers(self, frame: dict, step: int) -> None:
@@ -670,12 +640,13 @@ class IncrementalProjector:
             if ekey in self.seen_events:
                 continue
             self.seen_events.add(ekey)
+            if not event.get("uri"):  # the shape wants a referent; an unnamed event has none
+                continue
             occ = self._occurrence(
-                "EventOccurrence", eidx, trigger.get("wall_ns"), step, span=False
+                "ControlFlowOccurrence", f"e{eidx}", trigger.get("wall_ns"), step, span=False
             )
-            if event.get("uri"):
-                self.g.add((occ, TRACE.event, rdflib.URIRef(event["uri"])))
-                self._informed_by(occ, self.monitor_occ_for_event.pop(event["uri"], None))
+            self.g.add((occ, PROV.used, rdflib.URIRef(event["uri"])))
+            self._informed_by(occ, self.monitor_occ_for_event.pop(event["uri"], None))
             _literal(self.g, occ, TRACE.slotIndex, eidx)
             self.event_occ[eidx] = occ
 
@@ -726,8 +697,9 @@ class IncrementalProjector:
                 step,
                 frame_events | self.prev_frame_events,
             )
+            self._constraint_edges(controllers, csat, [False] * len(csat), frame, wall, step)
         else:
-            self._constraint_edges(controllers, csat, frame, wall, step)
+            self._constraint_edges(controllers, csat, self.prev_csat or [], frame, wall, step)
             self._monitor_edges(monitors, msat, frame, wall, step)
 
         if self.sample_interval_s is not None:
@@ -757,11 +729,11 @@ class IncrementalProjector:
 
 
 def _project_occurrences(
-    g: rdflib.Graph, run_id: str, header, frames: list[dict], cond_map: dict, dwells: dict
+    g: rdflib.Graph, run_id: str, header, frames: list[dict], dwells: dict
 ) -> set:
     """Synthesize the discrete event graph from the per-tick frame scan; return the set of steps
     that carry an occurrence (the frames worth materializing)."""
-    projector = IncrementalProjector(g, run_id, header, cond_map, declared_dwells=dwells)
+    projector = IncrementalProjector(g, run_id, header, declared_dwells=dwells)
     for frame in frames:
         projector.feed(frame)
     return projector.close()
@@ -792,6 +764,7 @@ def bind_namespaces(g, run_id: str, *, fsm_namespace: str = "") -> None:
         "msrun": MSRUN,
         "trace": TRACE,
         "time": TIME,
+        "dcterms": DCTERMS,
         "sens": SENS,
         "qudt": QUDT,
         "qkind": QKIND,
@@ -818,9 +791,7 @@ def bind_namespaces(g, run_id: str, *, fsm_namespace: str = "") -> None:
         g.bind("mfsm", rdflib.Namespace(fsm_namespace))
 
 
-def project_runtime(
-    run_dir: Path | str, frames: list[dict], *, frame_count: int | None = None
-) -> rdflib.Graph:
+def project_runtime(run_dir: Path | str, frames: list[dict]) -> rdflib.Graph:
     run_dir, manifest = load_manifest(run_dir)
     # The run's contract comes from the log itself, not a companion artifact.
     header = frame_log_pb.read_contract(run_dir / manifest["files"]["frame_log"]).header
@@ -878,11 +849,8 @@ def project_runtime(
         if rel and (run_dir / rel).exists():
             g.add((entity, rdflib.RDF.type, PROV.Entity))
             g.add((entity, PROV.atLocation, rdflib.URIRef(os.path.relpath(rel, "runtime"))))
-    g.add((run, TRACE.contractVersion, rdflib.Literal(RUNTIME_RDF_CONTRACT_VERSION)))
-    g.add((run, TRACE.runId, rdflib.Literal(manifest["run_id"])))
-    g.add(
-        (run, TRACE.frameCount, rdflib.Literal(len(frames) if frame_count is None else frame_count))
-    )
+    # The run id is already the run's own IRI, and the frame count is the last Frame's step.
+    g.add((run, DCTERMS.hasVersion, rdflib.Literal(RUNTIME_RDF_CONTRACT_VERSION)))
     # The run's tick rate, so a step converts to seconds without opening the frame log for one
     # header field. It hangs off the provider that produced the frames, as a qudt frequency --
     # the shape the sensors metamodel already defines for an update rate.
@@ -919,15 +887,9 @@ def project_runtime(
     # actually anchor an occurrence (plus the run's first/last for bounds). The dense per-tick
     # curve — every frame, all continuous scalars — stays in the frame log for numeric analysis.
     if frames:
-        states, _events = _state_maps(header)
         model_paths = _model_paths(run_dir, manifest)
         anchors = _project_occurrences(
-            g,
-            manifest["run_id"],
-            header,
-            frames,
-            condition_map_from_paths(model_paths),
-            declared_dwells_from_paths(model_paths),
+            g, manifest["run_id"], header, frames, declared_dwells_from_paths(model_paths)
         )
         emit_steps = anchors | {frames[0]["step"], frames[-1]["step"]}
         for frame in frames:
@@ -942,17 +904,12 @@ def project_runtime(
             frame_dt = _dt_literal(frame.get("timing", {}).get("wall_ns"))
             if frame_dt is not None:
                 g.add((frame_node, PROV.generatedAtTime, frame_dt))
-            state = _state_meta(states, frame.get("fsm_state", -1))
-            if state and state.get("uri"):
-                g.add((frame_node, TRACE.activeElement, rdflib.URIRef(state["uri"])))
     return g
 
 
-def write_runtime_ttl(
-    run_dir: Path | str, frames: list[dict], *, frame_count: int | None = None
-) -> Path:
+def write_runtime_ttl(run_dir: Path | str, frames: list[dict]) -> Path:
     run_dir = Path(run_dir)
-    graph = project_runtime(run_dir, frames, frame_count=frame_count)
+    graph = project_runtime(run_dir, frames)
     manifest_path = run_dir / "manifest.json"
     runtime_rel = "runtime/runtime.ttl"
     if manifest_path.exists():

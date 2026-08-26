@@ -383,19 +383,18 @@ def test_runtime_shacl_rejects_unanchored_occurrence(tmp_path: Path) -> None:
     path = tmp_path / "runtime.ttl"
     path.write_text(
         """
+@prefix dcterms: <http://purl.org/dc/terms/> .
 @prefix ms-exec-trace: <https://secorolab.github.io/metamodels/motion-spec/execution-trace/> .
-@prefix msrun: <https://secorolab.github.io/motion-spec/runtime/> .
 @prefix prov: <http://www.w3.org/ns/prov#> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 
 <run> a <https://secorolab.github.io/metamodels/execution-context#ExecutionContext> ;
-    msrun:contractVersion 1 ;
-    msrun:frameCount 1 ;
-    msrun:runId "run-test" ;
+    dcterms:hasVersion 3 ;
     prov:wasGeneratedBy <activity> .
 
-<event> a ms-exec-trace:EventOccurrence ;
-    ms-exec-trace:event <https://example.test/E_DONE> ;
+# No atFrame: InstantOccurrenceShape requires exactly one, so the shape must reject this.
+<event> a ms-exec-trace:ControlFlowOccurrence, prov:Activity ;
+    prov:used <https://example.test/E_DONE> ;
     ms-exec-trace:seq 0 .
 """.lstrip()
     )

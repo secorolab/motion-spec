@@ -10,14 +10,15 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
 from google.protobuf.message import DecodeError
-from rdflib import Dataset
+from rdflib import RDF, BNode, Literal
 
 from motion_spec.dashboard import roots
-from motion_spec.dashboard.graph import deployed_devices
+from motion_spec.dashboard.graph import LIVE_GRAPH, MODEL_GRAPH, RUNTIME_GRAPH, deployed_devices
 from motion_spec.dashboard.roots import LAYOUT_REL, directory_size, json_file, stamp_iso, trace
 from motion_spec.dashboard.runs import GenerationInfo, RunInfo
 from motion_spec.dashboard.sources import aligned_rows, authored_lines
@@ -232,36 +233,90 @@ def rdf_name(term: object) -> str:
     return str(term).rsplit("/", 1)[-1].rsplit("#", 1)[-1]
 
 
-def provenance_graph(path: Path, selected: list[str]) -> dict:
-    """Return every RDF term and triple for the browser WebGL renderer."""
-    graph = Dataset()
-    generated = (path / "generated").resolve()
-    for name in selected:
-        source = (generated / name).resolve()
-        if generated not in source.parents or source.suffix != ".json" or not source.is_file():
-            raise ValueError("unknown RDF graph")
-        graph.parse(source, format="json-ld")
-    triples = [
-        (subject, predicate, obj)
-        for subject, predicate, obj, _context in graph.quads((None, None, None, None))
-    ]
-    terms = sorted(
-        {term for subject, _predicate, obj in triples for term in (subject, obj)}, key=str
-    )
-    node_ids = {term: str(index) for index, term in enumerate(terms)}
-    return {
-        "nodes": [
-            {"id": node_ids[term], "label": rdf_name(term), "value": str(term)} for term in terms
-        ],
-        "links": [
+GRAPH_NAMES = {str(MODEL_GRAPH): "model", str(RUNTIME_GRAPH): "runtime", str(LIVE_GRAPH): "live"}
+PROV_NS = "http://www.w3.org/ns/prov#"
+
+
+def _is_prov(term) -> bool:
+    return str(term).startswith(PROV_NS)
+
+
+def _term_kind(term) -> str:
+    if isinstance(term, BNode):
+        return "blank"
+    return "provenance" if _is_prov(term) else "resource"
+
+
+def provenance_graph(service) -> dict:
+    """Every term and triple of one dataset -- model, runtime and live -- classified so the
+    renderer can colour and filter it.
+
+    Three edge classes never reach the picture as edges, because as edges they are hubs that a
+    force layout cannot separate: `rdf:type` becomes its subject's `types`, a literal object
+    becomes its subject's `attributes`, and `prov:` terms stay but are marked for the overlay.
+    `hidden` counts each one, so a reader can account for every triple that is not a link.
+    """
+    service.sync()
+    nodes: dict[str, dict] = {}
+    links: list[dict] = []
+    types: Counter = Counter()
+    predicates: Counter = Counter()
+    hidden = {"type_edges": 0, "literal_edges": 0, "provenance_edges": 0}
+
+    def node(term, graph_name: str) -> dict:
+        entry = nodes.get(str(term))
+        if entry is None:
+            entry = nodes[str(term)] = {
+                "id": str(term),
+                "label": rdf_name(term),
+                "value": str(term),
+                "types": [],
+                "attributes": {},
+                "degree": 0,
+                "kind": _term_kind(term),
+                "graphs": [],
+            }
+        if graph_name not in entry["graphs"]:
+            entry["graphs"].append(graph_name)
+        return entry
+
+    for subject, predicate, obj, context in service.dataset.quads((None, None, None, None)):
+        name = GRAPH_NAMES.get(str(getattr(context, "identifier", context)), "model")
+        source = node(subject, name)
+        if predicate == RDF.type:
+            short = rdf_name(obj)
+            source["types"].append(short)
+            types[short] += 1
+            hidden["type_edges"] += 1
+            continue
+        if isinstance(obj, Literal):
+            source["attributes"].setdefault(rdf_name(predicate), []).append(str(obj))
+            hidden["literal_edges"] += 1
+            continue
+        target = node(obj, name)
+        kind = "provenance" if any(map(_is_prov, (subject, predicate, obj))) else "relation"
+        links.append(
             {
-                "source": node_ids[subject],
-                "target": node_ids[obj],
+                "source": source["id"],
+                "target": target["id"],
                 "label": rdf_name(predicate),
                 "value": str(predicate),
+                "kind": kind,
+                "graph": name,
             }
-            for subject, predicate, obj in triples
-        ],
+        )
+        source["degree"] += 1
+        target["degree"] += 1
+        predicates[rdf_name(predicate)] += 1
+        if kind == "provenance":
+            hidden["provenance_edges"] += 1
+    return {
+        "nodes": list(nodes.values()),
+        "links": links,
+        "types": dict(types),
+        "predicates": dict(predicates),
+        "hidden": hidden,
+        "runtime_source": service.runtime_source,
     }
 
 

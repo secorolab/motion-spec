@@ -8,7 +8,7 @@
 
 import { appendConsole, listItem } from "./components.js";
 import { $, $$, api, askConfirm, copyText, post, snack, state } from "./core.js";
-import { mountEditor } from "./editor.js";
+import { mountEditor, revealLine } from "./editor.js";
 import { showGeneration, showGitDiff } from "./generations.js";
 import { setTab } from "./routing.js";
 
@@ -218,7 +218,56 @@ export async function openSource(source, absolute = null, push = true, line = nu
     };
   }
   // Only a .robmot is a whole generation to make; the other authored files are parts of one.
-  if (source.endsWith(".robmot")) bindGenerate(source);
+  if (source.endsWith(".robmot")) {
+    bindGenerate(source);
+    showLint(source).catch(() => {});
+  }
+}
+
+// What the design graph says about the model on screen. That graph is made by generating, so
+// the findings come from this model's newest generation and there is nothing to say until one
+// exists. A finding is a warning at most: the graph can see that nothing reads a declared
+// value, but only the author knows whether that is a mistake.
+export async function showLint(source) {
+  const box = document.createElement("section");
+  box.className = "lint";
+  box.hidden = true;
+  $(".viewer-top").after(box);
+  const file = source.split("/").pop();
+  const generations = await api("/api/generations").catch(() => []);
+  const newest = generations
+    .filter((generation) => generation.source === file)
+    .sort((left, right) => String(right.created).localeCompare(String(left.created)))[0];
+  if (!newest || state.viewing !== source || !box.isConnected) return;
+  const { items } = await api(`/api/model/lint?path=${encodeURIComponent(newest.path)}`)
+    .catch(() => ({ items: null }));
+  if (!items || state.viewing !== source || !box.isConnected) return;
+  const head = document.createElement("p");
+  head.className = "lint-head";
+  head.textContent = `${items.length || "no"} lint finding${items.length === 1 ? "" : "s"} · ${newest.path}`;
+  box.append(head, ...items.map((item) => {
+    // A row is a button because it does something: it takes the reader to the line.
+    const row = document.createElement("button");
+    row.className = "lint-item";
+    row.type = "button";
+    row.disabled = !item.source_line;
+    const cell = (className, text) => {
+      const span = document.createElement("span");
+      span.className = className;
+      span.textContent = text;
+      return span;
+    };
+    row.append(
+      cell("lint-sev", item.severity),
+      cell("lint-name", item.name),
+      cell("lint-line", item.source_line ? `:${item.source_line}` : ""),
+      cell("lint-why", `${item.rule} — ${item.why}`),
+    );
+    row.title = item.iri;
+    row.onclick = () => revealLine(item.source_line);
+    return row;
+  }));
+  box.hidden = false;
 }
 
 // Generate, build and run a model from its own page, showing the terminal that does it.

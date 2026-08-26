@@ -12,8 +12,9 @@ import rdflib
 from rdf_utils.uri import iri_parent
 
 from motion_spec.dashboard.catalog import classify_quads, graph_name, rdf_name, term_graphs
-from motion_spec.dashboard.graph import GraphService
+from motion_spec.dashboard.graph import MODEL_GRAPH, GraphService, load_model_graph, model_manifest
 from motion_spec.dashboard.roots import LAYOUT_REL, json_file
+from motion_spec.dashboard.sources import declaration_lines
 from motion_spec.dashboard.store import RunStore
 from motion_spec.dashboard.tail import FrameLogTail
 from motion_spec.introspection import frame_log_pb
@@ -503,3 +504,57 @@ def curie(term, prefixes: dict) -> str | None:
         default=(None, None),
     )
     return f"{prefix}:{text[len(namespace) :]}" if prefix else text
+
+
+# A declared quantity is the one that carries its own value; a measured or derived quantity is
+# given its value at run time and reads as unreferenced here for reasons that are not the
+# author's. Referenced means named by anything at all -- a constraint's tolerance, threshold or
+# reference value, a controller's bound, a solver limit, a path parameter -- so a term that is
+# the object of no triple is read by nothing in the design. `zero-length` and `zero-angle` are
+# the case this must not flag: they are tolerances, so a constraint names them.
+UNUSED_DECLARATION = """
+PREFIX qudt: <http://qudt.org/schema/qudt/>
+SELECT ?term ?value WHERE {
+  ?term a qudt:Quantity ; qudt:value ?value .
+  FILTER NOT EXISTS { ?subject ?predicate ?term }
+}
+"""
+
+# Warn, never error: the graph can say a term is read by nothing, but only the author knows
+# whether that is a mistake or a value being kept for the next edit.
+LINT_SEVERITY = "warn"
+
+
+def model_lint(generation_dir: Path) -> dict:
+    """What the design graph says about itself: terms declared and read by nothing.
+
+    Design graph only -- no run, no frame log. A generation with no model manifest lints to
+    nothing rather than failing, so the page can ask about any generation it lists.
+    """
+    manifest = model_manifest(generation_dir)
+    if manifest is None:
+        return {"items": []}
+    dataset = rdflib.Dataset(default_union=True)
+    model = load_model_graph(manifest, dataset, dataset.graph(MODEL_GRAPH))
+    authored = next((generation_dir / "generated/source").glob("*.robmot"), None)
+    lines = declaration_lines(authored.read_text()) if authored else {}
+    items = [
+        {
+            "rule": "unused-declaration",
+            "severity": LINT_SEVERITY,
+            "iri": str(term),
+            "name": name,
+            "source_line": lines.get(name),
+            "why": f"declared as {value} and read by nothing in the model",
+        }
+        for term, value in model.query(UNUSED_DECLARATION)
+        if (name := rdf_name(term))
+    ]
+    # In the order they are read in; what an imported graph declares has no line here, so it
+    # sorts to the end rather than to the top.
+    return {
+        "items": sorted(
+            items,
+            key=lambda item: (item["source_line"] is None, item["source_line"] or 0, item["name"]),
+        )
+    }

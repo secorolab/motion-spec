@@ -7,6 +7,7 @@
  * whether the run is finished or still being written.
  */
 
+import { COMPARE_MARKUP, loadCompare } from "./compare.js";
 import { appendConsole, consoleExcerpt, showEmpty } from "./components.js";
 import { $, $$, api, snack, state } from "./core.js";
 import { EXPLORE_MARKUP, bindExplore } from "./explore.js";
@@ -14,6 +15,7 @@ import { highlightGeneration, selectGeneration, stopRun } from "./generations.js
 import { addLivePlot, bindLivePlots, followLiveRun, livePlotsOn, simControl } from "./live.js";
 import { openNotebook } from "./notebook.js";
 import { addPlot, cursorOption } from "./plots.js";
+import { showReports } from "./reports.js";
 import { setView } from "./routing.js";
 import { loadViews } from "./views.js";
 
@@ -442,7 +444,7 @@ export function populateConstraints() {
 export function replayShell(path) {
   // The run page's markup, with what the reply fills left blank: the numbers, the timeline's
   // range and the constraint list.
-  return `<div class="replay"><div class="replay-heading"><button id="back" title="Back to generation">←</button><h1>${path.split("/").pop()}</h1><div class="replay-tabs"><button data-panel="plots" class="active">Plots</button><button data-panel="views">Views</button><button data-panel="explore">Explore</button><button data-panel="console">Console</button></div><span class="eyebrow">RUN</span></div><section id="panel-plots"><div class="constraint-panel"><div class="eyebrow">SOURCE CONSTRAINTS</div><input id="constraint-search" type="search" placeholder="Search .robmot constraints"><div id="constraints" class="constraints"></div></div><div class="chart-controls"><button id="plot">Add empty plot</button><button id="notebook">Open in Jupyter</button><button id="live-plots" title="Plot signals as the run writes them">live plots: on</button></div><div id="plots" class="plots"></div></section><section id="panel-views" hidden></section><section id="panel-explore" hidden>${EXPLORE_MARKUP}</section><section id="panel-console" hidden><pre id="console-text" class="console"></pre></section></div><div class="settling" hidden><div class="spinner"></div><span>archiving the run…</span></div><div class="videos" hidden><button class="video-max" title="Expand"></button><button class="video-min" title="Minimize"></button><div class="video-main"><video preload="auto" playsinline disablepictureinpicture controlslist="nodownload noplaybackrate noremoteplayback"></video><span class="video-name"></span></div><div class="video-strip"></div></div><div class="transport"><div class="transport-controls"><button id="step-back" title="Previous frame">‹</button><button id="play">Play</button><button id="step-forward" title="Next frame">›</button><details class="picker speed-menu"><summary>1×</summary><div class="picker-panel"><button data-value="0.25">0.25×</button><button data-value="0.5">0.5×</button><button data-value="1" aria-pressed="true">1×</button><button data-value="2">2×</button><button data-value="5">5×</button></div></details><span id="readout" class="path"></span><span class="marker-legend"><i class="lg lg-state"></i>state <i class="lg lg-event"></i>event <i class="lg lg-satisfied"></i>satisfied <i class="lg lg-unsatisfied"></i>lost <i class="lg lg-monitor"></i>monitor</span><button id="cancel-run" title="End the run" hidden>cancel</button></div><div class="markers"></div><input class="timeline" type="range" min="0" max="0" value="0" disabled></div>`;
+  return `<div class="replay"><div class="replay-heading"><button id="back" title="Back to generation">←</button><h1>${path.split("/").pop()}</h1><div class="replay-tabs"><button data-panel="plots" class="active">Plots</button><button data-panel="reports">Reports</button><button data-panel="views">Views</button><button data-panel="compare">Compare</button><button data-panel="explore">Explore</button><button data-panel="console">Console</button></div><span class="eyebrow">RUN</span></div><section id="panel-plots"><div class="constraint-panel"><div class="eyebrow">SOURCE CONSTRAINTS</div><input id="constraint-search" type="search" placeholder="Search .robmot constraints"><div id="constraints" class="constraints"></div></div><div class="chart-controls"><button id="plot">Add empty plot</button><button id="notebook">Open in Jupyter</button><button id="live-plots" title="Plot signals as the run writes them">live plots: on</button></div><div id="plots" class="plots"></div></section><section id="panel-reports" hidden></section><section id="panel-views" hidden></section><section id="panel-compare" hidden>${COMPARE_MARKUP}</section><section id="panel-explore" hidden>${EXPLORE_MARKUP}</section><section id="panel-console" hidden><pre id="console-text" class="console"></pre></section></div><div class="settling" hidden><div class="spinner"></div><span>archiving the run…</span></div><div class="videos" hidden><button class="video-max" title="Expand"></button><button class="video-min" title="Minimize"></button><div class="video-main"><video preload="auto" playsinline disablepictureinpicture controlslist="nodownload noplaybackrate noremoteplayback"></video><span class="video-name"></span></div><div class="video-strip"></div></div><div class="transport"><div class="transport-controls"><button id="step-back" title="Previous frame">‹</button><button id="play">Play</button><button id="step-forward" title="Next frame">›</button><details class="picker speed-menu"><summary>1×</summary><div class="picker-panel"><button data-value="0.25">0.25×</button><button data-value="0.5">0.5×</button><button data-value="1" aria-pressed="true">1×</button><button data-value="2">2×</button><button data-value="5">5×</button></div></details><span id="readout" class="path"></span><span class="marker-legend"><i class="lg lg-state"></i>state <i class="lg lg-event"></i>event <i class="lg lg-satisfied"></i>satisfied <i class="lg lg-unsatisfied"></i>lost <i class="lg lg-monitor"></i>monitor</span><button id="cancel-run" title="End the run" hidden>cancel</button></div><div class="markers"></div><input class="timeline" type="range" min="0" max="0" value="0" disabled></div>`;
 }
 
 export function bindPanels() {
@@ -450,11 +452,16 @@ export function bindPanels() {
     document.querySelectorAll(".replay-tabs button").forEach((button) =>
       button.classList.toggle("active", button.dataset.panel === panel));
     $("#panel-plots").hidden = panel !== "plots";
+    $("#panel-reports").hidden = panel !== "reports";
     $("#panel-views").hidden = panel !== "views";
+    $("#panel-compare").hidden = panel !== "compare";
     $("#panel-explore").hidden = panel !== "explore";
     $("#panel-console").hidden = panel !== "console";
+    // The sweep is paid for when the tab is opened, and once per run.
+    if (panel === "reports" && state.runPath) showReports(state.runPath);
     // A panel that cannot load is not the page failing to load.
     if (panel === "views") loadViews().catch((error) => snack(error.message));
+    if (panel === "compare") loadCompare().catch((error) => snack(error.message));
     state.charts.forEach((chart) => chart.resize());
     if (!remember) return;
     const view = new URLSearchParams(location.hash.slice(1));

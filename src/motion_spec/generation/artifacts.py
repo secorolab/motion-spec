@@ -996,7 +996,8 @@ def build_frame_log_header_record(schema: dict) -> bytes:
         constant.source_id = entry.get("source_id") or ""
         constant.value = float(entry.get("value") or 0.0)
         constant.uri = entry.get("uri") or ""
-        # Gain constants have no consumer: they are folded into the controller, not read off it.
+        # Empty means the deriver looked and found nobody, not that it did not look: scene
+        # geometry is baked into poses at generation time and no reader binds it.
         for reader in entry.get("consumers") or ():
             consumer = constant.consumers.add()
             consumer.id = reader.get("id") or ""

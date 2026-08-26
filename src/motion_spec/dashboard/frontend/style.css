@@ -179,6 +179,18 @@ h1 { margin: 7px 0; font-size: 30px; }
 .source-file .row-menu { top: calc(100% + 4px); bottom: auto; left: 0; min-width: 180px; }
 .source-file .row-menu button:disabled { color: var(--dim); cursor: default; }
 .source-file .row-menu button:disabled:hover { background: none; color: var(--dim); }
+/* What the design graph says about the model being read. A flat list of rows in the same
+   surface the tables above use, tinted rather than edge-marked so a finding does not read as
+   an uncommitted change. */
+.lint { display: grid; margin: 6px 0 14px; border: 1px solid var(--line); }
+.lint-head { margin: 0; padding: 7px 10px; background: var(--side); color: var(--dim); font: 10px var(--mono); letter-spacing: .06em; }
+.lint-item { display: grid; grid-template-columns: 34px minmax(0, 170px) 40px minmax(0, 1fr); align-items: baseline; gap: 10px; padding: 6px 10px; border: 0; border-top: 1px solid var(--bg); background: rgba(232, 196, 104, .06); color: var(--muted); font: 11px var(--code); text-align: left; cursor: pointer; }
+.lint-item:hover:not(:disabled) { background: rgba(232, 196, 104, .13); }
+.lint-item:disabled { cursor: default; }
+.lint-sev { color: #e8c468; font: 9px var(--mono); letter-spacing: .06em; }
+.lint-name { overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
+.lint-line { color: var(--dim); text-align: right; }
+.lint-why { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The archived model beside the authored one: the columns share a row per line, so what
    moved on one side stays level with where it was on the other. */
 .diff-state { margin: 4px 0 16px; color: var(--muted); font: 12px var(--mono); }
@@ -552,6 +564,18 @@ body:has(.notebook) #content { position: relative; max-width: none; padding: 0; 
 #answer td { padding: 5px 8px; border-top: 1px solid var(--line); color: var(--text); white-space: nowrap; }
 #answer tr:hover td { background: var(--bg); }
 
+#panel-reports { display: flex; flex-direction: column; gap: 10px; padding: 12px 0; }
+#panel-reports > .path { margin: 0; }
+.report { border: 1px solid var(--line); background: var(--surface); }
+.report summary { display: flex; gap: 14px; padding: 9px 12px; color: var(--muted); font: 11px var(--mono); list-style: none; cursor: pointer; }
+.report summary::-webkit-details-marker { display: none; }
+.report summary b { min-width: 84px; color: var(--accent); font-weight: 400; }
+.report[open] summary, .report summary:hover { color: var(--text); }
+.report table { width: 100%; border-collapse: collapse; font: 11px var(--code); }
+.report th { padding: 6px 12px; background: var(--bg); color: var(--dim); text-align: left; font-weight: 400; }
+.report td { padding: 5px 12px; border-top: 1px solid var(--line); color: var(--text); white-space: nowrap; }
+.report tr:hover td { background: var(--bg); }
+
 /* Temporal and causal views: the same flat tables, three of them stacked. */
 .views { display: grid; gap: 22px; }
 .view-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
@@ -565,8 +589,11 @@ body:has(.notebook) #content { position: relative; max-width: none; padding: 0; 
 /* The longest occupancy is tinted, not ruled: a bar down the side would read as a callout. */
 .view tr.tinted td { background: #2a2422; }
 .view tr.seekable { cursor: pointer; }
-.compare-bar { display: flex; }
-.compare-pick { padding: 5px 9px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 10px var(--mono); }
+.compare-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.compare-pick, .compare-gen, .compare-run { padding: 5px 9px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 10px var(--mono); }
+.compare-left { color: var(--dim); font: 10px var(--mono); }
+.compare-notes { margin: 0; padding: 8px 8px 8px 24px; background: #2a2422; border: 1px solid var(--line); color: var(--text); font: 11px var(--code); }
+.compare-notes li { margin: 2px 0; }
 
 .ask { max-width: 340px; padding: 16px 18px; border: 1px solid var(--line); background: var(--surface); color: var(--text); font: 12px/1.5 var(--mono); }
 .ask::backdrop { background: rgba(11, 12, 14, .55); }

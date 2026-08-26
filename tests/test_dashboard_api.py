@@ -196,10 +196,18 @@ def test_a_source_is_served_and_only_an_authored_one(dashboard):
     assert "not an authored model file" in json.loads(raised.value.read())["error"]
 
 
+def test_a_generation_lints_without_a_run(dashboard):
+    """The lint reads the design graph, so it answers for a generation on its own -- and a
+    generation whose graph declares nothing has nothing to say rather than failing."""
+    generation = _relative(dashboard, dashboard.run.parent.parent)
+    assert dashboard.get(f"/api/model/lint?path={generation}") == {"items": []}
+
+
 def test_a_path_outside_the_root_is_refused(dashboard):
-    with pytest.raises(urllib.error.HTTPError) as raised:
-        dashboard.get("/api/source?path=../../etc/passwd")
-    assert json.loads(raised.value.read())["error"] == "unknown path"
+    for endpoint in ("/api/source", "/api/model/lint"):
+        with pytest.raises(urllib.error.HTTPError) as raised:
+            dashboard.get(f"{endpoint}?path=../../etc/passwd")
+        assert json.loads(raised.value.read())["error"] == "unknown path"
 
 
 def test_only_a_same_origin_json_post_is_accepted(dashboard):

@@ -19,7 +19,7 @@ const seconds = (value) => (value === null || value === undefined ? "—" : `${v
 const signed = (value) =>
   value === null || value === undefined ? "—" : `${value >= 0 ? "+" : "−"}${Math.abs(value).toFixed(2)} s`;
 
-function table(headers, rows) {
+export function table(headers, rows) {
   const node = document.createElement("table");
   const head = document.createElement("tr");
   headers.forEach((name) => {
@@ -47,7 +47,7 @@ function table(headers, rows) {
   return node;
 }
 
-function section(title, note, body) {
+export function section(title, note, body) {
   const wrap = document.createElement("div");
   wrap.className = "view";
   const heading = document.createElement("div");

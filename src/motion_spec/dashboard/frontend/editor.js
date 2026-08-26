@@ -15,6 +15,17 @@ import { $, api, post, snack } from "./core.js";
 // module is fetched once and kept.
 export let codemirror = null;
 
+// The view the page is currently showing. Anything that can point at a line of the open file
+// jumps to it through `revealLine`, the same dispatch the syntax banner already makes.
+let mounted = null;
+
+export function revealLine(number) {
+  if (!mounted || !(number >= 1) || number > mounted.state.doc.lines) return;
+  const line = mounted.state.doc.line(number);
+  mounted.dispatch({ selection: { anchor: line.from }, scrollIntoView: true });
+  mounted.focus();
+}
+
 // The URL `codemirror` itself imports its view from. Asking for the same string gets the same
 // module instance; a different spelling of the same package (@codemirror/view@6.26.3, say)
 // is a second copy of the library, whose decorations the first copy quietly ignores.
@@ -207,6 +218,7 @@ function myersInsertions(a, b) {
 
 export async function mountEditor(holder, source, text, readOnly = false, gitHead = null, line = null) {
   let cm;
+  mounted = null;   // whatever was open is gone; nothing may jump into it
   try {
     cm = await editorModule();
   } catch (error) {
@@ -445,6 +457,7 @@ export async function mountEditor(holder, source, text, readOnly = false, gitHea
         }, { dark: true }),
     ],
   });
+  mounted = view;
   dirty(false);
   save.onclick = () => write(view);
   // The binding people expect from an editor, without importing a second package for it.

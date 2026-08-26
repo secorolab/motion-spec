@@ -324,7 +324,10 @@ def classify_quads(quads, graphs: dict[str, list[str]]) -> dict:
         if kind == "provenance":
             hidden["provenance_edges"] += 1
     return {
-        "nodes": list(nodes.values()),
+        # By id, because insertion order follows the store's quad iteration, and refresh_live
+        # rebuilds the live graph on every sync -- same terms, different order. The view caches
+        # focus by node id, so the payload has to name them in the same order twice running.
+        "nodes": sorted(nodes.values(), key=lambda node: node["id"]),
         "links": links,
         "types": dict(types),
         "predicates": dict(predicates),

@@ -398,46 +398,8 @@ def saturation_report(spans, series, joints, limits=()) -> list[dict]:
     return rows
 
 
-def watched_signals(spans, series, bands) -> list[dict]:
-    """Per occupancy, what each signal a gate judges there actually did.
-
-    Restricted to signals a monitor references, which is the restriction `monitor_bands`
-    already draws: every other recorded quantity moves for reasons nothing in the model has
-    an opinion about, and comparing all of them buries the few that were judged.
-
-    Per occupancy and per motion, because one quantity is held to different bands in
-    different motions -- the same restriction, and the same reason, as the contact bands.
-    """
-    rows = []
-    for span in spans:
-        watched = {
-            signal: band
-            for motion in span["motions"]
-            for signal, band in bands.get(motion, {}).items()
-        }
-        for signal, band in sorted(watched.items()):
-            # A gate may watch an operand the run records no quantity for, exactly as `sweep`
-            # drops an id it cannot find: omitted, never filled in with a zero.
-            values = _values(series, signal, span) if signal in series else []
-            if not values:
-                continue
-            rows.append(
-                {
-                    "state_index": span["state_index"],
-                    "state_id": span["state_id"],
-                    "signal": signal,
-                    "gate": band["gate"],
-                    "band": band["band"],
-                    "peak": max(values, key=abs),
-                    "pk_pk": max(values) - min(values),
-                    "rms": math.sqrt(sum(value * value for value in values) / len(values)),
-                }
-            )
-    return rows
-
-
 def run_reports(run_dir: Path | str) -> dict:
-    """All four reports off one sweep of the run's frame log."""
+    """All three reports off one sweep of the run's frame log."""
     _run_dir, log, _manifest, contract = resolve_archive(Path(run_dir))
     period = period_seconds(contract.header)
     joints = joint_signals(contract)
@@ -446,7 +408,6 @@ def run_reports(run_dir: Path | str) -> dict:
     # A run recording several whole wrenches or twists is read on the first of each.
     forces = next(iter(wrenches.values()), {})
     velocities = next(iter(twists.values()), {})
-    bands = monitor_bands(contract)
     ids = [
         name
         for roles in joints.values()
@@ -454,7 +415,6 @@ def run_reports(run_dir: Path | str) -> dict:
         for name in roles.get(role, {}).values()
     ]
     ids += [*forces.values(), *velocities.values()]
-    ids += sorted({signal for motion in bands.values() for signal in motion} - set(ids))
     spans, series = sweep(log, contract, ids)
     limits = [(row.id, row.value) for row in contract.header.constants]
     return {
@@ -466,10 +426,9 @@ def run_reports(run_dir: Path | str) -> dict:
         ],
         "oscillation": coherent_modes(spans, series, period, joints),
         "contact": (
-            contact_events(spans, series, period, forces, velocities, bands)
+            contact_events(spans, series, period, forces, velocities, monitor_bands(contract))
             if forces and velocities
             else []
         ),
         "saturation": saturation_report(spans, series, joints, limits),
-        "signals": watched_signals(spans, series, bands),
     }

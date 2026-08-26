@@ -589,11 +589,8 @@ body:has(.notebook) #content { position: relative; max-width: none; padding: 0; 
 /* The longest occupancy is tinted, not ruled: a bar down the side would read as a callout. */
 .view tr.tinted td { background: #2a2422; }
 .view tr.seekable { cursor: pointer; }
-.compare-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.compare-pick, .compare-gen, .compare-run { padding: 5px 9px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 10px var(--mono); }
-.compare-left { color: var(--dim); font: 10px var(--mono); }
-.compare-notes { margin: 0; padding: 8px 8px 8px 24px; background: #2a2422; border: 1px solid var(--line); color: var(--text); font: 11px var(--code); }
-.compare-notes li { margin: 2px 0; }
+.compare-bar { display: flex; }
+.compare-pick { padding: 5px 9px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 10px var(--mono); }
 
 .ask { max-width: 340px; padding: 16px 18px; border: 1px solid var(--line); background: var(--surface); color: var(--text); font: 12px/1.5 var(--mono); }
 .ask::backdrop { background: rgba(11, 12, 14, .55); }

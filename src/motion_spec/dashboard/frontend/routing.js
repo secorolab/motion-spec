@@ -21,8 +21,7 @@ import { loadSources, openSource } from "./sources.js";
 // and restoring one wins over that view -- otherwise the hash names two and a reload picks the
 // other. Every other tab only chooses which list the sidebar shows.
 const PAGE_TABS = { health: loadHealth, notebook: loadNotebook };
-const VIEW_PARAMS = ["run", "generation", "explore", "source", "diff", "gitdiff", "file", "panel",
-  "cmp_gen", "cmp_run"];
+const VIEW_PARAMS = ["run", "generation", "explore", "source", "diff", "gitdiff", "file", "panel"];
 
 export function goHome() {
   stopPlayback();
@@ -50,7 +49,7 @@ export function setView(kind, path) {
   view.delete("diff");
   view.set(kind, path);
   view.set("tab", state.tab);
-  if (kind !== "run") ["panel", "cmp_gen", "cmp_run"].forEach((param) => view.delete(param));
+  if (kind !== "run") view.delete("panel");
   history[unchanged ? "replaceState" : "pushState"](null, "", `#${view}`);
 }
 

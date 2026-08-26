@@ -30,7 +30,6 @@ from motion_spec.dashboard.catalog import (
     source_drift,
     video_file,
 )
-from motion_spec.dashboard.compare import compare_generations
 from motion_spec.dashboard.jobs import (
     console_log_for,
     console_slice,
@@ -104,7 +103,6 @@ LAN_GET_ALLOWED = frozenset(
         "/api/run/timeline",
         "/api/run/gates",
         "/api/run/compare",
-        "/api/compare",
         "/api/console",
         "/api/queries",
         "/api/video",
@@ -307,21 +305,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     compare(
                         relative_path(roots.GENERATIONS, query.get("left", [""])[0]),
                         relative_path(roots.GENERATIONS, query.get("right", [""])[0]),
-                    )
-                )
-            if parsed.path == "/api/compare":
-                # Runs are optional and taken as a pair: two generations with no run between
-                # them still have a model diff, which is worth more than a refusal.
-                runs = [query.get(f"{side}_run", [""])[0] for side in ("left", "right")]
-                return self.send_json(
-                    compare_generations(
-                        relative_path(roots.GENERATIONS, query.get("left", [""])[0]),
-                        relative_path(roots.GENERATIONS, query.get("right", [""])[0]),
-                        *(
-                            [relative_path(roots.GENERATIONS, run) for run in runs]
-                            if all(runs)
-                            else [None, None]
-                        ),
                     )
                 )
             if parsed.path == "/api/devices":

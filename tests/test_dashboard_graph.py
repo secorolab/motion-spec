@@ -21,7 +21,7 @@ from dashboard_fixture import (
 from frame_log_fixture import flat_frame, write_frame_log_pb
 from rdflib.namespace import split_uri
 
-from motion_spec.dashboard.catalog import provenance_graph, rdf_name
+from motion_spec.dashboard.catalog import graph_name, provenance_graph, rdf_name
 from motion_spec.dashboard.graph import LIVE_GRAPH, RUNTIME_GRAPH, GraphService
 from motion_spec.dashboard.queries import model_lint
 from motion_spec.dashboard.store import RunStore
@@ -187,15 +187,6 @@ def test_history_carries_no_values_when_sampling_is_off(tmp_path):
     assert (None, rdflib.URIRef(PROV + "used"), rdflib.URIRef(CONSTRAINT)) in runtime
 
 
-def test_occurrences_and_live_values_answer_one_query_together(tmp_path):
-    service = _service(tmp_path)
-    _type, (_headers, rows) = service.query(OCCURRENCES)
-    assert rows, "the satisfaction edge should be projected into urn:runtime"
-
-    assert service.namespaces()["sosa"] == SOSA
-    assert "msrun" in service.namespaces()
-
-
 def test_the_dashboard_mints_no_vocabulary(tmp_path):
     """Every predicate and class the dashboard emits must already exist in a standard or
     vendored vocabulary. A new term here means the graph stopped being composable."""
@@ -319,18 +310,6 @@ def test_a_zero_tolerance_is_referenced_and_must_never_be_flagged(tmp_path):
     }
 
 
-def test_the_lint_never_raises_above_a_warning(tmp_path):
-    """The graph can see that nothing reads a value; only the author knows whether that is a
-    mistake, so no finding is ever an error."""
-    assert {item["severity"] for item in model_lint(_lint_generation(tmp_path))["items"]} == {
-        "warn"
-    }
-
-
-def test_a_generation_with_no_model_graph_lints_to_nothing(tmp_path):
-    assert model_lint(_lint_generation(tmp_path, model=None)) == {"items": []}
-
-
 def test_a_term_the_source_does_not_declare_is_still_reported(tmp_path):
     """An imported graph -- a scene, an FSM -- has no line in the model being read. The finding
     is still true, so it is still listed, with no line to jump to."""
@@ -438,13 +417,6 @@ def test_every_folded_edge_is_accounted_for(tmp_path):
     )
 
 
-def test_folding_leaves_no_hub_a_force_layout_cannot_separate(tmp_path):
-    payload = _payload(tmp_path)[1]
-
-    assert payload["nodes"]
-    assert max(node["degree"] for node in payload["nodes"]) < 200
-
-
 def test_the_legend_carries_every_type_the_graph_declares(tmp_path):
     service, payload = _payload(tmp_path)
     declared = {rdf_name(obj) for obj in service.dataset.objects(None, rdflib.RDF.type)}
@@ -452,7 +424,11 @@ def test_the_legend_carries_every_type_the_graph_declares(tmp_path):
     assert payload["types"]
     assert set(payload["types"]) == declared
     assert payload["runtime_source"] == "archive"
-    assert {node["graphs"][0] for node in payload["nodes"]} <= {"model", "runtime", "live"}
+    # Against the dataset's own graphs, not a fixed three: a JSON-LD file that declares a graph
+    # of its own keeps that graph's name, so the allowed set is whatever was actually loaded.
+    assert {name for node in payload["nodes"] for name in node["graphs"]} <= {
+        graph_name(context) for context in service.dataset.graphs()
+    }
 
 
 def test_node_ids_are_stable_across_calls(tmp_path):

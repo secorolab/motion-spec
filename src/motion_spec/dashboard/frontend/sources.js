@@ -86,7 +86,7 @@ export function renderSourceNode(node, name, depth, isRoot = false) {
 
 // Read the file that is still authored, in the tree that lists it. A generation's own copy is
 // a snapshot the working tree may have moved past, so it is never what gets opened.
-export async function showSource(workspace, absolute) {
+export async function showSource(workspace, absolute, line = null) {
   if (!workspace) {
     await copyText(absolute);
     return snack("not in the sources tree any more — path copied");
@@ -94,14 +94,14 @@ export async function showSource(workspace, absolute) {
   setTab("sources");
   await loadSources().catch(() => {});
   try {
-    await openSource(workspace);
+    await openSource(workspace, null, true, line);
   } catch (error) {
     await copyText(absolute);
     snack(`${error.message} — path copied`);
   }
 }
 
-export async function openSource(source, absolute = null, push = true) {
+export async function openSource(source, absolute = null, push = true, line = null) {
   state.viewing = source;
   // A file being read is a place in the app: name it in the URL so a reload comes back to it.
   if (push) {
@@ -149,7 +149,7 @@ export async function openSource(source, absolute = null, push = true) {
       browser.scrollTop += entry.top - list.top - browser.clientHeight / 2 + entry.height / 2;
     }
   }
-  await mountEditor($("#source-text"), source, text, state.restricted, gitHead);
+  await mountEditor($("#source-text"), source, text, state.restricted, gitHead, line);
   // Both only mean anything for a committed file that has since been edited: with no commit
   // to compare against there is no diff to show and nothing to go back to.
   const dirty = gitHead != null && gitHead !== text;

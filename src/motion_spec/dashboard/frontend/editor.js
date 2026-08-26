@@ -205,7 +205,7 @@ function myersInsertions(a, b) {
   return added;
 }
 
-export async function mountEditor(holder, source, text, readOnly = false, gitHead = null) {
+export async function mountEditor(holder, source, text, readOnly = false, gitHead = null, line = null) {
   let cm;
   try {
     cm = await editorModule();
@@ -461,5 +461,10 @@ export async function mountEditor(holder, source, text, readOnly = false, gitHea
   // catch up on later. The budget is what keeps that promise honest on a file big enough to
   // break it, which then simply falls back to highlighting as it goes.
   forceParsing(view, view.state.doc.length, 150);
+  // Opened at a line someone was pointed at: put the cursor there and scroll it into the middle.
+  if (line && line <= view.state.doc.lines) {
+    const at = view.state.doc.line(line).from;
+    view.dispatch({ selection: { anchor: at }, effects: EditorView.scrollIntoView(at, { y: "center" }) });
+  }
   view.focus();
 }

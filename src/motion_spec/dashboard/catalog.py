@@ -221,10 +221,6 @@ def generation_details(path: Path) -> dict:
         for source in sorted((path / "generated").rglob("*"))
         if source.is_file() and "source" not in source.relative_to(path / "generated").parts
     ]
-    generated = path / "generated"
-    details["rdf_graphs"] = sorted(
-        str(source.relative_to(generated)) for source in generated.rglob("*.ld.json")
-    )
     return details
 
 
@@ -247,23 +243,43 @@ def _term_kind(term) -> str:
     return "provenance" if _is_prov(term) else "resource"
 
 
-def provenance_graph(service) -> dict:
-    """Every term and triple of one dataset -- model, runtime and live -- classified so the
-    renderer can colour and filter it.
+def graph_name(context) -> str:
+    """A quad's named graph as the dashboard names it; anything unnamed is the model."""
+    return GRAPH_NAMES.get(str(getattr(context, "identifier", context)), "model")
+
+
+def term_graphs(dataset) -> dict[str, list[str]]:
+    """Term -> the named graphs it appears in, anywhere in the dataset.
+
+    Membership is a property of the term, not of the triple that happened to name it: a design
+    IRI in `model` and `runtime` was modelled *and* ran, and that stays true in a result that
+    only carries its design triples.
+    """
+    where: dict[str, list[str]] = {}
+    for subject, _p, obj, context in dataset.quads((None, None, None, None)):
+        name = graph_name(context)
+        for term in (subject, obj):
+            seen = where.setdefault(str(term), [])
+            if name not in seen:
+                seen.append(name)
+    return where
+
+
+def classify_quads(quads, graphs: dict[str, list[str]]) -> dict:
+    """Classify (subject, predicate, object, graph name) tuples so the renderer can draw them.
 
     Three edge classes never reach the picture as edges, because as edges they are hubs that a
     force layout cannot separate: `rdf:type` becomes its subject's `types`, a literal object
     becomes its subject's `attributes`, and `prov:` terms stay but are marked for the overlay.
     `hidden` counts each one, so a reader can account for every triple that is not a link.
     """
-    service.sync()
     nodes: dict[str, dict] = {}
     links: list[dict] = []
     types: Counter = Counter()
     predicates: Counter = Counter()
     hidden = {"type_edges": 0, "literal_edges": 0, "provenance_edges": 0}
 
-    def node(term, graph_name: str) -> dict:
+    def node(term) -> dict:
         entry = nodes.get(str(term))
         if entry is None:
             entry = nodes[str(term)] = {
@@ -274,15 +290,12 @@ def provenance_graph(service) -> dict:
                 "attributes": {},
                 "degree": 0,
                 "kind": _term_kind(term),
-                "graphs": [],
+                "graphs": list(graphs.get(str(term), [])),
             }
-        if graph_name not in entry["graphs"]:
-            entry["graphs"].append(graph_name)
         return entry
 
-    for subject, predicate, obj, context in service.dataset.quads((None, None, None, None)):
-        name = GRAPH_NAMES.get(str(getattr(context, "identifier", context)), "model")
-        source = node(subject, name)
+    for subject, predicate, obj, name in quads:
+        source = node(subject)
         if predicate == RDF.type:
             short = rdf_name(obj)
             source["types"].append(short)
@@ -293,7 +306,7 @@ def provenance_graph(service) -> dict:
             source["attributes"].setdefault(rdf_name(predicate), []).append(str(obj))
             hidden["literal_edges"] += 1
             continue
-        target = node(obj, name)
+        target = node(obj)
         kind = "provenance" if any(map(_is_prov, (subject, predicate, obj))) else "relation"
         links.append(
             {
@@ -316,6 +329,18 @@ def provenance_graph(service) -> dict:
         "types": dict(types),
         "predicates": dict(predicates),
         "hidden": hidden,
+    }
+
+
+def provenance_graph(service) -> dict:
+    """Every term and triple of one dataset -- model, runtime and live -- classified."""
+    service.sync()
+    quads = (
+        (subject, predicate, obj, graph_name(context))
+        for subject, predicate, obj, context in service.dataset.quads((None, None, None, None))
+    )
+    return {
+        **classify_quads(quads, term_graphs(service.dataset)),
         "runtime_source": service.runtime_source,
     }
 

@@ -9,6 +9,7 @@
 
 import { consoleExcerpt, deviceRows, fact, listItem } from "./components.js";
 import { $, api, copyText, formatBytes, post, showError, snack, stampText, state } from "./core.js";
+import { showExplore } from "./explore.js";
 import { setTab, setView } from "./routing.js";
 import { filter, loadReplay, openPendingRun, showSpeed, stopPlayback } from "./run.js";
 import { openSource, showSource } from "./sources.js";
@@ -445,137 +446,10 @@ export async function selectGeneration(path) {
       applyFilter();
     },
   };
-  const graphPage = $("#content");
-  const options = graphPage.querySelector(".graph-options");
-  const graphStatus = graphPage.querySelector(".graph-status");
-  const graphSearch = graphPage.querySelector(".graph-search");
-  const graphMatches = graphPage.querySelector(".graph-matches");
-  const shell = graphPage.querySelector(".graph-shell");
-  const target = graphPage.querySelector(".generation-graph");
-  const details = graphPage.querySelector(".graph-details");
-  let graphRequest = 0;
-  options.replaceChildren(...generation.rdf_graphs.map((name) => {
-    const label = document.createElement("label");
-    label.innerHTML = `<input type="checkbox" value="${name}"> ${name}`;
-    return label;
-  }));
-  const selectedFiles = () => [...options.querySelectorAll("input:checked")].map((input) => input.value);
-  const renderGraph = async () => {
-    const selected = selectedFiles();
-    const request = ++graphRequest;
-    if (!selected.length) {
-      shell.hidden = true;
-      graphSearch.disabled = true;
-      graphMatches.replaceChildren();
-      graphStatus.textContent = "Select an RDF file to render its complete graph.";
-      return;
-    }
-    const query = new URLSearchParams({ path });
-    selected.forEach((name) => query.append("graph", name));
-    graphStatus.textContent = "Rendering RDF graph…";
-    try {
-      const data = await api(`/api/generation-graph?${query}`);
-      if (request !== graphRequest) return;
-      const [{ default: Sigma }, { default: Graphology }, { default: ForceAtlas2Layout }] = await Promise.all([
-        import("https://esm.sh/sigma@3.0.2?bundle"),
-        import("https://esm.sh/graphology@0.25.4?bundle"),
-        import("https://esm.sh/graphology-layout-forceatlas2@0.10.1/worker?bundle"),
-      ]);
-      if (request !== graphRequest) return;
-      state.graphRenderer?.kill();
-      state.graphLayout?.kill();
-      shell.hidden = false;
-      target.replaceChildren();
-      if (!data.nodes.length) {
-        graphSearch.disabled = true;
-        graphStatus.textContent = "This JSON-LD file contains no RDF triples.";
-        target.innerHTML = '<div class="graph-empty">No RDF resources or relationships to render.</div>';
-        return;
-      }
-      const graph = new Graphology.MultiDirectedGraph();
-      data.nodes.forEach((node, index) => graph.addNode(node.id, { ...node, x: Math.cos(index * 2.399), y: Math.sin(index * 2.399), size: 3, color: "#607fd4" }));
-      data.links.forEach((edge, index) => graph.addEdgeWithKey(String(index), edge.source, edge.target, { ...edge, size: .4, color: "#73777d", type: "arrow" }));
-      let selectedNode = null;
-      let selectedNeighbors = new Set();
-      let selectedEdges = new Set();
-      let hasSelection = false;
-      const renderer = new Sigma(graph, target, {
-        renderEdgeLabels: false,
-        renderLabels: true,
-        labelRenderedSizeThreshold: 0,
-        labelColor: { color: "#f1eee7" },
-        defaultDrawNodeHover: (context, data, settings) => {
-          if (!data.label) return;
-          const font = `${settings.labelWeight} ${settings.labelSize}px ${settings.labelFont}`;
-          context.font = font;
-          const x = data.x + data.size + 6;
-          const y = data.y - settings.labelSize / 2 - 5;
-          const width = context.measureText(data.label).width + 12;
-          context.fillStyle = "#202327";
-          context.fillRect(x - 6, y, width, settings.labelSize + 10);
-          context.fillStyle = "#f1eee7";
-          context.fillText(data.label, x, y + settings.labelSize + 1);
-        },
-        nodeReducer: (node, attributes) => !hasSelection ? attributes : { ...attributes, color: node === selectedNode || selectedNeighbors.has(node) ? "#e07a5f" : "#4b4e53", forceLabel: node === selectedNode },
-        edgeReducer: (edge, attributes) => !hasSelection ? attributes : { ...attributes, color: selectedEdges.has(edge) ? "#e07a5f" : "#30343a", size: selectedEdges.has(edge) ? 1.5 : .2 },
-      });
-      const focus = (id) => {
-        selectedNode = id;
-        selectedNeighbors = new Set(graph.neighbors(id));
-        selectedEdges = new Set(graph.edges(id));
-        hasSelection = true;
-        const node = graph.getNodeAttributes(id);
-        details.textContent = `${node.label}\n${node.value}`;
-        renderer.refresh();
-      };
-      const focusEdge = (id) => {
-        const edge = graph.getEdgeAttributes(id);
-        selectedNode = null;
-        selectedNeighbors = new Set([edge.source, edge.target]);
-        selectedEdges = new Set([id]);
-        hasSelection = true;
-        details.textContent = `${edge.label}\n${edge.value}`;
-        renderer.refresh();
-      };
-      renderer.on("clickNode", ({ node }) => focus(node));
-      renderer.on("downNode", ({ node }) => focus(node));
-      state.graphRenderer = renderer;
-      const layout = new ForceAtlas2Layout(graph, { settings: { barnesHutOptimize: true, gravity: 1, scalingRatio: 8 } });
-      state.graphLayout = layout;
-      layout.start();
-      graphStatus.textContent = "Arranging RDF graph…";
-      setTimeout(() => {
-        if (state.graphLayout !== layout) return;
-        layout.stop();
-        graphStatus.textContent = `${data.nodes.length} resources · ${data.links.length} relationships`;
-      }, Math.min(5000, 500 + data.nodes.length * 10));
-      graphSearch.disabled = false;
-      graphSearch.value = "";
-      graphMatches.replaceChildren();
-      graphSearch.oninput = () => {
-        const query = graphSearch.value.toLowerCase().trim();
-        if (!query) { graphMatches.replaceChildren(); selectedNode = null; selectedNeighbors = new Set(); selectedEdges = new Set(); hasSelection = false; renderer.refresh(); return; }
-        const matches = [
-          ...data.nodes.filter((node) => `${node.label} ${node.value}`.toLowerCase().includes(query)).map((node) => ({ kind: "node", label: node.label, select: () => focus(node.id) })),
-          ...data.links.map((edge, index) => ({ ...edge, id: String(index) })).filter((edge) => `${edge.label} ${edge.value}`.toLowerCase().includes(query)).map((edge) => ({
-            kind: "edge",
-            label: `${data.nodes.find((node) => node.id === edge.source)?.label ?? edge.source} → ${edge.label} → ${data.nodes.find((node) => node.id === edge.target)?.label ?? edge.target}`,
-            select: () => focusEdge(edge.id),
-          })),
-        ];
-        graphMatches.replaceChildren(...matches.slice(0, 12).map((match) => {
-          const button = document.createElement("button");
-          button.dataset.kind = match.kind;
-          button.textContent = match.label;
-          button.onclick = match.select;
-          return button;
-        }));
-      };
-      graphPage.querySelector(".graph-fullscreen").onclick = () =>
-        document.fullscreenElement ? document.exitFullscreen() : shell.requestFullscreen();
-    } catch (error) { if (request === graphRequest) { shell.hidden = true; graphStatus.textContent = error.message; } }
-  };
-  options.addEventListener("change", renderGraph);
+  // The file picker is gone: a query is the lens now, and file boundaries are not something
+  // the model graph has. The entry point stays, pointed at Explore with the whole graph.
+  $("#content").querySelector(".explore-link").onclick = () =>
+    showExplore(path).catch((error) => snack(error.message));
 }
 
 export function highlightGeneration() {

@@ -133,6 +133,46 @@ export function setpointBands(constraint) {
   };
 }
 
+// Draw a recording the way a run arrives: nothing past the cursor, into an axis already scaled
+// to the whole run. A growing axis would be more literal, but it rescales under the reader on
+// every frame, and the point of replaying is watching one shape form, not chasing it.
+export const PROGRESSIVE_KEY = "motion-spec.progressive-replay";
+
+export let progressive = false;
+
+try { progressive = localStorage.getItem(PROGRESSIVE_KEY) === "on"; } catch { /* private */ }
+
+export function progressiveOn() {
+  return progressive;
+}
+
+export function setProgressive(on) {
+  progressive = on;
+  try { localStorage.setItem(PROGRESSIVE_KEY, on ? "on" : "off"); } catch { /* private */ }
+}
+
+// The points are in frame order, so the cut is a search, not a scan of every frame drawn.
+function pointsUpTo(points, frame) {
+  let low = 0;
+  let high = points.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (points[middle][0] <= frame) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+// What each series should carry at this frame -- everything, once progressive is off again.
+export function seriesUpTo(chart, frame) {
+  const full = chart.fullSeries;
+  if (!full) return null;
+  return {
+    series: full.map((points) =>
+      ({ data: progressive ? points.slice(0, pointsUpTo(points, frame)) : points })),
+  };
+}
+
 export function cursorOption(frame, index = 0) {
   return { series: [...Array.from({ length: index }, () => ({})), { markLine: {
     symbol: "none", animation: false, silent: true,
@@ -368,6 +408,17 @@ export function addPlot(signals = [], title = signals.join(" · ") || "New plot"
     ],
     });
     chart.cursorIndex = signals.length;
+    // Kept whole so progressive drawing has something to cut from, and something to restore to.
+    chart.fullSeries = seriesValues.map((values) => values
+      .map((value, point) => value == null ? null : [firstFrame + point * step, value])
+      .filter(Boolean));
+    // The axis stays the run's full width whatever is drawn into it, so the line grows across a
+    // picture that does not move under it.
+    if (progressive) {
+      chart.setOption({ xAxis: { min: constraint?.window?.[0] ?? firstFrame,
+        max: constraint?.window?.[1] ?? Math.max(0, (state.replay?.frames ?? 1) - 1) } });
+      chart.setOption(seriesUpTo(chart, state.frame));
+    }
     // Same as updateCursor: while the run is being followed the cursor sits on the live edge.
     if (!state.following) chart.setOption(cursorOption(state.frame, chart.cursorIndex));
     // Live cards are addLivePlot's uPlot adapters; a replay card never registers for streaming.

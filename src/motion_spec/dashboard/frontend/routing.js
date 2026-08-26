@@ -9,18 +9,19 @@
 
 import { showEmpty } from "./components.js";
 import { $, RESTRICTED_TABS, showError, state } from "./core.js";
+import { showExplore } from "./explore.js";
 import { loadGenerations, selectGeneration, showDrift, showGitDiff } from "./generations.js";
 import { loadHealth } from "./health.js";
 import { loadNotebook } from "./notebook.js";
 import { loadReplay, stopPlayback } from "./run.js";
-import { loadSources, openSource } from "./sources.js";
+import { loadSources, openSource, showGenerated } from "./sources.js";
 
 // A tab that is a page of its own, not a list to pick from: it fills the content pane itself,
 // so it cannot also be showing a generation. Selecting one drops the view the hash still named,
 // and restoring one wins over that view -- otherwise the hash names two and a reload picks the
 // other. Every other tab only chooses which list the sidebar shows.
 const PAGE_TABS = { health: loadHealth, notebook: loadNotebook };
-const VIEW_PARAMS = ["run", "generation", "source", "diff", "gitdiff", "file", "panel"];
+const VIEW_PARAMS = ["run", "generation", "explore", "source", "diff", "gitdiff", "file", "panel"];
 
 export function goHome() {
   stopPlayback();
@@ -43,7 +44,9 @@ export function setView(kind, path) {
     && !view.has("source") && !view.has("diff");
   view.delete("run");
   view.delete("generation");
+  view.delete("explore");
   view.delete("source");
+  view.delete("generated");
   view.delete("diff");
   view.set(kind, path);
   view.set("tab", state.tab);
@@ -91,9 +94,14 @@ export function loadLocation() {
   // either: the state and the URL have to agree on which single view this is.
   const page = PAGE_TABS[state.tab];
   state.generationPath = page ? null
-    : view.get("generation") ?? view.get("diff") ?? view.get("run")?.split("/runs/")[0] ?? null;
+    : view.get("generation") ?? view.get("explore") ?? view.get("diff")
+      ?? view.get("run")?.split("/runs/")[0]
+      ?? view.get("generated")?.split("/generated/")[0] ?? null;
   if (page) return settle(loadSidebar().then(() => page()));
-  if (view.has("run")) {
+  if (view.has("explore")) {
+    settle(loadSidebar().then(() => showExplore(view.get("explore"), false)));
+  }
+  else if (view.has("run")) {
     settle(loadSidebar().then(() => loadReplay(view.get("run"))));
   }
   else if (view.has("diff")) {
@@ -105,6 +113,9 @@ export function loadLocation() {
   else if (view.has("source")) {
     // The viewer re-renders itself; it must not push the entry it is restoring back on.
     settle(loadSidebar().then(() => openSource(view.get("source"), null, false)));
+  }
+  else if (view.has("generated")) {
+    settle(loadSidebar().then(() => showGenerated(view.get("generated"), false)));
   }
   else if (view.has("generation")) {
     settle(loadSidebar().then(() => selectGeneration(view.get("generation"))));

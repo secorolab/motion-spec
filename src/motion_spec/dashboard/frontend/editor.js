@@ -26,26 +26,65 @@ export function revealLine(number) {
   mounted.focus();
 }
 
-// The URL `codemirror` itself imports its view from. Asking for the same string gets the same
+// Vendored, not fetched: the dashboard runs beside a robot, on machines that are often off
+// the internet, and a page that pulls its editor from a CDN at load half-loads there.
+// `scripts/vendor_frontend.py` mirrors these and pins the versions; the names are stable, so
+// a version bump moves files underneath without touching a line here.
+//
+// The file `codemirror` itself imports its view from. Asking for the same one gets the same
 // module instance; a different spelling of the same package (@codemirror/view@6.26.3, say)
 // is a second copy of the library, whose decorations the first copy quietly ignores.
-export const CM_VIEW = "https://esm.sh/@codemirror/view@^6.0.0?target=es2022";
+export const CM_VIEW = "./vendor/esm/cm-view.mjs";
 
 // Same rule for search: `basicSetup` already carries it, and this is where its panel is
 // configured -- so it has to be the copy of the package that setup itself imported.
-export const CM_SEARCH = "https://esm.sh/@codemirror/search@^6.0.0?target=es2022";
+export const CM_SEARCH = "./vendor/esm/cm-search.mjs";
 
 // And again for the language support the highlighting is hung off: `basicSetup` already
 // carries the highlighter, so the mode has to come from the copy of the package it uses.
-export const CM_LANGUAGE = "https://esm.sh/@codemirror/language@^6.0.0?target=es2022";
+export const CM_LANGUAGE = "./vendor/esm/cm-language.mjs";
 
 // The tag vocabulary a highlight style is written against, which the language package takes
 // but does not re-export.
-export const CM_TAGS = "https://esm.sh/@lezer/highlight@^1.0.0?target=es2022";
+export const CM_TAGS = "./vendor/esm/lezer-highlight.mjs";
+
+// The DSLs are what this editor is for, so their mode is the default. Generated output is
+// not a DSL -- it is the C++ and JSON the generator wrote -- and reading it in a mode that
+// knows neither leaves keywords, types and preprocessor lines all the same colour.
+// Legacy modes, not the lang-* packs: a lang-* pack builds its LanguageSupport out of its own
+// copy of @codemirror/language, which the copy basicSetup uses ignores -- the file then renders
+// with no highlighting at all. A legacy mode is a plain parser object with no CodeMirror
+// dependency, so it goes through the same StreamLanguage `structuralMode` already uses.
+const LANGUAGE_PACKS = [
+  {
+    suffixes: /\.(?:h|hh|hpp|hxx|c|cc|cpp|cxx|inc)$/i,
+    url: "./vendor/esm/cm-clike.mjs",
+    parser: (pack) => pack.cpp,
+  },
+  {
+    suffixes: /\.json$/i,
+    url: "./vendor/esm/cm-javascript.mjs",
+    parser: (pack) => pack.json,
+  },
+];
+
+const packs = new Map();
+
+// A pack this machine cannot fetch is not a reason to refuse the file: it reads in the
+// structural mode, the same as everything else without a pack of its own.
+export async function languageFor(name, StreamLanguage) {
+  const wanted = LANGUAGE_PACKS.find(({ suffixes }) => suffixes.test(name));
+  if (!wanted) return structuralMode(StreamLanguage);
+  if (!packs.has(wanted.url)) {
+    packs.set(wanted.url, import(wanted.url).then(wanted.parser).catch(() => null));
+  }
+  const parser = await packs.get(wanted.url);
+  return parser ? StreamLanguage.define(parser) : structuralMode(StreamLanguage);
+}
 
 export async function editorModule() {
   codemirror ??= Promise.all([
-    import("https://esm.sh/codemirror@6.0.1"),
+    import("./vendor/esm/codemirror.mjs"),
     import(CM_VIEW),
     import(CM_SEARCH),
     import(CM_LANGUAGE),
@@ -216,7 +255,7 @@ function myersInsertions(a, b) {
   return added;
 }
 
-export async function mountEditor(holder, source, text, readOnly = false, gitHead = null) {
+export async function mountEditor(holder, source, text, readOnly = false, gitHead = null, line = null) {
   let cm;
   mounted = null;   // whatever was open is gone; nothing may jump into it
   try {
@@ -231,14 +270,16 @@ export async function mountEditor(holder, source, text, readOnly = false, gitHea
     EditorView, basicSetup, Decoration, ViewPlugin, search,
     StreamLanguage, HighlightStyle, syntaxHighlighting, tags, forceParsing,
   } = cm;
+  // Absent in a viewer that cannot save -- generated output is read, never written back.
   const save = $("#save-source");
   // A button for something there is nothing to do is clutter: it arrives with the first edit.
   const dirty = (is) => {
+    if (!save) return;
     save.hidden = !is;
     save.textContent = "save";
   };
   const write = async (target) => {
-    if (save.hidden) return true;
+    if (!save || save.hidden) return true;
     const written = target.state.doc.toString();
     try {
       save.textContent = "saving…";
@@ -347,7 +388,7 @@ export async function mountEditor(holder, source, text, readOnly = false, gitHea
         // Ctrl-F opens at the foot of the file by default, which on a page-scrolled editor is
         // nowhere in particular.
         search({ top: true }),
-        structuralMode(StreamLanguage),
+        await languageFor(source, StreamLanguage),
         // After basicSetup, whose own highlighter is registered as a fallback: this one is
         // asked first, and the stock palette only answers for tags this does not name.
         syntaxHighlighting(tokyoNightStyle(HighlightStyle, tags)),
@@ -459,7 +500,7 @@ export async function mountEditor(holder, source, text, readOnly = false, gitHea
   });
   mounted = view;
   dirty(false);
-  save.onclick = () => write(view);
+  if (save) save.onclick = () => write(view);
   // The binding people expect from an editor, without importing a second package for it.
   holder.addEventListener("keydown", (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key === "s") {
@@ -474,5 +515,10 @@ export async function mountEditor(holder, source, text, readOnly = false, gitHea
   // catch up on later. The budget is what keeps that promise honest on a file big enough to
   // break it, which then simply falls back to highlighting as it goes.
   forceParsing(view, view.state.doc.length, 150);
+  // Opened at a line someone was pointed at: put the cursor there and scroll it into the middle.
+  if (line && line <= view.state.doc.lines) {
+    const at = view.state.doc.line(line).from;
+    view.dispatch({ selection: { anchor: at }, effects: EditorView.scrollIntoView(at, { y: "center" }) });
+  }
   view.focus();
 }

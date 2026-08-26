@@ -26,6 +26,7 @@ from motion_spec.dashboard.catalog import (
     generation_info,
     is_simulated,
     provenance_graph,
+    read_generated,
     run_info,
     source_drift,
     video_file,
@@ -43,7 +44,17 @@ from motion_spec.dashboard.jobs import (
 )
 from motion_spec.dashboard.live import live_state, run_control
 from motion_spec.dashboard.notebook import jupyter_server, run_notebook, stop_jupyter
-from motion_spec.dashboard.queries import model_lint, run_query, save_queries, saved_queries
+from motion_spec.dashboard.queries import (
+    compare,
+    gates,
+    generation_graph,
+    graph_sources,
+    model_lint,
+    run_query,
+    save_queries,
+    saved_queries,
+    timeline,
+)
 from motion_spec.dashboard.replay import plot_data, replay_data
 from motion_spec.dashboard.roots import (
     FRONTEND,
@@ -80,17 +91,35 @@ LIFECYCLE = None
 # robot. Local access (127.0.0.1) is unrestricted regardless of LAN_MODE.
 LAN_MODE = False
 
+# Naming the restriction and the way past it: the reader is most often the person who started
+# the server, on the machine that started it, having reached it by its network address.
+LAN_REFUSED = (
+    "This dashboard is shared on the network (started with --lan), and deleting, editing "
+    "sources and driving real hardware stay on the machine it runs on. "
+    "Open it at http://127.0.0.1:{port}/ there to do this."
+)
+
+
+def lan_refusal(port: int) -> str:
+    return LAN_REFUSED.format(port=port)
+
+
 LAN_GET_ALLOWED = frozenset(
     {
         "/api/events",
         "/api/generations",
         "/api/generation",
         "/api/generation-graph",
+        "/api/graph-sources",
+        "/api/generated",
         "/api/model/lint",
         "/api/source-drift",
         "/api/storage",
         "/api/runs",
         "/api/run",
+        "/api/run/timeline",
+        "/api/run/gates",
+        "/api/run/compare",
         "/api/console",
         "/api/queries",
         "/api/video",
@@ -236,7 +265,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if not self._from_this_page():
             return self.send_json({"error": "cross-site request"}, HTTPStatus.FORBIDDEN)
         if LAN_MODE and not self._is_local_client() and parsed.path not in LAN_GET_ALLOWED:
-            return self.send_json({"error": "not available from the network"}, HTTPStatus.FORBIDDEN)
+            return self.send_json({"error": self._lan_refusal()}, HTTPStatus.FORBIDDEN)
         if parsed.path == "/api/events":
             return self.stream_events()
         try:
@@ -267,11 +296,15 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     return self.send_json(drift_summary(generation))
                 return self.send_json(source_drift(generation, file or None))
             if parsed.path == "/api/generation-graph":
+                # The whole model graph, imports followed -- not the picked files, which cut
+                # the graph at file boundaries the model does not have.
                 return self.send_json(
-                    provenance_graph(
-                        relative_path(roots.GENERATIONS, value), query.get("graph", [])
-                    )
+                    provenance_graph(generation_graph(relative_path(roots.GENERATIONS, value)))
                 )
+            if parsed.path == "/api/graph-sources":
+                return self.send_json(graph_sources(relative_path(roots.GENERATIONS, value)))
+            if parsed.path == "/api/generated":
+                return self.send_json(read_generated(relative_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/model/lint":
                 return self.send_json(model_lint(relative_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/runs":
@@ -280,6 +313,21 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return self.send_json([run_info(path) for path in reversed(runs)])
             if parsed.path == "/api/run":
                 return self.send_json(run_status(relative_path(roots.GENERATIONS, value)))
+            if parsed.path == "/api/run/timeline":
+                return self.send_json(
+                    timeline(
+                        relative_path(roots.GENERATIONS, value), query.get("iri", [""])[0] or None
+                    )
+                )
+            if parsed.path == "/api/run/gates":
+                return self.send_json(gates(relative_path(roots.GENERATIONS, value)))
+            if parsed.path == "/api/run/compare":
+                return self.send_json(
+                    compare(
+                        relative_path(roots.GENERATIONS, query.get("left", [""])[0]),
+                        relative_path(roots.GENERATIONS, query.get("right", [""])[0]),
+                    )
+                )
             if parsed.path == "/api/devices":
                 return self.send_json(probe_devices(relative_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/health":
@@ -337,7 +385,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if not self._same_origin():
             return self.send_json({"error": "cross-origin request"}, HTTPStatus.FORBIDDEN)
         if LAN_MODE and not self._is_local_client() and self.path not in LAN_POST_ALLOWED:
-            return self.send_json({"error": "not available from the network"}, HTTPStatus.FORBIDDEN)
+            return self.send_json({"error": self._lan_refusal()}, HTTPStatus.FORBIDDEN)
         try:
             length = int(self.headers["Content-Length"])
             body = json.loads(self.rfile.read(length))
@@ -387,7 +435,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 )
             if self.path == "/api/sparql":
                 return self.send_json(
-                    run_query(relative_path(roots.GENERATIONS, body["path"]), body["query"])
+                    run_query(
+                        relative_path(roots.GENERATIONS, body["path"]),
+                        body["query"],
+                        offset=int(body.get("offset") or 0),
+                    )
                 )
             if self.path == "/api/notebook":
                 return self.send_json(run_notebook(relative_path(roots.GENERATIONS, body["path"])))
@@ -439,8 +491,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         return urlparse(origin).hostname == self.headers.get("Host", "").split(":")[0]
 
     def _is_local_client(self) -> bool:
-        """Whether this request came from this machine, not the network LAN_MODE opened up."""
+        """Whether this request came from this machine, not the network LAN_MODE opened up.
+
+        By address, not by host: reaching this machine at its own LAN address is a network
+        request, and the browser doing it is often the one sitting in front of the server.
+        """
         return self.client_address[0] in ("127.0.0.1", "::1")
+
+    def _lan_refusal(self) -> str:
+        """Why this was refused and where it can be done instead, at this server's own port."""
+        return lan_refusal(int(self.server.server_address[1]))
 
     @staticmethod
     def _failed(exc: Exception) -> dict:

@@ -43,7 +43,8 @@ export async function copyText(value) {
 export async function api(path) {
   const response = await fetch(path);
   const data = await response.json();
-  if (!response.ok) throw Error(data.error);
+  // The status is what tells a refusal from a failure; the message alone cannot say which.
+  if (!response.ok) throw Object.assign(Error(data.error), data, { status: response.status });
   return data;
 }
 
@@ -53,7 +54,7 @@ export async function post(path, body) {
   });
   const data = await response.json();
   // A refusal can carry what it found out; the message alone would throw that away.
-  if (!response.ok) throw Object.assign(Error(data.error), data);
+  if (!response.ok) throw Object.assign(Error(data.error), data, { status: response.status });
   return data;
 }
 
@@ -98,6 +99,13 @@ export function askConfirm({ message, confirmLabel = "Confirm" }) {
   });
 }
 
+// A refusal is not a failure: nothing broke and nothing was being loaded, so saying "could not
+// load" sends the reader looking for a fault that is not there.
 export function showError(error) {
-  showEmpty({ eyebrow: "ERROR", title: "Could not load data.", detail: error.message });
+  const refused = error.status === 403;
+  showEmpty({
+    eyebrow: refused ? "NOT ALLOWED" : "ERROR",
+    title: refused ? "This is not allowed here." : "Could not load data.",
+    detail: error.message,
+  });
 }

@@ -5,26 +5,29 @@ from __future__ import annotations
 
 import json
 from decimal import Decimal
+from pathlib import Path
 
 import rdflib
-from rdflib.namespace import split_uri
-
-from motion_spec.dashboard.graph import LIVE_GRAPH, RUNTIME_GRAPH, GraphService
-from motion_spec.dashboard.queries import model_lint
-from motion_spec.dashboard.store import RunStore
-from motion_spec.generation.artifacts import build_frame_layout
-from motion_spec.introspection import frame_log_pb
-
 from dashboard_fixture import (
     CONSTRAINT,
     ERROR_SIGNAL,
     MONITOR,
+    MOVE,
     OUTPUT_SIGNAL,
     QUANTITY,
     model_jsonld,
     schema,
 )
 from frame_log_fixture import flat_frame, write_frame_log_pb
+from rdflib.namespace import split_uri
+
+from motion_spec.dashboard.catalog import provenance_graph, rdf_name
+from motion_spec.dashboard.graph import LIVE_GRAPH, RUNTIME_GRAPH, GraphService
+from motion_spec.dashboard.queries import model_lint
+from motion_spec.dashboard.store import RunStore
+from motion_spec.generation.artifacts import build_frame_layout
+from motion_spec.introspection import frame_log_pb
+from motion_spec.introspection.runtime_graph import write_runtime_ttl
 
 SOSA = "http://www.w3.org/ns/sosa/"
 PROV = "http://www.w3.org/ns/prov#"
@@ -39,6 +42,28 @@ PREFIX sosa: <{SOSA}>
 PREFIX qudt: <{QUDT}>
 SELECT ?p ?v WHERE {{
     ?obs a sosa:Observation ; sosa:observedProperty ?p ; sosa:hasResult/qudt:value ?v .
+}}
+"""
+# What was active, and for how long: an activity spans two instants, each positioned at its step.
+SPANS = f"""
+PREFIX prov: <{PROV}>
+PREFIX time: <{TIME}>
+PREFIX ms-prov: <{MS_PROV}>
+SELECT ?element ?from ?to WHERE {{
+    VALUES ?kind {{ ms-prov:MotionExecution ms-prov:ConstraintMaintenance }}
+    ?occ a ?kind ;
+         prov:used ?element ;
+         time:hasBeginning ?begin ;
+         time:hasEnd ?end .
+    ?begin time:inTimePosition/time:numericPosition ?from .
+    ?end time:inTimePosition/time:numericPosition ?to .
+}}
+"""
+OCCURRENCES = f"""
+PREFIX ms-prov: <{MS_PROV}>
+SELECT ?occ WHERE {{
+    VALUES ?kind {{ ms-prov:MotionExecution ms-prov:ConstraintMaintenance }}
+    ?occ a ?kind .
 }}
 """
 
@@ -95,9 +120,27 @@ def _service(tmp_path, **kwargs):
     return GraphService(_generation(tmp_path, doc), _store(tmp_path, doc), **kwargs)
 
 
+def _archived_ttl(tmp_path, doc, frames) -> Path:
+    """A run directory that kept its own runtime.ttl -- the archived record, not a projection."""
+    run = tmp_path / "run"
+    (run / "logs").mkdir(parents=True)
+    write_frame_log_pb(run / "logs" / "frame_log.pb", doc, _frames(doc))
+    (run / "manifest.json").write_text(
+        json.dumps({"run_id": "run-1", "files": {"frame_log": "logs/frame_log.pb"}})
+    )
+    return write_runtime_ttl(run, frames)
+
+
+def _archived_service(tmp_path, **kwargs):
+    doc = schema()
+    store = _store(tmp_path, doc)
+    ttl = _archived_ttl(tmp_path, doc, store.snapshot())
+    return GraphService(_generation(tmp_path, doc), store, runtime_ttl=ttl, **kwargs)
+
+
 def test_a_live_query_returns_the_current_value_of_every_active_slot(tmp_path):
     service = _service(tmp_path)
-    _headers, rows = service.query(OBSERVATIONS)
+    _type, (_headers, rows) = service.query(OBSERVATIONS)
     observed = {(str(p), v.toPython()) for p, v in rows}
 
     assert (ERROR_SIGNAL, Decimal(repr(ERROR_VALUE))) in observed
@@ -146,10 +189,7 @@ def test_history_carries_no_values_when_sampling_is_off(tmp_path):
 
 def test_occurrences_and_live_values_answer_one_query_together(tmp_path):
     service = _service(tmp_path)
-    _headers, rows = service.query(f"""
-        PREFIX ms-prov: <{MS_PROV}>
-        SELECT ?occ WHERE {{ ?occ a ms-prov:ConstraintMaintenance }}
-    """)
+    _type, (_headers, rows) = service.query(OCCURRENCES)
     assert rows, "the satisfaction edge should be projected into urn:runtime"
 
     assert service.namespaces()["sosa"] == SOSA
@@ -168,7 +208,8 @@ def test_the_dashboard_mints_no_vocabulary(tmp_path):
         return {split_uri(str(node))[0] for node in nodes}
 
     # The value overlay is the dashboard's own emission: SOSA, each result as a QUDT quantity
-    # value, the OWL-Time instant it is counted at, and rdf:type. Nothing else.
+    # value, the wall time of the OWL-Time instant it counts on, and rdf:type. The instant's
+    # tick position is not restated here -- this run's runtime graph already positions it.
     live_predicates = {str(p) for p in set(live.predicates())}
     assert live_predicates - {str(rdflib.RDF.type)} == {
         SOSA + name
@@ -179,11 +220,7 @@ def test_the_dashboard_mints_no_vocabulary(tmp_path):
             "madeBySensor",
             "resultTime",
         )
-    } | {TIME + name for name in ("inTimePosition", "numericPosition", "hasTRS")} | {
-        PROV + "generatedAtTime",
-        QUDT + "value",
-        QUDT + "unit",
-    }
+    } | {PROV + "generatedAtTime", QUDT + "value", QUDT + "unit"}
     assert {str(o) for o in live.objects(None, rdflib.RDF.type)} == {
         SOSA + "Observation",
         TIME + "Instant",
@@ -301,3 +338,126 @@ def test_a_term_the_source_does_not_declare_is_still_reported(tmp_path):
 
     assert [item["name"] for item in items] == ["pose-band"]
     assert items[0]["source_line"] is None
+
+
+def test_an_archived_run_answers_the_state_timeline_from_its_runtime_ttl(tmp_path):
+    """The whole plan in one query: what was active, from which step to which. The archived
+    record is the source; the frame log only produced it."""
+    service = _archived_service(tmp_path)
+    assert service.runtime_source == "archive"
+    _type, (_headers, rows) = service.query(SPANS)
+    spans = {(str(element), int(begin), int(end)) for element, begin, end in rows}
+
+    # S_MOVE runs the whole 101-frame log; the constraint's goal is only reached at step 51.
+    assert (MOVE, 0, 100) in spans
+    assert (CONSTRAINT, 51, 100) in spans
+
+
+def test_an_archived_run_is_never_also_projected(tmp_path):
+    """Loading the record and projecting the frames would emit every occurrence twice, and
+    silently double every duration read off one."""
+    doc = schema()
+    store = _store(tmp_path, doc)
+    ttl = _archived_ttl(tmp_path, doc, store.snapshot())
+    archived = rdflib.Graph().parse(ttl, format="turtle")
+    on_record = {
+        occ
+        for kind in ("MotionExecution", "ConstraintMaintenance")
+        for occ in archived.subjects(rdflib.RDF.type, rdflib.URIRef(MS_PROV + kind))
+    }
+
+    service = GraphService(_generation(tmp_path, doc), store, runtime_ttl=ttl)
+    size = len(service.dataset.graph(RUNTIME_GRAPH))
+    _type, (_headers, rows) = service.query(OCCURRENCES)
+
+    assert {occ for (occ,) in rows} == on_record
+    assert len(rows) == len(on_record), "an occurrence was projected on top of the record"
+    assert len(service.dataset.graph(RUNTIME_GRAPH)) == size, "sync() projected onto the archive"
+    assert service._fed == 0, "frames reached a projector for an archived run"
+
+
+def test_a_live_run_projects_because_it_has_no_record_yet(tmp_path):
+    service = _service(tmp_path)
+    service.sync()
+
+    assert service.runtime_source == "projected"
+    assert len(service.dataset.graph(RUNTIME_GRAPH)) > 0
+
+
+def test_a_construct_query_answers_with_triples_and_a_select_keeps_its_shape(tmp_path):
+    service = _service(tmp_path)
+    kind, triples = service.query("CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o } LIMIT 5")
+
+    assert kind == "CONSTRUCT"
+    assert len(triples) == 5
+    assert all(len(triple) == 3 for triple in triples)
+
+    kind, (headers, rows) = service.query(OBSERVATIONS)
+    assert kind == "SELECT"
+    assert headers == ["p", "v"]
+    assert rows and all(len(row) == 2 for row in rows)
+
+
+def _payload(tmp_path):
+    service = _archived_service(tmp_path)
+    return service, provenance_graph(service)
+
+
+def test_the_graph_payload_folds_type_edges_into_node_types(tmp_path):
+    service, payload = _payload(tmp_path)
+    by_id = {node["value"]: node for node in payload["nodes"]}
+
+    assert not [link for link in payload["links"] if link["value"] == str(rdflib.RDF.type)]
+    for subject, _p, obj, _g in service.dataset.quads((None, rdflib.RDF.type, None, None)):
+        assert rdf_name(obj) in by_id[str(subject)]["types"]
+
+
+def test_the_graph_payload_folds_literals_into_node_attributes(tmp_path):
+    service, payload = _payload(tmp_path)
+    by_id = {node["value"]: node for node in payload["nodes"]}
+    drawn = {(link["source"], link["target"]) for link in payload["links"]}
+
+    for subject, predicate, obj, _g in service.dataset.quads((None, None, None, None)):
+        if not isinstance(obj, rdflib.Literal):
+            continue
+        assert (str(subject), str(obj)) not in drawn, "a literal was drawn as a node"
+        assert str(obj) in by_id[str(subject)]["attributes"][rdf_name(predicate)]
+
+
+def test_every_folded_edge_is_accounted_for(tmp_path):
+    """A reader who cannot account for the difference between triples and links will not
+    trust the picture, so the folded classes are counted rather than dropped."""
+    service, payload = _payload(tmp_path)
+    raw = len(list(service.dataset.quads((None, None, None, None))))
+    hidden = payload["hidden"]
+
+    assert hidden["type_edges"] + hidden["literal_edges"] + len(payload["links"]) == raw
+    # Provenance edges stay in `links`, marked for an overlay the view can switch off.
+    assert hidden["provenance_edges"] == len(
+        [link for link in payload["links"] if link["kind"] == "provenance"]
+    )
+
+
+def test_folding_leaves_no_hub_a_force_layout_cannot_separate(tmp_path):
+    payload = _payload(tmp_path)[1]
+
+    assert payload["nodes"]
+    assert max(node["degree"] for node in payload["nodes"]) < 200
+
+
+def test_the_legend_carries_every_type_the_graph_declares(tmp_path):
+    service, payload = _payload(tmp_path)
+    declared = {rdf_name(obj) for obj in service.dataset.objects(None, rdflib.RDF.type)}
+
+    assert payload["types"]
+    assert set(payload["types"]) == declared
+    assert payload["runtime_source"] == "archive"
+    assert {node["graphs"][0] for node in payload["nodes"]} <= {"model", "runtime", "live"}
+
+
+def test_node_ids_are_stable_across_calls(tmp_path):
+    service = _archived_service(tmp_path)
+
+    first = [node["id"] for node in provenance_graph(service)["nodes"]]
+    second = [node["id"] for node in provenance_graph(service)["nodes"]]
+    assert first == second

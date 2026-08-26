@@ -7,10 +7,10 @@
  */
 
 import { appendConsole, listItem } from "./components.js";
-import { $, $$, api, askConfirm, copyText, post, snack, state } from "./core.js";
+import { $, $$, api, askConfirm, copyText, formatBytes, post, snack, state } from "./core.js";
 import { mountEditor, revealLine } from "./editor.js";
 import { showGeneration, showGitDiff } from "./generations.js";
-import { setTab } from "./routing.js";
+import { setTab, setView } from "./routing.js";
 
 export async function loadSources(refresh = false) {
   const request = ++state.listRequest;
@@ -86,7 +86,7 @@ export function renderSourceNode(node, name, depth, isRoot = false) {
 
 // Read the file that is still authored, in the tree that lists it. A generation's own copy is
 // a snapshot the working tree may have moved past, so it is never what gets opened.
-export async function showSource(workspace, absolute) {
+export async function showSource(workspace, absolute, line = null) {
   if (!workspace) {
     await copyText(absolute);
     return snack("not in the sources tree any more — path copied");
@@ -94,14 +94,51 @@ export async function showSource(workspace, absolute) {
   setTab("sources");
   await loadSources().catch(() => {});
   try {
-    await openSource(workspace);
+    await openSource(workspace, null, true, line);
   } catch (error) {
     await copyText(absolute);
     snack(`${error.message} — path copied`);
   }
 }
 
-export async function openSource(source, absolute = null, push = true) {
+// Generated output, read where it was generated. The same editor the sources tab mounts, minus
+// everything that writes: there is no saving a file the generator owns, no git history behind
+// it, and no entry in the sources tree to select. Its generation is where back goes.
+export async function showGenerated(relative, push = true) {
+  // The path already says which generation and which file; nothing else has to be carried.
+  const [generation, name] = relative.split("/generated/");
+  state.viewing = relative;
+  state.generationPath = generation;
+  // A file being read is a place in the app: the browser's own back closes it again.
+  if (push) setView("generated", relative);
+  const read = await api(`/api/generated?path=${encodeURIComponent(relative)}`);
+  if (state.viewing !== relative) return;
+  $("#content").innerHTML = '<div class="viewer"><div class="viewer-top">'
+    + '<div class="page-heading"><button id="back" title="Back to generation">←</button>'
+    + '<h1></h1><span class="eyebrow">GENERATED</span></div>'
+    + '<div class="viewer-heading"><p class="path"></p></div>'
+    + '<p class="syntax-state generated-note" hidden></p></div><div id="source-text"></div></div>';
+  $(".viewer h1").textContent = name.split("/").pop();
+  $(".viewer .path").textContent = read.absolute;
+  $("#back").onclick = () => showGeneration(generation);
+  const note = $(".generated-note");
+  if (read.binary || read.truncated) {
+    note.hidden = false;
+    note.textContent = read.binary
+      ? `${formatBytes(read.size)} of packed binary — nothing to read as text.`
+      : `Showing the first ${formatBytes(GENERATED_SHOWN)} of ${formatBytes(read.size)}.`;
+  }
+  if (read.binary) {
+    $("#source-text").textContent = "";
+    return;
+  }
+  await mountEditor($("#source-text"), relative, read.text, true);
+}
+
+// What the server sends at most; only ever used to say so.
+const GENERATED_SHOWN = 2_000_000;
+
+export async function openSource(source, absolute = null, push = true, line = null) {
   state.viewing = source;
   // A file being read is a place in the app: name it in the URL so a reload comes back to it.
   if (push) {
@@ -149,7 +186,7 @@ export async function openSource(source, absolute = null, push = true) {
       browser.scrollTop += entry.top - list.top - browser.clientHeight / 2 + entry.height / 2;
     }
   }
-  await mountEditor($("#source-text"), source, text, state.restricted, gitHead);
+  await mountEditor($("#source-text"), source, text, state.restricted, gitHead, line);
   // Both only mean anything for a committed file that has since been edited: with no commit
   // to compare against there is no diff to show and nothing to go back to.
   const dirty = gitHead != null && gitHead !== text;

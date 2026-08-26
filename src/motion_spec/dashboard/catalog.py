@@ -10,14 +10,15 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
 from google.protobuf.message import DecodeError
-from rdflib import Dataset
+from rdflib import RDF, BNode, Literal
 
 from motion_spec.dashboard import roots
-from motion_spec.dashboard.graph import deployed_devices
+from motion_spec.dashboard.graph import LIVE_GRAPH, MODEL_GRAPH, RUNTIME_GRAPH, deployed_devices
 from motion_spec.dashboard.roots import LAYOUT_REL, directory_size, json_file, stamp_iso, trace
 from motion_spec.dashboard.runs import GenerationInfo, RunInfo
 from motion_spec.dashboard.sources import aligned_rows, authored_lines
@@ -220,11 +221,46 @@ def generation_details(path: Path) -> dict:
         for source in sorted((path / "generated").rglob("*"))
         if source.is_file() and "source" not in source.relative_to(path / "generated").parts
     ]
-    generated = path / "generated"
-    details["rdf_graphs"] = sorted(
-        str(source.relative_to(generated)) for source in generated.rglob("*.ld.json")
-    )
     return details
+
+
+# Generated output runs to megabytes -- a 13 MB ir.json handed to an editor locks the browser
+# -- so a large file arrives cut off and says so, rather than arriving whole and stopping the
+# page, or arriving cut and pretending to be the file.
+GENERATED_MAX_BYTES = 2_000_000
+
+# Tab, newline and carriage return are the only control bytes text has any business carrying.
+_TEXT_CONTROL = {9, 10, 13}
+
+
+def _is_binary(head: bytes) -> bool:
+    """Whether this looks like packed bytes rather than something to read.
+
+    The usual test -- a NUL in the first block -- passes a serialized frame log, whose wire
+    format is field tags and lengths in the low bytes with hardly a NUL among them. Counting
+    every control byte catches it, and leaves real source (which has none) far below the line.
+    """
+    if not head:
+        return False
+    control = sum(1 for byte in head if byte < 32 and byte not in _TEXT_CONTROL)
+    return b"\0" in head or control > len(head) * 0.02
+
+
+def read_generated(path: Path) -> dict:
+    """One generated artifact as text, for reading in the dashboard's editor."""
+    size = path.stat().st_size
+    with path.open("rb") as handle:
+        head = handle.read(GENERATED_MAX_BYTES)
+    if _is_binary(head[:8192]):
+        return {"absolute": str(path), "size": size, "binary": True, "text": ""}
+    return {
+        "absolute": str(path),
+        "size": size,
+        "binary": False,
+        # replace, not strict: the cut can land mid-character, and one glyph is not a failure
+        "text": head.decode("utf-8", "replace"),
+        "truncated": size > GENERATED_MAX_BYTES,
+    }
 
 
 def rdf_name(term: object) -> str:
@@ -232,36 +268,134 @@ def rdf_name(term: object) -> str:
     return str(term).rsplit("/", 1)[-1].rsplit("#", 1)[-1]
 
 
-def provenance_graph(path: Path, selected: list[str]) -> dict:
-    """Return every RDF term and triple for the browser WebGL renderer."""
-    graph = Dataset()
-    generated = (path / "generated").resolve()
-    for name in selected:
-        source = (generated / name).resolve()
-        if generated not in source.parents or source.suffix != ".json" or not source.is_file():
-            raise ValueError("unknown RDF graph")
-        graph.parse(source, format="json-ld")
-    triples = [
-        (subject, predicate, obj)
-        for subject, predicate, obj, _context in graph.quads((None, None, None, None))
-    ]
-    terms = sorted(
-        {term for subject, _predicate, obj in triples for term in (subject, obj)}, key=str
-    )
-    node_ids = {term: str(index) for index, term in enumerate(terms)}
-    return {
-        "nodes": [
-            {"id": node_ids[term], "label": rdf_name(term), "value": str(term)} for term in terms
-        ],
-        "links": [
+GRAPH_NAMES = {str(MODEL_GRAPH): "model", str(RUNTIME_GRAPH): "runtime", str(LIVE_GRAPH): "live"}
+PROV_NS = "http://www.w3.org/ns/prov#"
+
+
+def _is_prov(term) -> bool:
+    return str(term).startswith(PROV_NS)
+
+
+def _term_kind(term) -> str:
+    if isinstance(term, BNode):
+        return "blank"
+    return "provenance" if _is_prov(term) else "resource"
+
+
+def graph_name(context) -> str:
+    """A quad's named graph, named as compactly as it can be.
+
+    `urn:model`, `urn:runtime` and `urn:live` are the dashboard's own three. A JSON-LD file that
+    declares a graph of its own lands in that graph instead -- the whole FSM is one -- and
+    calling those "model" too would hide the split from every reader downstream.
+    """
+    identifier = str(getattr(context, "identifier", context))
+    return GRAPH_NAMES.get(identifier) or rdf_name(identifier.rstrip("/")) or identifier
+
+
+def term_graphs(dataset) -> dict[str, list[str]]:
+    """Term -> the named graphs it appears in, anywhere in the dataset.
+
+    Membership is a property of the term, not of the triple that happened to name it: a design
+    IRI in `model` and `runtime` was modelled *and* ran, and that stays true in a result that
+    only carries its design triples.
+    """
+    where: dict[str, list[str]] = {}
+    for subject, _p, obj, context in dataset.quads((None, None, None, None)):
+        name = graph_name(context)
+        for term in (subject, obj):
+            seen = where.setdefault(str(term), [])
+            if name not in seen:
+                seen.append(name)
+    return where
+
+
+def classify_quads(quads, graphs: dict[str, list[str]]) -> dict:
+    """Classify (subject, predicate, object, graph name) tuples so the renderer can draw them.
+
+    Three edge classes never reach the picture as edges, because as edges they are hubs that a
+    force layout cannot separate: `rdf:type` becomes its subject's `types`, a literal object
+    becomes its subject's `attributes`, and `prov:` terms stay but are marked for the overlay.
+    `hidden` counts each one, so a reader can account for every triple that is not a link.
+    """
+    nodes: dict[str, dict] = {}
+    links: list[dict] = []
+    types: Counter = Counter()
+    predicates: Counter = Counter()
+    hidden = {"type_edges": 0, "literal_edges": 0, "provenance_edges": 0}
+
+    quads = list(quads)
+    # A blank node's label changes every time the live overlay regenerates; its place in the
+    # graph does not. Reached from an IRI, it borrows that edge as its stable payload id.
+    blank_ids: dict[str, str] = {}
+    for subject, predicate, obj, _name in quads:
+        if isinstance(obj, BNode) and not isinstance(subject, BNode):
+            blank_ids.setdefault(str(obj), f"{subject}#{rdf_name(predicate)}")
+
+    def node(term) -> dict:
+        term_id = blank_ids.get(str(term), str(term)) if isinstance(term, BNode) else str(term)
+        entry = nodes.get(term_id)
+        if entry is None:
+            entry = nodes[term_id] = {
+                "id": term_id,
+                "label": rdf_name(term),
+                "value": str(term),
+                "types": [],
+                "attributes": {},
+                "degree": 0,
+                "kind": _term_kind(term),
+                "graphs": list(graphs.get(str(term), [])),
+            }
+        return entry
+
+    for subject, predicate, obj, name in quads:
+        source = node(subject)
+        if predicate == RDF.type:
+            short = rdf_name(obj)
+            source["types"].append(short)
+            types[short] += 1
+            hidden["type_edges"] += 1
+            continue
+        if isinstance(obj, Literal):
+            source["attributes"].setdefault(rdf_name(predicate), []).append(str(obj))
+            hidden["literal_edges"] += 1
+            continue
+        target = node(obj)
+        kind = "provenance" if any(map(_is_prov, (subject, predicate, obj))) else "relation"
+        links.append(
             {
-                "source": node_ids[subject],
-                "target": node_ids[obj],
+                "source": source["id"],
+                "target": target["id"],
                 "label": rdf_name(predicate),
                 "value": str(predicate),
+                "kind": kind,
+                "graph": name,
             }
-            for subject, predicate, obj in triples
-        ],
+        )
+        source["degree"] += 1
+        target["degree"] += 1
+        predicates[rdf_name(predicate)] += 1
+        if kind == "provenance":
+            hidden["provenance_edges"] += 1
+    return {
+        "nodes": list(nodes.values()),
+        "links": links,
+        "types": dict(types),
+        "predicates": dict(predicates),
+        "hidden": hidden,
+    }
+
+
+def provenance_graph(service) -> dict:
+    """Every term and triple of one dataset -- model, runtime and live -- classified."""
+    service.sync()
+    quads = (
+        (subject, predicate, obj, graph_name(context))
+        for subject, predicate, obj, context in service.dataset.quads((None, None, None, None))
+    )
+    return {
+        **classify_quads(quads, term_graphs(service.dataset)),
+        "runtime_source": service.runtime_source,
     }
 
 

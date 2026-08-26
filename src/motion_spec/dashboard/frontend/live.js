@@ -266,12 +266,15 @@ export function addLivePlot(signals, title, detail, { row = null, data = null } 
 
 // Where the run is now: highlight that motion's block and put every one of its constraints
 // on screen -- the constraint itself and its controller/monitor machinery -- as it enters.
-export function trackActiveMotion(handler) {
+// `live` is what separates a run arriving from a run being replayed: a replayed motion's
+// history is on disk however many motions came before it, so it is never already-watched.
+// `plots` is the reader's choice, which is a different toggle on each of the two pages.
+export function trackActiveMotion(handler, { plots = livePlotsOn(), live = true } = {}) {
   const motion = state.motionOf?.[handler] ?? handler;
   if (!motion || motion === state.activeMotion) return;
   // A motion this page watched enter has nothing behind it: it starts where the live ring
   // already is. Only the motion the page opened onto was running before anyone was looking.
-  const watched = state.activeMotion !== null;
+  const watched = live && state.activeMotion !== null;
   state.activeMotion = motion;
   $$("#constraints .constraint-motion").forEach((heading) =>
     heading.classList.toggle("active-motion", heading.textContent === motion));
@@ -282,7 +285,7 @@ export function trackActiveMotion(handler) {
     panel.scrollTo({ top: heading.offsetTop - panel.offsetTop, behavior: "smooth" });
   }
   // Where the run is stays visible with plots off; only the opening of charts is the choice.
-  if (!livePlotsOn()) return;
+  if (!plots) return;
   // Ask for this motion's signals from the next poll on, before a single card exists: the
   // rows below open charts that only register a second later, and by then a short motion is
   // over. The same fields the row click plots, plus what its members plot.
@@ -308,7 +311,8 @@ export function trackActiveMotion(handler) {
   const rows = $$("#constraints .constraint")
     .filter((row) => owns(row) && row.dataset.plottable && !row.dataset.plotted);
   state.autoRows = new Set(rows);
-  if (rows.length) openRowsTogether(rows, watched);
+  // Handed back so a caller that has to wait for the unfold can; the live poll does not.
+  return rows.length ? openRowsTogether(rows, watched) : Promise.resolve();
 }
 
 // Every card of one motion off ONE history read: a dozen rows clicked apart is a dozen

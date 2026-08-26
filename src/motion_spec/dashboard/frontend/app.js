@@ -32,13 +32,12 @@ $("#delete-selected").onclick = async () => {
     confirmLabel: "Delete",
   });
   if (!ok) return;
-  const response = await fetch("/api/delete", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ paths: [...state.selected] }),
-  });
-  const data = await response.json();
-  if (!response.ok) return showError(Error(data.error));
+  let data;
+  try {
+    data = await post("/api/delete", { paths: [...state.selected] });
+  } catch (error) {
+    return showError(error);
+  }
   const parts = [`${data.deleted} item${data.deleted === 1 ? "" : "s"}`];
   if (data.folders) parts.push(`${data.folders} empty folder${data.folders === 1 ? "" : "s"}`);
   snack(`Moved ${parts.join(" and ")} to Trash`);

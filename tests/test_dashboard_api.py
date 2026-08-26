@@ -8,11 +8,13 @@ a browser sees: which paths answer, what they answer with, and what they refuse.
 from __future__ import annotations
 
 import json
+import re
 import threading
 import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
@@ -71,6 +73,19 @@ def _relative(dashboard, path):
     return urllib.parse.quote(str(path.relative_to(dashboard.root)))
 
 
+def canned_queries() -> dict[str, str]:
+    """The Explore page's canned dictionary, read out of the page itself.
+
+    Read rather than restated so a query added to `explore.js` tomorrow is covered by the same
+    test without anyone remembering to copy it here.
+    """
+    page = Path(server.FRONTEND) / "explore.js"
+    block = page.read_text().split("export const CANNED = {", 1)[1].split("\n};", 1)[0]
+    found = dict(re.findall(r'"([^"]+)":\s*`(.*?)`', block, re.DOTALL))
+    assert found, "no canned queries found in explore.js"
+    return found
+
+
 def test_the_index_and_its_assets_are_served(dashboard):
     with urllib.request.urlopen(f"{dashboard.host}/") as response:
         assert response.status == 200
@@ -117,6 +132,50 @@ def test_queries_are_kept_with_the_run(dashboard):
     assert json.loads((dashboard.run / "queries.json").read_text())["queries"] == [
         "ASK { ?s ?p ?o }"
     ]
+
+
+def test_a_construct_answers_with_its_type_and_its_triples(dashboard):
+    """A CONSTRUCT is a graph, and the endpoint says so: the rows are subject/predicate/object
+    and the same result comes back classified for the renderer. Serializing it to turtle text
+    would leave the picture with nothing to draw."""
+    path = str(dashboard.run.relative_to(dashboard.root))
+    answer = dashboard.post(
+        "/api/sparql", {"path": path, "query": "CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }"}
+    )
+
+    assert answer["type"] == "CONSTRUCT"
+    assert answer["headers"] == ["subject", "predicate", "object"]
+    assert answer["count"] and all(len(row) == 3 for row in answer["rows"])
+    assert answer["graph"]["nodes"] and "hidden" in answer["graph"]
+    # An ASK has no picture, and saying so is not the same as drawing an empty one.
+    assert (
+        dashboard.post("/api/sparql", {"path": path, "query": "ASK { ?s ?p ?o }"})["graph"] is None
+    )
+
+
+def test_every_canned_query_runs(dashboard):
+    """Driven from `explore.js`'s own dictionary: a canned query that does not execute teaches
+    the wrong vocabulary, so every entry is parsed and run.
+
+    The row counts are not asserted here -- this fixture's run is one frame of a two-slot model
+    and carries no FSM transitions -- but each query is verified against a maintained
+    generation before it ships. What this catches is the regression: a typo, an unbound prefix,
+    or a term the runtime vocabulary no longer has.
+    """
+    path = str(dashboard.run.relative_to(dashboard.root))
+    for label, query in canned_queries().items():
+        answer = dashboard.post("/api/sparql", {"path": path, "query": query})
+        assert answer["type"] in ("SELECT", "CONSTRUCT", "DESCRIBE", "ASK"), label
+        assert isinstance(answer["count"], int), label
+
+
+def test_a_generation_answers_a_query_without_a_run(dashboard):
+    """The generation page's way into Explore: a model with no run is still a graph to ask."""
+    generation = str(dashboard.run.parent.parent.relative_to(dashboard.root))
+    answer = dashboard.post(
+        "/api/sparql", {"path": generation, "query": "SELECT ?s WHERE { ?s ?p ?o } LIMIT 5"}
+    )
+    assert answer["type"] == "SELECT" and answer["runtime_source"] is None
 
 
 def test_queries_belong_to_a_run_not_a_generation(dashboard):

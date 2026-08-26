@@ -224,6 +224,45 @@ def generation_details(path: Path) -> dict:
     return details
 
 
+# Generated output runs to megabytes -- a 13 MB ir.json handed to an editor locks the browser
+# -- so a large file arrives cut off and says so, rather than arriving whole and stopping the
+# page, or arriving cut and pretending to be the file.
+GENERATED_MAX_BYTES = 2_000_000
+
+# Tab, newline and carriage return are the only control bytes text has any business carrying.
+_TEXT_CONTROL = {9, 10, 13}
+
+
+def _is_binary(head: bytes) -> bool:
+    """Whether this looks like packed bytes rather than something to read.
+
+    The usual test -- a NUL in the first block -- passes a serialized frame log, whose wire
+    format is field tags and lengths in the low bytes with hardly a NUL among them. Counting
+    every control byte catches it, and leaves real source (which has none) far below the line.
+    """
+    if not head:
+        return False
+    control = sum(1 for byte in head if byte < 32 and byte not in _TEXT_CONTROL)
+    return b"\0" in head or control > len(head) * 0.02
+
+
+def read_generated(path: Path) -> dict:
+    """One generated artifact as text, for reading in the dashboard's editor."""
+    size = path.stat().st_size
+    with path.open("rb") as handle:
+        head = handle.read(GENERATED_MAX_BYTES)
+    if _is_binary(head[:8192]):
+        return {"absolute": str(path), "size": size, "binary": True, "text": ""}
+    return {
+        "absolute": str(path),
+        "size": size,
+        "binary": False,
+        # replace, not strict: the cut can land mid-character, and one glyph is not a failure
+        "text": head.decode("utf-8", "replace"),
+        "truncated": size > GENERATED_MAX_BYTES,
+    }
+
+
 def rdf_name(term: object) -> str:
     """Return the compact RDF name used in the dashboard."""
     return str(term).rsplit("/", 1)[-1].rsplit("#", 1)[-1]

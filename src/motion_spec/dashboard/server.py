@@ -26,6 +26,7 @@ from motion_spec.dashboard.catalog import (
     generation_info,
     is_simulated,
     provenance_graph,
+    read_generated,
     run_info,
     source_drift,
     video_file,
@@ -110,6 +111,7 @@ LAN_GET_ALLOWED = frozenset(
         "/api/generation",
         "/api/generation-graph",
         "/api/graph-sources",
+        "/api/generated",
         "/api/model/lint",
         "/api/source-drift",
         "/api/storage",
@@ -301,6 +303,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 )
             if parsed.path == "/api/graph-sources":
                 return self.send_json(graph_sources(relative_path(roots.GENERATIONS, value)))
+            if parsed.path == "/api/generated":
+                return self.send_json(read_generated(relative_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/model/lint":
                 return self.send_json(model_lint(relative_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/runs":

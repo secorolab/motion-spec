@@ -51,7 +51,9 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-motion_spec = ["templates/*.stg", "templates/CMakeLists.txt", "dashboard/frontend/*"]
+# frontend/**, not frontend/*: the vendored libraries live in subdirectories, and a
+# single-level glob shipped a dashboard whose editor and charts were missing.
+motion_spec = ["templates/*.stg", "templates/CMakeLists.txt", "dashboard/frontend/**/*"]
 
 [tool.pytest.ini_options]
 # rdflib's Dataset.parse() internally reads its deprecated default_context

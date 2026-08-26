@@ -14,7 +14,7 @@ import { loadGenerations, selectGeneration, showDrift, showGitDiff } from "./gen
 import { loadHealth } from "./health.js";
 import { loadNotebook } from "./notebook.js";
 import { loadReplay, stopPlayback } from "./run.js";
-import { loadSources, openSource } from "./sources.js";
+import { loadSources, openSource, showGenerated } from "./sources.js";
 
 // A tab that is a page of its own, not a list to pick from: it fills the content pane itself,
 // so it cannot also be showing a generation. Selecting one drops the view the hash still named,
@@ -46,6 +46,7 @@ export function setView(kind, path) {
   view.delete("generation");
   view.delete("explore");
   view.delete("source");
+  view.delete("generated");
   view.delete("diff");
   view.set(kind, path);
   view.set("tab", state.tab);
@@ -94,7 +95,8 @@ export function loadLocation() {
   const page = PAGE_TABS[state.tab];
   state.generationPath = page ? null
     : view.get("generation") ?? view.get("explore") ?? view.get("diff")
-      ?? view.get("run")?.split("/runs/")[0] ?? null;
+      ?? view.get("run")?.split("/runs/")[0]
+      ?? view.get("generated")?.split("/generated/")[0] ?? null;
   if (page) return settle(loadSidebar().then(() => page()));
   if (view.has("explore")) {
     settle(loadSidebar().then(() => showExplore(view.get("explore"), false)));
@@ -111,6 +113,9 @@ export function loadLocation() {
   else if (view.has("source")) {
     // The viewer re-renders itself; it must not push the entry it is restoring back on.
     settle(loadSidebar().then(() => openSource(view.get("source"), null, false)));
+  }
+  else if (view.has("generated")) {
+    settle(loadSidebar().then(() => showGenerated(view.get("generated"), false)));
   }
   else if (view.has("generation")) {
     settle(loadSidebar().then(() => selectGeneration(view.get("generation"))));

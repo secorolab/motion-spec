@@ -512,8 +512,8 @@ async function drawGraph() {
   const request = ++explore.drawing;
   const roots = drawnRoots();
   const drawn = visible(roots ? egoNetwork(explore.payload, roots, explore.depth) : explore.payload);
-  // Neither the legend nor the trail needs the renderer, and the renderer is fetched from a
-  // CDN this machine may not reach; drawing them first is what the reader keeps if it fails.
+  // Neither the legend nor the trail needs the renderer, which is a separate module and can
+  // still fail to load; drawing them first is what the reader keeps if it does.
   renderLegend();
   renderScopes();
   renderCrumbs();
@@ -525,9 +525,9 @@ async function drawGraph() {
   status.textContent = "Loading renderer…";
   const [{ default: Sigma }, { default: Graphology }, { default: ForceAtlas2Layout }] =
     await Promise.all([
-      import("https://esm.sh/sigma@3.0.2?bundle"),
-      import("https://esm.sh/graphology@0.25.4?bundle"),
-      import("https://esm.sh/graphology-layout-forceatlas2@0.10.1/worker?bundle"),
+      import("./vendor/esm/sigma.mjs"),
+      import("./vendor/esm/graphology.mjs"),
+      import("./vendor/esm/forceatlas2.mjs"),
     ]);
   if (request !== explore.drawing) return;   // a second click got here first
   stopGraph();

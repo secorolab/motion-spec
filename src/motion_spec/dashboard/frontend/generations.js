@@ -12,7 +12,7 @@ import { $, api, copyText, formatBytes, post, showError, snack, stampText, state
 import { showExplore } from "./explore.js";
 import { setTab, setView } from "./routing.js";
 import { filter, loadReplay, openPendingRun, showSpeed, stopPlayback } from "./run.js";
-import { openSource, showSource } from "./sources.js";
+import { openSource, showGenerated, showSource } from "./sources.js";
 
 export async function loadGenerations(refresh = false) {
   const request = ++state.listRequest;
@@ -348,7 +348,9 @@ export async function selectGeneration(path) {
   const generatedGroups = new Map();
   generation.generated_files.forEach((source) => {
     const [folder, ...rest] = source.name.split("/");
-    generatedGroups.set(folder, [...(generatedGroups.get(folder) ?? []), { ...source, name: rest.join("/") || folder }]);
+    // `full` is the name as the generation holds it; `name` is what the folder's row shows.
+    generatedGroups.set(folder, [...(generatedGroups.get(folder) ?? []),
+      { ...source, full: source.name, name: rest.join("/") || folder }]);
   });
   page.querySelector(".generated-files").replaceChildren(...[...generatedGroups].map(([folder, files]) => {
     const group = document.createElement("details");
@@ -358,10 +360,14 @@ export async function selectGeneration(path) {
     group.append(summary, ...files.map((source) => {
       const entry = document.createElement("div");
       entry.className = "source-file";
-      // Generated output, not a source: there is nothing in the tree to open it in.
-      entry.title = `${source.path} — click to copy the path`;
+      // Generated output has no place in the sources tree, but it is still the thing the
+      // generator produced and the thing a reader wants to check: it opens read-only.
+      entry.title = `${source.path} — click to read, shift-click to copy the path`;
       entry.innerHTML = `<span>${source.name}</span>`;
-      entry.onclick = () => copyText(source.path);
+      entry.onclick = (event) => (event.shiftKey
+        ? copyText(source.path)
+        : showGenerated(`${path}/generated/${source.full}`)
+          .catch((error) => snack(error.message)));
       return entry;
     }));
     return group;

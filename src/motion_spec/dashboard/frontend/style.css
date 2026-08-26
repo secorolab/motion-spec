@@ -257,7 +257,7 @@ h1 { margin: 7px 0; font-size: 30px; }
    inside themselves; the page itself never grows a scrollbar. */
 .replay { display: grid; gap: 24px; grid-template-rows: auto minmax(0, 1fr); height: calc(100dvh - 139px); }
 .replay > section { min-height: 0; overflow-y: auto; }
-.replay-heading #back { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 1px solid var(--line); color: var(--text); font: 13px var(--mono); }
+.replay-heading #back, .page-heading #back { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 1px solid var(--line); color: var(--text); font: 13px var(--mono); }
 .replay-heading #back:hover { border-color: var(--accent); color: var(--accent); }
 .constraint-panel { padding: 10px; border: 1px solid var(--line); background: var(--surface); }
 .constraint-panel input { margin: 8px 0; }

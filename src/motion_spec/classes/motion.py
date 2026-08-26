@@ -95,11 +95,15 @@ class SnapshotCapture:
     `scope` is the declaration site made operative: a snapshot a motion declares is captured
     at the start of each of its activations, one the shared context declares is captured once
     for the run, and one naming a trigger is re-captured on every occurrence of that event.
+
+    `captured_id` names the run-scoped latch guarding the once-for-the-run capture -- a shared
+    value like any other, so whoever reads it is recorded rather than invented by a template.
     """
 
     target_id: str
     source_id: str
     scope: str = "entry"
+    captured_id: str | None = None
     source_closure_id: str | None = None
     trigger_event: str | None = None
     fsm_namespace: str | None = None

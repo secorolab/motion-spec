@@ -279,11 +279,20 @@ def classify_quads(quads, graphs: dict[str, list[str]]) -> dict:
     predicates: Counter = Counter()
     hidden = {"type_edges": 0, "literal_edges": 0, "provenance_edges": 0}
 
+    quads = list(quads)
+    # A blank node's label changes every time the live overlay regenerates; its place in the
+    # graph does not. Reached from an IRI, it borrows that edge as its stable payload id.
+    blank_ids: dict[str, str] = {}
+    for subject, predicate, obj, _name in quads:
+        if isinstance(obj, BNode) and not isinstance(subject, BNode):
+            blank_ids.setdefault(str(obj), f"{subject}#{rdf_name(predicate)}")
+
     def node(term) -> dict:
-        entry = nodes.get(str(term))
+        term_id = blank_ids.get(str(term), str(term)) if isinstance(term, BNode) else str(term)
+        entry = nodes.get(term_id)
         if entry is None:
-            entry = nodes[str(term)] = {
-                "id": str(term),
+            entry = nodes[term_id] = {
+                "id": term_id,
                 "label": rdf_name(term),
                 "value": str(term),
                 "types": [],

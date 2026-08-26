@@ -29,7 +29,7 @@ QUDT = rdflib.Namespace("http://qudt.org/schema/qudt/")
 
 def _rec_entity_path(graph, label: str) -> str:
     """The archive-relative path REC recorded for the entity carrying `label`."""
-    entity = next(e for e, value in graph.subject_objects(REC.label) if str(value) == label)
+    entity = next(e for e, value in graph.subject_objects(rdflib.RDFS.label) if str(value) == label)
     return str(graph.value(graph.value(entity, PROV.atLocation), REC.path))
 
 
@@ -70,20 +70,22 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
     verify_manifest(run_dir)
 
     # REC records the archive as a PROV graph: lifecycle is an rdf:type on the run, and an
-    # entity's role is its rec:label. See metamodels rec.shacl.ttl (RunExecutionShape).
+    # entity's role is its rdfs:label. See metamodels rec.shacl.ttl (RunExecutionShape).
     rec_graph = rdflib.Graph().parse(run_dir / "rec.ld.json", format="json-ld")
     assert rec_run_lifecycle(rec_graph)["status"] == "COMPLETED"
-    labels = {str(value) for value in rec_graph.objects(None, REC.label)}
+    # One run, one node: rec types the same IRI the runtime graph does.
+    assert (rdflib.URIRef(prov_uri("run:run-test")), rdflib.RDF.type, REC.CompletedRun) in rec_graph
+    labels = {str(value) for value in rec_graph.objects(None, rdflib.RDFS.label)}
     assert {"frame_log", "frame_log_health", "runtime_ttl"} <= labels
     runtime_entity = next(
         entity
-        for entity, label in rec_graph.subject_objects(REC.label)
+        for entity, label in rec_graph.subject_objects(rdflib.RDFS.label)
         if str(label) == "runtime_ttl"
     )
     assert str(rec_graph.value(runtime_entity, REC.sha256)) == sha256_file(runtime_ttl)
     health = next(
         entity
-        for entity, value in rec_graph.subject_objects(REC.label)
+        for entity, value in rec_graph.subject_objects(rdflib.RDFS.label)
         if str(value) == "frame_log_health"
     )
     assert (
@@ -100,7 +102,7 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
     assert _rec_entity_path(rec_graph, "dsl_provenance") == "provenance/dsl.ld.json"
     assert _rec_entity_path(rec_graph, "runtime_ttl") == "runtime/runtime.ttl"
     metrics = {
-        str(rec_graph.value(metric, REC.label) or metric)
+        str(rec_graph.value(metric, rdflib.RDFS.label) or metric)
         .rsplit("/", 1)[0]
         .rsplit("metric/", 1)[-1]: (rec_graph.value(metric, QUDT.value))
         for metric in rec_graph.objects(None, REC.metrics)
@@ -372,32 +374,48 @@ def test_generation_run_vendors_its_authored_source(tmp_path: Path) -> None:
     rec_graph = rdflib.Graph().parse(run_dir / "rec.ld.json", format="json-ld")
     assert {
         str(rec_graph.value(rec_graph.value(entity, PROV.atLocation), REC.path))
-        for entity, label in rec_graph.subject_objects(REC.label)
+        for entity, label in rec_graph.subject_objects(rdflib.RDFS.label)
         if str(label) == "source_model"
     } == {"source/demo.fsm", "source/demo.robmot"}
 
 
-def test_runtime_shacl_rejects_unanchored_occurrence(tmp_path: Path) -> None:
+_RUNTIME_TTL = """
+@prefix ms-prov: <https://secorolab.github.io/metamodels/motion-spec/prov#> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix time: <http://www.w3.org/2006/time#> .
+
+<run> a ms-prov:TaskExecution ;
+    prov:used <entity/model> ;
+    prov:wasAssociatedWith <agent/controller> ;
+    time:hasBeginning <t0> ; time:hasEnd <t9> .
+
+<motion> a ms-prov:MotionExecution ;
+    prov:used <https://example.test/motion_move> ;
+    prov:wasAssociatedWith <agent/controller> ;
+    prov:wasInformedBy <run> ;
+    time:hasBeginning <t0> ; time:hasEnd <t9> .
+
+<t0> a time:Instant ; time:inTimePosition [ time:numericPosition %s ; time:hasTRS <trs> ] .
+<t9> a time:Instant ; time:inTimePosition [ time:numericPosition 9 ; time:hasTRS <trs> ] .
+"""
+
+
+def _runtime_ttl(tmp_path: Path, first_position: str) -> Path:
+    path = tmp_path / "runtime.ttl"
+    path.write_text((_RUNTIME_TTL % first_position).lstrip())
+    return path
+
+
+def test_runtime_shacl_accepts_a_positioned_run(tmp_path: Path) -> None:
+    """The half that has to pass: a run and its motion, positioned on the tick scale."""
     if not (Path(__file__).resolve().parents[2] / "metamodels").exists():
         pytest.skip("metamodels is not in this checkout")
-    path = tmp_path / "runtime.ttl"
-    path.write_text(
-        """
-@prefix dcterms: <http://purl.org/dc/terms/> .
-@prefix ms-exec-trace: <https://secorolab.github.io/metamodels/motion-spec/execution-trace/> .
-@prefix prov: <http://www.w3.org/ns/prov#> .
-@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+    _validate_runtime_shacl(_runtime_ttl(tmp_path, "0"))
 
-<run> a <https://secorolab.github.io/metamodels/execution-context#ExecutionContext> ;
-    dcterms:hasVersion 3 ;
-    prov:wasGeneratedBy <activity> .
 
-# No atFrame: InstantOccurrenceShape requires exactly one, so the shape must reject this.
-<event> a ms-exec-trace:ControlFlowOccurrence, prov:Activity ;
-    prov:used <https://example.test/E_DONE> ;
-    ms-exec-trace:seq 0 .
-""".lstrip()
-    )
-
+def test_runtime_shacl_rejects_a_negative_position(tmp_path: Path) -> None:
+    """The half that has to fail: a tick before the run began is not a position."""
+    if not (Path(__file__).resolve().parents[2] / "metamodels").exists():
+        pytest.skip("metamodels is not in this checkout")
     with pytest.raises(ArchiveError, match="runtime SHACL validation failed"):
-        _validate_runtime_shacl(path)
+        _validate_runtime_shacl(_runtime_ttl(tmp_path, "-1"))

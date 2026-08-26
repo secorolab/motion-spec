@@ -165,7 +165,7 @@ def _sample_ir() -> dict:
                     "activities": [
                         {
                             "id": "activity:motion_spec_ir_generation",
-                            "types": ["prov:Activity"],
+                            "types": ["prov:Activity", "ms-prov:SpecCompilation"],
                             "used": ["entity:app_manifest"],
                             "wasAssociatedWith": "agent:motion_spec_ir_gen",
                         },
@@ -549,11 +549,46 @@ def test_provenance_document_is_jsonld_and_prov_shacl_conformant(tmp_path: Path)
     assert (None, None, None) in graph
     # The robot model is recorded as a portable vendor-qualified reference (matching the
     # mj_kdl_wrapper cache layout), never a machine-specific absolute path.
-    model_ref = next(n for n in seed["@graph"] if n.get("role") == "robot")["has-agn-model"]
-    assert model_ref == "menagerie:kinova_gen3/gen3.xml"
+    robot = next(n for n in seed["@graph"] if n["@id"].endswith("agent/modelled_robot"))
+    assert robot["has-agn-model"] == "menagerie:kinova_gen3/gen3.xml"
     shape_path = metamodels / "prov.shacl.ttl"
     conforms, _, report = pyshacl.validate(graph, shacl_graph=str(shape_path))
     assert conforms, report
+
+
+def test_usage_roles_replace_the_minted_role_predicate(tmp_path: Path) -> None:
+    """A role is the part an entity played for one activity, not a label hung on the entity."""
+    document = build_provenance_document(_sample_ir(), tmp_path)
+    assert not any("role" in node for node in document["@graph"])
+    assert "role" not in dict(document["@context"][-1])
+    usages = [
+        usage
+        for node in document["@graph"]
+        for usage in node.get("qualifiedUsage", [])
+        if node["@id"].endswith("activity/motion_spec_ir_generation")
+    ]
+    assert usages == [
+        {
+            "@type": "Usage",
+            "entity": "msprov:entity/app_manifest",
+            "hadRole": "msprov:role/app_manifest",
+        }
+    ]
+    assert {"@id": "msprov:role/app_manifest", "@type": ["prov:Role"]} in document["@graph"]
+
+
+def test_compilation_activities_are_typed_but_execution_is_not(tmp_path: Path) -> None:
+    types = {
+        node["@id"]: node["@type"]
+        for node in build_provenance_document(_sample_ir(), tmp_path)["@graph"]
+    }
+    assert "ms-prov:SpecCompilation" in types["msprov:activity/code_generation"]
+    assert "ms-prov:SpecCompilation" in types["msprov:activity/motion_spec_ir_generation"]
+    assert types["msprov:activity/controller_execution"] == [
+        "prov:Activity",
+        "bdd:SimulatedExecution",
+    ]
+    assert types["msprov:activity/build"] == ["prov:Activity"]
 
 
 # --- derived-entity IRIs (plan 015) ---------------------------------------------------------

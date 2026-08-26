@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import shutil
+import sys
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +23,7 @@ from motion_spec.introspection.provenance import (
     ensure_local_rec_importable,
     host_info,
     parse_rec_time,
+    prov_uri,
     rec_run_lifecycle,
     record_activities,
     record_agents,
@@ -600,6 +602,9 @@ def verify_manifest(run_dir_or_manifest: Path | str) -> dict:
         _require_rec_provenance(rec_graph, "rec.ld.json", simulated=simulated)
         _validate_prov_shacl(run_dir / rec_rel)
         _validate_rec_shacl(run_dir / rec_rel)
+    trig_rel = manifest.get("files", {}).get("provenance_trig")
+    if trig_rel:
+        _verify_consolidated(run_dir / trig_rel, manifest["run_id"])
     return manifest
 
 
@@ -723,7 +728,7 @@ def _write_rec_snapshot(
         ) from exc
 
     run_id = manifest["run_id"]
-    observer = FileObserver(run_dir / "rec.ld.json")
+    observer = FileObserver(run_dir / "rec.ld.json", run_iri=prov_uri(f"run:{run_id}"))
     run = Run(observers=[observer], run_id=run_id)
     lifecycle = rec_run_lifecycle(observer.graph)
     started_time = lifecycle.get("started_time")
@@ -753,6 +758,44 @@ def _write_rec_snapshot(
             run.start_time = datetime.now(timezone.utc)
         run._emit_completed()
     observer.close()
+
+
+def consolidate_provenance(run_dir: Path | str) -> Path | None:
+    """Merge the run's provenance documents into ``runs/<id>/provenance.trig``.
+
+    The run already happened; a dataset that will not consolidate is a report about the
+    documents, not a failed run, so the reason is printed and the caller carries on. What the
+    manifest promises is only what was written.
+    """
+    run_dir = Path(run_dir)
+    ensure_local_rec_importable()
+    from rec.consolidate import CONSOLIDATED, ConsolidationError, consolidate_run
+
+    try:
+        path = consolidate_run(run_dir, metamodels_dir=_metamodels_root())
+    except (ConsolidationError, OSError) as exc:
+        print(f"provenance consolidation failed: {exc}", file=sys.stderr)
+        return None
+    manifest_path = run_dir / "manifest.json"
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text())
+        manifest.setdefault("files", {})["provenance_trig"] = CONSOLIDATED
+        manifest_path.write_text(json.dumps(manifest, indent=4) + "\n")
+    return path
+
+
+def _verify_consolidated(path: Path, run_id: str) -> None:
+    """The consolidated dataset names one run in both the lifecycle and the runtime graph."""
+    ensure_local_rec_importable()
+    from rec.consolidate import MS_PROV, REC, REC_GRAPH, RUNTIME_GRAPH
+
+    dataset = rdflib.Dataset()
+    dataset.parse(path, format="trig")
+    run = rdflib.URIRef(prov_uri(f"run:{run_id}"))
+    if (run, rdflib.RDF.type, MS_PROV.TaskExecution) not in dataset.graph(RUNTIME_GRAPH):
+        raise ArchiveError(f"{path.name}: the runtime graph does not name <{run}>")
+    if (run, REC["run-id"], None) not in dataset.graph(REC_GRAPH):
+        raise ArchiveError(f"{path.name}: the lifecycle graph does not name <{run}>")
 
 
 # pyshacl reads a non-absolute source shorter than 140 characters as a filename and anything
@@ -800,13 +843,12 @@ def _validate_rec_shacl(path: Path) -> None:
 
 def _validate_runtime_shacl(path: Path) -> None:
     root = _metamodels_root()
-    # The trace shape covers occurrences and frames; the tick rate is a sensors update-rate, so
-    # its frequency shape comes from the metamodel that defines it rather than being restated.
+    # The ms-prov shape covers the run, its motions and their maintenances; the tick rate is a
+    # sensors update-rate, so its frequency shape comes from the metamodel that defines it
+    # rather than being restated. The W3C prov shape is deliberately not loaded: it requires
+    # every prov:used object to be a typed prov:Entity, and design IRIs are not.
     shapes = rdflib.Graph()
-    for shape in (
-        root / "motion-spec" / "execution-trace.shacl.ttl",
-        root / "robot" / "sensors.shacl.ttl",
-    ):
+    for shape in (root / "motion-spec" / "prov.shacl.ttl", root / "robot" / "sensors.shacl.ttl"):
         if not shape.exists():
             raise ArchiveError(f"{shape}: missing runtime SHACL shape")
         shapes.parse(_graph_source(shape), format="turtle")

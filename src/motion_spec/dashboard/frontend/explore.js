@@ -19,55 +19,55 @@ export const CANNED = {
   "everything in this graph": `CONSTRUCT { ?s ?p ?o }
 WHERE { ?s ?p ?o }`,
 
-  "state timeline": `PREFIX trace: <https://secorolab.github.io/metamodels/motion-spec/execution-trace/>
+  "state timeline": `PREFIX ms-prov: <https://secorolab.github.io/metamodels/motion-spec/prov#>
 PREFIX prov: <http://www.w3.org/ns/prov#>
 PREFIX time: <http://www.w3.org/2006/time#>
 PREFIX fsm: <https://secorolab.github.io/metamodels/behaviour/fsm#>
 SELECT ?state ?from ?to WHERE {
-  ?occ a trace:ActivityOccurrence ;
+  ?occ a ms-prov:MotionExecution ;
        prov:used ?state ;
        time:hasBeginning ?begin ;
        time:hasEnd ?end .
   ?state a fsm:State .
-  ?begin trace:step ?from .
-  ?end trace:step ?to .
+  ?begin time:inTimePosition/time:numericPosition ?from .
+  ?end time:inTimePosition/time:numericPosition ?to .
 } ORDER BY ?from`,
 
-  "what caused a transition": `PREFIX trace: <https://secorolab.github.io/metamodels/motion-spec/execution-trace/>
-PREFIX prov: <http://www.w3.org/ns/prov#>
+  "what caused a transition": `PREFIX prov: <http://www.w3.org/ns/prov#>
+PREFIX time: <http://www.w3.org/2006/time#>
 PREFIX fsm: <https://secorolab.github.io/metamodels/behaviour/fsm#>
 SELECT ?transition ?step ?cause WHERE {
-  ?occ a trace:ControlFlowOccurrence ;
+  ?occ a prov:Activity ;
        prov:used ?transition ;
-       trace:atFrame ?frame ;
+       time:hasTime ?instant ;
        prov:wasInformedBy ?prior .
   ?transition a fsm:Transition .
-  ?frame trace:step ?step .
+  ?instant time:inTimePosition/time:numericPosition ?step .
   ?prior prov:used ?cause .
 } ORDER BY ?step`,
 
-  "satisfied during a state": `PREFIX trace: <https://secorolab.github.io/metamodels/motion-spec/execution-trace/>
+  "satisfied during a state": `PREFIX ms-prov: <https://secorolab.github.io/metamodels/motion-spec/prov#>
 PREFIX prov: <http://www.w3.org/ns/prov#>
 PREFIX time: <http://www.w3.org/2006/time#>
 PREFIX fsm: <https://secorolab.github.io/metamodels/behaviour/fsm#>
 PREFIX cstr: <https://comp-rob2b.github.io/metamodels/task/constraint#>
 SELECT ?state ?constraint ?from ?to WHERE {
   { SELECT ?state ?entered ?left WHERE {
-      ?stateOcc a trace:ActivityOccurrence ;
+      ?stateOcc a ms-prov:MotionExecution ;
                 prov:used ?state ;
                 time:hasBeginning ?stateBegin ;
                 time:hasEnd ?stateEnd .
       ?state a fsm:State .
-      ?stateBegin trace:step ?entered .
-      ?stateEnd trace:step ?left . } }
+      ?stateBegin time:inTimePosition/time:numericPosition ?entered .
+      ?stateEnd time:inTimePosition/time:numericPosition ?left . } }
   { SELECT DISTINCT ?constraint ?from ?to WHERE {
-      ?occ a trace:ActivityOccurrence ;
+      ?occ a ms-prov:ConstraintMaintenance ;
            prov:used ?constraint ;
            time:hasBeginning ?begin ;
            time:hasEnd ?end .
       ?constraint a cstr:Constraint .
-      ?begin trace:step ?from .
-      ?end trace:step ?to . } }
+      ?begin time:inTimePosition/time:numericPosition ?from .
+      ?end time:inTimePosition/time:numericPosition ?to . } }
   FILTER(?from >= ?entered && ?from <= ?left)
 } ORDER BY ?entered ?from`,
 
@@ -78,16 +78,16 @@ SELECT ?constraint WHERE {
   FILTER NOT EXISTS { GRAPH <urn:runtime> { ?occ prov:used ?constraint } }
 } ORDER BY ?constraint`,
 
-  "recorded results": `PREFIX trace: <https://secorolab.github.io/metamodels/motion-spec/execution-trace/>
+  "recorded results": `PREFIX ms-prov: <https://secorolab.github.io/metamodels/motion-spec/prov#>
 PREFIX prov: <http://www.w3.org/ns/prov#>
 PREFIX time: <http://www.w3.org/2006/time#>
 PREFIX sosa: <http://www.w3.org/ns/sosa/>
 SELECT ?element ?value ?step WHERE {
-  ?occ a trace:ActivityOccurrence ;
+  ?occ a ms-prov:ConstraintMaintenance ;
        prov:used ?element ;
        sosa:hasSimpleResult ?value ;
        time:hasBeginning ?begin .
-  ?begin trace:step ?step .
+  ?begin time:inTimePosition/time:numericPosition ?step .
 } ORDER BY ?step`,
 
   "controller gains": `PREFIX cstr-hdl: <https://comp-rob2b.github.io/metamodels/task/constraint-handler#>

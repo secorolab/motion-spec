@@ -214,46 +214,45 @@ def _home_graph(service: GraphService, triple) -> str:
 BEHAVIOUR_MM = "https://secorolab.github.io/metamodels/behaviour/"
 
 VIEW_PREFIXES = """
-PREFIX trace:    <https://secorolab.github.io/metamodels/motion-spec/execution-trace/>
+PREFIX ms-prov:  <https://secorolab.github.io/metamodels/motion-spec/prov#>
 PREFIX prov:     <http://www.w3.org/ns/prov#>
 PREFIX time:     <http://www.w3.org/2006/time#>
 PREFIX sosa:     <http://www.w3.org/ns/sosa/>
 PREFIX qudt:     <http://qudt.org/schema/qudt/>
 PREFIX sens:     <https://secorolab.github.io/metamodels/robot/sensors#>
-PREFIX exec:     <https://secorolab.github.io/metamodels/execution-context#>
 PREFIX cstr:     <https://comp-rob2b.github.io/metamodels/task/constraint#>
 PREFIX cstr-hdl: <https://comp-rob2b.github.io/metamodels/task/constraint-handler#>
 PREFIX ch:       <https://secorolab.github.io/metamodels/task/constraint-handler#>
 """
 
-# The run's own tick rate, hung off the agent that produced its frames. Scoped through the run
-# so the sensors declaring update rates of their own cannot answer instead.
+# The run's own tick rate: the frequency of the tick scale its instants are positioned on.
+# Scoped through the run so the sensors declaring update rates of their own cannot answer.
 RUN_PERIOD = (
     VIEW_PREFIXES
     + """
 SELECT ?hz WHERE {
-    ?run a exec:ExecutionContext ; prov:wasGeneratedBy/prov:wasAssociatedWith ?producer .
-    ?producer sens:update-rate/qudt:value ?hz .
+    ?run a ms-prov:TaskExecution ; time:hasBeginning/time:inTimePosition/time:hasTRS ?trs .
+    ?trs sens:update-rate/qudt:value ?hz .
 } LIMIT 1
 """
 )
 
 # Every occupancy, in order, with what moved control into it. `?element` may be bound by the
-# caller to narrow the timeline to one design IRI.
+# caller to narrow the timeline to one design IRI. A transition or event occurrence is a plain
+# prov:Activity: its referent's own rdf:type says what it was.
 ACTIVITY_TIMELINE = (
     VIEW_PREFIXES
-    + f"""
-SELECT ?occ ?element ?seq ?beginStep ?endStep ?transition ?event WHERE {{
-    ?occ a trace:ActivityOccurrence ; trace:seq ?seq ; prov:used ?element ;
-         time:hasBeginning/trace:step ?beginStep .
-    FILTER EXISTS {{ ?element a ?kind . FILTER(STRSTARTS(STR(?kind), "{BEHAVIOUR_MM}")) }}
-    OPTIONAL {{ ?occ time:hasEnd/trace:step ?endStep }}
-    OPTIONAL {{
+    + """
+SELECT ?occ ?element ?beginStep ?endStep ?transition ?event WHERE {
+    ?occ a ms-prov:MotionExecution ; prov:used ?element ;
+         time:hasBeginning/time:inTimePosition/time:numericPosition ?beginStep .
+    OPTIONAL { ?occ time:hasEnd/time:inTimePosition/time:numericPosition ?endStep }
+    OPTIONAL {
         ?occ prov:wasInformedBy ?flow .
-        ?flow a trace:ControlFlowOccurrence ; prov:used ?transition .
-        OPTIONAL {{ ?flow prov:wasInformedBy/prov:used ?event }}
-    }}
-}} ORDER BY ?beginStep ?seq
+        ?flow a prov:Activity ; prov:used ?transition .
+        OPTIONAL { ?flow prov:wasInformedBy/prov:used ?event }
+    }
+} ORDER BY ?beginStep
 """
 )
 
@@ -265,40 +264,48 @@ CONSTRAINTS_DURING_ACTIVITY = (
     VIEW_PREFIXES
     + """
 SELECT DISTINCT ?constraint WHERE {
-    ?occ time:hasBeginning/trace:step ?from ; time:hasEnd/trace:step ?to .
-    ?held a trace:ActivityOccurrence ; prov:used ?constraint ;
-          time:hasBeginning/trace:step ?heldFrom ; time:hasEnd/trace:step ?heldTo .
+    ?occ time:hasBeginning/time:inTimePosition/time:numericPosition ?from ;
+         time:hasEnd/time:inTimePosition/time:numericPosition ?to .
+    ?held a ms-prov:ConstraintMaintenance ; prov:used ?constraint ;
+          time:hasBeginning/time:inTimePosition/time:numericPosition ?heldFrom ;
+          time:hasEnd/time:inTimePosition/time:numericPosition ?heldTo .
     ?constraint a cstr:Constraint .
     FILTER(?heldFrom >= ?from && ?heldTo <= ?to)
 }
 """
 )
 
-# One row per arming: when the watched condition first held (the span's beginning), when the
-# gate fired (its end), how often it broke meanwhile, and the dwell the *design* graph declares
-# -- joined, never copied. A monitor that never fired keeps its row with the span left unbound.
+# One row per firing: the arming that fired is the maintenance carrying the observed value --
+# a held stretch that broke instead closes without one, and each such stretch counts as one
+# re-arm. The dwell the *design* graph declares is joined, never copied. A monitor that never
+# fired keeps its row with the span left unbound.
 GATE_ANALYSIS = (
     VIEW_PREFIXES
     + """
-SELECT ?monitor ?seq ?firstHeldStep ?firedStep ?rearmCount ?event ?declaredDwell
+SELECT ?monitor ?firstHeldStep ?firedStep ?event ?declaredDwell
+       (COUNT(DISTINCT ?stretch) AS ?rearmCount)
        (GROUP_CONCAT(DISTINCT STR(?member); SEPARATOR=" ") AS ?members)
 WHERE {
     ?monitor a cstr-hdl:Monitor .
     OPTIONAL { ?monitor ch:debounce-duration/qudt:value ?declaredDwell }
     OPTIONAL { ?monitor cstr-hdl:event ?event }
     OPTIONAL {
-        ?occ a trace:ActivityOccurrence ; prov:used ?monitor ; trace:seq ?seq ;
-             time:hasBeginning/trace:step ?firstHeldStep .
-        OPTIONAL { ?occ time:hasEnd/trace:step ?firedStep }
-        OPTIONAL { ?occ trace:rearmCount ?rearmCount }
+        ?occ a ms-prov:ConstraintMaintenance ; prov:used ?monitor ;
+             sosa:hasSimpleResult ?observed ;
+             time:hasBeginning/time:inTimePosition/time:numericPosition ?firstHeldStep .
+        OPTIONAL { ?occ time:hasEnd/time:inTimePosition/time:numericPosition ?firedStep }
+        OPTIONAL {
+            ?stretch a ms-prov:ConstraintMaintenance ; prov:used ?monitor .
+            FILTER(?stretch != ?occ)
+        }
         OPTIONAL {
             ?occ prov:wasInformedBy ?watch .
-            ?watch a trace:ActivityOccurrence ; prov:used ?member .
+            ?watch a ms-prov:ConstraintMaintenance ; prov:used ?member .
         }
     }
 }
-GROUP BY ?monitor ?seq ?firstHeldStep ?firedStep ?rearmCount ?event ?declaredDwell
-ORDER BY ?seq ?monitor
+GROUP BY ?monitor ?firstHeldStep ?firedStep ?event ?declaredDwell
+ORDER BY ?firstHeldStep ?monitor
 """
 )
 
@@ -379,7 +386,7 @@ def timeline(run_dir: Path, iri: str | None = None) -> dict:
     period_s = _period_s(service)
     bindings = {"element": rdflib.URIRef(iri)} if iri else {}
     spans = []
-    for occ, element, _seq, begin, end, transition, event in _rows(
+    for occ, element, begin, end, transition, event in _rows(
         service, ACTIVITY_TIMELINE, **bindings
     ):
         begin_step, end_step = _step(begin), _step(end)
@@ -422,7 +429,7 @@ def gates(run_dir: Path) -> dict:
     period_s = _period_s(service)
     archived = service.runtime_source == "archive"
     rows = []
-    for monitor, _seq, held, fired, rearm, event, dwell, members in _rows(service, GATE_ANALYSIS):
+    for monitor, held, fired, event, dwell, rearm, members in _rows(service, GATE_ANALYSIS):
         first_held_step, fired_step = _step(held), _step(fired)
         waited = (
             None if first_held_step is None or fired_step is None else fired_step - first_held_step

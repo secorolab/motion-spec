@@ -25,6 +25,7 @@ from rdf_utils.resolver import IriToFileResolver, install_resolver
 from rdflib.namespace import SDO
 
 from motion_spec.introspection.runtime_graph import (
+    TIME,
     IncrementalProjector,
     bind_namespaces,
     frame_observations,
@@ -193,6 +194,12 @@ class GraphService:
             quantity_iris=self._quantity_iris(),
             satisfied=True,
         )
+        # An instant the archived record already positions needs no second position here --
+        # the duplicate would draw the same tick twice in the graph view.
+        for instant, position in list(self.live.subject_objects(TIME.inTimePosition)):
+            if (instant, TIME.inTimePosition, None) in self.runtime:
+                self.live.remove((instant, TIME.inTimePosition, position))
+                self.live.remove((position, None, None))
 
     def query(self, sparql: str) -> tuple[str, object]:
         """(result type, payload) for a SPARQL query over the current dataset.

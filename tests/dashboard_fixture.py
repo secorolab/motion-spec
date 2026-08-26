@@ -39,10 +39,11 @@ def schema() -> dict:
             "end": 0,
         },
         "by_motion": {
+            # No motion uri: the writer then names each occupancy by its state, which keeps
+            # these views' story per-state -- the design fallback for a contract this old.
             "move": {
                 "index": 0,
                 "id": "move",
-                "uri": "https://example.test/move",
                 "controllers": [
                     {"index": 0, "id": "ctrl_x", "uri": CTRL, "constraint_uri": CONSTRAINT}
                 ],

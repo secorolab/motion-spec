@@ -18,10 +18,15 @@ from pathlib import Path
 
 MSPROV = "https://secorolab.github.io/motion-spec/provenance/"
 MSPROV_PREFIX = "msprov:"
+# Vocabulary namespaces the generation documents name classes from. Declared inline in each
+# document's context rather than pulled in as a context URL: these files are not published yet,
+# and an unresolvable context makes the document unparseable.
+MS_PROV_NS = "https://secorolab.github.io/metamodels/motion-spec/prov#"
 PROV_AGENT = "http://www.w3.org/ns/prov#Agent"
 PROV_SOFTWARE_AGENT = "http://www.w3.org/ns/prov#SoftwareAgent"
 TYPE_PREFIXES = {
     "http://www.w3.org/ns/prov#": "prov:",
+    MS_PROV_NS: "ms-prov:",
     "https://secorolab.github.io/metamodels/acceptance-criteria/bdd#": "bdd:",
     "https://secorolab.github.io/metamodels/agent#": "agn:",
     "https://secorolab.github.io/metamodels/observation#": "obs:",
@@ -56,13 +61,15 @@ TOOL_METADATA = {
 }
 
 
+def _slug(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("_") or "item"
+
+
 def _prov_iri(identifier: str) -> str:
     kind, _, name = identifier.partition(":")
     if not name:
         kind, name = "id", identifier
-    kind_slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", kind).strip("_") or "item"
-    name_slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_") or "item"
-    return f"{MSPROV_PREFIX}{kind_slug}/{name_slug}"
+    return f"{MSPROV_PREFIX}{_slug(kind)}/{_slug(name)}"
 
 
 # REC expands only the `rec:` and `prov:` prefixes it owns; every other CURIE would be stored
@@ -82,12 +89,25 @@ def rec_types(types) -> list[str]:
 
 
 def prov_uri(identifier: str) -> str:
-    """Canonical full provenance IRI for an agent/activity id."""
+    """Canonical full provenance IRI for an agent/activity/run id.
+
+    `run:<run-id>` is what makes the runtime, rec and consolidated graphs describe one run
+    rather than three, so every document mints the run through here.
+    """
     if identifier.startswith(("http://", "https://")):
         return identifier
     if identifier.startswith(MSPROV_PREFIX):
         return MSPROV + identifier[len(MSPROV_PREFIX) :]
     return MSPROV + _prov_iri(identifier)[len(MSPROV_PREFIX) :]
+
+
+def run_entity_uri(run_id: str, slug: str) -> str:
+    """Canonical IRI for a file entity belonging to one run.
+
+    Run-scoped, so unioning two runs of one generation keeps their artefacts apart instead of
+    collapsing them onto one node with conflicting locations and hashes.
+    """
+    return f"{MSPROV}entity/run/{_slug(run_id)}/{_slug(slug)}"
 
 
 def _location_iri(value: str | None) -> str | None:
@@ -164,10 +184,14 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
         graph.append(node)
         return node_id
 
+    # What part each entity played for the activity that used it. Kept as a usage role on that
+    # activity (below), never as a label on the entity: the entity's own kind is its rdf:type.
+    roles_by_entity: dict[str, str] = {}
     input_entity_ids = []
     for entity in prov.get("entities", []):
+        if entity.get("role"):
+            roles_by_entity[entity.get("id", "entity")] = entity["role"]
         properties = {
-            "role": entity.get("role"),
             "atLocation": _location_iri(entity.get("path") or entity.get("source")),
             "wasGeneratedBy": _prov_iri(entity["wasGeneratedBy"])
             if entity.get("wasGeneratedBy")
@@ -210,7 +234,6 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
         name: add_node(
             f"entity:generated_{name}",
             ["prov:Entity"],
-            role=f"generated_{name}",
             atLocation=_location_iri(str(output_dir / name)),
             wasGeneratedBy=_prov_iri("activity:code_generation"),
         )
@@ -223,32 +246,46 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
         if activity.get("wasAssociatedWith")
     }
     emitted_agents = set()
+    used_roles: set[str] = set()
+
+    def qualified_usage(used: list) -> list[dict]:
+        """The part each used entity played in this activity, as PROV states it."""
+        usages = []
+        for item in used:
+            role = roles_by_entity.get(item)
+            if role is None:
+                continue
+            used_roles.add(role)
+            usages.append(
+                {"@type": "Usage", "entity": _prov_iri(item), "hadRole": _prov_iri(f"role:{role}")}
+            )
+        return usages
 
     for activity in prov.get("activities", []):
         add_node(
             activity.get("id", "activity"),
             activity.get("types") or ["prov:Activity"],
-            role=activity.get("role"),
             used=[_prov_iri(item) for item in activity.get("used", [])],
+            qualifiedUsage=qualified_usage(activity.get("used", [])),
             wasAssociatedWith=_prov_iri(activity["wasAssociatedWith"])
             if activity.get("wasAssociatedWith")
             else None,
         )
     codegen_activity = add_node(
         "activity:code_generation",
-        ["prov:Activity"],
-        role="code_generation",
+        ["prov:Activity", "ms-prov:SpecCompilation"],
         used=input_entity_ids,
         wasAssociatedWith=_prov_iri("agent:motion_spec_codegen"),
     )
     add_node(
         "activity:build",
         ["prov:Activity"],
-        role="build",
         used=list(artifact_entities.values()),
         wasInformedBy=codegen_activity,
         wasAssociatedWith=_prov_iri("agent:build_toolchain"),
     )
+    for role in sorted(used_roles):
+        add_node(f"role:{role}", ["prov:Role"])
 
     for agent in prov.get("agents", []):
         emitted_agents.add(agent.get("id", "agent"))
@@ -256,7 +293,6 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
         add_node(
             agent_id,
             _agent_types(agent.get("types") or [PROV_AGENT]),
-            role=agent.get("role"),
             **({"has-agn-model": _vendor_model_ref(agent["model"])} if agent.get("model") else {}),
             actedOnBehalfOf=_prov_iri(agent["actedOnBehalfOf"])
             if agent.get("actedOnBehalfOf")
@@ -268,41 +304,21 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
     add_node(
         "agent:motion_spec_codegen",
         [PROV_SOFTWARE_AGENT, PROV_AGENT, "obs:ObservationProvider"],
-        role="code_generator",
         **_tool_properties("agent:motion_spec_codegen"),
     )
+    add_node("agent:stst", [PROV_SOFTWARE_AGENT, PROV_AGENT], **_tool_properties("agent:stst"))
     add_node(
-        "agent:stst",
-        [PROV_SOFTWARE_AGENT, PROV_AGENT],
-        role="template_renderer",
-        **_tool_properties("agent:stst"),
+        "agent:rdf_utils", [PROV_SOFTWARE_AGENT, PROV_AGENT], **_tool_properties("agent:rdf_utils")
     )
-    add_node(
-        "agent:rdf_utils",
-        [PROV_SOFTWARE_AGENT, PROV_AGENT],
-        role="rdf_resolver",
-        **_tool_properties("agent:rdf_utils"),
-    )
-    add_node(
-        "agent:rdflib",
-        [PROV_SOFTWARE_AGENT, PROV_AGENT],
-        role="rdf_graph_parser",
-        **_tool_properties("agent:rdflib"),
-    )
-    add_node("agent:build_toolchain", [PROV_SOFTWARE_AGENT, PROV_AGENT], role="build_toolchain")
-    add_node(
-        "agent:replay_process", [PROV_SOFTWARE_AGENT, PROV_AGENT], role="expected_replay_process"
-    )
-    add_node(
-        "agent:dashboard_process",
-        [PROV_SOFTWARE_AGENT, PROV_AGENT],
-        role="expected_dashboard_process",
-    )
+    add_node("agent:rdflib", [PROV_SOFTWARE_AGENT, PROV_AGENT], **_tool_properties("agent:rdflib"))
+    add_node("agent:build_toolchain", [PROV_SOFTWARE_AGENT, PROV_AGENT])
+    add_node("agent:replay_process", [PROV_SOFTWARE_AGENT, PROV_AGENT])
+    add_node("agent:dashboard_process", [PROV_SOFTWARE_AGENT, PROV_AGENT])
 
     return {
         "schema_version": 1,
         "runtime_rdf_contract_version": 1,
-        "@context": [*METAMODEL_CONTEXTS, {"msprov": MSPROV, "role": "msprov:role"}],
+        "@context": [*METAMODEL_CONTEXTS, {"msprov": MSPROV, "ms-prov": MS_PROV_NS}],
         "@graph": [{"@id": "msprov:bundle/static-provenance", "@type": "prov:Bundle"}, *graph],
     }
 

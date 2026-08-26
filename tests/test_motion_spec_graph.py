@@ -124,6 +124,35 @@ def test_generation_keeps_scene_fsm_and_provenance_separate(generated_model: Pat
     assert (activity, RDF.type, prov.Activity) in provenance
 
 
+def test_generation_documents_share_one_node_per_tool_and_per_file(generated_model: Path) -> None:
+    """dslprov names this document's own activities; everything shared is minted once, in the
+    space motion-spec already mints agents and run artefacts in."""
+    output = generated_model.parent
+    msprov = Namespace("https://secorolab.github.io/motion-spec/provenance/")
+    ms_prov = Namespace("https://secorolab.github.io/metamodels/motion-spec/prov#")
+    prov = Namespace("http://www.w3.org/ns/prov#")
+    dsl = Graph().parse(output / "provenance" / "dsl.ld.json", format="json-ld")
+    coord = Graph().parse(output / "provenance.ld.json", format="json-ld")
+
+    agents = set(dsl.subjects(RDF.type, prov.SoftwareAgent))
+    assert agents == {
+        msprov["agent/motion_spec_dsl"],
+        msprov["agent/coord_dsl"],
+        msprov["agent/scene_dsl"],
+    }
+    # The one tool both documents describe is one node, and so is the .fsm they both read.
+    assert msprov["agent/coord_dsl"] in set(coord.subjects(RDF.type, prov.SoftwareAgent))
+    assert msprov["entity/source/pick_place_single.fsm"] in set(coord.objects(None, prov.used))
+    assert msprov["entity/source/pick_place_single.fsm"] in set(dsl.objects(None, prov.used))
+
+    # Compiling the spec is what these activities do; the class says so in both documents.
+    assert set(dsl.subjects(RDF.type, ms_prov.SpecCompilation))
+    assert set(coord.subjects(RDF.type, ms_prov.SpecCompilation))
+    assert not set(coord.predicates(None, None)) & {
+        URIRef("https://secorolab.github.io/coord-dsl/provenance/version")
+    }
+
+
 def test_non_pose_component_views_keep_their_subspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

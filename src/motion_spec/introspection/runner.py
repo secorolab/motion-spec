@@ -15,7 +15,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from motion_spec.introspection import frame_log_pb
-from motion_spec.introspection.archive import create_archive_manifest, verify_manifest
+from motion_spec.introspection.archive import (
+    consolidate_provenance,
+    create_archive_manifest,
+    verify_manifest,
+)
 from motion_spec.introspection.lifecycle_events import publish_lifecycle
 from motion_spec.introspection.provenance import (
     artifact_sha256,
@@ -130,6 +134,9 @@ def run_cataloged(
             print(f"runtime.ttl recovered in {time.monotonic() - started:.1f}s")
         if returncode == 0:
             _finish_rec_run(rec_path, run_id, "COMPLETED")
+            # The lifecycle is terminal, so the run's documents are final and join into one
+            # dataset -- the thing every cross-layer question is asked of.
+            consolidate_provenance(run_dir)
             # A recording nobody checked is not worth the disk it sits on.
             verify_manifest(run_dir)
     except Exception:
@@ -317,7 +324,9 @@ def _start_rec_run(
     from rec import Run
     from rec.observers import FileObserver
 
-    observer = FileObserver(run_dir / "rec.ld.json")
+    # One run, one node: rec describes the same IRI the runtime graph and the generation
+    # provenance describe, so the three documents union instead of standing side by side.
+    observer = FileObserver(run_dir / "rec.ld.json", run_iri=prov_uri(f"run:{run_id}"))
     run = Run(observers=[observer], run_id=run_id)
     run._emit_started()
     run.log_host_info(host_info())
@@ -454,7 +463,7 @@ def _finish_rec_run(rec_path: Path, run_id: str, status: str) -> None:
     from rec import Run
     from rec.observers import FileObserver
 
-    observer = FileObserver(rec_path)
+    observer = FileObserver(rec_path, run_iri=prov_uri(f"run:{run_id}"))
     lifecycle = rec_run_lifecycle(observer.graph)
     if lifecycle.get("status") == status and (
         status != "COMPLETED" or lifecycle.get("completed_time")

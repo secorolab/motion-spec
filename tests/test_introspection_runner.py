@@ -72,14 +72,16 @@ def test_runner_catalogs_run_from_start_and_archives_outputs(tmp_path: Path) -> 
     # Recovery ran, so the manifest names the file it wrote.
     assert manifest["files"]["runtime_ttl"] == "runtime/runtime.ttl"
 
-    # REC writes a PROV graph: lifecycle is an rdf:type on the run, roles are rec:label.
+    # REC writes a PROV graph: lifecycle is an rdf:type on the run, roles are rdfs:label.
     rec_graph = rdflib.Graph().parse(run_dir / "rec.ld.json", format="json-ld")
     lifecycle = rec_run_lifecycle(rec_graph)
     assert lifecycle["status"] == "COMPLETED"
     assert lifecycle["started_time"]
     assert lifecycle["completed_time"]
-    labels = {str(value) for value in rec_graph.objects(None, REC.label)}
+    labels = {str(value) for value in rec_graph.objects(None, rdflib.RDFS.label)}
     assert {"log_producer_executable", "frame_log", "runtime_ttl"} <= labels
+    # rec and the runtime graph describe one run node, not two.
+    assert (rdflib.URIRef(prov_uri("run:run-001")), rdflib.RDF.type, REC.CompletedRun) in rec_graph
     assert (
         rdflib.URIRef(prov_uri("activity:run_cataloging")),
         rdflib.RDF.type,

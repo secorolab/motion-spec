@@ -5,7 +5,9 @@ from pathlib import Path
 
 import pytest
 from motion_spec_dsl.rdf_parser.vocab import (
+    ALGO_EXT,
     CSTR,
+    CSTR_EXT,
     GEOM_COORD,
     GEOM_ENT,
     GEOM_OP,
@@ -442,3 +444,38 @@ def test_sampled_scene_placements_are_rejected() -> None:
 
     with pytest.raises(ConstraintViolation):
         _placement(_model(g), frame, wrt)
+
+
+def test_an_authored_bound_is_named_by_the_closure_never_copied_into_it() -> None:
+    """A parameter that is a model quantity travels as its id: copying the number would leave the
+    authored bound with no reader, and the design and derived graphs disagreeing about it."""
+    from motion_spec.rdf_parser.operations import _parse_argument
+
+    g = Dataset(default_union=True)
+    call, bound = _u("admit-comply-x"), _u("admit-comply-x-max-velocity")
+    g.add((call, ALGO_EXT["maximum-velocity"], bound))
+    g.add((bound, RDF.type, QUDT_SCHEMA.Quantity))
+    g.add((bound, QUDT_SCHEMA.value, Literal(0.3)))
+    g.add((bound, QUDT_SCHEMA.unit, URI_QUDT_UNIT_M))
+    model = _model(g)
+
+    assert _parse_argument(g, call, ALGO_EXT["maximum-velocity"], model.id) == model.id(bound)
+
+
+def test_a_constraint_no_evaluator_compiles_is_rejected_by_name() -> None:
+    """A relation kind no evaluator reads leaves the authored bound uncompared. Dropping the
+    evaluator silently emits a program that ignores it, so generation names the constraint."""
+    from motion_spec_dsl.rdf_parser.vocab import CSTR_HDL
+
+    from motion_spec.rdf_parser.operations import ErrorEvaluator
+
+    g = Dataset(default_union=True)
+    evaluator, constraint = _u("eval-home-while-above-table"), _u("home/while/above-table")
+    g.add((evaluator, RDF.type, CSTR_HDL.ErrorEvaluator))
+    g.add((evaluator, CSTR_HDL.constraint, constraint))
+    g.add((constraint, RDF.type, CSTR.Constraint))
+    g.add((constraint, RDF.type, CSTR_EXT.AngleConstraint))
+    g.add((constraint, CSTR.quantity, _u("tcp-height")))
+
+    with pytest.raises(ConstraintViolation, match="above_table.*AngleConstraint"):
+        ErrorEvaluator().closure_step(_model(g), evaluator)

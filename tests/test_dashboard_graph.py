@@ -33,8 +33,10 @@ from frame_log_fixture import flat_frame, write_frame_log_pb
 SOSA = "http://www.w3.org/ns/sosa/"
 PROV = "http://www.w3.org/ns/prov#"
 MSRUN = "https://secorolab.github.io/motion-spec/runtime/"
-TRACE = "https://secorolab.github.io/metamodels/motion-spec/execution-trace/"
+MS_PROV = "https://secorolab.github.io/metamodels/motion-spec/prov#"
 TIME = "http://www.w3.org/2006/time#"
+QUDT = "http://qudt.org/schema/qudt/"
+SENS = "https://secorolab.github.io/metamodels/robot/sensors#"
 ERROR_VALUE = 0.125
 OBSERVATIONS = f"""
 PREFIX sosa: <{SOSA}>
@@ -42,23 +44,27 @@ SELECT ?p ?v WHERE {{
     ?obs a sosa:Observation ; sosa:observedProperty ?p ; sosa:hasSimpleResult ?v .
 }}
 """
-# What was active, and for how long: an activity spans two frames, each carrying its step.
+# What was active, and for how long: an activity spans two instants, each positioned at its step.
 SPANS = f"""
 PREFIX prov: <{PROV}>
 PREFIX time: <{TIME}>
-PREFIX trace: <{TRACE}>
+PREFIX ms-prov: <{MS_PROV}>
 SELECT ?element ?from ?to WHERE {{
-    ?occ a trace:ActivityOccurrence ;
+    VALUES ?kind {{ ms-prov:MotionExecution ms-prov:ConstraintMaintenance }}
+    ?occ a ?kind ;
          prov:used ?element ;
          time:hasBeginning ?begin ;
          time:hasEnd ?end .
-    ?begin trace:step ?from .
-    ?end trace:step ?to .
+    ?begin time:inTimePosition/time:numericPosition ?from .
+    ?end time:inTimePosition/time:numericPosition ?to .
 }}
 """
 OCCURRENCES = f"""
-PREFIX trace: <{TRACE}>
-SELECT ?occ WHERE {{ ?occ a trace:ActivityOccurrence }}
+PREFIX ms-prov: <{MS_PROV}>
+SELECT ?occ WHERE {{
+    VALUES ?kind {{ ms-prov:MotionExecution ms-prov:ConstraintMaintenance }}
+    ?occ a ?kind .
+}}
 """
 
 
@@ -201,7 +207,9 @@ def test_the_dashboard_mints_no_vocabulary(tmp_path):
     def namespaces(nodes):
         return {split_uri(str(node))[0] for node in nodes}
 
-    # The value overlay is the dashboard's own emission: SOSA plus rdf:type, nothing else.
+    # The value overlay is the dashboard's own emission: SOSA plus the wall time of the
+    # OWL-Time instant each result counts on, and rdf:type. The instant's tick position is
+    # not restated here -- this run's runtime graph already positions it.
     live_predicates = {str(p) for p in set(live.predicates())}
     assert live_predicates - {str(rdflib.RDF.type)} == {
         SOSA + name
@@ -212,10 +220,13 @@ def test_the_dashboard_mints_no_vocabulary(tmp_path):
             "madeBySensor",
             "resultTime",
         )
+    } | {PROV + "generatedAtTime"}
+    assert {str(o) for o in live.objects(None, rdflib.RDF.type)} == {
+        SOSA + "Observation",
+        TIME + "Instant",
     }
-    assert {str(o) for o in live.objects(None, rdflib.RDF.type)} == {SOSA + "Observation"}
 
-    allowed = {SOSA, PROV, MSRUN, TRACE, TIME, str(rdflib.RDF)}
+    allowed = {SOSA, PROV, MSRUN, MS_PROV, TIME, QUDT, SENS, str(rdflib.RDF)}
     for graph in (live, runtime):
         assert namespaces(graph.predicates()) <= allowed
         assert namespaces(graph.objects(None, rdflib.RDF.type)) <= allowed
@@ -348,7 +359,11 @@ def test_an_archived_run_is_never_also_projected(tmp_path):
     store = _store(tmp_path, doc)
     ttl = _archived_ttl(tmp_path, doc, store.snapshot())
     archived = rdflib.Graph().parse(ttl, format="turtle")
-    on_record = set(archived.subjects(rdflib.RDF.type, rdflib.URIRef(TRACE + "ActivityOccurrence")))
+    on_record = {
+        occ
+        for kind in ("MotionExecution", "ConstraintMaintenance")
+        for occ in archived.subjects(rdflib.RDF.type, rdflib.URIRef(MS_PROV + kind))
+    }
 
     service = GraphService(_generation(tmp_path, doc), store, runtime_ttl=ttl)
     size = len(service.dataset.graph(RUNTIME_GRAPH))
@@ -389,7 +404,7 @@ def _payload(tmp_path):
 
 def test_the_graph_payload_folds_type_edges_into_node_types(tmp_path):
     service, payload = _payload(tmp_path)
-    by_id = {node["id"]: node for node in payload["nodes"]}
+    by_id = {node["value"]: node for node in payload["nodes"]}
 
     assert not [link for link in payload["links"] if link["value"] == str(rdflib.RDF.type)]
     for subject, _p, obj, _g in service.dataset.quads((None, rdflib.RDF.type, None, None)):
@@ -398,7 +413,7 @@ def test_the_graph_payload_folds_type_edges_into_node_types(tmp_path):
 
 def test_the_graph_payload_folds_literals_into_node_attributes(tmp_path):
     service, payload = _payload(tmp_path)
-    by_id = {node["id"]: node for node in payload["nodes"]}
+    by_id = {node["value"]: node for node in payload["nodes"]}
     drawn = {(link["source"], link["target"]) for link in payload["links"]}
 
     for subject, predicate, obj, _g in service.dataset.quads((None, None, None, None)):

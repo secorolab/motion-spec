@@ -592,8 +592,6 @@ body:has(.notebook) #content { position: relative; max-width: none; padding: 0; 
 .compare-bar { display: flex; }
 .compare-pick { padding: 5px 9px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 10px var(--mono); }
 
-=======
->>>>>>> dev
 .ask { max-width: 340px; padding: 16px 18px; border: 1px solid var(--line); background: var(--surface); color: var(--text); font: 12px/1.5 var(--mono); }
 .ask::backdrop { background: rgba(11, 12, 14, .55); }
 .ask p { margin: 0 0 12px; }

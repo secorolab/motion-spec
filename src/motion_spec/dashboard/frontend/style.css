@@ -329,7 +329,7 @@ h1 { margin: 7px 0; font-size: 30px; }
 .markers::before, .markers::after { content: ""; position: absolute; left: calc(var(--thumb) / 2); right: calc(var(--thumb) / 2); height: 1px; background: var(--line); }
 .markers::before { top: 1px; }
 .markers::after { top: 15px; }
-.marker { position: absolute; top: -5px; width: 5px; height: 12px; margin-left: -2px; padding: 0; border: 1px solid var(--accent); border-radius: 1px; transform: rotate(-45deg); background: var(--accent); cursor: pointer; }
+.marker { position: absolute; z-index: 1; top: -5px; width: 5px; height: 12px; margin-left: -2px; padding: 0; border: 1px solid var(--accent); border-radius: 1px; transform: rotate(-45deg); background: var(--accent); cursor: pointer; }
 .marker-event { top: 12px; width: 7px; height: 7px; margin-left: -3px; border-radius: 0; border-color: var(--text); background: var(--muted); transform: rotate(45deg); }
 /* Satisfied edges are ticks in the band between the rails: a chattering constraint stays
    readable as texture without covering the state and event markers above it. */
@@ -337,8 +337,31 @@ h1 { margin: 7px 0; font-size: 30px; }
 .marker-satisfied { border-color: var(--good); background: var(--good); }
 .marker-unsatisfied { border-color: var(--dim); background: var(--dim); }
 .marker-monitor { top: 4px; width: 7px; height: 7px; margin-left: -3px; border-radius: 50%; border-color: var(--good); background: transparent; opacity: .8; transform: none; }
-.marker:hover { z-index: 1; border-color: var(--text); background: var(--text); opacity: 1; }
+.marker:hover { z-index: 2; border-color: var(--text); background: var(--text); opacity: 1; }
 .playhead { position: absolute; top: -6px; bottom: -8px; left: calc(var(--thumb) / 2 + var(--f, 0) * (100% - var(--thumb))); width: 0; border-left: 1px dotted var(--accent); pointer-events: none; }
+/* A bar wide enough shows its name and a narrow one does not: the browser clips, and nothing
+   on this page measures a box to decide. */
+.span { min-width: 2px; overflow: hidden; padding: 0 4px; font: 9px var(--mono); white-space: nowrap; }
+/* A motion is the context its markers happened in, so it reads as a stripe behind them rather
+   than as a row of its own -- and in-band it costs the transport no height, which #content's
+   padding and .replay's height are both hardcoded against. */
+.span-motion {
+  position: absolute; z-index: 0; top: 0; bottom: 0; border: 0; border-left: 1px solid var(--line);
+  background: #ffffff0a; color: var(--dim); line-height: 26px; text-align: left;
+}
+/* Adjacent occupancies are told apart by alternating tint, not by a palette that runs out. */
+.span-motion[data-band="1"] { background: #ffffff14; }
+.span-motion:hover { background: #e07a5f26; color: var(--text); }
+.span-motion.span-focus { border-left-color: var(--accent); background: #e07a5f2e; color: var(--text); }
+/* The wait only: .marker-monitor already draws the instant it fired. */
+.gate-wait { position: absolute; z-index: 1; top: 11px; height: 2px; min-width: 2px; background: var(--good); opacity: .5; }
+/* Floats out of the transport's box instead of growing it, so the strip stays 26 px either way. */
+.span-expand {
+  position: absolute; z-index: 3; right: 0; bottom: 100%; left: 0; display: flex; flex-direction: column;
+  gap: 2px; padding: 6px 0; border-top: 1px solid var(--line); background: var(--bg);
+}
+.span-held { position: relative; height: 12px; background: #79c6a533; color: var(--muted); line-height: 12px; }
+.span-note { padding: 2px 24px 0 0; color: var(--dim); font: 10px var(--mono); text-align: right; }
 
 #browser, #content, .constraints { scrollbar-color: var(--dim) var(--surface); scrollbar-width: thin; }
 #browser::-webkit-scrollbar, #content::-webkit-scrollbar, .constraints::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -622,22 +645,10 @@ body:has(.notebook) #content { position: relative; max-width: none; padding: 0; 
 .report th { padding: 6px 12px; background: var(--bg); color: var(--dim); text-align: left; font-weight: 400; }
 .report td { padding: 5px 12px; border-top: 1px solid var(--line); color: var(--text); white-space: nowrap; }
 .report tr:hover td { background: var(--bg); }
-
-/* Temporal and causal views: the same flat tables, three of them stacked. */
-.views { display: grid; gap: 22px; }
-.view-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
-.view-head h2 { margin: 0; font: 11px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
-.view-note { color: var(--dim); font: 10px var(--mono); }
-.view table { width: 100%; border-collapse: collapse; border: 1px solid var(--line); font: 11px var(--code); }
-.view th { padding: 6px 8px; background: var(--bg); color: var(--dim); text-align: left; font-weight: 400; }
-.view td { padding: 5px 8px; border-top: 1px solid var(--line); color: var(--text); }
-.view td:first-child { white-space: nowrap; }
-.view tr:hover td { background: var(--bg); }
-/* The longest occupancy is tinted, not ruled: a bar down the side would read as a callout. */
-.view tr.tinted td { background: #2a2422; }
-.view tr.seekable { cursor: pointer; }
 .compare-bar { display: flex; }
 .compare-pick { padding: 5px 9px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 10px var(--mono); }
+/* No run picked yet, so the slot is not a gap in the stack. */
+.compare-slot:empty { display: none; }
 
 .ask { max-width: 340px; padding: 16px 18px; border: 1px solid var(--line); background: var(--surface); color: var(--text); font: 12px/1.5 var(--mono); }
 .ask::backdrop { background: rgba(11, 12, 14, .55); }

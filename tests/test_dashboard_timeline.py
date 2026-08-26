@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MPL-2.0
-"""The temporal and causal views: timeline, gates, compare.
+"""What the transport's bars and the Reports page read: timeline, gates, constraints, compare.
 
-All three read the archived runtime graph joined to the design graph. What is tested here is
-what a reader is told -- including what the views refuse to make up when the run has not
+All four read the archived runtime graph joined to the design graph. What is tested here is
+what a reader is told -- including what these queries refuse to make up when the run has not
 archived a graph yet.
 """
 
@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from motion_spec.dashboard import roots, server, tail
-from motion_spec.dashboard.queries import compare, gates, timeline
+from motion_spec.dashboard.queries import activity_constraints, compare, gates, timeline
 from motion_spec.generation.artifacts import build_frame_layout
 from motion_spec.introspection import frame_log_pb
 from motion_spec.introspection.runtime_graph import write_runtime_ttl
@@ -337,6 +337,23 @@ def test_the_timeline_narrows_to_one_design_iri_with_what_held_throughout(run):
     assert payload["spans"][1]["satisfied"] == []
 
 
+def test_the_constraints_of_one_occupancy_come_back_as_spans_inside_it(run):
+    """The lane that expands under a motion bar: what held, and over which part of the axis."""
+    moves = [span for span in timeline(run)["spans"] if span["name"] == "S_MOVE"]
+
+    payload = activity_constraints(run, moves[0]["occurrence"])
+    assert payload["runtime_source"] == "archive"
+    held = payload["spans"]
+    assert [span["name"] for span in held] == ["hold_height"]
+    assert moves[0]["begin_step"] <= held[0]["begin_step"]
+    assert held[0]["end_step"] <= moves[0]["end_step"]
+    assert held[0]["duration_s"] == pytest.approx(
+        (held[0]["end_step"] - held[0]["begin_step"]) * 0.01
+    )
+    # Nothing held throughout the second occupancy, and nothing is invented to fill the lane.
+    assert activity_constraints(run, moves[1]["occurrence"])["spans"] == []
+
+
 @pytest.fixture
 def dashboard(run, monkeypatch):
     """A server on an ephemeral port, rooted at the tree holding the archived run."""
@@ -357,12 +374,15 @@ def dashboard(run, monkeypatch):
     httpd.shutdown()
 
 
-def test_the_three_routes_answer_over_http(dashboard):
+def test_the_four_routes_answer_over_http(dashboard):
     assert len(dashboard.get(f"/api/run/timeline?path={dashboard.path}")["spans"]) == 5
     narrowed = dashboard.get(
         f"/api/run/timeline?path={dashboard.path}&iri={urllib.parse.quote(S_MOVE)}"
     )
     assert len(narrowed["spans"]) == 2
     assert len(dashboard.get(f"/api/run/gates?path={dashboard.path}")["gates"]) == 3
+    occ = urllib.parse.quote(narrowed["spans"][0]["occurrence"], safe="")
+    held = dashboard.get(f"/api/run/constraints?path={dashboard.path}&occ={occ}")
+    assert [span["name"] for span in held["spans"]] == ["hold_height"]
     both = f"left={dashboard.path}&right={dashboard.path}"
     assert dashboard.get(f"/api/run/compare?{both}")["same_model"] is True

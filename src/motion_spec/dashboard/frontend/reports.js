@@ -2,16 +2,21 @@
 // SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 
 /**
- * What a signal did over a run: coherent oscillation, contact, torque saturation.
+ * A run measured against itself and against another: this run's timeline beside a second run's,
+ * then what its signals did -- coherent oscillation, contact, torque saturation.
  *
- * One request answers all three -- the server sweeps the log once -- and it is made when the
- * tab is first opened rather than with the page, because a finished log is ~160 MB.
+ * The three signal reports are one request -- the server sweeps the log once -- and it is made
+ * when the tab is first opened rather than with the page, because a finished log is ~160 MB.
+ * Compare reads graphs instead, and opens no log at all.
  */
 
-import { $, api } from "./core.js";
+import { $, api, seconds, state } from "./core.js";
 
 const num = (value, digits = 3) => (value ?? null) === null ? "—" : value.toFixed(digits);
 const exp = (value) => ((value ?? null) === null ? "—" : value.toExponential(2));
+
+const signed = (value) =>
+  value === null || value === undefined ? "—" : `${value >= 0 ? "+" : "−"}${Math.abs(value).toFixed(2)} s`;
 
 const REPORTS = [
   {
@@ -75,57 +80,104 @@ const REPORTS = [
   },
 ];
 
-function section(report, rows) {
+function table(headers, rows) {
+  const node = document.createElement("table");
+  const head = document.createElement("tr");
+  headers.forEach((name) => {
+    const cell = document.createElement("th");
+    cell.textContent = name;
+    head.append(cell);
+  });
+  node.append(head);
+  rows.forEach((cells) => {
+    const line = document.createElement("tr");
+    cells.forEach((text) => {
+      const cell = document.createElement("td");
+      cell.textContent = text;
+      line.append(cell);
+    });
+    node.append(line);
+  });
+  return node;
+}
+
+// Every report on this page folds the same way: a title, what it found in one line, and the
+// table behind it. Compare included -- it is a report the reader asked for by picking a run.
+function section(title, note, body) {
   const box = document.createElement("details");
   box.className = "report";
   const head = document.createElement("summary");
-  head.innerHTML = `<b>${report.title}</b><span>${rows.length ? report.summary(rows) : "nothing recorded"}</span>`;
+  const name = document.createElement("b");
+  name.textContent = title;
+  const detail = document.createElement("span");
+  detail.textContent = note;
+  head.append(name, detail);
   box.append(head);
-  if (!rows.length) return box;
-  const table = document.createElement("table");
-  const columns = document.createElement("tr");
-  report.columns.forEach((name) => {
-    const cell = document.createElement("th");
-    cell.textContent = name;
-    columns.append(cell);
-  });
-  table.append(columns);
-  rows.forEach((row) => {
-    const line = document.createElement("tr");
-    report.cells(row).forEach((value) => {
-      const cell = document.createElement("td");
-      cell.textContent = value;
-      line.append(cell);
-    });
-    table.append(line);
-  });
-  box.append(table);
+  if (body) box.append(body);
   return box;
 }
+
+function signalReport(report, rows) {
+  return section(
+    report.title,
+    rows.length ? report.summary(rows) : "nothing recorded",
+    rows.length ? table(report.columns, rows.map(report.cells)) : null,
+  );
+}
+
+function renderCompare(data, rightPath) {
+  const rows = data.activities.map((row) =>
+    [row.name, seconds(row.left_s), seconds(row.right_s), signed(row.delta_s)]);
+  const note = [
+    `against ${rightPath.split("/").pop()}`,
+    data.same_model ? "" : "different models — aligned where they align",
+  ].filter(Boolean).join(" · ");
+  const box = section("compare", note, table(["activity", "this run", "other run", "delta"], rows));
+  box.open = true;   // picking a run is the ask; folding the answer away would undo it
+  return box;
+}
+
+async function renderComparePicker(panel) {
+  const picker = panel.querySelector(".compare-pick");
+  const runs = await api(`/api/runs?path=${encodeURIComponent(state.generationPath)}`);
+  picker.replaceChildren(new Option("compare with…", ""));
+  runs.filter((run) => run.path !== state.runPath)
+    .forEach((run) => picker.append(new Option(run.id, run.path)));
+  picker.onchange = async () => {
+    const other = picker.value;
+    const slot = panel.querySelector(".compare-slot");
+    slot.replaceChildren();
+    if (!other) return;
+    const data = await api(
+      `/api/run/compare?left=${encodeURIComponent(state.runPath)}&right=${encodeURIComponent(other)}`,
+    );
+    slot.replaceChildren(renderCompare(data, other));
+  };
+}
+
+const holding = (text) =>
+  Object.assign(document.createElement("p"), { className: "path", textContent: text });
 
 export async function showReports(runPath) {
   const panel = $("#panel-reports");
   if (!panel || panel.dataset.run === runPath) return;
   panel.dataset.run = runPath;
-  panel.replaceChildren(Object.assign(document.createElement("p"), {
-    className: "path",
-    textContent: "sweeping the frame log…",
-  }));
+  panel.innerHTML = '<div class="compare-bar"><select class="compare-pick"></select></div>'
+    + '<div class="compare-slot"></div>';
+  // The picker is one cheap listing, so it is usable while the log sweep below it runs.
+  await renderComparePicker(panel);
+  panel.append(holding("sweeping the frame log…"));
   let data;
   try {
     data = await api(`/api/reports?path=${encodeURIComponent(runPath)}`);
   } catch (error) {
-    panel.dataset.run = "";
-    panel.replaceChildren(Object.assign(document.createElement("p"), {
-      className: "path",
-      textContent: error.message,
-    }));
+    panel.dataset.run = "";   // so reopening the tab tries the sweep again
+    panel.lastElementChild.replaceWith(holding(error.message));
     return;
   }
-  const clock = document.createElement("p");
-  clock.className = "path";
   // A period the header never carried is a guess, and durations built on it say so.
-  clock.textContent = `control period ${(data.period_s * 1e3).toFixed(3)} ms`
-    + (data.period_exact ? "" : " (assumed — this archive records no period)");
-  panel.replaceChildren(clock, ...REPORTS.map((report) => section(report, data[report.key])));
+  const clock = holding(`control period ${(data.period_s * 1e3).toFixed(3)} ms`
+    + (data.period_exact ? "" : " (assumed — this archive records no period)"));
+  panel.lastElementChild.replaceWith(clock);
+  panel.append(...REPORTS.map((report) => signalReport(report, data[report.key])));
 }

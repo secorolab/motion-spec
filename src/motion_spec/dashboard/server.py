@@ -45,6 +45,7 @@ from motion_spec.dashboard.jobs import (
 from motion_spec.dashboard.live import live_state, run_control
 from motion_spec.dashboard.notebook import jupyter_server, run_notebook, stop_jupyter
 from motion_spec.dashboard.queries import (
+    activity_constraints,
     compare,
     gates,
     generation_graph,
@@ -119,6 +120,7 @@ LAN_GET_ALLOWED = frozenset(
         "/api/run",
         "/api/run/timeline",
         "/api/run/gates",
+        "/api/run/constraints",
         "/api/run/compare",
         "/api/console",
         "/api/queries",
@@ -321,6 +323,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 )
             if parsed.path == "/api/run/gates":
                 return self.send_json(gates(relative_path(roots.GENERATIONS, value)))
+            if parsed.path == "/api/run/constraints":
+                return self.send_json(
+                    activity_constraints(
+                        relative_path(roots.GENERATIONS, value), query.get("occ", [""])[0]
+                    )
+                )
             if parsed.path == "/api/run/compare":
                 return self.send_json(
                     compare(

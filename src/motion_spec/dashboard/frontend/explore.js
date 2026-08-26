@@ -816,9 +816,8 @@ function nodeActions(node) {
     }]);
   }
   if (row) actions.push(["show constraint", () => showConstraint(row)]);
-  if (modelledAndRan(node)
-      && document.querySelector('.replay-tabs button[data-panel="views"]')) {
-    actions.push(["occurrences", () => openPanel("views", { iri: node.value })]);
+  if (modelledAndRan(node) && spansOf(node.value).length) {
+    actions.push(["occurrences", () => showOccurrences(node.value)]);
   }
   actions.push(["focus", () => {
     explore.focus.push(node.id);
@@ -880,13 +879,19 @@ function exportQuery() {
 
 /* ---------------------------------------------------------------- going elsewhere */
 
-// The run page's own tabs are the way between panels; clicking one keeps whatever 017 or the
-// plots panel reads out of the hash, and an absent tab means the action was never offered.
-function openPanel(panel, params = {}) {
-  const view = new URLSearchParams(location.hash.slice(1));
-  Object.entries(params).forEach(([key, value]) =>
-    value == null ? view.delete(key) : view.set(key, value));
-  history.replaceState(null, "", `#${view}`);
+const spansOf = (iri) => $$(".span-motion").filter((bar) => bar.dataset.element === iri);
+
+// An element's occurrences are its bars on the transport, which is on screen whatever panel is
+// open -- so this marks them where they are rather than sending the reader to a page of rows.
+function showOccurrences(iri) {
+  const wanted = spansOf(iri);
+  $$(".span-motion").forEach((bar) => bar.classList.toggle("span-focus", wanted.includes(bar)));
+  snack(`${wanted.length} occurrence${wanted.length === 1 ? "" : "s"} on the transport`);
+}
+
+// The run page's own tabs are the way between panels, and an absent tab means the action was
+// never offered. The tab's own click writes the hash.
+function openPanel(panel) {
   document.querySelector(`.replay-tabs button[data-panel="${panel}"]`)?.click();
 }
 

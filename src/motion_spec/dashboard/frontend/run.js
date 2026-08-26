@@ -8,14 +8,14 @@
  */
 
 import { appendConsole, consoleExcerpt, showEmpty } from "./components.js";
-import { $, $$, api, snack, state } from "./core.js";
+import { $, $$, api, seconds, snack, state } from "./core.js";
 import { EXPLORE_MARKUP, bindExplore } from "./explore.js";
 import { highlightGeneration, selectGeneration, stopRun } from "./generations.js";
 import { addLivePlot, bindLivePlots, followLiveRun, livePlotsOn, simControl, trackActiveMotion } from "./live.js";
 import { openNotebook } from "./notebook.js";
 import { addPlot, cursorOption, progressiveOn, seriesUpTo, setProgressive } from "./plots.js";
+import { showReports } from "./reports.js";
 import { setView } from "./routing.js";
-import { loadViews } from "./views.js";
 
 // A run that was just started: its page, open before its log exists. The server names the
 // run as it starts it and /api/replay answers from the generation's serialized contract, so
@@ -106,6 +106,9 @@ export async function loadReplay(path) {
   // A side panel that cannot load is not the page failing to load.
   bindExplore(path).catch((error) => snack(error.message));
   bindTransport();
+  // Detached on purpose: the strip is already drawn from the frame log, and the graph these
+  // bars come from must never be something the page waits on.
+  loadTimelineOverlay(path).catch(() => {});
   setTransportMode();
   showVideos(path, state.replay.videos ?? []);
   // Nothing recorded: a real platform has a camera, but only ROS to reach it through.
@@ -134,10 +137,14 @@ export function reserveVideoSpace() {
 
 // Waiting on the run: nothing on the page is worth clicking yet.
 export function settle(waiting, message = "archiving the run…") {
+  const waited = !$(".settling").hidden;
   $(".settling").hidden = !waiting;
   $(".settling span").textContent = message;
   $(".replay").classList.toggle("busy", waiting);
   $(".transport").classList.toggle("busy", waiting);
+  // What the bars were read from changes when the wait ends -- a run that had no graph now has
+  // one, and a projection is replaced by the archive. Re-read there, never on a timer.
+  if (waited && !waiting && state.runPath) loadTimelineOverlay(state.runPath, true).catch(() => {});
 }
 
 // What the run recorded: one camera large, the rest alongside to swap in.
@@ -432,7 +439,7 @@ export function populateConstraints() {
 export function replayShell(path) {
   // The run page's markup, with what the reply fills left blank: the numbers, the timeline's
   // range and the constraint list.
-  return `<div class="replay"><div class="replay-heading"><button id="back" title="Back to generation">←</button><h1>${path.split("/").pop()}</h1><div class="replay-tabs"><button data-panel="plots" class="active">Plots</button><button data-panel="views">Views</button><button data-panel="explore">Explore</button><button data-panel="console">Console</button></div><span class="eyebrow">RUN</span></div><section id="panel-plots"><div class="constraint-panel"><div class="eyebrow">SOURCE CONSTRAINTS</div><input id="constraint-search" type="search" placeholder="Search .robmot constraints"><div id="constraints" class="constraints"></div></div><div class="chart-controls"><button id="auto-plot" title="Open each motion's plots as the cursor enters it, the way a live run does">auto plot: off</button><button id="plot">Add empty plot</button><button id="notebook">Open in Jupyter</button><button id="live-plots" title="Plot signals as the run writes them">live plots: on</button><button id="progressive-plots" title="Draw a replayed run the way a live one arrives: nothing past the cursor">progressive: off</button></div><div id="plots" class="plots"></div></section><section id="panel-views" hidden></section><section id="panel-explore" hidden>${EXPLORE_MARKUP}</section><section id="panel-console" hidden><pre id="console-text" class="console"></pre></section></div><div class="settling" hidden><div class="spinner"></div><span>archiving the run…</span></div><div class="videos" hidden><button class="video-max" title="Expand"></button><button class="video-min" title="Minimize"></button><div class="video-main"><video preload="auto" playsinline disablepictureinpicture controlslist="nodownload noplaybackrate noremoteplayback"></video><span class="video-name"></span></div><div class="video-strip"></div></div><div class="transport"><div class="transport-controls"><button id="step-back" title="Previous frame">‹</button><button id="play">Play</button><button id="step-forward" title="Next frame">›</button><details class="picker speed-menu"><summary>1×</summary><div class="picker-panel"><button data-value="0.25">0.25×</button><button data-value="0.5">0.5×</button><button data-value="1" aria-pressed="true">1×</button><button data-value="2">2×</button><button data-value="5">5×</button></div></details><span id="readout" class="path"></span><span class="marker-legend"><i class="lg lg-state"></i>state <i class="lg lg-event"></i>event <i class="lg lg-satisfied"></i>satisfied <i class="lg lg-unsatisfied"></i>lost <i class="lg lg-monitor"></i>monitor</span><button id="cancel-run" title="End the run" hidden>cancel</button></div><div class="markers"></div><input class="timeline" type="range" min="0" max="0" value="0" disabled></div>`;
+  return `<div class="replay"><div class="replay-heading"><button id="back" title="Back to generation">←</button><h1>${path.split("/").pop()}</h1><div class="replay-tabs"><button data-panel="plots" class="active">Plots</button><button data-panel="reports">Reports</button><button data-panel="explore">Explore</button><button data-panel="console">Console</button></div><span class="eyebrow">RUN</span></div><section id="panel-plots"><div class="constraint-panel"><div class="eyebrow">SOURCE CONSTRAINTS</div><input id="constraint-search" type="search" placeholder="Search .robmot constraints"><div id="constraints" class="constraints"></div></div><div class="chart-controls"><button id="auto-plot" title="Open each motion's plots as the cursor enters it, the way a live run does">auto plot: off</button><button id="plot">Add empty plot</button><button id="notebook">Open in Jupyter</button><button id="live-plots" title="Plot signals as the run writes them">live plots: on</button><button id="progressive-plots" title="Draw a replayed run the way a live one arrives: nothing past the cursor">progressive: off</button></div><div id="plots" class="plots"></div></section><section id="panel-reports" hidden></section><section id="panel-explore" hidden>${EXPLORE_MARKUP}</section><section id="panel-console" hidden><pre id="console-text" class="console"></pre></section></div><div class="settling" hidden><div class="spinner"></div><span>archiving the run…</span></div><div class="videos" hidden><button class="video-max" title="Expand"></button><button class="video-min" title="Minimize"></button><div class="video-main"><video preload="auto" playsinline disablepictureinpicture controlslist="nodownload noplaybackrate noremoteplayback"></video><span class="video-name"></span></div><div class="video-strip"></div></div><div class="transport"><div class="transport-controls"><button id="step-back" title="Previous frame">‹</button><button id="play">Play</button><button id="step-forward" title="Next frame">›</button><details class="picker speed-menu"><summary>1×</summary><div class="picker-panel"><button data-value="0.25">0.25×</button><button data-value="0.5">0.5×</button><button data-value="1" aria-pressed="true">1×</button><button data-value="2">2×</button><button data-value="5">5×</button></div></details><span id="readout" class="path"></span><span class="marker-legend"><i class="lg lg-state"></i>state <i class="lg lg-event"></i>event <i class="lg lg-satisfied"></i>satisfied <i class="lg lg-unsatisfied"></i>lost <i class="lg lg-monitor"></i>monitor</span><button id="cancel-run" title="End the run" hidden>cancel</button></div><div class="markers"></div><input class="timeline" type="range" min="0" max="0" value="0" disabled></div>`;
 }
 
 export function bindPanels() {
@@ -440,11 +447,11 @@ export function bindPanels() {
     document.querySelectorAll(".replay-tabs button").forEach((button) =>
       button.classList.toggle("active", button.dataset.panel === panel));
     $("#panel-plots").hidden = panel !== "plots";
-    $("#panel-views").hidden = panel !== "views";
+    $("#panel-reports").hidden = panel !== "reports";
     $("#panel-explore").hidden = panel !== "explore";
     $("#panel-console").hidden = panel !== "console";
     // A panel that cannot load is not the page failing to load.
-    if (panel === "views") loadViews().catch((error) => snack(error.message));
+    if (panel === "reports") showReports(state.runPath).catch((error) => snack(error.message));
     state.charts.forEach((chart) => chart.resize());
     if (!remember) return;
     const view = new URLSearchParams(location.hash.slice(1));
@@ -457,7 +464,7 @@ export function bindPanels() {
   // a reload lands back where it left off, like the run it reopens
   // a hash naming a panel this page no longer offers falls back to plots
   const stored = new URLSearchParams(location.hash.slice(1)).get("panel");
-  show(["plots", "views", "explore", "console"].includes(stored) ? stored : "plots", false);
+  show(["plots", "reports", "explore", "console"].includes(stored) ? stored : "plots", false);
 }
 
 // One transport for a recording or the live run writing it.
@@ -544,7 +551,165 @@ export function renderMarkers() {
   const playhead = document.createElement("div");
   playhead.className = "playhead";
   $(".markers").append(playhead);
+  // replaceChildren just took the bars with it, and the live poll comes back through here four
+  // times a second, so they are put back from what was already fetched.
+  paintOverlay();
   movePlayhead();
+}
+
+// How far past its declared dwell a gate has to hold before the wait is worth remarking on.
+const SLOW_GATE = 1.2;
+
+// A constraint that chatters holds hundreds of times; twelve rows is a lane, not a wall.
+const CONSTRAINT_ROW_CAP = 12;
+
+// What a payload was read from, said plainly: an archived graph is the whole record, a
+// projection is strided and cannot be asked how long anything waited.
+function sourceNote(data) {
+  if (data.runtime_source === "archive") return "from the archived runtime graph";
+  if (data.runtime_source === "projected") {
+    return "projected from a run still going — waits and re-arms not yet known";
+  }
+  return "no runtime graph recorded yet";
+}
+
+// One gate, in the words a reader would use: when it became satisfiable, when it fired, and
+// what it did in between. Never a verdict -- a long wait may be exactly what was wanted.
+function gateStory(gate, period) {
+  if (gate.fired_step === null) return "never fired";
+  const at = (step) => (period ? `${(step * period).toFixed(2)} s` : `step ${step}`);
+  const parts = [`satisfiable at ${at(gate.first_held_step)}`, `fired at ${at(gate.fired_step)}`];
+  if (gate.declared_dwell_s !== null) parts.push(`declared dwell ${gate.declared_dwell_s.toFixed(2)} s`);
+  if (gate.waited_s !== null && gate.declared_dwell_s && gate.waited_s > gate.declared_dwell_s * SLOW_GATE) {
+    parts.push(`waited ${(gate.waited_s - gate.declared_dwell_s).toFixed(2)} s beyond its dwell`);
+  }
+  if (gate.rearm_count) parts.push(`condition broke ${gate.rearm_count}× before firing`);
+  return parts.join(" · ");
+}
+
+// The two trackLeft expressions subtract, leaving the fraction of the thumb's travel a span
+// covers -- so a bar keeps the axis' geometry without measuring anything.
+function spanWidth(begin, end) {
+  return `calc(${trackFraction(end) - trackFraction(begin)} * (100% - var(--thumb)))`;
+}
+
+// Where a span that never closed ends: the log's current edge, which a live run keeps moving.
+const lastFrame = () => Math.max(0, state.replay.frames - 1);
+
+function place(node, begin, end) {
+  node.style.left = trackLeft(begin);
+  node.style.width = spanWidth(begin, end);
+}
+
+// Motion spans as background stripes inside the strip, not above it: the occupancy is the
+// context its markers happened in, and drawn in-band it costs the transport no height -- which
+// #content's padding and .replay's height are both hardcoded against.
+function renderSpans(data) {
+  $(".markers").prepend(...data.spans.map((span, index) => {
+    const bar = document.createElement("button");
+    bar.className = "span span-motion";
+    bar.dataset.element = span.element;
+    bar.dataset.band = index % 2;   // adjacent motions told apart without inventing a palette
+    place(bar, span.begin_step, span.end_step ?? lastFrame());
+    // A wide bar is labelled and a narrow one is not: the browser clips, nothing measures.
+    bar.textContent = span.name;
+    bar.title = [
+      span.name,
+      `entered ${seconds(span.entered_s)}`,
+      span.duration_s === null ? "open" : `for ${seconds(span.duration_s)}`,
+      span.event ? `on ${span.event}` : "",
+    ].filter(Boolean).join(" · ");
+    bar.onclick = () => {
+      seek(span.begin_step);
+      expandSpan(span).catch((error) => snack(error.message));
+    };
+    return bar;
+  }));
+}
+
+// The wait only: .marker-monitor already draws the instant the gate fired, and a second dot on
+// the same step would read as a second firing.
+function renderGateWaits(data) {
+  const armed = data.gates.filter(
+    (gate) => gate.first_held_step !== null && gate.fired_step !== null,
+  );
+  $(".markers").prepend(...armed.map((gate) => {
+    const wait = document.createElement("div");
+    wait.className = "gate-wait";
+    place(wait, gate.first_held_step, gate.fired_step);
+    wait.title = [
+      gate.monitor_name,
+      gateStory(gate, data.period_s),
+      data.runtime_source === "archive" ? "" : sourceNote(data),
+    ].filter(Boolean).join(" · ");
+    return wait;
+  }));
+}
+
+// One motion's constraint spans, above the part of the axis they held over. The overlay floats
+// out of the transport's box rather than growing it, so the strip stays 26 px either way.
+async function expandSpan(span) {
+  const open = $(".span-expand");
+  const same = open?.dataset.occurrence === span.occurrence;
+  open?.remove();   // one at a time: two overlays would sit on top of each other
+  if (same) return;
+  const box = document.createElement("div");
+  box.className = "span-expand";
+  box.dataset.occurrence = span.occurrence;
+  $(".markers").append(box);
+  // Kept beside the fetch the bars came from, not on the bar: a live poll destroys the bars
+  // four times a second, and the containment filter is a cross join to pay once per occupancy.
+  const cache = (state.spanOverlay.held ??= new Map());
+  const query = `path=${encodeURIComponent(state.runPath)}&occ=${encodeURIComponent(span.occurrence)}`;
+  try {
+    if (!cache.has(span.occurrence)) cache.set(span.occurrence, await api(`/api/run/constraints?${query}`));
+  } catch (error) {
+    box.remove();   // a blank overlay left across the page is worse than the message alone
+    throw error;
+  }
+  if (!box.isConnected) return;   // the reader collapsed it, or the strip was rebuilt under it
+  const held = cache.get(span.occurrence).spans;
+  const rows = held.slice(0, CONSTRAINT_ROW_CAP).map((constraint) => {
+    const row = document.createElement("div");
+    row.className = "span span-held";
+    place(row, constraint.begin_step, constraint.end_step ?? lastFrame());
+    row.textContent = constraint.name;
+    row.title = `${constraint.name} · held ${seconds(constraint.duration_s)} from ${seconds(constraint.entered_s)}`;
+    return row;
+  });
+  const note = document.createElement("div");
+  note.className = "span-note";
+  // Silent truncation reads as "that is all there was".
+  note.textContent = held.length > rows.length
+    ? `${span.name} — showing ${rows.length} of ${held.length} constraints`
+    : `${span.name} — ${rows.length || "no"} constraints held throughout`;
+  box.replaceChildren(...rows, note);
+}
+
+// Bars are an enhancement, never a precondition: the frame log has already drawn the markers by
+// the time these land, and a graph query that fails leaves the strip exactly as it was.
+export async function loadTimelineOverlay(path, force = false) {
+  if (!force && state.spanOverlay?.path === path) return paintOverlay();
+  const query = `path=${encodeURIComponent(path)}`;
+  const [timeline, gates] = await Promise.all([
+    api(`/api/run/timeline?${query}`),
+    api(`/api/run/gates?${query}`),
+  ]);
+  state.spanOverlay = { path, timeline, gates };
+  paintOverlay();
+}
+
+// The live poll rebuilds the strip four times a second and the axis stretches as the log grows,
+// so the bars are repainted from what was fetched rather than re-asked of the graph.
+function paintOverlay() {
+  const overlay = state.spanOverlay;
+  if (!overlay || overlay.path !== state.runPath || !$(".markers")) return;
+  // Idempotent whoever calls it: renderMarkers has already cleared the strip, but a settle or a
+  // second load has not, and prepending onto what is there would stack a second set of bars.
+  $$(".span-motion, .gate-wait").forEach((node) => node.remove());
+  $(".markers").title = sourceNote(overlay.timeline);
+  renderSpans(overlay.timeline);
+  renderGateWaits(overlay.gates);
 }
 
 export function trackFraction(frame) {

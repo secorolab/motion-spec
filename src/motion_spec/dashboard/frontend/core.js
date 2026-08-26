@@ -13,7 +13,7 @@ export let plotKeys = 0;
 
 export const nextPlotKey = () => String(++plotKeys);
 
-export const state = { replay: null, queries: [], query: -1, anchor: null, runPath: null, generationPath: null, tab: "logs", frame: 0, charts: [], selected: new Set(), timer: null, roots: {}, cache: {}, listRequest: 0, live: null, speed: 1, consoleWatch: null, livePlots: new Map(), pendingSignals: new Set(), liveBuffer: new Map(), activeMotion: null, autoPlot: null, rosTopic: null, restricted: false };
+export const state = { replay: null, queries: [], query: -1, anchor: null, runPath: null, generationPath: null, tab: "logs", frame: 0, charts: [], selected: new Set(), timer: null, roots: {}, cache: {}, listRequest: 0, live: null, speed: 1, consoleWatch: null, livePlots: new Map(), pendingSignals: new Set(), liveBuffer: new Map(), activeMotion: null, autoPlot: null, rosTopic: null, restricted: false, spanOverlay: null };
 
 // Tabs the server drops entirely with a 403 for a LAN viewer (Jupyter spawn, host diagnostics):
 // kept out of reach client-side too, rather than left to fail open. Sources stays reachable --
@@ -57,6 +57,10 @@ export async function post(path, body) {
   if (!response.ok) throw Object.assign(Error(data.error), data, { status: response.status });
   return data;
 }
+
+// A duration the run never timed reads as a dash: a graph carrying no tick rate cannot say.
+export const seconds = (value) =>
+  value === null || value === undefined ? "—" : `${value.toFixed(2)} s`;
 
 export function stampText(iso) {
   if (!iso) return "unknown time";

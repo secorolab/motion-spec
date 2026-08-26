@@ -312,6 +312,24 @@ SELECT DISTINCT ?constraint WHERE {
 """
 )
 
+# The same containment, kept as spans rather than collapsed to names: a bar drawn under the
+# occupancy it held inside needs both ends, and one constraint held twice is two bars. `?occ` is
+# bound by the caller for the same reason as above -- unbound this is the ten-second cross join.
+CONSTRAINT_SPANS_DURING_ACTIVITY = (
+    VIEW_PREFIXES
+    + """
+SELECT ?constraint ?heldFrom ?heldTo WHERE {
+    ?occ time:hasBeginning/time:inTimePosition/time:numericPosition ?from ;
+         time:hasEnd/time:inTimePosition/time:numericPosition ?to .
+    ?held a ms-prov:ConstraintMaintenance ; prov:used ?constraint ;
+          time:hasBeginning/time:inTimePosition/time:numericPosition ?heldFrom ;
+          time:hasEnd/time:inTimePosition/time:numericPosition ?heldTo .
+    ?constraint a cstr:Constraint .
+    FILTER(?heldFrom >= ?from && ?heldTo <= ?to)
+} ORDER BY ?heldFrom
+"""
+)
+
 # One row per firing: the arming that fired is the maintenance carrying the observed value --
 # a held stretch that broke instead closes without one, and each such stretch counts as one
 # re-arm. The dwell the *design* graph declares is joined, never copied. A monitor that never
@@ -452,6 +470,38 @@ def timeline(run_dir: Path, iri: str | None = None) -> dict:
                 "transition": None if transition is None else rdf_name(transition),
                 "event": None if event is None else rdf_name(event),
                 "satisfied": sorted(satisfied),
+            }
+        )
+    return {
+        "period_s": period_s,
+        "runtime_source": service.runtime_source or "unavailable",
+        "spans": spans,
+    }
+
+
+def activity_constraints(run_dir: Path, occurrence: str) -> dict:
+    """The constraint spans held inside one occupancy, for the lane that expands under its bar.
+
+    Asked of one occurrence and never of a run: the interval filter is a cross join, so the
+    whole run at once costs ten seconds to answer a question nobody asked of every bar.
+    """
+    service = views_graph(run_dir)
+    period_s = _period_s(service)
+    spans = []
+    for constraint, held_from, held_to in _rows(
+        service, CONSTRAINT_SPANS_DURING_ACTIVITY, occ=rdflib.URIRef(occurrence)
+    ):
+        begin_step, end_step = _step(held_from), _step(held_to)
+        spans.append(
+            {
+                "constraint": str(constraint),
+                "name": rdf_name(constraint),
+                "begin_step": begin_step,
+                "end_step": end_step,
+                "entered_s": _seconds(begin_step, period_s),
+                "duration_s": _seconds(
+                    None if end_step is None else end_step - begin_step, period_s
+                ),
             }
         )
     return {

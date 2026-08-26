@@ -68,6 +68,39 @@ def declared_dwells_from_paths(paths) -> dict[str, float]:
     return dwells
 
 
+def units_from_graphs(graphs) -> dict[str, rdflib.URIRef]:
+    """Map each design IRI to its declared qudt:unit, read from the model graphs.
+
+    A quantity carries its unit directly. A constraint or monitor does not: it borrows the
+    one unit its referenced quantities agree on, walked twice so a monitor reaches its
+    constraint's quantity. An element whose references mix units stays unmapped -- no unit
+    is honest, a guessed one is wrong.
+    """
+    units: dict[str, rdflib.URIRef] = {}
+    edges: dict[str, set] = {}
+    for mg in graphs:
+        for subject, predicate, obj in mg:
+            if not isinstance(subject, rdflib.URIRef) or not isinstance(obj, rdflib.URIRef):
+                continue
+            if predicate == QUDT.unit:
+                units[str(subject)] = obj
+            else:
+                edges.setdefault(str(subject), set()).add(str(obj))
+    for _ in range(2):
+        for subject, targets in edges.items():
+            if subject in units:
+                continue
+            borrowed = {units[t] for t in targets if t in units}
+            if len(borrowed) == 1:
+                units[subject] = borrowed.pop()
+    return units
+
+
+def units_from_paths(paths) -> dict[str, rdflib.URIRef]:
+    """`units_from_graphs` over the model graphs a run archive vendored."""
+    return units_from_graphs(_model_graphs(paths))
+
+
 PROV = rdflib.Namespace("http://www.w3.org/ns/prov#")
 SOSA = rdflib.Namespace("http://www.w3.org/ns/sosa/")
 BDD = rdflib.Namespace("https://secorolab.github.io/metamodels/acceptance-criteria/bdd#")
@@ -122,6 +155,25 @@ def _literal(g: rdflib.Graph, subject: rdflib.URIRef, predicate: rdflib.URIRef, 
             value = Decimal(repr(value))
         # non-finite inf/nan fall through as a Python float -> xsd:double, which represents them
     g.add((subject, predicate, rdflib.Literal(value)))
+
+
+def _result(g: rdflib.Graph, subject: rdflib.URIRef, value, unit=None) -> None:
+    """The observed value as a qudt:QuantityValue: the number and its declared unit.
+
+    The unit is joined from the design graph at write time; a truth value is dimensionless
+    and counts as unit:UNITLESS. A value nothing resolved a unit for carries none -- no unit
+    is honest, a guessed one is wrong. A None value records no result at all.
+    """
+    if value is None:
+        return
+    node = rdflib.URIRef(f"{subject}/result")
+    g.add((subject, SOSA.hasResult, node))
+    g.add((node, rdflib.RDF.type, QUDT.QuantityValue))
+    _literal(g, node, QUDT.value, value)
+    if isinstance(value, bool):
+        unit = UNIT.UNITLESS
+    if unit is not None:
+        g.add((node, QUDT.unit, unit))
 
 
 def _named(rows) -> dict[int, dict]:
@@ -278,6 +330,7 @@ def _observation(
     prop: rdflib.URIRef,
     value,
     feature: rdflib.URIRef | None = None,
+    unit: rdflib.URIRef | None = None,
 ) -> rdflib.URIRef:
     """One sosa:Observation of a slot's value at a frame -- an instance node, no new vocabulary.
 
@@ -290,7 +343,7 @@ def _observation(
     g.add((node, SOSA.madeBySensor, sensor))
     if feature is not None:
         g.add((node, SOSA.hasFeatureOfInterest, feature))
-    _literal(g, node, SOSA.hasSimpleResult, value)
+    _result(g, node, value, unit)
     g.add((node, SOSA.resultTime, _instant(g, run_id, step, trs, wall_ns)))
     return node
 
@@ -304,6 +357,7 @@ def frame_observations(
     signal_map: dict | None = None,
     quantity_iris: dict | None = None,
     satisfied: bool = False,
+    units: dict | None = None,
 ) -> None:
     """sosa:Observations for one frame's active slots.
 
@@ -342,6 +396,7 @@ def frame_observations(
                 prop,
                 float(value),
                 feature=constraint_uri,
+                unit=(units or {}).get(str(prop)),
             )
         if satisfied and constraint_uri is not None:
             _observation(
@@ -375,6 +430,7 @@ def frame_observations(
             "value",
             monitor_uri,
             float(slot["value"]),
+            unit=(units or {}).get(str(monitor_uri)),
         )
     for idx, (qid, iri) in enumerate(sorted((quantity_iris or {}).items())):
         if qid not in frame.get("quantities", {}):
@@ -391,6 +447,7 @@ def frame_observations(
             "value",
             rdflib.URIRef(iri),
             float(frame["quantities"][qid]),
+            unit=(units or {}).get(str(iri)),
         )
 
 
@@ -440,6 +497,7 @@ class IncrementalProjector:
         sample_interval_s: float | None = None,
         signal_map: dict | None = None,
         declared_dwells: dict | None = None,
+        units: dict | None = None,
     ):
         self.g = g
         self.run_id = run_id
@@ -454,6 +512,7 @@ class IncrementalProjector:
         # Read to decide whether an arming is worth its member detail, never written: the
         # declared dwell belongs to the design graph and a query joins the two.
         self.declared_dwells = declared_dwells or {}
+        self.units = units or {}
         self.states, self.events = _state_maps(header)
         self.motions = _motion_meta(header)
         # A watched member's band is a declared constant, not a per-tick signal: read here to
@@ -649,7 +708,7 @@ class IncrementalProjector:
         else:
             self.g.add((occ, PROV.used, referent))
         self._informed_by(occ, self.open_activity or self.run)
-        _literal(self.g, occ, SOSA.hasSimpleResult, value)
+        _result(self.g, occ, value, self.units.get(str(referent)))
         goal = _scoped("goal", self.run_id, wall if wall is not None else 0, disc)
         self.g.add((goal, rdflib.RDF.type, PROV.Entity))
         self.g.add((goal, PROV.wasGeneratedBy, occ))
@@ -697,7 +756,9 @@ class IncrementalProjector:
         self._close(occ, step)
         slots = frame.get("monitors") or []
         value = slots[idx].get("value") if idx < len(slots) else None
-        _literal(self.g, occ, SOSA.hasSimpleResult, None if value is None else float(value))
+        _result(
+            self.g, occ, None if value is None else float(value), self.units.get(str(monitor_uri))
+        )
         if self._interesting(monitor_uri, rearm, step):
             self._emit_members(idx, occ, wall, step)
         self.member_pending.pop(idx, None)
@@ -847,7 +908,12 @@ class IncrementalProjector:
             if self.last_sample_t is None or t >= self.last_sample_t + self.sample_interval_s:
                 self.last_sample_t = t
                 frame_observations(
-                    self.g, self.run_id, self.header, frame, signal_map=self.signal_map
+                    self.g,
+                    self.run_id,
+                    self.header,
+                    frame,
+                    signal_map=self.signal_map,
+                    units=self.units,
                 )
 
         self.prev_state, self.prev_csat, self.prev_msat = cur, csat, msat
@@ -870,11 +936,11 @@ class IncrementalProjector:
 
 
 def _project_occurrences(
-    g: rdflib.Graph, run_id: str, header, frames: list[dict], dwells: dict
+    g: rdflib.Graph, run_id: str, header, frames: list[dict], dwells: dict, units: dict
 ) -> IncrementalProjector:
     """Synthesize the discrete event graph from the per-tick frame scan; return the projector,
     which holds the steps that carry an occurrence (the instants worth materializing)."""
-    projector = IncrementalProjector(g, run_id, header, declared_dwells=dwells)
+    projector = IncrementalProjector(g, run_id, header, declared_dwells=dwells, units=units)
     for frame in frames:
         projector.feed(frame)
     projector.close()
@@ -1028,7 +1094,12 @@ def project_runtime(run_dir: Path | str, frames: list[dict]) -> rdflib.Graph:
     if frames:
         model_paths = _model_paths(run_dir, manifest)
         projector = _project_occurrences(
-            g, run_id, header, frames, declared_dwells_from_paths(model_paths)
+            g,
+            run_id,
+            header,
+            frames,
+            declared_dwells_from_paths(model_paths),
+            units_from_paths(model_paths),
         )
         trs = _trs_node(run_id)
         emit_steps = projector.anchors | {frames[0]["step"], frames[-1]["step"]}

@@ -302,15 +302,18 @@ def test_runtime_ttl_projects_full_observation_graph(tmp_path: Path) -> None:
     ):
         assert not list(graph.triples((None, gone, None)))
 
-    # Each monitor/constraint occurrence carries the live residual as its simple result; the spec
-    # (setpoint/threshold/operator) is referenced by URI, not copied in.
+    # Each monitor/constraint occurrence carries the live residual as its result quantity; the
+    # spec (setpoint/threshold/operator) is referenced by URI, not copied in.
+    def result_value(node):
+        return graph.value(graph.value(node, SOSA.hasResult), QUDT.value)
+
     mon = next(graph.subjects(PROV.used, DONE_MON))
-    assert graph.value(mon, SOSA.hasSimpleResult) == rdflib.Literal(Decimal("0.004"))
+    assert result_value(mon) == rdflib.Literal(Decimal("0.004"))
     # Satisfied on entry, lost at step 2, regained at step 3: two maintenances, and what the
     # first held was invalidated by the activity that broke it.
     con_spans = _spans(graph, MS_PROV.ConstraintMaintenance, CONSTRAINT_X)
     assert len(con_spans) == 2
-    assert graph.value(con_spans[0], SOSA.hasSimpleResult) == rdflib.Literal(Decimal("0.0"))
+    assert result_value(con_spans[0]) == rdflib.Literal(Decimal("0.0"))
     assert _pos(graph, graph.value(con_spans[0], TIME.hasEnd)) == 2
     lost = next(graph.subjects(PROV.wasGeneratedBy, con_spans[0]))
     assert graph.value(lost, PROV.wasInvalidatedBy) is not None
@@ -318,12 +321,12 @@ def test_runtime_ttl_projects_full_observation_graph(tmp_path: Path) -> None:
     held = next(graph.subjects(PROV.wasGeneratedBy, con_spans[1]))
     assert graph.value(held, PROV.wasInvalidatedBy) is None
     # int-valued measurement coerced to xsd:decimal (not xsd:integer, which the runtime SHACL rejects)
-    assert graph.value(con_spans[1], SOSA.hasSimpleResult) == rdflib.Literal(Decimal("1.0"))
-    assert graph.value(con_spans[1], SOSA.hasSimpleResult).datatype == rdflib.XSD.decimal
+    assert result_value(con_spans[1]) == rdflib.Literal(Decimal("1.0"))
+    assert result_value(con_spans[1]).datatype == rdflib.XSD.decimal
     # The only floats are those bounded occurrence values, and they stay exact-decimal (never double).
     floats = [
         (s, o)
-        for s, p, o in graph.triples((None, SOSA.hasSimpleResult, None))
+        for s, p, o in graph.triples((None, QUDT.value, None))
         if isinstance(o, rdflib.Literal)
     ]
     assert floats and all(o.datatype == rdflib.XSD.decimal for _, o in floats)
@@ -359,7 +362,7 @@ ALLOWED_PREDICATES = {
     rdflib.RDF.type,
     rdflib.RDFS.label,
     DCTERMS.hasVersion,
-    SOSA.hasSimpleResult,
+    SOSA.hasResult,
     TIME.hasBeginning,
     TIME.hasEnd,
     TIME.hasTime,
@@ -644,7 +647,7 @@ def test_each_rearm_is_its_own_maintenance(tmp_path: Path) -> None:
         goal = next(graph.subjects(PROV.wasGeneratedBy, broken))
         assert graph.value(goal, PROV.wasInvalidatedBy) is not None
     # Only the arming that fired carries an observed value.
-    assert [occ for occ in armings if graph.value(occ, SOSA.hasSimpleResult) is not None] == [fired]
+    assert [occ for occ in armings if graph.value(occ, SOSA.hasResult) is not None] == [fired]
 
 
 def test_boring_gate_emits_no_member_edges(tmp_path: Path) -> None:

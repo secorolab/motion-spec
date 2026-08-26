@@ -319,7 +319,7 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
         "schema_version": 1,
         "runtime_rdf_contract_version": 1,
         "@context": [*METAMODEL_CONTEXTS, {"msprov": MSPROV, "ms-prov": MS_PROV_NS}],
-        "@graph": [{"@id": "msprov:bundle/static-provenance", "@type": "prov:Bundle"}, *graph],
+        "@graph": [*graph],
     }
 
 
@@ -402,13 +402,12 @@ def rec_run_lifecycle_from_file(path) -> dict:
     which a run list pays per row and an offline reader waits out.
     """
     import rdflib
-    from motion_spec_dsl.rdf_parser.manifest import metamodel_url_map
-    from rdf_utils.resolver import IriToFileResolver, install_resolver
+    from motion_spec_dsl.rdf_parser.manifest import install_metamodel_resolver
 
     path = Path(path)
     if not path.exists():
         return {}
-    install_resolver(IriToFileResolver(metamodel_url_map(), download=False))
+    install_metamodel_resolver()
     graph = rdflib.Graph()
     graph.parse(path, format="json-ld")
     return rec_run_lifecycle(graph)

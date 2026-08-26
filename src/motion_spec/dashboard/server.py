@@ -327,7 +327,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
         except ValueError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
-        except (OSError, KeyError, IndexError, json.JSONDecodeError) as exc:
+        # Any failure answers as an API error: a handler that dies silently closes the
+        # connection instead, and the client sees nothing to report.
+        except Exception as exc:  # noqa: BLE001
             self.send_json(self._failed(exc), HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def do_POST(self) -> None:
@@ -420,7 +422,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_json(
                 {"error": str(exc), **getattr(exc, "report", {})}, HTTPStatus.BAD_REQUEST
             )
-        except (OSError, KeyError, json.JSONDecodeError) as exc:
+        except Exception as exc:  # noqa: BLE001 -- any failure answers as an API error
             self.send_json(self._failed(exc), HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def _same_origin(self) -> bool:

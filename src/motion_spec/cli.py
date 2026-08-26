@@ -357,6 +357,9 @@ def _requirements_reported():
 @click.version_option(package_name="motion_spec")
 def main() -> None:
     """The motion-spec toolchain."""
+    from motion_spec_dsl.rdf_parser.manifest import install_metamodel_resolver
+
+    install_metamodel_resolver()
 
 
 @main.command()

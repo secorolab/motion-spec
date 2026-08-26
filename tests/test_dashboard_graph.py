@@ -36,8 +36,9 @@ SENS = "https://secorolab.github.io/metamodels/robot/sensors#"
 ERROR_VALUE = 0.125
 OBSERVATIONS = f"""
 PREFIX sosa: <{SOSA}>
+PREFIX qudt: <{QUDT}>
 SELECT ?p ?v WHERE {{
-    ?obs a sosa:Observation ; sosa:observedProperty ?p ; sosa:hasSimpleResult ?v .
+    ?obs a sosa:Observation ; sosa:observedProperty ?p ; sosa:hasResult/qudt:value ?v .
 }}
 """
 
@@ -166,24 +167,27 @@ def test_the_dashboard_mints_no_vocabulary(tmp_path):
     def namespaces(nodes):
         return {split_uri(str(node))[0] for node in nodes}
 
-    # The value overlay is the dashboard's own emission: SOSA plus the OWL-Time instant each
-    # result time is counted at, and rdf:type. Nothing else.
+    # The value overlay is the dashboard's own emission: SOSA, each result as a QUDT quantity
+    # value, the OWL-Time instant it is counted at, and rdf:type. Nothing else.
     live_predicates = {str(p) for p in set(live.predicates())}
     assert live_predicates - {str(rdflib.RDF.type)} == {
         SOSA + name
         for name in (
             "observedProperty",
-            "hasSimpleResult",
+            "hasResult",
             "hasFeatureOfInterest",
             "madeBySensor",
             "resultTime",
         )
     } | {TIME + name for name in ("inTimePosition", "numericPosition", "hasTRS")} | {
-        PROV + "generatedAtTime"
+        PROV + "generatedAtTime",
+        QUDT + "value",
+        QUDT + "unit",
     }
     assert {str(o) for o in live.objects(None, rdflib.RDF.type)} == {
         SOSA + "Observation",
         TIME + "Instant",
+        QUDT + "QuantityValue",
     }
 
     allowed = {SOSA, PROV, MSRUN, MS_PROV, TIME, QUDT, SENS, str(rdflib.RDF)}

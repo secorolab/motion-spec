@@ -13,7 +13,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import rdflib
-from motion_spec_dsl.rdf_parser.manifest import build_url_map, metamodel_url_map, metamodels_root
+from motion_spec_dsl.rdf_parser.manifest import (
+    build_url_map,
+    install_metamodel_resolver,
+    metamodels_root,
+)
 from motion_spec_dsl.rdf_parser.vocab import APP
 from pyshacl import validate
 
@@ -65,10 +69,8 @@ def _existing(run_dir: Path, rel: str) -> str | None:
 
 
 def _parse_jsonld(path: Path) -> rdflib.Dataset:
-    """Parse JSON-LD with the workspace resolver, without network fallback."""
-    from rdf_utils.resolver import IriToFileResolver, install_resolver
-
-    install_resolver(IriToFileResolver(metamodel_url_map(), download=False))
+    """Parse JSON-LD with the workspace resolver."""
+    install_metamodel_resolver()
     return rdflib.Dataset().parse(path, format="json-ld")
 
 
@@ -618,11 +620,10 @@ def _verify_model_imports(model_path: Path) -> None:
     from motion_spec_dsl.rdf_parser.vocab import APP
 
     try:
-        from rdf_utils.resolver import IriToFileResolver, install_resolver
+        install_metamodel_resolver()
     except Exception:
         return
     dataset = rdflib.Dataset()
-    install_resolver(IriToFileResolver(metamodel_url_map(), download=False))
     try:
         dataset.parse(str(model_path), format="json-ld")
     except Exception as exc:
@@ -630,12 +631,7 @@ def _verify_model_imports(model_path: Path) -> None:
     imports = {str(o) for _, _, o, _ in dataset.quads((None, APP["import"], None, None))}
     if not imports:
         return
-    url_map = {**metamodel_url_map(), **build_url_map(dataset, model_path)}
-    install_resolver(
-        IriToFileResolver(
-            dict(sorted(url_map.items(), key=lambda x: len(x[0]), reverse=True)), download=False
-        )
-    )
+    install_metamodel_resolver(build_url_map(dataset, model_path))
     for iri in sorted(imports):
         try:
             rdflib.Graph().parse(location=iri, format="json-ld")
@@ -647,9 +643,7 @@ def _verify_model_imports(model_path: Path) -> None:
 
 def _parse_rdf(path: Path, fmt: str) -> rdflib.Graph:
     try:
-        from rdf_utils.resolver import IriToFileResolver, install_resolver
-
-        install_resolver(IriToFileResolver(metamodel_url_map(), download=False))
+        install_metamodel_resolver()
     except Exception:
         pass
     try:

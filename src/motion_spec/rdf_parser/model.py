@@ -21,13 +21,12 @@ from typing import NamedTuple
 from urllib.parse import urlsplit
 
 import rdflib
-from motion_spec_dsl.rdf_parser.manifest import build_url_map, metamodel_url_map
+from motion_spec_dsl.rdf_parser.manifest import build_url_map, install_metamodel_resolver
 from motion_spec_dsl.rdf_parser.vocab import APP, CSTR_HDL
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import get_node_types
 from rdf_utils.models.vocab import URI_QUDT_UNIT_CM, URI_QUDT_UNIT_M, URI_QUDT_UNIT_MM
 from rdf_utils.namespace import NS_MM_QUDT_UNIT
-from rdf_utils.resolver import IriToFileResolver, install_resolver
 from rdflib import URIRef
 from rdflib.namespace import PROV, RDF, split_uri
 
@@ -145,11 +144,11 @@ def load_model(manifest_path) -> Model:
     """
     app_path = Path(manifest_path).resolve()
     graph = rdflib.Dataset(default_union=True)
-    install_resolver(IriToFileResolver(metamodel_url_map(), download=False))
+    install_metamodel_resolver()
     graph.parse(str(app_path), format="json-ld")
 
     url_map = build_url_map(graph, app_path)
-    install_resolver(IriToFileResolver({**metamodel_url_map(), **url_map}, download=False))
+    install_metamodel_resolver(url_map)
 
     imported = list(dict.fromkeys(str(model) for model in graph.objects(predicate=APP["import"])))
     provenance = [item for item in imported if item.endswith(_PROVENANCE_SUFFIX)]

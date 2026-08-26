@@ -10,12 +10,10 @@ never touched; the acceptance-fluent and failed-run halves are synthesised again
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import shutil
-from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from uuid import UUID
 
 import pytest
 import rdflib
@@ -41,6 +39,7 @@ PREFIX rec: <https://secorolab.github.io/metamodels/rec#>
 PREFIX solver-spec: <https://comp-rob2b.github.io/metamodels/task/solver-specification#>
 PREFIX sosa: <http://www.w3.org/ns/sosa/>
 PREFIX time: <http://www.w3.org/2006/time#>
+PREFIX qudt: <http://qudt.org/schema/qudt/>
 """
 
 # Q1 -- an authored constraint, the motion it was held under, and what the robot did about it.
@@ -51,7 +50,7 @@ SELECT ?constraint ?motion ?at ?value WHERE {
   ?occ a ms-prov:ConstraintMaintenance ;
        prov:used ?constraint ;
        prov:wasInformedBy ?mx ;
-       sosa:hasSimpleResult ?value ;
+       sosa:hasResult/qudt:value ?value ;
        time:hasBeginning/time:inTimePosition/time:numericPosition ?at .
   ?mx a ms-prov:MotionExecution ; prov:used ?motion .
   ?constraint a ?kind .
@@ -67,7 +66,7 @@ SELECT ?constraint ?motion ?at ?value WHERE {
   ?occ a ms-prov:ConstraintMaintenance ;
        prov:used ?constraint ;
        prov:wasInformedBy ?mx ;
-       sosa:hasSimpleResult ?value ;
+       sosa:hasResult/qudt:value ?value ;
        time:hasBeginning/time:inTimePosition/time:numericPosition ?at .
   ?mx a ms-prov:MotionExecution ; prov:used ?motion .
   ?constraint a ?kind .
@@ -82,7 +81,7 @@ Q2 = (
     + """
 SELECT ?constraint ?kind ?handler ?model ?location WHERE {
   ?occ a ms-prov:ConstraintMaintenance ; prov:used ?constraint ;
-       sosa:hasSimpleResult ?value .
+       sosa:hasResult/qudt:value ?value .
   ?handler cstr-hdl:constraint ?constraint .
   ?run a ms-prov:TaskExecution ; prov:used ?model .
   ?model prov:atLocation ?location .
@@ -123,10 +122,10 @@ Q6 = (
     PREFIXES
     + """
 SELECT ?constraint ?earlier ?later (COUNT(*) AS ?pairs) WHERE {
-  ?occA a ms-prov:ConstraintMaintenance ; prov:used ?constraint ; sosa:hasSimpleResult ?a ;
+  ?occA a ms-prov:ConstraintMaintenance ; prov:used ?constraint ; sosa:hasResult/qudt:value ?a ;
         prov:wasInformedBy/prov:wasInformedBy ?earlier .
   ?earlier a ms-prov:TaskExecution .
-  ?occB a ms-prov:ConstraintMaintenance ; prov:used ?constraint ; sosa:hasSimpleResult ?b ;
+  ?occB a ms-prov:ConstraintMaintenance ; prov:used ?constraint ; sosa:hasResult/qudt:value ?b ;
         prov:wasInformedBy/prov:wasInformedBy ?later .
   ?later a ms-prov:TaskExecution .
   FILTER(STR(?earlier) < STR(?later))
@@ -457,54 +456,32 @@ def _longest_motion(runtime_ttl: Path):
     return max(intervals, key=lambda interval: interval[2] - interval[1])
 
 
-@dataclass
-class _Trinary:
-    trinary: str
-    stamp: float
-    reason: str = ""
-
-
-@dataclass
-class _Policy:
-    id: rdflib.URIRef
-    fluent_id: rdflib.URIRef
-    trinary_timeline: list = field(default_factory=list)
-
-
 def _write_scenario_execution(run_dir: Path, first: int, middle: int) -> None:
-    """Record one acceptance fluent going false inside a real motion, on the sim clock."""
-    prov_trace = _prov_trace()
+    """Record one acceptance fluent going false inside a real motion, on the sim clock.
+
+    Inline stand-in for the coordination node's trace writer: a bdd:ScenarioExecution informed
+    by the shared run IRI, and per-fluent sosa:Observations whose sosa:resultTime is the
+    sim-epoch xsd:dateTime consolidation repositions onto the tick scale.
+    """
     model = rdflib.Namespace("https://secorolab.github.io/models/acceptance/")
+    bdd = rdflib.Namespace("https://secorolab.github.io/metamodels/acceptance-criteria/bdd#")
+    sosa = rdflib.Namespace("http://www.w3.org/ns/sosa/")
     rate = 1000.0
-    policy = _Policy(
-        id=model["policy/container"],
-        fluent_id=model["container-not-dropped"],
-        trinary_timeline=[
-            _Trinary("TRUE", first / rate),
-            _Trinary("FALSE", middle / rate, "dropped"),
-        ],
-    )
-    graph = prov_trace.scenario_execution_graph(
-        UUID(int=7),
-        model["variant/nominal"],
-        [policy],
-        start_time=first / rate,
-        end_time=middle / rate,
-        run=prov_trace.run_iri(run_dir.name),
-    )
+    run = rdflib.URIRef(prov_uri(f"run:{run_dir.name}"))
+    execution = model["variant/nominal/execution/7"]
+    fluent = model["container-not-dropped"]
+    graph = rdflib.Graph()
+    graph.add((execution, rdflib.RDF.type, bdd.ScenarioExecution))
+    graph.add((execution, PROV.wasInformedBy, run))
+    for tick, value in ((first, "TRUE"), (middle, "FALSE")):
+        observation = model[f"observation/container-not-dropped/{tick}"]
+        stamp = datetime.fromtimestamp(tick / rate, tz=timezone.utc)
+        graph.add((observation, rdflib.RDF.type, sosa.Observation))
+        graph.add((observation, sosa.hasFeatureOfInterest, fluent))
+        graph.add((observation, sosa.hasSimpleResult, rdflib.Literal(value)))
+        graph.add((observation, sosa.resultTime, rdflib.Literal(stamp)))
+        graph.add((observation, PROV.wasGeneratedBy, execution))
     graph.serialize(destination=run_dir / "runtime" / "bdd-nominal.ttl", format="turtle")
-
-
-def _prov_trace():
-    """Import the coordination node's trace writer from the workspace checkout."""
-    for root in (Path.cwd(), *Path(__file__).resolve().parents):
-        module = root / "src" / "bdd_exec_ros2" / "bdd_exec_ros2" / "prov_trace.py"
-        if module.exists():
-            spec = importlib.util.spec_from_file_location("prov_trace", module)
-            loaded = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(loaded)
-            return loaded
-    pytest.skip("no bdd_exec_ros2 checkout to build a scenario execution with")
 
 
 def _fail_the_run(run_dir: Path) -> None:

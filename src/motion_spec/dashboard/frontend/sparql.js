@@ -16,8 +16,10 @@ export const CANNED = {
   "what this run observed": "SELECT ?property (COUNT(*) AS ?observations) WHERE {\n"
     + "  GRAPH <urn:runtime> { ?o sosa:observedProperty ?property }\n"
     + "} GROUP BY ?property ORDER BY DESC(?observations) LIMIT 50",
-  "latest values": "SELECT ?property ?value WHERE {\n"
-    + "  GRAPH <urn:live> { ?o sosa:observedProperty ?property ; sosa:hasSimpleResult ?value }\n"
+  "latest values": "PREFIX qudt: <http://qudt.org/schema/qudt/>\n"
+    + "SELECT ?property ?value ?unit WHERE {\n"
+    + "  GRAPH <urn:live> { ?o sosa:observedProperty ?property ; sosa:hasResult ?r .\n"
+    + "                     ?r qudt:value ?value . OPTIONAL { ?r qudt:unit ?unit } }\n"
     + "} LIMIT 50",
   "graph sizes": "SELECT ?graph (COUNT(*) AS ?triples) WHERE {\n"
     + "  GRAPH ?graph { ?s ?p ?o }\n} GROUP BY ?graph",

@@ -18,15 +18,15 @@ from functools import lru_cache
 from pathlib import Path
 
 import rdflib
-from motion_spec_dsl.rdf_parser.manifest import build_url_map, metamodel_url_map
+from motion_spec_dsl.rdf_parser.manifest import build_url_map, install_metamodel_resolver
 from motion_spec_dsl.rdf_parser.vocab import APP, CSTR_HDL, EXEC
-from rdf_utils.resolver import IriToFileResolver, install_resolver
 from rdflib.namespace import SDO
 
 from motion_spec.introspection.runtime_graph import (
     IncrementalProjector,
     bind_namespaces,
     frame_observations,
+    units_from_graphs,
 )
 
 MODEL_GRAPH = rdflib.URIRef("urn:model")
@@ -43,17 +43,11 @@ def model_manifest(generation_dir: Path | str) -> Path | None:
 
 def load_model_graph(manifest_path: Path | str, dataset: rdflib.Dataset, graph: rdflib.Graph):
     """Parse an app manifest and everything it imports, resolving IRIs the way
-    `motion-spec check` does: the shared metamodel checkout merged with the model's own
-    iri-map, longest prefix first, so nothing reaches the network."""
+    `motion-spec check` does: the shared metamodel resolver merged with the model's own
+    iri-map, longest prefix first."""
     manifest_path = Path(manifest_path).resolve()
     graph.parse(manifest_path, format="json-ld")
-    url_map = {**metamodel_url_map(), **build_url_map(dataset, manifest_path)}
-    install_resolver(
-        IriToFileResolver(
-            dict(sorted(url_map.items(), key=lambda item: len(item[0]), reverse=True)),
-            download=False,
-        )
-    )
+    install_metamodel_resolver(build_url_map(dataset, manifest_path))
     for target in {o for _s, _p, o, _g in dataset.quads((None, APP["import"], None, None))}:
         graph.parse(location=str(target), format="json-ld")
     return graph
@@ -128,6 +122,7 @@ class GraphService:
         if manifest is not None:
             load_model_graph(manifest, self.dataset, self.model)
         self.signals = signal_map(self.model)
+        self.units = units_from_graphs([self.model])
         bind_namespaces(self.dataset, store.run_id)
 
     def _ensure_projector(self) -> IncrementalProjector | None:
@@ -140,6 +135,7 @@ class GraphService:
                 header,
                 sample_interval_s=self.sample_interval_s,
                 signal_map=self.signals,
+                units=self.units,
             )
             bind_namespaces(self.dataset, self.store.run_id, fsm_namespace=header.fsm_namespace)
         return self._projector
@@ -178,6 +174,7 @@ class GraphService:
             signal_map=self.signals,
             quantity_iris=self._quantity_iris(),
             satisfied=True,
+            units=self.units,
         )
 
     def query(self, sparql: str) -> tuple[list[str], list[tuple]]:

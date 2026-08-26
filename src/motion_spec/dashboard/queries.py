@@ -11,15 +11,17 @@ from pathlib import Path
 import rdflib
 from rdf_utils.uri import iri_parent
 
-from motion_spec.dashboard.catalog import rdf_name
+from motion_spec.dashboard.catalog import classify_quads, graph_name, rdf_name, term_graphs
 from motion_spec.dashboard.graph import GraphService
-from motion_spec.dashboard.roots import json_file
+from motion_spec.dashboard.roots import LAYOUT_REL, json_file
 from motion_spec.dashboard.store import RunStore
 from motion_spec.dashboard.tail import FrameLogTail
 from motion_spec.introspection import frame_log_pb
 from motion_spec.introspection.replay import resolve_archive
 
 GRAPH_SAMPLE_S = 0.1  # the graph wants the shape of a run, not its every tick
+# A picture of a hundred thousand triples is a locked browser, not an answer.
+GRAPH_MAX_TRIPLES = 20_000
 
 
 _GRAPHS: dict[tuple[str, int, bool], GraphService] = {}
@@ -49,14 +51,16 @@ def generation_graph(generation_dir: Path) -> GraphService:
     return GraphService(generation_dir, RunStore(generation_dir.name))
 
 
-def run_graph(run_dir: Path, *, frames: bool) -> GraphService:
+def run_graph(run_dir: Path) -> GraphService:
     """One run's queryable dataset: its model, plus what the recording says happened.
 
-    Reading the frames is what fills `urn:runtime` and `urn:live`, and on a long run that
-    costs tens of seconds, so a query that asks only about the model does not pay for it.
-    Kept per log revision: a finished run is read once, a growing one is read again.
+    Reading the frames is what fills `urn:runtime` and `urn:live` for a run still being
+    written. A run that archived a `runtime.ttl` has the record already, and sweeping its log
+    to rediscover it would cost tens of seconds and emit a second occurrence for every one
+    already there. Kept per log revision: a finished run is read once, a growing one again.
     """
     _, log, _manifest, contract = resolve_archive(run_dir)
+    frames = run_runtime_ttl(run_dir) is None
     key = (str(log), log.stat().st_size, frames)
     if key not in _GRAPHS:
         store = RunStore(run_dir.name, contract)
@@ -78,6 +82,17 @@ def run_graph(run_dir: Path, *, frames: bool) -> GraphService:
     return _GRAPHS[key]
 
 
+def query_graph(path: Path) -> GraphService:
+    """The dataset a query is asked of: a run's, or a generation's model on its own.
+
+    A generation with no run still has a model graph worth exploring, and the Explore page is
+    the only way left to look at one -- so a query aimed at a generation answers from it.
+    """
+    if (path / LAYOUT_REL).exists():
+        return generation_graph(path)
+    return run_graph(path)
+
+
 QUERIES_REL = "queries.json"
 
 
@@ -97,13 +112,15 @@ def save_queries(run_dir: Path, queries: list) -> dict:
 
 
 def run_query(run_dir: Path, sparql: str) -> dict:
-    """Answer one SPARQL query against a run, or say why it could not be answered."""
-    # only a query that reaches for the recording pays for reading it
-    recorded = any(word in sparql for word in ("urn:runtime", "urn:live", "sosa", "GRAPH ?"))
-    service = run_graph(run_dir, frames=recorded)
+    """Answer one SPARQL query against a run, or say why it could not be answered.
+
+    The answer carries both projections of the one result: the rows, and the classified graph
+    the same terms make. A table and a picture disagreeing would be two results, not two views.
+    """
+    service = query_graph(run_dir)
     started = time.perf_counter()
     try:
-        headers, rows = _query_rows(service, sparql)
+        kind, headers, rows = _query_rows(service, sparql)
     except Exception as exc:
         detail = f"{type(exc).__name__}: {exc}"
         if not len(service.model):
@@ -115,27 +132,74 @@ def run_query(run_dir: Path, sparql: str) -> dict:
         raise ValueError(detail) from exc
     prefixes = service.namespaces()
     return {
+        "type": kind,
         "model_triples": len(service.model),
         "headers": headers or ["result"],
         "rows": [[curie(term, prefixes) for term in row] for row in rows[:500]],
         "count": len(rows),
         "truncated": len(rows) > 500,
+        "graph": result_graph(service, kind, rows),
+        "runtime_source": service.runtime_source,
         "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
         "namespaces": prefixes,
     }
 
 
-def _query_rows(service: GraphService, sparql: str) -> tuple[list[str], list]:
-    """Answer any query shape as headers and rows: ASK says so, a graph comes back as text."""
-    service.sync()
-    result = service.dataset.query(sparql)
-    if result.type == "ASK":
-        return ["answer"], [(result.askAnswer,)]
-    if result.type in ("CONSTRUCT", "DESCRIBE"):
-        return ["triples"], [
-            (line,) for line in result.serialize(format="turtle").decode().splitlines() if line
+def _query_rows(service: GraphService, sparql: str) -> tuple[str, list[str], list]:
+    """Answer any query shape as headers and rows; a graph comes back as its triples."""
+    kind, payload = service.query(sparql)
+    if kind in ("CONSTRUCT", "DESCRIBE"):
+        return kind, ["subject", "predicate", "object"], payload
+    headers, rows = payload
+    return kind, headers, rows
+
+
+def result_graph(service: GraphService, kind: str, rows: list) -> dict | None:
+    """The result drawn as a graph, or None when there is nothing to draw.
+
+    A constructed graph is its own triples. Bindings are drawn as the IRIs they bound, plus the
+    unbound terms that join two of them -- a row set whose members are related only through a
+    handler or a motion draws as that relation rather than as a field of loose dots.
+    Either way the picture answers the same query the table does.
+    """
+    if kind in ("CONSTRUCT", "DESCRIBE"):
+        quads = [(*triple, _home_graph(service, triple)) for triple in rows]
+    elif kind == "SELECT":
+        drawn = _connected(
+            service, {t for row in rows for t in row if isinstance(t, rdflib.URIRef)}
+        )
+        quads = [
+            (subject, predicate, obj, graph_name(context))
+            for subject, predicate, obj, context in service.dataset.quads((None, None, None, None))
+            if subject in drawn
+            and (obj in drawn or isinstance(obj, rdflib.Literal) or predicate == rdflib.RDF.type)
         ]
-    return [str(var) for var in (result.vars or [])], [tuple(row) for row in result]
+    else:
+        return None  # an ASK answers yes or no; there is no picture of that
+    if not quads or len(quads) > GRAPH_MAX_TRIPLES:
+        return None
+    return classify_quads(quads, term_graphs(service.dataset))
+
+
+def _connected(service: GraphService, bound: set) -> set:
+    """The bound terms, plus every term that stands between two of them.
+
+    One hop is as far as this goes: a term reached from a single answer is that answer's
+    neighbourhood, which is what Expand is for, not part of the answer.
+    """
+    joins: dict = {}
+    for subject, predicate, obj, _context in service.dataset.quads((None, None, None, None)):
+        if predicate == rdflib.RDF.type or isinstance(obj, rdflib.Literal):
+            continue
+        for term, other in ((subject, obj), (obj, subject)):
+            if other in bound and term not in bound:
+                joins.setdefault(term, set()).add(other)
+    return bound | {term for term, reached in joins.items() if len(reached) > 1}
+
+
+def _home_graph(service: GraphService, triple) -> str:
+    """Which named graph a result triple came from; a derived one came from none of them."""
+    return next((graph_name(quad[3]) for quad in service.dataset.quads(triple)), "result")
 
 
 # -- temporal and causal views -------------------------------------------------------------
@@ -259,7 +323,7 @@ def views_graph(run_dir: Path) -> GraphService:
     """
     archived = run_runtime_ttl(run_dir)
     if archived is None:
-        return run_graph(run_dir, frames=True)
+        return run_graph(run_dir)
     return GraphService(
         run_dir.parent.parent,
         RunStore(run_dir.name),

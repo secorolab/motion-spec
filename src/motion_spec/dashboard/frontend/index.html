@@ -26,7 +26,7 @@
       // Anything but the bare logs tab replaces the empty state below, so do not let it be
       // seen first. Whatever renders instead takes the class back off.
       if ((view.get("tab") ?? "logs") !== "logs" || view.has("run") || view.has("generation")
-          || view.has("source") || view.has("diff")) {
+          || view.has("explore") || view.has("source") || view.has("diff")) {
         document.documentElement.classList.add("restoring");
       }
     </script>
@@ -105,11 +105,8 @@
         <div class="runs"></div>
         <div class="run-tools"><span class="run-filter"><label>from<input type="datetime-local" class="run-from"></label><label>to<input type="datetime-local" class="run-to"></label><button class="run-filter-clear" hidden>clear</button></span><div class="run-pagination"></div></div>
         <pre class="console run-console" hidden></pre>
-        <div class="graph-heading"><h2>RDF graph viz</h2></div>
-        <p class="graph-help">Select RDF files to render their complete RDF graph.</p>
-        <div class="graph-options"></div>
-        <div class="graph-actions"><span class="graph-status"></span></div>
-        <div class="graph-shell" hidden><div class="graph-search-panel"><input class="graph-search" type="search" placeholder="Search resources" disabled><div class="graph-matches"></div></div><button class="graph-fullscreen" title="Fullscreen graph">⛶</button><div class="generation-graph"></div><div class="graph-details">Select a resource or relationship for its RDF details.</div></div>
+        <div class="graph-heading"><h2>RDF graph</h2><button class="explore-link">explore →</button></div>
+        <p class="graph-help">Ask this model's graph a question, and read the answer as a table or as a picture.</p>
         <h2>Generated files</h2><div class="generated-files"></div>
       </article>
     </template>

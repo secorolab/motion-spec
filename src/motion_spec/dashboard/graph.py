@@ -43,22 +43,71 @@ def model_manifest(generation_dir: Path | str) -> Path | None:
     return matches[0] if matches else None
 
 
-def load_model_graph(manifest_path: Path | str, dataset: rdflib.Dataset, graph: rdflib.Graph):
+def resolved_file(resolver: IriToFileResolver, iri: str) -> str | None:
+    """The local file an IRI resolves to, asked of the resolver rather than re-derived.
+
+    Its own prefix rules decide this; a second copy of them here would be a second thing to
+    keep right. Only ever called for an IRI the parse above already read through it.
+    """
+    try:
+        with resolver.open(iri) as response:
+            # addinfourl names itself "<urllib response>"; the file it wraps knows its path
+            name = getattr(getattr(response, "fp", None), "name", None)
+    except OSError:
+        return None
+    return name if isinstance(name, str) and Path(name).is_file() else None
+
+
+def graph_sizes(dataset: rdflib.Dataset) -> dict[str, int]:
+    """Triples per named graph. A JSON-LD file that declares a graph of its own lands there,
+    not in the graph it was parsed into, so this is what a parse has to be measured against."""
+    return {str(graph.identifier): len(graph) for graph in dataset.graphs()}
+
+
+def graph_growth(before: dict[str, int], after: dict[str, int]) -> dict:
+    """What one parse added: the total, and which named graphs it went into."""
+    grew = {name: size - before.get(name, 0) for name, size in after.items()}
+    return {
+        "triples": sum(grew.values()),
+        "graphs": sorted(name for name, count in grew.items() if count),
+    }
+
+
+def load_model_graph(
+    manifest_path: Path | str, dataset: rdflib.Dataset, graph: rdflib.Graph
+) -> list[dict]:
     """Parse an app manifest and everything it imports, resolving IRIs the way
     `motion-spec check` does: the shared metamodel checkout merged with the model's own
-    iri-map, longest prefix first, so nothing reaches the network."""
+    iri-map, longest prefix first, so nothing reaches the network.
+
+    Returns what it read: one entry per file, with the triples that file put in the dataset.
+    """
     manifest_path = Path(manifest_path).resolve()
+    before = graph_sizes(dataset)
     graph.parse(manifest_path, format="json-ld")
+    read: list[dict] = [
+        {
+            "iri": manifest_path.as_uri(),
+            "path": str(manifest_path),
+            **graph_growth(before, graph_sizes(dataset)),
+        }
+    ]
     url_map = {**metamodel_url_map(), **build_url_map(dataset, manifest_path)}
-    install_resolver(
-        IriToFileResolver(
-            dict(sorted(url_map.items(), key=lambda item: len(item[0]), reverse=True)),
-            download=False,
-        )
+    resolver = IriToFileResolver(
+        dict(sorted(url_map.items(), key=lambda item: len(item[0]), reverse=True)), download=False
     )
+    install_resolver(resolver)
     for target in {o for _s, _p, o, _g in dataset.quads((None, APP["import"], None, None))}:
+        before = graph_sizes(dataset)
         graph.parse(location=str(target), format="json-ld")
-    return graph
+        read.append(
+            {
+                "iri": str(target),
+                "path": resolved_file(resolver, str(target)),
+                **graph_growth(before, graph_sizes(dataset)),
+            }
+        )
+    return read
 
 
 @lru_cache(maxsize=64)
@@ -72,7 +121,8 @@ def deployed_devices(generation_dir: Path | str) -> tuple[str, ...]:
     if manifest is None:
         return ()
     dataset = rdflib.Dataset(default_union=True)
-    model = load_model_graph(manifest, dataset, dataset.graph(MODEL_GRAPH))
+    model = dataset.graph(MODEL_GRAPH)
+    load_model_graph(manifest, dataset, model)
     return tuple(
         sorted(
             {
@@ -125,19 +175,28 @@ class GraphService:
         self._projector: IncrementalProjector | None = None
         self._fed = 0
         self.runtime_source: str | None = None
+        self.sources: list[dict] = []
         # A run names its own model graph; the generation is only where one is found without it.
         manifest = (
             manifest if manifest and manifest.is_file() else model_manifest(self.generation_dir)
         )
         if manifest is not None:
-            load_model_graph(manifest, self.dataset, self.model)
+            self.sources = load_model_graph(manifest, self.dataset, self.model)
         self.signals = signal_map(self.model)
         bind_namespaces(self.dataset, store.run_id)
         # The archived record, where the run kept one. Projecting on top of it would emit a
         # second occurrence for every one already recorded, and double every span read off them.
         if runtime_ttl is not None and Path(runtime_ttl).is_file():
+            before = graph_sizes(self.dataset)
             self.runtime.parse(runtime_ttl, format="turtle")
             self.runtime_source = "archive"
+            self.sources.append(
+                {
+                    "iri": Path(runtime_ttl).resolve().as_uri(),
+                    "path": str(runtime_ttl),
+                    **graph_growth(before, graph_sizes(self.dataset)),
+                }
+            )
 
     def _ensure_projector(self) -> IncrementalProjector | None:
         """Build the projector once the run's log contract is known (it carries the header)."""

@@ -244,8 +244,14 @@ def _term_kind(term) -> str:
 
 
 def graph_name(context) -> str:
-    """A quad's named graph as the dashboard names it; anything unnamed is the model."""
-    return GRAPH_NAMES.get(str(getattr(context, "identifier", context)), "model")
+    """A quad's named graph, named as compactly as it can be.
+
+    `urn:model`, `urn:runtime` and `urn:live` are the dashboard's own three. A JSON-LD file that
+    declares a graph of its own lands in that graph instead -- the whole FSM is one -- and
+    calling those "model" too would hide the split from every reader downstream.
+    """
+    identifier = str(getattr(context, "identifier", context))
+    return GRAPH_NAMES.get(identifier) or rdf_name(identifier.rstrip("/")) or identifier
 
 
 def term_graphs(dataset) -> dict[str, list[str]]:

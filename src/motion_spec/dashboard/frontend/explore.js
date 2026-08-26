@@ -71,10 +71,14 @@ SELECT ?state ?constraint ?from ?to WHERE {
   FILTER(?from >= ?entered && ?from <= ?left)
 } ORDER BY ?entered ?from`,
 
+  // The design side is every graph but the run's own: a JSON-LD file that declares a graph of
+  // its own lands there, not in urn:model, so naming urn:model here would miss it -- the whole
+  // FSM (states, transitions, reactions) is one such graph.
   "modelled, never ran": `PREFIX prov: <http://www.w3.org/ns/prov#>
 PREFIX cstr: <https://comp-rob2b.github.io/metamodels/task/constraint#>
-SELECT ?constraint WHERE {
-  GRAPH <urn:model> { ?constraint a cstr:Constraint }
+SELECT DISTINCT ?constraint WHERE {
+  GRAPH ?model { ?constraint a cstr:Constraint }
+  FILTER(?model NOT IN (<urn:runtime>, <urn:live>))
   FILTER NOT EXISTS { GRAPH <urn:runtime> { ?occ prov:used ?constraint } }
 } ORDER BY ?constraint`,
 
@@ -82,11 +86,14 @@ SELECT ?constraint WHERE {
 PREFIX prov: <http://www.w3.org/ns/prov#>
 PREFIX time: <http://www.w3.org/2006/time#>
 PREFIX sosa: <http://www.w3.org/ns/sosa/>
-SELECT ?element ?value ?step WHERE {
+PREFIX qudt: <http://qudt.org/schema/qudt/>
+SELECT ?element ?value ?unit ?step WHERE {
   ?occ a ms-prov:ConstraintMaintenance ;
        prov:used ?element ;
-       sosa:hasSimpleResult ?value ;
+       sosa:hasResult ?result ;
        time:hasBeginning ?begin .
+  ?result qudt:value ?value .
+  OPTIONAL { ?result qudt:unit ?unit }
   ?begin time:inTimePosition/time:numericPosition ?step .
 } ORDER BY ?step`,
 
@@ -103,7 +110,10 @@ SELECT ?controller ?kp ?ki ?kd WHERE {
 };
 
 export const EXPLORE_MARKUP = `<div class="explore">
-  <div class="query-rail"><button id="new-query" class="new-query">+ query</button></div>
+  <div class="explore-rail">
+    <div class="query-rail"><button id="new-query" class="new-query">+ query</button></div>
+    <div class="source-rail"><div class="legend-heading">graph sources</div><div class="source-list"></div></div>
+  </div>
   <div class="explore-body">
     <div class="explore-canned"></div>
     <textarea id="query" spellcheck="false"></textarea>
@@ -117,6 +127,7 @@ export const EXPLORE_MARKUP = `<div class="explore">
       <div class="graph-bar">
         <div class="graph-search-panel"><input class="graph-search" type="search" placeholder="Search nodes"><div class="graph-matches"></div></div>
         <span class="graph-depth"><em>depth</em><button data-depth="1" class="active">1</button><button data-depth="2">2</button><button data-depth="3">3</button></span>
+        <span class="graph-scopes"></span>
         <button class="graph-back" hidden>back</button>
         <button class="graph-clear" hidden>clear focus</button>
         <button class="graph-export">export as query</button>
@@ -129,6 +140,7 @@ export const EXPLORE_MARKUP = `<div class="explore">
         <div class="graph-side">
           <div class="graph-details">Select a node for its RDF details.</div>
           <div class="graph-legend"></div>
+          <div class="graph-rels"></div>
         </div>
       </div>
       <div class="graph-status"></div>
@@ -147,13 +159,17 @@ const explore = {
   pins: new Set(),
   depth: 1,
   hidden: new Set(),
-  only: null,
+  hiddenRels: new Set(),
+  onlyTypes: new Set(),
+  onlyRels: new Set(),
+  onlyGraphs: new Set(),
   filter: "",
   renderer: null,
   layout: null,
   settling: null,
   drawing: 0,
   generation: null,
+  selected: null,
 };
 
 export function queryLabel(query) {
@@ -185,6 +201,27 @@ export function renderRail() {
     tab.append(close);
     return tab;
   }), $("#new-query"));
+}
+
+// Where the graph came from. Every answer on this page is drawn out of these files, and until
+// they are named the dataset is something the page just has.
+export function renderSources(sources) {
+  const list = $(".source-list");
+  if (!sources.length) {
+    list.replaceChildren(Object.assign(document.createElement("div"), {
+      className: "legend-row is-off", textContent: "no model graph",
+    }));
+    return;
+  }
+  list.replaceChildren(...sources.map((source) => {
+    const row = document.createElement("div");
+    row.className = "legend-row source-row";
+    row.title = [source.path ?? source.iri, source.iri, ...(source.graphs ?? [])].join("\n");
+    row.innerHTML = '<span class="legend-name"></span><span class="legend-count"></span>';
+    row.querySelector(".legend-name").textContent = shortName(source.path ?? source.iri);
+    row.querySelector(".legend-count").textContent = source.triples;
+    return row;
+  }));
 }
 
 export function selectQuery(index) {
@@ -240,8 +277,7 @@ function statusLine(data) {
   const hidden = data.graph?.hidden ?? {};
   const folded = Object.entries(hidden).filter(([, count]) => count)
     .map(([name, count]) => `${count} ${name.replace("_edges", "")}`).join(" · ");
-  return `${data.count} row${data.count === 1 ? "" : "s"}`
-    + `${data.truncated ? " (table shows 500)" : ""} · ${data.elapsed_ms} ms`
+  return `${data.count} row${data.count === 1 ? "" : "s"} · ${data.elapsed_ms} ms`
     // an empty model graph is a run detached from its generation, not a query that found nothing
     + `${data.model_triples ? "" : " · model graph unavailable"}`
     + `${data.runtime_source ? ` · runtime: ${data.runtime_source}` : " · no runtime graph"}`
@@ -256,7 +292,10 @@ function showAnswer(data) {
   explore.focus = [];
   explore.expanded = new Set();
   explore.hidden = new Set();
-  explore.only = null;
+  explore.hiddenRels = new Set();
+  explore.onlyTypes = new Set();
+  explore.onlyRels = new Set();
+  explore.onlyGraphs = new Set();
   renderTable(data);
   showView(explore.payload ? explore.view : "table");
 }
@@ -296,7 +335,41 @@ export function renderTable(data) {
     });
     table.append(line);
   });
-  $("#answer").replaceChildren(table);
+  $("#answer").replaceChildren(table, ...pager(data));
+}
+
+// Page through a long answer rather than clipping it: the server windows the rows, the
+// query itself is re-asked with the next offset.
+function pager(data) {
+  const size = data.page_size ?? data.rows.length;
+  if (!size || (data.count ?? 0) <= size) return [];
+  const bar = document.createElement("div");
+  bar.className = "table-pager";
+  const from = data.offset + 1;
+  const to = Math.min(data.offset + size, data.count);
+  const jump = (offset) => () => fetchPage(offset).catch((error) => snack(error.message));
+  const step = (label, offset, enabled) => {
+    const button = document.createElement("button");
+    button.textContent = label;
+    button.disabled = !enabled;
+    button.onclick = jump(offset);
+    return button;
+  };
+  const where = document.createElement("span");
+  where.textContent = `rows ${from}–${to} of ${data.count}`;
+  bar.append(
+    step("‹ prev", Math.max(0, data.offset - size), data.offset > 0),
+    where,
+    step("next ›", data.offset + size, to < data.count),
+  );
+  return [bar];
+}
+
+async function fetchPage(offset) {
+  const data = await post("/api/sparql", { path: explore.path, query: $("#query").value, offset });
+  explore.data = data;
+  renderTable(data);
+  $("#answer").scrollTop = 0;
 }
 
 function showView(name) {
@@ -314,27 +387,90 @@ function showView(name) {
 
 /* ---------------------------------------------------------------- the picture */
 
+// Sigma's WebGL renderer only parses hex/rgb colours -- an hsl() string renders black.
+function hsl(h, s, l) {
+  s /= 100; l /= 100;
+  const f = (n) => {
+    const k = (n + h / 30) % 12;
+    const c = l - s * Math.min(l, 1 - l) * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+    return Math.round(255 * c).toString(16).padStart(2, "0");
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
+}
+
+// Only two of the named graphs are the run's own record; every other one is the design, so a
+// term modelled in the FSM's own graph counts as modelled exactly like one in urn:model.
+const RECORD_GRAPHS = new Set(["runtime", "live"]);
+const modelledAndRan = (node) =>
+  node.graphs.includes("runtime") && node.graphs.some((name) => !RECORD_GRAPHS.has(name));
+
 // Colour by primary type, deterministically and without a palette to run out of. Vividness is
 // the second dimension: a term the run also used is saturated, one only modelled is muted.
 function colourFor(node) {
   const type = node.types[0] ?? "";
   let hash = 0;
   for (const character of type) hash = (hash * 31 + character.charCodeAt(0)) % 360;
-  const ran = node.graphs.includes("runtime") && node.graphs.includes("model");
-  return type ? `hsl(${hash}, ${ran ? 68 : 26}%, ${ran ? 64 : 52}%)` : (ran ? "#e07a5f" : "#6c7079");
+  const ran = modelledAndRan(node);
+  return type ? hsl(hash, ran ? 68 : 40, ran ? 64 : 56) : (ran ? "#e07a5f" : "#8a8f98");
 }
 
 const sizeFor = (node) => Math.min(12, 3 + Math.log1p(node.degree) * 1.7);
 
+// The legend counts and the picker agree on one type per node, so a click on a row selects
+// exactly the nodes that row counted.
+const typeOf = (node) => node.types[0] ?? "(untyped)";
+
+// Sigma's hover box is a hardcoded white fill and our labels are near-white, so the hovered
+// name reads as a blank plate. Same geometry as its default, the page's own colours.
+function drawNodeHover(context, data, settings) {
+  const pad = 2;
+  const size = settings.labelSize;
+  context.font = `${settings.labelWeight} ${size}px ${settings.labelFont}`;
+  context.fillStyle = "#141516";
+  context.strokeStyle = "#5c626b";
+  context.shadowOffsetX = context.shadowOffsetY = 0;
+  context.shadowBlur = 8;
+  context.shadowColor = "#000";
+  context.beginPath();
+  if (typeof data.label === "string") {
+    const width = Math.round(context.measureText(data.label).width + 5);
+    const height = Math.round(size + 2 * pad);
+    const radius = Math.max(data.size, size / 2) + pad;
+    const cut = Math.sqrt(Math.abs(radius ** 2 - (height / 2) ** 2));
+    context.moveTo(data.x + cut, data.y + height / 2);
+    context.lineTo(data.x + radius + width, data.y + height / 2);
+    context.lineTo(data.x + radius + width, data.y - height / 2);
+    context.lineTo(data.x + cut, data.y - height / 2);
+    context.arc(data.x, data.y, radius, Math.asin(height / 2 / radius), -Math.asin(height / 2 / radius));
+  } else {
+    context.arc(data.x, data.y, data.size + pad, 0, Math.PI * 2);
+  }
+  context.closePath();
+  context.fill();
+  context.shadowBlur = 0;
+  context.stroke();
+  settings.defaultDrawNodeLabel(context, data, settings);
+}
+
+// A picked type or relationship is what stays; picking nothing keeps everything but the
+// shift-clicked exclusions. Picking relationships also drops the nodes left with no edge --
+// otherwise "only prov:used" is that one relation adrift in a field of loose nodes.
 function visible(payload) {
-  const wanted = (node) => {
-    const types = node.types.length ? node.types : [""];
-    if (explore.only) return types.includes(explore.only);
-    return !types.every((type) => explore.hidden.has(type));
-  };
-  const nodes = payload.nodes.filter(wanted);
+  const inScope = (node) => !explore.onlyGraphs.size
+    || node.graphs.some((name) => explore.onlyGraphs.has(name));
+  const wanted = (node) => inScope(node) && (explore.onlyTypes.size
+    ? explore.onlyTypes.has(typeOf(node)) : !explore.hidden.has(typeOf(node)));
+  const keepRel = (label) => (explore.onlyRels.size
+    ? explore.onlyRels.has(label) : !explore.hiddenRels.has(label));
+  let nodes = payload.nodes.filter(wanted);
   const ids = new Set(nodes.map((node) => node.id));
-  return { nodes, links: payload.links.filter((l) => ids.has(l.source) && ids.has(l.target)) };
+  const links = payload.links.filter((l) =>
+    ids.has(l.source) && ids.has(l.target) && keepRel(l.label));
+  if (explore.onlyRels.size) {
+    const touched = new Set(links.flatMap((l) => [l.source, l.target]));
+    nodes = nodes.filter((node) => touched.has(node.id));
+  }
+  return { nodes, links };
 }
 
 // Focus isolates: the ego network is built and handed to the renderer, so what is outside it
@@ -379,10 +515,11 @@ async function drawGraph() {
   // Neither the legend nor the trail needs the renderer, and the renderer is fetched from a
   // CDN this machine may not reach; drawing them first is what the reader keeps if it fails.
   renderLegend();
+  renderScopes();
   renderCrumbs();
   if (!drawn.nodes.length) {
     target.replaceChildren();
-    status.textContent = "Nothing left to draw — every type is hidden.";
+    status.textContent = "Nothing left to draw — no node matches the legend's picks.";
     return;
   }
   status.textContent = "Loading renderer…";
@@ -415,11 +552,20 @@ async function drawGraph() {
     renderLabels: true,
     labelRenderedSizeThreshold: 6,
     labelColor: { color: "#f1eee7" },
+    defaultDrawNodeHover: drawNodeHover,
   });
   renderer.on("clickNode", ({ node }) => showDetails(node));
   explore.renderer = renderer;
+  // ForceAtlas2's own size-derived tuning: without the log-scaled slowDown a small ego
+  // graph never damps and the nodes oscillate instead of settling.
   const layout = new ForceAtlas2Layout(graph, {
-    settings: { barnesHutOptimize: drawn.nodes.length > 200, gravity: 1, scalingRatio: 8 },
+    settings: {
+      barnesHutOptimize: drawn.nodes.length > 2000,
+      strongGravityMode: true,
+      gravity: 0.05,
+      scalingRatio: 10,
+      slowDown: 1 + Math.log(Math.max(2, drawn.nodes.length)),
+    },
   });
   explore.layout = layout;
   layout.start();
@@ -487,19 +633,42 @@ const shortName = (iri) => iri.split(/[/#]/).filter(Boolean).pop() ?? iri;
 
 // 151 types is not a legend, it is a wall. The ones worth naming, an "others" bucket for the
 // tail, and a filter for whatever is not in either.
+// The named graphs the answer spans, as a quick filter: which file's triples a term came from
+// is otherwise only visible one node at a time, in the details panel.
+function renderScopes() {
+  const counts = new Map();
+  explore.payload.nodes.forEach((node) =>
+    node.graphs.forEach((name) => counts.set(name, (counts.get(name) ?? 0) + 1)));
+  const scopes = $(".graph-scopes");
+  if (counts.size < 2) return scopes.replaceChildren();   // one graph is not a choice
+  scopes.replaceChildren(Object.assign(document.createElement("em"), { textContent: "graph" }),
+    ...[...counts].sort((left, right) => right[1] - left[1]).map(([name, count]) => {
+      const chip = document.createElement("button");
+      chip.className = "graph-scope";
+      chip.classList.toggle("active", explore.onlyGraphs.has(name));
+      chip.textContent = `${name} ${count}`;
+      chip.title = `Show only terms that appear in ${name}`;
+      chip.onclick = () => {
+        explore.onlyGraphs.has(name)
+          ? explore.onlyGraphs.delete(name) : explore.onlyGraphs.add(name);
+        drawGraph().catch((error) => snack(error.message));
+      };
+      return chip;
+    }));
+}
+
 function renderLegend() {
   const legend = $(".graph-legend");
   const counts = new Map();
   explore.payload.nodes.forEach((node) => {
-    const type = node.types[0] ?? "(untyped)";
+    const type = typeOf(node);
     counts.set(type, (counts.get(type) ?? 0) + 1);
   });
   const ranked = [...counts].sort((left, right) => right[1] - left[1]);
   const shown = ranked.filter(([type]) =>
     !explore.filter || type.toLowerCase().includes(explore.filter));
-  const top = shown.slice(0, 20);
-  const rest = shown.slice(20);
   legend.replaceChildren();
+  legend.append(legendHeading("types", explore.onlyTypes, explore.hidden));
   const filter = document.createElement("input");
   filter.type = "search";
   filter.className = "legend-filter";
@@ -510,50 +679,59 @@ function renderLegend() {
     renderLegend();
   };
   legend.append(filter);
-  top.forEach(([type, count]) => legend.append(legendRow(type, count)));
-  if (rest.length) {
-    const others = document.createElement("button");
-    others.className = "legend-row legend-others";
-    others.textContent = `${rest.length} more types · ${rest.reduce((n, [, c]) => n + c, 0)} nodes`;
-    others.onclick = () => {
-      rest.forEach(([type]) => explore.hidden.has(type)
-        ? explore.hidden.delete(type) : explore.hidden.add(type));
-      drawGraph().catch((error) => snack(error.message));
-    };
-    legend.append(others);
-  }
+  shown.forEach(([type, count]) => legend.append(legendRow(type, count)));
+
+  const rels = $(".graph-rels");
   const predicates = [...Object.entries(explore.payload.predicates ?? {})]
-    .sort((left, right) => right[1] - left[1]).slice(0, 12);
-  if (predicates.length) {
-    const heading = document.createElement("div");
-    heading.className = "legend-heading";
-    heading.textContent = "relationships";
-    legend.append(heading, ...predicates.map(([name, count]) => {
-      const row = document.createElement("div");
-      row.className = "legend-row legend-predicate";
-      row.innerHTML = '<span class="legend-name"></span><span class="legend-count"></span>';
-      row.querySelector(".legend-name").textContent = name;
-      row.querySelector(".legend-count").textContent = count;
-      return row;
-    }));
-  }
+    .sort((left, right) => right[1] - left[1]);
+  rels.replaceChildren(legendHeading("relationships", explore.onlyRels, explore.hiddenRels),
+    ...predicates.map(([name, count]) =>
+      pickRow(name, count, explore.onlyRels, explore.hiddenRels)));
+}
+
+// The heading doubles as the way back: it says how narrow the picture is and clears it.
+function legendHeading(what, only, hidden) {
+  const heading = document.createElement("div");
+  heading.className = "legend-heading";
+  heading.textContent = what;
+  if (!only.size && !hidden.size) return heading;
+  const clear = document.createElement("button");
+  clear.className = "legend-clear";
+  clear.textContent = only.size ? `showing ${only.size} ✕` : `hiding ${hidden.size} ✕`;
+  clear.onclick = () => {
+    only.clear();
+    hidden.clear();
+    drawGraph().catch((error) => snack(error.message));
+  };
+  heading.append(clear);
+  return heading;
+}
+
+// Click picks: what is picked is what stays, and picking a second row adds it. Nothing picked
+// means everything is drawn, so a second click on the last pick is how you get back.
+function pickRow(name, count, only, hidden) {
+  const row = document.createElement("button");
+  row.className = "legend-row";
+  row.classList.toggle("is-only", only.has(name));
+  row.classList.toggle("is-off", !only.has(name) && hidden.has(name));
+  row.title = "click to show only this · shift-click to hide it";
+  row.innerHTML = '<span class="legend-name"></span><span class="legend-count"></span>';
+  row.querySelector(".legend-name").textContent = name;
+  row.querySelector(".legend-count").textContent = count;
+  row.onclick = (event) => {
+    const set = event.shiftKey ? hidden : only;
+    set.has(name) ? set.delete(name) : set.add(name);
+    drawGraph().catch((error) => snack(error.message));
+  };
+  return row;
 }
 
 function legendRow(type, count) {
-  const row = document.createElement("button");
-  row.className = "legend-row";
-  row.classList.toggle("is-off", explore.hidden.has(type));
-  row.classList.toggle("is-only", explore.only === type);
-  row.title = "click to hide · shift-click to isolate";
-  row.innerHTML = '<i class="legend-swatch"></i><span class="legend-name"></span><span class="legend-count"></span>';
-  row.querySelector(".legend-swatch").style.background = colourFor({ types: [type], graphs: ["model", "runtime"], degree: 1 });
-  row.querySelector(".legend-name").textContent = type;
-  row.querySelector(".legend-count").textContent = count;
-  row.onclick = (event) => {
-    if (event.shiftKey) explore.only = explore.only === type ? null : type;
-    else explore.hidden.has(type) ? explore.hidden.delete(type) : explore.hidden.add(type);
-    drawGraph().catch((error) => snack(error.message));
-  };
+  const row = pickRow(type, count, explore.onlyTypes, explore.hidden);
+  const swatch = document.createElement("i");
+  swatch.className = "legend-swatch";
+  swatch.style.background = colourFor({ types: [type], graphs: ["model", "runtime"], degree: 1 });
+  row.prepend(swatch);
   return row;
 }
 
@@ -563,6 +741,7 @@ function showDetails(id) {
   const node = explore.payload.nodes.find((entry) => entry.id === id);
   const details = $(".graph-details");
   if (!node) return;
+  explore.selected = node.id;
   details.replaceChildren();
   const heading = document.createElement("div");
   heading.className = "detail-head";
@@ -637,7 +816,7 @@ function nodeActions(node) {
     }]);
   }
   if (row) actions.push(["show constraint", () => showConstraint(row)]);
-  if (node.graphs.includes("model") && node.graphs.includes("runtime")
+  if (modelledAndRan(node)
       && document.querySelector('.replay-tabs button[data-panel="views"]')) {
     actions.push(["occurrences", () => openPanel("views", { iri: node.value })]);
   }
@@ -754,7 +933,10 @@ export async function bindExplore(path, run = false) {
   explore.expanded = new Set();
   explore.pins = new Set();
   explore.hidden = new Set();
-  explore.only = null;
+  explore.hiddenRels = new Set();
+  explore.onlyTypes = new Set();
+  explore.onlyRels = new Set();
+  explore.onlyGraphs = new Set();
   explore.filter = "";
   state.queries = [];
   state.query = -1;
@@ -786,6 +968,13 @@ export async function bindExplore(path, run = false) {
     button.onclick = () => {
       explore.depth = Number(button.dataset.depth);
       $$(".graph-depth button").forEach((other) => other.classList.toggle("active", other === button));
+      // Depth is the radius around a focused node. Without one, the node last clicked is
+      // what the reader means; only with nothing selected at all is there nothing to narrow.
+      if (!explore.focus.length && explore.selected) explore.focus.push(explore.selected);
+      if (!explore.focus.length) {
+        snack("Depth needs a centre: click a node or search for one first.");
+        return;
+      }
       drawGraph().catch((error) => snack(error.message));
     };
   });
@@ -836,4 +1025,7 @@ export async function bindExplore(path, run = false) {
     renderRail();
   }
   if (run) await runQuery();
+  // after the query, not beside it: both build the same dataset, and the first one to ask pays
+  await api(`/api/graph-sources?path=${encodeURIComponent(path)}`)
+    .then(renderSources).catch(() => renderSources([]));
 }

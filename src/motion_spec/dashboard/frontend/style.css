@@ -210,7 +210,7 @@ h1 { margin: 7px 0; font-size: 30px; }
 .diff-row[data-kind="insert"] .diff-right, .diff-row[data-kind="replace"] .diff-right { background: #23302a; color: var(--good); }
 .source-file span { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .graph-help { margin: 4px 0 12px; color: var(--muted); font-size: 12px; }
-.graph-heading { display: flex; align-items: center; justify-content: space-between; margin-top: 30px; }
+.graph-heading { display: flex; align-items: center; gap: 12px; margin-top: 30px; }
 .graph-heading h2 { margin: 0; }
 .explore-link { padding: 5px 12px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 10px var(--mono); }
 .explore-link:hover { border-color: var(--accent); color: var(--accent); }
@@ -252,7 +252,11 @@ h1 { margin: 7px 0; font-size: 30px; }
 .badge-failed { color: #e0685f; }
 .badge-incomplete { color: var(--dim); }
 
-.replay { display: grid; gap: 24px; }
+/* The run page is a viewport-high column: heading row, then the active panel filling the
+   rest, ending where #content's bottom padding clears the fixed transport. Panels scroll
+   inside themselves; the page itself never grows a scrollbar. */
+.replay { display: grid; gap: 24px; grid-template-rows: auto minmax(0, 1fr); height: calc(100dvh - 139px); }
+.replay > section { min-height: 0; overflow-y: auto; }
 .replay-heading #back { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 1px solid var(--line); color: var(--text); font: 13px var(--mono); }
 .replay-heading #back:hover { border-color: var(--accent); color: var(--accent); }
 .constraint-panel { padding: 10px; border: 1px solid var(--line); background: var(--surface); }
@@ -281,10 +285,15 @@ h1 { margin: 7px 0; font-size: 30px; }
 .chart-controls button { padding: 5px 9px; border: 1px solid var(--line); color: var(--muted); font: 10px var(--mono); letter-spacing: .06em; }
 .chart-controls button:hover { border-color: var(--accent); color: var(--accent); }
 /* A state, not an action: the reader's live-plot choice sits apart from the buttons that do things. */
-.chart-controls #live-plots { margin-left: auto; }
-.chart-controls #live-plots[aria-pressed="true"] { color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
+/* Both carry it: whichever of the pair is the visible one starts the right-hand group. */
+.chart-controls #live-plots, .chart-controls #auto-plot { margin-left: auto; }
+.chart-controls #live-plots[aria-pressed="true"],
+.chart-controls #progressive-plots[aria-pressed="true"] { color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
+.chart-controls #auto-plot[aria-pressed="true"] { color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
 /* Only the plots make room for the video, and only while it is expanded. */
 .plots { padding-right: var(--video-w, 0px); padding-bottom: var(--video-h, 0px); display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 12px; }
+/* A card is appended and removed with nothing else inside, so :empty is exactly "no plots". */
+.plots:empty::before { content: "No plots open. auto plot follows the run, opening each motion's charts as the cursor enters it; a constraint on the left draws just that one."; padding: 14px 12px; border: 1px solid var(--line); background: var(--surface); color: var(--dim); font: 11px var(--mono); }
 .plot-card { border: 1px solid var(--line); background: var(--surface); }
 .plot-card header { display: flex; align-items: flex-start; gap: 10px; height: auto; min-height: 42px; padding: 7px 10px; border-bottom: 1px solid var(--line); }
 .plot-card header > div:first-child { flex: 1; min-width: 0; }
@@ -468,7 +477,20 @@ body:has(.notebook) #content { position: relative; max-width: none; padding: 0; 
 .replay-tabs button:hover { color: var(--muted); }
 .replay-tabs button.active { background: var(--surface); color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
 
-.explore { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 12px; align-items: start; }
+.explore { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 12px; align-items: stretch; height: 100%; min-height: 0; }
+#panel-explore { overflow: hidden; }
+/* Queries above, the files the graph was read from below, a half each -- a long query list
+   never pushes the sources out of sight, and neither half grows the page. */
+.explore-rail { display: grid; grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; min-height: 0; }
+.query-rail { overflow-y: auto; min-height: 0; align-content: start; }
+.source-rail { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; border-top: 1px solid var(--line); }
+.source-list { overflow: auto; min-height: 0; }
+.source-rail .legend-heading { padding: 8px 0 6px; background: var(--bg); }
+/* The filename is the content here, so it wraps rather than ellipsing away the tail that
+   tells `.scenex.ld.json` from `.ld.json`. */
+.source-row { align-items: baseline; border: 0; cursor: default; }
+.source-row .legend-name { overflow: visible; white-space: normal; overflow-wrap: anywhere; }
+.source-row:hover { background: var(--surface); color: var(--text); }
 .explore-page { padding: 24px 28px 40px; }
 .explore-page > .path { margin: 4px 0 18px; }
 .query-rail { display: grid; gap: 2px; }
@@ -480,7 +502,7 @@ body:has(.notebook) #content { position: relative; max-width: none; padding: 0; 
 .query-close:hover { border-color: var(--line); background: var(--bg); color: var(--accent); }
 .new-query { padding: 7px 9px; border: 1px dashed var(--line); background: none; color: var(--dim); font: 10px var(--mono); text-align: left; cursor: pointer; }
 .new-query:hover { border-color: var(--accent); color: var(--accent); }
-.explore-body { display: grid; gap: 8px; min-width: 0; }
+.explore-body { display: grid; gap: 8px; min-width: 0; min-height: 0; height: 100%; grid-template-rows: auto auto auto minmax(0, 1fr); }
 .explore-canned { display: flex; flex-wrap: wrap; gap: 6px; }
 .explore-canned button { padding: 4px 9px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 10px var(--mono); cursor: pointer; }
 .explore-canned button:hover { border-color: var(--accent); color: var(--accent); }
@@ -495,8 +517,14 @@ body:has(.notebook) #content { position: relative; max-width: none; padding: 0; 
 .explore-views button { padding: 6px 12px; border: 0; font: 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
 .explore-views button.active { background: var(--bg); color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
 
-.explore-graph { display: grid; gap: 8px; }
+/* Rows pinned by index: the empty crumbs row display:nones away, and without the pin the
+   canvas would slide into an auto row while the status line inherited the 1fr. */
+.explore-graph { display: grid; gap: 8px; grid-template-rows: auto auto minmax(0, 1fr) auto; min-height: 0; }
 .explore-graph[hidden] { display: none; }
+.graph-bar { grid-row: 1; }
+.graph-crumbs { grid-row: 2; }
+.graph-main { grid-row: 3; }
+.graph-status { grid-row: 4; }
 .graph-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .graph-bar button { padding: 5px 10px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 10px var(--mono); }
 .graph-bar button:hover { border-color: var(--accent); color: var(--accent); }
@@ -511,14 +539,25 @@ body:has(.notebook) #content { position: relative; max-width: none; padding: 0; 
 .graph-depth { display: flex; align-items: center; gap: 4px; color: var(--dim); font: 10px var(--mono); }
 .graph-depth em { font-style: normal; letter-spacing: .08em; text-transform: uppercase; }
 .graph-depth button.active { border-color: var(--accent); color: var(--accent); }
+.graph-scopes { display: flex; align-items: center; gap: 4px; min-width: 0; overflow-x: auto; color: var(--dim); font: 10px var(--mono); }
+.graph-scopes:empty { display: none; }
+.graph-scopes em { flex: none; font-style: normal; letter-spacing: .08em; text-transform: uppercase; }
+.graph-scope { flex: none; padding: 3px 8px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 10px var(--mono); }
+.graph-scope:hover { border-color: var(--accent); color: var(--accent); }
+.graph-scope.active { border-color: var(--accent); background: var(--bg); color: var(--accent); }
 .graph-crumbs { display: flex; flex-wrap: wrap; gap: 4px; }
 .graph-crumbs:empty { display: none; }
 .graph-crumb { padding: 3px 8px; background: #26292e; color: var(--muted); font: 10px var(--mono); }
 .graph-crumb:hover { color: var(--accent); }
 .graph-crumb + .graph-crumb::before { content: "› "; color: var(--dim); }
-.graph-main { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 1px; background: var(--line); border: 1px solid var(--line); }
-.graph-canvas { height: 520px; overflow: hidden; background: var(--surface); }
-.graph-side { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 1px; min-height: 0; background: var(--line); }
+/* The canvas fills the row and the side rail scrolls within it -- a rail taller than the
+   canvas would otherwise stretch the row and leave a dead band under the picture. The row
+   itself reaches down to the transport instead of leaving the viewport's tail empty. */
+.graph-main { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 1px; height: 100%; min-height: 0; background: var(--line); border: 1px solid var(--line); }
+.graph-canvas { height: 100%; overflow: hidden; background: var(--surface); }
+/* Types and relationships get a half of the rail each, both scrolling inside their own half,
+   so a long type list can never push the relationships off the bottom. */
+.graph-side { display: grid; grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr); gap: 1px; min-height: 0; background: var(--line); }
 .graph-details { padding: 9px 10px; overflow: auto; max-height: 260px; background: var(--surface); color: var(--muted); font: 11px var(--mono); }
 .detail-head strong { display: block; color: var(--text); font-size: 12px; }
 .detail-head .path { display: block; margin: 2px 0 8px; overflow-wrap: anywhere; }
@@ -530,10 +569,12 @@ body:has(.notebook) #content { position: relative; max-width: none; padding: 0; 
 .detail-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }
 .detail-actions button { padding: 4px 8px; border: 1px solid var(--line); background: var(--bg); color: var(--muted); font: 10px var(--mono); }
 .detail-actions button:hover { border-color: var(--accent); color: var(--accent); }
-.graph-legend { overflow: auto; padding: 8px; background: var(--surface); }
+.graph-legend, .graph-rels { overflow: auto; padding: 0 8px 8px; background: var(--surface); }
 .legend-filter { width: 100%; margin-bottom: 6px; padding: 5px 7px; border: 1px solid var(--line); outline: 0; background: var(--bg); color: var(--text); font: 10px var(--mono); }
 .legend-filter:focus { border-color: var(--accent); }
-.legend-heading { margin: 10px 0 4px; color: var(--dim); font: 9px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+.legend-heading { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 6px; padding: 8px 0 4px; background: var(--surface); color: var(--dim); font: 9px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+.legend-clear { margin-left: auto; padding: 1px 5px; border: 1px solid var(--line); background: var(--bg); color: var(--accent); font: 9px var(--mono); letter-spacing: .05em; }
+.legend-clear:hover { border-color: var(--accent); }
 .legend-row { display: flex; align-items: center; gap: 6px; width: 100%; padding: 3px 4px; border: 0; background: none; color: var(--muted); font: 10px var(--mono); text-align: left; }
 .legend-row:hover { background: var(--bg); color: var(--text); }
 .legend-row.is-off { color: var(--dim); text-decoration: line-through; }
@@ -558,7 +599,13 @@ body:has(.notebook) #content { position: relative; max-width: none; padding: 0; 
 .ansi-35, .ansi-95 { color: #c678dd; }
 .ansi-36, .ansi-96 { color: #56b6c2; }
 .ansi-37, .ansi-97 { color: #d7dae0; }
-#answer { max-height: 420px; overflow: auto; border: 1px solid var(--line); }
+/* Table and graph occupy the same row box, so switching views never changes the frame. */
+#answer { height: 100%; min-height: 0; overflow: auto; border: 1px solid var(--line); }
+#answer:empty { display: none; }
+.table-pager { position: sticky; bottom: 0; left: 0; display: flex; gap: 12px; align-items: center; justify-content: center; padding: 7px 10px; background: var(--surface); border-top: 1px solid var(--line); color: var(--muted); font: 10px var(--mono); }
+.table-pager button { padding: 4px 10px; border: 1px solid var(--line); background: var(--bg); color: var(--muted); font: 10px var(--mono); cursor: pointer; }
+.table-pager button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.table-pager button:disabled { color: var(--dim); cursor: default; }
 #answer table { width: 100%; border-collapse: collapse; font: 11px var(--code); }
 #answer th { position: sticky; top: 0; padding: 6px 8px; background: var(--bg); color: var(--dim); text-align: left; font-weight: 400; }
 #answer td { padding: 5px 8px; border-top: 1px solid var(--line); color: var(--text); white-space: nowrap; }

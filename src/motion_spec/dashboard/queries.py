@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -12,7 +13,13 @@ import rdflib
 from rdf_utils.uri import iri_parent
 
 from motion_spec.dashboard.catalog import classify_quads, graph_name, rdf_name, term_graphs
-from motion_spec.dashboard.graph import MODEL_GRAPH, GraphService, load_model_graph, model_manifest
+from motion_spec.dashboard.graph import (
+    MODEL_GRAPH,
+    RUNTIME_GRAPH,
+    GraphService,
+    load_model_graph,
+    model_manifest,
+)
 from motion_spec.dashboard.roots import LAYOUT_REL, json_file
 from motion_spec.dashboard.sources import declaration_lines
 from motion_spec.dashboard.store import RunStore
@@ -94,6 +101,28 @@ def query_graph(path: Path) -> GraphService:
     return run_graph(path)
 
 
+def graph_sources(path: Path) -> list[dict]:
+    """Every file this dataset was read from, and what each one put in it.
+
+    A run whose record was archived read a `runtime.ttl`; one without read the frame log, which
+    is a source of the graph exactly as much as any turtle file is.
+    """
+    service = query_graph(path)
+    sources = list(service.sources)
+    if (path / LAYOUT_REL).exists() or service.runtime_source == "archive":
+        return sources
+    _, log, _manifest, _contract = resolve_archive(path)
+    sources.append(
+        {
+            "iri": log.resolve().as_uri(),
+            "path": str(log),
+            "triples": len(service.runtime),
+            "graphs": [str(RUNTIME_GRAPH)],
+        }
+    )
+    return sources
+
+
 QUERIES_REL = "queries.json"
 
 
@@ -112,11 +141,15 @@ def save_queries(run_dir: Path, queries: list) -> dict:
     return {"saved": len(texts)}
 
 
-def run_query(run_dir: Path, sparql: str) -> dict:
+PAGE_SIZE = 500
+
+
+def run_query(run_dir: Path, sparql: str, offset: int = 0) -> dict:
     """Answer one SPARQL query against a run, or say why it could not be answered.
 
     The answer carries both projections of the one result: the rows, and the classified graph
     the same terms make. A table and a picture disagreeing would be two results, not two views.
+    The table pages through the rows PAGE_SIZE at a time; the graph is always the whole answer.
     """
     service = query_graph(run_dir)
     started = time.perf_counter()
@@ -132,13 +165,17 @@ def run_query(run_dir: Path, sparql: str) -> dict:
             )
         raise ValueError(detail) from exc
     prefixes = service.namespaces()
+    offset = max(0, min(int(offset), max(0, len(rows) - 1)))
     return {
         "type": kind,
         "model_triples": len(service.model),
         "headers": headers or ["result"],
-        "rows": [[curie(term, prefixes) for term in row] for row in rows[:500]],
+        "rows": [
+            [curie(term, prefixes) for term in row] for row in rows[offset : offset + PAGE_SIZE]
+        ],
         "count": len(rows),
-        "truncated": len(rows) > 500,
+        "offset": offset,
+        "page_size": PAGE_SIZE,
         "graph": result_graph(service, kind, rows),
         "runtime_source": service.runtime_source,
         "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
@@ -291,7 +328,7 @@ WHERE {
     OPTIONAL { ?monitor cstr-hdl:event ?event }
     OPTIONAL {
         ?occ a ms-prov:ConstraintMaintenance ; prov:used ?monitor ;
-             sosa:hasSimpleResult ?observed ;
+             sosa:hasResult ?observed ;
              time:hasBeginning/time:inTimePosition/time:numericPosition ?firstHeldStep .
         OPTIONAL { ?occ time:hasEnd/time:inTimePosition/time:numericPosition ?firedStep }
         OPTIONAL {
@@ -340,9 +377,15 @@ def views_graph(run_dir: Path) -> GraphService:
     )
 
 
+# rdflib parses SPARQL with pyparsing, whose parser state is process-global: two handler
+# threads parsing at once corrupt each other and both requests die. One query at a time.
+_QUERY_LOCK = threading.Lock()
+
+
 def _rows(service: GraphService, sparql: str, **bindings) -> list:
-    service.sync()
-    return list(service.dataset.query(sparql, initBindings=bindings or None))
+    with _QUERY_LOCK:
+        service.sync()
+        return list(service.dataset.query(sparql, initBindings=bindings or None))
 
 
 def _step(term) -> int | None:
@@ -537,12 +580,16 @@ def model_lint(generation_dir: Path) -> dict:
 
     Design graph only -- no run, no frame log. A generation with no model manifest lints to
     nothing rather than failing, so the page can ask about any generation it lists.
+
+    Asked of the whole dataset, not of `urn:model`: a JSON-LD file that declares a graph of its
+    own lands there instead, and a term those triples name is read, not unused. Nothing but the
+    design is loaded here, so the union is the design.
     """
     manifest = model_manifest(generation_dir)
     if manifest is None:
         return {"items": []}
     dataset = rdflib.Dataset(default_union=True)
-    model = load_model_graph(manifest, dataset, dataset.graph(MODEL_GRAPH))
+    load_model_graph(manifest, dataset, dataset.graph(MODEL_GRAPH))
     authored = next((generation_dir / "generated/source").glob("*.robmot"), None)
     lines = declaration_lines(authored.read_text()) if authored else {}
     items = [
@@ -554,7 +601,7 @@ def model_lint(generation_dir: Path) -> dict:
             "source_line": lines.get(name),
             "why": f"declared as {value} and read by nothing in the model",
         }
-        for term, value in model.query(UNUSED_DECLARATION)
+        for term, value in dataset.query(UNUSED_DECLARATION)
         if (name := rdf_name(term))
     ]
     # In the order they are read in; what an imported graph declares has no line here, so it

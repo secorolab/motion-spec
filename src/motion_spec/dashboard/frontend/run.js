@@ -11,10 +11,9 @@ import { appendConsole, consoleExcerpt, showEmpty } from "./components.js";
 import { $, $$, api, snack, state } from "./core.js";
 import { EXPLORE_MARKUP, bindExplore } from "./explore.js";
 import { highlightGeneration, selectGeneration, stopRun } from "./generations.js";
-import { addLivePlot, bindLivePlots, followLiveRun, livePlotsOn, simControl } from "./live.js";
+import { addLivePlot, bindLivePlots, followLiveRun, livePlotsOn, simControl, trackActiveMotion } from "./live.js";
 import { openNotebook } from "./notebook.js";
-import { addPlot, cursorOption } from "./plots.js";
-import { showReports } from "./reports.js";
+import { addPlot, cursorOption, progressiveOn, seriesUpTo, setProgressive } from "./plots.js";
 import { setView } from "./routing.js";
 import { loadViews } from "./views.js";
 
@@ -85,34 +84,24 @@ export async function loadReplay(path) {
   // The archive of a run this page started: reopen the cards that were open when it ended --
   // or, when none were (a run faster than the page), the last motion that ran. Never the
   // whole run's card set: eighty charts in one page is what made live pages crawl.
-  if (state.autoPlot === path && !state.replay.pending && livePlotsOn()) {
+  const reopened = state.autoPlot === path && !state.replay.pending && livePlotsOn();
+  if (reopened) {
     state.autoPlot = null;
     const keys = state.reopenRows ?? [];
-    let lastMotion = state.reopenMotion;
+    const lastMotion = state.reopenMotion;
     state.reopenRows = state.reopenMotion = null;
-    if (!keys.length && !lastMotion) {
-      lastMotion = state.replay.constraints
-        .filter((constraint) => constraint.window)
-        .sort((a, b) => b.window[1] - a.window[1])[0]?.motion;
-    }
-    // Each row is a full-log /api/plot read: click them apart so several never land in one
-    // frame. Detached on purpose -- the page is usable while the cards fill in.
-    (async () => {
-      const rows = $$("#constraints .constraint").filter((row) => {
-        if (!row.dataset.plottable || row.dataset.plotted || row.dataset.idle) return false;
-        const key = `${row.dataset.motion}/${row.querySelector("strong")?.textContent}`;
-        return keys.length ? keys.includes(key) : row.dataset.motion === lastMotion;
-      });
-      for (const row of rows) {
-        if (state.runPath !== path) return;   // the reader moved on
-        row.click();
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-    })();
+    openPlotsFor(path, keys, lastMotion);
   }
   $("#plot").onclick = () => addPlot([]);
+  state.motionSpans = motionSpans();
+  state.opening = false;
+  bindAutoPlot();
+  // The reopened set is what this page had open when the run ended; following would close it
+  // on the spot to show frame 0's motion instead.
+  if (!reopened) followMotion();
   $("#notebook").onclick = () => openNotebook(state.runPath).catch((error) => snack(error.message));
   bindLivePlots();
+  bindProgressive();
   bindPanels();
   // A side panel that cannot load is not the page failing to load.
   bindExplore(path).catch((error) => snack(error.message));
@@ -443,7 +432,7 @@ export function populateConstraints() {
 export function replayShell(path) {
   // The run page's markup, with what the reply fills left blank: the numbers, the timeline's
   // range and the constraint list.
-  return `<div class="replay"><div class="replay-heading"><button id="back" title="Back to generation">←</button><h1>${path.split("/").pop()}</h1><div class="replay-tabs"><button data-panel="plots" class="active">Plots</button><button data-panel="reports">Reports</button><button data-panel="views">Views</button><button data-panel="explore">Explore</button><button data-panel="console">Console</button></div><span class="eyebrow">RUN</span></div><section id="panel-plots"><div class="constraint-panel"><div class="eyebrow">SOURCE CONSTRAINTS</div><input id="constraint-search" type="search" placeholder="Search .robmot constraints"><div id="constraints" class="constraints"></div></div><div class="chart-controls"><button id="plot">Add empty plot</button><button id="notebook">Open in Jupyter</button><button id="live-plots" title="Plot signals as the run writes them">live plots: on</button></div><div id="plots" class="plots"></div></section><section id="panel-reports" hidden></section><section id="panel-views" hidden></section><section id="panel-explore" hidden>${EXPLORE_MARKUP}</section><section id="panel-console" hidden><pre id="console-text" class="console"></pre></section></div><div class="settling" hidden><div class="spinner"></div><span>archiving the run…</span></div><div class="videos" hidden><button class="video-max" title="Expand"></button><button class="video-min" title="Minimize"></button><div class="video-main"><video preload="auto" playsinline disablepictureinpicture controlslist="nodownload noplaybackrate noremoteplayback"></video><span class="video-name"></span></div><div class="video-strip"></div></div><div class="transport"><div class="transport-controls"><button id="step-back" title="Previous frame">‹</button><button id="play">Play</button><button id="step-forward" title="Next frame">›</button><details class="picker speed-menu"><summary>1×</summary><div class="picker-panel"><button data-value="0.25">0.25×</button><button data-value="0.5">0.5×</button><button data-value="1" aria-pressed="true">1×</button><button data-value="2">2×</button><button data-value="5">5×</button></div></details><span id="readout" class="path"></span><span class="marker-legend"><i class="lg lg-state"></i>state <i class="lg lg-event"></i>event <i class="lg lg-satisfied"></i>satisfied <i class="lg lg-unsatisfied"></i>lost <i class="lg lg-monitor"></i>monitor</span><button id="cancel-run" title="End the run" hidden>cancel</button></div><div class="markers"></div><input class="timeline" type="range" min="0" max="0" value="0" disabled></div>`;
+  return `<div class="replay"><div class="replay-heading"><button id="back" title="Back to generation">←</button><h1>${path.split("/").pop()}</h1><div class="replay-tabs"><button data-panel="plots" class="active">Plots</button><button data-panel="views">Views</button><button data-panel="explore">Explore</button><button data-panel="console">Console</button></div><span class="eyebrow">RUN</span></div><section id="panel-plots"><div class="constraint-panel"><div class="eyebrow">SOURCE CONSTRAINTS</div><input id="constraint-search" type="search" placeholder="Search .robmot constraints"><div id="constraints" class="constraints"></div></div><div class="chart-controls"><button id="auto-plot" title="Open each motion's plots as the cursor enters it, the way a live run does">auto plot: off</button><button id="plot">Add empty plot</button><button id="notebook">Open in Jupyter</button><button id="live-plots" title="Plot signals as the run writes them">live plots: on</button><button id="progressive-plots" title="Draw a replayed run the way a live one arrives: nothing past the cursor">progressive: off</button></div><div id="plots" class="plots"></div></section><section id="panel-views" hidden></section><section id="panel-explore" hidden>${EXPLORE_MARKUP}</section><section id="panel-console" hidden><pre id="console-text" class="console"></pre></section></div><div class="settling" hidden><div class="spinner"></div><span>archiving the run…</span></div><div class="videos" hidden><button class="video-max" title="Expand"></button><button class="video-min" title="Minimize"></button><div class="video-main"><video preload="auto" playsinline disablepictureinpicture controlslist="nodownload noplaybackrate noremoteplayback"></video><span class="video-name"></span></div><div class="video-strip"></div></div><div class="transport"><div class="transport-controls"><button id="step-back" title="Previous frame">‹</button><button id="play">Play</button><button id="step-forward" title="Next frame">›</button><details class="picker speed-menu"><summary>1×</summary><div class="picker-panel"><button data-value="0.25">0.25×</button><button data-value="0.5">0.5×</button><button data-value="1" aria-pressed="true">1×</button><button data-value="2">2×</button><button data-value="5">5×</button></div></details><span id="readout" class="path"></span><span class="marker-legend"><i class="lg lg-state"></i>state <i class="lg lg-event"></i>event <i class="lg lg-satisfied"></i>satisfied <i class="lg lg-unsatisfied"></i>lost <i class="lg lg-monitor"></i>monitor</span><button id="cancel-run" title="End the run" hidden>cancel</button></div><div class="markers"></div><input class="timeline" type="range" min="0" max="0" value="0" disabled></div>`;
 }
 
 export function bindPanels() {
@@ -451,12 +440,9 @@ export function bindPanels() {
     document.querySelectorAll(".replay-tabs button").forEach((button) =>
       button.classList.toggle("active", button.dataset.panel === panel));
     $("#panel-plots").hidden = panel !== "plots";
-    $("#panel-reports").hidden = panel !== "reports";
     $("#panel-views").hidden = panel !== "views";
     $("#panel-explore").hidden = panel !== "explore";
     $("#panel-console").hidden = panel !== "console";
-    // The sweep is paid for when the tab is opened, and once per run.
-    if (panel === "reports" && state.runPath) showReports(state.runPath);
     // A panel that cannot load is not the page failing to load.
     if (panel === "views") loadViews().catch((error) => snack(error.message));
     state.charts.forEach((chart) => chart.resize());
@@ -523,6 +509,12 @@ export function setTransportMode() {
   $(".timeline").disabled = driving || !state.replay.frames;
   $("#cancel-run").hidden = !driving;
   $(".transport").classList.toggle("transport-live", following);
+  // "live plots" governs a run being written; on a recording it is a switch for nothing.
+  // "auto plot" is its counterpart there, and the live poll follows motions on its own.
+  const live = following || Boolean(state.replay.pending);
+  $("#live-plots").hidden = !live;
+  $("#auto-plot").hidden = live;
+  $("#progressive-plots").hidden = live;
 }
 
 // A constraint that chatters would bury the state markers it happened under.
@@ -566,11 +558,130 @@ export function movePlayhead() {
   $(".transport").style.setProperty("--f", trackFraction(state.frame));
 }
 
+// Turning it off has to put back what it cut, so both directions go through updateCursor.
+function bindProgressive() {
+  const button = $("#progressive-plots");
+  const label = () => {
+    button.setAttribute("aria-pressed", String(progressiveOn()));
+    button.textContent = `progressive: ${progressiveOn() ? "on" : "off"}`;
+  };
+  button.onclick = () => {
+    setProgressive(!progressiveOn());
+    state.charts.forEach((chart) => {
+      chart.drawnUpTo = null;
+      if (chart.fullSeries) chart.setOption(seriesUpTo(chart, state.frame));
+    });
+    label();
+  };
+  label();
+}
+
+// When each motion ran, from the spans its own constraints were evaluated over. The recording
+// answers this itself; turning a state's name (S_PICK_ABOVE) into a motion's (pick-above) would
+// be a spelling rule invented here and true only until someone renames a state.
+function motionSpans() {
+  const spans = new Map();
+  (state.replay?.constraints ?? []).forEach(({ motion, window }) => {
+    if (!motion || !window) return;
+    const span = spans.get(motion);
+    spans.set(motion, span
+      ? [Math.min(span[0], window[0]), Math.max(span[1], window[1])]
+      : [...window]);
+  });
+  return [...spans].sort((left, right) => left[1][0] - right[1][0]);
+}
+
+// The motion the run is in at this frame -- or the last one it was in, since the frames before
+// a motion's constraints start evaluating, and the gaps between motions, still belong to it.
+// Spans can overlap where a guard outlives its motion; the one entered most recently wins.
+function motionAt(frame) {
+  const spans = state.motionSpans ?? [];
+  let current = null;
+  for (const [motion, [from, to]] of spans) {
+    if (from <= frame && frame <= to) current = motion;
+  }
+  if (current) return current;
+  const entered = spans.filter(([, [from]]) => from <= frame);
+  return (entered.length ? entered.at(-1) : spans[0])?.[0] ?? null;
+}
+
+// Cards follow the cursor the way they follow a live run: the motion being replayed has its
+// charts open and they close behind it. One motion's charts, never the whole run's.
+export const AUTO_PLOT_KEY = "motion-spec.auto-plot";
+
+let followMotions = false;
+
+try { followMotions = localStorage.getItem(AUTO_PLOT_KEY) === "on"; } catch { /* private */ }
+
+export function followMotion() {
+  // A live run is already followed by its poll; this is the same behaviour for a recording.
+  if (!followMotions || state.following || state.opening) return;
+  const motion = motionAt(state.frame);
+  if (!motion || motion === state.activeMotion) return;
+  // Scrubbing crosses motions faster than a card can load; one unfold at a time, then a
+  // re-check, so a drag lands on the motion it stopped at instead of every one it passed.
+  state.opening = true;
+  Promise.resolve(trackActiveMotion(motion, { plots: true, live: false }))
+    .catch(() => {})
+    .finally(() => { state.opening = false; followMotion(); });
+}
+
+function bindAutoPlot() {
+  const button = $("#auto-plot");
+  const label = () => {
+    button.setAttribute("aria-pressed", String(followMotions));
+    button.textContent = `auto plot: ${followMotions ? "on" : "off"}`;
+  };
+  button.onclick = () => {
+    followMotions = !followMotions;
+    try { localStorage.setItem(AUTO_PLOT_KEY, followMotions ? "on" : "off"); } catch { /* private */ }
+    label();
+    followMotion();
+  };
+  label();
+}
+
+// The cards worth opening on their own: the ones a named set asks for, else every plottable
+// constraint of the last motion that ran. Never the whole run's card set -- eighty charts in
+// one page is what made live pages crawl.
+function openPlotsFor(path, keys, motion) {
+  const wanted = motion ?? state.replay.constraints
+    .filter((constraint) => constraint.window)
+    .sort((left, right) => right.window[1] - left.window[1])[0]?.motion;
+  // Each row is a full-log /api/plot read: click them apart so several never land in one
+  // frame. Detached on purpose -- the page is usable while the cards fill in.
+  (async () => {
+    const rows = $$("#constraints .constraint").filter((row) => {
+      if (!row.dataset.plottable || row.dataset.plotted || row.dataset.idle) return false;
+      const key = `${row.dataset.motion}/${row.querySelector("strong")?.textContent}`;
+      return keys.length ? keys.includes(key) : row.dataset.motion === wanted;
+    });
+    if (!rows.length) return snack("Nothing recorded to plot in this run.");
+    for (const row of rows) {
+      if (state.runPath !== path) return;   // the reader moved on
+      row.click();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  })();
+}
+
 export function updateCursor() {
   // A cursor pinned to the live edge draws nothing worth a setOption on every chart; it comes
   // back by itself when following ends and the finished run is on screen.
   if (state.following) return;
-  state.charts.forEach((chart) => chart.setOption(cursorOption(state.frame, chart.cursorIndex ?? 0)));
+  state.charts.forEach((chart) => {
+    // Only when the cut actually moves: at 5x most frames land between two samples, and
+    // redrawing every series to draw the identical line is the whole cost of playing.
+    if (progressiveOn() && chart.fullSeries) {
+      const cut = seriesUpTo(chart, state.frame);
+      const drawn = cut.series[0]?.data.length ?? 0;
+      if (drawn !== chart.drawnUpTo) {
+        chart.drawnUpTo = drawn;
+        chart.setOption(cut);
+      }
+    }
+    chart.setOption(cursorOption(state.frame, chart.cursorIndex ?? 0));
+  });
 }
 
 export function filter(selector, value) {
@@ -585,6 +696,7 @@ export function seek(frame) {
   $(".timeline").value = state.frame;
   updateReadout();
   updateCursor();
+  followMotion();
   movePlayhead();
   syncVideo();
 }

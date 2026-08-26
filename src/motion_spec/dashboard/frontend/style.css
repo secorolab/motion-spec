@@ -198,11 +198,41 @@ h1 { margin: 7px 0; font-size: 30px; }
 .diff-row[data-kind="insert"] .diff-right, .diff-row[data-kind="replace"] .diff-right { background: #23302a; color: var(--good); }
 .source-file span { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .graph-help { margin: 4px 0 12px; color: var(--muted); font-size: 12px; }
+.graph-shell { position: relative; margin: 12px 0 28px; }
+.generation-graph { height: 360px; overflow: hidden; border: 1px solid var(--line); background: var(--surface); }
+.graph-empty { display: grid; height: 100%; place-items: center; color: var(--dim); font: 12px var(--mono); }
+.generation-graph svg { width: 100%; height: 100%; cursor: grab; }
+.generation-graph .node, .generation-graph .edge { cursor: pointer; transition: opacity 100ms ease-out; }
+.generation-graph .is-muted { opacity: .08; }
+.generation-graph .node.is-active ellipse, .generation-graph .node.is-active polygon { fill: var(--accent) !important; stroke: var(--text) !important; stroke-width: 2; }
+.generation-graph .edge.is-active path, .generation-graph .edge.is-active polygon { stroke: var(--accent) !important; fill: var(--accent) !important; stroke-width: 2; }
+.graph-shell:fullscreen, .graph-shell:-webkit-full-screen { display: grid; grid-template-rows: minmax(0, 1fr) auto; width: 100vw !important; height: 100vh !important; margin: 0; padding: 24px; background: var(--bg); }
+.graph-shell:fullscreen .generation-graph, .graph-shell:-webkit-full-screen .generation-graph { width: 100%; height: auto; }
+.graph-shell:fullscreen .graph-search-panel, .graph-shell:-webkit-full-screen .graph-search-panel { top: 34px; left: 34px; width: min(340px, calc(100% - 92px)); }
+.graph-shell:fullscreen .graph-fullscreen, .graph-shell:-webkit-full-screen .graph-fullscreen { top: 34px; right: 34px; }
 .graph-heading { display: flex; align-items: center; justify-content: space-between; margin-top: 30px; }
 .graph-heading h2 { margin: 0; }
-.explore-link { padding: 5px 12px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 10px var(--mono); }
-.explore-link:hover { border-color: var(--accent); color: var(--accent); }
+.graph-fullscreen { position: absolute; top: 10px; right: 10px; z-index: 1; width: 28px; height: 28px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); }
+.graph-fullscreen:hover { border-color: var(--accent); color: var(--accent); }
+/* Same rows as the run list: separated by the page's own background, lit on hover. */
+.graph-options { display: grid; margin: 12px 0; border: 1px solid var(--line); }
+.graph-options label { display: flex; align-items: center; gap: 8px; padding: 9px 10px; background: var(--surface); color: var(--muted); font: 11px var(--mono); cursor: pointer; }
+.graph-options label + label { border-top: 1px solid var(--bg); }
+.graph-options label:hover { background: #282c31; color: var(--text); }
+.graph-options input { appearance: none; width: 14px; height: 14px; margin: 0; border: 1px solid var(--dim); background: var(--bg); cursor: pointer; }
+.graph-options input:checked { border-color: var(--accent); background: var(--accent); box-shadow: inset 0 0 0 3px var(--surface); }
+.graph-actions { display: flex; align-items: center; gap: 10px; }
+.graph-search-panel { position: absolute; top: 10px; left: 10px; z-index: 2; width: min(340px, calc(100% - 60px)); }
+.graph-search { width: 100%; padding: 6px 8px; border: 1px solid var(--line); outline: 0; background: var(--surface); color: var(--text); font: 11px var(--mono); }
+.graph-search:focus { border-color: var(--accent); }
+.graph-matches { display: grid; gap: 1px; max-height: 180px; overflow: auto; border: 1px solid var(--line); border-top: 0; background: var(--line); }
+.graph-matches:empty { display: none; }
+.graph-matches button { overflow: hidden; padding: 6px 8px; background: var(--surface); border: 0; color: var(--muted); text-align: left; text-overflow: ellipsis; white-space: nowrap; font: 10px var(--mono); }
+.graph-matches button::before { content: attr(data-kind); display: inline-block; width: 38px; margin-right: 7px; color: var(--accent); text-transform: uppercase; font-size: 9px; }
+.graph-matches button:hover { border-color: var(--accent); color: var(--accent); }
 .run-pagination button { padding: 6px 8px; border: 1px solid var(--line); color: var(--muted); font: 11px var(--mono); }
+.graph-status { color: var(--dim); font: 11px var(--mono); }
+.graph-details { min-height: 42px; padding: 8px 10px; border: 1px solid var(--line); border-top: 0; color: var(--muted); white-space: pre-wrap; font: 11px var(--mono); }
 .run-pagination { display: flex; align-items: center; justify-content: end; gap: 8px; margin-left: auto; color: var(--muted); font: 11px var(--mono); }
 .run-pagination span { line-height: 1; }
 .runs { border: 1px solid var(--line); }
@@ -456,9 +486,7 @@ body:has(.notebook) #content { position: relative; max-width: none; padding: 0; 
 .replay-tabs button:hover { color: var(--muted); }
 .replay-tabs button.active { background: var(--surface); color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
 
-.explore { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 12px; align-items: start; }
-.explore-page { padding: 24px 28px 40px; }
-.explore-page > .path { margin: 4px 0 18px; }
+.sparql { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 12px; align-items: start; }
 .query-rail { display: grid; gap: 2px; }
 .query-tab { display: flex; align-items: center; gap: 6px; padding: 4px 4px 4px 9px; min-height: 30px; border: 1px solid var(--line); border-left: 2px solid transparent; background: var(--surface); color: var(--muted); font: 10px var(--mono); text-align: left; cursor: pointer; overflow: hidden; }
 .query-tab:hover { color: var(--text); }
@@ -468,72 +496,15 @@ body:has(.notebook) #content { position: relative; max-width: none; padding: 0; 
 .query-close:hover { border-color: var(--line); background: var(--bg); color: var(--accent); }
 .new-query { padding: 7px 9px; border: 1px dashed var(--line); background: none; color: var(--dim); font: 10px var(--mono); text-align: left; cursor: pointer; }
 .new-query:hover { border-color: var(--accent); color: var(--accent); }
-.explore-body { display: grid; gap: 8px; min-width: 0; }
-.explore-canned { display: flex; flex-wrap: wrap; gap: 6px; }
-.explore-canned button { padding: 4px 9px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 10px var(--mono); cursor: pointer; }
-.explore-canned button:hover { border-color: var(--accent); color: var(--accent); }
+.sparql-body { display: grid; gap: 8px; min-width: 0; }
+.sparql-canned { display: flex; flex-wrap: wrap; gap: 6px; }
+.sparql-canned button { padding: 4px 9px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 10px var(--mono); cursor: pointer; }
+.sparql-canned button:hover { border-color: var(--accent); color: var(--accent); }
 #query { min-height: 108px; padding: 9px; border: 1px solid var(--line); background: var(--surface); color: var(--text); font: 11px/1.5 var(--code); resize: vertical; }
 #query:focus { outline: none; border-color: var(--accent); }
-.explore-run { display: flex; align-items: center; gap: 10px; }
-.explore-run button { padding: 6px 14px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 11px var(--mono); cursor: pointer; }
-.explore-run button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
-.explore-run button:disabled { color: var(--dim); cursor: default; }
-/* Two projections of one answer, so they are one control rather than two buttons. */
-.explore-views { display: flex; gap: 1px; background: var(--line); }
-.explore-views button { padding: 6px 12px; border: 0; font: 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
-.explore-views button.active { background: var(--bg); color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
-
-.explore-graph { display: grid; gap: 8px; }
-.explore-graph[hidden] { display: none; }
-.graph-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.graph-bar button { padding: 5px 10px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 10px var(--mono); }
-.graph-bar button:hover { border-color: var(--accent); color: var(--accent); }
-.graph-search-panel { position: relative; width: min(280px, 100%); }
-.graph-search { width: 100%; padding: 6px 8px; border: 1px solid var(--line); outline: 0; background: var(--surface); color: var(--text); font: 11px var(--mono); }
-.graph-search:focus { border-color: var(--accent); }
-.graph-matches { position: absolute; z-index: 3; display: grid; gap: 1px; width: 100%; max-height: 220px; overflow: auto; border: 1px solid var(--line); border-top: 0; background: var(--line); }
-.graph-matches:empty { display: none; }
-.graph-matches button { overflow: hidden; padding: 6px 8px; background: var(--surface); border: 0; color: var(--muted); text-align: left; text-overflow: ellipsis; white-space: nowrap; font: 10px var(--mono); }
-.graph-matches button::before { content: attr(data-kind); display: inline-block; width: 74px; margin-right: 7px; overflow: hidden; color: var(--accent); text-transform: uppercase; font-size: 9px; vertical-align: bottom; }
-.graph-matches button:hover { background: var(--bg); color: var(--accent); }
-.graph-depth { display: flex; align-items: center; gap: 4px; color: var(--dim); font: 10px var(--mono); }
-.graph-depth em { font-style: normal; letter-spacing: .08em; text-transform: uppercase; }
-.graph-depth button.active { border-color: var(--accent); color: var(--accent); }
-.graph-crumbs { display: flex; flex-wrap: wrap; gap: 4px; }
-.graph-crumbs:empty { display: none; }
-.graph-crumb { padding: 3px 8px; background: #26292e; color: var(--muted); font: 10px var(--mono); }
-.graph-crumb:hover { color: var(--accent); }
-.graph-crumb + .graph-crumb::before { content: "› "; color: var(--dim); }
-.graph-main { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 1px; background: var(--line); border: 1px solid var(--line); }
-.graph-canvas { height: 520px; overflow: hidden; background: var(--surface); }
-.graph-side { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 1px; min-height: 0; background: var(--line); }
-.graph-details { padding: 9px 10px; overflow: auto; max-height: 260px; background: var(--surface); color: var(--muted); font: 11px var(--mono); }
-.detail-head strong { display: block; color: var(--text); font-size: 12px; }
-.detail-head .path { display: block; margin: 2px 0 8px; overflow-wrap: anywhere; }
-.detail-types { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
-.detail-types i { padding: 2px 6px; background: #2a2e34; color: var(--muted); font-style: normal; font-size: 10px; }
-.detail-attributes { width: 100%; border-collapse: collapse; font: 10px var(--code); }
-.detail-attributes th { padding: 3px 6px 3px 0; color: var(--dim); text-align: left; font-weight: 400; vertical-align: top; }
-.detail-attributes td { padding: 3px 0; color: var(--text); overflow-wrap: anywhere; }
-.detail-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }
-.detail-actions button { padding: 4px 8px; border: 1px solid var(--line); background: var(--bg); color: var(--muted); font: 10px var(--mono); }
-.detail-actions button:hover { border-color: var(--accent); color: var(--accent); }
-.graph-legend { overflow: auto; padding: 8px; background: var(--surface); }
-.legend-filter { width: 100%; margin-bottom: 6px; padding: 5px 7px; border: 1px solid var(--line); outline: 0; background: var(--bg); color: var(--text); font: 10px var(--mono); }
-.legend-filter:focus { border-color: var(--accent); }
-.legend-heading { margin: 10px 0 4px; color: var(--dim); font: 9px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
-.legend-row { display: flex; align-items: center; gap: 6px; width: 100%; padding: 3px 4px; border: 0; background: none; color: var(--muted); font: 10px var(--mono); text-align: left; }
-.legend-row:hover { background: var(--bg); color: var(--text); }
-.legend-row.is-off { color: var(--dim); text-decoration: line-through; }
-.legend-row.is-only { background: #2a2e34; color: var(--text); }
-.legend-swatch { flex: none; width: 9px; height: 9px; }
-.legend-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.legend-count { margin-left: auto; color: var(--dim); }
-.legend-others { color: var(--dim); font-style: italic; }
-.graph-status { color: var(--dim); font: 11px var(--mono); }
-.explore-graph:fullscreen { padding: 20px; background: var(--bg); }
-.explore-graph:fullscreen .graph-main { height: calc(100vh - 130px); }
-.explore-graph:fullscreen .graph-canvas { height: 100%; }
+.sparql-run { display: flex; align-items: center; gap: 10px; }
+.sparql-run button { padding: 6px 14px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 11px var(--mono); cursor: pointer; }
+.sparql-run button:hover { border-color: var(--accent); color: var(--accent); }
 .console { max-height: 420px; margin: 0; padding: 12px 14px; overflow-y: auto; border: 1px solid var(--line); background: var(--surface); color: var(--text); font: 11.5px/1.55 var(--code); white-space: pre-wrap; overflow-wrap: anywhere; }
 .console[hidden] { display: none; }
 /* Terminal SGR palette, muted to sit on --surface. */
@@ -551,6 +522,22 @@ body:has(.notebook) #content { position: relative; max-width: none; padding: 0; 
 #answer th { position: sticky; top: 0; padding: 6px 8px; background: var(--bg); color: var(--dim); text-align: left; font-weight: 400; }
 #answer td { padding: 5px 8px; border-top: 1px solid var(--line); color: var(--text); white-space: nowrap; }
 #answer tr:hover td { background: var(--bg); }
+
+/* Temporal and causal views: the same flat tables, three of them stacked. */
+.views { display: grid; gap: 22px; }
+.view-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+.view-head h2 { margin: 0; font: 11px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+.view-note { color: var(--dim); font: 10px var(--mono); }
+.view table { width: 100%; border-collapse: collapse; border: 1px solid var(--line); font: 11px var(--code); }
+.view th { padding: 6px 8px; background: var(--bg); color: var(--dim); text-align: left; font-weight: 400; }
+.view td { padding: 5px 8px; border-top: 1px solid var(--line); color: var(--text); }
+.view td:first-child { white-space: nowrap; }
+.view tr:hover td { background: var(--bg); }
+/* The longest occupancy is tinted, not ruled: a bar down the side would read as a callout. */
+.view tr.tinted td { background: #2a2422; }
+.view tr.seekable { cursor: pointer; }
+.compare-bar { display: flex; }
+.compare-pick { padding: 5px 9px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 10px var(--mono); }
 
 .ask { max-width: 340px; padding: 16px 18px; border: 1px solid var(--line); background: var(--surface); color: var(--text); font: 12px/1.5 var(--mono); }
 .ask::backdrop { background: rgba(11, 12, 14, .55); }

@@ -431,21 +431,33 @@ class IncrementalProjector:
         self.seq += 1
         if span:
             self.g.add((node, rdflib.RDF.type, TIME.ProperInterval))
-            self.g.add((node, TIME.hasBeginning, _frame_node(self.run_id, step)))
+            self.g.add((node, TIME.hasBeginning, self._frame(step)))
         else:
-            self.g.add((node, TRACE.atFrame, _frame_node(self.run_id, step)))
-        self.anchors.add(step)
+            self.g.add((node, TRACE.atFrame, self._frame(step)))
         dt = _dt_literal(wall_ns)
         if dt is not None:
             self.g.add((node, PROV.startedAtTime, dt))
+        return node
+
+    def _frame(self, step: int) -> rdflib.URIRef:
+        """The instant an occurrence anchors to, carrying the step that dates it.
+
+        Written where the node is minted rather than only when the run is archived: a live
+        projection that emits interval endpoints nothing can read the step off leaves every
+        duration query with a beginning and no time.
+        """
+        node = _frame_node(self.run_id, step)
+        self.g.add((node, rdflib.RDF.type, TRACE.Frame))
+        self.g.add((node, rdflib.RDF.type, TIME.Instant))
+        self.g.add((node, TRACE.step, rdflib.Literal(step)))
+        self.anchors.add(step)
         return node
 
     def _close(self, node: rdflib.URIRef | None, step: int) -> None:
         """Close a span at `step`. Idempotent, so closing the run twice is harmless."""
         if node is None or (node, TIME.hasEnd, None) in self.g:
             return
-        self.g.add((node, TIME.hasEnd, _frame_node(self.run_id, step)))
-        self.anchors.add(step)
+        self.g.add((node, TIME.hasEnd, self._frame(step)))
 
     def _informed_by(self, node: rdflib.URIRef, cause: rdflib.URIRef | None) -> None:
         if cause is not None:

@@ -42,7 +42,15 @@ from motion_spec.dashboard.jobs import (
 )
 from motion_spec.dashboard.live import live_state, run_control
 from motion_spec.dashboard.notebook import jupyter_server, run_notebook, stop_jupyter
-from motion_spec.dashboard.queries import generation_graph, run_query, save_queries, saved_queries
+from motion_spec.dashboard.queries import (
+    compare,
+    gates,
+    generation_graph,
+    run_query,
+    save_queries,
+    saved_queries,
+    timeline,
+)
 from motion_spec.dashboard.replay import plot_data, replay_data
 from motion_spec.dashboard.roots import (
     FRONTEND,
@@ -89,6 +97,9 @@ LAN_GET_ALLOWED = frozenset(
         "/api/storage",
         "/api/runs",
         "/api/run",
+        "/api/run/timeline",
+        "/api/run/gates",
+        "/api/run/compare",
         "/api/console",
         "/api/queries",
         "/api/video",
@@ -275,6 +286,21 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return self.send_json([run_info(path) for path in reversed(runs)])
             if parsed.path == "/api/run":
                 return self.send_json(run_status(relative_path(roots.GENERATIONS, value)))
+            if parsed.path == "/api/run/timeline":
+                return self.send_json(
+                    timeline(
+                        relative_path(roots.GENERATIONS, value), query.get("iri", [""])[0] or None
+                    )
+                )
+            if parsed.path == "/api/run/gates":
+                return self.send_json(gates(relative_path(roots.GENERATIONS, value)))
+            if parsed.path == "/api/run/compare":
+                return self.send_json(
+                    compare(
+                        relative_path(roots.GENERATIONS, query.get("left", [""])[0]),
+                        relative_path(roots.GENERATIONS, query.get("right", [""])[0]),
+                    )
+                )
             if parsed.path == "/api/devices":
                 return self.send_json(probe_devices(relative_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/health":

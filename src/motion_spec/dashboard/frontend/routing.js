@@ -9,7 +9,6 @@
 
 import { showEmpty } from "./components.js";
 import { $, RESTRICTED_TABS, showError, state } from "./core.js";
-import { showExplore } from "./explore.js";
 import { loadGenerations, selectGeneration, showDrift, showGitDiff } from "./generations.js";
 import { loadHealth } from "./health.js";
 import { loadNotebook } from "./notebook.js";
@@ -21,7 +20,7 @@ import { loadSources, openSource } from "./sources.js";
 // and restoring one wins over that view -- otherwise the hash names two and a reload picks the
 // other. Every other tab only chooses which list the sidebar shows.
 const PAGE_TABS = { health: loadHealth, notebook: loadNotebook };
-const VIEW_PARAMS = ["run", "generation", "explore", "source", "diff", "gitdiff", "file", "panel"];
+const VIEW_PARAMS = ["run", "generation", "source", "diff", "gitdiff", "file", "panel"];
 
 export function goHome() {
   stopPlayback();
@@ -44,7 +43,6 @@ export function setView(kind, path) {
     && !view.has("source") && !view.has("diff");
   view.delete("run");
   view.delete("generation");
-  view.delete("explore");
   view.delete("source");
   view.delete("diff");
   view.set(kind, path);
@@ -93,13 +91,9 @@ export function loadLocation() {
   // either: the state and the URL have to agree on which single view this is.
   const page = PAGE_TABS[state.tab];
   state.generationPath = page ? null
-    : view.get("generation") ?? view.get("explore") ?? view.get("diff")
-      ?? view.get("run")?.split("/runs/")[0] ?? null;
+    : view.get("generation") ?? view.get("diff") ?? view.get("run")?.split("/runs/")[0] ?? null;
   if (page) return settle(loadSidebar().then(() => page()));
-  if (view.has("explore")) {
-    settle(loadSidebar().then(() => showExplore(view.get("explore"), false)));
-  }
-  else if (view.has("run")) {
+  if (view.has("run")) {
     settle(loadSidebar().then(() => loadReplay(view.get("run"))));
   }
   else if (view.has("diff")) {

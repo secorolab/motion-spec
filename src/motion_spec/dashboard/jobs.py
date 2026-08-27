@@ -298,12 +298,16 @@ def start_generate(source: Path) -> dict:
     # Announce the path into the log ourselves -- generate_status reads it from there -- and
     # let build's output carry the rest. (No tee back into the log: a /dev/fd reopen starts at
     # offset 0 and overwrites what the others wrote.)
+    # pipefail so a failed gen fails the assignment: without it the status is tail's, the chain
+    # reaches build with an empty path, and click's "Directory '' does not exist" buries the
+    # rejection that actually stopped it. bash, not sh: dash has no pipefail.
     chain = (
+        "set -o pipefail; "
         f"g=$(motion-spec gen code {shlex.quote(str(source))}"
         f" -o {shlex.quote(str(roots.GENERATIONS))} | tail -n 1)"
         f' && printf "generation: %s\\n" "$g" && exec motion-spec build "$g"'
     )
-    argv = ["sh", "-c", chain]
+    argv = ["bash", "-c", chain]
     _reap_jobs()
     sink = log.open("wb")
     process = subprocess.Popen(

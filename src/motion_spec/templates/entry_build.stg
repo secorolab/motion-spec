@@ -167,7 +167,9 @@ inline Serial serial(const toml::table &config, const std::string &key) {
     Serial out;
     out.port = required_string(entry, "port", key);
     out.baudrate = required_int(entry, "baudrate", key);
-    out.timeout_ms = entry["timeout_ms"].value_or(1.0);
+    // Milliseconds, as the name says: a device that answers a request waits for the answer,
+    // one that streams waits for the next frame, and both fail the read when it does not come.
+    out.timeout_ms = entry["timeout_ms"].value_or(1000.0);
     out.slave_address = required_int(entry, "slave_address", key);
     return out;
 \}

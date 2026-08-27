@@ -40,17 +40,10 @@ CODEGEN_ALTERNATIVES = (("rosidl_pycommon", "rosidl_cmake"),)
 # `stst` is a Java program built by ant, and `protoc` compiles the frame-log schema every
 # generation carries: the generator shells out to all three.
 CODEGEN_EXECUTABLES = ("java", "ant", "protoc")
-ROBIF2B_BUILD_PACKAGES = (
-    "robif2b",
-    "urdfdom_headers",
-    "urdfdom",
-    "serial",
-    "robotiq_driver_noros",
-    "robotiq_ft",
-)
+ROBIF2B_BUILD_PACKAGES = ("robif2b", "urdfdom_headers", "urdfdom", "serial", "robotiq_driver_noros")
 # Present only when the workspace was built with that device wrapper enabled. A model that
 # binds none of them builds and runs regardless, so a miss here is a note, not a failure.
-OPTIONAL_BUILD_PACKAGES = frozenset({"serial", "robotiq_driver_noros", "robotiq_ft"})
+OPTIONAL_BUILD_PACKAGES = frozenset({"serial", "robotiq_driver_noros"})
 # TODO: Check hddc2b only when the generated model selects an HDDC2B base solver.
 
 _WORKSPACE = "$GRC_WS"
@@ -88,7 +81,6 @@ _WORKSPACE_PACKAGES = (
     "robif2b",
     "serial",
     "robotiq_driver_noros",
-    "robotiq_ft",
 )
 # robif2b builds a device wrapper only when told to. Missing here means the flag was off, not
 # that the package is absent, so the fix is a rebuild rather than a checkout.
@@ -274,12 +266,8 @@ DETAILS: dict[str, dict[str, str]] = {
         "source": "https://github.com/wjwwood/serial",
     },
     "robotiq_driver_noros": {
-        "why": "drives the Robotiq gripper on a real platform",
+        "why": "drives the Robotiq gripper and force-torque sensor on a real platform",
         "source": "https://github.com/secorolab/robotiq_driver_noros",
-    },
-    "robotiq_ft": {
-        "why": "reads the Robotiq force-torque sensor on a real platform",
-        "source": "https://github.com/secorolab/robotiq_ft",
     },
 }
 

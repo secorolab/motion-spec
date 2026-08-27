@@ -144,6 +144,9 @@ device-state-init-robif2b-RobotiqFT300s(solver, device) ::= <<
     ft_<device.drives>_io.stale.limit = motion_spec::io::stale_after_cycles(
         motion_spec::config::stale_after_ms(robot_config, "<device.config_key>"),
         motion_spec::runtime::kControlPeriodS);
+    ft_<device.drives>_io.stale.invalid_limit = motion_spec::io::stale_after_cycles(
+        motion_spec::config::invalid_after_ms(robot_config, "<device.config_key>"),
+        motion_spec::runtime::kControlPeriodS);
 >>
 
 // Each bound device opens its own connection, except a gripper on the arm's interconnect --

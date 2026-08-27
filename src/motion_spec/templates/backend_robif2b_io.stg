@@ -33,6 +33,16 @@ inline double stale_after_ms(const toml::table &config, const std::string &key) 
     return value;
 \}
 
+// How long failed transactions may persist before the run stops. Zero preserves the default
+// fail-fast behaviour; deployments may tolerate brief serial dropouts explicitly.
+inline double invalid_after_ms(const toml::table &config, const std::string &key) {
+    const double value = config.at_path(key + ".invalid_after_ms").value_or(0.0);
+    if (value \< 0.0) {
+        throw std::runtime_error("robot config [" + key + "] has a negative 'invalid_after_ms'");
+    \}
+    return value;
+\}
+
 // The Robotiq example leaves this gap after each update. The driver already waits while reading;
 // this is the quiet time before the next read, kept tunable for the real serial adapter.
 inline double ft_poll_interval_ms(const toml::table &config, const std::string &key) {
@@ -62,6 +72,8 @@ struct Staleness {
     std::uint64_t limit = 0;
     std::uint64_t last = 0;
     std::uint64_t cycles = 0;
+    std::uint64_t invalid_limit = 1;
+    std::uint64_t invalid_cycles = 0;
 };
 
 // A device thread that stops advancing is as bad as one that fails: its measurement keeps the
@@ -70,30 +82,34 @@ struct Staleness {
 inline void require_fresh(Staleness &staleness, std::uint64_t seq, bool ok, bool required,
                           std::string_view device) {
     if (motion_spec::runtime::stop_requested()) return;
-    if (seq != staleness.last) {
+    const bool advanced = seq != staleness.last;
+    if (advanced) {
         staleness.last = seq;
         staleness.cycles = 0;
-        if (ok) return;
-        if (!required) return;
-        std::cerr \<\< "[run] device '" \<\< device \<\< "' reported a failed transaction; stopping"
-                  \<\< std::endl;
-        motion_spec::runtime::request_stop(0);
-        return;
+        if (!ok) {
+            std::cerr \<\< "[run] device '" \<\< device \<\< "' reported a failed transaction"
+                      \<\< std::endl;
+        \}
     \}
     if (!required) {
         staleness.cycles = 0;
+        staleness.invalid_cycles = 0;
         return;
     \}
     if (!ok) {
-        std::cerr \<\< "[run] device '" \<\< device \<\< "' has no valid reading; stopping"
+        if (++staleness.invalid_cycles \< staleness.invalid_limit) return;
+        std::cerr \<\< "[run] device '" \<\< device
+                  \<\< "' has no valid reading after the configured grace period; Retry communication"
                   \<\< std::endl;
-        motion_spec::runtime::request_stop(0);
+        // motion_spec::runtime::request_stop(0);
         return;
     \}
+    staleness.invalid_cycles = 0;
+    if (advanced) return;
     if (++staleness.cycles \< staleness.limit) return;
-    std::cerr \<\< "[run] device '" \<\< device \<\< "' completed no transaction in time; stopping"
+    std::cerr \<\< "[run] device '" \<\< device \<\< "' completed no transaction in time. Retrying;"
               \<\< std::endl;
-    motion_spec::runtime::request_stop(0);
+    // motion_spec::runtime::request_stop(0);
 \}
 
 \} // namespace motion_spec::io

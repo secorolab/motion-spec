@@ -98,7 +98,6 @@ export function bindRunAgain(page, path, cameras, simulated) {
   const start = bar.querySelector(".run-start");
   const halt = bar.querySelector(".run-stop");
   const failed = page.querySelector(".run-console");
-  const devices = page.querySelector(".devices");
   // Each option is a choice between two named states, not a flag to guess the meaning of.
   bar.querySelectorAll(".run-choice").forEach((choice) => {
     choice.querySelectorAll("button").forEach((option) => {
@@ -245,8 +244,6 @@ export function bindRunAgain(page, path, cameras, simulated) {
     } catch (error) {
       start.disabled = false;
       state_.textContent = error.message;
-      // A run refused over the wire already probed it: show that where devices are reported.
-      if (error.devices) devices?.showReport(error);
     }
   };
   api(`/api/run?path=${encodeURIComponent(path)}`).then((status) => {
@@ -265,8 +262,7 @@ export function bindDevices(page, path) {
   const rows = panel.querySelector(".device-rows");
   const state_ = panel.querySelector(".devices-state");
   panel.hidden = false;
-  // A probe from anywhere lands here: the refused run's is the same report this button asks for.
-  panel.showReport = (report) => {
+  const showReport = (report) => {
     state_.textContent = report.config ? "" : "this generation archived no robot.toml";
     rows.replaceChildren(...report.devices.flatMap(deviceRows));
     panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -275,7 +271,7 @@ export function bindDevices(page, path) {
     state_.textContent = "testing…";
     rows.replaceChildren();
     try {
-      panel.showReport(await api(`/api/devices?path=${encodeURIComponent(path)}`));
+      showReport(await api(`/api/devices?path=${encodeURIComponent(path)}`));
     } catch (error) {
       state_.textContent = error.message;
     }

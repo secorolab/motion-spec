@@ -3,7 +3,7 @@
 """What the dashboard starts, refuses to start, follows and stops.
 
 A generation is made by one process and run by another; both are watched through their
-terminal output, and a hardware run is refused before it is named if nothing answers.
+terminal output.
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ from pathlib import Path
 from motion_spec.dashboard import roots
 from motion_spec.dashboard.catalog import generation_cameras, is_simulated, run_ended, run_recorded
 from motion_spec.dashboard.roots import LAYOUT_REL, RUN_LOG, trace
-from motion_spec.devices import probe_devices, unreachable
 
 RUNNING: dict[str, dict] = {}
 
@@ -91,14 +90,6 @@ def run_arguments(options: dict, simulated: bool) -> list[str]:
     return argv
 
 
-class Unreachable(ValueError):
-    """A refusal that carries the probe behind it, so the page shows rows and not a sentence."""
-
-    def __init__(self, message: str, report: dict):
-        super().__init__(message)
-        self.report = report
-
-
 def start_run(generation_dir: Path, options: dict) -> dict:
     """Run a generation again, with the options `motion-spec run` takes for one.
 
@@ -111,16 +102,13 @@ def start_run(generation_dir: Path, options: dict) -> dict:
         raise ValueError("this generation is already running")
     # Only a simulator has a display to drop or a frame to record, whatever the browser posted.
     simulated = is_simulated(generation_dir)
-    # Hardware that does not answer is not a run to start: the driver would block on the
-    # connect, and the run would exist as a named, empty directory that never records a frame.
+    # Two generations cannot share the real robot. Whether the hardware answers is not asked
+    # here: the devices panel probes when the operator asks it to, and a run that finds nothing
+    # says so in its own console.
     if not simulated:
         other = _real_run_active()
         if other is not None:
             raise ValueError(f"the real robot is already running {other.name}")
-        report = probe_devices(generation_dir)
-        missing = [device["name"] for device in unreachable(report)]
-        if missing:
-            raise Unreachable(f"not reachable: {', '.join(missing)}", report)
     from motion_spec.generation.pipeline import new_id
 
     # Name the run here rather than letting the CLI pick: the browser can then open the run

@@ -478,10 +478,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             storage_info.cache_clear()
             self.send_json({"deleted": len(targets), "folders": folders})
         except ValueError as exc:
-            # A refusal that probed something says what it found, beside why it said no.
-            self.send_json(
-                {"error": str(exc), **getattr(exc, "report", {})}, HTTPStatus.BAD_REQUEST
-            )
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         except Exception as exc:  # noqa: BLE001 -- any failure answers as an API error
             self.send_json(self._failed(exc), HTTPStatus.INTERNAL_SERVER_ERROR)
 

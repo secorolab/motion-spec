@@ -905,8 +905,10 @@ def run(
         raise click.UsageError(
             "--headless and --steps are simulator options; this generation runs on hardware"
         )
-    if not _is_simulated(generation):
-        _require_devices(generation)
+    # Probing before a hardware run is off for now: start the controller directly and let a
+    # device that does not answer say so in the run's own console.
+    # if not _is_simulated(generation):
+    #     _require_devices(generation)
 
     run_dir = generation / "runs" / (run_id or new_id("run"))
     arguments = (

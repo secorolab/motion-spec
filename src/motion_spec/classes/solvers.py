@@ -53,6 +53,9 @@ class AccelerationConstraint:
     as_seen_by: Frame | None = None
     base_aligned: bool = True
     direction: Direction | None = None
+    # The other subspace's half of the same solver column: a scalar of a body-fixed primitive
+    # changes with both halves of the twist, so one row carries two direction vectors.
+    moment_direction: Direction | None = None
     saturation: Saturation | None = None
     type: str = field(default="AccelerationConstraint")
 

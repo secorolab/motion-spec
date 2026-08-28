@@ -830,6 +830,11 @@ OPS_GENERIC = [
         [GEOM_OP["distance"], GEOM_OP_EXT["gradient"]],
     ),
     Operator(
+        GEOM_OP_EXT["PointBodyLineToLinearDistance"],
+        [GEOM_OP["in1"], GEOM_OP["direction"]],
+        [GEOM_OP["distance"], GEOM_OP_EXT["gradient"], GEOM_OP_EXT["gradient-moment"]],
+    ),
+    Operator(
         GEOM_OP_EXT["PointOnLineProjection"],
         [GEOM_OP["in1"], GEOM_OP["in2"], GEOM_OP["direction"]],
         [GEOM_OP["distance"], GEOM_OP_EXT["gradient"]],

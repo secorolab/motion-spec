@@ -121,6 +121,23 @@ class MjcfSceneFrame:
 
 
 @dataclass
+class MjcfSceneCamera:
+    """A camera on a static scene frame, built into the composed scene on that frame's body."""
+
+    name: str
+    body: str
+    fovy_deg: float
+    pos_x: float = 0.0
+    pos_y: float = 0.0
+    pos_z: float = 0.0
+    quat_x: float = 0.0
+    quat_y: float = 0.0
+    quat_z: float = 0.0
+    quat_w: float = 1.0
+    type: str = field(default="MjcfSceneCamera")
+
+
+@dataclass
 class MjcfSceneSpec:
     """The scene: robots, objects, cameras and the control timestep."""
 
@@ -131,6 +148,8 @@ class MjcfSceneSpec:
     cameras: list[CameraBinding] = field(default_factory=list)
     # Every frame the kgraph declares, as a site on its body.
     frames: list[MjcfSceneFrame] = field(default_factory=list)
+    # Cameras whose frame is a static scene frame; robot-asset cameras ride their MJCF instead.
+    static_cameras: list[MjcfSceneCamera] = field(default_factory=list)
     # Physics/control timestep from ENVIRONMENT.timestep; defaults to the backend
     # interval when the model omits it.
     timestep_s: float = 0.002

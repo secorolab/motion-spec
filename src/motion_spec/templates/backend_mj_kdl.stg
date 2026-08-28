@@ -314,6 +314,22 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros) ::= <<
         mj_scene.sites.push_back(site_spec);
     \}
 }; separator="\n">
+<scene.static_cameras:{camera |
+    {
+        mj_kdl::CameraSpec camera_spec{\};
+        camera_spec.name = "<camera.name>";
+        camera_spec.body = "<camera.body>";
+        camera_spec.pos[0] = <camera.pos_x>;
+        camera_spec.pos[1] = <camera.pos_y>;
+        camera_spec.pos[2] = <camera.pos_z>;
+        camera_spec.quat[0] = <camera.quat_x>;
+        camera_spec.quat[1] = <camera.quat_y>;
+        camera_spec.quat[2] = <camera.quat_z>;
+        camera_spec.quat[3] = <camera.quat_w>;
+        camera_spec.fovy = <camera.fovy_deg>;
+        mj_scene.cameras.push_back(camera_spec);
+    \}
+}; separator="\n">
 
     if (!mj_kdl::init_env(&mj_env, &mj_scene)) {
         std::cerr \<\< "mj_kdl::init_env() failed\\n";

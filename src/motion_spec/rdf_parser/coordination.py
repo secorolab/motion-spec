@@ -1579,7 +1579,9 @@ def _finish_motions(model, motions, handlers, computation, fsm, solvers_by_id):
         for group in motion.pose_axis_error_groups:
             for flag, types in _GROUP_TYPE_FLAGS.items():
                 setattr(group, flag, group.superobject_type in types)
-        annotate_controller_signals(motion.controllers, computation.closures)
+        annotate_controller_signals(
+            motion.controllers, computation.closures, motion.while_evaluators
+        )
         motion.declared_pose_components = quantities.declared_pose_component_entries(
             model,
             computation.data_structures,

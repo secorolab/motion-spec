@@ -249,6 +249,9 @@ class SpatialAxis:
     subspace: Subspace
     axis: str
     direction: str | None = None
+    # A second runtime vector filling this row's other subspace: a scalar of a body-fixed
+    # primitive changes with both halves of the twist, and both land in one solver column.
+    moment: str | None = None
 
     @property
     def suffix(self) -> str:

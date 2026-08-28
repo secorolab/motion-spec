@@ -470,11 +470,11 @@ def _operator_gradient(model, quantity):
         for op in sorted(graph.subjects(predicate, quantity), key=str):
             gradient = graph.value(op, GEOM_OP_EXT["gradient"])
             if gradient is not None:
-                return gradient, subspace
+                return gradient, subspace, graph.value(op, GEOM_OP_EXT["gradient-moment"])
     op = alignment_gradient_op(model, quantity)
     if op is not None:
-        return graph.value(op, GEOM_OP_EXT["gradient"]), _GRADIENT_OUTPUTS[GEOM_OP["angle"]]
-    return None, None
+        return graph.value(op, GEOM_OP_EXT["gradient"]), _GRADIENT_OUTPUTS[GEOM_OP["angle"]], None
+    return None, None, None
 
 
 def operator_gradient_directions(model, controller, constraint, quantity):
@@ -485,14 +485,14 @@ def operator_gradient_directions(model, controller, constraint, quantity):
     it instead of a frame axis -- the shape a path-following row already takes.
     """
     graph = model.graph
-    gradient, subspace = _operator_gradient(model, quantity)
+    gradient, subspace, moment = _operator_gradient(model, quantity)
     if gradient is None:
         return None
     axes = _view_axes(
         model, controller, constraint, None, quantity, subspace=subspace, axis="gradient"
     )
     return ControlDirections(
-        tuple(replace(axis, direction=gradient) for axis in axes),
+        tuple(replace(axis, direction=gradient, moment=moment) for axis in axes),
         None,
         1.0,
         graph.value(gradient, GEOM_COORD["as-seen-by"]),
@@ -1134,6 +1134,9 @@ def _derived_acceleration_drivers(model, context, plan, family) -> list:
                     if axis.direction is not None
                     else None
                 ),
+                moment_direction=(
+                    quantities.direction(model, axis.moment) if axis.moment is not None else None
+                ),
                 **{family.payload_field: family.payload(payload_id, axis.subspace)},
             )
         )
@@ -1338,7 +1341,7 @@ def augment_data(model, context, data: list, views: dict) -> None:
     data.extend(signals)
 
 
-def annotate_controller_signals(controllers, closures: dict) -> None:
+def annotate_controller_signals(controllers, closures: dict, evaluators=()) -> None:
     """Fold the measured and setpoint signal ids onto each controller record.
 
     Abstract ids only, taken from the error-evaluator closure that feeds the controller; the C++
@@ -1349,9 +1352,24 @@ def annotate_controller_signals(controllers, closures: dict) -> None:
         for closure in closures.values()
         if closure.get("type") == "ErrorEvaluator" and closure.get("error")
     }
+    # This motion's own evaluators, by the constraint they evaluate: a deduplicated constraint
+    # shares its id across motions, so the global closures cannot disambiguate.
+    sources_by_constraint = {
+        constraint_id: closure
+        for evaluator in evaluators
+        if (constraint_id := getattr(getattr(evaluator, "constraint", None), "id", None))
+        and (closure := closures.get(evaluator.id))
+    }
     for controller in controllers:
         error = getattr(controller, "error_signal", None)
         source = error_sources.get(error if isinstance(error, str) else getattr(error, "id", None))
+        if source is None:
+            # A feed-forward controller consumes no error, but its constraint's evaluator still
+            # says what is measured against what -- fold those on so the logged slot carries the
+            # real values instead of zeros.
+            source = sources_by_constraint.get(getattr(controller, "constraint", None))
+            if source is not None and error is None and source.get("error"):
+                controller.error_signal = source["error"]
         source = source or {}
         reference = getattr(controller, "reference_signal", None)
         setpoint_id = (

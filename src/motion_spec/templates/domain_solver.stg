@@ -104,6 +104,11 @@ assign-spatial-direction(specification, solver_state, column, chain_root) ::= <<
     state.<solver_state>.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::X), <column>) = shared.<specification.direction.id>.x();
     state.<solver_state>.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Y), <column>) = shared.<specification.direction.id>.y();
     state.<solver_state>.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Z), <column>) = shared.<specification.direction.id>.z();
+<if(specification.moment_direction)>
+    state.<solver_state>.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<other-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::X), <column>) = shared.<specification.moment_direction.id>.x();
+    state.<solver_state>.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<other-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Y), <column>) = shared.<specification.moment_direction.id>.y();
+    state.<solver_state>.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<other-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Z), <column>) = shared.<specification.moment_direction.id>.z();
+<endif>
 <else>
     {
 <alpha-frame(specification, solver_state, column)>
@@ -112,6 +117,13 @@ assign-spatial-direction(specification, solver_state, column, chain_root) ::= <<
         state.<solver_state>.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::X), <column>) = alpha_axis_<solver_state>_<column>[0];
         state.<solver_state>.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Y), <column>) = alpha_axis_<solver_state>_<column>[1];
         state.<solver_state>.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Z), <column>) = alpha_axis_<solver_state>_<column>[2];
+<if(specification.moment_direction)>
+        const KDL::Vector alpha_moment_<solver_state>_<column> =
+            alpha_frame_<solver_state>_<column>.M * shared.<specification.moment_direction.id>;
+        state.<solver_state>.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<other-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::X), <column>) = alpha_moment_<solver_state>_<column>[0];
+        state.<solver_state>.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<other-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Y), <column>) = alpha_moment_<solver_state>_<column>[1];
+        state.<solver_state>.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<other-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Z), <column>) = alpha_moment_<solver_state>_<column>[2];
+<endif>
     }
 <endif>
 <else>

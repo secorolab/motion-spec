@@ -16,6 +16,7 @@ the backend cannot run.
 from __future__ import annotations
 
 import collections
+import math
 import sys
 from collections import Counter
 from dataclasses import dataclass, replace
@@ -63,6 +64,7 @@ from rdf_utils.models.vocab import (
     URI_KC_TYPE_JOINT,
     URI_KC_TYPE_SERIAL,
 )
+from rdf_utils.models.vocab import URI_QUDT_PRED_UNIT, URI_QUDT_PRED_VALUE
 from rdf_utils.namespace import NS_MM_KC_EXT, NS_MM_QUDT_QTY
 from rdf_utils.uri import iri_is_descendant, iri_parent
 from rdflib import Graph, URIRef
@@ -71,6 +73,8 @@ from scene_dsl.kdl_tree import build_kdl_trees
 from scene_dsl.rdf.sensors import (
     CAMERA_TYPES,
     URI_SENS_PRED_CAMERA_KIND,
+    URI_SENS_PRED_FIELD_OF_VIEW,
+    URI_SENS_PRED_FRAME,
     URI_SENS_PRED_RESOLUTION_HEIGHT,
     URI_SENS_PRED_RESOLUTION_WIDTH,
     URI_SENS_TYPE_CAMERA,
@@ -93,6 +97,7 @@ from motion_spec.classes.geometry import SceneObject
 from motion_spec.classes.motion import BlackboardValue
 from motion_spec.classes.scene import (
     MjcfSceneAttachment,
+    MjcfSceneCamera,
     MjcfSceneFrame,
     MjcfSceneObject,
     MjcfSceneRobot,
@@ -397,9 +402,24 @@ def _cameras(model, hosted, runtime_prefix) -> list:
                 frame_id=f"{runtime_prefix}{local_name(sensor)}",
                 topic=topic,
                 message=message,
+                frame_uri=str(graph.value(sensor, URI_SENS_PRED_FRAME) or ""),
+                fovy_deg=_camera_fovy_deg(graph, sensor),
             )
         )
     return cameras
+
+
+def _camera_fovy_deg(graph, sensor) -> float:
+    """The camera's field of view in degrees, whatever unit the model authored it in."""
+    fov = graph.value(sensor, URI_SENS_PRED_FIELD_OF_VIEW)
+    value = graph.value(fov, URI_QUDT_PRED_VALUE) if fov is not None else None
+    if value is None:
+        return 45.0
+    degrees = float(value.toPython())
+    unit = graph.value(fov, URI_QUDT_PRED_UNIT) if fov is not None else None
+    if unit is not None and str(unit).endswith("RAD"):
+        degrees = math.degrees(degrees)
+    return degrees
 
 
 def _camera_provider(graph, sensor) -> tuple[str | None, str | None]:
@@ -1339,6 +1359,22 @@ def read_scene(model) -> MjcfSceneSpec:
         scene.cameras.extend(assembly.cameras)
 
     scene.frames = _scene_frames(model)
+    # A camera on a static scene frame is built into the composed scene at that frame's site
+    # pose; a camera on a robot-asset frame rides the asset's own MJCF instead.
+    frames_by_uri = {frame.uri: frame for frame in scene.frames}
+    for camera in scene.cameras:
+        frame = frames_by_uri.get(camera.frame_uri)
+        if frame is None:
+            continue
+        scene.static_cameras.append(
+            MjcfSceneCamera(
+                name=camera.id,
+                body=frame.body,
+                fovy_deg=camera.fovy_deg,
+                **{f: getattr(frame, f) for f in ("pos_x", "pos_y", "pos_z")},
+                **{f: getattr(frame, f) for f in ("quat_x", "quat_y", "quat_z", "quat_w")},
+            )
+        )
     _expand_scene_geometry(scene)
     _validate_scene(scene, model.app_path)
 

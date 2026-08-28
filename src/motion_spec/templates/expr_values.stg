@@ -6,6 +6,12 @@ subspace-to-runtime-subspace ::= [
     "Angular": "Subspace::Angular"
 ]
 
+// The other half of the twist: where a mixed row's moment direction lands.
+other-runtime-subspace ::= [
+    "Linear": "Subspace::Angular",
+    "Angular": "Subspace::Linear"
+]
+
 axis-to-vector ::= [
     "X": "1.0, 0.0, 0.0",
     "Y": "0.0, 1.0, 0.0",

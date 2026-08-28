@@ -95,6 +95,10 @@ class CameraBinding:
     # The frame the camera reports in, named by the sensor the uri points at. A publisher stamps
     # its images with this, so it must name a frame in the ROS optical convention.
     frame_id: str = ""
+    # The scene frame the model mounts the camera on, and its field of view: a camera on a
+    # static scene frame is built into the composed MuJoCo scene from these.
+    frame_uri: str = ""
+    fovy_deg: float = 45.0
     # Where a viewer reads this camera, as the model's subscription states it. A camera no
     # channel carries has no provider, and nothing may guess one from its name.
     topic: str | None = None

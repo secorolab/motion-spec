@@ -398,6 +398,30 @@ emit-call-PointPlaneToLinearDistance(closure, views) ::= <<
 }
 >>
 
+// Table IIa: unsigned distance from a point to a line riding the frame the point is measured
+// in (the line's origin IS that frame's origin). With P the point in that frame and d the
+// line direction, D = |P x d| and D' = (u x d).v + ((P.d) u).w for the frame's own twist
+// (v, w) in its coordinates, u = (P x d)/D: the linear gradient plus the angular half a
+// tilting axis contributes. On the line both vanish and command nothing.
+emit-call-PointBodyLineToLinearDistance(closure, views) ::= <<
+{
+    KDL::Vector _d_<closure.distance> = <access-expr(closure.direction, views)>;
+    _d_<closure.distance>.Normalize();
+    const KDL::Vector _p_<closure.distance> = shared.<closure.in1>.p;
+    const KDL::Vector _c_<closure.distance> = _p_<closure.distance> * _d_<closure.distance>;
+    const double _norm_<closure.distance> = _c_<closure.distance>.Norm();
+    shared.<closure.distance> = _norm_<closure.distance>;
+    if (_norm_<closure.distance> > 1e-9) {
+        const KDL::Vector _u_<closure.distance> = _c_<closure.distance> / _norm_<closure.distance>;
+        shared.<closure.gradient> = _u_<closure.distance> * _d_<closure.distance>;
+        shared.<closure.gradient_moment> = _u_<closure.distance> * KDL::dot(_p_<closure.distance>, _d_<closure.distance>);
+    } else {
+        shared.<closure.gradient> = KDL::Vector::Zero();
+        shared.<closure.gradient_moment> = KDL::Vector::Zero();
+    }
+}
+>>
+
 // Table IIa: unsigned distance from a point to a line; the gradient points from the line's
 // nearest point to the point. On the line the distance is zero and the gradient commands nothing.
 emit-call-PointLineToLinearDistance(closure, views) ::= <<
@@ -478,11 +502,11 @@ emit-call-DirectionPlaneToAngularDistance(closure, views) ::= <<
 }
 >>
 
-// The axis a positive moment turns `in1` toward `in2` about, matching the drive direction
-// RotationVectorFromDirections takes.
+// The angle's true gradient: the axis a positive rotation of `in1` about opens the angle to
+// `in2`, so the row convention matches every other Table-II gradient (d(angle)/dt = gradient . w).
 emit-call-AngleGradientFromDirections(closure, views) ::= <<
 {
-    const KDL::Vector _axis_<closure.gradient> = <access-expr(closure.in1, views)> * <access-expr(closure.in2, views)>;
+    const KDL::Vector _axis_<closure.gradient> = <access-expr(closure.in2, views)> * <access-expr(closure.in1, views)>;
     const double _norm_<closure.gradient> = _axis_<closure.gradient>.Norm();
     shared.<closure.gradient> = (_norm_<closure.gradient> > 1e-9)
         ? _axis_<closure.gradient> / _norm_<closure.gradient>

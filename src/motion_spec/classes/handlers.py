@@ -101,6 +101,9 @@ class FeedForwardController:
     control_signal: Quantity
     reference_signal: Quantity | None = None
     output_saturation: Saturation | None = None
+    # Not consumed by the controller; folded from its constraint's evaluator so the logged
+    # slot carries the real error instead of a zero.
+    error_signal: str | None = None
     measured_signal: str | None = None
     setpoint_signal: str | None = None
     # The band its constraint is satisfied within, as the model authored it.

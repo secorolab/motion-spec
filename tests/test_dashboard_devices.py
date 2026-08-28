@@ -11,8 +11,8 @@ import socket
 import threading
 import time
 
-from motion_spec.dashboard import catalog, jobs
 from motion_spec import devices
+from motion_spec.dashboard import catalog, jobs
 from motion_spec.health import HealthCheck
 
 ROBOT_TOML = """
@@ -107,7 +107,7 @@ def test_a_serial_port_written_as_a_path_is_used_as_written(tmp_path):
 
 def test_a_generation_that_archived_no_config_has_nothing_to_probe(tmp_path):
     generation = _generation(tmp_path, simulated=False)
-    assert jobs.probe_devices(generation) == {"devices": [], "config": None}
+    assert devices.probe_devices(generation) == {"devices": [], "config": None}
 
 
 def test_a_port_something_listens_on_answers(tmp_path):
@@ -116,7 +116,7 @@ def test_a_port_something_listens_on_answers(tmp_path):
         generation = _generation(
             tmp_path, simulated=False, toml_text=f'[arm]\nip = "127.0.0.1"\nport = {port}\n'
         )
-        report = jobs.probe_devices(generation)
+        report = devices.probe_devices(generation)
     device = report["devices"][0]
     assert report["config"].endswith("generated/source/robot.toml")
     assert device["ok"] is True
@@ -130,7 +130,7 @@ def test_a_port_nothing_listens_on_says_why(tmp_path):
     generation = _generation(
         tmp_path, simulated=False, toml_text=f'[arm]\nip = "127.0.0.1"\nport = {port}\n'
     )
-    device = jobs.probe_devices(generation)["devices"][0]
+    device = devices.probe_devices(generation)["devices"][0]
     assert device["ok"] is False
     assert device["ports"][0]["detail"]
 
@@ -144,14 +144,14 @@ def test_a_probe_never_carries_what_the_config_logs_in_with(tmp_path):
             "port = 1\nconnection_timeout_ms = 200\n"
         ),
     )
-    assert "hunter2" not in repr(jobs.probe_devices(generation))
+    assert "hunter2" not in repr(devices.probe_devices(generation))
 
 
 def test_a_serial_device_nobody_plugged_in_is_not_reachable(tmp_path):
     generation = _generation(
         tmp_path, simulated=False, toml_text='[gripper]\nport = "/dev/nothing-here"\n'
     )
-    device = jobs.probe_devices(generation)["devices"][0]
+    device = devices.probe_devices(generation)["devices"][0]
     assert device == {
         "name": "gripper",
         "kind": "serial",

@@ -114,6 +114,7 @@ export async function loadReplay(path) {
   // Nothing recorded: a real platform has a camera, but only ROS to reach it through.
   if (!state.replay.videos?.length) showRosCamera(state.replay.generation);
   followLiveRun(path);
+  bindConsoleSearch();
   followConsole(path);
   // Built from the generation's contract before the runtime wrote anything: hold the page
   // until the log begins.
@@ -163,18 +164,7 @@ export function showVideos(runPath, cameras) {
     if (queued !== undefined) main.currentTime = queued;
   };
   bindVideoExpand(panel);
-  const minimize = panel.querySelector(".video-min");
-  const setMinimized = (small) => {
-    panel.classList.toggle("minimized", small);
-    minimize.textContent = small ? "\u25a1" : "\u2013";
-    minimize.title = small ? "Show the recording" : "Minimize";
-    try { localStorage.setItem("motion-spec.video-minimized", String(small)); } catch { /* private */ }
-    reserveVideoSpace();
-  };
-  let small = false;
-  try { small = localStorage.getItem("motion-spec.video-minimized") === "true"; } catch { /* private */ }
-  minimize.onclick = () => setMinimized(!panel.classList.contains("minimized"));
-  setMinimized(small);
+  bindVideoMinimize(panel);
   const show = (camera) => {
     main.src = url(camera);
     // A video that is never played paints nothing: put it where the cursor is once it knows
@@ -212,6 +202,23 @@ export function showVideos(runPath, cameras) {
   reserveVideoSpace();
 }
 
+// Out of the way of the page under it, whether the pane is showing a recording or a live
+// hardware camera -- both float over the same run page and cover the same panels.
+function bindVideoMinimize(panel) {
+  const minimize = panel.querySelector(".video-min");
+  const setMinimized = (small) => {
+    panel.classList.toggle("minimized", small);
+    minimize.textContent = small ? "□" : "–";
+    minimize.title = small ? "Show the camera" : "Minimize";
+    try { localStorage.setItem("motion-spec.video-minimized", String(small)); } catch { /* private */ }
+    reserveVideoSpace();
+  };
+  let small = false;
+  try { small = localStorage.getItem("motion-spec.video-minimized") === "true"; } catch { /* private */ }
+  minimize.onclick = () => setMinimized(!panel.classList.contains("minimized"));
+  setMinimized(small);
+}
+
 // The expand toggle is shared by the recording pane and the ROS pane: one class, one size
 // custom property the video rules read, remembered like the minimize state.
 function bindVideoExpand(panel) {
@@ -245,11 +252,10 @@ async function showRosCamera(generationPath) {
   panel.hidden = false;
   panel.classList.add("one-camera", "ros-camera");
   panel.querySelector(".video-strip").hidden = true;
-  // The minimize button belongs to showVideos' recording panel; this one is a single live view.
-  panel.querySelector(".video-min").hidden = true;
   bindVideoExpand(panel);
+  bindVideoMinimize(panel);
   const main = panel.querySelector(".video-main");
-  main.innerHTML = `<img class="ros-frame" alt=""><div class="ros-topic"><input type="text" spellcheck="false" title="ROS image topic"><span class="ros-status"></span></div>`;
+  main.innerHTML = `<img class="ros-frame" alt=""><span class="video-name">live camera</span><div class="ros-topic"><input type="text" spellcheck="false" title="ROS image topic"><span class="ros-status"></span></div>`;
   const frame = main.querySelector(".ros-frame");
   const topic = main.querySelector("input");
   const status = main.querySelector(".ros-status");
@@ -286,9 +292,67 @@ export function followConsole(runPath) {
     if (!slice || !slice.text) return;
     offset = slice.offset;
     appendConsole(pre, slice.text);
+    // What just arrived is part of the log the search bar is searching.
+    findInConsole();
   };
   poll();
   state.consoleWatch = setInterval(poll, 1000);
+}
+
+// The matches the console's search bar is standing on, and which one ↑/↓ last stepped to.
+let consoleHits = [];
+let consoleHit = 0;
+
+// Find in the log the way a terminal does. The browser paints the matches from its highlight
+// registry rather than from elements wrapped around them: the log is appended to while it is
+// read, and rewriting its nodes would fight both that and the ANSI spans already in it.
+function findInConsole(step = 0) {
+  const pre = $("#console-text");
+  const input = $("#console-search");
+  if (!pre || !input || !CSS.highlights) return;
+  const needle = input.value.toLowerCase();
+  consoleHits = [];
+  if (needle) {
+    const walk = document.createTreeWalker(pre, NodeFilter.SHOW_TEXT);
+    for (let node = walk.nextNode(); node; node = walk.nextNode()) {
+      const text = node.data.toLowerCase();
+      // A word broken across an ANSI colour change is two text nodes and is not matched.
+      for (let at = text.indexOf(needle); at !== -1; at = text.indexOf(needle, at + needle.length)) {
+        const range = new Range();
+        range.setStart(node, at);
+        range.setEnd(node, at + needle.length);
+        consoleHits.push(range);
+      }
+    }
+  }
+  consoleHit = consoleHits.length
+    ? (consoleHit + step + consoleHits.length * 2) % consoleHits.length
+    : 0;
+  CSS.highlights.set("console-match", new Highlight(...consoleHits));
+  CSS.highlights.set("console-match-current", new Highlight(...consoleHits.slice(consoleHit, consoleHit + 1)));
+  $("#console-matches").textContent = needle
+    ? (consoleHits.length ? `${consoleHit + 1} / ${consoleHits.length}` : "no matches")
+    : "";
+  $("#console-prev").disabled = $("#console-next").disabled = consoleHits.length < 2;
+  // Only a step is asked to move the view: re-searching as the run writes must not yank it.
+  if (step && consoleHits.length) {
+    const hit = consoleHits[consoleHit].getBoundingClientRect();
+    pre.scrollTop += hit.top - pre.getBoundingClientRect().top - pre.clientHeight / 2;
+  }
+}
+
+export function bindConsoleSearch() {
+  const input = $("#console-search");
+  // Nothing to paint matches with: the field would take words and show nothing for them.
+  if (!CSS.highlights) return input.closest(".console-bar").remove();
+  input.oninput = () => { consoleHit = 0; findInConsole(); };
+  input.onkeydown = (event) => {
+    if (event.key === "Escape") { input.value = ""; consoleHit = 0; return findInConsole(); }
+    if (event.key !== "Enter") return;
+    findInConsole(event.shiftKey ? -1 : 1);
+  };
+  $("#console-prev").onclick = () => findInConsole(-1);
+  $("#console-next").onclick = () => findInConsole(1);
 }
 
 // A run over with no log to open. Told not to write one is not the same as never having run:
@@ -439,7 +503,7 @@ export function populateConstraints() {
 export function replayShell(path) {
   // The run page's markup, with what the reply fills left blank: the numbers, the timeline's
   // range and the constraint list.
-  return `<div class="replay"><div class="replay-heading"><button id="back" title="Back to generation">←</button><h1>${path.split("/").pop()}</h1><div class="replay-tabs"><button data-panel="plots" class="active">Plots</button><button data-panel="reports">Reports</button><button data-panel="explore">Explore</button><button data-panel="console">Console</button></div><span class="eyebrow">RUN</span></div><section id="panel-plots"><div class="constraint-panel"><div class="eyebrow">SOURCE CONSTRAINTS</div><input id="constraint-search" type="search" placeholder="Search .robmot constraints"><div id="constraints" class="constraints"></div></div><div class="chart-controls"><button id="auto-plot" title="Open each motion's plots as the cursor enters it, the way a live run does">auto plot: off</button><button id="plot">Add empty plot</button><button id="notebook">Open in Jupyter</button><button id="live-plots" title="Plot signals as the run writes them">live plots: on</button><button id="progressive-plots" title="Draw a replayed run the way a live one arrives: nothing past the cursor">progressive: off</button></div><div id="plots" class="plots"></div></section><section id="panel-reports" hidden></section><section id="panel-explore" hidden>${EXPLORE_MARKUP}</section><section id="panel-console" hidden><pre id="console-text" class="console"></pre></section></div><div class="settling" hidden><div class="spinner"></div><span>archiving the run…</span></div><div class="videos" hidden><button class="video-max" title="Expand"></button><button class="video-min" title="Minimize"></button><div class="video-main"><video preload="auto" playsinline disablepictureinpicture controlslist="nodownload noplaybackrate noremoteplayback"></video><span class="video-name"></span></div><div class="video-strip"></div></div><div class="transport"><div class="transport-controls"><button id="step-back" title="Previous frame">‹</button><button id="play">Play</button><button id="step-forward" title="Next frame">›</button><details class="picker speed-menu"><summary>1×</summary><div class="picker-panel"><button data-value="0.25">0.25×</button><button data-value="0.5">0.5×</button><button data-value="1" aria-pressed="true">1×</button><button data-value="2">2×</button><button data-value="5">5×</button></div></details><span id="readout" class="path"></span><span class="marker-legend"><i class="lg lg-state"></i>state <i class="lg lg-event"></i>event <i class="lg lg-satisfied"></i>satisfied <i class="lg lg-unsatisfied"></i>lost <i class="lg lg-monitor"></i>monitor</span><button id="cancel-run" title="End the run" hidden>cancel</button></div><div class="markers"></div><input class="timeline" type="range" min="0" max="0" value="0" disabled></div>`;
+  return `<div class="replay"><div class="replay-heading"><button id="back" title="Back to generation">←</button><h1>${path.split("/").pop()}</h1><div class="replay-tabs"><button data-panel="plots" class="active">Plots</button><button data-panel="reports">Reports</button><button data-panel="explore">Explore</button><button data-panel="console">Console</button></div><span class="eyebrow">RUN</span></div><section id="panel-plots"><div class="constraint-panel"><div class="eyebrow">SOURCE CONSTRAINTS</div><input id="constraint-search" type="search" placeholder="Search .robmot constraints"><div id="constraints" class="constraints"></div></div><div class="chart-controls"><button id="auto-plot" title="Open each motion's plots as the cursor enters it, the way a live run does">auto plot: off</button><button id="plot">Add empty plot</button><button id="notebook">Open in Jupyter</button><button id="live-plots" title="Plot signals as the run writes them">live plots: on</button><button id="progressive-plots" title="Draw a replayed run the way a live one arrives: nothing past the cursor">progressive: off</button></div><div id="plots" class="plots"></div></section><section id="panel-reports" hidden></section><section id="panel-explore" hidden>${EXPLORE_MARKUP}</section><section id="panel-console" hidden><div class="console-bar"><input id="console-search" type="search" spellcheck="false" placeholder="Search the console"><span id="console-matches"></span><button id="console-prev" title="Previous match (Shift+Enter)" disabled>↑</button><button id="console-next" title="Next match (Enter)" disabled>↓</button></div><pre id="console-text" class="console"></pre></section></div><div class="settling" hidden><div class="spinner"></div><span>archiving the run…</span></div><div class="videos" hidden><button class="video-max" title="Expand"></button><button class="video-min" title="Minimize"></button><div class="video-main"><video preload="auto" playsinline disablepictureinpicture controlslist="nodownload noplaybackrate noremoteplayback"></video><span class="video-name"></span></div><div class="video-strip"></div></div><div class="transport"><div class="transport-controls"><button id="step-back" title="Previous frame">‹</button><button id="play">Play</button><button id="step-forward" title="Next frame">›</button><details class="picker speed-menu"><summary>1×</summary><div class="picker-panel"><button data-value="0.25">0.25×</button><button data-value="0.5">0.5×</button><button data-value="1" aria-pressed="true">1×</button><button data-value="2">2×</button><button data-value="5">5×</button></div></details><span id="readout" class="path"></span><span class="marker-legend"><i class="lg lg-state"></i>state <i class="lg lg-event"></i>event <i class="lg lg-satisfied"></i>satisfied <i class="lg lg-unsatisfied"></i>lost <i class="lg lg-monitor"></i>monitor</span><button id="cancel-run" title="End the run" hidden>cancel</button></div><div class="markers"></div><input class="timeline" type="range" min="0" max="0" value="0" disabled></div>`;
 }
 
 export function bindPanels() {

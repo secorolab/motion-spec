@@ -10,6 +10,9 @@
 }
 
 * { box-sizing: border-box; }
+/* Every `display` rule here outranks the browser's own [hidden], and a panel that keeps its
+   box while hidden still takes a grid row. One rule, so no layout has to remember. */
+[hidden] { display: none !important; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px Inter, system-ui, sans-serif; }
 button, input, select { font: inherit; }
 button { border: 0; background: transparent; color: var(--muted); cursor: pointer; transition: background 100ms ease-out, color 100ms ease-out, transform 80ms ease-out; }
@@ -57,7 +60,6 @@ nav button.active { color: var(--text); border-color: var(--accent); }
   position: fixed; right: 28px; bottom: 24px; z-index: 4; display: grid; grid-template-columns: repeat(3, auto); gap: 6px;
   padding: 8px; border: 1px solid var(--line); background: #24201f; box-shadow: 0 8px 24px #0008;
 }
-#selection-actions[hidden] { display: none; }
 #selection-actions[data-side="sidebar"] { right: auto; left: 16px; }
 body.sidebar-collapsed #selection-actions[data-side="sidebar"] { left: 32px; }
 #snack { position: fixed; right: 28px; bottom: 24px; z-index: 6; padding: 8px 10px; border: 1px solid var(--accent); border-left-width: 3px; background: var(--surface); color: var(--text); font: 11px var(--mono); opacity: 0; pointer-events: none; transform: translateY(8px); transition: opacity 120ms ease-out, transform 120ms ease-out; }
@@ -410,7 +412,6 @@ h1 { margin: 7px 0; font-size: 30px; }
 .viewer-heading .path { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* What the parser said about the file as it was last saved; clicking it goes to the line. */
 .syntax-state { margin: 8px 0 0; padding: 6px 9px; background: #382b29; color: var(--accent); font: 11px var(--mono); cursor: pointer; }
-.syntax-state[hidden] { display: none; }
 /* The pickers elsewhere sit at the foot of the page and open upward; this one is at the top. */
 .picker-down .picker-panel { top: calc(100% + 5px); bottom: auto; right: 0; left: auto; }
 #aside-resize { position: absolute; top: 0; right: 0; bottom: 0; z-index: 3; width: 5px; cursor: col-resize; }
@@ -439,7 +440,6 @@ body.resizing main, body.resizing #sidebar-toggle, body.resizing .transport { tr
 .open-with .is-primary:hover { background: #382b29; }
 .open-with #save-source { color: var(--accent); }
 /* The bar sets display on its buttons, so hiding one has to outrank that, not merely say so. */
-.open-with .bar > button[hidden], .open-with .bar > [hidden], .open-with [hidden] { display: none; }
 /* Acts on click; the caret beside it is only for choosing what it acts with. The details box
    stretches to the bar, but the summary inside it does not, so the caret would centre itself
    in a box shorter than the cell it appears to sit in. */
@@ -458,7 +458,6 @@ body.resizing main, body.resizing #sidebar-toggle, body.resizing .transport { tr
 }
 .split #editor-choice summary:hover svg, .split #editor-choice[open] summary svg { stroke: var(--accent); }
 .split #editor-choice[open] summary svg { transform: rotate(180deg); }
-.split #editor-choice[hidden] { display: none; }
 
 .constraint[data-kind="monitored"] strong::after { content: "monitored"; margin-left: 8px; color: var(--dim); font: 9px var(--mono); letter-spacing: .06em; }
 
@@ -543,7 +542,6 @@ body:has(.notebook) #content { position: relative; max-width: none; padding: 0; 
 /* Rows pinned by index: the empty crumbs row display:nones away, and without the pin the
    canvas would slide into an auto row while the status line inherited the 1fr. */
 .explore-graph { display: grid; gap: 8px; grid-template-rows: auto auto minmax(0, 1fr) auto; min-height: 0; }
-.explore-graph[hidden] { display: none; }
 .graph-bar { grid-row: 1; }
 .graph-crumbs { grid-row: 2; }
 .graph-main { grid-row: 3; }
@@ -611,7 +609,20 @@ body:has(.notebook) #content { position: relative; max-width: none; padding: 0; 
 .explore-graph:fullscreen .graph-main { height: calc(100vh - 130px); }
 .explore-graph:fullscreen .graph-canvas { height: 100%; }
 .console { max-height: 420px; margin: 0; padding: 12px 14px; overflow-y: auto; border: 1px solid var(--line); background: var(--surface); color: var(--text); font: 11.5px/1.55 var(--code); white-space: pre-wrap; overflow-wrap: anywhere; }
-.console[hidden] { display: none; }
+/* The run page's console is the whole panel, not an excerpt of one: search bar on top, the
+   log filling every row under it and scrolling inside itself. */
+#panel-console { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 8px; overflow: hidden; }
+#panel-console .console { max-height: none; height: 100%; }
+.console-bar { display: flex; align-items: center; gap: 8px; }
+#console-search { min-width: 0; flex: 1; padding: 6px 9px; border: 1px solid var(--line); outline: 0; background: var(--bg); color: var(--text); font: 11px var(--code); }
+#console-search:focus { border-color: var(--accent); }
+#console-matches { min-width: 84px; color: var(--dim); font: 10px var(--mono); text-align: right; }
+.console-bar button { width: 26px; height: 26px; padding: 0; border: 1px solid var(--line); color: var(--muted); font: 12px var(--mono); line-height: 1; }
+.console-bar button:hover:enabled { border-color: var(--accent); color: var(--accent); }
+.console-bar button:disabled { color: var(--dim); cursor: default; }
+/* Painted by the browser over the log's own ANSI spans, so neither has to know about the other. */
+::highlight(console-match) { background: #e07a5f40; color: var(--text); }
+::highlight(console-match-current) { background: var(--accent); color: #141516; }
 /* Terminal SGR palette, muted to sit on --surface. */
 .ansi-b { font-weight: 600; }
 .ansi-30, .ansi-90 { color: #6b7480; }
@@ -697,8 +708,6 @@ html.restoring #content .empty { visibility: hidden; }
 }
 .run-bar .run-start { margin-left: auto; }
 .run-choice { display: flex; align-items: center; gap: 6px; }
-/* a display rule outranks the browser's own [hidden]: hardware has no display, speed or camera */
-.run-choice[hidden] { display: none; }
 .run-choice em { color: var(--dim); font-style: normal; letter-spacing: .08em; }
 .run-choice button { padding: 4px 10px; border: 1px solid var(--line); background: var(--bg); color: var(--dim); letter-spacing: .04em; cursor: pointer; }
 .run-choice button + button { border-left: 0; }
@@ -715,7 +724,6 @@ html.restoring #content .empty { visibility: hidden; }
 .picker-panel button { padding: 5px 8px; border: 0; box-shadow: none; background: none; color: var(--muted); font: 10px var(--mono); text-align: left; }
 .picker-panel button:hover { background: #2a2e34; color: var(--text); }
 .picker-panel button[aria-pressed="true"] { box-shadow: none; background: none; color: var(--accent); }
-.run-camera[hidden] { display: none; }
 .run-camera { border-radius: 0; }
 .run-camera[aria-pressed="true"] { border-color: var(--accent); background: #382b29; color: var(--accent); box-shadow: none; }
 .run-camera[aria-pressed="true"]::before { content: "● "; }
@@ -734,7 +742,6 @@ html.restoring #content .empty { visibility: hidden; }
   left: calc(var(--aside, 290px) + (100vw - var(--aside, 290px)) / 2); transform: translateX(-50%);
   border: 1px solid var(--accent); background: var(--surface); color: var(--muted); font: 11px var(--mono);
 }
-.settling[hidden], .videos[hidden] { display: none; }
 .spinner { width: 13px; height: 13px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 700ms linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -756,7 +763,9 @@ html.restoring #content .empty { visibility: hidden; }
 .marker-legend .lg-unsatisfied { width: 2px; border-color: var(--dim); background: var(--dim); }
 .marker-legend .lg-monitor { border-color: var(--good); background: transparent; border-radius: 50%; }
 .videos.minimized { width: auto; grid-template-columns: auto; justify-self: end; padding: 6px 34px 6px 8px; }
-.videos.minimized .video-main video, .videos.minimized .video-strip { display: none; }
+/* Everything the pane shows goes away but its name: a recorded track, or the live ROS frame
+   and the topic it is read from. */
+.videos.minimized .video-main > :not(.video-name), .videos.minimized .video-strip { display: none; }
 .videos.minimized .video-name { position: static; border: 0; background: none; }
 .video-main { position: relative; }
 .video-main video { display: block; max-width: 100%; max-height: var(--video-h, 34vh); background: #000; }
@@ -767,7 +776,6 @@ html.restoring #content .empty { visibility: hidden; }
 .ros-topic input { min-width: 0; flex: 1; padding: 3px 6px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font-size: 11px; }
 .ros-topic input:focus { border-color: var(--accent); outline: none; }
 .ros-status { color: var(--dim); font: 10px var(--mono); }
-.video-strip[hidden] { display: none; }
 .video-strip { display: flex; max-height: 34vh; flex-direction: column; overflow-y: auto; gap: 6px; }
 .video-pick { position: relative; display: block; flex: none; padding: 0; border: 1px solid var(--line); }
 .video-pick video { display: block; width: 100%; height: 62px; object-fit: cover; background: #000; }
@@ -782,7 +790,6 @@ html.restoring #content .empty { visibility: hidden; }
 .transport-live .playhead { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
 
 .devices { margin: 0 0 28px; }
-.devices[hidden] { display: none; }
 .devices-head { display: flex; align-items: center; gap: 12px; }
 .devices-head h2 { margin: 0; }
 .devices-test { padding: 4px 10px; border: 1px solid var(--line); color: var(--muted); font: 10px var(--mono); letter-spacing: .06em; }

@@ -9,6 +9,7 @@
 import { $, $$, api, post, snack, state } from "./core.js";
 import { addPlot } from "./plots.js";
 import { setView } from "./routing.js";
+import { seek } from "./run.js";
 import { showSource } from "./sources.js";
 
 // Every one of these is run against a maintained generation before it ships: a canned query
@@ -879,14 +880,20 @@ function exportQuery() {
 
 /* ---------------------------------------------------------------- going elsewhere */
 
-const spansOf = (iri) => $$(".span-motion").filter((bar) => bar.dataset.element === iri);
+// Asked of the fetched spans, not of the bars drawn from them: the bars arrive whenever the
+// graph query lands, and an action that appears or not depending on that is an action a reader
+// cannot learn.
+const spansOf = (iri) =>
+  (state.spanOverlay?.timeline.spans ?? []).filter((span) => span.element === iri);
 
 // An element's occurrences are its bars on the transport, which is on screen whatever panel is
-// open -- so this marks them where they are rather than sending the reader to a page of rows.
+// open -- so this goes to them where they are rather than to a page of rows. Marking alone
+// would leave the reader to find the marks; the playhead moves to the first one.
 function showOccurrences(iri) {
-  const wanted = spansOf(iri);
-  $$(".span-motion").forEach((bar) => bar.classList.toggle("span-focus", wanted.includes(bar)));
-  snack(`${wanted.length} occurrence${wanted.length === 1 ? "" : "s"} on the transport`);
+  const spans = spansOf(iri);
+  $$(".span-motion").forEach((bar) => bar.classList.toggle("span-focus", bar.dataset.element === iri));
+  seek(spans[0].begin_step);
+  snack(`${spans.length} occurrence${spans.length === 1 ? "" : "s"} · moved to the first`);
 }
 
 // The run page's own tabs are the way between panels, and an absent tab means the action was

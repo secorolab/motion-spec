@@ -104,9 +104,9 @@ Target dependencies
        `urdfdom_headers <https://github.com/ros/urdfdom_headers>`_, and
        `urdfdom <https://github.com/ros/urdfdom>`_
    * - robif2b devices (optional)
-     - `serial <https://github.com/secorolab/serial>`_,
-       `robotiq_driver_noros <https://github.com/secorolab/robotiq_driver_noros>`_, and
-       `robotiq_ft <https://github.com/secorolab/robotiq_ft>`_
+     - `serial <https://github.com/secorolab/serial>`_ and
+       `robotiq_driver_noros <https://github.com/secorolab/robotiq_driver_noros>`_,
+       which drives both the gripper and the force-torque sensor
 
 These tables mirror ``motion-spec health``. The device drivers are optional:
 robif2b builds each wrapper only when its flag is on. A model's ROS interface

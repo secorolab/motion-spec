@@ -68,32 +68,14 @@ def test_a_run_of_something_that_is_not_a_generation_is_refused(tmp_path):
         raise AssertionError("a directory with no contract is not a generation")
 
 
-def test_hardware_that_does_not_answer_stops_the_run_before_it_is_named(tmp_path, monkeypatch):
+def test_hardware_that_does_not_answer_still_starts_the_run(tmp_path, monkeypatch):
+    """Starting is the operator's call: the devices panel probes, the run does not."""
     generation = _generation(
         tmp_path,
         simulated=False,
         toml_text=HARDWARE_TOML.format(port=_dead_port()),
         monkeypatch=monkeypatch,
     )
-    monkeypatch.setattr(jobs.subprocess, "Popen", lambda *_, **__: pytest_fail("a run was started"))
-    refusal = None
-    try:
-        jobs.start_run(generation, {})
-    except ValueError as refused:
-        refusal = refused
-    assert refusal is not None, "an unreachable device must refuse the run"
-    assert "arm" in str(refusal)
-    # The refusal carries the probe, and nothing was named: no run directory, no job.
-    assert unreachable(refusal.report)[0]["name"] == "arm"
-    assert not (generation / "runs").exists()
-    assert str(generation) not in jobs.RUNNING
-
-
-def test_a_simulation_is_never_asked_whether_its_devices_answer(tmp_path, monkeypatch):
-    generation = _generation(
-        tmp_path, simulated=True, toml_text=HARDWARE_TOML.format(port=1), monkeypatch=monkeypatch
-    )
-    monkeypatch.setattr(jobs, "probe_devices", lambda *_: pytest_fail("a simulation was probed"))
     started = {}
     monkeypatch.setattr(jobs.subprocess, "Popen", lambda *a, **k: _record(started, a, k))
     try:
@@ -102,6 +84,24 @@ def test_a_simulation_is_never_asked_whether_its_devices_answer(tmp_path, monkey
         jobs.RUNNING.pop(str(generation), None)
     assert "--run-id" in started["argv"]
     assert answer["run"].endswith(started["argv"][started["argv"].index("--run-id") + 1])
+    # Hardware takes neither of the simulator's options, whatever the browser posted.
+    assert "--headless" not in started["argv"]
+    assert "--start-paused" not in started["argv"]
+
+
+def test_a_simulation_starts_paused_with_its_run_named(tmp_path, monkeypatch):
+    generation = _generation(
+        tmp_path, simulated=True, toml_text=HARDWARE_TOML.format(port=1), monkeypatch=monkeypatch
+    )
+    started = {}
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda *a, **k: _record(started, a, k))
+    try:
+        answer = jobs.start_run(generation, {})
+    finally:
+        jobs.RUNNING.pop(str(generation), None)
+    assert "--run-id" in started["argv"]
+    assert answer["run"].endswith(started["argv"][started["argv"].index("--run-id") + 1])
+    assert "--start-paused" in started["argv"]
 
 
 def test_a_generation_already_running_does_not_start_a_second_run(tmp_path):
@@ -168,7 +168,3 @@ def _record(started: dict, argv, kwargs):
     """Stand in for the runner: remember the command, and run something that ends at once."""
     started["argv"] = list(argv[0])
     return _POPEN([sys.executable, "-c", ""], **kwargs)
-
-
-def pytest_fail(message: str):
-    raise AssertionError(message)

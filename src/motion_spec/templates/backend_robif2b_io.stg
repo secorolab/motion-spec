@@ -33,8 +33,8 @@ inline double stale_after_ms(const toml::table &config, const std::string &key) 
     return value;
 \}
 
-// How long failed transactions may persist before the run stops. Zero preserves the default
-// fail-fast behaviour; deployments may tolerate brief serial dropouts explicitly.
+// How long failed transactions may persist before the run stops. Zero stops on the first one;
+// a deployment whose driver reconnects by itself states the window that recovery needs.
 inline double invalid_after_ms(const toml::table &config, const std::string &key) {
     const double value = config.at_path(key + ".invalid_after_ms").value_or(0.0);
     if (value \< 0.0) {
@@ -97,19 +97,20 @@ inline void require_fresh(Staleness &staleness, std::uint64_t seq, bool ok, bool
         return;
     \}
     if (!ok) {
+        // The driver recovers a dropped connection on its own, which takes it a moment: the grace
+        // period is how long the loop lets it try. Past that the sensor is gone, not busy.
         if (++staleness.invalid_cycles \< staleness.invalid_limit) return;
         std::cerr \<\< "[run] device '" \<\< device
-                  \<\< "' has no valid reading after the configured grace period; Retry communication"
-                  \<\< std::endl;
-        // motion_spec::runtime::request_stop(0);
+                  \<\< "' had no valid reading for its grace period; stopping" \<\< std::endl;
+        motion_spec::runtime::request_stop(0);
         return;
     \}
     staleness.invalid_cycles = 0;
     if (advanced) return;
     if (++staleness.cycles \< staleness.limit) return;
-    std::cerr \<\< "[run] device '" \<\< device \<\< "' completed no transaction in time. Retrying;"
+    std::cerr \<\< "[run] device '" \<\< device \<\< "' completed no transaction in time; stopping"
               \<\< std::endl;
-    // motion_spec::runtime::request_stop(0);
+    motion_spec::runtime::request_stop(0);
 \}
 
 \} // namespace motion_spec::io

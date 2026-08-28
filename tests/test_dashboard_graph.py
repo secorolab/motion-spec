@@ -432,8 +432,14 @@ def test_the_legend_carries_every_type_the_graph_declares(tmp_path):
 
 
 def test_node_ids_are_stable_across_calls(tmp_path):
+    """A second read names the same nodes: what the id identifies never moves under a reader.
+
+    Which order they come back in does not: every call rebuilds the live overlay, and the
+    nodes it puts back are ordered by a set the interpreter's hash seed decides. The force
+    layout the ids are drawn by asks for no order, so nothing here asserts one.
+    """
     service = _archived_service(tmp_path)
 
-    first = [node["id"] for node in provenance_graph(service)["nodes"]]
-    second = [node["id"] for node in provenance_graph(service)["nodes"]]
+    first = {node["id"] for node in provenance_graph(service)["nodes"]}
+    second = {node["id"] for node in provenance_graph(service)["nodes"]}
     assert first == second

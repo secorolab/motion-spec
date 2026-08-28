@@ -44,7 +44,7 @@ def _endpoints(table: dict, name: str):
             "timeout_ms": table.get("connection_timeout_ms") or CONNECT_TIMEOUT_MS,
         }
     elif name and isinstance(port, str):
-        # a bare name is one the driver itself resolves under /dev/
+        # every driver here opens the path it is given; a bare name is taken under /dev/
         yield {"name": name, "kind": "serial", "device": port if "/" in port else f"/dev/{port}"}
     for key, value in table.items():
         if isinstance(value, dict):

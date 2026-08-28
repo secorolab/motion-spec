@@ -424,7 +424,14 @@ def run_info(path: Path) -> dict:
 def generation_cameras(generation_dir: Path) -> list[dict]:
     """The cameras this generation can record, as its contract names them."""
     return [
-        {"id": camera["id"], "width": camera.get("width"), "height": camera.get("height")}
+        {
+            "id": camera["id"],
+            "width": camera.get("width"),
+            "height": camera.get("height"),
+            # Where a viewer reads it, or nothing: the page shows no live pane without one.
+            "topic": camera.get("topic"),
+            "message": camera.get("message"),
+        }
         for camera in json_file(generation_dir / LAYOUT_REL).get("cameras") or []
         if camera.get("id")
     ]

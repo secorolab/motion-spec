@@ -87,6 +87,7 @@ from rdf_utils.namespace import NS_MM_KC_EXT, NS_MM_QUDT_QTY, NS_MM_QUDT_UNIT
 from rdf_utils.naming import get_valid_var_name
 from rdflib import URIRef
 from rdflib.namespace import PROV, RDF, SOSA
+from scene_dsl.rdf.sensors import URI_SENS_TYPE_CAMERA
 from scene_dsl.rdf_parser.common import ensure_one_obj_uri
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 
@@ -857,7 +858,8 @@ def perceived_written_poses(model) -> dict[str, list[dict]]:
     resolves to its one world pose.
 
     A node that observes nothing -- a published topic -- contributes no rows, so every consumer
-    passes over it without filtering.
+    passes over it without filtering. So does one observing only a camera: that channel carries
+    images for a viewer to read, and states no pose for the run to act on.
 
     Raises:
         ConstraintViolation: a source observes an object no world pose is stated of, so a
@@ -878,6 +880,10 @@ def perceived_written_poses(model) -> dict[str, list[dict]]:
     for act in sources:
         rows = []
         for target in sorted(graph.objects(act, SOSA.hasFeatureOfInterest), key=str):
+            # A camera is what a channel carries, not a pose it writes: a viewer reads those
+            # images, and nothing in the loop does.
+            if URI_SENS_TYPE_CAMERA in get_node_types(graph, target):
+                continue
             if NS_MM_ROS["Topic"] in get_node_types(graph, act):
                 item = pose(model, target)
                 target_iri = item.of.uri

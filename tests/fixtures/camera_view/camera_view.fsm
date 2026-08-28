@@ -1,0 +1,32 @@
+ns cvw = "https://secorolab.github.io/models/camera-view-fixture/fsm/"
+
+evt loop (ns=cvw) camera_view_fsm_events {
+    evt E_STEP,
+    evt E_HOLD_ENTERED,
+    evt E_HELD
+}
+
+fsm (ns=cvw) camera_view_fsm {
+    description: "Hold where the arm started, until it has held there."
+
+    states {
+        S_START,
+        S_HOLD,
+        S_DONE
+    }
+
+    evt loop: <camera_view_fsm_events>
+
+    start: <S_START>
+    end:   <S_DONE>
+
+    transitions {
+        T_START_HOLD { from: <S_START>, to: <S_HOLD> },
+        T_HOLD_DONE  { from: <S_HOLD>,  to: <S_DONE> }
+    }
+
+    reactions {
+        R_STEP_START { when: <camera_view_fsm_events.E_STEP>,  do: <T_START_HOLD>, fires { <camera_view_fsm_events.E_HOLD_ENTERED> } },
+        R_HELD       { when: <camera_view_fsm_events.E_HELD>,  do: <T_HOLD_DONE> }
+    }
+}

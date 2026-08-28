@@ -19,6 +19,7 @@ import pytest
 from rdf_utils.constraints import ConstraintViolation
 from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import RDF, SOSA, split_uri
+from scene_dsl.rdf.sensors import URI_SENS_TYPE_CAMERA
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 
 from motion_spec.classes.motion import BlackboardValue
@@ -57,6 +58,28 @@ def test_a_topic_stating_no_feature_of_interest_is_one_the_model_publishes():
     """It says nothing about the world it wants told, so nothing subscribes to it."""
     graph = Graph()
     node = _topic(graph)
+    model = _model(graph)
+    assert quantities.perceived_written_poses(model)[str(node)] == []
+    assert communication.ros_subscriptions(model, {}) == []
+
+
+def _camera_topic(graph: Graph) -> URIRef:
+    """A channel carrying a camera's images: no field path, because an image holds no pose."""
+    camera = URIRef(f"{NS}scene/arm1/wrist")
+    graph.add((camera, RDF.type, URI_SENS_TYPE_CAMERA))
+    node = URIRef(f"{NS}wrist-view")
+    graph.add((node, RDF.type, NS_MM_ROS["Topic"]))
+    graph.add((node, NS_MM_ROS["channel-name"], Literal("/wrist/color")))
+    graph.add((node, NS_MM_ROS["type-name"], Literal("sensor_msgs/msg/Image")))
+    graph.add((node, SOSA.hasFeatureOfInterest, camera))
+    return node
+
+
+def test_a_topic_carrying_a_camera_writes_no_pose_and_is_not_subscribed_to():
+    """The loop reads no images: the pane on the run page does. A camera channel must therefore
+    reach neither the written poses nor the subscriptions the runtime is generated from."""
+    graph = Graph()
+    node = _camera_topic(graph)
     model = _model(graph)
     assert quantities.perceived_written_poses(model)[str(node)] == []
     assert communication.ros_subscriptions(model, {}) == []

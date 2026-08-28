@@ -1,0 +1,80 @@
+// A camera whose provider the model states: the topic its images arrive on is named by a
+// subscription, not guessed from the camera's name. The motion is incidental -- this fixture
+// exists for what the subscription lowers to, on the one maintained scene that declares a camera.
+import "./camera_view.fsm"
+import "../../../../motion-spec-dsl/models/pick_place_single/pick_place_single.scenex"
+ns app = "https://secorolab.github.io/models/camera-view-fixture/"
+ns cvw = "https://secorolab.github.io/models/camera-view-fixture/fsm/"
+
+exec-context (ns=app) camera-view-exec {
+    runs-scene: <pick_place_scene_mjc>
+    platform:   simulation { name: "MuJoCo" }
+    config:     "robot.toml"
+    timestep:   1.0 ms
+}
+
+ros (ns=app) {
+    subscribers {
+        wrist-view: topic "/wrist/color" message "sensor_msgs/msg/Image" {
+            observes { <pick_place_scene_mjc.wrist> }
+        },
+    },
+}
+
+tolerances {
+    position:    0.01 m,
+    orientation: 0.01 rad
+}
+
+context (ns=app) shared {
+    world {
+        pose pose-ee-base {
+            of:         <gripper.g_base.g_pinch>,
+            wrt:        <kinova.base_link>,
+            as-seen-by: <kinova.base_link>
+        }
+    },
+    spec {
+        length hold-band = 0.01 m
+    }
+}
+
+guarded-motion (ns=app) hold-still {
+    description: "Hold where the arm started"
+
+    context {
+        spec {
+            pose start-pose = snapshot of <shared.world.pose-ee-base> on event <cvw.E_HOLD_ENTERED>
+        }
+    }
+
+    when {}
+
+    while {
+        hold-position: keeping <shared.world.pose-ee-base>.position equal to <spec.start-pose>.position within <shared.spec.hold-band>
+    }
+
+    until {}
+}
+
+constraint-handler (ns=app) handler-hold {
+    handles: <hold-still>
+    runs-in: <cvw.S_HOLD>
+    monitors {
+        mon-held: monitor <hold-still.hold-position> {
+            satisfied for 0.3 s {
+                trigger: event <cvw.E_HELD>
+            },
+        }
+    }
+    controllers {
+        pid ctrl-hold-position { constraint: <hold-still.hold-position>, Kp: 200, Ki: 100, Kd: 40, decay: 0 }
+    }
+    solvers {
+        arm-solver: serial-chain {
+            agent:     <pickplace_agents.arm1>,
+            algorithm: achd,
+            gravity:   (0.0, 0.0, 9.81) m/s^2
+        }
+    }
+}

@@ -1,0 +1,12 @@
+# Where each agent starts. Keyed by the name the execution context binds.
+
+[pickplace_agents.arm1]
+# Joint configuration the simulator resets to, in the chain's joint order [rad].
+home = [0.0, 0.2618, 3.1416, -2.2689, 0.0, 0.9599, 1.5708]
+
+# Poses the model names and this deployment places. Position in metres, orientation as
+# extrinsic-XYZ Euler angles in radians, both in the frames the .robmot declares around the pose.
+[poses.home]
+# Where the TCP parks: the pose the arm reaches from the joint configuration above.
+position = [0.673671, 0.001345, 0.433689]
+orientation = [1.570860, 0.000005, 1.570789]

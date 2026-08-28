@@ -4,12 +4,13 @@
 from __future__ import annotations
 
 import io
+import json
 from types import SimpleNamespace
 
 import pytest
 from PIL import Image
 
-from motion_spec.dashboard import ros_camera
+from motion_spec.dashboard import catalog, ros_camera
 
 
 def _message(encoding, pixels, width=2, height=1, step=None):
@@ -92,3 +93,37 @@ def test_a_seq_that_does_not_move_is_sent_once():
 def test_a_source_with_no_frame_yet_sends_nothing():
     empty = SimpleNamespace(latest=lambda: None)
     assert list(ros_camera.mjpeg_stream(empty, _polls(3), fps=1000)) == []
+
+
+def _contract(tmp_path, camera: dict):
+    """A generation carrying one camera in its contract, as the generator writes it."""
+    contract = tmp_path / "generated" / "contract"
+    contract.mkdir(parents=True)
+    (contract / "frame_layout.json").write_text(json.dumps({"cameras": [camera]}))
+    return tmp_path
+
+
+def test_a_cameras_provider_reaches_the_page_that_reads_it(tmp_path):
+    """The topic is the model's answer to where the images come from, so the page is told it."""
+    generation = _contract(
+        tmp_path,
+        {
+            "id": "wrist",
+            "width": 640,
+            "height": 480,
+            "topic": "/wrist/color",
+            "message": "sensor_msgs/msg/Image",
+        },
+    )
+    (camera,) = catalog.generation_cameras(generation)
+    assert camera["topic"] == "/wrist/color"
+    assert camera["message"] == "sensor_msgs/msg/Image"
+
+
+def test_a_camera_with_no_provider_offers_the_page_no_topic(tmp_path):
+    """Nothing states where it is published, so nothing is passed on -- and the page, finding no
+    topic, shows no live pane rather than guessing one from the camera's name."""
+    generation = _contract(tmp_path, {"id": "wrist", "width": 640, "height": 480})
+    (camera,) = catalog.generation_cameras(generation)
+    assert camera["topic"] is None
+    assert camera["message"] is None

@@ -244,10 +244,11 @@ async function showRosCamera(generationPath) {
     ? state.generation
     : await api(`/api/generation?path=${encodeURIComponent(generationPath)}`).catch(() => null);
   if (generation?.simulated !== false || state.replay?.generation !== generationPath) return;
-  // The model names its cameras, and a published camera is <id>/color -- the external driver
-  // for the same sensor is expected on the same name. Anything else is typed in.
-  const declared = generation.cameras?.[0]?.id;
-  const defaultTopic = declared ? `/${declared}/color` : "";
+  // Where the camera is published is the model's to state -- a subscription naming it -- and
+  // never this page's to guess from its name. A camera no channel carries has no live view.
+  const camera = generation.cameras?.find((entry) => entry.topic);
+  if (!camera) return;
+  const declaredTopic = camera.topic;
   const panel = $(".videos");
   panel.hidden = false;
   panel.classList.add("one-camera", "ros-camera");
@@ -255,17 +256,18 @@ async function showRosCamera(generationPath) {
   bindVideoExpand(panel);
   bindVideoMinimize(panel);
   const main = panel.querySelector(".video-main");
-  main.innerHTML = `<img class="ros-frame" alt=""><span class="video-name">live camera</span><div class="ros-topic"><input type="text" spellcheck="false" title="ROS image topic"><span class="ros-status"></span></div>`;
+  main.innerHTML = `<img class="ros-frame" alt=""><span class="video-name"></span><div class="ros-topic"><input type="text" spellcheck="false" title="ROS image topic"><span class="ros-status"></span></div>`;
   const frame = main.querySelector(".ros-frame");
   const topic = main.querySelector("input");
   const status = main.querySelector(".ros-status");
-  topic.value = state.rosTopic ?? defaultTopic;
-  topic.placeholder = "ROS image topic";
+  main.querySelector(".video-name").textContent = camera.id;
+  topic.value = state.rosTopic ?? declaredTopic;
+  topic.placeholder = declaredTopic;
   const subscribe = () => {
-    state.rosTopic = topic.value.trim() || defaultTopic;
+    // Retyped for this session, or back to the one the model states.
+    state.rosTopic = topic.value.trim() || declaredTopic;
     topic.value = state.rosTopic;
     status.textContent = "";
-    if (!state.rosTopic) return;
     // A new query each time, so the browser reconnects rather than showing the stalled stream.
     frame.src = `/api/ros-camera?topic=${encodeURIComponent(state.rosTopic)}&t=${Date.now()}`;
   };

@@ -449,7 +449,10 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
     # dashboard, a script -- asks the contract what the cameras are; the model behind them is
     # the generator's to read, not theirs.
     cameras = [
-        {key: camera[key] for key in ("id", "width", "height", "rate_hz", "uri")}
+        {
+            key: camera[key]
+            for key in ("id", "width", "height", "rate_hz", "uri", "topic", "message")
+        }
         for camera in ir.get("composition", {}).get("scene", {}).get("cameras") or []
     ]
 

@@ -95,6 +95,10 @@ class CameraBinding:
     # The frame the camera reports in, named by the sensor the uri points at. A publisher stamps
     # its images with this, so it must name a frame in the ROS optical convention.
     frame_id: str = ""
+    # Where a viewer reads this camera, as the model's subscription states it. A camera no
+    # channel carries has no provider, and nothing may guess one from its name.
+    topic: str | None = None
+    message: str | None = None
 
 
 @dataclass

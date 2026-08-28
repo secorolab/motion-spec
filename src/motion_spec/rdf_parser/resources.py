@@ -55,10 +55,10 @@ from rdf_utils.models.geom_coord import (
 )
 from rdf_utils.models.vocab import (
     URI_DISTRIB_TYPE_SAMPLED_QUANTITY,
+    URI_GEOM_PRED_OF_POSE,
     URI_GEOM_TYPE_KGRAPH,
     URI_GEOM_TYPE_POSE,
     URI_GEOM_TYPE_POSE_COORD,
-    URI_GEOM_PRED_OF_POSE,
     URI_KC_PRED_BETWEEN_ATTACHMENTS,
     URI_KC_TYPE_JOINT,
     URI_KC_TYPE_SERIAL,
@@ -77,7 +77,7 @@ from scene_dsl.rdf.sensors import (
 )
 from scene_dsl.rdf_parser.kinematics import body_of_frame, get_kinematic_mapping, root_bodies
 from scene_dsl.rdf_parser.sensors import get_update_rate
-from scene_dsl.rdf_parser.vocab import URI_BDD_PRED_ELEMS, URI_ROS_PRED_PACKAGE_NAME
+from scene_dsl.rdf_parser.vocab import NS_MM_ROS, URI_BDD_PRED_ELEMS, URI_ROS_PRED_PACKAGE_NAME
 
 from motion_spec.classes.base import dedupe_by_id
 from motion_spec.classes.bindings import (
@@ -385,6 +385,7 @@ def _cameras(model, hosted, runtime_prefix) -> list:
                 f"camera '{local_name(sensor)}' is not an rgb camera; not lowered", file=sys.stderr
             )
             continue
+        topic, message = _camera_provider(graph, sensor)
         cameras.append(
             CameraBinding(
                 id=f"{runtime_prefix}{local_name(sensor)}",
@@ -394,9 +395,37 @@ def _cameras(model, hosted, runtime_prefix) -> list:
                 uri=str(sensor),
                 # Prefixed like id: two arms' wrist cameras must not share a frame name.
                 frame_id=f"{runtime_prefix}{local_name(sensor)}",
+                topic=topic,
+                message=message,
             )
         )
     return cameras
+
+
+def _camera_provider(graph, sensor) -> tuple[str | None, str | None]:
+    """The channel this camera is read off, from the subscription that states it carries it.
+
+    A camera nothing subscribes to has no provider: a viewer that cannot say where the images
+    come from shows none, rather than guessing a channel from the camera's name.
+    """
+    channels = [
+        node
+        for node in graph.subjects(SOSA.hasFeatureOfInterest, sensor)
+        if NS_MM_ROS["Topic"] in get_node_types(graph, node)
+    ]
+    if not channels:
+        return None, None
+    if len(channels) > 1:
+        raise ConstraintViolation(
+            "communication",
+            f"camera '{local_name(sensor)}' is carried by {len(channels)} channels; a camera "
+            "has one provider",
+        )
+    topic = channels[0]
+    return (
+        str(graph.value(topic, NS_MM_ROS["channel-name"]) or "") or None,
+        str(graph.value(topic, NS_MM_ROS["type-name"]) or "") or None,
+    )
 
 
 def _agent_bindings(model):

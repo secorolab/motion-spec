@@ -205,8 +205,11 @@ int main(int argc, char **argv) {
 <if(resources.by_kind.serial_chain)>
 <app-chain-camera-publish(configuration.backend, composition.scene.cameras)>
 <endif>
+        // The frame's t is the platform clock: simulation time under MuJoCo, so a log is the
+        // same regardless of how fast the host stepped it; wall_ns stays alongside for wall
+        // anchoring.
         _introspection_pub.begin_tick(
-            motion_spec::runtime::monotonic_time_s(),
+            shared.clock_time_s,
             static_cast\<std::uint64_t\>(_step),
             _active_motion,
             static_cast\<int\>(fsm->currentStateIndex));

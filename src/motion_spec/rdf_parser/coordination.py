@@ -1249,11 +1249,18 @@ def _motion_schedules(
     scope = Schedule(model)
 
     def live(nodes):
-        return [
-            node
-            for node in nodes
-            if not _is_elapsed_constraint(model, graph.value(node, CSTR_HDL["constraint"]))
-        ]
+        # Elapsed and goal-status conditions have no closure to schedule: the monitor reads
+        # the clock or the act's status slot directly.
+        out = []
+        for node in nodes:
+            constraint = graph.value(node, CSTR_HDL["constraint"])
+            if _is_elapsed_constraint(model, constraint):
+                continue
+            quantity = graph.value(constraint, CSTR["quantity"])
+            if quantities.goal_status_act(model, quantity) is not None:
+                continue
+            out.append(node)
+        return out
 
     # Until monitors run before control each tick, so build the until schedule first: a quantity
     # an until monitor consumes must be scheduled in the earlier phase, or the monitor reads the

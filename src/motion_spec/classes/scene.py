@@ -94,6 +94,10 @@ class MjcfSceneObject:
     friction_slide: float | None = None
     friction_torsion: float | None = None
     friction_roll: float | None = None
+    # Every body of this asset the model maps beyond the one the object is spawned as, by body
+    # uri, named the way the composed scene names it: the object's own name and the mapped
+    # body's, since only the asset's root body is renamed to the object.
+    secondary_bodies: dict[str, str] = field(default_factory=dict, metadata=INTERNAL)
     type: str = field(default="MjcfSceneObject")
 
 

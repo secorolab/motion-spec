@@ -1003,20 +1003,30 @@ def _scene_object_of(model, of, scene: MjcfSceneSpec) -> SceneObject | None:
     )
     if body is None:
         return None
-    object_id = next((obj.id for obj in scene.objects if obj.body == local_name(body)), None)
-    if object_id is None:
+    # A body the object maps beyond its root is as much the object's as the root one is: the
+    # scene measures it, so it answers here too -- under the name the composed scene gave it.
+    obj = next(
+        (
+            obj
+            for obj in scene.objects
+            if obj.body == local_name(body) or str(body) in obj.secondary_bodies
+        ),
+        None,
+    )
+    if obj is None:
         return None
+    body_name = obj.secondary_bodies.get(str(body), local_name(body))
     if quantities.placement_frame(model, body) == node:
-        return SceneObject(object_id, local_name(body))
+        return SceneObject(obj.id, body_name)
     site = next((frame.name for frame in scene.frames if frame.uri == str(node)), None)
     if site is None:
         raise ConstraintViolation(
             "geometry",
-            f"'{model.id(node)}' is a frame of scene object '{object_id}', but the scene marks "
+            f"'{model.id(node)}' is a frame of scene object '{obj.id}', but the scene marks "
             f"no site for it, so the runtime cannot ask where it is. A frame is marked only "
             f"once a pose places it on its body.",
         )
-    return SceneObject(object_id, local_name(body), site)
+    return SceneObject(obj.id, body_name, site)
 
 
 def _runtime_output(model, output, type_, node, frame_node, setup: _ChainSetup):
@@ -1316,23 +1326,23 @@ def read_scene(model) -> MjcfSceneSpec:
 
     for modelled in sorted(graph.subjects(RDF.type, ENV["ModelledObject"]), key=str):
         obj = graph.value(modelled, ENV["of-object"])
-        mapped = next(
-            (
-                (asset, body)
-                for asset in sorted(graph.objects(modelled, ENV["has-object-model"]), key=str)
-                for body, _entity in _model_mappings(model, asset, GEOM_ENT.RigidBody)
-            ),
-            None,
-        )
-        if obj is None or mapped is None:
+        mapped = [
+            (asset, body, entity)
+            for asset in sorted(graph.objects(modelled, ENV["has-object-model"]), key=str)
+            for body, entity in _model_mappings(model, asset, GEOM_ENT.RigidBody)
+        ]
+        if obj is None or not mapped:
             continue
-        asset, body = mapped
+        # The first mapping is the one the object is spawned as; the rest are further bodies of
+        # the same asset, which the scene already carries -- they are named, not spawned again.
+        asset, body, _entity = mapped[0]
+        object_id = local_name(obj)
         attachment = attach_by_body.get(body, ("World", "", body, None))
         attach_kind, attach_name, _frame, _parent = attachment
         position, orientation = _placement_of(model, attachment, anchor)
         scene.objects.append(
             MjcfSceneObject(
-                id=local_name(obj),
+                id=object_id,
                 body=local_name(body),
                 path=_asset_path(graph, asset),
                 fixed=body in attach_by_body,
@@ -1340,6 +1350,11 @@ def read_scene(model) -> MjcfSceneSpec:
                 attach_name=attach_name,
                 pos=position,
                 quat=orientation,
+                secondary_bodies={
+                    str(other): f"{object_id}_{entity}"
+                    for _asset, other, entity in mapped[1:]
+                    if entity
+                },
             )
         )
 
@@ -1358,7 +1373,7 @@ def read_scene(model) -> MjcfSceneSpec:
         )
         scene.cameras.extend(assembly.cameras)
 
-    scene.frames = _scene_frames(model)
+    scene.frames = _scene_frames(model, scene.objects)
     # A camera on a static scene frame is built into the composed scene at that frame's site
     # pose; a camera on a robot-asset frame rides the asset's own MJCF instead.
     frames_by_uri = {frame.uri: frame for frame in scene.frames}
@@ -1381,14 +1396,18 @@ def read_scene(model) -> MjcfSceneSpec:
     return scene
 
 
-def _scene_frames(model) -> list:
+def _scene_frames(model, objects) -> list:
     """Every frame the kgraph declares, placed on the body that carries it.
 
     A body's own root frame is where the body is, so it needs no marker of its own; the rest
     are posed against it, which is the frame the runtime builds each body on. A frame no pose
     leads to is left out rather than placed at the body's origin, which would invent a spot.
+
+    A frame on a body an object maps beyond its root goes on that body under the name the
+    composed scene gives it, not under its kgraph name, which names nothing in the scene.
     """
     graph = model.graph
+    body_names = {uri: name for obj in objects for uri, name in obj.secondary_bodies.items()}
     marked = [
         (body, frame)
         for kgraph in sorted(graph.subjects(RDF.type, URI_GEOM_TYPE_KGRAPH), key=str)
@@ -1407,10 +1426,11 @@ def _scene_frames(model) -> list:
         if position is None:
             continue
         name = local_name(frame)
+        body_name = body_names.get(str(body), local_name(body))
         frames.append(
             MjcfSceneFrame(
-                body=local_name(body),
-                name=f"{local_name(body)}_{name}" if counts[name] > 1 else name,
+                body=body_name,
+                name=f"{body_name}_{name}" if counts[name] > 1 else name,
                 uri=str(frame),
                 **dict(zip(("pos_x", "pos_y", "pos_z"), position)),
                 **dict(zip(("quat_x", "quat_y", "quat_z", "quat_w"), orientation)),

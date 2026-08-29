@@ -978,6 +978,11 @@ def run(
 @click.option("-o", "--output-dir", type=click.Path(file_okay=False, path_type=Path))
 @click.option("--list-sites", is_flag=True, help="Print the mutation sites and run nothing.")
 @click.option("--operators", help="Comma-separated operator tags to keep; default is all of them.")
+@click.option(
+    "--natural-faults",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Run the hand-recorded faults in this JSON file instead of enumerating operator sites.",
+)
 @click.option("--limit", type=click.IntRange(min=1), help="Take only the first K sites.")
 @click.option(
     "--reference-runs",
@@ -994,17 +999,33 @@ def mutate(
     output_dir: Path | None,
     list_sites: bool,
     operators: str | None,
+    natural_faults: Path | None,
     limit: int | None,
     reference_runs: int,
     steps: int,
 ) -> None:
-    """Mutate MODEL one site at a time and score what each mutant's run points at."""
+    """Mutate MODEL one site at a time and score what each mutant's run points at.
+
+    With --natural-faults, the sites are the hand-recorded faults in that file rather than the
+    operator sites the model's text admits. Those run through the same pipeline and are written to
+    report_natural.jsonl beside the operator campaign's report, against the same reference: pointed
+    at a campaign directory that already has one, they reuse it rather than measure a new envelope.
+    """
     from motion_spec.mutation import metric, runner, scorer
-    from motion_spec.mutation.operators import discover_sites
+    from motion_spec.mutation.operators import discover_sites, natural_sites
 
     if model.suffix != ".robmot":
         raise click.BadParameter("MODEL must be a .robmot file", param_hint="MODEL")
-    sites = discover_sites(model.read_text(), str(model))
+    text = model.read_text()
+    if natural_faults is None:
+        sites = discover_sites(text, str(model))
+    else:
+        try:
+            sites = natural_sites(
+                json.loads(natural_faults.read_text())["faults"], text, str(model)
+            )
+        except (KeyError, ValueError) as exc:
+            raise click.ClickException(f"{natural_faults}: {exc}") from exc
     if operators:
         wanted = {tag.strip() for tag in operators.split(",") if tag.strip()}
         unknown = wanted - {site.operator for site in sites}
@@ -1031,16 +1052,21 @@ def mutate(
 
     out = output_dir.expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
-    click.echo(f"reference: {reference_runs} runs of the unmutated model", err=True)
-    try:
-        generation, decoded = runner.reference_runs(model, out / "reference", reference_runs, steps)
-    except (OSError, RuntimeError) as exc:
-        raise click.ClickException(f"the reference did not run: {exc}") from exc
+    reference = runner.existing_reference(out / "reference") if natural_faults else None
+    if reference is None:
+        click.echo(f"reference: {reference_runs} runs of the unmutated model", err=True)
+        try:
+            reference = runner.reference_runs(model, out / "reference", reference_runs, steps)
+        except (OSError, RuntimeError) as exc:
+            raise click.ClickException(f"the reference did not run: {exc}") from exc
+    else:
+        click.echo(f"reference: reusing {len(reference[1])} runs in {out / 'reference'}", err=True)
+    generation, decoded = reference
     envelope = metric.envelope([metric.features(metric.load_frames(path)) for path in decoded])
     slots = scorer.state_controllers(generation, scorer.introspection(generation))
 
     records = []
-    report = out / "report.jsonl"
+    report = out / ("report_natural.jsonl" if natural_faults else "report.jsonl")
     report.unlink(missing_ok=True)
     for index, site in enumerate(sites):
         click.echo(f"[{index + 1}/{len(sites)}] {site.operator} {site.name}", err=True)
@@ -1048,7 +1074,11 @@ def mutate(
         if record["frames"]:
             feature = metric.features(metric.load_frames(Path(record["frames"])))
             record |= scorer.score(
-                metric.deviation(feature, envelope), slots, site.operator, site.name
+                metric.deviation(feature, envelope),
+                slots,
+                site.operator,
+                site.name,
+                site.element_uri,
             )
         records.append(record)
         with report.open("a") as sink:
@@ -1062,23 +1092,32 @@ def mutate_rescore(campaign: Path) -> None:
     """Re-rank the finished mutation campaign in CAMPAIGN with scorer v2.
 
     Reads the campaign's own report and mutant frames and writes report_v2.jsonl beside them: the
-    same records, ranked by deviation onset, with v1's ranking kept alongside for comparison.
+    same records, ranked by deviation onset, with v1's ranking kept alongside for comparison. A
+    naturals report in the same campaign is rescored the same way, into report_natural_v2.jsonl.
     """
-    from motion_spec.mutation import metric, scorer_v2
+    from motion_spec.mutation import scorer_v2
 
     report = campaign / "report.jsonl"
     if not report.is_file():
         raise click.ClickException(f"{report}: no campaign report to rescore")
-    records = [json.loads(line) for line in report.read_text().splitlines() if line.strip()]
     try:
         reference = scorer_v2.load(campaign)
     except (OSError, RuntimeError, ValueError) as exc:
         raise click.ClickException(f"the reference could not be read: {exc}") from exc
-    click.echo(f"{len(reference.candidates)} candidates, {len(records)} mutants", err=True)
+    click.echo(f"{len(reference.candidates)} candidates", err=True)
+    _rescore(campaign, report, campaign / "report_v2.jsonl", reference)
+    naturals = campaign / "report_natural.jsonl"
+    if naturals.is_file():
+        _rescore(campaign, naturals, campaign / "report_natural_v2.jsonl", reference)
 
+
+def _rescore(campaign: Path, report: Path, into: Path, reference) -> None:
+    """Rank one report's mutants with v2 and write the rescored records to `into`."""
+    from motion_spec.mutation import metric, scorer_v2
+
+    records = [json.loads(line) for line in report.read_text().splitlines() if line.strip()]
     rescored = []
-    rescore = campaign / "report_v2.jsonl"
-    rescore.unlink(missing_ok=True)
+    into.unlink(missing_ok=True)
     for index, record in enumerate(records, start=1):
         click.echo(f"[{index}/{len(records)}] {record['mutant']}", err=True)
         # The deviation rule is frozen, so whether a run deviated is carried over as it stands;
@@ -1091,11 +1130,13 @@ def mutate_rescore(campaign: Path) -> None:
         if not frames.is_file() and record.get("frames"):
             frames = Path(record["frames"])
         if frames.is_file():
-            fresh |= scorer_v2.score(metric.load_frames(frames), reference, record["name"])
+            fresh |= scorer_v2.score(
+                metric.load_frames(frames), reference, record["name"], record.get("element_uri")
+            )
         rescored.append(fresh)
-        with rescore.open("a") as sink:
+        with into.open("a") as sink:
             sink.write(json.dumps(fresh) + "\n")
-    _mutation_summary(rescored, rescore)
+    _mutation_summary(rescored, into)
 
 
 def _mutation_summary(records: list[dict], report: Path) -> None:
@@ -1120,6 +1161,48 @@ def _mutation_summary(records: list[dict], report: Path) -> None:
         unranked = sum(record.get("target_rank") is None for record in hit)
         click.echo(f"  {operator:<24} top-1 {first}/{len(hit)}, unranked {unranked}")
     click.echo(f"\n{report}")
+
+
+@main.command("mutate-taxonomy")
+@click.argument("campaign", type=click.Path(exists=True, file_okay=False, path_type=Path))
+def mutate_taxonomy(campaign: Path) -> None:
+    """Sort every mutant of the campaign in CAMPAIGN into one of four outcome classes.
+
+    Rejected before it ran, silent once it did, detected and attributed to the element that was
+    damaged, or detected without being attributed. Ranks come from the best scorer the campaign
+    holds -- report_v2.jsonl where a rescore was run, the original report otherwise -- and the
+    naturals report is counted alongside the operator mutants as its own operator.
+    """
+    from motion_spec.mutation import taxonomy
+
+    rows = taxonomy.load(campaign)
+    if not rows:
+        raise click.ClickException(f"{campaign}: no campaign report to classify")
+    counts = taxonomy.tally(rows)
+    width = max(len(operator) for operator in counts["per_operator"])
+    header = "  ".join(f"{name:>{len(name)}}" for name in taxonomy.CLASSES)
+    click.echo(f"\n  {'operator':<{width}}  {header}")
+    for operator, per_class in sorted(counts["per_operator"].items()):
+        click.echo(f"  {operator:<{width}}  {_taxonomy_row(per_class)}")
+    click.echo(f"  {'all':<{width}}  {_taxonomy_row(counts['overall'])}")
+
+    for class_name in ("rejected", "detected-unattributed"):
+        mutants = taxonomy.named(rows, class_name)
+        click.echo(f"\n  {class_name} ({len(mutants)})")
+        for mutant in mutants:
+            click.echo(f"    {mutant}")
+    written = campaign / "taxonomy.json"
+    written.write_text(
+        json.dumps({"campaign": str(campaign), "counts": counts, "records": rows}, indent=2) + "\n"
+    )
+    click.echo(f"\n{written}")
+
+
+def _taxonomy_row(per_class: dict[str, int]) -> str:
+    """One row of class counts, each under the width of its own class heading."""
+    from motion_spec.mutation import taxonomy
+
+    return "  ".join(f"{per_class[name]:>{len(name)}}" for name in taxonomy.CLASSES)
 
 
 @main.command(context_settings={"ignore_unknown_options": True})

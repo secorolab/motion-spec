@@ -1808,7 +1808,9 @@ def _reject_scene_objects_on_hardware(model, context) -> None:
         return
     graph = model.graph
     constrained = _constrained_entities(model)
-    observed = set(graph.objects(None, SOSA.hasFeatureOfInterest))
+    # A subscriber names the world quantity it observes; the object stands behind that
+    # quantity, so the observation is walked down to entities the same way constraints are.
+    observed = _entities_from(graph, set(graph.objects(None, SOSA.hasFeatureOfInterest)))
     objects = sorted(
         local_name(modelled)
         for modelled in graph.subjects(RDF.type, ENV.ModelledObject)
@@ -1833,11 +1835,17 @@ def _constrained_entities(model) -> set:
     entity in the scene.
     """
     graph = model.graph
-    queue = [
+    starts = {
         quantity
         for constraint in graph.subjects(RDF.type, CSTR.Constraint)
         for quantity in graph.objects(constraint, CSTR.quantity)
-    ]
+    }
+    return _entities_from(graph, starts)
+
+
+def _entities_from(graph, starts: set) -> set:
+    """The geometric entities reachable from the given nodes, first entity per branch."""
+    queue = list(starts)
     seen, entities = set(), set()
     while queue:
         node = queue.pop()

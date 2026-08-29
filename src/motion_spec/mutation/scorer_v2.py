@@ -21,6 +21,8 @@ import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from rdflib.namespace import split_uri
+
 from motion_spec.mutation import metric, scorer
 
 # What a frame reports per constraint row. A mutated gain shows in `output` on the tick it runs, a
@@ -106,10 +108,18 @@ def load(campaign: Path) -> Reference:
     return reference
 
 
-def score(frames: list[dict], reference: Reference, name: str) -> dict:
-    """The v2 ranking, and where the mutated element sits in it."""
+def score(
+    frames: list[dict], reference: Reference, name: str, element_uri: str | None = None
+) -> dict:
+    """The v2 ranking, and where the mutated element sits in it.
+
+    A site that names the element it damaged is resolved from that URI; a site that only carries an
+    operator and a term is resolved from the term, as before.
+    """
     ranked = rank(frames, reference)
-    targets = target_uris(name, reference)
+    targets = (
+        element_targets(element_uri, reference) if element_uri else target_uris(name, reference)
+    )
     result = {
         "target_rank": None,
         "target_uris": sorted(targets),
@@ -162,6 +172,20 @@ def target_uris(name: str, reference: Reference) -> set[str]:
         if node == sanitized or node.startswith(f"{sanitized}."):
             seeds |= {consumer["id"] for consumer in flow.get("consumers", ()) if consumer["id"]}
     return _resolve(seeds, reference)
+
+
+def element_targets(uri: str, reference: Reference) -> set[str]:
+    """The candidates a named element reaches. Evaluation only -- never used to rank.
+
+    An element that a run reports directly -- a controller, its constraint, a monitor -- is found by
+    its URI. An authored value has no URI in the run, so its local name is what the dataflow graph
+    knows it by, and the walk out from there is the one every other site takes.
+    """
+    seeds = {
+        row["id"] for row in reference.rows.values() if uri in (row["uri"], row["constraint_uri"])
+    }
+    seeds |= {row["id"] for row in reference.monitors.values() if row["uri"] == uri}
+    return _resolve(seeds, reference) if seeds else target_uris(split_uri(uri)[1], reference)
 
 
 def _resolve(ids: set[str], reference: Reference) -> set[str]:

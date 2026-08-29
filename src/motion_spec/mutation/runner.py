@@ -61,6 +61,25 @@ def reference_runs(model: Path, out_dir: Path, count: int, steps: int) -> tuple[
     return generation, decoded
 
 
+def existing_reference(out_dir: Path) -> tuple[Path, list[Path]] | None:
+    """The reference a campaign directory already holds, or None when it holds none.
+
+    Same layout `reference_runs` writes: the unmutated generation under `gen`, its decoded runs
+    beside it. A second campaign into the same directory scores against those rather than making a
+    new envelope the first campaign's mutants were never measured against.
+    """
+    decoded = sorted(out_dir.glob("reference*.jsonl"))
+    generation = next(
+        (
+            candidate
+            for candidate in sorted(out_dir.glob("gen/*/*"))
+            if (candidate / "generated" / "model" / "ir.json").is_file()
+        ),
+        None,
+    )
+    return (generation, decoded) if generation is not None and decoded else None
+
+
 def run_mutant(site: MutationSite, index: int, model: Path, out_dir: Path, steps: int) -> dict:
     """Build and run one mutant, and report how far down the pipeline it got."""
     root = workspace_root(model)
@@ -70,6 +89,7 @@ def run_mutant(site: MutationSite, index: int, model: Path, out_dir: Path, steps
         "mutant": mutant.name,
         "operator": site.operator,
         "name": site.name,
+        "element_uri": site.element_uri,
         "outcome": "",
         "gen_dir": None,
         "run_dir": None,

@@ -61,15 +61,26 @@ def state_controllers(generation: Path, ir: dict) -> dict[int, list[dict]]:
     return slots
 
 
-def score(deviation: dict, slots: dict[int, list[dict]], operator: str, name: str) -> dict:
-    """Rank the constraints by excess, and report where the mutated one sits in that ranking."""
+def score(
+    deviation: dict,
+    slots: dict[int, list[dict]],
+    operator: str,
+    name: str,
+    element_uri: str | None = None,
+) -> dict:
+    """Rank the constraints by excess, and report where the mutated one sits in that ranking.
+
+    A site that already knows the element it damaged is evaluated against that element instead of
+    against what its operator tag implies. v1 ranks constraints, so an authored value that is not
+    itself a constraint stays unranked here -- which is v1's answer, not a missing one.
+    """
     ranked = rank_constraints(deviation["excess"], slots)
     deviated = (
         any(value > 0.0 for value in deviation["excess"].values())
         or deviation["sequence_differs"]
         or deviation["incomplete"]
     )
-    targets = target_uris(operator, name, slots)
+    targets = {element_uri} if element_uri else target_uris(operator, name, slots)
     result = {
         "deviated": deviated,
         "target_rank": None,

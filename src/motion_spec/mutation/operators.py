@@ -34,6 +34,8 @@ class MutationSite:
     original: str
     mutated: str
     operator: str
+    # The element a perfect diagnosis should point at, when the site knows it. Evaluation only.
+    element_uri: str | None = None
 
 
 def discover_sites(text: str, file: str = "") -> list[MutationSite]:
@@ -111,6 +113,34 @@ def discover_sites(text: str, file: str = "") -> list[MutationSite]:
                 literal,
                 _number(value * 4.0, literal),
                 "debounce_x4",
+            )
+        )
+    return sites
+
+
+def natural_sites(faults: list[dict], text: str, file: str = "") -> list[MutationSite]:
+    """Hand-recorded faults as sites: each `find` located in the text, `replace` put in its place.
+
+    A natural fault is not enumerated from a form; it is one authoring mistake that actually
+    happened, recorded verbatim. It names the element it damaged, because no operator tag says so.
+    """
+    sites = []
+    for fault in faults:
+        name, find = fault["name"], fault["find"]
+        occurrences = text.count(find)
+        if occurrences != 1:
+            raise ValueError(f"{name}: `find` occurs {occurrences} times in the model, not once")
+        start = text.index(find)
+        sites.append(
+            MutationSite(
+                file,
+                (start, start + len(find)),
+                "natural",
+                name,
+                find,
+                fault["replace"],
+                "natural",
+                fault["element_uri"],
             )
         )
     return sites

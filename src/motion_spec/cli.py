@@ -397,6 +397,9 @@ def dashboard(
 ) -> None:
     """Browse generations, replay runs, and query them in a browser."""
     from motion_spec.dashboard.server import serve
+    from motion_spec.introspection.journal import record as _journal_record
+
+    _journal_record("dashboard")
 
     named_port = "--port" in sys.argv or "-p" in sys.argv
     if kill:
@@ -694,7 +697,10 @@ def check(manifest: Path, meta_shacl: bool) -> None:
 def generate_ir(manifest: Path, output: Path | None, console: bool) -> None:
     """Lower MANIFEST to motion-spec IR."""
     from motion_spec.classes.base import DataclassJSONEncoder
+    from motion_spec.introspection.journal import record as _journal_record
     from motion_spec.rdf_parser.ir import generate_ir as build_ir
+
+    _journal_record("ir")
 
     if console == (output is not None):
         raise click.UsageError("choose exactly one of --output or --console")
@@ -767,12 +773,44 @@ def archive(
 
 
 @main.command()
+@click.argument("generation_a", type=click.Path(exists=True, path_type=Path))
+@click.argument("generation_b", type=click.Path(exists=True, path_type=Path))
+@click.option("--json", "as_json_flag", is_flag=True, help="Emit the full delta as JSON.")
+def diff(generation_a: Path, generation_b: Path, as_json_flag: bool) -> None:
+    """Diff two generations' specification graphs, classified by layer (task/binding)."""
+    from motion_spec.introspection.journal import record
+    from motion_spec.introspection.spec_diff import (
+        as_json,
+        diff_graphs,
+        load_model_graph,
+        summarize,
+    )
+
+    record("diff")
+    deltas = diff_graphs(load_model_graph(generation_a), load_model_graph(generation_b))
+    if as_json_flag:
+        click.echo(as_json(deltas))
+        return
+    for layer, row in sorted(summarize(deltas).items()):
+        click.echo(
+            f"{layer:>9}: {row['subjects']} subjects (+{row['added']} / -{row['removed']} triples)"
+        )
+    for delta in deltas:
+        if delta.layer == "metadata":
+            continue
+        click.echo(f"  [{delta.layer}] {delta.subject} (+{len(delta.added)}/-{len(delta.removed)})")
+
+
+@main.command()
 @click.argument("log", type=click.Path(path_type=Path))
 @click.option("--jsonl", is_flag=True, help="Emit decoded frames as JSON Lines.")
 @click.option("--verify", is_flag=True, help="Verify the manifest and frame-log header.")
 @click.option("--recover-runtime-ttl", is_flag=True, help="Recover runtime.ttl from the log.")
 def replay(log: Path, jsonl: bool, verify: bool, recover_runtime_ttl: bool) -> None:
     """Inspect or recover a recorded run LOG."""
+    from motion_spec.introspection.journal import record as _journal_record
+
+    _journal_record("replay")
     from motion_spec.introspection.archive import ArchiveError
     from motion_spec.introspection.replay import (
         decode_frames,
@@ -933,6 +971,107 @@ def run(
     if returncode:
         raise click.exceptions.Exit(returncode)
     click.echo(run_dir)
+
+
+@main.command()
+@click.argument("model", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("-o", "--output-dir", type=click.Path(file_okay=False, path_type=Path))
+@click.option("--list-sites", is_flag=True, help="Print the mutation sites and run nothing.")
+@click.option("--operators", help="Comma-separated operator tags to keep; default is all of them.")
+@click.option("--limit", type=click.IntRange(min=1), help="Take only the first K sites.")
+@click.option(
+    "--reference-runs",
+    default=3,
+    show_default=True,
+    type=click.IntRange(min=1),
+    help="Reference runs.",
+)
+@click.option(
+    "--steps", default=12000, show_default=True, type=click.IntRange(min=1), help="Steps per run."
+)
+def mutate(
+    model: Path,
+    output_dir: Path | None,
+    list_sites: bool,
+    operators: str | None,
+    limit: int | None,
+    reference_runs: int,
+    steps: int,
+) -> None:
+    """Mutate MODEL one site at a time and score what each mutant's run points at."""
+    from motion_spec.mutation import metric, runner, scorer
+    from motion_spec.mutation.operators import discover_sites
+
+    if model.suffix != ".robmot":
+        raise click.BadParameter("MODEL must be a .robmot file", param_hint="MODEL")
+    sites = discover_sites(model.read_text(), str(model))
+    if operators:
+        wanted = {tag.strip() for tag in operators.split(",") if tag.strip()}
+        unknown = wanted - {site.operator for site in sites}
+        if unknown:
+            raise click.UsageError(f"no site uses these operators: {', '.join(sorted(unknown))}")
+        sites = [site for site in sites if site.operator in wanted]
+    if limit is not None:
+        sites = sites[:limit]
+    if not sites:
+        raise click.ClickException(f"{model}: nothing to mutate")
+
+    if list_sites:
+        width = max(len(site.operator) for site in sites)
+        names = max(len(site.name) for site in sites)
+        for index, site in enumerate(sites):
+            click.echo(
+                f"{index:3d}  {site.operator:<{width}}  {site.name:<{names}}  "
+                f"{site.original} -> {site.mutated}"
+            )
+        click.echo(f"\n{len(sites)} sites")
+        return
+    if output_dir is None:
+        raise click.UsageError("-o/--output-dir is required unless --list-sites is given")
+
+    out = output_dir.expanduser().resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    click.echo(f"reference: {reference_runs} runs of the unmutated model", err=True)
+    try:
+        generation, decoded = runner.reference_runs(model, out / "reference", reference_runs, steps)
+    except (OSError, RuntimeError) as exc:
+        raise click.ClickException(f"the reference did not run: {exc}") from exc
+    envelope = metric.envelope([metric.features(metric.load_frames(path)) for path in decoded])
+    slots = scorer.state_controllers(generation, scorer.introspection(generation))
+
+    records = []
+    report = out / "report.jsonl"
+    report.unlink(missing_ok=True)
+    for index, site in enumerate(sites):
+        click.echo(f"[{index + 1}/{len(sites)}] {site.operator} {site.name}", err=True)
+        record = runner.run_mutant(site, index, model, out, steps)
+        if record["frames"]:
+            feature = metric.features(metric.load_frames(Path(record["frames"])))
+            record |= scorer.score(
+                metric.deviation(feature, envelope), slots, site.operator, site.name
+            )
+        records.append(record)
+        with report.open("a") as sink:
+            sink.write(json.dumps(record) + "\n")
+    _mutation_summary(records, report)
+
+
+def _mutation_summary(records: list[dict], report: Path) -> None:
+    """Outcome counts, and how well the ranking found the mutated constraint."""
+    import statistics
+
+    click.echo()
+    for outcome in sorted({record["outcome"] for record in records}):
+        count = sum(record["outcome"] == outcome for record in records)
+        click.echo(f"  {outcome:<12} {count}")
+    deviated = [record for record in records if record.get("deviated")]
+    ranks = [record["target_rank"] for record in deviated if record.get("target_rank")]
+    click.echo(f"  {'deviated':<12} {len(deviated)} of {len(records)}")
+    if ranks:
+        click.echo(
+            f"  {'rank':<12} mean {statistics.mean(ranks):.2f}, median {statistics.median(ranks)}"
+        )
+    click.echo(f"\n{report}")
 
 
 @main.command(context_settings={"ignore_unknown_options": True})

@@ -1056,6 +1056,48 @@ def mutate(
     _mutation_summary(records, report)
 
 
+@main.command("mutate-rescore")
+@click.argument("campaign", type=click.Path(exists=True, file_okay=False, path_type=Path))
+def mutate_rescore(campaign: Path) -> None:
+    """Re-rank the finished mutation campaign in CAMPAIGN with scorer v2.
+
+    Reads the campaign's own report and mutant frames and writes report_v2.jsonl beside them: the
+    same records, ranked by deviation onset, with v1's ranking kept alongside for comparison.
+    """
+    from motion_spec.mutation import metric, scorer_v2
+
+    report = campaign / "report.jsonl"
+    if not report.is_file():
+        raise click.ClickException(f"{report}: no campaign report to rescore")
+    records = [json.loads(line) for line in report.read_text().splitlines() if line.strip()]
+    try:
+        reference = scorer_v2.load(campaign)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise click.ClickException(f"the reference could not be read: {exc}") from exc
+    click.echo(f"{len(reference.candidates)} candidates, {len(records)} mutants", err=True)
+
+    rescored = []
+    rescore = campaign / "report_v2.jsonl"
+    rescore.unlink(missing_ok=True)
+    for index, record in enumerate(records, start=1):
+        click.echo(f"[{index}/{len(records)}] {record['mutant']}", err=True)
+        # The deviation rule is frozen, so whether a run deviated is carried over as it stands;
+        # v2 changes only the ranking that follows from it.
+        fresh = dict(record) | {
+            "target_rank_v1": record.get("target_rank"),
+            "top_v1": record.get("top"),
+        }
+        frames = campaign / "mutants" / record["mutant"] / "frames.jsonl"
+        if not frames.is_file() and record.get("frames"):
+            frames = Path(record["frames"])
+        if frames.is_file():
+            fresh |= scorer_v2.score(metric.load_frames(frames), reference, record["name"])
+        rescored.append(fresh)
+        with rescore.open("a") as sink:
+            sink.write(json.dumps(fresh) + "\n")
+    _mutation_summary(rescored, rescore)
+
+
 def _mutation_summary(records: list[dict], report: Path) -> None:
     """Outcome counts, and how well the ranking found the mutated constraint."""
     import statistics
@@ -1071,6 +1113,12 @@ def _mutation_summary(records: list[dict], report: Path) -> None:
         click.echo(
             f"  {'rank':<12} mean {statistics.mean(ranks):.2f}, median {statistics.median(ranks)}"
         )
+    click.echo()
+    for operator in sorted({record["operator"] for record in deviated}):
+        hit = [record for record in deviated if record["operator"] == operator]
+        first = sum(record.get("target_rank") == 1 for record in hit)
+        unranked = sum(record.get("target_rank") is None for record in hit)
+        click.echo(f"  {operator:<24} top-1 {first}/{len(hit)}, unranked {unranked}")
     click.echo(f"\n{report}")
 
 

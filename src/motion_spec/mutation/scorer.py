@@ -12,7 +12,6 @@ import re
 from pathlib import Path
 
 SLOT = re.compile(r"s(\d+)/c(\d+)")
-STATE_ENUM = re.compile(r"enum e_states\s*\{(.*?)\}", re.DOTALL)
 ENUM_ENTRY = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)")
 
 
@@ -21,17 +20,23 @@ def introspection(generation: Path) -> dict:
     return json.loads((generation / "generated" / "model" / "ir.json").read_text())
 
 
-def state_order(generation: Path, ir: dict) -> list[str]:
-    """The FSM's states in the order their integers were assigned.
+def enum_order(generation: Path, ir: dict, enum: str) -> list[str]:
+    """One generated FSM enum, in the order its integers were assigned.
 
     Read off the generated enum, because that is what the integer in a frame means. The IR's own
-    state list is sorted by name and says nothing about which state is which number.
+    lists are sorted by name and say nothing about which state or event is which number.
     """
     header = generation / "generated" / "controller" / ir["coordination"]["fsm"]["header"]
-    match = STATE_ENUM.search(header.read_text())
+    pattern = re.compile(rf"enum {enum}\s*\{{(.*?)\}}", re.DOTALL)
+    match = pattern.search(header.read_text())
     if match is None:
-        raise ValueError(f"{header}: no e_states enum to read the state numbering from")
-    return [name for name in ENUM_ENTRY.findall(match.group(1)) if name != "NUM_STATES"]
+        raise ValueError(f"{header}: no {enum} enum to read the numbering from")
+    return [name for name in ENUM_ENTRY.findall(match.group(1)) if not name.startswith("NUM_")]
+
+
+def state_order(generation: Path, ir: dict) -> list[str]:
+    """The FSM's states in the order their integers were assigned."""
+    return enum_order(generation, ir, "e_states")
 
 
 def state_controllers(generation: Path, ir: dict) -> dict[int, list[dict]]:

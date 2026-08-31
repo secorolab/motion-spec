@@ -285,6 +285,10 @@ class Perturbation:
     # The authored window length, by id: the runtime accumulates measured cycle time against that
     # shared value. None when the window lasts until the state exits.
     duration_id: str | None = None
+    # The pose whose translation the force direction is normalized from, by id: the body-to-target
+    # vector, which is what a guide line to the aimed-at point is drawn along. None when the
+    # direction is a fixed authored vector, which points at nothing in particular.
+    target_pose_id: str | None = None
     has_gate: bool = False
     # Structured boolean terms, rendered by the same template a monitor's condition uses.
     terms: list = field(default_factory=list)

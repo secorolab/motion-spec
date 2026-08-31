@@ -689,6 +689,8 @@ perturbation-arrows-mj_kdl(perturbations, trace) ::= <<
             static constexpr float  kPerturbTorqueRGBA[4] = {0.15f, 0.45f, 0.95f, 1.0f};
             static constexpr double kPerturbArrowScale    = 0.03; // m per N, m per Nm
             static constexpr double kPerturbArrowMax      = 0.6;  // m
+            static constexpr float  kPerturbGuideRGBA[4]  = {0.95f, 0.45f, 0.45f, 0.35f};
+            static constexpr double kPerturbGuideDash     = 0.05; // m drawn, then as much skipped
 <if(!trace.enabled)>            // Nothing else draws an overlay in this model, so the per-frame clear belongs here.
             mj_kdl::clear_trace(&mj_viewer);
 <endif><perturbations:{p |            if (shared.<p.active_id>) {
@@ -715,7 +717,22 @@ perturbation-arrows-mj_kdl(perturbations, trace) ::= <<
                             std::min(_pw<i0>.torque.Norm() * kPerturbArrowScale, kPerturbArrowMax);
                         mj_kdl::add_overlay_arrow(&mj_viewer, _pat<i0> - _ptdir<i0> * _ptlen<i0>,
                             _ptdir<i0>, _ptlen<i0>, kPerturbTorqueRGBA);
-                    \}
+                    \}<if(p.target_pose_id)>
+                    // The direction is normalized from this pose, so the pose still says how far
+                    // the target is: dashes along it show what the push is aimed at.
+                    const KDL::Vector _pray<i0> =
+                        robot.<p.robot_id>.world_to_root.M.Inverse() * shared.<p.target_pose_id>.p;
+                    const double _praylen<i0> = _pray<i0>.Norm();
+                    if (_praylen<i0> > 1e-9) {
+                        const KDL::Vector _pstep<i0> = _pray<i0> / _praylen<i0>;
+                        for (double _pd<i0> = 0.0; _pd<i0> \< _praylen<i0>;
+                             _pd<i0> += 2.0 * kPerturbGuideDash) {
+                            mj_kdl::add_trace_segment(&mj_viewer,
+                                _pat<i0> + _pstep<i0> * _pd<i0>,
+                                _pat<i0> + _pstep<i0> * std::min(_pd<i0> + kPerturbGuideDash, _praylen<i0>),
+                                kPerturbGuideRGBA);
+                        \}
+                    \}<endif>
                 \}
             \}
 }>        \}

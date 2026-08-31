@@ -57,6 +57,7 @@ from rdf_utils.models.geom_coord import (
 from rdf_utils.models.vocab import (
     URI_DISTRIB_TYPE_SAMPLED_QUANTITY,
     URI_GEOM_PRED_OF_POSE,
+    URI_GEOM_PRED_WRT,
     URI_GEOM_TYPE_KGRAPH,
     URI_GEOM_TYPE_POSE,
     URI_GEOM_TYPE_POSE_COORD,
@@ -797,7 +798,10 @@ def _placed_on_chain(carrier, backend: str) -> tuple[tuple[str, bool], ...]:
         # into is read off the world model like any other posed frame.
         return (("of", False), ("as_seen_by", True))
     if getattr(carrier, "relative_to_frame", None) is not None:
-        # A link-relative pose reads both of its ends off the world model.
+        # A link-relative pose reads both of its ends off the world model -- unless the far end is
+        # a scene object, which the simulator answers by name and no chain reaches.
+        if getattr(getattr(carrier, "of", None), "is_scene_object", False):
+            return (("relative_to_frame", True),)
         return (("of", True), ("relative_to_frame", True))
     return (("of", getattr(carrier, "type", "") == "Pose"),)
 
@@ -976,6 +980,19 @@ def _world_solver_outputs(model, setup: _ChainSetup, scene: MjcfSceneSpec) -> li
             scene_object = _scene_object_of(model, getattr(output, "of", None), scene)
             if scene_object is not None:
                 output.of = scene_object
+                # The simulator answers where the object is, but a pose measured from a frame
+                # that moves with the arm still has to read that frame every cycle. Dropped, the
+                # pose comes out against the chain root instead -- and stays frozen, since both
+                # ends of that pair are static.
+                wrt_node = (
+                    _pose_wrt_node(model, node) if type_ == GEOM_COORD.PoseCoordinate else None
+                )
+                if wrt_node is not None:
+                    wrt = _runtime_frame(
+                        model, wrt_node, setup.runtime.prefix, setup.runtime.owned_trees
+                    )
+                    if wrt.id != setup.chain.root:
+                        output = replace(output, relative_to_frame=wrt)
             outputs.append(output)
 
     return dedupe_by_id(outputs)
@@ -1027,6 +1044,13 @@ def _scene_object_of(model, of, scene: MjcfSceneSpec) -> SceneObject | None:
             f"once a pose places it on its body.",
         )
     return SceneObject(obj.id, body_name, site)
+
+
+def _pose_wrt_node(model, node):
+    """The frame a pose coordinate is stated with respect to, or None."""
+    relation = model.graph.value(node, URI_GEOM_PRED_OF_POSE)
+
+    return None if relation is None else model.graph.value(relation, URI_GEOM_PRED_WRT)
 
 
 def _runtime_output(model, output, type_, node, frame_node, setup: _ChainSetup):

@@ -12,6 +12,7 @@ from __future__ import annotations
 from motion_spec_dsl.rdf_parser.vocab import (
     CSTR_EXT,
     CSTR_HDL,
+    GEOM_OP,
     RBDYN_COORD,
     RBDYN_OP,
     SIM,
@@ -61,6 +62,22 @@ def compose_ops(model, node) -> list:
         | set(graph.subjects(RBDYN_OP["out"], wrench)),
         key=str,
     )
+
+
+def _target_pose(model, node):
+    """The pose the force direction is normalized from, or None.
+
+    A direction computed between two frames is that pose's translation made unit, so the pose
+    still carries how far away the target is -- which is what a line drawn to it needs. An
+    authored direction is normalized from nothing and aims at no particular point.
+    """
+    graph = model.graph
+    for op in graph.subjects(RBDYN_OP["wrench"], wrench_node(model, node)):
+        for direction in graph.objects(op, RBDYN_OP["direction"]):
+            for source in graph.subjects(GEOM_OP["direction"], direction):
+                if GEOM_OP["PoseToDirection"] in get_node_types(graph, source):
+                    return graph.value(source, GEOM_OP["pose"])
+    return None
 
 
 def gate_constraints(model, node) -> tuple[list, bool]:
@@ -143,6 +160,7 @@ def read(model, node, chains) -> Perturbation:
         )
     duration = graph.value(node, TIME["hasDuration"])
     constraints, gate_any = gate_constraints(model, node)
+    target_pose = _target_pose(model, node)
 
     return Perturbation(
         id=identifier,
@@ -152,6 +170,7 @@ def read(model, node, chains) -> Perturbation:
         applied_id=f"{identifier}_applied",
         active_id=f"{identifier}_active",
         duration_id=None if duration is None else model.id(duration),
+        target_pose_id=None if target_pose is None else model.id(target_pose),
         has_gate=bool(constraints),
         gate_any=gate_any,
     )

@@ -338,7 +338,19 @@ solver-output-Pose-mj_kdl(solver, chain_solver, out) ::= <<
             &_base_world_frame_<solver.id>)) {
         throw std::runtime_error("MuJoCo body not found for chain root: <chain_solver.chain.root>");
     }
+<if(out.relative_to_frame)>
+    // Measured from a frame that moves with the arm, but stated in the chain's base: the
+    // translation is the base-frame gap between the two, so the object's own orientation is
+    // what the pose carries.
+    {
+        const KDL::Frame _base_of_<out.id> = _base_world_frame_<solver.id>.Inverse() * _body_frame_<out.id>;
+        const KDL::Frame _base_wrt_<out.id> = robot.<solver.id>.world_to_root
+            * robot.world->pose(robot.world_<solver.id>_<out.relative_to_frame.id>, robot.control_cycle);
+        shared.<out.id> = KDL::Frame(_base_of_<out.id>.M, _base_of_<out.id>.p - _base_wrt_<out.id>.p);
+    }
+<else>
     shared.<out.id> = _base_world_frame_<solver.id>.Inverse() * _body_frame_<out.id>;
+<endif>
 <elseif(out.relative_to_frame)>
     <relative-world-pose(solver, out)>
 <else>

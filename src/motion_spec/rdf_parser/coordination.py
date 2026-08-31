@@ -48,7 +48,7 @@ from motion_spec.classes.handlers import (
 )
 from motion_spec.classes.motion import ForwardedCommandStep, MotionSolverSlice, MotionUnit
 from motion_spec.classes.solvers import CommandForwarding
-from motion_spec.rdf_parser import quantities
+from motion_spec.rdf_parser import perturbations, quantities
 from motion_spec.rdf_parser.constraint_handler import (
     SolverIdFactory,
     alignment_chain_ops,
@@ -1311,6 +1311,15 @@ def _motion_schedules(
     commanded_force = scope.of(force_nodes, OPS_GENERIC + OPS_SOLVER + OPS_HANDLER)
     active.extend(scope.of(trailing, OPS_GENERIC + OPS_HANDLER))
     _append_new(active, [model.id(node) for node in trailing])
+    # A perturbation is reachable from no controller and no monitor, so nothing else pulls the
+    # ops composing its wrench or evaluating its gate into a schedule.
+    for node in perturbations.nodes(model, phase.handler_node):
+        gate = perturbations.evaluator_nodes(model, node)
+        _append_new(active, scope.of(gate, OPS_GENERIC + OPS_HANDLER))
+        _append_new(
+            active, [model.id(evaluator) for evaluator in gate if scope.claim(model.id(evaluator))]
+        )
+        _append_new(active, scope.of(perturbations.compose_ops(model, node), OPS_GENERIC))
 
     return MotionSchedules(_when_schedule(model, phase), while_pre, active, until, commanded_force)
 
@@ -1449,6 +1458,12 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
         if runs_in is not None:
             motions[-1].runs_in_state = str(runs_in)
         unit = motions[-1]
+        unit.perturbations = _read_perturbations(
+            model,
+            handler_node,
+            [(slice_.id, solvers_by_id[slice_.solver_id]) for slice_ in chain_solvers],
+        )
+        unit.has_perturbations = bool(unit.perturbations)
         unit.entry_snapshots = [s for s in unit.snapshots if s.scope == "entry"]
         unit.task_snapshots = [s for s in unit.snapshots if s.scope == "task"]
         unit.has_entry_snapshots = bool(unit.entry_snapshots)
@@ -1667,6 +1682,31 @@ def evaluator_term(evaluator) -> dict:
     return term
 
 
+def _read_perturbations(model, handler_node, chains) -> list:
+    """The handler's perturbations, each with the boolean terms its gate opens on.
+
+    The terms are folded here rather than in the reader: they are the same rows a monitor's
+    condition is built from, so both go through `evaluator_term` and render identically.
+    """
+    records = []
+    for node in perturbations.nodes(model, handler_node):
+        record = perturbations.read(model, node, chains)
+        record.terms = [
+            evaluator_term(constraint_evaluator(model, evaluator))
+            for evaluator in perturbations.evaluator_nodes(model, node)
+        ]
+        record.terms_present = bool(record.terms)
+        if record.has_gate and not record.terms_present:
+            raise ConstraintViolation(
+                "perturbation",
+                f"perturbation '{record.id}' states a when-gate that lowered to no terms, so it "
+                "renders as a constant false and the disturbance can never be applied",
+            )
+        records.append(record)
+
+    return records
+
+
 def _stamp_terms(monitor, terms, any_flag, where: str) -> None:
     """Give a monitor the boolean terms its condition is built from.
 
@@ -1812,6 +1852,10 @@ def _add_motion_function_interfaces(motions: list, solvers_by_id: dict) -> None:
             for solver in motion.serial_chain_solvers
         )
         motion.apply_needs_robot = has_chain or bool(motion.forwarded_commands)
+        if motion.has_perturbations:
+            motion.apply_needs_state = True
+            motion.apply_needs_shared = True
+            motion.apply_needs_robot = True
 
         # An edge is the occurrence: a flag monitor holds a level and never reaches the buffer.
         when_events = any(monitor.is_edge_triggered for monitor in when_mons)

@@ -220,6 +220,10 @@ class MotionUnit:
     apply_needs_state: bool = False
     apply_needs_shared: bool = False
     apply_needs_robot: bool = False
+    # The disturbances this motion's state arms, and whether it arms any (an empty list is
+    # truthy in the ST4 build, so the flag is what the templates read).
+    perturbations: list = field(default_factory=list)
+    has_perturbations: bool = False
     # Whether the function records into the coordination event buffer (holds an edge monitor).
     when_needs_events: bool = False
     until_needs_events: bool = False

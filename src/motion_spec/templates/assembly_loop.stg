@@ -103,3 +103,7 @@ loop-rtf-source-robif2b(serial_chain_solvers) ::= <<
 app-chain-trace-update(backend, serial_chain_solvers, trace) ::= <<
 <({app-chain-trace-update-<backend>})(serial_chain_solvers, trace)>
 >>
+
+perturbation-arrows(backend, perturbations, trace) ::= <<
+<({perturbation-arrows-<backend>})(perturbations, trace)>
+>>

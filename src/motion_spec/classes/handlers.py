@@ -266,6 +266,33 @@ class ConstraintHandler:
     type: str = field(default="ConstraintHandler")
 
 
+@dataclass
+class Perturbation:
+    """A disturbance the simulator applies to one body while a state is active.
+
+    `wrench_id` is what the authored magnitude and direction compose to, stated in the frame the
+    direction is seen by; `applied_id` is that wrench rotated into the world frame MuJoCo's
+    applied-force slots are read in, and is what the frame log records. `active_id` says whether
+    the window was open on the cycle the log recorded.
+    """
+
+    id: str
+    body: str
+    robot_id: str
+    wrench_id: str
+    applied_id: str
+    active_id: str
+    # The authored window length, by id: the runtime accumulates measured cycle time against that
+    # shared value. None when the window lasts until the state exits.
+    duration_id: str | None = None
+    has_gate: bool = False
+    # Structured boolean terms, rendered by the same template a monitor's condition uses.
+    terms: list = field(default_factory=list)
+    terms_present: bool = False
+    gate_any: bool = False
+    type: str = field(default="Perturbation")
+
+
 @dataclass(frozen=True)
 class StateField:
     """One value a stateful controller keeps between ticks, and how its step call reads it."""

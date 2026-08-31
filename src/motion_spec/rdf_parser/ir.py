@@ -125,6 +125,18 @@ def generate_ir(manifest_path) -> dict:
         # member nothing produces is pruned as absent.
         shared_data.append(BlackboardValue(id=captured_id, type="Bool", value=False))
 
+    # A perturbation's applied wrench and its open/closed flag are runtime state no model entity
+    # declares: the wrench the ops compose is stated in the robot's base frame, and what the run
+    # has to answer for is the world-frame wrench the simulator was actually given.
+    run_perturbations = [p for motion in motions for p in motion.perturbations]
+    for perturbation in run_perturbations:
+        node = model.node_by_id[perturbation.id]
+        model.register_derived(perturbation.applied_id, node, "applied", PROV.wasDerivedFrom)
+        model.register_derived(perturbation.active_id, node, "active", PROV.wasDerivedFrom)
+        shared_data.append(BlackboardValue(id=perturbation.applied_id, type="Wrench"))
+        shared_data.append(BlackboardValue(id=perturbation.active_id, type="Bool", value=False))
+    perturbation_bodies = _perturbations_by_body(run_perturbations)
+
     config_poses = resources.config_poses(model, platform_config)
     introspection = communication.build_introspection(
         model,
@@ -162,7 +174,9 @@ def generate_ir(manifest_path) -> dict:
         "computation": _computation_section(
             closures, views, shared_data, motions, computation.indexes.pose_components
         ),
-        "coordination": _coordination_section(motions, fsm, fsm_meta),
+        "coordination": _coordination_section(
+            motions, fsm, fsm_meta, run_perturbations, perturbation_bodies
+        ),
         "communication": _communication_section(
             introspection,
             motions,
@@ -241,9 +255,35 @@ def _computation_section(closures, views, shared_data, motions, pose_components)
     return section
 
 
-def _coordination_section(motions, fsm, fsm_meta) -> dict:
+def _perturbations_by_body(perturbations) -> list[dict]:
+    """The perturbations pushing each body, grouped.
+
+    One body's applied-wrench slots hold the sum of everything pushing it. Written per
+    perturbation instead, whichever ran last would be the only one the simulator ever saw --
+    and a closed window writes zero, so an idle perturbation would erase a live one.
+    """
+    groups: dict[str, dict] = {}
+    for perturbation in perturbations:
+        group = groups.setdefault(
+            perturbation.body,
+            # Every solver on one simulation shares its model and data, so any member's
+            # runtime resolves the body.
+            {"body": perturbation.body, "robot_id": perturbation.robot_id, "members": []},
+        )
+        group["members"].append(perturbation)
+
+    return list(groups.values())
+
+
+def _coordination_section(motions, fsm, fsm_meta, perturbations=(), perturbation_bodies=()) -> dict:
     """What runs when: the motions, and the FSM sequencing them when the model imports one."""
     section = {"motions": motions}
+    # Every perturbation in the run, not only the active motion's: the simulator holds an applied
+    # wrench until something clears it, so the clearing pass has to reach the ones whose state
+    # just exited, which by then selects no motion at all.
+    if perturbations:
+        section["perturbations"] = perturbations
+        section["perturbation_bodies"] = perturbation_bodies
     if fsm:
         section["fsm"] = {**fsm, **fsm_meta}
 

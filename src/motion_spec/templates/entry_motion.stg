@@ -34,6 +34,7 @@ struct <motion.id>_state {
 <motion.when_monitors:{monitor | <monitor-member(monitor)>}; separator="\n">
 <motion.while_monitors:{monitor | <monitor-member(monitor)>}; separator="\n">
 <motion.until_monitors:{monitor | <monitor-member(monitor)>}; separator="\n">
+<motion.perturbations:{p | <perturbation-member(p)>}; separator="\n">
 };
 
 inline void reset_<motion.id>(<motion.id>_state &state) {
@@ -142,6 +143,9 @@ inline void apply_<motion.id>(<sig-params(motion.id, motion.apply_needs_state, m
 <chain-apply-block(motion.serial_chain_solvers, backend)>
 <endif>
 <command-forwarding(backend, motion)>
+<if(motion.has_perturbations)>
+<perturbation-apply-block(motion, views)>
+<endif>
 }
 <if(motion.serial_chain_solvers)>
 

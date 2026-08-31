@@ -1377,17 +1377,37 @@ def read_scene(model) -> MjcfSceneSpec:
     # A camera on a static scene frame is built into the composed scene at that frame's site
     # pose; a camera on a robot-asset frame rides the asset's own MJCF instead.
     frames_by_uri = {frame.uri: frame for frame in scene.frames}
+    static_bodies = _static_body_uris(model)
     for camera in scene.cameras:
         frame = frames_by_uri.get(camera.frame_uri)
-        if frame is None:
+        if frame is not None:
+            scene.static_cameras.append(
+                MjcfSceneCamera(
+                    name=camera.id,
+                    body=frame.body,
+                    fovy_deg=camera.fovy_deg,
+                    **{f: getattr(frame, f) for f in ("pos_x", "pos_y", "pos_z")},
+                    **{f: getattr(frame, f) for f in ("quat_x", "quat_y", "quat_z", "quat_w")},
+                )
+            )
+            continue
+        # A scene frame the placement search cannot reach from its own body is one the model
+        # posed against the anchor instead: it stands in the world rather than riding the body
+        # it is declared under, so it is built on the world body at the pose the anchor gives
+        # it. A camera on a robot asset is not this case -- it rides that asset's own MJCF.
+        camera_frame = URIRef(camera.frame_uri)
+        if str(body_of_frame(camera_frame, graph)) not in static_bodies:
+            continue
+        position, orientation = _placement(model, camera_frame, anchor)
+        if position is None:
             continue
         scene.static_cameras.append(
             MjcfSceneCamera(
                 name=camera.id,
-                body=frame.body,
+                body="",
                 fovy_deg=camera.fovy_deg,
-                **{f: getattr(frame, f) for f in ("pos_x", "pos_y", "pos_z")},
-                **{f: getattr(frame, f) for f in ("quat_x", "quat_y", "quat_z", "quat_w")},
+                **dict(zip(("pos_x", "pos_y", "pos_z"), position)),
+                **dict(zip(("quat_x", "quat_y", "quat_z", "quat_w"), orientation)),
             )
         )
     _expand_scene_geometry(scene)
@@ -1532,6 +1552,15 @@ def _frames_of(model, node) -> list:
         for frame in model.graph.objects(node, GEOM_ENT.simplices)
         if GEOM_ENT.Frame in get_node_types(model.graph, frame)
     ]
+
+
+def _static_body_uris(model) -> set[str]:
+    """Every body the scene graph itself holds, as opposed to one a robot asset brings in."""
+    return {
+        str(body)
+        for kgraph in model.graph.subjects(RDF["type"], URI_GEOM_TYPE_KGRAPH)
+        for body in _kgraph_bodies(model, kgraph)
+    }
 
 
 def _placement_of(model, attachment, anchor):

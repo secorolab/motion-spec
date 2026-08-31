@@ -680,6 +680,47 @@ app-chain-control-paused-step-mj_kdl(serial_chain_solvers) ::= <<
             if (!headless && !mj_kdl::is_running(&mj_viewer)) break;
 >>
 
+// Default-on presentation of state the model already carries: nothing is authored to get this,
+// and it renders only where there is a window to draw into. The arrow starts at the body's
+// centre of mass, which is where MuJoCo applies xfrc_applied, and its length is the magnitude.
+perturbation-arrows-mj_kdl(perturbations, trace) ::= <<
+        if (!headless) {
+            static constexpr float  kPerturbForceRGBA[4]  = {0.95f, 0.15f, 0.15f, 1.0f};
+            static constexpr float  kPerturbTorqueRGBA[4] = {0.15f, 0.45f, 0.95f, 1.0f};
+            static constexpr double kPerturbArrowScale    = 0.03; // m per N, m per Nm
+            static constexpr double kPerturbArrowMax      = 0.6;  // m
+<if(!trace.enabled)>            // Nothing else draws an overlay in this model, so the per-frame clear belongs here.
+            mj_kdl::clear_trace(&mj_viewer);
+<endif><perturbations:{p |            if (shared.<p.active_id>) {
+                const mjModel *_pmodel<i0> = robot.<p.robot_id>.robot->model;
+                const mjData  *_pdata<i0>  = robot.<p.robot_id>.robot->data;
+                const int      _pbody<i0>  = mj_name2id(_pmodel<i0>, mjOBJ_BODY, "<p.body>");
+                if (_pbody<i0> >= 0) {
+                    const KDL::Vector _pat<i0>(_pdata<i0>->xipos[3 * _pbody<i0> + 0],
+                                               _pdata<i0>->xipos[3 * _pbody<i0> + 1],
+                                               _pdata<i0>->xipos[3 * _pbody<i0> + 2]);
+                    const KDL::Wrench &_pw<i0> = shared.<p.applied_id>;
+                    // Tail out in free air, tip at the body: a push reads as pushing, and the
+                    // shaft is not swallowed by the mesh it acts on.
+                    KDL::Vector _pfdir<i0> = _pw<i0>.force;
+                    if (_pfdir<i0>.Normalize() > 1e-9) {
+                        const double _pflen<i0> =
+                            std::min(_pw<i0>.force.Norm() * kPerturbArrowScale, kPerturbArrowMax);
+                        mj_kdl::add_overlay_arrow(&mj_viewer, _pat<i0> - _pfdir<i0> * _pflen<i0>,
+                            _pfdir<i0>, _pflen<i0>, kPerturbForceRGBA);
+                    \}
+                    KDL::Vector _ptdir<i0> = _pw<i0>.torque;
+                    if (_ptdir<i0>.Normalize() > 1e-9) {
+                        const double _ptlen<i0> =
+                            std::min(_pw<i0>.torque.Norm() * kPerturbArrowScale, kPerturbArrowMax);
+                        mj_kdl::add_overlay_arrow(&mj_viewer, _pat<i0> - _ptdir<i0> * _ptlen<i0>,
+                            _ptdir<i0>, _ptlen<i0>, kPerturbTorqueRGBA);
+                    \}
+                \}
+            \}
+}>        \}
+>>
+
 app-chain-trace-update-mj_kdl(serial_chain_solvers, trace) ::= <<
 <if(trace.enabled)>
 <if(trace.has_targets)>

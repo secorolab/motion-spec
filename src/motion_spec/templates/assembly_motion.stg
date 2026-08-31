@@ -130,6 +130,47 @@ command-forwarding(backend, motion) ::= <<
 <({command-forwarding-<backend>})(motion)>
 >>
 
+// The window: it opens the first time the gate holds while the state is active, stays open for
+// the authored duration, and never opens twice on one activation. What it writes is the wrench
+// in the world frame the simulator applies wrenches in -- the ops composed it in the frame the
+// authored direction is seen by, which is the arm's base, so it is rotated on the way out.
+perturbation-apply(perturbation, views) ::= <<
+    {
+        const bool gate = <if(perturbation.has_gate)><bool-condition(perturbation.terms, perturbation.gate_any)><else>true<endif>;
+        if (!state.<perturbation.id>_fired && gate) {
+            state.<perturbation.id>_fired = true;
+            state.<perturbation.id>_open = true;
+            state.<perturbation.id>_elapsed_s = 0.0;
+        \}
+<if(perturbation.duration_id)>        if (state.<perturbation.id>_open) {
+            state.<perturbation.id>_elapsed_s += shared.dt_measured_s;
+            if (state.<perturbation.id>_elapsed_s >= shared.<perturbation.duration_id>) {
+                state.<perturbation.id>_open = false;
+            \}
+        \}
+<endif>        shared.<perturbation.active_id> = state.<perturbation.id>_open;
+        if (state.<perturbation.id>_open) {
+            shared.<perturbation.applied_id> =
+                robot.<perturbation.robot_id>.world_to_root.M.Inverse() * shared.<perturbation.wrench_id>;
+        \}
+    \}
+>>
+
+perturbation-apply-block(motion, views) ::= <<
+<motion.perturbations:{p | <perturbation-apply(p, views)>}; separator="\n">
+>>
+
+// Cleared before the states are dispatched, written after: the simulator holds an applied wrench
+// until something clears it, and the tick a state exits on selects no motion to clear it from.
+perturbation-clear-block(perturbations) ::= <<
+<perturbations:{p |         shared.<p.applied_id> = KDL::Wrench::Zero();
+        shared.<p.active_id> = false;}; separator="\n">
+>>
+
+perturbation-write-block(backend, bodies) ::= <<
+<({perturbation-write-<backend>})(bodies)>
+>>
+
 // A forwarded command exists only where a gripper joint is commanded, and generation rejects
 // that without a gripper bound -- so the target is wired by the time this runs.
 
@@ -152,6 +193,26 @@ command-forwarding-mj_kdl(motion) ::= <<
         \}
     \}
 <endif>}; separator="\n">
+>>
+
+// One write per body, carrying the sum of everything pushing it: a closed window contributes a
+// zero rather than erasing a live push, and xfrc_applied persists across steps so the slots are
+// overwritten every tick rather than left alone.
+perturbation-write-mj_kdl(bodies) ::= <<
+<bodies:{b |         {
+            const mjModel *model = robot.<b.robot_id>.robot->model;
+            mjData *data = robot.<b.robot_id>.robot->data;
+            const int body_id = mj_name2id(model, mjOBJ_BODY, "<b.body>");
+            if (body_id >= 0) {
+                const KDL::Wrench applied = <b.members:{p|shared.<p.applied_id>}; separator=" + ">;
+                data->xfrc_applied[6 * body_id + 0] = applied.force.x();
+                data->xfrc_applied[6 * body_id + 1] = applied.force.y();
+                data->xfrc_applied[6 * body_id + 2] = applied.force.z();
+                data->xfrc_applied[6 * body_id + 3] = applied.torque.x();
+                data->xfrc_applied[6 * body_id + 4] = applied.torque.y();
+                data->xfrc_applied[6 * body_id + 5] = applied.torque.z();
+            \}
+        \}}; separator="\n">
 >>
 
 emit-relative-pose(rp) ::= <<

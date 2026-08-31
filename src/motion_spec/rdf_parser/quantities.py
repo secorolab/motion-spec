@@ -2246,7 +2246,7 @@ def _owners_by_value(motions, closures: dict) -> _ValueOwners:
     owners: dict[str, set] = {}
     # Poses, snapshots and per-axis errors are written by the pose-composition, snapshot and
     # error-decomposition blocks, which are emitted per motion rather than scheduled as closures.
-    block_ids = {"pose": set(), "snapshot": set(), "decomposition": set()}
+    block_ids = {"pose": set(), "snapshot": set(), "decomposition": set(), "perturbation": set()}
 
     def own(data_id, motion_id, kind=None) -> None:
         if not isinstance(data_id, str):
@@ -2280,6 +2280,10 @@ def _owners_by_value(motions, closures: dict) -> _ValueOwners:
         for group in motion.pose_axis_error_groups:
             for component in group.components:
                 own(component.error, motion.id, "decomposition")
+        # Not owned by the motion: the applied wrench is cleared every tick by the run, including
+        # the ticks after its state has exited and no motion is selected at all.
+        for perturbation in motion.perturbations:
+            block_ids["perturbation"].update((perturbation.applied_id, perturbation.active_id))
 
     return _ValueOwners(owners, block_ids)
 

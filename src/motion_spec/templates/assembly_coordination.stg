@@ -38,6 +38,7 @@ static void step_<motion.id>(<motion.id>_state &<motion.id>_state_instance, shar
 <motion.when_monitors:{monitor | <monitor-rearm(motion.id, monitor)>}; separator="\n">
 <motion.while_monitors:{monitor | <monitor-rearm(motion.id, monitor)>}; separator="\n">
 <motion.until_monitors:{monitor | <monitor-rearm(motion.id, monitor)>}; separator="\n">
+<motion.perturbations:{p | <perturbation-rearm(motion.id, p)>}; separator="\n">
 <motion.controllers:{controller |         <controller-reset(motion.id, controller, motion.has_entry_snapshots)>}; separator="\n">
 <motion.relative_poses:{rp |         <motion.id>_state_instance.<rp.id>_start_captured = false;}; separator="\n">
 <motion.path_projections:{proj |         shared.<proj.parameter> = 0.0;

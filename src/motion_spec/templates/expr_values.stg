@@ -106,6 +106,21 @@ monitor-member(monitor) ::= <<
 <endif><elseif(monitor.flag)>    bool <monitor.flag> = false;<endif>
 >>
 
+// One shot per activation: `fired` says the window has already had its turn, `open` whether it
+// is having it now, and `elapsed_s` how long it has been open. Three flags rather than one
+// counter, so a window that closes cannot be told apart from one that never opened.
+perturbation-member(perturbation) ::= <<
+    bool <perturbation.id>_fired = false;
+    bool <perturbation.id>_open = false;
+    double <perturbation.id>_elapsed_s = 0.0;
+>>
+
+perturbation-rearm(motion_id, perturbation) ::= <<
+        <motion_id>_state_instance.<perturbation.id>_fired = false;
+        <motion_id>_state_instance.<perturbation.id>_open = false;
+        <motion_id>_state_instance.<perturbation.id>_elapsed_s = 0.0;
+>>
+
 // An edge is an edge within one activation: a condition still true from the previous one must
 // hold afresh before it fires again, or a re-entered motion carries a monitor that can never
 // re-trigger. A flag monitor needs none -- it is recomputed every tick.

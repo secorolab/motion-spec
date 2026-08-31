@@ -172,13 +172,22 @@ int main(int argc, char **argv) {
 <if(resources.by_kind.serial_chain)>
 <world-state-block(resources.world_observations, resources.by_kind.serial_chain, resources.by_id, configuration.backend)>
 <endif>
+<if(coordination.perturbations)>
+<perturbation-clear-block(coordination.perturbations)>
+<endif>
         fsm_dispatch(fsm);
+<if(coordination.perturbations)>
+<perturbation-write-block(configuration.backend, coordination.perturbation_bodies)>
+<endif>
 <endif>
 <if(communication.ros)>
 <ros-publish-tick(coordination, communication, computation.views)>
 <endif>
 <if(resources.by_kind.serial_chain)>
 <app-chain-trace-update(configuration.backend, resources.by_kind.serial_chain, configuration.trace)>
+<if(coordination.perturbations)>
+<perturbation-arrows(configuration.backend, coordination.perturbations, configuration.trace)>
+<endif>
 <app-chain-runtime-step(configuration.backend, resources.by_kind.serial_chain, "_active_motion")>
 <endif>
 <if(coordination.fsm)>

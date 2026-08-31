@@ -811,7 +811,9 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
     return {"motions": cases, **ungated}
 
 
-def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path) -> dict:
+def write_introspection_artifacts(
+    ir: dict, *, ir_path: Path, output_dir: Path, sampling: dict | None = None
+) -> dict:
     """Write frame_layout.json, provenance.ld.json and the derivation graph, and return the
     frame-log header + sample model that codegen folds into the IR.
 
@@ -833,7 +835,7 @@ def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path) 
     with (output_dir / "frame_log_header.pb").open("wb") as fh:
         frame_log_pb.write_delimited(fh, header_record)
     (output_dir / "provenance.ld.json").write_text(
-        json.dumps(build_provenance_document(ir, output_dir), indent=4) + "\n"
+        json.dumps(build_provenance_document(ir, output_dir, sampling=sampling), indent=4) + "\n"
     )
     # Declares the IRIs the frame log's derived slots carry; moved beside the model graphs it
     # extends by _organize_generation.

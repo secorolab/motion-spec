@@ -135,7 +135,12 @@ access-expr(id, views) ::= <<
 >>
 
 view-access-expr(view) ::= <<
-<({view-access-expr-<view.superobject.type>-<view.subspace>})(view)>
+<if(view.subspace)><({view-access-expr-<view.superobject.type>-<view.subspace>})(view)><else><({view-access-expr-<view.superobject.type>})(view)><endif>
+>>
+
+// A superobject that is itself a 3-vector has no subspace: the axis alone names the component.
+view-access-expr-Direction(view) ::= <<
+shared.<view.superobject.id>[<axis-to-index.(view.axis)>]
 >>
 
 view-access-expr-Pose-Linear(view) ::= <<

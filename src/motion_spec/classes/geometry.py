@@ -217,7 +217,8 @@ class View:
     id: str
     superobject: Pose | VelocityTwist | AccelerationTwist | PoseDifference | Wrench
     subobject: Quantity = field(metadata=INTERNAL)
-    subspace: Subspace
+    # None when the superobject is itself a 3-vector: the axis alone names the component.
+    subspace: Subspace | None
     axis: Axis | None
     # A view onto a runtime direction rather than a frame axis: the component along it.
     direction: Direction | None = None

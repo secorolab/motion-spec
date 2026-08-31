@@ -200,7 +200,7 @@ def _remap_event_indices(node, remap: dict) -> None:
             _remap_event_indices(value, remap)
 
 
-def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
+def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, *, sampling: dict | None = None):
     """Render every C++/artifact file for an IR: introspection headers, runtime and
     shared-state headers, the frame-log proto (compiled to C++), per-motion headers and
     main.cpp.
@@ -224,7 +224,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     )
 
     ir["communication"]["introspection_artifacts"] = write_introspection_artifacts(
-        ir, ir_path=ir_path, output_dir=output_dir
+        ir, ir_path=ir_path, output_dir=output_dir, sampling=sampling
     )
 
     headers_dir = output_dir / "headers"

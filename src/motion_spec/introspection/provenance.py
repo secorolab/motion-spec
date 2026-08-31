@@ -173,7 +173,7 @@ def _tool_properties(agent_id: str) -> dict:
     return {"hasVersion": version, "references": metadata.get("repository")}
 
 
-def build_provenance_document(ir: dict, output_dir: Path) -> dict:
+def build_provenance_document(ir: dict, output_dir: Path, *, sampling: dict | None = None) -> dict:
     prov = (ir["communication"]["introspection"]).get("provenance", {})
     graph = []
 
@@ -208,6 +208,27 @@ def build_provenance_document(ir: dict, output_dir: Path) -> dict:
         )
         if entity.get("role") != "motion_spec_ir":
             input_entity_ids.append(entity_id)
+
+    # The draw a randomized model got: the seed it came from, and the number each quantity took.
+    # `prov:value` is spelled out -- the metamodel context aliases hadMember and Collection, not
+    # value -- and a 3-vector is an @list, since a bare array is an unordered set in JSON-LD.
+    if sampling:
+        add_node(
+            "entity:sampling",
+            ["prov:Entity", "prov:Collection"],
+            wasGeneratedBy=_prov_iri("activity:motion_spec_ir_generation"),
+            **{
+                "prov:value": sampling["seed"],
+                "hadMember": [
+                    {
+                        "@id": uri,
+                        "@type": ["prov:Entity"],
+                        "prov:value": values[0] if len(values) == 1 else {"@list": list(values)},
+                    }
+                    for uri, values in sorted(sampling.get("draws", {}).items())
+                ],
+            },
+        )
 
     artifact_names = [
         "frame_layout.json",

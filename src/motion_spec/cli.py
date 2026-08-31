@@ -623,7 +623,13 @@ def health(profiles: tuple[str, ...], targets: tuple[str, ...]) -> None:
     "model", required=False, type=click.Path(exists=True, dir_okay=False, path_type=Path)
 )
 @click.option("-o", "--output-dir", type=click.Path(file_okay=False, path_type=Path))
-def gen(stage_or_model: str, model: Path | None, output_dir: Path | None) -> None:
+@click.option(
+    "--seed",
+    type=int,
+    help="Seed the draws of any sampled quantity; recorded either way in "
+    "generated/provenance/motion-spec.ld.json.",
+)
+def gen(stage_or_model: str, model: Path | None, output_dir: Path | None, seed: int | None) -> None:
     """Generate IR or C++ from a .robmot MODEL; CODE is the default stage."""
     from rdf_utils.constraints import ConstraintViolation
 
@@ -645,7 +651,7 @@ def gen(stage_or_model: str, model: Path | None, output_dir: Path | None) -> Non
         raise click.BadParameter("MODEL must be a .robmot file", param_hint="MODEL")
     try:
         generation = _new_generation(model, output_dir)
-        generate_model(model, generation, stage=stage)
+        generate_model(model, generation, stage=stage, seed=seed)
     except ConstraintViolation as exc:
         raise _model_rejected(exc) from exc
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:

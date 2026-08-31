@@ -692,6 +692,26 @@ _ROBOT_MODEL_HINTS = (("kinova_gen3", "KinovaGen3"), ("gen3", "KinovaGen3"))
 _ROBOT_MODEL_BY_DEVICE = {"KinovaGen3-2F85": "KinovaGen3"}
 
 
+def scene_graph(model):
+    """The imported scene documents on their own, which is what a KDL tree is built from.
+
+    The builder walks every pose relation the graph holds and reads coordinates off each one. A
+    motion-spec world quantity is a measurement: it states the frames it relates and carries no
+    coordinates at all, so handing the builder the merged graph makes it demand numbers of a
+    reading the run has yet to take.
+    """
+    cached = model.cache.get("scene_graph")
+    if cached is not None:
+        return cached
+    graph = Graph()
+    for path in model.imported_models:
+        document = Graph().parse(path, format="json-ld")
+        if (None, RDF["type"], GEOM_ENT.KinematicTree) in document:
+            graph += document
+    model.cache["scene_graph"] = graph
+    return graph
+
+
 def robot_setups(model):
     """Per-robot chain setups, sourced from the scene-dsl graph.
 
@@ -702,12 +722,11 @@ def robot_setups(model):
     """
     from motion_spec.generation.scene_kdl import chain_for_iri
 
-    try:
-        trees = build_kdl_trees(model.graph)
-    except ConstraintViolation:
-        # Graph-only consumers may use an incomplete scene fixture: assembly metadata survives,
-        # but there is no KDL chain until Scene DSL can parse it.
-        trees = []
+    # Graph-only consumers may use an incomplete scene fixture: assembly metadata survives, but
+    # there is no chain to slice until the scene carries a tree. A scene that carries one and
+    # still fails to build is a fault to report, not one to answer with an empty chain.
+    scene = scene_graph(model)
+    trees = build_kdl_trees(scene) if (None, RDF["type"], GEOM_ENT.KinematicTree) in scene else []
     bound_trees = mapped_targets(model, AGN["AgentModel"], GEOM_ENT.KinematicTree)
     attach_by_body, _root = fixed_attachments(model, bound_trees)
 
@@ -1632,24 +1651,31 @@ def _placement_graph(model):
     return graph
 
 
-def _reject_sampled_placement(model, frame, wrt) -> None:
-    """A sampled placement has no seed semantics here, so it must not resolve to one value.
+def _reject_undrawn_placement(model, frame, wrt) -> None:
+    """A sampled placement must carry the draw this generation resolved it to.
 
-    Composing reads whatever coordinates a sampled quantity happens to carry, which would put
-    the body at one draw of a distribution and never say so.
+    The DSL draws every sampled quantity from the seed `motion-spec gen` hands it, so a
+    placement that still carries none was assembled outside that path and would put the body
+    at whatever coordinates it happens to hold, without saying which draw that is.
 
     Raises:
-        ConstraintViolation: a pose placing this frame is sampled.
+        ConstraintViolation: a pose placing this frame is sampled but was never drawn.
     """
     graph = _placement_graph(model)
     for pose, coords in get_pose_coords(graph=graph, poses=find_pose_path(frame, wrt, graph) or []):
         for coord in coords:
             for node in (coord.id, coord.position_coord.id, coord.orientation_coord.id):
-                if URI_DISTRIB_TYPE_SAMPLED_QUANTITY in get_node_types(model.graph, node):
+                if URI_DISTRIB_TYPE_SAMPLED_QUANTITY not in get_node_types(model.graph, node):
+                    continue
+                drawn = model.graph.value(node, GEOM_COORD.x) or model.graph.value(
+                    node, QUDT_SCHEMA.value
+                )
+                if drawn is None:
                     raise ConstraintViolation(
                         "geometry",
-                        f"sampled placement coordinate '{node}' places '{pose.id}': motion-spec "
-                        f"has no seed for it, so it cannot be resolved to a single placement",
+                        f"sampled placement coordinate '{node}' places '{pose.id}' but carries "
+                        f"no draw: generate through `motion-spec gen`, which seeds the draw and "
+                        f"records it in the generation's provenance",
                     )
 
 
@@ -1663,7 +1689,7 @@ def _placement(model, node, wrt):
     frame = quantities.placement_frame(model, node)
     if frame is None:
         return None, None
-    _reject_sampled_placement(model, frame, wrt)
+    _reject_undrawn_placement(model, frame, wrt)
     graph = _placement_graph(model)
     transform = get_transform_between_frames(frame, wrt, graph)
     if transform is None:

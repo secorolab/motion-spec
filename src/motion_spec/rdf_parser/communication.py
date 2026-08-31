@@ -155,12 +155,14 @@ def _watched_constraints(monitor, closures: dict, uri_by_id: dict) -> list:
         if closure.get("type") == "ErrorEvaluator" and closure.get("constraint_id")
     }
     return [
-        _prune({
-            "id": member,
-            "uri": uri,
-            "error_signal": errors.get(member),
-            "tolerance_signal": band or None,
-        })
+        _prune(
+            {
+                "id": member,
+                "uri": uri,
+                "error_signal": errors.get(member),
+                "tolerance_signal": band or None,
+            }
+        )
         for member, uri, band in zip(
             monitor.group_constraint_ids or (),
             monitor.group_constraint_uris or (),
@@ -494,7 +496,14 @@ _AXIS_SAMPLES = {
 }
 # The superobject types whose scalar view resolves to a composite-member access; a view onto any
 # other superobject samples the quantity's own shared field instead.
-_COMPOSITE_SUPEROBJECTS = {"Pose", "Wrench", "VelocityTwist", "AccelerationTwist", "FreeVector"}
+_COMPOSITE_SUPEROBJECTS = {
+    "Pose",
+    "Wrench",
+    "VelocityTwist",
+    "AccelerationTwist",
+    "FreeVector",
+    "Direction",
+}
 
 
 def add_quantity_samples(introspection: dict, shared_data: list, views: dict) -> None:

@@ -332,14 +332,14 @@ def axis(node) -> Axis:
     return _AXES[node]
 
 
-def _reject_sampled(coordinate) -> None:
-    """A placement drawn from a distribution has no value until a sampler runs, and nothing
-    downstream can wait for one. rdf-utils offers `get_or_sample_*` for the sampling path; these
-    readers take the strict one, so the rejection is stated once here.
+def _reject_undrawn(coordinate, values) -> None:
+    """A sampled coordinate reaches here already drawn: the DSL resolves every distribution from
+    the seed `motion-spec gen` hands it. One carrying no values was assembled outside that path,
+    and nothing downstream can draw one, so the rejection is stated once here.
     """
-    if URI_DISTRIB_TYPE_SAMPLED_QUANTITY in coordinate.types:
+    if values is None and URI_DISTRIB_TYPE_SAMPLED_QUANTITY in coordinate.types:
         raise ConstraintViolation(
-            "geometry", f"Sampled placement coordinate '{coordinate.id}' is unsupported"
+            "geometry", f"Sampled coordinate '{coordinate.id}' carries no draw"
         )
 
 
@@ -352,8 +352,8 @@ def position_values(model, coordinate) -> list[float] | None:
     Raises:
         ConstraintViolation: the coordinate is sampled, or its unit is not a length.
     """
-    _reject_sampled(coordinate)
     values = get_coord_vectorxyz(coordinate, model.graph)
+    _reject_undrawn(coordinate, values)
     return None if values is None else to_metres(values, coordinate.unit, coordinate.id)
 
 
@@ -364,8 +364,8 @@ def orientation_quaternion(model, coordinate) -> list[float] | None:
     sequence and intrinsic flag, quaternion, direction cosines -- so there is nothing to dispatch
     on here. (`get_quaternion_xyzw` is the quaternion-only reader and rejects the others.)
     """
-    _reject_sampled(coordinate)
     rotation = get_orientation_coord_vals(coordinate, model.graph)
+    _reject_undrawn(coordinate, rotation)
     return None if rotation is None else [float(value) for value in rotation.as_quat()]
 
 
@@ -1286,6 +1286,9 @@ _VIEW_SUPEROBJECTS = (
     (MAP_EXT["PoseDifferenceView"], pose_difference),
     (MAP_EXT["WrenchCoordinateView"], wrench),
 )
+# A component view of a superobject that is itself a 3-vector carries no coordinate-view type of
+# its own -- there is no subspace to cut -- so it is dispatched on what its superobject is.
+_VECTOR_SUPEROBJECTS = ((GEOM_COORD["DirectionCoordinate"], direction),)
 # A combined PoseCoordinate is also a PositionCoordinate and an OrientationCoordinate; dispatch
 # the most specific type first, and dedupe by id afterwards.
 _DATA_STRUCTURE_READERS = (
@@ -1318,20 +1321,28 @@ def read_views(model) -> dict:
     for node in sorted(graph[: RDF["type"] : MAP["View"]]):
         types = get_node_types(graph, node)
         superobject_node = graph.value(node, MAP["superobject"])
-        read = next((func for type_, func in _VIEW_SUPEROBJECTS if type_ in types), quantity)
+        read = next((func for type_, func in _VIEW_SUPEROBJECTS if type_ in types), None)
+        if read is None:
+            super_types = get_node_types(graph, superobject_node)
+            read = next(
+                (func for type_, func in _VECTOR_SUPEROBJECTS if type_ in super_types), quantity
+            )
         superobject = read(model, superobject_node)
         if superobject is None:
             raise ConstraintViolation(
                 "geometry", f"MAP view {node} has an unrecognized type; no view reader matched"
             )
         axis_node = graph.value(node, MAP["axis"])
+        # A superobject that is itself a 3-vector has no half to name, so its component view
+        # states only the axis.
+        subspace_node = graph.value(node, MAP["subspace"])
         views[model.id(node)] = View(
             model.id(node),
             superobject,
             # The view itself, not its bare subobject: a pooled relation has several
             # coordinates and the view's superobject pins which sampling is meant.
             quantity(model, node),
-            subspace(graph.value(node, MAP["subspace"])),
+            subspace(subspace_node) if subspace_node is not None else None,
             axis(axis_node) if axis_node is not None else None,
         )
 

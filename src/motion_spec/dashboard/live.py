@@ -13,9 +13,11 @@ from pathlib import Path
 from motion_spec.dashboard.catalog import run_ended
 from motion_spec.dashboard.control import SPEED_MAX, SPEED_MIN, ControlChannel
 from motion_spec.dashboard.frames import FrameLayout, ShmFrameReader, SignalFields, shm_path
+from motion_spec.dashboard.jobs import mark_stopped
 from motion_spec.dashboard.replay import log_events
 from motion_spec.dashboard.roots import LAYOUT_REL, json_file, trace
 from motion_spec.dashboard.tail import FrameLogTail
+from motion_spec.introspection.archive import ArchiveError
 from motion_spec.introspection.replay import resolve_archive
 
 _LIVE: dict[str, dict] = {}
@@ -196,11 +198,29 @@ def live_state(run_dir: Path, signals=()) -> dict:
     Live is the runtime's shared-memory frame, sampled at LIVE_SAMPLE_HZ into a ring: `signals`
     is served out of that ring as the increment since this page's last poll, values and events
     and states alike. Only a build that publishes no block falls back to following the log.
+
+    A run is named, and its directory made, before the runtime writes a frame log; the page polls
+    from the moment it is named. That poll is a well-formed question about a run that has not
+    started, so it is answered -- `started: False` -- rather than rejected.
     """
     session = _LIVE.get(str(run_dir))
     if session is None:
         # Resolving parses the full header contract -- once per session, never per poll.
-        _, log, _manifest, contract = resolve_archive(run_dir)
+        try:
+            _, log, _manifest, contract = resolve_archive(run_dir)
+        except ArchiveError:
+            # No frame log yet: named but not writing. Also how a --no-log run reads, which the
+            # page tells apart by asking the runner whether it is still busy.
+            return {
+                "started": False,
+                "writing": False,
+                "archived": False,
+                "frames": 0,
+                "duration": 0.0,
+                "events": [],
+                "control": None,
+                "active_motion": None,
+            }
         for stale in list(_LIVE.values()):
             _close_live(stale)
         _LIVE.clear()
@@ -272,6 +292,7 @@ def live_state(run_dir: Path, signals=()) -> dict:
     if not control["available"] and not live:
         writing = writing or time.time() - stat.st_mtime < LIVE_IDLE_S
     return {
+        "started": True,
         "writing": writing,
         # Finished means archived and marked: the run row can only say how it ended once REC
         # has recorded that.
@@ -346,6 +367,9 @@ def run_control(path: Path, options: dict) -> dict:
         channel.set_speed(float(options.get("speed")))
     elif action == "cancel":
         channel.request_stop()
+        # The loop will exit non-zero, the same as a crash. Say the end was asked for, so the
+        # generation page reports a cancel as a stop rather than posting a failure post-mortem.
+        mark_stopped(generation_dir)
     elif action is None:
         # re-publish what the block says, to ask the loop for an ack
         channel.set_pause(bool(channel.paused))

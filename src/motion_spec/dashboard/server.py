@@ -304,7 +304,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     provenance_graph(generation_graph(relative_path(roots.GENERATIONS, value)))
                 )
             if parsed.path == "/api/graph-sources":
-                return self.send_json(graph_sources(relative_path(roots.GENERATIONS, value)))
+                # The explore panel binds as the run page opens, which is before a just-named
+                # run has a directory: no sources yet is an answer, not a bad request.
+                run = expected_path(roots.GENERATIONS, value)
+                return self.send_json(graph_sources(run) if run.exists() else [])
             if parsed.path == "/api/generated":
                 return self.send_json(read_generated(relative_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/model/lint":
@@ -426,9 +429,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     raise ValueError("only a .robmot generates")
                 return self.send_json(start_generate(source_path(body["path"])))
             if self.path == "/api/live":
+                # A run is polled from the moment it is named, before the runtime has written
+                # its directory: live_state answers that with `started: False`.
                 return self.send_json(
                     live_state(
-                        relative_path(roots.GENERATIONS, body["path"]), body.get("signals") or ()
+                        expected_path(roots.GENERATIONS, body["path"]), body.get("signals") or ()
                     )
                 )
             if self.path == "/api/control":

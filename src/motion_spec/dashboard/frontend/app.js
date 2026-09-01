@@ -113,8 +113,14 @@ $("#sidebar-toggle").onclick = () => {
 
 export function showSidebarState() {
   const collapsed = document.body.classList.contains("sidebar-collapsed");
-  $("#sidebar-toggle").textContent = collapsed ? "☰" : "×";
+  // Collapsed, the rail carries the mark instead of a glyph -- the CSS draws it, so the button
+  // keeps no text of its own. The label still says what pressing it does, which is the part a
+  // logo cannot say for itself.
+  $("#sidebar-toggle").textContent = collapsed ? "" : "×";
   $("#sidebar-toggle").title = collapsed ? "Expand navigation" : "Collapse navigation";
+  $("#sidebar-toggle").setAttribute(
+    "aria-label", collapsed ? "Expand navigation" : "Collapse navigation"
+  );
 }
 
 showSidebarState();

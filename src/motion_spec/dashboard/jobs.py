@@ -61,6 +61,9 @@ def run_status(generation_dir: Path) -> dict:
         "pid": process.pid if busy else None,
         "run": str(run.relative_to(roots.GENERATIONS)) if live and run else None,
         "exit_code": None if busy or process is None else process.returncode,
+        # Ended on request, not by failing. A signalled run exits non-zero either way, so the
+        # page cannot tell a cancel from a crash by the code alone.
+        "stopped": bool(started and started.get("stopped")),
         "log": str(generation_dir / RUN_LOG) if process is not None else None,
         # What the run says about its own frame log, once it has written a manifest to say it in:
         # false means it kept none on purpose, and the page shows its console instead of waiting.
@@ -153,6 +156,18 @@ def start_run(generation_dir: Path, options: dict) -> dict:
 STOP_GRACE_S = 5
 
 
+def mark_stopped(generation_dir: Path) -> None:
+    """Record that this run's end was asked for, whoever asked.
+
+    A run signalled from the generation page and one cancelled through its control block both
+    exit non-zero, exactly as a failed run does. Only the asking tells them apart, so it is the
+    asking that is remembered.
+    """
+    started = RUNNING.get(str(generation_dir))
+    if started is not None:
+        started["stopped"] = True
+
+
 def stop_run(path: Path) -> dict:
     """End a run this dashboard started, by signalling the process group it was started in.
 
@@ -165,6 +180,9 @@ def stop_run(path: Path) -> dict:
     process = started["process"] if started else None
     if process is None or process.poll() is not None:
         raise ValueError("no run of this generation is running here")
+    # Remembered before the signal, so the exit this sets up is already known to be asked for
+    # by the time anything reads the status back.
+    mark_stopped(generation_dir)
     # The whole session: the CLI starts the runtime as a child, and it is the one holding the
     # devices open.
     group = os.getpgid(process.pid)

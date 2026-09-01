@@ -107,8 +107,9 @@ export async function loadReplay(path) {
   bindExplore(path).catch((error) => snack(error.message));
   bindTransport();
   // Detached on purpose: the strip is already drawn from the frame log, and the graph these
-  // bars come from must never be something the page waits on.
-  loadTimelineOverlay(path).catch(() => {});
+  // bars come from must never be something the page waits on. A run that has not started has
+  // no spans to draw yet either; settle() re-reads them the moment the hold lifts.
+  if (!state.replay.pending) loadTimelineOverlay(path).catch(() => {});
   setTransportMode();
   showVideos(path, state.replay.videos ?? []);
   // Nothing recorded: a real platform has a camera, but only ROS to reach it through.
@@ -138,11 +139,15 @@ export function reserveVideoSpace() {
 
 // Waiting on the run: nothing on the page is worth clicking yet.
 export function settle(waiting, message = "archiving the run…") {
-  const waited = !$(".settling").hidden;
-  $(".settling").hidden = !waiting;
-  $(".settling span").textContent = message;
-  $(".replay").classList.toggle("busy", waiting);
-  $(".transport").classList.toggle("busy", waiting);
+  // The live poll settles the page after an await, by which time the reader may have left the
+  // run page entirely -- cancel a run and go back and there is no overlay left to settle.
+  const overlay = $(".settling");
+  if (!overlay) return;
+  const waited = !overlay.hidden;
+  overlay.hidden = !waiting;
+  overlay.querySelector("span").textContent = message;
+  $(".replay")?.classList.toggle("busy", waiting);
+  $(".transport")?.classList.toggle("busy", waiting);
   // What the bars were read from changes when the wait ends -- a run that had no graph now has
   // one, and a projection is replaced by the archive. Re-read there, never on a timer.
   if (waited && !waiting && state.runPath) loadTimelineOverlay(state.runPath, true).catch(() => {});
@@ -236,19 +241,28 @@ function bindVideoExpand(panel) {
   setExpanded(large);
 }
 
-// The same pane, pointed at a live ROS topic: hardware records nothing to replay afterwards,
-// so the picture is whatever the camera is publishing now -- not a track the timeline drives.
+// The same pane, pointed at a live ROS topic: this run has no recording to replay, so the
+// picture is whatever the camera is publishing now -- not a track the timeline drives. That is
+// every hardware run, and a simulated one that was not started with --record.
 async function showRosCamera(generationPath) {
   if (!generationPath) return;
-  const generation = state.generation?.path === generationPath
+  // The cached generation only answers here if it carries the cameras: the side panel stores a
+  // lighter record for the list, and reading `cameras` off that one silently finds none.
+  const cached = state.generation?.path === generationPath && state.generation.cameras
     ? state.generation
-    : await api(`/api/generation?path=${encodeURIComponent(generationPath)}`).catch(() => null);
-  if (generation?.simulated !== false || state.replay?.generation !== generationPath) return;
+    : null;
+  const generation = cached
+    ?? await api(`/api/generation?path=${encodeURIComponent(generationPath)}`).catch(() => null);
+  // Nothing is re-read off `state` after the await: a run starting rewrites `state.replay` in
+  // place, and checking it here is a race the pane used to lose silently.
+  if (!generation) return;
   // Where the camera is published is the model's to state -- a subscription naming it -- and
   // never this page's to guess from its name. A camera no channel carries has no live view.
-  const camera = generation.cameras?.find((entry) => entry.topic);
-  if (!camera) return;
-  const declaredTopic = camera.topic;
+  // Every camera the model gives a channel, in the order the scene declares them. The picker
+  // offers these and nothing else: a topic the model does not state is not this page's to invent.
+  const carried = generation.cameras?.filter((entry) => entry.topic) ?? [];
+  if (!carried.length) return;
+  const declaredTopic = carried[0].topic;
   const panel = $(".videos");
   panel.hidden = false;
   panel.classList.add("one-camera", "ros-camera");
@@ -256,27 +270,39 @@ async function showRosCamera(generationPath) {
   bindVideoExpand(panel);
   bindVideoMinimize(panel);
   const main = panel.querySelector(".video-main");
-  main.innerHTML = `<img class="ros-frame" alt=""><span class="video-name"></span><div class="ros-topic"><input type="text" spellcheck="false" title="ROS image topic"><span class="ros-status"></span></div>`;
+  const options = carried
+    .map((entry) => `<option value="${entry.topic}">${entry.id} — ${entry.topic}</option>`)
+    .join("");
+  main.innerHTML = `<img class="ros-frame" alt=""><span class="video-name"></span><div class="ros-topic"><select title="ROS image topic">${options}</select><span class="ros-status"></span></div>`;
   const frame = main.querySelector(".ros-frame");
-  const topic = main.querySelector("input");
+  const topic = main.querySelector("select");
   const status = main.querySelector(".ros-status");
-  main.querySelector(".video-name").textContent = camera.id;
-  topic.value = state.rosTopic ?? declaredTopic;
-  topic.placeholder = declaredTopic;
+  const name = main.querySelector(".video-name");
+  // The topic picked last is remembered for the session, unless this run does not carry it.
+  const remembered = carried.some((entry) => entry.topic === state.rosTopic);
+  topic.value = remembered ? state.rosTopic : declaredTopic;
   const subscribe = () => {
-    // Retyped for this session, or back to the one the model states.
-    state.rosTopic = topic.value.trim() || declaredTopic;
-    topic.value = state.rosTopic;
+    state.rosTopic = topic.value;
     status.textContent = "";
+    name.textContent = carried.find((entry) => entry.topic === state.rosTopic)?.id ?? "";
     // A new query each time, so the browser reconnects rather than showing the stalled stream.
     frame.src = `/api/ros-camera?topic=${encodeURIComponent(state.rosTopic)}&t=${Date.now()}`;
   };
   frame.onerror = () => {
     frame.removeAttribute("src");
-    status.textContent = "source unavailable (no ROS env)";
+    // An armed run publishes nothing until it is played, so this is a wait, not a dead end:
+    // retry until frames start, rather than leaving the pane blank until the topic is reselected.
+    status.textContent = "waiting for frames…";
+    reserveVideoSpace();
+    clearTimeout(state.rosRetry);
+    state.rosRetry = setTimeout(() => {
+      if (frame.isConnected) subscribe();
+    }, 2000);
+  };
+  frame.onload = () => {
+    status.textContent = "";
     reserveVideoSpace();
   };
-  frame.onload = () => reserveVideoSpace();
   topic.onchange = subscribe;
   subscribe();
   reserveVideoSpace();

@@ -30,7 +30,7 @@ export function goHome() {
   setTab("logs");
   history.replaceState(null, "", `${location.pathname}#tab=logs`);
   showEmpty({
-    eyebrow: "REPLAY / 01",
+    eyebrow: "GENERATIONS",
     title: "Choose a generation.",
     detail: "Its build metadata and recorded runs will appear here.",
   });

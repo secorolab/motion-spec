@@ -19,12 +19,25 @@ button { border: 0; background: transparent; color: var(--muted); cursor: pointe
 button:active { background: #383d45; color: var(--text); transform: translateY(1px); }
 
 .brand, .eyebrow, .aside-head, button, select, input { font-family: var(--mono); }
-.brand { display: block; width: 100%; padding: 16px 14px 12px; color: var(--text); font-size: 17px; font-weight: 800; letter-spacing: .1em; text-align: left; }
+/* line-height 1 so the wordmark's box is its glyphs, not its leading: with the inherited 1.6 the
+   text centres on a box taller than it looks and rides high beside the mark. */
+.brand { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; padding: 14px; color: var(--text); font-size: 17px; line-height: 1; font-weight: 800; letter-spacing: .1em; }
 .brand:hover { color: var(--accent); }
+/* Set above the wordmark's cap height so the mark leads the name rather than trailing it.
+   Keeps its own size while the name wraps or the rail narrows. */
+.brand-mark { flex: none; display: block; pointer-events: none; }
 
 main { display: grid; grid-template-columns: var(--aside, 290px) minmax(0, 1fr); height: 100vh; transition: grid-template-columns 180ms cubic-bezier(.2, .8, .2, 1); }
 aside { position: relative; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; background: var(--side); border-right: 1px solid var(--line); transition: border-color 120ms ease-out, opacity 120ms ease-out; }
-.aside-foot { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 1px; border-top: 1px solid var(--line); background: var(--line); font: 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+.aside-foot { position: relative; z-index: 1; display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 1px; border-top: 1px solid var(--line); background: var(--line); font: 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+/* A row scrolled to the edge should read as continuing under the footer, not as being cut off by
+   it. A drop shadow cannot say that here -- black blurred onto a near-black rail is invisible --
+   so the list is faded into the rail's own colour over the last 28px instead. */
+.aside-foot::before {
+  content: ""; position: absolute; right: 0; bottom: 100%; left: 0; height: 28px;
+  background: linear-gradient(to top, var(--side), rgba(26, 28, 31, 0));
+  pointer-events: none;
+}
 .aside-foot > * { display: grid; place-items: center; padding: 10px 4px; background: var(--side); color: var(--dim); text-decoration: none; }
 .aside-foot > *:hover { background: var(--surface); color: var(--accent); }
 .aside-foot button.active { color: var(--text); }
@@ -61,7 +74,7 @@ nav button.active { color: var(--text); border-color: var(--accent); }
   padding: 8px; border: 1px solid var(--line); background: #24201f; box-shadow: 0 8px 24px #0008;
 }
 #selection-actions[data-side="sidebar"] { right: auto; left: 16px; }
-body.sidebar-collapsed #selection-actions[data-side="sidebar"] { left: 32px; }
+body.sidebar-collapsed #selection-actions[data-side="sidebar"] { left: 42px; }
 #snack { position: fixed; right: 28px; bottom: 24px; z-index: 6; padding: 8px 10px; border: 1px solid var(--accent); border-left-width: 3px; background: var(--surface); color: var(--text); font: 11px var(--mono); opacity: 0; pointer-events: none; transform: translateY(8px); transition: opacity 120ms ease-out, transform 120ms ease-out; }
 #snack.visible { opacity: 1; transform: translateY(0); }
 #selection-count { align-self: center; color: var(--text); text-align: center; font: 11px var(--mono); }
@@ -107,11 +120,25 @@ body.sidebar-collapsed #selection-actions[data-side="sidebar"] { left: 32px; }
   to { transform: translateX(calc(-1 * var(--scroll-distance))); }
 }
 
-body.sidebar-collapsed main { grid-template-columns: 24px minmax(0, 1fr); }
+body.sidebar-collapsed main { grid-template-columns: 34px minmax(0, 1fr); }
 body.sidebar-collapsed aside { opacity: 0; pointer-events: none; border-right: 0; }
-body.sidebar-collapsed #sidebar-toggle { left: 0; border-left: 0; }
-body.sidebar-collapsed #content { padding-left: 34px; }
-body.sidebar-collapsed .transport { left: 24px; }
+/* Collapsed, the mark is the control: the rail is 24px wide and a hamburger beside a logo in it
+   is the same corner saying two things. Hover and focus still answer, so it reads as a button. */
+/* top: 9px, not the 14px the expanded toggle sits at, so the 24px mark lands on exactly the rows
+   the brand's does (y 14 to 38): centred in a 34px button, that needs the button to start 5px
+   higher. Toggling the sidebar then moves the mark sideways only, never up or down. */
+body.sidebar-collapsed #sidebar-toggle {
+  top: 9px; left: 0; width: 34px; height: 34px; border-left: 0;
+  background: url("mark.svg") no-repeat center / 24px 24px;
+  /* The button's glyph is written into the HTML and only cleared once app.js runs, while the
+     collapsed class is set before the first paint -- so without this the mark wears an "x" for
+     a frame on every reload. CSS hides it on the same paint that draws the mark. */
+  font-size: 0;
+}
+body.sidebar-collapsed #sidebar-toggle:hover,
+body.sidebar-collapsed #sidebar-toggle:focus-visible { border-color: var(--accent); }
+body.sidebar-collapsed #content { padding-left: 44px; }
+body.sidebar-collapsed .transport { left: 34px; }
 
 #content { overflow: auto; padding: 9px 22px 130px; }
 .empty { max-width: 540px; margin: 16vh auto; }
@@ -773,8 +800,8 @@ html.restoring #content .empty { visibility: hidden; }
 .videos.one-camera { grid-template-columns: 1fr; }
 .ros-frame { display: block; min-width: 200px; min-height: 112px; max-width: 100%; max-height: var(--video-h, 34vh); background: #000; }
 .ros-topic { display: flex; align-items: center; gap: 6px; padding-top: 6px; }
-.ros-topic input { min-width: 0; flex: 1; padding: 3px 6px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font-size: 11px; }
-.ros-topic input:focus { border-color: var(--accent); outline: none; }
+.ros-topic select { min-width: 0; flex: 1; padding: 3px 6px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font: 11px var(--mono); }
+.ros-topic select:focus { border-color: var(--accent); outline: none; }
 .ros-status { color: var(--dim); font: 10px var(--mono); }
 .video-strip { display: flex; max-height: 34vh; flex-direction: column; overflow-y: auto; gap: 6px; }
 .video-pick { position: relative; display: block; flex: none; padding: 0; border: 1px solid var(--line); }

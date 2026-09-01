@@ -54,7 +54,13 @@ export async function followLiveRun(runPath) {
     // Plots off asks for no series: the run's frames, events and states still come back.
     const signals = livePlotsOn() ? liveSignals() : [];
     const live = await post("/api/live", { path: runPath, signals }).catch(() => null);
-    if (!live && state.replay.pending) {
+    // Checked again after the await, not only before it: a cancel can take the reader back to
+    // the generation page while this request is in flight, and everything below reaches for
+    // elements that page does not have.
+    if (state.runPath !== runPath) return stopLiveWatch();
+    // `started: false` is the server saying the run is named but has written nothing yet; a null
+    // is the request itself having failed. Both mean there is no run to follow.
+    if ((!live || live.started === false) && state.replay.pending) {
       // named before anything is on disk: hold until the log begins or the runner gives up
       const status = state.replay.generation
         ? await api(`/api/run?path=${encodeURIComponent(state.replay.generation)}`)

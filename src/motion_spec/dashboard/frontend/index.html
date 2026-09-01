@@ -6,7 +6,9 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>motion-spec replay</title>
+    <title>motion-spec</title>
+    <!-- Named, so the browser stops asking for /favicon.ico and logging the 404 when it misses. -->
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="style.css">
     <!-- Vendored, not fetched: a robot's machine is often on a network with no way out, and
          a dashboard whose charts depend on a CDN is a dashboard that is blank there. -->
@@ -35,7 +37,12 @@
     <main>
       <aside>
         <div class="sidebar-header">
-          <button id="home" class="brand">motion-spec</button>
+          <!-- The tab icon, once more where the product is named: same file, so the two can
+               never drift apart. Inert to the pointer so the whole brand stays one button. -->
+          <button id="home" class="brand">
+            <img class="brand-mark" src="mark.svg" alt="" width="24" height="24">
+            <span>motion-spec</span>
+          </button>
           <nav>
             <button class="active" data-tab="logs">Logs</button>
             <button data-tab="sources">Sources</button>

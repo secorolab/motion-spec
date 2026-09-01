@@ -192,14 +192,18 @@ export function bindRunAgain(page, path, cameras, simulated) {
     start.disabled = false;
     halt.hidden = true;
     state_.textContent = sawRunning
-      ? (status.exit_code ? `exited ${status.exit_code}` : "run finished")
+      ? (status.stopped ? "stopped" : status.exit_code ? `exited ${status.exit_code}` : "run finished")
       : "";
-    // A run that failed says why here rather than sending the reader to a file.
-    if (sawRunning && status.exit_code) {
+    // A run that failed says why here rather than sending the reader to a file. One the operator
+    // stopped did not fail, and exits non-zero all the same, so it gets no post-mortem.
+    if (sawRunning && status.exit_code && !status.stopped) {
+      // A post-mortem that cannot be read is not itself worth reporting: the run's status line
+      // has already said how it ended, and an unhandled rejection here surfaces as a toast
+      // about the console rather than about the run.
       consoleExcerpt(path).then((pre) => {
         failed.replaceChildren(...pre.childNodes);
         failed.hidden = !failed.textContent;
-      });
+      }).catch(() => { failed.hidden = true; });
     }
     api(`/api/runs?path=${encodeURIComponent(path)}`).then(state.generation?.setRuns);
     // Only an ending this page watched happen is news, and the run's own page may have said

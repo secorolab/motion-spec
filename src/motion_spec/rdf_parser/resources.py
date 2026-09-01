@@ -2003,9 +2003,10 @@ def _reject_unbound_sensors_on_hardware(model, context) -> None:
 def shared_runtime_members(model, serial_chains, control_period_ns: int, platform_uri) -> list:
     """The shared values the runtime writes that no model entity declares.
 
-    The measured control period and the clock beside it, plus the tare state kept alongside every
-    force/torque reading. Each is a contracted shared value: written from a port or computed from
-    a reading, and read like any other.
+    The measured control period and the clock beside it, plus, for every force/torque reading: the
+    raw sample, the tare state computed from it, and the counters that report how taring went.
+    Each is a contracted shared value: written from a port or computed from a reading, and read
+    like any other.
 
     Raises:
         RuntimeError: the platform or a sensor output has no IRI to derive the value from.
@@ -2034,10 +2035,14 @@ def shared_runtime_members(model, serial_chains, control_period_ns: int, platfor
                     f"ft tare state: sensor output '{out.id}' has no IRI to derive from"
                 )
             for suffix, member_type in (
+                ("ft_raw", "Wrench"),
                 ("ft_bias", "Wrench"),
                 ("ft_bias_new", "Wrench"),
+                ("ft_bias_prev", "Wrench"),
                 ("ft_settle", "IntCounter"),
                 ("ft_tares", "IntCounter"),
+                ("ft_rejects", "IntCounter"),
+                ("ft_confirming", "Bool"),
             ):
                 member_id = f"{out.id}_{suffix}"
                 members.append(BlackboardValue(id=member_id, type=member_type))

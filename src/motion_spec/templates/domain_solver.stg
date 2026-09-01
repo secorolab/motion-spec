@@ -446,6 +446,10 @@ solver-output-Wrench-mj_kdl(solver, chain_solver, out) ::= <<
 // window starts over. Only a completed window replaces the standing bias: re-taring therefore
 // leaves the previous zero in force instead of blinding every consumer for the window's length.
 ft-tare(out, sample) ::= <<
+    // The raw sample, logged before the tare: after the reference-point/as-seen-by transform
+    // and before the zero is subtracted -- the quantity a diagnostician wants, and what
+    // ft_bias is commensurate with.
+    shared.<out.id>_ft_raw = <sample>;
 <retare-on(out)>    if (robot.ft_<out.sensor_name>_bias_samples > 0 && shared.<out.id>_ft_settle \< robot.ft_<out.sensor_name>_bias_samples) {
         if (shared.<out.id>_ft_settle > 0 && robot.ft_<out.sensor_name>_bias_max_drift > 0.0
             && (<sample> - shared.<out.id>_ft_bias_new).force.Norm() > robot.ft_<out.sensor_name>_bias_max_drift) {
@@ -455,8 +459,25 @@ ft-tare(out, sample) ::= <<
         shared.<out.id>_ft_bias_new = shared.<out.id>_ft_bias_new
             + (<sample> - shared.<out.id>_ft_bias_new) / static_cast\<double>(shared.<out.id>_ft_settle);
         if (shared.<out.id>_ft_settle >= robot.ft_<out.sensor_name>_bias_samples) {
-            shared.<out.id>_ft_bias = shared.<out.id>_ft_bias_new;
-            ++shared.<out.id>_ft_tares;
+            // One window is a proposal, not a decision. A press that ends between two windows
+            // makes them disagree, so the press never becomes the zero; a load that is genuinely
+            // held makes them agree, so a real payload change still tares. The tolerance is the
+            // sensor's own noise scale -- the same number that decides a window is steady.
+            if (shared.<out.id>_ft_confirming
+                && (shared.<out.id>_ft_bias_new - shared.<out.id>_ft_bias_prev).force.Norm()
+                     \<= robot.ft_<out.sensor_name>_bias_max_drift) {
+                shared.<out.id>_ft_bias = shared.<out.id>_ft_bias_new;
+                ++shared.<out.id>_ft_tares;
+                shared.<out.id>_ft_confirming = false;
+                // Left latched at bias_samples: the zero holds until an event asks for a new one.
+            \} else {
+                if (shared.<out.id>_ft_confirming) {
+                    ++shared.<out.id>_ft_rejects;
+                \}
+                shared.<out.id>_ft_bias_prev = shared.<out.id>_ft_bias_new;
+                shared.<out.id>_ft_confirming = true;
+                shared.<out.id>_ft_settle = 0;
+            \}
         \}
     \}
     shared.<out.id> = (shared.<out.id>_ft_tares > 0 || robot.ft_<out.sensor_name>_bias_samples == 0)
@@ -468,6 +489,7 @@ ft-tare(out, sample) ::= <<
 retare-on(out) ::= <<
 <if(out.retare_events_present)>    if (robot.fsm_events && (<out.retare_events:{e | consume_event(robot.fsm_events, <e>)}; separator=" || ">)) {
         shared.<out.id>_ft_settle = 0;
+        shared.<out.id>_ft_confirming = false;
     \}
 <endif>
 >>

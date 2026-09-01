@@ -2229,10 +2229,14 @@ def _writers_by_output(serial_chain_solvers) -> _SolverWrites:
             sensor_outputs.add(out.id)
             # tare state, written alongside the reading (resources.shared_runtime_members)
             for companion in (
+                f"{out.id}_ft_raw",
                 f"{out.id}_ft_bias",
                 f"{out.id}_ft_bias_new",
+                f"{out.id}_ft_bias_prev",
                 f"{out.id}_ft_settle",
                 f"{out.id}_ft_tares",
+                f"{out.id}_ft_rejects",
+                f"{out.id}_ft_confirming",
             ):
                 by_output.setdefault(companion, set()).add(solver.id)
                 sensor_outputs.add(companion)
@@ -2273,10 +2277,14 @@ def _owners_by_value(motions, closures: dict) -> _ValueOwners:
                     own(out_id, motion.id)
         for solver in motion.serial_chain_solvers:
             for out in [*solver.output, *solver.gripper_joint_outputs]:
-                own(out.id, motion.id)
+                # A sensor reading is a world observation, not a motion's work: _split_outputs
+                # puts every Wrench in solver.world_output, so world-state-block answers it once
+                # per tick, before the FSM is dispatched. Attributing it to whichever motions
+                # happen to read it gates its frame-log slot behind active_motion and blanks the
+                # tare state in every other state -- exactly where a phantom bias must be read.
                 if getattr(out, "sensor_name", ""):
-                    own(f"{out.id}_ft_bias", motion.id)
-                    own(f"{out.id}_ft_settle", motion.id)
+                    continue
+                own(out.id, motion.id)
             # Joint-space mirrors are written by whichever motion's solver ran, so the runtime's
             # channels are live in every motion that drives it.
             for sample in [*solver.joint_space_samples, *solver.joint_space_cmd_samples]:

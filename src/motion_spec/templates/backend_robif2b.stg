@@ -357,11 +357,16 @@ device-update-robif2b-Robotiq2F85(solver, device, active_motion) ::= <<
 
 device-update-robif2b-RobotiqFT300s(solver, device, active_motion) ::= <<
             const auto ft_<device.drives>_msr = ft_<device.drives>_io.sample.read();
+            // The FT wrench is a world observation: _split_outputs puts it in world_output, so
+            // world-state-block reads and tares it once per tick, in every state, whether or not
+            // the active motion consumes ext_force. A thread that stops advancing therefore
+            // freezes the tare and every consumer downstream of it, in any state -- so freshness
+            // is required for the whole run, not per motion.
             motion_spec::io::require_fresh(
                 ft_<device.drives>_io.stale,
                 ft_<device.drives>_msr.seq,
                 ft_<device.drives>_msr.value.success,
-                <if(device.has_required_motions)>(<device.required_by_motion:{index | <active_motion> == <index>}; separator=" || ">)<else>false<endif>,
+                true,
                 "<device.config_key>");
 >>
 

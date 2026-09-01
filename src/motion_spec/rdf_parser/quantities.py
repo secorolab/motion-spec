@@ -2251,12 +2251,16 @@ class _ValueOwners(NamedTuple):
     block_ids: dict
 
 
-def _owners_by_value(motions, closures: dict) -> _ValueOwners:
+def _owners_by_value(motions, closures: dict, world_output_ids: set) -> _ValueOwners:
     """Which motions write each value, and which values the per-motion blocks -- rather than any
     schedule -- are responsible for.
 
     A union, never last-writer-wins: several motions can write one value, and attributing it to a
     single motion would gate away live data.
+
+    `world_output_ids` holds the id of every output in a solver's `world_output` -- the ones the
+    loop answers rather than a motion, written once per tick before the FSM is dispatched, so no
+    motion owns them.
     """
     owners: dict[str, set] = {}
     # Poses, snapshots and per-axis errors are written by the pose-composition, snapshot and
@@ -2277,12 +2281,13 @@ def _owners_by_value(motions, closures: dict) -> _ValueOwners:
                     own(out_id, motion.id)
         for solver in motion.serial_chain_solvers:
             for out in [*solver.output, *solver.gripper_joint_outputs]:
-                # A sensor reading is a world observation, not a motion's work: _split_outputs
-                # puts every Wrench in solver.world_output, so world-state-block answers it once
-                # per tick, before the FSM is dispatched. Attributing it to whichever motions
-                # happen to read it gates its frame-log slot behind active_motion and blanks the
-                # tare state in every other state -- exactly where a phantom bias must be read.
-                if getattr(out, "sensor_name", ""):
+                # A world observation is not a motion's work: _split_outputs sorts every output
+                # the loop answers into solver.world_output, and world-state-block writes those
+                # once per tick, before the FSM is dispatched. Attributing one to whichever
+                # motions happen to read it gates its frame-log slot behind active_motion and
+                # blanks it in every other state -- for an FT wrench, exactly where a phantom
+                # bias has to be read.
+                if out.id in world_output_ids:
                     continue
                 own(out.id, motion.id)
             # Joint-space mirrors are written by whichever motion's solver ran, so the runtime's
@@ -2328,7 +2333,10 @@ def annotate_dataflow(
         for out_id in closure_output_ids(closure):
             closure_by_output.setdefault(out_id, set()).add(closure_id)
     solver_by_output, sensor_outputs = _writers_by_output(serial_chain_solvers)
-    owners, block_ids = _owners_by_value(motions, closures)
+    world_output_ids = {
+        out.id for solver in serial_chain_solvers for out in getattr(solver, "world_output", ())
+    }
+    owners, block_ids = _owners_by_value(motions, closures, world_output_ids)
     # Named by the mechanism that produced the value, so the artifact says whether a pose was
     # asked for once or arrived on a standing channel.
     perceived_by_output = {

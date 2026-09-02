@@ -1367,6 +1367,7 @@ def read_scene(model) -> MjcfSceneSpec:
     _name_object_attachments(model, attach_by_body)
     anchor = anchor_frame(model)
 
+    parent_of = {}
     for modelled in sorted(graph.subjects(RDF.type, ENV["ModelledObject"]), key=str):
         obj = graph.value(modelled, ENV["of-object"])
         mapped = [
@@ -1381,8 +1382,9 @@ def read_scene(model) -> MjcfSceneSpec:
         asset, body, _entity = mapped[0]
         object_id = local_name(obj)
         attachment = attach_by_body.get(body, ("World", "", body, None))
-        attach_kind, attach_name, _frame, _parent = attachment
+        attach_kind, attach_name, _frame, parent = attachment
         position, orientation = _placement_of(model, attachment, anchor)
+        parent_of[local_name(body)] = local_name(parent) if parent is not None else None
         scene.objects.append(
             MjcfSceneObject(
                 id=object_id,
@@ -1400,6 +1402,8 @@ def read_scene(model) -> MjcfSceneSpec:
                 },
             )
         )
+    # The runtime resolves a parent site as it spawns, so a bolted-on object follows its host.
+    scene.objects = _hosts_first(scene.objects, parent_of)
 
     for assembly in _agent_assemblies(model, attach_by_body):
         scene.robots.append(
@@ -1500,6 +1504,17 @@ def _scene_frames(model, objects) -> list:
             )
         )
     return frames
+
+
+def _hosts_first(objects: list, parent_of: dict) -> list:
+    """The objects with each one after the object it is bolted to, otherwise in the order given."""
+    bodies = {obj.body for obj in objects}
+
+    def hosts(body) -> int:
+        parent = parent_of.get(body)
+        return 1 + hosts(parent) if parent in bodies else 0
+
+    return sorted(objects, key=lambda obj: hosts(obj.body))
 
 
 def _kgraph_bodies(model, kgraph) -> set:

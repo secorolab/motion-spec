@@ -26,7 +26,7 @@ struct motion_spec_event_buffer {
 >>
 
 fsm-step-function(motion) ::= <<
-<if(motion.fsm_state)>
+<if(motion.fsm_state || motion.is_when_gate_hold)>
 static void step_<motion.id>(<motion.id>_state &<motion.id>_state_instance, shared_data &shared, robot_io &robot<if(motion.step_needs_events)>, motion_spec_event_buffer &events<endif>) {
     if (!<motion.id>_state_instance.active) {
         <motion.id>_state_instance.active = true;
@@ -56,7 +56,18 @@ static void step_<motion.id>(<motion.id>_state &<motion.id>_state_instance, shar
 fsm-dispatch-case(motion, fsm) ::= <<
 <if(motion.fsm_state)>
         case <fsm.cpp_namespace>::<motion.fsm_state>:
+<if(motion.has_when_gate)>
+            // Held inside this state until the WHEN monitor's edge; the gated motion steps from
+            // the tick after, when the event the edge fired is current for its snapshots.
+            if (<motion.id>_state_instance.active || <motion.id>_state_instance.when_gate_open) {
+                step_<motion.id>(<motion.id>_state_instance, shared, robot<if(motion.step_needs_events)>, events<endif>);
+            } else {
+                monitor_when_<motion.id>(<sig-args(motion.id, motion.when_needs_state, motion.when_needs_shared, motion.when_needs_robot, motion.when_needs_events)>);
+                step_<motion.when_gate_hold.id>(<motion.when_gate_hold.id>_state_instance, shared, robot<if(motion.when_gate_hold.needs_events)>, events<endif>);
+            }
+<else>
             step_<motion.id>(<motion.id>_state_instance, shared, robot<if(motion.step_needs_events)>, events<endif>);
+<endif>
 <motion.fsm_when_gate_calls:{c |             monitor_when_<c.gid>(<sig-args(c.gid, c.needs_state, c.needs_shared, c.needs_robot, c.needs_events)>);}; separator="\n">
             break;
 <endif>
@@ -77,7 +88,11 @@ fsm-active-motion(motions, fsm) ::= <<
 
 fsm-active-motion-case(motion, fsm) ::= <<
 <if(motion.fsm_state)>
+<if(motion.has_when_gate)>
+        case <fsm.cpp_namespace>::<motion.fsm_state>: return (<motion.id>_state_instance.active || <motion.id>_state_instance.when_gate_open) ? <motion.index> : <motion.when_gate_hold.index>;
+<else>
         case <fsm.cpp_namespace>::<motion.fsm_state>: return <motion.index>;
+<endif>
 <endif>
 >>
 

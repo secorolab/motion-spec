@@ -28,6 +28,8 @@ class BlackboardValue:
     id: str
     type: str
     value: float | None = None
+    # A time position no reading has filled yet: minus infinity, so an age from it is infinite.
+    unset: bool = False
     role: str | None = None
     producer: dict | None = field(default=None, metadata=INTERNAL)
     quantity_kind: QuantityKind | None = field(default=None, metadata=INTERNAL)
@@ -93,8 +95,9 @@ class SnapshotCapture:
     """A sample-and-hold capture of a fluent, and when it is taken.
 
     `scope` is the declaration site made operative: a snapshot a motion declares is captured
-    at the start of each of its activations, one the shared context declares is captured once
-    for the run, and one naming a trigger is re-captured on every occurrence of that event.
+    at the start of each of its activations, one the shared context declares with no trigger is
+    captured once for the run, and one naming a trigger -- wherever it is declared -- is
+    re-captured on every occurrence of that event.
 
     `captured_id` names the run-scoped latch guarding the once-for-the-run capture -- a shared
     value like any other, so whoever reads it is recorded rather than invented by a template.
@@ -191,6 +194,9 @@ class MotionUnit:
     # value each timing constraint compares against, filled from the phase's start time.
     active_elapsed_ids: list[str] = field(default_factory=list)
     when_elapsed_ids: list[str] = field(default_factory=list)
+    # Age clocks per phase: shared coordinate written as clock minus the observation instant's slot.
+    when_observation_ages: list[dict] = field(default_factory=list)
+    active_observation_ages: list[dict] = field(default_factory=list)
     has_until_condition: bool = field(default=False, metadata=INTERNAL)
     # Derived join: the when phase is one disjunction.
     when_any: bool = False
@@ -237,6 +243,11 @@ class MotionUnit:
     runs_in_state: str = field(default="", metadata=INTERNAL)
     fsm_when_gate_motions: list = field(default_factory=list)
     fsm_when_gate_calls: list = field(default_factory=list)
+    # In-state gate: the hold this motion's own state steps until its when monitor's edge.
+    has_when_gate: bool = False
+    when_gate_hold: dict | None = None
+    # Steps as another motion's hold, so it gets a step function whether or not a state binds it.
+    is_when_gate_hold: bool = False
 
     # Solver Integration
     serial_chain_solvers: list[MotionSolverSlice] = field(default_factory=list)

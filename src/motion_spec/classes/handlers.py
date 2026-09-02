@@ -41,6 +41,8 @@ class ConstraintEvaluator:
     elapsed_op: str | None = None
     elapsed_threshold_s: float | None = None
     elapsed_tolerance_s: float | None = None
+    # The instant slot an observation-age clock counts from; None counts from motion entry.
+    observed_at_id: str | None = None
     # The action_msgs GoalStatus constant an action goal must reach for this to hold.
     goal_status: str | None = None
     type: str = field(default="ConstraintEvaluator")
@@ -179,6 +181,8 @@ class EdgeMonitor:
     event_uri: str | None = None
     event_name: str | None = None
     fallback_motion: str | None = None
+    # Its satisfied edge starts the motion it guards, inside that motion's own state.
+    opens_gate: bool = False
     # The authored duration the constraint must hold before the edge fires, by id: the runtime
     # accumulates measured cycle time against that shared value, so the model's bound has one
     # source of truth. None when absent.

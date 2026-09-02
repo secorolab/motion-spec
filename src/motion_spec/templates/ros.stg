@@ -310,13 +310,18 @@ ros-action-cancel-on-exit(motion) ::= <<
 >>
 
 // One try_lock per cycle: a staged result moves onto the blackboard, and a cycle that cannot
-// take the lock reads the previous answer and tries again next tick.
+// take the lock reads the previous answer and tries again next tick. Only a succeeded act stamps
+// the observation instant: a failed one carries no reading.
 
 ros-actions-tick(ros) ::= <<
 <ros.action_clients:{c |         if (robot.<c.client_id>_mutex.try_lock()) {
             if (robot.<c.client_id>_staged) {
                 shared.<c.status_id> = robot.<c.client_id>_staged_status;
-<c.written_poses:{w |                 shared.<w.pose_id> = robot.<c.client_id>_staged_<w.pose_id>;}; separator="\n">
+<c.written_poses:{w |                 shared.<w.pose_id> = robot.<c.client_id>_staged_<w.pose_id>;
+<if(w.observed_at_id)>                if (robot.<c.client_id>_staged_status == action_msgs::msg::GoalStatus::STATUS_SUCCEEDED) {
+                    shared.<w.observed_at_id> = shared.clock_time_s;
+                \}
+<endif>}; separator="\n">
                 robot.<c.client_id>_staged = false;
             \}
             robot.<c.client_id>_mutex.unlock();
@@ -337,6 +342,9 @@ ros-actions-tick(ros) ::= <<
 //
 // A pose no message has ever carried is left alone rather than written as the identity, which
 // would put the object at the origin of its own reference frame and say nothing about it.
+//
+// The observation instant is the loop clock at commit: what the controller can act on is what it
+// has, and the message header's clock is not the run's.
 
 ros-subscriptions-tick(ros) ::= <<
 <ros.subscriptions:{s |         if (robot.<s.sub_id>_mutex.try_lock()) {
@@ -346,7 +354,8 @@ ros-subscriptions-tick(ros) ::= <<
                         robot.world->pose(robot.<s.sub_id>_segment_<w.pose_id>, robot.control_cycle).Inverse()
                         * robot.world->pose(robot.<s.sub_id>_staged_from_<w.pose_id>, robot.control_cycle)
                         * robot.<s.sub_id>_staged_<w.pose_id>;
-                \}}; separator="\n">
+<if(w.observed_at_id)>                    shared.<w.observed_at_id> = shared.clock_time_s;
+<endif>                \}}; separator="\n">
                 robot.<s.sub_id>_staged = false;
             \}
             robot.<s.sub_id>_mutex.unlock();

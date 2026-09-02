@@ -177,3 +177,35 @@ def test_no_chain_computes_a_pose_the_subscription_writes(subscription_ir):
     assert "pose_table_cam" not in outputs
     dataflow = subscription_ir["communication"]["introspection"]["dataflow"]
     assert dataflow["pose_table_cam"]["producer"] == {"kind": "subscription", "id": "table_top"}
+
+
+@requires_interfaces(TYPE_NAME)
+def test_the_subscription_stamps_the_instant_its_pose_was_last_observed(subscription_ir):
+    """The channel that writes the pose is what dates it, and until the first message the slot
+    is minus infinity, so an age read off it is infinite."""
+    (subscription,) = subscription_ir["communication"]["ros"]["subscriptions"]
+    assert {row["observed_at_id"] for row in subscription["written_poses"]} == {
+        "pose_table_cam_observed"
+    }
+    members = {member["id"]: member for member in subscription_ir["computation"]["shared_data"]}
+    assert members["pose_table_cam_observed"]["type"] == "Quantity"
+    assert members["pose_table_cam_observed"]["unset"] is True
+    dataflow = subscription_ir["communication"]["introspection"]["dataflow"]
+    assert dataflow["pose_table_cam_observed"]["producer"] == {
+        "kind": "subscription",
+        "id": "table_top",
+    }
+
+
+@requires_interfaces(TYPE_NAME)
+def test_a_freshness_gated_motion_holds_inside_its_own_state(subscription_ir):
+    """`E_TABLE_SEEN` drives no transition, so the watch is gated in S_WATCH: the idle hold steps
+    there and the age clock counts from the pose's observation instant."""
+    motions = {motion["id"]: motion for motion in subscription_ir["coordination"]["motions"]}
+    watch = motions["handler_watch"]
+    assert watch["has_when_gate"] is True
+    assert watch["when_gate_hold"]["id"] == "handler_hold_idle"
+    assert watch["when_observation_ages"] == [
+        {"coordinate": "table_seen_elapsed", "observed_at": "pose_table_cam_observed"}
+    ]
+    assert motions["handler_hold_idle"]["is_when_gate_hold"] is True

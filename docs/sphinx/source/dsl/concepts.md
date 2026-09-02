@@ -252,6 +252,7 @@ A constraint reads one of these view forms:
 (<shared.world.ext-force>.force.x - <spec.mass-k> * <shared.world.acc>.linacc.x)
 distance between <shared.world.tcp-base> and <shared.world.object-base>
 elapsed
+elapsed since <shared.world.pose-object> observed
 progress of <shared.world.tcp-base> along <spec.approach-path>
 moving <shared.world.tcp-base> along <spec.approach-path> with <spec.approach-profile>
 <shared.world.tcp-base>.position on <spec.approach-path>
@@ -263,6 +264,12 @@ position, and `.position.x` is a distance. The same bare-quantity form also name
 context quantity directly (`<spec.residual>`), and a parenthesized inline expression is
 accepted too -- see [quantity expressions](expressions.md). `progress`, `moving`, and `on`
 read against a `path` context quantity; see [Paths](#paths) for what each of them does.
+
+`elapsed since <q> observed` measures the run-clock time since the last reading of `q` landed --
+from a `subscribers` channel or a detect result -- and is infinite until the first one, so
+`less than <validity>` reads as "observed within the last validity": the absolute validity
+interval of a real-time datum (Ramamritham, *Real-Time Databases*, 1993,
+[doi:10.1007/BF01264051](https://doi.org/10.1007/BF01264051)).
 
 ## Paths
 
@@ -816,6 +823,11 @@ boolean the model can read, belongs in `satisfied`:
 contact: monitor <approach.contact> { satisfied { flag: touching } }
 ```
 
+Where the `when` monitor's event drives no FSM transition, the motion is gated inside its own
+`runs-in` state: the `hold` motion steps there until the monitor's satisfied edge, and the event
+that edge fires marks the moment the gated motion starts -- so it is the event its `on event`
+snapshots should name.
+
 Events may be namespaced FSM events or standalone event names.
 
 `publish`, declared inside the state block whose condition should drive it (`satisfied` or
@@ -1098,7 +1110,8 @@ through their instance names and generated runtime prefixes.
 The FSM owns states, events, transitions, and reactions. Motion monitors emit those
 events, and the generated controller runs only the handler associated with the
 current FSM state. Event-triggered snapshots are sampled when their named event is
-received.
+received: a shared-context snapshot naming an event is sampled by whichever motion reading it is
+active on that tick, and one naming none is latched once for the run.
 
 ## Units
 

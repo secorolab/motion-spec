@@ -27,6 +27,8 @@ from motion_spec_dsl.rdf_parser.vocab import (
     MOT,
     SENSORS,
     SLV,
+    SOSA,
+    TIME,
 )
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import get_node_types
@@ -86,6 +88,37 @@ _PHASE_PREDICATES = {"when": MOT["when"], "while": MOT["while"], "until": MOT["u
 def _is_elapsed_constraint(model, node) -> bool:
     """Whether a constraint is a timing constraint, measured against the clock rather than a solver."""
     return node is not None and CSTR_EXT["TimeConstraint"] in get_node_types(model.graph, node)
+
+
+def _observation_instant(model, constraint_node) -> str | None:
+    """The id of the instant an age constraint counts from, or None for one counting from entry.
+
+    The constraint states the interval it measures; its beginning is an observation instant when a
+    world quantity states it as its sosa:phenomenonTime.
+
+    Raises:
+        ConstraintViolation: the instant belongs to a quantity nothing perceives -- no subscription
+            observes it and no detect act writes it -- so no reading could ever fill it.
+    """
+    graph = model.graph
+    interval = graph.value(constraint_node, TIME.hasTime)
+    begin = graph.value(interval, TIME.hasBeginning) if interval is not None else None
+    observed = next(graph.subjects(SOSA.phenomenonTime, begin), None) if begin is not None else None
+    if observed is None:
+        return None
+    perceived = {
+        row["pose_id"]
+        for rows in quantities.perceived_written_poses(model).values()
+        for row in rows
+    }
+    if model.id(observed) not in perceived:
+        raise ConstraintViolation(
+            "coordination",
+            f"'{model.id(constraint_node)}' measures the time since '{model.id(observed)}' was "
+            "observed, but nothing observes it: no subscriber names it and no detect act writes "
+            "it, so its observation instant can never be filled.",
+        )
+    return model.id(begin)
 
 
 def _constraint_transition(model, node) -> ConstraintTransition:
@@ -176,8 +209,9 @@ def constraint_evaluator(model, node) -> ConstraintEvaluator:
         goal_status = str(graph.value(reference, RDF.value))
 
     is_elapsed = _is_elapsed_constraint(model, constraint_node)
-    operator, threshold, elapsed_tolerance = None, None, None
+    operator, threshold, elapsed_tolerance, observed_at = None, None, None, None
     if is_elapsed:
+        observed_at = _observation_instant(model, constraint_node)
         types = get_node_types(graph, constraint_node)
         operator, predicate = next(
             ((op, pred) for type_, op, pred in _ELAPSED_RELATIONS if type_ in types),
@@ -201,6 +235,7 @@ def constraint_evaluator(model, node) -> ConstraintEvaluator:
         elapsed_op=operator,
         elapsed_threshold_s=threshold,
         elapsed_tolerance_s=elapsed_tolerance,
+        observed_at_id=observed_at,
         goal_status=goal_status,
     )
 
@@ -1491,6 +1526,8 @@ def _motion_unit(
     all_evaluators = evaluators["while"] + evaluators["when"] + evaluators["until"]
     when_elapsed = quantities.elapsed_coordinate_ids(evaluators["when"])
     active_elapsed = quantities.elapsed_coordinate_ids(evaluators["while"] + evaluators["until"])
+    when_ages = quantities.observation_ages(evaluators["when"])
+    active_ages = quantities.observation_ages(evaluators["while"] + evaluators["until"])
 
     return MotionUnit(
         id=handler.id,
@@ -1501,6 +1538,8 @@ def _motion_unit(
         has_active_elapsed=bool(active_elapsed),
         when_elapsed_ids=when_elapsed,
         active_elapsed_ids=active_elapsed,
+        when_observation_ages=when_ages,
+        active_observation_ages=active_ages,
         when_evaluators=evaluators["when"],
         while_evaluators=evaluators["while"],
         until_evaluators=evaluators["until"],
@@ -1511,7 +1550,7 @@ def _motion_unit(
         when_schedule=schedules.when,
         while_schedule=schedules.active,
         until_schedule=schedules.until,
-        has_elapsed=bool(when_elapsed or active_elapsed),
+        has_elapsed=bool(when_elapsed or active_elapsed or when_ages or active_ages),
         has_until_condition=bool(evaluators["until"]),
         when_any=_phase_any(handler.motion.when_transitions),
         serial_chain_solvers=chain_solvers,
@@ -2061,7 +2100,10 @@ def _apply_fsm_wiring(motions, fsm, solvers) -> dict:
             stamp(monitor)
             fallback = _when_gate_fallback(motion, monitor, units_by_motion)
             state = state_by_event.get(monitor.event_name or "")
-            if state and not fallback.fsm_state:
+            if state is None:
+                _bind_in_state_gate(motion, monitor, fallback)
+                continue
+            if not fallback.fsm_state:
                 fallback.fsm_state = state
             if motion.id not in fallback.fsm_when_gate_motions:
                 fallback.fsm_when_gate_motions.append(motion.id)
@@ -2112,7 +2154,11 @@ def _check_every_commanding_motion_runs(motions, fsm, meta) -> None:
     dispatches, and a state the heartbeat leaves, which the FSM does not dwell in.
     """
     namespace = meta["cpp_namespace"]
-    orphaned = [motion.id for motion in motions if motion.controllers and not motion.fsm_state]
+    orphaned = [
+        motion.id
+        for motion in motions
+        if motion.controllers and not motion.fsm_state and not motion.is_when_gate_hold
+    ]
     if orphaned:
         raise ConstraintViolation(
             "coordination",
@@ -2225,6 +2271,32 @@ def _when_gate_fallback(motion, monitor, units_by_motion):
     return candidates[0]
 
 
+def _bind_in_state_gate(motion, monitor, fallback) -> None:
+    """A WHEN monitor whose event drives no transition gates the motion inside its own state.
+
+    Raises:
+        ConstraintViolation: the motion names no `runs-in` state, so there is no state to hold
+            in; or two of its monitors name different holds.
+    """
+    if not motion.fsm_state:
+        raise ConstraintViolation(
+            "coordination",
+            f"WHEN monitor '{monitor.id}' fires '{monitor.event_name}', which no reaction "
+            f"consumes, so '{motion.id}' is gated inside its own state -- but it names no "
+            "'runs-in' state to hold in.",
+        )
+    if motion.when_gate_hold and motion.when_gate_hold["id"] != fallback.id:
+        raise ConstraintViolation(
+            "coordination",
+            f"'{motion.id}' is gated by two WHEN monitors naming different holds "
+            f"('{motion.when_gate_hold['id']}', '{fallback.id}'); one motion holds while it waits.",
+        )
+    monitor.opens_gate = True
+    motion.has_when_gate = True
+    motion.when_gate_hold = {"id": fallback.id}
+    fallback.is_when_gate_hold = True
+
+
 def _apply_fsm_gate_calls(motions, namespace) -> None:
     """Fold each hold motion's WHEN-evaluation gate calls.
 
@@ -2234,6 +2306,14 @@ def _apply_fsm_gate_calls(motions, namespace) -> None:
     if namespace is None:
         return
     by_id = {motion.id: motion for motion in motions}
+    for motion in motions:
+        if motion.has_when_gate:
+            hold = by_id[motion.when_gate_hold["id"]]
+            motion.when_gate_hold = {
+                "id": hold.id,
+                "index": hold.index,
+                "needs_events": hold.step_needs_events,
+            }
     for fallback in motions:
         if not fallback.fsm_when_gate_motions:
             continue

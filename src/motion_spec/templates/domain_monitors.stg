@@ -77,7 +77,8 @@ update-monitor(monitor) ::= <<
             produce_event(robot.fsm_events, <monitor.fsm_namespace>::<monitor.event_name>);
             std::cerr \<\< "[fsm] event   " \<\< <monitor.fsm_namespace>::EVENT_URIS[<monitor.fsm_namespace>::<monitor.event_name>] \<\< std::endl;
         \}
-<else>
+<if(monitor.opens_gate)>        if (detected) state.when_gate_open = true;
+<endif><else>
         if (state.active && detected) {
             events.record(<monitor.event_idx>);
             state.<monitor.id>_event_triggered = true;

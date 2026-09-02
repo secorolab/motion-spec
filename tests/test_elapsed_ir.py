@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from motion_spec_dsl.rdf_parser.vocab import CSTR, CSTR_EXT, CSTR_HDL, QUDT_SCHEMA, TIME
+import pytest
+from motion_spec_dsl.rdf_parser.vocab import CSTR, CSTR_EXT, CSTR_HDL, QUDT_SCHEMA, SOSA, TIME
+from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.namespace import NS_MM_QUDT_QTY as QUDT_QKIND
 from rdf_utils.namespace import NS_MM_QUDT_UNIT as QUDT_UNIT
 from rdflib import Dataset, Graph, Literal, URIRef
@@ -17,6 +19,7 @@ from rdflib.namespace import RDF, XSD
 
 from motion_spec.classes.handlers import ConstraintEvaluator, EvaluatorType
 from motion_spec.classes.qudt import Quantity, QuantityKind, Unit
+from motion_spec.rdf_parser import quantities
 from motion_spec.rdf_parser.coordination import constraint_evaluator, evaluator_term
 from motion_spec.rdf_parser.model import Model
 
@@ -52,9 +55,10 @@ def _duration(g: Graph, name: str, value: float | None = None, unit: str = "SEC"
     return node
 
 
-def _interval(g: Graph, name: str, duration: URIRef) -> None:
+def _interval(g: Graph, name: str, cstr: URIRef) -> None:
     node = URIRef(f"{NS}{name}")
     g.add((node, RDF.type, TIME.ProperInterval))
+    g.add((cstr, TIME.hasTime, node))
     g.add((node, TIME.hasBeginning, _instant(g, f"{name}-entry")))
     g.add((node, TIME.hasEnd, _instant(g, f"{name}-now")))
 
@@ -74,7 +78,7 @@ def test_elapsed_greater_than_reads_native_duration_threshold() -> None:
     g = Dataset(default_union=True)
     cstr = URIRef(f"{NS}wait5")
     measured = _duration(g, "wait5-elapsed")
-    _interval(g, "wait5-interval", measured)
+    _interval(g, "wait5-interval", cstr)
     threshold = _duration(g, "wait5-threshold", 5.0)
     g.add((cstr, RDF.type, CSTR.Constraint))
     g.add((cstr, RDF.type, CSTR_EXT.TimeConstraint))
@@ -90,13 +94,15 @@ def test_elapsed_greater_than_reads_native_duration_threshold() -> None:
     assert ev.elapsed_op == ">="
     assert ev.elapsed_threshold_s == 5.0
     assert ev.elapsed_tolerance_s is None
+    # No observation instant on the interval's beginning: this clock counts from motion entry.
+    assert ev.observed_at_id is None
 
 
 def test_elapsed_equality_reads_reference_and_tolerance_normalized_to_seconds() -> None:
     g = Dataset(default_union=True)
     cstr = URIRef(f"{NS}wait-eq")
     measured = _duration(g, "wait-eq-elapsed")
-    _interval(g, "wait-eq-interval", measured)
+    _interval(g, "wait-eq-interval", cstr)
     reference = _duration(g, "wait-eq-reference", 5.0)
     tolerance = _duration(g, "wait-eq-tolerance", 10.0, unit="MilliSEC")
     g.add((cstr, RDF.type, CSTR.Constraint))
@@ -113,6 +119,59 @@ def test_elapsed_equality_reads_reference_and_tolerance_normalized_to_seconds() 
     assert ev.elapsed_op == "=="
     assert ev.elapsed_threshold_s == 5.0
     assert ev.elapsed_tolerance_s == 0.01
+
+
+def _observed_interval(g: Graph, name: str, cstr: URIRef, pose: URIRef) -> URIRef:
+    """An age interval: the constraint states it, and it begins at the pose's last reading."""
+    node = URIRef(f"{NS}{name}")
+    instant = _instant(g, f"{name}-observed")
+    g.add((node, RDF.type, TIME.ProperInterval))
+    g.add((cstr, TIME.hasTime, node))
+    g.add((node, TIME.hasBeginning, instant))
+    g.add((node, TIME.hasEnd, _instant(g, f"{name}-now")))
+    g.add((pose, SOSA.phenomenonTime, instant))
+    return instant
+
+
+def _age_constraint(g: Graph, pose: URIRef) -> tuple[URIRef, URIRef]:
+    cstr = URIRef(f"{NS}seen")
+    measured = _duration(g, "seen-elapsed")
+    instant = _observed_interval(g, "seen-interval", cstr, pose)
+    threshold = _duration(g, "seen-threshold", 1.0)
+    g.add((cstr, RDF.type, CSTR.Constraint))
+    g.add((cstr, RDF.type, CSTR_EXT.TimeConstraint))
+    g.add((cstr, RDF.type, CSTR.UnilateralConstraint))
+    g.add((cstr, RDF.type, CSTR.LessThanConstraint))
+    g.add((cstr, CSTR.quantity, measured))
+    g.add((cstr, CSTR.threshold, threshold))
+    return _evaluator(g, cstr, measured), instant
+
+
+def test_observation_age_resolves_the_instant_its_pose_is_observed_at(monkeypatch) -> None:
+    g = Dataset(default_union=True)
+    pose = URIRef(f"{NS}pose-table-cam")
+    eval_node, instant = _age_constraint(g, pose)
+    model = _model(g)
+    monkeypatch.setattr(
+        quantities, "perceived_written_poses", lambda _: {"table": [{"pose_id": model.id(pose)}]}
+    )
+
+    ev = constraint_evaluator(model, eval_node)
+
+    assert ev.is_elapsed is True
+    assert ev.observed_at_id == model.id(instant)
+    assert quantities.observation_ages([ev]) == [
+        {"coordinate": "seen_elapsed", "observed_at": model.id(instant)}
+    ]
+    assert quantities.elapsed_coordinate_ids([ev]) == []
+
+
+def test_observation_age_of_an_unperceived_pose_is_rejected() -> None:
+    g = Dataset(default_union=True)
+    eval_node, _ = _age_constraint(g, URIRef(f"{NS}pose-table-cam"))
+
+    with pytest.raises(ConstraintViolation, match="nothing observes it"):
+        constraint_evaluator(_model(g), eval_node)
 
 
 def test_evaluator_term_renders_equality_as_abs_within_tolerance() -> None:

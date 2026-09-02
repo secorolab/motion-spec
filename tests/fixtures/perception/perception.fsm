@@ -3,6 +3,7 @@ ns pcp = "https://secorolab.github.io/models/perception-fixture/fsm/"
 evt loop (ns=pcp) perception_fsm_events {
     evt E_STEP,
     evt E_WATCH_ENTERED,
+    evt E_TABLE_SEEN,
     evt E_ANCHOR_SEEN
 }
 

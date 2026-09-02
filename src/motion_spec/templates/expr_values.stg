@@ -84,7 +84,7 @@ KDL::Wrench <var.id>;
 >>
 
 shared-member-Quantity(var) ::= <<
-double <var.id> = <if(var.value)><var.value><else>0.0<endif>;
+double <var.id> = <if(var.unset)>-std::numeric_limits\<double\>::infinity()<elseif(var.value)><var.value><else>0.0<endif>;
 >>
 
 shared-member-IntCounter(var) ::= <<

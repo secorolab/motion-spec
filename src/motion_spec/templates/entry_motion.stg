@@ -24,6 +24,8 @@ struct <motion.id>_state {
 <endif>
 <if(motion.has_when_elapsed)>    double when_start_time = -1.0;
 <endif>
+<if(motion.has_when_gate)>    bool when_gate_open = false;
+<endif>
 <chain-state-members(motion.serial_chain_solvers)>
 <if(motion.has_entry_snapshots)>    bool snapshot_taken = false;
 <endif>
@@ -57,7 +59,8 @@ inline void update_<motion.id>(
     }
 <motion.active_elapsed_ids:{c |     shared.<c> = shared.clock_time_s - state.motion_start_time;
 }><endif>
-<motion-prelude(motion.serial_chain_solvers, solvers, backend)>
+<motion.active_observation_ages:{a |     shared.<a.coordinate> = shared.clock_time_s - shared.<a.observed_at>;
+}><motion-prelude(motion.serial_chain_solvers, solvers, backend)>
 <motion.relative_poses:{rp | <emit-relative-pose(rp)>}; separator="\n">
 <motion.scene_relative_poses:{srp |
 <if(srp.base_seen)>    shared.<srp.id> = KDL::Frame(shared.<srp.fk_pose_id>.M, shared.<srp.fk_pose_id>.p - shared.<srp.scene_pose_id>.p);
@@ -84,7 +87,8 @@ inline bool can_start_<motion.id>(<sig-params(motion.id, motion.can_start_needs_
     }
 <motion.when_elapsed_ids:{c |     shared.<c> = shared.clock_time_s - state.when_start_time;
 }><endif>
-<motion-when-block(motion.when_schedule, closures, views)>
+<motion.when_observation_ages:{a |     shared.<a.coordinate> = shared.clock_time_s - shared.<a.observed_at>;
+}><motion-when-block(motion.when_schedule, closures, views)>
     return <if(motion.when_terms_present)><bool-condition(motion.when_terms, motion.when_any)><else>true<endif>;
 }
 
@@ -94,7 +98,8 @@ inline void monitor_when_<motion.id>(<sig-params(motion.id, motion.when_needs_st
     }
 <motion.when_elapsed_ids:{c |     shared.<c> = shared.clock_time_s - state.when_start_time;
 }><endif>
-<motion.declared_pose_components:{pose | <materialize-pose-component(pose, views)>}; separator="\n">
+<motion.when_observation_ages:{a |     shared.<a.coordinate> = shared.clock_time_s - shared.<a.observed_at>;
+}><motion.declared_pose_components:{pose | <materialize-pose-component(pose, views)>}; separator="\n">
 <shared-schedule-block(motion.when_schedule, closures, views)>
 <if(first(motion.when_monitors))>
 <monitor-block(motion.when_monitors)>

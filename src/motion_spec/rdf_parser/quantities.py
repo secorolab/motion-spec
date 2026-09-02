@@ -852,6 +852,12 @@ def _is_duration(model, node) -> bool:
     return model.graph.value(node, QUDT_SCHEMA.hasQuantityKind) == NS_MM_QUDT_QTY["Time"]
 
 
+def _observed_at_id(model, pose_node) -> str | None:
+    """The slot holding when this pose was last observed, when an age constraint asked for it."""
+    instant = model.graph.value(pose_node, SOSA.phenomenonTime)
+    return model.id(instant) if instant is not None else None
+
+
 def perceived_written_poses(model) -> dict[str, list[dict]]:
     """Per perception source, the world poses it writes and the frame each must arrive in.
 
@@ -896,6 +902,7 @@ def perceived_written_poses(model) -> dict[str, list[dict]]:
                         "pose_id": item.id,
                         "frame_id": item.with_respect_to.id,
                         "frame_iri": getattr(item.with_respect_to, "uri", ""),
+                        "observed_at_id": _observed_at_id(model, target),
                     }
                 )
                 continue
@@ -915,6 +922,7 @@ def perceived_written_poses(model) -> dict[str, list[dict]]:
                     # A scene object as an endpoint carries no frame IRI; the consumer that needs
                     # one to place the pose says so itself.
                     "frame_iri": getattr(item.with_respect_to, "uri", ""),
+                    "observed_at_id": _observed_at_id(model, model.node_by_id[item.id]),
                 }
                 for item in matched
             )
@@ -1773,11 +1781,13 @@ def snapshots_for_motion(
             continue
         # Capture only what this motion declares: re-capturing another motion's snapshot would
         # overwrite its value. A shared-context snapshot is owned by no motion, so every motion
-        # that reads it emits the capture -- guarded once for the run, not once per activation.
+        # that reads it emits the capture: one naming a trigger is re-sampled on that event by
+        # whichever reading motion is active on the tick it is current, one naming none is
+        # latched once for the run.
         owner = indexes.snapshot_owner.get(target_id)
         if owner in tokens and owner != token:
             continue
-        trigger = indexes.snapshot_trigger.get((token, target_id))
+        trigger = indexes.snapshot_trigger.get((owner, target_id))
         source_id = indexes.snapshot_source[target_id]
         scope = "event" if trigger else ("entry" if owner in tokens else "task")
         result.append(
@@ -1867,9 +1877,26 @@ def elapsed_coordinate_ids(evaluators) -> list[str]:
     """A phase's elapsed coordinates, deduplicated, in authored order."""
     return list(
         dict.fromkeys(
-            elapsed_coordinate_id(evaluator) for evaluator in evaluators if evaluator.is_elapsed
+            elapsed_coordinate_id(evaluator)
+            for evaluator in evaluators
+            if evaluator.is_elapsed and not evaluator.observed_at_id
         )
     )
+
+
+def observation_ages(evaluators) -> list[dict]:
+    """A phase's observation-age clocks: the coordinate each writes and the instant it counts from."""
+    seen = {}
+    for evaluator in evaluators:
+        if evaluator.is_elapsed and evaluator.observed_at_id:
+            seen.setdefault(
+                elapsed_coordinate_id(evaluator),
+                {
+                    "coordinate": elapsed_coordinate_id(evaluator),
+                    "observed_at": evaluator.observed_at_id,
+                },
+            )
+    return list(seen.values())
 
 
 _POSITION_FIELDS = ("position_x", "position_y", "position_z")
@@ -2052,7 +2079,8 @@ def _snapshot_maps(model) -> _SnapshotMaps:
     declaring it, taken from the motion segment of the quantity URI -- every motion captures each
     snapshot it references and they share one slot, so without an owner a motion silently
     retargets another's. ``trigger``: each event-triggered snapshot to its trigger event's local
-    name, keyed by (declaring motion, output id) since only the owner re-samples.
+    name, keyed by (declaring scope, output id) -- a motion's own re-samples only for it, a
+    shared one for whichever motion reads it.
     """
     graph = model.graph
     source: dict[str, str] = {}
@@ -2347,12 +2375,21 @@ def annotate_dataflow(
             for written_id in (
                 client["status_id"],
                 *(row["pose_id"] for row in client["written_poses"]),
+                *(
+                    row["observed_at_id"]
+                    for row in client["written_poses"]
+                    if row.get("observed_at_id")
+                ),
             )
         },
         **{
-            row["pose_id"]: {"kind": "subscription", "id": sub["sub_id"]}
+            written_id: {"kind": "subscription", "id": sub["sub_id"]}
             for sub in subscriptions
             for row in sub["written_poses"]
+            for written_id in (
+                row["pose_id"],
+                *((row["observed_at_id"],) if row.get("observed_at_id") else ()),
+            )
         },
     }
 

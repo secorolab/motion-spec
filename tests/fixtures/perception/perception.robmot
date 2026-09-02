@@ -44,7 +44,8 @@ context (ns=app) shared {
         }
     },
     spec {
-        length table-moved-band = 0.01 m
+        length table-moved-band = 0.01 m,
+        duration table-validity = 1.0 s
     }
 }
 
@@ -53,14 +54,34 @@ guarded-motion (ns=app) watch-table {
 
     context {
         spec {
-            pose table-ref = snapshot of <shared.world.pose-table-cam> on event <pcp.E_WATCH_ENTERED>
+            pose table-ref = snapshot of <shared.world.pose-table-cam> on event <pcp.E_TABLE_SEEN>
+        }
+    }
+
+    when {
+        table-seen: elapsed since <shared.world.pose-table-cam> observed less than <shared.spec.table-validity>
+    }
+
+    while {
+        table-moved: distance between <shared.world.pose-table-cam> and <spec.table-ref> greater than <shared.spec.table-moved-band>
+    }
+
+    until {}
+}
+
+guarded-motion (ns=app) hold-idle {
+    description: "Command nothing while the camera has not yet reported"
+
+    context {
+        spec {
+            length idle-x = 0.4 m
         }
     }
 
     when {}
 
     while {
-        table-moved: distance between <shared.world.pose-table-cam> and <spec.table-ref> greater than <shared.spec.table-moved-band>
+        stay-put: keeping <shared.world.pose-ee-base>.position.x equal to <spec.idle-x>
     }
 
     until {}
@@ -70,6 +91,12 @@ constraint-handler (ns=app) handler-watch {
     handles: <watch-table>
     runs-in: <pcp.S_WATCH>
     monitors {
+        mon-seen: monitor <watch-table.when> {
+            satisfied for 0.2 s {
+                trigger: event <pcp.E_TABLE_SEEN>
+            },
+            violated { hold: <hold-idle> }
+        },
         mon-table: monitor <watch-table.table-moved> {
             satisfied for 0.3 s {
                 trigger: event <pcp.E_ANCHOR_SEEN>,
@@ -82,5 +109,18 @@ constraint-handler (ns=app) handler-watch {
         arm-solver: serial-chain {
             agent: <agents.kinova_ft_2f85>
         }
+    }
+}
+
+constraint-handler (ns=app) handler-hold-idle {
+    handles: <hold-idle>
+    monitors {
+        mon-idle: monitor <hold-idle.stay-put> {
+            satisfied { flag: idle-reached }
+        }
+    }
+    controllers { }
+    solvers {
+        <handler-watch.arm-solver>
     }
 }

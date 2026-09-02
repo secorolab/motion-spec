@@ -151,7 +151,8 @@ int main(int argc, char **argv) {
 <if(communication.ros)>
 <coordination.motions:{motion | <ros-action-cancel-on-exit(motion)>}>
 <endif>
-<coordination.motions:{motion |             <motion.id>_state_instance.active = false;}; separator="\n">
+<coordination.motions:{motion |             <motion.id>_state_instance.active = false;<if(motion.has_when_gate)>
+            <motion.id>_state_instance.when_gate_open = false;<endif>}; separator="\n">
         \}
         if (fsm->currentStateIndex == fsm->endStateIndex) {
             break;
@@ -352,6 +353,7 @@ shared_state_header(configuration, resources, computation, coordination, communi
 #include "<coordination.fsm.header>"
 <endif>
 
+#include \<limits\>
 #include \<memory\>
 <if(communication.ros)>
 <ros-includes(communication.ros)>

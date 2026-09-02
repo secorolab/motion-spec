@@ -125,6 +125,20 @@ def generate_ir(manifest_path) -> dict:
         # member nothing produces is pruned as absent.
         shared_data.append(BlackboardValue(id=captured_id, type="Bool", value=False))
 
+    # An observation instant is written by the channel that perceives its pose, from the executor
+    # thread; until the first reading lands it is minus infinity, so the age read off it is
+    # infinite and a freshness gate stays shut.
+    observed_at_ids = sorted(
+        {
+            row["observed_at_id"]
+            for channel in (*action_clients, *subscriptions)
+            for row in channel["written_poses"]
+            if row.get("observed_at_id")
+        }
+    )
+    for observed_at_id in observed_at_ids:
+        shared_data.append(BlackboardValue(id=observed_at_id, type="Quantity", unset=True))
+
     # A perturbation's applied wrench and its open/closed flag are runtime state no model entity
     # declares: the wrench the ops compose is stated in the robot's base frame, and what the run
     # has to answer for is the world-frame wrench the simulator was actually given.

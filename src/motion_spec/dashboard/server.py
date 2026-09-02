@@ -469,16 +469,19 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             ]
             for target in sorted(targets, key=lambda item: len(item.parts), reverse=True):
                 trash(target)
-            # a model folder emptied of its generations is no longer a model folder
+            # a model folder emptied of its generations is no longer a model folder, and a
+            # generation nested under its own name empties two folders, not one
             folders = 0
-            for folder in {target.parent for target in targets}:
-                if (
+            for target in targets:
+                folder = target.parent
+                while (
                     roots.GENERATIONS in folder.parents
                     and folder.is_dir()
                     and not any(folder.iterdir())
                 ):
                     trash(folder)
                     folders += 1
+                    folder = folder.parent
             directory_size.cache_clear()
             storage_info.cache_clear()
             self.send_json({"deleted": len(targets), "folders": folders})

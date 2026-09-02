@@ -277,6 +277,8 @@ def _create_generation_run_manifest(
         # Listed only when written: a manifest never promises a file the run dir lacks.
         "runtime_ttl": _existing(run_dir, "runtime/runtime.ttl"),
         "console": _existing(run_dir, "logs/console.log"),
+        # metadata.yaml is what says rosbag2 closed the bag.
+        "bag": "bag" if (run_dir / "bag" / "metadata.yaml").is_file() else None,
         "rec": "rec.ld.json",
     }
     files = {key: value for key, value in files.items() if value is not None}

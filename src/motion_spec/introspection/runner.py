@@ -11,7 +11,8 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from motion_spec.introspection import frame_log_pb
@@ -75,16 +76,17 @@ def run_cataloged(
     _start_rec_run(run_dir, run_id, source_dir, executable, schema)
 
     try:
-        returncode = _run_executable(
-            executable,
-            executable_args,
-            cwd=Path(cwd).resolve() if cwd else None,
-            frame_log=frame_log,
-            run_id=run_id,
-            rec_path=rec_path,
-            record=record,
-            record_log=record_log,
-        )
+        with _rosbag_recorder(run_dir, _rosbag_topics(source_dir)):
+            returncode = _run_executable(
+                executable,
+                executable_args,
+                cwd=Path(cwd).resolve() if cwd else None,
+                frame_log=frame_log,
+                run_id=run_id,
+                rec_path=rec_path,
+                record=record,
+                record_log=record_log,
+            )
     except Exception:
         _finish_rec_run(rec_path, run_id, "FAILED")
         raise
@@ -276,8 +278,11 @@ def _validate_robot_config(source_dir: Path, cwd: Path | None = None) -> None:
 
     # A section for nothing bound is a mis-key or a stale device: it would connect to hardware
     # this run never commands. Under KinovaGen3-2F85 a separate gripper section lands here.
-    # [ros.*] configures the generated publishers, not a device this run binds.
-    sections = {key for key in _config_sections(config) if key.split(".")[0] != "ros"}
+    # [ros.*] configures the generated publishers and [rosbag] the run's recording, not a
+    # device this run binds.
+    sections = {
+        key for key in _config_sections(config) if key.split(".")[0] not in ("ros", "rosbag")
+    }
     unbound = sorted(
         key for key in sections - {key for key, _ in bound} - poses if not offers_a_pose(key)
     )
@@ -382,6 +387,89 @@ def _record_execution_inputs(
         sha256=artifact_sha256(executable),
         size_bytes=artifact_size(executable),
     )
+
+
+def _rosbag_topics(source_dir: Path) -> list[str]:
+    """The topics the deployment config asks the run to bag, or none."""
+    import tomllib
+
+    ir_path = source_dir / "model" / "ir.json"
+    if not ir_path.exists():
+        return []
+    ir = json.loads(ir_path.read_text())
+    declared = (ir["configuration"].get("platform") or {}).get("config") or ""
+    if not declared:
+        return []
+    config_path = Path(declared)
+    if not config_path.exists():
+        return []
+    try:
+        config = tomllib.loads(config_path.read_text())
+    except tomllib.TOMLDecodeError as error:
+        raise RunnerError(f"{config_path}: {error}") from error
+    topics = (config.get("rosbag") or {}).get("topics") or []
+    if not isinstance(topics, list) or any(not isinstance(topic, str) for topic in topics):
+        raise RunnerError(f"{config_path}: [rosbag] `topics` must be a list of topic names")
+    return topics
+
+
+@contextmanager
+def _rosbag_recorder(run_dir: Path, topics: list[str]):
+    """Bag the named topics for as long as the run lasts."""
+    if not topics:
+        yield
+        return
+    try:
+        import rclpy
+        import rosbag2_py
+        from rclpy.signals import SignalHandlerOptions
+        from rclpy.utilities import ok as rclpy_ok
+    except ImportError as exc:
+        raise RunnerError(
+            f"[rosbag] names topics to record, but rosbag2 is not importable: {exc}.\n"
+            "  Source the ROS workspace, or drop the section to run without a bag."
+        ) from exc
+    bag_dir = run_dir / "bag"
+    if bag_dir.exists():
+        raise RunnerError(f"{bag_dir}: bag directory already exists")
+    options = rosbag2_py.RecordOptions()
+    options.topics = topics
+    options.rmw_serialization_format = "cdr"
+    options.disable_keyboard_controls = True
+    # The run's own topics appear only once it starts, so this is how much of the first cycle
+    # discovery can miss.
+    options.topic_polling_interval = timedelta(milliseconds=50)
+    # NO: an rclpy handler would take SIGINT ahead of the run's own, which reports the stop.
+    started_rclpy = not rclpy_ok()
+    if started_rclpy:
+        rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
+    recorder = rosbag2_py.Recorder(rosbag2_py.StorageOptions(uri=str(bag_dir)), options)
+    spinner = threading.Thread(target=recorder.record, daemon=True)
+    spinner.start()
+    try:
+        _await_rosbag_ready(bag_dir, spinner)
+        # record() subscribes; without the spin the bag lists every topic and holds no message.
+        recorder.start_spin()
+        yield
+    finally:
+        recorder.stop()
+        spinner.join(timeout=15)
+        if started_rclpy:
+            rclpy.shutdown()
+        if not (bag_dir / "metadata.yaml").exists():
+            print(f"rosbag: {bag_dir} has no metadata.yaml; the bag is unreadable", file=sys.stderr)
+
+
+def _await_rosbag_ready(bag_dir: Path, spinner: threading.Thread, timeout_s: float = 30.0) -> None:
+    """Block until the recorder has opened the bag, so the run does not start without it."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if bag_dir.exists():
+            return
+        if not spinner.is_alive():
+            raise RunnerError(f"{bag_dir}: the rosbag2 recorder stopped before it opened the bag")
+        time.sleep(0.01)
+    raise RunnerError(f"{bag_dir}: the rosbag2 recorder did not open the bag in {timeout_s:g}s")
 
 
 def _run_executable(

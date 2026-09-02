@@ -197,6 +197,7 @@ def generate_ir(manifest_path) -> dict:
             introspection,
             motions,
             resources.ros_joint_states(platform, platform_config, robots.serial_chains),
+            resources.ros_clock(platform, platform_config),
             action_clients,
             communication.action_server(model, fsm),
             subscriptions,
@@ -310,6 +311,7 @@ def _communication_section(
     introspection,
     motions,
     joint_states,
+    clock=None,
     action_clients=(),
     server=None,
     subscriptions=(),
@@ -321,6 +323,7 @@ def _communication_section(
     if (
         not publishers
         and joint_states is None
+        and clock is None
         and not action_clients
         and server is None
         and not subscriptions
@@ -337,6 +340,9 @@ def _communication_section(
     if joint_states is not None:
         ros["joint_states"] = joint_states
         packages.add("sensor_msgs")
+    if clock is not None:
+        ros["clock"] = clock
+        packages.add("rosgraph_msgs")
     if action_clients:
         ros["action_clients"] = action_clients
         # Whatever the goal and the result reach into, not just the package the action lives in.

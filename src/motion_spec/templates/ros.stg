@@ -32,6 +32,9 @@ ros-includes(ros) ::= <<
 #include \<sensor_msgs/msg/joint_state.hpp\>
 #include \<limits\>
 <endif>
+<if(ros.clock)>
+#include \<rosgraph_msgs/msg/clock.hpp\>
+<endif>
 <if(ros.action_server)>
 #include \<atomic\>
 #include \<rclcpp_action/rclcpp_action.hpp\>
@@ -70,16 +73,23 @@ inline bool parse_uuid(const std::string &text, std::array\<std::uint8_t, 16\> &
 <endif>
 <endif>
 <if(ros.joint_states)>
+<ros-publish-divider()>
+<elseif(ros.clock)>
+<ros-publish-divider()>
+<endif>
+}  // namespace motion_spec::ros
+>>
+
 // Publish every Nth control cycle. A rate at or above the loop rate, or none at all, means
 // every cycle -- the loop is the fastest this can go.
+
+ros-publish-divider() ::= <<
 inline int publish_divider(double rate_hz) {
     if (rate_hz \<= 0.0) return 1;
     const double every = 1.0 / (rate_hz * motion_spec::runtime::kControlPeriodS);
     return every \<= 1.0 ? 1 : static_cast\<int\>(every + 0.5);
 \}
 
-<endif>
-}  // namespace motion_spec::ros
 >>
 
 ros-io-members(ros) ::= <<
@@ -107,6 +117,11 @@ ros-io-members(ros) ::= <<
     std::shared_ptr\<realtime_tools::RealtimePublisher\<sensor_msgs::msg::JointState\>\> joint_states_pub = nullptr;
     sensor_msgs::msg::JointState joint_states_msg{};
     int joint_states_divider = 1;
+<endif>
+<if(ros.clock)>
+    std::shared_ptr\<realtime_tools::RealtimePublisher\<rosgraph_msgs::msg::Clock\>\> clock_pub = nullptr;
+    rosgraph_msgs::msg::Clock clock_msg{};
+    int clock_divider = 1;
 <endif>
 >>
 
@@ -515,6 +530,21 @@ ros-joint-states-setup(ros) ::= <<
 <endif>
 >>
 
+ros-clock-setup(ros) ::= <<
+<if(ros.clock)>
+    {
+        const std::string _clk_key = "<ros.clock.config_key>";
+        const toml::table &_clk_cfg = motion_spec::config::section(robot_config, _clk_key);
+        robot.clock_divider = motion_spec::ros::publish_divider(_clk_cfg["rate"].value_or(0.0));
+        // ClockQoS: best-effort keep-last-1, so a late subscriber reads now, not a stale queue.
+        robot.clock_pub =
+            std::make_shared\<realtime_tools::RealtimePublisher\<rosgraph_msgs::msg::Clock\>\>(
+                robot.ros_node->create_publisher\<rosgraph_msgs::msg::Clock\>(
+                    _clk_cfg["topic"].value_or(std::string("/clock")), rclcpp::ClockQoS()));
+    \}
+<endif>
+>>
+
 // One tick per control cycle, for every publishing monitor whose motion is scheduled. Each
 // state block writes the fields the model authored for it; a cycle whose polarity authored
 // nothing publishes nothing, and an unscheduled monitor says nothing at all -- silence is what
@@ -531,6 +561,7 @@ ros-publish-tick(coordination, communication, views) ::= <<
 <endif>
 <coordination.motions:{m | <m.when_monitors:{mon | <ros-monitor-publish(m, mon)>}><m.while_monitors:{mon | <ros-monitor-publish(m, mon)>}><m.until_monitors:{mon | <ros-monitor-publish(m, mon)>}>}>
 <ros-joint-states-tick(communication.ros)>
+<ros-clock-tick(communication.ros)>
 <ros-actions-tick(communication.ros)>
 <ros-subscriptions-tick(communication.ros)>
 <ros-standing-tick(communication.ros, views)>
@@ -733,6 +764,17 @@ ros-joint-states-tick(ros) ::= <<
             robot.joint_states_msg.velocity[<i0>] = shared.<j.velocity>;<endif><if(j.effort)>
             robot.joint_states_msg.effort[<i0>] = shared.<j.effort>;<endif>}; separator="\n">
             robot.joint_states_pub->try_publish(robot.joint_states_msg);
+        \}
+<endif>
+>>
+
+ros-clock-tick(ros) ::= <<
+<if(ros.clock)>
+        if (robot.clock_pub && (_step % robot.clock_divider) == 0) {
+            robot.clock_msg.clock.sec = static_cast\<std::int32_t\>(shared.clock_time_s);
+            robot.clock_msg.clock.nanosec = static_cast\<std::uint32_t\>(
+                (shared.clock_time_s - static_cast\<double\>(robot.clock_msg.clock.sec)) * 1e9);
+            robot.clock_pub->try_publish(robot.clock_msg);
         \}
 <endif>
 >>

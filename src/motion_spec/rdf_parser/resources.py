@@ -2486,3 +2486,33 @@ def ros_joint_states(platform: dict, config: dict, serial_chains) -> dict | None
         )
 
     return {"config_key": ROS_JOINT_STATES_KEY, "joints": joints}
+
+
+ROS_CLOCK_KEY = "ros.clock"
+
+
+def ros_clock(platform: dict, config: dict) -> dict | None:
+    """The simulation-clock publisher the deployment asked for: the config key its topic and rate
+    are read from at runtime.
+
+    Raises:
+        ConstraintViolation: the config declares the section but the exec-context declares no
+            config to read it from, or the platform is not a simulation.
+    """
+    # Presence is the switch; an empty section means "on, all defaults".
+    if "clock" not in (config.get("ros") or {}):
+        return None
+    if not platform.get("config"):
+        raise ConstraintViolation(
+            "platform",
+            f"[{ROS_CLOCK_KEY}] needs the exec-context to declare `config:`; the topic and rate "
+            "are read from that file at run time.",
+        )
+    # On hardware the loop already runs on the wall clock every other node reads.
+    if not platform.get("simulated", False):
+        raise ConstraintViolation(
+            "platform",
+            f"[{ROS_CLOCK_KEY}] publishes the simulation clock, and this platform is not a "
+            "simulation; its loop already runs on the wall clock other nodes read.",
+        )
+    return {"config_key": ROS_CLOCK_KEY}

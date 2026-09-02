@@ -71,6 +71,7 @@ int main(int argc, char **argv) {
 <endif>
 <if(communication.ros)>
 <ros-joint-states-setup(communication.ros)>
+<ros-clock-setup(communication.ros)>
 <ros-spin-start(communication.ros)>
 <ros-publish-tick-locals(communication.ros)>
 <endif>

@@ -91,7 +91,9 @@ def generate_ir(manifest_path) -> dict:
     action_clients = communication.ros_action_clients(model)
     # A subscription places its detections through the world model, so it is built against the
     # same segment names the chains resolved against.
-    subscriptions = communication.ros_subscriptions(model, resources.tree_segments(setups))
+    subscriptions = communication.ros_subscriptions(
+        model, resources.tree_segments(setups, world_trees)
+    )
     standing = communication.ros_standing(model, data_structures, control_period_ns)
     clients_by_motion: dict[str, list] = {}
     for client in action_clients:

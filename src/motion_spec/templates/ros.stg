@@ -155,7 +155,16 @@ ros-subscription-members(s) ::= <<
     // The two segments a staged reading is composed between: the frame the sender stated it in,
     // which is whatever its header named, and the one this pose is stated against.
     int <s.sub_id>_staged_from_<w.pose_id> = -1;
-    int <s.sub_id>_segment_<w.pose_id> = -1;}; separator="\n">
+    int <s.sub_id>_segment_<w.pose_id> = -1;<if(w.reframed)>
+    // The reading places a body, not a pose: it is of one frame on that body, so the body's
+    // root is what the world model binds and every other frame on it follows from the tree.
+    int <s.sub_id>_observed_of_<w.pose_id> = -1;
+    int <s.sub_id>_target_of_<w.pose_id> = -1;
+    int <s.sub_id>_observed_body_<w.pose_id> = -1;
+    KDL::Frame <s.sub_id>_base_<w.pose_id>;
+    KDL::Frame <s.sub_id>_observed_on_body_<w.pose_id>;
+    KDL::Frame <s.sub_id>_target_on_body_<w.pose_id>;
+    bool <s.sub_id>_body_frames_initialized_<w.pose_id> = false;<endif>}; separator="\n">
 >>
 
 // The pose's own frame is the model's statement, so it is resolved once here and read by index
@@ -166,7 +175,32 @@ ros-subscription-wiring(s) ::= <<
     if (robot.<s.sub_id>_segment_<w.pose_id> \< 0) {
         std::cerr \<\< "[world] no segment is named '<w.frame_segment>'" \<\< std::endl;
         return 1;
-    \}}; separator="\n">
+    \}<if(w.reframed)>
+    robot.<s.sub_id>_staged_from_<w.pose_id> = world.index_of("<w.observed_wrt_segment>");
+    if (robot.<s.sub_id>_staged_from_<w.pose_id> \< 0) {
+        std::cerr \<\< "[world] no segment is named '<w.observed_wrt_segment>'" \<\< std::endl;
+        return 1;
+    \}
+    robot.<s.sub_id>_observed_of_<w.pose_id> = world.index_of("<w.observed_of_segment>");
+    if (robot.<s.sub_id>_observed_of_<w.pose_id> \< 0) {
+        std::cerr \<\< "[world] no segment is named '<w.observed_of_segment>'" \<\< std::endl;
+        return 1;
+    \}
+    robot.<s.sub_id>_target_of_<w.pose_id> = world.index_of("<w.target_of_segment>");
+    if (robot.<s.sub_id>_target_of_<w.pose_id> \< 0) {
+        std::cerr \<\< "[world] no segment is named '<w.target_of_segment>'" \<\< std::endl;
+        return 1;
+    \}
+    robot.<s.sub_id>_observed_body_<w.pose_id> = world.index_of("<w.observed_body_segment>");
+    if (robot.<s.sub_id>_observed_body_<w.pose_id> \< 0) {
+        std::cerr \<\< "[world] no segment is named '<w.observed_body_segment>'" \<\< std::endl;
+        return 1;
+    \}
+    if (!world.bind_base("<w.observed_body_segment>", &robot.<s.sub_id>_base_<w.pose_id>, world_error)
+            || !world.require_base("<w.observed_body_segment>", world_error)) {
+        std::cerr \<\< "[world] " \<\< world_error \<\< std::endl;
+        return 1;
+    \}<endif>}; separator="\n">
 >>
 
 // Staging is per message, not all-or-nothing: a goal asked one question and either answered it or
@@ -181,12 +215,12 @@ ros-subscription-setup(s) ::= <<
             for (const auto &detection : msg-><s.detections_path>) {
                 if (detection.<s.pose_container>.empty()) continue;
                 const auto &pose = detection.<s.pose_path>;
-<s.written_poses:{w |                 if (detection.<s.id_path> == "<w.target_iri>") {
+<s.written_poses:{w |                 if (detection.<s.id_path> == "<w.match_iri>") {
                     robot.<s.sub_id>_staged_<w.pose_id> = KDL::Frame(
                         KDL::Rotation::Quaternion(pose.orientation.x, pose.orientation.y,
                                                   pose.orientation.z, pose.orientation.w),
-                        KDL::Vector(pose.position.x, pose.position.y, pose.position.z));
-                    robot.<s.sub_id>_staged_from_<w.pose_id> = robot.<s.sub_id>_segment_<w.pose_id>;
+                        KDL::Vector(pose.position.x, pose.position.y, pose.position.z));<if(!w.reframed)>
+                    robot.<s.sub_id>_staged_from_<w.pose_id> = robot.<s.sub_id>_segment_<w.pose_id>;<endif>
                     robot.<s.sub_id>_seen_<w.pose_id> = true;
                     robot.<s.sub_id>_staged = true;
                 \}}; separator="\n">
@@ -349,11 +383,35 @@ ros-actions-tick(ros) ::= <<
 ros-subscriptions-tick(ros) ::= <<
 <ros.subscriptions:{s |         if (robot.<s.sub_id>_mutex.try_lock()) {
             if (robot.<s.sub_id>_staged) {
-<s.written_poses:{w |                 if (robot.<s.sub_id>_seen_<w.pose_id>) {
+<s.written_poses:{w |                 if (robot.<s.sub_id>_seen_<w.pose_id>) {<if(w.reframed)>
+                    // Body-local frames are rigid. Cache them before changing the bound base;
+                    // recomputing them from that base feeds floating-point error back every reading.
+                    if (!robot.<s.sub_id>_body_frames_initialized_<w.pose_id>) {
+                        const KDL::Frame _body_inverse =
+                            robot.world->pose(robot.<s.sub_id>_observed_body_<w.pose_id>, robot.control_cycle).Inverse();
+                        robot.<s.sub_id>_observed_on_body_<w.pose_id> = _body_inverse
+                            * robot.world->pose(robot.<s.sub_id>_observed_of_<w.pose_id>, robot.control_cycle);
+                        robot.<s.sub_id>_target_on_body_<w.pose_id> = _body_inverse
+                            * robot.world->pose(robot.<s.sub_id>_target_of_<w.pose_id>, robot.control_cycle);
+                        robot.<s.sub_id>_body_frames_initialized_<w.pose_id> = true;
+                    \}
+                    // The body's placement, which the world model reads on its next update.
+                    robot.<s.sub_id>_base_<w.pose_id> =
+                        robot.world->pose(robot.<s.sub_id>_staged_from_<w.pose_id>, robot.control_cycle)
+                        * robot.<s.sub_id>_staged_<w.pose_id>
+                        * robot.<s.sub_id>_observed_on_body_<w.pose_id>.Inverse();
+                    // Composed off the placement just computed, not off the world model's, which
+                    // still carries the previous cycle's: the first reading would otherwise report
+                    // the body at the origin and a motion would aim at it.
+                    shared.<w.pose_id> =
+                        robot.world->pose(robot.<s.sub_id>_segment_<w.pose_id>, robot.control_cycle).Inverse()
+                        * robot.<s.sub_id>_base_<w.pose_id>
+                        * robot.<s.sub_id>_target_on_body_<w.pose_id>;
+<else>
                     shared.<w.pose_id> =
                         robot.world->pose(robot.<s.sub_id>_segment_<w.pose_id>, robot.control_cycle).Inverse()
                         * robot.world->pose(robot.<s.sub_id>_staged_from_<w.pose_id>, robot.control_cycle)
-                        * robot.<s.sub_id>_staged_<w.pose_id>;
+                        * robot.<s.sub_id>_staged_<w.pose_id>;<endif>
 <if(w.observed_at_id)>                    shared.<w.observed_at_id> = shared.clock_time_s;
 <endif>                \}}; separator="\n">
                 robot.<s.sub_id>_staged = false;

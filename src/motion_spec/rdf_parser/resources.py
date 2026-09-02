@@ -777,17 +777,24 @@ def robot_setups(model):
     return setups_by_node, ordered, trees
 
 
-def tree_segments(setups) -> dict:
+def tree_segments(setups, trees=()) -> dict:
     """Every scene element the built trees carry, by IRI, named as the world model names it.
 
     A chain resolves the whole tree it is sliced from, not only the part it articulates, so a
     frame no chain reaches -- a fixed camera watching the scene -- resolves here just the same.
+    A tree no chain is sliced from at all -- a free body, placed by what measures it -- is still
+    added to the world model, so its segments resolve alongside them.
     """
-    return {
+    mapped = {
         iri: segment
         for setup in setups.values()
         for iri, segment in setup.chain.world_segments.items()
     }
+    for tree in trees:
+        mapped.setdefault(tree["root_iri"], tree["root"])
+        for segment in tree["segments"]:
+            mapped.setdefault(segment["iri"], segment["name"])
+    return mapped
 
 
 def _placed_on_chain(carrier, backend: str) -> tuple[tuple[str, bool], ...]:

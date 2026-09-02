@@ -56,6 +56,7 @@ from rdf_utils.models.geom_coord import (
     to_metres,
 )
 from rdf_utils.models.geom_rel import OrientationModel, PositionModel
+from scene_dsl.rdf_parser.kinematics import body_of_frame
 from rdf_utils.models.vocab import (
     URI_DISTRIB_TYPE_SAMPLED_QUANTITY,
     URI_GEOM_PRED_ALPHA,
@@ -896,12 +897,27 @@ def perceived_written_poses(model) -> dict[str, list[dict]]:
             if NS_MM_ROS["Topic"] in get_node_types(graph, act):
                 item = pose(model, target)
                 target_iri = item.of.uri
+                # The reading's own of/wrt when the channel states them: the composition into
+                # this quantity is the model's, so both ends travel with the row.
+                observed = graph.value(act, SOSA.observedProperty)
                 rows.append(
                     {
                         "target_iri": target_iri,
                         "pose_id": item.id,
                         "frame_id": item.with_respect_to.id,
                         "frame_iri": getattr(item.with_respect_to, "uri", ""),
+                        "observed_of_iri": str(graph.value(observed, GEOM_REL.of) or ""),
+                        # The body the reading places: its root segment is what the world model
+                        # binds, so every other frame on it follows from the one measurement.
+                        "observed_body_iri": str(
+                            body_of_frame(of_frame, graph)
+                            if (of_frame := graph.value(observed, GEOM_REL.of)) is not None
+                            else ""
+                        ),
+                        "observed_wrt_iri": str(
+                            graph.value(observed, GEOM_REL["with-respect-to"]) or ""
+                        ),
+                        "target_of_iri": str(target_iri),
                         "observed_at_id": _observed_at_id(model, target),
                     }
                 )

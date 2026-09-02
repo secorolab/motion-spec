@@ -1000,6 +1000,30 @@ def ros_subscriptions(model, segment_by_iri: dict) -> list:
                         "frame_segment": _segment_of(
                             segment_by_iri, row["frame_iri"], model.id(node)
                         ),
+                        # Absent an authored of/wrt the reading is the quantity itself, so both
+                        # ends collapse onto its own frames and the composition is the identity.
+                        "observed_wrt_segment": _segment_of(
+                            segment_by_iri,
+                            row.get("observed_wrt_iri") or row["frame_iri"],
+                            model.id(node),
+                        ),
+                        "observed_of_segment": _segment_of(
+                            segment_by_iri,
+                            row.get("observed_of_iri") or row["target_of_iri"],
+                            model.id(node),
+                        ),
+                        "target_of_segment": _segment_of(
+                            segment_by_iri, row["target_of_iri"], model.id(node)
+                        ),
+                        "observed_body_segment": _segment_of(
+                            segment_by_iri,
+                            row.get("observed_body_iri") or row["target_of_iri"],
+                            model.id(node),
+                        ),
+                        "reframed": bool(row.get("observed_of_iri")),
+                        # A detection is identified by what it is a reading of, which is the
+                        # observed frame when the channel states one and the target otherwise.
+                        "match_iri": row.get("observed_of_iri") or row["target_iri"],
                     }
                     for row in rows
                 ],

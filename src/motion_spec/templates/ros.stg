@@ -122,6 +122,17 @@ ros-io-members(ros) ::= <<
     std::shared_ptr\<realtime_tools::RealtimePublisher\<rosgraph_msgs::msg::Clock\>\> clock_pub = nullptr;
     rosgraph_msgs::msg::Clock clock_msg{};
     int clock_divider = 1;
+    double sim_time_s = 0.0;
+
+    // Every stamp this node writes comes from the clock it publishes on /clock, so subscribers
+    // running on use_sim_time read one epoch. Taking it from ros_node->now() instead would need
+    // this node to subscribe to its own clock.
+    rclcpp::Time stamp_now() const
+    {
+        return rclcpp::Time(static_cast\<std::int64_t\>(sim_time_s * 1e9));
+    \}
+<else>
+    rclcpp::Time stamp_now() const { return ros_node->now(); \}
 <endif>
 >>
 
@@ -575,10 +586,10 @@ ros-publish-tick(coordination, communication, views) ::= <<
 ros-standing-tick(ros, views) ::= <<
 <ros.standing:{s |         if ((_step % <s.divider>) == 0) {
 <s.entries:{e |<standing-payload(e)>
-<e.auto_time:{p |             robot.<e.pub_id>_msg.<p> = robot.ros_node->now();
+<e.auto_time:{p |             robot.<e.pub_id>_msg.<p> = robot.stamp_now();
 }>}>
 <s.fields:{f |             robot.<s.pub_id>_msg.<f.path> = <access-expr(f.ref, views)>;}; separator="\n">
-<s.auto_time:{p |             robot.<s.pub_id>_msg.<p> = robot.ros_node->now();}; separator="\n">
+<s.auto_time:{p |             robot.<s.pub_id>_msg.<p> = robot.stamp_now();}; separator="\n">
 <s.auto_context_id:{p |             robot.<s.pub_id>_msg.<p>.uuid = _scenario_context_id;}; separator="\n">
             robot.<s.pub_id>->try_publish(robot.<s.pub_id>_msg);
         \}}; separator="\n">
@@ -656,7 +667,7 @@ ros-goal-arm-tick(coordination, server) ::= <<
 // belonged to. Both are answered whether or not the run reached its end.
 
 ros-goal-result-own(server) ::= <<
-<server.result_auto_time:{p | _result-><p> = robot.ros_node->now();}; separator="\n">
+<server.result_auto_time:{p | _result-><p> = robot.stamp_now();}; separator="\n">
 <server.result_auto_context_id:{p | _result-><p>.uuid = _scenario_context_id;}; separator="\n">
 >>
 
@@ -687,7 +698,7 @@ ros-monitor-announce(monitor, event) ::= <<
         if (robot.fsm_events && consume_event(robot.fsm_events, <monitor.ros.occurrence_namespace>::<event>)) {
             robot.<monitor.ros.pub_id>_msg.<monitor.ros.occurrence_path> =
                 <monitor.ros.occurrence_namespace>::EVENT_URIS[<monitor.ros.occurrence_namespace>::<event>];
-<monitor.ros.auto_time:{p |             robot.<monitor.ros.pub_id>_msg.<p> = robot.ros_node->now();}; separator="\n">
+<monitor.ros.auto_time:{p |             robot.<monitor.ros.pub_id>_msg.<p> = robot.stamp_now();}; separator="\n">
 <monitor.ros.auto_context_id:{p |             robot.<monitor.ros.pub_id>_msg.<p>.uuid = _scenario_context_id;}; separator="\n">
             robot.<monitor.ros.pub_id>->try_publish(robot.<monitor.ros.pub_id>_msg);
         \}
@@ -711,7 +722,7 @@ ros-monitor-answer(motion, monitor) ::= <<
                 && <answer-condition(monitor)>) {
             auto _result = std::make_shared\<<monitor.answer.result_cpp_type>\>();
 <monitor.answer.fields:{f |             _result-><f.path> = <f.cpp_value>;}; separator="\n">
-<monitor.answer.auto_time:{p |             _result-><p> = robot.ros_node->now();}; separator="\n">
+<monitor.answer.auto_time:{p |             _result-><p> = robot.stamp_now();}; separator="\n">
 <monitor.answer.auto_context_id:{p |             _result-><p>.uuid = _scenario_context_id;}; separator="\n">
             if (_active_goal->is_canceling()) {
                 _active_goal->canceled(_result);
@@ -745,7 +756,7 @@ ros-monitor-publish(motion, monitor) ::= <<
             \}
 <endif>
             if (_authored) {
-<monitor.ros.auto_time:{p |                 robot.<monitor.ros.pub_id>_msg.<p> = robot.ros_node->now();}; separator="\n">
+<monitor.ros.auto_time:{p |                 robot.<monitor.ros.pub_id>_msg.<p> = robot.stamp_now();}; separator="\n">
 <monitor.ros.auto_context_id:{p |                 robot.<monitor.ros.pub_id>_msg.<p>.uuid = _scenario_context_id;}; separator="\n">
                 robot.<monitor.ros.pub_id>->try_publish(robot.<monitor.ros.pub_id>_msg);
             \}
@@ -759,7 +770,7 @@ ros-monitor-publish(motion, monitor) ::= <<
 ros-joint-states-tick(ros) ::= <<
 <if(ros.joint_states)>
         if (robot.joint_states_pub && (_step % robot.joint_states_divider) == 0) {
-            robot.joint_states_msg.header.stamp = robot.ros_node->now();
+            robot.joint_states_msg.header.stamp = robot.stamp_now();
 <ros.joint_states.joints:{j |             robot.joint_states_msg.position[<i0>] = shared.<j.position>;<if(j.velocity)>
             robot.joint_states_msg.velocity[<i0>] = shared.<j.velocity>;<endif><if(j.effort)>
             robot.joint_states_msg.effort[<i0>] = shared.<j.effort>;<endif>}; separator="\n">

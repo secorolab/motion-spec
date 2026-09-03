@@ -76,7 +76,7 @@ def run_cataloged(
     _start_rec_run(run_dir, run_id, source_dir, executable, schema)
 
     try:
-        with _rosbag_recorder(run_dir, _rosbag_topics(source_dir)):
+        with _rosbag_recorder(run_dir, *_rosbag_settings(source_dir)):
             returncode = _run_executable(
                 executable,
                 executable_args,
@@ -389,20 +389,21 @@ def _record_execution_inputs(
     )
 
 
-def _rosbag_topics(source_dir: Path) -> list[str]:
-    """The topics the deployment config asks the run to bag, or none."""
+def _rosbag_settings(source_dir: Path) -> tuple[list[str], bool]:
+    """The topics the deployment config asks the run to bag, and whether it stamps them in
+    simulation time: [ros.clock] means the run publishes /clock and every stamp reads from it."""
     import tomllib
 
     ir_path = source_dir / "model" / "ir.json"
     if not ir_path.exists():
-        return []
+        return [], False
     ir = json.loads(ir_path.read_text())
     declared = (ir["configuration"].get("platform") or {}).get("config") or ""
     if not declared:
-        return []
+        return [], False
     config_path = Path(declared)
     if not config_path.exists():
-        return []
+        return [], False
     try:
         config = tomllib.loads(config_path.read_text())
     except tomllib.TOMLDecodeError as error:
@@ -410,11 +411,11 @@ def _rosbag_topics(source_dir: Path) -> list[str]:
     topics = (config.get("rosbag") or {}).get("topics") or []
     if not isinstance(topics, list) or any(not isinstance(topic, str) for topic in topics):
         raise RunnerError(f"{config_path}: [rosbag] `topics` must be a list of topic names")
-    return topics
+    return topics, "clock" in (config.get("ros") or {})
 
 
 @contextmanager
-def _rosbag_recorder(run_dir: Path, topics: list[str]):
+def _rosbag_recorder(run_dir: Path, topics: list[str], use_sim_time: bool = False):
     """Bag the named topics for as long as the run lasts."""
     if not topics:
         yield
@@ -436,6 +437,7 @@ def _rosbag_recorder(run_dir: Path, topics: list[str]):
     options.topics = topics
     options.rmw_serialization_format = "cdr"
     options.disable_keyboard_controls = True
+    options.use_sim_time = use_sim_time
     # The run's own topics appear only once it starts, so this is how much of the first cycle
     # discovery can miss.
     options.topic_polling_interval = timedelta(milliseconds=50)

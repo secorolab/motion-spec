@@ -130,6 +130,9 @@ int main(int argc, char **argv) {
 #endif
 <endif>
         shared.clock_time_s = <clock-time-source(configuration.backend, resources.by_kind.serial_chain, resources.by_kind.serial_chain)>;
+<if(communication.ros.clock)>
+        robot.sim_time_s = shared.clock_time_s;
+<endif>
         // Integrators step with the time that actually elapsed, not the period we asked for: the
         // loop sleeps to deadlines it can overrun. In sim the clock advances exactly one timestep
         // per tick, so this equals the nominal period.

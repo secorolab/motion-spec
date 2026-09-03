@@ -2044,6 +2044,15 @@ def _apply_fsm_wiring(motions, fsm, solvers) -> dict:
                 f"'{namespace}' does not declare as a state.",
             )
         motion.fsm_state = state
+        if state == fsm["end_state"]:
+            if not motion.until_monitors:
+                raise ConstraintViolation(
+                    "coordination",
+                    f"motion '{motion.id}' runs in the end state '{state}', so its until is what "
+                    "ends the run; it needs a monitor on that until, or the loop never leaves.",
+                )
+            motion.runs_in_end_state = True
+            fsm["end_motion"] = motion.id
 
     def fires_fsm_event(monitor) -> bool:
         """A monitor fires the FSM only when its event lives in the FSM's namespace; a
@@ -2151,7 +2160,8 @@ def _check_every_commanding_motion_runs(motions, fsm, meta) -> None:
     it renders no `case` either, and the loop keeps calling the driver every tick with whatever
     was staged last, so the arm is uncommanded for exactly as long as the FSM stays there. Only
     two states are allowed to run nothing: the end state, which the loop breaks on before it
-    dispatches, and a state the heartbeat leaves, which the FSM does not dwell in.
+    dispatches unless a motion is bound there -- then it stays until that motion's until has
+    fired -- and a state the heartbeat leaves, which the FSM does not dwell in.
     """
     namespace = meta["cpp_namespace"]
     orphaned = [

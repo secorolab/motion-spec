@@ -882,17 +882,41 @@ def _is_simulated(generation: Path) -> bool:
 
 @main.command(context_settings={"ignore_unknown_options": True})
 @click.argument("input", type=click.Path(exists=True, path_type=Path))
-@click.option("-o", "--output-dir", type=click.Path(file_okay=False, path_type=Path))
+@click.option(
+    "-o",
+    "--output-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    help="Base directory for a new generation (<model>/<timestamp> is appended). "
+    "Rejected when INPUT is an existing generation.",
+)
 @click.option(
     "--prefix",
     "prefixes",
     multiple=True,
     type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Install prefix the build resolves packages from. Repeatable.",
 )
-@click.option("-j", "--jobs", type=click.IntRange(min=1))
-@click.option("--run-id")
-@click.option("--cwd", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("-j", "--jobs", type=click.IntRange(min=1), help="Parallel build jobs.")
+@click.option("--run-id", help="Name of this run's directory under <generation>/runs.")
+@click.option(
+    "--cwd",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Working directory of the executable; scene assets resolve relative to it.",
+)
 @click.option("--headless", is_flag=True, help="Run without a GUI.")
+@click.option(
+    "--rtf",
+    type=click.FloatRange(min=0.0),
+    help="Real-time factor: 1.0 paces the loop to wall time, 0.5 half speed, 2.0 double. "
+    "Headless runs uncapped (as fast as the machine allows) unless given; with a GUI the "
+    "viewer's live speed setting applies. Only the wall duration changes -- the simulation "
+    "clock advances one control period per tick either way.",
+)
+@click.option(
+    "--start-paused",
+    is_flag=True,
+    help="Arm the run paused; the loop holds on its first tick until the dashboard resumes it.",
+)
 @click.option(
     "--record",
     "record",
@@ -913,12 +937,18 @@ def run(
     run_id: str | None,
     cwd: Path | None,
     headless: bool,
+    rtf: float | None,
+    start_paused: bool,
     record: tuple[str, ...],
     steps: int | None,
     no_log: bool,
     executable_args: tuple[str, ...],
 ) -> None:
-    """Run a .robmot INPUT, generating and building it first, or an existing GENERATION."""
+    """Run a .robmot INPUT, generating and building it first, or an existing GENERATION.
+
+    Anything after the options that this command does not recognise is handed to the
+    executable unchanged.
+    """
     from rdf_utils.constraints import ConstraintViolation
 
     from motion_spec.generation.pipeline import build_generation, generate_model, new_id
@@ -958,6 +988,8 @@ def run(
     arguments = (
         (["--headless"] if headless else [])
         + (["--steps", str(steps)] if steps is not None else [])
+        + (["--rtf", str(rtf)] if rtf is not None else [])
+        + (["--start-paused"] if start_paused else [])
         + list(executable_args)
     )
     try:

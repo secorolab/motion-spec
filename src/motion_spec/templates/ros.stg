@@ -123,7 +123,6 @@ ros-io-members(ros) ::= <<
     rosgraph_msgs::msg::Clock clock_msg{};
     int clock_divider = 1;
     double sim_time_s = 0.0;
-    double clock_linger_s = 0.0;
 
     // Every stamp this node writes comes from the clock it publishes on /clock, so subscribers
     // running on use_sim_time read one epoch. Taking it from ros_node->now() instead would need
@@ -548,9 +547,6 @@ ros-clock-setup(ros) ::= <<
         const std::string _clk_key = "<ros.clock.config_key>";
         const toml::table &_clk_cfg = motion_spec::config::section(robot_config, _clk_key);
         robot.clock_divider = motion_spec::ros::publish_divider(_clk_cfg["rate"].value_or(0.0));
-        // Nodes on use_sim_time settle their bookkeeping on ticks that come after the result;
-        // the clock outlives the end state by this much so those ticks arrive.
-        robot.clock_linger_s = _clk_cfg["linger"].value_or(0.0);
         // ClockQoS: best-effort keep-last-1, so a late subscriber reads now, not a stale queue.
         robot.clock_pub =
             std::make_shared\<realtime_tools::RealtimePublisher\<rosgraph_msgs::msg::Clock\>\>(

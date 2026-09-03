@@ -239,6 +239,8 @@ class MotionUnit:
     # FSM wiring (folded from the FSM named graph): the state this motion runs in,
     # and the WHEN-gated motions this one holds for as a fallback.
     fsm_state: str | None = None
+    # Bound to the FSM's end state: the loop stays there until this motion's until has fired.
+    runs_in_end_state: bool = False
     # The state the model says runs this motion, when it says so rather than leaving it derived.
     runs_in_state: str = field(default="", metadata=INTERNAL)
     fsm_when_gate_motions: list = field(default_factory=list)

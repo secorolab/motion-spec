@@ -104,6 +104,9 @@ int main(int argc, char **argv) {
     timespec _next_tick{};
     clock_gettime(CLOCK_MONOTONIC, &_next_tick);
     double _prev_clock_s = 0.0;
+<if(communication.ros.clock)>
+    double _end_reached_s = -1.0;
+<endif>
 <if(configuration.platform.simulated)>
     double _ctrl_speed_applied = 1.0;
 <endif>
@@ -159,7 +162,14 @@ int main(int argc, char **argv) {
             <motion.id>_state_instance.when_gate_open = false;<endif>}; separator="\n">
         \}
         if (fsm->currentStateIndex == fsm->endStateIndex) {
+<if(communication.ros.clock)>
+            // The end state holds the arm and keeps the clock going for the configured linger,
+            // then the run ends the way it always did.
+            if (_end_reached_s \< 0.0) _end_reached_s = shared.clock_time_s;
+            if (shared.clock_time_s - _end_reached_s \>= robot.clock_linger_s) break;
+<else>
             break;
+<endif>
         \}
         const int _active_motion = fsm_active_motion(fsm);
 <coordination.motions:{m | <fsm-motion-reentry(m, coordination.fsm)>}><if(communication.ros.action_server)>

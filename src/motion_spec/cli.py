@@ -1006,9 +1006,11 @@ def run(
         )
     except (ArchiveError, RunnerError) as exc:
         raise click.ClickException(str(exc)) from exc
+    # Echoed before the exit: an interrupt leaves a complete archive, and that is when the
+    # caller most needs the path.
+    click.echo(run_dir)
     if returncode:
         raise click.exceptions.Exit(returncode)
-    click.echo(run_dir)
 
 
 @main.command()

@@ -1570,7 +1570,8 @@ def _motion_unit(
             handler.motion.while_ + handler.motion.when + handler.motion.until,
             computation.indexes,
             computation.views,
-            schedules.active + schedules.when + schedules.until,
+            # while_pre too: a grouped row's setpoint generator runs there and may read a snapshot.
+            schedules.while_pre + schedules.active + schedules.when + schedules.until,
             computation.closures,
             model.motion_suffix(motion_node),
             tokens,

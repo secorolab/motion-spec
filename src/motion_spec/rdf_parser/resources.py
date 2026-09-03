@@ -64,8 +64,9 @@ from rdf_utils.models.vocab import (
     URI_KC_PRED_BETWEEN_ATTACHMENTS,
     URI_KC_TYPE_JOINT,
     URI_KC_TYPE_SERIAL,
+    URI_QUDT_PRED_UNIT,
+    URI_QUDT_PRED_VALUE,
 )
-from rdf_utils.models.vocab import URI_QUDT_PRED_UNIT, URI_QUDT_PRED_VALUE
 from rdf_utils.namespace import NS_MM_KC_EXT, NS_MM_QUDT_QTY
 from rdf_utils.uri import iri_is_descendant, iri_parent
 from rdflib import Graph, URIRef
@@ -80,7 +81,12 @@ from scene_dsl.rdf.sensors import (
     URI_SENS_PRED_RESOLUTION_WIDTH,
     URI_SENS_TYPE_CAMERA,
 )
-from scene_dsl.rdf_parser.kinematics import body_of_frame, get_kinematic_mapping, root_bodies
+from scene_dsl.rdf_parser.kinematics import (
+    body_of_frame,
+    get_kinematic_mapping,
+    pose_between,
+    root_bodies,
+)
 from scene_dsl.rdf_parser.sensors import get_update_rate
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS, URI_BDD_PRED_ELEMS, URI_ROS_PRED_PACKAGE_NAME
 
@@ -1719,6 +1725,8 @@ def _placement(model, node, wrt):
         # against one of its own frames still says where that frame is on the body.
         reverse = get_transform_between_frames(wrt, frame, graph)
         transform = reverse.inv() if reverse is not None else None
+    if transform is None:
+        transform = pose_between(frame, wrt, graph)
     if transform is None:
         return None, None
     return list(transform.translation), list(transform.rotation.as_quat())

@@ -37,6 +37,7 @@ from motion_spec.introspection.provenance import (
     record_agents,
     repositories,
 )
+from motion_spec.introspection.ros_video import RosImageRecorder, real_camera_recordings
 
 
 class RunnerError(RuntimeError):
@@ -76,7 +77,10 @@ def run_cataloged(
     _start_rec_run(run_dir, run_id, source_dir, executable, schema)
 
     try:
-        with _rosbag_recorder(run_dir, *_rosbag_settings(source_dir)):
+        with (
+            _rosbag_recorder(run_dir, *_rosbag_settings(source_dir)),
+            _real_camera_recorders(schema, record, frame_log.parent),
+        ):
             returncode = _run_executable(
                 executable,
                 executable_args,
@@ -472,6 +476,29 @@ def _await_rosbag_ready(bag_dir: Path, spinner: threading.Thread, timeout_s: flo
             raise RunnerError(f"{bag_dir}: the rosbag2 recorder stopped before it opened the bag")
         time.sleep(0.01)
     raise RunnerError(f"{bag_dir}: the rosbag2 recorder did not open the bag in {timeout_s:g}s")
+
+
+@contextmanager
+def _real_camera_recorders(schema: dict, record: list[str] | None, output_dir: Path):
+    """Record selected real RGB camera topics while the generated controller runs."""
+    recorders = [
+        RosImageRecorder(camera, output_dir / f"{camera.id}.mp4")
+        for camera in real_camera_recordings(schema, record)
+    ]
+    for recorder in recorders:
+        recorder.start()
+    try:
+        yield
+    finally:
+        for recorder in recorders:
+            recorder.close()
+            if recorder.error:
+                wrote = recorder.output.exists() and recorder.output.stat().st_size > 0
+                outcome = f"kept {recorder.output.name}" if wrote else "not recorded"
+                print(
+                    f"camera '{recorder.recording.id}': {recorder.error}; {outcome}",
+                    file=sys.stderr,
+                )
 
 
 def _run_executable(

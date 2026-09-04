@@ -239,6 +239,18 @@ def build_provenance_document(ir: dict, output_dir: Path, *, sampling: dict | No
                 ],
             },
         )
+        # The scene declares the distributions; a draw's prov:wasDerivedFrom needs them typed
+        # here too, since the document is validated on its own.
+        graph.extend(
+            {"@id": distribution, "@type": ["prov:Entity"]}
+            for distribution in sorted(
+                {
+                    draw["distribution"]
+                    for draw in sampling.get("draws", {}).values()
+                    if draw["distribution"]
+                }
+            )
+        )
 
     artifact_names = [
         "frame_layout.json",

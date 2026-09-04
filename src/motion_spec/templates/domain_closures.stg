@@ -72,6 +72,15 @@ emit-call-TwistToLinearVelocityAlong(closure, views) ::= <<
 shared.<closure.along_speed> = KDL::dot(shared.<closure.in>.vel, shared.<closure.direction>);
 >>
 
+// The direction need not be unit: the projection divides by its own length squared.
+emit-call-VectorNorm(closure, views) ::= <<
+<if(closure.direction)>{
+    const KDL::Vector _v = <access-expr(closure.in, views)>;
+    const KDL::Vector _n = shared.<closure.direction>;
+    shared.<closure.norm> = (_v - (KDL::dot(_v, _n) / KDL::dot(_n, _n)) * _n).Norm();
+}<else>shared.<closure.norm> = (<access-expr(closure.in, views)>).Norm();<endif>
+>>
+
 emit-call-PathEvaluator(closure, views) ::= <<
 {
 <path-eval(closure, views)>

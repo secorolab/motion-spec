@@ -17,6 +17,7 @@ from typing import NamedTuple
 
 import rdflib
 from motion_spec_dsl.rdf_parser.vocab import (
+    ACT,
     ALGO_EXT,
     CSTR,
     CSTR_EXT,
@@ -102,7 +103,7 @@ from motion_spec.classes.constraints import (
     UnilateralConstraint,
     UnilateralConstraintType,
 )
-from motion_spec.classes.dynamics import JointPosition
+from motion_spec.classes.dynamics import JointCurrent, JointPosition
 from motion_spec.classes.geometry import (
     AccelerationTwist,
     Axis,
@@ -1089,6 +1090,17 @@ def joint_position(model, node) -> JointPosition:
     return JointPosition(
         model.id(node), model.label(joint), normalization=_normalization(model, node)
     )
+
+
+@reader
+def joint_current(model, node) -> JointCurrent:
+    """A JointCurrent quantity, named by the joint whose motor draws it."""
+    model.expect_type(node, ACT["JointCurrent"])
+    model.expect_type(node, KC_STAT["JointReference"])
+    joint = model.graph.value(node, KC_STAT["of-joint"])
+    if not isinstance(joint, URIRef):
+        raise ConstraintViolation("actuation", f"JointCurrent '{node}' has no of-joint URI")
+    return JointCurrent(model.id(node), model.label(joint))
 
 
 def _normalization(model, node) -> dict | None:
@@ -2277,6 +2289,8 @@ def _writers_by_output(serial_chain_solvers) -> _SolverWrites:
                 f"{out.id}_ft_bias",
                 f"{out.id}_ft_bias_new",
                 f"{out.id}_ft_bias_prev",
+                f"{out.id}_ft_load",
+                f"{out.id}_ft_payload",
                 f"{out.id}_ft_settle",
                 f"{out.id}_ft_tares",
                 f"{out.id}_ft_rejects",

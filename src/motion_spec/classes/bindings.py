@@ -37,6 +37,9 @@ class ChainBinding:
     joint_segments: list[str] = field(default_factory=list)
     world_root: str = ""
     world_tip: str = ""
+    # The root of the tree the chain is sliced from: a frame on another branch of that tree is
+    # required from here, since the chain's root is not above it.
+    tree_root: str = ""
     # Every scene element this chain reaches, by IRI, named as the tree names it. Startup wiring
     # resolves an index from a name, so only lowering needs the whole lookup.
     world_segments: dict = field(default_factory=dict, metadata=INTERNAL)

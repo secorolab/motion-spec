@@ -148,6 +148,7 @@ device-io-section-Robotiq2F85(solver, device) ::= <<
 struct serial_gripper_state {
     bool success = false;
     uint8_t position_msr = 0;
+    double current_msr = 0.0;
     bool is_moving = false;
     robif2b_robotiq_gripper_obj_status obj_status = ROBIF2B_ROBOTIQ_OBJ_UNKNOWN;
     robif2b_robotiq_gripper_status status = ROBIF2B_ROBOTIQ_UNKNOWN;

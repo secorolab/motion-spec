@@ -25,6 +25,18 @@ class JointPosition:
 
 
 @dataclass
+class JointCurrent:
+    """A joint motor-current quantity for a named joint."""
+
+    id: str
+    joint_name: str
+    # Where the joint sits in the chain's joint array, resolved while generating. None for a
+    # gripper joint, which the device reports on its own channel.
+    joint_index: int | None = None
+    type: str = field(default="JointCurrent")
+
+
+@dataclass
 class Saturation:
     """Input/output saturation limits applied to a signal."""
 

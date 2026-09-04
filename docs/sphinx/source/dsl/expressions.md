@@ -15,7 +15,8 @@ operators; repeated `+`/`*` stay one operation. Unary minus (`- <x>`) lowers to 
 by a dimensionless `-1`. A leaf is either a `<quantity>` reference (with the usual
 `.subspace.axis` selector) or a bare measure such as `0.5 1` or `9.81 m/s^2`.
 
-There are no functions (`abs`, `norm`, ...) and no exponent operator, and an expression never
+There are no functions (`abs`, ...) -- a vector's length is a view, `norm of`, not an
+expression -- and no exponent operator, and an expression never
 combines a whole vector/tensor quantity (a pose, a wrench, a velocity twist) -- select a scalar
 subspace axis first.
 

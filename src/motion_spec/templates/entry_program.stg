@@ -316,6 +316,7 @@ world-model-wiring(resources, communication, backend) ::= <<
     robot.world = &world;
 <resources.by_kind.serial_chain:{solver | <world-solver-wiring(solver, backend)>}; separator="\n">
 <resources.world_frames:{frame | <world-frame-wiring(frame)>}; separator="\n">
+<resources.world_observations:{obs | <ft-load-wiring(obs)>}; separator="\n">
 <communication.ros.subscriptions:{s | <ros-subscription-wiring(s)>}; separator="\n">
     if (!world.seal(world_error)) {
         std::cerr \<\< "[world] " \<\< world_error \<\< std::endl;
@@ -340,13 +341,27 @@ world-solver-wiring(solver, backend) ::= <<
     \}
 >>
 
+// Only a sensed wrench names a sensor; every other observation renders nothing here.
+ft-load-wiring(obs) ::= <<
+<if(obs.out.sensor_name)>    if (!world.load_on(robot.world_<obs.solver_id>_<obs.out.sensor_frame.id>, robot.ft_<obs.out.sensor_name>_load, world_error)) {
+        std::cerr \<\< "[world] " \<\< world_error \<\< std::endl;
+        return 1;
+    \}
+<endif>
+>>
+
 world-frame-wiring(frame) ::= <<
     robot.world_<frame.solver_id>_<frame.frame_id> = world.index_of("<frame.segment_name>");
     if (robot.world_<frame.solver_id>_<frame.frame_id> \< 0) {
         std::cerr \<\< "[world] no segment is named '<frame.segment_name>'" \<\< std::endl;
         return 1;
     \}
+<if(frame.tree_root)>
+    // On another branch of the chain's tree: the joints that place it run from the tree root.
+    if (!world.require_path(world.index_of("<frame.tree_root>"), robot.world_<frame.solver_id>_<frame.frame_id>, world_error)) {
+<else>
     if (!world.require_path(robot.<frame.solver_id>.world_root, robot.world_<frame.solver_id>_<frame.frame_id>, world_error)) {
+<endif>
         std::cerr \<\< "[world] " \<\< world_error \<\< std::endl;
         return 1;
     \}

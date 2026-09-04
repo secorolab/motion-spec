@@ -2,20 +2,37 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import shutil
+from pathlib import Path
 
 import rdflib
+from support import _source_tree
 
 from motion_spec.introspection import runner
 from motion_spec.introspection.archive import verify_manifest
-from motion_spec.introspection.runner import run_cataloged
 from motion_spec.introspection.provenance import prov_uri, rec_run_lifecycle
-
-from support import _source_tree
-
+from motion_spec.introspection.ros_video import real_camera_recordings
+from motion_spec.introspection.runner import run_cataloged
 
 REC = rdflib.Namespace("https://secorolab.github.io/metamodels/rec#")
+
+
+def test_real_camera_recordings_selects_declared_ros_topics() -> None:
+    schema = {
+        "platform": {"simulated": False},
+        "cameras": [
+            {"id": "perception", "topic": "/perception/color", "rate_hz": 30.0},
+            {"id": "rk", "topic": "/rk/color", "rate_hz": 15.0},
+        ],
+    }
+
+    recordings = real_camera_recordings(schema, ["rk", "missing", "perception"])
+
+    assert [(item.id, item.topic, item.rate_hz) for item in recordings] == [
+        ("rk", "/rk/color", 15.0),
+        ("perception", "/perception/color", 30.0),
+    ]
+    assert real_camera_recordings({**schema, "platform": {"simulated": True}}, ["rk"]) == []
 
 
 def _log_copy_executable(path: Path) -> Path:

@@ -153,27 +153,27 @@ view-access-expr-Pose-Angular(view) ::= <<
 
 
 view-access-expr-VelocityTwist-Angular(view) ::= <<
-shared.<view.superobject.id>.rot[<axis-to-index.(view.axis)>]
+<if(view.axis)>shared.<view.superobject.id>.rot[<axis-to-index.(view.axis)>]<else>shared.<view.superobject.id>.rot<endif>
 >>
 
 view-access-expr-VelocityTwist-Linear(view) ::= <<
-<if(view.direction)>KDL::dot(shared.<view.superobject.id>.vel, shared.<view.direction.id>)<else>shared.<view.superobject.id>.vel[<axis-to-index.(view.axis)>]<endif>
+<if(view.direction)>KDL::dot(shared.<view.superobject.id>.vel, shared.<view.direction.id>)<elseif(view.axis)>shared.<view.superobject.id>.vel[<axis-to-index.(view.axis)>]<else>shared.<view.superobject.id>.vel<endif>
 >>
 
 view-access-expr-AccelerationTwist-Angular(view) ::= <<
-shared.<view.superobject.id>.rot[<axis-to-index.(view.axis)>]
+<if(view.axis)>shared.<view.superobject.id>.rot[<axis-to-index.(view.axis)>]<else>shared.<view.superobject.id>.rot<endif>
 >>
 
 view-access-expr-AccelerationTwist-Linear(view) ::= <<
-shared.<view.superobject.id>.vel[<axis-to-index.(view.axis)>]
+<if(view.axis)>shared.<view.superobject.id>.vel[<axis-to-index.(view.axis)>]<else>shared.<view.superobject.id>.vel<endif>
 >>
 
 view-access-expr-PoseDifference-Angular(view) ::= <<
-shared.<view.superobject.id>.rot[<axis-to-index.(view.axis)>]
+<if(view.axis)>shared.<view.superobject.id>.rot[<axis-to-index.(view.axis)>]<else>shared.<view.superobject.id>.rot<endif>
 >>
 
 view-access-expr-PoseDifference-Linear(view) ::= <<
-<if(view.direction)>KDL::dot(shared.<view.superobject.id>.vel, shared.<view.direction.id>)<else>shared.<view.superobject.id>.vel[<axis-to-index.(view.axis)>]<endif>
+<if(view.direction)>KDL::dot(shared.<view.superobject.id>.vel, shared.<view.direction.id>)<elseif(view.axis)>shared.<view.superobject.id>.vel[<axis-to-index.(view.axis)>]<else>shared.<view.superobject.id>.vel<endif>
 >>
 
 view-access-expr-FreeVector-Angular(view) ::= <<

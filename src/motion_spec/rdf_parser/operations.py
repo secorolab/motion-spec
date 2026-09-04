@@ -907,6 +907,7 @@ OPS_GENERIC = [
         [GEOM_OP["in"], GEOM_OP["direction"]],
         [GEOM_OP_EXT["along-speed"]],
     ),
+    Operator(GEOM_OP_EXT.VectorNorm, [GEOM_OP["in"], GEOM_OP["direction"]], [GEOM_OP_EXT["norm"]]),
     Operator(
         GEOM_OP_EXT.PathEvaluator,
         [GEOM_OP_EXT.path, GEOM_OP_EXT["path-parameter"]],

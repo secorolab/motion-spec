@@ -236,6 +236,39 @@ class WorldModel {
         return true;
     }
 
+    // Every body hanging off the body that carries `frame`, as one rigid body in `frame` at zero
+    // joint positions. The carrying body is the sensor itself and stays out.
+    bool load_on(int frame, KDL::RigidBodyInertia &load, std::string &error) const {
+        const int count = static_cast\<int\>(segments_.size());
+        if (frame \< 0 || frame >= count) {
+            error = "a sensor frame names a segment the world model does not hold";
+            return false;
+        }
+        const int host = parents_[frame];
+        if (host \< 0) {
+            error = "'" + segments_[frame].getName() + "' is a root, so nothing hangs off it";
+            return false;
+        }
+        std::vector\<KDL::Frame\> from_host(count);
+        std::vector\<char\> below(count, 0);
+        load = KDL::RigidBodyInertia::Zero();
+        for (int i = 0; i \< count; ++i) {
+            if (parents_[i] == host) {
+                from_host[i] = segments_[i].pose(0.0);
+            } else if (parents_[i] >= 0 && below[parents_[i]]) {
+                from_host[i] = from_host[parents_[i]] * segments_[i].pose(0.0);
+            } else {
+                continue;
+            }
+            below[i] = 1;
+            if (i != frame) {
+                load = load + from_host[i] * segments_[i].getInertia();
+            }
+        }
+        load = from_host[frame].Inverse() * load;
+        return true;
+    }
+
     bool seal(std::string &error) {
         for (const auto &path : required_paths_) {
             for (int index = path.second; index != path.first; index = parents_[index]) {

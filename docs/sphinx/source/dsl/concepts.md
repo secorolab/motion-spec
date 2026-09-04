@@ -256,6 +256,8 @@ elapsed since <shared.world.pose-object> observed
 progress of <shared.world.tcp-base> along <spec.approach-path>
 moving <shared.world.tcp-base> along <spec.approach-path> with <spec.approach-profile>
 <shared.world.tcp-base>.position on <spec.approach-path>
+norm of <shared.world.ext-force>.force
+norm of <shared.world.ext-force>.force across <spec.up>
 ```
 
 Selectors (`.position`, `.position.x`, ...) are optional on the first form and determine the
@@ -264,6 +266,12 @@ position, and `.position.x` is a distance. The same bare-quantity form also name
 context quantity directly (`<spec.residual>`), and a parenthesized inline expression is
 accepted too -- see [quantity expressions](expressions.md). `progress`, `moving`, and `on`
 read against a `path` context quantity; see [Paths](#paths) for what each of them does.
+
+`norm of` takes the Euclidean length of a 3-vector view (`.force`, `.torque`, `.linvel`,
+`.angvel`, `.position`) and has that vector's kind and unit; a position's norm is a distance.
+`across <direction>` takes the length of the component perpendicular to a `direction` context
+quantity stated in the same frame as the vector, which is how "force across gravity" is written.
+A norm is a measurement: it can be gated and monitored, not commanded.
 
 `elapsed since <q> observed` measures the run-clock time since the last reading of `q` landed --
 from a `subscribers` channel or a detect result -- and is infinite until the first one, so

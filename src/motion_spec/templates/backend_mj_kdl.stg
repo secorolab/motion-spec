@@ -39,6 +39,8 @@ chain-device-members-mj_kdl(solver) ::= <<
 mj-sensor-member-ForceTorque(solver, sensor) ::= <<
     int ft_<sensor.id>_bias_samples = 0;
     double ft_<sensor.id>_bias_max_drift = 0.0;
+    // What hangs off the sensor, in its frame: the tare predicts this weight at every pose.
+    KDL::RigidBodyInertia ft_<sensor.id>_load = KDL::RigidBodyInertia::Zero();
 >>
 
 robot-state-init-mj_kdl-KinovaGen3(solver) ::= <<

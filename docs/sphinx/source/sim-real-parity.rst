@@ -41,7 +41,12 @@ Shared by construction (never fork these)
   [``kDtClampMin``, ``kDtClampMax``], and every integrator consumes it per call. In sim the
   measurement equals the nominal period by construction — one code path serves both.
 - FT processing: identical transform chain (sensor frame → reference point → as-seen-by) and
-  identical tare (``bias − measured`` after settle).
+  identical tare. The zero is taken in the sensor frame after the modelled load's weight is
+  removed (the bodies hanging off the sensor, walked from the world model, under the gravity
+  the platform states); the first tare of a run commits that zero. Every later tare splits
+  what it finds by gravity: the part along gravity is the held payload, a constant in the
+  as-seen-by frame, and the part across gravity is the zero having moved. The reading is
+  ``payload − transform(raw − zero − load)``.
 - Telemetry: none, anywhere. The protobuf frame log is the record (user decision 2026-08-06).
 
 The external-wrench law

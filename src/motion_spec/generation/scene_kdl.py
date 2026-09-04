@@ -89,6 +89,7 @@ def chain_for_iri(trees: list[dict], chain_iri: str) -> dict:
                     "tip_segment": chain["tip_index"],
                     "world_root": chain["root"],
                     "world_tip": chain["tip"],
+                    "tree_root": tree["root"],
                     "world_segments": _world_segments(tree, chain),
                 }
     return {
@@ -101,6 +102,7 @@ def chain_for_iri(trees: list[dict], chain_iri: str) -> dict:
         "tip_segment": 0,
         "world_root": "",
         "world_tip": "",
+        "tree_root": "",
         "world_segments": {},
     }
 

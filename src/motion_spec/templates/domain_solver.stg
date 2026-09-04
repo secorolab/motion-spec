@@ -42,6 +42,13 @@ solver-state-algorithm-fields-ACHD(solver) ::= <<
     // Zero after initialization and never written again: the pass that must not see a wrench.
     KDL::Wrenches f_ext_zero;
     KDL::JntArray tau_ctrl_acc;
+    // The external-wrench pass runs its own ACHD solve, whose inputs are constant zero and
+    // whose outputs KDL overwrites -- so all of them are sized once at initialization.
+    KDL::JntArray qdd_fext;
+    KDL::Jacobian alpha_zero;
+    KDL::JntArray beta_zero;
+    KDL::JntArray ff_zero;
+    KDL::JntArray tau_cstr_fext;
     std::unique_ptr\<KDL::ChainHdSolver_Vereshchagin_Fext_FixedJoint\> achd_fext;
     std::unique_ptr\<KDL::ChainHdSolver_Vereshchagin_Fixed_Joint\> achd_acc;
 >>
@@ -65,7 +72,6 @@ solver-state-algorithm-fields-RNE(solver) ::= <<
 // that contribute anything need a rule; the rest fall through to the empty default.
 solver-state-struct-extra-impl ::= [
     "ACHD-mj_kdl": "solver-state-struct-extra-ACHD-mj_kdl",
-    "ACHD-robif2b": "solver-state-struct-extra-ACHD-robif2b",
     default: "solver-no-extra"
 ]
 
@@ -78,16 +84,6 @@ solver-state-struct-extra(solver, backend) ::= <<
 // mj_kdl gravity-compensates the ACHD command with a separate RNE pass.
 solver-state-struct-extra-ACHD-mj_kdl(solver) ::= <<
     std::unique_ptr\<KDL::ChainIdSolver_RNE\> rnea;
->>
-
-// The hardware external-wrench pass runs its own ACHD solve, whose inputs are constant zero and
-// whose outputs KDL overwrites -- so all of them are sized once here.
-solver-state-struct-extra-ACHD-robif2b(solver) ::= <<
-    KDL::JntArray qdd_fext;
-    KDL::Jacobian alpha_zero;
-    KDL::JntArray beta_zero;
-    KDL::JntArray ff_zero;
-    KDL::JntArray tau_cstr_fext;
 >>
 
 // The frame an alpha direction is taken in comes off the one world model, composed back onto this
@@ -187,6 +183,14 @@ solver-init-algorithm-ACHD(solver, chain_solver, motion_driver) ::= <<
         state.<solver.id>.tau_ctrl_acc = KDL::JntArray(state.<solver.id>.num_joints);
 <if(motion_driver.has_cartesian_force)>
         state.<solver.id>.f_ext = KDL::Wrenches(state.<solver.id>.num_segments);
+        state.<solver.id>.qdd_fext = KDL::JntArray(state.<solver.id>.num_joints);
+        state.<solver.id>.alpha_zero = KDL::Jacobian(state.<solver.id>.num_spatial_directions);
+        state.<solver.id>.beta_zero = KDL::JntArray(state.<solver.id>.num_spatial_directions);
+        state.<solver.id>.ff_zero = KDL::JntArray(state.<solver.id>.num_joints);
+        state.<solver.id>.tau_cstr_fext = KDL::JntArray(state.<solver.id>.num_joints);
+        KDL::SetToZero(state.<solver.id>.alpha_zero);
+        KDL::SetToZero(state.<solver.id>.beta_zero);
+        KDL::SetToZero(state.<solver.id>.ff_zero);
         state.<solver.id>.achd_fext = std::make_unique\<KDL::ChainHdSolver_Vereshchagin_Fext_FixedJoint\>(*robot.<solver.id>.chain, state.<solver.id>.root_acc, state.<solver.id>.num_spatial_directions);
 <endif>
         state.<solver.id>.achd_acc = std::make_unique\<KDL::ChainHdSolver_Vereshchagin_Fixed_Joint\>(*robot.<solver.id>.chain, state.<solver.id>.root_acc, state.<solver.id>.num_spatial_directions);
@@ -211,7 +215,6 @@ solver-init-algorithm-RNE(solver, chain_solver, motion_driver) ::= <<
 
 solver-init-extra-impl ::= [
     "ACHD-mj_kdl": "solver-init-extra-ACHD-mj_kdl",
-    "ACHD-robif2b": "solver-init-extra-ACHD-robif2b",
     default: "solver-no-extra"
 ]
 
@@ -223,19 +226,6 @@ solver-init-extra(solver, chain_solver, motion_driver, backend) ::= <<
 // it is built with the field itself rather than with the root acceleration ACHD was given.
 solver-init-extra-ACHD-mj_kdl(solver, chain_solver, motion_driver) ::= <<
         state.<solver.id>.rnea = std::make_unique\<KDL::ChainIdSolver_RNE\>(*robot.<solver.id>.chain, KDL::Vector(<if(chain_solver.gravity_compensation)><chain_solver.gravity_compensation; separator=", "><else>0.0, 0.0, 0.0<endif>));
->>
-
-solver-init-extra-ACHD-robif2b(solver, chain_solver, motion_driver) ::= <<
-<if(motion_driver.has_cartesian_force)>
-        state.<solver.id>.qdd_fext = KDL::JntArray(state.<solver.id>.num_joints);
-        state.<solver.id>.alpha_zero = KDL::Jacobian(state.<solver.id>.num_spatial_directions);
-        state.<solver.id>.beta_zero = KDL::JntArray(state.<solver.id>.num_spatial_directions);
-        state.<solver.id>.ff_zero = KDL::JntArray(state.<solver.id>.num_joints);
-        state.<solver.id>.tau_cstr_fext = KDL::JntArray(state.<solver.id>.num_joints);
-        KDL::SetToZero(state.<solver.id>.alpha_zero);
-        KDL::SetToZero(state.<solver.id>.beta_zero);
-        KDL::SetToZero(state.<solver.id>.ff_zero);
-<endif>
 >>
 
 solver-sync-input(solver, backend, joint_normalization) ::= <<
@@ -388,11 +378,20 @@ shared.<out.id> = <normalized-joint-read({state.<solver.id>.q(<out.joint_index>)
 // A gripper mimic joint the chain does not articulate: the bound gripper device reports it,
 // so the read never touches chain joint state.
 gripper-joint-output(solver, chain_solver, out, backend) ::= <<
-<({gripper-joint-output-<backend>})(solver, chain_solver, out)>
+<({<gripper-joint-output-impl.(out.type)>-<backend>})(solver, chain_solver, out)>
 >>
 
-gripper-joint-output-robif2b(solver, chain_solver, out) ::= <<
+gripper-joint-output-impl ::= [
+    "JointCurrent": "gripper-current-output",
+    default: "gripper-position-output"
+]
+
+gripper-position-output-robif2b(solver, chain_solver, out) ::= <<
 shared.<out.id> = <normalized-joint-read({*robot.<solver.id>.gripper_pos}, out.normalization)>;
+>>
+
+gripper-current-output-robif2b(solver, chain_solver, out) ::= <<
+shared.<out.id> = *robot.<solver.id>.gripper_cur;
 >>
 
 // The simulator answers for a joint the chain does not articulate -- a gripper mimic -- so the
@@ -432,44 +431,63 @@ solver-output-Wrench-mj_kdl(solver, chain_solver, out) ::= <<
         }
         return frame;
     };
-    const KDL::Wrench measured_<out.id> = motion_spec::runtime::transform_wrench(
-        ft_<out.id>->wrench,
-        frame_<out.id>("<out.sensor_frame.id>"),
-        frame_<out.id>("<out.reference_point.id>"),
-        frame_<out.id>("<out.as_seen_by.id>"));
-<ft-tare(out, {measured_<out.id>})>
+    const KDL::Frame sensor_<out.id> = frame_<out.id>("<out.sensor_frame.id>");
+    const KDL::Frame reference_<out.id> = frame_<out.id>("<out.reference_point.id>");
+    const KDL::Frame observer_<out.id> = frame_<out.id>("<out.as_seen_by.id>");
+    const KDL::Vector gravity_<out.id>(
+        robot.<solver.id>.robot->model->opt.gravity[0],
+        robot.<solver.id>.robot->model->opt.gravity[1],
+        robot.<solver.id>.robot->model->opt.gravity[2]);
+<ft-tare(out, {ft_<out.id>->wrench}, {sensor_<out.id>}, {reference_<out.id>}, {observer_<out.id>}, {gravity_<out.id>})>
 }
 >>
 
-// A tare is what the sensor reads unloaded and at rest. The window keeps a running mean rather
-// than its last sample, and a reading that drifts from that mean is the arm still moving, so the
-// window starts over. Only a completed window replaces the standing bias: re-taring therefore
-// leaves the previous zero in force instead of blinding every consumer for the window's length.
-ft-tare(out, sample) ::= <<
-    // The raw sample, logged before the tare: after the reference-point/as-seen-by transform
-    // and before the zero is subtracted -- the quantity a diagnostician wants, and what
-    // ft_bias is commensurate with.
-    shared.<out.id>_ft_raw = <sample>;
+// Three constants, three frames: the sensor's zero is fixed in the sensor frame, the load's weight
+// in gravity's frame, the payload in the as-seen-by frame. A zero taken in any one frame leaves
+// the other two rotating with the wrist. `raw` is what the load applies to the sensor.
+ft-tare(out, raw, sensor, reference, observer, gravity) ::= <<
+    const KDL::Vector gravity_sensor_<out.id> = (<sensor>).M.Inverse(<gravity>);
+    {
+        const KDL::Vector weight_<out.id> = robot.ft_<out.sensor_name>_load.getMass() * gravity_sensor_<out.id>;
+        shared.<out.id>_ft_load = KDL::Wrench(
+            weight_<out.id>,
+            robot.ft_<out.sensor_name>_load.getMass() > 0.0
+                ? robot.ft_<out.sensor_name>_load.getCOG() * weight_<out.id>
+                : KDL::Vector::Zero());
+    }
+    shared.<out.id>_ft_raw = motion_spec::runtime::transform_wrench(<raw>, <sensor>, <reference>, <observer>);
+    // Sensor frame, zero and load out: payload plus contact (plus the zero until the first tare).
+    const KDL::Wrench net_<out.id> = <raw> - shared.<out.id>_ft_bias - shared.<out.id>_ft_load;
 <retare-on(out)>    if (robot.ft_<out.sensor_name>_bias_samples > 0 && shared.<out.id>_ft_settle \< robot.ft_<out.sensor_name>_bias_samples) {
         if (shared.<out.id>_ft_settle > 0 && robot.ft_<out.sensor_name>_bias_max_drift > 0.0
-            && (<sample> - shared.<out.id>_ft_bias_new).force.Norm() > robot.ft_<out.sensor_name>_bias_max_drift) {
+            && (net_<out.id> - shared.<out.id>_ft_bias_new).force.Norm() > robot.ft_<out.sensor_name>_bias_max_drift) {
             shared.<out.id>_ft_settle = 0;
         \}
         ++shared.<out.id>_ft_settle;
         shared.<out.id>_ft_bias_new = shared.<out.id>_ft_bias_new
-            + (<sample> - shared.<out.id>_ft_bias_new) / static_cast\<double>(shared.<out.id>_ft_settle);
+            + (net_<out.id> - shared.<out.id>_ft_bias_new) / static_cast\<double>(shared.<out.id>_ft_settle);
         if (shared.<out.id>_ft_settle >= robot.ft_<out.sensor_name>_bias_samples) {
-            // One window is a proposal, not a decision. A press that ends between two windows
-            // makes them disagree, so the press never becomes the zero; a load that is genuinely
-            // held makes them agree, so a real payload change still tares. The tolerance is the
-            // sensor's own noise scale -- the same number that decides a window is steady.
+            // Two agreeing windows commit; a press that ends between them never becomes the zero.
             if (shared.<out.id>_ft_confirming
                 && (shared.<out.id>_ft_bias_new - shared.<out.id>_ft_bias_prev).force.Norm()
                      \<= robot.ft_<out.sensor_name>_bias_max_drift) {
-                shared.<out.id>_ft_bias = shared.<out.id>_ft_bias_new;
+                if (shared.<out.id>_ft_tares == 0) {
+                    // First tare of a run: the sensor's zero.
+                    shared.<out.id>_ft_bias = shared.<out.id>_ft_bias_new;
+                \} else {
+                    // A held weight lies along gravity; what a later tare finds across it is
+                    // the zero having moved.
+                    const double _g = gravity_sensor_<out.id>.Norm();
+                    const KDL::Vector _g_hat = _g > 0.0 ? gravity_sensor_<out.id> / _g : KDL::Vector::Zero();
+                    const KDL::Wrench _along(
+                        KDL::dot(shared.<out.id>_ft_bias_new.force, _g_hat) * _g_hat,
+                        KDL::dot(shared.<out.id>_ft_bias_new.torque, _g_hat) * _g_hat);
+                    shared.<out.id>_ft_bias = shared.<out.id>_ft_bias + (shared.<out.id>_ft_bias_new - _along);
+                    shared.<out.id>_ft_payload = motion_spec::runtime::transform_wrench(
+                        _along, <sensor>, <reference>, <observer>);
+                \}
                 ++shared.<out.id>_ft_tares;
                 shared.<out.id>_ft_confirming = false;
-                // Left latched at bias_samples: the zero holds until an event asks for a new one.
             \} else {
                 if (shared.<out.id>_ft_confirming) {
                     ++shared.<out.id>_ft_rejects;
@@ -481,7 +499,9 @@ ft-tare(out, sample) ::= <<
         \}
     \}
     shared.<out.id> = (shared.<out.id>_ft_tares > 0 || robot.ft_<out.sensor_name>_bias_samples == 0)
-        ? shared.<out.id>_ft_bias - <sample>
+        ? shared.<out.id>_ft_payload
+            - motion_spec::runtime::transform_wrench(
+                <raw> - shared.<out.id>_ft_bias - shared.<out.id>_ft_load, <sensor>, <reference>, <observer>)
         : KDL::Wrench::Zero();
 >>
 
@@ -502,12 +522,12 @@ solver-output-Wrench-robif2b(solver, chain_solver, out) ::= <<
     const KDL::Wrench measured_<out.id>(
         KDL::Vector(<out.id>_sample.value.force[0], <out.id>_sample.value.force[1], <out.id>_sample.value.force[2]),
         KDL::Vector(<out.id>_sample.value.moment[0], <out.id>_sample.value.moment[1], <out.id>_sample.value.moment[2]));
-    const KDL::Wrench at_<out.id> = motion_spec::runtime::transform_wrench(
-        measured_<out.id>,
-        <world-pose(solver, {robot.world_<solver.id>_<out.sensor_frame.id>})>,
-        <world-pose(solver, {robot.world_<solver.id>_<out.reference_point.id>})>,
-        <world-pose(solver, {robot.world_<solver.id>_<out.as_seen_by.id>})>);
-<ft-tare(out, {at_<out.id>})>
+    const KDL::Frame sensor_<out.id> = <world-pose(solver, {robot.world_<solver.id>_<out.sensor_frame.id>})>;
+    const KDL::Frame reference_<out.id> = <world-pose(solver, {robot.world_<solver.id>_<out.reference_point.id>})>;
+    const KDL::Frame observer_<out.id> = <world-pose(solver, {robot.world_<solver.id>_<out.as_seen_by.id>})>;
+    // Frames are in the chain root's frame; so is the solver's gravity.
+    const KDL::Vector gravity_<out.id>(<if(chain_solver.gravity)><chain_solver.gravity; separator=", "><else>0.0, 0.0, 0.0<endif>);
+<ft-tare(out, {measured_<out.id>}, {sensor_<out.id>}, {reference_<out.id>}, {observer_<out.id>}, {gravity_<out.id>})>
 }
 >>
 
@@ -662,7 +682,8 @@ solver-run-RNE(solver, motion_driver, backend) ::= <<
 >>
 
 solver-run-fext-pre-impl ::= [
-    "ACHD-robif2b": "solver-run-fext-pre-ACHD-robif2b",
+    "ACHD-mj_kdl": "solver-run-fext-pre-ACHD",
+    "ACHD-robif2b": "solver-run-fext-pre-ACHD",
     default: "solver-no-fext-pre"
 ]
 
@@ -672,9 +693,10 @@ solver-run-fext-pre(solver, chain_solver, motion_driver, backend) ::= <<
 <({<solver-run-fext-pre-impl.({<chain_solver.algorithm_name>-<backend>})>})(solver, motion_driver)>
 >>
 
-// On hardware the external-wrench pass runs its own ACHD solve first; mj_kdl reads f_ext straight
-// from the simulator, so nothing precedes it there.
-solver-run-fext-pre-ACHD-robif2b(solver, motion_driver) ::= <<
+// The authored wrench is turned into joint torque by its own ACHD pass: zero constraints, zero
+// feed-forward, so the output is J^T f_ext alone -- no gravity, Coriolis or joint feed-forward in
+// it. Every backend needs that separation, so both run this before the acceleration solve.
+solver-run-fext-pre-ACHD(solver, motion_driver) ::= <<
     state.<solver.id>.achd_fext->CartToJnt(
         state.<solver.id>.q,
         state.<solver.id>.qd,
@@ -686,17 +708,9 @@ solver-run-fext-pre-ACHD-robif2b(solver, motion_driver) ::= <<
         state.<solver.id>.tau_cstr_fext);
 >>
 
+// The wrench was already priced by the fext pass above; letting it into the acceleration solve
+// too would make it a disturbance the constraints absorb instead of a force the arm exerts.
 solver-achd-f_ext-arg(solver, motion_driver, backend) ::= <<
-<({solver-achd-f_ext-arg-<backend>})(solver, motion_driver)>
->>
-
-// The wrench belongs in the constrained solve; the RNEA pass below is only the bridge to
-// MuJoCo's raw torque interface and must stay wrench-free (mj_kdl_wrapper docs/howto/torque_control.md).
-solver-achd-f_ext-arg-mj_kdl(solver, motion_driver) ::= <<
-<if(motion_driver.has_cartesian_force)>state.<solver.id>.f_ext<else>state.<solver.id>.f_ext_zero<endif>
->>
-
-solver-achd-f_ext-arg-robif2b(solver, motion_driver) ::= <<
 state.<solver.id>.f_ext_zero
 >>
 
@@ -705,7 +719,8 @@ solver-run-finalize(solver, motion_driver, backend) ::= <<
 >>
 
 // ACHD's constraint torque lives in the gravity-absorbed ABA frame (~ M*qdd - c); MuJoCo's
-// qfrc_applied needs M*qdd + c, so RNEA re-prices the resolved qdd. Zero wrench here, always.
+// qfrc_applied needs M*qdd + c, so RNEA re-prices the resolved qdd. Zero wrench here, always:
+// the wrench's own torque is added afterwards, so RNEA stays the acceleration bridge alone.
 solver-run-finalize-mj_kdl(solver, motion_driver) ::= <<
     state.<solver.id>.rnea->CartToJnt(
         state.<solver.id>.q,
@@ -713,6 +728,9 @@ solver-run-finalize-mj_kdl(solver, motion_driver) ::= <<
         state.<solver.id>.qdd,
         state.<solver.id>.f_ext_zero,
         state.<solver.id>.tau_ctrl);
+<if(motion_driver.has_cartesian_force)>
+    KDL::Add(state.<solver.id>.tau_ctrl, state.<solver.id>.tau_cstr_fext, state.<solver.id>.tau_ctrl);
+<endif>
 >>
 
 solver-run-finalize-robif2b(solver, motion_driver) ::= <<

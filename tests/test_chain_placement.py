@@ -110,9 +110,10 @@ def test_which_reads_move_to_the_world_model_is_decided_once() -> None:
     assert _placed_on_chain(force, "robif2b") == (("attached_to", False),)
     constraint = AccelerationConstraint("c", subspace=Subspace.Linear, axis=None)
     assert _placed_on_chain(constraint, "mj_kdl") == (("as_seen_by", True),)
-    # The simulator answers a wrench's frames from its own scene, by name, so nothing is placed.
+    # The simulator answers a wrench's transform frames from its own scene, by name; only the
+    # sensor frame is placed, because the load hanging off it is walked from the world model.
     wrench = _spatial(Wrench, sensor_frame=None)
-    assert _placed_on_chain(wrench, "mj_kdl") == ()
+    assert _placed_on_chain(wrench, "mj_kdl") == (("sensor_frame", True),)
     assert [attribute for attribute, _ in _placed_on_chain(wrench, "robif2b")] == [
         "sensor_frame",
         "reference_point",

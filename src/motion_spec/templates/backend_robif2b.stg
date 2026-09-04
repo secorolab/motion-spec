@@ -16,6 +16,8 @@ robot-state-struct-robif2b-KinovaGen3(solver) ::= <<
 
 struct kinova_state {
     bool success = false;
+    // Every kortex entry point asserts on the error port, not just the ones that can fail.
+    enum robif2b_kinova_gen3_error error = ROBIF2B_KINOVA_NO_ERROR;
     enum robif2b_ctrl_mode ctrl_mode = ROBIF2B_CTRL_MODE_FORCE;
     double pos_msr[KINOVA_NUM_JOINTS] = {0.0};
     double vel_msr[KINOVA_NUM_JOINTS] = {0.0};
@@ -55,6 +57,8 @@ struct manipulator_robot {
     // The measured gripper joint position [rad]: the mimic joint is not in the chain, so the
     // bound gripper device reports it.
     double *gripper_pos = nullptr;
+    // The gripper motor's measured current, in whatever the bound device reports it in.
+    const double *gripper_cur = nullptr;
     // Where this chain's endpoints sit in the one world model. Per instance, though the struct
     // type is shared: two arms sliced from one tree end at different segments.
     int world_root = -1;
@@ -96,6 +100,8 @@ device-io-member-robif2b-RobotiqFT300s(solver, device) ::= <<
     const ft_sensor_sample *ft_<device.drives> = nullptr;
     int ft_<device.drives>_bias_samples = 0;
     double ft_<device.drives>_bias_max_drift = 0.0;
+    // What hangs off the sensor, in its frame: the tare predicts this weight at every pose.
+    KDL::RigidBodyInertia ft_<device.drives>_load = KDL::RigidBodyInertia::Zero();
 >>
 
 device-io-assign-impl ::= [
@@ -122,6 +128,7 @@ device-state-init-robif2b-KinovaGen3-2F85(solver, device) ::= <<
     gripper_<solver.runtime.id>_state.frc_cmd = static_cast\<float\>(motion_spec::config::gripper_pct(robot_config, "<device.config_key>", "gripper_force_pct"));
     double gripper_<solver.runtime.id>_cmd = 0.0;
     double gripper_<solver.runtime.id>_pos_rad = 0.0;
+    double gripper_<solver.runtime.id>_cur_a = 0.0;
 >>
 
 // Two Modbus round trips at 115200 baud do not fit in a control cycle, so the device gets its own
@@ -136,6 +143,7 @@ device-state-init-robif2b-Robotiq2F85(solver, device) ::= <<
         motion_spec::runtime::kControlPeriodS);
     double gripper_<solver.runtime.id>_cmd = 0.0;
     double gripper_<solver.runtime.id>_pos_rad = 0.0;
+    double gripper_<solver.runtime.id>_cur_a = 0.0;
 >>
 
 device-state-init-robif2b-RobotiqFT300s(solver, device) ::= <<
@@ -208,6 +216,7 @@ device-init-robif2b-KinovaGen3(solver, device) ::= <<
     kinova_<solver.runtime.id>.jnt_vel_cmd = &kinova_<solver.runtime.id>_state.vel_cmd[0];
     kinova_<solver.runtime.id>.jnt_trq_cmd = &kinova_<solver.runtime.id>_state.eff_cmd[0];
     kinova_<solver.runtime.id>.act_cur_cmd = &kinova_<solver.runtime.id>_state.cur_cmd[0];
+    kinova_<solver.runtime.id>.error = &kinova_<solver.runtime.id>_state.error;
     kinova_<solver.runtime.id>.success = &kinova_<solver.runtime.id>_state.success;
 <endif>
 >>
@@ -235,6 +244,7 @@ device-init-robif2b-Robotiq2F85(solver, device) ::= <<
     gripper_<solver.runtime.id>.serial.timeout_ms = cfg_gripper_<solver.runtime.id>.timeout_ms;
     gripper_<solver.runtime.id>.serial.slave_address = cfg_gripper_<solver.runtime.id>.slave_address;
     gripper_<solver.runtime.id>.position_msr = &gripper_<solver.runtime.id>_io.state.position_msr;
+    gripper_<solver.runtime.id>.current_msr = &gripper_<solver.runtime.id>_io.state.current_msr;
     gripper_<solver.runtime.id>.is_gripper_moving = &gripper_<solver.runtime.id>_io.state.is_moving;
     gripper_<solver.runtime.id>.obj_detection_status = &gripper_<solver.runtime.id>_io.state.obj_status;
     gripper_<solver.runtime.id>.gripper_status = &gripper_<solver.runtime.id>_io.state.status;
@@ -263,6 +273,20 @@ device-init-robif2b-RobotiqFT300s(solver, device) ::= <<
 
 // A driver that cannot connect must not reach the loop: every measurement it owns would keep
 // whatever it was initialised to, and the first solve would price a pose the arm is not in.
+device-disconnected(config_key) ::= <<
+    std::cerr \<\< "[run] device '<config_key>' disconnected" \<\< std::endl;
+>>
+
+// The kortex session can fail to close; the driver says so on its error port and nowhere else.
+device-disconnect-check(handle, config_key) ::= <<
+    if (<handle>.success) {
+        std::cerr \<\< "[run] device '<config_key>' disconnected" \<\< std::endl;
+    \} else {
+        std::cerr \<\< "[run] device '<config_key>' disconnect failed, error "
+                  \<\< <handle>.error \<\< std::endl;
+    \}
+>>
+
 device-configure-check(handle, config_key) ::= <<
     if (!<handle>.success) {
         std::cerr \<\< "[run] device '<config_key>' failed to configure\n";
@@ -341,6 +365,9 @@ device-update-robif2b-KinovaGen3-2F85(solver, device, active_motion) ::= <<
             motion_spec::runtime::require_driver(gripper_<solver.runtime.id>_state.success, "<device.config_key>");
             gripper_<solver.runtime.id>_pos_rad =
                 <gripper-travel-Robotiq2F85()> * (gripper_<solver.runtime.id>_state.pos_msr / 100.0);
+            // The interconnect route reports motor current as a percentage, not amperes; scaling
+            // it needs the Kortex spec, so a model on this route thresholds the percentage.
+            gripper_<solver.runtime.id>_cur_a = gripper_<solver.runtime.id>_state.cur_msr;
 >>
 
 // No bus transaction here: the radian command is scaled to the device's units and handed over,
@@ -353,6 +380,7 @@ device-update-robif2b-Robotiq2F85(solver, device, active_motion) ::= <<
             motion_spec::io::require_fresh(gripper_<solver.runtime.id>_io.stale, gripper_<solver.runtime.id>_msr.seq, gripper_<solver.runtime.id>_msr.value.success, true, "<device.config_key>");
             gripper_<solver.runtime.id>_pos_rad =
                 <gripper-travel-Robotiq2F85()> * (gripper_<solver.runtime.id>_msr.value.position_msr / 255.0);
+            gripper_<solver.runtime.id>_cur_a = gripper_<solver.runtime.id>_msr.value.current_msr;
 >>
 
 device-update-robif2b-RobotiqFT300s(solver, device, active_motion) ::= <<
@@ -373,6 +401,7 @@ device-update-robif2b-RobotiqFT300s(solver, device, active_motion) ::= <<
 device-shutdown-robif2b-KinovaGen3(solver, device) ::= <<
     <robif2b-stop-kinova(solver.runtime.id)>
     <robif2b-shutdown-kinova(solver.runtime.id)>
+<device-disconnect-check({kinova_<solver.runtime.id>_state}, device.config_key)>
 >>
 
 device-shutdown-robif2b-KinovaGen3-2F85(solver, device) ::= <<
@@ -384,12 +413,14 @@ device-shutdown-robif2b-KinovaGen3-2F85(solver, device) ::= <<
 device-shutdown-robif2b-Robotiq2F85(solver, device) ::= <<
     gripper_<solver.runtime.id>_io.stop();
     robif2b_robotiq_gripper_shutdown(&gripper_<solver.runtime.id>);
+<device-disconnected(device.config_key)>
 >>
 
 device-shutdown-robif2b-RobotiqFT300s(solver, device) ::= <<
     if (ft_<device.drives>_configured) {
         ft_<device.drives>_io.stop();
         robif2b_robotiq_ft_shutdown(&ft_<device.drives>);
+    <device-disconnected(device.config_key)>
     \}
 >>
 
@@ -403,6 +434,7 @@ device-assign-impl ::= [
 device-assign-robif2b-gripper-cmd(solver, device) ::= <<
         .gripper_cmd = &gripper_<solver.runtime.id>_cmd,
         .gripper_pos = &gripper_<solver.runtime.id>_pos_rad,
+        .gripper_cur = &gripper_<solver.runtime.id>_cur_a,
 >>
 
 robot-chain-robif2b-KinovaGen3(solver) ::= <<

@@ -209,7 +209,8 @@ def build_provenance_document(ir: dict, output_dir: Path, *, sampling: dict | No
         if entity.get("role") != "motion_spec_ir":
             input_entity_ids.append(entity_id)
 
-    # The draw a randomized model got: the seed it came from, and the number each quantity took.
+    # The draw a randomized model got: the seed it came from, the number each quantity took, and
+    # the distribution it came out of -- what a later analysis groups runs by.
     # `prov:value` is spelled out -- the metamodel context aliases hadMember and Collection, not
     # value -- and a 3-vector is an @list, since a bare array is an unordered set in JSON-LD.
     if sampling:
@@ -223,9 +224,18 @@ def build_provenance_document(ir: dict, output_dir: Path, *, sampling: dict | No
                     {
                         "@id": uri,
                         "@type": ["prov:Entity"],
-                        "prov:value": values[0] if len(values) == 1 else {"@list": list(values)},
+                        "prov:value": (
+                            draw["values"][0]
+                            if len(draw["values"]) == 1
+                            else {"@list": list(draw["values"])}
+                        ),
+                        **(
+                            {"wasDerivedFrom": {"@id": draw["distribution"]}}
+                            if draw["distribution"]
+                            else {}
+                        ),
                     }
-                    for uri, values in sorted(sampling.get("draws", {}).items())
+                    for uri, draw in sorted(sampling.get("draws", {}).items())
                 ],
             },
         )

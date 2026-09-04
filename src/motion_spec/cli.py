@@ -61,7 +61,7 @@ def _generation_base(output_dir: Path | None) -> Path | None:
     return None
 
 
-def _new_generation(model: Path, output_dir: Path | None) -> Path:
+def _new_generation(model: Path, output_dir: Path | None, name: str | None = None) -> Path:
     """Create this run's generation directory, and say where it is before anything fills it.
 
     Announced up front rather than only on success: the DSL and the compiler write pages of
@@ -71,7 +71,7 @@ def _new_generation(model: Path, output_dir: Path | None) -> Path:
     """
     from motion_spec.generation.pipeline import create_generation_dir
 
-    generation = create_generation_dir(model, _generation_base(output_dir))
+    generation = create_generation_dir(model, _generation_base(output_dir), name)
     click.echo(f"generation: {generation}", err=True)
     _point_latest(generation)
 
@@ -629,7 +629,17 @@ def health(profiles: tuple[str, ...], targets: tuple[str, ...]) -> None:
     help="Seed the draws of any sampled quantity; recorded either way in "
     "generated/provenance/motion-spec.ld.json.",
 )
-def gen(stage_or_model: str, model: Path | None, output_dir: Path | None, seed: int | None) -> None:
+@click.option(
+    "--name",
+    help="Name the generation tree under the base directory; defaults to the model's stem.",
+)
+def gen(
+    stage_or_model: str,
+    model: Path | None,
+    output_dir: Path | None,
+    seed: int | None,
+    name: str | None,
+) -> None:
     """Generate IR or C++ from a .robmot MODEL; CODE is the default stage."""
     from rdf_utils.constraints import ConstraintViolation
 
@@ -650,7 +660,7 @@ def gen(stage_or_model: str, model: Path | None, output_dir: Path | None, seed: 
     if model.suffix != ".robmot":
         raise click.BadParameter("MODEL must be a .robmot file", param_hint="MODEL")
     try:
-        generation = _new_generation(model, output_dir)
+        generation = _new_generation(model, output_dir, name)
         generate_model(model, generation, stage=stage, seed=seed)
     except ConstraintViolation as exc:
         raise _model_rejected(exc) from exc
@@ -897,6 +907,11 @@ def _is_simulated(generation: Path) -> bool:
     help="Install prefix the build resolves packages from. Repeatable.",
 )
 @click.option("-j", "--jobs", type=click.IntRange(min=1), help="Parallel build jobs.")
+@click.option(
+    "--name",
+    help="Name the generation tree under the base directory; defaults to the model's stem. "
+    "Requires a .robmot INPUT.",
+)
 @click.option("--run-id", help="Name of this run's directory under <generation>/runs.")
 @click.option(
     "--cwd",
@@ -922,9 +937,8 @@ def _is_simulated(generation: Path) -> bool:
     "record",
     multiple=True,
     metavar="CAMERA",
-    help="Record this camera to MP4 beside the log. 'default' is the standard camera view "
-    "(the pose a fresh GUI window opens with) and records with or without a window; others "
-    "are the cameras the scene declares. Repeatable.",
+    help="Record this camera to MP4 beside the log. Simulations render declared cameras; "
+    "real runs record their declared ROS image topics. Repeatable.",
 )
 @click.option("--steps", type=click.IntRange(min=1), help="Maximum headless simulation steps.")
 @click.option("--no-log", is_flag=True, help="Do not write the frame log; the run has no replay.")
@@ -934,6 +948,7 @@ def run(
     output_dir: Path | None,
     prefixes: tuple[Path, ...],
     jobs: int | None,
+    name: str | None,
     run_id: str | None,
     cwd: Path | None,
     headless: bool,
@@ -959,7 +974,7 @@ def run(
         raise click.UsageError("--steps requires --headless")
     if input.suffix == ".robmot":
         try:
-            generation = _new_generation(input, output_dir)
+            generation = _new_generation(input, output_dir, name)
             generate_model(input, generation, stage="code")
             build_generation(generation, prefixes=prefixes, jobs=jobs)
         except ConstraintViolation as exc:
@@ -971,7 +986,7 @@ def run(
             raise click.BadParameter(
                 "INPUT must be a .robmot model or a generation directory", param_hint="INPUT"
             )
-        if output_dir is not None or prefixes or jobs is not None:
+        if output_dir is not None or prefixes or jobs is not None or name:
             raise click.UsageError("generation and build options require a .robmot INPUT")
         generation = input.resolve()
 
@@ -1257,9 +1272,8 @@ def _taxonomy_row(per_class: dict[str, int]) -> str:
     "record",
     multiple=True,
     metavar="CAMERA",
-    help="Record this camera to MP4 beside the log. 'default' is the standard camera view "
-    "(the pose a fresh GUI window opens with) and records with or without a window; others "
-    "are the cameras the scene declares. Repeatable.",
+    help="Record this camera to MP4 beside the log. Simulations render declared cameras; "
+    "real runs record their declared ROS image topics. Repeatable.",
 )
 @click.option("--steps", type=click.IntRange(min=1), help="Maximum headless simulation steps.")
 @click.option("--no-log", is_flag=True, help="Do not write the frame log; the run has no replay.")

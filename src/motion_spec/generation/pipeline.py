@@ -172,10 +172,16 @@ def new_id(name: str) -> str:
     return f"{name}-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')}"
 
 
-def create_generation_dir(model: Path, output_dir: Path | None = None) -> Path:
-    """Create <base>/<model>/<timestamp> for MODEL, where base is `-o` or ./generation."""
+def create_generation_dir(
+    model: Path, output_dir: Path | None = None, name: str | None = None
+) -> Path:
+    """Create <base>/<name>/<timestamp> for MODEL, where base is `-o` or ./generation.
+
+    NAME defaults to the model's own stem; one model generated several ways names each tree
+    for what tells them apart.
+    """
     base = output_dir or Path.cwd() / "generation"
-    generation = base / model.stem / datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    generation = base / (name or model.stem) / datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     generation.mkdir(parents=True, exist_ok=False)
     return generation.resolve()
 

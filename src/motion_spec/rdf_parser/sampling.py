@@ -16,27 +16,35 @@ import rdflib
 from motion_spec_dsl.rdf_parser.manifest import install_metamodel_resolver
 from motion_spec_dsl.rdf_parser.vocab import GEOM_COORD, QUDT_SCHEMA
 from rdf_utils.constraints import ConstraintViolation
-from rdf_utils.models.vocab import URI_DISTRIB_TYPE_SAMPLED_QUANTITY
+from rdf_utils.models.vocab import URI_DISTRIB_PRED_FROM_DISTRIB, URI_DISTRIB_TYPE_SAMPLED_QUANTITY
 from rdflib.namespace import RDF
 
 
-def sampled_draws(model_dir: Path) -> dict[str, list[float]]:
+def sampled_draws(model_dir: Path) -> dict[str, dict]:
     """The value the DSL drew for every sampled quantity the generated model documents declare.
+
+    The distribution travels with the numbers: which one a quantity drew from is what a later
+    analysis groups runs by.
 
     Parameters:
         model_dir: the generation's `generated/model` directory
 
     Returns:
-        ``{node_uri: [values]}``, or ``{}`` when the model declares no sampled quantity
+        ``{node_uri: {"values": [...], "distribution": uri}}``, or ``{}`` when the model
+        declares no sampled quantity
     """
     install_metamodel_resolver()
     graph = rdflib.Graph()
     for path in sorted(Path(model_dir).glob("*.ld.json")):
         graph.parse(str(path), format="json-ld")
 
-    draws: dict[str, list[float]] = {}
+    draws: dict[str, dict] = {}
     for node in sorted(graph.subjects(RDF.type, URI_DISTRIB_TYPE_SAMPLED_QUANTITY), key=str):
-        draws[str(node)] = _values(graph, node)
+        distribution = graph.value(node, URI_DISTRIB_PRED_FROM_DISTRIB)
+        draws[str(node)] = {
+            "values": _values(graph, node),
+            "distribution": str(distribution) if distribution is not None else None,
+        }
     return draws
 
 
@@ -79,7 +87,13 @@ def demo() -> None:
                     "@graph": [
                         sampled(
                             "p",
-                            {str(GEOM_COORD[axis]): v for axis, v in zip("xyz", [0.25, -1.0, 4.0])},
+                            {
+                                str(URI_DISTRIB_PRED_FROM_DISTRIB): {"@id": f"{base}p-distrib"},
+                                **{
+                                    str(GEOM_COORD[axis]): v
+                                    for axis, v in zip("xyz", [0.25, -1.0, 4.0])
+                                },
+                            },
                         )
                     ],
                 }
@@ -87,7 +101,10 @@ def demo() -> None:
         )
 
         draws = sampled_draws(model_dir)
-        assert draws == {f"{base}p": [0.25, -1.0, 4.0], f"{base}t": [1.5]}, draws
+        assert draws == {
+            f"{base}p": {"values": [0.25, -1.0, 4.0], "distribution": f"{base}p-distrib"},
+            f"{base}t": {"values": [1.5], "distribution": None},
+        }, draws
         assert list(draws) == [f"{base}p", f"{base}t"], draws
 
         (model_dir / "c.ld.json").write_text(

@@ -2066,14 +2066,42 @@ def declared_pose_component_entries(
     """Authored declared-pose component entries, restricted to the ids a motion references."""
     data_by_id = {item.id: item for item in data if getattr(item, "id", None)}
     snapshot_ids = snapshot_target_ids(model)
+
+    def bases(pose_id) -> list[str]:
+        """The poses a composed orientation multiplies in, in operand order."""
+        parts = pose_components.get(pose_id)
+        return [
+            operand["pose"]
+            for operand in (parts.orientation_operands if parts else None) or ()
+            if isinstance(operand.get("pose"), str)
+        ]
+
+    # A composed orientation names its base pose only through the compose operator, so the
+    # motion's own references miss it; and the base has to be built before what composes it.
+    ordered: list[str] = []
+    visiting: set[str] = set()
+
+    def schedule(pose_id) -> None:
+        if pose_id in ordered or pose_id not in pose_components:
+            return
+        if pose_id in visiting:
+            raise ValueError(f"pose {pose_id} composes its own orientation")
+        visiting.add(pose_id)
+        for base in bases(pose_id):
+            schedule(base)
+        visiting.discard(pose_id)
+        ordered.append(pose_id)
+
+    for pose_id in pose_components:
+        if referenced is None or pose_id in referenced:
+            schedule(pose_id)
+
     entries = []
-    for pose_id, parts in pose_components.items():
-        if referenced is not None and pose_id not in referenced:
-            continue
+    for pose_id in ordered:
         provenance = getattr(data_by_id.get(pose_id), "provenance", None)
         if provenance is None or not provenance.authored or pose_id in snapshot_ids:
             continue
-        entries.append({"id": pose_id, **asdict(parts)})
+        entries.append({"id": pose_id, **asdict(pose_components[pose_id])})
 
     return entries
 
@@ -2608,6 +2636,10 @@ def _consumers_by_id(
         for snapshot in getattr(motion, "task_snapshots", ()):
             add(snapshot.target_id, "motion", motion.id, "snapshot.target")
             add(snapshot.captured_id, "motion", motion.id, "snapshot.captured")
+        # The pose materializer reads a composed orientation's base pose; no closure binds it.
+        for entry in getattr(motion, "declared_pose_components", ()):
+            for operand in entry.get("orientation_operands") or ():
+                add(operand.get("pose"), "motion", motion.id, "pose.orientation.base")
     # Readers are collected from dicts whose order is the graph's; the list is an artifact.
     for member_id, readers in consumers.items():
         unique = {(entry["kind"], entry["id"], entry["role"]): entry for entry in readers}

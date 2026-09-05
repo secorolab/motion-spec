@@ -608,7 +608,7 @@ ros-standing-setup(s) ::= <<
 >>
 
 standing-payload(s) ::= <<
-<({standing-payload-<s.value_type>})(s)>
+<({standing-payload-<s.carrier>})(s)>
 >>
 
 standing-payload-Wrench(s) ::= <<
@@ -620,7 +620,7 @@ standing-payload-Wrench(s) ::= <<
             robot.<s.pub_id>_msg.<s.payload_path>torque.z = shared.<s.value_id>.torque.z();
 >>
 
-standing-payload-VelocityTwist(s) ::= <<
+standing-payload-Twist(s) ::= <<
             robot.<s.pub_id>_msg.<s.payload_path>linear.x = shared.<s.value_id>.vel.x();
             robot.<s.pub_id>_msg.<s.payload_path>linear.y = shared.<s.value_id>.vel.y();
             robot.<s.pub_id>_msg.<s.payload_path>linear.z = shared.<s.value_id>.vel.z();
@@ -640,6 +640,20 @@ standing-payload-Pose(s) ::= <<
                 robot.<s.pub_id>_msg.<s.payload_path>orientation.y = _qy;
                 robot.<s.pub_id>_msg.<s.payload_path>orientation.z = _qz;
                 robot.<s.pub_id>_msg.<s.payload_path>orientation.w = _qw;
+            \}
+>>
+
+standing-payload-Transform(s) ::= <<
+            {
+                double _qx, _qy, _qz, _qw;
+                shared.<s.value_id>.M.GetQuaternion(_qx, _qy, _qz, _qw);
+                robot.<s.pub_id>_msg.<s.payload_path>translation.x = shared.<s.value_id>.p.x();
+                robot.<s.pub_id>_msg.<s.payload_path>translation.y = shared.<s.value_id>.p.y();
+                robot.<s.pub_id>_msg.<s.payload_path>translation.z = shared.<s.value_id>.p.z();
+                robot.<s.pub_id>_msg.<s.payload_path>rotation.x = _qx;
+                robot.<s.pub_id>_msg.<s.payload_path>rotation.y = _qy;
+                robot.<s.pub_id>_msg.<s.payload_path>rotation.z = _qz;
+                robot.<s.pub_id>_msg.<s.payload_path>rotation.w = _qw;
             \}
 >>
 

@@ -799,7 +799,12 @@ def _standing_entries(model, pub_id: str, shape: dict, records: list) -> list:
     entry = shape["entry"]
     rows = []
     for index, (node, record) in enumerate(records):
-        row = {"pub_id": pub_id, "value_id": record.id, "value_type": record.type}
+        row = {
+            "pub_id": pub_id,
+            "value_id": record.id,
+            "value_type": record.type,
+            "carrier": shape["carrier"],
+        }
         if entry is None:
             # The message is the quantity: its frame and its stamp are the message's own, and
             # the run writes them where the message states them.
@@ -816,13 +821,22 @@ def _standing_entries(model, pub_id: str, shape: dict, records: list) -> list:
                     "frame_path": f"{at}{stated_in}" if stated_in else None,
                     "frame_id": _stated_against(record) if stated_in else None,
                     "id_path": f"{at}{entry['id_path']}",
-                    "id_value": _reported_subject(model, node, record),
+                    "id_value": _entry_subject(model, node, record, shape["carrier"]),
                     "auto_time": [f"{at}{path}" for path in entry["auto_time"]],
                 }
             )
         )
 
     return rows
+
+
+def _entry_subject(model, node, record, carrier: str) -> str:
+    """What an entry says it is about: a transform names the frame its pose is of, anything
+    else the entity the model states."""
+    if carrier == "Transform":
+        return record.of.id
+
+    return _reported_subject(model, node, record)
 
 
 def _stated_against(record) -> str | None:

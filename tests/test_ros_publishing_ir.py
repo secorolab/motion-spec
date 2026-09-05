@@ -378,6 +378,24 @@ def test_a_message_holding_an_array_reports_one_quantity_per_entry():
     assert "geometry_msgs" in publish["packages"]
 
 
+def test_a_tf_message_carries_a_pose_as_a_transform():
+    """`/tf` holds transforms, so a pose goes in as one: the frame it is against in the header,
+    the frame it is of as the child, and the fields spelled the way a Transform does."""
+    record = _reported("pose_ee", "Pose", "base_link")
+    record.of = type("F", (), {"id": "g_pinch"})()
+    (publish,) = _standing_many("tf2_msgs/msg/TFMessage", 100.0, (REPORTED, None, record))
+    assert publish["resize"] == [{"path": "transforms", "size": 1}]
+    (entry,) = publish["entries"]
+    assert (entry["value_type"], entry["carrier"]) == ("Pose", "Transform")
+    assert entry["payload_path"] == "transforms[0].transform."
+    assert (entry["id_path"], entry["id_value"]) == ("transforms[0].child_frame_id", "g_pinch")
+    assert (entry["frame_path"], entry["frame_id"]) == (
+        "transforms[0].header.frame_id",
+        "base_link",
+    )
+    assert entry["auto_time"] == ["transforms[0].header.stamp"]
+
+
 def test_the_array_states_no_frame_when_its_entries_disagree():
     """Two cameras on one topic: each detection says where it was seen, the message cannot."""
     (publish,) = _detections(

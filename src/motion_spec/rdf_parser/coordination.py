@@ -354,11 +354,11 @@ _FRAME_FIELD = "frame_id"
 # What a detect act writes: a pose in the world. Reached by descent, so the model names the
 # field that carries it rather than the whole path through it.
 _POSE_TYPE = "geometry_msgs/Pose"
-# The ROS type that carries a quantity published whole, per quantity type that has one.
+# The ROS types that carry a quantity published whole, per quantity type that has any.
 _PAYLOAD_TYPES = {
-    "Pose": _POSE_TYPE,
-    "VelocityTwist": "geometry_msgs/Twist",
-    "Wrench": "geometry_msgs/Wrench",
+    "Pose": (_POSE_TYPE, "geometry_msgs/Transform"),
+    "VelocityTwist": ("geometry_msgs/Twist",),
+    "Wrench": ("geometry_msgs/Wrench",),
 }
 
 
@@ -652,6 +652,17 @@ def _is_type(message, wanted: str) -> bool:
     )
 
 
+def _carried(root, carriers: tuple[str, ...]) -> str:
+    """The one of a quantity's ROS types the message reaches -- itself, by descent, or in one
+    entry of an array it holds -- or the first when it reaches none, so the descent names it."""
+    holders = [root, *(entry for _path, entry in _repeated_leaves(root))]
+    for carrier in carriers:
+        if any(_is_type(holder, carrier) or _paths_to(holder, carrier) for holder in holders):
+            return carrier
+
+    return carriers[0]
+
+
 def _descend_to(message, wanted: str, where: str) -> str:
     """The path from `message` down to the one field of type `wanted`, empty if it is already it."""
     if _is_type(message, wanted):
@@ -724,14 +735,15 @@ def standing_shape(type_name: str, quantity_type: str) -> dict:
         ConstraintViolation: no ROS type carries that quantity whole, or the message reaches
             neither one of the type it maps to nor one array of something that does.
     """
-    wanted = _PAYLOAD_TYPES.get(quantity_type)
-    if wanted is None:
+    carriers = _PAYLOAD_TYPES.get(quantity_type)
+    if carriers is None:
         raise ConstraintViolation(
             "communication",
             f"a '{quantity_type}' has no ROS type that carries it whole; a standing publish "
             f"reports {', '.join(sorted(_PAYLOAD_TYPES))}",
         )
     root = _message_class(type_name)
+    wanted = _carried(root, carriers)
     package, _cpp_type, include = _cpp_names(root)
     shape = _shape_of(root, type_name, package, include)
     # A message reaching it nowhere and holding no array of anything reaches it nowhere: the
@@ -751,6 +763,7 @@ def standing_shape(type_name: str, quantity_type: str) -> dict:
             path for path, kind in shape["auto"].items() if kind == "context_id"
         ),
         "entry": entry,
+        "carrier": _message_class(wanted).__name__,
     }
     if entry:
         shape["packages"] = sorted(set(shape["packages"]) | set(entry["packages"]))

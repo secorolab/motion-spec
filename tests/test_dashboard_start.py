@@ -89,6 +89,33 @@ def test_hardware_that_does_not_answer_still_starts_the_run(tmp_path, monkeypatc
     assert "--start-paused" not in started["argv"]
 
 
+def test_a_real_run_records_the_cameras_that_name_a_topic(tmp_path, monkeypatch):
+    """The standard view is the simulator's; hardware records what ROS can hand it."""
+    generation = _generation(
+        tmp_path,
+        simulated=False,
+        toml_text=HARDWARE_TOML.format(port=_dead_port()),
+        monkeypatch=monkeypatch,
+    )
+    (generation / "generated/contract/frame_layout.json").write_text(
+        json.dumps(
+            {
+                "platform": {"simulated": False},
+                "cameras": [{"id": "rk", "topic": "/cameras/rk/image_raw"}, {"id": "wrist"}],
+            }
+        )
+    )
+    started = {}
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda *a, **k: _record(started, a, k))
+    try:
+        answer = jobs.start_run(generation, {"cameras": ["default", "rk", "wrist"]})
+    finally:
+        jobs.RUNNING.pop(str(generation), None)
+    assert answer["recording"] == ["rk"]
+    assert started["argv"][started["argv"].index("--record") + 1] == "rk"
+    assert started["argv"].count("--record") == 1
+
+
 def test_a_simulation_starts_paused_with_its_run_named(tmp_path, monkeypatch):
     generation = _generation(
         tmp_path, simulated=True, toml_text=HARDWARE_TOML.format(port=1), monkeypatch=monkeypatch

@@ -105,7 +105,7 @@ export function bindRunAgain(page, path, cameras, simulated) {
         other.setAttribute("aria-pressed", other === option));
     });
   });
-  // Hardware takes neither: the CLI rejects a headless real run, and recording one comes later.
+  // Hardware has no display to drop: the CLI rejects a headless real run.
   const headless = bar.querySelector('.run-choice[data-option="headless"]');
   headless.hidden = !simulated;
   if (state.restricted) {
@@ -127,11 +127,14 @@ export function bindRunAgain(page, path, cameras, simulated) {
   headless.querySelectorAll("button").forEach((option) => option.addEventListener("click", showSpeed));
   showSpeed();
   let chosen = () => [];
-  if (simulated) {
-    // The cameras the model declares, plus the standard view, which needs no declaring.
+  {
+    // A simulator renders any camera the model declares, plus the standard view, which needs
+    // no declaring; a real platform records the cameras that name a ROS image topic.
     // A list that opens: a scene can declare more cameras than a bar has room for.
     const record = bar.querySelector(".run-record");
-    const offered = [{ id: "default", title: "standard camera view" }, ...cameras];
+    const offered = simulated
+      ? [{ id: "default", title: "standard camera view" }, ...cameras]
+      : cameras.filter((camera) => camera.topic);
     const menu = document.createElement("details");
     menu.className = "picker camera-menu";
     menu.innerHTML = '<summary></summary><div class="picker-panel"></div>';
@@ -152,7 +155,8 @@ export function bindRunAgain(page, path, cameras, simulated) {
       chip.dataset.camera = camera.id;
       chip.setAttribute("aria-pressed", "false");
       chip.textContent = camera.id;
-      chip.title = camera.width ? `${camera.width}×${camera.height}` : camera.title ?? camera.id;
+      chip.title = [camera.topic, camera.width ? `${camera.width}×${camera.height}` : camera.title ?? camera.id]
+        .filter(Boolean).join(" · ");
       chip.onclick = () => {
         chip.setAttribute("aria-pressed", chip.getAttribute("aria-pressed") !== "true");
         label();
@@ -163,8 +167,8 @@ export function bindRunAgain(page, path, cameras, simulated) {
     label();
   }
 
-  // Every named choice, hardware included: only the display, the speed and the cameras are a
-  // simulator's alone, and the server drops those for a real run. Whether to log is not.
+  // Every named choice, hardware included: only the display and the speed are a simulator's
+  // alone, and the server drops those for a real run. Whether to log or record is not.
   const options = () => ({
     ...Object.fromEntries(
       [...bar.querySelectorAll(".run-choice[data-option]")].map((choice) => [
@@ -172,7 +176,7 @@ export function bindRunAgain(page, path, cameras, simulated) {
         choice.querySelector('button[aria-pressed="true"]')?.dataset.value === "true",
       ]),
     ),
-    ...(simulated ? { cameras: chosen() } : {}),
+    cameras: chosen(),
   });
   // While it runs the page cannot say more than the runner does; watch until it stops, then
   // put the run it made in the list.

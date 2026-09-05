@@ -103,7 +103,7 @@ def start_run(generation_dir: Path, options: dict) -> dict:
         raise ValueError("not a generation")
     if run_status(generation_dir)["busy"]:
         raise ValueError("this generation is already running")
-    # Only a simulator has a display to drop or a frame to record, whatever the browser posted.
+    # Only a simulator has a display to drop, whatever the browser posted.
     simulated = is_simulated(generation_dir)
     # Two generations cannot share the real robot. Whether the hardware answers is not asked
     # here: the devices panel probes when the operator asks it to, and a run that finds nothing
@@ -130,13 +130,16 @@ def start_run(generation_dir: Path, options: dict) -> dict:
     # decides. A run always verifies what it archived; a recording nobody checked is not
     # worth the disk it sits on.
     argv += run_arguments(options, simulated)
-    # The runtime records: it holds the rendered frame, so it writes the video itself.
-    declared = {camera["id"] for camera in generation_cameras(generation_dir)}
-    recording = [
-        camera
-        for camera in (options.get("cameras") or () if simulated else ())
-        if camera in declared or camera == "default"
-    ]
+    # A simulator renders any declared camera and its standard view; a real platform records
+    # the cameras that name a ROS image topic to read.
+    recordable = {
+        camera["id"]
+        for camera in generation_cameras(generation_dir)
+        if simulated or camera.get("topic")
+    }
+    if simulated:
+        recordable.add("default")
+    recording = [camera for camera in options.get("cameras") or () if camera in recordable]
     for camera in recording:
         argv += ["--record", camera]
     sink = (generation_dir / RUN_LOG).open("wb")

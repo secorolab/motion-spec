@@ -103,7 +103,7 @@ from motion_spec.classes.constraints import (
     UnilateralConstraint,
     UnilateralConstraintType,
 )
-from motion_spec.classes.dynamics import JointCurrent, JointPosition
+from motion_spec.classes.dynamics import JointCurrent, JointPosition, JointVelocity
 from motion_spec.classes.geometry import (
     AccelerationTwist,
     Axis,
@@ -1090,6 +1090,19 @@ def joint_position(model, node) -> JointPosition:
     return JointPosition(
         model.id(node), model.label(joint), normalization=_normalization(model, node)
     )
+
+
+@reader
+def joint_velocity(model, node) -> JointVelocity:
+    """A JointVelocity quantity, named by the joint it reads."""
+    model.expect_type(node, KC_STAT["JointVelocityCoordinate"])
+    model.expect_type(node, KC_STAT["JointReference"])
+    joint = model.graph.value(node, KC_STAT["of-joint"])
+    if not isinstance(joint, URIRef):
+        raise ConstraintViolation(
+            "kinematic-chain", f"JointVelocityCoordinate '{node}' has no of-joint URI"
+        )
+    return JointVelocity(model.id(node), model.label(joint))
 
 
 @reader

@@ -57,6 +57,8 @@ struct manipulator_robot {
     // The measured gripper joint position [rad]: the mimic joint is not in the chain, so the
     // bound gripper device reports it.
     double *gripper_pos = nullptr;
+    // The gripper joint's measured rate, in whatever the bound device reports it in.
+    const double *gripper_vel = nullptr;
     // The gripper motor's measured current, in whatever the bound device reports it in.
     const double *gripper_cur = nullptr;
     // Where this chain's endpoints sit in the one world model. Per instance, though the struct
@@ -128,6 +130,7 @@ device-state-init-robif2b-KinovaGen3-2F85(solver, device) ::= <<
     gripper_<solver.runtime.id>_state.frc_cmd = static_cast\<float\>(motion_spec::config::gripper_pct(robot_config, "<device.config_key>", "gripper_force_pct"));
     double gripper_<solver.runtime.id>_cmd = 0.0;
     double gripper_<solver.runtime.id>_pos_rad = 0.0;
+    double gripper_<solver.runtime.id>_vel_rads = 0.0;
     double gripper_<solver.runtime.id>_cur_a = 0.0;
 >>
 
@@ -143,6 +146,7 @@ device-state-init-robif2b-Robotiq2F85(solver, device) ::= <<
         motion_spec::runtime::kControlPeriodS);
     double gripper_<solver.runtime.id>_cmd = 0.0;
     double gripper_<solver.runtime.id>_pos_rad = 0.0;
+    double gripper_<solver.runtime.id>_vel_rads = 0.0;
     double gripper_<solver.runtime.id>_cur_a = 0.0;
 >>
 
@@ -365,8 +369,9 @@ device-update-robif2b-KinovaGen3-2F85(solver, device, active_motion) ::= <<
             motion_spec::runtime::require_driver(gripper_<solver.runtime.id>_state.success, "<device.config_key>");
             gripper_<solver.runtime.id>_pos_rad =
                 <gripper-travel-Robotiq2F85()> * (gripper_<solver.runtime.id>_state.pos_msr / 100.0);
-            // The interconnect route reports motor current as a percentage, not amperes; scaling
-            // it needs the Kortex spec, so a model on this route thresholds the percentage.
+            // The interconnect route reports velocity and motor current as percentages; scaling
+            // them needs the Kortex spec, so a model on this route thresholds the percentage.
+            gripper_<solver.runtime.id>_vel_rads = gripper_<solver.runtime.id>_state.vel_msr;
             gripper_<solver.runtime.id>_cur_a = gripper_<solver.runtime.id>_state.cur_msr;
 >>
 
@@ -380,6 +385,8 @@ device-update-robif2b-Robotiq2F85(solver, device, active_motion) ::= <<
             motion_spec::io::require_fresh(gripper_<solver.runtime.id>_io.stale, gripper_<solver.runtime.id>_msr.seq, gripper_<solver.runtime.id>_msr.value.success, true, "<device.config_key>");
             gripper_<solver.runtime.id>_pos_rad =
                 <gripper-travel-Robotiq2F85()> * (gripper_<solver.runtime.id>_msr.value.position_msr / 255.0);
+            gripper_<solver.runtime.id>_vel_rads =
+                <gripper-travel-Robotiq2F85()> * (gripper_<solver.runtime.id>_msr.value.velocity_counts_per_s / 255.0);
             gripper_<solver.runtime.id>_cur_a = gripper_<solver.runtime.id>_msr.value.current_msr;
 >>
 
@@ -434,6 +441,7 @@ device-assign-impl ::= [
 device-assign-robif2b-gripper-cmd(solver, device) ::= <<
         .gripper_cmd = &gripper_<solver.runtime.id>_cmd,
         .gripper_pos = &gripper_<solver.runtime.id>_pos_rad,
+        .gripper_vel = &gripper_<solver.runtime.id>_vel_rads,
         .gripper_cur = &gripper_<solver.runtime.id>_cur_a,
 >>
 

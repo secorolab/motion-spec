@@ -382,12 +382,17 @@ gripper-joint-output(solver, chain_solver, out, backend) ::= <<
 >>
 
 gripper-joint-output-impl ::= [
+    "JointVelocity": "gripper-velocity-output",
     "JointCurrent": "gripper-current-output",
     default: "gripper-position-output"
 ]
 
 gripper-position-output-robif2b(solver, chain_solver, out) ::= <<
 shared.<out.id> = <normalized-joint-read({*robot.<solver.id>.gripper_pos}, out.normalization)>;
+>>
+
+gripper-velocity-output-robif2b(solver, chain_solver, out) ::= <<
+shared.<out.id> = *robot.<solver.id>.gripper_vel;
 >>
 
 gripper-current-output-robif2b(solver, chain_solver, out) ::= <<

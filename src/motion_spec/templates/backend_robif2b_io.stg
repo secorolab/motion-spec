@@ -148,6 +148,8 @@ device-io-section-Robotiq2F85(solver, device) ::= <<
 struct serial_gripper_state {
     bool success = false;
     uint8_t position_msr = 0;
+    // The gripper reports no rate: this is the position count differenced over the bus period.
+    double velocity_counts_per_s = 0.0;
     double current_msr = 0.0;
     bool is_moving = false;
     robif2b_robotiq_gripper_obj_status obj_status = ROBIF2B_ROBOTIQ_OBJ_UNKNOWN;
@@ -176,9 +178,18 @@ struct serial_gripper_io {
     void start(robif2b_robotiq_gripper_nbx &driver) {
         wire_cmd = state.position_msr;
         thread = std::jthread([this, &driver](std::stop_token token) {
+            auto last_read = std::chrono::steady_clock::now();
+            std::uint8_t last_position = state.position_msr;
             while (!token.stop_requested()) {
                 state.position_cmd = wire_cmd;
                 robif2b_robotiq_gripper_update(&driver);
+                const auto now = std::chrono::steady_clock::now();
+                const double period_s = std::chrono::duration\<double\>(now - last_read).count();
+                state.velocity_counts_per_s = period_s > 0.0
+                    ? (static_cast\<double\>(state.position_msr) - last_position) / period_s
+                    : 0.0;
+                last_read = now;
+                last_position = state.position_msr;
                 sample.publish(state);
             \}
         \});

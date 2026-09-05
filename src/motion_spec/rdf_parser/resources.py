@@ -946,15 +946,23 @@ _WORLD_OUTPUTS = (
     (GEOM_COORD.PoseCoordinate, quantities.pose),
     (GEOM_COORD.VelocityTwistCoordinate, quantities.velocity_twist),
     (KC_STAT.JointPositionCoordinate, quantities.joint_position),
+    (KC_STAT.JointVelocityCoordinate, quantities.joint_velocity),
     (ACT.JointCurrent, quantities.joint_current),
     (RBDYN_COORD.WrenchCoordinate, quantities.wrench),
+)
+
+# Every joint-referenced scalar: found by its joint, never by a frame.
+_JOINT_OUTPUT_TYPES = (
+    KC_STAT.JointPositionCoordinate,
+    KC_STAT.JointVelocityCoordinate,
+    ACT.JointCurrent,
 )
 
 
 def _observes_in_frame(model, node, type_, chain, runtime_prefix, owned_trees, backend: str):
     """Whether an observation is stated in this solver's reference frame, and in which frame node."""
     graph = model.graph
-    if type_ in (KC_STAT.JointPositionCoordinate, ACT.JointCurrent):
+    if type_ in _JOINT_OUTPUT_TYPES:
         joint = graph.value(node, KC_STAT["of-joint"])
         owned = joint is not None and any(iri_is_descendant(t, joint) for t in owned_trees)
 
@@ -1101,7 +1109,7 @@ def _pose_wrt_node(model, node):
 
 def _runtime_output(model, output, type_, node, frame_node, setup: _ChainSetup):
     """One observation with its frames and names rewritten the way the runtime knows them."""
-    if type_ in (KC_STAT.JointPositionCoordinate, ACT.JointCurrent):
+    if type_ in _JOINT_OUTPUT_TYPES:
         return replace(output, joint_name=f"{setup.runtime.prefix}{output.joint_name}")
     if type_ == GEOM_COORD.VelocityTwistCoordinate:
         seen_by = _runtime_frame(model, frame_node, setup.runtime.prefix, setup.runtime.owned_trees)
@@ -1288,6 +1296,7 @@ _SOLVER_OUTPUTS = (
     (GEOM_COORD["PoseCoordinate"], quantities.pose),
     (GEOM_COORD["VelocityTwistCoordinate"], quantities.velocity_twist),
     (KC_STAT["JointPositionCoordinate"], quantities.joint_position),
+    (KC_STAT["JointVelocityCoordinate"], quantities.joint_velocity),
     (ACT["JointCurrent"], quantities.joint_current),
     (RBDYN_COORD["WrenchCoordinate"], quantities.wrench),
 )
@@ -2106,7 +2115,7 @@ def shared_runtime_members(model, serial_chains, control_period_ns: int, platfor
 # compute it whether or not a motion that reads it is running.
 _STATE_ANSWERED = {
     "mj_kdl": {"VelocityTwist"},
-    "robif2b": {"VelocityTwist", "JointPosition", "JointCurrent"},
+    "robif2b": {"VelocityTwist", "JointPosition", "JointVelocity", "JointCurrent"},
 }
 
 
@@ -2235,20 +2244,31 @@ def annotate_device_dependencies(serial_chains, motions) -> None:
 
 
 # Diagnostics name the world-block keyword the author wrote, not the parsed record's type.
-_OUTPUT_KEYWORD = {"JointPosition": "joint-position", "JointCurrent": "joint-current"}
+_OUTPUT_KEYWORD = {
+    "JointPosition": "joint-position",
+    "JointVelocity": "joint-velocity",
+    "JointCurrent": "joint-current",
+}
+
+# Readings only a bound gripper device answers, and why a simulated backend cannot.
+_GRIPPER_ONLY_OUTPUTS = {
+    "JointVelocity": "the simulator has no joint-velocity read",
+    "JointCurrent": "the simulator reports no motor current",
+}
 
 
 def _refuse_unreportable_currents(solver, backend: str) -> None:
-    """A motor current is a hardware reading; no simulated backend has one to answer with.
+    """A gripper's rate and motor current are hardware readings no simulated backend answers.
 
     Raises:
-        RuntimeError: the model reads a joint current on a backend that measures none.
+        RuntimeError: the model reads one of them on a backend that measures neither.
     """
     if backend == "robif2b":
         return
     for out in solver.output:
-        if getattr(out, "type", "") == "JointCurrent":
-            raise RuntimeError(f"joint-current '{out.id}': the simulator reports no motor current")
+        reason = _GRIPPER_ONLY_OUTPUTS.get(getattr(out, "type", ""))
+        if reason is not None:
+            raise RuntimeError(f"{_OUTPUT_KEYWORD[out.type]} '{out.id}': {reason}")
 
 
 def _split_gripper_outputs(solver, backend: str) -> None:
@@ -2267,13 +2287,13 @@ def _split_gripper_outputs(solver, backend: str) -> None:
     for out in solver.output:
         joint = str(getattr(out, "joint_name", ""))
         out_type = getattr(out, "type", "")
-        if out_type == "JointCurrent" and joint in chain_joints:
+        if out_type in _GRIPPER_ONLY_OUTPUTS and joint in chain_joints:
             raise ConstraintViolation(
                 "solver",
-                f"joint-current '{out.id}' reads chain joint '{joint}'; only a bound gripper "
-                "reports a current",
+                f"{_OUTPUT_KEYWORD[out_type]} '{out.id}' reads chain joint '{joint}'; only a "
+                "bound gripper reports it",
             )
-        if out_type not in ("JointPosition", "JointCurrent") or joint in chain_joints:
+        if out_type not in _OUTPUT_KEYWORD or joint in chain_joints:
             outputs.append(out)
             continue
         gripper_outputs.append(out)

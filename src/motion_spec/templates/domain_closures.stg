@@ -287,17 +287,16 @@ pose-axis-error-group-pose(g, views) ::= <<
 <endif>
 <if(g.linear_z)>        _pose_axis_target_<g.id>.p[2] = <access-expr(g.linear_z, views)>;
 <endif>
-<if(g.has_angular)>        // An angular axis the motion does not state keeps the rotation the arm is at, so it
-        // contributes nothing to the error instead of being driven to zero.
-        double _pose_axis_roll_<g.id>, _pose_axis_pitch_<g.id>, _pose_axis_yaw_<g.id>;
-        shared.<g.pose>.M.GetRPY(_pose_axis_roll_<g.id>, _pose_axis_pitch_<g.id>, _pose_axis_yaw_<g.id>);
-<if(g.angular_x)>        _pose_axis_roll_<g.id> = <access-expr(g.angular_x, views)>;
+<if(g.has_angular)>        // The stated axes are PoseToAngleAroundAxis values, rotation-vector components, so the
+        // target is composed in that space; an axis the motion does not state keeps the arm's.
+        KDL::Vector _pose_axis_rotvec_<g.id> = KDL::diff(KDL::Rotation::Identity(), shared.<g.pose>.M);
+<if(g.angular_x)>        _pose_axis_rotvec_<g.id>[0] = <access-expr(g.angular_x, views)>;
 <endif>
-<if(g.angular_y)>        _pose_axis_pitch_<g.id> = <access-expr(g.angular_y, views)>;
+<if(g.angular_y)>        _pose_axis_rotvec_<g.id>[1] = <access-expr(g.angular_y, views)>;
 <endif>
-<if(g.angular_z)>        _pose_axis_yaw_<g.id> = <access-expr(g.angular_z, views)>;
+<if(g.angular_z)>        _pose_axis_rotvec_<g.id>[2] = <access-expr(g.angular_z, views)>;
 <endif>
-        _pose_axis_target_<g.id>.M = KDL::Rotation::RPY(_pose_axis_roll_<g.id>, _pose_axis_pitch_<g.id>, _pose_axis_yaw_<g.id>);
+        _pose_axis_target_<g.id>.M = KDL::Rotation::Rot(_pose_axis_rotvec_<g.id>, _pose_axis_rotvec_<g.id>.Norm());
 <endif>
         const KDL::Twist _pose_axis_error_<g.id> = motion_spec::runtime::short_way_rotation(KDL::diff(shared.<g.pose>, _pose_axis_target_<g.id>));
 <if(g.linear_x)>        const double _pose_axis_error_linear_X = _pose_axis_error_<g.id>.vel.x();

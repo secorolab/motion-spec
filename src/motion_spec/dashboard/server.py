@@ -462,9 +462,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if self.path == "/api/notes":
                 return self.send_json(
                     save_notes(
-                        expected_path(roots.GENERATIONS, body["path"]),
-                        body.get("note", ""),
-                        body.get("tags", []),
+                        expected_path(roots.GENERATIONS, body["path"]), body.get("notes", [])
                     )
                 )
             if self.path == "/api/sparql":

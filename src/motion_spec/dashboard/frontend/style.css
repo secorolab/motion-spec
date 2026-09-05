@@ -249,6 +249,24 @@ h1 { margin: 7px 0; font-size: 30px; }
 .run-files .source-file:hover .copy-path { opacity: 1; }
 .run-files .file-size { order: 2; margin-left: auto; color: var(--dim); }
 #panel-files { overflow: auto; }
+#panel-notes { display: flex; flex-direction: column; gap: 12px; overflow: auto; }
+.notes-compose, .note { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); background: var(--surface); }
+.notes-compose textarea, .note textarea { padding: 6px 9px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font: 11px/1.5 var(--code); resize: vertical; }
+.notes-compose-bar { display: flex; align-items: center; gap: 8px; }
+.notes-compose-bar input { flex: 1 1 auto; padding: 4px 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font: 10px var(--mono); }
+.notes-compose textarea:focus, .note textarea:focus, .notes-compose-bar input:focus { border-color: var(--accent); outline: 0; }
+.notes-compose textarea::placeholder, .notes-compose-bar input::placeholder { color: var(--dim); }
+.note-add, .note-action { flex: none; padding: 3px 8px; border: 1px solid var(--line); color: var(--dim); font: 10px var(--mono); }
+.note-add:hover, .note-action:hover { border-color: var(--accent); color: var(--accent); }
+.notes-state { color: var(--dim); font: 10px var(--mono); }
+.notes-bar { display: flex; align-items: center; gap: 8px; color: var(--dim); font: 10px var(--mono); }
+.notes-bar input, .note-head input { margin-right: 2px; }
+.note-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.note-when { margin-right: 4px; color: var(--dim); font: 10px var(--mono); }
+.note-head .note-action { margin-left: auto; }
+.note-head .note-action + .note-action { margin-left: 0; }
+.note-body { margin: 0; color: var(--text); font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.notes-empty { margin: 0; color: var(--dim); }
 .graph-help { margin: 4px 0 12px; color: var(--muted); font-size: 12px; }
 .graph-heading { display: flex; align-items: center; gap: 12px; margin-top: 30px; }
 .graph-heading h2 { margin: 0; }
@@ -265,7 +283,16 @@ h1 { margin: 7px 0; font-size: 30px; }
   align-items: center; gap: 16px; padding: 9px 12px; font-size: 12px;
 }
 .run-header { padding-bottom: 6px; }
-.run > input, .run-header > input { margin: 0; accent-color: var(--accent); cursor: pointer; }
+/* One box for every pick on the page: the page's hairline and surface, a tick in the accent,
+   a dash for a partly picked set -- never the platform's rounded blue control. */
+.pick {
+  display: inline-grid; place-content: center; width: 12px; height: 12px; margin: 0; padding: 0;
+  border: 1px solid var(--line); background: var(--bg); appearance: none; cursor: pointer; flex: none;
+}
+.pick::before { content: ""; width: 6px; height: 6px; background: var(--accent); transform: scale(0); transition: transform 80ms ease-out; }
+.pick:checked::before { transform: scale(1); }
+.pick:indeterminate::before { height: 2px; transform: scale(1); }
+.pick:hover, .pick:focus-visible, .pick:checked, .pick:indeterminate { border-color: var(--accent); outline: 0; }
 /* The numbers end and the outcome begins; let the gap say so. */
 .run > :nth-child(7), .run-header > :nth-child(7) { margin-left: 14px; }
 /* Sized to its columns rather than stretched across the page: a 1fr column only turns the
@@ -289,18 +316,7 @@ h1 { margin: 7px 0; font-size: 30px; }
 .run { row-gap: 4px; }
 .run .run-note { grid-column: 3 / -1; display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--muted); font: 10px var(--mono); }
 .run-tag { flex: none; padding: 1px 6px; border: 1px solid var(--line); background: var(--bg); color: var(--accent); font-size: 9px; letter-spacing: .06em; }
-.run-note .run-note-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-search { width: 150px; }
-/* Tags and note under the run heading, in the same box the query editor uses. */
-.run-annotation { display: grid; grid-template-columns: 240px minmax(0, 1fr) auto; gap: 8px; align-items: start; margin-top: -10px; }
-.run-annotation input, .run-annotation textarea {
-  padding: 6px 9px; border: 1px solid var(--line); background: var(--surface); color: var(--text);
-  font: 11px/1.5 var(--mono); color-scheme: dark;
-}
-.run-annotation textarea { min-height: 30px; resize: none; overflow: hidden; font-family: var(--code); }
-.run-annotation input:focus, .run-annotation textarea:focus { border-color: var(--accent); outline: 0; }
-.run-annotation input::placeholder, .run-annotation textarea::placeholder { color: var(--dim); }
-.run-annotation-state { align-self: center; color: var(--dim); font: 10px var(--mono); }
 .badge { justify-self: start; color: var(--dim); font: 9px var(--mono); letter-spacing: .06em; }
 .badge-completed { color: var(--good); }
 .badge-failed, .badge-interrupted, .badge-cancelled { color: var(--accent); }
@@ -313,7 +329,7 @@ h1 { margin: 7px 0; font-size: 30px; }
 /* The run page is a viewport-high column: heading row, then the active panel filling the
    rest, ending where #content's bottom padding clears the fixed transport. Panels scroll
    inside themselves; the page itself never grows a scrollbar. */
-.replay { display: grid; gap: 24px; grid-template-rows: auto auto minmax(0, 1fr); height: calc(100dvh - 139px); }
+.replay { display: grid; gap: 24px; grid-template-rows: auto minmax(0, 1fr); height: calc(100dvh - 139px); }
 .replay > section { min-height: 0; overflow-y: auto; }
 .replay-heading #back, .page-heading #back { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 1px solid var(--line); color: var(--text); font: 13px var(--mono); }
 .replay-heading #back:hover { border-color: var(--accent); color: var(--accent); }

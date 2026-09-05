@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 import json
+import secrets
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import rdflib
@@ -143,23 +145,39 @@ def save_queries(run_dir: Path, queries: list) -> dict:
 
 
 def run_notes(run_dir: Path) -> dict:
-    """What someone wrote about this run: a note and its tags, or nothing yet."""
+    """Every note kept beside this run, as written."""
     stored = json_file(run_dir / NOTES_REL)
-    if not isinstance(stored, dict):
-        return {"note": "", "tags": []}
-    tags = stored.get("tags")
+    notes = stored.get("notes") if isinstance(stored, dict) else None
     return {
-        "note": str(stored.get("note") or ""),
-        "tags": [str(tag) for tag in tags] if isinstance(tags, list) else [],
+        "notes": [note for note in notes if isinstance(note, dict)]
+        if isinstance(notes, list)
+        else []
     }
 
 
-def save_notes(run_dir: Path, note: str, tags: list) -> dict:
-    """Keep the note with the run. Tags are trimmed, deduped and kept in the order given."""
+def save_notes(run_dir: Path, notes: list) -> dict:
+    """Replace the run's notes with the list given. A note without an id or a time gets both here,
+    so the client never invents either."""
     if not run_dir.is_dir():
         raise ValueError("notes belong to a run")
-    cleaned = list(dict.fromkeys(str(tag).strip() for tag in tags if str(tag).strip()))[:20]
-    payload = {"note": str(note)[:4000], "tags": cleaned}
+    kept = []
+    for note in notes[:200]:
+        if not isinstance(note, dict):
+            continue
+        tags = note.get("tags") or []
+        kept.append(
+            {
+                "id": str(note.get("id") or secrets.token_hex(6)),
+                "created": str(
+                    note.get("created") or datetime.now(timezone.utc).isoformat(timespec="seconds")
+                ),
+                "text": str(note.get("text") or "")[:4000],
+                "tags": list(dict.fromkeys(str(tag).strip() for tag in tags if str(tag).strip()))[
+                    :20
+                ],
+            }
+        )
+    payload = {"notes": kept}
     (run_dir / NOTES_REL).write_text(json.dumps(payload, indent=1))
     return payload
 

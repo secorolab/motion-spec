@@ -428,18 +428,17 @@ export async function selectGeneration(path) {
     const status = run.status ?? (run.complete ? "COMPLETED" : "INCOMPLETE");
     // Every id begins `run-<date>T`; what distinguishes one row from the next is the time.
     const short = run.id.replace(/^run-\d{8}T/, "").replace(/Z$/, "");
-    row.innerHTML = `<input type="checkbox" title="Select; shift-click to select a range"><span>${runPage * 10 + index + 1}</span><strong>${short}</strong><span>${stampText(run.started)}</span><span>${run.duration_s.toFixed(2)} s</span><span>${(run.written_frames ?? 0).toLocaleString()}</span><span class="badge badge-${status.toLowerCase()}">${status}</span>`;
+    row.innerHTML = `<input type="checkbox" class="pick" title="Select; shift-click to select a range"><span>${runPage * 10 + index + 1}</span><strong>${short}</strong><span>${stampText(run.started)}</span><span>${run.duration_s.toFixed(2)} s</span><span>${(run.written_frames ?? 0).toLocaleString()}</span><span class="badge badge-${status.toLowerCase()}">${status}</span>`;
     row.firstChild.checked = state.selected.has(run.path);
     row.firstChild.onclick = (event) => {
       event.stopPropagation();
       event.shiftKey ? pickRange(run.path, row.parentElement, "main") : toggleSelection(run.path, "main");
       syncPickAll();
     };
-    if (run.note || run.tags?.length) {
+    if (run.tags?.length) {
       const note = document.createElement("div");
       note.className = "run-note";
-      note.append(...(run.tags ?? []).map((tag) => Object.assign(document.createElement("span"), { className: "run-tag", textContent: tag })));
-      if (run.note) note.append(Object.assign(document.createElement("span"), { className: "run-note-text", textContent: run.note.split("\n")[0] }));
+      note.append(...run.tags.map((tag) => Object.assign(document.createElement("span"), { className: "run-tag", textContent: tag })));
       row.append(note);
     }
     row.title = `${run.id} — open replay; Ctrl/Cmd-click to select`;
@@ -498,7 +497,7 @@ export async function selectGeneration(path) {
         ? !from.value && !to.value
         : started >= after && started <= before;
       if (!inWindow || !needle) return inWindow;
-      return [run.id, run.note ?? "", ...(run.tags ?? [])].join("\n").toLowerCase().includes(needle);
+      return [run.id, ...(run.tags ?? [])].join("\n").toLowerCase().includes(needle);
     });
     clear.hidden = !from.value && !to.value && !search.value;
     runPage = 0;

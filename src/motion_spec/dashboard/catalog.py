@@ -409,14 +409,13 @@ def provenance_graph(service) -> dict:
     }
 
 
-def _run_notes(path: Path) -> tuple[str, list[str]]:
-    """Read notes.json here rather than importing queries, which imports this module."""
+def _run_notes(path: Path) -> list[str]:
+    """Read notes.json here rather than importing queries, which imports this module: every tag
+    used by the run's notes."""
     stored = json_file(path / "notes.json")
-    tags = stored.get("tags") if isinstance(stored, dict) else None
-    return (
-        str(stored.get("note") or "") if isinstance(stored, dict) else "",
-        [str(tag) for tag in tags] if isinstance(tags, list) else [],
-    )
+    notes = stored.get("notes") if isinstance(stored, dict) else None
+    notes = [note for note in notes if isinstance(note, dict)] if isinstance(notes, list) else []
+    return list(dict.fromkeys(str(tag) for note in notes for tag in (note.get("tags") or [])))
 
 
 def run_info(path: Path) -> dict:
@@ -429,7 +428,7 @@ def run_info(path: Path) -> dict:
     except (ArchiveError, DecodeError, OSError):
         period_ns = 0
     match = re.fullmatch(r"run-(\d{8}T\d{6}\d{6}Z)", run_id)
-    note, tags = _run_notes(path)
+    tags = _run_notes(path)
     return {
         "path": str(path.relative_to(roots.GENERATIONS)),
         "id": run_id,
@@ -439,7 +438,6 @@ def run_info(path: Path) -> dict:
         "written_frames": health.get("written_frames"),
         "duration_s": health.get("written_frames", 0) * period_ns / 1e9,
         "dropped_frames": health.get("dropped_frames"),
-        "note": note,
         "tags": tags,
     }
 

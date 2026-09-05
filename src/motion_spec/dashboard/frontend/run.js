@@ -8,7 +8,7 @@
  */
 
 import { appendConsole, consoleExcerpt, showEmpty } from "./components.js";
-import { $, $$, api, copyText, formatBytes, post, seconds, snack, state } from "./core.js";
+import { $, $$, api, askConfirm, copyText, formatBytes, post, seconds, snack, stampText, state } from "./core.js";
 import { EXPLORE_MARKUP, bindExplore } from "./explore.js";
 import { highlightGeneration, readRunOptions, selectGeneration, stopRun } from "./generations.js";
 import { addLivePlot, bindLivePlots, followLiveRun, livePlotsOn, simControl, trackActiveMotion } from "./live.js";
@@ -123,38 +123,7 @@ export async function loadReplay(path) {
   if (state.replay.pending) settle(true, "waiting for the run to start…");
   $("#back").onclick = () => selectGeneration(state.replay.generation);
   bindRunAgain(path);
-  bindAnnotation(path);
   updateReadout();
-}
-
-// One note per run, kept beside the archive: what this run was for, in the words of whoever ran it.
-function bindAnnotation(runPath) {
-  const tags = $(".run-tags");
-  const note = $(".run-note-text");
-  const status = $(".run-annotation-state");
-  const fit = () => { note.style.height = "auto"; note.style.height = `${note.scrollHeight}px`; };
-  api(`/api/notes?path=${encodeURIComponent(runPath)}`).then((stored) => {
-    tags.value = stored.tags.join(", ");
-    note.value = stored.note;
-    fit();
-  }).catch(() => {});
-  const save = async () => {
-    status.textContent = "saving…";
-    try {
-      const saved = await post("/api/notes", {
-        path: runPath,
-        note: note.value,
-        tags: tags.value.split(",").map((tag) => tag.trim()).filter(Boolean),
-      });
-      tags.value = saved.tags.join(", ");
-      status.textContent = "saved";
-      setTimeout(() => { if (status.textContent === "saved") status.textContent = ""; }, 1500);
-    } catch (error) {
-      status.textContent = `not saved: ${error.message}`;
-    }
-  };
-  tags.onchange = note.onchange = save;
-  note.oninput = fit;
 }
 
 // The same start the generation page makes, from the run it is being compared against. The
@@ -582,7 +551,7 @@ export function populateConstraints() {
 export function replayShell(path) {
   // The run page's markup, with what the reply fills left blank: the numbers, the timeline's
   // range and the constraint list.
-  return `<div class="replay"><div class="replay-heading"><button id="back" title="Back to generation">←</button><h1>${path.split("/").pop()}</h1><button id="run-again" title="Run this generation again with the run bar's last choices">↻ run again</button><div class="replay-tabs"><button data-panel="plots" class="active">Plots</button><button data-panel="reports">Reports</button><button data-panel="explore">Explore</button><button data-panel="console">Console</button><button data-panel="files">Files</button></div><span class="eyebrow">RUN</span></div><div class="run-annotation"><input class="run-tags" placeholder="tags, comma separated" spellcheck="false"><textarea class="run-note-text" rows="1" placeholder="note about this run"></textarea><span class="run-annotation-state"></span></div><section id="panel-plots"><div class="constraint-panel"><div class="eyebrow">SOURCE CONSTRAINTS</div><input id="constraint-search" type="search" placeholder="Search .robmot constraints"><div id="constraints" class="constraints"></div></div><div class="chart-controls"><button id="auto-plot" title="Open each motion's plots as the cursor enters it, the way a live run does">auto plot: off</button><button id="plot">Add empty plot</button><button id="notebook">Open in Jupyter</button><button id="live-plots" title="Plot signals as the run writes them">live plots: on</button><button id="progressive-plots" title="Draw a replayed run the way a live one arrives: nothing past the cursor">progressive: off</button></div><div id="plots" class="plots"></div></section><section id="panel-reports" hidden></section><section id="panel-explore" hidden>${EXPLORE_MARKUP}</section><section id="panel-console" hidden><div class="console-bar"><input id="console-search" type="search" spellcheck="false" placeholder="Search the console"><span id="console-matches"></span><button id="console-prev" title="Previous match (Shift+Enter)" disabled>↑</button><button id="console-next" title="Next match (Enter)" disabled>↓</button></div><pre id="console-text" class="console"></pre></section><section id="panel-files" hidden><div class="generated-files run-files"></div></section></div><div class="settling" hidden><div class="spinner"></div><span>archiving the run…</span></div><div class="videos" hidden><button class="video-max" title="Expand"></button><button class="video-min" title="Minimize"></button><div class="video-main"><video preload="auto" playsinline disablepictureinpicture controlslist="nodownload noplaybackrate noremoteplayback"></video><span class="video-name"></span></div><div class="video-strip"></div></div><div class="transport"><div class="transport-controls"><button id="step-back" title="Previous frame">‹</button><button id="play">Play</button><button id="step-forward" title="Next frame">›</button><details class="picker speed-menu"><summary>1×</summary><div class="picker-panel"><button data-value="0.25">0.25×</button><button data-value="0.5">0.5×</button><button data-value="1" aria-pressed="true">1×</button><button data-value="2">2×</button><button data-value="5">5×</button></div></details><span id="readout" class="path"></span><span class="marker-legend"><i class="lg lg-state"></i>state <i class="lg lg-event"></i>event <i class="lg lg-satisfied"></i>satisfied <i class="lg lg-unsatisfied"></i>lost <i class="lg lg-monitor"></i>monitor</span><button id="cancel-run" title="End the run" hidden>cancel</button></div><div class="markers"></div><input class="timeline" type="range" min="0" max="0" value="0" disabled></div>`;
+  return `<div class="replay"><div class="replay-heading"><button id="back" title="Back to generation">←</button><h1>${path.split("/").pop()}</h1><button id="run-again" title="Run this generation again with the run bar's last choices">↻ run again</button><div class="replay-tabs"><button data-panel="plots" class="active">Plots</button><button data-panel="reports">Reports</button><button data-panel="explore">Explore</button><button data-panel="console">Console</button><button data-panel="files">Files</button><button data-panel="notes">Notes</button></div><span class="eyebrow">RUN</span></div><section id="panel-plots"><div class="constraint-panel"><div class="eyebrow">SOURCE CONSTRAINTS</div><input id="constraint-search" type="search" placeholder="Search .robmot constraints"><div id="constraints" class="constraints"></div></div><div class="chart-controls"><button id="auto-plot" title="Open each motion's plots as the cursor enters it, the way a live run does">auto plot: off</button><button id="plot">Add empty plot</button><button id="notebook">Open in Jupyter</button><button id="live-plots" title="Plot signals as the run writes them">live plots: on</button><button id="progressive-plots" title="Draw a replayed run the way a live one arrives: nothing past the cursor">progressive: off</button></div><div id="plots" class="plots"></div></section><section id="panel-reports" hidden></section><section id="panel-explore" hidden>${EXPLORE_MARKUP}</section><section id="panel-console" hidden><div class="console-bar"><input id="console-search" type="search" spellcheck="false" placeholder="Search the console"><span id="console-matches"></span><button id="console-prev" title="Previous match (Shift+Enter)" disabled>↑</button><button id="console-next" title="Next match (Enter)" disabled>↓</button></div><pre id="console-text" class="console"></pre></section><section id="panel-files" hidden><div class="generated-files run-files"></div></section><section id="panel-notes" hidden><div class="notes-compose"><textarea class="note-text" rows="3" placeholder="What happened, what to try next — Ctrl+Enter adds"></textarea><div class="notes-compose-bar"><input class="note-tags" placeholder="tags, comma separated" spellcheck="false"><button class="note-add">add note</button><span class="notes-state"></span></div></div><div class="notes-bar" hidden><input type="checkbox" class="pick notes-pick-all" title="Select every note"><span class="notes-picked"></span><button class="note-action notes-delete" disabled>delete selected</button></div><div class="notes-list"></div></section></div><div class="settling" hidden><div class="spinner"></div><span>archiving the run…</span></div><div class="videos" hidden><button class="video-max" title="Expand"></button><button class="video-min" title="Minimize"></button><div class="video-main"><video preload="auto" playsinline disablepictureinpicture controlslist="nodownload noplaybackrate noremoteplayback"></video><span class="video-name"></span></div><div class="video-strip"></div></div><div class="transport"><div class="transport-controls"><button id="step-back" title="Previous frame">‹</button><button id="play">Play</button><button id="step-forward" title="Next frame">›</button><details class="picker speed-menu"><summary>1×</summary><div class="picker-panel"><button data-value="0.25">0.25×</button><button data-value="0.5">0.5×</button><button data-value="1" aria-pressed="true">1×</button><button data-value="2">2×</button><button data-value="5">5×</button></div></details><span id="readout" class="path"></span><span class="marker-legend"><i class="lg lg-state"></i>state <i class="lg lg-event"></i>event <i class="lg lg-satisfied"></i>satisfied <i class="lg lg-unsatisfied"></i>lost <i class="lg lg-monitor"></i>monitor</span><button id="cancel-run" title="End the run" hidden>cancel</button></div><div class="markers"></div><input class="timeline" type="range" min="0" max="0" value="0" disabled></div>`;
 }
 
 export function bindPanels() {
@@ -594,9 +563,11 @@ export function bindPanels() {
     $("#panel-explore").hidden = panel !== "explore";
     $("#panel-console").hidden = panel !== "console";
     $("#panel-files").hidden = panel !== "files";
+    $("#panel-notes").hidden = panel !== "notes";
     // A panel that cannot load is not the page failing to load.
     if (panel === "reports") showReports(state.runPath).catch((error) => snack(error.message));
     if (panel === "files") showRunFiles(state.runPath).catch((error) => snack(error.message));
+    if (panel === "notes") showNotes(state.runPath).catch((error) => snack(error.message));
     state.charts.forEach((chart) => chart.resize());
     if (!remember) return;
     const view = new URLSearchParams(location.hash.slice(1));
@@ -609,7 +580,7 @@ export function bindPanels() {
   // a reload lands back where it left off, like the run it reopens
   // a hash naming a panel this page no longer offers falls back to plots
   const stored = new URLSearchParams(location.hash.slice(1)).get("panel");
-  show(["plots", "reports", "explore", "console", "files"].includes(stored) ? stored : "plots", false);
+  show(["plots", "reports", "explore", "console", "files", "notes"].includes(stored) ? stored : "plots", false);
 }
 
 // What the run wrote, read on each opening of the tab: a live run is still adding to it.
@@ -651,6 +622,100 @@ export async function showRunFiles(runPath) {
     group.append(summary, ...inside.map(entry));
     return group;
   }));
+}
+
+// Every note kept beside the run, newest first, with a place to add the next one. The whole
+// list is what is saved: notes are few and small, and one write is one thing to get right.
+export async function showNotes(runPath) {
+  const panel = $("#panel-notes");
+  if (!panel) return;
+  const list = panel.querySelector(".notes-list");
+  const text = panel.querySelector(".note-text");
+  const tags = panel.querySelector(".note-tags");
+  const status = panel.querySelector(".notes-state");
+  const splitTags = (value) => value.split(",").map((tag) => tag.trim()).filter(Boolean);
+  let notes = (await api(`/api/notes?path=${encodeURIComponent(runPath)}`)).notes;
+  // Picked by id, so a selection survives a redraw and is dropped only with the note it names.
+  const picked = new Set();
+  const bar = panel.querySelector(".notes-bar");
+  const pickAll = bar.querySelector(".notes-pick-all");
+  const syncBar = () => {
+    bar.hidden = !notes.length;
+    bar.querySelector(".notes-picked").textContent = picked.size ? `${picked.size} selected` : "";
+    bar.querySelector(".notes-delete").disabled = !picked.size;
+    pickAll.checked = picked.size > 0 && picked.size === notes.length;
+    pickAll.indeterminate = picked.size > 0 && picked.size < notes.length;
+  };
+  pickAll.onchange = () => {
+    picked.clear();
+    if (pickAll.checked) notes.forEach((note) => picked.add(note.id));
+    render();
+  };
+  bar.querySelector(".notes-delete").onclick = async () => {
+    const count = picked.size;
+    if (!(await askConfirm({ message: `Delete ${count} note${count === 1 ? "" : "s"}?`, confirmLabel: "Delete" }))) return;
+    save(notes.filter((note) => !picked.has(note.id)));
+  };
+  const save = async (next) => {
+    status.textContent = "saving…";
+    try {
+      notes = (await post("/api/notes", { path: runPath, notes: next })).notes;
+      status.textContent = "";
+      render();
+    } catch (error) {
+      status.textContent = `not saved: ${error.message}`;
+    }
+  };
+  const card = (note) => {
+    const box = document.createElement("article");
+    box.className = "note";
+    const head = document.createElement("div");
+    head.className = "note-head";
+    const pick = Object.assign(document.createElement("input"), { type: "checkbox", className: "pick", checked: picked.has(note.id), title: "Select" });
+    pick.onchange = () => { pick.checked ? picked.add(note.id) : picked.delete(note.id); syncBar(); };
+    head.append(pick, Object.assign(document.createElement("span"), { className: "note-when", textContent: stampText(note.created) }));
+    head.append(...note.tags.map((tag) => Object.assign(document.createElement("span"), { className: "run-tag", textContent: tag })));
+    const edit = Object.assign(document.createElement("button"), { className: "note-action", textContent: "edit" });
+    const remove = Object.assign(document.createElement("button"), { className: "note-action", textContent: "delete" });
+    head.append(edit, remove);
+    const body = Object.assign(document.createElement("p"), { className: "note-body", textContent: note.text });
+    box.append(head, body);
+    remove.onclick = async () => {
+      if (!(await askConfirm({ message: "Delete this note?", confirmLabel: "Delete" }))) return;
+      save(notes.filter((other) => other.id !== note.id));
+    };
+    edit.onclick = () => {
+      const editor = Object.assign(document.createElement("textarea"), { className: "note-text", rows: 3, value: note.text });
+      const editTags = Object.assign(document.createElement("input"), { className: "note-tags", value: note.tags.join(", "), spellcheck: false });
+      const keep = Object.assign(document.createElement("button"), { className: "note-action", textContent: "save" });
+      const drop = Object.assign(document.createElement("button"), { className: "note-action", textContent: "cancel" });
+      const bar = Object.assign(document.createElement("div"), { className: "notes-compose-bar" });
+      bar.append(editTags, keep, drop);
+      body.replaceWith(editor, bar);
+      editor.focus();
+      keep.onclick = () => save(notes.map((other) => (other.id === note.id
+        ? { ...other, text: editor.value, tags: splitTags(editTags.value) }
+        : other)));
+      drop.onclick = render;
+    };
+    return box;
+  };
+  const render = () => {
+    const ordered = [...notes].sort((a, b) => (a.created < b.created ? 1 : -1));
+    picked.forEach((id) => { if (!notes.some((note) => note.id === id)) picked.delete(id); });
+    list.replaceChildren(...ordered.map(card));
+    syncBar();
+    if (!ordered.length) list.append(Object.assign(document.createElement("p"), { className: "path notes-empty", textContent: "No notes yet." }));
+  };
+  const add = () => {
+    if (!text.value.trim()) return;
+    save([...notes, { text: text.value, tags: splitTags(tags.value) }]).then(() => {
+      if (!status.textContent) { text.value = ""; tags.value = ""; }
+    });
+  };
+  panel.querySelector(".note-add").onclick = add;
+  text.onkeydown = (event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") add(); };
+  render();
 }
 
 // One transport for a recording or the live run writing it.

@@ -143,16 +143,27 @@ def test_queries_are_kept_with_the_run(dashboard):
     ]
 
 
-def test_a_note_and_its_tags_are_kept_with_the_run(dashboard):
+def test_notes_are_kept_with_the_run_and_stamped_by_the_server(dashboard):
     path = str(dashboard.run.relative_to(dashboard.root))
-    assert dashboard.get(f"/api/notes?path={urllib.parse.quote(path)}") == {"note": "", "tags": []}
+    assert dashboard.get(f"/api/notes?path={urllib.parse.quote(path)}") == {"notes": []}
     saved = dashboard.post(
         "/api/notes",
-        {"path": path, "note": "slipped at lift", "tags": [" grasp", "grasp", "", "ft"]},
+        {
+            "path": path,
+            "notes": [{"text": "slipped at lift", "tags": [" grasp", "grasp", "", "ft"]}],
+        },
     )
-    assert saved == {"note": "slipped at lift", "tags": ["grasp", "ft"]}
+    (note,) = saved["notes"]
+    assert (note["text"], note["tags"]) == ("slipped at lift", ["grasp", "ft"])
+    assert len(note["id"]) == 12 and note["created"].endswith("+00:00")
     assert dashboard.get(f"/api/notes?path={urllib.parse.quote(path)}") == saved
     assert json.loads((dashboard.run / "notes.json").read_text()) == saved
+    # a second save keeps the first note's identity and time, and drops what the client dropped
+    again = dashboard.post(
+        "/api/notes", {"path": path, "notes": [*saved["notes"], {"text": "retry"}]}
+    )
+    assert [n["text"] for n in again["notes"]] == ["slipped at lift", "retry"]
+    assert again["notes"][0] == note
 
 
 def test_a_construct_answers_with_its_type_and_its_triples(dashboard):

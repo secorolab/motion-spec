@@ -9,7 +9,7 @@
 
 import { $, api, state } from "./core.js";
 
-export function listItem(name, detail, click, path) {
+export function listItem(name, detail, click, path, mark = null) {
   const button = document.createElement("button");
   button.className = "item";
   button.dataset.path = path;
@@ -19,6 +19,13 @@ export function listItem(name, detail, click, path) {
   label.textContent = name;
   const viewport = document.createElement("span");
   viewport.className = "item-name-viewport";
+  // How the last run went, before the name it went with.
+  if (mark) {
+    const dot = document.createElement("i");
+    dot.className = `run-mark run-mark-${mark.toLowerCase()}`;
+    dot.title = `last run: ${mark.toLowerCase()}`;
+    viewport.append(dot);
+  }
   viewport.append(label);
   button.append(viewport);
   if (detail) {

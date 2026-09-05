@@ -101,3 +101,29 @@ def test_the_motion_windows_and_the_cache_survive_the_extra_edges(tmp_path):
     assert scanned["windows"] == {0: [0, 4], 1: [5, 8]}
     # One scan per (path, size): the second read is the first read's answer, not another pass.
     assert replay.log_events(log, contract) is scanned
+
+
+def test_the_scan_tallies_each_goal_and_monitor_and_records_the_exit(tmp_path):
+    log, contract = _log(tmp_path)
+    scanned = replay.log_events(log, contract)
+    goal = scanned["tally"][(0, "goal", 0)]
+    assert (
+        goal["id"],
+        goal["active"],
+        goal["satisfied"],
+        goal["first_satisfied"],
+        goal["losses"],
+    ) == ("ctrl_x", 5, 3, 1, 1)
+    assert scanned["tally"][(0, "monitor", 0)]["fired"] == 3
+    settle = scanned["tally"][(1, "goal", 0)]
+    # frame 7 changes state, so the drop from 6 to 7 is no loss -- the same rule as the markers
+    assert (settle["active"], settle["satisfied"], settle["first_satisfied"], settle["losses"]) == (
+        4,
+        2,
+        6,
+        0,
+    )
+    assert (0, "goal", 1) not in scanned["tally"]  # regulation slots carry no goal
+    assert scanned["exits"] == {
+        1: [{"frame": 7, "to_state": "S_SETTLE", "events": [], "monitors": []}]
+    }

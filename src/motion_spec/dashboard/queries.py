@@ -124,6 +124,7 @@ def graph_sources(path: Path) -> list[dict]:
 
 
 QUERIES_REL = "queries.json"
+NOTES_REL = "notes.json"
 
 
 def saved_queries(run_dir: Path) -> list:
@@ -139,6 +140,28 @@ def save_queries(run_dir: Path, queries: list) -> dict:
     texts = [str(query) for query in queries][:200]
     (run_dir / QUERIES_REL).write_text(json.dumps({"queries": texts}, indent=1))
     return {"saved": len(texts)}
+
+
+def run_notes(run_dir: Path) -> dict:
+    """What someone wrote about this run: a note and its tags, or nothing yet."""
+    stored = json_file(run_dir / NOTES_REL)
+    if not isinstance(stored, dict):
+        return {"note": "", "tags": []}
+    tags = stored.get("tags")
+    return {
+        "note": str(stored.get("note") or ""),
+        "tags": [str(tag) for tag in tags] if isinstance(tags, list) else [],
+    }
+
+
+def save_notes(run_dir: Path, note: str, tags: list) -> dict:
+    """Keep the note with the run. Tags are trimmed, deduped and kept in the order given."""
+    if not run_dir.is_dir():
+        raise ValueError("notes belong to a run")
+    cleaned = list(dict.fromkeys(str(tag).strip() for tag in tags if str(tag).strip()))[:20]
+    payload = {"note": str(note)[:4000], "tags": cleaned}
+    (run_dir / NOTES_REL).write_text(json.dumps(payload, indent=1))
+    return payload
 
 
 PAGE_SIZE = 500

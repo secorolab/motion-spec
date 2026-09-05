@@ -107,6 +107,17 @@ def test_generations_expose_their_runs_newest_first(tmp_path):
     assert GenerationInfo(gen).runs[0].health is None  # no health sidecar written
 
 
+def test_a_generation_reports_how_its_newest_run_ended(tmp_path, monkeypatch):
+    monkeypatch.setattr(roots, "GENERATIONS", tmp_path)
+    gen = _generation(tmp_path)
+    _run(gen, run_id="run-1", status="CompletedRun")
+    _run(gen, run_id="run-2", status="FailedRun")
+
+    last = catalog.generation_info(gen)["last_run"]
+    assert (last["id"], last["status"]) == ("run-2", "FAILED")
+    assert catalog.generation_info(_generation(tmp_path, name="no_runs"))["last_run"] is None
+
+
 def _contract_schema(evaluator: dict | None = None) -> dict:
     """The dashboard schema, with the identity a controller and a monitor slot carry in a header.
 

@@ -52,12 +52,14 @@ from motion_spec.dashboard.queries import (
     generation_graph,
     graph_sources,
     model_lint,
+    run_notes,
     run_query,
+    save_notes,
     save_queries,
     saved_queries,
     timeline,
 )
-from motion_spec.dashboard.replay import plot_data, replay_data
+from motion_spec.dashboard.replay import plot_data, replay_data, run_verdict
 from motion_spec.dashboard.roots import (
     FRONTEND,
     GENERATION_DIR_ENV,
@@ -124,7 +126,9 @@ LAN_GET_ALLOWED = frozenset(
         "/api/run/constraints",
         "/api/run/compare",
         "/api/run/files",
+        "/api/run/verdict",
         "/api/console",
+        "/api/notes",
         "/api/queries",
         "/api/video",
         "/api/ros-camera",
@@ -145,6 +149,7 @@ LAN_POST_ALLOWED = frozenset(
         "/api/run/stop",
         "/api/live",
         "/api/control",
+        "/api/notes",
         "/api/queries",
         "/api/sparql",
         "/api/generate",
@@ -343,6 +348,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 )
             if parsed.path == "/api/run/files":
                 return self.send_json(run_files(relative_path(roots.GENERATIONS, value)))
+            if parsed.path == "/api/run/verdict":
+                return self.send_json(run_verdict(relative_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/devices":
                 return self.send_json(probe_devices(relative_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/health":
@@ -359,6 +366,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return self.send_json(console_slice(console_log_for(target), offset))
             if parsed.path == "/api/queries":
                 return self.send_json(saved_queries(expected_path(roots.GENERATIONS, value)))
+            if parsed.path == "/api/notes":
+                return self.send_json(run_notes(expected_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/video":
                 run = relative_path(roots.GENERATIONS, value)
                 return self.send_video(video_file(run, query.get("camera", [""])[0]))
@@ -449,6 +458,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if self.path == "/api/queries":
                 return self.send_json(
                     save_queries(expected_path(roots.GENERATIONS, body["path"]), body["queries"])
+                )
+            if self.path == "/api/notes":
+                return self.send_json(
+                    save_notes(
+                        expected_path(roots.GENERATIONS, body["path"]),
+                        body.get("note", ""),
+                        body.get("tags", []),
+                    )
                 )
             if self.path == "/api/sparql":
                 return self.send_json(

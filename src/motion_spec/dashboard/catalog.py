@@ -30,6 +30,15 @@ from motion_spec.introspection.replay import read_health, resolve_archive
 RUN_ENDED = {"COMPLETED", "FAILED", "INTERRUPTED", "CANCELLED"}
 
 
+def _last_run(path: Path) -> dict | None:
+    """How the newest run ended, or that it is still going -- the sidebar's one-glance answer."""
+    runs = GenerationInfo(path).runs
+    if not runs:
+        return None
+    newest = runs[0]
+    return {"id": newest.run_id, "status": newest.status, "live": newest.is_live()}
+
+
 def generation_info(path: Path) -> dict:
     layout = json_file(path / "generated/contract/frame_layout.json")
     source = next((item for item in (path / "generated/source").glob("*.robmot")), None)
@@ -49,6 +58,7 @@ def generation_info(path: Path) -> dict:
         "runs": len(GenerationInfo(path).runs),
         "has_fsm": any((path / "generated/model").glob("*_fsm.svg")),
         "cameras": generation_cameras(path),
+        "last_run": _last_run(path),
     }
 
 
@@ -399,6 +409,16 @@ def provenance_graph(service) -> dict:
     }
 
 
+def _run_notes(path: Path) -> tuple[str, list[str]]:
+    """Read notes.json here rather than importing queries, which imports this module."""
+    stored = json_file(path / "notes.json")
+    tags = stored.get("tags") if isinstance(stored, dict) else None
+    return (
+        str(stored.get("note") or "") if isinstance(stored, dict) else "",
+        [str(tag) for tag in tags] if isinstance(tags, list) else [],
+    )
+
+
 def run_info(path: Path) -> dict:
     log = frame_log_pb.log_path(path / "logs/frame_log.pb")
     health = read_health(log) or {}
@@ -409,6 +429,7 @@ def run_info(path: Path) -> dict:
     except (ArchiveError, DecodeError, OSError):
         period_ns = 0
     match = re.fullmatch(r"run-(\d{8}T\d{6}\d{6}Z)", run_id)
+    note, tags = _run_notes(path)
     return {
         "path": str(path.relative_to(roots.GENERATIONS)),
         "id": run_id,
@@ -418,6 +439,8 @@ def run_info(path: Path) -> dict:
         "written_frames": health.get("written_frames"),
         "duration_s": health.get("written_frames", 0) * period_ns / 1e9,
         "dropped_frames": health.get("dropped_frames"),
+        "note": note,
+        "tags": tags,
     }
 
 

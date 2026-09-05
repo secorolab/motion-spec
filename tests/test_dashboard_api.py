@@ -143,6 +143,18 @@ def test_queries_are_kept_with_the_run(dashboard):
     ]
 
 
+def test_a_note_and_its_tags_are_kept_with_the_run(dashboard):
+    path = str(dashboard.run.relative_to(dashboard.root))
+    assert dashboard.get(f"/api/notes?path={urllib.parse.quote(path)}") == {"note": "", "tags": []}
+    saved = dashboard.post(
+        "/api/notes",
+        {"path": path, "note": "slipped at lift", "tags": [" grasp", "grasp", "", "ft"]},
+    )
+    assert saved == {"note": "slipped at lift", "tags": ["grasp", "ft"]}
+    assert dashboard.get(f"/api/notes?path={urllib.parse.quote(path)}") == saved
+    assert json.loads((dashboard.run / "notes.json").read_text()) == saved
+
+
 def test_a_construct_answers_with_its_type_and_its_triples(dashboard):
     """A CONSTRUCT is a graph, and the endpoint says so: the rows are subject/predicate/object
     and the same result comes back classified for the renderer. Serializing it to turtle text

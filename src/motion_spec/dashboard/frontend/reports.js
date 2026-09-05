@@ -137,6 +137,34 @@ function renderCompare(data, rightPath) {
   return box;
 }
 
+// Reached, held, fired, left: the four questions asked of every motion after a run.
+function renderVerdict(data) {
+  const at = (frame) => (frame === null || frame === undefined ? "—" : seconds(frame * data.period_s));
+  const rows = [];
+  data.motions.forEach((motion) => {
+    motion.constraints.forEach((row) => {
+      const held = row.kind === "goal" && row.active ? `${Math.round((100 * row.satisfied) / row.active)} %` : "—";
+      const reached = row.kind === "goal" ? (row.first_satisfied === null ? "never" : at(row.first_satisfied - motion.window[0])) : "—";
+      const fired = row.kind === "monitor" ? (row.fired === null ? "never" : at(row.fired - motion.window[0])) : "—";
+      rows.push([motion.motion, row.id, row.kind, reached, held, row.kind === "goal" ? String(row.losses) : "—", fired]);
+    });
+    motion.exits.forEach((exit) => rows.push([
+      motion.motion, "→ " + exit.to_state, "exit", at(exit.frame - motion.window[0]), "—", "—",
+      [...exit.events, ...exit.monitors].join(", ") || "—",
+    ]));
+  });
+  const goals = data.motions.flatMap((motion) => motion.constraints.filter((row) => row.kind === "goal"));
+  const unreached = goals.filter((row) => row.first_satisfied === null).length;
+  const lost = goals.filter((row) => row.losses > 0).length;
+  const note = !goals.length ? "no goal constraints recorded"
+    : `${goals.length - unreached} of ${goals.length} goals reached` + (lost ? `, ${lost} lost after reaching` : "");
+  const box = section("verdict", note, rows.length
+    ? table(["motion", "constraint", "kind", "reached / left at", "held", "lost", "fired / via"], rows)
+    : null);
+  box.open = true;
+  return box;
+}
+
 async function renderComparePicker(panel) {
   const picker = panel.querySelector(".compare-pick");
   const runs = await api(`/api/runs?path=${encodeURIComponent(state.generationPath)}`);
@@ -166,6 +194,12 @@ export async function showReports(runPath) {
     + '<div class="compare-slot"></div>';
   // The picker is one cheap listing, so it is usable while the log sweep below it runs.
   await renderComparePicker(panel);
+  // The verdict comes off the marker scan the page already ran, so it lands before the sweep.
+  try {
+    panel.append(renderVerdict(await api(`/api/run/verdict?path=${encodeURIComponent(runPath)}`)));
+  } catch (error) {
+    panel.append(holding(`verdict unavailable: ${error.message}`));
+  }
   panel.append(holding("sweeping the frame log…"));
   let data;
   try {

@@ -14,6 +14,17 @@ import { setTab, setView } from "./routing.js";
 import { filter, loadReplay, openPendingRun, showSpeed, stopPlayback } from "./run.js";
 import { openSource, showGenerated, showSource } from "./sources.js";
 
+// One remembered run bar per model: every generation of a model shares its cameras and choices.
+export const runOptionsKey = (generationPath) => `motion-spec.run-options.${generationPath.split("/")[0]}`;
+
+export function readRunOptions(generationPath) {
+  try { return JSON.parse(localStorage.getItem(runOptionsKey(generationPath))) ?? {}; } catch { return {}; }
+}
+
+export function saveRunOptions(generationPath, options) {
+  try { localStorage.setItem(runOptionsKey(generationPath), JSON.stringify(options)); } catch { /* private */ }
+}
+
 export async function loadGenerations(refresh = false) {
   const request = ++state.listRequest;
   if (refresh || !state.cache.generations) {
@@ -66,6 +77,7 @@ export async function loadGenerations(refresh = false) {
           : selectGeneration(generation.path);
       },
       generation.path,
+      generation.last_run ? (generation.last_run.live ? "live" : (generation.last_run.status ?? "unknown")) : null,
     )));
     return group;
   }));
@@ -101,8 +113,11 @@ export function bindRunAgain(page, path, cameras, simulated) {
   // Each option is a choice between two named states, not a flag to guess the meaning of.
   bar.querySelectorAll(".run-choice").forEach((choice) => {
     choice.querySelectorAll("button").forEach((option) => {
-      option.onclick = () => choice.querySelectorAll("button").forEach((other) =>
-        other.setAttribute("aria-pressed", other === option));
+      option.onclick = () => {
+        choice.querySelectorAll("button").forEach((other) =>
+          other.setAttribute("aria-pressed", other === option));
+        saveRunOptions(path, options());
+      };
     });
   });
   // Hardware has no display to drop: the CLI rejects a headless real run.
@@ -127,6 +142,7 @@ export function bindRunAgain(page, path, cameras, simulated) {
   headless.querySelectorAll("button").forEach((option) => option.addEventListener("click", showSpeed));
   showSpeed();
   let chosen = () => [];
+  let label = () => {};
   {
     // A simulator renders any camera the model declares, plus the standard view, which needs
     // no declaring; a real platform records the cameras that name a ROS image topic.
@@ -141,7 +157,7 @@ export function bindRunAgain(page, path, cameras, simulated) {
     const summary = menu.querySelector("summary");
     chosen = () => [...menu.querySelectorAll('.run-camera[aria-pressed="true"]')]
       .filter((chip) => !chip.hidden).map((chip) => chip.dataset.camera);
-    const label = () => {
+    label = () => {
       const available = [...menu.querySelectorAll(".run-camera")].filter((chip) => !chip.hidden);
       const picked = chosen().length;
       summary.textContent = picked ? `${picked} camera${picked === 1 ? "" : "s"}` : "none";
@@ -160,6 +176,7 @@ export function bindRunAgain(page, path, cameras, simulated) {
       chip.onclick = () => {
         chip.setAttribute("aria-pressed", chip.getAttribute("aria-pressed") !== "true");
         label();
+        saveRunOptions(path, options());
       };
       return chip;
     }));
@@ -178,6 +195,22 @@ export function bindRunAgain(page, path, cameras, simulated) {
     ),
     cameras: chosen(),
   });
+  // What was picked last time this model was run: a real run's cameras are not worth re-picking
+  // on every visit. The forced-headless case stays the server's, not a remembered choice.
+  const remembered = readRunOptions(path);
+  bar.querySelectorAll(".run-choice[data-option]").forEach((choice) => {
+    const value = remembered[choice.dataset.option];
+    if (typeof value !== "boolean") return;
+    if (choice.dataset.option === "headless" && state.restricted) return;
+    choice.querySelectorAll("button").forEach((option) =>
+      option.setAttribute("aria-pressed", option.dataset.value === String(value)));
+  });
+  if (Array.isArray(remembered.cameras)) {
+    bar.querySelectorAll(".run-camera").forEach((chip) =>
+      chip.setAttribute("aria-pressed", remembered.cameras.includes(chip.dataset.camera)));
+    label();
+  }
+  showSpeed();
   // While it runs the page cannot say more than the runner does; watch until it stops, then
   // put the run it made in the list.
   let sawRunning = false;
@@ -402,6 +435,13 @@ export async function selectGeneration(path) {
       event.shiftKey ? pickRange(run.path, row.parentElement, "main") : toggleSelection(run.path, "main");
       syncPickAll();
     };
+    if (run.note || run.tags?.length) {
+      const note = document.createElement("div");
+      note.className = "run-note";
+      note.append(...(run.tags ?? []).map((tag) => Object.assign(document.createElement("span"), { className: "run-tag", textContent: tag })));
+      if (run.note) note.append(Object.assign(document.createElement("span"), { className: "run-note-text", textContent: run.note.split("\n")[0] }));
+      row.append(note);
+    }
     row.title = `${run.id} — open replay; Ctrl/Cmd-click to select`;
     row.onclick = (event) => {
       if (event.shiftKey) return pickRange(run.path, row.parentElement, "main");
@@ -447,19 +487,26 @@ export async function selectGeneration(path) {
   const from = page.querySelector(".run-from");
   const to = page.querySelector(".run-to");
   const clear = page.querySelector(".run-filter-clear");
+  const search = page.querySelector(".run-search");
   const applyFilter = () => {
     const after = from.value ? new Date(from.value).getTime() : -Infinity;
     const before = to.value ? new Date(to.value).getTime() : Infinity;
+    const needle = search.value.trim().toLowerCase();
     rows = runs.filter((run) => {
       const started = run.started ? new Date(run.started).getTime() : NaN;
-      return Number.isNaN(started) ? !from.value && !to.value : started >= after && started <= before;
+      const inWindow = Number.isNaN(started)
+        ? !from.value && !to.value
+        : started >= after && started <= before;
+      if (!inWindow || !needle) return inWindow;
+      return [run.id, run.note ?? "", ...(run.tags ?? [])].join("\n").toLowerCase().includes(needle);
     });
-    clear.hidden = !from.value && !to.value;
+    clear.hidden = !from.value && !to.value && !search.value;
     runPage = 0;
     draw();
   };
   from.onchange = to.oninput = from.oninput = to.onchange = applyFilter;
-  clear.onclick = () => { from.value = to.value = ""; applyFilter(); };
+  search.oninput = applyFilter;
+  clear.onclick = () => { from.value = to.value = search.value = ""; applyFilter(); };
   draw();
   bindRunAgain(page, path, generation.cameras ?? [], generation.simulated);
   if (!generation.simulated) bindDevices(page, path);

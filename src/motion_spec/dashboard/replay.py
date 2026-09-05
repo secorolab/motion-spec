@@ -366,7 +366,7 @@ def log_events(log: Path, contract) -> dict:
             "motion_was": None,
             "csat_was": None,
             "msat_was": None,
-            "result": {"events": [], "windows": {}},
+            "result": {"events": [], "windows": {}, "tally": {}, "exits": {}},
         }
     if size > scan["size"]:
         scan["size"] = size
@@ -379,6 +379,7 @@ def _extend_events(log: Path, contract, scan: dict) -> None:
     states, fired = scan["states"], scan["fired"]
     trigger_names = scan["trigger_names"]
     events, windows = scan["result"]["events"], scan["result"]["windows"]
+    tally, exits = scan["result"]["tally"], scan["result"]["exits"]
     index = scan["index"]
     state_was, event_was, motion_was = scan["state_was"], scan["event_was"], scan["motion_was"]
     csat_was, msat_was = scan["csat_was"], scan["msat_was"]
@@ -393,15 +394,18 @@ def _extend_events(log: Path, contract, scan: dict) -> None:
             if record.WhichOneof("record") != "frame":
                 continue
             frame = record.frame
+            fired_now: list[str] = []
             if trigger_names:
                 for slot in range(min(int(frame.trigger_count), len(trigger_names))):
                     entry = getattr(frame, trigger_names[slot])
                     if 0 <= entry.idx < len(fired):
                         events.append({"frame": index, "kind": "event", "label": fired[entry.idx]})
+                        fired_now.append(fired[entry.idx])
             elif frame.last_event != event_was:
                 event_was = frame.last_event
                 if 0 <= event_was < len(fired):
                     events.append({"frame": index, "kind": "event", "label": fired[event_was]})
+                    fired_now.append(fired[event_was])
             controllers, monitors = scan["by_motion"].get(frame.active_motion, ({}, {}))
             csat = [
                 slot in controllers and bool(getattr(frame, name).satisfied)
@@ -414,6 +418,54 @@ def _extend_events(log: Path, contract, scan: dict) -> None:
             # The latch is only valid within one state and motion: across a change slot i is
             # a different controller, so the projection compares nothing there either.
             held = frame.fsm_state == state_was and frame.active_motion == motion_was
+            _, monitors_was = scan["by_motion"].get(motion_was, ({}, {}))
+            if state_was is not None and frame.fsm_state != state_was:
+                # The motion that was running is what left; what fired and which monitors
+                # stood true on the way out say why.
+                exits.setdefault(motion_was, []).append(
+                    {
+                        "frame": index,
+                        "to_state": states[frame.fsm_state]
+                        if 0 <= frame.fsm_state < len(states)
+                        else str(frame.fsm_state),
+                        "events": list(fired_now),
+                        "monitors": [
+                            monitors_was[slot].id
+                            for slot, up in enumerate(msat_was or [])
+                            if up and slot in monitors_was
+                        ],
+                    }
+                )
+            for slot, controller in controllers.items():
+                if not controller.constraint_iri or slot >= len(csat):
+                    continue
+                goal = tally.setdefault(
+                    (frame.active_motion, "goal", slot),
+                    {
+                        "id": controller.id,
+                        "active": 0,
+                        "satisfied": 0,
+                        "first_satisfied": None,
+                        "losses": 0,
+                    },
+                )
+                goal["active"] += 1
+                if csat[slot]:
+                    goal["satisfied"] += 1
+                    if goal["first_satisfied"] is None:
+                        goal["first_satisfied"] = index
+                elif held and csat_was[slot]:
+                    goal["losses"] += 1
+            for slot, monitor in monitors.items():
+                if slot >= len(msat):
+                    continue
+                watch = tally.setdefault(
+                    (frame.active_motion, "monitor", slot),
+                    {"id": monitor.id, "active": 0, "fired": None},
+                )
+                watch["active"] += 1
+                if msat[slot] and watch["fired"] is None:
+                    watch["fired"] = index
             if frame.fsm_state != state_was:
                 state_was = frame.fsm_state
                 label = states[state_was] if 0 <= state_was < len(states) else str(state_was)
@@ -442,6 +494,36 @@ def _extend_events(log: Path, contract, scan: dict) -> None:
     scan["index"] = index
     scan["state_was"], scan["event_was"], scan["motion_was"] = state_was, event_was, motion_was
     scan["csat_was"], scan["msat_was"] = csat_was, msat_was
+
+
+def run_verdict(run_dir: Path) -> dict:
+    """Per motion: whether each goal was reached and held, when each monitor fired, and how the
+    motion was left. Read off the marker scan the page already paid for, never a second pass."""
+    run_dir, log, manifest, contract = resolve_archive(run_dir)
+    scanned = log_events(log, contract)
+    tally, exits, windows = scanned["tally"], scanned["exits"], scanned["windows"]
+    # The authored motion name, the way the constraint panel spells it.
+    spelling: dict[str, str] = {}
+    for row in source_constraints(run_dir, manifest, contract):
+        spelling.setdefault(row["handler"], row["motion"])
+    motions = []
+    for motion in sorted(contract.header.motions, key=lambda m: windows.get(m.index, [1 << 62])[0]):
+        if motion.index not in windows:
+            continue
+        rows = [
+            {"kind": kind, **counts}
+            for (index, kind, _slot), counts in tally.items()
+            if index == motion.index
+        ]
+        motions.append(
+            {
+                "motion": spelling.get(motion.id, motion.id),
+                "window": windows[motion.index],
+                "constraints": rows,
+                "exits": exits.get(motion.index, []),
+            }
+        )
+    return {"period_s": contract.header.nominal_period_ns / 1e9, "motions": motions}
 
 
 def signal_reader(contract):

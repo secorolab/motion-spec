@@ -132,9 +132,11 @@ function bindAnnotation(runPath) {
   const tags = $(".run-tags");
   const note = $(".run-note-text");
   const status = $(".run-annotation-state");
+  const fit = () => { note.style.height = "auto"; note.style.height = `${note.scrollHeight}px`; };
   api(`/api/notes?path=${encodeURIComponent(runPath)}`).then((stored) => {
     tags.value = stored.tags.join(", ");
     note.value = stored.note;
+    fit();
   }).catch(() => {});
   const save = async () => {
     status.textContent = "saving…";
@@ -152,7 +154,7 @@ function bindAnnotation(runPath) {
     }
   };
   tags.onchange = note.onchange = save;
-  note.oninput = () => { note.style.height = "auto"; note.style.height = `${note.scrollHeight}px`; };
+  note.oninput = fit;
 }
 
 // The same start the generation page makes, from the run it is being compared against. The

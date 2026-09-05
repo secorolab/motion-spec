@@ -284,13 +284,23 @@ h1 { margin: 7px 0; font-size: 30px; }
 .run:hover { background: #282c31; }
 .run:hover strong { color: var(--accent); }
 .run.picked { background: #382b29; }
-.run .run-note { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; min-width: 0; margin-top: -4px; color: var(--muted); font: 11px var(--mono); }
-.run-tag { padding: 1px 6px; border: 1px solid var(--line); color: var(--accent); font-size: 9px; letter-spacing: .06em; }
+/* The note is a second line under the id, not an eighth column: it starts where the id does
+   and runs to the row's edge, close under the numbers rather than a column gap below them. */
+.run { row-gap: 4px; }
+.run .run-note { grid-column: 3 / -1; display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--muted); font: 10px var(--mono); }
+.run-tag { flex: none; padding: 1px 6px; border: 1px solid var(--line); background: var(--bg); color: var(--accent); font-size: 9px; letter-spacing: .06em; }
 .run-note .run-note-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.run-annotation { display: flex; align-items: flex-start; gap: 8px; margin: -12px 0 10px; }
-.run-annotation .run-tags { flex: 0 0 220px; }
-.run-annotation textarea { flex: 1 1 auto; min-height: 26px; resize: none; overflow: hidden; }
-.run-annotation-state { flex: none; align-self: center; color: var(--dim); font: 10px var(--mono); }
+.run-search { width: 150px; }
+/* Tags and note under the run heading, in the same box the query editor uses. */
+.run-annotation { display: grid; grid-template-columns: 240px minmax(0, 1fr) auto; gap: 8px; align-items: start; margin-top: -10px; }
+.run-annotation input, .run-annotation textarea {
+  padding: 6px 9px; border: 1px solid var(--line); background: var(--surface); color: var(--text);
+  font: 11px/1.5 var(--mono); color-scheme: dark;
+}
+.run-annotation textarea { min-height: 30px; resize: none; overflow: hidden; font-family: var(--code); }
+.run-annotation input:focus, .run-annotation textarea:focus { border-color: var(--accent); outline: 0; }
+.run-annotation input::placeholder, .run-annotation textarea::placeholder { color: var(--dim); }
+.run-annotation-state { align-self: center; color: var(--dim); font: 10px var(--mono); }
 .badge { justify-self: start; color: var(--dim); font: 9px var(--mono); letter-spacing: .06em; }
 .badge-completed { color: var(--good); }
 .badge-failed, .badge-interrupted, .badge-cancelled { color: var(--accent); }
@@ -303,7 +313,7 @@ h1 { margin: 7px 0; font-size: 30px; }
 /* The run page is a viewport-high column: heading row, then the active panel filling the
    rest, ending where #content's bottom padding clears the fixed transport. Panels scroll
    inside themselves; the page itself never grows a scrollbar. */
-.replay { display: grid; gap: 24px; grid-template-rows: auto minmax(0, 1fr); height: calc(100dvh - 139px); }
+.replay { display: grid; gap: 24px; grid-template-rows: auto auto minmax(0, 1fr); height: calc(100dvh - 139px); }
 .replay > section { min-height: 0; overflow-y: auto; }
 .replay-heading #back, .page-heading #back { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 1px solid var(--line); color: var(--text); font: 13px var(--mono); }
 .replay-heading #back:hover { border-color: var(--accent); color: var(--accent); }
@@ -742,7 +752,7 @@ html.restoring #content .empty { visibility: hidden; }
 .run-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; margin-top: 30px; }
 .run-heading h2 { margin: 0; }
 /* Filters and pager are both list controls: one row under the list, not two places. */
-.run-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; max-width: 720px; margin: 10px 0 0; }
+.run-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; max-width: 750px; margin: 10px 0 0; }
 .run-filter { display: flex; align-items: center; gap: 10px; color: var(--dim); font: 10px var(--mono); }
 .run-filter label { display: flex; align-items: center; gap: 5px; }
 .run-filter input { padding: 3px 6px; border: 1px solid var(--line); background: var(--bg); color: var(--muted); font: 10px var(--mono); color-scheme: dark; }

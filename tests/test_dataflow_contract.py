@@ -13,7 +13,7 @@ from google.protobuf import descriptor_pb2
 from motion_spec.classes.base import DataclassJSONEncoder
 from motion_spec.classes.bindings import ChainBinding, HardwareBinding, RuntimeBinding
 from motion_spec.classes.dynamics import Saturation
-from motion_spec.classes.geometry import Direction, Pose, Position, Wrench
+from motion_spec.classes.geometry import Direction, Pose, Position, Wrench, WrenchEstimator
 from motion_spec.classes.motion import BlackboardValue, MotionSolverSlice, MotionUnit
 from motion_spec.classes.qudt import FreeVector, Quantity, QuantityKind, Unit
 from motion_spec.classes.solvers import MotionDrivers, SolverWithInputAndOutput
@@ -34,7 +34,7 @@ def _quantity(id_: str, value: float | None) -> Quantity:
     return Quantity(id_, QuantityKind("Distance"), Unit("M"), value, False)
 
 
-def _wrench(id_: str, sensor_name: str = "") -> Wrench:
+def _wrench(id_: str, sensor_name: str = "", estimator: WrenchEstimator | None = None) -> Wrench:
     return Wrench(
         id=id_,
         quantity_kind=[],
@@ -42,6 +42,7 @@ def _wrench(id_: str, sensor_name: str = "") -> Wrench:
         as_seen_by=None,
         unit=[],
         sensor_name=sensor_name,
+        estimator=estimator,
     )
 
 
@@ -217,6 +218,21 @@ def test_a_sensor_reading_is_produced_by_the_solver_that_reads_it() -> None:
     # The tare state is written alongside the reading; cmd_wrench is the program's own output.
     assert dataflow["ext_force_ft_bias"]["producer"]["kind"] == "sensor"
     assert dataflow["cmd_wrench"]["producer"]["kind"] == "closure"
+
+
+def test_an_estimated_wrench_is_a_plain_solver_write() -> None:
+    """Nothing measures it and it has no tare companions: the solver that runs the observer is
+    its producer, the same as any other value the solver block computes."""
+    estimate = _wrench("ext_force_est", estimator=WrenchEstimator("arm", 30.0, 0.5))
+    solver = _solver("arm_solver", output=[estimate])
+    motions = [_motion("motion_arc", 0, "S_ARC", [], [_slice("arm_solver", [estimate])])]
+    introspection: dict = {}
+    annotate_dataflow(introspection, [estimate], {}, motions, [solver], {})
+
+    assert introspection["dataflow"]["ext_force_est"]["producer"] == {
+        "kind": "solver",
+        "id": "arm_solver",
+    }
 
 
 def test_a_recorded_constant_carries_its_iri_and_who_reads_it() -> None:

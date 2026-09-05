@@ -18,12 +18,14 @@ from typing import NamedTuple
 import rdflib
 from motion_spec_dsl.rdf_parser.vocab import (
     ACT,
+    AGN,
     ALGO_EXT,
     CSTR,
     CSTR_EXT,
     CSTR_HDL,
     CSTR_HDL_EXT,
     ENV,
+    EST,
     EXEC,
     GEOM_COORD,
     GEOM_ENT,
@@ -120,6 +122,7 @@ from motion_spec.classes.geometry import (
     VelocityTwist,
     View,
     Wrench,
+    WrenchEstimator,
 )
 from motion_spec.classes.motion import (
     ComponentRef,
@@ -827,6 +830,23 @@ def wrench(model, node) -> Wrench:
         raise ConstraintViolation(
             "dynamics", f"WrenchCoordinate '{node}' sensor '{sensor}' has no physical frame"
         )
+    observer = graph.value(node, EST["estimated-by"])
+    estimator = None
+    if observer is not None:
+        agent_node = graph.value(observer, AGN["of-agent"])
+        if agent_node is None:
+            raise ConstraintViolation(
+                "dynamics", f"momentum observer '{observer}' names no agent to run on"
+            )
+        estimator = WrenchEstimator(
+            agent=model.id(agent_node),
+            estimation_gain_hz=float(
+                graph.value(graph.value(observer, EST["estimation-gain"]), QUDT_SCHEMA["value"])
+            ),
+            filter_constant=float(
+                graph.value(graph.value(observer, EST["filter-constant"]), QUDT_SCHEMA["value"])
+            ),
+        )
 
     return Wrench(
         id=model.id(node),
@@ -837,6 +857,7 @@ def wrench(model, node) -> Wrench:
         provenance=quantity_provenance(model, node),
         sensor_frame=frame(model, sensor_frame_node) if sensor_frame_node is not None else None,
         sensor_name=model.id(sensor) if sensor is not None else "",
+        estimator=estimator,
         retare_event_uris=tuple(
             str(event)
             for schedule in graph.subjects(URI_TIME_PRED_OF_CONSTRAINT, node)

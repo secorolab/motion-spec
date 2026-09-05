@@ -418,8 +418,29 @@ solver-output-JointPosition-mj_kdl(solver, chain_solver, out) ::= <<
 }
 >>
 
+solver-output-JointVelocity(solver, chain_solver, out, backend) ::= <<
+<({solver-output-JointVelocity-<backend>})(solver, chain_solver, out)>
+>>
+
+// The simulator reads any joint's rate by name; the chain's own joints fall back to the index.
+solver-output-JointVelocity-mj_kdl(solver, chain_solver, out) ::= <<
+{
+    double _joint_velocity_<out.id> = 0.0;
+    if (mj_kdl::get_joint_velocity(
+            robot.<solver.id>.robot->model,
+            robot.<solver.id>.robot->data,
+            "<out.joint_name>",
+            &_joint_velocity_<out.id>)) {
+        shared.<out.id> = _joint_velocity_<out.id>;
+    } else {
+<if(out.joint_index)>        shared.<out.id> = robot.<solver.id>.robot->jnt_vel_msr[<out.joint_index>];
+<else>        throw std::runtime_error("MuJoCo reports no joint '<out.joint_name>', and it is not on the chain");
+<endif>    }
+}
+>>
+
 solver-output-Wrench(solver, chain_solver, out, backend) ::= <<
-<({solver-output-Wrench-<backend>})(solver, chain_solver, out)>
+<if(out.estimator)><solver-output-Wrench-estimated(solver, chain_solver, out, backend)><else><({solver-output-Wrench-<backend>})(solver, chain_solver, out)><endif>
 >>
 
 solver-output-Wrench-mj_kdl(solver, chain_solver, out) ::= <<
@@ -534,6 +555,53 @@ solver-output-Wrench-robif2b(solver, chain_solver, out) ::= <<
     const KDL::Vector gravity_<out.id>(<if(chain_solver.gravity)><chain_solver.gravity; separator=", "><else>0.0, 0.0, 0.0<endif>);
 <ft-tare(out, {measured_<out.id>}, {sensor_<out.id>}, {reference_<out.id>}, {observer_<out.id>}, {gravity_<out.id>})>
 }
+>>
+
+// Momentum observer (Haddadin/De Luca/Albu-Schaeffer, T-RO 2017) as KDL ships it: fed the
+// chain's q, qd and joint torque, it returns the environment's wrench on the tip, in the tip frame.
+solver-output-Wrench-estimated(solver, chain_solver, out, backend) ::= <<
+{
+    static KDL::ChainExternalWrenchEstimator est_<out.id>(
+        *robot.<solver.id>.chain,
+        KDL::Vector(<chain_solver.gravity; separator=", ">),
+        1.0 / motion_spec::runtime::kControlPeriodS,
+        <out.estimator.estimation_gain_hz>,
+        <out.estimator.filter_constant>);
+    // The world block runs in main, where no motion's `state` is in scope: size off the chain.
+    static const unsigned nj_<out.id> = robot.<solver.id>.chain->getNrOfJoints();
+    static KDL::JntArray q_<out.id>(nj_<out.id>);
+    static KDL::JntArray qd_<out.id>(nj_<out.id>);
+    static KDL::JntArray tau_<out.id>(nj_<out.id>);
+    for (unsigned i = 0; i \< nj_<out.id>; ++i) {
+        q_<out.id>(i) = <({estimator-q-<backend>})(solver)>;
+        qd_<out.id>(i) = <({estimator-qd-<backend>})(solver)>;
+        tau_<out.id>(i) = <({estimator-tau-<backend>})(solver)>;
+    \}
+<retare-on-estimator(out)>    KDL::Wrench tip_<out.id>;
+    if (est_<out.id>.JntToExtWrench(q_<out.id>, qd_<out.id>, tau_<out.id>, tip_<out.id>) != KDL::SolverI::E_NOERROR) {
+        throw std::runtime_error(std::string("wrench estimate '<out.id>': ") + est_<out.id>.strError(est_<out.id>.getError()));
+    \}
+    const KDL::Frame tip_frame_<out.id> = <world-pose(solver, {robot.<solver.id>.world_tip})>;
+    const KDL::Frame reference_<out.id> = <world-pose(solver, {robot.world_<solver.id>_<out.reference_point.id>})>;
+    const KDL::Frame observer_<out.id> = <world-pose(solver, {robot.world_<solver.id>_<out.as_seen_by.id>})>;
+    // Same sign as the FT path: what the environment applies to the arm (a hanging load reads -z).
+    shared.<out.id> = motion_spec::runtime::transform_wrench(tip_<out.id>, tip_frame_<out.id>, reference_<out.id>, observer_<out.id>);
+\}
+>>
+estimator-q-mj_kdl(solver)    ::= "robot.<solver.id>.robot->jnt_pos_msr[i]"
+estimator-qd-mj_kdl(solver)   ::= "robot.<solver.id>.robot->jnt_vel_msr[i]"
+// qfrc_actuator is zero under TORQUE mode; the command applied last tick is what moved the arm.
+estimator-tau-mj_kdl(solver)  ::= "robot.<solver.id>.robot->jnt_trq_cmd[i]"
+estimator-q-robif2b(solver)   ::= "robot.<solver.id>.state->pos_msr[i]"
+estimator-qd-robif2b(solver)  ::= "robot.<solver.id>.state->vel_msr[i]"
+estimator-tau-robif2b(solver) ::= "robot.<solver.id>.state->eff_msr[i]"
+
+// The observer's zero is the momentum now: the integral and the filtered torque restart from it.
+retare-on-estimator(out) ::= <<
+<if(out.retare_events_present)>    if (robot.fsm_events && (<out.retare_events:{e | consume_event(robot.fsm_events, <e>)}; separator=" || ">)) {
+        est_<out.id>.setInitialMomentum(q_<out.id>, qd_<out.id>);
+    \}
+<endif>
 >>
 
 solver-output(solver, chain_solver, out, backend) ::= <<

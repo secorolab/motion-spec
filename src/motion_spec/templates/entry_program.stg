@@ -341,9 +341,11 @@ world-solver-wiring(solver, backend) ::= <<
     \}
 >>
 
-// Only a sensed wrench names a sensor; every other observation renders nothing here.
+// Only a sensed wrench has a sensor frame to hang a load off; every other observation -- an
+// estimated wrench included -- renders nothing here. Keyed on the frame, since an absent name
+// is an empty string, which the template engine reads as present.
 ft-load-wiring(obs) ::= <<
-<if(obs.out.sensor_name)>    if (!world.load_on(robot.world_<obs.solver_id>_<obs.out.sensor_frame.id>, robot.ft_<obs.out.sensor_name>_load, world_error)) {
+<if(obs.out.sensor_frame)>    if (!world.load_on(robot.world_<obs.solver_id>_<obs.out.sensor_frame.id>, robot.ft_<obs.out.sensor_name>_load, world_error)) {
         std::cerr \<\< "[world] " \<\< world_error \<\< std::endl;
         return 1;
     \}

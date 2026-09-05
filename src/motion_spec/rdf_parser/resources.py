@@ -33,9 +33,11 @@ from motion_spec_dsl.rdf_parser.vocab import (
     CSTR,
     CSTR_HDL,
     ENV,
+    EST,
     EXEC,
     GEOM_COORD,
     GEOM_ENT,
+    GEOM_OP,
     KC,
     KC_STAT,
     MAP,
@@ -87,6 +89,7 @@ from scene_dsl.rdf_parser.kinematics import (
     get_kinematic_mapping,
     pose_between,
     root_bodies,
+    root_frame_of,
 )
 from scene_dsl.rdf_parser.sensors import get_update_rate
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS, URI_BDD_PRED_ELEMS, URI_ROS_PRED_PACKAGE_NAME
@@ -683,6 +686,7 @@ class _ChainSetup(NamedTuple):
     runtime: RuntimeBinding
     sensors: list
     devices: list
+    agent: object
 
 
 _EMPTY_SETUP = _ChainSetup(
@@ -691,6 +695,7 @@ _EMPTY_SETUP = _ChainSetup(
     RuntimeBinding(id="", owner=False, prefix="", owned_trees=[], config_key=""),
     [],
     [],
+    None,
 )
 
 # What an asset path says about the arm it holds, when no device is bound to say it outright.
@@ -778,6 +783,7 @@ def robot_setups(model):
             ),
             sensors=assembly.sensors,
             devices=assembly.devices,
+            agent=assembly.agent,
         )
         setups_by_node[assembly.agent] = setup
         ordered.append(setup)
@@ -785,14 +791,16 @@ def robot_setups(model):
     return setups_by_node, ordered, trees
 
 
-def tree_segments(setups, trees=()) -> dict:
+def tree_segments(model, setups, trees=()) -> dict:
     """Every scene element the built trees carry, by IRI, named as the world model names it.
 
     A chain resolves the whole tree it is sliced from, not only the part it articulates, so a
     frame no chain reaches -- a fixed camera watching the scene -- resolves here just the same.
     A tree no chain is sliced from at all -- a free body, placed by what measures it -- is still
-    added to the world model, so its segments resolve alongside them.
+    added to the world model, so its segments resolve alongside them. A body's root frame is
+    where the body's segment is, so it resolves to that segment as it does on a chain.
     """
+    graph = model.graph
     mapped = {
         iri: segment
         for setup in setups.values()
@@ -802,6 +810,9 @@ def tree_segments(setups, trees=()) -> dict:
         mapped.setdefault(tree["root_iri"], tree["root"])
         for segment in tree["segments"]:
             mapped.setdefault(segment["iri"], segment["name"])
+            body = URIRef(segment["iri"])
+            if GEOM_ENT.RigidBody in get_node_types(graph, body):
+                mapped.setdefault(str(root_frame_of(body, graph).id), segment["name"])
     return mapped
 
 
@@ -813,6 +824,9 @@ def _placed_on_chain(carrier, backend: str) -> tuple[tuple[str, bool], ...]:
     resolves through the chain -- a twist states the point it is taken about -- and placing
     those would reject a model over a frame nothing looks up.
     """
+    if getattr(carrier, "estimator", None) is not None:
+        # No sensor frame to place: both backends read the transform frames off the world model.
+        return (("reference_point", True), ("as_seen_by", True))
     if hasattr(carrier, "sensor_frame"):
         # The simulator answers the transform frames by name; the sensor frame is placed on every
         # platform because the load hanging off it is walked from the world model.
@@ -959,7 +973,9 @@ _JOINT_OUTPUT_TYPES = (
 )
 
 
-def _observes_in_frame(model, node, type_, chain, runtime_prefix, owned_trees, backend: str):
+def _observes_in_frame(
+    model, node, type_, chain, runtime_prefix, owned_trees, backend: str, agent=None
+):
     """Whether an observation is stated in this solver's reference frame, and in which frame node."""
     graph = model.graph
     if type_ in _JOINT_OUTPUT_TYPES:
@@ -977,6 +993,10 @@ def _observes_in_frame(model, node, type_, chain, runtime_prefix, owned_trees, b
     if frame_node is None:
         frame_node = quantities.derived_reference_frames(model, node).as_seen_by
     if type_ == RBDYN_COORD.WrenchCoordinate:
+        observer = graph.value(node, EST["estimated-by"])
+        if observer is not None:
+            # The observer runs on one agent's chain, so that agent's solver answers it.
+            return graph.value(observer, AGN["of-agent"]) == agent, frame_node
         sensor = graph.value(node, SOSA.madeBySensor)
         sensor_frame = graph.value(sensor, SENSORS.frame) if sensor is not None else None
         owned = sensor_frame is not None and any(
@@ -1024,6 +1044,7 @@ def _world_solver_outputs(model, setup: _ChainSetup, scene: MjcfSceneSpec, backe
                 setup.runtime.prefix,
                 setup.runtime.owned_trees,
                 backend,
+                agent=setup.agent,
             )
             if not in_frame:
                 continue
@@ -1129,9 +1150,21 @@ def _runtime_output(model, output, type_, node, frame_node, setup: _ChainSetup):
     graph = model.graph
     relation = graph.value(node, RBDYN_COORD["of-wrench"])
     reference_node = graph.value(relation, RBDYN_ENT["reference-point"])
+    runtime = (setup.runtime.prefix, setup.runtime.owned_trees)
+    if output.estimator is not None:
+        # Nothing measures it, so there is no sensor or sensor frame to prefix.
+        return replace(
+            output,
+            estimator=replace(
+                output.estimator, agent=f"{setup.runtime.prefix}{output.estimator.agent}"
+            ),
+            reference_point=replace(
+                output.reference_point, id=_runtime_frame(model, reference_node, *runtime).id
+            ),
+            as_seen_by=_runtime_frame(model, frame_node, *runtime),
+        )
     sensor = graph.value(node, SOSA.madeBySensor)
     sensor_frame_node = graph.value(sensor, SENSORS.frame)
-    runtime = (setup.runtime.prefix, setup.runtime.owned_trees)
 
     return replace(
         output,
@@ -1697,6 +1730,10 @@ def _placement_graph(model):
         for node in model.graph.subjects(RDF["type"], type_):
             if model.context_scope(node) is not None:
                 graph.remove((node, None, None))
+    # A pose an operation computes each cycle holds no coordinates until the run; it places nothing.
+    for predicate in (GEOM_OP.composite, GEOM_OP.out):
+        for node in model.graph.objects(None, predicate):
+            graph.remove((node, None, None))
     for relation in list(graph.subjects(RDF["type"], URI_GEOM_TYPE_POSE)):
         if next(graph.subjects(URI_GEOM_PRED_OF_POSE, relation), None) is None:
             graph.remove((relation, None, None))
@@ -2218,6 +2255,18 @@ def annotate_runtime(serial_chains, motions, backend: str) -> list[dict]:
             solver.gravity_compensation = [
                 -component or 0.0 for component in solver.derived_root_acceleration
             ]
+    # The observer reconstructs the chain's momentum, which is gravity-dependent: without the
+    # vector it would report the arm's own weight as an external push.
+    for solver in serial_chains:
+        if solver.gravity:
+            continue
+        for out in solver.world_output:
+            if getattr(out, "estimator", None) is not None:
+                raise ConstraintViolation(
+                    "solver",
+                    f"wrench '{out.id}' is estimated on '{solver.id}', which declares no "
+                    "gravity; the momentum observer needs the chain's gravity vector",
+                )
 
     return world_frames
 
@@ -2250,23 +2299,23 @@ _OUTPUT_KEYWORD = {
     "JointCurrent": "joint-current",
 }
 
-# Readings only a bound gripper device answers, and why a simulated backend cannot.
-_GRIPPER_ONLY_OUTPUTS = {
-    "JointVelocity": "the simulator has no joint-velocity read",
-    "JointCurrent": "the simulator reports no motor current",
-}
+# Readings the robif2b arm cannot take on a chain joint: only a bound gripper device answers them.
+_GRIPPER_ONLY_OUTPUTS = {"JointVelocity", "JointCurrent"}
+
+# Readings no simulated backend answers, and why; the simulator reads any joint's rate by name.
+_SIMULATOR_UNREPORTED = {"JointCurrent": "the simulator reports no motor current"}
 
 
 def _refuse_unreportable_currents(solver, backend: str) -> None:
-    """A gripper's rate and motor current are hardware readings no simulated backend answers.
+    """A gripper's motor current is a hardware reading no simulated backend answers.
 
     Raises:
-        RuntimeError: the model reads one of them on a backend that measures neither.
+        RuntimeError: the model reads one on a backend that does not measure it.
     """
     if backend == "robif2b":
         return
     for out in solver.output:
-        reason = _GRIPPER_ONLY_OUTPUTS.get(getattr(out, "type", ""))
+        reason = _SIMULATOR_UNREPORTED.get(getattr(out, "type", ""))
         if reason is not None:
             raise RuntimeError(f"{_OUTPUT_KEYWORD[out.type]} '{out.id}': {reason}")
 

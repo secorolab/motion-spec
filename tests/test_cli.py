@@ -167,11 +167,11 @@ def test_gen_and_run_compose_the_model_pipeline(monkeypatch, tmp_path) -> None:
     model.write_text("")
     received = {}
 
-    def create_generation(_model, output):
+    def create_generation(_model, output, _name=None):
         output.mkdir()
         return output
 
-    def generate(_model, generation, *, stage):
+    def generate(_model, generation, *, stage, seed=None):
         received.setdefault("stages", []).append(stage)
         generated = generation / "generated"
         (generated / "model").mkdir(parents=True)
@@ -219,7 +219,7 @@ def test_generation_base_prefers_o_then_the_environment(monkeypatch, tmp_path) -
     model.write_text("")
     received = {}
 
-    def create_generation(_model, output):
+    def create_generation(_model, output, _name=None):
         received["output"] = output
         generation = output or tmp_path / "fallback"
         generation.mkdir(exist_ok=True)
@@ -228,7 +228,7 @@ def test_generation_base_prefers_o_then_the_environment(monkeypatch, tmp_path) -
     monkeypatch.setattr("motion_spec.generation.pipeline.create_generation_dir", create_generation)
     monkeypatch.setattr(
         "motion_spec.generation.pipeline.generate_model",
-        lambda _model, generation, *, stage: generation / "generated",
+        lambda _model, generation, *, stage, seed=None: generation / "generated",
     )
 
     explicit, configured = tmp_path / "explicit", tmp_path / "configured"

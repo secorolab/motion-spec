@@ -435,14 +435,18 @@ def test_position_of_scales_to_metres_and_rejects_a_missing_unit() -> None:
 
 
 def test_sampled_scene_placements_are_rejected() -> None:
-    """Sampling has no motion-spec seed semantics yet, so it must never become identity."""
+    """A sampled placement resolves only through the draw `motion-spec gen` seeded into it; one
+    that carries no draw would place the body at whatever it happens to hold."""
     g = Dataset(default_union=True)
     frame = _scene_frame(g, "frame-object")
     wrt = _scene_frame(g, "frame-world")
     coord = _scene_pose(g, frame, wrt, (1.0, 2.0, 3.0))
     g.add((coord, RDF.type, URI_DISTRIB_TYPE_SAMPLED_QUANTITY))
+    assert _placement(_model(g), frame, wrt)[0] == pytest.approx([1.0, 2.0, 3.0])
 
-    with pytest.raises(ConstraintViolation):
+    for predicate in (GEOM_COORD.x, GEOM_COORD.y, GEOM_COORD.z):
+        g.remove((coord, predicate, None))
+    with pytest.raises(ConstraintViolation, match="carries no draw"):
         _placement(_model(g), frame, wrt)
 
 

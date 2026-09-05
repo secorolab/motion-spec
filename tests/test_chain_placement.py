@@ -53,37 +53,47 @@ def _chain() -> ChainBinding:
 
 def test_a_frame_that_is_no_segment_resolves_through_the_body_carrying_it() -> None:
     frame = Frame("wrist_ft_site", uri=SITE)
-    _place_on_chain(_chain(), frame, "solver", False)
+    _place_on_chain(_chain(), frame, "solver", False, "mj_kdl")
     assert frame.segment == 8
 
 
 def test_a_body_resolves_to_the_segment_standing_for_it() -> None:
     body = SimplicialComplex("wrist_ft_body", uri=BODY)
-    _place_on_chain(_chain(), body, "solver", False)
+    _place_on_chain(_chain(), body, "solver", False, "mj_kdl")
     assert body.segment == 8
 
 
 def test_a_frame_the_chain_never_reaches_fails_while_generating() -> None:
     with pytest.raises(ConstraintViolation, match="not on the chain"):
         _place_on_chain(
-            _chain(), Frame("elbow", uri="https://example.test/other/elbow"), "solver", False
+            _chain(),
+            Frame("elbow", uri="https://example.test/other/elbow"),
+            "solver",
+            False,
+            "mj_kdl",
         )
 
 
 def test_an_offset_frame_a_world_read_asks_for_resolves_to_its_own_leaf_segment() -> None:
     # Plan 04 gives it a segment of its own, so the offset is composed in the tree, not at run time.
     frame = Frame("wrist_ft_offset", uri=OFFSET_SITE)
-    assert _place_on_chain(_chain(), frame, "solver", True) == OFFSET_SEGMENT
+    assert _place_on_chain(_chain(), frame, "solver", True, "mj_kdl") == OFFSET_SEGMENT
 
 
 def test_the_same_offset_still_fails_where_the_read_stays_chain_relative() -> None:
     # `f_ext[index - 1]` and the velocity solver are indexed by the chain, which has no segment
     # standing for a frame that only hangs off one.
     with pytest.raises(ConstraintViolation, match="no segment of 'chain' stands for"):
-        _place_on_chain(_chain(), Frame("wrist_ft_offset", uri=OFFSET_SITE), "solver", False)
+        _place_on_chain(
+            _chain(), Frame("wrist_ft_offset", uri=OFFSET_SITE), "solver", False, "mj_kdl"
+        )
     with pytest.raises(ConstraintViolation, match="no segment of 'chain' stands for"):
         _place_on_chain(
-            _chain(), SimplicialComplex("wrist_ft_offset", uri=OFFSET_SITE), "solver", False
+            _chain(),
+            SimplicialComplex("wrist_ft_offset", uri=OFFSET_SITE),
+            "solver",
+            False,
+            "mj_kdl",
         )
 
 

@@ -383,7 +383,8 @@ def test_a_tf_message_carries_a_pose_as_a_transform():
     the frame it is of as the child, and the fields spelled the way a Transform does."""
     record = _reported("pose_ee", "Pose", "base_link")
     record.of = type("F", (), {"id": "g_pinch"})()
-    (publish,) = _standing_many("tf2_msgs/msg/TFMessage", 100.0, (REPORTED, None, record))
+    reported = URIRef(f"{NS}pose-ee")
+    (publish,) = _standing_many("tf2_msgs/msg/TFMessage", 100.0, (reported, None, record))
     assert publish["resize"] == [{"path": "transforms", "size": 1}]
     (entry,) = publish["entries"]
     assert (entry["value_type"], entry["carrier"]) == ("Pose", "Transform")

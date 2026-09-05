@@ -193,10 +193,21 @@ class PoseDifference(SpatialCoordinate):
     type: str = field(default="PoseDifference")
 
 
+@dataclass(frozen=True)
+class WrenchEstimator:
+    """The momentum observer an estimated wrench comes from, on the chain of one agent."""
+
+    agent: str
+    estimation_gain_hz: float
+    filter_constant: float
+
+
 @dataclass(kw_only=True)
 class Wrench(SpatialCoordinate):
     """A wrench (force/torque) quantity, optionally read from a force/torque sensor."""
 
+    # Set when the wrench is estimated from the chain's own torques instead of measured.
+    estimator: WrenchEstimator | None = None
     sensor_frame: Frame | None = None
     # Non-empty when this wrench is measured from a force/torque sensor (the FT-read
     # solver-output reads and tares this sensor into shared.<id>). Empty for

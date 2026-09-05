@@ -32,16 +32,25 @@ class AdmittanceFilter {
         entered_comply_ = false;
         const bool outside_engage_band = force > upper_threshold || force \< lower_threshold;
         if (mode_ == Mode::IDLE_HOLD) {
-            if (!outside_engage_band) {
-                vel_ = 0.0;
-                return 0.0;
+            if (outside_engage_band) {
+                mode_ = Mode::COMPLY;
+                entered_comply_ = true;
+            } else {
+                // Brake the last compliant velocity instead of removing its setpoint in one
+                // control tick. The exact zero below prevents the exponential tail from drifting.
+                const double decay = std::max(0.0, 1.0 - damping * dt / mass);
+                vel_ *= decay;
+                if (std::abs(vel_) \< 0.001) vel_ = 0.0;
+                offset_ += vel_ * dt;
+                return vel_;
             }
-            mode_ = Mode::COMPLY;
-            entered_comply_ = true;
         } else if (std::abs(force) \<= release_threshold) {
             mode_ = Mode::IDLE_HOLD;
-            vel_ = 0.0;
-            return 0.0;
+            const double decay = std::max(0.0, 1.0 - damping * dt / mass);
+            vel_ *= decay;
+            if (std::abs(vel_) \< 0.001) vel_ = 0.0;
+            offset_ += vel_ * dt;
+            return vel_;
         }
         // Subtract the release threshold so the commanded direction cannot reverse while the
         // Schmitt trigger remains in COMPLY between its release and engage thresholds.

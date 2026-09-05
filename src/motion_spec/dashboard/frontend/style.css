@@ -238,6 +238,11 @@ h1 { margin: 7px 0; font-size: 30px; }
 .diff-row[data-kind="delete"] .diff-left, .diff-row[data-kind="replace"] .diff-left { background: #382b29; color: var(--accent); }
 .diff-row[data-kind="insert"] .diff-right, .diff-row[data-kind="replace"] .diff-right { background: #23302a; color: var(--good); }
 .source-file span { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-files .source-file span:first-child { order: 0; flex: 0 1 auto; }
+.run-files .copy-path { position: static; order: 1; width: 18px; height: 18px; transform: none; font-size: 13px; }
+.run-files .source-file:hover .copy-path { opacity: 1; }
+.run-files .file-size { order: 2; margin-left: auto; color: var(--dim); }
+#panel-files { overflow: auto; }
 .graph-help { margin: 4px 0 12px; color: var(--muted); font-size: 12px; }
 .graph-heading { display: flex; align-items: center; gap: 12px; margin-top: 30px; }
 .graph-heading h2 { margin: 0; }
@@ -250,24 +255,25 @@ h1 { margin: 7px 0; font-size: 30px; }
 /* The id is a timestamp nobody reads to the digit; the numbers are what gets compared, so
    they sit together on the right, right-aligned, instead of drifting on a 1fr id column. */
 .run, .run-header {
-  display: grid; grid-template-columns: 30px 170px 165px 78px 84px 96px;
+  display: grid; grid-template-columns: 14px 30px 170px 165px 78px 84px 96px;
   align-items: center; gap: 16px; padding: 9px 12px; font-size: 12px;
 }
 .run-header { padding-bottom: 6px; }
+.run > input, .run-header > input { margin: 0; accent-color: var(--accent); cursor: pointer; }
 /* The numbers end and the outcome begins; let the gap say so. */
-.run > :nth-child(6), .run-header > :nth-child(6) { margin-left: 14px; }
+.run > :nth-child(7), .run-header > :nth-child(7) { margin-left: 14px; }
 /* Sized to its columns rather than stretched across the page: a 1fr column only turns the
    slack into a void between two of them. */
-.runs, .run-header, .run-pagination { max-width: 720px; }
+.runs, .run-header, .run-pagination { max-width: 750px; }
 /* Ten ruled rows and ten outlined badges read as a grid of boxes; the rows are separated by
    the page's own background instead, and the outcome by its colour alone. */
 .run { background: var(--surface); cursor: pointer; }
 .run + .run { border-top: 1px solid var(--bg); }
 .run-header { color: var(--dim); font: 10px var(--mono); letter-spacing: .06em; }
 .run:last-child { border-bottom: 0; }
-.run > span:first-child, .run-header > span:first-child { color: var(--dim); font: 10px var(--mono); }
-.run > span:nth-child(4), .run > span:nth-child(5),
-.run-header > span:nth-child(4), .run-header > span:nth-child(5) { text-align: right; font-family: var(--mono); }
+.run > span:nth-child(2), .run-header > span:nth-child(2) { color: var(--dim); font: 10px var(--mono); }
+.run > span:nth-child(5), .run > span:nth-child(6),
+.run-header > span:nth-child(5), .run-header > span:nth-child(6) { text-align: right; font-family: var(--mono); }
 .run strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-family: var(--mono); font-weight: 400; }
 .run:hover { background: #282c31; }
 .run:hover strong { color: var(--accent); }
@@ -537,7 +543,8 @@ body:has(.notebook) #content { position: relative; max-width: none; padding: 0; 
 .source-rail .legend-heading { padding: 8px 0 6px; background: var(--bg); }
 /* The filename is the content here, so it wraps rather than ellipsing away the tail that
    tells `.scenex.ld.json` from `.ld.json`. */
-.source-row { align-items: baseline; border: 0; cursor: default; }
+.source-row { align-items: baseline; border: 0; cursor: pointer; }
+.source-row:hover .legend-name { color: var(--accent); }
 .source-row .legend-name { overflow: visible; white-space: normal; overflow-wrap: anywhere; }
 .source-row:hover { background: var(--surface); color: var(--text); }
 .explore-page { padding: 24px 28px 40px; }
@@ -725,7 +732,7 @@ html.restoring #content .empty { visibility: hidden; }
 .run-filter input:focus { border-color: var(--accent); outline: 0; }
 .run-filter-clear { padding: 3px 8px; border: 1px solid var(--line); color: var(--dim); font: 10px var(--mono); }
 .run-filter-clear:hover { border-color: var(--accent); color: var(--accent); }
-.runs-empty { max-width: 720px; padding: 14px 12px; border: 1px solid var(--line); border-top: 0; background: var(--surface); color: var(--dim); font: 11px var(--mono); }
+.runs-empty { max-width: 750px; padding: 14px 12px; border: 1px solid var(--line); border-top: 0; background: var(--surface); color: var(--dim); font: 11px var(--mono); }
 /* In the flow, under the model it runs: a fixed bar covered whatever section the reader had
    scrolled to, and hid the page's primary action behind the fold on the way down. */
 .run-bar {

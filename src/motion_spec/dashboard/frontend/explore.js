@@ -6,11 +6,11 @@
  * there is no "show me this file" mode that is not a query someone can edit and rerun.
  */
 
-import { $, $$, api, post, snack, state } from "./core.js";
+import { $, $$, api, copyText, post, snack, state } from "./core.js";
 import { addPlot } from "./plots.js";
 import { setView } from "./routing.js";
 import { seek } from "./run.js";
-import { showSource } from "./sources.js";
+import { showGenerated, showSource } from "./sources.js";
 
 // Every one of these is run against a maintained generation before it ships: a canned query
 // that answers nothing teaches the wrong vocabulary. Prefixes are spelled out rather than
@@ -217,7 +217,15 @@ export function renderSources(sources) {
   list.replaceChildren(...sources.map((source) => {
     const row = document.createElement("div");
     row.className = "legend-row source-row";
-    row.title = [source.path ?? source.iri, source.iri, ...(source.graphs ?? [])].join("\n");
+    // A file under the generations root opens in the read-only viewer; one resolved from
+    // elsewhere (a metamodel in the workspace) has no viewer here, so the click copies its path.
+    const root = state.roots.logs ? `${state.roots.logs}/` : null;
+    const inside = root && source.path?.startsWith(root);
+    row.title = [source.path ?? source.iri, source.iri, ...(source.graphs ?? []),
+      inside ? "click to read" : "click to copy the path"].join("\n");
+    row.onclick = () => (inside
+      ? showGenerated(source.path.slice(root.length)).catch((error) => snack(error.message))
+      : copyText(source.path ?? source.iri));
     row.innerHTML = '<span class="legend-name"></span><span class="legend-count"></span>';
     row.querySelector(".legend-name").textContent = shortName(source.path ?? source.iri);
     row.querySelector(".legend-count").textContent = source.triples;

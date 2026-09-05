@@ -27,6 +27,7 @@ from motion_spec.dashboard.catalog import (
     is_simulated,
     provenance_graph,
     read_generated,
+    run_files,
     run_info,
     source_drift,
     video_file,
@@ -122,6 +123,7 @@ LAN_GET_ALLOWED = frozenset(
         "/api/run/gates",
         "/api/run/constraints",
         "/api/run/compare",
+        "/api/run/files",
         "/api/console",
         "/api/queries",
         "/api/video",
@@ -339,6 +341,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         relative_path(roots.GENERATIONS, query.get("right", [""])[0]),
                     )
                 )
+            if parsed.path == "/api/run/files":
+                return self.send_json(run_files(relative_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/devices":
                 return self.send_json(probe_devices(relative_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/health":

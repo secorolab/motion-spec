@@ -391,7 +391,13 @@ export async function selectGeneration(path) {
     const status = run.status ?? (run.complete ? "COMPLETED" : "INCOMPLETE");
     // Every id begins `run-<date>T`; what distinguishes one row from the next is the time.
     const short = run.id.replace(/^run-\d{8}T/, "").replace(/Z$/, "");
-    row.innerHTML = `<span>${runPage * 10 + index + 1}</span><strong>${short}</strong><span>${stampText(run.started)}</span><span>${run.duration_s.toFixed(2)} s</span><span>${(run.written_frames ?? 0).toLocaleString()}</span><span class="badge badge-${status.toLowerCase()}">${status}</span>`;
+    row.innerHTML = `<input type="checkbox" title="Select; shift-click to select a range"><span>${runPage * 10 + index + 1}</span><strong>${short}</strong><span>${stampText(run.started)}</span><span>${run.duration_s.toFixed(2)} s</span><span>${(run.written_frames ?? 0).toLocaleString()}</span><span class="badge badge-${status.toLowerCase()}">${status}</span>`;
+    row.firstChild.checked = state.selected.has(run.path);
+    row.firstChild.onclick = (event) => {
+      event.stopPropagation();
+      event.shiftKey ? pickRange(run.path, row.parentElement, "main") : toggleSelection(run.path, "main");
+      syncPickAll();
+    };
     row.title = `${run.id} — open replay; Ctrl/Cmd-click to select`;
     row.onclick = (event) => {
       if (event.shiftKey) return pickRange(run.path, row.parentElement, "main");
@@ -400,7 +406,20 @@ export async function selectGeneration(path) {
         : loadReplay(run.path);
     };
     return row;
-  })));
+  })), syncPickAll());
+  // The header box stands for every run the filter left, across pages: all picked, none, or some.
+  const pickAll = page.querySelector(".run-pick-all");
+  const syncPickAll = () => {
+    const picked = rows.filter((run) => state.selected.has(run.path)).length;
+    pickAll.checked = picked > 0 && picked === rows.length;
+    pickAll.indeterminate = picked > 0 && picked < rows.length;
+  };
+  pickAll.onchange = () => {
+    rows.forEach((run) => {
+      if (state.selected.has(run.path) !== pickAll.checked) toggleSelection(run.path, "main");
+    });
+    syncPickAll();
+  };
   const pager = page.querySelector(".run-pagination");
   // Pages follow whatever the filter left, so they are counted per draw, not once.
   const drawPager = () => {
@@ -488,7 +507,10 @@ export function toggleSelection(path, source = "sidebar", anchor = true) {
   if (anchor) state.anchor = path;
   state.selected.has(path) ? state.selected.delete(path) : state.selected.add(path);
   document.querySelectorAll("[data-path]").forEach((item) => {
-    if (item.dataset.path === path) item.classList.toggle("picked", state.selected.has(path));
+    if (item.dataset.path !== path) return;
+    item.classList.toggle("picked", state.selected.has(path));
+    const box = item.querySelector(":scope > input[type=checkbox]");
+    if (box) box.checked = state.selected.has(path);
   });
   const button = $("#delete-selected");
   $("#selection-actions").dataset.side = source;

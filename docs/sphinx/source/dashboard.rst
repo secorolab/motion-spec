@@ -26,8 +26,9 @@ in place and regenerated.
 **Run.** One run, live or finished, fed by the shared memory block while the runtime writes and
 by the archived frame log afterwards. Constraint plots (``Open in Jupyter`` seeds a notebook
 beside the run), a timeline of state entries and constraint edges, SPARQL over the model graph
-and the run's occurrences with a live overlay, the run's console, and the camera — a recorded
-mp4, or a ROS image topic on a real platform.
+and the run's occurrences with a live overlay, the run's console, the files the run wrote
+(frame log, runtime graph, REC record, bag, videos — each opens read-only), and the camera — a
+recorded mp4, or a ROS image topic on a real platform.
 
 **Health.** ``motion-spec health`` on the page, with the installation's versions and roots
 above it. Reached from the sidebar footer, alongside the repository and these docs. The checks

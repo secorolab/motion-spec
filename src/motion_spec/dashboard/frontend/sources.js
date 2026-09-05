@@ -11,6 +11,7 @@ import { $, $$, api, askConfirm, copyText, formatBytes, post, snack, state } fro
 import { mountEditor, revealLine } from "./editor.js";
 import { showGeneration, showGitDiff } from "./generations.js";
 import { setTab, setView } from "./routing.js";
+import { loadReplay } from "./run.js";
 
 export async function loadSources(refresh = false) {
   const request = ++state.listRequest;
@@ -103,10 +104,12 @@ export async function showSource(workspace, absolute, line = null) {
 
 // Generated output, read where it was generated. The same editor the sources tab mounts, minus
 // everything that writes: there is no saving a file the generator owns, no git history behind
-// it, and no entry in the sources tree to select. Its generation is where back goes.
+// it, and no entry in the sources tree to select. Its generation is where back goes -- or its
+// run, for a file the run wrote.
 export async function showGenerated(relative, push = true) {
   // The path already says which generation and which file; nothing else has to be carried.
-  const [generation, name] = relative.split("/generated/");
+  const run = relative.match(/^(.*\/runs\/[^/]+)\/(.+)$/);
+  const [generation, name] = run ? [run[1].split("/runs/")[0], run[2]] : relative.split("/generated/");
   state.viewing = relative;
   state.generationPath = generation;
   // A file being read is a place in the app: the browser's own back closes it again.
@@ -114,13 +117,13 @@ export async function showGenerated(relative, push = true) {
   const read = await api(`/api/generated?path=${encodeURIComponent(relative)}`);
   if (state.viewing !== relative) return;
   $("#content").innerHTML = '<div class="viewer"><div class="viewer-top">'
-    + '<div class="page-heading"><button id="back" title="Back to generation">←</button>'
-    + '<h1></h1><span class="eyebrow">GENERATED</span></div>'
+    + `<div class="page-heading"><button id="back" title="Back to ${run ? "run" : "generation"}">←</button>`
+    + `<h1></h1><span class="eyebrow">${run ? "RUN" : "GENERATED"}</span></div>`
     + '<div class="viewer-heading"><p class="path"></p></div>'
     + '<p class="syntax-state generated-note" hidden></p></div><div id="source-text"></div></div>';
   $(".viewer h1").textContent = name.split("/").pop();
   $(".viewer .path").textContent = read.absolute;
-  $("#back").onclick = () => showGeneration(generation);
+  $("#back").onclick = () => (run ? loadReplay(run[1]) : showGeneration(generation));
   const note = $(".generated-note");
   if (read.binary || read.truncated) {
     note.hidden = false;

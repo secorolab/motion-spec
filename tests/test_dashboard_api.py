@@ -17,12 +17,10 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+from test_dashboard_runs import _archived_run, _contract_schema
 
 from motion_spec.dashboard import roots, server, sources
-
 from motion_spec.generation.artifacts import build_frame_layout
-
-from test_dashboard_runs import _archived_run, _contract_schema
 
 
 @pytest.fixture
@@ -104,6 +102,17 @@ def test_a_run_replays_with_its_constraints_and_events(dashboard):
     assert replay["frames"] == 1
     assert [c["name"] for c in replay["constraints"]] == ["hold-height", "settled"]
     assert replay["events"][0]["kind"] == "state"
+
+
+def test_a_run_lists_the_files_it_wrote_and_none_of_its_generation(dashboard):
+    files = dashboard.get(f"/api/run/files?path={_relative(dashboard, dashboard.run)}")
+    assert [f["name"] for f in files] == [
+        "logs/frame_log.pb",
+        "logs/frame_log.pb.health.json",
+        "manifest.json",
+        "source/demo.robmot",
+    ]
+    assert all(f["size"] > 0 and f["path"].startswith(str(dashboard.run)) for f in files)
 
 
 def test_a_plot_samples_only_the_window_it_is_given(dashboard):

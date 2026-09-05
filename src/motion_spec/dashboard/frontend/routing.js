@@ -96,7 +96,7 @@ export function loadLocation() {
   state.generationPath = page ? null
     : view.get("generation") ?? view.get("explore") ?? view.get("diff")
       ?? view.get("run")?.split("/runs/")[0]
-      ?? view.get("generated")?.split("/generated/")[0] ?? null;
+      ?? view.get("generated")?.split(/\/(generated|runs)\//)[0] ?? null;
   if (page) return settle(loadSidebar().then(() => page()));
   if (view.has("explore")) {
     settle(loadSidebar().then(() => showExplore(view.get("explore"), false)));

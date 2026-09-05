@@ -442,6 +442,19 @@ def is_simulated(generation_dir: Path) -> bool:
     return bool(json_file(generation_dir / LAYOUT_REL).get("platform", {}).get("simulated"))
 
 
+def run_files(run_dir: Path) -> list[dict]:
+    """Every file this run wrote, named relative to the run.
+
+    The run's own tree and nothing beyond it: the generation-owned files its manifest points
+    back to are the generation page's to list.
+    """
+    return [
+        {"name": str(path.relative_to(run_dir)), "path": str(path), "size": path.stat().st_size}
+        for path in sorted(run_dir.rglob("*"))
+        if path.is_file()
+    ]
+
+
 def run_videos(run_dir: Path) -> list[str]:
     """The cameras this run recorded, named by their video beside the log."""
     return sorted(path.stem for path in (run_dir / "logs").glob("*.mp4"))

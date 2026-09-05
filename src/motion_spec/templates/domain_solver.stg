@@ -572,6 +572,9 @@ solver-output-Wrench-estimated(solver, chain_solver, out, backend) ::= <<
     static KDL::JntArray q_<out.id>(nj_<out.id>);
     static KDL::JntArray qd_<out.id>(nj_<out.id>);
     static KDL::JntArray tau_<out.id>(nj_<out.id>);
+    // Five observer time constants for a reset to converge, five more averaged into the payload.
+    static const unsigned settle_<out.id> = static_cast\<unsigned>(
+        std::ceil(5.0 / (<out.estimator.estimation_gain_hz> * motion_spec::runtime::kControlPeriodS)));
     for (unsigned i = 0; i \< nj_<out.id>; ++i) {
         q_<out.id>(i) = <({estimator-q-<backend>})(solver)>;
         qd_<out.id>(i) = <({estimator-qd-<backend>})(solver)>;
@@ -584,8 +587,28 @@ solver-output-Wrench-estimated(solver, chain_solver, out, backend) ::= <<
     const KDL::Frame tip_frame_<out.id> = <world-pose(solver, {robot.<solver.id>.world_tip})>;
     const KDL::Frame reference_<out.id> = <world-pose(solver, {robot.world_<solver.id>_<out.reference_point.id>})>;
     const KDL::Frame observer_<out.id> = <world-pose(solver, {robot.world_<solver.id>_<out.as_seen_by.id>})>;
+    if (shared.<out.id>_est_settle \< 2 * settle_<out.id>) {
+        ++shared.<out.id>_est_settle;
+        if (shared.<out.id>_est_settle > settle_<out.id>) {
+            // As the FT tare: a held weight lies along gravity, so only that part is the payload.
+            const KDL::Vector g_tip_<out.id> = tip_frame_<out.id>.M.Inverse(KDL::Vector(<chain_solver.gravity; separator=", ">));
+            const double g_norm_<out.id> = g_tip_<out.id>.Norm();
+            const KDL::Vector g_hat_<out.id> = g_norm_<out.id> > 0.0 ? g_tip_<out.id> / g_norm_<out.id> : KDL::Vector::Zero();
+            const KDL::Wrench along_<out.id>(
+                KDL::dot(tip_<out.id>.force, g_hat_<out.id>) * g_hat_<out.id>,
+                KDL::dot(tip_<out.id>.torque, g_hat_<out.id>) * g_hat_<out.id>);
+            const KDL::Wrench sample_<out.id> = motion_spec::runtime::transform_wrench(along_<out.id>, tip_frame_<out.id>, reference_<out.id>, observer_<out.id>);
+            const double n_<out.id> = static_cast\<double>(shared.<out.id>_est_settle - settle_<out.id>);
+            shared.<out.id>_est_payload_new = shared.<out.id>_est_payload_new + (sample_<out.id> - shared.<out.id>_est_payload_new) / n_<out.id>;
+            if (shared.<out.id>_est_settle == 2 * settle_<out.id>) {
+                shared.<out.id>_est_payload = shared.<out.id>_est_payload_new;
+                ++shared.<out.id>_est_tares;
+            \}
+        \}
+    \}
     // Same sign as the FT path: what the environment applies to the arm (a hanging load reads -z).
-    shared.<out.id> = motion_spec::runtime::transform_wrench(tip_<out.id>, tip_frame_<out.id>, reference_<out.id>, observer_<out.id>);
+    shared.<out.id> = motion_spec::runtime::transform_wrench(tip_<out.id>, tip_frame_<out.id>, reference_<out.id>, observer_<out.id>)
+        - shared.<out.id>_est_payload;
 \}
 >>
 estimator-q-mj_kdl(solver)    ::= "robot.<solver.id>.robot->jnt_pos_msr[i]"
@@ -596,10 +619,13 @@ estimator-q-robif2b(solver)   ::= "robot.<solver.id>.state->pos_msr[i]"
 estimator-qd-robif2b(solver)  ::= "robot.<solver.id>.state->vel_msr[i]"
 estimator-tau-robif2b(solver) ::= "robot.<solver.id>.state->eff_msr[i]"
 
-// The observer's zero is the momentum now: the integral and the filtered torque restart from it.
+// The observer's zero is the momentum now: the integral and the filtered torque restart from it,
+// and the payload is taken again once it has re-converged.
 retare-on-estimator(out) ::= <<
 <if(out.retare_events_present)>    if (robot.fsm_events && (<out.retare_events:{e | consume_event(robot.fsm_events, <e>)}; separator=" || ">)) {
         est_<out.id>.setInitialMomentum(q_<out.id>, qd_<out.id>);
+        shared.<out.id>_est_settle = 0;
+        shared.<out.id>_est_payload_new = KDL::Wrench::Zero();
     \}
 <endif>
 >>

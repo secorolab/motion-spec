@@ -221,18 +221,18 @@ def test_a_sensor_reading_is_produced_by_the_solver_that_reads_it() -> None:
 
 
 def test_an_estimated_wrench_is_a_plain_solver_write() -> None:
-    """Nothing measures it and it has no tare companions: the solver that runs the observer is
-    its producer, the same as any other value the solver block computes."""
+    """Nothing measures it: the solver that runs the observer is its producer, the same as any
+    other value the solver block computes, and so is the payload it takes out at a tare."""
     estimate = _wrench("ext_force_est", estimator=WrenchEstimator("arm", 30.0, 0.5))
+    payload = BlackboardValue(id="ext_force_est_est_payload", type="Wrench")
     solver = _solver("arm_solver", output=[estimate])
     motions = [_motion("motion_arc", 0, "S_ARC", [], [_slice("arm_solver", [estimate])])]
     introspection: dict = {}
-    annotate_dataflow(introspection, [estimate], {}, motions, [solver], {})
+    annotate_dataflow(introspection, [estimate, payload], {}, motions, [solver], {})
 
-    assert introspection["dataflow"]["ext_force_est"]["producer"] == {
-        "kind": "solver",
-        "id": "arm_solver",
-    }
+    producer = {"kind": "solver", "id": "arm_solver"}
+    assert introspection["dataflow"]["ext_force_est"]["producer"] == producer
+    assert introspection["dataflow"]["ext_force_est_est_payload"]["producer"] == producer
 
 
 def test_a_recorded_constant_carries_its_iri_and_who_reads_it() -> None:

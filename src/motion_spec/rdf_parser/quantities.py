@@ -2342,6 +2342,10 @@ def _writers_by_output(serial_chain_solvers) -> _SolverWrites:
         gripper_outputs = [out for device in solver.devices for out in device.joint_outputs]
         for out in [*solver.output, *gripper_outputs]:
             by_output.setdefault(out.id, set()).add(solver.id)
+            if getattr(out, "estimator", None) is not None:
+                # payload tare, written alongside the estimate (resources.shared_runtime_members)
+                for suffix in ("est_payload", "est_payload_new", "est_settle", "est_tares"):
+                    by_output.setdefault(f"{out.id}_{suffix}", set()).add(solver.id)
             if not getattr(out, "sensor_name", ""):
                 continue
             sensor_outputs.add(out.id)

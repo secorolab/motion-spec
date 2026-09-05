@@ -2118,32 +2118,49 @@ def shared_runtime_members(model, serial_chains, control_period_ns: int, platfor
     seen = set()
     for solver in serial_chains:
         for out in solver.output:
-            if getattr(out, "type", None) != "Wrench" or not out.sensor_name or out.id in seen:
+            if getattr(out, "type", None) != "Wrench" or out.id in seen:
+                continue
+            if out.sensor_name:
+                companions = _FT_TARE_MEMBERS
+            elif getattr(out, "estimator", None) is not None:
+                companions = _ESTIMATE_TARE_MEMBERS
+            else:
                 continue
             seen.add(out.id)
             # The tare state is computed from the reading, so it derives from that output's node.
-            sensor_iri = model.iri_of(out.id)
-            if sensor_iri is None:
+            reading_iri = model.iri_of(out.id)
+            if reading_iri is None:
                 raise RuntimeError(
-                    f"ft tare state: sensor output '{out.id}' has no IRI to derive from"
+                    f"tare state: wrench output '{out.id}' has no IRI to derive from"
                 )
-            for suffix, member_type in (
-                ("ft_raw", "Wrench"),
-                ("ft_bias", "Wrench"),
-                ("ft_bias_new", "Wrench"),
-                ("ft_bias_prev", "Wrench"),
-                ("ft_load", "Wrench"),
-                ("ft_payload", "Wrench"),
-                ("ft_settle", "IntCounter"),
-                ("ft_tares", "IntCounter"),
-                ("ft_rejects", "IntCounter"),
-                ("ft_confirming", "Bool"),
-            ):
+            for suffix, member_type in companions:
                 member_id = f"{out.id}_{suffix}"
                 members.append(BlackboardValue(id=member_id, type=member_type))
-                model.register_derived(member_id, sensor_iri, suffix, PROV.wasDerivedFrom)
+                model.register_derived(member_id, reading_iri, suffix, PROV.wasDerivedFrom)
 
     return members
+
+
+_FT_TARE_MEMBERS = (
+    ("ft_raw", "Wrench"),
+    ("ft_bias", "Wrench"),
+    ("ft_bias_new", "Wrench"),
+    ("ft_bias_prev", "Wrench"),
+    ("ft_load", "Wrench"),
+    ("ft_payload", "Wrench"),
+    ("ft_settle", "IntCounter"),
+    ("ft_tares", "IntCounter"),
+    ("ft_rejects", "IntCounter"),
+    ("ft_confirming", "Bool"),
+)
+
+# An estimate has no sensor zero or load to take out; its tare is the held weight it re-converges to.
+_ESTIMATE_TARE_MEMBERS = (
+    ("est_payload", "Wrench"),
+    ("est_payload_new", "Wrench"),
+    ("est_settle", "IntCounter"),
+    ("est_tares", "IntCounter"),
+)
 
 
 # What answers an observation, per backend. A twist is derived by KDL from the solver's joint

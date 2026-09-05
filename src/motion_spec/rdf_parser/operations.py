@@ -939,6 +939,7 @@ OPS_GENERIC = [
             ALGO_EXT["maximum-absolute-value"],
             CSTR["lower-threshold"],
             CSTR["upper-threshold"],
+            ALGO_EXT["release-threshold"],
         ],
     ),
 ]

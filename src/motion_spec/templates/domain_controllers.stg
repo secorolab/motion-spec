@@ -22,16 +22,30 @@ namespace motion_spec::runtime {
 // the push ends. M/D/K/vmax are authored tuning knobs, passed in each step.
 class AdmittanceFilter {
   public:
+    enum class Mode { IDLE_HOLD, COMPLY };
+
     double step(double force, double mass, double damping, double stiffness,
                 double max_velocity, double max_excursion,
-                double lower_threshold, double upper_threshold, double dt) {
+                double lower_threshold, double upper_threshold,
+                double release_threshold, double dt) {
         mass = std::max(mass, 1e-6);
-        // Only force outside the band counts as a push -- what the tare left behind is otherwise
-        // indistinguishable from a small steady one, and with stiffness 0 a standing offset
-        // becomes a velocity that never decays. Shifted, not zeroed, so force stays continuous.
-        force = (force > upper_threshold) ? force - upper_threshold
-              : (force \< lower_threshold) ? force - lower_threshold
-                                          : 0.0;
+        entered_comply_ = false;
+        const bool outside_engage_band = force > upper_threshold || force \< lower_threshold;
+        if (mode_ == Mode::IDLE_HOLD) {
+            if (!outside_engage_band) {
+                vel_ = 0.0;
+                return 0.0;
+            }
+            mode_ = Mode::COMPLY;
+            entered_comply_ = true;
+        } else if (std::abs(force) \<= release_threshold) {
+            mode_ = Mode::IDLE_HOLD;
+            vel_ = 0.0;
+            return 0.0;
+        }
+        // Subtract the release threshold so the commanded direction cannot reverse while the
+        // Schmitt trigger remains in COMPLY between its release and engage thresholds.
+        force += force > 0.0 ? -release_threshold : release_threshold;
         const double acc = (force - damping * vel_ - stiffness * offset_) / mass;
         vel_ += acc * dt;
         vel_ = std::clamp(vel_, -max_velocity, max_velocity);
@@ -46,7 +60,11 @@ class AdmittanceFilter {
         return vel_;
     }
 
+    bool entered_comply() const { return entered_comply_; }
+
   private:
+    Mode mode_ = Mode::IDLE_HOLD;
+    bool entered_comply_ = false;
     double vel_ = 0.0;
     double offset_ = 0.0;
 };
@@ -96,6 +114,12 @@ class PIDControl {
     double error_integral() const { return err_integ; }
     double previous_error() const { return err_last; }
     bool is_first_sample() const { return first_sample; }
+
+    void clear_error_history() {
+        err_integ = 0.0;
+        err_last = 0.0;
+        first_sample = true;
+    }
 
     // Re-arm on motion entry. The stored error belongs to whenever this motion last ran, so
     // differencing across that gap would yield a huge one-step derivative.
@@ -230,7 +254,8 @@ controller-reset-FeedForwardController(motion_id, controller, resamples) ::= <<
 >>
 
 emit-call-Admittance(closure, views) ::= <<
-shared.<closure.out> = state.<closure.controller>.adm_filter.step(<access-expr(closure.in, views)>, shared.<closure.mass>, shared.<closure.damping>, shared.<closure.stiffness>, shared.<closure.maximum_velocity>, shared.<closure.maximum_absolute_value>, shared.<closure.lower_threshold>, shared.<closure.upper_threshold>, shared.dt_measured_s);
+shared.<closure.out> = state.<closure.controller>.adm_filter.step(<access-expr(closure.in, views)>, shared.<closure.mass>, shared.<closure.damping>, shared.<closure.stiffness>, shared.<closure.maximum_velocity>, shared.<closure.maximum_absolute_value>, shared.<closure.lower_threshold>, shared.<closure.upper_threshold>, shared.<closure.release_threshold>, shared.dt_measured_s);
+if (state.<closure.controller>.adm_filter.entered_comply()) state.<closure.controller>.clear_error_history();
 >>
 
 emit-call-Controller(closure, views) ::= <<
@@ -244,4 +269,3 @@ emit-call-Controller(closure, views) ::= <<
 <closure.internal_state_samples:{sample |     shared.<sample.id> = state.<closure.id>.<sample.getter>();}; separator="\n">
 }
 >>
-

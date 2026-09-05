@@ -81,7 +81,15 @@ export async function loadReplay(path) {
 
   // gate id -> the name the source spells it: a row carries the name, not the gate it ran under
   state.motionOf = state.replay.motion_names ?? {};
+  state.motionByIri = state.replay.motion_iri_names ?? {};
+  // slot id -> the motion and constraint it serves: an edge in the log names the slot.
+  state.slotOwner = Object.fromEntries(Object.values(state.replay.signal_index ?? {})
+    .filter((where) => where.slot).map((where) => [where.slot, where]));
   populateConstraints();
+  // Edges draw for the constraints whose charts are open, so the strip follows the cards.
+  state.plottedWatch?.disconnect();
+  state.plottedWatch = new MutationObserver(() => renderMarkers());
+  state.plottedWatch.observe($("#constraints"), { attributes: true, subtree: true, attributeFilter: ["data-plotted"] });
   // The archive of a run this page started: reopen the cards that were open when it ended --
   // or, when none were (a run faster than the page), the last motion that ran. Never the
   // whole run's card set: eighty charts in one page is what made live pages crawl.
@@ -551,7 +559,7 @@ export function populateConstraints() {
 export function replayShell(path) {
   // The run page's markup, with what the reply fills left blank: the numbers, the timeline's
   // range and the constraint list.
-  return `<div class="replay"><div class="replay-heading"><button id="back" title="Back to generation">←</button><h1>${path.split("/").pop()}</h1><button id="run-again" title="Run this generation again with the run bar's last choices">↻ run again</button><div class="replay-tabs"><button data-panel="plots" class="active">Plots</button><button data-panel="reports">Reports</button><button data-panel="explore">Explore</button><button data-panel="console">Console</button><button data-panel="files">Files</button><button data-panel="notes">Notes</button></div><span class="eyebrow">RUN</span></div><section id="panel-plots"><div class="constraint-panel"><div class="eyebrow">SOURCE CONSTRAINTS</div><input id="constraint-search" type="search" placeholder="Search .robmot constraints"><div id="constraints" class="constraints"></div></div><div class="chart-controls"><button id="auto-plot" title="Open each motion's plots as the cursor enters it, the way a live run does">auto plot: off</button><button id="plot">Add empty plot</button><button id="notebook">Open in Jupyter</button><button id="live-plots" title="Plot signals as the run writes them">live plots: on</button><button id="progressive-plots" title="Draw a replayed run the way a live one arrives: nothing past the cursor">progressive: off</button></div><div id="plots" class="plots"></div></section><section id="panel-reports" hidden></section><section id="panel-explore" hidden>${EXPLORE_MARKUP}</section><section id="panel-console" hidden><div class="console-bar"><input id="console-search" type="search" spellcheck="false" placeholder="Search the console"><span id="console-matches"></span><button id="console-prev" title="Previous match (Shift+Enter)" disabled>↑</button><button id="console-next" title="Next match (Enter)" disabled>↓</button></div><pre id="console-text" class="console"></pre></section><section id="panel-files" hidden><div class="generated-files run-files"></div></section><section id="panel-notes" hidden><div class="notes-compose"><textarea class="note-text" rows="3" placeholder="What happened, what to try next — Ctrl+Enter adds"></textarea><div class="notes-compose-bar"><input class="note-tags" placeholder="tags, comma separated" spellcheck="false"><button class="note-add">add note</button><span class="notes-state"></span></div></div><div class="notes-bar" hidden><input type="checkbox" class="pick notes-pick-all" title="Select every note"><span class="notes-picked"></span><button class="note-action notes-delete" disabled>delete selected</button></div><div class="notes-list"></div></section></div><div class="settling" hidden><div class="spinner"></div><span>archiving the run…</span></div><div class="videos" hidden><button class="video-max" title="Expand"></button><button class="video-min" title="Minimize"></button><div class="video-main"><video preload="auto" playsinline disablepictureinpicture controlslist="nodownload noplaybackrate noremoteplayback"></video><span class="video-name"></span></div><div class="video-strip"></div></div><div class="transport"><div class="transport-controls"><button id="step-back" title="Previous frame">‹</button><button id="play">Play</button><button id="step-forward" title="Next frame">›</button><details class="picker speed-menu"><summary>1×</summary><div class="picker-panel"><button data-value="0.25">0.25×</button><button data-value="0.5">0.5×</button><button data-value="1" aria-pressed="true">1×</button><button data-value="2">2×</button><button data-value="5">5×</button></div></details><span id="readout" class="path"></span><span class="marker-legend"><i class="lg lg-state"></i>state <i class="lg lg-event"></i>event <i class="lg lg-satisfied"></i>satisfied <i class="lg lg-unsatisfied"></i>lost <i class="lg lg-monitor"></i>monitor</span><button id="cancel-run" title="End the run" hidden>cancel</button></div><div class="markers"></div><input class="timeline" type="range" min="0" max="0" value="0" disabled></div>`;
+  return `<div class="replay"><div class="replay-heading"><button id="back" title="Back to generation">←</button><h1>${path.split("/").pop()}</h1><button id="run-again" title="Run this generation again with the run bar's last choices">↻ run again</button><div class="replay-tabs"><button data-panel="plots" class="active">Plots</button><button data-panel="reports">Reports</button><button data-panel="explore">Explore</button><button data-panel="console">Console</button><button data-panel="files">Files</button><button data-panel="notes">Notes</button></div><span class="eyebrow">RUN</span></div><section id="panel-plots"><div class="constraint-panel"><div class="eyebrow">SOURCE CONSTRAINTS</div><input id="constraint-search" type="search" placeholder="Search .robmot constraints"><div id="constraints" class="constraints"></div></div><div class="chart-controls"><button id="auto-plot" title="Open each motion's plots as the cursor enters it, the way a live run does">auto plot: off</button><button id="plot">Add empty plot</button><button id="notebook">Open in Jupyter</button><button id="live-plots" title="Plot signals as the run writes them">live plots: on</button><button id="progressive-plots" title="Draw a replayed run the way a live one arrives: nothing past the cursor">progressive: off</button></div><div id="plots" class="plots"></div></section><section id="panel-reports" hidden></section><section id="panel-explore" hidden>${EXPLORE_MARKUP}</section><section id="panel-console" hidden><div class="console-bar"><input id="console-search" type="search" spellcheck="false" placeholder="Search the console"><span id="console-matches"></span><button id="console-prev" title="Previous match (Shift+Enter)" disabled>↑</button><button id="console-next" title="Next match (Enter)" disabled>↓</button></div><pre id="console-text" class="console"></pre></section><section id="panel-files" hidden><div class="generated-files run-files"></div></section><section id="panel-notes" hidden><div class="notes-compose"><textarea class="note-text" rows="3" placeholder="What happened, what to try next — Ctrl+Enter adds"></textarea><div class="notes-compose-bar"><input class="note-tags" placeholder="tags, comma separated" spellcheck="false"><button class="note-add">add note</button><span class="notes-state"></span></div></div><div class="notes-bar" hidden><input type="checkbox" class="pick notes-pick-all" title="Select every note"><span class="notes-picked"></span><button class="note-action notes-delete" disabled>delete selected</button></div><div class="notes-list"></div></section></div><div class="settling" hidden><div class="spinner"></div><span>archiving the run…</span></div><div class="videos" hidden><button class="video-max" title="Expand"></button><button class="video-min" title="Minimize"></button><div class="video-main"><video preload="auto" playsinline disablepictureinpicture controlslist="nodownload noplaybackrate noremoteplayback"></video><span class="video-name"></span></div><div class="video-strip"></div></div><div class="transport"><div class="transport-controls"><button id="step-back" title="Previous frame">‹</button><button id="play">Play</button><button id="step-forward" title="Next frame">›</button><details class="picker speed-menu"><summary>1×</summary><div class="picker-panel"><button data-value="0.25">0.25×</button><button data-value="0.5">0.5×</button><button data-value="1" aria-pressed="true">1×</button><button data-value="2">2×</button><button data-value="5">5×</button></div></details><span id="readout" class="path"></span><span class="marker-legend"><span class="lg-item"><i class="lg lg-state"></i>state</span><span class="lg-item"><i class="lg lg-state lg-transition"></i>on event</span><span class="lg-item lg-event-item" hidden><i class="lg lg-event"></i>event</span><span class="lg-item lg-edges" hidden><i class="lg lg-satisfied"></i>satisfied</span><span class="lg-item lg-edges" hidden><i class="lg lg-unsatisfied"></i>lost</span><span class="lg-item"><i class="lg lg-monitor"></i>monitor</span><span class="lg-item lg-wait-item" hidden><i class="lg lg-wait"></i>wait</span><span class="lg-item lg-slow-item" hidden><i class="lg lg-wait lg-slow"></i>slow</span></span><button id="cancel-run" title="End the run" hidden>cancel</button></div><div class="markers"></div><input class="timeline" type="range" min="0" max="0" value="0" disabled></div>`;
 }
 
 export function bindPanels() {
@@ -780,26 +788,62 @@ export function setTransportMode() {
   $("#progressive-plots").hidden = live;
 }
 
-// A constraint that chatters would bury the state markers it happened under.
-const SATISFIED_MARKER_CAP = 12;
+// Marks of one kind closer than this many pixels are drawn as one.
+const CLUSTER_PX = 4;
 
 export function renderMarkers() {
-  // A satisfied bit can rise and fall a hundred times under one state: keep the first few per
-  // slot, and draw them behind the state and event markers rather than over them.
-  const seen = new Map();
+  // An edge belongs to the constraint whose chart is open: with no chart it is texture, with
+  // one it says when the line on that chart was inside its band. The log names the slot; the
+  // header's signal index says which constraint the slot served.
+  const plotted = new Set($$("#constraints .constraint[data-plotted]")
+    .map((row) => `${row.dataset.motion}/${row.querySelector("strong").textContent}`));
+  const edge = (event) => event.kind === "satisfied" || event.kind === "unsatisfied";
+  // The event that moved the FSM is the transition: one mark, outlined, naming the event in
+  // its tooltip. Only an event that moved nothing stands on its own.
+  const causes = new Map();
+  state.replay.events.forEach((event) => { if (event.kind === "state") causes.set(event.frame, []); });
   const kept = state.replay.events.filter((event) => {
-    if (event.kind !== "satisfied" && event.kind !== "unsatisfied") return true;
-    const count = (seen.get(event.label) ?? 0) + 1;
-    seen.set(event.label, count);
-    return count <= SATISFIED_MARKER_CAP;
+    if (event.kind === "event") {
+      const entry = causes.get(event.frame) ?? causes.get(event.frame + 1);
+      if (entry) entry.push(event.label);
+      return !entry;
+    }
+    if (!edge(event)) return true;
+    const where = state.slotOwner[event.label];
+    return Boolean(where) && plotted.has(`${where.motion}/${where.constraint}`);
   });
-  const weight = (event) => (event.kind === "state" || event.kind === "event" ? 1 : 0);
-  $(".markers").replaceChildren(...kept.sort((a, b) => weight(a) - weight(b)).map((event) => {
+  // A pixel is what can be told apart: marks of one kind closer than a few of them are one mark
+  // with several names, not several marks on top of each other.
+  const width = $(".markers").clientWidth || 1000;
+  const px = (frame) => trackFraction(frame) * width;
+  const clusters = [];
+  const last = {};
+  kept.sort((a, b) => a.frame - b.frame || a.kind.localeCompare(b.kind)).forEach((event) => {
+    const label = edge(event) ? state.slotOwner[event.label].constraint : event.label;
+    const open = last[event.kind];
+    if (open && px(event.frame) - px(open.frame) < CLUSTER_PX) {
+      open.labels.push(label);
+      open.until = event.frame;
+      return;
+    }
+    last[event.kind] = { kind: event.kind, frame: event.frame, until: event.frame, labels: [label] };
+    clusters.push(last[event.kind]);
+  });
+  // The legend names what is drawn, nothing more.
+  $$(".lg-edges").forEach((item) => { item.hidden = !clusters.some(edge); });
+  $(".lg-event-item").hidden = !clusters.some((mark) => mark.kind === "event");
+  const weight = (mark) => (mark.kind === "state" || mark.kind === "event" ? 1 : 0);
+  $(".markers").replaceChildren(...clusters.sort((a, b) => weight(a) - weight(b)).map((mark) => {
     const marker = document.createElement("button");
-    marker.className = `marker marker-${event.kind}`;
-    marker.style.left = trackLeft(event.frame);
-    marker.title = `${event.label} @ frame ${event.frame}`;
-    marker.onclick = () => seek(event.frame);
+    marker.className = `marker marker-${mark.kind}`;
+    marker.style.left = trackLeft(mark.frame);
+    const on = mark.kind === "state" ? causes.get(mark.frame) ?? [] : [];
+    marker.classList.toggle("marker-transition", on.length > 0);
+    marker.title = (mark.labels.length === 1
+      ? `${mark.labels[0]} @ frame ${mark.frame}`
+      : `${mark.labels.length} × ${mark.kind} @ frames ${mark.frame}–${mark.until}: ${mark.labels.join(", ")}`)
+      + (on.length ? ` · on ${on.join(", ")}` : "");
+    marker.onclick = () => { seek(mark.frame); revealMotion(motionAt(mark.frame)); };
     return marker;
   }));
   const playhead = document.createElement("div");
@@ -813,9 +857,6 @@ export function renderMarkers() {
 
 // How far past its declared dwell a gate has to hold before the wait is worth remarking on.
 const SLOW_GATE = 1.2;
-
-// A constraint that chatters holds hundreds of times; twelve rows is a lane, not a wall.
-const CONSTRAINT_ROW_CAP = 12;
 
 // What a payload was read from, said plainly: an archived graph is the whole record, a
 // projection is strided and cannot be asked how long anything waited.
@@ -865,20 +906,32 @@ function renderSpans(data) {
     bar.dataset.element = span.element;
     bar.dataset.band = index % 2;   // adjacent motions told apart without inventing a palette
     place(bar, span.begin_step, span.end_step ?? lastFrame());
-    // A wide bar is labelled and a narrow one is not: the browser clips, nothing measures.
-    bar.textContent = span.name;
+    // The authored name, joined by the motion's IRI; the graph's handler name is the fallback.
+    // Named in the tooltip only: a strip of labels that fit here and not there read as noise.
+    const name = state.motionByIri[span.element] ?? span.name;
     bar.title = [
-      span.name,
+      name,
       `entered ${seconds(span.entered_s)}`,
       span.duration_s === null ? "open" : `for ${seconds(span.duration_s)}`,
       span.event ? `on ${span.event}` : "",
     ].filter(Boolean).join(" · ");
-    bar.onclick = () => {
-      seek(span.begin_step);
-      expandSpan(span).catch((error) => snack(error.message));
-    };
+    bar.onclick = () => { seek(span.begin_step); revealMotion(name); };
     return bar;
   }));
+}
+
+// A click on the strip lands the table on the motion it points at: the block lights the way a
+// live run lights it, and the list scrolls so the block is what is read. Opens no plots.
+function revealMotion(name) {
+  if (!name) return;
+  trackActiveMotion(name, { plots: false, live: false });
+  const panel = $("#constraints");
+  const heading = $$("#constraints .constraint-motion").find((h) => h.textContent === name);
+  if (!panel || !heading) return;
+  // offsetTop of a stuck heading is where it is stuck, not where it lives; the distance from
+  // the panel's own scroll box says where it lives.
+  const top = heading.getBoundingClientRect().top - panel.getBoundingClientRect().top + panel.scrollTop;
+  panel.scrollTo({ top, behavior: "smooth" });
 }
 
 // The wait only: .marker-monitor already draws the instant the gate fired, and a second dot on
@@ -887,9 +940,15 @@ function renderGateWaits(data) {
   const armed = data.gates.filter(
     (gate) => gate.first_held_step !== null && gate.fired_step !== null,
   );
+  // The same line gateStory draws: past its dwell by the margin is worth a colour of its own.
+  const isSlow = (gate) =>
+    gate.waited_s !== null && gate.declared_dwell_s && gate.waited_s > gate.declared_dwell_s * SLOW_GATE;
+  $(".lg-wait-item").hidden = !armed.length;
+  $(".lg-slow-item").hidden = !armed.some(isSlow);
   $(".markers").prepend(...armed.map((gate) => {
     const wait = document.createElement("div");
     wait.className = "gate-wait";
+    wait.classList.toggle("gate-slow", Boolean(isSlow(gate)));
     place(wait, gate.first_held_step, gate.fired_step);
     wait.title = [
       gate.monitor_name,
@@ -898,46 +957,6 @@ function renderGateWaits(data) {
     ].filter(Boolean).join(" · ");
     return wait;
   }));
-}
-
-// One motion's constraint spans, above the part of the axis they held over. The overlay floats
-// out of the transport's box rather than growing it, so the strip stays 26 px either way.
-async function expandSpan(span) {
-  const open = $(".span-expand");
-  const same = open?.dataset.occurrence === span.occurrence;
-  open?.remove();   // one at a time: two overlays would sit on top of each other
-  if (same) return;
-  const box = document.createElement("div");
-  box.className = "span-expand";
-  box.dataset.occurrence = span.occurrence;
-  $(".markers").append(box);
-  // Kept beside the fetch the bars came from, not on the bar: a live poll destroys the bars
-  // four times a second, and the containment filter is a cross join to pay once per occupancy.
-  const cache = (state.spanOverlay.held ??= new Map());
-  const query = `path=${encodeURIComponent(state.runPath)}&occ=${encodeURIComponent(span.occurrence)}`;
-  try {
-    if (!cache.has(span.occurrence)) cache.set(span.occurrence, await api(`/api/run/constraints?${query}`));
-  } catch (error) {
-    box.remove();   // a blank overlay left across the page is worse than the message alone
-    throw error;
-  }
-  if (!box.isConnected) return;   // the reader collapsed it, or the strip was rebuilt under it
-  const held = cache.get(span.occurrence).spans;
-  const rows = held.slice(0, CONSTRAINT_ROW_CAP).map((constraint) => {
-    const row = document.createElement("div");
-    row.className = "span span-held";
-    place(row, constraint.begin_step, constraint.end_step ?? lastFrame());
-    row.textContent = constraint.name;
-    row.title = `${constraint.name} · held ${seconds(constraint.duration_s)} from ${seconds(constraint.entered_s)}`;
-    return row;
-  });
-  const note = document.createElement("div");
-  note.className = "span-note";
-  // Silent truncation reads as "that is all there was".
-  note.textContent = held.length > rows.length
-    ? `${span.name} — showing ${rows.length} of ${held.length} constraints`
-    : `${span.name} — ${rows.length || "no"} constraints held throughout`;
-  box.replaceChildren(...rows, note);
 }
 
 // Bars are an enhancement, never a precondition: the frame log has already drawn the markers by

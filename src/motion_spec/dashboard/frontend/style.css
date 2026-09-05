@@ -405,17 +405,18 @@ h1 { margin: 7px 0; font-size: 30px; }
 .markers::after { top: 15px; }
 .marker { position: absolute; z-index: 1; top: -5px; width: 5px; height: 12px; margin-left: -2px; padding: 0; border: 1px solid var(--accent); border-radius: 1px; transform: rotate(-45deg); background: var(--accent); cursor: pointer; }
 .marker-event { top: 12px; width: 7px; height: 7px; margin-left: -3px; border-radius: 0; border-color: var(--text); background: var(--muted); transform: rotate(45deg); }
+/* A state entered on an event: the event's outline on the state's mark, one mark for the two. */
+.marker-transition { border-color: var(--text); }
 /* Satisfied edges are ticks in the band between the rails: a chattering constraint stays
    readable as texture without covering the state and event markers above it. */
-.marker-satisfied, .marker-unsatisfied { top: 4px; width: 2px; height: 9px; margin-left: -1px; border-radius: 0; opacity: .55; transform: none; }
+.marker-satisfied, .marker-unsatisfied { top: 4px; width: 2px; height: 9px; margin-left: -1px; border-radius: 0; opacity: .9; transform: none; }
 .marker-satisfied { border-color: var(--good); background: var(--good); }
-.marker-unsatisfied { border-color: var(--dim); background: var(--dim); }
+.marker-unsatisfied { border-color: var(--accent); background: var(--accent); }
 .marker-monitor { top: 4px; width: 7px; height: 7px; margin-left: -3px; border-radius: 50%; border-color: var(--good); background: transparent; opacity: .8; transform: none; }
 .marker:hover { z-index: 2; border-color: var(--text); background: var(--text); opacity: 1; }
 .playhead { position: absolute; top: -6px; bottom: -8px; left: calc(var(--thumb) / 2 + var(--f, 0) * (100% - var(--thumb))); width: 0; border-left: 1px dotted var(--accent); pointer-events: none; }
-/* A bar wide enough shows its name and a narrow one does not: the browser clips, and nothing
-   on this page measures a box to decide. */
-.span { min-width: 2px; overflow: hidden; padding: 0 4px; font: 9px var(--mono); white-space: nowrap; }
+/* Unlabelled: the name is in the tooltip, and the constraints table the click lands on. */
+.span { min-width: 2px; overflow: hidden; }
 /* A motion is the context its markers happened in, so it reads as a stripe behind them rather
    than as a row of its own -- and in-band it costs the transport no height, which #content's
    padding and .replay's height are both hardcoded against. */
@@ -429,13 +430,8 @@ h1 { margin: 7px 0; font-size: 30px; }
 .span-motion.span-focus { border-left-color: var(--accent); background: #e07a5f2e; color: var(--text); }
 /* The wait only: .marker-monitor already draws the instant it fired. */
 .gate-wait { position: absolute; z-index: 1; top: 11px; height: 2px; min-width: 2px; background: var(--good); opacity: .5; }
-/* Floats out of the transport's box instead of growing it, so the strip stays 26 px either way. */
-.span-expand {
-  position: absolute; z-index: 3; right: 0; bottom: 100%; left: 0; display: flex; flex-direction: column;
-  gap: 2px; padding: 6px 0; border-top: 1px solid var(--line); background: var(--bg);
-}
-.span-held { position: relative; height: 12px; background: #79c6a533; color: var(--muted); line-height: 12px; }
-.span-note { padding: 2px 24px 0 0; color: var(--dim); font: 10px var(--mono); text-align: right; }
+/* Waited past its declared dwell: the condition kept breaking, or something held it up. */
+.gate-wait.gate-slow { background: var(--accent); opacity: .75; }
 
 #browser, #content, .constraints { scrollbar-color: var(--dim) var(--surface); scrollbar-width: thin; }
 #browser::-webkit-scrollbar, #content::-webkit-scrollbar, .constraints::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -832,13 +828,17 @@ html.restoring #content .empty { visibility: hidden; }
 .videos.expanded { max-width: min(1400px, 85vw); --video-h: 75vh; }
 
 /* The timeline's marker shapes, once more at caption size, each next to its name. */
-.marker-legend { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; color: var(--dim); font: 10px var(--mono); letter-spacing: .04em; }
-.marker-legend .lg { display: inline-block; width: 6px; height: 6px; margin-left: 8px; border: 1px solid var(--accent); }
-.marker-legend .lg-state { background: var(--accent); border-radius: 1px; transform: rotate(-45deg); }
+.marker-legend { display: inline-flex; align-items: center; gap: 12px; margin-left: auto; color: var(--dim); font: 10px var(--mono); letter-spacing: .04em; }
+.marker-legend .lg-item { display: inline-flex; align-items: center; gap: 6px; }
+.marker-legend .lg { display: inline-block; width: 6px; height: 6px; border: 1px solid var(--accent); }
+.marker-legend .lg-state { width: 3px; height: 8px; background: var(--accent); border-radius: 1px; transform: rotate(-45deg); }
+.marker-legend .lg-transition { border-color: var(--text); }
 .marker-legend .lg-event { border-color: var(--text); background: var(--muted); transform: rotate(45deg); }
 .marker-legend .lg-satisfied { width: 2px; border-color: var(--good); background: var(--good); }
-.marker-legend .lg-unsatisfied { width: 2px; border-color: var(--dim); background: var(--dim); }
+.marker-legend .lg-unsatisfied { width: 2px; border-color: var(--accent); background: var(--accent); }
 .marker-legend .lg-monitor { border-color: var(--good); background: transparent; border-radius: 50%; }
+.marker-legend .lg-wait { width: 12px; height: 2px; border: 0; background: var(--good); }
+.marker-legend .lg-slow { background: var(--accent); }
 .videos.minimized { width: auto; grid-template-columns: auto; justify-self: end; padding: 6px 34px 6px 8px; }
 /* Everything the pane shows goes away but its name: a recorded track, or the live ROS frame
    and the topic it is read from. */

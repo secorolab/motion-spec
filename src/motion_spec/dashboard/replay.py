@@ -308,6 +308,12 @@ def replay_data(run_dir: Path) -> dict:
         "constraints": constraints,
         # The live poll names the motion by its gate; the panel is headed by the authored name.
         "motion_names": spelling,
+        # The timeline's spans name a motion by its design IRI; the strip labels them as authored.
+        "motion_iri_names": {
+            motion.iri: spelling.get(motion.id, motion.id)
+            for motion in contract.header.motions
+            if motion.iri
+        },
         # A `when` guard's monitor runs while the PREDECESSOR motion is active: the contract's
         # owner, not the block it was authored in, says whose window carries its data.
         "monitor_owners": {

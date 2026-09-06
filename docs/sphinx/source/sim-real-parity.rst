@@ -4,8 +4,9 @@ Sim/real parity
 ===============
 
 Where the mj_kdl (simulation) and robif2b (hardware) paths are allowed to differ, where they
-are not, and the external-wrench law. Established 2026-08-06; the empirical record behind the
-wrench law is in ``plans/codegen-architecture/1g-*`` and branch ``plan/1g``. The authoritative
+are not, and the external-wrench law. Established 2026-08-06, wrench law revised 2026-09-05
+(motion-spec 51da846); the empirical record behind the original law is in
+``plans/codegen-architecture/1g-*`` and branch ``plan/1g``. The authoritative
 background for the simulation torque path is mj_kdl_wrapper's
 ``docs/howto/torque_control.md`` — read it before touching any of this.
 
@@ -52,60 +53,88 @@ Shared by construction (never fork these)
 The external-wrench law
 -----------------------
 
-**Doctrine: the external wrench always enters ACHD-family dynamics. The RNEA bridge always
-carries zero wrench. RNE's** ``f_ext`` **interface is for RNE-as-motion-driver only.**
+**Doctrine: an authored wrench is a force the arm exerts, never a disturbance the constraints
+absorb. It is priced by its own ACHD pass and superposed on the acceleration pass; neither
+the acceleration pass nor the RNEA bridge sees it. RNE's** ``f_ext`` **interface is for
+RNE-as-motion-driver only.**
 
-Per tick, for an ACHD motion carrying a wrench (measured, or the virtual elbow-support
-force)::
+Per tick, for an ACHD motion carrying a wrench (measured, or an impedance applied at a
+segment), both backends run the same two passes (motion-spec 51da846, 2026-09-05)::
+
+   tau_w      = ACHD_fext(q, qd, α = 0, β = 0, f_ext = w, ff = 0)    = J^T·w and nothing else
+   qdd, tau_c = ACHD(q, qd, α, β, f_ext = 0, ff)
+
+and only the completion forks::
 
    sim (mj_kdl)                                  real (robif2b)
    ------------                                  --------------
-   qdd = ACHD(q, qd, α, β, f_ext = w, ff)        qdd, tau_c = ACHD(q, qd, α, β, f_ext = 0, ff)
-   tau = RNEA(q, qd, qdd, f_ext = 0)             tau_w = ACHD_fext(q, qd, no-constraints, w)
-       = M·qdd + C·qd + G                        tau   = tau_c + tau_w
-   → qfrc_applied                                → firmware adds gravity + nature terms
+   tau = RNEA(q, qd, qdd, f_ext = 0) + tau_w     tau = tau_c + tau_w
+       = M·qdd + C·qd + G + J^T·w                → firmware adds gravity + nature terms
+   → qfrc_applied
 
-Why the two shapes are each correct for their platform (from the torque_control howto):
+Why the wrench has a pass of its own: the default Vereshchagin solver takes ``f_ext`` as a
+physical load and lets the constraint forces react to it, so it cannot prioritise a wrench over
+the acceleration constraints — a mid-chain wrench under six tip rows comes out as almost
+nothing at the joints (pick_place_single, 2026-09-06: a 224 Nm forearm couple priced as
+16 Nm). The ``_Fext`` instance runs with zero constraints and zero feed-forward, and since the
+fork fix of 2026-09-04 its ``constraint_torques`` output is the generalised force of ``f_ext``
+alone, with no gravity or velocity bias in it. That quantity is complete on both platforms,
+which is why one composition serves both.
+
+Why the completion still forks (from the torque_control howto):
 
 - MuJoCo's forward dynamics is ``v̇ = M⁻¹(τ − c)`` — the controller must supply ``M·qdd + c``
   itself. ACHD's constraint torque lives in the gravity-absorbed ABA frame
   (``constraint_tau ≈ M·qdd − c``); sent raw it produces a double-gravity residual
-  (measured: ~31 mm drift vs ~7 mm with the bridge). Hence the two-step pipeline: ACHD
-  resolves ``qdd`` *with the wrench coupled in*, RNEA re-prices that ``qdd`` into the full
-  torque. The howto is explicit: *"do not pass ACHD task/support wrenches into RNEA... keep
-  the RNEA external-wrench vector zero in this path."*
+  (measured: ~31 mm drift vs ~7 mm with the bridge). Hence RNEA re-prices the resolved
+  ``qdd`` into the full torque, and the wrench's torque is added after the bridge. The howto
+  is explicit: *"do not pass ACHD task/support wrenches into RNEA... keep the RNEA
+  external-wrench vector zero in this path."*
 - On a robot with an inner gravity-compensation loop, ``constraint_tau`` *is* the correct
   outer-loop command (howto, "Note on real robots"). robif2b therefore superposes two
-  constraint-torque quantities — same kind, firmware completes — and carries the wrench with
-  the dedicated per-segment ``ACHD_fext`` solve.
+  constraint-torque quantities — same kind, firmware completes.
 
-Compositions that were tried and rejected (2026-08-06, ``plan/1g``) — kept so they are not
-re-invented:
+Consequence for authoring: the wrench is really applied now. An impedance ``apply at`` a
+mid-chain segment fights the tip rows instead of vanishing into them, so its gains must be
+sized as torques the joints will carry, and the redundancy of a 7-DOF arm under six tip rows
+is pinned in joint space (``hold-elbow`` as torque), not by pushing a link with a wrench.
+pick_place_single's forearm-align impedance (400 Nm/rad on a 0.56 rad error, a 224 Nm demand)
+only ever worked because the coupled form absorbed it; exerted, it stalled the approach and
+MuJoCo diverged at t≈138 s (2026-09-06).
 
-- ``RNEA(qdd, 0) + tau_w`` in sim: QACC blow-up at the elbow — a constraint-only torque summed
-  onto a complete one, two different quantities.
+History (``plan/1g``, 2026-08-06), kept so it is not re-derived:
+
+- Before the fork fix ``ACHD_fext`` returned the constraint-frame reaction, so
+  ``RNEA(qdd, 0) + tau_w`` in sim blew up qacc at the elbow — a constraint-only torque summed
+  onto a complete one. Sim therefore coupled the wrench into the acceleration solve,
+  ``qdd = ACHD(..., f_ext = w)``, until 51da846. That form is retired: the constraints absorb
+  the wrench, so an impedance authored against it has no authority.
 - ``tau_c + tau_w`` verbatim in sim: the arm sags — both terms constraint-only and no inner
   loop exists to complete them.
 - ``RNEA(qdd, w)`` in sim (wrench through the bridge): gate-green but violates the wrapper's
-  documented bridge contract, and the constrained solve no longer anticipates the wrench;
-  reverted in favour of the coupled form above.
+  documented bridge contract.
 
 Facts about the solvers worth not re-deriving:
 
-- ``ChainHdSolver_Vereshchagin_Fext_FixedJoint`` outputs *constraint-only* torque; the
-  complete quantity is ``getTotalTorque()``.
-- Its ``f_ext`` is per-segment — a mid-chain wrench (elbow support at ``half_arm_2_link``) is
-  applied where it attaches, not tip-loaded.
+- ``ChainHdSolver_Vereshchagin_Fext_FixedJoint``: ``constraint_torques`` is ``J^T·f_ext``
+  (fork fix 2026-09-04); the complete quantity is ``getTotalTorque()``. The default
+  ``ChainHdSolver_Vereshchagin_Fixed_Joint`` cannot prioritise ``f_ext`` over the
+  constraints, which is why the second instance exists.
+- Its ``f_ext`` is per-segment — a mid-chain wrench is applied where it attaches, not
+  tip-loaded.
 - Its header restricts ``f_ext`` to *"physical (but not artificial, i.e. not task-introduced)"*
-  wrenches. The elbow-support force is a PID output — task-introduced — and both backends have
-  always fed it through ``f_ext`` anyway. Stable in practice, but outside the documented
-  contract: open item, decide deliberately if it ever misbehaves.
+  wrenches. An impedance's wrench is a controller output — task-introduced — and both backends
+  feed it through ``f_ext`` anyway. Stable in practice, but outside the documented contract:
+  open item, decide deliberately if it ever misbehaves.
 
 What the gate covers
 --------------------
 
-``pick_place_single`` is the model that exercises the ACHD wrench law — 8 of its 10 motions
-inject the virtual elbow support into ``state.f_ext``. ``admittance_arc_single``'s force
+``pick_place_single`` and ``pick_place_dual`` carry no wrench since 2026-09-06 (six tip rows
+plus a joint-space elbow pin); they gate that composition, not the wrench law. The ACHD wrench
+pass in sim is exercised by the models with an impedance applied on an ACHD chain —
+``handover_dual``, ``look_cartesian_test``, ``geometric_expressions``, ``tableii_probe`` —
+none of which has been re-run under the exerted law yet. ``admittance_arc_single``'s force
 motions are RNE-driven (wrench through RNE's own interface, sanctioned); its generated
 controller is byte-identical under ACHD wrench-law changes, so it gates nothing here.
 

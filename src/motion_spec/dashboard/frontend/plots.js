@@ -198,6 +198,8 @@ export function addPlot(signals = [], title = signals.join(" · ") || "New plot"
   }));
   $("#plots").append(card);
   const chart = echarts.init(card.querySelector(".plot-chart"));
+  card.inspection = () => ({ signals, title, detail, constraint, gains,
+    zoom: chart.getOption().dataZoom?.map(({ start, end }) => ({ start, end })) });
   state.charts.push(chart);
   // the plot grid reflows as cards come and go; the canvas only follows if told
   const observer = new ResizeObserver(() => chart.resize());
@@ -209,6 +211,14 @@ export function addPlot(signals = [], title = signals.join(" · ") || "New plot"
     state.charts = state.charts.filter((item) => item !== chart);
     state.livePlots.delete(chart);
     card.remove();
+  };
+  const replaceSignals = (next) => {
+    const sibling = card.nextSibling;
+    const zoom = card.inspection().zoom;
+    discard();
+    addPlot(next, title, detail, { row, constraint, gains, zoom });
+    const replacement = $("#plots").lastElementChild;
+    if (sibling) $("#plots").insertBefore(replacement, sibling);
   };
   card.querySelector(".expand-plot").onclick = () =>
     document.fullscreenElement ? document.exitFullscreen() : card.requestFullscreen();
@@ -266,8 +276,7 @@ export function addPlot(signals = [], title = signals.join(" · ") || "New plot"
         option.disabled = signals.includes(signal);
         option.onclick = () => {
           menu.open = false;
-          discard();
-          addPlot([...signals, signal], title, detail, { row, constraint, gains });
+          replaceSignals([...signals, signal]);
         };
         return option;
       })];
@@ -300,8 +309,7 @@ export function addPlot(signals = [], title = signals.join(" · ") || "New plot"
     chip.textContent = signal;
     chip.title = "Remove this signal";
     chip.onclick = () => {
-      discard();
-      addPlot(signals.filter((item) => item !== signal), title, detail, { row, constraint, gains });
+      replaceSignals(signals.filter((item) => item !== signal));
     };
     return chip;
   }));
@@ -311,6 +319,7 @@ export function addPlot(signals = [], title = signals.join(" · ") || "New plot"
   // sample inside the motion's window, or a short motion falls between two samples
   (constraint?.window ?? []).forEach((bound) => query.append("window", bound));
   (prefetched ? Promise.resolve(prefetched) : api(`/api/plot?${query}`)).then((data) => {
+    if (chart.isDisposed()) return;
     chart.hideLoading();
     // The tooltip already lists every signal at this frame; track which line the pointer is
     // closest to (by value, not just x) so that one entry can stand out from a crowded list.
@@ -408,6 +417,7 @@ export function addPlot(signals = [], title = signals.join(" · ") || "New plot"
     ],
     });
     chart.cursorIndex = signals.length;
+    if (options.zoom?.length) chart.setOption({ dataZoom: options.zoom });
     // Kept whole so progressive drawing has something to cut from, and something to restore to.
     chart.fullSeries = seriesValues.map((values) => values
       .map((value, point) => value == null ? null : [firstFrame + point * step, value])

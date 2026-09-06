@@ -32,6 +32,7 @@ from motion_spec.dashboard.catalog import (
     source_drift,
     video_file,
 )
+from motion_spec.dashboard.cleanup import preview, restore, trash_entries
 from motion_spec.dashboard.jobs import (
     console_log_for,
     console_slice,
@@ -44,6 +45,13 @@ from motion_spec.dashboard.jobs import (
     stop_run,
 )
 from motion_spec.dashboard.live import live_state, run_control
+from motion_spec.dashboard.metadata import (
+    LOCK,
+    annotations,
+    baseline,
+    save_annotations,
+    set_baseline,
+)
 from motion_spec.dashboard.notebook import jupyter_server, run_notebook, stop_jupyter
 from motion_spec.dashboard.queries import (
     activity_constraints,
@@ -129,6 +137,8 @@ LAN_GET_ALLOWED = frozenset(
         "/api/run/verdict",
         "/api/console",
         "/api/notes",
+        "/api/annotations",
+        "/api/baseline",
         "/api/queries",
         "/api/video",
         "/api/ros-camera",
@@ -285,6 +295,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 if LAN_MODE and not self._is_local_client():
                     payload = {**payload, "restricted": True}
                 return self.send_json(payload)
+            if parsed.path == "/api/annotations":
+                return self.send_json(annotations(relative_path(roots.GENERATIONS, value)))
+            if parsed.path == "/api/baseline":
+                return self.send_json(
+                    {"baseline": baseline(relative_path(roots.GENERATIONS, value))}
+                )
+            if parsed.path == "/api/trash":
+                return self.send_json(trash_entries())
             if parsed.path == "/api/pick-root":
                 return self.send_json(pick_root(query.get("kind", [""])[0]))
             if parsed.path == "/api/generations":
@@ -321,6 +339,15 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return self.send_json(model_lint(relative_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/runs":
                 generation = relative_path(roots.GENERATIONS, value)
+                if query.get("model"):
+                    model = generation.relative_to(roots.GENERATIONS).parts[0]
+                    runs = [
+                        run_info(run.dir) | {"generation_label": annotations(g.dir)["label"]}
+                        for g in GenerationCatalog([roots.GENERATIONS]).generations()
+                        if g.model == model
+                        for run in g.runs
+                    ]
+                    return self.send_json(runs)
                 runs = sorted(path for path in generation.glob("runs/*") if path.is_dir())
                 return self.send_json([run_info(path) for path in reversed(runs)])
             if parsed.path == "/api/run":
@@ -413,6 +440,23 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         try:
             length = int(self.headers["Content-Length"])
             body = json.loads(self.rfile.read(length))
+            if self.path == "/api/annotations":
+                return self.send_json(
+                    save_annotations(
+                        relative_path(roots.GENERATIONS, body["path"]), body["changes"]
+                    )
+                )
+            if self.path == "/api/baseline":
+                return self.send_json(
+                    set_baseline(relative_path(roots.GENERATIONS, body["path"]), body["enabled"])
+                )
+            if self.path == "/api/delete-preview":
+                return self.send_json(preview(body["paths"]))
+            if self.path == "/api/restore":
+                result = restore(body["uri"])
+                directory_size.cache_clear()
+                storage_info.cache_clear()
+                return self.send_json(result)
             if self.path == "/api/roots":
                 return self.send_json(set_root(body["kind"], body["path"]))
             if self.path == "/api/source":
@@ -433,7 +477,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     # The GUI would open on this machine's display, not the LAN viewer's --
                     # nothing there to watch it, and nothing here to stop it. Headless only.
                     options = {**options, "headless": True}
-                return self.send_json(start_run(target, options))
+                with LOCK:
+                    return self.send_json(start_run(target, options))
             if self.path == "/api/run/stop":
                 return self.send_json(stop_run(relative_path(roots.GENERATIONS, body["path"])))
             if self.path == "/api/generate":
@@ -478,16 +523,19 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if self.path != "/api/delete":
                 return self.send_json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
             selected = body["paths"]
-            targets = [relative_path(roots.GENERATIONS, value) for value in selected]
-            if not targets or any(not self._deletable(path) for path in targets):
-                raise ValueError("only generation bundles and run archives can be deleted")
-            targets = [
-                target
-                for target in targets
-                if not any(target in other.parents for other in targets)
-            ]
-            for target in sorted(targets, key=lambda item: len(item.parts), reverse=True):
-                trash(target)
+            with LOCK:
+                report = preview(selected)
+                blocked = [item for item in report["items"] if item["blocked"]]
+                if blocked:
+                    raise ValueError(
+                        "protected selection: "
+                        + "; ".join(f"{item['path']} ({item['blocked']})" for item in blocked)
+                    )
+                targets = [
+                    relative_path(roots.GENERATIONS, item["path"]) for item in report["items"]
+                ]
+                for target in targets:
+                    trash(target)
             # a model folder emptied of its generations is no longer a model folder, and a
             # generation nested under its own name empties two folders, not one
             folders = 0

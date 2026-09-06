@@ -8,6 +8,7 @@
  */
 
 import { showEmpty } from "./components.js";
+import { saveInspection } from "./inspection.js";
 import { $, RESTRICTED_TABS, showError, state } from "./core.js";
 import { showExplore } from "./explore.js";
 import { loadGenerations, selectGeneration, showDrift, showGitDiff } from "./generations.js";
@@ -24,6 +25,7 @@ const PAGE_TABS = { health: loadHealth, notebook: loadNotebook };
 const VIEW_PARAMS = ["run", "generation", "explore", "source", "diff", "gitdiff", "file", "panel"];
 
 export function goHome() {
+  saveInspection();
   stopPlayback();
   state.generationPath = null;
   state.runPath = null;
@@ -38,7 +40,9 @@ export function goHome() {
 }
 
 export function setView(kind, path) {
+  saveInspection();
   const view = new URLSearchParams(location.hash.slice(1));
+  const sameTarget = view.get(kind) === path;
   const unchanged = view.get(kind) === path
     && !view.has(kind === "run" ? "generation" : "run")
     && !view.has("source") && !view.has("diff");
@@ -48,6 +52,7 @@ export function setView(kind, path) {
   view.delete("source");
   view.delete("generated");
   view.delete("diff");
+  if (!sameTarget) view.delete("frame");
   view.set(kind, path);
   view.set("tab", state.tab);
   if (kind !== "run") view.delete("panel");
@@ -55,7 +60,9 @@ export function setView(kind, path) {
 }
 
 export function setTab(tab, push = true) {
+  saveInspection();
   state.tab = tab;
+  if ($("#generation-tools")) $("#generation-tools").hidden = tab === "sources";
   document.querySelectorAll("aside button[data-tab]").forEach((button) => {
     button.classList.toggle("active", button.dataset.tab === tab);
   });

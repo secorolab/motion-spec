@@ -6,7 +6,7 @@
  * The dashboard: what is wired to what, once, when the page loads.
  */
 
-import { $, RESTRICTED_TABS, api, askConfirm, post, showError, snack, state } from "./core.js";
+import { $, RESTRICTED_TABS, api, askConfirm, formatBytes, post, showError, snack, state } from "./core.js";
 import { filterGenerations, loadGenerations, selectGeneration } from "./generations.js";
 import { goHome, loadLocation, openTab, sidebarLoader } from "./routing.js";
 import { reserveVideoSpace } from "./run.js";
@@ -27,14 +27,20 @@ $("#refresh").onclick = () => sidebarLoader()(true).catch(showError);
 
 $("#delete-selected").onclick = async () => {
   if (!state.selected.size) return;
+  let preview;
+  try { preview = await post("/api/delete-preview", { paths: [...state.selected] }); }
+  catch (error) { return showError(error); }
+  const eligible = preview.items.filter((item) => !item.blocked);
+  const blocked = preview.items.filter((item) => item.blocked);
+  if (!eligible.length) return showError(new Error(`Nothing can be moved to Trash. ${blocked.map((item) => `${item.path}: ${item.blocked}`).join("; ")}`));
   const ok = await askConfirm({
-    message: `Delete ${state.selected.size} selected generation${state.selected.size === 1 ? "" : "s"} or run${state.selected.size === 1 ? "" : "s"}? This cannot be undone.`,
-    confirmLabel: "Delete",
+    message: `Move ${eligible.length} items (${eligible.reduce((n, item) => n + item.runs, 0)} runs, ${formatBytes(eligible.reduce((n, item) => n + item.bytes, 0))}) to Trash? Restore them from the Trash browser. Disk space is only freed when Trash is emptied.\n\n${eligible.map((item) => item.path).join("\n")}${blocked.length ? "\n\nProtected; excluded:\n" + blocked.map((item) => `${item.path}: ${item.blocked}`).join("\n") : ""}`,
+    confirmLabel: "Move to Trash",
   });
   if (!ok) return;
   let data;
   try {
-    data = await post("/api/delete", { paths: [...state.selected] });
+    data = await post("/api/delete", { paths: eligible.map((item) => item.path) });
   } catch (error) {
     return showError(error);
   }
@@ -42,7 +48,7 @@ $("#delete-selected").onclick = async () => {
   if (data.folders) parts.push(`${data.folders} empty folder${data.folders === 1 ? "" : "s"}`);
   snack(`Moved ${parts.join(" and ")} to Trash`);
   // Only the page being looked at has to move, and then only as far as its parent.
-  const trashed = [...state.selected];
+  const trashed = eligible.map((item) => item.path);
   const inTrash = (path) => path && trashed.some((gone) => path === gone || path.startsWith(`${gone}/`));
   const generation = state.generationPath;
   state.selected.clear();
@@ -61,6 +67,7 @@ $("#delete-selected").onclick = async () => {
 $("#clear-selection").onclick = () => {
   state.selected.clear();
   document.querySelectorAll(".picked").forEach((item) => item.classList.remove("picked"));
+  document.querySelectorAll(".pick").forEach((box) => { box.checked = box.indeterminate = false; });
   $("#selection-actions").hidden = true;
 };
 
@@ -148,12 +155,58 @@ fitSidebar();
 
 $("#home").onclick = goHome;
 
+$("#browse-trash").onclick = async () => {
+  const dialog = document.createElement("dialog");
+  dialog.className = "trash-browser";
+  dialog.innerHTML = '<h2>Trash</h2><p>Only items from this generation root are shown. Existing paths will never be overwritten.</p><input type="search" placeholder="Filter trashed paths" aria-label="Filter trashed paths"><div class="trash-entries"></div><button class="close">Close</button><p role="status"></p>';
+  document.body.append(dialog);
+  dialog.querySelector(".close").onclick = () => dialog.close();
+  dialog.onclose = () => dialog.remove();
+  dialog.showModal();
+  try {
+    const entries = await api("/api/trash");
+    const list = dialog.querySelector(".trash-entries");
+    const draw = () => {
+      const needle = dialog.querySelector("input").value.toLowerCase();
+      list.replaceChildren(...entries.filter((entry) => entry.path.toLowerCase().includes(needle)).map((entry) => {
+        const row = document.createElement("div");
+        const label = document.createElement("span");
+        label.textContent = entry.path;
+        const button = document.createElement("button");
+        button.textContent = entry.exists ? "Path exists" : "Restore";
+        button.disabled = entry.exists;
+        button.onclick = async () => {
+          button.disabled = true;
+          try {
+            await post("/api/restore", { uri: entry.uri });
+            entries.splice(entries.indexOf(entry), 1);
+            draw();
+            state.cache = {};
+            state.generation = null;
+            await loadGenerations(true);
+            dialog.querySelector('[role="status"]').textContent = `Restored ${entry.path}`;
+          } catch (error) {
+            button.disabled = false;
+            dialog.querySelector('[role="status"]').textContent = error.message;
+          }
+        };
+        row.append(label, button);
+        return row;
+      }));
+      if (!list.children.length) list.textContent = "No matching items in Trash.";
+    };
+    dialog.querySelector("input").oninput = draw;
+    draw();
+  } catch (error) { dialog.querySelector('[role="status"]').textContent = error.message; }
+};
+
 window.onpopstate = loadLocation;
 
 // Known before the first tab renders, so a restored #tab=notebook never gets a chance to
 // try and fail: the server drops those requests for a LAN viewer, this just hides the door.
 state.roots = await api("/api/roots").catch(() => ({}));
 state.restricted = Boolean(state.roots.restricted);
+$("#browse-trash").hidden = state.restricted;
 if (state.restricted) {
   RESTRICTED_TABS.forEach((tab) => {
     document.querySelectorAll(`[data-tab="${tab}"]`).forEach((button) => { button.style.display = "none"; });

@@ -19,6 +19,7 @@ from rdflib import RDF, BNode, Literal
 
 from motion_spec.dashboard import roots
 from motion_spec.dashboard.graph import LIVE_GRAPH, MODEL_GRAPH, RUNTIME_GRAPH, deployed_devices
+from motion_spec.dashboard.metadata import annotations, baseline
 from motion_spec.dashboard.roots import LAYOUT_REL, directory_size, json_file, stamp_iso, trace
 from motion_spec.dashboard.runs import GenerationInfo, RunInfo
 from motion_spec.dashboard.sources import aligned_rows, authored_lines
@@ -43,6 +44,9 @@ def generation_info(path: Path) -> dict:
     layout = json_file(path / "generated/contract/frame_layout.json")
     source = next((item for item in (path / "generated/source").glob("*.robmot")), None)
     return {
+        **annotations(path),
+        "note_tags": _run_notes(path),
+        "baseline": baseline(path),
         "path": str(path.relative_to(roots.GENERATIONS)),
         "name": GenerationInfo(path, roots.GENERATIONS).model,
         "created": stamp_iso(GenerationInfo(path).timestamp),
@@ -430,6 +434,7 @@ def run_info(path: Path) -> dict:
     match = re.fullmatch(r"run-(\d{8}T\d{6}\d{6}Z)", run_id)
     tags = _run_notes(path)
     return {
+        **annotations(path),
         "path": str(path.relative_to(roots.GENERATIONS)),
         "id": run_id,
         "started": stamp_iso(match.group(1)) if match else None,
@@ -438,7 +443,10 @@ def run_info(path: Path) -> dict:
         "written_frames": health.get("written_frames"),
         "duration_s": health.get("written_frames", 0) * period_ns / 1e9,
         "dropped_frames": health.get("dropped_frames"),
-        "tags": tags,
+        "tags": list(dict.fromkeys([*annotations(path)["tags"], *tags])),
+        "notes_text": "\n".join(
+            note.get("text", "") for note in json_file(path / "notes.json").get("notes", [])
+        ),
     }
 
 

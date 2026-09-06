@@ -74,12 +74,7 @@ def save_annotations(path: Path, changes: dict) -> dict:
 
 
 def set_protected(path: Path, enabled: bool, confirm: str = "") -> dict:
-    """Mark a bundle undeletable, and take that mark back only when its name is typed.
-
-    Two layers rather than one: deleting refuses a protected bundle outright, and clearing the
-    protection is a separate act that names what it clears, so no single click does both. Set
-    independently of `pinned`, which a click toggles and which orders the catalog as well.
-    """
+    """Mark a bundle undeletable, and take that mark back only when its name is typed."""
     generation_of(path)
     if type(enabled) is not bool:
         raise ValueError("enabled must be boolean")

@@ -221,6 +221,7 @@ export function bindRunAgain(page, path, cameras, simulated) {
       };
       return chip;
     }));
+    record.querySelector(".camera-menu")?.remove();
     record.append(menu);
     label();
   }
@@ -389,7 +390,9 @@ export async function selectGeneration(path) {
   if (state.generationPath !== path || new URLSearchParams(location.hash.slice(1)).get("generation") !== path) return;
   highlightGeneration();
 
-  const page = $("#generation-template").content.cloneNode(true);
+  // Write into the page that is up; swapping the subtree lays the same boxes out again.
+  const shown = $("#content .generation");
+  const page = shown ?? $("#generation-template").content.cloneNode(true);
   page.querySelector("h1").textContent = generation.spec_name ?? generation.name;
   page.querySelector(".path").textContent = generation.folder;
   page.querySelector(".copy-generation-path").onclick = () => copyText(generation.folder);
@@ -522,7 +525,7 @@ export async function selectGeneration(path) {
   empty.textContent = "No run started in that window.";
   const draw = () => {
     renderRuns();
-    empty.remove();
+    page.querySelector(".runs-empty")?.remove();
     if (!rows.length && runs.length) runList.after(empty);
     drawPager();
   };
@@ -553,10 +556,12 @@ export async function selectGeneration(path) {
   draw();
   bindRunAgain(page, path, generation.cameras ?? [], generation.simulated);
   if (!generation.simulated) bindDevices(page, path);
-  $("#content").replaceChildren(page);
+  if (!shown) $("#content").replaceChildren(page);
   const mounted = $("#content .generation");
   const metadata = await annotationEditor(path, () => loadGenerations(true));
   if (!mounted.isConnected) return;
+  mounted.querySelector(".annotation-editor")?.remove();
+  mounted.querySelector(".generation-notes")?.remove();
   mounted.querySelector(".generation-description").after(metadata);
   const notes = document.createElement("details");
   notes.className = "generation-notes";

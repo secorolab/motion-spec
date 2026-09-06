@@ -69,6 +69,7 @@ export const enhanceSelect = (select) => {
   select.classList.add("theme-select-native");
   select.tabIndex = -1;
   select.setAttribute("aria-hidden", "true");
+  select.removeAttribute("aria-label");
   const control = { select, button, menu, shell };
   button.onclick = () => {
     const opening = !shell.classList.contains("open");

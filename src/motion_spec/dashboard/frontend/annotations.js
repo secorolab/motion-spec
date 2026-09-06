@@ -36,7 +36,6 @@ export async function annotationEditor(path, changed = () => {}) {
     } catch (error) { status.textContent = error.message; }
   };
   pin.onclick = () => save({ pinned: !data.pinned });
-  // The second layer: protecting is one click, unprotecting names what it unprotects.
   lock.onclick = async () => {
     const name = path.split("/").pop();
     const confirm = data.protected ? name : "";

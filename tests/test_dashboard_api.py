@@ -380,8 +380,7 @@ def test_cleanup_protects_active_pinned_and_baseline_descendants(dashboard, monk
 
 
 def test_protection_refuses_deletion_until_the_run_is_named(dashboard, monkeypatch):
-    """Two layers, independent of the pin: deleting a protected bundle is refused, and lifting
-    that protection is its own act, spelling the folder it lifts."""
+    """Deletion is refused while protected, and lifting the protection names the folder."""
     from test_dashboard_runs import _rec
 
     generation = str(dashboard.run.parent.parent.relative_to(dashboard.root))
@@ -390,7 +389,6 @@ def test_protection_refuses_deletion_until_the_run_is_named(dashboard, monkeypat
     trashed = []
     monkeypatch.setattr(server, "trash", lambda path: trashed.append(path))
     assert dashboard.post("/api/protect", {"path": run, "enabled": True})["protected"] is True
-    # The run itself and the generation holding it both refuse, naming the mark that refused.
     for target in (run, generation):
         assert (
             dashboard.post("/api/delete-preview", {"paths": [target]})["items"][0]["blocked"]
@@ -402,7 +400,7 @@ def test_protection_refuses_deletion_until_the_run_is_named(dashboard, monkeypat
         with pytest.raises(urllib.error.HTTPError):
             dashboard.post("/api/protect", {"path": run, "enabled": False, "confirm": confirm})
     assert not trashed
-    # A pin is not what held it: the protection outlives one, and clearing it is what frees the run.
+    # A pin is not what held it.
     dashboard.post("/api/annotations", {"path": run, "changes": {"pinned": True, "label": "keep"}})
     assert dashboard.get(f"/api/annotations?path={run}")["protected"] is True
     cleared = dashboard.post(

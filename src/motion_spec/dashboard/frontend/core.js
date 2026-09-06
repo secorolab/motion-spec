@@ -87,8 +87,6 @@ export function askConfirm({ message, confirmLabel = "Confirm", require = "" }) 
     const yes = dialog.querySelector(".ask-yes");
     const typed = dialog.querySelector(".ask-typed");
     yes.textContent = confirmLabel;
-    // Asking for a word back is what makes an answer deliberate; without one this stays a
-    // plain confirm, so every caller keeps the dialog it already had.
     const settled = () => !require || typed.value.trim() === require;
     if (require) {
       typed.hidden = false;

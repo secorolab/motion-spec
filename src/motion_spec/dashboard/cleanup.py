@@ -24,7 +24,6 @@ def protection(path: Path) -> str | None:
     runs = [run.dir for run in GenerationInfo(generation).runs] if path == generation else [path]
     if run_status(generation).get("running") or any(RunInfo(run).is_live() for run in runs):
         return "active run"
-    # Deliberate protection outranks the rest: it is cleared by naming what it protects.
     if annotations(path)["protected"] or any(annotations(run)["protected"] for run in runs):
         return "protected generation or run"
     if annotations(path)["pinned"] or any(annotations(run)["pinned"] for run in runs):

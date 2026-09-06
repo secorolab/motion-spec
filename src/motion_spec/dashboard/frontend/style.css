@@ -149,7 +149,10 @@ body.sidebar-collapsed #sidebar-toggle:focus-visible { border-color: var(--accen
 body.sidebar-collapsed #content { padding-left: 44px; }
 body.sidebar-collapsed .transport { left: 34px; }
 
-#content { overflow: auto; padding: 9px 22px 130px; }
+#content { overflow: auto; padding: 9px 22px 24px; }
+/* Room for a bar fixed over the page, kept only while one is there: it is scrollable height. */
+body:not(:has(.transport)):has(#selection-actions:not([hidden])) #content { padding-bottom: 76px; }
+body:has(.transport) #content { padding-bottom: 130px; }
 .empty { max-width: 540px; margin: 16vh auto; }
 .empty h1 { margin: 8px 0; font-size: 36px; }
 .empty p, .path { color: var(--muted); }
@@ -800,8 +803,7 @@ html.restoring #content .empty { visibility: hidden; }
 .picker-panel button { padding: 5px 8px; border: 0; box-shadow: none; background: none; color: var(--muted); font: 10px var(--mono); text-align: left; }
 .picker-panel button:hover { background: #2a2e34; color: var(--text); }
 .picker-panel button[aria-pressed="true"] { box-shadow: none; background: none; color: var(--accent); }
-/* The record picker is the navbar select in another markup: picking several cameras needs a
-   details, not a select, so the trigger, the menu and the way it opens are matched here. */
+/* A multi-pick needs a details, not a select, so the navbar's look is matched here. */
 .run-bar .picker summary { position: relative; min-width: 96px; min-height: 26px; justify-content: flex-start; padding: 4px 25px 4px 7px; background: var(--surface); color: var(--text); font: 11px/1.2 var(--mono); }
 .run-bar .picker summary::after { position: absolute; right: 9px; width: 5px; height: 5px; border: 0; border-right: 1px solid var(--muted); border-bottom: 1px solid var(--muted); transform: translateY(-2px) rotate(45deg); }
 .run-bar .picker[open] summary::after { border-color: var(--accent); transform: translateY(2px) rotate(225deg); }
@@ -995,9 +997,7 @@ dialog p { white-space: pre-wrap; overflow-wrap: anywhere; }
 .theme-select .theme-select-option:hover:not(:disabled), .theme-select .theme-select-option:focus-visible { background: #282c31; color: var(--accent); outline: 0; }
 .theme-select .theme-select-option[aria-selected=true] { background: var(--bg); color: var(--text); }
 .theme-select-option:disabled { color: var(--dim); cursor: default; }
-/* A press nudges a button down 1px (see `button:active`). In a menu that scrolls, that 1px under
-   the last option is scrollable height it did not have, so the scrollbar blinks in for as long as
-   the button is held. The press still reads through its colour. */
+/* `button:active` nudges 1px, which under the last option is scroll height that blinks a bar in. */
 .theme-select-option:active, .picker-panel button:active { transform: none; }
 .browser-tools .theme-select { flex: 1; max-width: 100%; }
 .chart-controls .theme-select { min-width: 260px; }

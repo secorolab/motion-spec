@@ -86,4 +86,4 @@ def test_a_forwarded_command_takes_a_command_port(trees) -> None:
 def test_a_perturbation_on_hardware_fails_while_generating(trees) -> None:
     bodies = [{"body": "cube", "members": []}]
     with pytest.raises(ConstraintViolation, match="no actuator on robif2b"):
-        world_ports(trees, MjcfSceneSpec(), [], [], bodies, [], "robif2b")
+        world_ports(trees, _scene(_cube_iri(trees)), [], [], bodies, [], "robif2b")

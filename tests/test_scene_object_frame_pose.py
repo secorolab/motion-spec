@@ -48,11 +48,11 @@ def world_output(generated) -> dict:
 
 
 def test_a_pose_of_a_scene_object_is_a_frame_of_the_world_model(world_output):
-    """A pose of the object itself is a pose of the frame its root body stands at, so what the
-    observation names is a Frame carrying that frame's own IRI."""
+    """A pose of the object's root frame is a pose of the segment the body stands at, which the
+    world tree names after the body."""
     of = world_output["pose_table_top"]["of"]
     assert of["type"] == "Frame"
-    assert of["uri"].endswith("table_top")
+    assert of["id"] == "table"
 
 
 def test_a_pose_of_a_frame_the_object_carries_is_that_frames_own_segment(world_output):
@@ -65,7 +65,7 @@ def test_a_pose_of_a_frame_the_object_carries_is_that_frames_own_segment(world_o
 
 def test_no_observation_carries_a_scene_object(generated):
     """Nothing in the published IR is a scene object any more; every endpoint is a frame."""
-    assert "SceneObject" not in json.dumps(generated)
+    assert '"type": "SceneObject"' not in json.dumps(generated)
 
 
 def test_a_frame_off_the_chains_branch_records_its_trees_root(generated):

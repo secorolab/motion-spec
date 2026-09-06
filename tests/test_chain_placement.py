@@ -102,12 +102,12 @@ def test_which_reads_move_to_the_world_model_is_decided_once() -> None:
         position=None,
     )
     assert _placed_on_chain(pose) == (("of", True),)
-    # A twist states the point it is taken about, which stays on chain FK; the frame it asked
-    # to be seen in is a posed frame like any other, so that one reads the world model.
+    # The world pass carries twists, so both ends of a twist are world reads.
     twist = _spatial(VelocityTwist, of=None, with_respect_to=None)
-    assert _placed_on_chain(twist) == (("of", False), ("as_seen_by", True))
+    assert _placed_on_chain(twist) == (("of", True), ("as_seen_by", True))
+    # f_ext is indexed chain-relative; the frame that segment stands at is a world read.
     force = CartesianForceSpecification("f", force=None, attached_to=None)
-    assert _placed_on_chain(force) == (("attached_to", False),)
+    assert _placed_on_chain(force) == (("attached_to", False), ("attached_to", True))
     constraint = AccelerationConstraint("c", subspace=Subspace.Linear, axis=None)
     assert _placed_on_chain(constraint) == (("as_seen_by", True),)
     # The tare's three frames all come off the world model, on every platform.

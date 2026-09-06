@@ -34,11 +34,12 @@ SELECT ?state ?from ?to WHERE {
   ?end time:inTimePosition/time:numericPosition ?to .
 } ORDER BY ?from`,
 
-  "what caused a transition": `PREFIX prov: <http://www.w3.org/ns/prov#>
+  "what caused a transition": `PREFIX ms-prov: <https://secorolab.github.io/metamodels/motion-spec/prov#>
+PREFIX prov: <http://www.w3.org/ns/prov#>
 PREFIX time: <http://www.w3.org/2006/time#>
 PREFIX fsm: <https://secorolab.github.io/metamodels/behaviour/fsm#>
 SELECT ?transition ?step ?cause WHERE {
-  ?occ a prov:Activity ;
+  ?occ a ms-prov:TransitionFiring ;
        prov:used ?transition ;
        time:hasTime ?instant ;
        prov:wasInformedBy ?prior .
@@ -91,8 +92,9 @@ PREFIX qudt: <http://qudt.org/schema/qudt/>
 SELECT ?element ?value ?unit ?step WHERE {
   ?occ a ms-prov:ConstraintMaintenance ;
        prov:used ?element ;
-       sosa:hasResult ?result ;
+       prov:wasInformedBy ?judged ;
        time:hasBeginning ?begin .
+  ?judged a sosa:Observation ; sosa:hasResult ?result .
   ?result qudt:value ?value .
   OPTIONAL { ?result qudt:unit ?unit }
   ?begin time:inTimePosition/time:numericPosition ?step .

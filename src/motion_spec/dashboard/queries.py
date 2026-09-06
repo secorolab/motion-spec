@@ -286,21 +286,21 @@ PREFIX cstr-hdl: <https://comp-rob2b.github.io/metamodels/task/constraint-handle
 PREFIX ch:       <https://secorolab.github.io/metamodels/task/constraint-handler#>
 """
 
-# The run's own tick rate: the frequency of the tick scale its instants are positioned on.
-# Scoped through the run so the sensors declaring update rates of their own cannot answer.
+# The run's own tick rate: the update rate of the process the run is associated with, whose
+# ticks the instants' scale counts. Scoped through the run so the sensors declaring update
+# rates of their own cannot answer.
 RUN_PERIOD = (
     VIEW_PREFIXES
     + """
 SELECT ?hz WHERE {
-    ?run a ms-prov:TaskExecution ; time:hasBeginning/time:inTimePosition/time:hasTRS ?trs .
-    ?trs sens:update-rate/qudt:value ?hz .
+    ?run a ms-prov:TaskExecution ; prov:wasAssociatedWith ?process .
+    ?process sens:update-rate/qudt:value ?hz .
 } LIMIT 1
 """
 )
 
 # Every occupancy, in order, with what moved control into it. `?element` may be bound by the
-# caller to narrow the timeline to one design IRI. A transition or event occurrence is a plain
-# prov:Activity: its referent's own rdf:type says what it was.
+# caller to narrow the timeline to one design IRI.
 ACTIVITY_TIMELINE = (
     VIEW_PREFIXES
     + """
@@ -310,7 +310,7 @@ SELECT ?occ ?element ?beginStep ?endStep ?transition ?event WHERE {
     OPTIONAL { ?occ time:hasEnd/time:inTimePosition/time:numericPosition ?endStep }
     OPTIONAL {
         ?occ prov:wasInformedBy ?flow .
-        ?flow a prov:Activity ; prov:used ?transition .
+        ?flow a ms-prov:TransitionFiring ; prov:used ?transition .
         OPTIONAL { ?flow prov:wasInformedBy/prov:used ?event }
     }
 } ORDER BY ?beginStep
@@ -354,10 +354,10 @@ SELECT ?constraint ?heldFrom ?heldTo WHERE {
 """
 )
 
-# One row per firing: the arming that fired is the maintenance carrying the observed value --
-# a held stretch that broke instead closes without one, and each such stretch counts as one
-# re-arm. The dwell the *design* graph declares is joined, never copied. A monitor that never
-# fired keeps its row with the span left unbound.
+# One row per firing: the arming that fired is the maintenance informed by the observation it
+# was judged on -- a held stretch that broke instead closes without one, and each such stretch
+# counts as one re-arm. The dwell the *design* graph declares is joined, never copied. A
+# monitor that never fired keeps its row with the span left unbound.
 GATE_ANALYSIS = (
     VIEW_PREFIXES
     + """
@@ -370,8 +370,9 @@ WHERE {
     OPTIONAL { ?monitor cstr-hdl:event ?event }
     OPTIONAL {
         ?occ a ms-prov:ConstraintMaintenance ; prov:used ?monitor ;
-             sosa:hasResult ?observed ;
+             prov:wasInformedBy ?judged ;
              time:hasBeginning/time:inTimePosition/time:numericPosition ?firstHeldStep .
+        ?judged a sosa:Observation ; sosa:hasResult ?observed .
         OPTIONAL { ?occ time:hasEnd/time:inTimePosition/time:numericPosition ?firedStep }
         OPTIONAL {
             ?stretch a ms-prov:ConstraintMaintenance ; prov:used ?monitor .

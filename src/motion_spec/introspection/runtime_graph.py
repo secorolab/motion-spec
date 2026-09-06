@@ -38,6 +38,14 @@ def _dt_literal(wall_ns) -> rdflib.Literal | None:
     return rdflib.Literal(dt)
 
 
+def _dts_literal(wall_ns) -> rdflib.Literal | None:
+    """The same wall time as an xsd:dateTimeStamp, which is what OWL-Time places an instant at."""
+    dt = _dt_literal(wall_ns)
+    if dt is None:
+        return None
+    return rdflib.Literal(dt.toPython().isoformat(), datatype=rdflib.XSD.dateTimeStamp)
+
+
 def _model_graphs(paths):
     """Each readable model graph among `paths`. A graph that will not parse is skipped: the
     maps below are lookups, and a missing entry degrades one occurrence rather than the run."""
@@ -182,8 +190,11 @@ TTL_REWRITE_INTERVAL_S = 2.0
 OCCURRENCE_REL = "logs/occurrences.pb"
 RUNTIME_TTL_REL = "runtime/runtime.ttl"
 RUNTIME_NT_REL = "runtime/runtime.nt"
-# The graph is one projection of the stream the run appended to; nothing re-derives it.
+# The graph is one projection of the stream the run appended to; nothing re-derives it. The
+# runner's projector writes it during the run; a replay re-projects it afterwards.
 PROJECTION_ACTIVITY = "activity:runtime_projection"
+PROJECTION_AGENT = "agent:motion_spec_runner"
+RECOVERY_AGENT = "agent:replay_process"
 # rec lifecycle states in which the run never produced what it was meant to.
 _FAILED_STATUSES = {"FAILED", "INTERRUPTED", "CANCELLED"}
 
@@ -319,11 +330,15 @@ def _trs_node(run_id: str) -> rdflib.URIRef:
     return _node(f"trs:{run_id}")
 
 
-def _tick_scale(g: rdflib.Graph, run_id: str, nominal_period_ns) -> rdflib.URIRef:
-    """The run's TRS, carrying the tick rate as the sensors metamodel's update rate.
+def _tick_scale(
+    g: rdflib.Graph, run_id: str, producer: rdflib.URIRef, nominal_period_ns
+) -> rdflib.URIRef:
+    """The run's TRS, and the tick rate as the update rate of the process that ticks it.
 
-    This is the only place a period reaches the graph: a step converts to seconds through the
-    scale its own positions are counted on, without opening the frame log for one header field.
+    A time reference system has no rate of its own; the controller does, and its ticks are what
+    the scale counts. This is the only place a period reaches the graph: a step converts to
+    seconds through the rate of the agent the run is associated with, without opening the frame
+    log for one header field.
     """
     trs = _trs_node(run_id)
     if (trs, rdflib.RDF.type, TIME.TRS) in g:
@@ -331,7 +346,7 @@ def _tick_scale(g: rdflib.Graph, run_id: str, nominal_period_ns) -> rdflib.URIRe
     g.add((trs, rdflib.RDF.type, TIME.TRS))
     if nominal_period_ns:
         rate = _node(f"quantity:{run_id}:tick_rate")
-        g.add((trs, SENS["update-rate"], rate))
+        g.add((producer, SENS["update-rate"], rate))
         g.add((rate, rdflib.RDF.type, QUDT.Quantity))
         g.add((rate, QUDT.hasQuantityKind, QKIND.Frequency))
         g.add((rate, QUDT.unit, UNIT.HZ))
@@ -350,9 +365,9 @@ def _instant(
         g.add((node, TIME.inTimePosition, position))
         g.add((position, TIME.numericPosition, rdflib.Literal(step)))
         g.add((position, TIME.hasTRS, trs))
-    dt = _dt_literal(wall_ns)
-    if dt is not None and (node, PROV.generatedAtTime, None) not in g:
-        g.add((node, PROV.generatedAtTime, dt))
+    stamp = _dts_literal(wall_ns)
+    if stamp is not None and (node, TIME.inXSDDateTimeStamp, None) not in g:
+        g.add((node, TIME.inXSDDateTimeStamp, stamp))
     return node
 
 
@@ -397,6 +412,8 @@ def _observation(
     node = _scoped("observation", run_id, step, f"{kind}{slot}", role)
     g.add((node, rdflib.RDF.type, SOSA.Observation))
     g.add((node, SOSA.observedProperty, prop))
+    # What made it is a sensor, and sosa says a sensor says so.
+    g.add((sensor, rdflib.RDF.type, SOSA.Sensor))
     g.add((node, SOSA.madeBySensor, sensor))
     if feature is not None:
         g.add((node, SOSA.hasFeatureOfInterest, feature))
@@ -423,9 +440,6 @@ def frame_observations(
     dense per-tick quantities would swamp the graph and the frame log already holds them.
     """
     sensor = rdflib.URIRef(prov_uri(header.producer_agent_id or "agent:controller_process"))
-    # What made these observations is a sensor, and sosa says a sensor says so: an untyped
-    # madeBySensor object is what sens:ObservationShape refuses.
-    g.add((sensor, rdflib.RDF.type, SOSA.Sensor))
     # The scale itself is defined once, with the run; an observation only counts on it.
     trs = _trs_node(run_id)
     wall_ns = frame.get("timing", {}).get("wall_ns")
@@ -525,17 +539,19 @@ class IncrementalProjector:
         held for -- a goal constraint satisfied, a gate's condition arming, a watched member
         of a gate holding. Unsatisfied needs no occurrence: it is the gap between two held
         spans, and each re-arm is its own maintenance, so a re-arm count is COUNT(*).
-      * A plain prov:Activity at one instant marks control moving -- a transition, or the
-        event that drove it. Neither is one of the four classes, so neither invents one. The
-        heartbeat that drives the FSM is deliberately not recorded, because the frame log is a
-        time series and every frame already is the tick.
+      * ms-prov:TransitionFiring and ms-prov:EventFiring mark control moving at one instant:
+        a transition, and the event that drove it. The heartbeat that drives the FSM is
+        deliberately not recorded, because the frame log is a time series and every frame
+        already is the tick.
 
     A condition with no authoring referent is not an activity at all: it stays a
     sosa:Observation (see `frame_observations`). Nothing is named after a state or a
     transition: the single prov:used points at the design IRI, whose own rdf:type says what
     kind of element it was.
 
-    What a maintenance holds is an entity: it is prov:wasGeneratedBy the maintenance that
+    The value a maintenance was judged on is a sosa:Observation made at the edge, which the
+    maintenance is prov:wasInformedBy; an activity carries no result of its own. What a
+    maintenance holds is an ms-prov:GoalSatisfaction: prov:wasGeneratedBy the maintenance that
     achieved it, and prov:wasInvalidatedBy the activity that lost it.
 
     Occurrences are linked to the occurrence that informed them (prov:wasInformedBy), so
@@ -565,7 +581,7 @@ class IncrementalProjector:
         self.producer = rdflib.URIRef(
             prov_uri(header.producer_agent_id or "agent:controller_process")
         )
-        self.trs = _tick_scale(g, run_id, header.nominal_period_ns)
+        self.trs = _tick_scale(g, run_id, self.producer, header.nominal_period_ns)
         self.signal_map = signal_map or {}
         # Read to decide whether an arming is worth its member detail, never written: the
         # declared dwell belongs to the design graph and a query joins the two.
@@ -724,7 +740,11 @@ class IncrementalProjector:
         if not tr or not tr.get("uri"):
             return None
         occ = self._occurrence(
-            PROV.Activity, f"t{tr.get('id', f'{prev_state}-{cur}')}", entry, step, span=False
+            MS_PROV.TransitionFiring,
+            f"t{tr.get('id', f'{prev_state}-{cur}')}",
+            entry,
+            step,
+            span=False,
         )
         self.g.add((occ, PROV.used, rdflib.URIRef(tr["uri"])))
         # The event that drove it survives as the link to its own occurrence, written only when
@@ -758,12 +778,15 @@ class IncrementalProjector:
         if not occurrence["satisfied"]:
             self._lost(ended)
             return
-        value = occurrence.get("value")
-        self.open_constraint[idx] = self._maintenance(
-            f"c{idx}", constraint_uri, None if value is None else float(value), wall, step
-        )
+        occ = self._maintenance(f"c{idx}", constraint_uri, wall, step)
+        # The value the edge was judged on is the constraint's error signal, where the design
+        # names one; the constraint itself otherwise, so the reading is not lost.
+        controller_uri = _slot_uri(controllers[idx], "uri")
+        prop = (self.signal_map.get(str(controller_uri)) or {}).get("error") or constraint_uri
+        self._judged_on(occ, "c", idx, prop, occurrence.get("value"), wall, step, constraint_uri)
+        self.open_constraint[idx] = occ
 
-    def _maintenance(self, disc, referent, value, wall, step: int, *, plan_step: bool = True):
+    def _maintenance(self, disc, referent, wall, step: int, *, plan_step: bool = True):
         """One interval a commanded constraint was held for, and the goal it thereby held.
 
         `plan_step` is false for a gate's watched members: they are already steps in their own
@@ -776,12 +799,36 @@ class IncrementalProjector:
         else:
             self.g.add((occ, PROV.used, referent))
         self._informed_by(occ, self.open_activity or self.run)
-        _result(self.g, occ, value, self.units.get(str(referent)))
         goal = _scoped("goal", self.run_id, wall if wall is not None else 0, disc)
-        self.g.add((goal, rdflib.RDF.type, PROV.Entity))
+        self.g.add((goal, rdflib.RDF.type, MS_PROV.GoalSatisfaction))
         self.g.add((goal, PROV.wasGeneratedBy, occ))
         self.goal_of[occ] = goal
         return occ
+
+    def _judged_on(self, occ, kind: str, idx, prop, value, wall, step: int, feature=None):
+        """The observation a maintenance was judged on, made at the edge that opened or closed it.
+
+        An activity carries no result of its own: the reading is a sosa:Observation of the
+        signal the edge was decided on, and the maintenance is informed by it.
+        """
+        if value is None or prop is None:
+            return
+        obs = _observation(
+            self.g,
+            self.run_id,
+            step,
+            wall,
+            self.trs,
+            self.producer,
+            kind,
+            idx,
+            "judged",
+            prop,
+            float(value),
+            feature=feature,
+            unit=self.units.get(str(prop)) or self.units.get(str(feature)),
+        )
+        self.g.add((occ, PROV.wasInformedBy, obs))
 
     def _monitor_edge(self, monitors: list, occurrence: dict, wall, step: int) -> None:
         """Maintain one span per arming of a monitor, closed when it breaks or fires.
@@ -799,7 +846,7 @@ class IncrementalProjector:
         if occurrence["satisfied"]:
             if monitor_uri is not None:
                 self.first_held[idx] = step
-                self.open_monitor[idx] = self._maintenance(f"m{idx}", monitor_uri, None, wall, step)
+                self.open_monitor[idx] = self._maintenance(f"m{idx}", monitor_uri, wall, step)
             # A monitor that names no event (a flag, a `while` term) fires on its rising edge.
             if not slot.get("event_uri"):
                 self.pending_fires[idx] = slot
@@ -817,12 +864,9 @@ class IncrementalProjector:
         rearm = self.rearm.get(idx, 0)
         occ = self.open_monitor.pop(idx, None)
         if occ is None:  # fired without an observed arming edge: the firing tick is the arming
-            occ = self._maintenance(f"m{idx}", monitor_uri, None, wall, step)
+            occ = self._maintenance(f"m{idx}", monitor_uri, wall, step)
         self._close(occ, step)
-        value = self.monitor_value.get(idx)
-        _result(
-            self.g, occ, None if value is None else float(value), self.units.get(str(monitor_uri))
-        )
+        self._judged_on(occ, "m", idx, monitor_uri, self.monitor_value.get(idx), wall, step)
         if self._interesting(monitor_uri, rearm, step):
             self._emit_members(idx, occ, wall, step)
         self.member_pending.pop(idx, None)
@@ -886,10 +930,21 @@ class IncrementalProjector:
                 occ = self._maintenance(
                     f"w{idx}-{member_id}-{order}",
                     rdflib.URIRef(member_uri),
-                    error,
                     wall,
                     step,
                     plan_step=False,
+                )
+                # A member is judged on its own error signal, the design's or the member itself.
+                signal = self.signal_map.get(str(member_uri)) or {}
+                self._judged_on(
+                    occ,
+                    "w",
+                    f"{idx}-{member_id}-{order}",
+                    signal.get("error") or rdflib.URIRef(member_uri),
+                    error,
+                    wall,
+                    step,
+                    rdflib.URIRef(member_uri),
                 )
                 self._close(occ, ends_at)
                 self._informed_by(monitor_occ, occ)
@@ -910,7 +965,9 @@ class IncrementalProjector:
         if ekey in self.seen_events:
             return
         self.seen_events.add(ekey)
-        occ = self._occurrence(PROV.Activity, f"e{eidx}", occurrence["wall_ns"], step, span=False)
+        occ = self._occurrence(
+            MS_PROV.EventFiring, f"e{eidx}", occurrence["wall_ns"], step, span=False
+        )
         self.g.add((occ, PROV.used, rdflib.URIRef(uri)))
         self._informed_by(occ, self.monitor_occ_for_event.pop(uri, None))
         self.event_occ[eidx] = occ
@@ -1104,9 +1161,15 @@ def _run_document(
     header,
     run_id: str,
     last_activity: rdflib.URIRef | None = None,
+    *,
+    projector: str = PROJECTION_AGENT,
+    started_at: rdflib.Literal | None = None,
 ) -> dict:
     """The run-level statement of the document: the run, its agents, the files it read and
     wrote, and this graph's own provenance. Returns the rec lifecycle it read.
+
+    `projector` is the agent whose process projected this document -- the runner while the
+    run executes, a replay afterwards -- and `started_at` when that projection began.
 
     `files` is the archive's own mapping, so what the document says a file is at is what the
     manifest says. A run still executing has no manifest yet: it states the paths the runtime
@@ -1184,9 +1247,11 @@ def _run_document(
     lifecycle = _add_rec_timing(g, run_dir, files, run)
 
     # Provenance of this runtime.ttl document itself: one projection of the occurrence stream the
-    # run appended to, by the same agent the header names as the run's observer.
+    # run appended to, by the process that projected it -- not by the controller, which only
+    # wrote the stream.
     runtime_doc = rdflib.URIRef(run_entity_uri(run_id, "runtime_ttl"))
     projection = rdflib.URIRef(prov_uri(PROJECTION_ACTIVITY))
+    projector_agent = rdflib.URIRef(prov_uri(projector))
     generated_at = _dt_literal(time.time_ns())
     g.add((runtime_doc, rdflib.RDF.type, PROV.Entity))
     g.add((runtime_doc, PROV.atLocation, rdflib.URIRef("runtime.ttl")))
@@ -1195,8 +1260,10 @@ def _run_document(
     g.add((runtime_doc, PROV.generatedAtTime, generated_at))
     g.add((projection, rdflib.RDF.type, PROV.Activity))
     g.add((projection, PROV.used, occurrences))
-    g.add((projection, PROV.wasAssociatedWith, producer))
+    g.add((projection, PROV.wasAssociatedWith, projector_agent))
+    g.add((projection, PROV.startedAtTime, started_at or generated_at))
     g.add((projection, PROV.endedAtTime, generated_at))
+    g.add((projector_agent, rdflib.RDF.type, PROV.SoftwareAgent))
     # A run that did not complete never produced what it was meant to: the outcome is an entity
     # nothing generated, lost to whatever was in force when the run stopped.
     if lifecycle.get("status") in _FAILED_STATUSES and last_activity is not None:
@@ -1229,6 +1296,7 @@ def occurrence_log(run_dir: Path, files: dict) -> Path:
 
 def project_runtime(run_dir: Path | str) -> rdflib.Graph:
     """The whole runtime graph of an archived run, re-read from its occurrence stream."""
+    started_at = _dt_literal(time.time_ns())
     run_dir, manifest = load_manifest(run_dir)
     files = manifest.get("files", {})
     stream = occurrence_log(run_dir, files)
@@ -1246,7 +1314,16 @@ def project_runtime(run_dir: Path | str) -> rdflib.Graph:
         frame_log_pb.occurrence_records(stream, contract),
         run_design_graphs(run_dir, files),
     )
-    _run_document(g, run_dir, files, contract.header, run_id, projector.last_activity)
+    _run_document(
+        g,
+        run_dir,
+        files,
+        contract.header,
+        run_id,
+        projector.last_activity,
+        projector=RECOVERY_AGENT,
+        started_at=started_at,
+    )
     _materialize_extent(g, run_id, projector)
     return g
 
@@ -1266,16 +1343,19 @@ def write_runtime_ttl(run_dir: Path | str) -> Path:
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text())
         manifest.setdefault("files", {})["runtime_ttl"] = runtime_rel
-        record_runtime_ttl_with_rec(run_dir, manifest, out)
+        record_runtime_ttl_with_rec(run_dir, manifest, out, projector=RECOVERY_AGENT)
         manifest_path.write_text(json.dumps(manifest, indent=4) + "\n")
     return out
 
 
-def record_runtime_ttl_with_rec(run_dir: Path, manifest: dict, runtime_ttl: Path) -> None:
+def record_runtime_ttl_with_rec(
+    run_dir: Path, manifest: dict, runtime_ttl: Path, *, projector: str = PROJECTION_AGENT
+) -> None:
     """Record the projected graph as an artefact of the projection, with its digest.
 
     Called once the file is final: rec records a checksum, so a file still being appended to
-    would be recorded as something it is no longer.
+    would be recorded as something it is no longer. `projector` is the agent the runtime
+    document names for the projection, so the two records describe one activity.
     """
     try:
         from motion_spec.introspection.provenance import ensure_local_rec_importable
@@ -1291,15 +1371,15 @@ def record_runtime_ttl_with_rec(run_dir: Path, manifest: dict, runtime_ttl: Path
     if not rec_path.exists():
         return
     run_id = manifest.get("run_id")
-    # The same agent the runtime document names, read from the stream's own header, so the two
-    # records describe one activity rather than two.
-    header = frame_log_pb.read_contract(occurrence_log(run_dir, files)).header
     observer = FileObserver(rec_path, run_iri=prov_uri(f"run:{run_id}"))
     run = Run(observers=[observer], run_id=run_id)
+    # The runner registers itself when it catalogs the run; a replay is a new process.
+    if projector != PROJECTION_AGENT:
+        run.add_agent(prov_uri(projector), rec_types(["prov:SoftwareAgent"]))
     run.add_activity(
         prov_uri(PROJECTION_ACTIVITY),
         rec_types(["prov:Activity"]),
-        associated_with=prov_uri(header.producer_agent_id or "agent:controller_process"),
+        associated_with=prov_uri(projector),
     )
     run.add_artefact(
         str(runtime_ttl.resolve()),
@@ -1363,6 +1443,7 @@ class RuntimeGraphWriter:
         self._journal = None
         self._offset = 0
         self._written_at = 0.0
+        self._started_at: rdflib.Literal | None = None
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._follow, daemon=True)
 
@@ -1410,6 +1491,7 @@ class RuntimeGraphWriter:
             self._contract.header,
             self.run_id,
             None if self.projector is None else self.projector.last_activity,
+            started_at=self._started_at,
         )
         for triple in document:
             self.graph.add(triple)
@@ -1430,6 +1512,7 @@ class RuntimeGraphWriter:
             self._contract = frame_log_pb.read_contract(self.occurrence_log)
         except (ArchiveError, DecodeError):
             return False  # header still being written
+        self._started_at = _dt_literal(time.time_ns())
         self.nt_path.parent.mkdir(parents=True, exist_ok=True)
         self._journal = self.nt_path.open("w", encoding="utf-8")
         self.graph = JournaledGraph(self._journal)

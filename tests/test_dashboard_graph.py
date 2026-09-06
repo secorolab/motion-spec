@@ -219,8 +219,17 @@ def test_history_is_one_observation_per_sampled_value_set(tmp_path):
     service.sync()
     runtime = service.dataset.graph(RUNTIME_GRAPH)
 
+    # The observations a maintenance was judged on sit beside the samples; only the samples count.
+    judged = set(runtime.objects(None, rdflib.URIRef(PROV + "wasInformedBy")))
+
     def sampled(prop):
-        return len(list(runtime.subjects(rdflib.URIRef(SOSA + "observedProperty"), prop)))
+        return len(
+            [
+                obs
+                for obs in runtime.subjects(rdflib.URIRef(SOSA + "observedProperty"), prop)
+                if obs not in judged
+            ]
+        )
 
     # 10 s of sim time at the 1.0 s spacing the run sampled at.
     assert abs(sampled(rdflib.URIRef(ERROR_SIGNAL)) - 10) <= 1
@@ -235,8 +244,11 @@ def test_history_carries_no_values_when_the_run_sampled_none(tmp_path):
     service.sync()
     runtime = service.dataset.graph(RUNTIME_GRAPH)
 
-    assert list(runtime.subjects(rdflib.RDF.type, rdflib.URIRef(SOSA + "Observation"))) == []
-    # ...but the semantic edges are still there: the constraint became satisfied at step 51.
+    # The only observations are the ones the semantic edges were judged on...
+    judged = set(runtime.objects(None, rdflib.URIRef(PROV + "wasInformedBy")))
+    observations = set(runtime.subjects(rdflib.RDF.type, rdflib.URIRef(SOSA + "Observation")))
+    assert observations <= judged
+    # ...and the edges themselves are still there: the constraint became satisfied at step 51.
     assert (None, rdflib.URIRef(PROV + "used"), rdflib.URIRef(CONSTRAINT)) in runtime
 
 
@@ -264,7 +276,7 @@ def test_the_dashboard_mints_no_vocabulary(tmp_path):
             "madeBySensor",
             "resultTime",
         )
-    } | {PROV + "generatedAtTime", QUDT + "value", QUDT + "unit"}
+    } | {TIME + "inXSDDateTimeStamp", QUDT + "value", QUDT + "unit"}
     assert {str(o) for o in live.objects(None, rdflib.RDF.type)} == {
         SOSA + "Observation",
         # What made them: an untyped madeBySensor object is what sens:ObservationShape refuses.

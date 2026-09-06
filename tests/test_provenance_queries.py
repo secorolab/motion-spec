@@ -50,7 +50,7 @@ SELECT ?constraint ?motion ?at ?value WHERE {
   ?occ a ms-prov:ConstraintMaintenance ;
        prov:used ?constraint ;
        prov:wasInformedBy ?mx ;
-       sosa:hasResult/qudt:value ?value ;
+       prov:wasInformedBy/sosa:hasResult/qudt:value ?value ;
        time:hasBeginning/time:inTimePosition/time:numericPosition ?at .
   ?mx a ms-prov:MotionExecution ; prov:used ?motion .
   ?constraint a ?kind .
@@ -66,7 +66,7 @@ SELECT ?constraint ?motion ?at ?value WHERE {
   ?occ a ms-prov:ConstraintMaintenance ;
        prov:used ?constraint ;
        prov:wasInformedBy ?mx ;
-       sosa:hasResult/qudt:value ?value ;
+       prov:wasInformedBy/sosa:hasResult/qudt:value ?value ;
        time:hasBeginning/time:inTimePosition/time:numericPosition ?at .
   ?mx a ms-prov:MotionExecution ; prov:used ?motion .
   ?constraint a ?kind .
@@ -81,7 +81,7 @@ Q2 = (
     + """
 SELECT ?constraint ?kind ?handler ?model ?location WHERE {
   ?occ a ms-prov:ConstraintMaintenance ; prov:used ?constraint ;
-       sosa:hasResult/qudt:value ?value .
+       prov:wasInformedBy/sosa:hasResult/qudt:value ?value .
   ?handler cstr-hdl:constraint ?constraint .
   ?run a ms-prov:TaskExecution ; prov:used ?model .
   ?model prov:atLocation ?location .
@@ -122,10 +122,12 @@ Q6 = (
     PREFIXES
     + """
 SELECT ?constraint ?earlier ?later (COUNT(*) AS ?pairs) WHERE {
-  ?occA a ms-prov:ConstraintMaintenance ; prov:used ?constraint ; sosa:hasResult/qudt:value ?a ;
+  ?occA a ms-prov:ConstraintMaintenance ; prov:used ?constraint ;
+        prov:wasInformedBy/sosa:hasResult/qudt:value ?a ;
         prov:wasInformedBy/prov:wasInformedBy ?earlier .
   ?earlier a ms-prov:TaskExecution .
-  ?occB a ms-prov:ConstraintMaintenance ; prov:used ?constraint ; sosa:hasResult/qudt:value ?b ;
+  ?occB a ms-prov:ConstraintMaintenance ; prov:used ?constraint ;
+        prov:wasInformedBy/sosa:hasResult/qudt:value ?b ;
         prov:wasInformedBy/prov:wasInformedBy ?later .
   ?later a ms-prov:TaskExecution .
   FILTER(STR(?earlier) < STR(?later))
@@ -245,11 +247,12 @@ def _generations_root() -> Path | None:
 def _archived_runs() -> list[Path]:
     """Two runs of one model, each from its own generation, that carry the run vocabulary.
 
-    Both terms are asked for, because a run may carry one without the other: `TaskExecution`
-    names the run and long predates the day observed values became `qudt:QuantityValue`. An
-    archive written before that names its results with `sosa:hasSimpleResult`, which every
-    question below reads straight through -- so a run answering to the older term alone is not
-    one these queries can be asked of, and taking it would fail them rather than skip.
+    Three terms are asked for, because a run may carry one without the others: `TaskExecution`
+    names the run and long predates the day observed values became `qudt:QuantityValue`, and
+    an instant placed at an `xsd:dateTimeStamp` is what says the maintenance values sit on the
+    observations the questions below read through. A run answering to an older vocabulary
+    alone is not one these queries can be asked of, and taking it would fail them rather than
+    skip.
     """
     root = _generations_root()
     if root is None:
@@ -261,7 +264,11 @@ def _archived_runs() -> list[Path]:
             if not (generation / "rec.ld.json").exists() or not runtime.exists():
                 continue
             recorded = runtime.read_text()
-            if "ms-prov:TaskExecution" in recorded and "QuantityValue" in recorded:
+            if (
+                "ms-prov:TaskExecution" in recorded
+                and "QuantityValue" in recorded
+                and "inXSDDateTimeStamp" in recorded
+            ):
                 runs.append(generation)
         by_generation = {run.parents[1]: run for run in runs}
         if len(by_generation) >= 2:

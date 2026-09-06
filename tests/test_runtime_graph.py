@@ -18,6 +18,7 @@ from motion_spec.introspection.runtime_graph import (
     PROJECTION_ACTIVITY,
     PROV,
     QKIND,
+    RECOVERY_AGENT,
     QUDT,
     SENS,
     SOSA,
@@ -37,7 +38,14 @@ RUN = rdflib.URIRef(prov_uri("run:run-test"))
 
 # The classes the runtime graph is allowed to mint. Everything else composes from
 # prov/time/sosa/dcterms/sens; ms-prov:SpecCompilation belongs to generation, not to a run.
-MS_PROV_TERMS = {"TaskExecution", "MotionExecution", "ConstraintMaintenance"}
+MS_PROV_TERMS = {
+    "TaskExecution",
+    "MotionExecution",
+    "ConstraintMaintenance",
+    "TransitionFiring",
+    "EventFiring",
+    "GoalSatisfaction",
+}
 
 from frame_log_fixture import occurrence, write_frame_log_proto, write_occurrence_log_pb
 from support import _hash_doc, _layout, _provenance
@@ -237,10 +245,11 @@ def test_runtime_ttl_projects_full_observation_graph(tmp_path: Path) -> None:
     ):
         assert not list(graph.triples((None, gone, None)))
 
-    # Each monitor/constraint occurrence carries the live residual as its result quantity; the
-    # spec (setpoint/threshold/operator) is referenced by URI, not copied in.
+    # Each monitor/constraint occurrence is informed by the observation it was judged on, whose
+    # result is the live residual; the spec (setpoint/threshold/operator) is referenced by URI,
+    # not copied in.
     def result_value(node):
-        return graph.value(graph.value(node, SOSA.hasResult), QUDT.value)
+        return graph.value(graph.value(_judged(graph, node), SOSA.hasResult), QUDT.value)
 
     mon = next(graph.subjects(PROV.used, DONE_MON))
     assert result_value(mon) == rdflib.Literal(Decimal("0.004"))
@@ -271,11 +280,17 @@ def test_runtime_ttl_projects_full_observation_graph(tmp_path: Path) -> None:
         if isinstance(o, rdflib.Literal) and o.datatype == rdflib.XSD.double
     ]
 
-    # Time is xsd:dateTime; an instant is generated at one, a run starts at one.
-    stamps = list(graph.subject_objects(PROV.generatedAtTime)) + list(
-        graph.subject_objects(PROV.startedAtTime)
-    )
+    # A run starts at an xsd:dateTime; an instant stands at an xsd:dateTimeStamp, as OWL-Time
+    # places it, never at a PROV generation time (an instant is no entity).
+    stamps = list(graph.subject_objects(PROV.startedAtTime))
     assert stamps and all(o.datatype == rdflib.XSD.dateTime for _, o in stamps)
+    placed = list(graph.subject_objects(TIME.inXSDDateTimeStamp))
+    assert placed and all(o.datatype == rdflib.XSD.dateTimeStamp for _, o in placed)
+    assert all((s, rdflib.RDF.type, TIME.Instant) in graph for s, _ in placed)
+    assert not any(
+        (s, rdflib.RDF.type, TIME.Instant) in graph
+        for s, _ in graph.subject_objects(PROV.generatedAtTime)
+    )
 
     # Runtime.ttl self-provenance: one projection of the stream the run appended to. Its entity
     # is run-scoped, so two runs of one generation never collapse onto one document node.
@@ -285,12 +300,11 @@ def test_runtime_ttl_projects_full_observation_graph(tmp_path: Path) -> None:
     assert _has(graph, doc, PROV.wasGeneratedBy, projection)
     assert _has(graph, doc, PROV.wasDerivedFrom, stream)
     assert _has(graph, projection, PROV.used, stream)
-    assert _has(
-        graph,
-        projection,
-        PROV.wasAssociatedWith,
-        rdflib.URIRef(prov_uri("agent:controller_process")),
-    )
+    # Projected here by a replay, not by the controller that wrote the stream.
+    replay = rdflib.URIRef(prov_uri(RECOVERY_AGENT))
+    assert _has(graph, projection, PROV.wasAssociatedWith, replay)
+    assert _has(graph, replay, rdflib.RDF.type, PROV.SoftwareAgent)
+    assert graph.value(projection, PROV.startedAtTime) is not None
 
 
 # Predicates the runtime graph is allowed to carry. It says what happened and points at the
@@ -301,6 +315,11 @@ ALLOWED_PREDICATES = {
     rdflib.RDFS.label,
     DCTERMS.hasVersion,
     SOSA.hasResult,
+    SOSA.hasFeatureOfInterest,
+    SOSA.madeBySensor,
+    SOSA.observedProperty,
+    SOSA.resultTime,
+    TIME.inXSDDateTimeStamp,
     TIME.hasBeginning,
     TIME.hasEnd,
     TIME.hasTime,
@@ -323,6 +342,18 @@ ALLOWED_PREDICATES = {
     QUDT.value,
     SENS["update-rate"],
 }
+
+
+def _judged(graph: rdflib.Graph, occ) -> rdflib.URIRef | None:
+    """The observation a maintenance was judged on: the one activity informing it that is one."""
+    return next(
+        (
+            informer
+            for informer in graph.objects(occ, PROV.wasInformedBy)
+            if (informer, rdflib.RDF.type, SOSA.Observation) in graph
+        ),
+        None,
+    )
 
 
 def _graph(tmp_path: Path) -> tuple[rdflib.Graph, Path]:
@@ -380,8 +411,11 @@ def test_spans_are_closed_and_instants_have_no_interval(tmp_path: Path) -> None:
     instants = set(graph.subjects(TIME.hasTime, None))
     assert instants
     for occ in instants:
-        # Control flow is not one of the four classes, so it invents none: a plain activity.
-        assert set(graph.objects(occ, rdflib.RDF.type)) == {PROV.Activity}
+        # Control flow is a transition firing or the event firing that drove it.
+        assert set(graph.objects(occ, rdflib.RDF.type)) in (
+            {MS_PROV.TransitionFiring},
+            {MS_PROV.EventFiring},
+        )
         assert graph.value(occ, TIME.hasBeginning) is None
 
 
@@ -411,11 +445,15 @@ def test_activity_spans_tile_the_run(tmp_path: Path) -> None:
     assert _pos(graph, graph.value(RUN, TIME.hasEnd)) == max(steps)
 
 
-def test_tick_rate_hangs_off_the_time_reference_system(tmp_path: Path) -> None:
-    """A step converts to seconds without opening the frame log."""
+def test_tick_rate_is_the_update_rate_of_the_process_the_run_ran_on(tmp_path: Path) -> None:
+    """A step converts to seconds without opening the frame log: the scale counts the ticks of
+    the agent the run is associated with, and that agent states its update rate. A time
+    reference system has no rate of its own."""
     graph, _run_dir = _graph(tmp_path)
     trs = next(graph.subjects(rdflib.RDF.type, TIME.TRS))
-    rate = graph.value(trs, SENS["update-rate"])
+    assert graph.value(trs, SENS["update-rate"]) is None
+    process = graph.value(RUN, PROV.wasAssociatedWith)
+    rate = graph.value(process, SENS["update-rate"])
     assert graph.value(rate, QUDT.hasQuantityKind) == QKIND.Frequency
     assert graph.value(rate, QUDT.unit) == UNIT.HZ
     assert float(graph.value(rate, QUDT.value)) == 1e9 / _schema()["control_period_ns"]
@@ -558,8 +596,8 @@ def test_each_rearm_is_its_own_maintenance(tmp_path: Path) -> None:
     for broken in armings[:-1]:
         goal = next(graph.subjects(PROV.wasGeneratedBy, broken))
         assert graph.value(goal, PROV.wasInvalidatedBy) is not None
-    # Only the arming that fired carries an observed value.
-    assert [occ for occ in armings if graph.value(occ, SOSA.hasResult) is not None] == [fired]
+    # Only the arming that fired was judged on an observed value.
+    assert [occ for occ in armings if _judged(graph, occ) is not None] == [fired]
 
 
 def test_boring_gate_emits_no_member_edges(tmp_path: Path) -> None:

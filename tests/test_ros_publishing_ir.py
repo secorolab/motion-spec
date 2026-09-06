@@ -13,11 +13,18 @@ from pathlib import Path
 import pytest
 from motion_spec_dsl.rdf_parser.vocab import CSTR_EXT, CSTR_HDL, QUDT_SCHEMA, SENSORS
 from rdf_utils.constraints import ConstraintViolation
-from rdf_utils.namespace import NS_MM_QUDT_QTY
+from rdf_utils.models.vocab import (
+    URI_GEOM_PRED_OF,
+    URI_GEOM_PRED_WRT,
+    URI_GEOM_TYPE_KGRAPH,
+    URI_GEOM_TYPE_POSE,
+)
+from rdf_utils.namespace import NS_MM_KC_EXT, NS_MM_QUDT_QTY
 from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import RDF, RDFS, SOSA
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 
+from motion_spec.classes.bindings import WorldPort
 from motion_spec.classes.dynamics import JointPosition
 from motion_spec.classes.handlers import LevelMonitor, RosPublication
 from motion_spec.rdf_parser.communication import (
@@ -28,7 +35,7 @@ from motion_spec.rdf_parser.communication import (
 )
 from motion_spec.rdf_parser.coordination import _message_shape, _ros_publication
 from motion_spec.rdf_parser.model import Model
-from motion_spec.rdf_parser.resources import ros_joint_states
+from motion_spec.rdf_parser.resources import ros_joint_states, ros_tf
 
 from conftest import requires_interfaces
 
@@ -124,7 +131,7 @@ def test_a_monitors_rate_does_not_make_it_a_standing_publish():
     graph.add((MONITOR, NS_MM_ROS["type-name"], Literal("std_msgs/msg/Bool")))
     rate_node = URIRef(f"{MONITOR}.rate")
     graph.add((MONITOR, SENSORS["update-rate"], rate_node))
-    assert ros_standing(_model(graph), [], 1_000_000) == []
+    assert ros_standing(_model(graph), [], 1_000_000, {}) == []
 
 
 def test_message_shape_separates_authorable_fields_from_auto_filled_ones():
@@ -252,9 +259,8 @@ REPORTED = URIRef(f"{NS}ext-force")
 
 def _reported(name: str = "ext_force", type_: str = "Wrench", frame: str = "base_link"):
     """A data structure on the blackboard, as the standing publish finds it."""
-    return type(
-        "Q", (), {"id": name, "type": type_, "as_seen_by": type("F", (), {"id": frame})()}
-    )()
+    seen_by = type("F", (), {"id": frame, "uri": f"{NS}frames/{frame}"})()
+    return type("Q", (), {"id": name, "type": type_, "as_seen_by": seen_by})()
 
 
 def _standing(type_name: str = "geometry_msgs/msg/WrenchStamped", rate: float = 100.0, **kwargs):
@@ -262,7 +268,7 @@ def _standing(type_name: str = "geometry_msgs/msg/WrenchStamped", rate: float = 
     return _standing_many(type_name, rate, (REPORTED, None, _reported(**kwargs)))
 
 
-def _standing_many(type_name: str, rate: float, *entries):
+def _standing_many(type_name: str, rate: float, *entries, segment_by_iri=None):
     """The same, reporting several quantities -- each stating the entity it is an entry for."""
     graph = Graph()
     graph.add((STANDING, RDF.type, NS_MM_ROS["Topic"]))
@@ -280,8 +286,12 @@ def _standing_many(type_name: str, rate: float, *entries):
     graph.add((rate_node, QUDT_SCHEMA["hasQuantityKind"], NS_MM_QUDT_QTY["Frequency"]))
     graph.add((rate_node, QUDT_SCHEMA["unit"], URIRef("http://qudt.org/vocab/unit/HZ")))
     graph.add((rate_node, QUDT_SCHEMA["value"], Literal(rate)))
+    if segment_by_iri is None:
+        segment_by_iri = {record.as_seen_by.uri: record.as_seen_by.id for _q, _s, record in entries}
     # 1 kHz control loop, so 100 Hz is every tenth cycle.
-    return ros_standing(_model(graph), [record for _q, _s, record in entries], 1_000_000)
+    return ros_standing(
+        _model(graph), [record for _q, _s, record in entries], 1_000_000, segment_by_iri
+    )
 
 
 def test_a_standing_publish_reports_its_quantity_whole_at_its_own_rate():
@@ -382,17 +392,29 @@ def test_a_tf_message_carries_a_pose_as_a_transform():
     """`/tf` holds transforms, so a pose goes in as one: the frame it is against in the header,
     the frame it is of as the child, and the fields spelled the way a Transform does."""
     record = _reported("pose_ee", "Pose", "base_link")
-    record.of = type("F", (), {"id": "g_pinch"})()
-    reported = URIRef(f"{NS}pose-ee")
-    (publish,) = _standing_many("tf2_msgs/msg/TFMessage", 100.0, (reported, None, record))
+    record.as_seen_by.uri = f"{NS}scene/base_link_origin"
+    record.of = type("F", (), {"id": "g_pinch", "uri": f"{NS}scene/g_pinch"})()
+    segments = {
+        f"{NS}scene/base_link_origin": "kinova/base_link",
+        f"{NS}scene/g_pinch": "gripper/g_base/g_pinch",
+    }
+    (publish,) = _standing_many(
+        "tf2_msgs/msg/TFMessage",
+        100.0,
+        (URIRef(f"{NS}pose-ee"), None, record),
+        segment_by_iri=segments,
+    )
     assert publish["resize"] == [{"path": "transforms", "size": 1}]
     (entry,) = publish["entries"]
     assert (entry["value_type"], entry["carrier"]) == ("Pose", "Transform")
     assert entry["payload_path"] == "transforms[0].transform."
-    assert (entry["id_path"], entry["id_value"]) == ("transforms[0].child_frame_id", "g_pinch")
+    assert (entry["id_path"], entry["id_value"]) == (
+        "transforms[0].child_frame_id",
+        "gripper/g_base/g_pinch",
+    )
     assert (entry["frame_path"], entry["frame_id"]) == (
         "transforms[0].header.frame_id",
-        "base_link",
+        "kinova/base_link",
     )
     assert entry["auto_time"] == ["transforms[0].header.stamp"]
 
@@ -437,8 +459,9 @@ def _chain(prefix: str, joints: list[str], output=(), device_output=()):
         "C",
         (),
         {
+            "id": f"{prefix}solver",
             "runtime": type("R", (), {"owner": True, "prefix": prefix})(),
-            "chain": type("Ch", (), {"joints": joints})(),
+            "chain": type("Ch", (), {"joints": joints, "tree_root": ANCHOR_SEGMENT})(),
             "joint_space_samples": samples,
             "output": list(output),
             "devices": [type("D", (), {"joint_outputs": list(device_output)})()],
@@ -476,6 +499,90 @@ def test_a_joint_the_chain_does_not_articulate_is_still_published(reporter: str)
 def test_joint_states_need_a_declared_config_to_read_at_runtime():
     with pytest.raises(ConstraintViolation, match="declare `config:`"):
         ros_joint_states({}, {"ros": {"joint_states": {}}}, [_chain("r1_", ["j1"])])
+
+
+ANCHOR = URIRef(f"{NS}scene/world_body/world")
+ANCHOR_SEGMENT = "world_tree/world_body"
+NO_PORTS = {"free_roots": []}
+
+
+def _scene_graph() -> Graph:
+    """The one fact the tf section reads off the scene: the kinematic graph's anchor."""
+    graph = Graph()
+    kgraph = URIRef(f"{NS}scene/kgraph")
+    graph.add((kgraph, RDF.type, URI_GEOM_TYPE_KGRAPH))
+    graph.add((kgraph, NS_MM_KC_EXT["anchor"], ANCHOR))
+    return graph
+
+
+def _tf(config, chains, cameras=(), index=None, graph=None, ports=NO_PORTS, platform=None):
+    """The tf section as generation builds it, on a scene whose anchor resolves."""
+    graph = graph or _scene_graph()
+    index = {str(ANCHOR): ANCHOR_SEGMENT, **(index or {})}
+    platform = {"config": "robot.toml"} if platform is None else platform
+    return ros_tf(_model(graph), platform, config, chains, list(cameras), index, ports)
+
+
+def test_tf_is_gated_on_the_config_section():
+    chains = [_chain("r1_", ["j1", "j2"])]
+    assert _tf({}, chains) is None
+    assert _tf({"ros": {"tf": {}}}, chains) == {
+        "config_key": "ros.tf",
+        "anchor": ANCHOR_SEGMENT,
+        "observed": [],
+        "free_roots": [],
+    }
+    with pytest.raises(ConstraintViolation, match="declare `config:`"):
+        _tf({"ros": {"tf": {}}}, chains, platform={})
+    with pytest.raises(ConstraintViolation, match="no serial chain"):
+        _tf({"ros": {"tf": {}}}, [])
+
+
+def test_tf_hangs_the_forest_from_the_scene_anchor():
+    """Every driven chain stands in the anchor's tree; one in another tree would leave the
+    published forest with two roots and nothing to say how they relate."""
+    astray = _chain("r1_", ["j1"])
+    astray.chain.tree_root = "other/root"
+    with pytest.raises(ConstraintViolation, match="not at the scene's anchor"):
+        _tf({"ros": {"tf": {}}}, [astray])
+
+
+def _camera(name: str, topic, frame: str):
+    """A scene camera as the tf section reads it: what carries it, and where it stands."""
+    return type("Cam", (), {"id": name, "topic": topic, "frame_uri": f"{NS}scene/{frame}"})()
+
+
+def test_tf_lists_the_observed_camera_segments():
+    """Perception places a camera the run observes, so the controller's tree stops above it and
+    above every frame the scene poses against it; a camera nothing subscribes to stays in the
+    tree it was built into."""
+    chains = [_chain("r1_", ["j1", "j2"])]
+    cameras = [_camera("rk", "/rk/color", "rk_view"), _camera("spectator", None, "spectator_view")]
+    # The optical frame is posed against the camera frame, and hangs off the body in the tree.
+    graph = _scene_graph()
+    optical = URIRef(f"{NS}scene/rk_optical.pose")
+    graph.add((optical, RDF.type, URI_GEOM_TYPE_POSE))
+    graph.add((optical, URI_GEOM_PRED_OF, URIRef(f"{NS}scene/rk_optical")))
+    graph.add((optical, URI_GEOM_PRED_WRT, URIRef(f"{NS}scene/rk_view")))
+    segments = {
+        f"{NS}scene/rk_view": "collab-kgraph/rk-table-body/rk_view",
+        f"{NS}scene/rk_optical": "collab-kgraph/rk-table-body/rk_optical",
+    }
+    section = _tf({"ros": {"tf": {}}}, chains, cameras, segments, graph)
+    assert section["observed"] == [
+        "collab-kgraph/rk-table-body/rk_view",
+        "collab-kgraph/rk-table-body/rk_optical",
+    ]
+    with pytest.raises(ConstraintViolation, match="no segment of a built tree"):
+        _tf({"ros": {"tf": {}}}, chains, cameras, {}, graph)
+
+
+def test_tf_publishes_the_free_roots_the_program_measures():
+    """A free body the scene itself places is the program's to report; one perception places
+    takes no port and so is left to perception's own publisher."""
+    cube = WorldPort(kind="free_root", segment="pick_place_graph/cube", mapping="cube", slot=0)
+    section = _tf({"ros": {"tf": {}}}, [_chain("r1_", ["j1"])], ports={"free_roots": [cube]})
+    assert section["free_roots"] == ["pick_place_graph/cube"]
 
 
 FSM_NS = "https://example.test/fsm/"

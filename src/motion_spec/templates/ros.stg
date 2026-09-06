@@ -32,6 +32,12 @@ ros-includes(ros) ::= <<
 #include \<sensor_msgs/msg/joint_state.hpp\>
 #include \<limits\>
 <endif>
+<if(ros.tf)>
+#include \<tf2_msgs/msg/tf_message.hpp\>
+#include \<geometry_msgs/msg/transform_stamped.hpp\>
+#include \<algorithm\>
+#include \<vector\>
+<endif>
 <if(ros.clock)>
 #include \<rosgraph_msgs/msg/clock.hpp\>
 <endif>
@@ -72,10 +78,11 @@ inline bool parse_uuid(const std::string &text, std::array\<std::uint8_t, 16\> &
 
 <endif>
 <endif>
-<if(ros.joint_states)>
+<if(ros.joint_states || ros.clock || ros.tf)>
 <ros-publish-divider()>
-<elseif(ros.clock)>
-<ros-publish-divider()>
+<endif>
+<if(ros.tf)>
+<ros-transform-writer()>
 <endif>
 }  // namespace motion_spec::ros
 >>
@@ -88,6 +95,23 @@ inline int publish_divider(double rate_hz) {
     if (rate_hz \<= 0.0) return 1;
     const double every = 1.0 / (rate_hz * motion_spec::runtime::kControlPeriodS);
     return every \<= 1.0 ? 1 : static_cast\<int\>(every + 0.5);
+\}
+
+>>
+
+// tf carries a quaternion; KDL carries a rotation matrix.
+
+ros-transform-writer() ::= <<
+inline void write_transform(const KDL::Frame &frame, geometry_msgs::msg::Transform &out) {
+    double qx, qy, qz, qw;
+    frame.M.GetQuaternion(qx, qy, qz, qw);
+    out.translation.x = frame.p.x();
+    out.translation.y = frame.p.y();
+    out.translation.z = frame.p.z();
+    out.rotation.x = qx;
+    out.rotation.y = qy;
+    out.rotation.z = qz;
+    out.rotation.w = qw;
 \}
 
 >>
@@ -117,6 +141,14 @@ ros-io-members(ros) ::= <<
     std::shared_ptr\<realtime_tools::RealtimePublisher\<sensor_msgs::msg::JointState\>\> joint_states_pub = nullptr;
     sensor_msgs::msg::JointState joint_states_msg{};
     int joint_states_divider = 1;
+<endif>
+<if(ros.tf)>
+    rclcpp::Publisher\<tf2_msgs::msg::TFMessage\>::SharedPtr tf_static_pub = nullptr;
+    std::shared_ptr\<realtime_tools::RealtimePublisher\<tf2_msgs::msg::TFMessage\>\> tf_pub = nullptr;
+    tf2_msgs::msg::TFMessage tf_msg{};
+    std::vector\<int\> tf_roots;
+    std::vector\<int\> tf_moving;
+    int tf_divider = 1;
 <endif>
 <if(ros.clock)>
     std::shared_ptr\<realtime_tools::RealtimePublisher\<rosgraph_msgs::msg::Clock\>\> clock_pub = nullptr;
@@ -541,6 +573,72 @@ ros-joint-states-setup(ros) ::= <<
 <endif>
 >>
 
+// Walked off the sealed world model, not off a generated list: the forest already knows every
+// segment, its parent and the joint it moves.
+
+ros-tf-setup(ros, resources) ::= <<
+<if(ros.tf)>
+    {
+        const std::string _tf_key = "<ros.tf.config_key>";
+        const toml::table &_tf_cfg = motion_spec::config::section(robot_config, _tf_key);
+        robot.tf_divider = motion_spec::ros::publish_divider(_tf_cfg["rate"].value_or(0.0));
+        // The trees the driven chains stand in and those of the free roots the program measures;
+        // a tree perception places is its publisher's.
+        std::vector\<int\> _tf_trees;
+<resources.by_kind.serial_chain:{solver |<if(solver.runtime.owner)>        _tf_trees.push_back(world.tree_of(robot.<solver.id>.world_root));
+<endif>}>
+<ros.tf.free_roots:{name |         _tf_trees.push_back(world.tree_of(world.index_of("<name>")));}; separator="\n">
+        // A free root hangs from the anchor at the pose its provider bound; every placed root
+        // stands on the anchor already.
+<ros.tf.free_roots:{name |         {
+            geometry_msgs::msg::TransformStamped t;
+            t.header.frame_id = "<ros.tf.anchor>";
+            t.child_frame_id = "<name>";
+            robot.tf_roots.push_back(world.index_of("<name>"));
+            robot.tf_msg.transforms.push_back(t);
+        \}}; separator="\n">
+        // Perception places what the run observes; the tree stops above each such frame.
+        std::vector\<char\> _tf_observed(world.count(), 0);
+<ros.tf.observed:{name |         {
+            const int observed = world.index_of("<name>");
+            if (observed \< 0) {
+                std::cerr \<\< "[world] no segment is named '<name>'" \<\< std::endl;
+                return 1;
+            \}
+            _tf_observed[observed] = 1;
+        \}}; separator="\n">
+        tf2_msgs::msg::TFMessage _tf_static;
+        for (int i = 0; i \< world.count(); ++i) {
+            const int parent = world.parent_of(i);
+            if (parent >= 0 && _tf_observed[parent]) {
+                _tf_observed[i] = 1;
+            \}
+            if (parent \< 0 || _tf_observed[i] || std::find(_tf_trees.begin(), _tf_trees.end(), world.tree_of(i)) == _tf_trees.end()) {
+                continue;
+            \}
+            geometry_msgs::msg::TransformStamped t;
+            t.header.frame_id = world.name_of(parent);
+            t.child_frame_id = world.name_of(i);
+            if (world.moving(i)) {
+                robot.tf_moving.push_back(i);
+                robot.tf_msg.transforms.push_back(t);
+            \} else {
+                t.header.stamp = robot.stamp_now();
+                motion_spec::ros::write_transform(world.local_pose(i), t.transform);
+                _tf_static.transforms.push_back(t);
+            \}
+        \}
+        robot.tf_static_pub = robot.ros_node->create_publisher\<tf2_msgs::msg::TFMessage\>(
+            "/tf_static", rclcpp::QoS(rclcpp::KeepLast(1)).transient_local());
+        robot.tf_static_pub->publish(_tf_static);
+        robot.tf_pub =
+            std::make_shared\<realtime_tools::RealtimePublisher\<tf2_msgs::msg::TFMessage\>\>(
+                robot.ros_node->create_publisher\<tf2_msgs::msg::TFMessage\>(
+                    _tf_cfg["topic"].value_or(std::string("/tf")), rclcpp::QoS(10)));
+    \}
+<endif>
+>>
+
 ros-clock-setup(ros) ::= <<
 <if(ros.clock)>
     {
@@ -572,6 +670,7 @@ ros-publish-tick(coordination, communication, views) ::= <<
 <endif>
 <coordination.motions:{m | <m.when_monitors:{mon | <ros-monitor-publish(m, mon)>}><m.while_monitors:{mon | <ros-monitor-publish(m, mon)>}><m.until_monitors:{mon | <ros-monitor-publish(m, mon)>}>}>
 <ros-joint-states-tick(communication.ros)>
+<ros-tf-tick(communication.ros)>
 <ros-clock-tick(communication.ros)>
 <ros-actions-tick(communication.ros)>
 <ros-subscriptions-tick(communication.ros)>
@@ -793,6 +892,25 @@ ros-joint-states-tick(ros) ::= <<
 <endif>
 >>
 
+ros-tf-tick(ros) ::= <<
+<if(ros.tf)>
+        if (robot.tf_pub && (_step % robot.tf_divider) == 0) {
+            std::size_t k = 0;
+            for (std::size_t r = 0; r \< robot.tf_roots.size(); ++r, ++k) {
+                geometry_msgs::msg::TransformStamped &t = robot.tf_msg.transforms[k];
+                t.header.stamp = robot.stamp_now();
+                motion_spec::ros::write_transform(robot.world->pose(robot.tf_roots[r], robot.control_cycle), t.transform);
+            \}
+            for (std::size_t m = 0; m \< robot.tf_moving.size(); ++m, ++k) {
+                geometry_msgs::msg::TransformStamped &t = robot.tf_msg.transforms[k];
+                t.header.stamp = robot.stamp_now();
+                motion_spec::ros::write_transform(robot.world->local_pose(robot.tf_moving[m]), t.transform);
+            \}
+            robot.tf_pub->try_publish(robot.tf_msg);
+        \}
+<endif>
+>>
+
 ros-clock-tick(ros) ::= <<
 <if(ros.clock)>
         if (robot.clock_pub && (_step % robot.clock_divider) == 0) {
@@ -829,6 +947,10 @@ ros-shutdown(ros) ::= <<
 <ros.subscriptions:{s |     robot.<s.sub_id>_sub.reset();}; separator="\n">
 <if(ros.joint_states)>
     robot.joint_states_pub.reset();
+<endif>
+<if(ros.tf)>
+    robot.tf_pub.reset();
+    robot.tf_static_pub.reset();
 <endif>
 <if(ros.action_server)>
     robot.goal_server.reset();

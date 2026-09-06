@@ -92,6 +92,11 @@ def test_a_free_body_nothing_places_fails_while_generating(trees) -> None:
         world_ports(trees, MjcfSceneSpec(), [], [], [], [], "mj_kdl")
 
 
+def test_a_free_body_only_the_scene_places_has_no_provider_on_hardware(trees) -> None:
+    with pytest.raises(ConstraintViolation, match="only a subscription can place a free body"):
+        world_ports(trees, _scene(_cube_iri(trees)), [], [], [], [], "robif2b")
+
+
 def test_a_perception_channel_placing_the_root_is_its_provider(trees) -> None:
     # The subscription binds that base itself, so the table owes it no row and no scene object.
     subscription = {
@@ -136,5 +141,9 @@ def test_two_grippers_on_two_arms_take_two_distinct_segments(dual_trees) -> None
 
 def test_a_perturbation_on_hardware_fails_while_generating(trees) -> None:
     bodies = [{"body": "cube", "members": []}]
+    # Perception places the cube, so the push is the only thing hardware has no provider for.
+    placed = {
+        "written_poses": [{"reframed": True, "observed_body_segment": "pick_place_graph/cube"}]
+    }
     with pytest.raises(ConstraintViolation, match="no actuator on robif2b"):
-        world_ports(trees, _scene(_cube_iri(trees)), [], [], bodies, [], "robif2b")
+        world_ports(trees, MjcfSceneSpec(), [], [], bodies, [placed], "robif2b")

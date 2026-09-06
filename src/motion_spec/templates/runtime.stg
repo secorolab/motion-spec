@@ -322,6 +322,18 @@ class WorldKinematics {
         return true;
     }
 
+    // Read by a publisher reporting the forest whole; local_pose reads the bound joint directly.
+    int count() const { return static_cast\<int\>(segments_.size()); }
+    int parent_of(int index) const { return parents_[index]; }
+    int tree_of(int index) const { return trees_[index]; }
+    const std::string &name_of(int index) const { return segments_[index].getName(); }
+    bool moving(int index) const {
+        return segments_[index].getJoint().getType() != KDL::Joint::None;
+    \}
+    KDL::Frame local_pose(int index) const {
+        return segments_[index].pose(joints_[index] ? *joints_[index] : 0.0);
+    \}
+
     // The hot path: one flat pass, then reads by index. No lookup, allocation, resize, recursion,
     // lock or exception on the valid path.
 

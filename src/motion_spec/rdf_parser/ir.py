@@ -97,7 +97,7 @@ def generate_ir(manifest_path) -> dict:
     # A subscription places its detections through the world model, so it is built against the
     # same segment names the chains resolved against.
     subscriptions = communication.ros_subscriptions(model, world_index)
-    standing = communication.ros_standing(model, data_structures, control_period_ns)
+    standing = communication.ros_standing(model, data_structures, control_period_ns, world_index)
     clients_by_motion: dict[str, list] = {}
     for client in action_clients:
         clients_by_motion.setdefault(client["motion"], []).append(client)
@@ -155,6 +155,15 @@ def generate_ir(manifest_path) -> dict:
         shared_data.append(BlackboardValue(id=perturbation.applied_id, type="Wrench"))
         shared_data.append(BlackboardValue(id=perturbation.active_id, type="Bool", value=False))
     perturbation_bodies = _perturbations_by_body(run_perturbations)
+    ports = resources.world_ports(
+        world_trees,
+        scene,
+        robots.serial_chains,
+        motions,
+        perturbation_bodies,
+        subscriptions,
+        backend,
+    )
 
     config_poses = resources.config_poses(model, platform_config)
     introspection = communication.build_introspection(
@@ -188,20 +197,7 @@ def generate_ir(manifest_path) -> dict:
             "config_poses": config_poses,
             "trace": resources.TRACE_DISABLED,
         },
-        "resources": _resources_section(
-            robots,
-            world_trees,
-            world_frames,
-            resources.world_ports(
-                world_trees,
-                scene,
-                robots.serial_chains,
-                motions,
-                perturbation_bodies,
-                subscriptions,
-                backend,
-            ),
-        ),
+        "resources": _resources_section(robots, world_trees, world_frames, ports),
         "composition": {"scene": scene},
         "computation": _computation_section(
             closures, views, shared_data, motions, computation.indexes.pose_components
@@ -214,6 +210,15 @@ def generate_ir(manifest_path) -> dict:
             motions,
             resources.ros_joint_states(platform, platform_config, robots.serial_chains),
             resources.ros_clock(platform, platform_config),
+            resources.ros_tf(
+                model,
+                platform,
+                platform_config,
+                robots.serial_chains,
+                scene.cameras,
+                world_index,
+                ports,
+            ),
             action_clients,
             communication.action_server(model, fsm),
             subscriptions,
@@ -330,6 +335,7 @@ def _communication_section(
     motions,
     joint_states,
     clock=None,
+    tf=None,
     action_clients=(),
     server=None,
     subscriptions=(),
@@ -342,6 +348,7 @@ def _communication_section(
         not publishers
         and joint_states is None
         and clock is None
+        and tf is None
         and not action_clients
         and server is None
         and not subscriptions
@@ -361,6 +368,9 @@ def _communication_section(
     if clock is not None:
         ros["clock"] = clock
         packages.add("rosgraph_msgs")
+    if tf is not None:
+        ros["tf"] = tf
+        packages.update({"tf2_msgs", "geometry_msgs"})
     if action_clients:
         ros["action_clients"] = action_clients
         # Whatever the goal and the result reach into, not just the package the action lives in.

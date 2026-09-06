@@ -57,6 +57,7 @@ from rdf_utils.models.geom_coord import (
     get_pose_coords,
     get_transform_between_frames,
 )
+from rdf_utils.models.geom_rel import relation_neighbors
 from rdf_utils.models.vocab import (
     URI_DISTRIB_TYPE_SAMPLED_QUANTITY,
     URI_GEOM_PRED_OF_POSE,
@@ -2157,6 +2158,12 @@ def world_ports(
                 f"'{tree['name']}' is a free body the scene does not place, so nothing can "
                 "measure it",
             )
+        if backend != "mj_kdl":
+            raise ConstraintViolation(
+                "kinematics",
+                f"'{tree['name']}' is a free body nothing places on {backend}: only a "
+                "subscription can place a free body on hardware",
+            )
         free_roots.append(
             WorldPort(
                 kind="free_root",
@@ -2714,3 +2721,78 @@ def ros_clock(platform: dict, config: dict) -> dict | None:
             "simulation; its loop already runs on the wall clock other nodes read.",
         )
     return {"config_key": ROS_CLOCK_KEY}
+
+
+ROS_TF_KEY = "ros.tf"
+
+
+def _observed_segments(camera, segment_by_iri: dict, graph: Graph) -> list[str]:
+    """The segment a camera the run observes stands at, and those of every frame the scene
+    poses against it -- its optical frame. Perception places the camera, so the tree publisher
+    leaves all of them out; the built tree hangs each frame off its body, so what is posed
+    against what is read off the scene, not the tree."""
+    frames = [URIRef(camera.frame_uri)]
+    for frame in frames:
+        for posed, _pose in relation_neighbors(frame, URI_GEOM_TYPE_POSE, graph, reverse=True):
+            if posed not in frames:
+                frames.append(posed)
+    segments: dict[str, None] = {}
+    for frame in frames:
+        segment = segment_by_iri.get(str(frame))
+        if segment is None:
+            raise ConstraintViolation(
+                "platform",
+                f"[{ROS_TF_KEY}]: camera '{camera.id}' is observed on '{camera.topic}' but "
+                f"'{frame}' is no segment of a built tree",
+            )
+        segments.setdefault(segment, None)
+    return list(segments)
+
+
+def ros_tf(
+    model, platform: dict, config: dict, serial_chains, cameras, world_index: dict, ports: dict
+) -> dict | None:
+    """The tf publisher the deployment asked for: the config key its topic and rate are read
+    from at run time, the anchor segment the forest hangs from, the segments the run observes
+    and so never publishes, and the free roots the program measures itself and so does.
+
+    Raises:
+        ConstraintViolation: the section is declared but the exec-context declares no config to
+            read it from; the model drives no serial chain whose tree it could report; a driven
+            chain stands in a tree that is not the anchor's.
+    """
+    if "tf" not in (config.get("ros") or {}):
+        return None
+    if not platform.get("config"):
+        raise ConstraintViolation(
+            "platform",
+            f"[{ROS_TF_KEY}] needs the exec-context to declare `config:`; the topic and rate are "
+            "read from that file at run time.",
+        )
+    owners = [solver for solver in serial_chains if solver.runtime.owner]
+    if not owners:
+        raise ConstraintViolation(
+            "platform",
+            f"[{ROS_TF_KEY}] is declared, but the model drives no serial chain whose tree it "
+            "could report.",
+        )
+    anchor = world_index[str(anchor_frame(model))]
+    for solver in owners:
+        if solver.chain.tree_root != anchor:
+            raise ConstraintViolation(
+                "platform",
+                f"[{ROS_TF_KEY}]: solver '{solver.id}' stands in the tree rooted at "
+                f"'{solver.chain.tree_root}', not at the scene's anchor '{anchor}'; the "
+                "published forest would hang from two roots",
+            )
+    observed: dict[str, None] = {}
+    for camera in cameras:
+        if camera.topic:
+            for segment in _observed_segments(camera, world_index, model.graph):
+                observed.setdefault(segment, None)
+    return {
+        "config_key": ROS_TF_KEY,
+        "anchor": anchor,
+        "observed": list(observed),
+        "free_roots": [port.segment for port in ports["free_roots"]],
+    }

@@ -119,7 +119,13 @@ def test_two_grippers_on_two_arms_take_two_distinct_segments(dual_trees) -> None
         _Solver("arm1", [JointPosition("grip1", "kinova1_g_left_driver_joint", mimics[0])]),
         _Solver("arm2", [JointPosition("grip2", "kinova2_g_left_driver_joint", mimics[1])]),
     ]
-    ports = world_ports(dual_trees, MjcfSceneSpec(), solvers, [], [], [], "mj_kdl")
+    scene = MjcfSceneSpec()
+    for tree in dual_trees:
+        if tree["free_root"]:
+            scene.objects.append(
+                MjcfSceneObject(id=tree["name"], body=tree["name"], body_iri=tree["root_iri"])
+            )
+    ports = world_ports(dual_trees, scene, solvers, [], [], [], "mj_kdl")
     segments = [port.segment for port in ports["joints"]]
     assert all(segments) and len(set(segments)) == 2
 

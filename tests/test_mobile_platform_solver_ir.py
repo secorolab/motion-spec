@@ -35,4 +35,4 @@ def test_unimplemented_mobile_platform_algorithm_is_rejected(rdf_type, label) ->
     derivation = constraint_handler.solver_derivation_context(model)
 
     with pytest.raises(ConstraintViolation, match=label):
-        resources.build_robots(model, operations.Schedule(model), {}, derivation, [], "mj_kdl")
+        resources.build_robots(model, operations.Schedule(model), {}, derivation, "mj_kdl")

@@ -59,7 +59,7 @@ from rdf_utils.models.geom_coord import (
     to_metres,
 )
 from rdf_utils.models.geom_rel import OrientationModel, PositionModel
-from scene_dsl.rdf_parser.kinematics import body_of_frame
+from scene_dsl.rdf_parser.kinematics import body_of_frame, get_kinematic_mapping
 from rdf_utils.models.vocab import (
     URI_DISTRIB_TYPE_SAMPLED_QUANTITY,
     URI_GEOM_PRED_ALPHA,
@@ -116,7 +116,6 @@ from motion_spec.classes.geometry import (
     Pose,
     PoseDifference,
     Position,
-    SceneObject,
     SimplicialComplex,
     Subspace,
     VelocityTwist,
@@ -130,7 +129,6 @@ from motion_spec.classes.motion import (
     PoseErrorComponent,
     PoseErrorRegroup,
     RelativePoseCapture,
-    SceneRelativePose,
     SnapshotCapture,
 )
 from motion_spec.classes.qudt import (
@@ -484,7 +482,7 @@ def _optional_pose_reference(model, node):
         return None
     types = get_node_types(model.graph, node)
     if ENV.RigidObject in types:
-        return scene_object(model, node)
+        return frame(model, object_root_frame(model, node))
     if GEOM_ENT.Frame in types:
         return frame(model, node)
     return None
@@ -599,11 +597,11 @@ def _relative_orientation(model, node) -> list[dict]:
 
 @reader
 def _pose_endpoint(model, node):
-    """A pose endpoint as the entity it names: a scene object or a frame."""
+    """A pose endpoint as the frame it names, an object standing for its root body's frame."""
     if node is None:
         return None
     if ENV.RigidObject in get_node_types(model.graph, node):
-        return scene_object(model, node)
+        return frame(model, object_root_frame(model, node))
     return frame(model, node)
 
 
@@ -1278,11 +1276,28 @@ def point(model, node) -> Point:
     return Point(model.id(node), uri=str(node))
 
 
-@reader
-def scene_object(model, node) -> SceneObject:
-    """A scene object referenced as a spatial endpoint."""
+def object_root_frame(model, node):
+    """The frame the root body of a modelled scene object stands at.
+
+    An object is placed in the scene through the asset that models it, and the first body that
+    asset maps is the one it is spawned as -- so that body's own frame is where the object is.
+
+    Raises:
+        ConstraintViolation: no asset maps the object onto a scene body.
+    """
     model.expect_type(node, ENV.RigidObject)
-    return SceneObject(model.id(node), model.id(node))
+    graph = model.graph
+    for modelled in sorted(graph.subjects(ENV["of-object"], node), key=str):
+        for asset in sorted(graph.objects(modelled, ENV["has-object-model"]), key=str):
+            for mapping in sorted(graph.objects(asset, EXEC["has-mapping"]), key=str):
+                mapped = get_kinematic_mapping(mapping, graph)
+                if mapped.target_type == GEOM_ENT.RigidBody:
+                    return placement_frame(model, mapped.target_id)
+    raise ConstraintViolation(
+        "geometry",
+        f"'{model.id(node)}' is referenced as a spatial endpoint, but no asset maps it onto a "
+        "body of the scene, so nothing says where it is.",
+    )
 
 
 @reader
@@ -1584,114 +1599,6 @@ def relative_poses_for_motion(evaluators, views: dict, serial_chain_solvers) -> 
         fk_pose_id = fk_poses.get(of_id) if of_id else None
         if fk_pose_id:
             result.append(RelativePoseCapture(id=pose_id, fk_pose_id=fk_pose_id))
-
-    return result
-
-
-class _ScenePose(NamedTuple):
-    """The solver output tracking a scene object, and the frame it is stated against."""
-
-    pose_id: str
-    with_respect_to: str | None
-
-
-class _TrackedPoses(NamedTuple):
-    """Which FK output tracks each frame, and which tracks each scene object's body."""
-
-    fk_by_frame: dict[str, str]
-    scene_by_id: dict[str, _ScenePose]
-
-
-def _fk_and_scene_poses(serial_chain_solvers, views, solvers_by_id: dict) -> _TrackedPoses:
-    """Which FK output tracks each frame, and which tracks each scene object's body.
-
-    `serial_chain_solvers` are per-motion slices: their solver is resolved through
-    `solvers_by_id`, as templates do through `resources.by_id`.
-    """
-    fk_by_frame: dict[str, str] = {}
-    # Keyed by the scene-object's id; a wrt_id lookup asks whether that frame is the subject of a
-    # tracked scene-object pose.
-    scene_by_id: dict[str, _ScenePose] = {}
-    output_ids: set[str] = set()
-    for solver in serial_chain_solvers:
-        for out in solver.output:
-            if getattr(out, "type", "") != "Pose":
-                continue
-            output_ids.add(out.id)
-            of = out.of
-            if of is None:
-                chain_end = solvers_by_id[solver.solver_id].chain.end
-                if chain_end:
-                    fk_by_frame.setdefault(chain_end, out.id)
-                continue
-            if getattr(of, "is_scene_object", False):
-                entry = _ScenePose(
-                    out.id, getattr(getattr(out, "with_respect_to", None), "id", None)
-                )
-                scene_by_id[of.id] = entry
-                if getattr(of, "body", None):
-                    scene_by_id[of.body] = entry
-            else:
-                fk_by_frame[of.id] = out.id
-
-    for view in views.values():
-        superobject = view.superobject
-        if not hasattr(superobject, "of") or not hasattr(superobject, "with_respect_to"):
-            continue
-        if superobject.id not in output_ids:
-            continue
-        of = superobject.of
-        if of is None or getattr(of, "is_scene_object", False):
-            continue
-        fk_by_frame.setdefault(getattr(of, "id", ""), superobject.id)
-
-    return _TrackedPoses(fk_by_frame, scene_by_id)
-
-
-def scene_relative_poses_for_motion(
-    views: dict, serial_chain_solvers, solvers_by_id: dict, evaluators=()
-) -> list:
-    """For each pose stated with respect to a scene object, the relative pose it asks for."""
-    fk_by_frame, scene_by_id = _fk_and_scene_poses(serial_chain_solvers, views, solvers_by_id)
-    candidates = [
-        view.superobject
-        for view in views.values()
-        if not getattr(view.superobject, "authored", False)
-    ]
-    candidates.extend(
-        evaluator.constraint.quantity
-        for evaluator in evaluators
-        if getattr(getattr(evaluator, "constraint", None), "quantity", None) is not None
-        and hasattr(evaluator.constraint.quantity, "of")
-        and hasattr(evaluator.constraint.quantity, "with_respect_to")
-    )
-
-    seen: set[str] = set()
-    result: list[SceneRelativePose] = []
-    for candidate in candidates:
-        pose_id = getattr(candidate, "id", None)
-        of = getattr(candidate, "of", None)
-        wrt = getattr(candidate, "with_respect_to", None)
-        if not pose_id or pose_id in seen or of is None or wrt is None:
-            continue
-        if getattr(of, "is_scene_object", False) or of.id in scene_by_id:
-            continue
-        scene_pose = scene_by_id.get(getattr(wrt, "id", ""))
-        if scene_pose is None and not getattr(wrt, "is_scene_object", False):
-            continue
-        fk_pose_id = fk_by_frame.get(getattr(of, "id", ""))
-        if not fk_pose_id or not scene_pose:
-            continue
-        seen.add(pose_id)
-        result.append(
-            SceneRelativePose(
-                id=pose_id,
-                fk_pose_id=fk_pose_id,
-                scene_pose_id=scene_pose.pose_id,
-                base_seen=getattr(getattr(candidate, "as_seen_by", None), "id", None)
-                == scene_pose.with_respect_to,
-            )
-        )
 
     return result
 

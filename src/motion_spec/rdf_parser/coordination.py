@@ -1570,9 +1570,6 @@ def _motion_unit(
         relative_poses=quantities.relative_poses_for_motion(
             all_evaluators, computation.views, chain_solvers
         ),
-        scene_relative_poses=quantities.scene_relative_poses_for_motion(
-            computation.views, chain_solvers, solvers_by_id, all_evaluators
-        ),
         pose_axis_error_groups=groups,
         while_pre_schedule=schedules.while_pre,
         forwarded_commands=_forwarded_commands(

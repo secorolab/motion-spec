@@ -46,7 +46,7 @@ int main(int argc, char **argv) {
 <endif>
 <if(resources.by_kind.serial_chain)>
 
-<app-chain-setup(configuration.backend, resources.by_kind.serial_chain, composition.scene, configuration.platform.config, communication.ros)>
+<app-chain-setup(configuration.backend, resources.by_kind.serial_chain, composition.scene, configuration.platform.config, communication.ros, resources.world_ports)>
 
 <world-model-wiring(resources, communication, configuration.backend)>
 <configuration.config_poses:{pose |     shared.<pose.id> = motion_spec::config::pose(robot_config, "<pose.config_key>");
@@ -188,7 +188,7 @@ int main(int argc, char **argv) {
 <endif>
         fsm_dispatch(fsm);
 <if(coordination.perturbations)>
-<perturbation-write-block(configuration.backend, coordination.perturbation_bodies)>
+<perturbation-write-block(coordination.perturbation_bodies)>
 <endif>
 <endif>
 <if(communication.ros)>
@@ -296,7 +296,7 @@ int main(int argc, char **argv) {
 // Every distinct scene tree, built once, into the one world model. A tree several robots share
 // is still one tree, and a tree no serial-chain solver commands is still part of the world.
 world-model-trees(resources) ::= <<
-    motion_spec::runtime::WorldModel world;
+    motion_spec::runtime::WorldKinematics world;
     std::string world_error;
 <resources.world_trees:{tree |     KDL::Tree world_tree_<tree.cpp_name>{\};
     if (!scene_kdl::make_tree_<tree.cpp_name>(&world_tree_<tree.cpp_name>)) {
@@ -314,7 +314,12 @@ world-model-trees(resources) ::= <<
 // control loop only ever indexes.
 world-model-wiring(resources, communication, backend) ::= <<
     robot.world = &world;
-<resources.by_kind.serial_chain:{solver | <world-solver-wiring(solver, backend)>}; separator="\n">
+<resources.by_kind.serial_chain:{solver | <chain-port-wiring(solver, backend)>}; separator="">
+<resources.world_ports.free_roots:{port | <free-root-port-wiring(port, backend)>}; separator="\n">
+<resources.world_ports.joints:{port | <joint-port-wiring(port, backend)>}; separator="\n">
+<resources.world_ports.aux_cmds:{port | <aux-cmd-port-wiring(port, backend)>}; separator="\n">
+<resources.world_ports.wrench_cmds:{port | <wrench-cmd-port-wiring(port, backend)>}; separator="\n">
+<resources.by_kind.serial_chain:{solver | <world-solver-wiring(solver)>}; separator="\n">
 <resources.world_frames:{frame | <world-frame-wiring(frame)>}; separator="\n">
 <resources.world_observations:{obs | <ft-load-wiring(obs)>}; separator="\n">
 <communication.ros.subscriptions:{s | <ros-subscription-wiring(s)>}; separator="\n">
@@ -324,14 +329,69 @@ world-model-wiring(resources, communication, backend) ::= <<
     \}
 >>
 
-world-solver-wiring(solver, backend) ::= <<
+// One row per chain joint of the runtime: the addresses its owner already reads and writes, so
+// the world model, the solvers and the backend are readers of one buffer rather than copies.
+chain-port-wiring(solver, backend) ::= <<
+<if(solver.runtime.owner)><solver.chain.joints:{joint |     robot.ports_<solver.runtime.id>[<i0>] = <world-chain-port-address(solver, backend, i0)>;
+}><endif>
+>>
+
+// A port a backend has no provider for renders a null address, which startup refuses: the model
+// asks for a reading this platform cannot take.
+free-root-port-wiring(port, backend) ::= <<
+    robot.free_root_<port.slot> = <world-port-address(backend, "free_root", port)>;
+    robot.free_root_<port.slot>_seq = <world-port-address(backend, "free_root_seq", port)>;
+    if (!robot.free_root_<port.slot>) {
+        std::cerr \<\< "[world] '<port.mapping>' has no free_root source on <backend>" \<\< std::endl;
+        return 1;
+    \}
+    if (!world.bind_base("<port.segment>", robot.free_root_<port.slot>, world_error)
+            || !world.require_base("<port.segment>", world_error)) {
+        std::cerr \<\< "[world] " \<\< world_error \<\< std::endl;
+        return 1;
+    \}
+>>
+
+joint-port-wiring(port, backend) ::= <<
+    robot.world_joint_<port.slot> = <world-port-address(backend, "joint", port)>;
+    robot.world_joint_<port.slot>_velocity = <world-port-address(backend, "joint_velocity", port)>;
+    robot.world_joint_<port.slot>_current = <world-port-address(backend, "joint_current", port)>;
+    if (!robot.world_joint_<port.slot>) {
+        std::cerr \<\< "[world] '<port.mapping>' has no joint source on <backend>" \<\< std::endl;
+        return 1;
+    \}
+<if(port.segment)>    if (!world.bind_joint("<port.segment>", robot.world_joint_<port.slot>, world_error)) {
+        std::cerr \<\< "[world] " \<\< world_error \<\< std::endl;
+        return 1;
+    \}
+<endif>
+>>
+
+aux-cmd-port-wiring(port, backend) ::= <<
+    robot.aux_cmd_<port.slot> = <world-port-address(backend, "aux_cmd", port)>;
+    if (!robot.aux_cmd_<port.slot>) {
+        std::cerr \<\< "[world] '<port.mapping>' has no aux_cmd source on <backend>" \<\< std::endl;
+        return 1;
+    \}
+>>
+
+wrench-cmd-port-wiring(port, backend) ::= <<
+    robot.wrench_cmd_<port.slot> = <world-port-address(backend, "wrench_cmd", port)>;
+    if (!robot.wrench_cmd_<port.slot>) {
+        std::cerr \<\< "[world] '<port.mapping>' has no wrench_cmd source on <backend>" \<\< std::endl;
+        return 1;
+    \}
+>>
+
+world-solver-wiring(solver) ::= <<
     robot.<solver.id>.world_root = world.index_of("<solver.chain.world_root>");
     robot.<solver.id>.world_tip = world.index_of("<solver.chain.world_tip>");
     if (robot.<solver.id>.world_root \< 0 || robot.<solver.id>.world_tip \< 0) {
         std::cerr \<\< "[world] solver '<solver.id>' runs from '<solver.chain.world_root>' to '<solver.chain.world_tip>', which the world model does not hold" \<\< std::endl;
         return 1;
     \}
-<solver.chain.joint_segments:{segment |     if (!world.bind_joint("<segment>", <world-joint-address(solver, backend, i0)>, world_error)) {
+<solver.chain.joint_segments:{segment |     if (!world.bind_joint("<segment>", robot.ports_<solver.runtime.id>[<i0>].position, world_error)
+            || !world.bind_joint_velocity("<segment>", robot.ports_<solver.runtime.id>[<i0>].velocity, world_error)) {
         std::cerr \<\< "[world] " \<\< world_error \<\< std::endl;
         return 1;
     \}}; separator="\n">
@@ -345,7 +405,7 @@ world-solver-wiring(solver, backend) ::= <<
 // estimated wrench included -- renders nothing here. Keyed on the frame, since an absent name
 // is an empty string, which the template engine reads as present.
 ft-load-wiring(obs) ::= <<
-<if(obs.out.sensor_frame)>    if (!world.load_on(robot.world_<obs.solver_id>_<obs.out.sensor_frame.id>, robot.ft_<obs.out.sensor_name>_load, world_error)) {
+<if(obs.out.sensor_frame)>    if (!world.load_on(robot.world_<obs.owner_id>_<obs.out.sensor_frame.id>, robot.ft_<obs.out.sensor_name>_load, world_error)) {
         std::cerr \<\< "[world] " \<\< world_error \<\< std::endl;
         return 1;
     \}
@@ -466,6 +526,18 @@ struct mobile_base_robot {
 <chain-solver-members(resources.by_kind.serial_chain, configuration.backend)>
 <endif>
 
+<if(resources.by_kind.serial_chain)>
+// One connector per physical variable of a chain joint, bound once at startup to the address its
+// resource owner already reads or writes. `seq` is the provider's write count where it keeps one.
+struct world_ports {
+    const double *position = nullptr;
+    const double *velocity = nullptr;
+    const double *effort = nullptr;
+    const std::uint64_t *seq = nullptr;
+    double *effort_cmd = nullptr;
+};
+<endif>
+
 struct robot_io {
 <if(resources.by_kind.mobile_base)>
     mobile_base_robot mobile_base;
@@ -477,10 +549,18 @@ struct robot_io {
 <ros-io-members(communication.ros)>
 <endif>
 <resources.by_kind.serial_chain:{solver | <chain-robot-member(solver)>}; separator="\n">
+<resources.by_kind.serial_chain:{solver | <chain-port-member(solver)>}; separator="">
 <resources.by_kind.serial_chain:{solver | <chain-device-members(solver, configuration.backend)>}; separator="">
+<resources.world_ports.free_roots:{port |     const KDL::Frame *free_root_<port.slot> = nullptr;   // <port.mapping>
+    const std::uint64_t *free_root_<port.slot>_seq = nullptr;}; separator="\n">
+<resources.world_ports.joints:{port |     const double *world_joint_<port.slot> = nullptr;   // <port.mapping>
+    const double *world_joint_<port.slot>_velocity = nullptr;
+    const double *world_joint_<port.slot>_current = nullptr;}; separator="\n">
+<resources.world_ports.aux_cmds:{port |     double *aux_cmd_<port.slot> = nullptr;   // <port.mapping>}; separator="\n">
+<resources.world_ports.wrench_cmds:{port |     KDL::Wrench *wrench_cmd_<port.slot> = nullptr;   // <port.mapping>}; separator="\n">
 <if(resources.world_trees)>
     // The one pose authority, and the cycle its poses were computed for.
-    motion_spec::runtime::WorldModel *world = nullptr;
+    motion_spec::runtime::WorldKinematics *world = nullptr;
     std::uint64_t control_cycle = 0;
 <endif>
 <resources.world_frames:{frame |     int world_<frame.solver_id>_<frame.frame_id> = -1;}; separator="\n">
@@ -503,5 +583,11 @@ fsm-motion-reentry(m, fsm) ::= <<
 <m.action_clients:{c | <ros-action-cancel(c)>}; separator="\n">
             <m.id>_state_instance.active = false;
         \}
+<endif>
+>>
+
+// One array per runtime, not per solver record: the solvers sharing a chain read one set of ports.
+chain-port-member(solver) ::= <<
+<if(solver.runtime.owner)>    world_ports ports_<solver.runtime.id>[<length(solver.chain.joints)>];
 <endif>
 >>

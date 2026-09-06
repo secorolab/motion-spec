@@ -74,6 +74,21 @@ def _world_segments(tree: dict, chain: dict) -> dict[str, str]:
     return by_iri
 
 
+def segment_of_joint(trees: list[dict], joint_name: str) -> str:
+    """The tree segment the named joint moves, or "" when no tree carries it.
+
+    Joints are qualified by the tree that declares them; the name a world block states is the
+    local one the backend knows, so only that last element is matched.
+    """
+    for tree in trees:
+        for segment in tree["segments"]:
+            joint = segment["joint"]
+            if joint is not None and joint["name"].rsplit("/", 1)[-1] == joint_name:
+                return segment["name"]
+
+    return ""
+
+
 def chain_for_iri(trees: list[dict], chain_iri: str) -> dict:
     """The generated C++ builders, MuJoCo joints and segment lookups for one declared chain."""
     for tree in trees:

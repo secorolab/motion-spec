@@ -2,15 +2,10 @@
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 """A world pose stated of a scene object, or of one of the frames that object carries.
 
-The simulator's scene answers where a scene object is, so such a pose must never be asked of the
-arm's forward kinematics -- no chain reaches a table. Which marker answers it is the object's own
-body when the pose is of the body's own frame, and the site the scene already marks when the pose
-is of another frame the object carries.
-
-The `shared_motion` fixture states all three: the table's root frame, a second frame the table
-carries, and a frame on the arm. A resolution that matched names rather than reading the graph --
-a root recognised only when named `<body>_origin`, or a site invented for every frame -- answers
-wrongly on one of them.
+An object is placed in the scene through the asset that models it, so where it is is where that
+asset's root body stands -- a frame of the one world model like any other, not something a
+simulator answers by name. The `shared_motion` fixture states all three cases: the table's root
+frame, a second frame the table carries, and a frame on the arm.
 """
 
 from __future__ import annotations
@@ -33,8 +28,8 @@ pytestmark = requires_workspace(SCENE)
 
 
 @pytest.fixture(scope="module")
-def world_output(tmp_path_factory) -> dict:
-    """Every world observation the first handler's arm solver makes, by observation id."""
+def generated(tmp_path_factory) -> dict:
+    """The lowered IR of the shared-motion fixture."""
     outdir = tmp_path_factory.mktemp("shared_motion") / "generated" / "model"
     subprocess.run(
         ["textx", "generate", "shared_motion.robmot", "--target", "jsonld", "-o", str(outdir)],
@@ -42,39 +37,42 @@ def world_output(tmp_path_factory) -> dict:
         check=True,
     )
     manifest = outdir / "shared_motion-app.ld.json"
-    ir = json.loads(json.dumps(generate_ir(manifest), cls=DataclassJSONEncoder))
-    solver = ir["resources"]["by_id"]["arm_solver_handler_first"]
+    return json.loads(json.dumps(generate_ir(manifest), cls=DataclassJSONEncoder))
+
+
+@pytest.fixture(scope="module")
+def world_output(generated) -> dict:
+    """Every world observation the first handler's arm solver makes, by observation id."""
+    solver = generated["resources"]["by_id"]["arm_solver_handler_first"]
     return {out["id"]: out for out in solver["world_output"]}
 
 
-def test_a_pose_of_a_frame_on_a_scene_object_reads_the_site_marking_that_frame(world_output):
-    """The centre of mass is a frame on the table, and the scene already marks it, so that site
-    is what the pose is read off -- not the arm's kinematics, which no table is on."""
-    of = world_output["pose_table_com"]["of"]
-    assert of["type"] == "SceneObject"
-    assert of["is_scene_object"] is True
-    assert of["id"] == "table"
-    assert of["site"] == "table_com"
-
-
-def test_the_body_named_is_the_one_the_scene_compiled(world_output):
-    """The runtime looks the body up by the name the scene mapped it to, which is the simulator's
-    own spelling and need not be the id the model generated."""
-    assert world_output["pose_table_com"]["of"]["body"] == "table"
-
-
-def test_a_pose_of_the_objects_own_frame_names_no_site(world_output):
-    """The body's own frame is the body: it is answered by the body pose, so there is no site to
-    mark and none is named."""
+def test_a_pose_of_a_scene_object_is_a_frame_of_the_world_model(world_output):
+    """A pose of the object itself is a pose of the frame its root body stands at, so what the
+    observation names is a Frame carrying that frame's own IRI."""
     of = world_output["pose_table_top"]["of"]
-    assert of["is_scene_object"] is True
-    assert of["body"] == "table"
-    assert of["site"] is None
+    assert of["type"] == "Frame"
+    assert of["uri"].endswith("table_top")
 
 
-def test_a_pose_of_a_chain_frame_is_no_scene_object(world_output):
-    """The bracelet is on the arm, so it stays a chain-resolved frame and gains no scene marker
-    -- the site field is only ever set by a frame the scene marks."""
-    of = world_output["pose_bracelet_base"]["of"]
-    assert of.get("site", "") in ("", None)
-    assert of["is_scene_object"] is False
+def test_a_pose_of_a_frame_the_object_carries_is_that_frames_own_segment(world_output):
+    """The centre of mass is a frame the scene places on the table, so it is a segment of the
+    world tree and resolves to itself -- not to a marker minted for it."""
+    of = world_output["pose_table_com"]["of"]
+    assert of["type"] == "Frame"
+    assert of["id"] == "table_com"
+
+
+def test_no_observation_carries_a_scene_object(generated):
+    """Nothing in the published IR is a scene object any more; every endpoint is a frame."""
+    assert "SceneObject" not in json.dumps(generated)
+
+
+def test_a_frame_off_the_chains_branch_records_its_trees_root(generated):
+    """The joints placing a frame the chain root is not above run from that tree's root, so the
+    world read has to say which root to require the path from. A frame on the chain says none.
+    """
+    frames = generated["resources"]["world_frames"]
+    by_id = {frame["frame_id"]: frame for frame in frames}
+    assert by_id["table_com"]["tree_root"]
+    assert by_id["bracelet_link"]["tree_root"] is None

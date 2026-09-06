@@ -61,8 +61,11 @@ def generate_ir(manifest_path) -> dict:
         for row in rows
     )
     robots = resources.build_robots(
-        model, schedule, setups, derivation, scene, backend, perceived_pose_ids
+        model, schedule, setups, derivation, backend, perceived_pose_ids
     )
+    # Every scene element the world model holds, by IRI: a world read resolves against all of
+    # them, not only the tree the reading solver's chain is sliced from.
+    world_index = resources.tree_segments(model, setups, world_trees)
     handlers, handler_steps = coordination.build_constraint_handlers(model, schedule, derivation)
     coordination.assign_event_indexes(handlers)
 
@@ -78,7 +81,9 @@ def generate_ir(manifest_path) -> dict:
     motions, fsm_meta = coordination.build_motions(
         model, handlers, robots, computation, derivation, fsm
     )
-    world_frames = resources.annotate_runtime(robots.serial_chains, motions, backend)
+    world_frames = resources.annotate_runtime(
+        robots.serial_chains, motions, backend, world_index, world_trees
+    )
     coordination.annotate_sensor_dependencies(motions, computation)
     resources.annotate_device_dependencies(robots.serial_chains, motions)
 
@@ -91,9 +96,7 @@ def generate_ir(manifest_path) -> dict:
     action_clients = communication.ros_action_clients(model)
     # A subscription places its detections through the world model, so it is built against the
     # same segment names the chains resolved against.
-    subscriptions = communication.ros_subscriptions(
-        model, resources.tree_segments(model, setups, world_trees)
-    )
+    subscriptions = communication.ros_subscriptions(model, world_index)
     standing = communication.ros_standing(model, data_structures, control_period_ns)
     clients_by_motion: dict[str, list] = {}
     for client in action_clients:
@@ -185,7 +188,20 @@ def generate_ir(manifest_path) -> dict:
             "config_poses": config_poses,
             "trace": resources.TRACE_DISABLED,
         },
-        "resources": _resources_section(robots, world_trees, world_frames),
+        "resources": _resources_section(
+            robots,
+            world_trees,
+            world_frames,
+            resources.world_ports(
+                world_trees,
+                scene,
+                robots.serial_chains,
+                motions,
+                perturbation_bodies,
+                subscriptions,
+                backend,
+            ),
+        ),
         "composition": {"scene": scene},
         "computation": _computation_section(
             closures, views, shared_data, motions, computation.indexes.pose_components
@@ -206,7 +222,7 @@ def generate_ir(manifest_path) -> dict:
     }
 
 
-def _resources_section(robots, world_trees, world_frames) -> dict:
+def _resources_section(robots, world_trees, world_frames, ports) -> dict:
     """Every actuated resource the program commands, plus the by-kind cuts of it.
 
     An arm and a wheeled base are both actuated resources with kinematics, solvers and devices, so
@@ -251,6 +267,8 @@ def _resources_section(robots, world_trees, world_frames) -> dict:
         ]
     if world_frames:
         section["world_frames"] = world_frames
+    # Split by kind here, not in the templates: a template may iterate but not filter.
+    section["world_ports"] = {kind: rows for kind, rows in ports.items() if rows}
 
     return section
 

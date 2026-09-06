@@ -52,6 +52,8 @@ class ForwardedCommandStep:
     control_signal: Quantity
     target: str
     robot_id: str
+    # The command port row this reaches the platform through.
+    world_slot: int = 0
     type: str = field(default="ForwardedCommandStep")
 
 
@@ -111,17 +113,6 @@ class SnapshotCapture:
     trigger_event: str | None = None
     fsm_namespace: str | None = None
     type: str = field(default="SnapshotCapture")
-
-
-@dataclass
-class SceneRelativePose:
-    """Continuous relative pose of an FK frame with respect to a scene-object body."""
-
-    id: str
-    fk_pose_id: str
-    scene_pose_id: str
-    base_seen: bool = False
-    type: str = field(default="SceneRelativePose")
 
 
 @dataclass
@@ -265,9 +256,6 @@ class MotionUnit:
 
     # Relative-from-start pose computations (e.g. pose_start_ee)
     relative_poses: list[RelativePoseCapture] = field(default_factory=list)
-
-    # Continuous relative pose of FK frame wrt scene object body (e.g. pose_ee_wrt_cube)
-    scene_relative_poses: list[SceneRelativePose] = field(default_factory=list)
 
     # Pose coordinate-view scalar constraints grouped back into one KDL::diff pose error.
     pose_axis_error_groups: list[PoseErrorRegroup] = field(default_factory=list)

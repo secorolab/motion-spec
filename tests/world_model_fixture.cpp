@@ -18,6 +18,7 @@
 #include <vector>
 
 #include <kdl/chainfksolverpos_recursive.hpp>
+#include <kdl/chainfksolvervel_recursive.hpp>
 
 #include "runtime.hpp"
 
@@ -36,7 +37,7 @@ void check(bool ok, const char *what) {
     }
 }
 
-using motion_spec::runtime::WorldModel;
+using motion_spec::runtime::WorldKinematics;
 
 constexpr int kJointsPerArm = 3;
 
@@ -84,6 +85,7 @@ struct Arm {
     std::string tip;
     KDL::Chain chain;
     std::vector<double> q = std::vector<double>(kJointsPerArm, 0.0);
+    std::vector<double> qd = std::vector<double>(kJointsPerArm, 0.0);
     int world_root = -1;
     int world_tip = -1;
     int world_elbow = -1;
@@ -101,14 +103,16 @@ Arm slice(const KDL::Tree &tree, const std::string &prefix) {
     return arm;
 }
 
-bool bind(WorldModel &world, Arm &arm, std::string &error) {
+bool bind(WorldKinematics &world, Arm &arm, std::string &error) {
     for (int i = 0; i < kJointsPerArm; ++i) {
-        if (!world.bind_joint(arm.prefix + std::to_string(i + 1), &arm.q[i], error)) return false;
+        const std::string segment = arm.prefix + std::to_string(i + 1);
+        if (!world.bind_joint(segment, &arm.q[i], error)) return false;
+        if (!world.bind_joint_velocity(segment, &arm.qd[i], error)) return false;
     }
     return true;
 }
 
-void resolve(WorldModel &world, Arm &arm) {
+void resolve(WorldKinematics &world, Arm &arm) {
     arm.world_root = world.index_of(arm.root);
     arm.world_tip = world.index_of(arm.tip);
     arm.world_elbow = world.index_of(arm.prefix + "2");
@@ -129,8 +133,30 @@ KDL::Frame chain_pose(const Arm &arm, int segment) {
     return frame;
 }
 
-KDL::Frame world_pose(const WorldModel &world, const Arm &arm, int index, std::uint64_t cycle) {
+KDL::Frame world_pose(const WorldKinematics &world, const Arm &arm, int index, std::uint64_t cycle) {
     return world.pose(arm.world_root, cycle).Inverse() * world.pose(index, cycle);
+}
+
+// What a velocity solver would have reported: the twist of one segment in the chain root's axes.
+KDL::Twist chain_twist(const Arm &arm, int segment) {
+    KDL::ChainFkSolverVel_recursive fk(arm.chain);
+    KDL::JntArrayVel q_qd(kJointsPerArm);
+    for (int i = 0; i < kJointsPerArm; ++i) {
+        q_qd.q(i) = arm.q[i];
+        q_qd.qdot(i) = arm.qd[i];
+    }
+    KDL::FrameVel out;
+    fk.JntToCart(q_qd, out, segment);
+    return out.deriv();
+}
+
+KDL::Twist world_twist(const WorldKinematics &world, const Arm &arm, int index,
+                       std::uint64_t cycle) {
+    return world.pose(arm.world_root, cycle).M.Inverse() * world.twist(index, cycle);
+}
+
+double twist_error(const KDL::Twist &a, const KDL::Twist &b) {
+    return std::max((a.vel - b.vel).Norm(), (a.rot - b.rot).Norm());
 }
 
 constexpr double kTolerance = 1e-10;
@@ -138,7 +164,7 @@ constexpr double kTolerance = 1e-10;
 void verify_against_chain_fk() {
     KDL::Tree scene = scene_tree();
     KDL::Tree other = second_tree();
-    WorldModel world;
+    WorldKinematics world;
     std::string error;
     check(world.add_tree(scene, error), "the scene tree is accepted");
     check(world.add_tree(other, error), "a second, independent tree is accepted");
@@ -173,6 +199,9 @@ void verify_against_chain_fk() {
             a.q[i] = configuration[i];
             b.q[i] = -0.5 * configuration[i];
             s.q[i] = 0.25 * configuration[i];
+            a.qd[i] = 0.37 * configuration[i] - 0.11;
+            b.qd[i] = 0.9 - 0.23 * configuration[i];
+            s.qd[i] = 0.05 * configuration[i];
         }
         world.update(cycle);
         for (const Arm *arm : {&a, &b, &s}) {
@@ -183,6 +212,14 @@ void verify_against_chain_fk() {
             check(frame_error(chain_pose(*arm, 2), world_pose(world, *arm, arm->world_elbow, cycle))
                       <= kTolerance,
                   "the world model agrees with chain FK partway along the chain");
+            // The outward pass carries the twist, so it must be the one the velocity solver
+            // would have produced from the same q and qd.
+            check(twist_error(chain_twist(*arm, -1), world_twist(world, *arm, arm->world_tip,
+                                                                 cycle)) <= kTolerance,
+                  "the world model agrees with chain velocity FK at the offset leaf");
+            check(twist_error(chain_twist(*arm, 2), world_twist(world, *arm, arm->world_elbow,
+                                                                cycle)) <= kTolerance,
+                  "the world model agrees with chain velocity FK partway along the chain");
         }
         ++cycle;
     }
@@ -213,11 +250,11 @@ void verify_startup_failures() {
     KDL::Tree scene = scene_tree();
     std::string error;
 
-    WorldModel duplicate;
+    WorldKinematics duplicate;
     check(duplicate.add_tree(scene, error), "the first tree is accepted");
     check(!duplicate.add_tree(scene, error), "a duplicate segment name is rejected");
 
-    WorldModel world;
+    WorldKinematics world;
     check(world.add_tree(scene, error), "the scene tree is accepted");
     check(world.add_tree(second_tree(), error), "the second tree is accepted");
     check(world.index_of("w/nowhere") == -1, "an unknown segment has no index");
@@ -247,11 +284,11 @@ void verify_startup_failures() {
     check(!world.require_path(0, 1, error), "a sealed model requires no more paths");
 }
 
-WorldModel *g_freshness = nullptr;
+WorldKinematics *g_freshness = nullptr;
 
 void verify_freshness() {
     KDL::Tree scene = scene_tree();
-    WorldModel world;
+    WorldKinematics world;
     std::string error;
     world.add_tree(scene, error);
     Arm a = slice(scene, "w/a");
@@ -279,7 +316,7 @@ void verify_freshness() {
 // The valid hot path: one world update and one Cartesian-acceleration resolve per cycle.
 struct HotPath {
     KDL::Tree scene = scene_tree();
-    WorldModel world;
+    WorldKinematics world;
     Arm a;
     KDL::Jacobian jac{kJointsPerArm};
     KDL::Jacobian directions{kJointsPerArm};
@@ -356,7 +393,7 @@ double chain_fk_cycle(Arm &arm) {
     return consumed;
 }
 
-double world_cycle(WorldModel &world, Arm &arm, std::uint64_t token) {
+double world_cycle(WorldKinematics &world, Arm &arm, std::uint64_t token) {
     world.update(token);
     const KDL::Frame root = world.pose(arm.world_root, token).Inverse();
     double consumed = 0.0;

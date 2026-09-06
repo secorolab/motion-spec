@@ -25,8 +25,63 @@ struct manipulator_robot {
 };
 >>
 
-world-joint-address-mj_kdl(solver, index) ::= <<
-&robot.<solver.id>.robot->jnt_pos_msr[<index>]
+world-chain-port-address-mj_kdl(solver, index) ::= <<
+world_ports{.position = &mj_<solver.runtime.id>.jnt_pos_msr[<index>], .velocity = &mj_<solver.runtime.id>.jnt_vel_msr[<index>], .effort = &mj_<solver.runtime.id>.jnt_trq_msr[<index>], .effort_cmd = &mj_<solver.runtime.id>.jnt_trq_cmd[<index>]\}
+>>
+
+world-port-free-root-mj_kdl(port)     ::= "&mj_free_root_<port.slot>->pose"
+world-port-free-root-seq-mj_kdl(port) ::= "&mj_free_root_<port.slot>->seq"
+world-port-joint-mj_kdl(port)          ::= "&mj_scene_joint_<port.slot>->position"
+world-port-joint-velocity-mj_kdl(port) ::= "&mj_scene_joint_<port.slot>->velocity"
+world-port-aux-cmd-mj_kdl(port)        ::= "&mj_actuator_<port.slot>->command"
+world-port-wrench-cmd-mj_kdl(port)     ::= "&mj_body_wrench_<port.slot>->wrench"
+
+// Every non-robot primitive the model reads or pushes, resolved once against the compiled scene.
+scene-state-setup-mj_kdl(world_ports) ::= <<
+    mj_kdl::SceneState mj_world{};
+    if (!mj_kdl::init_scene_state(&mj_world, mj_env.model)) {
+        std::cerr \<\< "mj_kdl::init_scene_state() failed\\n";
+        mj_kdl::cleanup(&mj_env);
+        return 1;
+    \}
+<world_ports.free_roots:{port |     mj_kdl::SceneFreeBodySlot *mj_free_root_<port.slot> = mj_kdl::bind_scene_free_body(&mj_world, "<port.mapping>");
+    if (!mj_free_root_<port.slot>) {
+        std::cerr \<\< "bind_scene_free_body() failed for '<port.mapping>'\\n";
+        mj_kdl::cleanup(&mj_env);
+        return 1;
+    \}}; separator="\n">
+<world_ports.joints:{port |     mj_kdl::SceneJointSlot *mj_scene_joint_<port.slot> = mj_kdl::bind_scene_joint(&mj_world, "<port.mapping>");
+    if (!mj_scene_joint_<port.slot>) {
+        std::cerr \<\< "bind_scene_joint() failed for '<port.mapping>'\\n";
+        mj_kdl::cleanup(&mj_env);
+        return 1;
+    \}}; separator="\n">
+<world_ports.aux_cmds:{port |     mj_kdl::SceneActuatorSlot *mj_actuator_<port.slot> = mj_kdl::bind_scene_actuator(&mj_world, "<port.mapping>");
+    if (!mj_actuator_<port.slot>) {
+        std::cerr \<\< "bind_scene_actuator() failed for '<port.mapping>'\\n";
+        mj_kdl::cleanup(&mj_env);
+        return 1;
+    \}}; separator="\n">
+<world_ports.wrench_cmds:{port |     mj_kdl::SceneWrenchSlot *mj_body_wrench_<port.slot> = mj_kdl::bind_scene_wrench(&mj_world, "<port.mapping>");
+    if (!mj_body_wrench_<port.slot>) {
+        std::cerr \<\< "bind_scene_wrench() failed for '<port.mapping>'\\n";
+        mj_kdl::cleanup(&mj_env);
+        return 1;
+    \}}; separator="\n">
+>>
+
+// The simulator's own gravity, turned into the chain root's axes the world poses are stated in.
+wrench-gravity-mj_kdl(solver, chain_solver) ::= <<
+robot.<solver.id>.world_to_root.M * KDL::Vector(robot.<solver.id>.robot->model->opt.gravity[0], robot.<solver.id>.robot->model->opt.gravity[1], robot.<solver.id>.robot->model->opt.gravity[2])
+>>
+
+// The simulated sensor keeps its sample on the robot handle the scene registered it with.
+wrench-raw-mj_kdl(solver, out) ::= <<
+    const mj_kdl::ForceTorqueSensor *ft_<out.id> = mj_kdl::find_ft_sensor(robot.<solver.id>.robot, "<out.sensor_name>");
+    if (!ft_<out.id>) {
+        throw std::runtime_error("FT sensor '<out.sensor_name>' is unavailable");
+    \}
+    const KDL::Wrench raw_<out.id> = ft_<out.id>->wrench;
 >>
 
 // A simulated sensor exposes the one deployment property it has, under the same member name and
@@ -124,7 +179,7 @@ app-chain-includes-mj_kdl(has_serial_chain, resources, ros) ::= <<
 <endif>
 >>
 
-app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros) ::= <<
+app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros, world_ports) ::= <<
     const auto robot_config = motion_spec::config::load("<config_path>");
     bool headless = false;
     bool steps_limited = false;
@@ -346,6 +401,8 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros) ::= <<
     mj_env.model->opt.tolerance  = kMjSolverTolerance;
     mj_env.model->opt.impratio   = kMjImpratio;
     mj_env.model->opt.cone       = mjCONE_ELLIPTIC;
+
+<scene-state-setup-mj_kdl(world_ports)>
 <serial_chain_solvers:{solver |<robot-state-init(solver, "mj_kdl")>
 <robot-init(solver, "mj_kdl")>
 <robot-chain(solver, "mj_kdl")>
@@ -645,17 +702,16 @@ app-chain-cleanup-mj_kdl(has_serial_chain) ::= <<
     mj_kdl::cleanup(&mj_env);<endif>
 >>
 
-// Reads every robot before anything reads the world it feeds. update() also applies whatever
-// commands are staged, so the pass before step() is a separate call and not a duplicate of
-// this one: this reads what the last step produced, that one applies what this tick decided.
+// Communicate-in: every provider is read before anything reads the world it feeds.
 app-chain-provider-update-mj_kdl(serial_chain_solvers) ::= <<
-<serial_chain_solvers:{solver | <if(solver.runtime.owner)>        mj_kdl::update(&mj_<solver.runtime.id>);
-<endif>}; separator="">
+<serial_chain_solvers:{solver | <if(solver.runtime.owner)>        mj_kdl::read_measurements(&mj_<solver.runtime.id>);
+<endif>}; separator="">        mj_kdl::read_scene_state(&mj_world, mj_env.data);
 >>
 
+// Communicate-out: what this tick decided reaches the platform, then the platform advances.
 app-chain-runtime-step-mj_kdl(serial_chain_solvers, active_motion) ::= <<
-<serial_chain_solvers:{solver | <if(solver.runtime.owner)>        mj_kdl::update(&mj_<solver.runtime.id>);
-<endif>}; separator="">
+<serial_chain_solvers:{solver | <if(solver.runtime.owner)>        mj_kdl::apply_commands(&mj_<solver.runtime.id>);
+<endif>}; separator="">        mj_kdl::apply_scene_state(&mj_world, mj_env.data);
         // Closing the viewer ends the run, but it must end the same way S_DONE does. std::exit
         // skips destructors, so the frame logger's writer thread never drained and the log was
         // left with a half-written record and no health file -- break, and let teardown run.

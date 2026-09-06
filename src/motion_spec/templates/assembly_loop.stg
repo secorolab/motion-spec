@@ -12,8 +12,8 @@ app-chain-includes(backend, has_serial_chain, resources, ros) ::= <<
 
 // The ros block travels with the scene because a camera in it publishes through the node the
 // program already owns.
-app-chain-setup(backend, serial_chain_solvers, scene, config_path, ros) ::= <<
-<({app-chain-setup-<backend>})(serial_chain_solvers, scene, config_path, ros)>
+app-chain-setup(backend, serial_chain_solvers, scene, config_path, ros, world_ports) ::= <<
+<({app-chain-setup-<backend>})(serial_chain_solvers, scene, config_path, ros, world_ports)>
 >>
 
 app-loop-condition(backend, has_serial_chain) ::= <<

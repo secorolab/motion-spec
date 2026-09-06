@@ -103,8 +103,8 @@ from motion_spec.classes.bindings import (
     JointSpaceChannel,
     RuntimeBinding,
     SensorBinding,
+    WorldPort,
 )
-from motion_spec.classes.geometry import SceneObject
 from motion_spec.classes.motion import BlackboardValue
 from motion_spec.classes.scene import (
     MjcfSceneAttachment,
@@ -808,6 +808,9 @@ def tree_segments(model, setups, trees=()) -> dict:
     }
     for tree in trees:
         mapped.setdefault(tree["root_iri"], tree["root"])
+        root = URIRef(tree["root_iri"])
+        if GEOM_ENT.RigidBody in get_node_types(graph, root):
+            mapped.setdefault(str(root_frame_of(root, graph).id), tree["root"])
         for segment in tree["segments"]:
             mapped.setdefault(segment["iri"], segment["name"])
             body = URIRef(segment["iri"])
@@ -816,7 +819,7 @@ def tree_segments(model, setups, trees=()) -> dict:
     return mapped
 
 
-def _placed_on_chain(carrier, backend: str) -> tuple[tuple[str, bool], ...]:
+def _placed_on_chain(carrier) -> tuple[tuple[str, bool], ...]:
     """What of one carrier the generated code asks forward kinematics for, and which authority
     answers: the one world model, or this chain's own numbering.
 
@@ -825,59 +828,51 @@ def _placed_on_chain(carrier, backend: str) -> tuple[tuple[str, bool], ...]:
     those would reject a model over a frame nothing looks up.
     """
     if getattr(carrier, "estimator", None) is not None:
-        # No sensor frame to place: both backends read the transform frames off the world model.
+        # No sensor frame to place: the transform frames are read off the world model.
         return (("reference_point", True), ("as_seen_by", True))
     if hasattr(carrier, "sensor_frame"):
-        # The simulator answers the transform frames by name; the sensor frame is placed on every
-        # platform because the load hanging off it is walked from the world model.
-        if backend != "robif2b":
-            return (("sensor_frame", True),)
+        # The tare's three frames all come off the world model, and so does the load hanging
+        # off the sensor frame.
         return (("sensor_frame", True), ("reference_point", True), ("as_seen_by", True))
     if hasattr(carrier, "attached_to"):
-        # `f_ext` is indexed chain-relative, so this one stays the chain's own segment.
-        return (("attached_to", False),)
+        # `f_ext` is indexed chain-relative, so the chain's own segment stays; the frame that
+        # segment stands at is a world read like any other.
+        return (("attached_to", False), ("attached_to", True))
     if hasattr(carrier, "subspace"):
         # An acceleration constraint whose direction is taken in a frame that moves with the arm.
         return (("as_seen_by", True),)
     if getattr(carrier, "type", "") == "VelocityTwist":
-        # Chain FK answers the twist itself, in the chain's own root frame. A twist the model
-        # asked to see in another frame is that same twist rotated, and the frame it rotates
-        # into is read off the world model like any other posed frame.
-        return (("of", False), ("as_seen_by", True))
+        # The world pass carries the twist beside the pose, so both the segment it is taken of
+        # and the frame it is seen in are world-model reads.
+        return (("of", True), ("as_seen_by", True))
     if getattr(carrier, "relative_to_frame", None) is not None:
-        # A link-relative pose reads both of its ends off the world model -- unless the far end is
-        # a scene object, which the simulator answers by name and no chain reaches.
-        if getattr(getattr(carrier, "of", None), "is_scene_object", False):
-            return (("relative_to_frame", True),)
+        # A link-relative pose reads both of its ends off the world model.
         return (("of", True), ("relative_to_frame", True))
     return (("of", getattr(carrier, "type", "") == "Pose"),)
 
 
-def _place_on_chain(chain, item, owner: str, world_fk: bool, backend: str) -> str | None:
+def _place_on_chain(chain, item, owner: str, world_fk: bool, world_index: dict) -> str | None:
     """Resolve where one frame, point or body sits, once, while generating.
 
     The generated code is handed a resolved index, never a name: a name would have to be matched
     at run time, and a frame that matched nothing would surface as a dead controller on the first
-    tick instead of an error here. A world-model read resolves to the exact tree segment, which
-    plan 04 gives every posed frame, so its constant offset needs no run-time math; a chain-local
-    read still resolves to the chain's own segment index, which has no offset to compose onto.
+    tick instead of an error here. A world-model read resolves to the exact tree segment of any
+    tree the world model holds -- a body on a tree of its own included -- so its constant offset
+    needs no run-time math; a chain-local read still resolves to the chain's own segment index,
+    which has no offset to compose onto.
 
     Returns:
         the full tree segment name for a world-model read, else None
     """
-    # A scene object carries no segment to fill: where it is comes from the simulator's own
-    # scene, not from this chain's kinematics.
     if item is None or not hasattr(item, "segment"):
         return None
-    if getattr(item, "is_scene_object", False):
-        return None
     if world_fk:
-        segment = chain.world_segments.get(item.uri)
+        segment = chain.world_segments.get(item.uri) or world_index.get(item.uri)
         if segment is None:
             raise ConstraintViolation(
                 "geometry",
-                f"'{item.id}' is absent from the world tree solver '{owner}' runs on, so "
-                "the world model cannot be asked where it is.",
+                f"'{item.id}' is absent from every tree the world model holds, so it cannot be "
+                f"asked where solver '{owner}' should read it from.",
             )
         return segment
     placement = chain.frames.get(item.uri)
@@ -902,13 +897,14 @@ def _place_on_chain(chain, item, owner: str, world_fk: bool, backend: str) -> st
     return None
 
 
-def _place_solver_on_chain(solver, backend: str) -> list[dict]:
+def _place_solver_on_chain(solver, world_index: dict, root_by_segment: dict) -> list[dict]:
     """Place every frame, point and body the solver's generated code asks kinematics for.
 
     Returns:
         one `{solver_id, frame_id, segment_name, tree_root}` record per world-model read this
-        solver makes; `tree_root` names the tree's root for a frame the chain root is not above,
-        which is where the joints placing it must be required from, and is None otherwise
+        solver makes; `tree_root` names the root of the tree carrying the segment when the chain
+        root is not above it, which is where the joints placing it must be required from, and is
+        None otherwise
     """
     carriers = [
         *solver.output,
@@ -922,9 +918,9 @@ def _place_solver_on_chain(solver, backend: str) -> list[dict]:
     segment_by_frame: dict[str, str] = {}
     off_branch: set[str] = set()
     for carrier in carriers:
-        for attribute, world_fk in _placed_on_chain(carrier, backend):
+        for attribute, world_fk in _placed_on_chain(carrier):
             item = getattr(carrier, attribute, None)
-            segment = _place_on_chain(solver.chain, item, solver.id, world_fk, backend)
+            segment = _place_on_chain(solver.chain, item, solver.id, world_fk, world_index)
             if segment is None:
                 continue
             if segment_by_frame.setdefault(item.id, segment) != segment:
@@ -939,10 +935,14 @@ def _place_solver_on_chain(solver, backend: str) -> list[dict]:
 
     return [
         {
-            "solver_id": solver.id,
+            "solver_id": solver.runtime.owner_id,
             "frame_id": frame_id,
             "segment_name": segment,
-            "tree_root": solver.chain.tree_root if frame_id in off_branch else None,
+            "tree_root": (
+                root_by_segment.get(segment, solver.chain.tree_root)
+                if frame_id in off_branch
+                else None
+            ),
         }
         for frame_id, segment in sorted(segment_by_frame.items())
     ]
@@ -1027,7 +1027,7 @@ def _observes_in_frame(
     return True, frame_node
 
 
-def _world_solver_outputs(model, setup: _ChainSetup, scene: MjcfSceneSpec, backend: str) -> list:
+def _world_solver_outputs(model, setup: _ChainSetup, backend: str) -> list:
     """The runtime observations stated in this solver's reference frame."""
     graph = model.graph
     outputs = []
@@ -1052,73 +1052,9 @@ def _world_solver_outputs(model, setup: _ChainSetup, scene: MjcfSceneSpec, backe
             frame = getattr(output, "as_seen_by", None)
             if frame_node is None and frame is not None and frame.id != setup.chain.root:
                 continue
-            scene_object = _scene_object_of(model, getattr(output, "of", None), scene)
-            if scene_object is not None:
-                output.of = scene_object
-                # The simulator answers where the object is, but a pose measured from a frame
-                # that moves with the arm still has to read that frame every cycle. Dropped, the
-                # pose comes out against the chain root instead -- and stays frozen, since both
-                # ends of that pair are static.
-                wrt_node = (
-                    _pose_wrt_node(model, node) if type_ == GEOM_COORD.PoseCoordinate else None
-                )
-                if wrt_node is not None:
-                    wrt = _runtime_frame(
-                        model, wrt_node, setup.runtime.prefix, setup.runtime.owned_trees
-                    )
-                    if wrt.id != setup.chain.root:
-                        output = replace(output, relative_to_frame=wrt)
             outputs.append(output)
 
     return dedupe_by_id(outputs)
-
-
-def _scene_object_of(model, of, scene: MjcfSceneSpec) -> SceneObject | None:
-    """The scene object a pose is stated of, when the simulator's scene is what answers it.
-
-    A pose of the object itself is the body's own frame; a pose of one of its other frames is
-    the site the scene already marks that frame with. Either way the runtime reads it out of the
-    scene rather than off a chain, which no forward kinematics of the arm reaches.
-
-    Returns:
-        the scene object with the marker to read, or None when the frame is not on one
-    """
-    if of is None or not getattr(of, "uri", ""):
-        return None
-    node = URIRef(of.uri)
-    # The id a frame reports is its body's when it is that body's root, so the body is looked up
-    # through the graph rather than by matching that id against a body name.
-    body = (
-        node
-        if GEOM_ENT.RigidBody in get_node_types(model.graph, node)
-        else quantities.body_of(model, node)
-    )
-    if body is None:
-        return None
-    # A body the object maps beyond its root is as much the object's as the root one is: the
-    # scene measures it, so it answers here too -- under the name the composed scene gave it.
-    obj = next(
-        (
-            obj
-            for obj in scene.objects
-            if obj.body == local_name(body) or str(body) in obj.secondary_bodies
-        ),
-        None,
-    )
-    if obj is None:
-        return None
-    body_name = obj.secondary_bodies.get(str(body), local_name(body))
-    if quantities.placement_frame(model, body) == node:
-        return SceneObject(obj.id, body_name)
-    site = next((frame.name for frame in scene.frames if frame.uri == str(node)), None)
-    if site is None:
-        raise ConstraintViolation(
-            "geometry",
-            f"'{model.id(node)}' is a frame of scene object '{obj.id}', but the scene marks "
-            f"no site for it, so the runtime cannot ask where it is. A frame is marked only "
-            f"once a pose places it on its body.",
-        )
-    return SceneObject(obj.id, body_name, site)
 
 
 def _pose_wrt_node(model, node):
@@ -1138,7 +1074,15 @@ def _runtime_output(model, output, type_, node, frame_node, setup: _ChainSetup):
     if type_ == GEOM_COORD.PoseCoordinate and frame_node is not None:
         seen_by = _runtime_frame(model, frame_node, setup.runtime.prefix, setup.runtime.owned_trees)
         if seen_by.id == setup.chain.root:
-            return output
+            # Measured from a frame that moves, but stated in the chain root's axes: the
+            # orientation is the subject's own and the translation is the gap between the two.
+            wrt_node = _pose_wrt_node(model, node)
+            if wrt_node is None:
+                return output
+            wrt = _runtime_frame(model, wrt_node, setup.runtime.prefix, setup.runtime.owned_trees)
+            if wrt.id == setup.chain.root:
+                return output
+            return replace(output, relative_to_frame=wrt, seen_by_root=True)
         # Only wrt == as-seen-by composes as one relative pose; anything else stays unwritten.
         wrt_id = getattr(getattr(output, "with_respect_to", None), "id", None)
         if wrt_id != getattr(getattr(output, "as_seen_by", None), "id", None):
@@ -1215,28 +1159,19 @@ _UNIMPLEMENTED_PLATFORM_ALGORITHMS = (
 
 
 def build_robots(
-    model,
-    schedule,
-    setups,
-    derivation,
-    scene: MjcfSceneSpec,
-    backend: str,
-    detect_pose_ids=frozenset(),
+    model, schedule, setups, derivation, backend: str, detect_pose_ids=frozenset()
 ) -> Robots:
     """Build every robot the program commands, and schedule the calls that drive them.
 
     Parameters:
         schedule: the active scope; the steps join `Robots.schedule_steps`
         setups: the chain setup per agent node, from `robot_setups`
-        scene: the built scene, so an observation of one of its objects is named by that object
-            and read off the marker the scene carries for it
         detect_pose_ids: the world poses a detect result writes; the kinematics do not compute
             them, so no chain lists them among its outputs
 
     Raises:
         ConstraintViolation: a mobile-platform solver names an algorithm with no codegen wiring.
-        RuntimeError: a chain runs an unsupported robot model, or the backend cannot sync a
-            scene-object pose the model asks for.
+        RuntimeError: a chain runs an unsupported robot model.
     """
     graph = model.graph
     steps = []
@@ -1263,9 +1198,7 @@ def build_robots(
         solver.motion_drivers = constraint_handler.motion_drivers(model, derivation, node)
         solver.output = [
             out
-            for out in dedupe_by_id(
-                [*solver.output, *_world_solver_outputs(model, setup, scene, backend)]
-            )
+            for out in dedupe_by_id([*solver.output, *_world_solver_outputs(model, setup, backend)])
             if out.id not in detect_pose_ids
         ]
         # An acceleration constraint is base-aligned when its axis frame is the chain root. Both
@@ -1301,7 +1234,7 @@ def build_robots(
                 "motion-spec code generator does not implement yet. Use velocity-composition or "
                 "force-distribution instead.",
             )
-    _validate_solvers(serial_chains, backend)
+    _validate_solvers(serial_chains)
 
     return Robots(serial_chains, platform_velocity, platform_force, steps)
 
@@ -1390,8 +1323,8 @@ def _solver_with_input_and_output(model, node, setup: _ChainSetup) -> SolverWith
     return solver
 
 
-def _validate_solvers(serial_chain_solvers, backend: str) -> None:
-    """Reject unsupported robot models, and scene-object pose sync the backend cannot do."""
+def _validate_solvers(serial_chain_solvers) -> None:
+    """Reject robot models no backend has a driver for."""
     unsupported = {
         solver.hardware.model
         for solver in serial_chain_solvers
@@ -1402,19 +1335,6 @@ def _validate_solvers(serial_chain_solvers, backend: str) -> None:
             f"Unsupported robot model(s): {', '.join(sorted(unsupported))}. "
             f"Supported: {', '.join(sorted(SUPPORTED_ROBOT_MODELS))}"
         )
-    if backend != "robif2b":
-        return
-    for solver in serial_chain_solvers:
-        for out in solver.output:
-            entity = getattr(out, "of", None)
-            if getattr(out, "type", "") != "Pose" or not getattr(entity, "is_scene_object", False):
-                continue
-            raise RuntimeError(
-                f"robif2b backend cannot sync scene-object pose output '{out.id}' for "
-                f"'{entity.id or entity.body or out.id}'; world/scene object pose sync is only "
-                "implemented for mj_kdl. A pose a detect act writes is exempt: it is produced "
-                "by the perception result on every platform."
-            )
 
 
 def read_scene(model) -> MjcfSceneSpec:
@@ -1461,6 +1381,7 @@ def read_scene(model) -> MjcfSceneSpec:
             MjcfSceneObject(
                 id=object_id,
                 body=local_name(body),
+                body_iri=str(body),
                 path=_asset_path(graph, asset),
                 fixed=body in attach_by_body,
                 attach_kind=attach_kind,
@@ -2189,11 +2110,125 @@ def world_observations(serial_chains) -> list[dict]:
     claimed: dict[str, dict] = {}
     for solver in serial_chains:
         for out in solver.world_output:
-            claimed.setdefault(out.id, {"solver_id": solver.id, "out": out})
+            claimed.setdefault(
+                out.id, {"solver_id": solver.id, "owner_id": solver.runtime.owner_id, "out": out}
+            )
     return list(claimed.values())
 
 
-def annotate_runtime(serial_chains, motions, backend: str) -> list[dict]:
+def world_ports(
+    world_trees, scene, serial_chains, motions, perturbation_bodies, subscriptions, backend: str
+) -> dict:
+    """The world model's port table, split by kind: one row per physical variable a provider
+    answers.
+
+    `free_roots` and `joints` are measured -- what the kinematics and the world observations
+    read; `aux_cmds` and `wrench_cmds` are commanded -- what a backend applies at the end of the
+    tick. A chain joint's own measurements and its effort command ride the runtime's
+    `ports_<runtime>` array instead, which the backend binds whole.
+
+    Raises:
+        ConstraintViolation: a free root nothing places, or a body wrench on a backend that has
+            no way to apply one.
+    """
+    from motion_spec.generation.scene_kdl import segment_of_joint
+
+    # A subscription binds the base of what it observes itself, so that root has its provider.
+    placed_by_perception = {
+        row["observed_body_segment"]
+        for subscription in subscriptions
+        for row in subscription["written_poses"]
+        if row.get("reframed")
+    }
+    object_by_body = {obj.body_iri: obj for obj in scene.objects if obj.body_iri}
+
+    free_roots, joints, aux_cmds, wrench_cmds = [], [], [], []
+    for tree in world_trees:
+        if not tree["free_root"] or tree["root"] in placed_by_perception:
+            continue
+        obj = object_by_body.get(tree["root_iri"])
+        if obj is None:
+            raise ConstraintViolation(
+                "kinematics",
+                f"'{tree['name']}' is a free body the scene does not place, so nothing can "
+                "measure it",
+            )
+        free_roots.append(
+            WorldPort(
+                kind="free_root",
+                segment=tree["root"],
+                mapping=obj.body,
+                slot=len(free_roots),
+                iri=tree["root_iri"],
+            )
+        )
+
+    joint_slots: dict[str, int] = {}
+    for solver in serial_chains:
+        outputs = [
+            *solver.output,
+            *(out for device in solver.devices for out in device.joint_outputs),
+        ]
+        for out in outputs:
+            if out.type not in _JOINT_OUTPUT_KINDS or out.on_chain:
+                continue
+            slot = joint_slots.get(out.joint_name)
+            if slot is None:
+                slot = len(joint_slots)
+                joint_slots[out.joint_name] = slot
+                local = out.joint_name.removeprefix(solver.runtime.prefix)
+                joints.append(
+                    WorldPort(
+                        kind="joint",
+                        segment=segment_of_joint(world_trees, local),
+                        mapping=out.joint_name,
+                        slot=slot,
+                        owner_id=solver.runtime.id,
+                    )
+                )
+            out.world_slot = slot
+
+    aux_slots: dict[str, int] = {}
+    for motion in motions:
+        for cmd in motion.forwarded_commands:
+            if not cmd.target:
+                continue
+            if cmd.target not in aux_slots:
+                aux_slots[cmd.target] = len(aux_slots)
+                aux_cmds.append(
+                    WorldPort(
+                        kind="aux_cmd",
+                        segment="",
+                        mapping=cmd.target,
+                        slot=aux_slots[cmd.target],
+                        owner_id=cmd.robot_id,
+                    )
+                )
+            cmd.world_slot = aux_slots[cmd.target]
+
+    for slot, group in enumerate(perturbation_bodies):
+        if backend != "mj_kdl":
+            raise ConstraintViolation(
+                "perturbation",
+                f"perturbation on body '{group['body']}': a perturbation has no actuator on "
+                f"{backend}",
+            )
+        group["slot"] = slot
+        wrench_cmds.append(
+            WorldPort(kind="wrench_cmd", segment="", mapping=group["body"], slot=slot)
+        )
+
+    return {
+        "free_roots": free_roots,
+        "joints": joints,
+        "aux_cmds": aux_cmds,
+        "wrench_cmds": wrench_cmds,
+    }
+
+
+def annotate_runtime(
+    serial_chains, motions, backend: str, world_index=None, world_trees=()
+) -> list[dict]:
     """Fold onto each solver what running it implies, once every solver is known.
 
     Which runtime it shares, whether it owns that runtime, which of its joint outputs a gripper
@@ -2201,17 +2236,14 @@ def annotate_runtime(serial_chains, motions, backend: str) -> list[dict]:
     sits, and -- last, so it sees the runtime flags -- the gravity an RNE solver is built with.
 
     Returns:
-        every world-model read the program makes, as `{solver_id, frame_id, segment_name}`
+        every world-model read the program makes, as `{solver_id, frame_id, segment_name}`, once
+        per runtime: the records sharing a chain read the same segment from the same root
 
     Raises:
         ConstraintViolation: a joint output falls outside the chain with no gripper bound to report
             it, a frame is named that the solver's chain never reaches, or a motion declares a
             read-only solver on a runtime torque-commanded elsewhere.
     """
-    world_frames = []
-    for solver in serial_chains:
-        world_frames.extend(_place_solver_on_chain(solver, backend))
-
     runtime_by_signature: dict[tuple, str] = {}
     owner_by_runtime: dict[str, str] = {}
     for solver in serial_chains:
@@ -2229,9 +2261,22 @@ def annotate_runtime(serial_chains, motions, backend: str) -> list[dict]:
         owner_by_runtime.setdefault(runtime_id, solver.id)
         solver.runtime.id = runtime_id
         solver.runtime.owner = solver.id == owner_by_runtime[runtime_id]
+        solver.runtime.owner_id = owner_by_runtime[runtime_id]
         # ST4's <if(x)> treats "" as truthy, so a bare robot's empty tool fields must be None.
         solver.hardware.tool_body = solver.hardware.tool_body or None
         solver.hardware.tcp_frame = solver.hardware.tcp_frame or None
+
+    root_by_segment = {
+        name: tree["root"]
+        for tree in world_trees
+        for name in (tree["root"], *(segment["name"] for segment in tree["segments"]))
+    }
+    # Keyed by runtime owner and frame: all the records on one runtime read the same index.
+    claimed: dict[tuple[str, str], dict] = {}
+    for solver in serial_chains:
+        for frame in _place_solver_on_chain(solver, world_index or {}, root_by_segment):
+            claimed.setdefault((frame["solver_id"], frame["frame_id"]), frame)
+    world_frames = list(claimed.values())
 
     # Runtimes some driver torque-streams; declared-only solvers on any other runtime stage zeros.
     commanding = {
@@ -2315,6 +2360,9 @@ _OUTPUT_KEYWORD = {
     "JointVelocity": "joint-velocity",
     "JointCurrent": "joint-current",
 }
+
+# Every reading addressed by joint rather than by frame; each resolves to a chain index or a port.
+_JOINT_OUTPUT_KINDS = frozenset(_OUTPUT_KEYWORD)
 
 # Readings the robif2b arm cannot take on a chain joint: only a bound gripper device answers them.
 _GRIPPER_ONLY_OUTPUTS = {"JointVelocity", "JointCurrent"}
@@ -2402,9 +2450,14 @@ def _index_chain_joints(solver) -> None:
         ConstraintViolation: a joint force names a joint the chain does not articulate, so there
             is no joint-array slot to add it to.
     """
-    for out in solver.output:
-        if getattr(out, "type", "") == "JointPosition":
+    joint_outputs = [
+        *solver.output,
+        *(out for device in solver.devices for out in device.joint_outputs),
+    ]
+    for out in joint_outputs:
+        if getattr(out, "type", "") in _JOINT_OUTPUT_KINDS:
             out.joint_index = _chain_joint_index(solver, out.joint_name)
+            out.on_chain = out.joint_index is not None
     for driver in solver.motion_drivers:
         for force in driver.joint_force:
             force.joint_index = _chain_joint_index(solver, force.joint_name)

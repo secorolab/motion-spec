@@ -56,6 +56,25 @@ class HardwareBinding:
 
 
 @dataclass
+class WorldPort:
+    """One port of the world model's table: a physical variable, its provider mapping, its slot.
+
+    `kind` is the variable; `segment` the world-model segment it moves or places, empty for a
+    body-only port; `mapping` the name the backend resolves its provider by.
+    """
+
+    kind: str
+    segment: str
+    mapping: str
+    slot: int
+    # The runtime whose device provides it, for a port a bound device answers rather than the
+    # scene; empty otherwise.
+    owner_id: str = ""
+    iri: str = field(default="", metadata=INTERNAL)
+    type: str = field(default="WorldPort")
+
+
+@dataclass
 class RuntimeBinding:
     """Which runtime this solver's chain is driven by, and the deployment slot it fills."""
 
@@ -66,6 +85,8 @@ class RuntimeBinding:
     owned_trees: list = field(metadata=INTERNAL)
     # Section name in the deployment config; empty under simulation.
     config_key: str
+    # The solver that owns this runtime; every record on it reads that one's world_to_root.
+    owner_id: str = ""
 
 
 @dataclass

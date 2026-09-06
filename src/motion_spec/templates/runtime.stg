@@ -91,7 +91,7 @@ inline double finite_or_stop(double value, int joint) {
 // It owns no measurement: startup binds each moving segment to the address the backend already
 // writes its measured position to, so the world model and the dynamics solvers are two readers
 // of one buffer rather than two authorities.
-class WorldModel {
+class WorldKinematics {
   public:
     // Startup. These return failure and fill `error` rather than throwing: main is still holding
     // driver handles that its own exit paths release.
@@ -117,8 +117,10 @@ class WorldModel {
             parents_.push_back(element.second);
             trees_.push_back(tree_id);
             joints_.push_back(nullptr);
+            velocities_.push_back(nullptr);
             bases_.push_back(nullptr);
             poses_.push_back(KDL::Frame::Identity());
+            twists_.push_back(KDL::Twist::Zero());
             // Breadth-first, so a child is appended only once its parent holds an index.
             for (const auto &child : GetTreeElementChildren(element.first->second)) {
                 pending.push({child, index});
@@ -157,6 +159,35 @@ class WorldModel {
             return false;
         }
         joints_[index] = position;
+        return true;
+    }
+
+    // The rate of the same joint, so the outward pass carries the twist beside the pose. An
+    // unbound rate reads zero: the pose is still right, the twist is the arm held still.
+    bool bind_joint_velocity(const std::string &segment, const double *velocity,
+                             std::string &error) {
+        if (sealed_) {
+            error = "the world model is sealed; no joint can be bound";
+            return false;
+        }
+        if (velocity == nullptr) {
+            error = "segment '" + segment + "' was bound to no rate";
+            return false;
+        }
+        const int index = index_of(segment);
+        if (index \< 0) {
+            error = "no segment is named '" + segment + "'";
+            return false;
+        }
+        if (segments_[index].getJoint().getType() == KDL::Joint::None) {
+            error = "segment '" + segment + "' is fixed, so no rate moves it";
+            return false;
+        }
+        if (velocities_[index] != nullptr && velocities_[index] != velocity) {
+            error = "segment '" + segment + "' is already bound to another rate";
+            return false;
+        }
+        velocities_[index] = velocity;
         return true;
     }
 
@@ -310,12 +341,21 @@ class WorldModel {
                 // A root the scene places stands at the origin; a free body stands where its
                 // bound base last said, which is what perception writes between cycles.
                 poses_[i] = bases_[i] ? *bases_[i] : KDL::Frame::Identity();
+                // Nothing samples a root's own motion, so the pass starts from rest.
+                twists_[i] = KDL::Twist::Zero();
                 continue;
             }
             // KDL owns the joint convention: an unbound moving joint reads zero, and sealing has
             // already proved that no required path depends on one.
+            const int parent = parents_[i];
             const double q = joints_[i] ? *joints_[i] : 0.0;
-            poses_[i] = poses_[parents_[i]] * segments_[i].pose(q);
+            const double qd = velocities_[i] ? *velocities_[i] : 0.0;
+            poses_[i] = poses_[parent] * segments_[i].pose(q);
+            // The same composition KDL's recursive velocity solver performs on a FrameVel,
+            // written on Frame and Twist: the parent's twist moved to this segment's origin,
+            // plus this segment's own twist in the parent's axes (Featherstone 2008, eq. 4.5).
+            twists_[i] = twists_[parent].RefPoint(poses_[i].p - poses_[parent].p)
+                       + poses_[parent].M * segments_[i].twist(q, qd);
         }
         cycle_ = cycle;
     }
@@ -335,6 +375,19 @@ class WorldModel {
         return poses_[index];
     }
 
+    // The twist of the same segment, from the same pass, under the same cycle guard.
+    const KDL::Twist &twist(int index, std::uint64_t cycle) const {
+        if (index \< 0 || index >= static_cast\<int\>(twists_.size())) {
+            report("asked for a segment it does not hold");
+            return zero_twist_;
+        }
+        if (cycle != cycle_) {
+            report("read at a cycle it was not updated for");
+            return zero_twist_;
+        }
+        return twists_[index];
+    }
+
   private:
     static constexpr std::uint64_t kNoCycle = std::numeric_limits\<std::uint64_t\>::max();
 
@@ -350,14 +403,17 @@ class WorldModel {
     std::vector\<int\> parents_;            // -1 for each forest root
     std::vector\<int\> trees_;              // rejects a required path across two roots
     std::vector\<const double *\> joints_;  // null for a fixed or unbound moving segment
+    std::vector\<const double *\> velocities_;  // null where no rate is bound; the twist reads zero
     std::vector\<const KDL::Frame *\> bases_;  // null for a non-root, or a root nothing places
     std::vector\<KDL::Frame\> poses_;
+    std::vector\<KDL::Twist\> twists_;
     std::vector\<std::pair\<int, int\>\> required_paths_;
     std::vector\<int\> required_bases_;
     // Written only while trees are added, so after sealing it is a fixed table any thread may
     // read -- which is how a subscription resolves the frame a message states itself in.
     std::unordered_map\<std::string, int\> indexes_;
     KDL::Frame identity_ = KDL::Frame::Identity();
+    KDL::Twist zero_twist_ = KDL::Twist::Zero();
     std::uint64_t cycle_ = kNoCycle;
     int trees_seen_ = 0;
     bool sealed_ = false;

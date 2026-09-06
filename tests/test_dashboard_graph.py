@@ -267,6 +267,8 @@ def test_the_dashboard_mints_no_vocabulary(tmp_path):
     } | {PROV + "generatedAtTime", QUDT + "value", QUDT + "unit"}
     assert {str(o) for o in live.objects(None, rdflib.RDF.type)} == {
         SOSA + "Observation",
+        # What made them: an untyped madeBySensor object is what sens:ObservationShape refuses.
+        SOSA + "Sensor",
         TIME + "Instant",
         QUDT + "QuantityValue",
     }

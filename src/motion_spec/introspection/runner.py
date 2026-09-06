@@ -41,6 +41,7 @@ from motion_spec.introspection.runtime_graph import (
     OCCURRENCE_REL,
     RUNTIME_TTL_REL,
     RuntimeGraphWriter,
+    design_graphs,
     record_runtime_ttl_with_rec,
 )
 
@@ -88,7 +89,7 @@ def run_cataloged(
             run_dir,
             run_id=run_id,
             occurrence_log=occurrence_log,
-            model_paths=sorted((source_dir / "model").glob("*.json")),
+            model_paths=design_graphs(source_dir / "model"),
         )
         if record_log
         else None

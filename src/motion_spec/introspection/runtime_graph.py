@@ -51,8 +51,22 @@ def _model_graphs(paths):
             continue
 
 
-def _model_paths(run_dir: Path, manifest: dict):
-    return [run_dir / rel for rel in manifest.get("files", {}).get("model_imports") or []]
+def design_graphs(model_dir: Path | str) -> list[Path]:
+    """Every design graph beside a run's model manifest.
+
+    A directory rather than a list of named roles: the signals a sample observes and the dwells
+    an arming is judged by live in the graphs the manifest *imports*, which a generation run
+    references in place and an archived one vendors. One function, so a run being written and
+    one being re-read hand the projector the same design facts.
+    """
+    model_dir = Path(model_dir)
+    return sorted(path for path in model_dir.glob("*.json") if path.is_file())
+
+
+def run_design_graphs(run_dir: Path, files: dict) -> list[Path]:
+    """The design graphs a run names, wherever its manifest put them."""
+    named = files.get("model")
+    return design_graphs((run_dir / named).parent if named else run_dir / "model")
 
 
 def declared_dwells_from_paths(paths) -> dict[str, float]:
@@ -79,23 +93,35 @@ def units_from_graphs(graphs) -> dict[str, rdflib.URIRef]:
     constraint's quantity. An element whose references mix units stays unmapped -- no unit
     is honest, a guessed one is wrong.
     """
-    units: dict[str, rdflib.URIRef] = {}
+    declared: dict[str, set] = {}
     edges: dict[str, set] = {}
     for mg in graphs:
         for subject, predicate, obj in mg:
             if not isinstance(subject, rdflib.URIRef) or not isinstance(obj, rdflib.URIRef):
                 continue
             if predicate == QUDT.unit:
-                units[str(subject)] = obj
+                declared.setdefault(str(subject), set()).add(obj)
             else:
                 edges.setdefault(str(subject), set()).add(str(obj))
+    # An element declared with two units is as unmapped as one with none: taking whichever
+    # triple arrived last would make the answer depend on the order rdflib yielded them.
+    units: dict[str, rdflib.URIRef] = {
+        subject: next(iter(declared_units))
+        for subject, declared_units in declared.items()
+        if len(declared_units) == 1
+    }
     for _ in range(2):
+        # Each pass reads only what the pass before it settled. Borrowing from a node resolved
+        # earlier in the same pass would make the answer depend on the order the graphs happened
+        # to yield their triples, which is a hash order -- two runs would disagree.
+        settled = {}
         for subject, targets in edges.items():
             if subject in units:
                 continue
             borrowed = {units[t] for t in targets if t in units}
             if len(borrowed) == 1:
-                units[subject] = borrowed.pop()
+                settled[subject] = borrowed.pop()
+        units.update(settled)
     return units
 
 
@@ -397,6 +423,9 @@ def frame_observations(
     dense per-tick quantities would swamp the graph and the frame log already holds them.
     """
     sensor = rdflib.URIRef(prov_uri(header.producer_agent_id or "agent:controller_process"))
+    # What made these observations is a sensor, and sosa says a sensor says so: an untyped
+    # madeBySensor object is what sens:ObservationShape refuses.
+    g.add((sensor, rdflib.RDF.type, SOSA.Sensor))
     # The scale itself is defined once, with the run; an observation only counts on it.
     trs = _trs_node(run_id)
     wall_ns = frame.get("timing", {}).get("wall_ns")
@@ -1215,7 +1244,7 @@ def project_runtime(run_dir: Path | str) -> rdflib.Graph:
         run_id,
         contract.header,
         frame_log_pb.occurrence_records(stream, contract),
-        _model_paths(run_dir, manifest),
+        run_design_graphs(run_dir, files),
     )
     _run_document(g, run_dir, files, contract.header, run_id, projector.last_activity)
     _materialize_extent(g, run_id, projector)

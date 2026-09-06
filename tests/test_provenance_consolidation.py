@@ -23,7 +23,6 @@ from motion_spec.introspection.archive import (
     verify_manifest,
 )
 from motion_spec.introspection.provenance import ensure_local_rec_importable, prov_uri
-from motion_spec.introspection.replay import decode_frames
 from motion_spec.introspection.runtime_graph import write_runtime_ttl
 
 ensure_local_rec_importable()
@@ -39,7 +38,7 @@ def _archive(tmp_path: Path) -> Path:
     source = _source_tree(tmp_path / "source")
     run_dir = tmp_path / RUN_ID
     create_archive_manifest(run_dir, source_dir=source, run_id=RUN_ID)
-    write_runtime_ttl(run_dir, decode_frames(run_dir / "logs" / "frame_log.pb"))
+    write_runtime_ttl(run_dir)
     return run_dir
 
 

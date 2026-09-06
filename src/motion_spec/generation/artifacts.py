@@ -21,6 +21,8 @@ FRAME_LAYOUT_VERSION = 5
 RUNTIME_RDF_CONTRACT_VERSION = 1
 FIELD_BYTES = 8
 TRIGGER_POOL_SIZE = 32
+# Seconds of platform time between the value sets the occurrence stream samples; 0 samples none.
+DEFAULT_SAMPLE_INTERVAL_S = 1.0
 HEADER = [
     ("seq", "Q"),
     ("t", "d"),
@@ -350,7 +352,14 @@ def _fsm_meta(fsm_ir: dict | None) -> dict:
     }
 
 
-def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | None) -> dict:
+def build_schema(
+    ir: dict,
+    *,
+    ir_path: Path,
+    output_dir: Path,
+    fsm_ir: dict | None,
+    sample_interval_s: float = DEFAULT_SAMPLE_INTERVAL_S,
+) -> dict:
     """Build the run's introspection schema (pools, per-state slots, quantities, provenance) and its schema_hash."""
     introspection = ir["communication"]["introspection"]
     uri_by_id = _uri_by_id(ir)
@@ -513,6 +522,8 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
         "pools": pools,
         "timing": {"nominal_period_ns": introspection.get("control_period_ns")},
         "control_period_ns": introspection.get("control_period_ns"),
+        # How the occurrence stream samples value sets: the graph must say how it was sampled.
+        "sample_interval_s": float(sample_interval_s),
         "fsm": fsm,
         "by_motion": by_motion,
         "motions": introspection.get("motions", []),
@@ -586,6 +597,7 @@ def build_frame_layout(schema: dict) -> dict:
         "field_bytes": FIELD_BYTES,
         "frame_size_bytes": frame_size,
         "schema_hash": schema["schema_hash"],
+        "sample_interval_s": schema.get("sample_interval_s", DEFAULT_SAMPLE_INTERVAL_S),
         "runtime_provenance": schema["runtime_provenance"],
         # The runner records the run before any log exists, so this one fact cannot
         # come from the log's own header.
@@ -811,8 +823,47 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
     return {"motions": cases, **ungated}
 
 
+def build_watched_table(schema: dict) -> list[dict]:
+    """Every watched member of every gate, resolved to the frame slots that judge it.
+
+    The runtime decides whether a member held from `|quantities[error_slot]| <= band`, so the
+    ids the header carries are resolved to slot indices once, here. A member whose error or
+    band resolves to neither a quantity slot nor a declared constant is left out: nothing
+    could judge it.
+    """
+    quantity_slot = {entry["id"]: entry["index"] for entry in schema.get("quantities") or ()}
+    constants = {entry["id"]: entry.get("value") for entry in schema.get("constants") or ()}
+    rows = []
+    for entry in (schema.get("by_motion") or {}).values():
+        for slot in entry.get("monitors") or ():
+            for ordinal, member in enumerate(slot.get("watched") or ()):
+                error_id = member.get("error_signal") or member.get("error_id")
+                band_id = member.get("tolerance_signal") or member.get("tolerance_id")
+                if error_id not in quantity_slot:
+                    continue
+                tolerance_slot = quantity_slot.get(band_id, -1)
+                if tolerance_slot < 0 and constants.get(band_id) is None:
+                    continue
+                rows.append(
+                    {
+                        "motion": entry["index"],
+                        "monitor": slot.get("index", 0),
+                        "member": ordinal,
+                        "error_slot": quantity_slot[error_id],
+                        "tolerance_slot": tolerance_slot,
+                        "tolerance": float(constants.get(band_id) or 0.0),
+                    }
+                )
+    return rows
+
+
 def write_introspection_artifacts(
-    ir: dict, *, ir_path: Path, output_dir: Path, sampling: dict | None = None
+    ir: dict,
+    *,
+    ir_path: Path,
+    output_dir: Path,
+    sampling: dict | None = None,
+    sample_interval_s: float = DEFAULT_SAMPLE_INTERVAL_S,
 ) -> dict:
     """Write frame_layout.json, provenance.ld.json and the derivation graph, and return the
     frame-log header + sample model that codegen folds into the IR.
@@ -821,7 +872,11 @@ def write_introspection_artifacts(
     record, so a log needs no companion artifact to be read. The framed FSM lives in ir["fsm"].
     """
     schema = build_schema(
-        ir, ir_path=ir_path, output_dir=output_dir, fsm_ir=ir["coordination"].get("fsm")
+        ir,
+        ir_path=ir_path,
+        output_dir=output_dir,
+        fsm_ir=ir["coordination"].get("fsm"),
+        sample_interval_s=sample_interval_s,
     )
     layout = build_frame_layout(schema)
     end_state = schema.get("fsm", {}).get("end")
@@ -858,6 +913,8 @@ def write_introspection_artifacts(
             "runtime_agent_id": schema["runtime_provenance"].get("runtime_agent_id") or "",
             "end_state": end_state if end_state is not None else -1,
             "nominal_period_ns": schema.get("control_period_ns") or 0,
+            "sample_interval_s": schema["sample_interval_s"],
+            "watched": build_watched_table(schema),
             "protobuf": schema["protobuf"],
             "header_record_rows": _hex_rows(header_record),
         },
@@ -921,6 +978,7 @@ def build_frame_log_header_record(schema: dict) -> bytes:
     header.end_state = end_state if end_state is not None else -1
     header.nominal_period_ns = schema.get("control_period_ns") or 0
     header.fsm_namespace = fsm.get("namespace") or ""
+    header.sample_interval_s = float(schema.get("sample_interval_s") or 0.0)
 
     # Slot identity, keyed by the field number that carries it on the wire.
     for category in ("quantities", "poses", "twists", "wrenches", "devices"):

@@ -20,6 +20,17 @@ from motion_spec.introspection.archive import ArchiveError
 
 PROTO_PACKAGE = "motion_spec.introspection.log"
 
+# The semantic edges the runtime detects and appends, in the order the enum declares them.
+OCCURRENCE_KINDS = {
+    "STATE_CHANGE": 0,
+    "EVENT": 1,
+    "CONSTRAINT_EDGE": 2,
+    "MONITOR_EDGE": 3,
+    "MEMBER_EDGE": 4,
+    "SAMPLE": 5,
+}
+OCCURRENCE_KIND_NAMES = {number: name for name, number in OCCURRENCE_KINDS.items()}
+
 # A run writes its log uncompressed -- the writer is on the control loop's heels and the
 # dashboard tails the file while it grows -- and archiving compresses it once, afterwards.
 # So a log on disk is one of two files, and everything that reads one has to accept either.
@@ -210,6 +221,7 @@ def _build_file_descriptor(fields: dict) -> descriptor_pb2.FileDescriptorProto:
         ("end_state", D.TYPE_INT32, 15),
         ("nominal_period_ns", D.TYPE_INT64, 16),
         ("fsm_namespace", D.TYPE_STRING, 17),
+        ("sample_interval_s", D.TYPE_DOUBLE, 18),
     ):
         hdr.field.add(name=fname, number=number, label=D.LABEL_OPTIONAL, type=ftype)
     for fname, number, type_name in (
@@ -317,6 +329,58 @@ def _build_file_descriptor(fields: dict) -> descriptor_pb2.FileDescriptorProto:
         type_name=f".{PROTO_PACKAGE}.RuntimeFrame",
         oneof_index=0,
     )
+
+    occurrence = fdp.message_type.add(name="Occurrence")
+    kind = occurrence.enum_type.add(name="Kind")
+    for name, number in OCCURRENCE_KINDS.items():
+        kind.value.add(name=name, number=number)
+    for fname, ftype, number in (
+        ("step", D.TYPE_UINT64, 1),
+        ("t", D.TYPE_DOUBLE, 2),
+        ("wall_ns", D.TYPE_SFIXED64, 3),
+        ("fsm_state", D.TYPE_SFIXED64, 4),
+        ("active_motion", D.TYPE_SFIXED64, 5),
+        ("index", D.TYPE_SFIXED64, 7),
+        ("member", D.TYPE_SFIXED64, 8),
+        ("from_state", D.TYPE_SFIXED64, 9),
+        ("satisfied", D.TYPE_BOOL, 10),
+        ("value", D.TYPE_DOUBLE, 11),
+        ("state_since_wall_ns", D.TYPE_SFIXED64, 12),
+    ):
+        occurrence.field.add(name=fname, number=number, label=D.LABEL_OPTIONAL, type=ftype)
+    occurrence.field.add(
+        name="kind",
+        number=6,
+        label=D.LABEL_OPTIONAL,
+        type=D.TYPE_ENUM,
+        type_name=f".{PROTO_PACKAGE}.Occurrence.Kind",
+    )
+    occurrence.field.add(
+        name="frame",
+        number=13,
+        label=D.LABEL_OPTIONAL,
+        type=D.TYPE_MESSAGE,
+        type_name=f".{PROTO_PACKAGE}.RuntimeFrame",
+    )
+
+    occurrence_record = fdp.message_type.add(name="OccurrenceLogRecord")
+    occurrence_record.oneof_decl.add(name="record")
+    occurrence_record.field.add(
+        name="header",
+        number=1,
+        label=D.LABEL_OPTIONAL,
+        type=D.TYPE_MESSAGE,
+        type_name=f".{PROTO_PACKAGE}.FrameLogHeader",
+        oneof_index=0,
+    )
+    occurrence_record.field.add(
+        name="occurrence",
+        number=2,
+        label=D.LABEL_OPTIONAL,
+        type=D.TYPE_MESSAGE,
+        type_name=f".{PROTO_PACKAGE}.Occurrence",
+        oneof_index=0,
+    )
     return fdp
 
 
@@ -412,6 +476,12 @@ def frame_record(flat: dict, schema: dict) -> bytes:
     rec = record_cls()
     m = rec.frame
     m.SetInParent()
+    _set_frame(m, flat, fields)
+    return rec.SerializeToString()
+
+
+def _set_frame(m, flat: dict, fields: dict) -> None:
+    """Fill a RuntimeFrame message from a flat frame dict, slot by declared slot."""
     m.t = flat["t"]
     m.step = flat["step"]
     m.fsm_state = flat["fsm_state"]
@@ -471,7 +541,6 @@ def frame_record(flat: dict, schema: dict) -> bytes:
             s, i = getattr(m, e["name"]), e["index"]
             for name in names:
                 setattr(s, name, flat[f"{prefix}{i}.{name}"])
-    return rec.SerializeToString()
 
 
 # --- decode ---
@@ -514,9 +583,12 @@ class LogContract:
     the three things the wire cannot say about itself. Nothing here comes from a companion file.
     """
 
-    def __init__(self, header, record_cls, fields):
+    def __init__(self, header, record_cls, fields, occurrence_cls=None):
         self.header = header
         self.record_cls = record_cls
+        # The occurrence stream's envelope, built from the same descriptor: field 1 of both is
+        # the header, so one contract read decodes either file.
+        self.occurrence_cls = occurrence_cls
         self.fields = fields
         self.trigger_pool = header.trigger_pool
         self.gate = _slot_gate(header, fields)
@@ -628,8 +700,16 @@ def read_contract(path: Path | str) -> LogContract:
     record_cls = message_factory.GetMessageClass(
         pool.FindMessageTypeByName(f"{PROTO_PACKAGE}.FrameLogRecord")
     )
+    occurrence_cls = message_factory.GetMessageClass(
+        pool.FindMessageTypeByName(f"{PROTO_PACKAGE}.OccurrenceLogRecord")
+    )
     frame_descriptor = pool.FindMessageTypeByName(f"{PROTO_PACKAGE}.RuntimeFrame")
-    return LogContract(header, record_cls, _fields_from_descriptor(frame_descriptor, header))
+    return LogContract(
+        header,
+        record_cls,
+        _fields_from_descriptor(frame_descriptor, header),
+        occurrence_cls=occurrence_cls,
+    )
 
 
 def _parse_frame(msg, contract: LogContract) -> dict:
@@ -759,6 +839,85 @@ def frame_records(path: Path | str, contract: LogContract | None = None) -> Iter
     for kind, value in iter_messages(path, contract):
         if kind == "frame":
             yield value
+
+
+_OCCURRENCE_KEYS = (
+    "step",
+    "t",
+    "wall_ns",
+    "fsm_state",
+    "active_motion",
+    "index",
+    "member",
+    "from_state",
+    "satisfied",
+    "value",
+    "state_since_wall_ns",
+)
+
+
+def _parse_occurrence(msg, contract: LogContract) -> dict:
+    """One occurrence as the projector reads it; a SAMPLE carries its whole decoded frame."""
+    record = {key: getattr(msg, key) for key in _OCCURRENCE_KEYS}
+    record["kind"] = OCCURRENCE_KIND_NAMES[msg.kind]
+    record["frame"] = _parse_frame(msg.frame, contract) if record["kind"] == "SAMPLE" else None
+    return record
+
+
+def occurrence_record(occurrence: dict, schema: dict) -> bytes:
+    """Encode one occurrence into its record payload (fixtures/tests).
+
+    A SAMPLE carries the tick's whole frame, given as the same flat dict `frame_record` takes.
+    """
+    record_cls, fields = _record_class(schema)
+    pool = record_cls.DESCRIPTOR.file.pool
+    rec = message_factory.GetMessageClass(
+        pool.FindMessageTypeByName(f"{PROTO_PACKAGE}.OccurrenceLogRecord")
+    )()
+    m = rec.occurrence
+    m.SetInParent()
+    m.kind = OCCURRENCE_KINDS[occurrence["kind"]]
+    for key in _OCCURRENCE_KEYS:
+        value = occurrence.get(key)
+        if value is not None:
+            setattr(m, key, value)
+    if occurrence.get("frame") is not None:
+        _set_frame(m.frame, occurrence["frame"], fields)
+    return rec.SerializeToString()
+
+
+def occurrence_records(path: Path | str, contract: LogContract | None = None) -> Iterator[dict]:
+    """Decoded occurrences, in order. The stream describes itself: its first record is the
+    same header the frame log opens with, so nothing else has to be read to decode it."""
+    if contract is None:
+        contract = read_contract(path)
+    with open_log(path) as fh:
+        while True:
+            data = _read_delimited(fh, partial_ok=True)
+            if data is None:
+                return
+            record = contract.occurrence_cls()
+            record.ParseFromString(data)
+            if record.WhichOneof("record") == "occurrence":
+                yield _parse_occurrence(record.occurrence, contract)
+
+
+def stream_occurrences(fh, contract: LogContract, offset: int) -> tuple[list[dict], int]:
+    """Occurrences appended since `offset`, plus the offset to resume from.
+
+    Tailing the stream a run is still writing: a partial trailing record leaves the offset
+    where it was, so the next call re-reads it once the writer has completed it.
+    """
+    records = []
+    while True:
+        data, next_offset = _read_delimited_at(fh, offset)
+        if data is None:
+            return records, offset
+        offset = next_offset
+        record = contract.occurrence_cls()
+        record.ParseFromString(data)
+        if record.WhichOneof("record") == "occurrence":
+            records.append(_parse_occurrence(record.occurrence, contract))
 
 
 def stream_records(

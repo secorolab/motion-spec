@@ -274,6 +274,10 @@ def _create_generation_run_manifest(
         ),
         "frame_log": "logs/frame_log.pb" if recorded else None,
         "frame_log_health": "logs/frame_log.pb.health.json" if recorded else None,
+        # The semantic record, never packed: it is small, and the graph is projected from it
+        # while the run is still appending to it.
+        "occurrences": _existing(run_dir, "logs/occurrences.pb"),
+        "occurrences_health": _existing(run_dir, "logs/occurrences.pb.health.json"),
         # Listed only when written: a manifest never promises a file the run dir lacks.
         "runtime_ttl": _existing(run_dir, "runtime/runtime.ttl"),
         "console": _existing(run_dir, "logs/console.log"),
@@ -394,13 +398,27 @@ def create_archive_manifest(
             copies["frame_log.pb"] = frame_log_rel
             if (source_dir / "frame_log.pb.health.json").exists():
                 copies["frame_log.pb.health.json"] = frame_log_health_rel
+        for name in ("occurrences.pb", "occurrences.pb.health.json"):
+            if (source_dir / name).exists():
+                copies[name] = f"logs/{name}"
         from motion_spec.introspection import frame_log_pb
 
-        schema = frame_log_pb.read_contract(
-            source_dir / "frame_log.pb"
-            if (source_dir / "frame_log.pb").exists()
-            else run_dir / frame_log_rel
-        ).summary()
+        # Either record states the contract, so a run that kept only its occurrence stream is
+        # catalogued from that: both files open with the same header bytes.
+        stated = next(
+            (
+                path
+                for path in (
+                    source_dir / "frame_log.pb",
+                    run_dir / frame_log_rel,
+                    source_dir / "occurrences.pb",
+                    run_dir / "logs" / "occurrences.pb",
+                )
+                if path.exists()
+            ),
+            run_dir / frame_log_rel,
+        )
+        schema = frame_log_pb.read_contract(stated).summary()
     # graph/ir_path are portable basenames; resolve them against source_dir.
     model_source = source_dir / "model.ld.json"
     if (source_dir / "model.ld.json").exists():
@@ -496,8 +514,12 @@ def create_archive_manifest(
         # Listed only when written: a manifest never promises a file the run dir lacks.
         "runtime_ttl": _existing(run_dir, "runtime/runtime.ttl"),
         "console": _existing(run_dir, "logs/console.log"),
-        "frame_log": frame_log_rel if recorded else None,
-        "frame_log_health": frame_log_health_rel if recorded else None,
+        "frame_log": _existing(run_dir, frame_log_rel) if recorded else None,
+        "frame_log_health": _existing(run_dir, frame_log_health_rel) if recorded else None,
+        # The semantic record, never packed: it is small, and the graph is projected from it
+        # while the run is still appending to it.
+        "occurrences": _existing(run_dir, "logs/occurrences.pb"),
+        "occurrences_health": _existing(run_dir, "logs/occurrences.pb.health.json"),
         "model": "model/model.ld.json",
         "model_imports": model_imports or None,
         "sources": source_artifacts or None,
@@ -547,8 +569,10 @@ def verify_manifest(run_dir_or_manifest: Path | str) -> dict:
     # `recorded: false` is the run stating it kept no frame log; only that opt-in marker excuses
     # it. A manifest that merely lost its log still fails here.
     recorded = manifest.get("recorded") is not False
+    # The occurrence stream is the record that must be there: it is what the runtime graph is
+    # projected from. The frame log is the dense numeric companion, and a run may keep none.
     required = (
-        ("frame_log_proto", "provenance", "frame_log", "rec")
+        ("frame_log_proto", "provenance", "occurrences", "rec")
         if recorded
         else ("frame_log_proto", "provenance", "rec")
     )
@@ -558,7 +582,7 @@ def verify_manifest(run_dir_or_manifest: Path | str) -> dict:
     for key, value in files.items():
         for rel in value if isinstance(value, list) else [value]:
             if (
-                key in {"frame_log_health", "runtime_ttl", "console"}
+                key in {"frame_log_health", "occurrences_health", "runtime_ttl", "console"}
                 and not (run_dir / rel).exists()
             ):
                 continue
@@ -601,7 +625,9 @@ def verify_manifest(run_dir_or_manifest: Path | str) -> dict:
         if recorded:
             from motion_spec.introspection import frame_log_pb
 
-            run_schema = frame_log_pb.read_contract(run_dir / files["frame_log"]).summary()
+            # Either record states the contract: both open with the same header bytes.
+            contract = run_dir / (files.get("frame_log") or files["occurrences"])
+            run_schema = frame_log_pb.read_contract(contract).summary()
             simulated = (run_schema.get("platform") or {}).get("simulated")
         _require_rec_provenance(rec_graph, "rec.ld.json", simulated=simulated)
         _validate_prov_shacl(run_dir / rec_rel)

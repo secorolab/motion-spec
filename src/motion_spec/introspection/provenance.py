@@ -327,6 +327,9 @@ def build_provenance_document(ir: dict, output_dir: Path, *, sampling: dict | No
         wasInformedBy=codegen_activity,
         wasAssociatedWith=_prov_iri("agent:build_toolchain"),
     )
+    # The run's own graph names this as what generated it; declared here so the consolidated
+    # dataset carries the same node whichever document a reader arrives through.
+    add_node("activity:runtime_projection", ["prov:Activity"])
     for role in sorted(used_roles):
         add_node(f"role:{role}", ["prov:Role"])
 
@@ -355,7 +358,6 @@ def build_provenance_document(ir: dict, output_dir: Path, *, sampling: dict | No
     )
     add_node("agent:rdflib", [PROV_SOFTWARE_AGENT, PROV_AGENT], **_tool_properties("agent:rdflib"))
     add_node("agent:build_toolchain", [PROV_SOFTWARE_AGENT, PROV_AGENT])
-    add_node("agent:replay_process", [PROV_SOFTWARE_AGENT, PROV_AGENT])
     add_node("agent:dashboard_process", [PROV_SOFTWARE_AGENT, PROV_AGENT])
 
     return {

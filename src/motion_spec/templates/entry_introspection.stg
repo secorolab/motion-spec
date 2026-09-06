@@ -31,6 +31,25 @@ inline constexpr const char *kRuntimeProducerAgentId = "<communication.introspec
 inline constexpr const char *kRuntimeAgentId = "<communication.introspection_artifacts.frame_layout.runtime_agent_id>";
 inline constexpr std::int64_t kEndState = <communication.introspection_artifacts.frame_layout.end_state>;
 inline constexpr std::int64_t kNominalPeriodNs = <communication.introspection_artifacts.frame_layout.nominal_period_ns>;
+// Platform seconds between the value sets the occurrence stream samples; 0 samples none.
+inline constexpr double kSampleIntervalS = <communication.introspection_artifacts.frame_layout.sample_interval_s>;
+
+// One member of a gate's watched conjunction, resolved at generation to the frame slots that
+// judge it: the runtime decides `held` from |quantities[error_slot]| \<= band, and the band is
+// quantities[tolerance_slot] when that is a slot, else the declared constant.
+struct WatchedMember {
+    std::int64_t motion;
+    std::int64_t monitor;
+    std::int64_t member;
+    std::int64_t error_slot;
+    std::int64_t tolerance_slot;
+    double tolerance;
+};
+
+inline constexpr std::size_t kNumWatched = <length(communication.introspection_artifacts.frame_layout.watched)>;
+inline constexpr WatchedMember kWatched[] = {
+<if(communication.introspection_artifacts.frame_layout.watched)><communication.introspection_artifacts.frame_layout.watched:{row|    {<row.motion>, <row.monitor>, <row.member>, <row.error_slot>, <row.tolerance_slot>, <row.tolerance>\}}; separator=",\n"><else>    {-1, -1, -1, -1, -1, 0.0\}<endif>
+};
 
 // The frame log's first record, serialized at generation time: the message descriptor, every
 // slot's id and IRI, the per-motion gate, the FSM tables and the init-cadence constants. Built
@@ -44,6 +63,36 @@ inline constexpr std::size_t kFrameLogHeaderRecordSize = sizeof(kFrameLogHeaderR
 } // namespace motion_spec::introspection
 >>
 
+// The frame's own fields on a log::RuntimeFrame `m`, read from a Frame `frame` in scope. One
+// rule, because the frame log's records and the occurrence stream's samples are the same frame.
+runtime-frame-fields(communication) ::= <<
+m->set_t(frame.t);
+m->set_step(frame.step);
+m->set_fsm_state(frame.fsm_state);
+m->set_active_motion(frame.active_motion);
+m->set_last_event(frame.last_event);
+m->set_state_since_t(frame.state_since_t);
+m->set_state_since_wall_ns(frame.state_since_wall_ns);
+m->set_event_t(frame.event_t);
+m->set_event_wall_ns(frame.event_wall_ns);
+m->set_wall_ns(frame.wall_ns);
+m->set_period_ns(frame.period_ns);
+m->set_compute_ns(frame.compute_ns);
+m->set_trigger_count(frame.trigger_count);
+// `active` is not written: which slots a motion drives is already in schema["by_motion"],
+// and the decoder resolves it from active_motion exactly as it does for quantity slots.
+<communication.introspection_artifacts.frame_layout.protobuf.fields.constraints:{f|if (frame.constraints[<f.index>].active) { auto &s = *m->mutable_<f.name>(); const auto &c = frame.constraints[<f.index>]; s.set_error(c.error); s.set_output(c.output); s.set_satisfied(c.satisfied); s.set_sat_t(c.sat_t); s.set_measured(c.measured); s.set_setpoint(c.setpoint); \}}; separator="\n">
+<communication.introspection_artifacts.frame_layout.protobuf.fields.monitors:{f|if (frame.monitors[<f.index>].active) { auto &s = *m->mutable_<f.name>(); const auto &x = frame.monitors[<f.index>]; s.set_value(x.value); s.set_satisfied(x.satisfied); s.set_sat_t(x.sat_t); \}}; separator="\n">
+<communication.introspection_artifacts.frame_layout.protobuf.fields.quantities:{f|<quantity-field-set(f)>}; separator="\n">
+<communication.introspection_artifacts.frame_layout.protobuf.fields.devices:{f|{ auto &s = *m->mutable_<f.name>(); const auto &x = frame.devices[<f.index>]; s.set_seq(x.seq); s.set_success(x.success); \}}; separator="\n">
+// Only the slots this tick actually filled: mutable_ materializes a sub-message even when
+// empty, so writing the whole pool would ship 31 empty wrappers on every eventless tick.
+<communication.introspection_artifacts.frame_layout.protobuf.fields.triggers:{f|if (frame.trigger_count > <f.index>) { auto &s = *m->mutable_<f.name>(); const auto &x = frame.triggers[<f.index>]; s.set_kind(x.kind); s.set_idx(x.idx); s.set_fsm_state(x.fsm_state); s.set_t(x.t); s.set_wall_ns(x.wall_ns); \}}; separator="\n">
+<communication.introspection_artifacts.frame_layout.protobuf.fields.poses:{f|if (frame.poses[<f.index>].active) { auto &s = *m->mutable_<f.name>(); const auto &x = frame.poses[<f.index>]; s.set_px(x.px); s.set_py(x.py); s.set_pz(x.pz); s.set_qx(x.qx); s.set_qy(x.qy); s.set_qz(x.qz); s.set_qw(x.qw); \}}; separator="\n">
+<communication.introspection_artifacts.frame_layout.protobuf.fields.twists:{f|if (frame.twists[<f.index>].active) { auto &s = *m->mutable_<f.name>(); const auto &x = frame.twists[<f.index>]; s.set_lx(x.lx); s.set_ly(x.ly); s.set_lz(x.lz); s.set_ax(x.ax); s.set_ay(x.ay); s.set_az(x.az); \}}; separator="\n">
+<communication.introspection_artifacts.frame_layout.protobuf.fields.wrenches:{f|if (frame.wrenches[<f.index>].active) { auto &s = *m->mutable_<f.name>(); const auto &x = frame.wrenches[<f.index>]; s.set_fx(x.fx); s.set_fy(x.fy); s.set_fz(x.fz); s.set_tx(x.tx); s.set_ty(x.ty); s.set_tz(x.tz); \}}; separator="\n">
+>>
+
 introspection_runtime_header(communication, configuration) ::= <<
 // GENERATED by motion-spec codegen. Do not edit.
 #pragma once
@@ -53,6 +102,7 @@ introspection_runtime_header(communication, configuration) ::= <<
 
 #include \<atomic\>
 #include \<chrono\>
+#include \<cmath\>
 #include \<cstddef\>
 #include \<cstdint\>
 #include \<cstdio\>
@@ -151,6 +201,43 @@ static_assert(sizeof(TwistSlot) == 7 * 8, "TwistSlot must be padding-free");
 static_assert(sizeof(WrenchSlot) == 7 * 8, "WrenchSlot must be padding-free");
 static_assert(sizeof(Frame) == kFrameSizeBytes, "Frame layout must match frame_layout.json");
 static_assert(std::is_trivially_copyable_v\<Frame\>, "Frame must stay trivially copyable");
+
+inline constexpr std::int64_t kOccurrenceStateChange = 0;
+inline constexpr std::int64_t kOccurrenceEvent = 1;
+inline constexpr std::int64_t kOccurrenceConstraintEdge = 2;
+inline constexpr std::int64_t kOccurrenceMonitorEdge = 3;
+inline constexpr std::int64_t kOccurrenceMemberEdge = 4;
+inline constexpr std::int64_t kOccurrenceSample = 5;
+
+// One semantic thing that happened, stamped with the tick it happened at. The runtime detects
+// every edge here already; this is the record of it, and the runtime graph is its projection.
+// A SAMPLE carries the whole frame, so the graph never has to open the frame log.
+struct Occurrence {
+    std::uint64_t step;
+    double t;
+    std::int64_t wall_ns;
+    std::int64_t fsm_state;
+    std::int64_t active_motion;
+    std::int64_t kind;
+    std::int64_t index;
+    std::int64_t member;
+    std::int64_t from_state;
+    std::int64_t satisfied;
+    std::int64_t state_since_wall_ns;
+    double value;
+    Frame frame;
+};
+
+static_assert(std::is_trivially_copyable_v\<Occurrence\>, "Occurrence must stay trivially copyable");
+
+// Length-delimited framing for a protobuf record stream (varint size + bytes).
+inline void append_varint(std::string &out, std::uint64_t value) {
+    while (value \>= 128) {
+        out.push_back(static_cast\<char\>((value % 128) + 128));
+        value /= 128;
+    \}
+    out.push_back(static_cast\<char\>(value));
+}
 
 inline std::int64_t wall_time_ns() {
     const auto now = std::chrono::system_clock::now().time_since_epoch();
@@ -359,15 +446,6 @@ private:
         return true;
     \}
 
-    static void append_varint(std::string &out, std::uint64_t value) {
-        while (value \>= 128) {
-            out.push_back(static_cast\<char\>((value % 128) + 128));
-            value /= 128;
-        \}
-        out.push_back(static_cast\<char\>(value));
-    \}
-
-    // Length-delimited framing for the protobuf record stream (varint size + bytes).
     bool write_delimited(const std::string &message) {
         if (!log_) return false;
         prefix_.clear();
@@ -391,31 +469,7 @@ private:
     void write_frame(const Frame &frame) {
         record_.Clear();
         log::RuntimeFrame *m = record_.mutable_frame();
-        m->set_t(frame.t);
-        m->set_step(frame.step);
-        m->set_fsm_state(frame.fsm_state);
-        m->set_active_motion(frame.active_motion);
-        m->set_last_event(frame.last_event);
-        m->set_state_since_t(frame.state_since_t);
-        m->set_state_since_wall_ns(frame.state_since_wall_ns);
-        m->set_event_t(frame.event_t);
-        m->set_event_wall_ns(frame.event_wall_ns);
-        m->set_wall_ns(frame.wall_ns);
-        m->set_period_ns(frame.period_ns);
-        m->set_compute_ns(frame.compute_ns);
-        m->set_trigger_count(frame.trigger_count);
-        // `active` is not written: which slots a motion drives is already in schema["by_motion"],
-        // and the decoder resolves it from active_motion exactly as it does for quantity slots.
-        <communication.introspection_artifacts.frame_layout.protobuf.fields.constraints:{f|if (frame.constraints[<f.index>].active) { auto &s = *m->mutable_<f.name>(); const auto &c = frame.constraints[<f.index>]; s.set_error(c.error); s.set_output(c.output); s.set_satisfied(c.satisfied); s.set_sat_t(c.sat_t); s.set_measured(c.measured); s.set_setpoint(c.setpoint); \}}; separator="\n        ">
-        <communication.introspection_artifacts.frame_layout.protobuf.fields.monitors:{f|if (frame.monitors[<f.index>].active) { auto &s = *m->mutable_<f.name>(); const auto &x = frame.monitors[<f.index>]; s.set_value(x.value); s.set_satisfied(x.satisfied); s.set_sat_t(x.sat_t); \}}; separator="\n        ">
-        <communication.introspection_artifacts.frame_layout.protobuf.fields.quantities:{f|<quantity-field-set(f)>}; separator="\n        ">
-        <communication.introspection_artifacts.frame_layout.protobuf.fields.devices:{f|{ auto &s = *m->mutable_<f.name>(); const auto &x = frame.devices[<f.index>]; s.set_seq(x.seq); s.set_success(x.success); \}}; separator="\n        ">
-        // Only the slots this tick actually filled: mutable_ materializes a sub-message even when
-        // empty, so writing the whole pool would ship 31 empty wrappers on every eventless tick.
-        <communication.introspection_artifacts.frame_layout.protobuf.fields.triggers:{f|if (frame.trigger_count > <f.index>) { auto &s = *m->mutable_<f.name>(); const auto &x = frame.triggers[<f.index>]; s.set_kind(x.kind); s.set_idx(x.idx); s.set_fsm_state(x.fsm_state); s.set_t(x.t); s.set_wall_ns(x.wall_ns); \}}; separator="\n        ">
-        <communication.introspection_artifacts.frame_layout.protobuf.fields.poses:{f|if (frame.poses[<f.index>].active) { auto &s = *m->mutable_<f.name>(); const auto &x = frame.poses[<f.index>]; s.set_px(x.px); s.set_py(x.py); s.set_pz(x.pz); s.set_qx(x.qx); s.set_qy(x.qy); s.set_qz(x.qz); s.set_qw(x.qw); \}}; separator="\n        ">
-        <communication.introspection_artifacts.frame_layout.protobuf.fields.twists:{f|if (frame.twists[<f.index>].active) { auto &s = *m->mutable_<f.name>(); const auto &x = frame.twists[<f.index>]; s.set_lx(x.lx); s.set_ly(x.ly); s.set_lz(x.lz); s.set_ax(x.ax); s.set_ay(x.ay); s.set_az(x.az); \}}; separator="\n        ">
-        <communication.introspection_artifacts.frame_layout.protobuf.fields.wrenches:{f|if (frame.wrenches[<f.index>].active) { auto &s = *m->mutable_<f.name>(); const auto &x = frame.wrenches[<f.index>]; s.set_fx(x.fx); s.set_fy(x.fy); s.set_fz(x.fz); s.set_tx(x.tx); s.set_ty(x.ty); s.set_tz(x.tz); \}}; separator="\n        ">
+        <runtime-frame-fields(communication)>
         payload_.clear();
         record_.SerializeToString(&payload_);
         if (write_delimited(payload_)) {
@@ -468,6 +522,167 @@ private:
     std::uint64_t write_errors_ = 0;
 };
 
+// The run's semantic record: one appended record per thing that happened, written the same way
+// the frame log is written and opening with the identical header bytes, so one reader reads the
+// decode contract out of either file. Small -- hundreds of records a minute, not one a tick.
+class OccurrenceLogger {
+public:
+    OccurrenceLogger(
+        const std::string &path,
+        std::size_t ring_capacity = 1024)
+        : mask_(ring_capacity - 1) {
+        if (path.empty()) return;
+        if (ring_capacity == 0 || (ring_capacity & (ring_capacity - 1)) != 0) return;
+        ring_.resize(ring_capacity);
+        health_path_ = path + ".health.json";
+        log_ = std::fopen(path.c_str(), "wb");
+        if (!log_) return;
+        write_header();
+        running_.store(true, std::memory_order_relaxed);
+        writer_ = std::thread(&OccurrenceLogger::run, this);
+    \}
+
+    ~OccurrenceLogger() { close(); \}
+
+    void close() {
+        bool expected = true;
+        if (!running_.compare_exchange_strong(expected, false, std::memory_order_relaxed)) {
+            return;
+        \}
+        if (writer_.joinable()) writer_.join();
+        if (log_) {
+            std::fclose(log_);
+            log_ = nullptr;
+        \}
+        write_health();
+    \}
+
+    void push(const Occurrence &occurrence) {
+        attempted_.fetch_add(1, std::memory_order_relaxed);
+        if (!running_.load(std::memory_order_relaxed)) return;
+        const std::uint64_t head = head_.load(std::memory_order_relaxed);
+        const std::uint64_t tail = tail_.load(std::memory_order_acquire);
+        if (head - tail \>= ring_.size()) {
+            dropped_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        \}
+        ring_[head & mask_] = occurrence;
+        head_.store(head + 1, std::memory_order_release);
+        accepted_.fetch_add(1, std::memory_order_relaxed);
+    \}
+
+private:
+    void run() {
+        while (running_.load(std::memory_order_relaxed)) {
+            if (!drain()) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        \}
+        drain();
+    \}
+
+    bool drain() {
+        const std::uint64_t head = head_.load(std::memory_order_acquire);
+        std::uint64_t tail = tail_.load(std::memory_order_relaxed);
+        if (tail == head) return false;
+        while (tail != head) {
+            write_occurrence(ring_[tail & mask_]);
+            ++tail;
+        \}
+        tail_.store(tail, std::memory_order_release);
+        return true;
+    \}
+
+    bool write_delimited(const std::string &message) {
+        if (!log_) return false;
+        prefix_.clear();
+        append_varint(prefix_, message.size());
+        return std::fwrite(prefix_.data(), 1, prefix_.size(), log_) == prefix_.size()
+            && std::fwrite(message.data(), 1, message.size(), log_) == message.size();
+    \}
+
+    void write_header() {
+        if (!write_delimited(std::string(
+                reinterpret_cast\<const char *\>(kFrameLogHeaderRecord),
+                kFrameLogHeaderRecordSize))) {
+            ++write_errors_;
+        \}
+        std::fflush(log_);
+    \}
+
+    void write_occurrence(const Occurrence &occurrence) {
+        record_.Clear();
+        log::Occurrence *o = record_.mutable_occurrence();
+        o->set_step(occurrence.step);
+        o->set_t(occurrence.t);
+        o->set_wall_ns(occurrence.wall_ns);
+        o->set_fsm_state(occurrence.fsm_state);
+        o->set_active_motion(occurrence.active_motion);
+        o->set_kind(static_cast\<log::Occurrence_Kind\>(occurrence.kind));
+        o->set_index(occurrence.index);
+        o->set_member(occurrence.member);
+        o->set_from_state(occurrence.from_state);
+        o->set_satisfied(occurrence.satisfied != 0);
+        o->set_value(occurrence.value);
+        o->set_state_since_wall_ns(occurrence.state_since_wall_ns);
+        if (occurrence.kind == kOccurrenceSample) {
+            const Frame &frame = occurrence.frame;
+            log::RuntimeFrame *m = o->mutable_frame();
+            <runtime-frame-fields(communication)>
+        \}
+        payload_.clear();
+        record_.SerializeToString(&payload_);
+        if (write_delimited(payload_)) {
+            ++written_;
+            // The graph is projected from this file while the run is still writing it, so a
+            // record that stays in the C library's buffer is a record the projector cannot see.
+            std::fflush(log_);
+        \} else {
+            ++write_errors_;
+        \}
+    \}
+
+    void write_health() {
+        std::FILE *health = std::fopen(health_path_.c_str(), "wb");
+        if (!health) return;
+        const std::uint64_t attempted = attempted_.load(std::memory_order_relaxed);
+        const std::uint64_t accepted = accepted_.load(std::memory_order_relaxed);
+        const std::uint64_t dropped = dropped_.load(std::memory_order_relaxed);
+        std::fprintf(
+            health,
+            "{\n"
+            "  \"attempted_occurrences\": %llu,\n"
+            "  \"accepted_occurrences\": %llu,\n"
+            "  \"written_occurrences\": %llu,\n"
+            "  \"write_errors\": %llu,\n"
+            "  \"dropped_occurrences\": %llu,\n"
+            "  \"complete\": %s\n"
+            "}\n",
+            static_cast\<unsigned long long\>(attempted),
+            static_cast\<unsigned long long\>(accepted),
+            static_cast\<unsigned long long\>(written_),
+            static_cast\<unsigned long long\>(write_errors_),
+            static_cast\<unsigned long long\>(dropped),
+            (dropped == 0 && accepted == written_ && write_errors_ == 0) ? "true" : "false");
+        std::fclose(health);
+    \}
+
+    std::vector\<Occurrence\> ring_;
+    std::uint64_t mask_ = 0;
+    std::string health_path_;
+    std::FILE *log_ = nullptr;
+    log::OccurrenceLogRecord record_;
+    std::string payload_;
+    std::string prefix_;
+    std::thread writer_;
+    std::atomic\<bool\> running_{false};
+    std::atomic\<std::uint64_t\> head_{0};
+    std::atomic\<std::uint64_t\> tail_{0};
+    std::atomic\<std::uint64_t\> attempted_{0};
+    std::atomic\<std::uint64_t\> accepted_{0};
+    std::atomic\<std::uint64_t\> dropped_{0};
+    std::uint64_t written_ = 0;
+    std::uint64_t write_errors_ = 0;
+};
+
 class RunPublisher {
 public:
     RunPublisher()
@@ -475,7 +690,10 @@ public:
 <if(configuration.platform.simulated)>
           control_(ctrl_shm_name()),
 <endif>
-          logger_(log_path()) {}
+          logger_(log_path()),
+          occurrences_(occurrence_path()) {
+        for (std::size_t i = 0; i \< kNumWatched; ++i) member_prev_[i] = -1;
+    \}
 <if(configuration.platform.simulated)>
 
     ControlState poll_control() { return control_.poll(); \}
@@ -486,7 +704,18 @@ public:
     // Close the log before a backend tears down its GUI, its hardware or its worker threads.
     // The destructor would otherwise run last, and a teardown that hangs or aborts takes the
     // health record -- and the run's recoverable tail -- with it. Closing twice is a no-op.
-    void close() { logger_.close(); \}
+    void close() {
+        // The run's last tick, so the graph's extent is the run's rather than its last edge's:
+        // without it every span still open closes at whenever something last happened.
+        if (started_) {
+            Occurrence occ = occurrence(kOccurrenceSample);
+            occ.frame = scratch_;
+            occurrences_.push(occ);
+            started_ = false;
+        \}
+        logger_.close();
+        occurrences_.close();
+    \}
 
     void begin_tick(double t, std::uint64_t step, std::int64_t active_motion) {
         begin_tick(t, step, active_motion, active_motion);
@@ -510,6 +739,9 @@ public:
             latched_motion_ = active_motion;
             for (std::size_t i = 0; i \< kNumConstraints; ++i) { csat_since_[i] = 0.0; csat_prev_[i] = false; \}
             for (std::size_t i = 0; i \< kNumMonitors; ++i) { msat_since_[i] = 0.0; msat_prev_[i] = false; \}
+            // A watched member is judged by motion-local slots too, so nothing it held carries
+            // across; -1 is "not yet seen", which emits no edge.
+            for (std::size_t i = 0; i \< kNumWatched; ++i) { member_prev_[i] = -1; \}
         \}
     \}
 
@@ -526,9 +758,9 @@ public:
         slot.setpoint = setpoint;
         slot.satisfied = satisfied ? 1 : 0;
         // Since *when* it has been satisfied, latched on the rising edge. Writing the current
-        // tick's t here would only restate the frame's own timestamp.
+        // tick's t here would only restate the frame's own timestamp. The latch itself moves on
+        // in end_tick, where the edge is recorded, so the two cannot disagree.
         if (satisfied && !csat_prev_[index]) csat_since_[index] = scratch_.t;
-        csat_prev_[index] = satisfied;
         slot.sat_t = satisfied ? csat_since_[index] : 0.0;
     \}
 
@@ -539,7 +771,6 @@ public:
         slot.value = value;
         slot.satisfied = satisfied ? 1 : 0;
         if (satisfied && !msat_prev_[index]) msat_since_[index] = scratch_.t;
-        msat_prev_[index] = satisfied;
         slot.sat_t = satisfied ? msat_since_[index] : 0.0;
     \}
 
@@ -602,15 +833,122 @@ public:
 
     void end_tick() {
         scratch_.compute_ns = steady_time_ns() - tick_start_ns_;
+        emit_occurrences();
         shm_.publish(scratch_);
         logger_.push(scratch_);
     \}
 
 private:
+    Occurrence occurrence(std::int64_t kind) const {
+        Occurrence occ{};
+        occ.step = scratch_.step;
+        occ.t = scratch_.t;
+        occ.wall_ns = scratch_.wall_ns;
+        occ.fsm_state = scratch_.fsm_state;
+        occ.active_motion = scratch_.active_motion;
+        occ.kind = kind;
+        occ.index = -1;
+        occ.member = -1;
+        occ.from_state = -1;
+        return occ;
+    \}
+
+    // Everything semantic this tick, in the order a reader has to see it: the events first,
+    // because the state change they drove has to be able to name them; the entry next, because
+    // the edges under it are read against the state they belong to; the sampled value set last.
+    void emit_occurrences() {
+        const bool entered = !started_ || scratch_.fsm_state != prev_fsm_state_;
+        const std::int64_t appended = scratch_.trigger_count \< static_cast\<std::int64_t\>(kNumTriggers)
+            ? scratch_.trigger_count
+            : static_cast\<std::int64_t\>(kNumTriggers);
+        for (std::int64_t i = 0; i \< appended; ++i) {
+            Occurrence occ = occurrence(kOccurrenceEvent);
+            occ.wall_ns = scratch_.triggers[i].wall_ns;
+            occ.index = scratch_.triggers[i].idx;
+            occurrences_.push(occ);
+        \}
+        if (entered) {
+            Occurrence occ = occurrence(kOccurrenceStateChange);
+            occ.from_state = started_ ? prev_fsm_state_ : -1;
+            occ.state_since_wall_ns = scratch_.wall_ns;
+            occurrences_.push(occ);
+        \}
+        // On entry every latch reads unsatisfied, so a constraint already held when its motion
+        // begins opens a span there rather than leaving its later loss closing nothing.
+        for (std::size_t i = 0; i \< kNumConstraints; ++i) {
+            const ConstraintSlot &slot = scratch_.constraints[i];
+            if (!slot.active) continue;
+            const bool satisfied = slot.satisfied != 0;
+            if (satisfied != (entered ? false : csat_prev_[i])) {
+                Occurrence occ = occurrence(kOccurrenceConstraintEdge);
+                occ.index = static_cast\<std::int64_t\>(i);
+                occ.satisfied = satisfied ? 1 : 0;
+                occ.value = slot.error;
+                occurrences_.push(occ);
+            \}
+            csat_prev_[i] = satisfied;
+        \}
+        // A monitor slot is motion-local, so the entry tick only re-latches: an arming that
+        // crossed the boundary would be a different monitor's.
+        for (std::size_t i = 0; i \< kNumMonitors; ++i) {
+            const MonitorSlot &slot = scratch_.monitors[i];
+            if (!slot.active) continue;
+            const bool satisfied = slot.satisfied != 0;
+            if (!entered && satisfied != msat_prev_[i]) {
+                Occurrence occ = occurrence(kOccurrenceMonitorEdge);
+                occ.index = static_cast\<std::int64_t\>(i);
+                occ.satisfied = satisfied ? 1 : 0;
+                occ.value = slot.value;
+                occurrences_.push(occ);
+            \}
+            msat_prev_[i] = satisfied;
+        \}
+        if (!entered) {
+            for (std::size_t w = 0; w \< kNumWatched; ++w) {
+                const WatchedMember &row = kWatched[w];
+                if (row.motion != scratch_.active_motion) continue;
+                if (!scratch_.monitors[row.monitor].active) continue;
+                const double band = row.tolerance_slot \>= 0
+                    ? scratch_.quantities[row.tolerance_slot]
+                    : row.tolerance;
+                const double error = scratch_.quantities[row.error_slot];
+                const bool held = std::fabs(error) \<= band;
+                if (member_prev_[w] \>= 0 && (member_prev_[w] != 0) != held) {
+                    Occurrence occ = occurrence(kOccurrenceMemberEdge);
+                    occ.index = row.monitor;
+                    occ.member = row.member;
+                    occ.satisfied = held ? 1 : 0;
+                    occ.value = error;
+                    occurrences_.push(occ);
+                \}
+                member_prev_[w] = held ? 1 : 0;
+            \}
+        \}
+        // The tick a state is entered on still runs the motion that is leaving, so the sample
+        // that resolves the new one is owed to the next tick.
+        if (entered) {
+            sample_due_ = true;
+        \} else if (kSampleIntervalS > 0.0
+                   && (sample_due_ || scratch_.t \>= last_sample_t_ + kSampleIntervalS)) {
+            Occurrence occ = occurrence(kOccurrenceSample);
+            occ.frame = scratch_;
+            occurrences_.push(occ);
+            last_sample_t_ = scratch_.t;
+            sample_due_ = false;
+        \}
+        prev_fsm_state_ = scratch_.fsm_state;
+        started_ = true;
+    \}
+
     // An empty MOTION_SPEC_FRAME_LOG disables the logger (motion-spec run --no-log).
     static std::string log_path() {
         if (const char *env = std::getenv("MOTION_SPEC_FRAME_LOG")) return env;
         return "frame_log.pb";
+    \}
+
+    static std::string occurrence_path() {
+        if (const char *env = std::getenv("MOTION_SPEC_OCCURRENCE_LOG")) return env;
+        return "occurrences.pb";
     \}
 
     static std::string shm_name() {
@@ -635,15 +973,22 @@ private:
     bool csat_prev_[kNumConstraints ? kNumConstraints : 1]{};
     double msat_since_[kNumMonitors ? kNumMonitors : 1]{};
     bool msat_prev_[kNumMonitors ? kNumMonitors : 1]{};
+    // Tri-state per watched member: -1 not yet seen, 0 lost, 1 held.
+    std::int8_t member_prev_[kNumWatched ? kNumWatched : 1]{};
     std::int64_t latched_motion_ = -1;
     LatestFramePublisher shm_;
 <if(configuration.platform.simulated)>
     ControlChannel control_;
 <endif>
     FrameLogger logger_;
+    OccurrenceLogger occurrences_;
     std::int64_t tick_start_ns_ = 0;
     std::int64_t last_tick_ns_ = 0;
     std::int64_t last_event_count_ = 0;
+    std::int64_t prev_fsm_state_ = -1;
+    bool started_ = false;
+    bool sample_due_ = false;
+    double last_sample_t_ = 0.0;
 };
 
 } // namespace motion_spec::introspection
@@ -849,6 +1194,8 @@ message FrameLogHeader {
   int32 end_state = 15;
   int64 nominal_period_ns = 16;
   string fsm_namespace = 17;
+  // The spacing the occurrence stream samples value sets at; 0 means it samples none.
+  double sample_interval_s = 18;
 }
 
 message ConstraintSlot {
@@ -937,6 +1284,48 @@ message FrameLogRecord {
   oneof record {
     FrameLogHeader header = 1;
     RuntimeFrame frame = 2;
+  }
+}
+
+// One semantic thing that happened, appended at the tick it happened. The runtime graph is
+// projected from these; the frame log stays the dense numeric record.
+message Occurrence {
+  uint64 step = 1;
+  double t = 2;
+  sfixed64 wall_ns = 3;
+  sfixed64 fsm_state = 4;
+  sfixed64 active_motion = 5;
+  enum Kind {
+    STATE_CHANGE = 0;
+    EVENT = 1;
+    CONSTRAINT_EDGE = 2;
+    MONITOR_EDGE = 3;
+    MEMBER_EDGE = 4;
+    SAMPLE = 5;
+  }
+  Kind kind = 6;
+  // event idx | controller slot | monitor slot | monitor slot (member edge)
+  sfixed64 index = 7;
+  // watched-member ordinal for MEMBER_EDGE, else -1
+  sfixed64 member = 8;
+  // STATE_CHANGE: the state left behind, -1 when the run had none
+  sfixed64 from_state = 9;
+  // CONSTRAINT_EDGE / MONITOR_EDGE / MEMBER_EDGE (held)
+  bool satisfied = 10;
+  // error | monitor value | member error
+  double value = 11;
+  // STATE_CHANGE: the entry instant
+  sfixed64 state_since_wall_ns = 12;
+  // SAMPLE only
+  RuntimeFrame frame = 13;
+}
+
+// Field 1 is the FrameLogHeader of the frame log's own envelope, so both streams carry the
+// identical header record bytes and one reader reads the contract out of either.
+message OccurrenceLogRecord {
+  oneof record {
+    FrameLogHeader header = 1;
+    Occurrence occurrence = 2;
   }
 }
 >>

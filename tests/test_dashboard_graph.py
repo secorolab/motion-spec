@@ -18,7 +18,7 @@ from dashboard_fixture import (
     model_jsonld,
     schema,
 )
-from frame_log_fixture import flat_frame, write_frame_log_pb
+from frame_log_fixture import flat_frame, occurrence, write_frame_log_pb, write_occurrence_log_pb
 from rdflib.namespace import split_uri
 
 from motion_spec.dashboard.catalog import graph_name, provenance_graph, rdf_name
@@ -36,6 +36,10 @@ MS_PROV = "https://secorolab.github.io/metamodels/motion-spec/prov#"
 TIME = "http://www.w3.org/2006/time#"
 QUDT = "http://qudt.org/schema/qudt/"
 SENS = "https://secorolab.github.io/metamodels/robot/sensors#"
+DCTERMS = "http://purl.org/dc/terms/"
+BDD = "https://secorolab.github.io/metamodels/acceptance-criteria/bdd#"
+OBS = "https://secorolab.github.io/metamodels/observation#"
+EXEC = "https://secorolab.github.io/metamodels/execution-context#"
 ERROR_VALUE = 0.125
 OBSERVATIONS = f"""
 PREFIX sosa: <{SOSA}>
@@ -106,6 +110,38 @@ def _frames(doc, count=101):
     ]
 
 
+def _occurrences(doc, *, sampled=True):
+    """What the run appended: it entered its one state, reached its goal, and sampled itself."""
+    frames = {frame["step"]: frame for frame in _frames(doc)}
+    entries = [occurrence("STATE_CHANGE", 0, t=0.0, wall_ns=1_000_000_000, active_motion=0)]
+    entries.append(
+        occurrence(
+            "CONSTRAINT_EDGE",
+            51,
+            t=5.1,
+            wall_ns=1_000_000_051,
+            active_motion=0,
+            index=0,
+            satisfied=True,
+            value=ERROR_VALUE,
+        )
+    )
+    if sampled:
+        # One value set a second, which at 100 Hz is every tenth tick, and one at the close.
+        entries += [
+            occurrence(
+                "SAMPLE",
+                step,
+                t=step * 0.1,
+                wall_ns=1_000_000_000 + step,
+                active_motion=0,
+                frame=frames[step],
+            )
+            for step in (*range(1, 101, 10), 100)
+        ]
+    return sorted(entries, key=lambda entry: entry["step"])
+
+
 def _store(tmp_path, doc):
     log = tmp_path / "frame_log.pb"
     write_frame_log_pb(log, doc, _frames(doc))
@@ -115,27 +151,44 @@ def _store(tmp_path, doc):
     return store
 
 
-def _service(tmp_path, **kwargs):
-    doc = schema()
-    return GraphService(_generation(tmp_path, doc), _store(tmp_path, doc), **kwargs)
-
-
-def _archived_ttl(tmp_path, doc, frames) -> Path:
-    """A run directory that kept its own runtime.ttl -- the archived record, not a projection."""
+def _archived_ttl(tmp_path, doc, *, sampled=True) -> Path:
+    """A run directory holding the graph its own projector wrote from its occurrence stream."""
     run = tmp_path / "run"
-    (run / "logs").mkdir(parents=True)
+    (run / "logs").mkdir(parents=True, exist_ok=True)
     write_frame_log_pb(run / "logs" / "frame_log.pb", doc, _frames(doc))
-    (run / "manifest.json").write_text(
-        json.dumps({"run_id": "run-1", "files": {"frame_log": "logs/frame_log.pb"}})
+    write_occurrence_log_pb(
+        run / "logs" / "occurrences.pb", doc, _occurrences(doc, sampled=sampled)
     )
-    return write_runtime_ttl(run, frames)
+    # The design graph travels with the run: the units a sample is labelled with and the
+    # signals it observes are read from it, not restated in the record.
+    (run / "model").mkdir(exist_ok=True)
+    (run / "model" / "test-app.ld.json").write_text(json.dumps(model_jsonld()))
+    (run / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "run-1",
+                "files": {
+                    "frame_log": "logs/frame_log.pb",
+                    "occurrences": "logs/occurrences.pb",
+                    "model_imports": ["model/test-app.ld.json"],
+                },
+            }
+        )
+    )
+    return write_runtime_ttl(run)
 
 
-def _archived_service(tmp_path, **kwargs):
+def _service(tmp_path, *, sampled=True, **kwargs):
     doc = schema()
-    store = _store(tmp_path, doc)
-    ttl = _archived_ttl(tmp_path, doc, store.snapshot())
-    return GraphService(_generation(tmp_path, doc), store, runtime_ttl=ttl, **kwargs)
+    return GraphService(
+        _generation(tmp_path, doc),
+        _store(tmp_path, doc),
+        runtime_ttl=_archived_ttl(tmp_path, doc, sampled=sampled),
+        **kwargs,
+    )
+
+
+_archived_service = _service
 
 
 def test_a_live_query_returns_the_current_value_of_every_active_slot(tmp_path):
@@ -161,15 +214,15 @@ def test_the_live_graph_is_replaced_not_accumulated(tmp_path):
     assert len(set(sizes)) == 1, f"live graph grew across queries: {sizes}"
 
 
-def test_history_is_sampled_at_the_declared_interval_and_excludes_quantities(tmp_path):
-    service = _service(tmp_path, sample_interval_s=1.0)
+def test_history_is_one_observation_per_sampled_value_set(tmp_path):
+    service = _service(tmp_path)
     service.sync()
     runtime = service.dataset.graph(RUNTIME_GRAPH)
 
     def sampled(prop):
         return len(list(runtime.subjects(rdflib.URIRef(SOSA + "observedProperty"), prop)))
 
-    # 10 s of sim time at 1.0 s spacing.
+    # 10 s of sim time at the 1.0 s spacing the run sampled at.
     assert abs(sampled(rdflib.URIRef(ERROR_SIGNAL)) - 10) <= 1
     assert abs(sampled(rdflib.URIRef(OUTPUT_SIGNAL)) - 10) <= 1
     assert abs(sampled(rdflib.URIRef(MONITOR)) - 10) <= 1
@@ -177,8 +230,8 @@ def test_history_is_sampled_at_the_declared_interval_and_excludes_quantities(tmp
     assert sampled(rdflib.URIRef(QUANTITY)) == 0
 
 
-def test_history_carries_no_values_when_sampling_is_off(tmp_path):
-    service = _service(tmp_path, sample_interval_s=None)
+def test_history_carries_no_values_when_the_run_sampled_none(tmp_path):
+    service = _service(tmp_path, sampled=False)
     service.sync()
     runtime = service.dataset.graph(RUNTIME_GRAPH)
 
@@ -190,7 +243,7 @@ def test_history_carries_no_values_when_sampling_is_off(tmp_path):
 def test_the_dashboard_mints_no_vocabulary(tmp_path):
     """Every predicate and class the dashboard emits must already exist in a standard or
     vendored vocabulary. A new term here means the graph stopped being composable."""
-    service = _service(tmp_path, sample_interval_s=1.0)
+    service = _service(tmp_path)
     service.sync()
     live = service.dataset.graph(LIVE_GRAPH)
     runtime = service.dataset.graph(RUNTIME_GRAPH)
@@ -214,11 +267,15 @@ def test_the_dashboard_mints_no_vocabulary(tmp_path):
     } | {PROV + "generatedAtTime", QUDT + "value", QUDT + "unit"}
     assert {str(o) for o in live.objects(None, rdflib.RDF.type)} == {
         SOSA + "Observation",
+        # What made them: an untyped madeBySensor object is what sens:ObservationShape refuses.
+        SOSA + "Sensor",
         TIME + "Instant",
         QUDT + "QuantityValue",
     }
 
-    allowed = {SOSA, PROV, MSRUN, MS_PROV, TIME, QUDT, SENS, str(rdflib.RDF)}
+    # The run's own graph states its provenance too, in the same vendored vocabularies.
+    allowed = {SOSA, PROV, MSRUN, MS_PROV, TIME, QUDT, SENS, DCTERMS, BDD, OBS, EXEC}
+    allowed |= {str(rdflib.RDF)}
     for graph in (live, runtime):
         assert namespaces(graph.predicates()) <= allowed
         assert namespaces(graph.objects(None, rdflib.RDF.type)) <= allowed
@@ -319,10 +376,10 @@ def test_a_term_the_source_does_not_declare_is_still_reported(tmp_path):
     assert items[0]["source_line"] is None
 
 
-def test_an_archived_run_answers_the_state_timeline_from_its_runtime_ttl(tmp_path):
-    """The whole plan in one query: what was active, from which step to which. The archived
-    record is the source; the frame log only produced it."""
-    service = _archived_service(tmp_path)
+def test_a_run_answers_the_state_timeline_from_its_runtime_ttl(tmp_path):
+    """The whole plan in one query: what was active, from which step to which. The run's own
+    graph is the source; the dashboard derives nothing of its own."""
+    service = _service(tmp_path)
     assert service.runtime_source == "archive"
     _type, (_headers, rows) = service.query(SPANS)
     spans = {(str(element), int(begin), int(end)) for element, begin, end in rows}
@@ -332,35 +389,40 @@ def test_an_archived_run_answers_the_state_timeline_from_its_runtime_ttl(tmp_pat
     assert (CONSTRAINT, 51, 100) in spans
 
 
-def test_an_archived_run_is_never_also_projected(tmp_path):
-    """Loading the record and projecting the frames would emit every occurrence twice, and
-    silently double every duration read off one."""
+def test_the_run_graph_is_read_and_never_rederived(tmp_path):
+    """Deriving occurrences here on top of the ones the run recorded would emit every one
+    twice, and silently double every duration read off it."""
     doc = schema()
-    store = _store(tmp_path, doc)
-    ttl = _archived_ttl(tmp_path, doc, store.snapshot())
-    archived = rdflib.Graph().parse(ttl, format="turtle")
+    ttl = _archived_ttl(tmp_path, doc)
     on_record = {
         occ
         for kind in ("MotionExecution", "ConstraintMaintenance")
-        for occ in archived.subjects(rdflib.RDF.type, rdflib.URIRef(MS_PROV + kind))
+        for occ in rdflib.Graph()
+        .parse(ttl, format="turtle")
+        .subjects(rdflib.RDF.type, rdflib.URIRef(MS_PROV + kind))
     }
 
-    service = GraphService(_generation(tmp_path, doc), store, runtime_ttl=ttl)
+    service = GraphService(_generation(tmp_path, doc), _store(tmp_path, doc), runtime_ttl=ttl)
     size = len(service.dataset.graph(RUNTIME_GRAPH))
     _type, (_headers, rows) = service.query(OCCURRENCES)
 
+    assert on_record
     assert {occ for (occ,) in rows} == on_record
-    assert len(rows) == len(on_record), "an occurrence was projected on top of the record"
-    assert len(service.dataset.graph(RUNTIME_GRAPH)) == size, "sync() projected onto the archive"
-    assert service._fed == 0, "frames reached a projector for an archived run"
+    assert len(service.dataset.graph(RUNTIME_GRAPH)) == size, "sync() added to the run's record"
 
 
-def test_a_live_run_projects_because_it_has_no_record_yet(tmp_path):
-    service = _service(tmp_path)
+def test_a_growing_graph_is_re_read_when_the_run_replaces_it(tmp_path):
+    """A live run keeps writing its graph, so the dashboard takes it again when it changes."""
+    doc = schema()
+    ttl = _archived_ttl(tmp_path, doc, sampled=False)
+    service = GraphService(_generation(tmp_path, doc), _store(tmp_path, doc), runtime_ttl=ttl)
+    before = len(service.dataset.graph(RUNTIME_GRAPH))
+
+    grown = _archived_ttl(tmp_path, doc)
+    assert grown == ttl
     service.sync()
 
-    assert service.runtime_source == "projected"
-    assert len(service.dataset.graph(RUNTIME_GRAPH)) > 0
+    assert len(service.dataset.graph(RUNTIME_GRAPH)) > before
 
 
 def test_a_construct_query_answers_with_triples_and_a_select_keeps_its_shape(tmp_path):

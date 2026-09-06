@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 
 import click
 
+from motion_spec.generation.artifacts import DEFAULT_SAMPLE_INTERVAL_S
 from motion_spec.setup import DEFAULT_PREFIX
 
 
@@ -633,12 +634,21 @@ def health(profiles: tuple[str, ...], targets: tuple[str, ...]) -> None:
     "--name",
     help="Name the generation tree under the base directory; defaults to the model's stem.",
 )
+@click.option(
+    "--sample-interval",
+    type=click.FloatRange(min=0.0),
+    default=DEFAULT_SAMPLE_INTERVAL_S,
+    show_default=True,
+    help="Seconds of platform time between the value sets the run's occurrence stream samples "
+    "into runtime.ttl; 0 records edges only.",
+)
 def gen(
     stage_or_model: str,
     model: Path | None,
     output_dir: Path | None,
     seed: int | None,
     name: str | None,
+    sample_interval: float,
 ) -> None:
     """Generate IR or C++ from a .robmot MODEL; CODE is the default stage."""
     from rdf_utils.constraints import ConstraintViolation
@@ -661,7 +671,7 @@ def gen(
         raise click.BadParameter("MODEL must be a .robmot file", param_hint="MODEL")
     try:
         generation = _new_generation(model, output_dir, name)
-        generate_model(model, generation, stage=stage, seed=seed)
+        generate_model(model, generation, stage=stage, seed=seed, sample_interval_s=sample_interval)
     except ConstraintViolation as exc:
         raise _model_rejected(exc) from exc
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
@@ -821,7 +831,11 @@ def diff(generation_a: Path, generation_b: Path, as_json_flag: bool) -> None:
 @click.argument("log", type=click.Path(path_type=Path))
 @click.option("--jsonl", is_flag=True, help="Emit decoded frames as JSON Lines.")
 @click.option("--verify", is_flag=True, help="Verify the manifest and frame-log header.")
-@click.option("--recover-runtime-ttl", is_flag=True, help="Recover runtime.ttl from the log.")
+@click.option(
+    "--recover-runtime-ttl",
+    is_flag=True,
+    help="Re-project runtime.ttl from the run's occurrence stream.",
+)
 def replay(log: Path, jsonl: bool, verify: bool, recover_runtime_ttl: bool) -> None:
     """Inspect or recover a recorded run LOG."""
     from motion_spec.introspection.journal import record as _journal_record
@@ -831,7 +845,7 @@ def replay(log: Path, jsonl: bool, verify: bool, recover_runtime_ttl: bool) -> N
     from motion_spec.introspection.replay import (
         decode_frames,
         resolve_archive,
-        runtime_frames,
+        run_dir_for,
         summarize,
         validate_header,
     )
@@ -841,9 +855,8 @@ def replay(log: Path, jsonl: bool, verify: bool, recover_runtime_ttl: bool) -> N
             from motion_spec.introspection.archive import consolidate_provenance
             from motion_spec.introspection.runtime_graph import write_runtime_ttl
 
-            run_dir, log_path, _manifest, _schema = resolve_archive(log)
-            records, _frame_count = runtime_frames(log_path)
-            out = write_runtime_ttl(run_dir, records)
+            run_dir = run_dir_for(log)
+            out = write_runtime_ttl(run_dir)
             consolidate_provenance(run_dir)
             click.echo(out)
         elif verify:
@@ -942,12 +955,6 @@ def _is_simulated(generation: Path) -> bool:
 )
 @click.option("--steps", type=click.IntRange(min=1), help="Maximum headless simulation steps.")
 @click.option("--no-log", is_flag=True, help="Do not write the frame log; the run has no replay.")
-@click.option(
-    "--no-runtime-ttl",
-    is_flag=True,
-    help="Skip runtime.ttl recovery when the run ends; "
-    "'motion-spec replay <run> --recover-runtime-ttl' writes it from the log later.",
-)
 @click.argument("executable-args", nargs=-1, type=click.UNPROCESSED)
 def run(
     input: Path,
@@ -963,7 +970,6 @@ def run(
     record: tuple[str, ...],
     steps: int | None,
     no_log: bool,
-    no_runtime_ttl: bool,
     executable_args: tuple[str, ...],
 ) -> None:
     """Run a .robmot INPUT, generating and building it first, or an existing GENERATION.
@@ -1022,7 +1028,6 @@ def run(
             executable_args=arguments,
             run_id=run_id,
             cwd=cwd,
-            recover_runtime_ttl=not no_runtime_ttl,
             record=list(record),
             record_log=not no_log,
         )
@@ -1284,12 +1289,6 @@ def _taxonomy_row(per_class: dict[str, int]) -> str:
 )
 @click.option("--steps", type=click.IntRange(min=1), help="Maximum headless simulation steps.")
 @click.option("--no-log", is_flag=True, help="Do not write the frame log; the run has no replay.")
-@click.option(
-    "--no-runtime-ttl",
-    is_flag=True,
-    help="Skip runtime.ttl recovery when the run ends; "
-    "'motion-spec replay <run> --recover-runtime-ttl' writes it from the log later.",
-)
 @click.argument("executable-args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def rerun(
@@ -1301,7 +1300,6 @@ def rerun(
     record: tuple[str, ...],
     steps: int | None,
     no_log: bool,
-    no_runtime_ttl: bool,
     executable_args: tuple[str, ...],
 ) -> None:
     """Run a generation again, in a run of its own.
@@ -1323,6 +1321,5 @@ def rerun(
         record=record,
         steps=steps,
         no_log=no_log,
-        no_runtime_ttl=no_runtime_ttl,
         executable_args=executable_args,
     )

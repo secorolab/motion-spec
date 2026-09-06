@@ -15,7 +15,6 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from motion_spec.introspection import frame_log_pb
 from motion_spec.introspection.archive import (
     consolidate_provenance,
     create_archive_manifest,
@@ -38,6 +37,13 @@ from motion_spec.introspection.provenance import (
     repositories,
 )
 from motion_spec.introspection.ros_video import RosImageRecorder, real_camera_recordings
+from motion_spec.introspection.runtime_graph import (
+    OCCURRENCE_REL,
+    RUNTIME_TTL_REL,
+    RuntimeGraphWriter,
+    design_graphs,
+    record_runtime_ttl_with_rec,
+)
 
 
 class RunnerError(RuntimeError):
@@ -52,7 +58,6 @@ def run_cataloged(
     executable_args: list[str] | None = None,
     run_id: str | None = None,
     cwd: Path | str | None = None,
-    recover_runtime_ttl: bool = False,
     record: list[str] | None = None,
     record_log: bool = True,
 ) -> int:
@@ -63,6 +68,7 @@ def run_cataloged(
     executable_args = [str(arg) for arg in (executable_args or [])]
     run_id = run_id or run_dir.name
     frame_log = run_dir / "logs" / "frame_log.pb"
+    occurrence_log = run_dir / OCCURRENCE_REL
     rec_path = run_dir / "rec.ld.json"
 
     _validate_new_run(run_dir, source_dir, executable, Path(cwd).resolve() if cwd else None)
@@ -76,6 +82,18 @@ def run_cataloged(
     run_dir.mkdir(parents=True, exist_ok=True)
     _start_rec_run(run_dir, run_id, source_dir, executable, schema)
 
+    # The graph grows on disk as the run appends to its occurrence stream, so a run that never
+    # reaches the archive step still leaves its semantic record.
+    writer = (
+        RuntimeGraphWriter(
+            run_dir,
+            run_id=run_id,
+            occurrence_log=occurrence_log,
+            model_paths=design_graphs(source_dir / "model"),
+        )
+        if record_log
+        else None
+    )
     try:
         with (
             _rosbag_recorder(run_dir, *_rosbag_settings(source_dir)),
@@ -86,10 +104,12 @@ def run_cataloged(
                 executable_args,
                 cwd=Path(cwd).resolve() if cwd else None,
                 frame_log=frame_log,
+                occurrence_log=occurrence_log,
                 run_id=run_id,
                 rec_path=rec_path,
                 record=record,
                 record_log=record_log,
+                graph_writer=writer,
             )
     except Exception:
         _finish_rec_run(rec_path, run_id, "FAILED")
@@ -112,7 +132,7 @@ def run_cataloged(
         return returncode
 
     try:
-        create_archive_manifest(
+        manifest = create_archive_manifest(
             run_dir,
             source_dir=source_dir,
             run_id=run_id,
@@ -121,23 +141,11 @@ def run_cataloged(
             complete_rec=False,
             recorded=record_log,
         )
-        # Archiving has just packed the log, so ask after it by whichever name it now has --
-        # by the one it was written under, an interrupted run looks like it recorded nothing.
-        archived_log = frame_log_pb.log_path(frame_log)
-        if recover_runtime_ttl and record_log and (returncode == 0 or archived_log.exists()):
-            from motion_spec.introspection.replay import runtime_frames
-            from motion_spec.introspection.runtime_graph import write_runtime_ttl
-
-            # Recovery reads the whole frame log: report how long it took, and never let a
-            # failure vanish behind whatever the caller does with the raise.
-            started = time.monotonic()
-            try:
-                records, _frame_count = runtime_frames(archived_log)
-                write_runtime_ttl(run_dir, records)
-            except Exception as exc:
-                print(f"runtime.ttl recovery failed: {exc!r}", file=sys.stderr)
-                raise
-            print(f"runtime.ttl recovered in {time.monotonic() - started:.1f}s")
+        # The graph was written while the run ran, naming its files where the runtime wrote
+        # them; archiving has since moved some, so the document is restated over the same file
+        # and only then recorded -- rec records a digest, and this is when there is a final one.
+        if writer is not None and writer.rewrite(manifest.get("files", {})) is not None:
+            record_runtime_ttl_with_rec(run_dir, manifest, run_dir / RUNTIME_TTL_REL)
         if returncode == 0:
             _finish_rec_run(rec_path, run_id, "COMPLETED")
             # The lifecycle is terminal, so the run's documents are final and join into one
@@ -507,10 +515,12 @@ def _run_executable(
     *,
     cwd: Path | None,
     frame_log: Path,
+    occurrence_log: Path,
     run_id: str,
     rec_path: Path,
     record: list[str] | None = None,
     record_log: bool = True,
+    graph_writer=None,
 ) -> int:
     # logs/ holds the console tee and any camera videos too, so it is made whether or not the
     # frame log goes in it.
@@ -518,6 +528,7 @@ def _run_executable(
     env = os.environ.copy()
     # An empty path is how the runtime is told to record nothing (--no-log).
     env["MOTION_SPEC_FRAME_LOG"] = str(frame_log.resolve()) if record_log else ""
+    env["MOTION_SPEC_OCCURRENCE_LOG"] = str(occurrence_log.resolve()) if record_log else ""
     env["MOTION_SPEC_RUN_ID"] = run_id
     env["MOTION_SPEC_REC_PATH"] = str(rec_path.resolve())
     # A camera to record, and where the video goes: the runtime renders the frame, so it
@@ -545,6 +556,8 @@ def _run_executable(
         raise RunnerError(f"{executable}: failed to launch: {exc}") from exc
     pump = threading.Thread(target=_tee, args=(process.stdout, console), daemon=True)
     pump.start()
+    if graph_writer is not None:
+        graph_writer.start()
     try:
         return process.wait()
     except KeyboardInterrupt:
@@ -557,6 +570,10 @@ def _run_executable(
         _finish_rec_run(rec_path, run_id, "INTERRUPTED")
         return 130
     finally:
+        # The stream has stopped growing, so the graph is drained and closed here rather than
+        # after the archive step: what the run recorded is complete the moment it exits.
+        if graph_writer is not None:
+            graph_writer.stop()
         # A grandchild holding the pipe open must not stall the run's bookkeeping.
         pump.join(timeout=5)
         process.stdout.close()

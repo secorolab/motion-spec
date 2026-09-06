@@ -709,7 +709,7 @@ _PROTO_WORD = {
 def _declared_in_proto_text(text: str) -> dict:
     """{message: {field: (type word, number, repeated)}}, parsed off the rendered .proto."""
     messages: dict = {}
-    current, depth = None, 0
+    current, depth, enum_depth = None, 0, 0
     for raw in text.splitlines():
         line = raw.split("//")[0].strip()
         if line.startswith("message "):
@@ -719,10 +719,17 @@ def _declared_in_proto_text(text: str) -> dict:
             continue
         elif line.endswith("{"):
             depth += 1
+            # An enum's members are values, not fields on the wire.
+            if line.startswith("enum "):
+                enum_depth = depth
         elif line == "}":
+            if depth == enum_depth:
+                enum_depth = 0
             depth -= 1
             if depth == 0:
                 current = None
+        elif enum_depth:
+            continue
         elif line.endswith(";"):
             parts = line[:-1].split()
             repeated = parts[0] == "repeated"
@@ -737,7 +744,7 @@ def _declared_in_descriptor(fields: dict) -> dict:
         message.name: {
             field.name: (
                 field.type_name.rsplit(".", 1)[-1]
-                if field.type == D.TYPE_MESSAGE
+                if field.type in (D.TYPE_MESSAGE, D.TYPE_ENUM)
                 else _PROTO_WORD[field.type],
                 field.number,
                 field.label == D.LABEL_REPEATED,

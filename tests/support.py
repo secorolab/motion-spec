@@ -10,7 +10,13 @@ from pathlib import Path
 
 from motion_spec.generation.artifacts import fields_with_offsets
 
-from frame_log_fixture import flat_frame, write_frame_log_pb, write_frame_log_proto
+from frame_log_fixture import (
+    flat_frame,
+    occurrence,
+    write_frame_log_pb,
+    write_frame_log_proto,
+    write_occurrence_log_pb,
+)
 
 
 def _hash_doc(doc: dict) -> str:
@@ -113,6 +119,15 @@ def _write_frame_log(path: Path, schema: dict) -> None:
     write_frame_log_pb(path, schema, [flat])
 
 
+def _write_occurrence_log(path: Path, schema: dict) -> None:
+    """What the run's semantic record says: it entered its one state on the tick it logged."""
+    write_occurrence_log_pb(
+        path,
+        schema,
+        [occurrence("STATE_CHANGE", 7, fsm_state=0, from_state=-1, state_since_wall_ns=100)],
+    )
+
+
 def _source_tree(path: Path) -> Path:
     schema = _schema()
     layout = _layout(schema)
@@ -129,6 +144,19 @@ def _source_tree(path: Path) -> Path:
     (path / "headers" / "runtime.hpp").write_text("// generated\n")
     (path / "main.cpp").write_text("// generated\n")
     _write_frame_log(path / "frame_log.pb", schema)
+    _write_occurrence_log(path / "occurrences.pb", schema)
+    (path / "occurrences.pb.health.json").write_text(
+        json.dumps(
+            {
+                "attempted_occurrences": 1,
+                "accepted_occurrences": 1,
+                "written_occurrences": 1,
+                "dropped_occurrences": 0,
+                "complete": True,
+            },
+            indent=4,
+        )
+    )
     (path / "frame_log.pb.health.json").write_text(
         json.dumps(
             {

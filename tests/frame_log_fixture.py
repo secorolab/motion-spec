@@ -49,3 +49,30 @@ def write_frame_log_pb(path: Path, schema: dict, flats: list[dict]) -> None:
         frame_log_pb.write_delimited(fh, build_frame_log_header_record(schema))
         for flat in flats:
             frame_log_pb.write_delimited(fh, frame_log_pb.frame_record(flat, schema))
+
+
+def occurrence(kind: str, step: int, **values) -> dict:
+    """One occurrence as the runtime appends it: the tick it happened at, and its own fields."""
+    return {
+        "kind": kind,
+        "step": step,
+        "t": values.pop("t", step / 1000),
+        "wall_ns": values.pop("wall_ns", 100 + step),
+        "fsm_state": values.pop("fsm_state", 0),
+        "active_motion": values.pop("active_motion", -1),
+        "index": values.pop("index", -1),
+        "member": values.pop("member", -1),
+        "from_state": values.pop("from_state", -1),
+        "satisfied": values.pop("satisfied", False),
+        "value": values.pop("value", 0.0),
+        "state_since_wall_ns": values.pop("state_since_wall_ns", 0),
+        **values,
+    }
+
+
+def write_occurrence_log_pb(path: Path, schema: dict, occurrences: list[dict]) -> None:
+    """The occurrence stream a run leaves: the same header record, then one record each."""
+    with open(path, "wb") as fh:
+        frame_log_pb.write_delimited(fh, build_frame_log_header_record(schema))
+        for entry in occurrences:
+            frame_log_pb.write_delimited(fh, frame_log_pb.occurrence_record(entry, schema))

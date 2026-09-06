@@ -6,11 +6,18 @@
  * The dashboard: what is wired to what, once, when the page loads.
  */
 
-import { $, RESTRICTED_TABS, api, askConfirm, formatBytes, post, showError, snack, state } from "./core.js";
+import { $, RESTRICTED_TABS, api, askConfirm, copyText, formatBytes, post, showError, snack, stampText, state } from "./core.js";
 import { filterGenerations, loadGenerations, selectGeneration } from "./generations.js";
 import { goHome, loadLocation, openTab, sidebarLoader } from "./routing.js";
 import { reserveVideoSpace } from "./run.js";
+import { installSelectTheme } from "./selects.js";
 import { filterSources, loadSources } from "./sources.js";
+
+let trashEntries;
+
+const loadTrash = () => trashEntries ??= api("/api/trash");
+
+installSelectTheme();
 
 document.querySelectorAll("aside button[data-tab]").forEach((button) => {
   button.onclick = () => openTab(button.dataset.tab);
@@ -54,6 +61,7 @@ $("#delete-selected").onclick = async () => {
   state.selected.clear();
   $("#selection-actions").hidden = true;
   state.cache = {};
+  trashEntries = null;
   if (inTrash(generation)) {
     state.generation = null;
     return goHome();
@@ -97,6 +105,7 @@ export async function updateRoot(path) {
   const kind = state.tab === "sources" ? "sources" : "logs";
   state.roots = await post("/api/roots", { kind, path });
   state.cache = {};
+  trashEntries = null;
   (kind === "logs" ? loadGenerations : loadSources)(true).catch(showError);
 }
 
@@ -106,6 +115,7 @@ $("#pick-root").onclick = async () => {
   const kind = state.tab === "sources" ? "sources" : "logs";
   state.roots = await api(`/api/pick-root?kind=${kind}`);
   state.cache = {};
+  trashEntries = null;
   (kind === "logs" ? loadGenerations : loadSources)(true).catch(showError);
 };
 
@@ -156,22 +166,60 @@ fitSidebar();
 $("#home").onclick = goHome;
 
 $("#browse-trash").onclick = async () => {
+  let entries;
+  try { entries = await loadTrash(); }
+  catch (error) { return showError(error); }
   const dialog = document.createElement("dialog");
   dialog.className = "trash-browser";
-  dialog.innerHTML = '<h2>Trash</h2><p>Only items from this generation root are shown. Existing paths will never be overwritten.</p><input type="search" placeholder="Filter trashed paths" aria-label="Filter trashed paths"><div class="trash-entries"></div><button class="close">Close</button><p role="status"></p>';
+  dialog.innerHTML = '<header><div><span class="eyebrow">RECOVERABLE FILES</span><h2>Trash</h2></div><button class="close trash-action">Close</button></header><p>Only items from this generation root are shown. Existing paths will never be overwritten.</p><div class="browser-tools"><input type="search" placeholder="Filter trashed paths" aria-label="Filter trashed paths"></div><div class="run-header trash-columns"><span>Path</span><button class="trash-date-sort" aria-sort="descending">Deleted ↓</button><span>Actions</span></div><div class="trash-entries"></div><p role="status"></p>';
   document.body.append(dialog);
   dialog.querySelector(".close").onclick = () => dialog.close();
   dialog.onclose = () => dialog.remove();
-  dialog.showModal();
   try {
-    const entries = await api("/api/trash");
     const list = dialog.querySelector(".trash-entries");
+    const dateSort = dialog.querySelector(".trash-date-sort");
+    let newestFirst = true;
+    let shown = 100;
+    const groupLabel = (value) => {
+      if (!value) return "Unknown time";
+      const date = new Date(value);
+      const today = new Date();
+      const yesterday = new Date(today);
+      yesterday.setDate(today.getDate() - 1);
+      if (date.toDateString() === today.toDateString()) return "Today";
+      if (date.toDateString() === yesterday.toDateString()) return "Yesterday";
+      return date.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+    };
     const draw = () => {
       const needle = dialog.querySelector("input").value.toLowerCase();
-      list.replaceChildren(...entries.filter((entry) => entry.path.toLowerCase().includes(needle)).map((entry) => {
+      const visible = entries.filter((entry) => entry.path.toLowerCase().includes(needle)).sort((left, right) => {
+        const order = (new Date(right.deleted_at ?? 0)) - (new Date(left.deleted_at ?? 0));
+        return newestFirst ? order : -order;
+      });
+      const page = visible.slice(0, shown);
+      const groups = new Map();
+      page.forEach((entry) => {
+        const label = groupLabel(entry.deleted_at);
+        groups.set(label, [...(groups.get(label) ?? []), entry]);
+      });
+      const rows = [...groups].flatMap(([group, groupEntries]) => {
+        const heading = document.createElement("span");
+        heading.className = "eyebrow";
+        heading.textContent = group;
+        return [heading, ...groupEntries.map((entry) => {
         const row = document.createElement("div");
-        const label = document.createElement("span");
+        row.className = "item";
+        const details = document.createElement("div");
+        const label = document.createElement("strong");
         label.textContent = entry.path;
+        const time = document.createElement("small");
+        time.textContent = stampText(entry.deleted_at);
+        details.append(label);
+        const actions = document.createElement("div");
+        actions.className = "trash-actions";
+        const copy = document.createElement("button");
+        copy.textContent = "Copy";
+        copy.onclick = () => copyText(`${state.roots.logs}/${entry.path}`);
         const button = document.createElement("button");
         button.textContent = entry.exists ? "Path exists" : "Restore";
         button.disabled = entry.exists;
@@ -190,14 +238,41 @@ $("#browse-trash").onclick = async () => {
             dialog.querySelector('[role="status"]').textContent = error.message;
           }
         };
-        row.append(label, button);
+        actions.append(copy, button);
+        row.append(details, time, actions);
         return row;
-      }));
+        })];
+      });
+      if (page.length < visible.length) {
+        const pager = document.createElement("div");
+        pager.className = "table-pager";
+        const count = document.createElement("span");
+        count.textContent = `${page.length} of ${visible.length}`;
+        const more = document.createElement("button");
+        more.textContent = "Show more";
+        more.onclick = () => {
+          shown += 100;
+          draw();
+        };
+        pager.append(count, more);
+        rows.push(pager);
+      }
+      list.replaceChildren(...rows);
       if (!list.children.length) list.textContent = "No matching items in Trash.";
     };
-    dialog.querySelector("input").oninput = draw;
+    dialog.querySelector("input").oninput = () => {
+      shown = 100;
+      draw();
+    };
+    dateSort.onclick = () => {
+      newestFirst = !newestFirst;
+      dateSort.textContent = `Deleted ${newestFirst ? "↓" : "↑"}`;
+      dateSort.setAttribute("aria-sort", newestFirst ? "descending" : "ascending");
+      draw();
+    };
     draw();
   } catch (error) { dialog.querySelector('[role="status"]').textContent = error.message; }
+  dialog.showModal();
 };
 
 window.onpopstate = loadLocation;
@@ -207,6 +282,7 @@ window.onpopstate = loadLocation;
 state.roots = await api("/api/roots").catch(() => ({}));
 state.restricted = Boolean(state.roots.restricted);
 $("#browse-trash").hidden = state.restricted;
+if (!state.restricted) loadTrash().catch(() => {});
 if (state.restricted) {
   RESTRICTED_TABS.forEach((tab) => {
     document.querySelectorAll(`[data-tab="${tab}"]`).forEach((button) => { button.style.display = "none"; });

@@ -80,7 +80,8 @@ export async function loadGenerations(refresh = false) {
       const item = listItem(
       // The folder as it is on disk; when it was made is the line under it, not this one.
       generation.label || generation.path.split("/").pop(),
-      [generation.pinned ? generation.name : null, generation.label ? generation.path.split("/").pop() : null,
+      [generation.protected ? "Protected" : null,
+       generation.pinned ? generation.name : null, generation.label ? generation.path.split("/").pop() : null,
        ...generation.tags, ...generation.note_tags, generation.variant, stampText(generation.created ?? generation.built_at),
        `${generation.runs} runs`, formatBytes(generation.size_bytes)].filter(Boolean).join(" · "),
       (event) => {
@@ -126,13 +127,13 @@ export function stopRun(path) {
   return post("/api/run/stop", { path });
 }
 
-/** Browser controls survive refreshes; cleanup only selects candidates for preview. */
+/** Browser controls survive refreshes. */
 function bindBrowserTools() {
   if ($("#generation-tools")) return;
   const tools = document.createElement("div");
   tools.id = "generation-tools";
   tools.className = "browser-tools";
-  tools.innerHTML = '<select id="generation-filter" aria-label="Filter generations"><option value="all">All generations</option><option value="pinned">Pinned</option><option value="running">Running</option><option value="failed">Failed</option><option value="hardware">Hardware</option><option value="simulation">Simulation</option></select><select id="generation-sort" aria-label="Sort generations"><option value="newest">Newest</option><option value="last-run">Last run</option><option value="size">Largest</option></select><button id="cleanup-old">Clean up old…</button>';
+  tools.innerHTML = '<select id="generation-filter" aria-label="Filter generations"><option value="all">All generations</option><option value="pinned">Pinned</option><option value="running">Running</option><option value="failed">Failed</option><option value="hardware">Hardware</option><option value="simulation">Simulation</option></select><select id="generation-sort" aria-label="Sort generations"><option value="newest">Newest</option><option value="last-run">Last run</option><option value="size">Largest</option></select>';
   $("#search").parentElement.after(tools);
   for (const kind of ["filter", "sort"]) {
     const select = tools.querySelector(`#generation-${kind}`);
@@ -142,20 +143,6 @@ function bindBrowserTools() {
       loadGenerations().catch(showError);
     };
   }
-  tools.querySelector("#cleanup-old").hidden = state.restricted;
-  tools.querySelector("#cleanup-old").onclick = () => {
-    const days = prompt("Select unpinned generations older than how many days?", "30");
-    if (days === null) return;
-    if (!Number.isFinite(Number(days)) || Number(days) < 0 || !days.trim()) return snack("Enter a nonnegative number of days");
-    $("#clear-selection").click();
-    const cutoff = Date.now() - Number(days) * 86400000;
-    state.cache.generations.generations.filter((g) => !g.pinned && !g.last_run?.live
-      && !g.baseline?.startsWith(`${g.path}/runs/`)
-      && new Date(g.created ?? g.built_at).getTime() < cutoff)
-      .forEach((g) => toggleSelection(g.path));
-    if (state.selected.size) $("#delete-selected").click();
-    else snack("No old, unpinned generations match");
-  };
 }
 
 export function bindRunAgain(page, path, cameras, simulated) {
@@ -486,7 +473,7 @@ export async function selectGeneration(path) {
     const short = run.id.replace(/^run-\d{8}T/, "").replace(/Z$/, "");
     row.innerHTML = `<input type="checkbox" class="pick" title="Select; shift-click to select a range"><span>${runPage * 10 + index + 1}</span><strong>${short}</strong><span>${stampText(run.started)}</span><span>${run.duration_s.toFixed(2)} s</span><span>${(run.written_frames ?? 0).toLocaleString()}</span><span class="badge badge-${status.toLowerCase()}">${status}</span>`;
     row.firstChild.checked = state.selected.has(run.path);
-    row.querySelector("strong").textContent = `${run.pinned ? "★ " : ""}${generation.baseline === run.path ? "Baseline · " : ""}${run.label || short}`;
+    row.querySelector("strong").textContent = `${run.pinned ? "★ " : ""}${run.protected ? "Protected · " : ""}${generation.baseline === run.path ? "Baseline · " : ""}${run.label || short}`;
     row.firstChild.onclick = (event) => {
       event.stopPropagation();
       event.shiftKey ? pickRange(run.path, row.parentElement, "main") : toggleSelection(run.path, "main");

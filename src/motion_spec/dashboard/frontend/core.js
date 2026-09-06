@@ -76,14 +76,26 @@ export function formatBytes(bytes) {
     : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-export function askConfirm({ message, confirmLabel = "Confirm" }) {
+export function askConfirm({ message, confirmLabel = "Confirm", require = "" }) {
   return new Promise((resolve) => {
     const dialog = document.createElement("dialog");
     dialog.className = "ask";
-    dialog.innerHTML = '<p></p><div class="ask-actions"><button value="no">Cancel</button>'
+    dialog.innerHTML = '<p></p><input class="ask-typed" hidden autocomplete="off" spellcheck="false">'
+      + '<div class="ask-actions"><button value="no">Cancel</button>'
       + '<button value="yes" class="ask-yes"></button></div>';
     dialog.querySelector("p").textContent = message;
-    dialog.querySelector(".ask-yes").textContent = confirmLabel;
+    const yes = dialog.querySelector(".ask-yes");
+    const typed = dialog.querySelector(".ask-typed");
+    yes.textContent = confirmLabel;
+    // Asking for a word back is what makes an answer deliberate; without one this stays a
+    // plain confirm, so every caller keeps the dialog it already had.
+    const settled = () => !require || typed.value.trim() === require;
+    if (require) {
+      typed.hidden = false;
+      typed.placeholder = require;
+      yes.disabled = true;
+      typed.oninput = () => { yes.disabled = !settled(); };
+    }
     dialog.querySelectorAll("button").forEach((button) => {
       button.onclick = () => dialog.close(button.value);
     });
@@ -94,12 +106,12 @@ export function askConfirm({ message, confirmLabel = "Confirm" }) {
     dialog.onkeydown = (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
-        dialog.close("yes");
+        if (settled()) dialog.close("yes");
       }
     };
     document.body.append(dialog);
     dialog.showModal();
-    dialog.querySelector(".ask-yes").focus();
+    (require ? typed : yes).focus();
   });
 }
 

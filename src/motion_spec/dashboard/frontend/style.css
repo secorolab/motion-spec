@@ -7,6 +7,7 @@
   --text: #f1eee7; --muted: #a7a8a4; --dim: #73777d; --accent: #e07a5f;
   --good: #79c6a5; --mono: "SFMono-Regular", Consolas, monospace;
   --code: "JetBrainsMono Nerd Font", "JetBrains Mono", var(--mono);
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -17,6 +18,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 14px Inter, s
 button, input, select { font: inherit; }
 button { border: 0; background: transparent; color: var(--muted); cursor: pointer; transition: background 100ms ease-out, color 100ms ease-out, transform 80ms ease-out; }
 button:active { background: #383d45; color: var(--text); transform: translateY(1px); }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
 
 .brand, .eyebrow, .aside-head, button, select, input { font-family: var(--mono); }
 /* line-height 1 so the wordmark's box is its glyphs, not its leading: with the inherited 1.6 the
@@ -45,6 +47,7 @@ aside { position: relative; display: grid; grid-template-rows: auto minmax(0, 1f
 
 nav { display: flex; height: 48px; border-bottom: 1px solid var(--line); }
 nav button { flex: 1; border-bottom: 2px solid transparent; }
+nav button:hover, nav button:focus-visible { color: var(--text); border-color: var(--muted); }
 #sidebar-toggle {
   position: fixed; top: 14px; left: calc(var(--aside, 290px) - 38px); z-index: 5; display: grid; width: 24px; height: 26px;
   place-items: center; padding: 0; border: 1px solid var(--line); background: var(--side); color: var(--dim); font-size: 16px; line-height: 1; transition: left 180ms cubic-bezier(.2, .8, .2, 1);
@@ -256,8 +259,6 @@ h1 { margin: 7px 0; font-size: 30px; }
 .notes-compose-bar input { flex: 1 1 auto; padding: 4px 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font: 10px var(--mono); }
 .notes-compose textarea:focus, .note textarea:focus, .notes-compose-bar input:focus { border-color: var(--accent); outline: 0; }
 .notes-compose textarea::placeholder, .notes-compose-bar input::placeholder { color: var(--dim); }
-.note-add, .note-action { flex: none; padding: 3px 8px; border: 1px solid var(--line); color: var(--dim); font: 10px var(--mono); }
-.note-add:hover, .note-action:hover { border-color: var(--accent); color: var(--accent); }
 .notes-state { color: var(--dim); font: 10px var(--mono); }
 .notes-bar { display: flex; align-items: center; gap: 8px; color: var(--dim); font: 10px var(--mono); }
 .notes-bar input, .note-head input { margin-right: 2px; }
@@ -355,7 +356,7 @@ h1 { margin: 7px 0; font-size: 30px; }
 .constraint-motion.active-motion { box-shadow: inset 3px 0 var(--accent); background: #282c31; color: var(--text); }
 
 .chart-controls { display: flex; align-items: center; gap: 8px; margin: 16px 0; }
-.chart-controls select { min-width: 260px; padding: 7px; border: 1px solid var(--line); background: var(--surface); color: var(--text); }
+.chart-controls select { min-width: 260px; }
 .chart-controls button { padding: 5px 9px; border: 1px solid var(--line); color: var(--muted); font: 10px var(--mono); letter-spacing: .06em; }
 .chart-controls button:hover { border-color: var(--accent); color: var(--accent); }
 /* A state, not an action: the reader's live-plot choice sits apart from the buttons that do things. */
@@ -433,13 +434,13 @@ h1 { margin: 7px 0; font-size: 30px; }
 /* Waited past its declared dwell: the condition kept breaking, or something held it up. */
 .gate-wait.gate-slow { background: var(--accent); opacity: .75; }
 
-#browser, #content, .constraints { scrollbar-color: var(--dim) var(--surface); scrollbar-width: thin; }
-#browser::-webkit-scrollbar, #content::-webkit-scrollbar, .constraints::-webkit-scrollbar { width: 10px; height: 10px; }
-#browser::-webkit-scrollbar-track, #content::-webkit-scrollbar-track, .constraints::-webkit-scrollbar-track { background: var(--surface); }
-#browser::-webkit-scrollbar-thumb, #content::-webkit-scrollbar-thumb, .constraints::-webkit-scrollbar-thumb {
+#browser, #content, .constraints, .trash-entries { scrollbar-color: var(--dim) var(--surface); scrollbar-width: thin; }
+#browser::-webkit-scrollbar, #content::-webkit-scrollbar, .constraints::-webkit-scrollbar, .trash-entries::-webkit-scrollbar { width: 10px; height: 10px; }
+#browser::-webkit-scrollbar-track, #content::-webkit-scrollbar-track, .constraints::-webkit-scrollbar-track, .trash-entries::-webkit-scrollbar-track { background: var(--surface); }
+#browser::-webkit-scrollbar-thumb, #content::-webkit-scrollbar-thumb, .constraints::-webkit-scrollbar-thumb, .trash-entries::-webkit-scrollbar-thumb {
   border: 3px solid var(--surface); border-radius: 9px; background: var(--dim);
 }
-#browser::-webkit-scrollbar-thumb:hover, #content::-webkit-scrollbar-thumb:hover, .constraints::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+#browser::-webkit-scrollbar-thumb:hover, #content::-webkit-scrollbar-thumb:hover, .constraints::-webkit-scrollbar-thumb:hover, .trash-entries::-webkit-scrollbar-thumb:hover { background: var(--accent); }
 
 @media (prefers-reduced-motion: reduce) {
   main, aside, #sidebar-toggle, .transport { transition: none; }
@@ -568,7 +569,7 @@ body:has(.notebook) #content { position: relative; max-width: none; padding: 0; 
 #run-again:not([hidden]) + .replay-tabs { margin-left: 8px; }
 .replay-tabs { display: inline-flex; margin-left: auto; border: 1px solid var(--line); background: var(--bg); }
 .replay-tabs button { padding: 5px 12px; color: var(--dim); font-size: 9px; letter-spacing: .12em; text-transform: uppercase; }
-.replay-tabs button:hover { color: var(--muted); }
+.replay-tabs button:hover, .replay-tabs button:focus-visible { color: var(--muted); }
 .replay-tabs button.active { background: var(--surface); color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
 
 .explore { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 12px; align-items: stretch; height: 100%; min-height: 0; }
@@ -710,9 +711,9 @@ body:has(.notebook) #content { position: relative; max-width: none; padding: 0; 
 #answer { height: 100%; min-height: 0; overflow: auto; border: 1px solid var(--line); }
 #answer:empty { display: none; }
 .table-pager { position: sticky; bottom: 0; left: 0; display: flex; gap: 12px; align-items: center; justify-content: center; padding: 7px 10px; background: var(--surface); border-top: 1px solid var(--line); color: var(--muted); font: 10px var(--mono); }
-.table-pager button { padding: 4px 10px; border: 1px solid var(--line); background: var(--bg); color: var(--muted); font: 10px var(--mono); cursor: pointer; }
-.table-pager button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
-.table-pager button:disabled { color: var(--dim); cursor: default; }
+.table-pager button, .trash-actions button, .trash-action { padding: 4px 10px; border: 1px solid var(--line); background: var(--bg); color: var(--muted); font: 10px var(--mono); cursor: pointer; }
+.table-pager button:hover:not(:disabled), .trash-actions button:hover:not(:disabled), .trash-action:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.table-pager button:disabled, .trash-actions button:disabled, .trash-action:disabled { color: var(--dim); cursor: default; }
 #answer table { width: 100%; border-collapse: collapse; font: 11px var(--code); }
 #answer th { position: sticky; top: 0; padding: 6px 8px; background: var(--bg); color: var(--dim); text-align: left; font-weight: 400; }
 #answer td { padding: 5px 8px; border-top: 1px solid var(--line); color: var(--text); white-space: nowrap; }
@@ -730,16 +731,18 @@ body:has(.notebook) #content { position: relative; max-width: none; padding: 0; 
 .report td { padding: 5px 12px; border-top: 1px solid var(--line); color: var(--text); white-space: nowrap; }
 .report tr:hover td { background: var(--bg); }
 .compare-bar { display: flex; }
-.compare-pick { padding: 5px 9px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 10px var(--mono); }
 /* No run picked yet, so the slot is not a gap in the stack. */
 .compare-slot:empty { display: none; }
 
 .ask { max-width: 340px; padding: 16px 18px; border: 1px solid var(--line); background: var(--surface); color: var(--text); font: 12px/1.5 var(--mono); }
 .ask::backdrop { background: rgba(11, 12, 14, .55); }
 .ask p { margin: 0 0 12px; }
+.ask-typed { width: 100%; margin: 0 0 12px; padding: 6px 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font: 11px var(--mono); }
+.ask-typed:focus { border-color: var(--accent); outline: 0; }
 .ask-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .ask-actions button { padding: 6px 14px; border: 1px solid var(--line); background: var(--bg); color: var(--muted); font: 11px var(--mono); cursor: pointer; }
 .ask-actions button:hover { border-color: var(--muted); color: var(--text); }
+.ask-actions button:disabled, .ask-actions button:disabled:hover { border-color: var(--line); color: var(--dim); cursor: default; }
 .ask-actions .ask-yes { border-color: var(--accent); color: var(--accent); }
 .ask-actions .ask-yes:hover { background: #382b29; color: var(--accent); }
 .plot-members { align-self: center; padding: 3px 9px; border: 1px solid var(--line); background: var(--bg); color: var(--dim); font: 9px var(--mono); letter-spacing: .06em; cursor: pointer; }
@@ -797,6 +800,15 @@ html.restoring #content .empty { visibility: hidden; }
 .picker-panel button { padding: 5px 8px; border: 0; box-shadow: none; background: none; color: var(--muted); font: 10px var(--mono); text-align: left; }
 .picker-panel button:hover { background: #2a2e34; color: var(--text); }
 .picker-panel button[aria-pressed="true"] { box-shadow: none; background: none; color: var(--accent); }
+/* The record picker is the navbar select in another markup: picking several cameras needs a
+   details, not a select, so the trigger, the menu and the way it opens are matched here. */
+.run-bar .picker summary { position: relative; min-width: 96px; min-height: 26px; justify-content: flex-start; padding: 4px 25px 4px 7px; background: var(--surface); color: var(--text); font: 11px/1.2 var(--mono); }
+.run-bar .picker summary::after { position: absolute; right: 9px; width: 5px; height: 5px; border: 0; border-right: 1px solid var(--muted); border-bottom: 1px solid var(--muted); transform: translateY(-2px) rotate(45deg); }
+.run-bar .picker[open] summary::after { border-color: var(--accent); transform: translateY(2px) rotate(225deg); }
+.run-bar .picker summary:hover, .run-bar .picker[open] summary { background: #282c31; color: var(--text); }
+.run-bar .picker-panel { top: calc(100% + 3px); bottom: auto; min-width: max(100%, 150px); padding: 0; gap: 0; box-shadow: 0 10px 24px #0008; }
+.run-bar .picker-panel button { padding: 6px 8px; font: 10px var(--mono); }
+.run-bar .picker-panel button:hover { background: #282c31; color: var(--accent); }
 .run-camera { border-radius: 0; }
 .run-camera[aria-pressed="true"] { border-color: var(--accent); background: #382b29; color: var(--accent); box-shadow: none; }
 .run-camera[aria-pressed="true"]::before { content: "● "; }
@@ -850,8 +862,7 @@ html.restoring #content .empty { visibility: hidden; }
 .videos.one-camera { grid-template-columns: 1fr; }
 .ros-frame { display: block; min-width: 200px; min-height: 112px; max-width: 100%; max-height: var(--video-h, 34vh); background: #000; }
 .ros-topic { display: flex; align-items: center; gap: 6px; padding-top: 6px; }
-.ros-topic select { min-width: 0; flex: 1; padding: 3px 6px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font: 11px var(--mono); }
-.ros-topic select:focus { border-color: var(--accent); outline: none; }
+.ros-topic select { min-width: 0; flex: 1; }
 .ros-status { color: var(--dim); font: 10px var(--mono); }
 .video-strip { display: flex; max-height: 34vh; flex-direction: column; overflow-y: auto; gap: 6px; }
 .video-pick { position: relative; display: block; flex: none; padding: 0; border: 1px solid var(--line); }
@@ -932,26 +943,64 @@ html.restoring #content .empty { visibility: hidden; }
 .note-position input { width: 140px; }
 .marker-note { color: #e0b567; background: transparent; z-index: 5; border: 0; }
 .report-jump { text-decoration: underline; text-underline-offset: 3px; }
-.trash-browser { width: min(850px, 90vw); max-height: 85vh; }
-.trash-entries { max-height: 55vh; overflow: auto; margin: 12px 0; }
-.trash-entries > div { display: flex; gap: 12px; align-items: center; padding: 8px 0; }
-.trash-entries span { flex: 1; overflow-wrap: anywhere; }
-.trash-entries button { flex: none; }
+.trash-browser { width: min(850px, 90vw); max-height: 85vh; background: var(--bg); color: var(--text); border: 1px solid var(--line); }
+.trash-browser header { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
+.trash-browser header .eyebrow { display: block; }
+.trash-browser header h2 { margin: 3px 0 0; }
+.trash-columns, .trash-entries .item { display: grid; grid-template-columns: minmax(0, 1fr) 170px 180px; gap: 12px; align-items: center; }
+.trash-columns { max-width: none; border-bottom: 1px solid var(--line); }
+.trash-columns .trash-date-sort { justify-self: start; padding: 0; color: inherit; font: inherit; letter-spacing: inherit; }
+.trash-columns .trash-date-sort:hover { color: var(--accent); }
+.trash-entries { max-height: 55vh; overflow: auto; margin: 0 0 12px; }
+.trash-entries > .eyebrow { display: block; padding: 12px 14px 6px; border-bottom: 1px solid var(--line); color: var(--dim); font-size: 10px; }
+.trash-entries .item > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.trash-entries .item strong { font: 12px var(--mono); }
+.trash-entries .item small { margin: 0; font: 10px var(--mono); }
+.trash-actions { display: flex; gap: 6px; }
+.trash-actions button { flex: 1; }
 dialog p { white-space: pre-wrap; overflow-wrap: anywhere; }
 .compare-bar { flex-wrap: wrap; }
-.compare-pick { max-width: 100%; }
 .replay:has(> .annotation-editor) { grid-template-rows: auto auto minmax(0, 1fr); gap: 14px; }
 .annotation-editor, .inspection-controls, .note-position, .browser-tools { font: 11px var(--mono); }
 .annotation-editor { padding: 10px 12px; border: 1px solid var(--line); background: var(--side); margin: 0; }
 .annotation-editor label, .note-position label { color: var(--muted); font-size: 10px; }
-.annotation-editor input, .inspection-controls input, .inspection-controls select,
-.note-position input, .browser-tools select, .trash-browser input {
+.annotation-editor input, .inspection-controls input, .note-position input, .browser-tools input {
   padding: 6px 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); border-radius: 0;
 }
 .annotation-editor button, .inspection-controls button, .note-position button, .browser-tools button,
-.trash-browser button { padding: 6px 8px; border: 1px solid var(--line); }
-.annotation-editor .pin[aria-pressed=true] { color: var(--accent); border-color: var(--accent); }
-.annotation-editor input:focus, .inspection-controls input:focus, .note-position input:focus { outline: 1px solid var(--accent); }
-.trash-browser { background: var(--bg); color: var(--text); border: 1px solid var(--line); }
-.trash-browser::backdrop { background: #0009; }
+.note-add, .note-action {
+  padding: 6px 8px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 10px var(--mono);
+}
+.annotation-editor button:hover:not(:disabled), .inspection-controls button:hover:not(:disabled),
+.note-position button:hover:not(:disabled), .browser-tools button:hover:not(:disabled),
+.note-add:hover:not(:disabled), .note-action:hover:not(:disabled) {
+  border-color: var(--accent); background: var(--bg); color: var(--accent);
+}
+.annotation-editor button:disabled, .inspection-controls button:disabled, .note-position button:disabled,
+.browser-tools button:disabled, .note-add:disabled, .note-action:disabled { color: var(--dim); cursor: default; }
+.annotation-editor .pin[aria-pressed=true], .annotation-editor .lock[aria-pressed=true] { color: var(--accent); border-color: var(--accent); }
+.annotation-editor input:focus, .inspection-controls input:focus,
+.note-position input:focus, .browser-tools input:focus { border-color: var(--accent); outline: 0; }
+.generation-notes summary:hover, .generation-notes summary:focus-visible { color: var(--accent); }
+.theme-select { position: relative; min-width: 0; }
+.theme-select-native { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.theme-select .theme-select-trigger { display: flex; width: 100%; min-height: 26px; align-items: center; padding: 4px 25px 4px 7px; border: 1px solid var(--line); background: var(--surface); color: var(--text); font: 11px/1.2 var(--mono); text-align: left; }
+.theme-select-trigger::after { content: ""; position: absolute; right: 9px; width: 5px; height: 5px; border-right: 1px solid var(--muted); border-bottom: 1px solid var(--muted); transform: translateY(-2px) rotate(45deg); }
+.theme-select .theme-select-trigger:hover, .theme-select.open .theme-select-trigger { border-color: var(--accent); background: #282c31; color: var(--text); }
+.theme-select.open .theme-select-trigger::after { border-color: var(--accent); transform: translateY(2px) rotate(225deg); }
+.theme-select .theme-select-trigger:disabled { border-color: var(--line); background: var(--side); color: var(--dim); cursor: default; }
+.theme-select-menu { position: absolute; z-index: 10; top: calc(100% + 3px); left: 0; display: none; width: 100%; max-height: 240px; overflow: auto; border: 1px solid var(--line); background: var(--surface); box-shadow: 0 10px 24px #0008; }
+.theme-select.open .theme-select-menu { display: grid; }
+.theme-select .theme-select-option { padding: 6px 8px; border: 0; background: var(--surface); color: var(--muted); font: 10px var(--mono); text-align: left; }
+.theme-select .theme-select-option:hover:not(:disabled), .theme-select .theme-select-option:focus-visible { background: #282c31; color: var(--accent); outline: 0; }
+.theme-select .theme-select-option[aria-selected=true] { background: var(--bg); color: var(--text); }
+.theme-select-option:disabled { color: var(--dim); cursor: default; }
+/* A press nudges a button down 1px (see `button:active`). In a menu that scrolls, that 1px under
+   the last option is scrollable height it did not have, so the scrollbar blinks in for as long as
+   the button is held. The press still reads through its colour. */
+.theme-select-option:active, .picker-panel button:active { transform: none; }
+.browser-tools .theme-select { flex: 1; max-width: 100%; }
+.chart-controls .theme-select { min-width: 260px; }
+.compare-bar .theme-select { max-width: 100%; }
+.ros-topic .theme-select { min-width: 0; flex: 1; }
 dialog.ask { max-height: 85vh; overflow: auto; }

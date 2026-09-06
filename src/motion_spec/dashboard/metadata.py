@@ -43,6 +43,7 @@ def annotations(path: Path) -> dict:
     return {
         "label": stored.get("label", ""),
         "pinned": stored.get("pinned", False),
+        "protected": stored.get("protected", False),
         "tags": stored.get("tags", []),
     }
 
@@ -68,6 +69,24 @@ def save_annotations(path: Path, changes: dict) -> dict:
         result = {**annotations(path), **changes}
         result["label"] = result["label"].strip()
         result["tags"] = list(dict.fromkeys(tag.strip() for tag in result["tags"] if tag.strip()))
+        write_document(path / "dashboard.json", result)
+        return result
+
+
+def set_protected(path: Path, enabled: bool, confirm: str = "") -> dict:
+    """Mark a bundle undeletable, and take that mark back only when its name is typed.
+
+    Two layers rather than one: deleting refuses a protected bundle outright, and clearing the
+    protection is a separate act that names what it clears, so no single click does both. Set
+    independently of `pinned`, which a click toggles and which orders the catalog as well.
+    """
+    generation_of(path)
+    if type(enabled) is not bool:
+        raise ValueError("enabled must be boolean")
+    if not enabled and (not isinstance(confirm, str) or confirm.strip() != path.name):
+        raise ValueError(f"type '{path.name}' to remove its protection")
+    with LOCK:
+        result = {**annotations(path), "protected": enabled}
         write_document(path / "dashboard.json", result)
         return result
 

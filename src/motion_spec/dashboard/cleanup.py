@@ -6,8 +6,10 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
+from urllib.parse import unquote
 
 from motion_spec.dashboard import roots
 from motion_spec.dashboard.jobs import run_status
@@ -22,6 +24,9 @@ def protection(path: Path) -> str | None:
     runs = [run.dir for run in GenerationInfo(generation).runs] if path == generation else [path]
     if run_status(generation).get("running") or any(RunInfo(run).is_live() for run in runs):
         return "active run"
+    # Deliberate protection outranks the rest: it is cleared by naming what it protects.
+    if annotations(path)["protected"] or any(annotations(run)["protected"] for run in runs):
+        return "protected generation or run"
     if annotations(path)["pinned"] or any(annotations(run)["pinned"] for run in runs):
         return "pinned generation or run"
     reference = baseline(path)
@@ -60,7 +65,7 @@ def preview(paths: list[str]) -> dict:
 
 
 def trash_entries() -> list[dict]:
-    """Filter the desktop trash by original location before exposing any entry."""
+    """Filter the desktop trash by original location and retain deletion time."""
     result = subprocess.run(["gio", "trash", "--list"], capture_output=True, text=True, check=False)
     if result.returncode:
         raise ValueError(f"could not list Trash: {result.stderr.strip()}")
@@ -78,7 +83,21 @@ def trash_entries() -> list[dict]:
                     "exists": path.exists(),
                 }
             )
+    for entry in entries:
+        entry["deleted_at"] = deletion_date(entry["uri"])
     return entries
+
+
+def deletion_date(uri: str) -> str | None:
+    """Read the freedesktop Trash timestamp without a GIO query per entry."""
+    root = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "Trash" / "info"
+    info = (root / f"{unquote(uri.removeprefix('trash:///'))}.trashinfo").resolve()
+    if root.resolve() not in info.parents or not info.is_file():
+        return None
+    for line in info.read_text(encoding="utf-8").splitlines():
+        if line.startswith("DeletionDate="):
+            return line.removeprefix("DeletionDate=")
+    return None
 
 
 def restore(uri: str) -> dict:

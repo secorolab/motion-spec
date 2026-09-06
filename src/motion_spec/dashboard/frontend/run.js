@@ -18,6 +18,7 @@ import { openNotebook } from "./notebook.js";
 import { addPlot, cursorOption, progressiveOn, seriesUpTo, setProgressive } from "./plots.js";
 import { showReports } from "./reports.js";
 import { setView } from "./routing.js";
+import { enhanceSelect } from "./selects.js";
 import { showGenerated } from "./sources.js";
 
 // A run that was just started: its page, open before its log exists. The server names the
@@ -331,6 +332,7 @@ async function showRosCamera(generationPath) {
   // The topic picked last is remembered for the session, unless this run does not carry it.
   const remembered = carried.some((entry) => entry.topic === state.rosTopic);
   topic.value = remembered ? state.rosTopic : declaredTopic;
+  enhanceSelect(topic);
   const subscribe = () => {
     state.rosTopic = topic.value;
     status.textContent = "";

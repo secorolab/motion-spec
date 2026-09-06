@@ -47,15 +47,17 @@ Choose **Use as model baseline** on a run to compare later runs against it, incl
 other generations of the same model. Reports offer all of that model's runs and a direct
 baseline action. Comparison aligns the existing activity timings; it does not overlay signals.
 
-**Clean up old…** selects older unpinned generations for a preview. The preview counts bundles,
-contained runs and size, and excludes active runs, pins and model baselines. The server checks
-protection again before removal, including protected runs inside selected generations. Items
-move to desktop Trash; space is freed only when Trash is emptied. **Trash** in the sidebar
-lists this root's removed items and restores them without overwriting existing paths.
+**Protect** on a generation or run refuses every deletion of it, and of anything holding it,
+until the protection is lifted; lifting it asks for the folder's own name. It is deliberately
+two steps and independent of pinning, which one click undoes.
 
-Labels, pins and explicit tags live in ``dashboard.json`` beside the generation or run; notes
-live in ``notes.json``. A model's ``dashboard-model.json`` records its baseline. These ordinary
-JSON annotation files are separate from the generated RDF and REC provenance.
+Selected generations and runs move to desktop Trash; space is freed only when Trash is emptied.
+**Trash** in the sidebar lists this root's removed items by deletion time, lets you sort them,
+and restores them without overwriting existing paths.
+
+Labels, pins, protection and explicit tags live in ``dashboard.json`` beside the generation or
+run; notes live in ``notes.json``. A model's ``dashboard-model.json`` records its baseline.
+These ordinary JSON annotation files are separate from the generated RDF and REC provenance.
 
 Returning to an investigation
 ----------------------------

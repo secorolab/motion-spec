@@ -51,6 +51,7 @@ from motion_spec.dashboard.metadata import (
     baseline,
     save_annotations,
     set_baseline,
+    set_protected,
 )
 from motion_spec.dashboard.notebook import jupyter_server, run_notebook, stop_jupyter
 from motion_spec.dashboard.queries import (
@@ -449,6 +450,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if self.path == "/api/baseline":
                 return self.send_json(
                     set_baseline(relative_path(roots.GENERATIONS, body["path"]), body["enabled"])
+                )
+            if self.path == "/api/protect":
+                return self.send_json(
+                    set_protected(
+                        relative_path(roots.GENERATIONS, body["path"]),
+                        body["enabled"],
+                        body.get("confirm", ""),
+                    )
                 )
             if self.path == "/api/delete-preview":
                 return self.send_json(preview(body["paths"]))

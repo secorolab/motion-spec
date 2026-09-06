@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 from test_dashboard_runs import _archived_run, _contract_schema
 
-from motion_spec.dashboard import roots, server, sources
+from motion_spec.dashboard import cleanup, roots, server, sources
 from motion_spec.generation.artifacts import build_frame_layout
 
 
@@ -65,6 +65,32 @@ def dashboard(tmp_path, monkeypatch):
         },
     )
     httpd.shutdown()
+
+
+def test_trash_entries_include_the_desktop_deletion_time(tmp_path, monkeypatch):
+    generation = tmp_path / "demo" / "20260906T100000Z"
+    generation.mkdir(parents=True)
+    uri = "trash:///20260906T100000Z"
+
+    def run(_command, **_kwargs):
+        return type(
+            "Result", (), {"returncode": 0, "stderr": "", "stdout": f"{uri}\t{generation}\n"}
+        )()
+
+    monkeypatch.setattr(roots, "GENERATIONS", tmp_path)
+    monkeypatch.setattr(cleanup.subprocess, "run", run)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    info = tmp_path / "data" / "Trash" / "info" / "20260906T100000Z.trashinfo"
+    info.parent.mkdir(parents=True)
+    info.write_text("[Trash Info]\nDeletionDate=2026-09-06T10:00:00\n")
+    assert cleanup.trash_entries() == [
+        {
+            "uri": uri,
+            "path": "demo/20260906T100000Z",
+            "exists": True,
+            "deleted_at": "2026-09-06T10:00:00",
+        }
+    ]
 
 
 def _relative(dashboard, path):
@@ -291,7 +317,12 @@ def test_annotations_notes_and_baselines_across_generations(dashboard):
                 },
             },
         )
-        assert saved == {"label": "Contact baseline", "pinned": True, "tags": ["contact"]}
+        assert saved == {
+            "label": "Contact baseline",
+            "pinned": True,
+            "protected": False,
+            "tags": ["contact"],
+        }
         notes = dashboard.post(
             "/api/notes", {"path": path, "notes": [{"text": "Stable", "tags": ["verified"]}]}
         )
@@ -346,6 +377,40 @@ def test_cleanup_protects_active_pinned_and_baseline_descendants(dashboard, monk
     assert len(preview["items"]) == preview["runs"] == 1
     assert dashboard.post("/api/delete", {"paths": [generation, run]})["deleted"] == 1
     assert trashed == [dashboard.run.parent.parent]
+
+
+def test_protection_refuses_deletion_until_the_run_is_named(dashboard, monkeypatch):
+    """Two layers, independent of the pin: deleting a protected bundle is refused, and lifting
+    that protection is its own act, spelling the folder it lifts."""
+    from test_dashboard_runs import _rec
+
+    generation = str(dashboard.run.parent.parent.relative_to(dashboard.root))
+    run = str(dashboard.run.relative_to(dashboard.root))
+    (dashboard.run / "rec.ld.json").write_text(json.dumps(_rec("CompletedRun")))
+    trashed = []
+    monkeypatch.setattr(server, "trash", lambda path: trashed.append(path))
+    assert dashboard.post("/api/protect", {"path": run, "enabled": True})["protected"] is True
+    # The run itself and the generation holding it both refuse, naming the mark that refused.
+    for target in (run, generation):
+        assert (
+            dashboard.post("/api/delete-preview", {"paths": [target]})["items"][0]["blocked"]
+            == "protected generation or run"
+        )
+        with pytest.raises(urllib.error.HTTPError):
+            dashboard.post("/api/delete", {"paths": [target]})
+    for confirm in ("", "run-20200101T000000000000Z"):
+        with pytest.raises(urllib.error.HTTPError):
+            dashboard.post("/api/protect", {"path": run, "enabled": False, "confirm": confirm})
+    assert not trashed
+    # A pin is not what held it: the protection outlives one, and clearing it is what frees the run.
+    dashboard.post("/api/annotations", {"path": run, "changes": {"pinned": True, "label": "keep"}})
+    assert dashboard.get(f"/api/annotations?path={run}")["protected"] is True
+    cleared = dashboard.post(
+        "/api/protect", {"path": run, "enabled": False, "confirm": dashboard.run.name}
+    )
+    assert (cleared["protected"], cleared["label"]) == (False, "keep")
+    dashboard.post("/api/annotations", {"path": run, "changes": {"pinned": False}})
+    assert dashboard.post("/api/delete", {"paths": [run]})["deleted"] == 1
 
 
 def test_a_missing_jupyter_says_what_to_install(dashboard, monkeypatch):

@@ -913,3 +913,45 @@ html.restoring #content .empty { visibility: hidden; }
 .health-fix code::before { content: "$ "; color: var(--dim); }
 .health-fix a { color: var(--text); font-size: 10px; }
 .health-fix a:hover { color: var(--accent); }
+/* User annotations and inspection controls share the dashboard's compact form layout. */
+.annotation-editor, .inspection-controls, .note-position, .browser-tools {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+.annotation-editor label, .note-position label { display: grid; gap: 4px; }
+.annotation-editor input { max-width: 260px; }
+.annotation-editor [role=status] { font-size: 12px; }
+.browser-tools { margin: 8px 0 0; }
+.browser-tools select { min-width: 0; flex: 1; max-width: 100%; }
+.generation-notes { margin: 16px 0; }
+.generation-notes summary { cursor: pointer; padding: 8px 0; }
+.generation-notes-body { padding: 8px 0; }
+.note-position input { width: 140px; }
+.marker-note { color: #e0b567; background: transparent; z-index: 5; border: 0; }
+.report-jump { text-decoration: underline; text-underline-offset: 3px; }
+.trash-browser { width: min(850px, 90vw); max-height: 85vh; }
+.trash-entries { max-height: 55vh; overflow: auto; margin: 12px 0; }
+.trash-entries > div { display: flex; gap: 12px; align-items: center; padding: 8px 0; }
+.trash-entries span { flex: 1; overflow-wrap: anywhere; }
+.trash-entries button { flex: none; }
+dialog p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.compare-bar { flex-wrap: wrap; }
+.compare-pick { max-width: 100%; }
+.replay:has(> .annotation-editor) { grid-template-rows: auto auto minmax(0, 1fr); gap: 14px; }
+.annotation-editor, .inspection-controls, .note-position, .browser-tools { font: 11px var(--mono); }
+.annotation-editor { padding: 10px 12px; border: 1px solid var(--line); background: var(--side); margin: 0; }
+.annotation-editor label, .note-position label { color: var(--muted); font-size: 10px; }
+.annotation-editor input, .inspection-controls input, .inspection-controls select,
+.note-position input, .browser-tools select, .trash-browser input {
+  padding: 6px 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); border-radius: 0;
+}
+.annotation-editor button, .inspection-controls button, .note-position button, .browser-tools button,
+.trash-browser button { padding: 6px 8px; border: 1px solid var(--line); }
+.annotation-editor .pin[aria-pressed=true] { color: var(--accent); border-color: var(--accent); }
+.annotation-editor input:focus, .inspection-controls input:focus, .note-position input:focus { outline: 1px solid var(--accent); }
+.trash-browser { background: var(--bg); color: var(--text); border: 1px solid var(--line); }
+.trash-browser::backdrop { background: #0009; }
+dialog.ask { max-height: 85vh; overflow: auto; }

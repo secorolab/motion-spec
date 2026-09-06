@@ -10,7 +10,8 @@
  * Compare reads graphs instead, and opens no log at all.
  */
 
-import { $, api, seconds, state } from "./core.js";
+import { $, api, seconds, stampText, state } from "./core.js";
+import { jumpToFinding } from "./run.js";
 
 const num = (value, digits = 3) => (value ?? null) === null ? "—" : value.toFixed(digits);
 const exp = (value) => ((value ?? null) === null ? "—" : value.toExponential(2));
@@ -93,7 +94,8 @@ function table(headers, rows) {
     const line = document.createElement("tr");
     cells.forEach((text) => {
       const cell = document.createElement("td");
-      cell.textContent = text;
+      if (text instanceof Node) cell.append(text);
+      else cell.textContent = text;
       line.append(cell);
     });
     node.append(line);
@@ -118,11 +120,28 @@ function section(title, note, body) {
 }
 
 function signalReport(report, rows) {
+  const cells = rows.map((row) => {
+    const values = report.cells(row);
+    const stateId = row.state_id ?? row.states?.[0];
+    const event = state.replay.events.find((event) => event.kind === "state" && event.label === stateId);
+    if (event) values.push(jumpLink("Open motion", event.frame));
+    else values.push("—");
+    return values;
+  });
   return section(
     report.title,
     rows.length ? report.summary(rows) : "nothing recorded",
-    rows.length ? table(report.columns, rows.map(report.cells)) : null,
+    rows.length ? table([...report.columns, "Replay"], cells) : null,
   );
+}
+
+function jumpLink(label, frame, motion = null, constraint = null) {
+  const button = document.createElement("button");
+  button.className = "report-jump";
+  button.textContent = label;
+  button.title = `Open replay at frame ${frame}`;
+  button.onclick = () => jumpToFinding(frame, motion, constraint);
+  return button;
 }
 
 function renderCompare(data, rightPath) {
@@ -144,12 +163,12 @@ function renderVerdict(data) {
   data.motions.forEach((motion) => {
     motion.constraints.forEach((row) => {
       const held = row.kind === "goal" && row.active ? `${Math.round((100 * row.satisfied) / row.active)} %` : "—";
-      const reached = row.kind === "goal" ? (row.first_satisfied === null ? "never" : at(row.first_satisfied - motion.window[0])) : "—";
-      const fired = row.kind === "monitor" ? (row.fired === null ? "never" : at(row.fired - motion.window[0])) : "—";
+      const reached = row.kind === "goal" ? jumpLink(row.first_satisfied === null ? "never — inspect motion" : at(row.first_satisfied - motion.window[0]), row.first_satisfied ?? motion.window[0], motion.motion, row.id) : "—";
+      const fired = row.kind === "monitor" ? jumpLink(row.fired === null ? "never — inspect motion" : at(row.fired - motion.window[0]), row.fired ?? motion.window[0], motion.motion, row.id) : "—";
       rows.push([motion.motion, row.id, row.kind, reached, held, row.kind === "goal" ? String(row.losses) : "—", fired]);
     });
     motion.exits.forEach((exit) => rows.push([
-      motion.motion, "→ " + exit.to_state, "exit", at(exit.frame - motion.window[0]), "—", "—",
+      motion.motion, "→ " + exit.to_state, "exit", jumpLink(at(exit.frame - motion.window[0]), exit.frame), "—", "—",
       [...exit.events, ...exit.monitors].join(", ") || "—",
     ]));
   });
@@ -167,20 +186,38 @@ function renderVerdict(data) {
 
 async function renderComparePicker(panel) {
   const picker = panel.querySelector(".compare-pick");
-  const runs = await api(`/api/runs?path=${encodeURIComponent(state.generationPath)}`);
+  const runPath = state.runPath;
+  const [runs, reference] = await Promise.all([
+    api(`/api/runs?path=${encodeURIComponent(state.generationPath)}&model=1`),
+    api(`/api/baseline?path=${encodeURIComponent(runPath)}`),
+  ]);
   picker.replaceChildren(new Option("compare with…", ""));
   runs.filter((run) => run.path !== state.runPath)
-    .forEach((run) => picker.append(new Option(run.id, run.path)));
+    .sort((a, b) => Number(b.path === reference.baseline) - Number(a.path === reference.baseline))
+    .forEach((run) => picker.append(new Option([
+      run.path === reference.baseline ? "★ Baseline" : null,
+      run.generation_label || run.path.split("/runs/")[0], run.label || run.id,
+      stampText(run.started), run.status, ...run.tags,
+    ].filter(Boolean).join(" · "), run.path)));
+  let request = 0;
   picker.onchange = async () => {
+    const ticket = ++request;
     const other = picker.value;
     const slot = panel.querySelector(".compare-slot");
     slot.replaceChildren();
     if (!other) return;
-    const data = await api(
-      `/api/run/compare?left=${encodeURIComponent(state.runPath)}&right=${encodeURIComponent(other)}`,
-    );
-    slot.replaceChildren(renderCompare(data, other));
+    slot.textContent = "Comparing…";
+    try {
+      const data = await api(`/api/run/compare?left=${encodeURIComponent(runPath)}&right=${encodeURIComponent(other)}`);
+      if (ticket === request && state.runPath === runPath) slot.replaceChildren(renderCompare(data, other));
+    } catch (error) { if (ticket === request) slot.textContent = error.message; }
   };
+  if (reference.baseline && reference.baseline !== runPath && runs.some((run) => run.path === reference.baseline)) {
+    const button = document.createElement("button");
+    button.textContent = "Compare against baseline";
+    button.onclick = () => { picker.value = reference.baseline; picker.onchange(); };
+    picker.after(button);
+  }
 }
 
 const holding = (text) =>

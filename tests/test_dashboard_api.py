@@ -252,6 +252,9 @@ def test_only_a_same_origin_json_post_is_accepted(dashboard):
 
 
 def test_deleting_a_run_moves_it_to_the_trash(dashboard, monkeypatch):
+    from test_dashboard_runs import _rec
+
+    (dashboard.run / "rec.ld.json").write_text(json.dumps(_rec("CompletedRun")))
     trashed = []
     monkeypatch.setattr(server, "trash", lambda path: trashed.append(path))
     path = str(dashboard.run.relative_to(dashboard.root))
@@ -265,6 +268,84 @@ def test_only_generations_and_runs_can_be_deleted(dashboard, monkeypatch):
     with pytest.raises(urllib.error.HTTPError) as raised:
         dashboard.post("/api/delete", {"paths": ["elsewhere"]})
     assert "only generation bundles and run archives" in json.loads(raised.value.read())["error"]
+
+
+def test_annotations_notes_and_baselines_across_generations(dashboard):
+    """User metadata survives HTTP round trips without changing archive identities."""
+    import shutil
+
+    generation = dashboard.run.parent.parent
+    second = generation.parent / "20260906T100000Z"
+    shutil.copytree(generation, second)
+    gen_path = str(generation.relative_to(dashboard.root))
+    run_path = str(dashboard.run.relative_to(dashboard.root))
+    for path in (gen_path, run_path):
+        saved = dashboard.post(
+            "/api/annotations",
+            {
+                "path": path,
+                "changes": {
+                    "label": " Contact baseline ",
+                    "pinned": True,
+                    "tags": ["contact", " contact "],
+                },
+            },
+        )
+        assert saved == {"label": "Contact baseline", "pinned": True, "tags": ["contact"]}
+        notes = dashboard.post(
+            "/api/notes", {"path": path, "notes": [{"text": "Stable", "tags": ["verified"]}]}
+        )
+        assert dashboard.get(f"/api/notes?path={path}") == notes
+    dashboard.post("/api/baseline", {"path": run_path, "enabled": True})
+    assert (
+        dashboard.get(f"/api/baseline?path={second.relative_to(dashboard.root)}")["baseline"]
+        == run_path
+    )
+    assert len(dashboard.get(f"/api/runs?path={gen_path}&model=1")) == 2
+    listed = next(g for g in dashboard.get("/api/generations") if g["path"] == gen_path)
+    assert listed["label"] == "Contact baseline" and listed["note_tags"] == ["verified"]
+    note = dashboard.post(
+        "/api/notes", {"path": run_path, "notes": [{"text": "Here", "frame": 0, "end_frame": 1}]}
+    )["notes"][0]
+    assert (note["frame"], note["end_frame"]) == (0, 1)
+    for path, changes in [(run_path, {"pinned": "yes"}), (gen_path, {"tags": "bad"})]:
+        with pytest.raises(urllib.error.HTTPError):
+            dashboard.post("/api/annotations", {"path": path, "changes": changes})
+    for path, frame, end in [(gen_path, 0, None), (run_path, -1, None), (run_path, 2, 1)]:
+        with pytest.raises(urllib.error.HTTPError):
+            dashboard.post(
+                "/api/notes", {"path": path, "notes": [{"frame": frame, "end_frame": end}]}
+            )
+
+
+def test_cleanup_protects_active_pinned_and_baseline_descendants(dashboard, monkeypatch):
+    """Exercise each refusal, then verify parent/child selections count the run once."""
+    from test_dashboard_runs import _rec
+
+    generation = str(dashboard.run.parent.parent.relative_to(dashboard.root))
+    run = str(dashboard.run.relative_to(dashboard.root))
+    trashed = []
+    monkeypatch.setattr(server, "trash", lambda path: trashed.append(path))
+    assert (
+        dashboard.post("/api/delete-preview", {"paths": [generation]})["items"][0]["blocked"]
+        == "active run"
+    )
+    with pytest.raises(urllib.error.HTTPError):
+        dashboard.post("/api/delete", {"paths": [generation]})
+    (dashboard.run / "rec.ld.json").write_text(json.dumps(_rec("CompletedRun")))
+    dashboard.post("/api/annotations", {"path": run, "changes": {"pinned": True}})
+    with pytest.raises(urllib.error.HTTPError):
+        dashboard.post("/api/delete", {"paths": [generation]})
+    dashboard.post("/api/annotations", {"path": run, "changes": {"pinned": False}})
+    dashboard.post("/api/baseline", {"path": run, "enabled": True})
+    with pytest.raises(urllib.error.HTTPError):
+        dashboard.post("/api/delete", {"paths": [generation, run]})
+    assert not trashed
+    dashboard.post("/api/baseline", {"path": run, "enabled": False})
+    preview = dashboard.post("/api/delete-preview", {"paths": [generation, run]})
+    assert len(preview["items"]) == preview["runs"] == 1
+    assert dashboard.post("/api/delete", {"paths": [generation, run]})["deleted"] == 1
+    assert trashed == [dashboard.run.parent.parent]
 
 
 def test_a_missing_jupyter_says_what_to_install(dashboard, monkeypatch):

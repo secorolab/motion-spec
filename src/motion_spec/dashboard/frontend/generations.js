@@ -8,10 +8,12 @@
  */
 
 import { consoleExcerpt, deviceRows, fact, listItem } from "./components.js";
+import { annotationEditor, NOTES_MARKUP } from "./annotations.js";
+import { saveInspection } from "./inspection.js";
 import { $, api, copyText, formatBytes, post, showError, snack, stampText, state } from "./core.js";
 import { showExplore } from "./explore.js";
 import { setTab, setView } from "./routing.js";
-import { filter, loadReplay, openPendingRun, showSpeed, stopPlayback } from "./run.js";
+import { filter, loadReplay, openPendingRun, showSpeed, stopPlayback, showNotes } from "./run.js";
 import { openSource, showGenerated, showSource } from "./sources.js";
 
 // One remembered run bar per model: every generation of a model shares its cameras and choices.
@@ -37,15 +39,24 @@ export async function loadGenerations(refresh = false) {
   $("#list-title").textContent = "GENERATIONS";
   const { generations, storage, roots } = state.cache.generations;
   state.roots = roots;
+  bindBrowserTools();
   $("#storage").textContent = formatBytes(storage.generations_bytes);
   $("#generation-root").hidden = false;
   $("#generation-root").value = roots.logs;
   const groups = new Map();
-  generations.forEach((generation) => groups.set(generation.name, [...(groups.get(generation.name) ?? []), generation]));
+  const sort = $("#generation-sort").value;
+  const ordered = [...generations].sort((a, b) => sort === "size" ? b.size_bytes - a.size_bytes
+    : sort === "last-run" ? (b.last_run?.id ?? "").localeCompare(a.last_run?.id ?? "")
+    : (b.created ?? b.built_at).localeCompare(a.created ?? a.built_at));
+  if (ordered.some((g) => g.pinned)) groups.set("★ Pinned", ordered.filter((g) => g.pinned));
+  ordered.filter((g) => !g.pinned).forEach((generation) => groups.set(generation.name, [...(groups.get(generation.name) ?? []), generation]));
   $("#browser").replaceChildren(...[...groups].map(([model, entries]) => {
     const group = document.createElement("details");
     group.className = "generation-group";
-    group.open = true;
+    group.open = localStorage.getItem(`motion-spec.group.${roots.logs}.${model}`) !== "closed";
+    group.ontoggle = () => {
+      if (!$("#search").value) localStorage.setItem(`motion-spec.group.${roots.logs}.${model}`, group.open ? "open" : "closed");
+    };
     const summary = document.createElement("summary");
     const label = document.createElement("span");
     label.className = "group-name";
@@ -58,17 +69,19 @@ export async function loadGenerations(refresh = false) {
     all.onclick = (event) => {
       event.preventDefault();
       event.stopPropagation();
-      const paths = entries.map((generation) => generation.path);
+      const paths = entries.filter((generation) => !group.querySelector(`[data-path="${CSS.escape(generation.path)}"]`)?.hidden).map((generation) => generation.path);
       const adding = paths.some((path) => !state.selected.has(path));
       paths.forEach((path) => {
         if (state.selected.has(path) !== adding) toggleSelection(path, "sidebar");
       });
     };
     summary.append(all);
-    group.append(summary, ...entries.map((generation) => listItem(
+    group.append(summary, ...entries.map((generation) => {
+      const item = listItem(
       // The folder as it is on disk; when it was made is the line under it, not this one.
-      generation.path.split("/").pop(),
-      [generation.variant, stampText(generation.built_at),
+      generation.label || generation.path.split("/").pop(),
+      [generation.pinned ? generation.name : null, generation.label ? generation.path.split("/").pop() : null,
+       ...generation.tags, ...generation.note_tags, generation.variant, stampText(generation.created ?? generation.built_at),
        `${generation.runs} runs`, formatBytes(generation.size_bytes)].filter(Boolean).join(" · "),
       (event) => {
         if (event.shiftKey) return pickRange(generation.path, $("#browser"), "sidebar");
@@ -78,7 +91,13 @@ export async function loadGenerations(refresh = false) {
       },
       generation.path,
       generation.last_run ? (generation.last_run.live ? "live" : (generation.last_run.status ?? "unknown")) : null,
-    )));
+      );
+      item.dataset.search = [generation.name, generation.path, generation.label, ...generation.tags, ...generation.note_tags].join(" ").toLowerCase();
+      item.dataset.pinned = String(generation.pinned);
+      item.dataset.runtime = generation.simulated ? "simulation" : "hardware";
+      item.dataset.runStatus = generation.last_run?.live ? "running" : (generation.last_run?.status ?? "").toLowerCase();
+      return item;
+    }));
     return group;
   }));
   filterGenerations($("#search").value);
@@ -87,10 +106,13 @@ export async function loadGenerations(refresh = false) {
 
 export function filterGenerations(value) {
   const query = value.toLowerCase();
+  const selectedFilter = $("#generation-filter")?.value ?? "all";
   document.querySelectorAll(".generation-group").forEach((group) => {
     let visible = false;
     group.querySelectorAll(".item").forEach((item) => {
-      item.hidden = !item.textContent.toLowerCase().includes(query);
+      item.hidden = !(item.dataset.search + " " + item.textContent.toLowerCase()).includes(query)
+        || !(selectedFilter === "all" || item.dataset.runStatus === selectedFilter
+          || item.dataset.runtime === selectedFilter || selectedFilter === "pinned" && item.dataset.pinned === "true");
       visible ||= !item.hidden;
     });
     group.hidden = !visible;
@@ -102,6 +124,38 @@ export function filterGenerations(value) {
 // loop already ticking can hear; this reaches a run that is still connecting, or hung.
 export function stopRun(path) {
   return post("/api/run/stop", { path });
+}
+
+/** Browser controls survive refreshes; cleanup only selects candidates for preview. */
+function bindBrowserTools() {
+  if ($("#generation-tools")) return;
+  const tools = document.createElement("div");
+  tools.id = "generation-tools";
+  tools.className = "browser-tools";
+  tools.innerHTML = '<select id="generation-filter" aria-label="Filter generations"><option value="all">All generations</option><option value="pinned">Pinned</option><option value="running">Running</option><option value="failed">Failed</option><option value="hardware">Hardware</option><option value="simulation">Simulation</option></select><select id="generation-sort" aria-label="Sort generations"><option value="newest">Newest</option><option value="last-run">Last run</option><option value="size">Largest</option></select><button id="cleanup-old">Clean up old…</button>';
+  $("#search").parentElement.after(tools);
+  for (const kind of ["filter", "sort"]) {
+    const select = tools.querySelector(`#generation-${kind}`);
+    select.value = localStorage.getItem(`motion-spec.generation-${kind}`) ?? (kind === "filter" ? "all" : "newest");
+    select.onchange = () => {
+      localStorage.setItem(`motion-spec.generation-${kind}`, select.value);
+      loadGenerations().catch(showError);
+    };
+  }
+  tools.querySelector("#cleanup-old").hidden = state.restricted;
+  tools.querySelector("#cleanup-old").onclick = () => {
+    const days = prompt("Select unpinned generations older than how many days?", "30");
+    if (days === null) return;
+    if (!Number.isFinite(Number(days)) || Number(days) < 0 || !days.trim()) return snack("Enter a nonnegative number of days");
+    $("#clear-selection").click();
+    const cutoff = Date.now() - Number(days) * 86400000;
+    state.cache.generations.generations.filter((g) => !g.pinned && !g.last_run?.live
+      && !g.baseline?.startsWith(`${g.path}/runs/`)
+      && new Date(g.created ?? g.built_at).getTime() < cutoff)
+      .forEach((g) => toggleSelection(g.path));
+    if (state.selected.size) $("#delete-selected").click();
+    else snack("No old, unpinned generations match");
+  };
 }
 
 export function bindRunAgain(page, path, cameras, simulated) {
@@ -320,6 +374,7 @@ export function bindDevices(page, path) {
 }
 
 export async function selectGeneration(path) {
+  saveInspection();
   state.anchor = path;
   clearInterval(state.liveWatch);   // following a live run belongs to the run page that left
   clearInterval(state.consoleWatch);
@@ -344,6 +399,7 @@ export async function selectGeneration(path) {
     api(`/api/generation?path=${encodeURIComponent(path)}`),
     api(`/api/runs?path=${encodeURIComponent(path)}`),
   ]);
+  if (state.generationPath !== path || new URLSearchParams(location.hash.slice(1)).get("generation") !== path) return;
   highlightGeneration();
 
   const page = $("#generation-template").content.cloneNode(true);
@@ -430,6 +486,7 @@ export async function selectGeneration(path) {
     const short = run.id.replace(/^run-\d{8}T/, "").replace(/Z$/, "");
     row.innerHTML = `<input type="checkbox" class="pick" title="Select; shift-click to select a range"><span>${runPage * 10 + index + 1}</span><strong>${short}</strong><span>${stampText(run.started)}</span><span>${run.duration_s.toFixed(2)} s</span><span>${(run.written_frames ?? 0).toLocaleString()}</span><span class="badge badge-${status.toLowerCase()}">${status}</span>`;
     row.firstChild.checked = state.selected.has(run.path);
+    row.querySelector("strong").textContent = `${run.pinned ? "★ " : ""}${generation.baseline === run.path ? "Baseline · " : ""}${run.label || short}`;
     row.firstChild.onclick = (event) => {
       event.stopPropagation();
       event.shiftKey ? pickRange(run.path, row.parentElement, "main") : toggleSelection(run.path, "main");
@@ -497,8 +554,8 @@ export async function selectGeneration(path) {
         ? !from.value && !to.value
         : started >= after && started <= before;
       if (!inWindow || !needle) return inWindow;
-      return [run.id, ...(run.tags ?? [])].join("\n").toLowerCase().includes(needle);
-    });
+      return [run.id, run.label, run.notes_text, ...(run.tags ?? [])].join("\n").toLowerCase().includes(needle);
+    }).sort((a, b) => Number(b.pinned) - Number(a.pinned));
     clear.hidden = !from.value && !to.value && !search.value;
     runPage = 0;
     draw();
@@ -510,6 +567,17 @@ export async function selectGeneration(path) {
   bindRunAgain(page, path, generation.cameras ?? [], generation.simulated);
   if (!generation.simulated) bindDevices(page, path);
   $("#content").replaceChildren(page);
+  const mounted = $("#content .generation");
+  const metadata = await annotationEditor(path, () => loadGenerations(true));
+  if (!mounted.isConnected) return;
+  mounted.querySelector(".generation-description").after(metadata);
+  const notes = document.createElement("details");
+  notes.className = "generation-notes";
+  notes.innerHTML = `<summary>Generation notes</summary><div class="generation-notes-body">${NOTES_MARKUP}</div>`;
+  metadata.after(notes);
+  notes.ontoggle = () => {
+    if (notes.open) showNotes(path, notes.querySelector(".generation-notes-body")).catch(showError);
+  };
   state.generation = {
     path,
     folder: generation.folder,
@@ -566,7 +634,7 @@ export function toggleSelection(path, source = "sidebar", anchor = true) {
   $("#selection-actions").dataset.side = source;
   $("#selection-actions").hidden = !state.selected.size;
   $("#selection-count").textContent = `${state.selected.size} selected`;
-  button.textContent = "Delete";
+  button.textContent = "Move to Trash…";
 }
 
 // A file named on a generation page, read on the Sources tab where files are read. The path

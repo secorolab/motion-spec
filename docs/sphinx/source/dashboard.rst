@@ -35,6 +35,50 @@ real platform.
 above it. Reached from the sidebar footer, alongside the repository and these docs. The checks
 are slow, so they are remembered — **re-check** reruns them. See :doc:`setup`.
 
+Organizing results
+------------------
+
+Generations and runs have editable labels, pins, tags, and dated notes. Labels leave the folder
+name and provenance unchanged. Pinned generations appear first; pinned runs lead their run
+list. Search includes model names, labels and tags. The generation browser remembers folded
+groups, filters and sorting; use newest, last run or largest to order the list.
+
+Choose **Use as model baseline** on a run to compare later runs against it, including runs from
+other generations of the same model. Reports offer all of that model's runs and a direct
+baseline action. Comparison aligns the existing activity timings; it does not overlay signals.
+
+**Clean up old…** selects older unpinned generations for a preview. The preview counts bundles,
+contained runs and size, and excludes active runs, pins and model baselines. The server checks
+protection again before removal, including protected runs inside selected generations. Items
+move to desktop Trash; space is freed only when Trash is emptied. **Trash** in the sidebar
+lists this root's removed items and restores them without overwriting existing paths.
+
+Labels, pins and explicit tags live in ``dashboard.json`` beside the generation or run; notes
+live in ``notes.json``. A model's ``dashboard-model.json`` records its baseline. These ordinary
+JSON annotation files are separate from the generated RDF and REC provenance.
+
+Returning to an investigation
+----------------------------
+
+Archived replay views remember open plots, signals, zoom, panel, camera and cursor when leaving
+or reloading. Named plot presets reuse signal choices across runs of the same model; unavailable
+signals are reported and skipped, and a preset never reuses another run's time window. These
+preferences are local to the browser and generation root.
+
+**Copy link to this moment** includes the replay frame. Run notes can attach the current frame
+or an optional frame range; their timestamps and timeline markers return to it. Generation
+notes remain general notes. Report event times open the relevant replay position and constraint
+plots; aggregate signal reports link to the motion rather than implying an exact peak time.
+
+Verification
+------------
+
+Run the dashboard Python tests with the workspace environment and
+``PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest tests/test_dashboard_*.py``. The optional browser
+integration test requires Playwright and ``MOTION_SPEC_BROWSER_EXECUTABLE`` pointing to a
+Chromium executable. Give pytest a fresh ``--basetemp`` directory under
+``/home/batsy/work/ms/generations/``; the browser test moves and restores only its own fixtures.
+
 Driving a simulated run
 -----------------------
 

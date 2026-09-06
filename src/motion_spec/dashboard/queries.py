@@ -22,6 +22,7 @@ from motion_spec.dashboard.graph import (
     load_model_graph,
     model_manifest,
 )
+from motion_spec.dashboard.metadata import LOCK, generation_of, write_document
 from motion_spec.dashboard.roots import LAYOUT_REL, json_file
 from motion_spec.dashboard.sources import declaration_lines
 from motion_spec.dashboard.store import RunStore
@@ -158,13 +159,24 @@ def run_notes(run_dir: Path) -> dict:
 def save_notes(run_dir: Path, notes: list) -> dict:
     """Replace the run's notes with the list given. A note without an id or a time gets both here,
     so the client never invents either."""
-    if not run_dir.is_dir():
-        raise ValueError("notes belong to a run")
+    generation = generation_of(run_dir)
+    if not isinstance(notes, list) or len(notes) > 200:
+        raise ValueError("notes must be a list of at most 200 entries")
     kept = []
     for note in notes[:200]:
         if not isinstance(note, dict):
-            continue
+            raise ValueError("each note must be an object")  # noqa: TRY004 -- HTTP input validation
+        frame = note.get("frame")
+        end_frame = note.get("end_frame")
+        if frame is not None and (generation == run_dir or type(frame) is not int or frame < 0):
+            raise ValueError("a frame must be a nonnegative integer on a run note")
+        if end_frame is not None and (
+            frame is None or type(end_frame) is not int or end_frame < frame
+        ):
+            raise ValueError("note range must end at or after its frame")
         tags = note.get("tags") or []
+        if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
+            raise ValueError("note tags must be a list of strings")
         kept.append(
             {
                 "id": str(note.get("id") or secrets.token_hex(6)),
@@ -172,13 +184,16 @@ def save_notes(run_dir: Path, notes: list) -> dict:
                     note.get("created") or datetime.now(timezone.utc).isoformat(timespec="seconds")
                 ),
                 "text": str(note.get("text") or "")[:4000],
+                "frame": frame,
+                "end_frame": end_frame,
                 "tags": list(dict.fromkeys(str(tag).strip() for tag in tags if str(tag).strip()))[
                     :20
                 ],
             }
         )
     payload = {"notes": kept}
-    (run_dir / NOTES_REL).write_text(json.dumps(payload, indent=1))
+    with LOCK:
+        write_document(run_dir / NOTES_REL, payload)
     return payload
 
 

@@ -8,9 +8,11 @@
  */
 
 import { appendConsole, consoleExcerpt, showEmpty } from "./components.js";
+import { annotationEditor } from "./annotations.js";
+import { bindInspection, restoreInspection } from "./inspection.js";
 import { $, $$, api, askConfirm, copyText, formatBytes, post, seconds, snack, stampText, state } from "./core.js";
 import { EXPLORE_MARKUP, bindExplore } from "./explore.js";
-import { highlightGeneration, readRunOptions, selectGeneration, stopRun } from "./generations.js";
+import { highlightGeneration, loadGenerations, readRunOptions, selectGeneration, stopRun } from "./generations.js";
 import { addLivePlot, bindLivePlots, followLiveRun, livePlotsOn, simControl, trackActiveMotion } from "./live.js";
 import { openNotebook } from "./notebook.js";
 import { addPlot, cursorOption, progressiveOn, seriesUpTo, setProgressive } from "./plots.js";
@@ -75,6 +77,7 @@ export async function loadReplay(path) {
   state.live = null;
   highlightGeneration();
   state.frame = 0;
+  state.notes = [];
   const timeline = $(".timeline");
   timeline.max = Math.max(0, state.replay.frames - 1);
   timeline.disabled = false;
@@ -132,6 +135,24 @@ export async function loadReplay(path) {
   $("#back").onclick = () => selectGeneration(state.replay.generation);
   bindRunAgain(path);
   updateReadout();
+  annotationEditor(path, (data) => {
+    state.generation = null;
+    if (state.runPath === path) {
+      $(".replay-heading h1").textContent = data.label || path.split("/").pop();
+      $("#panel-reports").dataset.run = "";
+    }
+    return loadGenerations(true);
+  }).then((editor) => {
+    if (state.runPath !== path) return;
+    $(".replay-heading")?.after(editor);
+    $(".replay-heading h1").textContent = editor.elements.label.value || path.split("/").pop();
+    $(".replay-heading h1").title = path;
+  }).catch((error) => snack(error.message));
+  api(`/api/notes?path=${encodeURIComponent(path)}`).then((data) => {
+    if (state.runPath === path) { state.notes = data.notes; renderMarkers(); }
+  }).catch((error) => snack(error.message));
+  bindInspection(path);
+  if (!state.replay.pending && !state.following) restoreInspection(path);
 }
 
 // The same start the generation page makes, from the run it is being compared against. The
@@ -199,6 +220,7 @@ export function showVideos(runPath, cameras) {
   bindVideoExpand(panel);
   bindVideoMinimize(panel);
   const show = (camera) => {
+    state.camera = camera;
     main.src = url(camera);
     // A video that is never played paints nothing: put it where the cursor is once it knows
     // how long it is.
@@ -634,8 +656,8 @@ export async function showRunFiles(runPath) {
 
 // Every note kept beside the run, newest first, with a place to add the next one. The whole
 // list is what is saved: notes are few and small, and one write is one thing to get right.
-export async function showNotes(runPath) {
-  const panel = $("#panel-notes");
+export async function showNotes(runPath, container = null) {
+  const panel = container ?? $("#panel-notes");
   if (!panel) return;
   const list = panel.querySelector(".notes-list");
   const text = panel.querySelector(".note-text");
@@ -643,6 +665,18 @@ export async function showNotes(runPath) {
   const status = panel.querySelector(".notes-state");
   const splitTags = (value) => value.split(",").map((tag) => tag.trim()).filter(Boolean);
   let notes = (await api(`/api/notes?path=${encodeURIComponent(runPath)}`)).notes;
+  let frameInput = null;
+  let endInput = null;
+  if (!container) {
+    panel.querySelector(".note-position")?.remove();
+    const position = document.createElement("div");
+    position.className = "note-position";
+    position.innerHTML = '<button type="button">Attach current frame</button><label>Frame<input type="number" min="0" step="1" placeholder="General note"></label><label>End frame (optional)<input type="number" min="0" step="1"></label>';
+    [frameInput, endInput] = position.querySelectorAll("input");
+    frameInput.max = endInput.max = Math.max(0, state.replay.frames - 1);
+    position.querySelector("button").onclick = () => { frameInput.value = state.frame; };
+    panel.querySelector(".notes-compose").append(position);
+  }
   // Picked by id, so a selection survives a redraw and is dropped only with the note it names.
   const picked = new Set();
   const bar = panel.querySelector(".notes-bar");
@@ -668,6 +702,8 @@ export async function showNotes(runPath) {
     status.textContent = "saving…";
     try {
       notes = (await post("/api/notes", { path: runPath, notes: next })).notes;
+      state.cache.generations = null;
+      if (!container && state.runPath === runPath) { state.notes = notes; renderMarkers(); }
       status.textContent = "";
       render();
     } catch (error) {
@@ -683,6 +719,13 @@ export async function showNotes(runPath) {
     pick.onchange = () => { pick.checked ? picked.add(note.id) : picked.delete(note.id); syncBar(); };
     head.append(pick, Object.assign(document.createElement("span"), { className: "note-when", textContent: stampText(note.created) }));
     head.append(...note.tags.map((tag) => Object.assign(document.createElement("span"), { className: "run-tag", textContent: tag })));
+    if (!container && note.frame !== null && note.frame !== undefined) {
+      const jump = document.createElement("button");
+      jump.className = "note-action";
+      jump.textContent = `Frame ${note.frame}${note.end_frame == null ? "" : `–${note.end_frame}`}`;
+      jump.onclick = () => jumpToFinding(note.frame, null, null, note.end_frame);
+      head.append(jump);
+    }
     const edit = Object.assign(document.createElement("button"), { className: "note-action", textContent: "edit" });
     const remove = Object.assign(document.createElement("button"), { className: "note-action", textContent: "delete" });
     head.append(edit, remove);
@@ -717,7 +760,14 @@ export async function showNotes(runPath) {
   };
   const add = () => {
     if (!text.value.trim()) return;
-    save([...notes, { text: text.value, tags: splitTags(tags.value) }]).then(() => {
+    const frame = frameInput?.value ? Number(frameInput.value) : null;
+    const end = endInput?.value ? Number(endInput.value) : null;
+    if (frameInput && (!frameInput.checkValidity() || !endInput.checkValidity()
+      || end !== null && (frame === null || end < frame))) {
+      status.textContent = "Choose a valid frame or range within this recording.";
+      return;
+    }
+    save([...notes, { text: text.value, tags: splitTags(tags.value), frame, end_frame: end }]).then(() => {
       if (!status.textContent) { text.value = ""; tags.value = ""; }
     });
   };
@@ -849,6 +899,16 @@ export function renderMarkers() {
   const playhead = document.createElement("div");
   playhead.className = "playhead";
   $(".markers").append(playhead);
+  for (const note of state.notes ?? []) {
+    if (note.frame === null || note.frame === undefined) continue;
+    const marker = document.createElement("button");
+    marker.className = "marker marker-note";
+    marker.style.left = trackLeft(note.frame);
+    marker.textContent = "◆";
+    marker.title = `Note at frame ${note.frame}: ${note.text}`;
+    marker.onclick = () => jumpToFinding(note.frame, null, null, note.end_frame);
+    $(".markers").append(marker);
+  }
   // replaceChildren just took the bars with it, and the live poll comes back through here four
   // times a second, so they are put back from what was already fetched.
   paintOverlay();
@@ -1054,6 +1114,7 @@ let followMotions = false;
 try { followMotions = localStorage.getItem(AUTO_PLOT_KEY) === "on"; } catch { /* private */ }
 
 export function followMotion() {
+  if (state.restoringInspection) return;
   // A live run is already followed by its poll; this is the same behaviour for a recording.
   if (!followMotions || state.following || state.opening) return;
   const motion = motionAt(state.frame);
@@ -1139,6 +1200,18 @@ export function seek(frame) {
   followMotion();
   movePlayhead();
   syncVideo();
+}
+
+/** Reports and annotations use the same seek path as the transport and video. */
+export function jumpToFinding(frame, motion = null, constraint = null, endFrame = null) {
+  $(".replay-tabs [data-panel=plots]").click();
+  seek(frame);
+  const row = [...$$("#constraints .constraint")].find((row) =>
+    (!motion || row.dataset.motion === motion) && constraint && row.querySelector("strong")?.textContent === constraint);
+  if (row && !row.dataset.plotted) row.click();
+  if (endFrame != null) state.charts.forEach((chart) => chart.dispatchAction?.({
+    type: "dataZoom", startValue: frame, endValue: endFrame,
+  }));
 }
 
 // The recording of the run, if this run has one on screen.

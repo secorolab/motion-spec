@@ -24,7 +24,7 @@ from motion_spec.introspection import frame_log_pb
 from motion_spec.introspection.runtime_graph import write_runtime_ttl
 
 from dashboard_fixture import schema
-from frame_log_fixture import flat_frame, write_frame_log_pb
+from frame_log_fixture import occurrence, write_frame_log_pb, write_occurrence_log_pb
 from support import _hash_doc
 
 MODEL = "https://example.test/"
@@ -118,77 +118,89 @@ def views_schema() -> dict:
     return doc
 
 
-def _frame(doc, step, *, state, entered, event=None, settled=0, arrived=0, held=0):
-    wall = 1_000_000_000 + step * PERIOD_NS
-    trigger = (
-        {"trigger_count": 1, "tr0.kind": 1, "tr0.idx": event, "tr0.wall_ns": wall}
-        if event is not None
-        else {"trigger_count": 0}
-    )
-    return flat_frame(
-        doc,
-        t=step * PERIOD_NS / 1e9,
-        step=step,
-        fsm_state=state,
-        active_motion=0,
-        last_event=-1,
-        wall_ns=wall,
-        period_ns=PERIOD_NS,
-        state_since_wall_ns=1_000_000_000 + entered * PERIOD_NS,
-        **{
-            "c0.active": 1,
-            "c0.satisfied": held,
-            "c0.error": 0.01,
-            "m0.active": 1,
-            "m0.satisfied": settled,
-            "m0.value": 0.02,
-            "m1.active": 1,
-            "m1.satisfied": arrived,
-            "m1.value": 0.03,
-        },
-        **trigger,
-    )
+STATE_OF = {0: 0, 2: 1, 21: 2, 31: 1, 41: 3}
+EVENT_AT = {1: 0, 20: 1, 30: 2, 40: 3}
+LAST_STEP = 45
 
 
-def full_run_frames(doc) -> list[dict]:
+def _tick(step: int) -> dict:
+    """The fields every occurrence of one tick shares, on the run's own 100 Hz clock."""
+    return {
+        "t": step * PERIOD_NS / 1e9,
+        "wall_ns": 1_000_000_000 + step * PERIOD_NS,
+        "active_motion": 0,
+    }
+
+
+def full_run_occurrences(doc) -> list[dict]:
     """A run that enters S_MOVE, holds, comes back to S_MOVE, and finishes.
 
     `mon_settled` first holds at step 14 after breaking once, and fires with E_HOLD at 20:
     six steps, 0.06 s, against a declared 0.05 s. `mon_arrived` first holds at 38 and fires
     with E_DONE at 40, and its model declares no dwell at all.
     """
-    frames = []
-    for step in range(46):
-        state = 0 if step < 2 else 1 if step < 21 else 2 if step < 31 else 1 if step < 41 else 3
-        entered = (
-            0 if step < 2 else 2 if step < 21 else 21 if step < 31 else 31 if step < 41 else 41
-        )
-        event = {1: 0, 20: 1, 30: 2, 40: 3}.get(step)
-        settled = int(10 <= step < 12 or 14 <= step <= 20)
-        arrived = int(38 <= step <= 40)
-        # The goal constraint holds through the first S_MOVE occupancy and nothing else.
-        held = int(4 <= step <= 18)
-        frames.append(
-            _frame(
-                doc,
-                step,
-                state=state,
-                entered=entered,
-                event=event,
-                settled=settled,
-                arrived=arrived,
-                held=held,
+    entries = []
+    state, previous = 0, -1
+    for step in range(LAST_STEP + 1):
+        entered = step in STATE_OF
+        if step in EVENT_AT:
+            entries.append(occurrence("EVENT", step, index=EVENT_AT[step], **_tick(step)))
+        if entered:
+            state = STATE_OF[step]
+            entries.append(
+                occurrence(
+                    "STATE_CHANGE",
+                    step,
+                    fsm_state=state,
+                    from_state=previous,
+                    state_since_wall_ns=1_000_000_000 + step * PERIOD_NS,
+                    **_tick(step),
+                )
             )
-        )
-    return frames
+            previous = state
+            continue
+        # The goal constraint holds through the first S_MOVE occupancy and nothing else; the
+        # two gates arm and break inside it. A latch only moves on a tick that is not an entry.
+        for index, held in ((0, {4: True, 19: False}), (1, {})):
+            if step in held:
+                entries.append(
+                    occurrence(
+                        "CONSTRAINT_EDGE",
+                        step,
+                        fsm_state=state,
+                        index=index,
+                        satisfied=held[step],
+                        value=0.01,
+                        **_tick(step),
+                    )
+                )
+        for index, edges, value in (
+            (0, {10: True, 12: False, 14: True}, 0.02),
+            (1, {38: True}, 0.03),
+        ):
+            if step in edges:
+                entries.append(
+                    occurrence(
+                        "MONITOR_EDGE",
+                        step,
+                        fsm_state=state,
+                        index=index,
+                        satisfied=edges[step],
+                        value=value,
+                        **_tick(step),
+                    )
+                )
+    # The run's last tick, as its close writes it: the extent is the run's, not its last edge's.
+    entries.append(occurrence("SAMPLE", LAST_STEP, fsm_state=state, frame=None, **_tick(LAST_STEP)))
+    return entries
 
 
-def short_run_frames(doc) -> list[dict]:
+def short_run_occurrences(doc) -> list[dict]:
     """The same model, stopped in S_HOLD: no second S_MOVE occupancy and no S_DONE."""
-    return [frame for frame in full_run_frames(doc) if frame["step"] <= 25]
+    return [entry for entry in full_run_occurrences(doc) if entry["step"] <= 25]
 
 
-def _run_dir(tmp_path, name, doc, frames, *, archive=True) -> Path:
+def _run_dir(tmp_path, name, doc, occurrences, *, archive=True) -> Path:
     """A run archive with its own model graph, and its runtime graph unless it is still going."""
     run = tmp_path / "demo" / "20260825T000000Z" / "runs" / name
     (run / "logs").mkdir(parents=True)
@@ -197,19 +209,22 @@ def _run_dir(tmp_path, name, doc, frames, *, archive=True) -> Path:
     layout = run.parent.parent / "generated" / "contract"
     layout.mkdir(parents=True, exist_ok=True)
     (layout / "frame_layout.json").write_text(json.dumps(build_frame_layout(doc)))
-    log = run / "logs" / "frame_log.pb"
-    write_frame_log_pb(log, doc, frames)
-    files = {"frame_log": "logs/frame_log.pb", "model": "model/test-app.ld.json"}
+    write_frame_log_pb(run / "logs" / "frame_log.pb", doc, [])
+    write_occurrence_log_pb(run / "logs" / "occurrences.pb", doc, occurrences)
+    files = {
+        "frame_log": "logs/frame_log.pb",
+        "occurrences": "logs/occurrences.pb",
+        "model": "model/test-app.ld.json",
+    }
     (run / "manifest.json").write_text(json.dumps({"run_id": name, "files": files}))
     if archive:
-        contract = frame_log_pb.read_contract(log)
-        write_runtime_ttl(run, list(frame_log_pb.frame_records(log, contract)))
+        write_runtime_ttl(run)
     return run
 
 
 @pytest.fixture
 def run(tmp_path):
-    return _run_dir(tmp_path, "run-1", views_schema(), full_run_frames(views_schema()))
+    return _run_dir(tmp_path, "run-1", views_schema(), full_run_occurrences(views_schema()))
 
 
 def _names(payload):
@@ -298,8 +313,8 @@ def test_comparing_a_run_against_itself_is_all_zero_deltas(run):
 def test_an_activity_entered_in_only_one_run_keeps_its_row(tmp_path):
     """A state that stopped being entered is the regression this view exists to show."""
     doc = views_schema()
-    full = _run_dir(tmp_path, "run-full", doc, full_run_frames(doc))
-    short = _run_dir(tmp_path, "run-short", doc, short_run_frames(doc))
+    full = _run_dir(tmp_path, "run-full", doc, full_run_occurrences(doc))
+    short = _run_dir(tmp_path, "run-short", doc, short_run_occurrences(doc))
 
     rows = {row["name"]: row for row in compare(full, short)["activities"]}
     assert rows["S_DONE"]["left_s"] is not None and rows["S_DONE"]["right_s"] is None
@@ -309,20 +324,19 @@ def test_an_activity_entered_in_only_one_run_keeps_its_row(tmp_path):
     assert [row["name"] for row in mirrored if row["left_s"] is None] == ["S_MOVE", "S_DONE"]
 
 
-def test_a_run_with_no_archived_graph_says_so_and_invents_no_waits(tmp_path):
-    """A live run degrades: 015 projects from strided frames, which cannot time an arming.
+def test_a_run_with_no_graph_yet_says_so_and_invents_no_waits(tmp_path):
+    """A run whose projector has not written yet has nothing to be asked how long it waited.
 
     Reporting 0 re-arms there would be worse than reporting nothing -- it reads as a fact.
     """
     doc = views_schema()
-    live = _run_dir(tmp_path, "run-live", doc, full_run_frames(doc), archive=False)
+    live = _run_dir(tmp_path, "run-live", doc, full_run_occurrences(doc), archive=False)
 
-    spans = timeline(live)
-    assert spans["runtime_source"] == "projected"
-    assert spans["spans"]
+    assert timeline(live)["runtime_source"] == "unavailable"
+    assert timeline(live)["spans"] == []
 
     payload = gates(live)
-    assert payload["runtime_source"] == "projected"
+    assert payload["runtime_source"] == "unavailable"
     assert payload["gates"], "the gates the model declares are listed whatever the run knows"
     assert all(gate["waited_s"] is None for gate in payload["gates"])
     assert all(gate["rearm_count"] is None for gate in payload["gates"])

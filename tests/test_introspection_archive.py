@@ -42,6 +42,8 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
     assert "log_producer_executable" not in manifest["files"]
     assert manifest["files"]["rec"] == "rec.ld.json"
     assert manifest["files"]["frame_log_health"] == "logs/frame_log.pb.health.json"
+    assert manifest["files"]["occurrences"] == "logs/occurrences.pb"
+    assert manifest["files"]["occurrences_health"] == "logs/occurrences.pb.health.json"
     assert manifest["files"]["frame_log_proto"] == "contract/frame_log.proto"
     assert "frame_layout" not in manifest["files"]
     assert manifest["files"]["dsl_provenance"] == "provenance/dsl.ld.json"
@@ -65,7 +67,7 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
     with pytest.raises(ArchiveError, match="does not exist"):
         summarize(run_dir / "missing")
 
-    runtime_ttl = write_runtime_ttl(run_dir, frames)
+    runtime_ttl = write_runtime_ttl(run_dir)
     assert runtime_ttl.exists()
     verify_manifest(run_dir)
 
@@ -94,7 +96,7 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
         rdflib.URIRef(prov_uri("activity:controller_execution")),
     ) in rec_graph
     assert (
-        rdflib.URIRef(prov_uri("activity:runtime_ttl_recovery")),
+        rdflib.URIRef(prov_uri("activity:runtime_projection")),
         rdflib.RDF.type,
         rdflib.URIRef("http://www.w3.org/ns/prov#Activity"),
     ) in rec_graph
@@ -271,7 +273,7 @@ def test_manifest_lists_runtime_ttl_and_console_only_when_present(tmp_path: Path
     assert verify_manifest(run_dir)["run_id"] == "run-test"
 
     (run_dir / "logs" / "console.log").write_text("started\n")
-    write_runtime_ttl(run_dir, decode_frames(run_dir / "logs" / "frame_log.pb"))
+    write_runtime_ttl(run_dir)
     manifest = create_archive_manifest(run_dir, source_dir=source, run_id="run-test")
     assert manifest["files"]["runtime_ttl"] == "runtime/runtime.ttl"
     assert manifest["files"]["console"] == "logs/console.log"
@@ -285,6 +287,26 @@ def test_manifest_lists_runtime_ttl_and_console_only_when_present(tmp_path: Path
     )
     assert "runtime_ttl" not in manifest["files"]
     assert "console" not in manifest["files"]
+
+
+def test_verify_accepts_a_run_that_kept_only_its_occurrence_stream(tmp_path: Path) -> None:
+    """The occurrence stream is the record that must be there; the frame log is its companion.
+
+    Both open with the same header bytes, so a run without the dense record still states its
+    own contract and still has a graph.
+    """
+    source = _source_tree(tmp_path / "source")
+    (source / "frame_log.pb").unlink()
+    (source / "frame_log.pb.health.json").unlink()
+    run_dir = tmp_path / "run"
+
+    manifest = create_archive_manifest(run_dir, source_dir=source, run_id="run-test")
+    assert "frame_log" not in manifest["files"]
+    assert manifest["files"]["occurrences"] == "logs/occurrences.pb"
+    write_runtime_ttl(run_dir)
+    manifest = create_archive_manifest(run_dir, source_dir=source, run_id="run-test")
+    assert manifest["files"]["runtime_ttl"] == "runtime/runtime.ttl"
+    assert verify_manifest(run_dir)["run_id"] == "run-test"
 
 
 def test_logless_manifest_says_so_and_only_then_verifies_without_a_log(tmp_path: Path) -> None:
@@ -302,11 +324,12 @@ def test_logless_manifest_says_so_and_only_then_verifies_without_a_log(tmp_path:
     assert manifest["recorded"] is False
     assert "frame_log" not in manifest["files"]
     assert "frame_log_health" not in manifest["files"]
+    assert "occurrences" not in manifest["files"]
     assert verify_manifest(run_dir)["run_id"] == "run-test"
 
     del manifest["recorded"]
     (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=4) + "\n")
-    with pytest.raises(ArchiveError, match="files.frame_log: missing"):
+    with pytest.raises(ArchiveError, match="files.occurrences: missing"):
         verify_manifest(run_dir)
 
 

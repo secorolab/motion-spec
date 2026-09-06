@@ -858,13 +858,10 @@ export function renderMarkers() {
 // How far past its declared dwell a gate has to hold before the wait is worth remarking on.
 const SLOW_GATE = 1.2;
 
-// What a payload was read from, said plainly: an archived graph is the whole record, a
-// projection is strided and cannot be asked how long anything waited.
+// What a payload was read from, said plainly: the run's own graph is the whole record, and a
+// run that has not written one yet has nothing to be asked how long anything waited.
 function sourceNote(data) {
-  if (data.runtime_source === "archive") return "from the archived runtime graph";
-  if (data.runtime_source === "projected") {
-    return "projected from a run still going — waits and re-arms not yet known";
-  }
+  if (data.runtime_source === "archive") return "from the run's runtime graph";
   return "no runtime graph recorded yet";
 }
 

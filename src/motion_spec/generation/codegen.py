@@ -12,7 +12,10 @@ import sys
 from pathlib import Path
 
 from motion_spec.classes.base import DataclassJSONEncoder
-from motion_spec.generation.artifacts import write_introspection_artifacts
+from motion_spec.generation.artifacts import (
+    DEFAULT_SAMPLE_INTERVAL_S,
+    write_introspection_artifacts,
+)
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 MAIN_TEMPLATE = "main"
@@ -200,7 +203,14 @@ def _remap_event_indices(node, remap: dict) -> None:
             _remap_event_indices(value, remap)
 
 
-def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, *, sampling: dict | None = None):
+def generate_code(
+    ir_path: Path,
+    output_dir: Path,
+    stst_bin: str,
+    *,
+    sampling: dict | None = None,
+    sample_interval_s: float = DEFAULT_SAMPLE_INTERVAL_S,
+):
     """Render every C++/artifact file for an IR: introspection headers, runtime and
     shared-state headers, the frame-log proto (compiled to C++), per-motion headers and
     main.cpp.
@@ -224,7 +234,11 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str, *, sampling: d
     )
 
     ir["communication"]["introspection_artifacts"] = write_introspection_artifacts(
-        ir, ir_path=ir_path, output_dir=output_dir, sampling=sampling
+        ir,
+        ir_path=ir_path,
+        output_dir=output_dir,
+        sampling=sampling,
+        sample_interval_s=sample_interval_s,
     )
 
     headers_dir = output_dir / "headers"

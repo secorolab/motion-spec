@@ -10,13 +10,12 @@ import rdflib
 
 from motion_spec.introspection.archive import create_archive_manifest
 from motion_spec.introspection.provenance import prov_uri, run_entity_uri
-from motion_spec.generation.artifacts import field_names_and_format
-from motion_spec.introspection.replay import runtime_frames
 from motion_spec.introspection.runtime_graph import (
     DCTERMS,
     MEMBER_EDGE_LIMIT,
     MSRUN,
     MS_PROV,
+    PROJECTION_ACTIVITY,
     PROV,
     QKIND,
     QUDT,
@@ -40,7 +39,7 @@ RUN = rdflib.URIRef(prov_uri("run:run-test"))
 # prov/time/sosa/dcterms/sens; ms-prov:SpecCompilation belongs to generation, not to a run.
 MS_PROV_TERMS = {"TaskExecution", "MotionExecution", "ConstraintMaintenance"}
 
-from frame_log_fixture import write_frame_log_pb, write_frame_log_proto
+from frame_log_fixture import occurrence, write_frame_log_proto, write_occurrence_log_pb
 from support import _hash_doc, _layout, _provenance
 
 
@@ -112,95 +111,33 @@ def _schema() -> dict:
     return schema
 
 
-def _frame(names: list[str], **values) -> dict:
-    flat = {name: 0 for name in names}
-    flat.update(
-        {
-            "t": 1.0,
-            "step": 0,
-            "fsm_state": 0,
-            "active_motion": -1,
-            "last_event": -1,
-            "period_ns": 1_000_000,
-            "compute_ns": 10_000,
-        }
+def _write_occurrence_log(path: Path, schema: dict) -> None:
+    """A run through S_START into S_MOVE: the goal is held, lost, and held again."""
+    move = {"fsm_state": 1, "active_motion": 0}
+    write_occurrence_log_pb(
+        path,
+        schema,
+        [
+            # S_START; no motion resolves under it -> the span names the state
+            occurrence("STATE_CHANGE", 0, t=1.0, wall_ns=100, state_since_wall_ns=100),
+            # E_DONE drives 0->1; the goal is already held when S_MOVE begins
+            occurrence("EVENT", 1, t=1.1, wall_ns=200, index=1),
+            occurrence(
+                "STATE_CHANGE", 1, t=1.1, wall_ns=200, from_state=0, state_since_wall_ns=200, **move
+            ),
+            occurrence("CONSTRAINT_EDGE", 1, t=1.1, wall_ns=200, index=0, satisfied=True, **move),
+            # the goal is lost and the gate arms and fires on the same tick
+            occurrence("EVENT", 2, t=1.2, wall_ns=300, index=1, **move),
+            occurrence("CONSTRAINT_EDGE", 2, t=1.2, wall_ns=300, index=0, satisfied=False, **move),
+            occurrence(
+                "MONITOR_EDGE", 2, t=1.2, wall_ns=300, index=0, satisfied=True, value=0.004, **move
+            ),
+            # regained: a second satisfied span opens, carrying an integer-valued error
+            occurrence(
+                "CONSTRAINT_EDGE", 3, t=1.3, wall_ns=400, index=0, satisfied=True, value=1, **move
+            ),
+        ],
     )
-    flat.update(values)
-    return flat
-
-
-def _write_frame_log(path: Path, schema: dict) -> None:
-    _fmt, names = field_names_and_format(schema["pools"])
-    frames = [
-        # S_START; nothing active -> ActivityOccurrence(S_START)
-        _frame(names, step=0, t=1.0, wall_ns=100, fsm_state=0),
-        # 0->1 transition (event E_DONE); constraint satisfied + monitor low are the S_MOVE
-        # baseline (edges are only detected intra-state) -> one activity, two control flows
-        _frame(
-            names,
-            step=1,
-            t=1.1,
-            wall_ns=200,
-            fsm_state=1,
-            active_motion=0,  # S_MOVE runs the "move" motion; slots resolve through it
-            state_since_wall_ns=200,
-            **{
-                "c0.active": 1,
-                "c0.satisfied": 1,
-                "m0.active": 1,
-                "m0.satisfied": 0,
-                "trigger_count": 1,
-                "tr0.kind": 1,
-                "tr0.idx": 1,
-                "tr0.fsm_state": 0,
-                "tr0.t": 1.1,
-                "tr0.wall_ns": 200,
-            },
-        ),
-        # intra-state: constraint falls (goal lost -> the entry span closes) + monitor fires
-        _frame(
-            names,
-            step=2,
-            t=1.2,
-            wall_ns=300,
-            fsm_state=1,
-            active_motion=0,  # S_MOVE runs the "move" motion; slots resolve through it
-            state_since_wall_ns=200,
-            **{
-                "c0.active": 1,
-                "c0.satisfied": 0,
-                "m0.active": 1,
-                "m0.satisfied": 1,
-                "m0.value": 0.004,
-                "trigger_count": 1,
-                "tr0.kind": 1,
-                "tr0.idx": 1,
-                "tr0.fsm_state": 0,
-                "tr0.t": 1.1,
-                "tr0.wall_ns": 200,
-            },
-        ),
-        # intra-state: the goal is regained -> a satisfied span opens on the rising edge
-        _frame(
-            names,
-            step=3,
-            t=1.3,
-            wall_ns=400,
-            fsm_state=1,
-            active_motion=0,
-            state_since_wall_ns=200,
-            **{
-                "c0.active": 1,
-                "c0.satisfied": 1,
-                # Integer-valued measurement: JSON serializes a double 1.0 as "1", which
-                # json.loads reads back as int — the result must still be xsd:decimal.
-                "c0.error": 1,
-                "m0.active": 1,
-                "m0.satisfied": 1,
-            },
-        ),
-    ]
-    write_frame_log_pb(path, schema, frames)
 
 
 def _source_tree(path: Path) -> Path:
@@ -216,7 +153,7 @@ def _source_tree(path: Path) -> Path:
     (path / "headers").mkdir()
     (path / "headers" / "runtime.hpp").write_text("// generated\n")
     (path / "main.cpp").write_text("// generated\n")
-    _write_frame_log(path / "frame_log.pb", schema)
+    _write_occurrence_log(path / "occurrences.pb", schema)
     return path
 
 
@@ -246,13 +183,11 @@ def test_runtime_ttl_projects_full_observation_graph(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     create_archive_manifest(run_dir, source_dir=source, run_id="run-test")
 
-    frames, _frame_count = runtime_frames(run_dir)
-    runtime_ttl = write_runtime_ttl(run_dir, frames)
+    runtime_ttl = write_runtime_ttl(run_dir)
     text = runtime_ttl.read_text()
     assert "ent:runtime_ttl" in text
     assert "run:run-test" in text
-    assert "mspact:runtime_ttl_recovery" in text
-    assert "mspagent:replay_process" in text
+    assert "mspact:runtime_projection" in text
 
     graph = rdflib.Graph().parse(runtime_ttl, format="turtle")
 
@@ -342,16 +277,19 @@ def test_runtime_ttl_projects_full_observation_graph(tmp_path: Path) -> None:
     )
     assert stamps and all(o.datatype == rdflib.XSD.dateTime for _, o in stamps)
 
-    # Runtime.ttl self-provenance: who recovered it, and derived from the frame log. Its entity
+    # Runtime.ttl self-provenance: one projection of the stream the run appended to. Its entity
     # is run-scoped, so two runs of one generation never collapse onto one document node.
-    recovery = rdflib.URIRef(prov_uri("activity:runtime_ttl_recovery"))
+    projection = rdflib.URIRef(prov_uri(PROJECTION_ACTIVITY))
     doc = rdflib.URIRef(run_entity_uri("run-test", "runtime_ttl"))
-    assert _has(graph, doc, PROV.wasGeneratedBy, recovery)
+    stream = rdflib.URIRef(run_entity_uri("run-test", "occurrences"))
+    assert _has(graph, doc, PROV.wasGeneratedBy, projection)
+    assert _has(graph, doc, PROV.wasDerivedFrom, stream)
+    assert _has(graph, projection, PROV.used, stream)
     assert _has(
-        graph, doc, PROV.wasDerivedFrom, rdflib.URIRef(run_entity_uri("run-test", "frame_log"))
-    )
-    assert _has(
-        graph, recovery, PROV.wasAssociatedWith, rdflib.URIRef(prov_uri("agent:replay_process"))
+        graph,
+        projection,
+        PROV.wasAssociatedWith,
+        rdflib.URIRef(prov_uri("agent:controller_process")),
     )
 
 
@@ -391,8 +329,7 @@ def _graph(tmp_path: Path) -> tuple[rdflib.Graph, Path]:
     source = _source_tree(tmp_path / "source")
     run_dir = tmp_path / "run"
     create_archive_manifest(run_dir, source_dir=source, run_id="run-test")
-    frames, _frame_count = runtime_frames(run_dir)
-    runtime_ttl = write_runtime_ttl(run_dir, frames)
+    runtime_ttl = write_runtime_ttl(run_dir)
     return rdflib.Graph().parse(runtime_ttl, format="turtle"), run_dir
 
 
@@ -503,8 +440,8 @@ def test_occurrences_link_to_what_informed_them(tmp_path: Path) -> None:
     assert graph.value(entered, PROV.used) == MOTION_MOVE
 
 
-def test_recover_runtime_ttl_rewrites_with_the_new_terms(tmp_path: Path) -> None:
-    """The migration path for archives written before this vocabulary existed."""
+def test_recover_runtime_ttl_reprojects_the_occurrence_stream(tmp_path: Path) -> None:
+    """Re-reading an archived run reaches the same graph its own writer reached."""
     from motion_spec.introspection.replay import main
 
     source = _source_tree(tmp_path / "source")
@@ -541,57 +478,34 @@ def _gate_schema(*, members: bool = True) -> dict:
     return schema
 
 
-def _gate_frames(names: list[str], *, breaks: int, member_flaps: int) -> list[dict]:
-    """S_MOVE throughout: the monitor's condition holds, breaks `breaks` times, then fires."""
-    frames = [_frame(names, step=0, t=0.0, wall_ns=100, fsm_state=1, active_motion=0)]
+def _gate_occurrences(*, breaks: int, member_flaps: int) -> list[dict]:
+    """S_MOVE throughout: the gate's condition holds, breaks `breaks` times, then fires."""
+    move = {"fsm_state": 1, "active_motion": 0}
+    entries = [occurrence("STATE_CHANGE", 0, state_since_wall_ns=100, **move)]
     step = 1
+    member_held = True
     for cycle in range(breaks + 1):
-        for held in (1, 0) if cycle < breaks else (1,):
-            for _ in range(2):
-                flap = member_flaps and (step % 2)
-                frames.append(
-                    _frame(
-                        names,
-                        step=step,
-                        t=step / 1000,
-                        wall_ns=100 + step,
-                        fsm_state=1,
-                        active_motion=0,
-                        state_since_wall_ns=100,
-                        **{
-                            "m0.active": 1,
-                            "m0.satisfied": held,
-                            "q0": 0.5 if not flap else 5.0,
-                            "q1": 0.5,
-                        },
+        for held in (True, False) if cycle < breaks else (True,):
+            entries.append(
+                occurrence("MONITOR_EDGE", step, index=0, satisfied=held, value=0.004, **move)
+            )
+            if member_flaps:
+                member_held = not member_held
+                entries.append(
+                    occurrence(
+                        "MEMBER_EDGE",
+                        step,
+                        index=0,
+                        member=0,
+                        satisfied=member_held,
+                        value=0.5 if member_held else 5.0,
+                        **move,
                     )
                 )
-                step += 1
-    # The firing tick: the monitor's event reaches the trigger ring.
-    frames.append(
-        _frame(
-            names,
-            step=step,
-            t=step / 1000,
-            wall_ns=100 + step,
-            fsm_state=1,
-            active_motion=0,
-            state_since_wall_ns=100,
-            **{
-                "m0.active": 1,
-                "m0.satisfied": 1,
-                "q0": 0.5,
-                "q1": 0.5,
-                "trigger_count": 1,
-                "tr0.kind": 1,
-                "tr0.idx": 1,
-                "tr0.fsm_state": 1,
-                "tr0.t": step / 1000,
-                "tr0.wall_ns": 100 + step,
-            },
-        )
-    )
-    return frames
+            step += 1
+    # The firing tick: the event the gate names reaches the stream.
+    entries.append(occurrence("EVENT", step, index=1, **move))
+    return entries
 
 
 def _gate_graph(tmp_path: Path, *, breaks: int, member_flaps: int = 1, **kw) -> rdflib.Graph:
@@ -607,16 +521,14 @@ def _gate_graph(tmp_path: Path, *, breaks: int, member_flaps: int = 1, **kw) -> 
     (source / "headers").mkdir()
     (source / "headers" / "runtime.hpp").write_text("// generated\n")
     (source / "main.cpp").write_text("// generated\n")
-    _fmt, names = field_names_and_format(schema["pools"])
-    write_frame_log_pb(
-        source / "frame_log.pb",
+    write_occurrence_log_pb(
+        source / "occurrences.pb",
         schema,
-        _gate_frames(names, breaks=breaks, member_flaps=member_flaps),
+        _gate_occurrences(breaks=breaks, member_flaps=member_flaps),
     )
     run_dir = tmp_path / "run"
     create_archive_manifest(run_dir, source_dir=source, run_id="run-gate")
-    frames, _frame_count = runtime_frames(run_dir)
-    return rdflib.Graph().parse(write_runtime_ttl(run_dir, frames), format="turtle")
+    return rdflib.Graph().parse(write_runtime_ttl(run_dir), format="turtle")
 
 
 def _armings(graph: rdflib.Graph) -> list:

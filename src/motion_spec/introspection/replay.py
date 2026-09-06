@@ -94,11 +94,6 @@ def decode_frames(log_path: Path | str) -> list[dict]:
     return list(frame_log_pb.frame_records(log_path, contract))
 
 
-def runtime_frames(log_path: Path | str) -> tuple[list[dict], int]:
-    records = decode_frames(log_path)
-    return records, len(records)
-
-
 def summarize(log_path: Path | str) -> str:
     run_dir, log_path, _manifest, contract = resolve_archive(log_path)
     meta = validate_header(log_path, contract)
@@ -154,16 +149,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--jsonl", action="store_true", help="emit decoded frames as JSON Lines")
     parser.add_argument("--verify", action="store_true", help="verify manifest/header only")
     parser.add_argument(
-        "--recover-runtime-ttl", action="store_true", help="write runtime.ttl from the frame log"
+        "--recover-runtime-ttl",
+        action="store_true",
+        help="re-project runtime.ttl from the run's occurrence stream",
     )
     args = parser.parse_args(argv)
     try:
         if args.recover_runtime_ttl:
             from motion_spec.introspection.runtime_graph import write_runtime_ttl
 
-            run_dir, log_path, _manifest, _contract = resolve_archive(args.log)
-            records, _frame_count = runtime_frames(log_path)
-            out = write_runtime_ttl(run_dir, records)
+            run_dir = run_dir_for(Path(args.log))
+            out = write_runtime_ttl(run_dir)
             consolidate_provenance(run_dir)
             print(out)
         elif args.verify:

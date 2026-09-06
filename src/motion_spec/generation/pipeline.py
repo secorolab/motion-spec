@@ -187,7 +187,12 @@ def create_generation_dir(
 
 
 def generate_model(
-    model: Path, generation: Path, *, stage: str = "code", seed: int | None = None
+    model: Path,
+    generation: Path,
+    *,
+    stage: str = "code",
+    seed: int | None = None,
+    sample_interval_s: float | None = None,
 ) -> Path:
     """Generate MODEL through IR or C++ code and return its generated-artifact directory."""
     from motion_spec_dsl.rdf_parser.check import validate_manifest
@@ -236,7 +241,17 @@ def generate_model(
         for artifact in (*model_dir.glob("*_fsm.hpp"), model_dir / "fsm_ir.json"):
             if artifact.is_file():
                 artifact.replace(controller_dir / artifact.name)
-        generate_code(ir_path, controller_dir, find_stst() or "stst", sampling=sampling)
+        from motion_spec.generation.artifacts import DEFAULT_SAMPLE_INTERVAL_S
+
+        generate_code(
+            ir_path,
+            controller_dir,
+            find_stst() or "stst",
+            sampling=sampling,
+            sample_interval_s=(
+                DEFAULT_SAMPLE_INTERVAL_S if sample_interval_s is None else sample_interval_s
+            ),
+        )
         # The solver chain is the scene's, so it is emitted from the scene graph (plan 013).
         from motion_spec.generation.scene_kdl import write_scene_kdl_header
         from motion_spec.rdf_parser.model import load_model

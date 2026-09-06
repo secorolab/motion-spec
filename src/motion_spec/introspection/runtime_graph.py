@@ -1,19 +1,22 @@
 # SPDX-License-Identifier: MPL-2.0
-"""Recover runtime RDF from archive-local run data."""
+"""Project a run's occurrence stream into its runtime RDF, live and after the fact."""
 
 from __future__ import annotations
 
 import json
 import math
 import os
+import threading
 import time
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
 import rdflib
+from google.protobuf.message import DecodeError
+from rdflib.plugins.serializers.nt import _nt_row
 
-from motion_spec.introspection.archive import load_manifest, sha256_file
+from motion_spec.introspection.archive import ArchiveError, load_manifest, sha256_file
 from motion_spec_dsl.rdf_parser.vocab import CSTR_HDL
 from motion_spec.introspection import frame_log_pb
 from motion_spec.introspection.provenance import (
@@ -101,6 +104,29 @@ def units_from_paths(paths) -> dict[str, rdflib.URIRef]:
     return units_from_graphs(_model_graphs(paths))
 
 
+def signal_map_from_graphs(graphs) -> dict[str, dict]:
+    """Controller IRI -> its error/control signal IRIs, as the model declares them.
+
+    Those signals are what a sampled value is an observation *of*: the graph observes a
+    property the model already names rather than minting one per slot.
+    """
+    mapping: dict[str, dict] = {}
+    for mg in graphs:
+        for role, predicate in (
+            ("error", CSTR_HDL["error-signal"]),
+            ("output", CSTR_HDL["control-signal"]),
+        ):
+            for subject, obj in mg.subject_objects(predicate):
+                if isinstance(obj, rdflib.URIRef):
+                    mapping.setdefault(str(subject), {})[role] = obj
+    return mapping
+
+
+def signal_map_from_paths(paths) -> dict[str, dict]:
+    """`signal_map_from_graphs` over the model graphs a run archive vendored."""
+    return signal_map_from_graphs(_model_graphs(paths))
+
+
 PROV = rdflib.Namespace("http://www.w3.org/ns/prov#")
 SOSA = rdflib.Namespace("http://www.w3.org/ns/sosa/")
 BDD = rdflib.Namespace("https://secorolab.github.io/metamodels/acceptance-criteria/bdd#")
@@ -124,9 +150,14 @@ MEMBER_EDGE_LIMIT = 8
 # How far past its own declared dwell a gate must hold its activity before the members it
 # watches are worth recording. A gate that fired as soon as it armed was never waiting.
 SLOW_GATE_FACTOR = 2.0
-# Events are the only trigger kind the runtime actually emits; state/constraint/monitor edges
-# are synthesized here from the per-tick frame scan (see _project_occurrences).
-KIND_EVENT = 1
+# How often the growing Turtle is rewritten while a run executes. The N-Triples journal beside
+# it is complete per occurrence; this is only how fresh a reader of the Turtle finds it.
+TTL_REWRITE_INTERVAL_S = 2.0
+OCCURRENCE_REL = "logs/occurrences.pb"
+RUNTIME_TTL_REL = "runtime/runtime.ttl"
+RUNTIME_NT_REL = "runtime/runtime.nt"
+# The graph is one projection of the stream the run appended to; nothing re-derives it.
+PROJECTION_ACTIVITY = "activity:runtime_projection"
 # rec lifecycle states in which the run never produced what it was meant to.
 _FAILED_STATUSES = {"FAILED", "INTERRUPTED", "CANCELLED"}
 
@@ -452,10 +483,11 @@ def frame_observations(
 
 
 class IncrementalProjector:
-    """One run's occurrence projection, fed a frame at a time.
+    """One run's occurrence projection, fed an occurrence at a time.
 
-    Owns the state the per-tick scan carries across frames, so a batch replay and a live
-    dashboard session drive the identical projection code. Continuous scalars stay in the
+    The runtime detects the edges and appends them; this holds the policy alone -- what an edge
+    means, how long a span lasts, what caused it. The same projector drives a run being written
+    and one being re-read, so there is one answer either way. Continuous scalars stay in the
     frame log; only semantic edges land in the graph, as activities nested by
     prov:wasInformedBy (run -> motion -> maintenance):
 
@@ -481,11 +513,10 @@ class IncrementalProjector:
     "which monitor firing caused this transition" is a graph walk. A cause is written only
     where it is unique -- a missing link is honest, a guessed one poisons every query.
 
-    Edge detection resets at state boundaries: slot indices are motion-local (slot i is a
-    different controller under a different motion), so only intra-state comparison is valid.
-
-    With `sample_interval_s` set, controller and monitor values are additionally sampled at
-    that spacing in sim time. Left None (the archive path) no observations are emitted.
+    Occurrences arrive in tick order and, within a tick, in the order the runtime emitted them:
+    events first (a state change has to be able to name the event that drove it), then the
+    entry, then the edges under it, then the sampled value set. A monitor's firing is settled at
+    the tick's end, once that monitor's own edge for the tick has been applied.
     """
 
     def __init__(
@@ -494,7 +525,6 @@ class IncrementalProjector:
         run_id: str,
         header,
         *,
-        sample_interval_s: float | None = None,
         signal_map: dict | None = None,
         declared_dwells: dict | None = None,
         units: dict | None = None,
@@ -507,7 +537,6 @@ class IncrementalProjector:
             prov_uri(header.producer_agent_id or "agent:controller_process")
         )
         self.trs = _tick_scale(g, run_id, header.nominal_period_ns)
-        self.sample_interval_s = sample_interval_s
         self.signal_map = signal_map or {}
         # Read to decide whether an arming is worth its member detail, never written: the
         # declared dwell belongs to the design graph and a query joins the two.
@@ -528,15 +557,28 @@ class IncrementalProjector:
             )
         self.anchors: set = set()
         self.prev_state = None
-        self.prev_csat: list | None = None
-        self.prev_msat: list | None = None
         self.seen_events: set = set()
         # An event fires on one tick and the state change lands on the next, so the events that
-        # could have caused a change span this frame and the previous one.
+        # could have caused a change span this tick and the previous one.
+        self.frame_events: set = set()
         self.prev_frame_events: set = set()
         self.frame_event_uris: set = set()
-        self.last_sample_t: float | None = None
+        # Firings owed to the tick being read: a monitor fires once its edge for the tick has
+        # been applied, so they are settled when the tick ends.
+        self.pending_fires: dict = {}
+        # Whether the tick being read entered a state, and the motion its occurrences name --
+        # settled at the tick's end, because the tick a state is entered on still runs the
+        # motion that is leaving.
+        self.tick_entered = False
+        self.tick_motion: dict | None = None
+        # The last value each monitor reported, so a firing that carries no edge of its own
+        # still records what the monitor read.
+        self.monitor_value: dict = {}
+        self.first_step: int | None = None
         self.last_step: int | None = None
+        self.tick_wall = None
+        # Wall time per anchored step, so an instant materialized at the end still carries one.
+        self.step_wall: dict = {}
         self.activity_began: int | None = None
         # Open spans, closed when the opposite edge arrives or the run ends.
         self.open_activity: rdflib.URIRef | None = None
@@ -557,7 +599,6 @@ class IncrementalProjector:
         # -- each arming is its own maintenance, so a consumer counts them.
         self.first_held: dict = {}
         self.rearm: dict = {}
-        self.member_prev: dict = {}
         self.member_pending: dict = {}
         # Instance-level causes, kept only as long as they can still inform something.
         self.event_occ: dict = {}
@@ -667,33 +708,31 @@ class IncrementalProjector:
             self._informed_by(occ, self.event_occ.get(next(iter(fired))))
         return occ
 
-    def _constraint_edges(
-        self, controllers: list, csat: list, prev: list, frame: dict, wall, step: int
-    ) -> None:
-        """Span each goal constraint's satisfied stretches, closing one on its falling edge.
+    def _constraint_edge(self, controllers: list, occurrence: dict, wall, step: int) -> None:
+        """Span a goal constraint's satisfied stretches, closing one on its falling edge.
 
         Unsatisfied gets no occurrence of its own: it is the gap between two satisfied spans.
         The value carried is the observed error, never the declared band.
 
-        Entry passes an all-unsatisfied `prev`, so a constraint that is already satisfied when
-        its motion begins opens a span there. Without that its later loss -- the falling edge
-        that fires a goal-lost event -- would close nothing and leave no trace of the loss.
+        The runtime reports every latch as unsatisfied at a state entry, so a constraint already
+        satisfied when its motion begins opens a span there. Without that its later loss -- the
+        falling edge that fires a goal-lost event -- would close nothing and leave no trace.
         """
-        for idx, now in enumerate(csat):
-            if idx >= len(prev) or idx >= len(controllers) or now == prev[idx]:
-                continue
-            constraint_uri = _slot_uri(controllers[idx], "constraint_uri")
-            if constraint_uri is None:  # only goal constraints, not pure regulation
-                continue
-            ended = self.open_constraint.pop(idx, None)
-            self._close(ended, step)
-            if not now:
-                self._lost(ended)
-                continue
-            value = frame["constraints"][idx].get("error")
-            self.open_constraint[idx] = self._maintenance(
-                f"c{idx}", constraint_uri, None if value is None else float(value), wall, step
-            )
+        idx = occurrence["index"]
+        if idx >= len(controllers):
+            return
+        constraint_uri = _slot_uri(controllers[idx], "constraint_uri")
+        if constraint_uri is None:  # only goal constraints, not pure regulation
+            return
+        ended = self.open_constraint.pop(idx, None)
+        self._close(ended, step)
+        if not occurrence["satisfied"]:
+            self._lost(ended)
+            return
+        value = occurrence.get("value")
+        self.open_constraint[idx] = self._maintenance(
+            f"c{idx}", constraint_uri, None if value is None else float(value), wall, step
+        )
 
     def _maintenance(self, disc, referent, value, wall, step: int, *, plan_step: bool = True):
         """One interval a commanded constraint was held for, and the goal it thereby held.
@@ -715,37 +754,34 @@ class IncrementalProjector:
         self.goal_of[occ] = goal
         return occ
 
-    def _monitor_edges(self, monitors: list, msat: list, frame: dict, wall, step: int) -> None:
-        """Maintain one span per arming of each monitor, closed when it breaks or fires.
+    def _monitor_edge(self, monitors: list, occurrence: dict, wall, step: int) -> None:
+        """Maintain one span per arming of a monitor, closed when it breaks or fires.
 
         Every arming is its own maintenance, so how often a gate re-armed is COUNT(*) over
         them. The observed dwell is the interval this emits; the *declared* dwell stays in the
         design graph, where a query joins it. The two are compared, never copied together.
         """
-        prev = self.prev_msat
-        for idx, now in enumerate(msat):
-            if idx >= len(monitors):
-                continue
-            monitor_uri = _slot_uri(monitors[idx], "uri", "monitor_uri")
-            was = None if prev is None or idx >= len(prev) else prev[idx]
-            if now and not was and monitor_uri is not None:
+        idx = occurrence["index"]
+        if idx >= len(monitors):
+            return
+        slot = monitors[idx]
+        monitor_uri = _slot_uri(slot, "uri", "monitor_uri")
+        self.monitor_value[idx] = occurrence.get("value")
+        if occurrence["satisfied"]:
+            if monitor_uri is not None:
                 self.first_held[idx] = step
                 self.open_monitor[idx] = self._maintenance(f"m{idx}", monitor_uri, None, wall, step)
-            elif was and not now:
-                self.rearm[idx] = self.rearm.get(idx, 0) + 1
-                self.first_held.pop(idx, None)
-                broken = self.open_monitor.pop(idx, None)
-                self._close(broken, step)
-                self._lost(broken)
-            self._watch_members(idx, monitors[idx], frame, step)
-            # A monitor that names an event has fired when that event fired; one that names
-            # none (a flag, a `while` term) is recorded on the raw rising edge instead.
-            event_uri = monitors[idx].get("event_uri")
-            fired = event_uri in self.frame_event_uris if event_uri else bool(now and was is False)
-            if fired:
-                self._fire_monitor(idx, monitors[idx], frame, wall, step)
+            # A monitor that names no event (a flag, a `while` term) fires on its rising edge.
+            if not slot.get("event_uri"):
+                self.pending_fires[idx] = slot
+        else:
+            self.rearm[idx] = self.rearm.get(idx, 0) + 1
+            self.first_held.pop(idx, None)
+            broken = self.open_monitor.pop(idx, None)
+            self._close(broken, step)
+            self._lost(broken)
 
-    def _fire_monitor(self, idx: int, slot: dict, frame: dict, wall, step: int) -> None:
+    def _fire_monitor(self, idx: int, slot: dict, wall, step: int) -> None:
         monitor_uri = _slot_uri(slot, "uri", "monitor_uri")
         if monitor_uri is None:
             return
@@ -754,11 +790,17 @@ class IncrementalProjector:
         if occ is None:  # fired without an observed arming edge: the firing tick is the arming
             occ = self._maintenance(f"m{idx}", monitor_uri, None, wall, step)
         self._close(occ, step)
-        slots = frame.get("monitors") or []
-        value = slots[idx].get("value") if idx < len(slots) else None
+        value = self.monitor_value.get(idx)
         _result(
             self.g, occ, None if value is None else float(value), self.units.get(str(monitor_uri))
         )
+        if self._interesting(monitor_uri, rearm, step):
+            self._emit_members(idx, occ, wall, step)
+        self.member_pending.pop(idx, None)
+        self.rearm[idx] = 0
+        self.first_held.pop(idx, None)
+        if slot.get("event_uri"):
+            self.monitor_occ_for_event[slot["event_uri"]] = occ
         if self._interesting(monitor_uri, rearm, step):
             self._emit_members(idx, occ, wall, step)
         self.member_pending.pop(idx, None)
@@ -782,33 +824,27 @@ class IncrementalProjector:
             return False
         return (step - self.activity_began) * self.period_s > declared * SLOW_GATE_FACTOR
 
-    def _watch_members(self, idx: int, slot: dict, frame: dict, step: int) -> None:
-        """Buffer the satisfied/unsatisfied edges of a gate's watched members.
+    def _member_edge(self, monitors: list, occurrence: dict, step: int) -> None:
+        """Buffer one held/lost edge of a gate's watched member.
 
         They become occurrences only if the arming turns out interesting, and are capped per
         member -- the armings themselves are not, so a truncated series stays recognisable.
         """
-        quantities = frame.get("quantities") or {}
-        for member in slot.get("watched") or []:
-            error_id, member_uri = member.get("error_id"), member.get("uri")
-            if not error_id or not member_uri:
-                continue
-            error = quantities.get(error_id)
-            band = quantities.get(
-                member.get("tolerance_id"), self.constants.get(member.get("tolerance_id"))
-            )
-            if error is None or band is None:
-                continue
-            held = abs(float(error)) <= float(band)
-            key = (idx, member["id"])
-            was = self.member_prev.get(key)
-            self.member_prev[key] = held
-            if was is None or was == held:
-                continue
-            pending = self.member_pending.setdefault(idx, {}).setdefault(member["id"], [])
-            if len(pending) >= MEMBER_EDGE_LIMIT:
-                continue
-            pending.append((held, member_uri, float(error), step))
+        idx, ordinal = occurrence["index"], occurrence["member"]
+        if idx >= len(monitors):
+            return
+        watched = monitors[idx].get("watched") or []
+        if ordinal >= len(watched):
+            return
+        member = watched[ordinal]
+        if not member.get("uri"):
+            return
+        pending = self.member_pending.setdefault(idx, {}).setdefault(member["id"], [])
+        if len(pending) >= MEMBER_EDGE_LIMIT:
+            return
+        pending.append(
+            (bool(occurrence["satisfied"]), member["uri"], float(occurrence["value"]), step)
+        )
 
     def _emit_members(self, idx: int, monitor_occ: rdflib.URIRef, wall, fired: int) -> None:
         """Span each buffered held stretch of a gate's members, hung off the arming that wanted
@@ -829,105 +865,125 @@ class IncrementalProjector:
                 self._close(occ, ends_at)
                 self._informed_by(monitor_occ, occ)
 
-    def _triggers(self, frame: dict, step: int) -> None:
-        for trigger in frame.get("triggers", []):
-            if trigger.get("kind") != KIND_EVENT:
-                continue
-            eidx = trigger.get("idx")
-            event = self.events.get(eidx) or {}
-            ekey = (eidx, trigger.get("wall_ns"))
-            if ekey in self.seen_events:
-                continue
-            self.seen_events.add(ekey)
-            if not event.get("uri"):  # the shape wants a referent; an unnamed event has none
-                continue
-            occ = self._occurrence(
-                PROV.Activity, f"e{eidx}", trigger.get("wall_ns"), step, span=False
-            )
-            self.g.add((occ, PROV.used, rdflib.URIRef(event["uri"])))
-            self._informed_by(occ, self.monitor_occ_for_event.pop(event["uri"], None))
-            self.event_occ[eidx] = occ
-            self.frame_event_occ.append(occ)
+    def _event(self, monitors: list, occurrence: dict, step: int) -> None:
+        """Record one event firing, and owe the tick's end every monitor that names it."""
+        eidx = occurrence["index"]
+        event = self.events.get(eidx) or {}
+        self.frame_events.add(eidx)
+        uri = event.get("uri")
+        if not uri:  # the shape wants a referent; an unnamed event has none
+            return
+        self.frame_event_uris.add(uri)
+        for idx, slot in enumerate(monitors):
+            if slot.get("event_uri") == uri:
+                self.pending_fires[idx] = slot
+        ekey = (eidx, occurrence["wall_ns"])
+        if ekey in self.seen_events:
+            return
+        self.seen_events.add(ekey)
+        occ = self._occurrence(PROV.Activity, f"e{eidx}", occurrence["wall_ns"], step, span=False)
+        self.g.add((occ, PROV.used, rdflib.URIRef(uri)))
+        self._informed_by(occ, self.monitor_occ_for_event.pop(uri, None))
+        self.event_occ[eidx] = occ
+        self.frame_event_occ.append(occ)
+
+    def _entry(self, occurrence: dict, wall, step: int) -> None:
+        """Close what the outgoing motion held and open the span the new state runs.
+
+        Slot indices are motion-local, so no arming carries across the boundary. The spans open
+        under the outgoing motion end here -- dropping them instead would leave a beginning with
+        no end in every query that asks how long one held.
+        """
+        for occ in (*self.open_constraint.values(), *self.open_monitor.values()):
+            self._close(occ, step)
+        self.open_constraint, self.open_monitor = {}, {}
+        self.first_held, self.rearm, self.member_pending = {}, {}, {}
+        self.activity_began = step
+        cur = occurrence["fsm_state"]
+        from_state = occurrence["from_state"]
+        self.prev_state = None if from_state < 0 else from_state
+        self._state_change(
+            cur,
+            _state_meta(self.states, cur),
+            occurrence["state_since_wall_ns"] or wall,
+            step,
+            self.frame_events | self.prev_frame_events,
+        )
+        self.prev_state = cur
 
     # -- driving -----------------------------------------------------------------------
 
-    def feed(self, frame: dict) -> set:
-        """Project one frame; return the steps it anchored an occurrence at."""
-        step = frame["step"]
+    def _motion(self, occurrence: dict) -> dict:
+        return self.motions.get(occurrence.get("active_motion", -1), {})
+
+    def _end_tick(self) -> None:
+        """Settle the tick just read: fire what its events armed, and age its event set.
+
+        An event fires on one tick and the state change lands on the next, so the events a
+        change could have been caused by span this tick and the one before it.
+        """
+        if not self.tick_entered and self.tick_motion is not None:
+            self._resolve_motion(self.tick_motion)
+        for idx, slot in self.pending_fires.items():
+            self._fire_monitor(idx, slot, self.tick_wall, self.last_step)
+        self.pending_fires = {}
+        self.tick_entered, self.tick_motion = False, None
+        self.prev_frame_events = self.frame_events
+        self.frame_events, self.frame_event_uris, self.frame_event_occ = set(), set(), []
+
+    def feed(self, occurrence: dict) -> set:
+        """Project one occurrence; return the steps it anchored an occurrence at."""
+        step = occurrence["step"]
+        if self.last_step is not None and step != self.last_step:
+            self._end_tick()
+        if self.first_step is None:
+            self.first_step = step
         self.last_step = step
-        wall = frame.get("timing", {}).get("wall_ns")
-        cur = frame.get("fsm_state", -1)
-        frame_events = {
-            trigger.get("idx")
-            for trigger in frame.get("triggers", [])
-            if trigger.get("kind") == KIND_EVENT
-        }
-        self.frame_event_uris = {
-            (self.events.get(idx) or {}).get("uri") for idx in frame_events
-        } - {None}
-        state = _state_meta(self.states, cur)
-        meta = self.motions.get(frame.get("active_motion", -1), {})
-        controllers = meta.get("controllers") or meta.get("constraints") or []
-        monitors = meta.get("monitors") or []
-        csat = [
-            bool(c.get("active")) and bool(c.get("satisfied")) for c in frame.get("constraints", [])
-        ]
-        msat = [
-            bool(m.get("active")) and bool(m.get("satisfied")) for m in frame.get("monitors", [])
-        ]
-
+        wall = occurrence["wall_ns"]
+        self.step_wall.setdefault(step, wall)
+        self.tick_wall = wall
         before = set(self.anchors)
-        self.frame_event_occ = []
-        # Events first: a state change on this same tick has to be able to name the event
-        # instance that caused it, not just the event definition.
-        self._triggers(frame, step)
-        if cur != self.prev_state:
-            # Slot indices are motion-local, so no arming carries across the boundary. The
-            # spans open under the outgoing motion end here -- dropping them instead would
-            # leave a beginning with no end in every query that asks how long one held.
-            for occ in (*self.open_constraint.values(), *self.open_monitor.values()):
-                self._close(occ, step)
-            self.open_constraint, self.open_monitor = {}, {}
-            self.first_held, self.rearm, self.member_prev, self.member_pending = {}, {}, {}, {}
-            self.activity_began = step
-            self._state_change(
-                cur,
-                state,
-                frame.get("state_since_wall_ns") or wall,
-                step,
-                frame_events | self.prev_frame_events,
-            )
-            self._constraint_edges(controllers, csat, [False] * len(csat), frame, wall, step)
-        else:
-            self._resolve_motion(meta)
-            self._constraint_edges(controllers, csat, self.prev_csat or [], frame, wall, step)
-            self._monitor_edges(monitors, msat, frame, wall, step)
-
-        if self.sample_interval_s is not None:
-            t = frame.get("t", 0.0)
-            if self.last_sample_t is None or t >= self.last_sample_t + self.sample_interval_s:
-                self.last_sample_t = t
-                frame_observations(
-                    self.g,
-                    self.run_id,
-                    self.header,
-                    frame,
-                    signal_map=self.signal_map,
-                    units=self.units,
-                )
-
-        self.prev_state, self.prev_csat, self.prev_msat = cur, csat, msat
-        self.prev_frame_events = frame_events
+        kind = occurrence["kind"]
+        meta = self._motion(occurrence)
+        monitors = meta.get("monitors") or []
+        if kind == "STATE_CHANGE":
+            self.tick_entered = True
+            self._entry(occurrence, wall, step)
+            return self.anchors - before
+        self.tick_motion = meta
+        if kind == "EVENT":
+            self._event(monitors, occurrence, step)
+        elif kind == "CONSTRAINT_EDGE":
+            self._constraint_edge(meta.get("controllers") or [], occurrence, wall, step)
+        elif kind == "MONITOR_EDGE":
+            self._monitor_edge(monitors, occurrence, wall, step)
+        elif kind == "MEMBER_EDGE":
+            self._member_edge(monitors, occurrence, step)
+        elif kind == "SAMPLE":
+            self._sample(occurrence)
         return self.anchors - before
 
+    def _sample(self, occurrence: dict) -> None:
+        """The value set the runtime sampled: observations of every slot the motion drove."""
+        frame = occurrence.get("frame")
+        if frame is None:
+            return
+        for idx, slot in enumerate(frame.get("monitors") or []):
+            if slot.get("active"):
+                self.monitor_value[idx] = slot.get("value")
+        frame_observations(
+            self.g, self.run_id, self.header, frame, signal_map=self.signal_map, units=self.units
+        )
+
     def close(self) -> set:
-        """Close every span still open at the run's last frame.
+        """Close every span still open at the run's last occurrence.
 
         Without this the final occupancy silently drops out of every duration query, and the
         sum of activity durations no longer equals the run.
         """
         if self.last_step is None:
             return self.anchors
+        self._end_tick()
         for occ in (*self.open_constraint.values(), *self.open_monitor.values()):
             self._close(occ, self.last_step)
         self.last_activity = self.open_activity
@@ -936,21 +992,30 @@ class IncrementalProjector:
 
 
 def _project_occurrences(
-    g: rdflib.Graph, run_id: str, header, frames: list[dict], dwells: dict, units: dict
+    g: rdflib.Graph, run_id: str, header, occurrences, model_paths
 ) -> IncrementalProjector:
-    """Synthesize the discrete event graph from the per-tick frame scan; return the projector,
-    which holds the steps that carry an occurrence (the instants worth materializing)."""
-    projector = IncrementalProjector(g, run_id, header, declared_dwells=dwells, units=units)
-    for frame in frames:
-        projector.feed(frame)
+    """Project a whole occurrence stream; return the projector, which holds the steps that
+    carry an occurrence (the instants worth materializing)."""
+    projector = IncrementalProjector(g, run_id, header, **model_facts(model_paths))
+    for occurrence in occurrences:
+        projector.feed(occurrence)
     projector.close()
     return projector
 
 
-def _add_rec_timing(g: rdflib.Graph, run_dir: Path, manifest: dict, run: rdflib.URIRef) -> dict:
+def model_facts(model_paths) -> dict:
+    """What the projector reads out of the design graph: the declared dwells it judges an
+    arming by, the units it labels a value with, and the signals a sample observes."""
+    return {
+        "declared_dwells": declared_dwells_from_paths(model_paths),
+        "units": units_from_paths(model_paths),
+        "signal_map": signal_map_from_paths(model_paths),
+    }
+
+
+def _add_rec_timing(g: rdflib.Graph, run_dir: Path, files: dict, run: rdflib.URIRef) -> dict:
     """Stamp the run with the wall-clock lifecycle rec observed, and return that lifecycle."""
-    rec_rel = manifest.get("files", {}).get("rec", "rec.ld.json")
-    rec_path = run_dir / rec_rel
+    rec_path = run_dir / files.get("rec", "rec.ld.json")
     if not rec_path.exists():
         return {}
     lifecycle = rec_run_lifecycle(rdflib.Graph().parse(rec_path, format="json-ld"))
@@ -1003,14 +1068,21 @@ def bind_namespaces(g, run_id: str, *, fsm_namespace: str = "") -> None:
         g.bind("mfsm", rdflib.Namespace(fsm_namespace))
 
 
-def project_runtime(run_dir: Path | str, frames: list[dict]) -> rdflib.Graph:
-    run_dir, manifest = load_manifest(run_dir)
-    # The run's contract comes from the log itself, not a companion artifact.
-    header = frame_log_pb.read_contract(run_dir / manifest["files"]["frame_log"]).header
-    g = rdflib.Graph()
-    bind_namespaces(g, manifest["run_id"], fsm_namespace=header.fsm_namespace)
+def _run_document(
+    g: rdflib.Graph,
+    run_dir: Path,
+    files: dict,
+    header,
+    run_id: str,
+    last_activity: rdflib.URIRef | None = None,
+) -> dict:
+    """The run-level statement of the document: the run, its agents, the files it read and
+    wrote, and this graph's own provenance. Returns the rec lifecycle it read.
 
-    run_id = manifest["run_id"]
+    `files` is the archive's own mapping, so what the document says a file is at is what the
+    manifest says. A run still executing has no manifest yet: it states the paths the runtime
+    itself wrote to, and the runner restates them once the archive has settled.
+    """
     # The run, the agents and the execution activity are shared provenance concepts: emit the
     # same canonical msprov IRIs the codegen and rec graphs use so all three join on one node
     # per concept (rather than three parallel ones). File entities are run-scoped, so two runs
@@ -1019,6 +1091,7 @@ def project_runtime(run_dir: Path | str, frames: list[dict]) -> rdflib.Graph:
     activity = rdflib.URIRef(prov_uri(header.activity_id or "activity:controller_execution"))
     producer = rdflib.URIRef(prov_uri(header.producer_agent_id or "agent:controller_process"))
     runtime = rdflib.URIRef(prov_uri(header.runtime_agent_id or "agent:runtime"))
+    occurrences = rdflib.URIRef(run_entity_uri(run_id, "occurrences"))
     frame_log = rdflib.URIRef(run_entity_uri(run_id, "frame_log"))
     proto_entity = rdflib.URIRef(run_entity_uri(run_id, "frame_log_proto"))
     model_entity = rdflib.URIRef(run_entity_uri(run_id, "model_jsonld"))
@@ -1048,80 +1121,113 @@ def project_runtime(run_dir: Path | str, frames: list[dict]) -> rdflib.Graph:
     g.add((runtime, rdflib.RDF.type, PROV.SoftwareAgent))
     if header.simulated:
         g.add((runtime, rdflib.RDF.type, EXEC.Simulation))
-    g.add((frame_log, rdflib.RDF.type, PROV.Entity))
-    g.add((frame_log, PROV.wasGeneratedBy, activity))
+    # The stream the graph is projected from is always there -- it is what is being read.
+    g.add((occurrences, rdflib.RDF.type, PROV.Entity))
+    g.add((occurrences, PROV.wasGeneratedBy, activity))
     g.add(
         (
-            frame_log,
+            occurrences,
             PROV.atLocation,
-            rdflib.URIRef(os.path.relpath(manifest["files"]["frame_log"], "runtime")),
+            rdflib.URIRef(os.path.relpath(files.get("occurrences", OCCURRENCE_REL), "runtime")),
         )
     )
+    if files.get("frame_log"):
+        g.add((frame_log, rdflib.RDF.type, PROV.Entity))
+        g.add((frame_log, PROV.wasGeneratedBy, activity))
+        g.add(
+            (
+                frame_log,
+                PROV.atLocation,
+                rdflib.URIRef(os.path.relpath(files["frame_log"], "runtime")),
+            )
+        )
     for entity, key in (
         (proto_entity, "frame_log_proto"),
         (model_entity, "model"),
         (provenance_entity, "provenance"),
     ):
-        rel = manifest.get("files", {}).get(key)
+        rel = files.get(key)
         if rel and (run_dir / rel).exists():
             g.add((entity, rdflib.RDF.type, PROV.Entity))
             g.add((entity, PROV.atLocation, rdflib.URIRef(os.path.relpath(rel, "runtime"))))
     # The run id is already the run's own IRI, and the frame count is the last instant's position.
     g.add((run, DCTERMS.hasVersion, rdflib.Literal(RUNTIME_RDF_CONTRACT_VERSION)))
-    lifecycle = _add_rec_timing(g, run_dir, manifest, run)
+    lifecycle = _add_rec_timing(g, run_dir, files, run)
 
-    # Provenance of this runtime.ttl document itself: recovered from the frame log by the
-    # introspection recovery agent (same IRIs the rec graph uses), stamped at generation time.
+    # Provenance of this runtime.ttl document itself: one projection of the occurrence stream the
+    # run appended to, by the same agent the header names as the run's observer.
     runtime_doc = rdflib.URIRef(run_entity_uri(run_id, "runtime_ttl"))
-    recovery_activity = rdflib.URIRef(prov_uri("activity:runtime_ttl_recovery"))
-    recovery_agent = rdflib.URIRef(prov_uri("agent:replay_process"))
+    projection = rdflib.URIRef(prov_uri(PROJECTION_ACTIVITY))
     generated_at = _dt_literal(time.time_ns())
     g.add((runtime_doc, rdflib.RDF.type, PROV.Entity))
     g.add((runtime_doc, PROV.atLocation, rdflib.URIRef("runtime.ttl")))
-    g.add((runtime_doc, PROV.wasGeneratedBy, recovery_activity))
-    g.add((runtime_doc, PROV.wasDerivedFrom, frame_log))
+    g.add((runtime_doc, PROV.wasGeneratedBy, projection))
+    g.add((runtime_doc, PROV.wasDerivedFrom, occurrences))
     g.add((runtime_doc, PROV.generatedAtTime, generated_at))
-    g.add((recovery_activity, rdflib.RDF.type, PROV.Activity))
-    g.add((recovery_activity, PROV.used, frame_log))
-    g.add((recovery_activity, PROV.wasAssociatedWith, recovery_agent))
-    g.add((recovery_activity, PROV.endedAtTime, generated_at))
-    g.add((recovery_agent, rdflib.RDF.type, OBS.ObservationProvider))
-    g.add((recovery_agent, rdflib.RDFS.label, rdflib.Literal("motion_spec runtime.ttl recovery")))
+    g.add((projection, rdflib.RDF.type, PROV.Activity))
+    g.add((projection, PROV.used, occurrences))
+    g.add((projection, PROV.wasAssociatedWith, producer))
+    g.add((projection, PROV.endedAtTime, generated_at))
+    # A run that did not complete never produced what it was meant to: the outcome is an entity
+    # nothing generated, lost to whatever was in force when the run stopped.
+    if lifecycle.get("status") in _FAILED_STATUSES and last_activity is not None:
+        outcome = rdflib.URIRef(run_entity_uri(run_id, "outcome"))
+        g.add((outcome, rdflib.RDF.type, PROV.Entity))
+        g.add((outcome, PROV.wasInvalidatedBy, last_activity))
+    return lifecycle
 
-    # Synthesize the discrete event graph, then materialize an instant only for the steps that
-    # actually anchor an occurrence (plus the run's first/last for bounds). The dense per-tick
-    # curve — every frame, all continuous scalars — stays in the frame log for numeric analysis.
-    if frames:
-        model_paths = _model_paths(run_dir, manifest)
-        projector = _project_occurrences(
-            g,
-            run_id,
-            header,
-            frames,
-            declared_dwells_from_paths(model_paths),
-            units_from_paths(model_paths),
-        )
-        trs = _trs_node(run_id)
-        emit_steps = projector.anchors | {frames[0]["step"], frames[-1]["step"]}
-        for frame in frames:
-            if frame["step"] in emit_steps:
-                _instant(g, run_id, frame["step"], trs, frame.get("timing", {}).get("wall_ns"))
-        g.add((run, TIME.hasBeginning, _instant_node(run_id, frames[0]["step"])))
-        g.add((run, TIME.hasEnd, _instant_node(run_id, frames[-1]["step"])))
-        # A run that did not complete never produced what it was meant to: the outcome is an
-        # entity nothing generated, lost to whatever was in force when the run stopped.
-        if lifecycle.get("status") in _FAILED_STATUSES and projector.last_activity is not None:
-            outcome = rdflib.URIRef(run_entity_uri(run_id, "outcome"))
-            g.add((outcome, rdflib.RDF.type, PROV.Entity))
-            g.add((outcome, PROV.wasInvalidatedBy, projector.last_activity))
+
+def _materialize_extent(g: rdflib.Graph, run_id: str, projector: IncrementalProjector) -> None:
+    """Give every anchored step its instant, and bound the run by the first and the last.
+
+    Only the steps that carry an occurrence get one: the dense per-tick curve -- every frame,
+    all continuous scalars -- stays in the frame log for numeric analysis.
+    """
+    if projector.first_step is None:
+        return
+    trs = _trs_node(run_id)
+    for step in projector.anchors | {projector.first_step, projector.last_step}:
+        _instant(g, run_id, step, trs, projector.step_wall.get(step))
+    run = rdflib.URIRef(prov_uri(f"run:{run_id}"))
+    g.add((run, TIME.hasBeginning, _instant_node(run_id, projector.first_step)))
+    g.add((run, TIME.hasEnd, _instant_node(run_id, projector.last_step)))
+
+
+def occurrence_log(run_dir: Path, files: dict) -> Path:
+    """The occurrence stream this run recorded, wherever the archive put it."""
+    return run_dir / (files.get("occurrences") or OCCURRENCE_REL)
+
+
+def project_runtime(run_dir: Path | str) -> rdflib.Graph:
+    """The whole runtime graph of an archived run, re-read from its occurrence stream."""
+    run_dir, manifest = load_manifest(run_dir)
+    files = manifest.get("files", {})
+    stream = occurrence_log(run_dir, files)
+    if not stream.exists():
+        raise ArchiveError(f"{stream}: the run recorded no occurrence stream to project")
+    # The run's contract comes from the stream itself, not a companion artifact.
+    contract = frame_log_pb.read_contract(stream)
+    run_id = manifest["run_id"]
+    g = rdflib.Graph()
+    bind_namespaces(g, run_id, fsm_namespace=contract.header.fsm_namespace)
+    projector = _project_occurrences(
+        g,
+        run_id,
+        contract.header,
+        frame_log_pb.occurrence_records(stream, contract),
+        _model_paths(run_dir, manifest),
+    )
+    _run_document(g, run_dir, files, contract.header, run_id, projector.last_activity)
+    _materialize_extent(g, run_id, projector)
     return g
 
 
-def write_runtime_ttl(run_dir: Path | str, frames: list[dict]) -> Path:
+def write_runtime_ttl(run_dir: Path | str) -> Path:
+    """Re-project an archived run's occurrence stream over its runtime.ttl."""
     run_dir = Path(run_dir)
-    graph = project_runtime(run_dir, frames)
+    graph = project_runtime(run_dir)
     manifest_path = run_dir / "manifest.json"
-    runtime_rel = "runtime/runtime.ttl"
+    runtime_rel = RUNTIME_TTL_REL
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text())
         runtime_rel = manifest.get("files", {}).get("runtime_ttl") or runtime_rel
@@ -1131,12 +1237,17 @@ def write_runtime_ttl(run_dir: Path | str, frames: list[dict]) -> Path:
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text())
         manifest.setdefault("files", {})["runtime_ttl"] = runtime_rel
-        _record_runtime_ttl_with_rec(run_dir, manifest, out)
+        record_runtime_ttl_with_rec(run_dir, manifest, out)
         manifest_path.write_text(json.dumps(manifest, indent=4) + "\n")
     return out
 
 
-def _record_runtime_ttl_with_rec(run_dir: Path, manifest: dict, runtime_ttl: Path) -> None:
+def record_runtime_ttl_with_rec(run_dir: Path, manifest: dict, runtime_ttl: Path) -> None:
+    """Record the projected graph as an artefact of the projection, with its digest.
+
+    Called once the file is final: rec records a checksum, so a file still being appended to
+    would be recorded as something it is no longer.
+    """
     try:
         from motion_spec.introspection.provenance import ensure_local_rec_importable
 
@@ -1146,27 +1257,178 @@ def _record_runtime_ttl_with_rec(run_dir: Path, manifest: dict, runtime_ttl: Pat
     except ImportError as exc:
         raise RuntimeError("REC is required to update runtime.ttl provenance") from exc
 
-    rec_path = run_dir / manifest.get("files", {}).get("rec", "rec.ld.json")
+    files = manifest.get("files", {})
+    rec_path = run_dir / files.get("rec", "rec.ld.json")
     if not rec_path.exists():
         return
     run_id = manifest.get("run_id")
+    # The same agent the runtime document names, read from the stream's own header, so the two
+    # records describe one activity rather than two.
+    header = frame_log_pb.read_contract(occurrence_log(run_dir, files)).header
     observer = FileObserver(rec_path, run_iri=prov_uri(f"run:{run_id}"))
     run = Run(observers=[observer], run_id=run_id)
-    run.add_agent(
-        prov_uri("agent:replay_process"),
-        rec_types(["prov:SoftwareAgent", "obs:ObservationProvider"]),
-    )
     run.add_activity(
-        prov_uri("activity:runtime_ttl_recovery"),
+        prov_uri(PROJECTION_ACTIVITY),
         rec_types(["prov:Activity"]),
-        associated_with=prov_uri("agent:replay_process"),
+        associated_with=prov_uri(header.producer_agent_id or "agent:controller_process"),
     )
     run.add_artefact(
         str(runtime_ttl.resolve()),
-        gen_activity=prov_uri("activity:runtime_ttl_recovery"),
+        gen_activity=prov_uri(PROJECTION_ACTIVITY),
         archive_path=str(runtime_ttl.relative_to(run_dir)),
         title="runtime_ttl",
         sha256=sha256_file(runtime_ttl),
         size_bytes=runtime_ttl.stat().st_size,
     )
     observer.close()
+
+
+class JournaledGraph(rdflib.Graph):
+    """A graph that also appends every triple it gains to an open N-Triples journal.
+
+    The journal is the crash record: it is complete up to the last occurrence projected, where
+    the Turtle beside it is only as fresh as the last rewrite. Removals are not journaled -- the
+    only triples ever retracted are the document's own, which the next rewrite restates.
+    """
+
+    def __init__(self, journal, **kwargs):
+        super().__init__(**kwargs)
+        self.journal = journal
+
+    def add(self, triple):
+        self.journal.write(_nt_row(triple))
+        self.journal.flush()
+        return super().add(triple)
+
+
+class RuntimeGraphWriter:
+    """Projects a run's occurrence stream into `runtime/runtime.ttl` while the run executes.
+
+    One projector, fed from the stream the runtime is appending to: `runtime.nt` gains a line
+    per triple as it is added and `runtime.ttl` is replaced atomically at most every
+    `TTL_REWRITE_INTERVAL_S` and at close, so a run that dies leaves a graph complete up to its
+    last occurrence rather than nothing at all.
+    """
+
+    def __init__(
+        self,
+        run_dir: Path | str,
+        *,
+        run_id: str,
+        occurrence_log: Path | str,
+        model_paths=(),
+        poll_s: float = 0.2,
+    ):
+        self.run_dir = Path(run_dir)
+        self.run_id = run_id
+        self.occurrence_log = Path(occurrence_log)
+        self.model_paths = list(model_paths)
+        self.poll_s = poll_s
+        self.ttl_path = self.run_dir / RUNTIME_TTL_REL
+        self.nt_path = self.run_dir / RUNTIME_NT_REL
+        self.graph: JournaledGraph | None = None
+        self.projector: IncrementalProjector | None = None
+        self._document: set = set()
+        self._contract = None
+        self._fh = None
+        self._journal = None
+        self._offset = 0
+        self._written_at = 0.0
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._follow, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> Path | None:
+        """Drain what the run appended last, close every open span, and write the final Turtle."""
+        self._stop.set()
+        self._thread.join()
+        if self.projector is None:
+            return None
+        self.projector.close()
+        _materialize_extent(self.graph, self.run_id, self.projector)
+        self._write_ttl()
+        if self._fh is not None:
+            self._fh.close()
+            self._fh = None
+        return self.ttl_path
+
+    def rewrite(self, files: dict) -> Path | None:
+        """Restate the document with the paths the archive settled on, and write it out.
+
+        Only the run-level statement is replaced; every projected occurrence stands. Without
+        this the graph would keep naming files at the paths the runtime wrote them to, which
+        archiving has since moved.
+        """
+        if self.graph is None:
+            return None
+        for triple in self._document:
+            self.graph.remove(triple)
+        self._document = self._state_document(files)
+        self._write_ttl()
+        if self._journal is not None:
+            self._journal.close()
+            self._journal = None
+        return self.ttl_path
+
+    def _state_document(self, files: dict) -> set:
+        document = rdflib.Graph()
+        _run_document(
+            document,
+            self.run_dir,
+            files,
+            self._contract.header,
+            self.run_id,
+            None if self.projector is None else self.projector.last_activity,
+        )
+        for triple in document:
+            self.graph.add(triple)
+        return set(document)
+
+    def _follow(self) -> None:
+        while not self._stop.wait(self.poll_s):
+            self._drain()
+        self._drain()
+
+    def _open(self) -> bool:
+        """True once the stream's header record is complete and the projector is built."""
+        if self.projector is not None:
+            return True
+        if not self.occurrence_log.exists():
+            return False
+        try:
+            self._contract = frame_log_pb.read_contract(self.occurrence_log)
+        except (ArchiveError, DecodeError):
+            return False  # header still being written
+        self.nt_path.parent.mkdir(parents=True, exist_ok=True)
+        self._journal = self.nt_path.open("w", encoding="utf-8")
+        self.graph = JournaledGraph(self._journal)
+        bind_namespaces(self.graph, self.run_id, fsm_namespace=self._contract.header.fsm_namespace)
+        self.projector = IncrementalProjector(
+            self.graph, self.run_id, self._contract.header, **model_facts(self.model_paths)
+        )
+        self._document = self._state_document(
+            {"occurrences": os.path.relpath(self.occurrence_log, self.run_dir)}
+        )
+        self._fh = self.occurrence_log.open("rb")
+        return True
+
+    def _drain(self) -> None:
+        if not self._open():
+            return
+        records, self._offset = frame_log_pb.stream_occurrences(
+            self._fh, self._contract, self._offset
+        )
+        for record in records:
+            self.projector.feed(record)
+        if records and time.monotonic() - self._written_at >= TTL_REWRITE_INTERVAL_S:
+            self._write_ttl()
+
+    def _write_ttl(self) -> None:
+        """Replace the Turtle in one step, so a reader never finds it half written."""
+        self.ttl_path.parent.mkdir(parents=True, exist_ok=True)
+        pending = self.ttl_path.with_suffix(".ttl.tmp")
+        self.graph.serialize(pending, format="turtle")
+        os.replace(pending, self.ttl_path)
+        self._written_at = time.monotonic()

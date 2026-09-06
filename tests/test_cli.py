@@ -171,7 +171,7 @@ def test_gen_and_run_compose_the_model_pipeline(monkeypatch, tmp_path) -> None:
         output.mkdir()
         return output
 
-    def generate(_model, generation, *, stage, seed=None):
+    def generate(_model, generation, *, stage, seed=None, sample_interval_s=None):
         received.setdefault("stages", []).append(stage)
         generated = generation / "generated"
         (generated / "model").mkdir(parents=True)

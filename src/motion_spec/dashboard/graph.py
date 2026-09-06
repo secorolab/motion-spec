@@ -26,9 +26,9 @@ from rdflib.namespace import SDO
 
 from motion_spec.introspection.runtime_graph import (
     TIME,
-    IncrementalProjector,
     bind_namespaces,
     frame_observations,
+    signal_map_from_graphs,
     units_from_graphs,
 )
 
@@ -134,20 +134,8 @@ def deployed_devices(generation_dir: Path | str) -> tuple[str, ...]:
 
 
 def signal_map(model: rdflib.Graph) -> dict[str, dict]:
-    """Controller IRI -> its error/control signal IRIs, as the model declares them.
-
-    Those signals are what a value observation is *of*: the dashboard observes a property the
-    model already names, rather than inventing one per slot.
-    """
-    mapping: dict[str, dict] = {}
-    for role, predicate in (
-        ("error", CSTR_HDL["error-signal"]),
-        ("output", CSTR_HDL["control-signal"]),
-    ):
-        for subject, obj in model.subject_objects(predicate):
-            if isinstance(obj, rdflib.URIRef):
-                mapping.setdefault(str(subject), {})[role] = obj
-    return mapping
+    """Controller IRI -> its error/control signal IRIs, as the model declares them."""
+    return signal_map_from_graphs([model])
 
 
 class GraphService:
@@ -158,21 +146,19 @@ class GraphService:
         generation_dir: Path | str,
         store,
         *,
-        sample_interval_s: float | None = 1.0,
         manifest: Path | None = None,
         runtime_ttl: Path | None = None,
     ):
         self.generation_dir = Path(generation_dir)
         self.store = store
-        self.sample_interval_s = sample_interval_s
         # default_union so a plain { ?s ?p ?o } spans model, runtime and live, which is what
         # someone typing into the console means.
         self.dataset = rdflib.Dataset(default_union=True)
         self.model = self.dataset.graph(MODEL_GRAPH)
         self.runtime = self.dataset.graph(RUNTIME_GRAPH)
         self.live = self.dataset.graph(LIVE_GRAPH)
-        self._projector: IncrementalProjector | None = None
-        self._fed = 0
+        self.runtime_ttl = Path(runtime_ttl) if runtime_ttl is not None else None
+        self._runtime_mtime: float | None = None
         self.runtime_source: str | None = None
         self.sources: list[dict] = []
         # A run names its own model graph; the generation is only where one is found without it.
@@ -184,34 +170,36 @@ class GraphService:
         self.signals = signal_map(self.model)
         self.units = units_from_graphs([self.model])
         bind_namespaces(self.dataset, store.run_id)
-        # The archived record, where the run kept one. Projecting on top of it would emit a
-        # second occurrence for every one already recorded, and double every span read off them.
-        if runtime_ttl is not None and Path(runtime_ttl).is_file():
-            before = graph_sizes(self.dataset)
-            self.runtime.parse(runtime_ttl, format="turtle")
-            self.runtime_source = "archive"
-            self.sources.append(
-                {
-                    "iri": Path(runtime_ttl).resolve().as_uri(),
-                    "path": str(runtime_ttl),
-                    **graph_growth(before, graph_sizes(self.dataset)),
-                }
-            )
+        self._read_runtime()
 
-    def _ensure_projector(self) -> IncrementalProjector | None:
-        """Build the projector once the run's log contract is known (it carries the header)."""
-        if self._projector is None and self.store.contract is not None:
-            header = self.store.contract.header
-            self._projector = IncrementalProjector(
-                self.runtime,
-                self.store.run_id,
-                header,
-                sample_interval_s=self.sample_interval_s,
-                signal_map=self.signals,
-                units=self.units,
-            )
-            bind_namespaces(self.dataset, self.store.run_id, fsm_namespace=header.fsm_namespace)
-        return self._projector
+    def _read_runtime(self) -> bool:
+        """Take the run's graph from the file the runtime writes it to, when it has changed.
+
+        The run projects its own occurrences; reading that file is the whole of what this
+        knows about what happened. A live run's writer replaces it in one step, so re-reading
+        it on an mtime change never catches a half-written document.
+        """
+        if self.runtime_ttl is None or not self.runtime_ttl.is_file():
+            return False
+        mtime = self.runtime_ttl.stat().st_mtime
+        if mtime == self._runtime_mtime:
+            return False
+        self._runtime_mtime = mtime
+        before = graph_sizes(self.dataset)
+        self.runtime.remove((None, None, None))
+        self.runtime.parse(self.runtime_ttl, format="turtle")
+        self.runtime_source = "archive"
+        self.sources = [
+            source for source in self.sources if source["path"] != str(self.runtime_ttl)
+        ]
+        self.sources.append(
+            {
+                "iri": self.runtime_ttl.resolve().as_uri(),
+                "path": str(self.runtime_ttl),
+                **graph_growth(before, graph_sizes(self.dataset)),
+            }
+        )
+        return True
 
     def _quantity_iris(self) -> dict:
         contract = self.store.contract
@@ -224,19 +212,8 @@ class GraphService:
         }
 
     def sync(self) -> None:
-        """Project whatever frames the store has gained, then refresh the live overlay.
-
-        An archived run is never projected: its `urn:runtime` is already the whole record.
-        """
-        if self.runtime_source != "archive":
-            projector = self._ensure_projector()
-            if projector is not None:
-                frames = self.store.snapshot()
-                for frame in frames[self._fed :]:
-                    projector.feed(frame)
-                self._fed = len(frames)
-                if self._fed:
-                    self.runtime_source = "projected"
+        """Take up whatever the run has added to its graph, then refresh the live overlay."""
+        self._read_runtime()
         self.refresh_live()
 
     def refresh_live(self) -> None:

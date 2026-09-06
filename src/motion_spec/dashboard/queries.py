@@ -15,19 +15,13 @@ import rdflib
 from rdf_utils.uri import iri_parent
 
 from motion_spec.dashboard.catalog import classify_quads, graph_name, rdf_name, term_graphs
-from motion_spec.dashboard.graph import (
-    MODEL_GRAPH,
-    RUNTIME_GRAPH,
-    GraphService,
-    load_model_graph,
-    model_manifest,
-)
+from motion_spec.dashboard.graph import MODEL_GRAPH, GraphService, load_model_graph, model_manifest
 from motion_spec.dashboard.roots import LAYOUT_REL, json_file
 from motion_spec.dashboard.sources import declaration_lines
 from motion_spec.dashboard.store import RunStore
-from motion_spec.dashboard.tail import FrameLogTail
 from motion_spec.introspection import frame_log_pb
 from motion_spec.introspection.replay import resolve_archive
+from motion_spec.introspection.runtime_graph import RUNTIME_TTL_REL
 
 GRAPH_SAMPLE_S = 0.1  # the graph wants the shape of a run, not its every tick
 # A picture of a hundred thousand triples is a locked browser, not an answer.
@@ -48,11 +42,13 @@ def run_model_manifest(run_dir: Path) -> Path | None:
 
 
 def run_runtime_ttl(run_dir: Path) -> Path | None:
-    """The archived runtime graph this run names -- the validated record, not a re-projection."""
+    """The run's own graph: the file its projector writes and keeps writing.
+
+    Named by the manifest once the run has one; before that it is at the conventional place the
+    writer put it, which is how a run still executing shows anything at all.
+    """
     named = json_file(run_dir / "manifest.json").get("files", {}).get("runtime_ttl")
-    if not named:
-        return None
-    path = (run_dir / named).resolve()
+    path = (run_dir / (named or RUNTIME_TTL_REL)).resolve()
     return path if path.is_file() else None
 
 
@@ -62,30 +58,19 @@ def generation_graph(generation_dir: Path) -> GraphService:
 
 
 def run_graph(run_dir: Path) -> GraphService:
-    """One run's queryable dataset: its model, plus what the recording says happened.
+    """One run's queryable dataset: its model, plus the graph the run projected of itself.
 
-    Reading the frames is what fills `urn:runtime` and `urn:live` for a run still being
-    written. A run that archived a `runtime.ttl` has the record already, and sweeping its log
-    to rediscover it would cost tens of seconds and emit a second occurrence for every one
-    already there. Kept per log revision: a finished run is read once, a growing one again.
+    `urn:runtime` is read from the run's own `runtime.ttl` -- growing while the run executes,
+    final once it ends -- and never re-derived here: sweeping the log to rediscover it would
+    cost tens of seconds and emit a second occurrence for every one already recorded.
     """
     _, log, _manifest, contract = resolve_archive(run_dir)
-    frames = run_runtime_ttl(run_dir) is None
-    key = (str(log), log.stat().st_size, frames)
+    key = (str(log), log.stat().st_size, True)
     if key not in _GRAPHS:
-        store = RunStore(run_dir.name, contract)
-        tail = FrameLogTail(log)
-        if frames and tail.open():
-            # shaping every frame to project a tenth of them is the waste, not the reading
-            period = (contract.header.nominal_period_ns or 1_000_000) / 1e9
-            stride = max(1, round(GRAPH_SAMPLE_S / period))
-            while records := tail.poll(stride):
-                store.add_frames(records)
-            tail.close()
         _GRAPHS.clear()
         _GRAPHS[key] = GraphService(
             run_dir.parent.parent,
-            store,
+            RunStore(run_dir.name, contract),
             manifest=run_model_manifest(run_dir),
             runtime_ttl=run_runtime_ttl(run_dir),
         )
@@ -104,25 +89,8 @@ def query_graph(path: Path) -> GraphService:
 
 
 def graph_sources(path: Path) -> list[dict]:
-    """Every file this dataset was read from, and what each one put in it.
-
-    A run whose record was archived read a `runtime.ttl`; one without read the frame log, which
-    is a source of the graph exactly as much as any turtle file is.
-    """
-    service = query_graph(path)
-    sources = list(service.sources)
-    if (path / LAYOUT_REL).exists() or service.runtime_source == "archive":
-        return sources
-    _, log, _manifest, _contract = resolve_archive(path)
-    sources.append(
-        {
-            "iri": log.resolve().as_uri(),
-            "path": str(log),
-            "triples": len(service.runtime),
-            "graphs": [str(RUNTIME_GRAPH)],
-        }
-    )
-    return sources
+    """Every file this dataset was read from, and what each one put in it."""
+    return list(query_graph(path).sources)
 
 
 QUERIES_REL = "queries.json"
@@ -418,21 +386,19 @@ SELECT DISTINCT ?element WHERE {{
 
 
 def views_graph(run_dir: Path) -> GraphService:
-    """The dataset these views read: the archived runtime graph joined to the design graph.
+    """The dataset these views read: the run's own runtime graph joined to the design graph.
 
-    A run that kept a runtime.ttl answers from it alone, with an empty store -- the log is
-    never opened, not even for its header, and that boundary is what makes these views cheap.
-    A run still executing has no archived graph, so it falls back to 015's projection; nothing
-    here reads a frame, and that projection is strided, so its armings report as unavailable.
+    Answered from that file alone, with an empty store -- the log is never opened, not even for
+    its header, and that boundary is what makes these views cheap.
     """
-    archived = run_runtime_ttl(run_dir)
-    if archived is None:
+    graph = run_runtime_ttl(run_dir)
+    if graph is None:
         return run_graph(run_dir)
     return GraphService(
         run_dir.parent.parent,
         RunStore(run_dir.name),
         manifest=run_model_manifest(run_dir),
-        runtime_ttl=archived,
+        runtime_ttl=graph,
     )
 
 
@@ -555,13 +521,13 @@ def activity_constraints(run_dir: Path, occurrence: str) -> dict:
 def gates(run_dir: Path) -> dict:
     """Each gate's arming: how long it waited, how often it re-armed, against its declared dwell.
 
-    An observation, never a verdict -- a long wait may be exactly what the author wanted. A
-    projection has only strided frames behind it, so its waits and re-arms are reported
-    unavailable rather than as numbers a reader would trust.
+    An observation, never a verdict -- a long wait may be exactly what the author wanted. A run
+    that has not written its graph yet reports its waits and re-arms unavailable rather than as
+    numbers a reader would trust.
     """
     service = views_graph(run_dir)
     period_s = _period_s(service)
-    archived = service.runtime_source == "archive"
+    recorded = service.runtime_source == "archive"
     rows = []
     for monitor, held, fired, event, dwell, rearm, members in _rows(service, GATE_ANALYSIS):
         first_held_step, fired_step = _step(held), _step(fired)
@@ -577,8 +543,8 @@ def gates(run_dir: Path) -> dict:
                 "members": _names(members),
                 "first_held_step": first_held_step,
                 "fired_step": fired_step,
-                "waited_s": _seconds(waited, period_s) if archived else None,
-                "rearm_count": (int(rearm) if rearm is not None else None) if archived else None,
+                "waited_s": _seconds(waited, period_s) if recorded else None,
+                "rearm_count": (int(rearm) if rearm is not None else None) if recorded else None,
                 "declared_dwell_s": None if dwell is None else float(dwell),
             }
         )

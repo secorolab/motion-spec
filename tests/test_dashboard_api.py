@@ -17,16 +17,28 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+from frame_log_fixture import occurrence, write_occurrence_log_pb
 from test_dashboard_runs import _archived_run, _contract_schema
 
 from motion_spec.dashboard import roots, server, sources
 from motion_spec.generation.artifacts import build_frame_layout
+from motion_spec.introspection.runtime_graph import write_runtime_ttl
 
 
 @pytest.fixture
 def dashboard(tmp_path, monkeypatch):
     """A server on an ephemeral port, rooted at a tree holding one archived run."""
     run = _archived_run(tmp_path, vendored=True)
+    # The graph the dashboard serves is the one the run's own projector wrote.
+    write_occurrence_log_pb(
+        run / "logs" / "occurrences.pb",
+        _contract_schema(),
+        [occurrence("STATE_CHANGE", 1, fsm_state=0, from_state=-1, state_since_wall_ns=100)],
+    )
+    manifest = json.loads((run / "manifest.json").read_text())
+    manifest["files"]["occurrences"] = "logs/occurrences.pb"
+    (run / "manifest.json").write_text(json.dumps(manifest))
+    write_runtime_ttl(run)
     # the catalog knows a generation by its contract, and a run's length by its health file
     layout = run.parent.parent / "generated" / "contract" / "frame_layout.json"
     layout.parent.mkdir(parents=True)
@@ -109,7 +121,9 @@ def test_a_run_lists_the_files_it_wrote_and_none_of_its_generation(dashboard):
     assert [f["name"] for f in files] == [
         "logs/frame_log.pb",
         "logs/frame_log.pb.health.json",
+        "logs/occurrences.pb",
         "manifest.json",
+        "runtime/runtime.ttl",
         "source/demo.robmot",
     ]
     assert all(f["size"] > 0 and f["path"].startswith(str(dashboard.run)) for f in files)

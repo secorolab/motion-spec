@@ -69,8 +69,12 @@ def _scene(body_iri: str) -> MjcfSceneSpec:
     return scene
 
 
+def _is_free_body(tree) -> bool:
+    return not any(segment["joint"] for segment in tree["segments"])
+
+
 def _cube_iri(trees) -> str:
-    return next(tree["root_iri"] for tree in trees if tree["free_root"])
+    return next(tree["root_iri"] for tree in trees if _is_free_body(tree))
 
 
 def test_a_free_body_the_scene_places_becomes_a_measured_port(trees) -> None:
@@ -121,7 +125,7 @@ def test_two_grippers_on_two_arms_take_two_distinct_segments(dual_trees) -> None
     ]
     scene = MjcfSceneSpec()
     for tree in dual_trees:
-        if tree["free_root"]:
+        if _is_free_body(tree):
             scene.objects.append(
                 MjcfSceneObject(id=tree["name"], body=tree["name"], body_iri=tree["root_iri"])
             )

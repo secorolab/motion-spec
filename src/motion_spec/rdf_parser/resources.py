@@ -2144,7 +2144,11 @@ def world_ports(
 
     free_roots, joints, aux_cmds, wrench_cmds = [], [], [], []
     for tree in world_trees:
-        if not tree["free_root"] or tree["root"] in placed_by_perception:
+        # A body no joint holds is a tree of its own with no joint in it; the scene's tree
+        # articulates at least one. Nothing measures a free body unless something places it.
+        if any(segment["joint"] for segment in tree["segments"]):
+            continue
+        if tree["root"] in placed_by_perception:
             continue
         obj = object_by_body.get(tree["root_iri"])
         if obj is None:

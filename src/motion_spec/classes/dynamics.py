@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from motion_spec.classes.base import INTERNAL
 from motion_spec.classes.qudt import Quantity
 
 
@@ -15,6 +16,9 @@ class JointPosition:
 
     id: str
     joint_name: str
+    # The scene joint itself, so a segment resolves by identity: two grippers on two arms
+    # carry the same local joint name and must not resolve to one segment.
+    joint_uri: str = field(default="", metadata=INTERNAL)
     # Where the joint sits in the chain's joint array, resolved while generating. None for a
     # joint the chain does not articulate, which is read through its own world port instead.
     joint_index: int | None = None
@@ -34,6 +38,9 @@ class JointVelocity:
 
     id: str
     joint_name: str
+    # The scene joint itself, so a segment resolves by identity: two grippers on two arms
+    # carry the same local joint name and must not resolve to one segment.
+    joint_uri: str = field(default="", metadata=INTERNAL)
     # Where the joint sits in the chain's joint array, resolved while generating. None for a
     # joint the chain does not articulate, which is read through its own world port instead.
     joint_index: int | None = None
@@ -48,6 +55,9 @@ class JointCurrent:
 
     id: str
     joint_name: str
+    # The scene joint itself, so a segment resolves by identity: two grippers on two arms
+    # carry the same local joint name and must not resolve to one segment.
+    joint_uri: str = field(default="", metadata=INTERNAL)
     # Where the joint sits in the chain's joint array, resolved while generating. None for a
     # joint the chain does not articulate, which is read through its own world port instead.
     joint_index: int | None = None

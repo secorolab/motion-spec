@@ -74,16 +74,18 @@ def _world_segments(tree: dict, chain: dict) -> dict[str, str]:
     return by_iri
 
 
-def segment_of_joint(trees: list[dict], joint_name: str) -> str:
-    """The tree segment the named joint moves, or "" when no tree carries it.
+def segment_of_joint(trees: list[dict], joint_uri: str) -> str:
+    """The tree segment the given scene joint moves, or "" when no tree carries it.
 
-    Joints are qualified by the tree that declares them; the name a world block states is the
-    local one the backend knows, so only that last element is matched.
+    Matched by identity, never by name: two grippers on two arms declare the same local joint
+    name, and a suffix match would place both on whichever segment came first.
     """
+    if not joint_uri:
+        return ""
     for tree in trees:
         for segment in tree["segments"]:
             joint = segment["joint"]
-            if joint is not None and joint["name"].rsplit("/", 1)[-1] == joint_name:
+            if joint is not None and joint["iri"] == joint_uri:
                 return segment["name"]
 
     return ""

@@ -17,6 +17,8 @@ from scene_dsl.kdl_tree import build_kdl_trees
 from scene_dsl.langs import scenex_metamodel
 from scene_dsl.rdf.scenex import create_scenex_model_graph
 
+from motion_spec.classes.bindings import RuntimeBinding
+from motion_spec.classes.dynamics import JointPosition
 from motion_spec.classes.motion import ForwardedCommandStep
 from motion_spec.classes.scene import MjcfSceneObject, MjcfSceneSpec
 from motion_spec.rdf_parser.resources import world_ports
@@ -34,11 +36,31 @@ class _Motion:
         self.perturbations = list(perturbations)
 
 
-@pytest.fixture(scope="module")
-def trees() -> list[dict]:
-    scene = MODELS / "pick_place_single" / "pick_place_single.scenex"
+def _trees(model: str) -> list[dict]:
+    scene = MODELS / model / f"{model}.scenex"
     graph = create_scenex_model_graph(scenex_metamodel().model_from_file(scene))
     return build_kdl_trees(graph, scene.parent)
+
+
+@pytest.fixture(scope="module")
+def trees() -> list[dict]:
+    return _trees("pick_place_single")
+
+
+@pytest.fixture(scope="module")
+def dual_trees() -> list[dict]:
+    return _trees("pick_place_dual")
+
+
+class _Solver:
+    """The little of a chain solver the port table reads."""
+
+    def __init__(self, runtime_id: str, outputs):
+        self.runtime = RuntimeBinding(
+            id=runtime_id, owner=True, prefix="", owned_trees=[], config_key=""
+        )
+        self.output = list(outputs)
+        self.devices = []
 
 
 def _scene(body_iri: str) -> MjcfSceneSpec:
@@ -81,6 +103,25 @@ def test_a_forwarded_command_takes_a_command_port(trees) -> None:
     [aux] = ports["aux_cmds"]
     assert (aux.mapping, aux.owner_id, aux.slot) == ("g_left_driver_joint", "arm", 0)
     assert command.world_slot == 0
+
+
+def test_two_grippers_on_two_arms_take_two_distinct_segments(dual_trees) -> None:
+    """Both grippers declare a joint of the same local name, so a name match would put both
+    measurements on one segment -- which the world model refuses as two authorities for it."""
+    mimics = sorted(
+        segment["joint"]["iri"]
+        for tree in dual_trees
+        for segment in tree["segments"]
+        if segment["joint"] is not None and segment["joint"]["iri"].endswith("g_left_driver_joint")
+    )
+    assert len(mimics) == 2
+    solvers = [
+        _Solver("arm1", [JointPosition("grip1", "kinova1_g_left_driver_joint", mimics[0])]),
+        _Solver("arm2", [JointPosition("grip2", "kinova2_g_left_driver_joint", mimics[1])]),
+    ]
+    ports = world_ports(dual_trees, MjcfSceneSpec(), solvers, [], [], [], "mj_kdl")
+    segments = [port.segment for port in ports["joints"]]
+    assert all(segments) and len(set(segments)) == 2
 
 
 def test_a_perturbation_on_hardware_fails_while_generating(trees) -> None:

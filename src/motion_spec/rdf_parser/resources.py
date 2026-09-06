@@ -2176,14 +2176,14 @@ def world_ports(
             if slot is None:
                 slot = len(joint_slots)
                 joint_slots[out.joint_name] = slot
-                local = out.joint_name.removeprefix(solver.runtime.prefix)
                 joints.append(
                     WorldPort(
                         kind="joint",
-                        segment=segment_of_joint(world_trees, local),
+                        segment=segment_of_joint(world_trees, out.joint_uri),
                         mapping=out.joint_name,
                         slot=slot,
                         owner_id=solver.runtime.id,
+                        iri=out.joint_uri,
                     )
                 )
             out.world_slot = slot

@@ -1107,7 +1107,10 @@ def joint_position(model, node) -> JointPosition:
             "kinematic-chain", f"JointPositionCoordinate '{node}' has no of-joint URI"
         )
     return JointPosition(
-        model.id(node), model.label(joint), normalization=_normalization(model, node)
+        model.id(node),
+        model.label(joint),
+        joint_uri=str(joint),
+        normalization=_normalization(model, node),
     )
 
 
@@ -1121,7 +1124,7 @@ def joint_velocity(model, node) -> JointVelocity:
         raise ConstraintViolation(
             "kinematic-chain", f"JointVelocityCoordinate '{node}' has no of-joint URI"
         )
-    return JointVelocity(model.id(node), model.label(joint))
+    return JointVelocity(model.id(node), model.label(joint), joint_uri=str(joint))
 
 
 @reader
@@ -1132,7 +1135,7 @@ def joint_current(model, node) -> JointCurrent:
     joint = model.graph.value(node, KC_STAT["of-joint"])
     if not isinstance(joint, URIRef):
         raise ConstraintViolation("actuation", f"JointCurrent '{node}' has no of-joint URI")
-    return JointCurrent(model.id(node), model.label(joint))
+    return JointCurrent(model.id(node), model.label(joint), joint_uri=str(joint))
 
 
 def _normalization(model, node) -> dict | None:

@@ -30,7 +30,7 @@ GENERAL_BUILD_PACKAGES = ("coord2b", "Eigen3", "orocos_kdl", "kdl_parser", "toml
 ROS_BUILD_PACKAGES = ("rclcpp", "realtime_tools", "action_msgs", "rclcpp_action")
 # `(package, version)`; the generated CMakeLists asks for that version, so a check that ignores
 # it passes on an install the build then rejects.
-MUJOCO_BUILD_PACKAGES = (("mj_kdl_wrapper", "0.3.16"),)
+MUJOCO_BUILD_PACKAGES = (("mj_kdl_wrapper", "0.3.17"),)
 # Reading a ROS message's shape is what turns a declared type into fields, headers and packages.
 # rosidl spells its case-conversion helper differently across distros; either will do.
 # ament_index_python resolves a scene asset that names a package rather than a path, so a

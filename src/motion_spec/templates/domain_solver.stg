@@ -619,7 +619,8 @@ estimator-qd-mj_kdl(solver)   ::= "robot.<solver.id>.robot->jnt_vel_msr[i]"
 estimator-tau-mj_kdl(solver)  ::= "robot.<solver.id>.robot->jnt_trq_cmd[i]"
 estimator-q-robif2b(solver)   ::= "robot.<solver.id>.state->pos_msr[i]"
 estimator-qd-robif2b(solver)  ::= "robot.<solver.id>.state->vel_msr[i]"
-estimator-tau-robif2b(solver) ::= "robot.<solver.id>.state->eff_msr[i]"
+// Kortex actuator feedback torque carries the opposite sign to the command it answers.
+estimator-tau-robif2b(solver) ::= "-robot.<solver.id>.state->eff_msr[i]"
 
 // The observer's zero is the momentum now: the integral and the filtered torque restart from it,
 // and the payload is taken again once it has re-converged.
@@ -680,7 +681,7 @@ joint-space-expr-tau_ctrl(s, solver, backend) ::= "state.<solver.id>.tau_ctrl(<s
 joint-space-expr-tau_msr(s, solver, backend) ::= <<
 <({joint-space-expr-tau_msr-<backend>})(s, solver)>
 >>
-joint-space-expr-tau_msr-robif2b(s, solver) ::= "robot.<solver.id>.state->eff_msr[<s.index>]"
+joint-space-expr-tau_msr-robif2b(s, solver) ::= "-robot.<solver.id>.state->eff_msr[<s.index>]"
 
 // Read back from the port, so what is logged is what was sent -- not a second evaluation of
 // clamp_range, which could drift from what the store wrote.

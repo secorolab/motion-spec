@@ -1867,7 +1867,8 @@ def _add_motion_function_interfaces(motions: list, solvers_by_id: dict) -> None:
         motion.index = index
         when_mons = motion.when_monitors
         until_mons = motion.until_monitors
-        has_when_elapsed = any(evaluator.is_elapsed for evaluator in motion.when_evaluators)
+        # Only a when-elapsed clock lives in state; an observation age is read off shared.
+        has_when_elapsed = motion.has_when_elapsed
         when_sched = bool(motion.when_schedule)
         until_sched = bool(motion.until_schedule)
         when_fsm = any(monitor.fsm_namespace for monitor in when_mons)
@@ -1910,10 +1911,18 @@ def _add_motion_function_interfaces(motions: list, solvers_by_id: dict) -> None:
             motion.apply_needs_shared = True
             motion.apply_needs_robot = True
 
-        # An edge is the occurrence: a flag monitor holds a level and never reaches the buffer.
-        when_events = any(monitor.is_edge_triggered for monitor in when_mons)
-        until_events = any(monitor.is_edge_triggered for monitor in until_mons)
-        control_events = any(monitor.is_edge_triggered for monitor in motion.while_monitors)
+        # An edge is the occurrence: a flag monitor holds a level and never reaches the buffer,
+        # and an FSM-namespaced edge is produced on the sequencer, not recorded in the buffer.
+        when_events = any(
+            monitor.is_edge_triggered and not monitor.fsm_namespace for monitor in when_mons
+        )
+        until_events = any(
+            monitor.is_edge_triggered and not monitor.fsm_namespace for monitor in until_mons
+        )
+        control_events = any(
+            monitor.is_edge_triggered and not monitor.fsm_namespace
+            for monitor in motion.while_monitors
+        )
         motion.when_needs_events = when_events
         motion.until_needs_events = until_events
         motion.monitor_needs_events = when_events or until_events

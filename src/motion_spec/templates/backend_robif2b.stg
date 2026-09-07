@@ -68,7 +68,7 @@ struct manipulator_robot {
     // This chain's root, inverted, for the cycle the world was last updated for. Held here
     // rather than in a motion's state: it is a fact about the world, and the loop computes it
     // whether or not a motion that reads it is running.
-    KDL::Frame world_to_root;
+    KDL::Frame world_to_root = KDL::Frame::Identity();
 };
 >>
 

@@ -127,7 +127,7 @@ inline void monitor_<motion.id>(<sig-params(motion.id, motion.monitor_needs_stat
 inline void control_<motion.id>(
     <motion.id>_state &state,
     shared_data &shared,
-    const robot_io &robot<if(motion.control_needs_events)>,
+    [[maybe_unused]] const robot_io &robot<if(motion.control_needs_events)>,
     motion_spec_event_buffer &events<endif>) {
 <shared-schedule-block(motion.while_pre_schedule, closures, views)>
 <motion.pose_axis_error_groups:{group | <pose-axis-error-group(group, views)>}; separator="\n">

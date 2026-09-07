@@ -575,7 +575,7 @@ solver-output-Wrench-estimated(solver, chain_solver, out, backend) ::= <<
     static KDL::JntArray qd_<out.id>(nj_<out.id>);
     static KDL::JntArray tau_<out.id>(nj_<out.id>);
     // Five observer time constants for a reset to converge, five more averaged into the payload.
-    static const unsigned settle_<out.id> = static_cast\<unsigned>(
+    static const int settle_<out.id> = static_cast\<int>(
         std::ceil(5.0 / (<out.estimator.estimation_gain_hz> * motion_spec::runtime::kControlPeriodS)));
     for (unsigned i = 0; i \< nj_<out.id>; ++i) {
         q_<out.id>(i) = <({estimator-q-<backend>})(solver)>;

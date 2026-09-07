@@ -180,9 +180,34 @@ struct serial_gripper_io {
         thread = std::jthread([this, &driver](std::stop_token token) {
             auto last_read = std::chrono::steady_clock::now();
             std::uint8_t last_position = state.position_msr;
+            // The gripper serves a standing request once: fingers that stopped on an object stay
+            // where the object pries them until the request changes. So the count they stopped at
+            // is remembered, and a request they have fallen below is renewed one count down.
+            std::uint8_t held_cmd = wire_cmd;
+            int held_position = -1;
+            int slipped = 0;
             while (!token.stop_requested()) {
-                state.position_cmd = wire_cmd;
+                const std::uint8_t cmd = wire_cmd;
+                if (cmd != held_cmd) {
+                    held_cmd = cmd;
+                    held_position = -1;
+                    slipped = 0;
+                \}
+                const bool renew = slipped >= 2;
+                state.position_cmd = renew && cmd > 0 ? cmd - 1 : cmd;
+                if (renew) {
+                    held_position = -1;
+                    slipped = 0;
+                \}
                 robif2b_robotiq_gripper_update(&driver);
+                if (state.obj_status == ROBIF2B_ROBOTIQ_OBJ_DETECTED_CLOSING) {
+                    if (state.position_msr >= held_position) {
+                        held_position = state.position_msr;
+                        slipped = 0;
+                    \} else {
+                        ++slipped;
+                    \}
+                \}
                 const auto now = std::chrono::steady_clock::now();
                 const double period_s = std::chrono::duration\<double\>(now - last_read).count();
                 state.velocity_counts_per_s = period_s > 0.0

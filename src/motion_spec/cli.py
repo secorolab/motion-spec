@@ -943,10 +943,10 @@ def _is_simulated(generation: Path) -> bool:
 @click.option("--steps", type=click.IntRange(min=1), help="Maximum headless simulation steps.")
 @click.option("--no-log", is_flag=True, help="Do not write the frame log; the run has no replay.")
 @click.option(
-    "--no-runtime-ttl",
+    "--runtime-ttl",
     is_flag=True,
-    help="Skip runtime.ttl recovery when the run ends; "
-    "'motion-spec replay <run> --recover-runtime-ttl' writes it from the log later.",
+    help="Recover runtime.ttl from the log when the run ends; otherwise "
+    "'motion-spec replay <run> --recover-runtime-ttl' writes it later.",
 )
 @click.argument("executable-args", nargs=-1, type=click.UNPROCESSED)
 def run(
@@ -963,7 +963,7 @@ def run(
     record: tuple[str, ...],
     steps: int | None,
     no_log: bool,
-    no_runtime_ttl: bool,
+    runtime_ttl: bool,
     executable_args: tuple[str, ...],
 ) -> None:
     """Run a .robmot INPUT, generating and building it first, or an existing GENERATION.
@@ -1022,7 +1022,7 @@ def run(
             executable_args=arguments,
             run_id=run_id,
             cwd=cwd,
-            recover_runtime_ttl=not no_runtime_ttl,
+            recover_runtime_ttl=runtime_ttl,
             record=list(record),
             record_log=not no_log,
         )
@@ -1285,10 +1285,10 @@ def _taxonomy_row(per_class: dict[str, int]) -> str:
 @click.option("--steps", type=click.IntRange(min=1), help="Maximum headless simulation steps.")
 @click.option("--no-log", is_flag=True, help="Do not write the frame log; the run has no replay.")
 @click.option(
-    "--no-runtime-ttl",
+    "--runtime-ttl",
     is_flag=True,
-    help="Skip runtime.ttl recovery when the run ends; "
-    "'motion-spec replay <run> --recover-runtime-ttl' writes it from the log later.",
+    help="Recover runtime.ttl from the log when the run ends; otherwise "
+    "'motion-spec replay <run> --recover-runtime-ttl' writes it later.",
 )
 @click.argument("executable-args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
@@ -1301,7 +1301,7 @@ def rerun(
     record: tuple[str, ...],
     steps: int | None,
     no_log: bool,
-    no_runtime_ttl: bool,
+    runtime_ttl: bool,
     executable_args: tuple[str, ...],
 ) -> None:
     """Run a generation again, in a run of its own.
@@ -1323,6 +1323,6 @@ def rerun(
         record=record,
         steps=steps,
         no_log=no_log,
-        no_runtime_ttl=no_runtime_ttl,
+        runtime_ttl=runtime_ttl,
         executable_args=executable_args,
     )

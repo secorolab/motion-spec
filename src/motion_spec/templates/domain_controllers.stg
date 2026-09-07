@@ -52,9 +52,11 @@ class AdmittanceFilter {
             offset_ += vel_ * dt;
             return vel_;
         }
-        // Subtract the release threshold so the commanded direction cannot reverse while the
-        // Schmitt trigger remains in COMPLY between its release and engage thresholds.
-        force += force > 0.0 ? -release_threshold : release_threshold;
+        // Only force beyond the engage band drives; between release and engage the damper
+        // brakes, so a tare residual inside the band cannot creep and the direction never reverses.
+        force = (force > upper_threshold) ? force - upper_threshold
+              : (force \< lower_threshold) ? force - lower_threshold
+                                          : 0.0;
         const double acc = (force - damping * vel_ - stiffness * offset_) / mass;
         vel_ += acc * dt;
         vel_ = std::clamp(vel_, -max_velocity, max_velocity);

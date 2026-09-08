@@ -94,6 +94,8 @@ def run_cataloged(
     except Exception:
         _finish_rec_run(rec_path, run_id, "FAILED")
         raise
+    if (frame_log.parent / "sampling.json").exists():
+        _record_sampling(rec_path, run_id, frame_log.parent / "sampling.json")
     if _rec_status(rec_path) != "INTERRUPTED":
         # 130 is the program leaving its loop on SIGINT/SIGTERM, which it reports rather than
         # dying from: the run stopped early but its artifacts are complete, so it is not a
@@ -525,6 +527,8 @@ def _run_executable(
     if record:
         env["MOTION_SPEC_RECORD_CAMERAS"] = ",".join(record)
         env["MOTION_SPEC_RECORD_DIR"] = str(frame_log.parent.resolve())
+    # Where the runtime writes the seed and the draw of every sampled quantity, if it has any.
+    env["MOTION_SPEC_SAMPLING_PATH"] = str((frame_log.parent / "sampling.json").resolve())
     command = [str(executable), *executable_args]
     # Why a run died is otherwise only on the operator's terminal: tee it into the run dir.
     console = (frame_log.parent / "console.log").open("w", encoding="utf-8", errors="replace")
@@ -602,6 +606,25 @@ def _finish_rec_run(rec_path: Path, run_id: str, status: str) -> None:
         run._emit_failed()
     observer.close()
     publish_lifecycle(rec_path.parent, run_id, rec_run_lifecycle_from_file(rec_path)["status"])
+
+
+def _record_sampling(rec_path: Path, run_id: str, path: Path) -> None:
+    """The seed and every drawn value, as metrics of the run that drew them."""
+    ensure_local_rec_importable()
+    from rec import Run
+    from rec.observers import FileObserver
+
+    sampling = json.loads(path.read_text())
+    observer = FileObserver(rec_path, run_iri=prov_uri(f"run:{run_id}"))
+    run = Run(observers=[observer], run_id=run_id)
+    run._id = run_id
+    run.log_scalar("sampling/seed", sampling["seed"])
+    for uri, draw in sorted(sampling["draws"].items()):
+        values = draw["values"]
+        names = [uri] if len(values) == 1 else [f"{uri}/{axis}" for axis in "xyz"]
+        for name, value in zip(names, values):
+            run.log_scalar(name, value)
+    observer.close()
 
 
 def _rec_status(rec_path: Path) -> str | None:

@@ -171,7 +171,7 @@ def test_gen_and_run_compose_the_model_pipeline(monkeypatch, tmp_path) -> None:
         output.mkdir()
         return output
 
-    def generate(_model, generation, *, stage, seed=None):
+    def generate(_model, generation, *, stage):
         received.setdefault("stages", []).append(stage)
         generated = generation / "generated"
         (generated / "model").mkdir(parents=True)
@@ -204,11 +204,22 @@ def test_gen_and_run_compose_the_model_pipeline(monkeypatch, tmp_path) -> None:
 
     run_generation = tmp_path / "run-generation"
     result = CliRunner().invoke(
-        main, ["run", str(model), "-o", str(run_generation), "--headless", "--steps", "10"]
+        main,
+        [
+            "run",
+            str(model),
+            "-o",
+            str(run_generation),
+            "--headless",
+            "--steps",
+            "10",
+            "--seed",
+            "7",
+        ],
     )
     assert result.exit_code == 0
     assert received["stages"] == ["ir", "code"]
-    assert received["run"][1]["executable_args"] == ["--headless", "--steps", "10"]
+    assert received["run"][1]["executable_args"] == ["--headless", "--steps", "10", "--seed", "7"]
     assert str(run_generation / "runs" / "run-1") in result.output
 
 

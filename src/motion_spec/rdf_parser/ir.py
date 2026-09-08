@@ -21,6 +21,7 @@ from rdflib.namespace import PROV
 
 from motion_spec.classes.motion import BlackboardValue
 from motion_spec.rdf_parser.model import load_model
+from motion_spec.rdf_parser.sampling import sampled_quantities
 
 _ALL_OPERATORS = operations.OPS_GENERIC + operations.OPS_SOLVER + operations.OPS_HANDLER
 
@@ -45,10 +46,11 @@ def generate_ir(manifest_path) -> dict:
     platform = resources.read_platform(model)
     platform_config = resources.platform_config(platform)
     backend = platform["backend"]
-    scene = resources.read_scene(model)
+    setups, _ordered, world_trees = resources.robot_setups(model)
+    scene = resources.read_scene(model, world_trees)
     fsm = coordination.read_fsm(model)
     derivation = constraint_handler.solver_derivation_context(model)
-    setups, _ordered, world_trees = resources.robot_setups(model)
+    sampling = sampled_quantities(model, world_trees)
 
     # One scope for the whole active block: a step reachable from both a solver and a handler is
     # emitted once, and the four sections are only ever read as their union.
@@ -185,8 +187,9 @@ def generate_ir(manifest_path) -> dict:
             "config_poses": config_poses,
             "trace": resources.TRACE_DISABLED,
         },
-        "resources": _resources_section(robots, world_trees, world_frames),
-        "composition": {"scene": scene},
+        "resources": _resources_section(robots, world_trees, world_frames, sampling),
+        # None, not []: the template tests presence, and ST4 takes an empty list as present.
+        "composition": {"scene": scene, "sampling": sampling or None},
         "computation": _computation_section(
             closures, views, shared_data, motions, computation.indexes.pose_components
         ),
@@ -206,7 +209,7 @@ def generate_ir(manifest_path) -> dict:
     }
 
 
-def _resources_section(robots, world_trees, world_frames) -> dict:
+def _resources_section(robots, world_trees, world_frames, sampling) -> dict:
     """Every actuated resource the program commands, plus the by-kind cuts of it.
 
     An arm and a wheeled base are both actuated resources with kinematics, solvers and devices, so
@@ -246,8 +249,18 @@ def _resources_section(robots, world_trees, world_frames) -> dict:
         "world_observations": resources.world_observations(robots.serial_chains),
     }
     if world_trees:
+        # A drawn frame joins its tree after the draw, under the segment its pose is stated against.
         section["world_trees"] = [
-            {"name": tree["name"], "cpp_name": tree["cpp_name"]} for tree in world_trees
+            {
+                "name": tree["name"],
+                "cpp_name": tree["cpp_name"],
+                "sampled_frames": [
+                    {"name": s.segment, "parent": s.parent, "rotation": s.rotation, "draw": s.id}
+                    for s in sampling
+                    if s.tree == tree["cpp_name"]
+                ],
+            }
+            for tree in world_trees
         ]
     if world_frames:
         section["world_frames"] = world_frames

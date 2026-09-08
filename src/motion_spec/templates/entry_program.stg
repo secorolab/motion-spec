@@ -21,6 +21,14 @@ main_source(configuration, resources, composition, computation, coordination, co
 
 <app-chain-includes(configuration.backend, resources.by_kind.serial_chain, resources, communication.ros)>
 #include \<unistd.h\>
+<if(composition.sampling)>
+#include \<cstdint\>
+#include \<cstdlib\>
+#include \<cstring\>
+#include \<fstream\>
+#include \<iomanip\>
+#include \<random\>
+<endif>
 <if(coordination.fsm)>
 
 <coordination.motions:{motion | <fsm-step-function(motion)>}; separator="\n\n">
@@ -32,6 +40,10 @@ int main(int argc, char **argv) {
     robot_io robot{};
     shared_data shared{};
     motion_spec_event_buffer events{};
+<if(composition.sampling)>
+
+<sampling-draws(composition.sampling)>
+<endif>
 <if(communication.ros)>
 
 <ros-setup(communication.ros)>
@@ -303,10 +315,57 @@ world-model-trees(resources) ::= <<
         std::cerr \<\< "make_tree_<tree.cpp_name>() failed" \<\< std::endl;
         return 1;
     \}
+<tree.sampled_frames:{frame | <drawn-frame-segment(tree, frame)>}; separator="\n">
     if (!world.add_tree(world_tree_<tree.cpp_name>, world_error)) {
         std::cerr \<\< "[world] " \<\< world_error \<\< std::endl;
         return 1;
     \}}; separator="\n">
+>>
+
+// A frame the run draws the position of joins its tree here, under the frame its pose is
+// stated against, once the draw is known.
+drawn-frame-segment(tree, frame) ::= <<
+    if (!world_tree_<tree.cpp_name>.addSegment(
+          KDL::Segment("<frame.name>", KDL::Joint(KDL::Joint::None),
+            KDL::Frame(KDL::Rotation::Quaternion(<frame.rotation; separator=", ">),
+                       KDL::Vector(<frame.draw>_draw[0], <frame.draw>_draw[1], <frame.draw>_draw[2]))),
+          "<frame.parent>")) {
+        std::cerr \<\< "no segment <frame.parent> to attach <frame.name> to" \<\< std::endl;
+        return 1;
+    }
+>>
+
+// Drawn once, before anything reads them: the seed from --seed, else from the OS. A draw is
+// scaled to SI here, so the program sees the quantity as it sees an authored one.
+sampling-draws(sampling) ::= <<
+    std::uint64_t sampling_seed = std::random_device{}();
+    for (int i = 1; i + 1 \< argc; ++i) {
+        if (std::strcmp(argv[i], "--seed") == 0) {
+            sampling_seed = std::strtoull(argv[i + 1], nullptr, 10);
+        }
+    }
+    std::mt19937_64 sampling_rng(sampling_seed);
+<sampling:{s | <sampling-draw(s)>}; separator="\n">
+    if (const char *sampling_path = std::getenv("MOTION_SPEC_SAMPLING_PATH")) {
+        std::ofstream sampling_out(sampling_path);
+        sampling_out \<\< std::setprecision(17) \<\< R"({"seed": )" \<\< sampling_seed \<\< R"(, "draws": {)";
+        bool sampling_first = true;
+<sampling:{s | <sampling-record(s)>}; separator="\n">
+        sampling_out \<\< "}}\\n";
+    }
+>>
+
+sampling-draw(s) ::= <<
+    double <s.id>_draw[<s.size>];
+<s.components:{c |     <s.id>_draw[<i0>] = <s.scale> * std::<s.dist>_distribution\<double\>(<c.a>, <c.b>)(sampling_rng);}; separator="\n">
+<if(s.shared_member)>    shared.<s.shared_member> = <s.id>_draw[0];<endif>
+>>
+
+sampling-record(s) ::= <<
+        sampling_out \<\< (sampling_first ? "" : ",") \<\< R"("<s.uri>": {"distribution": "<s.distribution_uri>", "values": [)";
+        for (int i = 0; i \< <s.size>; ++i) sampling_out \<\< (i ? "," : "") \<\< <s.id>_draw[i];
+        sampling_out \<\< "]}";
+        sampling_first = false;
 >>
 
 // Wired after the backends have assigned their driver pointers, because binding takes the

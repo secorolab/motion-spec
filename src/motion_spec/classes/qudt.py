@@ -46,6 +46,8 @@ class Quantity:
     has_view: bool = field(metadata=INTERNAL)
     provenance: Provenance = field(default_factory=Provenance)
     reference_value: str | None = None
+    # Drawn by the run at startup, so it has no value here and no place in the header constants.
+    sampled: bool = False
     type: str = field(default="Quantity")
 
 

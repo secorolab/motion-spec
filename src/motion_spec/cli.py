@@ -624,22 +624,10 @@ def health(profiles: tuple[str, ...], targets: tuple[str, ...]) -> None:
 )
 @click.option("-o", "--output-dir", type=click.Path(file_okay=False, path_type=Path))
 @click.option(
-    "--seed",
-    type=int,
-    help="Seed the draws of any sampled quantity; recorded either way in "
-    "generated/provenance/motion-spec.ld.json.",
-)
-@click.option(
     "--name",
     help="Name the generation tree under the base directory; defaults to the model's stem.",
 )
-def gen(
-    stage_or_model: str,
-    model: Path | None,
-    output_dir: Path | None,
-    seed: int | None,
-    name: str | None,
-) -> None:
+def gen(stage_or_model: str, model: Path | None, output_dir: Path | None, name: str | None) -> None:
     """Generate IR or C++ from a .robmot MODEL; CODE is the default stage."""
     from rdf_utils.constraints import ConstraintViolation
 
@@ -661,7 +649,7 @@ def gen(
         raise click.BadParameter("MODEL must be a .robmot file", param_hint="MODEL")
     try:
         generation = _new_generation(model, output_dir, name)
-        generate_model(model, generation, stage=stage, seed=seed)
+        generate_model(model, generation, stage=stage)
     except ConstraintViolation as exc:
         raise _model_rejected(exc) from exc
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
@@ -948,6 +936,12 @@ def _is_simulated(generation: Path) -> bool:
     help="Recover runtime.ttl from the log when the run ends; otherwise "
     "'motion-spec replay <run> --recover-runtime-ttl' writes it later.",
 )
+@click.option(
+    "--seed",
+    type=click.IntRange(min=0),
+    help="Seed the run's draw of every sampled quantity; unseeded runs draw from OS entropy. "
+    "The seed and the draw are recorded in logs/sampling.json either way.",
+)
 @click.argument("executable-args", nargs=-1, type=click.UNPROCESSED)
 def run(
     input: Path,
@@ -962,6 +956,7 @@ def run(
     start_paused: bool,
     record: tuple[str, ...],
     steps: int | None,
+    seed: int | None,
     no_log: bool,
     runtime_ttl: bool,
     executable_args: tuple[str, ...],
@@ -1012,6 +1007,7 @@ def run(
         + (["--steps", str(steps)] if steps is not None else [])
         + (["--rtf", str(rtf)] if rtf is not None else [])
         + (["--start-paused"] if start_paused else [])
+        + (["--seed", str(seed)] if seed is not None else [])
         + list(executable_args)
     )
     try:

@@ -1417,7 +1417,7 @@ def _validate_solvers(serial_chain_solvers, backend: str) -> None:
             )
 
 
-def read_scene(model) -> MjcfSceneSpec:
+def read_scene(model, trees=()) -> MjcfSceneSpec:
     """The scene: every robot and object with its asset, placement and attachment.
 
     Geometry comes from the referenced mjcf assets, so procedural geometry fields stay unset and
@@ -1492,7 +1492,7 @@ def read_scene(model) -> MjcfSceneSpec:
         )
         scene.cameras.extend(assembly.cameras)
 
-    scene.frames = _scene_frames(model, scene.objects)
+    scene.frames = _scene_frames(model, scene.objects, trees)
     # A camera on a static scene frame is built into the composed scene at that frame's site
     # pose; a camera on a robot-asset frame rides the asset's own MJCF instead.
     frames_by_uri = {frame.uri: frame for frame in scene.frames}
@@ -1535,7 +1535,7 @@ def read_scene(model) -> MjcfSceneSpec:
     return scene
 
 
-def _scene_frames(model, objects) -> list:
+def _scene_frames(model, objects, trees=()) -> list:
     """Every frame the kgraph declares, placed on the body that carries it.
 
     A body's own root frame is where the body is, so it needs no marker of its own; the rest
@@ -1558,18 +1558,38 @@ def _scene_frames(model, objects) -> list:
     # A site is named after its frame, and carries its body only when another body has a frame
     # of the same name -- the name has to be unique, and it has to stay readable in a viewer.
     counts = Counter(local_name(frame) for _body, frame in marked)
+    # A frame the run draws the position of is marked from the tree the draw went into.
+    drawn = {
+        entry["iri"]: (tree["cpp_name"], entry)
+        for tree in trees
+        for entry in tree["sampled_frames"]
+    }
 
     frames = []
     for body, frame in marked:
+        name = local_name(frame)
+        body_name = body_names.get(str(body), local_name(body))
+        site = f"{body_name}_{name}" if counts[name] > 1 else name
+        if str(frame) in drawn:
+            tree, entry = drawn[str(frame)]
+            frames.append(
+                MjcfSceneFrame(
+                    body=body_name,
+                    name=site,
+                    uri=str(frame),
+                    segment=entry["name"],
+                    body_segment=entry["body"],
+                    tree=tree,
+                )
+            )
+            continue
         position, orientation = _placement(model, frame, quantities.placement_frame(model, body))
         if position is None:
             continue
-        name = local_name(frame)
-        body_name = body_names.get(str(body), local_name(body))
         frames.append(
             MjcfSceneFrame(
                 body=body_name,
-                name=f"{body_name}_{name}" if counts[name] > 1 else name,
+                name=site,
                 uri=str(frame),
                 **dict(zip(("pos_x", "pos_y", "pos_z"), position)),
                 **dict(zip(("quat_x", "quat_y", "quat_z", "quat_w"), orientation)),
@@ -1742,31 +1762,21 @@ def _placement_graph(model):
     return graph
 
 
-def _reject_undrawn_placement(model, frame, wrt) -> None:
-    """A sampled placement must carry the draw this generation resolved it to.
-
-    The DSL draws every sampled quantity from the seed `motion-spec gen` hands it, so a
-    placement that still carries none was assembled outside that path and would put the body
-    at whatever coordinates it happens to hold, without saying which draw that is.
+def _reject_sampled_placement(model, frame, wrt) -> None:
+    """A placement is built into the world before the run draws anything.
 
     Raises:
-        ConstraintViolation: a pose placing this frame is sampled but was never drawn.
+        ConstraintViolation: a pose placing this frame is drawn at run time.
     """
     graph = _placement_graph(model)
     for pose, coords in get_pose_coords(graph=graph, poses=find_pose_path(frame, wrt, graph) or []):
         for coord in coords:
             for node in (coord.id, coord.position_coord.id, coord.orientation_coord.id):
-                if URI_DISTRIB_TYPE_SAMPLED_QUANTITY not in get_node_types(model.graph, node):
-                    continue
-                drawn = model.graph.value(node, GEOM_COORD.x) or model.graph.value(
-                    node, QUDT_SCHEMA.value
-                )
-                if drawn is None:
+                if URI_DISTRIB_TYPE_SAMPLED_QUANTITY in get_node_types(model.graph, node):
                     raise ConstraintViolation(
                         "geometry",
-                        f"sampled placement coordinate '{node}' places '{pose.id}' but carries "
-                        f"no draw: generate through `motion-spec gen`, which seeds the draw and "
-                        f"records it in the generation's provenance",
+                        f"'{pose.id}' places '{frame}' by the drawn coordinate '{node}': a "
+                        f"placement cannot be drawn, sample a frame on the body instead",
                     )
 
 
@@ -1780,7 +1790,7 @@ def _placement(model, node, wrt):
     frame = quantities.placement_frame(model, node)
     if frame is None:
         return None, None
-    _reject_undrawn_placement(model, frame, wrt)
+    _reject_sampled_placement(model, frame, wrt)
     graph = _placement_graph(model)
     transform = get_transform_between_frames(frame, wrt, graph)
     if transform is None:

@@ -435,6 +435,33 @@ def test_init_members_become_schema_constants_and_no_per_tick_sample() -> None:
     assert not [q for q in schema["quantities"] if q["source_id"] in ("stiffness", "path_normal")]
 
 
+def test_a_drawn_member_is_written_at_init_but_is_no_header_constant() -> None:
+    """The run draws it before the loop, so it is init-cadence, and only the run that drew it
+    knows the number, so it is neither logged per tick nor recorded in the generation's header."""
+    introspection, shared_data, closures, motions, solvers, views = _model()
+    drawn = _quantity("place_near_y", None)
+    drawn.sampled = True
+    shared_data.append(drawn)
+    introspection["quantity_samples"].append(
+        {
+            "id": "place_near_y",
+            "source_id": "place_near_y",
+            "source_type": "Quantity",
+            "sample_desc": {"kind": "shared", "id": "place_near_y"},
+        }
+    )
+    annotate_dataflow(introspection, shared_data, closures, motions, solvers, views)
+
+    assert introspection["dataflow"]["place_near_y"] == {
+        "producer": {"kind": "sampled", "id": "place_near_y"},
+        "cadence": "init",
+        "storage": "record",
+    }
+    assert drawn in shared_data
+    assert "place_near_y" not in {row["id"] for row in introspection["constants"]}
+    assert "place_near_y" not in {row["id"] for row in introspection["quantity_samples"]}
+
+
 def test_gated_slots_appear_only_in_the_motions_that_write_them() -> None:
     schema = _schema()
     index_of = {q["source_id"]: q["index"] for q in schema["quantities"]}

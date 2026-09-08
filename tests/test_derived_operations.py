@@ -435,18 +435,15 @@ def test_position_of_scales_to_metres_and_rejects_a_missing_unit() -> None:
 
 
 def test_sampled_scene_placements_are_rejected() -> None:
-    """A sampled placement resolves only through the draw `motion-spec gen` seeded into it; one
-    that carries no draw would place the body at whatever it happens to hold."""
+    """A placement is built into the world before the run draws anything, so a drawn pose can
+    only be a frame on a body, never what places the body."""
     g = Dataset(default_union=True)
     frame = _scene_frame(g, "frame-object")
     wrt = _scene_frame(g, "frame-world")
     coord = _scene_pose(g, frame, wrt, (1.0, 2.0, 3.0))
     g.add((coord, RDF.type, URI_DISTRIB_TYPE_SAMPLED_QUANTITY))
-    assert _placement(_model(g), frame, wrt)[0] == pytest.approx([1.0, 2.0, 3.0])
 
-    for predicate in (GEOM_COORD.x, GEOM_COORD.y, GEOM_COORD.z):
-        g.remove((coord, predicate, None))
-    with pytest.raises(ConstraintViolation, match="carries no draw"):
+    with pytest.raises(ConstraintViolation, match="cannot be drawn"):
         _placement(_model(g), frame, wrt)
 
 

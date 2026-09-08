@@ -277,6 +277,7 @@ def _create_generation_run_manifest(
         # Listed only when written: a manifest never promises a file the run dir lacks.
         "runtime_ttl": _existing(run_dir, "runtime/runtime.ttl"),
         "console": _existing(run_dir, "logs/console.log"),
+        "sampling": _existing(run_dir, "logs/sampling.json"),
         # metadata.yaml is what says rosbag2 closed the bag.
         "bag": "bag" if (run_dir / "bag" / "metadata.yaml").is_file() else None,
         "rec": "rec.ld.json",
@@ -496,6 +497,7 @@ def create_archive_manifest(
         # Listed only when written: a manifest never promises a file the run dir lacks.
         "runtime_ttl": _existing(run_dir, "runtime/runtime.ttl"),
         "console": _existing(run_dir, "logs/console.log"),
+        "sampling": _existing(run_dir, "logs/sampling.json"),
         "frame_log": frame_log_rel if recorded else None,
         "frame_log_health": frame_log_health_rel if recorded else None,
         "model": "model/model.ld.json",

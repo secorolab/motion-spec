@@ -121,6 +121,10 @@ class MjcfSceneFrame:
     quat_y: float = 0.0
     quat_z: float = 0.0
     quat_w: float = 1.0
+    # A frame the run draws the position of is placed from the built tree, not from numbers.
+    segment: str | None = None
+    body_segment: str | None = None
+    tree: str | None = None
     type: str = field(default="MjcfSceneFrame")
 
 

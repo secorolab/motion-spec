@@ -337,17 +337,6 @@ def axis(node) -> Axis:
     return _AXES[node]
 
 
-def _reject_undrawn(coordinate, values) -> None:
-    """A sampled coordinate reaches here already drawn: the DSL resolves every distribution from
-    the seed `motion-spec gen` hands it. One carrying no values was assembled outside that path,
-    and nothing downstream can draw one, so the rejection is stated once here.
-    """
-    if values is None and URI_DISTRIB_TYPE_SAMPLED_QUANTITY in coordinate.types:
-        raise ConstraintViolation(
-            "geometry", f"Sampled coordinate '{coordinate.id}' carries no draw"
-        )
-
-
 def position_values(model, coordinate) -> list[float] | None:
     """xyz of a position coordinate in metres, or None when it carries no vector.
 
@@ -355,10 +344,9 @@ def position_values(model, coordinate) -> list[float] | None:
         coordinate: a `PositionCoordModel`, or the position half of a `PoseCoordModel`
 
     Raises:
-        ConstraintViolation: the coordinate is sampled, or its unit is not a length.
+        ConstraintViolation: the coordinate's unit is not a length.
     """
     values = get_coord_vectorxyz(coordinate, model.graph)
-    _reject_undrawn(coordinate, values)
     return None if values is None else to_metres(values, coordinate.unit, coordinate.id)
 
 
@@ -370,7 +358,6 @@ def orientation_quaternion(model, coordinate) -> list[float] | None:
     on here. (`get_quaternion_xyzw` is the quaternion-only reader and rejects the others.)
     """
     rotation = get_orientation_coord_vals(coordinate, model.graph)
-    _reject_undrawn(coordinate, rotation)
     return None if rotation is None else [float(value) for value in rotation.as_quat()]
 
 
@@ -1072,6 +1059,7 @@ def quantity(model, node):
         has_view,
         provenance=provenance,
         reference_value=model.id(reference) if reference is not None else None,
+        sampled=URI_DISTRIB_TYPE_SAMPLED_QUANTITY in types,
     )
 
 
@@ -1095,6 +1083,7 @@ def duration_quantity(model, node) -> Quantity:
         value,
         False,
         provenance=quantity_provenance(model, node),
+        sampled=URI_DISTRIB_TYPE_SAMPLED_QUANTITY in get_node_types(model.graph, node),
     )
 
 
@@ -2002,6 +1991,9 @@ def _pose_component(component_id: str, data_by_id: dict) -> ComponentRef:
 def _authored_pose_entry(model, pose_record, coordinate_node) -> PoseComponents | None:
     """The literal components a coordinate-authored pose carries, or None when it carries none."""
     coordinate = PoseCoordModel(coordinate_node, model.graph, coord_policy=recorded_coord_policy)
+    # A position the run draws is no authored component; the tree it joins carries the pose.
+    if URI_DISTRIB_TYPE_SAMPLED_QUANTITY in coordinate.position_coord.types:
+        return None
     representation = pose_record.orientation_representation or "quaternion"
     entry = PoseComponents(representation)
     values = position_values(model, coordinate.position_coord)
@@ -2523,6 +2515,9 @@ def annotate_dataflow(
         for kind, ids in block_ids.items():
             if item.id in ids:
                 return _Contract({"kind": kind, "id": item.id}, cadence)
+        # Drawn once at startup: written before the loop, known only to the run that drew it.
+        if getattr(item, "sampled", False):
+            return _Contract({"kind": "sampled", "id": item.id}, "init")
         # `is not None`, not truthiness: an authored 0.0 is a value, not a missing one.
         if any(getattr(item, name, None) is not None for name in _LITERAL_FIELDS):
             return _Contract({"kind": "authored", "id": None}, "init")
@@ -2702,6 +2697,9 @@ def _apply_dataflow(introspection: dict, shared_data: list, items_by_id: dict, d
         if entry["storage"] == "log":
             logged.append(sample)
         elif entry["storage"] == "record":
+            # A draw is recorded by the run that made it, not by the generation's header.
+            if entry["producer"]["kind"] == "sampled":
+                continue
             value = _constant_value(items_by_id[sample["source_id"]], sample["sample_desc"])
             if value is None:
                 unattributed.append(sample.get("id"))

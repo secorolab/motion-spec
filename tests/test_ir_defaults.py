@@ -281,10 +281,10 @@ def test_the_world_model_holds_every_distinct_tree_once_however_many_robots(tree
     # One forest, not one model per robot: two arms sharing a tree publish that tree once, and a
     # scene with two trees publishes both -- still into the one world model.
     robots = resources.Robots([_serial_chain("arm1"), _serial_chain("arm2")], [], [], [])
-    section = _resources_section(robots, trees, [])
+    section = _resources_section(robots, trees, [], [])
 
     assert section["world_trees"] == [
-        {"name": tree["name"], "cpp_name": tree["cpp_name"]} for tree in trees
+        {"name": tree["name"], "cpp_name": tree["cpp_name"], "sampled_frames": []} for tree in trees
     ]
 
 

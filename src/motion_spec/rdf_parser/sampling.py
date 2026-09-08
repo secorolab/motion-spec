@@ -1,126 +1,93 @@
 # SPDX-License-Identifier: MPL-2.0
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
-"""Read back the numbers the DSL drew for a randomized model.
+"""What the run draws at startup: every `distrib:SampledQuantity`, read as its distribution.
 
-The draw happens inside `textx generate` (the `--seed` argument on the `jsonld` target), because
-the DSL resolves poses numerically in that same pass. By the time the documents land here every
-`distrib:SampledQuantity` already carries plain values; this module only reports them so the
-generation's provenance can record what was drawn.
+The graph carries no numbers for these; the generated controller draws them once per run.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
+import math
 
-import rdflib
-from motion_spec_dsl.rdf_parser.manifest import install_metamodel_resolver
-from motion_spec_dsl.rdf_parser.vocab import GEOM_COORD, QUDT_SCHEMA
+import numpy as np
+from motion_spec_dsl.rdf_parser.vocab import QUDT_SCHEMA
 from rdf_utils.constraints import ConstraintViolation
-from rdf_utils.models.vocab import URI_DISTRIB_PRED_FROM_DISTRIB, URI_DISTRIB_TYPE_SAMPLED_QUANTITY
+from rdf_utils.models.distribution import DistributionModel
+from rdf_utils.models.vocab import (
+    URI_DISTRIB_PRED_COV,
+    URI_DISTRIB_PRED_FROM_DISTRIB,
+    URI_DISTRIB_PRED_LOWER,
+    URI_DISTRIB_PRED_MEAN,
+    URI_DISTRIB_PRED_STD,
+    URI_DISTRIB_PRED_UPPER,
+    URI_DISTRIB_TYPE_NORMAL,
+    URI_DISTRIB_TYPE_SAMPLED_QUANTITY,
+    URI_DISTRIB_TYPE_UNIFORM,
+)
 from rdflib.namespace import RDF
 
-
-def sampled_draws(model_dir: Path) -> dict[str, dict]:
-    """The value the DSL drew for every sampled quantity the generated model documents declare.
-
-    The distribution travels with the numbers: which one a quantity drew from is what a later
-    analysis groups runs by.
-
-    Parameters:
-        model_dir: the generation's `generated/model` directory
-
-    Returns:
-        ``{node_uri: {"values": [...], "distribution": uri}}``, or ``{}`` when the model
-        declares no sampled quantity
-    """
-    install_metamodel_resolver()
-    graph = rdflib.Graph()
-    for path in sorted(Path(model_dir).glob("*.ld.json")):
-        graph.parse(str(path), format="json-ld")
-
-    draws: dict[str, dict] = {}
-    for node in sorted(graph.subjects(RDF.type, URI_DISTRIB_TYPE_SAMPLED_QUANTITY), key=str):
-        distribution = graph.value(node, URI_DISTRIB_PRED_FROM_DISTRIB)
-        draws[str(node)] = {
-            "values": _values(graph, node),
-            "distribution": str(distribution) if distribution is not None else None,
-        }
-    return draws
+from motion_spec.classes.sampling import SampledQuantity
+from motion_spec.rdf_parser.model import seconds, si
+from motion_spec.rdf_parser.quantities import _is_duration
 
 
-def _values(graph, node) -> list[float]:
-    """The drawn numbers of one sampled quantity: a scalar value, or an xyz position."""
-    scalar = graph.value(node, QUDT_SCHEMA.value)
-    if scalar is not None:
-        return [float(scalar)]
-    position = [graph.value(node, GEOM_COORD[axis]) for axis in "xyz"]
-    if all(value is not None for value in position):
-        return [float(value) for value in position]
-    raise ConstraintViolation(
-        "sampling",
-        f"sampled quantity '{node}' carries neither a value nor xyz coordinates, so the DSL drew "
-        "nothing for it",
-    )
-
-
-def demo() -> None:
-    """A scalar and an xyz draw read back in order; a node carrying neither is rejected."""
-    import json
-    import tempfile
-
-    base = "http://example.org/demo/"
-
-    def sampled(name, keys):
-        return {"@id": f"{base}{name}", "@type": [str(URI_DISTRIB_TYPE_SAMPLED_QUANTITY)], **keys}
-
-    with tempfile.TemporaryDirectory() as directory:
-        model_dir = Path(directory)
-        (model_dir / "a.ld.json").write_text(
-            json.dumps(
-                {"@context": {"ex": base}, "@graph": [sampled("t", {str(QUDT_SCHEMA.value): 1.5})]}
+def sampled_quantities(model, trees: list[dict]) -> list[SampledQuantity]:
+    """Every sampled quantity of the model, sorted by IRI so a seed reproduces the draw."""
+    frames = {
+        frame["coord_iri"]: (tree, frame) for tree in trees for frame in tree["sampled_frames"]
+    }
+    result = []
+    for node in sorted(model.graph.subjects(RDF.type, URI_DISTRIB_TYPE_SAMPLED_QUANTITY), key=str):
+        distribution = model.graph.value(node, URI_DISTRIB_PRED_FROM_DISTRIB)
+        dist, components = _components(DistributionModel(distribution, model.graph))
+        unit = model.graph.value(node, QUDT_SCHEMA.unit)
+        scale = seconds(1.0, unit) if _is_duration(model, node) else si(1.0, unit)
+        tree, frame = frames.get(str(node), (None, None))
+        if len(components) != (3 if frame else 1):
+            raise ConstraintViolation(
+                "sampling",
+                f"'{node}' draws {len(components)} numbers from '{distribution}', which is not "
+                f"{'a position' if frame else 'a scalar'}",
+            )
+        result.append(
+            SampledQuantity(
+                id=model.id(node),
+                uri=str(node),
+                distribution_uri=str(distribution),
+                dist=dist,
+                components=components,
+                size=len(components),
+                scale=scale,
+                shared_member=None if frame else model.id(node),
+                segment=frame["name"] if frame else None,
+                parent=frame["parent"] if frame else None,
+                rotation=frame["rotation"] if frame else None,
+                tree=tree["cpp_name"] if tree else None,
             )
         )
-        (model_dir / "b.ld.json").write_text(
-            json.dumps(
-                {
-                    "@context": {"ex": base},
-                    "@graph": [
-                        sampled(
-                            "p",
-                            {
-                                str(URI_DISTRIB_PRED_FROM_DISTRIB): {"@id": f"{base}p-distrib"},
-                                **{
-                                    str(GEOM_COORD[axis]): v
-                                    for axis, v in zip("xyz", [0.25, -1.0, 4.0])
-                                },
-                            },
-                        )
-                    ],
-                }
-            )
-        )
+    return result
 
-        draws = sampled_draws(model_dir)
-        assert draws == {
-            f"{base}p": {"values": [0.25, -1.0, 4.0], "distribution": f"{base}p-distrib"},
-            f"{base}t": {"values": [1.5], "distribution": None},
-        }, draws
-        assert list(draws) == [f"{base}p", f"{base}t"], draws
 
-        (model_dir / "c.ld.json").write_text(
-            json.dumps({"@context": {"ex": base}, "@graph": [sampled("undrawn", {})]})
-        )
-        try:
-            sampled_draws(model_dir)
-        except ConstraintViolation as exc:
-            assert "undrawn" in str(exc), exc
+def _components(distribution: DistributionModel) -> tuple[str, list[dict]]:
+    """The C++ distribution and its per-axis parameters: bounds, or mean and deviation."""
+    if distribution.distrib_type == URI_DISTRIB_TYPE_UNIFORM:
+        lower = distribution.get_attr(URI_DISTRIB_PRED_LOWER)
+        upper = distribution.get_attr(URI_DISTRIB_PRED_UPPER)
+        return "uniform_real", [{"a": float(a), "b": float(b)} for a, b in zip(lower, upper)]
+    if distribution.distrib_type == URI_DISTRIB_TYPE_NORMAL:
+        mean = distribution.get_attr(URI_DISTRIB_PRED_MEAN)
+        if len(mean) == 1:
+            deviations = [float(distribution.get_attr(URI_DISTRIB_PRED_STD))]
         else:
-            raise AssertionError("a sampled quantity without values must be rejected")
-
-    with tempfile.TemporaryDirectory() as empty:
-        assert sampled_draws(Path(empty)) == {}
-    print("sampling demo ok")
-
-
-if __name__ == "__main__":
-    demo()
+            covariance = np.asarray(distribution.get_attr(URI_DISTRIB_PRED_COV), dtype=float)
+            if np.any(covariance != np.diag(np.diag(covariance))):
+                raise ConstraintViolation(
+                    "sampling",
+                    f"'{distribution.id}' has a non-diagonal covariance; correlated components "
+                    "are not drawn",
+                )
+            deviations = [math.sqrt(v) for v in np.diag(covariance)]
+        return "normal", [{"a": float(m), "b": s} for m, s in zip(mean, deviations)]
+    raise ConstraintViolation(
+        "sampling", f"'{distribution.id}': only uniform and normal distributions are drawn"
+    )

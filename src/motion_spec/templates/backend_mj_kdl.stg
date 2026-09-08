@@ -306,6 +306,15 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros) ::= <<
         mj_kdl::SiteSpec site_spec{\};
         site_spec.body = "<frame.body>";
         site_spec.name = "<frame.name>";
+<if(frame.segment)>
+        // Drawn this run: read back off the tree, composed up to the body it sits on.
+        KDL::Frame site_frame = KDL::Frame::Identity();
+        for (auto it = world_tree_<frame.tree>.getSegment("<frame.segment>"); it->first != "<frame.body_segment>"; it = it->second.parent) {
+            site_frame = it->second.segment.getFrameToTip() * site_frame;
+        \}
+        site_frame.M.GetQuaternion(site_spec.quat[0], site_spec.quat[1], site_spec.quat[2], site_spec.quat[3]);
+        for (int i = 0; i \< 3; ++i) site_spec.pos[i] = site_frame.p[i];
+<else>
         site_spec.pos[0] = <frame.pos_x>;
         site_spec.pos[1] = <frame.pos_y>;
         site_spec.pos[2] = <frame.pos_z>;
@@ -313,6 +322,7 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros) ::= <<
         site_spec.quat[1] = <frame.quat_y>;
         site_spec.quat[2] = <frame.quat_z>;
         site_spec.quat[3] = <frame.quat_w>;
+<endif>
         mj_scene.sites.push_back(site_spec);
     \}
 }; separator="\n">

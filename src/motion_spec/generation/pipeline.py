@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import os
-import random
 import shutil
 import subprocess
 import urllib.parse
@@ -186,40 +185,22 @@ def create_generation_dir(
     return generation.resolve()
 
 
-def generate_model(
-    model: Path, generation: Path, *, stage: str = "code", seed: int | None = None
-) -> Path:
+def generate_model(model: Path, generation: Path, *, stage: str = "code") -> Path:
     """Generate MODEL through IR or C++ code and return its generated-artifact directory."""
     from motion_spec_dsl.rdf_parser.check import validate_manifest
     from motion_spec.classes.base import DataclassJSONEncoder
     from motion_spec.rdf_parser.ir import generate_ir
-    from motion_spec.rdf_parser.sampling import sampled_draws
 
     generated = generation / "generated"
     model_dir = generated / "model"
-    # The DSL draws every sampled quantity, because it resolves poses numerically in this pass.
-    seed = seed if seed is not None else random.SystemRandom().randrange(2**32)
     dsl = subprocess.run(
-        [
-            "textx",
-            "generate",
-            str(model.resolve()),
-            "--target",
-            "jsonld",
-            "-o",
-            str(model_dir),
-            "--seed",
-            str(seed),
-        ],
+        ["textx", "generate", str(model.resolve()), "--target", "jsonld", "-o", str(model_dir)],
         cwd=model.parent,
     )
     if dsl.returncode:
         # The DSL already reported the offending line on stderr; don't bury it under an argv dump.
         raise RuntimeError(f"the DSL rejected {model.name}, see the error above")
     manifest = model_dir / f"{model.stem}-app.ld.json"
-    draws = sampled_draws(model_dir)
-    # A model with nothing sampled records no sampling at all.
-    sampling = {"seed": seed, "draws": draws} if draws else {}
     conforms, report = validate_manifest(manifest)
     if not conforms:
         raise RuntimeError(f"generated RDF failed SHACL validation:\n{report}")
@@ -236,7 +217,7 @@ def generate_model(
         for artifact in (*model_dir.glob("*_fsm.hpp"), model_dir / "fsm_ir.json"):
             if artifact.is_file():
                 artifact.replace(controller_dir / artifact.name)
-        generate_code(ir_path, controller_dir, find_stst() or "stst", sampling=sampling)
+        generate_code(ir_path, controller_dir, find_stst() or "stst")
         # The solver chain is the scene's, so it is emitted from the scene graph (plan 013).
         from motion_spec.generation.scene_kdl import write_scene_kdl_header
         from motion_spec.rdf_parser.model import load_model

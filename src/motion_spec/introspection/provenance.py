@@ -173,7 +173,7 @@ def _tool_properties(agent_id: str) -> dict:
     return {"hasVersion": version, "references": metadata.get("repository")}
 
 
-def build_provenance_document(ir: dict, output_dir: Path, *, sampling: dict | None = None) -> dict:
+def build_provenance_document(ir: dict, output_dir: Path) -> dict:
     prov = (ir["communication"]["introspection"]).get("provenance", {})
     graph = []
 
@@ -208,49 +208,6 @@ def build_provenance_document(ir: dict, output_dir: Path, *, sampling: dict | No
         )
         if entity.get("role") != "motion_spec_ir":
             input_entity_ids.append(entity_id)
-
-    # The draw a randomized model got: the seed it came from, the number each quantity took, and
-    # the distribution it came out of -- what a later analysis groups runs by.
-    # `prov:value` is spelled out -- the metamodel context aliases hadMember and Collection, not
-    # value -- and a 3-vector is an @list, since a bare array is an unordered set in JSON-LD.
-    if sampling:
-        add_node(
-            "entity:sampling",
-            ["prov:Entity", "prov:Collection"],
-            wasGeneratedBy=_prov_iri("activity:motion_spec_ir_generation"),
-            **{
-                "prov:value": sampling["seed"],
-                "hadMember": [
-                    {
-                        "@id": uri,
-                        "@type": ["prov:Entity"],
-                        "prov:value": (
-                            draw["values"][0]
-                            if len(draw["values"]) == 1
-                            else {"@list": list(draw["values"])}
-                        ),
-                        **(
-                            {"wasDerivedFrom": {"@id": draw["distribution"]}}
-                            if draw["distribution"]
-                            else {}
-                        ),
-                    }
-                    for uri, draw in sorted(sampling.get("draws", {}).items())
-                ],
-            },
-        )
-        # The scene declares the distributions; a draw's prov:wasDerivedFrom needs them typed
-        # here too, since the document is validated on its own.
-        graph.extend(
-            {"@id": distribution, "@type": ["prov:Entity"]}
-            for distribution in sorted(
-                {
-                    draw["distribution"]
-                    for draw in sampling.get("draws", {}).values()
-                    if draw["distribution"]
-                }
-            )
-        )
 
     artifact_names = [
         "frame_layout.json",

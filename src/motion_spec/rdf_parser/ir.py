@@ -13,6 +13,7 @@ from motion_spec.rdf_parser import (
     communication,
     constraint_handler,
     coordination,
+    mobile_base,
     operations,
     quantities,
     resources,
@@ -82,7 +83,7 @@ def generate_ir(manifest_path) -> dict:
         model, handlers, robots, computation, derivation, fsm
     )
     world_frames = resources.annotate_runtime(
-        robots.serial_chains, motions, backend, world_index, world_trees
+        robots.serial_chains, motions, backend, world_index, world_trees, robots.platform_force
     )
     coordination.annotate_sensor_dependencies(motions, computation)
     resources.annotate_device_dependencies(robots.serial_chains, motions)
@@ -110,6 +111,14 @@ def generate_ir(manifest_path) -> dict:
         closures,
         views,
         {out.id for solver in robots.serial_chains for out in solver.output}
+        # A platform solver's quantity is its published interface, as a chain's outputs are: the
+        # composition writes the twist every tick whether or not a constraint is judged on it.
+        | {
+            quantity.id
+            for solver in (*robots.platform_velocity, *robots.platform_force)
+            for quantity in (getattr(solver, "velocity", None), getattr(solver, "force", None))
+            if quantity is not None
+        }
         | perceived_pose_ids
         # A standing publish is the only reader of what it reports, and it reads it off the
         # blackboard: without this the quantity drops out and the message has nothing to carry.
@@ -156,6 +165,7 @@ def generate_ir(manifest_path) -> dict:
         shared_data.append(BlackboardValue(id=perturbation.active_id, type="Bool", value=False))
     perturbation_bodies = _perturbations_by_body(run_perturbations)
     ports = resources.world_ports(
+        model,
         world_trees,
         scene,
         robots.serial_chains,
@@ -197,7 +207,7 @@ def generate_ir(manifest_path) -> dict:
             "config_poses": config_poses,
             "trace": resources.TRACE_DISABLED,
         },
-        "resources": _resources_section(robots, world_trees, world_frames, ports),
+        "resources": _resources_section(robots, world_trees, world_frames, ports, motions),
         "composition": {"scene": scene},
         "computation": _computation_section(
             closures, views, shared_data, motions, computation.indexes.pose_components
@@ -227,7 +237,7 @@ def generate_ir(manifest_path) -> dict:
     }
 
 
-def _resources_section(robots, world_trees, world_frames, ports) -> dict:
+def _resources_section(robots, world_trees, world_frames, ports, motions=()) -> dict:
     """Every actuated resource the program commands, plus the by-kind cuts of it.
 
     An arm and a wheeled base are both actuated resources with kinematics, solvers and devices, so
@@ -243,9 +253,17 @@ def _resources_section(robots, world_trees, world_frames, ports) -> dict:
     if serial_chains:
         by_kind["serial_chain"] = serial_chains
     if any(robot.kind == "mobile_base" for robot in every):
+        drives = mobile_base.platform_drives(world_trees)
         by_kind["mobile_base"] = {
             "velocity_solvers": robots.platform_velocity,
             "force_solvers": robots.platform_force,
+            # The platform's geometry as the scene tree states it, so the deployment config
+            # carries none of it and the backend only adds joint names and indices.
+            "drives": drives,
+            "num_drives": len(drives),
+            "wrench_by_motion": mobile_base.wrench_terms_by_motion(
+                motions, robots.platform_velocity, robots.platform_force
+            ),
         }
 
     # Every device and sensor kind the model binds, as a membership map: templates emit code for
@@ -259,6 +277,11 @@ def _resources_section(robots, world_trees, world_frames, ports) -> dict:
     section = {
         "robots": every,
         "by_kind": by_kind,
+        # Whether the program drives anything at all, and whether a platform is the only thing it
+        # drives. ST4 can only test one attribute, so the two questions the loop asks -- "is
+        # there a scene to build" and "who steps it" -- are answered here rather than there.
+        "driven": bool(by_kind) or None,
+        "base_owns_runtime": ("mobile_base" in by_kind and not serial_chains) or None,
         "by_id": robots.by_id,
         "device_kinds": {kind: True for kind in device_kinds},
         # One entry per shared observation, not per solver that could answer it: several

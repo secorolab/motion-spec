@@ -1,0 +1,229 @@
+// SPDX-License-Identifier: MPL-2.0
+// The mobile platform's control cycle: the hddc2b velocity composition and force distribution
+// that turn hub rates into a platform twist and a platform wrench into hub torques.
+//
+// None of this is backend-specific. A backend supplies only the two ends -- filling the measured
+// pivot angles and hub rates, and draining the commanded hub torques -- through the dictionaries
+// below. The KELO drive over EtherCAT implements them in backend_kelo.stg, the MuJoCo simulation
+// in backend_mj_kdl.stg.
+//
+// The platform's geometry (where each pivot stands, how far apart the axles are, how far the
+// axle trails the pivot) comes from the scene's kinematic tree through the IR, so the deployment
+// config states none of it. What stays in the config is what the tree does not model: the
+// effective rolling diameter of a loaded tyre, and the solver's weights.
+
+base-nothing() ::= <<>>
+
+// The same no-op for the dispatches that carry the resources through to a backend.
+base-io-nothing(resources) ::= <<>>
+
+base-read-impl ::= [
+    "robif2b": "base-read-robif2b",
+    "mj_kdl": "base-read-mj_kdl",
+    default: "base-io-nothing"
+]
+
+base-write-impl ::= [
+    "robif2b": "base-write-robif2b",
+    "mj_kdl": "base-write-mj_kdl",
+    default: "base-io-nothing"
+]
+
+base-resolve-impl ::= [
+    "robif2b": "base-io-nothing",
+    "mj_kdl": "base-resolve-mj_kdl",
+    default: "base-io-nothing"
+]
+
+base-state-members-impl ::= [
+    "robif2b": "base-nothing",
+    "mj_kdl": "base-state-members-mj_kdl",
+    default: "base-nothing"
+]
+
+// Force distribution, primary task only: the platform wrench spread over the drives by a
+// weighted pseudoinverse.
+base-force-solver-primary(solver) ::= <<
+hddc2b_pltf_frc_pltf_to_drv(NUM_DRIVES, EPS, state.g, state.cfg.w_platform.data(), state.f_platform, state.cfg.w_drive.data(), state.f_drive_ref, state.f_prim, state.f_scnd);
+hddc2b_pltf_frc_redu_ref_fini(NUM_DRIVES, state.f_prim, state.f_scnd, state.f_drive);
+>>
+
+// Primary plus the castor alignment secondary task, projected into the primary's nullspace.
+//
+// The platform is redundant -- four drive units, two force coordinates each, against three
+// platform coordinates -- so the alignment reference costs the commanded wrench nothing. This is
+// where force distribution differs from velocity distribution, whose map has no nullspace at all.
+base-force-solver-aligned(solver) ::= <<
+hddc2b_pltf_drv_algn_dst(NUM_DRIVES, state.drive_attachment, state.cfg.w_align.data(), state.pvt_pos, state.f_platform, &state.f_drive_ref[1], 2);
+hddc2b_pltf_frc_pltf_to_drv(NUM_DRIVES, EPS, state.g, state.cfg.w_platform.data(), state.f_platform, state.cfg.w_drive.data(), state.f_drive_ref, state.f_prim, state.f_scnd);
+motion_spec::runtime::hddc2b_rescale(state.f_scnd);
+hddc2b_pltf_frc_redu_ref_fini(NUM_DRIVES, state.f_prim, state.f_scnd, state.f_drive);
+>>
+
+base-force-solver(solver) ::= <<
+<({base-force-solver-<solver.configuration>})(solver)>
+>>
+
+// Measured hub rates to a platform twist: the exact inverse of the chain the distribution uses,
+// closed with a damped least-squares solve because eight hub rates over-determine three platform
+// coordinates.
+// Measured hub rates to a platform twist: the exact inverse of the chain the distribution uses,
+// closed with a damped least-squares solve because eight hub rates over-determine three platform
+// coordinates. Computed once however many handlers assemble a composition solver -- they all
+// describe the same platform, and every one of them is handed the same answer.
+base-cycle-compose(base_velocity_solvers) ::= <<
+    hddc2b_pltf_frc_comp_mat(NUM_DRIVES, state.drive_attachment, state.pvt_pos, state.g);
+<if(base_velocity_solvers)>
+    hddc2b_whl_vel_hub_to_gnd(NUM_DRIVES, state.cfg.wheel_diameter.data(), state.whl_vel, state.xd_ground);
+    hddc2b_drv_vel_gnd_to_pvt(NUM_DRIVES, state.wheel_distance, state.castor_offset, state.xd_ground, state.xd_drive);
+    motion_spec::runtime::hddc2b_pltf_vel_drv_to_pltf(NUM_DRIVES, EPS, state.g, state.cfg.w_drive.data(), state.xd_drive, state.cfg.w_platform.data(), state.xd_platform);
+<base_velocity_solvers:{solver |    shared.<solver.velocity.id>.vel.x(state.xd_platform[0]);
+    shared.<solver.velocity.id>.vel.y(state.xd_platform[1]);
+    shared.<solver.velocity.id>.rot.z(state.xd_platform[2]);}; separator="\n">
+<endif>
+>>
+
+// The platform wrench is the sum of the running motion's controller outputs, by coordinate. Only
+// that motion's contribute: a control signal keeps whatever it last wrote, so a handler the FSM
+// One term of the platform wrench: a controller that closes on a platform component contributes
+// its scalar, one that commands a wrench contributes that wrench's own component.
+base-wrench-term(term) ::= <<
+<if(term.local)><term.local>.<term.subspace>.<term.axis>()<elseif(term.wrench)>shared.<term.wrench>.<term.subspace>.<term.axis>()<else>shared.<term.signal><endif>
+>>
+
+// A commanded wrench carried into the axes the distribution sums in. Rotation only: a couple is
+// reference-point independent, and a commanded force is meant to act through the platform, not to
+// pick up a moment arm from wherever the constraint it came from happens to be measured.
+base-wrench-rotation(term) ::= <<
+    const KDL::Wrench <term.local> = (robot.world->pose(robot.world_<term.platform_index>, robot.control_cycle).M.Inverse() * robot.world->pose(robot.world_<term.frame_index>, robot.control_cycle).M) * shared.<term.wrench>;
+>>
+
+// has left would otherwise keep driving the platform.
+base-cycle-force(resources, solver) ::= <<
+    state.f_platform[0] = 0.0;
+    state.f_platform[1] = 0.0;
+    state.f_platform[2] = 0.0;
+    switch (active_motion) {
+<resources.by_kind.mobile_base.wrench_by_motion:{row |    case <row.index>: {
+<row.rotations:{term |    <base-wrench-rotation(term)>}; separator="\n">
+<row.terms:{term |        state.f_platform[<term.coordinate>] += <base-wrench-term(term)>;}; separator="\n">
+        break;
+    \}}; separator="\n">
+    default: break;
+    \}
+    // What was actually distributed, back on the blackboard: a wrench the model commands is a
+    // value the run has to answer for, and this is the one place that knows it.
+<resources.by_kind.mobile_base.force_solvers:{s |    shared.<s.force.id>.force.x(state.f_platform[0]);
+    shared.<s.force.id>.force.y(state.f_platform[1]);
+    shared.<s.force.id>.torque.z(state.f_platform[2]);}; separator="\n">
+    <base-force-solver(solver)>
+    hddc2b_drv_frc_pvt_to_gnd(NUM_DRIVES, state.wheel_distance, state.castor_offset, state.f_drive, state.f_wheel);
+    hddc2b_whl_frc_gnd_to_hub(NUM_DRIVES, state.cfg.wheel_diameter.data(), state.f_wheel, state.trq);
+>>
+
+mobile_base_cycle_header(resources, configuration) ::= <<
+#pragma once
+
+#include "robot_config.hpp"
+#include "runtime.hpp"
+#include "shared_state.hpp"
+
+<if(resources.by_kind.mobile_base)>
+// The platform's array sizes and the solver's singularity threshold, named once in the runtime.
+using motion_spec::runtime::EPS;
+using motion_spec::runtime::NUM_DRIVES;
+using motion_spec::runtime::NUM_DRV_COORD;
+using motion_spec::runtime::NUM_G_COORD;
+using motion_spec::runtime::NUM_GND_COORD;
+using motion_spec::runtime::NUM_PLTF_COORD;
+using motion_spec::runtime::NUM_WHL_COORD;
+<endif>
+
+<if(resources.by_kind.mobile_base)>
+// The platform's own solver state, mirroring \<solver\>_solver_state on a serial chain: the
+// geometry it drives, the measured and commanded hub quantities, and the hddc2b intermediates.
+// None of it is a shared value, so none of it is on the blackboard.
+//
+// `pvt_pos`, `whl_vel` and `trq` are the backend boundary: a read hook fills the first two from
+// whatever the platform is running on, a write hook drains the third.
+struct mobile_base_state {
+    bool initialized = false;
+    motion_spec::config::Platform cfg;
+
+    // Read off the scene's kinematic tree, so the same numbers describe the model, the
+    // simulation and the robot.
+    double drive_attachment[NUM_DRIVES * NUM_DRV_COORD] = {<resources.by_kind.mobile_base.drives:{drive |<drive.attachment:{value |<value>}; separator=", ">}; separator=", ">};
+    double wheel_distance[NUM_DRIVES] = {<resources.by_kind.mobile_base.drives:{drive |<drive.wheel_distance>}; separator=", ">};
+    double castor_offset[NUM_DRIVES] = {<resources.by_kind.mobile_base.drives:{drive |<drive.castor_offset>}; separator=", ">};
+    // hddc2b's pivot angle is the heading of the drive's rolling direction on the platform; the
+    // joint's own zero is wherever the model put it.
+    double pivot_offset[NUM_DRIVES] = {<resources.by_kind.mobile_base.drives:{drive |<drive.pivot_offset>}; separator=", ">};
+    // Per channel, hddc2b's hub convention against this model's joint axes.
+    double hub_sign[NUM_DRIVES * NUM_WHL_COORD] = {<resources.by_kind.mobile_base.drives:{drive |<drive.hub_signs:{s |<s>}; separator=", ">}; separator=", ">};
+
+    double pvt_pos[NUM_DRIVES] = {0.0};
+    double whl_vel[NUM_DRIVES * NUM_WHL_COORD] = {0.0};
+    double trq[NUM_DRIVES * NUM_WHL_COORD] = {0.0};
+
+    double g[NUM_DRIVES * NUM_G_COORD] = {0.0};
+    double f_platform[NUM_PLTF_COORD] = {0.0, 0.0, 0.0};
+    double f_drive_ref[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
+    double f_drive[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
+    double f_wheel[NUM_DRIVES * NUM_GND_COORD] = {0.0};
+    double f_prim[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
+    double f_scnd[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
+    double xd_ground[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
+    double xd_drive[NUM_DRIVES * NUM_DRV_COORD] = {0.0};
+    double xd_platform[NUM_PLTF_COORD] = {0.0, 0.0, 0.0};
+<({<base-state-members-impl.(configuration.backend)>})()>
+};
+
+inline void reset_mobile_base(mobile_base_state &state) {
+    state = mobile_base_state{};
+}
+
+// Reads the config file and resolves the platform in the runtime, so the `initialized` latch is
+// load-bearing: both happen on the first cycle (or the first after a reset), never per tick.
+inline void init_mobile_base(mobile_base_state &state, shared_data &shared, robot_io &robot) {
+    if (state.initialized) return;
+    state.cfg = motion_spec::config::platform(motion_spec::config::load("<configuration.platform.config>"), "platform");
+<({<base-resolve-impl.(configuration.backend)>})(resources)>
+    state.initialized = true;
+}
+
+inline void update_mobile_base(
+    mobile_base_state &state,
+    shared_data &shared,
+    robot_io &robot) {
+    init_mobile_base(state, shared, robot);
+<({<base-read-impl.(configuration.backend)>})(resources)>
+<base-cycle-compose(resources.by_kind.mobile_base.velocity_solvers)>
+}
+
+inline void control_mobile_base(
+    mobile_base_state &state,
+    shared_data &shared,
+    robot_io &robot,
+    int active_motion) {
+<base-cycle-force(resources, first(resources.by_kind.mobile_base.force_solvers))>
+}
+
+inline void apply_mobile_base(
+    mobile_base_state &state,
+    shared_data &shared,
+    robot_io &robot) {
+<({<base-write-impl.(configuration.backend)>})(resources)>
+}
+<endif>
+>>
+
+base-runtime-step-impl ::= [
+    "mj_kdl": "base-runtime-step-mj_kdl",
+    default: "base-nothing"
+]
+
+// A platform that drives no chain still has to advance the simulation it runs in; on hardware
+// the plant advances itself and there is nothing to step.
+base-runtime-step-mj_kdl() ::= <<
+        if (!mj_kdl::step(&mj_platform)) break;
+>>

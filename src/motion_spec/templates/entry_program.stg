@@ -15,11 +15,11 @@ main_source(configuration, resources, composition, computation, coordination, co
 #include "introspect_model.hpp"
 #endif
 <if(resources.by_kind.mobile_base)>
-<({<mobile-base-cycle-include-impl.(configuration.backend)>})()>
+#include "mobile_base_cycle.hpp"
 <endif>
 <coordination.motions:{motion | <motion-include(motion)>}; separator="\n">
 
-<app-chain-includes(configuration.backend, resources.by_kind.serial_chain, resources, communication.ros)>
+<app-chain-includes(configuration.backend, resources.driven, resources, communication.ros)>
 #include \<unistd.h\>
 <if(coordination.fsm)>
 
@@ -36,29 +36,30 @@ int main(int argc, char **argv) {
 
 <ros-setup(communication.ros)>
 <endif>
-<if(resources.by_kind.mobile_base)>
-
-<({<app-main-base-setup-impl.(configuration.backend)>})()>
-<endif>
-<if(resources.world_trees)>
+<if(resources.by_kind.serial_chain)>
 
 <world-model-trees(resources)>
 <endif>
-<if(resources.by_kind.serial_chain)>
+<if(resources.driven)>
 
 <app-chain-setup(configuration.backend, resources.by_kind.serial_chain, composition.scene, configuration.platform.config, communication.ros, resources.world_ports)>
+<endif>
+<if(resources.by_kind.serial_chain)>
 
 <world-model-wiring(resources, communication, configuration.backend)>
 <configuration.config_poses:{pose |     shared.<pose.id> = motion_spec::config::pose(robot_config, "<pose.config_key>");
 }><endif>
+<if(resources.by_kind.mobile_base)>
+
+<({<app-main-base-setup-impl.(configuration.backend)>})()>
+<endif>
 <coordination.motions:{motion | <motion-state-member(motion)>}; separator="\n">
 <if(resources.by_kind.mobile_base)>
     mobile_base_state mobile_base_state_instance;
 <endif>
 <if(resources.by_kind.mobile_base)>
 
-    robif2b_ethercat_configure(robot.mobile_base.ethercat);
-    robif2b_ethercat_start(robot.mobile_base.ethercat);
+<({<app-main-base-start-impl.(configuration.backend)>})()>
 <endif>
 <if(resources.by_kind.serial_chain)>
 <resources.by_kind.serial_chain:{solver |
@@ -130,7 +131,7 @@ int main(int argc, char **argv) {
         \}
 #endif
 <endif>
-        shared.clock_time_s = <clock-time-source(configuration.backend, resources.by_kind.serial_chain, resources.by_kind.serial_chain)>;
+        shared.clock_time_s = <clock-time-source(configuration.backend, resources.by_kind.serial_chain, resources.driven)>;
 <if(communication.ros.clock)>
         robot.sim_time_s = shared.clock_time_s;
 <endif>
@@ -181,6 +182,11 @@ int main(int argc, char **argv) {
         // The freshness token every world read is checked against: one dispatch, one world
         // update, one set of poses that the whole cycle's reads agree on.
         robot.control_cycle = static_cast\<std::uint64_t\>(_step);
+<if(resources.by_kind.mobile_base)>
+        // Composes the platform twist from the hub rates before anything reads it: a monitor
+        // guarding on the base's motion is judged on this tick's measurement, not the last.
+        update_mobile_base(mobile_base_state_instance, shared, robot);
+<endif>
 <if(resources.by_kind.serial_chain)>
 <world-state-block(resources.world_observations, resources.by_kind.serial_chain, resources.by_id, configuration.backend)>
 <endif>
@@ -188,6 +194,12 @@ int main(int argc, char **argv) {
 <perturbation-clear-block(coordination.perturbations)>
 <endif>
         fsm_dispatch(fsm);
+<if(resources.by_kind.mobile_base)>
+        // The active motion's controllers have written the platform wrench by now; distribute it
+        // over the drives and hand the hub torques to whatever is driving them.
+        control_mobile_base(mobile_base_state_instance, shared, robot, _active_motion);
+        apply_mobile_base(mobile_base_state_instance, shared, robot);
+<endif>
 <if(coordination.perturbations)>
 <perturbation-write-block(coordination.perturbation_bodies)>
 <endif>
@@ -201,6 +213,9 @@ int main(int argc, char **argv) {
 <perturbation-arrows(configuration.backend, coordination.perturbations, configuration.trace)>
 <endif>
 <app-chain-runtime-step(configuration.backend, resources.by_kind.serial_chain, "_active_motion")>
+<endif>
+<if(resources.base_owns_runtime)>
+<({<base-runtime-step-impl.(configuration.backend)>})()>
 <endif>
 <if(coordination.fsm)>
         const unsigned int _fsm_state_before = fsm->currentStateIndex;
@@ -248,7 +263,7 @@ int main(int argc, char **argv) {
         // One pacer for this loop. The real-time factor scales the period rather than adding a
         // second sleep somewhere else: in simulation it is the viewer's live setting, so the
         // speed keys work mid-run; on hardware it is 1.0.
-        const double _rtf = <loop-rtf-source(configuration.backend, resources.by_kind.serial_chain, resources.by_kind.serial_chain)>;
+        const double _rtf = <loop-rtf-source(configuration.backend, resources.by_kind.serial_chain, resources.driven)>;
         if (_rtf > 0.0) {
             motion_spec::runtime::sleep_until_next(
               _next_tick, static_cast\<long>(<configuration.control_period_ns> / _rtf));
@@ -262,17 +277,17 @@ int main(int argc, char **argv) {
 <app-chain-camera-cleanup(configuration.backend, composition.scene.cameras)>
 <endif>
 #endif
-<if(resources.by_kind.serial_chain)>
+<if(resources.driven)>
 
-<app-chain-cleanup(configuration.backend, resources.by_kind.serial_chain)>
+<app-chain-cleanup(configuration.backend, resources.driven)>
+<endif>
+<if(resources.by_kind.serial_chain)>
 <resources.by_kind.serial_chain:{solver |
 <robot-shutdown(solver, configuration.backend)>
 }; separator="\n">
 <endif>
 <if(resources.by_kind.mobile_base)>
-    robif2b_kelo_drive_actuator_stop(robot.mobile_base.wheel_actuator);
-    robif2b_ethercat_stop(robot.mobile_base.ethercat);
-    robif2b_ethercat_shutdown(robot.mobile_base.ethercat);
+<({<app-main-base-stop-impl.(configuration.backend)>})()>
 <endif>
 <if(coordination.fsm)>
     <coordination.fsm.cpp_namespace>::destroy_fsm(fsm);
@@ -456,8 +471,7 @@ shared_state_header(configuration, resources, computation, coordination, communi
 <if(resources.by_kind.serial_chain)><solver-rnea-include(configuration.backend)><endif>
 <if(resources.by_kind.serial_chain)><robot-driver-include(first(resources.by_kind.serial_chain), configuration.backend, configuration.model_name, resources)><endif>
 <if(resources.by_kind.mobile_base)>
-#include \<robif2b/functions/ethercat.h\>
-#include \<robif2b/functions/kelo_drive.h\>
+<({<mobile-base-driver-include-impl.(configuration.backend)>})()>
 <endif>
 
 #include \<kdl/chainhdsolver_vereshchagin_fext_fixed_joint.hpp\>
@@ -465,58 +479,7 @@ shared_state_header(configuration, resources, computation, coordination, communi
 <if(resources.by_kind.serial_chain)><robot-num-joints-def(first(resources.by_kind.serial_chain))><endif>
 
 <if(resources.by_kind.mobile_base)>
-struct ecat_state {
-    const char *ethernet_if = nullptr;
-    int error_code = 0;
-    int num_exposed_slaves = 0;
-    int num_found_slaves = 0;
-    int num_active_slaves = 0;
-    int slave_idx[NUM_SLAVES] = {0};
-    const char *name[NUM_SLAVES] = {nullptr};
-    unsigned int prod_code[NUM_SLAVES] = {0U};
-    size_t input_size[NUM_SLAVES] = {0U};
-    size_t output_size[NUM_SLAVES] = {0U};
-    bool is_connected[NUM_SLAVES] = {false};
-};
-
-struct ecat_comm {
-    robif2b_kelo_drive_api_msr_pdo drv_msr_pdo[NUM_DRIVES];
-    robif2b_kelo_drive_api_cmd_pdo drv_cmd_pdo[NUM_DRIVES];
-};
-
-struct kelo_msr {
-    double pvt_off[NUM_DRIVES] = {0.0};
-    double pvt_pos[NUM_DRIVES] = {0.0};
-    double pvt_vel[NUM_DRIVES] = {0.0};
-    double whl_pos[NUM_DRIVES * 2] = {0.0};
-    double whl_vel[NUM_DRIVES * 2] = {0.0};
-    double imu_ang_vel[NUM_DRIVES * 3] = {0.0};
-    double imu_lin_acc[NUM_DRIVES * 3] = {0.0};
-    double bat_volt = 0.0;
-    double bat_cur = 0.0;
-    double bat_pwr = 0.0;
-    int bat_lvl = 0;
-};
-
-struct kelo_cmd {
-    enum robif2b_ctrl_mode ctrl_mode[NUM_DRIVES] = {ROBIF2B_CTRL_MODE_FORCE};
-    double vel[NUM_DRIVES * 2] = {0.0};
-    double trq[NUM_DRIVES * 2] = {0.0};
-    double cur[NUM_DRIVES * 2] = {0.0};
-    double max_current[NUM_DRIVES * 2] = {0.0};
-    double trq_const[NUM_DRIVES * 2] = {0.0};
-};
-
-struct mobile_base_robot {
-    int *num_drives = nullptr;
-    ecat_state *ethercat_state = nullptr;
-    ecat_comm *ethercat_comm = nullptr;
-    robif2b_ethercat *ethercat = nullptr;
-    kelo_msr *measurement = nullptr;
-    kelo_cmd *command = nullptr;
-    robif2b_kelo_drive_encoder *drive_encoder = nullptr;
-    robif2b_kelo_drive_actuator *wheel_actuator = nullptr;
-};
+<({<mobile-base-robot-struct-impl.(configuration.backend)>})()>
 <endif>
 
 <if(resources.by_kind.serial_chain)>

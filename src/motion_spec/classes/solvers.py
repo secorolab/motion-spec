@@ -229,5 +229,10 @@ class ForceDistributionSolver:
     id: str
     configuration: str
     force: Wrench
+    # The commanded wrenches routed to this solver, one per force controller: what the platform
+    # is asked to push with, before it is distributed over the drives. A controller holding a
+    # scalar -- a distance, say -- contributes through the wrench built from it and its
+    # direction, which is the only form a distribution can take.
+    forces: tuple = field(default=())
     kind: str = field(default="mobile_base")
     type: str = field(default="ForceDistributionSolver")

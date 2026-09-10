@@ -2,7 +2,7 @@
 // L4 entry — the build: CMake projects and the robot config header.
 
 import "backend_robif2b.stg"
-cmake_mj_kdl(coordination, communication) ::= <<
+cmake_mj_kdl(coordination, communication, resources) ::= <<
 cmake_minimum_required(VERSION 3.16)
 project(motion_spec_mj_kdl_target LANGUAGES CXX)
 
@@ -18,6 +18,13 @@ find_package(coord2b REQUIRED)
 find_package(mj_kdl_wrapper 0.3.17 REQUIRED CONFIG)
 find_package(tomlplusplus REQUIRED CONFIG)
 find_package(Threads REQUIRED)
+<if(resources.by_kind.mobile_base)>
+# The platform's force distribution and its damped-least-squares twist composition; the solve
+# goes through LAPACK, which hddc2b does not carry itself.
+find_package(hddc2b REQUIRED)
+find_package(BLAS REQUIRED)
+find_package(LAPACK REQUIRED)
+<endif>
 <if(communication.ros)>
 find_package(rclcpp REQUIRED)
 find_package(realtime_tools REQUIRED)
@@ -54,6 +61,11 @@ target_link_libraries(main PRIVATE
     mj_kdl_wrapper::mj_kdl_wrapper
     orocos-kdl
     tomlplusplus::tomlplusplus
+<if(resources.by_kind.mobile_base)>
+    hddc2b::hddc2b
+    LAPACK::LAPACK
+    BLAS::BLAS
+<endif>
 <if(coordination.fsm)>
     ${coord2b_LIBRARIES}
 <endif>
@@ -131,7 +143,7 @@ inline const toml::table &section(const toml::table &config, const std::string &
 
 <endif><if(resources.device_kinds.("Robotiq2F85"))><config-gripper-pct-byte()>
 
-<endif><if(resources.by_kind.mobile_base)><config-kelo()>
+<endif><if(resources.by_kind.mobile_base)><config-platform()>
 
 <endif><if(configuration.config_poses)><config-pose()>
 
@@ -256,7 +268,7 @@ inline KDL::Frame pose(const toml::table &config, const std::string &key) {
 \}
 >>
 
-config-kelo() ::= <<
+config-platform() ::= <<
 // An optional numeric array: absent means the built-in default stands, present must match it
 // in length -- a base with four drives cannot be handed three wheel diameters.
 inline std::vector\<double\> doubles_or(const toml::table &table, const std::string &key,
@@ -279,18 +291,15 @@ inline std::vector\<double\> doubles_or(const toml::table &table, const std::str
     return out;
 \}
 
-// A KELO drive platform: its geometry, and the hddc2b weights that decide how a platform
-// wrench is split over the drives. Geometry is per-robot-instance deployment data, like the
-// drive addresses; the weights are solver policy the same deployment tunes. Every key is
-// optional and defaults to the platform this generator was written against.
-struct Kelo {
-    // Drive pivot attachment points on the platform, (x, y) per drive [m].
-    std::vector\<double\> drive_attachment{0.195, 0.21, -0.195, 0.21, -0.195, -0.21, 0.195, -0.21};
-    // Wheel diameter, per wheel (two per drive) [m].
-    std::vector\<double\> wheel_diameter{0.115, 0.115, 0.115, 0.115, 0.115, 0.115, 0.115, 0.115};
-    // Lateral wheel separation and castor offset, per drive [m].
-    std::vector\<double\> wheel_distance{0.0775, 0.0775, 0.0775, 0.0775};
-    std::vector\<double\> castor_offset{0.01, 0.01, 0.01, 0.01};
+// What a drive platform needs that its kinematic tree cannot state. Where the pivots stand, how
+// far apart the axles are and how far each axle trails its pivot are the model's, and reach the
+// controller through the IR; what is left here is the effective rolling diameter of a tyre under
+// load -- a contact property, not a geometric one -- and the hddc2b weights, which are solver
+// policy the deployment tunes. Every key is optional.
+struct Platform {
+    // Effective rolling diameter, per wheel (two per drive) [m]. Smaller than the geometric
+    // diameter by however far the tyre sinks into the contact under the platform's weight.
+    std::vector\<double\> wheel_diameter{0.105, 0.105, 0.105, 0.105, 0.105, 0.105, 0.105, 0.105};
     // Platform-wrench weight (3x3), per-drive force weight (2x2 each), pivot-alignment weight.
     std::vector\<double\> w_platform{1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
     std::vector\<double\> w_drive{1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0,
@@ -298,15 +307,12 @@ struct Kelo {
     std::vector\<double\> w_align{1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
 };
 
-inline Kelo kelo(const toml::table &config, const std::string &key) {
-    Kelo out;
+inline Platform platform(const toml::table &config, const std::string &key) {
+    Platform out;
     const toml::node *node = config.at_path(key).node();
     if (!node || !node->is_table()) return out;
     const toml::table &entry = *node->as_table();
-    out.drive_attachment = doubles_or(entry, "drive_attachment", out.drive_attachment, key);
     out.wheel_diameter = doubles_or(entry, "wheel_diameter", out.wheel_diameter, key);
-    out.wheel_distance = doubles_or(entry, "wheel_distance", out.wheel_distance, key);
-    out.castor_offset = doubles_or(entry, "castor_offset", out.castor_offset, key);
     out.w_platform = doubles_or(entry, "w_platform", out.w_platform, key);
     out.w_drive = doubles_or(entry, "w_drive", out.w_drive, key);
     out.w_align = doubles_or(entry, "w_align", out.w_align, key);

@@ -5,6 +5,7 @@
 import "backend_mj_kdl.stg"
 import "backend_robif2b.stg"
 import "backend_kelo.stg"
+import "domain_mobile_base.stg"
 
 app-chain-includes(backend, has_serial_chain, resources, ros) ::= <<
 <({app-chain-includes-<backend>})(has_serial_chain, resources, ros)>
@@ -75,8 +76,10 @@ clock-time-source(backend, serial_chain_solvers, has_serial_chain) ::= <<
 <if(has_serial_chain)><({clock-time-source-<backend>})(serial_chain_solvers)><else>motion_spec::runtime::monotonic_time_s()<endif>
 >>
 
+// The scene's own clock, not a chain's view of it: a platform drives no chain but runs in the
+// same simulation, and both read the one mjData the env owns.
 clock-time-source-mj_kdl(serial_chain_solvers) ::= <<
-robot.<first(serial_chain_solvers).id>.robot->data->time
+mj_env.data->time
 >>
 
 clock-time-source-robif2b(serial_chain_solvers) ::= <<

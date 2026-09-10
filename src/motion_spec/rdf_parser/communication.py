@@ -1414,6 +1414,8 @@ def build_introspection(
         computation.views,
         subscriptions,
         config_poses,
+        robots.platform_velocity,
+        robots.platform_force,
     )
 
     # The registry grew while folding the samples in: rebuild the table and backfill every row

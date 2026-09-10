@@ -815,8 +815,9 @@ inline double path_velocity_profile_step(double velocity, double &acceleration,
 }
 
 <if(resources.by_kind.mobile_base)>
-inline constexpr int NUM_DRIVES = 4;
-inline constexpr int NUM_SLAVES = 4;
+// How many castors the platform has is the scene tree's statement, not a constant of the base.
+inline constexpr int NUM_DRIVES = <resources.by_kind.mobile_base.num_drives>;
+inline constexpr int NUM_SLAVES = NUM_DRIVES;
 inline constexpr int NUM_WHL_COORD = 2;
 inline constexpr int NUM_GND_COORD = 2;
 inline constexpr int NUM_DRV_COORD = 2;

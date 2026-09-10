@@ -2355,6 +2355,8 @@ def annotate_dataflow(
     views,
     subscriptions=(),
     config_poses=(),
+    platform_velocity_solvers=(),
+    platform_force_solvers=(),
 ) -> None:
     """Give every shared value its producer, its write cadence and the storage those imply, then
     apply that contract: drop what nothing writes and move what is written once into the header.
@@ -2367,6 +2369,19 @@ def annotate_dataflow(
         for out_id in closure_output_ids(closure):
             closure_by_output.setdefault(out_id, set()).add(closure_id)
     solver_by_output, sensor_outputs = _writers_by_output(serial_chain_solvers)
+    # A platform's twist is composed from the measured hub rates every tick, not forwarded along
+    # a chain, so its writer is the composition solver itself. The component views the
+    # constraints read inherit that from the twist, as every other view does.
+    for solver in platform_velocity_solvers:
+        output_id = getattr(solver.velocity, "id", None)
+        if output_id:
+            solver_by_output.setdefault(output_id, set()).add(solver.id)
+    # The commanded wrench is the distribution's own input, assembled from the running motion's
+    # controllers and mirrored back by the base cycle, so the solver is what answers for it.
+    for solver in platform_force_solvers:
+        output_id = getattr(solver.force, "id", None)
+        if output_id:
+            solver_by_output.setdefault(output_id, set()).add(solver.id)
     world_output_ids = {
         out.id for solver in serial_chain_solvers for out in getattr(solver, "world_output", ())
     }

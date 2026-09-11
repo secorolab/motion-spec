@@ -332,7 +332,12 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros, world_port
             return 1;
         \}
         object_spec.mjcf_path = object_path.string();
-<endif>        object_spec.pos[0] = <object.pos_x>;
+<if(object.has_color)>        object_spec.rgba[0] = <object.color_r>f;
+        object_spec.rgba[1] = <object.color_g>f;
+        object_spec.rgba[2] = <object.color_b>f;
+        object_spec.rgba[3] = <object.color_a>f;
+        object_spec.has_rgba = true;
+<endif><endif>        object_spec.pos[0] = <object.pos_x>;
         object_spec.pos[1] = <object.pos_y>;
         object_spec.pos[2] = <object.pos_z>;
         object_spec.quat[0] = <object.quat_x>;

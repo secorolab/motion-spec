@@ -14,7 +14,8 @@ maintainers = [
     {name = "Vamsi Kalagaturu", email = "vamsikalagaturu@gmail.com"}
 ]
 license = { text = "MPL-2.0" }
-requires-python = ">=3.10"
+# 3.11 for tomllib: the workspace's motion-spec.config.toml is read with the stdlib.
+requires-python = ">=3.11"
 # The secorolab packages are on no index, so they carry their source: named alone they
 # resolve nowhere and the whole install fails, wherever it is run from. rdflib does
 # resolve, to the wrong one -- a model with multi-type scoped contexts needs the fork.
@@ -25,20 +26,19 @@ dependencies = [
     "jinja2",
     "motion_spec_dsl @ git+https://github.com/secorolab/motion-spec-dsl@dev",
     "scene-dsl @ git+https://github.com/secorolab/scene-dsl@main",
-]
-
-[project.optional-dependencies]
-validation = ["pyshacl>=0.25.0"]
-introspection = [
     "pyshacl>=0.25.0",
+    # `run` imports the runner, and the runner the frame log, whatever --no-log says: these
+    # were an extra, and every run without them ended in a ModuleNotFoundError traceback.
     "rec @ git+https://github.com/secorolab/rec@dev",
     # frame_log_pb reads .pb logs via message_factory.GetMessageClass, added in 4.22.
     "protobuf>=4.22",
 ]
+
+[project.optional-dependencies]
 dashboard = ["nicegui>=2.0", "pillow"]
 # The browser dashboard's notebook tab; its SPARQL console runs on the rdflib above.
 replay = ["jupyterlab>=4.0", "matplotlib"]
-all = ["pyshacl>=0.25.0", "rec @ git+https://github.com/secorolab/rec@dev", "protobuf>=4.22", "nicegui>=2.0", "pillow", "jupyterlab>=4.0", "matplotlib"]
+all = ["nicegui>=2.0", "pillow", "jupyterlab>=4.0", "matplotlib"]
 test = ["pytest"]
 docs = ["sphinx", "myst-parser", "furo", "sphinx-autobuild", "matplotlib"]
 dev = ["pytest", "ruff"]
@@ -56,7 +56,13 @@ where = ["src"]
 [tool.setuptools.package-data]
 # frontend/**, not frontend/*: the vendored libraries live in subdirectories, and a
 # single-level glob shipped a dashboard whose editor and charts were missing.
-motion_spec = ["templates/*.stg", "templates/CMakeLists.txt", "dashboard/frontend/**/*"]
+motion_spec = [
+    "templates/*.stg",
+    "templates/CMakeLists.txt",
+    "dashboard/frontend/**/*",
+    # `motion-spec setup` reads its pins from this at run time, so it has to ship.
+    "*.repos",
+]
 
 [tool.pytest.ini_options]
 # rdflib's Dataset.parse() internally reads its deprecated default_context

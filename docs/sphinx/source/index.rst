@@ -10,21 +10,23 @@ that need individual stages.
 Quick start
 ===========
 
-``motion-spec`` needs the rest of its workspace — the authoring DSLs, the
-metamodels, the kinematics fork, the simulator wrapper — so install it through
-``grc_meta``, which sets all of them up in one command:
+``motion-spec`` needs the rest of what it builds against — the authoring DSLs,
+the kinematics fork, the simulator wrapper — and installs all of it itself:
 
 .. code-block:: console
 
    $ mkdir -p ws/src
-   $ git clone git@github.com:secorolab/grc_meta.git ws/src/grc_meta
-   $ ws/src/grc_meta/script-setup --check ws     # what is missing, changing nothing
-   $ ws/src/grc_meta/script-setup ws             # import, build, verify
-   $ source ws/setup-grc.bash                    # or .zsh
+   $ git clone git@github.com:secorolab/motion-spec.git ws/src/motion-spec
+   $ python3 -m venv ws/.venv && source ws/.venv/bin/activate
+   $ pip install -e ws/src/motion-spec            # the CLI and the DSL compilers
+   $ motion-spec install all                      # every optional Python feature
+   $ motion-spec health                           # the one apt line for what is missing
+   $ motion-spec setup --workspace ws             # STST and the C++ libraries
+   $ source ws/setup-motion-spec.bash             # or .zsh, whichever setup wrote
 
-ROS is optional (``--no-ros``), and the robot hardware backends are off until
-asked for (``--with-hardware``). Then run a model, replay the run it recorded,
-and run the same generation again:
+ROS is optional, and the robot hardware drivers are installed only if a model
+binds them. Then run a model, replay the run it recorded, and run the same
+generation again:
 
 .. code-block:: console
 

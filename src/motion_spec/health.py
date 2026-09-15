@@ -8,18 +8,36 @@ from __future__ import annotations
 
 import ctypes
 import importlib.util
+import json
+import os
+import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 
+from motion_spec.setup import BUILD_TYPE, COMPONENTS_BY_NAME, MJ_KDL_REF
+
 PROFILE_IMPORTS = {
-    "base": ("click", "rdflib", "rdf_utils", "jinja2"),
-    "validation": ("pyshacl",),
-    "introspection": ("pyshacl", "rec", "google.protobuf"),
-    "dsl": ("textx", "motion_spec_dsl", "coord_dsl", "scene_dsl"),
+    # motion_spec_dsl and scene_dsl are imported at module scope by the generation pipeline:
+    # hard dependencies in pyproject, not a profile someone opts into.
+    "base": (
+        "click",
+        "rdflib",
+        "rdf_utils",
+        "jinja2",
+        "motion_spec_dsl",
+        "scene_dsl",
+        "pyshacl",
+        "rec",
+        "google.protobuf",
+    ),
+    # Everything Python it needed is required now; what is left is the C++ library below.
+    "introspection": (),
+    "dsl": ("textx", "coord_dsl"),
 }
 PROFILES = (*PROFILE_IMPORTS, "codegen", "ros", "build", "runtime")
 # Every generated CMakeLists asks for these, whichever backend it targets: the kinematics and
@@ -29,8 +47,9 @@ GENERAL_BUILD_PACKAGES = ("coord2b", "Eigen3", "orocos_kdl", "kdl_parser", "toml
 # ROS reports them absent rather than missing, and generates, builds and runs regardless.
 ROS_BUILD_PACKAGES = ("rclcpp", "realtime_tools", "action_msgs", "rclcpp_action")
 # `(package, version)`; the generated CMakeLists asks for that version, so a check that ignores
-# it passes on an install the build then rejects.
-MUJOCO_BUILD_PACKAGES = (("mj_kdl_wrapper", "0.3.17"),)
+# it passes on an install the build then rejects. Taken from the ref `motion-spec setup`
+# installs, so the check and the installer cannot drift apart.
+MUJOCO_BUILD_PACKAGES = (("mj_kdl_wrapper", MJ_KDL_REF.lstrip("v")),)
 # Reading a ROS message's shape is what turns a declared type into fields, headers and packages.
 # rosidl spells its case-conversion helper differently across distros; either will do.
 # ament_index_python resolves a scene asset that names a package rather than a path, so a
@@ -46,14 +65,29 @@ ROBIF2B_BUILD_PACKAGES = ("robif2b", "urdfdom_headers", "urdfdom", "serial", "ro
 OPTIONAL_BUILD_PACKAGES = frozenset({"serial", "robotiq_driver_noros"})
 # TODO: Check hddc2b only when the generated model selects an HDDC2B base solver.
 
-_WORKSPACE = "$GRC_WS"
+ROS_ROOT = Path("/opt/ros")
+# What motion-spec reads, in the order a reader cares about it.
+ENVIRONMENT_VARIABLES = (
+    "MOTION_SPEC_WS",
+    "MOTION_SPEC_GEN",
+    "MOTION_SPEC_ENV",
+    "MOTION_SPEC_PREFIX",
+    "MOTION_SPEC_BUILD_TYPE",
+    "MOTION_SPEC_JOURNAL",
+    "ROS_DISTRO",
+    "ROS_VERSION",
+    "CMAKE_PREFIX_PATH",
+    "LD_LIBRARY_PATH",
+)
+# Unset is no warning where motion-spec falls back to a value of its own.
+ENVIRONMENT_DEFAULTS = {"MOTION_SPEC_BUILD_TYPE": BUILD_TYPE}
 # The remedies apt answers, which the report gathers into one install line.
 APT_REMEDY = "apt install "
 # What to do about a missing dependency: the one command that gets it. "Install it" is not an
 # instruction, so every dependency this checks names its own source -- an apt package, a
 # workspace package, or the flag whose absence left it unbuilt.
 _REMEDIES = {
-    "stst": f"motion-spec setup --prefix {_WORKSPACE}",
+    "stst": "motion-spec setup stst",
     "cmake": "apt install cmake",
     "c++": "apt install build-essential",
     "Eigen3": "apt install libeigen3-dev",
@@ -72,18 +106,8 @@ _REMEDIES = {
     "rosidl_pycommon": "source /opt/ros/$ROS_DISTRO/setup.bash",
     "ament_index_python": "source /opt/ros/$ROS_DISTRO/setup.bash",
 }
-# Everything else is a workspace package: grc_meta lists where each one comes from. orocos_kdl
-# is here rather than on apt: the templates call Vereshchagin solvers with fixed joints, which
-# only the secorolab fork carries, so a distro liborocos-kdl-dev configures and then fails.
-_WORKSPACE_PACKAGES = (
-    "coord2b",
-    "kdl_parser",
-    "orocos_kdl",
-    "mj_kdl_wrapper",
-    "robif2b",
-    "serial",
-    "robotiq_driver_noros",
-)
+# Not installed by `setup`: only a model that binds them needs them.
+_DEVICE_PACKAGES = ("robif2b", "serial", "robotiq_driver_noros")
 # robif2b builds a device wrapper only when told to. Missing here means the flag was off, not
 # that the package is absent, so the fix is a rebuild rather than a checkout.
 _ROBIF2B_DEVICE_FLAGS = {
@@ -91,19 +115,92 @@ _ROBIF2B_DEVICE_FLAGS = {
     "robif2b::robotiq_ft_sensor": "ENABLE_ROBOTIQ_FT",
     "robif2b::kinova_gen3": "ENABLE_KORTEX",
 }
+_PREFIX = "$MOTION_SPEC_PREFIX"
+
+
+def installed_ros_distros() -> list[str]:
+    """Every ROS distribution installed under /opt/ros, whether or not one is sourced."""
+    if not ROS_ROOT.is_dir():
+        return []
+    return sorted(entry.name for entry in ROS_ROOT.iterdir() if (entry / "setup.bash").is_file())
+
+
+def active_ros_distro(env: dict[str, str] | None = None) -> str | None:
+    """The distribution this environment is sourced against, when it is installed."""
+    distro = (env if env is not None else os.environ).get("ROS_DISTRO")
+    return distro if distro and (ROS_ROOT / distro / "setup.bash").is_file() else None
+
+
+def _ros_distro() -> str | None:
+    """The distribution a remedy can name: the sourced one, the configured one, or the only one."""
+    active = active_ros_distro()
+    if active:
+        return active
+    declared = _configured_distro()
+    if declared:
+        return declared
+    installed = installed_ros_distros()
+    return installed[0] if len(installed) == 1 else None
+
+
+def _configured_distro() -> str | None:
+    """The distribution the workspace's config names, when it names one."""
+    from motion_spec.config import settings
+
+    try:
+        configured, _ = settings()
+    except (OSError, ValueError):
+        return None
+    return configured.get("ros", {}).get("distro") or None
+
+
+def environment_values(env: dict[str, str] | None = None) -> dict[str, str | None]:
+    """What each variable motion-spec reads is set to, in the environment being reported on."""
+    source = env if env is not None else os.environ
+    return {name: source.get(name) or None for name in ENVIRONMENT_VARIABLES}
+
+
+def ros_summary(env: dict[str, str] | None = None) -> str:
+    """What this machine has to say about ROS, for the line above the ROS checks.
+
+    `ABSENT` alone cannot say whether ROS is missing or merely unsourced.
+    """
+    installed = installed_ros_distros()
+    active = active_ros_distro(env)
+    if not installed:
+        return "no distribution under /opt/ros"
+    if active:
+        release = (env if env is not None else os.environ).get("ROS_VERSION")
+        others = [name for name in installed if name != active]
+        sourced = f"{active} sourced (ROS {release})" if release else f"{active} sourced"
+        return f"{sourced}; {', '.join(others)} also installed" if others else sourced
+    if len(installed) == 1:
+        return f"{installed[0]} installed, not sourced: source /opt/ros/{installed[0]}/setup.bash"
+    return (
+        f"{', '.join(installed)} installed, none sourced: "
+        f"source /opt/ros/<distro>/setup.bash for the one this workspace builds against"
+    )
 
 
 def _remedy(dependency: str) -> str:
     """The command that gets `dependency`, for a report a reader can act on."""
     if dependency in _REMEDIES:
-        return _REMEDIES[dependency]
-    if dependency in _WORKSPACE_PACKAGES:
-        return (
-            f"vcs import src < src/grc_meta/grc_meta.repos && "
-            f"colcon build --packages-up-to {dependency}"
-        )
+        # `$ROS_DISTRO` is only an instruction when a shell already set it.
+        return _REMEDIES[dependency].replace("$ROS_DISTRO", _ros_distro() or "$ROS_DISTRO")
+    if dependency in COMPONENTS_BY_NAME:
+        return f"motion-spec setup {dependency}"
 
     return f"install {dependency} and expose its prefix through CMAKE_PREFIX_PATH"
+
+
+def _cmake_build(package: str, *options: str) -> str:
+    """Configure, build and install one source checkout into the motion-spec prefix."""
+    flags = "".join(f" -D{option}" for option in options)
+    return (
+        f"cmake -S <{package} checkout> -B build/{package} "
+        f"-DCMAKE_INSTALL_PREFIX={_PREFIX} -DCMAKE_PREFIX_PATH={_PREFIX}{flags} && "
+        f"cmake --build build/{package} --target install"
+    )
 
 
 def _device_remedy(cmake_target: str) -> str:
@@ -112,10 +209,22 @@ def _device_remedy(cmake_target: str) -> str:
     if flag is None:
         return _remedy(cmake_target.partition("::")[0])
 
-    return (
-        f"colcon build --packages-select robif2b --cmake-args -D{flag}=ON "
-        f"(grc_meta's colcon.meta sets this for the whole workspace)"
-    )
+    return f"motion-spec setup robif2b --force --cmake-arg -D{flag}=ON"
+
+
+def _by_hand(dependency: str) -> str:
+    """The same install without motion-spec, for a reader who would rather run it themselves."""
+    flag = _ROBIF2B_DEVICE_FLAGS.get(dependency)
+    if flag:
+        return _cmake_build("robif2b", "ENABLE_INSTALL_TARGETS=ON", f"{flag}=ON")
+    name = dependency.partition("::")[0]
+    if name in COMPONENTS_BY_NAME:
+        return _cmake_build(name, *_installed_options(name))
+    return ""
+
+
+def _installed_options(dependency: str) -> tuple[str, ...]:
+    return tuple(option.lstrip("-D") for option in COMPONENTS_BY_NAME[dependency].options)
 
 
 @dataclass(frozen=True)
@@ -132,6 +241,8 @@ class HealthCheck:
     # lives, and how it arrives. Filled from DETAILS for every dependency it names.
     why: str = ""
     source: str = ""
+    # The same install without motion-spec, for a reader who would rather do it themselves.
+    alternative: str = ""
     # Absent by choice rather than by mistake: reported, but not counted against the install.
     optional: bool = False
 
@@ -225,7 +336,7 @@ DETAILS: dict[str, dict[str, str]] = {
     },
     "kdl_parser": {
         "why": "builds KDL chains from robot descriptions",
-        "source": "https://github.com/ros/kdl_parser",
+        "source": "https://github.com/secorolab/kdl_parser",
     },
     "mj_kdl_wrapper": {
         "why": "the MuJoCo simulation the generated controller drives, and its camera publisher",
@@ -253,7 +364,7 @@ DETAILS: dict[str, dict[str, str]] = {
     },
     "robif2b": {
         "why": "the real-robot hardware drivers the robif2b backend generates against",
-        "source": "https://github.com/rosym-project/robif2b",
+        "source": "https://github.com/secorolab/robif2b",
     },
     "urdfdom": {
         "why": "parses the robot's URDF for the real-platform chain",
@@ -281,14 +392,37 @@ def _enrich(check: HealthCheck) -> HealthCheck:
     ("robif2b::kinova_gen3") or as alternatives ("rosidl_pycommon or rosidl_cmake"); the
     details belong to the bare name either way.
     """
-    name = check.dependency.partition(" or ")[0].partition("::")[0].split()[0]
-    spec = DETAILS.get(check.dependency) or DETAILS.get(name)
-    if spec is None:
-        return check
-    return dataclasses.replace(check, why=spec.get("why", ""), source=spec.get("source", ""))
+    bare = check.dependency.partition(" or ")[0].split()[0]
+    name = bare.partition("::")[0]
+    spec = DETAILS.get(check.dependency) or DETAILS.get(name) or {}
+    return dataclasses.replace(
+        check,
+        why=spec.get("why", check.why),
+        source=spec.get("source", check.source),
+        alternative=check.alternative or _by_hand(bare),
+    )
 
 
-def _module_path(name: str) -> str | None:
+_PROBE = """
+import importlib.util, json, sys
+
+found = {}
+for name in sys.argv[1:]:
+    try:
+        spec = importlib.util.find_spec(name)
+    except (ImportError, ValueError):
+        spec = None
+    origin = None
+    if spec is not None:
+        origin = spec.origin or next(iter(spec.submodule_search_locations or ()), None)
+    found[name] = origin
+print(json.dumps(found))
+"""
+
+
+def _module_path(name: str, env: dict[str, str] | None = None) -> str | None:
+    if env is not None:
+        return _module_paths((name,), env)[name]
     try:
         spec = importlib.util.find_spec(name)
     except ModuleNotFoundError:
@@ -298,6 +432,29 @@ def _module_path(name: str) -> str | None:
     if spec.origin:
         return spec.origin
     return next(iter(spec.submodule_search_locations or ()), None)
+
+
+def _module_paths(names: tuple[str, ...], env: dict[str, str]) -> dict[str, str | None]:
+    """Where each module resolves under ENV, asked of an interpreter started in it.
+
+    A sourced ROS distribution puts its Python packages on the path through the environment,
+    so importing them here would answer for this process instead of for the one the build
+    and the run will use. One subprocess answers for all of them.
+    """
+    done = subprocess.run(
+        [sys.executable, "-c", _PROBE, *names],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        text=True,
+    )
+    if done.returncode:
+        return dict.fromkeys(names)
+    try:
+        return json.loads(done.stdout)
+    except json.JSONDecodeError:
+        return dict.fromkeys(names)
 
 
 def _module_what(path: str | None) -> str:
@@ -314,10 +471,36 @@ def _module_what(path: str | None) -> str:
     return "Python module" if installed else "Python module, editable"
 
 
+def _stst_jar(launcher: str) -> bool:
+    """Whether the launcher still has the jar it runs; one without it renders nothing."""
+    try:
+        text = Path(launcher).read_text(errors="replace")
+    except OSError:
+        return False
+    home = next(
+        (line.partition("=")[2] for line in text.splitlines() if line.startswith("STST_HOME=")),
+        None,
+    )
+    if home is None:
+        return True  # not a launcher this tool wrote, so not its place to judge
+    return (Path(shlex.split(home)[0]) / "build" / "jar" / "stst.jar").is_file()
+
+
+def _which(executable: str, env: dict[str, str] | None = None) -> str | None:
+    """`executable` on PATH -- the one ENV gives, when the caller named an environment."""
+    if env and "PATH" in env:
+        return shutil.which(executable, path=env["PATH"])
+    return shutil.which(executable)
+
+
 def _cmake_package_path(
-    name: str, *, load_target: str | None = None, version: str | None = None
+    name: str,
+    *,
+    load_target: str | None = None,
+    version: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> str | None:
-    cmake = shutil.which("cmake")
+    cmake = _which("cmake", env)
     if not cmake:
         return None
     with tempfile.TemporaryDirectory(prefix="motion-spec-health-") as directory:
@@ -348,6 +531,7 @@ def _cmake_package_path(
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
+            env=env,
         ).returncode
         if configured:
             return None
@@ -355,8 +539,21 @@ def _cmake_package_path(
             return (build / "package").read_text().strip() or str(build)
         try:
             target = (build / "target").read_text().strip()
-            ctypes.CDLL(target)
         except (OSError, FileNotFoundError):
+            return None
+        if env is not None:
+            # ENV's LD_LIBRARY_PATH decides this, not ours.
+            loaded = subprocess.run(
+                [sys.executable, "-c", "import ctypes, sys; ctypes.CDLL(sys.argv[1])", target],
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            return target if loaded.returncode == 0 else None
+        try:
+            ctypes.CDLL(target)
+        except OSError:
             return None
         return target
 
@@ -383,13 +580,29 @@ def _named(package) -> tuple[str, str | None]:
     return package if isinstance(package, tuple) else (package, None)
 
 
-def check_health(profiles: tuple[str, ...], targets: tuple[str, ...] = ()) -> list[HealthCheck]:
-    """Check only the selected installation profiles and target-specific dependencies."""
+def check_health(
+    profiles: tuple[str, ...],
+    targets: tuple[str, ...] = (),
+    env: dict[str, str] | None = None,
+    on_progress=None,
+) -> list[HealthCheck]:
+    """Check only the selected installation profiles and target-specific dependencies.
+
+    ENV is the environment to check under; without it every probe answers for this process.
+    ON_PROGRESS is called with (done, dependency) before each probe: configuring a CMake
+    project takes seconds, and several of these do.
+    """
     selected = PROFILES if "all" in profiles else tuple(dict.fromkeys(("base", *profiles)))
     checks = []
+
+    def announce(dependency: str) -> None:
+        if on_progress:
+            on_progress(len(checks), dependency)
+
     for profile in selected:
         for module in PROFILE_IMPORTS.get(profile, ()):
-            path = _module_path(module)
+            announce(module)
+            path = _module_path(module, env)
             checks.append(
                 HealthCheck(
                     profile,
@@ -405,7 +618,8 @@ def check_health(profiles: tuple[str, ...], targets: tuple[str, ...] = ()) -> li
         if profile == "introspection":
             # The Python module reads a recorded run; the generated C++ writes one, and links
             # the C++ library to do it.
-            path = _cmake_package_path("Protobuf")
+            announce("Protobuf")
+            path = _cmake_package_path("Protobuf", env=env)
             checks.append(
                 HealthCheck(
                     profile,
@@ -419,22 +633,47 @@ def check_health(profiles: tuple[str, ...], targets: tuple[str, ...] = ()) -> li
     if "codegen" in selected:
         from motion_spec.setup import find_stst
 
-        path = find_stst()
+        announce("stst")
+        path = find_stst(path=env.get("PATH") if env else None)
+        runs = path is not None and _stst_jar(path)
         checks.append(
             HealthCheck(
-                "codegen", "stst", "executable", path, path is not None, "install STSTv4 on PATH"
+                "codegen",
+                "stst",
+                "executable" if runs else "executable, jar missing",
+                path,
+                runs,
+                "motion-spec setup stst --force" if path else _remedy("stst"),
             )
         )
         for executable in CODEGEN_EXECUTABLES:
-            path = shutil.which(executable)
+            announce(executable)
+            path = _which(executable, env)
             checks.append(
                 HealthCheck(
                     "codegen", executable, "executable", path, path is not None, _remedy(executable)
                 )
             )
     if "ros" in selected:
+        # First: every ROS row below is a consequence of it.
+        distro = active_ros_distro()
+        installed = installed_ros_distros()
+        checks.append(
+            HealthCheck(
+                "ros",
+                "ROS distribution",
+                "sourced" if distro else "installed" if installed else "not found",
+                str(ROS_ROOT / distro)
+                if distro
+                else ", ".join(str(ROS_ROOT / name) for name in installed) or None,
+                distro is not None,
+                ros_summary(),
+                optional=True,
+            )
+        )
         for module in ROS_IMPORTS:
-            path = _module_path(module)
+            announce(module)
+            path = _module_path(module, env)
             checks.append(
                 HealthCheck(
                     "ros",
@@ -447,7 +686,10 @@ def check_health(profiles: tuple[str, ...], targets: tuple[str, ...] = ()) -> li
                 )
             )
         for alternatives in ROS_ALTERNATIVES:
-            path = next((found for name in alternatives if (found := _module_path(name))), None)
+            announce(alternatives[0])
+            path = next(
+                (found for name in alternatives if (found := _module_path(name, env))), None
+            )
             checks.append(
                 HealthCheck(
                     "ros",
@@ -461,7 +703,8 @@ def check_health(profiles: tuple[str, ...], targets: tuple[str, ...] = ()) -> li
             )
         for package in ROS_BUILD_PACKAGES:
             name, version = _named(package)
-            path = _cmake_package_path(name, version=version)
+            announce(name)
+            path = _cmake_package_path(name, version=version, env=env)
             checks.append(
                 HealthCheck(
                     "ros",
@@ -475,7 +718,8 @@ def check_health(profiles: tuple[str, ...], targets: tuple[str, ...] = ()) -> li
             )
     if "build" in selected:
         for executable in ("cmake", "c++"):
-            path = shutil.which(executable)
+            announce(executable)
+            path = _which(executable, env)
             checks.append(
                 HealthCheck(
                     "build", executable, "executable", path, path is not None, _remedy(executable)
@@ -483,7 +727,8 @@ def check_health(profiles: tuple[str, ...], targets: tuple[str, ...] = ()) -> li
             )
         for package in GENERAL_BUILD_PACKAGES:
             name, version = _named(package)
-            path = _cmake_package_path(name, version=version)
+            announce(name)
+            path = _cmake_package_path(name, version=version, env=env)
             checks.append(
                 HealthCheck("build", name, "CMake package", path, path is not None, _remedy(name))
             )
@@ -495,7 +740,8 @@ def check_health(profiles: tuple[str, ...], targets: tuple[str, ...] = ()) -> li
                 continue
             for package in packages:
                 name, version = _named(package)
-                path = _cmake_package_path(name, version=version)
+                announce(name)
+                path = _cmake_package_path(name, version=version, env=env)
                 checks.append(
                     HealthCheck(
                         f"build[{target}]",
@@ -508,7 +754,8 @@ def check_health(profiles: tuple[str, ...], targets: tuple[str, ...] = ()) -> li
                     )
                 )
     if "runtime" in selected:
-        path = _cmake_package_path("coord2b", load_target="coord2b")
+        announce("coord2b")
+        path = _cmake_package_path("coord2b", load_target="coord2b", env=env)
         checks.append(
             HealthCheck(
                 "runtime", "coord2b", "shared library", path, path is not None, _remedy("coord2b")
@@ -527,7 +774,8 @@ def check_health(profiles: tuple[str, ...], targets: tuple[str, ...] = ()) -> li
         }
         for target in targets:
             for package, cmake_target in runtime_targets[target]:
-                path = _cmake_package_path(package, load_target=cmake_target)
+                announce(cmake_target)
+                path = _cmake_package_path(package, load_target=cmake_target, env=env)
                 checks.append(
                     HealthCheck(
                         f"runtime[{target}]",

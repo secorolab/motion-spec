@@ -18,26 +18,47 @@ for Contact-Rich Robotic Mobile-Manipulation Tasks*.
 
 ## Installation
 
-`motion-spec` is one package in a workspace. [grc_meta](https://github.com/secorolab/grc_meta)
-sets all of them up in one command, and that is the supported installation:
+`motion-spec` installs itself and everything it builds against — no second repository, no
+workspace tool:
 
 ```bash
 mkdir -p ws/src
-git clone git@github.com:secorolab/grc_meta.git ws/src/grc_meta
-ws/src/grc_meta/script-setup --check ws     # what is missing, changing nothing
-ws/src/grc_meta/script-setup ws             # import, build, verify
-source ws/setup-grc.bash                    # or .zsh
+git clone git@github.com:secorolab/motion-spec.git ws/src/motion-spec
+python3 -m venv ws/.venv && source ws/.venv/bin/activate
+pip install -e ws/src/motion-spec            # the CLI and the DSL compilers
+motion-spec install all                      # validation, recording, dashboard, replay
+motion-spec health                           # prints the one apt line for what is missing
+motion-spec setup --workspace ws             # STST and the C++ libraries, into ws/install
+source ws/setup-motion-spec.bash             # or .zsh, whichever setup wrote
 ```
 
-ROS is optional (`--no-ros`) and the robot hardware backends are off until asked for
-(`--with-hardware`). Full instructions, including the ROS-free build and the
-library-only install: **[Setup](https://secorolab.github.io/motion-spec/setup.html)**.
+`setup` clones each dependency at the version
+[`motion_spec.repos`](src/motion_spec/motion_spec.repos) pins into `WORKSPACE/src` as ordinary
+workspace packages (only STSTv4, which colcon cannot build, goes under `src/thirdparty` with a
+`COLCON_IGNORE`), builds it in
+`WORKSPACE/build` and installs it into `WORKSPACE/install`; run it again after the pin moves
+and only what changed is rebuilt. Name components to do fewer:
+`motion-spec setup stst mj_kdl_wrapper`. The workspace comes from `$MOTION_SPEC_WS` or
+`--workspace`, and naming neither is an error rather than a guess — nothing is ever installed
+into a location you did not choose. A source checkout that is already there is built only when
+it is clean and on the pinned commit, and otherwise reported and skipped rather than moved.
+One environment file is written to the workspace root, for the shell in force, putting the
+install prefix on `PATH`, `CMAKE_PREFIX_PATH` and `LD_LIBRARY_PATH` — which is how a generated
+controller finds its libraries. Anything `--clean` removes goes to the desktop trash, not away.
+
+`build`, `run`, `rerun` and `health` can source that file themselves — `--env <file>`, or
+`$MOTION_SPEC_ENV`, or the nearest one above the generation — and run every subprocess under
+what it left, so a ROS overlay reaches the build and the controller without a sourced shell.
+`--no-env` turns it off. A run archives the file it used and the variables a build depends on.
+
+ROS is optional, and the robot hardware drivers are not installed by `setup` — a model that
+binds none of them never needs them. Full instructions: **[Setup](https://secorolab.github.io/motion-spec/setup.html)**.
 
 ## Requirements
 
 | | |
 |---|---|
-| Python | 3.10+, with Click, RDFLib, rdf-utils, and Jinja |
+| Python | 3.11+, with Click, RDFLib, rdf-utils, and Jinja |
 | Authoring | motion-spec-dsl, coord-dsl, scene-dsl, textX |
 | Generation | STSTv4 (needs Git, a JDK, Ant) and `protoc` |
 | Build | CMake, a C++20 compiler, coord2b, Eigen, Orocos KDL, kdl_parser, toml++ |
@@ -46,13 +67,15 @@ library-only install: **[Setup](https://secorolab.github.io/motion-spec/setup.ht
 | ROS (optional) | rclcpp, realtime_tools, rosidl_runtime_py — only for a model that publishes a topic or drives an action |
 
 Orocos KDL must be the [secorolab fork](https://github.com/secorolab/orocos_kinematics_dynamics):
-generated controllers call the Vereshchagin solvers with fixed joints. The workspace packages
-come from `grc_meta`; the Robotiq and serial device drivers are optional and needed only by a
-model that binds them.
+generated controllers call the Vereshchagin solvers with fixed joints, which a distro
+`liborocos-kdl-dev` configures against and then fails to build. `motion-spec setup` installs
+that fork, kdl_parser, coord2b and mj_kdl_wrapper from source; Eigen, toml++ and urdfdom come
+from apt; the Robotiq and serial device drivers are needed only by a model that binds them.
 
 `motion-spec health` checks all of the above and, for anything missing, names what it is for
-and the command that installs it. Optional features install with `motion-spec install`, and
-the pinned STST with `motion-spec setup`.
+and the command that installs it — including which ROS distributions are installed under
+`/opt/ros` and whether one is sourced. Optional Python features install with
+`motion-spec install`, and the external tools and libraries with `motion-spec setup`.
 
 ## Documentation
 

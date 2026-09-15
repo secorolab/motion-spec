@@ -13,8 +13,12 @@ everything shown is read from the files the pipeline already writes.
    $ motion-spec dashboard --port 8090 --logs path/to/generations
    $ motion-spec dashboard -b               # detached; -k stops it, -r restarts
 
-``--logs`` names the generation root to browse (default ``$MOTION_SPEC_GEN``, else the working
-directory); ``--sources`` the model source root (default: the logs root's parent).
+``--logs`` names the generation root to browse (default ``$MOTION_SPEC_GEN``, else
+``$MOTION_SPEC_WS/generations``); ``--sources`` the model source root (default: the
+logs root's parent); ``--env`` the environment file health reports under (default:
+the nearest one above the logs root, ``--no-env`` for this shell). The Health page
+can switch between the workspace's environment files itself, and rechecks under the
+one chosen.
 
 The pages
 ---------

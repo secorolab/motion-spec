@@ -46,8 +46,9 @@ instead of copying them.
        contract/     schema, frame layout, and frame-log protocol
        provenance/   DSL, coordinate, and motion-spec provenance
      build/           reusable compiled controller
+     logs/            gen.log and build.log: what the DSL, stst and cmake said
      runs/<run-id>/
-       logs/          frame_log.pb and health information
+       logs/          frame_log.pb, console.log and health information
        runtime/       recovered runtime.ttl
        rec.ld.json    REC lifecycle and runtime artifact provenance
        manifest.json consumer-facing paths into the run and generation

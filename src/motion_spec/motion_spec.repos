@@ -1,0 +1,49 @@
+# The sources motion-spec builds against, pinned. vcstool's format, so the same file serves
+# both `motion-spec setup`, which reads it directly, and an import by hand:
+#
+#   vcs import ws/src < .../motion_spec/motion_spec.repos
+#
+# STSTv4 is ant-built and nothing colcon can identify, so it goes under thirdparty/, which
+# `setup` marks with a COLCON_IGNORE. The rest are ordinary workspace packages.
+# What each one is for, and how it is built, lives in setup.py's COMPONENTS.
+repositories:
+  motion-spec-dsl:
+    type: git
+    url: https://github.com/secorolab/motion-spec-dsl.git
+    version: dev
+  scene-dsl:
+    type: git
+    url: https://github.com/secorolab/scene-dsl.git
+    version: main
+  thirdparty/STSTv4:
+    type: git
+    url: https://github.com/jsnyders/STSTv4.git
+    version: e6152907c7f82aba7685c4f2630490968ffd6594
+  orocos_kinematics_dynamics:
+    type: git
+    url: https://github.com/secorolab/orocos_kinematics_dynamics.git
+    version: feature/achd_fixed_joint
+  kdl_parser:
+    type: git
+    url: https://github.com/secorolab/kdl_parser.git
+    version: main
+  coord2b:
+    type: git
+    url: https://github.com/rosym-project/coord2b.git
+    version: master
+  mj_kdl_wrapper:
+    type: git
+    url: https://github.com/vamsikalagaturu/mj_kdl_wrapper.git
+    version: v0.3.18
+  robif2b:
+    type: git
+    url: https://github.com/secorolab/robif2b.git
+    version: dev
+  serial:
+    type: git
+    url: https://github.com/secorolab/serial.git
+    version: noros
+  robotiq_driver_noros:
+    type: git
+    url: https://github.com/secorolab/robotiq_driver_noros.git
+    version: main

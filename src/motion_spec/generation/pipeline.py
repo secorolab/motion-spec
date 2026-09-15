@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 import urllib.parse
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,6 +16,8 @@ from pathlib import Path
 import rdflib
 
 from motion_spec_dsl.rdf_parser.vocab import APP
+
+from motion_spec.utils import generation_log, tee
 
 PROV = rdflib.Namespace("http://www.w3.org/ns/prov#")
 
@@ -185,19 +186,29 @@ def create_generation_dir(
     return generation.resolve()
 
 
-def generate_model(model: Path, generation: Path, *, stage: str = "code") -> Path:
-    """Generate MODEL through IR or C++ code and return its generated-artifact directory."""
+def generate_model(
+    model: Path, generation: Path, *, stage: str = "code", env: dict[str, str] | None = None
+) -> Path:
+    """Generate MODEL through IR or C++ code and return its generated-artifact directory.
+
+    ENV is the environment the caller resolved; codegen looks for `stst` along its PATH, so a
+    workspace tool is found rather than whatever this process happens to have first.
+    """
     from motion_spec_dsl.rdf_parser.check import validate_manifest
     from motion_spec.classes.base import DataclassJSONEncoder
     from motion_spec.rdf_parser.ir import generate_ir
 
     generated = generation / "generated"
     model_dir = generated / "model"
-    dsl = subprocess.run(
+    # Into the generation it is about, beside the run consoles: what the DSL said about this
+    # model belongs with this model's artifacts, not in the workspace's own record.
+    dsl_returncode = tee(
         ["textx", "generate", str(model.resolve()), "--target", "jsonld", "-o", str(model_dir)],
+        log=generation_log(generation, "gen"),
         cwd=model.parent,
+        check=False,
     )
-    if dsl.returncode:
+    if dsl_returncode:
         # The DSL already reported the offending line on stderr; don't bury it under an argv dump.
         raise RuntimeError(f"the DSL rejected {model.name}, see the error above")
     manifest = model_dir / f"{model.stem}-app.ld.json"
@@ -217,7 +228,7 @@ def generate_model(model: Path, generation: Path, *, stage: str = "code") -> Pat
         for artifact in (*model_dir.glob("*_fsm.hpp"), model_dir / "fsm_ir.json"):
             if artifact.is_file():
                 artifact.replace(controller_dir / artifact.name)
-        generate_code(ir_path, controller_dir, find_stst() or "stst")
+        generate_code(ir_path, controller_dir, find_stst((env or {}).get("PATH")) or "stst")
         # The solver chain is the scene's, so it is emitted from the scene graph (plan 013).
         from motion_spec.generation.scene_kdl import write_scene_kdl_header
         from motion_spec.rdf_parser.model import load_model
@@ -236,9 +247,16 @@ def generate_model(model: Path, generation: Path, *, stage: str = "code") -> Pat
 
 
 def build_generation(
-    generation: Path, *, prefixes: tuple[Path, ...] = (), jobs: int | None = None
+    generation: Path,
+    *,
+    prefixes: tuple[Path, ...] = (),
+    jobs: int | None = None,
+    env: dict[str, str] | None = None,
 ) -> Path:
-    """Configure and build GENERATION, returning the controller executable."""
+    """Configure and build GENERATION, returning the controller executable.
+
+    ENV is what both cmake invocations run under; None inherits this process's.
+    """
     controller = generation / "generated" / "controller"
     if not (controller / "CMakeLists.txt").is_file():
         raise RuntimeError(f"generated CMake project not found: {controller}")
@@ -251,17 +269,20 @@ def build_generation(
         str(build),
         "-DMOTION_SPEC_ENABLE_INTROSPECTION=ON",
         # CMake defaults to no build type, which compiles the control loop unoptimized.
-        f"-DCMAKE_BUILD_TYPE={os.environ.get('MOTION_SPEC_BUILD_TYPE', 'RelWithDebInfo')}",
+        # From ENV when there is one: a build type set by the sourced file is part of the
+        # environment the caller asked to build under.
+        f"-DCMAKE_BUILD_TYPE={(env or os.environ).get('MOTION_SPEC_BUILD_TYPE', 'RelWithDebInfo')}",
     ]
     if prefixes:
         configure.append(
             f"-DCMAKE_PREFIX_PATH={';'.join(str(path.resolve()) for path in prefixes)}"
         )
-    subprocess.run(configure, check=True)
+    log = generation_log(generation, "build")
+    tee(configure, log=log, env=env)
     command = ["cmake", "--build", str(build), "--parallel"]
     if jobs is not None:
         command.append(str(jobs))
-    subprocess.run(command, check=True)
+    tee(command, log=log, env=env)
     executable = build / "main"
     if not executable.is_file():
         raise RuntimeError(f"controller executable not found after build: {executable}")

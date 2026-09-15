@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import shutil
 import sys
@@ -35,6 +36,8 @@ from motion_spec.introspection.provenance import (
     record_frame_log_health,
     repositories,
 )
+
+log = logging.getLogger(__name__)
 
 PROV = rdflib.Namespace("http://www.w3.org/ns/prov#")
 
@@ -803,15 +806,37 @@ def _graph_source(path: Path) -> str:
     return str(Path(path).resolve())
 
 
-def _metamodels_root() -> Path:
+_warned_about_shapes = False
+
+
+def _shapes_missing() -> None:
+    """Say it once, not once per document the archive holds."""
+    global _warned_about_shapes
+
+    if _warned_about_shapes:
+        return
+    _warned_about_shapes = True
+    log.warning(
+        "no metamodels checkout: the archive's SHACL checks are skipped, everything else is "
+        "still checked; set METAMODELS_PATH to run them"
+    )
+
+
+def _metamodels_root() -> Path | None:
+    """The metamodels checkout the SHACL shapes live in, or None when there is none.
+
+    A checkout is a dev convenience; the shapes are not part of an installation, so a run is
+    archived without these checks rather than failed for want of them.
+    """
     root = metamodels_root()
-    if root is None or not (root / "prov.shacl.ttl").exists():
-        raise ArchiveError("could not locate metamodels/prov.shacl.ttl")
-    return root
+    return root if root is not None and (root / "prov.shacl.ttl").exists() else None
 
 
 def _validate_prov_shacl(path: Path) -> None:
     root = _metamodels_root()
+    if root is None:
+        _shapes_missing()
+        return
     conforms, _graph, text = validate(
         data_graph=_graph_source(path),
         shacl_graph=_graph_source(root / "prov.shacl.ttl"),
@@ -825,9 +850,10 @@ def _validate_prov_shacl(path: Path) -> None:
 
 def _validate_rec_shacl(path: Path) -> None:
     root = _metamodels_root()
+    if root is None or not (root / "rec" / "rec.shacl.ttl").exists():
+        _shapes_missing()
+        return
     shape = root / "rec" / "rec.shacl.ttl"
-    if not shape.exists():
-        raise ArchiveError(f"{shape}: missing REC SHACL shape")
     conforms, _graph, text = validate(
         data_graph=_graph_source(path),
         shacl_graph=_graph_source(shape),
@@ -845,10 +871,15 @@ def _validate_runtime_shacl(path: Path) -> None:
     # sensors update-rate, so its frequency shape comes from the metamodel that defines it
     # rather than being restated. The W3C prov shape is deliberately not loaded: it requires
     # every prov:used object to be a typed prov:Entity, and design IRIs are not.
+    if root is None:
+        _shapes_missing()
+        return
+    wanted = (root / "motion-spec" / "prov.shacl.ttl", root / "robot" / "sensors.shacl.ttl")
+    if not all(shape.exists() for shape in wanted):
+        _shapes_missing()
+        return
     shapes = rdflib.Graph()
-    for shape in (root / "motion-spec" / "prov.shacl.ttl", root / "robot" / "sensors.shacl.ttl"):
-        if not shape.exists():
-            raise ArchiveError(f"{shape}: missing runtime SHACL shape")
+    for shape in wanted:
         shapes.parse(_graph_source(shape), format="turtle")
     conforms, _graph, text = validate(
         data_graph=_graph_source(path),

@@ -319,10 +319,17 @@ def console_slice(log: Path, offset: int) -> dict:
 
 
 def console_log_for(path: Path) -> Path:
-    """Which terminal log a dashboard path means: a run's console, or a generation's runner log."""
-    if (path / LAYOUT_REL).is_file():
-        return path / RUN_LOG
-    return path / "logs" / "console.log"
+    """Which terminal log a dashboard path means.
+
+    A run directory keeps its own console. A generation has two: the dashboard's log of a run it
+    started, and the CLI's own console of generating and building it. The newest is the one that
+    says what just happened; without either, the name a run would have written.
+    """
+    if not (path / LAYOUT_REL).is_file():
+        return path / "logs" / "console.log"
+    candidates = (path / RUN_LOG, path / "logs" / "console.log")
+    written = [log for log in candidates if log.is_file()]
+    return max(written, key=lambda log: log.stat().st_mtime) if written else path / RUN_LOG
 
 
 GENERATING: dict[str, dict] = {}

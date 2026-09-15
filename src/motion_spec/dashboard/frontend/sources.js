@@ -59,23 +59,46 @@ function sourceTree(sources) {
   return root;
 }
 
-function renderSourceNode(node, name, depth, isRoot = false) {
+const FOLDS = "motion-spec.source-folds";
+
+// Only the folders the reader collapsed, so a new one arrives open and the list stays short.
+function collapsedFolders() {
+  try {
+    return new Set(JSON.parse(readStored(FOLDS, "[]")));
+  } catch {
+    return new Set();
+  }
+}
+
+function rememberFold(path, open) {
+  const collapsed = collapsedFolders();
+  if (open) collapsed.delete(path);
+  else collapsed.add(path);
+  writeStored(FOLDS, JSON.stringify([...collapsed]));
+}
+
+function renderSourceNode(node, name, depth, isRoot = false, path = "") {
   if (!isRoot) {
     const branch = document.createElement("details");
     branch.className = "source-node";
-    branch.open = true;
+    branch.open = !collapsedFolders().has(path);
+    branch.ontoggle = () => {
+      if (branch.dataset.openedByQuery === undefined) rememberFold(path, branch.open);
+    };
     branch.style.setProperty("--depth", depth);
     const summary = document.createElement("summary");
     summary.textContent = name;
     branch.append(summary);
-    branch.append(...renderSourceNode(node, "", depth + 1, true));
+    branch.append(...renderSourceNode(node, "", depth + 1, true, path));
     return [branch];
   }
   const children = [];
   [...node.folders]
     .sort(([left], [right]) => left.localeCompare(right))
     .forEach(([folder, child]) => {
-      children.push(...renderSourceNode(child, folder, depth));
+      children.push(
+        ...renderSourceNode(child, folder, depth, false, path ? `${path}/${folder}` : folder),
+      );
     });
   node.files
     .sort((left, right) => left.file.localeCompare(right.file))
@@ -127,7 +150,14 @@ export function filterSources(value) {
       (child) => child.matches(".source-leaf, .source-node") && !child.hidden,
     );
     node.hidden = !visible;
-    if (query && visible) node.open = true;
+    // Opened to show a match, not by the reader, so it must not outlive the query.
+    if (query && visible && !node.open) {
+      node.dataset.openedByQuery = "";
+      node.open = true;
+    } else if (!query && node.dataset.openedByQuery !== undefined) {
+      delete node.dataset.openedByQuery;
+      node.open = false;
+    }
   });
 }
 

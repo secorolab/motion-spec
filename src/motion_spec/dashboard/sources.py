@@ -14,7 +14,13 @@ from functools import lru_cache
 from pathlib import Path
 
 from motion_spec.dashboard import roots
-from motion_spec.dashboard.roots import AUTHORED, IGNORED, NOT_AUTHORED, relative_path
+from motion_spec.dashboard.roots import (
+    AUTHORED,
+    AUTHORED_NAMES,
+    IGNORED,
+    NOT_AUTHORED,
+    relative_path,
+)
 
 
 def browsable(path: Path) -> bool:
@@ -22,8 +28,10 @@ def browsable(path: Path) -> bool:
 
     One rule, not "a DSL file, or anything beside one": a directory only has to hold a single
     `.robmot` for that second rule to sweep in everything else living there, which at the top
-    of a workspace is the whole repository.
+    of a workspace is the whole repository. The environment file is named, not matched.
     """
+    if path.name in AUTHORED_NAMES:
+        return True
     return path.suffix in AUTHORED and path.name not in NOT_AUTHORED
 
 

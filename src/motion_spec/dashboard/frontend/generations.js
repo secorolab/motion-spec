@@ -306,6 +306,7 @@ export async function selectGeneration(path) {
   page.querySelector(".facts").innerHTML = factsMarkup(generation);
   page.querySelector(".source-files").replaceChildren(...sourceFileRows(generation, path));
   page.querySelector(".generated-files").replaceChildren(...generatedFileFolders(generation, path));
+  bindGenerationConsole(page, path);
   const setRuns = bindRunList(page, generation, runs);
   bindRunAgain(page, path, generation.cameras ?? [], generation.simulated);
   bindDevices(page, path, generation.simulated);
@@ -323,6 +324,25 @@ export async function selectGeneration(path) {
     setRuns,
   };
   $("#content").querySelector(".explore-link").onclick = () => showExplore(path).catch(snackError);
+}
+
+// What `gen` and `build` tee'd into the generation, or the dashboard's log of a run it started.
+// Read when the panel is opened: a log is thousands of lines nobody has asked to see.
+function bindGenerationConsole(page, path) {
+  const panel = page.querySelector(".generation-console");
+  const pre = panel.querySelector("pre");
+  panel.ontoggle = () => {
+    if (!panel.open || panel.dataset.loaded !== undefined) return;
+    panel.dataset.loaded = "";
+    consoleExcerpt(path, 500)
+      .then((loaded) => {
+        pre.replaceChildren(...loaded.childNodes);
+        if (!pre.textContent) pre.textContent = "no console log for this generation";
+      })
+      .catch(() => {
+        pre.textContent = "could not read the console log";
+      });
+  };
 }
 
 function factsMarkup(generation) {

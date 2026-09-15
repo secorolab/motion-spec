@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 
+from motion_spec.setup import ENVIRONMENT_FILES
+
 # Re-exported: the dashboard's callers ask roots for it, and it is the same removal every
 # other part of motion-spec uses.
 from motion_spec.utils import trash as trash
@@ -69,6 +71,10 @@ AUTHORED = (".robmot", ".fsm", ".scenex", ".scene", ".ktree", ".bdd", ".bddx", "
 
 # .toml belongs to the wider world too, so the tooling files that spell it are named here.
 NOT_AUTHORED = {"METADATA.toml", "netlify.toml", "pixi.toml", "pyproject.toml", "theme.toml"}
+
+# Not a DSL file and not a suffix worth admitting -- every .zsh in a workspace is not a source.
+# This one is: every build and run is launched under it, so what it says is part of the result.
+AUTHORED_NAMES = frozenset(ENVIRONMENT_FILES)
 
 
 def current_roots() -> dict:

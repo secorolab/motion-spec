@@ -213,11 +213,9 @@ def generation_details(path: Path) -> dict:
     details["folder"] = str(path)
     details["spec_name"] = Path(details["source"] or path.name).stem
     details["description"] = description.group(1) if description else None
-    # A generation vendors a copy of what it was built from; the tree lists the working file
-    # that copy came from. Name it here so the page can open the file that is still authored,
-    # not the snapshot -- and say nothing where the working tree no longer has one.
-    # Only the model needs the way back: it is what `gen` is pointed at again. The rest are
-    # its imports, kept here as the record of what this generation was built from.
+    # A generation vendors a copy of what it was built from. Only the model carries the way
+    # back to the working file, since that is what `gen` is pointed at again; the rest are its
+    # imports, and where the tree no longer has one this says nothing.
     model_dir = generation_model_dir(path)
     details["source_files"] = [
         {
@@ -238,9 +236,8 @@ def generation_details(path: Path) -> dict:
     return details
 
 
-# Generated output runs to megabytes -- a 13 MB ir.json handed to an editor locks the browser
-# -- so a large file arrives cut off and says so, rather than arriving whole and stopping the
-# page, or arriving cut and pretending to be the file.
+# A 13 MB ir.json handed to the editor locks the browser, so a larger file arrives cut off
+# and says so.
 GENERATED_MAX_BYTES = 2_000_000
 
 # Tab, newline and carriage return are the only control bytes text has any business carrying.

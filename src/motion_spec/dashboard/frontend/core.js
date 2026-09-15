@@ -2,71 +2,122 @@
 // SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 // Author: Vamsi Kalagaturu
 
-/**
- * Everything every view needs: the page's shared state, the server, and the small
- * feedback the whole dashboard speaks in.
- */
+/** Shared page state, the fetch wrappers, and the small feedback every view uses. */
 
 import { showEmpty } from "./components.js";
 
-export let plotKeys = 0;
+export const state = {
+  tab: "logs",
+  roots: {},
+  cache: {},
+  listRequest: 0,
+  restricted: false,
+  anchor: null,
+  selected: new Set(),
+  generationPath: null,
+  runPath: null,
+  replay: null,
+  frame: 0,
+  timer: null,
+  speed: 1,
+  spanOverlay: null,
+  live: null,
+  consoleWatch: null,
+  activeMotion: null,
+  autoPlot: null,
+  rosTopic: null,
+  charts: [],
+  livePlots: new Map(),
+  pendingSignals: new Set(),
+  liveBuffer: new Map(),
+  queries: [],
+  query: -1,
+};
+
+// The server answers these with 403 for a LAN viewer; hiding them here too keeps the reader
+// out of a dead end. The sources tab is reachable, and hides its write controls in sources.js.
+export const RESTRICTED_TABS = ["notebook", "health"];
+
+let plotKeys = 0;
 
 export const nextPlotKey = () => String(++plotKeys);
-
-export const state = { replay: null, queries: [], query: -1, anchor: null, runPath: null, generationPath: null, tab: "logs", frame: 0, charts: [], selected: new Set(), timer: null, roots: {}, cache: {}, listRequest: 0, live: null, speed: 1, consoleWatch: null, livePlots: new Map(), pendingSignals: new Set(), liveBuffer: new Map(), activeMotion: null, autoPlot: null, rosTopic: null, restricted: false, spanOverlay: null };
-
-// Tabs the server drops entirely with a 403 for a LAN viewer (Jupyter spawn, host diagnostics):
-// kept out of reach client-side too, rather than left to fail open. Sources stays reachable --
-// reading a model is allowed -- but its write affordances (save, open editor, terminal,
-// generate) are hidden separately in sources.js, since the read/write split happens within
-// that one tab rather than at the tab boundary.
-export const RESTRICTED_TABS = ["notebook", "health"];
 
 export const $ = (selector) => document.querySelector(selector);
 
 export const $$ = (selector) => [...document.querySelectorAll(selector)];
 
-export let snackTimer;
+let snackTimer;
 
 export function snack(message) {
-  $("#snack").textContent = message;
-  $("#snack").classList.add("visible");
+  const snackbar = $("#snack");
+  snackbar.textContent = message;
+  snackbar.classList.add("visible");
   clearTimeout(snackTimer);
-  snackTimer = setTimeout(() => $("#snack").classList.remove("visible"), 1400);
+  snackTimer = setTimeout(() => snackbar.classList.remove("visible"), 1400);
 }
+
+export const snackError = (error) => snack(error.message);
 
 export async function copyText(value) {
   await navigator.clipboard.writeText(value);
   snack("Copied path");
 }
 
-export async function api(path) {
-  const response = await fetch(path);
-  const data = await response.json();
-  // The status is what tells a refusal from a failure; the message alone cannot say which.
-  if (!response.ok) throw Object.assign(Error(data.error), data, { status: response.status });
-  return data;
-}
-
-export async function post(path, body) {
-  const response = await fetch(path, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+// A refusal is not a failure, so it must not say "could not load": nothing broke.
+export function showError(error) {
+  const refused = error.status === 403;
+  showEmpty({
+    eyebrow: refused ? "NOT ALLOWED" : "ERROR",
+    title: refused ? "This is not allowed here." : "Could not load data.",
+    detail: error.message,
   });
+}
+
+async function request(path, options) {
+  const response = await fetch(path, options);
   const data = await response.json();
-  // A refusal can carry what it found out; the message alone would throw that away.
   if (!response.ok) throw Object.assign(Error(data.error), data, { status: response.status });
   return data;
 }
 
-// A duration the run never timed reads as a dash: a graph carrying no tick rate cannot say.
+export const api = (path) => request(path);
+
+export const post = (path, body) =>
+  request(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+// A private window refuses storage; a preference nobody could save must not fail the page.
+export function readStored(key, fallback = null) {
+  try {
+    return localStorage.getItem(key) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export function writeStored(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // storage is unavailable
+  }
+}
+
 export const seconds = (value) =>
   value === null || value === undefined ? "—" : `${value.toFixed(2)} s`;
 
 export function stampText(iso) {
   if (!iso) return "unknown time";
   return new Date(iso).toLocaleString(undefined, {
-    day: "2-digit", month: "short", year: "numeric",
-    hour: "2-digit", minute: "2-digit", hour12: false,
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
   });
 }
 
@@ -80,9 +131,10 @@ export function askConfirm({ message, confirmLabel = "Confirm", require = "" }) 
   return new Promise((resolve) => {
     const dialog = document.createElement("dialog");
     dialog.className = "ask";
-    dialog.innerHTML = '<p></p><input class="ask-typed" hidden autocomplete="off" spellcheck="false">'
-      + '<div class="ask-actions"><button value="no">Cancel</button>'
-      + '<button value="yes" class="ask-yes"></button></div>';
+    dialog.innerHTML =
+      '<p></p><input class="ask-typed" hidden autocomplete="off" spellcheck="false">' +
+      '<div class="ask-actions"><button value="no">Cancel</button>' +
+      '<button value="yes" class="ask-yes"></button></div>';
     dialog.querySelector("p").textContent = message;
     const yes = dialog.querySelector(".ask-yes");
     const typed = dialog.querySelector(".ask-typed");
@@ -92,7 +144,9 @@ export function askConfirm({ message, confirmLabel = "Confirm", require = "" }) 
       typed.hidden = false;
       typed.placeholder = require;
       yes.disabled = true;
-      typed.oninput = () => { yes.disabled = !settled(); };
+      typed.oninput = () => {
+        yes.disabled = !settled();
+      };
     }
     dialog.querySelectorAll("button").forEach((button) => {
       button.onclick = () => dialog.close(button.value);
@@ -110,16 +164,5 @@ export function askConfirm({ message, confirmLabel = "Confirm", require = "" }) 
     document.body.append(dialog);
     dialog.showModal();
     (require ? typed : yes).focus();
-  });
-}
-
-// A refusal is not a failure: nothing broke and nothing was being loaded, so saying "could not
-// load" sends the reader looking for a fault that is not there.
-export function showError(error) {
-  const refused = error.status === 403;
-  showEmpty({
-    eyebrow: refused ? "NOT ALLOWED" : "ERROR",
-    title: refused ? "This is not allowed here." : "Could not load data.",
-    detail: error.message,
   });
 }

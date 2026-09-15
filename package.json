@@ -1,0 +1,10 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "format": "prettier --write \"src/motion_spec/dashboard/frontend/**/*.{js,css,html}\""
+  },
+  "devDependencies": {
+    "prettier": "3.3.3"
+  }
+}

@@ -10,7 +10,6 @@ their values, which would freeze whichever root was current at import time.
 from __future__ import annotations
 
 import json
-import os
 import re
 import subprocess
 import sys
@@ -19,11 +18,25 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 
+# Re-exported: the dashboard's callers ask roots for it, and it is the same removal every
+# other part of motion-spec uses.
+from motion_spec.utils import trash as trash
+
 GENERATION_DIR_ENV = "MOTION_SPEC_GEN"
 
 
 # Roots the dashboard browses, replaced at startup by `serve` and by /api/roots.
-GENERATIONS = Path(os.environ.get(GENERATION_DIR_ENV, "").strip() or Path.cwd())
+def _default_generations() -> Path:
+    """The root the CLI writes to, or the working directory: importing must not fail."""
+    from motion_spec.setup import generations_root
+
+    try:
+        return generations_root()
+    except RuntimeError:
+        return Path.cwd()
+
+
+GENERATIONS = _default_generations()
 
 
 WORKSPACE = GENERATIONS.parent
@@ -42,23 +55,31 @@ IGNORED = {
     "__pycache__",
     "test",
     "tests",
+    # What `motion-spec setup` checks out under src/: four third-party repositories, none of
+    # them anybody's authored model, and between them more files than the workspace itself.
+    "thirdparty",
 }
 
 
-# The DSL's own file types, plus .toml for the config a model names in its exec-context.
-# Listed by extension alone: "anything sitting beside a model" swept in the whole repository
-# as soon as one .robmot was left at the top of a workspace.
+# The DSL's own file types, plus .toml for the config a model names in its exec-context. By
+# extension alone: "anything beside a model" swept in a whole repository from one .robmot at
+# the top of a workspace.
 AUTHORED = (".robmot", ".fsm", ".scenex", ".scene", ".ktree", ".bdd", ".bddx", ".toml")
 
 
-# .toml is the one extension here that belongs to the wider world as much as to a model, so
-# the tooling files that spell it are named and dropped -- packaging, theming, site config.
+# .toml belongs to the wider world too, so the tooling files that spell it are named here.
 NOT_AUTHORED = {"METADATA.toml", "netlify.toml", "pixi.toml", "pyproject.toml", "theme.toml"}
 
 
 def current_roots() -> dict:
-    """Return the currently browsed source and generation roots."""
-    return {"sources": str(WORKSPACE), "logs": str(GENERATIONS)}
+    """Return the currently browsed source and generation roots, and what is serving them."""
+    from importlib import metadata
+
+    try:
+        version = metadata.version("motion_spec")
+    except metadata.PackageNotFoundError:
+        version = None
+    return {"sources": str(WORKSPACE), "logs": str(GENERATIONS), "version": version}
 
 
 def set_root(kind: str, value: str) -> dict:
@@ -78,30 +99,32 @@ def set_root(kind: str, value: str) -> dict:
     return current_roots()
 
 
-def pick_root(kind: str) -> dict:
-    """Open the host folder chooser and use its selected directory."""
-    initial = current_roots().get(kind)
-    if initial is None:
-        raise ValueError("unknown root")
+def choose(initial: str, *, directory: bool = True) -> str:
+    """The path the host chooser returns, starting at INITIAL."""
     result = subprocess.run(
-        ["zenity", "--file-selection", "--directory", "--filename", f"{initial}/"],
+        [
+            "zenity",
+            "--file-selection",
+            *(["--directory"] if directory else []),
+            "--filename",
+            initial,
+        ],
         check=False,
         capture_output=True,
         text=True,
         timeout=300,
     )
     if result.returncode:
-        raise ValueError("folder selection cancelled")
-    return set_root(kind, result.stdout.strip())
+        raise ValueError("selection cancelled")
+    return result.stdout.strip()
 
 
-def trash(path: Path) -> None:
-    """Move a path to the desktop trash. Nothing the dashboard removes should be unrecoverable."""
-    result = subprocess.run(
-        ["gio", "trash", "--", str(path)], check=False, capture_output=True, text=True
-    )
-    if result.returncode:
-        raise ValueError(f"could not move {path.name} to trash: {result.stderr.strip()}")
+def pick_root(kind: str) -> dict:
+    """Open the host folder chooser and use its selected directory."""
+    initial = current_roots().get(kind)
+    if initial is None:
+        raise ValueError("unknown root")
+    return set_root(kind, choose(f"{initial}/"))
 
 
 def relative_path(root: Path, value: str) -> Path:
@@ -123,9 +146,8 @@ def expected_path(root: Path, value: str) -> Path:
 def json_file(path: Path) -> dict:
     """One generated JSON document, parsed once per version of the file.
 
-    A contract is written once and read on every list, every poll and every page. Keying the
-    cache on the file's mtime and size means a regenerated file is read again and an unchanged
-    one is not -- these documents run to hundreds of kilobytes.
+    Keyed on mtime and size, so a regenerated file is read again and an unchanged one is not.
+    These run to hundreds of kilobytes and are read on every list, poll and page.
     """
     if not path.exists():
         return {}

@@ -16,3 +16,7 @@ dist/
 # uv lock — not used by CI or the other monorepo packages
 uv.lock
 generations/
+
+# npx fetches prettier on demand; nothing here is installed into the repo
+node_modules/
+package-lock.json

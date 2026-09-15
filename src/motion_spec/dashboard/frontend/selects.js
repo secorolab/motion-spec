@@ -15,37 +15,41 @@ const refresh = (control) => {
   const { select, button, menu } = control;
   button.textContent = select.selectedOptions[0]?.textContent ?? "Select";
   button.disabled = select.disabled;
-  menu.replaceChildren(...[...select.options].map((option, index) => {
-    const choice = document.createElement("button");
-    choice.type = "button";
-    choice.className = "theme-select-option";
-    choice.textContent = option.textContent;
-    choice.disabled = option.disabled;
-    choice.id = `${menu.id}-${index}`;
-    choice.setAttribute("role", "option");
-    choice.setAttribute("aria-selected", String(option.selected));
-    choice.onclick = () => {
-      select.value = option.value;
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-      close(control);
-      button.focus();
-    };
-    choice.onkeydown = (event) => {
-      const entries = choices(control);
-      const current = entries.indexOf(choice);
-      if (event.key === "Escape") return (close(control), button.focus());
-      if (event.key === "Home" || event.key === "End") {
-        event.preventDefault();
-        return entries[event.key === "Home" ? 0 : entries.length - 1]?.focus();
-      }
-      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-        event.preventDefault();
-        return entries[(current + (event.key === "ArrowDown" ? 1 : -1) + entries.length) % entries.length]?.focus();
-      }
-      if (event.key === "Tab") close(control);
-    };
-    return choice;
-  }));
+  menu.replaceChildren(
+    ...[...select.options].map((option, index) => {
+      const choice = document.createElement("button");
+      choice.type = "button";
+      choice.className = "theme-select-option";
+      choice.textContent = option.textContent;
+      choice.disabled = option.disabled;
+      choice.id = `${menu.id}-${index}`;
+      choice.setAttribute("role", "option");
+      choice.setAttribute("aria-selected", String(option.selected));
+      choice.onclick = () => {
+        select.value = option.value;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+        close(control);
+        button.focus();
+      };
+      choice.onkeydown = (event) => {
+        const entries = choices(control);
+        const current = entries.indexOf(choice);
+        if (event.key === "Escape") return close(control), button.focus();
+        if (event.key === "Home" || event.key === "End") {
+          event.preventDefault();
+          return entries[event.key === "Home" ? 0 : entries.length - 1]?.focus();
+        }
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          return entries[
+            (current + (event.key === "ArrowDown" ? 1 : -1) + entries.length) % entries.length
+          ]?.focus();
+        }
+        if (event.key === "Tab") close(control);
+      };
+      return choice;
+    }),
+  );
 };
 
 export const enhanceSelect = (select) => {
@@ -77,7 +81,9 @@ export const enhanceSelect = (select) => {
     if (!opening) return;
     shell.classList.add("open");
     button.setAttribute("aria-expanded", "true");
-    choices(control).find((entry) => entry.getAttribute("aria-selected") === "true")?.focus();
+    choices(control)
+      .find((entry) => entry.getAttribute("aria-selected") === "true")
+      ?.focus();
   };
   button.onkeydown = (event) => {
     if (event.key === "Escape") return close(control);
@@ -95,13 +101,16 @@ export const enhanceSelect = (select) => {
 export const installSelectTheme = () => {
   document.querySelectorAll("select").forEach(enhanceSelect);
   new MutationObserver((changes) => {
-    changes.forEach((change) => change.addedNodes.forEach((node) => {
-      if (node.nodeType !== Node.ELEMENT_NODE) return;
-      if (node.matches("select")) enhanceSelect(node);
-      node.querySelectorAll?.("select").forEach(enhanceSelect);
-    }));
+    changes.forEach((change) =>
+      change.addedNodes.forEach((node) => {
+        if (node.nodeType !== Node.ELEMENT_NODE) return;
+        if (node.matches("select")) enhanceSelect(node);
+        node.querySelectorAll?.("select").forEach(enhanceSelect);
+      }),
+    );
   }).observe(document.body, { childList: true, subtree: true });
   document.addEventListener("click", (event) => {
-    if (!event.target.closest(".theme-select")) document.querySelectorAll(".theme-select.open").forEach((entry) => close(entry.control));
+    if (!event.target.closest(".theme-select"))
+      document.querySelectorAll(".theme-select.open").forEach((entry) => close(entry.control));
   });
 };

@@ -10,6 +10,7 @@ import re
 import shlex
 import shutil
 import subprocess
+from functools import lru_cache
 from pathlib import Path
 
 from motion_spec.dashboard import roots
@@ -276,11 +277,14 @@ TERMINAL_ARGS = {
 }
 
 
+@lru_cache(maxsize=1)
 def terminal() -> tuple[str, list[str]] | None:
     """The desktop's terminal and the argv that runs a command in a new window.
 
     $TERMINAL, then the freedesktop and Debian pointers at the user's chosen terminal, and
     only then a known one off PATH -- picking a favourite here would override their default.
+
+    Cached: this is a dozen PATH lookups, and /api/source asks on every file opened.
     """
     override = os.environ.get("TERMINAL")
     for name in (override, "xdg-terminal-exec", "x-terminal-emulator", *TERMINAL_ARGS):
@@ -291,12 +295,8 @@ def terminal() -> tuple[str, list[str]] | None:
     return None
 
 
-def editors() -> dict[str, list[str]]:
-    """Every editor that can open a source file here, as name -> argv prefix.
-
-    MS_DASHBOARD_EDITOR is always offered; terminal editors only when a terminal exists to
-    host them, since the server has none of its own.
-    """
+@lru_cache(maxsize=1)
+def _editors() -> dict[str, list[str]]:
     host = terminal()
     found = {}
     if host:
@@ -307,6 +307,16 @@ def editors() -> dict[str, list[str]]:
         argv = shlex.split(override)
         found[Path(argv[0]).name] = argv
     return found or {"xdg-open": ["xdg-open"]}
+
+
+def editors() -> dict[str, list[str]]:
+    """Every editor that can open a source file here, as name -> argv prefix.
+
+    MS_DASHBOARD_EDITOR is always offered; terminal editors only when a terminal exists to
+    host them, since the server has none of its own. Copied out of the cache, so a caller
+    that edits what it gets back cannot change what the next one sees.
+    """
+    return dict(_editors())
 
 
 def open_terminal(value: str) -> dict:

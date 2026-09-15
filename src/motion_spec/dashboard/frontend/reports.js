@@ -2,22 +2,21 @@
 // SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 
 /**
- * A run measured against itself and against another: this run's timeline beside a second run's,
- * then what its signals did -- coherent oscillation, contact, torque saturation.
- *
- * The three signal reports are one request -- the server sweeps the log once -- and it is made
- * when the tab is first opened rather than with the page, because a finished log is ~160 MB.
- * Compare reads graphs instead, and opens no log at all.
+ * A run measured against itself and against another: oscillation, contact, torque saturation,
+ * and a second run's timeline beside this one's. The three signal reports are one request --
+ * the server sweeps the log once -- made when the tab opens, because a finished log is ~160 MB.
  */
 
 import { $, api, seconds, stampText, state } from "./core.js";
 import { jumpToFinding } from "./run.js";
 
-const num = (value, digits = 3) => (value ?? null) === null ? "—" : value.toFixed(digits);
+const num = (value, digits = 3) => ((value ?? null) === null ? "—" : value.toFixed(digits));
 const exp = (value) => ((value ?? null) === null ? "—" : value.toExponential(2));
 
 const signed = (value) =>
-  value === null || value === undefined ? "—" : `${value >= 0 ? "+" : "−"}${Math.abs(value).toFixed(2)} s`;
+  value === null || value === undefined
+    ? "—"
+    : `${value >= 0 ? "+" : "−"}${Math.abs(value).toFixed(2)} s`;
 
 const REPORTS = [
   {
@@ -31,14 +30,15 @@ const REPORTS = [
       `${row.agreeing} of ${row.joints}`,
       exp(row.mean_amplitude),
     ],
-    // Coherence is the finding: one state where several joints agree says more than the
-    // largest amplitude anywhere, which a motion's own sweep would win every time.
+    // Coherence is the finding, not amplitude: a motion's own sweep wins on amplitude anyway.
     summary: (rows) => {
       const found = rows.filter((row) => row.mode_hz !== null);
       if (!found.length) return `no coherent mode in ${rows.length} states`;
       const worst = found.reduce((a, b) => (b.mean_amplitude > a.mean_amplitude ? b : a));
-      return `${worst.state_id} — coherent ${worst.mode_hz.toFixed(2)} Hz across `
-        + `${worst.agreeing} of ${worst.joints} joints (mean ${exp(worst.mean_amplitude)})`;
+      return (
+        `${worst.state_id} — coherent ${worst.mode_hz.toFixed(2)} Hz across ` +
+        `${worst.agreeing} of ${worst.joints} joints (mean ${exp(worst.mean_amplitude)})`
+      );
     },
   },
   {
@@ -57,8 +57,10 @@ const REPORTS = [
     summary: (rows) => {
       const worst = rows.reduce((a, b) => (b.peak_n > a.peak_n ? b : a));
       const band = worst.band === null ? "" : ` vs band ${num(worst.band)}`;
-      return `${worst.state_id} — peak ${num(worst.peak_n, 1)} N, rebound ${num(worst.rebound)} m/s`
-        + `, ripple ${num(worst.ripple, 4)}${band}`;
+      return (
+        `${worst.state_id} — peak ${num(worst.peak_n, 1)} N, rebound ${num(worst.rebound)} m/s` +
+        `, ripple ${num(worst.ripple, 4)}${band}`
+      );
     },
   },
   {
@@ -75,8 +77,10 @@ const REPORTS = [
     ],
     summary: (rows) => {
       const worst = rows.reduce((a, b) => (b.ticks > a.ticks ? b : a));
-      return `joint_${worst.joint} tau — ${worst.ticks} ticks clipped at `
-        + `${num(worst.limit_nm, 1)} Nm (${worst.states.join(", ")})`;
+      return (
+        `joint_${worst.joint} tau — ${worst.ticks} ticks clipped at ` +
+        `${num(worst.limit_nm, 1)} Nm (${worst.states.join(", ")})`
+      );
     },
   },
 ];
@@ -103,8 +107,7 @@ function table(headers, rows) {
   return node;
 }
 
-// Every report on this page folds the same way: a title, what it found in one line, and the
-// table behind it. Compare included -- it is a report the reader asked for by picking a run.
+// Every report folds the same way: a title, what it found in one line, the table behind it.
 function section(title, note, body) {
   const box = document.createElement("details");
   box.className = "report";
@@ -119,13 +122,20 @@ function section(title, note, body) {
   return box;
 }
 
-function signalReport(report, rows) {
+// label -> the frame its state was first entered, so a report row is not a scan of the log.
+function stateFrames() {
+  const frames = new Map();
+  for (const event of state.replay.events) {
+    if (event.kind === "state" && !frames.has(event.label)) frames.set(event.label, event.frame);
+  }
+  return frames;
+}
+
+function signalReport(report, rows, frames) {
   const cells = rows.map((row) => {
     const values = report.cells(row);
-    const stateId = row.state_id ?? row.states?.[0];
-    const event = state.replay.events.find((event) => event.kind === "state" && event.label === stateId);
-    if (event) values.push(jumpLink("Open motion", event.frame));
-    else values.push("—");
+    const frame = frames.get(row.state_id ?? row.states?.[0]);
+    values.push(frame === undefined ? "—" : jumpLink("Open motion", frame));
     return values;
   });
   return section(
@@ -145,41 +155,95 @@ function jumpLink(label, frame, motion = null, constraint = null) {
 }
 
 function renderCompare(data, rightPath) {
-  const rows = data.activities.map((row) =>
-    [row.name, seconds(row.left_s), seconds(row.right_s), signed(row.delta_s)]);
+  const rows = data.activities.map((row) => [
+    row.name,
+    seconds(row.left_s),
+    seconds(row.right_s),
+    signed(row.delta_s),
+  ]);
   const note = [
     `against ${rightPath.split("/").pop()}`,
     data.same_model ? "" : "different models — aligned where they align",
-  ].filter(Boolean).join(" · ");
+  ]
+    .filter(Boolean)
+    .join(" · ");
   const box = section("compare", note, table(["activity", "this run", "other run", "delta"], rows));
-  box.open = true;   // picking a run is the ask; folding the answer away would undo it
+  box.open = true; // picking a run is the ask; folding the answer away would undo it
   return box;
 }
 
 // Reached, held, fired, left: the four questions asked of every motion after a run.
 function renderVerdict(data) {
-  const at = (frame) => (frame === null || frame === undefined ? "—" : seconds(frame * data.period_s));
+  const at = (frame) =>
+    frame === null || frame === undefined ? "—" : seconds(frame * data.period_s);
   const rows = [];
   data.motions.forEach((motion) => {
     motion.constraints.forEach((row) => {
-      const held = row.kind === "goal" && row.active ? `${Math.round((100 * row.satisfied) / row.active)} %` : "—";
-      const reached = row.kind === "goal" ? jumpLink(row.first_satisfied === null ? "never — inspect motion" : at(row.first_satisfied - motion.window[0]), row.first_satisfied ?? motion.window[0], motion.motion, row.id) : "—";
-      const fired = row.kind === "monitor" ? jumpLink(row.fired === null ? "never — inspect motion" : at(row.fired - motion.window[0]), row.fired ?? motion.window[0], motion.motion, row.id) : "—";
-      rows.push([motion.motion, row.id, row.kind, reached, held, row.kind === "goal" ? String(row.losses) : "—", fired]);
+      const held =
+        row.kind === "goal" && row.active
+          ? `${Math.round((100 * row.satisfied) / row.active)} %`
+          : "—";
+      const reached =
+        row.kind === "goal"
+          ? jumpLink(
+              row.first_satisfied === null
+                ? "never — inspect motion"
+                : at(row.first_satisfied - motion.window[0]),
+              row.first_satisfied ?? motion.window[0],
+              motion.motion,
+              row.id,
+            )
+          : "—";
+      const fired =
+        row.kind === "monitor"
+          ? jumpLink(
+              row.fired === null ? "never — inspect motion" : at(row.fired - motion.window[0]),
+              row.fired ?? motion.window[0],
+              motion.motion,
+              row.id,
+            )
+          : "—";
+      rows.push([
+        motion.motion,
+        row.id,
+        row.kind,
+        reached,
+        held,
+        row.kind === "goal" ? String(row.losses) : "—",
+        fired,
+      ]);
     });
-    motion.exits.forEach((exit) => rows.push([
-      motion.motion, "→ " + exit.to_state, "exit", jumpLink(at(exit.frame - motion.window[0]), exit.frame), "—", "—",
-      [...exit.events, ...exit.monitors].join(", ") || "—",
-    ]));
+    motion.exits.forEach((exit) =>
+      rows.push([
+        motion.motion,
+        "→ " + exit.to_state,
+        "exit",
+        jumpLink(at(exit.frame - motion.window[0]), exit.frame),
+        "—",
+        "—",
+        [...exit.events, ...exit.monitors].join(", ") || "—",
+      ]),
+    );
   });
-  const goals = data.motions.flatMap((motion) => motion.constraints.filter((row) => row.kind === "goal"));
+  const goals = data.motions.flatMap((motion) =>
+    motion.constraints.filter((row) => row.kind === "goal"),
+  );
   const unreached = goals.filter((row) => row.first_satisfied === null).length;
   const lost = goals.filter((row) => row.losses > 0).length;
-  const note = !goals.length ? "no goal constraints recorded"
-    : `${goals.length - unreached} of ${goals.length} goals reached` + (lost ? `, ${lost} lost after reaching` : "");
-  const box = section("verdict", note, rows.length
-    ? table(["motion", "constraint", "kind", "reached / left at", "held", "lost", "fired / via"], rows)
-    : null);
+  const note = !goals.length
+    ? "no goal constraints recorded"
+    : `${goals.length - unreached} of ${goals.length} goals reached` +
+      (lost ? `, ${lost} lost after reaching` : "");
+  const box = section(
+    "verdict",
+    note,
+    rows.length
+      ? table(
+          ["motion", "constraint", "kind", "reached / left at", "held", "lost", "fired / via"],
+          rows,
+        )
+      : null,
+  );
   box.open = true;
   return box;
 }
@@ -192,13 +256,26 @@ async function renderComparePicker(panel) {
     api(`/api/baseline?path=${encodeURIComponent(runPath)}`),
   ]);
   picker.replaceChildren(new Option("compare with…", ""));
-  runs.filter((run) => run.path !== state.runPath)
+  runs
+    .filter((run) => run.path !== state.runPath)
     .sort((a, b) => Number(b.path === reference.baseline) - Number(a.path === reference.baseline))
-    .forEach((run) => picker.append(new Option([
-      run.path === reference.baseline ? "★ Baseline" : null,
-      run.generation_label || run.path.split("/runs/")[0], run.label || run.id,
-      stampText(run.started), run.status, ...run.tags,
-    ].filter(Boolean).join(" · "), run.path)));
+    .forEach((run) =>
+      picker.append(
+        new Option(
+          [
+            run.path === reference.baseline ? "★ Baseline" : null,
+            run.generation_label || run.path.split("/runs/")[0],
+            run.label || run.id,
+            stampText(run.started),
+            run.status,
+            ...run.tags,
+          ]
+            .filter(Boolean)
+            .join(" · "),
+          run.path,
+        ),
+      ),
+    );
   let request = 0;
   picker.onchange = async () => {
     const ticket = ++request;
@@ -208,14 +285,26 @@ async function renderComparePicker(panel) {
     if (!other) return;
     slot.textContent = "Comparing…";
     try {
-      const data = await api(`/api/run/compare?left=${encodeURIComponent(runPath)}&right=${encodeURIComponent(other)}`);
-      if (ticket === request && state.runPath === runPath) slot.replaceChildren(renderCompare(data, other));
-    } catch (error) { if (ticket === request) slot.textContent = error.message; }
+      const data = await api(
+        `/api/run/compare?left=${encodeURIComponent(runPath)}&right=${encodeURIComponent(other)}`,
+      );
+      if (ticket === request && state.runPath === runPath)
+        slot.replaceChildren(renderCompare(data, other));
+    } catch (error) {
+      if (ticket === request) slot.textContent = error.message;
+    }
   };
-  if (reference.baseline && reference.baseline !== runPath && runs.some((run) => run.path === reference.baseline)) {
+  if (
+    reference.baseline &&
+    reference.baseline !== runPath &&
+    runs.some((run) => run.path === reference.baseline)
+  ) {
     const button = document.createElement("button");
     button.textContent = "Compare against baseline";
-    button.onclick = () => { picker.value = reference.baseline; picker.onchange(); };
+    button.onclick = () => {
+      picker.value = reference.baseline;
+      picker.onchange();
+    };
     picker.after(button);
   }
 }
@@ -227,11 +316,12 @@ export async function showReports(runPath) {
   const panel = $("#panel-reports");
   if (!panel || panel.dataset.run === runPath) return;
   panel.dataset.run = runPath;
-  panel.innerHTML = '<div class="compare-bar"><select class="compare-pick"></select></div>'
-    + '<div class="compare-slot"></div>';
-  // The picker is one cheap listing, so it is usable while the log sweep below it runs.
+  panel.innerHTML =
+    '<div class="compare-bar"><select class="compare-pick"></select></div>' +
+    '<div class="compare-slot"></div>';
+  // Ordered by cost: the picker is one cheap listing and the verdict a graph read, so both are
+  // usable while the log sweep below them runs.
   await renderComparePicker(panel);
-  // The verdict comes off the marker scan the page already ran, so it lands before the sweep.
   try {
     panel.append(renderVerdict(await api(`/api/run/verdict?path=${encodeURIComponent(runPath)}`)));
   } catch (error) {
@@ -242,13 +332,16 @@ export async function showReports(runPath) {
   try {
     data = await api(`/api/reports?path=${encodeURIComponent(runPath)}`);
   } catch (error) {
-    panel.dataset.run = "";   // so reopening the tab tries the sweep again
+    panel.dataset.run = ""; // so reopening the tab tries the sweep again
     panel.lastElementChild.replaceWith(holding(error.message));
     return;
   }
-  // A period the header never carried is a guess, and durations built on it say so.
-  const clock = holding(`control period ${(data.period_s * 1e3).toFixed(3)} ms`
-    + (data.period_exact ? "" : " (assumed — this archive records no period)"));
+  // A period the header never carried is a guess, so the line says so.
+  const clock = holding(
+    `control period ${(data.period_s * 1e3).toFixed(3)} ms` +
+      (data.period_exact ? "" : " (assumed — this archive records no period)"),
+  );
   panel.lastElementChild.replaceWith(clock);
-  panel.append(...REPORTS.map((report) => signalReport(report, data[report.key])));
+  const frames = stateFrames();
+  panel.append(...REPORTS.map((report) => signalReport(report, data[report.key], frames)));
 }

@@ -39,10 +39,12 @@ from motion_spec.dashboard.jobs import (
     generate_console,
     generate_status,
     health_report,
+    pick_environment,
     run_status,
     start_generate,
     start_run,
     stop_run,
+    use_environment,
 )
 from motion_spec.dashboard.live import live_state, run_control
 from motion_spec.dashboard.metadata import (
@@ -72,7 +74,6 @@ from motion_spec.dashboard.replay import plot_data, replay_data, run_verdict
 from motion_spec.dashboard.roots import (
     FRONTEND,
     GENERATION_DIR_ENV,
-    LAYOUT_REL,
     current_roots,
     directory_size,
     expected_path,
@@ -94,18 +95,16 @@ from motion_spec.dashboard.sources import (
     source_path,
 )
 from motion_spec.devices import probe_devices
-from motion_spec.introspection import frame_log_pb
 from motion_spec.introspection.lifecycle_events import socket_path
 
 LIFECYCLE = None
 
-# Off the loopback interface, the dashboard is someone else's browser on the network: it may
-# watch and replay, and drive a simulation, but never delete, touch sources, or reach a real
-# robot. Local access (127.0.0.1) is unrestricted regardless of LAN_MODE.
+# A network viewer may watch, replay and drive a simulation, but never delete, touch sources
+# or reach a real robot. 127.0.0.1 is unrestricted whatever this says.
 LAN_MODE = False
 
-# Naming the restriction and the way past it: the reader is most often the person who started
-# the server, on the machine that started it, having reached it by its network address.
+# The reader is most often the person who started the server, reaching it by its LAN address,
+# so the refusal names the way past it.
 LAN_REFUSED = (
     "This dashboard is shared on the network (started with --lan), and deleting, editing "
     "sources and driving real hardware stay on the machine it runs on. "
@@ -306,6 +305,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return self.send_json(trash_entries())
             if parsed.path == "/api/pick-root":
                 return self.send_json(pick_root(query.get("kind", [""])[0]))
+            if parsed.path == "/api/pick-env":
+                return self.send_json(pick_environment())
             if parsed.path == "/api/generations":
                 return self.send_json(
                     [
@@ -324,8 +325,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     return self.send_json(drift_summary(generation))
                 return self.send_json(source_drift(generation, file or None))
             if parsed.path == "/api/generation-graph":
-                # The whole model graph, imports followed -- not the picked files, which cut
-                # the graph at file boundaries the model does not have.
+                # The whole model graph, imports followed: the model has no file boundaries.
                 return self.send_json(
                     provenance_graph(generation_graph(relative_path(roots.GENERATIONS, value)))
                 )
@@ -381,6 +381,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/devices":
                 return self.send_json(probe_devices(relative_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/health":
+                if "env" in query:
+                    return self.send_json(use_environment(query.get("env", [""])[0]))
                 return self.send_json(health_report(bool(query.get("refresh", [""])[0])))
             if parsed.path == "/api/generate":
                 return self.send_json(generate_status(query.get("job", [""])[0]))
@@ -404,8 +406,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/replay":
                 return self.send_json(replay_data(expected_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/reports":
-                # All three reports off one sweep: three passes over a 160 MB log is the cost
-                # that would matter, so the route asks for them together or not at all.
+                # All three off one sweep: three passes over a 160 MB log is what would cost.
                 return self.send_json(run_reports(relative_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/plot":
                 bounds = query.get("window", [])
@@ -427,8 +428,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
         except ValueError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
-        # Any failure answers as an API error: a handler that dies silently closes the
-        # connection instead, and the client sees nothing to report.
+        # A handler that dies instead closes the connection, leaving the page nothing to report.
         except Exception as exc:  # noqa: BLE001
             self.send_json(self._failed(exc), HTTPStatus.INTERNAL_SERVER_ERROR)
 
@@ -483,8 +483,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     raise ValueError("only simulated generations can be started from the network")
                 options = body.get("options") or {}
                 if remote:
-                    # The GUI would open on this machine's display, not the LAN viewer's --
-                    # nothing there to watch it, and nothing here to stop it. Headless only.
+                    # The GUI would open on this machine's display, with nobody there to close it.
                     options = {**options, "headless": True}
                 with LOCK:
                     return self.send_json(start_run(target, options))
@@ -545,8 +544,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 ]
                 for target in targets:
                     trash(target)
-            # a model folder emptied of its generations is no longer a model folder, and a
-            # generation nested under its own name empties two folders, not one
+            # A model folder emptied of its generations is no longer a model folder, and a
+            # generation nested under its own name empties two folders, not one.
             folders = 0
             for target in targets:
                 folder = target.parent
@@ -613,13 +612,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         site = self.headers.get("Sec-Fetch-Site")
         return site is None or site in ("same-origin", "none")
 
-    @staticmethod
-    def _deletable(path: Path) -> bool:
-        return (path / LAYOUT_REL).exists() or (
-            path.parent.name == "runs"
-            and frame_log_pb.log_path(path / "logs/frame_log.pb").exists()
-        )
-
 
 def _lan_ip() -> str | None:
     """This machine's LAN address, found the way you'd find your own outbound route."""
@@ -673,7 +665,10 @@ def main() -> None:
         action="store_true",
         help="reachable from the network: replay and simulated runs only, no delete or source access",
     )
+    parser.add_argument("--env", help="environment file to report health under")
     args = parser.parse_args()
+    if args.env:
+        use_environment(args.env)
     serve(args.port, args.logs, args.sources, args.lan)
 
 

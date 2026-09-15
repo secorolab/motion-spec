@@ -39,8 +39,8 @@ def run_seconds(step: int, header) -> float:
     return step * period_seconds(header)
 
 
-# The frame says what was active as an FSM state index. A behaviour-tree target is coming and
-# will carry its own field; scoping goes through these two so that is one edit, not a sweep.
+# The frame says what was active as an FSM state index. Scoping goes through these two, so a
+# behaviour-tree target with a field of its own is one edit rather than a sweep.
 def _scope(frame) -> int:
     return frame.fsm_state
 
@@ -239,8 +239,7 @@ def _values(series, name, span):
     return [value for value in _slice(series, name, span) if value is not None]
 
 
-# The slowest band a spectrum is probed at; a span too short to hold two of its cycles has
-# no spectrum to take.
+# The slowest band probed; a span too short for two of its cycles has no spectrum to take.
 SPECTRUM_FLOOR_HZ = 0.5
 
 

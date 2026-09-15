@@ -253,9 +253,9 @@ def live_state(run_dir: Path, signals=()) -> dict:
     names = tuple(signals)
     plot = None
     if names and live:
-        # Only a cursor being created skips to the ring's end: history is the page's /api/plot
-        # backfill. The cursor counts samples, not names, so a signal set that changes mid-run
-        # -- a motion entering opens new charts -- keeps every sample since the last poll.
+        # Only a new cursor skips to the ring's end; /api/plot is where history comes from.
+        # The cursor counts samples, not names, so a signal set that changes mid-run keeps
+        # every sample taken since the last poll.
         if session["cursor"] is None:
             session["cursor"] = sampler.taken
         new, session["cursor"] = sampler.since(session["cursor"])
@@ -271,10 +271,9 @@ def live_state(run_dir: Path, signals=()) -> dict:
     frame = sampler.frame if live else session["frame"]
     t = sampler.t if live else session.get("t")
     motion = sampler.motion if live else session["motion"]
-    # Markers come off the log, which keeps every tick: the sampled block misses any trigger or
-    # satisfied edge that falls between two samples. The scan is incremental, so a poll pays
-    # for the frames written since the last one, not the run so far. A run whose log has
-    # nothing yet -- or records nothing at all -- falls back to what the block said.
+    # Markers come off the log, which keeps every tick, while the sampled block misses any
+    # edge falling between two samples. The scan is incremental, so a poll pays for the frames
+    # written since the last one. A run with no log yet falls back to what the block said.
     try:
         events = list(log_events(log, contract)["events"])
     except OSError:

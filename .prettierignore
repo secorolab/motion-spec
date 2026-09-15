@@ -1,0 +1,3 @@
+# Vendored libraries are mirrored by scripts/vendor_frontend.py and pinned to their upstream
+# versions: reformatting them would make every future mirror a diff.
+src/motion_spec/dashboard/frontend/vendor/

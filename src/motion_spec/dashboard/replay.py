@@ -66,8 +66,8 @@ def authored_key(slot, motion, name: str) -> tuple[str, str]:
     slot serves. A name alone does not: one authored in several motions -- an elbow held
     everywhere -- would otherwise take the first motion's line for all of them.
     """
-    # A generated conjunction has no motion of its own in its IRI, but what it watches does:
-    # it is the motion's `until`, so it belongs in that motion, not in a block beside it.
+    # A generated conjunction has no motion in its own IRI, but it is a motion's `until`, so
+    # what it watches says where it belongs.
     for iri in (slot.constraint_iri, *(member.iri for member in slot.watched)):
         segments = PurePosixPath(urlparse(iri or "").path).parts
         if len(segments) >= 3 and segments[-2] in ("while", "until", "when"):
@@ -98,8 +98,7 @@ def _constraint_row(motion, kind: str, group: list, constants: dict, authored: d
         "evaluator": evaluator or first.iri or first.id or None,
         "between": compared,
         "tracking": [value for value in compared if value not in constants],
-        # An aggregate monitor's scalar says only that every member holds; each member says why,
-        # and they are not one plot: a velocity and a distance share no axis.
+        # A velocity and a distance share no axis, so each member gets a plot of its own.
         "members": list(
             {
                 member.id: {
@@ -229,9 +228,8 @@ def replay_data(run_dir: Path) -> dict:
     try:
         run_dir, log, manifest, contract = resolve_archive(run_dir)
     except ArchiveError:
-        # A run named but not yet writing: the generation carries the same header record the
-        # runtime will put at the front of the log, and that record is itself a zero-frame
-        # log -- so the page is built from it and follows the real log when it begins.
+        # A run named but not yet writing. The generation's header record is the same one the
+        # runtime puts at the front of the log, and is itself a zero-frame log.
         record = run_dir.parent.parent / "generated/contract/frame_log_header.pb"
         if not record.is_file():
             raise

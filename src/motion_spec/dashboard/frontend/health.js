@@ -2,21 +2,18 @@
 // SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 // Author: Vamsi Kalagaturu
 
-/**
- * Whether this installation can build and run anything at all -- and what it is made of.
- */
+/** Whether this installation can build and run anything at all, and what it is made of. */
 
 import { $, api, showError, snack, stampText, state } from "./core.js";
 
-// Why a build or a run cannot work, before it is tried: the CLI's own checks, on the page.
 // The checks cost seconds, so the server runs them on a thread and this follows it. The poll
-// keeps running even after the reader leaves the tab, but it must never drag them back: it only
-// touches #content while they are still looking at it, and announces the result otherwise.
-export async function loadHealth(refresh = false) {
+// outlives the tab but never drags the reader back: off the tab it only announces the result.
+export async function loadHealth(refresh = false, env = null) {
   clearTimeout(state.healthWatch);
   const onTab = () => state.tab === "health";
+  const query = env !== null ? `?env=${encodeURIComponent(env)}` : refresh ? "?refresh=1" : "";
   const [report, storage] = await Promise.all([
-    api(`/api/health${refresh ? "?refresh=1" : ""}`),
+    api(`/api/health${query}`),
     onTab() ? api("/api/storage").catch(() => null) : null,
   ]);
   if (onTab()) renderHealth(report, storage);
@@ -27,9 +24,11 @@ export async function loadHealth(refresh = false) {
     state.healthChecking = false;
     if (!onTab()) {
       const failing = (report.checks ?? []).filter((check) => !check.ok && !check.optional);
-      snack(failing.length
-        ? `Health check done: ${failing.length} of ${report.checks.length} checks failing`
-        : `Health check done: all ${report.checks.length} checks pass`);
+      snack(
+        failing.length
+          ? `Health check done: ${failing.length} of ${report.checks.length} checks failing`
+          : `Health check done: all ${report.checks.length} checks pass`,
+      );
     }
   }
 }
@@ -37,16 +36,16 @@ export async function loadHealth(refresh = false) {
 export function renderHealth(report, storage) {
   const page = document.createElement("article");
   page.className = "health";
-  page.innerHTML = '<div class="page-heading"><h1>Installation health</h1>'
-    + '<span class="eyebrow">HEALTH</span></div>'
-    + '<div class="health-bar"><span class="health-verdict"></span>'
-    + '<span class="health-state"></span><span class="health-spacer"></span>'
-    + '<button class="health-recheck">re-check</button></div>'
-    + '<div class="health-groups"></div>';
+  page.innerHTML =
+    '<div class="page-heading"><h1>Installation health</h1>' +
+    '<span class="eyebrow">HEALTH</span></div>' +
+    '<div class="health-bar"><span class="health-verdict"></span>' +
+    '<span class="health-state"></span><span class="health-spacer"></span>' +
+    '<button class="health-recheck">re-check</button></div>' +
+    '<div class="health-groups"></div>';
 
   const checks = report.checks ?? [];
-  // An optional dependency left out of the build is not a failing check, so it neither reddens
-  // the verdict nor counts against its profile -- it is only listed, so its absence is visible.
+  // An optional dependency left out of the build is listed, but does not count as failing.
   const failing = checks.filter((check) => !check.ok && !check.optional);
   const verdict = page.querySelector(".health-verdict");
   if (report.running && !checks.length) {
@@ -57,14 +56,18 @@ export function renderHealth(report, storage) {
       : `all ${checks.length} checks pass`;
     verdict.dataset.ok = String(!failing.length);
   }
+  const progress = report.progress;
   page.querySelector(".health-state").textContent = report.running
-    ? "checking…"
-    : report.stamp ? `checked ${stampText(new Date(report.stamp * 1000).toISOString())}` : "";
+    ? progress?.dependency
+      ? `checking ${progress.dependency} (${progress.done} done)`
+      : "checking…"
+    : report.stamp
+      ? `checked ${stampText(new Date(report.stamp * 1000).toISOString())}`
+      : "";
   const recheck = page.querySelector(".health-recheck");
   recheck.disabled = report.running;
   recheck.onclick = () => loadHealth(true).catch(showError);
 
-  // One list language for everything: name on the left, value on the right, one row each.
   const list = (title, count) => {
     const section = document.createElement("section");
     section.className = "health-list";
@@ -83,9 +86,10 @@ export function renderHealth(report, storage) {
   const row = (name, value, { mark, dim, title } = {}) => {
     const line = document.createElement("div");
     line.className = "health-row";
-    line.innerHTML = '<span class="health-mark"></span>'
-      + '<span class="health-key"></span><span class="health-what"></span>'
-      + '<span class="health-value"></span>';
+    line.innerHTML =
+      '<span class="health-mark"></span>' +
+      '<span class="health-key"></span><span class="health-what"></span>' +
+      '<span class="health-value"></span>';
     if (mark) {
       line.querySelector(".health-mark").textContent = { ok: "✓", fail: "✗", absent: "·" }[mark];
       line.dataset.mark = mark;
@@ -99,51 +103,93 @@ export function renderHealth(report, storage) {
     return line;
   };
 
-  // What the installation is, next to whether it works: enough to cite in a bug report.
   const env = report.environment ?? {};
   const gb = (bytes) => (bytes == null ? null : `${(bytes / 1e9).toFixed(2)} GB`);
   const environment = list("environment");
   environment.append(
     row("motion-spec", env.motion_spec),
     row("python", env.python, { title: env.executable }),
-    row("ROS distro", env.ros_distro ?? "not sourced"),
+    row("ROS", env.ros ?? "not sourced"),
     row("generations root", env.generations),
     row("generations on disk", gb(storage?.generations_bytes)),
     row("of that, frame logs", gb(storage?.logs_bytes)),
   );
 
+  const sourced = list("environment file");
+  const picker = document.createElement("div");
+  picker.className = "health-row";
+  const select = document.createElement("select");
+  select.className = "health-env";
+  const options = [["", "this shell (nothing sourced)"], ...(env.choices ?? []).map((p) => [p, p])];
+  options.forEach(([value, label]) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    option.selected = value === (env.script ?? "");
+    select.append(option);
+  });
+  select.onchange = () => loadHealth(false, select.value).catch(showError);
+  const browse = document.createElement("button");
+  browse.className = "health-action";
+  browse.textContent = "Browse…";
+  browse.title = "Choose an environment file anywhere on this machine";
+  browse.onclick = async () => {
+    const picked = await api("/api/pick-env");
+    renderHealth(picked, storage);
+    if (picked.running) loadHealth().catch(showError);
+  };
+  picker.append(select, browse);
+  sourced.append(picker);
+
+  const variables = list("variables");
+  Object.entries(env.variables ?? {}).forEach(([name, value]) => {
+    variables.append(row(name, value ?? "unset", { mark: value ? undefined : "absent" }));
+  });
+
   const groups = new Map();
   checks.forEach((check) => {
-    groups.set(check.profile, [...(groups.get(check.profile) ?? []), check]);
+    const profile = groups.get(check.profile);
+    if (profile) profile.push(check);
+    else groups.set(check.profile, [check]);
   });
-  page.querySelector(".health-groups").replaceChildren(environment, ...[...groups].map(([profile, rows]) => {
-    const required = rows.filter((check) => !check.optional);
-    const passed = required.filter((check) => check.ok).length;
-    const group = list(profile, {
-      text: `${passed} of ${required.length}`, ok: passed === required.length,
-    });
-    rows.forEach((check) => {
-      // The key column already names the dependency: drop the module/cmake boilerplate tail.
-      const tidy = check.path?.replace(/\/__init__\.py$/, "").replace(/\/cmake\/.*$/, "");
-      const mark = check.ok ? "ok" : check.optional ? "absent" : "fail";
-      group.append(row(check.dependency, check.ok ? tidy : check.optional ? "not built" : null,
-        { mark, dim: check.what, title: check.path }));
-      // Failing: one indented line with the why, the one command that fixes it, and where it lives.
-      if (check.ok || check.optional) return;
-      const fix = document.createElement("div");
-      fix.className = "health-fix";
-      fix.innerHTML = '<span class="health-why"></span><code></code><a target="_blank" rel="noopener"></a>';
-      fix.querySelector(".health-why").textContent = check.why || "";
-      fix.querySelector("code").textContent = check.detail || "";
-      const anchor = fix.querySelector("a");
-      if (check.source) {
-        anchor.href = check.source;
-        anchor.textContent = check.source.replace(/^https?:\/\//, "");
-      } else anchor.remove();
-      if (!check.detail) fix.querySelector("code").remove();
-      group.append(fix);
-    });
-    return group;
-  }));
+  const sections = [environment, sourced, variables];
+  page.querySelector(".health-groups").replaceChildren(
+    ...sections,
+    ...[...groups].map(([profile, rows]) => {
+      const required = rows.filter((check) => !check.optional);
+      const passed = required.filter((check) => check.ok).length;
+      const group = list(profile, {
+        text: `${passed} of ${required.length}`,
+        ok: passed === required.length,
+      });
+      rows.forEach((check) => {
+        // The key column already names the dependency: drop the module/cmake boilerplate tail.
+        const tidy = check.path?.replace(/\/__init__\.py$/, "").replace(/\/cmake\/.*$/, "");
+        const mark = check.ok ? "ok" : check.optional ? "absent" : "fail";
+        group.append(
+          row(check.dependency, check.ok ? tidy : check.optional ? "not built" : null, {
+            mark,
+            dim: check.what,
+            title: check.path,
+          }),
+        );
+        if (check.ok || check.optional) return;
+        const fix = document.createElement("div");
+        fix.className = "health-fix";
+        fix.innerHTML =
+          '<span class="health-why"></span><code></code><a target="_blank" rel="noopener"></a>';
+        fix.querySelector(".health-why").textContent = check.why || "";
+        fix.querySelector("code").textContent = check.detail || "";
+        const anchor = fix.querySelector("a");
+        if (check.source) {
+          anchor.href = check.source;
+          anchor.textContent = check.source.replace(/^https?:\/\//, "");
+        } else anchor.remove();
+        if (!check.detail) fix.querySelector("code").remove();
+        group.append(fix);
+      });
+      return group;
+    }),
+  );
   $("#content").replaceChildren(page);
 }

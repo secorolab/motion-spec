@@ -296,14 +296,8 @@ def _home_graph(service: GraphService, triple) -> str:
     return next((graph_name(quad[3]) for quad in service.dataset.quads(triple)), "result")
 
 
-# -- temporal and causal views -------------------------------------------------------------
-#
-# All three read the archived runtime graph joined to the design graph, and open no frame log:
-# a step converts to seconds through the tick rate the run recorded, not the log header.
-
-# What a span was: the runtime graph names only the design IRI, so the *kind* of element comes
-# from the design graph's own rdf:type. Coordination elements live in the behaviour metamodel
-# family (fsm# today, behaviour-tree# next), which is why nothing here reads "state".
+# Matched as a family (fsm# today, behaviour-tree# next), so nothing here reads "state": the
+# runtime graph names only the design IRI, and the design graph's rdf:type says what it was.
 BEHAVIOUR_MM = "https://secorolab.github.io/metamodels/behaviour/"
 
 VIEW_PREFIXES = """
@@ -349,10 +343,8 @@ SELECT ?occ ?element ?beginStep ?endStep ?transition ?event WHERE {
 """
 )
 
-# Temporal containment is derived here, never stored: a constraint span counts as satisfied
-# during an occupancy when both its endpoints fall inside the occupancy's. `?occ` is bound by
-# the caller -- left open it is a cross join of every span against every other, which costs
-# ten seconds on a real run to answer a question nobody asked of all eleven rows at once.
+# A constraint counts as satisfied during an occupancy when both its endpoints fall inside it.
+# `?occ` must be bound by the caller: left open this is a cross join costing ten seconds.
 CONSTRAINTS_DURING_ACTIVITY = (
     VIEW_PREFIXES
     + """
@@ -368,9 +360,8 @@ SELECT DISTINCT ?constraint WHERE {
 """
 )
 
-# The same containment, kept as spans rather than collapsed to names: a bar drawn under the
-# occupancy it held inside needs both ends, and one constraint held twice is two bars. `?occ` is
-# bound by the caller for the same reason as above -- unbound this is the ten-second cross join.
+# The same containment kept as spans, because a bar needs both ends and one constraint held
+# twice is two bars. `?occ` must be bound, for the same reason as above.
 CONSTRAINT_SPANS_DURING_ACTIVITY = (
     VIEW_PREFIXES
     + """
@@ -386,10 +377,9 @@ SELECT ?constraint ?heldFrom ?heldTo WHERE {
 """
 )
 
-# One row per firing: the arming that fired is the maintenance carrying the observed value --
-# a held stretch that broke instead closes without one, and each such stretch counts as one
-# re-arm. The dwell the *design* graph declares is joined, never copied. A monitor that never
-# fired keeps its row with the span left unbound.
+# One row per firing. The arming that fired is the maintenance carrying the observed value; a
+# stretch that broke instead closes without one, and counts as a re-arm. A monitor that never
+# fired keeps its row with the span unbound.
 GATE_ANALYSIS = (
     VIEW_PREFIXES
     + """
@@ -662,12 +652,9 @@ def curie(term, prefixes: dict) -> str | None:
     return f"{prefix}:{text[len(namespace) :]}" if prefix else text
 
 
-# A declared quantity is the one that carries its own value; a measured or derived quantity is
-# given its value at run time and reads as unreferenced here for reasons that are not the
-# author's. Referenced means named by anything at all -- a constraint's tolerance, threshold or
-# reference value, a controller's bound, a solver limit, a path parameter -- so a term that is
-# the object of no triple is read by nothing in the design. `zero-length` and `zero-angle` are
-# the case this must not flag: they are tolerances, so a constraint names them.
+# Only declared quantities: one given its value at run time reads as unreferenced for reasons
+# that are not the author's. Referenced means the object of any triple at all, which is why
+# `zero-length` and `zero-angle` are not flagged -- they are tolerances a constraint names.
 UNUSED_DECLARATION = """
 PREFIX qudt: <http://qudt.org/schema/qudt/>
 SELECT ?term ?value WHERE {

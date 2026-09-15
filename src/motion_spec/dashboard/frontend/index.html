@@ -4,44 +4,57 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>motion-spec</title>
-    <!-- Named, so the browser stops asking for /favicon.ico and logging the 404 when it misses. -->
-    <link rel="icon" href="favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="style.css">
-    <!-- Vendored, not fetched: a robot's machine is often on a network with no way out, and
-         a dashboard whose charts depend on a CDN is a dashboard that is blank there. -->
+    <!-- Named, or the browser asks for /favicon.ico and logs the 404 when it misses. -->
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="style.css" />
+    <!-- Vendored, not fetched: a robot's machine is often on a network with no way out. -->
     <script src="vendor/echarts.min.js"></script>
     <!-- live cards stream through uPlot; echarts stays for replay's zoom/cursor/export -->
-    <link rel="stylesheet" href="vendor/uPlot.min.css">
+    <link rel="stylesheet" href="vendor/uPlot.min.css" />
     <script src="vendor/uPlot.iife.min.js"></script>
   </head>
   <body>
     <script>
-      if (localStorage.getItem("motion-spec.sidebar-collapsed") === "true") document.body.classList.add("sidebar-collapsed");
-      // Before the first paint: the width this sidebar was left at, and no empty state on a
-      // reload that already names what to open -- both would otherwise be seen changing.
-      const width = Number(localStorage.getItem("motion-spec.aside"));
+      // Both before the first paint, or the reader watches the sidebar and the empty state
+      // change under them on a reload that already names what to open.
+      const stored = (key) => {
+        try {
+          return localStorage.getItem(key);
+        } catch {
+          return null;
+        }
+      };
+      if (stored("motion-spec.sidebar-collapsed") === "true")
+        document.body.classList.add("sidebar-collapsed");
+      const width = Number(stored("motion-spec.aside"));
       if (width) document.documentElement.style.setProperty("--aside", `${width}px`);
       const view = new URLSearchParams(location.hash.slice(1));
-      // Anything but the bare logs tab replaces the empty state below, so do not let it be
-      // seen first. Whatever renders instead takes the class back off.
-      if ((view.get("tab") ?? "logs") !== "logs" || view.has("run") || view.has("generation")
-          || view.has("explore") || view.has("source") || view.has("diff")) {
+      if (
+        (view.get("tab") ?? "logs") !== "logs" ||
+        view.has("run") ||
+        view.has("generation") ||
+        view.has("explore") ||
+        view.has("source") ||
+        view.has("diff")
+      ) {
         document.documentElement.classList.add("restoring");
       }
     </script>
-    <button id="sidebar-toggle" title="Collapse navigation" aria-label="Collapse navigation">×</button>
+    <button id="sidebar-toggle" title="Collapse navigation" aria-label="Collapse navigation">
+      ×
+    </button>
 
     <main>
       <aside>
         <div class="sidebar-header">
-          <!-- The tab icon, once more where the product is named: same file, so the two can
-               never drift apart. Inert to the pointer so the whole brand stays one button. -->
+          <!-- The same file the tab icon uses, so the two can never drift apart. -->
           <button id="home" class="brand">
-            <img class="brand-mark" src="mark.svg" alt="" width="24" height="24">
+            <img class="brand-mark" src="mark.svg" alt="" width="24" height="24" />
             <span>motion-spec</span>
+            <small id="brand-version"></small>
           </button>
           <nav>
             <button class="active" data-tab="logs">Logs</button>
@@ -55,8 +68,11 @@
             <button id="refresh" title="Refresh">↻</button>
           </div>
           <div class="root-control">
-            <input id="generation-root" value="/home/batsy/work/ms/generations" title="Edit path">
-            <button id="pick-root" title="Choose folder" aria-label="Choose folder"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h7l2 2h9v10H3z"/></svg></button>
+            <!-- Filled from /api/roots; a value here would show a stranger's path until then. -->
+            <input id="generation-root" title="Edit path" />
+            <button id="pick-root" title="Choose folder" aria-label="Choose folder">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h7l2 2h9v10H3z" /></svg>
+            </button>
           </div>
           <script>
             if (new URLSearchParams(location.hash.slice(1)).get("tab") === "sources") {
@@ -68,7 +84,7 @@
           </script>
 
           <div class="search">
-            <input id="search" type="search" placeholder="Filter list">
+            <input id="search" type="search" placeholder="Filter list" />
           </div>
         </div>
 
@@ -76,7 +92,9 @@
         <footer class="aside-foot">
           <button data-tab="health">Health</button>
           <button id="browse-trash">Trash</button>
-          <a href="https://github.com/secorolab/motion-spec" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://github.com/secorolab/motion-spec" target="_blank" rel="noopener"
+            >GitHub</a
+          >
           <a href="https://secorolab.github.io/motion-spec/" target="_blank" rel="noopener">Docs</a>
         </footer>
         <div id="aside-resize" title="Drag to resize · double-click to reset"></div>
@@ -94,28 +112,86 @@
     <div id="selection-actions" hidden>
       <span id="selection-count"></span>
       <button id="clear-selection">Cancel</button>
-      <button id="delete-selected">Delete</button>
+      <button id="delete-selected">Move to Trash…</button>
     </div>
     <div id="snack" role="status" aria-live="polite"></div>
 
     <template id="generation-template">
       <article class="generation">
-        <div class="page-heading"><h1></h1><span class="eyebrow">GENERATION</span></div>
-        <div class="generation-path"><p class="path"></p><button class="copy-generation-path" title="Copy folder path" aria-label="Copy folder path">⧉</button></div>
+        <div class="page-heading">
+          <h1></h1>
+          <span class="eyebrow">GENERATION</span>
+        </div>
+        <div class="generation-path">
+          <p class="path"></p>
+          <button
+            class="copy-generation-path"
+            title="Copy folder path"
+            aria-label="Copy folder path"
+          >
+            ⧉
+          </button>
+        </div>
         <p class="generation-description"></p>
-        <div class="run-bar"><span class="run-choice" data-option="headless"><em>display</em><button data-value="false" aria-pressed="true">GUI</button><button data-value="true" aria-pressed="false">headless</button></span><span class="run-choice run-speed" data-option="realtime" hidden><em>speed</em><button data-value="true" aria-pressed="true">realtime</button><button data-value="false" aria-pressed="false">fast</button></span><span class="run-choice run-record" hidden><em>record</em></span><span class="run-choice" data-option="log"><em>log</em><button data-value="true" aria-pressed="true">on</button><button data-value="false" aria-pressed="false">off</button></span><button class="run-start">▶ run</button><button class="run-stop" hidden>stop</button><span class="run-state"></span></div>
+        <div class="run-bar">
+          <span class="run-choice" data-option="headless"
+            ><em>display</em><button data-value="false" aria-pressed="true">GUI</button
+            ><button data-value="true" aria-pressed="false">headless</button></span
+          ><span class="run-choice run-speed" data-option="realtime" hidden
+            ><em>speed</em><button data-value="true" aria-pressed="true">realtime</button
+            ><button data-value="false" aria-pressed="false">fast</button></span
+          ><span class="run-choice run-record" hidden><em>record</em></span
+          ><span class="run-choice" data-option="log"
+            ><em>log</em><button data-value="true" aria-pressed="true">on</button
+            ><button data-value="false" aria-pressed="false">off</button></span
+          ><button class="run-start">▶ run</button><button class="run-stop" hidden>stop</button
+          ><span class="run-state"></span>
+        </div>
         <div class="facts"></div>
-        <div class="devices" hidden><div class="devices-head"><h2>Devices</h2><button class="devices-test">test connections</button><span class="devices-state"></span></div><div class="device-rows"></div></div>
+        <div class="devices" hidden>
+          <div class="devices-head">
+            <h2>Devices</h2>
+            <button class="devices-test">test connections</button
+            ><span class="devices-state"></span>
+          </div>
+          <div class="device-rows"></div>
+        </div>
         <h2 class="source-heading">Authored source</h2>
         <div class="source-files"></div>
-        <div class="run-heading"><h2>Recorded runs</h2><span class="run-count"></span></div>
-        <div class="run-header"><input type="checkbox" class="pick run-pick-all" title="Select every run listed"><span>#</span><span>Run (time)</span><span>Started</span><span>Duration</span><span>Frames</span><span>Status</span></div>
+        <div class="run-heading">
+          <h2>Recorded runs</h2>
+          <span class="run-count"></span>
+        </div>
+        <div class="run-header">
+          <input type="checkbox" class="pick run-pick-all" title="Select every run listed" /><span
+            >#</span
+          ><span>Run (time)</span><span>Started</span><span>Duration</span><span>Frames</span
+          ><span>Status</span>
+        </div>
         <div class="runs"></div>
-        <div class="run-tools"><span class="run-filter"><label>from<input type="datetime-local" class="run-from"></label><label>to<input type="datetime-local" class="run-to"></label><input type="search" class="run-search" placeholder="note, tag or id"><button class="run-filter-clear" hidden>clear</button></span><div class="run-pagination"></div></div>
+        <div class="run-tools">
+          <span class="run-filter"
+            ><label>from<input type="datetime-local" class="run-from" /></label
+            ><label>to<input type="datetime-local" class="run-to" /></label
+            ><input type="search" class="run-search" placeholder="note, tag or id" /><button
+              class="run-filter-clear"
+              hidden
+            >
+              clear
+            </button></span
+          >
+          <div class="run-pagination"></div>
+        </div>
         <pre class="console run-console" hidden></pre>
-        <div class="graph-heading"><h2>RDF graph</h2><button class="explore-link">explore →</button></div>
-        <p class="graph-help">Ask this model's graph a question, and read the answer as a table or as a picture.</p>
-        <h2>Generated files</h2><div class="generated-files"></div>
+        <div class="graph-heading">
+          <h2>RDF graph</h2>
+          <button class="explore-link">explore →</button>
+        </div>
+        <p class="graph-help">
+          Ask this model's graph a question, and read the answer as a table or as a picture.
+        </p>
+        <h2>Generated files</h2>
+        <div class="generated-files"></div>
       </article>
     </template>
 

@@ -2,12 +2,16 @@
 // SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 // Author: Vamsi Kalagaturu
 
-/**
- * The pieces every page is built from: a row in the list, a fact in a header, a
- * terminal that keeps its colours, a device and what it answered.
- */
+/** The small pieces every page is built from: list rows, facts, file rows, consoles, devices. */
 
-import { $, api, state } from "./core.js";
+import { $, api, copyText, state } from "./core.js";
+
+function part(tag, text = "", className = "") {
+  const node = document.createElement(tag);
+  node.textContent = text;
+  if (className) node.className = className;
+  return node;
+}
 
 export function listItem(name, detail, click, path, mark = null) {
   const button = document.createElement("button");
@@ -19,7 +23,6 @@ export function listItem(name, detail, click, path, mark = null) {
   label.textContent = name;
   const viewport = document.createElement("span");
   viewport.className = "item-name-viewport";
-  // How the last run went, before the name it went with.
   if (mark) {
     const dot = document.createElement("i");
     dot.className = `run-mark run-mark-${mark.toLowerCase()}`;
@@ -33,7 +36,7 @@ export function listItem(name, detail, click, path, mark = null) {
     small.textContent = detail;
     button.append(small);
   }
-  button.onclick = (event) => click(event);
+  button.onclick = click;
   return button;
 }
 
@@ -45,7 +48,6 @@ export function fact(label, value, kind = "", version = null) {
   name.textContent = label;
   text.textContent = value ?? "—";
   text.title = [value, version].filter(Boolean).join(" ");
-  // A version is about the thing, not the thing: it rides along in its own hand.
   if (version) {
     const tag = document.createElement("i");
     tag.className = "fact-version";
@@ -56,22 +58,77 @@ export function fact(label, value, kind = "", version = null) {
   return cell.outerHTML;
 }
 
-// One row per thing actually knocked on: a network device has a row per port, a serial one its
-// device node. Host, port and path only -- what the config holds to log in with stays there.
+export function fileRow(name, title, click) {
+  const row = document.createElement("div");
+  row.className = "source-file";
+  row.title = title;
+  row.append(part("span", name));
+  row.onclick = click;
+  return row;
+}
+
+export function fileFolder(name, rows, open = false) {
+  const group = document.createElement("details");
+  group.className = "generated-folder";
+  group.open = open;
+  group.append(part("summary", `${name} · ${rows.length}`), ...rows);
+  return group;
+}
+
+const COPY_GLYPH = "⧉";
+
+// `stopClick` keeps the copy from reaching a row that is itself clickable.
+export function copyPathButton(path, { stopClick = false } = {}) {
+  const button = document.createElement("button");
+  button.className = "copy-path";
+  button.textContent = COPY_GLYPH;
+  button.title = "Copy full path";
+  button.onclick = async (event) => {
+    if (stopClick) event.stopPropagation();
+    await copyText(typeof path === "function" ? path() : path);
+    button.textContent = "✓";
+    setTimeout(() => {
+      button.textContent = COPY_GLYPH;
+    }, 900);
+  };
+  return button;
+}
+
+export function setPickAll(box, picked, total) {
+  box.checked = picked > 0 && picked === total;
+  box.indeterminate = picked > 0 && picked < total;
+}
+
+export function bindToggle(button, name, isOn, toggle) {
+  const draw = () => {
+    button.setAttribute("aria-pressed", String(isOn()));
+    button.textContent = `${name}: ${isOn() ? "on" : "off"}`;
+  };
+  button.onclick = () => {
+    toggle();
+    draw();
+  };
+  draw();
+}
+
+// One row per thing actually knocked on, showing host, port and path only: credentials from
+// the config must not reach the page.
 export function deviceRows(device) {
-  const targets = device.kind === "network"
-    ? device.ports.map((probe) => ({ ...probe, where: `${device.host}:${probe.port}` }))
-    : [{ ok: device.ok, detail: device.detail, where: device.device }];
+  const targets =
+    device.kind === "network"
+      ? device.ports.map((probe) => ({ ...probe, where: `${device.host}:${probe.port}` }))
+      : [{ ok: device.ok, detail: device.detail, where: device.device }];
   if (!targets.length) targets.push({ ok: null, detail: "no port to test", where: device.host });
   return targets.map((target) => {
     const row = document.createElement("div");
     row.className = "device";
     row.dataset.ok = String(target.ok);
-    row.innerHTML = '<span class="device-dot"></span><strong></strong>'
-      + '<span class="device-where"></span><span class="device-detail"></span>';
+    row.innerHTML =
+      '<span class="device-dot"></span><strong></strong>' +
+      '<span class="device-where"></span><span class="device-detail"></span>';
     row.querySelector("strong").textContent = device.name;
     row.querySelector(".device-where").textContent = target.where;
-    row.querySelector(".device-detail").textContent = target.ok ? "" : target.detail ?? "";
+    row.querySelector(".device-detail").textContent = target.ok ? "" : (target.detail ?? "");
     return row;
   });
 }
@@ -79,47 +136,49 @@ export function deviceRows(device) {
 // Stay on the newest line, unless the reader scrolled up to read an older one.
 export function appendConsole(pre, text) {
   const follow = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
-  // The log is terminal output: render its SGR color escapes as spans (built with
-  // textContent, so log content can never become markup) and draw nothing for the rest.
+  // Every piece goes in through textContent, so log bytes can never become markup.
   text = (pre._ansiTail ?? "") + text;
   // An escape split across two polls would render as junk once; hold the tail back instead.
   const cut = text.match(/\x1b(\[[0-9;]*)?$/);
   pre._ansiTail = cut ? cut[0] : "";
   if (cut) text = text.slice(0, -cut[0].length);
-  for (const part of text.split(/(\x1b\[[0-9;]*[A-Za-z])/)) {
-    if (!part) continue;
-    if (part.startsWith("\x1b")) {
-      if (part.endsWith("m")) pre._ansiClasses = sgrClasses(pre._ansiClasses ?? [], part);
-      continue;   // cursor-movement escapes draw nothing on a page
+  for (const piece of text.split(/(\x1b\[[0-9;]*[A-Za-z])/)) {
+    if (!piece) continue;
+    if (piece.startsWith("\x1b")) {
+      if (piece.endsWith("m")) pre._ansiClasses = sgrClasses(pre._ansiClasses ?? [], piece);
+      continue; // cursor-movement escapes draw nothing on a page
     }
     if (!pre._ansiClasses?.length) {
-      pre.append(document.createTextNode(part));
+      pre.append(document.createTextNode(piece));
     } else {
       const span = document.createElement("span");
       span.className = pre._ansiClasses.join(" ");
-      span.textContent = part;
+      span.textContent = piece;
       pre.append(span);
     }
   }
   if (follow) pre.scrollTop = pre.scrollHeight;
 }
 
-// One SGR escape applied to the classes in force: reset clears, bold and the 16 foreground
-// colors map to .ansi-* rules; anything else changes nothing.
-export function sgrClasses(classes, escape) {
-  for (const code of escape.slice(2, -1).split(";").map((n) => Number(n || 0))) {
+function sgrClasses(classes, escape) {
+  for (const code of escape
+    .slice(2, -1)
+    .split(";")
+    .map((n) => Number(n || 0))) {
     if (code === 0) classes = [];
     else if (code === 1) classes = [...classes.filter((c) => c !== "ansi-b"), "ansi-b"];
     else if (code === 22) classes = classes.filter((c) => c !== "ansi-b");
     else if (code === 39) classes = classes.filter((c) => c === "ansi-b");
     else if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97)) {
-      classes = [...classes.filter((c) => !c.startsWith("ansi-3") && !c.startsWith("ansi-9")), `ansi-${code}`];
+      classes = [
+        ...classes.filter((c) => !c.startsWith("ansi-3") && !c.startsWith("ansi-9")),
+        `ansi-${code}`,
+      ];
     }
   }
   return classes;
 }
 
-// The runner's last words, for a page that would otherwise name a file to go read in a terminal.
 export async function consoleExcerpt(path, lines = 50) {
   const slice = await api(`/api/console?path=${encodeURIComponent(path)}`).catch(() => null);
   const pre = document.createElement("pre");
@@ -128,8 +187,6 @@ export async function consoleExcerpt(path, lines = 50) {
   return pre;
 }
 
-// The page with nothing on it yet: what is missing, why, and whatever there is to do about it.
-// Six pages said this in six hand-written strings; they say it here instead.
 export function emptyState({ eyebrow = "", title = "", detail = "", spinner = false } = {}) {
   const empty = document.createElement("div");
   empty.className = "empty";
@@ -139,23 +196,13 @@ export function emptyState({ eyebrow = "", title = "", detail = "", spinner = fa
   return empty;
 }
 
-// Put one on the page, and hand it back for whatever else belongs in it.
 export function showEmpty(options) {
   const empty = emptyState(options);
   $("#content").replaceChildren(empty);
   return empty;
 }
 
-function part(tag, text = "", className = "") {
-  const node = document.createElement(tag);
-  node.textContent = text;
-  if (className) node.className = className;
-  return node;
-}
-
-// Every menu on the page closes the same way: a click anywhere else, or escape. One pair of
-// listeners for all of them, rather than one pair per menu ever built -- a generation page
-// opened twenty times used to leave twenty behind, each still holding a menu long gone.
+// One pair of listeners for every menu on the page. Binding per menu leaked a pair per open.
 document.addEventListener("click", (event) => {
   document.querySelectorAll("details.picker[open]").forEach((menu) => {
     if (!menu.contains(event.target)) menu.open = false;
@@ -164,5 +211,7 @@ document.addEventListener("click", (event) => {
 
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
-  document.querySelectorAll("details.picker[open]").forEach((menu) => { menu.open = false; });
+  document.querySelectorAll("details.picker[open]").forEach((menu) => {
+    menu.open = false;
+  });
 });

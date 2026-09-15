@@ -106,8 +106,7 @@ def start_run(generation_dir: Path, options: dict) -> dict:
     # Only a simulator has a display to drop, whatever the browser posted.
     simulated = is_simulated(generation_dir)
     # Two generations cannot share the real robot. Whether the hardware answers is not asked
-    # here: the devices panel probes when the operator asks it to, and a run that finds nothing
-    # says so in its own console.
+    # here: the devices panel probes when the operator asks it to.
     if not simulated:
         other = _real_run_active()
         if other is not None:
@@ -126,9 +125,7 @@ def start_run(generation_dir: Path, options: dict) -> dict:
         "--run-id",
         run_id,
     ]
-    # What a browser can meaningfully choose: the rest the dashboard already knows or the CLI
-    # decides. A run always verifies what it archived; a recording nobody checked is not
-    # worth the disk it sits on.
+    # Only what a browser can meaningfully choose; the CLI decides the rest.
     argv += run_arguments(options, simulated)
     # A simulator renders any declared camera and its standard view; a real platform records
     # the cameras that name a ROS image topic to read.
@@ -142,10 +139,12 @@ def start_run(generation_dir: Path, options: dict) -> dict:
     recording = [camera for camera in options.get("cameras") or () if camera in recordable]
     for camera in recording:
         argv += ["--record", camera]
-    sink = (generation_dir / RUN_LOG).open("wb")
-    process = subprocess.Popen(
-        argv, cwd=roots.WORKSPACE, stdout=sink, stderr=sink, start_new_session=True
-    )
+    # Closed here: Popen dups the descriptor for the child, and a handle per run never
+    # collected is a file descriptor leaked for the life of the server.
+    with (generation_dir / RUN_LOG).open("wb") as sink:
+        process = subprocess.Popen(
+            argv, cwd=roots.WORKSPACE, stdout=sink, stderr=sink, start_new_session=True
+        )
     RUNNING[str(generation_dir)] = {"process": process, "run_id": run_id}
     return {
         **run_status(generation_dir),
@@ -198,7 +197,41 @@ def stop_run(path: Path) -> dict:
     return run_status(generation_dir)
 
 
-HEALTH: dict = {"checks": None, "stamp": None, "thread": None}
+HEALTH: dict = {"checks": None, "stamp": None, "thread": None, "progress": None}
+# The environment file the page asked health to report under, and what sourcing it gave.
+ENVIRONMENT: dict = {"script": None, "captured": None}
+
+
+def use_environment(script: str | None) -> dict:
+    """Report under the environment SCRIPT leaves, or under the server's own when None."""
+    from motion_spec.setup import capture_environment
+
+    if not script:
+        ENVIRONMENT.update(script=None, captured=None)
+    else:
+        path = Path(script).expanduser()
+        if not path.is_file():
+            raise ValueError(f"no environment file at {path}")
+        ENVIRONMENT.update(script=str(path), captured=capture_environment(path))
+    HEALTH["checks"] = None
+    return health_report(refresh=True)
+
+
+def pick_environment() -> dict:
+    """Choose an environment file with the host file chooser, and report under it."""
+    start = ENVIRONMENT["script"] or f"{roots.WORKSPACE}/"
+    return use_environment(roots.choose(start, directory=False))
+
+
+def environment_choices() -> list[str]:
+    """The environment files a workspace offers, for the page to choose between."""
+    from motion_spec.setup import ENVIRONMENT_FILES
+
+    return [
+        str(roots.WORKSPACE / name)
+        for name in ENVIRONMENT_FILES
+        if (roots.WORKSPACE / name).is_file()
+    ]
 
 
 def health_report(refresh: bool = False) -> dict:
@@ -213,10 +246,20 @@ def health_report(refresh: bool = False) -> dict:
         from motion_spec.health import check_health
 
         def collect() -> None:
-            checks = check_health(("all",), ("mujoco", "robif2b"))
+            def progress(done: int, dependency: str) -> None:
+                HEALTH["progress"] = {"done": done, "dependency": dependency}
+
+            checks = check_health(
+                ("all",),
+                ("mujoco", "robif2b"),
+                env=ENVIRONMENT.get("captured"),
+                on_progress=progress,
+            )
             HEALTH["checks"] = [dataclasses.asdict(check) for check in checks]
             HEALTH["stamp"] = time.time()
+            HEALTH["progress"] = None
 
+        HEALTH["progress"] = {"done": 0, "dependency": ""}
         HEALTH["thread"] = threading.Thread(target=collect, daemon=True)
         HEALTH["thread"].start()
         running = True
@@ -224,6 +267,7 @@ def health_report(refresh: bool = False) -> dict:
         "running": running,
         "checks": HEALTH["checks"],
         "stamp": HEALTH["stamp"],
+        "progress": HEALTH["progress"] if running else None,
         "environment": _environment(),
     }
 
@@ -232,15 +276,21 @@ def _environment() -> dict:
     """What this installation is, beside whether it works: versions, interpreter, roots."""
     from importlib import metadata
 
+    from motion_spec.health import environment_values, ros_summary
+
     try:
         version = metadata.version("motion_spec")
     except metadata.PackageNotFoundError:
         version = None
+    env = ENVIRONMENT["captured"]
     return {
         "motion_spec": version,
         "python": platform.python_version(),
         "executable": sys.executable,
-        "ros_distro": os.environ.get("ROS_DISTRO"),
+        "ros": ros_summary(env),
+        "variables": environment_values(env),
+        "script": ENVIRONMENT["script"],
+        "choices": environment_choices(),
         "generations": str(roots.GENERATIONS),
     }
 
@@ -303,13 +353,11 @@ def start_generate(source: Path) -> dict:
     log_dir = roots.GENERATIONS / GENERATE_LOGS
     log_dir.mkdir(exist_ok=True)
     log = log_dir / f"{job}.log"
-    # gen narrates on stdout and ends with the bare generation path; the capture eats both.
-    # Announce the path into the log ourselves -- generate_status reads it from there -- and
-    # let build's output carry the rest. (No tee back into the log: a /dev/fd reopen starts at
-    # offset 0 and overwrites what the others wrote.)
-    # pipefail so a failed gen fails the assignment: without it the status is tail's, the chain
-    # reaches build with an empty path, and click's "Directory '' does not exist" buries the
-    # rejection that actually stopped it. bash, not sh: dash has no pipefail.
+    # The capture eats gen's narration, so the path is announced into the log here for
+    # generate_status to read. No tee back into it: a /dev/fd reopen starts at offset 0 and
+    # overwrites what the others wrote.
+    # pipefail, or the status is tail's, build is reached with an empty path, and click's
+    # "Directory '' does not exist" buries the rejection. bash, not sh: dash has no pipefail.
     chain = (
         "set -o pipefail; "
         f"g=$(motion-spec gen code {shlex.quote(str(source))}"
@@ -318,10 +366,10 @@ def start_generate(source: Path) -> dict:
     )
     argv = ["bash", "-c", chain]
     _reap_jobs()
-    sink = log.open("wb")
-    process = subprocess.Popen(
-        argv, cwd=roots.WORKSPACE, stdout=sink, stderr=sink, start_new_session=True
-    )
+    with log.open("wb") as sink:
+        process = subprocess.Popen(
+            argv, cwd=roots.WORKSPACE, stdout=sink, stderr=sink, start_new_session=True
+        )
     GENERATING[job] = {"process": process, "log": log, "generation": None}
     return {"job": job, **generate_status(job)}
 
@@ -338,10 +386,9 @@ def _reap_jobs() -> None:
     )
     for job in finished[:-GENERATE_LOGS_KEPT]:
         GENERATING.pop(job)
-    # On disk too, including logs left by earlier dashboards: their jobs went with the process
-    # that started them, so nothing is reading those at all. The directory appears with the
-    # first job; a root nothing generated under has nothing to reap. Another dashboard may be
-    # reaping the same logs, so one vanishing between the listing and the stat is not an error.
+    # Logs left by earlier dashboards go too: their jobs died with the process that started
+    # them. Another dashboard may be reaping the same ones, so a file that vanishes between
+    # the listing and the stat is not an error.
     log_dir = roots.GENERATIONS / GENERATE_LOGS
     if not log_dir.is_dir():
         return

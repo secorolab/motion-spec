@@ -281,14 +281,20 @@ def test_setup_installs_stst_in_prefix(monkeypatch, tmp_path) -> None:
     received = {}
     monkeypatch.setattr(
         "motion_spec.setup.install_stst",
-        lambda prefix: received.update(prefix=prefix) or prefix / "bin" / "stst",
+        lambda prefix, force=False: (
+            received.update(prefix=prefix, force=force) or prefix / "bin" / "stst"
+        ),
     )
 
     result = CliRunner().invoke(main, ["setup", "--prefix", str(tmp_path)])
 
     assert result.exit_code == 0
     assert received["prefix"] == tmp_path
+    assert received["force"] is False
     assert result.output.strip() == str(tmp_path / "bin" / "stst")
+
+    CliRunner().invoke(main, ["setup", "--prefix", str(tmp_path), "--force"])
+    assert received["force"] is True
 
     monkeypatch.setattr("motion_spec.setup.remove_stst", lambda prefix: prefix == tmp_path)
     result = CliRunner().invoke(main, ["setup", "--prefix", str(tmp_path), "--clean"])
@@ -304,6 +310,10 @@ def test_stst_setup_builds_pinned_launcher_once(monkeypatch, tmp_path) -> None:
         calls.append(args)
         if args[1] == "clone":
             (Path(args[-1]) / ".git").mkdir(parents=True)
+        if args[0] == "ant":
+            jar = Path(args[-1]).parent / "build" / "jar" / "stst.jar"
+            jar.parent.mkdir(parents=True, exist_ok=True)
+            jar.write_bytes(b"jar")
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(stst_setup.subprocess, "run", run)
@@ -319,6 +329,14 @@ def test_stst_setup_builds_pinned_launcher_once(monkeypatch, tmp_path) -> None:
     assert stst_setup.STST_REF in calls[2]
     assert stst_setup.install_stst(tmp_path) == launcher
     assert len(calls) == first_call_count
+    # A launcher whose jar went missing is a broken install, and so is one --force asks
+    # to replace: both build again rather than returning the launcher as it stands.
+    (tmp_path / "share" / "motion-spec" / "STSTv4" / "build" / "jar" / "stst.jar").unlink()
+    assert stst_setup.install_stst(tmp_path) == launcher
+    assert len(calls) > first_call_count
+    rebuilt_call_count = len(calls)
+    assert stst_setup.install_stst(tmp_path, force=True) == launcher
+    assert len(calls) > rebuilt_call_count
     assert stst_setup.remove_stst(tmp_path) is True
     assert not launcher.exists()
     assert not (tmp_path / "share" / "motion-spec").exists()
@@ -338,11 +356,14 @@ def test_health_is_profile_scoped() -> None:
     assert "Summary: 5 good, 0 missing" in result.output
 
 
-def test_managed_stst_wins_over_path(monkeypatch, tmp_path) -> None:
+def test_stst_on_path_wins_over_managed(monkeypatch, tmp_path) -> None:
     managed = tmp_path / "bin" / "stst"
     managed.parent.mkdir()
     managed.touch()
     monkeypatch.setattr(stst_setup, "DEFAULT_PREFIX", tmp_path)
-    monkeypatch.setattr(stst_setup.shutil, "which", lambda _command: "/old/venv/bin/stst")
+    monkeypatch.setattr(stst_setup.shutil, "which", lambda _command: "/ws/bin/stst")
 
+    assert stst_setup.find_stst() == "/ws/bin/stst"
+
+    monkeypatch.setattr(stst_setup.shutil, "which", lambda _command: None)
     assert stst_setup.find_stst() == str(managed)

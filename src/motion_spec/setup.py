@@ -24,9 +24,14 @@ DEFAULT_PREFIX = Path.home() / ".local"
 
 
 def find_stst() -> str | None:
-    """Prefer motion-spec's managed STST, falling back to PATH."""
+    """Prefer the STST on PATH, falling back to motion-spec's managed install."""
+    # `setup --prefix $GRC_WS` writes $GRC_WS/bin/stst and the workspace environment puts it on
+    # PATH, so a stale copy under ~/.local must not win.
+    on_path = shutil.which("stst")
+    if on_path:
+        return on_path
     managed = DEFAULT_PREFIX / "bin" / "stst"
-    return str(managed) if managed.is_file() else shutil.which("stst")
+    return str(managed) if managed.is_file() else None
 
 
 def remove_stst(prefix: Path) -> bool:
@@ -48,12 +53,14 @@ def remove_stst(prefix: Path) -> bool:
     return True
 
 
-def install_stst(prefix: Path) -> Path:
+def install_stst(prefix: Path, force: bool = False) -> Path:
     """Build the pinned STSTv4 and install its launcher under PREFIX/bin."""
     launcher = prefix / "bin" / "stst"
     root = prefix / "share" / "motion-spec" / "STSTv4"
     marker = root.parent / ".STSTv4-managed"
-    if launcher.is_file():
+    jar = root / "build" / "jar" / "stst.jar"
+    # A launcher without the jar it runs is a half-finished install, not a done one.
+    if not force and launcher.is_file() and jar.is_file():
         return launcher
 
     missing = [command for command in ("git", "ant", "java") if shutil.which(command) is None]

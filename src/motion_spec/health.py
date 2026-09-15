@@ -21,12 +21,12 @@ PROFILE_IMPORTS = {
     "introspection": ("pyshacl", "rec", "google.protobuf"),
     "dsl": ("textx", "motion_spec_dsl", "coord_dsl", "scene_dsl"),
 }
-PROFILES = (*PROFILE_IMPORTS, "codegen", "build", "runtime")
+PROFILES = (*PROFILE_IMPORTS, "codegen", "ros", "build", "runtime")
 # Every generated CMakeLists asks for these, whichever backend it targets: the kinematics and
 # the frame types are the same on a simulator and on a real arm.
 GENERAL_BUILD_PACKAGES = ("coord2b", "Eigen3", "orocos_kdl", "kdl_parser", "tomlplusplus")
-# A model that publishes, sends a goal or answers one links these; one that talks to nothing
-# does not, so a report for a purely offline model can show these missing and still build.
+# Only a model that publishes, sends a goal or answers one links these; an installation without
+# ROS reports them absent rather than missing, and generates, builds and runs regardless.
 ROS_BUILD_PACKAGES = ("rclcpp", "realtime_tools", "action_msgs", "rclcpp_action")
 # `(package, version)`; the generated CMakeLists asks for that version, so a check that ignores
 # it passes on an install the build then rejects.
@@ -35,8 +35,8 @@ MUJOCO_BUILD_PACKAGES = (("mj_kdl_wrapper", "0.3.17"),)
 # rosidl spells its case-conversion helper differently across distros; either will do.
 # ament_index_python resolves a scene asset that names a package rather than a path, so a
 # generation reaches for it long before anything ROS-shaped appears in the model.
-CODEGEN_IMPORTS = ("rosidl_runtime_py", "ament_index_python")
-CODEGEN_ALTERNATIVES = (("rosidl_pycommon", "rosidl_cmake"),)
+ROS_IMPORTS = ("rosidl_runtime_py", "ament_index_python")
+ROS_ALTERNATIVES = (("rosidl_pycommon", "rosidl_cmake"),)
 # `stst` is a Java program built by ant, and `protoc` compiles the frame-log schema every
 # generation carries: the generator shells out to all three.
 CODEGEN_EXECUTABLES = ("java", "ant", "protoc")
@@ -398,25 +398,6 @@ def check_health(profiles: tuple[str, ...], targets: tuple[str, ...] = ()) -> li
                 )
             )
     if "codegen" in selected:
-        for module in CODEGEN_IMPORTS:
-            path = _module_path(module)
-            checks.append(
-                HealthCheck(
-                    "codegen", module, _module_what(path), path, path is not None, _remedy(module)
-                )
-            )
-        for alternatives in CODEGEN_ALTERNATIVES:
-            path = next((found for name in alternatives if (found := _module_path(name))), None)
-            checks.append(
-                HealthCheck(
-                    "codegen",
-                    " or ".join(alternatives),
-                    _module_what(path),
-                    path,
-                    path is not None,
-                    _remedy(alternatives[0]),
-                )
-            )
         from motion_spec.setup import find_stst
 
         path = find_stst()
@@ -432,6 +413,47 @@ def check_health(profiles: tuple[str, ...], targets: tuple[str, ...] = ()) -> li
                     "codegen", executable, "executable", path, path is not None, _remedy(executable)
                 )
             )
+    if "ros" in selected:
+        for module in ROS_IMPORTS:
+            path = _module_path(module)
+            checks.append(
+                HealthCheck(
+                    "ros",
+                    module,
+                    _module_what(path),
+                    path,
+                    path is not None,
+                    _remedy(module),
+                    optional=True,
+                )
+            )
+        for alternatives in ROS_ALTERNATIVES:
+            path = next((found for name in alternatives if (found := _module_path(name))), None)
+            checks.append(
+                HealthCheck(
+                    "ros",
+                    " or ".join(alternatives),
+                    _module_what(path),
+                    path,
+                    path is not None,
+                    _remedy(alternatives[0]),
+                    optional=True,
+                )
+            )
+        for package in ROS_BUILD_PACKAGES:
+            name, version = _named(package)
+            path = _cmake_package_path(name, version=version)
+            checks.append(
+                HealthCheck(
+                    "ros",
+                    name,
+                    "CMake package",
+                    path,
+                    path is not None,
+                    _remedy(name),
+                    optional=True,
+                )
+            )
     if "build" in selected:
         for executable in ("cmake", "c++"):
             path = shutil.which(executable)
@@ -445,7 +467,7 @@ def check_health(profiles: tuple[str, ...], targets: tuple[str, ...] = ()) -> li
                     f"install {executable} on PATH",
                 )
             )
-        for package in (*GENERAL_BUILD_PACKAGES, *ROS_BUILD_PACKAGES):
+        for package in GENERAL_BUILD_PACKAGES:
             name, version = _named(package)
             path = _cmake_package_path(name, version=version)
             checks.append(

@@ -16,16 +16,34 @@ into RDF.
 Companion code for the RAL paper *From Composable Models to Correct-by-Construction Software
 for Contact-Rich Robotic Mobile-Manipulation Tasks*.
 
+## Installation
+
+`motion-spec` is one package in a workspace. [grc_meta](https://github.com/secorolab/grc_meta)
+sets all of them up in one command, and that is the supported installation:
+
+```bash
+mkdir -p ws/src
+git clone git@github.com:secorolab/grc_meta.git ws/src/grc_meta
+ws/src/grc_meta/script-setup --check ws     # what is missing, changing nothing
+ws/src/grc_meta/script-setup ws             # import, build, verify
+source ws/setup-grc.bash                    # or .zsh
+```
+
+ROS is optional (`--no-ros`) and the robot hardware backends are off until asked for
+(`--with-hardware`). Full instructions, including the ROS-free build and the
+library-only install: **[Setup](https://secorolab.github.io/motion-spec/setup.html)**.
+
 ## Requirements
 
 | | |
 |---|---|
 | Python | 3.10+, with Click, RDFLib, rdf-utils, and Jinja |
 | Authoring | motion-spec-dsl, coord-dsl, scene-dsl, textX |
-| Generation | STSTv4 (needs Git, Java, Ant) and `protoc` |
+| Generation | STSTv4 (needs Git, a JDK, Ant) and `protoc` |
 | Build | CMake, a C++20 compiler, coord2b, Eigen, Orocos KDL, kdl_parser, toml++ |
 | MuJoCo target | mj_kdl_wrapper |
 | Real-robot target | robif2b, urdfdom, urdfdom_headers |
+| ROS (optional) | rclcpp, realtime_tools, rosidl_runtime_py — only for a model that publishes a topic or drives an action |
 
 Orocos KDL must be the [secorolab fork](https://github.com/secorolab/orocos_kinematics_dynamics):
 generated controllers call the Vereshchagin solvers with fixed joints. The workspace packages

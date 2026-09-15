@@ -2,29 +2,148 @@
 Setup
 =====
 
-Installation
-============
-
-The base package provides the CLI, the authoring DSL, RDF-to-IR lowering, and C++
-generation.
-Install optional features only where they are needed:
+``motion-spec`` is one package in a workspace: the authoring DSLs, the RDF
+metamodels, the kinematics fork its generated controllers link, and the
+simulator wrapper are separate repositories. ``grc_meta`` sets all of them up in
+one command, and that is the supported installation.
 
 .. code-block:: console
 
-   $ python -m venv .venv
-   $ source .venv/bin/activate
-   $ python -m pip install /path/to/motion-spec
-   $ motion-spec install validation
-   $ motion-spec install introspection
+   $ mkdir -p ws/src
+   $ git clone git@github.com:secorolab/grc_meta.git ws/src/grc_meta
+   $ ws/src/grc_meta/script-setup --check ws     # what is missing, changing nothing
+   $ ws/src/grc_meta/script-setup ws             # import, build, verify
+   $ source ws/setup-grc.bash                    # or .zsh
 
-``motion-spec install all`` installs every optional Python feature. The package
-extras are ``validation``, ``introspection``, and ``all``. ``motion-spec install
-dsl`` installs the compilers: none of them are published on PyPI, so each is
-taken from its sibling checkout when the workspace has one and from its
-secorolab repository otherwise.
+``--check`` reports every missing prerequisite at once, with the ``apt-get``
+line that installs them; the only steps needing ``sudo`` are that line and
+``rosdep init``. Setup then imports the repositories, creates ``ws/.venv``,
+installs the Python packages, builds the workspace, installs the STST code
+generator, and finishes by running :ref:`motion-spec health <health-checks>`.
+
+Use HTTPS repository URLs on a machine without GitHub SSH configured:
+
+.. code-block:: console
+
+   $ GRC_GIT_TRANSPORT=https ws/src/grc_meta/script-setup ws
+
+Choosing what to build
+======================
+
+.. list-table::
+   :header-rows: 1
+   :width: 100%
+
+   * - Option
+     - What it does
+   * - *(none)*
+     - Build against the ROS distribution in ``$ROS_DISTRO``, or the single one
+       installed under ``/opt/ros``. Simulation backends only.
+   * - ``--ros <distro>``
+     - Build against that distribution, failing if it is not installed. Needed
+       when several are.
+   * - ``--no-ros``
+     - Build without ROS at all: plain CMake, no colcon, no rosdep.
+   * - ``--with-hardware``
+     - Also build the robot device backends: Kinova Kortex, EtherCat, Kelo and
+       Robotiq. Off by default — a simulation workspace does not need them, and
+       the Kortex API is a proprietary download.
+   * - ``--smoke``
+     - After setup, generate, build and run one model headless, as proof the
+       installation works end to end.
+
+Without ROS
+-----------
+
+ROS is optional. The generated controller asks for ``rclcpp`` only when the
+model communicates over ROS, and the simulator wrapper builds its camera
+publisher only when ROS is present, so a ROS-free workspace generates, builds
+and runs every model that talks to nothing outside itself.
+
+What a ROS-free workspace cannot do is generate a model that publishes a topic,
+sends an action goal or answers one: reading a ROS message's shape needs
+``rosidl_runtime_py``, which comes with the distribution. ``motion-spec health
+--profile ros`` reports those dependencies as absent rather than missing, and
+the generator says so plainly if a model asks for them anyway.
+
+The two modes build differently, and the scripts remember which one a workspace
+was set up as (in ``ws/.grc-mode``):
+
+.. list-table::
+   :header-rows: 1
+   :width: 100%
+
+   * -
+     - With ROS
+     - Without ROS
+   * - Build driver
+     - ``colcon build``, options from ``colcon.meta``
+     - ``cmake`` per package, in dependency order, options from ``grc-lib.sh``
+   * - System dependencies
+     - ``rosdep``
+     - the ``apt-get`` line from ``--check``
+   * - Environment
+     - sources ``/opt/ros/<distro>/setup.*`` and the colcon overlay
+     - exports ``CMAKE_PREFIX_PATH``, ``LD_LIBRARY_PATH`` and ``PATH``
+
+Python
+------
+
+``uv`` is used when it is installed, because it is much faster, and
+``python3 -m venv`` with ``pip`` when it is not. Neither is required to be
+present in advance and both produce the same workspace virtual environment at
+``ws/.venv``.
+
+Keeping a workspace up to date
+==============================
+
+.. code-block:: console
+
+   $ "$GRC" sync     # update every repo to what grc_meta.repos declares, rebuild what moved
+   $ "$GRC" build    # rebuild everything and refresh the editable Python installs
+   $ "$GRC" mj       # rebuild mj_kdl_wrapper alone (it compiles twice)
+
+``$GRC`` is exported by the generated environment file, so a sourced shell never
+needs the script paths, the workspace path or the distribution. See the
+`grc_meta README <https://github.com/secorolab/grc_meta>`_ for the update rules
+these follow — fast-forward only, never a merge commit, and no repository ever
+loses local work.
+
+The generated environment exports:
+
+.. list-table::
+   :header-rows: 1
+   :width: 100%
+
+   * - Variable
+     - Meaning
+   * - ``GRC_WS``
+     - The workspace root.
+   * - ``INSTALL``
+     - The install prefix generated controllers are built against.
+   * - ``MOTION_SPEC_GEN``
+     - Where ``motion-spec gen`` and ``run`` write a generation given no ``-o``.
+   * - ``METAMODELS_PATH``
+     - The metamodels checkout, for validation.
+   * - ``GRC``
+     - The workspace entry point described above.
+
+Docker
+======
+
+``grc_meta``'s ``script-docker`` builds a development image with the system
+packages preinstalled and runs it with the host display and GPU forwarded, so
+the MuJoCo GUI renders on your screen. Inside the container:
+
+.. code-block:: console
+
+   $ GRC_GIT_TRANSPORT=https /grc_meta/script-setup ws
+   $ source ws/setup-grc.bash
 
 Dependencies
 ============
+
+These tables mirror what ``motion-spec health`` checks.
 
 Python profiles
 ---------------
@@ -57,6 +176,10 @@ Python profiles
        `REC <https://github.com/secorolab/rec>`_, and
        `Protocol Buffers <https://github.com/protocolbuffers/protobuf>`_
      - Recording, archive verification, replay, and runtime RDF
+   * - ROS *(optional)*
+     - ``rosidl_runtime_py``, ``ament_index_python``, and ``rosidl_pycommon``
+       or ``rosidl_cmake``, all from the ROS distribution
+     - Generating a model that publishes a topic or drives a ROS action
 
 Generation and common runtime
 -----------------------------
@@ -71,9 +194,9 @@ Generation and common runtime
      - Rendering generated C++
    * - `Protocol Buffers compiler <https://protobuf.dev/>`_
      - Generating the C++ frame-log codec
-   * - `Git <https://git-scm.com/>`_, `Java <https://openjdk.org/>`_, and
-       `Apache Ant <https://ant.apache.org/>`_
-     - Building the managed STST installation
+   * - `Git <https://git-scm.com/>`_, a JDK, and `Apache Ant <https://ant.apache.org/>`_
+     - Building the managed STST installation. A JRE is not enough: STST is
+       compiled from source, and the ``ant`` package depends only on a runtime.
    * - `CMake <https://cmake.org/>`_ and `GCC <https://gcc.gnu.org/>`_ or another C++ compiler
      - Configuring and compiling generated controllers
    * - `coord2b <https://github.com/rosym-project/coord2b>`_,
@@ -103,36 +226,33 @@ Target dependencies
      - `robif2b <https://github.com/secorolab/robif2b>`_,
        `urdfdom_headers <https://github.com/ros/urdfdom_headers>`_, and
        `urdfdom <https://github.com/ros/urdfdom>`_
-   * - robif2b devices (optional)
+   * - robif2b devices (``--with-hardware``)
      - `serial <https://github.com/secorolab/serial>`_ and
        `robotiq_driver_noros <https://github.com/secorolab/robotiq_driver_noros>`_,
        which drives both the gripper and the force-torque sensor
 
-These tables mirror ``motion-spec health``. The device drivers are optional:
-robif2b builds each wrapper only when its flag is on. A model's ROS interface
-packages are not listed — the generated ``CMakeLists.txt`` asks for whichever
-ones that model declares. ``hddc2b`` is optional for base solvers and is not a
-core health check.
+The device drivers are optional: robif2b builds each wrapper only when its flag
+is on. A model's ROS interface packages are not listed — the generated
+``CMakeLists.txt`` asks for whichever ones that model declares. ``hddc2b`` is
+optional for base solvers and is not a core health check.
 
 Code generation
 ===============
 
-C++ generation requires STST and ``protoc``. Install the pinned STST version
-with:
+C++ generation requires STST and ``protoc``. ``script-setup`` installs the
+pinned STST itself; to install or repair it by hand:
 
 .. code-block:: console
 
-   $ motion-spec setup
+   $ motion-spec setup --prefix "$GRC_WS"
+   $ motion-spec setup --prefix "$GRC_WS" --force   # rebuild a broken installation
+   $ motion-spec setup --prefix "$GRC_WS" --clean   # remove it
 
-The default launcher is ``~/.local/bin/stst``. A local installation prefix and
-its matching cleanup are:
+The launcher is written to ``PREFIX/bin/stst``, which the workspace environment
+puts on ``PATH``; with no ``--prefix`` it goes to ``~/.local/bin``. STST setup
+requires Git, a JDK and Ant.
 
-.. code-block:: console
-
-   $ motion-spec setup --prefix /path/to/workspace
-   $ motion-spec setup --prefix /path/to/workspace --clean
-
-STST setup requires Git, Java, and Ant.
+.. _health-checks:
 
 Health checks
 =============
@@ -144,34 +264,54 @@ Health checks
    $ motion-spec health
    $ motion-spec health --profile dsl
    $ motion-spec health --profile codegen
+   $ motion-spec health --profile ros
    $ motion-spec health --target mujoco
    $ motion-spec health --target robif2b
 
 The health profiles are ``base``, ``validation``, ``introspection``, ``dsl``,
-``codegen``, ``build``, and ``runtime``. Build and runtime are evaluated per
-target: everything both targets share is reported under ``build``, and only
-what a target adds appears under ``build[mujoco]`` or ``build[robif2b]``.
-Missing optional profiles do not invalidate a base-only installation; the
-``dsl`` profile reports the transitive authoring dependencies separately so
-installation problems are actionable.
+``codegen``, ``ros``, ``build``, and ``runtime``. Build and runtime are
+evaluated per target: everything both targets share is reported under ``build``,
+and only what a target adds appears under ``build[mujoco]`` or
+``build[robif2b]``.
 
 Every check names what its dependency is for, where it comes from, and the
 command that installs it. A module resolved from a source tree rather than
-``site-packages`` is reported as editable. Ones absent by build option report
-``ABSENT`` and do not set a non-zero exit status; only missing ones do.
+``site-packages`` is reported as editable. Dependencies that are absent by
+choice — a device wrapper whose flag is off, ROS on a ROS-free workspace —
+report ``ABSENT`` and do not set a non-zero exit status; only missing ones do.
 
 The dashboard shows the same report under **Health**. Installing into a new
 location while it runs needs a restart — an editable install adds its path in a
 ``.pth`` file, which Python reads only at interpreter startup.
 
-Development checkout
-====================
+As a library
+============
 
-Use the workspace virtual environment:
+``motion-spec`` can be installed on its own, for a tool that reads a generation
+or drives the IR. This installs no DSL compiler, no kinematics and no simulator,
+so it cannot build or run a controller — use the workspace above for that.
 
 .. code-block:: console
 
-   $ cd /path/to/workspace
+   $ python -m pip install /path/to/motion-spec
+   $ motion-spec install validation
+   $ motion-spec install introspection
+
+``motion-spec install all`` installs every optional Python feature. The package
+extras are ``validation``, ``introspection``, ``dashboard``, ``replay`` and
+``all``. ``motion-spec install dsl`` adds the compilers: none of them are
+published on PyPI, so each is taken from its sibling checkout when the workspace
+has one and from its secorolab repository otherwise.
+
+Development checkout
+====================
+
+The workspace virtual environment already has every package installed editable.
+To reinstall one by hand:
+
+.. code-block:: console
+
+   $ cd "$GRC_WS"
    $ source .venv/bin/activate
    $ python -m pip install --no-deps -e src/motion-spec
 

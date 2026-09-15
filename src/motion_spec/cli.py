@@ -510,7 +510,12 @@ def _port_taken(port: int) -> bool:
     help="Installation prefix; the launcher is written to PREFIX/bin.",
 )
 @click.option("--clean", is_flag=True, help="Remove the managed STST installation and exit.")
-def setup(prefix: Path, clean: bool) -> None:
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Rebuild the managed STST even when a launcher is already installed.",
+)
+def setup(prefix: Path, clean: bool, force: bool) -> None:
     """Install the pinned STST code-generation tool."""
     from motion_spec.setup import install_stst, remove_stst
 
@@ -519,7 +524,7 @@ def setup(prefix: Path, clean: bool) -> None:
         if clean:
             click.echo("removed" if remove_stst(prefix) else "nothing to remove")
             return
-        launcher = install_stst(prefix)
+        launcher = install_stst(prefix, force=force)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
         raise _internal_failure("STST setup failed", exc) from exc
     click.echo(launcher)
@@ -546,7 +551,7 @@ def install(features: tuple[str, ...]) -> None:
     "profiles",
     multiple=True,
     type=click.Choice(
-        ("base", "validation", "introspection", "dsl", "codegen", "build", "runtime", "all")
+        ("base", "validation", "introspection", "dsl", "codegen", "ros", "build", "runtime", "all")
     ),
     default=("all",),
     show_default=True,
@@ -570,6 +575,7 @@ def health(profiles: tuple[str, ...], targets: tuple[str, ...]) -> None:
         "introspection": "required for recording and replay",
         "dsl": "required for DSL generation",
         "codegen": "required for C++ generation",
+        "ros": "required only for models with ROS communication",
         "build": "required to build generated C++",
         "runtime": "required to run generated controllers",
         "build[mujoco]": "required to build the MuJoCo target",

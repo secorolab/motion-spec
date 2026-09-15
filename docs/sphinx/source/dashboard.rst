@@ -60,7 +60,7 @@ run; notes live in ``notes.json``. A model's ``dashboard-model.json`` records it
 These ordinary JSON annotation files are separate from the generated RDF and REC provenance.
 
 Returning to an investigation
-----------------------------
+-----------------------------
 
 Archived replay views remember open plots, signals, zoom, panel, camera and cursor when leaving
 or reloading. Named plot presets reuse signal choices across runs of the same model; unavailable

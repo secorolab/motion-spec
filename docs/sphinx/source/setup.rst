@@ -274,9 +274,12 @@ evaluated per target: everything both targets share is reported under ``build``,
 and only what a target adds appears under ``build[mujoco]`` or
 ``build[robif2b]``.
 
-Every check names what its dependency is for, where it comes from, and the
-command that installs it. A module resolved from a source tree rather than
-``site-packages`` is reported as editable. Dependencies that are absent by
+Every check names what its dependency is for and where it comes from. What apt
+provides is gathered into one ``sudo apt-get install -y`` line under the summary,
+rather than a command per row to assemble by hand; anything apt cannot serve — a
+workspace package, the STST installation, a device wrapper whose flag is off —
+keeps its own ``fix:`` line where it was reported. A module resolved from a
+source tree rather than ``site-packages`` is reported as editable. Dependencies that are absent by
 choice — a device wrapper whose flag is off, ROS on a ROS-free workspace —
 report ``ABSENT`` and do not set a non-zero exit status; only missing ones do.
 

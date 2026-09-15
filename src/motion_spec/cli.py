@@ -566,7 +566,7 @@ def install(features: tuple[str, ...]) -> None:
 )
 def health(profiles: tuple[str, ...], targets: tuple[str, ...]) -> None:
     """Report health of selected installation profiles."""
-    from motion_spec.health import check_health
+    from motion_spec.health import APT_REMEDY, apt_packages, check_health
 
     checks = check_health(profiles, targets)
     requirements = {
@@ -605,7 +605,9 @@ def health(profiles: tuple[str, ...], targets: tuple[str, ...]) -> None:
                 click.secho(f"          why: {check.why}", fg="yellow")
             if check.source:
                 click.secho(f"          source: {check.source}", fg="yellow")
-            click.secho(f"          fix: {check.detail}", fg="yellow")
+            # What apt provides is gathered into the one install line below instead.
+            if not check.detail.startswith(APT_REMEDY):
+                click.secho(f"          fix: {check.detail}", fg="yellow")
     missing = sum(not check.ok and not check.optional for check in checks)
     absent = sum(not check.ok and check.optional for check in checks)
     click.echo()
@@ -619,6 +621,11 @@ def health(profiles: tuple[str, ...], targets: tuple[str, ...]) -> None:
         click.echo("0 missing", nl=False)
     # An absent optional is a fact about this workspace, not a fault: say it, do not fail on it.
     click.echo(f", {absent} absent by build option" if absent else "")
+    packages = apt_packages(checks)
+    if packages:
+        click.echo()
+        click.secho("Install what apt provides, in one line:", bold=True, fg="blue")
+        click.secho(f"  sudo apt-get install -y {' '.join(packages)}", fg="cyan")
     if missing:
         raise click.exceptions.Exit(1)
 

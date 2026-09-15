@@ -47,6 +47,8 @@ OPTIONAL_BUILD_PACKAGES = frozenset({"serial", "robotiq_driver_noros"})
 # TODO: Check hddc2b only when the generated model selects an HDDC2B base solver.
 
 _WORKSPACE = "$GRC_WS"
+# The remedies apt answers, which the report gathers into one install line.
+APT_REMEDY = "apt install "
 # What to do about a missing dependency: the one command that gets it. "Install it" is not an
 # instruction, so every dependency this checks names its own source -- an apt package, a
 # workspace package, or the flag whose absence left it unbuilt.
@@ -359,6 +361,23 @@ def _cmake_package_path(
         return target
 
 
+def apt_packages(checks: list[HealthCheck]) -> list[str]:
+    """The apt packages that would fix every missing check, in the order they were reported.
+
+    A remedy per row is a row-by-row installation: eight of them are eight apt invocations
+    to assemble by hand. The ones apt provides are the same command, so they are collected
+    into one, and each stays named where it was reported.
+    """
+    packages: list[str] = []
+    for check in checks:
+        if check.ok or check.optional or not check.detail.startswith(APT_REMEDY):
+            continue
+        for package in check.detail[len(APT_REMEDY) :].split():
+            if package not in packages:
+                packages.append(package)
+    return packages
+
+
 def _named(package) -> tuple[str, str | None]:
     """A build package as `(name, required version)`, whichever way it was written."""
     return package if isinstance(package, tuple) else (package, None)
@@ -459,12 +478,7 @@ def check_health(profiles: tuple[str, ...], targets: tuple[str, ...] = ()) -> li
             path = shutil.which(executable)
             checks.append(
                 HealthCheck(
-                    "build",
-                    executable,
-                    "executable",
-                    path,
-                    path is not None,
-                    f"install {executable} on PATH",
+                    "build", executable, "executable", path, path is not None, _remedy(executable)
                 )
             )
         for package in GENERAL_BUILD_PACKAGES:

@@ -356,6 +356,46 @@ def test_health_is_profile_scoped() -> None:
     assert "Summary: 5 good, 0 missing" in result.output
 
 
+def test_health_gathers_apt_remedies_into_one_line(monkeypatch) -> None:
+    from motion_spec.health import APT_REMEDY, HealthCheck
+
+    checks = [
+        HealthCheck("build", "cmake", "executable", None, False, f"{APT_REMEDY}cmake"),
+        HealthCheck("build", "c++", "executable", None, False, f"{APT_REMEDY}build-essential"),
+        HealthCheck(
+            "build",
+            "Protobuf",
+            "CMake package",
+            None,
+            False,
+            f"{APT_REMEDY}libprotobuf-dev protobuf-compiler",
+        ),
+        HealthCheck("codegen", "stst", "executable", None, False, "motion-spec setup"),
+        HealthCheck(
+            "ros",
+            "rclcpp",
+            "CMake package",
+            None,
+            False,
+            f"{APT_REMEDY}ros-$ROS_DISTRO-rclcpp",
+            optional=True,
+        ),
+    ]
+    monkeypatch.setattr("motion_spec.health.check_health", lambda *_a, **_kw: checks)
+
+    result = CliRunner().invoke(main, ["health"])
+
+    assert (
+        "sudo apt-get install -y cmake build-essential libprotobuf-dev protobuf-compiler"
+        in result.output
+    )
+    # One command for everything apt answers, not one per row.
+    assert APT_REMEDY not in result.output
+    # A remedy apt cannot serve keeps its own line; an absent optional asks for nothing.
+    assert "fix: motion-spec setup" in result.output
+    assert "ros-$ROS_DISTRO-rclcpp" not in result.output
+
+
 def test_stst_on_path_wins_over_managed(monkeypatch, tmp_path) -> None:
     managed = tmp_path / "bin" / "stst"
     managed.parent.mkdir()

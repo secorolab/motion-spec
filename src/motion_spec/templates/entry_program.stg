@@ -22,9 +22,11 @@ main_source(configuration, resources, composition, computation, coordination, co
 <app-chain-includes(configuration.backend, resources.by_kind.serial_chain, resources, communication.ros)>
 #include \<unistd.h\>
 <if(composition.sampling)>
+#include \<chrono\>
 #include \<cstdint\>
 #include \<cstdlib\>
 #include \<cstring\>
+#include \<ctime\>
 #include \<fstream\>
 #include \<iomanip\>
 #include \<random\>
@@ -345,10 +347,23 @@ sampling-draws(sampling) ::= <<
         }
     }
     std::mt19937_64 sampling_rng(sampling_seed);
+    const auto sampling_time = std::chrono::system_clock::now();
 <sampling:{s | <sampling-draw(s)>}; separator="\n">
     if (const char *sampling_path = std::getenv("MOTION_SPEC_SAMPLING_PATH")) {
+        // The draw is what provenance dates, and it happens here, before the first frame.
+        const auto sampling_epoch = sampling_time.time_since_epoch();
+        const auto sampling_us =
+            std::chrono::duration_cast\<std::chrono::microseconds\>(sampling_epoch).count();
+        const std::time_t sampling_secs = static_cast\<std::time_t\>(sampling_us / 1000000);
+        std::tm sampling_utc{};
+        gmtime_r(&sampling_secs, &sampling_utc);
+        char sampling_stamp[32];
+        std::strftime(sampling_stamp, sizeof(sampling_stamp), "%Y-%m-%dT%H:%M:%S", &sampling_utc);
         std::ofstream sampling_out(sampling_path);
-        sampling_out \<\< std::setprecision(17) \<\< R"({"seed": )" \<\< sampling_seed \<\< R"(, "draws": {)";
+        sampling_out \<\< std::setprecision(17) \<\< R"({"seed": )" \<\< sampling_seed
+                     \<\< R"(, "drawn_at": ")" \<\< sampling_stamp \<\< "." \<\< std::setfill('0')
+                     \<\< std::setw(6) \<\< (sampling_us % 1000000) \<\< std::setfill(' ')
+                     \<\< R"(Z", "draws": {)";
         bool sampling_first = true;
 <sampling:{s | <sampling-record(s)>}; separator="\n">
         sampling_out \<\< "}}\\n";

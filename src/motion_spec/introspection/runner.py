@@ -36,6 +36,7 @@ from motion_spec.introspection.provenance import (
     record_activities,
     record_agents,
     repositories,
+    run_entity_uri,
 )
 from motion_spec.introspection.ros_video import RosImageRecorder, real_camera_recordings
 
@@ -55,8 +56,13 @@ def run_cataloged(
     recover_runtime_ttl: bool = False,
     record: list[str] | None = None,
     record_log: bool = True,
+    env: dict[str, str] | None = None,
+    environment_provenance: dict | None = None,
 ) -> int:
-    """Run a generated executable with REC lifecycle and archive provenance."""
+    """Run a generated executable with REC lifecycle and archive provenance.
+
+    ENV is what the executable runs under; ENVIRONMENT_PROVENANCE is what the run records of it.
+    """
     run_dir = Path(run_dir)
     source_dir = Path(source_dir)
     executable = Path(executable).resolve()
@@ -74,7 +80,9 @@ def run_cataloged(
     )
     schema = json.loads(schema_path.read_text())
     run_dir.mkdir(parents=True, exist_ok=True)
-    _start_rec_run(run_dir, run_id, source_dir, executable, schema)
+    _start_rec_run(
+        run_dir, run_id, source_dir, executable, schema, environment=environment_provenance
+    )
 
     try:
         with (
@@ -90,6 +98,7 @@ def run_cataloged(
                 rec_path=rec_path,
                 record=record,
                 record_log=record_log,
+                base_env=env,
             )
     except Exception:
         _finish_rec_run(rec_path, run_id, "FAILED")
@@ -329,7 +338,12 @@ def _validate_new_run(
 
 
 def _start_rec_run(
-    run_dir: Path, run_id: str, source_dir: Path, executable: Path, schema: dict
+    run_dir: Path,
+    run_id: str,
+    source_dir: Path,
+    executable: Path,
+    schema: dict,
+    environment: dict | None = None,
 ) -> None:
     ensure_local_rec_importable()
     from rec import Run
@@ -340,7 +354,7 @@ def _start_rec_run(
     observer = FileObserver(run_dir / "rec.ld.json", run_iri=prov_uri(f"run:{run_id}"))
     run = Run(observers=[observer], run_id=run_id)
     run._emit_started()
-    run.log_host_info(host_info())
+    run.log_host_info(host_info(environment))
     run.log_repositories(repositories(run_dir))
     run.log_dependencies(dependencies())
     record_agents(run, run_dir, schema)
@@ -513,11 +527,14 @@ def _run_executable(
     rec_path: Path,
     record: list[str] | None = None,
     record_log: bool = True,
+    base_env: dict[str, str] | None = None,
 ) -> int:
     # logs/ holds the console tee and any camera videos too, so it is made whether or not the
     # frame log goes in it.
     frame_log.parent.mkdir(parents=True, exist_ok=True)
-    env = os.environ.copy()
+    # The run's own variables are set on top of whatever the caller's environment file left,
+    # so a sourced ROS overlay reaches the controller and the frame log still lands here.
+    env = dict(base_env) if base_env is not None else os.environ.copy()
     # An empty path is how the runtime is told to record nothing (--no-log).
     env["MOTION_SPEC_FRAME_LOG"] = str(frame_log.resolve()) if record_log else ""
     env["MOTION_SPEC_RUN_ID"] = run_id
@@ -609,7 +626,7 @@ def _finish_rec_run(rec_path: Path, run_id: str, status: str) -> None:
 
 
 def _record_sampling(rec_path: Path, run_id: str, path: Path) -> None:
-    """The seed and every drawn value, as metrics of the run that drew them."""
+    """The seed as a metric of the run, and each drawn value as an entity the run generated."""
     ensure_local_rec_importable()
     from rec import Run
     from rec.observers import FileObserver
@@ -620,11 +637,36 @@ def _record_sampling(rec_path: Path, run_id: str, path: Path) -> None:
     run._id = run_id
     run.log_scalar("sampling/seed", sampling["seed"])
     for uri, draw in sorted(sampling["draws"].items()):
-        values = draw["values"]
-        names = [uri] if len(values) == 1 else [f"{uri}/{axis}" for axis in "xyz"]
-        for name, value in zip(names, values):
-            run.log_scalar(name, value)
+        _record_draw(observer, run_id, uri, draw["values"], sampling.get("drawn_at"))
     observer.close()
+
+
+def _record_draw(
+    observer, run_id: str, uri: str, values: list[float], drawn_at: str | None
+) -> None:
+    """One draw, as the coordinate this run made of the quantity the generation declared.
+
+    The unit, the kind and the distribution stay on the declared quantity, which every run of
+    the generation shares; `prov:specializationOf` is how a reader gets from one to the other.
+    """
+    from motion_spec_dsl.rdf_parser.vocab import GEOM_COORD, QUDT_SCHEMA
+    from rdflib import Literal, URIRef
+    from rdflib.namespace import PROV, RDF, XSD
+
+    entity = URIRef(run_entity_uri(run_id, f"draw/{uri}"))
+    graph = observer.graph
+    if len(values) == 3:
+        graph.add((entity, RDF.type, URIRef(GEOM_COORD["VectorXYZ"])))
+        graph.add((entity, RDF.type, URIRef(GEOM_COORD["PositionCoordinate"])))
+        for axis, value in zip("xyz", values):
+            graph.set((entity, URIRef(GEOM_COORD[axis]), Literal(float(value))))
+    else:
+        graph.set((entity, URIRef(QUDT_SCHEMA["value"]), Literal(float(values[0]))))
+    graph.add((observer.run, PROV.generated, entity))
+    graph.set((entity, PROV.wasGeneratedBy, observer.run))
+    graph.set((entity, PROV.specializationOf, URIRef(uri)))
+    if drawn_at:
+        graph.set((entity, PROV.generatedAtTime, Literal(drawn_at, datatype=XSD.dateTime)))
 
 
 def _rec_status(rec_path: Path) -> str | None:

@@ -17,7 +17,7 @@ import rdflib
 
 from motion_spec_dsl.rdf_parser.vocab import APP
 
-from motion_spec.utils import generation_log, tee
+from motion_spec.utils import generation_log, tee, tool_environment
 
 PROV = rdflib.Namespace("http://www.w3.org/ns/prov#")
 
@@ -183,7 +183,22 @@ def create_generation_dir(
     base = output_dir or Path.cwd() / "generation"
     generation = base / (name or model.stem) / datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     generation.mkdir(parents=True, exist_ok=False)
-    return generation.resolve()
+    generation = generation.resolve()
+    _copy_config(generation)
+    return generation
+
+
+def _copy_config(generation: Path) -> None:
+    """Keep the settings this generation was made under; a later one may be made under others.
+
+    From the generation first: `-o` aside, it sits in the workspace whose config applied, which
+    the working directory need not be anywhere near.
+    """
+    from motion_spec.config import CONFIG_FILE, find_config
+
+    path = find_config(generation) or find_config()
+    if path is not None:
+        shutil.copy2(path, generation / CONFIG_FILE)
 
 
 def generate_model(
@@ -204,8 +219,9 @@ def generate_model(
     # model belongs with this model's artifacts, not in the workspace's own record.
     dsl_returncode = tee(
         ["textx", "generate", str(model.resolve()), "--target", "jsonld", "-o", str(model_dir)],
-        log=generation_log(generation, "gen"),
+        log=generation_log(generation),
         cwd=model.parent,
+        env=tool_environment(env),
         check=False,
     )
     if dsl_returncode:
@@ -277,7 +293,7 @@ def build_generation(
         configure.append(
             f"-DCMAKE_PREFIX_PATH={';'.join(str(path.resolve()) for path in prefixes)}"
         )
-    log = generation_log(generation, "build")
+    log = generation_log(generation)
     tee(configure, log=log, env=env)
     command = ["cmake", "--build", str(build), "--parallel"]
     if jobs is not None:

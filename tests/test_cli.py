@@ -177,7 +177,7 @@ def test_gen_and_run_compose_the_model_pipeline(monkeypatch, tmp_path) -> None:
         output.mkdir()
         return output
 
-    def generate(_model, generation, *, stage):
+    def generate(_model, generation, *, stage, env=None):
         received.setdefault("stages", []).append(stage)
         generated = generation / "generated"
         (generated / "model").mkdir(parents=True)
@@ -347,7 +347,7 @@ def test_setup_installs_every_component_in_dependency_order(monkeypatch, tmp_pat
     monkeypatch.setattr(
         "motion_spec.setup.install_component",
         lambda component, root, prefix=None, force=False, build_type="", log=None,
-        options=None, ros=False: (
+        options=None, ros=False, editable=False: (
             installed.append((component.name, build_type))
             or stst_setup.SourceState(
                 stst_setup.source_directory(root, component.repository), True, True
@@ -380,7 +380,7 @@ def test_setup_asked_for_one_component_installs_only_it(monkeypatch, tmp_path) -
     monkeypatch.setattr(
         "motion_spec.setup.install_component",
         lambda component, root, prefix=None, force=False, build_type="", log=None,
-        options=None, ros=False: (
+        options=None, ros=False, editable=False: (
             installed.append(component.name)
             or stst_setup.SourceState(
                 stst_setup.source_directory(root, component.repository), True, True
@@ -884,7 +884,8 @@ def test_a_tool_is_shown_as_it_runs_and_kept_in_the_log(tmp_path) -> None:
 
     # Where each kind of log lives: the workspace's own record, and the generation it is about.
     assert command_log(tmp_path, "setup").parent == tmp_path / ".motion-spec" / "logs"
-    assert generation_log(tmp_path / "gen-1", "build") == tmp_path / "gen-1" / "logs" / "build.log"
+    # One console per generation: generating and building are read as the one sitting they were.
+    assert generation_log(tmp_path / "gen-1") == tmp_path / "gen-1" / "logs" / "console.log"
 
 
 def test_a_config_file_says_what_the_workspace_is_and_how_it_builds(monkeypatch, tmp_path):
@@ -975,7 +976,7 @@ def test_a_ros_workspace_builds_with_colcon_and_sources_the_overlay(monkeypatch,
     monkeypatch.setattr(
         "motion_spec.setup.install_component",
         lambda component, root, prefix=None, force=False, build_type="", log=None,
-        options=None, ros=False: (
+        options=None, ros=False, editable=False: (
             received.update(ros=ros) or stst_setup.SourceState(root, True, True)
         ),
     )
@@ -1059,7 +1060,7 @@ def test_setup_takes_its_build_options_from_the_config(monkeypatch, tmp_path) ->
     monkeypatch.setattr(
         "motion_spec.setup.install_component",
         lambda component, root, prefix=None, force=False, build_type="", log=None,
-        options=None, ros=False: (
+        options=None, ros=False, editable=False: (
             installed.append((component.name, build_type, options))
             or stst_setup.SourceState(root, True, True)
         ),

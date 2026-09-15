@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 import traceback
+import warnings
 from contextlib import contextmanager
 from importlib.metadata import PackageNotFoundError, distribution
 from importlib.util import find_spec
@@ -29,7 +30,16 @@ from motion_spec.setup import (
     DEFAULT_COMPONENTS,
     WORKSPACE_VARIABLE,
 )
-from motion_spec.utils import command_log
+from motion_spec.utils import (
+    LEVEL_LABELS,
+    LOG_DATEFMT,
+    STAMP_COLOUR,
+    command_log,
+    generation_log,
+    mirrored_stderr,
+    paint,
+    show_warning,
+)
 
 
 def _internal_failure(what: str, exc: Exception) -> click.ClickException:
@@ -46,19 +56,10 @@ def _internal_failure(what: str, exc: Exception) -> click.ClickException:
 GENERATION_DIR_ENV = "MOTION_SPEC_GEN"
 # Every line the CLI says about its own progress, so one command reads like the next. Results
 # -- a generation path, an executable, a launcher -- stay bare on stdout for a caller to read.
-_LEVELS = {
-    "info": {"fg": None},
-    "step": {"fg": "blue", "bold": True},
-    "warn": {"fg": "yellow", "bold": True},
-    "error": {"fg": "red", "bold": True},
-    "done": {"fg": "green", "bold": True},
-}
-
-
 def _stamp(level: str, err: bool = True) -> None:
     """The prefix every line carries, for one assembled in pieces."""
-    click.secho(f"{time.strftime('%H:%M:%S')}  ", fg="bright_black", nl=False, err=err)
-    click.secho(f"{level:<6} ", **_LEVELS[level], nl=False, err=err)
+    click.echo(paint(time.strftime(LOG_DATEFMT), STAMP_COLOUR) + "  ", nl=False, err=err)
+    click.echo(LEVEL_LABELS[level] + " ", nl=False, err=err)
 
 
 def _say(level: str, message: str = "", err: bool = True) -> None:
@@ -384,6 +385,7 @@ def main(ctx: click.Context) -> None:
     record(ctx.invoked_subcommand or "")
     install_metamodel_resolver()
     _route_tool_logging()
+    warnings.showwarning = show_warning
 
 
 # The toolchain's own libraries, named so a third-party logger cannot make the CLI chatty.
@@ -543,9 +545,10 @@ def dashboard(
         argv += ["--env", str(script)]
     with destination.open("ab") as sink:
         child = subprocess.Popen(argv, stdout=sink, stderr=sink, start_new_session=True)
-    click.echo(f"motion-spec dashboard: http://127.0.0.1:{port}")
-    click.echo(f"  pid {child.pid}, logging to {destination}")
-    click.echo(f"  stop it with: kill {child.pid}")
+    _say("info", f"pid {child.pid}, logging to {destination}")
+    _say("info", f"stop it with: kill {child.pid}")
+    _say("done", f"dashboard http://127.0.0.1:{port}")
+    click.echo(f"http://127.0.0.1:{port}")
 
 
 def _stop_dashboards(port: int | None) -> None:
@@ -572,9 +575,9 @@ def _stop_dashboards(port: int | None) -> None:
         where = f" on port {port}" if port else ""
         raise click.ClickException(f"no dashboard is serving{where}.")
     if found:
-        click.echo(f"stopped {len(found)} dashboard{'' if len(found) == 1 else 's'}: {found}")
+        _say("done", f"stopped {len(found)} dashboard{'' if len(found) == 1 else 's'}: {found}")
     if orphans:
-        click.echo(f"stopped {len(orphans)} stranded JupyterLab: {orphans}")
+        _say("done", f"stopped {len(orphans)} stranded JupyterLab: {orphans}")
 
 
 def _dashboard_pids(port: int | None) -> list[int]:
@@ -1009,11 +1012,13 @@ def gen(stage_or_model: str, model: Path | None, output_dir: Path | None, name: 
         raise click.BadParameter("MODEL must be a .robmot file", param_hint="MODEL")
     try:
         generation = _new_generation(model, output_dir, name)
-        generate_model(model, generation, stage=stage)
+        with mirrored_stderr(generation_log(generation)):
+            generate_model(model, generation, stage=stage)
     except ConstraintViolation as exc:
         raise _model_rejected(exc) from exc
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
         raise _internal_failure("generation failed", exc) from exc
+    _say("done", f"generated {generation}")
     click.echo(generation)
 
 
@@ -1041,9 +1046,11 @@ def build(
     generation = generation.resolve()
     env, _ = _environment(env_script, no_env, generation)
     try:
-        executable = build_generation(generation, prefixes=prefixes, jobs=jobs, env=env)
+        with mirrored_stderr(generation_log(generation)):
+            executable = build_generation(generation, prefixes=prefixes, jobs=jobs, env=env)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
         raise _internal_failure("build failed", exc) from exc
+    _say("done", f"built {executable}")
     click.echo(executable)
 
 
@@ -1127,7 +1134,7 @@ def archive(
     try:
         if verify:
             verify_manifest(run_dir)
-            click.echo("archive OK")
+            _say("done", "archive OK")
         else:
             create_archive_manifest(
                 run_dir,
@@ -1174,7 +1181,11 @@ def config(initialize: bool, workspace_argument: Path | None) -> None:
         written = write_sample(
             root, COMPONENT_OPTIONS, DEFAULT_COMPONENTS, declared=workspace_argument is not None
         )
-        click.echo(written or f"{root / CONFIG_FILE} already exists, left as it is")
+        if written:
+            _say("done", f"settings written to {written}")
+            click.echo(written)
+        else:
+            _say("info", f"{root / CONFIG_FILE} already exists, left as it is")
         return
 
     try:
@@ -1246,7 +1257,7 @@ def journal(count: int | None, as_json_flag: bool) -> None:
             click.echo(json.dumps(entry))
         return
     if not read:
-        click.echo(f"{path}: nothing recorded yet")
+        _say("info", f"{path}: nothing recorded yet")
         return
     width = max(len(entry.get("command", "")) for entry in read)
     for entry in read:
@@ -1312,7 +1323,7 @@ def replay(log: Path, jsonl: bool, verify: bool, recover_runtime_ttl: bool) -> N
         elif verify:
             _run_dir, log_path, _manifest, schema = resolve_archive(log)
             validate_header(log_path, schema)
-            click.echo("archive OK")
+            _say("done", "archive OK")
         elif jsonl:
             for record in decode_frames(log):
                 click.echo(json.dumps(record, separators=(",", ":")))
@@ -1457,8 +1468,12 @@ def run(
         try:
             generation = _new_generation(input, output_dir, name)
             env, environment_record = _environment(env_script, no_env, generation)
-            generate_model(input, generation, stage="code", env=env)
-            build_generation(generation, prefixes=prefixes, jobs=jobs, env=env)
+            with mirrored_stderr(generation_log(generation)):
+                _say("step", "generating")
+                generate_model(input, generation, stage="code", env=env)
+                _say("step", "building")
+                executable = build_generation(generation, prefixes=prefixes, jobs=jobs, env=env)
+                _say("done", f"built {executable}")
         except ConstraintViolation as exc:
             raise _model_rejected(exc) from exc
         except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
@@ -1483,6 +1498,8 @@ def run(
     #     _require_devices(generation)
 
     run_dir = generation / "runs" / (run_id or new_id("run"))
+    _say("step", f"running {generation.name}")
+    _say("info", f"run directory {run_dir}")
     arguments = (
         (["--headless"] if headless else [])
         + (["--steps", str(steps)] if steps is not None else [])
@@ -1509,6 +1526,7 @@ def run(
         raise click.ClickException(str(exc)) from exc
     # Echoed before the exit: an interrupt leaves a complete archive, and that is when the
     # caller most needs the path.
+    _say("done", f"run {run_dir}")
     click.echo(run_dir)
     if returncode:
         raise click.exceptions.Exit(returncode)

@@ -7,15 +7,61 @@
 from __future__ import annotations
 
 import errno
+import json
 import os
 import pty
+import re
 import subprocess
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 STATE_DIRECTORY = ".motion-spec"
 LOG_DIRECTORY = "logs"
+
+# Every colour the toolchain writes, as SGR parameters. One table: the CLI paints its own lines
+# from it, and a tool motion-spec runs is handed it, because that tool is another process and the
+# CLI cannot reach into a line it has already printed.
+SGR = "\x1b["  # what a terminal reads as: the rest of this is a colour, until RESET
+RESET = f"{SGR}0m"
+STAMP_COLOUR = "90"
+LEVEL_COLOURS = {
+    "info": "",
+    "step": "1;34",
+    "warn": "1;33",
+    "error": "1;31",
+    "done": "1;32",
+}
+LEVEL_WIDTH = 6
+
+
+def paint(text: str, colour: str) -> str:
+    """TEXT in COLOUR, or unchanged when the colour is the terminal's own."""
+    return f"{SGR}{colour}m{text}{RESET}" if colour else text
+
+
+# Painted and padded here, so a tool is handed the finished word rather than the means to
+# build it: padding counts an escape the reader cannot see, and one place should get that right.
+LEVEL_LABELS = {
+    level: paint(f"{level:<{LEVEL_WIDTH}}", colour) for level, colour in LEVEL_COLOURS.items()
+}
+
+LOG_FORMAT_VARIABLE = "MOTION_SPEC_LOG_FORMAT"
+LOG_FORMAT = f"{paint('%(asctime)s', STAMP_COLOUR)}  %(levelname)s %(message)s"
+LOG_DATEFMT_VARIABLE = "MOTION_SPEC_LOG_DATEFMT"
+LOG_DATEFMT = "%H:%M:%S"
+LOG_LEVELS_VARIABLE = "MOTION_SPEC_LOG_LEVELS"
+
+
+def tool_environment(env: dict[str, str] | None = None) -> dict[str, str]:
+    """ENV with the format and the level words motion-spec's own tools write their lines in."""
+    return {
+        **(env if env is not None else os.environ),
+        LOG_FORMAT_VARIABLE: LOG_FORMAT,
+        LOG_DATEFMT_VARIABLE: LOG_DATEFMT,
+        LOG_LEVELS_VARIABLE: json.dumps(LEVEL_LABELS),
+    }
 
 
 def command_log(root: Path, command: str) -> Path:
@@ -24,9 +70,91 @@ def command_log(root: Path, command: str) -> Path:
     return root / STATE_DIRECTORY / LOG_DIRECTORY / f"{stamp}Z-{command}.log"
 
 
-def generation_log(generation: Path, command: str) -> Path:
-    """Where a command about one generation tees its tools' output."""
-    return generation / LOG_DIRECTORY / f"{command}.log"
+def generation_log(generation: Path) -> Path:
+    """One console per generation: everything done to it, in the order it happened.
+
+    A file per command would split what the operator watched as a single stream -- generating
+    and building are one sitting, and the build's first line answers the generation's last.
+    """
+    return generation / LOG_DIRECTORY / "console.log"
+
+
+class _Mirror:
+    """Everything written to a stream, written to a file as well."""
+
+    def __init__(self, stream, sink):
+        self._stream = stream
+        self._sink = sink
+
+    def write(self, text: str) -> int:
+        self._sink.write(text.encode("utf-8", "replace"))
+        self._sink.flush()
+        return self._stream.write(text)
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+# Two spaces before a line motion-spec did not write itself, so a tool's output reads as
+# belonging under the stamped line that started it rather than as a line of its own.
+INDENT = "  "
+
+
+# A line that already carries the stamp is motion-spec speaking through one of its own tools,
+# and belongs in the same column as the rest of what motion-spec says.
+STAMPED = re.compile(rb"^(\x1b\[[0-9;]*m)?\d\d:\d\d:\d\d[\s\x1b]")
+
+
+def _indenter():
+    """Indent every line of a byte stream arriving in arbitrary chunks.
+
+    A carriage return redraws the line it is already on -- a progress bar -- so only a newline
+    starts one worth indenting.
+    """
+    pad = INDENT.encode()
+    fresh = True
+
+    def prefix(line: bytes) -> bytes:
+        return b"" if not line or STAMPED.match(line) else pad
+
+    def indent(chunk: bytes) -> bytes:
+        nonlocal fresh
+        lines = chunk.split(b"\n")
+        out = [(prefix(lines[0]) if fresh else b"") + lines[0]]
+        out += [prefix(line) + line for line in lines[1:]]
+        fresh = chunk.endswith(b"\n")
+        return b"\n".join(out)
+
+    return indent
+
+
+def show_warning(message, category, filename, lineno, file=None, line=None) -> None:
+    """A Python warning, indented like every other line motion-spec did not write."""
+    import warnings
+
+    text = warnings.formatwarning(message, category, filename, lineno, line)
+    stream = file or sys.stderr
+    stream.write("".join(f"{INDENT}{part}\n" for part in text.rstrip().splitlines()))
+
+
+@contextmanager
+def mirrored_stderr(log: Path | None):
+    """Keep what motion-spec itself says in LOG, beside what its tools said.
+
+    The warnings a model raises and the lines the CLI prints are this process's, so `tee` never
+    sees them; without this the log holds the tools' half of a session the operator watched whole.
+    """
+    if log is None:
+        yield
+        return
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with log.open("ab") as sink:
+        previous = sys.stderr
+        sys.stderr = _Mirror(previous, sink)
+        try:
+            yield
+        finally:
+            sys.stderr = previous
 
 
 def tee(
@@ -47,6 +175,7 @@ def tee(
 
     log.parent.mkdir(parents=True, exist_ok=True)
     controller, worker = pty.openpty()
+    indent = _indenter()
     try:
         with log.open("ab") as sink:
             sink.write(f"$ {' '.join(argv)}\n".encode())
@@ -72,9 +201,12 @@ def tee(
                     raise
                 if not chunk:
                     break
-                sys.stdout.buffer.write(chunk)
-                sys.stdout.buffer.flush()
+                chunk = indent(chunk)
+                sys.stderr.buffer.write(chunk)
+                sys.stderr.buffer.flush()
                 sink.write(chunk)
+                # Two handles append here; unflushed they interleave by buffer, not by time.
+                sink.flush()
             returncode = process.wait()
     finally:
         os.close(controller)

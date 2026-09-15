@@ -250,6 +250,8 @@ def build_generation(
         "-B",
         str(build),
         "-DMOTION_SPEC_ENABLE_INTROSPECTION=ON",
+        # CMake defaults to no build type, which compiles the control loop unoptimized.
+        f"-DCMAKE_BUILD_TYPE={os.environ.get('MOTION_SPEC_BUILD_TYPE', 'RelWithDebInfo')}",
     ]
     if prefixes:
         configure.append(

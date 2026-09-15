@@ -15,27 +15,30 @@ maintainers = [
 ]
 license = { text = "MPL-2.0" }
 requires-python = ">=3.10"
+# The secorolab packages are on no index, so they carry their source: named alone they
+# resolve nowhere and the whole install fails, wherever it is run from. rdflib does
+# resolve, to the wrong one -- a model with multi-type scoped contexts needs the fork.
 dependencies = [
     "click>=8.1",
-    "rdflib",
-    "rdf_utils",
+    "rdflib @ git+https://github.com/secorolab/rdflib@7.6.0-fix-multi-type-scoped-context",
+    "rdf_utils @ git+https://github.com/minhnh/rdf-utils@main",
     "jinja2",
-    "motion_spec_dsl",
-    "scene-dsl",
+    "motion_spec_dsl @ git+https://github.com/secorolab/motion-spec-dsl@dev",
+    "scene-dsl @ git+https://github.com/secorolab/scene-dsl@main",
 ]
 
 [project.optional-dependencies]
 validation = ["pyshacl>=0.25.0"]
 introspection = [
     "pyshacl>=0.25.0",
-    "rec",
+    "rec @ git+https://github.com/secorolab/rec@dev",
     # frame_log_pb reads .pb logs via message_factory.GetMessageClass, added in 4.22.
     "protobuf>=4.22",
 ]
 dashboard = ["nicegui>=2.0", "pillow"]
-# The browser dashboard: rdflib for its SPARQL console, jupyterlab for its notebook tab.
-replay = ["rdflib>=7.0", "jupyterlab>=4.0", "matplotlib"]
-all = ["pyshacl>=0.25.0", "rec", "protobuf>=4.22", "nicegui>=2.0", "pillow", "rdflib>=7.0", "jupyterlab>=4.0", "matplotlib"]
+# The browser dashboard's notebook tab; its SPARQL console runs on the rdflib above.
+replay = ["jupyterlab>=4.0", "matplotlib"]
+all = ["pyshacl>=0.25.0", "rec @ git+https://github.com/secorolab/rec@dev", "protobuf>=4.22", "nicegui>=2.0", "pillow", "jupyterlab>=4.0", "matplotlib"]
 test = ["pytest"]
 docs = ["sphinx", "myst-parser", "furo", "sphinx-autobuild", "matplotlib"]
 dev = ["pytest", "ruff"]

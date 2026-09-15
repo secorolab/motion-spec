@@ -548,10 +548,16 @@ def artifact_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def host_info() -> dict:
+def host_info(environment: dict | None = None) -> dict:
     # The interpreter identity that matters for reproducibility is its version (python);
     # sys.executable is just the local venv path — machine-specific and provenance-free.
-    return {"hostname": socket.gethostname(), "os": platform.platform(), "python": sys.version}
+    info = {"hostname": socket.gethostname(), "os": platform.platform(), "python": sys.version}
+    # The environment file this run was launched under, and the variables it set that a build
+    # and a run depend on: without them, "it worked on that host" names the host but not the
+    # toolchain, the prefixes or the ROS distribution that produced the result.
+    if environment:
+        info["environment"] = environment
+    return info
 
 
 def dependencies() -> list[dict]:

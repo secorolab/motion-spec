@@ -26,12 +26,26 @@ DECODE_TIMEOUT = 180
 STDERR_LINES = 30
 
 
+# One capture per campaign; the file does not change under a running one.
+_CAPTURED: dict[str, str] | None = None
+
+
+def _environment_file(root: Path) -> Path | None:
+    """The environment file at ROOT, whichever shell's spelling is there."""
+    from motion_spec.setup import ENVIRONMENT_FILES
+
+    return next((root / name for name in ENVIRONMENT_FILES if (root / name).is_file()), None)
+
+
 def workspace_root(model: Path) -> Path:
     """The workspace above the model, known by the environment script every subprocess sources."""
     for parent in model.resolve().parents:
-        if (parent / "setup-grc.zsh").is_file():
+        if _environment_file(parent):
             return parent
-    raise RuntimeError(f"no setup-grc.zsh above {model}")
+    raise RuntimeError(
+        f"no setup-motion-spec environment file above {model}: "
+        f"`motion-spec setup --prefix <workspace>` writes it"
+    )
 
 
 def reference_runs(model: Path, out_dir: Path, count: int, steps: int) -> tuple[Path, list[Path]]:
@@ -212,20 +226,28 @@ def _decode(root: Path, run_dir: Path, frames: Path, record: dict | None = None)
     return True
 
 
+def _environment(root: Path) -> dict[str, str]:
+    """The workspace environment every subprocess runs under, captured once."""
+    from motion_spec.setup import capture_environment
+
+    global _CAPTURED
+    if _CAPTURED is None:
+        script = _environment_file(root)
+        if script is None:
+            raise RuntimeError(f"no setup-motion-spec environment file in {root}")
+        _CAPTURED = capture_environment(script)
+    return _CAPTURED
+
+
 def _command(
     root: Path, argv: list, timeout: int = GEN_TIMEOUT, sink=None
 ) -> tuple[int | None, str, str, bool]:
     """Run one motion-spec command under the workspace environment, from the workspace root."""
-    shell = [
-        "zsh",
-        "-c",
-        f'source {root / "setup-grc.zsh"} >/dev/null 2>&1 && exec "$@"',
-        "--",
-        *(str(argument) for argument in argv),
-    ]
+    command = [str(argument) for argument in argv]
     try:
         done = subprocess.run(
-            shell,
+            command,
+            env=_environment(root),
             cwd=root,
             stdout=sink or subprocess.PIPE,
             stderr=subprocess.PIPE,

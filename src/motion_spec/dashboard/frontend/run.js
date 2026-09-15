@@ -11,6 +11,7 @@ import {
   copyPathButton,
   fileFolder,
   fileRow,
+  iconMarkup,
   setPickAll,
   showEmpty,
 } from "./components.js";
@@ -288,8 +289,8 @@ const CONSOLE_PANEL =
   '<section id="panel-console" hidden><div class="console-bar">' +
   '<input id="console-search" type="search" spellcheck="false" placeholder="Search the console">' +
   '<span id="console-matches"></span>' +
-  '<button id="console-prev" title="Previous match (Shift+Enter)" disabled>↑</button>' +
-  '<button id="console-next" title="Next match (Enter)" disabled>↓</button></div>' +
+  `<button id="console-prev" title="Previous match (Shift+Enter)" aria-label="Previous match" disabled>${iconMarkup("arrow-up")}</button>` +
+  `<button id="console-next" title="Next match (Enter)" aria-label="Next match" disabled>${iconMarkup("arrow-down")}</button></div>` +
   '<pre id="console-text" class="console"></pre></section>';
 
 const NOTES_PANEL = `<section id="panel-notes" hidden>${NOTES_MARKUP}</section>`;
@@ -313,8 +314,9 @@ const MARKER_LEGEND =
 
 const TRANSPORT =
   '<div class="transport"><div class="transport-controls">' +
-  '<button id="step-back" title="Previous frame">‹</button><button id="play">Play</button>' +
-  '<button id="step-forward" title="Next frame">›</button>' +
+  `<button id="step-back" title="Previous frame" aria-label="Previous frame">${iconMarkup("chevron-left")}</button>` +
+  '<button id="play">Play</button>' +
+  `<button id="step-forward" title="Next frame" aria-label="Next frame">${iconMarkup("chevron-right")}</button>` +
   '<details class="picker speed-menu"><summary>1×</summary><div class="picker-panel">' +
   '<button data-value="0.25">0.25×</button><button data-value="0.5">0.5×</button>' +
   '<button data-value="1" aria-pressed="true">1×</button><button data-value="2">2×</button>' +
@@ -328,9 +330,10 @@ const TRANSPORT =
 function replayShell(path) {
   return (
     '<div class="replay"><div class="replay-heading">' +
-    '<button id="back" title="Back to generation">←</button>' +
+    `<button id="back" title="Back to generation" aria-label="Back to generation">${iconMarkup("arrow-left")}</button>` +
     `<h1>${path.split("/").pop()}</h1>` +
-    '<button id="run-again" title="Run this generation again with the run bar\'s last choices">↻ run again</button>' +
+    '<button id="run-again" title="Run this generation again with the run bar\'s last choices">' +
+    `${iconMarkup("refresh-cw")} run again</button>` +
     REPLAY_TABS +
     '<span class="eyebrow">RUN</span></div>' +
     PLOTS_PANEL +

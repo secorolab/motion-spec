@@ -4,7 +4,7 @@
 
 /** A run being written: the poll that follows it, the cards that grow with it, the controls. */
 
-import { bindToggle } from "./components.js";
+import { bindToggle, iconMarkup } from "./components.js";
 import { $, $$, api, nextPlotKey, post, readStored, snack, state, writeStored } from "./core.js";
 import {
   constraintKey,
@@ -211,7 +211,9 @@ export function addLivePlot(signals, title, detail, { row = null, data = null } 
   card.className = "plot-card";
   card.dataset.live = "true";
   card.innerHTML =
-    '<header><div><strong></strong><small></small></div><div class="plot-actions"><button class="remove-plot" title="Remove plot">×</button></div></header><div class="plot-signals"></div><div class="plot-chart"></div>';
+    '<header><div><strong></strong><small></small></div><div class="plot-actions">' +
+    `<button class="remove-plot" title="Remove plot" aria-label="Remove plot">${iconMarkup("x")}</button>` +
+    '</div></header><div class="plot-signals"></div><div class="plot-chart"></div>';
   card.querySelector("strong").textContent = title;
   card.querySelector("small").textContent = detail;
   const palette = ["#e07a5f", "#79c6a5", "#9da9c7", "#f0c36a"];

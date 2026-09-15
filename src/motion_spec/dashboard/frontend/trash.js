@@ -4,13 +4,31 @@
 
 /** What was moved to the desktop trash, and putting it back, in one dialog over the page. */
 
+import { icon, iconMarkup } from "./components.js";
 import { api, copyText, post, showError, stampText, state } from "./core.js";
 import { loadGenerations } from "./generations.js";
 
 const PAGE_SIZE = 100;
 
-const DIALOG_MARKUP =
-  '<header><div><span class="eyebrow">RECOVERABLE FILES</span><h2>Trash</h2></div><button class="close trash-action">Close</button></header><p>Only items from this generation root are shown. Existing paths will never be overwritten.</p><div class="browser-tools"><input type="search" placeholder="Filter trashed paths" aria-label="Filter trashed paths"></div><div class="run-header trash-columns"><span>Path</span><button class="trash-date-sort" aria-sort="descending">Deleted ↓</button><span>Actions</span></div><div class="trash-entries"></div><p role="status"></p>';
+const DIALOG_MARKUP = `
+  <header>
+    <div><span class="eyebrow">RECOVERABLE FILES</span><h2>Trash</h2></div>
+    <button class="close trash-action">Close</button>
+  </header>
+  <p>
+    Only items from this generation root are shown. Existing paths will never be overwritten.
+  </p>
+  <div class="browser-tools">
+    <input type="search" placeholder="Filter trashed paths" aria-label="Filter trashed paths">
+  </div>
+  <div class="run-header trash-columns">
+    <span>Path</span>
+    <button class="trash-date-sort" aria-sort="descending">Deleted ${iconMarkup("arrow-down")}</button>
+    <span>Actions</span>
+  </div>
+  <div class="trash-entries"></div>
+  <p role="status"></p>
+`;
 
 let entries;
 
@@ -78,7 +96,7 @@ function fillTrash(dialog, trashed) {
   };
   dateSort.onclick = () => {
     newestFirst = !newestFirst;
-    dateSort.textContent = `Deleted ${newestFirst ? "↓" : "↑"}`;
+    dateSort.replaceChildren("Deleted ", icon(newestFirst ? "arrow-down" : "arrow-up"));
     dateSort.setAttribute("aria-sort", newestFirst ? "descending" : "ascending");
     draw();
   };

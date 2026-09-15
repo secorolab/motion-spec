@@ -44,7 +44,9 @@
       }
     </script>
     <button id="sidebar-toggle" title="Collapse navigation" aria-label="Collapse navigation">
-      ×
+      <svg class="icon" aria-hidden="true">
+        <use href="vendor/icons.svg#panel-left-close"></use>
+      </svg>
     </button>
 
     <main>
@@ -65,13 +67,19 @@
           <div class="aside-head">
             <span id="list-title">GENERATIONS</span>
             <span id="storage"></span>
-            <button id="refresh" title="Refresh">↻</button>
+            <button id="refresh" title="Refresh" aria-label="Refresh">
+              <svg class="icon" aria-hidden="true">
+                <use href="vendor/icons.svg#refresh-cw"></use>
+              </svg>
+            </button>
           </div>
           <div class="root-control">
             <!-- Filled from /api/roots; a value here would show a stranger's path until then. -->
             <input id="generation-root" title="Edit path" />
             <button id="pick-root" title="Choose folder" aria-label="Choose folder">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h7l2 2h9v10H3z" /></svg>
+              <svg class="icon" aria-hidden="true">
+                <use href="vendor/icons.svg#folder-open"></use>
+              </svg>
             </button>
           </div>
           <script>
@@ -129,7 +137,7 @@
             title="Copy folder path"
             aria-label="Copy folder path"
           >
-            ⧉
+            <svg class="icon" aria-hidden="true"><use href="vendor/icons.svg#copy"></use></svg>
           </button>
         </div>
         <p class="generation-description"></p>
@@ -144,8 +152,12 @@
           ><span class="run-choice" data-option="log"
             ><em>log</em><button data-value="true" aria-pressed="true">on</button
             ><button data-value="false" aria-pressed="false">off</button></span
-          ><button class="run-start">▶ run</button><button class="run-stop" hidden>stop</button
-          ><span class="run-state"></span>
+          ><button class="run-start">
+            <svg class="icon solid" aria-hidden="true">
+              <use href="vendor/icons.svg#play"></use>
+            </svg>
+            run</button
+          ><button class="run-stop" hidden>stop</button><span class="run-state"></span>
         </div>
         <div class="facts"></div>
         <div class="devices" hidden>
@@ -192,8 +204,13 @@
         </p>
         <h2>Generated files</h2>
         <div class="generated-files"></div>
-        <details class="generation-console">
-          <summary>Console</summary>
+        <details class="generation-console fold">
+          <summary>
+            <svg class="icon fold-marker" aria-hidden="true">
+              <use href="vendor/icons.svg#chevron-right"></use>
+            </svg>
+            <h2>Console</h2>
+          </summary>
           <pre class="console gen-console"></pre>
         </details>
       </article>

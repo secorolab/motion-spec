@@ -4,6 +4,7 @@
 
 /** Whether this installation can build and run anything at all, and what it is made of. */
 
+import { icon } from "./components.js";
 import { $, api, showError, snack, stampText, state } from "./core.js";
 
 // The checks cost seconds, so the server runs them on a thread and this follows it. The poll
@@ -91,7 +92,9 @@ export function renderHealth(report, storage) {
       '<span class="health-key"></span><span class="health-what"></span>' +
       '<span class="health-value"></span>';
     if (mark) {
-      line.querySelector(".health-mark").textContent = { ok: "✓", fail: "✗", absent: "·" }[mark];
+      line
+        .querySelector(".health-mark")
+        .append(icon({ ok: "check", fail: "x", absent: "minus" }[mark]));
       line.dataset.mark = mark;
     }
     line.querySelector(".health-key").textContent = name;

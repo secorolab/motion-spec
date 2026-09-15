@@ -3,6 +3,7 @@
 
 /** Explore: one query, two projections. The table and the picture are the same answer. */
 
+import { icon, iconMarkup } from "./components.js";
 import { $, $$, api, copyText, post, snack, snackError, state } from "./core.js";
 import { addPlot } from "./plots.js";
 import { setView } from "./routing.js";
@@ -127,7 +128,9 @@ export const EXPLORE_MARKUP = `<div class="explore">
         <button class="graph-clear" hidden>clear focus</button>
         <button class="graph-export">export as query</button>
         <button class="graph-halt" hidden>stop</button>
-        <button class="graph-fullscreen" title="Fullscreen graph">⛶</button>
+        <button class="graph-fullscreen" title="Fullscreen graph" aria-label="Fullscreen graph">
+          ${iconMarkup("maximize-2")}
+        </button>
       </div>
       <div class="graph-crumbs"></div>
       <div class="graph-main">
@@ -199,7 +202,7 @@ function renderRail() {
       tab.onclick = () => selectQuery(index);
       const close = document.createElement("span");
       close.className = "query-close";
-      close.textContent = "×";
+      close.append(icon("x"));
       close.onclick = (event) => {
         event.stopPropagation();
         state.queries.splice(index, 1);

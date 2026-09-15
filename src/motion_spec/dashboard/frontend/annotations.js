@@ -9,8 +9,14 @@ export async function annotationEditor(path, changed = () => {}) {
   let data = await api(`/api/annotations?path=${encodeURIComponent(path)}`);
   const box = document.createElement("form");
   box.className = "annotation-editor";
-  box.innerHTML =
-    '<button type="button" class="pin"></button><button type="button" class="lock"></button><label>Label<input name="label" maxlength="200" placeholder="A name to remember"></label><label>Tags<input name="tags" placeholder="tags, comma separated"></label><button class="save">Save</button><span role="status"></span>';
+  box.innerHTML = `
+    <button type="button" class="pin"></button>
+    <button type="button" class="lock"></button>
+    <label>Label<input name="label" maxlength="200" placeholder="A name to remember"></label>
+    <label>Tags<input name="tags" placeholder="tags, comma separated"></label>
+    <button class="save">Save</button>
+    <span role="status"></span>
+  `;
   const label = box.elements.label;
   const tags = box.elements.tags;
   const pin = box.querySelector(".pin");
@@ -103,5 +109,23 @@ export async function annotationEditor(path, changed = () => {}) {
 }
 
 // Shared with the run page's Notes panel, which wraps it in a section of its own.
-export const NOTES_MARKUP =
-  '<div class="notes-compose"><textarea class="note-text" rows="3" placeholder="What happened, what to try next — Ctrl+Enter adds"></textarea><div class="notes-compose-bar"><input class="note-tags" placeholder="tags, comma separated" spellcheck="false"><button class="note-add">add note</button><span class="notes-state" role="status"></span></div></div><div class="notes-bar" hidden><input type="checkbox" class="pick notes-pick-all" title="Select every note"><span class="notes-picked"></span><button class="note-action notes-delete" disabled>delete selected</button></div><div class="notes-list"></div>';
+export const NOTES_MARKUP = `
+  <div class="notes-compose">
+    <textarea
+      class="note-text"
+      rows="3"
+      placeholder="What happened, what to try next — Ctrl+Enter adds"
+    ></textarea>
+    <div class="notes-compose-bar">
+      <input class="note-tags" placeholder="tags, comma separated" spellcheck="false">
+      <button class="note-add">add note</button>
+      <span class="notes-state" role="status"></span>
+    </div>
+  </div>
+  <div class="notes-bar" hidden>
+    <input type="checkbox" class="pick notes-pick-all" title="Select every note">
+    <span class="notes-picked"></span>
+    <button class="note-action notes-delete" disabled>delete selected</button>
+  </div>
+  <div class="notes-list"></div>
+`;

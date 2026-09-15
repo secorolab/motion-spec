@@ -6,6 +6,24 @@
 
 import { $, api, copyText, state } from "./core.js";
 
+const ICONS = "vendor/icons.svg";
+
+/** One icon from the vendored Lucide sprite, drawn in whatever colour its caller is using. */
+export function icon(name, className = "") {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", `icon ${className}`.trim());
+  svg.setAttribute("aria-hidden", "true");
+  const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+  use.setAttribute("href", `${ICONS}#${name}`);
+  svg.append(use);
+  return svg;
+}
+
+/** The same icon, for a piece of the page built as a string. */
+export function iconMarkup(name, className = "") {
+  return `<svg class="${`icon ${className}`.trim()}" aria-hidden="true"><use href="${ICONS}#${name}"></use></svg>`;
+}
+
 function part(tag, text = "", className = "") {
   const node = document.createElement(tag);
   node.textContent = text;
@@ -71,24 +89,24 @@ export function fileFolder(name, rows, open = false) {
   const group = document.createElement("details");
   group.className = "generated-folder";
   group.open = open;
-  group.append(part("summary", `${name} · ${rows.length}`), ...rows);
+  const summary = part("summary", `${name} · ${rows.length}`);
+  summary.prepend(icon("chevron-right", "fold-marker"));
+  group.append(summary, ...rows);
   return group;
 }
-
-const COPY_GLYPH = "⧉";
 
 // `stopClick` keeps the copy from reaching a row that is itself clickable.
 export function copyPathButton(path, { stopClick = false } = {}) {
   const button = document.createElement("button");
   button.className = "copy-path";
-  button.textContent = COPY_GLYPH;
+  button.append(icon("copy"));
   button.title = "Copy full path";
   button.onclick = async (event) => {
     if (stopClick) event.stopPropagation();
     await copyText(typeof path === "function" ? path() : path);
-    button.textContent = "✓";
+    button.replaceChildren(icon("check"));
     setTimeout(() => {
-      button.textContent = COPY_GLYPH;
+      button.replaceChildren(icon("copy"));
     }, 900);
   };
   return button;

@@ -10,6 +10,8 @@ import {
   fact,
   fileFolder,
   fileRow,
+  icon,
+  iconMarkup,
   listItem,
   setPickAll,
 } from "./components.js";
@@ -131,7 +133,7 @@ function generationGroup(model, entries, logsRoot) {
       if (state.selected.has(path) !== adding) toggleSelection(path, "sidebar");
     });
   };
-  summary.append(label, all);
+  summary.append(icon("chevron-right", "fold-marker"), label, all);
   group.append(summary, ...entries.map(generationItem));
   return group;
 }
@@ -210,8 +212,21 @@ function bindBrowserTools() {
   const tools = document.createElement("div");
   tools.id = "generation-tools";
   tools.className = "browser-tools";
-  tools.innerHTML =
-    '<select id="generation-filter" aria-label="Filter generations"><option value="all">All generations</option><option value="pinned">Pinned</option><option value="running">Running</option><option value="failed">Failed</option><option value="hardware">Hardware</option><option value="simulation">Simulation</option></select><select id="generation-sort" aria-label="Sort generations"><option value="newest">Newest</option><option value="last-run">Last run</option><option value="size">Largest</option></select>';
+  tools.innerHTML = `
+    <select id="generation-filter" aria-label="Filter generations">
+      <option value="all">All generations</option>
+      <option value="pinned">Pinned</option>
+      <option value="running">Running</option>
+      <option value="failed">Failed</option>
+      <option value="hardware">Hardware</option>
+      <option value="simulation">Simulation</option>
+    </select>
+    <select id="generation-sort" aria-label="Sort generations">
+      <option value="newest">Newest</option>
+      <option value="last-run">Last run</option>
+      <option value="size">Largest</option>
+    </select>
+  `;
   $("#search").parentElement.after(tools);
   for (const kind of ["filter", "sort"]) {
     const key = `motion-spec.generation-${kind}`;
@@ -408,8 +423,10 @@ function mountAnnotations(mounted, metadata, path) {
   mounted.querySelector(".generation-notes")?.remove();
   mounted.querySelector(".generation-description").after(metadata);
   const notes = document.createElement("details");
-  notes.className = "generation-notes";
-  notes.innerHTML = `<summary>Generation notes</summary><div class="generation-notes-body">${NOTES_MARKUP}</div>`;
+  notes.className = "generation-notes fold";
+  notes.innerHTML =
+    `<summary>${iconMarkup("chevron-right", "fold-marker")}Generation notes</summary>` +
+    `<div class="generation-notes-body">${NOTES_MARKUP}</div>`;
   metadata.after(notes);
   notes.ontoggle = () => {
     if (notes.open) showNotes(path, notes.querySelector(".generation-notes-body")).catch(showError);
@@ -487,7 +504,10 @@ function bindRunList(page, generation, runs) {
   const drawPager = () => {
     const total = Math.max(1, Math.ceil(rows.length / RUNS_PER_PAGE));
     if (total < 2) return pager.replaceChildren();
-    pager.innerHTML = `<button>‹</button><span>${runPage + 1} / ${total}</span><button>›</button>`;
+    pager.innerHTML =
+      `<button aria-label="Previous page">${iconMarkup("chevron-left")}</button>` +
+      `<span>${runPage + 1} / ${total}</span>` +
+      `<button aria-label="Next page">${iconMarkup("chevron-right")}</button>`;
     const [back, next] = pager.querySelectorAll("button");
     back.onclick = () => {
       runPage = Math.max(0, runPage - 1);
@@ -914,7 +934,7 @@ function driftPage(drift, { left, right, missing, unchanged, back }) {
   const page = document.createElement("article");
   page.className = "diff-page";
   page.innerHTML =
-    '<div class="page-heading"><button id="back" title="Back">←</button>' +
+    `<div class="page-heading"><button id="back" title="Back" aria-label="Back">${iconMarkup("arrow-left")}</button>` +
     '<h1></h1><span class="eyebrow">DIFF</span></div><p class="diff-state"></p>' +
     '<div class="diff-columns"><div class="diff-head"></div><div class="diff-head"></div></div>' +
     '<div class="diff-body"></div>';

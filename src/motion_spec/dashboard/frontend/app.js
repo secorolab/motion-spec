@@ -17,6 +17,7 @@ import {
   state,
   writeStored,
 } from "./core.js";
+import { icon } from "./components.js";
 import { filterGenerations, loadGenerations, selectGeneration } from "./generations.js";
 import { goHome, loadLocation, openTab, sidebarLoader } from "./routing.js";
 import { reserveVideoSpace } from "./run.js";
@@ -95,8 +96,16 @@ async function deleteSelected() {
         `Nothing can be moved to Trash. ${blocked.map((item) => `${item.path}: ${item.blocked}`).join("; ")}`,
       ),
     );
+  const runs = eligible.reduce((total, item) => total + item.runs, 0);
+  const bytes = formatBytes(eligible.reduce((total, item) => total + item.bytes, 0));
+  const listed = eligible.map((item) => item.path).join("\n");
+  const protectedNote = blocked.length
+    ? `\n\nProtected; excluded:\n${blocked.map((item) => `${item.path}: ${item.blocked}`).join("\n")}`
+    : "";
   const ok = await askConfirm({
-    message: `Move ${eligible.length} items (${eligible.reduce((n, item) => n + item.runs, 0)} runs, ${formatBytes(eligible.reduce((n, item) => n + item.bytes, 0))}) to Trash? Restore them from the Trash browser. Disk space is only freed when Trash is emptied.\n\n${eligible.map((item) => item.path).join("\n")}${blocked.length ? "\n\nProtected; excluded:\n" + blocked.map((item) => `${item.path}: ${item.blocked}`).join("\n") : ""}`,
+    message:
+      `Move ${eligible.length} items (${runs} runs, ${bytes}) to Trash? Restore them from the ` +
+      `Trash browser. Disk space is only freed when Trash is emptied.\n\n${listed}${protectedNote}`,
     confirmLabel: "Move to Trash",
   });
   if (!ok) return;
@@ -175,8 +184,8 @@ sidebarToggle.onclick = () => {
 function showSidebarState() {
   const collapsed = document.body.classList.contains("sidebar-collapsed");
   const label = collapsed ? "Expand navigation" : "Collapse navigation";
-  // Collapsed, the CSS draws the brand mark on this button, so it must carry no glyph.
-  sidebarToggle.textContent = collapsed ? "" : "×";
+  // Collapsed, the CSS draws the brand mark on this button, so it must carry nothing of its own.
+  sidebarToggle.replaceChildren(...(collapsed ? [] : [icon("panel-left-close")]));
   sidebarToggle.title = label;
   sidebarToggle.setAttribute("aria-label", label);
 }

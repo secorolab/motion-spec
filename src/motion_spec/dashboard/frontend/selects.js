@@ -34,7 +34,7 @@ const refresh = (control) => {
       choice.onkeydown = (event) => {
         const entries = choices(control);
         const current = entries.indexOf(choice);
-        if (event.key === "Escape") return close(control), button.focus();
+        if (event.key === "Escape") return (close(control), button.focus());
         if (event.key === "Home" || event.key === "End") {
           event.preventDefault();
           return entries[event.key === "Home" ? 0 : entries.length - 1]?.focus();

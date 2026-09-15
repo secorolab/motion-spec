@@ -188,7 +188,6 @@ nav button.active {
   border: 1px solid var(--line);
   background: var(--side);
   color: var(--dim);
-  font-size: 16px;
   line-height: 1;
   transition: left 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
@@ -217,7 +216,9 @@ nav button.active {
 }
 
 #refresh {
-  font-size: 18px;
+  display: grid;
+  place-items: center;
+  padding: 2px;
 }
 
 .root-control {
@@ -467,6 +468,9 @@ body.sidebar-collapsed .transport {
 
 .source-node summary,
 .generation-group summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 7px 14px 7px calc(14px + var(--depth, 0) * 12px);
   color: var(--accent);
   cursor: pointer;
@@ -474,22 +478,7 @@ body.sidebar-collapsed .transport {
   list-style: none;
 }
 
-.source-node summary::before,
-.generation-group summary::before {
-  content: "›";
-  display: inline-block;
-  width: 12px;
-  color: var(--dim);
-}
-
-.source-node[open] > summary::before,
-.generation-group[open] > summary::before {
-  content: "⌄";
-}
-
 .generation-group summary {
-  display: flex;
-  align-items: center;
   gap: 8px;
   white-space: nowrap;
 }
@@ -572,7 +561,6 @@ body.sidebar-collapsed .transport {
   background: var(--surface);
   color: var(--muted);
   cursor: pointer;
-  font-size: 15px;
   line-height: 1;
   opacity: 0;
 }
@@ -831,7 +819,6 @@ body.sidebar-collapsed #selection-actions[data-side="sidebar"] {
   place-items: center;
   border: 1px solid var(--line);
   color: var(--muted);
-  font-size: 15px;
 }
 
 .copy-generation-path:hover {
@@ -903,6 +890,9 @@ body.sidebar-collapsed #selection-actions[data-side="sidebar"] {
 }
 
 .generated-folder summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 9px 10px;
   background: var(--surface);
   color: var(--accent);
@@ -917,17 +907,6 @@ body.sidebar-collapsed #selection-actions[data-side="sidebar"] {
 
 .generated-folder[open] summary {
   border-bottom: 1px solid var(--bg);
-}
-
-.generated-folder summary::before {
-  content: "›";
-  display: inline-block;
-  width: 12px;
-  color: var(--dim);
-}
-
-.generated-folder[open] summary::before {
-  content: "⌄";
 }
 
 .source-file {
@@ -1473,6 +1452,78 @@ body.sidebar-collapsed #selection-actions[data-side="sidebar"] {
   line-height: 1;
 }
 
+.generation-console {
+  margin-top: 30px;
+}
+
+/* One size, not the font's: these buttons set a font-size to fit the glyph each once drew.
+   Scaled from a 24-unit grid this small, the stroke needs weight back or it reads grey. */
+.icon {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  stroke: currentColor;
+  stroke-width: 2.25;
+  vertical-align: -0.2em;
+}
+
+.icon.solid {
+  fill: currentColor;
+  stroke: none;
+}
+
+/* The label beside an icon is usually a text node, which no sibling selector can see, so the
+   space goes on the icon. An icon that is the only element in its button needs none. */
+button > .icon:not(:only-child):first-child {
+  margin-right: 6px;
+}
+
+button > .icon:not(:only-child):last-child {
+  margin-left: 6px;
+}
+
+button > .icon:only-child {
+  margin: auto;
+}
+
+.generation-console summary h2 {
+  margin: 0;
+}
+
+/* A section of the page the reader folds away. The marker's box is fixed, or the two glyphs
+   are different widths and the heading moves when it opens. */
+.fold summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.fold summary::-webkit-details-marker {
+  display: none;
+}
+
+/* One shape turned, not two glyphs swapped: the width cannot change, so the heading stays put. */
+.fold summary .fold-marker,
+.source-node summary .fold-marker,
+.generation-group summary .fold-marker,
+.generated-folder summary .fold-marker {
+  color: var(--dim);
+  transition: transform 0.12s;
+}
+
+.fold[open] summary .fold-marker,
+.source-node[open] > summary .fold-marker,
+.generation-group[open] > summary .fold-marker,
+.generated-folder[open] summary .fold-marker {
+  transform: rotate(90deg);
+}
+
+.generation-console .console {
+  margin-top: 14px;
+}
+
 .graph-heading {
   display: flex;
   align-items: center;
@@ -1939,7 +1990,6 @@ body.sidebar-collapsed #selection-actions[data-side="sidebar"] {
 }
 .plot-actions .remove-plot {
   margin-left: 6px;
-  font-size: 19px;
 }
 .export-plot {
   position: relative;

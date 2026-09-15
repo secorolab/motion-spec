@@ -4,7 +4,7 @@
 
 /** The sources tab: the model tree, one file open in the editor, and generating from it. */
 
-import { appendConsole, copyPathButton, listItem } from "./components.js";
+import { appendConsole, copyPathButton, icon, iconMarkup, listItem } from "./components.js";
 import {
   $,
   $$,
@@ -87,7 +87,7 @@ function renderSourceNode(node, name, depth, isRoot = false, path = "") {
     };
     branch.style.setProperty("--depth", depth);
     const summary = document.createElement("summary");
-    summary.textContent = name;
+    summary.append(icon("chevron-right", "fold-marker"), name);
     branch.append(summary);
     branch.append(...renderSourceNode(node, "", depth + 1, true, path));
     return [branch];
@@ -191,7 +191,8 @@ export async function showGenerated(relative, push = true) {
   if (state.viewing !== relative) return;
   $("#content").innerHTML =
     '<div class="viewer"><div class="viewer-top">' +
-    `<div class="page-heading"><button id="back" title="Back to ${run ? "run" : "generation"}">←</button>` +
+    `<div class="page-heading"><button id="back" title="Back to ${run ? "run" : "generation"}" ` +
+    `aria-label="Back">${iconMarkup("arrow-left")}</button>` +
     `<h1></h1><span class="eyebrow">${run ? "RUN" : "GENERATED"}</span></div>` +
     '<div class="viewer-heading"><p class="path"></p></div>' +
     '<p class="syntax-state generated-note" hidden></p></div><div id="source-text"></div></div>';
@@ -213,8 +214,36 @@ export async function showGenerated(relative, push = true) {
 }
 
 // Two groups of actions: what to do with the file, and what to make from it.
-const VIEWER_MARKUP =
-  '<div class="viewer"><div class="viewer-top"><div class="page-heading"><h1></h1><span class="eyebrow">SOURCE</span></div><div class="viewer-heading"><p class="path"></p><div class="open-with"><span class="bar file-bar"><button id="save-source" hidden>save</button><button id="diff-source" hidden>diff</button><button id="checkout-source" hidden>checkout</button><span class="split"><button id="open-editor"></button><details class="picker picker-down" id="editor-choice"><summary title="Choose the editor"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5"/></svg></summary><div class="picker-panel"></div></details></span></span><span class="bar build-bar"><button id="gen-source">generate</button><button id="gen-run-source" class="is-primary">generate &amp; run</button></span></div></div><p class="syntax-state" hidden></p></div><div id="source-text"></div></div>';
+const VIEWER_MARKUP = `
+  <div class="viewer">
+    <div class="viewer-top">
+      <div class="page-heading"><h1></h1><span class="eyebrow">SOURCE</span></div>
+      <div class="viewer-heading">
+        <p class="path"></p>
+        <div class="open-with">
+          <span class="bar file-bar">
+            <button id="save-source" hidden>save</button>
+            <button id="diff-source" hidden>diff</button>
+            <button id="checkout-source" hidden>checkout</button>
+            <span class="split">
+              <button id="open-editor"></button>
+              <details class="picker picker-down" id="editor-choice">
+                <summary title="Choose the editor">${iconMarkup("chevron-down")}</summary>
+                <div class="picker-panel"></div>
+              </details>
+            </span>
+          </span>
+          <span class="bar build-bar">
+            <button id="gen-source">generate</button>
+            <button id="gen-run-source" class="is-primary">generate &amp; run</button>
+          </span>
+        </div>
+      </div>
+      <p class="syntax-state" hidden></p>
+    </div>
+    <div id="source-text"></div>
+  </div>
+`;
 
 export async function openSource(source, absolute = null, push = true, line = null) {
   state.viewing = source;

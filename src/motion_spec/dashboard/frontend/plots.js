@@ -4,6 +4,7 @@
 
 /** A chart of a finished run: what it plots, what it is called, and what it exports to. */
 
+import { iconMarkup } from "./components.js";
 import { $, api, nextPlotKey, readStored, state, writeStored } from "./core.js";
 
 const SERIES_COLOURS = ["#e07a5f", "#79c6a5", "#9da9c7", "#f0c36a"];
@@ -22,7 +23,16 @@ const MAGNIFIER_OUT = `path://${MAGNIFIER} M5.4,8.1 L11,8.1`;
 const RESET_ARROW = "path://M15.4,9.6 A6.2,6.2 0 1,1 9.2,3.4 M9.2,0.7 L9.2,6.1 M6.5,3.4 L11.9,3.4";
 
 const PLOT_CARD_MARKUP =
-  '<header><div><strong></strong><small></small></div><div class="plot-actions"><details class="export-plot"><summary title="Export plot"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="square"><path d="M9.5 2.5h4v4"/><path d="M13.5 2.5 8 8"/><path d="M12 9v4.5H2.5V4h4.5"/></svg></summary><div class="export-menu"><button value="png">PNG</button><button value="jpg">JPG</button><button value="svg">SVG</button><button value="pdf">PDF</button></div></details><button class="expand-plot" title="Fullscreen plot">⛶</button><button class="remove-plot" title="Remove plot">×</button></div></header><details class="signal-menu"><summary>+ add signal</summary><div class="signal-panel"><input class="signal-filter" type="search" placeholder="Filter signals"><div class="signal-list"></div></div></details><div class="plot-signals"></div><div class="plot-chart"></div><div class="plot-facts"></div>';
+  '<header><div><strong></strong><small></small></div><div class="plot-actions">' +
+  `<details class="export-plot"><summary title="Export plot">${iconMarkup("external-link")}</summary>` +
+  '<div class="export-menu"><button value="png">PNG</button><button value="jpg">JPG</button>' +
+  '<button value="svg">SVG</button><button value="pdf">PDF</button></div></details>' +
+  `<button class="expand-plot" title="Fullscreen plot" aria-label="Fullscreen plot">${iconMarkup("maximize-2")}</button>` +
+  `<button class="remove-plot" title="Remove plot" aria-label="Remove plot">${iconMarkup("x")}</button>` +
+  '</div></header><details class="signal-menu"><summary>+ add signal</summary>' +
+  '<div class="signal-panel"><input class="signal-filter" type="search" placeholder="Filter signals">' +
+  '<div class="signal-list"></div></div></details><div class="plot-signals"></div>' +
+  '<div class="plot-chart"></div><div class="plot-facts"></div>';
 
 export function addPlot(
   signals = [],

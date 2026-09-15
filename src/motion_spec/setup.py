@@ -11,6 +11,7 @@ clean and on the pinned commit, never moved.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import shlex
 import shutil
@@ -617,11 +618,28 @@ def install_component(
     return state
 
 
+def installer() -> list[str]:
+    """How to install a Python package into this environment.
+
+    A virtual environment uv made has no pip in it at all, so `python -m pip` there fails with
+    "No module named pip"; uv installs into the interpreter it is pointed at instead.
+    """
+    if importlib.util.find_spec("pip") is not None:
+        return [sys.executable, "-m", "pip", "install"]
+    uv = shutil.which("uv")
+    if uv is None:
+        raise RuntimeError(
+            f"neither pip nor uv is available to install with: {sys.executable} has no pip "
+            f"module, and no `uv` is on PATH"
+        )
+    return [uv, "pip", "install", "--python", sys.executable]
+
+
 def _pip_install(source: Path, log: Path | None, editable: bool) -> None:
     """Install a checkout. Editable points site-packages back at it, so `--clean` would orphan
     the installation along with the source it removes."""
     arguments = ["--editable", str(source)] if editable else [str(source)]
-    tee([sys.executable, "-m", "pip", "install", *arguments], log=log)
+    tee([*installer(), *arguments], log=log)
 
 
 def remove_component(component: Component, root: Path, prefix: Path | None = None) -> bool:

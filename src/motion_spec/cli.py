@@ -851,7 +851,12 @@ def install(features: tuple[str, ...]) -> None:
     requirements = [f"motion_spec[{','.join(extras)}]"] if extras else []
     if "dsl" in features:
         requirements.extend(_dsl_requirements())
-    result = subprocess.run([sys.executable, "-m", "pip", "install", *requirements])
+    from motion_spec.setup import installer
+
+    try:
+        result = subprocess.run([*installer(), *requirements])
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
     if result.returncode:
         raise click.ClickException("installation failed")
 

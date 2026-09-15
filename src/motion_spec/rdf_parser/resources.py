@@ -122,6 +122,7 @@ from motion_spec.classes.solvers import (
 from motion_spec.rdf_parser import constraint_handler, quantities
 from motion_spec.rdf_parser.model import local_name, seconds
 from motion_spec.rdf_parser.operations import OPS_GENERIC, OPS_SOLVER
+from motion_spec.rdf_parser.sampling import unplaced_frames
 
 SUPPORTED_ROBOT_MODELS = {"KinovaGen3"}
 # Devices with driver templates. A name the grammar accepts but that is missing here is rejected.
@@ -1558,11 +1559,9 @@ def _scene_frames(model, objects, trees=()) -> list:
     # A site is named after its frame, and carries its body only when another body has a frame
     # of the same name -- the name has to be unique, and it has to stay readable in a viewer.
     counts = Counter(local_name(frame) for _body, frame in marked)
-    # A frame the run draws the position of is marked from the tree the draw went into.
+    # A frame the tree could not place is marked from the tree that will place it at runtime.
     drawn = {
-        entry["iri"]: (tree["cpp_name"], entry)
-        for tree in trees
-        for entry in tree["sampled_frames"]
+        entry["iri"]: (tree["cpp_name"], entry) for tree in trees for entry in unplaced_frames(tree)
     }
 
     frames = []

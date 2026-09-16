@@ -53,6 +53,14 @@ class _Reported(click.ClickException):
             click.echo(line, err=True)
 
 
+def _editable_here(root: Path) -> bool:
+    """Whether this motion-spec is running from a checkout in ROOT's source tree."""
+    import motion_spec
+
+    running = Path(motion_spec.__file__).resolve()
+    return (root / "src" / "motion-spec").resolve() in running.parents
+
+
 def _internal_failure(what: str, exc: Exception) -> click.ClickException:
     """Report a failure that is ours, not the model's, with the stack that produced it.
 
@@ -786,6 +794,16 @@ def setup(
     _say("info", f"installing into {prefix}")
     _say("info", f"console log {log}")
     _say("info", f"building with {jobs} job{'s' if jobs != 1 else ''} ({asked.source})")
+    # setup cannot check itself out: it is the code running. So it says so instead.
+    if dev and not _editable_here(root):
+        import motion_spec
+
+        _say(
+            "warn",
+            f"--dev leaves motion-spec itself installed from {Path(motion_spec.__file__).parent}; "
+            f"clone it into {root / 'src' / 'motion-spec'} and reinstall it with `pip install -e` "
+            "to edit it too",
+        )
     # The sample is written only when there is no config, so an existing one is left disagreeing.
     if config_path and ros != in_file:
         _say(

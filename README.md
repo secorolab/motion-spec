@@ -19,32 +19,88 @@ for Contact-Rich Robotic Mobile-Manipulation Tasks*.
 ## Installation
 
 `motion-spec` installs itself and everything it builds against — no second repository, no
-workspace tool:
+workspace tool. Two choices decide the commands: whether you are **using** it or **working on
+it** (`--dev`), and whether the workspace is a **colcon** one (`--ros`).
+
+### Use it
+
+The Python components come from their pinned git refs and the C++ ones are built in
+`WORKSPACE/.ms-sources`; nothing lands in `src/`.
 
 ```bash
-mkdir -p ws/src
-git clone git@github.com:secorolab/motion-spec.git ws/src/motion-spec
-python3 -m venv ws/.venv && source ws/.venv/bin/activate
-pip install -e ws/src/motion-spec            # the CLI and the DSL compilers
-motion-spec install all                      # validation, recording, dashboard, replay
-motion-spec health                           # prints the one apt line for what is missing
-motion-spec setup --workspace ws             # STST and the C++ libraries, into ws/install
-source ws/setup-motion-spec.bash             # or .zsh, whichever setup wrote
+python3 -m venv ~/ws/.venv && source ~/ws/.venv/bin/activate     # or: uv venv ~/ws/.venv
+pip install "motion_spec @ git+https://github.com/secorolab/motion-spec.git@dev"
+export MOTION_SPEC_WS=~/ws
+motion-spec setup
+source ~/ws/setup-motion-spec.bash                               # .zsh under zsh
+motion-spec health
 ```
 
-`setup` clones each dependency at the version
-[`motion_spec.repos`](src/motion_spec/motion_spec.repos) pins into `WORKSPACE/src` as ordinary
-workspace packages (only STSTv4, which colcon cannot build, goes under `src/thirdparty` with a
-`COLCON_IGNORE`), builds it in
-`WORKSPACE/build` and installs it into `WORKSPACE/install`; run it again after the pin moves
-and only what changed is rebuilt. Name components to do fewer:
-`motion-spec setup stst mj_kdl_wrapper`. The workspace comes from `$MOTION_SPEC_WS` or
-`--workspace`, and naming neither is an error rather than a guess — nothing is ever installed
-into a location you did not choose. A source checkout that is already there is built only when
-it is clean and on the pinned commit, and otherwise reported and skipped rather than moved.
-One environment file is written to the workspace root, for the shell in force, putting the
-install prefix on `PATH`, `CMAKE_PREFIX_PATH` and `LD_LIBRARY_PATH` — which is how a generated
-controller finds its libraries. Anything `--clean` removes goes to the desktop trash, not away.
+### Work on it
+
+`--dev` checks every component out into `WORKSPACE/src` and installs the Python ones editable.
+Clone motion-spec itself there too — `setup` cannot check out the code it is running, and says
+so if you do not.
+
+```bash
+mkdir -p ~/ws/src
+git clone -b dev https://github.com/secorolab/motion-spec.git ~/ws/src/motion-spec
+python3 -m venv ~/ws/.venv && source ~/ws/.venv/bin/activate
+pip install -e ~/ws/src/motion-spec
+export MOTION_SPEC_WS=~/ws
+motion-spec setup --dev
+source ~/ws/setup-motion-spec.bash
+```
+
+### With ROS
+
+Add `--ros` to either. The environment must be able to reach both ROS and the distribution's
+Python packages, so build the venv on the system interpreter — `setup` refuses before cloning
+anything if it cannot:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+python3 -m venv --system-site-packages ~/ws/.venv && source ~/ws/.venv/bin/activate
+pip install "motion_spec @ git+https://github.com/secorolab/motion-spec.git@dev"
+export MOTION_SPEC_WS=~/ws
+motion-spec setup --ros                                          # add --dev to work on it
+source ~/ws/setup-motion-spec.bash
+```
+
+`--ros` writes a `colcon.meta`, builds each component with `colcon build --packages-select` in
+motion-spec's dependency order, and writes an environment file that sources the distro and the
+overlay instead of exporting paths. Set `[ros] workspace = true` to keep it; the flag applies
+to one run. The distribution comes from `$ROS_DISTRO`, then `[ros] distro`, then the only one
+installed.
+
+### With uv
+
+Same commands, `uv` in place of `pip`. A uv environment has no `pip` in it, and `setup` uses
+`uv pip install --python` instead when that is so.
+
+```bash
+uv venv ~/ws/.venv                                               # plain
+uv venv --python /usr/bin/python3 --system-site-packages ~/ws/.venv    # for ROS
+uv pip install --python ~/ws/.venv/bin/python -e ~/ws/src/motion-spec
+```
+
+For ROS, `--python /usr/bin/python3` is what matters: without it uv builds the environment on
+its own CPython, whose system packages are not the distribution's, and `--system-site-packages`
+reaches nothing from apt.
+
+### What setup does
+
+It clones each dependency at the version
+[`motion_spec.repos`](src/motion_spec/motion_spec.repos) pins, builds it in `WORKSPACE/build`
+and installs it into `WORKSPACE/install`; run it again after a pin moves and only what changed
+is rebuilt. Name components to do fewer: `motion-spec setup stst mj_kdl_wrapper`. The workspace
+comes from `$MOTION_SPEC_WS` or `--workspace`, and naming neither is an error rather than a
+guess — nothing is ever installed into a location you did not choose. A source checkout that is
+already there is built only when it is clean and on the pinned commit, and otherwise reported
+and skipped rather than moved. Before the first clone it checks what it cannot install itself
+and stops with the one apt line that fixes it. The environment file it writes activates the
+environment setup ran in, so sourcing it is the only step between a new shell and a working
+workspace. Anything `--clean` removes goes to the desktop trash, not away.
 
 `build`, `run`, `rerun` and `health` can source that file themselves — `--env <file>`, or
 `$MOTION_SPEC_ENV`, or the nearest one above the generation — and run every subprocess under
@@ -64,7 +120,7 @@ binds none of them never needs them. Full instructions: **[Setup](https://secoro
 | Build | CMake, a C++20 compiler, coord2b, Eigen, Orocos KDL, toml++ |
 | MuJoCo target | mj_kdl_wrapper |
 | Real-robot target | robif2b, urdfdom, urdfdom_headers |
-| ROS (optional) | rclcpp, realtime_tools, rosidl_runtime_py — only for a model that publishes a topic or drives an action |
+| ROS (optional) | rclcpp, realtime_tools, rosidl_runtime_py, ament_package, PyYAML, colcon — only for a model that publishes a topic or drives an action |
 
 Orocos KDL must be the [secorolab fork](https://github.com/secorolab/orocos_kinematics_dynamics):
 generated controllers call the Vereshchagin solvers with fixed joints, which a distro

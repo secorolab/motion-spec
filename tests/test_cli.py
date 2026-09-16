@@ -595,6 +595,24 @@ def test_only_dev_checks_sources_out_into_src(monkeypatch, tmp_path) -> None:
     assert not (tmp_path / "src").exists()
 
 
+def test_a_missing_scene_asset_stops_codegen(monkeypatch, tmp_path) -> None:
+    from motion_spec.generation import codegen
+
+    monkeypatch.chdir(tmp_path)
+    ir = {"resources": {"robot": {"path": "models/there.xml"}, "extras": [{"path": "gone.xml"}]}}
+    (tmp_path / "models").mkdir()
+    (tmp_path / "models" / "there.xml").write_text("<mujoco/>")
+    assert codegen.unresolved_assets(ir) == ["gone.xml"]
+
+    # The wrapper's own assets come from its cache, wherever the scene spells them.
+    cache = tmp_path / "cache"
+    (cache / "mj_kdl_wrapper" / "assets").mkdir(parents=True)
+    (cache / "mj_kdl_wrapper" / "assets" / "cube.xml").write_text("<mujoco/>")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+    vendored = {"path": "src/mj_kdl_wrapper/assets/cube.xml"}
+    assert codegen.unresolved_assets(vendored) == []
+
+
 def test_the_job_count_is_bounded_by_memory_not_only_by_cores(monkeypatch) -> None:
     monkeypatch.setattr(stst_setup, "usable_cores", lambda: 32)
     monkeypatch.setattr(stst_setup, "total_memory", lambda: 8 * 1024**3)

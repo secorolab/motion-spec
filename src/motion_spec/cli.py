@@ -1593,12 +1593,12 @@ def run(
         )
     except (ArchiveError, RunnerError) as exc:
         raise click.ClickException(str(exc)) from exc
-    # Echoed before the exit: an interrupt leaves a complete archive, and that is when the
+    # Said before the exit: an interrupt leaves a complete archive, and that is when the
     # caller most needs the path.
-    _say("done", f"run {run_dir}")
-    click.echo(run_dir)
     if returncode:
+        _say("error", f"run failed ({returncode}) {run_dir}")
         raise click.exceptions.Exit(returncode)
+    _say("done", f"run {run_dir}")
 
 
 @main.command()

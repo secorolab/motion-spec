@@ -200,6 +200,65 @@ def _remap_event_indices(node, remap: dict) -> None:
             _remap_event_indices(value, remap)
 
 
+# The same prefixes the generated find_asset_path maps into the wrapper's cache.
+_VENDOR_MARKERS = (
+    ("third_party/menagerie/", "menagerie"),
+    ("src/mj_kdl_wrapper/assets/", "assets"),
+    ("src/examples/assets/", "assets"),
+)
+
+
+def _cache_root() -> Path | None:
+    for variable, tail in (("XDG_CACHE_HOME", ()), ("HOME", (".cache",))):
+        value = os.environ.get(variable)
+        if value:
+            return Path(value).joinpath(*tail) / "mj_kdl_wrapper"
+    return None
+
+
+def asset_candidates(path: str) -> list[Path]:
+    """Every place the generated program will look for PATH, in its order."""
+    declared = Path(path)
+    if declared.is_absolute():
+        return [declared]
+    candidates = [Path.cwd() / declared]
+    cache = _cache_root()
+    text = declared.as_posix()
+    for marker, subdirectory in _VENDOR_MARKERS:
+        position = text.find(marker)
+        if position == -1:
+            continue
+        tail = text[position + len(marker) :]
+        if cache:
+            candidates.append(cache / subdirectory / tail)
+        menagerie = os.environ.get("MJ_KDL_MENAGERIE")
+        if menagerie and subdirectory == "menagerie":
+            candidates.append(Path(menagerie) / tail)
+    return candidates
+
+
+def _asset_paths(node, found: list[str]) -> list[str]:
+    if isinstance(node, dict):
+        path = node.get("path")
+        if isinstance(path, str) and path.endswith(".xml"):
+            found.append(path)
+        for value in node.values():
+            _asset_paths(value, found)
+    elif isinstance(node, list):
+        for value in node:
+            _asset_paths(value, found)
+    return found
+
+
+def unresolved_assets(ir: dict) -> list[str]:
+    """The MJCF assets the IR names that nothing on this machine can supply."""
+    return [
+        path
+        for path in dict.fromkeys(_asset_paths(ir, []))
+        if not any(candidate.exists() for candidate in asset_candidates(path))
+    ]
+
+
 def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     """Render every C++/artifact file for an IR: introspection headers, runtime and
     shared-state headers, the frame-log proto (compiled to C++), per-motion headers and
@@ -216,6 +275,14 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
         raise RuntimeError(
             f"{ir_path}: the model declares no FSM; FSM-less execution is not supported. "
             "Coordinate the model with an FSM to generate C++."
+        )
+    # Here, not at run time: a controller that cannot load its scene must not build at all.
+    missing = unresolved_assets(ir)
+    if missing:
+        raise RuntimeError(
+            f"{ir_path}: the scene names MJCF assets nothing here supplies:\n"
+            + "\n".join(f"  {path}" for path in missing)
+            + f"\nPaths are resolved against {Path.cwd()} and the mj_kdl_wrapper cache."
         )
     # The pipeline moves fsm_ir.json into the controller dir before calling codegen; the
     # standalone `gen code <ir.json>` path leaves it beside the IR.

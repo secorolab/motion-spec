@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.request import urlretrieve
 
-from motion_spec.utils import tee, trash_if_present
+from motion_spec.utils import tee, total_memory, trash_if_present, usable_cores
 
 MANIFEST = "motion_spec.repos"
 STST_REPOSITORY = "thirdparty/STSTv4"
@@ -44,6 +44,8 @@ COLCON_IGNORE = "COLCON_IGNORE"
 MANAGED = Path("share") / "motion-spec"
 BUILD_TYPE = "RelWithDebInfo"
 BUILD_TYPE_VARIABLE = "MOTION_SPEC_BUILD_TYPE"
+# A marker origin, beside cloned and adopted: pip fetched it, so there is no source to clean.
+PIP_ORIGIN = "pip"
 
 
 @dataclass(frozen=True)
@@ -289,6 +291,17 @@ def build_directory(root: Path, name: str) -> Path:
     return root / BUILD_DIRECTORY / name
 
 
+def build_jobs(requested: int | None = None) -> int:
+    """How many compilers to run at once; memory caps it, not cores."""
+    if requested is not None:
+        return max(1, requested)
+    cores = usable_cores()
+    memory = total_memory()
+    if memory is None:
+        return max(1, cores // 2)
+    return max(1, min(cores, memory // (2 * 1024**3)))
+
+
 @dataclass(frozen=True)
 class SourceState:
     """What was found at a component's source path, and whether setup will build it."""
@@ -298,6 +311,8 @@ class SourceState:
     cloned: bool
     usable: bool
     reason: str = ""
+    # What to name as the source; empty means the path.
+    origin: str = ""
 
 
 def find_stst(path: str | None = None) -> str | None:
@@ -336,11 +351,15 @@ def remove_stst(root: Path, prefix: Path | None = None) -> bool:
     return True
 
 
-def component_installed(component: Component, prefix: Path) -> bool:
-    """Whether PREFIX carries COMPONENT at the ref the manifest pins, so a build is a no-op."""
+def component_installed(component: Component, prefix: Path, dev: bool | None = None) -> bool:
+    """Whether PREFIX has COMPONENT at the pinned ref, by the route DEV asks for."""
     marker = _marker(component.name, prefix)
     version = SOURCES[component.repository].version
-    return marker.is_file() and marker.read_text().split("\n")[0] == version
+    if not (marker.is_file() and marker.read_text().split("\n")[0] == version):
+        return False
+    if component.python and dev is not None:
+        return (_recorded_origin(marker) == PIP_ORIGIN) != dev
+    return True
 
 
 def stst_installed(root: Path, prefix: Path | None = None) -> bool:
@@ -551,17 +570,23 @@ def install_component(
     options: tuple[str, ...] | None = None,
     ros: bool = False,
     editable: bool = False,
+    jobs: int | None = None,
+    dev: bool = False,
 ) -> SourceState:
     """Build COMPONENT from ROOT/src into ROOT/build and install it into PREFIX.
 
     The marker carries the ref installed, so a rerun is a no-op until the pin moves. A source
-    this tool will not touch is returned unbuilt.
+    this tool will not touch is returned unbuilt. Without DEV a Python component is not a
+    checkout at all: pip fetches the pinned ref itself.
     """
     prefix = prefix or install_prefix(root)
     source_spec = SOURCES[component.repository]
     marker = _marker(component.name, prefix)
-    if not force and component_installed(component, prefix):
+    if not force and component_installed(component, prefix, dev):
         return SourceState(source_directory(root, component.repository), False, True, "installed")
+
+    if component.python and not dev:
+        return _install_python_from_git(component, root, source_spec, marker, log)
 
     needed = ("git",) if component.python else ("git", "cmake")
     missing = [command for command in needed if shutil.which(command) is None]
@@ -585,7 +610,7 @@ def install_component(
         return state
 
     if ros:
-        _colcon_build(component, root, build_type, log)
+        _colcon_build(component, root, build_type, log, build_jobs(jobs))
         if component.bindings:
             _pip_install(state.path, log, editable)
         marker.write_text(f"{source_spec.version}\n{_origin(previous, state)}\n")
@@ -608,7 +633,8 @@ def install_component(
         ],
         log=log,
     )
-    tee([cmake, "--build", str(build), "--parallel"], log=log)
+    # A bare --parallel is make -j: unlimited, and it overrides the env and MAKEFLAGS too.
+    tee([cmake, "--build", str(build), "--parallel", str(build_jobs(jobs))], log=log)
     tee([cmake, "--install", str(build)], log=log)
 
     if component.bindings:
@@ -640,6 +666,26 @@ def _pip_install(source: Path, log: Path | None, editable: bool) -> None:
     the installation along with the source it removes."""
     arguments = ["--editable", str(source)] if editable else [str(source)]
     tee([*installer(), *arguments], log=log)
+
+
+def git_requirement(source: Source) -> str:
+    """The pip requirement for a pinned repository."""
+    return f"git+{source.url}@{source.version}"
+
+
+def _install_python_from_git(
+    component: Component, root: Path, source: Source, marker: Path, log: Path | None
+) -> SourceState:
+    """Let pip fetch COMPONENT itself, leaving nothing under src/."""
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    requirement = git_requirement(source)
+    # Before the install: a half-installed component is still this tool's.
+    marker.write_text(f"installing\n{PIP_ORIGIN}\n")
+    tee([*installer(), requirement], log=log)
+    marker.write_text(f"{source.version}\n{PIP_ORIGIN}\n")
+    return SourceState(
+        source_directory(root, component.repository), False, True, origin=requirement
+    )
 
 
 def remove_component(component: Component, root: Path, prefix: Path | None = None) -> bool:
@@ -726,7 +772,9 @@ def _write_ros_environment(
     return path
 
 
-def _colcon_build(component: Component, root: Path, build_type: str, log: Path | None) -> None:
+def _colcon_build(
+    component: Component, root: Path, build_type: str, log: Path | None, jobs: int
+) -> None:
     """Build one package with colcon, in the order motion-spec knows and colcon cannot derive.
 
     One package per call rather than one `colcon build`: coord2b and mj_kdl_wrapper carry no
@@ -749,6 +797,8 @@ def _colcon_build(component: Component, root: Path, build_type: str, log: Path |
         ],
         log=log,
         cwd=root,
+        # colcon derives -j from the core count unless MAKEFLAGS already names one.
+        env={**os.environ, "MAKEFLAGS": f"-j{jobs} -l{jobs}"},
     )
 
 

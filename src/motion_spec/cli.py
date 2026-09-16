@@ -36,6 +36,8 @@ from motion_spec.utils import (
     STAMP_COLOUR,
     command_log,
     generation_log,
+    log_header,
+    machine_facts,
     mirrored_stderr,
     paint,
     show_warning,
@@ -645,11 +647,18 @@ def _port_taken(port: int) -> bool:
     "--build-type", default=BUILD_TYPE, show_default=True, help="CMAKE_BUILD_TYPE for the sources."
 )
 @click.option(
+    "--dev/--no-dev",
+    "dev_flag",
+    default=None,
+    help="Check the Python components out into WORKSPACE/src and install them editable, to work "
+    "on them. Without it pip fetches the pinned ref and nothing lands under src.",
+)
+@click.option(
     "--editable/--no-editable",
     "editable_flag",
     default=None,
-    help="Install the Python components with `pip install -e`, so edits in the checkout take "
-    "effect without reinstalling. `--clean` then removes a checkout its installation points at.",
+    help="Whether --dev's checkout is installed with `pip install -e`. On by default under "
+    "--dev; `--clean` then removes a checkout its installation points at.",
 )
 @click.option(
     "--ros/--no-ros",
@@ -664,6 +673,13 @@ def _port_taken(port: int) -> bool:
     multiple=True,
     help="Extra cmake option for the named components; repeat as needed.",
 )
+@click.option(
+    "-j",
+    "--jobs",
+    type=click.IntRange(min=1),
+    help="Compilers to run at once. Defaults to the lesser of the usable cores and one per "
+    "2 GiB of memory; $CMAKE_BUILD_PARALLEL_LEVEL and [setup] jobs also set it.",
+)
 def setup(
     components: tuple[str, ...],
     workspace_argument: Path | None,
@@ -671,18 +687,22 @@ def setup(
     clean: bool,
     force: bool,
     build_type: str,
+    dev_flag: bool | None,
     editable_flag: bool | None,
     ros_flag: bool | None,
     cmake_args: tuple[str, ...],
+    jobs: int | None,
 ) -> None:
     """Install the external tools and libraries motion-spec builds against.
 
     Installs into WORKSPACE/install, with the environment files written to WORKSPACE. With no
     COMPONENTS, installs the ones every model needs, in dependency order; the device drivers
-    (serial, robotiq_driver_noros, robif2b) are built only when named.
+    (serial, robotiq_driver_noros, robif2b) are built only when named. The Python components
+    come from their pinned git refs unless --dev asks for a checkout.
     """
     from motion_spec.setup import (
         COMPONENTS_BY_NAME,
+        build_jobs,
         component_installed,
         install_component,
         install_prefix,
@@ -711,9 +731,11 @@ def setup(
     configured_args = declared.get("cmake_args", {})
     in_file = bool(configured.get("ros", {}).get("workspace"))
     ros = ros_flag if ros_flag is not None else in_file
-    editable = (
-        editable_flag if editable_flag is not None else bool(declared.get("editable", False))
-    )
+    dev = dev_flag if dev_flag is not None else bool(declared.get("dev", False))
+    if editable_flag and not dev:
+        raise click.UsageError("--editable needs --dev: with no checkout there is nothing to edit")
+    # Editable is the point of a checkout, so --dev turns it on unless --no-editable says not to.
+    editable = editable_flag if editable_flag is not None else bool(declared.get("editable", dev))
     if not components and declared.get("components"):
         ordered = [name for name in COMPONENT_NAMES if name in declared["components"]]
     from motion_spec.config import resolve
@@ -725,12 +747,35 @@ def setup(
         BUILD_TYPE,
         os.environ,
     ).value
+    # CMake's own variable fills the environment slot; an explicit --parallel would shadow it.
+    asked = resolve(jobs, "CMAKE_BUILD_PARALLEL_LEVEL", declared.get("jobs"), None, os.environ)
+    try:
+        jobs = build_jobs(int(asked.value) if asked.value is not None else None)
+    except ValueError as exc:
+        raise click.UsageError(f"jobs ({asked.source}) is not a number: {asked.value!r}") from exc
     prefix = prefix or (Path(declared["prefix"]) if declared.get("prefix") else None)
     prefix = (root / prefix).resolve() if prefix else install_prefix(root)
     log = command_log(root, "setup")
+    # Held to the end of the command, so the failure that ends it is in the log too.
+    click.get_current_context().with_resource(mirrored_stderr(log))
+    log_header(
+        log,
+        "setup",
+        {
+            "workspace": root,
+            "prefix": prefix,
+            "components": ", ".join(ordered),
+            "build type": build_type,
+            "jobs": f"{jobs} ({asked.source})",
+            "python": "checkout, editable" if dev and editable else "checkout" if dev else "git",
+            "colcon": ros,
+            **machine_facts(),
+        },
+    )
     _say("info", f"workspace {root}")
     _say("info", f"installing into {prefix}")
     _say("info", f"console log {log}")
+    _say("info", f"building with {jobs} job{'s' if jobs != 1 else ''} ({asked.source})")
     # The sample is written only when there is no config, so an existing one is left disagreeing.
     if config_path and ros != in_file:
         _say(
@@ -784,7 +829,7 @@ def setup(
             already = not force and (
                 stst_installed(root, prefix)
                 if name == "stst"
-                else component_installed(component, prefix)
+                else component_installed(component, prefix, dev)
             )
             # Announced before the build, so its console output has a heading.
             if not already:
@@ -807,6 +852,8 @@ def setup(
                 options=_cmake_options(COMPONENTS_BY_NAME[name], configured_args, cmake_args),
                 ros=ros,
                 editable=editable,
+                jobs=jobs,
+                dev=dev,
             )
             if not state.usable:
                 _say("warn", f"skipped {name}: {state.path} {state.reason}")
@@ -815,7 +862,7 @@ def setup(
                 _say(
                     "info" if already else "done",
                     f"{name} {'already installed' if already else 'installed'}, "
-                    f"source {state.path}",
+                    f"source {state.origin or state.path}",
                 )
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
         raise _internal_failure("setup failed", exc) from exc
@@ -1175,6 +1222,7 @@ def config(initialize: bool, workspace_argument: Path | None) -> None:
         BUILD_TYPE as DEFAULT_BUILD_TYPE,
         GENERATION_DIRECTORY,
         INSTALL_DIRECTORY,
+        build_jobs,
         workspace as resolve_workspace,
     )
 
@@ -1221,7 +1269,9 @@ def config(initialize: bool, workspace_argument: Path | None) -> None:
         ("workspace.shell", workspace_keys, "shell", None, config_shell(configured)),
         ("setup.prefix", setup_keys, "prefix", None, f"<workspace>/{INSTALL_DIRECTORY}"),
         ("setup.build_type", setup_keys, "build_type", BUILD_TYPE_VARIABLE, DEFAULT_BUILD_TYPE),
+        ("setup.dev", setup_keys, "dev", None, False),
         ("setup.editable", setup_keys, "editable", None, False),
+        ("setup.jobs", setup_keys, "jobs", "CMAKE_BUILD_PARALLEL_LEVEL", build_jobs()),
         ("setup.components", setup_keys, "components", None, list(DEFAULT_COMPONENTS)),
     ]
     width = max(len(name) for name, *_ in rows)

@@ -17,11 +17,11 @@ license = { text = "MPL-2.0" }
 # 3.11 for tomllib: the workspace's motion-spec.config.toml is read with the stdlib.
 requires-python = ">=3.11"
 # The secorolab packages are on no index, so they carry their source: named alone they
-# resolve nowhere and the whole install fails, wherever it is run from. rdflib does
-# resolve, to the wrong one -- a model with multi-type scoped contexts needs the fork.
+# resolve nowhere and the whole install fails, wherever it is run from.
 dependencies = [
     "click>=8.1",
-    "rdflib @ git+https://github.com/secorolab/rdflib@7.6.0-fix-multi-type-scoped-context",
+    # No multi-type scoped @context support; generated models use none.
+    "rdflib>=7.6.0",
     "rdf_utils @ git+https://github.com/minhnh/rdf-utils@main",
     "jinja2",
     "motion_spec_dsl @ git+https://github.com/secorolab/motion-spec-dsl@dev",

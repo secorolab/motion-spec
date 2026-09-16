@@ -17,6 +17,7 @@ import rdflib
 
 from motion_spec_dsl.rdf_parser.vocab import APP
 
+from motion_spec.setup import build_jobs
 from motion_spec.utils import generation_log, tee, tool_environment
 
 PROV = rdflib.Namespace("http://www.w3.org/ns/prov#")
@@ -295,10 +296,7 @@ def build_generation(
         )
     log = generation_log(generation)
     tee(configure, log=log, env=env)
-    command = ["cmake", "--build", str(build), "--parallel"]
-    if jobs is not None:
-        command.append(str(jobs))
-    tee(command, log=log, env=env)
+    tee(["cmake", "--build", str(build), "--parallel", str(build_jobs(jobs))], log=log, env=env)
     executable = build / "main"
     if not executable.is_file():
         raise RuntimeError(f"controller executable not found after build: {executable}")

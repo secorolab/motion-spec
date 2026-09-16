@@ -252,9 +252,8 @@ class HealthCheck:
 DETAILS: dict[str, dict[str, str]] = {
     "click": {"why": "the CLI itself runs on it", "source": "https://github.com/pallets/click"},
     "rdflib": {
-        "why": "every model is an RDF graph; parsing, querying and serializing run on it "
-        "(the secorolab fork carries the multi-type scoped-context fix)",
-        "source": "https://github.com/secorolab/rdflib",
+        "why": "every model is an RDF graph; parsing, querying and serializing run on it",
+        "source": "https://github.com/RDFLib/rdflib",
     },
     "rdf_utils": {
         "why": "shared RDF loaders, resolvers and vocabularies every secorolab tool uses",

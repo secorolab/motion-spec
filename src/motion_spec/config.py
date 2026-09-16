@@ -20,7 +20,7 @@ from pathlib import Path
 CONFIG_FILE = "motion-spec.config.toml"
 SECTIONS = {
     "workspace": {"root", "generations", "environment", "shell"},
-    "setup": {"prefix", "build_type", "components", "cmake_args", "editable"},
+    "setup": {"prefix", "build_type", "components", "cmake_args", "editable", "jobs", "dev"},
     "ros": {"workspace", "distro"},
 }
 TOP_LEVEL = {"version"}
@@ -125,6 +125,10 @@ def sample(
     from motion_spec.formats import FORMATS
 
     from motion_spec.health import _ros_distro
+    from motion_spec.setup import build_jobs
+
+    # Left commented: a number that fits this machine's memory can take a smaller one down.
+    jobs_key = f"# jobs = {build_jobs()}"
 
     newline = "\n"
     using = shell()
@@ -161,7 +165,9 @@ version = {version}
 [setup]
 prefix = "install"
 build_type = "RelWithDebInfo"
-editable = false                           # pip install -e the Python components
+dev = false                                # check the Python components out into src/
+editable = false                           # pip install -e that checkout; --dev implies it
+{jobs_key:<42} # compilers at once; -j and the cmake variable win
 components = [{listed}]
 #   only when named: {", ".join(on_request)}
 

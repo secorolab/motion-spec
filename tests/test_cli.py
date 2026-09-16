@@ -523,6 +523,72 @@ def test_health_gathers_apt_remedies_into_one_line(monkeypatch) -> None:
     assert "ros-$ROS_DISTRO-rclcpp" not in result.output
 
 
+def test_a_build_is_never_given_an_unlimited_job_count(monkeypatch, tmp_path) -> None:
+    """A bare `cmake --build --parallel` is `make -j`, which swaps the machine to death."""
+    component = stst_setup.COMPONENTS_BY_NAME["coord2b"]
+    checkout = stst_setup.source_directory(tmp_path, component.repository)
+    (checkout / ".git").mkdir(parents=True)
+    state = stst_setup.SourceState(checkout, False, True, "cloned")
+    monkeypatch.setattr(stst_setup, "prepare_source", lambda *_a, **_k: state)
+    commands = []
+    monkeypatch.setattr(stst_setup, "tee", lambda command, **_kwargs: commands.append(command))
+    monkeypatch.setattr(stst_setup, "_pip_install", lambda *_a, **_k: None)
+
+    stst_setup.install_component(component, tmp_path, jobs=3)
+    build = next(c for c in commands if "--build" in c)
+    assert build[build.index("--parallel") + 1] == "3"
+
+    commands.clear()
+    stst_setup.install_component(component, tmp_path, force=True)
+    build = next(c for c in commands if "--build" in c)
+    # Whatever this machine computes, --parallel is never the last word.
+    assert int(build[build.index("--parallel") + 1]) >= 1
+
+    captured = {}
+
+    def record(command, **kwargs):
+        captured.update(kwargs)
+        commands.append(command)
+
+    monkeypatch.setattr(stst_setup, "tee", record)
+    monkeypatch.setattr(stst_setup.shutil, "which", lambda command: f"/usr/bin/{command}")
+    stst_setup.install_component(component, tmp_path, force=True, ros=True, jobs=2)
+    assert captured["env"]["MAKEFLAGS"] == "-j2 -l2"
+
+
+def test_a_python_component_is_only_checked_out_for_dev(monkeypatch, tmp_path) -> None:
+    component = stst_setup.COMPONENTS_BY_NAME["motion_spec_dsl"]
+    commands = []
+    monkeypatch.setattr(stst_setup, "tee", lambda command, **_kwargs: commands.append(command))
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("a source was prepared without --dev")
+
+    monkeypatch.setattr(stst_setup, "prepare_source", refuse)
+    state = stst_setup.install_component(component, tmp_path, dev=False)
+    pinned = stst_setup.SOURCES[component.repository]
+    assert commands[-1][-1] == f"git+{pinned.url}@{pinned.version}"
+    assert not (tmp_path / stst_setup.SOURCE_DIRECTORY).exists()
+    assert state.origin.startswith("git+")
+
+    prefix = stst_setup.install_prefix(tmp_path)
+    assert stst_setup.component_installed(component, prefix, dev=False)
+    # The same ref from a checkout is a different installation, so --dev rebuilds it.
+    assert not stst_setup.component_installed(component, prefix, dev=True)
+
+
+def test_the_job_count_is_bounded_by_memory_not_only_by_cores(monkeypatch) -> None:
+    monkeypatch.setattr(stst_setup, "usable_cores", lambda: 32)
+    monkeypatch.setattr(stst_setup, "total_memory", lambda: 8 * 1024**3)
+    assert stst_setup.build_jobs() == 4
+    monkeypatch.setattr(stst_setup, "total_memory", lambda: 512 * 1024**3)
+    assert stst_setup.build_jobs() == 32
+    # Never zero on a machine too small to hold one job.
+    monkeypatch.setattr(stst_setup, "total_memory", lambda: 1024**3)
+    assert stst_setup.build_jobs() == 1
+    assert stst_setup.build_jobs(64) == 64
+
+
 def test_component_install_is_skipped_until_its_pin_moves(monkeypatch, tmp_path) -> None:
     component = stst_setup.COMPONENTS_BY_NAME["coord2b"]
     pinned = stst_setup.SOURCES[component.repository].version
@@ -1009,7 +1075,8 @@ def test_a_generated_file_says_which_version_it_is(monkeypatch, tmp_path) -> Non
     written = tmp_path / config.CONFIG_FILE
     assert f"\nversion = {formats.FORMATS['config'].current}\n" in written.read_text()
 
-    written.write_text(written.read_text().replace("version = 1", "version = 9"))
+    current = formats.FORMATS["config"].current
+    written.write_text(written.read_text().replace(f"version = {current}", "version = 9"))
     try:
         config.settings(tmp_path)
     except ValueError as exc:

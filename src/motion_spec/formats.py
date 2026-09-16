@@ -30,9 +30,9 @@ class Format:
 FORMATS = {
     "config": Format(
         "motion-spec.config.toml",
-        current=1,
+        current=2,
         oldest=1,
-        changes={1: "workspace and setup settings"},
+        changes={1: "workspace and setup settings", 2: "[setup] jobs and dev"},
     ),
     "journal": Format(
         ".motion-spec/journal.jsonl",
@@ -42,10 +42,14 @@ FORMATS = {
     ),
     "marker": Format(
         "install marker",
-        current=2,
+        current=3,
         oldest=1,
         # A v1 marker predates `setup` adopting checkouts, so everything it recorded was cloned.
-        changes={1: "the installed ref alone", 2: "the ref, and whether setup cloned the source"},
+        changes={
+            1: "the installed ref alone",
+            2: "the ref, and whether setup cloned the source",
+            3: "pip, for a Python component installed from its git ref",
+        },
     ),
 }
 

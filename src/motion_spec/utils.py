@@ -11,8 +11,11 @@ import json
 import os
 import pty
 import re
+import shlex
+import signal
 import subprocess
 import sys
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -85,9 +88,10 @@ class _Mirror:
     def __init__(self, stream, sink):
         self._stream = stream
         self._sink = sink
+        self._readable = _for_the_file()
 
     def write(self, text: str) -> int:
-        self._sink.write(text.encode("utf-8", "replace"))
+        self._sink.write(self._readable(text.encode("utf-8", "replace")))
         self._sink.flush()
         return self._stream.write(text)
 
@@ -126,6 +130,95 @@ def _indenter():
         return b"\n".join(out)
 
     return indent
+
+
+ANSI = re.compile(rb"\x1b\[[0-9;?]*[a-zA-Z]")
+
+
+def _for_the_file():
+    """Strip colour and progress-bar redraws from a copy bound for the log, not the screen."""
+    pending = bytearray()
+    pad = INDENT.encode()
+
+    def clean(line: bytes) -> bytes:
+        # rstrip first: under a pty every line ends CRLF, which redraws nothing.
+        text = ANSI.sub(b"", line.rstrip(b"\r").rpartition(b"\r")[2])
+        # A redrawn line lost its indent along with everything before the last return.
+        return (pad + text if text and line.startswith(pad) else text) + b"\n"
+
+    def readable(chunk: bytes = b"", *, last: bool = False) -> bytes:
+        pending.extend(chunk)
+        out = bytearray()
+        while True:
+            end = pending.find(b"\n")
+            if end < 0:
+                break
+            out += clean(bytes(pending[:end]))
+            del pending[: end + 1]
+        if last and pending:
+            out += clean(bytes(pending))
+            pending.clear()
+        return bytes(out)
+
+    return readable
+
+
+def _stamp() -> str:
+    return datetime.now(timezone.utc).strftime("%H:%M:%S")
+
+
+def _outcome(returncode: int, started: float) -> str:
+    """How a tool ended. The signal is named, since SIGKILL is what identifies an OOM kill."""
+    elapsed = time.monotonic() - started
+    if returncode < 0:
+        name = next(
+            (member.name for member in signal.Signals if member.value == -returncode),
+            f"signal {-returncode}",
+        )
+        return f"# killed by {name} after {elapsed:.1f}s"
+    return f"# exit {returncode} after {elapsed:.1f}s"
+
+
+def log_header(log: Path | None, command: str, facts: dict[str, object]) -> None:
+    """Open LOG with what produced it: after a crash the file is all that is left."""
+    if log is None:
+        return
+    log.parent.mkdir(parents=True, exist_ok=True)
+    width = max((len(key) for key in facts), default=0)
+    lines = [
+        f"# motion-spec {command}",
+        f"# started    {datetime.now(timezone.utc).isoformat(timespec='seconds')}",
+        f"# argv       {shlex.join(sys.argv)}",
+        *(f"# {key:<{width}} {value}" for key, value in facts.items()),
+        "",
+    ]
+    with log.open("ab") as sink:
+        sink.write("\n".join(lines).encode())
+
+
+def usable_cores() -> int:
+    """Cores this process may actually run on: a cgroup or a taskset narrows what the host has."""
+    if hasattr(os, "sched_getaffinity"):
+        return len(os.sched_getaffinity(0)) or 1
+    return os.cpu_count() or 1
+
+
+def total_memory() -> int | None:
+    """Bytes of RAM in this machine, or None where the system will not say."""
+    try:
+        return os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    except (ValueError, OSError):  # not a POSIX machine, or the names are unknown
+        return None
+
+
+def machine_facts() -> dict[str, object]:
+    """What about this machine decides whether a build finishes or takes it down."""
+    memory = total_memory()
+    return {
+        "host": f"{os.uname().nodename} {os.uname().sysname} {os.uname().release}",
+        "cpus": f"{usable_cores()} of {os.cpu_count()} usable",
+        "memory": "unknown" if memory is None else f"{memory / 1024**3:.1f} GiB",
+    }
 
 
 def show_warning(message, category, filename, lineno, file=None, line=None) -> None:
@@ -176,9 +269,11 @@ def tee(
     log.parent.mkdir(parents=True, exist_ok=True)
     controller, worker = pty.openpty()
     indent = _indenter()
+    readable = _for_the_file()
+    started = time.monotonic()
     try:
         with log.open("ab") as sink:
-            sink.write(f"$ {' '.join(argv)}\n".encode())
+            sink.write(f"\n[{_stamp()}] $ {shlex.join(argv)}\n".encode())
             sink.flush()
             process = subprocess.Popen(
                 argv,
@@ -204,10 +299,13 @@ def tee(
                 chunk = indent(chunk)
                 sys.stderr.buffer.write(chunk)
                 sys.stderr.buffer.flush()
-                sink.write(chunk)
+                sink.write(readable(chunk))
                 # Two handles append here; unflushed they interleave by buffer, not by time.
                 sink.flush()
             returncode = process.wait()
+            sink.write(readable(last=True))
+            sink.write(f"[{_stamp()}] {_outcome(returncode, started)}\n".encode())
+            sink.flush()
     finally:
         os.close(controller)
         if worker >= 0:

@@ -21,13 +21,13 @@ jobs:
       # than a test. pyshacl/protobuf cover the validation/introspection extras.
       - name: Install workspace siblings
         run: |
-          pip install pytest pyshacl protobuf click textx PyLD numpy scipy jinja2 pillow
+          pip install pytest pyshacl protobuf click textx PyLD numpy scipy jinja2 pillow rdflib
           pip install \
             "git+https://github.com/minhnh/rdf-utils.git@main" \
             "git+https://github.com/secorolab/rec.git@dev"
           # --no-deps: these three depend on each other and on unpublished siblings, so a
           # resolver run reaches PyPI for names that are not there. Their real imports are
-          # installed above; the pin below settles rdflib for all of them.
+          # installed above.
           pip install --no-deps \
             "git+https://github.com/secorolab/scene-dsl.git@main" \
             "git+https://github.com/secorolab/coord-dsl.git@main" \
@@ -35,12 +35,6 @@ jobs:
 
       - name: Install motion_spec
         run: pip install -e . --no-deps
-
-      # The patched rdflib must win over the PyPI rdflib the siblings pulled in.
-      - name: Pin patched rdflib
-        run: |
-          pip install --force-reinstall --no-deps \
-            "git+https://github.com/secorolab/rdflib.git@7.6.0-fix-multi-type-scoped-context"
 
       - name: Run tests
         run: pytest -q

@@ -3,6 +3,7 @@
 # Author: Vamsi Kalagaturu
 
 import json
+import re
 import shutil
 import subprocess
 
@@ -290,7 +291,7 @@ def test_setup_installs_into_the_workspace_it_was_given(monkeypatch, tmp_path) -
     monkeypatch.delenv(stst_setup.WORKSPACE_VARIABLE, raising=False)
     monkeypatch.setattr(
         "motion_spec.setup.install_stst",
-        lambda root, prefix=None, force=False, log=None: (
+        lambda root, prefix=None, force=False, **_kwargs: (
             received.update(root=root, prefix=prefix, force=force) or prefix / "bin" / "stst"
         ),
     )
@@ -342,12 +343,11 @@ def test_setup_installs_every_component_in_dependency_order(monkeypatch, tmp_pat
     monkeypatch.delenv(stst_setup.WORKSPACE_VARIABLE, raising=False)
     monkeypatch.setattr(
         "motion_spec.setup.install_stst",
-        lambda root, prefix=None, force=False, log=None: prefix / "bin" / "stst",
+        lambda root, prefix=None, force=False, **_kwargs: prefix / "bin" / "stst",
     )
     monkeypatch.setattr(
         "motion_spec.setup.install_component",
-        lambda component, root, prefix=None, force=False, build_type="", log=None,
-        options=None, ros=False, editable=False: (
+        lambda component, root, prefix=None, build_type="", **_kwargs: (
             installed.append((component.name, build_type))
             or stst_setup.SourceState(
                 stst_setup.source_directory(root, component.repository), True, True
@@ -379,8 +379,7 @@ def test_setup_asked_for_one_component_installs_only_it(monkeypatch, tmp_path) -
     monkeypatch.delenv(stst_setup.WORKSPACE_VARIABLE, raising=False)
     monkeypatch.setattr(
         "motion_spec.setup.install_component",
-        lambda component, root, prefix=None, force=False, build_type="", log=None,
-        options=None, ros=False, editable=False: (
+        lambda component, root, prefix=None, **_kwargs: (
             installed.append(component.name)
             or stst_setup.SourceState(
                 stst_setup.source_directory(root, component.repository), True, True
@@ -575,6 +574,26 @@ def test_a_python_component_is_only_checked_out_for_dev(monkeypatch, tmp_path) -
     assert stst_setup.component_installed(component, prefix, dev=False)
     # The same ref from a checkout is a different installation, so --dev rebuilds it.
     assert not stst_setup.component_installed(component, prefix, dev=True)
+
+
+def test_only_dev_checks_sources_out_into_src(monkeypatch, tmp_path) -> None:
+    component = stst_setup.COMPONENTS_BY_NAME["coord2b"]
+    assert stst_setup.source_directory(tmp_path, "coord2b", True) == tmp_path / "src" / "coord2b"
+    managed = tmp_path / stst_setup.MANAGED_SOURCE_DIRECTORY / "coord2b"
+    assert stst_setup.source_directory(tmp_path, "coord2b", False) == managed
+
+    asked = []
+    monkeypatch.setattr(stst_setup, "tee", lambda *_a, **_k: None)
+
+    def record(_component, root, _log=None, dev=True):
+        asked.append(dev)
+        return stst_setup.SourceState(stst_setup.source_directory(root, "coord2b", dev), True, True)
+
+    monkeypatch.setattr(stst_setup, "prepare_source", record)
+    state = stst_setup.install_component(component, tmp_path, dev=False)
+    assert asked == [False]
+    assert state.path == managed
+    assert not (tmp_path / "src").exists()
 
 
 def test_the_job_count_is_bounded_by_memory_not_only_by_cores(monkeypatch) -> None:
@@ -935,8 +954,11 @@ def test_a_tool_is_shown_as_it_runs_and_kept_in_the_log(tmp_path) -> None:
     assert code == 0
     kept = log.read_text()
     assert "out" in kept and "err" in kept and "tty" in kept
-    # The command itself heads the entry, so a log read later says what produced it.
-    assert kept.startswith("$ bash -c")
+    # A stamped command heads the entry, and its outcome closes it.
+    assert re.match(r"\n\[\d\d:\d\d:\d\d\] \$ bash -c", kept)
+    assert re.search(r"\n\[\d\d:\d\d:\d\d\] # exit 0 after [\d.]+s\n$", kept)
+    # Indented once, by the indenter alone: the file copy must not pad what is already padded.
+    assert "\n  out\n" in kept
 
     tee(["bash", "-c", "echo second"], log=log)
     assert kept in log.read_text()  # appended, never replaced
@@ -1041,8 +1063,7 @@ def test_a_ros_workspace_builds_with_colcon_and_sources_the_overlay(monkeypatch,
     received = {}
     monkeypatch.setattr(
         "motion_spec.setup.install_component",
-        lambda component, root, prefix=None, force=False, build_type="", log=None,
-        options=None, ros=False, editable=False: (
+        lambda component, root, prefix=None, ros=False, **_kwargs: (
             received.update(ros=ros) or stst_setup.SourceState(root, True, True)
         ),
     )
@@ -1126,8 +1147,7 @@ def test_setup_takes_its_build_options_from_the_config(monkeypatch, tmp_path) ->
     installed = []
     monkeypatch.setattr(
         "motion_spec.setup.install_component",
-        lambda component, root, prefix=None, force=False, build_type="", log=None,
-        options=None, ros=False, editable=False: (
+        lambda component, root, prefix=None, build_type="", options=None, **_kwargs: (
             installed.append((component.name, build_type, options))
             or stst_setup.SourceState(root, True, True)
         ),

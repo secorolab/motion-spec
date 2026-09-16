@@ -827,7 +827,7 @@ def setup(
                     f"`motion-spec setup {required}` first, or point CMAKE_PREFIX_PATH at one",
                 )
             already = not force and (
-                stst_installed(root, prefix)
+                stst_installed(root, prefix, dev)
                 if name == "stst"
                 else component_installed(component, prefix, dev)
             )
@@ -835,7 +835,7 @@ def setup(
             if not already:
                 _say("step", name)
             if name == "stst":
-                launcher = install_stst(root, prefix, force=force, log=log)
+                launcher = install_stst(root, prefix, force=force, log=log, dev=dev)
                 _say(
                     "info" if already else "done",
                     f"stst {'already installed' if already else 'installed'}, launcher {launcher}",

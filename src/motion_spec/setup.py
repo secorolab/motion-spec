@@ -34,6 +34,9 @@ JARS = {
 WORKSPACE_VARIABLE = "MOTION_SPEC_WS"
 # The layout `vcs import` produces, so either route gives the same workspace.
 SOURCE_DIRECTORY = "src"
+# Where a plain install puts the sources it must build: hidden, because they are setup's to
+# fetch and delete, not the operator's to edit. `--dev` uses src/ for everything instead.
+MANAGED_SOURCE_DIRECTORY = ".ms-sources"
 BUILD_DIRECTORY = "build"
 INSTALL_DIRECTORY = "install"
 GENERATION_DIRECTORY = "generations"
@@ -266,19 +269,33 @@ def generations_directory(root: Path, configured: dict) -> Path:
     return Path(declared) if declared else root / GENERATION_DIRECTORY
 
 
-def thirdparty_directory(root: Path) -> Path:
-    """The subtree of src/ colcon leaves alone: what it could not build, or must not."""
-    return root / SOURCE_DIRECTORY / THIRDPARTY_DIRECTORY
+def source_root(root: Path, dev: bool = True) -> Path:
+    """Where sources are checked out: src/ is the developer's, and only theirs to edit."""
+    return root / (SOURCE_DIRECTORY if dev else MANAGED_SOURCE_DIRECTORY)
 
 
-def source_directory(root: Path, repository: str) -> Path:
+def thirdparty_directory(root: Path, dev: bool = True) -> Path:
+    """The subtree colcon leaves alone: what it could not build, or must not."""
+    return source_root(root, dev) / THIRDPARTY_DIRECTORY
+
+
+def source_directory(root: Path, repository: str, dev: bool = True) -> Path:
     """Where a workspace keeps one repository's source, as the manifest spells its path."""
-    return root / SOURCE_DIRECTORY / repository
+    return source_root(root, dev) / repository
 
 
-def _ignore_thirdparty(root: Path) -> Path:
+def checked_out(root: Path, repository: str) -> Path:
+    """The tree a repository is actually in, whichever mode put it there."""
+    for dev in (True, False):
+        candidate = source_directory(root, repository, dev)
+        if candidate.exists():
+            return candidate
+    return source_directory(root, repository)
+
+
+def _ignore_thirdparty(root: Path, dev: bool = True) -> Path:
     """Create the third-party subtree, marked so `colcon build` does not descend into it."""
-    directory = thirdparty_directory(root)
+    directory = thirdparty_directory(root, dev)
     directory.mkdir(parents=True, exist_ok=True)
     marker = directory / COLCON_IGNORE
     if not marker.exists():
@@ -334,14 +351,13 @@ def remove_stst(root: Path, prefix: Path | None = None) -> bool:
     """Remove an STST installation this tool made, and only a source it cloned itself."""
     prefix = prefix or install_prefix(root)
     launcher = prefix / "bin" / "stst"
-    source = source_directory(root, STST_REPOSITORY)
     marker = _marker("stst", prefix)
     if not (launcher.exists() or marker.exists()):
         return False
     if not marker.is_file():
         raise RuntimeError(f"refusing to clean an unmanaged STST installation under {prefix}")
     if _recorded_origin(marker) == "cloned":
-        trash_if_present(source)
+        trash_if_present(checked_out(root, STST_REPOSITORY))
     trash_if_present(launcher)
     marker.unlink(missing_ok=True)
     try:
@@ -362,22 +378,31 @@ def component_installed(component: Component, prefix: Path, dev: bool | None = N
     return True
 
 
-def stst_installed(root: Path, prefix: Path | None = None) -> bool:
+def stst_installed(root: Path, prefix: Path | None = None, dev: bool = True) -> bool:
     """Whether PREFIX carries a usable stst: a launcher without its jar is a half-finished one."""
     prefix = prefix or install_prefix(root)
-    jar = source_directory(root, STST_REPOSITORY) / "build" / "jar" / "stst.jar"
-    return (prefix / "bin" / "stst").is_file() and jar.is_file()
+    if not (prefix / "bin" / "stst").is_file():
+        return False
+    # Either tree counts: the launcher runs the jar wherever the install that made it put one.
+    return any(
+        (source_directory(root, STST_REPOSITORY, where) / "build" / "jar" / "stst.jar").is_file()
+        for where in {dev, True, False}
+    )
 
 
 def install_stst(
-    root: Path, prefix: Path | None = None, force: bool = False, log: Path | None = None
+    root: Path,
+    prefix: Path | None = None,
+    force: bool = False,
+    log: Path | None = None,
+    dev: bool = True,
 ) -> Path:
-    """Build the pinned STSTv4 from ROOT/src and install its launcher under PREFIX/bin."""
+    """Build the pinned STSTv4 from its checkout and install its launcher under PREFIX/bin."""
     prefix = prefix or install_prefix(root)
     launcher = prefix / "bin" / "stst"
-    source = source_directory(root, STST_REPOSITORY)
+    source = source_directory(root, STST_REPOSITORY, dev)
     marker = _marker("stst", prefix)
-    if not force and stst_installed(root, prefix):
+    if not force and stst_installed(root, prefix, dev):
         return launcher
 
     missing = [command for command in ("git", "ant", "java") if shutil.which(command) is None]
@@ -388,7 +413,7 @@ def install_stst(
 
     # Ant writes inside the source tree, so an adopted checkout must be clean and on the pin.
     previous = _recorded_origin(marker)
-    state = prepare_source(STST_COMPONENT, root, log)
+    state = prepare_source(STST_COMPONENT, root, log, dev)
     if not state.usable:
         raise RuntimeError(f"{state.path} {state.reason}")
     marker.parent.mkdir(parents=True, exist_ok=True)
@@ -506,19 +531,21 @@ def _pinned_commit(repository: Path, ref: str) -> str | None:
     return None
 
 
-def prepare_source(component: Component, root: Path, log: Path | None = None) -> SourceState:
-    """Put COMPONENT's source under ROOT/src without ever moving a checkout already there.
+def prepare_source(
+    component: Component, root: Path, log: Path | None = None, dev: bool = True
+) -> SourceState:
+    """Put COMPONENT's source in place without ever moving a checkout already there.
 
     A `checkout --detach` in a tree someone works in loses the branch they were on.
     """
     spec = SOURCES[component.repository]
-    repository = source_directory(root, component.repository)
+    repository = source_directory(root, component.repository, dev)
 
     if not (repository / ".git").is_dir():
         if repository.exists() and any(repository.iterdir()):
             return SourceState(repository, False, False, "is not a git checkout")
         if component.repository.startswith(f"{THIRDPARTY_DIRECTORY}/"):
-            _ignore_thirdparty(root)
+            _ignore_thirdparty(root, dev)
         repository.parent.mkdir(parents=True, exist_ok=True)
         tee(["git", "clone", spec.url, str(repository)], log=log)
         tee(["git", "-C", str(repository), "fetch", "--tags", "origin"], log=log)
@@ -583,7 +610,9 @@ def install_component(
     source_spec = SOURCES[component.repository]
     marker = _marker(component.name, prefix)
     if not force and component_installed(component, prefix, dev):
-        return SourceState(source_directory(root, component.repository), False, True, "installed")
+        return SourceState(
+            source_directory(root, component.repository, dev), False, True, "installed"
+        )
 
     if component.python and not dev:
         return _install_python_from_git(component, root, source_spec, marker, log)
@@ -596,7 +625,7 @@ def install_component(
         )
 
     previous = _recorded_origin(marker)
-    state = prepare_source(component, root, log)
+    state = prepare_source(component, root, log, dev)
     if not state.usable:
         return state
 
@@ -610,7 +639,7 @@ def install_component(
         return state
 
     if ros:
-        _colcon_build(component, root, build_type, log, build_jobs(jobs))
+        _colcon_build(component, root, build_type, log, build_jobs(jobs), dev)
         if component.bindings:
             _pip_install(state.path, log, editable)
         marker.write_text(f"{source_spec.version}\n{_origin(previous, state)}\n")
@@ -693,7 +722,6 @@ def remove_component(component: Component, root: Path, prefix: Path | None = Non
     prefix = prefix or install_prefix(root)
     marker = _marker(component.name, prefix)
     build = build_directory(root, component.name)
-    source = source_directory(root, component.repository)
     if not (build.exists() or marker.exists()):
         return False
     if not marker.is_file():
@@ -704,7 +732,7 @@ def remove_component(component: Component, root: Path, prefix: Path | None = Non
     _trash_installed(build / "install_manifest.txt", prefix, f"{component.name}-install")
     trash_if_present(build)
     if _recorded_origin(marker) == "cloned":
-        trash_if_present(source)
+        trash_if_present(checked_out(root, component.repository))
     marker.unlink(missing_ok=True)
     for directory in (prefix / MANAGED, root / BUILD_DIRECTORY):
         try:
@@ -773,7 +801,7 @@ def _write_ros_environment(
 
 
 def _colcon_build(
-    component: Component, root: Path, build_type: str, log: Path | None, jobs: int
+    component: Component, root: Path, build_type: str, log: Path | None, jobs: int, dev: bool
 ) -> None:
     """Build one package with colcon, in the order motion-spec knows and colcon cannot derive.
 
@@ -789,7 +817,7 @@ def _colcon_build(
             "--packages-select",
             component.name,
             "--base-paths",
-            str(root / SOURCE_DIRECTORY),
+            str(source_root(root, dev)),
             "--metas",
             str(root / "colcon.meta"),
             "--cmake-args",

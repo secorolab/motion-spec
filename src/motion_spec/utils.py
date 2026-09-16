@@ -144,7 +144,9 @@ def _for_the_file():
         # rstrip first: under a pty every line ends CRLF, which redraws nothing.
         text = ANSI.sub(b"", line.rstrip(b"\r").rpartition(b"\r")[2])
         # A redrawn line lost its indent along with everything before the last return.
-        return (pad + text if text and line.startswith(pad) else text) + b"\n"
+        if text and line.startswith(pad) and not text.startswith(pad):
+            text = pad + text
+        return text + b"\n"
 
     def readable(chunk: bytes = b"", *, last: bool = False) -> bytes:
         pending.extend(chunk)

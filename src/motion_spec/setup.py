@@ -731,6 +731,7 @@ def install_component(
     prefix: Path | None = None,
     *,
     force: bool = False,
+    clear_cache: bool = False,
     build_type: str = BUILD_TYPE,
     log: Path | None = None,
     options: tuple[str, ...] | None = None,
@@ -749,7 +750,9 @@ def install_component(
     prefix = prefix or install_prefix(root)
     source_spec = (SOURCES if sources is None else sources).get(component.repository)
     marker = _marker(component.name, prefix)
-    if not force and component_installed(component, prefix, dev, root, sources):
+    if not (force or (clear_cache and not component.python)) and component_installed(
+        component, prefix, dev, root, sources
+    ):
         return SourceState(
             source_directory(root, component.repository, dev), False, True, "installed"
         )
@@ -786,13 +789,17 @@ def install_component(
         return state
 
     if ros:
-        _colcon_build(component, root, build_type, log, build_jobs(jobs), dev)
+        _colcon_build(component, root, build_type, log, build_jobs(jobs), dev, clear_cache)
         if component.bindings:
             _pip_install(state.path, log, editable, ros)
         marker.write_text(f"{installed_ref}\n{_origin(previous, state)}\n")
         return state
 
     build = build_directory(root, component.name)
+    if clear_cache:
+        (build / "CMakeCache.txt").unlink(missing_ok=True)
+        if (build / "CMakeFiles").exists():
+            shutil.rmtree(build / "CMakeFiles")
     source = state.path / component.source if component.source else state.path
     cmake = shutil.which("cmake")
     tee(
@@ -991,7 +998,13 @@ def _write_ros_environment(
 
 
 def _colcon_build(
-    component: Component, root: Path, build_type: str, log: Path | None, jobs: int, dev: bool
+    component: Component,
+    root: Path,
+    build_type: str,
+    log: Path | None,
+    jobs: int,
+    dev: bool,
+    clear_cache: bool = False,
 ) -> None:
     """Build one package with colcon, in the order motion-spec knows and colcon cannot derive.
 
@@ -1010,6 +1023,7 @@ def _colcon_build(
             str(source_root(root, dev)),
             "--metas",
             str(root / "colcon.meta"),
+            *(["--cmake-clean-cache"] if clear_cache else []),
             "--cmake-args",
             f"-DCMAKE_BUILD_TYPE={build_type}",
         ],

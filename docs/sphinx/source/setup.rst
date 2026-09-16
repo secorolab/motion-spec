@@ -122,6 +122,7 @@ workspace root either way.
    $ motion-spec setup robif2b            # a device driver, only when named
    $ motion-spec setup mj_kdl_wrapper     # one of them
    $ motion-spec setup --force            # rebuild regardless
+   $ motion-spec setup mj_kdl_wrapper --clear-cache  # clear CMake cache and rebuild
    $ motion-spec setup --clean            # remove what it installed
    $ motion-spec setup --build-type Debug
 
@@ -130,6 +131,8 @@ is a no-op until a pin moves and a rebuild once it does — ``--force`` is for
 repairing a broken build, not for picking up a new version. ``--clean`` removes
 only what ``setup`` installed, through the build's own install manifest, and
 refuses an installation it did not make.
+``--clear-cache`` removes the selected CMake components' configuration caches and
+rebuilds them; Python components and ``stst`` have no CMake cache to clear.
 
 Nothing motion-spec removes is unrecoverable: ``--clean`` moves the sources,
 builds, installed files and environment files to the desktop trash rather than

@@ -108,6 +108,8 @@ and skipped rather than moved. Before the first clone it checks what it cannot i
 and stops with the one apt line that fixes it. The environment file it writes activates the
 environment setup ran in, so sourcing it is the only step between a new shell and a working
 workspace. Anything `--clean` removes goes to the desktop trash, not away.
+Use `motion-spec setup mj_kdl_wrapper --clear-cache` to discard that component's
+CMake configuration and rebuild it after a compiler or dependency change.
 
 `build`, `run`, `rerun` and `health` can source that file themselves — `--env <file>`, or
 `$MOTION_SPEC_ENV`, or the nearest one above the generation — and run every subprocess under

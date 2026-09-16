@@ -402,6 +402,36 @@ def test_setup_asked_for_one_component_installs_only_it(monkeypatch, tmp_path) -
     assert "mj_kdl_wrapper takes orocos_kdl" in result.output
 
 
+def test_setup_clear_cache_rebuilds_selected_cmake_component(monkeypatch, tmp_path) -> None:
+    component = stst_setup.COMPONENTS_BY_NAME["coord2b"]
+    checkout = stst_setup.source_directory(tmp_path, component.repository)
+    checkout.mkdir(parents=True)
+    build = stst_setup.build_directory(tmp_path, component.name)
+    (build / "CMakeFiles").mkdir(parents=True)
+    (build / "CMakeCache.txt").write_text("stale")
+    monkeypatch.setattr(stst_setup, "component_installed", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        stst_setup, "prepare_source", lambda *_a, **_k: stst_setup.SourceState(checkout, False, True)
+    )
+    commands = []
+    monkeypatch.setattr(stst_setup, "tee", lambda command, **_k: commands.append(command))
+
+    result = CliRunner().invoke(
+        main, ["setup", "coord2b", "--workspace", str(tmp_path), "--clear-cache"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert not (build / "CMakeCache.txt").exists()
+    assert not (build / "CMakeFiles").exists()
+    assert any("-S" in command for command in commands)
+
+    conflict = CliRunner().invoke(
+        main, ["setup", "coord2b", "--workspace", str(tmp_path), "--clean", "--clear-cache"]
+    )
+    assert conflict.exit_code != 0
+    assert "cannot be used together" in conflict.output
+
+
 def test_manifest_pins_what_setup_builds_and_the_template_asks_for() -> None:
     sources = stst_setup.read_manifest()
 
@@ -576,6 +606,10 @@ def test_a_build_is_never_given_an_unlimited_job_count(monkeypatch, tmp_path) ->
     monkeypatch.setattr(stst_setup.shutil, "which", lambda command: f"/usr/bin/{command}")
     stst_setup.install_component(component, tmp_path, force=True, ros=True, jobs=2)
     assert captured["env"]["MAKEFLAGS"] == "-j2 -l2"
+
+    commands.clear()
+    stst_setup.install_component(component, tmp_path, ros=True, clear_cache=True, jobs=2)
+    assert "--cmake-clean-cache" in commands[0]
 
 
 def test_a_python_component_is_only_checked_out_for_dev(monkeypatch, tmp_path) -> None:

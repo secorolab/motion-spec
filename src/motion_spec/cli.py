@@ -669,6 +669,11 @@ def _port_taken(port: int) -> bool:
     "--force", is_flag=True, help="Rebuild even when the component is already installed."
 )
 @click.option(
+    "--clear-cache",
+    is_flag=True,
+    help="Clear selected CMake build caches and rebuild those components.",
+)
+@click.option(
     "--build-type", default=BUILD_TYPE, show_default=True, help="CMAKE_BUILD_TYPE for the sources."
 )
 @click.option(
@@ -726,6 +731,7 @@ def setup(
     prefix: Path | None,
     clean: bool,
     force: bool,
+    clear_cache: bool,
     build_type: str,
     dev_flag: bool | None,
     editable_flag: bool | None,
@@ -742,6 +748,8 @@ def setup(
     (serial, robotiq_driver_noros, robif2b) are built only when named. The Python components
     come from their pinned git refs unless --dev asks for a checkout.
     """
+    if clean and clear_cache:
+        raise click.UsageError("--clean and --clear-cache cannot be used together")
     from motion_spec.setup import (
         COMPONENTS_BY_NAME,
         build_jobs,
@@ -913,7 +921,7 @@ def setup(
                     f"{name} takes {required} from {prefix}, which has none installed; run "
                     f"`motion-spec setup {required}` first, or point CMAKE_PREFIX_PATH at one",
                 )
-            already = not force and (
+            already = not (force or (clear_cache and component and not component.python)) and (
                 stst_installed(root, prefix, dev)
                 if name == "stst"
                 else component_installed(component, prefix, dev, root, sources)
@@ -934,6 +942,7 @@ def setup(
                 root,
                 prefix,
                 force=force,
+                clear_cache=clear_cache,
                 build_type=build_type,
                 log=log,
                 options=_cmake_options(COMPONENTS_BY_NAME[name], configured_args, cmake_args),

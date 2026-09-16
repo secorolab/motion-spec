@@ -157,7 +157,21 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros) ::= <<
         return {};
     };
 
-    const auto find_asset_path = [&cache_root](const std::vector\<std::filesystem::path\> &relative_paths) -> std::filesystem::path {
+    // A scene may name the cache outright. Nothing in std::filesystem expands a leading ~.
+    const auto expand_user = [](const std::filesystem::path &path) -> std::filesystem::path {
+        const auto text = path.generic_string();
+        if (text.rfind("~/", 0) != 0) {
+            return path;
+        }
+        const char *home = std::getenv("HOME");
+        return home && *home ? std::filesystem::path(home) / text.substr(2) : path;
+    };
+
+    const auto find_asset_path = [&cache_root, &expand_user](const std::vector\<std::filesystem::path\> &declared_paths) -> std::filesystem::path {
+        std::vector\<std::filesystem::path\> relative_paths;
+        for (const auto &declared : declared_paths) {
+            relative_paths.push_back(expand_user(declared));
+        }
         std::vector\<std::filesystem::path\> roots = {std::filesystem::current_path()};
         roots.push_back(std::filesystem::path(__FILE__).parent_path());
         const auto cache = cache_root();
@@ -166,16 +180,17 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros) ::= <<
             if (cache.empty()) {
                 return;
             }
-            const auto text = relative.generic_string();
-            const auto append_suffix = [&](const std::string &marker, const std::filesystem::path &cache_subdir) {
-                const auto pos = text.find(marker);
-                if (pos != std::string::npos) {
-                    candidates.push_back(cache / cache_subdir / text.substr(pos + marker.size()));
+            // Whole components, from the start: `src/mj_kdl_wrapper/assets` must not match
+            // inside `mysrc/mj_kdl_wrapper/assets`. A tail opening with `..` is not below it.
+            const auto append_suffix = [&](const std::filesystem::path &marker, const std::filesystem::path &cache_subdir) {
+                const auto tail = relative.lexically_relative(marker);
+                if (!tail.empty() && *tail.begin() != "..") {
+                    candidates.push_back(cache / cache_subdir / tail);
                 }
             };
-            append_suffix("third_party/menagerie/", "menagerie");
-            append_suffix("src/mj_kdl_wrapper/assets/", "assets");
-            append_suffix("src/examples/assets/", "assets");
+            append_suffix("third_party/menagerie", "menagerie");
+            append_suffix("src/mj_kdl_wrapper/assets", "assets");
+            append_suffix("src/examples/assets", "assets");
         };
 
         for (const auto &start : roots) {
@@ -197,10 +212,9 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros) ::= <<
         for (const auto &relative : relative_paths) {
             std::vector\<std::filesystem::path\> cache_candidates;
             if (const char *menagerie = std::getenv("MJ_KDL_MENAGERIE"); menagerie && *menagerie) {
-                const auto text = relative.generic_string();
-                const auto pos = text.find("third_party/menagerie/");
-                if (pos != std::string::npos) {
-                    cache_candidates.push_back(std::filesystem::path(menagerie) / text.substr(pos + std::string("third_party/menagerie/").size()));
+                const auto tail = relative.lexically_relative("third_party/menagerie");
+                if (!tail.empty() && *tail.begin() != "..") {
+                    cache_candidates.push_back(std::filesystem::path(menagerie) / tail);
                 }
             }
             append_cache_candidate(cache_candidates, relative);

@@ -44,6 +44,15 @@ from motion_spec.utils import (
 )
 
 
+class _Reported(click.ClickException):
+    """A failure already phrased for the reader, shown in the same format as every other line."""
+
+    def show(self, file=None) -> None:
+        for line in str(self.message).splitlines():
+            _stamp("error")
+            click.echo(line, err=True)
+
+
 def _internal_failure(what: str, exc: Exception) -> click.ClickException:
     """Report a failure that is ours, not the model's, with the stack that produced it.
 
@@ -1061,6 +1070,7 @@ def gen(stage_or_model: str, model: Path | None, output_dir: Path | None, name: 
     from rdf_utils.constraints import ConstraintViolation
 
     with _requirements_reported():
+        from motion_spec.generation.codegen import MissingAssets
         from motion_spec.generation.pipeline import generate_model
 
     if stage_or_model in {"ir", "code"}:
@@ -1082,6 +1092,8 @@ def gen(stage_or_model: str, model: Path | None, output_dir: Path | None, name: 
             generate_model(model, generation, stage=stage)
     except ConstraintViolation as exc:
         raise _model_rejected(exc) from exc
+    except MissingAssets as exc:
+        raise _Reported(str(exc)) from exc
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
         raise _internal_failure("generation failed", exc) from exc
     _say("done", f"generated {generation}")
@@ -1161,7 +1173,7 @@ def generate_ir(manifest: Path, output: Path | None, console: bool) -> None:
 @click.option("--stst-bin", help="STSTv4 executable; defaults to managed STST, then PATH.")
 def codegen(input: Path, output_dir: Path, stst_bin: str | None) -> None:
     """Generate C++ from motion-spec IR INPUT."""
-    from motion_spec.generation.codegen import generate_code
+    from motion_spec.generation.codegen import MissingAssets, generate_code
     from motion_spec.setup import find_stst
 
     stst = stst_bin or find_stst()
@@ -1169,6 +1181,8 @@ def codegen(input: Path, output_dir: Path, stst_bin: str | None) -> None:
         raise _requirement_box("stst") or click.ClickException("stst not found")
     try:
         generate_code(input.resolve(), output_dir.resolve(), stst)
+    except MissingAssets as exc:
+        raise _Reported(str(exc)) from exc
     except RuntimeError as exc:
         raise _internal_failure("code generation failed", exc) from exc
 
@@ -1527,6 +1541,7 @@ def run(
     from rdf_utils.constraints import ConstraintViolation
 
     with _requirements_reported():
+        from motion_spec.generation.codegen import MissingAssets
         from motion_spec.generation.pipeline import build_generation, generate_model, new_id
         from motion_spec.introspection.archive import ArchiveError
         from motion_spec.introspection.runner import RunnerError, run_cataloged
@@ -1545,6 +1560,8 @@ def run(
                 _say("done", f"built {executable}")
         except ConstraintViolation as exc:
             raise _model_rejected(exc) from exc
+        except MissingAssets as exc:
+            raise _Reported(str(exc)) from exc
         except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
             raise _internal_failure("pipeline failed", exc) from exc
     else:

@@ -9,6 +9,8 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Iterator
+from itertools import chain
 from pathlib import Path
 
 from motion_spec.classes.base import DataclassJSONEncoder
@@ -200,6 +202,25 @@ def _remap_event_indices(node, remap: dict) -> None:
             _remap_event_indices(value, remap)
 
 
+class MissingAssets(RuntimeError):
+    """The MJCF files a model names that nothing here supplies, and where they were looked for.
+
+    Carries the three, so a caller can report them its own way; the message is what the CLI
+    prints, and needs no stack beside it.
+    """
+
+    def __init__(self, ir_path: Path, paths: list[str], roots: list[Path]) -> None:
+        self.ir_path = ir_path
+        self.paths = paths
+        self.roots = roots
+        super().__init__(
+            f"{ir_path}: the scene names MJCF assets nothing here supplies:\n"
+            + "\n".join(f"  {path}" for path in paths)
+            + "\nlooked in "
+            + ", ".join(str(root) for root in roots)
+        )
+
+
 # The same prefixes the generated find_asset_path maps into the wrapper's cache.
 _VENDOR_MARKERS = (
     ("third_party/menagerie/", "menagerie"),
@@ -209,52 +230,71 @@ _VENDOR_MARKERS = (
 
 
 def _cache_root() -> Path | None:
-    for variable, tail in (("XDG_CACHE_HOME", ()), ("HOME", (".cache",))):
-        value = os.environ.get(variable)
-        if value:
-            return Path(value).joinpath(*tail) / "mj_kdl_wrapper"
+    if xdg := os.environ.get("XDG_CACHE_HOME"):
+        return Path(xdg) / "mj_kdl_wrapper"
+    if home := os.environ.get("HOME"):
+        return Path(home) / ".cache" / "mj_kdl_wrapper"
     return None
+
+
+def asset_roots() -> list[Path]:
+    """The directories an unqualified asset path is looked up under."""
+    cache = _cache_root()
+    return [Path.cwd(), *([cache] if cache else [])]
 
 
 def asset_candidates(path: str) -> list[Path]:
     """Every place the generated program will look for PATH, in its order."""
-    declared = Path(path)
+    declared = Path(path).expanduser()
     if declared.is_absolute():
         return [declared]
     candidates = [Path.cwd() / declared]
     cache = _cache_root()
-    text = declared.as_posix()
+    menagerie = os.environ.get("MJ_KDL_MENAGERIE")
     for marker, subdirectory in _VENDOR_MARKERS:
-        position = text.find(marker)
-        if position == -1:
+        if not declared.is_relative_to(marker):
             continue
-        tail = text[position + len(marker) :]
+        tail = declared.relative_to(marker)
         if cache:
             candidates.append(cache / subdirectory / tail)
-        menagerie = os.environ.get("MJ_KDL_MENAGERIE")
         if menagerie and subdirectory == "menagerie":
             candidates.append(Path(menagerie) / tail)
     return candidates
 
 
-def _asset_paths(node, found: list[str]) -> list[str]:
+def _asset_nodes(node) -> Iterator[dict]:
+    """Every mapping in the IR that names an MJCF file, wherever it sits."""
     if isinstance(node, dict):
-        path = node.get("path")
-        if isinstance(path, str) and path.endswith(".xml"):
-            found.append(path)
-        for value in node.values():
-            _asset_paths(value, found)
+        if isinstance(node.get("path"), str) and node["path"].endswith(".xml"):
+            yield node
+        yield from chain.from_iterable(_asset_nodes(value) for value in node.values())
     elif isinstance(node, list):
-        for value in node:
-            _asset_paths(value, found)
-    return found
+        yield from chain.from_iterable(_asset_nodes(value) for value in node)
 
 
-def unresolved_assets(ir: dict) -> list[str]:
+def resolve_model_assets(ir, model_dir: Path) -> list[str]:
+    """Rewrite the assets a model keeps beside itself to absolute paths, in place.
+
+    The generated program looks a relative path up from its working directory, so a scene that
+    names its own files stays runnable from one place only. Only paths MODEL_DIR supplies are
+    touched: a vendored one stays as written, for the cache to answer.
+    """
+    rewritten = []
+    for node in _asset_nodes(ir):
+        declared = Path(node["path"]).expanduser()
+        beside = (model_dir / declared).resolve()
+        if not declared.is_absolute() and beside.is_file():
+            rewritten.append(node["path"])
+            node["path"] = str(beside)
+    return rewritten
+
+
+def unresolved_assets(ir) -> list[str]:
     """The MJCF assets the IR names that nothing on this machine can supply."""
+    declared = dict.fromkeys(node["path"] for node in _asset_nodes(ir))
     return [
         path
-        for path in dict.fromkeys(_asset_paths(ir, []))
+        for path in declared
         if not any(candidate.exists() for candidate in asset_candidates(path))
     ]
 
@@ -279,11 +319,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     # Here, not at run time: a controller that cannot load its scene must not build at all.
     missing = unresolved_assets(ir)
     if missing:
-        raise RuntimeError(
-            f"{ir_path}: the scene names MJCF assets nothing here supplies:\n"
-            + "\n".join(f"  {path}" for path in missing)
-            + f"\nPaths are resolved against {Path.cwd()} and the mj_kdl_wrapper cache."
-        )
+        raise MissingAssets(Path(ir_path), missing, asset_roots())
     # The pipeline moves fsm_ir.json into the controller dir before calling codegen; the
     # standalone `gen code <ir.json>` path leaves it beside the IR.
     _adopt_fsm_state_order(

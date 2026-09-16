@@ -122,7 +122,7 @@ class Component:
     why: str = ""
 
 
-# Dependency order: kdl_parser links orocos_kdl, and mj_kdl_wrapper links both.
+# Dependency order: mj_kdl_wrapper links orocos_kdl.
 COMPONENTS = (
     # Before scene_dsl: motion_spec_dsl requires it from git, and pip would pull that over a
     # checkout already installed, undoing the local one.
@@ -144,7 +144,6 @@ COMPONENTS = (
         source="orocos_kdl",
         why="the secorolab fork: the Vereshchagin solvers with fixed joints the templates call",
     ),
-    Component("kdl_parser", "kdl_parser", why="builds KDL chains from robot descriptions"),
     Component(
         "coord2b",
         "coord2b",

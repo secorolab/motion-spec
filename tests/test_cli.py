@@ -363,7 +363,6 @@ def test_setup_installs_every_component_in_dependency_order(monkeypatch, tmp_pat
         "motion_spec_dsl",
         "scene_dsl",
         "orocos_kdl",
-        "kdl_parser",
         "coord2b",
         "mj_kdl_wrapper",
     ]

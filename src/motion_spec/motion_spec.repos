@@ -23,10 +23,6 @@ repositories:
     type: git
     url: https://github.com/secorolab/orocos_kinematics_dynamics.git
     version: feature/achd_fixed_joint
-  kdl_parser:
-    type: git
-    url: https://github.com/secorolab/kdl_parser.git
-    version: main
   coord2b:
     type: git
     url: https://github.com/rosym-project/coord2b.git

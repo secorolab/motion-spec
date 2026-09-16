@@ -717,7 +717,7 @@ def setup(
     )
 
     selected = components or DEFAULT_COMPONENTS
-    # Declaration order, not the order typed: kdl_parser links orocos_kdl.
+    # Declaration order, not the order typed: mj_kdl_wrapper links orocos_kdl.
     ordered = [name for name in COMPONENT_NAMES if name in selected]
     # A mistake in the command, not a failure inside it: no stack.
     try:
@@ -939,6 +939,7 @@ def health(
         check_health,
         environment_values,
         ros_summary,
+        verdicts,
     )
 
     # The environment a build and a run would be given, not this shell's.
@@ -1022,6 +1023,19 @@ def health(
     click.secho(f", {missing} missing", fg="red" if missing else None, nl=False)
     # An absent optional is a fact about this workspace, not a fault: say it, do not fail on it.
     click.echo(f", {absent} absent by build option" if absent else "")
+    ready = verdicts(checks)
+    if ready:
+
+        def verdict(name: str, blocking: list[str]) -> str:
+            if not blocking:
+                return click.style(f"{name} ready", fg="green")
+            # By package: three missing robif2b targets are one thing to install, not three.
+            owners = sorted({dependency.split("::")[0].split()[0] for dependency in blocking})
+            named = ", ".join(owners[:3]) + (f" +{len(owners) - 3}" if len(owners) > 3 else "")
+            return click.style(f"{name} NOT ready ({named})", fg="red")
+
+        _stamp("error" if any(ready.values()) else "done", err=False)
+        click.echo("  |  ".join(verdict(name, blocking) for name, blocking in ready.items()))
     packages = apt_packages(checks)
     if packages:
         click.echo()

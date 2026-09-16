@@ -61,7 +61,7 @@ binds none of them never needs them. Full instructions: **[Setup](https://secoro
 | Python | 3.11+, with Click, RDFLib, rdf-utils, and Jinja |
 | Authoring | motion-spec-dsl, coord-dsl, scene-dsl, textX |
 | Generation | STSTv4 (needs Git, a JDK, Ant) and `protoc` |
-| Build | CMake, a C++20 compiler, coord2b, Eigen, Orocos KDL, kdl_parser, toml++ |
+| Build | CMake, a C++20 compiler, coord2b, Eigen, Orocos KDL, toml++ |
 | MuJoCo target | mj_kdl_wrapper |
 | Real-robot target | robif2b, urdfdom, urdfdom_headers |
 | ROS (optional) | rclcpp, realtime_tools, rosidl_runtime_py — only for a model that publishes a topic or drives an action |
@@ -69,7 +69,7 @@ binds none of them never needs them. Full instructions: **[Setup](https://secoro
 Orocos KDL must be the [secorolab fork](https://github.com/secorolab/orocos_kinematics_dynamics):
 generated controllers call the Vereshchagin solvers with fixed joints, which a distro
 `liborocos-kdl-dev` configures against and then fails to build. `motion-spec setup` installs
-that fork, kdl_parser, coord2b and mj_kdl_wrapper from source; Eigen, toml++ and urdfdom come
+that fork, coord2b and mj_kdl_wrapper from source; Eigen, toml++ and urdfdom come
 from apt; the Robotiq and serial device drivers are needed only by a model that binds them.
 
 `motion-spec health` checks all of the above and, for anything missing, names what it is for

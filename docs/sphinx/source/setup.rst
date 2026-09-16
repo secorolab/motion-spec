@@ -26,10 +26,15 @@ and Ant to build what it installs.
 Installing the external dependencies
 ====================================
 
-``motion-spec setup`` clones each dependency at the version
-``src/motion_spec/motion_spec.repos`` pins, builds it, and installs it. With no
-components named it installs the ones every model needs, in dependency order;
-name components to do fewer, or to add a device driver.
+``motion-spec setup`` installs each dependency at the version
+``src/motion_spec/motion_spec.repos`` pins. With no components named it installs
+the ones every model needs, in dependency order; name components to do fewer, or
+to add a device driver.
+
+The CMake components have to be built, so their sources are fetched into
+``WORKSPACE/.ms-sources``. The Python components do not: pip installs them
+straight from the pinned ref. ``--dev`` changes both — everything is checked out
+into ``WORKSPACE/src`` and the Python components are installed editable.
 
 .. list-table::
    :header-rows: 1
@@ -37,11 +42,15 @@ name components to do fewer, or to add a device driver.
 
    * - Where
      - What
-   * - ``WORKSPACE/src/<repository>``
-     - The sources, as ordinary workspace packages — ``orocos_kdl`` and
-       ``kdl_parser`` carry a ``package.xml``, and the others are plain CMake
+   * - ``WORKSPACE/.ms-sources/<repository>``
+     - The sources a plain install must build, fetched and removed by ``setup``
+       — ``orocos_kdl`` carries a ``package.xml``, the others are plain CMake
        projects.
-   * - ``WORKSPACE/src/thirdparty/STSTv4``
+   * - ``WORKSPACE/src/<repository>``
+     - The same sources under ``--dev``, as ordinary workspace packages, plus
+       the Python components installed editable. Yours to edit; ``setup``
+       adopts a checkout already there and never moves it.
+   * - ``<sources>/thirdparty/STSTv4``
      - The exception: an Ant project colcon cannot identify, in a subtree
        carrying a ``COLCON_IGNORE``.
    * - ``WORKSPACE/build/<component>``
@@ -96,8 +105,6 @@ workspace root either way.
        launched from ``PREFIX/bin/stst``.
    * - ``orocos_kdl``
      - The secorolab fork of Orocos KDL — chains, solvers and frames.
-   * - ``kdl_parser``
-     - Builds KDL chains from robot descriptions.
    * - ``coord2b``
      - The FSM event loop the generated controller dispatches through.
    * - ``mj_kdl_wrapper``
@@ -350,15 +357,14 @@ Generation and common runtime
      - Configuring and compiling generated controllers
    * - `coord2b <https://github.com/rosym-project/coord2b>`_,
        `Eigen <https://eigen.tuxfamily.org/>`_,
-       `Orocos KDL <https://github.com/secorolab/orocos_kinematics_dynamics>`_,
-       `kdl_parser <https://github.com/ros/kdl_parser>`_, and
+       `Orocos KDL <https://github.com/secorolab/orocos_kinematics_dynamics>`_, and
        `toml++ <https://github.com/marzer/tomlplusplus>`_
      - Every generated controller, whichever target it drives
 
 Orocos KDL must be the secorolab fork: generated controllers call the
 Vereshchagin solvers with fixed joints, which ``liborocos-kdl-dev`` does not
-carry. ``motion-spec setup`` installs that fork, along with ``kdl_parser``,
-``coord2b`` and ``mj_kdl_wrapper``; Eigen and toml++ come from apt.
+carry. ``motion-spec setup`` installs that fork, along with ``coord2b`` and
+``mj_kdl_wrapper``; Eigen and toml++ come from apt.
 
 Target dependencies
 -------------------

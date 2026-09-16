@@ -42,7 +42,7 @@ PROFILE_IMPORTS = {
 PROFILES = (*PROFILE_IMPORTS, "codegen", "ros", "build", "runtime")
 # Every generated CMakeLists asks for these, whichever backend it targets: the kinematics and
 # the frame types are the same on a simulator and on a real arm.
-GENERAL_BUILD_PACKAGES = ("coord2b", "Eigen3", "orocos_kdl", "kdl_parser", "tomlplusplus")
+GENERAL_BUILD_PACKAGES = ("coord2b", "Eigen3", "orocos_kdl", "tomlplusplus")
 # Only a model that publishes, sends a goal or answers one links these; an installation without
 # ROS reports them absent rather than missing, and generates, builds and runs regardless.
 ROS_BUILD_PACKAGES = ("rclcpp", "realtime_tools", "action_msgs", "rclcpp_action")
@@ -333,10 +333,6 @@ DETAILS: dict[str, dict[str, str]] = {
         "why": "chains, solvers and frames: the kinematics the generated control math runs on",
         "source": "https://github.com/orocos/orocos_kinematics_dynamics",
     },
-    "kdl_parser": {
-        "why": "builds KDL chains from robot descriptions",
-        "source": "https://github.com/secorolab/kdl_parser",
-    },
     "mj_kdl_wrapper": {
         "why": "the MuJoCo simulation the generated controller drives, and its camera publisher",
         "source": "https://github.com/vamsikalagaturu/mj_kdl_wrapper",
@@ -555,6 +551,32 @@ def _cmake_package_path(
         except OSError:
             return None
         return target
+
+
+# What a target needs before it can be generated, built and run. ROS and introspection are
+# left out: whether a model needs them is a property of the model, not of the target.
+VERDICT_PROFILES = ("base", "dsl", "codegen", "build", "runtime")
+VERDICTS = {"mujoco": "sim", "robif2b": "real"}
+
+
+def verdicts(checks: list[HealthCheck]) -> dict[str, list[str]]:
+    """Per target, the dependencies still missing before it can run. Empty means ready.
+
+    A target is absent from the result unless every profile it needs was checked: a partial
+    run cannot say "ready" about probes it never made.
+    """
+    profiles = {check.profile for check in checks}
+    answer = {}
+    for target, name in VERDICTS.items():
+        wanted = {*VERDICT_PROFILES, f"build[{target}]", f"runtime[{target}]"}
+        if wanted - profiles:
+            continue
+        answer[name] = [
+            check.dependency
+            for check in checks
+            if check.profile in wanted and not check.ok and not check.optional
+        ]
+    return answer
 
 
 def apt_packages(checks: list[HealthCheck]) -> list[str]:

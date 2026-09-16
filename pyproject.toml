@@ -58,7 +58,6 @@ where = ["src"]
 # single-level glob shipped a dashboard whose editor and charts were missing.
 motion_spec = [
     "templates/*.stg",
-    "templates/CMakeLists.txt",
     "dashboard/frontend/**/*",
     # `motion-spec setup` reads its pins from this at run time, so it has to ship.
     "*.repos",

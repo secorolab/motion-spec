@@ -54,8 +54,7 @@ MUJOCO_BUILD_PACKAGES = (("mj_kdl_wrapper", MJ_KDL_REF.lstrip("v")),)
 # rosidl spells its case-conversion helper differently across distros; either will do.
 # ament_index_python resolves a scene asset that names a package rather than a path, so a
 # generation reaches for it long before anything ROS-shaped appears in the model.
-# ament_package: ament's own cmake scripts run it under whichever interpreter configures the
-# build, so a venv without it fails every find_package(rclcpp) with a bare "error code 1".
+# ament_package: ament's cmake scripts import it, so find_package(rclcpp) needs it too.
 ROS_IMPORTS = ("rosidl_runtime_py", "ament_index_python", "ament_package")
 ROS_ALTERNATIVES = (("rosidl_pycommon", "rosidl_cmake"),)
 # `stst` is a Java program built by ant, and `protoc` compiles the frame-log schema every
@@ -107,9 +106,7 @@ _REMEDIES = {
     "rosidl_runtime_py": "source /opt/ros/$ROS_DISTRO/setup.bash",
     "rosidl_pycommon": "source /opt/ros/$ROS_DISTRO/setup.bash",
     "ament_index_python": "source /opt/ros/$ROS_DISTRO/setup.bash",
-    # A sourced distro is not enough: pip builds a wheel with PYTHONPATH stripped, so the
-    # interpreter has to carry it, which for a venv means --system-site-packages.
-    "ament_package": "python3 -m venv --system-site-packages <venv>",
+    "ament_package": "source /opt/ros/$ROS_DISTRO/setup.bash",
 }
 # Not installed by `setup`: only a model that binds them needs them.
 _DEVICE_PACKAGES = ("robif2b", "serial", "robotiq_driver_noros")

@@ -633,14 +633,14 @@ def install_component(
     marker.write_text(f"installing\n{_origin(previous, state)}\n")
 
     if component.python:
-        _pip_install(state.path, log, editable)
+        _pip_install(state.path, log, editable, ros)
         marker.write_text(f"{source_spec.version}\n{_origin(previous, state)}\n")
         return state
 
     if ros:
         _colcon_build(component, root, build_type, log, build_jobs(jobs), dev)
         if component.bindings:
-            _pip_install(state.path, log, editable)
+            _pip_install(state.path, log, editable, ros)
         marker.write_text(f"{source_spec.version}\n{_origin(previous, state)}\n")
         return state
 
@@ -666,7 +666,7 @@ def install_component(
     tee([cmake, "--install", str(build)], log=log)
 
     if component.bindings:
-        _pip_install(state.path, log, editable)
+        _pip_install(state.path, log, editable, ros)
 
     marker.write_text(f"{source_spec.version}\n{_origin(previous, state)}\n")
     return state
@@ -689,10 +689,31 @@ def installer() -> list[str]:
     return [uv, "pip", "install", "--python", sys.executable]
 
 
-def _pip_install(source: Path, log: Path | None, editable: bool) -> None:
+def _build_requirements(source: Path) -> list[str]:
+    """What PEP 518 says this checkout needs to build, since nothing else will install them."""
+    manifest = source / "pyproject.toml"
+    if not manifest.is_file():
+        return []
+    import tomllib
+
+    return tomllib.loads(manifest.read_text()).get("build-system", {}).get("requires", [])
+
+
+def _pip_install(source: Path, log: Path | None, editable: bool, ros: bool = False) -> None:
     """Install a checkout. Editable points site-packages back at it, so `--clean` would orphan
-    the installation along with the source it removes."""
+    the installation along with the source it removes.
+
+    An extension that finds ament has to build without isolation: ament's cmake scripts import
+    ament_package, which reaches the interpreter over PYTHONPATH from the sourced distro, and
+    pip replaces PYTHONPATH with its own for an isolated build. Without isolation pip installs
+    no build backend either, so the checkout's own build requirements go in first.
+    """
     arguments = ["--editable", str(source)] if editable else [str(source)]
+    if ros:
+        requires = _build_requirements(source)
+        if requires:
+            tee([*installer(), *requires], log=log)
+        arguments = ["--no-build-isolation", *arguments]
     tee([*installer(), *arguments], log=log)
 
 

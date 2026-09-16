@@ -28,7 +28,7 @@ The Python components come from their pinned git refs and the C++ ones are built
 `WORKSPACE/.ms-sources`; nothing lands in `src/`.
 
 ```bash
-python3 -m venv ~/ws/.venv && source ~/ws/.venv/bin/activate     # or: uv venv ~/ws/.venv
+python3 -m venv ~/ws/.venv && source ~/ws/.venv/bin/activate
 pip install "motion_spec @ git+https://github.com/secorolab/motion-spec.git@dev"
 export MOTION_SPEC_WS=~/ws
 motion-spec setup
@@ -75,18 +75,25 @@ installed.
 
 ### With uv
 
-Same commands, `uv` in place of `pip`. A uv environment has no `pip` in it, and `setup` uses
-`uv pip install --python` instead when that is so.
+Same commands with `uv venv` and `uv pip`. `uv venv` does not activate anything, so source the
+activation yourself; after that `uv pip install` needs no `--python`.
 
 ```bash
-uv venv ~/ws/.venv                                               # plain
-uv venv --python /usr/bin/python3 --system-site-packages ~/ws/.venv    # for ROS
-uv pip install --python ~/ws/.venv/bin/python -e ~/ws/src/motion-spec
+uv venv ~/ws/.venv                                     # plain
+source ~/ws/.venv/bin/activate
+uv pip install "motion_spec @ git+https://github.com/secorolab/motion-spec.git@dev"
 ```
 
-For ROS, `--python /usr/bin/python3` is what matters: without it uv builds the environment on
+For ROS, build it on the system interpreter:
+
+```bash
+uv venv --python /usr/bin/python3 --system-site-packages ~/ws/.venv
+```
+
+`--python /usr/bin/python3` is the part that matters: without it uv builds the environment on
 its own CPython, whose system packages are not the distribution's, and `--system-site-packages`
-reaches nothing from apt.
+reaches nothing from apt. A uv environment has no `pip` in it either — `setup` notices and uses
+`uv pip install --python` for the components it installs.
 
 ### What setup does
 

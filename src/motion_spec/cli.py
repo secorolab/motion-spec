@@ -883,6 +883,8 @@ def setup(
         DEFAULT_COMPONENTS,
         declared=workspace_argument is not None,
         ros=ros,
+        dev=dev,
+        editable=editable,
     )
     if sample:
         _say("info", f"settings written to {sample}")

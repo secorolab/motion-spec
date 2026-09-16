@@ -111,8 +111,10 @@ def sample(
     default_components: tuple[str, ...],
     root: Path | None = None,
     ros: bool = False,
+    dev: bool = False,
+    editable: bool = False,
 ) -> str:
-    """Every key this file understands, at its default, commented out for someone to edit."""
+    """Every key this file understands, at the value the run that wrote it used."""
     listed = ", ".join(f'"{name}"' for name in default_components)
     on_request = [name for name in components if name not in default_components]
     width = max(len(name) for name in components)
@@ -136,6 +138,8 @@ def sample(
     found = _ros_distro()
     distro_key = f'distro = "{found}"' if found else '# distro = "jazzy"'
     ros_key = f"workspace = {'true' if ros else 'false'}"
+    dev_key = f"dev = {'true' if dev else 'false'}"
+    editable_key = f"editable = {'true' if editable else 'false'}"
     workspace_keys = newline.join(
         f"{code:<42} # {note}"
         for code, note in (
@@ -165,8 +169,8 @@ version = {version}
 [setup]
 prefix = "install"
 build_type = "RelWithDebInfo"
-dev = false                                # check the Python components out into src/
-editable = false                           # pip install -e that checkout; --dev implies it
+{dev_key:<42} # check the Python components out into src/
+{editable_key:<42} # pip install -e that checkout; --dev implies it
 {jobs_key:<42} # compilers at once; -j and the cmake variable win
 components = [{listed}]
 #   only when named: {", ".join(on_request)}
@@ -183,6 +187,8 @@ def write_sample(
     default: tuple[str, ...],
     declared: bool = False,
     ros: bool = False,
+    dev: bool = False,
+    editable: bool = False,
 ) -> Path | None:
     """Write the sample at ROOT, unless a config is already there.
 
@@ -192,5 +198,7 @@ def write_sample(
     path = root / CONFIG_FILE
     if path.exists():
         return None
-    path.write_text(sample(components, default, root if declared else None, ros))
+    path.write_text(
+        sample(components, default, root if declared else None, ros, dev, editable)
+    )
     return path

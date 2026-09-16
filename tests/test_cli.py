@@ -1099,11 +1099,16 @@ def test_a_ros_workspace_builds_with_colcon_and_sources_the_overlay(monkeypatch,
     assert "coord2b" not in meta  # nothing to say about a package with no options
 
     # Two sourcings, not exported paths -- except the prefix's bin, which no overlay carries.
-    written = (tmp_path / f"setup-motion-spec.{config.shell()}").read_text()
-    assert "source /opt/ros/jazzy/setup." in written
-    assert f"source {tmp_path / 'install' / 'setup.'}" in written
+    # Each is guarded, so sourcing the file in a shell that already has them changes nothing.
+    environment = tmp_path / f"setup-motion-spec.{config.shell()}"
+    written = environment.read_text()
+    assert '[ "${ROS_DISTRO:-}" = jazzy ] || . /opt/ros/jazzy/setup.' in written
+    assert f". {tmp_path / 'install' / 'setup.'}" in written
+    assert "COLCON_PREFIX_PATH" in written
     assert 'export PATH="$MOTION_SPEC_PREFIX/bin' in written
     assert "CMAKE_PREFIX_PATH" not in written
+    # Sourcing is the one step to a working workspace; the CLI has to be on PATH after it.
+    assert environment.stat().st_mode & 0o111
 
 
 def test_a_generated_file_says_which_version_it_is(monkeypatch, tmp_path) -> None:

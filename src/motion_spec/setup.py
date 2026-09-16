@@ -327,7 +327,13 @@ def missing_prerequisites(
     Only what setup cannot supply itself. Everything it does install carries a
     `motion-spec setup <name>` remedy instead, and is absent here by construction.
     """
-    from motion_spec.health import apt_packages, check_health, system_site_packages
+    from motion_spec.health import (
+        _ros_distro,
+        apt_packages,
+        check_health,
+        installed_ros_distros,
+        system_site_packages,
+    )
 
     profiles = required_profiles(components, ros)
     if not profiles:
@@ -335,6 +341,13 @@ def missing_prerequisites(
     packages = apt_packages(check_health(profiles, targets if "build" in profiles else ()))
     others = []
     if ros:
+        # The environment file is written last, so an unresolved distro would surface only
+        # after everything is built -- and the build would have used whatever was sourced.
+        if _ros_distro() is None:
+            installed = ", ".join(installed_ros_distros()) or "none under /opt/ros"
+            others.append(
+                f"a ROS distribution: source one, or set [ros] distro; installed: {installed}"
+            )
         if shutil.which("colcon") is None:
             others.append("colcon: apt install python3-colcon-common-extensions")
         if not system_site_packages():
@@ -671,7 +684,9 @@ def install_component(
     marker.write_text(f"installing\n{_origin(previous, state)}\n")
 
     if component.python:
-        _pip_install(state.path, log, editable, ros)
+        # No ament here: a pure-Python component has no cmake, and disabling isolation would
+        # strand every source dependency pip resolves for it without its own build backend.
+        _pip_install(state.path, log, editable)
         marker.write_text(f"{source_spec.version}\n{_origin(previous, state)}\n")
         return state
 
@@ -741,10 +756,11 @@ def _pip_install(source: Path, log: Path | None, editable: bool, ros: bool = Fal
     """Install a checkout. Editable points site-packages back at it, so `--clean` would orphan
     the installation along with the source it removes.
 
-    An extension that finds ament has to build without isolation: ament's cmake scripts import
-    ament_package, which reaches the interpreter over PYTHONPATH from the sourced distro, and
-    pip replaces PYTHONPATH with its own for an isolated build. Without isolation pip installs
-    no build backend either, so the checkout's own build requirements go in first.
+    ROS is for an extension whose cmake finds ament: ament's scripts import ament_package,
+    which reaches the interpreter over PYTHONPATH from the sourced distro, and pip replaces
+    PYTHONPATH with its own for an isolated build. Isolation off means pip installs no build
+    backend at all, for this checkout or for anything it resolves, so the checkout's own
+    requirements go in first and the flag stays off everything that does not need it.
     """
     arguments = ["--editable", str(source)] if editable else [str(source)]
     if ros:
@@ -800,6 +816,19 @@ def remove_component(component: Component, root: Path, prefix: Path | None = Non
     return True
 
 
+def _activation() -> str:
+    """Activate the environment setup ran in, unless this shell is already in it.
+
+    Sourcing the file is the one step between a fresh shell and a working workspace, and a
+    `motion-spec: command not found` right after it helps nobody.
+    """
+    activate = Path(sys.prefix) / "bin" / "activate"
+    if not (Path(sys.prefix) / "pyvenv.cfg").is_file() or not activate.is_file():
+        return ""
+    quoted = shlex.quote(str(activate))
+    return f'[ "${{VIRTUAL_ENV:-}}" = {shlex.quote(sys.prefix)} ] || . {quoted}\n'
+
+
 def write_environment(root: Path, prefix: Path | None = None, ros: bool | None = None) -> Path:
     """Write ROOT's environment file, pointing at the prefix its builds were installed into.
 
@@ -815,7 +844,8 @@ def write_environment(root: Path, prefix: Path | None = None, ros: bool | None =
         return _write_ros_environment(root, prefix, configured, using, path)
     body = (
         "# Written by `motion-spec setup`. Source it before generating, building or running.\n"
-        f"export {WORKSPACE_VARIABLE}={shlex.quote(str(root))}\n"
+        + _activation()
+        + f"export {WORKSPACE_VARIABLE}={shlex.quote(str(root))}\n"
         f"export {GENERATION_VARIABLE}={shlex.quote(str(generations_directory(root, configured)))}\n"
         f"export {ENVIRONMENT_VARIABLE}={shlex.quote(str(path))}\n"
         f"export MOTION_SPEC_PREFIX={shlex.quote(str(prefix))}\n"
@@ -827,6 +857,7 @@ def write_environment(root: Path, prefix: Path | None = None, ros: bool | None =
     )
     root.mkdir(parents=True, exist_ok=True)
     path.write_text(body)
+    path.chmod(0o755)
     return path
 
 
@@ -842,11 +873,16 @@ def _write_ros_environment(
             "no ROS distribution: set [ros] distro, or source one, for a [ros] workspace"
         )
     overlay = prefix / f"setup.{using}"
+    quoted_overlay = shlex.quote(str(overlay))
     body = (
         "# Written by `motion-spec setup`. Source it before generating, building or running.\n"
-        f"source /opt/ros/{distro}/setup.{using}\n"
-        f"[ -f {shlex.quote(str(overlay))} ] && source {shlex.quote(str(overlay))}\n"
-        f"export {WORKSPACE_VARIABLE}={shlex.quote(str(root))}\n"
+        + _activation()
+        # Each sourcing is skipped when this shell has already done it: sourcing a distro
+        # twice is noise, and sourcing an overlay twice repeats it on every path it sets.
+        + f'[ "${{ROS_DISTRO:-}}" = {distro} ] || . /opt/ros/{distro}/setup.{using}\n'
+        + f"case \":${{COLCON_PREFIX_PATH:-}}:\" in *:{prefix}:*) ;; *)"
+        f" [ -f {quoted_overlay} ] && . {quoted_overlay} ;; esac\n"
+        + f"export {WORKSPACE_VARIABLE}={shlex.quote(str(root))}\n"
         f"export {GENERATION_VARIABLE}={shlex.quote(str(generations_directory(root, configured)))}\n"
         f"export {ENVIRONMENT_VARIABLE}={shlex.quote(str(path))}\n"
         f"export MOTION_SPEC_PREFIX={shlex.quote(str(prefix))}\n"
@@ -855,6 +891,7 @@ def _write_ros_environment(
     )
     root.mkdir(parents=True, exist_ok=True)
     path.write_text(body)
+    path.chmod(0o755)
     return path
 
 

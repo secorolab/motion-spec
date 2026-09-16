@@ -20,13 +20,28 @@ from pathlib import Path
 CONFIG_FILE = "motion-spec.config.toml"
 SECTIONS = {
     "workspace": {"root", "generations", "environment", "shell"},
-    "setup": {"prefix", "build_type", "components", "cmake_args", "editable", "jobs", "dev"},
+    "setup": {
+        "prefix",
+        "build_type",
+        "components",
+        "cmake_args",
+        "editable",
+        "jobs",
+        "dev",
+        "external",
+        "repos",
+    },
     "ros": {"workspace", "distro"},
 }
 TOP_LEVEL = {"version"}
 SHELLS = ("bash", "zsh")
 # Paths are written relative to the file, and resolved against its directory.
-_PATH_KEYS = {("workspace", "root"), ("workspace", "generations"), ("workspace", "environment")}
+_PATH_KEYS = {
+    ("workspace", "root"),
+    ("workspace", "generations"),
+    ("workspace", "environment"),
+    ("setup", "repos"),
+}
 
 
 @dataclass(frozen=True)
@@ -174,6 +189,10 @@ build_type = "RelWithDebInfo"
 {jobs_key:<42} # compilers at once; -j and the cmake variable win
 components = [{listed}]
 #   only when named: {", ".join(on_request)}
+# Supplied by you, not by setup: never cloned, built or installed, only reported by health.
+external = []
+# Pins to use instead of the shipped manifest. Every component it omits must be checked out.
+# repos = "my.repos"
 
 # Each list is the whole list cmake is passed.
 [setup.cmake_args]

@@ -46,10 +46,34 @@ GENERAL_BUILD_PACKAGES = ("coord2b", "Eigen3", "orocos_kdl", "tomlplusplus")
 # Only a model that publishes, sends a goal or answers one links these; an installation without
 # ROS reports them absent rather than missing, and generates, builds and runs regardless.
 ROS_BUILD_PACKAGES = ("rclcpp", "realtime_tools", "action_msgs", "rclcpp_action")
-# `(package, version)`; the generated CMakeLists asks for that version, so a check that ignores
-# it passes on an install the build then rejects. Taken from the ref `motion-spec setup`
-# installs, so the check and the installer cannot drift apart.
-MUJOCO_BUILD_PACKAGES = (("mj_kdl_wrapper", MJ_KDL_REF.lstrip("v")),)
+
+
+def mujoco_build_packages() -> tuple[tuple[str, str], ...]:
+    """`(package, version)` for the MuJoCo target, from the manifest this workspace uses.
+
+    The generated CMakeLists asks for that version, so a check ignoring it passes on an
+    install the build rejects. Read per call: `[setup] repos` can put a different pin in
+    force, and a value frozen at import would answer for the shipped one instead.
+    """
+    from motion_spec.setup import manifest_in_force
+
+    declared = _configured_repos()
+    pinned = manifest_in_force(declared).get("mj_kdl_wrapper")
+    return (("mj_kdl_wrapper", (pinned.version if pinned else MJ_KDL_REF).lstrip("v")),)
+
+
+def _configured_repos() -> Path | None:
+    """The manifest `[setup] repos` names, if a workspace config names one."""
+    from motion_spec.config import settings
+
+    try:
+        configured, _ = settings()
+    except ValueError:
+        return None
+    declared = configured.get("setup", {}).get("repos")
+    return Path(declared) if declared else None
+
+
 # Reading a ROS message's shape is what turns a declared type into fields, headers and packages.
 # rosidl spells its case-conversion helper differently across distros; either will do.
 # ament_index_python resolves a scene asset that names a package rather than a path, so a
@@ -776,7 +800,7 @@ def check_health(
                 HealthCheck("build", name, "CMake package", path, path is not None, _remedy(name))
             )
         for target, packages in (
-            ("mujoco", MUJOCO_BUILD_PACKAGES),
+            ("mujoco", mujoco_build_packages()),
             ("robif2b", ROBIF2B_BUILD_PACKAGES),
         ):
             if target not in targets:

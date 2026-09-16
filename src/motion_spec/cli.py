@@ -678,6 +678,21 @@ def _port_taken(port: int) -> bool:
     "--dev; `--clean` then removes a checkout its installation points at.",
 )
 @click.option(
+    "--repos",
+    "repos",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Pins to use instead of the shipped manifest. Every component it omits must already "
+    "be checked out in the workspace, or setup stops and says which.",
+)
+@click.option(
+    "--external",
+    "external",
+    multiple=True,
+    type=click.Choice(COMPONENT_NAMES),
+    help="A component you supply yourself: never cloned, built or installed. Repeatable; "
+    "adds to [setup] external.",
+)
+@click.option(
     "--ros/--no-ros",
     "ros_flag",
     default=None,
@@ -706,6 +721,8 @@ def setup(
     build_type: str,
     dev_flag: bool | None,
     editable_flag: bool | None,
+    repos: Path | None,
+    external: tuple[str, ...],
     ros_flag: bool | None,
     cmake_args: tuple[str, ...],
     jobs: int | None,
@@ -725,8 +742,10 @@ def setup(
         install_prefix,
         install_stst,
         is_installed,
+        manifest_in_force,
         missing_prerequisites,
         remove_component,
+        uncovered,
         remove_environment,
         remove_stst,
         stst_installed,
@@ -756,6 +775,18 @@ def setup(
     editable = editable_flag if editable_flag is not None else bool(declared.get("editable", dev))
     if not components and declared.get("components"):
         ordered = [name for name in COMPONENT_NAMES if name in declared["components"]]
+    manifest = repos or (Path(declared["repos"]) if declared.get("repos") else None)
+    try:
+        sources = manifest_in_force(manifest)
+    except (OSError, ValueError) as exc:
+        raise click.UsageError(str(exc)) from exc
+    if manifest is not None:
+        _say("info", f"pins from {manifest}")
+    supplied = {*external, *declared.get("external", [])}
+    # Dropped before anything reads the list, so no clone, build, marker or prerequisite of an
+    # external component is ever considered; health still reports whether it resolves.
+    skipped_external = [name for name in ordered if name in supplied]
+    ordered = [name for name in ordered if name not in supplied]
     from motion_spec.config import resolve
 
     build_type = resolve(
@@ -794,6 +825,8 @@ def setup(
     _say("info", f"installing into {prefix}")
     _say("info", f"console log {log}")
     _say("info", f"building with {jobs} job{'s' if jobs != 1 else ''} ({asked.source})")
+    if skipped_external:
+        _say("info", f"supplied by you, left alone: {', '.join(skipped_external)}")
     # setup cannot check itself out: it is the code running. So it says so instead.
     if dev and not _editable_here(root):
         import motion_spec
@@ -815,6 +848,11 @@ def setup(
         # Before the first clone: a prerequisite setup cannot install itself is a failure the
         # operator has to act on, and finding it after four checkouts and a build helps nobody.
         _say("info", "checking prerequisites")
+        unsupplied = uncovered(ordered, root, dev, sources)
+        if unsupplied:
+            for name in unsupplied:
+                _say("error", f"{name}: no entry in {manifest} and no checkout in the workspace")
+            raise _Reported("every component needs a pin or a source; nothing was cloned.")
         packages, others = missing_prerequisites(ordered, ros)
         if packages or others:
             for requirement in others:
@@ -870,7 +908,7 @@ def setup(
             already = not force and (
                 stst_installed(root, prefix, dev)
                 if name == "stst"
-                else component_installed(component, prefix, dev)
+                else component_installed(component, prefix, dev, root, sources)
             )
             # Announced before the build, so its console output has a heading.
             if not already:
@@ -895,11 +933,14 @@ def setup(
                 editable=editable,
                 jobs=jobs,
                 dev=dev,
+                sources=sources,
             )
             if not state.usable:
                 _say("warn", f"skipped {name}: {state.path} {state.reason}")
                 skipped.append(name)
             else:
+                if state.drift:
+                    _say("warn", f"{name}: {state.path} {state.drift}")
                 _say(
                     "info" if already else "done",
                     f"{name} {'already installed' if already else 'installed'}, "
@@ -1332,6 +1373,7 @@ def config(initialize: bool, workspace_argument: Path | None) -> None:
         ("setup.editable", setup_keys, "editable", None, False),
         ("setup.jobs", setup_keys, "jobs", "CMAKE_BUILD_PARALLEL_LEVEL", build_jobs()),
         ("setup.components", setup_keys, "components", None, list(DEFAULT_COMPONENTS)),
+        ("setup.external", setup_keys, "external", None, []),
     ]
     width = max(len(name) for name, *_ in rows)
     for name, section, key, variable, default in rows:

@@ -99,6 +99,38 @@ STST_REF = SOURCES[STST_REPOSITORY].version
 MJ_KDL_REF = SOURCES["mj_kdl_wrapper"].version
 
 
+def manifest_in_force(path: Path | None = None) -> dict[str, Source]:
+    """The pins to use: PATH's when given, else the shipped manifest.
+
+    Replaces rather than merges: a manifest is the whole statement of what a workspace builds,
+    and a half-stated one would leave the rest silently on the shipped pins.
+    """
+    return read_manifest(path) if path else SOURCES
+
+
+def uncovered(
+    components: list[str], root: Path, dev: bool = False, sources: dict[str, Source] | None = None
+) -> list[str]:
+    """The named components SOURCES cannot supply and the workspace does not already have.
+
+    A manifest that omits one is fine when the source is checked out -- that is the workspace
+    answering for it -- and an error otherwise, before anything is cloned.
+    """
+    pins = SOURCES if sources is None else sources
+    missing = []
+    for name in components:
+        repository = repository_of(name)
+        if repository in pins or (source_directory(root, repository, dev) / ".git").is_dir():
+            continue
+        missing.append(name)
+    return missing
+
+
+def repository_of(name: str) -> str:
+    """The manifest key a component's source comes from."""
+    return STST_REPOSITORY if name == "stst" else COMPONENTS_BY_NAME[name].repository
+
+
 @dataclass(frozen=True)
 class Component:
     """One library installed from its own source into the shared prefix.
@@ -380,6 +412,10 @@ class SourceState:
     reason: str = ""
     # What to name as the source; empty means the path.
     origin: str = ""
+    # The commit actually in the tree, which is what the marker records.
+    ref: str = ""
+    # Set when that commit is not the pinned one, for the caller to report.
+    drift: str = ""
 
 
 def find_stst(path: str | None = None) -> str | None:
@@ -417,11 +453,29 @@ def remove_stst(root: Path, prefix: Path | None = None) -> bool:
     return True
 
 
-def component_installed(component: Component, prefix: Path, dev: bool | None = None) -> bool:
-    """Whether PREFIX has COMPONENT at the pinned ref, by the route DEV asks for."""
+def component_installed(
+    component: Component,
+    prefix: Path,
+    dev: bool | None = None,
+    root: Path | None = None,
+    sources: dict[str, Source] | None = None,
+) -> bool:
+    """Whether PREFIX already has what ROOT would build now, by the route DEV asks for.
+
+    Against the checkout when there is one, so an adopted source at another ref is a no-op
+    until that tree moves, rather than rebuilt on every run for not being the pin.
+    """
     marker = _marker(component.name, prefix)
-    version = SOURCES[component.repository].version
-    if not (marker.is_file() and marker.read_text().split("\n")[0] == version):
+    pinned = (SOURCES if sources is None else sources).get(component.repository)
+    wanted = pinned.version if pinned else None
+    if root is not None and dev is not None:
+        checkout = source_directory(root, component.repository, dev)
+        if (checkout / ".git").is_dir():
+            # Edits are not in any commit, so nothing recorded can prove the install matches.
+            if _dirty(checkout):
+                return False
+            wanted = _git(checkout, "rev-parse", "HEAD") or wanted
+    if wanted is None or not (marker.is_file() and marker.read_text().split("\n")[0] == wanted):
         return False
     if component.python and dev is not None:
         return (_recorded_origin(marker) == PIP_ORIGIN) != dev
@@ -572,6 +626,11 @@ def _git(repository: Path, *arguments: str) -> str | None:
     return done.stdout.strip() if done.returncode == 0 else None
 
 
+def _dirty(repository: Path) -> bool:
+    """Whether tracked files differ from HEAD, so what is there is not any recorded commit."""
+    return bool(_git(repository, "status", "--porcelain", "--untracked-files=no"))
+
+
 def _pinned_commit(repository: Path, ref: str) -> str | None:
     """The commit REF names, preferring the remote: a local branch still points where it did."""
     for candidate in (f"origin/{ref}", ref):
@@ -582,18 +641,24 @@ def _pinned_commit(repository: Path, ref: str) -> str | None:
 
 
 def prepare_source(
-    component: Component, root: Path, log: Path | None = None, dev: bool = True
+    component: Component,
+    root: Path,
+    log: Path | None = None,
+    dev: bool = True,
+    sources: dict[str, Source] | None = None,
 ) -> SourceState:
     """Put COMPONENT's source in place without ever moving a checkout already there.
 
     A `checkout --detach` in a tree someone works in loses the branch they were on.
     """
-    spec = SOURCES[component.repository]
+    spec = (SOURCES if sources is None else sources).get(component.repository)
     repository = source_directory(root, component.repository, dev)
 
     if not (repository / ".git").is_dir():
         if repository.exists() and any(repository.iterdir()):
             return SourceState(repository, False, False, "is not a git checkout")
+        if spec is None:
+            return SourceState(repository, False, False, "is in no manifest and not checked out")
         if component.repository.startswith(f"{THIRDPARTY_DIRECTORY}/"):
             _ignore_thirdparty(root, dev)
         repository.parent.mkdir(parents=True, exist_ok=True)
@@ -612,18 +677,33 @@ def prepare_source(
         stderr=subprocess.DEVNULL,
         check=False,
     )
-    commit = _pinned_commit(repository, spec.version)
+    # No entry in the manifest in force: the checkout is the only statement of what to build.
+    commit = _pinned_commit(repository, spec.version) if spec else None
     head = _git(repository, "rev-parse", "HEAD")
-    if commit is None:
-        return SourceState(repository, False, False, f"knows no ref {spec.version}")
-    if head != commit:
-        described = _git(repository, "describe", "--all", "--always", "HEAD") or (head or "?")
+    if head is None:
+        return SourceState(repository, False, False, "is a git checkout with no commit")
+    if _dirty(repository):
         return SourceState(
-            repository, False, False, f"is at {described}, and the manifest pins {spec.version}"
+            repository,
+            False,
+            True,
+            ref=head,
+            drift="has uncommitted changes; building them, and rebuilding on every run",
         )
-    if _git(repository, "status", "--porcelain", "--untracked-files=no"):
-        return SourceState(repository, False, False, "has uncommitted changes")
-    return SourceState(repository, False, True)
+    # A checkout already here is the operator's answer to which version this workspace wants.
+    # It is built as it stands and the ref is recorded, so nothing silently returns it to the
+    # pin; drift is said out loud instead, because a fork that merely compiles is the danger.
+    if commit is None or head != commit:
+        described = _git(repository, "describe", "--all", "--always", "HEAD") or head
+        return SourceState(
+            repository,
+            False,
+            True,
+            ref=head,
+            drift=f"is at {described}, {f'not the pinned {spec.version}' if spec else 'unpinned'}"
+            "; building it as it stands",
+        )
+    return SourceState(repository, False, True, ref=head)
 
 
 def _cmake_prefix_path(prefix: Path) -> str:
@@ -649,6 +729,7 @@ def install_component(
     editable: bool = False,
     jobs: int | None = None,
     dev: bool = False,
+    sources: dict[str, Source] | None = None,
 ) -> SourceState:
     """Build COMPONENT from ROOT/src into ROOT/build and install it into PREFIX.
 
@@ -657,14 +738,16 @@ def install_component(
     checkout at all: pip fetches the pinned ref itself.
     """
     prefix = prefix or install_prefix(root)
-    source_spec = SOURCES[component.repository]
+    source_spec = (SOURCES if sources is None else sources).get(component.repository)
     marker = _marker(component.name, prefix)
-    if not force and component_installed(component, prefix, dev):
+    if not force and component_installed(component, prefix, dev, root, sources):
         return SourceState(
             source_directory(root, component.repository, dev), False, True, "installed"
         )
 
     if component.python and not dev:
+        if source_spec is None:
+            raise RuntimeError(f"{component.name} is in no manifest, and pip needs a ref to fetch")
         return _install_python_from_git(component, root, source_spec, marker, log)
 
     needed = ("git",) if component.python else ("git", "cmake")
@@ -675,10 +758,13 @@ def install_component(
         )
 
     previous = _recorded_origin(marker)
-    state = prepare_source(component, root, log, dev)
+    state = prepare_source(component, root, log, dev, sources)
     if not state.usable:
         return state
 
+    # What was built, not what was wanted: an adopted checkout at another ref is recorded as
+    # that ref, so a rerun compares against the tree rather than the pin it does not match.
+    installed_ref = state.ref or (source_spec.version if source_spec else "")
     marker.parent.mkdir(parents=True, exist_ok=True)
     # Before the build: a half-built installation is still this tool's.
     marker.write_text(f"installing\n{_origin(previous, state)}\n")
@@ -687,14 +773,14 @@ def install_component(
         # No ament here: a pure-Python component has no cmake, and disabling isolation would
         # strand every source dependency pip resolves for it without its own build backend.
         _pip_install(state.path, log, editable)
-        marker.write_text(f"{source_spec.version}\n{_origin(previous, state)}\n")
+        marker.write_text(f"{installed_ref}\n{_origin(previous, state)}\n")
         return state
 
     if ros:
         _colcon_build(component, root, build_type, log, build_jobs(jobs), dev)
         if component.bindings:
             _pip_install(state.path, log, editable, ros)
-        marker.write_text(f"{source_spec.version}\n{_origin(previous, state)}\n")
+        marker.write_text(f"{installed_ref}\n{_origin(previous, state)}\n")
         return state
 
     build = build_directory(root, component.name)
@@ -721,7 +807,7 @@ def install_component(
     if component.bindings:
         _pip_install(state.path, log, editable, ros)
 
-    marker.write_text(f"{source_spec.version}\n{_origin(previous, state)}\n")
+    marker.write_text(f"{installed_ref}\n{_origin(previous, state)}\n")
     return state
 
 

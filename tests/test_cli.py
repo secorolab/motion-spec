@@ -584,7 +584,7 @@ def test_only_dev_checks_sources_out_into_src(monkeypatch, tmp_path) -> None:
     asked = []
     monkeypatch.setattr(stst_setup, "tee", lambda *_a, **_k: None)
 
-    def record(_component, root, _log=None, dev=True):
+    def record(_component, root, _log=None, dev=True, _sources=None):
         asked.append(dev)
         return stst_setup.SourceState(stst_setup.source_directory(root, "coord2b", dev), True, True)
 
@@ -654,7 +654,7 @@ def test_component_install_is_skipped_until_its_pin_moves(monkeypatch, tmp_path)
         raise AssertionError("expected the missing-command failure, so a build was attempted")
 
 
-def test_an_existing_checkout_is_adopted_only_when_it_matches_the_pin(monkeypatch, tmp_path):
+def test_an_existing_checkout_is_adopted_at_whatever_ref_it_is_on(monkeypatch, tmp_path):
     component = stst_setup.COMPONENTS_BY_NAME["coord2b"]
     checkout = stst_setup.source_directory(tmp_path, component.repository)
     (checkout / ".git").mkdir(parents=True)
@@ -670,11 +670,15 @@ def test_an_existing_checkout_is_adopted_only_when_it_matches_the_pin(monkeypatc
     state = stst_setup.prepare_source(component, tmp_path)
     assert (state.usable, state.cloned) == (True, False)
 
-    # Work in progress is never built over, and never stashed away either.
+    # Work in progress is built, since it is the whole reason to keep a checkout here. Nothing
+    # recorded can describe it, so it says so and every run rebuilds it.
     answers["status"] = " M src/main.cpp"
-    assert stst_setup.prepare_source(component, tmp_path).reason == "has uncommitted changes"
+    edited = stst_setup.prepare_source(component, tmp_path)
+    assert edited.usable is True and "uncommitted changes" in edited.drift
+    answers["status"] = ""
 
-    # A checkout on another commit is reported, not moved onto the pin.
+    # A checkout on another commit is the answer to which version this workspace wants: it is
+    # built as it stands, said out loud, and recorded as that ref rather than as the pin.
     answers.update({"status": "", "describe": "heads/my-feature"})
     calls = []
     monkeypatch.setattr(
@@ -690,10 +694,19 @@ def test_an_existing_checkout_is_adopted_only_when_it_matches_the_pin(monkeypatc
 
     monkeypatch.setattr(stst_setup, "_git", commit)
     state = stst_setup.prepare_source(component, tmp_path)
-    assert state.usable is False
-    assert "heads/my-feature" in state.reason and component.repository not in state.reason
+    assert state.usable is True
+    assert state.ref == "b" * 40
+    assert "heads/my-feature" in state.drift and "not the pinned" in state.drift
     # Fetching touches no working tree; checkout would have moved the branch they were on.
     assert not [args for args in calls if "checkout" in args]
+
+    # A ref the remote has never heard of is still theirs to build.
+    monkeypatch.setattr(
+        stst_setup, "_git", lambda _r, *a: {**answers, "rev-parse": "c" * 40}.get(a[0])
+    )
+    monkeypatch.setattr(stst_setup, "_pinned_commit", lambda *_a: None)
+    unknown = stst_setup.prepare_source(component, tmp_path)
+    assert unknown.usable is True and unknown.ref == "c" * 40
 
 
 def test_clean_refuses_a_checkout_it_did_not_make(tmp_path) -> None:

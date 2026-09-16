@@ -307,6 +307,44 @@ def build_directory(root: Path, name: str) -> Path:
     return root / BUILD_DIRECTORY / name
 
 
+def required_profiles(components: list[str], ros: bool = False) -> tuple[str, ...]:
+    """The health profiles the named COMPONENTS need before any of them can be installed.
+
+    Scoped, so `setup coord2b` is not refused for want of the Ant that only stst uses.
+    """
+    named = [COMPONENTS_BY_NAME[name] for name in components if name in COMPONENTS_BY_NAME]
+    profiles = {"codegen"} if "stst" in components else set()
+    if any(not component.python for component in named):
+        profiles.add("build")
+    return (*sorted(profiles), *(("ros",) if ros and profiles else ()))
+
+
+def missing_prerequisites(
+    components: list[str], ros: bool = False, targets: tuple[str, ...] = ("mujoco",)
+) -> tuple[list[str], list[str]]:
+    """What must be installed before setup starts: `(apt packages, other requirements)`.
+
+    Only what setup cannot supply itself. Everything it does install carries a
+    `motion-spec setup <name>` remedy instead, and is absent here by construction.
+    """
+    from motion_spec.health import apt_packages, check_health, system_site_packages
+
+    profiles = required_profiles(components, ros)
+    if not profiles:
+        return [], []
+    packages = apt_packages(check_health(profiles, targets if "build" in profiles else ()))
+    others = []
+    if ros:
+        if shutil.which("colcon") is None:
+            others.append("colcon: apt install python3-colcon-common-extensions")
+        if not system_site_packages():
+            others.append(
+                "the distribution's Python packages: recreate the environment with "
+                "`uv venv --python /usr/bin/python3 --system-site-packages`"
+            )
+    return packages, others
+
+
 def build_jobs(requested: int | None = None) -> int:
     """How many compilers to run at once; memory caps it, not cores."""
     if requested is not None:

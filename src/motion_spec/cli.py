@@ -717,6 +717,7 @@ def setup(
         install_prefix,
         install_stst,
         is_installed,
+        missing_prerequisites,
         remove_component,
         remove_environment,
         remove_stst,
@@ -792,6 +793,19 @@ def setup(
             f"--{'ros' if ros else 'no-ros'} applies to this run only; edit [ros] workspace in "
             f"{config_path} to keep it",
         )
+    if not clean:
+        # Before the first clone: a prerequisite setup cannot install itself is a failure the
+        # operator has to act on, and finding it after four checkouts and a build helps nobody.
+        _say("info", "checking prerequisites")
+        packages, others = missing_prerequisites(ordered, ros)
+        if packages or others:
+            for requirement in others:
+                _say("error", requirement)
+            if packages:
+                _say("error", f"apt: sudo apt-get install -y {' '.join(packages)}")
+            raise _Reported(
+                "setup needs these before it can start; nothing was cloned or built."
+            )
     if ros and not clean:
         from motion_spec.setup import write_colcon_meta
 

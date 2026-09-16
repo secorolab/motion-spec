@@ -55,7 +55,9 @@ MUJOCO_BUILD_PACKAGES = (("mj_kdl_wrapper", MJ_KDL_REF.lstrip("v")),)
 # ament_index_python resolves a scene asset that names a package rather than a path, so a
 # generation reaches for it long before anything ROS-shaped appears in the model.
 # ament_package: ament's cmake scripts import it, so find_package(rclcpp) needs it too.
-ROS_IMPORTS = ("rosidl_runtime_py", "ament_index_python", "ament_package")
+# yaml: rosidl_runtime_py imports it, and apt supplies it, not /opt/ros -- so it is the one
+# ROS dependency a venv can miss while every module above resolves.
+ROS_IMPORTS = ("rosidl_runtime_py", "ament_index_python", "ament_package", "yaml")
 ROS_ALTERNATIVES = (("rosidl_pycommon", "rosidl_cmake"),)
 # `stst` is a Java program built by ant, and `protoc` compiles the frame-log schema every
 # generation carries: the generator shells out to all three.
@@ -107,6 +109,7 @@ _REMEDIES = {
     "rosidl_pycommon": "source /opt/ros/$ROS_DISTRO/setup.bash",
     "ament_index_python": "source /opt/ros/$ROS_DISTRO/setup.bash",
     "ament_package": "source /opt/ros/$ROS_DISTRO/setup.bash",
+    "yaml": "uv venv --python /usr/bin/python3 --system-site-packages <venv>",
 }
 # Not installed by `setup`: only a model that binds them needs them.
 _DEVICE_PACKAGES = ("robif2b", "serial", "robotiq_driver_noros")
@@ -118,6 +121,15 @@ _ROBIF2B_DEVICE_FLAGS = {
     "robif2b::kinova_gen3": "ENABLE_KORTEX",
 }
 _PREFIX = "$MOTION_SPEC_PREFIX"
+
+
+def system_site_packages(env: dict[str, str] | None = None) -> bool:
+    """Whether the distribution's own Python packages are reachable.
+
+    Asked of a module rather than of pyvenv.cfg: a venv built on an interpreter that is not
+    the system one sets `include-system-site-packages` and still reaches nothing from apt.
+    """
+    return _module_path("yaml", env) is not None
 
 
 def installed_ros_distros() -> list[str]:
@@ -312,6 +324,10 @@ DETAILS: dict[str, dict[str, str]] = {
     "ament_package": {
         "why": "ament's cmake scripts import it, so find_package(rclcpp) fails without it",
         "source": "https://github.com/ament/ament_package",
+    },
+    "yaml": {
+        "why": "rosidl_runtime_py reads message shapes through it; apt supplies it, not ROS",
+        "source": "https://pyyaml.org",
     },
     "stst": {
         "why": "renders the generated C++ from the packaged StringTemplate groups",

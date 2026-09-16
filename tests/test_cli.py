@@ -1073,6 +1073,8 @@ def test_a_ros_workspace_builds_with_colcon_and_sources_the_overlay(monkeypatch,
     from motion_spec import config, health
 
     monkeypatch.setattr(health, "ROS_ROOT", _ros_root(tmp_path / "opt", "jazzy"))
+    # This is about colcon and the overlay, not about the interpreter setup refuses to use.
+    monkeypatch.setattr(health, "system_site_packages", lambda *_a, **_k: True)
     monkeypatch.delenv("ROS_DISTRO", raising=False)
     (tmp_path / config.CONFIG_FILE).write_text(
         '[ros]\nworkspace = true\ndistro = "jazzy"\n\n[setup]\ncomponents = ["coord2b"]\n'

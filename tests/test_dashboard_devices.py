@@ -165,7 +165,7 @@ def _health(monkeypatch, checks, *, delay=0.0):
     """Stand in for the real checks, which configure CMake projects to answer."""
     monkeypatch.setattr(jobs, "HEALTH", {"checks": None, "stamp": None, "thread": None})
 
-    def fake(profiles, targets=()):
+    def fake(profiles, targets=(), **_kwargs):
         time.sleep(delay)
         return checks
 

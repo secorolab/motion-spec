@@ -418,18 +418,18 @@ class SourceState:
     drift: str = ""
 
 
-def find_stst(path: str | None = None) -> str | None:
+def find_stst(path: str | None = None, workspace: str | None = None) -> str | None:
     """Prefer the STST on PATH, falling back to the one the sourced workspace installed.
 
-    PATH is the search path to look along, for a caller asking about an environment other
-    than this process's.
+    PATH and WORKSPACE can describe an environment other than this process's.
     """
-    on_path = shutil.which("stst", path=path) if path else shutil.which("stst")
+    on_path = shutil.which("stst", path=path) if path is not None else shutil.which("stst")
     if on_path:
         return on_path
     # Derived, not a variable of its own: one more to keep in step is one more to disagree.
-    named = os.environ.get(WORKSPACE_VARIABLE)
-    managed = install_prefix(Path(named).expanduser()) / "bin" / "stst" if named else None
+    if workspace is None and path is None:
+        workspace = os.environ.get(WORKSPACE_VARIABLE)
+    managed = install_prefix(Path(workspace).expanduser()) / "bin" / "stst" if workspace else None
     return str(managed) if managed and managed.is_file() else None
 
 
@@ -485,7 +485,10 @@ def component_installed(
 def stst_installed(root: Path, prefix: Path | None = None, dev: bool = True) -> bool:
     """Whether PREFIX carries a usable stst: a launcher without its jar is a half-finished one."""
     prefix = prefix or install_prefix(root)
-    if not (prefix / "bin" / "stst").is_file():
+    marker = _marker("stst", prefix)
+    if not (prefix / "bin" / "stst").is_file() or not marker.is_file():
+        return False
+    if marker.read_text().splitlines()[:1] == ["installing"]:
         return False
     # Either tree counts: the launcher runs the jar wherever the install that made it put one.
     return any(
@@ -500,6 +503,7 @@ def install_stst(
     force: bool = False,
     log: Path | None = None,
     dev: bool = True,
+    sources: dict[str, Source] | None = None,
 ) -> Path:
     """Build the pinned STSTv4 from its checkout and install its launcher under PREFIX/bin."""
     prefix = prefix or install_prefix(root)
@@ -517,11 +521,12 @@ def install_stst(
 
     # Ant writes inside the source tree, so an adopted checkout must be clean and on the pin.
     previous = _recorded_origin(marker)
-    state = prepare_source(STST_COMPONENT, root, log, dev)
+    state = prepare_source(STST_COMPONENT, root, log, dev, sources)
     if not state.usable:
         raise RuntimeError(f"{state.path} {state.reason}")
     marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text(f"{STST_REF}\n{_origin(previous, state)}\n")
+    origin = _origin(previous, state)
+    marker.write_text(f"installing\n{origin}\n")
     tee(["ant", "-f", str(source / "build.xml")], log=log)
 
     lib = source / "lib"
@@ -541,6 +546,8 @@ def install_stst(
         'exec java -cp "$CP" jjs.stst.STStandaloneTool "$@"\n'
     )
     launcher.chmod(0o755)
+    spec = (SOURCES if sources is None else sources).get(STST_REPOSITORY)
+    marker.write_text(f"{state.ref or (spec.version if spec else '')}\n{origin}\n")
     return launcher
 
 
@@ -583,10 +590,12 @@ def _trash_installed(manifest: Path, prefix: Path, label: str) -> None:
         if not line.strip() or not (installed.exists() or installed.is_symlink()):
             continue
         try:
-            destination = staging / installed.relative_to(prefix)
+            relative = installed.relative_to(prefix)
+            installed.resolve().relative_to(prefix.resolve())
         except ValueError:
-            # Outside the prefix: keep it by name.
-            destination = staging / "elsewhere" / installed.name
+            # A CMake manifest can name files outside the selected install prefix.
+            continue
+        destination = staging / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(installed), str(destination))
     trash_if_present(staging)
@@ -1082,8 +1091,7 @@ def capture_environment(script: Path) -> dict[str, str]:
     # stdout redirected so echoes stay out of the dump; env -0 because a value may hold newlines.
     done = subprocess.run(
         [shell, "-c", f". {shlex.quote(str(script))} >/dev/null && env -0"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=False,
     )
     if done.returncode:

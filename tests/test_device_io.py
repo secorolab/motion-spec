@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MPL-2.0
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
-"""What the loop/device handoff promises: the loop reads whole measurements, in publication
-order, and loses none of them. Those are claims about two threads, so they are checked by
-compiling the shipped primitives and running them against each other."""
+"""What the loop/device handoff promises: the loop reads whole measurements in publication
+order, even if it skips intermediate ones. Those are claims about two threads, so they are
+checked by compiling the shipped primitives and running them against each other."""
 
 from __future__ import annotations
 
@@ -67,12 +67,11 @@ struct Reading {
 int main() {
     reading_sample sampled;
     constexpr std::uint64_t kPublications = 1000;
-    // Two slots hold because a publication costs a bus transaction while a read costs a copy;
-    // pace the writer so the hammer runs at the ratio a serial device actually imposes.
+    // Pace the writer so the hammer runs at the ratio a serial device actually imposes.
     constexpr auto kTransaction = std::chrono::microseconds(100);
     std::atomic<bool> done{false};
 
-    std::thread writer([&] {
+    std::jthread writer([&] {
         for (std::uint64_t n = 1; n <= kPublications; ++n) {
             const auto until = std::chrono::steady_clock::now() + kTransaction;
             while (std::chrono::steady_clock::now() < until) {}
@@ -114,11 +113,7 @@ int main() {
 
 
 def test_a_reader_never_sees_a_torn_measurement(tmp_path: Path) -> None:
-    """Plain, not -fsanitize=thread: the writer rewrites a slot the reader read earlier, and
-    nothing the reader does is ever acquired by the writer, so no happens-before edge exists for
-    a detector to find. TSan reports that structure on every run -- it would flag the handoff
-    design the loop depends on, not a defect in it. What keeps the design honest is the ratio
-    the hammer runs at, so that is what is asserted here."""
+    """A delayed reader still sees one complete publication, never a reused slot."""
     compiler = shutil.which("g++") or shutil.which("c++")
     if compiler is None:
         pytest.skip("no C++ compiler")
@@ -128,7 +123,8 @@ def test_a_reader_never_sees_a_torn_measurement(tmp_path: Path) -> None:
     subprocess.run(
         [compiler, "-std=c++20", "-O2", "-pthread", str(source), "-o", str(binary)], check=True
     )
-    subprocess.run([str(binary)], check=True)
+    for _ in range(10):
+        subprocess.run([str(binary)], check=True)
 
 
 def test_ft_worker_publishes_failure_then_recovers(tmp_path: Path) -> None:

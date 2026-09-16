@@ -6,14 +6,15 @@ import json
 import re
 import shutil
 import subprocess
-
-from click.testing import CliRunner
 from pathlib import Path
 from types import SimpleNamespace
 
-from motion_spec.cli import main
+import pytest
+from click.testing import CliRunner
+
 from motion_spec import config as config_module
 from motion_spec import setup as stst_setup
+from motion_spec.cli import main
 
 
 def _declare_simulated(generation: Path) -> None:
@@ -231,8 +232,8 @@ def test_gen_and_run_compose_the_model_pipeline(monkeypatch, tmp_path) -> None:
 
 
 def test_generation_base_prefers_o_then_the_environment(monkeypatch, tmp_path) -> None:
-    """-o wins over $MOTION_SPEC_GEN, which wins over the working-directory fallback."""
-    monkeypatch.chdir(tmp_path)  # the unset case points `latest` at the working directory
+    """-o wins over $MOTION_SPEC_GEN, which wins over the workspace default."""
+    monkeypatch.chdir(tmp_path)
     model = tmp_path / "demo.robmot"
     model.write_text("")
     received = {}
@@ -268,6 +269,11 @@ def test_generation_base_prefers_o_then_the_environment(monkeypatch, tmp_path) -
     assert result.exit_code != 0
     assert stst_setup.WORKSPACE_VARIABLE in result.output
 
+    # With an explicit destination, generation needs no workspace or latest link.
+    result = CliRunner().invoke(main, ["gen", "ir", str(model), "-o", str(explicit)])
+    assert result.exit_code == 0, result.output
+    assert received["output"] == explicit
+
     monkeypatch.setenv(stst_setup.WORKSPACE_VARIABLE, str(tmp_path))
     assert CliRunner().invoke(main, ["gen", "ir", str(model)]).exit_code == 0
     assert received["output"] == tmp_path / "generations"
@@ -277,7 +283,7 @@ def test_install_uses_package_extras(monkeypatch) -> None:
     received = {}
     monkeypatch.setattr(
         "motion_spec.cli.subprocess.run",
-        lambda args: received.update(args=args) or SimpleNamespace(returncode=0),
+        lambda args, **_kwargs: received.update(args=args) or SimpleNamespace(returncode=0),
     )
 
     result = CliRunner().invoke(main, ["install", "dashboard"])
@@ -466,6 +472,24 @@ def test_stst_setup_builds_pinned_launcher_once(monkeypatch, tmp_path) -> None:
     # Removed means moved to the trash, never unlinked: the source it cloned and the launcher.
     assert trashed == [source, launcher]
     assert stst_setup.remove_stst(tmp_path) is False
+
+    custom_root = tmp_path / "custom"
+    custom = stst_setup.Source("https://example.org/STSTv4.git", "custom-ref")
+    stst_setup.install_stst(custom_root, sources={stst_setup.STST_REPOSITORY: custom})
+    assert any(call[:3] == ["git", "clone", custom.url] for call in calls)
+    marker = custom_root / "install" / "share" / "motion-spec" / ".stst-managed"
+    assert marker.read_text().splitlines()[0] == custom.version
+
+    def failing_ant(command, **_kwargs):
+        if command[0] == "ant":
+            raise RuntimeError("build failed")
+
+    monkeypatch.setattr(stst_setup, "tee", failing_ant)
+    with pytest.raises(RuntimeError, match="build failed"):
+        stst_setup.install_stst(
+            custom_root, force=True, sources={stst_setup.STST_REPOSITORY: custom}
+        )
+    assert not stst_setup.stst_installed(custom_root)
 
 
 def test_health_is_profile_scoped() -> None:
@@ -748,6 +772,23 @@ def test_clean_leaves_a_checkout_it_only_adopted(monkeypatch, tmp_path) -> None:
     assert trashed == [stst_setup.build_directory(tmp_path, component.name)]
 
 
+def test_clean_only_removes_manifest_files_inside_prefix(monkeypatch, tmp_path) -> None:
+    prefix = tmp_path / "install"
+    owned = prefix / "lib" / "owned.so"
+    owned.parent.mkdir(parents=True)
+    owned.write_text("owned")
+    outside = tmp_path / "outside.so"
+    outside.write_text("keep")
+    manifest = tmp_path / "install_manifest.txt"
+    manifest.write_text(f"{owned}\n{outside}\n{prefix / '..' / outside.name}\n")
+    monkeypatch.setattr(stst_setup, "trash_if_present", _trashing([]))
+
+    stst_setup._trash_installed(manifest, prefix, "test")
+
+    assert not owned.exists()
+    assert outside.read_text() == "keep"
+
+
 def _trashing(recorded: list) -> object:
     """A stand-in for the desktop trash: records what it took, and takes it."""
 
@@ -866,6 +907,7 @@ def test_health_names_the_installed_ros_distributions(monkeypatch, tmp_path) -> 
 
     monkeypatch.setattr(health, "ROS_ROOT", _ros_root(tmp_path, "jazzy", "rolling"))
     monkeypatch.delenv("ROS_DISTRO", raising=False)
+    monkeypatch.delenv("ROS_VERSION", raising=False)
     # The ROS CMake probes configure a project apiece; this test is about what is reported.
     monkeypatch.setattr(health, "_cmake_package_path", lambda *_a, **_kw: None)
 
@@ -890,6 +932,23 @@ def test_health_names_the_installed_ros_distributions(monkeypatch, tmp_path) -> 
     assert distribution_check().ok is True
 
 
+def test_health_uses_the_environment_being_checked_for_ros(monkeypatch, tmp_path) -> None:
+    from motion_spec import health
+
+    monkeypatch.setattr(health, "ROS_ROOT", _ros_root(tmp_path, "jazzy", "rolling"))
+    monkeypatch.setenv("ROS_DISTRO", "jazzy")
+    monkeypatch.setattr(health, "_module_path", lambda *_args: None)
+    monkeypatch.setattr(health, "_cmake_package_path", lambda *_args, **_kwargs: None)
+
+    checks = health.check_health(("ros",), env={"ROS_DISTRO": "rolling"})
+    distribution = next(check for check in checks if check.dependency == "ROS distribution")
+    rclcpp = next(check for check in checks if check.dependency == "rclcpp")
+
+    assert distribution.ok and distribution.path == str(tmp_path / "rolling")
+    assert "rolling sourced" in distribution.detail
+    assert rclcpp.detail == "apt install ros-rolling-rclcpp"
+
+
 def test_health_reports_the_variables_it_reads_and_the_sourced_distro(monkeypatch, tmp_path):
     from motion_spec import health
 
@@ -908,6 +967,21 @@ def test_health_reports_the_variables_it_reads_and_the_sourced_distro(monkeypatc
     result = CliRunner().invoke(main, ["health", "--profile", "dsl"])
     assert "ENVIRONMENT — what motion-spec reads" in result.output
     assert "MOTION_SPEC_WS" in result.output
+
+    monkeypatch.setenv("ROS_DISTRO", "jazzy")
+    monkeypatch.setattr(
+        "motion_spec.cli._environment", lambda *_args: ({"ROS_DISTRO": "rolling"}, None)
+    )
+    monkeypatch.setattr(
+        health,
+        "check_health",
+        lambda *_args, **_kwargs: [
+            health.HealthCheck("ros", "ROS distribution", "sourced", None, True, "")
+        ],
+    )
+    result = CliRunner().invoke(main, ["health", "--profile", "ros"])
+    assert "rolling sourced" in result.output
+    assert "jazzy sourced" not in result.output
 
 
 def test_health_announces_each_probe_before_it_runs(monkeypatch, tmp_path) -> None:
@@ -971,6 +1045,14 @@ def test_stst_on_path_wins_over_managed(monkeypatch, tmp_path) -> None:
 
     monkeypatch.delenv(stst_setup.WORKSPACE_VARIABLE)
     assert stst_setup.find_stst() is None
+
+    other = tmp_path / "other" / "install" / "bin" / "stst"
+    other.parent.mkdir(parents=True)
+    other.touch()
+    monkeypatch.setenv(stst_setup.WORKSPACE_VARIABLE, str(tmp_path))
+    monkeypatch.setattr(stst_setup.shutil, "which", lambda _command, **_kwargs: None)
+    assert stst_setup.find_stst(path="", workspace=str(tmp_path / "other")) == str(other)
+    assert stst_setup.find_stst(path="") is None
 
 
 def test_a_tool_is_shown_as_it_runs_and_kept_in_the_log(tmp_path) -> None:

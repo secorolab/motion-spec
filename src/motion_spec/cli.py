@@ -18,6 +18,7 @@ from contextlib import contextmanager
 from importlib.metadata import PackageNotFoundError, distribution
 from importlib.util import find_spec
 from pathlib import Path
+from typing import ClassVar
 from urllib.parse import urlparse
 
 import click
@@ -129,7 +130,11 @@ def _point_latest(generation: Path) -> None:
     relative, so moving the tree keeps it pointing at what it names, and it is replaced in one
     step, so a reader never finds it missing.
     """
-    base = _generation_root()
+    try:
+        base = _generation_root()
+    except click.UsageError:
+        # An explicit -o works without a workspace; there is no default tree to link from.
+        return
     link = base / LATEST_LINK
     try:
         target = os.path.relpath(generation, base)
@@ -155,7 +160,7 @@ def _generation_root() -> Path:
 
 
 def _latest_generation() -> Path:
-    """The generation `latest` points at, under `-o`'s default or the working directory.
+    """The generation `latest` points at under the configured generation root.
 
     Raises:
         ClickException: nothing has been generated there, or what was is not built.
@@ -217,7 +222,7 @@ class MotionSpecGroup(click.Group):
         with _manual_section(formatter, "WORKFLOW"):
             formatter.write_dl(
                 [
-                    ("setup", "Install the pinned STST code-generation tool."),
+                    ("setup", "Install the pinned tools and libraries needed to build controllers."),
                     ("install", "Install the optional DSL, dashboard, or replay features."),
                     ("health", "Check the tools and libraries required by the selected target."),
                     ("gen", "Generate IR or C++ from a .robmot model."),
@@ -245,9 +250,11 @@ class MotionSpecGroup(click.Group):
                 [
                     (
                         GENERATION_DIR_ENV,
-                        "Where 'gen' and 'run' put a new generation when given no -o. "
-                        "Unset, they fall back to the working directory and say so. "
-                        "'latest' there names the one 'rerun' takes.",
+                        (
+                            "Where 'gen' and 'run' put a new generation when given no -o. "
+                            "Unset, they use the workspace's generations directory. "
+                            "'latest' there names the one 'rerun' takes."
+                        ),
                     )
                 ]
             )
@@ -397,8 +404,9 @@ def _requirements_reported():
 @click.pass_context
 def main(ctx: click.Context) -> None:
     """The motion-spec toolchain."""
-    from motion_spec.introspection.journal import record
     from motion_spec_dsl.rdf_parser.manifest import install_metamodel_resolver
+
+    from motion_spec.introspection.journal import record
 
     # Before the work, so a command that never returned is still in the record.
     record(ctx.invoked_subcommand or "")
@@ -414,7 +422,7 @@ _TOOL_LOGGERS = ("motion_spec", "motion_spec_dsl", "scene_dsl", "coord_dsl", "te
 class _SayHandler(logging.Handler):
     """A library's log record, in the format every other line of the CLI is written in."""
 
-    _LEVELS = {logging.WARNING: "warn", logging.ERROR: "error", logging.CRITICAL: "error"}
+    _LEVELS: ClassVar = {logging.WARNING: "warn", logging.ERROR: "error", logging.CRITICAL: "error"}
 
     def emit(self, record: logging.LogRecord) -> None:
         _say(self._LEVELS.get(record.levelno, "info"), record.getMessage())
@@ -745,10 +753,10 @@ def setup(
         manifest_in_force,
         missing_prerequisites,
         remove_component,
-        uncovered,
         remove_environment,
         remove_stst,
         stst_installed,
+        uncovered,
         workspace,
         write_environment,
     )
@@ -914,7 +922,7 @@ def setup(
             if not already:
                 _say("step", name)
             if name == "stst":
-                launcher = install_stst(root, prefix, force=force, log=log, dev=dev)
+                launcher = install_stst(root, prefix, force=force, log=log, dev=dev, sources=sources)
                 _say(
                     "info" if already else "done",
                     f"stst {'already installed' if already else 'installed'}, launcher {launcher}",
@@ -985,7 +993,7 @@ def install(features: tuple[str, ...]) -> None:
     from motion_spec.setup import installer
 
     try:
-        result = subprocess.run([*installer(), *requirements])
+        result = subprocess.run([*installer(), *requirements], check=False)
     except RuntimeError as exc:
         raise click.ClickException(str(exc)) from exc
     if result.returncode:
@@ -1076,7 +1084,7 @@ def health(
             _say("info", click.style(heading, bold=True, fg="blue"), err=False)
             # ABSENT means one thing with no distribution installed, another with two unsourced.
             if current_profile == "ros":
-                _say("warn", ros_summary(), err=False)
+                _say("warn", ros_summary(env), err=False)
         status = "OK" if check.ok else "ABSENT" if check.optional else "MISSING"
         colour = "green" if check.ok else "yellow" if check.optional else "red"
         _stamp("info" if check.ok or check.optional else "error", err=False)
@@ -1313,16 +1321,21 @@ def config(initialize: bool, workspace_argument: Path | None) -> None:
     """Show this workspace's settings, and where each one came from."""
     from motion_spec.config import (
         CONFIG_FILE,
-        find_config,
         settings,
-        shell as config_shell,
         write_sample,
+    )
+    from motion_spec.config import (
+        shell as config_shell,
     )
     from motion_spec.setup import (
         BUILD_TYPE as DEFAULT_BUILD_TYPE,
+    )
+    from motion_spec.setup import (
         GENERATION_DIRECTORY,
         INSTALL_DIRECTORY,
         build_jobs,
+    )
+    from motion_spec.setup import (
         workspace as resolve_workspace,
     )
 

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import ctypes
+import dataclasses
 import importlib.util
 import json
 import os
@@ -15,7 +16,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -169,9 +169,9 @@ def active_ros_distro(env: dict[str, str] | None = None) -> str | None:
     return distro if distro and (ROS_ROOT / distro / "setup.bash").is_file() else None
 
 
-def _ros_distro() -> str | None:
+def _ros_distro(env: dict[str, str] | None = None) -> str | None:
     """The distribution a remedy can name: the sourced one, the configured one, or the only one."""
-    active = active_ros_distro()
+    active = active_ros_distro(env)
     if active:
         return active
     declared = _configured_distro()
@@ -220,11 +220,11 @@ def ros_summary(env: dict[str, str] | None = None) -> str:
     )
 
 
-def _remedy(dependency: str) -> str:
+def _remedy(dependency: str, env: dict[str, str] | None = None) -> str:
     """The command that gets `dependency`, for a report a reader can act on."""
     if dependency in _REMEDIES:
         # `$ROS_DISTRO` is only an instruction when a shell already set it.
-        return _REMEDIES[dependency].replace("$ROS_DISTRO", _ros_distro() or "$ROS_DISTRO")
+        return _REMEDIES[dependency].replace("$ROS_DISTRO", _ros_distro(env) or "$ROS_DISTRO")
     if dependency in COMPONENTS_BY_NAME:
         return f"motion-spec setup {dependency}"
 
@@ -701,7 +701,11 @@ def check_health(
         from motion_spec.setup import find_stst
 
         announce("stst")
-        path = find_stst(path=env.get("PATH") if env else None)
+        path = (
+            find_stst(path=env.get("PATH", ""), workspace=env.get("MOTION_SPEC_WS"))
+            if env is not None
+            else find_stst()
+        )
         runs = path is not None and _stst_jar(path)
         checks.append(
             HealthCheck(
@@ -723,7 +727,7 @@ def check_health(
             )
     if "ros" in selected:
         # First: every ROS row below is a consequence of it.
-        distro = active_ros_distro()
+        distro = active_ros_distro(env)
         installed = installed_ros_distros()
         checks.append(
             HealthCheck(
@@ -734,7 +738,7 @@ def check_health(
                 if distro
                 else ", ".join(str(ROS_ROOT / name) for name in installed) or None,
                 distro is not None,
-                ros_summary(),
+                ros_summary(env),
                 optional=True,
             )
         )
@@ -748,7 +752,7 @@ def check_health(
                     _module_what(path),
                     path,
                     path is not None,
-                    _remedy(module),
+                    _remedy(module, env),
                     optional=True,
                 )
             )
@@ -764,7 +768,7 @@ def check_health(
                     _module_what(path),
                     path,
                     path is not None,
-                    _remedy(alternatives[0]),
+                    _remedy(alternatives[0], env),
                     optional=True,
                 )
             )
@@ -779,7 +783,7 @@ def check_health(
                     "CMake package",
                     path,
                     path is not None,
-                    _remedy(name),
+                    _remedy(name, env),
                     optional=True,
                 )
             )

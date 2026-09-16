@@ -264,10 +264,9 @@ struct ft_sensor_io {
 >>
 
 // Thread -> loop, stamped once per device state type so the generated code stays template-free.
-// The last completed measurement and the sequence it was published under: the loop reads a
-// last-known value with an age, never a reading taken this cycle. One writer and one reader, and
-// the loop copies in nanoseconds while a transaction takes milliseconds, so the reader cannot be
-// lapped mid-copy and needs no retry.
+// The writer, reader and atomic exchange each own one slot. Swapping ownership publishes a whole
+// measurement without making the loop wait for a device transaction. Intermediate measurements
+// may be skipped; the loop always keeps its latest complete snapshot and sequence.
 sampled-buffer(state, sample) ::= <<
 struct <sample> {
     struct snapshot {
@@ -276,15 +275,15 @@ struct <sample> {
     \};
 
     void publish(const <state> &value) {
-        const std::uint64_t seq = published.load(std::memory_order_relaxed);
-        slot[seq & 1] = value;
-        published.store(seq + 1, std::memory_order_release);
+        slot[write_slot] = snapshot{value, ++next_seq};
+        write_slot = middle.exchange(write_slot | fresh, std::memory_order_acq_rel) & 3U;
     \}
 
     snapshot read() const {
-        const std::uint64_t seq = published.load(std::memory_order_acquire);
-        if (seq == 0) return snapshot{\};
-        return snapshot{slot[(seq - 1) & 1], seq\};
+        if (middle.load(std::memory_order_acquire) & fresh) {
+            read_slot = middle.exchange(read_slot, std::memory_order_acq_rel) & 3U;
+        \}
+        return slot[read_slot];
     \}
 
     // Startup only, where waiting is allowed: the first cycle must not run against a device
@@ -300,8 +299,12 @@ struct <sample> {
         return latest;
     \}
 
-    <state> slot[2]{\};
-    std::atomic\<std::uint64_t\> published{0\};
+    static constexpr unsigned fresh = 4U;
+    snapshot slot[3]{\};
+    mutable std::atomic\<unsigned\> middle{1U};
+    unsigned write_slot = 2U;
+    mutable unsigned read_slot = 0U;
+    std::uint64_t next_seq = 0;
 \};
 static_assert(std::is_trivially_copyable_v\<<state>\>, "a measurement crosses the handoff by copy");
 >>

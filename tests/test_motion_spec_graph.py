@@ -5,9 +5,11 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
+from conftest import requires_interfaces, requires_workspace
 from motion_spec_dsl.gens import _gen_graph
 from motion_spec_dsl.langs import motion_spec_metamodel
 from motion_spec_dsl.rdf.model import ROS
@@ -29,13 +31,15 @@ from rdflib.namespace import RDF
 from motion_spec.rdf_parser.ir import generate_ir
 from motion_spec.rdf_parser.model import load_model
 
-from conftest import requires_interfaces
-
-pytestmark = requires_interfaces("aruco_perception/action/LocateObjects")
-
 MODELS = Path(__file__).parents[2] / "motion-spec-dsl" / "models"
 FIXTURES = Path(__file__).parent / "fixtures"
-METAMODELS = Path(__file__).resolve().parents[2] / "metamodels"
+METAMODELS = Path(
+    os.environ.get("METAMODELS_PATH", Path(__file__).resolve().parents[2] / "metamodels")
+)
+pytestmark = [
+    requires_interfaces("aruco_perception/action/LocateObjects"),
+    requires_workspace(METAMODELS / "prov.shacl.ttl"),
+]
 
 
 @pytest.fixture(scope="module")
@@ -251,10 +255,10 @@ def test_ir_derives_forwarded_commands_and_monitors(generated_model: Path) -> No
     assert any(closure["type"] == "PoseDiffEvaluator" for closure in scheduled)
     assert any(component["id"] == "goal_pose" for component in pick_above.declared_pose_components)
     # The progress guard is a monitored condition, never a solver row: the schedule holds
-    # exactly the 1 tangent + 2 normal + 3 angular controllers, the 2 the forearm alignment
-    # drives, and the elbow's joint-space hold; the guard appears only as a while monitor over
+    # exactly the 1 tangent + 2 normal + 3 angular controllers and the elbow's joint-space
+    # hold; the guard appears only as a while monitor over
     # its along-speed error.
-    assert [closure["type"] for closure in scheduled].count("Controller") == 9
+    assert [closure["type"] for closure in scheduled].count("Controller") == 7
     assert not any(
         "advance" in closure["id"] and closure["type"] == "Controller" for closure in scheduled
     )

@@ -71,6 +71,7 @@ What every model needs, whichever target it drives:
 | | Git, a JDK and Ant | building STSTv4 itself — a JRE is not enough |
 | Build | CMake and a C++20 compiler | configuring and compiling a generated controller |
 | | coord2b, Eigen, Orocos KDL, toml++ | what every generated controller links |
+| MuJoCo | mj_kdl_wrapper, GLFW, OpenGL, EGL, `ffmpeg` | the simulation, its viewer, and the video recorder |
 
 The Python and authoring packages arrive with `pip install`; `motion-spec setup` builds STSTv4,
 coord2b, Orocos KDL and mj_kdl_wrapper; Eigen, toml++ and `protoc` come from apt. Orocos KDL

@@ -512,7 +512,12 @@ Target dependencies
      - Dependencies
    * - MuJoCo
      - `mj_kdl_wrapper <https://github.com/vamsikalagaturu/mj_kdl_wrapper>`_,
-       at the version the generated ``CMakeLists.txt`` pins
+       at the version the generated ``CMakeLists.txt`` pins, with what its own
+       build asks the system for: `GLFW <https://www.glfw.org/>`_ and OpenGL
+       for the viewer, `EGL <https://www.khronos.org/egl>`_ for the headless
+       video recorder, and `ffmpeg <https://ffmpeg.org/>`_ on ``PATH`` at run
+       time, which encodes the recorder's frames and the ROS camera recordings.
+       From apt: ``libglfw3-dev libgl-dev libegl-dev ffmpeg``
    * - robif2b
      - `robif2b <https://github.com/secorolab/robif2b>`_,
        `urdfdom_headers <https://github.com/ros/urdfdom_headers>`_, and

@@ -125,6 +125,10 @@ _REMEDIES = {
     "urdfdom_headers": "apt install liburdfdom-headers-dev",
     "tomlplusplus": "apt install libtomlplusplus-dev",
     "Protobuf": "apt install libprotobuf-dev protobuf-compiler",
+    "glfw3": "apt install libglfw3-dev",
+    "OpenGL": "apt install libgl-dev",
+    "EGL": "apt install libegl-dev",
+    "ffmpeg": "apt install ffmpeg",
     "rclcpp": "apt install ros-$ROS_DISTRO-rclcpp",
     "realtime_tools": "apt install ros-$ROS_DISTRO-realtime-tools",
     "action_msgs": "apt install ros-$ROS_DISTRO-action-msgs",
@@ -379,6 +383,22 @@ DETAILS: dict[str, dict[str, str]] = {
         "why": "chains, solvers and frames: the kinematics the generated control math runs on",
         "source": "https://github.com/orocos/orocos_kinematics_dynamics",
     },
+    "glfw3": {
+        "why": "the window and input layer of mj_kdl_wrapper's MuJoCo viewer",
+        "source": "https://www.glfw.org",
+    },
+    "OpenGL": {
+        "why": "mj_kdl_wrapper renders the scene through it, on screen and off",
+        "source": "https://www.khronos.org/opengl",
+    },
+    "EGL": {
+        "why": "the headless context mj_kdl_wrapper's video recorder renders into",
+        "source": "https://www.khronos.org/egl",
+    },
+    "ffmpeg": {
+        "why": "encodes the recorder's frames and the ROS camera recordings into MP4",
+        "source": "https://ffmpeg.org",
+    },
     "mj_kdl_wrapper": {
         "why": "the MuJoCo simulation the generated controller drives, and its camera publisher",
         "source": "https://github.com/vamsikalagaturu/mj_kdl_wrapper",
@@ -625,6 +645,35 @@ def verdicts(checks: list[HealthCheck]) -> dict[str, list[str]]:
     return answer
 
 
+def _cmake_library_path(name: str, env: dict[str, str] | None = None) -> str | None:
+    """Where `find_library({name})` lands, the lookup mj_kdl_wrapper's CMake makes itself."""
+    cmake = _which("cmake", env)
+    if not cmake:
+        return None
+    with tempfile.TemporaryDirectory(prefix="motion-spec-health-") as directory:
+        root = Path(directory)
+        (root / "CMakeLists.txt").write_text(
+            "cmake_minimum_required(VERSION 3.16)\n"
+            "project(motion_spec_health LANGUAGES CXX)\n"
+            f"find_library(LIBRARY {name})\n"
+            "if(NOT LIBRARY)\n"
+            f'  message(FATAL_ERROR "{name} not found")\n'
+            "endif()\n"
+            'file(WRITE "${CMAKE_BINARY_DIR}/library" "${LIBRARY}")\n'
+        )
+        build = root / "build"
+        configured = subprocess.run(
+            [cmake, "-S", str(root), "-B", str(build)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            env=env,
+        ).returncode
+        if configured:
+            return None
+        return (build / "library").read_text().strip() or None
+
+
 def apt_packages(checks: list[HealthCheck]) -> list[str]:
     """The apt packages that would fix every missing check, in the order they were reported.
 
@@ -802,6 +851,45 @@ def check_health(
             path = _cmake_package_path(name, version=version, env=env)
             checks.append(
                 HealthCheck("build", name, "CMake package", path, path is not None, _remedy(name))
+            )
+        if "mujoco" in targets:
+            # mj_kdl_wrapper's own CMake asks the system for these; a miss fails its configure.
+            announce("glfw3")
+            path = _cmake_package_path("glfw3", env=env)
+            checks.append(
+                HealthCheck(
+                    "build[mujoco]",
+                    "glfw3",
+                    "CMake package",
+                    path,
+                    path is not None,
+                    _remedy("glfw3"),
+                )
+            )
+            for name, library in (("OpenGL", "GL"), ("EGL", "EGL")):
+                announce(name)
+                path = _cmake_library_path(library, env=env)
+                checks.append(
+                    HealthCheck(
+                        "build[mujoco]",
+                        name,
+                        "shared library",
+                        path,
+                        path is not None,
+                        _remedy(name),
+                    )
+                )
+            announce("ffmpeg")
+            path = _which("ffmpeg", env)
+            checks.append(
+                HealthCheck(
+                    "build[mujoco]",
+                    "ffmpeg",
+                    "executable",
+                    path,
+                    path is not None,
+                    _remedy("ffmpeg"),
+                )
             )
         for target, packages in (
             ("mujoco", mujoco_build_packages()),

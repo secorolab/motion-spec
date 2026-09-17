@@ -761,15 +761,16 @@ def _port_taken(port: int) -> bool:
     "--dev/--no-dev",
     "dev_flag",
     default=None,
-    help="Check the Python components out into WORKSPACE/src and install them editable, to work "
-    "on them. Without it pip fetches the pinned ref and nothing lands under src.",
+    help="Check the Python components out into WORKSPACE/src, to work on them. Without it pip "
+    "fetches the pinned ref and nothing new lands under src; a checkout already there is "
+    "installed either way.",
 )
 @click.option(
     "--editable/--no-editable",
     "editable_flag",
     default=None,
-    help="Whether --dev's checkout is installed with `pip install -e`. On by default under "
-    "--dev, so site-packages points back at the checkout.",
+    help="Whether a Python checkout is installed with `pip install -e`. On by default, so "
+    "site-packages points back at the tree you are editing; --no-editable installs a snapshot.",
 )
 @click.option(
     "--repos",
@@ -828,8 +829,8 @@ def setup(
 
     Installs into WORKSPACE/install, with the environment files written to WORKSPACE. With no
     COMPONENTS, installs the ones every model needs, in dependency order; the device drivers
-    (serial, robotiq_driver_noros, robif2b) are built only when named. The Python components
-    come from their pinned git refs unless --dev asks for a checkout.
+    (serial, robotiq_driver_noros, robif2b) are built only when named. A source already in the
+    workspace is what gets built; --dev decides where a missing one is checked out.
     """
     if clean and clear_cache:
         raise click.UsageError("--clean and --clear-cache cannot be used together")
@@ -878,10 +879,10 @@ def setup(
     in_file = bool(configured.get("ros", {}).get("workspace"))
     ros = ros_flag if ros_flag is not None else in_file
     dev = dev_flag if dev_flag is not None else bool(declared.get("dev", False))
-    if editable_flag and not dev:
-        raise click.UsageError("--editable needs --dev: with no checkout there is nothing to edit")
-    # Editable is the point of a checkout, so --dev turns it on unless --no-editable says not to.
-    editable = editable_flag if editable_flag is not None else bool(declared.get("editable", dev))
+    # Editable is the point of a checkout, and a checkout is installed wherever one is found,
+    # so this is on unless --no-editable says otherwise. It reaches nothing else: a component
+    # pip fetches has no tree to point at, and a compiled extension takes it only under --dev.
+    editable = editable_flag if editable_flag is not None else bool(declared.get("editable", True))
     if not components and declared.get("components"):
         ordered = [name for name in COMPONENT_NAMES if name in declared["components"]]
     manifest = repos or (Path(declared["repos"]) if declared.get("repos") else None)

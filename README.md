@@ -50,13 +50,14 @@ never moves a checkout and never touches a working tree: it fetches, then builds
 | a C++ package, clean, on the pinned commit | built where it stands; the next run is a no-op | same |
 | a C++ package on some other ref | built as it stands, with a warning naming the ref | same |
 | a C++ package with uncommitted changes | your edits are built, with a warning — and rebuilt on every run, since no commit describes them | same |
-| nothing for that package | cloned into `WORKSPACE/.ms-sources` | cloned into `ws/src` |
-| a motion-spec-dsl or scene-dsl checkout | ignored: pip installs the pinned ref | installed editable from your checkout |
+| nothing for that package | cloned into `WORKSPACE/.ms-sources`, or pip-installed from the pin for the DSLs | cloned into `ws/src` |
+| a motion-spec-dsl or scene-dsl checkout | installed editable from your checkout | same |
 | a directory that is not a git checkout | skipped with a warning, and `setup` exits 1 | same |
 
-So `--dev` changes where *missing* sources land and how the Python components are installed; for
-a C++ package already in `ws/src` both modes do the same thing. `--clean` removes builds,
-installed files and markers, never a source tree.
+So `--dev` decides only where a *missing* source is cloned. Whatever is already in `ws/src` is
+what gets built and installed, in either mode — including a DSL you are editing, which is
+installed editable so your edits are live. `--clean` removes builds, installed files and
+markers, never a source tree.
 
 ## Requirements
 

@@ -57,11 +57,16 @@ the ones every model needs, in dependency order; name components to do fewer, or
 to add a device driver.
 
 The CMake components have to be built, so their sources are fetched into
-``WORKSPACE/.ms-sources``. The Python components do not: pip installs them
-straight from the pinned ref. ``--dev`` changes both — everything is checked out
-into ``WORKSPACE/src`` and the Python components are installed editable. Clone
+``WORKSPACE/.ms-sources``. The Python components do not: with no checkout of one
+in the workspace, pip installs it straight from the pinned ref. ``--dev``
+changes both — everything is checked out into ``WORKSPACE/src``. Clone
 motion-spec itself into ``WORKSPACE/src`` too: ``setup`` cannot check out the
 code it is running, and warns when it finds itself installed from elsewhere.
+
+What ``--dev`` decides is where a *missing* source is cloned, not which tree is
+used. A checkout already in the workspace is built and installed in either mode
+— a Python one with ``pip install -e``, so a DSL you are editing is the one that
+runs. ``--no-editable`` installs a snapshot of it instead.
 
 .. list-table::
    :header-rows: 1
@@ -138,8 +143,9 @@ are written to the workspace root either way.
      - The StringTemplate tool the C++ generator drives, built with Ant and
        launched from ``PREFIX/bin/stst``.
    * - ``motion_spec_dsl``
-     - The compiler for ``.robmot`` models, and the example models. pip
-       installs it from the pinned ref; ``--dev`` installs a checkout editable.
+     - The compiler for ``.robmot`` models, and the example models. Installed
+       from a checkout in the workspace when there is one, editable, and from
+       the pinned ref by pip when there is not.
    * - ``scene_dsl``
      - The compiler for ``.scenex`` and ``.ktree`` scenes, by the same two
        routes.
@@ -402,6 +408,10 @@ and into the workspace, where they are yours to edit:
 It adds only. A file already at the destination is kept and reported, never
 overwritten, so running it again after an edit brings in what is new and leaves
 your work alone.
+
+They are read from wherever pip put ``motion_spec_dsl``: with a checkout of it
+in the workspace, that is your tree, so the models you copy are the models you
+are editing.
 
 Without ROS
 ===========

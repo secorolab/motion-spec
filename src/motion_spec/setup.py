@@ -476,9 +476,11 @@ def component_installed(
     marker = install_marker(component.name, prefix)
     pinned = (SOURCES if sources is None else sources).get(component.repository)
     wanted = pinned.version if pinned else None
+    from_checkout = False
     if root is not None and dev is not None:
         checkout = source_tree(root, component.repository, dev)
-        if (checkout / ".git").is_dir():
+        from_checkout = (checkout / ".git").is_dir()
+        if from_checkout:
             # Edits are not in any commit, so nothing recorded can prove the install matches.
             if _dirty(checkout):
                 return False
@@ -486,8 +488,16 @@ def component_installed(
     if wanted is None or not (marker.is_file() and marker.read_text().split("\n")[0] == wanted):
         return False
     if component.python and dev is not None:
-        return (_recorded_origin(marker) == PIP_ORIGIN) != dev
+        # Compared against the route this run would take, not against --dev: pip fetches a
+        # Python component only when there is no checkout to adopt, and a route switch is
+        # not an installation.
+        return (_recorded_origin(marker) == PIP_ORIGIN) == not_adopted(dev, from_checkout)
     return True
+
+
+def not_adopted(dev: bool, from_checkout: bool) -> bool:
+    """Whether a Python component comes from pip: no checkout here, and none asked for."""
+    return not (dev or from_checkout)
 
 
 def stst_installed(root: Path, prefix: Path | None = None, dev: bool = True) -> bool:
@@ -770,8 +780,8 @@ def install_component(
     """Build COMPONENT from ROOT/src into ROOT/build and install it into PREFIX.
 
     The marker carries the ref installed, so a rerun is a no-op until the pin moves. A source
-    this tool will not touch is returned unbuilt. Without DEV a Python component is not a
-    checkout at all: pip fetches the pinned ref itself.
+    this tool will not touch is returned unbuilt. A Python component comes from pip at the
+    pinned ref when the workspace has no checkout of it; one that is there is installed.
     """
     prefix = prefix or install_prefix(root)
     source_spec = (SOURCES if sources is None else sources).get(component.repository)
@@ -783,10 +793,11 @@ def install_component(
             source_directory(root, component.repository, dev), False, True, "installed"
         )
 
-    if component.python and not dev:
+    checked_out = (source_tree(root, component.repository, dev) / ".git").is_dir()
+    if component.python and not_adopted(dev, checked_out):
         if source_spec is None:
             raise RuntimeError(f"{component.name} is in no manifest, and pip needs a ref to fetch")
-        return _install_python_from_git(component, root, source_spec, marker, log)
+        return _install_python_from_git(component, root, source_spec, marker, log, dev)
 
     needed = ("git",) if component.python else ("git", "cmake")
     missing = [command for command in needed if shutil.which(command) is None]
@@ -819,7 +830,7 @@ def install_component(
             component, root, prefix, build_type, log, build_jobs(jobs), dev, clear_cache
         )
         if component.bindings:
-            _pip_install(state.path, log, editable, ros)
+            _pip_install(state.path, log, editable and dev, ros)
         marker.write_text(f"{installed_ref}\n{_origin(previous, state)}\n")
         return state
 
@@ -849,7 +860,9 @@ def install_component(
     tee([cmake, "--install", str(build)], log=log)
 
     if component.bindings:
-        _pip_install(state.path, log, editable, ros)
+        # A compiled extension is installed editable only for someone working on it: an
+        # editable install of a build tree is a trap for anyone else.
+        _pip_install(state.path, log, editable and dev, ros)
 
     marker.write_text(f"{installed_ref}\n{_origin(previous, state)}\n")
     return state
@@ -907,9 +920,14 @@ def git_requirement(source: Source) -> str:
 
 
 def _install_python_from_git(
-    component: Component, root: Path, source: Source, marker: Path, log: Path | None
+    component: Component,
+    root: Path,
+    source: Source,
+    marker: Path,
+    log: Path | None,
+    dev: bool = False,
 ) -> SourceState:
-    """Let pip fetch COMPONENT itself, leaving nothing under src/."""
+    """Let pip fetch COMPONENT itself, leaving no checkout behind."""
     marker.parent.mkdir(parents=True, exist_ok=True)
     requirement = git_requirement(source)
     # Before the install: a half-installed component is still this tool's.
@@ -917,7 +935,7 @@ def _install_python_from_git(
     tee([*installer(), requirement], log=log)
     marker.write_text(f"{source.version}\n{PIP_ORIGIN}\n")
     return SourceState(
-        source_directory(root, component.repository), False, True, origin=requirement
+        source_directory(root, component.repository, dev), False, True, origin=requirement
     )
 
 

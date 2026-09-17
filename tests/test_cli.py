@@ -640,6 +640,35 @@ def test_a_python_component_is_only_checked_out_for_dev(monkeypatch, tmp_path) -
     assert not stst_setup.component_installed(component, prefix, dev=True)
 
 
+def test_a_python_checkout_is_installed_editable_without_dev(monkeypatch, tmp_path) -> None:
+    component = stst_setup.COMPONENTS_BY_NAME["motion_spec_dsl"]
+    checkout = stst_setup.source_directory(tmp_path, component.repository)
+    (checkout / ".git").mkdir(parents=True)
+    head = "e" * 40
+    commands = []
+    monkeypatch.setattr(stst_setup, "tee", lambda command, **_kwargs: commands.append(command))
+    monkeypatch.setattr(
+        stst_setup.subprocess, "run", lambda *_a, **_k: SimpleNamespace(returncode=0)
+    )
+    monkeypatch.setattr(
+        stst_setup, "_git", lambda _repository, *a: {"rev-parse": head, "status": ""}.get(a[0])
+    )
+    monkeypatch.setattr(stst_setup, "_pinned_commit", lambda *_a: head)
+    monkeypatch.setattr(stst_setup.shutil, "which", lambda command: f"/usr/bin/{command}")
+
+    state = stst_setup.install_component(component, tmp_path, dev=False, editable=True)
+
+    # The checkout is the installation: pip fetches a Python component only when there is none.
+    assert state.path == checkout
+    assert not [command for command in commands if "clone" in command]
+    assert commands[-1][-2:] == ["--editable", str(checkout)]
+    prefix = stst_setup.install_prefix(tmp_path)
+    marker = prefix / "share" / "motion-spec" / f".{component.name}-managed"
+    assert marker.read_text().splitlines() == [head, "adopted"]
+    # And the next plain run is a no-op: same route, same tree.
+    assert stst_setup.component_installed(component, prefix, False, tmp_path)
+
+
 def test_only_dev_checks_sources_out_into_src(monkeypatch, tmp_path) -> None:
     component = stst_setup.COMPONENTS_BY_NAME["coord2b"]
     assert stst_setup.source_directory(tmp_path, "coord2b", True) == tmp_path / "src" / "coord2b"

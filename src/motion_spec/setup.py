@@ -39,6 +39,8 @@ SOURCE_DIRECTORY = "src"
 MANAGED_SOURCE_DIRECTORY = ".ms-sources"
 BUILD_DIRECTORY = "build"
 INSTALL_DIRECTORY = "install"
+# colcon's, not motion-spec's: `colcon build` writes it beside build/ and install/.
+COLCON_LOG_DIRECTORY = "log"
 GENERATION_DIRECTORY = "generations"
 GENERATION_VARIABLE = "MOTION_SPEC_GEN"
 # For sources colcon has no business building; `setup` marks it with a COLCON_IGNORE.
@@ -120,7 +122,7 @@ def uncovered(
     missing = []
     for name in components:
         repository = repository_of(name)
-        if repository in pins or (source_directory(root, repository, dev) / ".git").is_dir():
+        if repository in pins or (source_tree(root, repository, dev) / ".git").is_dir():
             continue
         missing.append(name)
     return missing
@@ -315,13 +317,17 @@ def source_directory(root: Path, repository: str, dev: bool = True) -> Path:
     return source_root(root, dev) / repository
 
 
-def checked_out(root: Path, repository: str) -> Path:
-    """The tree a repository is actually in, whichever mode put it there."""
-    for dev in (True, False):
-        candidate = source_directory(root, repository, dev)
-        if candidate.exists():
-            return candidate
-    return source_directory(root, repository)
+def source_tree(root: Path, repository: str, dev: bool = True) -> Path:
+    """The tree to build: this mode's own, else a checkout the other mode left, else this one.
+
+    A source already in the workspace is adopted wherever it sits, so a plain install builds
+    the developer's src/ checkout instead of cloning a second copy of it.
+    """
+    own = source_directory(root, repository, dev)
+    if (own / ".git").is_dir():
+        return own
+    other = source_directory(root, repository, not dev)
+    return other if (other / ".git").is_dir() else own
 
 
 def _ignore_thirdparty(root: Path, dev: bool = True) -> Path:
@@ -368,9 +374,13 @@ def missing_prerequisites(
     )
 
     profiles = required_profiles(components, ros)
-    if not profiles:
-        return [], []
-    packages = apt_packages(check_health(profiles, targets if "build" in profiles else ()))
+    # The ROS checks run even for a selection with no profile at all: without them a
+    # Python-only `setup` in a colcon workspace fails on the distro only at the last step.
+    packages = (
+        apt_packages(check_health(profiles, targets if "build" in profiles else ()))
+        if profiles
+        else []
+    )
     others = []
     if ros:
         # The environment file is written last, so an unresolved distro would surface only
@@ -434,16 +444,14 @@ def find_stst(path: str | None = None, workspace: str | None = None) -> str | No
 
 
 def remove_stst(root: Path, prefix: Path | None = None) -> bool:
-    """Remove an STST installation this tool made, and only a source it cloned itself."""
+    """Remove an STST installation this tool made. Sources are never removed, whoever made them."""
     prefix = prefix or install_prefix(root)
     launcher = prefix / "bin" / "stst"
-    marker = _marker("stst", prefix)
+    marker = install_marker("stst", prefix)
     if not (launcher.exists() or marker.exists()):
         return False
     if not marker.is_file():
         raise RuntimeError(f"refusing to clean an unmanaged STST installation under {prefix}")
-    if _recorded_origin(marker) == "cloned":
-        trash_if_present(checked_out(root, STST_REPOSITORY))
     trash_if_present(launcher)
     marker.unlink(missing_ok=True)
     try:
@@ -465,11 +473,11 @@ def component_installed(
     Against the checkout when there is one, so an adopted source at another ref is a no-op
     until that tree moves, rather than rebuilt on every run for not being the pin.
     """
-    marker = _marker(component.name, prefix)
+    marker = install_marker(component.name, prefix)
     pinned = (SOURCES if sources is None else sources).get(component.repository)
     wanted = pinned.version if pinned else None
     if root is not None and dev is not None:
-        checkout = source_directory(root, component.repository, dev)
+        checkout = source_tree(root, component.repository, dev)
         if (checkout / ".git").is_dir():
             # Edits are not in any commit, so nothing recorded can prove the install matches.
             if _dirty(checkout):
@@ -485,7 +493,7 @@ def component_installed(
 def stst_installed(root: Path, prefix: Path | None = None, dev: bool = True) -> bool:
     """Whether PREFIX carries a usable stst: a launcher without its jar is a half-finished one."""
     prefix = prefix or install_prefix(root)
-    marker = _marker("stst", prefix)
+    marker = install_marker("stst", prefix)
     if not (prefix / "bin" / "stst").is_file() or not marker.is_file():
         return False
     if marker.read_text().splitlines()[:1] == ["installing"]:
@@ -508,8 +516,7 @@ def install_stst(
     """Build the pinned STSTv4 from its checkout and install its launcher under PREFIX/bin."""
     prefix = prefix or install_prefix(root)
     launcher = prefix / "bin" / "stst"
-    source = source_directory(root, STST_REPOSITORY, dev)
-    marker = _marker("stst", prefix)
+    marker = install_marker("stst", prefix)
     if not force and stst_installed(root, prefix, dev):
         return launcher
 
@@ -527,6 +534,8 @@ def install_stst(
     marker.parent.mkdir(parents=True, exist_ok=True)
     origin = _origin(previous, state)
     marker.write_text(f"installing\n{origin}\n")
+    # Whatever tree prepare_source settled on: the launcher must name the jar ant just built.
+    source = state.path
     tee(["ant", "-f", str(source / "build.xml")], log=log)
 
     lib = source / "lib"
@@ -576,26 +585,42 @@ def shadowing_stst(prefix: Path) -> tuple[Path, bool] | None:
 
 def is_installed(component: Component, prefix: Path) -> bool:
     """Whether PREFIX carries an installation of COMPONENT this tool made."""
-    marker = _marker(component.name, prefix)
-    return marker.is_file() and marker.read_text().strip() != "installing"
+    marker = install_marker(component.name, prefix)
+    # The first line only: a half-finished install records the origin under "installing".
+    return marker.is_file() and marker.read_text().splitlines()[:1] != ["installing"]
 
 
-def _trash_installed(manifest: Path, prefix: Path, label: str) -> None:
-    """Trash the files an install left in PREFIX, as one entry rather than hundreds."""
+def _manifest_files(manifest: Path, prefix: Path) -> list[Path]:
+    """The files a build's install manifest names that are still inside PREFIX."""
     if not manifest.is_file():
-        return
-    staging = prefix.parent / f".removed-{label}"
+        return []
+    inside = []
     for line in manifest.read_text().splitlines():
         installed = Path(line.strip())
         if not line.strip() or not (installed.exists() or installed.is_symlink()):
             continue
         try:
-            relative = installed.relative_to(prefix)
+            installed.relative_to(prefix)
             installed.resolve().relative_to(prefix.resolve())
         except ValueError:
             # A CMake manifest can name files outside the selected install prefix.
             continue
-        destination = staging / relative
+        inside.append(installed)
+    return inside
+
+
+def installed_files(component: Component, root: Path, prefix: Path | None = None) -> list[Path]:
+    """What COMPONENT's build put inside PREFIX, so a prompt can say what removing it takes."""
+    prefix = prefix or install_prefix(root)
+    manifest = build_directory(root, component.name) / "install_manifest.txt"
+    return _manifest_files(manifest, prefix)
+
+
+def _trash_installed(manifest: Path, prefix: Path, label: str) -> None:
+    """Trash the files an install left in PREFIX, as one entry rather than hundreds."""
+    staging = prefix.parent / f".removed-{label}"
+    for installed in _manifest_files(manifest, prefix):
+        destination = staging / installed.relative_to(prefix)
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(installed), str(destination))
     trash_if_present(staging)
@@ -619,7 +644,7 @@ def _origin(previous: str, state: SourceState) -> str:
     return "cloned" if state.cloned or previous == "cloned" else "adopted"
 
 
-def _marker(name: str, prefix: Path) -> Path:
+def install_marker(name: str, prefix: Path) -> Path:
     return prefix / MANAGED / f".{name}-managed"
 
 
@@ -661,7 +686,7 @@ def prepare_source(
     A `checkout --detach` in a tree someone works in loses the branch they were on.
     """
     spec = (SOURCES if sources is None else sources).get(component.repository)
-    repository = source_directory(root, component.repository, dev)
+    repository = source_tree(root, component.repository, dev)
 
     if not (repository / ".git").is_dir():
         if repository.exists() and any(repository.iterdir()):
@@ -678,7 +703,8 @@ def prepare_source(
             ["git", "-C", str(repository), "checkout", "--detach", commit or spec.version],
             log=log,
         )
-        return SourceState(repository, True, True)
+        # The commit, not the branch it was named by: the marker is compared against HEAD.
+        return SourceState(repository, True, True, ref=_git(repository, "rev-parse", "HEAD") or "")
 
     subprocess.run(
         ["git", "-C", str(repository), "fetch", "--tags", "origin"],
@@ -749,7 +775,7 @@ def install_component(
     """
     prefix = prefix or install_prefix(root)
     source_spec = (SOURCES if sources is None else sources).get(component.repository)
-    marker = _marker(component.name, prefix)
+    marker = install_marker(component.name, prefix)
     if not (force or (clear_cache and not component.python)) and component_installed(
         component, prefix, dev, root, sources
     ):
@@ -789,7 +815,9 @@ def install_component(
         return state
 
     if ros:
-        _colcon_build(component, root, build_type, log, build_jobs(jobs), dev, clear_cache)
+        _colcon_build(
+            component, root, prefix, build_type, log, build_jobs(jobs), dev, clear_cache
+        )
         if component.bindings:
             _pip_install(state.path, log, editable, ros)
         marker.write_text(f"{installed_ref}\n{_origin(previous, state)}\n")
@@ -894,9 +922,12 @@ def _install_python_from_git(
 
 
 def remove_component(component: Component, root: Path, prefix: Path | None = None) -> bool:
-    """Remove a COMPONENT installation this tool made, and only the source it cloned itself."""
+    """Remove a COMPONENT installation this tool made: its installed files, build and marker.
+
+    Never the source. A checkout is the operator's, whoever cloned it.
+    """
     prefix = prefix or install_prefix(root)
-    marker = _marker(component.name, prefix)
+    marker = install_marker(component.name, prefix)
     build = build_directory(root, component.name)
     if not (build.exists() or marker.exists()):
         return False
@@ -907,8 +938,6 @@ def remove_component(component: Component, root: Path, prefix: Path | None = Non
     # The only record of what landed in PREFIX; without it find_package keeps finding it.
     _trash_installed(build / "install_manifest.txt", prefix, f"{component.name}-install")
     trash_if_present(build)
-    if _recorded_origin(marker) == "cloned":
-        trash_if_present(checked_out(root, component.repository))
     marker.unlink(missing_ok=True)
     for directory in (prefix / MANAGED, root / BUILD_DIRECTORY):
         try:
@@ -1000,6 +1029,7 @@ def _write_ros_environment(
 def _colcon_build(
     component: Component,
     root: Path,
+    prefix: Path,
     build_type: str,
     log: Path | None,
     jobs: int,
@@ -1021,6 +1051,12 @@ def _colcon_build(
             component.name,
             "--base-paths",
             str(source_root(root, dev)),
+            # Named, not left to colcon's cwd defaults: --prefix must reach the same place the
+            # markers and the environment file describe.
+            "--build-base",
+            str(root / BUILD_DIRECTORY),
+            "--install-base",
+            str(prefix),
             "--metas",
             str(root / "colcon.meta"),
             *(["--cmake-clean-cache"] if clear_cache else []),
@@ -1046,6 +1082,26 @@ def write_colcon_meta(root: Path, options: dict[str, tuple[str, ...]]) -> Path:
     path = root / "colcon.meta"
     path.write_text(json.dumps({"names": named}, indent=4) + "\n")
     return path
+
+
+def workspace_outputs(root: Path, prefix: Path | None = None) -> list[Path]:
+    """Everything a workspace's builds wrote, for `--clean --all` to offer one by one.
+
+    Wider than any component: it takes what setup did not install too, which is the point of
+    asking for all of it. Sources, generations and .motion-spec/ are not outputs and never here.
+    """
+    prefix = prefix or install_prefix(root)
+    candidates = [
+        root / BUILD_DIRECTORY,
+        prefix,
+        root / COLCON_LOG_DIRECTORY,
+        *(root / name for name in ENVIRONMENT_FILES),
+    ]
+    seen: dict[Path, None] = {}
+    for path in candidates:
+        if path.exists():
+            seen.setdefault(path)
+    return list(seen)
 
 
 def remove_environment(root: Path) -> list[Path]:

@@ -9,11 +9,14 @@ and ownership boundary of every command visible before using the combined
 Choose the model and generation
 ===============================
 
-Run from the workspace root and define two paths used throughout this page:
+Run from the workspace root and define two paths used throughout this page.
+``motion-spec examples`` copies the models that ship with motion-spec-dsl into
+``src/ms-examples``, which is where ``MODEL_PATH`` points:
 
 .. code-block:: console
 
-   $ MODEL_PATH=src/motion-spec-dsl/models/pick_place_single/pick_place_single.robmot
+   $ motion-spec examples
+   $ MODEL_PATH=src/ms-examples/pick_place_single/pick_place_single.robmot
    $ GENERATION_DIR=generation/pick-place
 
 ``MODEL_PATH`` is authored input. ``GENERATION_DIR`` will own the generated model,

@@ -2,7 +2,7 @@
 // subscription, not guessed from the camera's name. The motion is incidental -- this fixture
 // exists for what the subscription lowers to, on the one maintained scene that declares a camera.
 import "./camera_view.fsm"
-import "../../../../motion-spec-dsl/models/pick_place_single/pick_place_single.scenex"
+import "../../../../motion-spec-dsl/src/motion_spec_dsl/models/pick_place_single/pick_place_single.scenex"
 ns app = "https://secorolab.github.io/models/camera-view-fixture/"
 ns cvw = "https://secorolab.github.io/models/camera-view-fixture/fsm/"
 

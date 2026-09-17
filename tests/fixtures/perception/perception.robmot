@@ -2,7 +2,7 @@
 // in the wrist sensor frame it is mounted on, and the model reads it off the topic. No chain
 // answers that pose, which is what the subscription cases are about.
 import "./perception.fsm"
-import "../../../../motion-spec-dsl/models/admittance_arc_single/admittance_arc_single.scenex"
+import "../../../../motion-spec-dsl/src/motion_spec_dsl/models/admittance_arc_single/admittance_arc_single.scenex"
 ns app = "https://secorolab.github.io/models/perception-fixture/"
 ns pcp = "https://secorolab.github.io/models/perception-fixture/fsm/"
 

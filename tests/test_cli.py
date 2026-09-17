@@ -321,9 +321,14 @@ def test_setup_installs_into_the_workspace_it_was_given(monkeypatch, tmp_path) -
     monkeypatch.setattr(
         "motion_spec.setup.remove_stst", lambda root, prefix=None: prefix == install
     )
-    result = CliRunner().invoke(main, ["setup", "stst", "--workspace", str(tmp_path), "--clean"])
+    # Something for the prompt to offer: with nothing installed there is nothing to ask about.
+    (install / "bin").mkdir(parents=True, exist_ok=True)
+    (install / "bin" / "stst").write_text("#!/usr/bin/env bash\n")
+    result = CliRunner().invoke(
+        main, ["setup", "stst", "--workspace", str(tmp_path), "--clean", "--yes"]
+    )
     assert result.exit_code == 0
-    assert "removed stst" in result.output
+    assert "moved to trash: stst" in result.output
 
 
 def test_setup_without_a_workspace_says_so_instead_of_choosing_one(monkeypatch, tmp_path) -> None:
@@ -499,8 +504,9 @@ def test_stst_setup_builds_pinned_launcher_once(monkeypatch, tmp_path) -> None:
     assert len(calls) > rebuilt_call_count
 
     assert stst_setup.remove_stst(tmp_path) is True
-    # Removed means moved to the trash, never unlinked: the source it cloned and the launcher.
-    assert trashed == [source, launcher]
+    # Removed means moved to the trash, never unlinked -- and the source stays, cloned or not.
+    assert trashed == [launcher]
+    assert source.is_dir()
     assert stst_setup.remove_stst(tmp_path) is False
 
     custom_root = tmp_path / "custom"
@@ -508,7 +514,8 @@ def test_stst_setup_builds_pinned_launcher_once(monkeypatch, tmp_path) -> None:
     stst_setup.install_stst(custom_root, sources={stst_setup.STST_REPOSITORY: custom})
     assert any(call[:3] == ["git", "clone", custom.url] for call in calls)
     marker = custom_root / "install" / "share" / "motion-spec" / ".stst-managed"
-    assert marker.read_text().splitlines()[0] == custom.version
+    # The commit the clone landed on, which is what the next run compares HEAD against.
+    assert marker.read_text().splitlines()[0] == stst_setup.STST_REF
 
     def failing_ant(command, **_kwargs):
         if command[0] == "ant":
@@ -651,6 +658,35 @@ def test_only_dev_checks_sources_out_into_src(monkeypatch, tmp_path) -> None:
     assert asked == [False]
     assert state.path == managed
     assert not (tmp_path / "src").exists()
+
+
+def test_a_plain_install_adopts_a_checkout_already_in_src(monkeypatch, tmp_path) -> None:
+    component = stst_setup.COMPONENTS_BY_NAME["coord2b"]
+    checkout = stst_setup.source_directory(tmp_path, component.repository)
+    (checkout / ".git").mkdir(parents=True)
+    head = "d" * 40
+    monkeypatch.setattr(
+        stst_setup.subprocess, "run", lambda *_a, **_k: SimpleNamespace(returncode=0)
+    )
+    monkeypatch.setattr(
+        stst_setup, "_git", lambda _repository, *a: {"rev-parse": head, "status": ""}.get(a[0])
+    )
+    monkeypatch.setattr(stst_setup, "_pinned_commit", lambda *_a: head)
+    commands = []
+    monkeypatch.setattr(stst_setup, "tee", lambda command, **_k: commands.append(command))
+
+    state = stst_setup.prepare_source(component, tmp_path, dev=False)
+
+    assert (state.path, state.cloned) == (checkout, False)
+    assert not [command for command in commands if "clone" in command]
+    assert not (tmp_path / stst_setup.MANAGED_SOURCE_DIRECTORY).exists()
+
+    # Recorded as the commit in the tree, so the next run is a no-op and not another build.
+    prefix = stst_setup.install_prefix(tmp_path)
+    marker = prefix / "share" / "motion-spec" / f".{component.name}-managed"
+    marker.parent.mkdir(parents=True)
+    marker.write_text(f"{head}\ncloned\n")
+    assert stst_setup.component_installed(component, prefix, False, tmp_path)
 
 
 def test_a_missing_scene_asset_stops_codegen(monkeypatch, tmp_path) -> None:
@@ -804,6 +840,72 @@ def test_clean_leaves_a_checkout_it_only_adopted(monkeypatch, tmp_path) -> None:
 
     # The build is setup's; the source it merely built in is not, whoever cleans up after it.
     assert trashed == [stst_setup.build_directory(tmp_path, component.name)]
+
+
+def test_clean_asks_for_each_path_and_takes_nothing_on_a_no(monkeypatch, tmp_path) -> None:
+    import motion_spec.cli as cli_module
+
+    component = stst_setup.COMPONENTS_BY_NAME["coord2b"]
+    prefix = stst_setup.install_prefix(tmp_path)
+    installed = prefix / "lib" / "libcoord2b.so"
+    installed.parent.mkdir(parents=True)
+    installed.write_text("o" * 2048)
+    marker = prefix / "share" / "motion-spec" / f".{component.name}-managed"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("master\ncloned\n")
+    build = stst_setup.build_directory(tmp_path, component.name)
+    build.mkdir(parents=True)
+    (build / "install_manifest.txt").write_text(f"{installed}\n")
+    checkout = stst_setup.source_directory(tmp_path, component.repository, dev=False)
+    (checkout / ".git").mkdir(parents=True)
+    trashed = []
+    monkeypatch.setattr(stst_setup, "trash_if_present", _trashing(trashed))
+    monkeypatch.setattr(cli_module, "trash_if_present", _trashing(trashed))
+
+    refused = CliRunner().invoke(
+        main, ["setup", "coord2b", "--workspace", str(tmp_path), "--clean"], input="n\n"
+    )
+
+    # Every path it would take, with its size, before the question -- and a no takes none.
+    assert "build/coord2b" in refused.output and "1 installed file" in refused.output
+    assert "2.0 KiB" in refused.output
+    assert trashed == [] and installed.is_file() and build.is_dir()
+
+    accepted = CliRunner().invoke(
+        main, ["setup", "coord2b", "--workspace", str(tmp_path), "--clean"], input="y\n"
+    )
+
+    assert accepted.exit_code == 0, accepted.output
+    assert not installed.exists() and not build.exists()
+    # The one thing a clean never takes, whoever cloned it.
+    assert (checkout / ".git").is_dir()
+    assert f"sources left in place: {stst_setup.MANAGED_SOURCE_DIRECTORY}" in accepted.output
+
+
+def test_clean_all_offers_the_whole_output_tree(monkeypatch, tmp_path) -> None:
+    import motion_spec.cli as cli_module
+
+    for directory in ("build", "install", "log"):
+        (tmp_path / directory / "inside").mkdir(parents=True)
+    (tmp_path / "setup-motion-spec.bash").write_text("x\n")
+    (tmp_path / "src" / "coord2b").mkdir(parents=True)
+    (tmp_path / "generations").mkdir()
+    trashed = []
+    monkeypatch.setattr(cli_module, "trash_if_present", _trashing(trashed))
+
+    result = CliRunner().invoke(
+        main, ["setup", "--workspace", str(tmp_path), "--clean", "--all", "--yes"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert [path.name for path in trashed] == ["build", "install", "log", "setup-motion-spec.bash"]
+    # Sources and generations are not outputs, so --all never offers them.
+    assert (tmp_path / "src" / "coord2b").is_dir() and (tmp_path / "generations").is_dir()
+
+    named = CliRunner().invoke(
+        main, ["setup", "coord2b", "--workspace", str(tmp_path), "--clean", "--all"]
+    )
+    assert named.exit_code != 0 and "takes no components" in named.output
 
 
 def test_clean_only_removes_manifest_files_inside_prefix(monkeypatch, tmp_path) -> None:

@@ -23,6 +23,31 @@ other C++ libraries from source into one prefix.
 Run it before ``setup``, which needs ``git``, ``cmake``, a C++ compiler, a JDK
 and Ant to build what it installs.
 
+With uv
+=======
+
+The same commands, with ``uv venv`` and ``uv pip``. ``uv venv`` activates
+nothing, so source the activation yourself; after that ``uv pip install`` needs
+no ``--python``.
+
+.. code-block:: console
+
+   $ uv venv ws/.venv
+   $ source ws/.venv/bin/activate
+   $ uv pip install "motion_spec @ git+https://github.com/secorolab/motion-spec.git@dev"
+
+For a ROS workspace, build the environment on the system interpreter instead:
+
+.. code-block:: console
+
+   $ uv venv --python /usr/bin/python3 --system-site-packages ws/.venv
+
+``--python /usr/bin/python3`` is the part that matters. Without it uv builds the
+environment on its own CPython, whose system packages are not the
+distribution's, so ``--system-site-packages`` reaches nothing from apt. A uv
+environment carries no ``pip`` either — ``setup`` notices and installs the
+Python components with ``uv pip install --python``.
+
 Installing the external dependencies
 ====================================
 
@@ -34,7 +59,9 @@ to add a device driver.
 The CMake components have to be built, so their sources are fetched into
 ``WORKSPACE/.ms-sources``. The Python components do not: pip installs them
 straight from the pinned ref. ``--dev`` changes both — everything is checked out
-into ``WORKSPACE/src`` and the Python components are installed editable.
+into ``WORKSPACE/src`` and the Python components are installed editable. Clone
+motion-spec itself into ``WORKSPACE/src`` too: ``setup`` cannot check out the
+code it is running, and warns when it finds itself installed from elsewhere.
 
 .. list-table::
    :header-rows: 1
@@ -43,7 +70,7 @@ into ``WORKSPACE/src`` and the Python components are installed editable.
    * - Where
      - What
    * - ``WORKSPACE/.ms-sources/<repository>``
-     - The sources a plain install must build, fetched and removed by ``setup``
+     - The sources a plain install must build, fetched by ``setup``
        — ``orocos_kdl`` carries a ``package.xml``, the others are plain CMake
        projects.
    * - ``WORKSPACE/src/<repository>``
@@ -58,20 +85,34 @@ into ``WORKSPACE/src`` and the Python components are installed editable.
    * - ``WORKSPACE/install``
      - The launcher, libraries, headers and CMake packages.
 
-In a ROS workspace
-------------------
+A source directory that is already there belongs to whoever made it, and
+``setup`` treats it that way. It fetches — which touches no working tree — and
+then builds what is in the tree, whatever ref that is:
 
-``[ros] workspace = true`` in the config makes this a colcon workspace, and
-``setup`` stops building by hand: it writes ``colcon.meta`` with the cmake
-options each package needs, then runs ``colcon build --packages-select`` once
-per component, in the order motion-spec knows — colcon cannot derive it, since
-``coord2b`` and ``mj_kdl_wrapper`` carry no ``package.xml``. ``[ros] distro``
-says which ``/opt/ros`` to build against, and ``$ROS_DISTRO`` overrides it.
+.. list-table::
+   :header-rows: 1
+   :width: 100%
 
-The environment file then sources rather than exports: the distribution, then
-the workspace's own ``install/setup.<shell>``, plus ``PATH`` for the prefix's
-``bin`` — ``stst`` is Ant-built into it and belongs to no colcon package.
-``stst`` is built the same way either way; only the CMake components change.
+   * - The checkout
+     - What ``setup`` does
+   * - Clean, on the pinned commit
+     - Builds it, and records that commit, so the next run is a no-op.
+   * - Clean, on some other ref
+     - Builds it as it stands and warns, naming the ref it found and the pin it
+       is not. A checkout is the operator's answer to which version this
+       workspace wants; ``setup`` never moves it onto the pin, which would lose
+       the branch you were on.
+   * - Uncommitted changes
+     - Builds them, and warns. Nothing recorded can describe work that is in no
+       commit, so it is rebuilt on every run until you commit it.
+   * - Not a git checkout
+     - Skipped with a warning, and ``setup`` exits non-zero once it has built
+       everything else, so a caller knows which components it did not get.
+
+This is the same with and without ``--dev``: the flag decides where a *missing*
+source is cloned, not which tree an existing one is built from. ``--clean``
+never removes a source tree, whoever cloned it; it names the ones it left
+behind.
 
 The device drivers — ``serial``, ``robotiq_driver_noros`` and ``robif2b`` — are
 pinned like the rest but built only when named: ``motion-spec setup robif2b``.
@@ -79,20 +120,13 @@ Each robif2b device wrapper stays off until its flag is passed, with
 ``--cmake-arg`` or the config file's ``[setup.cmake_args]``; ``health`` names the
 flag each missing wrapper needs.
 
-A source directory that is already there belongs to whoever made it. ``setup``
-fetches it — which touches no working tree — and builds it only when it is clean
-and already on the pinned commit. A checkout on another ref, or with uncommitted
-changes, is reported and skipped, never moved onto the pin; ``setup`` exits
-non-zero so a caller knows those components were not built. Only a checkout
-``setup`` cloned itself is ever removed by ``--clean``.
-
 The workspace is ``$MOTION_SPEC_WS``, or ``--workspace`` when the variable is
 unset; with neither, ``setup`` stops and says so rather than picking a location.
-What it installs is a toolchain — four C++ libraries, their headers and a Python
-extension — so where that lands is a choice the command never makes on its own.
-``--prefix`` overrides the install location for a caller who wants one somewhere
-other than ``WORKSPACE/install``; the environment files are written to the
-workspace root either way.
+What it installs is a toolchain — three C++ libraries, their headers, a Python
+extension and the STST generator — so where that lands is a choice the command
+never makes on its own. ``--prefix`` overrides the install location for a caller
+who wants one somewhere other than ``WORKSPACE/install``; the environment files
+are written to the workspace root either way.
 
 .. list-table::
    :header-rows: 1
@@ -103,6 +137,12 @@ workspace root either way.
    * - ``stst``
      - The StringTemplate tool the C++ generator drives, built with Ant and
        launched from ``PREFIX/bin/stst``.
+   * - ``motion_spec_dsl``
+     - The compiler for ``.robmot`` models, and the example models. pip
+       installs it from the pinned ref; ``--dev`` installs a checkout editable.
+   * - ``scene_dsl``
+     - The compiler for ``.scenex`` and ``.ktree`` scenes, by the same two
+       routes.
    * - ``orocos_kdl``
      - The secorolab fork of Orocos KDL — chains, solvers and frames.
    * - ``coord2b``
@@ -123,19 +163,25 @@ workspace root either way.
    $ motion-spec setup mj_kdl_wrapper     # one of them
    $ motion-spec setup --force            # rebuild regardless
    $ motion-spec setup mj_kdl_wrapper --clear-cache  # clear CMake cache and rebuild
-   $ motion-spec setup --clean            # remove what it installed
+   $ motion-spec setup --clean            # remove what it installed, asking first
+   $ motion-spec setup --clean --all      # offer the whole build, install and log trees
+   $ motion-spec setup --clean --all -y   # the same, unattended
    $ motion-spec setup --build-type Debug
 
 Each installation records the ref it was built from, so running ``setup`` again
 is a no-op until a pin moves and a rebuild once it does — ``--force`` is for
 repairing a broken build, not for picking up a new version. ``--clean`` removes
 only what ``setup`` installed, through the build's own install manifest, and
-refuses an installation it did not make.
+refuses an installation it did not make. It shows each component's paths with
+their sizes and asks before taking them, one question at a time; ``--all`` asks
+instead about the workspace's whole ``build/``, ``install/`` and ``log/`` trees
+and the environment files — including what ``setup`` did not install — and
+``-y``/``--yes`` answers every question for a script.
 ``--clear-cache`` removes the selected CMake components' configuration caches and
 rebuilds them; Python components and ``stst`` have no CMake cache to clear.
 
-Nothing motion-spec removes is unrecoverable: ``--clean`` moves the sources,
-builds, installed files and environment files to the desktop trash rather than
+Nothing motion-spec removes is unrecoverable: ``--clean`` moves the builds,
+installed files and environment files to the desktop trash rather than
 deleting them, the same way the dashboard clears a generation. The installed
 files go as one entry per component rather than as a page of loose headers. This
 needs ``gio``; without it ``--clean`` says so and removes nothing.
@@ -146,6 +192,59 @@ the same sources can be imported by hand into the same place:
 .. code-block:: console
 
    $ vcs import ws/src < ws/src/motion-spec/src/motion_spec/motion_spec.repos
+
+vcstool is not a dependency and is not needed: ``setup`` clones what the
+manifest pins itself. ``--repos <file>`` builds against a different manifest
+instead of the shipped one, and it replaces rather than merges — a manifest is
+the whole statement of what a workspace builds. Anything it leaves out has to be
+checked out in the workspace already, or ``setup`` stops before the first clone
+and names it. ``--external <component>`` (repeatable, or ``[setup] external``)
+declares a component you supply yourself: it is never cloned, built or
+installed, and ``health`` still reports whether it resolves.
+
+How many compilers at once
+--------------------------
+
+No build is given an unbounded job count. Left to itself, ``cmake --build
+--parallel`` emits a bare ``make -j``, which is unlimited and overrides
+``CMAKE_BUILD_PARALLEL_LEVEL`` and ``MAKEFLAGS`` as well — enough to swap a
+machine to death on an Eigen or pybind11 translation unit. ``setup`` decides the
+number instead: the lesser of the usable cores and one job per 2 GiB of RAM.
+
+.. code-block:: console
+
+   $ motion-spec setup -j 4                 # or --jobs 4
+   $ CMAKE_BUILD_PARALLEL_LEVEL=4 motion-spec setup
+
+``-j`` wins, then ``CMAKE_BUILD_PARALLEL_LEVEL``, then ``[setup] jobs``, then the
+computed default; the line ``setup`` prints says which applied. In a colcon
+workspace the same number is passed as ``MAKEFLAGS=-jN -lN``, which
+colcon-cmake honours in place of its own ``-j$(nproc)``. ``motion-spec build``
+uses the same default. The config sample leaves ``jobs`` commented out: it is a
+fact about a machine, not about a workspace.
+
+In a ROS workspace
+------------------
+
+``[ros] workspace = true`` in the config makes this a colcon workspace, and
+``setup`` stops building by hand: it writes ``colcon.meta`` with the cmake
+options each package needs, then runs ``colcon build --packages-select`` once
+per component, in the order motion-spec knows — colcon cannot derive it, since
+``coord2b`` and ``mj_kdl_wrapper`` carry no ``package.xml``. The build and
+install bases are named, so ``--prefix`` reaches the same place the environment
+file describes. ``[ros] distro`` says which ``/opt/ros`` to build against, and
+``$ROS_DISTRO`` overrides it.
+
+The environment file then sources rather than exports: the distribution, then
+the workspace's own ``install/setup.<shell>``, plus ``PATH`` for the prefix's
+``bin`` — ``stst`` is Ant-built into it and belongs to no colcon package.
+``stst`` is built the same way either way; only the CMake components change.
+
+``--ros`` and ``--no-ros`` apply to one run and say so; ``[ros] workspace`` is
+what keeps the choice. Before anything is cloned, ``setup`` checks that a
+distribution is resolvable, that ``colcon`` is on ``PATH`` and that the
+environment can see the distribution's Python packages — including for a
+selection that builds nothing, such as ``motion-spec setup motion_spec_dsl``.
 
 The environment file
 ====================
@@ -169,6 +268,10 @@ Sourcing it is what makes an installation usable from a fresh shell, and
      - Gains the prefix, so a generated ``CMakeLists.txt`` finds its packages.
    * - ``LD_LIBRARY_PATH``
      - Gains ``PREFIX/lib``, so a generated controller runs.
+
+Nothing reads ``MOTION_SPEC_PREFIX`` back: where a workspace installs is not a
+separate fact from the workspace, so it is derived rather than configured, and
+exported only so a shell and a build can see it.
 
 A workspace can keep its settings in a ``motion-spec.config.toml`` at its root
 instead of in the shell. ``motion-spec setup`` writes a commented sample the
@@ -194,8 +297,9 @@ robif2b device flags belong). A component's ``cmake_args`` is the whole list it
 is built with, not an addition to a hidden one: the sample writes out what
 motion-spec uses, so removing an option from the list removes it from the build.
 ``--cmake-arg`` adds to whichever list applies, for one invocation. An unknown
-section or key is an error rather than
-a setting that silently does nothing.
+section or key is an error rather than a setting that silently does nothing.
+``[setup]`` also carries ``jobs``, ``dev``, ``editable``, ``repos`` and
+``external``, and ``[ros]`` carries ``workspace`` and ``distro``.
 
 Two variables are yours to set, and sourcing the file sets the first:
 
@@ -249,9 +353,11 @@ generation it was about:
 Each runs under a pty, so a tool still sees a terminal: git's progress counter
 and cmake's colour look on screen exactly as they do without motion-spec in the
 way, and the log keeps those same bytes. A failed build is therefore something
-to read afterwards rather than something that scrolled past. Nothing reads ``MOTION_SPEC_PREFIX``: where a workspace installs
-is not a separate fact from the workspace, so it is derived rather than
-configured, and exported only so a shell and a build can see it.
+to read afterwards rather than something that scrolled past. A ``setup`` log
+opens with the command line, the workspace, the prefix, the components, the
+build type, the job count and the machine's cores and RAM, and closes with the
+exit status — or with the signal, which is what identifies a build the kernel
+killed for memory.
 
 Sourcing it by hand is not the only way to use it. ``build``, ``run``, ``rerun``
 and ``health`` source a file themselves and run everything under what it left:
@@ -280,6 +386,22 @@ a build and a run depend on (``PATH``, ``CMAKE_PREFIX_PATH``,
 ``LD_LIBRARY_PATH``, ``PYTHONPATH``, ``MOTION_SPEC_PREFIX`` and the ``ROS_*``
 ones) are archived with the run's host information, so a recorded result names
 the toolchain and the prefixes that produced it rather than only the hostname.
+
+Example models
+==============
+
+The example models ship inside ``motion_spec_dsl``, so a plain ``pip install``
+already carries them. ``motion-spec examples`` copies them out of the package
+and into the workspace, where they are yours to edit:
+
+.. code-block:: console
+
+   $ motion-spec examples                     # into WORKSPACE/src/ms-examples
+   $ motion-spec examples --into ~/scratch    # or anywhere else
+
+It adds only. A file already at the destination is kept and reported, never
+overwritten, so running it again after an edit brings in what is new and leaves
+your work alone.
 
 Without ROS
 ===========
@@ -385,10 +507,12 @@ Target dependencies
      - `robif2b <https://github.com/secorolab/robif2b>`_,
        `urdfdom_headers <https://github.com/ros/urdfdom_headers>`_, and
        `urdfdom <https://github.com/ros/urdfdom>`_
-   * - robif2b devices (``--with-hardware``)
+   * - robif2b devices
      - `serial <https://github.com/secorolab/serial>`_ and
        `robotiq_driver_noros <https://github.com/secorolab/robotiq_driver_noros>`_,
-       which drives both the gripper and the force-torque sensor
+       which drives both the gripper and the force-torque sensor. Installed by
+       name — ``motion-spec setup serial robotiq_driver_noros`` — and each
+       robif2b wrapper is turned on with its own cmake flag.
 
 The device drivers are optional: robif2b builds each wrapper only when its flag
 is on. A model's ROS interface packages are not listed — the generated

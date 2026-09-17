@@ -7,6 +7,7 @@
 import json
 import logging
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -37,11 +38,14 @@ from motion_spec.utils import (
     STAMP_COLOUR,
     command_log,
     generation_log,
+    human_bytes,
     log_header,
     machine_facts,
     mirrored_stderr,
     paint,
     show_warning,
+    trash_if_present,
+    tree_size,
 )
 
 
@@ -52,6 +56,64 @@ class _Reported(click.ClickException):
         for line in str(self.message).splitlines():
             _stamp("error")
             click.echo(line, err=True)
+
+
+def _clean_offer(name: str, root: Path, prefix: Path) -> list[tuple[str, int]]:
+    """What removing one component would take, as the lines the prompt shows before asking."""
+    from motion_spec.setup import (
+        COMPONENTS_BY_NAME,
+        build_directory,
+        install_marker,
+        installed_files,
+    )
+
+    entries = []
+    build = build_directory(root, name)
+    if build.is_dir():
+        entries.append((_under(build, root), tree_size(build)))
+    component = COMPONENTS_BY_NAME.get(name)
+    if component is None:
+        launcher = prefix / "bin" / "stst"
+        if launcher.is_file():
+            entries.append((_under(launcher, root), tree_size(launcher)))
+    elif files := installed_files(component, root, prefix):
+        entries.append(
+            (
+                f"{len(files)} installed file{'' if len(files) == 1 else 's'} under "
+                f"{_under(prefix, root)}",
+                sum(tree_size(path) for path in files),
+            )
+        )
+    marker = install_marker(name, prefix)
+    if marker.is_file():
+        entries.append((_under(marker, root), tree_size(marker)))
+    return entries
+
+
+def _under(path: Path, root: Path) -> str:
+    """PATH as the workspace spells it, so a prompt is not a wall of absolute paths."""
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return str(path)
+
+
+def _confirm_removal(title: str, entries: list[tuple[str, int]], assume_yes: bool) -> bool:
+    """Show what would go, with its size, and ask. Nothing is taken on silence."""
+    if not entries:
+        return False
+    _say("step", title)
+    for label, size in entries:
+        click.echo(f"  {label:<44} {human_bytes(size):>10}", err=True)
+    if assume_yes:
+        return True
+    try:
+        return click.confirm("  remove?", default=False, err=True)
+    except click.Abort:
+        # End of input rather than an answer: a script reached a prompt it cannot see.
+        raise click.UsageError(
+            "nothing answered the prompt: pass --yes to clean unattended"
+        ) from None
 
 
 def _editable_here(root: Path) -> bool:
@@ -664,7 +726,26 @@ def _port_taken(port: int) -> bool:
     help="Install somewhere other than WORKSPACE/install; the environment files still "
     "describe it from the workspace root.",
 )
-@click.option("--clean", is_flag=True, help="Remove the managed installations and exit.")
+@click.option(
+    "--clean",
+    is_flag=True,
+    help="Remove the managed installations and exit, asking before each one. Sources are "
+    "never removed.",
+)
+@click.option(
+    "--all",
+    "everything",
+    is_flag=True,
+    help="With --clean: offer the whole build, install and log trees and the environment "
+    "files, including what setup did not install itself.",
+)
+@click.option(
+    "-y",
+    "--yes",
+    "assume_yes",
+    is_flag=True,
+    help="Answer yes to every --clean prompt, for a script with no terminal to ask at.",
+)
 @click.option(
     "--force", is_flag=True, help="Rebuild even when the component is already installed."
 )
@@ -688,7 +769,7 @@ def _port_taken(port: int) -> bool:
     "editable_flag",
     default=None,
     help="Whether --dev's checkout is installed with `pip install -e`. On by default under "
-    "--dev; `--clean` then removes a checkout its installation points at.",
+    "--dev, so site-packages points back at the checkout.",
 )
 @click.option(
     "--repos",
@@ -730,6 +811,8 @@ def setup(
     workspace_argument: Path | None,
     prefix: Path | None,
     clean: bool,
+    everything: bool,
+    assume_yes: bool,
     force: bool,
     clear_cache: bool,
     build_type: str,
@@ -750,6 +833,12 @@ def setup(
     """
     if clean and clear_cache:
         raise click.UsageError("--clean and --clear-cache cannot be used together")
+    if everything and not clean:
+        raise click.UsageError("--all applies to --clean: it names what a clean may take")
+    if everything and components:
+        raise click.UsageError(
+            "--all removes the workspace's build, install and log trees; it takes no components"
+        )
     from motion_spec.setup import (
         COMPONENTS_BY_NAME,
         build_jobs,
@@ -763,8 +852,12 @@ def setup(
         remove_component,
         remove_environment,
         remove_stst,
+        repository_of,
+        source_directory,
+        source_tree,
         stst_installed,
         uncovered,
+        workspace_outputs,
         workspace,
         write_environment,
     )
@@ -891,24 +984,44 @@ def setup(
     skipped: list[str] = []
     try:
         if clean:
-            removed = [
-                name
-                for name in ordered
-                if (
-                    remove_stst(root, prefix)
-                    if name == "stst"
-                    else remove_component(COMPONENTS_BY_NAME[name], root, prefix)
-                )
-            ]
-            # With nothing installed they are a map to an empty prefix.
-            if removed and not any(
-                is_installed(component, prefix) for component in COMPONENTS_BY_NAME.values()
-            ):
-                remove_environment(root)
-            if removed:
-                _say("done", f"removed {', '.join(removed)}")
+            if everything:
+                removed = [
+                    _under(path, root)
+                    for path in workspace_outputs(root, prefix)
+                    if _confirm_removal(
+                        _under(path, root), [(_under(path, root), tree_size(path))], assume_yes
+                    )
+                    and trash_if_present(path)
+                ]
             else:
-                _say("info", "nothing to remove")
+                removed = [
+                    name
+                    for name in ordered
+                    if _confirm_removal(name, _clean_offer(name, root, prefix), assume_yes)
+                    and (
+                        remove_stst(root, prefix)
+                        if name == "stst"
+                        else remove_component(COMPONENTS_BY_NAME[name], root, prefix)
+                    )
+                ]
+                # With nothing installed they are a map to an empty prefix.
+                if removed and not any(
+                    is_installed(component, prefix) for component in COMPONENTS_BY_NAME.values()
+                ):
+                    remove_environment(root)
+            if removed:
+                _say("done", f"moved to trash: {', '.join(removed)}")
+                left = sorted(
+                    {
+                        _under(tree, root)
+                        for name in (ordered if everything else removed)
+                        if (tree := source_tree(root, repository_of(name), dev)).is_dir()
+                    }
+                )
+                if left:
+                    _say("info", f"sources left in place: {', '.join(left)}")
+            else:
+                _say("info", "nothing removed")
             return
         for name in ordered:
             component = COMPONENTS_BY_NAME.get(name)
@@ -956,6 +1069,11 @@ def setup(
                 _say("warn", f"skipped {name}: {state.path} {state.reason}")
                 skipped.append(name)
             else:
+                # Not the pip route, which reports its requirement as the origin and has no tree.
+                if not state.origin and state.path != source_directory(
+                    root, COMPONENTS_BY_NAME[name].repository, dev
+                ):
+                    _say("info", f"{name}: adopting the checkout at {state.path}")
                 if state.drift:
                     _say("warn", f"{name}: {state.path} {state.drift}")
                 _say(
@@ -1007,6 +1125,70 @@ def install(features: tuple[str, ...]) -> None:
         raise click.ClickException(str(exc)) from exc
     if result.returncode:
         raise click.ClickException("installation failed")
+
+
+# Where `examples` puts them, under the developer's tree: they are yours to edit from the
+# moment they land, which is the whole reason they are copied out of the package.
+EXAMPLES_DIRECTORY = "ms-examples"
+
+
+def _packaged_models() -> Path | None:
+    """The example models shipped inside motion-spec-dsl, wherever pip put the package."""
+    from importlib.resources import files
+
+    try:
+        models = Path(str(files("motion_spec_dsl") / "models"))
+    except (ImportError, ModuleNotFoundError):
+        return None
+    return models if models.is_dir() else None
+
+
+def _copy_examples(source: Path, destination: Path) -> tuple[list[str], list[str]]:
+    """Copy what is not there yet, and report what was left alone."""
+    copied, kept = [], []
+    for path in sorted(source.rglob("*")):
+        if not path.is_file() or "__pycache__" in path.parts:
+            continue
+        relative = path.relative_to(source)
+        target = destination / relative
+        if target.exists():
+            kept.append(str(relative))
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, target)
+        copied.append(str(relative))
+    return copied, kept
+
+
+@main.command()
+@click.option(
+    "--into",
+    type=click.Path(file_okay=False, path_type=Path),
+    help=f"Where to copy them; defaults to WORKSPACE/src/{EXAMPLES_DIRECTORY}.",
+)
+def examples(into: Path | None) -> None:
+    """Copy the example models that ship with motion-spec-dsl into the workspace.
+
+    A file already at the destination is never touched: the copy is yours to edit.
+    """
+    from motion_spec.setup import SOURCE_DIRECTORY, workspace
+
+    source = _packaged_models()
+    if source is None:
+        raise click.ClickException(
+            "no example models in this motion_spec_dsl: it predates the ones that ship with "
+            "the package; reinstall it with `motion-spec setup --force motion_spec_dsl`"
+        )
+    if into is None:
+        try:
+            into = workspace() / SOURCE_DIRECTORY / EXAMPLES_DIRECTORY
+        except RuntimeError as exc:
+            raise click.UsageError(str(exc)) from exc
+    copied, kept = _copy_examples(source, into.expanduser())
+    if kept:
+        shown = ", ".join(kept[:3]) + (f", and {len(kept) - 3} more" if len(kept) > 3 else "")
+        _say("info", f"kept {len(kept)} file{'' if len(kept) == 1 else 's'} already there: {shown}")
+    _say("done", f"{len(copied)} model file{'' if len(copied) == 1 else 's'} copied to {into}")
 
 
 @main.command()

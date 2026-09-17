@@ -3,7 +3,7 @@
 // model states this, so the invariant is pinned here rather than against one that may be
 // restructured for reasons of its own.
 import "./shared_motion.fsm"
-import "../../../../motion-spec-dsl/models/admittance_arc_single/admittance_arc_single.scenex"
+import "../../../../motion-spec-dsl/src/motion_spec_dsl/models/admittance_arc_single/admittance_arc_single.scenex"
 ns app = "https://secorolab.github.io/models/shared-motion/"
 ns sm = "https://secorolab.github.io/models/shared-motion/fsm/"
 

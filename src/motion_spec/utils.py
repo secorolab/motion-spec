@@ -336,3 +336,20 @@ def trash_if_present(path: Path) -> bool:
         return False
     trash(path)
     return True
+
+
+def tree_size(path: Path) -> int:
+    """Bytes under PATH, or its own size when it is a file. A broken symlink counts as nothing."""
+    if path.is_file():
+        return path.stat().st_size
+    return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+
+
+def human_bytes(count: int) -> str:
+    """A size to put in front of someone before they answer a question about deleting it."""
+    size = float(count)
+    for unit in ("B", "KiB", "MiB"):
+        if size < 1024:
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GiB"

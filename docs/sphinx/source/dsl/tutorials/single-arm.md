@@ -1,7 +1,7 @@
 # Hands-on: `pick_place_single`
 
 This walkthrough follows the maintained
-`models/pick_place_single/pick_place_single.robmot` model from authored files to
+`ms-examples/pick_place_single/pick_place_single.robmot` model from authored files to
 an observed run. It explains where each decision is made, so the example can be
 changed without guessing which generated file to edit.
 
@@ -219,7 +219,7 @@ From the workspace root, stop after IR when inspecting semantic lowering:
 
 ```bash
 motion-spec gen ir \
-  src/motion-spec-dsl/models/pick_place_single/pick_place_single.robmot \
+  src/ms-examples/pick_place_single/pick_place_single.robmot \
   -o generation/pick-place-ir
 ```
 
@@ -232,7 +232,7 @@ Generate C++ when the code-generation toolchain is available:
 
 ```bash
 motion-spec gen \
-  src/motion-spec-dsl/models/pick_place_single/pick_place_single.robmot \
+  src/ms-examples/pick_place_single/pick_place_single.robmot \
   -o generation/pick-place-generated
 ```
 
@@ -243,7 +243,7 @@ The authored snapshot is under `generated/source/`, RDF and IR under
 
 ```bash
 motion-spec run \
-  src/motion-spec-dsl/models/pick_place_single/pick_place_single.robmot \
+  src/ms-examples/pick_place_single/pick_place_single.robmot \
   -o generation/pick-place-run \
   --prefix /path/to/workspace/install \
   --run-id tutorial
@@ -271,7 +271,7 @@ generation directory:
 
 ```bash
 motion-spec run \
-  src/motion-spec-dsl/models/pick_place_single/pick_place_single.robmot \
+  src/ms-examples/pick_place_single/pick_place_single.robmot \
   -o generation/pick-place-higher \
   --prefix /path/to/workspace/install \
   --run-id tutorial

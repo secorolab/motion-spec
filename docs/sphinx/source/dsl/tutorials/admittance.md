@@ -1,13 +1,13 @@
 # Arc motion and admittance
 
-`models/admittance_arc_single` demonstrates force-aware motion with a wrist
+`ms-examples/admittance_arc_single` demonstrates force-aware motion with a wrist
 force/torque sensor.
 
 ## 1. Generate and open the simulation
 
 ```bash
 motion-spec run \
-  src/motion-spec-dsl/models/admittance_arc_single/admittance_arc_single.robmot \
+  src/ms-examples/admittance_arc_single/admittance_arc_single.robmot \
   -o /tmp/admittance-arc \
   --prefix /path/to/workspace/install \
   --run-id tutorial

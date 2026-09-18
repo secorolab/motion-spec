@@ -17,6 +17,7 @@ from motion_spec.dashboard import jobs, live, replay, roots
 from motion_spec.dashboard.frames import FrameLayout
 from motion_spec.generation.artifacts import build_frame_layout, build_frame_log_header_record
 from motion_spec.introspection import frame_log_pb
+from motion_spec.introspection.archive import ArchiveError
 from motion_spec.introspection.replay import resolve_archive
 
 from frame_log_fixture import flat_frame
@@ -321,3 +322,69 @@ def test_run_status_says_whether_the_run_kept_a_frame_log(live_run, monkeypatch)
 def test_the_response_names_the_motion_of_the_newest_sample(live_run):
     live_run.feed(range(4))
     assert live.live_state(live_run.path, SIGNALS)["active_motion"] == "move"
+
+
+def test_run_status_knows_logs_are_off_before_the_manifest_says_so(live_run, monkeypatch):
+    """The page must not wait for a log the run was told not to write."""
+    generation = live_run.path.parent.parent
+    busy = type("Busy", (), {"poll": lambda self: None, "pid": 1})()
+    monkeypatch.setitem(
+        jobs.RUNNING,
+        str(generation),
+        {"process": busy, "run_id": live_run.path.name, "recorded": False},
+    )
+    assert jobs.run_status(generation)["recorded"] is False
+
+
+@pytest.fixture
+def log_less_run(tmp_path, monkeypatch):
+    """A run the dashboard started with logs off: a contract record, a block, and no log."""
+    doc = _contract_schema()
+    run = tmp_path / "demo" / "20260822T000000Z" / "runs" / "run-1"
+    run.mkdir(parents=True)
+    contract_dir = run.parent.parent / "generated" / "contract"
+    contract_dir.mkdir(parents=True)
+    (contract_dir / "frame_layout.json").write_text(json.dumps(build_frame_layout(doc)))
+    with (contract_dir / "frame_log_header.pb").open("wb") as fh:
+        frame_log_pb.write_delimited(fh, build_frame_log_header_record(doc))
+    layout = FrameLayout.load(contract_dir / "frame_layout.json")
+    block = tmp_path / "shm_block"
+    block.write_bytes(bytes(layout.struct.size))
+    monkeypatch.setenv("MOTION_SPEC_SHM_NAME", str(block))
+    monkeypatch.setattr(roots, "GENERATIONS", tmp_path)
+    busy = type("Busy", (), {"poll": lambda self: None, "pid": 1})()
+    started = {"process": busy, "run_id": "run-1", "recorded": False}
+    monkeypatch.setitem(jobs.RUNNING, str(run.parent.parent), started)
+    live._LIVE.clear()
+
+    def feed(steps):
+        sampler = live._LIVE[str(run)]["sampler"]
+        for step in steps:
+            flat = _flat(doc, step)
+            sampler.absorb(layout.struct.pack(*(dict(flat, seq=2)[name] for name in layout.names)))
+
+    yield type("LogLessRun", (), {"path": run, "feed": staticmethod(feed)})
+
+
+def test_a_log_less_run_has_started_once_its_loop_answers(log_less_run):
+    """No log will ever appear, so the loop stepping is what says the run is under way."""
+    first = live.live_state(log_less_run.path)
+    assert first["started"] is False and first["control"] is not None
+    log_less_run.feed(range(3))
+    assert _until(lambda: live.live_state(log_less_run.path)["started"])
+    assert live.live_state(log_less_run.path)["writing"] is True
+
+
+def test_a_run_nobody_started_with_logs_off_is_still_not_started(log_less_run, monkeypatch):
+    """Only a run this dashboard launched log-less is followed through the contract record."""
+    monkeypatch.delitem(jobs.RUNNING, str(log_less_run.path.parent.parent))
+    live._LIVE.clear()
+    assert live.live_state(log_less_run.path) == live._NOT_STARTED
+
+
+def test_a_manifest_without_a_log_resolves_to_an_archive_error(log_less_run):
+    (log_less_run.path / "manifest.json").write_text(
+        json.dumps({"run_id": "run-1", "recorded": False, "files": {"frame_log": None}})
+    )
+    with pytest.raises(ArchiveError, match="no frame log"):
+        resolve_archive(log_less_run.path)

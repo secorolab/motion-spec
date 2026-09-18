@@ -44,6 +44,8 @@ def resolve_archive(path: Path | str) -> tuple[Path, Path, dict | None, dict]:
     if manifest_path.exists():
         _, manifest = load_manifest(run_dir)
         frame_log_rel = manifest["files"]["frame_log"]
+        if frame_log_rel is None:
+            raise ArchiveError(f"{run_dir}: the run recorded no frame log")
     # Either name: a run still being written has the plain log, an archived one the packed.
     log_path = frame_log_pb.log_path(run_dir / frame_log_rel if input_path.is_dir() else input_path)
     if not log_path.exists():

@@ -65,10 +65,17 @@ def run_status(generation_dir: Path) -> dict:
         # page cannot tell a cancel from a crash by the code alone.
         "stopped": bool(started and started.get("stopped")),
         "log": str(generation_dir / RUN_LOG) if process is not None else None,
-        # What the run says about its own frame log, once it has written a manifest to say it in:
-        # false means it kept none on purpose, and the page shows its console instead of waiting.
-        "recorded": run_recorded(run_dir),
+        # Whether the run keeps a frame log: from its manifest once written, before that from the
+        # choice this dashboard started it with. False means the page must not wait for a log.
+        "recorded": _recorded(run_dir, started),
     }
+
+
+def _recorded(run_dir: Path | None, started: dict | None) -> bool | None:
+    recorded = run_recorded(run_dir)
+    if recorded is None and started is not None:
+        return started.get("recorded")
+    return recorded
 
 
 def run_arguments(options: dict, simulated: bool) -> list[str]:
@@ -145,7 +152,11 @@ def start_run(generation_dir: Path, options: dict) -> dict:
         process = subprocess.Popen(
             argv, cwd=roots.WORKSPACE, stdout=sink, stderr=sink, start_new_session=True
         )
-    RUNNING[str(generation_dir)] = {"process": process, "run_id": run_id}
+    RUNNING[str(generation_dir)] = {
+        "process": process,
+        "run_id": run_id,
+        "recorded": options.get("log", True) is not False,
+    }
     return {
         **run_status(generation_dir),
         "command": argv,

@@ -13,10 +13,11 @@ from pathlib import Path
 from motion_spec.dashboard.catalog import run_ended
 from motion_spec.dashboard.control import SPEED_MAX, SPEED_MIN, ControlChannel
 from motion_spec.dashboard.frames import FrameLayout, ShmFrameReader, SignalFields, shm_path
-from motion_spec.dashboard.jobs import mark_stopped
+from motion_spec.dashboard.jobs import RUNNING, mark_stopped
 from motion_spec.dashboard.replay import log_events
 from motion_spec.dashboard.roots import LAYOUT_REL, json_file, trace
 from motion_spec.dashboard.tail import FrameLogTail
+from motion_spec.introspection import frame_log_pb
 from motion_spec.introspection.archive import ArchiveError
 from motion_spec.introspection.replay import resolve_archive
 
@@ -134,6 +135,28 @@ class ShmSampler(threading.Thread):
                 self.events.append({"frame": step, "kind": "state", "label": label})
 
 
+_NOT_STARTED = {
+    "started": False,
+    "writing": False,
+    "archived": False,
+    "frames": 0,
+    "duration": 0.0,
+    "events": [],
+    "control": None,
+    "active_motion": None,
+}
+
+
+def _log_less_record(run_dir: Path) -> Path | None:
+    """The generation's contract record, for a run this dashboard started with logs off."""
+    generation_dir = run_dir.parents[1]
+    started = RUNNING.get(str(generation_dir))
+    if not started or started.get("recorded") is not False or started["run_id"] != run_dir.name:
+        return None
+    record = generation_dir / "generated/contract/frame_log_header.pb"
+    return record if record.is_file() else None
+
+
 def _live_sampler(run_dir: Path, contract) -> ShmSampler | None:
     """This run's frame-block sampler, started, or None when the generation names no layout."""
     try:
@@ -205,27 +228,24 @@ def live_state(run_dir: Path, signals=()) -> dict:
     """
     session = _LIVE.get(str(run_dir))
     if session is None:
+        log_less = False
         # Resolving parses the full header contract -- once per session, never per poll.
         try:
             _, log, _manifest, contract = resolve_archive(run_dir)
         except ArchiveError:
-            # No frame log yet: named but not writing. Also how a --no-log run reads, which the
-            # page tells apart by asking the runner whether it is still busy.
-            return {
-                "started": False,
-                "writing": False,
-                "archived": False,
-                "frames": 0,
-                "duration": 0.0,
-                "events": [],
-                "control": None,
-                "active_motion": None,
-            }
+            # No frame log yet: named but not writing. A run started with logs off never has
+            # one, so its control block is reached through the generation's own contract
+            # record instead; the page then has a loop to drive and the run has a play button.
+            log = _log_less_record(run_dir)
+            if log is None:
+                return dict(_NOT_STARTED)
+            contract, log_less = frame_log_pb.read_contract(log), True
         for stale in list(_LIVE.values()):
             _close_live(stale)
         _LIVE.clear()
         session = _LIVE[str(run_dir)] = {
             "log": str(log),
+            "log_less": log_less,
             "contract": contract,
             "sampler": _live_sampler(run_dir, contract),
             "cursor": None,
@@ -291,7 +311,8 @@ def live_state(run_dir: Path, signals=()) -> dict:
     if not control["available"] and not live:
         writing = writing or time.time() - stat.st_mtime < LIVE_IDLE_S
     return {
-        "started": True,
+        # With no log to appear, a log-less run has started once its loop answers.
+        "started": writing if session["log_less"] else True,
         "writing": writing,
         # Finished means archived and marked: the run row can only say how it ended once REC
         # has recorded that.

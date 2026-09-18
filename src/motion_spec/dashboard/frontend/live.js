@@ -89,7 +89,8 @@ export async function followLiveRun(runPath) {
       state.announced = true;
       handed = true;
       carryOpenCards(runPath);
-      return loadReplay(runPath).catch(() => {});
+      // A run that kept no log has no archive to load: what it left is its console.
+      return loadReplay(runPath).catch(() => showWhenOver(runPath));
     }
     if (state.live) showSpeed(state.live.speed);
     showLiveFrames(live, armed);
@@ -100,6 +101,20 @@ export async function followLiveRun(runPath) {
   // One timer for events and plot increments both. The server answers out of its shm ring in
   // microseconds, so the beat is set by what the eye wants, not by what a read costs.
   state.liveWatch = setInterval(poll, 250);
+}
+
+// The runner verifies and reports after the run itself is over; the console view waits for it.
+function showWhenOver(runPath) {
+  const hop = setInterval(async () => {
+    if (state.runPath !== runPath) return clearInterval(hop);
+    const status = await api(`/api/run?path=${encodeURIComponent(state.replay.generation)}`).catch(
+      () => null,
+    );
+    if (status && !status.busy) {
+      clearInterval(hop);
+      await showRunWithoutLog(state.replay.generation, runPath, status);
+    }
+  }, 300);
 }
 
 // Named before anything is on disk: hold until the log begins or the runner gives up.

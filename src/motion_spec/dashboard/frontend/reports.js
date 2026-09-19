@@ -7,16 +7,11 @@
  * the server sweeps the log once -- made when the tab opens, because a finished log is ~160 MB.
  */
 
-import { $, api, seconds, stampText, state } from "./core.js";
+import { $, api, seconds, state } from "./core.js";
 import { jumpToFinding } from "./run.js";
 
 const num = (value, digits = 3) => ((value ?? null) === null ? "—" : value.toFixed(digits));
 const exp = (value) => ((value ?? null) === null ? "—" : value.toExponential(2));
-
-const signed = (value) =>
-  value === null || value === undefined
-    ? "—"
-    : `${value >= 0 ? "+" : "−"}${Math.abs(value).toFixed(2)} s`;
 
 const REPORTS = [
   {
@@ -154,24 +149,6 @@ function jumpLink(label, frame, motion = null, constraint = null) {
   return button;
 }
 
-function renderCompare(data, rightPath) {
-  const rows = data.activities.map((row) => [
-    row.name,
-    seconds(row.left_s),
-    seconds(row.right_s),
-    signed(row.delta_s),
-  ]);
-  const note = [
-    `against ${rightPath.split("/").pop()}`,
-    data.same_model ? "" : "different models — aligned where they align",
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  const box = section("compare", note, table(["activity", "this run", "other run", "delta"], rows));
-  box.open = true; // picking a run is the ask; folding the answer away would undo it
-  return box;
-}
-
 // Reached, held, fired, left: the four questions asked of every motion after a run.
 function renderVerdict(data) {
   const at = (frame) =>
@@ -248,67 +225,6 @@ function renderVerdict(data) {
   return box;
 }
 
-async function renderComparePicker(panel) {
-  const picker = panel.querySelector(".compare-pick");
-  const runPath = state.runPath;
-  const [runs, reference] = await Promise.all([
-    api(`/api/runs?path=${encodeURIComponent(state.generationPath)}&model=1`),
-    api(`/api/baseline?path=${encodeURIComponent(runPath)}`),
-  ]);
-  picker.replaceChildren(new Option("compare with…", ""));
-  runs
-    .filter((run) => run.path !== state.runPath)
-    .sort((a, b) => Number(b.path === reference.baseline) - Number(a.path === reference.baseline))
-    .forEach((run) =>
-      picker.append(
-        new Option(
-          [
-            run.path === reference.baseline ? "★ Baseline" : null,
-            run.generation_label || run.path.split("/runs/")[0],
-            run.label || run.id,
-            stampText(run.started),
-            run.status,
-            ...run.tags,
-          ]
-            .filter(Boolean)
-            .join(" · "),
-          run.path,
-        ),
-      ),
-    );
-  let request = 0;
-  picker.onchange = async () => {
-    const ticket = ++request;
-    const other = picker.value;
-    const slot = panel.querySelector(".compare-slot");
-    slot.replaceChildren();
-    if (!other) return;
-    slot.textContent = "Comparing…";
-    try {
-      const data = await api(
-        `/api/run/compare?left=${encodeURIComponent(runPath)}&right=${encodeURIComponent(other)}`,
-      );
-      if (ticket === request && state.runPath === runPath)
-        slot.replaceChildren(renderCompare(data, other));
-    } catch (error) {
-      if (ticket === request) slot.textContent = error.message;
-    }
-  };
-  if (
-    reference.baseline &&
-    reference.baseline !== runPath &&
-    runs.some((run) => run.path === reference.baseline)
-  ) {
-    const button = document.createElement("button");
-    button.textContent = "Compare against baseline";
-    button.onclick = () => {
-      picker.value = reference.baseline;
-      picker.onchange();
-    };
-    picker.after(button);
-  }
-}
-
 const holding = (text) =>
   Object.assign(document.createElement("p"), { className: "path", textContent: text });
 
@@ -316,12 +232,8 @@ export async function showReports(runPath) {
   const panel = $("#panel-reports");
   if (!panel || panel.dataset.run === runPath) return;
   panel.dataset.run = runPath;
-  panel.innerHTML =
-    '<div class="compare-bar"><select class="compare-pick"></select></div>' +
-    '<div class="compare-slot"></div>';
-  // Ordered by cost: the picker is one cheap listing and the verdict a graph read, so both are
-  // usable while the log sweep below them runs.
-  await renderComparePicker(panel);
+  panel.replaceChildren();
+  // The verdict is one graph read, so it is on screen while the log sweep below it runs.
   try {
     panel.append(renderVerdict(await api(`/api/run/verdict?path=${encodeURIComponent(runPath)}`)));
   } catch (error) {

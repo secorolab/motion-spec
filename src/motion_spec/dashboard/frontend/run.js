@@ -25,7 +25,6 @@ import {
   formatBytes,
   post,
   readStored,
-  seconds,
   snack,
   snackError,
   stampText,
@@ -159,9 +158,6 @@ export async function loadReplay(path) {
   // A side panel that cannot load is not the page failing to load.
   bindExplore(path).catch(snackError);
   bindTransport();
-  // Detached: the strip is already drawn from the frame log, so the page never waits on the
-  // graph these bars come from. settle() re-reads them when a pending run's hold lifts.
-  if (!state.replay.pending) loadTimelineOverlay(path).catch(() => {});
   setTransportMode();
   showVideos(path, state.replay.videos ?? []);
   // Nothing recorded: a real platform has a camera, but only ROS to reach it through.
@@ -191,7 +187,6 @@ function dropOpenCharts() {
 function indexReplay() {
   // gate id -> the name the source spells it: a row carries the name, not the gate it ran under
   state.motionOf = state.replay.motion_names ?? {};
-  state.motionByIri = state.replay.motion_iri_names ?? {};
   // slot id -> the motion and constraint it serves: an edge in the log names the slot.
   state.slotOwner = Object.fromEntries(
     Object.values(state.replay.signal_index ?? {})
@@ -308,9 +303,7 @@ const MARKER_LEGEND =
   '<span class="lg-item lg-event-item" hidden><i class="lg lg-event"></i>event</span>' +
   '<span class="lg-item lg-edges" hidden><i class="lg lg-satisfied"></i>satisfied</span>' +
   '<span class="lg-item lg-edges" hidden><i class="lg lg-unsatisfied"></i>lost</span>' +
-  '<span class="lg-item"><i class="lg lg-monitor"></i>monitor</span>' +
-  '<span class="lg-item lg-wait-item" hidden><i class="lg lg-wait"></i>wait</span>' +
-  '<span class="lg-item lg-slow-item" hidden><i class="lg lg-wait lg-slow"></i>slow</span></span>';
+  '<span class="lg-item"><i class="lg lg-monitor"></i>monitor</span></span>';
 
 const TRANSPORT =
   '<div class="transport"><div class="transport-controls">' +
@@ -1047,13 +1040,10 @@ export function settle(waiting, message = "archiving the run…") {
   // The live poll settles after an await, by which time the reader may have left the page.
   const overlay = $(".settling");
   if (!overlay) return;
-  const waited = !overlay.hidden;
   overlay.hidden = !waiting;
   overlay.querySelector("span").textContent = message;
   $(".replay")?.classList.toggle("busy", waiting);
   $(".transport")?.classList.toggle("busy", waiting);
-  // The archive replaces the projection when the wait ends, so re-read there, never on a timer.
-  if (waited && !waiting && state.runPath) loadTimelineOverlay(state.runPath, true).catch(() => {});
 }
 
 // Marks of one kind closer than this many pixels are drawn as one.
@@ -1075,8 +1065,6 @@ export function renderMarkers() {
     playhead,
     ...noteMarkers(),
   );
-  // replaceChildren just took the bars with it, so they go back from what was already fetched.
-  paintOverlay();
   movePlayhead();
 }
 
@@ -1176,126 +1164,6 @@ function trackLeft(frame) {
 
 export function movePlayhead() {
   $(".transport").style.setProperty("--f", trackFraction(state.frame));
-}
-
-// How far past its declared dwell a gate has to hold before the wait is worth remarking on.
-const SLOW_GATE = 1.2;
-
-const isSlowGate = (gate) =>
-  gate.waited_s !== null &&
-  gate.declared_dwell_s &&
-  gate.waited_s > gate.declared_dwell_s * SLOW_GATE;
-
-// A projection is strided, so it cannot be asked how long anything waited.
-function sourceNote(data) {
-  if (data.runtime_source === "archive") return "from the archived runtime graph";
-  if (data.runtime_source === "projected") {
-    return "projected from a run still going — waits and re-arms not yet known";
-  }
-  return "no runtime graph recorded yet";
-}
-
-// What one gate did, never a verdict on it: a long wait may be exactly what was wanted.
-function gateStory(gate, period) {
-  if (gate.fired_step === null) return "never fired";
-  const at = (step) => (period ? `${(step * period).toFixed(2)} s` : `step ${step}`);
-  const parts = [`satisfiable at ${at(gate.first_held_step)}`, `fired at ${at(gate.fired_step)}`];
-  if (gate.declared_dwell_s !== null)
-    parts.push(`declared dwell ${gate.declared_dwell_s.toFixed(2)} s`);
-  if (isSlowGate(gate)) {
-    parts.push(`waited ${(gate.waited_s - gate.declared_dwell_s).toFixed(2)} s beyond its dwell`);
-  }
-  if (gate.rearm_count) parts.push(`condition broke ${gate.rearm_count}× before firing`);
-  return parts.join(" · ");
-}
-
-// Same geometry as trackLeft, so a bar follows the axis without measuring anything.
-function place(node, begin, end) {
-  node.style.left = trackLeft(begin);
-  node.style.width = `calc(${trackFraction(end) - trackFraction(begin)} * (100% - var(--thumb)))`;
-}
-
-// Where a span that never closed ends: the log's current edge, which a live run keeps moving.
-const lastFrame = () => Math.max(0, state.replay.frames - 1);
-
-// Stripes inside the strip, not above it: #content's padding and .replay's height are both
-// hardcoded against the transport's height, so the bars must not add any.
-function renderSpans(data) {
-  $(".markers").prepend(
-    ...data.spans.map((span, index) => {
-      const bar = document.createElement("button");
-      bar.className = "span span-motion";
-      bar.dataset.element = span.element;
-      bar.dataset.band = index % 2; // adjacent motions told apart without inventing a palette
-      place(bar, span.begin_step, span.end_step ?? lastFrame());
-      // The authored name, joined by the motion's IRI; the graph's handler name is the fallback.
-      const name = state.motionByIri[span.element] ?? span.name;
-      bar.title = [
-        name,
-        `entered ${seconds(span.entered_s)}`,
-        span.duration_s === null ? "open" : `for ${seconds(span.duration_s)}`,
-        span.event ? `on ${span.event}` : "",
-      ]
-        .filter(Boolean)
-        .join(" · ");
-      bar.onclick = () => {
-        seek(span.begin_step);
-        revealMotion(name);
-      };
-      return bar;
-    }),
-  );
-}
-
-// The wait only: .marker-monitor already draws the instant the gate fired.
-function renderGateWaits(data) {
-  const armed = data.gates.filter(
-    (gate) => gate.first_held_step !== null && gate.fired_step !== null,
-  );
-  $(".lg-wait-item").hidden = !armed.length;
-  $(".lg-slow-item").hidden = !armed.some(isSlowGate);
-  $(".markers").prepend(
-    ...armed.map((gate) => {
-      const wait = document.createElement("div");
-      wait.className = "gate-wait";
-      wait.classList.toggle("gate-slow", Boolean(isSlowGate(gate)));
-      place(wait, gate.first_held_step, gate.fired_step);
-      wait.title = [
-        gate.monitor_name,
-        gateStory(gate, data.period_s),
-        data.runtime_source === "archive" ? "" : sourceNote(data),
-      ]
-        .filter(Boolean)
-        .join(" · ");
-      return wait;
-    }),
-  );
-}
-
-// An enhancement, never a precondition: a graph query that fails leaves the strip as it was.
-async function loadTimelineOverlay(path, force = false) {
-  if (!force && state.spanOverlay?.path === path) return paintOverlay();
-  const query = `path=${encodeURIComponent(path)}`;
-  const [timeline, gates] = await Promise.all([
-    api(`/api/run/timeline?${query}`),
-    api(`/api/run/gates?${query}`),
-  ]);
-  state.spanOverlay = { path, timeline, gates };
-  paintOverlay();
-}
-
-// The live poll rebuilds the strip four times a second, so the bars are repainted from what
-// was fetched rather than re-asked of the graph.
-function paintOverlay() {
-  const overlay = state.spanOverlay;
-  const markers = $(".markers");
-  if (!overlay || overlay.path !== state.runPath || !markers) return;
-  // A settle or a second load has not cleared the strip, and prepending would stack a second
-  // set of bars onto the first.
-  $$(".span-motion, .gate-wait").forEach((node) => node.remove());
-  markers.title = sourceNote(overlay.timeline);
-  renderSpans(overlay.timeline);
-  renderGateWaits(overlay.gates);
 }
 
 // The panel floats over the page, so the page ends above it rather than behind it.

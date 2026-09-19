@@ -308,7 +308,8 @@ def live_state(run_dir: Path, signals=()) -> dict:
     grew = stat.st_size > session["size"] >= 0
     session["size"] = stat.st_size
     writing = control["alive"] or (sampler.moving() if live else grew)
-    if not control["available"] and not live:
+    # A log-less run's "log" is the generation's contract record; its mtime says nothing.
+    if not control["available"] and not live and not session["log_less"]:
         writing = writing or time.time() - stat.st_mtime < LIVE_IDLE_S
     return {
         # With no log to appear, a log-less run has started once its loop answers.

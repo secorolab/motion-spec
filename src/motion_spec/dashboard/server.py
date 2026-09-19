@@ -57,18 +57,13 @@ from motion_spec.dashboard.metadata import (
 )
 from motion_spec.dashboard.notebook import jupyter_server, run_notebook, stop_jupyter
 from motion_spec.dashboard.queries import (
-    activity_constraints,
-    compare,
-    gates,
     generation_graph,
-    graph_sources,
     model_lint,
     run_notes,
     run_query,
     save_notes,
     save_queries,
     saved_queries,
-    timeline,
 )
 from motion_spec.dashboard.replay import plot_data, replay_data, run_verdict
 from motion_spec.dashboard.roots import (
@@ -122,17 +117,12 @@ LAN_GET_ALLOWED = frozenset(
         "/api/generations",
         "/api/generation",
         "/api/generation-graph",
-        "/api/graph-sources",
         "/api/generated",
         "/api/model/lint",
         "/api/source-drift",
         "/api/storage",
         "/api/runs",
         "/api/run",
-        "/api/run/timeline",
-        "/api/run/gates",
-        "/api/run/constraints",
-        "/api/run/compare",
         "/api/run/files",
         "/api/run/verdict",
         "/api/console",
@@ -329,11 +319,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return self.send_json(
                     provenance_graph(generation_graph(relative_path(roots.GENERATIONS, value)))
                 )
-            if parsed.path == "/api/graph-sources":
-                # The explore panel binds as the run page opens, which is before a just-named
-                # run has a directory: no sources yet is an answer, not a bad request.
-                run = expected_path(roots.GENERATIONS, value)
-                return self.send_json(graph_sources(run) if run.exists() else [])
             if parsed.path == "/api/generated":
                 return self.send_json(read_generated(relative_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/model/lint":
@@ -353,27 +338,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return self.send_json([run_info(path) for path in reversed(runs)])
             if parsed.path == "/api/run":
                 return self.send_json(run_status(relative_path(roots.GENERATIONS, value)))
-            if parsed.path == "/api/run/timeline":
-                return self.send_json(
-                    timeline(
-                        relative_path(roots.GENERATIONS, value), query.get("iri", [""])[0] or None
-                    )
-                )
-            if parsed.path == "/api/run/gates":
-                return self.send_json(gates(relative_path(roots.GENERATIONS, value)))
-            if parsed.path == "/api/run/constraints":
-                return self.send_json(
-                    activity_constraints(
-                        relative_path(roots.GENERATIONS, value), query.get("occ", [""])[0]
-                    )
-                )
-            if parsed.path == "/api/run/compare":
-                return self.send_json(
-                    compare(
-                        relative_path(roots.GENERATIONS, query.get("left", [""])[0]),
-                        relative_path(roots.GENERATIONS, query.get("right", [""])[0]),
-                    )
-                )
             if parsed.path == "/api/run/files":
                 return self.send_json(run_files(relative_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/run/verdict":

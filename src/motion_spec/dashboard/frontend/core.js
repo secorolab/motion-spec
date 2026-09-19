@@ -20,7 +20,6 @@ export const state = {
   frame: 0,
   timer: null,
   speed: 1,
-  spanOverlay: null,
   live: null,
   consoleWatch: null,
   activeMotion: null,

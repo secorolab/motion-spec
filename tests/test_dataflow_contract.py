@@ -128,19 +128,6 @@ def _model() -> tuple[dict, list, dict, list, list, dict]:
         ],
         "spatial_samples": {"poses": [{"id": "pose_ee", "index": 0}], "twists": [], "wrenches": []},
         "control_period_ns": 1_000_000,
-        "provenance": {
-            "activities": [
-                {
-                    "id": "activity:controller_execution",
-                    "role": "controller_execution",
-                    "wasAssociatedWith": "agent:controller_process",
-                }
-            ],
-            "agents": [
-                {"id": "agent:controller_process", "role": "controller_process"},
-                {"id": "agent:runtime:mujoco", "role": "runtime_runner"},
-            ],
-        },
     }
     return introspection, shared_data, closures, motions, [solver], {}
 
@@ -742,7 +729,7 @@ def _declared_in_proto_text(text: str) -> dict:
         if line.startswith("message "):
             current, depth = line.split()[1], 1
             messages[current] = {}
-        elif current is None or not line:
+        elif current is None or not line or line.startswith("reserved "):
             continue
         elif line.endswith("{"):
             depth += 1

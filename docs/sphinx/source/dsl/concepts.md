@@ -1141,9 +1141,9 @@ The generated RDF uses the corresponding QUDT terms.
 | `generated/model/` | JSON-LD graphs, FSM artifacts, and IR |
 | `generated/controller/` | Generated C++ and CMake project |
 | `generated/contract/` | Runtime schema, frame layout, and log protocol |
-| `generated/provenance/` | DSL, coordinate, and motion-spec provenance |
+| `generated/provenance.ld.json` | DSL, coordinate and motion-spec provenance, one named graph each |
 | `build/` | Reusable compiled controller |
-| `runs/<run-id>/` | Runtime logs, RDF, REC graph, and consumer manifest |
+| `runs/<run-id>/` | Runtime logs, REC graph, and consumer manifest |
 
 JSON-LD files use the `.ld.json` suffix. RDF data is handled as RDF graphs, not as
 application-specific JSON objects.

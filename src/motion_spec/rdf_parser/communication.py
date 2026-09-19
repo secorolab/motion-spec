@@ -17,10 +17,9 @@ from __future__ import annotations
 
 from enum import Enum
 
-from motion_spec_dsl.rdf_parser.vocab import CSTR, CSTR_EXT, CSTR_HDL, EXEC, MOT, SENSORS
+from motion_spec_dsl.rdf_parser.vocab import CSTR, CSTR_EXT, CSTR_HDL, MOT, SENSORS
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import get_node_types
-from rdf_utils.naming import get_valid_var_name
 from rdflib.namespace import PROV, RDF, RDFS, SOSA
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 
@@ -1230,118 +1229,12 @@ def annotate_publish_rates(motions, control_period_ns: int) -> None:
             publication.divider = max(1, round(1.0 / (publication.rate_hz * period_s)))
 
 
-def _provenance(model, scene, platform: dict) -> dict:
-    """The PROV document: what generated this IR, from what, and who will run it."""
-    # One authored fact -- the exec context's platform -- decides all three; never re-derived from
-    # the backend token or from substrings of the agent id.
-    simulated = platform["simulated"]
-    runtime_id = (
-        f"agent:runtime:{get_valid_var_name(platform['name']).casefold()}"
-        if simulated
-        else "agent:runtime:real_robot"
-    )
-    entities = [
-        {
-            "id": "entity:app_manifest",
-            "types": ["prov:Entity"],
-            "role": "app_manifest",
-            "path": str(model.app_path),
-        },
-        {
-            "id": "entity:motion_spec_ir",
-            "types": ["prov:Entity"],
-            "role": "motion_spec_ir",
-            "wasGeneratedBy": "activity:motion_spec_ir_generation",
-            "wasDerivedFrom": "entity:app_manifest",
-        },
-    ]
-    for role, sources in (
-        ("imported_model_graph", model.imported_models),
-        ("imported_provenance", model.imported_provenance),
-    ):
-        key = "imported_graph" if role == "imported_model_graph" else "imported_provenance"
-        entities.extend(
-            {
-                "id": f"entity:{key}:{index}",
-                "types": ["prov:Entity"],
-                "role": role,
-                "source": source,
-            }
-            for index, source in enumerate(sources)
-        )
-
-    agents = [
-        {
-            "id": "agent:motion_spec_ir_gen",
-            "types": ["prov:SoftwareAgent", "obs:ObservationProvider"],
-            "role": "ir_generator",
-        },
-        {
-            "id": runtime_id,
-            "types": ["prov:SoftwareAgent", "exec:Simulation" if simulated else "exec:RealWorld"],
-            "role": "runtime_runner",
-        },
-        {
-            "id": "agent:controller_process",
-            "types": ["prov:SoftwareAgent"],
-            "role": "controller_process",
-            "actedOnBehalfOf": runtime_id,
-        },
-    ]
-    agents.extend(
-        {
-            "id": f"agent:modelled:{robot.id}",
-            "types": ["prov:Agent", "agn:ModelledAgent"],
-            "role": "robot",
-            "model": robot.path,
-        }
-        for robot in scene.robots
-    )
-
-    return {
-        # Only id/uri are consumed; the uri is the published IRI, which the rdf-utils resolver
-        # maps to a local checkout. No local paths are baked in.
-        "contexts": [
-            {"id": "prov", "uri": str(PROV)},
-            {"id": "bdd", "uri": "https://secorolab.github.io/metamodels/acceptance-criteria/bdd#"},
-            {"id": "agent", "uri": "https://secorolab.github.io/metamodels/agent#"},
-            {"id": "observation", "uri": "https://secorolab.github.io/metamodels/observation#"},
-            {"id": "execution-context", "uri": str(EXEC.ExecutionContext)},
-        ],
-        "entities": entities,
-        "activities": [
-            {
-                # Compiling the spec, not building or running it: what a walk back from an
-                # artefact through prov:wasGeneratedBy separates on.
-                "id": "activity:motion_spec_ir_generation",
-                "types": ["prov:Activity", "ms-prov:SpecCompilation"],
-                "used": [entity["id"] for entity in entities if entity["role"] != "motion_spec_ir"],
-                "wasAssociatedWith": "agent:motion_spec_ir_gen",
-                "role": "motion_spec_ir_generation",
-            },
-            {
-                "id": "activity:controller_execution",
-                "types": [
-                    "prov:Activity",
-                    "bdd:SimulatedExecution" if simulated else "bdd:ScenarioExecution",
-                ],
-                "used": ["entity:motion_spec_ir"],
-                "wasAssociatedWith": "agent:controller_process",
-                "role": "controller_execution",
-            },
-        ],
-        "agents": agents,
-    }
-
-
 def build_introspection(
     model,
     motions,
     computation,
     shared_data,
     robots,
-    scene,
-    platform,
     control_period_ns,
     backend,
     action_clients=(),
@@ -1376,7 +1269,6 @@ def build_introspection(
         "monitors": _dedupe_by_id(monitor_rows),
         "quantities": _dedupe_by_id(quantity_rows),
         "signals": _dedupe_by_id(signals),
-        "provenance": _provenance(model, scene, platform),
     }
 
     rows = introspection["quantities"]

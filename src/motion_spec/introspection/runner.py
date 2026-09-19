@@ -15,16 +15,13 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from motion_spec.introspection import frame_log_pb
-from motion_spec.introspection.archive import (
-    consolidate_provenance,
-    create_archive_manifest,
-    verify_manifest,
-)
+from rdflib.namespace import PROV
+
+from motion_spec.introspection.archive import create_archive_manifest, verify_manifest
 from motion_spec.introspection.lifecycle_events import publish_lifecycle
 from motion_spec.introspection.provenance import (
-    artifact_sha256,
-    artifact_size,
+    CONTROLLER_PROCESS,
+    add_package,
     dependencies,
     ensure_local_rec_importable,
     host_info,
@@ -32,11 +29,12 @@ from motion_spec.introspection.provenance import (
     prov_uri,
     rec_run_lifecycle,
     rec_run_lifecycle_from_file,
-    rec_types,
-    record_activities,
-    record_agents,
+    record_arguments,
+    record_draw,
+    record_run_agents,
+    record_used_file,
     repositories,
-    run_entity_uri,
+    uri,
 )
 from motion_spec.introspection.ros_video import RosImageRecorder, real_camera_recordings
 
@@ -53,7 +51,6 @@ def run_cataloged(
     executable_args: list[str] | None = None,
     run_id: str | None = None,
     cwd: Path | str | None = None,
-    recover_runtime_ttl: bool = False,
     record: list[str] | None = None,
     record_log: bool = True,
     env: dict[str, str] | None = None,
@@ -81,7 +78,14 @@ def run_cataloged(
     schema = json.loads(schema_path.read_text())
     run_dir.mkdir(parents=True, exist_ok=True)
     _start_rec_run(
-        run_dir, run_id, source_dir, executable, schema, environment=environment_provenance
+        run_dir,
+        run_id,
+        source_dir,
+        executable,
+        schema,
+        executable_args,
+        cwd=Path(cwd).resolve() if cwd else None,
+        environment=environment_provenance,
     )
 
     try:
@@ -132,28 +136,8 @@ def run_cataloged(
             complete_rec=False,
             recorded=record_log,
         )
-        # Archiving has just packed the log, so ask after it by whichever name it now has --
-        # by the one it was written under, an interrupted run looks like it recorded nothing.
-        archived_log = frame_log_pb.log_path(frame_log)
-        if recover_runtime_ttl and record_log and (returncode == 0 or archived_log.exists()):
-            from motion_spec.introspection.replay import runtime_frames
-            from motion_spec.introspection.runtime_graph import write_runtime_ttl
-
-            # Recovery reads the whole frame log: report how long it took, and never let a
-            # failure vanish behind whatever the caller does with the raise.
-            started = time.monotonic()
-            try:
-                records, _frame_count = runtime_frames(archived_log)
-                write_runtime_ttl(run_dir, records)
-            except Exception as exc:
-                print(f"runtime.ttl recovery failed: {exc!r}", file=sys.stderr)
-                raise
-            print(f"runtime.ttl recovered in {time.monotonic() - started:.1f}s")
         if returncode == 0:
             _finish_rec_run(rec_path, run_id, "COMPLETED")
-            # The lifecycle is terminal, so the run's documents are final and join into one
-            # dataset -- the thing every cross-layer question is asked of.
-            consolidate_provenance(run_dir)
             # A recording nobody checked is not worth the disk it sits on.
             verify_manifest(run_dir)
     except Exception:
@@ -343,32 +327,36 @@ def _start_rec_run(
     source_dir: Path,
     executable: Path,
     schema: dict,
+    executable_args: list[str],
+    cwd: Path | None = None,
     environment: dict | None = None,
 ) -> None:
     ensure_local_rec_importable()
+    from rdf_utils.models.prov import load_execution_prov
     from rec import Run
     from rec.observers import FileObserver
 
-    # One run, one node: rec describes the same IRI the runtime graph and the generation
-    # provenance describe, so the three documents union instead of standing side by side.
+    # One run, one node: rec describes the same IRI the generation provenance and the
+    # consolidated dataset describe, so the documents union instead of standing side by side.
     observer = FileObserver(run_dir / "rec.ld.json", run_iri=prov_uri(f"run:{run_id}"))
     run = Run(observers=[observer], run_id=run_id)
     run._emit_started()
     run.log_host_info(host_info(environment))
     run.log_repositories(repositories(run_dir))
     run.log_dependencies(dependencies())
-    record_agents(run, run_dir, schema)
-    record_activities(run, schema)
-    run.add_agent(
-        prov_uri("agent:motion_spec_runner"),
-        rec_types(["prov:SoftwareAgent", "obs:ObservationProvider"]),
+    graph = observer.graph
+    record_run_agents(graph, source_dir, schema.get("platform") or {})
+    used = _record_execution_inputs(
+        run, run_dir, run_id, executable, schema, executable_args, cwd, environment
     )
-    run.add_activity(
-        prov_uri("activity:run_cataloging"),
-        rec_types(["prov:Activity"]),
-        associated_with=prov_uri("agent:motion_spec_runner"),
+    load_execution_prov(
+        graph,
+        observer.run,
+        used,
+        add_package(graph, "motion_spec"),
+        # rec has already stamped the start; a second `now()` would date the same run twice.
+        parse_rec_time(str(graph.value(observer.run, PROV.startedAtTime))),
     )
-    _record_execution_inputs(run, run_dir, source_dir, executable, schema)
     observer.close()
     publish_lifecycle(
         run_dir, run_id, rec_run_lifecycle_from_file(run_dir / "rec.ld.json")["status"]
@@ -376,37 +364,38 @@ def _start_rec_run(
 
 
 def _record_execution_inputs(
-    run, run_dir: Path, source_dir: Path, executable: Path, schema: dict
-) -> None:
-    activity = prov_uri(
-        schema.get("runtime_provenance", {}).get("activity_id") or "activity:controller_execution"
-    )
-    inputs = (
-        (("provenance/motion-spec.ld.json", "provenance"), ("model/ir.json", "ir"))
-        if (source_dir / "contract").is_dir()
-        else (("provenance.ld.json", "provenance"), ("model.ld.json", "model"), ("ir.json", "ir"))
-    )
-    for rel, role in inputs:
-        path = source_dir / rel
-        if path.exists():
-            # archivePath = where this input lands in the bundle, so the rec reference is
-            # portable and dedupes with the archive's own record of the same file.
-            run.add_resource(
-                path,
-                usage_activity=activity,
-                title=role,
-                archive_path=os.path.relpath(path, run_dir),
-                sha256=artifact_sha256(path),
-                size_bytes=artifact_size(path),
-            )
-    run.add_resource(
-        executable,
-        usage_activity=activity,
-        title="log_producer_executable",
-        archive_path=os.path.relpath(executable, run_dir),
-        sha256=artifact_sha256(executable),
-        size_bytes=artifact_size(executable),
-    )
+    run,
+    run_dir: Path,
+    run_id: str,
+    executable: Path,
+    schema: dict,
+    executable_args: list[str],
+    cwd: Path | None,
+    environment: dict | None,
+) -> list:
+    """What the execution ran and under what: the executable, its deployment, its environment."""
+    run_iri = run.observers[0].run
+    inputs = [(executable, "log_producer_executable")]
+    platform = schema.get("platform") or {}
+    declared = platform.get("config") or ""
+    if declared and not platform.get("simulated"):
+        # Resolved exactly as the executable resolves it: against the working directory it gets.
+        config = Path(declared)
+        if not config.is_absolute():
+            config = (cwd or Path.cwd()) / declared
+        inputs.append((config, "deployment_config"))
+    script = (environment or {}).get("script")
+    if script:
+        inputs.append((Path(script), "environment"))
+    used = [
+        # archivePath = where this input lands in the bundle, so the rec reference is
+        # portable and dedupes with the archive's own record of the same file.
+        record_used_file(run, run_iri, path, role, os.path.relpath(path, run_dir))
+        for path, role in inputs
+        if path.exists()
+    ]
+    used.append(record_arguments(run.observers[0].graph, run_id, executable_args))
+    return used
 
 
 def _rosbag_settings(source_dir: Path) -> tuple[list[str], bool]:
@@ -537,8 +526,6 @@ def _run_executable(
     env = dict(base_env) if base_env is not None else os.environ.copy()
     # An empty path is how the runtime is told to record nothing (--no-log).
     env["MOTION_SPEC_FRAME_LOG"] = str(frame_log.resolve()) if record_log else ""
-    env["MOTION_SPEC_RUN_ID"] = run_id
-    env["MOTION_SPEC_REC_PATH"] = str(rec_path.resolve())
     # A camera to record, and where the video goes: the runtime renders the frame, so it
     # writes the file, beside the log of the same run.
     if record:
@@ -636,37 +623,12 @@ def _record_sampling(rec_path: Path, run_id: str, path: Path) -> None:
     run = Run(observers=[observer], run_id=run_id)
     run._id = run_id
     run.log_scalar("sampling/seed", sampling["seed"])
-    for uri, draw in sorted(sampling["draws"].items()):
-        _record_draw(observer, run_id, uri, draw["values"], sampling.get("drawn_at"))
+    drawn_at = parse_rec_time(sampling["drawn_at"])
+    for quantity, draw in sorted(sampling["draws"].items()):
+        record_draw(
+            observer.graph, run_id, uri(CONTROLLER_PROCESS), quantity, draw["values"], drawn_at
+        )
     observer.close()
-
-
-def _record_draw(
-    observer, run_id: str, uri: str, values: list[float], drawn_at: str | None
-) -> None:
-    """One draw, as the coordinate this run made of the quantity the generation declared.
-
-    The unit, the kind and the distribution stay on the declared quantity, which every run of
-    the generation shares; `prov:specializationOf` is how a reader gets from one to the other.
-    """
-    from motion_spec_dsl.rdf_parser.vocab import GEOM_COORD, QUDT_SCHEMA
-    from rdflib import Literal, URIRef
-    from rdflib.namespace import PROV, RDF, XSD
-
-    entity = URIRef(run_entity_uri(run_id, f"draw/{uri}"))
-    graph = observer.graph
-    if len(values) == 3:
-        graph.add((entity, RDF.type, URIRef(GEOM_COORD["VectorXYZ"])))
-        graph.add((entity, RDF.type, URIRef(GEOM_COORD["PositionCoordinate"])))
-        for axis, value in zip("xyz", values):
-            graph.set((entity, URIRef(GEOM_COORD[axis]), Literal(float(value))))
-    else:
-        graph.set((entity, URIRef(QUDT_SCHEMA["value"]), Literal(float(values[0]))))
-    graph.add((observer.run, PROV.generated, entity))
-    graph.set((entity, PROV.wasGeneratedBy, observer.run))
-    graph.set((entity, PROV.specializationOf, URIRef(uri)))
-    if drawn_at:
-        graph.set((entity, PROV.generatedAtTime, Literal(drawn_at, datatype=XSD.dateTime)))
 
 
 def _rec_status(rec_path: Path) -> str | None:

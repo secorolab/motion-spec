@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from motion_spec.setup import find_stst
+from rdf_utils.namespace import NS_MM_PROV_EXT as PROV_EXT
 from rdf_utils.resolver import IriToFileResolver, install_resolver
 from rdflib import Dataset, Graph, URIRef
 from rdflib.namespace import PROV, RDF
@@ -27,10 +29,8 @@ from motion_spec.generation.artifacts import (
     build_schema,
     fields_with_offsets,
 )
-from motion_spec.introspection.provenance import (
-    build_derivation_document,
-    build_provenance_document,
-)
+from motion_spec.introspection import provenance
+from motion_spec.introspection.provenance import build_derivation_document
 from motion_spec.rdf_parser import communication, constraint_handler, quantities
 from motion_spec.rdf_parser.model import Model
 from rdf_utils.constraints import ConstraintViolation
@@ -139,64 +139,6 @@ def _sample_ir() -> dict:
                     }
                 ],
                 "signals": [{"id": "ctrl_x.error_signal", "quantity": "err_x"}],
-                "provenance": {
-                    "contexts": [
-                        {"id": "prov", "uri": "http://www.w3.org/ns/prov#"},
-                        {
-                            "id": "execution-context",
-                            "uri": "https://secorolab.github.io/metamodels/execution-context#",
-                        },
-                    ],
-                    "entities": [
-                        {
-                            "id": "entity:app_manifest",
-                            "types": ["prov:Entity"],
-                            "role": "app_manifest",
-                            "path": "/tmp/app.json",
-                        },
-                        {
-                            "id": "entity:motion_spec_ir",
-                            "types": ["prov:Entity"],
-                            "role": "motion_spec_ir",
-                            "wasGeneratedBy": "activity:motion_spec_ir_generation",
-                            "wasDerivedFrom": "entity:app_manifest",
-                        },
-                    ],
-                    "activities": [
-                        {
-                            "id": "activity:motion_spec_ir_generation",
-                            "types": ["prov:Activity", "ms-prov:SpecCompilation"],
-                            "used": ["entity:app_manifest"],
-                            "wasAssociatedWith": "agent:motion_spec_ir_gen",
-                        },
-                        {
-                            "id": "activity:controller_execution",
-                            "types": ["prov:Activity", "bdd:SimulatedExecution"],
-                            "used": ["entity:motion_spec_ir"],
-                            "wasAssociatedWith": "agent:controller_process",
-                            "role": "controller_execution",
-                        },
-                    ],
-                    "agents": [
-                        {
-                            "id": "agent:runtime:mujoco",
-                            "types": ["prov:SoftwareAgent", "exec:Simulation"],
-                            "role": "runtime_runner",
-                        },
-                        {
-                            "id": "agent:controller_process",
-                            "types": ["prov:SoftwareAgent"],
-                            "role": "controller_process",
-                            "actedOnBehalfOf": "agent:runtime:mujoco",
-                        },
-                        {
-                            "id": "agent:modelled:robot",
-                            "types": ["prov:Agent", "agn:ModelledAgent"],
-                            "role": "robot",
-                            "model": "src/mj_kdl_wrapper/third_party/menagerie/kinova_gen3/gen3.xml",
-                        },
-                    ],
-                },
             }
         },
     }
@@ -280,11 +222,8 @@ def test_schema_and_frame_layout_are_consistent(tmp_path: Path) -> None:
 
     assert schema["schema_version"] == 1
     assert schema["runtime_rdf_contract_version"] == 1
-    assert schema["runtime_provenance"] == {
-        "activity_id": "activity:controller_execution",
-        "producer_agent_id": "agent:controller_process",
-        "runtime_agent_id": "agent:runtime:mujoco",
-    }
+    # The contract describes the program, never the run: no agent or activity travels in it.
+    assert "runtime_provenance" not in schema and "runtime_provenance" not in layout
     assert schema["fsm"]["states"][1]["motion"] == "move"
     assert schema["by_motion"]["move"]["controllers"][0]["id"] == "ctrl_x"
     assert schema["by_motion"]["move"]["monitors"][0]["id"] == "done_mon"
@@ -532,63 +471,88 @@ def test_codegen_refuses_a_model_that_declares_no_fsm(tmp_path: Path) -> None:
         codegen.generate_code(ir_path, tmp_path, "stst")
 
 
-def test_provenance_document_is_jsonld_and_prov_shacl_conformant(tmp_path: Path) -> None:
+def _generation_tree(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """A generated/ tree with the sources codegen writes and the executable a build produces."""
+    generated = tmp_path / "generated"
+    controller = generated / "controller"
+    (controller / "headers").mkdir(parents=True)
+    written = [controller / "CMakeLists.txt", controller / "main.cpp", controller / "headers/r.hpp"]
+    for path in written:
+        path.write_text("// generated\n")
+    ir_path = generated / "model" / "ir.json"
+    ir_path.parent.mkdir(parents=True)
+    ir_path.write_text("{}")
+    executable = tmp_path / "build" / "main"
+    executable.parent.mkdir()
+    executable.write_text("binary")
+    now = datetime.now(UTC)
+    provenance.record_code_generation(generated, ir_path, written, started=now, ended=now)
+    provenance.record_build(generated, controller, executable, started=now, ended=now)
+    return generated, controller, executable
+
+
+def test_the_generation_document_names_one_graph_per_tool(tmp_path: Path) -> None:
+    """DSL, coord-dsl and motion-spec each write their own named graph of one document."""
+    generated, _controller, _executable = _generation_tree(tmp_path)
+    document = generated / provenance.GENERATION_DOCUMENT
+    provenance.append_generation_graph(
+        document, provenance.GRAPH_DSL, [{"@id": "https://example.test/dsl", "@type": "Entity"}]
+    )
+    provenance.append_generation_graph(
+        document,
+        provenance.GRAPH_COORD_DSL,
+        [{"@id": "https://example.test/cd", "@type": "Entity"}],
+    )
+    data = json.loads(document.read_text())
+    assert data["schema_version"] == provenance.SCHEMA_VERSION
+    assert "runtime_rdf_contract_version" not in data
+    assert {entry["@id"] for entry in data["@graph"]} == {
+        str(provenance.GRAPH_MOTION_SPEC),
+        str(provenance.GRAPH_DSL),
+        str(provenance.GRAPH_COORD_DSL),
+    }
+
+
+def test_the_build_transforms_the_generated_sources_into_the_executable(tmp_path: Path) -> None:
+    generated, controller, executable = _generation_tree(tmp_path)
+    dataset = provenance.read_generation_dataset(generated / provenance.GENERATION_DOCUMENT)
+    graph = dataset.graph(provenance.GRAPH_MOTION_SPEC)
+    build = provenance.uri("activity:build")
+    assert (build, RDF.type, PROV_EXT.Transformation) in graph
+    assert (build, PROV.wasAssociatedWith, provenance.uri("agent:cmake")) in graph
+    # Every source it used is one code generation declared, and only those.
+    assert set(graph.objects(build, PROV.used)) == {
+        provenance.uri(f"entity:generated_{name}")
+        for name in ("CMakeLists.txt", "main.cpp", "headers/r.hpp")
+    }
+    binary = provenance.uri("entity:controller_executable")
+    assert (binary, PROV.wasGeneratedBy, build) in graph
+    assert graph.value(binary, PROV.atLocation) == URIRef(executable.resolve().as_uri())
+    assert graph.value(binary, PROV.generatedAtTime) is not None
+    assert controller.is_dir()
+
+
+def test_the_generation_document_conforms_to_the_prov_shapes(tmp_path: Path) -> None:
     metamodels = Path(__file__).resolve().parents[2] / "metamodels"
     if not metamodels.exists():
         pytest.skip("metamodels is not in this checkout")
     pyshacl = __import__("pyshacl")
-    seed = build_provenance_document(_sample_ir(), tmp_path)
-    path = tmp_path / "provenance.ld.json"
-    path.write_text(json.dumps(seed))
+    generated, _controller, _executable = _generation_tree(tmp_path)
     install_resolver(
         IriToFileResolver(
             {"https://secorolab.github.io/metamodels/": str(metamodels)}, download=False
         )
     )
-    graph = Graph().parse(path, format="json-ld")
-    assert (None, None, None) in graph
-    # The robot model is recorded as a portable vendor-qualified reference (matching the
-    # mj_kdl_wrapper cache layout), never a machine-specific absolute path.
-    robot = next(n for n in seed["@graph"] if n["@id"].endswith("agent/modelled_robot"))
-    assert robot["has-agn-model"] == "menagerie:kinova_gen3/gen3.xml"
-    shape_path = metamodels / "prov.shacl.ttl"
-    conforms, _, report = pyshacl.validate(graph, shacl_graph=str(shape_path))
+    shapes = Graph()
+    for name in ("prov.shacl.ttl", "prov-extension.shacl.ttl"):
+        shapes.parse(str(metamodels / name), format="turtle")
+    conforms, _, report = pyshacl.validate(
+        str(generated / provenance.GENERATION_DOCUMENT),
+        shacl_graph=shapes,
+        data_graph_format="json-ld",
+        inference="rdfs",
+    )
     assert conforms, report
-
-
-def test_usage_roles_replace_the_minted_role_predicate(tmp_path: Path) -> None:
-    """A role is the part an entity played for one activity, not a label hung on the entity."""
-    document = build_provenance_document(_sample_ir(), tmp_path)
-    assert not any("role" in node for node in document["@graph"])
-    assert "role" not in dict(document["@context"][-1])
-    usages = [
-        usage
-        for node in document["@graph"]
-        for usage in node.get("qualifiedUsage", [])
-        if node["@id"].endswith("activity/motion_spec_ir_generation")
-    ]
-    assert usages == [
-        {
-            "@type": "Usage",
-            "entity": "msprov:entity/app_manifest",
-            "hadRole": "msprov:role/app_manifest",
-        }
-    ]
-    assert {"@id": "msprov:role/app_manifest", "@type": ["prov:Role"]} in document["@graph"]
-
-
-def test_compilation_activities_are_typed_but_execution_is_not(tmp_path: Path) -> None:
-    types = {
-        node["@id"]: node["@type"]
-        for node in build_provenance_document(_sample_ir(), tmp_path)["@graph"]
-    }
-    assert "ms-prov:SpecCompilation" in types["msprov:activity/code_generation"]
-    assert "ms-prov:SpecCompilation" in types["msprov:activity/motion_spec_ir_generation"]
-    assert types["msprov:activity/controller_execution"] == [
-        "prov:Activity",
-        "bdd:SimulatedExecution",
-    ]
-    assert types["msprov:activity/build"] == ["prov:Activity"]
 
 
 # --- derived-entity IRIs (plan 015) ---------------------------------------------------------

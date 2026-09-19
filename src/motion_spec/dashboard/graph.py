@@ -1,16 +1,8 @@
 # SPDX-License-Identifier: MPL-2.0
-"""SPARQL over a run: the model graph, its occurrences, and the latest frame's values.
+"""SPARQL over a run's model graph.
 
-Three named graphs, each with a different lifetime:
-
-* ``urn:model``   -- parsed once from the generation's app manifest and its imports.
-* ``urn:runtime`` -- the run's archived ``runtime.ttl`` where it has one, otherwise occurrences
-  plus interval-sampled values projected from frames as they arrive. Never both.
-* ``urn:live``    -- the newest frame only, cleared and refilled per query so per-tick values
-  never accumulate.
-
-Values enter as ``sosa:Observation`` instances against IRIs the model already declares; the
-dashboard mints no vocabulary of its own.
+One named graph, ``urn:model``, parsed once from the generation's app manifest and its imports.
+The dashboard mints no vocabulary of its own.
 """
 
 from __future__ import annotations
@@ -21,20 +13,10 @@ from pathlib import Path
 
 import rdflib
 from motion_spec_dsl.rdf_parser.manifest import build_url_map, install_metamodel_resolver
-from motion_spec_dsl.rdf_parser.vocab import APP, CSTR_HDL, EXEC
+from motion_spec_dsl.rdf_parser.vocab import APP, EXEC
 from rdflib.namespace import SDO
 
-from motion_spec.introspection.runtime_graph import (
-    TIME,
-    IncrementalProjector,
-    bind_namespaces,
-    frame_observations,
-    units_from_graphs,
-)
-
 MODEL_GRAPH = rdflib.URIRef("urn:model")
-RUNTIME_GRAPH = rdflib.URIRef("urn:runtime")
-LIVE_GRAPH = rdflib.URIRef("urn:live")
 MODEL_REL = Path("generated") / "model"
 
 
@@ -133,47 +115,20 @@ def deployed_devices(generation_dir: Path | str) -> tuple[str, ...]:
     )
 
 
-def signal_map(model: rdflib.Graph) -> dict[str, dict]:
-    """Controller IRI -> its error/control signal IRIs, as the model declares them.
-
-    Those signals are what a value observation is *of*: the dashboard observes a property the
-    model already names, rather than inventing one per slot.
-    """
-    mapping: dict[str, dict] = {}
-    for role, predicate in (
-        ("error", CSTR_HDL["error-signal"]),
-        ("output", CSTR_HDL["control-signal"]),
-    ):
-        for subject, obj in model.subject_objects(predicate):
-            if isinstance(obj, rdflib.URIRef):
-                mapping.setdefault(str(subject), {})[role] = obj
-    return mapping
-
-
 class GraphService:
-    """One run's queryable graph, kept current from its store."""
+    """One run's queryable model graph."""
 
     def __init__(
         self,
         generation_dir: Path | str,
         store,
         *,
-        sample_interval_s: float | None = 1.0,
         manifest: Path | None = None,
-        runtime_ttl: Path | None = None,
     ):
         self.generation_dir = Path(generation_dir)
         self.store = store
-        self.sample_interval_s = sample_interval_s
-        # default_union so a plain { ?s ?p ?o } spans model, runtime and live, which is what
-        # someone typing into the console means.
         self.dataset = rdflib.Dataset(default_union=True)
         self.model = self.dataset.graph(MODEL_GRAPH)
-        self.runtime = self.dataset.graph(RUNTIME_GRAPH)
-        self.live = self.dataset.graph(LIVE_GRAPH)
-        self._projector: IncrementalProjector | None = None
-        self._fed = 0
-        self.runtime_source: str | None = None
         self.sources: list[dict] = []
         # A run names its own model graph; the generation is only where one is found without it.
         manifest = (
@@ -181,86 +136,6 @@ class GraphService:
         )
         if manifest is not None:
             self.sources = load_model_graph(manifest, self.dataset, self.model)
-        self.signals = signal_map(self.model)
-        self.units = units_from_graphs([self.model])
-        bind_namespaces(self.dataset, store.run_id)
-        # The archived record, where the run kept one. Projecting on top of it would emit a
-        # second occurrence for every one already recorded, and double every span read off them.
-        if runtime_ttl is not None and Path(runtime_ttl).is_file():
-            before = graph_sizes(self.dataset)
-            self.runtime.parse(runtime_ttl, format="turtle")
-            self.runtime_source = "archive"
-            self.sources.append(
-                {
-                    "iri": Path(runtime_ttl).resolve().as_uri(),
-                    "path": str(runtime_ttl),
-                    **graph_growth(before, graph_sizes(self.dataset)),
-                }
-            )
-
-    def _ensure_projector(self) -> IncrementalProjector | None:
-        """Build the projector once the run's log contract is known (it carries the header)."""
-        if self._projector is None and self.store.contract is not None:
-            header = self.store.contract.header
-            self._projector = IncrementalProjector(
-                self.runtime,
-                self.store.run_id,
-                header,
-                sample_interval_s=self.sample_interval_s,
-                signal_map=self.signals,
-                units=self.units,
-            )
-            bind_namespaces(self.dataset, self.store.run_id, fsm_namespace=header.fsm_namespace)
-        return self._projector
-
-    def _quantity_iris(self) -> dict:
-        contract = self.store.contract
-        if contract is None:
-            return {}
-        return {
-            qid: contract.iri_by_id[qid]
-            for qid in contract.quantity_ids
-            if qid in contract.iri_by_id
-        }
-
-    def sync(self) -> None:
-        """Project whatever frames the store has gained, then refresh the live overlay.
-
-        An archived run is never projected: its `urn:runtime` is already the whole record.
-        """
-        if self.runtime_source != "archive":
-            projector = self._ensure_projector()
-            if projector is not None:
-                frames = self.store.snapshot()
-                for frame in frames[self._fed :]:
-                    projector.feed(frame)
-                self._fed = len(frames)
-                if self._fed:
-                    self.runtime_source = "projected"
-        self.refresh_live()
-
-    def refresh_live(self) -> None:
-        """Replace the live graph with the newest frame's values -- replace, never accumulate."""
-        self.live.remove((None, None, None))
-        frame, contract = self.store.latest, self.store.contract
-        if frame is None or contract is None:
-            return
-        frame_observations(
-            self.live,
-            self.store.run_id,
-            contract.header,
-            frame,
-            signal_map=self.signals,
-            quantity_iris=self._quantity_iris(),
-            satisfied=True,
-            units=self.units,
-        )
-        # An instant the archived record already positions needs no second position here --
-        # the duplicate would draw the same tick twice in the graph view.
-        for instant, position in list(self.live.subject_objects(TIME.inTimePosition)):
-            if (instant, TIME.inTimePosition, None) in self.runtime:
-                self.live.remove((instant, TIME.inTimePosition, position))
-                self.live.remove((position, None, None))
 
     def query(self, sparql: str) -> tuple[str, object]:
         """(result type, payload) for a SPARQL query over the current dataset.
@@ -268,7 +143,6 @@ class GraphService:
         SELECT and ASK answer with `(variable names, rows)`. CONSTRUCT and DESCRIBE answer with
         their triples: `result.vars` is None for both, so rows alone would flatten them away.
         """
-        self.sync()
         result = self.dataset.query(sparql)
         if result.type in ("CONSTRUCT", "DESCRIBE"):
             return result.type, [tuple(triple) for triple in result]

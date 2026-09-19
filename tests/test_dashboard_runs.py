@@ -11,11 +11,22 @@ from motion_spec.dashboard.runs import GenerationCatalog, GenerationInfo, RunInf
 from motion_spec.generation.artifacts import build_frame_layout
 from motion_spec.introspection.replay import resolve_archive
 
-from dashboard_fixture import CONSTRAINT, CTRL, MONITOR, QUANTITY, schema
+from dashboard_fixture import CONSTRAINT, CTRL, MONITOR, QUANTITY, model_jsonld, schema
 from frame_log_fixture import flat_frame, write_frame_log_pb
 from support import _hash_doc
 
 REC_NS = "https://secorolab.github.io/metamodels/rec#"
+OSLC_AUTO = "http://open-services.net/ns/auto#"
+PROV_EXT = "https://secorolab.github.io/metamodels/prov#"
+# The (state, verdict) pair REC records a run's lifecycle as.
+LIFECYCLE = {
+    "QUEUED": ("queued", "unavailable"),
+    "RUNNING": ("inProgress", "unavailable"),
+    "COMPLETED": ("complete", "passed"),
+    "FAILED": ("complete", "failed"),
+    "INTERRUPTED": ("complete", "error"),
+    "CANCELLED": ("canceled", "unavailable"),
+}
 
 SETTLED = "https://example.test/settled"
 ROBMOT = """
@@ -30,13 +41,21 @@ guarded-motion (ns=demo) move {
 """
 
 
-def _rec(status):
+def _rec(status="RUNNING"):
     """A REC run document with one lifecycle state, as the runner writes it."""
+    state, verdict = LIFECYCLE[status]
     return {
-        "@context": {"rec": REC_NS, "run-id": {"@id": "rec:run-id"}},
+        "@context": {
+            "prov": "http://www.w3.org/ns/prov#",
+            "prov-ext": PROV_EXT,
+            "oslc_auto": OSLC_AUTO,
+            "state": {"@id": "oslc_auto:state", "@type": "@id"},
+            "verdict": {"@id": "oslc_auto:verdict", "@type": "@id"},
+        },
         "@id": "https://example.test/run/r1",
-        "@type": f"rec:{status}",
-        "run-id": "r1",
+        "@type": ["prov:Activity", "prov-ext:Execution"],
+        "state": f"oslc_auto:{state}",
+        "verdict": f"oslc_auto:{verdict}",
     }
 
 
@@ -49,7 +68,7 @@ def _generation(tmp_path, name="pick_place_single", stamp="20260811T000000Z"):
     return gen
 
 
-def _run(gen, run_id="run-1", status="RunningRun", log=b"frames"):
+def _run(gen, run_id="run-1", status="RUNNING", log=b"frames"):
     run = gen / "runs" / run_id
     (run / "logs").mkdir(parents=True)
     (run / "logs" / "frame_log.pb").write_bytes(log)
@@ -84,7 +103,7 @@ def test_a_run_still_ticking_is_live(tmp_path):
 
 
 def test_a_finished_run_is_not_live_however_fresh_its_log(tmp_path):
-    run = _run(_generation(tmp_path), status="CompletedRun")
+    run = _run(_generation(tmp_path), status="COMPLETED")
     assert run.status == "COMPLETED"
     assert run.is_live() is False
 
@@ -110,8 +129,8 @@ def test_generations_expose_their_runs_newest_first(tmp_path):
 def test_a_generation_reports_how_its_newest_run_ended(tmp_path, monkeypatch):
     monkeypatch.setattr(roots, "GENERATIONS", tmp_path)
     gen = _generation(tmp_path)
-    _run(gen, run_id="run-1", status="CompletedRun")
-    _run(gen, run_id="run-2", status="FailedRun")
+    _run(gen, run_id="run-1", status="COMPLETED")
+    _run(gen, run_id="run-2", status="FAILED")
 
     last = catalog.generation_info(gen)["last_run"]
     assert (last["id"], last["status"]) == ("run-2", "FAILED")
@@ -182,6 +201,10 @@ def _archived_run(tmp_path, *, vendored: bool, evaluator: dict | None = None):
         doc, t=0.001, step=1, fsm_state=0, active_motion=0, last_event=-1, q0=0.5, q1=0.02
     )
     write_frame_log_pb(run / "logs" / "frame_log.pb", doc, [frame])
+    # The design graph the Explore page asks: a run without one has nothing to query.
+    model_dir = run.parent.parent / "generated" / "model"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    (model_dir / "demo-app.ld.json").write_text(json.dumps(model_jsonld()))
     files = {"frame_log": "logs/frame_log.pb"}
     if vendored:
         (run / "source").mkdir()

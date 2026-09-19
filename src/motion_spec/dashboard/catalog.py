@@ -18,7 +18,7 @@ from google.protobuf.message import DecodeError
 from rdflib import RDF, BNode, Literal
 
 from motion_spec.dashboard import roots
-from motion_spec.dashboard.graph import LIVE_GRAPH, MODEL_GRAPH, RUNTIME_GRAPH, deployed_devices
+from motion_spec.dashboard.graph import MODEL_GRAPH, deployed_devices
 from motion_spec.dashboard.metadata import annotations, baseline
 from motion_spec.dashboard.roots import LAYOUT_REL, directory_size, json_file, stamp_iso, trace
 from motion_spec.dashboard.runs import GenerationInfo, RunInfo
@@ -279,7 +279,7 @@ def rdf_name(term: object) -> str:
     return str(term).rsplit("/", 1)[-1].rsplit("#", 1)[-1]
 
 
-GRAPH_NAMES = {str(MODEL_GRAPH): "model", str(RUNTIME_GRAPH): "runtime", str(LIVE_GRAPH): "live"}
+GRAPH_NAMES = {str(MODEL_GRAPH): "model"}
 PROV_NS = "http://www.w3.org/ns/prov#"
 
 
@@ -296,9 +296,9 @@ def _term_kind(term) -> str:
 def graph_name(context) -> str:
     """A quad's named graph, named as compactly as it can be.
 
-    `urn:model`, `urn:runtime` and `urn:live` are the dashboard's own three. A JSON-LD file that
-    declares a graph of its own lands in that graph instead -- the whole FSM is one -- and
-    calling those "model" too would hide the split from every reader downstream.
+    `urn:model` is the dashboard's own. A JSON-LD file that declares a graph of its own lands in
+    that graph instead -- the whole FSM is one -- and calling those "model" too would hide the
+    split from every reader downstream.
     """
     identifier = str(getattr(context, "identifier", context))
     return GRAPH_NAMES.get(identifier) or rdf_name(identifier.rstrip("/")) or identifier
@@ -398,16 +398,12 @@ def classify_quads(quads, graphs: dict[str, list[str]]) -> dict:
 
 
 def provenance_graph(service) -> dict:
-    """Every term and triple of one dataset -- model, runtime and live -- classified."""
-    service.sync()
+    """Every term and triple of one dataset, classified."""
     quads = (
         (subject, predicate, obj, graph_name(context))
         for subject, predicate, obj, context in service.dataset.quads((None, None, None, None))
     )
-    return {
-        **classify_quads(quads, term_graphs(service.dataset)),
-        "runtime_source": service.runtime_source,
-    }
+    return classify_quads(quads, term_graphs(service.dataset))
 
 
 def _run_notes(path: Path) -> list[str]:

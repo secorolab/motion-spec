@@ -301,9 +301,9 @@ class MotionSpecGroup(click.Group):
                     ("generated/model/", "JSON-LD graphs, FSM artifacts, and IR."),
                     ("generated/controller/", "Generated C++ and CMake project."),
                     ("generated/contract/", "Schema, frame layout, and frame-log protocol."),
-                    ("generated/provenance/", "DSL, coordinate, and motion-spec provenance."),
+                    ("generated/provenance.ld.json", "DSL, coordinate and motion-spec provenance."),
                     ("build/", "Reusable compiled controller."),
-                    ("runs/RUN/", "Run-owned logs, runtime RDF, REC graph, and manifest."),
+                    ("runs/RUN/", "Run-owned logs, REC graph, and manifest."),
                     ("latest", f"Symlink to the newest generation, under ${GENERATION_DIR_ENV}."),
                 ]
             )
@@ -1659,29 +1659,18 @@ def diff(generation_a: Path, generation_b: Path, as_json_flag: bool) -> None:
 @click.argument("log", type=click.Path(path_type=Path))
 @click.option("--jsonl", is_flag=True, help="Emit decoded frames as JSON Lines.")
 @click.option("--verify", is_flag=True, help="Verify the manifest and frame-log header.")
-@click.option("--recover-runtime-ttl", is_flag=True, help="Recover runtime.ttl from the log.")
-def replay(log: Path, jsonl: bool, verify: bool, recover_runtime_ttl: bool) -> None:
-    """Inspect or recover a recorded run LOG."""
+def replay(log: Path, jsonl: bool, verify: bool) -> None:
+    """Inspect a recorded run LOG."""
     from motion_spec.introspection.archive import ArchiveError
     from motion_spec.introspection.replay import (
         decode_frames,
         resolve_archive,
-        runtime_frames,
         summarize,
         validate_header,
     )
 
     try:
-        if recover_runtime_ttl:
-            from motion_spec.introspection.archive import consolidate_provenance
-            from motion_spec.introspection.runtime_graph import write_runtime_ttl
-
-            run_dir, log_path, _manifest, _schema = resolve_archive(log)
-            records, _frame_count = runtime_frames(log_path)
-            out = write_runtime_ttl(run_dir, records)
-            consolidate_provenance(run_dir)
-            click.echo(out)
-        elif verify:
+        if verify:
             _run_dir, log_path, _manifest, schema = resolve_archive(log)
             validate_header(log_path, schema)
             _say("done", "archive OK")
@@ -1778,12 +1767,6 @@ def _is_simulated(generation: Path) -> bool:
 @click.option("--steps", type=click.IntRange(min=1), help="Maximum headless simulation steps.")
 @click.option("--no-log", is_flag=True, help="Do not write the frame log; the run has no replay.")
 @click.option(
-    "--runtime-ttl",
-    is_flag=True,
-    help="Recover runtime.ttl from the log when the run ends; otherwise "
-    "'motion-spec replay <run> --recover-runtime-ttl' writes it later.",
-)
-@click.option(
     "--seed",
     type=click.IntRange(min=0),
     help="Seed the run's draw of every sampled quantity; unseeded runs draw from OS entropy. "
@@ -1806,7 +1789,6 @@ def run(
     steps: int | None,
     seed: int | None,
     no_log: bool,
-    runtime_ttl: bool,
     executable_args: tuple[str, ...],
     env_script: Path | None,
     no_env: bool,
@@ -1880,7 +1862,6 @@ def run(
             executable_args=arguments,
             run_id=run_id,
             cwd=cwd,
-            recover_runtime_ttl=runtime_ttl,
             record=list(record),
             record_log=not no_log,
             env=env,
@@ -2145,12 +2126,6 @@ def _taxonomy_row(per_class: dict[str, int]) -> str:
 )
 @click.option("--steps", type=click.IntRange(min=1), help="Maximum headless simulation steps.")
 @click.option("--no-log", is_flag=True, help="Do not write the frame log; the run has no replay.")
-@click.option(
-    "--runtime-ttl",
-    is_flag=True,
-    help="Recover runtime.ttl from the log when the run ends; otherwise "
-    "'motion-spec replay <run> --recover-runtime-ttl' writes it later.",
-)
 @click.argument("executable-args", nargs=-1, type=click.UNPROCESSED)
 @_environment_options
 @click.pass_context
@@ -2163,7 +2138,6 @@ def rerun(
     record: tuple[str, ...],
     steps: int | None,
     no_log: bool,
-    runtime_ttl: bool,
     executable_args: tuple[str, ...],
     env_script: Path | None,
     no_env: bool,
@@ -2187,7 +2161,6 @@ def rerun(
         record=record,
         steps=steps,
         no_log=no_log,
-        runtime_ttl=runtime_ttl,
         executable_args=executable_args,
         env_script=env_script,
         no_env=no_env,

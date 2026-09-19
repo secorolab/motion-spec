@@ -6,18 +6,15 @@ from __future__ import annotations
 
 import json
 import secrets
-import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 import rdflib
-from rdf_utils.uri import iri_parent
 
 from motion_spec.dashboard.catalog import classify_quads, graph_name, rdf_name, term_graphs
 from motion_spec.dashboard.graph import (
     MODEL_GRAPH,
-    RUNTIME_GRAPH,
     GraphService,
     load_model_graph,
     model_manifest,
@@ -26,11 +23,9 @@ from motion_spec.dashboard.metadata import LOCK, generation_of, write_document
 from motion_spec.dashboard.roots import LAYOUT_REL, json_file
 from motion_spec.dashboard.sources import declaration_lines
 from motion_spec.dashboard.store import RunStore
-from motion_spec.dashboard.tail import FrameLogTail
 from motion_spec.introspection import frame_log_pb
 from motion_spec.introspection.replay import resolve_archive
 
-GRAPH_SAMPLE_S = 0.1  # the graph wants the shape of a run, not its every tick
 # A picture of a hundred thousand triples is a locked browser, not an answer.
 GRAPH_MAX_TRIPLES = 20_000
 
@@ -48,47 +43,21 @@ def run_model_manifest(run_dir: Path) -> Path | None:
     return path if path.is_file() else None
 
 
-def run_runtime_ttl(run_dir: Path) -> Path | None:
-    """The archived runtime graph this run names -- the validated record, not a re-projection."""
-    named = json_file(run_dir / "manifest.json").get("files", {}).get("runtime_ttl")
-    if not named:
-        return None
-    path = (run_dir / named).resolve()
-    return path if path.is_file() else None
-
-
 def generation_graph(generation_dir: Path) -> GraphService:
-    """A generation's model graph on its own -- no run, so nothing recorded to merge in."""
+    """A generation's model graph on its own."""
     return GraphService(generation_dir, RunStore(generation_dir.name))
 
 
 def run_graph(run_dir: Path) -> GraphService:
-    """One run's queryable dataset: its model, plus what the recording says happened.
-
-    Reading the frames is what fills `urn:runtime` and `urn:live` for a run still being
-    written. A run that archived a `runtime.ttl` has the record already, and sweeping its log
-    to rediscover it would cost tens of seconds and emit a second occurrence for every one
-    already there. Kept per log revision: a finished run is read once, a growing one again.
-    """
+    """One run's queryable model graph. Kept per log revision, as the run list is."""
     _, log, _manifest, contract = resolve_archive(run_dir)
-    frames = run_runtime_ttl(run_dir) is None
-    key = (str(log), log.stat().st_size, frames)
+    key = (str(log), log.stat().st_size, True)
     if key not in _GRAPHS:
-        store = RunStore(run_dir.name, contract)
-        tail = FrameLogTail(log)
-        if frames and tail.open():
-            # shaping every frame to project a tenth of them is the waste, not the reading
-            period = (contract.header.nominal_period_ns or 1_000_000) / 1e9
-            stride = max(1, round(GRAPH_SAMPLE_S / period))
-            while records := tail.poll(stride):
-                store.add_frames(records)
-            tail.close()
         _GRAPHS.clear()
         _GRAPHS[key] = GraphService(
             run_dir.parent.parent,
-            store,
+            RunStore(run_dir.name, contract),
             manifest=run_model_manifest(run_dir),
-            runtime_ttl=run_runtime_ttl(run_dir),
         )
     return _GRAPHS[key]
 
@@ -102,28 +71,6 @@ def query_graph(path: Path) -> GraphService:
     if (path / LAYOUT_REL).exists():
         return generation_graph(path)
     return run_graph(path)
-
-
-def graph_sources(path: Path) -> list[dict]:
-    """Every file this dataset was read from, and what each one put in it.
-
-    A run whose record was archived read a `runtime.ttl`; one without read the frame log, which
-    is a source of the graph exactly as much as any turtle file is.
-    """
-    service = query_graph(path)
-    sources = list(service.sources)
-    if (path / LAYOUT_REL).exists() or service.runtime_source == "archive":
-        return sources
-    _, log, _manifest, _contract = resolve_archive(path)
-    sources.append(
-        {
-            "iri": log.resolve().as_uri(),
-            "path": str(log),
-            "triples": len(service.runtime),
-            "graphs": [str(RUNTIME_GRAPH)],
-        }
-    )
-    return sources
 
 
 QUERIES_REL = "queries.json"
@@ -233,7 +180,6 @@ def run_query(run_dir: Path, sparql: str, offset: int = 0) -> dict:
         "offset": offset,
         "page_size": PAGE_SIZE,
         "graph": result_graph(service, kind, rows),
-        "runtime_source": service.runtime_source,
         "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
         "namespaces": prefixes,
     }
@@ -294,347 +240,6 @@ def _connected(service: GraphService, bound: set) -> set:
 def _home_graph(service: GraphService, triple) -> str:
     """Which named graph a result triple came from; a derived one came from none of them."""
     return next((graph_name(quad[3]) for quad in service.dataset.quads(triple)), "result")
-
-
-# Matched as a family (fsm# today, behaviour-tree# next), so nothing here reads "state": the
-# runtime graph names only the design IRI, and the design graph's rdf:type says what it was.
-BEHAVIOUR_MM = "https://secorolab.github.io/metamodels/behaviour/"
-
-VIEW_PREFIXES = """
-PREFIX ms-prov:  <https://secorolab.github.io/metamodels/motion-spec/prov#>
-PREFIX prov:     <http://www.w3.org/ns/prov#>
-PREFIX time:     <http://www.w3.org/2006/time#>
-PREFIX sosa:     <http://www.w3.org/ns/sosa/>
-PREFIX qudt:     <http://qudt.org/schema/qudt/>
-PREFIX sens:     <https://secorolab.github.io/metamodels/robot/sensors#>
-PREFIX cstr:     <https://comp-rob2b.github.io/metamodels/task/constraint#>
-PREFIX cstr-hdl: <https://comp-rob2b.github.io/metamodels/task/constraint-handler#>
-PREFIX ch:       <https://secorolab.github.io/metamodels/task/constraint-handler#>
-"""
-
-# The run's own tick rate: the frequency of the tick scale its instants are positioned on.
-# Scoped through the run so the sensors declaring update rates of their own cannot answer.
-RUN_PERIOD = (
-    VIEW_PREFIXES
-    + """
-SELECT ?hz WHERE {
-    ?run a ms-prov:TaskExecution ; time:hasBeginning/time:inTimePosition/time:hasTRS ?trs .
-    ?trs sens:update-rate/qudt:value ?hz .
-} LIMIT 1
-"""
-)
-
-# Every occupancy, in order, with what moved control into it. `?element` may be bound by the
-# caller to narrow the timeline to one design IRI. A transition or event occurrence is a plain
-# prov:Activity: its referent's own rdf:type says what it was.
-ACTIVITY_TIMELINE = (
-    VIEW_PREFIXES
-    + """
-SELECT ?occ ?element ?beginStep ?endStep ?transition ?event WHERE {
-    ?occ a ms-prov:MotionExecution ; prov:used ?element ;
-         time:hasBeginning/time:inTimePosition/time:numericPosition ?beginStep .
-    OPTIONAL { ?occ time:hasEnd/time:inTimePosition/time:numericPosition ?endStep }
-    OPTIONAL {
-        ?occ prov:wasInformedBy ?flow .
-        ?flow a prov:Activity ; prov:used ?transition .
-        OPTIONAL { ?flow prov:wasInformedBy/prov:used ?event }
-    }
-} ORDER BY ?beginStep
-"""
-)
-
-# A constraint counts as satisfied during an occupancy when both its endpoints fall inside it.
-# `?occ` must be bound by the caller: left open this is a cross join costing ten seconds.
-CONSTRAINTS_DURING_ACTIVITY = (
-    VIEW_PREFIXES
-    + """
-SELECT DISTINCT ?constraint WHERE {
-    ?occ time:hasBeginning/time:inTimePosition/time:numericPosition ?from ;
-         time:hasEnd/time:inTimePosition/time:numericPosition ?to .
-    ?held a ms-prov:ConstraintMaintenance ; prov:used ?constraint ;
-          time:hasBeginning/time:inTimePosition/time:numericPosition ?heldFrom ;
-          time:hasEnd/time:inTimePosition/time:numericPosition ?heldTo .
-    ?constraint a cstr:Constraint .
-    FILTER(?heldFrom >= ?from && ?heldTo <= ?to)
-}
-"""
-)
-
-# The same containment kept as spans, because a bar needs both ends and one constraint held
-# twice is two bars. `?occ` must be bound, for the same reason as above.
-CONSTRAINT_SPANS_DURING_ACTIVITY = (
-    VIEW_PREFIXES
-    + """
-SELECT ?constraint ?heldFrom ?heldTo WHERE {
-    ?occ time:hasBeginning/time:inTimePosition/time:numericPosition ?from ;
-         time:hasEnd/time:inTimePosition/time:numericPosition ?to .
-    ?held a ms-prov:ConstraintMaintenance ; prov:used ?constraint ;
-          time:hasBeginning/time:inTimePosition/time:numericPosition ?heldFrom ;
-          time:hasEnd/time:inTimePosition/time:numericPosition ?heldTo .
-    ?constraint a cstr:Constraint .
-    FILTER(?heldFrom >= ?from && ?heldTo <= ?to)
-} ORDER BY ?heldFrom
-"""
-)
-
-# One row per firing. The arming that fired is the maintenance carrying the observed value; a
-# stretch that broke instead closes without one, and counts as a re-arm. A monitor that never
-# fired keeps its row with the span unbound.
-GATE_ANALYSIS = (
-    VIEW_PREFIXES
-    + """
-SELECT ?monitor ?firstHeldStep ?firedStep ?event ?declaredDwell
-       (COUNT(DISTINCT ?stretch) AS ?rearmCount)
-       (GROUP_CONCAT(DISTINCT STR(?member); SEPARATOR=" ") AS ?members)
-WHERE {
-    ?monitor a cstr-hdl:Monitor .
-    OPTIONAL { ?monitor ch:debounce-duration/qudt:value ?declaredDwell }
-    OPTIONAL { ?monitor cstr-hdl:event ?event }
-    OPTIONAL {
-        ?occ a ms-prov:ConstraintMaintenance ; prov:used ?monitor ;
-             sosa:hasResult ?observed ;
-             time:hasBeginning/time:inTimePosition/time:numericPosition ?firstHeldStep .
-        OPTIONAL { ?occ time:hasEnd/time:inTimePosition/time:numericPosition ?firedStep }
-        OPTIONAL {
-            ?stretch a ms-prov:ConstraintMaintenance ; prov:used ?monitor .
-            FILTER(?stretch != ?occ)
-        }
-        OPTIONAL {
-            ?occ prov:wasInformedBy ?watch .
-            ?watch a ms-prov:ConstraintMaintenance ; prov:used ?member .
-        }
-    }
-}
-GROUP BY ?monitor ?firstHeldStep ?firedStep ?event ?declaredDwell
-ORDER BY ?firstHeldStep ?monitor
-"""
-)
-
-# What the model declares can be occupied at all -- unchanged by a run that stopped entering
-# one of them, which is exactly what makes it usable as the two runs' shared identity.
-DECLARED_ACTIVITIES = (
-    VIEW_PREFIXES
-    + f"""
-SELECT DISTINCT ?element WHERE {{
-    ?element a ?kind . FILTER(STRSTARTS(STR(?kind), "{BEHAVIOUR_MM}"))
-}}
-"""
-)
-
-
-def views_graph(run_dir: Path) -> GraphService:
-    """The dataset these views read: the archived runtime graph joined to the design graph.
-
-    A run that kept a runtime.ttl answers from it alone, with an empty store -- the log is
-    never opened, not even for its header, and that boundary is what makes these views cheap.
-    A run still executing has no archived graph, so it falls back to 015's projection; nothing
-    here reads a frame, and that projection is strided, so its armings report as unavailable.
-    """
-    archived = run_runtime_ttl(run_dir)
-    if archived is None:
-        return run_graph(run_dir)
-    return GraphService(
-        run_dir.parent.parent,
-        RunStore(run_dir.name),
-        manifest=run_model_manifest(run_dir),
-        runtime_ttl=archived,
-    )
-
-
-# rdflib parses SPARQL with pyparsing, whose parser state is process-global: two handler
-# threads parsing at once corrupt each other and both requests die. One query at a time.
-_QUERY_LOCK = threading.Lock()
-
-
-def _rows(service: GraphService, sparql: str, **bindings) -> list:
-    with _QUERY_LOCK:
-        service.sync()
-        return list(service.dataset.query(sparql, initBindings=bindings or None))
-
-
-def _step(term) -> int | None:
-    return None if term is None else int(term)
-
-
-def _seconds(steps: int | None, period_s: float | None) -> float | None:
-    """A step count as seconds, or nothing when the run recorded no tick rate."""
-    if steps is None or period_s is None:
-        return None
-    return round(steps * period_s, 3)
-
-
-def _period_s(service: GraphService) -> float | None:
-    rows = _rows(service, RUN_PERIOD)
-    hz = float(rows[0][0]) if rows and rows[0][0] is not None else 0.0
-    return 1 / hz if hz else None
-
-
-def _qualified_name(iri) -> str:
-    """A monitor's name with the handler it belongs to, since `mon-opened` names five of them."""
-    try:
-        return f"{rdf_name(iri_parent(iri))}/{rdf_name(iri)}"
-    except ValueError:
-        return rdf_name(iri)
-
-
-def _names(concatenated) -> list[str]:
-    """The display names in a GROUP_CONCAT of IRIs, in the order the group produced them."""
-    return [rdf_name(iri) for iri in str(concatenated or "").split() if iri]
-
-
-def timeline(run_dir: Path, iri: str | None = None) -> dict:
-    """Every occupancy this run recorded, in order, with what moved control into it.
-
-    Repeated occupancies stay separate rows: a re-entry is usually the thing being looked for.
-    Narrowed to one design IRI, each row also carries what held throughout it -- the interval
-    filter is a cross join, so it is answered for the spans actually asked about.
-    """
-    service = views_graph(run_dir)
-    period_s = _period_s(service)
-    bindings = {"element": rdflib.URIRef(iri)} if iri else {}
-    spans = []
-    for occ, element, begin, end, transition, event in _rows(
-        service, ACTIVITY_TIMELINE, **bindings
-    ):
-        begin_step, end_step = _step(begin), _step(end)
-        satisfied = (
-            [rdf_name(row[0]) for row in _rows(service, CONSTRAINTS_DURING_ACTIVITY, occ=occ)]
-            if iri
-            else []
-        )
-        spans.append(
-            {
-                "occurrence": str(occ),
-                "element": str(element),
-                "name": rdf_name(element),
-                "begin_step": begin_step,
-                "end_step": end_step,
-                "entered_s": _seconds(begin_step, period_s),
-                "duration_s": _seconds(
-                    None if end_step is None else end_step - begin_step, period_s
-                ),
-                "transition": None if transition is None else rdf_name(transition),
-                "event": None if event is None else rdf_name(event),
-                "satisfied": sorted(satisfied),
-            }
-        )
-    return {
-        "period_s": period_s,
-        "runtime_source": service.runtime_source or "unavailable",
-        "spans": spans,
-    }
-
-
-def activity_constraints(run_dir: Path, occurrence: str) -> dict:
-    """The constraint spans held inside one occupancy, for the lane that expands under its bar.
-
-    Asked of one occurrence and never of a run: the interval filter is a cross join, so the
-    whole run at once costs ten seconds to answer a question nobody asked of every bar.
-    """
-    service = views_graph(run_dir)
-    period_s = _period_s(service)
-    spans = []
-    for constraint, held_from, held_to in _rows(
-        service, CONSTRAINT_SPANS_DURING_ACTIVITY, occ=rdflib.URIRef(occurrence)
-    ):
-        begin_step, end_step = _step(held_from), _step(held_to)
-        spans.append(
-            {
-                "constraint": str(constraint),
-                "name": rdf_name(constraint),
-                "begin_step": begin_step,
-                "end_step": end_step,
-                "entered_s": _seconds(begin_step, period_s),
-                "duration_s": _seconds(
-                    None if end_step is None else end_step - begin_step, period_s
-                ),
-            }
-        )
-    return {
-        "period_s": period_s,
-        "runtime_source": service.runtime_source or "unavailable",
-        "spans": spans,
-    }
-
-
-def gates(run_dir: Path) -> dict:
-    """Each gate's arming: how long it waited, how often it re-armed, against its declared dwell.
-
-    An observation, never a verdict -- a long wait may be exactly what the author wanted. A
-    projection has only strided frames behind it, so its waits and re-arms are reported
-    unavailable rather than as numbers a reader would trust.
-    """
-    service = views_graph(run_dir)
-    period_s = _period_s(service)
-    archived = service.runtime_source == "archive"
-    rows = []
-    for monitor, held, fired, event, dwell, rearm, members in _rows(service, GATE_ANALYSIS):
-        first_held_step, fired_step = _step(held), _step(fired)
-        waited = (
-            None if first_held_step is None or fired_step is None else fired_step - first_held_step
-        )
-        rows.append(
-            {
-                "monitor": str(monitor),
-                "monitor_name": _qualified_name(monitor),
-                "event": None if event is None else str(event),
-                "event_name": None if event is None else rdf_name(event),
-                "members": _names(members),
-                "first_held_step": first_held_step,
-                "fired_step": fired_step,
-                "waited_s": _seconds(waited, period_s) if archived else None,
-                "rearm_count": (int(rearm) if rearm is not None else None) if archived else None,
-                "declared_dwell_s": None if dwell is None else float(dwell),
-            }
-        )
-    return {
-        "period_s": period_s,
-        "runtime_source": service.runtime_source or "unavailable",
-        "gates": rows,
-    }
-
-
-def _declared(run_dir: Path) -> set[str]:
-    return {str(row[0]) for row in _rows(views_graph(run_dir), DECLARED_ACTIVITIES)}
-
-
-def compare(left_dir: Path, right_dir: Path) -> dict:
-    """Two runs' timelines aligned occurrence by occurrence, in the left run's order.
-
-    An element entered in only one of them keeps its row with the other side blank: an element
-    that stopped being entered is exactly the regression this view exists to show. Two runs of
-    different models align what aligns, and the payload says they are different models.
-    """
-    left, right = timeline(left_dir), timeline(right_dir)
-    pending: dict[str, list[dict]] = {}
-    for span in right["spans"]:
-        pending.setdefault(span["element"], []).append(span)
-    rows = []
-    for span in left["spans"]:
-        queue = pending.get(span["element"]) or []
-        rows.append(_aligned(span, queue.pop(0) if queue else None))
-    for span in (span for queue in pending.values() for span in queue):
-        rows.append(_aligned(None, span))
-    return {
-        "same_model": _declared(left_dir) == _declared(right_dir),
-        "left": left,
-        "right": right,
-        "activities": rows,
-    }
-
-
-def _aligned(left: dict | None, right: dict | None) -> dict:
-    both = [side["duration_s"] for side in (left, right) if side]
-    delta = (
-        right["duration_s"] - left["duration_s"] if left and right and None not in both else None
-    )
-    return {
-        "element": (left or right)["element"],
-        "name": (left or right)["name"],
-        "left_s": left["duration_s"] if left else None,
-        "right_s": right["duration_s"] if right else None,
-        "delta_s": None if delta is None else round(delta, 3),
-    }
 
 
 def curie(term, prefixes: dict) -> str | None:

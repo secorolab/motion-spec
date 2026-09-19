@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -12,51 +13,79 @@ from motion_spec.introspection.archive import (
     ArchiveError,
     create_archive_manifest,
     sha256_file,
-    _validate_runtime_shacl,
     verify_manifest,
 )
-from motion_spec.introspection.provenance import prov_uri, rec_run_lifecycle
+from motion_spec.introspection.provenance import (
+    GENERATION_DOCUMENT,
+    GRAPH_DSL,
+    prov_uri,
+    rec_run_lifecycle,
+)
 from motion_spec.introspection import replay
 from motion_spec.introspection.replay import decode_frames, summarize, validate_header
-from motion_spec.introspection.runtime_graph import write_runtime_ttl
 from motion_spec_dsl.rdf_parser.vocab import APP
-from support import _provenance, _schema, _source_tree, _write_frame_log
+from support import _provenance, _schema, _source_tree, _start_run, _write_frame_log
 
 REC = rdflib.Namespace("https://secorolab.github.io/metamodels/rec#")
 PROV = rdflib.Namespace("http://www.w3.org/ns/prov#")
+PROV_EXT = rdflib.Namespace("https://secorolab.github.io/metamodels/prov#")
 QUDT = rdflib.Namespace("http://qudt.org/schema/qudt/")
+SPDX = rdflib.Namespace("http://spdx.org/rdf/terms#")
 
 
-def _rec_entity_path(graph, label: str) -> str:
-    """The archive-relative path REC recorded for the entity carrying `label`."""
+def _rec_entity_location(graph, label: str, run_dir: Path) -> str:
+    """Where in the archive REC put the entity carrying `label`.
+
+    Stored relative, so the bundle moves; a parse resolves it against the document it sits in.
+    """
     entity = next(e for e, value in graph.subject_objects(rdflib.RDFS.label) if str(value) == label)
-    return str(graph.value(graph.value(entity, PROV.atLocation), REC.path))
+    location = str(graph.value(entity, PROV.atLocation))
+    return str(Path(urllib.parse.urlparse(location).path).relative_to(run_dir.resolve()))
 
 
-def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> None:
+def _executable(tmp_path: Path) -> Path:
+    """What a run ran: the one input a manifest still names after the run is over."""
+    path = tmp_path / "main"
+    path.write_text("binary\n")
+    return path
+
+
+def _archived(tmp_path: Path, run_dir: Path, source: Path, **manifest) -> dict:
+    """A run catalogued as the runner catalogues it, then archived."""
+    executable = _executable(tmp_path)
+    _start_run(run_dir, source, executable)
+    return create_archive_manifest(
+        run_dir, source_dir=source, run_id="run-test", log_producer_executable=executable, **manifest
+    )
+
+
+def test_archive_and_replay_are_self_contained(tmp_path: Path) -> None:
     source = _source_tree(tmp_path / "source")
     run_dir = tmp_path / "copied-run"
 
-    manifest = create_archive_manifest(run_dir, source_dir=source, run_id="run-test")
+    manifest = _archived(tmp_path, run_dir, source)
 
-    assert "log_producer_executable" not in manifest["files"]
     assert manifest["files"]["rec"] == "rec.ld.json"
     assert manifest["files"]["frame_log_health"] == "logs/frame_log.pb.health.json"
     assert manifest["files"]["frame_log_proto"] == "contract/frame_log.proto"
     assert "frame_layout" not in manifest["files"]
-    assert manifest["files"]["dsl_provenance"] == "provenance/dsl.ld.json"
+    # One provenance document, not one per tool.
+    assert manifest["files"]["provenance"] == GENERATION_DOCUMENT
+    assert "dsl_provenance" not in manifest["files"]
+    assert "runtime_ttl" not in manifest["files"]
     assert "rec" not in manifest
     assert manifest["files"]["controller"] == "controller/source"
     assert "artifacts" not in manifest
     # The archived proto is the generated semantic one (copied from source), not a static file.
     assert "double q0 = 3000;" in (run_dir / "contract" / "frame_log.proto").read_text()
     assert verify_manifest(run_dir)["run_id"] == "run-test"
-    header = validate_header(run_dir / "logs" / "frame_log.pb")
-    assert header["producer_agent_id"] == "agent:controller_process"
+    # The header states the contract the log was written against and nothing about the run.
+    assert validate_header(run_dir / "logs" / "frame_log.pb") == {
+        "schema_hash": _schema()["schema_hash"]
+    }
 
-    frames = decode_frames(run_dir / "logs" / "frame_log.pb")
-    assert frames[0]["step"] == 7
-    assert frames[0]["quantities"] == {"q0": 42.0}
+    assert decode_frames(run_dir / "logs" / "frame_log.pb")[0]["step"] == 7
+    assert decode_frames(run_dir / "logs" / "frame_log.pb")[0]["quantities"] == {"q0": 42.0}
     assert "frames      1" in summarize(run_dir / "logs" / "frame_log.pb")
     assert "dropped 0" in summarize(run_dir / "logs" / "frame_log.pb")
     assert decode_frames(run_dir)[0]["step"] == 7
@@ -65,52 +94,61 @@ def test_archive_replay_and_runtime_ttl_are_self_contained(tmp_path: Path) -> No
     with pytest.raises(ArchiveError, match="does not exist"):
         summarize(run_dir / "missing")
 
-    runtime_ttl = write_runtime_ttl(run_dir, frames)
-    assert runtime_ttl.exists()
-    verify_manifest(run_dir)
 
-    # REC records the archive as a PROV graph: lifecycle is an rdf:type on the run, and an
-    # entity's role is its rdfs:label. See metamodels rec.shacl.ttl (RunExecutionShape).
+def test_rec_records_the_run_as_an_execution_of_what_it_used(tmp_path: Path) -> None:
+    """One run, one node: rec types it, names what it used and hashes what it generated."""
+    source = _source_tree(tmp_path / "source")
+    run_dir = tmp_path / "run"
+    _archived(tmp_path, run_dir, source)
     rec_graph = rdflib.Graph().parse(run_dir / "rec.ld.json", format="json-ld")
+    run = rdflib.URIRef(prov_uri("run:run-test"))
+
     assert rec_run_lifecycle(rec_graph)["status"] == "COMPLETED"
-    # One run, one node: rec types the same IRI the runtime graph does.
-    assert (rdflib.URIRef(prov_uri("run:run-test")), rdflib.RDF.type, REC.CompletedRun) in rec_graph
+    assert (run, rdflib.RDF.type, PROV_EXT.Execution) in rec_graph
+    assert (run, PROV.used, None) in rec_graph
+    assert (run, PROV.wasAssociatedWith, None) in rec_graph
     labels = {str(value) for value in rec_graph.objects(None, rdflib.RDFS.label)}
-    assert {"frame_log", "frame_log_health", "runtime_ttl"} <= labels
-    runtime_entity = next(
-        entity
-        for entity, label in rec_graph.subject_objects(rdflib.RDFS.label)
-        if str(label) == "runtime_ttl"
-    )
-    assert str(rec_graph.value(runtime_entity, REC.sha256)) == sha256_file(runtime_ttl)
-    health = next(
+    assert {"frame_log", "frame_log_health", "log_producer_executable"} <= labels
+    # The generation's own artifacts are the manifest's business, never the run's inputs.
+    assert not {"provenance", "ir", "model"} & labels
+    # Every artefact the run generated hangs off the run itself.
+    log_entity = next(
         entity
         for entity, value in rec_graph.subject_objects(rdflib.RDFS.label)
-        if str(value) == "frame_log_health"
+        if str(value) == "frame_log"
     )
-    assert (
-        health,
-        rdflib.URIRef("http://www.w3.org/ns/prov#wasGeneratedBy"),
-        rdflib.URIRef(prov_uri("activity:controller_execution")),
-    ) in rec_graph
-    assert (
-        rdflib.URIRef(prov_uri("activity:runtime_ttl_recovery")),
-        rdflib.RDF.type,
-        rdflib.URIRef("http://www.w3.org/ns/prov#Activity"),
-    ) in rec_graph
-    # rec references bundle contents by archive-relative path (portable, no machine path).
-    assert _rec_entity_path(rec_graph, "dsl_provenance") == "provenance/dsl.ld.json"
-    assert _rec_entity_path(rec_graph, "runtime_ttl") == "runtime/runtime.ttl"
+    assert (log_entity, PROV.wasGeneratedBy, run) in rec_graph
+    # An integrity claim is an spdx:Checksum, and the location it is claimed for is relative.
+    checksum = rec_graph.value(log_entity, SPDX.checksum)
+    assert str(rec_graph.value(checksum, SPDX.checksumValue)) == sha256_file(
+        run_dir / "logs" / "frame_log.pb.zst"
+    )
+    assert _rec_entity_location(rec_graph, "frame_log", run_dir) == "logs/frame_log.pb.zst"
+
     metrics = {
-        str(rec_graph.value(metric, rdflib.RDFS.label) or metric)
-        .rsplit("/", 1)[0]
-        .rsplit("metric/", 1)[-1]: (rec_graph.value(metric, QUDT.value))
-        for metric in rec_graph.objects(None, REC.metrics)
+        str(rec_graph.value(metric, rdflib.RDFS.label)): rec_graph.value(metric, QUDT.value)
+        for metric in rec_graph.subjects(rdflib.RDF.type, REC.Metric)
     }
     assert metrics["frame_log_attempted_frames"].toPython() == 1
     assert metrics["frame_log_written_frames"].toPython() == 1
     assert metrics["frame_log_dropped_frames"].toPython() == 0
+    # The sixth counter the health file keeps, and one of the three `complete` is computed from.
+    assert metrics["frame_log_write_errors"].toPython() == 0
     assert metrics["frame_log_complete"].toPython() == 1
+
+
+def test_verify_rejects_a_file_that_no_longer_hashes_to_what_rec_recorded(tmp_path: Path) -> None:
+    source = _source_tree(tmp_path / "source")
+    run_dir = tmp_path / "run"
+    _archived(tmp_path, run_dir, source)
+    (run_dir / "logs" / "console.log").write_text("started\n")
+    create_archive_manifest(
+        run_dir, source_dir=source, run_id="run-test", log_producer_executable=_executable(tmp_path)
+    )
+    (run_dir / "logs" / "console.log").write_text("tampered\n")
+
+    with pytest.raises(ArchiveError, match="sha256 mismatch"):
+        verify_manifest(run_dir)
 
 
 def test_replay_works_on_aborted_run_without_manifest(tmp_path: Path) -> None:
@@ -169,7 +207,7 @@ def test_archive_vendors_imported_model_graph_and_verify_catches_dangling(tmp_pa
     )
     run_dir = tmp_path / "run"
 
-    manifest = create_archive_manifest(run_dir, source_dir=source, run_id="run-test")
+    manifest = _archived(tmp_path, run_dir, source)
     assert manifest["files"]["model_imports"] == ["model/sub.ld.json"]
     assert (run_dir / "model" / "sub.ld.json").is_file()
     assert "artifacts" not in manifest
@@ -181,10 +219,9 @@ def test_archive_vendors_imported_model_graph_and_verify_catches_dangling(tmp_pa
 
 
 def test_archive_is_provenance_complete_and_relative(tmp_path: Path) -> None:
-    # The DSL's authored source (referenced by dsl.ld.json) is vendored into source/ and
-    # its atLocation rewritten relative; a vendor asset the model only points at (via
-    # codegen provenance) is NOT archived. The dsl provenance is imported but not
-    # duplicated; the manifest import/iri-map are rewritten to resolve inside the archive.
+    # The DSL's authored source (referenced by the generation provenance) is vendored into
+    # source/ and its atLocation rewritten relative; a vendor asset the model only points at is
+    # NOT archived. The manifest import/iri-map are rewritten to resolve inside the archive.
     source = _source_tree(tmp_path / "source")
     authored = tmp_path / "inputs" / "model.robmot"
     authored.parent.mkdir()
@@ -194,34 +231,36 @@ def test_archive_is_provenance_complete_and_relative(tmp_path: Path) -> None:
     vendor.write_text("<mujoco/>\n")
 
     manifest_doc = _importing_manifest()
-    manifest_doc["@graph"][0]["import"] = ["sub.ld.json", "provenance/dsl.ld.json"]
     (source / "model.ld.json").write_text(json.dumps(manifest_doc, indent=4))
     (source / "sub.ld.json").write_text(
         json.dumps({"@context": {"prov": "http://www.w3.org/ns/prov#"}, "@graph": []})
     )
-    # dsl.ld.json references the authored source -> must be vendored + rewritten.
-    dsl = _provenance()
-    dsl["@graph"].append(
+    # The DSL's graph names the authored source (vendored + rewritten); motion-spec's names a
+    # vendor asset the archive only points at.
+    document = _provenance()
+    document["@graph"][0]["@graph"].append(
         {
-            "@id": "https://example.test/entity/src",
+            "@id": "https://example.test/entity/asset",
             "@type": "Entity",
-            "atLocation": authored.resolve().as_uri(),
-        }
-    )
-    (source / "provenance" / "dsl.ld.json").write_text(json.dumps(dsl, indent=4))
-    # motion-spec.ld.json points at a vendor asset -> must be left alone, not archived.
-    prov = _provenance()
-    prov["@graph"].append(
-        {
-            "@id": "https://example.test/agent/robot",
-            "@type": "Agent",
             "atLocation": vendor.resolve().as_uri(),
         }
     )
-    (source / "provenance.ld.json").write_text(json.dumps(prov, indent=4))
+    document["@graph"].append(
+        {
+            "@id": str(GRAPH_DSL),
+            "@graph": [
+                {
+                    "@id": "https://example.test/entity/src",
+                    "@type": "Entity",
+                    "atLocation": authored.resolve().as_uri(),
+                }
+            ],
+        }
+    )
+    (source / GENERATION_DOCUMENT).write_text(json.dumps(document, indent=4))
     run_dir = tmp_path / "run"
 
-    manifest = create_archive_manifest(run_dir, source_dir=source, run_id="run-test")
+    manifest = _archived(tmp_path, run_dir, source)
 
     # Authored source vendored under source/, tracked, reachable.
     assert manifest["files"]["sources"] == ["source/model.robmot"]
@@ -230,61 +269,53 @@ def test_archive_is_provenance_complete_and_relative(tmp_path: Path) -> None:
 
     # Vendor asset NOT archived; its reference left untouched.
     assert not (run_dir / "source" / "gen3.xml").exists()
-    codegen = rdflib.Graph().parse(run_dir / "provenance" / "motion-spec.ld.json", format="json-ld")
-    robot = rdflib.URIRef("https://example.test/agent/robot")
-    assert codegen.value(robot, PROV.atLocation) == rdflib.URIRef(vendor.resolve().as_uri())
-
-    # dsl provenance imported but not duplicated under model/.
-    assert set(manifest["files"]["model_imports"]) == {
-        "model/sub.ld.json",
-        "provenance/dsl.ld.json",
-    }
-    assert not (run_dir / "model" / "provenance").exists()
+    archived = rdflib.Dataset(default_union=True).parse(
+        run_dir / GENERATION_DOCUMENT, format="json-ld"
+    )
+    asset = rdflib.URIRef("https://example.test/entity/asset")
+    assert archived.value(asset, PROV.atLocation) == rdflib.URIRef(vendor.resolve().as_uri())
+    # The authored source's location now names the archived copy.
+    src_node = rdflib.URIRef("https://example.test/entity/src")
+    assert archived.value(src_node, PROV.atLocation) == rdflib.URIRef(
+        (run_dir / "source" / "model.robmot").resolve().as_uri()
+    )
+    # The document keeps its shape: the wrapper and the named graph survive the rewrite.
+    written = json.loads((run_dir / GENERATION_DOCUMENT).read_text())
+    assert written["schema_version"] == 1 and written["@graph"][0]["@graph"]
 
     # Manifest import + iri-map rewritten to resolve archive-relative.
     model = rdflib.Dataset().parse(run_dir / "model" / "model.ld.json", format="json-ld")
     assert {str(value) for _, _, value, _ in model.quads((None, APP["import"], None, None))} == {
-        "https://secorolab.github.io/model/sub.ld.json",
-        "https://secorolab.github.io/provenance/dsl.ld.json",
+        "https://secorolab.github.io/model/sub.ld.json"
     }
     iri_root = rdflib.URIRef("https://secorolab.github.io/")
     assert next(model.quads((iri_root, APP.path, None, None)))[2] == rdflib.Literal("..")
 
-    # Authored-source atLocation rewritten relative to the dsl provenance doc.
-    dsl_out = rdflib.Graph().parse(run_dir / "provenance" / "dsl.ld.json", format="json-ld")
-    src_node = rdflib.URIRef("https://example.test/entity/src")
-    assert dsl_out.value(src_node, PROV.atLocation) == rdflib.URIRef(
-        (run_dir / "source" / "model.robmot").resolve().as_uri()
-    )
-
     assert verify_manifest(run_dir)["run_id"] == "run-test"
 
 
-def test_manifest_lists_runtime_ttl_and_console_only_when_present(tmp_path: Path) -> None:
-    # A manifest that promises runtime/runtime.ttl a run never wrote is a false record.
+def test_manifest_lists_console_and_videos_only_when_present(tmp_path: Path) -> None:
+    # A manifest that promises a file the run never wrote is a false record.
     source = _source_tree(tmp_path / "source")
     run_dir = tmp_path / "run"
 
-    manifest = create_archive_manifest(run_dir, source_dir=source, run_id="run-test")
-    assert "runtime_ttl" not in manifest["files"]
+    manifest = _archived(tmp_path, run_dir, source)
+    executable = _executable(tmp_path)
     assert "console" not in manifest["files"]
+    assert "videos" not in manifest["files"]
     assert verify_manifest(run_dir)["run_id"] == "run-test"
 
     (run_dir / "logs" / "console.log").write_text("started\n")
-    write_runtime_ttl(run_dir, decode_frames(run_dir / "logs" / "frame_log.pb"))
-    manifest = create_archive_manifest(run_dir, source_dir=source, run_id="run-test")
-    assert manifest["files"]["runtime_ttl"] == "runtime/runtime.ttl"
-    assert manifest["files"]["console"] == "logs/console.log"
-    assert verify_manifest(run_dir)["run_id"] == "run-test"
-
-    # The generation-owned builder follows the same rule.
-    flat, generated = _generation_tree(tmp_path)
-    generation_run = generated.parent / "runs" / "run-1"
+    (run_dir / "logs" / "wrist.mp4").write_bytes(b"\x00video")
     manifest = create_archive_manifest(
-        generation_run, source_dir=generated, run_id="run-1", frame_log=flat / "frame_log.pb"
+        run_dir, source_dir=source, run_id="run-test", log_producer_executable=executable
     )
-    assert "runtime_ttl" not in manifest["files"]
-    assert "console" not in manifest["files"]
+    assert manifest["files"]["console"] == "logs/console.log"
+    assert manifest["files"]["videos"] == ["logs/wrist.mp4"]
+    assert verify_manifest(run_dir)["run_id"] == "run-test"
+    # A video is something the run produced, so rec records it as an artefact of the run.
+    rec_graph = rdflib.Graph().parse(run_dir / "rec.ld.json", format="json-ld")
+    assert _rec_entity_location(rec_graph, "videos", run_dir) == "logs/wrist.mp4"
 
 
 def test_logless_manifest_says_so_and_only_then_verifies_without_a_log(tmp_path: Path) -> None:
@@ -296,9 +327,7 @@ def test_logless_manifest_says_so_and_only_then_verifies_without_a_log(tmp_path:
     (run_dir / "logs").mkdir(parents=True)
     (run_dir / "logs" / "console.log").write_text("started\n")
 
-    manifest = create_archive_manifest(
-        run_dir, source_dir=source, run_id="run-test", recorded=False
-    )
+    manifest = _archived(tmp_path, run_dir, source, recorded=False)
     assert manifest["recorded"] is False
     assert "frame_log" not in manifest["files"]
     assert "frame_log_health" not in manifest["files"]
@@ -310,26 +339,15 @@ def test_logless_manifest_says_so_and_only_then_verifies_without_a_log(tmp_path:
         verify_manifest(run_dir)
 
 
-def test_manifest_hash_verification_rejects_mutation(tmp_path: Path) -> None:
-    source = _source_tree(tmp_path / "source")
-    run_dir = tmp_path / "run"
-    create_archive_manifest(run_dir, source_dir=source, run_id="run-test")
-    (run_dir / "contract" / "frame_log.proto").write_text("mutated")
-
-    with pytest.raises(ArchiveError, match="frame_log.proto: sha256 mismatch"):
-        verify_manifest(run_dir)
-
-
 def _generation_tree(tmp_path: Path) -> tuple[Path, Path]:
     """A generation bundle and the flat source tree its artifacts were copied from."""
     flat = _source_tree(tmp_path / "flat")
     generated = tmp_path / "generation" / "generated"
-    for directory in ("contract", "model", "controller", "provenance"):
+    for directory in ("contract", "model", "controller"):
         (generated / directory).mkdir(parents=True, exist_ok=True)
     for source, target in (
         (flat / "frame_log.proto", generated / "contract/frame_log.proto"),
-        (flat / "provenance.ld.json", generated / "provenance/motion-spec.ld.json"),
-        (flat / "provenance/dsl.ld.json", generated / "provenance/dsl.ld.json"),
+        (flat / GENERATION_DOCUMENT, generated / GENERATION_DOCUMENT),
         (flat / "model.ld.json", generated / "model/demo-app.ld.json"),
         (flat / "ir.json", generated / "model/ir.json"),
     ):
@@ -348,7 +366,7 @@ def test_generation_owned_run_does_not_copy_static_artifacts(tmp_path: Path) -> 
     assert {path.name for path in run_dir.iterdir()} == {"logs", "rec.ld.json", "manifest.json"}
     assert "provenance" not in manifest
     assert "rec" not in manifest
-    assert json.dumps(manifest).count("../../generated/provenance/motion-spec.ld.json") == 1
+    assert json.dumps(manifest).count(f"../../generated/{GENERATION_DOCUMENT}") == 1
     assert "artifacts" not in manifest
 
 
@@ -370,52 +388,17 @@ def test_generation_run_vendors_its_authored_source(tmp_path: Path) -> None:
     # Everything the generation owns is still referenced where it lives, not duplicated.
     assert manifest["files"]["ir"] == "../../generated/model/ir.json"
     assert not (run_dir / "model").exists()
-    # REC records each vendored source as its own entity, at its archive-relative path.
-    rec_graph = rdflib.Graph().parse(run_dir / "rec.ld.json", format="json-ld")
-    assert {
-        str(rec_graph.value(rec_graph.value(entity, PROV.atLocation), REC.path))
-        for entity, label in rec_graph.subject_objects(rdflib.RDFS.label)
-        if str(label) == "source_model"
-    } == {"source/demo.fsm", "source/demo.robmot"}
 
 
-_RUNTIME_TTL = """
-@prefix ms-prov: <https://secorolab.github.io/metamodels/motion-spec/prov#> .
-@prefix prov: <http://www.w3.org/ns/prov#> .
-@prefix time: <http://www.w3.org/2006/time#> .
+def test_verify_requires_the_run_to_be_a_recorded_execution(tmp_path: Path) -> None:
+    """The gate on rec.ld.json: the run node is an Execution that names what it used."""
+    source = _source_tree(tmp_path / "source")
+    run_dir = tmp_path / "run"
+    create_archive_manifest(
+        run_dir, source_dir=source, run_id="run-test", log_producer_executable=_executable(tmp_path)
+    )
+    rec_path = run_dir / "rec.ld.json"
+    rec_path.write_text(rec_path.read_text().replace("prov-ext:Execution", "prov:Activity"))
 
-<run> a ms-prov:TaskExecution ;
-    prov:used <entity/model> ;
-    prov:wasAssociatedWith <agent/controller> ;
-    time:hasBeginning <t0> ; time:hasEnd <t9> .
-
-<motion> a ms-prov:MotionExecution ;
-    prov:used <https://example.test/motion_move> ;
-    prov:wasAssociatedWith <agent/controller> ;
-    prov:wasInformedBy <run> ;
-    time:hasBeginning <t0> ; time:hasEnd <t9> .
-
-<t0> a time:Instant ; time:inTimePosition [ time:numericPosition %s ; time:hasTRS <trs> ] .
-<t9> a time:Instant ; time:inTimePosition [ time:numericPosition 9 ; time:hasTRS <trs> ] .
-"""
-
-
-def _runtime_ttl(tmp_path: Path, first_position: str) -> Path:
-    path = tmp_path / "runtime.ttl"
-    path.write_text((_RUNTIME_TTL % first_position).lstrip())
-    return path
-
-
-def test_runtime_shacl_accepts_a_positioned_run(tmp_path: Path) -> None:
-    """The half that has to pass: a run and its motion, positioned on the tick scale."""
-    if not (Path(__file__).resolve().parents[2] / "metamodels").exists():
-        pytest.skip("metamodels is not in this checkout")
-    _validate_runtime_shacl(_runtime_ttl(tmp_path, "0"))
-
-
-def test_runtime_shacl_rejects_a_negative_position(tmp_path: Path) -> None:
-    """The half that has to fail: a tick before the run began is not a position."""
-    if not (Path(__file__).resolve().parents[2] / "metamodels").exists():
-        pytest.skip("metamodels is not in this checkout")
-    with pytest.raises(ArchiveError, match="runtime SHACL validation failed"):
-        _validate_runtime_shacl(_runtime_ttl(tmp_path, "-1"))
+    with pytest.raises(ArchiveError, match="missing REC provenance relationship"):
+        verify_manifest(run_dir)

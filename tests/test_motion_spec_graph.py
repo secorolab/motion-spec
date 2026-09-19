@@ -133,7 +133,7 @@ def test_generation_documents_share_one_node_per_tool_and_per_file(generated_mod
     space motion-spec already mints agents and run artefacts in."""
     output = generated_model.parent
     msprov = Namespace("https://secorolab.github.io/motion-spec/provenance/")
-    ms_prov = Namespace("https://secorolab.github.io/metamodels/motion-spec/prov#")
+    prov_ext = Namespace("https://secorolab.github.io/metamodels/prov#")
     prov = Namespace("http://www.w3.org/ns/prov#")
     dsl = Graph().parse(output / "provenance" / "dsl.ld.json", format="json-ld")
     coord = Graph().parse(output / "provenance.ld.json", format="json-ld")
@@ -149,9 +149,9 @@ def test_generation_documents_share_one_node_per_tool_and_per_file(generated_mod
     assert msprov["entity/source/pick_place_single.fsm"] in set(coord.objects(None, prov.used))
     assert msprov["entity/source/pick_place_single.fsm"] in set(dsl.objects(None, prov.used))
 
-    # Compiling the spec is what these activities do; the class says so in both documents.
-    assert set(dsl.subjects(RDF.type, ms_prov.SpecCompilation))
-    assert set(coord.subjects(RDF.type, ms_prov.SpecCompilation))
+    # Turning one model into another is what these activities do; the class says so in both.
+    assert set(dsl.subjects(RDF.type, prov_ext.Transformation))
+    assert set(coord.subjects(RDF.type, prov_ext.Transformation))
     assert not set(coord.predicates(None, None)) & {
         URIRef("https://secorolab.github.io/coord-dsl/provenance/version")
     }

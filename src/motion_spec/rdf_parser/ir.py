@@ -162,8 +162,6 @@ def generate_ir(manifest_path) -> dict:
         computation,
         shared_data,
         robots,
-        scene,
-        platform,
         control_period_ns,
         backend,
         action_clients,

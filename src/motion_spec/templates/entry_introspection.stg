@@ -26,9 +26,6 @@ inline constexpr std::size_t kNumWrenches = <communication.introspection_artifac
 inline constexpr std::size_t kFrameSizeBytes = <communication.introspection_artifacts.frame_layout.frame_size_bytes>;
 inline constexpr const char *kSchemaHash = "<communication.introspection_artifacts.frame_layout.schema_hash>";
 inline constexpr const char *kFrameLayoutHash = "<communication.introspection_artifacts.frame_layout.frame_layout_hash>";
-inline constexpr const char *kRuntimeActivityId = "<communication.introspection_artifacts.frame_layout.runtime_activity_id>";
-inline constexpr const char *kRuntimeProducerAgentId = "<communication.introspection_artifacts.frame_layout.runtime_producer_agent_id>";
-inline constexpr const char *kRuntimeAgentId = "<communication.introspection_artifacts.frame_layout.runtime_agent_id>";
 inline constexpr std::int64_t kEndState = <communication.introspection_artifacts.frame_layout.end_state>;
 inline constexpr std::int64_t kNominalPeriodNs = <communication.introspection_artifacts.frame_layout.nominal_period_ns>;
 
@@ -830,9 +827,8 @@ message ConstantConsumer {
 }
 
 message FrameLogHeader {
+  reserved 2, 3, 12;
   string schema_hash = 1;
-  string producer_agent_id = 2;
-  string activity_id = 3;
   // This file's own FileDescriptorSet: the log carries the schema it was written against.
   bytes descriptor_set = 4;
   repeated SlotIri slots = 5;
@@ -843,7 +839,6 @@ message FrameLogHeader {
   repeated Transition fsm_transitions = 10;
   // Written once at init; repeating them per tick would say nothing new.
   repeated Constant constants = 11;
-  string runtime_agent_id = 12;
   string platform_name = 13;
   bool simulated = 14;
   int32 end_state = 15;

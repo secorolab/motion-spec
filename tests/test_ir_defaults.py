@@ -33,7 +33,6 @@ from rdflib.namespace import RDF, XSD, Namespace
 
 from motion_spec.classes.handlers import PIDController
 from motion_spec.classes.motion import MotionUnit
-from motion_spec.classes.scene import MjcfSceneRobot, MjcfSceneSpec
 from motion_spec.classes.solvers import CartesianAccelerationDriven
 from motion_spec.rdf_parser import (
     communication,
@@ -364,11 +363,8 @@ def test_introspection_contract_carries_control_and_provenance() -> None:
     robots = resources.Robots(
         serial_chains=[], platform_velocity=[], platform_force=[], schedule_steps=[]
     )
-    scene = MjcfSceneSpec(robots=[MjcfSceneRobot(id="robot", path="robot.xml")])
-    platform = {"uri": None, "name": None, "simulated": True, "backend": "mj_kdl"}
-
     introspection = communication.build_introspection(
-        model, [motion], computation, [], robots, scene, platform, 2_000_000, "mj_kdl"
+        model, [motion], computation, [], robots, 2_000_000, "mj_kdl"
     )
 
     assert introspection["contract_version"] == 2
@@ -384,12 +380,8 @@ def test_introspection_contract_carries_control_and_provenance() -> None:
     roles = {signal["role"] for signal in introspection["signals"]}
     assert {"measured_signal", "setpoint_signal", "tolerance_signal"} <= roles
     assert {"id": "control", "uri": "https://example.test/control"} in introspection["uris"]
-    runtime_activity = next(
-        activity
-        for activity in introspection["provenance"]["activities"]
-        if activity["id"] == "activity:controller_execution"
-    )
-    assert runtime_activity["wasAssociatedWith"] == "agent:controller_process"
+    # The IR is the codegen contract; nothing in it describes the run that will execute it.
+    assert "provenance" not in introspection
 
 
 def test_velocity_profile_operator_closure_exposes_codegen_fields() -> None:

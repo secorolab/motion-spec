@@ -32,7 +32,7 @@ digraph pipeline {
     cpp [label="gen / gen code\ngenerated C++"];
     build [label="build\nreusable executable"];
     run [label="run\nREC + frame log"];
-    replay [label="replay\nsummary / runtime RDF"];
+    replay [label="replay\nsummary / decoded frames"];
 
     ir -> cpp -> build;
     build -> run [label="1..n"];

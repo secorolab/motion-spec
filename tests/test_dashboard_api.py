@@ -233,7 +233,7 @@ def test_a_generation_answers_a_query_without_a_run(dashboard):
     answer = dashboard.post(
         "/api/sparql", {"path": generation, "query": "SELECT ?s WHERE { ?s ?p ?o } LIMIT 5"}
     )
-    assert answer["type"] == "SELECT" and answer["runtime_source"] is None
+    assert answer["type"] == "SELECT" and answer["count"]
 
 
 def test_queries_belong_to_a_run_not_a_generation(dashboard):
@@ -280,7 +280,7 @@ def test_only_a_same_origin_json_post_is_accepted(dashboard):
 def test_deleting_a_run_moves_it_to_the_trash(dashboard, monkeypatch):
     from test_dashboard_runs import _rec
 
-    (dashboard.run / "rec.ld.json").write_text(json.dumps(_rec("CompletedRun")))
+    (dashboard.run / "rec.ld.json").write_text(json.dumps(_rec("COMPLETED")))
     trashed = []
     monkeypatch.setattr(server, "trash", lambda path: trashed.append(path))
     path = str(dashboard.run.relative_to(dashboard.root))
@@ -363,7 +363,7 @@ def test_cleanup_protects_active_pinned_and_baseline_descendants(dashboard, monk
     )
     with pytest.raises(urllib.error.HTTPError):
         dashboard.post("/api/delete", {"paths": [generation]})
-    (dashboard.run / "rec.ld.json").write_text(json.dumps(_rec("CompletedRun")))
+    (dashboard.run / "rec.ld.json").write_text(json.dumps(_rec("COMPLETED")))
     dashboard.post("/api/annotations", {"path": run, "changes": {"pinned": True}})
     with pytest.raises(urllib.error.HTTPError):
         dashboard.post("/api/delete", {"paths": [generation]})
@@ -385,7 +385,7 @@ def test_protection_refuses_deletion_until_the_run_is_named(dashboard, monkeypat
 
     generation = str(dashboard.run.parent.parent.relative_to(dashboard.root))
     run = str(dashboard.run.relative_to(dashboard.root))
-    (dashboard.run / "rec.ld.json").write_text(json.dumps(_rec("CompletedRun")))
+    (dashboard.run / "rec.ld.json").write_text(json.dumps(_rec("COMPLETED")))
     trashed = []
     monkeypatch.setattr(server, "trash", lambda path: trashed.append(path))
     assert dashboard.post("/api/protect", {"path": run, "enabled": True})["protected"] is True

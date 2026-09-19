@@ -2,19 +2,31 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
+import pytest
 import rdflib
+from rdf_utils.models.vocab import URI_GEOM_PRED_X, URI_GEOM_TYPE_VECTOR_XYZ
+from rdflib.namespace import PROV
 from support import _source_tree
 
 from motion_spec.introspection import runner
 from motion_spec.introspection.archive import verify_manifest
-from motion_spec.introspection.provenance import prov_uri, rec_run_lifecycle
+from motion_spec.introspection.provenance import (
+    _slug,
+    prov_uri,
+    rec_run_lifecycle,
+    run_entity_uri,
+)
 from motion_spec.introspection.ros_video import real_camera_recordings
 from motion_spec.introspection.runner import run_cataloged
 
 REC = rdflib.Namespace("https://secorolab.github.io/metamodels/rec#")
+PROV_EXT = rdflib.Namespace("https://secorolab.github.io/metamodels/prov#")
+AGN = rdflib.Namespace("https://secorolab.github.io/metamodels/agent#")
+QUDT = rdflib.Namespace("http://qudt.org/schema/qudt/")
 
 
 def test_real_camera_recordings_selects_declared_ros_topics() -> None:
@@ -74,9 +86,8 @@ def test_runner_catalogs_run_from_start_and_archives_outputs(tmp_path: Path) -> 
         run_dir,
         source_dir=source,
         executable=executable,
-        executable_args=[str(source / "frame_log.pb")],
+        executable_args=[str(source / "frame_log.pb"), "--headless"],
         run_id="run-001",
-        recover_runtime_ttl=True,
     )
 
     assert result == 0
@@ -85,28 +96,58 @@ def test_runner_catalogs_run_from_start_and_archives_outputs(tmp_path: Path) -> 
     # Archiving packs the log, so the manifest names it as it now is on disk.
     assert manifest["files"]["frame_log"] == "logs/frame_log.pb.zst"
     assert manifest["files"]["log_producer_executable"] == "controller/executable/log-copy"
-    assert (run_dir / "runtime" / "runtime.ttl").exists()
-    # Recovery ran, so the manifest names the file it wrote.
-    assert manifest["files"]["runtime_ttl"] == "runtime/runtime.ttl"
+    assert "runtime_ttl" not in manifest["files"]
+    assert not (run_dir / "provenance.trig").exists()
 
-    # REC writes a PROV graph: lifecycle is an rdf:type on the run, roles are rdfs:label.
     rec_graph = rdflib.Graph().parse(run_dir / "rec.ld.json", format="json-ld")
     lifecycle = rec_run_lifecycle(rec_graph)
     assert lifecycle["status"] == "COMPLETED"
     assert lifecycle["started_time"]
     assert lifecycle["completed_time"]
     labels = {str(value) for value in rec_graph.objects(None, rdflib.RDFS.label)}
-    assert {"log_producer_executable", "frame_log", "runtime_ttl"} <= labels
-    # rec and the runtime graph describe one run node, not two.
-    assert (rdflib.URIRef(prov_uri("run:run-001")), rdflib.RDF.type, REC.CompletedRun) in rec_graph
-    assert (
-        rdflib.URIRef(prov_uri("activity:run_cataloging")),
-        rdflib.RDF.type,
-        rdflib.URIRef("http://www.w3.org/ns/prov#Activity"),
-    ) in rec_graph
+    assert {"log_producer_executable", "frame_log"} <= labels
 
 
-def test_interrupted_runner_recovers_runtime_ttl(tmp_path: Path, monkeypatch) -> None:
+def test_the_run_is_an_execution_of_the_executable_and_its_arguments(tmp_path: Path) -> None:
+    """What the run used: the program, and the command line it was given. Not the IR, not the
+    generation's own documents -- those are what the archive keeps, not what the run read."""
+    source = _source_tree(tmp_path / "source")
+    executable = _log_copy_executable(tmp_path / "log-copy")
+    run_dir = tmp_path / "run-006"
+
+    run_cataloged(
+        run_dir,
+        source_dir=source,
+        executable=executable,
+        executable_args=[str(source / "frame_log.pb"), "--headless"],
+        run_id="run-006",
+    )
+
+    rec_graph = rdflib.Graph().parse(run_dir / "rec.ld.json", format="json-ld")
+    run = rdflib.URIRef(prov_uri("run:run-006"))
+    assert (run, rdflib.RDF.type, PROV_EXT.Execution) in rec_graph
+    assert (run, PROV.wasAssociatedWith, rdflib.URIRef(prov_uri("agent:motion_spec"))) in rec_graph
+    # The controller process acts for the runtime the model named, and every modelled robot
+    # the generation declared is an agent of the run.
+    controller = rdflib.URIRef(prov_uri("agent:controller_process"))
+    runtime = rdflib.URIRef(prov_uri("agent:runtime_mujoco"))
+    assert (controller, PROV.actedOnBehalfOf, runtime) in rec_graph
+    assert (rdflib.URIRef(prov_uri("agent:modelled:arm1")), rdflib.RDF.type, AGN.ModelledAgent) in (
+        rec_graph
+    )
+
+    arguments = rdflib.URIRef(run_entity_uri("run-006", "arguments"))
+    assert (run, PROV.used, arguments) in rec_graph
+    assert str(rec_graph.value(arguments, rdflib.RDFS.label)).endswith("frame_log.pb --headless")
+    used_labels = {
+        str(rec_graph.value(entity, rdflib.RDFS.label))
+        for entity in rec_graph.objects(run, PROV.used)
+    }
+    assert "log_producer_executable" in used_labels
+    assert not {"ir", "provenance", "model"} & used_labels
+
+
+def test_interrupted_runner_records_a_terminal_state(tmp_path: Path, monkeypatch) -> None:
     source = _source_tree(tmp_path / "source")
     executable = _log_copy_executable(tmp_path / "log-copy")
     run_dir = tmp_path / "run-002"
@@ -119,18 +160,60 @@ def test_interrupted_runner_recovers_runtime_ttl(tmp_path: Path, monkeypatch) ->
 
     monkeypatch.setattr(runner, "_run_executable", interrupt)
 
-    result = run_cataloged(
-        run_dir,
-        source_dir=source,
-        executable=executable,
-        run_id="run-002",
-        recover_runtime_ttl=True,
-    )
+    result = run_cataloged(run_dir, source_dir=source, executable=executable, run_id="run-002")
 
     assert result == 130
-    assert (run_dir / "runtime" / "runtime.ttl").exists()
     rec_graph = rdflib.Graph().parse(run_dir / "rec.ld.json", format="json-ld")
     assert rec_run_lifecycle(rec_graph)["status"] == "INTERRUPTED"
+
+
+def test_a_draw_is_a_generalization_of_the_quantity_it_sampled(tmp_path: Path) -> None:
+    """Sampling is an activity of its own: it used the quantity and generated this run's draw."""
+    source = _source_tree(tmp_path / "source")
+    executable = _log_copy_executable(tmp_path / "log-copy")
+    run_dir = tmp_path / "run-007"
+    quantity = "https://example.test/spec/start-pose"
+
+    def sampling(*args, **kwargs):
+        (run_dir / "logs").mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source / "frame_log.pb", run_dir / "logs" / "frame_log.pb")
+        (run_dir / "logs" / "sampling.json").write_text(
+            json.dumps(
+                {
+                    "seed": 7,
+                    "drawn_at": "2026-09-19T10:00:00.000000Z",
+                    "draws": {quantity: {"distribution": "d", "values": [0.1, 0.2, 0.3]}},
+                }
+            )
+        )
+        return 0
+
+    monkeypatch_run = pytest.MonkeyPatch()
+    monkeypatch_run.setattr(runner, "_run_executable", sampling)
+    try:
+        run_cataloged(run_dir, source_dir=source, executable=executable, run_id="run-007")
+    finally:
+        monkeypatch_run.undo()
+
+    rec_graph = rdflib.Graph().parse(run_dir / "rec.ld.json", format="json-ld")
+    draw = rdflib.URIRef(run_entity_uri("run-007", f"draw/{quantity}"))
+    activity = rdflib.URIRef(f"{prov_uri('run:run-007')}/sampling/{_slug(quantity)}")
+
+    assert (activity, rdflib.RDF.type, PROV_EXT.Generalization) in rec_graph
+    assert (activity, PROV.used, rdflib.URIRef(quantity)) in rec_graph
+    assert (rdflib.URIRef(quantity), rdflib.RDF.type, PROV.Entity) in rec_graph
+    assert (draw, PROV.wasGeneratedBy, activity) in rec_graph
+    assert (draw, PROV.specializationOf, rdflib.URIRef(quantity)) in rec_graph
+    # A three-vector is a coordinate, not a bare number.
+    assert (draw, rdflib.RDF.type, URI_GEOM_TYPE_VECTOR_XYZ) in rec_graph
+    assert rec_graph.value(draw, URI_GEOM_PRED_X).toPython() == 0.1
+    # The seed stays what it always was: a metric of the run.
+    seeds = [
+        rec_graph.value(metric, QUDT.value)
+        for metric in rec_graph.subjects(rdflib.RDF.type, REC.Metric)
+        if str(rec_graph.value(metric, rdflib.RDFS.label)) == "sampling/seed"
+    ]
+    assert seeds and seeds[0].toPython() == 7
 
 
 def test_console_is_captured_and_mirrored(tmp_path: Path, capfd) -> None:
@@ -153,8 +236,6 @@ def test_console_is_captured_and_mirrored(tmp_path: Path, capfd) -> None:
     assert "hello from the run" in capfd.readouterr().out
     manifest = verify_manifest(run_dir)
     assert manifest["files"]["console"] == "logs/console.log"
-    # Nothing recovered runtime.ttl here, so nothing promises it.
-    assert "runtime_ttl" not in manifest["files"]
 
 
 def test_run_without_a_log_still_catalogs_itself(tmp_path: Path) -> None:
@@ -164,14 +245,12 @@ def test_run_without_a_log_still_catalogs_itself(tmp_path: Path) -> None:
     executable = _noisy_executable(tmp_path / "noisy-quiet", 0)
     run_dir = tmp_path / "run-005"
 
-    # recover_runtime_ttl on: a logless run has nothing to recover and must not try.
     result = run_cataloged(
         run_dir,
         source_dir=source,
         executable=executable,
         run_id="run-005",
         record_log=False,
-        recover_runtime_ttl=True,
     )
 
     assert result == 0

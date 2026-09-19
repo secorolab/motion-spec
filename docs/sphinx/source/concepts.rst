@@ -44,12 +44,11 @@ instead of copying them.
        model/        application JSON-LD, imported graphs, FSM IR, motion IR
        controller/   generated C++ and CMake project
        contract/     schema, frame layout, and frame-log protocol
-       provenance/   DSL, coordinate, and motion-spec provenance
+       provenance.ld.json  one document, one named graph per tool
      build/           reusable compiled controller
      logs/            gen.log and build.log: what the DSL, stst and cmake said
      runs/<run-id>/
        logs/          frame_log.pb, console.log and health information
-       runtime/       recovered runtime.ttl
        rec.ld.json    REC lifecycle and runtime artifact provenance
        manifest.json consumer-facing paths into the run and generation
 
@@ -120,15 +119,16 @@ Runtime recording
 =================
 
 ``run`` creates ``rec.ld.json`` before launching the executable and exports the
-run ID, REC path, and frame-log path to it. The log starts with a header containing
-the schema hash, followed by one protobuf frame per control tick. On completion,
-the CLI catalogs run-owned files, records their provenance in REC, optionally
-recovers ``runtime.ttl``, and verifies the archive.
+frame-log path to it. The run is recorded there as a ``prov-ext:Execution`` of the
+executable, its deployment configuration, the environment file it was launched under
+and its command line. The log starts with a header containing the schema hash,
+followed by one protobuf frame per control tick. On completion, the CLI catalogs
+run-owned files, records their provenance in REC, and verifies the archive.
 
 The manifest is deliberately small: its ``files`` map identifies what replay and
 other consumers need. Runtime artifact hashes and lifecycle provenance live in
-``rec.ld.json``. Static code-generation provenance is consolidated in
-``generated/provenance/motion-spec.ld.json``.
+``rec.ld.json``. Everything generation recorded lives in one document,
+``generated/provenance.ld.json``, with a named graph per tool that wrote into it.
 
 Replay
 ======
@@ -138,5 +138,4 @@ required files and PROV/REC provenance, then validates the frame-log header --
 the log embeds its own schema hash, so there is no separate generation contract
 to cross-check it against. Without a manifest (a run recorded before archiving
 finished), ``--verify`` falls back to the header check alone rather than
-rejecting the run. ``--recover-runtime-ttl`` rebuilds runtime RDF from the frame
-log, and ``--jsonl`` streams decoded frames for external analysis.
+rejecting the run. ``--jsonl`` streams decoded frames for external analysis.

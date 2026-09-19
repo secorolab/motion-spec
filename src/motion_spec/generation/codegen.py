@@ -45,7 +45,7 @@ def render_template(
     payload_path: Path,
     output_path: Path,
     module_template: str = MAIN_TEMPLATE,
-):
+) -> Path:
     """Render a StringTemplate group template over a JSON payload to output_path via the STSTv4 runner."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     stst_path = Path(stst_bin)
@@ -86,6 +86,7 @@ def render_template(
 
     _reject_dropped_output(template_name, output_path, result.stderr)
     output_path.write_text(_collapse_blank_lines(result.stdout))
+    return output_path
 
 
 def _reject_dropped_output(template_name: str, output_path: Path, stderr: str) -> None:
@@ -299,10 +300,10 @@ def unresolved_assets(ir) -> list[str]:
     ]
 
 
-def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
+def generate_code(ir_path: Path, output_dir: Path, stst_bin: str) -> list[Path]:
     """Render every C++/artifact file for an IR: introspection headers, runtime and
     shared-state headers, the frame-log proto (compiled to C++), per-motion headers and
-    main.cpp.
+    main.cpp, and return the files written.
 
     ir.json is complete by construction in ir_gen (every codegen-facing field, incl. FSM
     wiring); codegen only loads it, writes artifacts, and renders.
@@ -329,6 +330,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     ir["communication"]["introspection_artifacts"] = write_introspection_artifacts(
         ir, ir_path=ir_path, output_dir=output_dir
     )
+    written = [output_dir / "frame_layout.json", output_dir / "frame_log_header.pb"]
 
     headers_dir = output_dir / "headers"
     headers_dir.mkdir(parents=True, exist_ok=True)
@@ -341,31 +343,55 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     ir_payload_path = payload_dir / "ir.json"
     write_json(ir_payload_path, ir)
 
-    render_template(
-        stst_bin,
-        "introspection_runtime_header",
-        ir_payload_path,
-        output_dir / "introspection_runtime.hpp",
-    )
-    render_template(
-        stst_bin, "introspect_model_header", ir_payload_path, output_dir / "introspect_model.hpp"
-    )
-    render_template(stst_bin, "frame_layout_header", ir_payload_path, output_dir / "frame_layout.h")
-    render_template(stst_bin, "frame_log_proto", ir_payload_path, output_dir / "frame_log.proto")
-    compile_frame_log_proto(output_dir / "frame_log.proto")
-    render_template(stst_bin, "runtime_header", ir_payload_path, headers_dir / "runtime.hpp")
-    render_template(
-        stst_bin, "controller_runtime_header", ir_payload_path, headers_dir / "controllers.hpp"
-    )
-    render_template(
-        stst_bin, "shared_state_header", ir_payload_path, headers_dir / "shared_state.hpp"
-    )
-    if ir["resources"]["by_kind"].get("mobile_base"):
+    written.append(
         render_template(
             stst_bin,
-            "mobile_base_cycle_header",
+            "introspection_runtime_header",
             ir_payload_path,
-            headers_dir / "mobile_base_cycle.hpp",
+            output_dir / "introspection_runtime.hpp",
+        )
+    )
+    written.append(
+        render_template(
+            stst_bin,
+            "introspect_model_header",
+            ir_payload_path,
+            output_dir / "introspect_model.hpp",
+        )
+    )
+    written.append(
+        render_template(
+            stst_bin, "frame_layout_header", ir_payload_path, output_dir / "frame_layout.h"
+        )
+    )
+    written.append(
+        render_template(
+            stst_bin, "frame_log_proto", ir_payload_path, output_dir / "frame_log.proto"
+        )
+    )
+    compile_frame_log_proto(output_dir / "frame_log.proto")
+    written += [output_dir / "frame_log.pb.h", output_dir / "frame_log.pb.cc"]
+    written.append(
+        render_template(stst_bin, "runtime_header", ir_payload_path, headers_dir / "runtime.hpp")
+    )
+    written.append(
+        render_template(
+            stst_bin, "controller_runtime_header", ir_payload_path, headers_dir / "controllers.hpp"
+        )
+    )
+    written.append(
+        render_template(
+            stst_bin, "shared_state_header", ir_payload_path, headers_dir / "shared_state.hpp"
+        )
+    )
+    if ir["resources"]["by_kind"].get("mobile_base"):
+        written.append(
+            render_template(
+                stst_bin,
+                "mobile_base_cycle_header",
+                ir_payload_path,
+                headers_dir / "mobile_base_cycle.hpp",
+            )
         )
 
     for motion in ir["coordination"]["motions"]:
@@ -378,16 +404,22 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
         }
         payload_path = payload_dir / f"{motion['id']}.json"
         write_json(payload_path, payload)
-        render_template(
-            stst_bin, "motion_header", payload_path, headers_dir / f"{motion['id']}.hpp"
+        written.append(
+            render_template(
+                stst_bin, "motion_header", payload_path, headers_dir / f"{motion['id']}.hpp"
+            )
         )
 
-    render_template(stst_bin, "main_source", ir_payload_path, output_dir / "main.cpp")
+    written.append(
+        render_template(stst_bin, "main_source", ir_payload_path, output_dir / "main.cpp")
+    )
     cmake = "cmake_mj_kdl" if ir["configuration"]["backend"] == "mj_kdl" else "cmake_robif2b"
-    render_template(stst_bin, cmake, ir_payload_path, output_dir / "CMakeLists.txt")
+    written.append(render_template(stst_bin, cmake, ir_payload_path, output_dir / "CMakeLists.txt"))
     # Both backends read deployment properties (the FT tare length) from the same config.
-    render_template(
-        stst_bin, "robot_config_header", ir_payload_path, output_dir / "robot_config.hpp"
+    written.append(
+        render_template(
+            stst_bin, "robot_config_header", ir_payload_path, output_dir / "robot_config.hpp"
+        )
     )
     # Only real hardware has serial devices the loop must not block on: the simulator's are
     # function calls. Which kinds those are is the backend template's decision
@@ -396,7 +428,12 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str):
     if ir["configuration"]["backend"] == "robif2b" and serial_device_kinds & set(
         ir["resources"]["device_kinds"]
     ):
-        render_template(stst_bin, "device_io_header", ir_payload_path, output_dir / "device_io.hpp")
+        written.append(
+            render_template(
+                stst_bin, "device_io_header", ir_payload_path, output_dir / "device_io.hpp"
+            )
+        )
+    return written
 
 
 def main(argv: list[str] | None = None):

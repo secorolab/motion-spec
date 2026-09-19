@@ -130,6 +130,32 @@ def _import_path(location: str, url_map: dict[str, str]) -> str:
     return location
 
 
+def _parse_manifest(manifest_path) -> tuple[rdflib.Dataset, Path, dict[str, str]]:
+    """The manifest parsed alone, its resolved path and its url map, with the resolver on it."""
+    app_path = Path(manifest_path).resolve()
+    graph = rdflib.Dataset(default_union=True)
+    install_metamodel_resolver()
+    graph.parse(str(app_path), format="json-ld")
+    url_map = build_url_map(graph, app_path)
+    install_metamodel_resolver(url_map)
+    return graph, app_path, url_map
+
+
+def _imports(graph: rdflib.Dataset) -> tuple[list[str], list[str]]:
+    """The manifest's imports, split into model graphs and provenance documents."""
+    imported = list(dict.fromkeys(str(model) for model in graph.objects(predicate=APP["import"])))
+    provenance = [item for item in imported if item.endswith(_PROVENANCE_SUFFIX)]
+    models = [item for item in imported if not item.endswith(_PROVENANCE_SUFFIX)]
+    return models, provenance
+
+
+def imported_models(manifest_path) -> list[str]:
+    """The model graphs a manifest imports, as local file paths."""
+    graph, _app_path, url_map = _parse_manifest(manifest_path)
+    models, _provenance = _imports(graph)
+    return [_import_path(item, url_map) for item in models]
+
+
 def load_model(manifest_path) -> Model:
     """Load an app manifest and every model it imports into one merged graph.
 
@@ -142,17 +168,8 @@ def load_model(manifest_path) -> Model:
     Returns:
         the `Model` every reader in the package reads through
     """
-    app_path = Path(manifest_path).resolve()
-    graph = rdflib.Dataset(default_union=True)
-    install_metamodel_resolver()
-    graph.parse(str(app_path), format="json-ld")
-
-    url_map = build_url_map(graph, app_path)
-    install_metamodel_resolver(url_map)
-
-    imported = list(dict.fromkeys(str(model) for model in graph.objects(predicate=APP["import"])))
-    provenance = [item for item in imported if item.endswith(_PROVENANCE_SUFFIX)]
-    models = [item for item in imported if not item.endswith(_PROVENANCE_SUFFIX)]
+    graph, app_path, url_map = _parse_manifest(manifest_path)
+    models, provenance = _imports(graph)
     for location in models:
         graph.parse(location=location, format="json-ld")
 

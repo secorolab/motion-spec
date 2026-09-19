@@ -8,7 +8,6 @@ import json
 import logging
 import os
 import shutil
-import sys
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +22,8 @@ from motion_spec_dsl.rdf_parser.vocab import APP
 from pyshacl import validate
 
 from motion_spec.introspection.provenance import (
+    GENERATION_DOCUMENT,
+    GRAPH_DSL,
     artifact_sha256,
     dependencies,
     ensure_local_rec_importable,
@@ -30,10 +31,9 @@ from motion_spec.introspection.provenance import (
     parse_rec_time,
     prov_uri,
     rec_run_lifecycle,
-    record_activities,
-    record_agents,
     record_files,
     record_frame_log_health,
+    record_run_agents,
     repositories,
 )
 
@@ -42,6 +42,7 @@ log = logging.getLogger(__name__)
 PROV = rdflib.Namespace("http://www.w3.org/ns/prov#")
 
 MANIFEST_VERSION = 1
+PROV_SHAPES = (("prov.shacl.ttl",), ("prov-extension.shacl.ttl",))
 GENERATED_BUNDLE_FILES = (
     "CMakeLists.txt",
     "main.cpp",
@@ -69,6 +70,12 @@ def _copy_file(src: Path, dst: Path) -> None:
 def _existing(run_dir: Path, rel: str) -> str | None:
     """A manifest entry for a file written outside the manifest builder, or None."""
     return rel if (run_dir / rel).is_file() else None
+
+
+def _camera_videos(run_dir: Path) -> list[str] | None:
+    """The videos a run recorded, whichever side wrote them."""
+    videos = sorted(f"logs/{path.name}" for path in (run_dir / "logs").glob("*.mp4"))
+    return videos or None
 
 
 def _parse_jsonld(path: Path) -> rdflib.Dataset:
@@ -109,19 +116,19 @@ def _file_uri_to_path(value: str) -> Path | None:
 def _archive_referenced_sources(
     prov_docs: list[Path], run_dir: Path, location_map: dict[str, str]
 ) -> list[str]:
-    """Vendor authored source inputs referenced by the given provenance doc(s).
+    """Vendor the authored source inputs the DSL's own named graph references.
 
-    Pass only the DSL source provenance here: a referenced-but-unmapped file that still
-    exists on disk (the .robmot/.fsm models) is copied into ``source/`` and registered so
-    the rewrite can point at it. Third-party/vendor assets (MuJoCo scene xml, etc.) are not
-    in the DSL source provenance and are intentionally left as references, not archived.
+    Only that graph: a referenced-but-unmapped file that still exists on disk (the
+    .robmot/.fsm models) is copied into ``source/`` and registered so the rewrite can point at
+    it. Third-party/vendor assets (MuJoCo scene xml, etc.) are named by the other graphs and
+    are intentionally left as references, not archived.
     """
     sources: list[str] = []
     for doc in prov_docs:
         if not doc.is_file():
             continue
-        graph = _parse_jsonld(doc)
-        for _, _, location, _ in graph.quads((None, PROV.atLocation, None, None)):
+        graph = _parse_jsonld(doc).graph(GRAPH_DSL)
+        for _, _, location in graph.triples((None, PROV.atLocation, None)):
             path = _file_uri_to_path(str(location))
             if path is None or not path.is_file():
                 continue
@@ -150,35 +157,16 @@ def _relativize_paths(obj, location_map: dict[str, str], start: str):
     return obj
 
 
-def _rewrite_archived_locations(doc: Path, location_map: dict[str, str]) -> None:
+def _rewrite_archived_locations(doc: Path, location_map: dict[str, str], run_dir: Path) -> None:
     """Repoint every archived file reference in a JSON(-LD) doc, relative to the doc's dir.
 
-    Covers the provenance graphs' ``atLocation`` (file:// IRIs) and the IR's provenance
-    entity ``path``/``source`` (absolute paths) so no build-tree location survives in the
-    archived model.
+    Edited as JSON, not through rdflib: a re-serialized document loses its `@context`, its
+    `schema_version` and the named graphs the generation provenance is written as.
     """
     if not doc.is_file():
         return
-    if doc.name.endswith(".ld.json"):
-        dataset = _parse_jsonld(doc)
-        changed = False
-        for subject, predicate, location, context in list(
-            dataset.quads((None, PROV.atLocation, None, None))
-        ):
-            path = _file_uri_to_path(str(location))
-            rel = location_map.get(str(path.resolve())) if path else None
-            if rel is None:
-                continue
-            graph = dataset.graph(context)
-            graph.remove((subject, predicate, location))
-            graph.add((subject, predicate, rdflib.URIRef(os.path.relpath(rel, doc.parent.name))))
-            changed = True
-        if changed:
-            dataset.serialize(doc, format="json-ld", indent=2)
-        return
-
     data = json.loads(doc.read_text())
-    rewritten = _relativize_paths(data, location_map, doc.parent.name)
+    rewritten = _relativize_paths(data, location_map, os.path.relpath(doc.parent, run_dir))
     if rewritten != data:
         doc.write_text(json.dumps(rewritten, indent=2) + "\n")
 
@@ -222,7 +210,7 @@ def _create_generation_run_manifest(
     """Catalog a run while referencing immutable artifacts owned by its generation."""
     run_dir.mkdir(parents=True, exist_ok=True)
     proto_path = generated / "contract" / "frame_log.proto"
-    provenance_path = generated / "provenance" / "motion-spec.ld.json"
+    provenance_path = generated / GENERATION_DOCUMENT
     model_manifests = list((generated / "model").glob("*-app.ld.json"))
     for required in (proto_path, provenance_path, generated / "model" / "ir.json"):
         if not required.is_file():
@@ -259,11 +247,6 @@ def _create_generation_run_manifest(
     files = {
         "frame_log_proto": relative(proto_path),
         "provenance": relative(provenance_path),
-        "dsl_provenance": (
-            relative(generated / "provenance" / "dsl.ld.json")
-            if (generated / "provenance" / "dsl.ld.json").is_file()
-            else None
-        ),
         "model": relative(model_manifests[0]),
         # Without it the log's derived slot IRIs resolve to nothing.
         "derived": next(
@@ -278,9 +261,9 @@ def _create_generation_run_manifest(
         "frame_log": "logs/frame_log.pb" if recorded else None,
         "frame_log_health": "logs/frame_log.pb.health.json" if recorded else None,
         # Listed only when written: a manifest never promises a file the run dir lacks.
-        "runtime_ttl": _existing(run_dir, "runtime/runtime.ttl"),
         "console": _existing(run_dir, "logs/console.log"),
         "sampling": _existing(run_dir, "logs/sampling.json"),
+        "videos": _camera_videos(run_dir),
         # metadata.yaml is what says rosbag2 closed the bag.
         "bag": "bag" if (run_dir / "bag" / "metadata.yaml").is_file() else None,
         "rec": "rec.ld.json",
@@ -377,8 +360,7 @@ def create_archive_manifest(
 
     copies = {
         "frame_log.proto": "contract/frame_log.proto",
-        "provenance.ld.json": "provenance/motion-spec.ld.json",
-        "provenance/dsl.ld.json": "provenance/dsl.ld.json",
+        GENERATION_DOCUMENT: GENERATION_DOCUMENT,
     }
     frame_log_rel = "logs/frame_log.pb"
     frame_log_health_rel = "logs/frame_log.pb.health.json"
@@ -481,26 +463,19 @@ def create_archive_manifest(
     # submodule) are left as references, not copied in. Then rewrite every archived file
     # reference — and the model manifest's import/iri-map — to resolve inside the bundle.
     source_artifacts = _archive_referenced_sources(
-        [run_dir / "provenance" / "dsl.ld.json"], run_dir, location_map
+        [run_dir / GENERATION_DOCUMENT], run_dir, location_map
     )
-    for doc in (
-        run_dir / "provenance" / "motion-spec.ld.json",
-        run_dir / "provenance" / "dsl.ld.json",
-        run_dir / "model" / "ir.json",
-    ):
-        _rewrite_archived_locations(doc, location_map)
+    for doc in (run_dir / GENERATION_DOCUMENT, run_dir / "model" / "ir.json"):
+        _rewrite_archived_locations(doc, location_map, run_dir)
     _rewrite_model_imports(model_manifest, model_imports)
 
     files = {
         "frame_log_proto": "contract/frame_log.proto",
-        "provenance": "provenance/motion-spec.ld.json",
-        "dsl_provenance": (
-            "provenance/dsl.ld.json" if (run_dir / "provenance" / "dsl.ld.json").exists() else None
-        ),
+        "provenance": GENERATION_DOCUMENT,
         # Listed only when written: a manifest never promises a file the run dir lacks.
-        "runtime_ttl": _existing(run_dir, "runtime/runtime.ttl"),
         "console": _existing(run_dir, "logs/console.log"),
         "sampling": _existing(run_dir, "logs/sampling.json"),
+        "videos": _camera_videos(run_dir),
         "frame_log": frame_log_rel if recorded else None,
         "frame_log_health": frame_log_health_rel if recorded else None,
         "model": "model/model.ld.json",
@@ -562,59 +537,45 @@ def verify_manifest(run_dir_or_manifest: Path | str) -> dict:
             errors.append(f"files.{key}: missing")
     for key, value in files.items():
         for rel in value if isinstance(value, list) else [value]:
-            if (
-                key in {"frame_log_health", "runtime_ttl", "console"}
-                and not (run_dir / rel).exists()
-            ):
+            if key in {"frame_log_health", "console"} and not (run_dir / rel).exists():
                 continue
             if not (run_dir / rel).exists():
                 errors.append(f"{rel}: missing")
     if errors:
         raise ArchiveError("; ".join(errors))
-    provenance_graph = _parse_rdf(run_dir / manifest["files"]["provenance"], "json-ld")
-    _require_provenance(provenance_graph, "provenance.ld.json")
-    _validate_prov_shacl(run_dir / manifest["files"]["provenance"])
-    dsl_provenance_rel = manifest.get("files", {}).get("dsl_provenance")
-    if dsl_provenance_rel and (run_dir / dsl_provenance_rel).exists():
-        dsl_provenance_graph = _parse_rdf(run_dir / dsl_provenance_rel, "json-ld")
-        _require_provenance(dsl_provenance_graph, "dsl.ld.json")
-        _validate_prov_shacl(run_dir / dsl_provenance_rel)
+    provenance_path = run_dir / manifest["files"]["provenance"]
+    provenance_graph = _parse_rdf(provenance_path, "json-ld")
+    _require_provenance(provenance_graph, provenance_path.name)
+    _validate_shacl(provenance_graph, provenance_path.name, *PROV_SHAPES)
     model_rel = manifest.get("files", {}).get("model")
     if model_rel and (run_dir / model_rel).exists():
         _parse_rdf(run_dir / model_rel, "json-ld")
         _verify_model_imports(run_dir / model_rel)
-    runtime_rel = manifest.get("files", {}).get("runtime_ttl")
-    if runtime_rel and (run_dir / runtime_rel).exists():
-        runtime_graph = _parse_rdf(run_dir / runtime_rel, "turtle")
-        _require_runtime_provenance(runtime_graph, "runtime.ttl")
-        _validate_runtime_shacl(run_dir / runtime_rel)
     rec_rel = manifest.get("files", {}).get("rec")
     if rec_rel and (run_dir / rec_rel).exists():
         rec_graph = _parse_rdf(run_dir / rec_rel, "json-ld")
-        rec = rdflib.Namespace("https://secorolab.github.io/metamodels/rec#")
-        for entity, expected in rec_graph.subject_objects(rec.sha256):
-            location = rec_graph.value(entity, PROV.atLocation)
-            rel = rec_graph.value(location, rec.path) if location else None
-            path = run_dir / str(rel) if rel else None
-            if not path or not path.exists():
-                errors.append(f"{rel or entity}: missing")
-            elif artifact_sha256(path) != str(expected):
-                errors.append(f"{rel}: sha256 mismatch")
+        _verify_checksums(rec_graph, run_dir, errors)
         if errors:
             raise ArchiveError("; ".join(errors))
-        simulated = None
-        if recorded:
-            from motion_spec.introspection import frame_log_pb
-
-            run_schema = frame_log_pb.read_contract(run_dir / files["frame_log"]).summary()
-            simulated = (run_schema.get("platform") or {}).get("simulated")
-        _require_rec_provenance(rec_graph, "rec.ld.json", simulated=simulated)
-        _validate_prov_shacl(run_dir / rec_rel)
-        _validate_rec_shacl(run_dir / rec_rel)
-    trig_rel = manifest.get("files", {}).get("provenance_trig")
-    if trig_rel:
-        _verify_consolidated(run_dir / trig_rel, manifest["run_id"])
+        _require_rec_provenance(rec_graph, "rec.ld.json", prov_uri(f"run:{manifest['run_id']}"))
+        _validate_shacl(rec_graph, "rec.ld.json", *PROV_SHAPES, ("rec", "rec.shacl.ttl"))
+        _verify_consolidated(run_dir, manifest["run_id"])
     return manifest
+
+
+def _verify_checksums(rec_graph: rdflib.Graph, run_dir: Path, errors: list[str]) -> None:
+    """Every file rec hashed still hashes to what rec recorded, where rec said it is."""
+    spdx = rdflib.Namespace("http://spdx.org/rdf/terms#")
+    for entity, checksum in rec_graph.subject_objects(spdx.checksum):
+        expected = rec_graph.value(checksum, spdx.checksumValue)
+        location = rec_graph.value(entity, PROV.atLocation)
+        path = _file_uri_to_path(str(location)) if location else None
+        if path is None and location is not None:
+            path = run_dir / str(location)
+        if path is None or not path.exists():
+            errors.append(f"{location or entity}: missing")
+        elif expected is not None and artifact_sha256(path) != str(expected):
+            errors.append(f"{location}: sha256 mismatch")
 
 
 def _verify_model_imports(model_path: Path) -> None:
@@ -649,14 +610,22 @@ def _verify_model_imports(model_path: Path) -> None:
 
 
 def _parse_rdf(path: Path, fmt: str) -> rdflib.Graph:
+    """One document as a single graph; a named-graph document is read as its union.
+
+    The generation provenance is written as one named graph per tool, and a plain Graph parse
+    of it comes back empty -- every triple belongs to a graph.
+    """
     try:
         install_metamodel_resolver()
     except Exception:
         pass
     try:
-        graph = rdflib.Graph().parse(path, format=fmt)
+        dataset = rdflib.Dataset(default_union=True).parse(path, format=fmt)
     except Exception as exc:
         raise ArchiveError(f"{path.name}: RDF parse failed: {exc}") from exc
+    graph = rdflib.Graph()
+    for triple in dataset.triples((None, None, None)):
+        graph.add(triple)
     return graph
 
 
@@ -668,47 +637,14 @@ def _require_provenance(graph: rdflib.Graph, label: str) -> None:
         raise ArchiveError(f"{label}: missing required PROV types {', '.join(missing)}")
 
 
-def _require_runtime_provenance(graph: rdflib.Graph, label: str) -> None:
-    prov = rdflib.Namespace("http://www.w3.org/ns/prov#")
+def _require_rec_provenance(graph: rdflib.Graph, label: str, run_iri: str) -> None:
+    prov_ext = rdflib.Namespace("https://secorolab.github.io/metamodels/prov#")
+    run = rdflib.URIRef(run_iri)
     checks = {
-        "generated entity": (None, prov.wasGeneratedBy, None),
-        "associated activity": (None, prov.wasAssociatedWith, None),
-        "used entity": (None, prov.used, None),
+        "execution": (run, rdflib.RDF.type, prov_ext.Execution),
+        "activity-agent association": (run, PROV.wasAssociatedWith, None),
+        "activity resource usage": (run, PROV.used, None),
     }
-    missing = [name for name, triple in checks.items() if triple not in graph]
-    if missing:
-        raise ArchiveError(
-            f"{label}: missing runtime provenance relationship(s): {', '.join(missing)}"
-        )
-
-
-def _require_rec_provenance(graph: rdflib.Graph, label: str, simulated: bool | None = None) -> None:
-    prov = rdflib.Namespace("http://www.w3.org/ns/prov#")
-    bdd = rdflib.Namespace("https://secorolab.github.io/metamodels/acceptance-criteria/bdd#")
-    obs = rdflib.Namespace("https://secorolab.github.io/metamodels/observation#")
-    # A real-hardware run is a ScenarioExecution. Requiring SimulatedExecution unconditionally
-    # would make the archive enforce a claim the model never made. None means the archive predates
-    # the platform record: assert that *an* execution activity is typed, not which kind.
-    checks = {
-        "observation provider agent": (None, rdflib.RDF.type, obs.ObservationProvider),
-        "generated artifact entity": (None, prov.wasGeneratedBy, None),
-        "activity-agent association": (None, prov.wasAssociatedWith, None),
-        "activity resource usage": (None, prov.used, None),
-    }
-    if simulated is not None:
-        checks["BDD execution activity"] = (
-            None,
-            rdflib.RDF.type,
-            bdd.SimulatedExecution if simulated else bdd.ScenarioExecution,
-        )
-    elif (None, rdflib.RDF.type, bdd.SimulatedExecution) not in graph and (
-        None,
-        rdflib.RDF.type,
-        bdd.ScenarioExecution,
-    ) not in graph:
-        raise ArchiveError(
-            f"{label}: missing REC provenance relationship(s): BDD execution activity"
-        )
     missing = [name for name, triple in checks.items() if triple not in graph]
     if missing:
         raise ArchiveError(f"{label}: missing REC provenance relationship(s): {', '.join(missing)}")
@@ -750,9 +686,8 @@ def _write_rec_snapshot(
     run.log_host_info(host_info())
     run.log_repositories(repositories(run_dir))
     run.log_dependencies(dependencies())
-    record_agents(run, run_dir, schema)
-    record_activities(run, schema)
-    record_files(run, run_dir, manifest, schema)
+    record_run_agents(observer.graph, run_dir, schema.get("platform") or {})
+    record_files(run, run_dir, manifest, str(observer.run))
     record_frame_log_health(run, run_dir, manifest)
     if complete_lifecycle and not completed_time and not terminal_status:
         if run.start_time is None:
@@ -761,42 +696,24 @@ def _write_rec_snapshot(
     observer.close()
 
 
-def consolidate_provenance(run_dir: Path | str) -> Path | None:
-    """Merge the run's provenance documents into ``runs/<id>/provenance.trig``.
+def _verify_consolidated(run_dir: Path, run_id: str) -> None:
+    """The run's documents join into one dataset whose lifecycle graph names this execution.
 
-    The run already happened; a dataset that will not consolidate is a report about the
-    documents, not a failed run, so the reason is printed and the caller carries on. What the
-    manifest promises is only what was written.
+    Consolidated in memory: the dataset is the check, not an artifact the archive keeps.
     """
-    run_dir = Path(run_dir)
     ensure_local_rec_importable()
-    from rec.consolidate import CONSOLIDATED, ConsolidationError, consolidate_run
+    from rec.consolidate import REC_GRAPH, ConsolidationError, consolidate_dataset
+    from rec.observers.graph_observer import run_node
 
     try:
-        path = consolidate_run(run_dir, metamodels_dir=_metamodels_root())
+        dataset = consolidate_dataset(run_dir, metamodels_dir=_metamodels_root())
     except (ConsolidationError, OSError) as exc:
-        print(f"provenance consolidation failed: {exc}", file=sys.stderr)
-        return None
-    manifest_path = run_dir / "manifest.json"
-    if manifest_path.exists():
-        manifest = json.loads(manifest_path.read_text())
-        manifest.setdefault("files", {})["provenance_trig"] = CONSOLIDATED
-        manifest_path.write_text(json.dumps(manifest, indent=4) + "\n")
-    return path
-
-
-def _verify_consolidated(path: Path, run_id: str) -> None:
-    """The consolidated dataset names one run in both the lifecycle and the runtime graph."""
-    ensure_local_rec_importable()
-    from rec.consolidate import MS_PROV, REC, REC_GRAPH, RUNTIME_GRAPH
-
-    dataset = rdflib.Dataset()
-    dataset.parse(path, format="trig")
+        raise ArchiveError(f"the run's documents do not consolidate: {exc}") from exc
+    prov_ext = rdflib.Namespace("https://secorolab.github.io/metamodels/prov#")
+    rec_graph = dataset.graph(REC_GRAPH)
     run = rdflib.URIRef(prov_uri(f"run:{run_id}"))
-    if (run, rdflib.RDF.type, MS_PROV.TaskExecution) not in dataset.graph(RUNTIME_GRAPH):
-        raise ArchiveError(f"{path.name}: the runtime graph does not name <{run}>")
-    if (run, REC["run-id"], None) not in dataset.graph(REC_GRAPH):
-        raise ArchiveError(f"{path.name}: the lifecycle graph does not name <{run}>")
+    if run_node(rec_graph) != run or (run, rdflib.RDF.type, prov_ext.Execution) not in rec_graph:
+        raise ArchiveError(f"the consolidated lifecycle graph does not name <{run}>")
 
 
 # pyshacl reads a non-absolute source shorter than 140 characters as a filename and anything
@@ -832,63 +749,17 @@ def _metamodels_root() -> Path | None:
     return root if root is not None and (root / "prov.shacl.ttl").exists() else None
 
 
-def _validate_prov_shacl(path: Path) -> None:
+def _validate_shacl(graph: rdflib.Graph, label: str, *shape_names: tuple[str, ...]) -> None:
     root = _metamodels_root()
-    if root is None:
-        _shapes_missing()
-        return
-    conforms, _graph, text = validate(
-        data_graph=_graph_source(path),
-        shacl_graph=_graph_source(root / "prov.shacl.ttl"),
-        data_graph_format="json-ld",
-        shacl_graph_format="turtle",
-        inference="rdfs",
-    )
-    if not conforms:
-        raise ArchiveError(f"{path.name}: PROV SHACL validation failed: {text}")
-
-
-def _validate_rec_shacl(path: Path) -> None:
-    root = _metamodels_root()
-    if root is None or not (root / "rec" / "rec.shacl.ttl").exists():
-        _shapes_missing()
-        return
-    shape = root / "rec" / "rec.shacl.ttl"
-    conforms, _graph, text = validate(
-        data_graph=_graph_source(path),
-        shacl_graph=_graph_source(shape),
-        data_graph_format="json-ld",
-        shacl_graph_format="turtle",
-        inference="rdfs",
-    )
-    if not conforms:
-        raise ArchiveError(f"{path.name}: REC SHACL validation failed: {text}")
-
-
-def _validate_runtime_shacl(path: Path) -> None:
-    root = _metamodels_root()
-    # The ms-prov shape covers the run, its motions and their maintenances; the tick rate is a
-    # sensors update-rate, so its frequency shape comes from the metamodel that defines it
-    # rather than being restated. The W3C prov shape is deliberately not loaded: it requires
-    # every prov:used object to be a typed prov:Entity, and design IRIs are not.
-    if root is None:
-        _shapes_missing()
-        return
-    wanted = (root / "motion-spec" / "prov.shacl.ttl", root / "robot" / "sensors.shacl.ttl")
-    if not all(shape.exists() for shape in wanted):
+    if root is None or not all((root.joinpath(*name)).exists() for name in shape_names):
         _shapes_missing()
         return
     shapes = rdflib.Graph()
-    for shape in wanted:
-        shapes.parse(_graph_source(shape), format="turtle")
-    conforms, _graph, text = validate(
-        data_graph=_graph_source(path),
-        shacl_graph=shapes,
-        data_graph_format="turtle",
-        inference="rdfs",
-    )
+    for name in shape_names:
+        shapes.parse(_graph_source(root.joinpath(*name)), format="turtle")
+    conforms, _graph, text = validate(data_graph=graph, shacl_graph=shapes, inference="rdfs")
     if not conforms:
-        raise ArchiveError(f"{path.name}: runtime SHACL validation failed: {text}")
+        raise ArchiveError(f"{label}: SHACL validation failed: {text}")
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -9,12 +9,7 @@ import sys
 from pathlib import Path
 
 from motion_spec.introspection import frame_log_pb
-from motion_spec.introspection.archive import (
-    ArchiveError,
-    consolidate_provenance,
-    load_manifest,
-    verify_manifest,
-)
+from motion_spec.introspection.archive import ArchiveError, load_manifest, verify_manifest
 
 
 def run_dir_for(log_path: Path) -> Path:
@@ -73,11 +68,7 @@ def validate_header(log_path: Path | str, contract=None) -> dict:
     header = contract.header
     if not header.schema_hash:
         raise ArchiveError(f"{log_path}: frame log header carries no schema hash")
-    return {
-        "schema_hash": header.schema_hash,
-        "producer_agent_id": header.producer_agent_id,
-        "activity_id": header.activity_id,
-    }
+    return {"schema_hash": header.schema_hash}
 
 
 def read_health(log_path: Path | str) -> dict | None:
@@ -126,7 +117,7 @@ def summarize(log_path: Path | str) -> str:
         f"log         {log_path}",
         f"archive     {run_dir}",
         f"frames      {count}",
-        f"writer      {meta.get('producer_agent_id', '')} {meta.get('activity_id', '')}",
+        f"schema      {meta.get('schema_hash', '')}",
         f"final state {final_name}",
     ]
     if frame_log_pb.tail_is_partial(log_path):
@@ -155,20 +146,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("log", help="frame_log.pb inside a motion-spec run archive")
     parser.add_argument("--jsonl", action="store_true", help="emit decoded frames as JSON Lines")
     parser.add_argument("--verify", action="store_true", help="verify manifest/header only")
-    parser.add_argument(
-        "--recover-runtime-ttl", action="store_true", help="write runtime.ttl from the frame log"
-    )
     args = parser.parse_args(argv)
     try:
-        if args.recover_runtime_ttl:
-            from motion_spec.introspection.runtime_graph import write_runtime_ttl
-
-            run_dir, log_path, _manifest, _contract = resolve_archive(args.log)
-            records, _frame_count = runtime_frames(log_path)
-            out = write_runtime_ttl(run_dir, records)
-            consolidate_provenance(run_dir)
-            print(out)
-        elif args.verify:
+        if args.verify:
             run_dir, log_path, manifest, contract = resolve_archive(args.log)
             validate_header(log_path, contract)
             if manifest is not None:

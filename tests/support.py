@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
-"""Shared archive/runtime-graph test fixtures: a minimal maintained schema, its derived
-frame layout, a stub PROV document, and the on-disk source tree they assemble into."""
+"""Shared archive test fixtures: a minimal maintained schema, its derived frame layout, a stub
+PROV document, and the on-disk source tree they assemble into."""
 
 from __future__ import annotations
 
@@ -9,6 +9,13 @@ import json
 from pathlib import Path
 
 from motion_spec.generation.artifacts import fields_with_offsets
+from motion_spec.introspection.provenance import (
+    GENERATION_DOCUMENT,
+    GRAPH_MOTION_SPEC,
+    PROV_CONTEXT,
+    SCHEMA_VERSION,
+    prov_uri,
+)
 
 from frame_log_fixture import flat_frame, write_frame_log_pb, write_frame_log_proto
 
@@ -24,8 +31,6 @@ def _schema() -> dict:
         "runtime_rdf_contract_version": 1,
         "generated_by": "test",
         "ir_path": "ir.json",
-        "graph": "model.ld.json",
-        "context": {},
         "pools": {"constraints": 1, "monitors": 1, "quantities": 1, "triggers": 2},
         "timing": {"nominal_period_ns": 1_000_000},
         "fsm": {
@@ -36,12 +41,6 @@ def _schema() -> dict:
         "by_motion": {},
         "platform": {"name": "MuJoCo", "simulated": True, "backend": "mj_kdl"},
         "quantities": [{"index": 0, "id": "q0"}],
-        "provenance_contexts": [{"id": "prov", "source": "src/metamodels/prov.json"}],
-        "runtime_provenance": {
-            "activity_id": "activity:controller_execution",
-            "producer_agent_id": "agent:controller_process",
-            "runtime_agent_id": "agent:runtime:mujoco",
-        },
     }
     schema["schema_hash"] = _hash_doc(schema)
     return schema
@@ -57,7 +56,7 @@ def _layout(schema: dict) -> dict:
         "field_bytes": 8,
         "frame_size_bytes": size,
         "schema_hash": schema["schema_hash"],
-        "runtime_provenance": schema["runtime_provenance"],
+        "platform": schema["platform"],
         "fields": fields,
     }
     layout["frame_layout_hash"] = _hash_doc(layout)
@@ -65,32 +64,38 @@ def _layout(schema: dict) -> dict:
 
 
 def _provenance() -> dict:
+    """The generation document in miniature: one named graph holding one transformation."""
     return {
-        "@context": {
-            "prov": "http://www.w3.org/ns/prov#",
-            "Entity": "prov:Entity",
-            "Activity": "prov:Activity",
-            "Agent": "prov:Agent",
-            "SoftwareAgent": "prov:SoftwareAgent",
-            "used": {"@id": "prov:used", "@type": "@id"},
-            "wasGeneratedBy": {"@id": "prov:wasGeneratedBy", "@type": "@id"},
-            "wasAssociatedWith": {"@id": "prov:wasAssociatedWith", "@type": "@id"},
-            "atLocation": {"@id": "prov:atLocation", "@type": "@id"},
-        },
+        "schema_version": SCHEMA_VERSION,
+        "@context": PROV_CONTEXT,
         "@graph": [
-            {"@id": "https://example.test/entity/schema", "@type": "Entity"},
             {
-                "@id": "https://example.test/entity/run_bin",
-                "@type": "Entity",
-                "wasGeneratedBy": "https://example.test/activity/run",
-            },
-            {
-                "@id": "https://example.test/activity/run",
-                "@type": "Activity",
-                "used": "https://example.test/entity/schema",
-                "wasAssociatedWith": "https://example.test/agent/producer",
-            },
-            {"@id": "https://example.test/agent/producer", "@type": ["SoftwareAgent", "Agent"]},
+                "@id": str(GRAPH_MOTION_SPEC),
+                "@graph": [
+                    {"@id": prov_uri("entity:app_manifest"), "@type": "Entity"},
+                    {
+                        "@id": prov_uri("entity:motion_spec_ir"),
+                        "@type": "Entity",
+                        "wasGeneratedBy": prov_uri("activity:motion_spec_ir_generation"),
+                    },
+                    {
+                        "@id": prov_uri("activity:motion_spec_ir_generation"),
+                        "@type": ["Activity", "Transformation"],
+                        "used": prov_uri("entity:app_manifest"),
+                        "wasAssociatedWith": prov_uri("agent:motion_spec"),
+                    },
+                    {
+                        "@id": prov_uri("agent:motion_spec"),
+                        "@type": ["Agent", "SoftwareAgent"],
+                        "name": "motion-spec",
+                    },
+                    {
+                        "@id": prov_uri("agent:modelled:arm1"),
+                        "@type": ["Agent", "ModelledAgent"],
+                        "name": "arm1",
+                    },
+                ],
+            }
         ],
     }
 
@@ -113,6 +118,15 @@ def _write_frame_log(path: Path, schema: dict) -> None:
     write_frame_log_pb(path, schema, [flat])
 
 
+def _start_run(run_dir: Path, source: Path, executable: Path, run_id: str = "run-test") -> None:
+    """Catalogue a run the way the runner does before it launches the executable."""
+    from motion_spec.introspection.runner import _start_rec_run
+
+    run_dir.mkdir(parents=True, exist_ok=True)
+    schema = json.loads((source / "frame_layout.json").read_text())
+    _start_rec_run(run_dir, run_id, source, executable, schema, [])
+
+
 def _source_tree(path: Path) -> Path:
     schema = _schema()
     layout = _layout(schema)
@@ -120,9 +134,7 @@ def _source_tree(path: Path) -> Path:
     (path / "schema.json").write_text(json.dumps(schema, indent=4))
     (path / "frame_layout.json").write_text(json.dumps(layout, indent=4))
     write_frame_log_proto(path / "frame_log.proto", schema)
-    (path / "provenance.ld.json").write_text(json.dumps(_provenance(), indent=4))
-    (path / "provenance").mkdir()
-    (path / "provenance" / "dsl.ld.json").write_text(json.dumps(_provenance(), indent=4))
+    (path / GENERATION_DOCUMENT).write_text(json.dumps(_provenance(), indent=4))
     (path / "model.ld.json").write_text(json.dumps(_provenance(), indent=4))
     (path / "ir.json").write_text(json.dumps({"id": "test-ir"}))
     (path / "headers").mkdir()
@@ -135,6 +147,7 @@ def _source_tree(path: Path) -> Path:
                 "attempted_frames": 1,
                 "accepted_frames": 1,
                 "written_frames": 1,
+                "write_errors": 0,
                 "dropped_frames": 0,
                 "complete": True,
             },

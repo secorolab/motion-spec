@@ -200,11 +200,8 @@ def _build_file_descriptor(fields: dict) -> descriptor_pb2.FileDescriptorProto:
     hdr = fdp.message_type.add(name="FrameLogHeader")
     for fname, ftype, number in (
         ("schema_hash", D.TYPE_STRING, 1),
-        ("producer_agent_id", D.TYPE_STRING, 2),
-        ("activity_id", D.TYPE_STRING, 3),
         ("descriptor_set", D.TYPE_BYTES, 4),
         ("trigger_pool", D.TYPE_UINT32, 7),
-        ("runtime_agent_id", D.TYPE_STRING, 12),
         ("platform_name", D.TYPE_STRING, 13),
         ("simulated", D.TYPE_BOOL, 14),
         ("end_state", D.TYPE_INT32, 15),
@@ -536,11 +533,6 @@ class LogContract:
         """The run facts the archive and provenance record, read off the log's own header."""
         return {
             "schema_hash": self.header.schema_hash,
-            "runtime_provenance": {
-                "activity_id": self.header.activity_id,
-                "producer_agent_id": self.header.producer_agent_id,
-                "runtime_agent_id": self.header.runtime_agent_id,
-            },
             "platform": {"name": self.header.platform_name, "simulated": self.header.simulated},
         }
 
@@ -730,26 +722,14 @@ def iter_messages(
             rec.ParseFromString(data)
             which = rec.WhichOneof("record")
             if which == "header":
-                yield (
-                    "header",
-                    {
-                        "schema_hash": rec.header.schema_hash,
-                        "producer_agent_id": rec.header.producer_agent_id,
-                        "activity_id": rec.header.activity_id,
-                    },
-                )
+                yield "header", {"schema_hash": rec.header.schema_hash}
             elif which == "frame":
                 yield "frame", _parse_frame(rec.frame, contract)
 
 
 def read_header(path: Path | str) -> dict:
-    """The log's identity record: schema hash and the agents that produced it."""
-    contract = read_contract(path)
-    return {
-        "schema_hash": contract.header.schema_hash,
-        "producer_agent_id": contract.header.producer_agent_id,
-        "activity_id": contract.header.activity_id,
-    }
+    """The log's identity record: the schema hash it was written against."""
+    return {"schema_hash": read_contract(path).header.schema_hash}
 
 
 def frame_records(path: Path | str, contract: LogContract | None = None) -> Iterator[dict]:

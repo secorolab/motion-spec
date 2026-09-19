@@ -306,12 +306,6 @@ def replay_data(run_dir: Path) -> dict:
         "constraints": constraints,
         # The live poll names the motion by its gate; the panel is headed by the authored name.
         "motion_names": spelling,
-        # The timeline's spans name a motion by its design IRI; the strip labels them as authored.
-        "motion_iri_names": {
-            motion.iri: spelling.get(motion.id, motion.id)
-            for motion in contract.header.motions
-            if motion.iri
-        },
         # A `when` guard's monitor runs while the PREDECESSOR motion is active: the contract's
         # owner, not the block it was authored in, says whose window carries its data.
         "monitor_owners": {
@@ -334,10 +328,9 @@ def log_events(log: Path, contract) -> dict:
 
     Events come off the frame's trigger ring, not `last_event`: several events fire on one
     transition and `last_event` holds only one of them, while the ring carries every fire of
-    that tick (`trigger_count` entries, each naming its event by index). The satisfied edges are
-    the same ones runtime_graph projects into occurrences -- rise and fall for a goal
-    constraint, rise only for a monitor -- so a marker and an occurrence say the same thing
-    about the same tick. A log the runtime is still writing resumes at the byte the last call
+    that tick (`trigger_count` entries, each naming its event by index). A satisfied edge is a
+    rise and a fall for a goal constraint, a rise only for a monitor.
+    A log the runtime is still writing resumes at the byte the last call
     stopped at, latches intact, so the live page pays for its new frames only; a finished log is
     never rescanned.
     """
@@ -476,7 +469,7 @@ def _extend_events(log: Path, contract, scan: dict) -> None:
                 events.append({"frame": index, "kind": "state", "label": label})
             if held:
                 for slot, (now, before) in enumerate(zip(csat, csat_was)):
-                    # only goal constraints, not pure regulation -- runtime_graph's own rule
+                    # only goal constraints, not pure regulation
                     if now == before or not controllers[slot].constraint_iri:
                         continue
                     events.append(

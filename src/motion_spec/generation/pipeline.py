@@ -60,7 +60,7 @@ def _relocated(value, document: Path, locations: dict[Path, Path]):
     if source is None:
         return value
     target = locations.get(source.resolve())
-    if target is None and source.exists() and source.is_relative_to(document.parent.parent):
+    if target is None and source.exists() and source.is_relative_to(document.parent):
         target = source
     if target is None:
         return value
@@ -72,7 +72,7 @@ def _rewrite_locations(document: Path, locations: dict[Path, Path]) -> None:
 
     Edits the parsed JSON in place rather than round-tripping through rdflib: a serialized
     Dataset carries only triples, and rewriting through one dropped the document's @context and
-    its schema_version / runtime_rdf_contract_version keys on the way out.
+    its schema_version key on the way out.
     """
     data = json.loads(document.read_text())
     for node in _json_objects(data):
@@ -82,19 +82,31 @@ def _rewrite_locations(document: Path, locations: dict[Path, Path]) -> None:
     document.write_text(json.dumps(data, indent=2) + "\n")
 
 
+def _fold_provenance(document: Path, graph_id, source: Path) -> None:
+    """Move one tool's provenance document into its named graph of the generation document."""
+    from motion_spec.introspection.provenance import append_generation_graph
+
+    data = json.loads(source.read_text())
+    append_generation_graph(document, graph_id, data.get("@graph", []))
+    source.unlink()
+
+
 def _organize_generation(model_dir: Path, controller_dir: Path | None = None) -> None:
+    from motion_spec.introspection.provenance import (
+        GENERATION_DOCUMENT,
+        GRAPH_COORD_DSL,
+        GRAPH_DSL,
+    )
+
     generated = model_dir.parent
-    provenance_dir = generated / "provenance"
+    document = generated / GENERATION_DOCUMENT
     source_dir = generated / "source"
-    for directory in (provenance_dir, source_dir):
-        directory.mkdir(exist_ok=True)
+    source_dir.mkdir(exist_ok=True)
 
     locations: dict[Path, Path] = {}
     coord_provenance = model_dir / "provenance.ld.json"
-    target_coord_provenance = provenance_dir / "coord-dsl.ld.json"
     if coord_provenance.is_file():
-        locations[coord_provenance.resolve()] = target_coord_provenance
-        coord_provenance.replace(target_coord_provenance)
+        locations[coord_provenance.resolve()] = document
     dsl_provenance = model_dir / "provenance" / "dsl.ld.json"
     dataset = rdflib.Dataset().parse(dsl_provenance, format="json-ld")
     for _, _, location, _ in dataset.quads((None, PROV.atLocation, None, None)):
@@ -124,35 +136,17 @@ def _organize_generation(model_dir: Path, controller_dir: Path | None = None) ->
         shutil.copy2(source, target)
         locations[source.resolve()] = target
 
-    target_dsl_provenance = provenance_dir / "dsl.ld.json"
-    locations[dsl_provenance.resolve()] = target_dsl_provenance
-    dsl_provenance.replace(target_dsl_provenance)
-    (model_dir / "provenance").rmdir()
+    locations[dsl_provenance.resolve()] = document
 
     app_manifest = next(model_dir.glob("*-app.ld.json"))
     app = rdflib.Dataset().parse(app_manifest, format="json-ld")
-    for subject, predicate, imported, context in list(app.quads((None, APP["import"], None, None))):
-        if str(imported).endswith("provenance/dsl.ld.json"):
-            graph = app.graph(context)
-            graph.remove((subject, predicate, imported))
-            graph.add((subject, predicate, rdflib.URIRef("../provenance/dsl.ld.json")))
     for subject, predicate, path, context in list(app.quads((None, APP.path, None, None))):
         graph = app.graph(context)
         graph.remove((subject, predicate, path))
         graph.add((subject, predicate, rdflib.Literal(".")))
     app.serialize(app_manifest, format="json-ld", indent=2)
 
-    _rewrite_locations(target_dsl_provenance, locations)
-    if target_coord_provenance.is_file():
-        _rewrite_locations(target_coord_provenance, locations)
     if controller_dir:
-        # The derivation graph extends the model's own graphs, so it lives beside them.
-        derived = controller_dir / "derived.ld.json"
-        if derived.is_file():
-            model_name = app_manifest.name.removesuffix("-app.ld.json")
-            target = model_dir / f"{model_name}-derived.ld.json"
-            derived.replace(target)
-            locations[derived.resolve()] = target
         contract_dir = generated / "contract"
         contract_dir.mkdir()
         for artifact in ("frame_layout.json", "frame_log.proto", "frame_log_header.pb"):
@@ -160,12 +154,13 @@ def _organize_generation(model_dir: Path, controller_dir: Path | None = None) ->
             target = contract_dir / artifact
             source.replace(target)
             locations[source.resolve()] = target
-        motion_spec_provenance = provenance_dir / "motion-spec.ld.json"
-        codegen_provenance = controller_dir / "provenance.ld.json"
-        codegen_provenance.replace(motion_spec_provenance)
-        locations[codegen_provenance.resolve()] = motion_spec_provenance
-        _rewrite_locations(motion_spec_provenance, locations)
         shutil.rmtree(controller_dir / ".stst")
+
+    _fold_provenance(document, GRAPH_DSL, dsl_provenance)
+    (model_dir / "provenance").rmdir()
+    if coord_provenance.is_file():
+        _fold_provenance(document, GRAPH_COORD_DSL, coord_provenance)
+    _rewrite_locations(document, locations)
 
 
 def new_id(name: str) -> str:
@@ -212,6 +207,11 @@ def generate_model(
     """
     from motion_spec_dsl.rdf_parser.check import validate_manifest
     from motion_spec.classes.base import DataclassJSONEncoder
+    from motion_spec.introspection.provenance import (
+        build_derivation_document,
+        record_code_generation,
+        record_ir_generation,
+    )
     from motion_spec.rdf_parser.ir import generate_ir
 
     generated = generation / "generated"
@@ -235,9 +235,24 @@ def generate_model(
     from motion_spec.generation.codegen import resolve_model_assets
 
     ir_path = model_dir / "ir.json"
+    started = datetime.now(UTC)
     ir = json.loads(json.dumps(generate_ir(manifest), cls=DataclassJSONEncoder))
     resolve_model_assets(ir, model.resolve().parent)
     ir_path.write_text(json.dumps(ir, indent=4, sort_keys=True))
+    # The derivation graph extends the model's own graphs, so it is written beside them.
+    derived_path = model_dir / f"{model.stem}-derived.ld.json"
+    derived_path.write_text(json.dumps(build_derivation_document(ir), indent=4) + "\n")
+    record_ir_generation(
+        generated,
+        manifest,
+        ir,
+        {
+            "entity:motion_spec_ir": ir_path,
+            f"entity:generated_{derived_path.name}": derived_path,
+        },
+        started=started,
+        ended=datetime.now(UTC),
+    )
     if stage == "code":
         from motion_spec.generation.codegen import generate_code
         from motion_spec.setup import find_stst
@@ -247,17 +262,24 @@ def generate_model(
         for artifact in (*model_dir.glob("*_fsm.hpp"), model_dir / "fsm_ir.json"):
             if artifact.is_file():
                 artifact.replace(controller_dir / artifact.name)
-        generate_code(ir_path, controller_dir, find_stst((env or {}).get("PATH")) or "stst")
+        started = datetime.now(UTC)
+        stst = find_stst((env or {}).get("PATH")) or "stst"
+        written = generate_code(ir_path, controller_dir, stst)
         # The solver chain is the scene's, so it is emitted from the scene graph (plan 013).
         from motion_spec.generation.scene_kdl import write_scene_kdl_header
         from motion_spec.rdf_parser.model import load_model
         from motion_spec.rdf_parser.resources import scene_graph
 
-        write_scene_kdl_header(
-            scene_graph(load_model(manifest)),
-            controller_dir / "headers",
-            model.name,
-            base_dir=model.parent,
+        written.append(
+            write_scene_kdl_header(
+                scene_graph(load_model(manifest)),
+                controller_dir / "headers",
+                model.name,
+                base_dir=model.parent,
+            )
+        )
+        record_code_generation(
+            generated, ir_path, written, started=started, ended=datetime.now(UTC)
         )
         _organize_generation(model_dir, controller_dir)
     else:
@@ -296,10 +318,16 @@ def build_generation(
         configure.append(
             f"-DCMAKE_PREFIX_PATH={';'.join(str(path.resolve()) for path in prefixes)}"
         )
+    from motion_spec.introspection.provenance import record_build
+
     log = generation_log(generation)
+    started = datetime.now(UTC)
     tee(configure, log=log, env=env)
     tee(["cmake", "--build", str(build), "--parallel", str(build_jobs(jobs))], log=log, env=env)
     executable = build / "main"
     if not executable.is_file():
         raise RuntimeError(f"controller executable not found after build: {executable}")
+    record_build(
+        generation / "generated", controller, executable, started=started, ended=datetime.now(UTC)
+    )
     return executable

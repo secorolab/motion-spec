@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: MPL-2.0
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
-"""The run's documents consolidate into one dataset at the end of the run.
+"""How a run's lifecycle is read back, and what verification asks of the joined dataset.
 
-Consolidation is a report about what was recorded, so a dataset that will not join is printed
-and the run stands; what the manifest promises is only what was written, and verification holds
-the promise to account.
+Consolidation is a check, not an artifact: the dataset is built in memory when the archive is
+verified, and nothing on disk promises it.
 """
 
 from __future__ import annotations
@@ -14,83 +13,109 @@ from pathlib import Path
 
 import pytest
 import rdflib
-from support import _source_tree
+from support import _source_tree, _start_run
 
 from motion_spec.introspection.archive import (
     ArchiveError,
-    consolidate_provenance,
     create_archive_manifest,
     verify_manifest,
 )
-from motion_spec.introspection.provenance import ensure_local_rec_importable, prov_uri
-from motion_spec.introspection.replay import decode_frames
-from motion_spec.introspection.runtime_graph import write_runtime_ttl
+from motion_spec.introspection.provenance import (
+    ensure_local_rec_importable,
+    prov_uri,
+    rec_run_lifecycle,
+    rec_run_lifecycle_from_file,
+)
 
 ensure_local_rec_importable()
 
 RUN_ID = "run-test"
 RUN = rdflib.URIRef(prov_uri(f"run:{RUN_ID}"))
-MS_PROV = rdflib.Namespace("https://secorolab.github.io/metamodels/motion-spec/prov#")
-REC = rdflib.Namespace("https://secorolab.github.io/metamodels/rec#")
+OSLC_AUTO = rdflib.Namespace("http://open-services.net/ns/auto#")
+PROV_EXT = rdflib.Namespace("https://secorolab.github.io/metamodels/prov#")
 
 
 def _archive(tmp_path: Path) -> Path:
-    """One recorded run with its manifest, lifecycle document and runtime graph."""
+    """One recorded run with its manifest and its lifecycle document."""
     source = _source_tree(tmp_path / "source")
+    executable = tmp_path / "main"
+    executable.write_text("binary\n")
     run_dir = tmp_path / RUN_ID
-    create_archive_manifest(run_dir, source_dir=source, run_id=RUN_ID)
-    write_runtime_ttl(run_dir, decode_frames(run_dir / "logs" / "frame_log.pb"))
+    _start_run(run_dir, source, executable, RUN_ID)
+    create_archive_manifest(
+        run_dir, source_dir=source, run_id=RUN_ID, log_producer_executable=executable
+    )
     return run_dir
 
 
-def test_consolidation_writes_the_dataset_and_the_manifest_entry(tmp_path: Path) -> None:
-    from rec.consolidate import INFERRED_GRAPH, REC_GRAPH, RUNTIME_GRAPH
-
-    run_dir = _archive(tmp_path)
-    path = consolidate_provenance(run_dir)
-
-    assert path == run_dir / "provenance.trig"
-    manifest = json.loads((run_dir / "manifest.json").read_text())
-    assert manifest["files"]["provenance_trig"] == "provenance.trig"
-    dataset = rdflib.Dataset()
-    dataset.parse(path, format="trig")
-    assert (RUN, rdflib.RDF.type, MS_PROV.TaskExecution) in dataset.graph(RUNTIME_GRAPH)
-    assert (RUN, REC["run-id"], None) in dataset.graph(REC_GRAPH)
-    assert (RUN, rdflib.RDF.type, rdflib.PROV.Activity) in dataset.graph(INFERRED_GRAPH)
-    assert verify_manifest(run_dir)["files"]["provenance_trig"] == "provenance.trig"
+def _lifecycle(state: str, verdict: str) -> rdflib.Graph:
+    graph = rdflib.Graph()
+    graph.add((RUN, rdflib.RDF.type, PROV_EXT.Execution))
+    graph.set((RUN, OSLC_AUTO.state, OSLC_AUTO[state]))
+    graph.set((RUN, OSLC_AUTO.verdict, OSLC_AUTO[verdict]))
+    return graph
 
 
-def test_verification_holds_the_manifest_to_its_promise(tmp_path: Path) -> None:
-    run_dir = _archive(tmp_path)
-    consolidate_provenance(run_dir)
-    (run_dir / "provenance.trig").unlink()
-    with pytest.raises(ArchiveError, match="provenance.trig"):
-        verify_manifest(run_dir)
+@pytest.mark.parametrize(
+    ("state", "verdict", "status"),
+    [
+        ("queued", "unavailable", "QUEUED"),
+        ("inProgress", "unavailable", "RUNNING"),
+        ("complete", "passed", "COMPLETED"),
+        ("complete", "failed", "FAILED"),
+        ("complete", "error", "INTERRUPTED"),
+        ("canceled", "unavailable", "CANCELLED"),
+    ],
+)
+def test_the_oslc_pair_is_what_says_how_a_run_ended(state, verdict, status) -> None:
+    """REC records a lifecycle as an OSLC Automation (state, verdict); this is the whole map."""
+    assert rec_run_lifecycle(_lifecycle(state, verdict))["status"] == status
 
 
-def test_an_old_vocabulary_archive_reports_the_migration_and_leaves_the_run_alone(
-    tmp_path: Path, capsys
+def test_a_document_written_before_the_oslc_terms_has_no_status_and_does_not_raise(
+    tmp_path: Path,
 ) -> None:
-    run_dir = _archive(tmp_path)
-    (run_dir / "runtime" / "runtime.ttl").write_text(
-        "@prefix prov: <http://www.w3.org/ns/prov#> .\n"
-        f"<https://secorolab.github.io/motion-spec/runtime/run/{RUN_ID}> a prov:Entity .\n"
+    """An archive from an older REC states its lifecycle as an rdf:type nothing reads now.
+
+    It is still a document, and a run list that walks over one must report it as unknown
+    rather than stop.
+    """
+    path = tmp_path / "rec.ld.json"
+    path.write_text(
+        json.dumps(
+            {
+                "@context": {"rec": "https://secorolab.github.io/metamodels/rec#"},
+                "@id": str(RUN),
+                "@type": "rec:CompletedRun",
+                "rec:run-id": RUN_ID,
+            }
+        )
     )
-    assert consolidate_provenance(run_dir) is None
-    assert "--recover-runtime-ttl" in capsys.readouterr().err
+    lifecycle = rec_run_lifecycle_from_file(path)
+
+    assert lifecycle["status"] is None
+    assert lifecycle["started_time"] is None and lifecycle["completed_time"] is None
+    # And a document that is not there at all reads the same way.
+    assert rec_run_lifecycle_from_file(tmp_path / "absent.ld.json")["status"] is None
+
+
+def test_verification_consolidates_the_run_without_writing_anything(tmp_path: Path) -> None:
+    run_dir = _archive(tmp_path)
+    before = {path.name for path in run_dir.rglob("*")}
+
+    assert verify_manifest(run_dir)["run_id"] == RUN_ID
+
+    assert "provenance.trig" not in before
+    assert {path.name for path in run_dir.rglob("*")} == before
     assert "provenance_trig" not in json.loads((run_dir / "manifest.json").read_text())["files"]
-    assert not (run_dir / "provenance.trig").exists()
 
 
-def test_a_run_id_match_without_the_shared_iri_is_reported_not_patched(
-    tmp_path: Path, capsys
-) -> None:
+def test_a_rec_document_naming_another_run_is_reported_not_patched(tmp_path: Path) -> None:
+    """The joined dataset has to describe one run; two IRIs for it is a failed archive."""
     run_dir = _archive(tmp_path)
     rec_path = run_dir / "rec.ld.json"
     other = f"https://secorolab.github.io/rec/run/{RUN_ID}"
     rec_path.write_text(rec_path.read_text().replace(str(RUN), other))
 
-    assert consolidate_provenance(run_dir) is None
-    message = capsys.readouterr().err
-    assert str(RUN) in message and other in message
-    assert not (run_dir / "provenance.trig").exists()
+    with pytest.raises(ArchiveError):
+        verify_manifest(run_dir)

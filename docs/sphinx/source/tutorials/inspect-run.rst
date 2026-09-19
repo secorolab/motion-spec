@@ -52,16 +52,6 @@ schema hash, so there is nothing external left to cross-check it against. A run
 recorded before ``manifest.json`` was written (e.g. one killed mid-run) still
 replays and verifies -- verification just falls back to the frame-log header.
 
-Recover runtime RDF
-===================
-
-.. code-block:: console
-
-   $ motion-spec replay "$RUN_DIR" --recover-runtime-ttl
-
-This decodes the archived frame log and writes ``runtime/runtime.ttl``. The source
-frame log and REC record remain the authoritative runtime record.
-
 Stream decoded frames
 =====================
 

@@ -51,11 +51,6 @@ def schema() -> dict:
             }
         },
         "platform": {"name": "MuJoCo", "simulated": True, "backend": "mj_kdl"},
-        "runtime_provenance": {
-            "activity_id": "activity:controller_execution",
-            "producer_agent_id": "agent:controller_process",
-            "runtime_agent_id": "agent:runtime:mujoco",
-        },
     }
     doc["schema_hash"] = _hash_doc(doc)
     return doc
@@ -65,13 +60,22 @@ def model_jsonld() -> dict:
     """The controller's signal declarations -- what a value observation observes."""
     return {
         "@context": {
+            "cstr": "https://comp-rob2b.github.io/metamodels/task/constraint#",
             "cstr-hdl": "https://comp-rob2b.github.io/metamodels/task/constraint-handler#",
+            "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
             "error-signal": {"@id": "cstr-hdl:error-signal", "@type": "@id"},
             "control-signal": {"@id": "cstr-hdl:control-signal", "@type": "@id"},
             "constraint": {"@id": "cstr-hdl:constraint", "@type": "@id"},
         },
         "@graph": [
-            {"@id": CTRL, "error-signal": ERROR_SIGNAL, "control-signal": OUTPUT_SIGNAL},
-            {"@id": MONITOR, "constraint": CONSTRAINT},
+            {
+                "@id": CTRL,
+                "@type": "cstr-hdl:PIDController",
+                "rdfs:label": "ctrl_x",
+                "error-signal": ERROR_SIGNAL,
+                "control-signal": OUTPUT_SIGNAL,
+            },
+            {"@id": MONITOR, "@type": "cstr-hdl:Monitor", "constraint": CONSTRAINT},
+            {"@id": CONSTRAINT, "@type": "cstr:Constraint"},
         ],
     }

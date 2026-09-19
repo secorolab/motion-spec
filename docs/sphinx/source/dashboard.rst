@@ -29,9 +29,8 @@ in place and regenerated.
 
 **Run.** One run, live or finished, fed by the shared memory block while the runtime writes and
 by the archived frame log afterwards. Constraint plots (``Open in Jupyter`` seeds a notebook
-beside the run), a timeline of state entries and constraint edges, SPARQL over the model graph
-and the run's occurrences with a live overlay, the run's console, the files the run wrote
-(frame log, runtime graph, REC record, bag, videos — each opens read-only), its notes (dated,
+beside the run), SPARQL over the model graph, the run's console, the files the run wrote
+(frame log, REC record, bag, videos — each opens read-only), its notes (dated,
 tagged, kept beside the archive), and the camera — a recorded mp4, or a ROS image topic on a
 real platform.
 
@@ -47,9 +46,8 @@ name and provenance unchanged. Pinned generations appear first; pinned runs lead
 list. Search includes model names, labels and tags. The generation browser remembers folded
 groups, filters and sorting; use newest, last run or largest to order the list.
 
-Choose **Use as model baseline** on a run to compare later runs against it, including runs from
-other generations of the same model. Reports offer all of that model's runs and a direct
-baseline action. Comparison aligns the existing activity timings; it does not overlay signals.
+Choose **Use as model baseline** on a run to mark it as the reference for later runs of the
+same model, including runs from other generations.
 
 **Protect** on a generation or run refuses every deletion of it, and of anything holding it,
 until the protection is lifted; lifting it asks for the folder's own name. It is deliberately
@@ -72,7 +70,7 @@ signals are reported and skipped, and a preset never reuses another run's time w
 preferences are local to the browser and generation root.
 
 **Copy link to this moment** includes the replay frame. Run notes can attach the current frame
-or an optional frame range; their timestamps and timeline markers return to it. Generation
+or an optional frame range; their timestamps and transport markers return to it. Generation
 notes remain general notes. Report event times open the relevant replay position and constraint
 plots; aggregate signal reports link to the motion rather than implying an exact peak time.
 

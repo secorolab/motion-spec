@@ -4,11 +4,10 @@
 /** Explore: one query, two projections. The table and the picture are the same answer. */
 
 import { icon, iconMarkup } from "./components.js";
-import { $, $$, api, copyText, post, snack, snackError, state } from "./core.js";
+import { $, $$, api, post, snack, snackError, state } from "./core.js";
 import { addPlot } from "./plots.js";
 import { setView } from "./routing.js";
-import { seek } from "./run.js";
-import { showGenerated, showSource } from "./sources.js";
+import { showSource } from "./sources.js";
 
 // The suite reads this dictionary and runs every entry: a canned query that answers nothing
 // teaches the wrong vocabulary. Each spells out its prefixes to say which metamodel it uses.
@@ -16,82 +15,18 @@ export const CANNED = {
   "everything in this graph": `CONSTRUCT { ?s ?p ?o }
 WHERE { ?s ?p ?o }`,
 
-  "state timeline": `PREFIX ms-prov: <https://secorolab.github.io/metamodels/motion-spec/prov#>
-PREFIX prov: <http://www.w3.org/ns/prov#>
-PREFIX time: <http://www.w3.org/2006/time#>
-PREFIX fsm: <https://secorolab.github.io/metamodels/behaviour/fsm#>
-SELECT ?state ?from ?to WHERE {
-  ?occ a ms-prov:MotionExecution ;
-       prov:used ?state ;
-       time:hasBeginning ?begin ;
-       time:hasEnd ?end .
-  ?state a fsm:State .
-  ?begin time:inTimePosition/time:numericPosition ?from .
-  ?end time:inTimePosition/time:numericPosition ?to .
-} ORDER BY ?from`,
+  "states and their transitions": `PREFIX fsm: <https://secorolab.github.io/metamodels/behaviour/fsm#>
+SELECT ?transition ?from ?to WHERE {
+  ?transition fsm:transition-from ?from ;
+              fsm:transition-to ?to .
+} ORDER BY ?transition`,
 
-  "what caused a transition": `PREFIX prov: <http://www.w3.org/ns/prov#>
-PREFIX time: <http://www.w3.org/2006/time#>
-PREFIX fsm: <https://secorolab.github.io/metamodels/behaviour/fsm#>
-SELECT ?transition ?step ?cause WHERE {
-  ?occ a prov:Activity ;
-       prov:used ?transition ;
-       time:hasTime ?instant ;
-       prov:wasInformedBy ?prior .
-  ?transition a fsm:Transition .
-  ?instant time:inTimePosition/time:numericPosition ?step .
-  ?prior prov:used ?cause .
-} ORDER BY ?step`,
-
-  "satisfied during a state": `PREFIX ms-prov: <https://secorolab.github.io/metamodels/motion-spec/prov#>
-PREFIX prov: <http://www.w3.org/ns/prov#>
-PREFIX time: <http://www.w3.org/2006/time#>
-PREFIX fsm: <https://secorolab.github.io/metamodels/behaviour/fsm#>
-PREFIX cstr: <https://comp-rob2b.github.io/metamodels/task/constraint#>
-SELECT ?state ?constraint ?from ?to WHERE {
-  { SELECT ?state ?entered ?left WHERE {
-      ?stateOcc a ms-prov:MotionExecution ;
-                prov:used ?state ;
-                time:hasBeginning ?stateBegin ;
-                time:hasEnd ?stateEnd .
-      ?state a fsm:State .
-      ?stateBegin time:inTimePosition/time:numericPosition ?entered .
-      ?stateEnd time:inTimePosition/time:numericPosition ?left . } }
-  { SELECT DISTINCT ?constraint ?from ?to WHERE {
-      ?occ a ms-prov:ConstraintMaintenance ;
-           prov:used ?constraint ;
-           time:hasBeginning ?begin ;
-           time:hasEnd ?end .
-      ?constraint a cstr:Constraint .
-      ?begin time:inTimePosition/time:numericPosition ?from .
-      ?end time:inTimePosition/time:numericPosition ?to . } }
-  FILTER(?from >= ?entered && ?from <= ?left)
-} ORDER BY ?entered ?from`,
-
-  // The design side is every graph but the run's own: the FSM declares a graph of its own, so
-  // naming urn:model here would miss its states, transitions and reactions.
-  "modelled, never ran": `PREFIX prov: <http://www.w3.org/ns/prov#>
-PREFIX cstr: <https://comp-rob2b.github.io/metamodels/task/constraint#>
-SELECT DISTINCT ?constraint WHERE {
-  GRAPH ?model { ?constraint a cstr:Constraint }
-  FILTER(?model NOT IN (<urn:runtime>, <urn:live>))
-  FILTER NOT EXISTS { GRAPH <urn:runtime> { ?occ prov:used ?constraint } }
-} ORDER BY ?constraint`,
-
-  "recorded results": `PREFIX ms-prov: <https://secorolab.github.io/metamodels/motion-spec/prov#>
-PREFIX prov: <http://www.w3.org/ns/prov#>
-PREFIX time: <http://www.w3.org/2006/time#>
-PREFIX sosa: <http://www.w3.org/ns/sosa/>
-PREFIX qudt: <http://qudt.org/schema/qudt/>
-SELECT ?element ?value ?unit ?step WHERE {
-  ?occ a ms-prov:ConstraintMaintenance ;
-       prov:used ?element ;
-       sosa:hasResult ?result ;
-       time:hasBeginning ?begin .
-  ?result qudt:value ?value .
-  OPTIONAL { ?result qudt:unit ?unit }
-  ?begin time:inTimePosition/time:numericPosition ?step .
-} ORDER BY ?step`,
+  "constraints a handler maintains": `PREFIX cstr: <https://comp-rob2b.github.io/metamodels/task/constraint#>
+PREFIX cstr-hdl: <https://comp-rob2b.github.io/metamodels/task/constraint-handler#>
+SELECT ?handler ?constraint WHERE {
+  ?handler cstr-hdl:constraint ?constraint .
+  ?constraint a cstr:Constraint .
+} ORDER BY ?handler`,
 
   "controller gains": `PREFIX cstr-hdl: <https://comp-rob2b.github.io/metamodels/task/constraint-handler#>
 SELECT ?controller ?kp ?ki ?kd WHERE {
@@ -108,7 +43,6 @@ SELECT ?controller ?kp ?ki ?kd WHERE {
 export const EXPLORE_MARKUP = `<div class="explore">
   <div class="explore-rail">
     <div class="query-rail"><button id="new-query" class="new-query">+ query</button></div>
-    <div class="source-rail"><div class="legend-heading">graph sources</div><div class="source-list"></div></div>
   </div>
   <div class="explore-body">
     <div class="explore-canned"></div>
@@ -217,43 +151,6 @@ function renderRail() {
   );
 }
 
-// Which files every answer on this page was drawn out of.
-function renderSources(sources) {
-  const list = $(".source-list");
-  if (!sources.length) {
-    list.replaceChildren(
-      Object.assign(document.createElement("div"), {
-        className: "legend-row is-off",
-        textContent: "no model graph",
-      }),
-    );
-    return;
-  }
-  list.replaceChildren(
-    ...sources.map((source) => {
-      const row = document.createElement("div");
-      row.className = "legend-row source-row";
-      // A file outside the generations root (a metamodel in the workspace) has no viewer here.
-      const root = state.roots.logs ? `${state.roots.logs}/` : null;
-      const inside = root && source.path?.startsWith(root);
-      row.title = [
-        source.path ?? source.iri,
-        source.iri,
-        ...(source.graphs ?? []),
-        inside ? "click to read" : "click to copy the path",
-      ].join("\n");
-      row.onclick = () =>
-        inside
-          ? showGenerated(source.path.slice(root.length)).catch((error) => snack(error.message))
-          : copyText(source.path ?? source.iri);
-      row.innerHTML = '<span class="legend-name"></span><span class="legend-count"></span>';
-      row.querySelector(".legend-name").textContent = shortName(source.path ?? source.iri);
-      row.querySelector(".legend-count").textContent = source.triples;
-      return row;
-    }),
-  );
-}
-
 function selectQuery(index) {
   state.query = index;
   const entry = state.queries[index];
@@ -317,7 +214,6 @@ function statusLine(data) {
     `${data.count} row${data.count === 1 ? "" : "s"} · ${data.elapsed_ms} ms` +
     // an empty model graph is a run detached from its generation, not a query that found nothing
     `${data.model_triples ? "" : " · model graph unavailable"}` +
-    `${data.runtime_source ? ` · runtime: ${data.runtime_source}` : " · no runtime graph"}` +
     `${folded ? ` · folded ${folded}` : ""}`
   );
 }
@@ -435,19 +331,12 @@ function hsl(h, s, l) {
   return `#${f(0)}${f(8)}${f(4)}`;
 }
 
-// Only these two graphs are the run's own record; every other one is the design.
-const RECORD_GRAPHS = new Set(["runtime", "live"]);
-const modelledAndRan = (node) =>
-  node.graphs.includes("runtime") && node.graphs.some((name) => !RECORD_GRAPHS.has(name));
-
-// Hashed from the type, so there is no palette to run out of. A term the run used is
-// saturated, one only modelled is muted.
+// Hashed from the type, so there is no palette to run out of.
 function colourFor(node) {
   const type = node.types[0] ?? "";
   let hash = 0;
   for (const character of type) hash = (hash * 31 + character.charCodeAt(0)) % 360;
-  const ran = modelledAndRan(node);
-  return type ? hsl(hash, ran ? 68 : 40, ran ? 64 : 56) : ran ? "#e07a5f" : "#8a8f98";
+  return type ? hsl(hash, 68, 64) : "#8a8f98";
 }
 
 const sizeFor = (node) => Math.min(12, 3 + Math.log1p(node.degree) * 1.7);
@@ -889,9 +778,6 @@ function nodeActions(node) {
     ]);
   }
   if (row) actions.push(["show constraint", () => showConstraint(row)]);
-  if (modelledAndRan(node) && spansOf(node.value).length) {
-    actions.push(["occurrences", () => showOccurrences(node.value)]);
-  }
   actions.push([
     "focus",
     () => {
@@ -954,21 +840,6 @@ function exportQuery() {
   saveQueries();
   renderRail();
   runQuery();
-}
-
-// Asked of the fetched spans, not of the bars drawn from them, which land whenever the graph
-// query does -- an action that comes and goes with that is one a reader cannot learn.
-const spansOf = (iri) =>
-  (state.spanOverlay?.timeline.spans ?? []).filter((span) => span.element === iri);
-
-// The occurrences are the bars on the transport, which is on screen whatever panel is open.
-function showOccurrences(iri) {
-  const spans = spansOf(iri);
-  $$(".span-motion").forEach((bar) =>
-    bar.classList.toggle("span-focus", bar.dataset.element === iri),
-  );
-  seek(spans[0].begin_step);
-  snack(`${spans.length} occurrence${spans.length === 1 ? "" : "s"} · moved to the first`);
 }
 
 // Through the tab, so its own click writes the hash. An absent tab means no action was offered.
@@ -1034,10 +905,6 @@ export async function bindExplore(path, run = false) {
     renderRail();
   }
   if (run) await runQuery();
-  // After the query, not beside it: both build the same dataset, and the first to ask pays.
-  await api(`/api/graph-sources?path=${encodeURIComponent(path)}`)
-    .then(renderSources)
-    .catch(() => renderSources([]));
 }
 
 function bindQueryBar() {

@@ -86,6 +86,3 @@ no defaults; zero stiffness in this example explicitly disables the spring term.
 motion-spec replay /tmp/admittance-arc/runs/tutorial --verify
 motion-spec replay /tmp/admittance-arc/runs/tutorial --jsonl
 ```
-
-Use `--recover-runtime-ttl` when the archived runtime RDF needs to be regenerated
-from the frame log.

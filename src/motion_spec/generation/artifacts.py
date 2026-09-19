@@ -8,11 +8,6 @@ import json
 import re
 from pathlib import Path
 
-from motion_spec.introspection.provenance import (
-    build_derivation_document,
-    build_provenance_document,
-)
-
 SCHEMA_VERSION = 1
 # 3: the log carries its own decode contract in its header record -- the message descriptor,
 # every slot's id and IRI, the per-motion gate and the FSM tables. A v2 log has none of that,
@@ -482,13 +477,6 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
         "twists": len(spatial["twists"]),
         "wrenches": len(spatial["wrenches"]),
     }
-    provenance = introspection.get("provenance", {})
-    contexts = {
-        item["id"]: item["uri"]
-        for item in provenance.get("contexts", [])
-        if item.get("id") and item.get("uri")
-    }
-    runtime_provenance = _runtime_provenance(provenance)
     schema = {
         "schema_version": SCHEMA_VERSION,
         "frame_layout_version": FRAME_LAYOUT_VERSION,
@@ -498,18 +486,9 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
         # paths into the archive AND make schema_hash (carried in the frame-log header)
         # depend on where the build ran. The archive resolves these against its own dirs.
         "ir_path": Path(ir_path).name,
-        "graph": next(
-            (
-                Path(entity["path"]).name
-                for entity in provenance.get("entities", [])
-                if entity.get("role") == "app_manifest" and entity.get("path")
-            ),
-            Path(ir_path).name,
-        ),
-        # The authored execution platform travels with the run so the runtime graph and the
-        # archive validator read one fact rather than sniffing the runtime agent id.
+        # The authored execution platform travels with the run so the runner and the archive
+        # validator read one fact rather than sniffing a derived agent id.
         "platform": ir["configuration"]["platform"],
-        "context": contexts,
         "pools": pools,
         "timing": {"nominal_period_ns": introspection.get("control_period_ns")},
         "control_period_ns": introspection.get("control_period_ns"),
@@ -532,8 +511,6 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
         ],
         "spatial": spatial,
         "signals": introspection.get("signals", []),
-        "provenance_contexts": provenance.get("contexts", []),
-        "runtime_provenance": runtime_provenance,
     }
     # The wire field mapping is part of the run contract: fold it into schema_hash so the
     # frame-log header hash changes whenever a slot's protobuf field name/number changes.
@@ -542,37 +519,6 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
         :16
     ]
     return schema
-
-
-def _runtime_provenance(provenance: dict) -> dict:
-    """Resolve the controller-execution activity and its producer/runtime agents from provenance."""
-    activity = next(
-        (
-            item
-            for item in provenance.get("activities", [])
-            if item.get("role") == "controller_execution"
-            or item.get("id") == "activity:controller_execution"
-        ),
-        None,
-    )
-    if activity is None or not activity.get("wasAssociatedWith"):
-        raise RuntimeError(
-            "Introspection provenance must identify the controller execution activity "
-            "and associated producer agent."
-        )
-    producer_id = activity["wasAssociatedWith"]
-    producer = next(
-        (item for item in provenance.get("agents", []) if item.get("id") == producer_id), None
-    )
-    if producer is None:
-        raise RuntimeError(
-            f"Introspection provenance activity {activity['id']} references missing agent {producer_id}."
-        )
-    return {
-        "activity_id": activity["id"],
-        "producer_agent_id": producer_id,
-        "runtime_agent_id": producer.get("actedOnBehalfOf"),
-    }
 
 
 def build_frame_layout(schema: dict) -> dict:
@@ -586,7 +532,6 @@ def build_frame_layout(schema: dict) -> dict:
         "field_bytes": FIELD_BYTES,
         "frame_size_bytes": frame_size,
         "schema_hash": schema["schema_hash"],
-        "runtime_provenance": schema["runtime_provenance"],
         # The runner records the run before any log exists, so this one fact cannot
         # come from the log's own header.
         "platform": schema.get("platform") or {},
@@ -832,14 +777,6 @@ def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path) 
 
     with (output_dir / "frame_log_header.pb").open("wb") as fh:
         frame_log_pb.write_delimited(fh, header_record)
-    (output_dir / "provenance.ld.json").write_text(
-        json.dumps(build_provenance_document(ir, output_dir), indent=4) + "\n"
-    )
-    # Declares the IRIs the frame log's derived slots carry; moved beside the model graphs it
-    # extends by _organize_generation.
-    (output_dir / "derived.ld.json").write_text(
-        json.dumps(build_derivation_document(ir), indent=4) + "\n"
-    )
     return {
         "schema_hash": schema["schema_hash"],
         "frame_layout_hash": layout["frame_layout_hash"],
@@ -851,9 +788,6 @@ def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path) 
             "frame_size_bytes": layout["frame_size_bytes"],
             "schema_hash": schema["schema_hash"],
             "frame_layout_hash": layout["frame_layout_hash"],
-            "runtime_activity_id": schema["runtime_provenance"]["activity_id"],
-            "runtime_producer_agent_id": schema["runtime_provenance"]["producer_agent_id"],
-            "runtime_agent_id": schema["runtime_provenance"].get("runtime_agent_id") or "",
             "end_state": end_state if end_state is not None else -1,
             "nominal_period_ns": schema.get("control_period_ns") or 0,
             "protobuf": schema["protobuf"],
@@ -905,10 +839,6 @@ def build_frame_log_header_record(schema: dict) -> bytes:
     header = rec.header
     header.SetInParent()
     header.schema_hash = schema["schema_hash"]
-    meta = schema.get("runtime_provenance") or {}
-    header.producer_agent_id = meta.get("producer_agent_id", "")
-    header.activity_id = meta.get("activity_id", "")
-    header.runtime_agent_id = meta.get("runtime_agent_id") or ""
     header.descriptor_set = descriptor_set.SerializeToString()
     header.trigger_pool = schema["pools"].get("triggers", 0)
     platform = schema.get("platform") or {}

@@ -34,6 +34,7 @@ from motion_spec.introspection.provenance import (
     record_files,
     record_frame_log_health,
     record_run_agents,
+    record_used_file,
     repositories,
 )
 
@@ -687,6 +688,12 @@ def _write_rec_snapshot(
     run.log_repositories(repositories(run_dir))
     run.log_dependencies(dependencies())
     record_run_agents(observer.graph, run_dir, schema.get("platform") or {})
+    # Archiving without a prior catalogued run: the caller names the executable that ran.
+    executable = manifest.get("files", {}).get("log_producer_executable")
+    if executable and (run_dir / executable).exists():
+        record_used_file(
+            run, observer.run, run_dir / executable, "log_producer_executable", executable
+        )
     record_files(run, run_dir, manifest, str(observer.run))
     record_frame_log_health(run, run_dir, manifest)
     if complete_lifecycle and not completed_time and not terminal_status:

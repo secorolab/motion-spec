@@ -25,7 +25,6 @@ from motion_spec.introspection.provenance import (
     GENERATION_DOCUMENT,
     GRAPH_DSL,
     artifact_sha256,
-    dependencies,
     ensure_local_rec_importable,
     host_info,
     parse_rec_time,
@@ -34,8 +33,8 @@ from motion_spec.introspection.provenance import (
     record_files,
     record_frame_log_health,
     record_run_agents,
+    record_software,
     record_used_file,
-    repositories,
 )
 
 log = logging.getLogger(__name__)
@@ -560,7 +559,6 @@ def verify_manifest(run_dir_or_manifest: Path | str) -> dict:
             raise ArchiveError("; ".join(errors))
         _require_rec_provenance(rec_graph, "rec.ld.json", prov_uri(f"run:{manifest['run_id']}"))
         _validate_shacl(rec_graph, "rec.ld.json", *PROV_SHAPES, ("rec", "rec.shacl.ttl"))
-        _verify_consolidated(run_dir, manifest["run_id"])
     return manifest
 
 
@@ -685,8 +683,7 @@ def _write_rec_snapshot(
     else:
         run._emit_started()
     run.log_host_info(host_info())
-    run.log_repositories(repositories(run_dir))
-    run.log_dependencies(dependencies())
+    record_software(run, run_dir)
     record_run_agents(observer.graph, run_dir, schema.get("platform") or {})
     # Archiving without a prior catalogued run: the caller names the executable that ran.
     executable = manifest.get("files", {}).get("log_producer_executable")
@@ -701,26 +698,6 @@ def _write_rec_snapshot(
             run.start_time = datetime.now(timezone.utc)
         run._emit_completed()
     observer.close()
-
-
-def _verify_consolidated(run_dir: Path, run_id: str) -> None:
-    """The run's documents join into one dataset whose lifecycle graph names this execution.
-
-    Consolidated in memory: the dataset is the check, not an artifact the archive keeps.
-    """
-    ensure_local_rec_importable()
-    from rec.consolidate import REC_GRAPH, ConsolidationError, consolidate_dataset
-    from rec.observers.graph_observer import run_node
-
-    try:
-        dataset = consolidate_dataset(run_dir, metamodels_dir=_metamodels_root())
-    except (ConsolidationError, OSError) as exc:
-        raise ArchiveError(f"the run's documents do not consolidate: {exc}") from exc
-    prov_ext = rdflib.Namespace("https://secorolab.github.io/metamodels/prov#")
-    rec_graph = dataset.graph(REC_GRAPH)
-    run = rdflib.URIRef(prov_uri(f"run:{run_id}"))
-    if run_node(rec_graph) != run or (run, rdflib.RDF.type, prov_ext.Execution) not in rec_graph:
-        raise ArchiveError(f"the consolidated lifecycle graph does not name <{run}>")
 
 
 # pyshacl reads a non-absolute source shorter than 140 characters as a filename and anything

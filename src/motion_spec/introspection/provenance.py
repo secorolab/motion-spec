@@ -77,7 +77,7 @@ def _prov_iri(identifier: str) -> str:
 def prov_uri(identifier: str) -> str:
     """Canonical full provenance IRI for an agent/activity/run id.
 
-    `run:<run-id>` is what makes the rec and consolidated graphs describe one run rather than
+    `run:<run-id>` is what makes the rec and generation graphs describe one run rather than
     two, so every document mints the run through here.
     """
     if identifier.startswith(("http://", "https://")):
@@ -417,9 +417,9 @@ def record_used_file(run, run_iri: URIRef, path: Path, role: str, archive_path: 
     """One file the execution used; rec owns its checksum, size and qualified usage."""
     return run.add_resource(
         path,
-        usage_activity=str(run_iri),
-        usage_time=_mtime(path),
-        title=role,
+        used_by=str(run_iri),
+        used_at=_mtime(path),
+        label=role,
         archive_path=archive_path,
         sha256=artifact_sha256(path),
         size_bytes=artifact_size(path),
@@ -487,9 +487,9 @@ def record_files(run, run_dir: Path, manifest: dict, run_iri: str) -> None:
                 continue
             run.add_artefact(
                 rel,
-                gen_activity=run_iri,
-                generated_time=_mtime(path),
-                title=role,
+                generated_by=run_iri,
+                generated_at=_mtime(path),
+                label=role,
                 sha256=artifact_sha256(path),
                 size_bytes=artifact_size(path),
             )
@@ -554,10 +554,18 @@ def dependencies() -> list[dict]:
     rows = []
     for name in ("motion_spec", "rec", "rdflib", "pyshacl"):
         try:
-            rows.append({"name": name, "hasVersion": importlib.metadata.version(name)})
+            rows.append({"name": name, "version": importlib.metadata.version(name)})
         except importlib.metadata.PackageNotFoundError:
             continue
     return rows
+
+
+def record_software(run, run_dir: Path) -> None:
+    """The checked-out repositories and installed packages the run ran with."""
+    for row in repositories(run_dir):
+        run.add_software(row["name"], commit=row["commit"], repository=row.get("url"))
+    for row in dependencies():
+        run.add_software(row["name"], version=row["version"])
 
 
 def repositories(run_dir: Path) -> list[dict]:

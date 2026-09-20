@@ -23,7 +23,6 @@ from motion_spec.introspection.lifecycle_events import publish_lifecycle
 from motion_spec.introspection.provenance import (
     CONTROLLER_PROCESS,
     add_package,
-    dependencies,
     ensure_local_rec_importable,
     host_info,
     parse_rec_time,
@@ -33,8 +32,8 @@ from motion_spec.introspection.provenance import (
     record_arguments,
     record_draw,
     record_run_agents,
+    record_software,
     record_used_file,
-    repositories,
     uri,
 )
 from motion_spec.introspection.ros_video import RosImageRecorder, real_camera_recordings
@@ -334,14 +333,13 @@ def _start_rec_run(
     from rec import Run
     from rec.observers import FileObserver
 
-    # One run, one node: rec describes the same IRI the generation provenance and the
-    # consolidated dataset describe, so the documents union instead of standing side by side.
+    # One run, one node: rec describes the same IRI the generation provenance describes, so
+    # the documents union instead of standing side by side.
     observer = FileObserver(run_dir / "rec.ld.json", run_iri=prov_uri(f"run:{run_id}"))
     run = Run(observers=[observer], run_id=run_id)
     run._emit_started()
     run.log_host_info(host_info(environment))
-    run.log_repositories(repositories(run_dir))
-    run.log_dependencies(dependencies())
+    record_software(run, run_dir)
     graph = observer.graph
     record_run_agents(graph, source_dir, schema.get("platform") or {})
     used = _record_execution_inputs(

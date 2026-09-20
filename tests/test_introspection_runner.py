@@ -97,7 +97,6 @@ def test_runner_catalogs_run_from_start_and_archives_outputs(tmp_path: Path) -> 
     assert manifest["files"]["frame_log"] == "logs/frame_log.pb.zst"
     assert manifest["files"]["log_producer_executable"] == "controller/executable/log-copy"
     assert "runtime_ttl" not in manifest["files"]
-    assert not (run_dir / "provenance.trig").exists()
 
     rec_graph = rdflib.Graph().parse(run_dir / "rec.ld.json", format="json-ld")
     lifecycle = rec_run_lifecycle(rec_graph)

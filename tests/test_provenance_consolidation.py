@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
-"""How a run's lifecycle is read back, and what verification asks of the joined dataset.
-
-Consolidation is a check, not an artifact: the dataset is built in memory when the archive is
-verified, and nothing on disk promises it.
-"""
+"""How a run's lifecycle is read back, and what verification asks of the rec document."""
 
 from __future__ import annotations
 
@@ -99,19 +95,17 @@ def test_a_document_written_before_the_oslc_terms_has_no_status_and_does_not_rai
     assert rec_run_lifecycle_from_file(tmp_path / "absent.ld.json")["status"] is None
 
 
-def test_verification_consolidates_the_run_without_writing_anything(tmp_path: Path) -> None:
+def test_verification_writes_nothing(tmp_path: Path) -> None:
     run_dir = _archive(tmp_path)
     before = {path.name for path in run_dir.rglob("*")}
 
     assert verify_manifest(run_dir)["run_id"] == RUN_ID
 
-    assert "provenance.trig" not in before
     assert {path.name for path in run_dir.rglob("*")} == before
-    assert "provenance_trig" not in json.loads((run_dir / "manifest.json").read_text())["files"]
 
 
 def test_a_rec_document_naming_another_run_is_reported_not_patched(tmp_path: Path) -> None:
-    """The joined dataset has to describe one run; two IRIs for it is a failed archive."""
+    """The rec document has to describe this run; another IRI for it is a failed archive."""
     run_dir = _archive(tmp_path)
     rec_path = run_dir / "rec.ld.json"
     other = f"https://secorolab.github.io/rec/run/{RUN_ID}"

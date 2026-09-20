@@ -465,15 +465,14 @@ shared_state_header(configuration, resources, computation, coordination, communi
 #include \<kdl/jntarray.hpp\>
 #include \<kdl/chainfksolverpos_recursive.hpp\>
 #include \<kdl/chainfksolvervel_recursive.hpp\>
-#include \<kdl/chainhdsolver_vereshchagin_fixed_joint.hpp\>
+#include \<kdl/chainhdsolver_vereshchagin.hpp\>
+#include \<kdl/chainjnttojacsolver.hpp\>
 <if(resources.by_kind.serial_chain)><solver-rnea-include(configuration.backend)><endif>
 <if(resources.by_kind.serial_chain)><robot-driver-include(first(resources.by_kind.serial_chain), configuration.backend, configuration.model_name, resources)><endif>
 <if(resources.by_kind.mobile_base)>
 #include \<robif2b/functions/ethercat.h\>
 #include \<robif2b/functions/kelo_drive.h\>
 <endif>
-
-#include \<kdl/chainhdsolver_vereshchagin_fext_fixed_joint.hpp\>
 
 <if(resources.by_kind.serial_chain)><robot-num-joints-def(first(resources.by_kind.serial_chain))><endif>
 

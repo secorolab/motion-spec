@@ -22,7 +22,7 @@ repositories:
   orocos_kinematics_dynamics:
     type: git
     url: https://github.com/secorolab/orocos_kinematics_dynamics.git
-    version: feature/achd_fixed_joint
+    version: vereshchagin-driver-weighting
   coord2b:
     type: git
     url: https://github.com/rosym-project/coord2b.git

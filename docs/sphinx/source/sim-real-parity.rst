@@ -92,8 +92,12 @@ re-invented:
 
 Facts about the solvers worth not re-deriving:
 
-- ``ChainHdSolver_Vereshchagin_Fext_FixedJoint`` outputs *constraint-only* torque; the
-  complete quantity is ``getTotalTorque()``.
+- ``ChainHdSolver_Vereshchagin`` outputs *constraint-only* torque; the complete quantity is
+  ``getTotalTorque()``. The modelled wrench enters the one solve with ``setDriverWeights`` at
+  weight one, so the constraints let it through instead of compensating it; on robif2b the
+  torque that exerts it, ``J^T f_ext`` per forced segment, is added to the constraint torque.
+- ``beta`` is the true acceleration energy, as the model states it: the fork's solver offsets it
+  by ``root_acc`` internally and reports true accelerations back, so ``beta = 0`` holds still.
 - Its ``f_ext`` is per-segment — a mid-chain wrench (elbow support at ``half_arm_2_link``) is
   applied where it attaches, not tip-loaded.
 - Its header restricts ``f_ext`` to *"physical (but not artificial, i.e. not task-introduced)"*

@@ -42,15 +42,7 @@ solver-state-algorithm-fields-ACHD(solver) ::= <<
     // Zero after initialization and never written again: the pass that must not see a wrench.
     KDL::Wrenches f_ext_zero;
     KDL::JntArray tau_ctrl_acc;
-    // The external-wrench pass runs its own ACHD solve, whose inputs are constant zero and
-    // whose outputs KDL overwrites -- so all of them are sized once at initialization.
-    KDL::JntArray qdd_fext;
-    KDL::Jacobian alpha_zero;
-    KDL::JntArray beta_zero;
-    KDL::JntArray ff_zero;
-    KDL::JntArray tau_cstr_fext;
-    std::unique_ptr\<KDL::ChainHdSolver_Vereshchagin_Fext_FixedJoint\> achd_fext;
-    std::unique_ptr\<KDL::ChainHdSolver_Vereshchagin_Fixed_Joint\> achd_acc;
+    std::unique_ptr\<KDL::ChainHdSolver_Vereshchagin\> achd;
 >>
 
 solver-state-algorithm-fields-RNE(solver) ::= <<
@@ -72,6 +64,7 @@ solver-state-algorithm-fields-RNE(solver) ::= <<
 // that contribute anything need a rule; the rest fall through to the empty default.
 solver-state-struct-extra-impl ::= [
     "ACHD-mj_kdl": "solver-state-struct-extra-ACHD-mj_kdl",
+    "ACHD-robif2b": "solver-state-struct-extra-ACHD-robif2b",
     default: "solver-no-extra"
 ]
 
@@ -84,6 +77,13 @@ solver-state-struct-extra(solver, backend) ::= <<
 // mj_kdl gravity-compensates the ACHD command with a separate RNE pass.
 solver-state-struct-extra-ACHD-mj_kdl(solver) ::= <<
     std::unique_ptr\<KDL::ChainIdSolver_RNE\> rnea;
+>>
+
+// A wrench the arm exerts never enters the constraint torque robif2b sends, so J^T f_ext is.
+solver-state-struct-extra-ACHD-robif2b(solver) ::= <<
+    KDL::Jacobian jac;
+    KDL::JntArray tau_fext;
+    std::unique_ptr\<KDL::ChainJntToJacSolver\> jac_solver;
 >>
 
 // The frame an alpha direction is taken in comes off the one world model, composed back onto this
@@ -181,19 +181,14 @@ solver-init-algorithm-ACHD(solver, chain_solver, motion_driver) ::= <<
         // KDL::Wrench default-constructs to zero, which is the only value this one ever holds.
         state.<solver.id>.f_ext_zero = KDL::Wrenches(state.<solver.id>.num_segments);
         state.<solver.id>.tau_ctrl_acc = KDL::JntArray(state.<solver.id>.num_joints);
+        state.<solver.id>.achd = std::make_unique\<KDL::ChainHdSolver_Vereshchagin\>(*robot.<solver.id>.chain, state.<solver.id>.root_acc, state.<solver.id>.num_spatial_directions);
 <if(motion_driver.has_cartesian_force)>
         state.<solver.id>.f_ext = KDL::Wrenches(state.<solver.id>.num_segments);
-        state.<solver.id>.qdd_fext = KDL::JntArray(state.<solver.id>.num_joints);
-        state.<solver.id>.alpha_zero = KDL::Jacobian(state.<solver.id>.num_spatial_directions);
-        state.<solver.id>.beta_zero = KDL::JntArray(state.<solver.id>.num_spatial_directions);
-        state.<solver.id>.ff_zero = KDL::JntArray(state.<solver.id>.num_joints);
-        state.<solver.id>.tau_cstr_fext = KDL::JntArray(state.<solver.id>.num_joints);
-        KDL::SetToZero(state.<solver.id>.alpha_zero);
-        KDL::SetToZero(state.<solver.id>.beta_zero);
-        KDL::SetToZero(state.<solver.id>.ff_zero);
-        state.<solver.id>.achd_fext = std::make_unique\<KDL::ChainHdSolver_Vereshchagin_Fext_FixedJoint\>(*robot.<solver.id>.chain, state.<solver.id>.root_acc, state.<solver.id>.num_spatial_directions);
+        // Weight one: the authored wrench is exerted, not a disturbance to compensate.
+        state.<solver.id>.achd->setDriverWeights(
+            Eigen::VectorXd::Ones(state.<solver.id>.num_spatial_directions),
+            Eigen::VectorXd::Zero(state.<solver.id>.num_spatial_directions));
 <endif>
-        state.<solver.id>.achd_acc = std::make_unique\<KDL::ChainHdSolver_Vereshchagin_Fixed_Joint\>(*robot.<solver.id>.chain, state.<solver.id>.root_acc, state.<solver.id>.num_spatial_directions);
 >>
 
 solver-init-algorithm-RNE(solver, chain_solver, motion_driver) ::= <<
@@ -215,6 +210,7 @@ solver-init-algorithm-RNE(solver, chain_solver, motion_driver) ::= <<
 
 solver-init-extra-impl ::= [
     "ACHD-mj_kdl": "solver-init-extra-ACHD-mj_kdl",
+    "ACHD-robif2b": "solver-init-extra-ACHD-robif2b",
     default: "solver-no-extra"
 ]
 
@@ -226,6 +222,14 @@ solver-init-extra(solver, chain_solver, motion_driver, backend) ::= <<
 // it is built with the field itself rather than with the root acceleration ACHD was given.
 solver-init-extra-ACHD-mj_kdl(solver, chain_solver, motion_driver) ::= <<
         state.<solver.id>.rnea = std::make_unique\<KDL::ChainIdSolver_RNE\>(*robot.<solver.id>.chain, KDL::Vector(<if(chain_solver.gravity_compensation)><chain_solver.gravity_compensation; separator=", "><else>0.0, 0.0, 0.0<endif>));
+>>
+
+solver-init-extra-ACHD-robif2b(solver, chain_solver, motion_driver) ::= <<
+<if(motion_driver.has_cartesian_force)>
+        state.<solver.id>.jac = KDL::Jacobian(state.<solver.id>.num_joints);
+        state.<solver.id>.tau_fext = KDL::JntArray(state.<solver.id>.num_joints);
+        state.<solver.id>.jac_solver = std::make_unique\<KDL::ChainJntToJacSolver\>(*robot.<solver.id>.chain);
+<endif>
 >>
 
 solver-sync-input(solver, backend, joint_normalization) ::= <<
@@ -738,7 +742,7 @@ solver-execute-algorithm-RNE(solver, motion_driver, backend) ::= <<
 >>
 
 solver-execute-algorithm-ACHD(solver, motion_driver, backend) ::= <<
-    state.<solver.id>.achd_acc->CartToJnt(
+    state.<solver.id>.achd->CartToJnt(
         state.<solver.id>.q,
         state.<solver.id>.qd,
         state.<solver.id>.qdd,
@@ -783,37 +787,11 @@ solver-run-RNE(solver, motion_driver, backend) ::= <<
     }
 >>
 
-solver-run-fext-pre-impl ::= [
-    "ACHD-mj_kdl": "solver-run-fext-pre-ACHD",
-    "ACHD-robif2b": "solver-run-fext-pre-ACHD",
-    default: "solver-no-fext-pre"
-]
+// The wrench used to take its own ACHD pass; with the driver weights it rides the one solve.
+solver-run-fext-pre(solver, chain_solver, motion_driver, backend) ::= <<>>
 
-solver-no-fext-pre(solver, motion_driver) ::= <<>>
-
-solver-run-fext-pre(solver, chain_solver, motion_driver, backend) ::= <<
-<({<solver-run-fext-pre-impl.({<chain_solver.algorithm_name>-<backend>})>})(solver, motion_driver)>
->>
-
-// The authored wrench is turned into joint torque by its own ACHD pass: zero constraints, zero
-// feed-forward, so the output is J^T f_ext alone -- no gravity, Coriolis or joint feed-forward in
-// it. Every backend needs that separation, so both run this before the acceleration solve.
-solver-run-fext-pre-ACHD(solver, motion_driver) ::= <<
-    state.<solver.id>.achd_fext->CartToJnt(
-        state.<solver.id>.q,
-        state.<solver.id>.qd,
-        state.<solver.id>.qdd_fext,
-        state.<solver.id>.alpha_zero,
-        state.<solver.id>.beta_zero,
-        state.<solver.id>.f_ext,
-        state.<solver.id>.ff_zero,
-        state.<solver.id>.tau_cstr_fext);
->>
-
-// The wrench was already priced by the fext pass above; letting it into the acceleration solve
-// too would make it a disturbance the constraints absorb instead of a force the arm exerts.
 solver-achd-f_ext-arg(solver, motion_driver, backend) ::= <<
-state.<solver.id>.f_ext_zero
+<if(motion_driver.has_cartesian_force)>state.<solver.id>.f_ext<else>state.<solver.id>.f_ext_zero<endif>
 >>
 
 solver-run-finalize(solver, motion_driver, backend) ::= <<
@@ -822,7 +800,7 @@ solver-run-finalize(solver, motion_driver, backend) ::= <<
 
 // ACHD's constraint torque lives in the gravity-absorbed ABA frame (~ M*qdd - c); MuJoCo's
 // qfrc_applied needs M*qdd + c, so RNEA re-prices the resolved qdd. Zero wrench here, always:
-// the wrench's own torque is added afterwards, so RNEA stays the acceleration bridge alone.
+// qdd already carries the wrench, so the re-priced torque holds J^T f_ext without RNEA seeing it.
 solver-run-finalize-mj_kdl(solver, motion_driver) ::= <<
     state.<solver.id>.rnea->CartToJnt(
         state.<solver.id>.q,
@@ -830,14 +808,23 @@ solver-run-finalize-mj_kdl(solver, motion_driver) ::= <<
         state.<solver.id>.qdd,
         state.<solver.id>.f_ext_zero,
         state.<solver.id>.tau_ctrl);
-<if(motion_driver.has_cartesian_force)>
-    KDL::Add(state.<solver.id>.tau_ctrl, state.<solver.id>.tau_cstr_fext, state.<solver.id>.tau_ctrl);
-<endif>
 >>
 
+// The constraint torque is blind to a wrench it lets through, so J^T f_ext is added per segment.
 solver-run-finalize-robif2b(solver, motion_driver) ::= <<
 <if(motion_driver.has_cartesian_force)>
-    KDL::Add(state.<solver.id>.tau_cstr_fext, state.<solver.id>.tau_ctrl_acc, state.<solver.id>.tau_ctrl);
+    KDL::SetToZero(state.<solver.id>.tau_fext);
+    for (int i = 0; i \< state.<solver.id>.num_segments; ++i) {
+        if (KDL::Equal(state.<solver.id>.f_ext[i], KDL::Wrench::Zero())) {
+            continue;
+        \}
+        state.<solver.id>.jac_solver->JntToJac(state.<solver.id>.q, state.<solver.id>.jac, i + 1);
+        Eigen::Matrix\<double, 6, 1\> wrench_<solver.id>;
+        wrench_<solver.id> \<\< state.<solver.id>.f_ext[i](0), state.<solver.id>.f_ext[i](1), state.<solver.id>.f_ext[i](2),
+                             state.<solver.id>.f_ext[i](3), state.<solver.id>.f_ext[i](4), state.<solver.id>.f_ext[i](5);
+        state.<solver.id>.tau_fext.data.noalias() += state.<solver.id>.jac.data.transpose() * wrench_<solver.id>;
+    \}
+    KDL::Add(state.<solver.id>.tau_fext, state.<solver.id>.tau_ctrl_acc, state.<solver.id>.tau_ctrl);
 <else>
     state.<solver.id>.tau_ctrl = state.<solver.id>.tau_ctrl_acc;
 <endif>

@@ -19,7 +19,7 @@ main_source(configuration, resources, composition, computation, coordination, co
 <endif>
 <coordination.motions:{motion | <motion-include(motion)>}; separator="\n">
 
-<app-chain-includes(configuration.backend, resources.by_kind.serial_chain, resources, communication.ros)>
+<app-chain-includes(configuration.backend, resources.by_kind.serial_chain, resources, communication.ros, composition.scene.cameras)>
 #include \<unistd.h\>
 <if(composition.sampling)>
 #include \<chrono\>

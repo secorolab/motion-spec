@@ -107,7 +107,7 @@ robot-shutdown-mj_kdl-KinovaGen3(solver) ::= <<
 <endif>
 >>
 
-app-chain-includes-mj_kdl(has_serial_chain, resources, ros) ::= <<
+app-chain-includes-mj_kdl(has_serial_chain, resources, ros, cameras) ::= <<
 <if(has_serial_chain)>
 #include \<algorithm\>
 #include \<cstring\>
@@ -118,7 +118,7 @@ app-chain-includes-mj_kdl(has_serial_chain, resources, ros) ::= <<
 #include \<string\>
 #include \<vector\>
 #include "robot_config.hpp"
-<if(ros)>
+<if(ros && first(cameras).id)>
 #include \<mj_kdl_wrapper/camera_ros.hpp\>
 <endif>
 <endif>
@@ -429,12 +429,12 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros) ::= <<
     class CameraWorker {
       public:
         CameraWorker(std::string id, int width, int height, mjModel *model, std::string camera,
-                     std::string video_path, int fps<if(ros)>,
+                     std::string video_path, int fps<if(ros && first(scene.cameras).id)>,
                      std::unique_ptr\<mj_kdl::CameraRosPublisher\> ros_pub<endif>)
             : id_(std::move(id)), width_(width), height_(height), model_(model),
-              camera_(std::move(camera)), video_path_(std::move(video_path)), fps_(fps)<if(ros)>,
+              camera_(std::move(camera)), video_path_(std::move(video_path)), fps_(fps)<if(ros && first(scene.cameras).id)>,
               ros_pub_(std::move(ros_pub))<endif> {
-<if(ros)>
+<if(ros && first(scene.cameras).id)>
             if (ros_pub_) rgb_.resize(static_cast\<std::size_t\>(width) * height * 3);
 <endif>
             copy_ = mj_makeData(model);
@@ -468,7 +468,7 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros) ::= <<
         void run() {
             // A GL context belongs to the thread that created it, so this one is created here
             // rather than handed over from startup.
-<if(ros)>
+<if(ros && first(scene.cameras).id)>
             const bool recording = !video_path_.empty();
             const bool ready = recording
                                  ? mj_kdl::init_video_recorder(
@@ -488,19 +488,19 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros) ::= <<
             \}
 <endif>
             for (;;) {
-<if(ros)>
+<if(ros && first(scene.cameras).id)>
                 double t = 0.0;
 <endif>
                 {
                     std::unique_lock\<std::mutex\> lock(mutex_);
                     ready_.wait(lock, [this] { return pending_ || quit_; \});
                     if (quit_) break;
-<if(ros)>
+<if(ros && first(scene.cameras).id)>
                     t = stamp_;
 <endif>
                 \}
                 // Safe to read copy_ unlocked: submit() leaves it alone while pending_ is set.
-<if(ros)>
+<if(ros && first(scene.cameras).id)>
                 if (recording) mj_kdl::record_frame(&recorder_, model_, copy_);
                 // record_frame() renders into the recorder's own buffer and hands nothing back, so
                 // a recorded camera renders a second time to publish -- but only when the frame is
@@ -527,7 +527,7 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros) ::= <<
         std::string camera_;
         std::string video_path_;
         int fps_ = 30;
-<if(ros)>
+<if(ros && first(scene.cameras).id)>
         std::unique_ptr\<mj_kdl::CameraRosPublisher\> ros_pub_;
         std::vector\<std::uint8_t\> rgb_;
 <endif>
@@ -549,7 +549,7 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros) ::= <<
         const std::string _default_video = _record_video_path("default");
         if (!_default_video.empty()) {
             _cam_default = std::make_unique\<CameraWorker\>(
-              "default", 1280, 720, mj_env.model, /*camera=*/"", _default_video, 30<if(ros)>,
+              "default", 1280, 720, mj_env.model, /*camera=*/"", _default_video, 30<if(ros && first(scene.cameras).id)>,
               // The free camera is a view of the scene, not a modelled sensor: no frame to stamp.
               /*ros_pub=*/nullptr<endif>);
         \}

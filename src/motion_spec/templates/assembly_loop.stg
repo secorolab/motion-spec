@@ -6,8 +6,8 @@ import "backend_mj_kdl.stg"
 import "backend_robif2b.stg"
 import "backend_kelo.stg"
 
-app-chain-includes(backend, has_serial_chain, resources, ros) ::= <<
-<({app-chain-includes-<backend>})(has_serial_chain, resources, ros)>
+app-chain-includes(backend, has_serial_chain, resources, ros, cameras) ::= <<
+<({app-chain-includes-<backend>})(has_serial_chain, resources, ros, cameras)>
 >>
 
 // The ros block travels with the scene because a camera in it publishes through the node the

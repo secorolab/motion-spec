@@ -473,7 +473,7 @@ robot-shutdown-robif2b-KinovaGen3(solver) ::= <<
 <endif>
 >>
 
-app-chain-includes-robif2b(has_serial_chain, resources, ros) ::= <<
+app-chain-includes-robif2b(has_serial_chain, resources, ros, cameras) ::= <<
 <if(has_serial_chain)>
 #include \<iostream\>
 #include "robot_config.hpp"

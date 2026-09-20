@@ -18,6 +18,7 @@ from pathlib import Path
 from rdflib.namespace import PROV
 
 from motion_spec.introspection.archive import create_archive_manifest, verify_manifest
+from motion_spec.introspection.provenance import GENERATION_DOCUMENT
 from motion_spec.introspection.lifecycle_events import publish_lifecycle
 from motion_spec.introspection.provenance import (
     CONTROLLER_PROCESS,
@@ -301,12 +302,9 @@ def _validate_new_run(
     if not source_dir.exists():
         raise RunnerError(f"{source_dir}: source directory does not exist")
     required = (
-        (
-            source_dir / "contract" / "frame_log.proto",
-            source_dir / "provenance" / "motion-spec.ld.json",
-        )
+        (source_dir / "contract" / "frame_log.proto", source_dir / GENERATION_DOCUMENT)
         if (source_dir / "contract").is_dir()
-        else tuple(source_dir / rel for rel in ("frame_log.proto", "provenance.ld.json"))
+        else tuple(source_dir / rel for rel in ("frame_log.proto", GENERATION_DOCUMENT))
     )
     for path in required:
         if not path.exists():

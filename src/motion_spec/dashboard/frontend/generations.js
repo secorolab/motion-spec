@@ -633,6 +633,20 @@ export function stopRun(path) {
   return post("/api/run/stop", { path });
 }
 
+// Several at once, each on its own: one the server did not start is skipped, not a failure.
+export async function stopRuns(paths) {
+  const results = await Promise.allSettled(paths.map(stopRun));
+  const stopped = results.filter((result) => result.status === "fulfilled").length;
+  const skipped = results.length - stopped;
+  const count = `stopped ${stopped} run${stopped === 1 ? "" : "s"}`;
+  snack(
+    stopped
+      ? `${count}${skipped ? `, ${skipped} not running here` : ""}`
+      : "none of these runs is running here",
+  );
+  return stopped;
+}
+
 export function bindRunAgain(page, path, cameras, simulated) {
   const bar = page.querySelector(".run-bar");
   // Each option is a choice between two named states, not a flag to guess the meaning of.
@@ -775,6 +789,7 @@ function watchRun(page, bar, path, options) {
     const running = answer.runs.filter((run) => run.running);
     running.forEach((run) => watched.add(run.path));
     live.replaceChildren(...running.map(liveRow));
+    if (running.length > 1) live.append(stopAllRow(running.map((run) => run.path)));
     for (const run of answer.runs) {
       if (run.running || !watched.delete(run.path)) continue;
       status.textContent = run.stopped
@@ -822,6 +837,20 @@ function watchRun(page, bar, path, options) {
   };
   bar.refreshRun = check;
   watch();
+}
+
+function stopAllRow(paths) {
+  const row = document.createElement("div");
+  row.className = "live-run";
+  const stop = document.createElement("button");
+  stop.className = "run-stop";
+  stop.textContent = `stop all ${paths.length}`;
+  stop.onclick = () => {
+    stop.disabled = true;
+    stopRuns(paths).finally(() => (stop.disabled = false));
+  };
+  row.append(stop);
+  return row;
 }
 
 function liveRow(run) {

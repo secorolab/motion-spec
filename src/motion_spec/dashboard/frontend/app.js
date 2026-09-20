@@ -18,7 +18,7 @@ import {
   writeStored,
 } from "./core.js";
 import { icon } from "./components.js";
-import { filterGenerations, loadGenerations, selectGeneration } from "./generations.js";
+import { filterGenerations, loadGenerations, selectGeneration, stopRuns } from "./generations.js";
 import { goHome, loadLocation, openTab, sidebarLoader } from "./routing.js";
 import { reserveVideoSpace } from "./run.js";
 import { installSelectTheme } from "./selects.js";
@@ -51,6 +51,9 @@ $("#search").oninput = (event) => {
 };
 
 $("#delete-selected").onclick = () => deleteSelected();
+// Only runs stop; a generation picked in the sidebar is left alone.
+$("#stop-selected").onclick = () =>
+  stopRuns([...state.selected].filter((path) => path.includes("/runs/")));
 
 $("#clear-selection").onclick = () => {
   state.selected.clear();

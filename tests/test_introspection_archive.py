@@ -16,11 +16,15 @@ from motion_spec.introspection.archive import (
     verify_manifest,
 )
 from motion_spec.introspection.provenance import (
+    EXECUTION_DOCUMENT,
     GENERATION_DOCUMENT,
     GRAPH_DSL,
     prov_uri,
-    rec_run_lifecycle,
+    read_generation_dataset,
+    rec_document,
+    rec_run_lifecycle_from_file,
 )
+from rec import State, Verdict
 from motion_spec.introspection import replay
 from motion_spec.introspection.replay import decode_frames, summarize, validate_header
 from motion_spec_dsl.rdf_parser.vocab import APP
@@ -65,7 +69,8 @@ def test_archive_and_replay_are_self_contained(tmp_path: Path) -> None:
 
     manifest = _archived(tmp_path, run_dir, source)
 
-    assert manifest["files"]["rec"] == "rec.ld.json"
+    assert manifest["files"]["rec"] == "run-test.ld.json"
+    assert manifest["files"]["execution"] == EXECUTION_DOCUMENT
     assert manifest["files"]["frame_log_health"] == "logs/frame_log.pb.health.json"
     assert manifest["files"]["frame_log_proto"] == "contract/frame_log.proto"
     assert "frame_layout" not in manifest["files"]
@@ -100,10 +105,12 @@ def test_rec_records_the_run_as_an_execution_of_what_it_used(tmp_path: Path) -> 
     source = _source_tree(tmp_path / "source")
     run_dir = tmp_path / "run"
     _archived(tmp_path, run_dir, source)
-    rec_graph = rdflib.Graph().parse(run_dir / "rec.ld.json", format="json-ld")
+    rec_path = rec_document(run_dir, "run-test")
+    rec_graph = read_generation_dataset(rec_path)
     run = rdflib.URIRef(prov_uri("run:run-test"))
 
-    assert rec_run_lifecycle(rec_graph)["status"] == "COMPLETED"
+    lifecycle = rec_run_lifecycle_from_file(rec_path)
+    assert (lifecycle["state"], lifecycle["verdict"]) == (State.COMPLETE, Verdict.PASSED)
     assert (run, rdflib.RDF.type, PROV_EXT.Execution) in rec_graph
     assert (run, PROV.used, None) in rec_graph
     assert (run, PROV.wasAssociatedWith, None) in rec_graph
@@ -314,7 +321,7 @@ def test_manifest_lists_console_and_videos_only_when_present(tmp_path: Path) -> 
     assert manifest["files"]["videos"] == ["logs/wrist.mp4"]
     assert verify_manifest(run_dir)["run_id"] == "run-test"
     # A video is something the run produced, so rec records it as an artefact of the run.
-    rec_graph = rdflib.Graph().parse(run_dir / "rec.ld.json", format="json-ld")
+    rec_graph = read_generation_dataset(rec_document(run_dir, "run-test"))
     assert _rec_entity_location(rec_graph, "videos", run_dir) == "logs/wrist.mp4"
 
 
@@ -363,7 +370,12 @@ def test_generation_owned_run_does_not_copy_static_artifacts(tmp_path: Path) -> 
         run_dir, source_dir=generated, run_id="run-1", frame_log=flat / "frame_log.pb"
     )
 
-    assert {path.name for path in run_dir.iterdir()} == {"logs", "rec.ld.json", "manifest.json"}
+    assert {path.name for path in run_dir.iterdir()} == {
+        "logs",
+        "run-1.ld.json",
+        EXECUTION_DOCUMENT,
+        "manifest.json",
+    }
     assert "provenance" not in manifest
     assert "rec" not in manifest
     assert json.dumps(manifest).count(f"../../generated/{GENERATION_DOCUMENT}") == 1
@@ -391,14 +403,14 @@ def test_generation_run_vendors_its_authored_source(tmp_path: Path) -> None:
 
 
 def test_verify_requires_the_run_to_be_a_recorded_execution(tmp_path: Path) -> None:
-    """The gate on rec.ld.json: the run node is an Execution that names what it used."""
+    """The gate on the rec document: the run node is an Execution that names what it used."""
     source = _source_tree(tmp_path / "source")
     run_dir = tmp_path / "run"
     create_archive_manifest(
         run_dir, source_dir=source, run_id="run-test", log_producer_executable=_executable(tmp_path)
     )
-    rec_path = run_dir / "rec.ld.json"
-    rec_path.write_text(rec_path.read_text().replace("prov-ext:Execution", "prov:Activity"))
+    rec_path = rec_document(run_dir, "run-test")
+    rec_path.write_text(rec_path.read_text().replace('"Execution"', '"Activity"'))
 
     with pytest.raises(ArchiveError, match="missing REC provenance relationship"):
         verify_manifest(run_dir)

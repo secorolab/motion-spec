@@ -8,6 +8,7 @@ import { showEmpty } from "./components.js";
 
 export const state = {
   tab: "logs",
+  announced: new Set(), // runs whose ending a page has already reported
   roots: {},
   cache: {},
   listRequest: 0,

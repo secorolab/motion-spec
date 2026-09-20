@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import unquote
 
 from motion_spec.dashboard import roots
-from motion_spec.dashboard.jobs import run_status
+from motion_spec.dashboard.jobs import generation_status
 from motion_spec.dashboard.metadata import annotations, baseline, generation_of
 from motion_spec.dashboard.roots import directory_size, relative_path
 from motion_spec.dashboard.runs import GenerationInfo, RunInfo
@@ -22,7 +22,7 @@ def protection(path: Path) -> str | None:
     """Include descendant pins and pending processes, not just recent log writes."""
     generation = generation_of(path)
     runs = [run.dir for run in GenerationInfo(generation).runs] if path == generation else [path]
-    if run_status(generation).get("running") or any(RunInfo(run).is_live() for run in runs):
+    if generation_status(generation)["running"] or any(RunInfo(run).is_live() for run in runs):
         return "active run"
     if annotations(path)["protected"] or any(annotations(run)["protected"] for run in runs):
         return "protected generation or run"

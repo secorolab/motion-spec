@@ -8,19 +8,19 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from rec import State, Verdict
+
 from motion_spec.dashboard.frames import FrameLayout
 from motion_spec.introspection import frame_log_pb
-from motion_spec.introspection.provenance import rec_run_lifecycle_from_file
+from motion_spec.introspection.provenance import rec_document, rec_run_lifecycle_from_file
 from motion_spec.introspection.replay import read_health
 
 LAYOUT_REL = Path("generated") / "contract" / "frame_layout.json"
 LOG_REL = Path("logs") / "frame_log.pb"
-# REC's run-state vocabulary (see provenance._REC_RUN_STATUS); the rest -- QUEUED, RUNNING --
-# mean the run may still produce frames.
-TERMINAL_STATUS = frozenset({"COMPLETED", "FAILED", "INTERRUPTED", "CANCELLED"})
+# The rest of rec's states -- queued, in-progress -- mean the run may still produce frames.
+ENDED = frozenset({State.COMPLETE, State.CANCELED})
 
-# Parsing one rec.ld.json costs ~150 ms of rdflib; a run list pays it per row on every load.
-# The doc only changes when the runner appends a transition, so mtime+size gates a re-parse.
+# The doc only changes when the runner appends a transition, so mtime+size gates a re-read.
 _LIFECYCLE_CACHE: dict[str, tuple[tuple, dict]] = {}
 
 
@@ -58,9 +58,14 @@ class RunInfo:
         return json.loads(path.read_text()) if path.exists() else None
 
     @property
-    def status(self) -> str | None:
-        """QUEUED / RUNNING / COMPLETED / FAILED / INTERRUPTED / CANCELLED, as REC recorded it."""
-        return _lifecycle(self.dir / "rec.ld.json").get("status")
+    def state(self) -> State | None:
+        """Where the run is, as rec recorded it; None while nothing is recorded."""
+        return _lifecycle(rec_document(self.dir)).get("state")
+
+    @property
+    def verdict(self) -> Verdict | None:
+        """How the run turned out; `unavailable` until it is complete."""
+        return _lifecycle(rec_document(self.dir)).get("verdict")
 
     @property
     def health(self) -> dict | None:
@@ -69,13 +74,13 @@ class RunInfo:
     def is_live(self, within_s: float = 10.0) -> bool:
         """Not finished, and the frame log grew within the last `within_s` seconds.
 
-        Asking the status alone is not enough: a run killed outright never records a terminal
-        state, so a stale log is what actually distinguishes it from one still ticking. The log
+        Asking the state alone is not enough: a run killed outright never records an end,
+        so a stale log is what actually distinguishes it from one still ticking. The log
         is written through buffered stdio, so mtime lags the tick by an unpredictable margin --
         hence the wide window. A caller already polling the shm block has the sharper signal in
         its advancing seq and should prefer it.
         """
-        if self.status in TERMINAL_STATUS or not self.log_path.exists():
+        if self.state in ENDED or not self.log_path.exists():
             return False
         return time.time() - self.log_path.stat().st_mtime <= within_s
 

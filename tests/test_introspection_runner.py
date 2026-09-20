@@ -15,13 +15,17 @@ from support import _source_tree
 from motion_spec.introspection import runner
 from motion_spec.introspection.archive import verify_manifest
 from motion_spec.introspection.provenance import (
+    EXECUTION_DOCUMENT,
     _slug,
     prov_uri,
-    rec_run_lifecycle,
+    read_generation_dataset,
+    rec_document,
+    rec_run_lifecycle_from_file,
     run_entity_uri,
 )
 from motion_spec.introspection.ros_video import real_camera_recordings
 from motion_spec.introspection.runner import run_cataloged
+from rec import State, Verdict
 
 REC = rdflib.Namespace("https://secorolab.github.io/metamodels/rec#")
 PROV_EXT = rdflib.Namespace("https://secorolab.github.io/metamodels/prov#")
@@ -68,6 +72,8 @@ def _noisy_executable(path: Path, exit_code: int) -> Path:
         "import sys\n"
         "print('hello from the run', flush=True)\n"
         "print('frame log:', repr(os.environ['MOTION_SPEC_FRAME_LOG']), flush=True)\n"
+        "print('blocks:', os.environ['MOTION_SPEC_SHM_NAME'], "
+        "os.environ['MOTION_SPEC_CTRL_SHM_NAME'], flush=True)\n"
         "print('boom', file=sys.stderr, flush=True)\n"
         "if len(sys.argv) > 1:\n"
         "    shutil.copyfile(sys.argv[1], os.environ['MOTION_SPEC_FRAME_LOG'])\n"
@@ -98,11 +104,12 @@ def test_runner_catalogs_run_from_start_and_archives_outputs(tmp_path: Path) -> 
     assert manifest["files"]["log_producer_executable"] == "controller/executable/log-copy"
     assert "runtime_ttl" not in manifest["files"]
 
-    rec_graph = rdflib.Graph().parse(run_dir / "rec.ld.json", format="json-ld")
-    lifecycle = rec_run_lifecycle(rec_graph)
-    assert lifecycle["status"] == "COMPLETED"
+    assert manifest["files"]["rec"] == "run-001.ld.json"
+    lifecycle = rec_run_lifecycle_from_file(rec_document(run_dir, "run-001"))
+    assert (lifecycle["state"], lifecycle["verdict"]) == (State.COMPLETE, Verdict.PASSED)
     assert lifecycle["started_time"]
     assert lifecycle["completed_time"]
+    rec_graph = read_generation_dataset(rec_document(run_dir, "run-001"))
     labels = {str(value) for value in rec_graph.objects(None, rdflib.RDFS.label)}
     assert {"log_producer_executable", "frame_log"} <= labels
 
@@ -122,22 +129,24 @@ def test_the_run_is_an_execution_of_the_executable_and_its_arguments(tmp_path: P
         run_id="run-006",
     )
 
-    rec_graph = rdflib.Graph().parse(run_dir / "rec.ld.json", format="json-ld")
+    rec_graph = read_generation_dataset(rec_document(run_dir, "run-006"))
+    # rec records the run; what rec has no word for is in the run's execution document.
+    execution = read_generation_dataset(run_dir / EXECUTION_DOCUMENT)
     run = rdflib.URIRef(prov_uri("run:run-006"))
     assert (run, rdflib.RDF.type, PROV_EXT.Execution) in rec_graph
-    assert (run, PROV.wasAssociatedWith, rdflib.URIRef(prov_uri("agent:motion_spec"))) in rec_graph
+    assert (run, PROV.wasAssociatedWith, rdflib.URIRef(prov_uri("agent:motion_spec"))) in execution
     # The controller process acts for the runtime the model named, and every modelled robot
     # the generation declared is an agent of the run.
     controller = rdflib.URIRef(prov_uri("agent:controller_process"))
     runtime = rdflib.URIRef(prov_uri("agent:runtime_mujoco"))
-    assert (controller, PROV.actedOnBehalfOf, runtime) in rec_graph
+    assert (controller, PROV.actedOnBehalfOf, runtime) in execution
     assert (rdflib.URIRef(prov_uri("agent:modelled:arm1")), rdflib.RDF.type, AGN.ModelledAgent) in (
-        rec_graph
+        execution
     )
 
     arguments = rdflib.URIRef(run_entity_uri("run-006", "arguments"))
-    assert (run, PROV.used, arguments) in rec_graph
-    assert str(rec_graph.value(arguments, rdflib.RDFS.label)).endswith("frame_log.pb --headless")
+    assert (run, PROV.used, arguments) in execution
+    assert str(execution.value(arguments, rdflib.RDFS.label)).endswith("frame_log.pb --headless")
     used_labels = {
         str(rec_graph.value(entity, rdflib.RDFS.label))
         for entity in rec_graph.objects(run, PROV.used)
@@ -154,7 +163,7 @@ def test_interrupted_runner_records_a_terminal_state(tmp_path: Path, monkeypatch
     def interrupt(_executable, _args, *, cwd, frame_log, run_id, rec_path, **_recording):
         frame_log.parent.mkdir(parents=True)
         shutil.copyfile(source / "frame_log.pb", frame_log)
-        runner._finish_rec_run(rec_path, run_id, "INTERRUPTED")
+        runner._finish_rec_run(rec_path, run_id, Verdict.ERROR)
         return 130
 
     monkeypatch.setattr(runner, "_run_executable", interrupt)
@@ -162,8 +171,8 @@ def test_interrupted_runner_records_a_terminal_state(tmp_path: Path, monkeypatch
     result = run_cataloged(run_dir, source_dir=source, executable=executable, run_id="run-002")
 
     assert result == 130
-    rec_graph = rdflib.Graph().parse(run_dir / "rec.ld.json", format="json-ld")
-    assert rec_run_lifecycle(rec_graph)["status"] == "INTERRUPTED"
+    lifecycle = rec_run_lifecycle_from_file(rec_document(run_dir, "run-002"))
+    assert (lifecycle["state"], lifecycle["verdict"]) == (State.COMPLETE, Verdict.ERROR)
 
 
 def test_a_draw_is_a_generalization_of_the_quantity_it_sampled(tmp_path: Path) -> None:
@@ -194,18 +203,19 @@ def test_a_draw_is_a_generalization_of_the_quantity_it_sampled(tmp_path: Path) -
     finally:
         monkeypatch_run.undo()
 
-    rec_graph = rdflib.Graph().parse(run_dir / "rec.ld.json", format="json-ld")
+    execution = read_generation_dataset(run_dir / EXECUTION_DOCUMENT)
+    rec_graph = read_generation_dataset(rec_document(run_dir, "run-007"))
     draw = rdflib.URIRef(run_entity_uri("run-007", f"draw/{quantity}"))
     activity = rdflib.URIRef(f"{prov_uri('run:run-007')}/sampling/{_slug(quantity)}")
 
-    assert (activity, rdflib.RDF.type, PROV_EXT.Generalization) in rec_graph
-    assert (activity, PROV.used, rdflib.URIRef(quantity)) in rec_graph
-    assert (rdflib.URIRef(quantity), rdflib.RDF.type, PROV.Entity) in rec_graph
-    assert (draw, PROV.wasGeneratedBy, activity) in rec_graph
-    assert (draw, PROV.specializationOf, rdflib.URIRef(quantity)) in rec_graph
+    assert (activity, rdflib.RDF.type, PROV_EXT.Generalization) in execution
+    assert (activity, PROV.used, rdflib.URIRef(quantity)) in execution
+    assert (rdflib.URIRef(quantity), rdflib.RDF.type, PROV.Entity) in execution
+    assert (draw, PROV.wasGeneratedBy, activity) in execution
+    assert (draw, PROV.specializationOf, rdflib.URIRef(quantity)) in execution
     # A three-vector is a coordinate, not a bare number.
-    assert (draw, rdflib.RDF.type, URI_GEOM_TYPE_VECTOR_XYZ) in rec_graph
-    assert rec_graph.value(draw, URI_GEOM_PRED_X).toPython() == 0.1
+    assert (draw, rdflib.RDF.type, URI_GEOM_TYPE_VECTOR_XYZ) in execution
+    assert execution.value(draw, URI_GEOM_PRED_X).toPython() == 0.1
     # The seed stays what it always was: a metric of the run.
     seeds = [
         rec_graph.value(metric, QUDT.value)
@@ -232,6 +242,11 @@ def test_console_is_captured_and_mirrored(tmp_path: Path, capfd) -> None:
     console = (run_dir / "logs" / "console.log").read_text()
     assert "hello from the run" in console
     assert "boom" in console
+    # The runtime's blocks are named for this run, so a second run beside it shares nothing.
+    schema_hash = json.loads((source / "frame_layout.json").read_text())["schema_hash"][:16]
+    assert f"blocks: /motion_spec_{schema_hash}_run-003 /motion_spec_ctrl_{schema_hash}_run-003" in (
+        console
+    )
     assert "hello from the run" in capfd.readouterr().out
     manifest = verify_manifest(run_dir)
     assert manifest["files"]["console"] == "logs/console.log"
@@ -256,7 +271,7 @@ def test_run_without_a_log_still_catalogs_itself(tmp_path: Path) -> None:
     console = (run_dir / "logs" / "console.log").read_text()
     assert "frame log: ''" in console
     assert not (run_dir / "logs" / "frame_log.pb").exists()
-    assert (run_dir / "rec.ld.json").exists()
+    assert rec_document(run_dir, "run-005").exists()
     manifest = verify_manifest(run_dir)
     assert manifest["recorded"] is False
     assert "frame_log" not in manifest["files"]

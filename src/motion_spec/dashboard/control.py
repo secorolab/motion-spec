@@ -12,6 +12,7 @@ import mmap
 import struct
 
 from motion_spec.dashboard.frames import shm_path
+from motion_spec.introspection.frame_log_pb import ctrl_shm_name
 
 SIZE = 56
 VERSION = 1
@@ -19,10 +20,6 @@ VERSION = 1
     0, SIZE, 8
 )
 SPEED_MIN, SPEED_MAX = 0.1, 10.0
-
-
-def ctrl_shm_name(schema_hash: str) -> str:
-    return f"/motion_spec_ctrl_{schema_hash[:16]}"
 
 
 class ControlChannel:

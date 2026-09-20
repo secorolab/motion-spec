@@ -20,19 +20,23 @@ from motion_spec_dsl.rdf_parser.manifest import (
 )
 from motion_spec_dsl.rdf_parser.vocab import APP
 from pyshacl import validate
+from rec import State
 
 from motion_spec.introspection.provenance import (
     GENERATION_DOCUMENT,
     GRAPH_DSL,
+    EXECUTION_DOCUMENT,
+    RUN_IRI_BASE,
     artifact_sha256,
     ensure_local_rec_importable,
     host_info,
     parse_rec_time,
     prov_uri,
-    rec_run_lifecycle,
+    rec_document,
+    rec_run_lifecycle_from_file,
+    record_execution,
     record_files,
     record_frame_log_health,
-    record_run_agents,
     record_software,
     record_used_file,
 )
@@ -266,7 +270,7 @@ def _create_generation_run_manifest(
         "videos": _camera_videos(run_dir),
         # metadata.yaml is what says rosbag2 closed the bag.
         "bag": "bag" if (run_dir / "bag" / "metadata.yaml").is_file() else None,
-        "rec": "rec.ld.json",
+        "rec": rec_document(run_dir, run_id).name,
     }
     files = {key: value for key, value in files.items() if value is not None}
     manifest = {
@@ -279,11 +283,18 @@ def _create_generation_run_manifest(
     if not recorded:
         manifest["recorded"] = False
     if rec and Path(rec).exists():
-        _copy_file(Path(rec), run_dir / "rec.ld.json")
+        _copy_file(Path(rec), rec_document(run_dir, run_id))
     else:
         _write_rec_snapshot(run_dir, manifest, schema, complete_lifecycle=complete_rec)
+    _name_execution_document(run_dir, manifest)
     (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=4) + "\n")
     return manifest
+
+
+def _name_execution_document(run_dir: Path, manifest: dict) -> None:
+    """The execution document is written by the run or the snapshot, so it is named last."""
+    if (run_dir / EXECUTION_DOCUMENT).is_file():
+        manifest["files"]["execution"] = EXECUTION_DOCUMENT
 
 
 def _compress_frame_log(run_dir: Path, rel: str, location_map: dict[str, str]) -> str:
@@ -488,7 +499,7 @@ def create_archive_manifest(
             if log_producer_executable
             else None
         ),
-        "rec": "rec.ld.json",
+        "rec": rec_document(run_dir, run_id).name,
     }
     manifest = {
         "manifest_version": MANIFEST_VERSION,
@@ -498,9 +509,10 @@ def create_archive_manifest(
     if not recorded:
         manifest["recorded"] = False
     if rec and Path(rec).exists():
-        _copy_file(Path(rec), run_dir / "rec.ld.json")
+        _copy_file(Path(rec), rec_document(run_dir, run_id))
     else:
         _write_rec_snapshot(run_dir, manifest, schema, complete_lifecycle=complete_rec)
+    _name_execution_document(run_dir, manifest)
     (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=4) + "\n")
     return manifest
 
@@ -557,8 +569,8 @@ def verify_manifest(run_dir_or_manifest: Path | str) -> dict:
         _verify_checksums(rec_graph, run_dir, errors)
         if errors:
             raise ArchiveError("; ".join(errors))
-        _require_rec_provenance(rec_graph, "rec.ld.json", prov_uri(f"run:{manifest['run_id']}"))
-        _validate_shacl(rec_graph, "rec.ld.json", *PROV_SHAPES, ("rec", "rec.shacl.ttl"))
+        _require_rec_provenance(rec_graph, rec_rel, prov_uri(f"run:{manifest['run_id']}"))
+        _validate_shacl(rec_graph, rec_rel, *PROV_SHAPES, ("rec", "rec.shacl.ttl"))
     return manifest
 
 
@@ -654,8 +666,8 @@ def _write_rec_snapshot(
 ) -> None:
     try:
         ensure_local_rec_importable()
-        from rec import Run
-        from rec.observers import FileObserver
+        from rec.observers.file_observer import FileObserver
+        from rec.run import Run
     except ImportError as exc:
         raise ArchiveError(
             "REC is required to create introspection archives. Install the sibling "
@@ -664,34 +676,28 @@ def _write_rec_snapshot(
         ) from exc
 
     run_id = manifest["run_id"]
-    observer = FileObserver(run_dir / "rec.ld.json", run_iri=prov_uri(f"run:{run_id}"))
+    observer = FileObserver(run_dir, base=RUN_IRI_BASE)
     run = Run(observers=[observer], run_id=run_id)
-    lifecycle = rec_run_lifecycle(observer.graph)
-    started_time = lifecycle.get("started_time")
-    completed_time = lifecycle.get("completed_time")
-    terminal_status = lifecycle.get("status") in {
-        "COMPLETED",
-        "FAILED",
-        "INTERRUPTED",
-        "CANCELLED",
-        "TIMED_OUT",
-        "DEAD",
-    }
+    lifecycle = rec_run_lifecycle_from_file(rec_document(run_dir, run_id))
+    started_time = lifecycle["started_time"]
+    completed_time = lifecycle["completed_time"]
+    terminal_status = lifecycle["state"] in (State.COMPLETE, State.CANCELED)
     if started_time:
-        run._id = run_id
         run.start_time = parse_rec_time(started_time)
     else:
         run._emit_started()
+        # Archiving without a prior catalogued run: the caller names the executable that ran,
+        # and nothing knows the command line it was given.
+        generation_document = run_dir / manifest["files"].get("provenance", GENERATION_DOCUMENT)
+        record_execution(
+            run_dir, run_id, generation_document, schema.get("platform") or {}, [], run.start_time
+        )
     run.log_host_info(host_info())
     record_software(run, run_dir)
-    record_run_agents(observer.graph, run_dir, schema.get("platform") or {})
-    # Archiving without a prior catalogued run: the caller names the executable that ran.
     executable = manifest.get("files", {}).get("log_producer_executable")
     if executable and (run_dir / executable).exists():
-        record_used_file(
-            run, observer.run, run_dir / executable, "log_producer_executable", executable
-        )
-    record_files(run, run_dir, manifest, str(observer.run))
+        record_used_file(run, run_dir / executable, "log_producer_executable", executable)
+    record_files(run, run_dir, manifest)
     record_frame_log_health(run, run_dir, manifest)
     if complete_lifecycle and not completed_time and not terminal_status:
         if run.start_time is None:

@@ -16,19 +16,17 @@ from pathlib import Path
 
 from google.protobuf.message import DecodeError
 from rdflib import RDF, BNode, Literal
+from rec import Verdict
 
 from motion_spec.dashboard import roots
 from motion_spec.dashboard.graph import MODEL_GRAPH, deployed_devices
 from motion_spec.dashboard.metadata import annotations, baseline
 from motion_spec.dashboard.roots import LAYOUT_REL, directory_size, json_file, stamp_iso, trace
-from motion_spec.dashboard.runs import GenerationInfo, RunInfo
+from motion_spec.dashboard.runs import ENDED, GenerationInfo, RunInfo
 from motion_spec.dashboard.sources import aligned_rows, authored_lines
 from motion_spec.introspection import frame_log_pb
 from motion_spec.introspection.archive import ArchiveError
 from motion_spec.introspection.replay import read_health, resolve_archive
-
-# How REC says a run is over; anything else (QUEUED, RUNNING) means it still has work to do.
-RUN_ENDED = {"COMPLETED", "FAILED", "INTERRUPTED", "CANCELLED"}
 
 
 def _last_run(path: Path) -> dict | None:
@@ -37,7 +35,12 @@ def _last_run(path: Path) -> dict | None:
     if not runs:
         return None
     newest = runs[0]
-    return {"id": newest.run_id, "status": newest.status, "live": newest.is_live()}
+    return {
+        "id": newest.run_id,
+        "state": newest.state,
+        "verdict": newest.verdict,
+        "live": newest.is_live(),
+    }
 
 
 def generation_info(path: Path) -> dict:
@@ -431,8 +434,10 @@ def run_info(path: Path) -> dict:
         "path": str(path.relative_to(roots.GENERATIONS)),
         "id": run_id,
         "started": stamp_iso(match.group(1)) if match else None,
-        "complete": health.get("complete") or RunInfo(path).status == "COMPLETED",
-        "status": RunInfo(path).status,
+        "complete": health.get("complete") or RunInfo(path).verdict is Verdict.PASSED,
+        "state": RunInfo(path).state,
+        "verdict": RunInfo(path).verdict,
+        "live": RunInfo(path).is_live(),
         "written_frames": health.get("written_frames"),
         "duration_s": health.get("written_frames", 0) * period_ns / 1e9,
         "dropped_frames": health.get("dropped_frames"),
@@ -495,9 +500,9 @@ def run_ended(run_dir: Path) -> bool:
         # No manifest, no archive -- and no reason to pay the REC parse on every live poll.
         trace(f"run_ended {run_dir.name}: archived=False")
         return False
-    status = RunInfo(run_dir).status
-    trace(f"run_ended {run_dir.name}: archived=True status={status}")
-    return status in RUN_ENDED
+    state = RunInfo(run_dir).state
+    trace(f"run_ended {run_dir.name}: archived=True state={state}")
+    return state in ENDED
 
 
 def run_recorded(run_dir: Path | None) -> bool | None:

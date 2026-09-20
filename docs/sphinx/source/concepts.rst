@@ -49,7 +49,8 @@ instead of copying them.
      logs/            gen.log and build.log: what the DSL, stst and cmake said
      runs/<run-id>/
        logs/          frame_log.pb, console.log and health information
-       rec.ld.json    REC lifecycle and runtime artifact provenance
+       <run-id>.ld.json    REC record: lifecycle, host, files, metrics
+       execution.ld.json   who ran it, the command line, sampling draws
        manifest.json consumer-facing paths into the run and generation
 
 JSON-LD artifacts use the ``.ld.json`` suffix and are loaded as RDF datasets,
@@ -118,16 +119,17 @@ is part of a release or CI contract.
 Runtime recording
 =================
 
-``run`` creates ``rec.ld.json`` before launching the executable and exports the
-frame-log path to it. The run is recorded there as a ``prov-ext:Execution`` of the
-executable, its deployment configuration, the environment file it was launched under
-and its command line. The log starts with a header containing the schema hash,
+``run`` creates the REC record ``<run-id>.ld.json`` before launching the executable
+and exports the frame-log path to it. The run is recorded there as a
+``prov-ext:Execution`` with an OSLC Automation state and, once complete, a verdict;
+what REC has no word for -- the agents that ran it and its command line -- goes to
+``execution.ld.json`` on the same run node. The log starts with a header containing the schema hash,
 followed by one protobuf frame per control tick. On completion, the CLI catalogs
 run-owned files, records their provenance in REC, and verifies the archive.
 
 The manifest is deliberately small: its ``files`` map identifies what replay and
 other consumers need. Runtime artifact hashes and lifecycle provenance live in
-``rec.ld.json``. Everything generation recorded lives in one document,
+the REC record. Everything generation recorded lives in one document,
 ``generated/provenance.ld.json``, with a named graph per tool that wrote into it.
 
 Replay

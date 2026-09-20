@@ -278,9 +278,9 @@ def test_only_a_same_origin_json_post_is_accepted(dashboard):
 
 
 def test_deleting_a_run_moves_it_to_the_trash(dashboard, monkeypatch):
-    from test_dashboard_runs import _rec
+    from test_dashboard_runs import _write_rec
 
-    (dashboard.run / "rec.ld.json").write_text(json.dumps(_rec("COMPLETED")))
+    _write_rec(dashboard.run)
     trashed = []
     monkeypatch.setattr(server, "trash", lambda path: trashed.append(path))
     path = str(dashboard.run.relative_to(dashboard.root))
@@ -351,7 +351,7 @@ def test_annotations_notes_and_baselines_across_generations(dashboard):
 
 def test_cleanup_protects_active_pinned_and_baseline_descendants(dashboard, monkeypatch):
     """Exercise each refusal, then verify parent/child selections count the run once."""
-    from test_dashboard_runs import _rec
+    from test_dashboard_runs import _write_rec
 
     generation = str(dashboard.run.parent.parent.relative_to(dashboard.root))
     run = str(dashboard.run.relative_to(dashboard.root))
@@ -363,7 +363,7 @@ def test_cleanup_protects_active_pinned_and_baseline_descendants(dashboard, monk
     )
     with pytest.raises(urllib.error.HTTPError):
         dashboard.post("/api/delete", {"paths": [generation]})
-    (dashboard.run / "rec.ld.json").write_text(json.dumps(_rec("COMPLETED")))
+    _write_rec(dashboard.run)
     dashboard.post("/api/annotations", {"path": run, "changes": {"pinned": True}})
     with pytest.raises(urllib.error.HTTPError):
         dashboard.post("/api/delete", {"paths": [generation]})
@@ -381,11 +381,11 @@ def test_cleanup_protects_active_pinned_and_baseline_descendants(dashboard, monk
 
 def test_protection_refuses_deletion_until_the_run_is_named(dashboard, monkeypatch):
     """Deletion is refused while protected, and lifting the protection names the folder."""
-    from test_dashboard_runs import _rec
+    from test_dashboard_runs import _write_rec
 
     generation = str(dashboard.run.parent.parent.relative_to(dashboard.root))
     run = str(dashboard.run.relative_to(dashboard.root))
-    (dashboard.run / "rec.ld.json").write_text(json.dumps(_rec("COMPLETED")))
+    _write_rec(dashboard.run)
     trashed = []
     monkeypatch.setattr(server, "trash", lambda path: trashed.append(path))
     assert dashboard.post("/api/protect", {"path": run, "enabled": True})["protected"] is True

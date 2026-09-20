@@ -46,10 +46,15 @@ PROV_CONTEXT = [
 ]
 
 # One generation, one provenance document: three named graphs, one per tool that wrote into it.
+# One run, one execution document beside rec's record: what rec does not say about the run.
 GENERATION_DOCUMENT = "provenance.ld.json"
+EXECUTION_DOCUMENT = "execution.ld.json"
 GRAPH_DSL = URIRef(f"{MSPROV}graph/dsl")
 GRAPH_COORD_DSL = URIRef(f"{MSPROV}graph/coord-dsl")
 GRAPH_MOTION_SPEC = URIRef(f"{MSPROV}graph/motion-spec")
+GRAPH_EXECUTION = URIRef(f"{MSPROV}graph/execution")
+# What rec is told to mint run nodes under, so its record and these graphs share the node.
+RUN_IRI_BASE = f"{MSPROV}run/"
 SCHEMA_VERSION = 1
 
 # What each package is, for the one agent node it gets. The commit is read from the checkout
@@ -90,6 +95,11 @@ def prov_uri(identifier: str) -> str:
 def uri(identifier: str) -> URIRef:
     """`prov_uri` as the node the rdf-utils writers take."""
     return URIRef(prov_uri(identifier))
+
+
+def rec_document(run_dir: Path, run_id: str | None = None) -> Path:
+    """Where rec keeps the run's record: ``<run_dir>/<run_id>.ld.json``, the run dir named after the run."""
+    return Path(run_dir) / f"{run_id or Path(run_dir).name}.ld.json"
 
 
 def run_entity_uri(run_id: str, slug: str) -> str:
@@ -312,63 +322,31 @@ def build_derivation_document(ir: dict) -> dict:
     }
 
 
-# OSLC Automation is where rec records a run's lifecycle: a state, and once complete, a verdict.
-_OSLC_AUTO = "http://open-services.net/ns/auto#"
-_RUN_STATUS = {
-    ("queued", "unavailable"): "QUEUED",
-    ("inProgress", "unavailable"): "RUNNING",
-    ("complete", "passed"): "COMPLETED",
-    ("complete", "failed"): "FAILED",
-    ("complete", "error"): "INTERRUPTED",
-    ("canceled", "unavailable"): "CANCELLED",
-}
-
-
-def rec_run_lifecycle(graph) -> dict:
-    """The observed run's status and timestamps, read from a REC graph.
-
-    REC exposes lifecycle only as RDF, so a consumer has to project it. Every key is None when
-    the document states nothing -- a document written before the OSLC terms names no run here.
-    """
-    from rec.observers.graph_observer import run_node
-
-    empty = {"status": None, "started_time": None, "completed_time": None}
-    run = run_node(graph)
-    if run is None:
-        return empty
-    state, verdict = (
-        graph.value(run, URIRef(_OSLC_AUTO + "state")),
-        graph.value(run, URIRef(_OSLC_AUTO + "verdict")),
-    )
-    key = tuple(
-        str(term).removeprefix(_OSLC_AUTO) if term is not None else None
-        for term in (state, verdict)
-    )
-    started = graph.value(run, PROV.startedAtTime)
-    ended = graph.value(run, PROV.endedAtTime)
-    return {
-        "status": _RUN_STATUS.get(key),
-        "started_time": str(started) if started is not None else None,
-        "completed_time": str(ended) if ended is not None else None,
-    }
-
-
 def rec_run_lifecycle_from_file(path) -> dict:
-    """`rec_run_lifecycle` for an archive on disk; empty when it does not exist.
+    """The run's OSLC state and verdict and its timestamps, from rec's document on disk.
 
-    Through the workspace resolver, as every other JSON-LD read here: the REC context is a
-    github.io URL, so an unresolved parse fetches it over the network -- twice per document,
-    which a run list pays per row and an offline reader waits out.
+    Read back through rec's own mapping, as JSON: an rdflib parse resolves the document's
+    contexts, which a run list would pay per row. Every key is None when there is no document
+    or it was written before the OSLC terms.
     """
-    from motion_spec_dsl.rdf_parser.manifest import install_metamodel_resolver
+    ensure_local_rec_importable()
+    from rec import jsonld
 
+    empty = {"state": None, "verdict": None, "started_time": None, "completed_time": None}
     path = Path(path)
     if not path.exists():
-        return {"status": None, "started_time": None, "completed_time": None}
-    install_metamodel_resolver()
-    graph = Graph()
-    graph.parse(path, format="json-ld")
-    return rec_run_lifecycle(graph)
+        return empty
+    try:
+        record = jsonld.record(json.loads(path.read_text()))
+    except (KeyError, StopIteration, ValueError):
+        return empty
+    info = record.get("run_info") or {}
+    return {
+        "state": record["state"],
+        "verdict": record["verdict"],
+        "started_time": info.get("start_time"),
+        "completed_time": info.get("end_time"),
+    }
 
 
 def parse_rec_time(value: str) -> datetime:
@@ -394,6 +372,9 @@ def ensure_local_rec_importable() -> None:
         sys.path.insert(0, str(rec_root))
 
 
+ensure_local_rec_importable()
+
+
 def runtime_agent_uri(platform_facts: dict) -> URIRef:
     """The runtime the controller process acts for, named by the platform the model authored."""
     return uri(f"agent:runtime_{_slug(platform_facts.get('name') or 'runtime').casefold()}")
@@ -402,28 +383,54 @@ def runtime_agent_uri(platform_facts: dict) -> URIRef:
 CONTROLLER_PROCESS = "agent:controller_process"
 
 
-def record_run_agents(graph: Graph, run_dir: Path, platform_facts: dict) -> URIRef:
+def record_run_agents(graph: Graph, generation_document: Path, platform_facts: dict) -> URIRef:
     """The process that produced the run's logs, the runtime it ran on, and the modelled robots."""
     runtime = runtime_agent_uri(platform_facts)
     add_agent(graph, runtime, (PROV.SoftwareAgent,), platform_facts.get("name") or "runtime")
     controller = uri(CONTROLLER_PROCESS)
     add_agent(graph, controller, (PROV.SoftwareAgent,), "controller", acted_on_behalf_of=runtime)
-    for agent_id, name in modelled_agents(run_dir):
+    for agent_id, name in modelled_agents(generation_document):
         add_agent(graph, URIRef(agent_id), (URI_AGN_TYPE_MOD_AGN,), name)
     return controller
 
 
-def record_used_file(run, run_iri: URIRef, path: Path, role: str, archive_path: str) -> URIRef:
-    """One file the execution used; rec owns its checksum, size and qualified usage."""
-    return run.add_resource(
-        path,
-        used_by=str(run_iri),
-        used_at=_mtime(path),
-        label=role,
-        archive_path=archive_path,
+def record_used_file(run, path: Path, role: str, archive_path: str) -> None:
+    """One file the execution used; rec owns its checksum, size and qualified usage.
+
+    Named by where it lands in the bundle, so the reference is portable and dedupes with the
+    archive's own record of the same file.
+    """
+    run.add_resource(
+        archive_path,
+        usage_time=_mtime(path),
+        title=role,
         sha256=artifact_sha256(path),
         size_bytes=artifact_size(path),
     )
+
+
+def record_execution(
+    run_dir: Path,
+    run_id: str,
+    generation_document: Path,
+    platform_facts: dict,
+    arguments: list[str],
+    started: datetime,
+) -> None:
+    """What rec does not record of the run: who ran it and the command line it was given.
+
+    Written as the run's execution document, on the same run node rec's record describes.
+    The modelled robots are read from the generation document, wherever the caller keeps it.
+    """
+    from rdf_utils.models.prov import load_execution_prov
+
+    graph = Graph()
+    record_run_agents(graph, generation_document, platform_facts)
+    arguments_entity = record_arguments(graph, run_id, arguments)
+    load_execution_prov(
+        graph, uri(f"run:{run_id}"), [arguments_entity], add_package(graph, "motion_spec"), started
+    )
+    write_generation_graph(run_dir / EXECUTION_DOCUMENT, GRAPH_EXECUTION, graph)
 
 
 def record_arguments(graph: Graph, run_id: str, arguments: list[str]) -> URIRef:
@@ -475,7 +482,7 @@ def record_draw(graph: Graph, run_id: str, agent: URIRef, quantity: str, values,
 GENERATED_ROLES = ("frame_log", "frame_log_health", "console", "sampling", "bag", "videos")
 
 
-def record_files(run, run_dir: Path, manifest: dict, run_iri: str) -> None:
+def record_files(run, run_dir: Path, manifest: dict) -> None:
     """Record the files the run generated, with their integrity metadata, as PROV entities."""
     for role in GENERATED_ROLES:
         value = manifest.get("files", {}).get(role)
@@ -487,9 +494,8 @@ def record_files(run, run_dir: Path, manifest: dict, run_iri: str) -> None:
                 continue
             run.add_artefact(
                 rel,
-                generated_by=run_iri,
-                generated_at=_mtime(path),
-                label=role,
+                generated_time=_mtime(path),
+                title=role,
                 sha256=artifact_sha256(path),
                 size_bytes=artifact_size(path),
             )
@@ -562,10 +568,8 @@ def dependencies() -> list[dict]:
 
 def record_software(run, run_dir: Path) -> None:
     """The checked-out repositories and installed packages the run ran with."""
-    for row in repositories(run_dir):
-        run.add_software(row["name"], commit=row["commit"], repository=row.get("url"))
-    for row in dependencies():
-        run.add_software(row["name"], version=row["version"])
+    run.log_repositories(repositories(run_dir))
+    run.log_dependencies(dependencies())
 
 
 def repositories(run_dir: Path) -> list[dict]:
@@ -619,17 +623,12 @@ def run_tool(*command: str) -> str | None:
         return None
 
 
-def modelled_agents(run_dir: Path) -> list[tuple[str, str]]:
+def modelled_agents(generation_document: Path) -> list[tuple[str, str]]:
     """Every robot the generation modelled, as its agent IRI and name."""
-    manifest_path = run_dir / "manifest.json"
-    path = run_dir / GENERATION_DOCUMENT
-    if manifest_path.is_file():
-        manifest = json.loads(manifest_path.read_text())
-        path = run_dir / manifest.get("files", {}).get("provenance", path)
-    if not path.exists():
+    if not Path(generation_document).exists():
         return []
     try:
-        dataset = read_generation_dataset(path)
+        dataset = read_generation_dataset(generation_document)
     except Exception:
         return []
     return [

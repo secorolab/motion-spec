@@ -132,6 +132,7 @@ def test_the_shm_name_follows_the_generated_runtime(tmp_path):
     layout = _layout(tmp_path, doc)
     assert layout.shm_name == f"/motion_spec_{doc['schema_hash'][:16]}"
     assert layout.shm_name == shm_name_for(doc["schema_hash"])
+    assert shm_name_for(doc["schema_hash"], "run-7") == f"{layout.shm_name}_run-7"
     assert shm_path(layout.shm_name).parent.name == "shm"
     assert shm_path("/tmp/some/file") == shm_path("/tmp/some/file")
 

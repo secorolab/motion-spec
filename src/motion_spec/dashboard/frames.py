@@ -17,6 +17,7 @@ from motion_spec.introspection.frame_log_pb import (
     _MONITOR_KEYS,
     _SPATIAL,
     _TRIGGER_KEYS,
+    shm_name_for,
 )
 
 _CORE_KEYS = (
@@ -76,11 +77,6 @@ def slot_signals(contract) -> dict:
         for part, attribute in parts.items()
         if hasattr(contract.record_cls().frame, field["name"])
     }
-
-
-def shm_name_for(schema_hash: str) -> str:
-    """The name the generated runtime publishes under, absent a MOTION_SPEC_SHM_NAME override."""
-    return f"/motion_spec_{schema_hash[:16]}"
 
 
 def shm_path(name: str) -> Path:

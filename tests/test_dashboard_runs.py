@@ -9,24 +9,13 @@ import shutil
 from motion_spec.dashboard import catalog, replay, roots
 from motion_spec.dashboard.runs import GenerationCatalog, GenerationInfo, RunInfo
 from motion_spec.generation.artifacts import build_frame_layout
+from motion_spec.introspection.provenance import rec_document
 from motion_spec.introspection.replay import resolve_archive
+from rec import State, Verdict, jsonld
 
 from dashboard_fixture import CONSTRAINT, CTRL, MONITOR, QUANTITY, model_jsonld, schema
 from frame_log_fixture import flat_frame, write_frame_log_pb
 from support import _hash_doc
-
-REC_NS = "https://secorolab.github.io/metamodels/rec#"
-OSLC_AUTO = "http://open-services.net/ns/auto#"
-PROV_EXT = "https://secorolab.github.io/metamodels/prov#"
-# The (state, verdict) pair REC records a run's lifecycle as.
-LIFECYCLE = {
-    "QUEUED": ("queued", "unavailable"),
-    "RUNNING": ("inProgress", "unavailable"),
-    "COMPLETED": ("complete", "passed"),
-    "FAILED": ("complete", "failed"),
-    "INTERRUPTED": ("complete", "error"),
-    "CANCELLED": ("canceled", "unavailable"),
-}
 
 SETTLED = "https://example.test/settled"
 ROBMOT = """
@@ -41,22 +30,10 @@ guarded-motion (ns=demo) move {
 """
 
 
-def _rec(status="RUNNING"):
-    """A REC run document with one lifecycle state, as the runner writes it."""
-    state, verdict = LIFECYCLE[status]
-    return {
-        "@context": {
-            "prov": "http://www.w3.org/ns/prov#",
-            "prov-ext": PROV_EXT,
-            "oslc_auto": OSLC_AUTO,
-            "state": {"@id": "oslc_auto:state", "@type": "@id"},
-            "verdict": {"@id": "oslc_auto:verdict", "@type": "@id"},
-        },
-        "@id": "https://example.test/run/r1",
-        "@type": ["prov:Activity", "prov-ext:Execution"],
-        "state": f"oslc_auto:{state}",
-        "verdict": f"oslc_auto:{verdict}",
-    }
+def _write_rec(run_dir, state=State.COMPLETE, verdict=Verdict.PASSED):
+    """A REC run document with one lifecycle, as rec writes it."""
+    doc = jsonld.document("https://example.test/run/r1", {"state": state, "verdict": verdict})
+    rec_document(run_dir).write_text(json.dumps(doc))
 
 
 def _generation(tmp_path, name="pick_place_single", stamp="20260811T000000Z"):
@@ -68,11 +45,11 @@ def _generation(tmp_path, name="pick_place_single", stamp="20260811T000000Z"):
     return gen
 
 
-def _run(gen, run_id="run-1", status="RUNNING", log=b"frames"):
+def _run(gen, run_id="run-1", state=State.IN_PROGRESS, verdict=Verdict.UNAVAILABLE, log=b"frames"):
     run = gen / "runs" / run_id
     (run / "logs").mkdir(parents=True)
     (run / "logs" / "frame_log.pb").write_bytes(log)
-    (run / "rec.ld.json").write_text(json.dumps(_rec(status)))
+    _write_rec(run, state, verdict)
     (run / "manifest.json").write_text(json.dumps({"run_id": run_id}))
     return RunInfo(run)
 
@@ -94,17 +71,16 @@ def test_the_catalog_finds_generations_by_their_contract(tmp_path):
 
 
 def test_a_run_still_ticking_is_live(tmp_path):
-    """The REC vocabulary says RUNNING, not STARTED -- a run whose log is still growing is
-    live regardless of which non-terminal state it sits in."""
+    """A run whose log is still growing is live in any state that is not an end."""
     run = _run(_generation(tmp_path))
-    assert run.status == "RUNNING"
+    assert (run.state, run.verdict) == (State.IN_PROGRESS, Verdict.UNAVAILABLE)
     assert run.is_live() is True
     assert run.manifest == {"run_id": "run-1"}
 
 
 def test_a_finished_run_is_not_live_however_fresh_its_log(tmp_path):
-    run = _run(_generation(tmp_path), status="COMPLETED")
-    assert run.status == "COMPLETED"
+    run = _run(_generation(tmp_path), state=State.COMPLETE, verdict=Verdict.PASSED)
+    assert (run.state, run.verdict) == (State.COMPLETE, Verdict.PASSED)
     assert run.is_live() is False
 
 
@@ -129,11 +105,11 @@ def test_generations_expose_their_runs_newest_first(tmp_path):
 def test_a_generation_reports_how_its_newest_run_ended(tmp_path, monkeypatch):
     monkeypatch.setattr(roots, "GENERATIONS", tmp_path)
     gen = _generation(tmp_path)
-    _run(gen, run_id="run-1", status="COMPLETED")
-    _run(gen, run_id="run-2", status="FAILED")
+    _run(gen, run_id="run-1", state=State.COMPLETE, verdict=Verdict.PASSED)
+    _run(gen, run_id="run-2", state=State.COMPLETE, verdict=Verdict.FAILED)
 
     last = catalog.generation_info(gen)["last_run"]
-    assert (last["id"], last["status"]) == ("run-2", "FAILED")
+    assert (last["id"], last["state"], last["verdict"]) == ("run-2", "complete", "failed")
     assert catalog.generation_info(_generation(tmp_path, name="no_runs"))["last_run"] is None
 
 

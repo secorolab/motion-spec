@@ -38,6 +38,7 @@ from motion_spec.dashboard.jobs import (
     console_slice,
     generate_console,
     generate_status,
+    generation_status,
     health_report,
     pick_environment,
     run_status,
@@ -69,6 +70,7 @@ from motion_spec.dashboard.replay import plot_data, replay_data, run_verdict
 from motion_spec.dashboard.roots import (
     FRONTEND,
     GENERATION_DIR_ENV,
+    LAYOUT_REL,
     current_roots,
     directory_size,
     expected_path,
@@ -337,7 +339,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 runs = sorted(path for path in generation.glob("runs/*") if path.is_dir())
                 return self.send_json([run_info(path) for path in reversed(runs)])
             if parsed.path == "/api/run":
-                return self.send_json(run_status(relative_path(roots.GENERATIONS, value)))
+                # A generation answers for every run of it the dashboard started; a run for itself.
+                target = relative_path(roots.GENERATIONS, value)
+                if (target / LAYOUT_REL).exists():
+                    return self.send_json(generation_status(target))
+                return self.send_json(run_status(target))
             if parsed.path == "/api/run/files":
                 return self.send_json(run_files(relative_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/run/verdict":

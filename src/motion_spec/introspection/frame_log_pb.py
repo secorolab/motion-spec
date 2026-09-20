@@ -26,6 +26,19 @@ PROTO_PACKAGE = "motion_spec.introspection.log"
 LOG_SUFFIX = ".zst"
 
 
+def shm_name_for(schema_hash: str, run_id: str | None = None) -> str:
+    """The frame block the generated runtime publishes under, absent a MOTION_SPEC_SHM_NAME override.
+
+    Named per run when the run is known, so two runs of one generation never share a block.
+    """
+    return f"/motion_spec_{schema_hash[:16]}" + (f"_{run_id}" if run_id else "")
+
+
+def ctrl_shm_name(schema_hash: str, run_id: str | None = None) -> str:
+    """The control block of a simulated run, absent a MOTION_SPEC_CTRL_SHM_NAME override."""
+    return f"/motion_spec_ctrl_{schema_hash[:16]}" + (f"_{run_id}" if run_id else "")
+
+
 def log_path(path: Path | str) -> Path:
     """The frame log that is actually there, compressed or not, given either name."""
     path = Path(path)

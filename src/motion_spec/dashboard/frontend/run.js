@@ -72,9 +72,7 @@ export async function openPendingRun(runPath) {
   const hop = setInterval(async () => {
     if (state.runPath !== runPath) return clearInterval(hop); // the user went elsewhere
     if (await opened(runPath)) return clearInterval(hop);
-    const status = await api(`/api/run?path=${encodeURIComponent(state.generationPath)}`).catch(
-      () => null,
-    );
+    const status = await api(`/api/run?path=${encodeURIComponent(runPath)}`).catch(() => null);
     if (status && !status.busy) {
       // over without ever writing a log: the runner's own words are all there is to show
       clearInterval(hop);
@@ -98,7 +96,7 @@ function showRunStarting() {
   waiting.insertAdjacentHTML("beforeend", '<button id="stop-pending">stop run</button>');
   $("#stop-pending").onclick = async (event) => {
     event.target.disabled = true;
-    await stopRun(state.generationPath).catch(snackError);
+    await stopRun(state.runPath).catch(snackError);
   };
 }
 

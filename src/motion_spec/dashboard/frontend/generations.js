@@ -165,7 +165,7 @@ function generationItem(generation) {
     generation.last_run
       ? generation.last_run.live
         ? "live"
-        : (generation.last_run.status ?? "unknown")
+        : (lifecycleWord(generation.last_run) ?? "unknown")
       : null,
   );
   // Built once: the filter runs over every row on every keystroke.
@@ -183,8 +183,15 @@ function generationItem(generation) {
   item.dataset.runtime = generation.simulated ? "simulation" : "hardware";
   item.dataset.runStatus = generation.last_run?.live
     ? "running"
-    : (generation.last_run?.status ?? "").toLowerCase();
+    : (lifecycleWord(generation.last_run) ?? "");
   return item;
+}
+
+// rec records an OSLC state and, once complete, a verdict: the one word a row shows is the
+// verdict of a complete run and the state of any other.
+export function lifecycleWord(run) {
+  if (!run?.state) return null;
+  return run.state === "complete" ? run.verdict : run.state;
 }
 
 export function filterGenerations(value) {
@@ -569,10 +576,10 @@ function runRow(run, generation, number, syncPickAll) {
   row.className = "run";
   row.dataset.path = run.path;
   row.classList.toggle("picked", state.selected.has(run.path));
-  const status = run.status ?? (run.complete ? "COMPLETED" : "INCOMPLETE");
+  const status = lifecycleWord(run) ?? (run.complete ? "passed" : "incomplete");
   // Every id begins `run-<date>T`; what distinguishes one row from the next is the time.
   const short = run.id.replace(/^run-\d{8}T/, "").replace(/Z$/, "");
-  row.innerHTML = `<input type="checkbox" class="pick" title="Select; shift-click to select a range"><span>${number}</span><strong>${short}</strong><span>${stampText(run.started)}</span><span>${run.duration_s.toFixed(2)} s</span><span>${(run.written_frames ?? 0).toLocaleString()}</span><span class="badge badge-${status.toLowerCase()}">${status}</span>`;
+  row.innerHTML = `<input type="checkbox" class="pick" title="Select; shift-click to select a range"><span>${number}</span><strong>${short}</strong><span>${stampText(run.started)}</span><span>${run.duration_s.toFixed(2)} s</span><span>${(run.written_frames ?? 0).toLocaleString()}</span><span class="badge badge-${status}">${status}</span>`;
   row.firstChild.checked = state.selected.has(run.path);
   row.querySelector("strong").textContent =
     `${run.pinned ? "★ " : ""}${run.protected ? "Protected · " : ""}${generation.baseline === run.path ? "Baseline · " : ""}${run.label || short}`;
@@ -593,6 +600,8 @@ function runRow(run, generation, number, syncPickAll) {
     );
     row.append(note);
   }
+  // A run still ticking can be ended from its row; the server says so if it did not start it.
+  if (run.live) row.querySelector(".badge").append(" ", stopButton(run.path));
   row.title = `${run.id} — open replay; Ctrl/Cmd-click to select`;
   row.onclick = (event) => {
     if (event.shiftKey) return pickRange(run.path, row.parentElement, "main");
@@ -601,6 +610,21 @@ function runRow(run, generation, number, syncPickAll) {
       : loadReplay(run.path);
   };
   return row;
+}
+
+function stopButton(runPath) {
+  const stop = document.createElement("button");
+  stop.className = "run-stop";
+  stop.textContent = "stop";
+  stop.onclick = (event) => {
+    event.stopPropagation();
+    stop.disabled = true;
+    stopRun(runPath).catch((error) => {
+      stop.disabled = false;
+      snackError(error);
+    });
+  };
+  return stop;
 }
 
 // Signals the process. The transport's cancel asks the loop, which only a ticking loop hears;
@@ -733,96 +757,81 @@ function restoreChoices(bar, path, label) {
   }
 }
 
-// While it runs the page cannot say more than the runner does; watch until it stops, then
-// put the run it made in the list.
+// Every run of this generation the dashboard has up is listed with its own stop; the page keeps
+// looking while any is running and, as each ends, says how and puts it in the list.
 function watchRun(page, bar, path, options) {
   const status = bar.querySelector(".run-state");
   const start = bar.querySelector(".run-start");
-  const halt = bar.querySelector(".run-stop");
+  const live = page.querySelector(".run-live");
   const failed = page.querySelector(".run-console");
   // The page is written into in place, so this may still hold the last generation's failure.
   failed.hidden = true;
   failed.replaceChildren();
-  let sawRunning = false;
+  live.replaceChildren();
+  const watched = new Set(); // runs seen running here, so each ending is reported once
   const check = async () => {
-    const run = await api(`/api/run?path=${encodeURIComponent(path)}`).catch(() => null);
-    if (!run) return;
-    if (run.running) {
-      sawRunning = true;
-      start.disabled = true;
-      failed.hidden = true;
-      halt.hidden = false;
-      status.textContent = run.pid ? `running · pid ${run.pid}` : "running";
-      return;
-    }
-    clearInterval(state.runWatch);
-    start.disabled = false;
-    halt.hidden = true;
-    status.textContent = sawRunning
-      ? run.stopped
-        ? "stopped"
+    const answer = await api(`/api/run?path=${encodeURIComponent(path)}`).catch(() => null);
+    if (!answer) return;
+    const running = answer.runs.filter((run) => run.running);
+    running.forEach((run) => watched.add(run.path));
+    live.replaceChildren(...running.map(liveRow));
+    for (const run of answer.runs) {
+      if (run.running || !watched.delete(run.path)) continue;
+      status.textContent = run.stopped
+        ? `${run.id} stopped`
         : run.exit_code
-          ? `exited ${run.exit_code}`
-          : "run finished"
-      : "";
-    // A stopped run exits non-zero too, and did not fail, so it gets no post-mortem.
-    if (sawRunning && run.exit_code && !run.stopped) showPostMortem(failed, path);
-    const setRuns = state.generation?.setRuns;
-    if (setRuns) {
-      api(`/api/runs?path=${encodeURIComponent(path)}`)
-        .then(setRuns)
-        .catch(() => {});
+          ? `${run.id} exited ${run.exit_code}`
+          : `${run.id} finished`;
+      // A stopped run exits non-zero too, and did not fail, so it gets no post-mortem.
+      if (run.exit_code && !run.stopped) showPostMortem(failed, path);
+      // The run's own page may have announced the same ending seconds earlier.
+      if (!state.announced.has(run.path)) {
+        snack(run.exit_code ? `run failed (${run.exit_code})` : "run finished");
+      }
+      state.announced.add(run.path);
+      const setRuns = state.generation?.setRuns;
+      if (setRuns) {
+        api(`/api/runs?path=${encodeURIComponent(path)}`)
+          .then(setRuns)
+          .catch(() => {});
+      }
     }
-    // The run's own page may have announced the same ending seconds earlier.
-    if (sawRunning && !state.announced) {
-      snack(run.exit_code ? `run failed (${run.exit_code})` : "run finished");
-    }
-    if (sawRunning) state.announced = true;
-    sawRunning = false;
+    if (!running.length) clearInterval(state.runWatch);
   };
-  const watch = (lookNow = true) => {
+  const watch = () => {
     clearInterval(state.runWatch);
-    if (lookNow) check();
     state.runWatch = setInterval(check, 2000);
-  };
-  halt.onclick = async () => {
-    halt.disabled = true;
-    status.textContent = "stopping…";
-    try {
-      await stopRun(path);
-    } catch (error) {
-      status.textContent = error.message;
-    }
-    halt.disabled = false;
     check();
   };
   start.onclick = async () => {
     start.disabled = true;
     status.textContent = "starting…";
-    state.announced = false; // this run has not reported its ending yet
     try {
       const started = await post("/api/run", { path, options: options() });
       status.textContent = started.recording?.length
-        ? `running · pid ${started.pid} · recording ${started.recording.join(", ")}`
-        : `running · pid ${started.pid}`;
+        ? `recording ${started.recording.join(", ")}`
+        : "";
+      watched.add(started.path);
       watch();
       // The server names the run before anything is on disk, so its page can open and wait.
       await openPendingRun(started.run);
     } catch (error) {
-      start.disabled = false;
       status.textContent = error.message;
     }
+    start.disabled = false;
   };
   bar.refreshRun = check;
-  api(`/api/run?path=${encodeURIComponent(path)}`)
-    .then((run) => {
-      if (!run.running) return;
-      sawRunning = true;
-      start.disabled = true;
-      status.textContent = `running · pid ${run.pid}`;
-      watch(false); // this reply is the look-now
-    })
-    .catch(() => {});
+  watch();
+}
+
+function liveRow(run) {
+  const row = document.createElement("div");
+  row.className = "live-run";
+  row.innerHTML = `<strong></strong><span>running · pid ${run.pid}</span>`;
+  row.querySelector("strong").textContent = run.id;
+  row.querySelector("strong").onclick = () => openPendingRun(run.path);
+  row.append(stopButton(run.path));
+  return row;
 }
 
 // Swallowed: the status line has already said how the run ended, so a failure to read the

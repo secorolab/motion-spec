@@ -50,13 +50,22 @@ def _dead_port() -> int:
         return listener.getsockname()[1]
 
 
-def _sleeping_job(generation):
+def _sleeping_job(generation, run_id="run-test"):
     """Register a run of this generation that stays up until it is stopped."""
     process = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True
     )
-    jobs.RUNNING[str(generation)] = {"process": process, "run_id": "run-test"}
+    jobs.RUNNING[str(generation / "runs" / run_id)] = {
+        "process": process,
+        "run_id": run_id,
+        "generation": str(generation),
+    }
     return process
+
+
+def _forget(generation):
+    for key in [key for key, run in jobs.RUNNING.items() if run["generation"] == str(generation)]:
+        jobs.RUNNING.pop(key)
 
 
 def test_a_run_of_something_that_is_not_a_generation_is_refused(tmp_path):
@@ -81,7 +90,7 @@ def test_hardware_that_does_not_answer_still_starts_the_run(tmp_path, monkeypatc
     try:
         answer = jobs.start_run(generation, {})
     finally:
-        jobs.RUNNING.pop(str(generation), None)
+        _forget(generation)
     assert "--run-id" in started["argv"]
     assert answer["run"].endswith(started["argv"][started["argv"].index("--run-id") + 1])
     # Hardware takes neither of the simulator's options, whatever the browser posted.
@@ -110,7 +119,7 @@ def test_a_real_run_records_the_cameras_that_name_a_topic(tmp_path, monkeypatch)
     try:
         answer = jobs.start_run(generation, {"cameras": ["default", "rk", "wrist"]})
     finally:
-        jobs.RUNNING.pop(str(generation), None)
+        _forget(generation)
     assert answer["recording"] == ["rk"]
     assert started["argv"][started["argv"].index("--record") + 1] == "rk"
     assert started["argv"].count("--record") == 1
@@ -125,42 +134,59 @@ def test_a_simulation_starts_paused_with_its_run_named(tmp_path, monkeypatch):
     try:
         answer = jobs.start_run(generation, {})
     finally:
-        jobs.RUNNING.pop(str(generation), None)
+        _forget(generation)
     assert "--run-id" in started["argv"]
     assert answer["run"].endswith(started["argv"][started["argv"].index("--run-id") + 1])
     assert "--start-paused" in started["argv"]
 
 
-def test_a_generation_already_running_does_not_start_a_second_run(tmp_path):
-    generation = _generation(tmp_path, simulated=True)
+def test_simulations_of_one_generation_run_side_by_side(tmp_path, monkeypatch):
+    """Two simulated runs, each with its own entry, listed together under their generation."""
+    generation = _generation(tmp_path, simulated=True, monkeypatch=monkeypatch)
+    first = _sleeping_job(generation, "run-1")
+    started = {}
+    monkeypatch.setattr(jobs.subprocess, "Popen", lambda *a, **k: _record(started, a, k))
+    try:
+        second = jobs.start_run(generation, {})
+        listed = jobs.generation_status(generation)
+        assert listed["running"] is True
+        assert [run["id"] for run in listed["runs"]] == [second["id"], "run-1"]
+        assert jobs.run_status(generation / "runs" / "run-1")["running"] is True
+    finally:
+        first.kill()
+        _forget(generation)
+
+
+def test_the_real_robot_runs_one_thing_at_a_time(tmp_path):
+    generation = _generation(tmp_path, simulated=False)
     process = _sleeping_job(generation)
     try:
         jobs.start_run(generation, {})
     except ValueError as refused:
         assert "already running" in str(refused)
     else:
-        raise AssertionError("one generation runs once at a time")
+        raise AssertionError("the real robot is busy")
     finally:
         process.kill()
-        jobs.RUNNING.pop(str(generation), None)
+        _forget(generation)
 
 
-def test_stopping_a_run_ends_the_process_group_it_was_started_in(tmp_path):
-    generation = _generation(tmp_path, simulated=True)
+def test_stopping_a_run_ends_the_process_group_it_was_started_in(tmp_path, monkeypatch):
+    generation = _generation(tmp_path, simulated=True, monkeypatch=monkeypatch)
     process = _sleeping_job(generation)
     try:
-        status = jobs.stop_run(generation)
+        status = jobs.stop_run(generation / "runs" / "run-test")
         assert process.poll() is not None
         assert status["running"] is False
     finally:
         process.kill()
-        jobs.RUNNING.pop(str(generation), None)
+        _forget(generation)
 
 
 def test_stopping_what_is_not_running_says_so(tmp_path):
     generation = _generation(tmp_path, simulated=True)
     try:
-        jobs.stop_run(generation)
+        jobs.stop_run(generation / "runs" / "run-test")
     except ValueError as refused:
         assert "running" in str(refused)
     else:

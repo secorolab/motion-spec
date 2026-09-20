@@ -103,3 +103,7 @@ def test_a_run_without_a_control_block_is_simply_unavailable(tmp_path):
 
 def test_the_control_name_follows_the_frame_shm_suffix_rule():
     assert ctrl_shm_name("0123456789abcdef0123") == "/motion_spec_ctrl_0123456789abcdef"
+    # Named per run, so two runs of one generation drive two loops, not one block.
+    assert (
+        ctrl_shm_name("0123456789abcdef0123", "run-7") == "/motion_spec_ctrl_0123456789abcdef_run-7"
+    )

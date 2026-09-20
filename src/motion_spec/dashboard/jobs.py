@@ -23,52 +23,65 @@ from motion_spec.dashboard import roots
 from motion_spec.dashboard.catalog import generation_cameras, is_simulated, run_ended, run_recorded
 from motion_spec.dashboard.roots import LAYOUT_REL, RUN_LOG, trace
 
+# One entry per run this dashboard started, keyed by the run directory: several runs of one
+# generation can be up at once.
 RUNNING: dict[str, dict] = {}
+
+# Finished runs whose status a page may still ask for; older ones are the past.
+RUNS_KEPT = 20
 
 
 def _real_run_active() -> Path | None:
-    """The generation directory of a real-hardware run still in progress, if any is.
+    """The run directory of a real-hardware run still in progress, if any is.
 
-    Two generations can each believe they own the real robot; the dashboard tracks one entry
-    per generation, so this is the one place that looks across all of them at once.
+    Two runs can each believe they own the real robot, so this is the one place that looks
+    across all of them at once.
     """
     for key, started in RUNNING.items():
-        if started["process"].poll() is None and not is_simulated(Path(key)):
+        if started["process"].poll() is None and not is_simulated(Path(started["generation"])):
             return Path(key)
     return None
 
 
-def run_status(generation_dir: Path) -> dict:
-    """Whether this generation has a run in progress, and where its output is going.
+def run_status(run_dir: Path) -> dict:
+    """Whether this run is in progress, and where its output is going.
 
     A run is over when its archive is written, not when the process that started it exits:
     the CLI still verifies and reports for a while after, which is no longer this run.
     """
-    started = RUNNING.get(str(generation_dir))
+    started = RUNNING.get(str(run_dir))
     process = started["process"] if started else None
     busy = process is not None and process.poll() is None
     # The dashboard names the run when it starts it, so the directory to watch is known
     # before anything exists on disk.
-    run_dir = generation_dir / "runs" / started["run_id"] if started else None
-    run = run_dir if run_dir is not None and run_dir.is_dir() else None
-    live = busy and not (run is not None and run_ended(run))
-    trace(
-        f"run_status {generation_dir.name}: busy={busy} running={live} run={run.name if run else None}"
-    )
+    live = busy and not (run_dir.is_dir() and run_ended(run_dir))
+    trace(f"run_status {run_dir.name}: busy={busy} running={live}")
     return {
+        "id": run_dir.name,
+        "path": str(run_dir.relative_to(roots.GENERATIONS)),
         "running": live,
         "busy": busy,
         "pid": process.pid if busy else None,
-        "run": str(run.relative_to(roots.GENERATIONS)) if live and run else None,
+        "run": str(run_dir.relative_to(roots.GENERATIONS)) if live else None,
         "exit_code": None if busy or process is None else process.returncode,
         # Ended on request, not by failing. A signalled run exits non-zero either way, so the
         # page cannot tell a cancel from a crash by the code alone.
         "stopped": bool(started and started.get("stopped")),
-        "log": str(generation_dir / RUN_LOG) if process is not None else None,
+        "log": str(Path(started["generation"]) / RUN_LOG) if started else None,
         # Whether the run keeps a frame log: from its manifest once written, before that from the
         # choice this dashboard started it with. False means the page must not wait for a log.
         "recorded": _recorded(run_dir, started),
     }
+
+
+def generation_status(generation_dir: Path) -> dict:
+    """Every run of this generation the dashboard started and still remembers, newest first."""
+    runs = [
+        run_status(Path(key))
+        for key, started in sorted(RUNNING.items(), reverse=True)
+        if started["generation"] == str(generation_dir)
+    ]
+    return {"running": any(run["running"] for run in runs), "runs": runs}
 
 
 def _recorded(run_dir: Path | None, started: dict | None) -> bool | None:
@@ -108,12 +121,11 @@ def start_run(generation_dir: Path, options: dict) -> dict:
     """
     if not (generation_dir / LAYOUT_REL).exists():
         raise ValueError("not a generation")
-    if run_status(generation_dir)["busy"]:
-        raise ValueError("this generation is already running")
     # Only a simulator has a display to drop, whatever the browser posted.
     simulated = is_simulated(generation_dir)
-    # Two generations cannot share the real robot. Whether the hardware answers is not asked
-    # here: the devices panel probes when the operator asks it to.
+    # Simulations run side by side; the real robot runs one thing at a time, whichever
+    # generation asks. Whether the hardware answers is not asked here: the devices panel
+    # probes when the operator asks it to.
     if not simulated:
         other = _real_run_active()
         if other is not None:
@@ -146,56 +158,67 @@ def start_run(generation_dir: Path, options: dict) -> dict:
     recording = [camera for camera in options.get("cameras") or () if camera in recordable]
     for camera in recording:
         argv += ["--record", camera]
+    _reap_runs()
     # Closed here: Popen dups the descriptor for the child, and a handle per run never
     # collected is a file descriptor leaked for the life of the server.
     with (generation_dir / RUN_LOG).open("wb") as sink:
         process = subprocess.Popen(
             argv, cwd=roots.WORKSPACE, stdout=sink, stderr=sink, start_new_session=True
         )
-    RUNNING[str(generation_dir)] = {
+    run_dir = generation_dir / "runs" / run_id
+    RUNNING[str(run_dir)] = {
         "process": process,
         "run_id": run_id,
+        "generation": str(generation_dir),
         "recorded": options.get("log", True) is not False,
     }
     return {
-        **run_status(generation_dir),
+        **run_status(run_dir),
         "command": argv,
         "recording": recording,
-        "run": str((generation_dir / "runs" / run_id).relative_to(roots.GENERATIONS)),
+        "run": str(run_dir.relative_to(roots.GENERATIONS)),
     }
+
+
+def _reap_runs() -> None:
+    """Forget finished runs beyond the last few: their status is on disk, in rec's record."""
+    finished = sorted(
+        key for key, started in RUNNING.items() if started["process"].poll() is not None
+    )
+    for key in finished[:-RUNS_KEPT]:
+        RUNNING.pop(key)
 
 
 # How long a run gets to end on a TERM before it is killed outright.
 STOP_GRACE_S = 5
 
 
-def mark_stopped(generation_dir: Path) -> None:
+def mark_stopped(run_dir: Path) -> None:
     """Record that this run's end was asked for, whoever asked.
 
     A run signalled from the generation page and one cancelled through its control block both
     exit non-zero, exactly as a failed run does. Only the asking tells them apart, so it is the
     asking that is remembered.
     """
-    started = RUNNING.get(str(generation_dir))
+    started = RUNNING.get(str(run_dir))
     if started is not None:
         started["stopped"] = True
 
 
-def stop_run(path: Path) -> dict:
+def stop_run(run_dir: Path) -> dict:
     """End a run this dashboard started, by signalling the process group it was started in.
 
     The control block is the polite way to stop a loop, and only a loop already ticking reads
     it: a run still connecting to its hardware, or one that never gets that far, answers
-    nothing. This is the signal for that. Takes a run or its generation, as `run_control` does.
+    nothing. This is the signal for that.
     """
-    generation_dir = path if (path / LAYOUT_REL).exists() else path.parent.parent
-    started = RUNNING.get(str(generation_dir))
+    started = RUNNING.get(str(run_dir))
     process = started["process"] if started else None
     if process is None or process.poll() is not None:
-        raise ValueError("no run of this generation is running here")
+        raise ValueError(f"{run_dir.name} is not running here")
     # Remembered before the signal, so the exit this sets up is already known to be asked for
     # by the time anything reads the status back.
-    mark_stopped(generation_dir)
+    mark_stopped(run_dir)
     # The whole session: the CLI starts the runtime as a child, and it is the one holding the
     # devices open.
     group = os.getpgid(process.pid)
@@ -205,7 +228,7 @@ def stop_run(path: Path) -> dict:
     except subprocess.TimeoutExpired:
         os.killpg(group, signal.SIGKILL)
         process.wait(timeout=STOP_GRACE_S)
-    return run_status(generation_dir)
+    return run_status(run_dir)
 
 
 HEALTH: dict = {"checks": None, "stamp": None, "thread": None, "progress": None}

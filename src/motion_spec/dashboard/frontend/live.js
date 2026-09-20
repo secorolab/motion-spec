@@ -85,8 +85,8 @@ export async function followLiveRun(runPath) {
       // read the finished run back, for its health and full frame count
       if (!wasFollowing && !settling) return null;
       settling = false;
-      if (!state.announced) snack("run finished");
-      state.announced = true;
+      if (!state.announced.has(runPath)) snack("run finished");
+      state.announced.add(runPath);
       handed = true;
       carryOpenCards(runPath);
       // A run that kept no log has no archive to load: what it left is its console.
@@ -107,9 +107,7 @@ export async function followLiveRun(runPath) {
 function showWhenOver(runPath) {
   const hop = setInterval(async () => {
     if (state.runPath !== runPath) return clearInterval(hop);
-    const status = await api(`/api/run?path=${encodeURIComponent(state.replay.generation)}`).catch(
-      () => null,
-    );
+    const status = await api(`/api/run?path=${encodeURIComponent(runPath)}`).catch(() => null);
     if (status && !status.busy) {
       clearInterval(hop);
       await showRunWithoutLog(state.replay.generation, runPath, status);
@@ -119,9 +117,7 @@ function showWhenOver(runPath) {
 
 // Named before anything is on disk: hold until the log begins or the runner gives up.
 async function holdForStart(runPath) {
-  const status = state.replay.generation
-    ? await api(`/api/run?path=${encodeURIComponent(state.replay.generation)}`).catch(() => null)
-    : null;
+  const status = await api(`/api/run?path=${encodeURIComponent(runPath)}`).catch(() => null);
   if (status && !status.busy) {
     stopLiveWatch();
     settle(false);

@@ -10,7 +10,7 @@ import shutil
 
 import pytest
 from test_dashboard_api import dashboard  # noqa: F401 -- shared HTTP fixture
-from test_dashboard_runs import _rec
+from test_dashboard_runs import _write_rec
 
 
 def test_organize_annotate_and_resume(dashboard):  # noqa: F811 -- pytest fixture
@@ -19,7 +19,7 @@ def test_organize_annotate_and_resume(dashboard):  # noqa: F811 -- pytest fixtur
     executable = os.environ.get("MOTION_SPEC_BROWSER_EXECUTABLE")
     if not executable:
         pytest.skip("set MOTION_SPEC_BROWSER_EXECUTABLE to run browser integration checks")
-    (dashboard.run / "rec.ld.json").write_text(json.dumps(_rec("COMPLETED")))
+    _write_rec(dashboard.run)
     os.utime(dashboard.run / "logs/frame_log.pb", (1, 1))
     second = dashboard.run.parent.parent.parent / "20260906T100000Z"
     shutil.copytree(dashboard.run.parent.parent, second)

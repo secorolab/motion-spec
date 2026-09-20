@@ -1217,6 +1217,25 @@ body.sidebar-collapsed #selection-actions[data-side="sidebar"] {
   color: var(--dim);
 }
 
+.run-live:not(:empty) {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 4px;
+}
+
+.run-live .live-run {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font: 11px var(--mono);
+  color: var(--muted);
+}
+
+.run-live .live-run strong {
+  color: var(--fg);
+  cursor: pointer;
+}
+
 .run-heading {
   display: flex;
   flex-wrap: wrap;
@@ -1348,15 +1367,15 @@ body.sidebar-collapsed #selection-actions[data-side="sidebar"] {
   letter-spacing: 0.06em;
 }
 
-.badge-cancelled {
+.badge-canceled {
   color: var(--accent);
 }
 
-.badge-completed {
+.badge-passed {
   color: var(--good);
 }
 
-.badge-interrupted {
+.badge-error {
   color: #e8c468;
 }
 

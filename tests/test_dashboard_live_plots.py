@@ -308,15 +308,17 @@ def test_run_status_says_whether_the_run_kept_a_frame_log(live_run, monkeypatch)
     generation = live_run.path.parent.parent
     finished = type("Finished", (), {"poll": lambda self: 0, "returncode": 0, "pid": 1})()
     monkeypatch.setitem(
-        jobs.RUNNING, str(generation), {"process": finished, "run_id": live_run.path.name}
+        jobs.RUNNING,
+        str(live_run.path),
+        {"process": finished, "run_id": live_run.path.name, "generation": str(generation)},
     )
     manifest = live_run.path / "manifest.json"
 
-    assert jobs.run_status(generation)["recorded"] is None  # nothing has said yet
+    assert jobs.run_status(live_run.path)["recorded"] is None  # nothing has said yet
     manifest.write_text(json.dumps({"run_id": "run-1", "recorded": False, "files": {}}))
-    assert jobs.run_status(generation)["recorded"] is False
+    assert jobs.run_status(live_run.path)["recorded"] is False
     manifest.write_text(json.dumps({"run_id": "run-1", "files": {}}))
-    assert jobs.run_status(generation)["recorded"] is True
+    assert jobs.run_status(live_run.path)["recorded"] is True
 
 
 def test_the_response_names_the_motion_of_the_newest_sample(live_run):
@@ -330,10 +332,15 @@ def test_run_status_knows_logs_are_off_before_the_manifest_says_so(live_run, mon
     busy = type("Busy", (), {"poll": lambda self: None, "pid": 1})()
     monkeypatch.setitem(
         jobs.RUNNING,
-        str(generation),
-        {"process": busy, "run_id": live_run.path.name, "recorded": False},
+        str(live_run.path),
+        {
+            "process": busy,
+            "run_id": live_run.path.name,
+            "generation": str(generation),
+            "recorded": False,
+        },
     )
-    assert jobs.run_status(generation)["recorded"] is False
+    assert jobs.run_status(live_run.path)["recorded"] is False
 
 
 @pytest.fixture
@@ -353,8 +360,13 @@ def log_less_run(tmp_path, monkeypatch):
     monkeypatch.setenv("MOTION_SPEC_SHM_NAME", str(block))
     monkeypatch.setattr(roots, "GENERATIONS", tmp_path)
     busy = type("Busy", (), {"poll": lambda self: None, "pid": 1})()
-    started = {"process": busy, "run_id": "run-1", "recorded": False}
-    monkeypatch.setitem(jobs.RUNNING, str(run.parent.parent), started)
+    started = {
+        "process": busy,
+        "run_id": "run-1",
+        "generation": str(run.parent.parent),
+        "recorded": False,
+    }
+    monkeypatch.setitem(jobs.RUNNING, str(run), started)
     live._LIVE.clear()
 
     def feed(steps):
@@ -377,7 +389,7 @@ def test_a_log_less_run_has_started_once_its_loop_answers(log_less_run):
 
 def test_a_run_nobody_started_with_logs_off_is_still_not_started(log_less_run, monkeypatch):
     """Only a run this dashboard launched log-less is followed through the contract record."""
-    monkeypatch.delitem(jobs.RUNNING, str(log_less_run.path.parent.parent))
+    monkeypatch.delitem(jobs.RUNNING, str(log_less_run.path))
     live._LIVE.clear()
     assert live.live_state(log_less_run.path) == live._NOT_STARTED
 

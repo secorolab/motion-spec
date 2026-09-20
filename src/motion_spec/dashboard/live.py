@@ -19,6 +19,7 @@ from motion_spec.dashboard.roots import LAYOUT_REL, json_file, trace
 from motion_spec.dashboard.tail import FrameLogTail
 from motion_spec.introspection import frame_log_pb
 from motion_spec.introspection.archive import ArchiveError
+from motion_spec.introspection.frame_log_pb import ctrl_shm_name, shm_name_for
 from motion_spec.introspection.replay import resolve_archive
 
 _LIVE: dict[str, dict] = {}
@@ -149,11 +150,10 @@ _NOT_STARTED = {
 
 def _log_less_record(run_dir: Path) -> Path | None:
     """The generation's contract record, for a run this dashboard started with logs off."""
-    generation_dir = run_dir.parents[1]
-    started = RUNNING.get(str(generation_dir))
-    if not started or started.get("recorded") is not False or started["run_id"] != run_dir.name:
+    started = RUNNING.get(str(run_dir))
+    if not started or started.get("recorded") is not False:
         return None
-    record = generation_dir / "generated/contract/frame_log_header.pb"
+    record = run_dir.parents[1] / "generated/contract/frame_log_header.pb"
     return record if record.is_file() else None
 
 
@@ -165,8 +165,9 @@ def _live_sampler(run_dir: Path, contract) -> ShmSampler | None:
     except (OSError, ValueError, KeyError) as error:
         trace(f"live sampler {run_dir.name}: no frame layout ({error})")
         return None
+    name = os.environ.get("MOTION_SPEC_SHM_NAME") or shm_name_for(layout.schema_hash, run_dir.name)
     sampler = ShmSampler(
-        ShmFrameReader(os.environ.get("MOTION_SPEC_SHM_NAME") or layout.shm_name, layout, contract),
+        ShmFrameReader(name, layout, contract),
         fields,
         [state.id for state in contract.header.fsm_states],
         [event.id for event in contract.header.fsm_events],
@@ -338,10 +339,7 @@ def _control_status(session: dict, run_dir: Path, moving: bool) -> dict:
     """
     channel = session.get("channel")
     if channel is None:
-        generation_dir = run_dir.parents[1]
-        channel = session["channel"] = ControlChannel(
-            json_file(generation_dir / LAYOUT_REL).get("schema_hash")
-        )
+        channel = session["channel"] = _control_channel(run_dir)
     now = time.monotonic()
     if moving:
         alive = True
@@ -368,14 +366,20 @@ def _control_status(session: dict, run_dir: Path, moving: bool) -> dict:
     }
 
 
-def run_control(path: Path, options: dict) -> dict:
+def _control_channel(run_dir: Path) -> ControlChannel:
+    """This run's control block, named as the runner named it for the runtime."""
+    schema_hash = json_file(run_dir.parents[1] / LAYOUT_REL).get("schema_hash")
+    name = os.environ.get("MOTION_SPEC_CTRL_SHM_NAME") or ctrl_shm_name(schema_hash, run_dir.name)
+    return ControlChannel(name=name)
+
+
+def run_control(run_dir: Path, options: dict) -> dict:
     """Pause, step, cancel, or slow a simulation through the block its loop polls.
 
-    Takes a run or its generation. `alive` is the loop's own ack, not a guess about who
-    started it; only a simulated run creates the block.
+    `alive` is the loop's own ack, not a guess about who started it; only a simulated run
+    creates the block.
     """
-    generation_dir = path if (path / LAYOUT_REL).exists() else path.parent.parent
-    channel = ControlChannel(json_file(generation_dir / LAYOUT_REL).get("schema_hash"))
+    channel = _control_channel(run_dir)
     action = options.get("action")
     if action == "pause":
         channel.set_pause(True)
@@ -390,7 +394,7 @@ def run_control(path: Path, options: dict) -> dict:
         channel.request_stop()
         # The loop will exit non-zero, the same as a crash. Say the end was asked for, so the
         # generation page reports a cancel as a stop rather than posting a failure post-mortem.
-        mark_stopped(generation_dir)
+        mark_stopped(run_dir)
     elif action is None:
         # re-publish what the block says, to ask the loop for an ack
         channel.set_pause(bool(channel.paused))

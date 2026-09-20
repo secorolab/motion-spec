@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import threading
 
-from motion_spec.dashboard.runs import TERMINAL_STATUS
+from motion_spec.dashboard.runs import ENDED
 
 
 class RunStore:
@@ -21,7 +21,7 @@ class RunStore:
         self.contract = contract
         self.frames: list[dict] = []
         self.latest: dict | None = None
-        self.status: str | None = None
+        self.state = None
         self._lock = threading.Lock()
 
     def add_frames(self, frames) -> None:
@@ -48,7 +48,7 @@ class RunStore:
 
     @property
     def completed(self) -> bool:
-        if self.status in TERMINAL_STATUS:
+        if self.state in ENDED:
             return True
         if self.latest is None or self.contract is None:
             return False

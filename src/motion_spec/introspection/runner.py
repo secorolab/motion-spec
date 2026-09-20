@@ -15,26 +15,29 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from rdflib.namespace import PROV
+from rdflib import Graph
+from rec import State, Verdict
 
 from motion_spec.introspection.archive import create_archive_manifest, verify_manifest
-from motion_spec.introspection.provenance import GENERATION_DOCUMENT
+from motion_spec.introspection.frame_log_pb import ctrl_shm_name, shm_name_for
 from motion_spec.introspection.lifecycle_events import publish_lifecycle
 from motion_spec.introspection.provenance import (
     CONTROLLER_PROCESS,
-    add_package,
+    EXECUTION_DOCUMENT,
+    GENERATION_DOCUMENT,
+    GRAPH_EXECUTION,
+    RUN_IRI_BASE,
     ensure_local_rec_importable,
     host_info,
     parse_rec_time,
-    prov_uri,
-    rec_run_lifecycle,
+    rec_document,
     rec_run_lifecycle_from_file,
-    record_arguments,
     record_draw,
-    record_run_agents,
+    record_execution,
     record_software,
     record_used_file,
     uri,
+    write_generation_graph,
 )
 from motion_spec.introspection.ros_video import RosImageRecorder, real_camera_recordings
 
@@ -66,9 +69,9 @@ def run_cataloged(
     executable_args = [str(arg) for arg in (executable_args or [])]
     run_id = run_id or run_dir.name
     frame_log = run_dir / "logs" / "frame_log.pb"
-    rec_path = run_dir / "rec.ld.json"
+    rec_path = rec_document(run_dir, run_id)
 
-    _validate_new_run(run_dir, source_dir, executable, Path(cwd).resolve() if cwd else None)
+    _validate_new_run(run_dir, source_dir, executable, run_id, Path(cwd).resolve() if cwd else None)
     # frame_layout.json, not the log: the run is recorded before the log exists.
     schema_path = (
         source_dir / "contract" / "frame_layout.json"
@@ -103,20 +106,21 @@ def run_cataloged(
                 record=record,
                 record_log=record_log,
                 base_env=env,
+                schema_hash=schema.get("schema_hash"),
             )
     except Exception:
-        _finish_rec_run(rec_path, run_id, "FAILED")
+        _finish_rec_run(rec_path, run_id, Verdict.FAILED)
         raise
     if (frame_log.parent / "sampling.json").exists():
         _record_sampling(rec_path, run_id, frame_log.parent / "sampling.json")
-    if _rec_status(rec_path) != "INTERRUPTED":
+    if rec_run_lifecycle_from_file(rec_path)["verdict"] is not Verdict.ERROR:
         # 130 is the program leaving its loop on SIGINT/SIGTERM, which it reports rather than
         # dying from: the run stopped early but its artifacts are complete, so it is not a
         # failure. Reached when the signal went to the child alone and never raised here.
         if returncode == 130:
-            _finish_rec_run(rec_path, run_id, "INTERRUPTED")
+            _finish_rec_run(rec_path, run_id, Verdict.ERROR)
         elif returncode != 0:
-            _finish_rec_run(rec_path, run_id, "FAILED")
+            _finish_rec_run(rec_path, run_id, Verdict.FAILED)
 
     # A run that died before its first frame has nothing to catalogue. The rec run is already
     # FAILED, and what the caller needs to see is the executable's own error -- not a missing
@@ -137,12 +141,12 @@ def run_cataloged(
             recorded=record_log,
         )
         if returncode == 0:
-            _finish_rec_run(rec_path, run_id, "COMPLETED")
+            _finish_rec_run(rec_path, run_id, Verdict.PASSED)
             # A recording nobody checked is not worth the disk it sits on.
             verify_manifest(run_dir)
     except Exception:
         if returncode == 0:
-            _finish_rec_run(rec_path, run_id, "FAILED")
+            _finish_rec_run(rec_path, run_id, Verdict.FAILED)
         raise
     return returncode
 
@@ -296,7 +300,7 @@ def _validate_robot_config(source_dir: Path, cwd: Path | None = None) -> None:
 
 
 def _validate_new_run(
-    run_dir: Path, source_dir: Path, executable: Path, cwd: Path | None = None
+    run_dir: Path, source_dir: Path, executable: Path, run_id: str, cwd: Path | None = None
 ) -> None:
     if not source_dir.exists():
         raise RunnerError(f"{source_dir}: source directory does not exist")
@@ -311,8 +315,8 @@ def _validate_new_run(
     if not executable.exists():
         raise RunnerError(f"{executable}: executable does not exist")
     _validate_robot_config(source_dir, cwd)
-    if run_dir.exists() and (run_dir / "rec.ld.json").exists():
-        raise RunnerError(f"{run_dir}: already contains rec.ld.json; choose a fresh run directory")
+    if run_dir.exists() and rec_document(run_dir, run_id).exists():
+        raise RunnerError(f"{run_dir}: already records a run; choose a fresh run directory")
     frame_log = run_dir / "logs" / "frame_log.pb"
     if frame_log.exists():
         raise RunnerError(f"{frame_log}: refusing to overwrite an existing frame log")
@@ -329,48 +333,38 @@ def _start_rec_run(
     environment: dict | None = None,
 ) -> None:
     ensure_local_rec_importable()
-    from rdf_utils.models.prov import load_execution_prov
-    from rec import Run
-    from rec.observers import FileObserver
+    from rec.run import Run
 
     # One run, one node: rec describes the same IRI the generation provenance describes, so
     # the documents union instead of standing side by side.
-    observer = FileObserver(run_dir / "rec.ld.json", run_iri=prov_uri(f"run:{run_id}"))
-    run = Run(observers=[observer], run_id=run_id)
+    run = Run(observers=[_rec_observer(run_dir)], run_id=run_id)
     run._emit_started()
     run.log_host_info(host_info(environment))
     record_software(run, run_dir)
-    graph = observer.graph
-    record_run_agents(graph, source_dir, schema.get("platform") or {})
-    used = _record_execution_inputs(
-        run, run_dir, run_id, executable, schema, executable_args, cwd, environment
+    _record_execution_inputs(run, run_dir, executable, schema, cwd, environment)
+    run.observers[0].close()
+    # rec has already stamped the start; a second `now()` would date the same run twice.
+    record_execution(
+        run_dir,
+        run_id,
+        source_dir / GENERATION_DOCUMENT,
+        schema.get("platform") or {},
+        executable_args,
+        run.start_time,
     )
-    load_execution_prov(
-        graph,
-        observer.run,
-        used,
-        add_package(graph, "motion_spec"),
-        # rec has already stamped the start; a second `now()` would date the same run twice.
-        parse_rec_time(str(graph.value(observer.run, PROV.startedAtTime))),
-    )
-    observer.close()
-    publish_lifecycle(
-        run_dir, run_id, rec_run_lifecycle_from_file(run_dir / "rec.ld.json")["status"]
-    )
+    _publish(run_dir, run_id)
+
+
+def _rec_observer(run_dir: Path):
+    from rec.observers.file_observer import FileObserver
+
+    return FileObserver(run_dir, base=RUN_IRI_BASE)
 
 
 def _record_execution_inputs(
-    run,
-    run_dir: Path,
-    run_id: str,
-    executable: Path,
-    schema: dict,
-    executable_args: list[str],
-    cwd: Path | None,
-    environment: dict | None,
-) -> list:
+    run, run_dir: Path, executable: Path, schema: dict, cwd: Path | None, environment: dict | None
+) -> None:
     """What the execution ran and under what: the executable, its deployment, its environment."""
-    run_iri = run.observers[0].run
     inputs = [(executable, "log_producer_executable")]
     platform = schema.get("platform") or {}
     declared = platform.get("config") or ""
@@ -383,15 +377,9 @@ def _record_execution_inputs(
     script = (environment or {}).get("script")
     if script:
         inputs.append((Path(script), "environment"))
-    used = [
-        # archivePath = where this input lands in the bundle, so the rec reference is
-        # portable and dedupes with the archive's own record of the same file.
-        record_used_file(run, run_iri, path, role, os.path.relpath(path, run_dir))
-        for path, role in inputs
-        if path.exists()
-    ]
-    used.append(record_arguments(run.observers[0].graph, run_id, executable_args))
-    return used
+    for path, role in inputs:
+        if path.exists():
+            record_used_file(run, path, role, os.path.relpath(path, run_dir))
 
 
 def _rosbag_settings(source_dir: Path) -> tuple[list[str], bool]:
@@ -513,6 +501,7 @@ def _run_executable(
     record: list[str] | None = None,
     record_log: bool = True,
     base_env: dict[str, str] | None = None,
+    schema_hash: str | None = None,
 ) -> int:
     # logs/ holds the console tee and any camera videos too, so it is made whether or not the
     # frame log goes in it.
@@ -520,6 +509,11 @@ def _run_executable(
     # The run's own variables are set on top of whatever the caller's environment file left,
     # so a sourced ROS overlay reaches the controller and the frame log still lands here.
     env = dict(base_env) if base_env is not None else os.environ.copy()
+    # Blocks named per run, so runs of one generation can go side by side; an operator's own
+    # names win.
+    if schema_hash:
+        env.setdefault("MOTION_SPEC_SHM_NAME", shm_name_for(schema_hash, run_id))
+        env.setdefault("MOTION_SPEC_CTRL_SHM_NAME", ctrl_shm_name(schema_hash, run_id))
     # An empty path is how the runtime is told to record nothing (--no-log).
     env["MOTION_SPEC_FRAME_LOG"] = str(frame_log.resolve()) if record_log else ""
     # A camera to record, and where the video goes: the runtime renders the frame, so it
@@ -558,7 +552,7 @@ def _run_executable(
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait()
-        _finish_rec_run(rec_path, run_id, "INTERRUPTED")
+        _finish_rec_run(rec_path, run_id, Verdict.ERROR)
         return 130
     finally:
         # A grandchild holding the pipe open must not stall the run's bookkeeping.
@@ -579,53 +573,52 @@ def _tee(stream, sink) -> None:
         return  # the run gave up waiting for this pump and closed the log under it
 
 
-def _finish_rec_run(rec_path: Path, run_id: str, status: str) -> None:
+def _finish_rec_run(rec_path: Path, run_id: str, verdict: Verdict) -> None:
+    """Complete the run with VERDICT: passed, or error for a run stopped early, else failed."""
     ensure_local_rec_importable()
-    from rec import Run
-    from rec.observers import FileObserver
+    from rec.run import Run
 
-    observer = FileObserver(rec_path, run_iri=prov_uri(f"run:{run_id}"))
-    lifecycle = rec_run_lifecycle(observer.graph)
-    if lifecycle.get("status") == status and (
-        status != "COMPLETED" or lifecycle.get("completed_time")
+    run_dir = rec_path.parent
+    lifecycle = rec_run_lifecycle_from_file(rec_path)
+    if (
+        lifecycle["state"] is State.COMPLETE
+        and lifecycle["verdict"] is verdict
+        and (verdict is not Verdict.PASSED or lifecycle["completed_time"])
     ):
-        observer.close()
         return
-    run = Run(observers=[observer], run_id=run_id)
-    run._id = run_id
+    run = Run(observers=[_rec_observer(run_dir)], run_id=run_id)
     run.start_time = (
         parse_rec_time(lifecycle["started_time"])
-        if lifecycle.get("started_time")
+        if lifecycle["started_time"]
         else datetime.now(timezone.utc)
     )
-    if status == "COMPLETED":
+    if verdict is Verdict.PASSED:
         run._emit_completed()
-    elif status == "INTERRUPTED":
+    elif verdict is Verdict.ERROR:
         run._emit_interrupted()
     else:
         run._emit_failed()
-    observer.close()
-    publish_lifecycle(rec_path.parent, run_id, rec_run_lifecycle_from_file(rec_path)["status"])
+    run.observers[0].close()
+    _publish(run_dir, run_id)
 
 
 def _record_sampling(rec_path: Path, run_id: str, path: Path) -> None:
     """The seed as a metric of the run, and each drawn value as an entity the run generated."""
     ensure_local_rec_importable()
-    from rec import Run
-    from rec.observers import FileObserver
+    from rec.run import Run
 
+    run_dir = rec_path.parent
     sampling = json.loads(path.read_text())
-    observer = FileObserver(rec_path, run_iri=prov_uri(f"run:{run_id}"))
-    run = Run(observers=[observer], run_id=run_id)
-    run._id = run_id
+    run = Run(observers=[_rec_observer(run_dir)], run_id=run_id)
     run.log_scalar("sampling/seed", sampling["seed"])
+    run.observers[0].close()
     drawn_at = parse_rec_time(sampling["drawn_at"])
+    graph = Graph()
     for quantity, draw in sorted(sampling["draws"].items()):
-        record_draw(
-            observer.graph, run_id, uri(CONTROLLER_PROCESS), quantity, draw["values"], drawn_at
-        )
-    observer.close()
+        record_draw(graph, run_id, uri(CONTROLLER_PROCESS), quantity, draw["values"], drawn_at)
+    write_generation_graph(run_dir / EXECUTION_DOCUMENT, GRAPH_EXECUTION, graph)
 
 
-def _rec_status(rec_path: Path) -> str | None:
-    return rec_run_lifecycle_from_file(rec_path).get("status")
+def _publish(run_dir: Path, run_id: str) -> None:
+    lifecycle = rec_run_lifecycle_from_file(rec_document(run_dir, run_id))
+    publish_lifecycle(run_dir, run_id, lifecycle["state"], lifecycle["verdict"])

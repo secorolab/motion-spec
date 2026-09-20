@@ -17,9 +17,11 @@ def socket_path() -> Path:
     return runtime / "motion-spec-lifecycle.sock"
 
 
-def publish_lifecycle(run_dir: Path, run_id: str, status: str) -> None:
+def publish_lifecycle(run_dir: Path, run_id: str, state, verdict) -> None:
     """Notify a local listener after REC durably records a lifecycle transition."""
-    message = json.dumps({"run": str(run_dir), "run_id": run_id, "status": status}).encode()
+    message = json.dumps(
+        {"run": str(run_dir), "run_id": run_id, "state": state, "verdict": verdict}
+    ).encode()
     with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as channel:
         try:
             channel.sendto(message, str(socket_path()))

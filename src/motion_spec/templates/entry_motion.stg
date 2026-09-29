@@ -62,11 +62,6 @@ inline void update_<motion.id>(
 <motion.active_observation_ages:{a |     shared.<a.coordinate> = shared.clock_time_s - shared.<a.observed_at>;
 }><motion-prelude(motion.serial_chain_solvers, solvers, backend)>
 <motion.relative_poses:{rp | <emit-relative-pose(rp)>}; separator="\n">
-<motion.scene_relative_poses:{srp |
-<if(srp.base_seen)>    shared.<srp.id> = KDL::Frame(shared.<srp.fk_pose_id>.M, shared.<srp.fk_pose_id>.p - shared.<srp.scene_pose_id>.p);
-<else>    shared.<srp.id> = shared.<srp.scene_pose_id>.Inverse() * shared.<srp.fk_pose_id>;
-<endif>
-}; separator="\n">
 <if(motion.has_entry_snapshots)>
     if (!state.snapshot_taken) {
 <motion.entry_snapshots:{snap | <emit-snapshot(snap, closures, views)>}; separator="\n">
@@ -145,9 +140,8 @@ inline void control_<motion.id>(
 inline void apply_<motion.id>(<sig-params(motion.id, motion.apply_needs_state, motion.apply_needs_shared, motion.apply_needs_robot)>) {
 <if(motion.serial_chain_solvers)>
 <chain-stage-block(motion.serial_chain_solvers, solvers, backend)>
-<chain-apply-block(motion.serial_chain_solvers, backend)>
 <endif>
-<command-forwarding(backend, motion)>
+<command-forwarding(motion)>
 <if(motion.has_perturbations)>
 <perturbation-apply-block(motion, views)>
 <endif>

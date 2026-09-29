@@ -25,8 +25,63 @@ struct manipulator_robot {
 };
 >>
 
-world-joint-address-mj_kdl(solver, index) ::= <<
-&robot.<solver.id>.robot->jnt_pos_msr[<index>]
+world-chain-port-address-mj_kdl(solver, index) ::= <<
+world_ports{.position = &mj_<solver.runtime.id>.jnt_pos_msr[<index>], .velocity = &mj_<solver.runtime.id>.jnt_vel_msr[<index>], .effort = &mj_<solver.runtime.id>.jnt_trq_msr[<index>], .effort_cmd = &mj_<solver.runtime.id>.jnt_trq_cmd[<index>]\}
+>>
+
+world-port-free-root-mj_kdl(port)     ::= "&mj_free_root_<port.slot>->pose"
+world-port-free-root-seq-mj_kdl(port) ::= "&mj_free_root_<port.slot>->seq"
+world-port-joint-mj_kdl(port)          ::= "&mj_scene_joint_<port.slot>->position"
+world-port-joint-velocity-mj_kdl(port) ::= "&mj_scene_joint_<port.slot>->velocity"
+world-port-aux-cmd-mj_kdl(port)        ::= "&mj_actuator_<port.slot>->command"
+world-port-wrench-cmd-mj_kdl(port)     ::= "&mj_body_wrench_<port.slot>->wrench"
+
+// Every non-robot primitive the model reads or pushes, resolved once against the compiled scene.
+scene-state-setup-mj_kdl(world_ports) ::= <<
+    mj_kdl::SceneState mj_world{};
+    if (!mj_kdl::init_scene_state(&mj_world, mj_env.model)) {
+        std::cerr \<\< "mj_kdl::init_scene_state() failed\\n";
+        mj_kdl::cleanup(&mj_env);
+        return 1;
+    \}
+<world_ports.free_roots:{port |     mj_kdl::SceneFreeBodySlot *mj_free_root_<port.slot> = mj_kdl::bind_scene_free_body(&mj_world, "<port.mapping>");
+    if (!mj_free_root_<port.slot>) {
+        std::cerr \<\< "bind_scene_free_body() failed for '<port.mapping>'\\n";
+        mj_kdl::cleanup(&mj_env);
+        return 1;
+    \}}; separator="\n">
+<world_ports.joints:{port |     mj_kdl::SceneJointSlot *mj_scene_joint_<port.slot> = mj_kdl::bind_scene_joint(&mj_world, "<port.mapping>");
+    if (!mj_scene_joint_<port.slot>) {
+        std::cerr \<\< "bind_scene_joint() failed for '<port.mapping>'\\n";
+        mj_kdl::cleanup(&mj_env);
+        return 1;
+    \}}; separator="\n">
+<world_ports.aux_cmds:{port |     mj_kdl::SceneActuatorSlot *mj_actuator_<port.slot> = mj_kdl::bind_scene_actuator(&mj_world, "<port.mapping>");
+    if (!mj_actuator_<port.slot>) {
+        std::cerr \<\< "bind_scene_actuator() failed for '<port.mapping>'\\n";
+        mj_kdl::cleanup(&mj_env);
+        return 1;
+    \}}; separator="\n">
+<world_ports.wrench_cmds:{port |     mj_kdl::SceneWrenchSlot *mj_body_wrench_<port.slot> = mj_kdl::bind_scene_wrench(&mj_world, "<port.mapping>");
+    if (!mj_body_wrench_<port.slot>) {
+        std::cerr \<\< "bind_scene_wrench() failed for '<port.mapping>'\\n";
+        mj_kdl::cleanup(&mj_env);
+        return 1;
+    \}}; separator="\n">
+>>
+
+// The simulator's own gravity, turned into the chain root's axes the world poses are stated in.
+wrench-gravity-mj_kdl(solver, chain_solver) ::= <<
+robot.<solver.id>.world_to_root.M * KDL::Vector(robot.<solver.id>.robot->model->opt.gravity[0], robot.<solver.id>.robot->model->opt.gravity[1], robot.<solver.id>.robot->model->opt.gravity[2])
+>>
+
+// The simulated sensor keeps its sample on the robot handle the scene registered it with.
+wrench-raw-mj_kdl(solver, out) ::= <<
+    const mj_kdl::ForceTorqueSensor *ft_<out.id> = mj_kdl::find_ft_sensor(robot.<solver.id>.robot, "<out.sensor_name>");
+    if (!ft_<out.id>) {
+        throw std::runtime_error("FT sensor '<out.sensor_name>' is unavailable");
+    \}
+    const KDL::Wrench raw_<out.id> = ft_<out.id>->wrench;
 >>
 
 // A simulated sensor exposes the one deployment property it has, under the same member name and
@@ -124,7 +179,7 @@ app-chain-includes-mj_kdl(has_serial_chain, resources, ros, cameras) ::= <<
 <endif>
 >>
 
-app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros) ::= <<
+app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros, world_ports) ::= <<
     const auto robot_config = motion_spec::config::load("<config_path>");
     bool headless = false;
     bool steps_limited = false;
@@ -291,7 +346,12 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros) ::= <<
             return 1;
         \}
         object_spec.mjcf_path = object_path.string();
-<endif>        object_spec.pos[0] = <object.pos_x>;
+<if(object.has_color)>        object_spec.rgba[0] = <object.color_r>f;
+        object_spec.rgba[1] = <object.color_g>f;
+        object_spec.rgba[2] = <object.color_b>f;
+        object_spec.rgba[3] = <object.color_a>f;
+        object_spec.has_rgba = true;
+<endif><endif>        object_spec.pos[0] = <object.pos_x>;
         object_spec.pos[1] = <object.pos_y>;
         object_spec.pos[2] = <object.pos_z>;
         object_spec.quat[0] = <object.quat_x>;
@@ -370,6 +430,8 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros) ::= <<
     mj_env.model->opt.tolerance  = kMjSolverTolerance;
     mj_env.model->opt.impratio   = kMjImpratio;
     mj_env.model->opt.cone       = mjCONE_ELLIPTIC;
+
+<scene-state-setup-mj_kdl(world_ports)>
 <serial_chain_solvers:{solver |<robot-state-init(solver, "mj_kdl")>
 <robot-init(solver, "mj_kdl")>
 <robot-chain(solver, "mj_kdl")>
@@ -379,7 +441,13 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros) ::= <<
     mj_kdl::Viewer mj_viewer{};
     if (_headless_rtf > 0.0) mj_viewer.realtime_factor = _headless_rtf;
     if (!headless) {
+<if(!serial_chain_solvers)>
+        // A platform drives no chain, so there is no Robot to hang the window on; the viewer
+        // takes the scene's model and data directly.
+        if (!mj_kdl::init_window_sim(&mj_viewer, mj_env.model, mj_env.data)) {
+<else>
         if (!mj_kdl::init_window_sim(&mj_viewer, &mj_<first(serial_chain_solvers).runtime.id>)) {
+<endif>
             std::cerr \<\< "mj_kdl::init_window_sim() failed\\n";
             mj_kdl::cleanup(&mj_env);
             return 1;
@@ -669,17 +737,16 @@ app-chain-cleanup-mj_kdl(has_serial_chain) ::= <<
     mj_kdl::cleanup(&mj_env);<endif>
 >>
 
-// Reads every robot before anything reads the world it feeds. update() also applies whatever
-// commands are staged, so the pass before step() is a separate call and not a duplicate of
-// this one: this reads what the last step produced, that one applies what this tick decided.
+// Communicate-in: every provider is read before anything reads the world it feeds.
 app-chain-provider-update-mj_kdl(serial_chain_solvers) ::= <<
-<serial_chain_solvers:{solver | <if(solver.runtime.owner)>        mj_kdl::update(&mj_<solver.runtime.id>);
-<endif>}; separator="">
+<serial_chain_solvers:{solver | <if(solver.runtime.owner)>        mj_kdl::read_measurements(&mj_<solver.runtime.id>);
+<endif>}; separator="">        mj_kdl::read_scene_state(&mj_world, mj_env.data);
 >>
 
+// Communicate-out: what this tick decided reaches the platform, then the platform advances.
 app-chain-runtime-step-mj_kdl(serial_chain_solvers, active_motion) ::= <<
-<serial_chain_solvers:{solver | <if(solver.runtime.owner)>        mj_kdl::update(&mj_<solver.runtime.id>);
-<endif>}; separator="">
+<serial_chain_solvers:{solver | <if(solver.runtime.owner)>        mj_kdl::apply_commands(&mj_<solver.runtime.id>);
+<endif>}; separator="">        mj_kdl::apply_scene_state(&mj_world, mj_env.data);
         // Closing the viewer ends the run, but it must end the same way S_DONE does. std::exit
         // skips destructors, so the frame logger's writer thread never drained and the log was
         // left with a half-written record and no health file -- break, and let teardown run.
@@ -809,4 +876,104 @@ app-chain-trace-update-mj_kdl(serial_chain_solvers, trace) ::= <<
         }
 <endif>
 <endif>
+>>
+
+// ---------------------------------------------------------------------------
+// The mobile platform in simulation. The two ends domain_mobile_base.stg leaves
+// to a backend: read the pivot angles and hub rates out of mjData, write the hub
+// torques into mjData's actuator controls.
+
+base-state-members-mj_kdl() ::= <<
+    // Resolved once from the compiled model, in the drive order the scene tree states.
+    int pivot_qpos[NUM_DRIVES] = {0};
+    int pivot_dof[NUM_DRIVES] = {0};
+    int wheel_dof[NUM_DRIVES * NUM_WHL_COORD] = {0};
+    int wheel_ctrl[NUM_DRIVES * NUM_WHL_COORD] = {0};
+    // Which side of the axle each wheel sits on, as the sign of its offset along its own spin
+    // axis. Reading a fixed coordinate would tie the solver to the frame the model is drawn in.
+    double wheel_side[NUM_DRIVES * NUM_WHL_COORD] = {0.0};
+>>
+
+base-resolve-mj_kdl(resources) ::= <<
+    {
+        const mjModel *_m = robot.mobile_base.model;
+        static const char *_pivot_names[NUM_DRIVES] = {<resources.by_kind.mobile_base.drives:{drive |"<drive.pivot_joint>"}; separator=", ">};
+        static const char *_wheel_names[NUM_DRIVES * NUM_WHL_COORD] = {<resources.by_kind.mobile_base.drives:{drive |<drive.wheels:{wheel |"<wheel>"}; separator=", ">}; separator=", ">};
+        for (int i = 0; i \< NUM_DRIVES; ++i) {
+            const int _pivot = mj_name2id(_m, mjOBJ_JOINT, _pivot_names[i]);
+            if (_pivot \< 0) {
+                std::cerr \<\< "model has no joint '" \<\< _pivot_names[i] \<\< "'\\n";
+                std::exit(1);
+            \}
+            state.pivot_qpos[i] = _m->jnt_qposadr[_pivot];
+            state.pivot_dof[i] = _m->jnt_dofadr[_pivot];
+            for (int w = 0; w \< NUM_WHL_COORD; ++w) {
+                const int _channel = i * NUM_WHL_COORD + w;
+                const int _joint = mj_name2id(_m, mjOBJ_JOINT, _wheel_names[_channel]);
+                const int _act = mj_name2id(_m, mjOBJ_ACTUATOR, _wheel_names[_channel]);
+                if (_joint \< 0 || _act \< 0) {
+                    std::cerr \<\< "model has no joint/actuator '" \<\< _wheel_names[_channel] \<\< "'\\n";
+                    std::exit(1);
+                \}
+                state.wheel_dof[_channel] = _m->jnt_dofadr[_joint];
+                state.wheel_ctrl[_channel] = _act;
+                const int _body = _m->jnt_bodyid[_joint];
+                double _along = 0.0;
+                for (int k = 0; k \< 3; ++k) {
+                    _along += _m->body_pos[_body * 3 + k] * _m->jnt_axis[_joint * 3 + k];
+                \}
+                state.wheel_side[_channel] = _along > 0.0 ? 1.0 : -1.0;
+            \}
+        \}
+    \}
+>>
+
+// hddc2b runs a unit's two channels against each other, as the real drive's mirrored motors do,
+// while both MJCF wheel joints turn about one axis -- hence the alternating channel sign.
+//
+// The pivot's own rotation is removed from the rates the composition reads: a unit turning about
+// its pivot rolls its wheels while the pivot point, bolted to the platform, stays put, and
+// hddc2b composing from hub rates alone would read that as the platform moving. A wheel at
+// +-whl_dst from the pivot axis sees +-qd*whl_dst of contact velocity.
+base-read-mj_kdl(resources) ::= <<
+    {
+        const mjData *_d = robot.mobile_base.data;
+        for (int i = 0; i \< NUM_DRIVES; ++i) {
+            state.pvt_pos[i] = _d->qpos[state.pivot_qpos[i]] + state.pivot_offset[i];
+            for (int w = 0; w \< NUM_WHL_COORD; ++w) {
+                const int _channel = i * NUM_WHL_COORD + w;
+                const double _radius = 0.5 * state.cfg.wheel_diameter[_channel];
+                const double _spin = _d->qvel[state.pivot_dof[i]]
+                                   * state.wheel_side[_channel] * state.wheel_distance[i] / _radius;
+                state.whl_vel[_channel] =
+                    state.hub_sign[_channel] * (_d->qvel[state.wheel_dof[_channel]] + _spin);
+            \}
+        \}
+    \}
+>>
+
+base-write-mj_kdl(resources) ::= <<
+    {
+        mjData *_d = robot.mobile_base.data;
+        const mjModel *_m = robot.mobile_base.model;
+        for (int i = 0; i \< NUM_DRIVES * NUM_WHL_COORD; ++i) {
+            const int _act = state.wheel_ctrl[i];
+            double _tau = state.hub_sign[i] * state.trq[i];
+            if (_m->actuator_ctrllimited[_act]) {
+                _tau = std::clamp(_tau, _m->actuator_ctrlrange[_act * 2 + 0],
+                                        _m->actuator_ctrlrange[_act * 2 + 1]);
+            \}
+            _d->ctrl[_act] = std::isfinite(_tau) ? _tau : 0.0;
+        \}
+    \}
+>>
+
+app-main-base-setup-mj_kdl() ::= <<
+    // A bare Robot carrying the scene's model and data, so the platform steps through the same
+    // call a chain does: step(Robot*) is the one that knows whether a window is driving the tick.
+    mj_kdl::Robot mj_platform{};
+    mj_platform.model = mj_env.model;
+    mj_platform.data = mj_env.data;
+    robot.mobile_base.model = mj_env.model;
+    robot.mobile_base.data = mj_env.data;
 >>

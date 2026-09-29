@@ -53,47 +53,37 @@ def _chain() -> ChainBinding:
 
 def test_a_frame_that_is_no_segment_resolves_through_the_body_carrying_it() -> None:
     frame = Frame("wrist_ft_site", uri=SITE)
-    _place_on_chain(_chain(), frame, "solver", False, "mj_kdl")
+    _place_on_chain(_chain(), frame, "solver", False, {})
     assert frame.segment == 8
 
 
 def test_a_body_resolves_to_the_segment_standing_for_it() -> None:
     body = SimplicialComplex("wrist_ft_body", uri=BODY)
-    _place_on_chain(_chain(), body, "solver", False, "mj_kdl")
+    _place_on_chain(_chain(), body, "solver", False, {})
     assert body.segment == 8
 
 
 def test_a_frame_the_chain_never_reaches_fails_while_generating() -> None:
     with pytest.raises(ConstraintViolation, match="not on the chain"):
         _place_on_chain(
-            _chain(),
-            Frame("elbow", uri="https://example.test/other/elbow"),
-            "solver",
-            False,
-            "mj_kdl",
+            _chain(), Frame("elbow", uri="https://example.test/other/elbow"), "solver", False, {}
         )
 
 
 def test_an_offset_frame_a_world_read_asks_for_resolves_to_its_own_leaf_segment() -> None:
     # Plan 04 gives it a segment of its own, so the offset is composed in the tree, not at run time.
     frame = Frame("wrist_ft_offset", uri=OFFSET_SITE)
-    assert _place_on_chain(_chain(), frame, "solver", True, "mj_kdl") == OFFSET_SEGMENT
+    assert _place_on_chain(_chain(), frame, "solver", True, {}) == OFFSET_SEGMENT
 
 
 def test_the_same_offset_still_fails_where_the_read_stays_chain_relative() -> None:
     # `f_ext[index - 1]` and the velocity solver are indexed by the chain, which has no segment
     # standing for a frame that only hangs off one.
     with pytest.raises(ConstraintViolation, match="no segment of 'chain' stands for"):
-        _place_on_chain(
-            _chain(), Frame("wrist_ft_offset", uri=OFFSET_SITE), "solver", False, "mj_kdl"
-        )
+        _place_on_chain(_chain(), Frame("wrist_ft_offset", uri=OFFSET_SITE), "solver", False, {})
     with pytest.raises(ConstraintViolation, match="no segment of 'chain' stands for"):
         _place_on_chain(
-            _chain(),
-            SimplicialComplex("wrist_ft_offset", uri=OFFSET_SITE),
-            "solver",
-            False,
-            "mj_kdl",
+            _chain(), SimplicialComplex("wrist_ft_offset", uri=OFFSET_SITE), "solver", False, {}
         )
 
 
@@ -111,20 +101,18 @@ def test_which_reads_move_to_the_world_model_is_decided_once() -> None:
         unit=[],
         position=None,
     )
-    assert _placed_on_chain(pose, "mj_kdl") == (("of", True),)
-    # A twist states the point it is taken about, which stays on chain FK; the frame it asked
-    # to be seen in is a posed frame like any other, so that one reads the world model.
+    assert _placed_on_chain(pose) == (("of", True),)
+    # The world pass carries twists, so both ends of a twist are world reads.
     twist = _spatial(VelocityTwist, of=None, with_respect_to=None)
-    assert _placed_on_chain(twist, "mj_kdl") == (("of", False), ("as_seen_by", True))
+    assert _placed_on_chain(twist) == (("of", True), ("as_seen_by", True))
+    # f_ext is indexed chain-relative; the frame that segment stands at is a world read.
     force = CartesianForceSpecification("f", force=None, attached_to=None)
-    assert _placed_on_chain(force, "robif2b") == (("attached_to", False),)
+    assert _placed_on_chain(force) == (("attached_to", False), ("attached_to", True))
     constraint = AccelerationConstraint("c", subspace=Subspace.Linear, axis=None)
-    assert _placed_on_chain(constraint, "mj_kdl") == (("as_seen_by", True),)
-    # The simulator answers a wrench's transform frames from its own scene, by name; only the
-    # sensor frame is placed, because the load hanging off it is walked from the world model.
+    assert _placed_on_chain(constraint) == (("as_seen_by", True),)
+    # The tare's three frames all come off the world model, on every platform.
     wrench = _spatial(Wrench, sensor_frame=None)
-    assert _placed_on_chain(wrench, "mj_kdl") == (("sensor_frame", True),)
-    assert [attribute for attribute, _ in _placed_on_chain(wrench, "robif2b")] == [
+    assert [attribute for attribute, _ in _placed_on_chain(wrench)] == [
         "sensor_frame",
         "reference_point",
         "as_seen_by",
@@ -177,9 +165,25 @@ def test_a_joint_force_off_the_chain_fails_while_generating() -> None:
 
 
 def test_a_joint_the_chain_does_not_articulate_reads_as_no_index() -> None:
-    # A gripper mimic: only a simulated backend can answer for it, so it carries no chain index
+    # A gripper mimic: it is read through a world port instead, so it carries no chain index
     # rather than failing the whole model.
     solver = _solver("")
     solver.output = [JointPosition("gripper_pos", "g_left_driver_joint")]
     _index_chain_joints(solver)
     assert solver.output[0].joint_index is None
+    assert solver.output[0].on_chain is False
+
+
+def test_a_world_read_resolves_against_a_tree_the_chain_is_not_sliced_from() -> None:
+    # A body placed on a tree of its own -- a free object -- is a segment of the world model,
+    # so a pose of it resolves even though no chain reaches it.
+    frame = Frame("cube", uri="https://example.test/graph/cube")
+    index = {"https://example.test/graph/cube": "graph/cube"}
+    assert _place_on_chain(_chain(), frame, "solver", True, index) == "graph/cube"
+
+
+def test_a_frame_on_no_tree_at_all_fails_while_generating() -> None:
+    with pytest.raises(ConstraintViolation, match="absent from every tree"):
+        _place_on_chain(
+            _chain(), Frame("nowhere", uri="https://example.test/nowhere"), "s", True, {}
+        )

@@ -102,7 +102,8 @@ int main() {
     KDL::JntArray tau_free(nj);
     rnea.CartToJnt(q, qd, qdd, f_ext, tau_free);
 
-    // Exactly what `solver-assign-f-ext-RNE` emits.
+    // The frame and sign `solver-assign-f-ext-RNE` emits. The generated code takes that frame
+    // off the world pass; chain FK stands in for it here, which is the same pose.
     KDL::Frame f_ext_frame;
     fk_pos.JntToCart(q, f_ext_frame, kForcedSegment);
     f_ext[kForcedSegment - 1] -= f_ext_frame.M.Inverse() * wrench;

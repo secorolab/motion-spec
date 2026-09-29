@@ -48,19 +48,7 @@ struct kg3_gripper_state {
 
 robot-manipulator-struct-robif2b-KinovaGen3(solver) ::= <<
 struct manipulator_robot {
-    kinova_state *state = nullptr;
-    robif2b_kinova_gen3_nbx *robot = nullptr;
     KDL::Chain *chain = nullptr;
-    // The commanded gripper joint position [rad], as the model authored it. Which device that
-    // reaches, and in whose units, is settled at generation by the bound device's rule set.
-    double *gripper_cmd = nullptr;
-    // The measured gripper joint position [rad]: the mimic joint is not in the chain, so the
-    // bound gripper device reports it.
-    double *gripper_pos = nullptr;
-    // The gripper joint's measured rate, in whatever the bound device reports it in.
-    const double *gripper_vel = nullptr;
-    // The gripper motor's measured current, in whatever the bound device reports it in.
-    const double *gripper_cur = nullptr;
     // Where this chain's endpoints sit in the one world model. Per instance, though the struct
     // type is shared: two arms sliced from one tree end at different segments.
     int world_root = -1;
@@ -72,8 +60,30 @@ struct manipulator_robot {
 };
 >>
 
-world-joint-address-robif2b(solver, index) ::= <<
-&robot.<solver.id>.state->pos_msr[<index>]
+world-chain-port-address-robif2b(solver, index) ::= <<
+world_ports{.position = &kinova_<solver.runtime.id>_state.pos_msr[<index>], .velocity = &kinova_<solver.runtime.id>_state.vel_msr[<index>], .effort = &kinova_<solver.runtime.id>_state.eff_msr[<index>], .effort_cmd = &kinova_<solver.runtime.id>_state.eff_cmd[<index>]\}
+>>
+
+// A joint the chain does not articulate is the bound gripper's to report, in radians the device
+// update derives; the raw device units never leave that update.
+world-port-joint-robif2b(port)          ::= "&gripper_<port.owner_id>_pos_rad"
+world-port-joint-velocity-robif2b(port) ::= "&gripper_<port.owner_id>_vel_rads"
+world-port-joint-current-robif2b(port)  ::= "&gripper_<port.owner_id>_cur_a"
+world-port-aux-cmd-robif2b(port)        ::= "&gripper_<port.owner_id>_cmd"
+
+// The frames are stated in the chain root, and so is the gravity the model authored.
+wrench-gravity-robif2b(solver, chain_solver) ::= <<
+KDL::Vector(<if(chain_solver.gravity)><chain_solver.gravity; separator=", "><else>0.0, 0.0, 0.0<endif>)
+>>
+
+// The driver reports in the sensor's own frame; its thread fills the sample the loop reads.
+wrench-raw-robif2b(solver, out) ::= <<
+    const auto <out.id>_sample = robot.ft_<out.sensor_name>->read();
+    // The FT 300-S reports the effort applied on its tool side (manual 5.1, 9.1); the tare
+    // expects the simulator's sign, the reaction, so the real reading is negated here.
+    const KDL::Wrench raw_<out.id>(
+        KDL::Vector(-<out.id>_sample.value.force[0], -<out.id>_sample.value.force[1], -<out.id>_sample.value.force[2]),
+        KDL::Vector(-<out.id>_sample.value.moment[0], -<out.id>_sample.value.moment[1], -<out.id>_sample.value.moment[2]));
 >>
 
 robot-state-init-robif2b-KinovaGen3(solver) ::= <<
@@ -431,20 +441,6 @@ device-shutdown-robif2b-RobotiqFT300s(solver, device) ::= <<
     \}
 >>
 
-// Where the forwarding block leaves the commanded joint position for this chain's gripper.
-device-assign-impl ::= [
-    "KinovaGen3-2F85": "device-assign-robif2b-gripper-cmd",
-    "Robotiq2F85": "device-assign-robif2b-gripper-cmd",
-    default: "device-nothing"
-]
-
-device-assign-robif2b-gripper-cmd(solver, device) ::= <<
-        .gripper_cmd = &gripper_<solver.runtime.id>_cmd,
-        .gripper_pos = &gripper_<solver.runtime.id>_pos_rad,
-        .gripper_vel = &gripper_<solver.runtime.id>_vel_rads,
-        .gripper_cur = &gripper_<solver.runtime.id>_cur_a,
->>
-
 robot-chain-robif2b-KinovaGen3(solver) ::= <<
 <if(solver.runtime.owner)>    KDL::Chain chain_<solver.runtime.id>{};
     if (!scene_kdl::make_chain_<solver.chain.name>(world_tree_<solver.chain.tree>, &chain_<solver.runtime.id>)) {
@@ -456,10 +452,7 @@ robot-chain-robif2b-KinovaGen3(solver) ::= <<
 
 robot-assign-robif2b-KinovaGen3(solver) ::= <<
     robot.<solver.id> = manipulator_robot{
-        .state = &kinova_<solver.runtime.id>_state,
-        .robot = &kinova_<solver.runtime.id>,
         .chain = &chain_<solver.runtime.id>,
-<solver.devices:{device | <({<device-assign-impl.(device.kind)>})(solver, device)>}; separator="">
     };
 >>
 
@@ -481,7 +474,7 @@ app-chain-includes-robif2b(has_serial_chain, resources, ros, cameras) ::= <<
 <endif><endif>
 >>
 
-app-chain-setup-robif2b(serial_chain_solvers, scene, config_path, ros) ::= <<
+app-chain-setup-robif2b(serial_chain_solvers, scene, config_path, ros, world_ports) ::= <<
     const auto robot_config = motion_spec::config::load("<config_path>");
 <serial_chain_solvers:{solver |
 

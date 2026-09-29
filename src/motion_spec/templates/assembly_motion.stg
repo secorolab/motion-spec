@@ -87,7 +87,7 @@ chain-init-block(serial_chain_solvers, solvers, backend) ::= <<
 // FSM was dispatched, so a quantity the scene shares is fresh whether or not this motion runs.
 chain-prepare-block(serial_chain_solvers, solvers, backend) ::= <<
 <serial_chain_solvers:{solver |
-    <solver-sync-input(solver, backend, solvers.(solver.solver_id).joint_normalization)>}; separator="\n">
+    <solver-sync-input(solver, solvers.(solver.solver_id))>}; separator="\n">
 <serial_chain_solvers:{solver |
     <solvers.(solver.solver_id).state_output:{out | <solver-output(solver, solvers.(solver.solver_id), out, backend)>}; separator="\n\n">
 <solver.gripper_joint_outputs:{out |     <gripper-joint-output(solver, solvers.(solver.solver_id), out, backend)>}; separator="\n">
@@ -100,14 +100,20 @@ chain-prepare-block(serial_chain_solvers, solvers, backend) ::= <<
 world-state-block(observations, serial_chain_solvers, solvers, backend) ::= <<
 <app-chain-provider-update(backend, serial_chain_solvers)>
         robot.world->update(robot.control_cycle);
-<serial_chain_solvers:{solver |
-        // This chain's root is not the tree's, so every pose it reports is relative to that root.
-        robot.<solver.id>.world_to_root =
-            robot.world->pose(robot.<solver.id>.world_root, robot.control_cycle).Inverse();
-}; separator="\n">
+<serial_chain_solvers:{solver | <world-to-root(solver)>}; separator="">
 <observations:{obs |
         <solver-output(solvers.(obs.solver_id), solvers.(obs.solver_id), obs.out, backend)>
 }; separator="\n">
+>>
+
+// The chain root inverted once per runtime: every record on it stands on the same root, so the
+// rest copy that one frame rather than each inverting it again.
+world-to-root(solver) ::= <<
+<if(solver.runtime.owner)>        // This chain's root is not the tree's, so every pose it reports is relative to that root.
+        robot.<solver.id>.world_to_root =
+            robot.world->pose(robot.<solver.id>.world_root, robot.control_cycle).Inverse();
+<else>        robot.<solver.id>.world_to_root = robot.<solver.runtime.owner_id>.world_to_root;
+<endif>
 >>
 
 chain-run-block(serial_chain_solvers, solvers, backend) ::= <<
@@ -118,16 +124,15 @@ chain-stage-block(serial_chain_solvers, solvers, backend) ::= <<
 <serial_chain_solvers:{solver |     <solver-stage-output(solver, solvers.(solver.solver_id), backend)>}; separator="\n">
 >>
 
-chain-apply-block(serial_chain_solvers, backend) ::= <<
-<serial_chain_solvers:{solver |     <solver-apply-output(solver, backend)>}; separator="\n">
->>
-
 chain-gravity-block(serial_chain_solvers, solvers, backend) ::= <<
 <serial_chain_solvers:{solver | <solver-gravity-hold(solver, solvers.(solver.solver_id), backend)>}; separator="\n">
 >>
 
-command-forwarding(backend, motion) ::= <<
-<({command-forwarding-<backend>})(motion)>
+// A forwarded command exists only where a gripper joint is commanded, and generation rejects
+// that without an actuator bound -- so the port is wired by the time this runs.
+command-forwarding(motion) ::= <<
+<motion.forwarded_commands:{cmd | <if(cmd.target)>    *robot.aux_cmd_<cmd.world_slot> = shared.<cmd.control_signal.id>;
+<endif>}; separator="">
 >>
 
 // The window: it opens the first time the gate holds while the state is active, stays open for
@@ -167,52 +172,11 @@ perturbation-clear-block(perturbations) ::= <<
         shared.<p.active_id> = false;}; separator="\n">
 >>
 
-perturbation-write-block(backend, bodies) ::= <<
-<({perturbation-write-<backend>})(bodies)>
->>
-
-// A forwarded command exists only where a gripper joint is commanded, and generation rejects
-// that without a gripper bound -- so the target is wired by the time this runs.
-
-command-forwarding-robif2b(motion) ::= <<
-<motion.forwarded_commands:{cmd | <if(cmd.target)>    *robot.<cmd.robot_id>.gripper_cmd = shared.<cmd.control_signal.id>;
-<endif>}; separator="">
->>
-
-command-forwarding-mj_kdl(motion) ::= <<
-<motion.forwarded_commands:{cmd | <if(cmd.target)>    {
-        const mjModel *model = robot.<cmd.robot_id>.robot->model;
-        int actuator_id = mj_name2id(model, mjOBJ_ACTUATOR, "<cmd.target>");
-        const int joint_id = mj_name2id(model, mjOBJ_JOINT, "<cmd.target>");
-        for (int i = 0; actuator_id \< 0 && joint_id >= 0 && i \< model->nu; ++i) {
-            if (model->actuator_trntype[i] == mjTRN_JOINT
-                && model->actuator_trnid[2 * i] == joint_id) actuator_id = i;
-        \}
-        if (actuator_id >= 0) {
-            robot.<cmd.robot_id>.robot->data->ctrl[actuator_id] = shared.<cmd.control_signal.id>;
-        \}
-    \}
-<endif>}; separator="\n">
->>
-
 // One write per body, carrying the sum of everything pushing it: a closed window contributes a
-// zero rather than erasing a live push, and xfrc_applied persists across steps so the slots are
-// overwritten every tick rather than left alone.
-perturbation-write-mj_kdl(bodies) ::= <<
-<bodies:{b |         {
-            const mjModel *model = robot.<b.robot_id>.robot->model;
-            mjData *data = robot.<b.robot_id>.robot->data;
-            const int body_id = mj_name2id(model, mjOBJ_BODY, "<b.body>");
-            if (body_id >= 0) {
-                const KDL::Wrench applied = <b.members:{p|shared.<p.applied_id>}; separator=" + ">;
-                data->xfrc_applied[6 * body_id + 0] = applied.force.x();
-                data->xfrc_applied[6 * body_id + 1] = applied.force.y();
-                data->xfrc_applied[6 * body_id + 2] = applied.force.z();
-                data->xfrc_applied[6 * body_id + 3] = applied.torque.x();
-                data->xfrc_applied[6 * body_id + 4] = applied.torque.y();
-                data->xfrc_applied[6 * body_id + 5] = applied.torque.z();
-            \}
-        \}}; separator="\n">
+// zero rather than erasing a live push, and the port is written every tick rather than left
+// alone, since the platform holds an applied wrench until something clears it.
+perturbation-write-block(bodies) ::= <<
+<bodies:{b |         *robot.wrench_cmd_<b.slot> = <b.members:{p|shared.<p.applied_id>}; separator=" + ">;}; separator="\n">
 >>
 
 emit-relative-pose(rp) ::= <<

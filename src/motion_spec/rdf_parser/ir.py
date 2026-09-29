@@ -13,6 +13,7 @@ from motion_spec.rdf_parser import (
     communication,
     constraint_handler,
     coordination,
+    mobile_base,
     operations,
     quantities,
     resources,
@@ -63,8 +64,11 @@ def generate_ir(manifest_path) -> dict:
         for row in rows
     )
     robots = resources.build_robots(
-        model, schedule, setups, derivation, scene, backend, perceived_pose_ids
+        model, schedule, setups, derivation, backend, perceived_pose_ids
     )
+    # Every scene element the world model holds, by IRI: a world read resolves against all of
+    # them, not only the tree the reading solver's chain is sliced from.
+    world_index = resources.tree_segments(model, setups, world_trees)
     handlers, handler_steps = coordination.build_constraint_handlers(model, schedule, derivation)
     coordination.assign_event_indexes(handlers)
 
@@ -80,7 +84,9 @@ def generate_ir(manifest_path) -> dict:
     motions, fsm_meta = coordination.build_motions(
         model, handlers, robots, computation, derivation, fsm
     )
-    world_frames = resources.annotate_runtime(robots.serial_chains, motions, backend)
+    world_frames = resources.annotate_runtime(
+        robots.serial_chains, motions, backend, world_index, world_trees, robots.platform_force
+    )
     coordination.annotate_sensor_dependencies(motions, computation)
     resources.annotate_device_dependencies(robots.serial_chains, motions)
 
@@ -93,10 +99,8 @@ def generate_ir(manifest_path) -> dict:
     action_clients = communication.ros_action_clients(model)
     # A subscription places its detections through the world model, so it is built against the
     # same segment names the chains resolved against.
-    subscriptions = communication.ros_subscriptions(
-        model, resources.tree_segments(model, setups, world_trees)
-    )
-    standing = communication.ros_standing(model, data_structures, control_period_ns)
+    subscriptions = communication.ros_subscriptions(model, world_index)
+    standing = communication.ros_standing(model, data_structures, control_period_ns, world_index)
     clients_by_motion: dict[str, list] = {}
     for client in action_clients:
         clients_by_motion.setdefault(client["motion"], []).append(client)
@@ -109,6 +113,14 @@ def generate_ir(manifest_path) -> dict:
         closures,
         views,
         {out.id for solver in robots.serial_chains for out in solver.output}
+        # A platform solver's quantity is its published interface, as a chain's outputs are: the
+        # composition writes the twist every tick whether or not a constraint is judged on it.
+        | {
+            quantity.id
+            for solver in (*robots.platform_velocity, *robots.platform_force)
+            for quantity in (getattr(solver, "velocity", None), getattr(solver, "force", None))
+            if quantity is not None
+        }
         | perceived_pose_ids
         # A standing publish is the only reader of what it reports, and it reads it off the
         # blackboard: without this the quantity drops out and the message has nothing to carry.
@@ -154,6 +166,16 @@ def generate_ir(manifest_path) -> dict:
         shared_data.append(BlackboardValue(id=perturbation.applied_id, type="Wrench"))
         shared_data.append(BlackboardValue(id=perturbation.active_id, type="Bool", value=False))
     perturbation_bodies = _perturbations_by_body(run_perturbations)
+    ports = resources.world_ports(
+        model,
+        world_trees,
+        scene,
+        robots.serial_chains,
+        motions,
+        perturbation_bodies,
+        subscriptions,
+        backend,
+    )
 
     config_poses = resources.config_poses(model, platform_config)
     introspection = communication.build_introspection(
@@ -185,7 +207,9 @@ def generate_ir(manifest_path) -> dict:
             "config_poses": config_poses,
             "trace": resources.TRACE_DISABLED,
         },
-        "resources": _resources_section(robots, world_trees, world_frames, sampling),
+        "resources": _resources_section(
+            robots, world_trees, world_frames, sampling, ports, motions
+        ),
         # None, not []: the template tests presence, and ST4 takes an empty list as present.
         "composition": {"scene": scene, "sampling": sampling or None},
         "computation": _computation_section(
@@ -199,6 +223,15 @@ def generate_ir(manifest_path) -> dict:
             motions,
             resources.ros_joint_states(platform, platform_config, robots.serial_chains),
             resources.ros_clock(platform, platform_config),
+            resources.ros_tf(
+                model,
+                platform,
+                platform_config,
+                robots.serial_chains,
+                scene.cameras,
+                world_index,
+                ports,
+            ),
             action_clients,
             communication.action_server(model, fsm),
             subscriptions,
@@ -207,7 +240,7 @@ def generate_ir(manifest_path) -> dict:
     }
 
 
-def _resources_section(robots, world_trees, world_frames, sampling) -> dict:
+def _resources_section(robots, world_trees, world_frames, sampling, ports, motions=()) -> dict:
     """Every actuated resource the program commands, plus the by-kind cuts of it.
 
     An arm and a wheeled base are both actuated resources with kinematics, solvers and devices, so
@@ -223,9 +256,17 @@ def _resources_section(robots, world_trees, world_frames, sampling) -> dict:
     if serial_chains:
         by_kind["serial_chain"] = serial_chains
     if any(robot.kind == "mobile_base" for robot in every):
+        drives = mobile_base.platform_drives(world_trees)
         by_kind["mobile_base"] = {
             "velocity_solvers": robots.platform_velocity,
             "force_solvers": robots.platform_force,
+            # The platform's geometry as the scene tree states it, so the deployment config
+            # carries none of it and the backend only adds joint names and indices.
+            "drives": drives,
+            "num_drives": len(drives),
+            "wrench_by_motion": mobile_base.wrench_terms_by_motion(
+                motions, robots.platform_velocity, robots.platform_force
+            ),
         }
 
     # Every device and sensor kind the model binds, as a membership map: templates emit code for
@@ -239,6 +280,11 @@ def _resources_section(robots, world_trees, world_frames, sampling) -> dict:
     section = {
         "robots": every,
         "by_kind": by_kind,
+        # Whether the program drives anything at all, and whether a platform is the only thing it
+        # drives. ST4 can only test one attribute, so the two questions the loop asks -- "is
+        # there a scene to build" and "who steps it" -- are answered here rather than there.
+        "driven": bool(by_kind) or None,
+        "base_owns_runtime": ("mobile_base" in by_kind and not serial_chains) or None,
         "by_id": robots.by_id,
         "device_kinds": {kind: True for kind in device_kinds},
         # One entry per shared observation, not per solver that could answer it: several
@@ -262,6 +308,8 @@ def _resources_section(robots, world_trees, world_frames, sampling) -> dict:
         ]
     if world_frames:
         section["world_frames"] = world_frames
+    # Split by kind here, not in the templates: a template may iterate but not filter.
+    section["world_ports"] = {kind: rows for kind, rows in ports.items() if rows}
 
     return section
 
@@ -323,6 +371,7 @@ def _communication_section(
     motions,
     joint_states,
     clock=None,
+    tf=None,
     action_clients=(),
     server=None,
     subscriptions=(),
@@ -335,6 +384,7 @@ def _communication_section(
         not publishers
         and joint_states is None
         and clock is None
+        and tf is None
         and not action_clients
         and server is None
         and not subscriptions
@@ -354,6 +404,9 @@ def _communication_section(
     if clock is not None:
         ros["clock"] = clock
         packages.add("rosgraph_msgs")
+    if tf is not None:
+        ros["tf"] = tf
+        packages.update({"tf2_msgs", "geometry_msgs"})
     if action_clients:
         ros["action_clients"] = action_clients
         # Whatever the goal and the result reach into, not just the package the action lives in.

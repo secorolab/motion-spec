@@ -53,9 +53,11 @@ def test_a_chain_joint_measurement_generates_and_compiles(tmp_path: Path) -> Non
         )
         built = next(generation.glob(f"{patched.stem}/*"))
         emitted = (built / "generated" / "controller" / "main.cpp").read_text()
-        # The reading is taken from the robot, which is what the scope it renders into has.
-        assert "jnt_pos_msr" in emitted
+        # The reading is taken from the port table, which is what the scope it renders into has.
+        assert ".position" in emitted
         assert "normalize_joint_position" in emitted
+        # No name reaches the loop: every joint the model measures was resolved while generating.
+        assert "get_joint_position" not in emitted
 
         build = subprocess.run(
             ["motion-spec", "build", str(built)], capture_output=True, text=True, check=False

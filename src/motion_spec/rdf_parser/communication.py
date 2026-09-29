@@ -674,7 +674,7 @@ _PUBLISHER_KEYS = (
 )
 
 
-def ros_standing(model, data_structures, control_period_ns: int) -> list:
+def ros_standing(model, data_structures, control_period_ns: int, segment_by_iri: dict) -> list:
     """The topics published for the whole run, one per standing publish.
 
     A standing publish reports readings rather than a verdict, so it belongs to the run and keeps
@@ -745,9 +745,13 @@ def ros_standing(model, data_structures, control_period_ns: int) -> list:
                 f"'{model.id(node)}' reports {len(records)} quantities on '{type_name}', which "
                 "carries one; a message reporting many holds an array of them",
             )
-        entries = _standing_entries(model, pub_id, shape, records)
+        entries = _standing_entries(model, pub_id, shape, records, segment_by_iri)
         frames = (
-            {frame for _row, record in records if (frame := _stated_against(record))}
+            {
+                frame
+                for _row, record in records
+                if (frame := _stated_against(record, segment_by_iri, pub_id))
+            }
             if shape["frame_path"]
             else set()
         )
@@ -788,7 +792,7 @@ def ros_standing(model, data_structures, control_period_ns: int) -> list:
     return standing
 
 
-def _standing_entries(model, pub_id: str, shape: dict, records: list) -> list:
+def _standing_entries(model, pub_id: str, shape: dict, records: list, segment_by_iri: dict) -> list:
     """Where in the message each reported quantity is written.
 
     A message carrying one quantity has one entry writing straight into it. A message carrying an
@@ -818,9 +822,13 @@ def _standing_entries(model, pub_id: str, shape: dict, records: list) -> list:
                     **row,
                     "payload_path": f"{at}{entry['payload_path']}",
                     "frame_path": f"{at}{stated_in}" if stated_in else None,
-                    "frame_id": _stated_against(record) if stated_in else None,
+                    "frame_id": _stated_against(record, segment_by_iri, pub_id)
+                    if stated_in
+                    else None,
                     "id_path": f"{at}{entry['id_path']}",
-                    "id_value": _entry_subject(model, node, record, shape["carrier"]),
+                    "id_value": _entry_subject(
+                        model, node, record, shape["carrier"], segment_by_iri, pub_id
+                    ),
                     "auto_time": [f"{at}{path}" for path in entry["auto_time"]],
                 }
             )
@@ -829,18 +837,22 @@ def _standing_entries(model, pub_id: str, shape: dict, records: list) -> list:
     return rows
 
 
-def _entry_subject(model, node, record, carrier: str) -> str:
-    """What an entry says it is about: a transform names the frame its pose is of, anything
+def _entry_subject(model, node, record, carrier: str, segment_by_iri: dict, where: str) -> str:
+    """What an entry says it is about: a transform names the segment its pose is of, anything
     else the entity the model states."""
     if carrier == "Transform":
-        return record.of.id
+        return _segment_of(segment_by_iri, record.of.uri, where)
 
     return _reported_subject(model, node, record)
 
 
-def _stated_against(record) -> str | None:
-    """The frame a reported quantity is stated against, when it is stated against one."""
-    return getattr(getattr(record, "as_seen_by", None), "id", None)
+def _stated_against(record, segment_by_iri: dict, where: str) -> str | None:
+    """The segment a reported quantity is stated against, when it is stated against one."""
+    frame = getattr(record, "as_seen_by", None)
+    if frame is None:
+        return None
+
+    return _segment_of(segment_by_iri, frame.uri, where)
 
 
 def _reported_subject(model, node, record) -> str:
@@ -1294,6 +1306,8 @@ def build_introspection(
         computation.views,
         subscriptions,
         config_poses,
+        robots.platform_velocity,
+        robots.platform_force,
     )
 
     # The registry grew while folding the samples in: rebuild the table and backfill every row

@@ -1217,15 +1217,25 @@ def _handler_chain_solvers(handler, serial_chains, solver_ids) -> list:
     return result
 
 
-def _cartesian_force_nodes(model, chain_solvers, handler, computation) -> list:
+def _cartesian_force_nodes(model, chain_solvers, handler, computation, handler_node=None) -> list:
     """The authored Cartesian forces a handler's own controllers ultimately drive."""
     graph = model.graph
     outputs = {controller.control_signal.id for controller in handler.controllers}
     found = []
-    for solver in chain_solvers:
-        driver_node = model.node_by_id.get(solver.motion_driver.id)
-        if driver_node is None:
-            continue
+    driver_nodes = [
+        node
+        for node in (model.node_by_id.get(solver.motion_driver.id) for solver in chain_solvers)
+        if node is not None
+    ]
+    # A force distribution's drivers hang off the solver, not off a chain.
+    if handler_node is not None:
+        driver_nodes.extend(
+            driver
+            for solver_node in graph.objects(handler_node, CSTR_HDL_EXT["runs-solver"])
+            if (solver_node, RDF.type, SLV["ForceDistributionSolver"]) in graph
+            for driver in graph[solver_node : SLV["motion-drivers"]]
+        )
+    for driver_node in driver_nodes:
         for node in graph[driver_node : SLV["cartesian-force"]]:
             force = graph.value(node, SLV["force"])
             if force is None:
@@ -1353,7 +1363,9 @@ def _motion_schedules(
     _append_new(active, _alignment_chain_steps(model, phase))
     _append_new(active, _pose_command_steps(model, scope, active_plans))
     _append_new(active, [model.id(node) for node in leading])
-    force_nodes = _cartesian_force_nodes(model, chain_solvers, handler, computation)
+    force_nodes = _cartesian_force_nodes(
+        model, chain_solvers, handler, computation, phase.handler_node
+    )
     # Claimed here so the walk still resolves shared prerequisites in this position, but emitted
     # after the control laws run: the wrench reads the control signal they write this tick.
     commanded_force = scope.of(force_nodes, OPS_GENERIC + OPS_SOLVER + OPS_HANDLER)
@@ -1569,9 +1581,6 @@ def _motion_unit(
         serial_chain_solvers=chain_solvers,
         relative_poses=quantities.relative_poses_for_motion(
             all_evaluators, computation.views, chain_solvers
-        ),
-        scene_relative_poses=quantities.scene_relative_poses_for_motion(
-            computation.views, chain_solvers, solvers_by_id, all_evaluators
         ),
         pose_axis_error_groups=groups,
         while_pre_schedule=schedules.while_pre,

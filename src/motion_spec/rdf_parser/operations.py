@@ -323,6 +323,22 @@ def _materialize_linear_distance_operations(model) -> None:
         graph.add((magnitude, GEOM_OP.pose, relative_pose))
         graph.add((magnitude, GEOM_OP.distance, distance))
 
+        # A direction taken off this distance means the line it measures, which is this pose.
+        # The DSL points such an op at the distance itself or at the pose carrier the coordinate
+        # samples -- a node it never emits, and which sits under the motion, not beside the
+        # coordinate, so it is matched on the name the two share.
+        local = str(distance).rsplit("/", 1)[-1]
+        carrier_local = local[: -len(".distance")] if local.endswith(".distance") else None
+        for direction_op, target in [
+            (subject, obj)
+            for subject, obj in graph.subject_objects(GEOM_OP.pose)
+            if (subject, RDF.type, GEOM_OP.PoseToDirection) in graph
+        ]:
+            target_local = str(target).rsplit("/", 1)[-1]
+            if target_local == local or (carrier_local and target_local == carrier_local):
+                graph.remove((direction_op, GEOM_OP.pose, target))
+                graph.add((direction_op, GEOM_OP.pose, relative_pose))
+
 
 def _materialize_pose_reference_transforms(model) -> None:
     """Re-express a full-pose equality reference into the constrained pose's frame.

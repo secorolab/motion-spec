@@ -704,10 +704,25 @@ solver-assign-f-ext-modular(solver, chain_solver, force) ::= <<
 <({solver-assign-f-ext-<chain_solver.algorithm_name>})(solver, chain_solver, force)>
 >>
 
+// From the wrench's own as-seen-by frame and reference point to root orientation at the segment.
+f-ext-on-segment(solver, chain_solver, force) ::= <<
+    const KDL::Frame f_ext_seen_<force.force.id> =
+        <world-pose(solver, {robot.world_<chain_solver.runtime.owner_id>_<force.force.as_seen_by.id>})>;
+    const KDL::Frame f_ext_ref_<force.force.id> =
+        <world-pose(solver, {robot.world_<chain_solver.runtime.owner_id>_<force.force.reference_point.id>})>;
+    const KDL::Frame f_ext_frame_<force.force.id> =
+        <world-pose(solver, {robot.world_<chain_solver.runtime.owner_id>_<force.attached_to.id>})>;
+    const KDL::Wrench f_ext_root_<force.force.id> = (f_ext_seen_<force.force.id>.M * shared.<force.force.id>)
+        .RefPoint(f_ext_frame_<force.force.id>.p - f_ext_ref_<force.force.id>.p);
+>>
+
 // Vereshchagin rotates f_ext onto the segment itself and enters it as a bias force of the sign
 // the model states, so the wrench goes in as authored.
 solver-assign-f-ext-ACHD(solver, chain_solver, force) ::= <<
-state.<solver.id>.f_ext[<force.attached_to.segment> - 1] += shared.<force.force.id>;
+{
+<f-ext-on-segment(solver, chain_solver, force)>
+    state.<solver.id>.f_ext[<force.attached_to.segment> - 1] += f_ext_root_<force.force.id>;
+}
 >>
 
 // RNEA does neither: it reads f_ext[i] in segment i's own frame, and enters it as `-J_i^T f_ext`
@@ -715,12 +730,9 @@ state.<solver.id>.f_ext[<force.attached_to.segment> - 1] += shared.<force.force.
 // what turns that into the force the arm generates there.
 solver-assign-f-ext-RNE(solver, chain_solver, force) ::= <<
 {
-    // Where that segment stands this cycle comes off the one world pass, composed back onto this
-    // chain's root -- the frame the authored wrench is stated in.
-    const KDL::Frame f_ext_frame_<force.force.id> =
-        <world-pose(solver, {robot.world_<chain_solver.runtime.owner_id>_<force.attached_to.id>})>;
+<f-ext-on-segment(solver, chain_solver, force)>
     state.<solver.id>.f_ext[<force.attached_to.segment> - 1] -=
-        f_ext_frame_<force.force.id>.M.Inverse() * shared.<force.force.id>;
+        f_ext_frame_<force.force.id>.M.Inverse() * f_ext_root_<force.force.id>;
 }
 >>
 

@@ -3,6 +3,39 @@
 
 import "backend_robot.stg"
 import "backend_robif2b_io.stg"
+
+robot-driver-include-robif2b(solver, model_name, resources) ::= <<
+<({robot-driver-include-robif2b-<solver.hardware.model>})(solver, model_name, resources)>
+>>
+robot-num-joints-def-robif2b(solver) ::= <<
+<({robot-num-joints-def-robif2b-<solver.hardware.model>})(solver)>
+>>
+robot-state-struct-robif2b(solver) ::= <<
+<({robot-state-struct-robif2b-<solver.hardware.model>})(solver)>
+>>
+robot-manipulator-struct-robif2b(solver) ::= <<
+<({robot-manipulator-struct-robif2b-<solver.hardware.model>})(solver)>
+>>
+robot-state-init-robif2b(solver) ::= <<
+<({robot-state-init-robif2b-<solver.hardware.model>})(solver)>
+>>
+robot-chain-robif2b(solver) ::= <<
+<({robot-chain-robif2b-<solver.hardware.model>})(solver)>
+>>
+robot-assign-robif2b(solver) ::= <<
+<({robot-assign-robif2b-<solver.hardware.model>})(solver)>
+>>
+robot-configure-robif2b(solver) ::= <<
+<({robot-configure-robif2b-<solver.hardware.model>})(solver)>
+>>
+robot-shutdown-robif2b(solver) ::= <<
+<({robot-shutdown-robif2b-<solver.hardware.model>})(solver)>
+>>
+
+robot-num-joints-def-robif2b-KinovaGen3(solver) ::= <<
+inline constexpr int KINOVA_NUM_JOINTS = 7;
+>>
+
 // The robotiq driver headers ride in device_io.hpp, which includes them per bound device.
 robot-driver-include-robif2b-KinovaGen3(solver, model_name, resources) ::= <<
 #include "headers/<model_name>.kdl.hpp"

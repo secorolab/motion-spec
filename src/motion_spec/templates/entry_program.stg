@@ -549,7 +549,7 @@ shared_state_header(configuration, resources, computation, coordination, communi
 <({<mobile-base-driver-include-impl.(configuration.backend)>})()>
 <endif>
 
-<if(resources.by_kind.serial_chain)><robot-num-joints-def(first(resources.by_kind.serial_chain))><endif>
+<if(resources.by_kind.serial_chain)><robot-num-joints-def(first(resources.by_kind.serial_chain), configuration.backend)><endif>
 
 <if(resources.by_kind.mobile_base)>
 <({<mobile-base-robot-struct-impl.(configuration.backend)>})()>

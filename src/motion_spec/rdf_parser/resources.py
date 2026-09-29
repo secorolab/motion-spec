@@ -985,10 +985,17 @@ def _place_solver_on_chain(solver, world_index: dict, root_by_segment: dict) -> 
         ),
         *(force for driver in solver.motion_drivers for force in driver.cartesian_force),
     ]
+    placements = [(carrier, _placed_on_chain(carrier)) for carrier in carriers]
+    # A commanded wrench is moved onto its segment from its own frame and point.
+    placements += [
+        (force.force, (("reference_point", True), ("as_seen_by", True)))
+        for driver in solver.motion_drivers
+        for force in driver.cartesian_force
+    ]
     segment_by_frame: dict[str, str] = {}
     off_branch: set[str] = set()
-    for carrier in carriers:
-        for attribute, world_fk in _placed_on_chain(carrier):
+    for carrier, reads in placements:
+        for attribute, world_fk in reads:
             item = getattr(carrier, attribute, None)
             segment = _place_on_chain(solver.chain, item, solver.id, world_fk, world_index)
             if segment is None:
@@ -1323,7 +1330,7 @@ def build_robots(
                 "motion-spec code generator does not implement yet. Use velocity-composition or "
                 "force-distribution instead.",
             )
-    _validate_solvers(serial_chains)
+    _validate_solvers(serial_chains, backend)
 
     return Robots(serial_chains, platform_velocity, platform_force, steps)
 
@@ -1412,16 +1419,18 @@ def _solver_with_input_and_output(model, node, setup: _ChainSetup) -> SolverWith
     return solver
 
 
-def _validate_solvers(serial_chain_solvers) -> None:
-    """Reject robot models no backend has a driver for."""
+def _validate_solvers(serial_chain_solvers, backend: str) -> None:
+    """Reject robot models the hardware backend has no driver for."""
+    if backend != "robif2b":
+        return
     unsupported = {
-        solver.hardware.model
+        solver.hardware.model or "(unrecognised)"
         for solver in serial_chain_solvers
-        if solver.hardware.model and solver.hardware.model not in SUPPORTED_ROBOT_MODELS
+        if solver.hardware.model not in SUPPORTED_ROBOT_MODELS
     }
     if unsupported:
         raise RuntimeError(
-            f"Unsupported robot model(s): {', '.join(sorted(unsupported))}. "
+            f"Unsupported robot model(s) for robif2b: {', '.join(sorted(unsupported))}. "
             f"Supported: {', '.join(sorted(SUPPORTED_ROBOT_MODELS))}"
         )
 

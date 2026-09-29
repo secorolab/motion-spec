@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: MPL-2.0
-// mj_kdl backend tool: MuJoCo+KDL simulation robot impl (KinovaGen3) and CMake generation.
+// mj_kdl backend tool: MuJoCo+KDL simulation robot impl and CMake generation.
 
 import "backend_robot.stg"
-robot-driver-include-mj_kdl-KinovaGen3(solver, model_name, resources) ::= <<
+robot-driver-include-mj_kdl(solver, model_name, resources) ::= <<
 #include \<mj_kdl_wrapper/mj_kdl_wrapper.hpp\>
 #include "headers/<model_name>.kdl.hpp"
 >>
 
-robot-state-struct-mj_kdl-KinovaGen3(solver) ::= <<
+robot-num-joints-def-mj_kdl(solver) ::= <<
 >>
 
-robot-manipulator-struct-mj_kdl-KinovaGen3(solver) ::= <<
+robot-state-struct-mj_kdl(solver) ::= <<
+>>
+
+robot-manipulator-struct-mj_kdl(solver) ::= <<
 struct manipulator_robot {
     mj_kdl::Robot *robot = nullptr;
     KDL::Chain *chain = nullptr;
@@ -98,14 +101,14 @@ mj-sensor-member-ForceTorque(solver, sensor) ::= <<
     KDL::RigidBodyInertia ft_<sensor.id>_load = KDL::RigidBodyInertia::Zero();
 >>
 
-robot-state-init-mj_kdl-KinovaGen3(solver) ::= <<
+robot-state-init-mj_kdl(solver) ::= <<
 >>
 
 mj-sensor-ForceTorque(solver, sensor) ::= <<
     mj_tool_<solver.runtime.id>.ft_sensors.push_back(mj_kdl::ForceTorqueSensorSpec{ .name = "<sensor.id>", .frame_site = "<sensor.frame>" \});
 >>
 
-robot-init-mj_kdl-KinovaGen3(solver) ::= <<
+robot-init-mj_kdl(solver) ::= <<
 <if(solver.runtime.owner)>    mj_kdl::Robot mj_<solver.runtime.id>{};
 <if(solver.hardware.tool_body)>    mj_kdl::ToolFrameSpec mj_tool_<solver.runtime.id>{};
 <solver.sensors:{s |<({mj-sensor-<s.type>})(solver, s)>
@@ -133,12 +136,12 @@ robot-init-mj_kdl-KinovaGen3(solver) ::= <<
 <endif>
 >>
 
-robot-chain-mj_kdl-KinovaGen3(solver) ::= <<
+robot-chain-mj_kdl(solver) ::= <<
 <if(solver.runtime.owner)>    KDL::Chain *chain_<solver.runtime.id> = &mj_<solver.runtime.id>.chain;
 <endif>
 >>
 
-robot-assign-mj_kdl-KinovaGen3(solver) ::= <<
+robot-assign-mj_kdl(solver) ::= <<
     robot.<solver.id> = manipulator_robot{
         .robot = &mj_<solver.runtime.id>,
         .chain = chain_<solver.runtime.id>,
@@ -154,10 +157,10 @@ mj-sensor-config-ForceTorque(solver, sensor) ::= <<
     robot.ft_<sensor.id>_bias_max_drift = motion_spec::config::bias_max_drift(robot_config, "<sensor.config_key>");
 >>
 
-robot-configure-mj_kdl-KinovaGen3(solver) ::= <<
+robot-configure-mj_kdl(solver) ::= <<
 >>
 
-robot-shutdown-mj_kdl-KinovaGen3(solver) ::= <<
+robot-shutdown-mj_kdl(solver) ::= <<
 <if(solver.runtime.owner)>    mj_kdl::cleanup(&mj_<solver.runtime.id>);
 <endif>
 >>

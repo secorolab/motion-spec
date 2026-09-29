@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 // Backend-neutral robot driver dispatch (include/state/init/chain/shutdown).
+// A backend that drives real hardware dispatches on to the robot model itself.
 
 
 robot-driver-include(solver, backend, model_name, resources) ::= <<
-<({robot-driver-include-<backend>-<solver.hardware.model>})(solver, model_name, resources)>
+<({robot-driver-include-<backend>})(solver, model_name, resources)>
 >>
 
 solver-rnea-include(backend) ::= <<
@@ -24,43 +25,40 @@ solver-rnea-include-robif2b() ::= <<
 #include \<kdl/chainjnttojacdotsolver.hpp\>
 >>
 
-robot-num-joints-def(solver) ::= <<
-<({robot-num-joints-def-<solver.hardware.model>})(solver)>
->>
-robot-num-joints-def-KinovaGen3(solver) ::= <<
-inline constexpr int KINOVA_NUM_JOINTS = 7;
+robot-num-joints-def(solver, backend) ::= <<
+<({robot-num-joints-def-<backend>})(solver)>
 >>
 
 robot-state-struct(solver, backend) ::= <<
-<({robot-state-struct-<backend>-<solver.hardware.model>})(solver)>
+<({robot-state-struct-<backend>})(solver)>
 >>
 
 robot-manipulator-struct(solver, backend) ::= <<
-<({robot-manipulator-struct-<backend>-<solver.hardware.model>})(solver)>
+<({robot-manipulator-struct-<backend>})(solver)>
 >>
 
 robot-state-init(solver, backend) ::= <<
-<({robot-state-init-<backend>-<solver.hardware.model>})(solver)>
+<({robot-state-init-<backend>})(solver)>
 >>
 
 robot-init(solver, backend) ::= <<
-<({robot-init-<backend>-<solver.hardware.model>})(solver)>
+<({robot-init-<backend>})(solver)>
 >>
 
 robot-chain(solver, backend) ::= <<
-<({robot-chain-<backend>-<solver.hardware.model>})(solver)>
+<({robot-chain-<backend>})(solver)>
 >>
 
 robot-assign(solver, backend) ::= <<
-<({robot-assign-<backend>-<solver.hardware.model>})(solver)>
+<({robot-assign-<backend>})(solver)>
 >>
 
 robot-configure(solver, backend) ::= <<
-<({robot-configure-<backend>-<solver.hardware.model>})(solver)>
+<({robot-configure-<backend>})(solver)>
 >>
 
 robot-shutdown(solver, backend) ::= <<
-<({robot-shutdown-<backend>-<solver.hardware.model>})(solver)>
+<({robot-shutdown-<backend>})(solver)>
 >>
 
 // Where this backend already keeps the chain's nth joint. The port table binds those addresses

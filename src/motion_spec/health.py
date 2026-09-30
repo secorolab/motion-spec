@@ -19,7 +19,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from motion_spec.setup import BUILD_TYPE, COMPONENTS_BY_NAME, MJ_KDL_REF
+from motion_spec.setup import BUILD_TYPE
 
 PROFILE_IMPORTS = {
     # motion_spec_dsl and scene_dsl are imported at module scope by the generation pipeline:
@@ -49,29 +49,14 @@ ROS_BUILD_PACKAGES = ("rclcpp", "realtime_tools", "action_msgs", "rclcpp_action"
 
 
 def mujoco_build_packages() -> tuple[tuple[str, str], ...]:
-    """`(package, version)` for the MuJoCo target, from the manifest this workspace uses.
+    """`(package, version)` for the MuJoCo target, as motion_spec.repos pins it.
 
     The generated CMakeLists asks for that version, so a check ignoring it passes on an
-    install the build rejects. Read per call: `[setup] repos` can put a different pin in
-    force, and a value frozen at import would answer for the shipped one instead.
+    install the build rejects.
     """
-    from motion_spec.setup import manifest_in_force
+    from motion_spec.setup import shipped_pin
 
-    declared = _configured_repos()
-    pinned = manifest_in_force(declared).get("mj_kdl_wrapper")
-    return (("mj_kdl_wrapper", (pinned.version if pinned else MJ_KDL_REF).lstrip("v")),)
-
-
-def _configured_repos() -> Path | None:
-    """The manifest `[setup] repos` names, if a workspace config names one."""
-    from motion_spec.config import settings
-
-    try:
-        configured, _ = settings()
-    except ValueError:
-        return None
-    declared = configured.get("setup", {}).get("repos")
-    return Path(declared) if declared else None
+    return (("mj_kdl_wrapper", shipped_pin("mj_kdl_wrapper").version.lstrip("v")),)
 
 
 # Reading a ROS message's shape is what turns a declared type into fields, headers and packages.
@@ -114,7 +99,6 @@ APT_REMEDY = "apt install "
 # instruction, so every dependency this checks names its own source -- an apt package, a
 # workspace package, or the flag whose absence left it unbuilt.
 _REMEDIES = {
-    "stst": "motion-spec setup stst",
     "cmake": "apt install cmake",
     "c++": "apt install build-essential",
     "Eigen3": "apt install libeigen3-dev",
@@ -139,7 +123,22 @@ _REMEDIES = {
     "ament_package": "source /opt/ros/$ROS_DISTRO/setup.bash",
     "yaml": "uv venv --python /usr/bin/python3 --system-site-packages <venv>",
 }
-# Not installed by `setup`: only a model that binds them needs them.
+# A dependency this checks, and the manifest entry `motion-spec setup` provides it from.
+SETUP_PROVIDES = {
+    "rdf_utils": "rdf-utils",
+    "rec": "rec",
+    "motion_spec_dsl": "motion-spec-dsl",
+    "coord_dsl": "coord-dsl",
+    "scene_dsl": "scene-dsl",
+    "stst": "STSTv4",
+    "coord2b": "coord2b",
+    "orocos_kdl": "orocos_kinematics_dynamics",
+    "mj_kdl_wrapper": "mj_kdl_wrapper",
+    "robif2b": "robif2b",
+    "serial": "serial",
+    "robotiq_driver_noros": "robotiq_driver_noros",
+}
+# In motion_spec.real.repos: only a model that binds them needs them.
 _DEVICE_PACKAGES = ("robif2b", "serial", "robotiq_driver_noros")
 # robif2b builds a device wrapper only when told to. Missing here means the flag was off, not
 # that the package is absent, so the fix is a rebuild rather than a checkout.
@@ -229,8 +228,9 @@ def _remedy(dependency: str, env: dict[str, str] | None = None) -> str:
     if dependency in _REMEDIES:
         # `$ROS_DISTRO` is only an instruction when a shell already set it.
         return _REMEDIES[dependency].replace("$ROS_DISTRO", _ros_distro(env) or "$ROS_DISTRO")
-    if dependency in COMPONENTS_BY_NAME:
-        return f"motion-spec setup {dependency}"
+    if dependency in SETUP_PROVIDES:
+        real = "--real " if dependency in _DEVICE_PACKAGES else ""
+        return f"motion-spec setup {real}{SETUP_PROVIDES[dependency]}"
 
     return f"install {dependency} and expose its prefix through CMAKE_PREFIX_PATH"
 
@@ -251,22 +251,31 @@ def _device_remedy(cmake_target: str) -> str:
     if flag is None:
         return _remedy(cmake_target.partition("::")[0])
 
-    return f"motion-spec setup robif2b --force --cmake-arg -D{flag}=ON"
+    return f'add "-D{flag}=ON" to robif2b in colcon.meta, then motion-spec setup --real --force robif2b'
 
 
 def _by_hand(dependency: str) -> str:
     """The same install without motion-spec, for a reader who would rather run it themselves."""
     flag = _ROBIF2B_DEVICE_FLAGS.get(dependency)
     if flag:
-        return _cmake_build("robif2b", "ENABLE_INSTALL_TARGETS=ON", f"{flag}=ON")
+        return _cmake_build("robif2b", *_installed_options("robif2b"), f"{flag}=ON")
     name = dependency.partition("::")[0]
-    if name in COMPONENTS_BY_NAME:
+    if name in SETUP_PROVIDES:
         return _cmake_build(name, *_installed_options(name))
     return ""
 
 
-def _installed_options(dependency: str) -> tuple[str, ...]:
-    return tuple(option.lstrip("-D") for option in COMPONENTS_BY_NAME[dependency].options)
+def _installed_options(package: str) -> tuple[str, ...]:
+    """PACKAGE's cmake arguments from the workspace colcon.meta, else the shipped one."""
+    from motion_spec.setup import COLCON_META, cmake_arguments, shipped, workspace
+
+    try:
+        meta = workspace() / COLCON_META
+    except RuntimeError:
+        meta = shipped(COLCON_META)
+    if not meta.is_file():
+        meta = shipped(COLCON_META)
+    return tuple(option.removeprefix("-D") for option in cmake_arguments(meta, package))
 
 
 @dataclass(frozen=True)
@@ -298,17 +307,13 @@ DETAILS: dict[str, dict[str, str]] = {
         "source": "https://github.com/RDFLib/rdflib",
     },
     "rdf_utils": {
-        "why": "shared RDF loaders, resolvers and vocabularies every secorolab tool uses",
-        "source": "https://github.com/minhnh/rdf-utils",
+        "why": "shared RDF loaders, resolvers and vocabularies every secorolab tool uses"
     },
     "pyshacl": {
         "why": "validates a generated model graph against the published SHACL shapes",
         "source": "https://github.com/RDFLib/pySHACL",
     },
-    "rec": {
-        "why": "the archive contract: what a recorded run keeps and how it is read back",
-        "source": "https://github.com/secorolab/rec",
-    },
+    "rec": {"why": "the archive contract: what a recorded run keeps and how it is read back"},
     "google.protobuf": {
         "why": "decodes the frame log every run writes",
         "source": "https://github.com/protocolbuffers/protobuf",
@@ -334,16 +339,11 @@ DETAILS: dict[str, dict[str, str]] = {
         "source": "https://github.com/textX/textX",
     },
     "motion_spec_dsl": {
-        "why": "compiles .robmot models into the RDF graphs every later stage reads",
-        "source": "https://github.com/secorolab/motion-spec-dsl",
+        "why": "compiles .robmot models into the RDF graphs every later stage reads"
     },
-    "coord_dsl": {
-        "why": "compiles .fsm coordination models into the FSM the runtime dispatches",
-        "source": "https://github.com/secorolab/coord-dsl",
-    },
+    "coord_dsl": {"why": "compiles .fsm coordination models into the FSM the runtime dispatches"},
     "scene_dsl": {
-        "why": "compiles .scenex/.ktree scenes into the kinematic tree and simulator assets",
-        "source": "https://github.com/secorolab/scene-dsl",
+        "why": "compiles .scenex/.ktree scenes into the kinematic tree and simulator assets"
     },
     "rosidl_runtime_py": {
         "why": "reads a ROS message's shape, turning declared types into fields and headers",
@@ -357,20 +357,14 @@ DETAILS: dict[str, dict[str, str]] = {
         "why": "rosidl_runtime_py reads message shapes through it; apt supplies it, not ROS",
         "source": "https://pyyaml.org",
     },
-    "stst": {
-        "why": "renders the generated C++ from the packaged StringTemplate groups",
-        "source": "https://github.com/jsnyders/STSTv4",
-    },
+    "stst": {"why": "renders the generated C++ from the packaged StringTemplate groups"},
     "cmake": {"why": "configures every generated controller build", "source": "https://cmake.org"},
     "c++": {"why": "compiles the generated controller", "source": "https://gcc.gnu.org"},
     "Protobuf": {
         "why": "the generated runtime links it to write the frame log",
         "source": "https://github.com/protocolbuffers/protobuf",
     },
-    "coord2b": {
-        "why": "the FSM event loop the generated controller links and dispatches through",
-        "source": "https://github.com/secorolab/coord2b",
-    },
+    "coord2b": {"why": "the FSM event loop the generated controller links and dispatches through"},
     "Eigen3": {
         "why": "the linear algebra under KDL's kinematics",
         "source": "https://gitlab.com/libeigen/eigen",
@@ -380,8 +374,7 @@ DETAILS: dict[str, dict[str, str]] = {
         "source": "https://github.com/marzer/tomlplusplus",
     },
     "orocos_kdl": {
-        "why": "chains, solvers and frames: the kinematics the generated control math runs on",
-        "source": "https://github.com/orocos/orocos_kinematics_dynamics",
+        "why": "chains, solvers and frames: the kinematics the generated control math runs on"
     },
     "glfw3": {
         "why": "the window and input layer of mj_kdl_wrapper's MuJoCo viewer",
@@ -400,8 +393,7 @@ DETAILS: dict[str, dict[str, str]] = {
         "source": "https://ffmpeg.org",
     },
     "mj_kdl_wrapper": {
-        "why": "the MuJoCo simulation the generated controller drives, and its camera publisher",
-        "source": "https://github.com/vamsikalagaturu/mj_kdl_wrapper",
+        "why": "the MuJoCo simulation the generated controller drives, and its camera publisher"
     },
     "rclcpp": {
         "why": "the ROS node a model with a ros block publishes and serves through",
@@ -423,10 +415,7 @@ DETAILS: dict[str, dict[str, str]] = {
         "why": "reads a ROS message's shape, turning declared types into fields and headers",
         "source": "https://github.com/ros2/rosidl",
     },
-    "robif2b": {
-        "why": "the real-robot hardware drivers the robif2b backend generates against",
-        "source": "https://github.com/secorolab/robif2b",
-    },
+    "robif2b": {"why": "the real-robot hardware drivers the robif2b backend generates against"},
     "urdfdom": {
         "why": "parses the robot's URDF for the real-platform chain",
         "source": "https://github.com/ros/urdfdom",
@@ -435,15 +424,23 @@ DETAILS: dict[str, dict[str, str]] = {
         "why": "parses the robot's URDF for the real-platform chain",
         "source": "https://github.com/ros/urdfdom_headers",
     },
-    "serial": {
-        "why": "the serial line the Robotiq devices are driven over",
-        "source": "https://github.com/wjwwood/serial",
-    },
+    "serial": {"why": "the serial line the Robotiq devices are driven over"},
     "robotiq_driver_noros": {
-        "why": "drives the Robotiq gripper and force-torque sensor on a real platform",
-        "source": "https://github.com/secorolab/robotiq_driver_noros",
+        "why": "drives the Robotiq gripper and force-torque sensor on a real platform"
     },
 }
+
+
+def _manifest_sources() -> None:
+    """Fill in where each dependency `setup` provides comes from, as the manifests pin it."""
+    from motion_spec.setup import manifest_files, manifest_in_force
+
+    by_name = {r.name: r for r in manifest_in_force(manifest_files(real=True))}
+    for dependency, name in SETUP_PROVIDES.items():
+        DETAILS[dependency]["source"] = by_name[name].url.removesuffix(".git")
+
+
+_manifest_sources()
 
 
 def _enrich(check: HealthCheck) -> HealthCheck:

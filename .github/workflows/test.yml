@@ -16,25 +16,22 @@ jobs:
         with:
           python-version: "3.12"
 
-      # Workspace siblings, none on PyPI. The DSL packages are what parse a .robmot,
-      # and most test modules import one, so leaving them out fails collection rather
-      # than a test. pyshacl/protobuf cover the validation/introspection extras.
-      - name: Install workspace siblings
-        run: |
-          pip install pytest pyshacl protobuf click textx PyLD numpy scipy jinja2 pillow rdflib
-          pip install \
-            "git+https://github.com/minhnh/rdf-utils.git@main" \
-            "git+https://github.com/secorolab/rec.git@dev"
-          # --no-deps: these three depend on each other and on unpublished siblings, so a
-          # resolver run reaches PyPI for names that are not there. Their real imports are
-          # installed above.
-          pip install --no-deps \
-            "git+https://github.com/secorolab/scene-dsl.git@main" \
-            "git+https://github.com/secorolab/coord-dsl.git@main" \
-            "git+https://github.com/secorolab/motion-spec-dsl.git@dev"
-
       - name: Install motion_spec
-        run: pip install -e . --no-deps
+        run: pip install -e ".[test]" vcstool
+
+      # The Python packages motion_spec.repos lists, in its order: none are on PyPI, and most
+      # test modules import one, so leaving them out fails collection rather than a test.
+      - name: Install the manifest's Python packages
+        run: |
+          mkdir -p ws/src
+          vcs import --input src/motion_spec/motion_spec.repos ws/src
+          python - <<'EOF'
+          import subprocess, sys
+          from motion_spec.setup import MANIFEST, STST_REPOSITORY, is_thirdparty, read_manifest, shipped
+          for repository in read_manifest(shipped(MANIFEST)):
+              if is_thirdparty(repository) and repository.path != STST_REPOSITORY:
+                  subprocess.run([sys.executable, "-m", "pip", "install", f"ws/src/{repository.path}"], check=True)
+          EOF
 
       - name: Run tests
         run: pytest -q

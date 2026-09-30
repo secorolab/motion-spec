@@ -16,22 +16,18 @@ maintainers = [
 license = { text = "MPL-2.0" }
 # 3.11 for tomllib: the workspace's motion-spec.config.toml is read with the stdlib.
 requires-python = ">=3.11"
-# The secorolab packages are on no index, so they carry their source: named alone they
-# resolve nowhere and the whole install fails, wherever it is run from.
+# PyPI only. rdf-utils, the DSL compilers and rec are on no index: `motion-spec setup`
+# installs them from motion_spec.repos.
 dependencies = [
     "click>=8.1",
     # No multi-type scoped @context support; generated models use none.
     "rdflib>=7.6.0",
-    "rdf_utils @ git+https://github.com/minhnh/rdf-utils@main",
     "jinja2",
-    "motion_spec_dsl @ git+https://github.com/secorolab/motion-spec-dsl@dev",
-    "scene-dsl @ git+https://github.com/secorolab/scene-dsl@main",
     "pyshacl>=0.25.0",
-    # `run` imports the runner, and the runner the frame log, whatever --no-log says: these
-    # were an extra, and every run without them ended in a ModuleNotFoundError traceback.
-    "rec @ git+https://github.com/secorolab/rec@dev",
     # frame_log_pb reads .pb logs via message_factory.GetMessageClass, added in 4.22.
     "protobuf>=4.22",
+    # `motion-spec setup` reads the .repos manifests with it.
+    "PyYAML",
 ]
 
 [project.optional-dependencies]
@@ -39,7 +35,7 @@ dashboard = ["nicegui>=2.0", "pillow"]
 # The browser dashboard's notebook tab; its SPARQL console runs on the rdflib above.
 replay = ["jupyterlab>=4.0", "matplotlib"]
 all = ["nicegui>=2.0", "pillow", "jupyterlab>=4.0", "matplotlib"]
-test = ["pytest", "pillow", "zstandard", "PyYAML", "empy", "lark"]
+test = ["pytest", "pillow", "zstandard", "empy", "lark"]
 docs = ["sphinx", "myst-parser", "furo", "sphinx-autobuild", "matplotlib"]
 dev = ["pytest", "ruff"]
 
@@ -59,8 +55,9 @@ where = ["src"]
 motion_spec = [
     "templates/*.stg",
     "dashboard/frontend/**/*",
-    # `motion-spec setup` reads its pins from this at run time, so it has to ship.
+    # `motion-spec setup` reads what to install from these at run time, so they ship.
     "*.repos",
+    "colcon.meta",
 ]
 
 [tool.pytest.ini_options]

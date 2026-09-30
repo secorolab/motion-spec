@@ -29,13 +29,7 @@ LOG_DIRECTORY = "logs"
 SGR = "\x1b["  # what a terminal reads as: the rest of this is a colour, until RESET
 RESET = f"{SGR}0m"
 STAMP_COLOUR = "90"
-LEVEL_COLOURS = {
-    "info": "",
-    "step": "1;34",
-    "warn": "1;33",
-    "error": "1;31",
-    "done": "1;32",
-}
+LEVEL_COLOURS = {"info": "", "step": "1;34", "warn": "1;33", "error": "1;31", "done": "1;32"}
 LEVEL_WIDTH = 6
 
 
@@ -317,8 +311,9 @@ def tee(
     return returncode
 
 
-def trash(path: Path) -> None:
-    """Move PATH to the desktop trash."""
+def trash(path: Path) -> Path | None:
+    """Move PATH to the desktop trash; where it landed, when the home trash records it."""
+    original = path.absolute()
     try:
         result = subprocess.run(
             ["gio", "trash", "--", str(path)], check=False, capture_output=True, text=True
@@ -328,6 +323,27 @@ def trash(path: Path) -> None:
         raise ValueError(f"cannot remove {path.name}: gio is not installed") from error
     if result.returncode:
         raise ValueError(f"could not move {path.name} to trash: {result.stderr.strip()}")
+    return trashed_location(original)
+
+
+def trashed_location(original: Path) -> Path | None:
+    """Where the home trash keeps ORIGINAL: the newest entry whose .trashinfo names it.
+
+    None when it went to another filesystem's trash, which the home trash does not record.
+    """
+    from urllib.parse import quote
+
+    home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "Trash"
+    wanted = f"Path={quote(str(original))}"
+    records = [
+        info
+        for info in (home / "info").glob("*.trashinfo")
+        if wanted in info.read_text(encoding="utf-8", errors="replace").splitlines()
+    ]
+    if not records:
+        return None
+    newest = max(records, key=lambda info: info.stat().st_mtime)
+    return home / "files" / newest.name.removesuffix(".trashinfo")
 
 
 def trash_if_present(path: Path) -> bool:

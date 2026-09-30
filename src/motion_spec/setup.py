@@ -2,28 +2,29 @@
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 # Author: Vamsi Kalagaturu
 
-"""Install the external tools and libraries every motion-spec installation builds against.
+"""Install what the .repos manifests list, in their order, with the workspace's colcon.meta.
 
-Sources in src/, builds in build/, everything installed into install/; only what colcon cannot
-build goes under src/thirdparty/. A source directory that already exists is built only when
-clean and on the pinned commit, never moved.
+`vcs import` fetches what the workspace has no checkout of; a checkout already there is built
+as it stands and never moved. Python packages go into one environment, CMake ones into
+install/, and src/thirdparty/ holds what colcon must not build.
 """
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import shlex
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.request import urlretrieve
 
-from motion_spec.utils import tee, total_memory, trash_if_present, usable_cores
+from motion_spec.utils import tee, total_memory, trash, usable_cores
 
 MANIFEST = "motion_spec.repos"
+REAL_MANIFEST = "motion_spec.real.repos"
+COLCON_META = "colcon.meta"
 STST_REPOSITORY = "thirdparty/STSTv4"
 JARS = {
     "ST4-4.3.4.jar": "https://repo1.maven.org/maven2/org/antlr/ST4/4.3.4/ST4-4.3.4.jar",
@@ -34,9 +35,6 @@ JARS = {
 WORKSPACE_VARIABLE = "MOTION_SPEC_WS"
 # The layout `vcs import` produces, so either route gives the same workspace.
 SOURCE_DIRECTORY = "src"
-# Where a plain install puts the sources it must build: hidden, because they are setup's to
-# fetch and delete, not the operator's to edit. `--dev` uses src/ for everything instead.
-MANAGED_SOURCE_DIRECTORY = ".ms-sources"
 BUILD_DIRECTORY = "build"
 INSTALL_DIRECTORY = "install"
 # colcon's, not motion-spec's: `colcon build` writes it beside build/ and install/.
@@ -49,187 +47,182 @@ COLCON_IGNORE = "COLCON_IGNORE"
 MANAGED = Path("share") / "motion-spec"
 BUILD_TYPE = "RelWithDebInfo"
 BUILD_TYPE_VARIABLE = "MOTION_SPEC_BUILD_TYPE"
-# A marker origin, beside cloned and adopted: pip fetched it, so there is no source to clean.
-PIP_ORIGIN = "pip"
+VENV_DIRECTORY = ".venv"
 
 
 @dataclass(frozen=True)
-class Source:
-    """Where one pinned repository comes from."""
+class Repository:
+    """One manifest entry: where it is checked out, where from, and at which version."""
 
+    path: str
     url: str
     version: str
 
+    @property
+    def name(self) -> str:
+        return Path(self.path).name
 
-def read_manifest(path: Path | None = None) -> dict[str, Source]:
-    """The repositories the shipped .repos manifest declares, by directory name.
 
-    A line outside vcstool's shape raises: a pin read wrong is a build of the wrong version.
+def shipped(filename: str) -> Path:
+    """A data file that ships inside the motion_spec package."""
+    return Path(__file__).parent / filename
+
+
+def read_manifest(path: Path) -> list[Repository]:
+    """PATH's repositories, in the order it lists them, which is the order they install in.
+
+    Only vcstool's fields are read; a pin read wrong is a build of the wrong version, so a
+    malformed entry raises instead of being skipped.
     """
-    manifest = path or Path(__file__).parent / MANIFEST
-    entries: dict[str, dict[str, str]] = {}
-    current: dict[str, str] | None = None
-    for number, raw in enumerate(manifest.read_text().splitlines(), start=1):
-        line = raw.split("#", 1)[0].rstrip()
-        if not line or line == "repositories:":
-            continue
-        if line.startswith("    ") and current is not None:
-            key, separator, value = line.strip().partition(":")
-            if not separator:
-                raise ValueError(f"{manifest}:{number}: expected `key: value`, got {raw!r}")
-            current[key] = value.strip()
-        elif line.startswith("  ") and not line.startswith("   ") and line.endswith(":"):
-            current = entries.setdefault(line.strip().rstrip(":"), {})
-        else:
-            raise ValueError(f"{manifest}:{number}: not a repository or a field: {raw!r}")
+    import yaml
 
-    sources = {}
-    for name, fields in entries.items():
+    loaded = yaml.safe_load(path.read_text()) or {}
+    entries = loaded.get("repositories") if isinstance(loaded, dict) else None
+    if not isinstance(entries, dict):
+        raise ValueError(f"{path}: no `repositories:` mapping")  # noqa: TRY004 -- file content
+    repositories = []
+    for key, fields in entries.items():
+        if not isinstance(fields, dict):
+            raise ValueError(f"{path}: {key} is not a mapping")  # noqa: TRY004 -- file content
         missing = {"type", "url", "version"} - fields.keys()
         if missing:
-            raise ValueError(f"{manifest}: {name} declares no {', '.join(sorted(missing))}")
+            raise ValueError(f"{path}: {key} declares no {', '.join(sorted(missing))}")
         if fields["type"] != "git":
-            raise ValueError(f"{manifest}: {name} is {fields['type']}; only git is supported")
-        sources[name] = Source(fields["url"], fields["version"])
-    return sources
+            raise ValueError(f"{path}: {key} is {fields['type']}; only git is supported")
+        repositories.append(Repository(str(key), str(fields["url"]), str(fields["version"])))
+    return repositories
 
 
-SOURCES = read_manifest()
-STST_REPO = SOURCES[STST_REPOSITORY].url
-STST_REF = SOURCES[STST_REPOSITORY].version
-# The version the generated CMakeLists asks for; health checks the same one.
-MJ_KDL_REF = SOURCES["mj_kdl_wrapper"].version
+def manifest_files(repos: tuple[Path, ...] = (), real: bool = False) -> list[Path]:
+    """The manifests a setup reads: REPOS in place of the shipped one, then the real layer."""
+    files = list(repos) or [shipped(MANIFEST)]
+    if real:
+        files.append(shipped(REAL_MANIFEST))
+    return files
 
 
-def manifest_in_force(path: Path | None = None) -> dict[str, Source]:
-    """The pins to use: PATH's when given, else the shipped manifest.
-
-    Replaces rather than merges: a manifest is the whole statement of what a workspace builds,
-    and a half-stated one would leave the rest silently on the shipped pins.
-    """
-    return read_manifest(path) if path else SOURCES
-
-
-def uncovered(
-    components: list[str], root: Path, dev: bool = False, sources: dict[str, Source] | None = None
-) -> list[str]:
-    """The named components SOURCES cannot supply and the workspace does not already have.
-
-    A manifest that omits one is fine when the source is checked out -- that is the workspace
-    answering for it -- and an error otherwise, before anything is cloned.
-    """
-    pins = SOURCES if sources is None else sources
-    missing = []
-    for name in components:
-        repository = repository_of(name)
-        if repository in pins or (source_tree(root, repository, dev) / ".git").is_dir():
-            continue
-        missing.append(name)
-    return missing
+def manifest_in_force(files: list[Path]) -> list[Repository]:
+    """Every repository FILES list, file after file; one path listed twice is an error."""
+    listed: dict[str, Path] = {}
+    repositories = []
+    for path in files:
+        for repository in read_manifest(path):
+            if repository.path in listed:
+                raise ValueError(
+                    f"{repository.path} is listed in both {listed[repository.path]} and {path}"
+                )
+            listed[repository.path] = path
+            repositories.append(repository)
+    return repositories
 
 
-def repository_of(name: str) -> str:
-    """The manifest key a component's source comes from."""
-    return STST_REPOSITORY if name == "stst" else COMPONENTS_BY_NAME[name].repository
+def shipped_pin(path: str) -> Repository:
+    """A repository as the shipped manifests pin it."""
+    for repository in manifest_in_force(manifest_files(real=True)):
+        if repository.path == path:
+            return repository
+    raise KeyError(f"{path} is in no shipped manifest")
+
+
+def is_thirdparty(repository: Repository) -> bool:
+    """Whether colcon must not build it: a Python package or STST, by where it is listed."""
+    return repository.path.startswith(f"{THIRDPARTY_DIRECTORY}/")
 
 
 @dataclass(frozen=True)
-class Component:
-    """One library installed from its own source into the shared prefix.
-
-    The name is what a user asks for and what health reports; `repository` is its entry in
-    the manifest, which is also the directory it is checked out into -- the two differ where
-    a repository carries more than the one package.
-    """
+class Package:
+    """One buildable directory in a checkout, and how it builds: CMake, pip, or both."""
 
     name: str
-    repository: str
-    source: str = ""
-    options: tuple[str, ...] = field(default_factory=tuple)
-    # Also install the checkout's Python package; its extension is a separate build.
-    bindings: bool = False
-    # A Python package, not a CMake one: pip installs the checkout and nothing is built.
-    python: bool = False
-    requires: tuple[str, ...] = field(default_factory=tuple)
-    # Installed only when named: a model that binds no device never links these.
-    on_request: bool = False
-    why: str = ""
+    path: Path
+    cmake: bool
+    python: bool
 
 
-# Dependency order: mj_kdl_wrapper links orocos_kdl.
-COMPONENTS = (
-    # Before scene_dsl: motion_spec_dsl requires it from git, and pip would pull that over a
-    # checkout already installed, undoing the local one.
-    Component(
-        "motion_spec_dsl",
-        "motion-spec-dsl",
-        python=True,
-        why="compiles .robmot models into the RDF graphs every later stage reads",
-    ),
-    Component(
-        "scene_dsl",
-        "scene-dsl",
-        python=True,
-        why="compiles .scenex/.ktree scenes into the kinematic tree and simulator assets",
-    ),
-    Component(
-        "orocos_kdl",
-        "orocos_kinematics_dynamics",
-        source="orocos_kdl",
-        why="the secorolab fork: the Vereshchagin solvers with fixed joints the templates call",
-    ),
-    Component(
-        "coord2b",
-        "coord2b",
-        why="the FSM event loop the generated controller dispatches through",
-    ),
-    Component(
-        "mj_kdl_wrapper",
-        "mj_kdl_wrapper",
-        options=(
-            # The robot models a generated scene names by package path.
-            "-DMJ_KDL_FETCH_MENAGERIE=ON",
-            # Left off, it builds the KDL fork again: two liborocos-kdl, one SONAME, one process.
-            "-DMJ_KDL_OROCOS_KDL_FROM_PACKAGE=ON",
-        ),
-        bindings=True,
-        requires=("orocos_kdl",),
-        why="the MuJoCo simulation the generated controller drives, and its camera publisher",
-    ),
-    Component(
-        "serial",
-        "serial",
-        on_request=True,
-        why="the serial line the Robotiq devices are driven over",
-    ),
-    Component(
-        "robotiq_driver_noros",
-        "robotiq_driver_noros",
-        on_request=True,
-        why="drives the Robotiq gripper and force-torque sensor on a real platform",
-    ),
-    Component(
-        "robif2b",
-        "robif2b",
-        # Each device wrapper stays off until its own flag is passed; health names which.
-        options=("-DENABLE_INSTALL_TARGETS=ON",),
-        on_request=True,
-        why="the real-robot hardware drivers the robif2b backend generates against",
-    ),
-)
-COMPONENTS_BY_NAME = {component.name: component for component in COMPONENTS}
-# Ant builds this one, but its source is fetched by the same rules.
-STST_COMPONENT = Component(
-    "stst", STST_REPOSITORY, why="renders the generated C++ from the packaged StringTemplate groups"
-)
-COMPONENT_NAMES = ("stst", *COMPONENTS_BY_NAME)
-# Name to the cmake options motion-spec already passes, for the config sample to show.
-COMPONENT_OPTIONS = {
-    "stst": STST_COMPONENT.options,
-    **{component.name: component.options for component in COMPONENTS if not component.python},
-}
-# What a bare `motion-spec setup` installs; the rest are named or not built.
-DEFAULT_COMPONENTS = ("stst", *(c.name for c in COMPONENTS if not c.on_request))
+def _package_at(directory: Path) -> Package | None:
+    cmake = (directory / "CMakeLists.txt").is_file()
+    python = (directory / "pyproject.toml").is_file() or (directory / "setup.py").is_file()
+    if not (cmake or python):
+        return None
+    return Package(_package_name(directory, cmake, python), directory, cmake, python)
+
+
+def _package_name(directory: Path, cmake: bool, python: bool) -> str:
+    """The name colcon and the markers know it by: package.xml, else project(), else pyproject."""
+    import re
+
+    manifest = directory / "package.xml"
+    if manifest.is_file():
+        found = re.search(r"<name>\s*([^<\s]+)\s*</name>", manifest.read_text())
+        if found:
+            return found.group(1)
+    if cmake:
+        found = re.search(
+            r"^\s*project\s*\(\s*([A-Za-z0-9_.+-]+)",
+            (directory / "CMakeLists.txt").read_text(),
+            re.IGNORECASE | re.MULTILINE,
+        )
+        if found:
+            return found.group(1)
+    if python and (directory / "pyproject.toml").is_file():
+        import tomllib
+
+        declared = tomllib.loads((directory / "pyproject.toml").read_text())
+        name = declared.get("project", {}).get("name")
+        if name:
+            return name
+    return directory.name
+
+
+def _package_dependencies(package: Package) -> set[str]:
+    import re
+
+    manifest = package.path / "package.xml"
+    if not manifest.is_file():
+        return set()
+    return set(re.findall(r"<(?:build_)?depend>\s*([^<\s]+)\s*<", manifest.read_text()))
+
+
+def discover_packages(checkout: Path) -> list[Package]:
+    """The packages a checkout holds, as colcon finds them: its root, else each subdirectory.
+
+    Subdirectories come in package.xml dependency order, so python_orocos_kdl follows orocos_kdl.
+    """
+    at_root = _package_at(checkout)
+    if at_root is not None:
+        return [at_root]
+    found = [
+        package
+        for directory in sorted(checkout.iterdir())
+        if directory.is_dir() and not directory.name.startswith(".")
+        if (package := _package_at(directory)) is not None
+    ]
+    ordered: list[Package] = []
+    pending = list(found)
+    while pending:
+        names = {package.name for package in pending}
+        ready = [p for p in pending if not (_package_dependencies(p) & names)] or pending[:1]
+        ordered.extend(ready)
+        pending = [p for p in pending if p not in ready]
+    return ordered
+
+
+def workspace_colcon_meta(root: Path) -> Path:
+    """ROOT's colcon.meta, seeded from the shipped one the first time and edited by hand after."""
+    path = root / COLCON_META
+    if not path.exists():
+        shutil.copyfile(shipped(COLCON_META), path)
+    return path
+
+
+def cmake_arguments(meta: Path, package: str) -> tuple[str, ...]:
+    """The cmake-args META holds for PACKAGE: what colcon would pass it, for a plain build too."""
+    import json
+
+    names = json.loads(meta.read_text()).get("names", {})
+    return tuple(names.get(package, {}).get("cmake-args", []))
+
+
 ENVIRONMENT_FILES = ("setup-motion-spec.bash", "setup-motion-spec.zsh")
 ENVIRONMENT_VARIABLE = "MOTION_SPEC_ENV"
 # Archived with a run. Not the whole environment: that is mostly the operator's shell.
@@ -302,37 +295,24 @@ def generations_directory(root: Path, configured: dict) -> Path:
     return Path(declared) if declared else root / GENERATION_DIRECTORY
 
 
-def source_root(root: Path, dev: bool = True) -> Path:
-    """Where sources are checked out: src/ is the developer's, and only theirs to edit."""
-    return root / (SOURCE_DIRECTORY if dev else MANAGED_SOURCE_DIRECTORY)
+def source_root(root: Path) -> Path:
+    """Where every source is checked out, whatever the mode."""
+    return root / SOURCE_DIRECTORY
 
 
-def thirdparty_directory(root: Path, dev: bool = True) -> Path:
+def thirdparty_directory(root: Path) -> Path:
     """The subtree colcon leaves alone: what it could not build, or must not."""
-    return source_root(root, dev) / THIRDPARTY_DIRECTORY
+    return source_root(root) / THIRDPARTY_DIRECTORY
 
 
-def source_directory(root: Path, repository: str, dev: bool = True) -> Path:
+def source_directory(root: Path, repository: str) -> Path:
     """Where a workspace keeps one repository's source, as the manifest spells its path."""
-    return source_root(root, dev) / repository
+    return source_root(root) / repository
 
 
-def source_tree(root: Path, repository: str, dev: bool = True) -> Path:
-    """The tree to build: this mode's own, else a checkout the other mode left, else this one.
-
-    A source already in the workspace is adopted wherever it sits, so a plain install builds
-    the developer's src/ checkout instead of cloning a second copy of it.
-    """
-    own = source_directory(root, repository, dev)
-    if (own / ".git").is_dir():
-        return own
-    other = source_directory(root, repository, not dev)
-    return other if (other / ".git").is_dir() else own
-
-
-def _ignore_thirdparty(root: Path, dev: bool = True) -> Path:
+def _ignore_thirdparty(root: Path) -> Path:
     """Create the third-party subtree, marked so `colcon build` does not descend into it."""
-    directory = thirdparty_directory(root, dev)
+    directory = thirdparty_directory(root)
     directory.mkdir(parents=True, exist_ok=True)
     marker = directory / COLCON_IGNORE
     if not marker.exists():
@@ -345,20 +325,21 @@ def build_directory(root: Path, name: str) -> Path:
     return root / BUILD_DIRECTORY / name
 
 
-def required_profiles(components: list[str], ros: bool = False) -> tuple[str, ...]:
-    """The health profiles the named COMPONENTS need before any of them can be installed.
+def required_profiles(repositories: list[Repository], ros: bool = False) -> tuple[str, ...]:
+    """The health profiles REPOSITORIES need before any of them can be installed.
 
-    Scoped, so `setup coord2b` is not refused for want of the Ant that only stst uses.
+    Scoped, so `setup coord2b` is not refused for want of the Ant that only STST uses.
     """
-    named = [COMPONENTS_BY_NAME[name] for name in components if name in COMPONENTS_BY_NAME]
-    profiles = {"codegen"} if "stst" in components else set()
-    if any(not component.python for component in named):
+    profiles = set()
+    if any(repository.path == STST_REPOSITORY for repository in repositories):
+        profiles.add("codegen")
+    if any(not is_thirdparty(repository) for repository in repositories):
         profiles.add("build")
     return (*sorted(profiles), *(("ros",) if ros and profiles else ()))
 
 
 def missing_prerequisites(
-    components: list[str], ros: bool = False, targets: tuple[str, ...] = ("mujoco",)
+    repositories: list[Repository], ros: bool = False, targets: tuple[str, ...] = ("mujoco",)
 ) -> tuple[list[str], list[str]]:
     """What must be installed before setup starts: `(apt packages, other requirements)`.
 
@@ -373,7 +354,7 @@ def missing_prerequisites(
         system_site_packages,
     )
 
-    profiles = required_profiles(components, ros)
+    profiles = required_profiles(repositories, ros)
     # The ROS checks run even for a selection with no profile at all: without them a
     # Python-only `setup` in a colcon workspace fails on the distro only at the last step.
     packages = (
@@ -382,6 +363,8 @@ def missing_prerequisites(
         else []
     )
     others = []
+    if repositories and shutil.which("vcs") is None:
+        others.append("vcs: apt install python3-vcstool")
     if ros:
         # The environment file is written last, so an unresolved distro would surface only
         # after everything is built -- and the build would have used whatever was sourced.
@@ -443,64 +426,61 @@ def find_stst(path: str | None = None, workspace: str | None = None) -> str | No
     return str(managed) if managed and managed.is_file() else None
 
 
-def remove_stst(root: Path, prefix: Path | None = None) -> bool:
+@dataclass(frozen=True)
+class Removed:
+    """One thing a clean took: what it was, and where the trash keeps it."""
+
+    what: str
+    # None when deleted outright, or trashed where the home trash cannot say.
+    to: Path | None
+    deleted: bool = False
+
+
+def _trash_into(path: Path, what: str, removed: list[Removed]) -> None:
+    if path.exists() or path.is_symlink():
+        removed.append(Removed(what, trash(path)))
+
+
+def _delete_marker(marker: Path, removed: list[Removed]) -> None:
+    if marker.is_file():
+        marker.unlink()
+        removed.append(Removed(str(marker), None, deleted=True))
+
+
+def remove_stst(root: Path, prefix: Path | None = None) -> list[Removed]:
     """Remove an STST installation this tool made. Sources are never removed, whoever made them."""
     prefix = prefix or install_prefix(root)
     launcher = prefix / "bin" / "stst"
     marker = install_marker("stst", prefix)
     if not (launcher.exists() or marker.exists()):
-        return False
+        return []
     if not marker.is_file():
         raise RuntimeError(f"refusing to clean an unmanaged STST installation under {prefix}")
-    trash_if_present(launcher)
-    marker.unlink(missing_ok=True)
+    removed: list[Removed] = []
+    _trash_into(launcher, str(launcher), removed)
+    _delete_marker(marker, removed)
     try:
         (prefix / MANAGED).rmdir()
     except OSError:
         pass
-    return True
+    return removed
 
 
-def component_installed(
-    component: Component,
-    prefix: Path,
-    dev: bool | None = None,
-    root: Path | None = None,
-    sources: dict[str, Source] | None = None,
-) -> bool:
-    """Whether PREFIX already has what ROOT would build now, by the route DEV asks for.
+def package_installed(name: str, prefix: Path, checkout: Path) -> bool:
+    """Whether PREFIX already has package NAME built from CHECKOUT as it stands now.
 
-    Against the checkout when there is one, so an adopted source at another ref is a no-op
-    until that tree moves, rather than rebuilt on every run for not being the pin.
+    Against the checkout's HEAD, so an adopted source at another ref is a no-op until that tree
+    moves, rather than rebuilt on every run for not being the pin.
     """
-    marker = install_marker(component.name, prefix)
-    pinned = (SOURCES if sources is None else sources).get(component.repository)
-    wanted = pinned.version if pinned else None
-    from_checkout = False
-    if root is not None and dev is not None:
-        checkout = source_tree(root, component.repository, dev)
-        from_checkout = (checkout / ".git").is_dir()
-        if from_checkout:
-            # Edits are not in any commit, so nothing recorded can prove the install matches.
-            if _dirty(checkout):
-                return False
-            wanted = _git(checkout, "rev-parse", "HEAD") or wanted
-    if wanted is None or not (marker.is_file() and marker.read_text().split("\n")[0] == wanted):
+    # Edits are not in any commit, so nothing recorded can prove the install matches.
+    if not (checkout / ".git").is_dir() or _dirty(checkout):
         return False
-    if component.python and dev is not None:
-        # Compared against the route this run would take, not against --dev: pip fetches a
-        # Python component only when there is no checkout to adopt, and a route switch is
-        # not an installation.
-        return (_recorded_origin(marker) == PIP_ORIGIN) == not_adopted(dev, from_checkout)
-    return True
+    head = _git(checkout, "rev-parse", "HEAD")
+    marker = install_marker(name, prefix)
+    return head is not None and marker.is_file() and marker.read_text().split("\n")[0] == head
 
 
-def not_adopted(dev: bool, from_checkout: bool) -> bool:
-    """Whether a Python component comes from pip: no checkout here, and none asked for."""
-    return not (dev or from_checkout)
-
-
-def stst_installed(root: Path, prefix: Path | None = None, dev: bool = True) -> bool:
+def stst_installed(root: Path, prefix: Path | None = None) -> bool:
     """Whether PREFIX carries a usable stst: a launcher without its jar is a half-finished one."""
     prefix = prefix or install_prefix(root)
     marker = install_marker("stst", prefix)
@@ -508,43 +488,35 @@ def stst_installed(root: Path, prefix: Path | None = None, dev: bool = True) -> 
         return False
     if marker.read_text().splitlines()[:1] == ["installing"]:
         return False
-    # Either tree counts: the launcher runs the jar wherever the install that made it put one.
-    return any(
-        (source_directory(root, STST_REPOSITORY, where) / "build" / "jar" / "stst.jar").is_file()
-        for where in {dev, True, False}
-    )
+    return (source_directory(root, STST_REPOSITORY) / "build" / "jar" / "stst.jar").is_file()
 
 
 def install_stst(
     root: Path,
+    state: SourceState,
     prefix: Path | None = None,
     force: bool = False,
     log: Path | None = None,
-    dev: bool = True,
-    sources: dict[str, Source] | None = None,
 ) -> Path:
     """Build the pinned STSTv4 from its checkout and install its launcher under PREFIX/bin."""
     prefix = prefix or install_prefix(root)
     launcher = prefix / "bin" / "stst"
     marker = install_marker("stst", prefix)
-    if not force and stst_installed(root, prefix, dev):
+    if not force and stst_installed(root, prefix):
         return launcher
 
-    missing = [command for command in ("git", "ant", "java") if shutil.which(command) is None]
+    missing = [command for command in ("ant", "java") if shutil.which(command) is None]
     if missing:
         raise RuntimeError(
             f"required command{'s' if len(missing) > 1 else ''} missing: {', '.join(missing)}"
         )
 
-    # Ant writes inside the source tree, so an adopted checkout must be clean and on the pin.
-    previous = _recorded_origin(marker)
-    state = prepare_source(STST_COMPONENT, root, log, dev, sources)
     if not state.usable:
         raise RuntimeError(f"{state.path} {state.reason}")
     marker.parent.mkdir(parents=True, exist_ok=True)
-    origin = _origin(previous, state)
+    origin = _origin(_recorded_origin(marker), state)
     marker.write_text(f"installing\n{origin}\n")
-    # Whatever tree prepare_source settled on: the launcher must name the jar ant just built.
+    # Whatever tree the checkout is in: the launcher must name the jar ant just built.
     source = state.path
     tee(["ant", "-f", str(source / "build.xml")], log=log)
 
@@ -565,8 +537,7 @@ def install_stst(
         'exec java -cp "$CP" jjs.stst.STStandaloneTool "$@"\n'
     )
     launcher.chmod(0o755)
-    spec = (SOURCES if sources is None else sources).get(STST_REPOSITORY)
-    marker.write_text(f"{state.ref or (spec.version if spec else '')}\n{origin}\n")
+    marker.write_text(f"{state.ref}\n{origin}\n")
     return launcher
 
 
@@ -585,7 +556,11 @@ def shadowing_stst(prefix: Path) -> tuple[Path, bool] | None:
     except OSError:
         return None
     home = next(
-        (line.split("=", 1)[1].strip() for line in body.splitlines() if line.startswith("STST_HOME=")),
+        (
+            line.split("=", 1)[1].strip()
+            for line in body.splitlines()
+            if line.startswith("STST_HOME=")
+        ),
         None,
     )
     if home is None:
@@ -593,9 +568,9 @@ def shadowing_stst(prefix: Path) -> tuple[Path, bool] | None:
     return other, (Path(shlex.split(home)[0]) / "build" / "jar" / "stst.jar").is_file()
 
 
-def is_installed(component: Component, prefix: Path) -> bool:
-    """Whether PREFIX carries an installation of COMPONENT this tool made."""
-    marker = install_marker(component.name, prefix)
+def is_installed(name: str, prefix: Path) -> bool:
+    """Whether PREFIX carries an installation of package NAME this tool made."""
+    marker = install_marker(name, prefix)
     # The first line only: a half-finished install records the origin under "installing".
     return marker.is_file() and marker.read_text().splitlines()[:1] != ["installing"]
 
@@ -619,21 +594,23 @@ def _manifest_files(manifest: Path, prefix: Path) -> list[Path]:
     return inside
 
 
-def installed_files(component: Component, root: Path, prefix: Path | None = None) -> list[Path]:
-    """What COMPONENT's build put inside PREFIX, so a prompt can say what removing it takes."""
+def installed_files(name: str, root: Path, prefix: Path | None = None) -> list[Path]:
+    """What package NAME's build put inside PREFIX, so a prompt can say what removing it takes."""
     prefix = prefix or install_prefix(root)
-    manifest = build_directory(root, component.name) / "install_manifest.txt"
+    manifest = build_directory(root, name) / "install_manifest.txt"
     return _manifest_files(manifest, prefix)
 
 
-def _trash_installed(manifest: Path, prefix: Path, label: str) -> None:
+def _trash_installed(manifest: Path, prefix: Path, label: str, removed: list[Removed]) -> None:
     """Trash the files an install left in PREFIX, as one entry rather than hundreds."""
     staging = prefix.parent / f".removed-{label}"
-    for installed in _manifest_files(manifest, prefix):
+    files = _manifest_files(manifest, prefix)
+    for installed in files:
         destination = staging / installed.relative_to(prefix)
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(installed), str(destination))
-    trash_if_present(staging)
+    if files:
+        _trash_into(staging, f"{len(files)} installed files from {prefix}", removed)
 
 
 def _recorded_origin(marker: Path) -> str:
@@ -684,46 +661,34 @@ def _pinned_commit(repository: Path, ref: str) -> str | None:
     return None
 
 
-def prepare_source(
-    component: Component,
-    root: Path,
-    log: Path | None = None,
-    dev: bool = True,
-    sources: dict[str, Source] | None = None,
-) -> SourceState:
-    """Put COMPONENT's source in place without ever moving a checkout already there.
+def import_sources(
+    files: list[Path], listed: list[Repository], root: Path, log: Path | None = None
+) -> set[str]:
+    """`vcs import --skip-existing` each manifest in FILES into ROOT/src.
 
-    A `checkout --detach` in a tree someone works in loses the branch they were on.
+    A checkout already there is the operator's, and vcs leaves it as it is. Returns the paths
+    that had none before, which are the ones setup cloned.
     """
-    spec = (SOURCES if sources is None else sources).get(component.repository)
-    repository = source_tree(root, component.repository, dev)
+    if shutil.which("vcs") is None:
+        raise RuntimeError("required command missing: vcs (apt install python3-vcstool)")
+    missing = {r.path for r in listed if not (source_directory(root, r.path) / ".git").is_dir()}
+    target = source_root(root)
+    target.mkdir(parents=True, exist_ok=True)
+    for path in files:
+        tee(["vcs", "import", "--skip-existing", "--input", str(path), str(target)], log=log)
+    return missing
 
+
+def source_state(pinned: Repository, root: Path, imported: bool = False) -> SourceState:
+    """What PINNED's checkout holds now, read-only: the commit to record and any drift."""
+    repository = source_directory(root, pinned.path)
     if not (repository / ".git").is_dir():
-        if repository.exists() and any(repository.iterdir()):
-            return SourceState(repository, False, False, "is not a git checkout")
-        if spec is None:
-            return SourceState(repository, False, False, "is in no manifest and not checked out")
-        if component.repository.startswith(f"{THIRDPARTY_DIRECTORY}/"):
-            _ignore_thirdparty(root, dev)
-        repository.parent.mkdir(parents=True, exist_ok=True)
-        tee(["git", "clone", spec.url, str(repository)], log=log)
-        tee(["git", "-C", str(repository), "fetch", "--tags", "origin"], log=log)
-        commit = _pinned_commit(repository, spec.version)
-        tee(
-            ["git", "-C", str(repository), "checkout", "--detach", commit or spec.version],
-            log=log,
-        )
+        reason = "is not a git checkout" if repository.exists() else "was not imported"
+        return SourceState(repository, False, False, reason)
+    if imported:
         # The commit, not the branch it was named by: the marker is compared against HEAD.
         return SourceState(repository, True, True, ref=_git(repository, "rev-parse", "HEAD") or "")
-
-    subprocess.run(
-        ["git", "-C", str(repository), "fetch", "--tags", "origin"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
-    # No entry in the manifest in force: the checkout is the only statement of what to build.
-    commit = _pinned_commit(repository, spec.version) if spec else None
+    commit = _pinned_commit(repository, pinned.version)
     head = _git(repository, "rev-parse", "HEAD")
     if head is None:
         return SourceState(repository, False, False, "is a git checkout with no commit")
@@ -745,8 +710,7 @@ def prepare_source(
             False,
             True,
             ref=head,
-            drift=f"is at {described}, {f'not the pinned {spec.version}' if spec else 'unpinned'}"
-            "; building it as it stands",
+            drift=f"is at {described}, not the pinned {pinned.version}; building it as it stands",
         )
     return SourceState(repository, False, True, ref=head)
 
@@ -761,128 +725,171 @@ def _cmake_prefix_path(prefix: Path) -> str:
     return f"{prefix}{os.pathsep}{inherited}" if inherited else str(prefix)
 
 
-def install_component(
-    component: Component,
+def install_package(
+    package: Package,
+    state: SourceState,
     root: Path,
-    prefix: Path | None = None,
+    prefix: Path,
+    python: Path,
     *,
-    force: bool = False,
     clear_cache: bool = False,
     build_type: str = BUILD_TYPE,
     log: Path | None = None,
-    options: tuple[str, ...] | None = None,
+    extra: tuple[str, ...] = (),
     ros: bool = False,
-    editable: bool = False,
     jobs: int | None = None,
     dev: bool = False,
-    sources: dict[str, Source] | None = None,
-) -> SourceState:
-    """Build COMPONENT from ROOT/src into ROOT/build and install it into PREFIX.
+) -> None:
+    """Build PACKAGE from its prepared checkout and install it into PREFIX and PYTHON's env.
 
-    The marker carries the ref installed, so a rerun is a no-op until the pin moves. A source
-    this tool will not touch is returned unbuilt. A Python component comes from pip at the
-    pinned ref when the workspace has no checkout of it; one that is there is installed.
+    CMake first when it has a CMakeLists, with the workspace colcon.meta's arguments either
+    way; then pip when it is a Python package too, editable under --dev.
     """
-    prefix = prefix or install_prefix(root)
-    source_spec = (SOURCES if sources is None else sources).get(component.repository)
-    marker = install_marker(component.name, prefix)
-    if not (force or (clear_cache and not component.python)) and component_installed(
-        component, prefix, dev, root, sources
-    ):
-        return SourceState(
-            source_directory(root, component.repository, dev), False, True, "installed"
+    marker = install_marker(package.name, prefix)
+    origin = _origin(_recorded_origin(marker), state)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    # Before the build: a half-built installation is still this tool's.
+    marker.write_text(f"installing\n{origin}\n")
+    meta = workspace_colcon_meta(root)
+    configured = cmake_arguments(meta, package.name)
+    interpreter = extension_options(python, log) if package.cmake else ()
+
+    if package.cmake and ros:
+        # colcon reads configured from --metas itself; the rest is this machine and this run.
+        _colcon_build(
+            package.name,
+            root,
+            prefix,
+            build_type,
+            log,
+            build_jobs(jobs),
+            clear_cache,
+            (*interpreter, *extra),
         )
-
-    checked_out = (source_tree(root, component.repository, dev) / ".git").is_dir()
-    if component.python and not_adopted(dev, checked_out):
-        if source_spec is None:
-            raise RuntimeError(f"{component.name} is in no manifest, and pip needs a ref to fetch")
-        return _install_python_from_git(component, root, source_spec, marker, log, dev)
-
-    needed = ("git",) if component.python else ("git", "cmake")
-    missing = [command for command in needed if shutil.which(command) is None]
-    if missing:
-        raise RuntimeError(
-            f"required command{'s' if len(missing) > 1 else ''} missing: {', '.join(missing)}"
+    elif package.cmake:
+        build = build_directory(root, package.name)
+        if clear_cache:
+            (build / "CMakeCache.txt").unlink(missing_ok=True)
+            if (build / "CMakeFiles").exists():
+                shutil.rmtree(build / "CMakeFiles")
+        cmake = shutil.which("cmake")
+        tee(
+            [
+                cmake,
+                "-S",
+                str(package.path),
+                "-B",
+                str(build),
+                f"-DCMAKE_INSTALL_PREFIX={prefix}",
+                f"-DCMAKE_PREFIX_PATH={_cmake_prefix_path(prefix)}",
+                f"-DCMAKE_BUILD_TYPE={build_type}",
+                *configured,
+                *interpreter,
+                *extra,
+            ],
+            log=log,
         )
+        # A bare --parallel is make -j: unlimited, and it overrides the env and MAKEFLAGS too.
+        tee([cmake, "--build", str(build), "--parallel", str(build_jobs(jobs))], log=log)
+        tee([cmake, "--install", str(build)], log=log)
 
-    previous = _recorded_origin(marker)
-    state = prepare_source(component, root, log, dev, sources)
-    if not state.usable:
-        return state
+    if package.python:
+        # The same -D options the CMake build got, so an extension links what the build linked.
+        defines = (
+            (*configured, *interpreter, *extra, f"-DCMAKE_PREFIX_PATH={_cmake_prefix_path(prefix)}")
+            if package.cmake
+            else ()
+        )
+        _pip_install(package.path, log, dev, python, ros and package.cmake, defines)
 
     # What was built, not what was wanted: an adopted checkout at another ref is recorded as
     # that ref, so a rerun compares against the tree rather than the pin it does not match.
-    installed_ref = state.ref or (source_spec.version if source_spec else "")
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    # Before the build: a half-built installation is still this tool's.
-    marker.write_text(f"installing\n{_origin(previous, state)}\n")
-
-    if component.python:
-        # No ament here: a pure-Python component has no cmake, and disabling isolation would
-        # strand every source dependency pip resolves for it without its own build backend.
-        _pip_install(state.path, log, editable)
-        marker.write_text(f"{installed_ref}\n{_origin(previous, state)}\n")
-        return state
-
-    if ros:
-        _colcon_build(
-            component, root, prefix, build_type, log, build_jobs(jobs), dev, clear_cache
-        )
-        if component.bindings:
-            _pip_install(state.path, log, editable and dev, ros)
-        marker.write_text(f"{installed_ref}\n{_origin(previous, state)}\n")
-        return state
-
-    build = build_directory(root, component.name)
-    if clear_cache:
-        (build / "CMakeCache.txt").unlink(missing_ok=True)
-        if (build / "CMakeFiles").exists():
-            shutil.rmtree(build / "CMakeFiles")
-    source = state.path / component.source if component.source else state.path
-    cmake = shutil.which("cmake")
-    tee(
-        [
-            cmake,
-            "-S",
-            str(source),
-            "-B",
-            str(build),
-            f"-DCMAKE_INSTALL_PREFIX={prefix}",
-            f"-DCMAKE_PREFIX_PATH={_cmake_prefix_path(prefix)}",
-            f"-DCMAKE_BUILD_TYPE={build_type}",
-            *(component.options if options is None else options),
-        ],
-        log=log,
-    )
-    # A bare --parallel is make -j: unlimited, and it overrides the env and MAKEFLAGS too.
-    tee([cmake, "--build", str(build), "--parallel", str(build_jobs(jobs))], log=log)
-    tee([cmake, "--install", str(build)], log=log)
-
-    if component.bindings:
-        # A compiled extension is installed editable only for someone working on it: an
-        # editable install of a build tree is a trap for anyone else.
-        _pip_install(state.path, log, editable and dev, ros)
-
-    marker.write_text(f"{installed_ref}\n{_origin(previous, state)}\n")
-    return state
+    marker.write_text(f"{state.ref}\n{origin}\n")
 
 
-def installer() -> list[str]:
-    """How to install a Python package into this environment.
+def installer(python: Path | None = None) -> list[str]:
+    """How to install a Python package into PYTHON's environment, this one by default.
 
     A virtual environment uv made has no pip in it at all, so `python -m pip` there fails with
     "No module named pip"; uv installs into the interpreter it is pointed at instead.
     """
-    if importlib.util.find_spec("pip") is not None:
-        return [sys.executable, "-m", "pip", "install"]
+    interpreter = str(python or sys.executable)
+    has_pip = subprocess.run(
+        [interpreter, "-m", "pip", "--version"], capture_output=True, check=False
+    )
+    if has_pip.returncode == 0:
+        return [interpreter, "-m", "pip", "install"]
     uv = shutil.which("uv")
     if uv is None:
         raise RuntimeError(
-            f"neither pip nor uv is available to install with: {sys.executable} has no pip "
+            f"neither pip nor uv is available to install with: {interpreter} has no pip "
             f"module, and no `uv` is on PATH"
         )
-    return [uv, "pip", "install", "--python", sys.executable]
+    return [uv, "pip", "install", "--python", interpreter]
+
+
+# mj_kdl_wrapper's bindings build with this; PyKDL must share its pybind11 to share its types.
+PYBIND11_REQUIREMENT = "pybind11>=2.13"
+_EXTENSION_PROBE = (
+    "import pybind11, sysconfig; print(pybind11.get_cmake_dir()); "
+    "print(sysconfig.get_paths()['platlib'])"
+)
+
+
+def extension_options(python: Path, log: Path | None = None) -> tuple[str, ...]:
+    """The interpreter, pybind11 and site-packages a CPython extension is built for.
+
+    Passed to every CMake package: a package with no extension ignores them.
+    """
+    probe = [str(python), "-c", _EXTENSION_PROBE]
+    done = subprocess.run(probe, capture_output=True, text=True, check=False)
+    if done.returncode:
+        tee([*installer(python), PYBIND11_REQUIREMENT], log=log)
+        done = subprocess.run(probe, capture_output=True, text=True, check=True)
+    cmake_dir, platlib = done.stdout.split("\n")[:2]
+    return (
+        f"-DPython3_EXECUTABLE={python}",
+        f"-Dpybind11_DIR={cmake_dir}",
+        f"-DPYTHON_SITE_PACKAGES_INSTALL_DIR={platlib}",
+    )
+
+
+def own_source() -> Path | None:
+    """motion-spec's own checkout when it runs from one, for a new environment to install."""
+    candidate = Path(__file__).resolve().parents[2]
+    return candidate if (candidate / "pyproject.toml").is_file() else None
+
+
+def target_environment(
+    root: Path, ros: bool = False, dev: bool = False, log: Path | None = None
+) -> Path:
+    """The interpreter every Python package goes into: the active venv, else ROOT/.venv.
+
+    A new ROOT/.venv gets motion-spec itself too, so the environment file points at one
+    environment that holds the whole toolchain.
+    """
+    active = os.environ.get("VIRTUAL_ENV")
+    if active:
+        return Path(active) / "bin" / "python"
+    venv = root / VENV_DIRECTORY
+    python = venv / "bin" / "python"
+    if not python.is_file():
+        tee(
+            [sys.executable, "-m", "venv", *(["--system-site-packages"] if ros else []), str(venv)],
+            log=log,
+        )
+    has_self = subprocess.run(
+        [str(python), "-c", "import motion_spec"], capture_output=True, check=False
+    )
+    if has_self.returncode:
+        source = own_source()
+        if source is None:
+            raise RuntimeError(
+                f"no virtual environment is active and motion-spec runs from no checkout to "
+                f"install into {venv}; activate the environment motion-spec is installed in"
+            )
+        _pip_install(source, log, dev, python)
+    return python
 
 
 def _build_requirements(source: Path) -> list[str]:
@@ -895,7 +902,14 @@ def _build_requirements(source: Path) -> list[str]:
     return tomllib.loads(manifest.read_text()).get("build-system", {}).get("requires", [])
 
 
-def _pip_install(source: Path, log: Path | None, editable: bool, ros: bool = False) -> None:
+def _pip_install(
+    source: Path,
+    log: Path | None,
+    editable: bool,
+    python: Path | None = None,
+    ros: bool = False,
+    defines: tuple[str, ...] = (),
+) -> None:
     """Install a checkout. Editable points site-packages back at it, so `--clean` would orphan
     the installation along with the source it removes.
 
@@ -906,79 +920,59 @@ def _pip_install(source: Path, log: Path | None, editable: bool, ros: bool = Fal
     requirements go in first and the flag stays off everything that does not need it.
     """
     arguments = ["--editable", str(source)] if editable else [str(source)]
+    # The same -D options the CMake build got, so the extension links what the build linked.
+    for define in defines:
+        arguments += ["-C", f"cmake.define.{define.removeprefix('-D')}"]
     if ros:
         requires = _build_requirements(source)
         if requires:
-            tee([*installer(), *requires], log=log)
+            tee([*installer(python), *requires], log=log)
         arguments = ["--no-build-isolation", *arguments]
-    tee([*installer(), *arguments], log=log)
+    tee([*installer(python), *arguments], log=log)
 
 
-def git_requirement(source: Source) -> str:
-    """The pip requirement for a pinned repository."""
-    return f"git+{source.url}@{source.version}"
-
-
-def _install_python_from_git(
-    component: Component,
-    root: Path,
-    source: Source,
-    marker: Path,
-    log: Path | None,
-    dev: bool = False,
-) -> SourceState:
-    """Let pip fetch COMPONENT itself, leaving no checkout behind."""
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    requirement = git_requirement(source)
-    # Before the install: a half-installed component is still this tool's.
-    marker.write_text(f"installing\n{PIP_ORIGIN}\n")
-    tee([*installer(), requirement], log=log)
-    marker.write_text(f"{source.version}\n{PIP_ORIGIN}\n")
-    return SourceState(
-        source_directory(root, component.repository, dev), False, True, origin=requirement
-    )
-
-
-def remove_component(component: Component, root: Path, prefix: Path | None = None) -> bool:
-    """Remove a COMPONENT installation this tool made: its installed files, build and marker.
+def remove_package(name: str, root: Path, prefix: Path | None = None) -> list[Removed]:
+    """Remove package NAME's installation this tool made: its installed files, build and marker.
 
     Never the source. A checkout is the operator's, whoever cloned it.
     """
     prefix = prefix or install_prefix(root)
-    marker = install_marker(component.name, prefix)
-    build = build_directory(root, component.name)
+    marker = install_marker(name, prefix)
+    build = build_directory(root, name)
     if not (build.exists() or marker.exists()):
-        return False
+        return []
     if not marker.is_file():
-        raise RuntimeError(
-            f"refusing to clean an unmanaged {component.name} installation under {prefix}"
-        )
+        raise RuntimeError(f"refusing to clean an unmanaged {name} installation under {prefix}")
+    removed: list[Removed] = []
     # The only record of what landed in PREFIX; without it find_package keeps finding it.
-    _trash_installed(build / "install_manifest.txt", prefix, f"{component.name}-install")
-    trash_if_present(build)
-    marker.unlink(missing_ok=True)
+    _trash_installed(build / "install_manifest.txt", prefix, f"{name}-install", removed)
+    _trash_into(build, str(build), removed)
+    _delete_marker(marker, removed)
     for directory in (prefix / MANAGED, root / BUILD_DIRECTORY):
         try:
             directory.rmdir()
         except OSError:
             pass
-    return True
+    return removed
 
 
-def _activation() -> str:
-    """Activate the environment setup ran in, unless this shell is already in it.
+def _activation(python: Path | None = None) -> str:
+    """Activate PYTHON's environment, this one by default, unless the shell is already in it.
 
     Sourcing the file is the one step between a fresh shell and a working workspace, and a
     `motion-spec: command not found` right after it helps nobody.
     """
-    activate = Path(sys.prefix) / "bin" / "activate"
-    if not (Path(sys.prefix) / "pyvenv.cfg").is_file() or not activate.is_file():
+    venv = python.parent.parent if python else Path(sys.prefix)
+    activate = venv / "bin" / "activate"
+    if not (venv / "pyvenv.cfg").is_file() or not activate.is_file():
         return ""
     quoted = shlex.quote(str(activate))
-    return f'[ "${{VIRTUAL_ENV:-}}" = {shlex.quote(sys.prefix)} ] || . {quoted}\n'
+    return f'[ "${{VIRTUAL_ENV:-}}" = {shlex.quote(str(venv))} ] || . {quoted}\n'
 
 
-def write_environment(root: Path, prefix: Path | None = None, ros: bool | None = None) -> Path:
+def write_environment(
+    root: Path, prefix: Path | None = None, ros: bool | None = None, python: Path | None = None
+) -> Path:
     """Write ROOT's environment file, pointing at the prefix its builds were installed into.
 
     One file, for the shell in force. `motion-spec mutate` finds a workspace by it.
@@ -990,10 +984,10 @@ def write_environment(root: Path, prefix: Path | None = None, ros: bool | None =
     using = shell(configured)
     path = root / f"setup-motion-spec.{using}"
     if configured.get("ros", {}).get("workspace") if ros is None else ros:
-        return _write_ros_environment(root, prefix, configured, using, path)
+        return _write_ros_environment(root, prefix, configured, using, path, python)
     body = (
         "# Written by `motion-spec setup`. Source it before generating, building or running.\n"
-        + _activation()
+        + _activation(python)
         + f"export {WORKSPACE_VARIABLE}={shlex.quote(str(root))}\n"
         f"export {GENERATION_VARIABLE}={shlex.quote(str(generations_directory(root, configured)))}\n"
         f"export {ENVIRONMENT_VARIABLE}={shlex.quote(str(path))}\n"
@@ -1011,7 +1005,7 @@ def write_environment(root: Path, prefix: Path | None = None, ros: bool | None =
 
 
 def _write_ros_environment(
-    root: Path, prefix: Path, configured: dict, using: str, path: Path
+    root: Path, prefix: Path, configured: dict, using: str, path: Path, python: Path | None = None
 ) -> Path:
     """The two sourcings a colcon workspace needs, rather than paths exported by hand."""
     from motion_spec.health import _ros_distro
@@ -1025,11 +1019,11 @@ def _write_ros_environment(
     quoted_overlay = shlex.quote(str(overlay))
     body = (
         "# Written by `motion-spec setup`. Source it before generating, building or running.\n"
-        + _activation()
+        + _activation(python)
         # Each sourcing is skipped when this shell has already done it: sourcing a distro
         # twice is noise, and sourcing an overlay twice repeats it on every path it sets.
         + f'[ "${{ROS_DISTRO:-}}" = {distro} ] || . /opt/ros/{distro}/setup.{using}\n'
-        + f"case \":${{COLCON_PREFIX_PATH:-}}:\" in *:{prefix}:*) ;; *)"
+        + f'case ":${{COLCON_PREFIX_PATH:-}}:" in *:{prefix}:*) ;; *)'
         f" [ -f {quoted_overlay} ] && . {quoted_overlay} ;; esac\n"
         + f"export {WORKSPACE_VARIABLE}={shlex.quote(str(root))}\n"
         f"export {GENERATION_VARIABLE}={shlex.quote(str(generations_directory(root, configured)))}\n"
@@ -1045,19 +1039,21 @@ def _write_ros_environment(
 
 
 def _colcon_build(
-    component: Component,
+    name: str,
     root: Path,
     prefix: Path,
     build_type: str,
     log: Path | None,
     jobs: int,
-    dev: bool,
     clear_cache: bool = False,
+    options: tuple[str, ...] = (),
 ) -> None:
-    """Build one package with colcon, in the order motion-spec knows and colcon cannot derive.
+    """Build one package with colcon, in the manifest's order, which colcon cannot derive.
 
-    One package per call rather than one `colcon build`: coord2b and mj_kdl_wrapper carry no
-    package.xml, so colcon has no dependency to order them by. Options come from colcon.meta.
+    One package per call rather than one `colcon build`: coord2b and robif2b carry no
+    package.xml, so colcon has no dependency to order them by. The workspace colcon.meta holds
+    the configured arguments; OPTIONS, this machine's interpreter and this run's --cmake-arg,
+    go on the command line.
     """
     if shutil.which("colcon") is None:
         raise RuntimeError("required command missing: colcon (this workspace is [ros] workspace)")
@@ -1066,9 +1062,9 @@ def _colcon_build(
             "colcon",
             "build",
             "--packages-select",
-            component.name,
+            name,
             "--base-paths",
-            str(source_root(root, dev)),
+            str(source_root(root)),
             # Named, not left to colcon's cwd defaults: --prefix must reach the same place the
             # markers and the environment file describe.
             "--build-base",
@@ -1080,26 +1076,13 @@ def _colcon_build(
             *(["--cmake-clean-cache"] if clear_cache else []),
             "--cmake-args",
             f"-DCMAKE_BUILD_TYPE={build_type}",
+            *options,
         ],
         log=log,
         cwd=root,
         # colcon derives -j from the core count unless MAKEFLAGS already names one.
         env={**os.environ, "MAKEFLAGS": f"-j{jobs} -l{jobs}"},
     )
-
-
-def write_colcon_meta(root: Path, options: dict[str, tuple[str, ...]]) -> Path:
-    """Write the cmake options each package needs, for a colcon workspace to build them itself.
-
-    Without it `colcon build` misses -DMJ_KDL_OROCOS_KDL_FROM_PACKAGE=ON and builds a second
-    Orocos KDL, and misses -DENABLE_INSTALL_TARGETS=ON and installs no robif2b.
-    """
-    import json
-
-    named = {name: {"cmake-args": list(args)} for name, args in options.items() if args}
-    path = root / "colcon.meta"
-    path.write_text(json.dumps({"names": named}, indent=4) + "\n")
-    return path
 
 
 def workspace_outputs(root: Path, prefix: Path | None = None) -> list[Path]:
@@ -1122,14 +1105,11 @@ def workspace_outputs(root: Path, prefix: Path | None = None) -> list[Path]:
     return list(seen)
 
 
-def remove_environment(root: Path) -> list[Path]:
+def remove_environment(root: Path) -> list[Removed]:
     """Trash ROOT's environment files, which describe an installation being cleaned away."""
-    removed = []
+    removed: list[Removed] = []
     for name in ENVIRONMENT_FILES:
-        path = root / name
-        if path.is_file():
-            trash_if_present(path)
-            removed.append(path)
+        _trash_into(root / name, str(root / name), removed)
     return removed
 
 

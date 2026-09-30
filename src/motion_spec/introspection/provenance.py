@@ -61,11 +61,13 @@ SCHEMA_VERSION = 1
 # (motion-spec) or from the pinned repos file (stst); a wheel has neither.
 _PACKAGES = {
     "motion_spec": ("motion-spec", "motion_spec", "https://github.com/secorolab/motion-spec"),
-    "rdf_utils": ("rdf-utils", "rdf_utils", "https://github.com/secorolab/rdf-utils"),
+    "rdf_utils": ("rdf-utils", "rdf_utils", None),
     "rdflib": ("rdflib", "rdflib", "https://github.com/RDFLib/rdflib"),
-    "stst": ("stst", None, "https://github.com/jsnyders/STSTv4"),
+    "stst": ("stst", None, None),
     "cmake": ("cmake", None, None),
 }
+# The ones motion_spec.repos pins, whose repository is read from it.
+_MANIFEST_ENTRIES = {"rdf_utils": "thirdparty/rdf-utils", "stst": "thirdparty/STSTv4"}
 
 
 def _slug(value: str) -> str:
@@ -126,9 +128,9 @@ def _version(distribution: str | None) -> str | None:
 
 def _stst_commit() -> str | None:
     """The STSTv4 revision motion_spec.repos pins."""
-    repos = Path(__file__).resolve().parent.parent / "motion_spec.repos"
-    match = re.search(r"STSTv4:.*?version:\s*(\S+)", repos.read_text(), re.DOTALL)
-    return match.group(1) if match else None
+    from motion_spec.setup import STST_REPOSITORY, shipped_pin
+
+    return shipped_pin(STST_REPOSITORY).version
 
 
 def _cmake_version() -> str | None:
@@ -140,6 +142,10 @@ def _cmake_version() -> str | None:
 def add_package(graph: Graph, key: str) -> URIRef:
     """Declare one software package as the agent a step is associated with."""
     name, distribution, repository = _PACKAGES[key]
+    if key in _MANIFEST_ENTRIES:
+        from motion_spec.setup import shipped_pin
+
+        repository = shipped_pin(_MANIFEST_ENTRIES[key]).url.removesuffix(".git")
     agent = uri(f"agent:{key}")
     commit = None
     if key == "motion_spec":

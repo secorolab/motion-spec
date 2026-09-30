@@ -11,21 +11,21 @@ Quick start
 ===========
 
 ``motion-spec`` needs the rest of what it builds against — the authoring DSLs,
-the kinematics fork, the simulator wrapper — and installs all of it itself:
+the kinematics fork, the simulator wrapper — and installs all of it itself, from
+the ``.repos`` manifest it ships:
 
 .. code-block:: console
 
    $ mkdir -p ws/src
    $ git clone git@github.com:secorolab/motion-spec.git ws/src/motion-spec
    $ python3 -m venv ws/.venv && source ws/.venv/bin/activate
-   $ pip install -e ws/src/motion-spec            # the CLI and the DSL compilers
-   $ motion-spec install all                      # every optional Python feature
+   $ pip install -e ws/src/motion-spec            # the CLI, PyPI dependencies only
    $ motion-spec health                           # the one apt line for what is missing
-   $ motion-spec setup --workspace ws             # STST and the C++ libraries
+   $ motion-spec setup --workspace ws --dev       # everything motion_spec.repos lists
    $ source ws/setup-motion-spec.bash             # or .zsh, whichever setup wrote
 
-ROS is optional, and the robot hardware drivers are installed only if a model
-binds them. Then run a model, replay the run it recorded, and run the same
+ROS is optional, and the robot hardware drivers are installed only with
+``setup --real``. Then run a model, replay the run it recorded, and run the same
 generation again:
 
 .. code-block:: console

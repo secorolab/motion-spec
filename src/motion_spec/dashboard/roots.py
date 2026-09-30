@@ -57,8 +57,8 @@ IGNORED = {
     "__pycache__",
     "test",
     "tests",
-    # What `motion-spec setup` checks out under src/: four third-party repositories, none of
-    # them anybody's authored model, and between them more files than the workspace itself.
+    # What `motion-spec setup` imports under src/: the Python packages and STST, none of them
+    # anybody's authored model, and between them more files than the workspace itself.
     "thirdparty",
 }
 

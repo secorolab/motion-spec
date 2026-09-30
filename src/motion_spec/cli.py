@@ -16,22 +16,13 @@ import time
 import traceback
 import warnings
 from contextlib import contextmanager
-from importlib.metadata import PackageNotFoundError, distribution
-from importlib.util import find_spec
+from importlib.metadata import distribution
 from pathlib import Path
 from typing import ClassVar
-from urllib.parse import urlparse
 
 import click
 
-from motion_spec.setup import (
-    BUILD_TYPE,
-    BUILD_TYPE_VARIABLE,
-    COMPONENT_NAMES,
-    COMPONENT_OPTIONS,
-    DEFAULT_COMPONENTS,
-    WORKSPACE_VARIABLE,
-)
+from motion_spec.setup import BUILD_TYPE, BUILD_TYPE_VARIABLE, WORKSPACE_VARIABLE
 from motion_spec.utils import (
     LEVEL_LABELS,
     LOG_DATEFMT,
@@ -44,7 +35,6 @@ from motion_spec.utils import (
     mirrored_stderr,
     paint,
     show_warning,
-    trash_if_present,
     tree_size,
 )
 
@@ -59,28 +49,24 @@ class _Reported(click.ClickException):
 
 
 def _clean_offer(name: str, root: Path, prefix: Path) -> list[tuple[str, int]]:
-    """What removing one component would take, as the lines the prompt shows before asking."""
-    from motion_spec.setup import (
-        COMPONENTS_BY_NAME,
-        build_directory,
-        install_marker,
-        installed_files,
-    )
+    """What removing one package would take, as the lines the prompt shows before asking."""
+    from motion_spec.setup import build_directory, install_marker, installed_files
 
     entries = []
     build = build_directory(root, name)
     if build.is_dir():
         entries.append((_under(build, root), tree_size(build)))
-    component = COMPONENTS_BY_NAME.get(name)
-    if component is None:
+    if name == "stst":
         launcher = prefix / "bin" / "stst"
         if launcher.is_file():
             entries.append((_under(launcher, root), tree_size(launcher)))
-    elif files := installed_files(component, root, prefix):
+    elif files := installed_files(name, root, prefix):
         entries.append(
             (
-                f"{len(files)} installed file{'' if len(files) == 1 else 's'} under "
-                f"{_under(prefix, root)}",
+                (
+                    f"{len(files)} installed file{'' if len(files) == 1 else 's'} under "
+                    f"{_under(prefix, root)}"
+                ),
                 sum(tree_size(path) for path in files),
             )
         )
@@ -136,6 +122,8 @@ def _internal_failure(what: str, exc: Exception) -> click.ClickException:
 
 
 GENERATION_DIR_ENV = "MOTION_SPEC_GEN"
+
+
 # Every line the CLI says about its own progress, so one command reads like the next. Results
 # -- a generation path, an executable, a launcher -- stay bare on stdout for a caller to read.
 def _stamp(level: str, err: bool = True) -> None:
@@ -151,6 +139,8 @@ def _say(level: str, message: str = "", err: bool = True) -> None:
     """
     _stamp(level, err)
     click.echo(message, err=err)
+
+
 # `  STATUS   ` — what a health row's detail lines indent by, to sit under the dependency.
 _STATUS_WIDTH = 11
 # A command to run, in a hue no name, source or status uses.
@@ -284,7 +274,10 @@ class MotionSpecGroup(click.Group):
         with _manual_section(formatter, "WORKFLOW"):
             formatter.write_dl(
                 [
-                    ("setup", "Install the pinned tools and libraries needed to build controllers."),
+                    (
+                        "setup",
+                        "Install the pinned tools and libraries needed to build controllers.",
+                    ),
                     ("install", "Install the optional DSL, dashboard, or replay features."),
                     ("health", "Check the tools and libraries required by the selected target."),
                     ("gen", "Generate IR or C++ from a .robmot model."),
@@ -371,59 +364,18 @@ class MotionSpecGroup(click.Group):
 
 
 def _install_features() -> tuple[str, ...]:
-    extras = distribution("motion_spec").metadata.get_all("Provides-Extra") or []
-    return (*sorted(extras), "dsl")
+    return tuple(sorted(distribution("motion_spec").metadata.get_all("Provides-Extra") or []))
 
 
-def _editable_source_root() -> Path | None:
-    """Editable-install source root from the distribution's direct_url.json, or None."""
-    try:
-        direct_url = distribution("motion_spec").read_text("direct_url.json")
-    except (PackageNotFoundError, FileNotFoundError):
-        return None
-    if not direct_url:
-        return None
-    try:
-        url = json.loads(direct_url).get("url", "")
-    except json.JSONDecodeError:
-        return None
-    parsed = urlparse(url)
-    return Path(parsed.path) if parsed.scheme == "file" else None
-
-
-# None of these are on PyPI: motion-spec-dsl and the compilers it depends on each come
-# from a sibling checkout when there is one, from GitHub otherwise.
-_DSL_REPOS = {
-    "motion_spec_dsl": "motion-spec-dsl",
-    "coord_dsl": "coord-dsl",
-    "scene_dsl": "scene-dsl",
-}
-
-
-def _dsl_requirements() -> list[str]:
-    root = _editable_source_root()
-    requirements = []
-    for module, repo in _DSL_REPOS.items():
-        # An already-importable dependency stays as installed; pip would rebuild it from git.
-        if module != "motion_spec_dsl" and find_spec(module) is not None:
-            continue
-        sibling = root.parent / repo if root else None
-        requirements.append(
-            str(sibling)
-            if sibling and sibling.is_dir()
-            else f"{module} @ git+https://github.com/secorolab/{repo}.git"
-        )
-    return requirements
-
-
-# How each optional dependency arrives; its why and source live in health.DETAILS, once.
+# How each dependency arrives; its why and source live in health.DETAILS, once.
 _INSTALLS = {
-    "motion_spec_dsl": "motion-spec install dsl",
-    "coord_dsl": "motion-spec install dsl",
-    "scene_dsl": "motion-spec install dsl",
-    "textx": "motion-spec install dsl",
+    "motion_spec_dsl": "motion-spec setup",
+    "coord_dsl": "motion-spec setup",
+    "scene_dsl": "motion-spec setup",
+    "rdf_utils": "motion-spec setup",
+    "rec": "motion-spec setup",
+    "textx": "motion-spec setup",
     "pyshacl": "pip install motion_spec",
-    "rec": "pip install motion_spec",
     "google.protobuf": "pip install motion_spec",
     "stst": "motion-spec setup",
 }
@@ -466,13 +418,15 @@ def _requirements_reported():
 @click.pass_context
 def main(ctx: click.Context) -> None:
     """The motion-spec toolchain."""
-    from motion_spec_dsl.rdf_parser.manifest import install_metamodel_resolver
-
     from motion_spec.introspection.journal import record
 
     # Before the work, so a command that never returned is still in the record.
     record(ctx.invoked_subcommand or "")
-    install_metamodel_resolver()
+    # setup is what installs motion-spec-dsl, so it has to run before there is one.
+    if ctx.invoked_subcommand != "setup":
+        from motion_spec_dsl.rdf_parser.manifest import install_metamodel_resolver
+
+        install_metamodel_resolver()
     _route_tool_logging()
     warnings.showwarning = show_warning
 
@@ -517,10 +471,72 @@ def _clear_shadowing_stst(prefix: Path) -> None:
     _say("done", f"trashed {other}, an older install whose jar is gone")
 
 
-def _cmake_options(component, configured: dict, extra: tuple[str, ...]) -> tuple[str, ...]:
-    """What a component is built with: its own list unless the config names one, plus extras."""
-    declared = configured.get(component.name)
-    return (*(component.options if declared is None else declared), *extra)
+def _clean(selected: list, everything: bool, root: Path, prefix: Path, assume_yes: bool) -> None:
+    """`setup --clean`: offer each installed package of SELECTED, or with --all every output."""
+    from motion_spec.setup import (
+        STST_REPOSITORY,
+        Removed,
+        discover_packages,
+        is_installed,
+        remove_environment,
+        remove_package,
+        remove_stst,
+        source_directory,
+        workspace_outputs,
+    )
+    from motion_spec.utils import trash
+
+    def report(items: list[Removed]) -> None:
+        for item in items:
+            what = item.what.replace(f"{root}/", "")
+            if item.deleted:
+                _say("done", f"deleted {what}")
+            elif item.to is not None:
+                _say("done", f"trashed {what} → {item.to}")
+            else:
+                _say("done", f"trashed {what} (into its filesystem's trash)")
+
+    removed = []
+    if everything:
+        for path in workspace_outputs(root, prefix):
+            label = _under(path, root)
+            if _confirm_removal(label, [(label, tree_size(path))], assume_yes):
+                report([Removed(str(path), trash(path))])
+                removed.append(label)
+    else:
+        names = []
+        for repository in selected:
+            checkout = source_directory(root, repository.path)
+            if repository.path == STST_REPOSITORY:
+                names.append("stst")
+            elif checkout.is_dir():
+                names.extend(package.name for package in discover_packages(checkout))
+        for name in names:
+            if not _confirm_removal(name, _clean_offer(name, root, prefix), assume_yes):
+                continue
+            items = (
+                remove_stst(root, prefix) if name == "stst" else remove_package(name, root, prefix)
+            )
+            report(items)
+            if items:
+                removed.append(name)
+        # With nothing installed they are a map to an empty prefix.
+        if removed and not any(is_installed(name, prefix) for name in names):
+            report(remove_environment(root))
+    if not removed:
+        _say("info", "nothing removed")
+        return
+    _say(
+        "done",
+        f"cleaned: {', '.join(removed)}; restore with `gio trash --restore` or your file manager",
+    )
+    left = sorted(
+        _under(tree, root)
+        for repository in selected
+        if (tree := source_directory(root, repository.path)).is_dir()
+    )
+    if left:
+        _say("info", f"sources left in place: {', '.join(left)}")
 
 
 def _environment_options(command):
@@ -710,7 +726,7 @@ def _port_taken(port: int) -> bool:
 
 
 @main.command()
-@click.argument("components", nargs=-1, type=click.Choice(COMPONENT_NAMES))
+@click.argument("repositories", nargs=-1)
 @click.option(
     "--workspace",
     "workspace_argument",
@@ -746,69 +762,57 @@ def _port_taken(port: int) -> bool:
     is_flag=True,
     help="Answer yes to every --clean prompt, for a script with no terminal to ask at.",
 )
-@click.option(
-    "--force", is_flag=True, help="Rebuild even when the component is already installed."
-)
+@click.option("--force", is_flag=True, help="Rebuild even when a package is already installed.")
 @click.option(
     "--clear-cache",
     is_flag=True,
-    help="Clear selected CMake build caches and rebuild those components.",
+    help="Clear the selected CMake build caches and rebuild those packages.",
 )
 @click.option(
     "--build-type", default=BUILD_TYPE, show_default=True, help="CMAKE_BUILD_TYPE for the sources."
 )
 @click.option(
-    "--dev/--no-dev",
-    "dev_flag",
-    default=None,
-    help="Check the Python components out into WORKSPACE/src, to work on them. Without it pip "
-    "fetches the pinned ref and nothing new lands under src; a checkout already there is "
-    "installed either way.",
+    "--dev",
+    is_flag=True,
+    help="Install the Python packages editable (`pip install -e`), for working on their "
+    "checkouts in WORKSPACE/src. Without it they install as snapshots.",
 )
 @click.option(
-    "--editable/--no-editable",
-    "editable_flag",
-    default=None,
-    help="Whether a Python checkout is installed with `pip install -e`. On by default, so "
-    "site-packages points back at the tree you are editing; --no-editable installs a snapshot.",
+    "--real",
+    is_flag=True,
+    help="Also install motion_spec.real.repos: the device drivers a real platform needs.",
 )
 @click.option(
     "--repos",
     "repos",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    help="Pins to use instead of the shipped manifest. Every component it omits must already "
-    "be checked out in the workspace, or setup stops and says which.",
-)
-@click.option(
-    "--external",
-    "external",
     multiple=True,
-    type=click.Choice(COMPONENT_NAMES),
-    help="A component you supply yourself: never cloned, built or installed. Repeatable; "
-    "adds to [setup] external.",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="A .repos manifest to install instead of the shipped motion_spec.repos; repeatable, "
+    "installed file after file in the order given.",
 )
 @click.option(
     "--ros/--no-ros",
     "ros_flag",
     default=None,
-    help="Treat the workspace as a colcon one: build each component with colcon and write an "
-    "environment file that sources ROS and the overlay. Overrides [ros] workspace.",
+    help="Treat the workspace as a colcon one: build each CMake package with colcon and write "
+    "an environment file that sources ROS and the overlay. Overrides [ros] workspace.",
 )
 @click.option(
     "--cmake-arg",
     "cmake_args",
     multiple=True,
-    help="Extra cmake option for the named components; repeat as needed.",
+    help="Extra cmake argument for every CMake package this run builds; repeatable. Lasting "
+    "ones belong in the workspace colcon.meta.",
 )
 @click.option(
     "-j",
     "--jobs",
     type=click.IntRange(min=1),
     help="Compilers to run at once. Defaults to the lesser of the usable cores and one per "
-    "2 GiB of memory; $CMAKE_BUILD_PARALLEL_LEVEL and [setup] jobs also set it.",
+    "2 GiB of memory; $CMAKE_BUILD_PARALLEL_LEVEL also sets it.",
 )
 def setup(
-    components: tuple[str, ...],
+    repositories: tuple[str, ...],
     workspace_argument: Path | None,
     prefix: Path | None,
     clean: bool,
@@ -817,55 +821,48 @@ def setup(
     force: bool,
     clear_cache: bool,
     build_type: str,
-    dev_flag: bool | None,
-    editable_flag: bool | None,
-    repos: Path | None,
-    external: tuple[str, ...],
+    dev: bool,
+    real: bool,
+    repos: tuple[Path, ...],
     ros_flag: bool | None,
     cmake_args: tuple[str, ...],
     jobs: int | None,
 ) -> None:
-    """Install the external tools and libraries motion-spec builds against.
+    """Install what the .repos manifests list, in their order.
 
-    Installs into WORKSPACE/install, with the environment files written to WORKSPACE. With no
-    COMPONENTS, installs the ones every model needs, in dependency order; the device drivers
-    (serial, robotiq_driver_noros, robif2b) are built only when named. A source already in the
-    workspace is what gets built; --dev decides where a missing one is checked out.
+    Sources come in by `vcs import`, Python packages go into the active virtual environment
+    (else WORKSPACE/.venv, made here), and CMake packages into WORKSPACE/install with the
+    arguments in WORKSPACE/colcon.meta. REPOSITORIES narrows the run to those entries, by
+    manifest path or by name.
     """
     if clean and clear_cache:
         raise click.UsageError("--clean and --clear-cache cannot be used together")
     if everything and not clean:
         raise click.UsageError("--all applies to --clean: it names what a clean may take")
-    if everything and components:
+    if everything and repositories:
         raise click.UsageError(
-            "--all removes the workspace's build, install and log trees; it takes no components"
+            "--all removes the workspace's build, install and log trees; it takes no repositories"
         )
     from motion_spec.setup import (
-        COMPONENTS_BY_NAME,
+        STST_REPOSITORY,
+        _ignore_thirdparty,
         build_jobs,
-        component_installed,
-        install_component,
+        discover_packages,
+        import_sources,
+        install_package,
         install_prefix,
         install_stst,
-        is_installed,
+        manifest_files,
         manifest_in_force,
         missing_prerequisites,
-        remove_component,
-        remove_environment,
-        remove_stst,
-        repository_of,
-        source_directory,
-        source_tree,
+        package_installed,
+        source_state,
         stst_installed,
-        uncovered,
-        workspace_outputs,
+        target_environment,
         workspace,
         write_environment,
     )
 
-    selected = components or DEFAULT_COMPONENTS
-    # Declaration order, not the order typed: mj_kdl_wrapper links orocos_kdl.
-    ordered = [name for name in COMPONENT_NAMES if name in selected]
     # A mistake in the command, not a failure inside it: no stack.
     try:
         root = workspace(workspace_argument)
@@ -874,45 +871,35 @@ def setup(
         configured, config_path = config_settings(root)
     except (RuntimeError, ValueError) as exc:
         raise click.UsageError(str(exc)) from exc
-    declared = configured.get("setup", {})
-    configured_args = declared.get("cmake_args", {})
     in_file = bool(configured.get("ros", {}).get("workspace"))
     ros = ros_flag if ros_flag is not None else in_file
-    dev = dev_flag if dev_flag is not None else bool(declared.get("dev", False))
-    # Editable is the point of a checkout, and a checkout is installed wherever one is found,
-    # so this is on unless --no-editable says otherwise. It reaches nothing else: a component
-    # pip fetches has no tree to point at, and a compiled extension takes it only under --dev.
-    editable = editable_flag if editable_flag is not None else bool(declared.get("editable", True))
-    if not components and declared.get("components"):
-        ordered = [name for name in COMPONENT_NAMES if name in declared["components"]]
-    manifest = repos or (Path(declared["repos"]) if declared.get("repos") else None)
+    files = manifest_files(repos, real)
     try:
-        sources = manifest_in_force(manifest)
+        listed = manifest_in_force(files)
     except (OSError, ValueError) as exc:
         raise click.UsageError(str(exc)) from exc
-    if manifest is not None:
-        _say("info", f"pins from {manifest}")
-    supplied = {*external, *declared.get("external", [])}
-    # Dropped before anything reads the list, so no clone, build, marker or prerequisite of an
-    # external component is ever considered; health still reports whether it resolves.
-    skipped_external = [name for name in ordered if name in supplied]
-    ordered = [name for name in ordered if name not in supplied]
+    unknown = [n for n in repositories if not any(n in (r.path, r.name) for r in listed)]
+    if unknown:
+        raise click.UsageError(
+            f"not in {', '.join(str(f) for f in files)}: {', '.join(unknown)}; listed are "
+            f"{', '.join(r.name for r in listed)}"
+        )
+    selected = [r for r in listed if not repositories or {r.path, r.name} & set(repositories)]
     from motion_spec.config import resolve
 
     build_type = resolve(
         build_type if build_type != BUILD_TYPE else None,
         BUILD_TYPE_VARIABLE,
-        declared.get("build_type"),
+        None,
         BUILD_TYPE,
         os.environ,
     ).value
     # CMake's own variable fills the environment slot; an explicit --parallel would shadow it.
-    asked = resolve(jobs, "CMAKE_BUILD_PARALLEL_LEVEL", declared.get("jobs"), None, os.environ)
+    asked = resolve(jobs, "CMAKE_BUILD_PARALLEL_LEVEL", None, None, os.environ)
     try:
         jobs = build_jobs(int(asked.value) if asked.value is not None else None)
     except ValueError as exc:
         raise click.UsageError(f"jobs ({asked.source}) is not a number: {asked.value!r}") from exc
-    prefix = prefix or (Path(declared["prefix"]) if declared.get("prefix") else None)
     prefix = (root / prefix).resolve() if prefix else install_prefix(root)
     log = command_log(root, "setup")
     # Held to the end of the command, so the failure that ends it is in the log too.
@@ -923,20 +910,20 @@ def setup(
         {
             "workspace": root,
             "prefix": prefix,
-            "components": ", ".join(ordered),
+            "manifests": ", ".join(str(path) for path in files),
+            "repositories": ", ".join(repository.name for repository in selected),
             "build type": build_type,
             "jobs": f"{jobs} ({asked.source})",
-            "python": "checkout, editable" if dev and editable else "checkout" if dev else "git",
+            "python": "editable" if dev else "snapshot",
             "colcon": ros,
             **machine_facts(),
         },
     )
     _say("info", f"workspace {root}")
     _say("info", f"installing into {prefix}")
+    _say("info", f"manifests {', '.join(str(path) for path in files)}")
     _say("info", f"console log {log}")
     _say("info", f"building with {jobs} job{'s' if jobs != 1 else ''} ({asked.source})")
-    if skipped_external:
-        _say("info", f"supplied by you, left alone: {', '.join(skipped_external)}")
     # setup cannot check itself out: it is the code running. So it says so instead.
     if dev and not _editable_here(root):
         import motion_spec
@@ -955,150 +942,82 @@ def setup(
             f"{config_path} to keep it",
         )
     if not clean:
-        # Before the first clone: a prerequisite setup cannot install itself is a failure the
+        # Before the first import: a prerequisite setup cannot install itself is a failure the
         # operator has to act on, and finding it after four checkouts and a build helps nobody.
         _say("info", "checking prerequisites")
-        unsupplied = uncovered(ordered, root, dev, sources)
-        if unsupplied:
-            for name in unsupplied:
-                _say("error", f"{name}: no entry in {manifest} and no checkout in the workspace")
-            raise _Reported("every component needs a pin or a source; nothing was cloned.")
-        packages, others = missing_prerequisites(ordered, ros)
+        packages, others = missing_prerequisites(selected, ros)
         if packages or others:
             for requirement in others:
                 _say("error", requirement)
             if packages:
                 _say("error", f"apt: sudo apt-get install -y {' '.join(packages)}")
-            raise _Reported(
-                "setup needs these before it can start; nothing was cloned or built."
-            )
-    if ros and not clean:
-        from motion_spec.setup import write_colcon_meta
-
-        # Every package, not just the ones installed now: colcon builds whatever is in src/,
-        # and it is written before the first build, which reads it.
-        built_with = {
-            component.name: _cmake_options(component, configured_args, ())
-            for component in COMPONENTS_BY_NAME.values()
-        }
-        _say("info", f"colcon options in {write_colcon_meta(root, built_with)}")
+            raise _Reported("setup needs these before it can start; nothing was imported or built.")
     skipped: list[str] = []
     try:
         if clean:
-            if everything:
-                removed = [
-                    _under(path, root)
-                    for path in workspace_outputs(root, prefix)
-                    if _confirm_removal(
-                        _under(path, root), [(_under(path, root), tree_size(path))], assume_yes
-                    )
-                    and trash_if_present(path)
-                ]
-            else:
-                removed = [
-                    name
-                    for name in ordered
-                    if _confirm_removal(name, _clean_offer(name, root, prefix), assume_yes)
-                    and (
-                        remove_stst(root, prefix)
-                        if name == "stst"
-                        else remove_component(COMPONENTS_BY_NAME[name], root, prefix)
-                    )
-                ]
-                # With nothing installed they are a map to an empty prefix.
-                if removed and not any(
-                    is_installed(component, prefix) for component in COMPONENTS_BY_NAME.values()
-                ):
-                    remove_environment(root)
-            if removed:
-                _say("done", f"moved to trash: {', '.join(removed)}")
-                left = sorted(
-                    {
-                        _under(tree, root)
-                        for name in (ordered if everything else removed)
-                        if (tree := source_tree(root, repository_of(name), dev)).is_dir()
-                    }
-                )
-                if left:
-                    _say("info", f"sources left in place: {', '.join(left)}")
-            else:
-                _say("info", "nothing removed")
+            _clean(selected, everything, root, prefix, assume_yes)
             return
-        for name in ordered:
-            component = COMPONENTS_BY_NAME.get(name)
-            # Otherwise the miss is a find_package error pages into a build log.
-            for required in component.requires if component else ():
-                if required in ordered or is_installed(COMPONENTS_BY_NAME[required], prefix):
-                    continue
-                _say(
-                    "warn",
-                    f"{name} takes {required} from {prefix}, which has none installed; run "
-                    f"`motion-spec setup {required}` first, or point CMAKE_PREFIX_PATH at one",
-                )
-            already = not (force or (clear_cache and component and not component.python)) and (
-                stst_installed(root, prefix, dev)
-                if name == "stst"
-                else component_installed(component, prefix, dev, root, sources)
-            )
-            # Announced before the build, so its console output has a heading.
-            if not already:
-                _say("step", name)
-            if name == "stst":
-                launcher = install_stst(root, prefix, force=force, log=log, dev=dev, sources=sources)
+        python = target_environment(root, ros, dev, log)
+        _say("info", f"python packages into {python}")
+        if ros:
+            _ignore_thirdparty(root)
+        imported = import_sources(files, listed, root, log)
+        for repository in selected:
+            state = source_state(repository, root, repository.path in imported)
+            if not state.usable:
+                _say("warn", f"skipped {repository.name}: {state.path} {state.reason}")
+                skipped.append(repository.name)
+                continue
+            if state.drift:
+                _say("warn", f"{repository.name}: {state.path} {state.drift}")
+            if repository.path == STST_REPOSITORY:
+                already = not force and stst_installed(root, prefix)
+                if not already:
+                    _say("step", "stst")
+                launcher = install_stst(root, state, prefix, force=force, log=log)
                 _say(
                     "info" if already else "done",
                     f"stst {'already installed' if already else 'installed'}, launcher {launcher}",
                 )
                 _clear_shadowing_stst(prefix)
                 continue
-            state = install_component(
-                COMPONENTS_BY_NAME[name],
-                root,
-                prefix,
-                force=force,
-                clear_cache=clear_cache,
-                build_type=build_type,
-                log=log,
-                options=_cmake_options(COMPONENTS_BY_NAME[name], configured_args, cmake_args),
-                ros=ros,
-                editable=editable,
-                jobs=jobs,
-                dev=dev,
-                sources=sources,
-            )
-            if not state.usable:
-                _say("warn", f"skipped {name}: {state.path} {state.reason}")
-                skipped.append(name)
-            else:
-                # Not the pip route, which reports its requirement as the origin and has no tree.
-                if not state.origin and state.path != source_directory(
-                    root, COMPONENTS_BY_NAME[name].repository, dev
+            packages = discover_packages(state.path)
+            if not packages:
+                _say("warn", f"skipped {repository.name}: {state.path} holds no package to build")
+                skipped.append(repository.name)
+                continue
+            for package in packages:
+                if not (force or (clear_cache and package.cmake)) and package_installed(
+                    package.name, prefix, state.path
                 ):
-                    _say("info", f"{name}: adopting the checkout at {state.path}")
-                if state.drift:
-                    _say("warn", f"{name}: {state.path} {state.drift}")
-                _say(
-                    "info" if already else "done",
-                    f"{name} {'already installed' if already else 'installed'}, "
-                    f"source {state.origin or state.path}",
+                    _say("info", f"{package.name} already installed, source {state.path}")
+                    continue
+                # Announced before the build, so its console output has a heading.
+                _say("step", package.name)
+                install_package(
+                    package,
+                    state,
+                    root,
+                    prefix,
+                    python,
+                    clear_cache=clear_cache,
+                    build_type=build_type,
+                    log=log,
+                    extra=cmake_args,
+                    ros=ros,
+                    jobs=jobs,
+                    dev=dev,
                 )
+                _say("done", f"{package.name} installed, source {state.path}")
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
         raise _internal_failure("setup failed", exc) from exc
     from motion_spec.config import write_sample
 
-    sample = write_sample(
-        root,
-        COMPONENT_OPTIONS,
-        DEFAULT_COMPONENTS,
-        declared=workspace_argument is not None,
-        ros=ros,
-        dev=dev,
-        editable=editable,
-    )
+    sample = write_sample(root, declared=workspace_argument is not None, ros=ros)
     if sample:
         _say("info", f"settings written to {sample}")
     try:
-        written = write_environment(root, prefix, ros=ros)
+        written = write_environment(root, prefix, ros=ros, python=python)
     except RuntimeError as exc:
         raise click.UsageError(str(exc)) from exc
     _say("done", f"source {written} before generating, building or running")
@@ -1111,13 +1030,10 @@ def setup(
 @main.command()
 @click.argument("features", nargs=-1, type=click.Choice(_install_features()))
 def install(features: tuple[str, ...]) -> None:
-    """Install optional FEATURES and motion-spec-dsl."""
+    """Install optional FEATURES of motion-spec."""
     if not features:
         raise click.UsageError("name at least one feature")
-    extras = sorted(set(features) - {"dsl"})
-    requirements = [f"motion_spec[{','.join(extras)}]"] if extras else []
-    if "dsl" in features:
-        requirements.extend(_dsl_requirements())
+    requirements = [f"motion_spec[{','.join(sorted(features))}]"]
     from motion_spec.setup import installer
 
     try:
@@ -1262,8 +1178,7 @@ def health(
             click.secho(value)
         else:
             click.secho(
-                f"{fallback} (default)" if fallback else "unset",
-                fg=None if fallback else "yellow",
+                f"{fallback} (default)" if fallback else "unset", fg=None if fallback else "yellow"
             )
     current_profile = None
     dependency_width = max(len(check.dependency) for check in checks)
@@ -1511,34 +1426,17 @@ def archive(
 )
 def config(initialize: bool, workspace_argument: Path | None) -> None:
     """Show this workspace's settings, and where each one came from."""
-    from motion_spec.config import (
-        CONFIG_FILE,
-        settings,
-        write_sample,
-    )
-    from motion_spec.config import (
-        shell as config_shell,
-    )
-    from motion_spec.setup import (
-        BUILD_TYPE as DEFAULT_BUILD_TYPE,
-    )
-    from motion_spec.setup import (
-        GENERATION_DIRECTORY,
-        INSTALL_DIRECTORY,
-        build_jobs,
-    )
-    from motion_spec.setup import (
-        workspace as resolve_workspace,
-    )
+    from motion_spec.config import CONFIG_FILE, settings, write_sample
+    from motion_spec.config import shell as config_shell
+    from motion_spec.setup import GENERATION_DIRECTORY
+    from motion_spec.setup import workspace as resolve_workspace
 
     if initialize:
         try:
             root = resolve_workspace(workspace_argument)
         except RuntimeError as exc:
             raise click.UsageError(str(exc)) from exc
-        written = write_sample(
-            root, COMPONENT_OPTIONS, DEFAULT_COMPONENTS, declared=workspace_argument is not None
-        )
+        written = write_sample(root, declared=workspace_argument is not None)
         if written:
             _say("done", f"settings written to {written}")
             click.echo(written)
@@ -1552,7 +1450,7 @@ def config(initialize: bool, workspace_argument: Path | None) -> None:
         raise click.ClickException(str(exc)) from exc
     click.secho(f"file: {path or f'none found ({CONFIG_FILE})'}", fg="blue")
     workspace_keys = configured.get("workspace", {})
-    setup_keys = configured.get("setup", {})
+    ros_keys = configured.get("ros", {})
     # The file's own directory is the workspace when it does not name one.
     located = str(path.parent) if path else None
     rows = [
@@ -1572,13 +1470,8 @@ def config(initialize: bool, workspace_argument: Path | None) -> None:
             "the nearest setup-motion-spec file",
         ),
         ("workspace.shell", workspace_keys, "shell", None, config_shell(configured)),
-        ("setup.prefix", setup_keys, "prefix", None, f"<workspace>/{INSTALL_DIRECTORY}"),
-        ("setup.build_type", setup_keys, "build_type", BUILD_TYPE_VARIABLE, DEFAULT_BUILD_TYPE),
-        ("setup.dev", setup_keys, "dev", None, False),
-        ("setup.editable", setup_keys, "editable", None, False),
-        ("setup.jobs", setup_keys, "jobs", "CMAKE_BUILD_PARALLEL_LEVEL", build_jobs()),
-        ("setup.components", setup_keys, "components", None, list(DEFAULT_COMPONENTS)),
-        ("setup.external", setup_keys, "external", None, []),
+        ("ros.workspace", ros_keys, "workspace", None, False),
+        ("ros.distro", ros_keys, "distro", "ROS_DISTRO", None),
     ]
     width = max(len(name) for name, *_ in rows)
     for name, section, key, variable, default in rows:
@@ -1593,9 +1486,6 @@ def config(initialize: bool, workspace_argument: Path | None) -> None:
         click.secho(f"  {name:<{width}}  ", fg="cyan", nl=False)
         click.secho(f"{shown}", nl=False)
         click.secho(f"  ({source})", fg="yellow", dim=True)
-    for component, options in setup_keys.get("cmake_args", {}).items():
-        click.secho(f"  setup.cmake_args.{component}  ", fg="cyan", nl=False)
-        click.echo(" ".join(options))
 
 
 @main.command()

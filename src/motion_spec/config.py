@@ -20,28 +20,12 @@ from pathlib import Path
 CONFIG_FILE = "motion-spec.config.toml"
 SECTIONS = {
     "workspace": {"root", "generations", "environment", "shell"},
-    "setup": {
-        "prefix",
-        "build_type",
-        "components",
-        "cmake_args",
-        "editable",
-        "jobs",
-        "dev",
-        "external",
-        "repos",
-    },
     "ros": {"workspace", "distro"},
 }
 TOP_LEVEL = {"version"}
 SHELLS = ("bash", "zsh")
 # Paths are written relative to the file, and resolved against its directory.
-_PATH_KEYS = {
-    ("workspace", "root"),
-    ("workspace", "generations"),
-    ("workspace", "environment"),
-    ("setup", "repos"),
-}
+_PATH_KEYS = {("workspace", "root"), ("workspace", "generations"), ("workspace", "environment")}
 
 
 @dataclass(frozen=True)
@@ -121,31 +105,10 @@ def resolve(flag, variable: str | None, configured, default, environ) -> Setting
     return Setting(default, "default")
 
 
-def sample(
-    components: dict[str, tuple[str, ...]],
-    default_components: tuple[str, ...],
-    root: Path | None = None,
-    ros: bool = False,
-    dev: bool = False,
-    editable: bool = False,
-) -> str:
+def sample(root: Path | None = None, ros: bool = False) -> str:
     """Every key this file understands, at the value the run that wrote it used."""
-    listed = ", ".join(f'"{name}"' for name in default_components)
-    on_request = [name for name in components if name not in default_components]
-    width = max(len(name) for name in components)
-    args = []
-    for name, built_in in components.items():
-        listed_options = ", ".join(f'"{option}"' for option in built_in)
-        # Commented like its entry in `components`: not built unless it is named.
-        prefix = "" if name in default_components else "# "
-        args.append(f"{prefix}{name:<{width}} = [{listed_options}]")
     from motion_spec.formats import FORMATS
-
     from motion_spec.health import _ros_distro
-    from motion_spec.setup import build_jobs
-
-    # Left commented: a number that fits this machine's memory can take a smaller one down.
-    jobs_key = f"# jobs = {build_jobs()}"
 
     newline = "\n"
     using = shell()
@@ -153,8 +116,6 @@ def sample(
     found = _ros_distro()
     distro_key = f'distro = "{found}"' if found else '# distro = "jazzy"'
     ros_key = f"workspace = {'true' if ros else 'false'}"
-    dev_key = f"dev = {'true' if dev else 'false'}"
-    editable_key = f"editable = {'true' if editable else 'false'}"
     workspace_keys = newline.join(
         f"{code:<42} # {note}"
         for code, note in (
@@ -178,37 +139,12 @@ version = {version}
 {workspace_keys}
 
 [ros]
-{ros_key:<42} # true: setup writes colcon.meta so colcon builds these
+{ros_key:<42} # true: CMake packages build with colcon
 {distro_key:<42} # which /opt/ros to build against; $ROS_DISTRO overrides
-
-[setup]
-prefix = "install"
-build_type = "RelWithDebInfo"
-{dev_key:<42} # check the Python components out into src/
-{editable_key:<42} # pip install -e that checkout; --dev implies it
-{jobs_key:<42} # compilers at once; -j and the cmake variable win
-components = [{listed}]
-#   only when named: {", ".join(on_request)}
-# Supplied by you, not by setup: never cloned, built or installed, only reported by health.
-external = []
-# Pins to use instead of the shipped manifest. Every component it omits must be checked out.
-# repos = "my.repos"
-
-# Each list is the whole list cmake is passed.
-[setup.cmake_args]
-{newline.join(args)}
 """
 
 
-def write_sample(
-    root: Path,
-    components: dict[str, tuple[str, ...]],
-    default: tuple[str, ...],
-    declared: bool = False,
-    ros: bool = False,
-    dev: bool = False,
-    editable: bool = False,
-) -> Path | None:
+def write_sample(root: Path, declared: bool = False, ros: bool = False) -> Path | None:
     """Write the sample at ROOT, unless a config is already there.
 
     DECLARED records ROOT in the file, for a workspace named on the command line rather than
@@ -217,7 +153,5 @@ def write_sample(
     path = root / CONFIG_FILE
     if path.exists():
         return None
-    path.write_text(
-        sample(components, default, root if declared else None, ros, dev, editable)
-    )
+    path.write_text(sample(root if declared else None, ros))
     return path

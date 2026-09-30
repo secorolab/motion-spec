@@ -9,11 +9,12 @@ struct members baked into the generated C++ change between two builds of the sam
 from __future__ import annotations
 
 import shutil
-from pathlib import Path
+
+from support import example
 
 from motion_spec.generation.pipeline import generate_model
 
-MODEL = Path(__file__).parents[2] / "motion-spec-dsl" / "models" / "pick_place_single"
+MODEL = example("pick_and_place")
 
 from conftest import requires_workspace
 
@@ -28,6 +29,6 @@ def test_two_generations_of_one_model_lower_to_the_same_ir(tmp_path):
     for _ in range(2):
         shutil.rmtree(generation, ignore_errors=True)
         generation.mkdir()
-        generated = generate_model(MODEL / "pick_place_single.robmot", generation, stage="ir")
+        generated = generate_model(MODEL / "pick_and_place.robmot", generation, stage="ir")
         irs.append((generated / "model" / "ir.json").read_text())
     assert irs[0] == irs[1]

@@ -27,11 +27,12 @@ from motion_spec_dsl.rdf_parser.vocab import (
 )
 from rdflib import Graph, Namespace, URIRef
 from rdflib.namespace import RDF
+from support import DSL_MODELS, example
 
 from motion_spec.rdf_parser.ir import generate_ir
 from motion_spec.rdf_parser.model import load_model
 
-MODELS = Path(__file__).parents[2] / "motion-spec-dsl" / "models"
+MODELS = DSL_MODELS
 FIXTURES = Path(__file__).parent / "fixtures"
 METAMODELS = Path(
     os.environ.get("METAMODELS_PATH", Path(__file__).resolve().parents[2] / "metamodels")
@@ -46,26 +47,26 @@ pytestmark = [
 def generated_model(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Generate the representative model once per module; consumers load their own
     fresh graph from the immutable result and must not mutate the manifest on disk."""
-    tmp_path = tmp_path_factory.mktemp("pick_place_single")
+    tmp_path = tmp_path_factory.mktemp("pick_and_place")
     with pytest.MonkeyPatch.context() as mp:
         mp.setenv("METAMODELS_PATH", str(METAMODELS))
         metamodel = motion_spec_metamodel()
-        model = metamodel.model_from_file(MODELS / "pick_place_single" / "pick_place_single.robmot")
+        model = metamodel.model_from_file(example("pick_and_place") / "pick_and_place.robmot")
         _gen_graph(metamodel, model, tmp_path, overwrite=True, debug=False)
-    return tmp_path / "pick_place_single-app.ld.json"
+    return tmp_path / "pick_and_place-app.ld.json"
 
 
 @pytest.fixture(scope="module")
 def generated_dual_model(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Generate the dual-arm model once per module; consumers load their own fresh
     graph from the immutable result and must not mutate the manifest on disk."""
-    tmp_path = tmp_path_factory.mktemp("pick_place_dual")
+    tmp_path = tmp_path_factory.mktemp("dual_arm_pick_and_place")
     with pytest.MonkeyPatch.context() as mp:
         mp.setenv("METAMODELS_PATH", str(METAMODELS))
         metamodel = motion_spec_metamodel()
-        model = metamodel.model_from_file(MODELS / "pick_place_dual" / "pick_place_dual.robmot")
+        model = metamodel.model_from_file(example("dual_arm_pick_and_place") / "dual_arm_pick_and_place.robmot")
         _gen_graph(metamodel, model, tmp_path, overwrite=True, debug=False)
-    return tmp_path / "pick_place_dual-app.ld.json"
+    return tmp_path / "dual_arm_pick_and_place-app.ld.json"
 
 
 def test_dual_arm_physical_profiles_and_path_progress_reach_ir(generated_dual_model: Path) -> None:
@@ -112,18 +113,18 @@ def test_dual_arm_physical_profiles_and_path_progress_reach_ir(generated_dual_mo
 
 def test_generation_keeps_scene_fsm_and_provenance_separate(generated_model: Path) -> None:
     output = generated_model.parent
-    assert (output / "pick_place_single.ld.json").exists()
-    assert (output / "pick_place_single.scenex.ld.json").exists()
-    header = output / "pick_place_single.kdl.hpp"
+    assert (output / "pick_and_place.ld.json").exists()
+    assert (output / "pick_and_place.scenex.ld.json").exists()
+    header = output / "pick_and_place.kdl.hpp"
     assert header.exists()
     assert "make_tree_" in header.read_text()
-    assert (output / "pick_place_single_fsm.ld.json").exists()
+    assert (output / "pick_and_place_fsm.ld.json").exists()
 
     provenance = Graph().parse(output / "provenance" / "dsl.ld.json", format="json-ld")
     prov = Namespace("http://www.w3.org/ns/prov#")
     activity = URIRef(
         "https://secorolab.github.io/motion-spec-dsl/provenance/"
-        "activity/jsonld_generation/pick_place_single"
+        "activity/jsonld_generation/pick_and_place"
     )
     assert (activity, RDF.type, prov.Activity) in provenance
 
@@ -146,8 +147,8 @@ def test_generation_documents_share_one_node_per_tool_and_per_file(generated_mod
     }
     # The one tool both documents describe is one node, and so is the .fsm they both read.
     assert msprov["agent/coord_dsl"] in set(coord.subjects(RDF.type, prov.SoftwareAgent))
-    assert msprov["entity/source/pick_place_single.fsm"] in set(coord.objects(None, prov.used))
-    assert msprov["entity/source/pick_place_single.fsm"] in set(dsl.objects(None, prov.used))
+    assert msprov["entity/source/pick_and_place.fsm"] in set(coord.objects(None, prov.used))
+    assert msprov["entity/source/pick_and_place.fsm"] in set(dsl.objects(None, prov.used))
 
     # Turning one model into another is what these activities do; the class says so in both.
     assert set(dsl.subjects(RDF.type, prov_ext.Transformation))
@@ -164,10 +165,10 @@ def test_non_pose_component_views_keep_their_subspace(
     monkeypatch.setenv("METAMODELS_PATH", str(METAMODELS))
     metamodel = motion_spec_metamodel()
     model = metamodel.model_from_file(
-        MODELS / "admittance_arc_single" / "admittance_arc_single.robmot"
+        example("arc_tracing_with_admittance") / "arc_tracing_with_admittance.robmot"
     )
     _gen_graph(metamodel, model, tmp_path, overwrite=True, debug=False)
-    graph = load_model(tmp_path / "admittance_arc_single-app.ld.json").graph
+    graph = load_model(tmp_path / "arc_tracing_with_admittance-app.ld.json").graph
     wrench_views = set(graph.subjects(RDF.type, MAP_EXT.WrenchCoordinateView))
     twist_views = set(graph.subjects(RDF.type, MAP_EXT.VelocityTwistCoordinateView))
     assert wrench_views and twist_views

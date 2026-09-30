@@ -51,7 +51,7 @@ inline void init_<motion.id>(<motion.id>_state &state, const robot_io &robot) {
 
 inline void update_<motion.id>(
     <motion.id>_state &state,
-    shared_data &shared,
+    [[maybe_unused]] shared_data &shared,
     const robot_io &robot) {
     init_<motion.id>(state, robot);
 <if(motion.has_active_elapsed)>    if (state.motion_start_time \< 0.0) {

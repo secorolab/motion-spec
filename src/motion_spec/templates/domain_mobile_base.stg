@@ -225,5 +225,5 @@ base-runtime-step-impl ::= [
 // A platform that drives no chain still has to advance the simulation it runs in; on hardware
 // the plant advances itself and there is nothing to step.
 base-runtime-step-mj_kdl() ::= <<
-        if (!mj_kdl::step(&mj_platform)) break;
+        if (!mj_kdl::step(&mj_env)) break;
 >>

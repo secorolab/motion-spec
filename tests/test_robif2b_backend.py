@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 from conftest import requires_workspace
+from support import DSL_MODELS, example
 
 TEMPLATES = Path(__file__).resolve().parents[1] / "src" / "motion_spec" / "templates"
 ROBIF2B = (TEMPLATES / "backend_robif2b.stg").read_text()
@@ -44,7 +45,7 @@ def test_a_commanded_joint_position_reaches_each_route_as_that_devices_units(tmp
     helper = re.search(
         r"inline double gripper_closed_fraction.*?\n\}",
         (TEMPLATES / "runtime.stg").read_text(),
-        re.S,
+        re.DOTALL,
     )
     assert helper, "gripper_closed_fraction is no longer in runtime.stg"
     travel = _gripper_travel()
@@ -84,10 +85,10 @@ def test_no_deployment_detail_is_authored_into_a_template() -> None:
         assert not found, f"{template.name} carries deployment literals: {sorted(set(found))}"
 
 
-MODELS = Path(__file__).parents[2] / "motion-spec-dsl" / "models"
+MODELS = DSL_MODELS
 # One per route the gripper can take: its own serial line, or the arm's interconnect.
-REAL_WORLD_MODELS = ("real_demo_monitor", "real_demo_hold")
-FT_REQUIRED_BY_MOTION = {"real_demo_monitor": [0, 1], "real_demo_hold": []}
+REAL_WORLD_MODELS = ("real_gripper_cycle_ft_monitoring", "real_arm_pose_hold")
+FT_REQUIRED_BY_MOTION = {"real_gripper_cycle_ft_monitoring": [0, 1], "real_arm_pose_hold": []}
 
 pytestmark = requires_workspace(MODELS)
 
@@ -102,7 +103,7 @@ def test_a_real_world_model_generates_and_compiles(name: str, tmp_path: Path) ->
     generation = tmp_path / "gen"
     subprocess.run(
         ["motion-spec", "gen", "code", f"{name}.robmot", "-o", str(generation)],
-        cwd=MODELS / name,
+        cwd=example(name),
         check=True,
     )
     built = next(generation.glob(f"{name}/*"))

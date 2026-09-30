@@ -7,9 +7,6 @@ import "backend_robif2b_io.stg"
 robot-driver-include-robif2b(solver, model_name, resources) ::= <<
 <({robot-driver-include-robif2b-<solver.hardware.model>})(solver, model_name, resources)>
 >>
-robot-num-joints-def-robif2b(solver) ::= <<
-<({robot-num-joints-def-robif2b-<solver.hardware.model>})(solver)>
->>
 robot-state-struct-robif2b(solver) ::= <<
 <({robot-state-struct-robif2b-<solver.hardware.model>})(solver)>
 >>
@@ -32,10 +29,6 @@ robot-shutdown-robif2b(solver) ::= <<
 <({robot-shutdown-robif2b-<solver.hardware.model>})(solver)>
 >>
 
-robot-num-joints-def-robif2b-KinovaGen3(solver) ::= <<
-inline constexpr int KINOVA_NUM_JOINTS = 7;
->>
-
 // The robotiq driver headers ride in device_io.hpp, which includes them per bound device.
 robot-driver-include-robif2b-KinovaGen3(solver, model_name, resources) ::= <<
 #include "headers/<model_name>.kdl.hpp"
@@ -52,14 +45,14 @@ struct kinova_state {
     // Every kortex entry point asserts on the error port, not just the ones that can fail.
     enum robif2b_kinova_gen3_error error = ROBIF2B_KINOVA_NO_ERROR;
     enum robif2b_ctrl_mode ctrl_mode = ROBIF2B_CTRL_MODE_FORCE;
-    double pos_msr[KINOVA_NUM_JOINTS] = {0.0};
-    double vel_msr[KINOVA_NUM_JOINTS] = {0.0};
-    double eff_msr[KINOVA_NUM_JOINTS] = {0.0};
-    double cur_msr[KINOVA_NUM_JOINTS] = {0.0};
-    double pos_cmd[KINOVA_NUM_JOINTS] = {0.0};
-    double vel_cmd[KINOVA_NUM_JOINTS] = {0.0};
-    double eff_cmd[KINOVA_NUM_JOINTS] = {0.0};
-    double cur_cmd[KINOVA_NUM_JOINTS] = {0.0};
+    double pos_msr[ROBIF2B_KINOVA_GEN3_NR_JOINTS] = {0.0};
+    double vel_msr[ROBIF2B_KINOVA_GEN3_NR_JOINTS] = {0.0};
+    double eff_msr[ROBIF2B_KINOVA_GEN3_NR_JOINTS] = {0.0};
+    double cur_msr[ROBIF2B_KINOVA_GEN3_NR_JOINTS] = {0.0};
+    double pos_cmd[ROBIF2B_KINOVA_GEN3_NR_JOINTS] = {0.0};
+    double vel_cmd[ROBIF2B_KINOVA_GEN3_NR_JOINTS] = {0.0};
+    double eff_cmd[ROBIF2B_KINOVA_GEN3_NR_JOINTS] = {0.0};
+    double cur_cmd[ROBIF2B_KINOVA_GEN3_NR_JOINTS] = {0.0};
     // The base IMU is not optional: the driver writes it on every measurement it publishes,
     // whether or not the model asks for it, and asserts on the buffer being there.
     double imu_ang_vel_msr[3] = {0.0};

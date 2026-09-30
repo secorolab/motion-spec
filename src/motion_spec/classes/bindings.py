@@ -96,6 +96,9 @@ class SensorBinding:
     id: str
     type: str
     frame: str
+    # `id` and `frame` without the runtime prefix, as the robot's own model names them.
+    local_id: str
+    local_frame: str
     update_rate_hz: float | None
     # What `robot.toml` calls this sensor. The same key a bound device is configured under, so a
     # deployment property of the sensor -- its tare length -- is stated once for both platforms.

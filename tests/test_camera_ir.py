@@ -14,11 +14,12 @@ from pathlib import Path
 
 import pytest
 from conftest import requires_workspace
+from support import DSL_MODELS, example
 from textx.exceptions import TextXSemanticError
 
 from motion_spec.rdf_parser.ir import generate_ir
 
-MODELS = Path(__file__).parents[2] / "motion-spec-dsl" / "models"
+MODELS = DSL_MODELS
 SUBSCRIPTION = """        wrist-view: topic "/wrist/color" message "sensor_msgs/msg/Image" {
             observes { <pick_place_scene_mjc.wrist> }
         },
@@ -35,15 +36,15 @@ def _cameras(name, tmp_path, model_dir=None):
     outdir = tmp_path / "generated" / "model"
     subprocess.run(
         ["textx", "generate", f"{name}.robmot", "--target", "jsonld", "-o", str(outdir)],
-        cwd=model_dir or MODELS / name,
+        cwd=model_dir or example(name),
         check=True,
     )
     return generate_ir(outdir / f"{name}-app.ld.json")["composition"]["scene"].cameras
 
 
 def test_declared_camera_lowers_with_its_authored_render_settings(tmp_path):
-    """pick_place_single authors one 640x480 rgb camera at 30 Hz on the wrist."""
-    cameras = _cameras("pick_place_single", tmp_path)
+    """pick_and_place authors one 640x480 rgb camera at 30 Hz on the wrist."""
+    cameras = _cameras("pick_and_place", tmp_path)
 
     assert len(cameras) == 1
     camera = cameras[0]
@@ -53,13 +54,13 @@ def test_declared_camera_lowers_with_its_authored_render_settings(tmp_path):
 
 def test_scene_without_a_camera_lowers_none(tmp_path):
     """No camera declared, no camera lowered -- and so no camera code to generate."""
-    assert _cameras("pick_place_dual", tmp_path) == []
+    assert _cameras("dual_arm_pick_and_place", tmp_path) == []
 
 
 def test_a_camera_nothing_subscribes_to_has_no_provider(tmp_path):
-    """pick_place_single renders its camera and publishes it nowhere: a viewer has no channel
+    """pick_and_place renders its camera and publishes it nowhere: a viewer has no channel
     to read, and must not invent one from the camera's name."""
-    camera = _cameras("pick_place_single", tmp_path)[0]
+    camera = _cameras("pick_and_place", tmp_path)[0]
 
     assert camera.topic is None
     assert camera.message is None

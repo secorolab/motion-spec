@@ -377,7 +377,9 @@ ft-tare(out, raw, sensor, reference, observer, gravity) ::= <<
                 ? robot.ft_<out.sensor_name>_load.getCOG() * weight_<out.id>
                 : KDL::Vector::Zero());
     }
-    shared.<out.id>_ft_raw = motion_spec::runtime::transform_wrench(<raw>, <sensor>, <reference>, <observer>);
+    // In the observer's axes, taken at the reference point.
+    const KDL::Frame at_reference_<out.id> = KDL::Frame(<observer>.M, <reference>.p).Inverse() * <sensor>;
+    shared.<out.id>_ft_raw = at_reference_<out.id> * <raw>;
     // Sensor frame, zero and load out: payload plus contact (plus the zero until the first tare).
     const KDL::Wrench net_<out.id> = <raw> - shared.<out.id>_ft_bias - shared.<out.id>_ft_load;
 <retare-on(out)>    if (robot.ft_<out.sensor_name>_bias_samples > 0 && shared.<out.id>_ft_settle \< robot.ft_<out.sensor_name>_bias_samples) {
@@ -405,8 +407,7 @@ ft-tare(out, raw, sensor, reference, observer, gravity) ::= <<
                         KDL::dot(shared.<out.id>_ft_bias_new.force, _g_hat) * _g_hat,
                         KDL::dot(shared.<out.id>_ft_bias_new.torque, _g_hat) * _g_hat);
                     shared.<out.id>_ft_bias = shared.<out.id>_ft_bias + (shared.<out.id>_ft_bias_new - _along);
-                    shared.<out.id>_ft_payload = motion_spec::runtime::transform_wrench(
-                        _along, <sensor>, <reference>, <observer>);
+                    shared.<out.id>_ft_payload = at_reference_<out.id> * _along;
                 \}
                 ++shared.<out.id>_ft_tares;
                 shared.<out.id>_ft_confirming = false;
@@ -422,8 +423,7 @@ ft-tare(out, raw, sensor, reference, observer, gravity) ::= <<
     \}
     shared.<out.id> = (shared.<out.id>_ft_tares > 0 || robot.ft_<out.sensor_name>_bias_samples == 0)
         ? shared.<out.id>_ft_payload
-            - motion_spec::runtime::transform_wrench(
-                <raw> - shared.<out.id>_ft_bias - shared.<out.id>_ft_load, <sensor>, <reference>, <observer>)
+            - at_reference_<out.id> * (<raw> - shared.<out.id>_ft_bias - shared.<out.id>_ft_load)
         : KDL::Wrench::Zero();
 >>
 
@@ -466,6 +466,7 @@ solver-output-Wrench-estimated(solver, chain_solver, out, backend) ::= <<
     const KDL::Frame tip_frame_<out.id> = <world-pose(solver, {robot.<solver.id>.world_tip})>;
     const KDL::Frame reference_<out.id> = <world-pose(solver, {robot.world_<chain_solver.runtime.owner_id>_<out.reference_point.id>})>;
     const KDL::Frame observer_<out.id> = <world-pose(solver, {robot.world_<chain_solver.runtime.owner_id>_<out.as_seen_by.id>})>;
+    const KDL::Frame at_reference_<out.id> = KDL::Frame(observer_<out.id>.M, reference_<out.id>.p).Inverse() * tip_frame_<out.id>;
     if (shared.<out.id>_est_settle \< 2 * settle_<out.id>) {
         ++shared.<out.id>_est_settle;
         if (shared.<out.id>_est_settle > settle_<out.id>) {
@@ -476,7 +477,7 @@ solver-output-Wrench-estimated(solver, chain_solver, out, backend) ::= <<
             const KDL::Wrench along_<out.id>(
                 KDL::dot(tip_<out.id>.force, g_hat_<out.id>) * g_hat_<out.id>,
                 KDL::dot(tip_<out.id>.torque, g_hat_<out.id>) * g_hat_<out.id>);
-            const KDL::Wrench sample_<out.id> = motion_spec::runtime::transform_wrench(along_<out.id>, tip_frame_<out.id>, reference_<out.id>, observer_<out.id>);
+            const KDL::Wrench sample_<out.id> = at_reference_<out.id> * along_<out.id>;
             const double n_<out.id> = static_cast\<double>(shared.<out.id>_est_settle - settle_<out.id>);
             shared.<out.id>_est_payload_new = shared.<out.id>_est_payload_new + (sample_<out.id> - shared.<out.id>_est_payload_new) / n_<out.id>;
             if (shared.<out.id>_est_settle == 2 * settle_<out.id>) {
@@ -486,15 +487,13 @@ solver-output-Wrench-estimated(solver, chain_solver, out, backend) ::= <<
         \}
     \}
     // Same sign as the FT path: what the environment applies to the arm (a hanging load reads -z).
-    shared.<out.id> = motion_spec::runtime::transform_wrench(tip_<out.id>, tip_frame_<out.id>, reference_<out.id>, observer_<out.id>)
-        - shared.<out.id>_est_payload;
+    shared.<out.id> = at_reference_<out.id> * tip_<out.id> - shared.<out.id>_est_payload;
 \}
 >>
 estimator-q-mj_kdl(solver)    ::= "*robot.ports_<solver.runtime.id>[i].position"
 estimator-qd-mj_kdl(solver)   ::= "*robot.ports_<solver.runtime.id>[i].velocity"
-// Simulated torque control zeroes qfrc_actuator, so the measured effort port reads nothing; the
-// command applied last tick is what moved the arm.
-estimator-tau-mj_kdl(solver)  ::= "*robot.ports_<solver.runtime.id>[i].effort_cmd"
+// The drive torque the torque actuators actually produced (qfrc_actuator), after MuJoCo's clamp.
+estimator-tau-mj_kdl(solver)  ::= "*robot.ports_<solver.runtime.id>[i].effort"
 estimator-q-robif2b(solver)   ::= "*robot.ports_<solver.runtime.id>[i].position"
 estimator-qd-robif2b(solver)  ::= "*robot.ports_<solver.runtime.id>[i].velocity"
 // Kortex actuator feedback torque carries the opposite sign to the command it answers.
@@ -560,7 +559,7 @@ joint-space-expr-tau_ctrl(s, solver, chain_solver) ::= "state.<solver.id>.tau_ct
 joint-space-expr-tau_msr(s, solver, chain_solver) ::= "-*robot.ports_<chain_solver.runtime.id>[<s.index>].effort"
 
 // Read back from the port, so what is logged is what was sent -- not a second evaluation of
-// clamp_range, which could drift from what the store wrote.
+// the clamp, which could drift from what the store wrote.
 solver-log-joint-space-cmd(solver, chain_solver) ::= <<
 <solver.joint_space_cmd_samples:{s |     shared.<s.id> = *robot.ports_<chain_solver.runtime.id>[<s.index>].effort_cmd;}; separator="\n">
 >>
@@ -747,5 +746,5 @@ solver-stage-output(solver, chain_solver, backend) ::= <<
 // The authored torque limit binds on every backend: it protects the joint, so the simulator and
 // the real arm must clamp the same command by the same bound.
 solver-torque-command(solver, chain_solver) ::= <<
-motion_spec::runtime::finite_or_stop(<if(chain_solver.torque_saturation)>motion_spec::runtime::clamp_range(state.<solver.id>.tau_ctrl(i), <saturation-lower(chain_solver.torque_saturation)>, <saturation-upper(chain_solver.torque_saturation)>)<else>state.<solver.id>.tau_ctrl(i)<endif>, i)
+motion_spec::runtime::finite_or_stop(<if(chain_solver.torque_saturation)>std::clamp\<double\>(state.<solver.id>.tau_ctrl(i), <saturation-lower(chain_solver.torque_saturation)>, <saturation-upper(chain_solver.torque_saturation)>)<else>state.<solver.id>.tau_ctrl(i)<endif>, i)
 >>

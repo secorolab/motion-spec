@@ -93,7 +93,6 @@ from scene_dsl.rdf_parser.kinematics import (
     root_bodies,
     root_frame_of,
 )
-from scene_dsl.rdf_parser.scenex import read_colour
 from scene_dsl.rdf_parser.sensors import get_update_rate
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS, URI_BDD_PRED_ELEMS, URI_ROS_PRED_PACKAGE_NAME
 
@@ -576,6 +575,7 @@ def _agent_assemblies(model, attach_by_body) -> list:
     bindings = [row for rows in bindings_by_modelled.values() for row in rows]
 
     result = []
+    chainless = []
     for modelled in sorted(graph.subjects(RDF.type, AGN.ModelledAgent), key=str):
         agent = graph.value(modelled, AGN["of-agent"])
         own = bindings_by_modelled[modelled]
@@ -615,6 +615,7 @@ def _agent_assemblies(model, attach_by_body) -> list:
             attach_kind, attach_name, _frame, _parent = attachment
             position, orientation = _placement_of(model, attachment, anchor_frame(model))
             hosted = sorted(graph.objects(modelled, SOSA.hosts), key=str)
+            chainless.append(len(result))
             result.append(
                 AgentAssembly(
                     agent=agent,
@@ -680,6 +681,8 @@ def _agent_assemblies(model, attach_by_body) -> list:
                         id=f"{runtime_prefix}{local_name(sensor)}",
                         type=kind,
                         frame=f"{runtime_prefix}{local_name(frame)}",
+                        local_id=local_name(sensor),
+                        local_frame=local_name(frame),
                         update_rate_hz=get_update_rate(
                             model.graph, ModelBase(node_id=sensor, graph=model.graph)
                         ),
@@ -724,7 +727,18 @@ def _agent_assemblies(model, attach_by_body) -> list:
             )
         )
 
-    return result
+    # A gripper at a chain's tip drives no chain either, but that chain's assembly mounts it.
+    carried = {
+        tree
+        for index, assembly in enumerate(result)
+        if index not in chainless
+        for tree in assembly.owned_trees
+    }
+    return [
+        assembly
+        for index, assembly in enumerate(result)
+        if index not in chainless or not carried.intersection(assembly.owned_trees)
+    ]
 
 
 def _chain_tip_body(root_binding, serial_tree, path, tip_body, root_body):
@@ -1481,7 +1495,6 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
                 body=local_name(body),
                 body_iri=str(body),
                 path=_asset_path(graph, asset),
-                color=_colour_of(graph, asset),
                 fixed=body in attach_by_body,
                 attach_kind=attach_kind,
                 attach_name=attach_name,
@@ -1663,12 +1676,6 @@ def _name_object_attachments(model, attach_by_body) -> None:
             frame,
             parent_body,
         )
-
-
-def _colour_of(graph, asset) -> list[float] | None:
-    """The RGBA the scene draws an asset in, or None when the asset's own colours stand."""
-    colour = read_colour(graph, asset)
-    return list(colour) if colour is not None else None
 
 
 def _asset_path(graph, asset) -> str:
@@ -1876,11 +1883,7 @@ def _expand_scene_geometry(scene: MjcfSceneSpec) -> None:
         for name, components, default in _PLACEMENT_VECTORS:
             _expand_vector(obj, name, components, default)
         obj.has_path = bool(obj.path)
-        obj.has_color = obj.color is not None
         if obj.has_path:
-            # An asset brings its own geometry; a stated colour still overrides its geoms'.
-            if obj.has_color:
-                _expand_vector(obj, "color", ("r", "g", "b", "a"), None)
             continue
         for name, components, default in _PROCEDURAL_VECTORS:
             if getattr(obj, name) is not None:

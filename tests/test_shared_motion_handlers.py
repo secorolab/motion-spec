@@ -18,9 +18,10 @@ from motion_spec_dsl.langs import motion_spec_metamodel
 from motion_spec.rdf_parser.ir import generate_ir
 
 from conftest import requires_workspace
+from support import example
 
 MODEL = Path(__file__).parent / "fixtures" / "shared_motion"
-SCENE = Path(__file__).parents[2] / "motion-spec-dsl" / "models" / "admittance_arc_single"
+SCENE = example("arc_tracing_with_admittance")
 METAMODELS = Path(__file__).resolve().parents[2] / "metamodels"
 
 pytestmark = requires_workspace(SCENE, METAMODELS)

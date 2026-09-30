@@ -36,7 +36,7 @@ def _write_rec(run_dir, state=State.COMPLETE, verdict=Verdict.PASSED):
     rec_document(run_dir).write_text(json.dumps(doc))
 
 
-def _generation(tmp_path, name="pick_place_single", stamp="20260811T000000Z"):
+def _generation(tmp_path, name="pick_and_place", stamp="20260811T000000Z"):
     gen = tmp_path / name / stamp
     (gen / "generated" / "contract").mkdir(parents=True)
     (gen / "generated" / "contract" / "frame_layout.json").write_text(
@@ -57,14 +57,14 @@ def _run(gen, run_id="run-1", state=State.IN_PROGRESS, verdict=Verdict.UNAVAILAB
 def test_the_catalog_finds_generations_by_their_contract(tmp_path):
     _generation(tmp_path)
     _generation(tmp_path, stamp="20260811T010000Z")
-    _generation(tmp_path, name="admittance_arc_single")
+    _generation(tmp_path, name="arc_tracing_with_admittance")
     (tmp_path / "not_a_generation").mkdir()
 
     generations = GenerationCatalog([tmp_path]).generations()
     assert len(generations) == 3
     # most recently written first, and a model ranks by its newest generation
-    assert [g.model for g in generations][0] == "admittance_arc_single"
-    newest = next(g for g in generations if g.model == "pick_place_single")
+    assert [g.model for g in generations][0] == "arc_tracing_with_admittance"
+    newest = next(g for g in generations if g.model == "pick_and_place")
     assert newest.timestamp == "20260811T010000Z"
     assert newest.built is False
     assert newest.layout.schema_hash == schema()["schema_hash"]

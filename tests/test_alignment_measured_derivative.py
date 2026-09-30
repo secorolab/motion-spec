@@ -18,10 +18,11 @@ import pytest
 from conftest import requires_workspace
 from motion_spec_dsl.gens import _gen_graph
 from motion_spec_dsl.langs import motion_spec_metamodel
+from support import DSL_MODELS, example
 
 from motion_spec.rdf_parser.ir import generate_ir
 
-MODELS = Path(__file__).parents[2] / "motion-spec-dsl" / "models"
+MODELS = DSL_MODELS
 METAMODELS = Path(__file__).resolve().parents[2] / "metamodels"
 
 pytestmark = requires_workspace(MODELS, METAMODELS)
@@ -53,16 +54,16 @@ ROW_ALIGN = (
 
 
 def _model_driving_alignment_with_a_pid(tmp_path: Path) -> Path:
-    """admittance_arc_single, with its compliance alignment moved onto a pid that reads angvel."""
-    source = MODELS / "admittance_arc_single"
-    # The scenex reaches for the ktree beside the model directory, so the siblings come too.
+    """arc_tracing_with_admittance, with its compliance alignment moved onto a pid that reads angvel."""
+    source = example("arc_tracing_with_admittance")
+    # The scenex reaches for ft_mount.xml beside the model directory, so the siblings come too.
     for entry in source.parent.iterdir():
         if entry.is_file():
             shutil.copy2(entry, tmp_path / entry.name)
     model_dir = tmp_path / source.name
     shutil.copytree(source, model_dir)
 
-    path = model_dir / "admittance_arc_single.robmot"
+    path = model_dir / "arc_tracing_with_admittance.robmot"
     text = path.read_text()
     for anchor in (WHILE_ORI, CTRL_ORI, ELBOW_CTRL):
         assert anchor in text, f"model no longer carries the anchor:\n{anchor}"
@@ -81,7 +82,7 @@ def test_alignment_pid_declares_its_measured_derivative(
     generated.mkdir()
     _gen_graph(metamodel, metamodel.model_from_file(path), generated, overwrite=True, debug=False)
 
-    ir = generate_ir(generated / "admittance_arc_single-app.ld.json")
+    ir = generate_ir(generated / "arc_tracing_with_admittance-app.ld.json")
     declared = {item.id for item in ir["computation"]["shared_data"] if getattr(item, "id", None)}
 
     # One per controlled axis, and only those: the reference direction is the base's z, so the

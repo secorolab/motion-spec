@@ -30,6 +30,7 @@ from rdf_utils.models.vocab import URI_KC_TYPE_SERIAL
 from rdf_utils.namespace import NS_MM_GEOM, NS_MM_KC_EXT
 from rdflib import Dataset, Literal, URIRef
 from rdflib.namespace import RDF, XSD, Namespace
+from support import example
 
 from motion_spec.classes.handlers import PIDController
 from motion_spec.classes.motion import MotionUnit
@@ -855,16 +856,16 @@ def test_an_authored_band_rides_the_constraint_term() -> None:
 @pytest.fixture(scope="module")
 def dual_ir(tmp_path_factory) -> dict:
     """The dual-arm IR, the only maintained model whose runtimes carry a scoping prefix."""
-    model = Path(__file__).parents[2] / "motion-spec-dsl" / "models" / "pick_place_dual"
+    model = example("dual_arm_pick_and_place")
     if not model.exists():
         pytest.skip("motion-spec-dsl is not in this checkout")
-    outdir = tmp_path_factory.mktemp("pick_place_dual") / "generated" / "model"
+    outdir = tmp_path_factory.mktemp("dual_arm_pick_and_place") / "generated" / "model"
     subprocess.run(
-        ["textx", "generate", "pick_place_dual.robmot", "--target", "jsonld", "-o", str(outdir)],
+        ["textx", "generate", "dual_arm_pick_and_place.robmot", "--target", "jsonld", "-o", str(outdir)],
         cwd=model,
         check=True,
     )
-    return generate_ir(outdir / "pick_place_dual-app.ld.json")
+    return generate_ir(outdir / "dual_arm_pick_and_place-app.ld.json")
 
 
 def test_chain_joints_are_unprefixed_and_the_runtime_prefix_is_published(dual_ir: dict) -> None:
@@ -884,4 +885,4 @@ def test_chain_joints_are_unprefixed_and_the_runtime_prefix_is_published(dual_ir
 
 def test_configuration_publishes_the_model_name(dual_ir: dict) -> None:
     """One scalar the backends name their generated artifacts from, instead of one per solver."""
-    assert dual_ir["configuration"]["model_name"] == "pick_place_dual"
+    assert dual_ir["configuration"]["model_name"] == "dual_arm_pick_and_place"

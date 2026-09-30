@@ -116,7 +116,7 @@ hardware alike, and the real-time factor scales its period:
    effective period = nominal period / rtf     (rtf > 0)
    uncapped                                    (rtf == 0)
 
-The factor comes from ``mj_kdl::realtime_factor_of`` in simulation, so the viewer's ``,`` and
+The factor comes from ``mj_env.viewer.realtime_factor`` in simulation, so the viewer's ``,`` and
 ``.`` speed keys keep working mid-run, and is the literal ``1.0`` on hardware. This is a named
 backend dispatch (``loop-rtf-source``), not an inline conditional, for the same reason
 ``clock-time-source`` is.

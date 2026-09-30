@@ -29,11 +29,12 @@ from motion_spec.rdf_parser.coordination import observation_shape
 from motion_spec.rdf_parser.model import Model
 
 from conftest import requires_interfaces
+from support import example
 
 NS = "https://example.test/"
 TYPE_NAME = "vision_msgs/msg/Detection3DArray"
 MODEL = Path(__file__).parent / "fixtures" / "perception"
-SCENE = Path(__file__).parents[2] / "motion-spec-dsl" / "models" / "admittance_arc_single"
+SCENE = example("arc_tracing_with_admittance")
 
 
 def _model(graph: Graph) -> Model:

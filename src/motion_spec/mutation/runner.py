@@ -140,8 +140,8 @@ def run_mutant(site: MutationSite, index: int, model: Path, out_dir: Path, steps
 def _materialize(model: Path, workdir: Path) -> Path:
     """Copy the model directory into `workdir`, plus whatever it imports from above itself.
 
-    The scene files import the arm and gripper ktrees from the models root a level up, so a
-    workdir holding only the model directory has nothing for those imports to resolve to. The
+    A model may import a sibling example's files (the base-rotation model reuses the admittance
+    scene), so a workdir holding only the model directory has nothing for those to resolve to. The
     layout is rebuilt instead: the model directory keeps its name inside `workdir`, and every
     parent-relative import lands where its relative path already points.
     """

@@ -7,9 +7,6 @@ robot-driver-include-mj_kdl(solver, model_name, resources) ::= <<
 #include "headers/<model_name>.kdl.hpp"
 >>
 
-robot-num-joints-def-mj_kdl(solver) ::= <<
->>
-
 robot-state-struct-mj_kdl(solver) ::= <<
 >>
 
@@ -41,31 +38,25 @@ world-port-wrench-cmd-mj_kdl(port)     ::= "&mj_body_wrench_<port.slot>->wrench"
 
 // Every non-robot primitive the model reads or pushes, resolved once against the compiled scene.
 scene-state-setup-mj_kdl(world_ports) ::= <<
-    mj_kdl::SceneState mj_world{};
-    if (!mj_kdl::init_scene_state(&mj_world, mj_env.model)) {
-        std::cerr \<\< "mj_kdl::init_scene_state() failed\\n";
-        mj_kdl::cleanup(&mj_env);
-        return 1;
-    \}
-<world_ports.free_roots:{port |     mj_kdl::SceneFreeBodySlot *mj_free_root_<port.slot> = mj_kdl::bind_scene_free_body(&mj_world, "<port.mapping>");
+<world_ports.free_roots:{port |     mj_kdl::SceneFreeBodySlot *mj_free_root_<port.slot> = mj_kdl::bind_scene_free_body(&mj_env.scene, "<port.mapping>");
     if (!mj_free_root_<port.slot>) {
         std::cerr \<\< "bind_scene_free_body() failed for '<port.mapping>'\\n";
         mj_kdl::cleanup(&mj_env);
         return 1;
     \}}; separator="\n">
-<world_ports.joints:{port |     mj_kdl::SceneJointSlot *mj_scene_joint_<port.slot> = mj_kdl::bind_scene_joint(&mj_world, "<port.mapping>");
+<world_ports.joints:{port |     mj_kdl::SceneJointSlot *mj_scene_joint_<port.slot> = mj_kdl::bind_scene_joint(&mj_env.scene,"<port.mapping>");
     if (!mj_scene_joint_<port.slot>) {
         std::cerr \<\< "bind_scene_joint() failed for '<port.mapping>'\\n";
         mj_kdl::cleanup(&mj_env);
         return 1;
     \}}; separator="\n">
-<world_ports.aux_cmds:{port |     mj_kdl::SceneActuatorSlot *mj_actuator_<port.slot> = mj_kdl::bind_scene_actuator(&mj_world, "<port.mapping>");
+<world_ports.aux_cmds:{port |     mj_kdl::SceneActuatorSlot *mj_actuator_<port.slot> = mj_kdl::bind_scene_actuator(&mj_env.scene,"<port.mapping>");
     if (!mj_actuator_<port.slot>) {
         std::cerr \<\< "bind_scene_actuator() failed for '<port.mapping>'\\n";
         mj_kdl::cleanup(&mj_env);
         return 1;
     \}}; separator="\n">
-<world_ports.wrench_cmds:{port |     mj_kdl::SceneWrenchSlot *mj_body_wrench_<port.slot> = mj_kdl::bind_scene_wrench(&mj_world, "<port.mapping>");
+<world_ports.wrench_cmds:{port |     mj_kdl::SceneWrenchSlot *mj_body_wrench_<port.slot> = mj_kdl::bind_scene_wrench(&mj_env.scene,"<port.mapping>");
     if (!mj_body_wrench_<port.slot>) {
         std::cerr \<\< "bind_scene_wrench() failed for '<port.mapping>'\\n";
         mj_kdl::cleanup(&mj_env);
@@ -80,7 +71,13 @@ robot.<solver.id>.world_to_root.M * KDL::Vector(robot.<solver.id>.robot->model->
 
 // The simulated sensor keeps its sample on the robot handle the scene registered it with.
 wrench-raw-mj_kdl(solver, out) ::= <<
-    const mj_kdl::ForceTorqueSensor *ft_<out.id> = mj_kdl::find_ft_sensor(robot.<solver.id>.robot, "<out.sensor_name>");
+    const mj_kdl::ForceTorqueSensor *ft_<out.id> = nullptr;
+    for (const auto &_sensor : robot.<solver.id>.robot->ft_sensors) {
+        if (_sensor.name == "<out.sensor_name>") {
+            ft_<out.id> = &_sensor;
+            break;
+        \}
+    \}
     if (!ft_<out.id>) {
         throw std::runtime_error("FT sensor '<out.sensor_name>' is unavailable");
     \}
@@ -104,8 +101,16 @@ mj-sensor-member-ForceTorque(solver, sensor) ::= <<
 robot-state-init-mj_kdl(solver) ::= <<
 >>
 
+// The wrapper prefixes the MuJoCo names itself; `name` is only what the chain looks it up by.
 mj-sensor-ForceTorque(solver, sensor) ::= <<
-    mj_tool_<solver.runtime.id>.ft_sensors.push_back(mj_kdl::ForceTorqueSensorSpec{ .name = "<sensor.id>", .frame_site = "<sensor.frame>" \});
+    {
+        mj_kdl::ForceTorqueSensorSpec ft_spec{\};
+        ft_spec.name = "<sensor.id>";
+        ft_spec.force_sensor = "<sensor.local_id>_force";
+        ft_spec.torque_sensor = "<sensor.local_id>_torque";
+        ft_spec.frame_site = "<sensor.local_frame>";
+        mj_tool_<solver.runtime.id>.ft_sensors.push_back(ft_spec);
+    \}
 >>
 
 robot-init-mj_kdl(solver) ::= <<
@@ -118,21 +123,24 @@ robot-init-mj_kdl(solver) ::= <<
         mj_kdl::cleanup(&mj_env);
         return 1;
     \}
-    if (!mj_kdl::init_robot_from_chain(&mj_<solver.runtime.id>, mj_env.model, mj_env.data, built_chain_<solver.runtime.id>, {<solver.chain.joints:{j |"<j>"}; separator=", ">\}, "<solver.runtime.prefix>", &mj_tool_<solver.runtime.id>)) {
+    if (const auto _s = mj_kdl::init_robot_from_chain(&mj_<solver.runtime.id>, &mj_env, built_chain_<solver.runtime.id>, {<solver.chain.joints:{j |"<j>"}; separator=", ">\}, "<solver.runtime.prefix>", &mj_tool_<solver.runtime.id>); !_s) {
 <else>    KDL::Chain built_chain_<solver.runtime.id>{};
     if (!scene_kdl::make_chain_<solver.chain.name>(world_tree_<solver.chain.tree>, &built_chain_<solver.runtime.id>)) {
         std::cerr \<\< "make_chain_<solver.chain.name>() failed for runtime <solver.runtime.id>\n";
         mj_kdl::cleanup(&mj_env);
         return 1;
     \}
-    if (!mj_kdl::init_robot_from_chain(&mj_<solver.runtime.id>, mj_env.model, mj_env.data, built_chain_<solver.runtime.id>, {<solver.chain.joints:{j |"<j>"}; separator=", ">\}, "<solver.runtime.prefix>")) {
+    if (const auto _s = mj_kdl::init_robot_from_chain(&mj_<solver.runtime.id>, &mj_env, built_chain_<solver.runtime.id>, {<solver.chain.joints:{j |"<j>"}; separator=", ">\}, "<solver.runtime.prefix>"); !_s) {
 <endif>
-        std::cerr \<\< "init_robot_from_chain() failed for runtime <solver.runtime.id>\n";
+        std::cerr \<\< "init_robot_from_chain() failed for runtime <solver.runtime.id>: " \<\< _s.error \<\< "\n";
         mj_kdl::cleanup(&mj_env);
         return 1;
     \}
-    mj_<solver.runtime.id>.ctrl_mode = mj_kdl::CtrlMode::TORQUE;
-    mj_kdl::env_add_robot(&mj_env, &mj_<solver.runtime.id>);
+    if (const auto _s = mj_kdl::set_control_mode(&mj_<solver.runtime.id>, mj_kdl::CtrlMode::TORQUE); !_s) {
+        std::cerr \<\< "set_control_mode(TORQUE) failed for runtime <solver.runtime.id>: " \<\< _s.error \<\< "\n";
+        mj_kdl::cleanup(&mj_env);
+        return 1;
+    \}
 <endif>
 >>
 
@@ -290,7 +298,6 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros, world_port
     mj_scene.timestep = <scene.timestep_s>;
     mj_scene.add_floor = true;
     mj_scene.add_skybox = true;
-    std::deque\<std::string\> mj_path_storage;
 <scene.robots:{robot |
     {
         const std::filesystem::path robot_mjcf_path = find_asset_path({"<robot.path>"\});
@@ -298,9 +305,8 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros, world_port
             std::cerr \<\< "MJCF model not found: <robot.path>\\n";
             return 1;
         \}
-        mj_path_storage.push_back(robot_mjcf_path.string());
         mj_kdl::RobotSpec mj_robot_spec{\};
-        mj_robot_spec.path = mj_path_storage.back().c_str();
+        mj_robot_spec.path = robot_mjcf_path.string();
         mj_robot_spec.prefix = "<robot.prefix>";
         mj_robot_spec.attach_to.kind = mj_kdl::AttachKind::<robot.attach_kind>;
         mj_robot_spec.attach_to.name = "<robot.attach_name>";
@@ -318,9 +324,8 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros, world_port
                 std::cerr \<\< "MJCF attachment not found: <attachment.path>\\n";
                 return 1;
             \}
-            mj_path_storage.push_back(attachment_path.string());
             mj_kdl::AttachmentSpec attachment_spec{\};
-            attachment_spec.mjcf_path = mj_path_storage.back().c_str();
+            attachment_spec.mjcf_path = attachment_path.string();
             attachment_spec.attach_to.kind = mj_kdl::AttachKind::<attachment.attach_kind>;
             attachment_spec.attach_to.name = "<attachment.attach_to>";
             attachment_spec.prefix = "<attachment.prefix>";
@@ -341,6 +346,8 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros, world_port
     {
         mj_kdl::SceneObject object_spec{\};
         object_spec.name = "<object.body>";
+        // 0.4 keeps an asset's element names as authored; the scene's mappings name them as 0.3 did.
+        object_spec.prefix = "<object.body>_";
         object_spec.attach_to.kind = mj_kdl::AttachKind::<object.attach_kind>;
         object_spec.attach_to.name = "<object.attach_name>";
 <if(object.has_path)>        const std::filesystem::path object_path = find_asset_path({"<object.path>"\});
@@ -349,12 +356,7 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros, world_port
             return 1;
         \}
         object_spec.mjcf_path = object_path.string();
-<if(object.has_color)>        object_spec.rgba[0] = <object.color_r>f;
-        object_spec.rgba[1] = <object.color_g>f;
-        object_spec.rgba[2] = <object.color_b>f;
-        object_spec.rgba[3] = <object.color_a>f;
-        object_spec.has_rgba = true;
-<endif><endif>        object_spec.pos[0] = <object.pos_x>;
+<endif>        object_spec.pos[0] = <object.pos_x>;
         object_spec.pos[1] = <object.pos_y>;
         object_spec.pos[2] = <object.pos_z>;
         object_spec.quat[0] = <object.quat_x>;
@@ -420,8 +422,8 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros, world_port
     \}
 }; separator="\n">
 
-    if (!mj_kdl::init_env(&mj_env, &mj_scene)) {
-        std::cerr \<\< "mj_kdl::init_env() failed\\n";
+    if (const auto _s = mj_kdl::init_env(&mj_env, &mj_scene); !_s) {
+        std::cerr \<\< "mj_kdl::init_env() failed: " \<\< _s.error \<\< "\\n";
         return 1;
     }
 
@@ -441,17 +443,10 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros, world_port
 <robot-assign(solver, "mj_kdl")>
 <mj-sensor-io-assign(solver)>}; separator="\n">
 
-    mj_kdl::Viewer mj_viewer{};
-    if (_headless_rtf > 0.0) mj_viewer.realtime_factor = _headless_rtf;
+    if (_headless_rtf > 0.0) mj_env.viewer.realtime_factor = _headless_rtf;
     if (!headless) {
-<if(!serial_chain_solvers)>
-        // A platform drives no chain, so there is no Robot to hang the window on; the viewer
-        // takes the scene's model and data directly.
-        if (!mj_kdl::init_window_sim(&mj_viewer, mj_env.model, mj_env.data)) {
-<else>
-        if (!mj_kdl::init_window_sim(&mj_viewer, &mj_<first(serial_chain_solvers).runtime.id>)) {
-<endif>
-            std::cerr \<\< "mj_kdl::init_window_sim() failed\\n";
+        if (const auto _s = mj_kdl::open_viewer(&mj_env); !_s) {
+            std::cerr \<\< "mj_kdl::open_viewer() failed: " \<\< _s.error \<\< "\\n";
             mj_kdl::cleanup(&mj_env);
             return 1;
         }
@@ -493,142 +488,33 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros, world_port
         \}
     \}
 
-    // An offscreen render costs milliseconds; the control loop has one. Rendering inside the
-    // tick made a camera model miss its deadline on every published frame -- ~300 of 9967 ticks,
-    // peaking at 9.4ms against a 1ms period, while the same model without a camera peaked at 2ms.
-    // So the render runs on its own thread, off a copy of the simulation state.
-    class CameraWorker {
-      public:
-        CameraWorker(std::string id, int width, int height, mjModel *model, std::string camera,
-                     std::string video_path, int fps<if(ros && first(scene.cameras).id)>,
-                     std::unique_ptr\<mj_kdl::CameraRosPublisher\> ros_pub<endif>)
-            : id_(std::move(id)), width_(width), height_(height), model_(model),
-              camera_(std::move(camera)), video_path_(std::move(video_path)), fps_(fps)<if(ros && first(scene.cameras).id)>,
-              ros_pub_(std::move(ros_pub))<endif> {
-<if(ros && first(scene.cameras).id)>
-            if (ros_pub_) rgb_.resize(static_cast\<std::size_t\>(width) * height * 3);
-<endif>
-            copy_ = mj_makeData(model);
-            thread_ = std::thread([this] { run(); \});
-        \}
-
-        ~CameraWorker() {
-            {
-                std::lock_guard\<std::mutex\> lock(mutex_);
-                quit_ = true;
-            \}
-            ready_.notify_all();
-            if (thread_.joinable()) thread_.join();
-            if (copy_) mj_deleteData(copy_);
-        \}
-
-        // Called from the control thread, which must never wait on a camera: if the previous
-        // frame is still rendering, this one is dropped. A dropped frame costs the video a
-        // frame; a blocked controller costs the deadline.
-        void submit(mjData *data, double t) {
-            std::unique_lock\<std::mutex\> lock(mutex_, std::try_to_lock);
-            if (!lock.owns_lock() || pending_) return;
-            mj_copyData(copy_, model_, data);
-            stamp_ = t;
-            pending_ = true;
-            lock.unlock();
-            ready_.notify_one();
-        \}
-
-      private:
-        void run() {
-            // A GL context belongs to the thread that created it, so this one is created here
-            // rather than handed over from startup.
-<if(ros && first(scene.cameras).id)>
-            const bool recording = !video_path_.empty();
-            const bool ready = recording
-                                 ? mj_kdl::init_video_recorder(
-                                     &recorder_, model_, video_path_.c_str(), width_, height_, fps_)
-                                 : mj_kdl::init_offscreen(&recorder_, model_, width_, height_);
-            if (!ready || !mj_kdl::use_camera(&recorder_, model_, camera_.c_str())) {
-                std::cerr \<\< "camera '" \<\< id_ \<\< "': offscreen init failed; "
-                          \<\< (recording ? "not recorded" : "not published") \<\< "\n";
-                return;
-            \}
-<else>
-            const bool ready = mj_kdl::init_video_recorder(
-                &recorder_, model_, video_path_.c_str(), width_, height_, fps_);
-            if (!ready || !mj_kdl::use_camera(&recorder_, model_, camera_.c_str())) {
-                std::cerr \<\< "camera '" \<\< id_ \<\< "': offscreen init failed; not recorded\n";
-                return;
-            \}
-<endif>
-            for (;;) {
-<if(ros && first(scene.cameras).id)>
-                double t = 0.0;
-<endif>
-                {
-                    std::unique_lock\<std::mutex\> lock(mutex_);
-                    ready_.wait(lock, [this] { return pending_ || quit_; \});
-                    if (quit_) break;
-<if(ros && first(scene.cameras).id)>
-                    t = stamp_;
-<endif>
-                \}
-                // Safe to read copy_ unlocked: submit() leaves it alone while pending_ is set.
-<if(ros && first(scene.cameras).id)>
-                if (recording) mj_kdl::record_frame(&recorder_, model_, copy_);
-                // record_frame() renders into the recorder's own buffer and hands nothing back, so
-                // a recorded camera renders a second time to publish -- but only when the frame is
-                // due and somebody is subscribed, so an unwatched topic costs nothing.
-                if (ros_pub_ && ros_pub_->wants_frame(t)
-                    && mj_kdl::render_rgb(&recorder_, model_, copy_, rgb_.data())) {
-                    ros_pub_->publish(rgb_.data(), t);
-                \}
-<else>
-                mj_kdl::record_frame(&recorder_, model_, copy_);
-<endif>
-                {
-                    std::lock_guard\<std::mutex\> lock(mutex_);
-                    pending_ = false;
-                \}
-            \}
-            mj_kdl::cleanup(&recorder_);
-        \}
-
-        std::string id_;
-        int width_ = 0;
-        int height_ = 0;
-        mjModel *model_ = nullptr;
-        std::string camera_;
-        std::string video_path_;
-        int fps_ = 30;
-<if(ros && first(scene.cameras).id)>
-        std::unique_ptr\<mj_kdl::CameraRosPublisher\> ros_pub_;
-        std::vector\<std::uint8_t\> rgb_;
-<endif>
-        mj_kdl::VideoRecorder recorder_{\};
-        mjData *copy_ = nullptr;
-        std::thread thread_;
-        std::mutex mutex_;
-        std::condition_variable ready_;
-        bool pending_ = false;
-        bool quit_ = false;
-        double stamp_ = 0.0;
-    \};
-
-    // 'default' is the standard free-camera view a fresh window opens with
-    // (mjv_defaultFreeCamera), rendered offscreen; it does not follow the window.
-    std::unique_ptr\<CameraWorker\> _cam_default;
+    // A recorder renders on its own thread; the tick pays only for the scene snapshot.
+    // 'default' is the free-camera view a fresh window opens with; it does not follow the window.
+    mj_kdl::VideoRecorder _cam_default{};
+    bool _cam_default_on = false;
     double _cam_default_due_s = 0.0;
     {
         const std::string _default_video = _record_video_path("default");
         if (!_default_video.empty()) {
-            _cam_default = std::make_unique\<CameraWorker\>(
-              "default", 1280, 720, mj_env.model, /*camera=*/"", _default_video, 30<if(ros && first(scene.cameras).id)>,
-              // The free camera is a view of the scene, not a modelled sensor: no frame to stamp.
-              /*ros_pub=*/nullptr<endif>);
+            if (const auto _s = mj_kdl::init_video_recorder(&_cam_default, mj_env.model, _default_video.c_str(), 1280, 720, 30); _s) {
+                _cam_default_on = true;
+            \} else {
+                std::cerr \<\< "camera 'default': " \<\< _s.error \<\< "; not recorded\\n";
+            \}
         \}
     \}
 <if(scene.cameras)>
-    const std::vector\<std::string\> _mj_camera_names = mj_kdl::get_camera_names(mj_env.model);
+    std::vector\<std::string\> _mj_camera_names;
+    for (int _i = 0; _i \< mj_env.model->ncam; ++_i) {
+        if (const char *_n = mj_id2name(mj_env.model, mjOBJ_CAMERA, _i)) _mj_camera_names.emplace_back(_n);
+    \}
 <scene.cameras:{camera |
-    std::unique_ptr\<CameraWorker\> _cam_<camera.id>;
+    mj_kdl::VideoRecorder _cam_<camera.id>{\};
+    bool _cam_<camera.id>_on = false;
+    bool _cam_<camera.id>_video = false;
+<if(ros)>
+    std::unique_ptr\<mj_kdl::CameraRosPublisher\> _cam_<camera.id>_ros;
+<endif>
     double _cam_<camera.id>_due_s = 0.0;
     {
         const std::string _video = _record_video_path("<camera.id>");
@@ -664,15 +550,22 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros, world_port
                 _conf.height = <camera.height>;
                 _conf.rate_hz = <camera.rate_hz>;
 <endif>
-                // The worker opens its own render context; a failure there reports and stays silent.
-                _cam_<camera.id> = std::make_unique\<CameraWorker\>(
-                  "<camera.id>", <camera.width>, <camera.height>, mj_env.model, _name,
+                _cam_<camera.id>_video = !_video.empty();
+                const auto _s = _cam_<camera.id>_video
+                    ? mj_kdl::init_video_recorder(&_cam_<camera.id>, mj_env.model, _video.c_str(), <camera.width>, <camera.height>, static_cast\<int\>(<camera.rate_hz>))
+                    : mj_kdl::init_offscreen(&_cam_<camera.id>, mj_env.model, <camera.width>, <camera.height>);
+                if (!_s) {
+                    std::cerr \<\< "camera '<camera.id>': " \<\< _s.error \<\< "; not rendered\\n";
+                \} else {
+                    _cam_<camera.id>.cam.type = mjCAMERA_FIXED;
+                    _cam_<camera.id>.cam.fixedcamid = mj_name2id(mj_env.model, mjOBJ_CAMERA, _name.c_str());
 <if(ros)>
-                  _video, static_cast\<int\>(<camera.rate_hz>),
-                  std::make_unique\<mj_kdl::CameraRosPublisher\>(*robot.ros_node, mj_env.model, _conf));
-<else>
-                  _video, static_cast\<int\>(<camera.rate_hz>));
+                    if (robot.ros_node) {
+                        _cam_<camera.id>_ros = std::make_unique\<mj_kdl::CameraRosPublisher\>(*robot.ros_node, mj_env.model, _conf);
+                    \}
 <endif>
+                    _cam_<camera.id>_on = true;
+                \}
             \}
         \}
     \}
@@ -682,29 +575,31 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros, world_port
 >>
 
 app-chain-post-setup-mj_kdl(serial_chain_solvers, motions, agent_homes) ::= <<
+    // The FSM is built after this hook, so the loop restarts it when it sees a reset happened.
+    bool _mj_reset_seen = false;
     mj_env.on_reset = [&](mj_kdl::ResetContext *) {
+        _mj_reset_seen = true;
 <serial_chain_solvers:{solver | <if(solver.runtime.owner)>        {
             const double _q_home[] = {<agent_homes.(solver.runtime.config_key); separator=", ">\};
             KDL::JntArray _q(mj_<solver.runtime.id>.n_joints);
             for (int _i = 0; _i \< mj_<solver.runtime.id>.n_joints && _i \< static_cast\<int\>(std::size(_q_home)); ++_i)
                 _q(_i) = _q_home[_i];
-            mj_kdl::set_joint_pos(&mj_<solver.runtime.id>, _q, false);
+            mj_kdl::set_joint_pos(&mj_<solver.runtime.id>, _q);
         \}
 <endif>}; separator="">
         <motions:{m | reset_<m.id>(<m.id>_state_instance);}; separator="\n        ">
     };
     mj_kdl::reset(&mj_env);
-    double _prev_sim_time = mj_<first(serial_chain_solvers).runtime.id>.data->time;
 >>
 
+// A reset, from the API or the viewer's button, has already re-seeded the Env and run on_reset.
 app-chain-loop-reset-mj_kdl(serial_chain_solvers, fsm) ::= <<
-        if (mj_<first(serial_chain_solvers).runtime.id>.data->time \< _prev_sim_time - 1e-6) {
-            mj_kdl::reset(&mj_env);
+        if (_mj_reset_seen) {
+            _mj_reset_seen = false;
 <if(fsm)>
             fsm->currentStateIndex = fsm->startStateIndex;
 <endif>
         }
-        _prev_sim_time = mj_<first(serial_chain_solvers).runtime.id>.data->time;
 >>
 
 app-loop-condition-mj_kdl(has_serial_chain) ::= <<
@@ -713,47 +608,48 @@ app-loop-condition-mj_kdl(has_serial_chain) ::= <<
 
 // Sim time drives the cadence, so a paused or slowed run records at the rate the model asked
 // for in the world the camera looks at, not at the rate the wall clock ticks.
-app-chain-camera-publish-mj_kdl(cameras) ::= <<
+app-chain-camera-publish-mj_kdl(cameras, ros) ::= <<
         // The default camera records the standard view, scene cameras or not.
-        if (_cam_default && shared.clock_time_s \>= _cam_default_due_s) {
+        if (_cam_default_on && shared.clock_time_s \>= _cam_default_due_s) {
             _cam_default_due_s = shared.clock_time_s + 1.0 / 30.0;
-            _cam_default->submit(mj_env.data, shared.clock_time_s);
+            mj_kdl::record_frame(&_cam_default, &mj_env);
         \}
 <cameras:{camera |
-        if (_cam_<camera.id> && shared.clock_time_s \>= _cam_<camera.id>_due_s) {
+        if (_cam_<camera.id>_on && shared.clock_time_s \>= _cam_<camera.id>_due_s) {
             _cam_<camera.id>_due_s = shared.clock_time_s + 1.0 / <camera.rate_hz>;
-            // Copies the state and returns; the render happens on the worker's thread.
-            _cam_<camera.id>->submit(mj_env.data, shared.clock_time_s);
+            if (_cam_<camera.id>_video) mj_kdl::record_frame(&_cam_<camera.id>, &mj_env);
+<if(ros)>
+            // Rendered only when somebody is subscribed, so an unwatched topic costs nothing.
+            if (_cam_<camera.id>_ros && _cam_<camera.id>_ros->wants_frame(shared.clock_time_s)) {
+                mj_kdl::render_rgb(&_cam_<camera.id>, &mj_env, [pub = _cam_<camera.id>_ros.get(), t = shared.clock_time_s](const std::uint8_t *rgb) { pub->publish(rgb, t); \});
+            \}
+<endif>
         \}}; separator="\n">
 >>
 
+// Drains each render thread before the publishers and the Env it snapshotted go.
 app-chain-camera-cleanup-mj_kdl(cameras) ::= <<
-    _cam_default.reset();   // joins the render thread and releases its context
+    mj_kdl::cleanup(&_cam_default);
 <cameras:{camera |
-    _cam_<camera.id>.reset();   // joins the render thread and releases its context}; separator="\n">
+    mj_kdl::cleanup(&_cam_<camera.id>);}; separator="\n">
 >>
 
 app-chain-cleanup-mj_kdl(has_serial_chain) ::= <<
-<if(has_serial_chain)>    if (!headless) {
-        mj_kdl::cleanup(&mj_viewer);
-    }
-    mj_kdl::cleanup(&mj_env);<endif>
+<if(has_serial_chain)>    mj_kdl::cleanup(&mj_env);<endif>
 >>
 
-// Communicate-in: every provider is read before anything reads the world it feeds.
+// One exchange, as on a fieldbus: this tick's measurements in, the previous tick's commands out.
+// So a command acts one control period after the state it was computed from, as on hardware.
 app-chain-provider-update-mj_kdl(serial_chain_solvers) ::= <<
-<serial_chain_solvers:{solver | <if(solver.runtime.owner)>        mj_kdl::read_measurements(&mj_<solver.runtime.id>);
-<endif>}; separator="">        mj_kdl::read_scene_state(&mj_world, mj_env.data);
+        mj_kdl::update(&mj_env);
 >>
 
-// Communicate-out: what this tick decided reaches the platform, then the platform advances.
+// The commands this tick decides go out with the next update(); here the platform only advances.
 app-chain-runtime-step-mj_kdl(serial_chain_solvers, active_motion) ::= <<
-<serial_chain_solvers:{solver | <if(solver.runtime.owner)>        mj_kdl::apply_commands(&mj_<solver.runtime.id>);
-<endif>}; separator="">        mj_kdl::apply_scene_state(&mj_world, mj_env.data);
         // Closing the viewer ends the run, but it must end the same way S_DONE does. std::exit
         // skips destructors, so the frame logger's writer thread never drained and the log was
         // left with a half-written record and no health file -- break, and let teardown run.
-        if (!mj_kdl::step(&mj_<first(serial_chain_solvers).runtime.id>)) {
+        if (!mj_kdl::step(&mj_env)) {
             break;
         }
 >>
@@ -765,7 +661,7 @@ app-chain-control-apply-mj_kdl(serial_chain_solvers) ::= <<
         if (_ctrl.speed != _ctrl_speed_applied) {
             // Only on change, so the viewer's own ,/. speed keys keep working in between.
             _ctrl_speed_applied = _ctrl.speed;
-            if (!headless) mj_viewer.realtime_factor = _ctrl.speed;
+            if (!headless) mj_env.viewer.realtime_factor = _ctrl.speed;
         \}
 >>
 
@@ -773,7 +669,7 @@ app-chain-control-paused-step-mj_kdl(serial_chain_solvers) ::= <<
             // step() is the sole physics driver, so not calling it is the pause; the GUI's own
             // render thread keeps the window drawing and responding. Only the window-close
             // request still has to end the run, and that is readable without stepping.
-            if (!headless && !mj_kdl::is_running(&mj_viewer)) break;
+            if (!headless && !mj_kdl::is_running(&mj_env.viewer)) break;
 >>
 
 // Default-on presentation of state the model already carries: nothing is authored to get this,
@@ -788,7 +684,7 @@ perturbation-arrows-mj_kdl(perturbations, trace) ::= <<
             static constexpr float  kPerturbGuideRGBA[4]  = {0.95f, 0.45f, 0.45f, 0.35f};
             static constexpr double kPerturbGuideDash     = 0.05; // m drawn, then as much skipped
 <if(!trace.enabled)>            // Nothing else draws an overlay in this model, so the per-frame clear belongs here.
-            mj_kdl::clear_trace(&mj_viewer);
+            mj_kdl::clear_trace(&mj_env.viewer);
 <endif><perturbations:{p |            if (shared.<p.active_id>) {
                 const mjModel *_pmodel<i0> = robot.<p.robot_id>.robot->model;
                 const mjData  *_pdata<i0>  = robot.<p.robot_id>.robot->data;
@@ -804,14 +700,14 @@ perturbation-arrows-mj_kdl(perturbations, trace) ::= <<
                     if (_pfdir<i0>.Normalize() > 1e-9) {
                         const double _pflen<i0> =
                             std::min(_pw<i0>.force.Norm() * kPerturbArrowScale, kPerturbArrowMax);
-                        mj_kdl::add_overlay_arrow(&mj_viewer, _pat<i0> - _pfdir<i0> * _pflen<i0>,
+                        mj_kdl::add_overlay_arrow(&mj_env.viewer, _pat<i0> - _pfdir<i0> * _pflen<i0>,
                             _pfdir<i0>, _pflen<i0>, kPerturbForceRGBA);
                     \}
                     KDL::Vector _ptdir<i0> = _pw<i0>.torque;
                     if (_ptdir<i0>.Normalize() > 1e-9) {
                         const double _ptlen<i0> =
                             std::min(_pw<i0>.torque.Norm() * kPerturbArrowScale, kPerturbArrowMax);
-                        mj_kdl::add_overlay_arrow(&mj_viewer, _pat<i0> - _ptdir<i0> * _ptlen<i0>,
+                        mj_kdl::add_overlay_arrow(&mj_env.viewer, _pat<i0> - _ptdir<i0> * _ptlen<i0>,
                             _ptdir<i0>, _ptlen<i0>, kPerturbTorqueRGBA);
                     \}<if(p.target_pose_id)>
                     // The direction is normalized from this pose, so the pose still says how far
@@ -823,7 +719,7 @@ perturbation-arrows-mj_kdl(perturbations, trace) ::= <<
                         const KDL::Vector _pstep<i0> = _pray<i0> / _praylen<i0>;
                         for (double _pd<i0> = 0.0; _pd<i0> \< _praylen<i0>;
                              _pd<i0> += 2.0 * kPerturbGuideDash) {
-                            mj_kdl::add_trace_segment(&mj_viewer,
+                            mj_kdl::add_trace_segment(&mj_env.viewer,
                                 _pat<i0> + _pstep<i0> * _pd<i0>,
                                 _pat<i0> + _pstep<i0> * std::min(_pd<i0> + kPerturbGuideDash, _praylen<i0>),
                                 kPerturbGuideRGBA);
@@ -841,16 +737,16 @@ app-chain-trace-update-mj_kdl(serial_chain_solvers, trace) ::= <<
             // Live EE trajectory trace: one bounded polyline per referenced link,
             // each link's world frame read straight from MuJoCo. Length and colour
             // come from the ENVIRONMENT TRACE block in the .robmot model.
-            static constexpr size_t kTraceMax = <trace.length>; // bounded by user_scn maxgeom (init_window_sim)
+            static constexpr size_t kTraceMax = <trace.length>; // bounded by user_scn maxgeom (open_viewer)
             static constexpr float kTraceRGBA[4] = {
                 <trace.color_r>f, <trace.color_g>f, <trace.color_b>f, <trace.color_a>f};
-            mj_kdl::clear_trace(&mj_viewer);
+            mj_kdl::clear_trace(&mj_env.viewer);
 <trace.targets:{target |            static std::deque\<KDL::Vector> _trace<i0>;
             KDL::Frame _f<i0>;
-            if (mj_kdl::get_site_frame(mj_<first(serial_chain_solvers).runtime.id>.model, mj_<first(serial_chain_solvers).runtime.id>.data, "<target.link>", &_f<i0>) || mj_kdl::get_body_frame(mj_<first(serial_chain_solvers).runtime.id>.model, mj_<first(serial_chain_solvers).runtime.id>.data, "<target.link>", &_f<i0>)) _trace<i0>.push_back(_f<i0>.p);
+            if (mj_kdl::get_site_frame(&mj_env, "<target.link>", &_f<i0>) || mj_kdl::get_body_frame(&mj_env, "<target.link>", &_f<i0>)) _trace<i0>.push_back(_f<i0>.p);
             if (_trace<i0>.size() > kTraceMax) _trace<i0>.pop_front();
             for (size_t _i = 1; _i \< _trace<i0>.size(); ++_i)
-                mj_kdl::add_trace_segment(&mj_viewer, _trace<i0>[_i - 1], _trace<i0>[_i], kTraceRGBA);
+                mj_kdl::add_trace_segment(&mj_env.viewer, _trace<i0>[_i - 1], _trace<i0>[_i], kTraceRGBA);
 }>        }
 <else>
         if (!headless) {
@@ -860,21 +756,20 @@ app-chain-trace-update-mj_kdl(serial_chain_solvers, trace) ::= <<
             // base body pose (cached once; base is fixed). Length and colour come
             // from the ENVIRONMENT TRACE block in the .robmot model.
             static std::deque\<KDL::Vector> _trace;
-            static constexpr size_t kTraceMax = <trace.length>; // bounded by user_scn maxgeom (init_window_sim)
+            static constexpr size_t kTraceMax = <trace.length>; // bounded by user_scn maxgeom (open_viewer)
             static constexpr float kTraceRGBA[4] = {
                 <trace.color_r>f, <trace.color_g>f, <trace.color_b>f, <trace.color_a>f};
             static bool _trace_base_ok = false;
             static KDL::Frame _trace_world_T_base;
             if (!_trace_base_ok) {
                 _trace_base_ok = mj_kdl::get_body_frame(
-                    mj_<first(serial_chain_solvers).runtime.id>.model, mj_<first(serial_chain_solvers).runtime.id>.data,
-                    "<first(serial_chain_solvers).chain.root>", &_trace_world_T_base);
+                    &mj_env, "<first(serial_chain_solvers).chain.root>", &_trace_world_T_base);
             }
             _trace.push_back(_trace_world_T_base * shared.pose_ee_base.p);
             if (_trace.size() > kTraceMax) _trace.pop_front();
-            mj_kdl::clear_trace(&mj_viewer);
+            mj_kdl::clear_trace(&mj_env.viewer);
             for (size_t _i = 1; _i \< _trace.size(); ++_i) {
-                mj_kdl::add_trace_segment(&mj_viewer, _trace[_i - 1], _trace[_i], kTraceRGBA);
+                mj_kdl::add_trace_segment(&mj_env.viewer, _trace[_i - 1], _trace[_i], kTraceRGBA);
             }
         }
 <endif>
@@ -972,11 +867,6 @@ base-write-mj_kdl(resources) ::= <<
 >>
 
 app-main-base-setup-mj_kdl() ::= <<
-    // A bare Robot carrying the scene's model and data, so the platform steps through the same
-    // call a chain does: step(Robot*) is the one that knows whether a window is driving the tick.
-    mj_kdl::Robot mj_platform{};
-    mj_platform.model = mj_env.model;
-    mj_platform.data = mj_env.data;
     robot.mobile_base.model = mj_env.model;
     robot.mobile_base.data = mj_env.data;
 >>

@@ -376,7 +376,7 @@ void verify_no_allocation() {
                 static_cast<unsigned long long>(kCycles), allocations, consumed);
 }
 
-// `real_demo_hold` reads five poses in one cycle: two pose/direction reads and three wrench
+// `real_arm_pose_hold` reads five poses in one cycle: two pose/direction reads and three wrench
 // frames. That whole cycle is the honest unit to compare, not one read in isolation.
 constexpr int kReadsPerCycle = 5;
 

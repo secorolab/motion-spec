@@ -17,9 +17,9 @@ from pathlib import Path
 
 import pytest
 from conftest import requires_workspace
+from support import example
 
-MODELS = Path(__file__).resolve().parents[2] / "motion-spec-dsl" / "models"
-MODEL = "pick_place_single"
+MODEL = "pick_and_place"
 
 WORLD_ANCHOR = """    world {
 """
@@ -33,11 +33,11 @@ CHAIN_JOINT = """    world {
 """
 
 
-@requires_workspace(MODELS / MODEL)
+@requires_workspace(example(MODEL))
 def test_a_chain_joint_measurement_generates_and_compiles(tmp_path: Path) -> None:
     if shutil.which("cmake") is None:
         pytest.skip("no cmake")
-    source = MODELS / MODEL / f"{MODEL}.robmot"
+    source = example(MODEL) / f"{MODEL}.robmot"
     text = source.read_text()
     assert WORLD_ANCHOR in text, "the model's world block is no longer where this patches it"
 

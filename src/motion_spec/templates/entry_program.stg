@@ -36,7 +36,7 @@ main_source(configuration, resources, composition, computation, coordination, co
 <coordination.motions:{motion | <fsm-step-function(motion)>}; separator="\n\n">
 <endif>
 
-int main(int argc, char **argv) {
+int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
     motion_spec::runtime::install_stop_handlers();
     motion_spec::runtime::tighten_timer_slack();
     robot_io robot{};
@@ -253,7 +253,7 @@ int main(int argc, char **argv) {
 <endif>
 #ifdef MOTION_SPEC_ENABLE_INTROSPECTION
 <if(resources.by_kind.serial_chain)>
-<app-chain-camera-publish(configuration.backend, composition.scene.cameras)>
+<app-chain-camera-publish(configuration.backend, composition.scene.cameras, communication.ros)>
 <endif>
         // The frame's t is the platform clock: simulation time under MuJoCo, so a log is the
         // same regardless of how fast the host stepped it; wall_ns stays alongside for wall
@@ -549,7 +549,6 @@ shared_state_header(configuration, resources, computation, coordination, communi
 <({<mobile-base-driver-include-impl.(configuration.backend)>})()>
 <endif>
 
-<if(resources.by_kind.serial_chain)><robot-num-joints-def(first(resources.by_kind.serial_chain), configuration.backend)><endif>
 
 <if(resources.by_kind.mobile_base)>
 <({<mobile-base-robot-struct-impl.(configuration.backend)>})()>

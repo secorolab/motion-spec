@@ -1,7 +1,7 @@
-# Hands-on: `pick_place_single`
+# Hands-on: `pick_and_place`
 
 This walkthrough follows the maintained
-`ms-examples/pick_place_single/pick_place_single.robmot` model from authored files to
+`ms-examples/01_pick_and_place/pick_and_place.robmot` model from authored files to
 an observed run. It explains where each decision is made, so the example can be
 changed without guessing which generated file to edit.
 
@@ -11,16 +11,16 @@ The example is composed rather than written as one large model:
 
 | File | Responsibility |
 |---|---|
-| `pick_place_single.robmot` | quantities, guarded motions, controllers, and solvers |
-| `pick_place_single.fsm` | task states, events, transitions, and reactions |
-| `pick_place_single.scene` | abstract objects, workspace, agent, and scene |
-| `pick_place_single.scenex` | kinematic instances, fixed joints, poses, and MJCF mappings |
+| `pick_and_place.robmot` | quantities, guarded motions, controllers, and solvers |
+| `pick_and_place.fsm` | task states, events, transitions, and reactions |
+| `pick_and_place.scene` | abstract objects, workspace, agent, and scene |
+| `pick_and_place.scenex` | kinematic instances, fixed joints, poses, and MJCF mappings |
 
 The motion file imports the FSM and expanded scene:
 
 ```robmot
-import "pick_place_single.fsm"
-import "pick_place_single.scenex"
+import "pick_and_place.fsm"
+import "pick_and_place.scenex"
 ```
 
 Nothing in the motion model depends on a parsed MuJoCo body name. It refers to
@@ -45,7 +45,7 @@ The execution context in the motion file selects that scene instance and fixes
 the control period:
 
 ```robmot
-exec-context (ns=app) pick-place-single-exec {
+exec-context (ns=app) pick-and-place-exec {
     runs-scene: <pick_place_scene_mjc>
     platform: simulation { name: "MuJoCo" }
     timestep: 1.0 ms
@@ -219,7 +219,7 @@ From the workspace root, stop after IR when inspecting semantic lowering:
 
 ```bash
 motion-spec gen ir \
-  src/ms-examples/pick_place_single/pick_place_single.robmot \
+  src/ms-examples/01_pick_and_place/pick_and_place.robmot \
   -o generation/pick-place-ir
 ```
 
@@ -232,7 +232,7 @@ Generate C++ when the code-generation toolchain is available:
 
 ```bash
 motion-spec gen \
-  src/ms-examples/pick_place_single/pick_place_single.robmot \
+  src/ms-examples/01_pick_and_place/pick_and_place.robmot \
   -o generation/pick-place-generated
 ```
 
@@ -243,7 +243,7 @@ The authored snapshot is under `generated/source/`, RDF and IR under
 
 ```bash
 motion-spec run \
-  src/ms-examples/pick_place_single/pick_place_single.robmot \
+  src/ms-examples/01_pick_and_place/pick_and_place.robmot \
   -o generation/pick-place-run \
   --prefix /path/to/workspace/install \
   --run-id tutorial
@@ -271,7 +271,7 @@ generation directory:
 
 ```bash
 motion-spec run \
-  src/ms-examples/pick_place_single/pick_place_single.robmot \
+  src/ms-examples/01_pick_and_place/pick_and_place.robmot \
   -o generation/pick-place-higher \
   --prefix /path/to/workspace/install \
   --run-id tutorial

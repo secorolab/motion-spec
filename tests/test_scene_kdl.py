@@ -6,6 +6,7 @@ from pathlib import Path
 from scene_dsl.kdl_tree import build_kdl_trees
 from scene_dsl.langs import scenex_metamodel
 from scene_dsl.rdf.scenex import create_scenex_model_graph
+from support import DSL_MODELS, example
 
 from motion_spec.generation.scene_kdl import (
     chain_for_iri,
@@ -14,7 +15,7 @@ from motion_spec.generation.scene_kdl import (
     write_scene_kdl_header,
 )
 
-MODELS = Path(__file__).parents[2] / "motion-spec-dsl" / "models"
+MODELS = DSL_MODELS
 
 from conftest import requires_workspace
 
@@ -22,7 +23,7 @@ pytestmark = requires_workspace(MODELS)
 
 
 def test_scene_kdl_adapter_derives_solver_chains_and_writes_header(tmp_path: Path) -> None:
-    scene = MODELS / "pick_place_single" / "pick_place_single.scenex"
+    scene = example("pick_and_place") / "pick_and_place.scenex"
     graph = create_scenex_model_graph(scenex_metamodel().model_from_file(scene))
 
     trees = build_kdl_trees(graph, scene.parent)
@@ -39,10 +40,10 @@ def test_scene_kdl_adapter_derives_solver_chains_and_writes_header(tmp_path: Pat
     assert set(record["joint_segments"]) <= names
 
     header = write_scene_kdl_header(graph, tmp_path, scene.name, scene.parent)
-    assert header.name == "pick_place_single.kdl.hpp"
+    assert header.name == "pick_and_place.kdl.hpp"
     # The written header and the IR's published `configuration.model_name` share one derivation,
     # so the include a backend composes can never name a file the pipeline did not write.
-    manifest = "pick_place_single-app.ld.json"
+    manifest = "pick_and_place-app.ld.json"
     assert kdl_header_name(manifest) == header.name
     assert kdl_header_name(manifest) == f"{model_stem(manifest)}.kdl.hpp"
     assert "make_chain_kinova_2f85_chain" in header.read_text()

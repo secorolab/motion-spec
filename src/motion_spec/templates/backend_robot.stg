@@ -25,10 +25,6 @@ solver-rnea-include-robif2b() ::= <<
 #include \<kdl/chainjnttojacdotsolver.hpp\>
 >>
 
-robot-num-joints-def(solver, backend) ::= <<
-<({robot-num-joints-def-<backend>})(solver)>
->>
-
 robot-state-struct(solver, backend) ::= <<
 <({robot-state-struct-<backend>})(solver)>
 >>

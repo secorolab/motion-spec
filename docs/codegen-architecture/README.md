@@ -336,7 +336,7 @@ The gate:
 1. `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest` in `motion-spec` and `motion-spec-dsl`, from the
    workspace `.venv`;
 2. `motion-spec check <generation>/generated/model/<name>-app.ld.json` → `Conforms: True`;
-3. `motion-spec run` on `pick_place_single`, `pick_place_dual` and `admittance_arc_single` →
+3. `motion-spec run` on `pick_and_place`, `dual_arm_pick_and_place` and `arc_tracing_with_admittance` →
    each reaches `s_done`, with no step or time bound.
 
 A truncated run proves only that the model started. Reproducible generation is worth having on

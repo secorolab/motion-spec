@@ -14,7 +14,7 @@ graphs. Validate the complete dataset before treating it as a release artifact:
 .. code-block:: console
 
    $ motion-spec check \
-       generation/pick-place/generated/model/pick_place_single-app.ld.json
+       generation/pick-place/generated/model/pick_and_place-app.ld.json
 
 Add ``--meta-shacl`` when the shape graph itself must also be validated against
 SHACL-of-SHACL.
@@ -29,7 +29,7 @@ are for inspecting or debugging those boundaries independently:
 
    $ mkdir -p scratch/controller
    $ motion-spec ir \
-       generation/pick-place/generated/model/pick_place_single-app.ld.json \
+       generation/pick-place/generated/model/pick_and_place-app.ld.json \
        -o scratch/ir.json
    $ motion-spec codegen scratch/ir.json -o scratch/controller
 

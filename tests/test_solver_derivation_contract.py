@@ -20,10 +20,11 @@ from motion_spec_dsl.rdf_parser.vocab import (
 )
 from rdflib import Dataset, Graph
 from rdflib.namespace import PROV, RDF
+from support import DSL_MODELS, example
 
 from motion_spec.rdf_parser.ir import generate_ir
 
-MODELS = Path(__file__).parents[2] / "motion-spec-dsl" / "models"
+MODELS = DSL_MODELS
 METAMODELS = Path(__file__).resolve().parents[2] / "metamodels"
 
 from conftest import requires_workspace
@@ -32,22 +33,22 @@ pytestmark = requires_workspace(MODELS, METAMODELS)
 
 
 @pytest.fixture(scope="module")
-def pick_place_single_jsonld(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    tmp_path = tmp_path_factory.mktemp("pick_place_single")
+def pick_and_place_jsonld(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    tmp_path = tmp_path_factory.mktemp("pick_and_place")
     with pytest.MonkeyPatch.context() as mp:
         mp.setenv("METAMODELS_PATH", str(METAMODELS))
         metamodel = motion_spec_metamodel()
-        model = metamodel.model_from_file(MODELS / "pick_place_single" / "pick_place_single.robmot")
+        model = metamodel.model_from_file(example("pick_and_place") / "pick_and_place.robmot")
         _gen_graph(metamodel, model, tmp_path, overwrite=True, debug=False)
-    return tmp_path / "pick_place_single.ld.json"
+    return tmp_path / "pick_and_place.ld.json"
 
 
 @pytest.fixture
-def constraint_graph(pick_place_single_jsonld: Path) -> Graph:
+def constraint_graph(pick_and_place_jsonld: Path) -> Graph:
     """Fresh graph per test: parsed from the immutable JSON-LD so no test can leak
     triple mutations into another."""
     dataset = Dataset()
-    dataset.parse(str(pick_place_single_jsonld), format="json-ld")
+    dataset.parse(str(pick_and_place_jsonld), format="json-ld")
     graph = Graph()
     for quad in dataset.quads((None, None, None, None)):
         graph.add(quad[:3])
@@ -92,10 +93,10 @@ def test_authored_output_limit_binds_to_derived_signal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("METAMODELS_PATH", str(METAMODELS))
-    source = (MODELS / "pick_place_single" / "pick_place_single.robmot").read_text()
+    source = (example("pick_and_place") / "pick_and_place.robmot").read_text()
     source = source.replace(
-        "linear-velocity zero-linvel = 0.0 m/s,",
-        "linear-velocity zero-linvel = 0.0 m/s,\n"
+        "length satisfied-band      = 0.01 m,",
+        "length satisfied-band      = 0.01 m,\n"
         # The signal saturated is the solver's acceleration-energy row, not a velocity.
         "        linear-acceleration output-limit = 10.0 m/s^2,",
     ).replace(
@@ -105,11 +106,11 @@ def test_authored_output_limit_binds_to_derived_signal(
     )
     metamodel = motion_spec_metamodel()
     model = metamodel.model_from_str(
-        source, file_name=str(MODELS / "pick_place_single" / "pick_place_single.robmot")
+        source, file_name=str(example("pick_and_place") / "pick_and_place.robmot")
     )
     _gen_graph(metamodel, model, tmp_path, overwrite=True, debug=False)
 
-    graph = Graph().parse(tmp_path / "pick_place_single.ld.json", format="json-ld")
+    graph = Graph().parse(tmp_path / "pick_and_place.ld.json", format="json-ld")
     controller = next(
         node
         for node in graph.subjects(RDF.type, CSTR_HDL.Controller)
@@ -119,7 +120,7 @@ def test_authored_output_limit_binds_to_derived_signal(
     authored_output = graph.value(saturation, ALGO_EXT["in"])
     assert QUDT_QKIND.LinearVelocity in graph[authored_output : QUDT_SCHEMA.hasQuantityKind]
 
-    ir = generate_ir(tmp_path / "pick_place_single-app.ld.json")
+    ir = generate_ir(tmp_path / "pick_and_place-app.ld.json")
     shared_ids = {item.id for item in ir["computation"]["shared_data"]}
     # Handlers are no longer published: a motion carries the controllers derived for it.
     controllers = [

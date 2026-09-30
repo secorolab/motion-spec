@@ -9,19 +9,20 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from support import DSL_MODELS, example
 
 from motion_spec.rdf_parser.ir import generate_ir
 
-MODELS = Path(__file__).parents[2] / "motion-spec-dsl" / "models"
+MODELS = DSL_MODELS
 
 from conftest import requires_workspace
 
 pytestmark = requires_workspace(MODELS)
-REAL_WORLD_MODELS = ["real_demo_hold", "real_demo_monitor"]
+REAL_WORLD_MODELS = ["real_arm_pose_hold", "real_gripper_cycle_ft_monitoring"]
 
 
 def _generate_ir(name: str, tmp_path: Path) -> dict:
-    model_dir = MODELS / name
+    model_dir = example(name)
     outdir = tmp_path / "generated" / "model"
     subprocess.run(
         ["textx", "generate", f"{name}.robmot", "--target", "jsonld", "-o", str(outdir)],
@@ -43,13 +44,13 @@ def _config_keys(ir: dict) -> set[str]:
 def _toml_sections(name: str) -> set[str]:
     """The device sections, the same cut runner.py makes: [ros.*] configures the generated
     publishers, not a device the run binds, so no derived key ever answers to it."""
-    found = re.findall(r"^\[([^]]+)\]", (MODELS / name / "robot.toml").read_text(), re.MULTILINE)
+    found = re.findall(r"^\[([^]]+)\]", (example(name) / "robot.toml").read_text(), re.MULTILINE)
     return {key for key in found if key.split(".")[0] != "ros"}
 
 
 @pytest.fixture(scope="module")
 def one_agent_ir(tmp_path_factory) -> dict:
-    return _generate_ir("real_demo_hold", tmp_path_factory.mktemp("real_demo_hold"))
+    return _generate_ir("real_arm_pose_hold", tmp_path_factory.mktemp("real_arm_pose_hold"))
 
 
 def test_the_agent_key_is_its_scenex_alias_then_its_leaf(one_agent_ir: dict) -> None:
@@ -65,7 +66,7 @@ def test_a_hosted_sensors_key_is_its_agents_leaf_then_its_own(one_agent_ir: dict
 
 @pytest.fixture(scope="module")
 def two_agent_ir(tmp_path_factory) -> dict:
-    return _generate_ir("real_demo_monitor", tmp_path_factory.mktemp("real_demo_monitor"))
+    return _generate_ir("real_gripper_cycle_ft_monitoring", tmp_path_factory.mktemp("real_gripper_cycle_ft_monitoring"))
 
 
 def test_two_agents_in_one_model_get_distinct_keys(two_agent_ir: dict) -> None:

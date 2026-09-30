@@ -20,9 +20,10 @@ from motion_spec.classes.base import DataclassJSONEncoder
 from motion_spec.rdf_parser.ir import generate_ir
 
 from conftest import requires_workspace
+from support import example
 
 MODEL = Path(__file__).parent / "fixtures" / "shared_motion"
-SCENE = Path(__file__).parents[2] / "motion-spec-dsl" / "models" / "admittance_arc_single"
+SCENE = example("arc_tracing_with_admittance")
 
 pytestmark = requires_workspace(SCENE)
 

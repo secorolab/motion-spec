@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from importlib.resources import files
 from pathlib import Path
 
 from motion_spec.generation.artifacts import fields_with_offsets
@@ -18,6 +19,14 @@ from motion_spec.introspection.provenance import (
 )
 
 from frame_log_fixture import flat_frame, write_frame_log_pb, write_frame_log_proto
+
+# Where the installed DSL ships its example models, as `motion-spec examples` reads them.
+DSL_MODELS = Path(str(files("motion_spec_dsl") / "models"))
+
+
+def example(name: str) -> Path:
+    """The shipped example directory holding NAME.robmot, whatever its order number."""
+    return next(DSL_MODELS.glob(f"[0-9][0-9]_{name}"), DSL_MODELS / name)
 
 
 def _hash_doc(doc: dict) -> str:

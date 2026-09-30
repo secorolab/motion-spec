@@ -34,16 +34,14 @@ pose-rotation-relative(pose, views) ::= <%
 <pose.orientation_operands:{op | <relative-operand(op)>}; separator=" * ">
 %>
 
-euler-axis-quat(factor, views) ::= <%
-motion_spec::runtime::quat_axis('<factor.axis>', <component-value(factor.component, views)>)
-%>
-
-euler-quat(factors, views) ::= <%
-<if(rest(factors))>motion_spec::runtime::quat_mul(<euler-axis-quat(first(factors), views)>, <euler-quat(rest(factors), views)>)<else><euler-axis-quat(first(factors), views)><endif>
-%>
+axis-rotation ::= [
+    "x": "RotX",
+    "y": "RotY",
+    "z": "RotZ"
+]
 
 pose-rotation-euler(pose, views) ::= <%
-motion_spec::runtime::quat_rotation(<euler-quat(pose.euler_factors, views)>)
+<pose.euler_factors:{f | KDL::Rotation::<axis-rotation.(f.axis)>(<component-value(f.component, views)>)}; separator=" * ">
 %>
 
 pose-rotation-quaternion(pose, views) ::= <%

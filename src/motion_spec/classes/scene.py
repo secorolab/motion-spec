@@ -84,7 +84,6 @@ class MjcfSceneObject:
     quat_z: float | None = None
     quat_w: float | None = None
     has_path: bool = False
-    has_color: bool = False
     size_x: float | None = None
     size_y: float | None = None
     size_z: float | None = None

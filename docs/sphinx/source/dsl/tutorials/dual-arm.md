@@ -1,6 +1,6 @@
 # Dual-arm pick and place
 
-`ms-examples/pick_place_dual` uses the same Kinova and gripper definitions twice without
+`ms-examples/02_dual_arm_pick_and_place` uses the same Kinova and gripper definitions twice without
 copying their source models.
 
 ## 1. Distinguish semantic instances
@@ -38,8 +38,8 @@ fixed-joint endpoints.
 
 ```bash
 motion-spec run \
-  src/ms-examples/pick_place_dual/pick_place_dual.robmot \
-  -o /tmp/pick-place-dual \
+  src/ms-examples/02_dual_arm_pick_and_place/dual_arm_pick_and_place.robmot \
+  -o /tmp/dual-arm-pick-and-place \
   --prefix /path/to/workspace/install \
   --run-id tutorial
 ```

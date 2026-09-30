@@ -108,8 +108,8 @@ Facts about the solvers worth not re-deriving:
 What the gate covers
 --------------------
 
-``pick_place_single`` is the model that exercises the ACHD wrench law — 8 of its 10 motions
-inject the virtual elbow support into ``state.f_ext``. ``admittance_arc_single``'s force
+``pick_and_place`` is the model that exercises the ACHD wrench law — 8 of its 10 motions
+inject the virtual elbow support into ``state.f_ext``. ``arc_tracing_with_admittance``'s force
 motions are RNE-driven (wrench through RNE's own interface, sanctioned); its generated
 controller is byte-identical under ACHD wrench-law changes, so it gates nothing here.
 

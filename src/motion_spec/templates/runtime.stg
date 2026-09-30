@@ -13,7 +13,6 @@ runtime_header(resources, configuration) ::= <<
 #include \<cmath\>
 #include \<csignal\>
 #include \<sys/prctl.h\>
-#include \<condition_variable\>
 #include \<memory\>
 #include \<mutex\>
 #include \<thread\>
@@ -440,76 +439,6 @@ inline constexpr double kDtClampMin = 0.5 * kControlPeriodS;
 // Ceiling on a measured tick: a scheduler stall must not become one giant integral step.
 inline constexpr double kDtClampMax = 2.0 * kControlPeriodS;
 
-inline double clamp_range(double v, double lower, double upper) {
-    if (v \< lower) return lower;
-    if (v > upper) return upper;
-    return v;
-}
-
-inline double clamp01(double v) {
-    if (v \< 0.0) return 0.0;
-    if (v > 1.0) return 1.0;
-    return v;
-}
-
-// A rotation error past pi is the same rotation taken the short way round. Handed the long way,
-// a controller drives the tumble on instead of unwinding it.
-inline KDL::Vector short_way_rotation(KDL::Vector error) {
-    const double angle = error.Norm();
-    if (angle > M_PI) {
-        error -= (2.0 * M_PI / angle) * error;
-    }
-    return error;
-}
-
-inline KDL::Twist short_way_rotation(KDL::Twist difference) {
-    difference.rot = short_way_rotation(difference.rot);
-    return difference;
-}
-
-// A rotation authored as literals is resolved to a quaternion before it reaches here. One
-// whose angles arrive at runtime is composed from these, so the control loop still turns a
-// quaternion rather than rebuilding a matrix from angles.
-struct Quat {
-    double x, y, z, w;
-};
-
-// Rotation of `angle` about the axis named by 'x', 'y' or 'z'.
-inline Quat quat_axis(char axis, double angle) {
-    const double half = 0.5 * angle;
-    const double s = std::sin(half);
-    const double c = std::cos(half);
-    switch (axis) {
-        case 'x': return Quat{s, 0.0, 0.0, c};
-        case 'y': return Quat{0.0, s, 0.0, c};
-        default:  return Quat{0.0, 0.0, s, c};
-    }
-}
-
-// Hamilton product: the rotation `b` followed by the rotation `a`.
-inline Quat quat_mul(const Quat &a, const Quat &b) {
-    return Quat{
-        a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
-        a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
-        a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
-        a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z};
-}
-
-inline KDL::Rotation quat_rotation(const Quat &q) {
-    return KDL::Rotation::Quaternion(q.x, q.y, q.z, q.w);
-}
-
-inline KDL::Wrench transform_wrench(
-    const KDL::Wrench &source_wrench,
-    const KDL::Frame &world_source,
-    const KDL::Frame &world_reference_point,
-    const KDL::Frame &world_observation_frame) {
-    const KDL::Wrench world_wrench = world_source.M * source_wrench;
-    const KDL::Wrench at_reference =
-        world_wrench.RefPoint(world_reference_point.p - world_source.p);
-    return world_observation_frame.M.Inverse(at_reference);
-}
-
 <if(resources.device_kinds.("KinovaGen3-2F85") || resources.device_kinds.("Robotiq2F85"))>// A commanded gripper joint position as a fraction of the device's travel: 0 fully open, 1
 // fully closed. Clamped, because a controller may overshoot the authored range and no device
 // takes a command outside its stroke -- and on this path an out-of-range value closes a real
@@ -542,9 +471,9 @@ inline double path_project(const Eval &eval, const KDL::Vector &point, double pr
     const double lo_s = std::max(0.0, previous - kPathTangentStep);
     const double hi_s = std::min(1.0, previous + kPathTangentStep);
     const double ds = hi_s - lo_s;
-    if (ds \< 1e-12) return clamp01(previous);
+    if (ds \< 1e-12) return std::clamp(previous, 0.0, 1.0);
     const double speed = (eval(hi_s).p - eval(lo_s).p).Norm() / ds;
-    if (speed \< 1e-9) return clamp01(previous);  // stationary curve: nothing to search along
+    if (speed \< 1e-9) return std::clamp(previous, 0.0, 1.0);  // stationary curve: nothing to search along
     const double window = 2.0 * std::sqrt(distance2(previous)) / speed;
     double a = std::max(0.0, previous - window);
     double b = std::min(1.0, previous + window);
@@ -567,7 +496,7 @@ inline double path_project(const Eval &eval, const KDL::Vector &point, double pr
             fd = distance2(d);
         }
     }
-    return clamp01(0.5 * (a + b));
+    return std::clamp(0.5 * (a + b), 0.0, 1.0);
 }
 
 // Frenet-style frame at a point on the path: the tangent by central difference, then two
@@ -769,7 +698,7 @@ inline double velocity_profile_step(double x, double &v, double &a, double goal,
 template \<typename PathEvaluator\>
 inline double remaining_path_length(const PathEvaluator &evaluate, double parameter) {
     constexpr int samples = 16;
-    const double start = clamp01(parameter);
+    const double start = std::clamp(parameter, 0.0, 1.0);
     // path_project resolves the parameter only to kPathTangentStep, so a start within that of
     // the end is the end. Reporting the sub-resolution tail floors the profile's braking
     // velocity at sqrt(2*a*tail) and the motion creeps past the goal instead of stopping.

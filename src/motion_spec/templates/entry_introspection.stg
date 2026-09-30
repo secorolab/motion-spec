@@ -47,6 +47,7 @@ introspection_runtime_header(communication, configuration) ::= <<
 
 #include "frame_layout.h"
 #include "frame_log.pb.h"
+#include \<google/protobuf/io/coded_stream.h\>
 
 #include \<atomic\>
 #include \<chrono\>
@@ -356,20 +357,14 @@ private:
         return true;
     \}
 
-    static void append_varint(std::string &out, std::uint64_t value) {
-        while (value \>= 128) {
-            out.push_back(static_cast\<char\>((value % 128) + 128));
-            value /= 128;
-        \}
-        out.push_back(static_cast\<char\>(value));
-    \}
-
     // Length-delimited framing for the protobuf record stream (varint size + bytes).
     bool write_delimited(const std::string &message) {
         if (!log_) return false;
-        prefix_.clear();
-        append_varint(prefix_, message.size());
-        return std::fwrite(prefix_.data(), 1, prefix_.size(), log_) == prefix_.size()
+        std::uint8_t prefix[10];  // a 64-bit varint takes at most 10 bytes (protobuf encoding)
+        const std::size_t prefix_size = static_cast\<std::size_t\>(
+            google::protobuf::io::CodedOutputStream::WriteVarint64ToArray(message.size(), prefix)
+            - prefix);
+        return std::fwrite(prefix, 1, prefix_size, log_) == prefix_size
             && std::fwrite(message.data(), 1, message.size(), log_) == message.size();
     \}
 
@@ -453,7 +448,6 @@ private:
     std::FILE *log_ = nullptr;
     log::FrameLogRecord record_;
     std::string payload_;
-    std::string prefix_;
     std::thread writer_;
     std::atomic\<bool\> running_{false};
     std::atomic\<std::uint64_t\> head_{0};

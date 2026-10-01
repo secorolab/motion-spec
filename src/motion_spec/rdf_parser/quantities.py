@@ -359,32 +359,6 @@ def orientation_quaternion(model, coordinate) -> list[float] | None:
     return None if rotation is None else [float(value) for value in rotation.as_quat()]
 
 
-def position_coordinate_values(model, position_node) -> list[float] | None:
-    """xyz of a position relation's coordinate, in metres, or None when none carries a vector."""
-    relation = PositionModel(position_id=position_node, graph=model.graph)
-    for coordinate_id in relation.coordinate_ids:
-        coordinate = PositionCoordModel(
-            coord_id=coordinate_id, graph=model.graph, position=relation
-        )
-        values = position_values(model, coordinate)
-        if values is not None:
-            return values
-    return None
-
-
-def orientation_relation_quaternion(model, orientation_node) -> list[float] | None:
-    """Rotation of an orientation relation's coordinate as [x, y, z, w], or None."""
-    relation = OrientationModel(orn_id=orientation_node, graph=model.graph)
-    for coordinate_id in relation.coordinate_ids:
-        coordinate = OrientCoordModel(
-            coord_id=coordinate_id, graph=model.graph, orientation=relation
-        )
-        rotation = orientation_quaternion(model, coordinate)
-        if rotation is not None:
-            return rotation
-    return None
-
-
 def parse_xyz(model, node) -> list[float] | None:
     """The x/y/z scalars authored on a node, on SI, or None when it carries no vector.
 

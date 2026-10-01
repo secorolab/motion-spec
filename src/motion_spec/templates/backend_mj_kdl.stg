@@ -136,13 +136,16 @@ robot-init-mj_kdl(solver) ::= <<
         mj_kdl::cleanup(&mj_env);
         return 1;
     \}
-    if (const auto _s = mj_kdl::set_control_mode(&mj_<solver.runtime.id>, mj_kdl::CtrlMode::TORQUE); !_s) {
-        std::cerr \<\< "set_control_mode(TORQUE) failed for runtime <solver.runtime.id>: " \<\< _s.error \<\< "\n";
+<! An arm only read is held by its position servos, at the pose its ports were seeded with. !>
+    if (const auto _s = mj_kdl::set_control_mode(&mj_<solver.runtime.id>, mj_kdl::CtrlMode::<ctrl-mode-mj_kdl(solver)>); !_s) {
+        std::cerr \<\< "set_control_mode(<ctrl-mode-mj_kdl(solver)>) failed for runtime <solver.runtime.id>: " \<\< _s.error \<\< "\n";
         mj_kdl::cleanup(&mj_env);
         return 1;
     \}
 <endif>
 >>
+
+ctrl-mode-mj_kdl(solver) ::= "<if(solver.runtime.commanded)>TORQUE<else>POSITION<endif>"
 
 robot-chain-mj_kdl(solver) ::= <<
 <if(solver.runtime.owner)>    KDL::Chain *chain_<solver.runtime.id> = &mj_<solver.runtime.id>.chain;

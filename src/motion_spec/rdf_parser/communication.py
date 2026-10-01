@@ -148,17 +148,18 @@ def _watched_constraints(monitor, closures: dict, uri_by_id: dict) -> list:
     it does not needs the members: each one's error, as its evaluator writes it, and the band
     that error is judged against.
     """
+    # By IRI: two motions' until terms may share a short id.
     errors = {
-        closure["constraint_id"]: closure.get("error")
+        closure["constraint_uri"]: closure.get("error")
         for closure in closures.values()
-        if closure.get("type") == "ErrorEvaluator" and closure.get("constraint_id")
+        if closure.get("type") == "ErrorEvaluator" and closure.get("constraint_uri")
     }
     return [
         _prune(
             {
                 "id": member,
                 "uri": uri,
-                "error_signal": errors.get(member),
+                "error_signal": errors.get(uri),
                 "tolerance_signal": band or None,
             }
         )

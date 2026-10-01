@@ -56,7 +56,6 @@ hddc2b_pltf_frc_redu_ref_fini(NUM_DRIVES, state.f_prim, state.f_scnd, state.f_dr
 base-force-solver-aligned(solver) ::= <<
 hddc2b_pltf_drv_algn_dst(NUM_DRIVES, state.drive_attachment, state.cfg.w_align.data(), state.pvt_pos, state.f_platform, &state.f_drive_ref[1], 2);
 hddc2b_pltf_frc_pltf_to_drv(NUM_DRIVES, EPS, state.g, state.cfg.w_platform.data(), state.f_platform, state.cfg.w_drive.data(), state.f_drive_ref, state.f_prim, state.f_scnd);
-motion_spec::runtime::hddc2b_rescale(state.f_scnd);
 hddc2b_pltf_frc_redu_ref_fini(NUM_DRIVES, state.f_prim, state.f_scnd, state.f_drive);
 >>
 

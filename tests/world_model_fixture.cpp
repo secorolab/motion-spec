@@ -8,7 +8,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -376,87 +375,6 @@ void verify_no_allocation() {
                 static_cast<unsigned long long>(kCycles), allocations, consumed);
 }
 
-// `real_arm_pose_hold` reads five poses in one cycle: two pose/direction reads and three wrench
-// frames. That whole cycle is the honest unit to compare, not one read in isolation.
-constexpr int kReadsPerCycle = 5;
-
-double chain_fk_cycle(Arm &arm) {
-    double consumed = 0.0;
-    KDL::JntArray q(kJointsPerArm);
-    for (int i = 0; i < kJointsPerArm; ++i) q(i) = arm.q[i];
-    for (int read = 0; read < kReadsPerCycle; ++read) {
-        KDL::ChainFkSolverPos_recursive fk(arm.chain);
-        KDL::Frame frame;
-        fk.JntToCart(q, frame, read < 2 ? 2 : -1);
-        consumed += frame.p.x();
-    }
-    return consumed;
-}
-
-double world_cycle(WorldKinematics &world, Arm &arm, std::uint64_t token) {
-    world.update(token);
-    const KDL::Frame root = world.pose(arm.world_root, token).Inverse();
-    double consumed = 0.0;
-    for (int read = 0; read < kReadsPerCycle; ++read) {
-        const KDL::Frame frame =
-            root * world.pose(read < 2 ? arm.world_elbow : arm.world_tip, token);
-        consumed += frame.p.x();
-    }
-    return consumed;
-}
-
-long long median(std::vector<long long> samples) {
-    std::sort(samples.begin(), samples.end());
-    return samples[samples.size() / 2];
-}
-
-long long percentile95(std::vector<long long> samples) {
-    std::sort(samples.begin(), samples.end());
-    return samples[(samples.size() * 95) / 100];
-}
-
-void benchmark() {
-    HotPath hot;
-    constexpr int kBatches = 40;
-    constexpr int kCyclesPerBatch = 2000;
-    std::vector<long long> before, after;
-    double consumed = 0.0;
-    std::uint64_t token = 1;
-
-    // Warm both paths before measuring either.
-    for (int i = 0; i < kCyclesPerBatch; ++i) {
-        consumed += chain_fk_cycle(hot.a);
-        consumed += world_cycle(hot.world, hot.a, token++);
-    }
-
-    for (int batch = 0; batch < kBatches; ++batch) {
-        // Alternate the order, so neither path always pays for the other's cache state.
-        for (int order = 0; order < 2; ++order) {
-            const bool chain_first = (batch % 2 == 0) ? (order == 0) : (order == 1);
-            const auto start = std::chrono::steady_clock::now();
-            for (int i = 0; i < kCyclesPerBatch; ++i) {
-                consumed += chain_first ? chain_fk_cycle(hot.a) : world_cycle(hot.world, hot.a, token++);
-            }
-            const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                     std::chrono::steady_clock::now() - start)
-                                     .count();
-            (chain_first ? before : after).push_back(elapsed / kCyclesPerBatch);
-        }
-    }
-
-    const long long before_median = median(before);
-    const long long after_median = median(after);
-    std::printf("PLAN05 benchmark: %d batches of %d control cycles, %d reads per cycle\n", kBatches,
-                kCyclesPerBatch, kReadsPerCycle);
-    std::printf("PLAN05 before(chain FK per cycle) median %lld ns p95 %lld ns\n", before_median,
-                percentile95(before));
-    std::printf("PLAN05 after(world model per cycle) median %lld ns p95 %lld ns\n", after_median,
-                percentile95(after));
-    std::printf("PLAN05 ratio before/after %.3f\n",
-                static_cast<double>(before_median) / static_cast<double>(after_median));
-    std::printf("PLAN05 consumed %.6f\n", consumed);
-}
-
 }  // namespace
 
 void *operator new(std::size_t size) {
@@ -490,10 +408,6 @@ void operator delete[](void *memory, std::size_t, std::align_val_t) noexcept { s
 
 int main(int argc, char **argv) {
     const std::string mode = argc > 1 ? argv[1] : "verify";
-    if (mode == "bench") {
-        benchmark();
-        return 0;
-    }
     if (mode == "alloc") {
         verify_no_allocation();
         return g_failures == 0 ? 0 : 1;

@@ -114,7 +114,7 @@ wrench-raw-robif2b(solver, out) ::= <<
 
 robot-state-init-robif2b-KinovaGen3(solver) ::= <<
 <if(solver.runtime.owner)>    kinova_state kinova_<solver.runtime.id>_state{};
-    kinova_<solver.runtime.id>_state.ctrl_mode = ROBIF2B_CTRL_MODE_FORCE;
+    kinova_<solver.runtime.id>_state.ctrl_mode = <if(solver.runtime.commanded)>ROBIF2B_CTRL_MODE_FORCE<else>ROBIF2B_CTRL_MODE_POSITION<endif>;
 <solver.devices:{device | <({<device-state-init-impl.(device.kind)>})(solver, device)>}; separator="\n">
 <endif>
 >>
@@ -339,6 +339,11 @@ device-configure-robif2b-KinovaGen3(solver, device) ::= <<
     <robif2b-recover-kinova(solver.runtime.id)>
     <robif2b-start-kinova(solver.runtime.id)>
 <device-configure-check({kinova_<solver.runtime.id>_state}, device.config_key)>
+<if(!solver.runtime.commanded)>    // Only read: hold where configure found the arm.
+    for (int i = 0; i \< ROBIF2B_KINOVA_GEN3_NR_JOINTS; ++i) {
+        kinova_<solver.runtime.id>_state.pos_cmd[i] = kinova_<solver.runtime.id>_state.pos_msr[i];
+    \}
+<endif>
 >>
 
 device-configure-robif2b-KinovaGen3-2F85(solver, device) ::= <<

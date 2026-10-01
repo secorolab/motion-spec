@@ -87,6 +87,8 @@ class RuntimeBinding:
     config_key: str
     # The solver that owns this runtime; every record on it reads that one's world_to_root.
     owner_id: str = ""
+    # False when only forward kinematics reads this chain: the arm is held in position mode.
+    commanded: bool = True
 
 
 @dataclass

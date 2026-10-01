@@ -34,12 +34,6 @@ FORMATS = {
         oldest=1,
         changes={1: "workspace and setup settings"},
     ),
-    "journal": Format(
-        ".motion-spec/journal.jsonl",
-        current=1,
-        oldest=1,
-        changes={1: "one entry per command: ts, command, argv, cwd"},
-    ),
     "marker": Format(
         "install marker",
         current=2,

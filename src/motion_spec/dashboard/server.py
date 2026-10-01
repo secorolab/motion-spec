@@ -390,7 +390,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/sources":
                 return self.send_json(sorted(authored_sources()))
             if parsed.path == "/api/jupyter":
-                return self.send_json(jupyter_server())
+                return self.send_json(jupyter_server(self.server.server_address[1]))
             if parsed.path == "/api/source":
                 return self.send_json(read_source(value))
             if parsed.path == "/api/source-diff":
@@ -497,7 +497,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     )
                 )
             if self.path == "/api/notebook":
-                return self.send_json(run_notebook(relative_path(roots.GENERATIONS, body["path"])))
+                return self.send_json(
+                    run_notebook(
+                        relative_path(roots.GENERATIONS, body["path"]), self.server.server_address[1]
+                    )
+                )
             if self.path != "/api/delete":
                 return self.send_json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
             selected = body["paths"]

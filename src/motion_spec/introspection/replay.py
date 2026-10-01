@@ -3,13 +3,11 @@
 
 from __future__ import annotations
 
-import argparse
 import json
-import sys
 from pathlib import Path
 
 from motion_spec.introspection import frame_log_pb
-from motion_spec.introspection.archive import ArchiveError, load_manifest, verify_manifest
+from motion_spec.introspection.archive import ArchiveError, load_manifest
 
 
 def run_dir_for(log_path: Path) -> Path:
@@ -49,13 +47,6 @@ def resolve_archive(path: Path | str) -> tuple[Path, Path, dict | None, dict]:
     return run_dir, log_path, manifest, frame_log_pb.read_contract(log_path)
 
 
-def read_meta(log_path: Path | str) -> dict:
-    path = Path(log_path)
-    if path.suffix != ".pb":
-        raise ArchiveError(f"{path}: expected a .pb frame log")
-    return frame_log_pb.read_header(path)
-
-
 def validate_header(log_path: Path | str, contract=None) -> dict:
     """The log states its own identity, so there is nothing left to cross-check it against.
 
@@ -85,11 +76,6 @@ def decode_frames(log_path: Path | str) -> list[dict]:
     _run_dir, log_path, _manifest, contract = resolve_archive(log_path)
     validate_header(log_path, contract)
     return list(frame_log_pb.frame_records(log_path, contract))
-
-
-def runtime_frames(log_path: Path | str) -> tuple[list[dict], int]:
-    records = decode_frames(log_path)
-    return records, len(records)
 
 
 def summarize(log_path: Path | str) -> str:
@@ -139,34 +125,3 @@ def summarize(log_path: Path | str) -> str:
             f"compute[us] mean {sum(computes) / len(computes) / 1e3:.1f} max {computes[-1] / 1e3:.1f}"
         )
     return "\n".join(lines)
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="motion-spec replay")
-    parser.add_argument("log", help="frame_log.pb inside a motion-spec run archive")
-    parser.add_argument("--jsonl", action="store_true", help="emit decoded frames as JSON Lines")
-    parser.add_argument("--verify", action="store_true", help="verify manifest/header only")
-    args = parser.parse_args(argv)
-    try:
-        if args.verify:
-            run_dir, log_path, manifest, contract = resolve_archive(args.log)
-            validate_header(log_path, contract)
-            if manifest is not None:
-                verify_manifest(run_dir)
-                print("archive OK")
-            else:
-                print("archive OK (no manifest.json yet -- header verified only)")
-        elif args.jsonl:
-            for record in decode_frames(args.log):
-                print(json.dumps(record, separators=(",", ":")))
-        else:
-            print(summarize(args.log))
-    except ArchiveError as exc:
-        parser.exit(2, f"{exc}\n")
-    except BrokenPipeError:
-        sys.stdout = None
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

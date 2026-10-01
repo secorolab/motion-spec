@@ -5,18 +5,20 @@ copying their source models.
 
 ## 1. Distinguish semantic instances
 
-The expanded scene declares four independent instances:
+The shared `models/common/dual_arm_table.scenex`, also used by the handover
+example, declares four independent instances:
 
 ```text
-ktree inst (ns=ppd_mjc) kinova1 of <kinova_tree>
-ktree inst (ns=ppd_mjc) gripper1 of <gripper_tree>
-ktree inst (ns=ppd_mjc) kinova2 of <kinova_tree>
-ktree inst (ns=ppd_mjc) gripper2 of <gripper_tree>
+ktree inst (ns=dat) kinova1 of <kinova_tree>
+ktree inst (ns=dat) gripper1 of <gripper_tree>
+ktree inst (ns=dat) kinova2 of <kinova_tree>
+ktree inst (ns=dat) gripper2 of <gripper_tree>
 ```
 
 `kinova1`, `kinova2`, `gripper1`, and `gripper2` are semantic identities. Generated
 runtime prefixes keep repeated MJCF element names separate; the instance names are
-not string-parsing conventions.
+not string-parsing conventions. Each arm and each gripper is its own agent, because
+each is commanded through its own solver.
 
 Both arms attach to frames authored on the table body. The second mount has a
 180-degree extrinsic XYZ yaw, so the arms face each other:
@@ -53,19 +55,30 @@ one ACHD solver per agent. Later handlers explicitly route each controller to th
 matching solver:
 
 ```robmot
-solver arm1-solver {
-    agent: <pickplace_agents.arm1>,
-    algorithm: ACHD,
-    gravity: { x: 0.0, y: 0.0, z: -9.81 m/s2 }
+arm1-solver: serial-chain {
+    agent:     <agents.arm1>,
+    algorithm: achd,
+    limits {   torque: saturation { max: <shared.spec.arm-torque-limit> } },
+    gravity:   (0.0, 0.0, 9.81) m/s^2
 },
-solver arm2-solver {
-    agent: <pickplace_agents.arm2>,
-    algorithm: ACHD,
-    gravity: { x: 0.0, y: 0.0, z: -9.81 m/s2 }
+arm2-solver: serial-chain {
+    agent:     <agents.arm2>,
+    algorithm: achd,
+    limits {   torque: saturation { max: <shared.spec.arm-torque-limit> } },
+    gravity:   (0.0, 0.0, 9.81) m/s^2
 }
 ```
 
-The same separation applies to the two gripper command-forwarding solvers.
+The two gripper agents get their own command-forwarding solvers:
+
+```robmot
+gripper1-solver: command-forwarding {
+    agent: <agents.gripper1>
+},
+gripper2-solver: command-forwarding {
+    agent: <agents.gripper2>
+}
+```
 
 ## 4. Inspect velocity-profile propagation
 
@@ -75,20 +88,16 @@ same measured derivative:
 
 ```robmot
 velocity-profile lower1-profile = profile {
-    max-velocity: <spec.lower-max-v>,
-    max-acceleration: <spec.lower-max-a>,
+    max-velocity: <spec.max-lower-velocity>,
+    max-acceleration: <spec.max-lower-acceleration>,
     measured-velocity: <shared.world.twist-ee1-base>.linvel.z,
-    shape: trapezoidal
+    max-jerk: <spec.max-lower-jerk>,
+    shape: s-curve
 }
 
-pid ctrl-pk1-lower-z {
-    constraint: <pick.lower1-z>,
-    profile: <pick.spec.lower1-profile>,
-    measured-derivative: <shared.world.twist-ee1-base>.linvel.z,
-    Kp: 12, Ki: 5, Kd: 15, decay: 0
-} via <handler-home.arm1-solver>
+pid ctrl-pick-lower1-z { constraint: <pick.lower1-z>, profile: <pick.spec.lower1-profile>, measured-derivative: <shared.world.twist-ee1-base>.linvel.z, Kp: 12, Ki: 5, Kd: 15, decay: 0 } via <handler-home.arm1-solver>
 ```
 
 In `generated/model/ir.json`, find `lower1-profile`; then find the same profile on
-`ctrl-pk1-lower-z` in the generated controller. This checks model-to-IR-to-codegen
+`ctrl-pick-lower1-z` in the generated controller. This checks model-to-IR-to-codegen
 propagation without relying only on the observed motion.

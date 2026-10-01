@@ -39,12 +39,6 @@ motion-prelude(serial_chain_solvers, solvers, backend) ::= <<
 <endif>
 >>
 
-motion-when-block(steps, closures, views) ::= <<
-<if(first(steps))>
-<schedule-block(steps, closures, views)>
-<endif>
->>
-
 shared-schedule-block(steps, closures, views) ::= <<
 <if(first(steps))>
 <schedule-block(steps, closures, views)>

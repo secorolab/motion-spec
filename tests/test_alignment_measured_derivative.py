@@ -11,7 +11,6 @@ only failed at C++ compile time.
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 import pytest
@@ -39,6 +38,7 @@ CTRL_ORI = (
     "        pid ctrl-comply-ori {\n"
     "            constraint: <compliance.comply-ori>,\n"
     "            measured-derivative: <shared.world.twist-ee-base>.angvel,\n"
+    "            output-saturation: saturation { max: <compliance.spec.comply-angular-accel-max> },\n"
     "            Kp: 240,\n"
     "            Ki: 0,\n"
     "            Kd: 160,\n"
@@ -53,23 +53,14 @@ ROW_ALIGN = (
 )
 
 
-def _model_driving_alignment_with_a_pid(tmp_path: Path) -> Path:
+def _model_driving_alignment_with_a_pid() -> tuple[Path, str]:
     """arc_tracing_with_admittance, with its compliance alignment moved onto a pid that reads angvel."""
-    source = example("arc_tracing_with_admittance")
-    # The scenex reaches for ft_mount.xml beside the model directory, so the siblings come too.
-    for entry in source.parent.iterdir():
-        if entry.is_file():
-            shutil.copy2(entry, tmp_path / entry.name)
-    model_dir = tmp_path / source.name
-    shutil.copytree(source, model_dir)
-
-    path = model_dir / "arc_tracing_with_admittance.robmot"
+    path = example("arc_tracing_with_admittance") / "arc_tracing_with_admittance.robmot"
     text = path.read_text()
     for anchor in (WHILE_ORI, CTRL_ORI, ELBOW_CTRL):
         assert anchor in text, f"model no longer carries the anchor:\n{anchor}"
     text = text.replace(WHILE_ORI, "", 1).replace(CTRL_ORI, "", 1)
-    path.write_text(text.replace(ELBOW_CTRL, ROW_ALIGN + ELBOW_CTRL, 1))
-    return path
+    return path, text.replace(ELBOW_CTRL, ROW_ALIGN + ELBOW_CTRL, 1)
 
 
 def test_alignment_pid_declares_its_measured_derivative(
@@ -77,10 +68,12 @@ def test_alignment_pid_declares_its_measured_derivative(
 ) -> None:
     monkeypatch.setenv("METAMODELS_PATH", str(METAMODELS))
     metamodel = motion_spec_metamodel()
-    path = _model_driving_alignment_with_a_pid(tmp_path)
+    path, text = _model_driving_alignment_with_a_pid()
     generated = tmp_path / "gen"
     generated.mkdir()
-    _gen_graph(metamodel, metamodel.model_from_file(path), generated, overwrite=True, debug=False)
+    # Parsed as if it were the model's own file, so its imports resolve where the model's do.
+    model = metamodel.model_from_str(text, file_name=str(path))
+    _gen_graph(metamodel, model, generated, overwrite=True, debug=False)
 
     ir = generate_ir(generated / "arc_tracing_with_admittance-app.ld.json")
     declared = {item.id for item in ir["computation"]["shared_data"] if getattr(item, "id", None)}

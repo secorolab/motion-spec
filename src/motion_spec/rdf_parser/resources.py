@@ -1421,7 +1421,11 @@ def _solver_with_input_and_output(model, node, setup: _ChainSetup) -> SolverWith
         sensors=setup.sensors,
         devices=setup.devices,
         algorithm=family,
-        algorithm_name=family.codegen_name or None,
+        algorithm_name=(
+            family.codegen_name
+            if family is not None
+            else constraint_handler.KINEMATICS_ALGORITHMS[graph.value(node, SLV.solver)]
+        ),
         derived_root_acceleration=quantities.parse_xyz(model, gravity_node)
         if gravity_node
         else None,
@@ -1722,17 +1726,6 @@ def anchor_frame(model):
             f"{': ' + ', '.join(sorted(map(str, anchors))) if anchors else ''}",
         )
     return anchors.pop()
-
-
-def _frames_of(model, node) -> list:
-    """The frames a body carries, or the node itself when it already is one."""
-    if GEOM_ENT.Frame in get_node_types(model.graph, node):
-        return [node]
-    return [
-        frame
-        for frame in model.graph.objects(node, GEOM_ENT.simplices)
-        if GEOM_ENT.Frame in get_node_types(model.graph, frame)
-    ]
 
 
 def _static_body_uris(model) -> set[str]:
@@ -2479,19 +2472,11 @@ def annotate_runtime(
 
     world_frames = list(claimed.values())
 
-    # Runtimes some driver torque-streams; declared-only solvers on any other runtime stage zeros.
-    commanding = {
-        solver.runtime.id
-        for solver in serial_chains
-        if any(
-            driver.acceleration_constraint
-            or driver.cartesian_force
-            or driver.cartesian_acceleration
-            or driver.joint_force
-            for driver in solver.motion_drivers
-        )
-    }
+    # Runtimes a dynamics solver torque-streams; the rest are only read, so they hold position.
+    commanding = {solver.runtime.id for solver in serial_chains if solver.algorithm is not None}
     for solver in serial_chains:
+        solver.runtime.commanded = solver.runtime.id in commanding
+        _refuse_twist_without_velocity_kinematics(solver)
         _refuse_unreportable_currents(solver, backend)
         _split_gripper_outputs(solver, backend)
         # Last, so it sees the outputs a gripper device took over: what the loop answers is
@@ -2570,6 +2555,23 @@ _GRIPPER_ONLY_OUTPUTS = {"JointVelocity", "JointCurrent"}
 
 # Readings no simulated backend answers, and why; the simulator reads any joint's rate by name.
 _SIMULATOR_UNREPORTED = {"JointCurrent": "the simulator reports no motor current"}
+
+
+def _refuse_twist_without_velocity_kinematics(solver) -> None:
+    """Forward position kinematics states poses only.
+
+    Raises:
+        ConstraintViolation: the model reads a twist through an FPK solver.
+    """
+    if solver.algorithm_name != "FPK":
+        return
+    for out in solver.output:
+        if getattr(out, "type", "") == "VelocityTwist":
+            raise ConstraintViolation(
+                "solver",
+                f"solver '{solver.id}' is forward position kinematics, but twist '{out.id}' is "
+                "read through it; name 'fvk' to read twists.",
+            )
 
 
 def _refuse_unreportable_currents(solver, backend: str) -> None:
@@ -2691,14 +2693,14 @@ def _apply_runtime_to_motions(serial_chains, motions, commanding) -> None:
                 if device.kind in GRIPPER_DEVICES
                 for out in device.joint_outputs
             ]
-            # A read-only solver on a torque-streamed runtime would stage zero torques while
-            # active (the arm drops) -- and skipping the stage would leave stale torques applied.
+            # One arm is either torque-streamed or held: a kinematics-only motion on a
+            # torque-streamed arm would stage zero torques while active, and the arm drops.
             if solver.read_only and canonical.runtime.id in commanding:
                 raise ConstraintViolation(
                     "solver",
-                    f"motion '{motion.id}' declares solver '{solver.id}' without any controller, "
-                    f"but runtime '{canonical.runtime.id}' is torque-commanded elsewhere; drive "
-                    "the solver in every motion or in none",
+                    f"motion '{motion.id}' only reads arm '{canonical.runtime.id}' through "
+                    f"'{solver.id}' ({canonical.algorithm_name}), but another motion drives it "
+                    "with torque; name a dynamics algorithm in both or kinematics in both",
                 )
         for command in motion.forwarded_commands:
             canonical = by_id.get(command.robot_id)

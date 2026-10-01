@@ -3,12 +3,10 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import re
 import subprocess
-import sys
 from collections.abc import Iterator
 from itertools import chain
 from pathlib import Path
@@ -434,34 +432,3 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str) -> list[Path]:
             )
         )
     return written
-
-
-def main(argv: list[str] | None = None):
-    """CLI entry point: render C++ from a previously generated IR JSON."""
-    parser = argparse.ArgumentParser(
-        prog="motion-spec codegen", description="Generate C++ header files from motion-spec IR."
-    )
-    parser.add_argument("input", help="Previously generated IR JSON path")
-    parser.add_argument(
-        "-o", "--output-dir", required=True, help="Directory for generated C++ files"
-    )
-    parser.add_argument(
-        "--stst-bin",
-        default="stst",
-        help="Path to the STSTv4 executable used to render StringTemplate groups",
-    )
-    args = parser.parse_args(argv)
-
-    try:
-        generate_code(
-            ir_path=Path(args.input).resolve(),
-            output_dir=Path(args.output_dir).resolve(),
-            stst_bin=args.stst_bin,
-        )
-    except RuntimeError as exc:
-        print(f"Code generation failed: {exc}", file=sys.stderr)
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()

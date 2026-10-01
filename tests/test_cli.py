@@ -31,12 +31,8 @@ def test_cli_exposes_lazy_click_commands(monkeypatch, tmp_path) -> None:
     assert result.exit_code == 0
     assert all(
         command in result.output
-        for command in ("install", "health", "gen", "build", "check", "ir", "codegen", "run")
+        for command in ("install", "health", "gen", "build", "check", "run")
     )
-
-    result = runner.invoke(main, ["codegen", "--help"])
-    assert result.exit_code == 0
-    assert "--stst-bin" in result.output
 
     generation = tmp_path / "generation"
     (generation / "generated").mkdir(parents=True)
@@ -1567,7 +1563,6 @@ def test_a_ros_workspace_builds_with_colcon_and_sources_the_overlay(monkeypatch,
 
 def test_a_generated_file_says_which_version_it_is(monkeypatch, tmp_path) -> None:
     from motion_spec import config, formats
-    from motion_spec.introspection import journal
 
     monkeypatch.chdir(tmp_path)
     CliRunner().invoke(main, ["config", "--init", "--workspace", str(tmp_path)])
@@ -1583,15 +1578,6 @@ def test_a_generated_file_says_which_version_it_is(monkeypatch, tmp_path) -> Non
         assert "version 9" in str(exc) and "reads 1" in str(exc)
     else:
         raise AssertionError("a file from a newer motion-spec must not be half-read")
-
-    monkeypatch.setenv(stst_setup.WORKSPACE_VARIABLE, str(tmp_path))
-    monkeypatch.delenv(journal.JOURNAL_VARIABLE, raising=False)
-    journal.record("health")
-    assert journal.entries()[0]["v"] == formats.FORMATS["journal"].current
-
-    path = journal.journal_path()
-    path.write_text(path.read_text() + '{"v": 9, "command": "from-the-future"}\n')
-    assert [entry["command"] for entry in journal.entries()] == ["health"]
 
 
 def test_an_old_install_marker_is_read_as_one_setup_cloned(monkeypatch, tmp_path) -> None:
@@ -1643,52 +1629,6 @@ def test_setup_takes_its_build_options_from_its_flags(monkeypatch, tmp_path) -> 
     installed.clear()
     CliRunner().invoke(main, ["setup", "coord2b", "--workspace", str(tmp_path)])
     assert installed == [("coord2b", stst_setup.BUILD_TYPE, (), False)]
-
-
-def test_the_journal_belongs_to_a_workspace_or_nowhere(monkeypatch, tmp_path) -> None:
-    from motion_spec.introspection import journal
-
-    monkeypatch.delenv(journal.JOURNAL_VARIABLE, raising=False)
-    monkeypatch.delenv(stst_setup.WORKSPACE_VARIABLE, raising=False)
-
-    # Outside a workspace there is nowhere it belongs, so nothing is written -- least of all
-    # to the home directory, where every workspace's history would blend into one.
-    assert journal.journal_path() is None
-    journal.record("gen")
-
-    monkeypatch.setenv(stst_setup.WORKSPACE_VARIABLE, str(tmp_path))
-    assert journal.journal_path() == tmp_path / ".motion-spec" / "journal.jsonl"
-
-    named = tmp_path / "elsewhere.jsonl"
-    monkeypatch.setenv(journal.JOURNAL_VARIABLE, str(named))
-    assert journal.journal_path() == named
-
-
-def test_every_command_appends_one_entry(monkeypatch, tmp_path) -> None:
-    from motion_spec.introspection import journal
-
-    monkeypatch.delenv(journal.JOURNAL_VARIABLE, raising=False)
-    monkeypatch.setenv(stst_setup.WORKSPACE_VARIABLE, str(tmp_path))
-
-    monkeypatch.setattr("sys.argv", ["motion-spec", "health", "--profile", "dsl"])
-    CliRunner().invoke(main, ["health", "--profile", "dsl"])
-    monkeypatch.setattr("sys.argv", ["motion-spec", "setup", "stst"])
-    CliRunner().invoke(main, ["setup", "stst"])  # fails on its own terms; still asked for
-
-    recorded = journal.entries()
-    assert [entry["command"] for entry in recorded] == ["health", "setup"]
-    assert recorded[0]["argv"] == ["health", "--profile", "dsl"]
-    assert all(entry["ts"].endswith("+00:00") and entry["cwd"] for entry in recorded)
-
-    # And the reader prints them, newest last, without anyone opening the file.
-    result = CliRunner().invoke(main, ["journal", "-n", "3"])
-    assert result.exit_code == 0
-    # `journal` is a command too, so reading the journal is itself the newest entry.
-    assert [line.split()[1] for line in result.output.splitlines()] == [
-        "health",
-        "setup",
-        "journal",
-    ]
 
 
 def test_generations_root_is_the_workspace_and_never_the_working_directory(monkeypatch, tmp_path):

@@ -3,12 +3,12 @@
 // model states this, so the invariant is pinned here rather than against one that may be
 // restructured for reasons of its own.
 import "./shared_motion.fsm"
-import "../../../../motion-spec-dsl/src/motion_spec_dsl/models/08_arc_tracing_with_admittance/arc_tracing_with_admittance.scenex"
+import "../../../../motion-spec-dsl/src/motion_spec_dsl/models/common/table_arm_sim.scenex"
 ns app = "https://secorolab.github.io/models/shared-motion/"
 ns sm = "https://secorolab.github.io/models/shared-motion/fsm/"
 
 exec-context (ns=app) shared-motion-exec {
-    runs-scene: <admittance_arc_scene_mjc>
+    runs-scene: <table_arm_sim_scene_mjc>
     platform:   simulation { name: "MuJoCo" }
     config:     "robot.toml"
     timestep:   1.0 ms

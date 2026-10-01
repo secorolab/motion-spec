@@ -908,21 +908,6 @@ inline void hddc2b_pltf_vel_drv_to_pltf(
 
     hddc2b_pltf_vel_redu_wgh_fini(num_drv, xd_pltf2, w_pltf_inv_sqrt, xd_pltf);
 }
-
-inline void hddc2b_rescale(double *f_scnd) {
-    double f_scnd_max = 0.0;
-    for (int i = 0; i \< NUM_DRIVES; ++i) {
-        double current = fabs(f_scnd[i * NUM_DRV_COORD + 1]);
-        if (current > f_scnd_max) f_scnd_max = current;
-    }
-
-    double scale_factor = (f_scnd_max == 0.0) ? 1.0 : f_scnd_max;
-
-    for (int i = 0; i \< NUM_DRIVES; ++i) {
-        f_scnd[i * NUM_DRV_COORD + 0] /= scale_factor;
-        f_scnd[i * NUM_DRV_COORD + 1] /= scale_factor;
-    }
-}
 <endif>
 
 }  // namespace motion_spec::runtime

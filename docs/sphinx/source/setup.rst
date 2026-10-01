@@ -295,8 +295,7 @@ The environment file
 
 ``setup`` writes one ``setup-motion-spec.<shell>`` to the workspace root, for the
 shell in force — ``$SHELL``, or ``[workspace] shell`` when the config names one.
-Sourcing it is what makes an installation usable from a fresh shell, and
-``motion-spec mutate`` finds a workspace by looking for it above the model.
+Sourcing it is what makes an installation usable from a fresh shell.
 
 .. list-table::
    :header-rows: 1
@@ -397,17 +396,10 @@ Two variables are yours to set, and sourcing the file sets the first:
        find them again.
 
 Everything else is optional: ``MOTION_SPEC_ENV`` (the file to source, below),
-``MOTION_SPEC_BUILD_TYPE`` (``CMAKE_BUILD_TYPE`` for a generated build),
-``MOTION_SPEC_JOURNAL`` (a journal somewhere other than
-``$MOTION_SPEC_WS/.motion-spec/journal.jsonl``) and ``ROS_DISTRO``.
+``MOTION_SPEC_BUILD_TYPE`` (``CMAKE_BUILD_TYPE`` for a generated build) and
+``ROS_DISTRO``.
 
-Every command appends one JSON line to that journal — when, what was asked, and
-from where — written before the work, so a command that never returned is still
-in the record. It is a workspace's history or nothing: outside a workspace,
-nothing is written. ``motion-spec journal`` prints it as columns, ``-n`` for the
-last few and ``--json`` for the lines themselves.
-
-What the tools themselves printed is kept too, beside the journal or with the
+What the tools themselves printed is kept, in the workspace or with the
 generation it was about:
 
 .. list-table::

@@ -366,6 +366,13 @@ find_package(tomlplusplus REQUIRED CONFIG)
 find_package(coord2b REQUIRED)
 <endif>
 find_package(Threads REQUIRED)
+<if(resources.by_kind.mobile_base)>
+# The platform's force distribution and its damped-least-squares twist composition; the solve
+# goes through LAPACK, which hddc2b does not carry itself.
+find_package(hddc2b REQUIRED)
+find_package(BLAS REQUIRED)
+find_package(LAPACK REQUIRED)
+<endif>
 <if(communication.ros)>
 find_package(rclcpp REQUIRED)
 find_package(realtime_tools REQUIRED)
@@ -396,6 +403,13 @@ target_link_libraries(main PRIVATE
     tomlplusplus::tomlplusplus
     Threads::Threads
 <resources.by_kind.serial_chain:{solver | <if(solver.runtime.owner)><solver.devices:{device | <({cmake-device-link-<device.kind>})()>}; separator="\n"><endif>}; separator="\n">
+<if(resources.by_kind.mobile_base)>
+    robif2b::kelo
+    robif2b::ethercat
+    hddc2b::hddc2b
+    LAPACK::LAPACK
+    BLAS::BLAS
+<endif>
 <if(coordination.fsm)>
     ${coord2b_LIBRARIES}
 <endif>

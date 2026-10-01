@@ -973,10 +973,7 @@ def _activation(python: Path | None = None) -> str:
 def write_environment(
     root: Path, prefix: Path | None = None, ros: bool | None = None, python: Path | None = None
 ) -> Path:
-    """Write ROOT's environment file, pointing at the prefix its builds were installed into.
-
-    One file, for the shell in force. `motion-spec mutate` finds a workspace by it.
-    """
+    """Write ROOT's environment file, for the shell in force, pointing at its install prefix."""
     from motion_spec.config import settings, shell
 
     prefix = prefix or install_prefix(root)

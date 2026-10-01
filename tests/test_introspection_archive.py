@@ -95,7 +95,8 @@ def test_archive_and_replay_are_self_contained(tmp_path: Path) -> None:
     assert "dropped 0" in summarize(run_dir / "logs" / "frame_log.pb")
     assert decode_frames(run_dir)[0]["step"] == 7
     assert f"archive     {run_dir}" in summarize(run_dir)
-    assert replay.main([str(run_dir), "--verify"]) == 0
+    _, log_path, _, schema = replay.resolve_archive(run_dir)
+    validate_header(log_path, schema)
     with pytest.raises(ArchiveError, match="does not exist"):
         summarize(run_dir / "missing")
 
@@ -171,7 +172,8 @@ def test_replay_works_on_aborted_run_without_manifest(tmp_path: Path) -> None:
     assert decode_frames(frame_log)[0]["step"] == 7
     assert decode_frames(run_dir)[0]["step"] == 7
     assert f"archive     {run_dir}" in summarize(frame_log)
-    assert replay.main([str(frame_log), "--verify"]) == 0
+    _, log_path, _, schema = replay.resolve_archive(frame_log)
+    validate_header(log_path, schema)
 
 
 def _importing_manifest() -> dict:

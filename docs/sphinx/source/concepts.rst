@@ -98,12 +98,8 @@ The individual stages remain available for automation and debugging:
      - Input and output
    * - ``check MANIFEST``
      - Validate an application JSON-LD manifest and its imported graphs with SHACL
-   * - ``ir MANIFEST``
-     - Lower an application manifest to IR; write with ``-o`` or print with ``--console``
-   * - ``codegen IR -o DIR``
-     - Render C++ and runtime contracts using STST
-   * - ``archive RUN_DIR``
-     - Create a standalone archive from existing generated artifacts and a frame log, or verify one
+   * - ``gen ir MODEL``
+     - Stop after lowering to IR
 
 The high-level model commands call these capabilities through the same Python
 implementation; they do not maintain a second pipeline.

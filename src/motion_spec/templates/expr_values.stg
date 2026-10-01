@@ -95,10 +95,6 @@ shared-member-Bool(var) ::= <<
 bool <var.id> = false;
 >>
 
-shared-member-Setpoint(var) ::= <<
-KDL::Frame <var.id>;
->>
-
 monitor-member(monitor) ::= <<
 <if(monitor.is_edge_triggered)>    bool <monitor.id>_previous = false;
     bool <monitor.id>_event_triggered = false;

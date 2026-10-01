@@ -31,10 +31,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dashboard = ["nicegui>=2.0", "pillow"]
+dashboard = ["pillow"]
 # The browser dashboard's notebook tab; its SPARQL console runs on the rdflib above.
 replay = ["jupyterlab>=4.0", "matplotlib"]
-all = ["nicegui>=2.0", "pillow", "jupyterlab>=4.0", "matplotlib"]
+all = ["pillow", "jupyterlab>=4.0", "matplotlib"]
 test = ["pytest", "pillow", "zstandard", "empy", "lark"]
 docs = ["sphinx", "myst-parser", "furo", "sphinx-autobuild", "matplotlib"]
 dev = ["pytest", "ruff"]

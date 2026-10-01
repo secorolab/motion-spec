@@ -127,12 +127,6 @@ class CommandForwarding(DynamicsSolverFamily):
     codegen_name = ""
 
 
-class Unsolved(DynamicsSolverFamily):
-    """Names no algorithm: nothing drives this solver, it is read for state and watched by
-    monitors.
-    """
-
-
 @dataclass
 class CartesianForceSpecification:
     """A Cartesian force applied to a body."""
@@ -179,10 +173,9 @@ class SolverWithInputAndOutput:
     hardware: HardwareBinding
     runtime: RuntimeBinding
     # What drives this chain, resolved once from the algorithm the model names; the runtime and
-    # the templates dispatch on the name, the lowering reads the record.
+    # the templates dispatch on the name, the lowering reads the record. None for forward
+    # kinematics: nothing drives the chain, it is only read.
     algorithm: type[DynamicsSolverFamily] | None = field(default=None, metadata=INTERNAL)
-    # None, not "", when the model names no algorithm: ST4 reads an empty string as present and
-    # would dispatch on it.
     algorithm_name: str | None = None
     # What the scene mounts on this chain, and what hardware is bound to drive it.
     sensors: list[SensorBinding] = field(default_factory=list)

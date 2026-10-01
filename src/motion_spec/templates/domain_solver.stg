@@ -30,11 +30,17 @@ struct <solver.id>_solver_state {
 };
 >>
 
-// A solver nothing drives never solves, so it carries no algorithm state. This hook is handed the
-// resource solver, which states the algorithm it was resolved to; `read_only` is a motion slice's
-// word for the same thing and is not a field here.
+// Forward kinematics never solves, so FPK and FVK carry no algorithm state and fall through to the
+// empty default. This hook is handed the resource solver, which states the algorithm it was
+// resolved to; `read_only` is a motion slice's word for the same thing and is not a field here.
+solver-state-algorithm-fields-impl ::= [
+    "ACHD": "solver-state-algorithm-fields-ACHD",
+    "RNE": "solver-state-algorithm-fields-RNE",
+    default: "solver-no-extra"
+]
+
 solver-state-algorithm-fields(solver) ::= <<
-<if(solver.algorithm_name)><({solver-state-algorithm-fields-<solver.algorithm_name>})(solver)><endif>
+<({<solver-state-algorithm-fields-impl.(solver.algorithm_name)>})(solver)>
 >>
 
 solver-state-algorithm-fields-ACHD(solver) ::= <<
@@ -68,7 +74,7 @@ solver-state-struct-extra-impl ::= [
 solver-no-extra(solver, chain_solver="", motion_driver="") ::= <<>>
 
 solver-state-struct-extra(solver, backend) ::= <<
-<if(solver.algorithm_name)><({<solver-state-struct-extra-impl.({<solver.algorithm_name>-<backend>})>})(solver)><endif>
+<({<solver-state-struct-extra-impl.({<solver.algorithm_name>-<backend>})>})(solver)>
 >>
 
 // mj_kdl gravity-compensates the ACHD command with a separate RNE pass.
@@ -421,9 +427,10 @@ ft-tare(out, raw, sensor, reference, observer, gravity) ::= <<
             \}
         \}
     \}
+    // The environment's wrench on the tool, the same sense as the momentum observer's estimate.
     shared.<out.id> = (shared.<out.id>_ft_tares > 0 || robot.ft_<out.sensor_name>_bias_samples == 0)
-        ? shared.<out.id>_ft_payload
-            - at_reference_<out.id> * (<raw> - shared.<out.id>_ft_bias - shared.<out.id>_ft_load)
+        ? at_reference_<out.id> * (<raw> - shared.<out.id>_ft_bias - shared.<out.id>_ft_load)
+            - shared.<out.id>_ft_payload
         : KDL::Wrench::Zero();
 >>
 

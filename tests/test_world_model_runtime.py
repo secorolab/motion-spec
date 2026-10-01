@@ -11,7 +11,6 @@ than split into a C++ case per accessor.
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -94,15 +93,3 @@ def test_the_world_model_matches_chain_fk_and_refuses_a_stale_read(tmp_path: Pat
 def test_the_valid_hot_path_allocates_nothing(tmp_path: Path, eigen_guard: tuple) -> None:
     """Counted only after every buffer has been sized, so what is measured is the cycle."""
     _run(_build(tmp_path, *eigen_guard), "alloc")
-
-
-@pytest.mark.skipif(
-    os.environ.get("PLAN05_WORLD_BENCH") != "1", reason="set PLAN05_WORLD_BENCH=1 to measure"
-)
-def test_one_control_cycle_of_reads_is_cheaper_through_the_world_model(tmp_path: Path) -> None:
-    """Report-only: a wall-clock ratio is not a pass/fail a test suite should carry.
-
-    The unit is one control cycle's reads, not one read: the tree pass computes every segment
-    once, so a motion with a single low-index read can legitimately be slower in isolation.
-    """
-    _run(_build(tmp_path), "bench")

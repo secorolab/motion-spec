@@ -220,8 +220,13 @@ def wrench_terms_by_motion(motions, velocity_solvers, force_solvers=()) -> list[
             if commanded is not None:
                 wrench, frame_key, platform_key = commanded
                 # The wrench is built in the frame its constraint measures in; the platform sums
-                # in its own. Rotated once per wrench, under a local name the terms then read.
-                local = f"pltf_{wrench}" if frame_key and platform_key else None
+                # in its own. Rotated once per wrench, under a local name the terms then read --
+                # unless the two are one frame, which a platform without a chain has no world to ask.
+                local = (
+                    f"pltf_{wrench}"
+                    if frame_key and platform_key and frame_key != platform_key
+                    else None
+                )
                 terms.extend(
                     {
                         "wrench": wrench,

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import os
@@ -525,13 +524,6 @@ def load_manifest(run_dir_or_manifest: Path | str) -> tuple[Path, dict]:
     return manifest_path.parent, json.loads(manifest_path.read_text())
 
 
-def _artifact_path(run_dir: Path, rel: str) -> Path:
-    path = run_dir / rel
-    if not path.exists():
-        raise ArchiveError(f"{rel}: missing required archive artifact")
-    return path
-
-
 def verify_manifest(run_dir_or_manifest: Path | str) -> dict:
     run_dir, manifest = load_manifest(run_dir_or_manifest)
     errors = []
@@ -750,36 +742,3 @@ def _validate_shacl(graph: rdflib.Graph, label: str, *shape_names: tuple[str, ..
     conforms, _graph, text = validate(data_graph=graph, shacl_graph=shapes, inference="rdfs")
     if not conforms:
         raise ArchiveError(f"{label}: SHACL validation failed: {text}")
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="motion-spec archive")
-    parser.add_argument("run_dir")
-    parser.add_argument("--source-dir", default=None)
-    parser.add_argument("--run-id", default=None)
-    parser.add_argument("--frame-log", default=None)
-    parser.add_argument("--log-producer-executable", default=None)
-    parser.add_argument("--rec", default=None)
-    parser.add_argument("--verify", action="store_true")
-    args = parser.parse_args(argv)
-    try:
-        if args.verify:
-            verify_manifest(args.run_dir)
-            print("archive OK")
-        else:
-            create_archive_manifest(
-                args.run_dir,
-                source_dir=args.source_dir,
-                run_id=args.run_id,
-                frame_log=args.frame_log,
-                log_producer_executable=args.log_producer_executable,
-                rec=args.rec,
-            )
-            print(Path(args.run_dir) / "manifest.json")
-    except ArchiveError as exc:
-        parser.exit(2, f"{exc}\n")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

@@ -29,6 +29,8 @@ from motion_spec_dsl.rdf_parser.vocab import (
     GEOM_COORD,
     GEOM_OP,
     GEOM_OP_EXT,
+    KC_OP,
+    KC_OP_EXT,
     KC_STAT,
     MAP,
     QUDT_SCHEMA,
@@ -59,29 +61,41 @@ from motion_spec.classes.solvers import (
     DynamicsSolverFamily,
     JointForceSpecification,
     MotionDrivers,
-    Unsolved,
 )
 from motion_spec.rdf_parser import quantities
 from motion_spec.rdf_parser.model import kebab, local_name, si
 
 # Every solver family the code generator can run, keyed by the term that identifies it -- the
-# algorithm a solver names, or the type a command-forwarding solver carries.
+# algorithm a solver names, or the type a command-forwarding or mobile-platform solver carries.
 #
 # Vereshchagin's acceleration-constrained hybrid dynamics is posed as a constrained optimisation
 # over Gauss's principle, so each constrained direction is driven by an acceleration energy
 # (N-m2/s2) and the derived signals lead with `eacc`. Recursive Newton-Euler is driven by the
 # Cartesian acceleration itself, and leads with `acc`. A command-forwarding solver runs no
-# dynamics at all: its controller's output goes straight to the joint. `slv:ArticulatedBodyAlgorithm`
-# gets no entry: an unmapped algorithm is the "unsupported" answer below, not a fourth class.
+# dynamics at all: its controller's output goes straight to the joint. A mobile-platform solver
+# takes its wrench or twist as authored, so nothing is derived for it and it keeps the base
+# family's defaults. `slv:ArticulatedBodyAlgorithm` gets no entry: an unmapped algorithm is the
+# "unsupported" answer below.
 _SOLVER_FAMILIES = {
     SLV["AccelerationConstrainedHybridDynamicsAlgorithm"]: AccelerationEnergyDriven,
     SLV["RecursiveNewtonEulerAlgorithm"]: CartesianAccelerationDriven,
     SLV_EXT.CommandForwardingSolver: CommandForwarding,
+    SLV.VelocityCompositionSolver: DynamicsSolverFamily,
+    SLV.ForceDistributionSolver: DynamicsSolverFamily,
+    SLV_EXT.VelocityDistributionSolver: DynamicsSolverFamily,
+    SLV_EXT.ForceCompositionSolver: DynamicsSolverFamily,
+}
+
+# The forward-kinematics algorithms a serial chain may name instead: it is then read, never driven.
+KINEMATICS_ALGORITHMS = {
+    KC_OP.ForwardPositionKinematics: "FPK",
+    KC_OP_EXT.ForwardVelocityKinematics: "FVK",
 }
 
 
-def solver_algorithm(model, solver: URIRef) -> type[DynamicsSolverFamily]:
-    """The family a solver belongs to, and so what may be derived against it.
+def solver_algorithm(model, solver: URIRef) -> type[DynamicsSolverFamily] | None:
+    """The family a solver belongs to, and so what may be derived against it; None for a
+    forward-kinematics solver, which nothing drives.
 
     Raises:
         ConstraintViolation: the solver names an algorithm no backend implements.
@@ -91,7 +105,9 @@ def solver_algorithm(model, solver: URIRef) -> type[DynamicsSolverFamily]:
             return _SOLVER_FAMILIES[type_]
     algorithm = model.graph.value(solver, SLV["solver"])
     if algorithm is None:
-        return Unsolved
+        raise ConstraintViolation("solver", f"solver '{solver}' names no algorithm")
+    if algorithm in KINEMATICS_ALGORITHMS:
+        return None
     if algorithm not in _SOLVER_FAMILIES:
         raise ConstraintViolation(
             "solver", f"Solver '{solver}' has unsupported algorithm '{algorithm}'."
@@ -751,6 +767,12 @@ def _validate_solver_derivations(model, by_handler, by_solver, algorithms) -> No
     """Enforce executable solver limits, which only hold once authored RDF has resolved to plans."""
     for solver, plans in by_solver.items():
         family = algorithms[solver]
+        if family is None:
+            raise ConstraintViolation(
+                "solver",
+                f"Solver '{solver}' only reads its chain, but controller "
+                f"'{plans[0].controller}' drives it.",
+            )
         # A moment plan's axes are f_ext directions, not solver rows, so they claim no budget.
         axes = [axis for plan in plans if not _is_moment_plan(model, plan) for axis in plan.axes]
         if family.axes_must_be_distinct:

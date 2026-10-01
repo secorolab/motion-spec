@@ -28,7 +28,7 @@ def lab_settings() -> Path:
     return directory
 
 
-def jupyter_server() -> dict:
+def jupyter_server(dashboard_port: int) -> dict:
     """The embedded JupyterLab, started on first use and framed by this dashboard only."""
     if JUPYTER.get("process") and JUPYTER["process"].poll() is None:
         return {"url": JUPYTER["url"], "root": str(roots.WORKSPACE)}
@@ -44,7 +44,10 @@ def jupyter_server() -> dict:
     framing = json.dumps(
         {
             "headers": {
-                "Content-Security-Policy": "frame-ancestors 'self' http://127.0.0.1:8080 http://localhost:8080"
+                "Content-Security-Policy": (
+                    f"frame-ancestors 'self' http://127.0.0.1:{dashboard_port}"
+                    f" http://localhost:{dashboard_port}"
+                )
             }
         }
     )
@@ -84,9 +87,9 @@ def stop_jupyter() -> None:
         process.kill()
 
 
-def run_notebook(run_dir: Path) -> dict:
+def run_notebook(run_dir: Path, dashboard_port: int) -> dict:
     """Seed a notebook beside the run that loads its signals, and open it in JupyterLab."""
-    jupyter_server()
+    jupyter_server(dashboard_port)
     notebook = run_dir / "analysis.ipynb"
     if not notebook.exists():
         notebook.write_text(json.dumps(NOTEBOOK_TEMPLATE(run_dir), indent=1))

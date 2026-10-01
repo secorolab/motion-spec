@@ -169,7 +169,7 @@ class MotionUnit:
     when_monitors: list[Monitor]
     while_monitors: list[Monitor]
     until_monitors: list[Monitor]
-    # Schedules: when_schedule runs in can_start (own Parser). while_/until_schedule are slices of
+    # Schedules: when_schedule runs in monitor_when (own Parser). while_/until_schedule are slices of
     # one shared active graph, so they share a Parser -- common steps emit once and dedup correctly.
     when_schedule: list[str]
     while_schedule: list[str]
@@ -189,31 +189,18 @@ class MotionUnit:
     when_observation_ages: list[dict] = field(default_factory=list)
     active_observation_ages: list[dict] = field(default_factory=list)
     has_until_condition: bool = field(default=False, metadata=INTERNAL)
-    # Derived join: the when phase is one disjunction.
-    when_any: bool = False
-    # Structured boolean terms (folded from evaluators/monitors); rendered to C++ by the
-    # bool-condition template, joined by when_any. The *_present flag gates the
-    # empty-default (JSON empty lists are truthy in the ST4 build).
-    when_terms: list = field(default_factory=list)
-    when_terms_present: bool = False
     path_projections: list[dict] = field(default_factory=list)
     # Declared pose components referenced by this motion (folded from pose_components).
     declared_pose_components: list = field(default_factory=list)
     # Per-function capability booleans (which context objects each generated function
     # needs). The C++ signatures/args are built from these by the sig-params/sig-args
     # templates (folded from schedules/monitors/solvers).
-    can_start_needs_state: bool = False
-    can_start_needs_shared: bool = False
-    can_start_needs_robot: bool = False
     when_needs_state: bool = False
     when_needs_shared: bool = False
     when_needs_robot: bool = False
     until_needs_state: bool = False
     until_needs_shared: bool = False
     until_needs_robot: bool = False
-    monitor_needs_state: bool = False
-    monitor_needs_shared: bool = False
-    monitor_needs_robot: bool = False
     apply_needs_state: bool = False
     apply_needs_shared: bool = False
     apply_needs_robot: bool = False
@@ -224,7 +211,6 @@ class MotionUnit:
     # Whether the function records into the coordination event buffer (holds an edge monitor).
     when_needs_events: bool = False
     until_needs_events: bool = False
-    monitor_needs_events: bool = False
     control_needs_events: bool = False
     step_needs_events: bool = False
     # FSM wiring (folded from the FSM named graph): the state this motion runs in,

@@ -24,31 +24,34 @@ import "pick_and_place.scenex"
 ```
 
 Nothing in the motion model depends on a parsed MuJoCo body name. It refers to
-semantic scene entities such as `<kinova.base_link>` and
+semantic scene entities such as `<kinova.base_link.base_link_origin>` and
 `<gripper.g_base.g_pinch>`.
 
 ## 2. Follow scene composition
 
-The expanded scene instantiates one Kinova tree and one gripper tree:
+The expanded scene takes the arm, wrist F/T coupler, gripper and table from the
+shared `models/common/` folder:
 
 ```text
-ktree inst (ns=pps_mjc) kinova of <kinova_tree>
-ktree inst (ns=pps_mjc) gripper of <gripper_tree>
+import "../common/wrist_ft.scenex"
+import "../common/kinova_ft_2f85.scenex"
+import "../common/table_arm.scenex"
 ```
 
-`kinova_2f85` joins the gripper interface to the robot pinch site. `world_tree`
-then attaches the robot and table to the semantic world. Finally,
-`pick_place_scene_mjc` maps those semantic instances to MJCF assets and adds the
-cube at `(0.50, 0.0, 0.76) m`.
+`kinova_ft_2f85` instantiates one Kinova tree and one gripper tree and joins the
+coupler and gripper to the robot pinch site. `world_tree` attaches that tree and
+the table to the semantic world. Finally, `pick_and_place_scene_mjc` maps those
+semantic instances to MJCF assets and adds the cube at `(0.50, 0.0, 0.76) m`.
 
 The execution context in the motion file selects that scene instance and fixes
 the control period:
 
 ```robmot
 exec-context (ns=app) pick-and-place-exec {
-    runs-scene: <pick_place_scene_mjc>
-    platform: simulation { name: "MuJoCo" }
-    timestep: 1.0 ms
+    runs-scene: <pick_and_place_scene_mjc>
+    platform:   simulation { name: "MuJoCo" }
+    config:     "robot.toml"
+    timestep:   1.0 ms
 }
 ```
 
@@ -67,9 +70,9 @@ For example, this quantity says exactly what pose is observed and in which frame
 
 ```robmot
 pose pose-ee-base {
-    of: <gripper.g_base.g_pinch>,
-    wrt: <kinova.base_link>,
-    as-seen-by: <kinova.base_link>
+    of:         <gripper.g_base.g_pinch>,
+    wrt:        <kinova.base_link.base_link_origin>,
+    as-seen-by: <kinova.base_link.base_link_origin>
 }
 ```
 
@@ -173,23 +176,27 @@ while {
 
 `follow-tan` commands the speed along the path, `follow-lat` and `follow-ori`
 keep the TCP on its geometry, and `advance` confirms that measured tangential
-progress stays above the minimum. The separate `when` constraint prevents motion
-until the gripper is open.
+progress stays above the minimum. Its `until` states when the motion is done:
+
+```robmot
+until all {
+    aligned-above: <shared.world.pose-ee-base>.position equal to <spec.goal-pose>.position within <shared.spec.satisfied-band>
+}
+```
 
 `handler-pick-above` gives those declarative constraints runtime behavior:
 
-- the monitor emits `E_PICK_ABOVE_READY` when `gripper-ready` activates;
-- `otherwise hold <home>` supplies the safe motion before it activates;
+- the monitor on `<pick-above.until>` emits `E_PICK_READY` once the TCP is above the cube;
 - three PID controllers regulate the tangential, lateral, and orientation constraints;
 - the handler reuses the ACHD arm solver from `handler-home`.
 
-That event drives `T_HOME_PICK_ABOVE` in the FSM. The same chain—constraint,
-monitor, event, transition—advances every subsequent stage.
+That event drives `T_PICK_ABOVE_PICK` in the FSM. The same chain—until
+constraint, monitor, event, transition—advances every subsequent stage.
 
 ## 6. See why the gripper closes
 
-`grasp-hold` becomes eligible only when the TCP is within `0.015 m` of the cube.
-Its `close-gripper` constraint targets `0.8 rad`:
+`pick` ends when the TCP is within `0.015 m` of the cube, which starts
+`grasp-hold`. Its `close-gripper` constraint targets `0.8 rad`:
 
 ```robmot
 close-gripper: keeping <shared.world.gripper-pos>
@@ -200,13 +207,10 @@ The matching handler uses a feed-forward controller and a
 `command-forwarding` solver:
 
 ```robmot
-feed-forward ctrl-cg-close-gripper {
-    constraint: <grasp-hold.close-gripper>
-}
+feed-forward ctrl-grasp-hold-close-gripper { constraint: <grasp-hold.close-gripper> }
 
-solver gripper-command-solver {
-    agent: <pickplace_agents.kinova_2f85>,
-    algorithm: command-forwarding
+gripper-solver: command-forwarding {
+    agent: <agents.gripper1>
 }
 ```
 
@@ -224,8 +228,8 @@ motion-spec gen ir \
 ```
 
 Open `generation/pick-place-ir/generated/model/ir.json`. Search for
-`pick-above`, `ctrl-pa-follow-pos`, `E_PICK_ABOVE_READY`, and
-`gripper-command-solver` to verify that the motion, handler, event, and solver
+`pick-above`, `ctrl-pick-above-follow-lat`, `E_PICK_ABOVE_READY`, and
+`gripper-solver` to verify that the motion, handler, event, and solver
 all reached IR.
 
 Generate C++ when the code-generation toolchain is available:

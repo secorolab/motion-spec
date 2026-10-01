@@ -138,11 +138,6 @@ def _constraint_transition(model, node) -> ConstraintTransition:
     )
 
 
-def _phase_any(transitions) -> bool:
-    """Whether a phase is met by a disjunction: one transition, joined by `any`."""
-    return len(transitions) == 1 and transitions[0].any
-
-
 @reader
 def guarded_motion(model, node) -> GuardedMotion:
     """A GuardedMotion: the constraints it starts on, holds during and ends on.
@@ -1205,12 +1200,7 @@ def _handler_chain_solvers(handler, serial_chains, solver_ids) -> list:
                 solver_id=solver.id,
                 output=solver.output,
                 motion_driver=selected,
-                read_only=not (
-                    selected.acceleration_constraint
-                    or selected.cartesian_force
-                    or selected.cartesian_acceleration
-                    or selected.joint_force
-                ),
+                read_only=solver.algorithm is None,
             )
         )
 
@@ -1280,7 +1270,7 @@ class MotionSchedules:
 
 
 def _when_schedule(model, phase: PhaseNodes) -> list:
-    """The calls `can_start` runs, in their own scope: a step evaluated in both phases emits in
+    """The calls `monitor_when` runs, in their own scope: a step evaluated in both phases emits in
     both, so the when block never shares the active block's emitted-once set.
     """
     scope = Schedule(model)
@@ -1290,8 +1280,7 @@ def _when_schedule(model, phase: PhaseNodes) -> list:
         if not _is_elapsed_constraint(model, model.graph.value(node, CSTR_HDL["constraint"]))
     ]
     steps = scope.of(live, OPS_GENERIC + OPS_HANDLER)
-    # can_start inlines the when evaluators, but their prerequisite generic ops still need
-    # scheduling, and the evaluators themselves are not reachable from anything.
+    # Nothing downstream reaches the when evaluators, so they are scheduled explicitly.
     for node in live:
         if scope.claim(model.id(node)):
             steps.append(model.id(node))
@@ -1577,7 +1566,6 @@ def _motion_unit(
         until_schedule=schedules.until,
         has_elapsed=bool(when_elapsed or active_elapsed or when_ages or active_ages),
         has_until_condition=bool(evaluators["until"]),
-        when_any=_phase_any(handler.motion.when_transitions),
         serial_chain_solvers=chain_solvers,
         relative_poses=quantities.relative_poses_for_motion(
             all_evaluators, computation.views, chain_solvers
@@ -1841,28 +1829,8 @@ def _set_monitor_conditions(motion, phase: str) -> None:
 
 
 def _set_motion_conditions(motion) -> None:
-    """Fold the until and when boolean terms onto a motion.
-
-    Raises:
-        ConstraintViolation: the motion states a `when` precondition none of whose conditions
-            lowered to a term. Declaring none is fine and means the motion is always ready;
-            stating one that evaluates to nothing renders as `can_start` returning a constant
-            true, so the motion starts as if the precondition had been met.
-    """
+    """Fold the until and when monitor terms onto a motion."""
     _set_monitor_conditions(motion, "until")
-    motion.when_terms = [
-        evaluator_term(evaluator)
-        for evaluator in motion.when_evaluators
-        if evaluator.error or evaluator.is_elapsed
-    ]
-    if motion.when_evaluators and not motion.when_terms:
-        raise ConstraintViolation(
-            "coordination",
-            f"motion '{motion.id}' states a 'when' precondition that lowered to no terms, so it "
-            "would start unconditionally -- the gate reads as always open, not as the condition "
-            "the model states. Every condition it names is one nothing evaluates.",
-        )
-    motion.when_terms_present = bool(motion.when_terms)
     _set_monitor_conditions(motion, "when")
 
 
@@ -1884,10 +1852,6 @@ def _add_motion_function_interfaces(motions: list, solvers_by_id: dict) -> None:
         until_fsm = any(monitor.fsm_namespace for monitor in until_mons)
         has_chain = bool(motion.serial_chain_solvers)
 
-        motion.can_start_needs_state = has_when_elapsed
-        motion.can_start_needs_shared = bool(when_sched or motion.when_evaluators)
-        motion.can_start_needs_robot = False
-
         motion.when_needs_state = has_when_elapsed or bool(when_mons)
         motion.when_needs_shared = (
             has_when_elapsed
@@ -1900,12 +1864,6 @@ def _add_motion_function_interfaces(motions: list, solvers_by_id: dict) -> None:
         motion.until_needs_state = bool(until_mons)
         motion.until_needs_shared = until_sched or bool(until_mons)
         motion.until_needs_robot = until_fsm
-
-        motion.monitor_needs_state = bool(when_mons) or bool(until_mons)
-        motion.monitor_needs_shared = (
-            when_sched or bool(when_mons) or until_sched or bool(until_mons)
-        )
-        motion.monitor_needs_robot = when_fsm or until_fsm
 
         motion.apply_needs_state = has_chain
         # Gate on the torque limit, not on the joint-space samples: this runs before the
@@ -1934,7 +1892,6 @@ def _add_motion_function_interfaces(motions: list, solvers_by_id: dict) -> None:
         )
         motion.when_needs_events = when_events
         motion.until_needs_events = until_events
-        motion.monitor_needs_events = when_events or until_events
         motion.control_needs_events = control_events
         motion.step_needs_events = until_events or control_events
 

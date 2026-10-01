@@ -170,7 +170,8 @@ path-eval-Arc(closure, views) ::= <<
     const double _a = shared.<closure.amplitude>;
     const double _chordlen = _chord.Norm();
     // A dynamically-resolved start/end can still land on a degenerate chord at runtime;
-    // hold at start rather than dividing by zero.
+    // hold at start rather than dividing by zero. A computed amplitude with no bulge left
+    // makes the arc its chord.
     bool _valid = _chordlen > 1e-9 && _a > 1e-9;
     KDL::Vector _center = shared.<closure.start>.p;
     KDL::Vector _v0 = KDL::Vector::Zero();
@@ -194,13 +195,14 @@ path-eval-Arc(closure, views) ::= <<
             _v0 = shared.<closure.start>.p - _center;
         }
     }
+    const bool _flat = _chordlen > 1e-9 && !_valid;
     const KDL::Frame _rot_start(shared.<closure.start>.M, KDL::Vector(0.0, 0.0, 0.0));
     const KDL::Frame _rot_goal(shared.<closure.end>.M, KDL::Vector(0.0, 0.0, 0.0));
     const auto _path_eval = [&](double _s) -> KDL::Frame {
-        const double _sc = _valid ? std::clamp(_s, 0.0, 1.0) : 0.0;
-        const KDL::Vector _pos = _valid
-            ? _center + KDL::Rotation::Rot(_n, -_theta * _sc) * _v0
-            : shared.<closure.start>.p;
+        const double _sc = (_valid || _flat) ? std::clamp(_s, 0.0, 1.0) : 0.0;
+        const KDL::Vector _pos = _valid ? _center + KDL::Rotation::Rot(_n, -_theta * _sc) * _v0
+                               : _flat  ? shared.<closure.start>.p + _sc * _chord
+                                        : shared.<closure.start>.p;
         return KDL::Frame(
             KDL::addDelta(_rot_start, KDL::diff(_rot_start, _rot_goal), _sc).M, _pos);
     };

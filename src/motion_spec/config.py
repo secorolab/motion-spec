@@ -5,8 +5,7 @@
 """A workspace's own settings, so its shape is not retyped into every shell.
 
 A command-line option beats an environment variable, which beats this file, which beats the
-built-in default. Every value says which of the four it came from, and `motion-spec config`
-prints that.
+built-in default; `setting` is the one place that order is applied.
 """
 
 from __future__ import annotations
@@ -18,14 +17,26 @@ from dataclasses import dataclass
 from pathlib import Path
 
 CONFIG_FILE = "motion-spec.config.toml"
-SECTIONS = {
-    "workspace": {"root", "generations", "environment", "shell"},
-    "ros": {"workspace", "distro"},
-}
-TOP_LEVEL = {"version"}
 SHELLS = ("bash", "zsh")
-# Paths are written relative to the file, and resolved against its directory.
-_PATH_KEYS = {("workspace", "root"), ("workspace", "generations"), ("workspace", "environment")}
+
+
+@dataclass(frozen=True)
+class Key:
+    """Where a setting sits in the file, the variable that overrides it, and whether it is a path."""
+
+    section: str
+    key: str
+    variable: str | None
+    path: bool = False
+
+
+KEYS = {
+    "workspace.root": Key("workspace", "root", "MOTION_SPEC_WS", path=True),
+    "workspace.generations": Key("workspace", "generations", "MOTION_SPEC_GEN", path=True),
+    "workspace.environment": Key("workspace", "environment", "MOTION_SPEC_ENV", path=True),
+    "ros.workspace": Key("ros", "workspace", None),
+    "ros.distro": Key("ros", "distro", "ROS_DISTRO"),
+}
 
 
 @dataclass(frozen=True)
@@ -36,16 +47,10 @@ class Setting:
     source: str
 
 
-def detect_shell() -> str:
-    """The shell this user runs, from $SHELL; bash when it is neither one we write files for."""
+def shell() -> str:
+    """The shell environment files are written for: $SHELL's, else bash."""
     name = Path(os.environ.get("SHELL", "")).name
     return name if name in SHELLS else "bash"
-
-
-def shell(configured: dict | None = None) -> str:
-    """The shell a workspace's environment file is written for and sourced with."""
-    declared = (configured or {}).get("workspace", {}).get("shell")
-    return declared if declared in SHELLS else detect_shell()
 
 
 def find_config(start: Path | None = None) -> Path | None:
@@ -67,42 +72,41 @@ def load(path: Path) -> dict:
 
     from motion_spec.formats import FORMATS, check
 
-    warning = check("config", parsed.get("version", FORMATS["config"].oldest), path)
+    warning = check("config", parsed.pop("version", FORMATS["config"].oldest), path)
     if warning:
         print(f"warning: {warning}", file=sys.stderr)
+    known = {(key.section, key.key): key for key in KEYS.values()}
     for section, keys in parsed.items():
-        if section in TOP_LEVEL:
-            continue
-        if section not in SECTIONS:
-            raise ValueError(f"{path}: unknown section [{section}]")
         if not isinstance(keys, dict):
-            raise ValueError(f"{path}: [{section}] is not a table")
-        for key in keys:
-            if key not in SECTIONS[section]:
-                raise ValueError(f"{path}: unknown key {key} in [{section}]")
-    for section, key in _PATH_KEYS:
-        value = parsed.get(section, {}).get(key)
-        if value is not None:
-            parsed[section][key] = str((path.parent / str(value)).resolve())
+            raise ValueError(f"{path}: [{section}] is not a table")  # noqa: TRY004 -- file content
+        for name, value in keys.items():
+            key = known.get((section, name))
+            if key is None:
+                raise ValueError(f"{path}: unknown key {name} in [{section}]")
+            if key.path:
+                keys[name] = str((path.parent / str(value)).resolve())
     return parsed
 
 
-def settings(start: Path | None = None) -> tuple[dict, Path | None]:
-    """The settings in force, and the file they came from."""
+def configured(name: str, start: Path | None = None) -> object | None:
+    """What the nearest config file says for NAME, ignoring any environment variable."""
     path = find_config(start)
-    return (load(path) if path else {}), path
+    if path is None:
+        return None
+    key = KEYS[name]
+    return load(path).get(key.section, {}).get(key.key)
 
 
-def resolve(flag, variable: str | None, configured, default, environ) -> Setting:
-    """The value in force, by the precedence this module exists to state once."""
+def setting(name: str, flag: object = None, start: Path | None = None) -> Setting:
+    """NAME's value in force: the flag, else its variable, else the file, else None."""
     if flag is not None:
         return Setting(flag, "flag")
-    named = environ.get(variable) if variable else None
+    variable = KEYS[name].variable
+    named = os.environ.get(variable) if variable else None
     if named:
         return Setting(named, "environment")
-    if configured is not None:
-        return Setting(configured, "file")
-    return Setting(default, "default")
+    value = configured(name, start)
+    return Setting(value, "file") if value is not None else Setting(None, "default")
 
 
 def sample(root: Path | None = None, ros: bool = False) -> str:
@@ -111,7 +115,6 @@ def sample(root: Path | None = None, ros: bool = False) -> str:
     from motion_spec.health import _ros_distro
 
     newline = "\n"
-    using = shell()
     version = FORMATS["config"].current
     found = _ros_distro()
     distro_key = f'distro = "{found}"' if found else '# distro = "jazzy"'
@@ -121,8 +124,7 @@ def sample(root: Path | None = None, ros: bool = False) -> str:
         for code, note in (
             (f'root = "{root}"' if root else '# root = "."', "$MOTION_SPEC_WS"),
             ('generations = "generations"', "$MOTION_SPEC_GEN"),
-            (f'environment = "setup-motion-spec.{using}"', "$MOTION_SPEC_ENV"),
-            (f'shell = "{using}"', "written, and sourced with"),
+            (f'environment = "setup-motion-spec.{shell()}"', "$MOTION_SPEC_ENV"),
         )
     )
     return f"""\

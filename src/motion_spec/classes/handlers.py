@@ -146,7 +146,6 @@ class LevelMonitor:
     # Structured active-phase boolean terms (rendered to C++ by the bool-condition template).
     has_active: bool = False
     active_terms: list | None = None
-    active_terms_present: bool = False
     active_any: bool = False
     ros: RosPublication | None = None
     answer: RosGoalAnswer | None = None
@@ -190,7 +189,6 @@ class EdgeMonitor:
     # Structured active-phase boolean terms (rendered to C++ by the bool-condition template).
     has_active: bool = False
     active_terms: list | None = None
-    active_terms_present: bool = False
     active_any: bool = False
     # FSM binding (folded when the monitor's event lives in the FSM namespace).
     fsm_namespace: str | None = None
@@ -218,8 +216,6 @@ class RosPublication:
     pub_id: str | None = None
     on_satisfied: list[dict] = field(default_factory=list)
     on_violated: list[dict] = field(default_factory=list)
-    has_satisfied: bool = False
-    has_violated: bool = False
     auto_time: list[str] = field(default_factory=list)
     auto_context_id: list[str] = field(default_factory=list)
     # How often the verdict goes out, as the model states it and as the loop counts it. Without
@@ -296,7 +292,6 @@ class Perturbation:
     has_gate: bool = False
     # Structured boolean terms, rendered by the same template a monitor's condition uses.
     terms: list = field(default_factory=list)
-    terms_present: bool = False
     gate_any: bool = False
     type: str = field(default="Perturbation")
 

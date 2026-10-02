@@ -75,7 +75,6 @@ def slot_signals(contract) -> dict:
         for kind, parts in SLOT_PARTS.items()
         for field in contract.fields.get(kind, ())
         for part, attribute in parts.items()
-        if hasattr(contract.record_cls().frame, field["name"])
     }
 
 

@@ -54,6 +54,7 @@ where = ["src"]
 # single-level glob shipped a dashboard whose editor and charts were missing.
 motion_spec = [
     "templates/*.stg",
+    "introspection/frame_log.proto",
     "dashboard/frontend/**/*",
     # `motion-spec setup` reads what to install from these at run time, so they ship.
     "*.repos",

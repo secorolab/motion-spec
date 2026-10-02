@@ -2537,7 +2537,6 @@ def annotate_device_dependencies(serial_chains, motions) -> None:
                     for part in motion.serial_chain_solvers
                 )
             ]
-            device.has_required_motions = bool(device.required_by_motion)
 
 
 # Diagnostics name the world-block keyword the author wrote, not the parsed record's type.

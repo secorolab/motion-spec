@@ -938,8 +938,6 @@ def _ros_publication(model, node) -> dict:
             f"{model.id(node)}_pub".replace("-", "_"),
             on_satisfied=on_satisfied,
             on_violated=on_violated,
-            has_satisfied=bool(on_satisfied),
-            has_violated=bool(on_violated),
             auto_time=sorted(path for path, kind in auto.items() if kind == "time"),
             auto_context_id=sorted(path for path, kind in auto.items() if kind == "context_id"),
             occurrence_path=occurrence_path,
@@ -1217,16 +1215,17 @@ def _cartesian_force_nodes(model, chain_solvers, handler, computation, handler_n
         for node in (model.node_by_id.get(solver.motion_driver.id) for solver in chain_solvers)
         if node is not None
     ]
-    # A force distribution's drivers hang off the solver, not off a chain.
+    # A force distribution's drivers hang off the solver, not off a chain. sorted() throughout:
+    # triples iterate in hash order, which varies between processes and orders the schedule.
     if handler_node is not None:
         driver_nodes.extend(
             driver
-            for solver_node in graph.objects(handler_node, CSTR_HDL_EXT["runs-solver"])
+            for solver_node in sorted(graph.objects(handler_node, CSTR_HDL_EXT["runs-solver"]))
             if (solver_node, RDF.type, SLV["ForceDistributionSolver"]) in graph
-            for driver in graph[solver_node : SLV["motion-drivers"]]
+            for driver in sorted(graph[solver_node : SLV["motion-drivers"]])
         )
     for driver_node in driver_nodes:
-        for node in graph[driver_node : SLV["cartesian-force"]]:
+        for node in sorted(graph[driver_node : SLV["cartesian-force"]]):
             force = graph.value(node, SLV["force"])
             if force is None:
                 continue
@@ -1382,7 +1381,8 @@ def _alignment_chain_steps(model, phase) -> list:
     """
     graph = model.graph
     steps = []
-    for constraint in phase.constraints["while"]:
+    # sorted(): a set of nodes iterates in hash order, which varies between processes.
+    for constraint in sorted(phase.constraints["while"]):
         quantity = graph.value(constraint, CSTR.quantity)
         if quantity is None:
             continue
@@ -1512,10 +1512,8 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
             handler_node,
             [(slice_.id, solvers_by_id[slice_.solver_id]) for slice_ in chain_solvers],
         )
-        unit.has_perturbations = bool(unit.perturbations)
         unit.entry_snapshots = [s for s in unit.snapshots if s.scope == "entry"]
         unit.task_snapshots = [s for s in unit.snapshots if s.scope == "task"]
-        unit.has_entry_snapshots = bool(unit.entry_snapshots)
 
     return _finish_motions(model, motions, handlers, computation, fsm, solvers_by_id)
 
@@ -1548,8 +1546,6 @@ def _motion_unit(
         motion_id=handler.motion.id,
         name=handler.motion.name,
         description=(handler.motion.description or "").splitlines(),
-        has_when_elapsed=bool(when_elapsed),
-        has_active_elapsed=bool(active_elapsed),
         when_elapsed_ids=when_elapsed,
         active_elapsed_ids=active_elapsed,
         when_observation_ages=when_ages,
@@ -1745,8 +1741,7 @@ def _read_perturbations(model, handler_node, chains) -> list:
             evaluator_term(constraint_evaluator(model, evaluator))
             for evaluator in perturbations.evaluator_nodes(model, node)
         ]
-        record.terms_present = bool(record.terms)
-        if record.has_gate and not record.terms_present:
+        if record.has_gate and not record.terms:
             raise ConstraintViolation(
                 "perturbation",
                 f"perturbation '{record.id}' states a when-gate that lowered to no terms, so it "
@@ -1774,7 +1769,6 @@ def _stamp_terms(monitor, terms, any_flag, where: str) -> None:
             "constraint with an error to watch, or an elapsed time.",
         )
     monitor.active_terms = terms
-    monitor.active_terms_present = bool(terms)
     monitor.active_any = any_flag
     monitor.has_active = True
 
@@ -1845,7 +1839,7 @@ def _add_motion_function_interfaces(motions: list, solvers_by_id: dict) -> None:
         when_mons = motion.when_monitors
         until_mons = motion.until_monitors
         # Only a when-elapsed clock lives in state; an observation age is read off shared.
-        has_when_elapsed = motion.has_when_elapsed
+        has_when_elapsed = bool(motion.when_elapsed_ids)
         when_sched = bool(motion.when_schedule)
         until_sched = bool(motion.until_schedule)
         when_fsm = any(monitor.fsm_namespace for monitor in when_mons)
@@ -1873,7 +1867,7 @@ def _add_motion_function_interfaces(motions: list, solvers_by_id: dict) -> None:
             for solver in motion.serial_chain_solvers
         )
         motion.apply_needs_robot = has_chain or bool(motion.forwarded_commands)
-        if motion.has_perturbations:
+        if motion.perturbations:
             motion.apply_needs_state = True
             motion.apply_needs_shared = True
             motion.apply_needs_robot = True
@@ -2071,7 +2065,6 @@ def _apply_fsm_wiring(motions, fsm, solvers) -> dict:
                     )
                 names.append(f"{namespace}::{name}")
             out.retare_events = tuple(names)
-            out.retare_events_present = bool(names)
 
     for motion in motions:
         # An event-triggered snapshot only compiles when the FSM declares the event it waits on.
@@ -2234,7 +2227,6 @@ def _apply_reentry_events(motions, fsm) -> None:
             fired_by_state.setdefault(state, set()).update(row["fires_events"])
     for motion in motions:
         motion.reentry_events = sorted(fired_by_state.get(motion.fsm_state, ()))
-        motion.has_reentry_events = bool(motion.reentry_events)
 
 
 def _when_gate_fallback(motion, monitor, units_by_motion):

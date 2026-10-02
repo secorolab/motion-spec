@@ -93,12 +93,9 @@ def read_manifest(path: Path) -> list[Repository]:
     return repositories
 
 
-def manifest_files(repos: tuple[Path, ...] = (), real: bool = False) -> list[Path]:
-    """The manifests a setup reads: REPOS in place of the shipped one, then the real layer."""
-    files = list(repos) or [shipped(MANIFEST)]
-    if real:
-        files.append(shipped(REAL_MANIFEST))
-    return files
+def manifest_files(real: bool = False) -> list[Path]:
+    """The manifests a setup reads: the shipped one, then the real layer."""
+    return [shipped(MANIFEST), *([shipped(REAL_MANIFEST)] if real else [])]
 
 
 def manifest_in_force(files: list[Path]) -> list[Repository]:
@@ -244,20 +241,18 @@ def workspace(argument: Path | None = None) -> Path:
 
     Neither is an error, not a guess: this installs a toolchain.
     """
-    from motion_spec.config import CONFIG_FILE, settings
+    from motion_spec.config import CONFIG_FILE, find_config, setting
 
-    configured, path = settings()
-    # The file's own directory is the workspace unless it says otherwise, so a workspace with
-    # one needs nothing in the shell.
-    declared = configured.get("workspace", {}).get("root") or (str(path.parent) if path else None)
-    named = os.environ.get(WORKSPACE_VARIABLE)
-    chosen = argument or (Path(named) if named else None) or (Path(declared) if declared else None)
+    chosen = setting("workspace.root", argument).value
+    if chosen is None and (path := find_config()) is not None:
+        # The file's own directory is the workspace unless it says otherwise.
+        chosen = path.parent
     if chosen is None:
         raise RuntimeError(
             f"no workspace: set {WORKSPACE_VARIABLE}, pass --workspace <path>, or put a "
             f"{CONFIG_FILE} in it"
         )
-    root = chosen.expanduser()
+    root = Path(chosen).expanduser()
     if not root.is_dir():
         raise RuntimeError(f"workspace is not a directory: {root}")
     return root.resolve()
@@ -273,25 +268,25 @@ def generations_root() -> Path:
 
     Never the working directory: `rerun` and the dashboard look in one place.
     """
-    from motion_spec.config import settings
+    from motion_spec.config import setting
 
-    named = os.environ.get(GENERATION_VARIABLE, "").strip()
-    if named:
-        return Path(named).expanduser()
-    configured, _ = settings()
+    chosen = setting("workspace.generations").value
+    if chosen is not None:
+        return Path(chosen).expanduser()
     try:
-        root = workspace()
+        return workspace() / GENERATION_DIRECTORY
     except RuntimeError as exc:
         raise RuntimeError(
             f"no generation directory: set {GENERATION_VARIABLE}, or {WORKSPACE_VARIABLE} to "
             f"use its {GENERATION_DIRECTORY}/"
         ) from exc
-    return generations_directory(root, configured)
 
 
-def generations_directory(root: Path, configured: dict) -> Path:
+def generations_directory(root: Path) -> Path:
     """Where ROOT keeps its generations, with no environment variable in the way."""
-    declared = configured.get("workspace", {}).get("generations")
+    from motion_spec.config import configured
+
+    declared = configured("workspace.generations", root)
     return Path(declared) if declared else root / GENERATION_DIRECTORY
 
 
@@ -399,12 +394,8 @@ class SourceState:
     """What was found at a component's source path, and whether setup will build it."""
 
     path: Path
-    # Only a checkout setup cloned is setup's to delete.
-    cloned: bool
     usable: bool
     reason: str = ""
-    # What to name as the source; empty means the path.
-    origin: str = ""
     # The commit actually in the tree, which is what the marker records.
     ref: str = ""
     # Set when that commit is not the pinned one, for the caller to report.
@@ -426,44 +417,18 @@ def find_stst(path: str | None = None, workspace: str | None = None) -> str | No
     return str(managed) if managed and managed.is_file() else None
 
 
-@dataclass(frozen=True)
-class Removed:
-    """One thing a clean took: what it was, and where the trash keeps it."""
+def clean_workspace(root: Path) -> list[tuple[Path, Path | None]]:
+    """Trash what setup wrote into ROOT: builds, installs, colcon logs and environment files.
 
-    what: str
-    # None when deleted outright, or trashed where the home trash cannot say.
-    to: Path | None
-    deleted: bool = False
-
-
-def _trash_into(path: Path, what: str, removed: list[Removed]) -> None:
-    if path.exists() or path.is_symlink():
-        removed.append(Removed(what, trash(path)))
-
-
-def _delete_marker(marker: Path, removed: list[Removed]) -> None:
-    if marker.is_file():
-        marker.unlink()
-        removed.append(Removed(str(marker), None, deleted=True))
-
-
-def remove_stst(root: Path, prefix: Path | None = None) -> list[Removed]:
-    """Remove an STST installation this tool made. Sources are never removed, whoever made them."""
-    prefix = prefix or install_prefix(root)
-    launcher = prefix / "bin" / "stst"
-    marker = install_marker("stst", prefix)
-    if not (launcher.exists() or marker.exists()):
-        return []
-    if not marker.is_file():
-        raise RuntimeError(f"refusing to clean an unmanaged STST installation under {prefix}")
-    removed: list[Removed] = []
-    _trash_into(launcher, str(launcher), removed)
-    _delete_marker(marker, removed)
-    try:
-        (prefix / MANAGED).rmdir()
-    except OSError:
-        pass
-    return removed
+    Each trashed path with where the trash keeps it. Sources and generations stay.
+    """
+    outputs = (
+        root / BUILD_DIRECTORY,
+        install_prefix(root),
+        root / COLCON_LOG_DIRECTORY,
+        *(root / name for name in ENVIRONMENT_FILES),
+    )
+    return [(path, trash(path)) for path in outputs if path.exists() or path.is_symlink()]
 
 
 def package_installed(name: str, prefix: Path, checkout: Path) -> bool:
@@ -480,29 +445,22 @@ def package_installed(name: str, prefix: Path, checkout: Path) -> bool:
     return head is not None and marker.is_file() and marker.read_text().split("\n")[0] == head
 
 
-def stst_installed(root: Path, prefix: Path | None = None) -> bool:
-    """Whether PREFIX carries a usable stst: a launcher without its jar is a half-finished one."""
-    prefix = prefix or install_prefix(root)
-    marker = install_marker("stst", prefix)
-    if not (prefix / "bin" / "stst").is_file() or not marker.is_file():
-        return False
-    if marker.read_text().splitlines()[:1] == ["installing"]:
+def stst_installed(root: Path) -> bool:
+    """Whether ROOT carries a usable stst: a launcher without its jar is a half-finished one."""
+    prefix = install_prefix(root)
+    if not (prefix / "bin" / "stst").is_file() or not install_marker("stst", prefix).is_file():
         return False
     return (source_directory(root, STST_REPOSITORY) / "build" / "jar" / "stst.jar").is_file()
 
 
 def install_stst(
-    root: Path,
-    state: SourceState,
-    prefix: Path | None = None,
-    force: bool = False,
-    log: Path | None = None,
+    root: Path, state: SourceState, force: bool = False, log: Path | None = None
 ) -> Path:
-    """Build the pinned STSTv4 from its checkout and install its launcher under PREFIX/bin."""
-    prefix = prefix or install_prefix(root)
+    """Build the pinned STSTv4 from its checkout and install its launcher under ROOT/install/bin."""
+    prefix = install_prefix(root)
     launcher = prefix / "bin" / "stst"
     marker = install_marker("stst", prefix)
-    if not force and stst_installed(root, prefix):
+    if not force and stst_installed(root):
         return launcher
 
     missing = [command for command in ("ant", "java") if shutil.which(command) is None]
@@ -513,9 +471,8 @@ def install_stst(
 
     if not state.usable:
         raise RuntimeError(f"{state.path} {state.reason}")
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    origin = _origin(_recorded_origin(marker), state)
-    marker.write_text(f"installing\n{origin}\n")
+    # A half-built installation must not read as installed.
+    marker.unlink(missing_ok=True)
     # Whatever tree the checkout is in: the launcher must name the jar ant just built.
     source = state.path
     tee(["ant", "-f", str(source / "build.xml")], log=log)
@@ -537,98 +494,9 @@ def install_stst(
         'exec java -cp "$CP" jjs.stst.STStandaloneTool "$@"\n'
     )
     launcher.chmod(0o755)
-    marker.write_text(f"{state.ref}\n{origin}\n")
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(f"{state.ref}\n")
     return launcher
-
-
-def shadowing_stst(prefix: Path) -> tuple[Path, bool] | None:
-    """An `stst` PATH reaches before PREFIX's, and whether its jar is still there.
-
-    Earlier motion-spec versions installed the launcher into `~/.local/bin`, which most PATHs
-    put ahead of a workspace. Left alone it wins and codegen dies on its missing jar.
-    """
-    found = shutil.which("stst")
-    if not found or Path(found) == prefix / "bin" / "stst":
-        return None
-    other = Path(found)
-    try:
-        body = other.read_text()
-    except OSError:
-        return None
-    home = next(
-        (
-            line.split("=", 1)[1].strip()
-            for line in body.splitlines()
-            if line.startswith("STST_HOME=")
-        ),
-        None,
-    )
-    if home is None:
-        return None
-    return other, (Path(shlex.split(home)[0]) / "build" / "jar" / "stst.jar").is_file()
-
-
-def is_installed(name: str, prefix: Path) -> bool:
-    """Whether PREFIX carries an installation of package NAME this tool made."""
-    marker = install_marker(name, prefix)
-    # The first line only: a half-finished install records the origin under "installing".
-    return marker.is_file() and marker.read_text().splitlines()[:1] != ["installing"]
-
-
-def _manifest_files(manifest: Path, prefix: Path) -> list[Path]:
-    """The files a build's install manifest names that are still inside PREFIX."""
-    if not manifest.is_file():
-        return []
-    inside = []
-    for line in manifest.read_text().splitlines():
-        installed = Path(line.strip())
-        if not line.strip() or not (installed.exists() or installed.is_symlink()):
-            continue
-        try:
-            installed.relative_to(prefix)
-            installed.resolve().relative_to(prefix.resolve())
-        except ValueError:
-            # A CMake manifest can name files outside the selected install prefix.
-            continue
-        inside.append(installed)
-    return inside
-
-
-def installed_files(name: str, root: Path, prefix: Path | None = None) -> list[Path]:
-    """What package NAME's build put inside PREFIX, so a prompt can say what removing it takes."""
-    prefix = prefix or install_prefix(root)
-    manifest = build_directory(root, name) / "install_manifest.txt"
-    return _manifest_files(manifest, prefix)
-
-
-def _trash_installed(manifest: Path, prefix: Path, label: str, removed: list[Removed]) -> None:
-    """Trash the files an install left in PREFIX, as one entry rather than hundreds."""
-    staging = prefix.parent / f".removed-{label}"
-    files = _manifest_files(manifest, prefix)
-    for installed in files:
-        destination = staging / installed.relative_to(prefix)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(installed), str(destination))
-    if files:
-        _trash_into(staging, f"{len(files)} installed files from {prefix}", removed)
-
-
-def _recorded_origin(marker: Path) -> str:
-    """Whether an earlier install cloned this source. Sticky: a rebuild would read it as adopted.
-
-    A one-line marker is the v1 format, written before `setup` could adopt a checkout, so
-    everything it recorded was cloned.
-    """
-    if not marker.is_file():
-        return ""
-    lines = marker.read_text().splitlines()
-    if len(lines) < 2:
-        return "cloned" if lines else ""
-    return lines[-1]
-
-
-def _origin(previous: str, state: SourceState) -> str:
-    return "cloned" if state.cloned or previous == "cloned" else "adopted"
 
 
 def install_marker(name: str, prefix: Path) -> Path:
@@ -684,18 +552,17 @@ def source_state(pinned: Repository, root: Path, imported: bool = False) -> Sour
     repository = source_directory(root, pinned.path)
     if not (repository / ".git").is_dir():
         reason = "is not a git checkout" if repository.exists() else "was not imported"
-        return SourceState(repository, False, False, reason)
+        return SourceState(repository, False, reason)
     if imported:
         # The commit, not the branch it was named by: the marker is compared against HEAD.
-        return SourceState(repository, True, True, ref=_git(repository, "rev-parse", "HEAD") or "")
+        return SourceState(repository, True, ref=_git(repository, "rev-parse", "HEAD") or "")
     commit = _pinned_commit(repository, pinned.version)
     head = _git(repository, "rev-parse", "HEAD")
     if head is None:
-        return SourceState(repository, False, False, "is a git checkout with no commit")
+        return SourceState(repository, False, "is a git checkout with no commit")
     if _dirty(repository):
         return SourceState(
             repository,
-            False,
             True,
             ref=head,
             drift="has uncommitted changes; building them, and rebuilding on every run",
@@ -707,12 +574,11 @@ def source_state(pinned: Repository, root: Path, imported: bool = False) -> Sour
         described = _git(repository, "describe", "--all", "--always", "HEAD") or head
         return SourceState(
             repository,
-            False,
             True,
             ref=head,
             drift=f"is at {described}, not the pinned {pinned.version}; building it as it stands",
         )
-    return SourceState(repository, False, True, ref=head)
+    return SourceState(repository, True, ref=head)
 
 
 def _cmake_prefix_path(prefix: Path) -> str:
@@ -729,46 +595,37 @@ def install_package(
     package: Package,
     state: SourceState,
     root: Path,
-    prefix: Path,
     python: Path,
     *,
-    clear_cache: bool = False,
+    fresh: bool = False,
     build_type: str = BUILD_TYPE,
     log: Path | None = None,
-    extra: tuple[str, ...] = (),
     ros: bool = False,
     jobs: int | None = None,
     dev: bool = False,
 ) -> None:
-    """Build PACKAGE from its prepared checkout and install it into PREFIX and PYTHON's env.
+    """Build PACKAGE from its prepared checkout and install it into ROOT/install and PYTHON's env.
 
     CMake first when it has a CMakeLists, with the workspace colcon.meta's arguments either
-    way; then pip when it is a Python package too, editable under --dev.
+    way; then pip when it is a Python package too, editable under --dev. FRESH clears the CMake
+    cache first.
     """
+    prefix = install_prefix(root)
     marker = install_marker(package.name, prefix)
-    origin = _origin(_recorded_origin(marker), state)
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    # Before the build: a half-built installation is still this tool's.
-    marker.write_text(f"installing\n{origin}\n")
+    # A half-built installation must not read as installed.
+    marker.unlink(missing_ok=True)
     meta = workspace_colcon_meta(root)
     configured = cmake_arguments(meta, package.name)
     interpreter = extension_options(python, log) if package.cmake else ()
 
     if package.cmake and ros:
-        # colcon reads configured from --metas itself; the rest is this machine and this run.
+        # colcon reads configured from --metas itself; the rest is this machine.
         _colcon_build(
-            package.name,
-            root,
-            prefix,
-            build_type,
-            log,
-            build_jobs(jobs),
-            clear_cache,
-            (*interpreter, *extra),
+            package.name, root, prefix, build_type, log, build_jobs(jobs), fresh, interpreter
         )
     elif package.cmake:
         build = build_directory(root, package.name)
-        if clear_cache:
+        if fresh:
             (build / "CMakeCache.txt").unlink(missing_ok=True)
             if (build / "CMakeFiles").exists():
                 shutil.rmtree(build / "CMakeFiles")
@@ -785,7 +642,6 @@ def install_package(
                 f"-DCMAKE_BUILD_TYPE={build_type}",
                 *configured,
                 *interpreter,
-                *extra,
             ],
             log=log,
         )
@@ -796,7 +652,7 @@ def install_package(
     if package.python:
         # The same -D options the CMake build got, so an extension links what the build linked.
         defines = (
-            (*configured, *interpreter, *extra, f"-DCMAKE_PREFIX_PATH={_cmake_prefix_path(prefix)}")
+            (*configured, *interpreter, f"-DCMAKE_PREFIX_PATH={_cmake_prefix_path(prefix)}")
             if package.cmake
             else ()
         )
@@ -804,7 +660,8 @@ def install_package(
 
     # What was built, not what was wanted: an adopted checkout at another ref is recorded as
     # that ref, so a rerun compares against the tree rather than the pin it does not match.
-    marker.write_text(f"{state.ref}\n{origin}\n")
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(f"{state.ref}\n")
 
 
 def installer(python: Path | None = None) -> list[str]:
@@ -910,8 +767,7 @@ def _pip_install(
     ros: bool = False,
     defines: tuple[str, ...] = (),
 ) -> None:
-    """Install a checkout. Editable points site-packages back at it, so `--clean` would orphan
-    the installation along with the source it removes.
+    """Install a checkout; EDITABLE points site-packages back at it.
 
     ROS is for an extension whose cmake finds ament: ament's scripts import ament_package,
     which reaches the interpreter over PYTHONPATH from the sourced distro, and pip replaces
@@ -931,31 +787,6 @@ def _pip_install(
     tee([*installer(python), *arguments], log=log)
 
 
-def remove_package(name: str, root: Path, prefix: Path | None = None) -> list[Removed]:
-    """Remove package NAME's installation this tool made: its installed files, build and marker.
-
-    Never the source. A checkout is the operator's, whoever cloned it.
-    """
-    prefix = prefix or install_prefix(root)
-    marker = install_marker(name, prefix)
-    build = build_directory(root, name)
-    if not (build.exists() or marker.exists()):
-        return []
-    if not marker.is_file():
-        raise RuntimeError(f"refusing to clean an unmanaged {name} installation under {prefix}")
-    removed: list[Removed] = []
-    # The only record of what landed in PREFIX; without it find_package keeps finding it.
-    _trash_installed(build / "install_manifest.txt", prefix, f"{name}-install", removed)
-    _trash_into(build, str(build), removed)
-    _delete_marker(marker, removed)
-    for directory in (prefix / MANAGED, root / BUILD_DIRECTORY):
-        try:
-            directory.rmdir()
-        except OSError:
-            pass
-    return removed
-
-
 def _activation(python: Path | None = None) -> str:
     """Activate PYTHON's environment, this one by default, unless the shell is already in it.
 
@@ -970,64 +801,50 @@ def _activation(python: Path | None = None) -> str:
     return f'[ "${{VIRTUAL_ENV:-}}" = {shlex.quote(str(venv))} ] || . {quoted}\n'
 
 
-def write_environment(
-    root: Path, prefix: Path | None = None, ros: bool | None = None, python: Path | None = None
-) -> Path:
-    """Write ROOT's environment file, for the shell in force, pointing at its install prefix."""
-    from motion_spec.config import settings, shell
+def write_environment(root: Path, ros: bool, python: Path | None = None) -> Path:
+    """Write ROOT's environment file for $SHELL, pointing at its install prefix.
 
-    prefix = prefix or install_prefix(root)
-    configured, _ = settings(root)
-    using = shell(configured)
+    A colcon workspace sources ROS and its overlay; any other exports the install's paths.
+    """
+    from motion_spec.config import shell
+
+    prefix = install_prefix(root)
+    using = shell()
     path = root / f"setup-motion-spec.{using}"
-    if configured.get("ros", {}).get("workspace") if ros is None else ros:
-        return _write_ros_environment(root, prefix, configured, using, path, python)
-    body = (
-        "# Written by `motion-spec setup`. Source it before generating, building or running.\n"
-        + _activation(python)
-        + f"export {WORKSPACE_VARIABLE}={shlex.quote(str(root))}\n"
-        f"export {GENERATION_VARIABLE}={shlex.quote(str(generations_directory(root, configured)))}\n"
-        f"export {ENVIRONMENT_VARIABLE}={shlex.quote(str(path))}\n"
-        f"export MOTION_SPEC_PREFIX={shlex.quote(str(prefix))}\n"
-        'export PATH="$MOTION_SPEC_PREFIX/bin${PATH:+:$PATH}"\n'
-        'export CMAKE_PREFIX_PATH="$MOTION_SPEC_PREFIX'
-        '${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"\n'
-        'export LD_LIBRARY_PATH="$MOTION_SPEC_PREFIX/lib'
-        '${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"\n'
-    )
-    root.mkdir(parents=True, exist_ok=True)
-    path.write_text(body)
-    path.chmod(0o755)
-    return path
+    if ros:
+        from motion_spec.health import _ros_distro
 
-
-def _write_ros_environment(
-    root: Path, prefix: Path, configured: dict, using: str, path: Path, python: Path | None = None
-) -> Path:
-    """The two sourcings a colcon workspace needs, rather than paths exported by hand."""
-    from motion_spec.health import _ros_distro
-
-    distro = _ros_distro()
-    if distro is None:
-        raise RuntimeError(
-            "no ROS distribution: set [ros] distro, or source one, for a [ros] workspace"
-        )
-    overlay = prefix / f"setup.{using}"
-    quoted_overlay = shlex.quote(str(overlay))
-    body = (
-        "# Written by `motion-spec setup`. Source it before generating, building or running.\n"
-        + _activation(python)
+        distro = _ros_distro()
+        if distro is None:
+            raise RuntimeError(
+                "no ROS distribution: set [ros] distro, or source one, for a [ros] workspace"
+            )
+        overlay = shlex.quote(str(prefix / f"setup.{using}"))
         # Each sourcing is skipped when this shell has already done it: sourcing a distro
         # twice is noise, and sourcing an overlay twice repeats it on every path it sets.
-        + f'[ "${{ROS_DISTRO:-}}" = {distro} ] || . /opt/ros/{distro}/setup.{using}\n'
-        + f'case ":${{COLCON_PREFIX_PATH:-}}:" in *:{prefix}:*) ;; *)'
-        f" [ -f {quoted_overlay} ] && . {quoted_overlay} ;; esac\n"
+        sourcing = (
+            f'[ "${{ROS_DISTRO:-}}" = {distro} ] || . /opt/ros/{distro}/setup.{using}\n'
+            f'case ":${{COLCON_PREFIX_PATH:-}}:" in *:{prefix}:*) ;; *)'
+            f" [ -f {overlay} ] && . {overlay} ;; esac\n"
+        )
+        # stst is ant-built into the prefix, so it is in no colcon package and on no overlay.
+        paths = 'export PATH="$MOTION_SPEC_PREFIX/bin${PATH:+:$PATH}"\n'
+    else:
+        sourcing = ""
+        paths = (
+            'export PATH="$MOTION_SPEC_PREFIX/bin${PATH:+:$PATH}"\n'
+            'export CMAKE_PREFIX_PATH="$MOTION_SPEC_PREFIX${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"\n'
+            'export LD_LIBRARY_PATH="$MOTION_SPEC_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"\n'
+        )
+    body = (
+        "# Written by `motion-spec setup`. Source it before generating, building or running.\n"
+        + _activation(python)
+        + sourcing
         + f"export {WORKSPACE_VARIABLE}={shlex.quote(str(root))}\n"
-        f"export {GENERATION_VARIABLE}={shlex.quote(str(generations_directory(root, configured)))}\n"
+        f"export {GENERATION_VARIABLE}={shlex.quote(str(generations_directory(root)))}\n"
         f"export {ENVIRONMENT_VARIABLE}={shlex.quote(str(path))}\n"
         f"export MOTION_SPEC_PREFIX={shlex.quote(str(prefix))}\n"
-        # stst is ant-built into the prefix, so it is in no colcon package and on no overlay.
-        'export PATH="$MOTION_SPEC_PREFIX/bin${PATH:+:$PATH}"\n'
+        + paths
     )
     root.mkdir(parents=True, exist_ok=True)
     path.write_text(body)
@@ -1049,8 +866,7 @@ def _colcon_build(
 
     One package per call rather than one `colcon build`: coord2b and robif2b carry no
     package.xml, so colcon has no dependency to order them by. The workspace colcon.meta holds
-    the configured arguments; OPTIONS, this machine's interpreter and this run's --cmake-arg,
-    go on the command line.
+    the configured arguments; OPTIONS, this machine's interpreter, go on the command line.
     """
     if shutil.which("colcon") is None:
         raise RuntimeError("required command missing: colcon (this workspace is [ros] workspace)")
@@ -1062,8 +878,8 @@ def _colcon_build(
             name,
             "--base-paths",
             str(source_root(root)),
-            # Named, not left to colcon's cwd defaults: --prefix must reach the same place the
-            # markers and the environment file describe.
+            # Named, not left to colcon's cwd defaults: the prefix must be the one the markers
+            # and the environment file describe.
             "--build-base",
             str(root / BUILD_DIRECTORY),
             "--install-base",
@@ -1082,58 +898,23 @@ def _colcon_build(
     )
 
 
-def workspace_outputs(root: Path, prefix: Path | None = None) -> list[Path]:
-    """Everything a workspace's builds wrote, for `--clean --all` to offer one by one.
-
-    Wider than any component: it takes what setup did not install too, which is the point of
-    asking for all of it. Sources, generations and .motion-spec/ are not outputs and never here.
-    """
-    prefix = prefix or install_prefix(root)
-    candidates = [
-        root / BUILD_DIRECTORY,
-        prefix,
-        root / COLCON_LOG_DIRECTORY,
-        *(root / name for name in ENVIRONMENT_FILES),
-    ]
-    seen: dict[Path, None] = {}
-    for path in candidates:
-        if path.exists():
-            seen.setdefault(path)
-    return list(seen)
-
-
-def remove_environment(root: Path) -> list[Removed]:
-    """Trash ROOT's environment files, which describe an installation being cleaned away."""
-    removed: list[Removed] = []
-    for name in ENVIRONMENT_FILES:
-        _trash_into(root / name, str(root / name), removed)
-    return removed
-
-
 def find_environment(start: Path | None = None) -> Path | None:
     """The environment file a command should run under, or None to inherit the shell.
 
-    ``$MOTION_SPEC_ENV`` names one outright; otherwise the nearest one above START and then
-    above the working directory. Discovery is what lets an installed prefix work without a
-    flag: `setup --prefix ws` writes the file at the workspace root, and every generation
-    underneath finds it from there.
+    ``$MOTION_SPEC_ENV`` names one outright, then the config file; otherwise the nearest one
+    above START and then above the working directory, so a generation under a workspace finds
+    the workspace's file without a flag.
     """
-    from motion_spec.config import settings
+    from motion_spec.config import setting, shell
 
-    configured, _ = settings()
-    named = os.environ.get(ENVIRONMENT_VARIABLE)
-    if named:
-        path = Path(named).expanduser()
-        if not path.is_file():
+    chosen = setting("workspace.environment")
+    if chosen.value is not None:
+        path = Path(str(chosen.value)).expanduser()
+        if path.is_file():
+            return path
+        if chosen.source == "environment":
             raise RuntimeError(f"{ENVIRONMENT_VARIABLE} names no file: {path}")
-        return path
-    # The config's is a workspace default, which `setup` has not necessarily written yet.
-    declared = configured.get("workspace", {}).get("environment")
-    if declared and Path(declared).expanduser().is_file():
-        return Path(declared).expanduser()
-    from motion_spec.config import shell
-
-    preferred = f"setup-motion-spec.{shell(configured)}"
+    preferred = f"setup-motion-spec.{shell()}"
     ordered = (preferred, *(name for name in ENVIRONMENT_FILES if name != preferred))
     roots = [start.resolve()] if start else []
     roots.append(Path.cwd())

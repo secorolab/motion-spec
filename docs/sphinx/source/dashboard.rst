@@ -12,6 +12,7 @@ everything shown is read from the files the pipeline already writes.
    $ motion-spec dashboard                  # serve on :8080, browse $MOTION_SPEC_GEN
    $ motion-spec dashboard --port 8090 --logs path/to/generations
    $ motion-spec dashboard -b               # detached; -k stops it, -r restarts
+   $ motion-spec dashboard --lan            # on the network: replay and simulated runs only
 
 ``--logs`` names the generation root to browse (default ``$MOTION_SPEC_GEN``, else
 ``$MOTION_SPEC_WS/generations``); ``--sources`` the model source root (default: the
@@ -71,8 +72,8 @@ preferences are local to the browser and generation root.
 
 **Copy link to this moment** includes the replay frame. Run notes can attach the current frame
 or an optional frame range; their timestamps and transport markers return to it. Generation
-notes remain general notes. Report event times open the relevant replay position and constraint
-plots; aggregate signal reports link to the motion rather than implying an exact peak time.
+notes remain general notes. Verdict times in the Reports panel open the relevant replay position
+and constraint plots.
 
 Verification
 ------------

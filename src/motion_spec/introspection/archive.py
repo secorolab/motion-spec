@@ -17,14 +17,12 @@ from motion_spec_dsl.rdf_parser.manifest import (
     install_metamodel_resolver,
     metamodels_root,
 )
-from motion_spec_dsl.rdf_parser.vocab import APP
 from pyshacl import validate
 from rec import State
 
 from motion_spec.introspection.provenance import (
-    GENERATION_DOCUMENT,
-    GRAPH_DSL,
     EXECUTION_DOCUMENT,
+    GENERATION_DOCUMENT,
     RUN_IRI_BASE,
     artifact_sha256,
     ensure_local_rec_importable,
@@ -46,15 +44,6 @@ PROV = rdflib.Namespace("http://www.w3.org/ns/prov#")
 
 MANIFEST_VERSION = 1
 PROV_SHAPES = (("prov.shacl.ttl",), ("prov-extension.shacl.ttl",))
-GENERATED_BUNDLE_FILES = (
-    "CMakeLists.txt",
-    "main.cpp",
-    "frame_layout.h",
-    "introspection_runtime.hpp",
-    "introspect_model.hpp",
-    "fsm_ir.json",
-    "headers",
-)
 
 
 class ArchiveError(ValueError):
@@ -81,33 +70,6 @@ def _camera_videos(run_dir: Path) -> list[str] | None:
     return videos or None
 
 
-def _parse_jsonld(path: Path) -> rdflib.Dataset:
-    """Parse JSON-LD with the workspace resolver."""
-    install_metamodel_resolver()
-    return rdflib.Dataset().parse(path, format="json-ld")
-
-
-def _mapped_iri_path(iri: str, url_map: dict[str, str]) -> Path | None:
-    """Resolve an IRI through the same prefix map used by rdf-utils."""
-    for prefix, directory in sorted(url_map.items(), key=lambda item: len(item[0]), reverse=True):
-        if iri.startswith(prefix):
-            suffix = urllib.parse.unquote(urllib.parse.urlsplit(iri.removeprefix(prefix)).path)
-            return Path(directory) / suffix
-    return None
-
-
-def _manifest_imports(manifest_path: Path) -> list[Path]:
-    """Resolve app:import entities in a JSON-LD manifest to local graph files."""
-    dataset = _parse_jsonld(manifest_path)
-    url_map = build_url_map(dataset, manifest_path)
-    imports = {
-        path
-        for _, _, iri, _ in dataset.quads((None, APP["import"], None, None))
-        if (path := _mapped_iri_path(str(iri), url_map)) is not None
-    }
-    return sorted(imports)
-
-
 def _file_uri_to_path(value: str) -> Path | None:
     """Resolve a ``file://`` atLocation to a local path (None for other IRIs)."""
     if not isinstance(value, str) or not value.startswith("file://"):
@@ -116,101 +78,19 @@ def _file_uri_to_path(value: str) -> Path | None:
     return Path(urllib.parse.unquote(parsed.path))
 
 
-def _archive_referenced_sources(
-    prov_docs: list[Path], run_dir: Path, location_map: dict[str, str]
-) -> list[str]:
-    """Vendor the authored source inputs the DSL's own named graph references.
-
-    Only that graph: a referenced-but-unmapped file that still exists on disk (the
-    .robmot/.fsm models) is copied into ``source/`` and registered so the rewrite can point at
-    it. Third-party/vendor assets (MuJoCo scene xml, etc.) are named by the other graphs and
-    are intentionally left as references, not archived.
-    """
-    sources: list[str] = []
-    for doc in prov_docs:
-        if not doc.is_file():
-            continue
-        graph = _parse_jsonld(doc).graph(GRAPH_DSL)
-        for _, _, location in graph.triples((None, PROV.atLocation, None)):
-            path = _file_uri_to_path(str(location))
-            if path is None or not path.is_file():
-                continue
-            key = str(path.resolve())
-            if key in location_map:
-                continue
-            rel = f"source/{path.name}"
-            _copy_file(path, run_dir / rel)
-            location_map[key] = rel
-            sources.append(rel)
-    return sources
-
-
-def _relativize_paths(obj, location_map: dict[str, str], start: str):
-    """Repoint every archived reference (``file://`` URI or absolute path) at its archive
-    copy, relative to ``start``. Non-archived references are left untouched."""
-    if isinstance(obj, dict):
-        return {k: _relativize_paths(v, location_map, start) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_relativize_paths(v, location_map, start) for v in obj]
-    if isinstance(obj, str) and (obj.startswith("file://") or obj.startswith("/")):
-        path = _file_uri_to_path(obj) if obj.startswith("file://") else Path(obj)
-        rel = location_map.get(str(path.resolve())) if path else None
-        if rel is not None:
-            return os.path.relpath(rel, start)
-    return obj
-
-
-def _rewrite_archived_locations(doc: Path, location_map: dict[str, str], run_dir: Path) -> None:
-    """Repoint every archived file reference in a JSON(-LD) doc, relative to the doc's dir.
-
-    Edited as JSON, not through rdflib: a re-serialized document loses its `@context`, its
-    `schema_version` and the named graphs the generation provenance is written as.
-    """
-    if not doc.is_file():
-        return
-    data = json.loads(doc.read_text())
-    rewritten = _relativize_paths(data, location_map, os.path.relpath(doc.parent, run_dir))
-    if rewritten != data:
-        doc.write_text(json.dumps(rewritten, indent=2) + "\n")
-
-
-def _rewrite_model_imports(model_manifest: Path, imports: list[str]) -> None:
-    """Point the archived app manifest at the vendored graphs (archive-root-relative).
-
-    Imports become root-relative archive paths and the model-root IRI maps to '..' (the
-    archive root, one up from model/), so each import resolves to its single archived
-    copy — no duplicate dsl.ld.json, no path into the build tree.
-    """
-    if not model_manifest.is_file() or not imports:
-        return
-    dataset = _parse_jsonld(model_manifest)
-    import_quads = list(dataset.quads((None, APP["import"], None, None)))
-    iri_map_quads = list(dataset.quads((None, APP["iri-map"], None, None)))
-    for subject, predicate, value, context in import_quads:
-        dataset.graph(context).remove((subject, predicate, value))
-    for subject, _, _, context in import_quads:
-        graph = dataset.graph(context)
-        base = str(iri_map_quads[0][2])
-        for rel in imports:
-            graph.add((subject, APP["import"], rdflib.URIRef(urllib.parse.urljoin(base, rel))))
-    for _, _, iri, context in iri_map_quads:
-        graph = dataset.graph(context)
-        graph.set((iri, APP.path, rdflib.Literal("..")))
-    dataset.serialize(model_manifest, format="json-ld", indent=2)
-
-
-def _create_generation_run_manifest(
-    run_dir: Path,
-    generated: Path,
+def create_archive_manifest(
+    run_dir: Path | str,
     *,
-    run_id: str | None,
-    frame_log: Path | str | None,
-    log_producer_executable: Path | str | None,
-    rec: Path | str | None,
-    complete_rec: bool,
+    source_dir: Path | str,
+    run_id: str | None = None,
+    frame_log: Path | str | None = None,
+    log_producer_executable: Path | str | None = None,
+    rec: Path | str | None = None,
+    complete_rec: bool = True,
     recorded: bool = True,
 ) -> dict:
     """Catalog a run while referencing immutable artifacts owned by its generation."""
+    run_dir, generated = Path(run_dir), Path(source_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     proto_path = generated / "contract" / "frame_log.proto"
     provenance_path = generated / GENERATION_DOCUMENT
@@ -265,7 +145,6 @@ def _create_generation_run_manifest(
         "frame_log_health": "logs/frame_log.pb.health.json" if recorded else None,
         # Listed only when written: a manifest never promises a file the run dir lacks.
         "console": _existing(run_dir, "logs/console.log"),
-        "sampling": _existing(run_dir, "logs/sampling.json"),
         "videos": _camera_videos(run_dir),
         # metadata.yaml is what says rosbag2 closed the bag.
         "bag": "bag" if (run_dir / "bag" / "metadata.yaml").is_file() else None,
@@ -294,226 +173,6 @@ def _name_execution_document(run_dir: Path, manifest: dict) -> None:
     """The execution document is written by the run or the snapshot, so it is named last."""
     if (run_dir / EXECUTION_DOCUMENT).is_file():
         manifest["files"]["execution"] = EXECUTION_DOCUMENT
-
-
-def _compress_frame_log(run_dir: Path, rel: str, location_map: dict[str, str]) -> str:
-    """Pack the archived frame log with zstd, and say where it went.
-
-    Frames are numbers, one row per control cycle, and rows next to each other say nearly the
-    same thing -- which is why this is worth about three to one. Streamed rather than read
-    whole: a long run's log is bigger than it needs to be held in memory to shrink.
-
-    Left alone if zstandard is not installed, and the archive is still a valid archive: the
-    log is named by the manifest, and both names are ones a reader accepts.
-    """
-    try:
-        import zstandard
-    except ImportError:
-        return rel
-    # Locally, as everywhere else here: frame_log_pb reads ArchiveError back out of this module.
-    from motion_spec.introspection import frame_log_pb
-
-    source = run_dir / rel
-    if not source.is_file():
-        return rel
-    packed = source.with_name(source.name + frame_log_pb.LOG_SUFFIX)
-    with source.open("rb") as raw, packed.open("wb") as out:
-        zstandard.ZstdCompressor(level=COMPRESSION_LEVEL).copy_stream(raw, out)
-    source.unlink()
-    packed_rel = f"{rel}{frame_log_pb.LOG_SUFFIX}"
-    # Provenance points at where each artifact landed; this one landed somewhere else.
-    for key, value in list(location_map.items()):
-        if value == rel:
-            location_map[key] = packed_rel
-    return packed_rel
-
-
-# Measured on a real log: every level from 3 to 15 lands on the same 2.3x, and only 19 finds
-# more (2.9x) by searching harder -- thirteen times the time, and it does not thread. So this
-# sits in the range that is effectively free rather than paying half a minute at the end of
-# every run for a quarter more.
-COMPRESSION_LEVEL = 10
-
-
-def create_archive_manifest(
-    run_dir: Path | str,
-    *,
-    source_dir: Path | str | None = None,
-    run_id: str | None = None,
-    frame_log: Path | str | None = None,
-    log_producer_executable: Path | str | None = None,
-    rec: Path | str | None = None,
-    complete_rec: bool = True,
-    recorded: bool = True,
-) -> dict:
-    """Create or refresh a local replay manifest for a run folder."""
-    run_dir = Path(run_dir)
-    source_dir = Path(source_dir) if source_dir else run_dir
-    if (source_dir / "contract" / "frame_log.proto").is_file():
-        return _create_generation_run_manifest(
-            run_dir,
-            source_dir,
-            run_id=run_id,
-            frame_log=frame_log,
-            log_producer_executable=log_producer_executable,
-            rec=rec,
-            complete_rec=complete_rec,
-            recorded=recorded,
-        )
-    run_dir.mkdir(parents=True, exist_ok=True)
-
-    # Contract inputs the archive cannot be self-explanatory without. Fail fast at the source
-    # rather than emit an archive that only trips verify_manifest later.
-    for required in ("frame_log.proto",):
-        if not (source_dir / required).is_file():
-            raise ArchiveError(f"{source_dir / required}: required generated artifact is missing")
-
-    copies = {
-        "frame_log.proto": "contract/frame_log.proto",
-        GENERATION_DOCUMENT: GENERATION_DOCUMENT,
-    }
-    frame_log_rel = "logs/frame_log.pb"
-    frame_log_health_rel = "logs/frame_log.pb.health.json"
-    if not recorded:
-        # No log to state the contract: read the layout the run would have written.
-        schema = json.loads((source_dir / "frame_layout.json").read_text())
-    else:
-        if frame_log and Path(frame_log).exists():
-            frame_log_path = Path(frame_log)
-            frame_log_rel = f"logs/{frame_log_path.name}"
-            frame_log_health_rel = f"logs/{frame_log_path.name}.health.json"
-            copies[str(frame_log_path.resolve())] = frame_log_rel
-            health = Path(str(frame_log_path) + ".health.json")
-            if health.exists():
-                copies[str(health.resolve())] = frame_log_health_rel
-        elif (source_dir / "frame_log.pb").exists():
-            copies["frame_log.pb"] = frame_log_rel
-            if (source_dir / "frame_log.pb.health.json").exists():
-                copies["frame_log.pb.health.json"] = frame_log_health_rel
-        from motion_spec.introspection import frame_log_pb
-
-        schema = frame_log_pb.read_contract(
-            source_dir / "frame_log.pb"
-            if (source_dir / "frame_log.pb").exists()
-            else run_dir / frame_log_rel
-        ).summary()
-    # graph/ir_path are portable basenames; resolve them against source_dir.
-    model_source = source_dir / "model.ld.json"
-    if (source_dir / "model.ld.json").exists():
-        copies["model.ld.json"] = "model/model.ld.json"
-    if (source_dir / "ir.json").exists():
-        copies["ir.json"] = "model/ir.json"
-    # Without it the archived log's derived slot IRIs resolve to nothing.
-    for derived in source_dir.glob("*-derived.ld.json"):
-        copies[derived.name] = "model/derived.ld.json"
-
-    # Track where each source artifact lands in the archive so provenance atLocations
-    # can be rewritten to point at the archived copy (keyed by resolved source path).
-    location_map: dict[str, str] = {}
-
-    def _register(src: Path, rel: str) -> None:
-        if src.is_file():
-            location_map[str(src.resolve())] = rel
-
-    for src_name, dst_name in copies.items():
-        src = Path(src_name) if Path(src_name).is_absolute() else source_dir / src_name
-        if src.exists() and src.resolve() != (run_dir / dst_name).resolve():
-            _copy_file(src, run_dir / dst_name)
-        _register(src, dst_name)
-
-    # Vendor the model graph(s) the app manifest imports. Graphs already archived under
-    # another role (e.g. the dsl provenance -> provenance/dsl.ld.json) are reused in place
-    # rather than duplicated; the manifest's import list is rewritten to the single copies.
-    model_manifest = run_dir / "model" / "model.ld.json"
-    model_imports: list[str] = []
-    if model_manifest.exists():
-        for src in _manifest_imports(model_source):
-            key = str(src.resolve())
-            if key in location_map:
-                model_imports.append(location_map[key])
-                continue
-            dst_rel = f"model/{src.relative_to(source_dir)}"
-            dst = run_dir / dst_rel
-            if src.is_file() and src.resolve() != dst.resolve():
-                _copy_file(src, dst)
-            if dst.is_file():
-                _register(src, dst_rel)
-                model_imports.append(dst_rel)
-
-    # The run wrote its log uncompressed, at the speed the control loop produced it. Nothing
-    # is appending to it now, so this is where it stops costing what a live file has to cost.
-    if recorded:
-        frame_log_rel = _compress_frame_log(run_dir, frame_log_rel, location_map)
-
-    controller_dir = run_dir / "controller" / "source"
-    controller_dir.mkdir(parents=True, exist_ok=True)
-    for rel in GENERATED_BUNDLE_FILES:
-        src = source_dir / rel
-        dst = controller_dir / rel
-        if src.is_file():
-            _copy_file(src, dst)
-            _register(src, f"controller/source/{rel}")
-        elif src.is_dir():
-            if dst.exists():
-                shutil.rmtree(dst)
-            shutil.copytree(src, dst)
-            for item in sorted(p for p in src.rglob("*") if p.is_file()):
-                _register(item, f"controller/source/{rel}/{item.relative_to(src).as_posix()}")
-    for header in sorted(source_dir.glob("*_fsm.hpp")):
-        _copy_file(header, controller_dir / header.name)
-        _register(header, f"controller/source/{header.name}")
-    if log_producer_executable and Path(log_producer_executable).exists():
-        executable = Path(log_producer_executable)
-        _copy_file(executable, run_dir / "controller" / "executable" / executable.name)
-        _register(executable, f"controller/executable/{executable.name}")
-
-    # Vendor the DSL's authored source inputs (.robmot/.fsm — referenced by dsl.ld.json and
-    # still outside the archive) so the model provenance is self-contained. Third-party /
-    # vendor assets the model merely points at (e.g. MuJoCo scene xml from the menagerie
-    # submodule) are left as references, not copied in. Then rewrite every archived file
-    # reference — and the model manifest's import/iri-map — to resolve inside the bundle.
-    source_artifacts = _archive_referenced_sources(
-        [run_dir / GENERATION_DOCUMENT], run_dir, location_map
-    )
-    for doc in (run_dir / GENERATION_DOCUMENT, run_dir / "model" / "ir.json"):
-        _rewrite_archived_locations(doc, location_map, run_dir)
-    _rewrite_model_imports(model_manifest, model_imports)
-
-    files = {
-        "frame_log_proto": "contract/frame_log.proto",
-        "provenance": GENERATION_DOCUMENT,
-        # Listed only when written: a manifest never promises a file the run dir lacks.
-        "console": _existing(run_dir, "logs/console.log"),
-        "sampling": _existing(run_dir, "logs/sampling.json"),
-        "videos": _camera_videos(run_dir),
-        "frame_log": frame_log_rel if recorded else None,
-        "frame_log_health": frame_log_health_rel if recorded else None,
-        "model": "model/model.ld.json",
-        "model_imports": model_imports or None,
-        "sources": source_artifacts or None,
-        "ir": "model/ir.json",
-        "controller": "controller/source",
-        "log_producer_executable": (
-            f"controller/executable/{Path(log_producer_executable).name}"
-            if log_producer_executable
-            else None
-        ),
-        "rec": rec_document(run_dir, run_id).name,
-    }
-    manifest = {
-        "manifest_version": MANIFEST_VERSION,
-        "run_id": run_id or run_dir.name,
-        "files": {key: value for key, value in files.items() if value is not None},
-    }
-    if not recorded:
-        manifest["recorded"] = False
-    if rec and Path(rec).exists():
-        _copy_file(Path(rec), rec_document(run_dir, run_id))
-    else:
-        _write_rec_snapshot(run_dir, manifest, schema, complete_lifecycle=complete_rec)
-    _name_execution_document(run_dir, manifest)
-    (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=4) + "\n")
-    return manifest
 
 
 def load_manifest(run_dir_or_manifest: Path | str) -> tuple[Path, dict]:

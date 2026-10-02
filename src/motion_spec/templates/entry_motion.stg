@@ -20,14 +20,14 @@ motion_header(motion, closures, views, backend, solvers) ::= <<
 struct <motion.id>_state {
     bool active = false;
     int active_steps = 0;
-<if(motion.has_active_elapsed)>    double motion_start_time = -1.0;
+<if(motion.active_elapsed_ids)>    double motion_start_time = -1.0;
 <endif>
-<if(motion.has_when_elapsed)>    double when_start_time = -1.0;
+<if(motion.when_elapsed_ids)>    double when_start_time = -1.0;
 <endif>
 <if(motion.has_when_gate)>    bool when_gate_open = false;
 <endif>
 <chain-state-members(motion.serial_chain_solvers)>
-<if(motion.has_entry_snapshots)>    bool snapshot_taken = false;
+<if(motion.entry_snapshots)>    bool snapshot_taken = false;
 <endif>
 <motion.relative_poses:{rp |     KDL::Frame <rp.id>_start_frame;
     bool <rp.id>_start_captured = false;
@@ -54,7 +54,7 @@ inline void update_<motion.id>(
     [[maybe_unused]] shared_data &shared,
     const robot_io &robot) {
     init_<motion.id>(state, robot);
-<if(motion.has_active_elapsed)>    if (state.motion_start_time \< 0.0) {
+<if(motion.active_elapsed_ids)>    if (state.motion_start_time \< 0.0) {
         state.motion_start_time = shared.clock_time_s;
     }
 <motion.active_elapsed_ids:{c |     shared.<c> = shared.clock_time_s - state.motion_start_time;
@@ -62,7 +62,7 @@ inline void update_<motion.id>(
 <motion.active_observation_ages:{a |     shared.<a.coordinate> = shared.clock_time_s - shared.<a.observed_at>;
 }><motion-prelude(motion.serial_chain_solvers, solvers, backend)>
 <motion.relative_poses:{rp | <emit-relative-pose(rp)>}; separator="\n">
-<if(motion.has_entry_snapshots)>
+<if(motion.entry_snapshots)>
     if (!state.snapshot_taken) {
 <motion.entry_snapshots:{snap | <emit-snapshot(snap, closures, views)>}; separator="\n">
         state.snapshot_taken = true;
@@ -77,7 +77,7 @@ inline void update_<motion.id>(
 }
 
 inline void monitor_when_<motion.id>(<sig-params(motion.id, motion.when_needs_state, motion.when_needs_shared, motion.when_needs_robot, motion.when_needs_events)>) {
-<if(motion.has_when_elapsed)>    if (state.when_start_time \< 0.0) {
+<if(motion.when_elapsed_ids)>    if (state.when_start_time \< 0.0) {
         state.when_start_time = shared.clock_time_s;
     }
 <motion.when_elapsed_ids:{c |     shared.<c> = shared.clock_time_s - state.when_start_time;
@@ -85,14 +85,14 @@ inline void monitor_when_<motion.id>(<sig-params(motion.id, motion.when_needs_st
 <motion.when_observation_ages:{a |     shared.<a.coordinate> = shared.clock_time_s - shared.<a.observed_at>;
 }><motion.declared_pose_components:{pose | <materialize-pose-component(pose, views)>}; separator="\n">
 <shared-schedule-block(motion.when_schedule, closures, views)>
-<if(first(motion.when_monitors))>
+<if(motion.when_monitors)>
 <monitor-block(motion.when_monitors)>
 <endif>
 }
 
 inline void monitor_until_<motion.id>(<sig-params(motion.id, motion.until_needs_state, motion.until_needs_shared, motion.until_needs_robot, motion.until_needs_events)>) {
 <shared-schedule-block(motion.until_schedule, closures, views)>
-<if(first(motion.until_monitors))>
+<if(motion.until_monitors)>
 <monitor-block(motion.until_monitors)>
 <endif>
 }
@@ -105,7 +105,7 @@ inline void control_<motion.id>(
 <shared-schedule-block(motion.while_pre_schedule, closures, views)>
 <motion.pose_axis_error_groups:{group | <pose-axis-error-group(group, views)>}; separator="\n">
 <shared-schedule-block(motion.while_schedule, closures, views)>
-<if(first(motion.while_monitors))>
+<if(motion.while_monitors)>
 
 <monitor-block(motion.while_monitors)>
 <endif>
@@ -120,7 +120,7 @@ inline void apply_<motion.id>(<sig-params(motion.id, motion.apply_needs_state, m
 <chain-stage-block(motion.serial_chain_solvers, solvers, backend)>
 <endif>
 <command-forwarding(motion)>
-<if(motion.has_perturbations)>
+<if(motion.perturbations)>
 <perturbation-apply-block(motion, views)>
 <endif>
 }

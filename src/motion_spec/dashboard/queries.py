@@ -22,7 +22,6 @@ from motion_spec.dashboard.graph import (
 from motion_spec.dashboard.metadata import LOCK, generation_of, write_document
 from motion_spec.dashboard.roots import LAYOUT_REL, json_file
 from motion_spec.dashboard.sources import declaration_lines
-from motion_spec.dashboard.store import RunStore
 from motion_spec.introspection import frame_log_pb
 from motion_spec.introspection.replay import resolve_archive
 
@@ -45,20 +44,16 @@ def run_model_manifest(run_dir: Path) -> Path | None:
 
 def generation_graph(generation_dir: Path) -> GraphService:
     """A generation's model graph on its own."""
-    return GraphService(generation_dir, RunStore(generation_dir.name))
+    return GraphService(generation_dir)
 
 
 def run_graph(run_dir: Path) -> GraphService:
     """One run's queryable model graph. Kept per log revision, as the run list is."""
-    _, log, _manifest, contract = resolve_archive(run_dir)
+    _, log, _manifest, _contract = resolve_archive(run_dir)
     key = (str(log), log.stat().st_size, True)
     if key not in _GRAPHS:
         _GRAPHS.clear()
-        _GRAPHS[key] = GraphService(
-            run_dir.parent.parent,
-            RunStore(run_dir.name, contract),
-            manifest=run_model_manifest(run_dir),
-        )
+        _GRAPHS[key] = GraphService(run_dir.parent.parent, manifest=run_model_manifest(run_dir))
     return _GRAPHS[key]
 
 

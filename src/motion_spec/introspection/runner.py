@@ -19,7 +19,7 @@ from rdflib import Graph
 from rec import State, Verdict
 
 from motion_spec.introspection.archive import create_archive_manifest, verify_manifest
-from motion_spec.introspection.frame_log_pb import ctrl_shm_name, shm_name_for
+from motion_spec.introspection.frame_log_pb import ctrl_shm_name, read_sampling, shm_name_for
 from motion_spec.introspection.lifecycle_events import publish_lifecycle
 from motion_spec.introspection.provenance import (
     CONTROLLER_PROCESS,
@@ -73,12 +73,7 @@ def run_cataloged(
 
     _validate_new_run(run_dir, source_dir, executable, run_id, Path(cwd).resolve() if cwd else None)
     # frame_layout.json, not the log: the run is recorded before the log exists.
-    schema_path = (
-        source_dir / "contract" / "frame_layout.json"
-        if (source_dir / "contract").is_dir()
-        else source_dir / "frame_layout.json"
-    )
-    schema = json.loads(schema_path.read_text())
+    schema = json.loads((source_dir / "contract" / "frame_layout.json").read_text())
     run_dir.mkdir(parents=True, exist_ok=True)
     _start_rec_run(
         run_dir,
@@ -111,8 +106,9 @@ def run_cataloged(
     except Exception:
         _finish_rec_run(rec_path, run_id, Verdict.FAILED)
         raise
-    if (frame_log.parent / "sampling.json").exists():
-        _record_sampling(rec_path, run_id, frame_log.parent / "sampling.json")
+    sampling = read_sampling(frame_log) if record_log and frame_log.exists() else None
+    if sampling:
+        _record_sampling(rec_path, run_id, sampling)
     if rec_run_lifecycle_from_file(rec_path)["verdict"] is not Verdict.ERROR:
         # 130 is the program leaving its loop on SIGINT/SIGTERM, which it reports rather than
         # dying from: the run stopped early but its artifacts are complete, so it is not a
@@ -304,12 +300,7 @@ def _validate_new_run(
 ) -> None:
     if not source_dir.exists():
         raise RunnerError(f"{source_dir}: source directory does not exist")
-    required = (
-        (source_dir / "contract" / "frame_log.proto", source_dir / GENERATION_DOCUMENT)
-        if (source_dir / "contract").is_dir()
-        else tuple(source_dir / rel for rel in ("frame_log.proto", GENERATION_DOCUMENT))
-    )
-    for path in required:
+    for path in (source_dir / "contract" / "frame_log.proto", source_dir / GENERATION_DOCUMENT):
         if not path.exists():
             raise RunnerError(f"{path}: required generated artifact is missing")
     if not executable.exists():
@@ -521,8 +512,6 @@ def _run_executable(
     if record:
         env["MOTION_SPEC_RECORD_CAMERAS"] = ",".join(record)
         env["MOTION_SPEC_RECORD_DIR"] = str(frame_log.parent.resolve())
-    # Where the runtime writes the seed and the draw of every sampled quantity, if it has any.
-    env["MOTION_SPEC_SAMPLING_PATH"] = str((frame_log.parent / "sampling.json").resolve())
     command = [str(executable), *executable_args]
     # Why a run died is otherwise only on the operator's terminal: tee it into the run dir.
     console = (frame_log.parent / "console.log").open("w", encoding="utf-8", errors="replace")
@@ -602,20 +591,19 @@ def _finish_rec_run(rec_path: Path, run_id: str, verdict: Verdict) -> None:
     _publish(run_dir, run_id)
 
 
-def _record_sampling(rec_path: Path, run_id: str, path: Path) -> None:
+def _record_sampling(rec_path: Path, run_id: str, sampling: dict) -> None:
     """The seed as a metric of the run, and each drawn value as an entity the run generated."""
     ensure_local_rec_importable()
     from rec.run import Run
 
     run_dir = rec_path.parent
-    sampling = json.loads(path.read_text())
     run = Run(observers=[_rec_observer(run_dir)], run_id=run_id)
     run.log_scalar("sampling/seed", sampling["seed"])
     run.observers[0].close()
-    drawn_at = parse_rec_time(sampling["drawn_at"])
+    drawn_at = datetime.fromtimestamp(sampling["drawn_at_ns"] / 1e9, tz=timezone.utc)
     graph = Graph()
-    for quantity, draw in sorted(sampling["draws"].items()):
-        record_draw(graph, run_id, uri(CONTROLLER_PROCESS), quantity, draw["values"], drawn_at)
+    for quantity, values in sorted(sampling["draws"].items()):
+        record_draw(graph, run_id, uri(CONTROLLER_PROCESS), quantity, values, drawn_at)
     write_generation_graph(run_dir / EXECUTION_DOCUMENT, GRAPH_EXECUTION, graph)
 
 

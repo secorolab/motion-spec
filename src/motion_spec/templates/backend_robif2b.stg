@@ -509,13 +509,13 @@ app-chain-setup-robif2b(serial_chain_solvers, scene, config_path, ros, world_por
     const auto robot_config = motion_spec::config::load("<config_path>");
 <serial_chain_solvers:{solver |
 
-<robot-state-init(solver, "robif2b")>
+<robot-state-init-robif2b(solver)>
 
 <if(solver.runtime.owner)><solver.devices:{device | <device-init-robif2b(solver, device)>}; separator="\n"><endif>
 
-<robot-chain(solver, "robif2b")>
+<robot-chain-robif2b(solver)>
 
-<robot-assign(solver, "robif2b")>
+<robot-assign-robif2b(solver)>
 <if(solver.runtime.owner)><solver.devices:{device | <({<device-io-assign-impl.(device.kind)>})(solver, device)>}; separator=""><endif>
 }; separator="\n">
 >>
@@ -609,4 +609,44 @@ robif2b_kinova_gen3_stop(&kinova_<side>);
 
 robif2b-shutdown-kinova(side) ::= <<
 robif2b_kinova_gen3_shutdown(&kinova_<side>);
+>>
+
+app-chain-loop-reset-robif2b(serial_chain_solvers, fsm) ::= ""
+
+// Cameras render against the simulated scene, so only a simulation backend serves them.
+app-chain-camera-publish-robif2b(cameras, ros) ::= ""
+
+app-chain-camera-cleanup-robif2b(cameras) ::= <<
+
+>>
+
+clock-time-source-robif2b() ::= "motion_spec::runtime::monotonic_time_s()"
+
+// Hardware runs at wall speed.
+loop-rtf-source-robif2b() ::= "1.0"
+
+// The runtime helpers the device cycle calls.
+backend-runtime-robif2b(resources) ::= <<
+// A driver that reports a failed cycle has not refreshed anything it owns: its measurements keep
+// the values they last had, so the next solve would price a pose the robot may have left. Stop
+// the loop rather than command against a reading nothing stands behind.
+inline void require_driver(bool ok, std::string_view device) {
+    if (ok || stop_requested()) return;
+    std::cerr \<\< "[run] device '" \<\< device \<\< "' reported a failed cycle; stopping" \<\< std::endl;
+    request_stop(0);
+\}
+
+<if(resources.device_kinds.("KinovaGen3-2F85") || resources.device_kinds.("Robotiq2F85"))>
+// A commanded gripper joint position as a fraction of the device's travel: 0 fully open, 1
+// fully closed. Clamped, because a controller may overshoot the authored range and no device
+// takes a command outside its stroke -- and on this path an out-of-range value closes a real
+// gripper on whatever is between its fingers.
+inline double gripper_closed_fraction(double joint_position, double travel) {
+    if (!(travel > 0.0)) {
+        throw std::runtime_error("gripper travel must be positive");
+    }
+    return std::clamp(joint_position / travel, 0.0, 1.0);
+}
+
+<endif>
 >>

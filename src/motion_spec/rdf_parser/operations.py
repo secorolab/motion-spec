@@ -1290,10 +1290,13 @@ class ClosureMaps(NamedTuple):
 
 
 def closure_maps(closures: dict) -> ClosureMaps:
-    """Who writes each data id, and what that writer reads."""
+    """Who writes each data id, and what its writers read.
+
+    A data id several motions write has several writers; it reads what any of them reads.
+    """
     output_map: dict[str, str] = {}
     input_map: dict[str, set[str]] = {}
-    for closure_id, closure in closures.items():
+    for closure_id, closure in sorted(closures.items()):
         outputs = closure_output_ids(closure)
         inputs = {
             value
@@ -1301,8 +1304,8 @@ def closure_maps(closures: dict) -> ClosureMaps:
             if key not in {"id", "type"} and isinstance(value, str) and value not in outputs
         }
         for output in outputs:
-            output_map[output] = closure_id
-            input_map[output] = inputs
+            output_map.setdefault(output, closure_id)
+            input_map.setdefault(output, set()).update(inputs)
 
     return ClosureMaps(output_map, input_map)
 

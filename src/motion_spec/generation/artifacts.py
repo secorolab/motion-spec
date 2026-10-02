@@ -181,31 +181,31 @@ def _evaluator_terms(evaluators: dict, error_id: str | None) -> dict:
 
 
 def _controller_slot(
-    controller: dict, index: int, motion: dict, uri_by_id: dict, evaluators: dict
+    row: dict, controller: dict, index: int, uri_by_id: dict, evaluators: dict
 ) -> dict:
-    """Introspection slot for a controller: gains and resolved signal ids/URIs."""
-    error_id = _signal_id(controller.get("error_signal"))
-    output_id = _signal_id(controller.get("control_signal")) or controller.get("output_signal")
-    reference_id = _signal_id(controller.get("reference_signal"))
-    measured_id = _signal_id(controller.get("measured_signal")) or controller.get("quantity")
-    setpoint_id = (
-        reference_id
-        or _signal_id(controller.get("setpoint_signal"))
-        or controller.get("reference_value")
-    )
-    measured_derivative_id = _signal_id(controller.get("measured_derivative"))
-    tolerance_id = _signal_id(controller.get("tolerance_signal")) or controller.get("tolerance_id")
+    """Introspection slot for a controller: its published row, indexed, with signal URIs.
+
+    `controller` is the coordination record, read only for the measured quantity and the
+    reference value a row names no signal for.
+    """
+    error_id = row.get("error_signal")
+    output_id = row.get("output_signal")
+    reference_id = row.get("reference_signal")
+    measured_id = row.get("measured_signal") or controller.get("quantity")
+    setpoint_id = reference_id or row.get("setpoint_signal") or controller.get("reference_value")
+    measured_derivative_id = row.get("measured_derivative")
+    tolerance_id = row.get("tolerance_signal")
     return {
         "index": index,
-        "id": controller.get("id"),
-        "uri": uri_by_id.get(controller.get("id")),
-        "motion": motion.get("id"),
-        "type": controller.get("type"),
+        "id": row["id"],
+        "uri": row.get("uri"),
+        "motion": row.get("motion"),
+        "type": row.get("type"),
         # The constraint this controller serves: what a plot of its error is about.
-        "constraint": controller.get("constraint"),
-        "constraint_uri": controller.get("constraint_uri"),
+        "constraint": row.get("constraint"),
+        "constraint_uri": row.get("constraint_uri"),
         "gains": {
-            key: controller[key]
+            key: row[key]
             for key in (
                 "proportional_gain",
                 "integral_gain",
@@ -214,7 +214,7 @@ def _controller_slot(
                 "stiffness",
                 "damping",
             )
-            if controller.get(key) is not None
+            if row.get(key) is not None
         },
         "error_signal": error_id,
         "error_signal_uri": uri_by_id.get(error_id),
@@ -275,7 +275,6 @@ def _monitor_slot(
         and error.get("type") in {"Pose", "VelocityTwist"},
         "has_active": monitor.get("has_active", False),
         "active_terms": monitor.get("active_terms"),
-        "active_terms_present": monitor.get("active_terms_present", False),
         "active_any": monitor.get("active_any", False),
         "fallback_motion": monitor.get("fallback_motion"),
         **_evaluator_terms(evaluators, error_id),
@@ -354,6 +353,7 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
     motions = ir["coordination"]["motions"]
     motion_by_id = {motion.get("id"): motion for motion in motions}
     monitor_rows = {row.get("id"): row for row in introspection.get("monitors") or ()}
+    controller_rows = {row.get("id"): row for row in introspection.get("controllers") or ()}
     states = fsm["states"]
     state_by_id = {state["id"]: state for state in states}
     # Slots are keyed by the motion that computes them, not by the coordinator state that happens
@@ -381,7 +381,7 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
             )
 
         controller_slots = [
-            _controller_slot(controller, idx, motion, uri_by_id, evaluators)
+            _controller_slot(controller_rows[controller["id"]], controller, idx, uri_by_id, evaluators)
             for idx, controller in enumerate(motion.get("controllers", []))
         ]
         monitor_sources = []
@@ -512,9 +512,6 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
         "spatial": spatial,
         "signals": introspection.get("signals", []),
     }
-    # The wire field mapping is part of the run contract: fold it into schema_hash so the
-    # frame-log header hash changes whenever a slot's protobuf field name/number changes.
-    schema["protobuf"] = build_frame_log_proto_fields(schema)
     schema["schema_hash"] = hashlib.sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest()[
         :16
     ]
@@ -543,113 +540,6 @@ def build_frame_layout(schema: dict) -> dict:
         json.dumps(layout, sort_keys=True).encode()
     ).hexdigest()[:16]
     return layout
-
-
-# Deterministic per-category field-number ranges. Each runtime-frame slot maps to one
-# singular protobuf field, so `<base> + slot_index` is stable across runs of the same model.
-PROTO_FIELD_BASES = {
-    "constraints": 1000,
-    "monitors": 2000,
-    "quantities": 3000,
-    "triggers": 4000,
-    "poses": 5000,
-    "twists": 6000,
-    "wrenches": 7000,
-    "devices": 8000,
-}
-PROTO_MAX_FIELD_NUMBER = 536870911
-RUNTIME_FRAME_MESSAGE = "RuntimeFrame"
-
-
-def _proto_field_name(value: str | None, used: set[str], fallback: str) -> str:
-    """Sanitize a schema id to a unique, valid protobuf3 field identifier."""
-    name = re.sub(r"[^a-z0-9]+", "_", (value or "").lower()).strip("_")
-    if not name:
-        name = fallback
-    if name[0].isdigit():
-        name = f"field_{name}"
-    base = name
-    suffix = 2
-    while name in used:
-        name = f"{base}_{suffix}"
-        suffix += 1
-    used.add(name)
-    return name
-
-
-def build_frame_log_proto_fields(schema: dict) -> dict:
-    """Per-category runtime-frame slot -> protobuf field {index, id, name, number}.
-
-    Constraint/monitor/trigger slots are reused per FSM state, so their names are slot-stable
-    (`constraint_0`), never state-specific. Quantities and spatial slots take semantic names
-    sanitized from their schema ids. Names are unique across the whole RuntimeFrame message.
-    """
-    pools = schema.get("pools", {})
-    spatial = schema.get("spatial") or {"poses": [], "twists": [], "wrenches": []}
-    used: set[str] = set()
-    fields: dict[str, list] = {}
-    next_number = 1
-
-    def _pool_slots(category: str) -> None:
-        """Emit slot-stable proto fields (e.g. constraint_0) for a fixed-size pool category."""
-        nonlocal next_number
-        base = max(PROTO_FIELD_BASES[category], next_number)
-        singular = category[:-1]
-        fields[category] = []
-        for idx in range(pools.get(category, 0)):
-            slot_id = f"{singular}_{idx}"
-            fields[category].append(
-                {
-                    "index": idx,
-                    "id": slot_id,
-                    "name": _proto_field_name(slot_id, used, slot_id),
-                    "number": base + idx,
-                }
-            )
-        next_number = base + len(fields[category])
-
-    def _semantic_slots(category: str, entries: list) -> None:
-        """Emit proto fields named from each entry's schema id (quantities and spatial slots)."""
-        nonlocal next_number
-        base = max(PROTO_FIELD_BASES[category], next_number)
-        singular = category[:-1]
-        fields[category] = []
-        for entry in sorted(entries, key=lambda e: e.get("index", 0)):
-            idx = entry.get("index", len(fields[category]))
-            name = _proto_field_name(entry.get("id"), used, f"{singular}_{idx}")
-            # A value the model declares as a flag is a flag on the wire too: a proto bool costs
-            # one byte where a double costs eight, and proto3 drops it entirely when false.
-            kind = (entry.get("sample_desc") or {}).get("kind")
-            fields[category].append(
-                {
-                    "index": idx,
-                    "id": entry.get("id"),
-                    # The slot's model identity travels with the wire field that carries it.
-                    "iri": entry.get("uri"),
-                    "name": name,
-                    "number": base + idx,
-                    "proto_type": "bool" if kind == "bool" else "double",
-                }
-            )
-        next_number = max((entry["number"] for entry in fields[category]), default=base - 1) + 1
-
-    _pool_slots("constraints")
-    _pool_slots("monitors")
-    _semantic_slots("quantities", schema.get("quantities", []))
-    _pool_slots("triggers")
-    _semantic_slots("poses", spatial.get("poses", []))
-    _semantic_slots("twists", spatial.get("twists", []))
-    _semantic_slots("wrenches", spatial.get("wrenches", []))
-    _semantic_slots("devices", schema.get("devices", []))
-
-    for category, entries in fields.items():
-        for entry in entries:
-            if entry["number"] > PROTO_MAX_FIELD_NUMBER:
-                raise RuntimeError(
-                    f"protobuf field number {entry['number']} for {category}[{entry['index']}] "
-                    f"exceeds maximum {PROTO_MAX_FIELD_NUMBER}"
-                )
-    return {"runtime_frame": RUNTIME_FRAME_MESSAGE, "fields": fields}
 
 
 def _uri_comment(uri: str | None) -> str:
@@ -725,7 +615,6 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
                         "uri_comment": _uri_comment(slot.get("uri")),
                         "has_active": True,
                         "active_terms": slot.get("active_terms"),
-                        "active_terms_present": slot.get("active_terms_present", False),
                         "active_any": slot.get("active_any", False),
                     }
                 )
@@ -790,7 +679,6 @@ def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path) 
             "frame_layout_hash": layout["frame_layout_hash"],
             "end_state": end_state if end_state is not None else -1,
             "nominal_period_ns": schema.get("control_period_ns") or 0,
-            "protobuf": schema["protobuf"],
             "header_record_rows": _hex_rows(header_record),
         },
         "model": build_introspection_model(schema, ir),
@@ -821,25 +709,42 @@ def _as_list(value) -> list:
     return [value] if value else []
 
 
+def _constraint_iris(slot_entry: dict) -> list:
+    return slot_entry.get("constraint_uris") or _as_list(slot_entry.get("constraint_uri"))
+
+
+def _fill_slot(slot, slot_entry: dict) -> None:
+    """The fields a controller and a monitor share, and the signal ids this message carries."""
+    slot.number, slot.id = slot_entry["index"], slot_entry.get("id") or ""
+    slot.iri = slot_entry.get("uri") or ""
+    # The scalar only when it is unambiguous: an aggregate monitor watches several.
+    iris = _constraint_iris(slot_entry)
+    if len(iris) == 1:
+        slot.constraint_iri = iris[0]
+    ids = slot_entry.get("constraint_ids") or _as_list(slot_entry.get("constraint"))
+    if len(ids) == 1:
+        slot.constraint_id = ids[0]
+    carried = slot.DESCRIPTOR.fields_by_name
+    for field, key in _SLOT_SIGNAL_FIELDS:
+        if field in carried:
+            setattr(slot, field, slot_entry.get(key) or "")
+    # The two quantities the evaluator compares: what "between" is drawn from.
+    slot.operand_ids.extend(slot_entry.get("operand_ids") or ())
+
+
 def build_frame_log_header_record(schema: dict) -> bytes:
     """Serialize the run's FrameLogRecord header: everything a decoder needs and the wire cannot say.
 
     Built here, once, rather than assembled by generated C++: every field is known at generation
     time, so the runtime only has to write these bytes out verbatim.
     """
-    from google.protobuf import descriptor_pb2
-
     from motion_spec.introspection import frame_log_pb
 
-    record_cls, fields = frame_log_pb._record_class(schema)
-    descriptor_set = descriptor_pb2.FileDescriptorSet()
-    descriptor_set.file.add().CopyFrom(frame_log_pb._build_file_descriptor(fields))
-
-    rec = record_cls()
+    rec = frame_log_pb.record_class()()
     header = rec.header
-    header.SetInParent()
+    header.format_version = frame_log_pb.FORMAT_VERSION
     header.schema_hash = schema["schema_hash"]
-    header.descriptor_set = descriptor_set.SerializeToString()
+    header.descriptor_set = frame_log_pb.descriptor_set()
     header.trigger_pool = schema["pools"].get("triggers", 0)
     platform = schema.get("platform") or {}
     header.platform_name = platform.get("name") or ""
@@ -850,12 +755,18 @@ def build_frame_log_header_record(schema: dict) -> bytes:
     header.nominal_period_ns = schema.get("control_period_ns") or 0
     header.fsm_namespace = fsm.get("namespace") or ""
 
-    # Slot identity, keyed by the field number that carries it on the wire.
-    for category in ("quantities", "poses", "twists", "wrenches", "devices"):
-        for entry in fields.get(category, ()):
-            slot = header.slots.add()
-            slot.number, slot.id = entry["number"], entry["id"]
-            slot.iri = entry.get("iri") or ""
+    spatial = schema.get("spatial") or {}
+    for category, entries in (
+        ("quantities", schema.get("quantities") or ()),
+        ("poses", spatial.get("poses") or ()),
+        ("twists", spatial.get("twists") or ()),
+        ("wrenches", spatial.get("wrenches") or ()),
+        ("devices", schema.get("devices") or ()),
+    ):
+        for position, entry in enumerate(sorted(entries, key=lambda e: e.get("index", 0))):
+            slot = getattr(header, category).add()
+            slot.number, slot.id = entry.get("index", position), entry.get("id") or ""
+            slot.iri = entry.get("uri") or ""
 
     state_index = {
         row["id"]: row["index"] for row in (fsm.get("states") or ()) if isinstance(row, dict)
@@ -867,42 +778,28 @@ def build_frame_log_header_record(schema: dict) -> bytes:
         gate.fsm_state = state_index.get(entry.get("fsm_state"), -1)
         for category in ("quantities", "poses", "twists", "wrenches"):
             getattr(gate, category).extend(entry.get(category, ()))
-        for category in ("controllers", "monitors"):
-            for slot_entry in entry.get(category, ()):
-                slot = getattr(gate, category).add()
-                slot.number, slot.id = slot_entry["index"], slot_entry.get("id") or ""
-                slot.iri = slot_entry.get("uri") or ""
-                # A controller slot names the constraint it serves, a monitor slot the event it
-                # fires -- runtime.ttl attributes an occurrence to those, not to the slot.
-                slot.event_iri = slot_entry.get("event_uri") or ""
-                slot.phase = slot_entry.get("phase") or ""
-                iris = slot_entry.get("constraint_uris") or _as_list(
-                    slot_entry.get("constraint_uri")
+        for slot_entry in entry.get("controllers", ()):
+            slot = gate.controllers.add()
+            _fill_slot(slot, slot_entry)
+            for role, value in (slot_entry.get("gains") or {}).items():
+                gain = slot.gains.add()
+                gain.role, gain.value = role, float(value)
+        for slot_entry in entry.get("monitors", ()):
+            slot = gate.monitors.add()
+            _fill_slot(slot, slot_entry)
+            # The event it fires: runtime.ttl attributes an occurrence to it, not to the slot.
+            slot.event_iri = slot_entry.get("event_uri") or ""
+            slot.phase = slot_entry.get("phase") or ""
+            slot.constraint_iris.extend(_constraint_iris(slot_entry))
+            # An aggregate monitor's members, each with the error it is judged by.
+            for member in slot_entry.get("watched") or ():
+                watched = slot.watched.add()
+                watched.id = member.get("id") or ""
+                watched.iri = member.get("uri") or member.get("iri") or ""
+                watched.error_id = member.get("error_signal") or member.get("error_id") or ""
+                watched.tolerance_id = (
+                    member.get("tolerance_signal") or member.get("tolerance_id") or ""
                 )
-                slot.constraint_iris.extend(iris)
-                # The scalar only when it is unambiguous: an aggregate monitor watches several.
-                if len(iris) == 1:
-                    slot.constraint_iri = iris[0]
-                ids = slot_entry.get("constraint_ids") or _as_list(slot_entry.get("constraint"))
-                if len(ids) == 1:
-                    slot.constraint_id = ids[0]
-                for field, key in _SLOT_SIGNAL_FIELDS:
-                    setattr(slot, field, slot_entry.get(key) or "")
-                # The two quantities the evaluator compares: what "between" is drawn from.
-                slot.operand_ids.extend(slot_entry.get("operand_ids") or ())
-                # An aggregate monitor's members, each with the error it is judged by.
-                for member in slot_entry.get("watched") or ():
-                    watched = slot.watched.add()
-                    watched.id = member.get("id") or ""
-                    watched.iri = member.get("uri") or member.get("iri") or ""
-                    watched.error_id = member.get("error_signal") or member.get("error_id") or ""
-                    watched.tolerance_id = (
-                        member.get("tolerance_signal") or member.get("tolerance_id") or ""
-                    )
-                # Gains are literals folded into the controller: no quantity slot carries them.
-                for role, value in (slot_entry.get("gains") or {}).items():
-                    gain = slot.gains.add()
-                    gain.role, gain.value = role, float(value)
 
     for key, target in (("states", header.fsm_states), ("events", header.fsm_events)):
         for index, row in enumerate(fsm.get(key) or ()):

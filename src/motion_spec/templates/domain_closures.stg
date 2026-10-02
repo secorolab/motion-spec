@@ -593,3 +593,254 @@ shared.<closure.out> = <access-expr(closure.dividend, views)> / <access-expr(clo
 emit-call-AddWrench(closure, views) ::= <<
 shared.<closure.out> = <access-expr(closure.in1, views)> + <access-expr(closure.in2, views)>;
 >>
+
+// The runtime helpers the closures above call, each emitted only when a closure of its kind runs.
+closure-runtime(uses) ::= <<
+<if(uses.("PathProjection") || uses.("PathTangentFrame") || uses.("PathVelocityProfile"))>
+// Central-difference step for the tangent, in path parameter. Also the resolution the
+// projection converges to: refining the parameter finer than the step the curve is
+// differentiated at buys nothing.
+inline constexpr double kPathTangentStep = 1e-4;
+
+<endif>
+<if(uses.("PathProjection"))>
+// Closest point on a path, refined locally around the previous parameter.
+// The window is derived, not tuned: how far the frame drifted off the last projection is how
+// far it can have travelled in the control period that passed. The closest point is no farther
+// away than P(previous) already is, so P(s*) is within 2d of P(previous) in arc length, and
+// dividing by the local |dP/ds| turns that into the parameter bound searched here. A tuned window
+// would either lag a fast motion or, when generous, reach across a fold of a self-intersecting
+// path; one control period of measured motion can do neither.
+template \<typename Eval\>
+inline double path_project(const Eval &eval, const KDL::Vector &point, double previous) {
+    const auto distance2 = [&](double s) {
+        const KDL::Vector delta = eval(s).p - point;
+        return KDL::dot(delta, delta);
+    };
+    const double lo_s = std::max(0.0, previous - kPathTangentStep);
+    const double hi_s = std::min(1.0, previous + kPathTangentStep);
+    const double ds = hi_s - lo_s;
+    if (ds \< 1e-12) return std::clamp(previous, 0.0, 1.0);
+    const double speed = (eval(hi_s).p - eval(lo_s).p).Norm() / ds;
+    if (speed \< 1e-9) return std::clamp(previous, 0.0, 1.0);  // stationary curve: nothing to search along
+    const double window = 2.0 * std::sqrt(distance2(previous)) / speed;
+    double a = std::max(0.0, previous - window);
+    double b = std::min(1.0, previous + window);
+    // Golden section: the distance is unimodal over a window this size, so no coarse scan is
+    // needed to bracket. The shrink factor bounds the loop -- worst case is a full-length
+    // window, ~19 iterations to the tangent step -- so the tick cost stays deterministic.
+    constexpr double kInvPhi = 0.6180339887498949;
+    double c = b - kInvPhi * (b - a);
+    double d = a + kInvPhi * (b - a);
+    double fc = distance2(c);
+    double fd = distance2(d);
+    while (b - a > kPathTangentStep) {
+        if (fc \< fd) {
+            b = d; d = c; fd = fc;
+            c = b - kInvPhi * (b - a);
+            fc = distance2(c);
+        } else {
+            a = c; c = d; fc = fd;
+            d = a + kInvPhi * (b - a);
+            fd = distance2(d);
+        }
+    }
+    return std::clamp(0.5 * (a + b), 0.0, 1.0);
+}
+
+<endif>
+<if(uses.("PathTangentFrame"))>
+// Frenet-style frame at a point on the path: the tangent by central difference, then two
+// normals carried forward from the previous tick (parallel transport). Rebuilding the normals
+// from a world axis every tick would flip them as the tangent turns, and the lateral rows
+// would jump with them; transport keeps the frame continuous.
+template \<typename Eval\>
+inline void path_frame(const Eval &eval, double s, KDL::Vector &tangent,
+                       KDL::Vector &normal_a, KDL::Vector &normal_b) {
+    const double lo = std::max(0.0, s - kPathTangentStep);
+    const double hi = std::min(1.0, s + kPathTangentStep);
+    tangent = eval(hi).p - eval(lo).p;
+    if (tangent.Norm() \< 1e-12) {
+        tangent = KDL::Vector(1.0, 0.0, 0.0);
+    } else {
+        tangent.Normalize();
+    }
+    KDL::Vector candidate = normal_a - KDL::dot(normal_a, tangent) * tangent;
+    if (candidate.Norm() \< 1e-6) {
+        // No usable previous normal (first tick, or the tangent turned onto it): start from the
+        // world axis least aligned with the tangent, which keeps the cross product conditioned.
+        const double ax = std::fabs(tangent.x());
+        const double ay = std::fabs(tangent.y());
+        const double az = std::fabs(tangent.z());
+        const KDL::Vector helper = (ax \<= ay && ax \<= az) ? KDL::Vector(1.0, 0.0, 0.0)
+                                 : (ay \<= az)             ? KDL::Vector(0.0, 1.0, 0.0)
+                                                          : KDL::Vector(0.0, 0.0, 1.0);
+        candidate = tangent * helper;
+    }
+    candidate.Normalize();
+    normal_a = candidate;
+    normal_b = tangent * normal_a;
+    normal_b.Normalize();
+}
+
+<endif>
+<if(uses.("VelocityProfile"))>
+enum class VelocityProfileShape { Trapezoidal, SCurve };
+
+<endif>
+<if(uses.("TargetVelocityProfile"))>
+// SCurve is a cascaded jerk limiter, not a time-optimal phase planner.
+// Feed-forward online generator: the setpoint must LEAD the plant to drive a
+// position controller, so v is the profile's own integrated velocity, not the
+// measured one. (Resetting v to the measured velocity each step glues the
+// setpoint to the plant -> zero tracking error -> no drive -> deadlock from
+// rest.) The measured state seeds vp_velocity once at init in the caller.
+inline double velocity_profile_step(double x, double &v, double &a, double goal,
+                                    double vmax, double amax, double jmax, double dt,
+                                    VelocityProfileShape shape) {
+    vmax = std::max(vmax, 1e-9);
+    amax = std::max(amax, 1e-9);
+    const double dir = (goal >= x) ? 1.0 : -1.0;
+    const double dist = std::abs(goal - x);
+    const double v_brake = std::sqrt(2.0 * amax * dist);
+    const double v_target = dir * std::min(vmax, v_brake);
+    if (shape == VelocityProfileShape::Trapezoidal) {
+        const double dv = std::clamp(v_target - v, -amax * dt, amax * dt);
+        v += dv;
+        a = dv / dt;
+    } else {
+        jmax = std::max(jmax, 1e-9);
+        const double a_target = std::clamp((v_target - v) / dt, -amax, amax);
+        a += std::clamp(a_target - a, -jmax * dt, jmax * dt);
+        v += a * dt;
+    }
+    v = std::clamp(v, -vmax, vmax);
+    double nx = x + v * dt;
+    if ((goal - nx) * dir \< 0.0) {
+        nx = goal;
+        v = 0.0;
+        a = 0.0;
+    }
+    return nx;
+}
+
+<endif>
+<if(uses.("PathVelocityProfile"))>
+template \<typename PathEvaluator\>
+inline double remaining_path_length(const PathEvaluator &evaluate, double parameter) {
+    constexpr int samples = 16;
+    const double start = std::clamp(parameter, 0.0, 1.0);
+    // path_project resolves the parameter only to kPathTangentStep, so a start within that of
+    // the end is the end. Reporting the sub-resolution tail floors the profile's braking
+    // velocity at sqrt(2*a*tail) and the motion creeps past the goal instead of stopping.
+    if (1.0 - start \<= kPathTangentStep) return 0.0;
+    KDL::Vector previous = evaluate(start).p;
+    double length = 0.0;
+    for (int i = 1; i \<= samples; ++i) {
+        const double s = start + (1.0 - start) * static_cast\<double\>(i) / samples;
+        const KDL::Vector current = evaluate(s).p;
+        length += (current - previous).Norm();
+        previous = current;
+    }
+    return length;
+}
+
+inline double path_velocity_profile_step(double velocity, double &acceleration,
+                                         double cruise_velocity, double maximum_velocity,
+                                         double maximum_acceleration, double maximum_jerk,
+                                         double remaining_distance, double dt,
+                                         VelocityProfileShape shape) {
+    maximum_velocity = std::max(std::abs(maximum_velocity), 1e-9);
+    maximum_acceleration = std::max(std::abs(maximum_acceleration), 1e-9);
+    const double direction = cruise_velocity >= 0.0 ? 1.0 : -1.0;
+    const double cruise = std::min(std::abs(cruise_velocity), maximum_velocity);
+    const double braking = std::sqrt(2.0 * maximum_acceleration
+                                     * std::max(remaining_distance, 0.0));
+    const double target = direction * std::min(cruise, braking);
+    if (shape == VelocityProfileShape::Trapezoidal) {
+        const double delta = std::clamp(target - velocity,
+                                        -maximum_acceleration * dt,
+                                        maximum_acceleration * dt);
+        velocity += delta;
+        acceleration = delta / dt;
+    } else {
+        maximum_jerk = std::max(std::abs(maximum_jerk), 1e-9);
+        const double target_acceleration = std::clamp(
+            (target - velocity) / dt, -maximum_acceleration, maximum_acceleration);
+        acceleration += std::clamp(target_acceleration - acceleration,
+                                   -maximum_jerk * dt, maximum_jerk * dt);
+        velocity += acceleration * dt;
+    }
+    return std::clamp(velocity, -maximum_velocity, maximum_velocity);
+}
+
+<endif>
+<if(uses.("JointNormalization"))>
+// A measured joint position, moved onto the turn the model's normalization interval is stated
+// on. A backend reporting [0, 2*pi) and a model stating (-pi, pi] describe the same pose one
+// turn apart; normalizing where the reading is taken means every constraint, solve and log
+// downstream sees the same one. Whole turns only, so a reading outside the interval stays
+// outside rather than being clamped onto it.
+inline double normalize_joint_position(double position, double lower, double upper) {
+    const double turn = 2.0 * M_PI;
+    const double centre = 0.5 * (lower + upper);
+    return position - turn * std::round((position - centre) / turn);
+}
+
+<endif>
+<if(uses.("ErrorEvaluator-EqualityConstraint"))>
+inline double evaluate_equality_constraint(double quantity, double reference) {
+    return quantity - reference;
+}
+
+// Shortest signed angular distance, in (-pi, pi]: a continuous joint's error lives on the circle.
+inline double wrap_angle(double angle) {
+    return std::remainder(angle, 2.0 * M_PI);
+}
+
+inline double evaluate_equality_constraint(const KDL::Vector &target, const KDL::Vector &current) {
+    return (target - current).Norm();
+}
+
+// The geodesic angle between two orientations: the one rotation that carries current onto
+// target, measured the way a satisfaction band on an orientation is authored -- in radians.
+inline double evaluate_equality_constraint(const KDL::Rotation &target, const KDL::Rotation &current) {
+    KDL::Vector axis;
+    return (current.Inverse() * target).GetRotAngle(axis);
+}
+
+inline KDL::Frame evaluate_equality_constraint(const KDL::Frame &target, const KDL::Frame &current) {
+    return current.Inverse() * target;
+}
+
+<endif>
+<if(uses.("ErrorEvaluator-LessThanConstraint"))>
+inline double evaluate_less_than_constraint(double quantity, double threshold) {
+    return (quantity \< threshold) ? 0.0 : threshold - quantity;
+}
+
+<endif>
+<if(uses.("ErrorEvaluator-GreaterThanConstraint"))>
+inline double evaluate_greater_than_constraint(double quantity, double threshold) {
+    return (quantity \> threshold) ? 0.0 : threshold - quantity;
+}
+
+<endif>
+<if(uses.("ErrorEvaluator-BilateralConstraint"))>
+inline double evaluate_bilateral_constraint(double quantity, double lower, double upper) {
+    if (quantity \< lower) return lower - quantity;
+    if (quantity \> upper) return upper - quantity;
+    return 0.0;
+}
+
+<endif>
+<if(uses.("ErrorEvaluator-OutsideConstraint"))>
+inline double evaluate_outside_constraint(double quantity, double lower, double upper) {
+    // Complement of bilateral: satisfied (0) when outside [lower, upper]; otherwise
+    // the remaining distance to the nearer band edge (still inside -> not yet satisfied).
+    if (quantity \<= lower || quantity \>= upper) return 0.0;
+    return std::min(quantity - lower, upper - quantity);
+}
+
+<endif>
+>>

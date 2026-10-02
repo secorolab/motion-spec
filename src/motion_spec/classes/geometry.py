@@ -202,7 +202,6 @@ class Wrench(SpatialCoordinate):
     # codegen emits.
     retare_event_uris: tuple[str, ...] = ()
     retare_events: tuple[str, ...] = ()
-    retare_events_present: bool = False
     type: str = field(default="Wrench")
 
 

@@ -19,16 +19,12 @@ main_source(configuration, resources, composition, computation, coordination, co
 <endif>
 <coordination.motions:{motion | <motion-include(motion)>}; separator="\n">
 
-<app-chain-includes(configuration.backend, resources.driven, resources, communication.ros, composition.scene.cameras)>
+<({app-chain-includes-<configuration.backend>})(resources.driven, resources, communication.ros, composition.scene.cameras)>
 #include \<unistd.h\>
 <if(composition.sampling)>
+#include "robot_config.hpp"
 #include \<chrono\>
 #include \<cstdint\>
-#include \<cstdlib\>
-#include \<cstring\>
-#include \<ctime\>
-#include \<fstream\>
-#include \<iomanip\>
 #include \<random\>
 <endif>
 <if(coordination.fsm)>
@@ -44,7 +40,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
     motion_spec_event_buffer events{};
 <if(composition.sampling)>
 
-<sampling-draws(composition.sampling)>
+<sampling-draws(composition.sampling, configuration.platform.config)>
 <endif>
 <if(communication.ros)>
 
@@ -56,7 +52,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
 <endif>
 <if(resources.driven)>
 
-<app-chain-setup(configuration.backend, resources.by_kind.serial_chain, composition.scene, configuration.platform.config, communication.ros, resources.world_ports)>
+<({app-chain-setup-<configuration.backend>})(resources.by_kind.serial_chain, composition.scene, configuration.platform.config, communication.ros, resources.world_ports)>
 <endif>
 <if(resources.by_kind.serial_chain)>
 
@@ -77,12 +73,12 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
 <endif>
 <if(resources.by_kind.serial_chain)>
 <resources.by_kind.serial_chain:{solver |
-<robot-configure(solver, configuration.backend)>
+<({robot-configure-<configuration.backend>})(solver)>
 }; separator="\n">
 <endif>
 
 <if(resources.by_kind.serial_chain)>
-<app-chain-post-setup(configuration.backend, resources.by_kind.serial_chain, coordination.motions, configuration.agent_homes)>
+<({app-chain-post-setup-<configuration.backend>})(resources.by_kind.serial_chain, coordination.motions, configuration.agent_homes)>
 <endif>
 <if(communication.ros)>
 <ros-joint-states-setup(communication.ros)>
@@ -111,7 +107,12 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
     int _fsm_prev_state = -1;
 <endif>
 #ifdef MOTION_SPEC_ENABLE_INTROSPECTION
+<if(composition.sampling)>
+<sampling-record(composition.sampling)>
+    motion_spec::introspection::RunPublisher _introspection_pub(&_sampling_record);
+<else>
     motion_spec::introspection::RunPublisher _introspection_pub;
+<endif>
 <if(configuration.platform.simulated)>
     // The operator asked to arm the run and press play.
     if (_start_paused) _introspection_pub.start_paused();
@@ -123,17 +124,17 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
 <if(configuration.platform.simulated)>
     double _ctrl_speed_applied = 1.0;
 <endif>
-    while (!motion_spec::runtime::stop_requested() && (<app-loop-condition(configuration.backend, resources.by_kind.serial_chain)>)<if(communication.ros)> && rclcpp::ok()<endif>) {
+    while (!motion_spec::runtime::stop_requested() && (<({app-loop-condition-<configuration.backend>})(resources.by_kind.serial_chain)>)<if(communication.ros)> && rclcpp::ok()<endif>) {
 <if(configuration.platform.simulated)>
 #ifdef MOTION_SPEC_ENABLE_INTROSPECTION
         const auto _ctrl = _introspection_pub.poll_control();
         if (_ctrl.stop) motion_spec::runtime::request_stop(0);
 <if(resources.by_kind.serial_chain)>
-<app-chain-control-apply(configuration.backend, resources.by_kind.serial_chain)>
+<({app-chain-control-apply-<configuration.backend>})(resources.by_kind.serial_chain)>
 <endif>
         if (_ctrl.pause && !_ctrl.step && !motion_spec::runtime::stop_requested()) {
 <if(resources.by_kind.serial_chain)>
-<app-chain-control-paused-step(configuration.backend, resources.by_kind.serial_chain)>
+<({app-chain-control-paused-step-<configuration.backend>})(resources.by_kind.serial_chain)>
 <endif>
             // Skip the whole tick: the clock never advanced, so an FSM step or a frame here
             // would be a duplicate, and the controllers would wind up against a frozen plant.
@@ -145,7 +146,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
         \}
 #endif
 <endif>
-        shared.clock_time_s = <clock-time-source(configuration.backend, resources.by_kind.serial_chain, resources.driven)>;
+        shared.clock_time_s = <if(resources.driven)><({clock-time-source-<configuration.backend>})()><else>motion_spec::runtime::monotonic_time_s()<endif>;
 <if(communication.ros.clock)>
         robot.sim_time_s = shared.clock_time_s;
 <endif>
@@ -159,7 +160,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
         shared.dt_measured_s = std::clamp(_dt_raw, motion_spec::runtime::kDtClampMin,
                                           motion_spec::runtime::kDtClampMax);
 <if(resources.by_kind.serial_chain)>
-<app-chain-loop-reset(configuration.backend, resources.by_kind.serial_chain, coordination.fsm)>
+<({app-chain-loop-reset-<configuration.backend>})(resources.by_kind.serial_chain, coordination.fsm)>
 <endif>
 <if(coordination.fsm)>
         if (static_cast\<int\>(fsm->currentStateIndex) != _fsm_prev_state) {
@@ -222,11 +223,11 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
 <ros-publish-tick(coordination, communication, computation.views)>
 <endif>
 <if(resources.by_kind.serial_chain)>
-<app-chain-trace-update(configuration.backend, resources.by_kind.serial_chain, configuration.trace)>
+<({app-chain-trace-update-<configuration.backend>})(resources.by_kind.serial_chain, configuration.trace)>
 <if(coordination.perturbations)>
-<perturbation-arrows(configuration.backend, coordination.perturbations, configuration.trace)>
+<({perturbation-arrows-<configuration.backend>})(coordination.perturbations, configuration.trace)>
 <endif>
-<app-chain-runtime-step(configuration.backend, resources.by_kind.serial_chain, "_active_motion")>
+<({app-chain-runtime-step-<configuration.backend>})(resources.by_kind.serial_chain, "_active_motion")>
 <endif>
 <if(resources.base_owns_runtime)>
 <({<base-runtime-step-impl.(configuration.backend)>})()>
@@ -253,7 +254,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
 <endif>
 #ifdef MOTION_SPEC_ENABLE_INTROSPECTION
 <if(resources.by_kind.serial_chain)>
-<app-chain-camera-publish(configuration.backend, composition.scene.cameras, communication.ros)>
+<({app-chain-camera-publish-<configuration.backend>})(composition.scene.cameras, communication.ros)>
 <endif>
         // The frame's t is the platform clock: simulation time under MuJoCo, so a log is the
         // same regardless of how fast the host stepped it; wall_ns stays alongside for wall
@@ -269,7 +270,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
             _active_motion,
             shared);
 <if(resources.by_kind.serial_chain)>
-<app-chain-introspection-sample(configuration.backend, resources.by_kind.serial_chain)>
+<({app-chain-introspection-sample-<configuration.backend>})(resources.by_kind.serial_chain)>
 <endif>
         _introspection_pub.end_tick();
 #endif
@@ -277,7 +278,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
         // One pacer for this loop. The real-time factor scales the period rather than adding a
         // second sleep somewhere else: in simulation it is the viewer's live setting, so the
         // speed keys work mid-run; on hardware it is 1.0.
-        const double _rtf = <loop-rtf-source(configuration.backend, resources.by_kind.serial_chain, resources.driven)>;
+        const double _rtf = <if(resources.driven)><({loop-rtf-source-<configuration.backend>})()><else>1.0<endif>;
         if (_rtf > 0.0) {
             motion_spec::runtime::sleep_until_next(
               _next_tick, static_cast\<long>(<configuration.control_period_ns> / _rtf));
@@ -288,16 +289,16 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
 #ifdef MOTION_SPEC_ENABLE_INTROSPECTION
     _introspection_pub.close();
 <if(resources.by_kind.serial_chain)>
-<app-chain-camera-cleanup(configuration.backend, composition.scene.cameras)>
+<({app-chain-camera-cleanup-<configuration.backend>})(composition.scene.cameras)>
 <endif>
 #endif
 <if(resources.driven)>
 
-<app-chain-cleanup(configuration.backend, resources.driven)>
+<({app-chain-cleanup-<configuration.backend>})(resources.driven)>
 <endif>
 <if(resources.by_kind.serial_chain)>
 <resources.by_kind.serial_chain:{solver |
-<robot-shutdown(solver, configuration.backend)>
+<({robot-shutdown-<configuration.backend>})(solver)>
 }; separator="\n">
 <endif>
 <if(resources.by_kind.mobile_base)>
@@ -353,37 +354,14 @@ drawn-frame-segment(tree, frame) ::= <<
     }
 >>
 
-// Drawn once, before anything reads them: the seed from --seed, else from the OS. A draw is
-// scaled to SI here, so the program sees the quantity as it sees an authored one.
-sampling-draws(sampling) ::= <<
-    std::uint64_t sampling_seed = std::random_device{}();
-    for (int i = 1; i + 1 \< argc; ++i) {
-        if (std::strcmp(argv[i], "--seed") == 0) {
-            sampling_seed = std::strtoull(argv[i + 1], nullptr, 10);
-        }
-    }
+// Drawn once, before anything reads them. A draw is scaled to SI here, so the program sees the
+// quantity as it sees an authored one.
+sampling-draws(sampling, config_path) ::= <<
+    const std::uint64_t sampling_seed = motion_spec::config::sampling_seed("<config_path>");
     std::mt19937_64 sampling_rng(sampling_seed);
-    const auto sampling_time = std::chrono::system_clock::now();
+    const std::int64_t sampling_drawn_at_ns = std::chrono::duration_cast\<std::chrono::nanoseconds\>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
 <sampling:{s | <sampling-draw(s)>}; separator="\n">
-    if (const char *sampling_path = std::getenv("MOTION_SPEC_SAMPLING_PATH")) {
-        // The draw is what provenance dates, and it happens here, before the first frame.
-        const auto sampling_epoch = sampling_time.time_since_epoch();
-        const auto sampling_us =
-            std::chrono::duration_cast\<std::chrono::microseconds\>(sampling_epoch).count();
-        const std::time_t sampling_secs = static_cast\<std::time_t\>(sampling_us / 1000000);
-        std::tm sampling_utc{};
-        gmtime_r(&sampling_secs, &sampling_utc);
-        char sampling_stamp[32];
-        std::strftime(sampling_stamp, sizeof(sampling_stamp), "%Y-%m-%dT%H:%M:%S", &sampling_utc);
-        std::ofstream sampling_out(sampling_path);
-        sampling_out \<\< std::setprecision(17) \<\< R"({"seed": )" \<\< sampling_seed
-                     \<\< R"(, "drawn_at": ")" \<\< sampling_stamp \<\< "." \<\< std::setfill('0')
-                     \<\< std::setw(6) \<\< (sampling_us % 1000000) \<\< std::setfill(' ')
-                     \<\< R"(Z", "draws": {)";
-        bool sampling_first = true;
-<sampling:{s | <sampling-record(s)>}; separator="\n">
-        sampling_out \<\< "}}\\n";
-    }
 >>
 
 sampling-draw(s) ::= <<
@@ -392,11 +370,19 @@ sampling-draw(s) ::= <<
 <if(s.shared_member)>    shared.<s.shared_member> = <s.id>_draw[0];<endif>
 >>
 
-sampling-record(s) ::= <<
-        sampling_out \<\< (sampling_first ? "" : ",") \<\< R"("<s.uri>": {"distribution": "<s.distribution_uri>", "values": [)";
-        for (int i = 0; i \< <s.size>; ++i) sampling_out \<\< (i ? "," : "") \<\< <s.id>_draw[i];
-        sampling_out \<\< "]}";
-        sampling_first = false;
+sampling-record(sampling) ::= <<
+    motion_spec::introspection::log::FrameLogRecord _sampling_record;
+    _sampling_record.mutable_sampling()->set_seed(sampling_seed);
+    _sampling_record.mutable_sampling()->set_drawn_at_ns(sampling_drawn_at_ns);
+<sampling:{s | <sampling-record-draw(s)>}; separator="\n">
+>>
+
+sampling-record-draw(s) ::= <<
+    {
+        auto *draw = _sampling_record.mutable_sampling()->add_draws();
+        draw->set_quantity("<s.uri>");
+        for (const double value : <s.id>_draw) draw->add_values(value);
+    }
 >>
 
 // Wired after the backends have assigned their driver pointers, because binding takes the
@@ -422,7 +408,7 @@ world-model-wiring(resources, communication, backend) ::= <<
 // One row per chain joint of the runtime: the addresses its owner already reads and writes, so
 // the world model, the solvers and the backend are readers of one buffer rather than copies.
 chain-port-wiring(solver, backend) ::= <<
-<if(solver.runtime.owner)><solver.chain.joints:{joint |     robot.ports_<solver.runtime.id>[<i0>] = <world-chain-port-address(solver, backend, i0)>;
+<if(solver.runtime.owner)><solver.chain.joints:{joint |     robot.ports_<solver.runtime.id>[<i0>] = <({world-chain-port-address-<backend>})(solver, i0)>;
 }><endif>
 >>
 
@@ -543,8 +529,8 @@ shared_state_header(configuration, resources, computation, coordination, communi
 #include \<kdl/chainfksolvervel_recursive.hpp\>
 #include \<kdl/chainhdsolver_vereshchagin.hpp\>
 #include \<kdl/chainjnttojacsolver.hpp\>
-<if(resources.by_kind.serial_chain)><solver-rnea-include(configuration.backend)><endif>
-<if(resources.by_kind.serial_chain)><robot-driver-include(first(resources.by_kind.serial_chain), configuration.backend, configuration.model_name, resources)><endif>
+<if(resources.by_kind.serial_chain)><solver-rnea-include()><endif>
+<if(resources.by_kind.serial_chain)><({robot-driver-include-<configuration.backend>})(first(resources.by_kind.serial_chain), configuration.model_name, resources)><endif>
 <if(resources.by_kind.mobile_base)>
 <({<mobile-base-driver-include-impl.(configuration.backend)>})()>
 <endif>
@@ -555,9 +541,9 @@ shared_state_header(configuration, resources, computation, coordination, communi
 <endif>
 
 <if(resources.by_kind.serial_chain)>
-<robot-state-struct(first(resources.by_kind.serial_chain), configuration.backend)>
+<({robot-state-struct-<configuration.backend>})(first(resources.by_kind.serial_chain))>
 
-<robot-manipulator-struct(first(resources.by_kind.serial_chain), configuration.backend)>
+<({robot-manipulator-struct-<configuration.backend>})(first(resources.by_kind.serial_chain))>
 
 <chain-solver-members(resources.by_kind.serial_chain, configuration.backend)>
 <endif>
@@ -613,7 +599,7 @@ struct shared_data {
 // retries perception by authoring `fires` on the retry reaction.
 
 fsm-motion-reentry(m, fsm) ::= <<
-<if(m.has_reentry_events)>
+<if(m.reentry_events)>
         if (fsm->currentStateIndex == <fsm.cpp_namespace>::<m.fsm_state>
                 && (<m.reentry_events:{e | consume_event(robot.fsm_events, <fsm.cpp_namespace>::<e>)}; separator=" || ">)) {
 <m.action_clients:{c | <ros-action-cancel(c)>}; separator="\n">

@@ -119,8 +119,9 @@ Runtime recording
 and exports the frame-log path to it. The run is recorded there as a
 ``prov-ext:Execution`` with an OSLC Automation state and, once complete, a verdict;
 what REC has no word for -- the agents that ran it and its command line -- goes to
-``execution.ld.json`` on the same run node. The log starts with a header containing the schema hash,
-followed by one protobuf frame per control tick. On completion, the CLI catalogs
+``execution.ld.json`` on the same run node. The log starts with a header containing the schema hash;
+a model that samples follows it with the seed and every draw (``[sampling] seed`` in the robot
+config fixes the seed, otherwise the OS draws one). One protobuf frame per control tick follows. On completion, the CLI catalogs
 run-owned files, records their provenance in REC, and verifies the archive.
 
 The manifest is deliberately small: its ``files`` map identifies what replay and

@@ -3,19 +3,19 @@
 # SPDX-FileContributor: Vamsi Kalagaturu <vamsikalagaturu@gmail.com>
 """Length-delimited protobuf frame-log helpers.
 
-The wire format is standard protobuf; protoc owns the C++ side. Here the message
-classes are built at runtime from the run's schema (no protoc, no generated _pb2)
-so replay stays a pure-Python, dependency-light reader."""
+frame_log.proto beside this module is the one schema: protoc compiles it to C++ at generation,
+and a log embeds it, so a reader builds its classes from the log alone."""
 
 from __future__ import annotations
 
 import io
+import subprocess
+import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
-from motion_spec.generation.artifacts import build_frame_log_proto_fields
 from motion_spec.introspection.archive import ArchiveError
 
 PROTO_PACKAGE = "motion_spec.introspection.log"
@@ -67,283 +67,71 @@ def open_log(path: Path | str):
 POSE_NAMES = ("px", "py", "pz", "qx", "qy", "qz", "qw")
 TWIST_NAMES = ("lx", "ly", "lz", "ax", "ay", "az")
 WRENCH_NAMES = ("fx", "fy", "fz", "tx", "ty", "tz")
-_SLOT_MESSAGE = {
-    "constraints": "ConstraintSlot",
-    "monitors": "MonitorSlot",
-    "triggers": "Trigger",
-    "poses": "PoseSlot",
-    "twists": "TwistSlot",
-    "wrenches": "WrenchSlot",
-    "devices": "DeviceSlot",
-}
+PROTO = Path(__file__).with_name("frame_log.proto")
+FORMAT_VERSION = 2
+_HEADER_SLOTS = ("quantities", "poses", "twists", "wrenches", "devices")
 _CONSTRAINT_KEYS = ("active", "error", "output", "satisfied", "sat_t", "measured", "setpoint")
 _MONITOR_KEYS = ("active", "value", "satisfied", "sat_t")
 _TRIGGER_KEYS = ("kind", "idx", "fsm_state", "t", "wall_ns")
-# Header-only schema: enough to decode the FrameLogHeader without a model's field map.
-_HEADER_SCHEMA = {
-    "protobuf": {
-        "fields": {
-            cat: []
-            for cat in (
-                "constraints",
-                "monitors",
-                "quantities",
-                "triggers",
-                "poses",
-                "twists",
-                "wrenches",
-                "devices",
-            )
-        }
-    },
-    "pools": {},
-    "quantities": [],
-}
 _CLASS_CACHE: dict = {}
 
 
-def _proto_fields(schema: dict) -> dict:
-    protobuf = schema.get("protobuf")
-    fields = protobuf.get("fields") if protobuf else None
-    return fields if fields is not None else build_frame_log_proto_fields(schema)["fields"]
+def slot(frame, category: str, index: int):
+    """Slot `index` of a frame's category; None where the frame carries none."""
+    items = getattr(frame, category)
+    return items[index] if index < len(items) else None
 
 
-def _build_file_descriptor(fields: dict) -> descriptor_pb2.FileDescriptorProto:
-    """FileDescriptorProto mirroring the generated frame_log.proto, from the schema field map."""
-    D = descriptor_pb2.FieldDescriptorProto
-    fdp = descriptor_pb2.FileDescriptorProto(
-        name="frame_log.proto", package=PROTO_PACKAGE, syntax="proto3"
-    )
+def quantities(frame, size: int) -> list[float]:
+    """Every quantity slot's value; one the frame leaves out is zero."""
+    values = [0.0] * size
+    for index, value in zip(frame.quantity_slots, frame.quantities):
+        values[index] = value
+    return values
 
-    def message(name: str, entries: list) -> None:
-        m = fdp.message_type.add(name=name)
-        for fname, ftype, number in entries:
-            m.field.add(name=fname, number=number, label=D.LABEL_OPTIONAL, type=ftype)
 
-    slot_iri = fdp.message_type.add(name="SlotIri")
-    for fname, ftype, number in (
-        ("number", D.TYPE_UINT32, 1),
-        ("id", D.TYPE_STRING, 2),
-        ("iri", D.TYPE_STRING, 3),
-        ("constraint_iri", D.TYPE_STRING, 4),
-        ("event_iri", D.TYPE_STRING, 5),
-        ("constraint_id", D.TYPE_STRING, 6),
-        ("phase", D.TYPE_STRING, 7),
-        ("error_id", D.TYPE_STRING, 8),
-        ("output_id", D.TYPE_STRING, 9),
-        ("measured_id", D.TYPE_STRING, 10),
-        ("setpoint_id", D.TYPE_STRING, 11),
-        ("tolerance_id", D.TYPE_STRING, 12),
-        ("difference_id", D.TYPE_STRING, 16),
-        ("evaluator_id", D.TYPE_STRING, 17),
-    ):
-        slot_iri.field.add(name=fname, number=number, label=D.LABEL_OPTIONAL, type=ftype)
-    slot_iri.field.add(
-        name="constraint_iris", number=13, label=D.LABEL_REPEATED, type=D.TYPE_STRING
-    )
-    slot_iri.field.add(name="operand_ids", number=15, label=D.LABEL_REPEATED, type=D.TYPE_STRING)
-    slot_iri.field.add(
-        name="watched",
-        number=18,
-        label=D.LABEL_REPEATED,
-        type=D.TYPE_MESSAGE,
-        type_name=f".{PROTO_PACKAGE}.WatchedConstraint",
-    )
-    slot_iri.field.add(
-        name="gains",
-        number=14,
-        label=D.LABEL_REPEATED,
-        type=D.TYPE_MESSAGE,
-        type_name=f".{PROTO_PACKAGE}.SlotGain",
-    )
-    message("SlotGain", [("role", D.TYPE_STRING, 1), ("value", D.TYPE_DOUBLE, 2)])
-    transition = fdp.message_type.add(name="Transition")
-    for fname, ftype, number in (
-        ("index", D.TYPE_UINT32, 1),
-        ("id", D.TYPE_STRING, 2),
-        ("iri", D.TYPE_STRING, 3),
-        ("from_state", D.TYPE_INT32, 4),
-        ("to_state", D.TYPE_INT32, 5),
-        ("event_index", D.TYPE_INT32, 6),
-    ):
-        transition.field.add(name=fname, number=number, label=D.LABEL_OPTIONAL, type=ftype)
-    transition.field.add(name="event_indices", number=7, label=D.LABEL_REPEATED, type=D.TYPE_UINT32)
-    watched = fdp.message_type.add(name="WatchedConstraint")
-    for fname, number in (("id", 1), ("iri", 2), ("error_id", 3), ("tolerance_id", 4)):
-        watched.field.add(name=fname, number=number, label=D.LABEL_OPTIONAL, type=D.TYPE_STRING)
-    constant = fdp.message_type.add(name="Constant")
-    for fname, ftype, number in (
-        ("id", D.TYPE_STRING, 1),
-        ("source_id", D.TYPE_STRING, 2),
-        ("value", D.TYPE_DOUBLE, 3),
-        ("uri", D.TYPE_STRING, 4),
-    ):
-        constant.field.add(name=fname, number=number, label=D.LABEL_OPTIONAL, type=ftype)
-    constant.field.add(
-        name="consumers",
-        number=5,
-        label=D.LABEL_REPEATED,
-        type=D.TYPE_MESSAGE,
-        type_name=f".{PROTO_PACKAGE}.ConstantConsumer",
-    )
-    message(
-        "ConstantConsumer",
-        [("id", D.TYPE_STRING, 1), ("kind", D.TYPE_STRING, 2), ("role", D.TYPE_STRING, 3)],
-    )
-
-    gate = fdp.message_type.add(name="MotionGate")
-    for fname, ftype, number in (
-        ("index", D.TYPE_UINT32, 1),
-        ("id", D.TYPE_STRING, 2),
-        ("iri", D.TYPE_STRING, 3),
-        ("fsm_state", D.TYPE_INT32, 4),
-    ):
-        gate.field.add(name=fname, number=number, label=D.LABEL_OPTIONAL, type=ftype)
-    for fname, number in (("quantities", 5), ("poses", 6), ("twists", 7), ("wrenches", 8)):
-        gate.field.add(name=fname, number=number, label=D.LABEL_REPEATED, type=D.TYPE_UINT32)
-    for fname, number in (("controllers", 9), ("monitors", 10)):
-        gate.field.add(
-            name=fname,
-            number=number,
-            label=D.LABEL_REPEATED,
-            type=D.TYPE_MESSAGE,
-            type_name=f".{PROTO_PACKAGE}.SlotIri",
+def run_protoc(*arguments: str) -> None:
+    """Run protoc over the shipped frame_log.proto."""
+    try:
+        subprocess.run(
+            ["protoc", f"--proto_path={PROTO.parent}", *arguments, PROTO.name],
+            check=True,
+            capture_output=True,
+            text=True,
         )
-
-    hdr = fdp.message_type.add(name="FrameLogHeader")
-    for fname, ftype, number in (
-        ("schema_hash", D.TYPE_STRING, 1),
-        ("descriptor_set", D.TYPE_BYTES, 4),
-        ("trigger_pool", D.TYPE_UINT32, 7),
-        ("platform_name", D.TYPE_STRING, 13),
-        ("simulated", D.TYPE_BOOL, 14),
-        ("end_state", D.TYPE_INT32, 15),
-        ("nominal_period_ns", D.TYPE_INT64, 16),
-        ("fsm_namespace", D.TYPE_STRING, 17),
-    ):
-        hdr.field.add(name=fname, number=number, label=D.LABEL_OPTIONAL, type=ftype)
-    for fname, number, type_name in (
-        ("slots", 5, "SlotIri"),
-        ("motions", 6, "MotionGate"),
-        ("fsm_states", 8, "SlotIri"),
-        ("fsm_events", 9, "SlotIri"),
-        ("fsm_transitions", 10, "Transition"),
-        ("constants", 11, "Constant"),
-    ):
-        hdr.field.add(
-            name=fname,
-            number=number,
-            label=D.LABEL_REPEATED,
-            type=D.TYPE_MESSAGE,
-            type_name=f".{PROTO_PACKAGE}.{type_name}",
-        )
-    message(
-        "ConstraintSlot",
-        [
-            ("active", D.TYPE_SFIXED64, 1),
-            ("error", D.TYPE_DOUBLE, 2),
-            ("output", D.TYPE_DOUBLE, 3),
-            ("satisfied", D.TYPE_SFIXED64, 4),
-            ("sat_t", D.TYPE_DOUBLE, 5),
-            ("measured", D.TYPE_DOUBLE, 6),
-            ("setpoint", D.TYPE_DOUBLE, 7),
-        ],
-    )
-    message(
-        "MonitorSlot",
-        [
-            ("active", D.TYPE_SFIXED64, 1),
-            ("value", D.TYPE_DOUBLE, 2),
-            ("satisfied", D.TYPE_SFIXED64, 3),
-            ("sat_t", D.TYPE_DOUBLE, 4),
-        ],
-    )
-    message(
-        "Trigger",
-        [
-            ("kind", D.TYPE_SFIXED64, 1),
-            ("idx", D.TYPE_SFIXED64, 2),
-            ("fsm_state", D.TYPE_SFIXED64, 3),
-            ("t", D.TYPE_DOUBLE, 4),
-            ("wall_ns", D.TYPE_SFIXED64, 5),
-        ],
-    )
-    message("PoseSlot", [(n, D.TYPE_DOUBLE, i) for i, n in enumerate(POSE_NAMES, 1)])
-    message("TwistSlot", [(n, D.TYPE_DOUBLE, i) for i, n in enumerate(TWIST_NAMES, 1)])
-    message("WrenchSlot", [(n, D.TYPE_DOUBLE, i) for i, n in enumerate(WRENCH_NAMES, 1)])
-    message("DeviceSlot", [("seq", D.TYPE_UINT64, 1), ("success", D.TYPE_BOOL, 2)])
-
-    rf = fdp.message_type.add(name="RuntimeFrame")
-    core = [
-        ("t", D.TYPE_DOUBLE, 1),
-        ("step", D.TYPE_UINT64, 2),
-        ("fsm_state", D.TYPE_SFIXED64, 3),
-        ("active_motion", D.TYPE_SFIXED64, 4),
-        ("last_event", D.TYPE_SFIXED64, 5),
-        ("state_since_t", D.TYPE_DOUBLE, 6),
-        ("state_since_wall_ns", D.TYPE_SFIXED64, 7),
-        ("event_t", D.TYPE_DOUBLE, 8),
-        ("event_wall_ns", D.TYPE_SFIXED64, 9),
-        ("wall_ns", D.TYPE_SFIXED64, 10),
-        ("period_ns", D.TYPE_SFIXED64, 11),
-        ("compute_ns", D.TYPE_SFIXED64, 12),
-        ("trigger_count", D.TYPE_SFIXED64, 17),
-    ]
-    for fname, ftype, number in core:
-        rf.field.add(name=fname, number=number, label=D.LABEL_OPTIONAL, type=ftype)
-    for category, entries in fields.items():
-        for entry in entries:
-            if category == "quantities":
-                rf.field.add(
-                    name=entry["name"],
-                    number=entry["number"],
-                    label=D.LABEL_OPTIONAL,
-                    type=D.TYPE_BOOL if entry.get("proto_type") == "bool" else D.TYPE_DOUBLE,
-                )
-            else:
-                rf.field.add(
-                    name=entry["name"],
-                    number=entry["number"],
-                    label=D.LABEL_OPTIONAL,
-                    type=D.TYPE_MESSAGE,
-                    type_name=f".{PROTO_PACKAGE}.{_SLOT_MESSAGE[category]}",
-                )
-
-    rec = fdp.message_type.add(name="FrameLogRecord")
-    rec.oneof_decl.add(name="record")
-    rec.field.add(
-        name="header",
-        number=1,
-        label=D.LABEL_OPTIONAL,
-        type=D.TYPE_MESSAGE,
-        type_name=f".{PROTO_PACKAGE}.FrameLogHeader",
-        oneof_index=0,
-    )
-    rec.field.add(
-        name="frame",
-        number=2,
-        label=D.LABEL_OPTIONAL,
-        type=D.TYPE_MESSAGE,
-        type_name=f".{PROTO_PACKAGE}.RuntimeFrame",
-        oneof_index=0,
-    )
-    return fdp
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "protoc was not found. Install the protobuf compiler (apt: protobuf-compiler) "
+            "to generate the frame-log codec."
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(exc.stderr.strip() or exc.stdout.strip()) from exc
 
 
-def _record_class(schema: dict):
-    """(FrameLogRecord class, field map) for a schema, built once per schema and cached."""
-    key = schema.get("schema_hash") or id(schema)
-    cached = _CLASS_CACHE.get(key)
-    if cached is not None:
-        return cached
-    fields = _proto_fields(schema)
+def descriptor_set() -> bytes:
+    """frame_log.proto compiled by protoc to a FileDescriptorSet, built once."""
+    if "descriptor_set" not in _CLASS_CACHE:
+        with tempfile.TemporaryDirectory() as scratch:
+            out = Path(scratch) / "frame_log.desc"
+            run_protoc(f"--descriptor_set_out={out}")
+            _CLASS_CACHE["descriptor_set"] = out.read_bytes()
+    return _CLASS_CACHE["descriptor_set"]
+
+
+def _record_class_of(serialized_set: bytes):
     pool = descriptor_pool.DescriptorPool()
-    pool.Add(_build_file_descriptor(fields))
-    record_cls = message_factory.GetMessageClass(
+    for file_proto in descriptor_pb2.FileDescriptorSet.FromString(serialized_set).file:
+        pool.Add(file_proto)
+    return message_factory.GetMessageClass(
         pool.FindMessageTypeByName(f"{PROTO_PACKAGE}.FrameLogRecord")
     )
-    _CLASS_CACHE[key] = (record_cls, fields)
-    return _CLASS_CACHE[key]
+
+
+def record_class():
+    """The FrameLogRecord class of the shipped frame_log.proto, built once."""
+    if "record" not in _CLASS_CACHE:
+        _CLASS_CACHE["record"] = _record_class_of(descriptor_set())
+    return _CLASS_CACHE["record"]
 
 
 # --- length-delimited framing (a varint size prefix per protobuf record) ---
@@ -359,6 +147,38 @@ def _varint(value: int) -> bytes:
 def write_delimited(fh, message: bytes) -> None:
     fh.write(_varint(len(message)))
     fh.write(message)
+
+
+def _varint_at(data: bytes, offset: int) -> tuple[int, int]:
+    value = shift = 0
+    while True:
+        if offset >= len(data) or shift > 63:
+            raise ArchiveError("frame log record is not protobuf")
+        byte = data[offset]
+        value |= (byte & 0x7F) << shift
+        offset, shift = offset + 1, shift + 7
+        if not byte & 0x80:
+            return value, offset
+
+
+def _length_delimited(data: bytes, number: int) -> bytes | None:
+    """Field `number` of a serialized message, read off the wire without its schema."""
+    offset = 0
+    while offset < len(data):
+        key, offset = _varint_at(data, offset)
+        wire = key & 7
+        if wire == 2:
+            size, offset = _varint_at(data, offset)
+            if key >> 3 == number:
+                return data[offset : offset + size]
+            offset += size
+        elif wire == 0:
+            _, offset = _varint_at(data, offset)
+        elif wire in (1, 5):
+            offset += 8 if wire == 1 else 4
+        else:
+            raise ArchiveError("frame log record is not protobuf")
+    return None
 
 
 def _read_delimited_at(fh, offset: int) -> tuple[bytes | None, int]:
@@ -418,8 +238,8 @@ def tail_is_partial(path: Path | str) -> bool:
 
 # --- encode (fixtures/tests) ---
 def frame_record(flat: dict, schema: dict) -> bytes:
-    record_cls, fields = _record_class(schema)
-    rec = record_cls()
+    pools = schema["pools"]
+    rec = record_class()()
     m = rec.frame
     m.SetInParent()
     m.t = flat["t"]
@@ -435,86 +255,44 @@ def frame_record(flat: dict, schema: dict) -> bytes:
     m.period_ns = flat["period_ns"]
     m.compute_ns = flat["compute_ns"]
     m.trigger_count = flat["trigger_count"]
-    for e in fields["constraints"]:
-        s, i = getattr(m, e["name"]), e["index"]
-        s.active, s.error, s.output = (
-            flat[f"c{i}.active"],
-            flat[f"c{i}.error"],
-            flat[f"c{i}.output"],
-        )
-        s.satisfied, s.sat_t, s.measured, s.setpoint = (
-            flat[f"c{i}.satisfied"],
-            flat[f"c{i}.sat_t"],
-            flat[f"c{i}.measured"],
-            flat[f"c{i}.setpoint"],
-        )
-    for e in fields["monitors"]:
-        s, i = getattr(m, e["name"]), e["index"]
-        s.active, s.value, s.satisfied, s.sat_t = (
-            flat[f"m{i}.active"],
-            flat[f"m{i}.value"],
-            flat[f"m{i}.satisfied"],
-            flat[f"m{i}.sat_t"],
-        )
-    for e in fields["quantities"]:
-        value = flat[f"q{e['index']}"]
-        setattr(m, e["name"], value != 0 if e.get("proto_type") == "bool" else value)
-    for e in fields.get("devices", []):
-        s, i = getattr(m, e["name"]), e["index"]
+    for i in range(pools["constraints"]):
+        if flat[f"c{i}.active"]:
+            s = m.constraints.add()
+            for key in _CONSTRAINT_KEYS[1:]:
+                setattr(s, key, flat[f"c{i}.{key}"])
+    for i in range(pools["monitors"]):
+        if flat[f"m{i}.active"]:
+            s = m.monitors.add()
+            for key in _MONITOR_KEYS[1:]:
+                setattr(s, key, flat[f"m{i}.{key}"])
+    for i in range(pools["quantities"]):
+        if flat[f"q{i}"]:
+            m.quantity_slots.append(i)
+            m.quantities.append(flat[f"q{i}"])
+    for i in range(pools.get("devices", 0)):
+        s = m.devices.add()
         s.seq = flat.get(f"device{i}.seq", 0)
         s.success = bool(flat.get(f"device{i}.success", 0))
-    for e in fields["triggers"]:
-        s, i = getattr(m, e["name"]), e["index"]
-        s.kind, s.idx, s.fsm_state, s.t, s.wall_ns = (
-            flat[f"tr{i}.kind"],
-            flat[f"tr{i}.idx"],
-            flat[f"tr{i}.fsm_state"],
-            flat[f"tr{i}.t"],
-            flat[f"tr{i}.wall_ns"],
-        )
+    for i in range(min(flat["trigger_count"], pools["triggers"])):
+        s = m.triggers.add()
+        for key in _TRIGGER_KEYS:
+            setattr(s, key, flat[f"tr{i}.{key}"])
     for prefix, names, category in (
         ("pose", POSE_NAMES, "poses"),
         ("twist", TWIST_NAMES, "twists"),
         ("wrench", WRENCH_NAMES, "wrenches"),
     ):
-        for e in fields[category]:
-            s, i = getattr(m, e["name"]), e["index"]
+        for i in range(pools.get(category, 0)):
+            s = getattr(m, category).add()
+            if not flat.get(f"{prefix}{i}.active", 1):
+                continue
             for name in names:
                 setattr(s, name, flat[f"{prefix}{i}.{name}"])
     return rec.SerializeToString()
 
 
 # --- decode ---
-# Core RuntimeFrame fields carry the tick itself, not a slot; everything else is a slot whose
-# category follows from its wire type, so the descriptor alone says what the frame contains.
-_CORE_FIELDS = frozenset(
-    (
-        "t",
-        "step",
-        "fsm_state",
-        "active_motion",
-        "last_event",
-        "state_since_t",
-        "state_since_wall_ns",
-        "event_t",
-        "event_wall_ns",
-        "wall_ns",
-        "period_ns",
-        "compute_ns",
-        "trigger_count",
-    )
-)
-_CATEGORY_BY_MESSAGE = {
-    "ConstraintSlot": "constraints",
-    "MonitorSlot": "monitors",
-    "Trigger": "triggers",
-    "PoseSlot": "poses",
-    "TwistSlot": "twists",
-    "WrenchSlot": "wrenches",
-    "DeviceSlot": "devices",
-}
 _SPATIAL = (("poses", POSE_NAMES), ("twists", TWIST_NAMES), ("wrenches", WRENCH_NAMES))
-_BOOTSTRAP_FIELDS = {category: [] for category in (*_SLOT_MESSAGE, "quantities")}
 
 
 class LogContract:
@@ -550,29 +328,22 @@ class LogContract:
         }
 
 
-def _fields_from_descriptor(frame_descriptor, header) -> dict:
-    """Per-category slot list, derived from the embedded descriptor and the header's slot table."""
-    slot_by_number = {slot.number: slot for slot in header.slots}
-    fields: dict[str, list] = {category: [] for category in (*_SLOT_MESSAGE, "quantities")}
-    for field in sorted(frame_descriptor.fields, key=lambda f: f.number):
-        if field.name in _CORE_FIELDS:
-            continue
-        category = (
-            _CATEGORY_BY_MESSAGE[field.message_type.name]
-            if field.message_type is not None
-            else "quantities"
-        )
-        slot = slot_by_number.get(field.number)
-        fields[category].append(
-            {
-                "index": len(fields[category]),
-                "id": slot.id if slot is not None else field.name,
-                "iri": slot.iri if slot is not None else "",
-                "name": field.name,
-                "number": field.number,
-                "proto_type": "bool" if field.type == field.TYPE_BOOL else "double",
-            }
-        )
+def _fields_from_header(header) -> dict:
+    """Per-category slot list: pooled slots by index, model slots as the header names them."""
+    pools = {
+        "constraints": max((len(motion.controllers) for motion in header.motions), default=0),
+        "monitors": max((len(motion.monitors) for motion in header.motions), default=0),
+        "triggers": header.trigger_pool,
+    }
+    fields = {
+        category: [{"index": i, "id": f"{category[:-1]}_{i}", "iri": ""} for i in range(size)]
+        for category, size in pools.items()
+    }
+    for category in _HEADER_SLOTS:
+        fields[category] = [
+            {"index": slot.number, "id": slot.id, "iri": slot.iri}
+            for slot in getattr(header, category)
+        ]
     return fields
 
 
@@ -598,43 +369,24 @@ def _slot_gate(header, fields: dict) -> dict:
     return gate
 
 
-def _bootstrap_class():
-    """FrameLogRecord class carrying only the header messages, to read record 1 of any log."""
-    cached = _CLASS_CACHE.get("__bootstrap__")
-    if cached is None:
-        pool = descriptor_pool.DescriptorPool()
-        pool.Add(_build_file_descriptor(_BOOTSTRAP_FIELDS))
-        cached = _CLASS_CACHE["__bootstrap__"] = message_factory.GetMessageClass(
-            pool.FindMessageTypeByName(f"{PROTO_PACKAGE}.FrameLogRecord")
-        )
-    return cached
-
-
 def read_contract(path: Path | str) -> LogContract:
     """Read a log's header record and build its decode contract from that alone."""
     with open_log(path) as fh:
         data = _read_delimited(fh)
     if data is None:
         raise ArchiveError(f"{path}: empty frame log")
-    record = _bootstrap_class()()
-    record.ParseFromString(data)
-    if record.WhichOneof("record") != "header":
-        raise ArchiveError(f"{path}: first record is not a frame-log header")
-    header = record.header
-    if not header.descriptor_set:
+    header = _length_delimited(data, 1)
+    embedded = _length_delimited(header, 4) if header is not None else None
+    if not embedded:
+        raise ArchiveError(f"{path}: first record is not a frame-log header carrying its schema")
+    record_cls = _record_class_of(embedded)
+    record = record_cls.FromString(data)
+    version = getattr(record.header, "format_version", 0)
+    if version != FORMAT_VERSION:
         raise ArchiveError(
-            f"{path}: header carries no descriptor set -- written by a pre-v3 runtime"
+            f"{path}: frame-log format {version}; this motion-spec reads format {FORMAT_VERSION}"
         )
-    descriptor_set = descriptor_pb2.FileDescriptorSet()
-    descriptor_set.ParseFromString(header.descriptor_set)
-    pool = descriptor_pool.DescriptorPool()
-    for file_proto in descriptor_set.file:
-        pool.Add(file_proto)
-    record_cls = message_factory.GetMessageClass(
-        pool.FindMessageTypeByName(f"{PROTO_PACKAGE}.FrameLogRecord")
-    )
-    frame_descriptor = pool.FindMessageTypeByName(f"{PROTO_PACKAGE}.RuntimeFrame")
-    return LogContract(header, record_cls, _fields_from_descriptor(frame_descriptor, header))
+    return LogContract(record.header, record_cls, _fields_from_header(record.header))
 
 
 def _parse_frame(msg, contract: LogContract) -> dict:
@@ -656,45 +408,34 @@ def _parse_frame(msg, contract: LogContract) -> dict:
         },
     }
     # `active` is derived, not carried: the header already says how many constraint and monitor
-    # slots the active motion drives, so writing a constant 1 per slot per tick would only
-    # restate it. Slots beyond that count belong to some other motion and were not written.
+    # slots the active motion drives. Slots beyond that count belong to some other motion.
     counts = contract.counts.get(msg.active_motion, {})
-    record["constraints"] = [
-        {
-            **{k: getattr(getattr(msg, e["name"]), k) for k in _CONSTRAINT_KEYS},
-            "active": 1 if e["index"] < counts.get("controllers", 0) else 0,
-        }
-        for e in fields["constraints"]
-    ]
-    record["monitors"] = [
-        {
-            **{k: getattr(getattr(msg, e["name"]), k) for k in _MONITOR_KEYS},
-            "active": 1 if e["index"] < counts.get("monitors", 0) else 0,
-        }
-        for e in fields["monitors"]
-    ]
-    # Flags come back as bool; keep the decoded record numeric so readers see one value type.
-    quantities = [float(getattr(msg, e["name"])) for e in fields["quantities"]]
-    triggers = [
-        {k: getattr(getattr(msg, e["name"]), k) for k in _TRIGGER_KEYS} for e in fields["triggers"]
-    ]
+
+    def slots(category: str, keys: tuple, count: int) -> list:
+        return [
+            {
+                "active": 1 if i < count else 0,
+                **{k: getattr(s, k) if (s := slot(msg, category, i)) else 0 for k in keys[1:]},
+            }
+            for i in range(len(fields[category]))
+        ]
+
+    record["constraints"] = slots("constraints", _CONSTRAINT_KEYS, counts.get("controllers", 0))
+    record["monitors"] = slots("monitors", _MONITOR_KEYS, counts.get("monitors", 0))
     qids = contract.quantity_ids
+    values = quantities(msg, len(qids))
+    triggers = [{k: getattr(entry, k) for k in _TRIGGER_KEYS} for entry in msg.triggers]
 
     def written(category: str, index: int) -> bool:
         by_index = contract.gate.get(category)
         return by_index is None or index in by_index.get(msg.active_motion, ())
 
     record["quantities"] = {
-        qids[idx]: quantities[idx]
-        for idx in range(min(len(qids), len(quantities)))
-        if written("quantities", idx)
+        qid: values[idx] for idx, qid in enumerate(qids) if written("quantities", idx)
     }
     record["devices"] = {
-        entry["id"]: {
-            "seq": getattr(msg, entry["name"]).seq,
-            "success": bool(getattr(msg, entry["name"]).success),
-        }
-        for entry in fields.get("devices", [])
+        entry["id"]: {"seq": device.seq, "success": bool(device.success)}
+        for entry, device in zip(fields["devices"], msg.devices)
     }
     trigger_count = msg.trigger_count
     pool_size = contract.trigger_pool
@@ -708,50 +449,55 @@ def _parse_frame(msg, contract: LogContract) -> dict:
     # the list stays positional so a slot keeps one index for the whole run.
     for category, names in _SPATIAL:
         record[category] = [
-            {n: getattr(getattr(msg, e["name"]), n) for n in names}
-            if written(category, e["index"])
+            {n: getattr(s, n) for n in names}
+            if written(category, e["index"]) and (s := slot(msg, category, e["index"]))
             else None
             for e in fields[category]
         ]
     return record
 
 
-def iter_messages(
-    path: Path | str, contract: LogContract | None = None
-) -> Iterator[tuple[str, object]]:
-    """Yield ('header', dict) then ('frame', decoded) for every whole record in a log.
+def raw_frames(fh, contract: LogContract, offset: int = 0) -> Iterator[tuple[object, int]]:
+    """Each whole RuntimeFrame from OFFSET on, undecoded, with the offset just past it.
 
-    A log left truncated by a crashed run ends here at its last complete record instead of
-    raising: the frames leading up to the crash are the ones worth reading.
+    A record still being written ends the walk, so a crashed run's log reads up to its last
+    complete frame and a growing one resumes from the last offset yielded.
     """
-    if contract is None:
-        contract = read_contract(path)
+    while True:
+        data, offset = _read_delimited_at(fh, offset)
+        if data is None:
+            return
+        record = contract.record_cls.FromString(data)
+        if record.WhichOneof("record") == "frame":
+            yield record.frame, offset
+
+
+def read_sampling(path: Path | str) -> dict | None:
+    """The run's draw, written right after the header; None for a run that sampled nothing."""
+    contract = read_contract(path)
     with open_log(path) as fh:
-        while True:
-            data = _read_delimited(fh, partial_ok=True)
-            if data is None:
-                return
-            rec = contract.record_cls()
-            rec.ParseFromString(data)
-            which = rec.WhichOneof("record")
-            if which == "header":
-                yield "header", {"schema_hash": rec.header.schema_hash}
-            elif which == "frame":
-                yield "frame", _parse_frame(rec.frame, contract)
-
-
-def read_header(path: Path | str) -> dict:
-    """The log's identity record: the schema hash it was written against."""
-    return {"schema_hash": read_contract(path).header.schema_hash}
+        _read_delimited(fh)
+        data = _read_delimited(fh, partial_ok=True)
+    if data is None:
+        return None
+    record = contract.record_cls()
+    record.ParseFromString(data)
+    if record.WhichOneof("record") != "sampling":
+        return None
+    return {
+        "seed": record.sampling.seed,
+        "drawn_at_ns": record.sampling.drawn_at_ns,
+        "draws": {draw.quantity: list(draw.values) for draw in record.sampling.draws},
+    }
 
 
 def frame_records(path: Path | str, contract: LogContract | None = None) -> Iterator[dict]:
     """Decoded frames, in order. Needs no companion file -- the log describes itself."""
     if contract is None:
         contract = read_contract(path)
-    for kind, value in iter_messages(path, contract):
-        if kind == "frame":
-            yield value
+    with open_log(path) as fh:
+        for frame, _ in raw_frames(fh, contract):
+            yield _parse_frame(frame, contract)
 
 
 def stream_records(
@@ -771,17 +517,10 @@ def stream_records(
     """
     records = []
     state = event = None
-    while True:
-        data, next_offset = _read_delimited_at(fh, offset)
-        if data is None:
-            return records, offset
-        offset = next_offset
-        record = contract.record_cls()
-        record.ParseFromString(data)
-        if record.WhichOneof("record") != "frame":
-            continue
-        frame = record.frame
+    resume = offset
+    for frame, resume in raw_frames(fh, contract, offset):
         moved = frame.fsm_state != state or frame.last_event != event
         state, event = frame.fsm_state, frame.last_event
         if moved or frame.step % stride == 0:
             records.append(_parse_frame(frame, contract))
+    return records, resume

@@ -179,8 +179,6 @@ class MotionUnit:
     # ahead of while_schedule, so these must run before it, not with the controllers.
     while_pre_schedule: list[str] = field(default_factory=list)
     has_elapsed: bool = field(default=False, metadata=INTERNAL)
-    has_when_elapsed: bool = False
-    has_active_elapsed: bool = False
     # The elapsed-duration coordinates this motion measures, per phase: the authored shared
     # value each timing constraint compares against, filled from the phase's start time.
     active_elapsed_ids: list[str] = field(default_factory=list)
@@ -204,10 +202,8 @@ class MotionUnit:
     apply_needs_state: bool = False
     apply_needs_shared: bool = False
     apply_needs_robot: bool = False
-    # The disturbances this motion's state arms, and whether it arms any (an empty list is
-    # truthy in the ST4 build, so the flag is what the templates read).
+    # The disturbances this motion's state arms.
     perturbations: list = field(default_factory=list)
-    has_perturbations: bool = False
     # Whether the function records into the coordination event buffer (holds an edge monitor).
     when_needs_events: bool = False
     until_needs_events: bool = False
@@ -236,8 +232,6 @@ class MotionUnit:
     # The same captures cut by when they are taken: ST4 cannot filter, and each scope is
     # guarded differently -- per activation, once for the run, or on an event.
     entry_snapshots: list[SnapshotCapture] = field(default_factory=list)
-    # Stated, not inferred from the list: ST4 reads an empty list as present.
-    has_entry_snapshots: bool = False
     task_snapshots: list[SnapshotCapture] = field(default_factory=list)
 
     # Relative-from-start pose computations (e.g. pose_start_ee)
@@ -249,14 +243,11 @@ class MotionUnit:
     # Direct robot command forwarding driven by FeedForward controllers.
     forwarded_commands: list[ForwardedCommandStep] = field(default_factory=list)
 
-    # The action goals this motion sends on entry and cancels on exit. The presence flag gates
-    # the exit block: JSON empty lists are truthy in the ST4 build.
+    # The action goals this motion sends on entry and cancels on exit.
     action_clients: list = field(default_factory=list)
-    has_action_clients: bool = False
     # Events fired by self-transitions on this motion's state: consuming one re-enters the
     # motion, so entry runs again (snapshots re-capture, goals re-send).
     reentry_events: list = field(default_factory=list)
-    has_reentry_events: bool = False
 
     # This motion's introspection index: the single index space the frame log's active_motion,
     # the generated sample switch and schema["by_motion"] all share.

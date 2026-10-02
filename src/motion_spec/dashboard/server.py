@@ -4,9 +4,9 @@
 
 from __future__ import annotations
 
-import argparse
 import atexit
 import json
+import os
 import re
 import signal
 import socket
@@ -19,7 +19,6 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from motion_spec.dashboard import roots, ros_camera
-from motion_spec.dashboard.analysis import run_reports
 from motion_spec.dashboard.catalog import (
     drift_summary,
     generation_details,
@@ -69,7 +68,6 @@ from motion_spec.dashboard.queries import (
 from motion_spec.dashboard.replay import plot_data, replay_data, run_verdict
 from motion_spec.dashboard.roots import (
     FRONTEND,
-    GENERATION_DIR_ENV,
     LAYOUT_REL,
     current_roots,
     directory_size,
@@ -136,7 +134,6 @@ LAN_GET_ALLOWED = frozenset(
         "/api/ros-camera",
         "/api/replay",
         "/api/plot",
-        "/api/reports",
         "/api/roots",
         "/api/sources",
         "/api/source",
@@ -375,9 +372,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return self.stream_ros_camera(query.get("topic", [""])[0])
             if parsed.path == "/api/replay":
                 return self.send_json(replay_data(expected_path(roots.GENERATIONS, value)))
-            if parsed.path == "/api/reports":
-                # All three off one sweep: three passes over a 160 MB log is what would cost.
-                return self.send_json(run_reports(relative_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/plot":
                 bounds = query.get("window", [])
                 return self.send_json(
@@ -609,6 +603,9 @@ def serve(
     if sources is not None:
         roots.WORKSPACE = Path(sources).expanduser().resolve()
     LIFECYCLE = LifecycleListener()
+    own = roots.pidfile(port)
+    own.write_text(f"{os.getpid()}\n")
+    atexit.register(own.unlink, missing_ok=True)
     atexit.register(stop_jupyter)
     for name in (signal.SIGTERM, signal.SIGINT):
         signal.signal(name, lambda *_: sys.exit(0))
@@ -625,26 +622,3 @@ def serve(
     server.serve_forever()
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument(
-        "--logs", type=Path, help=f"generation root (default ${GENERATION_DIR_ENV})"
-    )
-    parser.add_argument(
-        "--sources", type=Path, help="model sources root (default: the logs root's parent)"
-    )
-    parser.add_argument(
-        "--lan",
-        action="store_true",
-        help="reachable from the network: replay and simulated runs only, no delete or source access",
-    )
-    parser.add_argument("--env", help="environment file to report health under")
-    args = parser.parse_args()
-    if args.env:
-        use_environment(args.env)
-    serve(args.port, args.logs, args.sources, args.lan)
-
-
-if __name__ == "__main__":
-    main()

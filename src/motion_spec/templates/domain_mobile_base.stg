@@ -226,3 +226,54 @@ base-runtime-step-impl ::= [
 base-runtime-step-mj_kdl() ::= <<
         if (!mj_kdl::step(&mj_env)) break;
 >>
+
+mobile-base-runtime-includes() ::= <<
+#include \<hddc2b/functions/platform.h\>
+#include \<hddc2b/functions/solver.h\>
+#include \<hddc2b/functions/drive.h\>
+#include \<hddc2b/functions/wheel.h\>
+>>
+
+mobile-base-runtime(mobile_base) ::= <<
+// How many castors the platform has is the scene tree's statement, not a constant of the base.
+inline constexpr int NUM_DRIVES = <mobile_base.num_drives>;
+inline constexpr int NUM_SLAVES = NUM_DRIVES;
+inline constexpr int NUM_WHL_COORD = 2;
+inline constexpr int NUM_GND_COORD = 2;
+inline constexpr int NUM_DRV_COORD = 2;
+inline constexpr int NUM_PLTF_COORD = 3;
+inline constexpr int NUM_G_COORD = NUM_DRV_COORD * NUM_PLTF_COORD;
+inline constexpr double EPS = 0.001;
+
+inline void hddc2b_pltf_vel_drv_to_pltf(
+        int num_drv,
+        double eps,
+        const double *g,
+        const double *w_drv_sqrt,
+        const double *xd_drv,
+        const double *w_pltf_inv_sqrt,
+        double *xd_pltf)
+{
+    assert(num_drv >= 0);
+
+    double g2[num_drv * NUM_G_COORD];
+    double xd_drv2[num_drv * NUM_DRV_COORD];
+    hddc2b_pltf_vel_sing_wgh(num_drv, g, xd_drv, w_drv_sqrt, g2, xd_drv2);
+
+    double g3[num_drv * NUM_G_COORD];
+    hddc2b_pltf_vel_redu_wgh_init(num_drv, g2, w_pltf_inv_sqrt, g3);
+
+    double u[NUM_PLTF_COORD * NUM_PLTF_COORD];
+    double s[NUM_PLTF_COORD];
+    double vt[num_drv * NUM_G_COORD];
+    hddc2b_pltf_dcmp(num_drv, g3, u, s, vt);
+
+    double s_inv[NUM_PLTF_COORD];
+    hddc2b_pltf_pinv(num_drv, eps, s, s_inv);
+
+    double xd_pltf2[NUM_PLTF_COORD];
+    hddc2b_pltf_vel_slv(num_drv, u, s_inv, vt, xd_drv2, xd_pltf2);
+
+    hddc2b_pltf_vel_redu_wgh_fini(num_drv, xd_pltf2, w_pltf_inv_sqrt, xd_pltf);
+}
+>>

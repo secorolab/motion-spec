@@ -142,7 +142,6 @@ class DeviceBinding:
     config_key: str
     drives: str = ""
     required_by_motion: list[int] = field(default_factory=list)
-    has_required_motions: bool = False
     health_index: int | None = None
     # kc-ext:JointCoupling mimic joints this device reports instead of the chain (was the
     # solver's own flat `gripper_joint_outputs`).

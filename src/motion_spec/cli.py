@@ -4,6 +4,7 @@
 
 """Unified Click command-line interface for motion-spec."""
 
+import contextlib
 import json
 import logging
 import os
@@ -29,13 +30,11 @@ from motion_spec.utils import (
     STAMP_COLOUR,
     command_log,
     generation_log,
-    human_bytes,
     log_header,
     machine_facts,
     mirrored_stderr,
     paint,
     show_warning,
-    tree_size,
 )
 
 
@@ -46,60 +45,6 @@ class _Reported(click.ClickException):
         for line in str(self.message).splitlines():
             _stamp("error")
             click.echo(line, err=True)
-
-
-def _clean_offer(name: str, root: Path, prefix: Path) -> list[tuple[str, int]]:
-    """What removing one package would take, as the lines the prompt shows before asking."""
-    from motion_spec.setup import build_directory, install_marker, installed_files
-
-    entries = []
-    build = build_directory(root, name)
-    if build.is_dir():
-        entries.append((_under(build, root), tree_size(build)))
-    if name == "stst":
-        launcher = prefix / "bin" / "stst"
-        if launcher.is_file():
-            entries.append((_under(launcher, root), tree_size(launcher)))
-    elif files := installed_files(name, root, prefix):
-        entries.append(
-            (
-                (
-                    f"{len(files)} installed file{'' if len(files) == 1 else 's'} under "
-                    f"{_under(prefix, root)}"
-                ),
-                sum(tree_size(path) for path in files),
-            )
-        )
-    marker = install_marker(name, prefix)
-    if marker.is_file():
-        entries.append((_under(marker, root), tree_size(marker)))
-    return entries
-
-
-def _under(path: Path, root: Path) -> str:
-    """PATH as the workspace spells it, so a prompt is not a wall of absolute paths."""
-    try:
-        return str(path.relative_to(root))
-    except ValueError:
-        return str(path)
-
-
-def _confirm_removal(title: str, entries: list[tuple[str, int]], assume_yes: bool) -> bool:
-    """Show what would go, with its size, and ask. Nothing is taken on silence."""
-    if not entries:
-        return False
-    _say("step", title)
-    for label, size in entries:
-        click.echo(f"  {label:<44} {human_bytes(size):>10}", err=True)
-    if assume_yes:
-        return True
-    try:
-        return click.confirm("  remove?", default=False, err=True)
-    except click.Abort:
-        # End of input rather than an answer: a script reached a prompt it cannot see.
-        raise click.UsageError(
-            "nothing answered the prompt: pass --yes to clean unattended"
-        ) from None
 
 
 def _editable_here(root: Path) -> bool:
@@ -146,7 +91,6 @@ _STATUS_WIDTH = 11
 # A command to run, in a hue no name, source or status uses.
 _COMMAND_COLOUR = 180
 LATEST_LINK = "latest"
-LAB_SETTINGS_DIR = "motion-spec-lab-settings"
 
 
 def _generation_base(output_dir: Path | None) -> Path | None:
@@ -367,26 +311,16 @@ def _install_features() -> tuple[str, ...]:
     return tuple(sorted(distribution("motion_spec").metadata.get_all("Provides-Extra") or []))
 
 
-# How each dependency arrives; its why and source live in health.DETAILS, once.
-_INSTALLS = {
-    "motion_spec_dsl": "motion-spec setup",
-    "coord_dsl": "motion-spec setup",
-    "scene_dsl": "motion-spec setup",
-    "rdf_utils": "motion-spec setup",
-    "rec": "motion-spec setup",
-    "textx": "motion-spec setup",
-    "pyshacl": "pip install motion_spec",
-    "google.protobuf": "pip install motion_spec",
-    "stst": "motion-spec setup",
-}
+# What arrives some other way than as a manifest entry of its own.
+_INSTALLS = {"textx": "motion-spec setup motion-spec-dsl", "pyshacl": "pip install motion_spec"}
 
 
 def _requirement_box(dependency: str) -> click.ClickException | None:
     """The dependency's box, when both its details and its install command are known."""
-    from motion_spec.health import DETAILS
+    from motion_spec.health import DETAILS, SETUP_PROVIDES, _remedy
 
     spec = DETAILS.get(dependency)
-    install = _INSTALLS.get(dependency)
+    install = _remedy(dependency) if dependency in SETUP_PROVIDES else _INSTALLS.get(dependency)
     if spec is None or install is None:
         return None
     return _missing(dependency, spec["why"], spec["source"], install)
@@ -451,88 +385,14 @@ def _route_tool_logging() -> None:
         logger.propagate = False
 
 
-def _clear_shadowing_stst(prefix: Path) -> None:
-    """Trash a broken launcher an older motion-spec left on PATH; warn about a working one."""
-    from motion_spec.setup import shadowing_stst
-    from motion_spec.utils import trash
+def _clean(root: Path) -> None:
+    """`setup --clean`: trash the workspace's builds, installs, logs and environment files."""
+    from motion_spec.setup import clean_workspace
 
-    found = shadowing_stst(prefix)
-    if found is None:
-        return
-    other, has_jar = found
-    if has_jar:
-        _say("warn", f"PATH reaches {other} before {prefix / 'bin' / 'stst'}; remove it or reorder")
-        return
-    trash(other)
-    _say("done", f"trashed {other}, an older install whose jar is gone")
-
-
-def _clean(selected: list, everything: bool, root: Path, prefix: Path, assume_yes: bool) -> None:
-    """`setup --clean`: offer each installed package of SELECTED, or with --all every output."""
-    from motion_spec.setup import (
-        STST_REPOSITORY,
-        Removed,
-        discover_packages,
-        is_installed,
-        remove_environment,
-        remove_package,
-        remove_stst,
-        source_directory,
-        workspace_outputs,
-    )
-    from motion_spec.utils import trash
-
-    def report(items: list[Removed]) -> None:
-        for item in items:
-            what = item.what.replace(f"{root}/", "")
-            if item.deleted:
-                _say("done", f"deleted {what}")
-            elif item.to is not None:
-                _say("done", f"trashed {what} → {item.to}")
-            else:
-                _say("done", f"trashed {what} (into its filesystem's trash)")
-
-    removed = []
-    if everything:
-        for path in workspace_outputs(root, prefix):
-            label = _under(path, root)
-            if _confirm_removal(label, [(label, tree_size(path))], assume_yes):
-                report([Removed(str(path), trash(path))])
-                removed.append(label)
-    else:
-        names = []
-        for repository in selected:
-            checkout = source_directory(root, repository.path)
-            if repository.path == STST_REPOSITORY:
-                names.append("stst")
-            elif checkout.is_dir():
-                names.extend(package.name for package in discover_packages(checkout))
-        for name in names:
-            if not _confirm_removal(name, _clean_offer(name, root, prefix), assume_yes):
-                continue
-            items = (
-                remove_stst(root, prefix) if name == "stst" else remove_package(name, root, prefix)
-            )
-            report(items)
-            if items:
-                removed.append(name)
-        # With nothing installed they are a map to an empty prefix.
-        if removed and not any(is_installed(name, prefix) for name in names):
-            report(remove_environment(root))
-    if not removed:
-        _say("info", "nothing removed")
-        return
-    _say(
-        "done",
-        f"cleaned: {', '.join(removed)}; restore with `gio trash --restore` or your file manager",
-    )
-    left = sorted(
-        _under(tree, root)
-        for repository in selected
-        if (tree := source_directory(root, repository.path)).is_dir()
-    )
-    if left:
-        _say("info", f"sources left in place: {', '.join(left)}")
+    trashed = clean_workspace(root)
+    for path, where in trashed:
+        _say("done", f"trashed {path}" + (f" → {where}" if where else ""))
+    _say("info", "sources and generations left in place" if trashed else "nothing to clean")
 
 
 def _environment_options(command):
@@ -597,6 +457,11 @@ def _environment(
     type=click.Path(dir_okay=False, path_type=Path),
     help="Where --background writes output. Default: dashboard.log in the logs root.",
 )
+@click.option(
+    "--lan",
+    is_flag=True,
+    help="Reachable from the network: replay and simulated runs only, no delete or source access.",
+)
 @_environment_options
 def dashboard(
     port: int,
@@ -608,6 +473,7 @@ def dashboard(
     kill: bool,
     restart: bool,
     log_file: Path | None,
+    lan: bool,
 ) -> None:
     """Browse generations, replay runs, and query them in a browser."""
     from motion_spec.dashboard.jobs import use_environment
@@ -638,15 +504,16 @@ def dashboard(
         if script:
             use_environment(str(script))
             _say("info", f"environment {script}")
-        return serve(port, logs, sources)
+        return serve(port, logs, sources, lan)
 
     destination = (log_file or logs / "dashboard.log").expanduser()
     destination.parent.mkdir(parents=True, exist_ok=True)
-    argv = [sys.executable, "-m", "motion_spec.dashboard", "--port", str(port), "--logs", str(logs)]
+    argv = [sys.argv[0], "dashboard", "--port", str(port), "--logs", str(logs)]
     if sources is not None:
         argv += ["--sources", str(sources)]
-    if script:
-        argv += ["--env", str(script)]
+    argv += ["--env", str(script)] if script else ["--no-env"]
+    if lan:
+        argv.append("--lan")
     with destination.open("ab") as sink:
         child = subprocess.Popen(argv, stdout=sink, stderr=sink, start_new_session=True)
     _say("info", f"pid {child.pid}, logging to {destination}")
@@ -656,65 +523,51 @@ def dashboard(
 
 
 def _stop_dashboards(port: int | None) -> None:
-    """Stop the dashboards this machine is serving, whoever started them, and their labs.
+    """Stop the dashboards serving, on PORT or all, and the labs they started.
 
-    A dashboard takes its JupyterLab with it when asked to stop, so a lab still running with
-    no dashboard left was orphaned by one that had to be killed outright. Sweep those too, or
-    the next dashboard starts a second lab beside a stranded one.
+    Each records its pid on start, and its lab's; a lab whose dashboard had to be killed
+    outright is stopped from that record too, or the next dashboard starts a second one.
     """
-    found = _dashboard_pids(port)
-    for pid in found:
-        os.kill(pid, signal.SIGTERM)
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline and _dashboard_pids(port):
-        time.sleep(0.2)
-    for pid in _dashboard_pids(port):
-        os.kill(pid, signal.SIGKILL)
+    from motion_spec.dashboard.roots import pidfile
 
-    orphans = [] if _dashboard_pids(None) else _lab_pids()
-    for pid in orphans:
-        os.kill(pid, signal.SIGTERM)
-
-    if not found and not orphans:
+    every = pidfile("*")
+    ports = [port] if port else [path.stem.rpartition("-")[2] for path in every.parent.glob(every.name)]
+    stopped = []
+    for each in ports:
+        for path in (pidfile(each), pidfile(each, "lab")):
+            pid = _recorded_pid(path)
+            if pid is not None and _stop(pid):
+                stopped.append(pid)
+            path.unlink(missing_ok=True)
+    if not stopped:
         where = f" on port {port}" if port else ""
         raise click.ClickException(f"no dashboard is serving{where}.")
-    if found:
-        _say("done", f"stopped {len(found)} dashboard{'' if len(found) == 1 else 's'}: {found}")
-    if orphans:
-        _say("done", f"stopped {len(orphans)} stranded JupyterLab: {orphans}")
+    _say("done", f"stopped {', '.join(map(str, stopped))}")
 
 
-def _dashboard_pids(port: int | None) -> list[int]:
-    """Processes serving the dashboard, by what they were started as."""
-    return _matching_pids(
-        lambda argv: "motion_spec.dashboard" in argv and (port is None or str(port) in argv)
-    )
-
-
-def _lab_pids() -> list[int]:
-    """JupyterLabs a dashboard started, known by the settings directory it hands them."""
-    return _matching_pids(lambda argv: any(part.endswith(LAB_SETTINGS_DIR) for part in argv))
-
-
-def _matching_pids(wanted) -> list[int]:
-    """Live processes whose argv this accepts, never this one.
-
-    Matching whole arguments, not a substring of the line: a shell that merely mentions the
-    dashboard in its own command would otherwise be killed along with it.
-    """
-    found = []
-    for entry in Path("/proc").glob("[0-9]*"):
-        pid = int(entry.name)
-        if pid != os.getpid() and wanted(_argv_of(pid)):
-            found.append(pid)
-    return sorted(found)
-
-
-def _argv_of(pid: int) -> list[str]:
+def _recorded_pid(path: Path) -> int | None:
     try:
-        return Path(f"/proc/{pid}/cmdline").read_bytes().decode().split("\0")
-    except OSError:
-        return []  # it exited while we looked
+        return int(path.read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _stop(pid: int) -> bool:
+    """SIGTERM, then SIGKILL after 5 s; False when PID was already gone."""
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return False
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.2)
+    with contextlib.suppress(ProcessLookupError):
+        os.kill(pid, signal.SIGKILL)
+    return True
 
 
 def _port_taken(port: int) -> bool:
@@ -736,39 +589,22 @@ def _port_taken(port: int) -> bool:
     ),
 )
 @click.option(
-    "--prefix",
-    type=click.Path(file_okay=False, path_type=Path),
-    help="Install somewhere other than WORKSPACE/install; the environment files still "
-    "describe it from the workspace root.",
-)
-@click.option(
     "--clean",
     is_flag=True,
-    help="Remove the managed installations and exit, asking before each one. Sources are "
-    "never removed.",
+    help="Trash the workspace's build, install and log trees and its environment files, then "
+    "exit. Sources and generations stay.",
 )
 @click.option(
-    "--all",
-    "everything",
+    "--force",
     is_flag=True,
-    help="With --clean: offer the whole build, install and log trees and the environment "
-    "files, including what setup did not install itself.",
+    help="Rebuild even when a package is already installed, from a cleared CMake cache.",
 )
 @click.option(
-    "-y",
-    "--yes",
-    "assume_yes",
-    is_flag=True,
-    help="Answer yes to every --clean prompt, for a script with no terminal to ask at.",
-)
-@click.option("--force", is_flag=True, help="Rebuild even when a package is already installed.")
-@click.option(
-    "--clear-cache",
-    is_flag=True,
-    help="Clear the selected CMake build caches and rebuild those packages.",
-)
-@click.option(
-    "--build-type", default=BUILD_TYPE, show_default=True, help="CMAKE_BUILD_TYPE for the sources."
+    "--build-type",
+    default=BUILD_TYPE,
+    show_default=True,
+    envvar=BUILD_TYPE_VARIABLE,
+    help="CMAKE_BUILD_TYPE for the sources.",
 )
 @click.option(
     "--dev",
@@ -782,14 +618,6 @@ def _port_taken(port: int) -> bool:
     help="Also install motion_spec.real.repos: the device drivers a real platform needs.",
 )
 @click.option(
-    "--repos",
-    "repos",
-    multiple=True,
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    help="A .repos manifest to install instead of the shipped motion_spec.repos; repeatable, "
-    "installed file after file in the order given.",
-)
-@click.option(
     "--ros/--no-ros",
     "ros_flag",
     default=None,
@@ -797,34 +625,22 @@ def _port_taken(port: int) -> bool:
     "an environment file that sources ROS and the overlay. Overrides [ros] workspace.",
 )
 @click.option(
-    "--cmake-arg",
-    "cmake_args",
-    multiple=True,
-    help="Extra cmake argument for every CMake package this run builds; repeatable. Lasting "
-    "ones belong in the workspace colcon.meta.",
-)
-@click.option(
     "-j",
     "--jobs",
     type=click.IntRange(min=1),
+    envvar="CMAKE_BUILD_PARALLEL_LEVEL",
     help="Compilers to run at once. Defaults to the lesser of the usable cores and one per "
-    "2 GiB of memory; $CMAKE_BUILD_PARALLEL_LEVEL also sets it.",
+    "2 GiB of memory.",
 )
 def setup(
     repositories: tuple[str, ...],
     workspace_argument: Path | None,
-    prefix: Path | None,
     clean: bool,
-    everything: bool,
-    assume_yes: bool,
     force: bool,
-    clear_cache: bool,
     build_type: str,
     dev: bool,
     real: bool,
-    repos: tuple[Path, ...],
     ros_flag: bool | None,
-    cmake_args: tuple[str, ...],
     jobs: int | None,
 ) -> None:
     """Install what the .repos manifests list, in their order.
@@ -834,14 +650,9 @@ def setup(
     arguments in WORKSPACE/colcon.meta. REPOSITORIES narrows the run to those entries, by
     manifest path or by name.
     """
-    if clean and clear_cache:
-        raise click.UsageError("--clean and --clear-cache cannot be used together")
-    if everything and not clean:
-        raise click.UsageError("--all applies to --clean: it names what a clean may take")
-    if everything and repositories:
-        raise click.UsageError(
-            "--all removes the workspace's build, install and log trees; it takes no repositories"
-        )
+    if clean and repositories:
+        raise click.UsageError("--clean takes the whole workspace's outputs; it takes no names")
+    from motion_spec.config import setting
     from motion_spec.setup import (
         STST_REPOSITORY,
         _ignore_thirdparty,
@@ -865,14 +676,13 @@ def setup(
     # A mistake in the command, not a failure inside it: no stack.
     try:
         root = workspace(workspace_argument)
-        from motion_spec.config import settings as config_settings
-
-        configured, config_path = config_settings(root)
+        ros = bool(setting("ros.workspace", ros_flag, root).value)
     except (RuntimeError, ValueError) as exc:
         raise click.UsageError(str(exc)) from exc
-    in_file = bool(configured.get("ros", {}).get("workspace"))
-    ros = ros_flag if ros_flag is not None else in_file
-    files = manifest_files(repos, real)
+    if clean:
+        _clean(root)
+        return
+    files = manifest_files(real)
     try:
         listed = manifest_in_force(files)
     except (OSError, ValueError) as exc:
@@ -884,22 +694,8 @@ def setup(
             f"{', '.join(r.name for r in listed)}"
         )
     selected = [r for r in listed if not repositories or {r.path, r.name} & set(repositories)]
-    from motion_spec.config import resolve
-
-    build_type = resolve(
-        build_type if build_type != BUILD_TYPE else None,
-        BUILD_TYPE_VARIABLE,
-        None,
-        BUILD_TYPE,
-        os.environ,
-    ).value
-    # CMake's own variable fills the environment slot; an explicit --parallel would shadow it.
-    asked = resolve(jobs, "CMAKE_BUILD_PARALLEL_LEVEL", None, None, os.environ)
-    try:
-        jobs = build_jobs(int(asked.value) if asked.value is not None else None)
-    except ValueError as exc:
-        raise click.UsageError(f"jobs ({asked.source}) is not a number: {asked.value!r}") from exc
-    prefix = (root / prefix).resolve() if prefix else install_prefix(root)
+    jobs = build_jobs(jobs)
+    prefix = install_prefix(root)
     log = command_log(root, "setup")
     # Held to the end of the command, so the failure that ends it is in the log too.
     click.get_current_context().with_resource(mirrored_stderr(log))
@@ -908,11 +704,10 @@ def setup(
         "setup",
         {
             "workspace": root,
-            "prefix": prefix,
             "manifests": ", ".join(str(path) for path in files),
             "repositories": ", ".join(repository.name for repository in selected),
             "build type": build_type,
-            "jobs": f"{jobs} ({asked.source})",
+            "jobs": jobs,
             "python": "editable" if dev else "snapshot",
             "colcon": ros,
             **machine_facts(),
@@ -922,7 +717,7 @@ def setup(
     _say("info", f"installing into {prefix}")
     _say("info", f"manifests {', '.join(str(path) for path in files)}")
     _say("info", f"console log {log}")
-    _say("info", f"building with {jobs} job{'s' if jobs != 1 else ''} ({asked.source})")
+    _say("info", f"building with {jobs} job{'s' if jobs != 1 else ''}")
     # setup cannot check itself out: it is the code running. So it says so instead.
     if dev and not _editable_here(root):
         import motion_spec
@@ -933,29 +728,18 @@ def setup(
             f"clone it into {root / 'src' / 'motion-spec'} and reinstall it with `pip install -e` "
             "to edit it too",
         )
-    # The sample is written only when there is no config, so an existing one is left disagreeing.
-    if config_path and ros != in_file:
-        _say(
-            "warn",
-            f"--{'ros' if ros else 'no-ros'} applies to this run only; edit [ros] workspace in "
-            f"{config_path} to keep it",
-        )
-    if not clean:
-        # Before the first import: a prerequisite setup cannot install itself is a failure the
-        # operator has to act on, and finding it after four checkouts and a build helps nobody.
-        _say("info", "checking prerequisites")
-        packages, others = missing_prerequisites(selected, ros)
-        if packages or others:
-            for requirement in others:
-                _say("error", requirement)
-            if packages:
-                _say("error", f"apt: sudo apt-get install -y {' '.join(packages)}")
-            raise _Reported("setup needs these before it can start; nothing was imported or built.")
+    # Before the first import: a prerequisite setup cannot install itself is a failure the
+    # operator has to act on, and finding it after four checkouts and a build helps nobody.
+    _say("info", "checking prerequisites")
+    packages, others = missing_prerequisites(selected, ros)
+    if packages or others:
+        for requirement in others:
+            _say("error", requirement)
+        if packages:
+            _say("error", f"apt: sudo apt-get install -y {' '.join(packages)}")
+        raise _Reported("setup needs these before it can start; nothing was imported or built.")
     skipped: list[str] = []
     try:
-        if clean:
-            _clean(selected, everything, root, prefix, assume_yes)
-            return
         python = target_environment(root, ros, dev, log)
         _say("info", f"python packages into {python}")
         if ros:
@@ -970,15 +754,14 @@ def setup(
             if state.drift:
                 _say("warn", f"{repository.name}: {state.path} {state.drift}")
             if repository.path == STST_REPOSITORY:
-                already = not force and stst_installed(root, prefix)
+                already = not force and stst_installed(root)
                 if not already:
                     _say("step", "stst")
-                launcher = install_stst(root, state, prefix, force=force, log=log)
+                launcher = install_stst(root, state, force=force, log=log)
                 _say(
                     "info" if already else "done",
                     f"stst {'already installed' if already else 'installed'}, launcher {launcher}",
                 )
-                _clear_shadowing_stst(prefix)
                 continue
             packages = discover_packages(state.path)
             if not packages:
@@ -986,9 +769,7 @@ def setup(
                 skipped.append(repository.name)
                 continue
             for package in packages:
-                if not (force or (clear_cache and package.cmake)) and package_installed(
-                    package.name, prefix, state.path
-                ):
+                if not force and package_installed(package.name, prefix, state.path):
                     _say("info", f"{package.name} already installed, source {state.path}")
                     continue
                 # Announced before the build, so its console output has a heading.
@@ -997,12 +778,10 @@ def setup(
                     package,
                     state,
                     root,
-                    prefix,
                     python,
-                    clear_cache=clear_cache,
+                    fresh=force,
                     build_type=build_type,
                     log=log,
-                    extra=cmake_args,
                     ros=ros,
                     jobs=jobs,
                     dev=dev,
@@ -1016,7 +795,7 @@ def setup(
     if sample:
         _say("info", f"settings written to {sample}")
     try:
-        written = write_environment(root, prefix, ros=ros, python=python)
+        written = write_environment(root, ros, python)
     except RuntimeError as exc:
         raise click.UsageError(str(exc)) from exc
     _say("done", f"source {written} before generating, building or running")
@@ -1344,9 +1123,7 @@ def check(manifest: Path, meta_shacl: bool) -> None:
 )
 def config(initialize: bool, workspace_argument: Path | None) -> None:
     """Show this workspace's settings, and where each one came from."""
-    from motion_spec.config import CONFIG_FILE, settings, write_sample
-    from motion_spec.config import shell as config_shell
-    from motion_spec.setup import GENERATION_DIRECTORY
+    from motion_spec.config import CONFIG_FILE, KEYS, find_config, setting, write_sample
     from motion_spec.setup import workspace as resolve_workspace
 
     if initialize:
@@ -1362,48 +1139,25 @@ def config(initialize: bool, workspace_argument: Path | None) -> None:
             _say("info", f"{root / CONFIG_FILE} already exists, left as it is")
         return
 
-    try:
-        configured, path = settings()
-    except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
+    path = find_config()
     click.secho(f"file: {path or f'none found ({CONFIG_FILE})'}", fg="blue")
-    workspace_keys = configured.get("workspace", {})
-    ros_keys = configured.get("ros", {})
-    # The file's own directory is the workspace when it does not name one.
-    located = str(path.parent) if path else None
-    rows = [
-        ("workspace.root", workspace_keys, "root", WORKSPACE_VARIABLE, located),
-        (
-            "workspace.generations",
-            workspace_keys,
-            "generations",
-            GENERATION_DIR_ENV,
-            f"<workspace>/{GENERATION_DIRECTORY}",
-        ),
-        (
-            "workspace.environment",
-            workspace_keys,
-            "environment",
-            "MOTION_SPEC_ENV",
-            "the nearest setup-motion-spec file",
-        ),
-        ("workspace.shell", workspace_keys, "shell", None, config_shell(configured)),
-        ("ros.workspace", ros_keys, "workspace", None, False),
-        ("ros.distro", ros_keys, "distro", "ROS_DISTRO", None),
-    ]
-    width = max(len(name) for name, *_ in rows)
-    for name, section, key, variable, default in rows:
-        from_env = os.environ.get(variable) if variable else None
-        if from_env:
-            shown, source = from_env, "environment"
-        elif key in section:
-            shown, source = section[key], "file"
-        else:
-            shown = default
-            source = "this file's directory" if default is located and located else "default"
+    # What each key falls back to when nothing sets it, as the commands that read it decide.
+    defaults = {
+        "workspace.root": path.parent if path else None,
+        "workspace.generations": "<workspace>/generations",
+        "workspace.environment": "the nearest setup-motion-spec file",
+        "ros.workspace": False,
+    }
+    width = max(len(name) for name in KEYS)
+    for name in KEYS:
+        try:
+            resolved = setting(name)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        shown = resolved.value if resolved.value is not None else defaults.get(name)
         click.secho(f"  {name:<{width}}  ", fg="cyan", nl=False)
         click.secho(f"{shown}", nl=False)
-        click.secho(f"  ({source})", fg="yellow", dim=True)
+        click.secho(f"  ({resolved.source})", fg="yellow", dim=True)
 
 
 @main.command()
@@ -1517,12 +1271,6 @@ def _is_simulated(generation: Path) -> bool:
 )
 @click.option("--steps", type=click.IntRange(min=1), help="Maximum headless simulation steps.")
 @click.option("--no-log", is_flag=True, help="Do not write the frame log; the run has no replay.")
-@click.option(
-    "--seed",
-    type=click.IntRange(min=0),
-    help="Seed the run's draw of every sampled quantity; unseeded runs draw from OS entropy. "
-    "The seed and the draw are recorded in logs/sampling.json either way.",
-)
 @click.argument("executable-args", nargs=-1, type=click.UNPROCESSED)
 @_environment_options
 def run(
@@ -1538,7 +1286,6 @@ def run(
     start_paused: bool,
     record: tuple[str, ...],
     steps: int | None,
-    seed: int | None,
     no_log: bool,
     executable_args: tuple[str, ...],
     env_script: Path | None,
@@ -1602,7 +1349,6 @@ def run(
         + (["--steps", str(steps)] if steps is not None else [])
         + (["--rtf", str(rtf)] if rtf is not None else [])
         + (["--start-paused"] if start_paused else [])
-        + (["--seed", str(seed)] if seed is not None else [])
         + list(executable_args)
     )
     try:

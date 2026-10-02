@@ -34,16 +34,6 @@ FORMATS = {
         oldest=1,
         changes={1: "workspace and setup settings"},
     ),
-    "marker": Format(
-        "install marker",
-        current=2,
-        oldest=1,
-        # A v1 marker predates `setup` adopting checkouts, so everything it recorded was cloned.
-        changes={
-            1: "the installed ref alone",
-            2: "the ref, and where the source came from: cloned, adopted or pip",
-        },
-    ),
 }
 
 

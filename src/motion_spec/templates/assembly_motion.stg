@@ -40,7 +40,7 @@ motion-prelude(serial_chain_solvers, solvers, backend) ::= <<
 >>
 
 shared-schedule-block(steps, closures, views) ::= <<
-<if(first(steps))>
+<if(steps)>
 <schedule-block(steps, closures, views)>
 <endif>
 >>
@@ -92,7 +92,7 @@ chain-prepare-block(serial_chain_solvers, solvers, backend) ::= <<
 // updated from those readings, and every observation it answers is written. Interleaved with the
 // motions, arm 1 would read forward kinematics from before arm 2 had been read.
 world-state-block(observations, serial_chain_solvers, solvers, backend) ::= <<
-<app-chain-provider-update(backend, serial_chain_solvers)>
+<({app-chain-provider-update-<backend>})(serial_chain_solvers)>
         robot.world->update(robot.control_cycle);
 <serial_chain_solvers:{solver | <world-to-root(solver)>}; separator="">
 <observations:{obs |

@@ -57,7 +57,7 @@ bool-condition(terms, any) ::= <<
 // answer from outside the motion, so both sides can never disagree.
 
 monitor-satisfied-expr(monitor) ::= <<
-<if(monitor.has_active)><if(monitor.active_terms_present)><bool-condition(monitor.active_terms, monitor.active_any)><else>false<endif><else>motion_spec::runtime::constraint_satisfied(shared.<monitor.error.id>, <band(monitor.tolerance.id)>)<endif>
+<if(monitor.has_active)><if(monitor.active_terms)><bool-condition(monitor.active_terms, monitor.active_any)><else>false<endif><else>motion_spec::runtime::constraint_satisfied(shared.<monitor.error.id>, <band(monitor.tolerance.id)>)<endif>
 >>
 
 update-monitor(monitor) ::= <<
@@ -93,4 +93,67 @@ update-monitor(monitor) ::= <<
 
 monitor-block(monitors) ::= <<
 <monitors:{monitor | <update-monitor(monitor)>}; separator="\n\n">
+>>
+
+// The runtime helpers monitors and their samples call: the band test always, the edges and the
+// flag only when a monitor of that kind runs.
+monitor-runtime(uses) ::= <<
+// The band comes from the model, per constraint kind: an equality's says how close to its
+// target counts as reached, a gate's how close to its threshold counts as arrived. A gate
+// that states none is tested against the boundary itself, which its evaluator returns 0.0 on.
+inline bool constraint_satisfied(double error, double tolerance) {
+    return std::fabs(error) \<= tolerance;
+}
+
+inline double constraint_error_value(const KDL::Twist &error) {
+    return std::max(error.vel.Norm(), error.rot.Norm());
+}
+
+inline double constraint_error_value(const KDL::Frame &error) {
+    KDL::Vector axis;
+    const double angle = error.M.GetRotAngle(axis);
+    return std::max(error.p.Norm(), std::fabs(angle));
+}
+
+inline bool constraint_satisfied(const KDL::Twist &error, double tolerance) {
+    return constraint_error_value(error) \<= tolerance;
+}
+
+inline bool constraint_satisfied(const KDL::Frame &error, double tolerance) {
+    return constraint_error_value(error) \<= tolerance;
+}
+
+<if(uses.("RisingEdge"))>
+inline bool rising_edge(bool &previous, bool active) {
+    const bool detected = active && !previous;
+    previous = active;
+    return detected;
+}
+
+<endif>
+<if(uses.("SustainedEdge"))>
+// Fire once after `active` has held true for `hold_s` of measured time; re-arms when `active`
+// drops. The model authors a duration, so the debounce accumulates the time the cycles actually
+// took: counting cycles is that duration only on a loop that never misses its deadline. The dt
+// handed in is already clamped at kDtClampMax, so a stall longer than that still under-counts.
+inline bool sustained_edge(double &held_s, bool active, double dt_s, double hold_s) {
+    if (!active) { held_s = 0.0; return false; }
+    const double before = held_s;
+    held_s += dt_s;
+    return before \< hold_s && held_s >= hold_s;
+}
+
+<endif>
+<if(uses.("Flag"))>
+inline void set_flag(bool &flag, bool active) {
+    flag = active;
+}
+
+<endif>
+<if(uses.("ProduceEvent"))>
+inline void warn_produce_event_not_implemented(std::string_view event_id) {
+    std::cerr \<\< "produce_event(" \<\< event_id \<\< ") not implemented yet\\n";
+}
+
+<endif>
 >>

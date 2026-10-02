@@ -79,9 +79,8 @@ What setup installs
        ``--real``.
 
 The manifest is the whole statement: what it lists is installed, in the order it
-lists it, and nothing else. ``--repos <file>`` (repeatable) installs other manifests in place of ``motion_spec.repos``, file after file;
-``--real`` still layers the device drivers on top. A path listed in two
-manifests is an error.
+lists it, and nothing else; ``--real`` layers the device drivers on top. A path
+listed in both manifests is an error.
 
 The order is the install order. The Python packages come first and go
 *dependents first*: their own ``pyproject.toml`` files pin each other by git URL,
@@ -169,8 +168,7 @@ it builds what is in the tree, whatever ref that is:
      - Skipped with a warning, and ``setup`` exits non-zero once it has built
        everything else, so a caller knows which repositories it did not get.
 
-``--clean`` never removes a source tree, whoever cloned it; it names the ones it
-left behind.
+``--clean`` never removes a source tree, whoever cloned it.
 
 cmake arguments: ``colcon.meta``
 --------------------------------
@@ -195,20 +193,17 @@ then on it is yours to edit, and ``setup`` never rewrites it:
 colcon reads it through ``--metas``; a plain CMake build reads the same entry, so
 a package gets the same arguments either way. That is where the robif2b device
 wrappers are turned on: each stays off until its ``-DENABLE_*`` flag is in the
-list, and ``health`` names the flag a missing wrapper needs. Two kinds of
-argument are not in it: the interpreter, pybind11 and site-packages of the
+list, and ``health`` names the flag a missing wrapper needs. One kind of
+argument is not in it: the interpreter, pybind11 and site-packages of the
 Python environment, which ``setup`` passes to every CMake package because they
-are paths on this machine, and ``--cmake-arg``, which adds to every CMake
-package for one run.
+are paths on this machine.
 
 The workspace
 -------------
 
 The workspace is ``--workspace``, else ``$MOTION_SPEC_WS``, else the one the
 config file names or sits in; with none, ``setup`` stops and says so rather than
-picking a location. ``--prefix`` overrides the install location for a caller who
-wants one somewhere other than ``WORKSPACE/install``; the environment files are
-written to the workspace root either way.
+picking a location. Everything installs into ``WORKSPACE/install``.
 
 .. code-block:: console
 
@@ -216,30 +211,18 @@ written to the workspace root either way.
    $ motion-spec setup --dev              # motion_spec.repos, into $MOTION_SPEC_WS/install
    $ motion-spec setup --dev --real       # plus the device drivers
    $ motion-spec setup mj_kdl_wrapper     # build only that entry
-   $ motion-spec setup --force            # rebuild regardless
-   $ motion-spec setup mj_kdl_wrapper --clear-cache  # clear its CMake cache and rebuild
-   $ motion-spec setup --clean            # remove what it installed, asking first
-   $ motion-spec setup --clean --all      # offer the whole build, install and log trees
-   $ motion-spec setup --clean --all -y   # the same, unattended
+   $ motion-spec setup --force            # rebuild regardless, from a cleared CMake cache
+   $ motion-spec setup --clean            # trash build/, install/, log/ and the env files
    $ motion-spec setup --build-type Debug
 
 Each package records the commit it was built from, so running ``setup`` again
 is a no-op until that checkout moves — ``--force`` is for repairing a broken
-build, not for picking up a new version. ``--clean`` removes only what ``setup``
-installed, through the build's own install manifest, and refuses an installation
-it did not make. It shows each package's paths with their sizes and asks before
-taking them, one question at a time; ``--all`` asks instead about the
-workspace's whole ``build/``, ``install/`` and ``log/`` trees and the environment
-files — including what ``setup`` did not install — and ``-y``/``--yes`` answers
-every question for a script. ``--clear-cache`` removes the selected CMake
-packages' configuration caches and rebuilds them; Python packages and STST have
-no CMake cache to clear.
+build, not for picking up a new version.
 
-Nothing motion-spec removes is unrecoverable: ``--clean`` moves the builds,
-installed files and environment files to the desktop trash rather than
-deleting them, the same way the dashboard clears a generation. The installed
-files go as one entry per package rather than as a page of loose headers. This
-needs ``gio``; without it ``--clean`` says so and removes nothing.
+``--clean`` moves the workspace's ``build/``, ``install/`` and ``log/`` trees and
+its environment files to the desktop trash rather than deleting them, the same
+way the dashboard clears a generation; sources and generations stay. This needs
+``gio``; without it ``--clean`` says so and removes nothing.
 
 The manifests import by hand too, into the same place ``--dev`` uses:
 
@@ -261,8 +244,8 @@ number instead: the lesser of the usable cores and one job per 2 GiB of RAM.
    $ motion-spec setup -j 4                 # or --jobs 4
    $ CMAKE_BUILD_PARALLEL_LEVEL=4 motion-spec setup
 
-``-j`` wins, then ``CMAKE_BUILD_PARALLEL_LEVEL``, then the computed default; the
-line ``setup`` prints says which applied. In a colcon workspace the same number
+``-j`` wins, then ``CMAKE_BUILD_PARALLEL_LEVEL``, then the computed default. In a
+colcon workspace the same number
 is passed as ``MAKEFLAGS=-jN -lN``, which colcon-cmake honours in place of its
 own ``-j$(nproc)``. ``motion-spec build`` uses the same default.
 
@@ -275,8 +258,8 @@ call in the manifest's order — colcon cannot derive it, since ``coord2b`` and
 ``robif2b`` carry no ``package.xml`` — with the workspace ``colcon.meta`` passed
 as ``--metas``. ``setup`` puts a ``COLCON_IGNORE`` in ``src/thirdparty``,
 so a bare ``colcon build`` never tries the Python packages or STSTv4 either. The
-build and install bases are named, so ``--prefix`` reaches the same place the
-environment file describes. ``[ros] distro`` says which ``/opt/ros`` to build
+build and install bases are named, so colcon writes where the environment file
+points. ``[ros] distro`` says which ``/opt/ros`` to build
 against, and ``$ROS_DISTRO`` overrides it.
 
 The environment file then sources rather than exports: the distribution, then
@@ -285,16 +268,16 @@ the workspace's own ``install/setup.<shell>``, plus ``PATH`` for the prefix's
 Python packages and STST are installed the same way either way; only the CMake
 build changes.
 
-``--ros`` and ``--no-ros`` apply to one run and say so; ``[ros] workspace`` is
-what keeps the choice. Before anything is imported, ``setup`` checks that a
+``--ros`` and ``--no-ros`` apply to one run; ``[ros] workspace`` is what keeps
+the choice. Before anything is imported, ``setup`` checks that a
 distribution is resolvable, that ``colcon`` is on ``PATH`` and that the
 environment can see the distribution's Python packages.
 
 The environment file
 ====================
 
-``setup`` writes one ``setup-motion-spec.<shell>`` to the workspace root, for the
-shell in force — ``$SHELL``, or ``[workspace] shell`` when the config names one.
+``setup`` writes one ``setup-motion-spec.<shell>`` to the workspace root, for
+``$SHELL``'s shell (bash or zsh, else bash).
 Sourcing it is what makes an installation usable from a fresh shell.
 
 .. list-table::
@@ -325,7 +308,7 @@ first time, ``motion-spec config --init`` writes one on demand, and
 
    $ motion-spec config
    file: /home/you/ws/motion-spec.config.toml
-     workspace.root         /home/you/ws            (this file's directory)
+     workspace.root         /home/you/ws            (default)
      workspace.generations  /home/you/ws/gen-out    (file)
      ros.workspace          True                    (file)
 
@@ -341,9 +324,8 @@ setting that silently does nothing. Paths are relative to the file.
 
    * - Key
      - Meaning
-   * - ``[workspace] root``, ``generations``, ``environment``, ``shell``
-     - The workspace, where generations go, the environment file, and the
-       shell it is written for.
+   * - ``[workspace] root``, ``generations``, ``environment``
+     - The workspace, where generations go, and the environment file.
    * - ``[ros] workspace``, ``distro``
      - Build CMake packages with colcon (the default for ``--ros``), and
        against which ``/opt/ros``.
@@ -361,12 +343,8 @@ every time, where it can be seen.
      - off: Python packages installed as snapshots
    * - ``--real``
      - off: ``motion_spec.real.repos`` is not installed
-   * - ``--repos FILE`` (repeatable)
-     - the shipped ``motion_spec.repos``
-   * - ``--prefix``
-     - ``WORKSPACE/install``
    * - ``--build-type``
-     - ``RelWithDebInfo``
+     - ``$MOTION_SPEC_BUILD_TYPE``, else ``RelWithDebInfo``
    * - ``-j``/``--jobs``
      - ``$CMAKE_BUILD_PARALLEL_LEVEL``, else from cores and memory
    * - ``--ros``/``--no-ros``
@@ -610,7 +588,6 @@ pinned STSTv4 with everything else; to install or repair only it:
 
    $ motion-spec setup STSTv4
    $ motion-spec setup STSTv4 --force   # rebuild a broken one
-   $ motion-spec setup STSTv4 --clean   # remove it
 
 The launcher is written to ``WORKSPACE/install/bin/stst``, which the environment
 file puts on ``PATH``. It is a two-line script naming the jar it runs, so a

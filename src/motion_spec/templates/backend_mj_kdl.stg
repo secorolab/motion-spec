@@ -440,10 +440,10 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros, world_port
     mj_env.model->opt.cone       = mjCONE_ELLIPTIC;
 
 <scene-state-setup-mj_kdl(world_ports)>
-<serial_chain_solvers:{solver |<robot-state-init(solver, "mj_kdl")>
-<robot-init(solver, "mj_kdl")>
-<robot-chain(solver, "mj_kdl")>
-<robot-assign(solver, "mj_kdl")>
+<serial_chain_solvers:{solver |<robot-state-init-mj_kdl(solver)>
+<robot-init-mj_kdl(solver)>
+<robot-chain-mj_kdl(solver)>
+<robot-assign-mj_kdl(solver)>
 <mj-sensor-io-assign(solver)>}; separator="\n">
 
     if (_headless_rtf > 0.0) mj_env.viewer.realtime_factor = _headless_rtf;
@@ -872,4 +872,21 @@ base-write-mj_kdl(resources) ::= <<
 app-main-base-setup-mj_kdl() ::= <<
     robot.mobile_base.model = mj_env.model;
     robot.mobile_base.data = mj_env.data;
+>>
+
+backend-runtime-mj_kdl(resources) ::= ""
+
+// The scene's own clock, not a chain's view of it: a platform drives no chain but runs in the
+// same simulation, and both read the one mjData the env owns.
+clock-time-source-mj_kdl() ::= <<
+mj_env.data->time
+>>
+
+// How fast the loop should run relative to wall time. 0.0 means uncapped -- run as fast as the
+// machine allows. With a window the viewer's factor is the one setting: the dashboard writes its
+// speed into it, so reading it here picks up both that and the ,/. keys without applying either
+// twice. Headless has no viewer, so the dashboard speed scales the requested rate directly, and
+// an uncapped run stays uncapped whatever the speed says.
+loop-rtf-source-mj_kdl() ::= <<
+(headless ? _headless_rtf * _ctrl_speed_applied : mj_env.viewer.realtime_factor)
 >>

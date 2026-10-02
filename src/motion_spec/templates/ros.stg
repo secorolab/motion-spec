@@ -394,7 +394,7 @@ ros-action-cancel(c) ::= <<
 // Cancelled on the exit edge, from the loop thread: `async_cancel_goal` only enqueues too.
 
 ros-action-cancel-on-exit(motion) ::= <<
-<if(motion.has_action_clients)>
+<if(motion.action_clients)>
             if (<motion.id>_state_instance.active) {
 <motion.action_clients:{c | <ros-action-cancel(c)>}; separator="\n">
             \}
@@ -856,13 +856,13 @@ ros-monitor-publish(motion, monitor) ::= <<
         if (<motion.id>_state_instance.active<if(monitor.ros.divider)> && (_step % <monitor.ros.divider>) == 0<endif>) {
             const bool _satisfied = <monitor-satisfied-expr(monitor)>;
             bool _authored = false;
-<if(monitor.ros.has_satisfied)>
+<if(monitor.ros.on_satisfied)>
             if (_satisfied) {
 <monitor.ros.on_satisfied:{f |                 robot.<monitor.ros.pub_id>_msg.<f.path> = <f.cpp_value>;}; separator="\n">
                 _authored = true;
             \}
 <endif>
-<if(monitor.ros.has_violated)>
+<if(monitor.ros.on_violated)>
             if (!_satisfied) {
 <monitor.ros.on_violated:{f |                 robot.<monitor.ros.pub_id>_msg.<f.path> = <f.cpp_value>;}; separator="\n">
                 _authored = true;

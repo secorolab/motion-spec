@@ -106,7 +106,6 @@ def generate_ir(manifest_path) -> dict:
         clients_by_motion.setdefault(client["motion"], []).append(client)
     for motion in motions:
         motion.action_clients = clients_by_motion.get(motion.motion_id, [])
-        motion.has_action_clients = bool(motion.action_clients)
     shared_data = quantities.filter_shared_data(
         data_structures,
         robots.schedule_steps + handler_steps,
@@ -210,8 +209,7 @@ def generate_ir(manifest_path) -> dict:
         "resources": _resources_section(
             robots, world_trees, world_frames, sampling, ports, motions
         ),
-        # None, not []: the template tests presence, and ST4 takes an empty list as present.
-        "composition": {"scene": scene, "sampling": sampling or None},
+        "composition": {"scene": scene, "sampling": sampling},
         "computation": _computation_section(
             closures, views, shared_data, motions, computation.indexes.pose_components
         ),

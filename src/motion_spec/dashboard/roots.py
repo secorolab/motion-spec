@@ -10,9 +10,11 @@ their values, which would freeze whichever root was current at import time.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -25,6 +27,12 @@ from motion_spec.setup import ENVIRONMENT_FILES
 from motion_spec.utils import trash as trash
 
 GENERATION_DIR_ENV = "MOTION_SPEC_GEN"
+
+
+def pidfile(port: int | str, role: str = "dashboard") -> Path:
+    """Where the dashboard on PORT, or the lab it started, records its pid; "*" globs them."""
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir())
+    return runtime / f"motion-spec-{role}-{port}.pid"
 
 
 # Roots the dashboard browses, replaced at startup by `serve` and by /api/roots.

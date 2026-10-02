@@ -118,15 +118,8 @@ def deployed_devices(generation_dir: Path | str) -> tuple[str, ...]:
 class GraphService:
     """One run's queryable model graph."""
 
-    def __init__(
-        self,
-        generation_dir: Path | str,
-        store,
-        *,
-        manifest: Path | None = None,
-    ):
+    def __init__(self, generation_dir: Path | str, *, manifest: Path | None = None):
         self.generation_dir = Path(generation_dir)
-        self.store = store
         self.dataset = rdflib.Dataset(default_union=True)
         self.model = self.dataset.graph(MODEL_GRAPH)
         self.sources: list[dict] = []

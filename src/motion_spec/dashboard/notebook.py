@@ -69,6 +69,9 @@ def jupyter_server(dashboard_port: int) -> dict:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+    # Its own session, so a dashboard killed outright leaves this for `dashboard -k` to find.
+    JUPYTER["pidfile"] = roots.pidfile(dashboard_port, "lab")
+    JUPYTER["pidfile"].write_text(f"{JUPYTER['process'].pid}\n")
     JUPYTER["url"] = f"http://127.0.0.1:{port}/lab?token={token}"
     JUPYTER["base"] = f"http://127.0.0.1:{port}"
     JUPYTER["token"] = token
@@ -78,13 +81,14 @@ def jupyter_server(dashboard_port: int) -> dict:
 def stop_jupyter() -> None:
     """Take the embedded lab down with the dashboard that started it."""
     process = JUPYTER.get("process")
-    if process is None or process.poll() is not None:
-        return
-    process.terminate()
-    try:
-        process.wait(5)
-    except subprocess.TimeoutExpired:
-        process.kill()
+    if process is not None and process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+    if JUPYTER.get("pidfile") is not None:
+        JUPYTER["pidfile"].unlink(missing_ok=True)
 
 
 def run_notebook(run_dir: Path, dashboard_port: int) -> dict:

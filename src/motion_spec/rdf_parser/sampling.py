@@ -82,7 +82,6 @@ def sampled_quantities(model, trees: list[dict]) -> list[SampledQuantity]:
             SampledQuantity(
                 id=model.id(node),
                 uri=str(node),
-                distribution_uri=str(distribution),
                 dist=dist,
                 components=components,
                 size=len(components),

@@ -436,7 +436,7 @@ ft-tare(out, raw, sensor, reference, observer, gravity) ::= <<
 
 // Re-arm the settle: the bias is only what the sensor reads unloaded, and the load changes.
 retare-on(out) ::= <<
-<if(out.retare_events_present)>    if (robot.fsm_events && (<out.retare_events:{e | consume_event(robot.fsm_events, <e>)}; separator=" || ">)) {
+<if(out.retare_events)>    if (robot.fsm_events && (<out.retare_events:{e | consume_event(robot.fsm_events, <e>)}; separator=" || ">)) {
         shared.<out.id>_ft_settle = 0;
         shared.<out.id>_ft_confirming = false;
     \}
@@ -509,7 +509,7 @@ estimator-tau-robif2b(solver) ::= "-*robot.ports_<solver.runtime.id>[i].effort"
 // The observer's zero is the momentum now: the integral and the filtered torque restart from it,
 // and the payload is taken again once it has re-converged.
 retare-on-estimator(out) ::= <<
-<if(out.retare_events_present)>    if (robot.fsm_events && (<out.retare_events:{e | consume_event(robot.fsm_events, <e>)}; separator=" || ">)) {
+<if(out.retare_events)>    if (robot.fsm_events && (<out.retare_events:{e | consume_event(robot.fsm_events, <e>)}; separator=" || ">)) {
         est_<out.id>.setInitialMomentum(q_<out.id>, qd_<out.id>);
         shared.<out.id>_est_settle = 0;
         shared.<out.id>_est_payload_new = KDL::Wrench::Zero();
@@ -754,4 +754,97 @@ solver-stage-output(solver, chain_solver, backend) ::= <<
 // the real arm must clamp the same command by the same bound.
 solver-torque-command(solver, chain_solver) ::= <<
 motion_spec::runtime::finite_or_stop(<if(chain_solver.torque_saturation)>std::clamp\<double\>(state.<solver.id>.tau_ctrl(i), <saturation-lower(chain_solver.torque_saturation)>, <saturation-upper(chain_solver.torque_saturation)>)<else>state.<solver.id>.tau_ctrl(i)<endif>, i)
+>>
+
+// The runtime helpers the chain solvers call, by algorithm.
+solver-runtime(uses) ::= <<
+// A non-finite command means the controller diverged, and no value is the right one to send: zero
+// drops a simulated arm, the last good value hides the divergence, and throwing from the loop
+// leaves the log truncated. So ask the loop to leave -- shutdown then closes the frame log the
+// same way an interrupt does, and the record ends at the tick that broke. The substitute below
+// reaches a simulator, which is where it has to be a number at all; on hardware the cycle that
+// asked to stop transmits nothing.
+inline double finite_or_stop(double value, int joint) {
+    if (std::isfinite(value)) return value;
+    if (!stop_requested()) {
+        std::cerr \<\< "[run] non-finite command on joint " \<\< joint \<\< "; stopping" \<\< std::endl;
+        request_stop(0);
+    \}
+    return 0.0;
+\}
+
+<if(uses.("SolverACHD") || uses.("SolverRNE"))>
+enum class Axis {
+    X = 0,
+    Y = 1,
+    Z = 2,
+};
+
+enum class Subspace {
+    Linear = 0,
+    Angular = 1,
+};
+
+inline int constraint_row(Subspace subspace, Axis axis) {
+    return static_cast\<int\>(subspace) * 3 + static_cast\<int\>(axis);
+}
+
+<endif>
+<if(uses.("SolverRNE"))>
+// Every dynamically sized term the task-space resolve needs, at its final size. Sized once when
+// the solver initializes, so the control cycle only writes into it.
+struct CartesianAccelerationWorkspace {
+    Eigen::MatrixXd task_jac;
+    Eigen::VectorXd rhs;
+    Eigen::MatrixXd gram;
+    Eigen::VectorXd lambda;
+    Eigen::VectorXd qdd;
+    Eigen::LDLT\<Eigen::MatrixXd\> factorization;
+
+    void resize(int constraints, int joints) {
+        task_jac.resize(constraints, joints);
+        rhs.resize(constraints);
+        gram.resize(constraints, constraints);
+        lambda.resize(constraints);
+        qdd.resize(joints);
+        factorization = Eigen::LDLT\<Eigen::MatrixXd\>(constraints);
+    }
+};
+
+// Damped least-squares regularization for J^T (J J^T + lambda^2 I)^-1. This is
+// deliberately small: it removes the singular inverse without materially changing a
+// well-conditioned task. Keep it named because hardware may justify model-level tuning later.
+inline constexpr double kCartesianAccelerationDamping = 0.05;
+
+inline void resolve_cartesian_acceleration(
+        const KDL::Jacobian &jac,
+        const KDL::Jacobian &directions,
+        const KDL::JntArray &cartesian_acceleration,
+        const Eigen::VectorXd *bias,
+        CartesianAccelerationWorkspace &work,
+        KDL::JntArray &qdd_out) {
+    KDL::SetToZero(qdd_out);
+    const int m = cartesian_acceleration.rows();
+    if (m == 0) return;
+    work.task_jac.noalias() = directions.data.transpose() * jac.data;
+    for (int i = 0; i \< m; ++i) {
+        work.rhs(i) = cartesian_acceleration(i);
+    }
+    if (bias != nullptr && bias->size() == m) {
+        work.rhs -= *bias;
+    }
+    work.gram.noalias() = work.task_jac * work.task_jac.transpose();
+    work.gram.diagonal().array() +=
+        kCartesianAccelerationDamping * kCartesianAccelerationDamping;
+    // Factor and solve the damped normal equations in place, without a temporary per cycle.
+    work.factorization.compute(work.gram);
+    work.lambda = work.rhs;
+    work.factorization.solveInPlace(work.lambda);
+    work.qdd.noalias() = work.task_jac.transpose() * work.lambda;
+    for (int i = 0; i \< static_cast\<int\>(qdd_out.rows()); ++i) {
+        qdd_out(i) = work.qdd(i);
+    }
+}
+
+<endif>
 >>

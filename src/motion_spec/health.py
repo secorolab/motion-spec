@@ -137,8 +137,8 @@ SETUP_PROVIDES = {
     "serial": "serial",
     "robotiq_driver_noros": "robotiq_driver_noros",
 }
-# In motion_spec.real.repos: only a model that binds them needs them.
-_DEVICE_PACKAGES = ("robif2b", "serial", "robotiq_driver_noros")
+# In motion_spec.real.repos, filled in from it: only a model that binds them needs them.
+_DEVICE_PACKAGES: set[str] = set()
 # robif2b builds a device wrapper only when told to. Missing here means the flag was off, not
 # that the package is absent, so the fix is a rebuild rather than a checkout.
 _ROBIF2B_DEVICE_FLAGS = {
@@ -185,13 +185,12 @@ def _ros_distro(env: dict[str, str] | None = None) -> str | None:
 
 def _configured_distro() -> str | None:
     """The distribution the workspace's config names, when it names one."""
-    from motion_spec.config import settings
+    from motion_spec.config import configured
 
     try:
-        configured, _ = settings()
+        return configured("ros.distro") or None
     except (OSError, ValueError):
         return None
-    return configured.get("ros", {}).get("distro") or None
 
 
 def environment_values(env: dict[str, str] | None = None) -> dict[str, str | None]:
@@ -432,11 +431,20 @@ DETAILS: dict[str, dict[str, str]] = {
 
 def _manifest_sources() -> None:
     """Fill in where each dependency `setup` provides comes from, as the manifests pin it."""
-    from motion_spec.setup import manifest_files, manifest_in_force
+    from motion_spec.setup import (
+        REAL_MANIFEST,
+        manifest_files,
+        manifest_in_force,
+        read_manifest,
+        shipped,
+    )
 
     by_name = {r.name: r for r in manifest_in_force(manifest_files(real=True))}
+    real = {r.name for r in read_manifest(shipped(REAL_MANIFEST))}
     for dependency, name in SETUP_PROVIDES.items():
         DETAILS[dependency]["source"] = by_name[name].url.removesuffix(".git")
+        if name in real:
+            _DEVICE_PACKAGES.add(dependency)
 
 
 _manifest_sources()

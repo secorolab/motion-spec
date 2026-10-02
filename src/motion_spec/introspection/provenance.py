@@ -485,7 +485,7 @@ def record_draw(graph: Graph, run_id: str, agent: URIRef, quantity: str, values,
 
 
 # What the run produced, as opposed to what it read. Camera videos are a list.
-GENERATED_ROLES = ("frame_log", "frame_log_health", "console", "sampling", "bag", "videos")
+GENERATED_ROLES = ("frame_log", "frame_log_health", "console", "bag", "videos")
 
 
 def record_files(run, run_dir: Path, manifest: dict) -> None:

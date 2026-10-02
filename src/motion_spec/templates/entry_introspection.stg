@@ -66,7 +66,7 @@ introspection_runtime_header(communication, configuration) ::= <<
 
 namespace motion_spec::introspection {
 
-struct ConstraintSlot {
+struct ControllerSample {
     std::int64_t active;
     double error;
     double output;
@@ -76,7 +76,7 @@ struct ConstraintSlot {
     double setpoint;
 };
 
-struct MonitorSlot {
+struct MonitorSample {
     std::int64_t active;
     double value;
     std::int64_t satisfied;
@@ -129,8 +129,8 @@ struct Frame {
     std::int64_t wall_ns;
     std::int64_t period_ns;
     std::int64_t compute_ns;
-    ConstraintSlot constraints[kNumConstraints];
-    MonitorSlot monitors[kNumMonitors];
+    ControllerSample constraints[kNumConstraints];
+    MonitorSample monitors[kNumMonitors];
     double quantities[kNumQuantities];
     DeviceSlot devices[kNumDevices];
     Trigger triggers[kNumTriggers];
@@ -140,8 +140,8 @@ struct Frame {
     WrenchSlot wrenches[kNumWrenches];
 };
 
-static_assert(sizeof(ConstraintSlot) == 7 * 8, "ConstraintSlot must be padding-free");
-static_assert(sizeof(MonitorSlot) == 4 * 8, "MonitorSlot must be padding-free");
+static_assert(sizeof(ControllerSample) == 7 * 8, "ControllerSample must be padding-free");
+static_assert(sizeof(MonitorSample) == 4 * 8, "MonitorSample must be padding-free");
 static_assert(sizeof(DeviceSlot) == 2 * 8, "DeviceSlot must be padding-free");
 static_assert(sizeof(Trigger) == 5 * 8, "Trigger must be padding-free");
 static_assert(sizeof(PoseSlot) == 8 * 8, "PoseSlot must be padding-free");
@@ -293,6 +293,7 @@ class FrameLogger {
 public:
     FrameLogger(
         const std::string &path,
+        const log::FrameLogRecord *sampling = nullptr,
         std::size_t ring_capacity = 8192)
         : mask_(ring_capacity - 1) {
         // An empty path is the operator saying "no recording": no ring, no health file, no thread.
@@ -303,6 +304,7 @@ public:
         log_ = std::fopen(path.c_str(), "wb");
         if (!log_) return;
         write_header();
+        if (sampling) write_record(*sampling);
         running_.store(true, std::memory_order_relaxed);
         writer_ = std::thread(&FrameLogger::run, this);
     \}
@@ -380,6 +382,11 @@ private:
         std::fflush(log_);
     \}
 
+    void write_record(const log::FrameLogRecord &record) {
+        if (!write_delimited(record.SerializeAsString())) ++write_errors_;
+        std::fflush(log_);
+    \}
+
     void write_frame(const Frame &frame) {
         record_.Clear();
         log::RuntimeFrame *m = record_.mutable_frame();
@@ -396,18 +403,49 @@ private:
         m->set_period_ns(frame.period_ns);
         m->set_compute_ns(frame.compute_ns);
         m->set_trigger_count(frame.trigger_count);
-        // `active` is not written: which slots a motion drives is already in schema["by_motion"],
-        // and the decoder resolves it from active_motion exactly as it does for quantity slots.
-        <communication.introspection_artifacts.frame_layout.protobuf.fields.constraints:{f|if (frame.constraints[<f.index>].active) { auto &s = *m->mutable_<f.name>(); const auto &c = frame.constraints[<f.index>]; s.set_error(c.error); s.set_output(c.output); s.set_satisfied(c.satisfied); s.set_sat_t(c.sat_t); s.set_measured(c.measured); s.set_setpoint(c.setpoint); \}}; separator="\n        ">
-        <communication.introspection_artifacts.frame_layout.protobuf.fields.monitors:{f|if (frame.monitors[<f.index>].active) { auto &s = *m->mutable_<f.name>(); const auto &x = frame.monitors[<f.index>]; s.set_value(x.value); s.set_satisfied(x.satisfied); s.set_sat_t(x.sat_t); \}}; separator="\n        ">
-        <communication.introspection_artifacts.frame_layout.protobuf.fields.quantities:{f|<quantity-field-set(f)>}; separator="\n        ">
-        <communication.introspection_artifacts.frame_layout.protobuf.fields.devices:{f|{ auto &s = *m->mutable_<f.name>(); const auto &x = frame.devices[<f.index>]; s.set_seq(x.seq); s.set_success(x.success); \}}; separator="\n        ">
-        // Only the slots this tick actually filled: mutable_ materializes a sub-message even when
-        // empty, so writing the whole pool would ship 31 empty wrappers on every eventless tick.
-        <communication.introspection_artifacts.frame_layout.protobuf.fields.triggers:{f|if (frame.trigger_count > <f.index>) { auto &s = *m->mutable_<f.name>(); const auto &x = frame.triggers[<f.index>]; s.set_kind(x.kind); s.set_idx(x.idx); s.set_fsm_state(x.fsm_state); s.set_t(x.t); s.set_wall_ns(x.wall_ns); \}}; separator="\n        ">
-        <communication.introspection_artifacts.frame_layout.protobuf.fields.poses:{f|if (frame.poses[<f.index>].active) { auto &s = *m->mutable_<f.name>(); const auto &x = frame.poses[<f.index>]; s.set_px(x.px); s.set_py(x.py); s.set_pz(x.pz); s.set_qx(x.qx); s.set_qy(x.qy); s.set_qz(x.qz); s.set_qw(x.qw); \}}; separator="\n        ">
-        <communication.introspection_artifacts.frame_layout.protobuf.fields.twists:{f|if (frame.twists[<f.index>].active) { auto &s = *m->mutable_<f.name>(); const auto &x = frame.twists[<f.index>]; s.set_lx(x.lx); s.set_ly(x.ly); s.set_lz(x.lz); s.set_ax(x.ax); s.set_ay(x.ay); s.set_az(x.az); \}}; separator="\n        ">
-        <communication.introspection_artifacts.frame_layout.protobuf.fields.wrenches:{f|if (frame.wrenches[<f.index>].active) { auto &s = *m->mutable_<f.name>(); const auto &x = frame.wrenches[<f.index>]; s.set_fx(x.fx); s.set_fy(x.fy); s.set_fz(x.fz); s.set_tx(x.tx); s.set_ty(x.ty); s.set_tz(x.tz); \}}; separator="\n        ">
+        // A motion's controller and monitor slots are its first ones, so the active ones are a prefix.
+        for (std::size_t i = 0; i != kNumConstraints && frame.constraints[i].active; ++i) {
+            const auto &c = frame.constraints[i];
+            auto *s = m->add_constraints();
+            s->set_error(c.error); s->set_output(c.output); s->set_satisfied(c.satisfied);
+            s->set_sat_t(c.sat_t); s->set_measured(c.measured); s->set_setpoint(c.setpoint);
+        \}
+        for (std::size_t i = 0; i != kNumMonitors && frame.monitors[i].active; ++i) {
+            const auto &x = frame.monitors[i];
+            auto *s = m->add_monitors();
+            s->set_value(x.value); s->set_satisfied(x.satisfied); s->set_sat_t(x.sat_t);
+        \}
+        // Most slots are zero on a given tick -- another motion's -- so only the rest travel.
+        for (std::size_t i = 0; i != kNumQuantities; ++i) {
+            if (frame.quantities[i] == 0.0) continue;
+            m->add_quantity_slots(static_cast\<std::uint32_t\>(i));
+            m->add_quantities(frame.quantities[i]);
+        \}
+        for (std::size_t i = 0; i != kNumDevices; ++i) {
+            auto *s = m->add_devices();
+            s->set_seq(frame.devices[i].seq); s->set_success(frame.devices[i].success);
+        \}
+        for (std::size_t i = 0; i != kNumTriggers && static_cast\<std::int64_t\>(i) \< frame.trigger_count; ++i) {
+            const auto &x = frame.triggers[i];
+            auto *s = m->add_triggers();
+            s->set_kind(x.kind); s->set_idx(x.idx); s->set_fsm_state(x.fsm_state); s->set_t(x.t); s->set_wall_ns(x.wall_ns);
+        \}
+        // A spatial slot keeps its index: one the active motion does not write is an empty message.
+        for (std::size_t i = 0; i != kNumPoses; ++i) {
+            const auto &x = frame.poses[i];
+            auto *s = m->add_poses();
+            if (x.active) { s->set_px(x.px); s->set_py(x.py); s->set_pz(x.pz); s->set_qx(x.qx); s->set_qy(x.qy); s->set_qz(x.qz); s->set_qw(x.qw); \}
+        \}
+        for (std::size_t i = 0; i != kNumTwists; ++i) {
+            const auto &x = frame.twists[i];
+            auto *s = m->add_twists();
+            if (x.active) { s->set_lx(x.lx); s->set_ly(x.ly); s->set_lz(x.lz); s->set_ax(x.ax); s->set_ay(x.ay); s->set_az(x.az); \}
+        \}
+        for (std::size_t i = 0; i != kNumWrenches; ++i) {
+            const auto &x = frame.wrenches[i];
+            auto *s = m->add_wrenches();
+            if (x.active) { s->set_fx(x.fx); s->set_fy(x.fy); s->set_fz(x.fz); s->set_tx(x.tx); s->set_ty(x.ty); s->set_tz(x.tz); \}
+        \}
         payload_.clear();
         record_.SerializeToString(&payload_);
         if (write_delimited(payload_)) {
@@ -461,12 +499,12 @@ private:
 
 class RunPublisher {
 public:
-    RunPublisher()
+    explicit RunPublisher(const log::FrameLogRecord *sampling = nullptr)
         : shm_(shm_name()),
 <if(configuration.platform.simulated)>
           control_(ctrl_shm_name()),
 <endif>
-          logger_(log_path()) {}
+          logger_(log_path(), sampling) {}
 <if(configuration.platform.simulated)>
 
     ControlState poll_control() { return control_.poll(); \}
@@ -509,7 +547,7 @@ public:
     // samples happened to be emitted before it.
     void constraint_sample(std::size_t index, double error, double output, double measured, double setpoint, bool satisfied) {
         if (index \>= kNumConstraints) return;
-        ConstraintSlot &slot = scratch_.constraints[index];
+        ControllerSample &slot = scratch_.constraints[index];
         slot.active = 1;
         slot.error = error;
         slot.output = output;
@@ -525,7 +563,7 @@ public:
 
     void monitor_sample(std::size_t index, double value, bool satisfied) {
         if (index \>= kNumMonitors) return;
-        MonitorSlot &slot = scratch_.monitors[index];
+        MonitorSample &slot = scratch_.monitors[index];
         slot.active = 1;
         slot.value = value;
         slot.satisfied = satisfied ? 1 : 0;
@@ -656,15 +694,8 @@ introspection-controller-sample(slot, views) ::= <<
 >>
 
 introspection-monitor-sample(slot) ::= <<
-<if(slot.has_active)>        pub.monitor_sample(<slot.index>, <if(slot.active_terms_present)><bool-condition(slot.active_terms, slot.active_any)><else>false<endif>, <if(slot.active_terms_present)><bool-condition(slot.active_terms, slot.active_any)><else>false<endif>);  // <slot.uri_comment><else>        pub.monitor_sample(<slot.index>, <if(slot.composite_error)>motion_spec::runtime::constraint_error_value(<shared-sig(slot.value_signal)>)<else><shared-sig(slot.value_signal)><endif>, motion_spec::runtime::constraint_satisfied(<shared-sig(slot.value_signal)>, <shared-sig(slot.tolerance_signal)>));  // <slot.uri_comment><endif>
+<if(slot.has_active)>        pub.monitor_sample(<slot.index>, <if(slot.active_terms)><bool-condition(slot.active_terms, slot.active_any)><else>false<endif>, <if(slot.active_terms)><bool-condition(slot.active_terms, slot.active_any)><else>false<endif>);  // <slot.uri_comment><else>        pub.monitor_sample(<slot.index>, <if(slot.composite_error)>motion_spec::runtime::constraint_error_value(<shared-sig(slot.value_signal)>)<else><shared-sig(slot.value_signal)><endif>, motion_spec::runtime::constraint_satisfied(<shared-sig(slot.value_signal)>, <shared-sig(slot.tolerance_signal)>));  // <slot.uri_comment><endif>
 >>
-
-// A flag-typed quantity is stored as a double in the frame ring but written as a proto bool.
-quantity-field-set(f) ::= <<
-<({quantity-field-set-<f.proto_type>})(f)>
->>
-quantity-field-set-double(f) ::= "m->set_<f.name>(frame.quantities[<f.index>]);"
-quantity-field-set-bool(f)   ::= "m->set_<f.name>(frame.quantities[<f.index>] != 0.0);"
 
 introspection-quantity-sample(slot, views) ::= <<
     pub.quantity_sample(<slot.index>, <sample-expr(slot.desc, views)>);
@@ -723,209 +754,4 @@ inline void sample_model(RunPublisher &pub, int active_motion, shared_data &shar
 }
 
 } // namespace motion_spec::introspection
->>
-
-// Per-model semantic frame-log wire contract. Field numbers come from the run's schema
-// (motion_spec.introspection.artifacts.build_frame_log_proto_fields); the C++ writer in
-// module.stg (write_frame) emits the matching numbers, so this .proto decodes logs/frame_log.pb.
-frame_log_proto(communication) ::= <<
-// SPDX-License-Identifier: MPL-2.0
-// GENERATED by motion-spec codegen from this model's schema. Do not edit.
-
-syntax = "proto3";
-
-package motion_spec.introspection.log;
-
-// A slot's identity: the RuntimeFrame field number that carries it, the generated id, and the
-// model IRI it names. An id is a lossy projection of its IRI, so both travel.
-message SlotIri {
-  uint32 number = 1;
-  string id = 2;
-  string iri = 3;
-  // A controller slot names the constraint it serves; a monitor slot names the event it fires.
-  string constraint_iri = 4;
-  string event_iri = 5;
-  string constraint_id = 6;
-  // "while" | "until" | "when" on a monitor slot, empty elsewhere.
-  string phase = 7;
-  // The quantity slots this slot joins to, by id: what a plot of it is drawn from.
-  string error_id = 8;
-  string output_id = 9;
-  string measured_id = 10;
-  string setpoint_id = 11;
-  string tolerance_id = 12;
-  // Every watched constraint: an aggregate monitor watches more than the scalar can say.
-  repeated string constraint_iris = 13;
-  // Each one with the error it is judged by, so a conjunction can be read member by member.
-  repeated WatchedConstraint watched = 18;
-  repeated SlotGain gains = 14;
-  // The two quantities the evaluator compares, the difference it writes, and the closure itself.
-  repeated string operand_ids = 15;
-  string difference_id = 16;
-  string evaluator_id = 17;
-}
-
-// One constraint an aggregate monitor watches, and the error its evaluator writes.
-message WatchedConstraint {
-  string id = 1;
-  string iri = 2;
-  string error_id = 3;
-  string tolerance_id = 4;
-}
-
-// A controller's gains: literals folded into the controller, so no quantity slot carries them.
-message SlotGain {
-  string role = 1;
-  double value = 2;
-}
-
-message Transition {
-  uint32 index = 1;
-  string id = 2;
-  string iri = 3;
-  int32 from_state = 4;
-  int32 to_state = 5;
-  int32 event_index = 6;
-  repeated uint32 event_indices = 7;
-}
-
-// Which slots a motion drives. proto3 elides a genuine 0.0 exactly as it elides "never written",
-// so absence on the wire cannot tell an inactive slot from a zero one -- the frame carries
-// active_motion and this says what that motion writes.
-message MotionGate {
-  uint32 index = 1;
-  string id = 2;
-  string iri = 3;
-  int32 fsm_state = 4;
-  repeated uint32 quantities = 5;
-  repeated uint32 poses = 6;
-  repeated uint32 twists = 7;
-  repeated uint32 wrenches = 8;
-  repeated SlotIri controllers = 9;
-  repeated SlotIri monitors = 10;
-}
-
-message Constant {
-  string id = 1;
-  string source_id = 2;
-  double value = 3;
-  // The model term this number projects, and who reads it.
-  string uri = 4;
-  repeated ConstantConsumer consumers = 5;
-}
-
-message ConstantConsumer {
-  string id = 1;
-  string kind = 2;
-  string role = 3;
-}
-
-message FrameLogHeader {
-  reserved 2, 3, 12;
-  string schema_hash = 1;
-  // This file's own FileDescriptorSet: the log carries the schema it was written against.
-  bytes descriptor_set = 4;
-  repeated SlotIri slots = 5;
-  repeated MotionGate motions = 6;
-  uint32 trigger_pool = 7;
-  repeated SlotIri fsm_states = 8;
-  repeated SlotIri fsm_events = 9;
-  repeated Transition fsm_transitions = 10;
-  // Written once at init; repeating them per tick would say nothing new.
-  repeated Constant constants = 11;
-  string platform_name = 13;
-  bool simulated = 14;
-  int32 end_state = 15;
-  int64 nominal_period_ns = 16;
-  string fsm_namespace = 17;
-}
-
-message ConstraintSlot {
-  sfixed64 active = 1;
-  double error = 2;
-  double output = 3;
-  sfixed64 satisfied = 4;
-  double sat_t = 5;
-  double measured = 6;
-  double setpoint = 7;
-}
-
-message MonitorSlot {
-  sfixed64 active = 1;
-  double value = 2;
-  sfixed64 satisfied = 3;
-  double sat_t = 4;
-}
-
-message DeviceSlot {
-  uint64 seq = 1;
-  bool success = 2;
-}
-
-message Trigger {
-  sfixed64 kind = 1;
-  sfixed64 idx = 2;
-  sfixed64 fsm_state = 3;
-  double t = 4;
-  sfixed64 wall_ns = 5;
-}
-
-message PoseSlot {
-  double px = 1;
-  double py = 2;
-  double pz = 3;
-  double qx = 4;
-  double qy = 5;
-  double qz = 6;
-  double qw = 7;
-}
-
-message TwistSlot {
-  double lx = 1;
-  double ly = 2;
-  double lz = 3;
-  double ax = 4;
-  double ay = 5;
-  double az = 6;
-}
-
-message WrenchSlot {
-  double fx = 1;
-  double fy = 2;
-  double fz = 3;
-  double tx = 4;
-  double ty = 5;
-  double tz = 6;
-}
-
-message RuntimeFrame {
-  double t = 1;
-  uint64 step = 2;
-  sfixed64 fsm_state = 3;
-  sfixed64 active_motion = 4;
-  sfixed64 last_event = 5;
-  double state_since_t = 6;
-  sfixed64 state_since_wall_ns = 7;
-  double event_t = 8;
-  sfixed64 event_wall_ns = 9;
-  sfixed64 wall_ns = 10;
-  sfixed64 period_ns = 11;
-  sfixed64 compute_ns = 12;
-  <communication.introspection_artifacts.frame_layout.protobuf.fields.constraints:{f|ConstraintSlot <f.name> = <f.number>;}; separator="\n">
-  <communication.introspection_artifacts.frame_layout.protobuf.fields.monitors:{f|MonitorSlot <f.name> = <f.number>;}; separator="\n">
-  <communication.introspection_artifacts.frame_layout.protobuf.fields.quantities:{f|<f.proto_type> <f.name> = <f.number>;}; separator="\n">
-  <communication.introspection_artifacts.frame_layout.protobuf.fields.devices:{f|DeviceSlot <f.name> = <f.number>;}; separator="\n">
-  <communication.introspection_artifacts.frame_layout.protobuf.fields.triggers:{f|Trigger <f.name> = <f.number>;}; separator="\n">
-  sfixed64 trigger_count = 17;
-  <communication.introspection_artifacts.frame_layout.protobuf.fields.poses:{f|PoseSlot <f.name> = <f.number>;}; separator="\n">
-  <communication.introspection_artifacts.frame_layout.protobuf.fields.twists:{f|TwistSlot <f.name> = <f.number>;}; separator="\n">
-  <communication.introspection_artifacts.frame_layout.protobuf.fields.wrenches:{f|WrenchSlot <f.name> = <f.number>;}; separator="\n">
-}
-
-message FrameLogRecord {
-  oneof record {
-    FrameLogHeader header = 1;
-    RuntimeFrame frame = 2;
-  }
-}
 >>

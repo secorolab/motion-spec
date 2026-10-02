@@ -18,7 +18,6 @@ class SampledQuantity:
 
     id: str
     uri: str
-    distribution_uri: str
     dist: str
     components: list[dict]
     size: int

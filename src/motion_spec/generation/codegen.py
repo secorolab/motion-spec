@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 from collections.abc import Iterator
 from itertools import chain
@@ -13,6 +14,7 @@ from pathlib import Path
 
 from motion_spec.classes.base import DataclassJSONEncoder
 from motion_spec.generation.artifacts import write_introspection_artifacts
+from motion_spec.introspection import frame_log_pb
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 MAIN_TEMPLATE = "main"
@@ -35,6 +37,50 @@ def write_json(path: Path, payload):
     ``sort_keys`` so dict-insertion order can never make two generations of the same model differ."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, cls=DataclassJSONEncoder, indent=4, sort_keys=True) + "\n")
+
+
+def _for_templates(o):
+    """Every empty list as null: StringTemplate's `<if()>` holds a JSON list true even when empty."""
+    if isinstance(o, dict):
+        return {key: _for_templates(value) for key, value in o.items()}
+    if isinstance(o, list):
+        return [_for_templates(value) for value in o] or None
+    return o
+
+
+def runtime_uses(ir: dict) -> dict:
+    """What the program calls into the runtime for, by name: runtime.hpp carries only these."""
+    uses = set()
+    for closure in ir["computation"]["closures"].values():
+        kind = closure["type"]
+        uses.add(kind)
+        if kind == "ErrorEvaluator":
+            uses.add(f"ErrorEvaluator-{closure['constraint']}")
+        if kind == "VelocityProfile":
+            uses.add("PathVelocityProfile" if closure.get("path_parameter") else "TargetVelocityProfile")
+        if closure.get("error_normalization"):
+            uses.add("JointNormalization")
+    solvers = (ir["resources"].get("by_id") or {}).values()
+    for solver in solvers:
+        if solver.get("algorithm_name"):
+            uses.add(f"Solver{solver['algorithm_name']}")
+        if any(out.get("normalization") for out in solver.get("output") or ()):
+            uses.add("JointNormalization")
+    for motion in ir["coordination"]["motions"]:
+        for phase in ("when", "while", "until"):
+            for monitor in motion.get(f"{phase}_monitors") or ():
+                if monitor.get("is_edge_triggered"):
+                    uses.add("SustainedEdge" if monitor.get("debounce_id") else "RisingEdge")
+                    if not monitor.get("fsm_namespace"):
+                        uses.add("ProduceEvent")
+                elif monitor.get("flag"):
+                    uses.add("Flag")
+    return dict.fromkeys(sorted(uses), True)
+
+
+def write_payload(path: Path, payload) -> None:
+    """Write a template payload, with empty lists read as absent."""
+    write_json(path, _for_templates(json.loads(json.dumps(payload, cls=DataclassJSONEncoder))))
 
 
 def render_template(
@@ -111,32 +157,6 @@ def _reject_dropped_output(template_name: str, output_path: Path, stderr: str) -
         )
 
 
-def compile_frame_log_proto(proto_path: Path) -> None:
-    """Compile the generated frame_log.proto to C++ (frame_log.pb.{h,cc}) with protoc.
-
-    The controller links libprotobuf and includes the generated header; protoc owns the
-    wire format on the C++ side (the Python reader builds its message classes from schema).
-    """
-    proto_path = Path(proto_path)
-    try:
-        subprocess.run(
-            [
-                "protoc",
-                f"--proto_path={proto_path.parent}",
-                f"--cpp_out={proto_path.parent}",
-                proto_path.name,
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except FileNotFoundError as exc:
-        raise RuntimeError(
-            "protoc was not found. Install the protobuf compiler (apt: protobuf-compiler) "
-            "to generate the frame-log C++ codec."
-        ) from exc
-    except subprocess.CalledProcessError as exc:
-        raise RuntimeError(exc.stderr.strip() or exc.stdout.strip()) from exc
 
 
 def _collapse_blank_lines(text: str) -> str:
@@ -336,10 +356,11 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str) -> list[Path]:
     # include in shared_state.hpp resolves it via the root include dir, so no headers/ copy
     # is needed — copying it there just duplicated the file in the tree and the archive.
 
+    ir["computation"]["uses"] = runtime_uses(ir)
     payload_dir = output_dir / ".stst"
     payload_dir.mkdir(parents=True, exist_ok=True)
     ir_payload_path = payload_dir / "ir.json"
-    write_json(ir_payload_path, ir)
+    write_payload(ir_payload_path, ir)
 
     written.append(
         render_template(
@@ -362,13 +383,13 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str) -> list[Path]:
             stst_bin, "frame_layout_header", ir_payload_path, output_dir / "frame_layout.h"
         )
     )
-    written.append(
-        render_template(
-            stst_bin, "frame_log_proto", ir_payload_path, output_dir / "frame_log.proto"
-        )
-    )
-    compile_frame_log_proto(output_dir / "frame_log.proto")
-    written += [output_dir / "frame_log.pb.h", output_dir / "frame_log.pb.cc"]
+    shutil.copyfile(frame_log_pb.PROTO, output_dir / "frame_log.proto")
+    frame_log_pb.run_protoc(f"--cpp_out={output_dir}")
+    written += [
+        output_dir / "frame_log.proto",
+        output_dir / "frame_log.pb.h",
+        output_dir / "frame_log.pb.cc",
+    ]
     written.append(
         render_template(stst_bin, "runtime_header", ir_payload_path, headers_dir / "runtime.hpp")
     )
@@ -401,7 +422,7 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str) -> list[Path]:
             "solvers": ir["resources"]["by_id"],
         }
         payload_path = payload_dir / f"{motion['id']}.json"
-        write_json(payload_path, payload)
+        write_payload(payload_path, payload)
         written.append(
             render_template(
                 stst_bin, "motion_header", payload_path, headers_dir / f"{motion['id']}.hpp"
